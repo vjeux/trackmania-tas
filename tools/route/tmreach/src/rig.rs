@@ -30,7 +30,7 @@ pub struct Rolled {
 }
 
 pub struct Worker {
-    forest: Forest,
+    pub forest: Forest,
     pub tape: Tape,
     /// The root's probed consumed boundary: the first tick the root has NOT
     /// consumed.

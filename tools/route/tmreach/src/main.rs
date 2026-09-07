@@ -101,6 +101,7 @@ fn main() {
         "campaign" => cmd_campaign(&a),
         "explore" => cmd_explore(&a),
         "replay" => cmd_replay(&a),
+        "effects" => cmd_effects(&a),
         _ => usage(),
     };
     if let Err(e) = r {
@@ -1179,5 +1180,50 @@ fn cmd_replay(a: &Args) -> Result<(), String> {
     if let Some(out) = a.get("out") {
         tmreach::starts::write_trace(&PathBuf::from(out), &rolled.rows)?;
     }
+    Ok(())
+}
+
+fn cmd_effects(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let ghost = PathBuf::from(a.req("ghost"));
+    let out = PathBuf::from(a.req("out"));
+    let t0: usize = a.req("t0").parse().map_err(|_| "--t0 tick")?;
+    let n: usize = a.get("n").unwrap_or("300").parse().map_err(|_| "--n ticks")?;
+    let at: usize = a.get("at").unwrap_or("100").parse().map_err(|_| "--at idx of the crossing within the window")?;
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/effects-{}", std::process::id())));
+    let mut w = Worker::start(&server, &map, &shim, &work, &ghost, a.has("verbose"))?;
+    let prov = w.car.provenance().clone();
+    let layout = w.forest.layout().cloned().ok_or("no layout")?;
+    println!("vehicle {:#x} state_pos {:#x} vis {:#x} participant {:#x} clock {:#x} cps {:#x}", prov.vehicle, prov.state_pos, layout.vis, prov.participant, layout.clock, layout.cps);
+    let windows = vec![
+        tmreach::effects::Window { name: "vehicle", base: prov.vehicle.saturating_sub(0x8000), len: 0x18000 },
+        tmreach::effects::Window { name: "participant", base: prov.participant.saturating_sub(0x8000), len: 0x18000 },
+        tmreach::effects::Window { name: "controller", base: prov.controller.saturating_sub(0x4000), len: 0x8000 },
+        tmreach::effects::Window { name: "sim", base: prov.sim.saturating_sub(0x4000), len: 0x8000 },
+        tmreach::effects::Window { name: "players", base: prov.players.saturating_sub(0x2000), len: 0x4000 },
+        tmreach::effects::Window { name: "playground", base: prov.playground.saturating_sub(0x4000), len: 0x8000 },
+    ];
+    let t = std::time::Instant::now();
+    let o = tmreach::effects::scan(&mut w, t0, n, windows)?;
+    println!("scanned {} ticks ({} .. {}) race {} .. {} in {:.1} s", o.ticks.len(), o.ticks.first().unwrap_or(&0), o.ticks.last().unwrap_or(&0), tmreach::secs(*o.race_ms.first().unwrap_or(&0)), tmreach::secs(*o.race_ms.last().unwrap_or(&0)), t.elapsed().as_secs_f64());
+    tmreach::effects::write_dumps(&o, &out)?;
+    let timers = tmreach::effects::find_timers(&o, a.get("min-run").unwrap_or("20").parse().unwrap_or(20));
+    println!("\nTIMER candidates (jump then a constant step per tick):");
+    for c in &timers {
+        println!("  {} +{:#x} ({}): idx {} race {}: {}   series {:?}", c.window, c.offset, c.kind, c.first_tick_idx, tmreach::secs(o.race_ms[c.first_tick_idx]), c.note, c.series.iter().take(8).map(|v| format!("{v}")).collect::<Vec<_>>());
+    }
+    let flags = tmreach::effects::find_flags(&o, at, a.get("radius").unwrap_or("15").parse().unwrap_or(15));
+    println!("\nFLAG candidates (a byte that changes once or twice, within ±radius ticks of idx {at}):");
+    for c in flags.iter().take(60) {
+        println!("  {} +{:#x}: {}", c.window, c.offset, c.note);
+    }
+    let (alo, ahi): (f64, f64) = (a.get("appear-lo").unwrap_or("7000").parse().unwrap_or(7000.0), a.get("appear-hi").unwrap_or("9000").parse().unwrap_or(9000.0));
+    let app = tmreach::effects::find_appearing(&o, alo, ahi, at.saturating_sub(20), at + 40);
+    println!("\nAPPEARING candidates (a value in [{alo}, {ahi}] appearing within idx {}..{}):", at.saturating_sub(20), at + 40);
+    for c in app.iter().take(60) {
+        println!("  {} +{:#x} ({}): {}  series {:?}", c.window, c.offset, c.kind, c.note, c.series.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>());
+    }
+    println!("{} timer candidates, {} flag candidates, {} appearing; dumps in {}", timers.len(), flags.len(), app.len(), out.display());
     Ok(())
 }

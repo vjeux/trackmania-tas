@@ -61,11 +61,14 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
     // the counter credits — synthesised when it is within 0.5 s past the trace.
     if let Some(decl) = w.tape.declared_ms {
         for (gi, g) in gates.gates.iter().enumerate() {
-            if g.kind == GateKind::Finish && first[gi] < 0 {
+            // DETERMINISM: whether the finish step is captured varies run to run, so the
+            // finish leg's end row is ALWAYS the declared-time row with the ghost's own
+            // telemetry position/velocity (cm-level vs the engine row), never the flushed rows
+            if g.kind == GateKind::Finish {
                 let want = decl as i64 - (decl as i64 % 10); // the row whose tick the counter credits (p00001: notice 19538 → step row race 19.530)
                 if let Some(i) = flat.iter().position(|r| w.race_of(r) == want) {
-                    // only when the counter shows every checkpoint credited
-                    if flat.iter().rev().find(|r| r.cps != u32::MAX).map(|r| r.cps as usize + 1 == ng).unwrap_or(false) {
+                    // only when the counter shows every checkpoint credited (or the finish itself)
+                    if flat.iter().rev().find(|r| r.cps != u32::MAX).map(|r| r.cps as usize + 1 >= ng).unwrap_or(false) {
                         // DETERMINISM: the rows near the exit are however many the child flushed
                         // (0..5) plus extrapolation; anchor the finish row on the row 200 ms
                         // before the finish, extrapolated at constant velocity, run to run
@@ -82,8 +85,8 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
                             r.vz = (pp[2] - pm[2]) / 0.02;
                             flat[i] = r;
                         }
+                        synth_finish = first[gi] < 0;
                         first[gi] = i as i32;
-                        synth_finish = true;
                     }
                 }
             }
