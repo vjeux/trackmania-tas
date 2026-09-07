@@ -21,6 +21,10 @@ impl<'a> CipherReader<'a> {
             cipher: PakCipher::new(key, iv, version),
         }
     }
+    pub fn with_blowfish(data: &'a [u8], off: usize, bf: crate::blowfish::Blowfish, version: i32) -> CipherReader<'a> {
+        let iv = u64::from_le_bytes(data[off..off + 8].try_into().unwrap());
+        CipherReader { data, pos: off + 8, cipher: PakCipher::with_blowfish(bf, iv, version) }
+    }
     pub fn take(&mut self, n: usize) -> Vec<u8> {
         let mut out = vec![0u8; n];
         let data = self.data;

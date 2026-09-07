@@ -25,7 +25,13 @@ fn plausible(t: &Target, key: &[u8; 16]) -> bool {
     for i in 0..16 {
         kh[i] ^= HEADER_KEY[i];
     }
-    let mut r = CipherReader::new(&t.data, t.enc_start, &kh, t.version);
+    let bf = crate::blowfish::Blowfish::new(&kh, crate::blowfish::PakCipher::trick_for(t.version));
+    plausible_bf(t, bf)
+}
+
+/// `plausible` over an already-scheduled header cipher (key XOR HEADER_KEY).
+fn plausible_bf(t: &Target, bf: crate::blowfish::Blowfish) -> bool {
+    let mut r = CipherReader::with_blowfish(&t.data, t.enc_start, bf, t.version);
     let _md5 = r.take(16);
     let gbx_headers_start = r.u32() as usize;
     if t.version < 15 {
@@ -168,29 +174,16 @@ pub fn run(rest: &[String]) -> Result<(), String> {
             }
         }
         if found[ti].is_none() && full {
-            println!("  no anchored hit; scanning the whole dump at 16-byte alignment...");
-            let mut pos = 0usize;
-            'full: while pos < total {
-                let chunk = read_at(&mut f, pos, CHUNK);
-                let mut off = 0usize;
-                while off + 16 <= chunk.len() {
-                    let mut k = [0u8; 16];
-                    k.copy_from_slice(&chunk[off..off + 16]);
-                    if k != [0u8; 16] && plausible(t, &k) {
-                        if let Some(n) = confirm(t, &k) {
-                            println!("  KEY {} ({} entries) at dump offset {:#x}", hex(&k), n, pos + off);
-                            found[ti] = Some(k);
-                            break 'full;
-                        }
-                    }
-                    off += 16;
-                }
-                pos += CHUNK;
-            }
+            println!("  (no anchored hit)");
         }
         if found[ti].is_none() {
             println!("  no key found for {}", t.name);
         }
+    }
+    if full && found.iter().any(|f| f.is_none()) {
+        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        println!("full scan of the dump with {threads} threads...");
+        full_scan(&mut f, total, &targets, &mut found, threads);
     }
     println!();
     for (t, k) in targets.iter().zip(found.iter()) {
@@ -200,4 +193,75 @@ pub fn run(rest: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Whole-dump scan, every 16-byte-aligned window, all targets at once: one
+/// Blowfish schedule per candidate (the header cipher is keyed by
+/// key XOR HEADER_KEY, the same for every pack), cloned per target. A cheap
+/// entropy filter first: an MD5-shaped key has no byte value four times and
+/// at most two zero bytes; pointers, floats and text fail that.
+fn full_scan(f: &mut std::fs::File, total: usize, targets: &[Target], found: &mut [Option<[u8; 16]>], threads: usize) {
+    use std::io::{Read, Seek, SeekFrom};
+    const CHUNK: usize = 256 << 20;
+    let trick = crate::blowfish::PakCipher::trick_for(targets[0].version);
+    let mut pos = 0usize;
+    let mut buf = vec![0u8; CHUNK];
+    let t0 = std::time::Instant::now();
+    while pos < total && found.iter().any(|f| f.is_none()) {
+        let want = CHUNK.min(total - pos);
+        if f.seek(SeekFrom::Start(pos as u64)).is_err() { break; }
+        let mut got = 0;
+        while got < want {
+            match f.read(&mut buf[got..want]) { Ok(0) | Err(_) => break, Ok(n) => got += n }
+        }
+        let chunk = &buf[..got];
+        let per = (got / threads + 15) & !15;
+        let hits: Vec<(usize, [u8; 16], usize)> = std::thread::scope(|s| {
+            let mut hs = Vec::new();
+            for ti in 0..threads {
+                let lo = ti * per;
+                let hi = ((ti + 1) * per).min(got);
+                if lo >= hi { continue; }
+                let found_now: Vec<bool> = found.iter().map(|f| f.is_some()).collect();
+                hs.push(s.spawn(move || {
+                    let mut out = Vec::new();
+                    let mut off = lo;
+                    while off + 16 <= hi {
+                        let k: [u8; 16] = chunk[off..off + 16].try_into().unwrap();
+                        off += 16;
+                        let mut counts = [0u8; 256];
+                        let mut bad = false;
+                        for b in k { counts[b as usize] += 1; if counts[b as usize] >= 4 { bad = true; break; } }
+                        if bad || counts[0] > 2 { continue; }
+                        // candidate as the pack key (schedule on k ^ HEADER_KEY) and as the header key itself
+                        for form in 0..2 {
+                            let mut kh = k;
+                            if form == 0 { for i in 0..16 { kh[i] ^= HEADER_KEY[i]; } }
+                            let bf = crate::blowfish::Blowfish::new(&kh, trick);
+                            for (i, t) in targets.iter().enumerate() {
+                                if found_now[i] { continue; }
+                                if plausible_bf(t, bf.clone()) {
+                                    let key = if form == 0 { k } else { let mut x = k; for j in 0..16 { x[j] ^= HEADER_KEY[j]; } x };
+                                    out.push((i, key, off - 16));
+                                }
+                            }
+                        }
+                    }
+                    out
+                }));
+            }
+            hs.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+        });
+        for (i, key, off) in hits {
+            if found[i].is_none() {
+                if let Some(n) = confirm(&targets[i], &key) {
+                    println!("  KEY {} for {} ({} entries) at dump offset {:#x}", hex(&key), targets[i].name, n, pos + off);
+                    found[i] = Some(key);
+                }
+            }
+        }
+        pos += got;
+        println!("  scanned {} MiB in {:.0} s", pos >> 20, t0.elapsed().as_secs_f32());
+        if got == 0 { break; }
+    }
 }

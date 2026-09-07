@@ -121,6 +121,14 @@ pub struct PakCipher {
 }
 
 impl PakCipher {
+    /// A cipher over an already-scheduled Blowfish (the key hunt shares one
+    /// schedule across every pack it tests a candidate against).
+    pub fn with_blowfish(bf: Blowfish, iv: u64, version: i32) -> PakCipher {
+        PakCipher { bf, iv, iv_xor: 0, buf: [0; 8], buf_index: 0, total_index: 0, version }
+    }
+    pub fn trick_for(version: i32) -> Trick {
+        if version >= 18 { Trick::LittleEndianPak18 } else { Trick::LittleEndian }
+    }
     pub fn new(key: &[u8], iv: u64, version: i32) -> PakCipher {
         let trick = if version >= 18 { Trick::LittleEndianPak18 } else { Trick::LittleEndian };
         PakCipher {

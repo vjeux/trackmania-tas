@@ -474,21 +474,33 @@ pub fn cmd(args: &[String]) {
     let mut neutralised = 0;
     for i in 0..m.blocks.len() {
         let b = m.blocks[i].clone();
+        if std::env::var_os("TINY_NO_PARK_BLOCKS").is_some() && b.waypoint_tag.is_none() {
+            continue; // debug knob: only the waypoint blocks are parked
+        }
         if b.flags & FREE_BLOCK_FLAG != 0 {
             m.move_block_free(i, [16.0, -1000.0, 16.0]);
         } else {
             m.move_block_cell(i, (0, 0, 0));
         }
-        if b.waypoint_tag.is_some() || b.name.contains("Start") || b.name.contains("Finish") || b.name.contains("Checkpoint") || b.name.contains("Multilap") {
+        // EVERY parked block is renamed to the neutral road, not just the
+        // waypoints: with the genealogy chunk cleared, a parked terrain block
+        // (Summer 06: Land0_Land1_Land2 / DecoTreeBeach…) at cell 0,0,0 makes
+        // the client dereference a missing zone (0x140d2b0bc, 2026-09-06);
+        // the same map loads with the blocks left in place or the genealogy
+        // kept. A road needs no zone.
+        if b.name != neutral {
             m.set_block_name(i, &neutral);
             neutralised += 1;
         }
     }
-    println!("  {neutralised} parked waypoint blocks renamed to {neutral}");
+    println!("  {neutralised} parked blocks renamed to {neutral}");
     // the generated non-Sea fillers are parked too (re-emitted as items above);
     // the Sea records stay: they are the water
     let mut parked_baked = 0usize;
     for i in 0..m.baked.len() {
+        if std::env::var_os("TINY_NO_PARK_BAKED").is_some() {
+            break; // debug knob: leave the generated blocks where they are
+        }
         if m.baked[i].name != "Sea" {
             m.move_baked_cell(i, (0, 0, 0));
             parked_baked += 1;
