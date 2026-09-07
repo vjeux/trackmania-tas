@@ -2700,6 +2700,8 @@ fn cp_oracle_control(a: &[String]) {
         path: PathBuf,
         done: String,
         cps_steps: Vec<i64>,
+        /// Race time of the tick after this worker's tape's last record.
+        tape_end_ms: i64,
     }
     let t0 = Instant::now();
     let mut outs: Vec<Out> = std::thread::scope(|sc| {
@@ -2852,6 +2854,7 @@ fn cp_oracle_control(a: &[String]) {
                             path,
                             done,
                             cps_steps,
+                            tape_end_ms: tape.n() as i64 * 10 + tape.start_offset_ms as i64,
                         });
                         i += workers;
                     }
@@ -2886,6 +2889,11 @@ fn cp_oracle_control(a: &[String]) {
     let mut finishes = 0usize;
     let mut unreported = 0usize;
     let mut by_count: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
+    // finishes AFTER the tape's last record: the engine reads its default record
+    // there (participant+0x188 goes 2 -> 0 one tick after the last record) and
+    // such a finish is batch-dependent (tickhook arm: 43 of 1100) -- counted as
+    // its own class, never as a policy's result.
+    let mut post_tape_finish = 0usize;
     let mut lines = String::from("tape\tpolicy\toracle\toracle_cps\tengine_cps\tgeom_cps\tticks\n");
     // MATCHED BY FILE NAME, never by position: with several donor containers
     // in one batch the server answers in an order that is NOT the filename
@@ -2899,6 +2907,11 @@ fn cp_oracle_control(a: &[String]) {
             die(format!("the oracle has no answer named {name}"));
         };
         let ov = ans.verdict();
+        if let Some(tmauto::Verdict::Finish { ms }) = ov {
+            if ms as i64 > o.tape_end_ms {
+                post_tape_finish += 1;
+            }
+        }
         let oracle_cps: Option<u32> = match ov {
             Some(tmauto::Verdict::Dnf { cps }) => Some(cps),
             Some(tmauto::Verdict::Finish { .. }) => {
@@ -2947,7 +2960,7 @@ fn cp_oracle_control(a: &[String]) {
     }
     let _ = std::fs::write(bank.join("per-tape.tsv"), lines);
     println!();
-    println!("oracle checkpoint counts over the {} tapes: {:?}  (finishes {}, refusals {}, counts UNREPORTED -- bare wrong simu = 0 or 1 -- {})", outs.len(), by_count, finishes, refused, unreported);
+    println!("oracle checkpoint counts over the {} tapes: {:?}  (finishes {} of which {} AFTER the tape's last record -- batch-dependent, not a policy's result; refusals {}; counts UNREPORTED -- bare wrong simu = 0 or 1 -- {})", outs.len(), by_count, finishes, post_tape_finish, refused, unreported);
     println!("ENGINE COUNTER vs oracle : {agree} agree, {disagree} disagree");
     println!("geometric detector vs oracle: {geom_agree} agree, {} disagree  (the number it replaces)", outs.len() - geom_agree);
     let pass = disagree == 0 && refused == 0 && agree == outs.len();
