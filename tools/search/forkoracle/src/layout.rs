@@ -1,31 +1,40 @@
-//! Where the car's state lives in one server process, and how to find it
-//! without any recorded telemetry.
+//! Where the car's state lives in one server process, as the sampler and every
+//! consumer of a sampled record see it.
 //!
-//! Extracted from `fk` into the shared driver crate so the SEARCH can locate
-//! the vehicle struct in its own fork servers -- the search cannot depend on
-//! `fk` (that dependency runs the other way), and a second copy of this code
-//! would be a second thing to get wrong.
-//!
-//! Everything here is parameterised by the input tape as `&[Rec]` rather than
-//! by a ghost `Factory`, which is what keeps this crate free of tmsearch.
+//! The addresses come from `car::locate` -- the dyna body record the physics
+//! step integrates, stamped with the tick loop's own clock -- and nothing here
+//! searches for anything. What stays here is the RECORD: the byte layout of one
+//! gathered sample, how it decodes into rows, and the whole-run self-checks.
 
-use crate::forksrv::{ForkServer, Rec};
+use crate::forksrv::Rec;
 
 /// Where the car's state lives in one particular server process.
+///
+/// Every address is derived (`car::locate`), and the label is the engine's:
+/// `clock` is `sim+0x48`, the simulation time the tick loop writes at the end
+/// of every tick, and `clock_bias` is the race start it set in this process,
+/// so `clock - clock_bias` is the race time of the state a sample holds.
 #[derive(Clone, Debug)]
 pub struct Layout {
-    /// f32 x,y,z. The anchor everything else is expressed against.
+    /// f32 x,y,z -- the body record's position.
     pub pos: u64,
-    /// u32 race clock, ticking by exactly 10 ms.
+    /// f32 w,x,y,z -- the body record's attitude.
+    pub quat: u64,
+    /// f32 vx,vy,vz -- the body record's linear velocity.
+    pub vel: u64,
+    /// f32 tyre wetness, 0..1 -- `WetnessValue01` of the post-step vis state.
+    pub wet: u64,
+    /// u32 simulation time of the last finished tick, `sim+0x48`.
     pub clock: u64,
-    /// `clock_value - race_ms`, constant for the whole run.
+    /// `clock_value - race_ms` of the state a sample holds: the race start.
     pub clock_bias: i64,
-    /// Deviation of the located position from the ghost's own path, metres.
+    /// Deviation of the located position from a reference, when one was
+    /// measured; 0 for a derived layout.
     pub rms: f64,
     pub max_dev: f64,
 }
 
-/// Offsets within the gathered record, once the two segments are concatenated.
+/// Offsets within the gathered record, once the segments are concatenated.
 pub const R_CLOCK: usize = 0;
 pub const R_QUAT: usize = 4; // qw qx qy qz
 pub const R_POS: usize = 20; // x y z
@@ -33,24 +42,13 @@ pub const R_VEL: usize = 32; // vx vy vz
 pub const R_WET: usize = 44; // f32 tyre wetness, 0..1
 pub const REC_LEN: usize = 48;
 
-/// Where the wetness f32 sits relative to the position anchor. MEASURED, not
-/// assumed: `fk probe` searched a 2 KB window around the car against the
-/// game's own recording and found car+180 reproducing it on 95.4-96.0 % of
-/// steady ticks with a correlation of 0.9997, against a next-best offset at
-/// 31-47 %. Confirmed at two probe ticks and on two different ghosts, and the
-/// negative control -- the same tape against ANOTHER run's answer key -- finds
-/// nothing (44 %).
-///
-/// Wetness matters because it is a POSITIONAL INTEGRAL: a function of where
-/// the car has been rather than of its state, so it separates two runs that
-/// speed cannot tell apart (measured: >10 points apart at 49 % of the shared
-/// instants of two human replays of one map).
-pub const WET_OFF: i64 = 180;
-
-/// The segments the production sampler gathers: the clock, the car block, and
-/// the wetness word (see `WET_OFF`).
+/// The segments the production sampler gathers, in record order: the clock,
+/// the attitude, the position, the velocity, the wetness word. Five segments
+/// because the body record keeps its quaternion AFTER the position (`+0x30` vs
+/// `+0x24`) while the record every consumer decodes puts it first; the sampler
+/// concatenates, so the consumers never learned the difference.
 pub fn segments(l: &Layout) -> Vec<(u64, u32)> {
-    vec![(l.clock, 4), (l.pos - 16, 40), (l.pos.wrapping_add(WET_OFF as u64), 4)]
+    vec![(l.clock, 4), (l.quat, 16), (l.pos, 12), (l.vel, 12), (l.wet, 4)]
 }
 
 fn getf32(b: &[u8], o: usize) -> f64 {
@@ -75,83 +73,6 @@ pub struct Row {
     pub wetness: f64,
 }
 
-/// Find the engine's race clock near an already-qualified position address.
-///
-/// One extra fork: stream a wide window keyed on the position, then look for
-/// the 4-byte slot that advances by exactly 10 on every one of those ticks.
-/// Demanding *every* step rules out anything that merely correlates.
-pub fn find_clock(
-    srv: &mut ForkServer,
-    probe: usize,
-    recs: &[Rec],
-    start_offset_ms: i32,
-    pos: u64,
-    back: u64,
-    ahead: u64,
-    stride: u64,
-) -> Result<(u64, i64), String> {
-    let lo = pos - back;
-    let len = (back + ahead) as u32;
-
-    // HOW MANY SAMPLES, AND WHY THE CHILD MUST BE TOLD TO STOP.
-    //
-    // A slot that steps by exactly +10 on 96 consecutive ticks inside a 20 KB
-    // window is the clock; 400 was not buying confidence, it was buying pipe
-    // traffic (20 KB per tick, so 8 MB instead of 2 MB) -- and the bias is
-    // MEASURED against the engine now (`measured_clock_bias`), so the sample
-    // count only has to pin WHICH slot, never what it means.
-    //
-    // The budget matters more than the count. Without `EXIT_ON_BUDGET` the
-    // child collects its samples and then simulates the WHOLE REMAINING TAPE in
-    // silence -- 2261 ticks and the validator's finish path, for a measurement
-    // that was over after 96. Measured on map 2 at tick 171: 4.3 s -> 0.35 s.
-    const CLOCK_TICKS: u32 = 96;
-    let (_j, blob) = srv.run_sampled_segs_ex(
-        probe,
-        &recs[..(CLOCK_TICKS as usize + 8).min(recs.len())],
-        &[(lo, len)],
-        stride,
-        CLOCK_TICKS | 0x8000_0000,
-        (back as u32, 12),
-        crate::clock::budget_for_ticks(CLOCK_TICKS + 8),
-    );
-    let recsz = 8 + len as usize;
-    let m = blob.len() / recsz;
-    if m < 24 {
-        return Err(format!("clock discovery: only {} samples", m));
-    }
-    let g = |i: usize, o: usize| -> u32 {
-        u32::from_le_bytes(blob[i * recsz + 8 + o..i * recsz + 12 + o].try_into().unwrap())
-    };
-    let _ = start_offset_ms;
-    let mut found: Vec<(u64, i64)> = Vec::new();
-    for o in (0..len as usize - 4).step_by(4) {
-        if (0..m - 1).all(|i| g(i + 1, o).wrapping_sub(g(i, o)) == 10) {
-            // The +10-per-tick signature FINDS the counter; the label comes
-            // from the engine, not from a fit. See `measured_clock_bias`.
-            let a = lo + o as u64;
-            match measured_clock_bias(srv, a) {
-                Ok(b) => found.push((a, b)),
-                Err(_) => continue,
-            }
-        }
-    }
-    if std::env::var("FKDBG").is_ok() {
-        eprintln!(
-            "DBG find_clock: {} samples (asked 400), {} slots step by exactly +10: {:?}",
-            m,
-            found.len(),
-            found
-                .iter()
-                .map(|(a, b)| format!("{:#x} bias{:+}", a, b))
-                .collect::<Vec<_>>()
-        );
-    }
-    match found.first() {
-        Some(&(a, b)) => Ok((a, b)),
-        None => Err("no u32 advances by exactly 10 every tick near the vehicle state".into()),
-    }
-}
 /// Decode a gathered sample blob into one row per tick.
 ///
 /// The record is keyed on its whole content, so the engine may emit several
@@ -374,62 +295,4 @@ pub fn check_rows(rows: &[Row]) -> Result<RowCheck, String> {
         return Err(format!("the car never moves: {}", c));
     }
     Ok(c)
-}
-
-/// THE CLOCK'S LABEL, MEASURED RATHER THAN FITTED.
-///
-/// The counter the locators find is not the race clock: on build 128182 it
-/// counts from the ROUND start, which sits 1000 ms before the race start on
-/// map 2 (round 1200, race 2200), and the difference is not a constant of the
-/// engine — it is per race. So a label needs an origin, and until now that
-/// origin was FITTED: `first sample value - sample_ms(probe, 0, ...)`, i.e. an
-/// assumption about which tick the first sample of a child's stream belongs to.
-/// Measured, that fit was 1000 in one run and 1020 in another — two ticks of
-/// disagreement between two runs of one tape, which is exactly the shape of
-/// "the fork child's tick labelling shifts by a whole tick between workers"
-/// (phantom defect 3).
-///
-/// This reads the counter out of the STOPPED PARENT, whose tick the tick hook
-/// reports exactly, so the origin is arithmetic rather than inference. Two
-/// facts, both measured on the stopped parent rather than assumed:
-///
-/// * the counter is the ROUND time of the tick the engine has FINISHED --
-///   exactly `[sim+0x48] - round_start` (at sim 12620 with race start 2200 it
-///   reads 11410, and `[sim+0x48]` is 12610);
-/// * the VIS STATE that `segments()` gathers lags that by one more tick: the
-///   validator's CGameVehiclePhy holds the finished tick, and the vis state
-///   holds the one before it (`fk tickhook reads` measures the pair exactly
-///   one tick of travel apart, 0.8360 m at 83.58 m/s).
-///
-/// So the state present when the counter reads `C` is the state at the END of
-/// race tick `(C - bias) / 10` with
-///
-/// ```text
-/// bias = counter_in_parent - ((sim_ms - race_start) - 20)
-/// ```
-///
-/// and that is not arithmetic anyone should believe without the control:
-/// `fk trace` against a ghost's own telemetry reads **median 3.1 mm, max 6.8 mm,
-/// 100 % of ticks within 5 cm** with this bias, and median 796 mm -- one tick of
-/// travel -- with the second term left out.
-///
-/// # THE BIAS BELONGS TO THE OBJECT, NOT TO THE CLOCK
-///
-/// This is calibrated for the VIS STATE, which is what `segments()` gathers and
-/// what every offset here describes. The validator's own `CGameVehiclePhy` holds
-/// the same car ONE TICK LATER (`fk tickhook reads` measures the pair every run:
-/// 0.8360 m apart at 83.58 m/s = 1.00 ticks), so a row read from THAT object
-/// wants `-10` where this wants `-20`.
-///
-/// The tm-player project's ENV arm reached the opposite sign from three
-/// harnesses and was right about its own object: it reads physics rows. Both
-/// conventions are correct and carrying one across objects is a one-tick error,
-/// which is 0.84 m at racing speed. The bias therefore travels in the same
-/// `Layout` as the address it was measured for -- never as a free constant.
-pub fn measured_clock_bias(srv: &ForkServer, clock_addr: u64) -> Result<i64, String> {
-    let v = crate::procmem::read_at(srv.pid(), clock_addr, 4)
-        .ok_or_else(|| format!("cannot read the located clock at {:#x}", clock_addr))?;
-    let counter = u32::from_le_bytes(v[..4].try_into().unwrap()) as i64;
-    let sampled_state_race_ms = (srv.sim_ms as i64 - srv.race_start as i64) - 20;
-    Ok(counter - sampled_state_race_ms)
 }

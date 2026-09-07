@@ -179,22 +179,17 @@ fn fit(p: &[(f64, f64)]) -> (f64, f64) {
 ///
 /// A missing layout is **UNMEASURED**, not "no trace needed": the cost arms
 /// still run and their trace column reads UNMEASURED rather than 0.
-fn locate_layout(srv: &mut ForkServer, probe: usize, recs: &[Rec], off: i32) -> Option<Layout> {
-    let wide = (-1.0e6, 1.0e6, -1.0e6, 1.0e6, -1.0e6, 1.0e6);
-    match crate::locate::locate_v2(srv, probe, recs, off, wide, 40_000, 24, false) {
-        Ok(l) => {
-            println!(
-                "state readout located: pos {:#x}, clock {:#x} (bias {}), self-consistency \
-                 {:.3} m/s",
-                l.pos, l.clock, l.clock_bias, l.rms
-            );
+fn locate_layout(srv: &ForkServer) -> Option<Layout> {
+    match forkoracle::car::locate(srv) {
+        Ok(car) => {
+            let l = car.layout();
+            println!("state readout derived: {}", car);
             Some(l)
         }
         Err(e) => {
             eprintln!(
-                "fk tree: the car could not be located ({}). The timing arms still run; every \
-                 state-trace column reads UNMEASURED. This is a harness limit, not an absence: \
-                 the engine computes the state and it is in memory.",
+                "fk tree: the car did not derive ({}). The timing arms still run; every \
+                 state-trace column reads UNMEASURED.",
                 e
             );
             None
@@ -250,7 +245,7 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
     let reference = recs_from(&tape.steer, &tape.accel, &tape.brake, 0);
 
     let layout = if o.trace {
-        locate_layout(&mut srv, probe, &reference, tape.start_offset_ms)
+        locate_layout(&srv)
     } else {
         None
     };

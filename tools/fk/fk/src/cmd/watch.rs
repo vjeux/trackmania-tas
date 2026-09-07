@@ -26,11 +26,11 @@
 //! tape is run through both paths and must return the reference's own
 //! millisecond, and must not trip anything.
 
-use forkoracle::blind::{bounds_from, locate_blind};
+
 use forkoracle::forksrv::{parse_result, rec_of, write_key, ForkServer, Rec};
 use forkoracle::pred_core::Summary;
 use forkoracle::pred::{outcome, parse_spec, Outcome, RefLineData, Watch};
-use forkoracle::layout::{segments, Layout, Row, R_CLOCK, R_POS, R_QUAT, R_VEL, REC_LEN};
+use forkoracle::layout::{segments, Layout, R_CLOCK, R_POS, R_QUAT, R_VEL, REC_LEN};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use crate::tape::Tape as Factory;
@@ -383,47 +383,21 @@ fn setup(c: &Cfg) -> Setup {
         boundary as i64 * 10 + f.start_offset_ms as i64
     );
 
-    // the reference line, and the bounds the blind locate needs
+    // the reference line
     let refline = if c.refcsv.is_empty() {
         RefLineData::default()
     } else {
         ref_from_csv(&c.refcsv, f.start_offset_ms, n).unwrap_or_else(|e| panic!("{}", e))
     };
-    let bounds = if refline.n > 0 {
-        let rows: Vec<Row> = (0..refline.n)
-            .map(|i| Row {
-                time_ms: 0,
-                x: refline.xyz[3 * i] as f64,
-                y: refline.xyz[3 * i + 1] as f64,
-                z: refline.xyz[3 * i + 2] as f64,
-                vx: 0.0,
-                vy: 0.0,
-                vz: 0.0,
-                qx: 0.0,
-                qy: 0.0,
-                qz: 0.0,
-                qw: 0.0,
-                wetness: 0.0,
-            })
-            .collect();
-        bounds_from(&rows, 200.0)
-    } else {
-        (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0)
-    };
-    let lrecs = tail_recs(&f.steer, &f.accel, &f.brake, probe);
-    // FK_FAST_LOCATE=1 asks the engine (0.2 s) instead of sweeping (3.6 s). Off
-    // by default: see the note in `tmsearch::forkeval` -- the watchdog behaves
-    // differently with the object it picks, and that is unexplained.
-    let layout = if std::env::var("FK_FAST_LOCATE").is_ok() {
-        forkoracle::car::locate_fast(&mut srv, probe, &lrecs, true)
-            .unwrap_or_else(|e| panic!("ABORT: {}", e))
-    } else {
-        locate_blind(&mut srv, probe, &lrecs, f.start_offset_ms, c.every.max(1), bounds, true)
-            .unwrap_or_else(|e| panic!("ABORT: {}", e))
-    };
+    // THE CAR, DERIVED: the dyna body the physics step integrates, read through
+    // its copy-out in the driven CGameVehiclePhy, stamped with the tick loop's
+    // clock (`forkoracle::car`, LOCATE.md). No sweep, no fork, nothing chosen.
+    let car = forkoracle::car::locate(&srv).unwrap_or_else(|e| panic!("ABORT: {}", e));
+    let layout = car.layout();
+    println!("car: {}", car);
     println!(
-        "state located: position {:#x}, clock {:#x} (bias {:+} ms), self-consistency {:.3} m/s",
-        layout.pos, layout.clock, layout.clock_bias, layout.rms
+        "state located: position {:#x}, clock {:#x} (bias {:+} ms)",
+        layout.pos, layout.clock, layout.clock_bias
     );
 
     let cp_s: Vec<f32> = cp_times

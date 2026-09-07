@@ -695,10 +695,10 @@ pub fn callers_of(elf: &Elf, target: usize) -> Vec<usize> {
 ///    engine reads next, and the page-fault probe's independent answer;
 /// 2. **the record layout** -- the 32 bytes at that record, field by field,
 ///    against `forksrv::STRIDE`'s documented layout and against the tape;
-/// 3. **the race clock** -- the u32 the blind locator picks by its `+10 every
-///    tick` signature, read at a tick whose race time the hook knows exactly;
-/// 4. **the car state** -- the position the blind locator picks vs the one the
-///    VALIDATOR's own ownership chain resolves, which share no evidence;
+/// 3. **the car** -- derived (`forkoracle::car`), with the body record vs its
+///    copy-out, and every copy the engine keeps beside it with its phase;
+/// 4. **the label** -- `[sim+0x48] - race_start` against the race time the
+///    hook knows exactly;
 /// 5. **the simulation clock** -- `[sim+0x48]`, which the hook checks on every
 ///    tick anyway, reported here for completeness.
 pub fn reads(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<(), String> {
@@ -787,129 +787,82 @@ pub fn reads(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<(), String> 
         tails.iter().map(|t| t.1).collect::<std::collections::BTreeSet<_>>().len()
     );
 
-    // 3+4. THE CAR AND THE CLOCK, found two ways that share no evidence: the
-    //    VALIDATOR'S OWN ownership chain (typed, no search) and the blind
-    //    locator the search uses (a float triple whose derivative matches the
-    //    velocity 12 bytes later).
-    //
-    //    The blind one is given a box around the validator car, because that is
-    //    how production runs it -- `tmsearch` bounds it by the reference line --
-    //    and because UNBOUNDED it does not work: with the whole world allowed it
-    //    picked a STATIONARY object 1624 m from the car on 126859 and 1192 m on
-    //    145875, both of which pass its own self-consistency test (nothing moves,
-    //    so d(pos)/dt matches a zero velocity). A 200 m box does not choose
-    //    between candidates 0.8 m apart; it excludes ones a kilometre away.
-    let recs = s.tape.tail_records(probe);
-    let world = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
-    let car = crate::validator::ValidatorCar::locate(&mut s.srv, probe, &recs, off, world, 4000, false)
-        .map_err(|e| format!("the validator's ownership chain did not resolve: {}", e))?;
-    let cpos = {
-        let b = read_at(pid, car.layout().pos, 12).ok_or("cannot read the validator car")?;
-        [
+    // 3+4. THE CAR, DERIVED, and its copies. `forkoracle::car::locate` walks
+    //    the pointers the physics step itself follows -- controller, sim,
+    //    playground, scene, vehicle manager, dyna world, and the participant's
+    //    driven slot -- to the body record the solver integrates and the
+    //    copy-out in the CGameVehiclePhy. Every hop is checked as it is taken
+    //    and the record is required to be byte-identical to the copy-out; here
+    //    the copies the engine ALSO keeps are read beside it, so their phases
+    //    are stated rather than assumed (LOCATE.md).
+    let car = forkoracle::car::locate(&s.srv)
+        .map_err(|e| format!("the car did not derive: {}", e))?;
+    println!("  car: {}", car);
+    let xyz = |a: u64| -> Option<[f64; 3]> {
+        let b = read_at(pid, a, 12)?;
+        Some([
             f32::from_le_bytes(b[0..4].try_into().unwrap()) as f64,
             f32::from_le_bytes(b[4..8].try_into().unwrap()) as f64,
             f32::from_le_bytes(b[8..12].try_into().unwrap()) as f64,
-        ]
+        ])
     };
-    let r = 200.0;
-    let bounds = (cpos[0] - r, cpos[0] + r, cpos[1] - r, cpos[1] + r, cpos[2] - r, cpos[2] + r);
-    let layout = forkoracle::blind::locate_blind(&mut s.srv, probe, &recs, off, 1, bounds, false)
-        .map_err(|e| format!("the blind locator could not find the car: {}", e))?;
-    let clk = read_at(pid, layout.clock, 4)
-        .map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()) as i64)
-        .ok_or("cannot read the located clock")?;
+    let dist = |a: [f64; 3], b: [f64; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    let pos = xyz(car.pos()).ok_or("cannot read the car's position")?;
+    let vel = xyz(car.vel()).ok_or("cannot read the car's velocity")?;
+    let speed = (vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]).sqrt();
+    let tick_m = speed * 0.01;
     println!(
-        "  located clock {:#x} reads {} ms; race time here is {} ms (difference {})",
-        layout.clock, clk, race_ms, clk - race_ms
+        "  car pos = ({:.4}, {:.4}, {:.4}), speed {:.2} m/s ({:.4} m per tick)",
+        pos[0], pos[1], pos[2], speed, tick_m
     );
-    // WHICH u32 NEAR THE CAR EQUALS RACE TIME? The locator picks by a `+10
-    // every tick` signature, and several counters in the engine step by 10.
-    // This says what the neighbourhood actually holds.
-    if let Some(win) = read_at(pid, layout.clock - 256, 1024) {
-        let hits: Vec<String> = (0..win.len() / 4)
-            .map(|i| (i, u32::from_le_bytes(win[i * 4..i * 4 + 4].try_into().unwrap()) as i64))
-            .filter(|(_, v)| (*v - race_ms).abs() <= 2000 && *v > 0)
-            .map(|(i, v)| format!("{:+}:{}({:+})", i as i64 * 4 - 256, v, v - race_ms))
-            .collect();
-        println!("  u32 within 2 s of race time in [clock-256, clock+768): {}", hits.join(" "));
-    }
-    // It is NOT the race clock: it counts from the ROUND start (1200 ms here,
-    // 1000 ms before the race). What must hold is that the MEASURED bias turns
-    // it into race time exactly -- that is what labels every sample.
-    // WHICH INSTANT the label names: the VIS STATE's, which is one tick behind
-    // the tick the engine has finished (the validator's CGameVehiclePhy holds
-    // that one). So `counter - bias` is `race_ms - 20`, not `race_ms - 10`, and
-    // the number that proves it is not this arithmetic but `fk trace`: 3.1 mm
-    // median against a ghost's own telemetry with this bias, 796 mm -- one tick
-    // of travel -- with the other one.
-    let bias = forkoracle::layout::measured_clock_bias(&s.srv, layout.clock)?;
-    let sampled = race_ms - 20;
-    check(
-        clk - bias == sampled && bias == layout.clock_bias,
-        format!(
-            "counter - bias = {} ms = the race time the VIS STATE holds here ({}), and the \
-             locator carries the same bias ({} vs {})",
-            clk - bias,
-            sampled,
-            layout.clock_bias,
-            bias
-        ),
-    );
-
-    {
-        {
-            let p = car.provenance();
-            println!(
-                "  validator chain: controller {:#x} -> sim {:#x} -> playground {:#x} -> \
-                 participant {:#x} -> vehicle {:#x} -> pos {:#x}",
-                p.controller, p.sim, p.playground, p.participant, p.vehicle, p.state_pos
-            );
-            // The two locators resolve DIFFERENT OBJECTS by design (a vis state
-            // and the CGameVehiclePhy), so the check is that they agree about
-            // the CAR -- same position, to float precision.
-            let xyz = |a: u64| -> Option<[f32; 3]> {
-                let b = read_at(pid, a, 12)?;
-                Some([
-                    f32::from_le_bytes(b[0..4].try_into().unwrap()),
-                    f32::from_le_bytes(b[4..8].try_into().unwrap()),
-                    f32::from_le_bytes(b[8..12].try_into().unwrap()),
-                ])
-            };
-            let (a, b) = (xyz(layout.pos), xyz(car.layout().pos));
-            println!("  blind pos {:#x} = {:?}", layout.pos, a);
-            println!("  chain pos {:#x} = {:?}", car.layout().pos, b);
-            // They are DIFFERENT OBJECTS -- a vis state and the CGameVehiclePhy --
-            // and they hold the same car at instants one tick apart, so the
-            // test is that the gap is one tick of travel and not a second car.
-            let vel = xyz(layout.pos + 12);
-            match (a, b, vel) {
-                (Some(a), Some(b), Some(v)) => {
-                    let d = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
-                    let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-                    check(
-                        d <= speed * 0.01 + 0.05,
-                        format!(
-                            "the two locators hold the same car one tick apart: {:.4} m apart at \
-                             {:.2} m/s, i.e. {:.2} ticks of travel",
-                            d,
-                            speed,
-                            d / (speed * 0.01).max(1e-6)
-                        ),
-                    );
-                }
-                _ => check(false, "one of the two car positions could not be read".to_string()),
-            }
-            let cclk = read_at(pid, car.layout().clock, 4)
-                .map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()) as i64)
-                .unwrap_or(-1);
-            println!(
-                "  chain clock {:#x} reads {} ms ({:+} vs race)",
-                car.layout().clock,
-                cclk,
-                cclk - race_ms
+    match car.body {
+        Some(b) => {
+            let bpos = xyz(b.addr + forkoracle::car::build128182::POS_IN_BODY).ok_or("cannot read the body")?;
+            check(
+                bpos == pos,
+                format!(
+                    "the dyna body record {:#x} (handle {}) and the phy copy-out hold the same position bit for bit",
+                    b.addr, b.handle
+                ),
             );
         }
+        None => println!("  (no dyna body at this tick: inside a respawn window; the copy-out holds the checkpoint pose)"),
     }
+    // the copies, each with its measured phase
+    let vis_post = xyz(car.vis() + forkoracle::car::build128182::POS_IN_VIS).ok_or("cannot read the post-step vis state")?;
+    let vis_pre = xyz(car.vis_pre() + forkoracle::car::build128182::POS_IN_VIS).ok_or("cannot read the pre-step vis state")?;
+    let pcopy = xyz(car.participant_copy_pos()).ok_or("cannot read the participant's copy")?;
+    check(
+        dist(vis_post, pos) <= 0.002,
+        format!(
+            "the post-step vis state (phy+0x848) is the car's position quantised to 1 mm: {:.4} m off",
+            dist(vis_post, pos)
+        ),
+    );
+    println!(
+        "  the pre-step vis state (phy+0x4e8) sits {:.4} m from the car = {:.2} ticks of travel (expected 1: it is refreshed BEFORE the solver)",
+        dist(vis_pre, pos),
+        dist(vis_pre, pos) / tick_m.max(1e-6)
+    );
+    println!(
+        "  the participant's copy (+0xe24, the old sweep's object on map 2) sits {:.4} m from the car = {:.2} ticks of travel",
+        dist(pcopy, pos),
+        dist(pcopy, pos) / tick_m.max(1e-6)
+    );
+    // THE LABEL: the clock word is the tick loop's own, the bias the race start
+    // it set; the state present is the one stamped [sim+0x48].
+    let l = car.layout();
+    let clk = read_at(pid, l.clock, 4)
+        .map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()) as i64)
+        .ok_or("cannot read [sim+0x48]")?;
+    check(
+        clk - l.clock_bias == race_ms - 10,
+        format!(
+            "[sim+0x48] - race_start = {} ms = the race time of the state present (the tick before the one being entered, {})",
+            clk - l.clock_bias,
+            race_ms - 10
+        ),
+    );
 
     // 5. THE SIMULATION CLOCK the hook cross-checks on every tick.
     let simclk = read_at(pid, s.srv.validation_sim + 0x48, 4)
@@ -1319,10 +1272,10 @@ pub fn finishfind(engine: &Engine, tape: Tape, at: Checkpoint, what: &str) -> Re
     let mut s = Session::start(engine, tape, at)?;
     let probe = s.srv.boundary_tick(s.tape.start_offset_ms)?;
     let recs = s.tape.tail_records(probe);
-    let chain = forkoracle::car::validator_chain(&s.srv)?;
+    let chain = forkoracle::car::locate(&s.srv)?;
     let (name, base) = match what {
         "participant" => ("participant", chain.participant),
-        "vehicle" => ("vehicle", chain.vehicle),
+        "vehicle" => ("vehicle", chain.phy),
         "playground" => ("playground", chain.playground),
         "sim" => ("sim", chain.sim),
         // the RESULT BLOCK: the printer's own struct is built too late to help a
@@ -1886,7 +1839,7 @@ pub fn dnf(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<(), String> {
     for r in recs.iter_mut().take(40) {
         r.steer = 1.0;
     }
-    let chain = forkoracle::car::validator_chain(&s.srv)?;
+    let chain = forkoracle::car::locate(&s.srv)?;
     let cp_addr = chain.participant + forkoracle::car::CP_COUNT_IN_PARTICIPANT;
     println!(
         "participant {:#x}, cp counter {:#x}; the tape has {} tail ticks from tick {}",

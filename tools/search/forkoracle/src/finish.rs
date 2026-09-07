@@ -89,7 +89,7 @@ pub fn calibrate(
     // pointer scan found it and where it is on two of the three maps tried; on
     // 126859 it is not there at all, so the other typed objects follow. Each
     // costs one fork of a tape that is going to be simulated anyway.
-    let chain = crate::car::validator_chain(srv)?;
+    let chain = crate::car::locate(srv)?;
     let block = procmem::read_at(pid, srv.validator_controller + RESULT_PTR_IN_CONTROLLER, 8)
         .map(|b| u64::from_le_bytes(b[..8].try_into().unwrap()))
         .unwrap_or(0);

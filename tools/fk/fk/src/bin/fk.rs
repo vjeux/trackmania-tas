@@ -106,7 +106,6 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                 tape,
                 at,
                 cmd::liveness::LivenessOpts {
-                    reference: flag(rest, "--reference").map(|s| s.to_string()),
                     also: flag(rest, "--also")
                         .map(|s| s.split(',').map(|x| x.parse().expect("--also a,b,c")).collect())
                         .unwrap_or_default(),

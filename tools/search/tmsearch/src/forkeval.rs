@@ -42,8 +42,8 @@ use crate::score::{Outcome, Progress};
 use crate::search::Evaluator;
 use std::path::{Path, PathBuf};
 use forkoracle::forksrv::{ForkServer, Rec};
-use forkoracle::layout::{segments, tail_recs, Row, REC_LEN, R_CLOCK, R_POS, R_QUAT, R_VEL};
-use forkoracle::blind::{bounds_from, locate_blind as locate};
+use forkoracle::layout::{segments, tail_recs, REC_LEN, R_CLOCK, R_POS, R_QUAT, R_VEL};
+
 use forkoracle::pred::{outcome, GateRecord, Watch};
 
 /// The clock value the checkpoint should stop at, from the fitted relation
@@ -245,24 +245,6 @@ impl ForkEval {
         let brake: Vec<u8> = reference.brake.iter().map(|&v| v as u8).collect();
         let lrecs = tail_recs(&steer, &gas, &brake, from);
 
-        let rows: Vec<Row> = (0..watch.refline.n)
-            .map(|i| Row {
-                time_ms: 0,
-                x: watch.refline.xyz[3 * i] as f64,
-                y: watch.refline.xyz[3 * i + 1] as f64,
-                z: watch.refline.xyz[3 * i + 2] as f64,
-                vx: 0.0,
-                vy: 0.0,
-                vz: 0.0,
-                qx: 0.0,
-                qy: 0.0,
-                qz: 0.0,
-                qw: 0.0,
-                wetness: 0.0,
-            })
-            .collect();
-        let bounds = bounds_from(&rows, 200.0);
-
         // THE IDENTITY CONTROL, and the search never ran it before: is this
         // server simulating the tape we think it is? The decoded input array in
         // its memory is read back and compared tick for tick with the reference
@@ -279,34 +261,15 @@ impl ForkEval {
         forkoracle::layout::verify_tape(srv.pid(), srv.base, &refsteer, &gas, &brake)
             .map_err(|e| format!("this server is not simulating the tape we asked for: {}", e))?;
 
-        // Addresses are re-derived in THIS process, every time: the server is
-        // PIE and its heap is bimodal, so five consecutive runs give five
-        // different addresses. A failure is an abort, never a guess.
-        //
-        // ASK THE ENGINE, do not sweep for it. `locate_fast` reads the car out
-        // of the validator's own object and scans the paused parent for that
-        // exact position -- 0.2 s, where the blind sweep it replaces costs 3.6 s
-        // PER WORKER (37 forks, one per 64 KB window) and can be fooled by a
-        // stationary decoy. The sweep stays as the fallback for a server whose
-        // validator callback was never captured, and it is bounded there by the
-        // reference line as before.
-        // FK_FAST_LOCATE=1 selects `forkoracle::car::locate_fast` -- 0.2 s where
-        // this sweep costs 3.6 s per worker. It is NOT the default, and the
-        // reason is a measurement, not caution: with it the watchdog stopped
-        // tripping (4 of 8 candidates aborted before, 0 after) and the search
-        // ran 5.8x faster with 0 % finishers. The object it picks passes
-        // `fk trace`'s 3 mm control against ghost telemetry, and that trace's
-        // own quaternion and velocity self-checks, so its position, attitude
-        // and velocity are right -- something else the predicates read is not,
-        // and until that is named this path keeps the locator its numbers were
-        // measured with.
-        let layout = if std::env::var("FK_FAST_LOCATE").is_ok() {
-            forkoracle::car::locate_fast(&mut srv, from, &lrecs, false)
-                .map_err(|e| format!("the car's state was not located: {}", e))?
-        } else {
-            locate(&mut srv, from, &lrecs, s.start_offset_ms, 1, bounds, false)
-                .map_err(|e| format!("the car's state was not located: {}", e))?
-        };
+        // THE CAR, DERIVED. The dyna body record the physics step integrates,
+        // reached by the pointers the engine itself follows (`forkoracle::car`,
+        // `LOCATE.md`): thirty reads of the stopped parent, no fork, no scan,
+        // nothing to choose between. Addresses are re-derived in THIS process
+        // every time -- the server is PIE and its heap is bimodal -- and a
+        // failure is an abort with the broken hop's name, never a guess.
+        let car = forkoracle::car::locate(&srv)
+            .map_err(|e| format!("the car's state was not located: {}", e))?;
+        let layout = car.layout();
 
         // EXIT AT THE FINISH. A candidate that finishes spends 5.8 ms after its
         // last simulated tick on the validator's finish-and-print path, for a

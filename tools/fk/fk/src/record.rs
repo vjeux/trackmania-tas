@@ -17,8 +17,36 @@
 //! whose telemetry was recorded.
 
 use crate::session::{clock_for_tick, start_server_on_file, tail_recs, Ctx};
-use crate::locate::locate_v2;
+
 use crate::tape::Tape as Factory;
+
+/// The clock and the labels of the car's copies, derived (`forkoracle::car`,
+/// LOCATE.md) instead of scanned for.
+///
+/// `sim+0x48` is the tick loop's own clock and at a stop it holds the tick the
+/// engine has FINISHED. The state stamped with it is the phy copy-out and the
+/// post-step vis state (`phy+0x848`): bias = race start. The pre-step vis
+/// states the chain anchors name (`+0x4e8`) hold the tick BEFORE: bias =
+/// race start + 10. The bias belongs to the object, never to the clock.
+pub struct DerivedClock {
+    pub car: forkoracle::car::Car,
+    /// `sim+0x48`.
+    pub addr: u64,
+    /// For the phy copy-out and the post-step vis state.
+    pub bias_post: i64,
+    /// For the pre-step vis states the `CAR_CHAINS` anchors reach.
+    pub bias_pre: i64,
+}
+
+pub fn derived_clock(srv: &forkoracle::forksrv::ForkServer) -> Result<DerivedClock, String> {
+    let car = forkoracle::car::locate(srv).map_err(|e| format!("clock: the car did not derive: {}", e))?;
+    Ok(DerivedClock {
+        addr: car.sim_time,
+        bias_post: car.race_start as i64,
+        bias_pre: car.race_start as i64 + 10,
+        car,
+    })
+}
 
 /// One gathered instant: the race clock and the raw bytes of every segment.
 pub struct Rec {
@@ -406,7 +434,7 @@ pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result
     let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
     let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
     let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
-    let ck = crate::locate::find_clock2(&mut srv, probe, &lrecs, f.start_offset_ms, 100000, verbose)?;
+    let ck = derived_clock(&srv)?;
     let base = srv.base;
     let pid = srv.pid();
 
@@ -440,7 +468,7 @@ pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result
     // the acceptance test — which reads the whole run — decide.
     let mut out: Vec<Anchors> = Vec::new();
     for ch in &chains {
-        if let Ok(v) = Anchors::candidates(ck.bias, ck.addr as i64 - base as i64, ch, pid) {
+        if let Ok(v) = Anchors::candidates(ck.bias_pre, ck.addr as i64 - base as i64, ch, pid) {
             out.extend(v);
         }
     }
@@ -479,10 +507,10 @@ pub fn measure_bias(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result<i6
     // nothing but decoys. Observing costs nothing and assumes nothing.
     let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
     let _ = tail_recs(&f.steer, &f.accel, &f.brake, probe);
-    let hit = crate::locate::find_clock2(&mut srv, probe, &lrecs, f.start_offset_ms, 100000, verbose)?;
+    let hit = derived_clock(&srv)?;
     srv.quit();
     let _ = std::fs::remove_dir_all(&work);
-    Ok(hit.bias)
+    Ok(hit.bias_pre)
 }
 
 /// The clean run itself.
@@ -764,37 +792,40 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     // nothing but decoys. Observing costs nothing and assumes nothing.
     let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
     let _ = tail_recs(&f.steer, &f.accel, &f.brake, probe);
-    let bounds = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
+    // THE CLOCK AND THE CAR, DERIVED in this process (`forkoracle::car`): the
+    // clock word is the tick loop's `sim+0x48`, whose address does not
+    // transfer between processes any more than the old scanned one did (on
+    // 252289 a transferred clock address read 0 in the clean process and the
+    // whole run collapsed to a single deduplicated instant).
+    let ck = derived_clock(&srv)?;
     let mut layout = match anchors {
-        // The POSITION comes from a checkpoint where the car was moving (the
-        // early handover cannot locate it: a stationary car fails both the
-        // "moving triple" filter and the velocity test). The CLOCK is located
-        // here, in this process, because its address does NOT transfer -- on
-        // 252289 the transferred clock address read 0 in the clean process, the
-        // grid gate then matched every call, and the whole run collapsed to a
-        // single deduplicated instant.
-        Some(a) => {
-            let ck = crate::locate::find_clock2(
-                &mut srv,
-                probe,
-                &lrecs,
-                f.start_offset_ms,
-                100000,
-                verbose,
-            )
-            .map_err(|e| format!("clock: {}", e))?;
-            forkoracle::layout::Layout {
-                pos: a
-                    .resolve_in(srv.pid(), srv.base)
-                    .map_err(|e| format!("resolving the car chain: {}", e))?,
-                clock: ck.addr,
-                clock_bias: a.bias,
-                rms: 0.0,
-                max_dev: 0.0,
-            }
-        }
-        None => locate_v2(&mut srv, probe, &lrecs, f.start_offset_ms, bounds, 2000, 4000, verbose)
-            .map_err(|e| format!("locate {}", e))?,
+        // The POSITION comes from the anchor, resolved here; its bias is the
+        // anchor's own (a pre-step vis state lags the clock word by a tick).
+        Some(a) => forkoracle::layout::Layout {
+            pos: a
+                .resolve_in(srv.pid(), srv.base)
+                .map_err(|e| format!("resolving the car chain: {}", e))?,
+            quat: 0,
+            vel: 0,
+            wet: 0,
+            clock: ck.addr,
+            clock_bias: a.bias,
+            rms: 0.0,
+            max_dev: 0.0,
+        },
+        // No anchor: the post-step vis state of the derived car, which is the
+        // object that carries the wheel, gear and rpm fields the gather wants,
+        // stamped by the clock word it is refreshed under.
+        None => forkoracle::layout::Layout {
+            pos: ck.car.vis() + forkoracle::car::build128182::POS_IN_VIS,
+            quat: 0,
+            vel: 0,
+            wet: 0,
+            clock: ck.addr,
+            clock_bias: ck.bias_post,
+            rms: 0.0,
+            max_dev: 0.0,
+        },
     };
     if let Some(b) = bias_override {
         layout.clock_bias = b;
@@ -1978,44 +2009,34 @@ pub fn anchors_from_validator(
     let _ = std::fs::create_dir_all(&work);
     let ckpt = clock_for_tick(tick, f.start_offset_ms);
     let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
-    let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
-    let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
-    let bounds = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
-    let got = crate::validator::ValidatorCar::locate(
-        &mut srv,
-        probe,
-        &lrecs,
-        f.start_offset_ms,
-        bounds,
-        100000,
-        verbose,
-    );
+    let _probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
+    // THE CAR, DERIVED (`forkoracle::car`, LOCATE.md): the copy-out in the
+    // driven CGameVehiclePhy -- quaternion at -16, velocity at +12 -- stamped
+    // by the tick loop's own clock with the race start as its bias.
+    let got = derived_clock(&srv);
     let base = srv.base;
     srv.quit();
     let _ = std::fs::remove_dir_all(&work);
-    let v = got?;
-    let l = v.layout();
+    let ck = got?;
+    let pos = ck.car.pos();
     if verbose {
         println!(
             "  validator car at {:#x} (base{:+}) -- q at -16, vel after the position",
-            l.pos,
-            l.pos as i64 - base as i64
+            pos,
+            pos as i64 - base as i64
         );
     }
     Ok(vec![Anchors {
-        bias: l.clock_bias,
-        chain: format!("base{:+}", l.pos as i64 - base as i64),
+        bias: ck.bias_post,
+        chain: format!("base{:+}", pos as i64 - base as i64),
         member: 0,
-        clock_delta: l.clock as i64 - base as i64,
+        clock_delta: ck.addr as i64 - base as i64,
         speed: 0.0,
         quat_off: -16,
-        // KIND 0, not 1. `qualify2` -- which is what validated this very
-        // address inside `ValidatorCar::resolve` -- gathers 40 bytes from
-        // pos-16 and reads the quaternion as q(0),q(4),q(8),q(12): the
-        // (x,y,z,w) form, kind 0. Declaring kind 1 made the anchor self-check
-        // read the velocity as zero, so |d(pos)/dt - v| came out equal to the
-        // speed itself (277.79 against a median speed of 277.8) and a correct
-        // anchor was refused as "not the vehicle state".
+        // KIND 0: the copy-out is read as q(0),q(4),q(8),q(12) by the anchor
+        // self-check, the (x,y,z,w) form. Declaring kind 1 made it read the
+        // velocity as zero, so |d(pos)/dt - v| came out equal to the speed
+        // itself and a correct anchor was refused as "not the vehicle state".
         quat_kind: 0,
         vel_off: 12,
     }])
@@ -2045,22 +2066,12 @@ pub fn search_car_and_snapshot(
     let _ = std::fs::create_dir_all(&work);
     let ckpt = clock_for_tick(tick, f.start_offset_ms);
     let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
-    let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
-    let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
-    let bounds = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
-    let ck = crate::locate::find_clock2(&mut srv, probe, &lrecs, f.start_offset_ms, 100000, verbose)?;
-    let mut cands = crate::locate::locate_candidates(
-        &mut srv, probe, &lrecs, ck.addr, bounds, 4000, 6, verbose,
-    );
-    if cands.is_empty() {
-        cands = crate::locate::locate_positions_loose(
-            &mut srv, probe, &lrecs, ck.addr, bounds, 4000, 8, verbose,
-        );
-    }
-    let hit = cands
-        .first()
-        .ok_or("the search found no car in this process")?;
-    let pos = hit.pos;
+    let _probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
+    // No search: the car is derived, and the address handed back is the
+    // position of its post-step vis state -- the copy that carries the fields
+    // a carrier gathers -- in THIS process, beside a snapshot of that process.
+    let ck = derived_clock(&srv)?;
+    let pos = ck.car.vis() + forkoracle::car::build128182::POS_IN_VIS;
     // Snapshot BEFORE the server goes away: `quit` reaps the child and
     // /proc/<pid>/maps with it.
     let snap = crate::ptr::Snapshot::take(srv.pid())?;
@@ -2068,7 +2079,7 @@ pub fn search_car_and_snapshot(
     let _ = std::fs::remove_dir_all(&work);
     if verbose {
         println!(
-            "search: the car is at {:#x} (base{:+}) in pid {}",
+            "derived: the car's vis state is at {:#x} (base{:+}) in pid {}",
             pos,
             pos as i64 - snap.module as i64,
             snap.pid
