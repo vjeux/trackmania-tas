@@ -208,7 +208,7 @@ fn main() {
     // missing that is `index out of bounds: the len is 2 but the index is 2` —
     // a panic where a usage line belongs. Say what is missing instead.
     const WANTS_MAP: &[&str] = &[
-        "waypoints", "census", "region", "colors", "tiny-catalog", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
+        "waypoints", "census", "region", "colors", "genealogy", "tiny-catalog", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
         "renamecheck", "cporder", "origin", "chunks",
     ];
@@ -227,9 +227,10 @@ fn main() {
         "waypoints" => {
             let m = map::MapFile::load(Path::new(&args[2]));
             eprintln!(
-                "size={:?} decoration={} blocks={} items={} body_regions={:?} items_region={:?}",
+                "size={:?} decoration={} collection={:#x} blocks={} items={} body_regions={:?} items_region={:?}",
                 m.size,
                 m.decoration_id,
+                m.items.first().map(|it| it.collection_raw).unwrap_or(0),
                 m.blocks.len(),
                 m.items.len(),
                 m.body_regions.clone(),
@@ -1102,6 +1103,30 @@ fn main() {
             println!("chunk\toff\tpayload\tsize");
             for (cid, off, payload, size) in map::skip_chunks(&g.body) {
                 println!("0x{:08X}\t{}\t{}\t{}", cid, off, payload, size);
+            }
+        }
+        "genealogy" => {
+            // Chunk 0x03043043 (terrain zone genealogies): version, inner
+            // buffer length, record count, then the records — a hex dump of
+            // the head to read the record layout off.
+            let g = gbx::Gbx::load(Path::new(&args[2])).unwrap();
+            let &(_, _, payload, size) = map::skip_chunks(&g.body).iter().find(|(c, ..)| *c == 0x0304_3043).expect("no genealogy chunk");
+            let b = &g.body[payload..payload + size];
+            println!("version {} buffer {} count {}", u32::from_le_bytes(b[0..4].try_into().unwrap()), u32::from_le_bytes(b[4..8].try_into().unwrap()), u32::from_le_bytes(b[8..12].try_into().unwrap()));
+            if let Ok(recs) = map::genealogy_records(b) {
+                let mut hist = std::collections::BTreeMap::new();
+                for (_, _, z) in &recs { *hist.entry(z.clone()).or_insert(0) += 1; }
+                println!("zones: {hist:?}");
+                if tmmaps::cli::has(&args, "--grid") {
+                    // 64 rows of 64 first letters, record order
+                    for row in recs.chunks(64) {
+                        println!("{}", row.iter().map(|(_, _, z)| z.chars().next().unwrap_or('.')).collect::<String>());
+                    }
+                }
+            }
+            let n: usize = tmmaps::cli::flag(&args, "--bytes").and_then(|s| s.parse().ok()).unwrap_or(256);
+            for (i, row) in b[12..(12 + n).min(b.len())].chunks(16).enumerate() {
+                println!("{:06x}: {}  {}", 12 + i * 16, row.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" "), row.iter().map(|x| if x.is_ascii_graphic() { *x as char } else { '.' }).collect::<String>());
             }
         }
         "colors" => {

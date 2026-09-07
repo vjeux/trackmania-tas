@@ -130,6 +130,7 @@ fn read_mapping(path: &Path) -> Mappings {
 fn fixed_plane(collection: u32) -> f32 {
     match collection {
         0x1c => 7.0,
+        0x10 => -0.5, // RedIsland lake surface (Water prefab local +7.5 at cell 14)
         _ => 10.0,
     }
 }
@@ -610,9 +611,24 @@ pub fn cmd(args: &[String]) {
     // needed and makes the game refuse the map: "Couldn't load map!".)
     // Stadium keeps it: its zones are the grass floor, full size under the
     // tiny map like the reference maps (and there is no sea to fall into).
-    if std::env::var_os("TINY_KEEP_GENEALOGY").is_none() && collection == 0x1c {
-        let zones = MapFile::clear_genealogy_file(&out).expect("clear genealogies");
-        println!("  genealogy chunk cleared: {zones} terrain zone records dropped");
+    if std::env::var_os("TINY_KEEP_GENEALOGY").is_none() {
+        match collection {
+            // BlueBay: the sea around the island is decoration, so no zone
+            // at all leaves plain sea under the tiny map.
+            0x1c => {
+                let zones = MapFile::clear_genealogy_file(&out).expect("clear genealogies");
+                println!("  genealogy chunk cleared: {zones} terrain zone records dropped");
+            }
+            // RedIsland: the ambient terrain is a zone BLOCK (Water, 2568 of
+            // the 4096 cells of Summer 02); every cell gets it, so the game
+            // regenerates the lake full size around and under the tiny
+            // island, whose water items sit on the same surface (-0.5).
+            0x10 => {
+                let (zone, n) = MapFile::fill_genealogy_file(&out).expect("fill genealogies");
+                println!("  genealogy chunk filled: {n} cells of {zone}");
+            }
+            _ => {}
+        }
     }
 
     let check = MapFile::load(&out);

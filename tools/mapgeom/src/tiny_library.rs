@@ -53,6 +53,12 @@ fn veget_substitute(model: &str) -> Option<&'static str> {
         m if m.starts_with("PalmTreeSugarBig") => "PalmTreeSugarSmallA",
         m if m.starts_with("PalmTreeSugarMedium") => "PalmTreeSugarSmallB",
         "TreeMediumA" => "BushBigA",
+        // RedIsland pines (Summer 02: 113 TreePineBig, 49 TreePine, 13 Small)
+        m if m.starts_with("TreePineBig") => "TreePineMedium",
+        "TreePine" | "TreePineMedium" => "TreePineSmall",
+        m if m.starts_with("TreePineMedium") => "TreePineSmall",
+        "Bush" => "BushMedium",
+        m if m.starts_with("TreePineSmall") => return None,
         m if m.starts_with("BushBig") => "BushMediumA",
         m if m.starts_with("BushMedium") => "BushSmallA",
         m if m.starts_with("BushSmall") => "PlantSmallA",
@@ -96,7 +102,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // block infos are looked up under the map's own collection first
     // (BlueBay\GameCtnBlockInfo\…\Stadium\X carries the terrain modifiers a
     // Stadium block gets on BlueBay; a Stadium map wants the plain files)
-    let collection_name = if collection_name.is_empty() { match collection { 0x1c => "BlueBay", 0x1a => "Stadium", _ => "BlueBay" } } else { collection_name };
+    let collection_name = if collection_name.is_empty() { crate::static_item::build::env_name(collection) } else { collection_name };
     let wanted = |name: &str| only.map(|o| o.split(',').any(|n| n == name)).unwrap_or(true);
     let legacy: BTreeMap<String, Vec<u8>> = match legacy_zip {
         Some(p) => crate::embedded::unzip(&std::fs::read(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))).expect("legacy zip"),
@@ -142,6 +148,15 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // size: `tmmaps tiny` leaves the Stadium genealogy in place, so the
         // game regenerates the floor under the tiny map (the reference
         // maps' foundation); a half-scale copy would only z-fight it.
+        // RedIsland's Water is the lake the island sits in: `tmmaps tiny` fills
+        // the genealogy with it, so the game regenerates it full size under
+        // and around the tiny map — its surface (-0.5) is the tiny map's
+        // fixed plane, so a half-scale copy would only z-fight it.
+        if collection == 0x10 && name == "Water" {
+            block_map.insert((name.clone(), *flags), ("-".into(), 1, 1));
+            outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok("RedIsland lake: regenerated full size by the genealogy, no item".into()) });
+            continue;
+        }
         if collection == 0x1a && name == "Grass" {
             block_map.insert((name.clone(), *flags), ("-".into(), 1, 1));
             outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok("Stadium grass floor: regenerated full size by the genealogy, no item".into()) });

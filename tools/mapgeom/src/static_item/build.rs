@@ -1750,6 +1750,18 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
 /// stands drew Stadium's wooden `TrackWallClips` where the original shows
 /// BlueBay's concrete `TrackWallClipsInWorld` (2026-09-06).
 /// `TINY_NO_SKIN=1` disables the remap.
+/// The environment folder of a map collection id (the pack's root folder).
+pub fn env_name(collection: u32) -> &'static str {
+    match collection {
+        0x1c => "BlueBay",
+        0x1a => "Stadium",
+        0x10 => "RedIsland",
+        0x1d => "WhiteShore",
+        0xf => "GreenCoast",
+        _ => "BlueBay",
+    }
+}
+
 pub fn skinned_material(inst: &CPlugMaterialUserInst, collection: u32) -> CPlugMaterialUserInst {
     // TINY_MAT_SUBST="Stem=Other,…": rewrite a material link stem (any family) before the skin remap — experiments.
     let inst = &match std::env::var("TINY_MAT_SUBST") {
@@ -1785,15 +1797,18 @@ pub fn skinned_material(inst: &CPlugMaterialUserInst, collection: u32) -> CPlugM
         ("DecalPaint2Sponsor4x1NoColorizeD", "DecalPaint2Sponsor4x1NoColorizeD"),
         ("DecalPaintSponsor4x1NoColorizeD", "DecalPaintSponsor4x1NoColorizeD"),
     ];
-    if collection != 28 || std::env::var_os("TINY_NO_SKIN").is_some() {
+    // every terrain environment carries `<Env>\Media\Modifier\StadiumOnTerrain\`
+    // with the same slots (BlueBay and RedIsland checked); Stadium itself has none
+    if collection == 0x1a || std::env::var_os("TINY_NO_SKIN").is_some() {
         return inst.clone();
     }
+    let env = env_name(collection);
     let Some(link) = inst.link() else { return inst.clone() };
     let Some(stem) = link.strip_prefix("Stadium\\Media\\Material\\") else { return inst.clone() };
     let Some((_, slot)) = SKIN.iter().find(|(name, _)| *name == stem) else { return inst.clone() };
     let mut owned = inst.clone();
     if let Some(main) = owned.main.as_mut() {
-        main.link = crate::crystal_model::Id::Str(format!("BlueBay\\Media\\Modifier\\StadiumOnTerrain\\{slot}"));
+        main.link = crate::crystal_model::Id::Str(format!("{env}\\Media\\Modifier\\StadiumOnTerrain\\{slot}"));
     }
     owned
 }

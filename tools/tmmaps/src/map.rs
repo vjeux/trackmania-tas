@@ -57,6 +57,12 @@ pub const CELL_Y: f32 = 8.0;
 pub fn ground_y(collection: u32) -> f32 {
     match collection {
         0x1c => -40.0,
+        // RedIsland (0x10), measured on Summer 2026 - 02: the Dirt zone plane
+        // sits at local +2 in its prefab; authored Dirt at cell 19 carries
+        // TreePineBig items at y 34 (152 - 120 + 2), the regenerated Dirt at
+        // cell 15 carries Bush items at y 2 (120 - 120 + 2). Lake water
+        // (Water at cell 14, surface local +7.5) is at y -0.5.
+        0x10 => -120.0,
         _ => -62.0,
     }
 }
@@ -2024,5 +2030,142 @@ impl Colors {
     }
     pub fn item(&self, index: usize) -> u8 {
         self.bytes.get(self.n_blocks + self.n_baked + index).copied().unwrap_or(0)
+    }
+}
+
+/// The genealogy chunk (0x03043043) decoded: one record per cell in the
+/// chunk's own order (64 x 64 = 4096 records, no coordinates stored), each
+/// a `CGameCtnZoneGenealogy` node: `count`, [lookback version 3 once],
+/// `count` zone Ids, CurrentIndex, Dir, CurrentZoneId, FACADE. Returns
+/// (record byte ranges within the chunk payload, current zone names).
+pub fn genealogy_records(payload: &[u8]) -> Result<Vec<(usize, usize, String)>, String> {
+    let count = u32::from_le_bytes(payload[8..12].try_into().unwrap()) as usize;
+    let mut table: Vec<String> = Vec::new();
+    let mut seen_version = false;
+    let mut o = 12usize;
+    let mut out = Vec::with_capacity(count);
+    let rd = |o: &mut usize| -> u32 { let v = u32::from_le_bytes(payload[*o..*o + 4].try_into().unwrap()); *o += 4; v };
+    for _ in 0..count {
+        let start = o;
+        let class = rd(&mut o);
+        let chunk = rd(&mut o);
+        if class != 0x0311_D000 || chunk != 0x0311_D002 {
+            return Err(format!("genealogy record at {start:#x}: class {class:#010x} chunk {chunk:#010x}"));
+        }
+        let n = rd(&mut o) as usize;
+        let mut id = |o: &mut usize, table: &mut Vec<String>, seen: &mut bool| -> String {
+            if !*seen {
+                let v = rd(o);
+                if v != 3 { return format!("<lookback version {v}>"); }
+                *seen = true;
+            }
+            let v = rd(o);
+            if v == 0xFFFF_FFFF { return String::new(); }
+            if v & 0x4000_0000 != 0 {
+                let idx = (v & 0x3FFF_FFFF) as usize;
+                if idx == 0 {
+                    let len = rd(o) as usize;
+                    let s = String::from_utf8_lossy(&payload[*o..*o + len]).to_string();
+                    *o += len;
+                    table.push(s.clone());
+                    s
+                } else {
+                    table.get(idx - 1).cloned().unwrap_or_default()
+                }
+            } else {
+                format!("#{v}")
+            }
+        };
+        for _ in 0..n {
+            id(&mut o, &mut table, &mut seen_version);
+        }
+        let _current_index = rd(&mut o);
+        let _dir = rd(&mut o);
+        let cur = id(&mut o, &mut table, &mut seen_version);
+        let facade = rd(&mut o);
+        if facade != 0xFACA_DE01 {
+            return Err(format!("genealogy record at {start:#x}: no terminator ({facade:#010x})"));
+        }
+        out.push((start, o, cur));
+    }
+    Ok(out)
+}
+
+impl MapFile {
+    /// Fill chunk 0x03043043 with ONE zone everywhere: every cell gets a copy
+    /// of the map's first genealogy record (RedIsland: `Water`, the lake the
+    /// island sits in — a zone BLOCK there, not decoration like BlueBay's
+    /// sea), so the game regenerates the full-size ambient terrain around
+    /// and under the tiny map instead of void. The first record carries the
+    /// lookback strings; the copies reference them. Refuses unless the first
+    /// record's zone is the map's most common one. Returns (zone, count).
+    pub fn fill_genealogy_file(path: &std::path::Path) -> Result<(String, usize), String> {
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let g = Gbx::parse(&bytes);
+        let body = g.body.clone();
+        let (_, off, payload, size) = *crate::gbx::all_skip_chunks(&body)
+            .iter()
+            .find(|(cid, ..)| *cid == 0x03043043)
+            .ok_or("no genealogy chunk")?;
+        let chunk = &body[payload..payload + size];
+        let recs = genealogy_records(chunk)?;
+        let n = recs.len();
+        let (r0s, r0e, zone) = recs.first().cloned().ok_or("no genealogy records")?;
+        let mut hist: std::collections::BTreeMap<&str, usize> = Default::default();
+        for (_, _, z) in &recs {
+            *hist.entry(z.as_str()).or_default() += 1;
+        }
+        let top = hist.iter().max_by_key(|(_, c)| **c).map(|(z, _)| z.to_string()).unwrap_or_default();
+        if top != zone {
+            return Err(format!("first genealogy record is {zone}, the most common zone is {top}: no fill"));
+        }
+        // record 0 verbatim (defines the lookback strings), then short copies:
+        // count, refs 1..=count, CurrentIndex, Dir, ref count+1, FACADE — the
+        // form the source's own later records of the same zone take.
+        let rec0 = &chunk[r0s..r0e];
+        let count = u32::from_le_bytes(chunk[r0s + 8..r0s + 12].try_into().unwrap());
+        let mut short = Vec::new();
+        short.extend_from_slice(&0x0311_D000u32.to_le_bytes());
+        short.extend_from_slice(&0x0311_D002u32.to_le_bytes());
+        short.extend_from_slice(&count.to_le_bytes());
+        for i in 1..=count {
+            short.extend_from_slice(&(0x4000_0000 | i).to_le_bytes());
+        }
+        // CurrentIndex and Dir of record 0: walk past its ids (lookback version, then `count` new strings)
+        let mut o = r0s + 12 + 4;
+        for _ in 0..count {
+            let marker = u32::from_le_bytes(chunk[o..o + 4].try_into().unwrap());
+            o += 4;
+            if marker == 0x4000_0000 {
+                let len = u32::from_le_bytes(chunk[o..o + 4].try_into().unwrap()) as usize;
+                o += 4 + len;
+            }
+        }
+        short.extend_from_slice(&chunk[o..o + 8]);
+        short.extend_from_slice(&(0x4000_0000 | (count + 1)).to_le_bytes());
+        short.extend_from_slice(&0xFACA_DE01u32.to_le_bytes());
+        // check the source's own second record has this exact shape when it is the same zone
+        if let Some((s, e, z)) = recs.get(1) {
+            if *z == zone && &chunk[*s..*e] != &short[..] {
+                return Err(format!("genealogy record 1 ({z}) is not the short form this fill writes: {:02x?} vs {:02x?}", &chunk[*s..*e], short));
+            }
+        }
+        let mut inner = Vec::with_capacity(4 + rec0.len() + short.len() * (n - 1));
+        inner.extend_from_slice(&(n as u32).to_le_bytes());
+        inner.extend_from_slice(rec0);
+        for _ in 1..n {
+            inner.extend_from_slice(&short);
+        }
+        let mut out = Vec::with_capacity(body.len());
+        out.extend_from_slice(&body[..off]);
+        out.extend_from_slice(&0x03043043u32.to_le_bytes());
+        out.extend_from_slice(&body[off + 4..off + 8]); // PIKS
+        out.extend_from_slice(&((8 + inner.len()) as u32).to_le_bytes());
+        out.extend_from_slice(&chunk[0..4]); // version
+        out.extend_from_slice(&(inner.len() as u32).to_le_bytes()); // inner buffer length
+        out.extend_from_slice(&inner);
+        out.extend_from_slice(&body[payload + size..]);
+        std::fs::write(path, g.write_body_recompressed(&out)).map_err(|e| e.to_string())?;
+        Ok((zone, n))
     }
 }
