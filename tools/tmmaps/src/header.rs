@@ -570,6 +570,31 @@ pub fn item_ident_author(bytes: &[u8]) -> Option<(String, String)> {
 }
 
 /// A stored (uncompressed) zip with one more file appended.
+/// Every entry of a zip (stored or deflated): (name, bytes).
+pub fn zip_entries(zip: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut i = 0usize;
+    while i + 30 <= zip.len() && &zip[i..i + 4] == b"PK\x03\x04" {
+        let method = u16::from_le_bytes(zip[i + 8..i + 10].try_into().unwrap());
+        let csize = u32::from_le_bytes(zip[i + 18..i + 22].try_into().unwrap()) as usize;
+        let nlen = u16::from_le_bytes(zip[i + 26..i + 28].try_into().unwrap()) as usize;
+        let xlen = u16::from_le_bytes(zip[i + 28..i + 30].try_into().unwrap()) as usize;
+        let fname = String::from_utf8_lossy(&zip[i + 30..i + 30 + nlen]).to_string();
+        let start = i + 30 + nlen + xlen;
+        if start + csize > zip.len() {
+            break;
+        }
+        let data = match method {
+            0 => zip[start..start + csize].to_vec(),
+            8 => miniz_oxide::inflate::decompress_to_vec(&zip[start..start + csize]).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        files.push((fname, data));
+        i = start + csize;
+    }
+    files
+}
+
 pub fn zip_add(zip: &[u8], name: &str, bytes: &[u8]) -> Vec<u8> {
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
     // parse local headers

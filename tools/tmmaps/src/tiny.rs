@@ -854,11 +854,15 @@ pub fn cmd(args: &[String]) {
     m.write_to(&tmp2).expect("write waypoint stage");
 
     // Stage 4: embed the converted block models. The source's own archive
-    // (custom items: the TME nation items) is replaced, which is only right
-    // when no placement still points at one of its files — the library
-    // builder bakes them into half-scale copies; anything left over would be
-    // silently dropped, so it is a refusal.
-    if let Some((_, names)) = crate::header::embedded_zip(&source.gbx.body) {
+    // (custom items: the TME nation items) is replaced; a custom item still
+    // placed after the mapping — the club's custom-material items, which the
+    // library builder leaves out (TINY_DROP_ITEMS) and `tmmaps tiny` parks —
+    // keeps its ORIGINAL file, carried over into the new archive, so the game
+    // finds every model the map names (a dangling name is "Missing Items" on
+    // load). Anything still placed whose file the source does not carry is a
+    // refusal.
+    let mut carried: Vec<(String, Vec<u8>)> = Vec::new();
+    if let Some((src_zip, names)) = crate::header::embedded_zip_bytes(&source.gbx.body) {
         let files: Vec<String> = names.iter().map(|n| n.replace('/', "\\").to_ascii_lowercase()).collect();
         let still: Vec<String> = specs
             .iter()
@@ -867,12 +871,19 @@ pub fn cmd(args: &[String]) {
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
-        assert!(
-            still.is_empty(),
-            "source map embeds custom objects still placed after the mapping ({}): merge them into --library before converting",
-            still.join(", ")
-        );
-        println!("  source archive ({} files) replaced: every custom item is re-pointed at a scaled copy", names.len());
+        if !still.is_empty() {
+            let entries = crate::header::zip_entries(&src_zip);
+            for model in &still {
+                let want = format!("items\\{}", model.to_ascii_lowercase());
+                match entries.iter().find(|(n, _)| n.replace('/', "\\").to_ascii_lowercase() == want) {
+                    Some((n, bytes)) if !bytes.is_empty() => carried.push((n.replace('\\', "/"), bytes.clone())),
+                    _ => panic!("source map embeds custom object {model} still placed after the mapping, and its file cannot be read from the source archive"),
+                }
+            }
+            println!("  source archive ({} files) replaced; {} custom items still placed keep their original files ({})", names.len(), carried.len(), still.join(", "));
+        } else {
+            println!("  source archive ({} files) replaced: every custom item is re-pointed at a scaled copy", names.len());
+        }
     }
     let mut m = MapFile::load(&tmp2);
     m.remove_password();
@@ -974,12 +985,15 @@ pub fn cmd(args: &[String]) {
         println!("  MediaTracker kept untouched (TINY_MEDIATRACKER=keep)");
     }
     if library.as_os_str() != "-" {
-        let zip = std::fs::read(&library).unwrap_or_else(|e| panic!("{}: {e}", library.display()));
+        let mut zip = std::fs::read(&library).unwrap_or_else(|e| panic!("{}: {e}", library.display()));
         assert!(
             zip.starts_with(b"PK\x03\x04"),
             "{} is not a ZIP archive",
             library.display()
         );
+        for (name, bytes) in &carried {
+            zip = crate::header::zip_add(&zip, name, bytes);
+        }
         let mut embedded_names: Vec<String> = specs
             .iter()
             .enumerate()
@@ -987,6 +1001,10 @@ pub fn cmd(args: &[String]) {
             .filter(|(_, s)| s.model.ends_with(".Item.Gbx"))
             .map(|(_, s)| s.model.clone())
             .collect();
+        // the carried custom items are embedded too (their original files)
+        for (name, _) in &carried {
+            embedded_names.push(name.trim_start_matches("Items/").to_string());
+        }
         embedded_names.sort();
         embedded_names.dedup();
         let manifest: Vec<(&str, &str)> = embedded_names

@@ -778,6 +778,21 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         if model.is_empty() || !wanted(model) {
             continue;
         }
+        // TINY_DROP_ITEMS=sub,sub: item models whose name contains a substring
+        // are left out (`-` rows). Default `TME\`: the club's custom nation
+        // items (Summer 21's football, gauchos, glacier…) carry CUSTOM
+        // materials with their own textures — a re-baked copy keeps a bare
+        // material link the game cannot resolve, so the game reports the map
+        // as "Missing Items" and the publish gate refuses the library
+        // (item-check: `link TechnicsTrims resolves to no .Material.Gbx`).
+        // Until the bake embeds custom textures they are dropped: the
+        // original placements are parked like procedural vegetation.
+        let drop_items = std::env::var("TINY_DROP_ITEMS").unwrap_or_else(|_| "TME\\".to_string());
+        if drop_items.split(',').any(|s| !s.is_empty() && s != "-" && model.contains(s)) {
+            item_map.insert((model.clone(), *variant, lskin.clone()), "-".into());
+            outcomes.push(Outcome { alias: "-".into(), kind: "item", source: model.clone(), placements: *n, result: Ok("dropped by TINY_DROP_ITEMS (custom-material item)".into()) });
+            continue;
+        }
         if lskin.is_none() {
             if let Some(target) = single_variant.get(model) {
                 item_map.insert((model.clone(), *variant, None), target.clone());
