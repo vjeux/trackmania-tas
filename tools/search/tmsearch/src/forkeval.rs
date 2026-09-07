@@ -42,6 +42,7 @@ use crate::score::{Outcome, Progress};
 use crate::search::Evaluator;
 use std::path::{Path, PathBuf};
 use forkoracle::forksrv::{ForkServer, Rec};
+use forkoracle::ladder::Ladder;
 use forkoracle::layout::{segments, tail_recs, REC_LEN, R_CLOCK, R_POS, R_QUAT, R_VEL};
 
 use forkoracle::pred::{outcome, GateRecord, Watch};
@@ -181,6 +182,34 @@ pub struct ForkEval {
     /// calibrated value is not within [`PLANE_TOL_MS`] of it removes itself.
     plane_off_ms: Option<f64>,
     start_offset_ms: i32,
+    /// DEEP FORK POINTS. Savestate nodes along the lineage this worker is
+    /// editing; a candidate forks from the deepest one that agrees with it
+    /// instead of from the server's checkpoint. See `forkoracle::ladder`.
+    ladder: Ladder,
+    /// The tick each candidate of the LAST batch was actually forked at,
+    /// indexed as the batch was, for the provenance record.
+    last_from: Vec<usize>,
+}
+
+/// Grid spacing of the deep fork points, in ticks, and how many a worker keeps.
+///
+/// Measured on map 2 (`fk ladder check`, 1000 candidates edited anywhere in a
+/// 2432-tick tape): at 100 ticks the ladder forks 96 % of candidates from a
+/// node and the average candidate re-simulates 1089 fewer ticks; the cost of
+/// making a node is ~12 ms once. A node is a paused engine process whose
+/// private pages are the ones its own ticks dirtied (a few MB); 32 of them per
+/// worker covers a 3200-tick tape at this spacing.
+pub const LADDER_SPACING: usize = 100;
+pub const LADDER_CAP: usize = 32;
+
+/// Every worker's ladder statistics, folded together at `finish` so the run
+/// can print one line about what the deep fork points did.
+static LADDER_TOTALS: std::sync::Mutex<forkoracle::ladder::Stats> =
+    std::sync::Mutex::new(forkoracle::ladder::Stats::ZERO);
+
+/// One line about the whole run's deep fork points.
+pub fn ladder_report() -> String {
+    format!("deep fork points: {}", LADDER_TOTALS.lock().map(|g| *g).unwrap_or(forkoracle::ladder::Stats::ZERO))
 }
 
 /// How far a worker's own calibrated crossing of the plane may sit from the
@@ -353,6 +382,11 @@ impl ForkEval {
         } else {
             None
         };
+        // The deep fork points live in the worker's own directory, beside the
+        // server they fork from. Warm: every node carries the watchdog's state
+        // up to its own tick, which is what makes a deep fork's summary the
+        // root's summary.
+        let ladder = Ladder::new(&work.join("ladder"), probe, from, LADDER_SPACING, LADDER_CAP, true)?;
         Ok(ForkEval {
             srv,
             from,
@@ -367,6 +401,8 @@ impl ForkEval {
             last_gate: Vec::new(),
             plane_off_ms,
             start_offset_ms: s.start_offset_ms,
+            ladder,
+            last_from: Vec::new(),
         })
     }
 
@@ -392,15 +428,19 @@ impl Evaluator for ForkEval {
     fn evaluate(&mut self, cands: &[Inputs]) -> Vec<Outcome> {
         let mut out = Vec::with_capacity(cands.len());
         self.last_gate.clear();
+        self.last_from.clear();
+        // ONE node per batch at most, at the deepest grid tick below the prefix
+        // the whole batch shares -- every candidate is the worker's incumbent
+        // with edits inside one window, so that prefix is the incumbent up to
+        // the earliest edit. Making it costs the prefix the first candidate
+        // would have simulated anyway plus a fork and a probe; every candidate
+        // after that starts where the edits start.
+        if let Some(first) = cands.first() {
+            self.ladder.prepare(&mut self.srv, first, Ladder::common_prefix(cands));
+        }
         for c in cands {
-            let recs: Vec<Rec> = (self.from..c.len())
-                .map(|t| Rec {
-                    steer: c.steer[t] as f32 / 127.0,
-                    gas: if c.gas[t] { 1.0 } else { 0.0 },
-                    brake: if c.brake[t] { 1.0 } else { 0.0 },
-                })
-                .collect();
-            let (j, b) = self.srv.run_watched(self.from, &recs);
+            let (j, b, at) = self.ladder.run_watched(&mut self.srv, c);
+            self.last_from.push(at);
             let o = outcome(&j, &b);
             self.last_gate.push(o.gate());
             out.push(match (o.time, self.gate) {
@@ -434,7 +474,7 @@ impl Evaluator for ForkEval {
         let g = self.last_gate.get(idx).copied().flatten();
         Provenance {
             from_fork: true,
-            resume_tick: Some(self.from),
+            resume_tick: Some(self.last_from.get(idx).copied().unwrap_or(self.from)),
             distance: inputs.distance_from(&self.reference),
             gate: g,
             gate_edge: match (g, self.gate_seed_pos) {
@@ -445,6 +485,13 @@ impl Evaluator for ForkEval {
     }
 
     fn finish(self: Box<Self>) {
-        self.srv.quit();
+        let this = *self;
+        if let Ok(mut g) = LADDER_TOTALS.lock() {
+            g.add(&this.ladder.stats());
+        }
+        // The nodes die with the ladder, before the server they were forked
+        // from is told to quit.
+        drop(this.ladder);
+        this.srv.quit();
     }
 }

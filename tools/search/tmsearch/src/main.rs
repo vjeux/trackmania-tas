@@ -807,6 +807,7 @@ fn run_fork(
     tmsearch::search::run(cfg, Arc::clone(&p), start, start_outcome, bank, move |wi| {
         ForkEval::start(&rootp.join(format!("w{:03}", wi)), &setup, &watch, refr.clone())
     });
+    eprintln!("{}", tmsearch::forkeval::ladder_report());
 }
 
 /// Report the seed against every `--must MAP`, and put the seed on the rung it

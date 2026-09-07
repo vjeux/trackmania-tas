@@ -434,6 +434,18 @@ impl std::fmt::Display for Stats {
 }
 
 impl Stats {
+    pub const ZERO: Stats = Stats {
+        runs: 0,
+        from_root: 0,
+        from_rung: 0,
+        ticks_saved: 0,
+        rungs_made: 0,
+        rungs_failed: 0,
+        rungs_evicted: 0,
+        make_us: 0,
+        off_grid: 0,
+    };
+
     /// Fold another worker's stats into this one.
     pub fn add(&mut self, o: &Stats) {
         self.runs += o.runs;
