@@ -1088,6 +1088,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmstate"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "tmtraj"
 version = "1.0.0"
 dependencies = [
