@@ -267,6 +267,27 @@ fn load_cache(args: &[String]) -> (Vec<Rows>, Vec<u8>) {
     (rows, held)
 }
 
+/// Map names for the given uids only: the cache's last-good copies first, the bank per uid second
+/// (never a scan of the bank — 363 dirs on the object-store mount took 91 s).
+fn map_names_for(cache: Option<&Path>, uids: &[String]) -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    for u in uids {
+        let mut cands = Vec::new();
+        if let Some(c) = cache {
+            cands.push(c.join(format!("{u}.gates.json")));
+        }
+        cands.push(default_geom().join(u).join("gates.json"));
+        for p in cands {
+            if let Ok(g) = tmroute::io::read_gates(&p) {
+                m.insert(g.map_uid, g.map_name);
+                break;
+            }
+        }
+    }
+    m
+}
+
+#[allow(dead_code)]
 fn map_names(cache: Option<&Path>) -> HashMap<String, String> {
     let mut m = HashMap::new();
     // the cache's last-good copies first (the bank's gates.json may be mid-rewrite)
@@ -352,8 +373,13 @@ fn eval_sets(w: &Weights, rows: &[Rows], held: &[u8], keep: &[&str], dev: &candl
 }
 
 fn cmd_train(args: &[String]) {
+    let t_load = std::time::Instant::now();
     let (rows, held) = load_cache(args);
-    let names = map_names(flag(args, "--cache").map(PathBuf::from).as_deref());
+    eprintln!("load: {} maps in {:.1} s", rows.len(), t_load.elapsed().as_secs_f64());
+    let t_names = std::time::Instant::now();
+    let uids: Vec<String> = rows.iter().map(|r| r.map_uid.clone()).collect();
+    let names = map_names_for(flag(args, "--cache").map(PathBuf::from).as_deref(), &uids);
+    eprintln!("names: {} in {:.1} s", names.len(), t_names.elapsed().as_secs_f64());
     let mut cfg = TrainCfg::default();
     if let Some(a) = flag(args, "--ablation") {
         cfg.ablation = a;
@@ -398,7 +424,9 @@ fn cmd_train(args: &[String]) {
         die("every map is held out — nothing to train on");
     }
     let mirror = !has(args, "--no-mirror");
+    let t_set = std::time::Instant::now();
     let train_set = Set::from_rows_aug(&train_rows, &keep, mirror);
+    eprintln!("set: {} rows in {:.1} s", train_set.n, t_set.elapsed().as_secs_f64());
     let h_max = (0..train_set.n).map(|i| train_set.lab(i)[data::L_H]).fold(0f32, f32::max);
     let h_min = (0..train_set.n).map(|i| train_set.lab(i)[data::L_H]).fold(f32::INFINITY, f32::min);
     print!("{report}");
@@ -435,8 +463,10 @@ fn cmd_train(args: &[String]) {
         Ok(v) => format!("ACCEPTED with worst {v:.3e} — the check cannot fail; FAIL"),
     };
     report.push_str(&format!("agrees_with negative half (first bias +1e-3): {neg}\n\n## Evaluation\n"));
+    let t_ev = std::time::Instant::now();
     let mut ev = String::new();
     eval_sets(&w, &rows, &held, &keep, &dev, &names, &mut ev);
+    eprintln!("eval: {:.1} s", t_ev.elapsed().as_secs_f64());
     print!("{ev}");
     report.push_str(&ev);
     println!("wrote {} ({} params, {} bytes of meta)", out.display(), w.n_params(), w.meta.len());
@@ -453,7 +483,8 @@ fn cmd_eval(args: &[String]) {
     let abl = meta.get("ablation").and_then(|a| a.as_str()).unwrap_or("full").to_string();
     let keep = tmr::feat::ablation_keep(w.fv, &abl).unwrap_or_else(|| die("model meta names an unknown ablation"));
     let (rows, held) = load_cache(args);
-    let names = map_names(flag(args, "--cache").map(PathBuf::from).as_deref());
+    let uids: Vec<String> = rows.iter().map(|r| r.map_uid.clone()).collect();
+    let names = map_names_for(flag(args, "--cache").map(PathBuf::from).as_deref(), &uids);
     let dev = candle_core::Device::Cpu;
     let mut report = format!("# tmr eval — {} — model {} ({}), ablation {}\n\n## Split\n{}\n", provenance("eval"), model.display(), meta.get("produced_by").and_then(|p| p.as_str()).unwrap_or("?"), abl, split_summary(&rows, &held, &names));
     eval_sets(&w, &rows, &held, &keep, &dev, &names, &mut report);

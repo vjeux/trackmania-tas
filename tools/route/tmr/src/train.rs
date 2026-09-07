@@ -259,9 +259,15 @@ pub fn train(train_set: &Set, cfg: &TrainCfg, dev: &Device, verbose: bool) -> Re
         shuffle(&mut fit, &mut seed);
         let (mut sl, mut sb, mut st, mut sn, mut nb) = (0f64, 0f64, 0f64, 0f64, 0usize);
         let (mut clipped, mut gmax) = (0usize, 0f64);
+        let (mut t_batch, mut t_loss, mut t_back, mut t_step) = (0f64, 0f64, 0f64, 0f64);
         for chunk in fit.chunks(cfg.batch) {
+            let t0b = std::time::Instant::now();
             let bt = batch(train_set, chunk, dev).map_err(|e| e.to_string())?;
+            t_batch += t0b.elapsed().as_secs_f64();
+            let t0l = std::time::Instant::now();
             let (loss, b, tk, bn) = losses(&t, &bt, cfg, true).map_err(|e| e.to_string())?;
+            t_loss += t0l.elapsed().as_secs_f64();
+            let t0g = std::time::Instant::now();
             // global-norm gradient clipping (cfg.clip), then the AdamW step
             let mut grads = loss.backward().map_err(|e| e.to_string())?;
             let vars = t.varmap.all_vars();
@@ -283,7 +289,10 @@ pub fn train(train_set: &Set, cfg: &TrainCfg, dev: &Device, verbose: bool) -> Re
                 clipped += 1;
             }
             gmax = gmax.max(gnorm);
+            t_back += t0g.elapsed().as_secs_f64();
+            let t0s = std::time::Instant::now();
             opt.step(&grads).map_err(|e| e.to_string())?;
+            t_step += t0s.elapsed().as_secs_f64();
             sl += loss.to_scalar::<f32>().map_err(|e| e.to_string())? as f64;
             sb += b as f64;
             st += tk as f64;
@@ -313,7 +322,7 @@ pub fn train(train_set: &Set, cfg: &TrainCfg, dev: &Device, verbose: bool) -> Re
             ep, lr, sl / nb.max(1) as f64, sb / nb.max(1) as f64, st / nb.max(1) as f64, sn / nb.max(1) as f64, vloss, vb / vn_, vt / vn_, vn / vn_, gmax, clipped, nb, t0.elapsed().as_secs_f64()
         );
         if verbose {
-            eprintln!("{line}");
+            eprintln!("{line}  [batch {:.1} s, fwd+loss {:.1} s, bwd+clip {:.1} s, step {:.1} s]", t_batch, t_loss, t_back, t_step);
         }
         log.push(line);
         let improved = best.as_ref().map_or(true, |(b, _, _)| vloss < *b);
