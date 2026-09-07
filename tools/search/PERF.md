@@ -469,7 +469,15 @@ batch it was measured in. `tmauto verdict` marks the same class `AFTER-TAPE`
   lie of 22.000 on every third tape, so phantoms are in the same batch, or the
   DNF), certified one at a time and in batches of 15; every verdict — confirmed
   time, or phantom with the same oracle answer and the same kind — must match.
-  N = 30 on every `cargo test`; the proof run below used `TM_CERT_N=500`.
+  N = 30 on every `cargo test`; the proof run used `TM_CERT_N=500`:
+
+  > certification: 500 claims (391 confirmed, 109 phantoms of which 92 finished
+  > after their own tape); one at a time 954.3 s, batched by 15 86.3 s
+  > (11.1x); 0 verdicts differ
+
+  Every verdict identical, claim for claim — the same confirmed millisecond,
+  the same phantom kind with the same oracle answer — and **954 s → 86 s**
+  (1.9 s per launch alone, 0.17 s per file batched).
 * `the_guard_refuses_a_finish_after_the_tapes_own_end`: the template braked
   over its last 0.3 s finishes after its own end, the oracle prints a time, the
   guard refuses it as `PHANTOM_pastend_*`.
@@ -511,7 +519,7 @@ no label computation to cache once. Nothing to do here.
 | 4 | frame overhead | measured: ≤ 0.5 % of a run | inter-tick gap census | nothing to change |
 | 5 | sample ring | 3.2 µs per sample; sampled run 64.6 → 57.4 ms | shimhost test; CSVs byte-identical | the per-sample write |
 | 6 | box saturation | knee at ¾ of the cores; pinning −4.5 % | 6-point sweep, 2 min each | the pinning experiment |
-| 7 | batched certification | one launch per batch of 15 (see §7 for the 500-file run) | identical verdicts alone vs batched | one launch per claim |
+| 7 | batched certification | 500 claims: 954 s → 86 s (11.1×) | 500/500 identical verdicts alone vs batched | one launch per claim |
 | 8–9 | designs | `MPPI.md` | — | — |
 | 10 | dataset labels | nothing to cache | player coordinator | — |
 
