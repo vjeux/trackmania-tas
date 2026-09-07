@@ -12,6 +12,9 @@ tmmaps = { path = "../../tmmaps" }
 tmauto = { path = "../../tmauto" }
 ghost = { path = "../../ghost" }
 gbx = { path = "../../gbx" }
+tmstate = { path = "../tmstate" }
+tmobs = { path = "../tmobs" }
+serde_json = "1"
 
 [lib]
 name = "tmenv"

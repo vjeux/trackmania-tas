@@ -1061,8 +1061,11 @@ dependencies = [
  "gbx",
  "ghost",
  "mapgeom",
+ "serde_json",
  "tmauto",
  "tmmaps",
+ "tmobs",
+ "tmstate",
 ]
 
 [[package]]
@@ -1072,6 +1075,13 @@ dependencies = [
  "gbx",
  "ghost",
  "miniz_oxide",
+]
+
+[[package]]
+name = "tmobs"
+version = "0.1.0"
+dependencies = [
+ "tmstate",
 ]
 
 [[package]]

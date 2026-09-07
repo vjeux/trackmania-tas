@@ -172,7 +172,18 @@ impl ForkEnv {
         }
         let k = self.core.cfg.k_ticks;
         let from = self.forest.floor(self.cur, None)?;
-        if from + k > self.n_ticks {
+        // One record more than the macro, and one tick more of running: the
+        // child pauses on an `lroundf` count, i.e. somewhere INSIDE a tick, so
+        // the last row it traces is that tick's state part-way through its
+        // update. Measured: the final row of an episode 0.538 m from the flat
+        // re-simulation of the same tape while every earlier row agreed to
+        // 0.000000 m (the earlier partials had been superseded by the next
+        // child's completed row). So the macro is held for k+1 ticks, the
+        // child runs ~k+1, and only ticks the clock has moved PAST are
+        // ingested -- a tick is complete once a row with a later clock exists.
+        // The trailing partial is re-traced, completed, by the next step.
+        let held = k + 1;
+        if from + held > self.n_ticks {
             // Out of tape. Not a crash and not a finish: say which.
             let obs = self.core.observe();
             return Ok((obs, 0.0, Some(Done::TickCap), Info { tick: from, ..Default::default() }));
@@ -185,14 +196,20 @@ impl ForkEnv {
 
         let a = self.core.acts.get(action);
         let r = rec_of(a.steer, a.gas, a.brake);
-        let recs = vec![r; k];
-        let (rows, h) = self.forest.advance(self.cur, &recs, from, k as u64)?;
+        let recs = vec![r; held];
+        let (all_rows, h) = self.forest.advance(self.cur, &recs, from, held as u64)?;
         if self.cur != ROOT {
             self.forest.release(self.cur);
         }
         self.cur = h;
-        self.spans.push(Span { from, k, act: a });
-        self.last_end = from + k;
+        self.spans.push(Span { from, k: held, act: a });
+        self.last_end = from + held;
+
+        let last_clock = all_rows.last().map(|r| r.time_ms);
+        let rows: Vec<Row> = match last_clock {
+            Some(lc) if all_rows.len() > 1 => all_rows.iter().filter(|r| r.time_ms < lc).cloned().collect(),
+            _ => all_rows.clone(),
+        };
 
         let before = self.core.gates_hit();
         self.trace.extend(rows.iter().cloned());
@@ -363,10 +380,10 @@ pub struct RootCfg {
     /// knowing the container seeded it at the map's start line are different
     /// claims; this is the second one.
     pub require_start: Option<([f32; 3], f32, f64)>,
-    /// The largest root probe accepted: the reference tape owns at most this
-    /// many ticks of every episode. A server whose root probes higher is
-    /// restarted, up to `max_root_tries` times.
-    pub max_root_probe: usize,
+    /// The latest RACE time (ms) the write floor may sit at: the reference
+    /// tape owns at most this much of every episode. A server whose root
+    /// probe lands later is restarted, up to `max_root_tries` times.
+    pub max_root_floor_ms: i64,
     pub max_root_tries: usize,
 }
 
@@ -376,7 +393,7 @@ impl Default for RootCfg {
             clock: crate::control::EARLIEST_CLOCK,
             verbose: false,
             require_start: None,
-            max_root_probe: 12,
+            max_root_floor_ms: 120,
             max_root_tries: 6,
         }
     }
@@ -461,20 +478,27 @@ pub fn build_at_start(
     // The root's probe is not a tick label (see `Forest::calibrate_clock`),
     // but it IS the write floor: records below it may already have been read
     // ahead, so the env never writes them and they stay the reference's. How
-    // many that is varies per server (0 to 112 measured at the same instant),
-    // so a server whose floor would give the reference more than
-    // `max_root_probe` ticks is thrown away and started again -- cheap, once,
-    // at startup -- rather than silently handing the first second to a tape
-    // the policy does not control.
+    // many that is varies per server (0 to 113 measured at the same instant
+    // on a synthesized container), so a server whose floor would give the
+    // reference more than `max_root_floor_ms` of the RACE is thrown away and
+    // started again -- cheap, once, at startup -- rather than silently handing
+    // the first second to a tape the policy does not control.
+    //
+    // Judged in race time, not tick index: a game-recorded template is
+    // countdown-prefixed (`start_offset_ms` < 0), its root probe is
+    // legitimately ~156 -- the countdown ticks the engine consumed -- and the
+    // reference then owns nothing of the race at all.
+    let floor_race_ms = |probe: usize, tape: &Tape| probe as i64 * 10 + tape.start_offset_ms as i64;
     let mut s = rig.session_clock(root.clock)?;
     let mut probe = s.probe_tick()?;
     let mut tries = 1usize;
-    while probe > root.max_root_probe && tries < root.max_root_tries {
+    while floor_race_ms(probe, &s.tape) > root.max_root_floor_ms && tries < root.max_root_tries {
         if root.verbose {
             eprintln!(
-                "  root probe {probe} > {} (try {tries}): the pre-race read-ahead got that far on this \
-                 server; restarting it",
-                root.max_root_probe
+                "  root probe {probe} = race {:.3} > {:.3} (try {tries}): the pre-race read-ahead got \
+                 that far on this server; restarting it",
+                floor_race_ms(probe, &s.tape) as f64 / 1000.0,
+                root.max_root_floor_ms as f64 / 1000.0
             );
         }
         drop(s);
@@ -482,12 +506,12 @@ pub fn build_at_start(
         probe = s.probe_tick()?;
         tries += 1;
     }
-    if probe > root.max_root_probe {
+    if floor_race_ms(probe, &s.tape) > root.max_root_floor_ms {
         return Err(format!(
-            "the root probe is {probe} on {tries} consecutive servers (limit {}): the first {:.2} s \
-             of every tape would belong to the reference. Refusing rather than training on it.",
-            root.max_root_probe,
-            probe as f64 * 0.01
+            "the root probe is {probe} (race {:.3}) on {tries} consecutive servers (limit race {:.3}): \
+             that much of every tape would belong to the reference. Refusing rather than training on it.",
+            floor_race_ms(probe, &s.tape) as f64 / 1000.0,
+            root.max_root_floor_ms as f64 / 1000.0
         ));
     }
     let refrecs = s.tape.tail_records(0);

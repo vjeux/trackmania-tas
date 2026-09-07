@@ -18,8 +18,9 @@
 use crate::action::ActionSpace;
 use crate::geom::*;
 use crate::track::{GateTracker, Track};
-use std::sync::Arc;
 use forkoracle::layout::Row;
+use std::sync::Arc;
+use tmstate::{Action, CarState};
 
 pub const TICK_S: f32 = 0.010;
 
@@ -150,8 +151,10 @@ impl Default for CoreCfg {
 }
 
 /// What the caller learns about a step, beyond the reward.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct Info {
+    /// The car state at the end of the step, as every arm shares it.
+    pub state: CarState,
     pub tick: usize,
     pub race_s: f32,
     pub s: f32,
@@ -164,6 +167,24 @@ pub struct Info {
     pub dprog: f32,
     /// True if the airborne guard suppressed a no-progress cut this step.
     pub air_guarded: bool,
+}
+
+impl Default for Info {
+    fn default() -> Self {
+        Info {
+            state: CarState::unknown(),
+            tick: 0,
+            race_s: 0.0,
+            s: 0.0,
+            best_s: 0.0,
+            gates: 0,
+            speed: 0.0,
+            lateral: 0.0,
+            height: 0.0,
+            dprog: 0.0,
+            air_guarded: false,
+        }
+    }
 }
 
 pub struct Core {
@@ -179,6 +200,9 @@ pub struct Core {
     off_run: usize,
     tick: usize,
     prev_action: usize,
+    /// The last `tmobs::N_PREV` actions, oldest first: the observation's
+    /// action-history block.
+    prev_actions: Vec<Action>,
     /// Where the route probe was last, so arc length is tracked forward from
     /// where the car IS rather than re-found on the whole polyline every tick.
     cur_s: f32,
@@ -202,6 +226,7 @@ impl Core {
             off_run: 0,
             tick: 0,
             prev_action: usize::MAX,
+            prev_actions: Vec::new(),
             cur_s: 0.0,
             done: None,
             obs_dim: 0,
@@ -253,6 +278,7 @@ impl Core {
         self.last_gain_tick = tick0;
         self.off_run = 0;
         self.prev_action = usize::MAX;
+        self.prev_actions.clear();
         self.done = None;
         self.cur_s = 0.0;
         let p = self.pos();
@@ -352,7 +378,9 @@ impl Core {
         }
 
         self.prev_action = action;
+        self.push_action(action);
         info.tick = self.tick;
+        info.state = self.state();
         info.race_s = self.cur.time_ms as f32 / 1000.0;
         info.best_s = self.best_s;
         info.gates = self.gates.hit();
@@ -360,81 +388,68 @@ impl Core {
         (self.observe(), reward, self.done, info)
     }
 
-    /// The observation vector.
-    pub fn observe(&self) -> Vec<f32> {
-        let cfg = &self.cfg;
-        let mut o = Vec::with_capacity(self.obs_dim());
-        let p = self.pos();
-        let q = self.quat();
-        let v = self.vel();
-        let pr = self.track.probe_near(p, Some(self.cur_s));
-
-        let vc = q.world_to_car(v);
-        o.push(vc[0] / cfg.v_scale);
-        o.push(vc[1] / cfg.v_scale);
-        o.push(vc[2] / cfg.v_scale);
-        o.push(norm(v) / cfg.v_scale);
-
-        let up = q.world_to_car([0.0, 1.0, 0.0]);
-        o.extend_from_slice(&up);
-
-        let w = match self.prev {
-            Some(pv) => ang_vel_car(
-                Quat(pv.qx as f32, pv.qy as f32, pv.qz as f32, pv.qw as f32),
-                q,
+    /// The car state at the current tick, as every arm shares it
+    /// (`tmstate::CarState`, STATE_VERSION 1).
+    ///
+    /// What the readout provides: race clock, position, world velocity,
+    /// orientation (reordered to `(w, x, y, z)`), speed = |v|, angular velocity
+    /// differenced from the previous tick's quaternion (NaN on the first row —
+    /// there is no previous), `cps` and `finished` from the geometric gate
+    /// tracker. Everything else is UNKNOWN (NaN / u8::MAX), never zero: gear,
+    /// rpm, wheel contact/material/slip and turbo are gap G3 — the engine
+    /// computes them and the readout does not expose them yet.
+    ///
+    /// `cps` from the geometric tracker is PROVISIONAL: the oracle does not
+    /// agree with it on Summer 2026 - 01 (RL-agentG §5.1). Gap G1 replaces it
+    /// with the engine's own counter in this same field.
+    pub fn state(&self) -> CarState {
+        let mut st = CarState::unknown();
+        let r = &self.cur;
+        st.race_ms = r.time_ms as i32;
+        st.pos = [r.x as f32, r.y as f32, r.z as f32];
+        st.vel = [r.vx as f32, r.vy as f32, r.vz as f32];
+        st.quat = [r.qw as f32, r.qx as f32, r.qy as f32, r.qz as f32];
+        st.speed = norm(st.vel);
+        st.ang_vel = match self.prev {
+            Some(pv) => tmobs::ang_vel_from_quats(
+                [pv.qw as f32, pv.qx as f32, pv.qy as f32, pv.qz as f32],
+                st.quat,
                 TICK_S,
             ),
-            None => [0.0, 0.0, 0.0],
+            None => [f32::NAN; 3],
         };
-        o.push(w[0] / 10.0);
-        o.push(w[1] / 10.0);
-        o.push(w[2] / 10.0);
+        st.cps = self.gates.hit().min(u8::MAX as usize) as u8;
+        st.finished = self.gates.finished(&self.track);
+        st
+    }
 
-        o.push(self.cur.wetness as f32);
+    /// The action history the observation sees, oldest first.
+    pub fn prev_actions(&self) -> &[Action] {
+        &self.prev_actions
+    }
 
-        o.push(pr.lateral / 20.0);
-        o.push(pr.height / 10.0);
-        o.push(pr.half_width / 20.0);
-        o.push(if pr.lateral.abs() <= pr.half_width { 1.0 } else { 0.0 });
-
-        let len = self.track.length().max(1.0);
-        o.push(pr.s / len);
-        let cap = if self.cfg.gate_cap { self.gates.cap(&self.track) } else { self.track.length() };
-        o.push(cap / len);
-        o.push(((cap - pr.s) / cfg.d_scale).clamp(-10.0, 10.0));
-        o.push(self.tick as f32 / cfg.max_ticks as f32);
-
-        // Gates collected, one-hot over 0..=n.
-        let n = self.track.n_gates();
-        for i in 0..=n {
-            o.push(if self.gates.hit() == i { 1.0 } else { 0.0 });
+    fn push_action(&mut self, action: usize) {
+        let a = self.acts.get(action);
+        self.prev_actions.push(Action { steer: a.steer as i8, gas: a.gas != 0, brake: a.brake != 0 });
+        if self.prev_actions.len() > tmobs::N_PREV {
+            let drop = self.prev_actions.len() - tmobs::N_PREV;
+            self.prev_actions.drain(0..drop);
         }
+    }
 
-        // The track ahead, in the car's frame. Linesight's single most
-        // load-bearing observation block (their 40 zone centres, 400 m of
-        // lookahead); the Neinders ablation moved 44.413 to 38.402 on adding
-        // curvature lookahead alone.
-        for (i, la) in self.track.lookahead(pr.s, p, q, &cfg.lookahead).iter().enumerate() {
-            o.push(la[0] / cfg.d_scale);
-            o.push(la[1] / cfg.d_scale);
-            o.push(la[2] / cfg.d_scale);
-            o.push(self.track.half_width(pr.s + cfg.lookahead[i]) / 20.0);
-        }
-
-        for i in 0..self.acts.n() {
-            o.push(if self.prev_action == i { 1.0 } else { 0.0 });
-        }
-
-        // A real assert, not a debug_assert: the release build is the one that
-        // runs, and this is the invariant every consumer of the vector depends
-        // on. It is free next to a fork.
+    /// The observation vector: `tmobs::observe` on this core's state. There is
+    /// no other observation code in the env — a recorded human sample turned
+    /// into a `CarState` goes through the same function and gets the same
+    /// floats (`tmobs` is the ONE observation function; INTERFACES.md).
+    pub fn observe(&self) -> Vec<f32> {
+        let o = tmobs::observe(&self.track.geom, &self.state(), &self.prev_actions);
         assert!(
             self.obs_dim == 0 || o.len() == self.obs_dim,
             "the observation is {} wide but this Core was built at {}",
             o.len(),
             self.obs_dim
         );
-        o
+        o.to_vec()
     }
 }
 

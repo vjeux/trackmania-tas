@@ -301,7 +301,7 @@ fn build_env_shared(
     if let Some(c) = flag(a, "--root-clock").and_then(|s| s.parse::<u64>().ok()) {
         root.clock = c;
     }
-    root.max_root_probe = num(a, "--max-root-probe", root.max_root_probe);
+    root.max_root_floor_ms = num(a, "--max-root-floor-ms", root.max_root_floor_ms);
     root.max_root_tries = num(a, "--max-root-tries", root.max_root_tries);
     tmenv::forkenv::build_at_start(
         &p.server, &p.map, &p.shim, work, &p.reference, track,
@@ -1670,6 +1670,11 @@ fn reset_control(a: &[String]) {
         if let Some(c) = clock {
             aa.push("--root-clock".into());
             aa.push(c.to_string());
+            // The old root is INSIDE the race, so its probe is a real tick and
+            // the read-ahead restart rule would refuse it -- that is not the
+            // failure this arm is here to show.
+            aa.push("--max-root-floor-ms".into());
+            aa.push("1000000".into());
         }
         let work = bank.join(format!("root{}", clock.map(|c| c.to_string()).unwrap_or_else(|| "ladder".into())));
         let _ = std::fs::remove_dir_all(&work);

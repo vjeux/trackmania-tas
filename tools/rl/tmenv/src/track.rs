@@ -22,7 +22,8 @@
 //! `.Map.Gbx` and the game's own pak.
 
 use crate::geom::*;
-use mapgeom::pack::{MapPack, Route};
+use mapgeom::pack::{MapPack, Route, Vertex};
+use tmstate::{Gate, GateKind, TrackGeom};
 
 /// Where the car is, relative to the track.
 #[derive(Clone, Copy, Debug)]
@@ -48,9 +49,21 @@ pub struct Probe {
 /// itself.
 pub const PROGRESS_WINDOW: f32 = 60.0;
 
+/// The geometry version `Track::geom` writes. Bump when the resampling or the
+/// gate derivation changes.
+pub const GEOM_VERSION: u32 = 1;
+/// Centreline resampling step, metres (INTERFACES.md: "every ~2 m").
+pub const GEOM_STEP: f32 = 2.0;
+
 pub struct Track {
+    /// The cartographer's pack and route, when the track came from them. When
+    /// it came from a `geom.json` these are SYNTHESIZED from the geometry
+    /// (verts = pts, no checkpoint groups) so the diagnostics still run.
     pub pack: MapPack,
     pub route: Route,
+    /// **The geometry the observation and the reward are computed against.**
+    /// One source of truth, whichever way the track was built.
+    pub geom: std::sync::Arc<TrackGeom>,
     /// Gate centres on the road surface, in tour order, finish last.
     pub gate_pos: Vec<V3>,
     /// Arc length of each gate, tour order, finish last.
@@ -58,14 +71,144 @@ pub struct Track {
 }
 
 impl Track {
+    /// From the cartographer's pack and route. The `TrackGeom` is derived here:
+    /// the route resampled every `GEOM_STEP` metres, the corridor half-width
+    /// read off the nearest route vertex, and the gates at the route's own
+    /// road-surface point (`route.at(gate_s)`, see the module docs), with the
+    /// route tangent as their normal. `source = "cartographer"`.
     pub fn new(pack: MapPack, route: Route) -> Track {
-        let gate_s = route.gate_s.clone();
-        let gate_pos = gate_s.iter().map(|&s| route.at(s)).collect();
-        Track { pack, route, gate_pos, gate_s }
+        let hw_at = |s: f32| -> f32 {
+            let mut best = (f32::INFINITY, mapgeom::pack::CORRIDOR_FLOOR);
+            for v in &route.verts {
+                let d = (v.s - s).abs();
+                if d < best.0 {
+                    best = (d, v.half_width.max(mapgeom::pack::CORRIDOR_FLOOR));
+                }
+            }
+            best.1
+        };
+        let tangent_at = |s: f32| -> V3 {
+            let a = route.at((s - 1.0).max(0.0));
+            let b = route.at((s + 1.0).min(route.length));
+            let t = unit(sub(b, a));
+            if norm(t) < 0.5 { [1.0, 0.0, 0.0] } else { t }
+        };
+        let n = ((route.length / GEOM_STEP).ceil() as usize).max(1) + 1;
+        let mut pts = Vec::with_capacity(n);
+        let mut s = Vec::with_capacity(n);
+        let mut half_width = Vec::with_capacity(n);
+        for i in 0..n {
+            let si = (i as f32 * GEOM_STEP).min(route.length);
+            pts.push(route.at(si));
+            s.push(si);
+            half_width.push(hw_at(si));
+        }
+        let ng = route.gate_s.len();
+        let gates: Vec<Gate> = route
+            .gate_s
+            .iter()
+            .enumerate()
+            .map(|(i, &gs)| Gate {
+                kind: if i + 1 == ng { GateKind::Finish } else { GateKind::Checkpoint },
+                centre: route.at(gs),
+                normal: tangent_at(gs),
+                half_width: hw_at(gs),
+                s: gs,
+                map_waypoint: u32::MAX,
+            })
+            .collect();
+        let t0 = tangent_at(0.0);
+        let geom = TrackGeom {
+            geom_version: GEOM_VERSION,
+            map_uid: pack.uid.clone(),
+            pts,
+            half_width,
+            s,
+            gates,
+            spawn: route.at(0.0),
+            spawn_yaw: t0[0].atan2(-t0[2]),
+            source: "cartographer".into(),
+            legs: None,
+            route: None,
+        };
+        Self::assemble(pack, route, geom)
+    }
+
+    /// From a `TrackGeom` (the DATA arm's `geom.json`, a field median, a WR
+    /// line): the pack and route are synthesized from it so every consumer of
+    /// `Track` works unchanged. `author_ms` is unknown on this path.
+    pub fn from_geom(geom: TrackGeom) -> Track {
+        let verts: Vec<Vertex> = geom
+            .pts
+            .iter()
+            .zip(geom.s.iter())
+            .enumerate()
+            .map(|(i, (p, s))| Vertex {
+                pos: *p,
+                s: *s,
+                half_width: geom.half_width.get(i).copied().unwrap_or(mapgeom::pack::CORRIDOR_FLOOR),
+                material: String::new(),
+                next_gate: geom.gates.iter().position(|g| g.s > *s).unwrap_or(geom.gates.len()),
+            })
+            .collect();
+        let length = geom.length();
+        let stations: Vec<f32> = (0..=((length / 20.0) as usize)).map(|i| i as f32 * 20.0).collect();
+        let route = Route {
+            verts,
+            gate_s: geom.gates.iter().map(|g| g.s).collect(),
+            order: (0..geom.gates.len().saturating_sub(1)).collect(),
+            order_exact: false,
+            length,
+            stations,
+        };
+        let pack = MapPack {
+            uid: geom.map_uid.clone(),
+            name: geom.map_uid.clone(),
+            author_ms: None,
+            yoff: 0.0,
+            spawn: geom.spawn,
+            spawn_yaw: geom.spawn_yaw,
+            checkpoints: Vec::new(),
+            finish: Vec::new(),
+            road_materials: Vec::new(),
+            group_control: Vec::new(),
+        };
+        Self::assemble(pack, route, geom)
+    }
+
+    /// Read a `geom.json` (serde form of `tmstate::TrackGeom`).
+    pub fn load_geom_json(path: &std::path::Path) -> Result<Track, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let g: TrackGeom = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+        if g.pts.len() != g.s.len() || g.pts.len() != g.half_width.len() {
+            return Err(format!(
+                "{}: pts/s/half_width lengths differ ({}/{}/{})",
+                path.display(),
+                g.pts.len(),
+                g.s.len(),
+                g.half_width.len()
+            ));
+        }
+        if g.s.windows(2).any(|w| w[1] < w[0]) {
+            return Err(format!("{}: arc length is not monotone", path.display()));
+        }
+        Ok(Self::from_geom(g))
+    }
+
+    /// Write the geometry as `geom.json`.
+    pub fn save_geom_json(&self, path: &std::path::Path) -> Result<(), String> {
+        let text = serde_json::to_string_pretty(&*self.geom).map_err(|e| e.to_string())?;
+        std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    fn assemble(pack: MapPack, route: Route, geom: TrackGeom) -> Track {
+        let gate_s = geom.gates.iter().map(|g| g.s).collect();
+        let gate_pos = geom.gates.iter().map(|g| g.centre).collect();
+        Track { pack, route, geom: std::sync::Arc::new(geom), gate_pos, gate_s }
     }
 
     pub fn length(&self) -> f32 {
-        self.route.length
+        self.geom.length()
     }
 
     pub fn n_gates(&self) -> usize {
@@ -77,34 +220,19 @@ impl Track {
         self.pack.author_ms.map(|m| m as f64 / 1000.0)
     }
 
-    /// The route tangent at `s`, by central difference on the polyline.
+    /// The route tangent at `s` (tmobs: central difference over 1 m).
     pub fn tangent(&self, s: f32) -> V3 {
-        let h = 1.0f32;
-        let a = self.route.at((s - h).max(0.0));
-        let b = self.route.at((s + h).min(self.route.length));
-        let t = unit(sub(b, a));
-        if norm(t) < 0.5 {
-            [1.0, 0.0, 0.0]
-        } else {
-            t
-        }
+        tmobs::tangent(&self.geom, s)
     }
 
-    /// The corridor half-width at `s`, read off the nearest vertex.
+    /// The corridor half-width at `s` (tmobs: the nearer geometry point, floored).
     pub fn half_width(&self, s: f32) -> f32 {
-        let mut best = (f32::INFINITY, mapgeom::pack::CORRIDOR_FLOOR);
-        for v in &self.route.verts {
-            let d = (v.s - s).abs();
-            if d < best.0 {
-                best = (d, v.half_width.max(mapgeom::pack::CORRIDOR_FLOOR));
-            }
-        }
-        best.1
+        tmobs::half_width(&self.geom, s)
     }
 
-    /// The gate's plane normal: the route's own tangent where it crosses.
+    /// The gate's plane normal, as the geometry carries it.
     pub fn gate_normal(&self, i: usize) -> V3 {
-        self.tangent(self.gate_s[i])
+        self.geom.gates[i].normal
     }
 
     pub fn probe(&self, p: V3) -> Probe {
@@ -135,10 +263,10 @@ impl Track {
     /// macro of 50 ticks, or a respawn, still finds itself.
     pub fn probe_near(&self, p: V3, near: Option<f32>) -> Probe {
         let s = match near {
-            None => self.route.progress(p).0,
+            None => tmobs::project(&self.geom, p, 0.0, self.length()),
             Some(s0) => self.project_window(p, s0),
         };
-        let c = self.route.at(s);
+        let c = tmobs::at(&self.geom, s);
         let t = self.tangent(s);
         let d = sub(p, c);
         // Split the offset: the component along world up is height, the rest is
@@ -165,30 +293,7 @@ impl Track {
     /// s = 0, 0, 0, 44, 44, 44, 78 and a lateral of 13.3 m, and the off-route
     /// cut fired on it.
     fn project_window(&self, p: V3, s0: f32) -> f32 {
-        let v = &self.route.verts;
-        if v.len() < 2 {
-            return s0;
-        }
-        let mut best = (f32::INFINITY, s0);
-        for w in v.windows(2) {
-            let (a, b) = (&w[0], &w[1]);
-            if (a.s - s0).abs() > PROGRESS_WINDOW && (b.s - s0).abs() > PROGRESS_WINDOW {
-                continue;
-            }
-            let ab = sub(b.pos, a.pos);
-            let len2 = dot(ab, ab);
-            let t = if len2 < 1e-9 { 0.0 } else { (dot(sub(p, a.pos), ab) / len2).clamp(0.0, 1.0) };
-            let q = add(a.pos, scale(ab, t));
-            let d = norm(sub(p, q));
-            if d < best.0 {
-                best = (d, a.s + (b.s - a.s) * t);
-            }
-        }
-        if best.0.is_finite() {
-            best.1
-        } else {
-            s0
-        }
+        tmobs::project(&self.geom, p, (s0 - PROGRESS_WINDOW).max(0.0), (s0 + PROGRESS_WINDOW).min(self.length()))
     }
 
     /// Points on the route ahead of `s`, in the car's frame.
@@ -196,8 +301,8 @@ impl Track {
         offsets
             .iter()
             .map(|&o| {
-                let t = (s + o).min(self.route.length);
-                q.world_to_car(sub(self.route.at(t), car))
+                let t = (s + o).min(self.length());
+                q.world_to_car(sub(tmobs::at(&self.geom, t), car))
             })
             .collect()
     }
