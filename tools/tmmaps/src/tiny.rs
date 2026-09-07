@@ -37,6 +37,9 @@ struct Spec {
     frame: Option<([f32; 3], [f32; 3])>,
     scale: f32,
     tag: Option<String>,
+    /// The waypoint ORDER carried from the source placement (0 on a block-
+    /// derived waypoint: a block record has no order field).
+    order: u32,
 }
 
 fn vec3(s: &str, label: &str) -> [f32; 3] {
@@ -312,7 +315,7 @@ fn push_veget(specs: &mut Vec<Spec>, mapping: &Mappings, alias: &str, origin: [f
     for (item, local, tree_yaw) in rows {
         let pos = [origin[0] + local[0] * c + local[2] * s, origin[1] + local[1], origin[2] - local[0] * s + local[2] * c];
         let y = yaw + tree_yaw;
-        specs.push(Spec { model: item.clone(), pos, yaw: y, frame: Some(([y, 0.0, 0.0], [0.0, 0.0, 0.0])), scale: 1.0, tag: None, color });
+        specs.push(Spec { model: item.clone(), pos, yaw: y, frame: Some(([y, 0.0, 0.0], [0.0, 0.0, 0.0])), scale: 1.0, tag: None, order: 0, color });
     }
     rows.len()
 }
@@ -551,7 +554,7 @@ pub fn cmd(args: &[String]) {
             // (`v@<model>` rows) at the placement's position and yaw.
             Some(map) if map.model == "-" => {
                 dropped_items += 1;
-                specs.push(Spec { model: it.model.clone(), pos: [8.0, -900.0, 8.0], yaw: 0.0, frame: None, scale: 1.0, tag: None, color: 0 });
+                specs.push(Spec { model: it.model.clone(), pos: [8.0, -900.0, 8.0], yaw: 0.0, frame: None, scale: 1.0, tag: None, order: 0, color: 0 });
                 prefab_trees += push_veget(&mut cluster_trees, &mapping, &it.model, transform(it.pos, source_anchor, target_anchor, scale), it.yaw, colors.item(it.index));
             }
             // Re-pointed at an embedded copy whose geometry already carries
@@ -584,7 +587,7 @@ pub fn cmd(args: &[String]) {
                     yaw: it.yaw,
                     frame,
                     scale: it.scale * scale / map.model_scale,
-                    tag: it.waypoint_tag.clone(),
+                    tag: it.waypoint_tag.clone(), order: it.waypoint_order,
                     color: colors.item(it.index),
                 });
             }
@@ -594,7 +597,7 @@ pub fn cmd(args: &[String]) {
                 yaw: it.yaw,
                 frame: None,
                 scale: it.scale * scale,
-                tag: it.waypoint_tag.clone(),
+                tag: it.waypoint_tag.clone(), order: it.waypoint_order,
                 color: colors.item(it.index),
             }),
         }
@@ -619,7 +622,7 @@ pub fn cmd(args: &[String]) {
             .collect();
         for name in converted {
             let pos = [target_anchor[0], crate::map::ground_y(collection) + 4.0, target_anchor[2]];
-            specs.push(Spec { model: name.to_string(), pos, yaw: 0.0, frame: None, scale: 1.0, tag: None, color: 0 });
+            specs.push(Spec { model: name.to_string(), pos, yaw: 0.0, frame: None, scale: 1.0, tag: None, order: 0, color: 0 });
             println!("  flag driver: one stock {name} parked at {:.0},{:.0},{:.0} (keeps the tween cloths animating)", pos[0], pos[1], pos[2]);
         }
     }
@@ -665,7 +668,7 @@ pub fn cmd(args: &[String]) {
             yaw: rot[0],
             frame: Some((rot, [0.0, 0.0, 0.0])),
             scale: scale / map.model_scale,
-            tag: b.waypoint_tag.clone(),
+            tag: b.waypoint_tag.clone(), order: 0,
             color: colors.block(b.index),
         });
         prefab_trees += push_veget(&mut specs, &mapping, &map.model, pos, rot[0], colors.block(b.index));
@@ -730,6 +733,7 @@ pub fn cmd(args: &[String]) {
             color,
             scale: scale / map.model_scale,
             tag: None,
+            order: 0,
         });
         prefab_trees += push_veget(&mut specs, &mapping, &map.model, pos, rot[0], color);
     }
@@ -894,7 +898,7 @@ pub fn cmd(args: &[String]) {
     // Stage 3: variable-length waypoint nodes.
     let mut m = MapFile::load(&tmp2);
     for (i, s) in specs.iter().enumerate() {
-        m.set_item_waypoint_tag(i, s.tag.as_deref());
+        m.set_item_waypoint(i, s.tag.as_deref(), s.order);
     }
     m.write_to(&tmp2).expect("write waypoint stage");
 
@@ -1212,7 +1216,7 @@ pub fn catalog_cmd(args: &[String]) {
                 let bytes = std::fs::read(refitem).unwrap_or_else(|e| panic!("--ref-item {refitem}: {e}"));
                 let (ident, author) = crate::header::item_ident_author(&bytes).expect("item header ident");
                 let pos = [origin[0] + 160.0 + 48.0 * ri as f32, origin[1], origin[2]];
-                specs.push(Spec { model: ident.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0, tag: None, color: 1 });
+                specs.push(Spec { model: ident.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0, tag: None, order: 0, color: 1 });
                 ref_authors.insert(ident, author);
             }
         }
@@ -1224,7 +1228,7 @@ pub fn catalog_cmd(args: &[String]) {
                 let bytes = std::fs::read(file).unwrap_or_else(|e| panic!("--lineup {file}: {e}"));
                 let (ident, author) = crate::header::item_ident_author(&bytes).expect("item header ident");
                 let pos = [origin[0] + 64.0 + 48.0 * ri as f32, origin[1], origin[2]];
-                specs.push(Spec { model: ident.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0, tag: None, color: 1 });
+                specs.push(Spec { model: ident.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0, tag: None, order: 0, color: 1 });
                 ref_authors.insert(ident, author);
             }
             let bp = block_pos(&moved);
@@ -1240,7 +1244,7 @@ pub fn catalog_cmd(args: &[String]) {
             // reads as covered instead of z-fighting with the block.
             let lift: f32 = cli::flag(args, "--overlay-lift").unwrap_or("0").parse().expect("--overlay-lift m");
             let pos = [origin[0], origin[1] + lift, origin[2]];
-            specs.push(Spec { model: map.model.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0 / map.model_scale, tag: None, color: 1 });
+            specs.push(Spec { model: map.model.clone(), pos, yaw: rot[0], frame: Some((rot, [0.0, 0.0, 0.0])), scale: 1.0 / map.model_scale, tag: None, order: 0, color: 1 });
             let bp = block_pos(&moved);
             tsv.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\toverlay\n", b.name, map.model, cell.0, cell.1, cell.2, bp[0], bp[1], bp[2]));
             continue;
@@ -1250,7 +1254,7 @@ pub fn catalog_cmd(args: &[String]) {
             for k in 0..4 {
                 let pos = [origin[0] + 64.0 + 48.0 * k as f32, origin[1], origin[2]];
                 let yaw = k as f32 * std::f32::consts::FRAC_PI_2;
-                specs.push(Spec { model: map.model.clone(), pos, yaw, frame: Some(([yaw, 0.0, 0.0], [0.0, 0.0, 0.0])), scale: 1.0 / map.model_scale, tag: None, color: 1 });
+                specs.push(Spec { model: map.model.clone(), pos, yaw, frame: Some(([yaw, 0.0, 0.0], [0.0, 0.0, 0.0])), scale: 1.0 / map.model_scale, tag: None, order: 0, color: 1 });
             }
             let bp = block_pos(&moved);
             tsv.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\tsweep yaw 0/90/180/270 at x+64/+112/+160/+208\n", b.name, map.model, cell.0, cell.1, cell.2, bp[0], bp[1], bp[2]));
@@ -1270,6 +1274,7 @@ pub fn catalog_cmd(args: &[String]) {
                 frame: Some((rot, [0.0, 0.0, 0.0])),
                 scale: s,
                 tag: None,
+                order: 0,
                 color: 1,
             });
         }
@@ -1290,7 +1295,7 @@ pub fn catalog_cmd(args: &[String]) {
         let base_pos = [bx as f32 * crate::map::CELL_XZ, by as f32 * crate::map::CELL_Y + ground() + 2.0, bz as f32 * crate::map::CELL_XZ - 40.0];
         for (k, name) in list.split(',').filter(|s| !s.is_empty()).enumerate() {
             let pos = [base_pos[0] + 16.0 * k as f32, base_pos[1], base_pos[2]];
-            specs.push(Spec { model: name.to_string(), pos, yaw: 0.0, frame: Some(([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])), scale: 1.0, tag: None, color: 0 });
+            specs.push(Spec { model: name.to_string(), pos, yaw: 0.0, frame: Some(([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])), scale: 1.0, tag: None, order: 0, color: 0 });
             ref_authors.insert(name.to_string(), "Nadeo".to_string());
             tsv.push_str(&format!("stock\t{name}\t\t\t\t{:.0}\t{:.0}\t{:.0}\n", pos[0], pos[1], pos[2]));
         }

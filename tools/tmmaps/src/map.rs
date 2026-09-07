@@ -180,9 +180,12 @@ pub struct ItemRec {
     pub waypoint_region: (usize, usize),
     /// Entire CGameCtnAnchoredObject record, from class id through FACADE.
     pub record_region: (usize, usize),
+    /// The tag of the placement's waypoint special property (`Spawn`,
+    /// `Checkpoint`, `LinkedCheckpoint`, `Goal`), and its ORDER — the number
+    /// inside a linked group; carried from the source placement.
     pub waypoint_tag: Option<String>,
+    pub waypoint_order: u32,
     /// The v8 flags word (at `waypoint_region.1`): bit 2 = the record carries
-    /// a skin PackDesc; the HIGH byte is the item VARIANT index — which
     /// external of a variant-list item this placement shows (Summer 11's
     /// `Show` rigs: 4 = RigStraight32m, 23 = Light4Spots, 28 = Fogger16M;
     /// a `PalmForest` placement's variant is its palm species). Read off the
@@ -575,8 +578,13 @@ fn read_file_ref(r: &mut Reader) {
 
 /// A node ref written *with* its class id and no index (how the items
 /// sub-archive writes CGameWaypointSpecialProperty). Returns the tag.
-fn read_waypoint_node(r: &mut Reader) -> Option<String> {
+/// The tag and the ORDER of a placement's `CGameWaypointSpecialProperty`. The
+/// order is the checkpoint's number in a multi-lap/linked group; our writer
+/// used to emit 0 for every placement, which the route finder read as "unset"
+/// on 25 maps (2026-09-07).
+fn read_waypoint_node(r: &mut Reader) -> (Option<String>, u32) {
     let mut tag = None;
+    let mut order = 0u32;
     loop {
         let cid = r.u32();
         if cid == FACADE {
@@ -593,9 +601,9 @@ fn read_waypoint_node(r: &mut Reader) -> Option<String> {
             if version >= 2 {
                 let n = r.u32() as usize;
                 tag = Some(String::from_utf8_lossy(r.bytes(n)).into_owned());
-                r.u32(); // order (always 0 -- which is why order is measured)
+                order = r.u32();
             } else {
-                r.u32();
+                order = r.u32();
                 r.u32();
             }
             continue;
@@ -606,7 +614,7 @@ fn read_waypoint_node(r: &mut Reader) -> Option<String> {
             r.o - 4
         );
     }
-    tag
+    (tag, order)
 }
 
 impl MapFile {
@@ -1458,7 +1466,7 @@ fn read_node_ref(r: &mut Reader, seen: &mut std::collections::HashSet<u32>) -> O
     }
     let class = r.u32();
     if class == WAYPOINT_CLASS {
-        return read_waypoint_node(r);
+        return read_waypoint_node(r).0;
     }
     if class == 0x03059000 {
         read_skin_node(r);
@@ -1554,8 +1562,8 @@ fn parse_items(
             // waypointSpecialProperty: written with its class id, no index
             let waypoint_start = r.o;
             let w = r.u32();
-            let tag = if w == 0xFFFF_FFFF {
-                None
+            let (tag, waypoint_order) = if w == 0xFFFF_FFFF {
+                (None, 0)
             } else {
                 assert_eq!(
                     w,
@@ -1611,6 +1619,7 @@ fn parse_items(
                 waypoint_region,
                 record_region: (record_start, 0),
                 waypoint_tag: tag,
+                waypoint_order,
                 flags,
                 skin_region,
             });
@@ -1887,7 +1896,16 @@ impl MapFile {
             .push((it.scale_off, scale.to_le_bytes().to_vec()));
     }
 
+    /// Set (or clear) a placement's waypoint special property. `order` is the
+    /// number inside a linked checkpoint group — carried from the source
+    /// placement; it was hard-coded to 0 until 2026-09-07, which made every
+    /// gate of every tiny map read as "unset" to a route reader.
     pub fn set_item_waypoint_tag(&mut self, item_index: usize, tag: Option<&str>) {
+        let order = self.items[item_index].waypoint_order;
+        self.set_item_waypoint(item_index, tag, order)
+    }
+
+    pub fn set_item_waypoint(&mut self, item_index: usize, tag: Option<&str>, order: u32) {
         let it = self.items[item_index].clone();
         let mut bytes = Vec::new();
         match tag {
@@ -1898,7 +1916,7 @@ impl MapFile {
                 bytes.extend_from_slice(&2u32.to_le_bytes());
                 bytes.extend_from_slice(&(tag.len() as u32).to_le_bytes());
                 bytes.extend_from_slice(tag.as_bytes());
-                bytes.extend_from_slice(&0u32.to_le_bytes());
+                bytes.extend_from_slice(&order.to_le_bytes());
                 bytes.extend_from_slice(&FACADE.to_le_bytes());
             }
         }
