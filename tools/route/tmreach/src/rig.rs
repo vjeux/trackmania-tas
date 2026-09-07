@@ -46,6 +46,8 @@ pub struct Worker {
     /// of `forkoracle::layout`, never a shift of the run). Until measured: the
     /// tick hook's own race clock at the root.
     pub label_shift: i64,
+    /// The telemetry time origin minus the label convention (0 unless the recorder was off).
+    pub telemetry_offset_ms: i64,
     /// The root's race time as the tick hook reports it (sim_ms − race_start), if
     /// in tick mode.
     pub root_race_ms_hook: Option<i64>,
@@ -156,6 +158,7 @@ impl Worker {
             car,
             startup_s: t0.elapsed().as_secs_f64(),
             label_shift: 10,
+            telemetry_offset_ms: 0,
             root_race_ms_hook: hook,
         })
     }

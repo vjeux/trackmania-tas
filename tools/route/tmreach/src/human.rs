@@ -79,10 +79,10 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
                         // (the telemetry ends AT the declared time: velocity by a backward difference)
                         // (the telemetry's last sample can be up to 50 ms before the finish: the
                         // position is extrapolated from it at its own velocity, deterministically)
-                        let te = tel.end_ms().min(want);
+                        let te = tel.end_ms().min(want + w.telemetry_offset_ms);
                         if let (Some(p), Some(pm)) = (tel.pos_at(te), tel.pos_at(te - 20)) {
                             let v = [(p[0] - pm[0]) / 0.02, (p[1] - pm[1]) / 0.02, (p[2] - pm[2]) / 0.02];
-                            let dt = (want - te) as f64 / 1000.0;
+                            let dt = (want + w.telemetry_offset_ms - te) as f64 / 1000.0;
                             let mut r = flat[i].clone();
                             r.x = p[0] + v[0] * dt;
                             r.y = p[1] + v[1] * dt;

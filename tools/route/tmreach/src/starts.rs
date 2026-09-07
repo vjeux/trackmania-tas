@@ -97,15 +97,20 @@ pub fn run_on_worker(w: &mut Worker, tel: &Telemetry, gates: &MapGates, o: &Star
         id,
         if id.passes() && shift.abs() <= 30 && hook_shift.map(|h| h == shift).unwrap_or(true) { "PASS" } else { "FAIL" }
     );
-    if shift.abs() > 30 {
-        return Err(format!("the engine trajectory matches the telemetry only {shift:+} ms away: not one label convention, a different run"));
+    if shift.abs() > 30 || !id.passes() {
+        return Err(format!("the engine trajectory matches the telemetry only {shift:+} ms away (RMS {:.3} m): not one label convention, a different run", id.rms));
     }
+    // THE TICK HOOK'S RACE CLOCK IS THE LABEL AUTHORITY. When the telemetry's best shift differs
+    // from it (Spring 2026 - 12: every ghost's telemetry reads −30 ms against the hook's +0, RMS
+    // 4 mm at that shift) the telemetry's time origin is what is off; labels stay the hook's and
+    // the offset is recorded.
     if let Some(h) = hook_shift {
         if h != shift {
-            return Err(format!("label shift {shift:+} ms from the telemetry but {h:+} ms from the tick hook's race clock: the telemetry origin and the engine's race clock disagree"));
+            println!("TELEMETRY TIME ORIGIN OFF by {:+} ms against the tick hook's race clock (identity RMS {:.4} m at the telemetry's best shift {shift:+}); labels keep the hook's convention {h:+}", shift - h, id.rms);
         }
     }
-    w.label_shift = shift;
+    w.label_shift = hook_shift.unwrap_or(shift);
+    w.telemetry_offset_ms = shift - w.label_shift;
     // ---- (a) START-POSITION control. Two forms, and the transcript says which:
     //  LIVE  -- the root is pre-race (a countdown tape): the live root state must
     //           be at the map's Spawn, at rest.
@@ -132,7 +137,10 @@ pub fn run_on_worker(w: &mut Worker, tel: &Telemetry, gates: &MapGates, o: &Star
     }
     let pass_a;
     if pre_race {
-        pass_a = at_origin && (dy.abs() <= 12.0 || root_on_t0 <= 0.5) && v0 <= 4.0;
+        if dy.abs() > 12.0 {
+            println!("SPAWN FRAME OFF vertically (GEOM/tmroute): root y {:.2} vs Spawn y {:.2}", r0.y, sp.centre[1]);
+        }
+        pass_a = at_origin && v0 <= 4.0;
         println!(
             "START-POSITION control (LIVE): root tick {} race {} at ({:.3}, {:.3}, {:.3}) {:.2} m/s; map Spawn wp{} {:?} group {} -> \
              ({:.1}, {:.1}, {:.1}); d_xz {:.2} m, dy {:+.2} m, d3 {:.2} m  => {}",
@@ -145,7 +153,11 @@ pub fn run_on_worker(w: &mut Worker, tel: &Telemetry, gates: &MapGates, o: &Star
         let t0_dxz = ((t0[0] - sp.centre[0]).powi(2) + (t0[2] - sp.centre[2]).powi(2)).sqrt();
         let t0_v = (s0.vx as f64).hypot(s0.vy as f64).hypot(s0.vz as f64);
         let root_on_tel = tel.pos_at(r0.time_ms + shift).map(|p| dist(pos(&r0), p)).unwrap_or(f64::NAN);
-        pass_a = t0_dxz <= 6.0 && (t0[1] - sp.centre[1]).abs() <= 12.0 && t0_v <= 4.0 && root_on_tel < 0.05;
+        // the spawn's vertical position is a GEOM number (Spring 2026 - 06: 20 m below the cars), noted, not judged
+        if (t0[1] - sp.centre[1]).abs() > 12.0 {
+            println!("SPAWN FRAME OFF vertically (GEOM/tmroute): telemetry t=0 y {:.2} vs Spawn y {:.2}", t0[1], sp.centre[1]);
+        }
+        pass_a = t0_dxz <= 6.0 && t0_v <= 4.0 && root_on_tel < 0.05;
         println!(
             "START-POSITION control (ORIGIN; root is inside the race at tick {} race {}, {:.1} m/s): telemetry t=0 at ({:.3}, {:.3}, {:.3}) {:.2} m/s, \
              d_xz {:.2} m from Spawn ({:.1}, {:.1}, {:.1}); live root state {:.4} m off that telemetry  => {}",
