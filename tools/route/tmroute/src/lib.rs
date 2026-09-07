@@ -29,6 +29,14 @@ pub fn provenance(tool: &str) -> String {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|| "nogit".into());
+    let dirty = std::process::Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=no", "."])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .ok()
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false);
+    let hash = if dirty { format!("{hash}+dirty") } else { hash };
     let host = std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()).unwrap_or_default();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     format!("{tool} {hash} unix{now} {host}")
