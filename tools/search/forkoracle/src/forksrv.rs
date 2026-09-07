@@ -762,9 +762,23 @@ impl ForkServer {
     }
 
     pub fn probe_tick(&mut self) -> Result<usize, String> {
-        write_frame(&mut self.cmd_w, &payload_probe()).map_err(|e| e.to_string())?;
-        let v = read_frame(&mut self.res_r).ok_or("probe: no reply")?;
-        parse_probe(&String::from_utf8_lossy(&v))
+        // The probe forks a throwaway child; under heavy concurrent start-up
+        // (20-40 servers coming up at once) that child occasionally dies before
+        // it faults on the array and the reply is EMPTY. An empty reply is not
+        // a boundary and not a disagreement -- it is no measurement -- so it is
+        // asked again, twice; a reply with content is judged as before.
+        let mut last = String::new();
+        for _ in 0..3 {
+            write_frame(&mut self.cmd_w, &payload_probe()).map_err(|e| e.to_string())?;
+            let v = read_frame(&mut self.res_r).ok_or("probe: no reply")?;
+            let s = String::from_utf8_lossy(&v).into_owned();
+            if s.trim().is_empty() {
+                last = s;
+                continue;
+            }
+            return parse_probe(&s);
+        }
+        parse_probe(&last)
     }
 
     /// THE FIRST UNCONSUMED TAPE TICK, measured two independent ways and

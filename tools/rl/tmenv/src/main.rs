@@ -28,6 +28,7 @@ fn has(a: &[String], k: &str) -> bool {
     a.iter().any(|x| x == k)
 }
 
+#[derive(Clone)]
 struct Paths {
     server: PathBuf,
     map: PathBuf,
@@ -94,6 +95,7 @@ fn main() {
         Some("probe-scan") => probe_scan(&a),
         Some("geom-export") => geom_export(&a),
         Some("cpfind") => cpfind_cmd(&a),
+        Some("run-end") => run_end_cmd(&a),
         Some("tape-diff") => tape_diff(&a),
         Some("open-loop-control") => open_loop_control(&a),
         Some("oracle-cut") => oracle_cut(&a),
@@ -314,7 +316,7 @@ fn build_env_shared(
     if !has(a, "--no-require-start") && flag(a, "--root-clock").is_none() {
         match tmenv::measured_spawn(&p.server, &p.map, &p.shim, &work.join("spawnfix"), &p.reference) {
             Ok(s) => root.require_start = Some((s, num(a, "--tol", 6.0f32), num(a, "--vmax", 4.0f64))),
-            Err(e) => die(format!("the start is UNMEASURED, so the env cannot be certified: {e}")),
+            Err(e) => die(format!("the start is UNMEASURED, so the env cannot be certified: {e} (reference {}, work {})", p.reference.display(), work.display())),
         }
     }
     if let Some(c) = flag(a, "--root-clock").and_then(|s| s.parse::<u64>().ok()) {
@@ -2635,6 +2637,28 @@ fn cp_oracle_control(a: &[String]) {
             .unwrap_or_default(),
     );
     println!("donors     {} ghost tape(s) for the prefixes", donors.len());
+    // ONE REFERENCE PER DONOR: each donor ghost is wrapped as a template
+    // carrying OUR inputs (Template::write_with_inputs), so a worker replaying
+    // that donor's prefix runs in the donor's own container -- its per-packet
+    // state words included (the keyboard action-key flags the env's Action
+    // cannot express). Without this a prefix from another ghost diverges
+    // before CP2 and the oracle's counts never leave {0, 1}.
+    let donor_paths: Vec<String> = flag(a, "--ghosts")
+        .map(|s| s.split(',').map(|g| g.trim().to_string()).collect())
+        .unwrap_or_default();
+    let refs: Vec<PathBuf> = donor_paths
+        .iter()
+        .enumerate()
+        .map(|(i, g)| {
+            let tpl = tmenv::template::Template::load(Path::new(g)).unwrap_or_else(|e| die(e));
+            let n = tpl.facts().ticks;
+            let s: Vec<u8> = (0..n).map(|t| ((((t as i64 * 7919 + 13) % 25) - 12) as i8) as u8).collect();
+            let out = p.work.join(format!("ref-donor{i}.Ghost.Gbx"));
+            std::fs::create_dir_all(&p.work).unwrap_or_else(|e| die(e.to_string()));
+            tpl.write_with_inputs(&s, &vec![1u8; n], &vec![0u8; n], &out).unwrap_or_else(|e| die(e));
+            out
+        })
+        .collect();
 
     struct Out {
         i: usize,
@@ -2643,6 +2667,8 @@ fn cp_oracle_control(a: &[String]) {
         geom_cps: usize,
         ticks: usize,
         path: PathBuf,
+        done: String,
+        cps_steps: Vec<i64>,
     }
     let t0 = Instant::now();
     let mut outs: Vec<Out> = std::thread::scope(|sc| {
@@ -2653,8 +2679,18 @@ fn cp_oracle_control(a: &[String]) {
                 let track = track.clone();
                 let bank = bank.clone();
                 let donors = donors.clone();
+                let refs = refs.clone();
                 sc.spawn(move || {
                     let work = p.work.join(format!("cpo-w{w}"));
+                    // this worker's donor (tapes i with i % donors == w % donors) and its container
+                    let mut pw = p.clone();
+                    if !refs.is_empty() {
+                        pw.reference = refs[w % refs.len()].clone();
+                    }
+                    let p = &pw;
+                    if std::env::var("TMENV_STAGGER_MS").is_ok() {
+                        std::thread::sleep(std::time::Duration::from_millis(w as u64 * std::env::var("TMENV_STAGGER_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(0)));
+                    }
                     let (mut env, _rig, tape) = build_env_shared(p, &a, &work, track);
                     env.allow_after_done = true;
                     let n_act = env.n_actions();
@@ -2679,12 +2715,12 @@ fn cp_oracle_control(a: &[String]) {
                         let cut = if donors.is_empty() {
                             0
                         } else {
-                            let d = &donors[i % donors.len()];
+                            let d = &donors[w % donors.len()];
                             // align by RACE time: donor tick k <-> env tick t when
                             // k*10 + donor_offset == t*10 + template_offset
                             let shift: i64 = (tape.start_offset_ms as i64 - d.3 as i64) / 10;
                             let cut = 200 + rng.below(d.0.len().saturating_sub(300));
-                            let mut t = env.core.tick().max(0);
+                            let mut t = env.next_tick().unwrap_or_else(|e| die(e));
                             let mut stop = false;
                             while t + 10 <= cut && !stop {
                                 let chunk: Vec<tmstate::Action> = (t..t + 10)
@@ -2695,7 +2731,7 @@ fn cp_oracle_control(a: &[String]) {
                                     .collect();
                                 let (_o, _r, dn, _i) = env.step_ticks(&chunk).unwrap_or_else(|e| die(e));
                                 stop = matches!(dn, Some(Done::Finished) | Some(Done::TickCap) | Some(Done::RunEnded));
-                                t = env.core.tick();
+                                t = env.next_tick().unwrap_or(t + 10);
                             }
                             cut
                         };
@@ -2728,15 +2764,50 @@ fn cp_oracle_control(a: &[String]) {
                                 || d == Some(Done::Finished)
                                 || d == Some(Done::RunEnded)
                                 || d == Some(Done::RunEnded)
-                                || env.core.tick() + 30 >= tape.n()
                                 || stalled >= 3
                             {
                                 break;
                             }
                         }
+                        // THE SAME TAIL THE FILE GETS. `banked_tape` brakes from
+                        // the last written tick to the tape's end, so the env
+                        // drives that brake tail too (through step_ticks, so it
+                        // is written and traced), then watches the engine's
+                        // default-record stretch past the tape -- the plain
+                        // validator runs to declared + ~3 s or the finish, and a
+                        // rolling car crosses gates there.
+                        if !matches!(env.core.done(), Some(Done::RunEnded) | Some(Done::Finished)) {
+                            let brake = tmstate::Action { steer: 0, gas: false, brake: true };
+                            for _ in 0..60 {
+                                match env.step_ticks(&[brake; 50]) {
+                                    Ok((_o, _r, Some(Done::TickCap), _)) => break,
+                                    Ok((_o, _r, Some(Done::RunEnded), _)) => break,
+                                    Ok(_) => {}
+                                    Err(_) => break,
+                                }
+                            }
+                            if !env.run_ended() {
+                                for _ in 0..40 {
+                                    let (_rows, ended) = env.coast(50).unwrap_or_else(|e| die(e));
+                                    if ended {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                         let _ = cut;
                         let rec = env.rollout_record();
                         let engine_cps = rec.trace.last().and_then(|r| if r.cps == u32::MAX { None } else { Some(r.cps) });
+                        // the race clocks at which the counter stepped
+                        let mut cps_steps = Vec::new();
+                        let mut lastc = 0u32;
+                        for r in &rec.trace {
+                            if r.cps != u32::MAX && r.cps > lastc {
+                                cps_steps.push(r.time_ms);
+                                lastc = r.cps;
+                            }
+                        }
+                        let done = format!("{:?}", env.core.done());
                         let path = bank.join(format!("tape-{i:03}.Ghost.Gbx"));
                         // the driven prefix, then brake: the oracle judges THIS file
                         let (s, g, b) = env.banked_tape(&tape);
@@ -2748,6 +2819,8 @@ fn cp_oracle_control(a: &[String]) {
                             geom_cps: env.core.geometric_gates_hit(),
                             ticks: rec.trace.len(),
                             path,
+                            done,
+                            cps_steps,
                         });
                         i += workers;
                     }
@@ -2768,7 +2841,7 @@ fn cp_oracle_control(a: &[String]) {
     let _ = std::fs::write(bank.join("oracle-stderr.txt"), &batch.err);
     if batch.answers.len() != files.len() {
         die(format!(
-            "the oracle answered {} of {} files -- answers are matched by ORDER and the count must agree",
+            "the oracle answered {} of {} files",
             batch.answers.len(),
             files.len()
         ));
@@ -2783,7 +2856,17 @@ fn cp_oracle_control(a: &[String]) {
     let mut unreported = 0usize;
     let mut by_count: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
     let mut lines = String::from("tape\tpolicy\toracle\toracle_cps\tengine_cps\tgeom_cps\tticks\n");
-    for (o, ans) in outs.iter().zip(batch.answers.iter()) {
+    // MATCHED BY FILE NAME, never by position: with several donor containers
+    // in one batch the server answers in an order that is NOT the filename
+    // order (measured: 86 of 200 "disagreements", spread evenly over every
+    // donor and worker, all of them a permutation; 0 of 120 with one donor).
+    let by_name: std::collections::HashMap<String, &tmauto::oracle::Answer> =
+        batch.answers.iter().map(|x| (x.file.clone(), x)).collect();
+    for o in outs.iter() {
+        let name = o.path.file_name().unwrap().to_string_lossy().into_owned();
+        let Some(ans) = by_name.get(&name) else {
+            die(format!("the oracle has no answer named {name}"));
+        };
         let ov = ans.verdict();
         let oracle_cps: Option<u32> = match ov {
             Some(tmauto::Verdict::Dnf { cps }) => Some(cps),
@@ -2817,8 +2900,10 @@ fn cp_oracle_control(a: &[String]) {
         } else {
             disagree += 1;
             println!(
-                "  tape {:03} [{}]: oracle {:?} -> {:?}, engine cps {:?}, geometric {}  DISAGREE",
-                o.i, o.policy, ov, oracle_cps, o.engine_cps, o.geom_cps
+                "  tape {:03} [{}]: oracle {:?} -> {:?}, engine cps {:?} (steps at {}), geometric {}, done {}, {} rows  DISAGREE",
+                o.i, o.policy, ov, oracle_cps, o.engine_cps,
+                o.cps_steps.iter().map(|t| format!("{:.3}", *t as f64 / 1000.0)).collect::<Vec<_>>().join(" "),
+                o.geom_cps, o.done, o.ticks
             );
         }
         if oracle_cps == Some(o.geom_cps as u32) {
@@ -2986,7 +3071,13 @@ fn open_loop_control(a: &[String]) {
     let tpl_words = state_words(&p.reference.to_string_lossy());
     let mut pass = true;
     let mut judged = 0usize;
-    for ((g, declared, splits, finish_tick, cps), ans) in expect.iter().zip(batch.answers.iter()) {
+    let by_name: std::collections::HashMap<String, &tmauto::oracle::Answer> =
+        batch.answers.iter().map(|x| (x.file.clone(), x)).collect();
+    for ((g, declared, splits, finish_tick, cps), f) in expect.iter().zip(files.iter()) {
+        let name = f.file_name().unwrap().to_string_lossy().into_owned();
+        let Some(ans) = by_name.get(&name) else {
+            die(format!("the oracle has no answer named {name}"));
+        };
         let ov = ans.verdict();
         let gw = state_words(g);
         let d = fk::tape::Tape::load(g).unwrap_or_else(|e| die(e));
@@ -3102,4 +3193,30 @@ fn tape_diff(a: &[String]) {
         }
     }
     println!("{sd} ticks differ in the STATE word; {} distinct (word0, flags) in the first: {:?}", hist.len(), hist);
+}
+
+/// Where does the engine END a run? One flat fork of FILE for --ticks ticks.
+fn run_end_cmd(a: &[String]) {
+    let p = paths(a);
+    let ticks: u64 = num(a, "--ticks", 2600);
+    std::fs::create_dir_all(&p.work).unwrap_or_else(|e| die(e.to_string()));
+    let (rows, ended) = tmenv::control::flat_trace_or_end(&p.server, &p.map, &p.shim, &p.work, &p.reference, ticks)
+        .unwrap_or_else(|e| die(e));
+    let last = rows.last();
+    let mut steps = Vec::new();
+    let mut c = 0u32;
+    for r in &rows {
+        if r.cps != u32::MAX && r.cps > c {
+            steps.push(format!("{:.3}", r.time_ms as f64 / 1000.0));
+            c = r.cps;
+        }
+    }
+    println!(
+        "{} rows, first race {:?}, last race {:?}, run ended {ended}, counter {} (steps at {})",
+        rows.len(),
+        rows.first().map(|r| r.time_ms as f64 / 1000.0),
+        last.map(|r| r.time_ms as f64 / 1000.0),
+        last.map(|r| r.cps).unwrap_or(0),
+        steps.join(" ")
+    );
 }

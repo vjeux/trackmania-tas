@@ -274,6 +274,11 @@ impl ForkEnv {
         self.enforce_pin_budget();
     }
 
+    /// Has the engine ended this episode's run (no further step is possible)?
+    pub fn run_ended(&self) -> bool {
+        self.run_ended
+    }
+
     pub fn live_pinned(&self) -> usize {
         self.pin_lru.len()
     }
@@ -465,6 +470,48 @@ impl ForkEnv {
             self.finish_ms = rows.last().map(|r| r.time_ms);
         }
         Ok(out)
+    }
+
+    /// Run `k` more ticks WITHOUT writing any input: past the tape's last
+    /// record the engine reads its default record, and the validator keeps
+    /// simulating until the finish or its own cut-off -- a car that was still
+    /// rolling can cross gates the tape never drove it to (measured: a tape
+    /// whose records end at race 19.82 s finished at 21.57 s). A control that
+    /// compares the env's counter with the oracle's count on the same file
+    /// must watch that stretch too. Returns the rows and whether the run
+    /// ended; the core scores nothing here.
+    pub fn coast(&mut self, k: usize) -> Result<(Vec<Row>, bool), String> {
+        if self.run_ended {
+            return Ok((Vec::new(), true));
+        }
+        let (rows, ended) = match self.forest.advance_or_end(self.cur, &[], 0, k.clamp(1, MAX_CHUNK) as u64)? {
+            branch::Advanced::Node(rows, h) => {
+                self.leave_cur();
+                self.cur = h;
+                (rows, false)
+            }
+            branch::Advanced::RunEnded(rows) => (rows, true),
+        };
+        if std::env::var("TMENV_DEBUG").is_ok() {
+            eprintln!(
+                "  coast: k {k} -> {} rows, clocks {:?}..{:?}, ended {ended}, cur {:?}",
+                rows.len(),
+                rows.first().map(|r| r.time_ms),
+                rows.last().map(|r| r.time_ms),
+                self.cur
+            );
+        }
+        self.trace.extend(rows.iter().cloned());
+        // keep the core's row current so `state()` (and the counter) follow
+        let saved = self.core.done();
+        let _ = self.core.ingest(&[], &rows);
+        if ended {
+            self.core.end(Done::RunEnded);
+            self.run_ended = true;
+        } else if let Some(d) = saved {
+            self.core.end(d);
+        }
+        Ok((rows, ended))
     }
 
     /// The episode as it happened, with the trace DEDUPED BY TICK, keeping the

@@ -303,3 +303,34 @@ pub fn measure_spawn(
         rows,
     ))
 }
+
+/// [`flat_trace`] that reports where the ENGINE ended the run instead of
+/// failing there: one fork from the root, `ticks` ticks or the run's end,
+/// whichever comes first. For asking how far past its tape a run goes.
+pub fn flat_trace_or_end(
+    server: &Path,
+    map: &Path,
+    shim: &Path,
+    work: &Path,
+    candidate: &Path,
+    ticks: u64,
+) -> Result<(Vec<Row>, bool), String> {
+    let rig = Rig::new(server, map, shim, work, candidate)?;
+    let mut s = rig.session_clock(EARLIEST_CLOCK)?;
+    let probe = s.probe_tick()?;
+    let reference = s.tape.tail_records(0);
+    let car = resolve_car(&mut s.srv, probe, &reference, s.tape.start_offset_ms, false)?;
+    let dir = work.join("flat-traces");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let cfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 400_000 };
+    let fk::session::Session { srv, .. } = s;
+    let mut f = Forest::new(srv, work, reference, Some(cfg))?;
+    f.probe_root()?;
+    match f.advance_or_end(ROOT, &[], 0, ticks)? {
+        branch::Advanced::Node(rows, h) => {
+            f.release(h);
+            Ok((rows, false))
+        }
+        branch::Advanced::RunEnded(rows) => Ok((rows, true)),
+    }
+}
