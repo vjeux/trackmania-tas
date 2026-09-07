@@ -816,6 +816,7 @@ fn main() {
             report(&c.stats, &c.scene);
             write_scene(&c.scene, &out);
         }
+        "collhash" => mapgeom::collhash::run(&a.rest).unwrap_or_else(die),
         "items" => {
             let p = a.rest.get(1).cloned().unwrap_or_default();
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));

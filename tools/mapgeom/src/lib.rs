@@ -30,6 +30,7 @@ pub mod blowfish;
 pub mod classes;
 pub mod container;
 pub mod corpus;
+pub mod collhash;
 pub mod coverage;
 pub mod embedded;
 pub mod geom;
