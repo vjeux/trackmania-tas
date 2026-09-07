@@ -46,6 +46,10 @@ pub struct BuildOpts {
 pub struct MergedVisual {
     pub visual: CPlugVisualIndexedTriangles,
     pub material: usize,
+    /// The shaded geom's detail-level mask (bit 0 = nearest). 1 for every
+    /// static visual (the item keeps LOD0 only); the pack's own mask for the
+    /// visuals of a tween part, which keeps all its levels.
+    pub lod_mask: u32,
 }
 
 /// A light of the source model, ready for the item's Solid2 `lights` list.
@@ -140,6 +144,19 @@ pub struct Merged {
     /// prefab entity model, each with its kinematic constraint. Empty for a
     /// static item.
     pub dyna: Vec<DynaPart>,
+    /// Keep every detail level of the source (with its lod mask) instead of
+    /// the nearest one only — the tween cloth: ten or more instances of a
+    /// LOD0-only copy drew as garbage (giant black sails, or nothing) while
+    /// one or two drew right (2026-09-07); the pack's five levels are the
+    /// layout the many-instance draw path expects.
+    pub all_lods: bool,
+    /// Solid2 fields carried from the source mesh for a tween part: the pack's
+    /// Flag.Mesh.Gbx says `vis_cst_type` 2 (its vertices are not constant —
+    /// the frames), `lod_max_dist` [16, 64, 128, 512] for its five levels,
+    /// `u07` -1; a static item says 1, [], 1.
+    pub vis_cst_type: Option<i32>,
+    pub lod_max_dist: Vec<f32>,
+    pub solid2_u07: Option<i32>,
 }
 
 /// One `CPlugDynaObjectModel` entity of the source prefab, scaled: its mesh
@@ -666,7 +683,7 @@ impl Merged {
             // 22-vertex LOD1 sheet voted SeaFloor over the LOD0 grass — the
             // "wide bright beaches with hard seams", 2026-09-06). Keep the
             // nearest level only; `TINY_ALL_LODS=1` restores the old behaviour.
-            if g.lod_mask != 0 && g.lod_mask & 1 == 0 && std::env::var_os("TINY_ALL_LODS").is_none() {
+            if g.lod_mask != 0 && g.lod_mask & 1 == 0 && std::env::var_os("TINY_ALL_LODS").is_none() && !self.all_lods {
                 self.notes.push(format!("visual {} (lod mask {}) skipped: not the nearest level", g.visual_index, g.lod_mask));
                 continue;
             }
@@ -865,7 +882,7 @@ impl Merged {
                         let has_color = sv.stream().map(|s| s.decls.iter().any(|d| d.name() == N_COLOR0)).unwrap_or(false);
                         let gm = if !has_color { self.plain_variant_slot(gm) } else { gm };
                         visual_slots.push((self.visuals.len(), gm));
-                        self.visuals.push(MergedVisual { visual: sv, material: gm });
+                        self.visuals.push(MergedVisual { visual: sv, material: gm, lod_mask: 1 });
                     }
                     continue;
                 }
@@ -876,14 +893,15 @@ impl Merged {
                         // triangles — but keep the per-triangle answer)
                         transform_visual(&mut v, iso, scale)?;
                         visual_slots.push((self.visuals.len(), only));
-                        self.visuals.push(MergedVisual { visual: v, material: only });
+                        self.visuals.push(MergedVisual { visual: v, material: only, lod_mask: 1 });
                         continue;
                     }
                 }
             }
             transform_visual(&mut v, iso, scale)?;
             visual_slots.push((self.visuals.len(), mat));
-            self.visuals.push(MergedVisual { visual: v, material: mat });
+            let lod_mask = if self.all_lods && g.lod_mask > 0 { g.lod_mask as u32 } else { 1 };
+            self.visuals.push(MergedVisual { visual: v, material: mat, lod_mask });
         }
         if let Some(sf) = so.surface() {
             match &sf.surf {
@@ -1234,6 +1252,13 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
         return Err("no visuals: nothing to build".into());
     }
     let mut s2 = CPlugSolid2Model::new_v34();
+    if let Some(t) = m.vis_cst_type {
+        s2.vis_cst_type = t;
+    }
+    s2.lod_max_dist = m.lod_max_dist.clone();
+    if let Some(u) = m.solid2_u07 {
+        s2.u07 = u;
+    }
     let mut pre = m.visuals.clone();
     if std::env::var_os("TINY_NO_HARMONIZE").is_none() {
         harmonize_layouts(&mut pre);
@@ -1284,18 +1309,21 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
                 s.flags = f.parse().unwrap_or(s.flags);
             }
         }
-        // the stream sits right after its visual
+        // the stream sits right after its visual (an inline-form visual has
+        // none and takes one index)
+        let mut has_stream = false;
         for r in main.vertex_streams.iter_mut() {
-            if r.inline.is_some() {
+            if r.inline.is_some() && !v.inline_form {
                 r.index = *next + 1;
+                has_stream = true;
             }
         }
         // TINY_MAT_PER_VISUAL=1: one custom material entry per visual (duplicating the
         // inst), the way the reference items are built.
         let material_index = if per_visual { s2.visuals.len() as i32 } else { used.iter().position(|u| *u == mv.material).unwrap() as i32 };
-        s2.shaded_geoms.push(ShadedGeom { visual_index: s2.visuals.len() as i32, material_index, u01: -1, lod_mask: 1, u02: 0 });
+        s2.shaded_geoms.push(ShadedGeom { visual_index: s2.visuals.len() as i32, material_index, u01: -1, lod_mask: mv.lod_mask as i32, u02: 0 });
         s2.visuals.push(inline(*next, Node::Visual(v)));
-        *next += 2;
+        *next += if has_stream { 2 } else { 1 };
     }
     let mat_list: Vec<usize> = if per_visual { visuals.iter().map(|mv| mv.material).collect() } else { used.clone() };
     for inst in mat_list.iter().map(|u| &m.materials[*u]) {
@@ -1994,7 +2022,8 @@ pub fn coalesce(visuals: &[MergedVisual]) -> Vec<MergedVisual> {
             out.push(mv.clone());
             continue;
         };
-        let mergeable = main.tex_coord_sets.is_empty() && main.skin.is_none() && stream.base.index == -1 && main.vertex_streams.len() == 1;
+        // a visual with a frame table (a tween cloth's LOD levels) is never merged
+        let mergeable = main.tex_coord_sets.is_empty() && main.skin.is_none() && stream.base.index == -1 && main.vertex_streams.len() == 1 && mv.visual.sub_visuals.is_empty();
         if !mergeable {
             out.push(mv.clone());
             continue;
@@ -2225,7 +2254,11 @@ fn is_tween_material(store: &mut crate::store::DataStore, p: &str) -> bool {
 /// — the waving, hue-masked flag of 2026-09-07. `TINY_FLAG_TWEEN=0` bakes it
 /// as frame 0 under TrackBorders instead (the still white flag of before).
 pub fn tween_parts_enabled() -> bool {
-    std::env::var("TINY_FLAG_TWEEN").map(|v| v != "0").unwrap_or(true)
+    // OFF by default until the many-instance draw is right: ten or more
+    // copies of the tween item in one map drew as giant black sails or
+    // nothing (Summer 20, 2026-09-07), two copies drew right. TINY_FLAG_TWEEN=1
+    // turns it on.
+    std::env::var("TINY_FLAG_TWEEN").map(|v| v == "1").unwrap_or(false)
 }
 
 fn name_in(tbl: &[(u32, String)], i: i32) -> Option<String> {
@@ -2659,6 +2692,10 @@ pub fn add_dyna_tween_part(store: &mut crate::store::DataStore, path: &str, at: 
     mesh.modifier = m.modifier.clone();
     mesh.modifier_suffix = m.modifier_suffix.clone();
     mesh.no_split = true;
+    mesh.all_lods = true;
+    mesh.vis_cst_type = Some(src.s2.vis_cst_type);
+    mesh.lod_max_dist = src.s2.lod_max_dist.clone();
+    mesh.solid2_u07 = Some(src.s2.u07);
     let mesh_ext = src.mesh_ext.clone();
     let so = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(src.s2.clone())), is_mesh_collidable: false, shape: super::null_ref() };
     let mut resolve = |idx: i32| -> Option<(String, String, u8)> {

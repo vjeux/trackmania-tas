@@ -2608,7 +2608,7 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
         let slot = slots.get(i).copied().unwrap_or_else(|| m.material_slot("Stadium\\Media\\Material\\PlatformTech", 0));
         let layout = visual_layout(&m.materials[slot].link().unwrap_or("").to_string());
         for v in make_visuals(tris, layout, umode) {
-            m.visuals.push(MergedVisual { visual: v, material: slot });
+            m.visuals.push(MergedVisual { visual: v, material: slot, lod_mask: 1 });
         }
     }
     // collision: shared vertices by exact position; `surface_index` per

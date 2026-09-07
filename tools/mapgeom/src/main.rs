@@ -649,6 +649,10 @@ fn main() {
             let first_diff = m.body.iter().zip(out.iter()).position(|(x, y)| x != y);
             let same = m.body.len() == out.len() && first_diff.is_none();
             println!("{p}: body {} bytes ({consumed} consumed by the parser), rewritten {} bytes, {}", m.body.len(), out.len(), if same { "IDENTICAL".to_string() } else { format!("first difference at 0x{:x}", first_diff.unwrap_or(m.body.len().min(out.len()))) });
+            println!(
+                "  solid2 v{} lod_max_dist {:?} vis_cst_type {} damage_zone {} flags {:#x} u05 {} u06 {:?} u07 {} boxes {:?} joints {} u10 {:?} u11 {} u12 {:?} u13 {} u15 {} u16 {} u17 {:?} u18 {} u19 {:?} pre_light_gen {} file_write_time {} u03 {:?} folder {:?} u04 {:?} material_ids {:?} materials {} custom {} raw {:?}",
+                s2.version, s2.lod_max_dist, s2.vis_cst_type, s2.damage_zone, s2.flags, s2.u05, s2.u06, s2.u07, s2.boxes, s2.joints.len(), s2.u10, s2.u11, s2.u12, s2.u13, s2.u15, s2.u16, s2.u17, s2.u18, s2.u19, s2.pre_light_gen.is_some(), s2.file_write_time, s2.u03, s2.materials_folder, s2.u04, s2.material_ids, s2.materials.len(), s2.custom_materials.len(), s2.raw.iter().map(|r| (r.id, r.payload.len())).collect::<Vec<_>>()
+            );
             for vr in &s2.visuals {
                 if let Some(mapgeom::static_item::Node::Visual(v)) = vr.inline.as_deref() {
                     println!("  visual: {} vertices, {} sub-visuals, inline form {}, {} uv sets (flags {}), chunks {:x?}", v.main.as_ref().map(|m| m.count).unwrap_or(0), v.sub_visuals.len(), v.inline_form, v.inline_uv_sets, v.inline_uv_flags, v.chunks);
