@@ -67,15 +67,15 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
                     // only when the counter shows every checkpoint credited
                     if flat.iter().rev().find(|r| r.cps != u32::MAX).map(|r| r.cps as usize + 1 == ng).unwrap_or(false) {
                         // DETERMINISM: the rows near the exit are however many the child flushed
-                        // (0..5) plus extrapolation; anchor the finish row on the row 100 ms
+                        // (0..5) plus extrapolation; anchor the finish row on the row 200 ms
                         // before the finish, extrapolated at constant velocity, run to run
-                        if let Some(a) = flat.iter().position(|r| w.race_of(r) == want - 100) {
+                        if let Some(a) = flat.iter().position(|r| w.race_of(r) == want - 200) {
                             let anchor = flat[a].clone();
                             let mut r = anchor.clone();
                             r.time_ms = flat[i].time_ms;
-                            r.x = anchor.x + anchor.vx * 0.1;
-                            r.y = anchor.y + anchor.vy * 0.1;
-                            r.z = anchor.z + anchor.vz * 0.1;
+                            r.x = anchor.x + anchor.vx * 0.2;
+                            r.y = anchor.y + anchor.vy * 0.2;
+                            r.z = anchor.z + anchor.vz * 0.2;
                             r.cps = flat[i].cps;
                             flat[i] = r;
                         }
