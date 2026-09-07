@@ -13,10 +13,10 @@
 //!   validated time as the plain run. `--gdb` adds an independent count of the
 //!   loop's clock write under a debugger.
 //! * `load` — *is the stop the same simulation point on N servers started at
-//!   once?* Under the lroundf clock 104 of 150 were one tick late. Under the
-//!   tick hook every server must report the same `sim_ms` AND the page-fault
-//!   probe (the control, measured from the other side) must agree on every
-//!   one.
+//!   once?* When the clock was a count of `lroundf` calls, 104 of 150 were one
+//!   tick late. Now every server must report the same race tick AND the
+//!   page-fault probe (the control, measured from the other side) must agree
+//!   on every one.
 //! * `find` — *on a build with different offsets, which function is the tick?*
 //!   Dynamic first: the probe's fault log gives the return address inside the
 //!   tick loop; the `call rel32` targets near it are the candidates; each is
@@ -138,7 +138,6 @@ fn hex(b: &[u8]) -> String {
 /// What the shim prints on stderr at exit.
 #[derive(Debug, Default, Clone)]
 pub struct ShimReport {
-    pub lroundf_total: u64,
     pub tick_total: u64,
     pub sim_ms0: u64,
     pub sim_ms_end: u64,
@@ -154,9 +153,7 @@ pub fn parse_shim_report(stderr: &str) -> ShimReport {
     let mut r = ShimReport::default();
     for l in stderr.lines() {
         let get = |k: &str| l.strip_prefix(k).and_then(|v| v.trim().parse::<u64>().ok());
-        if let Some(v) = get("FKSHIM lroundf_total ") {
-            r.lroundf_total = v;
-        } else if let Some(v) = get("FKSHIM tick_total ") {
+        if let Some(v) = get("FKSHIM tick_total ") {
             r.tick_total = v;
         } else if let Some(v) = get("FKSHIM sim_ms0 ") {
             r.sim_ms0 = v;
@@ -294,7 +291,6 @@ pub fn count(engine: &Engine, tape: Tape, o: CountOpts) -> Result<(), String> {
         &g,
         &[
             ("LD_PRELOAD", shim.clone()),
-            ("FKSHIM_CLOCK", "tick".into()),
             ("FKSHIM_VALIDATOR_CAR", "1".into()),
         ],
         to,
@@ -308,8 +304,8 @@ pub fn count(engine: &Engine, tape: Tape, o: CountOpts) -> Result<(), String> {
         hook_s
     );
     println!(
-        "hook: {} ticks, sim {} -> {} ms, race start {}, dt!=10: {}, sim-clock disagreements: {}, clock_total {}, lroundf calls: {}",
-        r.tick_total, r.sim_ms0, r.sim_ms_end, r.race_start, r.anomalies, r.clock_mismatch, r.clock_total, r.lroundf_total
+        "hook: {} ticks, sim {} -> {} ms, race start {}, dt!=10: {}, sim-clock disagreements: {}, clock_total {}",
+        r.tick_total, r.sim_ms0, r.sim_ms_end, r.race_start, r.anomalies, r.clock_mismatch, r.clock_total
     );
     let mut fails = Vec::new();
     if let Err(e) = r.consistent() {
@@ -406,7 +402,7 @@ pub struct LoadOpts {
 
 /// N fork servers started at once, all asked for the same checkpoint. Reports
 /// the distribution of (clock, sim_ms, probe). Under the tick hook every one
-/// must agree, and `probe + 1` must be the tick the engine reported.
+/// must agree, and the probe must be the record the engine's own tick names.
 pub fn load(engine: &Engine, tape: Tape, at: Checkpoint, o: LoadOpts) -> Result<(), String> {
     engine.check()?;
     std::fs::create_dir_all(&engine.work).map_err(|e| e.to_string())?;
@@ -424,13 +420,13 @@ pub fn load(engine: &Engine, tape: Tape, at: Checkpoint, o: LoadOpts) -> Result<
         };
         let tp = tape.clone();
         let b = barrier.clone();
-        handles.push(std::thread::spawn(move || -> Result<(u64, u64, usize, bool, u64), String> {
+        handles.push(std::thread::spawn(move || -> Result<(u64, u64, usize, u64), String> {
             b.wait();
             let mut s = Session::start(&e, tp, at)?;
             // The raw probe, NOT `boundary_tick`: this command wants to SEE a
             // disagreement, not abort on the first one.
             let p = s.srv.probe_tick()?;
-            let r = (s.srv.clock, s.srv.sim_ms, p, s.srv.tick_mode, s.srv.race_start);
+            let r = (s.srv.clock, s.srv.sim_ms, p, s.srv.race_start);
             s.srv.quit();
             Ok(r)
         }));
@@ -449,13 +445,12 @@ pub fn load(engine: &Engine, tape: Tape, at: Checkpoint, o: LoadOpts) -> Result<
     // tick and the probe do not.
     let mut by: BTreeMap<(u64, usize, u64), usize> = BTreeMap::new();
     for r in &rows {
-        *by.entry((r.0, r.2, r.4)).or_default() += 1;
+        *by.entry((r.0, r.2, r.3)).or_default() += 1;
     }
     println!(
-        "{} servers started together at {:?} ({}), {} answered, {} failed, {:.1}s wall",
+        "{} servers started together at {:?}, {} answered, {} failed, {:.1}s wall",
         n,
         at,
-        if clock::tick_mode() { "tick clock" } else { "lroundf clock" },
         rows.len(),
         errs.len(),
         wall
@@ -464,35 +459,26 @@ pub fn load(engine: &Engine, tape: Tape, at: Checkpoint, o: LoadOpts) -> Result<
         println!("  failure: {}", e);
     }
     for ((c, p, rs), k) in &by {
-        println!("  clock {:>8}  race_start {:>5}  probe {:>5}  (first unconsumed {:>5})  x{}", c, rs, p, p + 1, k);
+        println!("  clock {:>8}  race_start {:>5}  first unconsumed record {:>5}  x{}", c, rs, p, k);
     }
-    let tick_mode = rows.first().map(|r| r.3).unwrap_or(false);
-    if tick_mode {
-        // Per server: probe + 1 must be the tape tick its OWN sim_ms/race_start
-        // name; across servers: one clock value and one probe.
-        let want_of = |r: &(u64, u64, usize, bool, u64)| clock::tape_tick_at(r.1, r.4, tape.start_offset_ms).max(clock::first_read_tick(tape.start_offset_ms));
-        let probe_ok = rows.iter().filter(|r| r.2 as i64 + 1 == want_of(r)).count();
-        let clocks: std::collections::BTreeSet<u64> = rows.iter().map(|r| r.0).collect();
-        let probes: std::collections::BTreeSet<usize> = rows.iter().map(|r| r.2).collect();
-        let starts: std::collections::BTreeSet<u64> = rows.iter().map(|r| r.4).collect();
-        println!(
-            "race starts seen: {:?}; distinct clock values: {}; distinct probes: {}; probe agrees with its own server's tick on {} of {}",
-            starts, clocks.len(), probes.len(), probe_ok, rows.len()
-        );
-        if !errs.is_empty() || clocks.len() != 1 || probes.len() != 1 || probe_ok != rows.len() {
-            return Err(format!(
-                "FAIL: {} distinct clocks, {} distinct probes, probe agrees on {} of {}, {} failures",
-                clocks.len(), probes.len(), probe_ok, rows.len(), errs.len()
-            ));
-        }
-        println!("PASS: one race tick on all {} servers; the probe agrees on every one", rows.len());
-    } else {
-        println!(
-            "lroundf clock: {} distinct stop points across {} servers (this is the A/B baseline, not a failure)",
-            by.len(),
-            rows.len()
-        );
+    // Per server: probe + 1 must be the tape tick its OWN sim_ms/race_start
+    // name; across servers: one clock value and one probe.
+    let want_of = |r: &(u64, u64, usize, u64)| clock::record_read_at(r.1, r.3, tape.start_offset_ms);
+    let probe_ok = rows.iter().filter(|r| r.2 as i64 == want_of(r)).count();
+    let clocks: std::collections::BTreeSet<u64> = rows.iter().map(|r| r.0).collect();
+    let probes: std::collections::BTreeSet<usize> = rows.iter().map(|r| r.2).collect();
+    let starts: std::collections::BTreeSet<u64> = rows.iter().map(|r| r.3).collect();
+    println!(
+        "race starts seen: {:?}; distinct clock values: {}; distinct probes: {}; probe agrees with its own server's tick on {} of {}",
+        starts, clocks.len(), probes.len(), probe_ok, rows.len()
+    );
+    if !errs.is_empty() || clocks.len() != 1 || probes.len() != 1 || probe_ok != rows.len() {
+        return Err(format!(
+            "FAIL: {} distinct clocks, {} distinct probes, probe agrees on {} of {}, {} failures",
+            clocks.len(), probes.len(), probe_ok, rows.len(), errs.len()
+        ));
     }
+    println!("PASS: one race tick on all {} servers; the probe agrees on every one", rows.len());
     Ok(())
 }
 
@@ -515,67 +501,47 @@ pub fn find(engine: &Engine, tape: Tape, o: FindOpts) -> Result<(), String> {
         Err(w) => println!("current constants do not match this binary ({}); searching", w),
     }
 
-    // 1. DYNAMIC: where does the engine read an input record from, and who
-    //    called it? The page-fault probe logs the fault RIP and the frame
-    //    chain. Run it under the LEGACY clock (the tick hook may not install
-    //    on this build) in a child `fk`, so this process's clock mode is left
-    //    alone.
-    let pw = engine.work.join("probe");
     let g = engine.work.join("find.Ghost.Gbx");
     tape.write_reference(&g)?;
-    let me = std::env::current_exe().map_err(|e| e.to_string())?;
-    let st = Command::new(&me)
-        .args(["server", "probe", "--tape"])
-        .arg(&g)
-        .arg("--map")
-        .arg(&engine.map)
-        .arg("--server")
-        .arg(&engine.server)
-        .arg("--shim")
-        .arg(&engine.shim)
-        .arg("--work")
-        .arg(&pw)
-        .args(["--at", "frac:0.5"])
-        .env("FK_CLOCK", "lroundf")
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .status()
-        .map_err(|e| e.to_string())?;
-    if !st.success() {
-        return Err("the legacy-clock probe run failed; cannot get the fault frame chain".into());
-    }
-    let log = std::fs::read_to_string(pw.join("srv/server.log")).map_err(|e| e.to_string())?;
-    let mut base = 0u64;
-    let mut rip = 0u64;
-    let mut frames = Vec::new();
-    for l in log.lines() {
-        let f: Vec<&str> = l.split_whitespace().collect();
-        if f.len() >= 4 && f[0] == "FKSHIM" && f[1] == "input_fault" {
-            match f[2] {
-                "module_base" => base = f[3].parse().unwrap_or(0),
-                "rip" => rip = f[3].parse().unwrap_or(0),
-                "frame" if f.len() >= 5 => frames.push(f[4].parse::<u64>().unwrap_or(0)),
-                _ => {}
-            }
-        }
-    }
-    if base == 0 || rip == 0 || frames.is_empty() {
-        return Err("no input_fault frame chain in server.log".into());
-    }
-    let reader_rip = (rip - base) as usize;
-    let ret_in_loop = frames[0].wrapping_sub(base) as usize;
-    println!(
-        "record read at {:#x}; returns into {:#x} (frames: {})",
-        reader_rip,
-        ret_in_loop,
-        frames.iter().map(|f| format!("{:#x}", f.wrapping_sub(base))).collect::<Vec<_>>().join(" ")
-    );
-    if !elf.is_text(ret_in_loop) {
-        return Err("the return address is not in the binary's text".into());
-    }
 
-    // 2. STATIC: every `call rel32` in [ret - back, ret + ahead) whose target
-    //    is text and begins with a relocatable frame-pointer prologue.
+    // 1. STATIC: find the INPUT-RECORD READER, then the loop that calls it.
+    //
+    //    The reader is the one function in the binary that indexes a 32-byte
+    //    array by a tick number and copies a whole record out of it, so its
+    //    body carries `shl rcx,5` immediately followed by the two `movups`
+    //    that fetch the 32 bytes. That shape is about what the code DOES, not
+    //    where it sits, so it survives a rebuild in a way an address never
+    //    does. It is still only a lead: what decides is the behaviour test in
+    //    step 3.
+    let readers = find_record_readers(&elf);
+    if readers.is_empty() {
+        return Err("no input-record reader found (no `shl rcx,5` + `movups [rdx+rcx]` pair in \
+                    the text); the record layout of this build is not what TICKHOOK.md \
+                    describes, and the hook needs re-deriving by hand"
+            .into());
+    }
+    println!(
+        "input-record reader(s): {}",
+        readers.iter().map(|(f, s)| format!("{:#x} (copy at {:#x})", f, s)).collect::<Vec<_>>().join(", ")
+    );
+
+    // 2. Every `call rel32` targeting a reader is inside the tick loop; take a
+    //    window around each such call site and collect every OTHER function it
+    //    calls whose prologue is relocatable.
+    let mut call_sites: Vec<usize> = Vec::new();
+    for (f, _) in &readers {
+        call_sites.extend(callers_of(&elf, *f));
+    }
+    if call_sites.is_empty() {
+        return Err("nothing calls the record reader with a direct `call rel32`; the tick loop \
+                    reaches it some other way on this build"
+            .into());
+    }
+    println!(
+        "called from {}",
+        call_sites.iter().map(|s| format!("{:#x}", s)).collect::<Vec<_>>().join(", ")
+    );
+    let ret_in_loop = call_sites[0];
     let lo = ret_in_loop.saturating_sub(o.back);
     let hi = ret_in_loop + o.ahead;
     let win = elf.read(lo, hi - lo);
@@ -611,8 +577,7 @@ pub fn find(engine: &Engine, tape: Tape, o: FindOpts) -> Result<(), String> {
             &g,
             &[
                 ("LD_PRELOAD", shim.clone()),
-                ("FKSHIM_CLOCK", "tick".into()),
-                ("FKSHIM_TICK_UNSAFE", "1".into()),
+                    ("FKSHIM_TICK_UNSAFE", "1".into()),
                 ("FKSHIM_TICK_FN_OFF", format!("{:#x}", t)),
                 ("FKSHIM_VALIDATOR_CAR", "1".into()),
             ],
@@ -657,4 +622,293 @@ pub fn find(engine: &Engine, tape: Tape, o: FindOpts) -> Result<(), String> {
     }
     println!("\nThe loop's clock write (TICK_CLOCK_WRITE_*) is not found automatically: disassemble the\nloop around the reader's return address and take the `mov [sim+0x48], new_time` at the\nend of the body (TICKHOOK.md §4). Then `fk tickhook check` and `fk tickhook count --gdb`.");
     Ok(())
+}
+
+/// Every `(function entry, copy site)` that looks like the input-record reader:
+/// `shl rcx,5` (index * 32) followed within 8 bytes by
+/// `movups xmm0,[rdx+rcx*1]` — the 32-byte record fetch.
+///
+/// This is a shape, not an address, which is the point: it is what the reader
+/// DOES. It is a lead and never a verdict — `find`'s behaviour test is what
+/// decides, and a build where this returns nothing is one where the record
+/// layout itself changed.
+pub fn find_record_readers(elf: &Elf) -> Vec<(usize, usize)> {
+    const SHL_RCX_5: [u8; 4] = [0x48, 0xc1, 0xe1, 0x05];
+    const MOVUPS_RDX_RCX: [u8; 4] = [0x0f, 0x10, 0x04, 0x0a];
+    let mut out = Vec::new();
+    for (va, bytes) in elf.text_segments() {
+        let mut i = 0usize;
+        while i + 16 < bytes.len() {
+            if bytes[i..i + 4] == SHL_RCX_5 {
+                if let Some(k) = (4..12).find(|k| bytes[i + k..i + k + 4] == MOVUPS_RDX_RCX) {
+                    if let Some(f) = function_entry(bytes, i) {
+                        out.push((va + f, va + i + k));
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+    out.dedup_by_key(|(f, _)| *f);
+    out
+}
+
+/// The entry of the function containing `off`: the nearest `push rbp; mov
+/// rbp,rsp` above it that is preceded by padding (`int3`/`nop`), which is how
+/// this compiler separates functions.
+fn function_entry(bytes: &[u8], off: usize) -> Option<usize> {
+    let lo = off.saturating_sub(4096);
+    (lo..off).rev().find(|&i| {
+        bytes[i..i + 4] == [0x55, 0x48, 0x89, 0xe5]
+            && i > 0
+            && (bytes[i - 1] == 0xcc || bytes[i - 1] == 0x90)
+    })
+}
+
+/// Every `call rel32` site whose target is `target`.
+pub fn callers_of(elf: &Elf, target: usize) -> Vec<usize> {
+    let mut out = Vec::new();
+    for (va, bytes) in elf.text_segments() {
+        for i in 0..bytes.len().saturating_sub(5) {
+            if bytes[i] != 0xe8 {
+                continue;
+            }
+            let rel = i32::from_le_bytes(bytes[i + 1..i + 5].try_into().unwrap()) as i64;
+            if (va + i + 5) as i64 + rel == target as i64 {
+                out.push(va + i);
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------- fk tickhook reads
+
+/// AUDIT EVERY READ THE ORACLE MAKES OF ENGINE MEMORY, against the engine.
+///
+/// The fork oracle reads five things out of the running server, and until this
+/// command existed only two of them were ever checked against the engine's own
+/// arithmetic. Two of the other three turned out to be wrong (the input array's
+/// base was four bytes into the record; the countdown reads record 0, not the
+/// tape's countdown records). So: one command, one stopped server, every read
+/// stated and compared with what the engine says it should be.
+///
+/// 1. **the input array** -- the address the shim found, the record it says the
+///    engine reads next, and the page-fault probe's independent answer;
+/// 2. **the record layout** -- the 32 bytes at that record, field by field,
+///    against `forksrv::STRIDE`'s documented layout and against the tape;
+/// 3. **the race clock** -- the u32 the blind locator picks by its `+10 every
+///    tick` signature, read at a tick whose race time the hook knows exactly;
+/// 4. **the car state** -- the position the blind locator picks vs the one the
+///    VALIDATOR's own ownership chain resolves, which share no evidence;
+/// 5. **the simulation clock** -- `[sim+0x48]`, which the hook checks on every
+///    tick anyway, reported here for completeness.
+pub fn reads(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<(), String> {
+    use forkoracle::forksrv::{REC_BRAKE, REC_GAS, REC_STEER, STRIDE};
+    use forkoracle::procmem::read_at;
+
+    let mut s = Session::start(engine, tape, at)?;
+    let pid = s.srv.pid();
+    let (sim_ms, race_start) = (s.srv.sim_ms, s.srv.race_start);
+    let race_ms = sim_ms as i64 - race_start as i64;
+    let off = s.tape.start_offset_ms;
+    println!(
+        "server {} stopped at sim {} ms, race start {} ms -> race {} ms (clock {}), tape start_offset {} ms",
+        pid, sim_ms, race_start, race_ms, s.srv.clock, off
+    );
+
+    let mut fails: Vec<String> = Vec::new();
+    let mut check = |ok: bool, what: String| {
+        println!("  [{}] {}", if ok { "ok" } else { "FAIL" }, what);
+        if !ok {
+            fails.push(what);
+        }
+    };
+
+    // 1. THE INPUT ARRAY, and the two independent answers about the boundary.
+    let want = clock::record_read_at(sim_ms, race_start, off);
+    let probe = s.srv.probe_tick()?;
+    check(
+        probe as i64 == want,
+        format!(
+            "input array at {:#x}; the engine's own tick says it reads record {} next, the \
+             page-fault probe says {}",
+            s.srv.base, want, probe
+        ),
+    );
+
+    // 2. THE RECORD, field by field, against the tape and the documented shape.
+    let t = probe.min(s.tape.n() - 1);
+    let raw = read_at(pid, s.srv.base + (t as u64) * STRIDE as u64, STRIDE)
+        .ok_or("cannot read the record out of the stopped server")?;
+    let f32at = |o: usize| f32::from_le_bytes(raw[o..o + 4].try_into().unwrap());
+    let u32at = |o: usize| u32::from_le_bytes(raw[o..o + 4].try_into().unwrap());
+    let w = forkoracle::forksrv::rec_of(s.tape.steer[t], s.tape.accel[t], s.tape.brake[t]);
+    println!(
+        "  record {} = [{:#010x}] steer {} gas {} brake {} | {} {:#010x} {:#010x} {:#010x}",
+        t,
+        u32at(0),
+        f32at(REC_STEER),
+        f32at(REC_GAS),
+        f32at(REC_BRAKE),
+        f32at(16),
+        u32at(20),
+        u32at(24),
+        u32at(28)
+    );
+    check(
+        f32at(REC_STEER) == w.steer && f32at(REC_GAS) == w.gas && f32at(REC_BRAKE) == w.brake,
+        format!(
+            "steer/gas/brake at +{}/+{}/+{} match the tape ({}, {}, {})",
+            REC_STEER, REC_GAS, REC_BRAKE, w.steer, w.gas, w.brake
+        ),
+    );
+    // The tail, over several records, so "constant" is measured and not assumed.
+    let tail = |k: usize| -> Option<(f32, u32, u32, u32)> {
+        let r = read_at(pid, s.srv.base + (k as u64) * STRIDE as u64, STRIDE)?;
+        let f = |o: usize| f32::from_le_bytes(r[o..o + 4].try_into().unwrap());
+        let u = |o: usize| u32::from_le_bytes(r[o..o + 4].try_into().unwrap());
+        Some((f(16), u(20), u(24), u(28)))
+    };
+    let ks: Vec<usize> = [0usize, 1, 157, 158, t, t + 1, s.tape.n() - 1].iter().copied().filter(|k| *k < s.tape.n()).collect();
+    for k in &ks {
+        if let Some((a, b, c, d)) = tail(*k) {
+            println!("  tail[{}] = {} {:#010x} {:#010x} {:#010x}", k, a, b, c, d);
+        }
+    }
+    let tails: Vec<(f32, u32, u32, u32)> = ks.iter().filter_map(|k| tail(*k)).collect();
+    check(
+        tails.iter().all(|t| t.0 == 0.0 && t.2 == 0 && t.3 == 2),
+        "the engine-owned tail is +0x10 = 0.0, +0x18 = 0, +0x1c = 2 in every record".to_string(),
+    );
+    // +0x14 is NOT constant (0x3576f40e early on this tape, 0x3576f409 later),
+    // so the old note calling it a "device-segment const" is wrong. It is
+    // engine-owned either way: the check is that we never touch it.
+    println!(
+        "  +0x14 takes {} distinct value(s) across those records -- engine-owned, never written",
+        tails.iter().map(|t| t.1).collect::<std::collections::BTreeSet<_>>().len()
+    );
+
+    // 3. THE RACE CLOCK. The locator picks a u32 by its `+10 every tick`
+    //    signature; the hook knows this tick's race time exactly, so the value
+    //    can be compared rather than trusted.
+    let recs = s.tape.tail_records(probe);
+    let bounds = (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0);
+    let layout = forkoracle::blind::locate_blind(&mut s.srv, probe, &recs, off, 1, bounds, false)
+        .map_err(|e| format!("the blind locator could not find the car: {}", e))?;
+    let clk = read_at(pid, layout.clock, 4)
+        .map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()) as i64)
+        .ok_or("cannot read the located clock")?;
+    println!(
+        "  located clock {:#x} reads {} ms; race time here is {} ms (difference {})",
+        layout.clock, clk, race_ms, clk - race_ms
+    );
+    // WHICH u32 NEAR THE CAR EQUALS RACE TIME? The locator picks by a `+10
+    // every tick` signature, and several counters in the engine step by 10.
+    // This says what the neighbourhood actually holds.
+    if let Some(win) = read_at(pid, layout.clock - 256, 1024) {
+        let hits: Vec<String> = (0..win.len() / 4)
+            .map(|i| (i, u32::from_le_bytes(win[i * 4..i * 4 + 4].try_into().unwrap()) as i64))
+            .filter(|(_, v)| (*v - race_ms).abs() <= 2000 && *v > 0)
+            .map(|(i, v)| format!("{:+}:{}({:+})", i as i64 * 4 - 256, v, v - race_ms))
+            .collect();
+        println!("  u32 within 2 s of race time in [clock-256, clock+768): {}", hits.join(" "));
+    }
+    // It is NOT the race clock: it counts from the ROUND start (1200 ms here,
+    // 1000 ms before the race). What must hold is that the MEASURED bias turns
+    // it into race time exactly -- that is what labels every sample.
+    let bias = forkoracle::layout::measured_clock_bias(&s.srv, layout.clock)?;
+    let finished = race_ms - 10;
+    check(
+        clk - bias == finished && bias == layout.clock_bias,
+        format!(
+            "counter - bias = {} ms = the race time of the tick the server has FINISHED ({}), \
+             and the locator carries the same bias ({} vs {})",
+            clk - bias,
+            finished,
+            layout.clock_bias,
+            bias
+        ),
+    );
+
+    // 4. THE CAR. Two locators that share no evidence: the blind one (a float
+    //    triple whose derivative matches the velocity 12 bytes later) and the
+    //    validator's own ownership chain (controller -> sim -> playground ->
+    //    participant -> vehicle -> +0x12f0).
+    match crate::validator::ValidatorCar::locate(&mut s.srv, probe, &recs, off, bounds, 4000, false)
+    {
+        Ok(car) => {
+            let p = car.provenance();
+            println!(
+                "  validator chain: controller {:#x} -> sim {:#x} -> playground {:#x} -> \
+                 participant {:#x} -> vehicle {:#x} -> pos {:#x}",
+                p.controller, p.sim, p.playground, p.participant, p.vehicle, p.state_pos
+            );
+            // The two locators resolve DIFFERENT OBJECTS by design (a vis state
+            // and the CGameVehiclePhy), so the check is that they agree about
+            // the CAR -- same position, to float precision.
+            let xyz = |a: u64| -> Option<[f32; 3]> {
+                let b = read_at(pid, a, 12)?;
+                Some([
+                    f32::from_le_bytes(b[0..4].try_into().unwrap()),
+                    f32::from_le_bytes(b[4..8].try_into().unwrap()),
+                    f32::from_le_bytes(b[8..12].try_into().unwrap()),
+                ])
+            };
+            let (a, b) = (xyz(layout.pos), xyz(car.layout().pos));
+            println!("  blind pos {:#x} = {:?}", layout.pos, a);
+            println!("  chain pos {:#x} = {:?}", car.layout().pos, b);
+            // They are DIFFERENT OBJECTS -- a vis state and the CGameVehiclePhy --
+            // and they hold the same car at instants one tick apart, so the
+            // test is that the gap is one tick of travel and not a second car.
+            let vel = xyz(layout.pos + 12);
+            match (a, b, vel) {
+                (Some(a), Some(b), Some(v)) => {
+                    let d = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+                    let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                    check(
+                        d <= speed * 0.01 + 0.05,
+                        format!(
+                            "the two locators hold the same car one tick apart: {:.4} m apart at \
+                             {:.2} m/s, i.e. {:.2} ticks of travel",
+                            d,
+                            speed,
+                            d / (speed * 0.01).max(1e-6)
+                        ),
+                    );
+                }
+                _ => check(false, "one of the two car positions could not be read".to_string()),
+            }
+            let cclk = read_at(pid, car.layout().clock, 4)
+                .map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()) as i64)
+                .unwrap_or(-1);
+            println!(
+                "  chain clock {:#x} reads {} ms ({:+} vs race)",
+                car.layout().clock,
+                cclk,
+                cclk - race_ms
+            );
+        }
+        Err(e) => check(false, format!("the validator's ownership chain did not resolve: {}", e)),
+    }
+
+    // 5. THE SIMULATION CLOCK the hook cross-checks on every tick.
+    let simclk = read_at(pid, s.srv.validation_sim + 0x48, 4)
+        .map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()) as u64)
+        .ok_or("cannot read [sim+0x48]")?;
+    check(
+        simclk + 10 == sim_ms,
+        format!(
+            "[sim+0x48] = {} ms, one tick behind the tick being entered ({} ms)",
+            simclk, sim_ms
+        ),
+    );
+
+    s.srv.quit();
+    if fails.is_empty() {
+        println!("PASS: every read agrees with the engine");
+        Ok(())
+    } else {
+        Err(format!("{} of the oracle's reads disagree with the engine", fails.len()))
+    }
 }

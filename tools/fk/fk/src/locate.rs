@@ -56,9 +56,8 @@ use forkoracle::layout::{sample_ms, Layout, Row, R_POS, R_QUAT, R_VEL, REC_LEN};
 /// Bit 31 of the sample budget: the child exits when the budget is spent.
 pub const EXIT_ON_BUDGET: u32 = 0x8000_0000;
 
-/// A simulated-time budget for a child that must run `ticks` more ticks, in
-/// the shim's clock units (ticks + 2 under the tick hook; the old
-/// `340 * ticks + 12000` lroundf calls under the legacy clock).
+/// A budget for a child that must run `ticks` more ticks, in the shim's clock
+/// units (ticks).
 pub fn budget_for(ticks: u32) -> u32 {
     forkoracle::clock::budget_for_ticks(ticks)
 }
@@ -223,7 +222,7 @@ pub fn find_clock2(
             probe,
             &recs[..keep],
             &[(*w, slice)],
-            forkoracle::clock::per_tick() * GAP_TICKS,
+            GAP_TICKS,
             NSNAP | EXIT_ON_BUDGET,
             (0, 0), // no dedup: a fixed number of snapshots
             budget_for(ticks),
@@ -351,7 +350,12 @@ fn confirm_clock(
             if ok && tens >= 15 {
                 confirmed.push(ClockHit {
                     addr: *a,
-                    bias: vals[0] as i64 - race0,
+                    // FOUND by the +10-per-tick signature, LABELLED by the engine:
+                    // see `forkoracle::layout::measured_clock_bias`.
+                    bias: match forkoracle::layout::measured_clock_bias(srv, *a) {
+                        Ok(b) => b,
+                        Err(_) => continue,
+                    },
                 });
             }
         }

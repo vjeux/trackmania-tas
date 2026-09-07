@@ -21,7 +21,40 @@ const F_SETFD: c_int = 2;
 const O_CLOEXEC: c_int = 0o2000000;
 const SIGKILL: c_int = 9;
 
+/// THE ENGINE'S DECODED INPUT RECORD, read out of the engine rather than
+/// guessed. One per 10 ms tick, in tick order, exactly `STRIDE` bytes:
+///
+/// ```text
+/// +0x00 u32  flags      2 normally; the "no input for this tick" path writes
+///                       2 to the BYTE at +0x1c and ORs 0x40 into the byte at
+///                       +0x00 (0x119f14c / 0x119f1a2)
+/// +0x04 f32  steer      (i8)steer / 127
+/// +0x08 f32  gas        0.0 or 1.0
+/// +0x0c f32  brake      0.0 or 1.0
+/// +0x10 f32  0
+/// +0x14 u32  0x3576f40e constant across every record of every tape seen
+/// +0x18 u32  0
+/// +0x1c u32  2
+/// ```
+///
+/// The engine fetches a record with `shl rcx,5; movups xmm0,[rdx+rcx];
+/// movups xmm1,[rdx+rcx+0x10]` at `0x119f165..0x119f16d`, so the element is 32
+/// bytes starting at `array + tick*32` — and `array` is what `base` means
+/// everywhere in this crate and on the wire.
+///
+/// **This was off by four until 2026-09-06.** The shim finds the array by
+/// searching for the tape's STEER values, and it used the address of tick 0's
+/// steer as the base — four bytes into the record. Nothing read a wrong field
+/// (the patch wrote steer/gas/brake at the right addresses either way), but the
+/// page-fault probe divided a record-aligned fault address by 32 against a base
+/// that was not record-aligned, so it reported `i-1` for a fault on record `i`
+/// — which is where the `probe + 1` that every resume carried came from. The
+/// base is now the record base and the probe reports the record the engine is
+/// about to read.
 pub const STRIDE: usize = 32;
+pub const REC_STEER: usize = 4;
+pub const REC_GAS: usize = 8;
+pub const REC_BRAKE: usize = 12;
 
 // ---------------------------------------------------------------------------
 // THE WIRE, BUILT IN ONE PLACE
@@ -65,9 +98,8 @@ pub struct BranchReq<'a> {
     /// boundary, and `tree::Node::branch` refuses otherwise.
     pub from: usize,
     pub recs: &'a [Rec],
-    /// How many more CLOCK UNITS the child simulates before it re-enters the
-    /// fork server: ticks under the tick hook, `lroundf` calls (~255 to the
-    /// tick) under the legacy clock. See `clock::per_tick`.
+    /// How many more TICKS the child simulates before it re-enters the fork
+    /// server.
     pub stop_after: u64,
     /// The driver's listening unix socket. The node connects to it and serves
     /// the same protocol down it.
@@ -193,10 +225,8 @@ pub struct ForkServer {
     pub validator_controller: u64,
     /// The simulation object passed in rcx at that same callback.
     pub validation_sim: u64,
-    /// `true` when the checkpoint is the tick hook. `clock` is then in ticks
-    /// (`sim_ms / 10`) and `sim_ms` is the engine's simulation time of the
-    /// tick the stopped server is about to run -- nothing of it consumed.
-    pub tick_mode: bool,
+    /// The engine's simulation time of the tick the stopped server is about to
+    /// run -- nothing of that tick consumed. `clock` is its race tick.
     pub sim_ms: u64,
     /// The race start in simulation ms, as the engine set it in THIS process
     /// (usually 2200; not a constant -- see `clock`).
@@ -336,9 +366,6 @@ impl ForkServer {
             // simulation-binding callback. `start_raw` deliberately does not
             // set this: its shimhost tests do not contain that server code.
             .env("FKSHIM_VALIDATOR_CAR", "1");
-        // Which clock the shim keys the checkpoint on. `tick` makes the shim
-        // install the per-tick hook or die; it never falls back.
-        c.env("FKSHIM_CLOCK", crate::clock::shim_env());
         let srv = ForkServer::start_raw(dir, c, key, shim, ckpt)?;
         if srv.validator_controller == 0 || srv.validation_sim == 0 {
             return Err(
@@ -415,7 +442,6 @@ impl ForkServer {
             clock: 0,
             validator_controller: 0,
             validation_sim: 0,
-            tick_mode: false,
             sim_ms: 0,
             race_start: 0,
             dir: dir.to_path_buf(),
@@ -436,7 +462,6 @@ impl ForkServer {
         srv.clock = ready.clock;
         srv.validator_controller = ready.validator_controller.unwrap_or(0);
         srv.validation_sim = ready.validation_sim.unwrap_or(0);
-        srv.tick_mode = ready.tick_mode;
         srv.sim_ms = ready.sim_ms;
         srv.race_start = ready.race_start;
         Ok(srv)
@@ -454,7 +479,7 @@ impl ForkServer {
     }
 
     /// THE BRANCH: fork a child that appends `req.recs`, consumes
-    /// `req.stop_after` more clock units, and then re-enters the fork server
+    /// `req.stop_after` more ticks, and then re-enters the fork server
     /// on `req.sock` as a node of its own. Returns the node's pid.
     ///
     /// This call does NOT wait for the node. The server answers `BRANCHED
@@ -487,10 +512,10 @@ impl ForkServer {
 
     /// As `run_sampled_segs`, plus a simulated-time budget for the child.
     ///
-    /// `budget_lroundf` (0 = unlimited) caps how far the child simulates:
-    /// ~255 `lroundf` calls to the tick. A locate probe needs a handful of
-    /// ticks, and without a cap the child runs the WHOLE remaining tape --
-    /// 43 000 ticks on this project's 440 s record, for six ticks of data.
+    /// `budget_ticks` (0 = unlimited) caps how far the child simulates. A
+    /// locate probe needs a handful of ticks, and without a cap the child runs
+    /// the WHOLE remaining tape -- 43 000 ticks on this project's 440 s record,
+    /// for six ticks of data.
     /// Set bit 31 of `max` to make the child exit as soon as the sample budget
     /// is spent instead of simulating on in silence.
     pub fn run_sampled_segs_ex(
@@ -501,7 +526,7 @@ impl ForkServer {
         stride: u64,
         max: u32,
         key: (u32, u32),
-        budget_lroundf: u32,
+        budget_ticks: u32,
     ) -> (String, Vec<u8>) {
         let mut p = Vec::with_capacity(33 + segs.len() * 12 + recs.len() * 16);
         p.push(b'S');
@@ -521,7 +546,7 @@ impl ForkServer {
             p.extend_from_slice(&r.gas.to_le_bytes());
             p.extend_from_slice(&r.brake.to_le_bytes());
         }
-        p.extend_from_slice(&budget_lroundf.to_le_bytes());
+        p.extend_from_slice(&budget_ticks.to_le_bytes());
         self.cmd_w
             .write_all(&(p.len() as u32).to_le_bytes())
             .unwrap();
@@ -546,7 +571,7 @@ impl ForkServer {
         stride: u64,
         max: u32,
         key: (u32, u32),
-        budget_lroundf: u32,
+        budget_ticks: u32,
         gate: (u64, u32, u32),
     ) -> (String, Vec<u8>) {
         let mut p = Vec::with_capacity(49 + segs.len() * 12 + recs.len() * 16);
@@ -567,7 +592,7 @@ impl ForkServer {
             p.extend_from_slice(&r.gas.to_le_bytes());
             p.extend_from_slice(&r.brake.to_le_bytes());
         }
-        p.extend_from_slice(&budget_lroundf.to_le_bytes());
+        p.extend_from_slice(&budget_ticks.to_le_bytes());
         p.extend_from_slice(&gate.0.to_le_bytes());
         p.extend_from_slice(&gate.1.to_le_bytes());
         p.extend_from_slice(&gate.2.to_le_bytes());
@@ -746,38 +771,33 @@ impl ForkServer {
         parse_probe(&String::from_utf8_lossy(&v))
     }
 
-    /// The page-fault probe, WITH THE TICK-HOOK CONTROL.
+    /// THE FIRST UNCONSUMED TAPE TICK, measured two independent ways and
+    /// required to agree.
     ///
-    /// The probe's reply is `(fault_addr - base) / 32`, and `base` is where the
-    /// shim found the tape's STEER sequence -- which sits 4 bytes into the
-    /// engine's 32-byte record (engine record = `[?, steer, gas, brake, ...]`).
-    /// A fault on the first byte of engine record `i` therefore reports
-    /// `i - 1`: **the probe names the last record the engine has finished
-    /// with, and `probe + 1` is the first unconsumed one.** That is the
-    /// `probe + 1` every resume already applies (it was found empirically as
-    /// "tick p is partly consumed"; this is why).
+    /// 1. The page-fault probe: a throwaway child loses read access to the
+    ///    input array and the engine faults on the record it reads next.
+    ///    `(fault_addr - base) / 32` with a record-aligned base IS that record.
+    /// 2. The tick hook: the server is stopped at the START of the tick whose
+    ///    simulation time is `sim_ms`, and that tick copies record
+    ///    `(sim_ms - race_start - start_offset_ms) / 10`.
     ///
-    /// Under the tick hook the same boundary is a function of the tick the
-    /// engine reported: the server is stopped at the START of the tick whose
-    /// simulation time is `sim_ms`, and that tick's input application copies
-    /// record `(sim_ms - race_start - start_offset_ms) / 10`. So on
-    /// every server, every time, `probe + 1` must equal that -- a disagreement
-    /// means the hook is not where TICKHOOK.md says, or the origin constant does
-    /// not hold for this build/map, and it is a hard error rather than a number
-    /// to pick between. Under the legacy clock the probe is the only source.
+    /// They are measured from opposite sides -- one is where the engine says it
+    /// is, the other is which record it actually faults on -- so agreement is a
+    /// real check and a disagreement is a hard error, never a number to pick
+    /// between. It means the hook is not where TICKHOOK.md says it is, or the
+    /// record layout of this build is not what `STRIDE` documents.
     pub fn boundary_tick(&mut self, start_offset_ms: i32) -> Result<usize, String> {
         let probe = self.probe_tick()?;
-        if self.tick_mode {
-            // A checkpoint inside the countdown is in front of records the engine
-            // never reads; the first read is then the first race-time record.
-            let want = crate::clock::tape_tick_at(self.sim_ms, self.race_start, start_offset_ms)
-                .max(crate::clock::first_read_tick(start_offset_ms));
-            if probe as i64 + 1 != want {
-                return Err(format!(
-                    "tick hook / probe disagreement: server stopped at sim_ms {} with race start {} (about to read tape tick {} with start_offset {}), but the probe says the engine has finished record {} (so reads {} next)",
-                    self.sim_ms, self.race_start, want, start_offset_ms, probe, probe + 1
-                ));
-            }
+        // A checkpoint inside the countdown stops in front of RECORD 0: before
+        // race time -10 ms the engine copies record 0 verbatim as that tick's
+        // input, whatever the tape says. `record_read_at` is the engine's own
+        // rule, transcribed.
+        let want = crate::clock::record_read_at(self.sim_ms, self.race_start, start_offset_ms);
+        if probe as i64 != want {
+            return Err(format!(
+                "tick hook / probe disagreement: server stopped at sim_ms {} with race start {} (about to read tape tick {} with start_offset {}), but the page-fault probe says it reads record {} next",
+                self.sim_ms, self.race_start, want, start_offset_ms, probe
+            ));
         }
         Ok(probe)
     }
@@ -811,7 +831,7 @@ impl ForkServer {
 /// `anon_pipe_read` forever, and a search whose workers are all parked makes no
 /// further progress while still looking alive.
 ///
-/// OBSERVED, twice: a fork server that sails past its `lroundf` checkpoint and
+/// OBSERVED, twice: a fork server that sails past its checkpoint and
 /// settles into the dedicated server's ordinary 1x-realtime loop
 /// (`do_sys_poll` + `hrtimer_nanosleep`, ~4% of a core, no children). It never
 /// sends READY, and every worker on it blocks. One stalled run out of five cost
@@ -905,9 +925,8 @@ pub struct Ready {
     pub pid: Option<i32>,
     pub validator_controller: Option<u64>,
     pub validation_sim: Option<u64>,
-    /// `true` when the shim stopped on the tick hook; `sim_ms` is then the
-    /// engine's simulation time of the tick it is about to run.
-    pub tick_mode: bool,
+    /// The engine's simulation time of the tick the stopped server is about to
+    /// run, and the race start it is measured from.
     pub sim_ms: u64,
     pub race_start: u64,
 }
@@ -928,19 +947,21 @@ pub fn parse_ready_full(s: &str) -> Result<Ready, String> {
             s.trim()
         ));
     }
-    // Trailing `tick <sim_ms> <race_start>` or `lroundf 0`; absent from older shims.
-    let (tick_mode, sim_ms, race_start) = match (it.next(), it.next(), it.next()) {
+    // Trailing `tick <sim_ms> <race_start>`. Required: a shim that does not send
+    // it is not this shim, and its `clock` means something else.
+    let (sim_ms, race_start) = match (it.next(), it.next(), it.next()) {
         (Some("tick"), Some(v), Some(r)) => {
             let sim_ms: u64 = v.parse().map_err(|_| format!("bad sim_ms in handshake: {}", s.trim()))?;
             let race_start: u64 = r.parse().map_err(|_| format!("bad race_start in handshake: {}", s.trim()))?;
-            if race_start == u64::MAX || race_start > sim_ms + 10_000 {
+            // `sim_ms < race_start` is legitimate: a checkpoint inside the countdown
+            // stops before race time 0. What is NOT legitimate is a race start
+            // the engine never set -- the clock would then be meaningless.
+            if race_start == u64::MAX || race_start == 0 {
                 return Err(format!("the shim stopped before the engine set a race start: {}", s.trim()));
             }
-            (true, sim_ms, race_start)
+            (sim_ms, race_start)
         }
-        (Some("tick"), _, _) => return Err(format!("truncated tick handshake: {}", s.trim())),
-        (Some("lroundf"), _, _) | (None, _, _) => (false, 0, 0),
-        (Some(other), _, _) => return Err(format!("unknown clock `{}` in handshake: {}", other, s.trim())),
+        _ => return Err(format!("this shim did not report a tick clock: {}", s.trim())),
     };
     Ok(Ready {
         base,
@@ -948,7 +969,6 @@ pub fn parse_ready_full(s: &str) -> Result<Ready, String> {
         pid,
         validator_controller,
         validation_sim,
-        tick_mode,
         sim_ms,
         race_start,
     })

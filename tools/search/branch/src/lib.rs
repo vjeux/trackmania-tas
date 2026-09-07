@@ -32,7 +32,7 @@
 //!
 //! Three consequences are baked in here and none of them are negotiable:
 //!
-//! * **Every node probes its own boundary.** The `lroundf` checkpoint is not a
+//! * **Every node probes its own boundary.** The checkpoint is not a
 //!   fixed simulation point — under load it moves in whole ~62-call chunks, and
 //!   a real run had 135 of 150 workers stop past the master's single
 //!   calibration. A boundary inherited from a parent, a sibling or a master is
@@ -40,9 +40,9 @@
 //! * **A failed probe is a hard abort.** [`Forest::advance`] destroys a node
 //!   whose probe fails rather than continuing with an estimate. A fallback here
 //!   is how a plausible number 2–3 ms off gets banked.
-//! * **Calibration may only move the floor LATER.** `max(calibrated, probe + 1)`
-//!   and never `min`; `probe + 1` because tick `p` is the record the engine is
-//!   about to read and is already partly consumed. Getting this backwards made
+//! * **Calibration may only move the floor LATER.** `max(calibrated, probe)`
+//!   and never `min`; the probe names the record the engine is about to read,
+//!   which is the first one it is safe to write. Getting this backwards made
 //!   23 of 100 candidates silently wrong on a re-verification that had passed
 //!   4700/4700 the first time.
 //!
@@ -62,21 +62,6 @@ use forkoracle::tree::{Node, Tree};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// ~`lroundf` calls per simulated 10 ms tick.
-///
-/// Measured at ~255 on this engine and used ONLY to choose how far a branch
-/// child runs before it stops. Nothing is ever labelled from it: where a child
-/// actually stopped is what its own probe says, and the two differ by up to a
-/// tick. This is the same discipline `session::clock_for_race_ms` states for
-/// the fitted clock line — an estimate is allowed to place a checkpoint and is
-/// never allowed to name one.
-pub const LROUNDF_PER_TICK: u64 = 255;
-
-/// Clock units per tick for the clock the shim is actually running: 1 under
-/// the tick hook (exact), `LROUNDF_PER_TICK` under `FK_CLOCK=lroundf`.
-pub fn clock_per_tick() -> u64 {
-    forkoracle::clock::per_tick()
-}
 
 /// A live paused simulation.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
@@ -126,7 +111,7 @@ pub struct TraceCfg {
     /// Where trace files go. One file per branch, named by pid, deleted when
     /// the node is dropped.
     pub dir: PathBuf,
-    /// `lroundf` calls between sample attempts. 1 catches every tick.
+    /// Ticks between sample attempts. 1 catches every tick.
     pub stride: u64,
     /// Cap on samples per branch, so a runaway child cannot fill a disk.
     pub max: u32,
@@ -188,15 +173,15 @@ impl Forest {
 
     /// The first tick it is safe to write at `h`.
     ///
-    /// `max(calibrated, probe + 1)` — calibration may only push it LATER.
+    /// `max(calibrated, probe)` — calibration may only push it LATER.
     pub fn floor(&self, h: Handle, calibrated: Option<usize>) -> Result<usize, String> {
         if h == ROOT {
             let p = self.root_boundary.ok_or(
                 "the root has not probed its own boundary -- call probe_root before writing",
             )?;
             return Ok(match calibrated {
-                Some(c) => c.max(p + 1),
-                None => p + 1,
+                Some(c) => c.max(p),
+                None => p,
             });
         }
         self.held(h)?.node.floor(calibrated)
@@ -213,7 +198,7 @@ impl Forest {
     /// point, with no inputs appended.
     ///
     /// It is `advance` with an empty macro, and it is honest about what that
-    /// means: the new node stops one `lroundf` call later than its parent, not
+    /// means: the new node stops one tick later than its parent, not
     /// at the identical instant, and it probes its own boundary like any other
     /// node. There is no cheaper way to duplicate a paused process, and
     /// pretending the copy is at the same tick is exactly the assumption that
@@ -273,9 +258,9 @@ impl Forest {
         let req = BranchReq {
             from,
             recs: inputs,
-            // ~255 calls to the tick. Where the child ACTUALLY stops is what
-            // its probe says; this only decides roughly how far it goes.
-            stop_after: (k_ticks * clock_per_tick()).max(1),
+            // Ticks. Where the child ACTUALLY stops is still what its own probe
+            // says -- that is the control, and it is not optional.
+            stop_after: k_ticks.max(1),
             sock: &sock,
             trace_path: &tp,
             segs: &segs,
@@ -445,14 +430,4 @@ impl Forest {
 mod tests {
     use super::*;
 
-    /// `LROUNDF_PER_TICK` is a PLACEMENT aid. This test exists to pin the
-    /// comment: if someone ever uses it to label a tick, the arithmetic below
-    /// is what they will be relying on, and it is only good to about a tick.
-    #[test]
-    fn the_tick_estimate_is_only_ever_used_to_place_a_stop() {
-        assert_eq!(LROUNDF_PER_TICK * 10, 2550);
-        // one tick of slop at ten ticks is 10%: too coarse to label with,
-        // fine to stop with.
-        assert!(LROUNDF_PER_TICK >= 200 && LROUNDF_PER_TICK <= 300);
-    }
 }

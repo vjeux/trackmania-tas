@@ -1,53 +1,18 @@
-//! WHICH CLOCK THE FORK SERVER IS KEYED ON, and the units the driver owes it.
+//! THE CLOCK THE FORK SERVER IS KEYED ON: the engine's own race tick.
 //!
 //! Every stride, budget, deadline and checkpoint the driver sends to the shim
-//! is in *clock units*. There are two clocks:
+//! is in ticks. The shim hooks the entry of the engine's per-tick function
+//! (build 128182: `0x119e060`, called first in the validator's tick loop, once
+//! per 10 ms of simulated time) and counts race ticks, so a checkpoint is the
+//! same simulation point in every process under any load.
 //!
-//! * **`tick`** (the default): the shim hooks the entry of the engine's own
-//!   per-tick function (build 128182: `0x119e060`, called first in the
-//!   validator's tick loop, once per 10 ms of simulated time). One unit is one
-//!   tick, and the reading is the engine's simulation time divided by ten --
-//!   the same number in every process, under any load. See
-//!   `tools/search/TICKHOOK.md`.
-//! * **`lroundf`** (`FK_CLOCK=lroundf`, kept for A/B): the count of `lroundf`
-//!   calls, ~255 per tick. Bit-identical on an idle box and NOT under load: the
-//!   validator's frame loop has a wall-clock budget branch, contention cuts a
-//!   run into more frames, and each frame costs ~62 more calls. A fixed count
-//!   therefore lands on a different tick per process, which is what forced the
-//!   per-worker probes and floors in the search.
-//!
-//! The conversions below are the ONLY place the two are told apart. Callers
-//! say "N ticks" and get clock units back.
-
-use std::sync::OnceLock;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ClockMode {
-    Tick,
-    Lroundf,
-}
-
-/// `FK_CLOCK=lroundf` selects the legacy clock; anything else is the tick hook.
-pub fn mode() -> ClockMode {
-    static M: OnceLock<ClockMode> = OnceLock::new();
-    *M.get_or_init(|| match std::env::var("FK_CLOCK").as_deref() {
-        Ok("lroundf") => ClockMode::Lroundf,
-        Ok("tick") | Err(_) => ClockMode::Tick,
-        Ok(other) => panic!("FK_CLOCK must be `tick` or `lroundf`, not `{}`", other),
-    })
-}
-
-pub fn tick_mode() -> bool {
-    mode() == ClockMode::Tick
-}
-
-/// The value the shim's `FKSHIM_CLOCK` must be given for this mode.
-pub fn shim_env() -> &'static str {
-    match mode() {
-        ClockMode::Tick => "tick",
-        ClockMode::Lroundf => "lroundf",
-    }
-}
+//! It used to count `lroundf` calls (~255 per tick), which is bit-identical on
+//! an idle box and NOT under load: the validator's frame loop has a wall-clock
+//! budget branch, contention cuts a run into more frames, and each frame costs
+//! ~62 more calls -- so a fixed count landed on a different tick per process.
+//! That clock is GONE, along with the per-worker calibration it forced. The
+//! page-fault probe stays as the CONTROL on the tick, not as the mechanism.
+//! `tools/search/TICKHOOK.md` has the hook, the controls and the numbers.
 
 /// THE RACE START IS NOT A CONSTANT. The validator's simulation starts at
 /// ~1000 ms and the race (input record 0 of a tape with `start_offset_ms = 0`)
@@ -61,21 +26,6 @@ pub fn shim_env() -> &'static str {
 pub const TYPICAL_RACE_START_MS: i64 = 2200;
 pub const RACE_CLOCK_BIAS: i64 = 1000;
 
-/// Clock units per simulated tick.
-pub fn per_tick() -> u64 {
-    match mode() {
-        ClockMode::Tick => 1,
-        ClockMode::Lroundf => 255,
-    }
-}
-
-/// The lroundf-clock fit, `clock = 36141 + 25.483 * race_ms` (three segment
-/// maps of one ghost; another map fitted `5431 + 26.49 * race_ms`). Only the
-/// legacy mode uses it, and only to place a checkpoint roughly.
-pub fn lroundf_for_race_ms(ms: i64) -> u64 {
-    (36141.0 + 25.483 * ms as f64).max(1000.0) as u64
-}
-
 /// The clock value at which a server should stop for race time `ms`.
 ///
 /// Tick mode: EXACT -- the start of the tick at race time `ms`, before that
@@ -84,14 +34,11 @@ pub fn lroundf_for_race_ms(ms: i64) -> u64 {
 /// the first tick at which the engine has set the start; everything before
 /// that is countdown the engine never reads inputs for.)
 pub fn ckpt_for_race_ms(ms: i64) -> u64 {
-    match mode() {
-        ClockMode::Tick => (ms.div_euclid(10) + RACE_CLOCK_BIAS).max(0) as u64,
-        ClockMode::Lroundf => lroundf_for_race_ms(ms),
-    }
+    (ms.div_euclid(10) + RACE_CLOCK_BIAS).max(0) as u64
 }
 
 /// The clock value at which a server should stop with tape tick `tick` as the
-/// first unconsumed record (tick mode: exactly; lroundf mode: approximately).
+/// first unconsumed record. Exact.
 pub fn ckpt_for_tick(tick: i64, start_offset_ms: i32) -> u64 {
     ckpt_for_race_ms(tick * 10 + start_offset_ms as i64)
 }
@@ -103,24 +50,43 @@ pub fn tape_tick_at(sim_ms: u64, race_start_ms: u64, start_offset_ms: i32) -> i6
     (sim_ms as i64 - race_start_ms as i64 - start_offset_ms as i64).div_euclid(10)
 }
 
-/// The first tape tick the engine ever reads. The input application only
-/// looks at the tape from race time -10 ms on (`0x119f0fc..0x119f11a`), so every record before that -- the
-/// countdown -- is never consumed at all, which is why rewriting the
-/// countdown region is physically inert.
+/// WHICH RECORD THE ENGINE READS AT A GIVEN SIMULATION TIME, exactly as
+/// `0x119f0f0` decides it:
+///
+/// ```text
+/// esi = race_start - 10
+/// if race_start is unknown (-1) or new_time < race_start - 10:
+///         copy RECORD 0 verbatim                       (0x119f127)
+/// else    i = (new_time - race_start - start_offset) / 10
+///         if i >= record_count: the .rdata default, [out+0x1c] = 2
+///         else copy RECORD i                           (0x119f169)
+/// ```
+///
+/// Two consequences that are easy to get wrong, and both were:
+///
+/// * **Every pre-race tick reads record 0**, so a tape whose `start_offset_ms`
+///   is -1580 never has records 1..=156 read at all -- the engine uses record 0
+///   as the input for the whole countdown. That is why rewriting the countdown
+///   region is physically inert: it was measured that way (a `best_23200` with
+///   it replaced still gave 23200) long before anyone could say why.
+/// * The first record the INDEX path reads is `(-10 - start_offset) / 10`, at
+///   race time -10 ms -- one tick before race 0.
+pub fn record_read_at(sim_ms: u64, race_start_ms: u64, start_offset_ms: i32) -> i64 {
+    if (sim_ms as i64) < race_start_ms as i64 - 10 {
+        return 0;
+    }
+    tape_tick_at(sim_ms, race_start_ms, start_offset_ms)
+}
+
+/// The first record the index path ever reads, at race time -10 ms.
 pub fn first_read_tick(start_offset_ms: i32) -> i64 {
     (-10 - start_offset_ms as i64).div_euclid(10).max(0)
 }
 
-/// A simulated-time budget for a child that must run `ticks` more ticks.
-///
-/// Tick mode: `ticks + 2` (the sample for tick k lands at the hook of tick
-/// k+1). Lroundf mode: the old `340 * ticks + 12000`, generous because the
-/// count drifts.
+/// A budget for a child that must run `ticks` more ticks: `ticks + 2`, because
+/// the sample for tick k lands at the hook of tick k+1.
 pub fn budget_for_ticks(ticks: u32) -> u32 {
-    match mode() {
-        ClockMode::Tick => ticks.saturating_add(2),
-        ClockMode::Lroundf => ticks.saturating_mul(340).saturating_add(12000),
-    }
+    ticks.saturating_add(2)
 }
 
 #[cfg(test)]
@@ -128,10 +94,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tick_mode_checkpoint_is_exact_and_inverts() {
-        if !tick_mode() {
-            return;
-        }
+    fn the_checkpoint_is_exact_and_inverts() {
         // map 2, rank 1: start_offset -1580, record 157 is read at race -10 ms
         // (sim 2190 with the usual 2200 start, 2290 with a 2300 one).
         assert_eq!(ckpt_for_tick(157, -1580), 999);
@@ -139,6 +102,10 @@ mod tests {
         assert_eq!(tape_tick_at(2290, 2300, -1580), 157);
         assert_eq!(first_read_tick(-1580), 157);
         assert_eq!(first_read_tick(0), 0);
+        // the countdown reads record 0, not the tape's countdown records
+        assert_eq!(record_read_at(2020, 2200, -1580), 0);
+        assert_eq!(record_read_at(2190, 2200, -1580), 157);
+        assert_eq!(record_read_at(2200, 2200, -1580), 158);
         for t in [0i64, 1, 60, 171, 2313, 43000] {
             let c = ckpt_for_tick(t, -1580) as i64;
             let race_ms = (c - RACE_CLOCK_BIAS) * 10;
