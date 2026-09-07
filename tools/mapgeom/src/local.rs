@@ -90,7 +90,8 @@ impl Special {
         if has("Multilap") { return Special::Multilap; }
         if has("Checkpoint") { return Special::Checkpoint; }
         if has("Finish") || has("Goal") { return Special::Finish; }
-        if n.ends_with("Start") || has("StartBlock") { return Special::Start; }
+        // `PlatformTechLoopStart` is a LOOP piece, not a start
+        if (n.ends_with("Start") || has("StartBlock")) && !has("Loop") { return Special::Start; }
         Special::None
     }
 }
@@ -679,5 +680,6 @@ mod tests {
         assert_eq!(Special::of_name("RoadDirtFinish"), Special::Finish);
         assert_eq!(Special::of_name("RoadTechStart"), Special::Start);
         assert_eq!(Special::of_name("RoadTechStraight"), Special::None);
+        assert_eq!(Special::of_name("PlatformTechLoopStart"), Special::None);
     }
 }
