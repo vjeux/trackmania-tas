@@ -138,6 +138,16 @@ const PARENTS: &[(u32, u32)] = &[
 /// fold, while `ItemLampSpot.Light.Gbx` (CPlugLight : CPlug in the table)
 /// needs its fold. The old fallback (CPlug for 0x09xxxxxx, CMwNod otherwise)
 /// corrupted every table-less raw class past 0x100.
+/// Every class id the table mentions (children and parents) plus the two
+/// roots — the candidate set of a fold hunt.
+pub fn known_classes() -> Vec<u32> {
+    let mut v: Vec<u32> = PARENTS.iter().flat_map(|(c, p)| [*c, *p]).collect();
+    v.extend([C_MWNOD, C_PLUG, 0x2401C000, 0x24005000, 0x07001000]);
+    v.sort();
+    v.dedup();
+    v
+}
+
 pub fn dummy_write_class(class_id: u32) -> Option<u32> {
     // GBX.NET's own overrides where its hierarchy differs from the engine's
     match class_id {

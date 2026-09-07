@@ -770,6 +770,31 @@ fn main() {
         "pak-trykeys" => {
             mapgeom::keyhunt::try_keys(&a.rest).unwrap_or_else(die);
         }
+        // pak-foldhunt <logical-path> [--max-len N]: which dummy-write fold
+        // sequence lets a compressed pak file's next chunk decode (the probe
+        // for a table-less class the node walker cannot read, e.g. the
+        // VegetTreeModel files)
+        "pak-foldhunt" => {
+            let store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("pak-foldhunt <logical-path>".into()));
+            let max_len: usize = flag(&a.rest, "--max-len").unwrap_or_else(|| "2".into()).parse().unwrap_or(2);
+            let show = |folds: &[(usize, u32)]| {
+                for (off, c) in folds {
+                    println!("{off:#x}\t{c:08X}");
+                }
+            };
+            match store.fold_hunt(&p, max_len) {
+                Ok(folds) => {
+                    println!("decodes with {} folds:", folds.len());
+                    show(&folds);
+                }
+                Err((msg, folds)) => {
+                    println!("stuck: {msg}; {} folds found so far:", folds.len());
+                    show(&folds);
+                    std::process::exit(2);
+                }
+            }
+        }
         "crystal-roundtrip" => {
             let template = std::fs::read(a.rest.get(1).cloned().unwrap_or_default()).unwrap();
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));

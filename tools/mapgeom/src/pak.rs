@@ -6,6 +6,7 @@ pub const HEADER_KEY: [u8; 16] = [
 ];
 
 /// A sequential reader over the blowfish-decrypted header stream.
+#[derive(Clone)]
 pub struct CipherReader<'a> {
     data: &'a [u8],
     pos: usize,
@@ -20,6 +21,12 @@ impl<'a> CipherReader<'a> {
             pos: off + 8,
             cipher: PakCipher::new(key, iv, version),
         }
+    }
+    /// A fresh cipher over the IV stored at `off`, reading ciphertext from
+    /// `start` (a per-chunk restart probe).
+    pub fn new_at(data: &'a [u8], off: usize, start: usize, key: &[u8; 16], version: i32) -> CipherReader<'a> {
+        let iv = u64::from_le_bytes(data[off..off + 8].try_into().unwrap());
+        CipherReader { data, pos: start, cipher: PakCipher::new(key, iv, version) }
     }
     pub fn with_blowfish(data: &'a [u8], off: usize, bf: crate::blowfish::Blowfish, version: i32) -> CipherReader<'a> {
         let iv = u64::from_le_bytes(data[off..off + 8].try_into().unwrap());

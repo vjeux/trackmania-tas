@@ -11,7 +11,7 @@ use crate::container::Gbx;
 use crate::names;
 use crate::node::Graph;
 use crate::pak::{read_pak, Pak, PakEntry};
-use crate::pakfile::read_file;
+use crate::pakfile::{self as read, read_file};
 use std::collections::HashMap;
 
 /// The Stadium pack's encryption key. It is a property of the pack file, not
@@ -199,6 +199,14 @@ impl DataStore {
     }
 
     /// Read a file by logical path, resolving the hash if needed.
+    /// `pakfile::fold_hunt` on the pack entry behind a logical path: the
+    /// dummy-write folds (compressed offset, class) that make its stream decode.
+    pub fn fold_hunt(&self, logical: &str, max_len: usize) -> Result<Vec<(usize, u32)>, (String, Vec<(usize, u32)>)> {
+        let path = self.resolve(logical).ok_or_else(|| (format!("{logical}: not in any pack"), Vec::new()))?;
+        let (pi, ei) = self.index[&path.to_uppercase()];
+        let p = &self.paks[pi];
+        read::fold_hunt(&p.data, p.header_max_size, &p.pak.entries[ei], &p.key, p.pak.version, max_len)
+    }
     pub fn read(&mut self, logical: &str) -> Result<Vec<u8>, String> {
         let key = logical.to_uppercase();
         if let Some(b) = self.overlay.get(&key) {

@@ -121,6 +121,7 @@ impl Blowfish {
 
 /// The Nadeo pak cipher stream: CBC-ish with a custom IV update, a 0x100-byte
 /// re-key point, and (v18) encrypt-used-as-decrypt.
+#[derive(Clone)]
 pub struct PakCipher {
     bf: Blowfish,
     iv: u64,
