@@ -275,6 +275,8 @@ pub fn tdiff_cmd(rest: &[String]) {
     let a = rest.first().unwrap_or_else(|| die("tminput tdiff A.csv B.csv"));
     let b = rest.get(1).unwrap_or_else(|| die("tminput tdiff A.csv B.csv"));
     let tol: f64 = flag(rest, "--tol").map(|s| s.parse().unwrap_or_else(|_| die("--tol M"))).unwrap_or(1e-4);
+    // --to MS: only compare ticks up to this race time (a press window, say)
+    let to_ms: i64 = flag(rest, "--to").map(|s| s.parse().unwrap_or_else(|_| die("--to MS"))).unwrap_or(i64::MAX);
     // Reads `fk trace` / `tmtraj` 30-column CSVs (time_ms,x,y,z,...,yaw at 9,
     // steer at 18) and tminput's own 16-column trace (yaw at 14, yaw_rate 15).
     let load = |p: &str| -> Vec<(i64, [f64; 3], f64, f64)> {
@@ -314,6 +316,9 @@ pub fn tdiff_cmd(rest: &[String]) {
     let mut maxd = 0.0f64;
     let mut printed = 0;
     for (t, p, yaw, rate) in &ra {
+        if *t > to_ms {
+            break;
+        }
         if let Some((q, yb, rb_)) = mb.get(t) {
             shared += 1;
             let d = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();

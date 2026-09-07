@@ -165,6 +165,14 @@ pub struct GhostRow {
     pub words: Vec<Word>,
     pub respawns: u32,
     pub err: Option<String>,
+    /// B3: telemetry steer (byte 14) vs the tape under three rules, over in-race
+    /// 50 ms samples: raw tape; cap by the tracked action-key scale; multiply
+    /// by it. (agreeing samples, samples compared).
+    pub echo_raw: (u32, u32),
+    pub echo_cap: (u32, u32),
+    pub echo_mul: (u32, u32),
+    /// Ticks where two action keys rise together (ambiguous under the rule).
+    pub ak_simultaneous: u32,
 }
 
 pub struct Census {
@@ -202,6 +210,10 @@ pub fn scan(files: &[String], digital_bar: f64) -> Census {
                     words: Vec::new(),
                     respawns: 0,
                     err: Some(e),
+                    echo_raw: (0, 0),
+                    echo_cap: (0, 0),
+                    echo_mul: (0, 0),
+                    ak_simultaneous: 0,
                 });
                 continue;
             }
@@ -346,6 +358,7 @@ pub fn scan(files: &[String], digital_bar: f64) -> Census {
         }
         let lo = runs.len() - nruns;
         fill_scales(f, ar, &steer, &mut runs[lo..]);
+        let (echo_raw, echo_cap, echo_mul, ak_simultaneous) = echo_check(f, ar, &steer, &phase_of);
         ghosts.push(GhostRow {
             id,
             ticks: n,
@@ -361,6 +374,10 @@ pub fn scan(files: &[String], digital_bar: f64) -> Census {
             words,
             respawns,
             err: None,
+            echo_raw,
+            echo_cap,
+            echo_mul,
+            ak_simultaneous,
         });
     }
     Census {
@@ -647,6 +664,29 @@ pub fn render(c: &Census) -> String {
         s.push_str(&format!("| `{}` | {} |\n", w.label(), txt.join(", ")));
     }
 
+    // B3: echo of the telemetry steer under the three rules
+    {
+        let with_ak: Vec<&&GhostRow> = ok.iter().filter(|g| g.echo_cap.1 > 0 && g.words.iter().any(|w| ACTION_KEYS.iter().any(|(m, _)| w.flags & m == *m))).collect();
+        let without: Vec<&&GhostRow> = ok.iter().filter(|g| g.echo_cap.1 > 0 && !g.words.iter().any(|w| ACTION_KEYS.iter().any(|(m, _)| w.flags & m == *m))).collect();
+        let sum = |gs: &Vec<&&GhostRow>, f: &dyn Fn(&GhostRow) -> (u32, u32)| -> (u64, u64) {
+            gs.iter().fold((0u64, 0u64), |a, g| { let e = f(g); (a.0 + e.0 as u64, a.1 + e.1 as u64) })
+        };
+        let frac = |e: (u64, u64)| if e.1 == 0 { 0.0 } else { 100.0 * e.0 as f64 / e.1 as f64 };
+        let low = |gs: &Vec<&&GhostRow>, f: &dyn Fn(&GhostRow) -> (u32, u32)| gs.iter().filter(|g| { let e = f(g); e.1 > 0 && (e.0 as f64) < 0.98 * e.1 as f64 }).count();
+        s.push_str("\n## B3 — telemetry steer (sample byte 14) vs the tape, in-race 50 ms samples, |Δ| ≤ 0.012\n\n");
+        s.push_str("| ghosts | samples | raw tape agrees | CAP by tracked action-key scale agrees | MULTIPLY by scale agrees | ghosts < 98 % (raw / cap / mul) | ghosts with two keys rising together |\n|---|---:|---:|---:|---:|---|---:|\n");
+        for (label, gs) in [("with an action-key event", &with_ak), ("without", &without)] {
+            let r = sum(gs, &|g| g.echo_raw);
+            let c = sum(gs, &|g| g.echo_cap);
+            let m = sum(gs, &|g| g.echo_mul);
+            s.push_str(&format!(
+                "| {} ({}) | {} | {:.2} % | **{:.2} %** | {:.2} % | {} / {} / {} | {} |\n",
+                label, gs.len(), c.1, frac(r), frac(c), frac(m), low(gs, &|g| g.echo_raw), low(gs, &|g| g.echo_cap), low(gs, &|g| g.echo_mul),
+                gs.iter().filter(|g| g.ak_simultaneous > 0).count()
+            ));
+        }
+    }
+
     // co-occurrence: words appearing in the same ghost
     s.push_str("\n## Words per ghost\n\n| distinct non-plain words in ghost | ghosts |\n|---:|---:|\n");
     let mut per: BTreeMap<usize, usize> = BTreeMap::new();
@@ -705,11 +745,11 @@ pub fn runs_tsv(c: &Census) -> String {
 }
 
 pub fn ghosts_tsv(c: &Census) -> String {
-    let mut s = String::from("file\tmap\trank\tdeclared_ms\tticks\trace_ticks\tstart_offset_ms\tformat\tdigital_frac\tdigital\tlits\tprev2\tnonplain_race_ticks\truns\twords\trespawns\terr\n");
+    let mut s = String::from("file\tmap\trank\tdeclared_ms\tticks\trace_ticks\tstart_offset_ms\tformat\tdigital_frac\tdigital\tlits\tprev2\tnonplain_race_ticks\truns\twords\trespawns\techo_raw\techo_cap\techo_mul\techo_n\tak_simultaneous\terr\n");
     for g in &c.ghosts {
         let words: Vec<String> = g.words.iter().map(|w| w.label()).collect();
         s.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             g.id.path,
             g.id.map,
             g.id.rank,
@@ -726,6 +766,11 @@ pub fn ghosts_tsv(c: &Census) -> String {
             g.runs,
             words.join(";"),
             g.respawns,
+            g.echo_raw.0,
+            g.echo_cap.0,
+            g.echo_mul.0,
+            g.echo_cap.1,
+            g.ak_simultaneous,
             g.err.clone().unwrap_or_default()
         ));
     }
@@ -835,4 +880,111 @@ fn fill_scales(path: &str, ar: &gbx::tape::Archive, steer: &[i8], runs: &mut [Ru
         r.scale_after = summarize(&vals[k.min(nseg - 1)]);
         r.scale_before = if k >= 1 { summarize(&vals[k - 1]) } else { (f32::NAN, 0, 0) };
     }
+}
+
+/// The action keys: flag bit → steering cap. Measured (BAR.md B/B2): the word
+/// is held while the key is down; the engine acts on the rising edge; pressing
+/// the key whose cap is already active cancels to 1.0 (AK5 has nothing to
+/// cancel to); the cap CLAMPS the steer input (a partial analog steer below it
+/// is untouched).
+pub const ACTION_KEYS: [(u32, f32); 5] = [(0x404, 0.2), (0x1020, 0.4), (0x4000, 0.6), (0x10000, 0.8), (0x40000, 1.0)];
+
+/// The steering cap in force at every tick of a tape, under the rule above.
+/// The countdown copies record 0 for every tick before race −0.010 s, so edges
+/// inside it are never read by the engine: tracking starts at the first tick
+/// the engine indexes. `ambiguous` counts ticks where two keys rise together.
+pub fn scale_track(ar: &gbx::tape::Archive) -> (Vec<f32>, u32) {
+    let n = ar.packets.len();
+    let mut out = vec![1.0f32; n];
+    let mut s = 1.0f32;
+    let mut prev_flags = 0u32;
+    let mut ambiguous = 0u32;
+    let first_read = ((-10 - ar.start_offset_ms as i64) / 10).max(0) as usize; // tick of race −0.010
+    for i in 0..n {
+        let fl = ar.packets[i].flags;
+        if i >= first_read {
+            let rising = fl & !prev_flags;
+            let mut hits = 0;
+            for (mask, cap) in ACTION_KEYS {
+                if rising & mask == mask {
+                    hits += 1;
+                    s = if (s - cap).abs() < 1e-6 && cap < 0.999 { 1.0 } else { cap };
+                }
+            }
+            if hits > 1 {
+                ambiguous += 1;
+            }
+            prev_flags = fl;
+        }
+        out[i] = s;
+    }
+    (out, ambiguous)
+}
+
+fn echo_check(
+    path: &str,
+    ar: &gbx::tape::Archive,
+    steer: &[i8],
+    phase_of: &dyn Fn(usize) -> Phase,
+) -> ((u32, u32), (u32, u32), (u32, u32), u32) {
+    let dec = match gbx::record::decode_ghost(path) {
+        Ok(d) => d,
+        Err(_) => return ((0, 0), (0, 0), (0, 0), 0),
+    };
+    if dec.sample_period_ms.map(|p| p != 50).unwrap_or(false) || vehicle_entities(path) != 1 {
+        // a multi-car record (car-switch map): the picked entity is one car's
+        // segment, and the other cars' recorded steer is NOT the stadium rule
+        // (three such maps read tape × scale; see STATUS.md B3) -- excluded here
+        return ((0, 0), (0, 0), (0, 0), 0);
+    }
+    let (scale, amb) = scale_track(ar);
+    let n = steer.len();
+    let mut raw = (0u32, 0u32);
+    let mut cap = (0u32, 0u32);
+    let mut mul = (0u32, 0u32);
+    for smp in &dec.samples {
+        let t = smp.time_ms as i64 - ar.start_offset_ms as i64;
+        if t < 0 || t % 10 != 0 {
+            continue;
+        }
+        let tick = (t / 10) as usize;
+        if tick >= n || phase_of(tick) != Phase::Race {
+            continue;
+        }
+        let x = steer[tick] as f32 / 127.0;
+        let sc = scale[tick];
+        let rec = smp.steer;
+        // byte 14 quantizes to 2/255 ≈ 0.0078; a tape step is 1/127 ≈ 0.0079.
+        let tol = 0.012f32;
+        let agree = |pred: f32| (pred - rec).abs() <= tol;
+        raw.1 += 1;
+        raw.0 += agree(x) as u32;
+        cap.1 += 1;
+        cap.0 += agree(x.clamp(-sc, sc)) as u32;
+        mul.1 += 1;
+        mul.0 += agree(x * sc) as u32;
+    }
+    (raw, cap, mul, amb)
+}
+
+/// How many `CSceneVehicleVis` entities the record holds (1 on a solo ghost of
+/// one car; one per car on a car-switch map; several on a server recording).
+pub fn vehicle_entities(path: &str) -> usize {
+    let data = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(_) => return 0,
+    };
+    let g = gbx::container::Gbx::parse(&data);
+    let (version, blob) = match gbx::record::find_entrecord_blob(&g.body) {
+        Ok(v) => v,
+        Err(_) => return 0,
+    };
+    let rd = match gbx::record::parse_record_data(&blob, version) {
+        Ok(r) => r,
+        Err(_) => return 0,
+    };
+    rd.ents
+        .iter()
+        .filter(|e| e.type_ >= 0 && rd.descs.get(e.type_ as usize).map(|d| d.class_id) == Some(0x0A018000))
+        .count()
 }
