@@ -97,6 +97,14 @@ pub fn run_on_worker(w: &mut Worker, tel: &Telemetry, gates: &MapGates, o: &Star
         id,
         if id.passes() && shift.abs() <= 30 && hook_shift.map(|h| h == shift).unwrap_or(true) { "PASS" } else { "FAIL" }
     );
+    // which vehicle slot was live along the run (a transformation gate changes it mid-run)
+    {
+        let mut cars: std::collections::BTreeMap<u8, usize> = Default::default();
+        for r in &flat {
+            *cars.entry(if r.vis.known { r.vis.car } else { u8::MAX }).or_default() += 1;
+        }
+        println!("VEHICLE SLOT along the run (0 Stadium, 1 Snow, 2 Rally, 3 Desert, 255 unknown): {:?}", cars);
+    }
     if shift.abs() > 30 || !id.passes() {
         return Err(format!("the engine trajectory matches the telemetry only {shift:+} ms away (RMS {:.3} m): not one label convention, a different run", id.rms));
     }
