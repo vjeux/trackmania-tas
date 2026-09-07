@@ -103,6 +103,7 @@ fn main() {
         "replay" => cmd_replay(&a),
         "effects" => cmd_effects(&a),
         "bank-table" => cmd_bank_table(&a),
+        "load-control" => cmd_load_control(&a),
         _ => usage(),
     };
     if let Err(e) = r {
@@ -1380,6 +1381,38 @@ fn cmd_bank_table(a: &Args) -> Result<(), String> {
     println!("{} maps banked", rows.len());
     if let Some(out) = a.get("out") {
         std::fs::write(out, &s).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// `tmreach load-control --map M --tape T [--geom DIR]`: does the dedicated
+/// server LOAD the map and SPAWN a car? Boots the server on the map with the
+/// given (synthetic) tape, derives the car (forkoracle::car::locate), reads the
+/// root row and compares it with the map's Spawn from the local tmroute gates.
+/// One TSV line on stdout: loads, car, spawn_dxyz, cps (checkpoint groups).
+fn cmd_load_control(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let tape = PathBuf::from(a.req("tape"));
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/loadctl-{}", std::process::id())));
+    let geom = a.get("geom").map(PathBuf::from);
+    let gates = MapGates::load(&map, geom.as_deref());
+    let (spawn, n_cp) = match &gates {
+        Ok(g) => (g.gates.iter().find(|x| x.kind == GateKind::Start).map(|x| x.centre), g.gates.iter().filter(|x| x.kind == GateKind::Checkpoint).map(|x| x.group).collect::<std::collections::BTreeSet<_>>().len()),
+        Err(_) => (None, 0),
+    };
+    let t0 = std::time::Instant::now();
+    match Worker::start(&server, &map, &shim, &work, &tape, a.has("verbose")) {
+        Ok(w) => {
+            let r = &w.root_row;
+            let d = spawn.map(|s| format!("{:.2},{:.2},{:.2}", r.x - s[0], r.y - s[1], r.z - s[2])).unwrap_or("-".into());
+            let dh = spawn.map(|s| ((r.x - s[0]).powi(2) + (r.z - s[2]).powi(2)).sqrt()).unwrap_or(f64::NAN);
+            println!("loads=yes\tcar=yes\troot=({:.3},{:.3},{:.3})\tspeed={:.2}\tspawn_dxyz={d}\tspawn_dxz={dh:.2}\tcps={n_cp}\tgates={}\tstartup_s={:.1}", r.x, r.y, r.z, (r.vx * r.vx + r.vy * r.vy + r.vz * r.vz).sqrt(), gates.as_ref().map(|g| g.gates.len()).unwrap_or(0), t0.elapsed().as_secs_f64());
+        }
+        Err(e) => {
+            let loads = if e.contains("car") || e.contains("locate") || e.contains("probe") { "yes" } else { "no" };
+            println!("loads={loads}\tcar=no\troot=-\tspeed=-\tspawn_dxyz=-\tspawn_dxz=-\tcps={n_cp}\tgates={}\tstartup_s={:.1}\terror={}", gates.as_ref().map(|g| g.gates.len()).unwrap_or(0), t0.elapsed().as_secs_f64(), e.replace('\n', " ").chars().take(160).collect::<String>());
+        }
     }
     Ok(())
 }
