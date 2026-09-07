@@ -7,7 +7,7 @@ use crate::macros::{build, Built, Macro};
 use crate::rig::{dist, pos, speed, Worker};
 use crate::starts::{run_on_worker, StartsOpts};
 use crate::tele::Telemetry;
-use crate::tmr::{CarState, Record, OUTCOME_ABORTED, OUTCOME_CRASH_STOP, OUTCOME_FINISHED, OUTCOME_OFFWORLD, OUTCOME_OK};
+use crate::tmr::{CarState, FromRow, Record, OUTCOME_ABORTED, OUTCOME_CRASH_STOP, OUTCOME_FINISHED, OUTCOME_OFFWORLD, OUTCOME_OK};
 use branch::Handle;
 use forkoracle::layout::Row;
 use std::sync::Arc;

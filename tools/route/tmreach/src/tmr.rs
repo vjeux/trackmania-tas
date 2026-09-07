@@ -21,36 +21,27 @@ pub const OUTCOME_OFFWORLD: u8 = 2;
 pub const OUTCOME_FINISHED: u8 = 3;
 pub const OUTCOME_ABORTED: u8 = 4;
 
-/// One 10 ms tick of ground-truth car state (tmstate text, verbatim). Fields
-/// the source cannot provide are NaN / u8::MAX — never zero.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CarState {
-    pub race_ms: i32,
-    pub pos: [f32; 3],
-    pub vel: [f32; 3],
-    pub quat: [f32; 4], // (w, x, y, z)
-    pub ang_vel: [f32; 3],
-    pub speed: f32,
-    pub gear: u8,
-    pub rpm: f32,
-    pub wheel_contact: [u8; 4],
-    pub wheel_material: [u8; 4],
-    pub wheel_slip: [f32; 4],
-    pub turbo: f32,
-    pub cps: u8,
-    pub finished: bool,
-}
+/// THE dataset's car state is `tmstate::CarState` itself (repr(C), 100 bytes; the
+/// MODEL arm reads it through the same crate), not a copy.
+pub use tmstate::CarState;
 
 pub const CARSTATE_BYTES: usize = 100;
 pub const RECORD_BYTES: usize = 4 + 2 + 2 + 1 + 3 + CARSTATE_BYTES + 64 + 4 + 4 + 4;
 pub const HEADER_BYTES: usize = 24;
 
-impl CarState {
+/// Building a `CarState` from an engine row.
+pub trait FromRow {
+    fn from_row(r: &forkoracle::layout::Row, race_ms: i64, cps: u8, finished: bool) -> CarState;
+    /// The byte-exact TMR0 layout (100 bytes, little-endian, padding zeroed).
+    fn write(&self, o: &mut Vec<u8>);
+    fn read(b: &[u8]) -> CarState;
+}
+
+impl FromRow for CarState {
     /// From an engine row (pos/vel/quat); everything the readout does not
     /// expose is NaN / u8::MAX. `race_ms` is the TRUE race clock: the row's
     /// label + the worker's measured shift (`Worker::race_of`).
-    pub fn from_row(r: &forkoracle::layout::Row, race_ms: i64, cps: u8, finished: bool) -> CarState {
+    fn from_row(r: &forkoracle::layout::Row, race_ms: i64, cps: u8, finished: bool) -> CarState {
         let v = [r.vx as f32, r.vy as f32, r.vz as f32];
         CarState {
             race_ms: race_ms as i32,
@@ -70,7 +61,7 @@ impl CarState {
         }
     }
 
-    pub fn write(&self, o: &mut Vec<u8>) {
+    fn write(&self, o: &mut Vec<u8>) {
         let start = o.len();
         o.extend_from_slice(&self.race_ms.to_le_bytes());
         for x in self.pos.iter().chain(&self.vel).chain(&self.quat).chain(&self.ang_vel) {
@@ -92,7 +83,7 @@ impl CarState {
         debug_assert_eq!(o.len() - start, CARSTATE_BYTES);
     }
 
-    pub fn read(b: &[u8]) -> CarState {
+    fn read(b: &[u8]) -> CarState {
         let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
         CarState {
             race_ms: i32::from_le_bytes(b[0..4].try_into().unwrap()),

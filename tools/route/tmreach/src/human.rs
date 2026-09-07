@@ -12,7 +12,7 @@ use crate::gates::{Detector, GateKind, MapGates};
 use crate::rig::{speed, Worker};
 use crate::starts::{run_on_worker, StartsOpts};
 use crate::tele::Telemetry;
-use crate::tmr::{CarState, Record, OUTCOME_CRASH_STOP, OUTCOME_FINISHED, OUTCOME_OK};
+use crate::tmr::{CarState, FromRow, Record, OUTCOME_CRASH_STOP, OUTCOME_FINISHED, OUTCOME_OK};
 use forkoracle::layout::Row;
 
 pub const HUMAN_MACRO: u16 = 65535;

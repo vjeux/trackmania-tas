@@ -176,6 +176,7 @@ dependencies = [
  "gbx",
  "ghost",
  "tmmaps",
+ "tmstate",
 ]
 
 [[package]]
