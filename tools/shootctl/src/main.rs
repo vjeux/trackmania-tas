@@ -25,6 +25,7 @@ mod host;
 use host::plugin_addrs;
 mod loadprof;
 mod lock;
+mod perfsum;
 mod playshots;
 mod shootset;
 
@@ -1036,6 +1037,8 @@ usage:
         counters (process + every thread + GPU + disk), a WPR sampled-profile trace
         with stacks around the load (--tracerpt dumps it to CSV for mapgeom etlsum),
         and a minidump of the game every N s (mapgeom threads). --restart = cold load.
+  shootctl perfsum PERF.csv [--every N] [--threads K]
+        the loadprof typeperf counters as a table: CPU, busiest threads, I/O, GPU, disk
 "#);
         std::process::exit(0);
     }
@@ -1162,6 +1165,7 @@ usage:
         // collision move (pushers around the spawn shove the car)? playshots.rs.
         "playshots" => playshots::run(&args[1..]),
         "loadprof" => loadprof::run(&args[1..]),
+        "perfsum" => perfsum::run(&args[1..]),
         "carlog" => playshots::summarize(&args[1..]),
         "launch" => {
             let force = args.iter().any(|a| a == "--force");
