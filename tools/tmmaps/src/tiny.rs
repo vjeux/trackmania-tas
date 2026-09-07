@@ -893,6 +893,24 @@ pub fn cmd(args: &[String]) {
                     mt.strip = true;
                     println!("  MediaTracker: every clip dropped (TINY_MEDIATRACKER=strip)");
                 } else {
+                    // The trigger grid is doubled first (3x1x3 -> 6x2x6 cells per
+                    // block, every source cell re-expressed as its 2x2x2 finer
+                    // cells, exactly): a half-size volume then lands on cells of
+                    // its own size instead of the coarse ones, and the tiny
+                    // trigger is as tight as the original's (Summer 15's spawn-
+                    // ahead test trigger: 10.7 m deep instead of 21.3 m). The game
+                    // honours the chunk's trigger size — measured 2026-09-07: the
+                    // same clip fired at the same car position with the 3x1x3 and
+                    // the 6x2x6 encoding (camera jump 12.96 s / 13.01 s into the
+                    // logs, entry 12.97 / 13.03). TINY_TRIGGER_SIZE=keep leaves the
+                    // source grid.
+                    if std::env::var("TINY_TRIGGER_SIZE").map(|v| v != "keep").unwrap_or(true) {
+                        if let Some(t0) = mt.trigger_size {
+                            if let Err(e) = mt.set_trigger_size([t0[0] * 2, t0[1] * 2, t0[2] * 2]) {
+                                eprintln!("  WARNING: trigger grid kept at {t0:?}: {e}");
+                            }
+                        }
+                    }
                     let ts = mt.trigger_size.unwrap_or([3, 1, 3]);
                     let point = |p: [f32; 3]| transform(p, source_anchor, target_anchor, scale);
                     let cell = |c: [i32; 3]| trigger_cells(c, ts, &point);
