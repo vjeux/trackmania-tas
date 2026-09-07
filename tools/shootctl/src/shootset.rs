@@ -148,7 +148,7 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         outdir,
         anchor,
         load_timeout_s: num("--load-timeout", 420)?,
-        settle_ms: num("--settle-ms", 3500)?,
+        settle_ms: num("--settle-ms", 5000)?,
         lock: !args.iter().any(|a| a == "--no-lock"),
         detach: args.iter().any(|a| a == "--detach"),
     })
@@ -298,6 +298,10 @@ fn run_set(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         }
     }
 
+    // The editor opens with its own camera fly-in; a camera written under it
+    // is overridden by the animation (the first smoke test shot the lake,
+    // not the gate). Let it finish before the first view.
+    std::thread::sleep(Duration::from_millis(opts.settle_ms.max(4000)));
     let mut lines = Vec::new();
     if !dialogs.is_empty() {
         lines.push(format!("dialogs\t{}", dialogs.join(" | ")));
@@ -310,11 +314,18 @@ fn run_set(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         let cam = format!("{:.2},{:.2},{:.2},{:.2},{:.4},{:.4}", target[0], target[1], target[2], dist, v.h, v.v);
         // cam.txt is read by the probe plugin every frame and applied when it
         // changes; the nonce makes two identical cameras in a row still count.
-        let tmp = format!("{STORE}/cam.tmp");
-        std::fs::write(&tmp, format!("{cam},{}-{}", std::process::id(), i)).map_err(|e| format!("cam.txt: {e}"))?;
-        std::fs::rename(&tmp, format!("{STORE}/cam.txt")).map_err(|e| format!("cam.txt: {e}"))?;
+        let aim = |nonce: &str| -> Result<(), String> {
+            let tmp = format!("{STORE}/cam.tmp");
+            std::fs::write(&tmp, format!("{cam},{}-{nonce}", std::process::id())).map_err(|e| format!("cam.txt: {e}"))?;
+            std::fs::rename(&tmp, format!("{STORE}/cam.txt")).map_err(|e| format!("cam.txt: {e}"))
+        };
+        aim(&format!("{i}a"))?;
         // Probe: what did the game keep? (a silently dropped item shows here)
         let kept = probe(i)?;
+        // Aim again: the orbital camera eases towards its target and anything
+        // still animating in the editor can steal the first write; a second
+        // identical camera (new nonce) re-applies it, then the settle.
+        aim(&format!("{i}b"))?;
         std::thread::sleep(Duration::from_millis(opts.settle_ms));
         let file = opts.outdir.join(format!("cmp-{}{}-{}.png", opts.tag, v.name, opts.side));
         let _ = std::fs::remove_file(&file);

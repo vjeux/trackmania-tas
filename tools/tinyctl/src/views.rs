@@ -87,10 +87,10 @@ pub fn derive(m: &MapFile, gate_dist: f32) -> Vec<View> {
                 format!("cp{cps}")
             }
         };
-        // the block grid: a gate at dir 0/2 spans x, so the camera looks along z
-        // (h = 0 or pi); at dir 1/3 it looks along x. The waypoint's yaw is
-        // already that quarter turn; the +pi/2 turns "facing" into "behind".
-        let h = yaw + std::f32::consts::FRAC_PI_2;
+        // along the gate's own axis: a dir 0/2 block (yaw 0) is a road running
+        // north-south, so the camera sits on the z axis (h = 0) and looks
+        // through the gate; dir 1/3 (yaw pi/2) puts it on the x axis.
+        let h = yaw;
         let n = used.entry(name.clone()).or_default();
         *n += 1;
         let name = if *n > 1 { format!("{name}{n}") } else { name };
