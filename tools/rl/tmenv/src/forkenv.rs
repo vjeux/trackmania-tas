@@ -315,7 +315,14 @@ impl ForkEnv {
 
         let mut recs: Vec<Rec> = chunk.iter().map(|a| rec_of(a.steer as u8, a.gas as u8, a.brake as u8)).collect();
         recs.push(*recs.last().unwrap());
-        let (all_rows, h) = self.forest.advance(self.cur, &recs, from, held as u64)?;
+        // The child's run budget is k ticks (plus a fraction, so a k = 1 step
+        // reliably crosses one tick boundary): the extra RECORD is written so
+        // the trailing partial tick runs under our input, but the budget must
+        // not grow with it or every step advances k+1 ticks (measured 1.92
+        // ticks per k = 1 step before this). `lroundf` counts are ~263 per tick
+        // against the crate's 255 estimate, so ticks/step reads ~0.97 k; the
+        // tick hook (agentcloud/tickhook) makes this exact later.
+        let (all_rows, h) = self.forest.advance_budget(self.cur, &recs, from, k as u64 * branch::LROUNDF_PER_TICK + 32)?;
         self.leave_cur();
         self.cur = h;
         for (i, a) in chunk.iter().enumerate() {

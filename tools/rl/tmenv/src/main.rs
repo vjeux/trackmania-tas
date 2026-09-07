@@ -93,6 +93,7 @@ fn main() {
         Some("from-template") => from_template(&a),
         Some("probe-scan") => probe_scan(&a),
         Some("geom-export") => geom_export(&a),
+        Some("bench-sweep") => bench_sweep(&a),
         Some("reset-anywhere-control") => reset_anywhere_control(&a),
         _ => {
             eprintln!(
@@ -2425,5 +2426,131 @@ fn reset_anywhere_control(a: &[String]) {
     println!("snapshots after drop  {}", env.snapshots());
     if !pass {
         std::process::exit(1);
+    }
+}
+
+// ------------------------------------------------------------- bench-sweep
+
+/// G5: env-steps/s and game-ticks/s for chunk lengths k at several worker
+/// counts, one table. Workers are built once per worker count and reused
+/// across k (setup is per worker LIFETIME and is reported separately). Each
+/// cell runs every worker for `--seconds` of wall clock on a forward-biased
+/// random policy, resetting on termination; the rate is the total over the
+/// slowest worker's stepping wall.
+fn bench_sweep(a: &[String]) {
+    let p = paths(a);
+    let workers: Vec<usize> = flag(a, "--workers")
+        .unwrap_or_else(|| "32,64,96,128".into())
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    let ks: Vec<usize> = flag(a, "--ks")
+        .unwrap_or_else(|| "1,5,10,20,50".into())
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    let seconds: f64 = num(a, "--seconds", 15.0);
+    let seed: u64 = num(a, "--seed", 7);
+    std::fs::create_dir_all(&p.work).unwrap_or_else(|e| die(e.to_string()));
+    let cores = std::thread::available_parallelism().map(|v| v.get()).unwrap_or(0);
+    println!("# tmenv bench-sweep  workers {:?}  k {:?}  {seconds} s per cell  box {cores} cores", workers, ks);
+    if let Ok(l) = std::fs::read_to_string("/proc/loadavg") {
+        println!("# load at start: {}", l.trim());
+    }
+    if let Some(w) = workers.iter().max() {
+        if *w + 8 > cores {
+            die(format!("{w} workers on {cores} cores leaves fewer than 8 free; refusing"));
+        }
+    }
+    let track = std::sync::Arc::new(measured_track(&p).unwrap_or_else(|e| die(e)));
+    println!();
+    println!("workers   k   env-steps/s   game-ticks/s   x-realtime   ms/step   ticks/step   episodes   setup-median-s   load-end");
+
+    for &w in &workers {
+        // build once
+        let t0 = Instant::now();
+        let mut envs: Vec<(ForkEnv, f64)> = std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..w)
+                .map(|i| {
+                    let p = &p;
+                    let a = a.to_vec();
+                    let track = track.clone();
+                    sc.spawn(move || {
+                        let work = p.work.join(format!("bs{w}-w{i}"));
+                        let t = Instant::now();
+                        let env = build_env_with(p, &a, &work, track);
+                        (env, t.elapsed().as_secs_f64())
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().expect("worker panicked")).collect()
+        });
+        let mut setups: Vec<f64> = envs.iter().map(|e| e.1).collect();
+        setups.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        let setup_med = setups[setups.len() / 2];
+        eprintln!("  {w} workers built in {:.1} s (median per worker {:.2} s)", t0.elapsed().as_secs_f64(), setup_med);
+
+        for &k in &ks {
+            let res: Vec<(usize, usize, usize, f64)> = std::thread::scope(|sc| {
+                let hs: Vec<_> = envs
+                    .iter_mut()
+                    .enumerate()
+                    .map(|(i, (env, _))| {
+                        let mut rng = Sm(seed ^ (i as u64 * 0x9E37) ^ ((k as u64) << 32));
+                        sc.spawn(move || {
+                            let n_act = env.n_actions();
+                            let fwd = ActionSpace::default().forward();
+                            let start = Instant::now();
+                            let (mut steps, mut ticks, mut eps) = (0usize, 0usize, 0usize);
+                            let mut need_reset = true;
+                            while start.elapsed().as_secs_f64() < seconds {
+                                if need_reset {
+                                    env.reset().unwrap_or_else(|e| die(e));
+                                    eps += 1;
+                                    need_reset = false;
+                                }
+                                let idx = if rng.below(4) == 0 { rng.below(n_act) } else { fwd };
+                                let act = {
+                                    let x = env.core.acts.get(idx);
+                                    tmstate::Action { steer: x.steer as i8, gas: x.gas != 0, brake: x.brake != 0 }
+                                };
+                                let t_before = env.core.tick();
+                                let (_o, _r, d, _i) = env.step_ticks(&vec![act; k]).unwrap_or_else(|e| die(e));
+                                steps += 1;
+                                ticks += env.core.tick().saturating_sub(t_before);
+                                if d.is_some() {
+                                    need_reset = true;
+                                }
+                            }
+                            (steps, ticks, eps, start.elapsed().as_secs_f64())
+                        })
+                    })
+                    .collect();
+                hs.into_iter().map(|h| h.join().expect("worker panicked")).collect()
+            });
+            let steps: usize = res.iter().map(|r| r.0).sum();
+            let ticks: usize = res.iter().map(|r| r.1).sum();
+            let eps: usize = res.iter().map(|r| r.2).sum();
+            let wall = res.iter().map(|r| r.3).fold(0.0, f64::max);
+            let load = std::fs::read_to_string("/proc/loadavg")
+                .ok()
+                .and_then(|l| l.split_whitespace().next().map(|s| s.to_string()))
+                .unwrap_or_default();
+            println!(
+                "{:7} {:3}   {:11.0}   {:12.0}   {:10.1}   {:7.2}   {:10.2}   {:8}   {:14.2}   {}",
+                w,
+                k,
+                steps as f64 / wall,
+                ticks as f64 / wall,
+                ticks as f64 * 0.010 / wall,
+                wall * 1000.0 * w as f64 / steps.max(1) as f64,
+                ticks as f64 / steps.max(1) as f64,
+                eps,
+                setup_med,
+                load
+            );
+        }
+        drop(envs);
+        std::thread::sleep(std::time::Duration::from_secs(2));
     }
 }
