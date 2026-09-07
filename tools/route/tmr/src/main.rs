@@ -8,7 +8,8 @@
 //!             [--epochs N] [--hidden 256,256,256] [--batch B] [--lr X] [--wd X] [--noise σ] [--dropout p] [--geo-dropout p] [--no-mirror] [--held-out uid,..] [--report F] [--threads T]
 //!   tmr eval [--kind gate|local] --model r.tmw --cache DIR [--held-out uid,..] [--report F]
 //!   tmr selftest --model r.tmw           agrees_with (flat vs candle) + the negative half (a perturbed copy must be REFUSED)
-//!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--top-k 3] [--beam 4000] [--p-floor 0.02] [--out-dir DIR] [--source NAME]
+//!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--local rl.tmw --estimator chained [--chain-beam 24] [--p-step 0.05] [--penalty 3000]]
+//!            [--top-k 3] [--beam 4000] [--p-floor 0.02] [--out-dir DIR] [--source NAME]
 //!                                        the planner over R (tmplan's beam, R as the EdgeEstimator) — the M2 seam
 //!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--geo-dropout p] [--interval S] [--once] [--epochs N] [--threads T]
 //!                                        rebuild rows for new/changed shards, retrain both heads, publish bank/r-v<N>.tmw + rl-v<N>.tmw + reports
@@ -234,7 +235,8 @@ fn cmd_build(args: &[String]) {
 }
 
 /// Load every `<uid>.rows` in the cache, split by the map rule (+ overrides).
-fn load_cache(args: &[String]) -> (Vec<Rows>, Vec<bool>) {
+/// `held[i]`: 0 train, 1 held out by the fnv rule, 2 held out by --held-out (the FIXED extra maps, BAR.md 08:30Z).
+fn load_cache(args: &[String]) -> (Vec<Rows>, Vec<u8>) {
     let kind = kind_of(args);
     let cache = PathBuf::from(flag(args, "--cache").unwrap_or_else(|| die("--cache DIR")));
     let force: Vec<String> = flag(args, "--held-out").map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
@@ -257,7 +259,7 @@ fn load_cache(args: &[String]) -> (Vec<Rows>, Vec<bool>) {
                 continue;
             }
         }
-        let h = data::held_out(&r.map_uid) || force.contains(&r.map_uid);
+        let h = if data::held_out(&r.map_uid) { 1 } else if force.contains(&r.map_uid) { 2 } else { 0 };
         held.push(h);
         rows.push(r);
     }
@@ -291,18 +293,22 @@ fn map_names(cache: Option<&Path>) -> HashMap<String, String> {
     m
 }
 
-fn split_summary(rows: &[Rows], held: &[bool], names: &HashMap<String, String>) -> String {
+fn held_label(h: u8) -> &'static str {
+    match h { 0 => "train", 1 => "HELD-OUT (fnv)", _ => "HELD-OUT (forced)" }
+}
+
+fn split_summary(rows: &[Rows], held: &[u8], names: &HashMap<String, String>) -> String {
     let mut s = String::new();
     for (r, h) in rows.iter().zip(held) {
         let pos = (0..r.n).filter(|&i| r.lab(i)[data::L_Y] > 0.5).count();
-        s.push_str(&format!("  {:<9} {}  {}: {} rows, {} positives ({:.1} %), fnv1a64 % 10 = {}\n", if *h { "HELD-OUT" } else { "train" }, r.map_uid, names.get(&r.map_uid).cloned().unwrap_or_default(), r.n, pos, 100.0 * pos as f64 / r.n.max(1) as f64, data::fnv1a64(&r.map_uid) % 10));
+        s.push_str(&format!("  {:<18} {}  {}: {} rows, {} positives ({:.1} %), fnv1a64 % 10 = {}\n", held_label(*h), r.map_uid, names.get(&r.map_uid).cloned().unwrap_or_default(), r.n, pos, 100.0 * pos as f64 / r.n.max(1) as f64, data::fnv1a64(&r.map_uid) % 10));
     }
     s
 }
 
 /// Per-map two-gate lines, then the pooled numbers: TRAIN maps, ALL held-out
 /// maps, and INFORMATIVE held-out maps (distance-only < 99 %) — the gate.
-fn eval_sets(w: &Weights, rows: &[Rows], held: &[bool], keep: &[&str], dev: &candle_core::Device, names: &HashMap<String, String>, out: &mut String) {
+fn eval_sets(w: &Weights, rows: &[Rows], held: &[u8], keep: &[&str], dev: &candle_core::Device, names: &HashMap<String, String>, out: &mut String) {
     let per_map = |r: &Rows| -> tmr::eval::Report {
         let s1 = Set::from_rows(&[r], keep);
         let p1 = tmr::train::predict_all_candle(w, &s1, dev).unwrap_or_else(|e| die(&e));
@@ -314,25 +320,27 @@ fn eval_sets(w: &Weights, rows: &[Rows], held: &[bool], keep: &[&str], dev: &can
     for (r, h) in rows.iter().zip(held) {
         let rep = per_map(r);
         let tg = &rep.two_gate;
-        if *h && tg.informative() {
+        if *h > 0 && tg.informative() {
             informative_held.push(r);
         }
         out.push_str(&format!(
             "| {} | {} {} | {} | {:.1} | {:.1} | {:+.1} | {} | {:.1}/{:.1} | {} ({:.1} %) | {:.1} | {:.4} | {:.3} | {:.3} s ({} legs) |\n",
-            if *h { "HELD-OUT" } else { "train" },
+            held_label(*h),
             r.map_uid,
             names.get(&r.map_uid).cloned().unwrap_or_default(),
             tg.pairs, tg.model_pct(), tg.baseline_pct(), tg.margin(),
-            if !*h { "—" } else if tg.informative() { "yes" } else { "NO (distance ≥ 99 %)" },
+            if *h == 0 { "—" } else if tg.informative() { "yes" } else { "NO (distance ≥ 99 %)" },
             tg.hard_model_pct(), tg.hard_baseline_pct(),
             tg.dw_pairs, 100.0 * tg.dw_pairs as f64 / tg.all_pairs.max(1) as f64, tg.dw_model_pct(),
             rep.calib.ece, rep.calib.auc, rep.time_human.mae_s, rep.time_human.n
         ));
     }
     out.push('\n');
-    let train_rows: Vec<&Rows> = rows.iter().zip(held).filter(|(_, h)| !**h).map(|(r, _)| r).collect();
-    let held_rows: Vec<&Rows> = rows.iter().zip(held).filter(|(_, h)| **h).map(|(r, _)| r).collect();
-    for (name, set_rows) in [("TRAIN maps", train_rows), ("HELD-OUT maps, all", held_rows), ("HELD-OUT maps, INFORMATIVE (the gate)", informative_held)] {
+    let train_rows: Vec<&Rows> = rows.iter().zip(held).filter(|(_, h)| **h == 0).map(|(r, _)| r).collect();
+    let held_rows: Vec<&Rows> = rows.iter().zip(held).filter(|(_, h)| **h > 0).map(|(r, _)| r).collect();
+    let fnv_rows: Vec<&Rows> = rows.iter().zip(held).filter(|(_, h)| **h == 1).map(|(r, _)| r).collect();
+    let forced_rows: Vec<&Rows> = rows.iter().zip(held).filter(|(_, h)| **h == 2).map(|(r, _)| r).collect();
+    for (name, set_rows) in [("TRAIN maps", train_rows), ("HELD-OUT maps, all", held_rows), ("HELD-OUT maps, fnv rule", fnv_rows), ("HELD-OUT maps, forced (BAR.md 08:30Z)", forced_rows), ("HELD-OUT maps, INFORMATIVE (the gate)", informative_held)] {
         if set_rows.is_empty() {
             out.push_str(&format!("[{name}] none\n"));
             continue;
@@ -387,7 +395,7 @@ fn cmd_train(args: &[String]) {
     let out = PathBuf::from(flag(args, "--out").unwrap_or_else(|| die("--out r.tmw")));
     let dev = candle_core::Device::Cpu;
     let mut report = format!("# tmr train — {}\n\n## Split (by MAP: fnv1a64(uid) % 10 == 0 held out; --held-out adds {:?})\n{}\n", provenance("train"), flag(args, "--held-out").unwrap_or_default(), split_summary(&rows, &held, &names));
-    let train_rows: Vec<&Rows> = rows.iter().zip(&held).filter(|(_, h)| !**h).map(|(r, _)| r).collect();
+    let train_rows: Vec<&Rows> = rows.iter().zip(&held).filter(|(_, h)| **h == 0).map(|(r, _)| r).collect();
     if train_rows.is_empty() {
         die("every map is held out — nothing to train on");
     }
@@ -412,7 +420,8 @@ fn cmd_train(args: &[String]) {
         "best_epoch": rep.best_epoch,
         "best_val_loss": rep.best_val,
         "train_maps": train_rows.iter().map(|r| r.map_uid.clone()).collect::<Vec<_>>(),
-        "held_out_maps": rows.iter().zip(&held).filter(|(_, h)| **h).map(|(r, _)| r.map_uid.clone()).collect::<Vec<_>>(),
+        "held_out_maps": rows.iter().zip(&held).filter(|(_, h)| **h > 0).map(|(r, _)| r.map_uid.clone()).collect::<Vec<_>>(),
+        "held_out_forced": rows.iter().zip(&held).filter(|(_, h)| **h == 2).map(|(r, _)| r.map_uid.clone()).collect::<Vec<_>>(),
         "train_rows": train_set.n,
         "h_min": h_min, "h_max": h_max,
         "feature_version": fv,
@@ -573,8 +582,25 @@ fn cmd_plan(args: &[String]) {
             println!("{line}");
         }
     }
-    let plans = tmplan::planner::beam(&nodes, &est, width, top_k, StateBucket::of_speed(0.0));
-    println!("{}\t{}\tcp_groups {}\tfinish_groups {}\testimator {}\tbeam {}\tplans {}", gates.map_name, gates.map_uid, nodes.n_cp, nodes.n_fin, est.name(), width, plans.len());
+    // --estimator chained (needs --local rl.tmw): the horizon-native chain prices every edge; the gate head stays the prior
+    let feat_local = ctx.feat_local();
+    let chained = if flag(args, "--estimator").as_deref() == Some("chained") {
+        let lw = ctx.local_w.as_ref().unwrap_or_else(|| die("--estimator chained needs --local rl.tmw"));
+        let mut c = tmr::estimator::Chained::new(lw, &feat_local, gates, nodes, surf, tmr::feat::ablation_keep(lw.fv, "full").unwrap());
+        if let Some(b) = flag(args, "--chain-beam") { c.beam = b.parse().unwrap_or(24); }
+        if let Some(f) = flag(args, "--p-step") { c.p_step_floor = f.parse().unwrap_or(0.05); }
+        if let Some(p) = flag(args, "--penalty") { c.penalty_ms = p.parse().unwrap_or(3000.0); }
+        Some(c)
+    } else {
+        None
+    };
+    let est_dyn: &dyn EdgeEstimator = match &chained {
+        Some(c) => c,
+        None => &est,
+    };
+    let t0 = std::time::Instant::now();
+    let plans = tmplan::planner::beam(nodes, est_dyn, width, top_k, StateBucket::of_speed(0.0));
+    println!("{}\t{}\tcp_groups {}\tfinish_groups {}\testimator {}\tbeam {}\tplans {}\t{:.1} s", gates.map_name, gates.map_uid, nodes.n_cp, nodes.n_fin, est_dyn.name(), width, plans.len(), t0.elapsed().as_secs_f64());
     let prov = provenance("plan");
     let out_dir = flag(args, "--out-dir");
     let (_d, _len, _drop, fields) = surf.distance_matrix_full(&nodes);
@@ -584,7 +610,7 @@ fn cmd_plan(args: &[String]) {
         println!("  rank {k}: predicted {}  P(reach) {:.3}  groups [{}]  waypoints [{}]  legs p@t [{}]", tmr::secs(p.total_ms as i64), p.p_reach, g, wp, legs.join(" "));
         if let Some(dir) = &out_dir {
             let source = flag(args, "--source").unwrap_or_else(|| "router-plan-r".into());
-            let mut route = tmplan::export::export(&gates, &nodes, &surf, &fields, p, k as u32, &est.name(), &prov);
+            let mut route = tmplan::export::export(gates, nodes, surf, &fields, p, k as u32, &est_dyn.name(), &prov);
             route.source = source.clone();
             if let Some(r) = route.route.as_mut() {
                 r.source = source.clone();
@@ -796,6 +822,11 @@ fn cmd_watch(args: &[String]) {
                 if let Some(h) = flag(args, "--held-out") {
                     cmd.args(["--held-out", &h]);
                 }
+                for pass in ["--batch", "--lr", "--wd", "--hidden", "--patience"] {
+                    if let Some(v) = flag(args, pass) {
+                        cmd.args([pass, &v]);
+                    }
+                }
                 let out = cmd.output();
                 match out {
                     Ok(out) => {
@@ -962,12 +993,13 @@ fn cmd_report(args: &[String]) {
             let train = t.lines().filter(|l| l.starts_with("| train |")).count();
             let held: Vec<String> = t
                 .lines()
-                .filter(|l| l.starts_with("| HELD-OUT |"))
+                .filter(|l| l.starts_with("| HELD-OUT"))
                 .map(|l| {
                     let c: Vec<&str> = l.split('|').map(|x| x.trim()).collect();
                     // | split | map | pairs | R | dist | margin | informative | ...
                     let map = c.get(2).map(|m| m.split_whitespace().skip(1).collect::<Vec<_>>().join(" ")).unwrap_or_default();
-                    format!("{}: ({}, {}) {} [{}]", if map.is_empty() { c.get(2).cloned().unwrap_or("?").to_string() } else { map }, c.get(4).unwrap_or(&"?"), c.get(5).unwrap_or(&"?"), c.get(6).unwrap_or(&"?"), c.get(7).map(|x| if x.starts_with("NO") { "uninformative" } else { x }).unwrap_or("?"))
+                    let tag = c.get(1).map(|x| x.replace("HELD-OUT", "").trim().to_string()).unwrap_or_default();
+                    format!("{}{}: ({}, {}) {} [{}]", if tag.is_empty() { String::new() } else { format!("{tag} ") }, if map.is_empty() { c.get(2).cloned().unwrap_or("?").to_string() } else { map }, c.get(4).unwrap_or(&"?"), c.get(5).unwrap_or(&"?"), c.get(6).unwrap_or(&"?"), c.get(7).map(|x| if x.starts_with("NO") { "uninformative" } else { x }).unwrap_or("?"))
                 })
                 .collect();
             let pooled = t.lines().find(|l| l.starts_with("[HELD-OUT maps, INFORMATIVE") && l.contains("two-gate")).map(|l| {
