@@ -115,6 +115,11 @@ pub struct BlockRec {
 }
 
 impl BlockRec {
+    /// A FREE block (position as floats in chunk 0x0304305F). An "unassigned" placeholder
+    /// (flags 0xFFFFFFFF) has the free bit set by accident of being all ones and is not one.
+    pub fn is_free(&self) -> bool {
+        self.flags != 0xFFFF_FFFF && self.flags & FREE_BLOCK_FLAG != 0
+    }
     /// Cell coordinates the way gbx-py (and therefore the measured geometry in
     /// the Python's report) reports them: the file stores x and z one cell
     /// higher than the world grid.
@@ -1536,14 +1541,11 @@ fn parse_free_positions(
         .iter()
         .find(|(cid, ..)| *cid == FREE_POS_CHUNK)?;
     let end = payload + size;
-    let n_free_blocks = blocks
-        .iter()
-        .filter(|b| b.flags & FREE_BLOCK_FLAG != 0)
-        .count();
-    let n_free_baked = baked
-        .iter()
-        .filter(|b| b.flags & FREE_BLOCK_FLAG != 0)
-        .count();
+    // an "unassigned" placeholder (flags 0xFFFFFFFF) has every bit set, the free bit included — it is NOT a
+    // free block and has no entry here. ~100 TMX maps in the 2026-09-07 crawl carry hundreds of them
+    // ("7 entries but 125 free blocks") and this walk refused them all until the placeholders were excluded.
+    let n_free_blocks = blocks.iter().filter(|b| b.is_free()).count();
+    let n_free_baked = baked.iter().filter(|b| b.is_free()).count();
     assert_eq!(
         (size - 4) % 24,
         0,
@@ -1573,7 +1575,7 @@ fn parse_free_positions(
     let _version = r.u32();
     let mut rank = 0usize;
     for b in blocks.iter_mut().chain(baked.iter_mut()) {
-        if b.flags & FREE_BLOCK_FLAG == 0 {
+        if !b.is_free() {
             continue;
         }
         let off = r.o;
