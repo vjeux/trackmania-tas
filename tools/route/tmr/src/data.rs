@@ -218,7 +218,7 @@ fn dist3(a: [f32; 3], b: [f32; 3]) -> f32 {
 
 /// Build the rows of one map. `probe` = the map's geometry (or `Probe::none()`
 /// for the geometry-free ablation build).
-pub fn build_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Featurizer, max_rows: usize, threads: usize, log: &mut Vec<String>) -> Result<(Rows, BuildStats), String> {
+pub fn build_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Featurizer, max_rows: usize, threads: usize, keep_fast: f32, log: &mut Vec<String>) -> Result<(Rows, BuildStats), String> {
     let shard = read_shard(&reach_dir.join("samples.tmr"))?;
     let starts = read_starts(&reach_dir.join("starts.tsv"))?;
     let orders = read_orders(geom_dir);
@@ -334,7 +334,7 @@ pub fn build_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Fe
         }
     }
     st.candidates_per_record = cand_total as f64 / st.records.max(1) as f64;
-    let (rows, dropped) = featurise(&gates.map_uid, &specs, &labs, feat, max_rows, 7, threads);
+    let (rows, dropped) = featurise_strat(&gates.map_uid, &specs, &labs, feat, max_rows, 7, threads, keep_fast);
     if dropped > 0 {
         log.push(format!("  {} [gate]: {} of {} rows kept (uniform, seed 7)", gates.map_uid, rows.n, specs.len()));
     }
@@ -452,7 +452,7 @@ fn unif(s: &mut u64) -> f32 {
 }
 
 /// Build the horizon-native rows of one map.
-pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Featurizer, seed: u64, max_rows: usize, threads: usize, log: &mut Vec<String>) -> Result<(Rows, LocalStats), String> {
+pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Featurizer, seed: u64, max_rows: usize, threads: usize, keep_fast: f32, log: &mut Vec<String>) -> Result<(Rows, LocalStats), String> {
     let shard = read_shard(&reach_dir.join("samples.tmr"))?;
     let starts = read_starts(&reach_dir.join("starts.tsv"))?;
     let orders = read_orders(geom_dir);
@@ -605,7 +605,7 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, fea
     }
     st.cloud_mean_extent_m = extent_sum / st.groups.max(1) as f64;
     let n_specs = rows.0.len();
-    let (rows, dropped) = featurise(&gates.map_uid, &rows.0, &rows.1, feat, max_rows, seed.wrapping_add(7), threads);
+    let (rows, dropped) = featurise_strat(&gates.map_uid, &rows.0, &rows.1, feat, max_rows, seed.wrapping_add(7), threads, keep_fast);
     if dropped > 0 {
         log.push(format!("  {} [local]: {} of {} rows kept (uniform, seed 7)", gates.map_uid, rows.n, n_specs));
     }
@@ -789,21 +789,38 @@ pub struct Spec {
 /// Featurise `specs` (a uniform seeded subsample of `max_rows` when set) on `threads` threads.
 /// Labels are `NLAB` per spec, in the same order.
 pub fn featurise(map_uid: &str, specs: &[Spec], lab: &[f32], feat: &Featurizer, max_rows: usize, seed: u64, threads: usize) -> (Rows, usize) {
+    featurise_strat(map_uid, specs, lab, feat, max_rows, seed, threads, 0.0)
+}
+
+/// `keep_fast` > 0: rows whose START speed is ≥ keep_fast m/s are all kept (up to the cap) and only the
+/// rest is subsampled — the high-speed regime is rare per map and it is where the chain mispriced legs
+/// (arrival speeds 14–56 m/s predicted where humans run 100–140; coordinator 14:52Z / MODEL 15:20Z).
+pub fn featurise_strat(map_uid: &str, specs: &[Spec], lab: &[f32], feat: &Featurizer, max_rows: usize, seed: u64, threads: usize, keep_fast: f32) -> (Rows, usize) {
     let n = specs.len();
     let mut idx: Vec<usize> = (0..n).collect();
     let mut dropped = 0;
     if max_rows > 0 && n > max_rows {
+        let speed = |i: usize| { let s = &specs[i].state; if s.speed.is_finite() { s.speed } else { crate::frame::norm3(s.vel) } };
+        let mut fast: Vec<usize> = if keep_fast > 0.0 { (0..n).filter(|&i| speed(i) >= keep_fast).collect() } else { Vec::new() };
+        let mut rest: Vec<usize> = (0..n).filter(|&i| !(keep_fast > 0.0 && speed(i) >= keep_fast)).collect();
         let mut s = seed.max(1) ^ 0x9e37_79b9_7f4a_7c15;
-        for i in (1..idx.len()).rev() {
-            s ^= s << 13;
-            s ^= s >> 7;
-            s ^= s << 17;
-            let j = (s % (i as u64 + 1)) as usize;
-            idx.swap(i, j);
-        }
-        idx.truncate(max_rows);
+        let shuffle = |v: &mut Vec<usize>, s: &mut u64| {
+            for i in (1..v.len()).rev() {
+                *s ^= *s << 13;
+                *s ^= *s >> 7;
+                *s ^= *s << 17;
+                let j = (*s % (i as u64 + 1)) as usize;
+                v.swap(i, j);
+            }
+        };
+        shuffle(&mut fast, &mut s);
+        shuffle(&mut rest, &mut s);
+        fast.truncate(max_rows);
+        rest.truncate(max_rows - fast.len());
+        idx = fast;
+        idx.extend(rest);
         idx.sort_unstable();
-        dropped = n - max_rows;
+        dropped = n - idx.len();
     }
     let dim = feat.dim();
     let threads = threads.max(1).min(idx.len().max(1));

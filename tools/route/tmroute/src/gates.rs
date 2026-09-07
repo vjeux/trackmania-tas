@@ -291,6 +291,10 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         order: u32,
         centre: [f32; 3],
         yaw: f32,
+        /// Full 3-D gate axis when the placement is pitched/rolled (an item on a wall, a flat gate); else None.
+        axis3: Option<[f32; 3]>,
+        /// The placement's local UP in world (unit) when pitched/rolled; the arch centre is hh along it.
+        up3: Option<[f32; 3]>,
         model: String,
         from_item: bool,
         // a grid-placed block (cell coordinates, no free position)
@@ -311,6 +315,7 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         // 1×1 cell is local (16, 2, 16) through the placement rotation, and the
         // road axis is local +Z through the same rotation (tilted pieces included).
         let mut free_axis: Option<[f32; 3]> = None;
+        let mut free_up: Option<[f32; 3]> = None;
         // A road/platform piece's crossing point is its road centre (16, 2, 16); a gate
         // structure's is mid-arch (16, 8, 16) — Poland 2026's finish is a GateFinish rolled
         // −90° about its road axis (lying flat) and the car finishes 17 m BELOW its anchor,
@@ -330,7 +335,20 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
                 free_axis = Some([c2[0] - c[0], c2[1] - c[1], c2[2] - c[2]]);
                 c
             }
-            (Some(p), None) => p,
+            (Some(p), None) => {
+                // an ITEM: its trigger plane turns with the item's full (yaw, pitch, roll) — Fall 2025 - 12's
+                // 32 m gates are pitched 66–83° on a wall section (GEN arm, engine-credited rows)
+                if let Some(rot) = w.item_rot {
+                    if rot[1].abs() > 0.05 || rot[2].abs() > 0.05 {
+                        let m = turned(p, rot);
+                        let a = apply(&m, [0.0, 0.0, 1.0]);
+                        free_axis = Some([a[0] - p[0], a[1] - p[1], a[2] - p[2]]);
+                        let u = apply(&m, [0.0, 1.0, 0.0]);
+                        free_up = Some([u[0] - p[0], u[1] - p[1], u[2] - p[2]]);
+                    }
+                }
+                p
+            }
             (None, _) => [
                 32.0 * w.coords.0 as f32 + 16.0,
                 8.0 * w.coords.1 as f32 + yoff + ROAD_ABOVE_BASE,
@@ -344,7 +362,9 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             order: w.order,
             centre,
             // yaw such that (sin yaw, 0, cos yaw) is the road axis: a free block's rotated local axis, else the placement yaw
-            yaw: match free_axis { Some(a) => a[0].atan2(a[2]), None => w.yaw.unwrap_or(0.0) },
+            yaw: match free_axis { Some(a) if (a[0] * a[0] + a[2] * a[2]).sqrt() > 0.3 => a[0].atan2(a[2]), Some(_) => w.yaw.unwrap_or(0.0), None => w.yaw.unwrap_or(0.0) },
+            axis3: free_axis.filter(|a| a[1].abs() > 0.05),
+            up3: free_up,
             model: w.name.clone(),
             from_item,
             grid: w.pos.is_none(),
@@ -440,8 +460,9 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
                 kind: r.kind,
                 tag: r.tag.clone(),
                 link_order: r.order,
-                centre: [r.centre[0], r.centre[1] + hh, r.centre[2]],
-                normal: [sy, 0.0, cy],
+                centre: match r.up3 { Some(u) => [r.centre[0] + hh * u[0], r.centre[1] + hh * u[1], r.centre[2] + hh * u[2]], None => [r.centre[0], r.centre[1] + hh, r.centre[2]] },
+                // a pitched/rolled placement keeps its 3-D axis (unit); the sign is oriented later
+                normal: match r.axis3 { Some(a) => { let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt(); [a[0] / l, a[1] / l, a[2] / l] } None => [sy, 0.0, cy] },
                 normal_source: "placement".into(),
                 half_width: hw,
                 half_height: hh,
@@ -518,7 +539,7 @@ pub fn orient(g: &mut GatesFile, dirs: &BTreeMap<u32, [f32; 3]>, source: &str) -
         if let Some(d) = dirs.get(&gate.waypoint) {
             let dot = gate.normal[0] * d[0] + gate.normal[2] * d[2];
             if dot < 0.0 {
-                gate.normal = [-gate.normal[0], 0.0, -gate.normal[2]];
+                gate.normal = [-gate.normal[0], -gate.normal[1], -gate.normal[2]];
             }
             gate.normal_source = source.to_string();
             n += 1;
@@ -763,7 +784,7 @@ pub fn orient_engine(g: &mut GatesFile, flipped: &[u32]) -> usize {
             continue;
         }
         if flipped.contains(&gate.waypoint) {
-            gate.normal = [-gate.normal[0], 0.0, -gate.normal[2]];
+            gate.normal = [-gate.normal[0], -gate.normal[1], -gate.normal[2]];
             n += 1;
         }
         gate.normal_source = "engine".to_string();

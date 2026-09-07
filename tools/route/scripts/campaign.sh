@@ -58,7 +58,8 @@ if [ $step = classify ] || [ $step = all ]; then
 fi
 # plan-r: the MODEL arm's R plugged into the EdgeEstimator seam (`tmr plan`, tools/route/tmr on agentcloud/route-model;
 # binary TMR, models model/watch/r-latest.tmw + rl-latest.tmw). Every map with a human order + the hypothesis maps.
-HYP="3wllzzuIOaf7WnPga5vlnGvu8q7 E3iCwrFqXmr4TbDmkJgQGmNnxhb izk69D9FxOr6GzMU534ykPCeepb sAhLhKUwHH9V95xk3mlm9hAxun4 OPozt3ejdJCjNsvRuhuW2BmBbTe VsTQVXqqByO_qBi1GZtUraFtj35 CEeRuRAw6E4hdRfnZEwn1XMe235"
+# Summer 2026 - 04, 07, 09, 14, Norway 2026, Saudi Arabia 2026, Poland 2026
+HYP="3wllzzuIOaf7WnPga5vlnGvu8q7 E3iCwrFqXmr4TbDmkJgQGmNnxhb meaXfi6lw0X01rzXmkGnbg9hdXg v_2z3U5J1xzvZTnDmnXDvvweon3 OPozt3ejdJCjNsvRuhuW2BmBbTe VsTQVXqqByO_qBi1GZtUraFtj35 CEeRuRAw6E4hdRfnZEwn1XMe235"
 TMR=${TMR:-/tmp/tmp/model-target/release/tmr}
 # floors OFF so a ranking always exists (with the 05:12Z r-latest every leg is below the 0.02/0.05 defaults on
 # Summer 2026 - 01; with them off rank 0 is the human order there). Agreed with the MODEL arm: see plan/plan-r/MODELS.txt.
@@ -69,28 +70,47 @@ MODEL_R=${MODEL_R:-$BANK/model/watch/r-latest-gd.tmw}; MODEL_RL=${MODEL_RL:-$BAN
 if [ $step = plan-r ]; then
   mkdir -p $P/plan-r
   [ -x $TMR ] || { echo "no tmr binary at $TMR"; exit 1; }
+  # the watcher rewrites the model pointers every ~40 min and the bank mount can serve a half-written or stale file
+  # ("trailer says 1657 bytes of meta, 1059 remain" on 7 of 30 maps, 13:11Z run): remount, then SNAPSHOT both models
+  # to /tmp so one table is one model
+  # (no remount here: a remount while other pipelines hold files left the mount "Transport endpoint is not connected", 15:22Z)
+  SNAP=/tmp/tmr-models-$(date -u +%Y%m%dT%H%MZ); mkdir -p $SNAP
+  # copy, then prove the copy LOADS (a stale FUSE read gave a 700776-byte rl.tmw whose trailer said otherwise, 14:54Z)
+  snap_model() { local src=$1 dst=$2 i; for i in 1 2 3 4 5; do cp $src $dst && $TMR selftest --model $dst > $dst.selftest.txt 2>&1 && return 0; echo "  snapshot of $src did not load (try $i): $(tail -1 $dst.selftest.txt | cut -c1-100)"; sleep 20; done; return 1; }
+  # copy the VERSIONED file LATEST.txt names (r-vN-gd.tmw never changes once written) rather than the moving pointer:
+  # the mount served a pointer whose size was v7's and whose bytes were v8's (16:49Z)
+  resolve_ptr() { local ptr=$1 dir=$(dirname $1) base=$(basename $1) v; v=$(grep -E "^$base = " $dir/LATEST.txt 2>/dev/null | awk '{print $3}'); if [ -n "$v" ] && [ -f $dir/$v ]; then echo $dir/$v; else echo $ptr; fi; }
+  MODEL_R=$(resolve_ptr $MODEL_R); MODEL_RL=$(resolve_ptr $MODEL_RL); echo "models resolved: $MODEL_R $MODEL_RL"
+  snap_model $MODEL_R $SNAP/r.tmw || { echo "gate model never loaded whole"; exit 1; }
+  snap_model $MODEL_RL $SNAP/rl.tmw || { echo "local model never loaded whole"; exit 1; }
+  W=$(dirname $MODEL_R); MODEL_R_PTR=$MODEL_R; MODEL_R=$SNAP/r.tmw; MODEL_RL=$SNAP/rl.tmw
   # which r-v<N> the latest pointer is (by md5), and the maps it trained on (its .md)
-  W=$(dirname $MODEL_R); RV=""; for f in $W/r-v*.tmw; do [ "$(md5sum < $f)" = "$(md5sum < $MODEL_R)" ] && RV=$(basename $f .tmw); done
+  RV=""; for f in $W/r-v*.tmw; do [ "$(md5sum < $f)" = "$(md5sum < $MODEL_R)" ] && RV=$(basename $f .tmw); done
   RLV=""; for f in $W/rl-v*.tmw; do [ "$(md5sum < $f)" = "$(md5sum < $MODEL_RL)" ] && RLV=$(basename $f .tmw); done
   TRAIN=$( [ -n "$RV" ] && grep -E "^  train " $W/$RV.md 2>/dev/null | awk '{print $2}' | tr '\n' ',' )
   HELD=$( [ -n "$RV" ] && grep -E "^  HELD-OUT " $W/$RV.md 2>/dev/null | awk '{print $2}' | tr '\n' ',' )
   echo "gate prior $RV ($(md5sum < $MODEL_R | cut -c1-8)) chain $RLV ($(md5sum < $MODEL_RL | cut -c1-8)) flags $TMR_FLAGS run $(date -u +%Y-%m-%dT%H:%MZ); trained on: $TRAIN held-out: $HELD" | tee $P/plan-r/MODELS.txt
   { for d in $G/*/; do u=$(basename $d); [ -f $d/consensus.txt ] || [ -f $d/consensus.unverified.txt ] || continue; grep -q "modal_groups \[[0-9]" $d/consensus*.txt 2>/dev/null && echo $u; done; for u in $HYP; do echo $u; done; } | sort -u > /tmp/plan-r.uids
   echo "plan-r over $(wc -l < /tmp/plan-r.uids) maps"
+  # per map: the HYBRID first (geometric on roads, R where the graph has nothing — fast), then pure R; each under a
+  # wall-clock cap (the chained estimator costs ~5 s per edge evaluation: Poland 2026 ran > 90 min un-capped)
   plan_r_one() { u=$1; f=$(mapfile_of $u); [ -n "$f" ] || return 0; [ -f $G/$u/gates.json ] || return 0
-    nice $TMR plan $f --gates $G/$u/gates.json --model $MODEL_R --local $MODEL_RL --estimator chained $TMR_FLAGS --top-k 3 --quiet --out-dir $RT --source router-plan-r > $P/plan-r/$u.txt 2>&1
-    grep -E "cp_groups|rank 0|NO PLAN" $P/plan-r/$u.txt | head -2 | cut -c1-160; }
-  export -f plan_r_one mapfile_of; export TMR TMR_FLAGS MODEL_R MODEL_RL G RT P B V
-  cat /tmp/plan-r.uids | xargs -P ${PAR:-6} -n 1 bash -c 'plan_r_one "$0"'
-  $R/tmroute index $RT --names $G
-  $R/tmroute table-r $RT --geom $G --geo router-plan-cost --r router-plan-r --also $(echo $HYP | tr " " ",") --train "$TRAIN" --held-out "$HELD" --title "$(cat $P/plan-r/MODELS.txt)" > $P/table-r.md
+    timeout ${CAP_HYB:-900} nice $TMR plan $f --gates $G/$u/gates.json --model $MODEL_R --local $MODEL_RL --estimator hybrid $TMR_FLAGS --top-k 3 --quiet --out-dir $RT --source router-plan-hyb > $P/plan-r/$u.hyb.txt 2>&1 || echo "TIMEOUT/ERROR after ${CAP_HYB:-900} s" >> $P/plan-r/$u.hyb.txt
+    grep -E "cp_groups|rank 0|NO PLAN|TIMEOUT|hybrid pricing" $P/plan-r/$u.hyb.txt | head -3 | cut -c1-160
+    timeout ${CAP_R:-1500} nice $TMR plan $f --gates $G/$u/gates.json --model $MODEL_R --local $MODEL_RL --estimator chained $TMR_FLAGS --top-k 3 --quiet --out-dir $RT --source router-plan-r > $P/plan-r/$u.txt 2>&1 || echo "TIMEOUT/ERROR after ${CAP_R:-1500} s" >> $P/plan-r/$u.txt
+    grep -E "cp_groups|rank 0|NO PLAN|TIMEOUT" $P/plan-r/$u.txt | head -2 | cut -c1-160; }
+  export -f plan_r_one mapfile_of; export TMR TMR_FLAGS MODEL_R MODEL_RL G RT P B V CAP_HYB CAP_R
+  cat /tmp/plan-r.uids | xargs -P ${PAR:-3} -n 1 bash -c 'plan_r_one "$0"'
+  # no `index` here (a full walk of the bank mount is > 40 min); table-r reads only the exhibit's maps
+  $R/tmroute table-r $RT --geom $G --geo router-plan-cost --r router-plan-r --hyb router-plan-hyb --uids $(cat /tmp/plan-r.uids | tr "\n" ",") --also $(echo $HYP | tr " " ",") --train "$TRAIN" --held-out "$HELD" --title "$(cat $P/plan-r/MODELS.txt)" > $P/table-r.md
+  cp $P/table-r.md $P/table-r-$(date -u +%Y%m%dT%H%MZ)-$RV.md
   tail -1 $P/table-r.md
 fi
 if [ $step = tables ] || [ $step = all ]; then
   $R/tmroute index $RT --names $G
   $R/tmroute table $RT --geom $G --plan-source router-plan-cost > $P/table-cost.md
   $R/tmroute table $RT --geom $G --plan-source router-plan > $P/table-speed.md
-  [ -f $RT/routes.tsv ] && grep -q router-plan-r $RT/routes.tsv && $R/tmroute table-r $RT --geom $G --geo router-plan-cost --r router-plan-r --also $(echo $HYP | tr " " ",") > $P/table-r.md
+  [ -f $RT/routes.tsv ] && grep -q router-plan-r $RT/routes.tsv && $R/tmroute table-r $RT --geom $G --geo router-plan-cost --r router-plan-r --hyb router-plan-hyb --also $(echo $HYP | tr " " ",") > $P/table-r.md
   tail -1 $P/table-cost.md; tail -1 $P/table-speed.md
   echo "human legs the surface graph cannot explain: $(grep -c MISSING $P/human-legs/ALL.tsv) of $(wc -l < $P/human-legs/ALL.tsv)"
 fi

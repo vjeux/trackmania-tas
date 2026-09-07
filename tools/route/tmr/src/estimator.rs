@@ -157,7 +157,6 @@ impl<'a> EdgeEstimator for REstimator<'a> {
 // position × speed × yaw, stop when a target is the gate itself. The gate heads (R's
 // `REstimator`) remain the fast ORDER PRIOR; this is the price.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
@@ -184,15 +183,24 @@ pub struct Chained<'a> {
     pub p_step_floor: f32,
     /// Penalty in ms per unit of −ln p when ranking states (tmplan::planner::PENALTY_MS).
     pub penalty_ms: f32,
-    cache: RefCell<HashMap<(u8, usize, usize), Edge>>,
+    cache: std::sync::Mutex<HashMap<(u8, usize, usize), Edge>>,
     pub trace: bool,
+    /// Fast fan (fewer bearings/fractions) — see FAN_FRAC_FAST.
+    pub fast: bool,
+    /// Fallback when an edge was not chained (budget exhausted): the gate head, if given.
+    pub fallback: Option<REstimator<'a>>,
+    pub fallbacks_used: std::sync::atomic::AtomicUsize,
 }
 
 /// Fan of local targets per horizon: (h ticks, distance as a fraction of what the car covers at its
 /// current speed in h — the endpoint cloud lives there; a 138 m/s car covers 276 m in 2 s and a fixed
 /// 120 m fan priced it at half speed).
 const FAN_H: &[u16] = &[200, 400];
+/// Fan fractions and bearings: the FULL fan (F7 numbers) and the FAST fan (`Chained::fast`, ~5× fewer
+/// queries per step) — the coordinator's ≤ 5 min per map budget (Poland, 15 CPs: 1 h 15 min with the full fan).
 const FAN_FRAC: &[f32] = &[0.5, 0.75, 1.0, 1.2, 1.4];
+const FAN_FRAC_FAST: &[f32] = &[0.6, 0.9, 1.2];
+const BEARINGS_FAST: &[f32] = &[-60.0, -30.0, -12.0, 0.0, 12.0, 30.0, 60.0];
 
 /// Metres a full-throttle Stadium car covers in h from speed v under tmplan's two-phase model
 /// (20 m/s² below 50 m/s, 5 m/s² above, top 140 m/s — Geometric::leg_time_ms's constants).
@@ -214,7 +222,7 @@ const BEARINGS_DEG: &[f32] = &[-90.0, -60.0, -40.0, -25.0, -12.0, 0.0, 12.0, 25.
 
 impl<'a> Chained<'a> {
     pub fn new(local: &'a Weights, feat: &'a Featurizer<'a>, gates: &'a GatesFile, nodes: &'a Nodes, surf: &'a SurfaceModel, keep: Vec<&'static str>) -> Chained<'a> {
-        Chained { local, feat, gates, nodes, surf, keep, beam: 24, max_steps: 10, p_step_floor: 0.05, penalty_ms: tmplan::planner::PENALTY_MS, cache: RefCell::new(HashMap::new()), trace: false }
+        Chained { local, feat, gates, nodes, surf, keep, beam: 24, max_steps: 10, p_step_floor: 0.05, penalty_ms: tmplan::planner::PENALTY_MS, cache: std::sync::Mutex::new(HashMap::new()), trace: false, fast: false, fallback: None, fallbacks_used: std::sync::atomic::AtomicUsize::new(0) }
     }
 
     fn state_of(&self, s: &ChainState) -> CarState {
@@ -291,17 +299,17 @@ impl<'a> Chained<'a> {
                         }
                     }
                 }
-                // expansion fan
+                // expansion fan (distances scale with what the car covers in h — reach_m)
+                let fracs: &[f32] = if self.fast { FAN_FRAC_FAST } else { FAN_FRAC };
+                let bearings: &[f32] = if self.fast { BEARINGS_FAST } else { BEARINGS_DEG };
                 for h in FAN_H {
-                    // what the car covers in h: v·t + ½·a·t² with a = 8 m/s² (a Stadium car from rest: ~56 m in 2 s,
-                    // ~144 m in 4 s — the fan must reach the cloud, not stop short of it)
                     let reach = reach_m(s.speed, *h);
-                    for f in FAN_FRAC {
+                    for f in fracs {
                         let d = &(reach * f).max(FAN_MIN_M).min(crate::data::LOCAL_MAX_M);
                         if *d > dg + ghw + 20.0 {
                             continue; // overshooting the gate
                         }
-                        let mut dirs: Vec<[f32; 2]> = BEARINGS_DEG
+                        let mut dirs: Vec<[f32; 2]> = bearings
                             .iter()
                             .map(|b| {
                                 let a = b.to_radians();
@@ -364,11 +372,78 @@ impl<'a> REstimator<'a> {
     }
 }
 
+impl<'a> Chained<'a> {
+    /// Chain one edge (no cache).
+    fn price(&self, bucket: StateBucket, prev: Option<usize>, from: usize, to: usize) -> Edge {
+        let dir = self.heading_at(prev, from);
+        let (horiz, dy) = tmplan::estimator::chord(self.nodes.pos[from], self.nodes.pos[to]);
+        let length = (horiz * horiz + dy * dy).sqrt();
+        match self.chain(self.nodes.pos[from], bucket.speed(), dir, to) {
+            Some((p, ticks, v_arr, _steps, _path)) => Edge { p_reach: p, expected_ms: ticks * 10, arrival: StateBucket::of_speed(v_arr), length_m: length, kind: EdgeKind::Surface },
+            None => Edge { p_reach: 0.0, expected_ms: -1, arrival: bucket, length_m: length, kind: EdgeKind::None },
+        }
+    }
+
+    /// Price every (bucket, from, to) edge in parallel within `budget` seconds; the beam then reads the
+    /// cache. Returns (edges priced, edges total, seconds). Edges left unpriced fall back to the gate
+    /// head in `estimate` (counted in `fallbacks_used`). The cache is filled in a deterministic order
+    /// (spawn edges first, then by from/to/bucket) so a budget cut drops the same edges every run.
+    pub fn precompute(&self, threads: usize, budget: std::time::Duration) -> (usize, usize, f64) {
+        let n = self.nodes.pos.len();
+        let mut jobs: Vec<(u8, usize, usize)> = Vec::new();
+        for from in 0..n {
+            for to in 1..n {
+                if from == to {
+                    continue;
+                }
+                for b in 0..5u8 {
+                    if from == 0 && b != 0 {
+                        continue; // the spawn is left from rest only
+                    }
+                    jobs.push((b, from, to));
+                }
+            }
+        }
+        let total = jobs.len();
+        let t0 = std::time::Instant::now();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let results = std::sync::Mutex::new(Vec::<((u8, usize, usize), Edge)>::with_capacity(total));
+        std::thread::scope(|sc| {
+            for _ in 0..threads.max(1) {
+                sc.spawn(|| loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= total || t0.elapsed() > budget {
+                        break;
+                    }
+                    let (b, from, to) = jobs[i];
+                    let prev = if from == 0 { None } else { Some(0) };
+                    let e = self.price(StateBucket { speed_bin: b, car: 0 }, prev, from, to);
+                    results.lock().unwrap().push(((b, from, to), e));
+                });
+            }
+        });
+        let results = results.into_inner().unwrap();
+        let done = results.len();
+        let mut c = self.cache.lock().unwrap();
+        for (k, e) in results {
+            c.insert(k, e);
+        }
+        (done, total, t0.elapsed().as_secs_f64())
+    }
+}
+
 impl<'a> EdgeEstimator for Chained<'a> {
     fn estimate(&self, bucket: StateBucket, prev: Option<usize>, from: usize, to: usize) -> Edge {
         let key = (bucket.speed_bin, from, to);
-        if let Some(e) = self.cache.borrow().get(&key) {
+        if let Some(e) = self.cache.lock().unwrap().get(&key) {
             return *e;
+        }
+        if let Some(fb) = &self.fallback {
+            // budget exhausted for this edge: the gate head prices it (flagged)
+            self.fallbacks_used.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let e = fb.estimate(bucket, prev, from, to);
+            self.cache.lock().unwrap().insert(key, e);
+            return e;
         }
         let dir = self.heading_at(prev, from);
         let (horiz, dy) = tmplan::estimator::chord(self.nodes.pos[from], self.nodes.pos[to]);
@@ -377,7 +452,7 @@ impl<'a> EdgeEstimator for Chained<'a> {
             Some((p, ticks, v_arr, _steps, _path)) => Edge { p_reach: p, expected_ms: ticks * 10, arrival: StateBucket::of_speed(v_arr), length_m: length, kind: EdgeKind::Surface },
             None => Edge { p_reach: 0.0, expected_ms: -1, arrival: bucket, length_m: length, kind: EdgeKind::None },
         };
-        self.cache.borrow_mut().insert(key, e);
+        self.cache.lock().unwrap().insert(key, e);
         e
     }
     fn name(&self) -> String {

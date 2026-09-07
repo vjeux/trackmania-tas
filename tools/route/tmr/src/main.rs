@@ -8,10 +8,10 @@
 //!             [--epochs N] [--hidden 256,256,256] [--batch B] [--lr X] [--wd X] [--noise σ] [--dropout p] [--geo-dropout p] [--no-mirror] [--held-out uid,..] [--report F] [--threads T]
 //!   tmr eval [--kind gate|local] --model r.tmw --cache DIR [--held-out uid,..] [--report F]
 //!   tmr selftest --model r.tmw           agrees_with (flat vs candle) + the negative half (a perturbed copy must be REFUSED)
-//!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--local rl.tmw --estimator chained [--chain-beam 24] [--p-step 0.05] [--penalty 3000]]
+//!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--local rl.tmw --estimator chained [--chain-beam 24] [--p-step 0.05] [--penalty 3000] [--fast-fan] [--budget-s 300] [--chain-threads 32]]
 //!            [--top-k 3] [--beam 4000] [--p-floor 0.02] [--out-dir DIR] [--source NAME]
 //!                                        the planner over R (tmplan's beam, R as the EdgeEstimator) — the M2 seam
-//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--max-rows-total N] [--geo-dropout p] [--held-out uid,..] [--batch B] [--lr X] [--force-first] [--interval S] [--once] [--epochs N] [--threads T]
+//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--max-rows-total N] [--gate-rows N] [--keep-fast M_S] [--geo-dropout p] [--held-out uid,..] [--batch B] [--lr X] [--force-first] [--interval S] [--once] [--epochs N] [--threads T]
 //!                                        rebuild rows for new/changed shards, retrain both heads, publish bank/r-v<N>.tmw + rl-v<N>.tmw + reports
 //!   tmr report --bank DIR [--bank DIR2] [--out REPORT.md]   one table per watcher bank: every version's held-out numbers
 //!   tmr split UID..                      which maps the fnv1a64 rule holds out
@@ -136,6 +136,8 @@ struct BuildOpts {
     max_rows: usize,
     /// Featurisation threads.
     threads: usize,
+    /// Keep every row whose start speed ≥ this (m/s) before subsampling the rest; 0 = off.
+    keep_fast: f32,
     geom: PathBuf,
     maps: Vec<PathBuf>,
     no_geom: bool,
@@ -181,11 +183,11 @@ fn build_one(d: &Path, o: &BuildOpts, log: &mut Vec<String>) -> Result<(String, 
     };
     let feat = featurizer(&geo);
     let (rows, manifest_tail) = if o.kind == "local" {
-        let (rows, st) = data::build_local_map(d, &gates, &gdir, &feat, 1, o.max_rows, o.threads, log)?;
+        let (rows, st) = data::build_local_map(d, &gates, &gdir, &feat, 1, o.max_rows, o.threads, o.keep_fast, log)?;
         let m = format!("{}\t{}\t{}\t{:.4}\t0\t0\t{}\t0\t0\t0\t{}", st.groups, rows.n, st.positives, st.positives as f64 / rows.n.max(1) as f64, st.negatives, st.rejected_near_endpoint);
         (rows, m)
     } else {
-        let (rows, st) = data::build_map(d, &gates, &gdir, &feat, o.max_rows, o.threads, log)?;
+        let (rows, st) = data::build_map(d, &gates, &gdir, &feat, o.max_rows, o.threads, o.keep_fast, log)?;
         (rows, format!("{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", st.records, st.rows, st.positives, st.positives as f64 / st.rows.max(1) as f64, st.human_rows, st.human_pos, st.band_rows, st.finish_candidates, st.positives_beyond_400, st.positives_outside_radius, st.unknown_ghost_starts))
     };
     let _ = &rows;
@@ -211,7 +213,7 @@ fn build_opts(args: &[String]) -> BuildOpts {
     if let Some(m) = flag(args, "--maps") {
         maps.insert(0, PathBuf::from(m));
     }
-    BuildOpts { kind: kind_of(args), fv: fv_of(args), max_rows: flag(args, "--max-rows").and_then(|s| s.parse().ok()).unwrap_or(0), threads: flag(args, "--build-threads").and_then(|s| s.parse().ok()).unwrap_or(8), geom: flag(args, "--geom").map(PathBuf::from).unwrap_or_else(default_geom), maps, no_geom: has(args, "--no-geometry"), out }
+    BuildOpts { kind: kind_of(args), fv: fv_of(args), max_rows: flag(args, "--max-rows").and_then(|s| s.parse().ok()).unwrap_or(0), threads: flag(args, "--build-threads").and_then(|s| s.parse().ok()).unwrap_or(8), keep_fast: flag(args, "--keep-fast").and_then(|s| s.parse().ok()).unwrap_or(0.0), geom: flag(args, "--geom").map(PathBuf::from).unwrap_or_else(default_geom), maps, no_geom: has(args, "--no-geometry"), out }
 }
 
 fn reach_dirs(args: &[String]) -> Vec<PathBuf> {
@@ -603,7 +605,7 @@ fn cmd_plan(args: &[String]) {
     let PlanCtx { gates, surf, nodes, w, h_min, h_max, keep, .. } = &ctx;
     let (h_min, h_max, keep) = (*h_min, *h_max, keep.clone());
     let feat = ctx.feat();
-    let est = tmr::estimator::REstimator { w, feat: &feat, gates, nodes, surf, h_max, h_min, keep, p_floor: flag(args, "--p-floor").and_then(|s| s.parse().ok()).unwrap_or(0.02) };
+    let est = tmr::estimator::REstimator { w, feat: &feat, gates, nodes, surf, h_max, h_min, keep: keep.clone(), p_floor: flag(args, "--p-floor").and_then(|s| s.parse().ok()).unwrap_or(0.02) };
     let width: usize = flag(args, "--beam").and_then(|s| s.parse().ok()).unwrap_or(4000);
     let top_k: usize = flag(args, "--top-k").and_then(|s| s.parse().ok()).unwrap_or(3);
     if has(args, "--matrix") {
@@ -631,26 +633,92 @@ fn cmd_plan(args: &[String]) {
         if let Some(b) = flag(args, "--chain-beam") { c.beam = b.parse().unwrap_or(24); }
         if let Some(f) = flag(args, "--p-step") { c.p_step_floor = f.parse().unwrap_or(0.05); }
         if let Some(p) = flag(args, "--penalty") { c.penalty_ms = p.parse().unwrap_or(3000.0); }
+        c.fast = has(args, "--fast-fan");
+        // budget: price every (bucket, from, to) edge in parallel first, the gate head prices the rest
+        let budget = std::time::Duration::from_secs_f64(flag(args, "--budget-s").and_then(|s| s.parse().ok()).unwrap_or(300.0));
+        let cthreads: usize = flag(args, "--chain-threads").and_then(|s| s.parse().ok()).unwrap_or(32);
+        let (done, total, secs) = c.precompute(cthreads, budget);
+        println!("  chained precompute: {done}/{total} edges priced in {secs:.1} s on {cthreads} threads (budget {:.0} s, {} fan){}", budget.as_secs_f64(), if c.fast { "fast" } else { "full" }, if done < total { " — the rest fall back to the gate head" } else { "" });
+        c.fallback = Some(tmr::estimator::REstimator { w, feat: &feat, gates, nodes, surf, h_max, h_min, keep: keep.clone(), p_floor: 0.0 });
         Some(c)
     } else {
         None
     };
-    let est_dyn: &dyn EdgeEstimator = match &chained {
-        Some(c) => c,
-        None => &est,
+    // --estimator hybrid (GEOM arm, coordinator 14:52Z): geometric on road legs, R's chain where the surface graph
+    // has no path or a detour (tmplan::estimator::Hybrid); needs --local
+    let hybrid_on = flag(args, "--estimator").as_deref() == Some("hybrid");
+    let (d_m, len_m, drop_m, fields_m) = surf.distance_matrix_full(nodes);
+    let dirs_m = surf.directions(nodes, &fields_m);
+    let leg_specials = surf.leg_specials(nodes, &fields_m, gates);
+    let geo = tmplan::estimator::Geometric { time_model: tmplan::estimator::TimeModel::Cost, d: &d_m, len: &len_m, nodes, flight: None, surface: Some(surf), dirs: Some(&dirs_m), drop: Some(&drop_m), drop_penalty: 0.0, specials: Some((&leg_specials, gates)) };
+    let chained_h = if hybrid_on {
+        let lw = ctx.local_w.as_ref().unwrap_or_else(|| die("--estimator hybrid needs --local rl.tmw"));
+        let mut c = tmr::estimator::Chained::new(lw, &feat_local, gates, nodes, surf, tmr::feat::ablation_keep(lw.fv, "full").unwrap());
+        if let Some(b) = flag(args, "--chain-beam") { c.beam = b.parse().unwrap_or(24); }
+        if let Some(f) = flag(args, "--p-step") { c.p_step_floor = f.parse().unwrap_or(0.05); }
+        if let Some(p) = flag(args, "--penalty") { c.penalty_ms = p.parse().unwrap_or(3000.0); }
+        c.fast = has(args, "--fast-fan");
+        // the same parallel precompute + budget as the pure chain (the cost is inside Chained; a memo on top saw 0 hits)
+        let budget = std::time::Duration::from_secs_f64(flag(args, "--budget-s").and_then(|s| s.parse().ok()).unwrap_or(300.0));
+        let cthreads: usize = flag(args, "--chain-threads").and_then(|s| s.parse().ok()).unwrap_or(32);
+        let (done, total, secs) = c.precompute(cthreads, budget);
+        println!("  chained precompute (hybrid): {done}/{total} edges priced in {secs:.1} s on {cthreads} threads (budget {:.0} s){}", budget.as_secs_f64(), if done < total { " — the rest fall back to the gate head" } else { "" });
+        c.fallback = Some(tmr::estimator::REstimator { w, feat: &feat, gates, nodes, surf, h_max, h_min, keep: keep.clone(), p_floor: 0.0 });
+        Some(c)
+    } else { None };
+    // memoised: the beam asks the same (bucket, prev, from, to) thousands of times
+    let chained_memo = chained.as_ref().map(|c| tmplan::estimator::Memo::new(c as &dyn EdgeEstimator));
+    let chained_h_memo = chained_h.as_ref().map(|c| tmplan::estimator::Memo::new(c as &dyn EdgeEstimator));
+    let geo_speed = tmplan::estimator::Geometric { time_model: tmplan::estimator::TimeModel::Speed, d: &d_m, len: &len_m, nodes, flight: None, surface: Some(surf), dirs: Some(&dirs_m), drop: Some(&drop_m), drop_penalty: 0.0, specials: Some((&leg_specials, gates)) };
+    let hybrid = chained_h_memo.as_ref().map(|c| tmplan::estimator::Hybrid { geo: &geo, learned: c, geo_time: Some(&geo_speed), override_p: flag(args, "--override-p").and_then(|s| s.parse().ok()).unwrap_or(0.8), override_frac: flag(args, "--override-frac").and_then(|s| s.parse().ok()).unwrap_or(0.5), detour_ratio: flag(args, "--detour").and_then(|s| s.parse().ok()).unwrap_or(4.0), detour_speed: flag(args, "--detour-speed").and_then(|s| s.parse().ok()).unwrap_or(50.0), nodes, len: &len_m, counts: std::cell::Cell::new((0, 0)) });
+    let est_dyn: &dyn EdgeEstimator = match (&hybrid, &chained_memo) {
+        (Some(h), _) => h,
+        (None, Some(c)) => c,
+        (None, None) => &est,
     };
     let t0 = std::time::Instant::now();
     let plans = tmplan::planner::beam(nodes, est_dyn, width, top_k, StateBucket::of_speed(0.0));
-    println!("{}\t{}\tcp_groups {}\tfinish_groups {}\testimator {}\tbeam {}\tplans {}\t{:.1} s", gates.map_name, gates.map_uid, nodes.n_cp, nodes.n_fin, est_dyn.name(), width, plans.len(), t0.elapsed().as_secs_f64());
+    let fb = [&chained, &chained_h].into_iter().flatten().map(|c| c.fallbacks_used.load(std::sync::atomic::Ordering::Relaxed)).sum::<usize>();
+    println!("{}\t{}\tcp_groups {}\tfinish_groups {}\testimator {}\tbeam {}\tplans {}\t{:.1} s\tgate-head fallbacks {}", gates.map_name, gates.map_uid, nodes.n_cp, nodes.n_fin, est_dyn.name(), width, plans.len(), t0.elapsed().as_secs_f64(), fb);
+    if let Some(h) = &hybrid {
+        let (ng, nr) = h.counts.get();
+        println!("  hybrid pricing: {ng} edge queries geometric, {nr} learned");
+        // --diag: where geometry and R DISAGREE by > 2× on a leg (from rest), with the surface path behind it
+        if has(args, "--diag") {
+            println!("  disagreement (from rest; geo = cost-mode s, R = chained s/p; path len / chord / cost-speed):");
+            let n = nodes.pos.len();
+            for from in 0..n {
+                for to in 0..n {
+                    if from == to || (to == 0) { continue; }
+                    let b = StateBucket::of_speed(0.0);
+                    let g = h.geo.estimate(b, None, from, to);
+                    let r = h.learned.estimate(b, None, from, to);
+                    let len = len_m[from][to];
+                    let p = nodes.pos[from]; let q = nodes.pos[to];
+                    let chord = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+                    let gs = g.expected_ms as f32 / 1000.0; let rs = r.expected_ms as f32 / 1000.0;
+                    let ts = h.geo_time.map(|t| t.estimate(b, None, from, to).expected_ms as f32 / 1000.0).unwrap_or(f32::NAN);
+                    let ratio = if ts > 0.0 && rs > 0.0 { (ts / rs).max(rs / ts) } else { f32::INFINITY };
+                    if ratio > 2.0 || len.is_infinite() {
+                        let lab = |i: usize| -> String { if i == 0 { "spawn".into() } else { format!("g{}", nodes.groups[i]) } };
+                        println!("    {:>5} → {:<5}  geo cost {} speed {:.3}s {:?}  R {} p {:.2}  speed/R ratio {:.1}  path {:.0} m  chord {:.0} m  cost-speed {:.0}{}", lab(from), lab(to), if gs > 0.0 { format!("{gs:.3}") } else { "none".into() }, ts, g.kind, if rs > 0.0 { format!("{rs:.3}") } else { "none".into() }, r.p_reach, ratio, len, chord, if gs > 0.0 { len / gs } else { f32::NAN }, if rs > 0.0 && r.p_reach >= 0.8 && rs < 0.5 * ts { "  ← R OVERRIDES" } else { "" });
+                    }
+                }
+            }
+        }
+    }
+    for m in [&chained_memo, &chained_h_memo].into_iter().flatten() {
+        println!("  memo: {} chain evaluations, {} cache hits", m.misses.get(), m.hits.get());
+    }
     let prov = provenance("plan");
     let out_dir = flag(args, "--out-dir");
     let (_d, _len, _drop, fields) = surf.distance_matrix_full(&nodes);
     for (k, p) in plans.iter().enumerate() {
         let (g, wp) = order_str(&nodes, &gates, &p.visit);
-        let legs: Vec<String> = p.edges.iter().map(|e| format!("{:.2}@{}", e.p_reach, tmr::secs(e.expected_ms as i64))).collect();
+        let legs: Vec<String> = p.edges.iter().map(|e| format!("{:.2}@{}{}", e.p_reach, tmr::secs(e.expected_ms as i64), match e.kind { tmplan::estimator::EdgeKind::Learned => "R", tmplan::estimator::EdgeKind::Flight => "F", _ => "" })).collect();
         println!("  rank {k}: predicted {}  P(reach) {:.3}  groups [{}]  waypoints [{}]  legs p@t [{}]", tmr::secs(p.total_ms as i64), p.p_reach, g, wp, legs.join(" "));
         if let Some(dir) = &out_dir {
-            let source = flag(args, "--source").unwrap_or_else(|| "router-plan-r".into());
+            let source = flag(args, "--source").unwrap_or_else(|| if hybrid_on { "router-plan-hyb".into() } else { "router-plan-r".into() });
             let mut route = tmplan::export::export(gates, nodes, surf, &fields, p, k as u32, &est_dyn.name(), &prov);
             route.source = source.clone();
             if let Some(r) = route.route.as_mut() {
@@ -683,6 +751,7 @@ fn cmd_legs(args: &[String]) {
         if let Some(b) = flag(args, "--beam") { c.beam = b.parse().unwrap_or(24); }
         if let Some(f) = flag(args, "--p-step") { c.p_step_floor = f.parse().unwrap_or(0.05); }
         if let Some(p) = flag(args, "--penalty") { c.penalty_ms = p.parse().unwrap_or(3000.0); }
+        c.fast = has(args, "--fast-fan");
         c
     });
     let ho = flag(args, "--human-orders").unwrap_or_else(|| die("--human-orders human-orders.tsv"));
@@ -852,7 +921,10 @@ fn cmd_watch(args: &[String]) {
             }
             let mut ok = true;
             for kind in ["gate", "local"] {
-                let ok_ = BuildOpts { kind: kind.into(), fv: o.fv, max_rows: o.max_rows, threads: o.threads, geom: o.geom.clone(), maps: o.maps.clone(), no_geom: o.no_geom, out: o.out.clone() };
+                // --gate-rows N caps the GATE rows separately (they need fewer: 60k/map trains the order prior as
+                // well as 150k did, and a 60-map round was taking an hour per head)
+                let cap = if kind == "gate" { flag(args, "--gate-rows").and_then(|s| s.parse().ok()).unwrap_or(o.max_rows).min(if o.max_rows > 0 { o.max_rows } else { usize::MAX }) } else { o.max_rows };
+                let ok_ = BuildOpts { kind: kind.into(), fv: o.fv, max_rows: cap, threads: o.threads, keep_fast: o.keep_fast, geom: o.geom.clone(), maps: o.maps.clone(), no_geom: o.no_geom, out: o.out.clone() };
                 match build_one(&d, &ok_, &mut log) {
                     Ok((_, line)) => println!("{line}"),
                     Err(e) => {
@@ -877,6 +949,7 @@ fn cmd_watch(args: &[String]) {
             let stamp = now_utc();
             println!("watch: {} map(s) changed ({}), training v{version} at {stamp}", changed.len(), changed.join(","));
             let mut summary = format!("## {stamp} — tmr watch v{version}: rebuilt {} map(s) [{}]\n", changed.len(), changed.join(", "));
+            let mut latest_lines: Vec<String> = Vec::new();
             // variants: plain, and (when --geo-dropout p is given) the geometry block-dropout A/B
             let mut variants: Vec<(String, Vec<String>)> = vec![(String::new(), vec![])];
             if let Some(p) = flag(args, "--geo-dropout") {
@@ -921,8 +994,23 @@ fn cmd_watch(args: &[String]) {
                     }
                     Err(e) => summary.push_str(&format!("[{kind}{suffix}] train failed to finish: {e}\n")),
                 }
-                let _ = std::fs::copy(&model, bank.join(format!("{prefix}-latest{suffix}.tmw")));
+                // atomic pointer: copy to a temp name in the bank, then rename (a consumer read a half-written
+                // pointer mid-copy — GEOM's plan-r, 7 of 30 maps)
+                let latest = bank.join(format!("{prefix}-latest{suffix}.tmw"));
+                let tmp = bank.join(format!(".{prefix}-latest{suffix}.tmw.tmp"));
+                if std::fs::copy(&model, &tmp).is_ok() {
+                    let _ = std::fs::rename(&tmp, &latest);
+                }
+                latest_lines.push(format!("{prefix}-latest{suffix}.tmw = {prefix}-v{version}{suffix}.tmw"));
             }
+            }
+            // LATEST.txt: which versions the pointers are (atomic too)
+            {
+                let body = format!("{}\nwritten {}\n", latest_lines.join("\n"), now_utc());
+                let tmp = bank.join(".LATEST.txt.tmp");
+                if std::fs::write(&tmp, body).is_ok() {
+                    let _ = std::fs::rename(&tmp, bank.join("LATEST.txt"));
+                }
             }
             print!("{summary}");
             use std::io::Write;

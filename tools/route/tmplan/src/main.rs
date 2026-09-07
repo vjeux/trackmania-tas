@@ -199,7 +199,7 @@ fn cmd_legs(args: &[String]) {
         let pb = nodes.pos[b];
         let prof = surf.chord_profile(pa, pb, step, reach);
         let mats: Vec<String> = prof.materials().iter().map(|(m, f)| format!("{m} {:.0}%", f * 100.0)).collect();
-        let tag = match e.kind { EdgeKind::Surface => "surface", EdgeKind::Flight => "NO-SURFACE-PATH", EdgeKind::None => "none" };
+        let tag = match e.kind { EdgeKind::Surface => "surface", EdgeKind::Flight => "NO-SURFACE-PATH", EdgeKind::Learned => "learned", EdgeKind::None => "none" };
         println!(
             "  leg {li}: g{} → g{} [{}]  surface path {}  chord {:.1} m horiz, dy {:+.1} m  gaps {} (longest {:.1} m)  beneath the chord: {}",
             if a == 0 { "spawn".into() } else { nodes.groups[a].to_string() },

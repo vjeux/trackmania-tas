@@ -44,6 +44,9 @@ pub enum EdgeKind {
     Surface,
     /// No surface path; a ballistic/drag-limited flight chord was allowed.
     Flight,
+    /// Priced by a LEARNED estimator (R's chain) — the hybrid used it because the surface graph had no
+    /// path or its path was a detour.
+    Learned,
     /// Nothing: the estimator refuses this leg.
     None,
 }
@@ -255,5 +258,113 @@ impl<'a> EdgeEstimator for Geometric<'a> {
             None => base.into(),
             Some(f) => format!("{base}+flight(h<={:.0},rise<={:.0},x{:.1})", f.max_horiz, f.max_rise, f.cost_mult),
         }
+    }
+}
+
+/// The HYBRID estimator (coordinator, 2026-09-07 14:52Z): the geometric estimator is the strong prior on
+/// roads — a leg the surface graph connects is priced geometrically, unless the graph's path is a DETOUR
+/// (path length > `detour_ratio` × the straight chord, the F8 signature of a missing connection: humans
+/// fly what the graph walks around) — then, and whenever the graph has no path at all, the leg is priced
+/// by the learned estimator (R's chained local head). Every edge records which one priced it
+/// (`EdgeKind::Surface` / `Flight` = geometric, `EdgeKind::Learned` = R).
+pub struct Hybrid<'a> {
+    pub geo: &'a dyn EdgeEstimator,
+    pub learned: &'a dyn EdgeEstimator,
+    /// Surface path length / chord above which the graph is not trusted (4.0; hairpin roads on Spring 2026 - 17
+    /// reach 3×, the F8 detours 2.4–5×).
+    pub detour_ratio: f32,
+    /// COST-implied speed (path length / the geometric estimator's own leg time) below which the graph path is a
+    /// penalised detour (off-road / decoration crossing): a road leg prices at ~100 m/s in cost units, Summer
+    /// 2026 - 04's two F8 detour legs at 20. Default 50.
+    pub detour_speed: f32,
+    /// The geometric estimator in its SPEED time model (real seconds) — only for comparing against R's real
+    /// seconds; cost-mode "seconds" are ~path/100 m/s and cannot be compared to a physical time.
+    pub geo_time: Option<&'a dyn EdgeEstimator>,
+    /// R overrides a connected non-detour leg when its chained p ≥ `override_p` AND its time is below
+    /// `override_frac` × the geometric SPEED-model time — a jump/drop the graph walks around (coordinator, 16:43Z).
+    pub override_p: f32,
+    pub override_frac: f32,
+    /// Node positions (for the chord) and the surface path lengths.
+    pub nodes: &'a Nodes,
+    pub len: &'a [Vec<f32>],
+    /// Count of legs priced by each side (interior mutability so the beam can report it).
+    pub counts: std::cell::Cell<(u32, u32)>,
+}
+
+impl<'a> Hybrid<'a> {
+    fn chord(&self, a: usize, b: usize) -> f32 {
+        let p = self.nodes.pos[a];
+        let q = self.nodes.pos[b];
+        ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
+    }
+}
+
+impl<'a> EdgeEstimator for Hybrid<'a> {
+    fn estimate(&self, bucket: StateBucket, prev: Option<usize>, from: usize, to: usize) -> Edge {
+        let g = self.geo.estimate(bucket, prev, from, to);
+        let has_path = self.len[from][to].is_finite() && g.kind == EdgeKind::Surface;
+        let implied = if g.expected_ms > 0 { self.len[from][to] / (g.expected_ms as f32 / 1000.0) } else { f32::INFINITY };
+        let detour = has_path && (self.len[from][to] > self.detour_ratio * self.chord(from, to).max(20.0) || implied < self.detour_speed);
+        if has_path && !detour {
+            // the override: R confident AND much faster than the physical time along the graph path
+            if let Some(gt) = self.geo_time {
+                let r = self.learned.estimate(bucket, prev, from, to);
+                let t_geo = gt.estimate(bucket, prev, from, to).expected_ms;
+                if r.kind != EdgeKind::None && r.expected_ms > 0 && t_geo > 0 && r.p_reach >= self.override_p && (r.expected_ms as f32) < self.override_frac * t_geo as f32 {
+                    let (a, b) = self.counts.get();
+                    self.counts.set((a, b + 1));
+                    return Edge { kind: EdgeKind::Learned, ..r };
+                }
+            }
+            let (a, b) = self.counts.get();
+            self.counts.set((a + 1, b));
+            return g;
+        }
+        let r = self.learned.estimate(bucket, prev, from, to);
+        if r.kind != EdgeKind::None && r.expected_ms > 0 {
+            let (a, b) = self.counts.get();
+            self.counts.set((a, b + 1));
+            return Edge { kind: EdgeKind::Learned, ..r };
+        }
+        // R refused: fall back to whatever geometry had (a detour path or a flight chord, or nothing)
+        let (a, b) = self.counts.get();
+        self.counts.set((a + 1, b));
+        g
+    }
+    fn name(&self) -> String {
+        format!("hybrid(geo: {}, learned: {}, detour > {:.1}× or cost-speed < {:.0})", self.geo.name(), self.learned.name(), self.detour_ratio, self.detour_speed)
+    }
+}
+
+/// Memoises an estimator on (bucket, prev, from, to): the beam re-queries the same edge thousands of
+/// times (every partial tour at `from` with the same arrival bucket asks the same question), and a
+/// learned estimator pays a network forward pass per query — Poland 2026 took > 75 min un-memoised.
+pub struct Memo<'a> {
+    pub inner: &'a dyn EdgeEstimator,
+    cache: std::cell::RefCell<std::collections::HashMap<(u8, u8, u32, u32, u32), Edge>>,
+    pub hits: std::cell::Cell<u64>,
+    pub misses: std::cell::Cell<u64>,
+}
+
+impl<'a> Memo<'a> {
+    pub fn new(inner: &'a dyn EdgeEstimator) -> Memo<'a> {
+        Memo { inner, cache: std::cell::RefCell::new(std::collections::HashMap::new()), hits: std::cell::Cell::new(0), misses: std::cell::Cell::new(0) }
+    }
+}
+
+impl<'a> EdgeEstimator for Memo<'a> {
+    fn estimate(&self, bucket: StateBucket, prev: Option<usize>, from: usize, to: usize) -> Edge {
+        let key = (bucket.speed_bin, bucket.car, prev.map_or(u32::MAX, |p| p as u32), from as u32, to as u32);
+        if let Some(e) = self.cache.borrow().get(&key) {
+            self.hits.set(self.hits.get() + 1);
+            return e.clone();
+        }
+        self.misses.set(self.misses.get() + 1);
+        let e = self.inner.estimate(bucket, prev, from, to);
+        self.cache.borrow_mut().insert(key, e.clone());
+        e
+    }
+    fn name(&self) -> String {
+        self.inner.name()
     }
 }
