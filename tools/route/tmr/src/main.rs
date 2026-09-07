@@ -11,7 +11,7 @@
 //!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--local rl.tmw --estimator chained [--chain-beam 24] [--p-step 0.05] [--penalty 3000]]
 //!            [--top-k 3] [--beam 4000] [--p-floor 0.02] [--out-dir DIR] [--source NAME]
 //!                                        the planner over R (tmplan's beam, R as the EdgeEstimator) — the M2 seam
-//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--geo-dropout p] [--held-out uid,..] [--batch B] [--lr X] [--force-first] [--interval S] [--once] [--epochs N] [--threads T]
+//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--max-rows-total N] [--geo-dropout p] [--held-out uid,..] [--batch B] [--lr X] [--force-first] [--interval S] [--once] [--epochs N] [--threads T]
 //!                                        rebuild rows for new/changed shards, retrain both heads, publish bank/r-v<N>.tmw + rl-v<N>.tmw + reports
 //!   tmr report --bank DIR [--bank DIR2] [--out REPORT.md]   one table per watcher bank: every version's held-out numbers
 //!   tmr split UID..                      which maps the fnv1a64 rule holds out
@@ -756,8 +756,13 @@ fn rows_file_name(uid: &str, kind: &str) -> String {
 /// retrain both heads, evaluate, and publish `bank/r-v<N>.tmw`, `bank/rl-v<N>.tmw`,
 /// `bank/r-v<N>.md` (per-map table) and append a STATUS line. Never stops at a finished step.
 fn cmd_watch(args: &[String]) {
-    let o = build_opts(args);
+    let mut o = build_opts(args);
     let bank = PathBuf::from(flag(args, "--bank").unwrap_or_else(|| die("--bank DIR")));
+    // --max-rows-total N: the per-map cap shrinks as maps arrive so the training set stays ≤ N rows
+    // (a v2 row is 2,692 f32 = 10.8 KB; 2.4 M rows ≈ 26 GB in RAM, twice that at the Set copy). A cap change
+    // invalidates the cache (rows are re-subsampled), recorded in <cache>/CAP.
+    let max_total: usize = flag(args, "--max-rows-total").and_then(|s| s.parse().ok()).unwrap_or(0);
+    let base_cap = o.max_rows;
     std::fs::create_dir_all(&bank).unwrap_or_else(|e| die(&e.to_string()));
     let interval: u64 = flag(args, "--interval").and_then(|s| s.parse().ok()).unwrap_or(600);
     let once = has(args, "--once");
@@ -771,7 +776,25 @@ fn cmd_watch(args: &[String]) {
     loop {
         let mut changed = Vec::new();
         let mut log = Vec::new();
-        for d in reach_dirs(args) {
+        let dirs = reach_dirs(args);
+        if max_total > 0 && !dirs.is_empty() {
+            let cap = (max_total / dirs.len()).min(if base_cap > 0 { base_cap } else { usize::MAX });
+            let cap_file = o.out.join("CAP");
+            let prev: usize = std::fs::read_to_string(&cap_file).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+            if prev != cap {
+                println!("watch: per-map row cap {prev} → {cap} ({} maps, total ≤ {max_total}): invalidating the row cache", dirs.len());
+                if let Ok(rd) = std::fs::read_dir(&o.out) {
+                    for e in rd.flatten() {
+                        if e.file_name().to_string_lossy().ends_with(".rows") {
+                            let _ = std::fs::remove_file(e.path());
+                        }
+                    }
+                }
+                let _ = std::fs::write(&cap_file, cap.to_string());
+            }
+            o.max_rows = cap;
+        }
+        for d in dirs {
             let Some(uid) = data::shard_map_uid(&d) else { continue };
             let shard = d.join("samples.tmr");
             let Ok(meta) = std::fs::metadata(&shard) else { continue };
