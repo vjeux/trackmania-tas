@@ -877,6 +877,7 @@ fn cmd_watch(args: &[String]) {
             let stamp = now_utc();
             println!("watch: {} map(s) changed ({}), training v{version} at {stamp}", changed.len(), changed.join(","));
             let mut summary = format!("## {stamp} — tmr watch v{version}: rebuilt {} map(s) [{}]\n", changed.len(), changed.join(", "));
+            let mut latest_lines: Vec<String> = Vec::new();
             // variants: plain, and (when --geo-dropout p is given) the geometry block-dropout A/B
             let mut variants: Vec<(String, Vec<String>)> = vec![(String::new(), vec![])];
             if let Some(p) = flag(args, "--geo-dropout") {
@@ -921,8 +922,23 @@ fn cmd_watch(args: &[String]) {
                     }
                     Err(e) => summary.push_str(&format!("[{kind}{suffix}] train failed to finish: {e}\n")),
                 }
-                let _ = std::fs::copy(&model, bank.join(format!("{prefix}-latest{suffix}.tmw")));
+                // atomic pointer: copy to a temp name in the bank, then rename (a consumer read a half-written
+                // pointer mid-copy — GEOM's plan-r, 7 of 30 maps)
+                let latest = bank.join(format!("{prefix}-latest{suffix}.tmw"));
+                let tmp = bank.join(format!(".{prefix}-latest{suffix}.tmw.tmp"));
+                if std::fs::copy(&model, &tmp).is_ok() {
+                    let _ = std::fs::rename(&tmp, &latest);
+                }
+                latest_lines.push(format!("{prefix}-latest{suffix}.tmw = {prefix}-v{version}{suffix}.tmw"));
             }
+            }
+            // LATEST.txt: which versions the pointers are (atomic too)
+            {
+                let body = format!("{}\nwritten {}\n", latest_lines.join("\n"), now_utc());
+                let tmp = bank.join(".LATEST.txt.tmp");
+                if std::fs::write(&tmp, body).is_ok() {
+                    let _ = std::fs::rename(&tmp, bank.join("LATEST.txt"));
+                }
             }
             print!("{summary}");
             use std::io::Write;
