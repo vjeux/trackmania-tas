@@ -310,23 +310,6 @@ fn main() {
             }
             eprintln!("{} of {} candidate entries carry a 0x090F4000 header chunk", n, paths.len());
         }
-        // item-rename IN.Item.Gbx --out OUT --ident NAME.Item.Gbx [--author A]: the
-        // game's own item file under a new Ident (every length-prefixed ident /
-        // name / author string replaced in header and body) so it can be
-        // EMBEDDED in a map as is — every reference it carries still points
-        // into the packs, which is the question such a copy asks the game.
-        "item-rename" => {
-            let inp = a.rest.get(1).cloned().unwrap_or_else(|| die("item-rename IN.Item.Gbx --out OUT --ident NAME.Item.Gbx [--author A]".to_string()));
-            let bytes = std::fs::read(&inp).unwrap_or_else(|e| die(format!("{inp}: {e}")));
-            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".to_string()));
-            let ident = flag(&a.rest, "--ident").unwrap_or_else(|| die("--ident NAME.Item.Gbx".to_string()));
-            let author = flag(&a.rest, "--author").unwrap_or_else(|| ident.clone());
-            let (old_name, old_author) = tmmaps::header::item_ident_author(&bytes).unwrap_or_else(|| die(format!("{inp}: no header ident")));
-            let renamed = mapgeom::tiny_assets::rename_item_ident(&bytes, &old_name, &old_author, &ident, &author);
-            std::fs::write(&out, &renamed).unwrap_or_else(|e| die(e.to_string()));
-            let back = tmmaps::header::item_ident_author(&renamed).map(|(n, a)| format!("{n} by {a}")).unwrap_or_else(|| "NOT READ BACK".into());
-            println!("wrote {out}: ident {old_name:?} by {old_author:?} -> {back} ({} bytes)", renamed.len());
-        }
         // skin FILE [--from SRC --out OUT]: print a GBX file's skin declaration
         // (header chunk 0x090F4000), or graft SRC's declaration onto FILE and
         // write OUT — the one-item experiment before the bake carried it.

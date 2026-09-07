@@ -257,46 +257,6 @@ pub fn rename_item_ident(bytes: &[u8], old_name: &str, old_author: &str, name: &
     g.write_body_recompressed(&body)
 }
 
-/// The game's own item file under a new Ident (`name` by `author`, both
-/// replacing every length-prefixed occurrence of the old ones in header and
-/// body — the ident, the collector name, the icon-less description), so the
-/// stock bytes can be EMBEDDED in a map as they are. Every reference the file
-/// carries (its prefab, its placement params) still points into the packs —
-/// whether the game resolves those from an embedded item is the question
-/// such a copy asks (2026-09-07: the screen-ad test).
-pub fn rename_item_ident(bytes: &[u8], old_name: &str, old_author: &str, name: &str, author: &str) -> Vec<u8> {
-    let mut g = Gbx::parse(bytes);
-    // header: only the collector-description chunk carries the ident; the
-    // size table must follow the new string lengths
-    let mut chunks = tmmaps::header::user_chunks(&g.user_data).expect("item header chunk table");
-    for c in chunks.iter_mut().filter(|c| c.id == 0x2E00_1003) {
-        c.data = replace_lp(std::mem::take(&mut c.data), old_name, name);
-        if old_author != author {
-            c.data = replace_lp(std::mem::take(&mut c.data), old_author, author);
-        }
-    }
-    let mut ud = Vec::new();
-    ud.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
-    for c in &chunks {
-        ud.extend_from_slice(&c.id.to_le_bytes());
-        ud.extend_from_slice(&((c.data.len() as u32) | if c.heavy { 0x8000_0000 } else { 0 }).to_le_bytes());
-    }
-    for c in &chunks {
-        ud.extend_from_slice(&c.data);
-    }
-    g.user_data = ud;
-    g.body = replace_lp(g.body, old_name, name);
-    if old_author != author {
-        g.body = replace_lp(g.body, old_author, author);
-    }
-    let body = g.body.clone();
-    if g.comp.is_some() {
-        g.write_body_recompressed(&body)
-    } else {
-        g.write_body_uncompressed(&body)
-    }
-}
-
 /// Give an item file the Ident the game matches placements against: the
 /// header chunk 0x2E001003 rebuilt with `name` and `author` as fresh lookback
 /// strings (the archive crystals ship with NO ident name at all, and a
