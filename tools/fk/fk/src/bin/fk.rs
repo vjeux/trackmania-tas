@@ -19,7 +19,12 @@ fk -- the driver for the TM2020 dedicated server used as a physics oracle.
   fk tree cost       what a savestate-tree branch costs, against every baseline  [Q1]
   fk tree exact      forward-only fork exactness, with both controls and a depth sweep
   fk tree scale      branch-evals per second with many servers side by side
-  fk liveness        is this anchor the copy of the car that has the fields?
+  fk locate          the car, DERIVED: every pointer hop, the record, the clock; timed
+  fk locate census   every copy of the car in memory, by object and by phase
+  fk locate check    body == copy-out bit for bit, every tick of a run  [THE CONTROL]
+  fk locate mirror   hard left vs hard right: which object answers first
+  fk locate watch    under gdb: who writes each copy, and in what order
+  fk liveness        do the wheel fields of the car's vis state move?
   fk probe           find a named telemetry channel in the car's memory
   fk trace           one fork -> the car's own state per tick, as a 29-column CSV
   fk watch           the early-abort watchdog: exactness, false positives, speedup
@@ -96,6 +101,43 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                     num(rest, "--seed").unwrap_or(1) as u64,
                 ),
                 _ => Err("fk server <probe|check|bench>".into()),
+            }
+        }
+        "locate" => {
+            let verb = a.get(1).map(|s| s.as_str()).unwrap_or("");
+            let (sub, rest): (&str, &[String]) = match verb {
+                "census" | "check" | "mirror" | "watch" => (verb, &a[2..]),
+                _ => ("", &a[1..]),
+            };
+            match sub {
+                "" => {
+                    let (engine, tape, at) = common(rest)?;
+                    cmd::locate::show(&engine, tape, at, num(rest, "--reps").unwrap_or(1000) as usize)
+                }
+                "census" => {
+                    let (engine, tape, at) = common(rest)?;
+                    let radius = flag(rest, "--radius").and_then(|v| v.parse().ok()).unwrap_or(5.0);
+                    cmd::locate::census(&engine, tape, at, radius, num(rest, "--ticks").unwrap_or(64) as u32)
+                }
+                "check" => {
+                    let (engine, tape, at) = common(rest)?;
+                    cmd::locate::check(&engine, tape, at, num(rest, "--ticks").map(|v| v as u32))
+                }
+                "mirror" => {
+                    let (engine, tape, at) = common(rest)?;
+                    cmd::locate::mirror(
+                        &engine,
+                        tape,
+                        at,
+                        num(rest, "--hold").unwrap_or(5) as usize,
+                        num(rest, "--ticks").unwrap_or(24) as u32,
+                    )
+                }
+                "watch" => {
+                    let (engine, tape, _) = common(rest)?;
+                    cmd::locate::watch(&engine, tape, num(rest, "--arm").unwrap_or(400) as u32)
+                }
+                _ => unreachable!(),
             }
         }
         "liveness" => {
