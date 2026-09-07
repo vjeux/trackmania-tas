@@ -47,6 +47,14 @@ pub const CGAME_VEHICLE_PHY: u32 = 0x032e_2000;
 
 /// The checkpoint counter's offset from the validator's participant object,
 /// build 128182. Measured, not fitted: see `ValidatorCar::resolve`.
+/// The `CSceneVehicleVisState` inside a `CGameVehiclePhy` (WHEELS.md §1: its
+/// position triple is at +0x50, i.e. phy+0x898 = ValidatorCar.pos - 2728).
+pub const VIS_IN_VEHICLE: u64 = 0x848;
+
+/// The simulation time word inside the validation sim object (ms, +10 per tick,
+/// car-independent) -- WHEELS.md §6.
+pub const SIM_TIME_OFF: u64 = 0x48;
+
 pub const CP_COUNTER_OFF: u64 = 0xc70;
 /// Three more slots that step with it on every server measured; read at the
 /// root as a cross-check that the offsets hold on this process.
@@ -61,6 +69,10 @@ pub struct ValidatorCarProvenance {
     pub participant: u64,
     pub vehicle: u64,
     pub state_pos: u64,
+    /// Which participant slot was live: 0 Stadium, 1 Snow, 2 Rally, 3 Desert.
+    pub car: u8,
+    /// The live vehicle's `CSceneVehicleVisState` (`vehicle + 0x848`, 0x360 B).
+    pub vis: u64,
 }
 
 /// A car whose identity came from the validator's controlled-player ownership
@@ -86,9 +98,38 @@ impl ValidatorCar {
         bias_max: i64,
         verbose: bool,
     ) -> Result<Self, String> {
-        let clock =
-            crate::locate::find_clock2(srv, probe, recs, start_offset_ms, bias_max, verbose)?;
+        // THE CLOCK: the simulation's own time word at `sim + 0x48`, which is
+        // car-independent. The race counter `find_clock2` locates sits beside
+        // the ROOT car's vis state and FREEZES when a car-switch block re-binds
+        // the participant's vehicle (INPUT arm, WHEELS.md §6: every later tick
+        // then dedups into one row). The sim word must read within a tick of the
+        // handshake's own sim time, or the scan is used as before.
+        let clock = match Self::sim_clock(srv, verbose) {
+            Some(c) => c,
+            None => crate::locate::find_clock2(srv, probe, recs, start_offset_ms, bias_max, verbose)?,
+        };
         Self::resolve(srv, probe, recs, clock, bounds, verbose)
+    }
+
+    /// `sim + 0x48` as the race clock, labelled by `measured_clock_bias`, if it
+    /// reads like the simulation time the handshake reported.
+    pub fn sim_clock(srv: &mut ForkServer, verbose: bool) -> Option<ClockHit> {
+        if srv.validation_sim < 0x1000 || srv.sim_ms == 0 {
+            return None;
+        }
+        let addr = srv.validation_sim + SIM_TIME_OFF;
+        let v = procmem::read_at(srv.pid(), addr, 4).map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()))? as i64;
+        if (v - srv.sim_ms as i64).abs() > 20 {
+            if verbose {
+                println!("CLOCK sim+{:#x} reads {} but the handshake says sim {} -- not using it", SIM_TIME_OFF, v, srv.sim_ms);
+            }
+            return None;
+        }
+        let bias = forkoracle::layout::measured_clock_bias(srv, addr).ok()?;
+        if verbose {
+            println!("CLOCK sim+{:#x} = {:#x} reads {} (handshake sim {}), bias {:+} -- car-independent", SIM_TIME_OFF, addr, v, srv.sim_ms, bias);
+        }
+        Some(ClockHit { addr, bias })
     }
 
     /// Resolve and behaviorally validate the one controlled vehicle. Every hop
@@ -179,10 +220,14 @@ impl ValidatorCar {
             layout: Layout {
                 pos: provenance.state_pos,
                 clock: clock.addr,
-                clock_bias: clock.bias,
+                // ValidatorCar.pos is the PHYSICS object: its label is the vis
+                // label + 10 (forkoracle::layout::physics_bias).
+                clock_bias: forkoracle::layout::physics_bias(clock.bias),
                 rms: hit.verr,
                 max_dev: hit.qerr,
                 cps,
+                vis: provenance.vis,
+                car: provenance.car,
             },
             provenance,
         })
@@ -263,18 +308,52 @@ fn resolve_with(
         "playground.players",
     )?;
     let participant = ptr(&mut read, players, "players[0]")?;
-    let class = u32_at(&mut read, participant + o.participant_vehicle_class)?;
-    if class != CGAME_VEHICLE_PHY {
+    // THE LIVE VEHICLE, not slot 0. The participant holds four (class, ptr)
+    // pairs -- Stadium, Snow, Rally, Desert, in the order the cars joined the
+    // game -- at +0x1110/+0x1118, +0x1120/+0x1128, +0x1130/+0x1138,
+    // +0x1140/+0x1148; the live one is the slot whose u32 at phy+0x10 is not
+    // 0xffffffff (the other three read -1 and hold a frozen position: the
+    // spawn, or where they were swapped out). Reading slot 0 unconditionally is
+    // why the car "never moved" on Fall 2024 - 14 and froze at the first gate of
+    // Winter 2026 - 05 (INPUT arm, WHEELS.md §1, 2026-09-06). Slot 0 is the
+    // fallback only when no slot says it is live.
+    let mut phys: Vec<(u8, u64, bool)> = Vec::new();
+    for k in 0..4u64 {
+        let class = match u32_at(&mut read, participant + o.participant_vehicle_class + 0x10 * k) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        if class != CGAME_VEHICLE_PHY {
+            continue;
+        }
+        // slot 0 is the chain the build was audited on: its hop failing is a
+        // stale chain and must fail LOUDLY; a missing extra slot is just absent.
+        let phy = match ptr(&mut read, participant + o.participant_vehicle + 0x10 * k, "participant.vehicle[k]") {
+            Ok(p) => p,
+            Err(e) if k == 0 => return Err(e),
+            Err(_) => continue,
+        };
+        let live = u32_at(&mut read, phy + 0x10).map(|v| v != 0xffff_ffff).unwrap_or(false);
+        phys.push((k as u8, phy, live));
+    }
+    if phys.is_empty() || phys[0].0 != 0 {
+        let class = u32_at(&mut read, participant + o.participant_vehicle_class)?;
         return Err(format!(
             "participant primary vehicle class is {:#x}, expected CGameVehiclePhy {:#x}",
             class, CGAME_VEHICLE_PHY
         ));
     }
-    let vehicle = ptr(
-        &mut read,
-        participant + o.participant_vehicle,
-        "participant.vehicle",
-    )?;
+    let live: Vec<&(u8, u64, bool)> = phys.iter().filter(|p| p.2).collect();
+    let (car, vehicle) = match live.len() {
+        1 => (live[0].0, live[0].1),
+        0 => (phys[0].0, phys[0].1),
+        n => {
+            return Err(format!(
+                "{n} of the participant's vehicle slots say they are live ({:?}); expected exactly one",
+                live.iter().map(|p| p.0).collect::<Vec<_>>()
+            ))
+        }
+    };
     let state_pos = vehicle + o.vehicle_state_pos;
     let state = word::<40>(&mut read, state_pos - 16)?;
     let f = |i: usize| f32::from_le_bytes(state[i..i + 4].try_into().unwrap());
@@ -299,6 +378,8 @@ fn resolve_with(
         participant,
         vehicle,
         state_pos,
+        car,
+        vis: vehicle + VIS_IN_VEHICLE,
     })
 }
 
@@ -390,3 +471,34 @@ mod tests {
         assert!(e.contains("CGameVehiclePhy"), "{e}");
     }
 }
+
+/// The participant's LIVE vehicle, read from a paused process: `(slot, phy)`
+/// with slot 0 Stadium, 1 Snow, 2 Rally, 3 Desert (WHEELS.md §1; the live one
+/// is the slot whose u32 at phy+0x10 is not -1). `None` when no slot says it is
+/// live or the reads fail -- the caller keeps what it had. For following a car
+/// switch inside an episode: the participant address is the same in every
+/// fork of the server.
+pub fn live_vehicle(pid: i32, participant: u64) -> Option<(u8, u64)> {
+    let o = BUILD_128182;
+    let mut live: Vec<(u8, u64)> = Vec::new();
+    for k in 0..4u64 {
+        let class = procmem::read_at(pid, participant + o.participant_vehicle_class + 0x10 * k, 4)
+            .map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()))?;
+        if class != CGAME_VEHICLE_PHY {
+            continue;
+        }
+        let phy = procmem::read_at(pid, participant + o.participant_vehicle + 0x10 * k, 8)
+            .map(|b| u64::from_le_bytes(b[..8].try_into().unwrap()))?;
+        if phy == 0 {
+            continue;
+        }
+        let flag = procmem::read_at(pid, phy + 0x10, 4).map(|b| u32::from_le_bytes(b[..4].try_into().unwrap()))?;
+        if flag != 0xffff_ffff {
+            live.push((k as u8, phy));
+        }
+    }
+    if live.len() == 1 { Some(live[0]) } else { None }
+}
+
+/// Where a `CGameVehiclePhy`'s physics position sits (ValidatorCar.pos).
+pub const STATE_POS_IN_VEHICLE: u64 = 0x12f0;

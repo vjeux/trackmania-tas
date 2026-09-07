@@ -6,7 +6,20 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const STATE_VERSION: u32 = 1;
+/// v2 (2026-09-06, ENV): `car: u8` joins the struct in what was the padding after `finished`, so the
+/// 100-byte layout is unchanged and a v1 reader sees 0 (= Stadium) there; the wheel/gear/rpm/turbo fields
+/// are now FILLED by the env (G3: the live `CSceneVehicleVisState`), with the PHASE convention below.
+pub const STATE_VERSION: u32 = 2;
+
+/// LABEL CONVENTION (2026-09-06, measured against the tape by ENV, LEARN and INPUT): a record labelled `race_ms = T`
+/// holds the PHYSICS state (pos, vel, quat, speed) at race time T -- the state before input record
+/// `(T - start_offset) / 10` is read -- and the VIS-derived fields (gear, rpm, wheel_*, turbo, car) exactly as
+/// the ghost's own telemetry sample stamped T carries them, which is the engine's vis state = the car one tick
+/// earlier (T - 10). So: env row T and telemetry sample T agree on the vis fields with NO shift (`tmenv
+/// wheels-control` phase 0 ms on Summer 2026 - 01/02/03), and a telemetry sample's POSITION is the physics of
+/// T - 10 (DATA labels telemetry-derived pos/vel with that +10 ms lag). The phase is measured per map by the
+/// control, never assumed.
+pub const VIS_PHASE_MS_DEFAULT: i32 = 0;
 
 /// One 10 ms tick of ground-truth car state. Units: metres, m/s, radians, seconds. World frame = the map's
 /// (x east, y UP, z). Fields the source cannot provide are NaN (floats) / u8::MAX (small ints) — never zero.
@@ -30,6 +43,7 @@ pub struct CarState {
     pub turbo: f32,              // NaN unknown
     pub cps: u8,                 // checkpoints credited so far (engine-authoritative when available)
     pub finished: bool,
+    pub car: u8,                 // v2: 0 Stadium, 1 Snow, 2 Rally, 3 Desert (the participant's live vehicle slot); u8::MAX unknown
 }
 
 /// One 10 ms tick of driver input.
@@ -161,6 +175,7 @@ impl CarState {
             turbo: f32::NAN,
             cps: 0,
             finished: false,
+            car: u8::MAX,
         }
     }
 }
@@ -184,7 +199,12 @@ mod tests {
     fn car_state_is_100_bytes_repr_c() {
         assert_eq!(std::mem::size_of::<CarState>(), 100);
         assert_eq!(std::mem::size_of::<Action>(), 3);
-        assert_eq!(STATE_VERSION, 1);
+        assert_eq!(STATE_VERSION, 2);
+        // `car` lives in the former padding: offset 98, the layout of v1 is untouched
+        let s = CarState::unknown();
+        let base = &s as *const CarState as usize;
+        assert_eq!(&s.car as *const u8 as usize - base, 98);
+        assert_eq!(&s.finished as *const bool as usize - base, 97);
     }
 }
 

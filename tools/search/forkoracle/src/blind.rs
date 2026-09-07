@@ -341,6 +341,8 @@ pub fn locate_blind(
         rms: hit.vel_err,
         max_dev: hit.vel_err,
         cps: 0,
+        vis: 0,
+        car: 0,
     })
 }
 

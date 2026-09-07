@@ -465,7 +465,7 @@ pub fn locate_v2(
         if verbose {
             println!("STATE {:#014x} (base-{}) taken from FK_STATE_OFF", pos, off);
         }
-        return Ok(Layout { pos, clock: ck.addr, clock_bias: ck.bias, rms: 0.0, max_dev: 0.0, cps: 0 });
+        return Ok(Layout { pos, clock: ck.addr, clock_bias: ck.bias, rms: 0.0, max_dev: 0.0, cps: 0, vis: 0, car: 0 });
     }
     // THE CAR COMES FROM THE POINTER, not from a sweep -- and WHICH pointer is
     // decided by the validator's own car, not by whichever chain resolves.
@@ -533,6 +533,8 @@ pub fn locate_v2(
                         rms: d,
                         max_dev: 0.0,
                         cps: 0,
+                        vis: 0,
+                        car: 0,
                     });
                 }
                 Err(why) => tried.push(format!("{} -> {:#x}: {}", chain, pos, why)),
@@ -571,6 +573,8 @@ pub fn locate_v2(
         rms: d,
         max_dev: 0.0,
         cps: 0,
+        vis: 0,
+        car: 0,
     })
 }
 
@@ -692,6 +696,7 @@ pub fn trajectory(
             qy: getf32(&t.rec, R_QUAT + 8),
             qz: getf32(&t.rec, R_QUAT + 12),
             wetness: getf32(&t.rec, forkoracle::layout::R_WET),
+            vis: forkoracle::layout::Vis::UNKNOWN,
             cps: u32::MAX,
         })
         .collect()

@@ -20,6 +20,7 @@
 //! ```
 
 pub mod census;
+pub mod wordcensus;
 pub mod cli;
 pub mod declare;
 pub mod engine;

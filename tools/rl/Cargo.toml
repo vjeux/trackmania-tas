@@ -12,7 +12,7 @@
 # the network forward pass runs inside the rollout loop) and because the ML
 # dependency tree has no business in `tools/`.
 [workspace]
-members = ["tmstate", "tmobs", "tmenv", "tmrl"]
+members = ["tmstate", "tmobs", "tmenv", "tmrl", "tminput"]
 resolver = "2"
 
 [profile.release]

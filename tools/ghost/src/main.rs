@@ -60,6 +60,11 @@ INPUTS  (operation 1 and 2)
   ghost tape bits FILE... [--events]
         Which bits of the state literal actually vary across a corpus; --events
         also prints each explicit literal's tick and decoded state, never inputs.
+  ghost tape census FILE|DIR... [--digital-bar 0.98] [--runs R.tsv] [--ghosts G.tsv] [--md OUT.md]
+        The packet STATE WORD over a corpus: every distinct non-plain word, how
+        many ghosts/runs/ticks carry it, countdown vs race vs post-finish, run
+        lengths, the steer beside it (0 / ±127 / partial, edges at onset), by
+        rank bucket. Read-only; the input to the state-word experiments.
 
 CAR STATE  (operation 3)
   ghost regen IN OUT --map MAP [--anchorticks a,b,c] [--noanchor]
@@ -1496,6 +1501,7 @@ fn cmd_tape(a: &[String]) {
             }
         }
         "bits" => cmd_bits(rest),
+        "census" => ghost::wordcensus::cmd(rest),
         o => die(format!("unknown `ghost tape` operation {:?}", o)),
     }
 }
