@@ -57,5 +57,7 @@ pub mod tables;
 pub mod tiny_assets;
 pub mod tiny_library;
 pub mod static_item;
+// The reachability model's geometry query: tagged triangles, raycast, layers (INTERFACES.md §4).
+pub mod local;
 
 pub use store::{DataStore, Model};

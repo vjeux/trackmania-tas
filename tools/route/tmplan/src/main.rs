@@ -7,6 +7,7 @@
 //!        the failed-map characterisation (R4): every leg of the best flight-allowed plan that the
 //!        surface graph cannot connect, with the chord profile (what lies beneath, the gaps, the drop)
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use tmplan::estimator::{EdgeEstimator, EdgeKind, FlightModel, Geometric, StateBucket, TimeModel};
 use tmplan::planner;
@@ -216,6 +217,8 @@ fn main() {
         "plan" => cmd_plan(&args[1..]),
         "legs" => cmd_legs(&args[1..]),
         "classify" => cmd_classify(&args[1..]),
+        "local" => cmd_local(&args[1..]),
+        "families" => cmd_families(&args[1..]),
         other => die(&format!("unknown command {other}")),
     }
 }
@@ -258,7 +261,7 @@ fn human_legs(args: &[String], nodes: &Nodes, gates: &tmroute::gates::GatesFile,
         let v_h = 1000.0 * l / human_ms.max(1) as f32;
         // A human leg whose surface-graph path implies > 130 m/s, or has no path at all, was
         // NOT driven along the graph: the humans used a connection the surface reader lacks.
-        let verdict = if !l.is_finite() { "MISSING-CONNECTION (no surface path)" } else if v_h > 130.0 { "MISSING-CONNECTION (graph detour)" } else { "surface" };
+        let verdict = if !l.is_finite() { "MISSING-CONNECTION (no surface path)" } else if v_h > 150.0 { "MISSING-CONNECTION (graph detour)" } else if v_h > 130.0 { "SUSPECT (130-150 m/s: booster or detour)" } else { "surface" };
         println!("    {:>3} {:>8} {:>9.0} {:>7.1} {:>10} {:>10} {:>9.1} {:>9.1}  {}", li, format!("g{}", modal[li]), l, drop, e.expected_ms, human_ms, if e.expected_ms > 0 { 1000.0 * l / e.expected_ms as f32 } else { f32::NAN }, v_h, verdict);
         tsv.push(format!("{}\t{}\t{}\t{}\t{}\t{:.0}\t{:.1}\t{}\t{}\t{:.1}\t{}", gates.map_name, li, if a == 0 { "spawn".to_string() } else { nodes.groups[a].to_string() }, modal[li], gates.group_rep(modal[li]).map_or(u32::MAX, |g| g.waypoint), l, drop, e.expected_ms, human_ms, v_h, verdict));
         tot_pred += e.expected_ms.max(0);
@@ -299,4 +302,136 @@ fn cmd_classify(args: &[String]) {
     }
     io::write_route(Path::new(&route_path), &route).unwrap_or_else(|e| die(&e));
     println!("{}: {} leg connections changed, written", route_path, changed);
+}
+
+/// `tmplan local MAP.Map.Gbx --gates gates.json [--cache FILE] [--ghost G.Ghost.Gbx ...] [--ray x,y,z:dx,dy,dz ...]`
+/// Build (or load) the map's `LocalScene` (mapgeom::local) and answer queries. With ghosts: the control —
+/// for every telemetry sample, the nearest surface straight below the car: how far, what material, what
+/// block family; a car sits 0.3–1.2 m over its road, so the P50/P90 of that distance and the share of
+/// samples with a surface within 3 m say whether the scene is the world the car drove.
+fn cmd_local(args: &[String]) {
+    let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
+    let gp = flag(args, "--gates").unwrap_or_else(|| die("--gates gates.json required (for yoff)"));
+    let gates = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+    let t0 = std::time::Instant::now();
+    let scene = match flag(args, "--cache").filter(|c| Path::new(c).exists()) {
+        Some(c) => {
+            let s = mapgeom::local::LocalScene::load(Path::new(&c)).unwrap_or_else(|e| die(&e));
+            println!("loaded {} ({} triangles, {} placements) in {:.1} s", c, s.tri_count(), s.placements.len(), t0.elapsed().as_secs_f32());
+            s
+        }
+        None => {
+            let server = std::env::var("TM_SERVER").unwrap_or_else(|_| die("TM_SERVER"));
+            let paths: Vec<String> = ["dedicated_TMStadium.pak", "dedicated.pak", "resource.pak"].iter().map(|n| format!("{server}/Packs/{n}")).filter(|p| Path::new(p).exists()).collect();
+            let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
+            let m = tmmaps::map::MapFile::load(Path::new(&map));
+            let opts = mapgeom::local::BuildOpts { with_deco: !has(args, "--no-deco"), with_baked: !has(args, "--no-baked"), cell: flag(args, "--cell").and_then(|s| s.parse().ok()).unwrap_or(4.0) };
+            let s = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &opts);
+            println!("built {} triangles, {} placements, grid {}x{}x{} @ {} m in {:.1} s", s.tri_count(), s.placements.len(), s.dims[0], s.dims[1], s.dims[2], s.cell, t0.elapsed().as_secs_f32());
+            if let Some(c) = flag(args, "--cache") {
+                let t1 = std::time::Instant::now();
+                s.save(Path::new(&c)).unwrap_or_else(|e| die(&e.to_string()));
+                println!("cached → {c} ({:.1} MB, {:.1} s)", std::fs::metadata(&c).map(|m| m.len() as f64 / 1e6).unwrap_or(0.0), t1.elapsed().as_secs_f32());
+            }
+            s
+        }
+    };
+    // specials census
+    let mut specials: BTreeMap<String, usize> = BTreeMap::new();
+    for p in &scene.placements {
+        if p.special != mapgeom::local::Special::None {
+            *specials.entry(format!("{:?} ({})", p.special, p.name)).or_default() += 1;
+        }
+    }
+    if !specials.is_empty() {
+        println!("  gameplay placements: {}", specials.iter().map(|(k, v)| format!("{k}×{v}")).collect::<Vec<_>>().join(", "));
+    }
+    // rays
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--ray" {
+            let spec = args.get(i + 1).cloned().unwrap_or_default();
+            let (o, d) = spec.split_once(':').unwrap_or_else(|| die("--ray x,y,z:dx,dy,dz"));
+            let p3 = |s: &str| -> [f32; 3] { let v: Vec<f32> = s.split(',').filter_map(|x| x.parse().ok()).collect(); if v.len() != 3 { die("--ray x,y,z:dx,dy,dz") } [v[0], v[1], v[2]] };
+            match scene.raycast(p3(o), p3(d), 500.0, true) {
+                Some(h) => println!("  ray {spec}: hit at {:.2} m ({:.1}, {:.1}, {:.1}) normal ({:.2}, {:.2}, {:.2}) {} {} {:?} {:?}{}", h.dist, h.point[0], h.point[1], h.point[2], h.normal[0], h.normal[1], h.normal[2], h.material_name, h.family, h.kind, h.special, if h.collidable { "" } else { " NOT-COLLIDABLE" }),
+                None => println!("  ray {spec}: nothing within 500 m"),
+            }
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    // ghost control
+    let ghosts: Vec<String> = args.iter().filter(|a| a.ends_with(".Ghost.Gbx")).cloned().collect();
+    if !ghosts.is_empty() {
+        let mut dists: Vec<f32> = Vec::new();
+        let mut n = 0usize;
+        let mut within3 = 0usize;
+        let mut mats: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let mut fams: BTreeMap<String, usize> = BTreeMap::new();
+        let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+        let mut t_ray = std::time::Duration::ZERO;
+        for g in &ghosts {
+            let Ok(run) = tmroute::human::load_run(Path::new(g)) else { continue };
+            for s in run.samples.iter().filter(|s| s.t_ms >= 0) {
+                n += 1;
+                let t1 = std::time::Instant::now();
+                let (below, _) = scene.layers_below_above(s.pos, 60.0, true);
+                t_ray += t1.elapsed();
+                match below {
+                    Some(h) => {
+                        dists.push(h.dist);
+                        if h.dist <= 3.0 { within3 += 1; }
+                        *mats.entry(h.material_name).or_default() += 1;
+                        *fams.entry(h.family.clone()).or_default() += 1;
+                        *kinds.entry(format!("{:?}", h.kind)).or_default() += 1;
+                    }
+                    None => dists.push(f32::INFINITY),
+                }
+            }
+        }
+        let mut finite: Vec<f32> = dists.iter().copied().filter(|d| d.is_finite()).collect();
+        let none = dists.len() - finite.len();
+        println!(
+            "  ghost control: {} samples from {} ghosts; surface below within 3 m: {:.1} %; none within 60 m: {} ({:.1} %); dist P50 {:.2} m P90 {:.2} m; {:.1} µs per layers query",
+            n, ghosts.len(), 100.0 * within3 as f32 / n.max(1) as f32, none, 100.0 * none as f32 / n.max(1) as f32,
+            tmroute::human::percentile(&mut finite.clone(), 50.0), tmroute::human::percentile(&mut finite, 90.0),
+            t_ray.as_secs_f64() * 1e6 / (n.max(1) as f64)
+        );
+        let top = |m: &BTreeMap<_, usize>| -> String { let mut v: Vec<(String, usize)> = m.iter().map(|(k, v)| (format!("{k}"), *v)).collect(); v.sort_by(|a, b| b.1.cmp(&a.1)); v.iter().take(8).map(|(k, v)| format!("{k} {:.0}%", 100.0 * *v as f32 / n.max(1) as f32)).collect::<Vec<_>>().join(", ") };
+        println!("  materials under the car: {}", top(&mats.iter().map(|(k, v)| (k.to_string(), *v)).collect()));
+        println!("  block families under the car: {}", top(&fams));
+        println!("  placement kinds under the car: {}", top(&kinds));
+    }
+}
+
+/// `tmplan families MAP.Map.Gbx ... --gates-dir GEOM_DIR` — census of placement families over maps
+/// (for the stable family id table in mapgeom::local).
+fn cmd_families(args: &[String]) {
+    let gdir = flag(args, "--gates-dir").unwrap_or_else(|| die("--gates-dir GEOM_DIR"));
+    let server = std::env::var("TM_SERVER").unwrap_or_else(|_| die("TM_SERVER"));
+    let paths: Vec<String> = ["dedicated_TMStadium.pak", "dedicated.pak", "resource.pak"].iter().map(|n| format!("{server}/Packs/{n}")).filter(|p| Path::new(p).exists()).collect();
+    let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
+    let mut census: BTreeMap<String, (usize, usize)> = BTreeMap::new(); // family → (placements, triangles)
+    for map in args.iter().filter(|a| a.ends_with(".Map.Gbx")) {
+        let uid = Path::new(map).file_name().unwrap().to_string_lossy().replace(".Map.Gbx", "");
+        let yoff = io::read_gates(&Path::new(&gdir).join(&uid).join("gates.json")).map(|g| g.yoff).unwrap_or(-40.0);
+        let m = tmmaps::map::MapFile::load(Path::new(map));
+        let s = mapgeom::local::LocalScene::build(&mut store, &m, yoff, &mapgeom::local::BuildOpts::default());
+        let mut tri_per: Vec<usize> = vec![0; s.placements.len()];
+        for t in &s.tris { tri_per[t.tag as usize] += 1; }
+        for (i, p) in s.placements.iter().enumerate() {
+            let e = census.entry(p.family.clone()).or_default();
+            e.0 += 1;
+            e.1 += tri_per[i];
+        }
+        eprintln!("{uid}: {} placements", s.placements.len());
+    }
+    let mut v: Vec<(String, usize, usize)> = census.into_iter().map(|(k, (a, b))| (k, a, b)).collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1));
+    println!("family\tplacements\ttriangles\tid");
+    for (f, a, b) in &v {
+        println!("{f}\t{a}\t{b}\t{}", mapgeom::local::family_id(f));
+    }
 }

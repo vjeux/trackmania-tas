@@ -96,6 +96,9 @@ pub struct GatesFile {
     pub author_ms: i32,
     /// Header word: checkpoints including the finish. -1 if the header is older than v13.
     pub declared_checkpoints: i32,
+    /// Header word: laps (1 = a plain race; 2+ = a lap race whose `StartFinish` line is crossed every lap).
+    #[serde(default = "one")]
+    pub laps: u32,
     /// Checkpoint groups (excluding finish groups).
     pub checkpoint_groups: u32,
     pub finish_groups: u32,
@@ -107,12 +110,25 @@ pub struct GatesFile {
     pub produced_by: String,
 }
 
+fn one() -> u32 {
+    1
+}
+
 impl GatesFile {
-    /// The two-sided control: groups + 1 finish == declared.
+    /// The control against the header: checkpoint groups + 1 for the lap line (`StartFinish`, when the map
+    /// has one) + 1 for a plain finish (when the map has one) == declared. Winter 2026 - 10 (2 laps, no
+    /// separate finish): 5 + 1 = 6; Fall 2024 - 24 (2 laps, lap line AND two finish lines): 5 + 1 + 1 = 7;
+    /// an ordinary map: CPs + 1.
     pub fn control_ok(&self) -> bool {
-        self.declared_checkpoints >= 0
-            && self.checkpoint_groups as i32 + 1 == self.declared_checkpoints
-            && self.finish_groups >= 1
+        let has_lap_line = self.gates.iter().any(|g| g.kind == WpKind::Multilap);
+        let has_finish = self.gates.iter().any(|g| g.kind == WpKind::Finish);
+        let expected = self.checkpoint_groups as i32 + has_lap_line as i32 + has_finish as i32;
+        self.declared_checkpoints >= 0 && expected == self.declared_checkpoints && self.finish_groups >= 1
+    }
+    /// Splits a FINISHED run declares: every checkpoint and the lap line each lap, the finish last —
+    /// `laps × (checkpoint groups + 1)`; a plain race: checkpoints + 1 = the header count.
+    pub fn expected_splits(&self) -> i32 {
+        self.laps.max(1) as i32 * (self.checkpoint_groups as i32 + 1)
     }
     pub fn group_ids(&self) -> Vec<u32> {
         let mut g: Vec<u32> = self
@@ -139,7 +155,7 @@ impl GatesFile {
         let mut g: Vec<u32> = self
             .gates
             .iter()
-            .filter(|g| g.kind == WpKind::Finish)
+            .filter(|g| matches!(g.kind, WpKind::Finish | WpKind::Multilap))
             .map(|g| g.group)
             .collect();
         g.sort_unstable();
@@ -150,7 +166,7 @@ impl GatesFile {
         let mut g: Vec<u32> = self
             .gates
             .iter()
-            .filter(|g| g.kind == WpKind::Checkpoint || g.kind == WpKind::Multilap)
+            .filter(|g| g.kind == WpKind::Checkpoint)
             .map(|g| g.group)
             .collect();
         g.sort_unstable();
@@ -240,17 +256,17 @@ pub fn yoff_cellmode(m: &tmmaps::map::MapFile) -> (f32, f32) {
     (yoff, mode as f32 - yoff)
 }
 
-fn kind_of(tag: &str, model: &str) -> WpKind {
+/// The file TAG decides (the header count agrees with it on 207/207 crawled maps): `StartFinish` is the
+/// lap line — in a single-lap race the FINISH (Winter 2026 - 10: a `RoadTechMultilap` block beside a
+/// plain `RoadTechStart`); a `GateMultilap*` ITEM tagged `Checkpoint` is a checkpoint (Fall 2024 - 24 has
+/// two beside two real finishes, and its header counts them as checkpoints).
+fn kind_of(tag: &str, _model: &str) -> WpKind {
+    if tag == "StartFinish" {
+        return WpKind::Multilap;
+    }
     match tag {
         "Spawn" => WpKind::Start,
         "Goal" => WpKind::Finish,
-        "Checkpoint" | "LinkedCheckpoint" => {
-            if model.contains("Multilap") {
-                WpKind::Multilap
-            } else {
-                WpKind::Checkpoint
-            }
-        }
         _ => WpKind::Checkpoint,
     }
 }
@@ -352,10 +368,16 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             // A row of grid FINISH blocks is still one finish line (any finish ends the race;
             // Summer 2026 - 18 has six `Goal` blocks side by side); only CHECKPOINT grid
             // blocks are kept apart.
-            let grid_pair = a.grid && b.grid && a.kind != WpKind::Finish;
-            let near = same_tag && !grid_pair && dxz <= GROUP_XZ && dy <= GROUP_Y;
-            let stacked = same_tag && dxz <= STACK_XZ;
-            if linked || near || stacked {
+            // Distance merges rows of ITEMS / free blocks only (Fall 2025 - 24: a RoadTechCheckpoint
+            // grid block 32 m from a gate item is a second checkpoint; the header says so).
+            let both_placed = !a.grid && !b.grid;
+            let is_finish = matches!(a.kind, WpKind::Finish | WpKind::Multilap);
+            let near = same_tag && (both_placed || is_finish) && dxz <= GROUP_XZ && dy <= GROUP_Y;
+            // two touching pieces are one gate whatever their tags (Fall 2024 - 24 has a
+            // LinkedCheckpoint piece 2 m from a plain Checkpoint piece of the same row)
+            let stacked = dxz <= STACK_XZ && dy <= GROUP_Y * 3.0;
+            let mixed = both_placed && (a.tag == "LinkedCheckpoint") != (b.tag == "LinkedCheckpoint") && dxz <= 4.0 && dy <= GROUP_Y;
+            if linked || near || stacked || mixed {
                 let (ra, rb) = (find(&mut parent, i), find(&mut parent, j));
                 if ra != rb {
                     parent[ra] = rb;
@@ -367,7 +389,7 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
     let mut gid: Vec<u32> = vec![u32::MAX; n];
     let mut next = 0u32;
     let mut root_to_gid: BTreeMap<usize, u32> = BTreeMap::new();
-    for pass in [WpKind::Checkpoint, WpKind::Multilap, WpKind::Finish] {
+    for pass in [WpKind::Checkpoint, WpKind::Finish, WpKind::Multilap] {
         for i in 0..n {
             if raws[i].kind != pass {
                 continue;
@@ -381,11 +403,8 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             gid[i] = g;
         }
     }
-    let cp_groups = root_to_gid
-        .iter()
-        .filter(|(r, _)| matches!(raws[**r].kind, WpKind::Checkpoint | WpKind::Multilap))
-        .count() as u32;
-    let fin_groups = root_to_gid.iter().filter(|(r, _)| raws[**r].kind == WpKind::Finish).count() as u32;
+    let cp_groups = root_to_gid.iter().filter(|(r, _)| raws[**r].kind == WpKind::Checkpoint).count() as u32;
+    let fin_groups = root_to_gid.iter().filter(|(r, _)| matches!(raws[**r].kind, WpKind::Finish | WpKind::Multilap)).count() as u32;
 
     let spawn_i = raws.iter().position(|r| r.kind == WpKind::Start).ok_or("map has no Spawn waypoint")?;
     let spawn = Spawn {
@@ -423,6 +442,7 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         map_name: strip_fmt(&h.name),
         author_ms,
         declared_checkpoints: h.nb_checkpoints.map(|v| v as i32).unwrap_or(-1),
+        laps: h.nb_laps.unwrap_or(1).max(1),
         checkpoint_groups: cp_groups,
         finish_groups: fin_groups,
         yoff,
