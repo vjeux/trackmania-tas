@@ -197,6 +197,26 @@ answer means anything: 0 of 312 fork-reported finishes survived a plain
 re-validation when the tape was not a small, late perturbation of its
 reference.
 
+### The DNF checkpoint count changed meaning on 2026-09-06
+
+A DNF's checkpoint count now comes from the ENGINE'S OWN COUNTER
+(`participant+0xc70`), not from the validator's `Desc` line. The `Desc` line is
+a lossy print -- for a mutated candidate it is almost always `"wrong simu"`,
+which the driver mapped to 0, and the plain oracle cannot see a lone checkpoint
+at all (k>=2 only). **A DNF cps recorded before that commit is a LOWER BOUND and
+must not be compared naively with one recorded after it**: the same run can read
+0 then and 1 now with nothing about the driving having changed. Measured on 1100
+candidates, the engine count was never below the old one and was ABOVE it on 144
+of 306 DNFs on map 2. Ordering is unchanged (finishers above DNFs, more
+checkpoints better among DNFs), so only the 1-CP-vs-0-CP comparison moves.
+See `TICKHOOK.md` 12.
+
+Related, same commit: a candidate that crosses the finish line AFTER its tape's
+last record is no longer a finish. Past the end the engine simulates on heap
+contents and the plain oracle's verdict is batch-dependent (DNF alone, 26.839 in
+a batch of 520); the shim detects it and reports a DNF instead. 43 of 1100
+candidates were in that class.
+
 ### The resume floor
 
 Since the tick hook the checkpoint IS the same simulation point in every

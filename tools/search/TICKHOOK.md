@@ -809,3 +809,102 @@ picks the live slot and refuses if the count is not exactly one.
 exact on 126859 and 145875 and one tick out on map 2, and the quaternion at
 `pos-16` is not a unit quaternion there — so its internal layout is not the one
 `segments()` describes. Left alone rather than guessed at.)
+
+---
+
+## 12. The DNF count is the engine's, and a finish past the tape's end is not a finish
+
+Two changes decided after §10: the parent adopted the engine's checkpoint
+counter as the default, and the perf arm's plain-oracle hazard turned out to be
+something this lever can *fix* rather than merely avoid.
+
+### 12.1 The checkpoint count comes from the engine, on every path
+
+`parse_result` used to read a DNF's checkpoint count out of the validator's
+`Desc` line. That line is a **lossy print**: for a mutated candidate it is
+almost always `"wrong simu"` — the ghost file's declared result no longer
+matches what was simulated — which the driver mapped to 0, and the plain oracle
+cannot see a lone checkpoint at all (it reports k≥2 only; the route project
+measured 1163 of 2453 tapes in that class). A `Desc` count is a **lower bound**,
+not a measurement.
+
+The engine counts them itself at `participant+0xc70` (located behaviourally by
+the tm-player project's ENV arm, verified 200/200 against the plain oracle and
+1288/1289 over 2453 tapes; this arm's finish hunt found the same word
+independently — it is the `2 -> 3` at the finish in §10.2).
+
+**The child publishes it every tick**, not only when it takes the fast exit —
+one load and one store — so the count is present however the child ended: fast
+exit, validator print path, or SIGKILL. A run can therefore never mix two
+definitions of the same number, which was the condition on adopting it. The
+`Desc` parse survives only for a server with no shim, which is the plain
+oracle's own path.
+
+Measured on 1100 candidates across 3 maps, against the JSON:
+
+| | m2 `tick:171` | 145875 | 126859 |
+|---|---|---|---|
+| engine == JSON | 306 | 125 | 138 |
+| engine **above** the JSON's bound | **144** | 0 | 0 |
+| engine below it, or ≠ a JSON count that was ≥2 | **0** | **0** | **0** |
+
+144 of 306 DNFs on map 2 are candidates that really passed a checkpoint and
+were scored 0. `Outcome`'s ordering is unchanged — every finisher still ranks
+above every DNF, more checkpoints still ranks higher among DNFs — so the only
+behavioural change is that a 1-CP DNF now correctly outranks a 0-CP one.
+
+> **A DNF checkpoint count recorded before this commit is a LOWER BOUND.** Do
+> not compare one naively with a new one; the same run can read 0 then and 1
+> now without anything having changed about the driving.
+
+### 12.2 A finish after the tape's last record is not a finish
+
+Past the end of its tape the engine keeps simulating on whatever the input
+array happens to hold, so a candidate can cross the finish line on heap
+contents. The perf arm measured what the plain oracle then says: **the verdict
+is batch-dependent** — one tape is a DNF alone and 26.839 in a batch of 520.
+
+The JSON reports such a crossing as an ordinary finish, and every consumer
+believes it. The shim does not, because it can see what the JSON cannot: the
+tape-exhausted word (`participant+0x188`, `2 -> 0` one tick after the last
+record, §10.6) fires first. A finish recorded after it is reported as
+`FKPASTEND` and never as a time; `parse_result` returns it as a DNF with its
+checkpoint count.
+
+It is not a rare class: of 1100 candidates, **43 finished past their tape's
+end** — 32 of 71 apparent finishers on map 2 at `tick:171`, 6 on 145875, 5 on
+126859. Every one of those would have been scored with a batch-dependent
+number.
+
+This makes the fast path **more correct than the JSON**, not merely faster.
+
+### 12.3 The controls, after both changes
+
+`fk tickhook finishcheck`, 1100 candidates over 4 (map, checkpoint) pairs:
+
+| map, checkpoint | candidates | finishers | agree | disagree | past-end |
+|---|---|---|---|---|---|
+| map 2, `tick:171` | 400 | 62 | 62 | **0** | 32 |
+| map 2, `tick:2313` | 200 | 200 | 200 | **0** | 0 |
+| 145875, `tick:400` | 300 | 169 | 169 | **0** | 6 |
+| 126859, `tick:1200` | 200 | 57 | 57 | **0** | 5 |
+
+Score safety 50/50 with 0 violations, trips and false positives unchanged from
+the baseline, `fk server check` exact, and the guarded 10-minute stress search
+with 0 phantoms.
+
+### 12.4 126859 and the finish word
+
+The calibration window is now two passes, 32 KB then 256 KB of each base (the
+controller's result block, the participant, all four vehicle slots, the
+playground, the simulation) — one extra fork per base, only on a map the narrow
+pass cannot answer.
+
+**126859 is not reliably calibrable even so**: it succeeded on one run and
+failed on the next at the same checkpoint, which means the record's distance
+from every typed object varies per process on that map. When calibration
+refuses, the server keeps the JSON path and everything still works — verified
+rather than assumed: 100/100 exact on that map with the lever refused, and the
+`finishcheck` row above is from a run where it did calibrate. Whoever picks
+this up: the record is reachable (the backward pointer scan finds it every
+time), so the answer is a chain, not a bigger window.

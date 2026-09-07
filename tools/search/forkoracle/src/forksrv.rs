@@ -1019,12 +1019,54 @@ pub fn parse_result(text: &str) -> (Option<i64>, Option<u32>) {
     let mut time = None;
     let mut cps = None;
     let mut in_validated = false;
+    // THE CHECKPOINT COUNT COMES FROM THE ENGINE, NOT FROM THE `Desc` LINE.
+    //
+    // `Desc` is a lossy print. For a mutated candidate it is almost always
+    // "wrong simu" -- the ghost file's declared result no longer matches what
+    // was simulated -- which this used to map to 0 checkpoints, and the plain
+    // oracle cannot see a lone checkpoint at all (it reports k>=2 only; the
+    // route project measured 1163 of 2453 tapes in that class). So a `Desc`
+    // count is a LOWER BOUND on what the car did.
+    //
+    // The engine counts them itself at `participant+0xc70`, the shim publishes
+    // that every tick, and the child's last value arrives as `FKCPS`. It is the
+    // quantity rather than a rendering of it, it is present however the child
+    // ended, and it is what every path here reports -- a run must never mix two
+    // definitions of the same number.
+    //
+    // A DNF cps recorded before this change is a lower bound: do not compare
+    // one naively with a new one (see SEARCH.md).
+    // A FINISH AFTER THE TAPE'S LAST RECORD IS NOT A FINISH.
+    //
+    // Past the end the engine keeps simulating on whatever the input array
+    // holds, so a candidate can cross the line on heap contents -- and the
+    // plain oracle's verdict for that is BATCH-DEPENDENT (the perf arm measured
+    // one tape DNF alone and 26.839 in a batch of 520). The JSON reports it as
+    // an ordinary finish; the shim knows better, because the tape-exhausted
+    // word fires first. Such a candidate is a DNF here, with its checkpoint
+    // count, and never a time.
+    if let Some(l) = text.lines().find(|l| l.trim().starts_with("FKPASTEND ")) {
+        let _ = l;
+        let cps = text.lines().find_map(|l| {
+            l.trim()
+                .strip_prefix("FKCPS ")
+                .and_then(|r| r.split_whitespace().next())
+                .and_then(|v| v.parse::<u32>().ok())
+        });
+        return (None, cps);
+    }
+    let engine_cps = text.lines().find_map(|l| {
+        l.trim()
+            .strip_prefix("FKCPS ")
+            .and_then(|r| r.split_whitespace().next())
+            .and_then(|v| v.parse::<u32>().ok())
+    });
     // A child that ran out of tape without finishing already knows its whole
     // answer: it did not finish, and it passed this many checkpoints.
     for line in text.lines() {
         if let Some(rest) = line.trim().strip_prefix("FKDNF cps ") {
             if let Some(v) = rest.split_whitespace().next().and_then(|s| s.parse::<u32>().ok()) {
-                return (None, Some(v));
+                return (None, Some(engine_cps.unwrap_or(v)));
             }
         }
     }
@@ -1055,10 +1097,21 @@ pub fn parse_result(text: &str) -> (Option<i64>, Option<u32>) {
                 .and_then(|s| s.trim().trim_end_matches(',').parse::<i64>().ok())
                 .filter(|&ms| (0..=BAD_TIME_MS).contains(&ms));
             in_validated = false;
-        } else if t.starts_with("\"Desc\"") {
+        }
+    }
+    // The engine's count wins wherever it is present; the `Desc` fallback below
+    // exists only for a server with no shim (the plain oracle's own path).
+    if engine_cps.is_some() {
+        return (time, engine_cps);
+    }
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("\"Desc\"") {
             if let Some(p) = t.find("reached some checkpoints (") {
-                let rest = &t[p + "reached some checkpoints (".len()..];
-                cps = rest.split(' ').next().and_then(|s| s.trim().parse().ok());
+                cps = t[p + "reached some checkpoints (".len()..]
+                    .split(' ')
+                    .next()
+                    .and_then(|s| s.trim().parse().ok());
             } else if t.contains("wrong simu") {
                 cps = Some(0);
             }

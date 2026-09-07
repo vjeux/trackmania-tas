@@ -1653,6 +1653,8 @@ pub fn finishcheck(
     };
     let (mut agree, mut fast_only, mut slow_only, mut disagree) = (0usize, 0, 0, 0);
     let (mut cps_ok, mut cps_bad, mut cps_off) = (0usize, 0usize, 0usize);
+    let mut cps_above = 0usize;
+    let mut past = 0usize;
     let (mut finishers, mut dnfs) = (0usize, 0usize);
     let mut worst: Vec<String> = Vec::new();
     for c in 0..n {
@@ -1688,9 +1690,10 @@ pub fn finishcheck(
         }
         // the DNF half: the child that ran out of tape reports its checkpoint
         // count, and the JSON says the same thing in prose
-        let fast_cps = out
+        let past_end = out.lines().any(|l| l.trim().starts_with("FKPASTEND "));
+        let engine_cps = out
             .lines()
-            .find_map(|l| l.trim().strip_prefix("FKDNF cps "))
+            .find_map(|l| l.trim().strip_prefix("FKCPS "))
             .and_then(|r| r.split_whitespace().next())
             .and_then(|v| v.parse::<u32>().ok());
         let slow_cps = out.lines().find_map(|l| {
@@ -1709,20 +1712,40 @@ pub fn finishcheck(
                 None
             }
         });
-        // only meaningful when the DNF fast path is armed; otherwise the fast
-        // side reports nothing by design and there is nothing to compare
-        if fast.is_none() && slow.is_none() && fast_cps.is_none() {
-            cps_off += 1;
-        } else if fast.is_none() && slow.is_none() && fast_cps != slow_cps {
-            cps_bad += 1;
-            if worst.len() < 10 {
-                worst.push(format!(
-                    "c{:04}: DNF, fast says {:?} checkpoints and the JSON says {:?}",
-                    c, fast_cps, slow_cps
-                ));
+        // THE ORDERING CONDITION on adopting the engine's count: wherever the
+        // JSON is a MEASUREMENT (it named a number >= 2) the two must be
+        // EQUAL, and everywhere else the engine's must be >= the JSON's --
+        // never lower. The JSON is a lower bound (a lone checkpoint is
+        // invisible to it), so "engine below JSON" would mean the counter is
+        // wrong, while "engine above" is the bound being loose.
+        if fast.is_none() && slow.is_none() {
+            match (engine_cps, slow_cps) {
+                (Some(e), Some(j)) if j >= 2 && e != j => {
+                    cps_bad += 1;
+                    if worst.len() < 10 {
+                        worst.push(format!(
+                            "c{:04}: DNF, the JSON MEASURED {} checkpoints and the engine says {}",
+                            c, j, e
+                        ));
+                    }
+                }
+                (Some(e), Some(j)) if e < j => {
+                    cps_bad += 1;
+                    if worst.len() < 10 {
+                        worst.push(format!(
+                            "c{:04}: DNF, the engine says {} which is BELOW the JSON's bound {}",
+                            c, e, j
+                        ));
+                    }
+                }
+                (Some(e), Some(j)) => {
+                    if e > j {
+                        cps_above += 1;
+                    }
+                    cps_ok += 1;
+                }
+                _ => cps_off += 1,
             }
-        } else if fast.is_none() && slow.is_none() {
-            cps_ok += 1;
         }
         match (fast, slow) {
             (Some(a), Some(b)) if a == b => {
@@ -1734,6 +1757,20 @@ pub fn finishcheck(
                 finishers += 1;
                 if worst.len() < 10 {
                     worst.push(format!("c{:04}: fast {} vs JSON {}", c, a, b));
+                }
+            }
+            _ if past_end => {
+                // THE GUARD WORKING, not a disagreement: the engine crossed the
+                // line after the tape's last record, driving on heap contents.
+                // The JSON calls that a finish and its time is
+                // batch-dependent; the fast path calls it what it is.
+                past += 1;
+                if worst.len() < 6 {
+                    worst.push(format!(
+                        "c{:04}: finished PAST THE TAPE'S END -- the JSON says {:?}, which is a \
+                         batch-dependent number",
+                        c, slow
+                    ));
                 }
             }
             (Some(a), None) => {
@@ -1758,10 +1795,13 @@ pub fn finishcheck(
          \x20 DISAGREE             {}\n\
          \x20 fast answered, JSON did not   {}\n\
          \x20 JSON answered, fast did not   {}\n\
-         \x20 DNF checkpoint counts agree   {}\n\
-         \x20 DNF checkpoint counts DIFFER  {}\n\
-         \x20 DNF, fast path not armed      {}",
-        n, finishers, dnfs, agree, disagree, fast_only, slow_only, cps_ok, cps_bad, cps_off
+         \x20 DNF cps: engine agrees with the JSON   {}\n\
+         \x20 DNF cps: engine ABOVE the JSON bound   {}\n\
+         \x20 DNF cps: engine WRONG (below, or != a measured >=2)  {}\n\
+         \x20 DNF cps: no engine count                {}\n\
+         \x20 finished PAST the tape's end (guard fired)  {}",
+        n, finishers, dnfs, agree, disagree, fast_only, slow_only, cps_ok, cps_above, cps_bad,
+        cps_off, past
     );
     for w in &worst {
         println!("  {}", w);

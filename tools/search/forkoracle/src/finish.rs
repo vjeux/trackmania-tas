@@ -54,7 +54,12 @@ pub const EXHAUSTED_IN_PARTICIPANT: u64 = 0x188;
 /// How much of the block to watch. The record was at +0xa4 on two maps and
 /// past +0x400 on a third; 32 KB covers every one seen and costs nothing,
 /// because the gather is deduplicated and the block barely changes.
-const WINDOW: u32 = 32 * 1024;
+const WINDOW: u32 = std::mem::size_of::<u8>() as u32 * 32 * 1024;
+
+/// How far to look when 32 KB was not enough. 126859 keeps its finish record
+/// outside every 32 KB window tried, so the second pass sweeps 256 KB of each
+/// base -- one extra fork per base, and only on a map that needs it.
+const WIDE_WINDOW: u32 = 256 * 1024;
 
 /// Find the word this engine writes its finish time into, and hand it to the
 /// shim. Returns the address and the "no result yet" value it currently holds.
@@ -93,12 +98,18 @@ pub fn calibrate(
     bases.push(("the playground".into(), chain.playground));
     bases.push(("the simulation".into(), chain.sim));
     let mut tried: Vec<String> = Vec::new();
-    for (what, base) in bases {
+    // 32 KB of each base first -- that is where it is on every map but one --
+    // then 256 KB, which costs a fork per base and only happens on a map the
+    // narrow pass could not answer.
+    let passes: [(u32, u64); 2] = [(WINDOW, 0), (WIDE_WINDOW, 0)];
+    for (window, _) in passes {
+    for (what, base) in &bases {
         let what = what.as_str();
+        let base = *base;
         if base < 0x1000 {
             continue;
         }
-        match calibrate_in(srv, probe, recs, want, base) {
+        match calibrate_in(srv, probe, recs, want, base, window) {
             Ok(v) => {
                 let (addr, sentinel) = v;
                 // and the two words that make a DNF answerable: the one the
@@ -114,8 +125,9 @@ pub fn calibrate(
                 }
                 return Ok((addr, sentinel));
             }
-            Err(e) => tried.push(format!("{}: {}", what, e)),
+            Err(e) => tried.push(format!("{} ({} KB): {}", what, window / 1024, e)),
         }
+    }
     }
     Err(format!(
         "no object holds a word that ends at {} (race {} + start {}): {}",
@@ -132,6 +144,7 @@ fn calibrate_in(
     recs: &[Rec],
     want: u32,
     block: u64,
+    window: u32,
 ) -> Result<(u64, u32), String> {
 
     // ONE fork, gathering the block as it CHANGES: the dedup key is the whole
@@ -139,7 +152,7 @@ fn calibrate_in(
     // distinct state it passes through -- including the last one, which is the
     // only one this needs.
     let nseg = 8u64;
-    let chunk = WINDOW / nseg as u32;
+    let chunk = window / nseg as u32;
     let segs: Vec<(u64, u32)> = (0..nseg).map(|i| (block + i * chunk as u64, chunk)).collect();
     let (_j, blob) = srv.run_sampled_segs_ex(
         probe,
@@ -147,10 +160,10 @@ fn calibrate_in(
         &segs,
         1,
         4096,
-        (0, WINDOW),
+        (0, window),
         crate::clock::budget_for_ticks(recs.len() as u32 + 16),
     );
-    let recsz = 8 + WINDOW as usize;
+    let recsz = 8 + window as usize;
     let n = blob.len() / recsz;
     if n < 2 {
         return Err(format!(
@@ -164,7 +177,7 @@ fn calibrate_in(
     };
     // the word that ENDS at this run's finish time and did not start there
     let mut hit: Option<(usize, u32)> = None;
-    for o in (0..WINDOW as usize - 4).step_by(4) {
+    for o in (0..window as usize - 4).step_by(4) {
         if word(n - 1, o) == want && word(0, o) != want {
             let first = word(0, o);
             // and the marker it started from must be one of the two the engine
@@ -176,7 +189,7 @@ fn calibrate_in(
         }
     }
     let (off, sentinel) = hit.ok_or_else(|| {
-        format!("no word in {} KB ends at {}", WINDOW / 1024, want)
+        format!("no word ends at {}", want)
     })?;
     Ok((block + off as u64, sentinel))
 }

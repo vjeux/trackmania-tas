@@ -1002,6 +1002,10 @@ struct Timing {
     dnf_cps: u64,
     /// The race tick at which it gave up.
     dnf_clock: u64,
+    /// The engine's own checkpoint count, PLUS ONE, refreshed every tick.
+    cps: u64,
+    /// The tick at which the tape ran out, 0 if it never did.
+    exhausted_clock: u64,
 }
 static TIMING: AtomicUsize = AtomicUsize::new(0);
 
@@ -1018,6 +1022,8 @@ static EXIT_AT_FINISH: AtomicUsize = AtomicUsize::new(0);
 /// holds while they have not.
 static EXHAUSTED_WORD: AtomicUsize = AtomicUsize::new(0);
 static EXHAUSTED_LIVE: AtomicUsize = AtomicUsize::new(0);
+/// Has this child passed the end of its tape?
+static EXHAUSTED_SEEN: AtomicUsize = AtomicUsize::new(0);
 /// The participant's checkpoint counter.
 static CP_WORD: AtomicUsize = AtomicUsize::new(0);
 /// The "no time yet" value THIS race uses (0xffffffff on some maps, 0 on
@@ -1148,6 +1154,41 @@ unsafe fn tick(new: u32, dt: u32, race_start: Option<u32>) {
     // and go, instead of paying 5.8 ms for the validator to format it as JSON.
     // Mode 2 records it and stays, so the same child also prints the JSON and
     // the two numbers can be compared.
+    // THE CHECKPOINT COUNT, published every tick so the parent has it however
+    // the child ends -- fast exit, validator print path, or SIGKILL.
+    if IS_CHILD.load(Ordering::Relaxed) != 0 {
+        let cw = CP_WORD.load(Ordering::Relaxed);
+        if cw != 0 {
+            let t = timing();
+            if !t.is_null() {
+                (*t).cps = std::ptr::read_volatile(cw as *const u32) as u64 + 1;
+            }
+        }
+    }
+    // HAS THE TAPE RUN OUT? Tracked on every tick, whatever mode we are in,
+    // because a finish AFTER the last record is not a finish.
+    //
+    // The engine keeps simulating past the tape's end on whatever the input
+    // array happens to hold, so a candidate can "finish" on heap contents --
+    // and the plain oracle's verdict for that case is BATCH-DEPENDENT (the perf
+    // arm measured a tape that is a DNF alone and 26.839 in a batch of 520).
+    // The JSON reports such a finish as a finish. This does not: the exhausted
+    // word (`participant+0x188`, 2 -> 0 one tick after the last record) fires
+    // first, so a finish seen after it is reported as its own class and never
+    // as a time.
+    if IS_CHILD.load(Ordering::Relaxed) != 0 && EXHAUSTED_SEEN.load(Ordering::Relaxed) == 0 {
+        let e = EXHAUSTED_WORD.load(Ordering::Relaxed);
+        if e != 0
+            && std::ptr::read_volatile(e as *const u32) as usize
+                != EXHAUSTED_LIVE.load(Ordering::Relaxed)
+        {
+            EXHAUSTED_SEEN.store(1, Ordering::Relaxed);
+            let t = timing();
+            if !t.is_null() {
+                (*t).exhausted_clock = n;
+            }
+        }
+    }
     let mode = EXIT_AT_FINISH.load(Ordering::Relaxed);
     if mode != 0 && IS_CHILD.load(Ordering::Relaxed) != 0 {
         let w = RESULT_WORD.load(Ordering::Relaxed);
@@ -1156,7 +1197,11 @@ unsafe fn tick(new: u32, dt: u32, race_start: Option<u32>) {
             if v as usize != RESULT_SENTINEL.load(Ordering::Relaxed) {
                 let t = timing();
                 if !t.is_null() && (*t).finish_sim_ms == 0 {
-                    (*t).finish_sim_ms = v as u64;
+                    // a finish recorded after the tape ran out is the engine
+                    // driving on heap contents: record WHEN, never as a time
+                    if EXHAUSTED_SEEN.load(Ordering::Relaxed) == 0 {
+                        (*t).finish_sim_ms = v as u64;
+                    }
                     (*t).finish_clock = n;
                 }
                 if mode == 1 {
@@ -1172,10 +1217,8 @@ unsafe fn tick(new: u32, dt: u32, race_start: Option<u32>) {
                         != EXHAUSTED_LIVE.load(Ordering::Relaxed)
                 {
                     let t = timing();
-                    let cw = CP_WORD.load(Ordering::Relaxed);
-                    let cps = if cw != 0 { std::ptr::read_volatile(cw as *const u32) } else { 0 };
                     if !t.is_null() && (*t).dnf_clock == 0 {
-                        (*t).dnf_cps = cps as u64 + 1; // +1: 0 means "no report"
+                        (*t).dnf_cps = (*t).cps.max(1); // the tick-by-tick count
                         (*t).dnf_clock = n;
                     }
                     if mode == 1 {
@@ -2119,26 +2162,34 @@ unsafe fn forkserver() {
             // after the last record -- on a finisher AND on a DNF -- so a child
             // that reaches that point with no finish recorded knows its answer
             // is "did not finish, N checkpoints" and can report it and go.
-            // OFF BY DEFAULT, and not for safety-in-general: the fast DNF answer
-            // and the JSON's answer are NOT THE SAME NUMBER, and the fast one
-            // is the more truthful.
+            // THE CHECKPOINT COUNT COMES FROM THE ENGINE, on every path.
             //
-            // `parse_result` derives a DNF's checkpoint count from the `Desc`
-            // line, and for a MUTATED candidate that line is almost always
-            // "wrong simu" -- the declared result in the ghost file no longer
-            // matches what was simulated -- which the driver maps to 0. The
-            // engine's own counter says 1 on 34 of 79 DNFs where the JSON says
-            // "wrong simu". Both are right about different things; switching
-            // the search to the engine's number would change how every
-            // non-finisher is scored, and that is a decision about the search,
-            // not a speedup to slip in behind a 6 ms saving.
-            if payload.len() >= 25 && std::env::var("FKSHIM_DNF_FAST").is_ok() {
+            // The `Desc` line a DNF prints is a LOSSY PRINT: for a mutated
+            // candidate it is almost always "wrong simu" (the ghost file's
+            // declared result no longer matches what was simulated), which the
+            // driver maps to 0 checkpoints -- while the car really passed 1 on
+            // 34 of 79 DNFs measured. The counter at `participant+0xc70` is the
+            // quantity itself, verified 200/200 against the plain oracle by the
+            // tm-player project's ENV arm.
+            //
+            // So the child publishes it EVERY TICK (one load, one store) rather
+            // than only when it takes the fast exit: a run must never mix two
+            // definitions of the same number, and the slow path -- a map where
+            // the tape-exhausted exit is refused -- has to report the same
+            // quantity as the fast one.
+            if payload.len() >= 25 {
                 let exh = u64::from_le_bytes(payload[9..17].try_into().unwrap());
                 let cp = u64::from_le_bytes(payload[17..25].try_into().unwrap());
+                if readable(cp as usize, 4) {
+                    CP_WORD.store(cp as usize, Ordering::SeqCst);
+                }
+                // The tape-exhausted EXIT is separate and stays opt-in: it
+                // saves the 6.02 ms epilogue but ends the child early, which
+                // is a behaviour change where the counter is only a
+                // measurement change.
                 if exh >= 0x1000 && readable(exh as usize, 4) && readable(cp as usize, 4) {
                     EXHAUSTED_WORD.store(exh as usize, Ordering::SeqCst);
                     EXHAUSTED_LIVE.store(*(exh as *const u32) as usize, Ordering::SeqCst);
-                    CP_WORD.store(cp as usize, Ordering::SeqCst);
                 }
             }
             EXIT_AT_FINISH.store(
@@ -2889,6 +2940,16 @@ unsafe fn forkserver() {
             {
                 // the child may have left at the finish with the answer
                 let tp = timing();
+                if !tp.is_null() && (*tp).exhausted_clock != 0 && (*tp).finish_clock != 0 && (*tp).finish_sim_ms == 0 {
+                    out.extend_from_slice(b"\nFKPASTEND clock ");
+                    utoa((*tp).finish_clock, &mut out);
+                    out.push(b'\n');
+                }
+                if !tp.is_null() && (*tp).cps != 0 {
+                    out.extend_from_slice(b"\nFKCPS ");
+                    utoa((*tp).cps - 1, &mut out);
+                    out.push(b'\n');
+                }
                 if !tp.is_null() && (*tp).dnf_cps != 0 {
                     out.extend_from_slice(b"\nFKDNF cps ");
                     utoa((*tp).dnf_cps - 1, &mut out);
@@ -3012,6 +3073,16 @@ unsafe fn forkserver() {
         // simulation -- the validator's finish and print path, the JSON, the
         // pipe and the parse.
         let tp = timing();
+        if !tp.is_null() && (*tp).exhausted_clock != 0 && (*tp).finish_clock != 0 && (*tp).finish_sim_ms == 0 {
+            out.extend_from_slice(b"\nFKPASTEND clock ");
+            utoa((*tp).finish_clock, &mut out);
+            out.push(b'\n');
+        }
+        if !tp.is_null() && (*tp).cps != 0 {
+            out.extend_from_slice(b"\nFKCPS ");
+            utoa((*tp).cps - 1, &mut out);
+            out.push(b'\n');
+        }
         if !tp.is_null() && (*tp).dnf_cps != 0 {
             out.extend_from_slice(b"\nFKDNF cps ");
             utoa((*tp).dnf_cps - 1, &mut out);
