@@ -123,10 +123,12 @@ fn veget_substitute(collection: u32, model: &str) -> Option<&'static str> {
 /// makes the platforms visible). One size down where the family has one:
 /// `Lamp`/`LampB`/`LampC` -> `LampSmall*`; `Light<Shape><N>m…` -> N/2 m (a 2 m
 /// piece stays); `LightTubeBig4m…` -> `LightTubeSmall4m…` (no 2 m tube);
-/// `ShowLightRamp8m` -> `ShowLightRamp4m`. Anything else keeps its name (a
-/// stock item at its own size, the placement scaled). Show rigs
-/// (`Show`, `ShowLights`, `ShowRace`: 16-32 m trusses) are NOT substituted —
-/// full size they would span twice the platform; they stay baked, unlit.
+/// `ShowLightRamp8m` -> `ShowLightRamp4m`. Only the Lamp* and Light* families
+/// qualify: anything else that happens to carry a light (the gates' speedometer
+/// LEDs — `GateCheckpointCenter32mv2` has no 16 m twin and stayed FULL size on
+/// Summer 11's half-size plaza — `Podium`, screens) is baked, unlit, at the
+/// right size. Show rigs (`Show`, `ShowLights`, `ShowRace`: 16-32 m trusses)
+/// are NOT substituted either — full size they would span twice the platform.
 pub fn light_substitute(model: &str) -> Option<String> {
     if model.starts_with("Show") && !model.starts_with("ShowLightRamp") {
         return None;
@@ -136,6 +138,9 @@ pub fn light_substitute(model: &str) -> Option<String> {
             return Some(format!("LampSmall{rest}"));
         }
         return Some(model.to_string());
+    }
+    if !model.starts_with("Light") && !model.starts_with("ShowLightRamp") {
+        return None;
     }
     // the first `<digits>m` run: the piece's size
     let bytes = model.as_bytes();
