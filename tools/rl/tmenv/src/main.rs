@@ -34,6 +34,8 @@ struct Paths {
     shim: PathBuf,
     work: PathBuf,
     reference: PathBuf,
+    /// `--geom geom.json`: run on a TrackGeom instead of the cartographer.
+    geom: Option<PathBuf>,
 }
 
 fn paths(a: &[String]) -> Paths {
@@ -56,6 +58,7 @@ fn paths(a: &[String]) -> Paths {
         shim,
         work,
         reference: PathBuf::from(flag(a, "--ref").unwrap_or_default()),
+        geom: flag(a, "--geom").map(PathBuf::from),
     }
 }
 
@@ -89,6 +92,7 @@ fn main() {
         Some("accept") => accept(&a),
         Some("from-template") => from_template(&a),
         Some("probe-scan") => probe_scan(&a),
+        Some("geom-export") => geom_export(&a),
         _ => {
             eprintln!(
                 "tmenv -- the RL environment over our own instrument\n\
@@ -253,6 +257,14 @@ fn drive(env: &mut ForkEnv, actions: &dyn Fn(usize) -> usize, max_steps: usize) 
 /// order and the wrong first gate -- all of it silently, because the geometry is
 /// self-consistent either way and only the reward is nonsense.
 fn measured_track(p: &Paths) -> Result<tmenv::Track, String> {
+    // `--geom geom.json` (the DATA arm's TrackGeom: field-median line, WR line,
+    // router output) takes precedence over the cartographer's pack/route, which
+    // on Summer 2026 - 01 runs on another road for its first ~150 m
+    // (RL-agentG §5.3). The geometry is the env's contract with the dataset:
+    // BC and RL must see the same route.
+    if let Some(g) = &p.geom {
+        return tmenv::Track::load_geom_json(g);
+    }
     tmenv::load_track_measured(&p.server, &p.map, &p.shim, &p.work.join("spawnfix"), &p.reference)
 }
 
@@ -2209,4 +2221,34 @@ fn probe_scan(a: &[String]) {
             }
         }
     }
+}
+
+// ------------------------------------------------------------- geom-export
+
+/// Write the track the env would run on as `geom.json` (`tmstate::TrackGeom`),
+/// so the DATA arm's geometry and the cartographer's can be compared on equal
+/// terms, and so a box can run without the pak store.
+fn geom_export(a: &[String]) {
+    let p = paths(a);
+    let out = PathBuf::from(flag(a, "--out").unwrap_or_else(|| "geom.json".into()));
+    let t = if has(a, "--measured") {
+        measured_track(&p).unwrap_or_else(|e| die(e))
+    } else if let Some(g) = &p.geom {
+        tmenv::Track::load_geom_json(g).unwrap_or_else(|e| die(e))
+    } else {
+        load_track(&p.server, &p.map).unwrap_or_else(|e| die(e))
+    };
+    t.save_geom_json(&out).unwrap_or_else(|e| die(e));
+    let g = &t.geom;
+    println!(
+        "wrote {}  ({} points, {:.1} m, {} gates, source {}, spawn ({:.1}, {:.1}, {:.1}))",
+        out.display(),
+        g.pts.len(),
+        g.length(),
+        g.gates.len(),
+        g.source,
+        g.spawn[0],
+        g.spawn[1],
+        g.spawn[2]
+    );
 }

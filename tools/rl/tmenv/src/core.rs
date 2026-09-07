@@ -469,3 +469,109 @@ pub fn zero_row() -> Row {
         wetness: 0.0,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tmstate::{Gate, GateKind, TrackGeom};
+
+    /// A straight 400 m track along -z at y = 10, one checkpoint, a finish.
+    fn straight_geom() -> TrackGeom {
+        let n = 201;
+        let gate = |k, s: f32| Gate {
+            kind: k,
+            centre: [0.0, 10.0, -s],
+            normal: [0.0, 0.0, -1.0],
+            half_width: 8.0,
+            s,
+            map_waypoint: u32::MAX,
+        };
+        TrackGeom {
+            geom_version: 1,
+            map_uid: "straight".into(),
+            pts: (0..n).map(|i| [0.0, 10.0, -(2.0 * i as f32)]).collect(),
+            half_width: vec![8.0; n],
+            s: (0..n).map(|i| 2.0 * i as f32).collect(),
+            gates: vec![gate(GateKind::Checkpoint, 200.0), gate(GateKind::Finish, 400.0)],
+            spawn: [0.0, 10.0, 0.0],
+            spawn_yaw: 0.0,
+            source: "test".into(),
+            legs: None,
+            route: None,
+        }
+    }
+
+    fn row(t: i64, z: f64, vz: f64) -> Row {
+        Row { time_ms: t, x: 0.3, y: 10.0, z, vx: 0.0, vy: 0.0, vz, qx: 0.0, qy: 0.0, qz: 0.0, qw: 1.0, wetness: 0.0 }
+    }
+
+    /// THE identity the interface promises: the env's live observation IS
+    /// `tmobs::observe` on the `CarState` the env exposes. Bit for bit, on
+    /// every step of an episode, including the first (no previous row, so
+    /// `ang_vel` is NaN and reads as 0) and after a gate is credited.
+    #[test]
+    fn the_live_observation_is_tmobs_on_the_exposed_state() {
+        let track = Arc::new(Track::from_geom(straight_geom()));
+        let mut core = Core::new(CoreCfg { k_ticks: 10, max_ticks: 4000, ..Default::default() }, track.clone(), ActionSpace::default());
+        let o0 = core.reset(row(-20, 0.0, 0.0), 0);
+        let via_tmobs = tmobs::observe(&track.geom, &core.state(), core.prev_actions());
+        assert_eq!(o0.len(), tmobs::OBS_DIM);
+        assert!(o0.iter().zip(via_tmobs.iter()).all(|(a, b)| a.to_bits() == b.to_bits()));
+
+        // 60 macros of 10 ticks at 30 m/s: 0.3 m per tick, 180 m -- then past the CP.
+        let mut t = -20i64;
+        let mut z = 0.0f64;
+        for step in 0..80usize {
+            let rows: Vec<Row> = (0..10)
+                .map(|_| {
+                    t += 10;
+                    z -= 0.3;
+                    row(t, z, -30.0)
+                })
+                .collect();
+            let (obs, _r, done, info) = core.ingest(step % 20, &rows);
+            let st = core.state();
+            let again = tmobs::observe(&track.geom, &st, core.prev_actions());
+            assert!(
+                obs.iter().zip(again.iter()).all(|(a, b)| a.to_bits() == b.to_bits()),
+                "step {step}: the live observation and tmobs disagree"
+            );
+            // Info carries the same state the observation was computed from.
+            // NaN != NaN under PartialEq; compare the rendering, which prints NaN as NaN.
+            assert_eq!(format!("{:?}", info.state), format!("{:?}", st));
+            assert_eq!(st.race_ms as i64, t);
+            assert!((st.speed - 30.0).abs() < 1e-4);
+            if done.is_some() {
+                break;
+            }
+        }
+        // The straight run crossed the checkpoint plane at 200 m: the tracker
+        // credited it, so cps moved and with it the leg the progress is in.
+        assert_eq!(core.state().cps, 1, "the checkpoint at 200 m was crossed");
+        assert!(core.best_s() > 200.0);
+    }
+
+    /// geom.json round trip: what the DATA arm writes, the env reads back to
+    /// the same geometry, and the observation on it is unchanged.
+    #[test]
+    fn geom_json_round_trips_and_observes_identically() {
+        let g = straight_geom();
+        let dir = std::env::temp_dir().join(format!("tmenv-geom-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("geom.json");
+        let a = Track::from_geom(g.clone());
+        a.save_geom_json(&p).unwrap();
+        let b = Track::load_geom_json(&p).unwrap();
+        assert_eq!(*a.geom, *b.geom);
+        let mut st = tmstate::CarState::unknown();
+        st.pos = [1.0, 10.5, -123.0];
+        st.vel = [0.0, 0.0, -40.0];
+        st.speed = 40.0;
+        st.quat = [1.0, 0.0, 0.0, 0.0];
+        st.race_ms = 4000;
+        let oa = tmobs::observe(&a.geom, &st, &[]);
+        let ob = tmobs::observe(&b.geom, &st, &[]);
+        assert!(oa.iter().zip(ob.iter()).all(|(x, y)| x.to_bits() == y.to_bits()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

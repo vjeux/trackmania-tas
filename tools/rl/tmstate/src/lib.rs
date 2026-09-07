@@ -112,11 +112,16 @@ pub struct Leg {
     pub s_start: f32,
     pub s_end: f32,
     pub connection: ConnectionClass,
+    #[serde(with = "nanf::arr2")]
     pub arrival_speed: [f32; 2],
+    #[serde(with = "nanf::arr3")]
     pub arrival_heading: [f32; 3],
+    #[serde(with = "nanf::scalar")]
     pub arrival_heading_tol: f32,
+    #[serde(with = "nanf::arr2")]
     pub arrival_height: [f32; 2],
-    pub p_reach: f32,     // NaN if not measured
+    #[serde(with = "nanf::scalar")]
+    pub p_reach: f32, // NaN if not measured
     pub expected_ms: i32, // -1 unknown
     pub evidence: LegEvidence,
 }
@@ -181,4 +186,53 @@ mod tests {
         assert_eq!(std::mem::size_of::<Action>(), 3);
         assert_eq!(STATE_VERSION, 1);
     }
+}
+
+/// JSON has no NaN: an "unknown" f32 serializes as `null` and reads back as NaN, so route/geom files interchange
+/// with the ROUTE FINDER's `tmroute::types::nanf`. Use `#[serde(with = "nanf::scalar")]` / `arr2` / `arr3`.
+pub mod nanf {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    fn to_opt(x: f32) -> Option<f32> {
+        if x.is_nan() {
+            None
+        } else {
+            Some(x)
+        }
+    }
+
+    pub mod scalar {
+        use super::*;
+        pub fn serialize<S: Serializer>(x: &f32, s: S) -> Result<S::Ok, S::Error> {
+            to_opt(*x).serialize(s)
+        }
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+            Ok(Option::<f32>::deserialize(d)?.unwrap_or(f32::NAN))
+        }
+    }
+
+    macro_rules! arr {
+        ($name:ident, $n:expr) => {
+            pub mod $name {
+                use super::*;
+                pub fn serialize<S: Serializer>(x: &[f32; $n], s: S) -> Result<S::Ok, S::Error> {
+                    let v: Vec<Option<f32>> = x.iter().map(|&f| to_opt(f)).collect();
+                    v.serialize(s)
+                }
+                pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[f32; $n], D::Error> {
+                    let v = Vec::<Option<f32>>::deserialize(d)?;
+                    if v.len() != $n {
+                        return Err(serde::de::Error::custom(format!("expected {} floats, got {}", $n, v.len())));
+                    }
+                    let mut out = [f32::NAN; $n];
+                    for (o, x) in out.iter_mut().zip(v) {
+                        *o = x.unwrap_or(f32::NAN);
+                    }
+                    Ok(out)
+                }
+            }
+        };
+    }
+    arr!(arr2, 2);
+    arr!(arr3, 3);
 }
