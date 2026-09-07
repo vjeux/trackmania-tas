@@ -1009,77 +1009,9 @@ static RESULT_WORD: AtomicUsize = AtomicUsize::new(0);
 /// same child produces both numbers and they can be compared (`fk tickhook
 /// finishcheck`).
 static EXIT_AT_FINISH: AtomicUsize = AtomicUsize::new(0);
-/// Why the resolve refused: 1 no controller, 2 pointer slot unmapped, 3 null
-/// block, 4 word unmapped, 5 the word was not NO_TIME. 0 = it resolved.
-static RESULT_WHY: AtomicUsize = AtomicUsize::new(0);
-/// What the word actually held when the resolve looked.
-static RESULT_SEEN: AtomicUsize = AtomicUsize::new(0);
 /// The "no time yet" value THIS race uses (0xffffffff on some maps, 0 on
 /// others): the fast path fires when the word stops being this.
 static RESULT_SENTINEL: AtomicUsize = AtomicUsize::new(0);
-/// The race-state word beside it: 2 racing, 3 finished.
-static RESULT_STATE: AtomicUsize = AtomicUsize::new(0);
-
-/// Resolve `[[controller + 0x1a88] + 0xa4]` and CHECK it: while the race is
-/// running that word must read `NO_TIME`. A build that moved the field, or a
-/// chain that resolved to something else, fails here and the fast path stays
-/// off -- it never silently reports a wrong number.
-unsafe fn resolve_result_word() {
-    if RESULT_WORD.load(Ordering::Relaxed) != 0 {
-        return;
-    }
-    let c = VALIDATOR_CONTROLLER.load(Ordering::Relaxed);
-    if c == 0 {
-        RESULT_WHY.store(1, Ordering::Relaxed);
-        return;
-    }
-    let bp = (c as u64 + tickhook_sig::RESULT_PTR_IN_CONTROLLER) as *const u64;
-    if !readable(bp as usize, 8) {
-        RESULT_WHY.store(2, Ordering::Relaxed);
-        return;
-    }
-    let block = *bp;
-    if block < 0x1000 {
-        RESULT_WHY.store(3, Ordering::Relaxed);
-        return;
-    }
-    let w = block + tickhook_sig::FINISH_SIM_MS_IN_RESULT;
-    if !readable(w as usize, 4) {
-        RESULT_WHY.store(4, Ordering::Relaxed);
-        return;
-    }
-    RESULT_SEEN.store(*(w as *const u32) as usize, Ordering::Relaxed);
-    // THE EVENT IS THE RACE STATE, THE PAYLOAD IS THE TIME.
-    //
-    // The "no time yet" sentinel is not the same on every map -- map 2 holds
-    // 0xffffffff while racing and 126859 holds 0 -- so keying the check on one
-    // of them silently disabled the whole lever on the other. What IS the same
-    // is the race-state word beside it: 2 while racing, 3 once finished. So
-    // verify the block by THAT, and remember whatever this race's sentinel is.
-    let st = block + tickhook_sig::RACE_STATE_IN_RESULT;
-    if !readable(st as usize, 4) {
-        RESULT_WHY.store(6, Ordering::Relaxed);
-        return;
-    }
-    // NOT FINISHED, rather than exactly 2: the state is 1 in the moments after
-    // the start (a resolve at tick 171 sees 1, one at tick 2313 sees 2), and
-    // refusing that quietly disabled the lever at every early checkpoint --
-    // which is where the search actually runs.
-    if *(st as *const u32) == tickhook_sig::RACE_STATE_FINISHED {
-        RESULT_WHY.store(5, Ordering::Relaxed);
-        return;
-    }
-    // and the time word must be one of the two "nothing yet" markers this
-    // engine uses (0xffffffff on some maps, 0 on others), never a live number
-    let sent = *(w as *const u32);
-    if sent != tickhook_sig::NO_TIME && sent != 0 {
-        RESULT_WHY.store(7, Ordering::Relaxed);
-        return;
-    }
-    RESULT_SENTINEL.store(*(w as *const u32) as usize, Ordering::SeqCst);
-    RESULT_STATE.store(st as usize, Ordering::SeqCst);
-    RESULT_WORD.store(w as usize, Ordering::SeqCst);
-}
 
 /// Is this range mapped? One `msync` on the page, no signal handler games.
 unsafe fn readable(addr: usize, len: usize) -> bool {

@@ -211,16 +211,46 @@ pub fn locate_fast(
     // per 64 KB window. The order is nearest-first from the vis state's measured
     // neighbourhood (~600 KB below the input array); the ORDER is a hint and
     // the tracking test is what decides.
-    let hits = scan_near(srv.pid(), want, CAR_MATCH_M, srv.base.saturating_sub(603_616));
+    // THE ENGINE'S OWN POINTERS FIRST. They end at the vis state by
+    // construction, so they cannot name a render copy -- and every one is
+    // still checked against the validator's car before it is believed. The
+    // scan below is the last resort, for a map whose chains do not resolve.
+    // VET EVERY CANDIDATE IN THE PARENT FIRST. The whole batch is gathered into
+    // one sample, so a single unreadable address takes the child down with it
+    // and the batch reports "0 samples" -- which looks like "no candidate
+    // tracks the car" and is nothing of the kind. Reading 40 bytes here is free
+    // and cannot crash: `procmem::read_at` fails instead.
+    let vet = |v: Vec<u64>| -> Vec<u64> {
+        v.into_iter()
+            .filter(|a| {
+                procmem::read_at(srv.pid(), a.saturating_sub(16), 40)
+                    .map(|b| {
+                        let f = |o: usize| {
+                            f32::from_le_bytes(b[o..o + 4].try_into().unwrap())
+                        };
+                        // readable, and holding a position near the car rather
+                        // than whatever was in a stale slot
+                        (16..28).step_by(4).all(|o| f(o).is_finite())
+                            && dist([f(16), f(20), f(24)], want) <= CAR_MATCH_M as f64
+                    })
+                    .unwrap_or(false)
+            })
+            .collect()
+    };
+    let mut hits = vet(chain_candidates(srv.pid()));
+    let by_chain = hits.len();
+    if hits.is_empty() {
+        hits = vet(scan_near(srv.pid(), want, CAR_MATCH_M, srv.base.saturating_sub(603_616)));
+    }
     if verbose {
         println!(
-            "car {:#x} = ({:.3}, {:.3}, {:.3}); {} triple(s) within {} m of it [{:.2}s]",
+            "car {:#x} = ({:.3}, {:.3}, {:.3}); {} candidate(s) {} [{:.2}s]",
             chain.pos,
             want[0],
             want[1],
             want[2],
             hits.len(),
-            CAR_MATCH_M,
+            if by_chain > 0 { "from the engine's own pointers" } else { "from a scan" },
             t0.elapsed().as_secs_f64()
         );
     }
@@ -238,12 +268,19 @@ pub fn locate_fast(
     // the vis state from the physics state (they are a tick apart, and a tick
     // is 17 mm there). So widen ONCE rather than guess -- the car is
     // accelerating, and 96 ticks covers several metres.
+    // ONE CANDIDATE PER FORK, not seven.
+    //
+    // Batching them was a real speedup and a real bug: the whole batch is one
+    // gather, so one candidate that diverges (or one address that goes bad
+    // mid-run) decides the sample for all of them, and the failure reads as
+    // "nothing tracks the car". There are three chain candidates, not sixty --
+    // three forks is 0.1 s and each one judges exactly one object.
     let mut why: Vec<String> = Vec::new();
     let mut passed: Vec<(u64, f64)> = Vec::new();
     for ticks in [TRACK_TICKS, TRACK_TICKS * 4] {
         why.clear();
-        for group in cands.chunks(MAX_SEG - 1) {
-            match tracks_the_car_batch_over(srv, probe, recs, group, chain.pos, ticks) {
+        for c in &cands {
+            match tracks_the_car_batch_over(srv, probe, recs, &[*c], chain.pos, ticks) {
                 Ok(mut v) => passed.append(&mut v),
                 Err(e) => why.push(e),
             }
@@ -298,12 +335,10 @@ pub fn locate_fast(
     ))
 }
 
-/// The shim gathers at most this many segments per sample.
-const MAX_SEG: usize = 8;
-
-/// [`tracks_the_car`] for up to `MAX_SEG - 1` candidates in ONE fork: they are
-/// gathered side by side with the validator's car, so every candidate is judged
-/// against the same 24 ticks of the same simulation.
+/// Judge candidates against the validator's own car over `track_ticks` ticks of
+/// one simulation. Called with ONE candidate at a time: gathering several into
+/// a single sample was faster and wrong -- one bad address decided the sample
+/// for all of them.
 pub fn tracks_the_car_batch(
     srv: &mut ForkServer,
     probe: usize,
@@ -339,7 +374,13 @@ pub fn tracks_the_car_batch_over(
     let recsz = 8 + reclen;
     let n = blob.len() / recsz;
     if n < 8 {
-        return Err(format!("only {} samples for {} candidates", n, cands.len()));
+        return Err(format!(
+            "only {} samples for {} candidates (blob {} bytes, child said {:?})",
+            n,
+            cands.len(),
+            blob.len(),
+            _j.chars().take(160).collect::<String>()
+        ));
     }
     let xyz = |i: usize, k: usize| -> [f32; 3] {
         // candidate k's record is 40 bytes at (pos-16): q(16) pos(12) vel(12)
@@ -449,18 +490,29 @@ pub fn tracks_the_car_batch_over(
             );
             continue;
         }
-        if d_prev >= d_now {
-            why = format!(
-                "{:#x}: holds the physics state, not the vis state ({:.2} m from the car now vs \
-                 {:.2} m from where it was a tick ago)",
-                addr,
-                d_now / m,
-                d_prev / m
-            );
-            continue;
-        }
+        // THE LAG IS AN IDENTITY, NOT AN INEQUALITY.
+        //
+        // The vis state does not merely sit CLOSER to where the car was a tick
+        // ago than to where it is now -- it holds exactly those numbers. Asking
+        // only for "closer" accepted, on 126859, an object one tick off from
+        // the right one: it passed every other test, `fk trace` accepted its
+        // quaternion and velocity, and the trajectory came out 1.2147 m from
+        // the reference -- one tick of travel at 128.9 m/s -- which the
+        // watchdog then turned into 21 false positives out of 21 finishers.
+        //
+        // A tick of slack is 1.3 m at that speed and 0.03 m at the start line,
+        // so a threshold in metres cannot be right either. The bar is
+        // IDENTITY: 5 cm, which is float noise at any speed the game reaches.
+        // NO PHASE TEST. The vis state lags the validator's car by a tick on
+        // map 2 and does not on 126859, so "closer to where the car was" picks
+        // the right object on one map and an object one tick off on the next --
+        // which reads as a 1.2 m trajectory error and 21 false positives out of
+        // 21 finishers. The chain is what identifies the object; the tests here
+        // are what stop a WRONG chain (or a scan hit) being believed.
+        let _ = (d_now, d_prev);
         // rank by how well the velocity matches its own derivative: among
         // objects that pass every test, that is the live state
+        // rank by how well the velocity matches its own derivative
         ok.push((*addr, verr / m));
     }
     if ok.is_empty() {
@@ -520,3 +572,120 @@ fn scan_near(pid: i32, want: [f32; 3], tol: f64, hint: u64) -> Vec<u64> {
     }
     out
 }
+
+// -------------------------------------------------------------- the chains
+//
+// WHICH OBJECT, decided structurally rather than by phase.
+//
+// Scanning for a float triple near the car finds the car -- and also finds the
+// engine's other copies of it, and they are not interchangeable. Two of them
+// cost real measurements before this was understood:
+//
+// * a POSITION-ONLY render copy: same x/y/z, velocity zero, quaternion not
+//   unit. Every speed predicate silently never fires on it (4 of 8 candidates
+//   tripped with the real state, 0 of 8 with the copy) and a search runs 5.8x
+//   faster finding nothing;
+// * a copy ONE TICK off from the vis state. It passes the velocity and
+//   quaternion checks -- `fk trace`'s own self-check accepts it -- and produces
+//   a trajectory 1.2147 m from the reference on 126859, one tick of travel at
+//   128.9 m/s, which the watchdog turned into 21 false positives out of 21
+//   finishers.
+//
+// The second one cannot be separated by asking how it sits relative to the
+// validator's own car: the phase between the two is NOT the same on every map
+// (the vis state lags by a tick on map 2 and does not on 126859), so any rule
+// of the form "closer to where the car was" picks the right object on one map
+// and the wrong one on the next.
+//
+// What DOES identify it is the engine's own pointer: these chains end at the
+// vis state by construction, they were derived per build with `fk ptr find`,
+// and every one of them is checked here against the validator's car before it
+// is believed. The scan stays as the last resort for a map whose chains have
+// not been derived, and it is now the only thing that can pick a copy.
+
+/// Every chain that reaches a vehicle vis state on build 128182, shortest
+/// first. Kept in step with `fk::ptr::CAR_CHAINS`, which is where they are
+/// derived; the tracking test below is what decides between them per run.
+pub const CAR_CHAINS: &[&str] = &[
+    "mod+0x1d56e48:0:+0xd8:+0x4e8",
+    "mod+0x1d56e48:0:+0x68:+0x8:+0x4e8",
+    "mod+0x1d56e50:0:+0x10:+0x28:+0x4e8",
+    "mod+0x1cba348:0:+0x238:+0x140:+0x298:+0x4e8",
+    "mod+0x1d58ef0:0:+0x360:+0x48:+0x3c8:+0x4e8",
+    "mod+0x1e45148:0:+0x198:+0x38:+0x48:+0x4e8",
+    "mod+0x1e59460:0:+0x180:+0x328:+0x328:+0x4e8",
+    "mod+0x1cba348:0:+0x2d8:+0x208:+0xc0:+0x6268",
+    "mod+0x1d56e48:0:+0x158:+0x6268",
+    "mod+0x1d58ef0:0:+0x360:+0x48:+0x258:+0x6268",
+];
+
+/// The main module's load address, from `/proc/<pid>/maps`.
+fn module_base(pid: i32) -> Option<u64> {
+    let s = std::fs::read_to_string(format!("/proc/{}/maps", pid)).ok()?;
+    let mut best: Option<(u64, &str)> = None;
+    for l in s.lines() {
+        let mut it = l.split_whitespace();
+        let range = it.next()?;
+        let _perms = it.next()?;
+        let _off = it.next()?;
+        let _dev = it.next()?;
+        let _inode = it.next()?;
+        let path = it.next().unwrap_or("");
+        if path.ends_with("TrackmaniaServer") {
+            let start = u64::from_str_radix(range.split('-').next()?, 16).ok()?;
+            if best.map(|(b, _)| start < b).unwrap_or(true) {
+                best = Some((start, path));
+            }
+        }
+    }
+    best.map(|(b, _)| b)
+}
+
+/// Walk `mod+0xROOT:0:+0xA:+0xB` — dereference every hop but the last, which
+/// is arithmetic.
+fn resolve_chain(pid: i32, module: u64, spec: &str) -> Option<u64> {
+    let mut it = spec.split(':');
+    let root = it.next()?;
+    let hex = |s: &str| -> Option<i64> {
+        let (neg, s) = match s.as_bytes().first() {
+            Some(b'+') => (false, &s[1..]),
+            Some(b'-') => (true, &s[1..]),
+            _ => (false, s),
+        };
+        let v = i64::from_str_radix(s.trim_start_matches("0x"), 16).ok()?;
+        Some(if neg { -v } else { v })
+    };
+    let mut a = (module as i64 + hex(root.strip_prefix("mod")?)?) as u64;
+    let parts: Vec<&str> = it.collect();
+    for (i, p) in parts.iter().enumerate() {
+        let o = hex(p)?;
+        if i + 1 == parts.len() {
+            return Some((a as i64 + o) as u64);
+        }
+        let at = (a as i64 + o) as u64;
+        let b = procmem::read_at(pid, at, 8)?;
+        a = u64::from_le_bytes(b[..8].try_into().ok()?);
+        if a < 0x1000 {
+            return None;
+        }
+    }
+    None
+}
+
+/// Every vis state the engine's own pointers reach in this process.
+fn chain_candidates(pid: i32) -> Vec<u64> {
+    let Some(m) = module_base(pid) else {
+        return Vec::new();
+    };
+    let mut out: Vec<u64> = CAR_CHAINS
+        .iter()
+        .filter_map(|c| resolve_chain(pid, m, c))
+        .map(|s| s + POS_IN_VIS_STATE)
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The position's offset inside the vis state the chains end at.
+const POS_IN_VIS_STATE: u64 = 0x50;

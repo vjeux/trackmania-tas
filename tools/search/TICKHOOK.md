@@ -390,7 +390,9 @@ fk tickhook count --tape G --map M [--gdb]     hooked vs plain run, all the crit
 fk tickhook load  --tape G --map M --at T --n N   N servers at once
 fk tickhook reads --tape G --map M --at T      every read of engine memory, vs the engine
 fk tickhook cost  --tape G --map M --at T      where a candidate's milliseconds go, measured in the child
-fk tickhook finish --tape G --map M --at T     hunt the race result in memory (past the finish)
+fk tickhook finish --tape G --map M --at T      hunt the race result in memory (--chain: backward pointer scan)
+fk tickhook finishfind --tape G --map M --at T  which word changes at the finish (--object result)
+fk tickhook finishcheck --tape G --map M --at T --n N   the fast finish vs the JSON, same child
 fk tickhook find  --tape G --map M             a new build: which function is the tick?
 ```
 
@@ -572,3 +574,175 @@ measured with.
   branch point: the pool-spec test named `DEFAULT_CHAIN` after the default
   had stopped being a pool; `POINTER.md` quoted the legacy chain as the
   default; two indented blocks in `record.rs` docs compiled as Rust. **38/38.**
+
+---
+
+## 10. Exit at the finish
+
+A candidate no longer waits for the validator to format its answer.
+
+### 10.1 What the 5.8 ms was
+
+§9.1 measured it and could not name it: 5.8 ms per candidate, constant, between
+the child's last simulated tick and its first byte of output, and only 0.26 ms
+of that is the 7 ticks the engine runs past the finish. The rest is the
+validator's finish-and-print path — run to deliver one integer.
+
+The printer is at `0x113b020` and reads a result struct whose fields fall
+straight out of the disassembly, each beside its own name string:
+
+| field | offset | how it is known |
+|---|---|---|
+| `IsValid` | +0x00 | `cmp DWORD PTR [rbx],0x1` / `sete` |
+| `Time` | +0x08 | `mov r8d,[rbx+0x8]` beside `"Time"` |
+| `Score` | +0x0c | `mov r8d,[rbx+0xc]` beside `"Score"` |
+| `NbRespawns` | +0x10 | `mov r8d,[rbx+0x10]` |
+| `NbCheckpoints` | +0x20 | `mov r8d,[rbx+0x20]` |
+
+That struct is **no use**: the engine builds it at print time, out of a vector
+it hangs at `+0x4870`, so reaching it means paying for the thing being skipped.
+
+### 10.2 Finding the word the engine writes AT the finish
+
+The value is in memory two ticks after the finish and long before anything is
+printed — 41 copies of it — but at no fixed offset from anything: **two runs of
+the same tape put it 0x50 apart**. So it lives in a per-run allocation, and the
+only durable way to it is a pointer some typed object holds.
+
+Forwards that is a 150 MB pointer graph. Backwards it is a short search, and
+`fk tickhook finish --chain` does it: snapshot the writable memory, take the
+words holding the finish time, find every word that points into their blocks,
+repeat, and stop when a hop lands inside an object the shim can already
+resolve. Sixteen candidates at depth 1; four survived three tapes with three
+different finish times; the shortest is
+
+```text
+[[controller + 0x1a88] + 0xa4]     the finish time, in SIMULATION ms
+```
+
+It reads `0xffffffff` for the whole race and takes its value one tick after the
+tick that detects the crossing. It is exact **including the sub-tick**:
+rank00100 finishes at race 22884 ms — not a multiple of 10, so the engine
+interpolates within the tick — and the word reads sim 25084, which is 22884 to
+the millisecond. (This is also why "detect the finish tick and convert" is not
+a solution: the tick is 22880.)
+
+### 10.3 Why it is calibrated per server and not a constant
+
+Hardcoding that offset is wrong, and every way it is wrong is SILENT:
+
+| map | what a hardcoded rule met |
+|---|---|
+| map 2 | the word at +0xa4, sentinel `0xffffffff`, state beside it `2 -> 3` |
+| 145875 | the word at +0xa4, sentinel `0xffffffff`, state beside it **`0 -> 1`** |
+| 126859 | sentinel **`0`**, and the record **not in that block at all** |
+
+Each mismatch made the lever quietly not fire — a search would have kept paying
+the 5.8 ms while the code said it had been fixed. So the driver calibrates:
+one fork of the tape whose finish time it already knows (the incumbent's own
+millisecond, from the plain oracle), gathering the block as it changes — the
+dedup key is the whole window, so a block that sits still costs nothing — and
+it keeps the word that ends at exactly that time and started at one of the two
+"nothing yet" markers. It tries the controller's block first, then the
+participant, vehicle, playground and simulation.
+
+Children are forked from that process, so **the address is the same in every
+one of them** and no offset has to be portable. The shim is told the address
+(`'Y'`), reads the sentinel itself, and every tick does one load and one
+compare; when the word changes it writes the value to the shared timing page
+and `_exit`s. The parent turns it into `FKFINISH race_ms <N>`, which
+`parse_result` prefers over the JSON.
+
+`on_clock` runs BEFORE that check, deliberately: leaving first would drop the
+last tick from every finisher's watchdog summary — a behaviour change disguised
+as a speedup.
+
+### 10.4 The control, and the numbers
+
+`fk tickhook finishcheck` arms `FKSHIM_FINISH_CHECK`, which makes a child
+record the fast answer **and print the JSON anyway**, so both numbers come from
+one simulation. It fails on any disagreement, and on any candidate where one
+path answered and the other did not.
+
+| map, checkpoint | candidates | finished | agree | disagree |
+|---|---|---|---|---|
+| map 2, `tick:171` | 400 | 93 | 93 | **0** |
+| map 2, `tick:2313` | 200 | 200 | 200 | **0** |
+| 126859, `tick:1200` | 250 | 57 | 57 | **0** |
+| 145875, `tick:400` | 250 | 144 | 144 | **0** |
+| **total** | **1100** | **494** | **494** | **0** |
+
+A DNF produces no fast answer and keeps the JSON path — that is the honest
+fallback, not a guess, and it is why the table's non-finishers are not a gap.
+
+**Cost, measured** (`fk tickhook cost`, n=40, map 2 rank00001):
+
+| checkpoint | before | after | |
+|---|---|---|---|
+| `tick:2313` (119 tail ticks) | 13.22 ms | **9.57 ms** | 1.38x |
+| `tick:1200` (1232) | 43.19 | 40.78 | 1.06x |
+| `tick:171` (2261) | 75.71 | 70.50 | 1.07x |
+
+**Nothing else moved:** `fk watch measure` 50 candidates, same seed — 30 of 50
+trips, 20 identical armed vs unarmed, 0 false positives, 50/50 score safety,
+the same as with the lever off. `fk server check` **300/300 exact** across two
+maps × three checkpoints. The guarded 10-minute stress search: 278 850 evals,
+9 improvements, **0 phantoms**, best 22.711.
+
+### 10.5 What is NOT done
+
+* **A DNF still pays the 5.8 ms.** Skipping it needs the checkpoint count the
+  driver reads from the `Desc` line, and no stable place for that has been
+  found. In a search most candidates that reach the end are DNFs, so this is
+  the larger half of the remaining win.
+* **`FK_FAST_LOCATE` is still off** — §11.
+
+---
+
+## 11. FK_FAST_LOCATE: named, half fixed, still off
+
+§9.3 reported a locator that answers in 0.2 s where the sweep takes 3.6 s, and
+an unexplained difference: with it the watchdog stopped tripping (4 of 8 → 0 of
+8) and a search ran 5.8x faster with 0 % finishers. That is now explained, and
+the explanation is worth more than the speedup.
+
+**The fast locator was picking a POSITION-ONLY RENDER COPY of the car.**
+Identical x/y/z to the real state — which is why every position check passed,
+including `fk trace`'s 3 mm control — but **velocity all zeros** and a
+quaternion that is not a unit quaternion (|q|−1 = 0.14 against 1.3e-7 for the
+real one). A speed-based predicate cannot fire on a car whose speed is
+identically zero, so the watchdog went quiet, every candidate ran to the end,
+and the search "sped up" by measuring nothing.
+
+The fix is that the test is now the whole state, not the position: a candidate
+must track the validator's car, travel what the car travels, carry a unit
+quaternion at −16, and carry a velocity at +12 that is the derivative of its
+own position. That rejects the copy on every map.
+
+**It is still not the only locator, because a second copy exists.** With the
+whole-state tests in place the candidate set still contains an object exactly
+ONE TICK out of phase with the vis state. It passes every test above —
+`fk trace`'s self-check accepts its quaternion and velocity — and produces a
+trajectory 1.2147 m from the reference on 126859, which is one tick of travel
+at 128.9 m/s, which the watchdog turns into **21 false positives out of 21
+finishers**. The obvious discriminator does not work: the phase between the vis
+state and the validator's own car is **not the same on every map** (the vis
+state lags by a tick on map 2 and does not on 126859), so any rule of the form
+"closer to where the car was" is right on one map and wrong on the next.
+
+So the sweep stays the default and the blind sweep is NOT deleted. What is
+known, for whoever finishes it:
+
+* the engine's own pointer chains (`fk::ptr::CAR_CHAINS`, mirrored in
+  `forkoracle::car::CAR_CHAINS`) end at the vis state by construction and
+  resolve in 0.00 s — they are the right candidate source, and `fk trace`'s
+  ladder already uses them to reach 2.9 mm on 126859 where the sweep cannot
+  locate at all (`vel_err 1356 m/s: refusing to guess`);
+* what is missing is the choice BETWEEN chains on a map where several resolve.
+  The one test that is ground truth for it is the reference line the search
+  already holds: the chosen object and bias must reproduce the reference
+  position at the checkpoint tick. That is one comparison, and it is the next
+  step;
+* candidates must be vetted in the driver before they reach a child. Gathering
+  several into one sample is faster and wrong: one bad address takes the child
+  down and the failure reads as "nothing tracks the car".

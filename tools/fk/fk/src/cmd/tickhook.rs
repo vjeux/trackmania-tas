@@ -1617,6 +1617,12 @@ pub fn finishcheck(
     n: usize,
     seed: u64,
 ) -> Result<(), String> {
+    // THIS TOOL ARMS ITS OWN CONTROL. In the normal mode the child LEAVES at the
+    // finish, so there is no JSON to compare against and every candidate reads
+    // as a disagreement -- a check that fails because it was not set up is
+    // worse than no check. Check mode records the fast answer and prints the
+    // JSON anyway, from one simulation.
+    std::env::set_var("FKSHIM_FINISH_CHECK", "1");
     let mut s = Session::start(engine, tape, at)?;
     let probe = s.srv.boundary_tick(s.tape.start_offset_ms)?;
     let recs = s.tape.tail_records(probe);
