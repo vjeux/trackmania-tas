@@ -306,14 +306,65 @@ pub fn model_stats(runs: &[GhostRun], gates: &MapGates) -> Vec<(String, usize, f
 pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, Vec<String>) {
     // per model: (outside s, inside s) pairs, GEOM half_width, from_item, and the human crossings' |lat| max and up range
     let mut by: std::collections::BTreeMap<String, (Vec<(f64, f64)>, f64, bool, f64, f64, f64)> = Default::default();
+    // PHASE 1 -- per gate, in the GEOM frame: when no plane perpendicular to the gate's normal
+    // separates the rows before the credit from the credited rows by more than 0.3 m, the
+    // NORMAL is wrong (a wall-mounted item read as pitched 90°): replace it by the humans' mean
+    // travel direction at the credit and refit that gate alone (Spring 2025 - 24 wp14)
+    let pair_of = |c: &Crossing| match (c.p_step, c.p_step_prev) {
+        (Some(a), Some(b)) => Some((a, b)),
+        _ => c.pm.zip(c.pmm),
+    };
+    let mut per_gate_pairs: std::collections::BTreeMap<u32, Vec<([f64; 3], [f64; 3])>> = Default::default();
     for run in runs {
         for c in &run.crossings {
-            let g = gates.gate(c.gate_wp).unwrap();
+            if let Some(p) = pair_of(c) {
+                per_gate_pairs.entry(c.gate_wp).or_default().push(p);
+            }
+        }
+    }
+    let mut normals: Vec<(u32, [f64; 3])> = Vec::new();
+    let mut overridden: std::collections::BTreeMap<u32, crate::gates::Gate> = Default::default();
+    for (wp, pairs) in &per_gate_pairs {
+        let Some(g) = gates.gate(*wp) else { continue };
+        if pairs.len() < 3 {
+            continue;
+        }
+        let lo = pairs.iter().map(|(_, o)| g.local(*o).0).fold(f64::NEG_INFINITY, f64::max);
+        let hi = pairs.iter().map(|(i, _)| g.local(*i).0).fold(f64::INFINITY, f64::min);
+        if hi - lo >= -0.3 {
+            continue;
+        }
+        let mut t = [0.0f64; 3];
+        for (i, o) in pairs {
+            for k in 0..3 {
+                t[k] += i[k] - o[k];
+            }
+        }
+        let tn = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+        if tn < 1e-6 {
+            continue;
+        }
+        let n_new = [t[0] / tn, t[1] / tn, t[2] / tn];
+        let mut g2 = g.clone();
+        g2.normal = n_new;
+        let lo2 = pairs.iter().map(|(_, o)| g2.local(*o).0).fold(f64::NEG_INFINITY, f64::max);
+        let hi2 = pairs.iter().map(|(i, _)| g2.local(*i).0).fold(f64::INFINITY, f64::min);
+        // only when the travel normal explains the rows BETTER (a wall-riding car credited
+        // mid-box is not a plane crossing in any frame: Spring 2025 - 24 wp14 got worse, -15.7 m)
+        if hi2 - lo2 > hi - lo + 0.05 {
+            normals.push((*wp, n_new));
+            overridden.insert(*wp, g2);
+            eprintln!("  wp{wp} {}: GEOM normal ({:.2}, {:.2}, {:.2}) inconsistent by {:.2} m; NORMAL REFITTED from the humans' travel -> ({:.3}, {:.3}, {:.3}), slack now {:+.3} m", g.model, g.normal[0], g.normal[1], g.normal[2], lo - hi, n_new[0], n_new[1], n_new[2], hi2 - lo2);
+        } else {
+            eprintln!("  wp{wp} {}: GEOM normal ({:.2}, {:.2}, {:.2}) inconsistent by {:.2} m and the humans' travel normal ({:.2}, {:.2}, {:.2}) is no better ({:+.2} m): not a plane crossing; frame kept", g.model, g.normal[0], g.normal[1], g.normal[2], lo - hi, n_new[0], n_new[1], n_new[2], hi2 - lo2);
+        }
+    }
+    for run in runs {
+        for c in &run.crossings {
+            let g0 = gates.gate(c.gate_wp).unwrap();
+            let g = overridden.get(&c.gate_wp).unwrap_or(g0);
             // the engine's counter step row when present, else T-1/T-2 from the notice
-            let pair = match (c.p_step, c.p_step_prev) {
-                (Some(a), Some(b)) => Some((a, b)),
-                _ => c.pm.zip(c.pmm),
-            };
+            let pair = pair_of(c);
             if let Some((pin, pout)) = pair {
                 let (s1, lat1, up1) = g.local(pin);
                 let s2 = g.local(pout).0;
@@ -374,6 +425,7 @@ pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, 
             default: Trigger { s_off: -2.0, depth: 8.0, lat_half: 10.0, up_lo: -6.0, up_hi: 8.0 },
             provenance: provenance.to_string(),
             flipped: Vec::new(),
+            normals,
         },
         notes,
     )
