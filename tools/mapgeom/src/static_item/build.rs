@@ -118,6 +118,34 @@ pub struct Merged {
     /// itself (per-slot entries, trigger synthesis); skip the shared
     /// dedup-and-weld tail in `add_crystal`.
     pub surface_built: bool,
+    /// The moving parts (a pusher's piston, a rotor's disc): kept apart from
+    /// the static merge and emitted as `CPlugDynaObjectModel` entities of a
+    /// prefab entity model, each with its kinematic constraint. Empty for a
+    /// static item.
+    pub dyna: Vec<DynaPart>,
+}
+
+/// One `CPlugDynaObjectModel` entity of the source prefab, scaled: its mesh
+/// merged on its own (in the object's local frame), its two hulls, the
+/// constraint that moves it (translation range scaled), and the entity
+/// params both carried from the pack.
+#[derive(Clone, Debug)]
+pub struct DynaPart {
+    pub path: String,
+    /// The entity's pose in the item frame: rotation as the game's quaternion
+    /// (x, y, z, w), position already scaled.
+    pub rot: [f32; 4],
+    pub pos: [f32; 3],
+    pub mesh: Merged,
+    /// `MoveShape` — moves with the object.
+    pub move_shape: Option<CPlugSurface>,
+    /// `HitShape` — stays.
+    pub hit_shape: Option<CPlugSurface>,
+    pub model: super::dyna::CPlugDynaObjectModel,
+    pub instance_params_id: i32,
+    pub instance_params: Vec<u8>,
+    pub constraint: super::dyna::KinematicConstraint,
+    pub constraint_params: super::dyna::ConstraintParams,
 }
 
 pub fn dec3n_unpack(v: u32) -> [f32; 3] {
@@ -1114,14 +1142,12 @@ pub fn placement_param(sclass_index: i32) -> super::item::CGameItemPlacementPara
     }
 }
 
-/// Build the whole item tree from the merged geometry.
-pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
-    use super::item::*;
-    use super::Id;
+/// The merged visuals + materials as one `CPlugSolid2Model`, node indices
+/// taken from `next` (visual, its stream, then the materials).
+pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSolid2Model> {
     if m.visuals.is_empty() {
         return Err("no visuals: nothing to build".into());
     }
-    let mut next = 4i32;
     let mut s2 = CPlugSolid2Model::new_v34();
     let mut pre = m.visuals.clone();
     if std::env::var_os("TINY_NO_HARMONIZE").is_none() {
@@ -1176,21 +1202,21 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         // the stream sits right after its visual
         for r in main.vertex_streams.iter_mut() {
             if r.inline.is_some() {
-                r.index = next + 1;
+                r.index = *next + 1;
             }
         }
         // TINY_MAT_PER_VISUAL=1: one custom material entry per visual (duplicating the
         // inst), the way the reference items are built.
         let material_index = if per_visual { s2.visuals.len() as i32 } else { used.iter().position(|u| *u == mv.material).unwrap() as i32 };
         s2.shaded_geoms.push(ShadedGeom { visual_index: s2.visuals.len() as i32, material_index, u01: -1, lod_mask: 1, u02: 0 });
-        s2.visuals.push(inline(next, Node::Visual(v)));
-        next += 2;
+        s2.visuals.push(inline(*next, Node::Visual(v)));
+        *next += 2;
     }
     let mat_list: Vec<usize> = if per_visual { visuals.iter().map(|mv| mv.material).collect() } else { used.clone() };
     for inst in mat_list.iter().map(|u| &m.materials[*u]) {
         let inst = skinned_material(inst, opts.collection);
-        s2.custom_materials.push(Material { name: String::new(), node: Some(inline(next, Node::Material(inst))) });
-        next += 1;
+        s2.custom_materials.push(Material { name: String::new(), node: Some(inline(*next, Node::Material(inst))) });
+        *next += 1;
     }
     // The source model's lights, each socket pointing at an INLINE CPlugLight
     // whose GxLight rides inline in turn (two node indices). TINY_LIGHTS=drop
@@ -1199,38 +1225,71 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         for ml in &m.lights_out {
             let mut light = ml.light.clone();
             match light.gx_mut() {
-                Some(gx) if gx.inline.is_some() => gx.index = next + 1,
+                Some(gx) if gx.inline.is_some() => gx.index = *next + 1,
                 Some(gx) => *gx = super::null_ref(),
                 None => {}
             }
             let mut socket = ml.socket.clone();
             socket.u02 = true;
             socket.u04.clear();
-            socket.node = inline(next, Node::Light(light));
-            next += 2;
+            socket.node = inline(*next, Node::Light(light));
+            *next += 2;
             s2.lights.push(socket);
         }
     }
     s2.pre_light_gen = Some(m.pre_light_gen.clone().unwrap_or_else(default_prelight));
     s2.file_write_time = m.file_write_time;
-    let surface = CPlugSurface::mesh(m.surf_vertices.clone(), m.surf_triangles.clone(), m.surf_ids.clone(), [0.0, 0.0, 1.0]);
-    let surface_index = next;
-    next += 1;
+    Ok(s2)
+}
+
+/// The merged collision as the canonical mesh surface.
+pub fn build_surface(m: &Merged) -> CPlugSurface {
+    CPlugSurface::mesh(m.surf_vertices.clone(), m.surf_triangles.clone(), m.surf_ids.clone(), [0.0, 0.0, 1.0])
+}
+
+/// Which item layout carries a prefab entity model (moving parts):
+/// `TINY_DYNA_FORM=common` wraps it in a `CGameCommonItemEntityModel` like a
+/// static item; the default puts the prefab straight under `CGameItemModel`,
+/// as the pack's own obstacle items do.
+fn dyna_form_common() -> bool {
+    std::env::var("TINY_DYNA_FORM").map(|v| v == "common").unwrap_or(false)
+}
+
+/// Build the whole item tree from the merged geometry.
+pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
+    use super::item::*;
+    use super::Id;
+    if m.visuals.is_empty() && m.dyna.is_empty() {
+        return Err("no visuals: nothing to build".into());
+    }
+    // node 1 = the entity model; a static item fixes 2 (static object) and 3
+    // (its solid) like the reference items, a moving item hands indices out
+    // in write order from 2
+    let mut next = if m.dyna.is_empty() { 4i32 } else { 2i32 };
     let no_wp = std::env::var_os("TINY_NO_WAYPOINT").is_some();
+    // The static geometry: one static object (mesh + collision) — the whole
+    // item when nothing moves, else one entity of the prefab.
+    let static_object = if m.visuals.is_empty() {
+        None
+    } else {
+        let mesh_index = if m.dyna.is_empty() { 3 } else { next_index(&mut next) };
+        let s2 = build_solid2(m, opts, &mut next)?;
+        let surface_index = next_index(&mut next);
+        Some(CPlugStaticObjectModel { version: 3, mesh: inline(mesh_index, Node::Solid2(s2)), is_mesh_collidable: false, shape: inline(surface_index, Node::Surface(build_surface(m))) })
+    };
     let trigger = match m.trigger.as_ref().filter(|_| !no_wp) {
         Some(t) => {
-            next += 1;
-            inline(next - 1, Node::Surface(t.clone()))
+            let i = next_index(&mut next);
+            inline(i, Node::Surface(t.clone()))
         }
         None => super::null_ref(),
     };
-    let so = CPlugStaticObjectModel { version: 3, mesh: inline(3, Node::Solid2(s2)), is_mesh_collidable: false, shape: inline(surface_index, Node::Surface(surface)) };
-    let ent = CGameCommonItemEntityModel {
+    let common = |entity: Ref| CGameCommonItemEntityModel {
         version: 6,
         v0_models: None,
         v3_strings: None,
-        static_object: inline(2, Node::StaticObject(so)),
-        trigger_shape: trigger,
+        static_object: entity,
+        trigger_shape: trigger.clone(),
         iso: { let mut i = IDENTITY; i[9] = m.spawn[0]; i[10] = m.spawn[1]; i[11] = m.spawn[2]; i },
         particle_emitter: super::null_ref(),
         actions: Vec::new(),
@@ -1240,9 +1299,58 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         expr_validator: 0,
         u_byte: 1,
     };
-    let placement_index = next;
-    let sclass_index = next + 1;
-    next += 2;
+    let entity_model: Ref = if m.dyna.is_empty() {
+        let so = static_object.ok_or("no visuals: nothing to build")?;
+        inline(1, Node::EntityModel(common(inline(2, Node::StaticObject(so)))))
+    } else {
+        // A prefab, laid out like the pack's obstacle prefabs: the moving
+        // parts first (each a CPlugDynaObjectModel with its own mesh and two
+        // hulls, its instance params carried), then the static part, then one
+        // kinematic constraint per moving part binding the world (-1) to it.
+        let prefab_index = if dyna_form_common() { next_index(&mut next) } else { 1 };
+        let mut ents: Vec<super::prefab::Entity> = Vec::new();
+        for part in &m.dyna {
+            let mesh_index = next_index(&mut next);
+            let s2 = build_solid2(&part.mesh, opts, &mut next).map_err(|e| format!("{}: {e}", part.path))?;
+            let mut model = part.model.clone();
+            model.mesh = inline(mesh_index, Node::Solid2(s2));
+            model.dyna_shape = match &part.move_shape {
+                Some(s) => {
+                    let i = next_index(&mut next);
+                    inline(i, Node::Surface(s.clone()))
+                }
+                None => super::null_ref(),
+            };
+            model.static_shape = match &part.hit_shape {
+                Some(s) => {
+                    let i = next_index(&mut next);
+                    inline(i, Node::Surface(s.clone()))
+                }
+                None => super::null_ref(),
+            };
+            let i = next_index(&mut next);
+            ents.push(super::prefab::Entity { model: inline(i, Node::Dyna(model)), rot: part.rot, pos: part.pos, params_id: part.instance_params_id, params: part.instance_params.clone(), u01: Vec::new() });
+        }
+        if let Some(so) = static_object {
+            let i = next_index(&mut next);
+            ents.push(super::prefab::Entity { model: inline(i, Node::StaticObject(so)), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
+        }
+        for (k, part) in m.dyna.iter().enumerate() {
+            let mut cp = part.constraint_params.clone();
+            cp.ent1 = -1;
+            cp.ent2 = k as i32;
+            let i = next_index(&mut next);
+            ents.push(super::prefab::Entity { model: inline(i, Node::Kinematic(part.constraint.clone())), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: super::dyna::P_CONSTRAINT, params: cp.bytes(), u01: Vec::new() });
+        }
+        let prefab = super::prefab::CPlugPrefab { version: 11, file_write_time: 0, url: String::new(), u01: 0, u02: 0, ents };
+        if dyna_form_common() {
+            inline(1, Node::EntityModel(common(inline(prefab_index, Node::Prefab(prefab)))))
+        } else {
+            inline(prefab_index, Node::Prefab(prefab))
+        }
+    };
+    let placement_index = next_index(&mut next);
+    let sclass_index = next_index(&mut next);
     let ident = || ItemChunk::Ident { path: Id::Str(opts.ident.clone()), collection: Id::Raw(opts.collection), author: Id::Str(opts.author.clone()) };
     let model = ModelChunk {
         version: 15,
@@ -1253,7 +1361,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         actions: Vec::new(),
         default_cam: 0,
         entity_model_edition: super::null_ref(),
-        entity_model: inline(1, Node::EntityModel(ent)),
+        entity_model,
         vfx: super::null_ref(),
         material_modifier: super::null_ref(),
     };
@@ -1292,6 +1400,12 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         ref_table: 0u32.to_le_bytes().to_vec(),
         item: CGameItemModel { chunks },
     })
+}
+
+fn next_index(next: &mut i32) -> i32 {
+    let i = *next;
+    *next += 1;
+    i
 }
 
 /// Header chunks 2E001003 (desc, v8), 2E001006 (lightmap time 0),
@@ -1351,6 +1465,26 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
     let prefab = super::prefab::CPlugPrefab::from_model(&model)?;
     let externals = model.externals.clone();
     let ext_name = |i: i32| externals.iter().find(|(k, _)| *k as i32 == i).map(|(_, p)| p.clone());
+    // The kinematic constraints of this prefab: which entity each one moves
+    // (its params name the dyna entity; -1 is the world), and the constraint
+    // file — through the item's Level modifier when it has one (the game skin
+    // swaps `KinematicConstraints\ObstacleX` for `Modifier\ItemObstacle\
+    // AnimX<Level>`, whose ranges are the real ones; the prefab's own file has
+    // a zero range).
+    let mut constraints: Vec<(i32, String, super::dyna::ConstraintParams)> = Vec::new();
+    for e in &prefab.ents {
+        if e.params_id != super::dyna::P_CONSTRAINT || e.model.inline.is_some() || e.model.index < 0 {
+            continue;
+        }
+        let Some(cp) = ext_name(e.model.index).filter(|p| p.to_ascii_lowercase().ends_with(".kinematicconstraint.gbx")) else { continue };
+        let Some(params) = super::dyna::ConstraintParams::parse(&e.params) else {
+            m.notes.push(format!("{path}: constraint {cp} with {}-byte params skipped", e.params.len()));
+            continue;
+        };
+        let target = if params.ent2 >= 0 { params.ent2 } else { params.ent1 };
+        constraints.push((target, modified_constraint_path(store, m, &cp), params));
+    }
+    let dyna_static = std::env::var("TINY_DYNA").map(|v| v == "static").unwrap_or(false);
     for (i, e) in prefab.ents.iter().enumerate() {
         let iso = compose(at, &super::prefab::CPlugPrefab::entity_iso(e));
         match e.model.inline.as_deref() {
@@ -1417,13 +1551,31 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                         m.notes.push(format!("{path} entity {i}: external {p} failed: {e}"));
                     }
                 }
-                // a dynamic object (the flag cloth of Flag16m/Flag8m): its mesh
-                // at rest, no collision
+                // a dynamic object: a MOVING part when a constraint of this
+                // prefab binds it (pusher pistons, rotor discs — kept as a
+                // dyna entity with its constraint, see `DynaPart`); otherwise
+                // (the flag cloth of Flag16m/Flag8m) its mesh at rest, no
+                // collision. `TINY_DYNA=static` bakes every one at rest.
                 Some(p) if p.to_ascii_lowercase().ends_with(".dynaobject.gbx") => {
-                    if let Err(e) = add_dyna_object_file(store, &p, &iso, scale, m) {
-                        m.notes.push(format!("{path} entity {i}: external {p} failed: {e}"));
+                    let bound = constraints.iter().find(|(target, _, _)| *target == i as i32).cloned();
+                    match bound {
+                        Some((_, cpath, cparams)) if !dyna_static => {
+                            if let Err(err) = add_dyna_part(store, &p, &iso, scale, m, &cpath, cparams, e) {
+                                m.notes.push(format!("{path} entity {i}: moving part {p} failed ({err}); baked at rest"));
+                                if let Err(e2) = add_dyna_object_file(store, &p, &iso, scale, m) {
+                                    m.notes.push(format!("{path} entity {i}: external {p} failed: {e2}"));
+                                }
+                            }
+                        }
+                        _ => {
+                            if let Err(e2) = add_dyna_object_file(store, &p, &iso, scale, m) {
+                                m.notes.push(format!("{path} entity {i}: external {p} failed: {e2}"));
+                            }
+                        }
                     }
                 }
+                // the constraint entities were taken above, with the part they move
+                Some(p) if p.to_ascii_lowercase().ends_with(".kinematicconstraint.gbx") => {}
                 Some(p) if p.to_ascii_lowercase().ends_with(".vegettreemodel.gbx") => {
                     m.veget.push((p.clone(), iso));
                     m.notes.push(format!("{path} entity {i}: external {p} skipped (vegetation, re-emitted as an item)"));
@@ -1784,16 +1936,35 @@ impl Merged {
     }
 }
 
-/// A `.DynaObject.Gbx` pack file (`CPlugDynaObjectModel`, class 0x09144000:
-/// the cloth of `Items\Flag\Flag16m`, a rotor, a light ray): its mesh at REST,
-/// merged as a non-collidable static object. The body is the plain struct
-/// `classes.rs` documents — version, IsStatic, DynamizeOnSpawn, then the Mesh
-/// ref — and the mesh is an external `.Mesh.Gbx` (`CPlugSolid2Model`) whose
-/// visuals carry their vertices INLINE (converted to streams on parse). A
-/// vertex-animated mesh stacks its frames in that one vertex array under a
-/// single index list (Flag: 12384 = 43 x 288 vertices, 726 indices); the first
-/// frame — the vertices the indices reach — is what stays.
-pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at: &Xform, scale: f32, m: &mut Merged) -> R<()> {
+/// A `.DynaObject.Gbx` pack file loaded for either use: baked at rest
+/// (`add_dyna_object_file`) or kept as a moving part (`add_dyna_part`). The
+/// mesh is an external `.Mesh.Gbx` (`CPlugSolid2Model`) whose visuals carry
+/// their vertices INLINE (converted to streams on parse); a vertex-animated
+/// mesh stacks its frames in that one vertex array under a single index list
+/// (Flag: 12384 = 43 x 288 vertices, 726 indices) — the first frame, the
+/// vertices the indices reach, is what stays.
+pub struct DynaSource {
+    pub model: super::dyna::CPlugDynaObjectModel,
+    /// The dyna file's own reference table (mesh, MoveShape, HitShape).
+    pub externals: Vec<(u32, String)>,
+    pub mesh_path: String,
+    pub s2: super::solid2::CPlugSolid2Model,
+    pub mesh_ext: Vec<(u32, String)>,
+    /// Per Solid2 material: dressed by a vertex-tween shader (the flag cloth).
+    pub tween_mats: Vec<bool>,
+}
+
+/// A material whose shader tweens between vertex frames
+/// (`Tech3_Warp_TDiffSpec_VertexTween`, the flag cloth's `ItemFlag`).
+fn is_tween_material(store: &mut crate::store::DataStore, p: &str) -> bool {
+    store.load_model(p).map(|mm| mm.externals.iter().any(|(_, e)| e.to_ascii_lowercase().contains("tween"))).unwrap_or(false)
+}
+
+fn name_in(tbl: &[(u32, String)], i: i32) -> Option<String> {
+    tbl.iter().find(|(k, _)| *k as i32 == i).map(|(_, p)| p.clone())
+}
+
+pub fn load_dyna_source(store: &mut crate::store::DataStore, path: &str, m: &mut Merged) -> R<DynaSource> {
     let model = store.load_model(path)?;
     if model.class_id != crate::node::C_DYNA_OBJECT {
         return Err(format!("{path}: class 0x{:08X} is not CPlugDynaObjectModel", model.class_id));
@@ -1801,20 +1972,13 @@ pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at:
     let mut lb = super::LookbackState::default();
     lb.defined_nodes.extend(model.external_indices().iter().copied());
     let mut r = super::Rd::new(&model.body, 0, lb);
-    let _version = r.u32()?;
-    let _is_static = r.u32()?;
-    let _dynamize = r.u32()?;
-    let mesh = super::read_ref(&mut r)?;
-    // the two hulls: the one that moves with the object, the one that stays —
-    // either gives the static copy a collision surface (an item whose surface
-    // is EMPTY is dropped by the game: Summer 15's 14 rotors and 2 tubes were
-    // placed at the right spot and never drawn until the HitShape came along)
-    let dyna_shape = super::read_ref(&mut r).ok();
-    let static_shape = super::read_ref(&mut r).ok();
-    let name_in = |tbl: &[(u32, String)], i: i32| tbl.iter().find(|(k, _)| *k as i32 == i).map(|(_, p)| p.clone());
-    let mp = match mesh.inline.as_deref() {
+    let dyna = super::dyna::CPlugDynaObjectModel::parse(&mut r).map_err(|e| format!("{path}: {e}"))?;
+    if r.o != model.body.len() {
+        return Err(format!("{path}: {} trailing bytes after the dyna object", model.body.len() - r.o));
+    }
+    let mp = match dyna.mesh.inline.as_deref() {
         Some(_) => return Err(format!("{path}: inline dyna mesh is not handled")),
-        None => name_in(&model.externals, mesh.index).ok_or_else(|| format!("{path}: mesh node {} is neither inline nor external", mesh.index))?,
+        None => name_in(&model.externals, dyna.mesh.index).ok_or_else(|| format!("{path}: mesh node {} is neither inline nor external", dyna.mesh.index))?,
     };
     let mm_ = store.load_model(&mp)?;
     let mut lb = super::LookbackState::default();
@@ -1851,8 +2015,7 @@ pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at:
         }
     }
     let mesh_ext = mm_.externals.clone();
-    // A material whose shader tweens between vertex frames
-    // (`Tech3_Warp_TDiffSpec_VertexTween`, the flag cloth's `ItemFlag`) runs the
+    // A material whose shader tweens between vertex frames runs the
     // vertex-animation draw path on every visual it dresses — with no frame
     // table that is a NULL read (SCBufferDraw@NCharAnimSkelV, 2026-09-06, twice).
     // Such a cloth is drawn as TrackBorders (the road-shoulder material: white
@@ -1860,11 +2023,7 @@ pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at:
     // its uv0 pinned to one texel of the white panel — the flag is a plain
     // light cloth in the game (its own green `ItemFlag_D` is hue-masked to the
     // colour); Technics made it a dark grey rag.
-    let tween = |store: &mut crate::store::DataStore, p: &str| -> bool {
-        store.load_model(p).map(|mm| mm.externals.iter().any(|(_, e)| e.to_ascii_lowercase().contains("tween"))).unwrap_or(false)
-    };
-    let mut tween_notes: Vec<String> = Vec::new();
-    let tween_mats: Vec<bool> = s2.materials.iter().map(|r| r.inline.is_none() && r.index >= 0 && name_in(&mesh_ext, r.index).map(|p| tween(store, &p)).unwrap_or(false)).collect();
+    let tween_mats: Vec<bool> = s2.materials.iter().map(|r| r.inline.is_none() && r.index >= 0 && name_in(&mesh_ext, r.index).map(|p| is_tween_material(store, &p)).unwrap_or(false)).collect();
     if tween_mats.iter().any(|t| *t) {
         for g in &s2.shaded_geoms {
             if !tween_mats.get(g.material_index.max(0) as usize).copied().unwrap_or(false) {
@@ -1897,39 +2056,63 @@ pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at:
             }
         }
     }
+    Ok(DynaSource { model: dyna, externals: model.externals.clone(), mesh_path: mp, s2, mesh_ext, tween_mats })
+}
+
+/// One of the dyna object's hulls (`MoveShape` / `HitShape` / `.Shape.Gbx`)
+/// parsed, with the shape file's own externals (its material nodes).
+fn load_dyna_shape(store: &mut crate::store::DataStore, src: &DynaSource, sref: &Ref, m: &mut Merged) -> Option<(CPlugSurface, Vec<(u32, String)>, String)> {
+    if sref.inline.is_some() || sref.index < 0 {
+        return None;
+    }
+    let sp = name_in(&src.externals, sref.index)?;
+    let low = sp.to_ascii_lowercase();
+    if !low.ends_with(".hitshape.gbx") && !low.ends_with(".moveshape.gbx") && !low.ends_with(".shape.gbx") {
+        return None;
+    }
+    let sm = store.load_model(&sp).ok()?;
+    let mut lb = super::LookbackState::default();
+    lb.defined_nodes.extend(sm.external_indices().iter().copied());
+    let mut r = super::Rd::new(&sm.body, 0, lb);
+    match super::surface::CPlugSurface::parse(&mut r) {
+        Ok(sf) => Some((sf, sm.externals.clone(), sp)),
+        Err(e) => {
+            m.notes.push(format!("{sp}: {e} (no collision from this hull)"));
+            None
+        }
+    }
+}
+
+/// A `.DynaObject.Gbx` pack file (`CPlugDynaObjectModel`, class 0x09144000:
+/// the cloth of `Items\Flag\Flag16m`, a rotor, a light ray): its mesh at REST,
+/// merged as a static object, with one of its hulls as collision.
+pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at: &Xform, scale: f32, m: &mut Merged) -> R<()> {
+    let src = load_dyna_source(store, path, m)?;
+    let mut tween_notes: Vec<String> = Vec::new();
+    // the two hulls: the one that moves with the object, the one that stays —
+    // either gives the static copy a collision surface (an item whose surface
+    // is EMPTY is dropped by the game: Summer 15's 14 rotors and 2 tubes were
+    // placed at the right spot and never drawn until the HitShape came along)
     const SHAPE_OFF: i32 = 200_000;
     let mut shape_ext: Vec<(u32, String)> = Vec::new();
     let mut shape_node = super::null_ref();
-    for sref in [static_shape.as_ref(), dyna_shape.as_ref()].into_iter().flatten() {
-        if sref.inline.is_some() || sref.index < 0 {
-            continue;
-        }
-        let Some(sp) = name_in(&model.externals, sref.index) else { continue };
-        if !sp.to_ascii_lowercase().ends_with(".hitshape.gbx") && !sp.to_ascii_lowercase().ends_with(".moveshape.gbx") && !sp.to_ascii_lowercase().ends_with(".shape.gbx") {
-            continue;
-        }
-        let Ok(sm) = store.load_model(&sp) else { continue };
-        let mut lb = super::LookbackState::default();
-        lb.defined_nodes.extend(sm.external_indices().iter().copied());
-        let mut r = super::Rd::new(&sm.body, 0, lb);
-        match super::surface::CPlugSurface::parse(&mut r) {
-            Ok(mut sf) => {
-                for sm_ in sf.materials.iter_mut() {
-                    if let super::surface::SurfMaterial::Node(nr) = sm_ {
-                        if nr.inline.is_none() && nr.index >= 0 {
-                            nr.index += SHAPE_OFF;
-                        }
+    for sref in [&src.model.static_shape, &src.model.dyna_shape] {
+        if let Some((mut sf, ext, sp)) = load_dyna_shape(store, &src, sref, m) {
+            for sm_ in sf.materials.iter_mut() {
+                if let super::surface::SurfMaterial::Node(nr) = sm_ {
+                    if nr.inline.is_none() && nr.index >= 0 {
+                        nr.index += SHAPE_OFF;
                     }
                 }
-                shape_ext = sm.externals.clone();
-                shape_node = inline(2, Node::Surface(sf));
-                m.notes.push(format!("{}: collision from {}", path.rsplit('\\').next().unwrap_or(path), sp.rsplit('\\').next().unwrap_or(&sp)));
-                break;
             }
-            Err(e) => m.notes.push(format!("{sp}: {e} (no collision from this hull)")),
+            shape_ext = ext;
+            shape_node = inline(2, Node::Surface(sf));
+            m.notes.push(format!("{}: collision from {}", path.rsplit('\\').next().unwrap_or(path), sp.rsplit('\\').next().unwrap_or(&sp)));
+            break;
         }
     }
-    let so = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(s2)), is_mesh_collidable: false, shape: shape_node };
+    let mesh_ext = src.mesh_ext.clone();
+    let so = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(src.s2)), is_mesh_collidable: false, shape: shape_node };
     let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
         if idx >= SHAPE_OFF {
             let p = name_in(&shape_ext, idx - SHAPE_OFF)?;
@@ -1938,7 +2121,7 @@ pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at:
             return Some((p, link, phys));
         }
         let p = name_in(&mesh_ext, idx)?;
-        if tween(store, &p) {
+        if is_tween_material(store, &p) {
             tween_notes.push(format!("{p}: vertex-tween shader; drawn as TrackBorders (uv0 pinned to the white panel)"));
             return Some((p, "Stadium\\Media\\Material\\TrackBorders".to_string(), 9));
         }
@@ -1952,6 +2135,125 @@ pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at:
     r
 }
 
+/// A hull re-emitted in the canonical form the item writer uses, scaled: a
+/// mesh through `add_surface_mesh` (the pack shape kept verbatim — its
+/// material nodes — made the game drop a whole item, 2026-09-06); a
+/// primitive or compound (a pusher's `MoveShape` is a convex polyhedron, a
+/// rotor's a compound of nine) kept as is with its lengths scaled and its
+/// external material nodes dropped — the physics ids stay in `material_ids`.
+fn canonical_surface(sf: &CPlugSurface, scale: f32) -> Option<CPlugSurface> {
+    match &sf.surf {
+        Surf::Mesh { vertices, triangles, .. } => {
+            let mut tmp = Merged::default();
+            tmp.add_surface_mesh(vertices, triangles, &IDENTITY, scale);
+            Some(CPlugSurface::mesh(tmp.surf_vertices, tmp.surf_triangles, tmp.surf_ids, sf.gameplay_main_dir.unwrap_or([0.0, 0.0, 1.0])))
+        }
+        other => {
+            let mut surf = other.clone();
+            surf.scale(scale);
+            let has_nodes = sf.materials.iter().any(|m| matches!(m, super::surface::SurfMaterial::Node(_)));
+            let materials = if has_nodes { Vec::new() } else { sf.materials.clone() };
+            let u05 = if has_nodes { None } else { sf.u05 };
+            Some(CPlugSurface { version: 4, surf_version: 2, surf, gameplay_main_dir: sf.gameplay_main_dir.or(Some([0.0, 0.0, 1.0])), materials, u05, u01: Vec::new(), material_ids: sf.material_ids.clone(), skel: super::null_ref(), u06: Vec::new() })
+        }
+    }
+}
+
+/// The constraint file an item's Level modifier substitutes for a prefab's
+/// own: `…\KinematicConstraints\ObstacleX.KinematicConstraint.Gbx` becomes
+/// `<modifier folder>\AnimX<suffix>.KinematicConstraint.Gbx` when that file
+/// exists (`ItemObstacleLevel1.GameSkin.gbx` lists exactly these pairs:
+/// ObstaclePusher8m -> AnimPusher8mLevel1, ObstacleRotor -> AnimRotorLevel1,
+/// ObstacleTube -> AnimTubeLevel1 …). Without a modifier, or without such a
+/// file, the prefab's own constraint stands.
+pub fn modified_constraint_path(store: &mut crate::store::DataStore, m: &Merged, constraint: &str) -> String {
+    let Some(first) = m.modifier.first() else { return constraint.to_string() };
+    let Some((folder, _)) = first.rsplit_once('\\') else { return constraint.to_string() };
+    let file = constraint.rsplit('\\').next().unwrap_or(constraint);
+    let Some(stem) = file.strip_suffix(".KinematicConstraint.Gbx") else { return constraint.to_string() };
+    let anim = format!("Anim{}", stem.strip_prefix("Obstacle").unwrap_or(stem));
+    let candidate = format!("{folder}\\{anim}{}.KinematicConstraint.Gbx", m.modifier_suffix);
+    if store.load_model(&candidate).is_ok() {
+        candidate
+    } else {
+        constraint.to_string()
+    }
+}
+
+/// A `.DynaObject.Gbx` entity kept MOVING: its mesh merged on its own (the
+/// object's local frame, scaled), its two hulls scaled, the constraint that
+/// drives it with the translation range scaled, the entity pose and params
+/// carried — everything `assemble` needs for a `CPlugDynaObjectModel` entity
+/// of the item's prefab.
+#[allow(clippy::too_many_arguments)]
+pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform, scale: f32, m: &mut Merged, constraint_path: &str, cparams: super::dyna::ConstraintParams, ent: &super::prefab::Entity) -> R<()> {
+    let src = load_dyna_source(store, path, m)?;
+    let kmodel = store.load_model(constraint_path)?;
+    let mut constraint = super::dyna::KinematicConstraint::parse_body(&kmodel.body).map_err(|e| format!("{constraint_path}: {e}"))?;
+    constraint.scale(scale);
+    let mut mesh = Merged::default();
+    mesh.editors = m.editors;
+    mesh.keep_water = m.keep_water;
+    mesh.modifier = m.modifier.clone();
+    mesh.modifier_suffix = m.modifier_suffix.clone();
+    mesh.no_split = true;
+    let mesh_ext = src.mesh_ext.clone();
+    let mut tween_notes: Vec<String> = Vec::new();
+    let so = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(src.s2.clone())), is_mesh_collidable: false, shape: super::null_ref() };
+    let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
+        let p = name_in(&mesh_ext, idx)?;
+        if is_tween_material(store, &p) {
+            tween_notes.push(format!("{p}: vertex-tween shader; drawn as TrackBorders (uv0 pinned to the white panel)"));
+            return Some((p, "Stadium\\Media\\Material\\TrackBorders".to_string(), 9));
+        }
+        let link = material_link(&p);
+        let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).unwrap_or(28);
+        Some((p, link, phys))
+    };
+    mesh.add_static_object(&so, &IDENTITY, scale, &mut resolve).map_err(|err| format!("{path}: {err}"))?;
+    // a moving part's own lights (none in the pack so far) ride in its solid
+    mesh.resolve_pending_lights(store);
+    m.notes.extend(tween_notes);
+    if mesh.visuals.is_empty() {
+        return Err(format!("{path}: the moving mesh has no visuals"));
+    }
+    let move_shape = load_dyna_shape(store, &src, &src.model.dyna_shape, m).and_then(|(sf, _, _)| canonical_surface(&sf, scale));
+    let hit_shape = load_dyna_shape(store, &src, &src.model.static_shape, m).and_then(|(sf, _, _)| canonical_surface(&sf, scale));
+    let iso = compose(at, &super::prefab::CPlugPrefab::entity_iso(ent));
+    let rot = crate::geom::to_quat(&iso);
+    let pos = [iso[9] * scale, iso[10] * scale, iso[11] * scale];
+    let hulls = |s: &Option<CPlugSurface>| match s.as_ref() {
+        Some(s) => {
+            let (v, t) = s.surf.counts();
+            format!("type {} {v}v/{t}f", s.surf.type_id())
+        }
+        None => "none".to_string(),
+    };
+    m.notes.push(format!(
+        "{}: MOVING part, {} visuals, move shape {}, hit shape {}, constraint {} [{}]",
+        path.rsplit('\\').next().unwrap_or(path),
+        mesh.visuals.len(),
+        hulls(&move_shape),
+        hulls(&hit_shape),
+        constraint_path.rsplit('\\').next().unwrap_or(constraint_path),
+        constraint.summary()
+    ));
+    m.notes.extend(mesh.notes.drain(..).map(|n| format!("  (moving part) {n}")));
+    m.dyna.push(DynaPart {
+        path: path.to_string(),
+        rot,
+        pos,
+        mesh,
+        move_shape,
+        hit_shape,
+        model: src.model.clone(),
+        instance_params_id: ent.params_id,
+        instance_params: ent.params.clone(),
+        constraint,
+        constraint_params: cparams,
+    });
+    Ok(())
+}
 /// The variant list of a pack ITEM: its geometry and vegetation externals
 /// (`.Prefab.Gbx` / `.StaticObject.Gbx` / `.VegetTreeModel.Gbx`) in reference
 /// order — the order the placement's variant byte indexes (Summer 11's
