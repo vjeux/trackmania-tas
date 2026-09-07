@@ -97,7 +97,7 @@ fn pearson(a: &[f64], b: &[f64]) -> f64 {
 
 pub fn run(engine: &Engine, tape: Tape, at: Checkpoint, o: ProbeOpts) -> Result<(), String> {
     let affine = o.affine;
-    let reference = traj::Reference::load(&o.reference)?;
+    let _reference = traj::Reference::load(&o.reference)?;
     let want = crate::traj::Reference::channel_from(&o.reference, &o.channel)
 
         .ok_or_else(|| format!("the reference has no column {}", o.channel))?;

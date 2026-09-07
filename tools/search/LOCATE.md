@@ -203,6 +203,22 @@ The parked slots on a single-car map read `u32[phy+0x128c] & 0xf == 2` and
 
 ---
 
+### Before the spawn there is no car
+
+The four vehicle objects are CREATED two ticks before the race starts (map 2:
+`vehmgr` holds 0 vehicles and the participant's slots are null until race
+−20 ms; at −20 ms the four appear with `+0x128c = 1`, and the driven one turns
+0 at the race start). A checkpoint in the countdown therefore has nothing to
+derive from — and nothing to locate either; the sweep only appeared to manage
+it because its probe children ran past the spawn and searched for an object
+that had come into existence in the meantime. `fk trace` and `fk regen` now
+say so and move to the first checkpoint that has the car (race +0.2 s for
+trace, the next rung of regen's own ladder — race 0 — for regen); a checkpoint
+before the car exists is the ONE case where the checkpoint is not the user's
+to choose, and the tool prints why.
+
+---
+
 ## 6. The controls — each one a test a wrong answer would fail
 
 ### 6.1 `fk locate` — derive and time it
@@ -274,6 +290,22 @@ figures on the two maps where the sweep could run — the precondition the
 car goes 188.9 → 62.5 m/s into a wall and free-falls to the finish. The ghost's
 own telemetry shows the same numbers to 0.1 m/s. A predicate fact about a
 Kacky finish, not a locator fact; the row above is measured without it.)
+
+---
+
+### 6.6 The guarded 10-minute stress search
+`tmsearch search --fork --forktick 171` on map 2, 24 workers, seed 42, phantom
+guard on, the boundary-stress window (`--lo 171 --window 60 --stride 400`) —
+the same run TICKHOOK.md §5 tabulates for every build of the clock:
+
+| build | evals | eval/s | banked | phantoms | best |
+|---|---|---|---|---|---|
+| tickhook, past-the-end guard fixed (sweep locator) | 275 400 | 458 | 8 | 0 | 22.712 |
+| tickhook, finish word without calibration fork (sweep locator) | 282 630 | 470 | 10 | 0 | 22.711 |
+| **this branch: the derived car** | **280 050** | **465** | **8** | **0** | **22.713** |
+
+Every banked improvement was re-validated by the plain oracle; nothing was
+refused as a phantom. The search does not know the locator changed.
 
 ---
 
@@ -366,3 +398,28 @@ object fails `check` on the first tick the car moves. Neither is a guess.
 here (`proof/`), the gdb scripts and logs of the first write-watch experiments
 (`exp/`), the disassembly listing of the server (`ts.asm`, 5.5 M lines), and
 the old-tree binaries' outputs for the comparisons.
+
+---
+
+## 12. The suites, and what was deleted
+
+`tools/search`: **163 tests listed, all green** (151 before: the sweep's own
+tests left with it, 12 tests of the derivation came in — every hop, both slot
+rules, the respawn window, the copy-out cross-check, the sentinel). `tools/fk`
+with the engine tier strict: **34 / 34** (38 before: the four unit tests of
+`ValidatorCar` went with the file). `fk tickhook reads` PASS on the maps above.
+
+Deleted, not flagged off: `forkoracle::blind` (the sweep), `car::locate_fast`
+and `FK_FAST_LOCATE`, the `CAR_CHAINS` mirror and `resolve_chain`/`scan_near`,
+`layout::find_clock`, `measured_clock_bias`, `WET_OFF` and the `q@−16` shape
+assumption in `segments()`, `fk::locate::{find_clock2, confirm_clock,
+locate_v2, qualify2, locate_pos2, locate_candidates, locate_positions_loose,
+PosHit, ClockHit}`, `fk::validator::ValidatorCar`, `record::discover_layout`,
+the reference-line bounding boxes every caller built to fence the sweep,
+`fk trace`'s and `fk resync`'s retry ladders (kept only as the pre-spawn walk
+above), and `fk liveness`'s fixture constant (`WHEEL0 = 496`, "408 bytes above
+the anchor on this fixture") — the wheel block is at `vis+0xa8`, by the
+engine's reflection, and that is what it reads now.
+
+`fk ptr` (the chain finder) and regen's chain-anchor pool remain as regen's
+own machinery; they no longer locate anything on the oracle's path.

@@ -35,7 +35,7 @@ use forkoracle::car::Car;
 
 use forkoracle::forksrv::{parse_result, write_key, ForkServer, Rec};
 use forkoracle::inputs::Inputs;
-use forkoracle::layout::{decode_rows, segments, tail_recs, Row, REC_LEN};
+use forkoracle::layout::{decode_rows, segments, REC_LEN};
 use std::path::PathBuf;
 use tmexplore::action::Input;
 use tmexplore::branch::{Advance, Branch, BranchErr, CarState, Handle};
@@ -153,7 +153,6 @@ impl ForkBranch {
         // Addresses are re-derived in THIS process, every time: the server is
         // PIE and its heap is bimodal, so consecutive runs give different
         // addresses. A failure is an abort, never a guess.
-        let lrecs = tail_recs(&reference.steer_u8(), &gas, &brake, from);
         // The car is DERIVED (`forkoracle::car`, LOCATE.md): the copy-out of
         // the dyna body the physics step integrates, in the driven
         // CGameVehiclePhy, stamped by the tick loop's own clock. No search, no

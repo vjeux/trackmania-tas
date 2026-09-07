@@ -927,7 +927,7 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, n: usize) -> Result<(),
         t.elapsed().as_secs_f64() * 1000.0 / n as f64
     };
 
-    let mut srv = &mut s.srv;
+    let srv = &mut s.srv;
     let null_ms = {
         let t = Instant::now();
         for _ in 0..n {
@@ -1077,7 +1077,7 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, n: usize) -> Result<(),
 pub fn finish(engine: &Engine, tape: Tape, at: Checkpoint) -> Result<(), String> {
     use forkoracle::procmem;
 
-    let mut s = Session::start(engine, tape, at)?;
+    let s = Session::start(engine, tape, at)?;
     let pid = s.srv.pid();
     let race_ms = s.srv.sim_ms as i64 - s.srv.race_start as i64;
     println!(

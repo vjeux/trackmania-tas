@@ -16,7 +16,7 @@
 //! instant. The finish time it prints is the re-verification of the very run
 //! whose telemetry was recorded.
 
-use crate::session::{clock_for_tick, start_server_on_file, tail_recs, Ctx};
+use crate::session::{clock_for_tick, start_server_on_file, Ctx};
 
 use crate::tape::Tape as Factory;
 
@@ -387,27 +387,6 @@ pub fn mat_to_quat(m: &[f64; 9]) -> [f64; 4] {
     }
 }
 
-fn quat_fwd(q: [f64; 4]) -> [f64; 3] {
-    let [x, y, z, w] = q;
-    // rotate (0,0,1)
-    [
-        2.0 * (x * z + w * y),
-        2.0 * (y * z - w * x),
-        1.0 - 2.0 * (x * x + y * y),
-    ]
-}
-
-fn wrap(a: f64) -> f64 {
-    let mut a = a;
-    while a > std::f64::consts::PI {
-        a -= 2.0 * std::f64::consts::PI;
-    }
-    while a < -std::f64::consts::PI {
-        a += 2.0 * std::f64::consts::PI;
-    }
-    a
-}
-
 
 
 pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result<Vec<Anchors>, String> {
@@ -432,8 +411,7 @@ pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result
     let _ = std::fs::create_dir_all(&work);
     let ckpt = clock_for_tick(tick, f.start_offset_ms);
     let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
-    let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
-    let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
+    let _probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
     let ck = derived_clock(&srv)?;
     let base = srv.base;
     let pid = srv.pid();
@@ -492,21 +470,14 @@ pub fn measure_anchors(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result
     Ok(out)
 }
 
-pub fn measure_bias(c: &Ctx, f: &Factory, tick: i64, verbose: bool) -> Result<i64, String> {
+pub fn measure_bias(c: &Ctx, f: &Factory, tick: i64, _verbose: bool) -> Result<i64, String> {
 
     use std::path::PathBuf;
     let work = PathBuf::from(format!("{}-bias", c.work));
     let _ = std::fs::create_dir_all(&work);
     let ckpt = clock_for_tick(tick, f.start_offset_ms);
     let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
-    let probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
-    // NO INPUT PATCH for the locate probes. The staged ghost is the original
-    // file, so the child already has the right tape; patching it with the
-    // Factory'"'"'s decoded values is at best a no-op and at worst wrong -- on
-    // 267859 and 227654 the patched child drove at 1.3 m/s and the locate found
-    // nothing but decoys. Observing costs nothing and assumes nothing.
-    let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
-    let _ = tail_recs(&f.steer, &f.accel, &f.brake, probe);
+    let _probe = srv.probe_tick().map_err(|e| format!("probe {}", e))?;
     let hit = derived_clock(&srv)?;
     srv.quit();
     let _ = std::fs::remove_dir_all(&work);
@@ -841,8 +812,6 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     // Factory'"'"'s decoded values is at best a no-op and at worst wrong -- on
     // 267859 and 227654 the patched child drove at 1.3 m/s and the locate found
     // nothing but decoys. Observing costs nothing and assumes nothing.
-    let lrecs: Vec<forkoracle::forksrv::Rec> = Vec::new();
-    let _ = tail_recs(&f.steer, &f.accel, &f.brake, probe);
     // THE CLOCK AND THE CAR, DERIVED in this process (`forkoracle::car`): the
     // clock word is the tick loop's `sim+0x48`, whose address does not
     // transfer between processes any more than the old scanned one did (on
@@ -1752,187 +1721,6 @@ pub fn name_of(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).replace(".Ghost.Gbx", "").replace(".Replay.Gbx", "")
 }
 
-fn discover_layout(
-    srv: &mut forkoracle::forksrv::ForkServer,
-    probe: usize,
-    recs: &[forkoracle::forksrv::Rec],
-    clock: u64,
-    pos: u64,
-) -> Option<(i64, u8, i64, f64)> {
-    let segs = [(clock, 4u32), ((pos as i64 - win_back()) as u64, win_len())];
-    let ts = crate::locate::gather_ticks(srv, probe, recs, &segs, 200, 1600, (0, 4 + win_len()));
-    if ts.len() < 40 {
-        return None;
-    }
-    let g = |t: &crate::locate::Tick, o: usize| -> f64 {
-        f32::from_le_bytes(t.rec[o..o + 4].try_into().unwrap()) as f64
-    };
-    let p0 = 4 + win_back() as usize;
-    let mut best_v: Option<(f64, i64)> = None;
-    for o in (4..(4 + win_len() as usize - 12)).step_by(4) {
-        let mut ds: Vec<f64> = Vec::new();
-        for w in ts.windows(2) {
-            let dt = (w[1].clock as i64 - w[0].clock as i64) as f64 / 1000.0;
-            if dt <= 0.0 {
-                continue;
-            }
-            let mut d = 0.0;
-            for k in 0..3 {
-                let dv = (g(&w[1], p0 + k * 4) - g(&w[0], p0 + k * 4)) / dt - g(&w[0], o + k * 4);
-                d += dv * dv;
-            }
-            ds.push(d.sqrt());
-        }
-        if ds.is_empty() {
-            continue;
-        }
-        ds.sort_by(|a, b| a.total_cmp(b));
-        let med = ds[ds.len() / 2];
-        if med.is_finite() && best_v.map_or(true, |b: (f64, i64)| med < b.0) {
-            best_v = Some((med, o as i64 - p0 as i64));
-        }
-    }
-    let mut speeds: Vec<f64> = Vec::new();
-    for w in ts.windows(2) {
-        let dt = (w[1].clock as i64 - w[0].clock as i64) as f64 / 1000.0;
-        if dt > 0.0 {
-            let s: f64 = (0..3)
-                .map(|k| ((g(&w[1], p0 + k * 4) - g(&w[0], p0 + k * 4)) / dt).powi(2))
-                .sum::<f64>()
-                .sqrt();
-            speeds.push(s);
-        }
-    }
-    speeds.sort_by(|a, b| a.total_cmp(b));
-    let speed = if speeds.is_empty() { 0.0 } else { speeds[speeds.len() / 2] };
-    let (verr, voff) = best_v?;
-    if verr > (0.15 * speed).max(1.0) {
-        return None;
-    }
-    // ---- orientation: a unit quaternion OR an orthonormal 3x3, and it must
-    //      point roughly where the car is going.
-    let vyaw: Vec<Option<f64>> = ts
-        .iter()
-        .map(|t| {
-            let vx = g(t, (p0 as i64 + voff) as usize);
-            let vz = g(t, (p0 as i64 + voff) as usize + 8);
-            if (vx * vx + vz * vz).sqrt() > 3.0 {
-                Some(vz.atan2(vx))
-            } else {
-                None
-            }
-        })
-        .collect();
-    let heading_spread = |qs: &[Option<[f64; 4]>]| -> Option<f64> {
-        let mut d: Vec<f64> = Vec::new();
-        for (i, q) in qs.iter().enumerate() {
-            let (Some(q), Some(vy)) = (q, vyaw[i]) else { continue };
-            let f = quat_fwd(*q);
-            if (f[0] * f[0] + f[2] * f[2]).sqrt() < 0.2 {
-                continue;
-            }
-            d.push(wrap(f[2].atan2(f[0]) - vy));
-        }
-        if d.len() < 20 {
-            return None;
-        }
-        // circular median, then the spread about it
-        let mut s: Vec<f64> = d.clone();
-        s.sort_by(|a, b| a.total_cmp(b));
-        let med = s[s.len() / 2];
-        let mut dev: Vec<f64> = d.iter().map(|x| wrap(x - med).abs()).collect();
-        dev.sort_by(|a, b| a.total_cmp(b));
-        Some(dev[(dev.len() as f64 * 0.9) as usize])
-    };
-    let mut best_o: Option<(f64, u8, i64)> = None;
-    for o in (4..(4 + win_len() as usize - 16)).step_by(4) {
-        // quaternion candidate
-        let mut ok = true;
-        let mut varies = false;
-        let qs: Vec<Option<[f64; 4]>> = ts
-            .iter()
-            .map(|t| {
-                let q = [g(t, o), g(t, o + 4), g(t, o + 8), g(t, o + 12)];
-                let n: f64 = q.iter().map(|c| c * c).sum::<f64>().sqrt();
-                if !n.is_finite() || (n - 1.0).abs() > 1e-4 {
-                    ok = false;
-                }
-                if q[0] != g(&ts[0], o) {
-                    varies = true;
-                }
-                // the record's convention is (x, y, z, w)
-                Some([q[0], q[1], q[2], q[3]])
-            })
-            .collect();
-        if ok && varies {
-            for order in 0..2 {
-                let qq: Vec<Option<[f64; 4]>> = qs
-                    .iter()
-                    .map(|q| {
-                        q.map(|q| {
-                            if order == 0 {
-                                q
-                            } else {
-                                [q[1], q[2], q[3], q[0]] // engine (w,x,y,z)
-                            }
-                        })
-                    })
-                    .collect();
-                if let Some(sp) = heading_spread(&qq) {
-                    if sp < 0.9 && best_o.map_or(true, |b| sp < b.0) {
-                        best_o = Some((sp, order, o as i64 - p0 as i64));
-                    }
-                }
-            }
-        }
-        // orthonormal 3x3 candidate
-        if o + 36 <= 4 + win_len() as usize {
-            let mut good = true;
-            let ms: Vec<Option<[f64; 4]>> = ts
-                .iter()
-                .map(|t| {
-                    let mut m = [0.0f64; 9];
-                    for k in 0..9 {
-                        m[k] = g(t, o + k * 4);
-                    }
-                    let row = |i: usize| [m[i * 3], m[i * 3 + 1], m[i * 3 + 2]];
-                    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-                    for i in 0..3 {
-                        let r = row(i);
-                        if (dot(r, r).sqrt() - 1.0).abs() > 1e-3 {
-                            good = false;
-                        }
-                    }
-                    if dot(row(0), row(1)).abs() > 1e-3
-                        || dot(row(0), row(2)).abs() > 1e-3
-                        || dot(row(1), row(2)).abs() > 1e-3
-                    {
-                        good = false;
-                    }
-                    Some(mat_to_quat(&m))
-                })
-                .collect();
-            if good {
-                if let Some(sp) = heading_spread(&ms) {
-                    if sp < 0.9 && best_o.map_or(true, |b| sp < b.0) {
-                        best_o = Some((sp, 2, o as i64 - p0 as i64));
-                    }
-                }
-            }
-        }
-    }
-    let (spread, kind, ooff) = best_o?;
-    if std::env::var("FKDBG").is_ok() {
-        println!(
-            "    orientation: kind {} at {:+}, heading spread p90 {:.1} deg",
-            kind,
-            ooff,
-            spread.to_degrees()
-        );
-    }
-    Some((ooff, kind, voff, speed))
-}
-
 // `measure_anchors_by_search` was HERE and is deleted (see the note at its old
 // call site in cmd/regen.rs). It measured anchors by sweeping mapped memory --
 // ~7.5 s per tick -- and was regen's fallback when no chain resolved. The
@@ -2010,7 +1798,7 @@ pub fn validator_live_chain(
     let work = PathBuf::from(format!("{}-vlc", c.work));
     let _ = std::fs::create_dir_all(&work);
     let ckpt = clock_for_tick(tick, f.start_offset_ms);
-    let mut srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
+    let srv = start_server_on_file(c, f, &work, ckpt, std::path::Path::new(&c.template))?;
     let root = srv.validator_controller;
     srv.quit();
     let _ = std::fs::remove_dir_all(&work);
