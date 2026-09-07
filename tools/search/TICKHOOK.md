@@ -256,11 +256,20 @@ stopped parent, whose tick the hook knows, so the origin is arithmetic.
 
 Measured at three checkpoints on map 2 (`fk tickhook reads`, all PASS):
 
-| checkpoint | probe vs engine | counter − bias | blind car vs validator car |
-|---|---|---|---|
-| `tick:171` | 171 = 171 | 120 ms = race of the finished tick | 0.0175 m at 1.73 m/s = **1.01 ticks** |
-| `tick:1200` | 1200 = 1200 | 10410 ms | 0.8360 m at 83.58 m/s = **1.00 ticks** |
-| `tick:2313` | 2313 = 2313 | 21540 ms | 0.8523 m at 85.16 m/s = **1.00 ticks** |
+| map, checkpoint | probe vs engine | counter − bias | bias | blind car vs validator car |
+|---|---|---|---|---|
+| map 2, `tick:171` | 171 = 171 | 120 ms = race of the finished tick | 1000 | 0.0175 m at 1.73 m/s = **1.01 ticks** |
+| map 2, `tick:1200` | 1200 = 1200 | 10410 ms | 1000 | 0.8360 m at 83.58 m/s = **1.00 ticks** |
+| map 2, `tick:2313` | 2313 = 2313 | 21540 ms | 1000 | 0.8523 m at 85.16 m/s = **1.00 ticks** |
+| 126859, `tick:300` | 300 = 300 | 1440 ms | 2200 | 0.2248 m at 22.58 m/s = **1.00 ticks** |
+| 126859, `tick:1500` | 1500 = 1500 | 13440 ms | 2200 | same object (0.0000 m) |
+| 145875, `tick:500` | 500 = 500 | 3450 ms | 2200 | same object (0.0000 m) |
+
+The bias is 1000 on map 2 and 2200 on the other two: the counter's origin is
+per race, which is the whole reason it has to be measured per server rather
+than fitted once. Note also that the two locators land on the SAME object on
+some maps and on two objects a tick apart on others -- so "same address" was
+never the right check, and "same car" is.
 
 ---
 
@@ -317,7 +326,8 @@ time: those nine servers are at a different `sim_ms` and the same tick.
 | 126859 | rank01 | tick 300, 1500, 2500 | 150/150 exact |
 | 145875 | r01 | tick 200, 500, 700 | 150/150 exact |
 
-**700 / 700 identical, 0 mismatches**, oracle self-repeatability 0 disagreements
+**700 / 700 identical, 0 mismatches** (plus 300/300 more re-run after the read
+audit, at three checkpoints on each of the other two maps), oracle self-repeatability 0 disagreements
 throughout, identity resume exact everywhere. In every one of the 14 runs the
 calibration sweep left the boundary where the probe put it. (Those runs predate
 the record-alignment fix, so they read `boundary tick N (probe N−1)`; three of
@@ -348,10 +358,18 @@ workers, 10 minutes, seed 42, phantom guard on, and the boundary-stress window
 that historically produced phantoms (`--lo 171 --window 60 --stride 400`), run
 once under each clock, while both still existed:
 
-| clock | evals | eval/s | banked | phantoms | best |
+| build | evals | eval/s | banked | phantoms | best |
 |---|---|---|---|---|---|
-| tick | 272 910 | 454 | 9 | **0** | 22.711 |
-| lroundf | 236 130 | 391 | 9 | **0** | 22.711 |
+| tick clock | 272 910 | 454 | 9 | **0** | 22.711 |
+| lroundf clock | 236 130 | 391 | 9 | **0** | 22.711 |
+| tick clock, after the read audit (`from = probe`, one tick earlier) | 274 590 | 456 | 9 | **0** | 22.711 |
+
+The third row is the one that matters for the audit: the resume floor moved a
+tick earlier when the probe stopped reporting one record late, so every
+candidate could now edit a tick the old code could not. If record `probe` were
+in fact already consumed, those edits would be silent no-ops scoring exactly
+the incumbent -- the phantom signature -- and the guard would have caught them.
+It caught nothing.
 
 Same answer, same number of confirmed improvements, no phantoms either way (the
 guard has been on since the phantom work, and 10 minutes is not a phantom-rate
