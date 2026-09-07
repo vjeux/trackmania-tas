@@ -220,13 +220,13 @@ pub fn write_trace(p: &Path, rows: &[Row]) -> Result<(), String> {
 
 /// One starts.tsv row (INTERFACES §2).
 pub fn starts_tsv_header() -> &'static str {
-    "start_id\tghost_md5\ttick\trace_ms\tx\ty\tz\tvx\tvy\tvz\tqw\tqx\tqy\tqz\tcps_before\tsource\n"
+    "start_id\tghost_md5\ttick\trace_ms\tx\ty\tz\tvx\tvy\tvz\tqw\tqx\tqy\tqz\tcps_before\tsource\tid_rms_trim_m\tid_p995_m\tid_bar\n"
 }
 
 pub fn starts_tsv_row(id: u32, md5: &str, s: &Start, source: &str) -> String {
     let r = &s.row;
     format!(
-        "{}\t{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\n",
+        "{}\t{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t-\t-\t-\n",
         id, md5, s.tick, r.time_ms, r.x, r.y, r.z, r.vx, r.vy, r.vz, r.qw, r.qx, r.qy, r.qz, s.cps_before, source
     )
 }
