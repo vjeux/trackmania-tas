@@ -53,18 +53,25 @@ impl Set {
         let n: usize = rows.iter().map(|r| r.n).sum::<usize>() * if mirror { 2 } else { 1 };
         let mut x = Vec::with_capacity(n * dim);
         let mut lab = Vec::with_capacity(n * NLAB);
+        // L_REC (the pairing group) is per map: offset it so pooled sets never pair rows of different maps
+        let mut rec_base = 0f32;
         for r in rows {
+            let mut rec_max = 0f32;
             for i in 0..r.n {
                 let mut f = r.feat(i).to_vec();
                 feat::mask_blocks(fv, &mut f, keep);
+                let mut l = r.lab(i).to_vec();
+                rec_max = rec_max.max(l[crate::data::L_REC]);
+                l[crate::data::L_REC] += rec_base;
                 x.extend_from_slice(&f);
-                lab.extend_from_slice(r.lab(i));
+                lab.extend_from_slice(&l);
                 if mirror {
                     feat::mirror(fv, &mut f);
                     x.extend_from_slice(&f);
-                    lab.extend_from_slice(r.lab(i));
+                    lab.extend_from_slice(&l);
                 }
             }
+            rec_base += rec_max + 1.0;
         }
         Set { fv, dim, x, lab, n }
     }
