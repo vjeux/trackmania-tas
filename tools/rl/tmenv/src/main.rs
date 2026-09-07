@@ -98,6 +98,11 @@ fn main() {
         Some("probe-scan") => probe_scan(&a),
         Some("geom-export") => geom_export(&a),
         Some("cpfind") => cpfind_cmd(&a),
+        Some("clock-probe") => clock_probe(&a),
+        Some("sample-diff") => sample_diff(&a),
+        Some("transplant") => transplant(&a),
+        Some("packet-show") => packet_show(&a),
+        Some("tape-show") => tape_show(&a),
         Some("wheels-control") => wheels_control(&a),
         Some("run-end") => run_end_cmd(&a),
         Some("tape-diff") => tape_diff(&a),
@@ -2248,8 +2253,8 @@ fn probe_scan(a: &[String]) {
                 Some(row) => {
                     let v = (row.vx * row.vx + row.vy * row.vy + row.vz * row.vz).sqrt();
                     println!(
-                        "{:6}  {:3}  {:<22} {:9}  {:10}  ({:8.2}, {:6.2}, {:8.2})  {:6.2}   engine bias {}",
-                        c, r, format!("{:?}", probes), row.time_ms + bias, row.time_ms, row.x, row.y, row.z, v, bias
+                        "{:6}  {:3}  {:<22} {:9}  {:10}  ({:8.2}, {:6.2}, {:8.2})  {:6.2}   engine bias {}  q ({:+.6} {:+.6} {:+.6} {:+.6})  v ({:+.4} {:+.4} {:+.4})",
+                        c, r, format!("{:?}", probes), row.time_ms + bias, row.time_ms, row.x, row.y, row.z, v, bias, row.qw, row.qx, row.qy, row.qz, row.vx, row.vy, row.vz
                     );
                 }
                 None => println!("{:6}  {:3}  {:<22} (no rows)", c, r, format!("{:?}", probes)),
@@ -3075,6 +3080,15 @@ fn open_loop_control(a: &[String]) {
                 break;
             }
         }
+        if let Some(dir) = flag(a, "--dump-trace") {
+            let rec = env.rollout_record();
+            let mut s = String::from("race_ms\tx\ty\tz\tvx\tvy\tvz\tcps\tcar\tgear\n");
+            for r in &rec.trace {
+                s.push_str(&format!("{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}\n", r.time_ms, r.x, r.y, r.z, r.vx, r.vy, r.vz, r.cps, r.vis.car, r.vis.gear));
+            }
+            std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
+            std::fs::write(Path::new(&dir).join(format!("olc-{gi:02}.tsv")), s).unwrap_or_else(|e| die(e.to_string()));
+        }
         // trace continuity: the largest per-tick position jump and the ticks where
         // the position froze while the car was moving (a car switch not followed)
         {
@@ -3268,6 +3282,13 @@ fn run_end_cmd(a: &[String]) {
             c = r.cps;
         }
     }
+    if let Some(f) = flag(a, "--dump-trace") {
+        let mut s = String::from("race_ms\tx\ty\tz\tvx\tvy\tvz\tcps\tcar\tgear\n");
+        for r in &rows {
+            s.push_str(&format!("{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}\n", r.time_ms, r.x, r.y, r.z, r.vx, r.vy, r.vz, r.cps, r.vis.car, r.vis.gear));
+        }
+        std::fs::write(&f, s).unwrap_or_else(|e| die(e.to_string()));
+    }
     println!(
         "{} rows, first race {:?}, last race {:?}, run ended {ended}, counter {} (steps at {})",
         rows.len(),
@@ -3410,5 +3431,147 @@ fn wheels_control(a: &[String]) {
     );
     if !all_pass {
         std::process::exit(1);
+    }
+}
+
+/// Print a tape's records around a tick (steer/gas/brake + state word).
+fn tape_show(a: &[String]) {
+    let t = fk::tape::Tape::load(&a[1]).unwrap_or_else(|e| die(e));
+    let from: usize = num(a, "--from", 0);
+    let to: usize = num(a, "--to", t.n());
+    let words = state_words(&a[1]);
+    for i in from..to.min(t.n()) {
+        println!(
+            "tick {i:5} race {:8.3}: steer {:4} gas {} brake {}  word0/flags {:#x}/{:#x}",
+            t.race_ms(i) as f64 / 1000.0,
+            t.steer[i] as i8,
+            t.accel[i],
+            t.brake[i],
+            words.get(i).map(|w| w.0).unwrap_or(0),
+            words.get(i).map(|w| w.1).unwrap_or(0)
+        );
+    }
+}
+
+/// Every packet field of a tape around a tick (word0, flags, mode, mouse, tri, vsame).
+fn packet_show(a: &[String]) {
+    let t = gbx::tape::Tape::from_file(&a[1]).unwrap_or_else(|e| die(e.to_string()));
+    let from: usize = num(a, "--from", 0);
+    let to: usize = num(a, "--to", 20);
+    let Some(ar) = t.archives.first() else { die("no archive".into()) };
+    let mut hist: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for (i, p) in ar.packets.iter().enumerate() {
+        let k = format!("mode {} mouse {:?} tri {:?} word0 {:#x} flags {:#x}", p.mode, p.mouse, p.tri, p.word0, p.flags);
+        *hist.entry(k.clone()).or_default() += 1;
+        if i >= from && i < to {
+            println!("tick {i:5}: steer {:4} accel {} brake {} | {k} vsame {}", p.steer_i8(), p.accel, p.brake, p.vsame);
+        }
+    }
+    println!("distinct (mode, mouse, tri, word0, flags): {:#?}", hist);
+}
+
+/// Write DONOR's inputs (aligned by race time) into TEMPLATE's container, as a
+/// file, with no env involved -- to ask the plain oracle whether a container
+/// carries physics beyond its input records.
+fn transplant(a: &[String]) {
+    let tpl_path = flag(a, "--template").unwrap_or_else(|| die("--template".into()));
+    let donor_path = flag(a, "--donor").unwrap_or_else(|| die("--donor".into()));
+    let out = flag(a, "--out").unwrap_or_else(|| die("--out".into()));
+    let tpl = tmenv::template::Template::load(Path::new(&tpl_path)).unwrap_or_else(|e| die(e));
+    let t = fk::tape::Tape::load(&tpl_path).unwrap_or_else(|e| die(e));
+    let d = fk::tape::Tape::load(&donor_path).unwrap_or_else(|e| die(e));
+    let n = tpl.facts().ticks;
+    let shift: i64 = (t.start_offset_ms as i64 - d.start_offset_ms as i64) / 10 + num::<i64>(a, "--shift-adjust", 0);
+    let mut s = vec![0u8; n];
+    let mut g = vec![0u8; n];
+    let mut b = vec![0u8; n];
+    for k in 0..n {
+        let j = ((k as i64 + shift).max(0) as usize).min(d.n() - 1);
+        s[k] = d.steer[j];
+        g[k] = d.accel[j];
+        b[k] = d.brake[j];
+    }
+    tpl.write_with_inputs(&s, &g, &b, Path::new(&out)).unwrap_or_else(|e| die(e));
+    println!("wrote {out}: {} ticks of {} in {}'s container (donor index = tick {shift:+})", n, donor_path, tpl_path);
+}
+
+/// Compare two ghosts' telemetry SAMPLES by timestamp: max/median |Δpos| at
+/// Δt = 0 and at ±10/±20 ms, so a regenerated record's stamps can be checked
+/// against the game's own (the best shift must be 0).
+fn sample_diff(a: &[String]) {
+    let x = gbx::record::decode_ghost(&a[1]).unwrap_or_else(|e| die(e.to_string()));
+    let y = gbx::record::decode_ghost(&a[2]).unwrap_or_else(|e| die(e.to_string()));
+    let by: std::collections::BTreeMap<i64, [f64; 3]> =
+        y.samples.iter().map(|s| (s.time_ms as i64, [s.x as f64, s.y as f64, s.z as f64])).collect();
+    println!("{}: {} samples; {}: {} samples", a[1], x.samples.len(), a[2], y.samples.len());
+    let mut best: Option<(f64, i64)> = None;
+    for shift in [-20i64, -10, 0, 10, 20] {
+        let mut d: Vec<f64> = Vec::new();
+        for s in &x.samples {
+            let Some(p) = by.get(&(s.time_ms as i64 + shift)) else { continue };
+            let dd = ((s.x as f64 - p[0]).powi(2) + (s.y as f64 - p[1]).powi(2) + (s.z as f64 - p[2]).powi(2)).sqrt();
+            d.push(dd);
+        }
+        if d.is_empty() {
+            println!("  shift {shift:+3} ms: no paired samples");
+            continue;
+        }
+        d.sort_by(|p, q| p.total_cmp(q));
+        let med = d[d.len() / 2];
+        let max = d[d.len() - 1];
+        println!("  shift {shift:+3} ms: {} pairs, |dpos| median {:.4} m, max {:.4} m", d.len(), med, max);
+        if best.map(|b| med < b.0).unwrap_or(true) {
+            best = Some((med, shift));
+        }
+    }
+    if let Some((m, s)) = best {
+        println!("BEST shift {s:+} ms (median {m:.4} m){}", if s == 0 { "  -- the stamps agree" } else { "  -- the stamps are OFF" });
+        if s != 0 {
+            std::process::exit(1);
+        }
+    }
+}
+
+/// THE TWO CLOCK WORDS, side by side: the located race counter and `sim+0x48`,
+/// read in the stopped parent and then sampled in a child for a few ticks --
+/// to learn whether the two advance in lockstep at the sampler's instant, i.e.
+/// whether one bias transfers to the other.
+fn clock_probe(a: &[String]) {
+    let p = paths(a);
+    std::fs::create_dir_all(&p.work).unwrap_or_else(|e| die(e.to_string()));
+    let rig = Rig::new(&p.server, &p.map, &p.shim, &p.work, &p.reference).unwrap_or_else(|e| die(e));
+    let mut s = rig.session_root().unwrap_or_else(|e| die(e));
+    let probe = s.probe_tick().unwrap_or_else(|e| die(e));
+    let recs = s.tape.tail_records(probe);
+    let hit = fk::locate::find_clock2(&mut s.srv, probe, &recs, s.tape.start_offset_ms, 40_000, false).unwrap_or_else(|e| die(e));
+    let car = tmenv::control::resolve_car(&mut s.srv, probe, &recs, s.tape.start_offset_ms, false).unwrap_or_else(|e| die(e));
+    let sim_addr = car.provenance().sim + fk::validator::SIM_TIME_OFF;
+    let rd = |pid: i32, a: u64| forkoracle::procmem::read_at(pid, a, 4).map(|b| u32::from_le_bytes(b[..4].try_into().unwrap())).unwrap_or(0);
+    let pid = s.srv.pid();
+    println!(
+        "parent at the root stop: handshake sim_ms {} race_start {} -> race {}; located counter {:#x} = {} (vis bias {}, physics bias {}); sim+0x48 = {}",
+        s.srv.sim_ms,
+        s.srv.race_start,
+        s.srv.sim_ms as i64 - s.srv.race_start as i64,
+        hit.addr,
+        rd(pid, hit.addr),
+        hit.bias,
+        forkoracle::layout::physics_bias(hit.bias),
+        rd(pid, sim_addr)
+    );
+    let segs = vec![(hit.addr, 4u32), (sim_addr, 4u32), (car.layout().pos, 12u32)];
+    let rows = fk::locate::gather_ticks(&mut s.srv, probe, &recs, &segs, 6, 1000, (0, 8));
+    for r in rows.iter().take(6) {
+        let c = u32::from_le_bytes(r.rec[0..4].try_into().unwrap()) as i64;
+        let sm = u32::from_le_bytes(r.rec[4..8].try_into().unwrap()) as i64;
+        let z = f32::from_le_bytes(r.rec[16..20].try_into().unwrap());
+        println!(
+            "  child row: counter {} (label phys {}), sim+0x48 {} (sim - counter = {}), z {:.4}",
+            c,
+            c - forkoracle::layout::physics_bias(hit.bias),
+            sm,
+            sm - c,
+            z
+        );
     }
 }

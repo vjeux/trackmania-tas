@@ -492,6 +492,17 @@ pub fn run(args: &[String]) -> Result<(), String> {
             std::process::exit(3)
         }
     };
+    // THE LABEL BIAS BELONGS TO THE OBJECT THE ANCHOR NAMES (forkoracle::layout,
+    // 2026-09-06): the validator anchor is the PHYSICS object, whose layout
+    // carries `physics_bias` -- a row labelled race T is the physics at T --
+    // and the cached/scanned bias (the vis convention, one tick earlier) must
+    // not override it. INPUT measured the mix-up as regen samples stamped 10 ms
+    // (Summer 2026 - 02 templates) and 20 ms (Summer 2026 - 01) late.
+    let phys_anchor = used_anchor.as_ref().map(|a| a.chain == "validator").unwrap_or(false);
+    if phys_anchor {
+        bias = o.bias;
+        println!("label bias {} (the validator car's own, physics convention: row race T = physics at T)", bias);
+    }
     println!(
         "clean run: {} instants ({} .. {} ms), probe at race {} ms, validator Time {:?}",
         o.instants, o.first_ms, o.last_ms, o.probe_ms, o.sim_time
@@ -566,7 +577,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // eight of thirteen maps measure zero -- and because the only honest way
     // to set it is to measure the control on THAT map and check the correction
     // returns the control to zero. `ghost phase` prints the value to pass.
-    let pair_shift: i64 = flag("--pair-shift-ms").unwrap_or_else(|| "0".into()).parse().unwrap_or(0);
+    // THE GAME'S CONVENTION, in the physics-label convention regen now uses: a
+    // sample stamped T holds the car the PHYSICS row labelled T holds (the vis
+    // state the writer samples is one tick behind the physics object, and its
+    // own label is one tick earlier too -- the two cancel). Measured: the
+    // Summer 2026 - 01 WR regenerated with shift 0 pairs its own samples to mm;
+    // +10 puts them 0.99 m (one tick) off. `--pair-shift-ms` still overrides for
+    // a map measured otherwise.
+    let pair_shift: i64 = flag("--pair-shift-ms").and_then(|v| v.parse().ok()).unwrap_or(0);
+    println!("pairing: sample T <- engine row labelled T {:+} ms", -pair_shift);
     let by_ms: std::collections::HashMap<i64, (&Vec<u8>, &Vec<u8>)> =
         recs.iter().map(|(c, f, l)| (*c as i64 - bias + pair_shift, (f, l))).collect();
 
@@ -1366,6 +1385,54 @@ pub fn run(args: &[String]) -> Result<(), String> {
         Err(e) => {
             println!("ABORT: rewrite: {}", e);
             std::process::exit(3)
+        }
+    }
+    // THE STAMP CONTROL (coordinator, 2026-09-06): a regeneration of a REAL
+    // ghost must reproduce that ghost's own samples at Δt = 0 -- position to
+    // millimetres at the same timestamps. This is the one statement that ties
+    // regen's labels to the game's: a one-tick label slip shows as ~1 m at
+    // racing speed (measured 0.79-0.99 m when a vis-convention bias was
+    // carried onto the physics object). Printed always; `--self-check` makes
+    // a miss above 1 cm fatal. A synthesized template has no real samples and
+    // scores nothing here.
+    {
+        let (a, b) = (gbx::record::decode_ghost(&outp), gbx::record::decode_ghost(&c.template));
+        if let (Ok(a), Ok(b)) = (a, b) {
+            let by: std::collections::HashMap<i64, [f64; 3]> =
+                b.samples.iter().map(|s| (s.time_ms as i64, [s.x as f64, s.y as f64, s.z as f64])).collect();
+            let mut best: Option<(f64, i64, f64, usize)> = None;
+            for shift in [-20i64, -10, 0, 10, 20] {
+                let mut d: Vec<f64> = Vec::new();
+                for s in &a.samples {
+                    if let Some(p) = by.get(&(s.time_ms as i64 + shift)) {
+                        d.push(((s.x as f64 - p[0]).powi(2) + (s.y as f64 - p[1]).powi(2) + (s.z as f64 - p[2]).powi(2)).sqrt());
+                    }
+                }
+                if d.len() < 10 {
+                    continue;
+                }
+                d.sort_by(|p, q| p.total_cmp(q));
+                let (med, max) = (d[d.len() / 2], d[d.len() - 1]);
+                if best.map(|x| med < x.0).unwrap_or(true) {
+                    best = Some((med, shift, max, d.len()));
+                }
+            }
+            match best {
+                Some((med, 0, max, n)) if max <= 0.01 => println!(
+                    "STAMP CONTROL: {} samples pair with the template's at Δt = 0, |Δpos| median {:.4} m, max {:.4} m -- the labels are the game's",
+                    n, med, max
+                ),
+                Some((med, shift, max, n)) => {
+                    println!(
+                        "STAMP CONTROL: FAIL -- best pairing at Δt = {:+} ms (median {:.4} m, max {:.4} m over {} samples); the written stamps do not reproduce the template's",
+                        shift, med, max, n
+                    );
+                    if args.iter().any(|x| x == "--self-check") {
+                        std::process::exit(4);
+                    }
+                }
+                None => println!("STAMP CONTROL: no paired samples (synthesized template?)"),
+            }
         }
     }
     // THE COVERAGE ASSERTION. Everything above reasons about what the clean run

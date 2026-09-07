@@ -840,8 +840,15 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
         None => locate_v2(&mut srv, probe, &lrecs, f.start_offset_ms, bounds, 2000, 4000, verbose)
             .map_err(|e| format!("locate {}", e))?,
     };
+    // The validator anchor's layout carries its OWN bias -- the physics object's,
+    // measured on this very server -- and a cached/scanned vis-convention bias
+    // must not override it (that override stamped Summer 2026 - 02 regens one
+    // tick early while Summer 2026 - 01's stale cache happened to be right).
+    let validator_anchor = matches!(anchors, Some(a) if a.chain == "validator");
     if let Some(b) = bias_override {
-        layout.clock_bias = b;
+        if !validator_anchor {
+            layout.clock_bias = b;
+        }
     }
     // THE POINTER, IF THE CALLER HAS ONE. See `GatherOpts::pos_from`. It
     // replaces the anchor and nothing else: every test below is unchanged, so
