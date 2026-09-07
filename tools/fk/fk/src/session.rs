@@ -78,10 +78,13 @@ impl Drop for Engine {
 
 /// Where to stop the simulation.
 ///
-/// The engine has no notion of "tick 2323"; it has an `lroundf` call count. The
-/// two are related by a line fitted on three segment maps, and the fit is only
-/// ever used to CHOOSE a checkpoint — never to label anything, because the
-/// count is not a fixed simulation point (see [`Session::probe_tick`]).
+/// Under the tick hook (the default) a checkpoint IS a tick: the shim stops at
+/// the start of the tick at that race time, before its input record is read,
+/// in every process and under any load. Under `FK_CLOCK=lroundf` the engine
+/// has no notion of "tick 2323" — only an `lroundf` count related to race time
+/// by a line fitted on three segment maps, which may CHOOSE a checkpoint and
+/// never label anything, because that count is not a fixed simulation point.
+/// See `tools/search/TICKHOOK.md`.
 #[derive(Clone, Copy, Debug)]
 pub enum Checkpoint {
     /// A raw `lroundf` call count.
@@ -106,7 +109,8 @@ pub fn clock_for_race_ms(ms: i64) -> u64 {
     forkoracle::clock::ckpt_for_race_ms(ms)
 }
 
-/// The TOTAL `lroundf` count for one full validation of `ghost` on `map`.
+/// The TOTAL clock (ticks under the hook, `lroundf` calls otherwise) for one
+/// full validation of `ghost` on `map`.
 ///
 /// Measured, not fitted, because `--at frac:F` should mean F of the run on any
 /// map rather than F of a line fitted on three segment maps of one ghost. Costs

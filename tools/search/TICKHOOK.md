@@ -234,6 +234,17 @@ criteria all pass.)
 | tick | 300 (×2 runs) | 1 (`clock 1013`, probe 170) | 300/300 agree, both runs — including the 1–3 servers whose race start was 2300 |
 | lroundf | 300 | **10** (probe 277…287) | n/a |
 
+At a late checkpoint and on another map (150 servers each):
+
+| map, checkpoint | clock | distinct stops | race starts seen |
+|---|---|---|---|
+| map 2, `tick:2313` | tick | 1 (`clock 3155`, probe 2312) | {2200} — 150/150 agree |
+| map 2, `tick:2313` | lroundf | **2** (probe 2327, 2328) | n/a |
+| 126859, `tick:1500` | tick | 1 (`clock 2345`, probe 1499) | **{2200, 2300}** — 9 servers started their race 100 ms later and still reported the same race tick and the same probe; 150/150 agree |
+
+That last row is why the clock is keyed on race time and not on simulation
+time: those nine servers are at a different `sim_ms` and the same tick.
+
 **Exactness** (`fk server check`, 50 candidates each, fork vs full validation):
 
 | map | ghost | checkpoints | result |
@@ -267,10 +278,22 @@ abort lands at most one tick earlier, which the score-safety invariant
 (`progress(aborted) ≤ progress(unarmed)`) allows and 60/60 confirmed.
 
 **A search, end to end.** `tmsearch --fork --forktick 171` on map 2, 24
-workers, 10 minutes, with the phantom guard on and the boundary-stress window
-that historically produced phantoms (`--lo 171 --window 60 --stride 400`):
-**272 910 evals, 454 eval/s, 9 improvements, all confirmed by the plain oracle,
-0 phantoms** (22.730 → 22.711).
+workers, 10 minutes, seed 42, phantom guard on, and the boundary-stress window
+that historically produced phantoms (`--lo 171 --window 60 --stride 400`), run
+once under each clock:
+
+| clock | evals | eval/s | banked | phantoms | best |
+|---|---|---|---|---|---|
+| tick | 272 910 | 454 | 9 | **0** | 22.711 |
+| lroundf | 236 130 | 391 | 9 | **0** | 22.711 |
+
+Same answer, same number of confirmed improvements, no phantoms either way (the
+guard has been on since the phantom work, and 10 minutes is not a phantom-rate
+measurement — the base rate is low, which is exactly why the defect survived
+four investigations). The eval/s gap is not a clean speed claim: the two arms
+resumed at different boundaries (tick 171 vs the lroundf stop at 278, i.e. 2261
+vs 2154 tail ticks) and ran at different times on a shared box. Per-candidate
+cost is equal within noise (§ above).
 
 ---
 
