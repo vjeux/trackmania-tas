@@ -347,3 +347,42 @@ impl SurfaceModel {
         d
     }
 }
+
+impl SurfaceModel {
+    /// For every (i, j): the indices into `gates.specials` whose centre lies
+    /// within `half_width + 6` m (XZ) and 8 m (Y) of the surface path i→j, in
+    /// path order. The planner reads a TRANSFORMATION gate here as "the rest of
+    /// this leg is driven by that car" and a booster as a speed change.
+    pub fn leg_specials(&self, nodes: &Nodes, fields: &[Option<(Vec<f32>, Vec<u32>)>], gates: &GatesFile) -> Vec<Vec<Vec<usize>>> {
+        let n = nodes.pos.len();
+        let mut out = vec![vec![Vec::new(); n]; n];
+        if gates.specials.is_empty() {
+            return out;
+        }
+        for i in 0..n {
+            for j in 0..n {
+                if i == j { continue; }
+                let Some(p) = self.path_points(nodes, fields, i, j) else { continue };
+                let mut found: Vec<(usize, usize)> = Vec::new(); // (path index, special index)
+                for (si, s) in gates.specials.iter().enumerate() {
+                    let r = s.half_width + 6.0;
+                    let mut best: Option<usize> = None;
+                    for (k, q) in p.iter().enumerate() {
+                        let dx = q[0] - s.centre[0];
+                        let dz = q[2] - s.centre[2];
+                        if dx * dx + dz * dz <= r * r && (q[1] - s.centre[1]).abs() <= 8.0 {
+                            best = Some(k);
+                            break;
+                        }
+                    }
+                    if let Some(k) = best {
+                        found.push((k, si));
+                    }
+                }
+                found.sort();
+                out[i][j] = found.into_iter().map(|(_, si)| si).collect();
+            }
+        }
+        out
+    }
+}

@@ -84,12 +84,13 @@ fn print_matrix(nodes: &Nodes, d: &[Vec<f32>], title: &str) {
 fn cmd_plan(args: &[String]) {
     let (_map, gates, surf, nodes, d, len, drop, fields) = load(args);
     let dirs = surf.directions(&nodes, &fields);
+    let leg_specials = surf.leg_specials(&nodes, &fields, &gates);
     if has(args, "--matrix") {
         print_matrix(&nodes, &d, "surface-graph COST (off-road 20x; inf = no path)");
         print_matrix(&nodes, &len, "surface-graph path LENGTH (m)");
     }
     let flight = flight_of(flag(args, "--flight"));
-    let est = Geometric { time_model: tm(args), d: &d, len: &len, nodes: &nodes, flight, surface: Some(&surf), dirs: Some(&dirs), drop: Some(&drop), drop_penalty: flag(args, "--drop-penalty").and_then(|s| s.parse().ok()).unwrap_or(0.0) };
+    let est = Geometric { time_model: tm(args), d: &d, len: &len, nodes: &nodes, flight, surface: Some(&surf), dirs: Some(&dirs), drop: Some(&drop), drop_penalty: flag(args, "--drop-penalty").and_then(|s| s.parse().ok()).unwrap_or(0.0), specials: Some((&leg_specials, &gates)) };
     let width: usize = flag(args, "--beam").and_then(|s| s.parse().ok()).unwrap_or(4000);
     let top_k: usize = flag(args, "--top-k").and_then(|s| s.parse().ok()).unwrap_or(3);
     human_legs(args, &nodes, &gates, &est, &len, Some(&surf), &fields);
@@ -129,6 +130,22 @@ fn cmd_plan(args: &[String]) {
             let f = Path::new(dir).join(&gates.map_uid).join(io::route_file_name(&source, k as u32));
             io::write_route(&f, &route).unwrap_or_else(|e| die(&e));
             println!("    wrote {}", f.display());
+            // sidecar: the gameplay placements on each leg (transformation gates, boosters …) — proposed as
+            // `Leg.specials` in tmstate; until then a file beside the route
+            if !gates.specials.is_empty() {
+                let mut rows: Vec<serde_json::Value> = Vec::new();
+                for (li, w) in p.visit.windows(2).enumerate() {
+                    for &si in &leg_specials[w[0]][w[1]] {
+                        let s = &gates.specials[si];
+                        rows.push(serde_json::json!({"leg": li, "kind": s.kind, "car": s.car, "model": s.model, "centre": s.centre, "half_width": s.half_width}));
+                    }
+                }
+                let sf = f.with_extension("specials.json");
+                io::write_atomic(&sf, serde_json::to_string_pretty(&rows).unwrap().as_bytes()).unwrap_or_else(|e| die(&e));
+                if !rows.is_empty() {
+                    println!("    specials on the route: {}", rows.iter().map(|r| format!("leg {} {}{}", r["leg"], r["kind"].as_str().unwrap_or(""), r["car"].as_str().map_or(String::new(), |c| format!("→{c}")))).collect::<Vec<_>>().join(", "));
+                }
+            }
         }
     }
     if plans.is_empty() {
@@ -140,10 +157,11 @@ fn cmd_plan(args: &[String]) {
 fn cmd_legs(args: &[String]) {
     let (_map, gates, surf, nodes, d, len, drop, fields) = load(args);
     let dirs = surf.directions(&nodes, &fields);
+    let leg_specials = surf.leg_specials(&nodes, &fields, &gates);
     print_matrix(&nodes, &d, "surface-graph COST (off-road 20x; inf = no path)");
     print_matrix(&nodes, &len, "surface-graph path LENGTH (m)");
     let flight = flight_of(flag(args, "--flight").or(Some("ballistic".into())));
-    let est = Geometric { time_model: tm(args), d: &d, len: &len, nodes: &nodes, flight, surface: Some(&surf), dirs: Some(&dirs), drop: Some(&drop), drop_penalty: flag(args, "--drop-penalty").and_then(|s| s.parse().ok()).unwrap_or(0.0) };
+    let est = Geometric { time_model: tm(args), d: &d, len: &len, nodes: &nodes, flight, surface: Some(&surf), dirs: Some(&dirs), drop: Some(&drop), drop_penalty: flag(args, "--drop-penalty").and_then(|s| s.parse().ok()).unwrap_or(0.0), specials: Some((&leg_specials, &gates)) };
     let mut plans = planner::beam(&nodes, &est, 4000, 1, StateBucket::of_speed(0.0));
     if let Some(o) = flag(args, "--order") {
         // characterise a GIVEN group order (e.g. the human modal order) instead of the best tour

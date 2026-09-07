@@ -10,11 +10,28 @@ use crate::surface::{Nodes, SurfaceModel};
 pub struct StateBucket {
     /// 0 rest (<15 m/s), 1 slow (15–50), 2 medium (50–90), 3 fast (90–120), 4 very fast (>120)
     pub speed_bin: u8,
+    /// The car: 0 Stadium, 1 Snow, 2 Rally, 3 Desert (a transformation gate on a leg changes it).
+    pub car: u8,
+}
+
+pub fn car_id(name: &str) -> u8 {
+    match name { "Snow" => 1, "Rally" => 2, "Desert" => 3, _ => 0 }
+}
+pub fn car_name(id: u8) -> &'static str {
+    ["Stadium", "Snow", "Rally", "Desert"].get(id as usize).copied().unwrap_or("Stadium")
+}
+/// Speed scale per car relative to the Stadium car — HYPOTHESES until measured on human legs
+/// through transformation gates (the snow car is slow and grippy, rally and desert in between).
+pub fn car_speed_scale(id: u8) -> f32 {
+    [1.0, 0.6, 0.8, 0.85].get(id as usize).copied().unwrap_or(1.0)
 }
 
 impl StateBucket {
     pub fn of_speed(v: f32) -> StateBucket {
-        StateBucket { speed_bin: if v < 15.0 { 0 } else if v < 50.0 { 1 } else if v < 90.0 { 2 } else if v < 120.0 { 3 } else { 4 } }
+        StateBucket { speed_bin: if v < 15.0 { 0 } else if v < 50.0 { 1 } else if v < 90.0 { 2 } else if v < 120.0 { 3 } else { 4 }, car: 0 }
+    }
+    pub fn with_car(self, car: u8) -> StateBucket {
+        StateBucket { car, ..self }
     }
     pub fn speed(&self) -> f32 {
         [0.0, 35.0, 70.0, 105.0, 135.0][self.speed_bin as usize]
@@ -84,6 +101,9 @@ pub struct Geometric<'a> {
     /// it (cost model) — a car that falls off a ledge loses its speed; the graph's drop edges are free.
     pub drop: Option<&'a [Vec<f32>]>,
     pub drop_penalty: f32,
+    /// `SurfaceModel::leg_specials` + the gates file they index: transformation gates change the
+    /// arrival car; boosters/turbos scale the leg speed; a Reset pad drops the entry speed.
+    pub specials: Option<(&'a [Vec<Vec<usize>>], &'a tmroute::gates::GatesFile)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -183,28 +203,48 @@ impl<'a> EdgeEstimator for Geometric<'a> {
             }
             _ => 0.0,
         };
+        // what sits on this leg: car change, boost, reset
+        let mut car = bucket.car;
+        let mut boost = 1.0f32;
+        let mut reset = false;
+        if let Some((ls, g)) = self.specials {
+            for &si in &ls[from][to] {
+                let s = &g.specials[si];
+                if let Some(c) = &s.car {
+                    car = car_id(c);
+                }
+                match s.kind.as_str() {
+                    "Boost" | "Boost2" | "Turbo" | "Turbo2" => boost = 1.15,
+                    "Reset" => reset = true,
+                    _ => {}
+                }
+            }
+        }
+        let v_in = if reset { 0.0 } else { v_in };
         if cost.is_finite() {
             if self.time_model == TimeModel::Cost {
                 let dr = self.drop.map_or(0.0, |m| m[from][to]);
                 let dr = if dr.is_finite() { dr } else { 0.0 };
                 let cost = cost + self.drop_penalty * dr;
-                return Edge { p_reach: 1.0, expected_ms: (cost * 10.0).round() as i32, arrival: bucket, length_m: self.len[from][to], kind: EdgeKind::Surface }; // decimetres: keeps near-ties (Summer 2026 - 13: 1614.6 vs 1615.2) honest
+                return Edge { p_reach: 1.0, expected_ms: (cost * 10.0).round() as i32, arrival: bucket.with_car(car), length_m: self.len[from][to], kind: EdgeKind::Surface }; // decimetres: keeps near-ties (Summer 2026 - 13: 1614.6 vs 1615.2) honest
             }
             let length = self.len[from][to];
-            let (ms, v_end) = Self::leg_time_ms(v_in, length, turn);
+            let scale = car_speed_scale(car) * boost;
+            let (ms, v_end) = Self::leg_time_ms(v_in / scale, length / scale, turn);
+            let (ms, v_end) = (((ms as f32) / 1.0).round() as i32, v_end * scale);
             // off-road share: cost/length runs 1.0 on pure road and up to 20 on grass
             let offroad = ((cost / length.max(1.0)) - 1.0) / 19.0;
             let p = (0.95 - 0.5 * offroad.clamp(0.0, 1.0)).max(0.3);
-            return Edge { p_reach: p, expected_ms: ms, arrival: StateBucket::of_speed(v_end), length_m: length, kind: EdgeKind::Surface };
+            return Edge { p_reach: p, expected_ms: ms, arrival: StateBucket::of_speed(v_end).with_car(car), length_m: length, kind: EdgeKind::Surface };
         }
         if let Some(f) = self.flight {
             if horiz <= f.max_horiz && dy <= f.max_rise {
                 let len = (horiz * horiz + dy * dy).sqrt() * f.cost_mult;
                 if self.time_model == TimeModel::Cost {
-                    return Edge { p_reach: f.p_reach, expected_ms: (len * 10.0).round() as i32, arrival: bucket, length_m: len, kind: EdgeKind::Flight };
+                    return Edge { p_reach: f.p_reach, expected_ms: (len * 10.0).round() as i32, arrival: bucket.with_car(car), length_m: len, kind: EdgeKind::Flight };
                 }
                 let (ms, v_end) = Self::leg_time_ms(v_in, len, 0.0);
-                return Edge { p_reach: f.p_reach, expected_ms: ms, arrival: StateBucket::of_speed(v_end), length_m: len, kind: EdgeKind::Flight };
+                return Edge { p_reach: f.p_reach, expected_ms: ms, arrival: StateBucket::of_speed(v_end).with_car(car), length_m: len, kind: EdgeKind::Flight };
             }
         }
         Edge { p_reach: 0.0, expected_ms: -1, arrival: bucket, length_m: f32::INFINITY, kind: EdgeKind::None }
