@@ -33,6 +33,12 @@ pub struct Opts {
     /// it, measured on Summer 15).
     pub drive_ms: u64,
     pub drive_at_ms: u64,
+    /// `--camlog-ms MS`: the live CAMERA (and the car) per frame from the
+    /// moment the playground opens, for MS milliseconds, into
+    /// `OUTDIR/cam-<tag>.tsv` — on its own thread, alongside the shots and
+    /// the drive: the intro's camera path (the tiny build's must be the
+    /// original's through the transform) and the in-game clip's jump.
+    pub camlog_ms: u64,
     pub detach: bool,
 }
 
@@ -54,6 +60,7 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         carlog_ms: num("--carlog-ms", 0)?,
         drive_ms: num("--drive-ms", 0)?,
         drive_at_ms: num("--drive-at-ms", 13500)?,
+        camlog_ms: num("--camlog-ms", 0)?,
         detach: args.iter().any(|a| a == "--detach"),
     })
 }
@@ -63,7 +70,7 @@ pub fn run(args: &[String]) -> i32 {
         Ok(o) => o,
         Err(e) => {
             eprintln!("{e}");
-            eprintln!("usage: shootctl playshots --map MAP --outdir /mnt/c/... [--tag T] [--shots N] [--every-ms MS] [--first-ms MS] [--carlog-ms MS] [--drive-ms MS [--drive-at-ms MS]] [--timeout S] [--detach]");
+            eprintln!("usage: shootctl playshots --map MAP --outdir /mnt/c/... [--tag T] [--shots N] [--every-ms MS] [--first-ms MS] [--carlog-ms MS] [--drive-ms MS [--drive-at-ms MS]] [--camlog-ms MS] [--timeout S] [--detach]");
             return 2;
         }
     };
@@ -133,6 +140,30 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     println!("{} playground after {:.1}s (ctx {})", el(), opened.as_secs_f64(), super::http_get("/ctx", 10).unwrap_or_default().trim());
     let mut lines = Vec::new();
     let mut driver: Option<std::thread::JoinHandle<Result<String, String>>> = None;
+    let mut camlog: Option<std::thread::JoinHandle<Result<String, String>>> = None;
+    if opts.camlog_ms > 0 {
+        let (file, total) = (opts.outdir.join(format!("cam-{}.tsv", opts.tag)), opts.camlog_ms);
+        camlog = Some(std::thread::spawn(move || {
+            // 5 s slices like the car log: one long request never comes back
+            let mut tsv = String::new();
+            let mut left = total;
+            let t0 = Instant::now();
+            while left > 0 {
+                let chunk = left.min(5_000);
+                let body = super::http_get(&format!("/camlog?ms={chunk}"), chunk / 1000 + 20)?;
+                for (i, row) in body.lines().enumerate() {
+                    if i == 0 && !tsv.is_empty() {
+                        continue;
+                    }
+                    tsv.push_str(row);
+                    tsv.push('\n');
+                }
+                left -= chunk;
+            }
+            std::fs::write(&file, &tsv).map_err(|e| format!("{}: {e}", file.display()))?;
+            Ok(format!("camlog\t{} rows over {:.1} s\t{}", tsv.lines().count().saturating_sub(1), t0.elapsed().as_secs_f64(), file.display()))
+        }));
+    }
     if opts.drive_ms > 0 {
         // the key is held on its own thread so the shots keep their cadence
         let (at, hold) = (opts.drive_at_ms, opts.drive_ms);
@@ -188,6 +219,13 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         let line = format!("shot {k}\t{at:.1}s after the playground opened\t{}\t{size}", file.display());
         println!("{} {line}", el());
         lines.push(line);
+    }
+    if let Some(c) = camlog {
+        match c.join() {
+            Ok(Ok(text)) => lines.push(text),
+            Ok(Err(e)) => lines.push(format!("camlog\tFAILED: {e}")),
+            Err(_) => lines.push("camlog\tFAILED: the camera thread panicked".to_string()),
+        }
     }
     if let Some(d) = driver {
         match d.join() {

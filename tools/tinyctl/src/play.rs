@@ -53,7 +53,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         (Some(ms), at) => format!(" --drive-ms {ms}{}", at.map(|a| format!(" --drive-at-ms {a}")).unwrap_or_default()),
         (None, _) => String::new(),
     };
-    let cmd = format!("{shootctl} playshots --detach --map {remote_map} --outdir {remote_dir} --tag {tag} --shots {shots} --every-ms {every_ms} --first-ms {first_ms} --timeout {timeout}{drive}");
+    let camlog = f("--camlog-ms").map(|ms| format!(" --camlog-ms {ms}")).unwrap_or_default();
+    let cmd = format!("{shootctl} playshots --detach --map {remote_map} --outdir {remote_dir} --tag {tag} --shots {shots} --every-ms {every_ms} --first-ms {first_ms} --timeout {timeout}{drive}{camlog}");
     eprintln!("playing {tag} on the box ({shots} frames) — waits for the render lock if another thread holds the game …");
     let started = wsx.sh(&cmd)?;
     if wsx.verbose {
@@ -77,6 +78,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let filter = if shots > 1 { format!("{scales}{labels}vstack=inputs={shots}") } else { "[0:v]scale=960:-1".to_string() };
     let ff = format!("\"{BOX_FFMPEG}\" -nostdin -y -loglevel error{inputs} -filter_complex \"{filter}\" -q:v 4 {}", to_win(&sheet_remote));
     wsx.sh(&ff).map_err(|e| format!("contact sheet: {e}"))?;
+    if !camlog.is_empty() {
+        let tsv = format!("cam-{tag}.tsv");
+        match wsx.pull(&format!("{remote_dir}/{tsv}"), &outdir.join(&tsv)) {
+            Ok(n) => eprintln!("  pulled {tsv} ({n} B)"),
+            Err(e) => eprintln!("  {tsv}: {e}"),
+        }
+    }
     let local = outdir.join(format!("play-{tag}-sheet.jpg"));
     let n = wsx.pull(&sheet_remote, &local)?;
     println!("{} ({n} B): {shots} frames top to bottom; full frames in {remote_dir} on the box", local.display());

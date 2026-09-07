@@ -100,6 +100,7 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     // spawn point and whether a moving item's hull shoves the car
     if (r == "/car") return HttpResponse(200, CarState());
     if (r == "/carlog") return HttpResponse(200, CarLog(Text::ParseInt(QArg(qs,"ms"))));
+    if (r == "/camlog") return HttpResponse(200, CamLog(Text::ParseInt(QArg(qs,"ms"))));
     if (r == "/clipend") return HttpResponse(200, ClipEnd(Text::ParseInt(QArg(qs,"ms"))));
     if (r == "/clipcam") return HttpResponse(200, ClipCam(Text::ParseInt(QArg(qs,"ms"))));
     if (r == "/camset") return HttpResponse(200, CameraSet(Text::ParseInt(QArg(qs,"ent")), Text::ParseInt(QArg(qs,"cam"))));

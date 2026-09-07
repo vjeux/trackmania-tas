@@ -53,3 +53,27 @@ string CarLog(int ms) {
     }
     return sb;
 }
+
+// The LIVE camera per frame, next to the car: where the MediaTracker put it.
+// This is the readout behind the tiny campaign's camera check — the tiny
+// map's intro camera at time t must be the original's at t through the
+// items' transform — and behind the in-game trigger test (the camera jumps
+// when the car enters a trigger). Same shape as CarLog: one HTTP call, one
+// whole trajectory, a row per frame. A null player (the intro, the loading
+// screen) leaves the car columns empty rather than ending the log.
+string CamLog(int ms) {
+    if (ms <= 0) ms = 3000;
+    if (ms > 30000) ms = 30000;
+    uint t0 = Time::Now;
+    string sb = "wall_ms\tt_ms\tpx\tpy\tpz\tcx\tcy\tcz\tfov\n";
+    while (int(Time::Now - t0) < ms) {
+        vec3 c = Camera::GetCurrentPosition();
+        auto cam = Camera::GetCurrent();
+        float fov = (cam is null) ? 0.0f : cam.Fov;
+        auto p = ScriptPlayer();
+        string car = (p is null) ? "\t\t\t" : ("" + p.CurrentRaceTime + "\t" + p.Position.x + "\t" + p.Position.y + "\t" + p.Position.z);
+        sb += "" + Time::Now + "\t" + car + "\t" + c.x + "\t" + c.y + "\t" + c.z + "\t" + fov + "\n";
+        yield();
+    }
+    return sb;
+}
