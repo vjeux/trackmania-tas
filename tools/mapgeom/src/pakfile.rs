@@ -4,7 +4,7 @@ use crate::lz4dict::LZ4_DICT;
 
 /// Decode one LZ4 block into `hist` (which already holds the dictionary and
 /// everything decoded so far). Returns the number of bytes produced.
-fn lz4_block(src: &[u8], hist: &mut Vec<u8>) -> Result<usize, String> {
+pub fn lz4_block(src: &[u8], hist: &mut Vec<u8>) -> Result<usize, String> {
     let start = hist.len();
     let mut i = 0usize;
     while i < src.len() {

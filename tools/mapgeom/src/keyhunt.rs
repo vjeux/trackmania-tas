@@ -43,7 +43,7 @@ fn plausible_bf(t: &Target, bf: crate::blowfish::Blowfish) -> bool {
     }
     let gbx_headers_size = r.i32();
     let gbx_headers_compr_size = r.i32();
-    if gbx_headers_start > t.data.len() || gbx_headers_size <= 0 || gbx_headers_compr_size <= 0 || gbx_headers_compr_size > gbx_headers_size + 0x1000 {
+    if gbx_headers_start > t.data.len().max(1 << 31) || gbx_headers_size <= 0 || gbx_headers_compr_size <= 0 || gbx_headers_compr_size > gbx_headers_size + 0x1000 {
         return false;
     }
     if t.version >= 14 {
@@ -322,6 +322,17 @@ fn schedule_scan(f: &mut std::fs::File, total: usize, targets: &[Target], known:
                 kh[i] ^= HEADER_KEY[i];
             }
             let bh = crate::blowfish::Blowfish::new(&kh, trick);
+            if let Ok(path) = std::env::var("KEYHUNT_EMIT_SCHEDULE") {
+                // self-test material: both schedules as [P18][S], as-stored order
+                let mut out = Vec::new();
+                for b in [&bf, &bh] {
+                    for w in b.p() { out.extend_from_slice(&w.to_le_bytes()); }
+                    for box_ in b.s() { for w in box_ { out.extend_from_slice(&w.to_le_bytes()); } }
+                    out.extend_from_slice(&[0u8; 24]);
+                }
+                std::fs::write(&path, out).ok();
+                println!("  wrote {path}");
+            }
             println!("  {}: file schedule P[0..4] {:08x} {:08x} {:08x} {:08x}, S0[0..2] {:08x} {:08x}; header schedule P[0..2] {:08x} {:08x}", t.name, bf.p()[0], bf.p()[1], bf.p()[2], bf.p()[3], bf.s()[0][0], bf.s()[0][1], bh.p()[0], bh.p()[1]);
         }
     }
@@ -360,11 +371,18 @@ fn schedule_scan(f: &mut std::fs::File, total: usize, targets: &[Target], known:
                             off += 4;
                             continue;
                         }
-                        for (plen, s_first) in [(10usize, false), (18, false), (10, true), (18, true)] {
+                        // layouts: P (18 or 10 words) then S — the struct order of every
+                        // Blowfish implementation we know; S-then-P is not tried (cost)
+                        for (plen, s_first) in [(18usize, false), (10, false)] {
                             let (p_off, s_off) = if s_first { (off + 4096, off) } else { (off, off + plen * 4) };
                             if s_off + 4096 > chunk.len() || p_off + plen * 4 > chunk.len() { continue; }
                             let mut p = [0u32; 18];
                             for i in 0..plen { p[i] = word(p_off + i * 4); }
+                            // cheap pre-test before copying 4 KB of S boxes: with the
+                            // real schedule the header's first plaintext word is the
+                            // MD5's first word — no constraint; but the FIRST SLOT's
+                            // first two bytes are an LZ4 length <= 4128, and the header
+                            // test needs the boxes anyway: so copy once per s_off.
                             let mut sb = [[0u32; 256]; 4];
                             for i in 0..4 { for j in 0..256 { sb[i][j] = word(s_off + (i * 256 + j) * 4); } }
                             for rev in [false, true] {
@@ -381,6 +399,8 @@ fn schedule_scan(f: &mut std::fs::File, total: usize, targets: &[Target], known:
                                         if got == exp.1 {
                                             out.push(format!("FILE schedule for {} at {:#x} (P{} {} rev {})", t.name, off, plen, if s_first { "after S" } else { "first" }, rev));
                                         }
+                                    } else if first_slot_decodes(t, bf.clone()) {
+                                        out.push(format!("FILE schedule (first slot decodes as an LZ4 block) for {} at {:#x} (P{} {} rev {})", t.name, off, plen, if s_first { "after S" } else { "first" }, rev));
                                     }
                                     let _ = i;
                                 }
@@ -401,4 +421,139 @@ fn schedule_scan(f: &mut std::fs::File, total: usize, targets: &[Target], known:
         println!("  schedule scan: {} MiB in {:.0} s, {hits_total} hit(s)", pos >> 20, t0.elapsed().as_secs_f32());
         if got == 0 || limit == 0 { break; }
     }
+}
+
+/// Without the header, the one slot whose position is known is the first
+/// one (offset 0 = header_max): decrypt its first bytes with the candidate
+/// and require a well-formed first LZ4 block — `[u16 len ≤ 4128]` then a
+/// block that decodes against the Nadeo dictionary to exactly 4096 bytes (a
+/// compressed entry's blocks all do, bar the last). An encrypted+compressed
+/// first entry is the common case (BlueBay: Collections\BlueBay.Collection.Gbx).
+fn first_slot_decodes(t: &Target, bf: crate::blowfish::Blowfish) -> bool {
+    let hmax = u32::from_le_bytes(t.data[0x30..0x34].try_into().unwrap()) as usize;
+    if hmax + 8 + 4200 > t.data.len() {
+        return false;
+    }
+    let mut r = CipherReader::with_blowfish(&t.data, hmax, bf, t.version);
+    let head = r.take(2);
+    let n = u16::from_le_bytes([head[0], head[1]]) as usize;
+    if n == 0 || n > 4128 {
+        return false;
+    }
+    let block = r.take(n);
+    let mut hist: Vec<u8> = Vec::with_capacity(crate::lz4dict::LZ4_DICT.len() + 4200);
+    hist.extend_from_slice(crate::lz4dict::LZ4_DICT);
+    let before = hist.len();
+    match crate::pakfile::lz4_block(&block, &mut hist) {
+        Ok(_) => hist.len() - before == 4096,
+        Err(_) => false,
+    }
+}
+
+/// `mapgeom pak-basekey FILE PAK:KEYHEX...` — a pack key is
+/// `MD5(hex_upper(base16) + "NadeoPak")` (GBX.NET `Pak.ComputeKey`; the
+/// ModelsSport key checked out that way). Where the 16-byte BASE keys live
+/// is the question: scan FILE (the exe, the title pack, a dump) for any
+/// 16-byte window whose computed key is one of the known pack keys. A hit
+/// names the table; the other packs' bases are its neighbours.
+pub fn basekey_scan(rest: &[String]) -> Result<(), String> {
+    let path = rest.get(1).ok_or("pak-basekey FILE PAK:KEYHEX...")?;
+    let mut wants: Vec<(String, [u8; 16])> = Vec::new();
+    for arg in rest.iter().skip(2) {
+        if let Some((p, k)) = arg.rsplit_once(':') {
+            let bytes: Vec<u8> = (0..k.len()).step_by(2).filter_map(|i| u8::from_str_radix(&k[i..i + 2], 16).ok()).collect();
+            if bytes.len() == 16 {
+                let mut a = [0u8; 16];
+                a.copy_from_slice(&bytes);
+                wants.push((p.to_string(), a));
+            }
+        }
+    }
+    if wants.is_empty() {
+        return Err("no PAK:KEYHEX given".into());
+    }
+    let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    println!("{path}: {} bytes; {} known keys", data.len(), wants.len());
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let per = data.len() / threads + 1;
+    let hits: Vec<String> = std::thread::scope(|s| {
+        let mut hs = Vec::new();
+        for ti in 0..threads {
+            let lo = ti * per;
+            let hi = ((ti + 1) * per + 16).min(data.len());
+            let data = &data;
+            let wants = &wants;
+            hs.push(s.spawn(move || {
+                let mut out = Vec::new();
+                let mut off = lo;
+                while off + 16 <= hi {
+                    let w = &data[off..off + 16];
+                    // an all-zero or text window is not a key
+                    if w.iter().all(|b| *b == 0) || w.iter().all(|b| b.is_ascii_graphic() || *b == b' ') {
+                        off += 1;
+                        continue;
+                    }
+                    let k = crate::md5::compute_key(w);
+                    for (name, want) in wants.iter() {
+                        if k == *want {
+                            out.push(format!("BASE for {name} at {off:#x}: {}", crate::md5::hex_upper(w)));
+                        }
+                    }
+                    off += 1;
+                }
+                out
+            }));
+        }
+        hs.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+    });
+    for h in &hits {
+        println!("  {h}");
+    }
+    if hits.is_empty() {
+        println!("  no base key found in {path}");
+    }
+    Ok(())
+}
+
+/// `mapgeom pak-trykeys PAK... --keys FILE` — try every 32-hex BASE key of
+/// FILE (one per line: the exe's table, `strings -n 32 Trackmania.exe |
+/// grep -E '^[0-9A-F]{32}$'`) as `compute_key(base)` against each pack's
+/// private header (the first 4 KB of the pack is enough for the test).
+pub fn try_keys(rest: &[String]) -> Result<(), String> {
+    let kf = rest.iter().position(|a| a == "--keys").and_then(|i| rest.get(i + 1)).ok_or("pak-trykeys PAK... --keys FILE")?;
+    let bases: Vec<[u8; 16]> = std::fs::read_to_string(kf)
+        .map_err(|e| format!("{kf}: {e}"))?
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            if l.len() != 32 { return None; }
+            let b: Vec<u8> = (0..32).step_by(2).filter_map(|i| u8::from_str_radix(&l[i..i + 2], 16).ok()).collect();
+            (b.len() == 16).then(|| { let mut a = [0u8; 16]; a.copy_from_slice(&b); a })
+        })
+        .collect();
+    println!("{} base keys from {kf}", bases.len());
+    for p in rest.iter().skip(1).take_while(|a| *a != "--keys") {
+        let data = std::fs::read(p).map_err(|e| format!("{p}: {e}"))?;
+        if data.len() < 0x200 || &data[0..8] != b"NadeoPak" {
+            println!("{p}: not a NadeoPak");
+            continue;
+        }
+        let version = i32::from_le_bytes(data[8..12].try_into().unwrap());
+        let enc_start = crate::store::pak_encrypted_header_start(&data, version)?;
+        let mut sha = [0u8; 32];
+        sha.copy_from_slice(&data[12..44]);
+        let t = Target { name: p.clone(), data, version, enc_start, sha, first_encrypted: None };
+        let mut hit = false;
+        for b in &bases {
+            let k = crate::md5::compute_key(b);
+            if plausible(&t, &k) {
+                println!("{p}: base {} -> KEY {}", crate::md5::hex_upper(b), crate::md5::hex_upper(&k));
+                hit = true;
+            }
+        }
+        if !hit {
+            println!("{p}: no base key of the table opens it");
+        }
+    }
+    Ok(())
 }

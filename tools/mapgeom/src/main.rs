@@ -525,6 +525,12 @@ fn main() {
         "pak-keyhunt" => {
             mapgeom::keyhunt::run(&a.rest).unwrap_or_else(die);
         }
+        "pak-basekey" => {
+            mapgeom::keyhunt::basekey_scan(&a.rest).unwrap_or_else(die);
+        }
+        "pak-trykeys" => {
+            mapgeom::keyhunt::try_keys(&a.rest).unwrap_or_else(die);
+        }
         "crystal-roundtrip" => {
             let template = std::fs::read(a.rest.get(1).cloned().unwrap_or_default()).unwrap();
             let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));
