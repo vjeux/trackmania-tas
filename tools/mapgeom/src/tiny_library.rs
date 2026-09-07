@@ -57,11 +57,12 @@ fn veget_substitute(collection: u32, model: &str) -> Option<&'static str> {
     // GreenCoast (0xf) species (Summer 04: 2821 Forest + 1472 Grove + 1249
     // Ecotone patches, no individual trees): Tree/TreeThin/TreeBushy in
     // Big/Medium/Small, Bush in Big/Medium/Small, Flower*. A Forest patch
-    // becomes one small tree, a Grove one small bushy tree, an Ecotone (the
+    // becomes one thin small tree (the original forest is tall thin trunks
+    // with light canopies), a Grove one small bushy tree, an Ecotone (the
     // forest edge) one medium bush.
     if collection == 0xf {
         return Some(match model {
-            "Forest" => "TreeSmallA",
+            "Forest" => "TreeThinSmallA",
             "Grove" => "TreeBushySmallA",
             "Ecotone" => "BushMediumA",
             m if m.starts_with("TreeThinBushyBig") => "TreeThinBushySmallA",
@@ -111,6 +112,32 @@ fn find_item_file(store: &DataStore, model: &str) -> Option<String> {
     let mut hits: Vec<String> = store.entries().map(|e| e.path()).filter(|p| p.to_uppercase().ends_with(&want)).collect();
     hits.sort_by_key(|p| (!p.to_uppercase().contains("\\ITEMS\\"), p.len()));
     hits.into_iter().next()
+}
+
+/// The stock vegetation item standing in for a prefab's `.VegetTreeModel.Gbx`
+/// entity: `…\TreeBigA1.VegetTreeModel.Gbx` -> the pack item `TreeBigA` (an
+/// item carries its A1/A2/A3 variants; `PalmTreeBigB3` -> `PalmTreeBigB`),
+/// then the collection's smaller species for it. None when no item matches.
+fn veget_item(store: &DataStore, collection: u32, model_path: &str, cache: &mut BTreeMap<String, Option<String>>) -> Option<String> {
+    let file = model_path.rsplit('\\').next().unwrap_or(model_path);
+    let low = file.to_ascii_lowercase();
+    let stem = if low.ends_with(".vegettreemodel.gbx") { &file[..file.len() - ".vegettreemodel.gbx".len()] } else { file };
+    if let Some(c) = cache.get(stem) {
+        return c.clone();
+    }
+    let mut cands = vec![stem.to_string()];
+    let no_digits = stem.trim_end_matches(|c: char| c.is_ascii_digit());
+    if no_digits != stem {
+        cands.push(no_digits.to_string());
+    }
+    let no_letter = no_digits.trim_end_matches(|c: char| c.is_ascii_uppercase());
+    if no_letter != no_digits && !no_letter.is_empty() {
+        cands.push(no_letter.to_string());
+    }
+    let found = cands.iter().find(|c| find_item_file(store, c).is_some()).cloned();
+    let out = found.map(|item| veget_substitute(collection, &item).map(|s| s.to_string()).unwrap_or(item));
+    cache.insert(stem.to_string(), out.clone());
+    out
 }
 
 /// Closed box mesh over the block's units (each 32 x 8 x 32 m in block
@@ -164,6 +191,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut block_map: BTreeMap<(String, u32), (String, u32, u32)> = BTreeMap::new();
     let mut alias_of_recipe: BTreeMap<String, String> = BTreeMap::new();
     let mut next_alias = 0usize;
+    // `v@ALIAS` rows (the prefabs' vegetation as stock items) and the
+    // VegetTreeModel stem -> stock item cache behind them.
+    let mut veget_rows = String::new();
+    let mut veget_cache: BTreeMap<String, Option<String>> = BTreeMap::new();
     let ambient = source.ambient_zone().unwrap_or_default();
     for ((name, flags), n) in &keys {
         if !wanted(name) {
@@ -300,10 +331,23 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         match res {
             Ok((bytes, m)) => {
                 let nv = m.visuals.len();
-                let veget = m.notes.iter().filter(|n| n.contains(".VegetTreeModel.Gbx")).count();
-                let other_skips = m.notes.iter().filter(|n| (n.contains("skipped") || n.contains("failed") || n.contains("unnamed")) && !n.contains(".VegetTreeModel.Gbx")).count();
+                let veget = m.notes.iter().filter(|n| n.to_ascii_lowercase().contains(".vegettreemodel.gbx")).count();
+                let other_skips = m.notes.iter().filter(|n| (n.contains("skipped") || n.contains("failed") || n.contains("unnamed")) && !n.to_ascii_lowercase().contains(".vegettreemodel.gbx")).count();
                 let wp = match m.waypoint_type { Some(t) => format!(", waypoint {t} spawn {:?} trigger {}", m.spawn, m.trigger.is_some()), None => String::new() };
-                let summary = format!("{} bytes, {} visuals, {} collision tris, {} vegetation entities dropped, {} other skips{wp}", bytes.len(), nv, m.surf_triangles.len(), veget, other_skips);
+                // The prefab's vegetation entities become stock tree items placed
+                // with the block (`v@ALIAS` rows: item, position in the item's
+                // scaled frame, yaw), the species one step smaller like the
+                // map's own vegetation. Only in `substitute` mode.
+                let mut re_emitted = 0usize;
+                if veget_mode == "substitute" {
+                    for (p, iso) in &m.veget {
+                        let Some(item) = veget_item(store, collection, p, &mut veget_cache) else { continue };
+                        let yaw = (-iso[2]).atan2(iso[0]);
+                        veget_rows.push_str(&format!("v@{ident}\t{item}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\n", iso[9] * scale, iso[10] * scale, iso[11] * scale, yaw));
+                        re_emitted += 1;
+                    }
+                }
+                let summary = format!("{} bytes, {} visuals, {} collision tris, {} vegetation entities ({} re-emitted as items), {} other skips{wp}", bytes.len(), nv, m.surf_triangles.len(), veget, re_emitted, other_skips);
                 if nv == 0 {
                     outcomes.push(Outcome { alias: alias.clone(), kind: "block", source: format!("{name} {flags:08X} [{}] {}", pk.label, recipe), placements: *n, result: Err(format!("no visuals ({summary}); notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | "))) });
                     continue;
@@ -409,6 +453,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             None => *missing_items.entry(it.model.clone()).or_insert(0) += 1,
         }
     }
+    mapping.push_str(&veget_rows);
     std::fs::write(out_mapping, &mapping).unwrap();
     // report
     let mut rep = String::from("kind\talias\tplacements\tstatus\tsource\tdetail\n");

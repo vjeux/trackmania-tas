@@ -62,12 +62,18 @@ struct Mappings {
     /// Original ITEM placements re-pointed at an embedded copy of their own
     /// model (`i@INDEX` rows). Items without a row keep their model.
     items_by_index: BTreeMap<usize, Mapping>,
+    /// `v@ALIAS` rows: the vegetation a block's prefab carried, as stock
+    /// items to place with every placement of that alias — (item, position
+    /// in the item's scaled frame, yaw). A DecoLake shore carries hundreds of
+    /// trees the static item cannot bake (VegetTreeModel: no mesh).
+    veget_by_alias: BTreeMap<String, Vec<(String, [f32; 3], f32)>>,
 }
 
 /// `BLOCK<TAB>ITEM[<TAB>MODEL_SCALE]`, or `@INDEX<TAB>...` for an exact block
 /// placement, or `i@INDEX<TAB>...` for an existing item placement. Index rows
 /// win over block-name rows. MODEL_SCALE is the scale already baked into the
-/// item geometry.
+/// item geometry. `v@ALIAS<TAB>ITEM<TAB>X<TAB>Y<TAB>Z<TAB>YAW` adds a stock
+/// vegetation item to every placement of ALIAS.
 fn read_mapping(path: &Path) -> Mappings {
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let mut out = Mappings::default();
@@ -77,6 +83,12 @@ fn read_mapping(path: &Path) -> Mappings {
             continue;
         }
         let fields: Vec<&str> = line.split('\t').collect();
+        if let Some(alias) = fields[0].strip_prefix("v@") {
+            assert!(fields.len() == 6, "{}:{}: expected v@ALIAS<TAB>ITEM<TAB>X<TAB>Y<TAB>Z<TAB>YAW", path.display(), line_no + 1);
+            let f = |i: usize| fields[i].parse::<f32>().unwrap_or_else(|_| panic!("{}:{}: number expected", path.display(), line_no + 1));
+            out.veget_by_alias.entry(alias.to_string()).or_default().push((fields[1].to_string(), [f(2), f(3), f(4)], f(5)));
+            continue;
+        }
         assert!(
             (2..=5).contains(&fields.len()) && fields.len() != 4,
             "{}:{}: expected BLOCK<TAB>ITEM[<TAB>MODEL_SCALE[<TAB>SX<TAB>SZ]]",
@@ -194,6 +206,22 @@ fn block_yaw(b: &crate::map::BlockRec) -> f32 {
         2 => std::f32::consts::PI,
         _ => std::f32::consts::FRAC_PI_2,
     }
+}
+
+/// The stock vegetation items a block's prefab carried (`v@ALIAS` rows),
+/// placed with the block: the row's position is in the item's scaled frame,
+/// so it turns with the block's yaw the way `block_origin` turns footprints
+/// (dir 1 = yaw -pi/2 maps local +x onto world +z, local +z onto world -x).
+/// Returns how many were added.
+fn push_veget(specs: &mut Vec<Spec>, mapping: &Mappings, alias: &str, origin: [f32; 3], yaw: f32, color: u8) -> usize {
+    let Some(rows) = mapping.veget_by_alias.get(alias) else { return 0 };
+    let (s, c) = yaw.sin_cos();
+    for (item, local, tree_yaw) in rows {
+        let pos = [origin[0] + local[0] * c + local[2] * s, origin[1] + local[1], origin[2] - local[0] * s + local[2] * c];
+        let y = yaw + tree_yaw;
+        specs.push(Spec { model: item.clone(), pos, yaw: y, frame: Some(([y, 0.0, 0.0], [0.0, 0.0, 0.0])), scale: 1.0, tag: None, color });
+    }
+    rows.len()
 }
 
 fn transform(
@@ -424,6 +452,7 @@ pub fn cmd(args: &[String]) {
         }
     }
     let mut replaced_terrain = 0usize;
+    let mut prefab_trees = 0usize;
     // Authored blocks occupy appended clones.
     for b in &source.blocks {
         let map = mapping
@@ -446,15 +475,17 @@ pub fn cmd(args: &[String]) {
             Some(fp) => block_origin(b, fp),
             None => block_pos(b),
         };
+        let pos = transform(origin, source_anchor, target_anchor, scale);
         specs.push(Spec {
             model: map.model.clone(),
-            pos: transform(origin, source_anchor, target_anchor, scale),
+            pos,
             yaw: rot[0],
             frame: Some((rot, [0.0, 0.0, 0.0])),
             scale: scale / map.model_scale,
             tag: b.waypoint_tag.clone(),
             color: colors.block(b.index),
         });
+        prefab_trees += push_veget(&mut specs, &mapping, &map.model, pos, rot[0], colors.block(b.index));
     }
     // Baked (generated) non-Sea blocks -- the FC clip fillers that finish the
     // authored structures (pillar feet, screen caps, wall faces) -- become
@@ -471,15 +502,18 @@ pub fn cmd(args: &[String]) {
             None => block_pos(b),
         };
         baked_items += 1;
+        let pos = transform(origin, source_anchor, target_anchor, scale);
+        let color = std::env::var("TINY_BAKED_COLOR").ok().and_then(|s| s.parse().ok()).unwrap_or(colors.baked(b.index));
         specs.push(Spec {
             model: map.model.clone(),
-            pos: transform(origin, source_anchor, target_anchor, scale),
+            pos,
             yaw: rot[0],
             frame: Some((rot, [0.0, 0.0, 0.0])),
-            color: std::env::var("TINY_BAKED_COLOR").ok().and_then(|s| s.parse().ok()).unwrap_or(colors.baked(b.index)),
+            color,
             scale: scale / map.model_scale,
             tag: None,
         });
+        prefab_trees += push_veget(&mut specs, &mapping, &map.model, pos, rot[0], color);
     }
     assert!(specs.iter().any(|s| s.tag.as_deref() == Some("Spawn")));
     assert!(specs.iter().any(|s| s.tag.as_deref() == Some("Goal")));
@@ -693,7 +727,7 @@ pub fn cmd(args: &[String]) {
     }
     println!("wrote {}", out.display());
     println!("  uid: {}", new_uid);
-    println!("  {} existing items re-pointed at scaled copies; {} dropped (procedural vegetation); {} blocks intentionally without an item (empty variants); {} terrain tiles replaced by the block standing in for them", repointed_items, dropped_items, empty_blocks, replaced_terrain);
+    println!("  {} existing items re-pointed at scaled copies; {} dropped (procedural vegetation); {} blocks intentionally without an item (empty variants); {} terrain tiles replaced by the block standing in for them; {} prefab trees placed as stock items", repointed_items, dropped_items, empty_blocks, replaced_terrain, prefab_trees);
     println!(
         "  scaled every authored object: {} blocks + {} items = {} item placements",
         source.blocks.len(),
@@ -861,6 +895,20 @@ pub fn catalog_cmd(args: &[String]) {
     }
 
     let base = host.clone().unwrap_or_else(|| src.clone());
+    // --stock A,B,C: stock (pack) items by name — vegetation species — in a
+    // row 40 m in front of the first block, 16 m apart, standing on the
+    // block's deck level, under author Nadeo: a size-and-colour survey of a
+    // collection's trees in one frame (GreenCoast has 45 species).
+    if let Some(list) = cli::flag(args, "--stock") {
+        let (bx, by, bz) = grid.first().map(|g| g.1).unwrap_or((20, 5, 20));
+        let base_pos = [bx as f32 * crate::map::CELL_XZ, by as f32 * crate::map::CELL_Y + ground() + 2.0, bz as f32 * crate::map::CELL_XZ - 40.0];
+        for (k, name) in list.split(',').filter(|s| !s.is_empty()).enumerate() {
+            let pos = [base_pos[0] + 16.0 * k as f32, base_pos[1], base_pos[2]];
+            specs.push(Spec { model: name.to_string(), pos, yaw: 0.0, frame: Some(([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])), scale: 1.0, tag: None, color: 0 });
+            ref_authors.insert(name.to_string(), "Nadeo".to_string());
+            tsv.push_str(&format!("stock\t{name}\t\t\t\t{:.0}\t{:.0}\t{:.0}\n", pos[0], pos[1], pos[2]));
+        }
+    }
     let tmp0 = out.with_extension("cat0.Map.Gbx");
     let tmp1 = out.with_extension("cat1.Map.Gbx");
     let tmp2 = out.with_extension("cat2.Map.Gbx");
@@ -878,10 +926,17 @@ pub fn catalog_cmd(args: &[String]) {
     if host.is_none() {
         let keep: BTreeSet<usize> = grid.iter().map(|g| g.0).collect();
         let neutral = "RoadTechStraight".to_string();
+        // Zone (terrain) blocks stay where they are: 2936 Lake/LakeShore
+        // tiles stacked in one cell left the GreenCoast editor view solid
+        // white (Summer 04, 2026-09-06); the island is scenery for the survey.
+        let zones: BTreeSet<String> = source.genealogy_zones().into_iter().collect();
         for i in 0..m.blocks.len() {
             let b = m.blocks[i].clone();
             if let Some(&(_, cell)) = grid.iter().find(|g| g.0 == i) {
                 m.move_block_cell(i, cell);
+                continue;
+            }
+            if zones.contains(&b.name) {
                 continue;
             }
             if b.flags & FREE_BLOCK_FLAG != 0 {
@@ -935,7 +990,7 @@ pub fn catalog_cmd(args: &[String]) {
             }
         }
     }
-    let mut names: Vec<String> = specs.iter().map(|s| s.model.clone()).collect();
+    let mut names: Vec<String> = specs.iter().map(|s| s.model.clone()).filter(|n| n.ends_with(".Item.Gbx")).collect();
     names.sort();
     names.dedup();
     let manifest: Vec<(&str, &str)> = names

@@ -64,6 +64,11 @@ pub struct Merged {
     pub spawn: [f32; 3],
     /// Things skipped, for the report.
     pub notes: Vec<String>,
+    /// The prefab's procedural vegetation entities (`.VegetTreeModel.Gbx`
+    /// externals: no mesh to bake), as (model path, iso in the item's
+    /// UNSCALED frame) — `tiny-library` re-emits them as stock tree items next
+    /// to the block's item (a DecoLake shore carries hundreds of trees).
+    pub veget: Vec<(String, Xform)>,
     /// Remap every material link onto the mesh-editor family (BlueBay).
     /// Do not split shared-id visuals by layer for this model (the Mangrove
     /// split crashes the client — open bug, minimal repro in var-m1).
@@ -1279,6 +1284,10 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                     if let Err(e) = add_dyna_object_file(store, &p, &iso, scale, m) {
                         m.notes.push(format!("{path} entity {i}: external {p} failed: {e}"));
                     }
+                }
+                Some(p) if p.to_ascii_lowercase().ends_with(".vegettreemodel.gbx") => {
+                    m.veget.push((p.clone(), iso));
+                    m.notes.push(format!("{path} entity {i}: external {p} skipped (vegetation, re-emitted as an item)"));
                 }
                 Some(p) => m.notes.push(format!("{path} entity {i}: external {p} skipped")),
                 None => m.notes.push(format!("{path} entity {i}: external node {} unnamed", e.model.index)),
