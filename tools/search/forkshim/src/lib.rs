@@ -623,8 +623,10 @@ unsafe fn watch_eval(rec: *const u8, clock: i64) {
                 utoa(tick.max(0) as u64, &mut m);
                 send_frame(fd, &m);
             }
+            _exit(0)
         }
-        _exit(0)
+        // A candidate: its verdict is in the shared page; say so and go.
+        leave(1)
     }
 }
 
@@ -1283,7 +1285,7 @@ unsafe fn tick(new: u32, dt: u32, race_start: Option<u32>) {
                     }
                 }
                 if mode == 1 {
-                    _exit(0);
+                    leave(1);
                 }
             } else {
                 // no finish yet -- has the tape run out? then this candidate's
@@ -1865,6 +1867,34 @@ unsafe fn read_exact(fd: c_int, buf: &mut [u8]) -> bool {
         got += r as usize;
     }
     true
+}
+
+/// THE EXIT MARKER. A candidate child that has its answer leaves with
+/// `_exit`, and the parent used to learn that from EOF on the pipe. But EOF
+/// arrives only when the kernel closes the child's files, and `do_exit` tears
+/// the address space down FIRST -- every COW'd page and every page table of a
+/// 150 MB process, 2-3 ms -- so the parent sat through the teardown of a child
+/// whose answer was already in the shared page. Measured on map 2 at tick
+/// 2313: 2.34 ms between a finisher's last tick and the parent's answer, of
+/// which the pipe and the parse are 0.06.
+///
+/// So the child writes these bytes down its result pipe right before it goes.
+/// The parent treats them exactly like `"IsValid"` -- the run is over, read
+/// the pages, answer the driver -- and the teardown happens on whatever core
+/// the kernel puts it on while the next candidate is already running. Every
+/// store into the shared pages precedes the `write` syscall, so a parent that
+/// has seen the marker sees them.
+pub const EXIT_MARK: &[u8] = b"\nFKEXIT\n";
+
+/// `_exit(0)` for a child whose answer is in the shared pages: mark, then go.
+unsafe fn leave(fd: c_int) -> ! {
+    write_all(fd, EXIT_MARK);
+    _exit(0)
+}
+
+/// Has the child said it is done, one way or the other?
+fn child_done(out: &[u8]) -> bool {
+    out.windows(9).any(|w| w == b"\"IsValid\"") || out.windows(EXIT_MARK.len()).any(|w| w == EXIT_MARK)
 }
 
 unsafe fn write_all(fd: c_int, buf: &[u8]) -> bool {
@@ -2760,7 +2790,7 @@ unsafe fn forkserver() {
                             t_first = now_us();
                         }
                         out.extend_from_slice(&buf[..r as usize]);
-                        if out.windows(9).any(|w| w == b"\"IsValid\"") {
+                        if child_done(&out) {
                             json_done = true;
                             // the child is finished simulating, so every sample
                             // it will ever write is already in the pipe; kill it
@@ -3097,7 +3127,7 @@ unsafe fn forkserver() {
                     t_first = now_us();
                 }
                 out.extend_from_slice(&buf[..r as usize]);
-                if out.windows(9).any(|w| w == b"\"IsValid\"") {
+                if child_done(&out) {
                     done = true;
                 }
             }
@@ -3216,7 +3246,7 @@ unsafe fn forkserver() {
             out.extend_from_slice(&buf[..r as usize]);
             // everything we need is in ValidatedResult/Desc, which precede IsValid;
             // stopping here skips the DeclaredResult block and the Inputs RLE
-            if out.windows(9).any(|w| w == b"\"IsValid\"") {
+            if child_done(&out) {
                 done = true;
             }
         }
