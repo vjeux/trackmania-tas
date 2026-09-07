@@ -665,27 +665,6 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             model.clone()
         };
         let key = (model.clone(), *variant);
-        // The light-carrying pieces of a stage rig (`ShowLights` v23
-        // Light4Spots, v24 LightRamp4m, v25 LightRamp8m; `Show` has the same
-        // externals) exist as standalone stock items — `ShowLight4Spots`,
-        // `ShowLightRamp4m`, `ShowLightRamp8m` — so the light rule applies to
-        // them per VARIANT: the rig piece's stock twin one size down where
-        // there is one (Summer 14's finish is lit by 188 spot bars and 132
-        // ramps; baked, the deck stayed dark). The trusses stay baked.
-        let rig_light_sub: Option<String> = if multi {
-            variants.get(*variant as usize).and_then(|p| {
-                let stem = p.rsplit('\\').next().unwrap_or(p).split('.').next().unwrap_or("");
-                match stem {
-                    "Light4Spots" => Some("ShowLight4Spots".to_string()),
-                    "LightRamp4m" => Some("ShowLightRamp4m".to_string()),
-                    "LightRamp8m" => Some("ShowLightRamp4m".to_string()),
-                    _ => None,
-                }
-            })
-        } else {
-            None
-        };
-        let light_sub = |m: &str| -> Option<String> { rig_light_sub.clone().or_else(|| light_substitute(m)) };
         let mut remember = |target: &str| {
             if !multi {
                 single_variant.insert(model.clone(), target.to_string());
@@ -696,8 +675,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             // stays a STOCK item one size down: the static bake has no
             // light, and on a night map (Summer 09) the lamps are what
             // shows the platforms. TINY_LIGHTS=bake keeps the unlit copy.
-            Ok((_, m)) if m.lights > 0 && lights_mode != "bake" && light_sub(model).is_some() => {
-                let sub = light_sub(model).unwrap_or_else(|| model.clone());
+            Ok((_, m)) if m.lights > 0 && lights_mode != "bake" && light_substitute(model).is_some() => {
+                let sub = light_substitute(model).unwrap_or_else(|| model.clone());
                 if sub != *model && find_item_file(store, &sub).is_none() {
                     outcomes.push(Outcome { alias: model.clone(), kind: "item", source: source_name, placements: *n, result: Ok(format!("{} light(s): kept as the stock item (no {sub} in the packs); full size, unscaled", m.lights)) });
                     remember(model);
