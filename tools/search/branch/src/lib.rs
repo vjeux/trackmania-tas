@@ -339,10 +339,20 @@ impl Forest {
         // EVERY NODE PROBES ITS OWN BOUNDARY, and a failed probe is a hard
         // abort. Not "fall back to the parent's" -- that is the defect.
         if let Err(e) = node.probe() {
-            let pid = node.pid;
-            node.destroy();
-            self.tree.reaped(pid);
-            return Err(format!("node {} could not probe its own boundary: {}", pid, e));
+            if e.contains("ValidatedResult") {
+                // The probe child ran to the END without another input read:
+                // every remaining record is already in the engine's buffer.
+                // The node is alive and can continue the reference, but owns
+                // no writable tick (measured by the route GEN arm: paused at
+                // 19.670 of a 19.798 run, 13 records left, probe reply = the
+                // validator's result).
+                node.assume_exhausted(self.reference.len());
+            } else {
+                let pid = node.pid;
+                node.destroy();
+                self.tree.reaped(pid);
+                return Err(format!("node {} could not probe its own boundary: {}", pid, e));
+            }
         }
 
         let mut written = match h {

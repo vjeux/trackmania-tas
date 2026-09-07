@@ -309,7 +309,11 @@ impl ForkEnv {
         // 1 once the run has outlived its tape, and a caller stepping on it
         // rewrites records 1..k -- the countdown -- forever). The race clock
         // says whether the tape is spent.
-        if self.core.last_row().time_ms + 10 >= self.tape_end_ms || from >= self.n_ticks {
+        if self.core.last_row().time_ms + 10 >= self.tape_end_ms
+            || from >= self.n_ticks
+            || self.last_end >= self.n_ticks
+            || from + 2 * MAX_CHUNK < self.last_end
+        {
             let obs = self.core.observe();
             return Ok((obs, 0.0, Some(Done::TickCap), Info { tick: from, ..Default::default() }));
         }

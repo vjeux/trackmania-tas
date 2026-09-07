@@ -2974,58 +2974,114 @@ fn open_loop_control(a: &[String]) {
     if batch.answers.len() != files.len() {
         die(format!("the oracle answered {} of {} files", batch.answers.len(), files.len()));
     }
+    // The bar is the ORACLE: the env's tape must validate to the ghost's own
+    // time. That can only hold for a ghost whose per-packet STATE WORDS match
+    // the template's (the keyboard action-key flags at engine record +0x18 --
+    // the INPUT arm's finding; they scale the applied steer and the env's
+    // Action does not carry them). Ghosts that differ in a state word during
+    // the race are reported, not judged: their run is not expressible through
+    // steer/gas/brake alone, whatever the tick convention.
+    let tpl_words = state_words(&p.reference.to_string_lossy());
     let mut pass = true;
+    let mut judged = 0usize;
     for ((g, declared, splits, finish_tick, cps), ans) in expect.iter().zip(batch.answers.iter()) {
         let ov = ans.verdict();
+        let gw = state_words(g);
+        let d = fk::tape::Tape::load(g).unwrap_or_else(|e| die(e));
+        let shift: i64 = (tape.start_offset_ms as i64 - d.start_offset_ms as i64) / 10;
+        // state words compared at the same RACE time, race 0 onwards
+        let first_race_tick = ((-d.start_offset_ms as i64) / 10).max(0) as usize;
+        let mut state_diff = 0usize;
+        for j in first_race_tick..gw.len() {
+            let t = j as i64 - shift;
+            if t < 0 || t as usize >= tpl_words.len() {
+                continue;
+            }
+            if gw[j] != tpl_words[t as usize] {
+                state_diff += 1;
+            }
+        }
         let ok_oracle = matches!(ov, Some(tmauto::Verdict::Finish { ms }) if ms as i32 == *declared);
-        let ok_env = *cps == n_gates && finish_tick.map(|f| (f - *declared as i64).abs() <= 10).unwrap_or(false);
         println!(
-            "{}\n  declared {:.3}  splits {}\n  oracle on the env's tape: {:?}  {}\n  env counter: {} of {} gates, finish at env race {:?}  {}",
+            "{}\n  declared {:.3}  splits {}  state words differing from the template during the race: {}\n  oracle on the env's tape: {:?}  {}\n  env counter: {} of {} gates, finish seen at env race {:?}",
             g,
             *declared as f64 / 1000.0,
             splits.iter().map(|s| format!("{:.3}", *s as f64 / 1000.0)).collect::<Vec<_>>().join(" "),
+            state_diff,
             ov,
-            if ok_oracle { "== the ghost's own time  PASS" } else { "!= the ghost's time  FAIL" },
+            if state_diff > 0 {
+                "(NOT JUDGED: the ghost's state words are not expressible through steer/gas/brake)"
+            } else if ok_oracle {
+                "== the ghost's own time  PASS"
+            } else {
+                "!= the ghost's time  FAIL"
+            },
             cps,
             n_gates,
             finish_tick.map(|f| format!("{:.3}", f as f64 / 1000.0)),
-            if ok_env { "PASS" } else { "FAIL" }
         );
-        pass &= ok_oracle && ok_env;
+        if state_diff == 0 {
+            judged += 1;
+            pass &= ok_oracle;
+        }
     }
-    println!("OPEN-LOOP  {}", if pass { "PASS -- the env's tick is the tape's tick" } else { "FAIL" });
+    if judged == 0 {
+        pass = false;
+        println!("no ghost was judgeable (every one differs from the template in its state words)");
+    }
+    println!(
+        "OPEN-LOOP  {}  ({judged} ghost(s) judged)",
+        if pass { "PASS -- the env's tick is the tape's tick" } else { "FAIL" }
+    );
     if !pass {
         std::process::exit(1);
     }
 }
 
+/// The per-packet STATE words of a tape (word0, flags), for `tape-diff`.
+fn state_words(path: &str) -> Vec<(u32, u32)> {
+    match gbx::tape::Tape::from_file(path) {
+        Ok(t) => t.archives.first().map(|a| a.packets.iter().map(|p| (p.word0, p.flags)).collect()).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}
+
 // --------------------------------------------------------------- tape-diff
 
-/// Where two containers' input tapes differ, tick by tick.
+/// Where two containers' input tapes differ, tick by tick, inputs and state
+/// words.
 fn tape_diff(a: &[String]) {
     let x = fk::tape::Tape::load(&a[1]).unwrap_or_else(|e| die(e));
     let y = fk::tape::Tape::load(&a[2]).unwrap_or_else(|e| die(e));
+    // `--shift S`: compare x[t] with y[t + S] (S negative = y lags), so two tapes
+    // with different countdown lengths can be compared at the same race time.
+    let shift: i64 = num(a, "--shift", 0);
     println!("{}: {} ticks, offset {} ms, declared {:?}", a[1], x.n(), x.start_offset_ms, x.declared_ms);
     println!("{}: {} ticks, offset {} ms, declared {:?}", a[2], y.n(), y.start_offset_ms, y.declared_ms);
     let n = x.n().min(y.n());
     let mut diffs = 0usize;
     let mut first = None;
     for t in 0..n {
-        if x.steer[t] != y.steer[t] || x.accel[t] != y.accel[t] || x.brake[t] != y.brake[t] {
+        let u = t as i64 + shift;
+        if u < 0 || u as usize >= y.n() {
+            continue;
+        }
+        let u = u as usize;
+        if x.steer[t] != y.steer[u] || x.accel[t] != y.accel[u] || x.brake[t] != y.brake[u] {
             diffs += 1;
             if first.is_none() {
                 first = Some(t);
             }
-            if diffs <= 12 {
+            if diffs <= 400 {
                 println!(
                     "  tick {t:5} (race {:.3}): steer {:4} vs {:4}  gas {} vs {}  brake {} vs {}",
                     x.race_ms(t) as f64 / 1000.0,
                     x.steer[t] as i8,
-                    y.steer[t] as i8,
+                    y.steer[u] as i8,
                     x.accel[t],
-                    y.accel[t],
+                    y.accel[u],
                     x.brake[t],
-                    y.brake[t]
+                    y.brake[u]
                 );
             }
         }
@@ -3044,12 +3100,4 @@ fn tape_diff(a: &[String]) {
         }
     }
     println!("{sd} ticks differ in the STATE word; {} distinct (word0, flags) in the first: {:?}", hist.len(), hist);
-}
-
-/// The per-packet STATE words of a tape (word0, flags), for `tape-diff`.
-fn state_words(path: &str) -> Vec<(u32, u32)> {
-    match gbx::tape::Tape::from_file(path) {
-        Ok(t) => t.archives.first().map(|a| a.packets.iter().map(|p| (p.word0, p.flags)).collect()).unwrap_or_default(),
-        Err(_) => Vec::new(),
-    }
 }

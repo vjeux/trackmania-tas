@@ -157,6 +157,9 @@ fn parse(args: &[String]) -> Cfg {
             "--every" => c.every = next(&mut i).parse().unwrap(),
             "--finishmargin" => c.finishmargin = next(&mut i).parse().unwrap(),
             "--fast" => c.fast = next(&mut i).parse().unwrap(),
+            // read through `has_flag` where the boundary is decided; named here
+            // so the unknown-flag guard does not refuse it
+            "--calibrate" => {}
             "--reference-ms" => c.reftime = next(&mut i).parse().unwrap(),
             "--gate" => c.gate = next(&mut i),
             "--gate-key" => c.gate_key = next(&mut i),
@@ -342,8 +345,27 @@ fn setup(c: &Cfg) -> Setup {
         work: work.clone(),
         work_is_temporary: false,
     };
-    let boundary = crate::cmd::server::calibrate_boundary(&mut srv, &f, &engine, probe)
-        .unwrap_or_else(|e| crate::abort(e));
+    // THE CALIBRATION SWEEP IS NOT ON THIS PATH BY DEFAULT ANY MORE.
+    //
+    // It perturbs three axes at each of 17 ticks around the probe and takes the
+    // last disagreement with the plain oracle, +1: 51 forks and a 51-file batch
+    // validation, **8.2 s**, once per run. It exists because the probe used to
+    // be the only word on where the engine had got to.
+    //
+    // It is not any more: `boundary_tick` requires the probe to equal the record
+    // the engine's OWN tick says it reads next, and those are two independent
+    // measurements from opposite sides. Across 20 runs on 3 maps since the tick
+    // hook landed, the sweep has never moved the boundary off the probe.
+    //
+    // So it is a control, not a step: `fk server check` still runs it
+    // unconditionally (that is the acceptance test), and `--calibrate` brings
+    // it back here.
+    let boundary = if crate::has_flag("--calibrate") {
+        crate::cmd::server::calibrate_boundary(&mut srv, &f, &engine, probe)
+            .unwrap_or_else(|e| crate::abort(e))
+    } else {
+        probe
+    };
     println!(
         "boundary tick {} (probe {}) = race {} ms",
         boundary,
@@ -380,8 +402,16 @@ fn setup(c: &Cfg) -> Setup {
         (-64000.0, 64000.0, -1000.0, 4000.0, -64000.0, 64000.0)
     };
     let lrecs = tail_recs(&f.steer, &f.accel, &f.brake, probe);
-    let layout = locate_blind(&mut srv, probe, &lrecs, f.start_offset_ms, c.every.max(1), bounds, true)
-        .unwrap_or_else(|e| panic!("ABORT: {}", e));
+    // FK_FAST_LOCATE=1 asks the engine (0.2 s) instead of sweeping (3.6 s). Off
+    // by default: see the note in `tmsearch::forkeval` -- the watchdog behaves
+    // differently with the object it picks, and that is unexplained.
+    let layout = if std::env::var("FK_FAST_LOCATE").is_ok() {
+        forkoracle::car::locate_fast(&mut srv, probe, &lrecs, true)
+            .unwrap_or_else(|e| panic!("ABORT: {}", e))
+    } else {
+        locate_blind(&mut srv, probe, &lrecs, f.start_offset_ms, c.every.max(1), bounds, true)
+            .unwrap_or_else(|e| panic!("ABORT: {}", e))
+    };
     println!(
         "state located: position {:#x}, clock {:#x} (bias {:+} ms), self-consistency {:.3} m/s",
         layout.pos, layout.clock, layout.clock_bias, layout.rms

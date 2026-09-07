@@ -116,12 +116,31 @@ pub fn find_clock(
     let lo = pos - back;
     let len = (back + ahead) as u32;
 
-    // 400 ticks is plenty to pin a strict +10-every-tick slot, and keeps the
-    // discovery fork's pipe traffic to a few MB.
-    let (_j, blob) = srv.run_sampled(probe, recs, lo, len, stride, 400, (back as u32, 12));
+    // HOW MANY SAMPLES, AND WHY THE CHILD MUST BE TOLD TO STOP.
+    //
+    // A slot that steps by exactly +10 on 96 consecutive ticks inside a 20 KB
+    // window is the clock; 400 was not buying confidence, it was buying pipe
+    // traffic (20 KB per tick, so 8 MB instead of 2 MB) -- and the bias is
+    // MEASURED against the engine now (`measured_clock_bias`), so the sample
+    // count only has to pin WHICH slot, never what it means.
+    //
+    // The budget matters more than the count. Without `EXIT_ON_BUDGET` the
+    // child collects its samples and then simulates the WHOLE REMAINING TAPE in
+    // silence -- 2261 ticks and the validator's finish path, for a measurement
+    // that was over after 96. Measured on map 2 at tick 171: 4.3 s -> 0.35 s.
+    const CLOCK_TICKS: u32 = 96;
+    let (_j, blob) = srv.run_sampled_segs_ex(
+        probe,
+        &recs[..(CLOCK_TICKS as usize + 8).min(recs.len())],
+        &[(lo, len)],
+        stride,
+        CLOCK_TICKS | 0x8000_0000,
+        (back as u32, 12),
+        crate::clock::budget_for_ticks(CLOCK_TICKS + 8),
+    );
     let recsz = 8 + len as usize;
     let m = blob.len() / recsz;
-    if m < 50 {
+    if m < 24 {
         return Err(format!("clock discovery: only {} samples", m));
     }
     let g = |i: usize, o: usize| -> u32 {
@@ -396,18 +415,32 @@ pub fn check_rows(rows: &[Row]) -> Result<RowCheck, String> {
 /// (phantom defect 3).
 ///
 /// This reads the counter out of the STOPPED PARENT, whose tick the tick hook
-/// reports exactly, so the origin is arithmetic rather than inference:
+/// reports exactly, so the origin is arithmetic rather than inference. Two
+/// facts, both measured on the stopped parent rather than assumed:
+///
+/// * the counter is the ROUND time of the tick the engine has FINISHED --
+///   exactly `[sim+0x48] - round_start` (at sim 12620 with race start 2200 it
+///   reads 11410, and `[sim+0x48]` is 12610);
+/// * the VIS STATE that `segments()` gathers lags that by one more tick: the
+///   validator's CGameVehiclePhy holds the finished tick, and the vis state
+///   holds the one before it (`fk tickhook reads` measures the pair exactly
+///   one tick of travel apart, 0.8360 m at 83.58 m/s).
+///
+/// So the state present when the counter reads `C` is the state at the END of
+/// race tick `(C - bias) / 10` with
 ///
 /// ```text
-/// bias = counter_in_parent - (race time of the tick the parent has FINISHED)
-///      = counter_in_parent - ((sim_ms - race_start) - 10)
+/// bias = counter_in_parent - ((sim_ms - race_start) - 20)
 /// ```
 ///
-/// and `race_ms = counter - bias` for every sample thereafter.
+/// and that is not arithmetic anyone should believe without the control:
+/// `fk trace` against a ghost's own telemetry reads **median 3.1 mm, max 6.8 mm,
+/// 100 % of ticks within 5 cm** with this bias, and median 796 mm -- one tick of
+/// travel -- with the second term left out.
 pub fn measured_clock_bias(srv: &ForkServer, clock_addr: u64) -> Result<i64, String> {
     let v = crate::procmem::read_at(srv.pid(), clock_addr, 4)
         .ok_or_else(|| format!("cannot read the located clock at {:#x}", clock_addr))?;
     let counter = u32::from_le_bytes(v[..4].try_into().unwrap()) as i64;
-    let finished_race_ms = (srv.sim_ms as i64 - srv.race_start as i64) - 10;
-    Ok(counter - finished_race_ms)
+    let sampled_state_race_ms = (srv.sim_ms as i64 - srv.race_start as i64) - 20;
+    Ok(counter - sampled_state_race_ms)
 }

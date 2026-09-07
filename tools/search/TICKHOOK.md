@@ -363,6 +363,7 @@ once under each clock, while both still existed:
 | tick clock | 272 910 | 454 | 9 | **0** | 22.711 |
 | lroundf clock | 236 130 | 391 | 9 | **0** | 22.711 |
 | tick clock, after the read audit (`from = probe`, one tick earlier) | 274 590 | 456 | 9 | **0** | 22.711 |
+| final build (bias fix, calibration off the per-run path, 96-tick clock hunt) | 275 760 | 458 | 8 | **0** | 22.711 |
 
 The third row is the one that matters for the audit: the resume floor moved a
 tick earlier when the probe stopped reporting one record late, so every
@@ -388,6 +389,8 @@ fk tickhook check                              do the constants match this binar
 fk tickhook count --tape G --map M [--gdb]     hooked vs plain run, all the criteria
 fk tickhook load  --tape G --map M --at T --n N   N servers at once
 fk tickhook reads --tape G --map M --at T      every read of engine memory, vs the engine
+fk tickhook cost  --tape G --map M --at T      where a candidate's milliseconds go, measured in the child
+fk tickhook finish --tape G --map M --at T     hunt the race result in memory (past the finish)
 fk tickhook find  --tape G --map M             a new build: which function is the tick?
 ```
 
@@ -432,3 +435,140 @@ chain plus `0x1219f3b..0x1219f66`.
   deleted, and that is deliberate: two independent measurements that must agree
   are worth more than either alone. It is also how the four-byte base error was
   caught, months after every downstream number had been checked.
+
+---
+
+## 9. Where the time goes, and what was done about it
+
+vjeux: *"investigate how to make all these operations and fork way faster? I
+feel like there's a lot of wasted overhead."* Measured first, then cut what the
+measurement named.
+
+### 9.1 A candidate, phase by phase — measured INSIDE the child
+
+Every earlier estimate of the per-candidate fixed cost was by subtraction
+between protocol paths, and that measures the paths (the sampled path's own
+transport costs more than the finish path it was meant to price). So the shim
+now carries a **MAP_SHARED timing page**: the child stores when it started, its
+first tick, its last tick and its tick count (three stores per tick, no
+syscalls), and the parent appends them to `FKTIME`. `fk tickhook cost` reads it.
+Map 2 rank00001, 40 runs per phase:
+
+| phase | `tick:2313` (119 ticks) | `tick:1200` (1232) | `tick:171` (2261) |
+|---|---|---|---|
+| fork → child alive | 1.88 ms | 2.66 | 2.81 |
+| child → its first tick (COW, shim entry, patch) | 0.55 | 0.58 | 0.57 |
+| first tick → last tick | 4.70 (37 µs/tick) | 34.53 (27.9) | 65.38 (28.8) |
+| **last tick → first output byte** | **5.82** | **6.09** | **5.79** |
+| first byte → answer (pipe, parse, SIGKILL) | 0.06 | — | — |
+| total | 12.81 | 43.85 | 74.56 |
+
+Across the three checkpoints the end-to-end model is **9.9 ms fixed +
+27.6 µs per tick**, and the fixed part is now itemised: 1.9 ms is the fork
+itself (a null fork + reap of the paused engine costs 1.7–2.0 ms — the floor
+for a ~150 MB address space), 0.55 ms is the child reaching its first tick,
+and **5.8 ms — constant, 44 % of a late-checkpoint candidate, 8 % of an early
+one — is spent inside the child between its last simulated tick and its first
+byte of output.** The transport after that is 0.06 ms. So the waste is not the
+pipe, not the JSON parse, not the kill: it is the validator's own
+finish-and-print path, run by every child for an answer that is a single
+number.
+
+Only 7 of those ticks are simulation (the engine runs 70–80 ms past the
+finish, 0.26 ms); the rest is the validator.
+
+### 9.2 What it would take to skip it, and why it is not done yet
+
+A child that knew its own finish time could `_exit` at the finish tick and
+report through the timing page — no validator epilogue, no JSON. The finish
+time is a tick boundary (every validated time is a multiple of 10 ms), so it
+is exactly the race clock at the tick the finish is *detected*: the missing
+piece is the detection, i.e. where the engine writes the race result.
+
+`fk tickhook finish` stops a server past the finish and scans every writable
+region for the validated time (as race ms and as sim ms), reporting each hit as
+an offset from the typed objects a child can resolve — participant, vehicle,
+playground, simulation, input array. Three tapes with different finish times
+(22730 / 22884 / 23013) were the control: **no offset holds each tape's own
+result in all three runs.** The result lives in per-run heap allocations
+(`participant+0x11e48`, `+0x11ff8`, `+0x12058` on the three), so it is reached
+by a pointer the participant holds, not by an offset from it. Finding that
+pointer is the next step and it is worth **1.8× at late checkpoints**
+(12.8 → ~7 ms per candidate); it needs the disassembly around the finish
+event, which is why it is a measured lever here rather than a change.
+
+### 9.3 Worker startup: 18.6 s → 10.4 s, and → 2.8 s behind a flag
+
+Timestamping `fk watch measure`'s startup line by line:
+
+| phase | before | now |
+|---|---|---|
+| server boot to READY | 2.2 s | 2.2 s |
+| `calibrate_boundary` (51 forks + a 51-file batch validation) | **8.1 s** | 0 — off by default |
+| blind locate of the vis state (37 windows, a fork each) | 3.6 s | 3.6 s (0.2 s with `FK_FAST_LOCATE=1`) |
+| clock hunt inside the locate | 4.3 s (of the 3.6/blind path's own; see below) | 0.35 s |
+
+**The calibration sweep is off the per-run path** (`--calibrate` restores it;
+`fk server check` still runs it unconditionally as the acceptance test). It
+existed because the probe used to be the only word on where the engine had
+got to; `boundary_tick` now requires the probe to equal the engine's own next
+record, two independent measurements from opposite sides, and across 20 runs
+on 3 maps since the hook landed the sweep never once moved the boundary off
+the probe. A control that cannot fail is decoration — 8 s of it per run.
+
+**`find_clock` sampled 400 ticks of a 20 KB window and then let the child
+simulate the rest of the tape in silence.** 96 ticks pin a strict
++10-every-tick slot just as well (the bias is measured against the engine now,
+so the sample count only has to pick *which* slot), and `EXIT_ON_BUDGET` ends
+the child when the measurement is over: 4.3 s → 0.35 s.
+
+**`forkoracle::car::locate_fast`** replaces the blind sweep with two steps that
+cannot pick a decoy: read the car's position out of the validator's own
+`CGameVehiclePhy` (a typed pointer walk, six reads, no simulation), scan the
+*paused parent* for every float triple within a tick of travel of it (one pass
+over memory, no forks, 0.10 s), then test the candidates seven at a time in one
+fork each over 24 ticks — a candidate must stay within a tick of the car,
+travel what the car travels, and **lag it by one tick** (the vis state does;
+the engine's mirrors of the physics state do not, and picking one would shift
+every label by a tick). It locates in 0.15–0.5 s and the object it picks passes
+`fk trace`'s control — median 3.5 mm against the ghost's own telemetry,
+100 % of ticks within 5 cm, with the trace's quaternion and velocity
+self-checks passing.
+
+**It is behind `FK_FAST_LOCATE=1`, not the default, and the reason is a
+measurement.** With it, `fk watch measure --tick 171 --n 8 --seed 1` goes
+from *4 of 8 candidates tripping the crash predicate, 2 disagreeing with the
+full validation* to *0 of 8 tripping, 6 disagreeing*, and the search ran 5.8×
+faster with 0 % finishers. Position, attitude and velocity of the chosen
+object are right — the 3 mm control says so — so something else the predicate
+evaluator reads from `segments()` is not (the wetness word at +180, or the
+counter it pairs with the state: `locate_fast`'s clock carries bias +2210
+where the sweep's carries +1010, two different counters both correctly
+biased for *labelling*, but the watchdog's own arithmetic may assume one of
+them). That is a named, reproducible question — same seed, one env var —
+and until it is answered the search keeps the locator its numbers were
+measured with.
+
+### 9.4 Fixed on the way
+
+* `fk trace` had been dead on map 2 for months ("the chain is stale"):
+  `DEFAULT_CHAIN`'s root `mod+0x1d56e48` holds the address of a STACK FRAME
+  and is only walkable while that frame is live. `locate_v2` now resolves the
+  car from the validator's own object and tries every chain against it, with
+  a test that a pointer that merely *resolves* cannot pass: the first version
+  accepted a chain 0.1034 m from the car whose object was a **frozen copy**
+  parked at the checkpoint position (463 m median error against the
+  reference). A candidate must now *track* the car over 24 ticks. The
+  bounded sweep is the fallback, bounded by the validator's car rather than
+  the map.
+* **The clock bias was one tick out.** `fk trace` against the ghost's own
+  telemetry read median **0.7966 m** — one tick of travel at 80 m/s — and
+  **0.0031 m** with a −10 ms shift. The counter is the round time of the
+  *finished* tick, and the vis state that `segments()` gathers lags that by one
+  more tick; `measured_clock_bias` now labels the state the sampler actually
+  reads (`counter − ((sim − race_start) − 20)`), and `fk tickhook reads`
+  checks that instant. 3.1 / 3.5 mm at two checkpoints, 100 % within 5 cm.
+* `fk`'s two suite failures and two doctest failures, all pre-existing at the
+  branch point: the pool-spec test named `DEFAULT_CHAIN` after the default
+  had stopped being a pool; `POINTER.md` quoted the legacy chain as the
+  default; two indented blocks in `record.rs` docs compiled as Rust. **38/38.**
