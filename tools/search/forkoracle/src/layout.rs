@@ -58,7 +58,10 @@ fn getf32(b: &[u8], o: usize) -> f64 {
 }
 
 /// One extracted tick.
-#[derive(Clone, Debug)]
+///
+/// `Copy` because the environment carries it as plain state through a hot loop
+/// and every scalar in it is a machine word.
+#[derive(Clone, Copy, Debug)]
 pub struct Row {
     pub time_ms: i64,
     pub x: f64,

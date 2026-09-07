@@ -1,0 +1,477 @@
+//! The environment over a live savestate tree.
+//!
+//! One `ForkEnv` owns one fork server. `reset` returns to the server's own
+//! checkpoint — the start of the race — and `step` advances a macro of
+//! `k_ticks`, forking a fresh paused engine each time and reading the car's
+//! own state per tick out of it.
+//!
+//! # What a step costs, and why the shape is what it is
+//!
+//! Agent D measured a `k = 10` branch at **6.953 ms**, of which **4.220 ms is
+//! the boundary probe and is flat in `k`**. So a step is dominated by a fixed
+//! cost, and `k = 20` buys ten more ticks for about 1.3 ms rather than for
+//! another 6.9 ms. The macro length is therefore a throughput knob as much as a
+//! control-resolution one, and `EnvCfg::k_ticks` is the thing to sweep first
+//! when the rollout rate is the binding constraint.
+//!
+//! # The one rule
+//!
+//! Every node probes its own boundary and `advance` refuses to write at or
+//! below it. This env never tries: `step` always asks the forest for the floor
+//! rather than tracking a tick count of its own. Where the probe lands past the
+//! end of the previous macro, the ticks in between were consumed from the
+//! **reference tape**, not from the policy — those are counted and reported as
+//! `gap_ticks`, because a policy that does not control 3 % of its own ticks is
+//! a fact about the measurement, not a detail.
+
+use crate::action::{Act, ActionSpace};
+use crate::core::{Core, CoreCfg, Done, Info};
+use branch::{Forest, Handle, TraceCfg, ROOT};
+use fk::session::{Checkpoint, Engine, Session};
+use fk::tape::Tape;
+use forkoracle::forksrv::{rec_of, Rec};
+use forkoracle::layout::Row;
+use crate::track::Track;
+use std::path::{Path, PathBuf};
+
+/// One macro the policy committed, as it landed on the tape.
+#[derive(Clone, Copy, Debug)]
+pub struct Span {
+    pub from: usize,
+    pub k: usize,
+    pub act: Act,
+}
+
+/// What a rollout produced.
+pub struct Rollout {
+    pub spans: Vec<Span>,
+    /// Every row the episode saw, in tick order.
+    pub trace: Vec<Row>,
+    pub done: Option<Done>,
+    pub steps: usize,
+    /// Gates collected, the env's own reading. Never a result on its own.
+    pub gates_hit: usize,
+    /// Ticks consumed from the reference because a probe landed past the end of
+    /// the previous macro.
+    pub gap_ticks: usize,
+    /// Ticks the policy wrote twice because a probe landed short.
+    pub overlap_ticks: usize,
+    /// The race clock at the tick the finish gate was collected, if it was.
+    pub finish_ms: Option<i64>,
+}
+
+pub struct ForkEnv {
+    pub core: Core,
+    forest: Forest,
+    cur: Handle,
+    reference: Vec<Rec>,
+    n_ticks: usize,
+    spans: Vec<Span>,
+    trace: Vec<Row>,
+    root_row: Row,
+    last_end: usize,
+    gap: usize,
+    overlap: usize,
+    finish_ms: Option<i64>,
+}
+
+impl ForkEnv {
+    /// Build an env on an already-started session.
+    ///
+    /// `session` must have passed its own identity control (`Session::start`
+    /// does it and there is no way to skip it), so the engine inside is
+    /// provably running `tape` and not somebody else's.
+    pub fn new(
+        session: Session,
+        engine: &Engine,
+        track: std::sync::Arc<Track>,
+        acts: ActionSpace,
+        cfg: CoreCfg,
+        trace_cfg: Option<TraceCfg>,
+    ) -> Result<ForkEnv, String> {
+        let Session { mut srv, tape, .. } = session;
+        let n_ticks = tape.n();
+        if cfg.max_ticks > n_ticks {
+            return Err(format!(
+                "max_ticks {} exceeds the tape's {} ticks: the engine would stop before the cap \
+                 and the truncation is indistinguishable from a crash",
+                cfg.max_ticks, n_ticks
+            ));
+        }
+        let reference = tape.tail_records(0);
+        let probe = srv.probe_tick()?;
+        let _ = probe;
+        let mut forest = Forest::new(srv, &engine.work, reference.clone(), trace_cfg)?;
+        forest.probe_root()?;
+
+        // The state at the root, captured once: the root never moves, so every
+        // reset starts from the same place and there is no reason to pay a fork
+        // per episode for it.
+        let (rows, h) = forest.advance(ROOT, &[], 0, 1)?;
+        let root_row = rows
+            .last()
+            .cloned()
+            .ok_or("the root produced no state rows: the car was not located, so every \
+                    observation this env would return is UNMEASURED rather than wrong")?;
+        forest.release(h);
+
+        let core = Core::new(cfg, track, acts);
+        Ok(ForkEnv {
+            core,
+            forest,
+            cur: ROOT,
+            reference,
+            n_ticks,
+            spans: Vec::new(),
+            trace: Vec::new(),
+            root_row,
+            last_end: 0,
+            gap: 0,
+            overlap: 0,
+            finish_ms: None,
+        })
+    }
+
+    pub fn obs_dim(&self) -> usize {
+        self.core.obs_dim()
+    }
+
+    pub fn n_actions(&self) -> usize {
+        self.core.acts.n()
+    }
+
+    pub fn reset(&mut self) -> Result<Vec<f32>, String> {
+        if self.cur != ROOT {
+            self.forest.release(self.cur);
+            self.cur = ROOT;
+        }
+        self.spans.clear();
+        self.trace.clear();
+        self.last_end = self.forest.floor(ROOT, None)?;
+        self.gap = 0;
+        self.overlap = 0;
+        self.finish_ms = None;
+        let t0 = self.last_end;
+        Ok(self.core.reset(self.root_row, t0))
+    }
+
+    pub fn step(&mut self, action: usize) -> Result<(Vec<f32>, f32, Option<Done>, Info), String> {
+        if self.core.done().is_some() {
+            return Err("step on a finished episode: call reset".into());
+        }
+        let k = self.core.cfg.k_ticks;
+        let from = self.forest.floor(self.cur, None)?;
+        if from + k > self.n_ticks {
+            // Out of tape. Not a crash and not a finish: say which.
+            let obs = self.core.observe();
+            return Ok((obs, 0.0, Some(Done::TickCap), Info { tick: from, ..Default::default() }));
+        }
+        if from > self.last_end {
+            self.gap += from - self.last_end;
+        } else {
+            self.overlap += self.last_end - from;
+        }
+
+        let a = self.core.acts.get(action);
+        let r = rec_of(a.steer, a.gas, a.brake);
+        let recs = vec![r; k];
+        let (rows, h) = self.forest.advance(self.cur, &recs, from, k as u64)?;
+        if self.cur != ROOT {
+            self.forest.release(self.cur);
+        }
+        self.cur = h;
+        self.spans.push(Span { from, k, act: a });
+        self.last_end = from + k;
+
+        let before = self.core.gates_hit();
+        self.trace.extend(rows.iter().cloned());
+        let out = self.core.ingest(action, &rows);
+        if self.finish_ms.is_none()
+            && before < self.core.track.n_gates()
+            && self.core.gates_hit() >= self.core.track.n_gates()
+        {
+            self.finish_ms = rows.last().map(|r| r.time_ms);
+        }
+        Ok(out)
+    }
+
+    /// The episode as it happened, with the trace DEDUPED BY TICK, keeping the
+    /// LAST row for each.
+    ///
+    /// Not cosmetic. When a node's probe lands SHORT of the previous macro's
+    /// end, the new macro is written over ticks the previous child had already
+    /// simulated and traced -- and the new child RE-SIMULATES them with the new
+    /// inputs. The superseded rows are a real record of a run that the final
+    /// tape does not contain, so keeping them makes the stitched trajectory
+    /// disagree with a flat simulation of that tape at exactly those ticks.
+    ///
+    /// Measured before this fix: 20 of 445 ticks over tolerance, max 0.805 m,
+    /// median 0.000000 -- against an instrument whose own noise floor is
+    /// exactly 0.000000 m over 824 ticks, so the disagreement was real and it
+    /// was ours.
+    pub fn rollout_record(&self) -> Rollout {
+        let mut seen: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+        for (i, r) in self.trace.iter().enumerate() {
+            seen.insert(r.time_ms, i);
+        }
+        let mut trace: Vec<Row> = self
+            .trace
+            .iter()
+            .enumerate()
+            .filter(|(i, r)| seen.get(&r.time_ms) == Some(i))
+            .map(|(_, r)| *r)
+            .collect();
+        trace.sort_by_key(|r| r.time_ms);
+        Rollout {
+            spans: self.spans.clone(),
+            trace,
+            done: self.core.done(),
+            steps: self.spans.len(),
+            gates_hit: self.core.gates_hit(),
+            gap_ticks: self.gap,
+            overlap_ticks: self.overlap,
+            finish_ms: self.finish_ms,
+        }
+    }
+
+    /// The tape the engine actually ran: the reference with every span applied
+    /// in order.
+    ///
+    /// **This is the tape the control re-simulates.** Applying the spans in
+    /// order is not a convenience — it is what the engine's own memory did,
+    /// since a later macro whose probe landed short overwrites records an
+    /// earlier one wrote and had not yet been consumed.
+    pub fn faithful_tape(&self, tape: &Tape) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let (mut s, mut g, mut b) =
+            (tape.steer.clone(), tape.accel.clone(), tape.brake.clone());
+        for sp in &self.spans {
+            for t in sp.from..(sp.from + sp.k).min(s.len()) {
+                s[t] = sp.act.steer;
+                g[t] = sp.act.gas;
+                b[t] = sp.act.brake;
+            }
+        }
+        (s, g, b)
+    }
+
+    /// The tape to BANK: the driven prefix, then a stop tail.
+    ///
+    /// After the episode ends the reference tape is still full throttle, so a
+    /// faithful tape keeps driving under somebody else's inputs and the oracle
+    /// would answer a question about that drive rather than about the policy's.
+    /// The tail is steer 0, no gas, brake — inputs the policy is answerable for.
+    pub fn banked_tape(&self, tape: &Tape) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let n = tape.n();
+        let (mut s, mut g, mut b) = (vec![0u8; n], vec![0u8; n], vec![0u8; n]);
+        // Before the first span the engine consumed the reference; that prefix
+        // is part of what the policy inherited and is reproduced verbatim.
+        let first = self.spans.first().map(|x| x.from).unwrap_or(0);
+        for t in 0..first.min(n) {
+            s[t] = tape.steer[t];
+            g[t] = tape.accel[t];
+            b[t] = tape.brake[t];
+        }
+        for sp in &self.spans {
+            for t in sp.from..(sp.from + sp.k).min(n) {
+                s[t] = sp.act.steer;
+                g[t] = sp.act.gas;
+                b[t] = sp.act.brake;
+            }
+        }
+        for t in self.last_end.min(n)..n {
+            s[t] = 0;
+            g[t] = 0;
+            b[t] = 1;
+        }
+        (s, g, b)
+    }
+
+    pub fn live_nodes(&self) -> usize {
+        self.forest.live_nodes()
+    }
+}
+
+/// Everything needed to stand an env up on a box, in one place.
+pub struct Rig {
+    pub engine: Engine,
+    pub tape: Tape,
+    pub reference_path: PathBuf,
+}
+
+impl Rig {
+    /// `reference` is the varied-steer container the server forks on.
+    pub fn new(
+        server: &Path,
+        map: &Path,
+        shim: &Path,
+        work: &Path,
+        reference: &Path,
+    ) -> Result<Rig, String> {
+        let engine = Engine {
+            server: server.to_path_buf(),
+            map: map.to_path_buf(),
+            shim: shim.to_path_buf(),
+            work: work.to_path_buf(),
+            work_is_temporary: false,
+        };
+        engine.check()?;
+        let tape = Tape::load(&reference.to_string_lossy())?;
+        tape.codec_is_lossless()?;
+        Ok(Rig { engine, tape, reference_path: reference.to_path_buf() })
+    }
+
+    /// Start a server checkpointed at the start of the race.
+    pub fn session(&self, at_tick: i64) -> Result<Session, String> {
+        Session::start(&self.engine, self.tape.clone(), Checkpoint::Tick(at_tick))
+    }
+
+    /// Start a server stopped at a raw `lroundf` count.
+    ///
+    /// The tick form goes through a line fitted on three segment maps and lands
+    /// tens of ticks away from where it was aimed; asking for tick 1 on this map
+    /// stops at tick 95. When the question is *how early can the engine be
+    /// stopped*, the fitted line is the wrong instrument and the raw count is
+    /// the right one.
+    pub fn session_clock(&self, clock: u64) -> Result<Session, String> {
+        Session::start(&self.engine, self.tape.clone(), Checkpoint::Clock(clock))
+    }
+}
+
+/// How to pick the root, and how hard to look for the car.
+#[derive(Clone, Debug)]
+pub struct RootCfg {
+    /// The raw `lroundf` count to stop the engine at. One value: the resolver
+    /// reads a pointer rather than searching for a moving car, so there is
+    /// nothing for a ladder to work around.
+    pub clock: u64,
+    pub verbose: bool,
+    /// Require the reset state to BE the start: `(position, tolerance m,
+    /// max speed m/s)`.
+    ///
+    /// Still needed WITH the resolver. Resolving which object the car is and
+    /// knowing the container seeded it at the map's start line are different
+    /// claims; this is the second one.
+    pub require_start: Option<([f32; 3], f32, f64)>,
+}
+
+impl Default for RootCfg {
+    fn default() -> Self {
+        RootCfg { clock: crate::control::EARLIEST_CLOCK, verbose: false, require_start: None }
+    }
+}
+
+/// Is this reset state physically coherent, independent of whether it is the
+/// answer we want?
+///
+/// A layout on the wrong address reads out a smooth-looking nothing. Measured,
+/// once: position (1085.23, 0.69, 5.33) at race 1155135.336 s and 496.01 m/s.
+/// These clauses are about internal consistency — a unit quaternion, a speed a
+/// car can reach, a race clock matching the tick the engine says it stopped at
+/// — and deliberately NOT about agreeing with the measured start, which is the
+/// acceptance control's job and would be circular here.
+/// `start_offset_ms` is the countdown: race time of tick `t` is
+/// `t * 10 + start_offset_ms`, and a game-recorded container is countdown-
+/// prefixed so it is NEGATIVE. The synthetic containers had 0, so an earlier
+/// version of this check compared the race clock against `probe * 10` and
+/// fired on the first real container -- correctly, on a wrong assumption of
+/// mine rather than on a wrong state. Exactly what a control is for.
+pub fn reset_is_coherent(r: &Row, probe: usize, start_offset_ms: i32) -> Result<(), String> {
+    let q = (r.qx * r.qx + r.qy * r.qy + r.qz * r.qz + r.qw * r.qw).sqrt();
+    if !(0.99..=1.01).contains(&q) {
+        return Err(format!("|q| = {q:.4}, not a unit quaternion"));
+    }
+    let v = (r.vx * r.vx + r.vy * r.vy + r.vz * r.vz).sqrt();
+    if !v.is_finite() || v > 200.0 {
+        return Err(format!("speed {v:.1} m/s"));
+    }
+    if ![r.x, r.y, r.z].iter().all(|c| c.is_finite() && c.abs() < 1.0e5) {
+        return Err(format!("position ({:.1}, {:.1}, {:.1})", r.x, r.y, r.z));
+    }
+    let expect = probe as i64 * 10 + start_offset_ms as i64;
+    if (r.time_ms - expect).abs() > 200 {
+        return Err(format!(
+            "race clock {} ms but the engine stopped at tick {} with a {} ms countdown (~{} ms)",
+            r.time_ms, probe, start_offset_ms, expect
+        ));
+    }
+    Ok(())
+}
+
+/// Build an environment rooted as close to the start of the race as the
+/// instrument can be made to reach.
+///
+/// **One implementation, called by both binaries.** The root selection is
+/// exactly the kind of fact this project keeps stating twice and then finding
+/// the two statements disagree; there is one of it, here.
+///
+/// Returns the env, its `Rig` (which owns the `Engine` and must outlive it) and
+/// the reference `Tape`.
+#[allow(clippy::too_many_arguments)]
+/// Build an environment rooted at the start of the race.
+///
+/// **One path, no ladder, no retries, no fallback.** All three existed because
+/// the value-based locator could not find a car that had barely moved, so the
+/// env walked later and later checkpoints hoping one would resolve. The
+/// resolver does not look for a moving car — it reads the validator's own
+/// ownership chain — so the constraint is gone and with it the
+/// non-determinism: three identical repeats of the old path gave one outright
+/// refusal and two different roots.
+///
+/// `require_start` is still enforced. The resolver says *which object* the car
+/// is; it does not say the container seeded that object at the map's start
+/// line, and that is a different claim needing its own check.
+pub fn build_at_start(
+    server: &Path,
+    map: &Path,
+    shim: &Path,
+    work: &Path,
+    reference: &Path,
+    track: std::sync::Arc<Track>,
+    acts: ActionSpace,
+    cfg: CoreCfg,
+    root: &RootCfg,
+) -> Result<(ForkEnv, Rig, Tape), String> {
+    let rig = Rig::new(server, map, shim, work, reference)?;
+    let tape = rig.tape.clone();
+    let dir = work.join("traces");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let mut s = rig.session_clock(root.clock)?;
+    let probe = s.probe_tick()?;
+    let refrecs = s.tape.tail_records(0);
+    let car = crate::control::resolve_car(
+        &mut s.srv,
+        probe,
+        &refrecs,
+        s.tape.start_offset_ms,
+        root.verbose,
+    )?;
+    let tcfg = TraceCfg { layout: car.layout().clone(), dir, stride: 1, max: 200_000 };
+    let mut env = ForkEnv::new(s, &rig.engine, track, acts, cfg, Some(tcfg))?;
+    let row = {
+        env.reset()?;
+        env.core.last_row()
+    };
+    reset_is_coherent(&row, probe, tape.start_offset_ms)?;
+
+    if let Some((want, tol, vmax)) = root.require_start {
+        let pos = [row.x as f32, row.y as f32, row.z as f32];
+        let d = crate::geom::norm(crate::geom::sub(pos, want));
+        let v = (row.vx * row.vx + row.vy * row.vy + row.vz * row.vz).sqrt();
+        if d > tol || v > vmax {
+            return Err(format!(
+                "the env resets {d:.2} m from the required start at {v:.2} m/s (want <= {tol:.1} m, \
+                 <= {vmax:.1} m/s). The car is resolved from validator ownership, so this is not a \
+                 locator ambiguity: the CONTAINER seeds the vehicle here."
+            ));
+        }
+    }
+    if root.verbose {
+        eprintln!(
+            "  env root: lroundf {}, probe tick {probe} (race {:.3}), car from validator ownership",
+            root.clock,
+            probe as f64 * 0.01
+        );
+    }
+    Ok((env, rig, tape))
+}

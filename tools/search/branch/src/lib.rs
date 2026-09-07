@@ -381,6 +381,25 @@ impl Forest {
         })
     }
 
+    /// Re-run a node's own boundary probe, and time it.
+    ///
+    /// [`Forest::advance`] already probes every node it creates, so this is not
+    /// needed for correctness — it exists so the rig can MEASURE what the probe
+    /// costs. The first version of that measurement timed [`Forest::floor`]
+    /// instead, which only reads the cached boundary: the column read 0.000 ms
+    /// for every row, which is a number reported for something the instrument
+    /// was not measuring.
+    pub fn reprobe(&mut self, h: Handle) -> Result<usize, String> {
+        match h {
+            ROOT => {
+                let t = self.root.probe_tick()?;
+                self.root_boundary = Some(t);
+                Ok(t)
+            }
+            _ => self.held_mut(h)?.node.probe(),
+        }
+    }
+
     /// Destroy a node and forget it.
     pub fn release(&mut self, h: Handle) {
         if let Some(mut x) = self.nodes.remove(&h) {
