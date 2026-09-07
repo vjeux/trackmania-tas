@@ -73,13 +73,14 @@ pub fn run(args: &[String]) -> i32 {
     let _ = std::fs::remove_file(&done);
     let code = match go(&opts) {
         Ok(saved) => {
-            println!("ok\t{saved}");
-            let _ = std::fs::write(&done, format!("ok\t{saved}\n"));
+            // the done file starts with "OK" — the word tinyctl's wait_done accepts
+            println!("OK\t{saved}");
+            let _ = std::fs::write(&done, format!("OK\t{saved}\n"));
             0
         }
         Err(e) => {
             eprintln!("lightmap: {e}");
-            let _ = std::fs::write(&done, format!("fail\t{e}\n"));
+            let _ = std::fs::write(&done, format!("FAIL\t{e}\n"));
             1
         }
     };

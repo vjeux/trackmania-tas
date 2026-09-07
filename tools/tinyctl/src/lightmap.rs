@@ -49,7 +49,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     }
     let done = wsx.wait_done(&format!("{r_dir}/done.txt"), &format!("{r_dir}/lightmap.log"), Duration::from_secs(3600), "lightmap")?;
     let line = done.lines().next().unwrap_or("").to_string();
-    if !line.starts_with("ok") {
+    if !line.starts_with("OK") {
         return Err(format!("lightmap: {line}"));
     }
     let saved = line.split('\t').nth(1).ok_or("lightmap: no path in the done file")?.to_string();
