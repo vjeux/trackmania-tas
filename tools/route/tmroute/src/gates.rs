@@ -326,11 +326,14 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         // exactly where the rotated local frame puts the arch.
         let road_piece = w.name.starts_with("Road") || w.name.starts_with("Platform");
         // A 2×2-cell DIAGONAL piece: the GEN arm measured Summer 2026 - 07's `RoadDirtDiagLeftCheckpoint`
-        // crediting at local (46.7, 0.5, 30.7) — the road crosses the block at (48, ~0.5, 32); DiagRight is the
-        // mirror (16, 0.5, 32) — a GUESS until a DiagRight gate is measured. Its axis runs along the diagonal.
+        // crediting at local (46.7, 0.5, 30.7) — the road crosses the block at (48, ~0.5, 32). DiagRight MEASURED
+        // (GEN, Spring 2024 - 05 wp2, 19 engine-credited rows to 0.10 m; a GRID placement with dir 1, so the
+        // 2×2 footprint turned 90° about its centre): local (23.4, 0.5, 37.3), travel axis (0.45, 0, −0.893) —
+        // not the mirror of DiagLeft; the credit line follows the 2:1 slant of the piece. One specimen: verify.
+
         let diag = w.name.contains("Diag");
-        let local_c = if diag && w.name.contains("DiagRight") { [16.0, 0.5, 32.0] } else if diag { [48.0, 0.5, 32.0] } else if road_piece { [16.0, ROAD_ABOVE_BASE, 16.0] } else { [16.0, 8.0, 16.0] };
-        let local_axis: [f32; 3] = if diag && w.name.contains("DiagRight") { [0.7071, 0.0, -0.7071] } else if diag { [0.7071, 0.0, 0.7071] } else { [0.0, 0.0, 1.0] };
+        let local_c = if diag && w.name.contains("DiagRight") { [23.4, 0.5, 37.3] } else if diag { [48.0, 0.5, 32.0] } else if road_piece { [16.0, ROAD_ABOVE_BASE, 16.0] } else { [16.0, 8.0, 16.0] };
+        let local_axis: [f32; 3] = if diag && w.name.contains("DiagRight") { [0.45, 0.0, -0.893] } else if diag { [0.7071, 0.0, 0.7071] } else { [0.0, 0.0, 1.0] };
         let centre = match (w.pos, w.free_rot) {
             (Some(p), Some(rot)) => {
                 let m = turned(p, rot);
@@ -357,6 +360,18 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
                     }
                 }
                 p
+            }
+            (None, _) if diag => {
+                // a GRID diagonal piece (Spring 2024 - 05 wp2, GEN's rows 31 m from the cell centre): the 2×2
+                // footprint turns about its own centre (32, ·, 32) by the placement yaw; the crossing point and
+                // its slant axis turn with it
+                let yaw = w.yaw.unwrap_or(0.0);
+                let (s, c) = yaw.sin_cos();
+                let rot = |x: f32, z: f32| -> (f32, f32) { (x * c + z * s, -x * s + z * c) };
+                let (dx, dz) = rot(local_c[0] - 32.0, local_c[2] - 32.0);
+                let (ax, az) = rot(local_axis[0], local_axis[2]);
+                free_axis = Some([ax, 0.0, az]);
+                [32.0 * w.coords.0 as f32 + 32.0 + dx, 8.0 * w.coords.1 as f32 + yoff + ROAD_ABOVE_BASE, 32.0 * w.coords.2 as f32 + 32.0 + dz]
             }
             (None, _) => [
                 32.0 * w.coords.0 as f32 + 16.0,
