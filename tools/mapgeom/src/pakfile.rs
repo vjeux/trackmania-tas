@@ -279,6 +279,15 @@ fn lz4_continue(raw: &[u8], from: usize, hist: &mut Vec<u8>, dict_len: usize, wa
                 reach = i;
                 break;
             }
+            // every chunk but the last holds exactly 4096 plain bytes (the block
+            // compressor emits a chunk when its buffer fills): anything else
+            // before the end is garbage that happened to parse
+            Ok(_) if hist.len() - before != 4096 && hist.len() - dict_len < want => {
+                status = Err(format!("short lz4 chunk ({} plain bytes) at compressed offset {i}", hist.len() - before));
+                hist.truncate(before);
+                reach = i;
+                break;
+            }
             Ok(_) => {
                 i += 2 + n;
                 starts.push(i);
@@ -420,11 +429,18 @@ fn read_compressed_with_dummy_writes(data: &[u8], base: usize, e: &crate::pak::P
     // itself says which sequence decodes each chunk — and remember them in
     // a cache next to the user's home (one hunt per file, ~1 s to minutes).
     if let Some(folds) = cached_folds(e) {
-        let sched: Vec<(usize, usize, u32)> = folds.iter().enumerate().map(|(i, &(o, c))| (o, i, c)).collect();
-        let raw = decrypt_scheduled_ordered(data, base, key, version, n, &sched);
-        let (plain, _, status) = lz4_stream(&raw, want);
-        if status.is_ok() {
-            return Ok(plain);
+        if folds.is_empty() {
+            // a hunt that failed before: not repeated (MAPGEOM_REHUNT=1 retries)
+            if std::env::var_os("MAPGEOM_REHUNT").is_none() {
+                return Err(format!("{last_err} (a fold hunt failed earlier; MAPGEOM_REHUNT=1 retries)"));
+            }
+        } else {
+            let sched: Vec<(usize, usize, u32)> = folds.iter().enumerate().map(|(i, &(o, c))| (o, i, c)).collect();
+            let raw = decrypt_scheduled_ordered(data, base, key, version, n, &sched);
+            let (plain, _, status) = lz4_stream(&raw, want);
+            if status.is_ok() {
+                return Ok(plain);
+            }
         }
     }
     if std::env::var_os("MAPGEOM_NO_FOLD_HUNT").is_none() {
@@ -440,6 +456,8 @@ fn read_compressed_with_dummy_writes(data: &[u8], base: usize, e: &crate::pak::P
                 last_err = format!("hunt found {} folds but the stream still fails: {}", folds.len(), status.err().unwrap_or_default());
             }
             Err((msg, _)) => {
+                // remembered as a failure so the next build does not pay again
+                store_folds(e, &[]);
                 last_err = format!("{last_err}; fold hunt: {msg}");
             }
         }
@@ -542,6 +560,9 @@ pub fn fold_hunt(data: &[u8], header_max_size: usize, e: &crate::pak::PakEntry, 
     };
     let mut tries = 0usize;
     eprintln!("alphabet of {} fold values, sequences up to {max_len}", alphabet.len());
+    // MAPGEOM_FOLD_BUDGET: tries per file before the hunt gives up (a species
+    // whose folds the alphabet cannot express must not cost every build minutes)
+    let budget: usize = std::env::var("MAPGEOM_FOLD_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(300_000);
     for _round in 0..256 {
         let (plain, starts, ok, reach0) = decode(&schedule, n);
         if ok {
@@ -595,6 +616,9 @@ pub fn fold_hunt(data: &[u8], header_max_size: usize, e: &crate::pak::PakEntry, 
             let mut idx = vec![0usize; k];
             loop {
                 tries += 1;
+                if tries > budget {
+                    return Err((format!("fold hunt over budget ({budget} tries) at chunk {f}"), schedule.iter().map(|&(o, _, c)| (o, c)).collect()));
+                }
                 let mut r = r0.clone();
                 for &ai in &idx {
                     r.initialize(&alpha[ai].to_le_bytes(), 0, 4);

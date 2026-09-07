@@ -212,11 +212,18 @@ const GATE_NAMES: &[&str] = &[
 /// item carries its A1/A2/A3 variants; `PalmTreeBigB3` -> `PalmTreeBigB`),
 /// then the collection's smaller species for it. None when no item matches.
 fn veget_item(store: &DataStore, collection: u32, model_path: &str, cache: &mut BTreeMap<String, Option<String>>) -> Option<String> {
+    veget_item_pair(store, collection, model_path, cache).map(|(_, sub)| sub)
+}
+
+/// `veget_item` with the species the entity NAMED as well: (original item,
+/// substitute item) — the substitute is the original when no smaller species
+/// exists in the packs.
+fn veget_item_pair(store: &DataStore, collection: u32, model_path: &str, cache: &mut BTreeMap<String, Option<String>>) -> Option<(String, String)> {
     let file = model_path.rsplit('\\').next().unwrap_or(model_path);
     let low = file.to_ascii_lowercase();
     let stem = if low.ends_with(".vegettreemodel.gbx") { &file[..file.len() - ".vegettreemodel.gbx".len()] } else { file };
     if let Some(c) = cache.get(stem) {
-        return c.clone();
+        return c.clone().and_then(|s| s.split_once('\t').map(|(a, b)| (a.to_string(), b.to_string())));
     }
     let mut cands = vec![stem.to_string()];
     let no_digits = stem.trim_end_matches(|c: char| c.is_ascii_digit());
@@ -233,12 +240,48 @@ fn veget_item(store: &DataStore, collection: u32, model_path: &str, cache: &mut 
     // (FlowerSmall*/Grass* instead) has none — the editor still loaded Summer
     // 12 with 67 of them, play mode refused the stored map ("Missing Items:
     // PlantSmallA"). No smaller species in the packs: the species itself stays.
-    let out = found.map(|item| match veget_substitute(collection, &item) {
-        Some(sub) if find_item_file(store, sub).is_some() => sub.to_string(),
-        _ => item,
+    let out = found.map(|item| {
+        let sub = match veget_substitute(collection, &item) {
+            Some(sub) if find_item_file(store, sub).is_some() => sub.to_string(),
+            _ => item.clone(),
+        };
+        (item, sub)
     });
-    cache.insert(stem.to_string(), out.clone());
+    cache.insert(stem.to_string(), out.as_ref().map(|(a, b)| format!("{a}\t{b}")));
     out
+}
+
+/// How far a stock tree standing in for another species is SUNK into the
+/// ground (metres) so its crown top sits where the original's would at the
+/// tiny scale: `top(substitute) - top(original) * scale`, never negative.
+/// The game ignores placement scale for VegetTreeModel items, so a species
+/// one size down is still taller than half the original — its trunk poked
+/// through the roads above (vjeux, Summer 20: "trees overlapping with the
+/// road and making the map impossible to play"). Heights come from the tree
+/// models' own visual boxes (`veget::tree_model_stats`; the trunk mesh — the
+/// procedural crown is not in the file, so the reference is the trunk top,
+/// which is where a palm's crown sits). `TINY_VEGET_SINK=0` turns it off; a
+/// species whose model does not read sinks 0 (noted once).
+fn veget_sink(store: &mut DataStore, orig: &str, sub: &str, scale: f32, cache: &mut BTreeMap<String, Option<f32>>) -> f32 {
+    if std::env::var("TINY_VEGET_SINK").map(|v| v == "0").unwrap_or(false) {
+        return 0.0;
+    }
+    let mut top = |name: &str, store: &mut DataStore, cache: &mut BTreeMap<String, Option<f32>>| -> Option<f32> {
+        if let Some(t) = cache.get(name) {
+            return *t;
+        }
+        let t = find_item_file(store, name).and_then(|path| match crate::veget::tree_model_stats(store, &path) {
+            Ok(s) => Some(s.top),
+            Err(e) => {
+                eprintln!("  vegetation: {name}: no height ({e}); not sunk");
+                None
+            }
+        });
+        cache.insert(name.to_string(), t);
+        t
+    };
+    let (Some(t_orig), Some(t_sub)) = (top(orig, store, cache), top(sub, store, cache)) else { return 0.0 };
+    (t_sub - t_orig * scale).max(0.0)
 }
 
 /// Closed box mesh over the block's units (each 32 x 8 x 32 m in block
@@ -417,6 +460,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // VegetTreeModel stem -> stock item cache behind them.
     let mut veget_rows = String::new();
     let mut veget_cache: BTreeMap<String, Option<String>> = BTreeMap::new();
+    // species -> trunk top (metres) for the sink; (model, variant, skin) key -> sink of re-pointed vegetation items
+    let mut height_cache: BTreeMap<String, Option<f32>> = BTreeMap::new();
+    let mut sink_map: BTreeMap<(String, u8, Option<String>), f32> = BTreeMap::new();
+    let mut sunk_rows = 0usize;
     let ambient = source.ambient_zone().unwrap_or_default();
     for ((name, flags, modk), n) in &keys {
         if !wanted(name) {
@@ -621,9 +668,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 let mut re_emitted = 0usize;
                 if veget_mode == "substitute" {
                     for (p, iso) in &m.veget {
-                        let Some(item) = veget_item(store, collection, p, &mut veget_cache) else { continue };
+                        let Some((orig, item)) = veget_item_pair(store, collection, p, &mut veget_cache) else { continue };
                         let yaw = (-iso[2]).atan2(iso[0]);
-                        veget_rows.push_str(&format!("v@{ident}\t{item}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\n", iso[9] * scale, iso[10] * scale, iso[11] * scale, yaw));
+                        let sink = veget_sink(store, &orig, &item, scale, &mut height_cache);
+                        if sink > 0.0 {
+                            sunk_rows += 1;
+                        }
+                        veget_rows.push_str(&format!("v@{ident}\t{item}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\n", iso[9] * scale, iso[10] * scale - sink, iso[11] * scale, yaw));
                         re_emitted += 1;
                     }
                 }
@@ -771,9 +822,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             Ok((_, m)) if !m.veget.is_empty() && veget_mode == "substitute" => {
                 let mut placed = 0usize;
                 for (p, iso) in &m.veget {
-                    let Some(item) = veget_item(store, collection, p, &mut veget_cache) else { continue };
+                    let Some((orig, item)) = veget_item_pair(store, collection, p, &mut veget_cache) else { continue };
                     let yaw = (-iso[2]).atan2(iso[0]);
-                    veget_rows.push_str(&format!("v@{model}\t{item}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\n", iso[9] * scale, iso[10] * scale, iso[11] * scale, yaw));
+                    let sink = veget_sink(store, &orig, &item, scale, &mut height_cache);
+                    if sink > 0.0 {
+                        sunk_rows += 1;
+                    }
+                    veget_rows.push_str(&format!("v@{model}\t{item}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\n", iso[9] * scale, iso[10] * scale - sink, iso[11] * scale, yaw));
                     placed += 1;
                 }
                 remember("-");
@@ -787,19 +842,30 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     // the stock item of that species one size down; else the
                     // collection ladder for the item's own name
                     let species = e.split_once("procedural vegetation: ").and_then(|(_, rest)| rest.split(" (").next()).filter(|p| p.to_ascii_lowercase().ends_with(".vegettreemodel.gbx")).map(|s| s.to_string());
-                    let by_species = species.as_deref().and_then(|p| veget_item(store, collection, p, &mut veget_cache));
-                    let by_name = || veget_substitute(collection, model).filter(|s| find_item_file(store, s).is_some()).map(|s| s.to_string());
+                    let by_species = species.as_deref().and_then(|p| veget_item_pair(store, collection, p, &mut veget_cache));
+                    let by_name = || veget_substitute(collection, model).filter(|s| find_item_file(store, s).is_some()).map(|s| (model.clone(), s.to_string()));
                     match by_species.or_else(by_name) {
-                        Some(sub) => {
+                        Some((orig, sub)) => {
                             let how = if species.is_some() { "species of this variant" } else { "the item's own name" };
+                            // the stand-in keeps its full height: sunk so its trunk top
+                            // sits where the original's would at the tiny scale
+                            let sink = veget_sink(store, &orig, &sub, scale, &mut height_cache);
+                            if sink > 0.0 {
+                                sink_map.insert(key.clone(), sink);
+                            }
                             remember(&sub);
                             item_map.insert(key, sub.clone());
-                            outcomes.push(Outcome { alias: sub.to_string(), kind: "item", source: source_name, placements: *n, result: Ok(format!("vegetation: re-pointed at stock {sub} by {how} (placement scale is ignored by the game)")) });
+                            outcomes.push(Outcome { alias: sub.to_string(), kind: "item", source: source_name, placements: *n, result: Ok(format!("vegetation: re-pointed at stock {sub} by {how} (placement scale is ignored by the game), sunk {sink:.1} m")) });
                         }
                         None => {
+                            // the species itself stays: sunk by half its own height
+                            let sink = veget_sink(store, model, model, scale, &mut height_cache);
+                            if sink > 0.0 {
+                                sink_map.insert(key.clone(), sink);
+                            }
                             remember(model);
                             item_map.insert(key, model.clone());
-                            outcomes.push(Outcome { alias: model.clone(), kind: "item", source: source_name, placements: *n, result: Ok("vegetation: already a small species, kept".into()) });
+                            outcomes.push(Outcome { alias: model.clone(), kind: "item", source: source_name, placements: *n, result: Ok(format!("vegetation: already a small species, kept, sunk {sink:.1} m")) });
                         }
                     }
                 }
@@ -867,6 +933,11 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 let ms = if target.ends_with(".Item.Gbx") || half_stock.contains(target) { scale } else { 1.0 };
                 mapping.push_str(&format!("i@{}\t{}\t{}\n", it.index, target, ms));
                 rows += 1;
+                // `y@INDEX<TAB>DY`: the vegetation stand-in is lowered by DY metres
+                if let Some(sink) = sink_map.get(&(it.model.clone(), it.variant(), light_skin_of(it))) {
+                    mapping.push_str(&format!("y@{}\t{:.3}\n", it.index, sink));
+                    sunk_rows += 1;
+                }
             }
             None => *missing_items.entry(it.model.clone()).or_insert(0) += 1,
         }
@@ -895,7 +966,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     if !deepened.is_empty() {
         println!("  sea floor at source depth under {} shore tile models at the water row (TINY_DEEPEN=0 to keep it halved): {}", deepened.len(), deepened.join(", "));
     }
-    println!("  mapping: {} rows -> {}", rows, out_mapping.display());
+    println!("  mapping: {} rows -> {} ({} vegetation placements sunk to half-tree crown height)", rows, out_mapping.display(), sunk_rows);
     if !missing_blocks.is_empty() {
         println!("  BLOCK PLACEMENTS WITHOUT A MODEL:");
         for (k, n) in &missing_blocks {
@@ -922,7 +993,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     for line in mapping.lines() {
         let mut f = line.split('\t');
         let (Some(head), Some(model)) = (f.next(), f.next()) else { continue };
-        if head.starts_with('#') || model == "-" || model.ends_with(".Item.Gbx") {
+        if head.starts_with('#') || head.starts_with("y@") || model == "-" || model.ends_with(".Item.Gbx") {
             continue;
         }
         *stock.entry(model.to_string()).or_insert(0) += 1;

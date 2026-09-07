@@ -67,6 +67,10 @@ struct Mappings {
     /// in the item's scaled frame, yaw). A DecoLake shore carries hundreds of
     /// trees the static item cannot bake (VegetTreeModel: no mesh).
     veget_by_alias: BTreeMap<String, Vec<(String, [f32; 3], f32)>>,
+    /// `y@INDEX` rows: metres an existing item placement is LOWERED by after the
+    /// transform — a full-size stock tree standing in for a species the game
+    /// cannot scale, sunk so its crown top sits where the original's would.
+    sink_by_index: BTreeMap<usize, f32>,
 }
 
 /// `BLOCK<TAB>ITEM[<TAB>MODEL_SCALE]`, or `@INDEX<TAB>...` for an exact block
@@ -83,6 +87,13 @@ fn read_mapping(path: &Path) -> Mappings {
             continue;
         }
         let fields: Vec<&str> = line.split('\t').collect();
+        if let Some(index) = fields[0].strip_prefix("y@") {
+            assert!(fields.len() == 2, "{}:{}: expected y@INDEX<TAB>DY", path.display(), line_no + 1);
+            let idx: usize = index.parse().unwrap_or_else(|_| panic!("{}:{}: item index expected", path.display(), line_no + 1));
+            let dy: f32 = fields[1].parse().unwrap_or_else(|_| panic!("{}:{}: number expected", path.display(), line_no + 1));
+            out.sink_by_index.insert(idx, dy);
+            continue;
+        }
         if let Some(alias) = fields[0].strip_prefix("v@") {
             assert!(fields.len() == 6, "{}:{}: expected v@ALIAS<TAB>ITEM<TAB>X<TAB>Y<TAB>Z<TAB>YAW", path.display(), line_no + 1);
             let f = |i: usize| fields[i].parse::<f32>().unwrap_or_else(|_| panic!("{}:{}: number expected", path.display(), line_no + 1));
@@ -531,6 +542,7 @@ pub fn cmd(args: &[String]) {
     let mut cluster_trees: Vec<Spec> = Vec::new();
     let mut repointed_items = 0usize;
     let mut dropped_items = 0usize;
+    let mut sunk_items = 0usize;
     for it in &source.items {
         match mapping.items_by_index.get(&it.index) {
             // "-": intentionally gone (procedural vegetation the tiny map
@@ -559,9 +571,16 @@ pub fn cmd(args: &[String]) {
                 } else {
                     None
                 };
+                // a vegetation stand-in is sunk (`y@` row): its crown top
+                // where the original's would be at the tiny scale
+                let mut pos = transform(it.pos, source_anchor, target_anchor, scale);
+                if let Some(dy) = mapping.sink_by_index.get(&it.index) {
+                    pos[1] -= dy;
+                    sunk_items += 1;
+                }
                 specs.push(Spec {
                     model: map.model.clone(),
-                    pos: transform(it.pos, source_anchor, target_anchor, scale),
+                    pos,
                     yaw: it.yaw,
                     frame,
                     scale: it.scale * scale / map.model_scale,
@@ -1019,7 +1038,7 @@ pub fn cmd(args: &[String]) {
     }
     println!("wrote {}", out.display());
     println!("  uid: {}", new_uid);
-    println!("  {} existing items re-pointed at scaled copies; {} dropped (procedural vegetation); {} blocks intentionally without an item (empty variants); {} terrain tiles replaced by the block standing in for them; {} prefab trees placed as stock items", repointed_items, dropped_items, empty_blocks, replaced_terrain, prefab_trees);
+    println!("  {} existing items re-pointed at scaled copies ({} vegetation stand-ins sunk to half-tree crown height); {} dropped (procedural vegetation); {} blocks intentionally without an item (empty variants); {} terrain tiles replaced by the block standing in for them; {} prefab trees placed as stock items", repointed_items, sunk_items, dropped_items, empty_blocks, replaced_terrain, prefab_trees);
     println!(
         "  scaled every authored object: {} blocks + {} items = {} item placements",
         source.blocks.len(),

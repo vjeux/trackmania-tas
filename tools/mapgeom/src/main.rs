@@ -632,6 +632,21 @@ fn main() {
         // as the item writer's classes read it, one line each (node contents
         // elided) — what a pack item declares that ours does not (the
         // 2026-09-07 detail-level probe).
+        // veget-info <VegetTreeModel path | Item.Gbx of a vegetation item>: the
+        // tree model's visuals (CPlugVisualIndexedTriangles nodes inline in the
+        // table-less CPlugVegetTreeModel struct) and their bounding boxes — the
+        // species' height and radius, for sinking a full-size tree so its crown
+        // sits where a half tree's would (vjeux, 2026-09-07). An .Item.Gbx is
+        // followed to its VegetTreeModel reference.
+        "veget-info" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("veget-info <path>".into()));
+            let stats = mapgeom::veget::tree_model_stats(&mut store, &p).unwrap_or_else(die);
+            println!("{p}: {} visuals; bottom {:.2} top {:.2} (height {:.2}) radius {:.2} m", stats.visuals.len(), stats.bottom, stats.top, stats.top - stats.bottom, stats.radius);
+            for v in &stats.visuals {
+                println!("  visual {} verts: centre ({:.2}, {:.2}, {:.2}) half ({:.2}, {:.2}, {:.2})", v.vertices, v.bbox[0], v.bbox[1], v.bbox[2], v.bbox[3], v.bbox[4], v.bbox[5]);
+            }
+        }
         "item-fields" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
