@@ -357,15 +357,85 @@ fn playcheck(o: &PublishOpts, auth_core: &str, file_url: &str, uid: &str) -> Res
 
 // ---------------------------------------------------------------- devserver
 
+/// `tinyctl publish-map NN [NN…] --tag T [--out-root /tmp] [--playcheck]`: every map
+/// of a `tinyctl build … --tag T` run, one after the other — the map, its items
+/// directory, the packs of its collection and its NAME (the file's own header
+/// name, "Tiny Summer 2026 - 05" / "Tiny Argentina 2026") all derived — with a
+/// one-line verdict per map at the end. A failure moves on to the next map.
+/// The single-map form (`NN --map F [--items-dir D --paks P] [--name N]`) is
+/// unchanged.
 pub fn publish_map_cmd(args: &[String]) -> Result<(), String> {
-    let nn = args.get(0).ok_or("publish-map needs NN (the map number, 01..25)")?;
-    let n: usize = nn.parse().map_err(|_| format!("`{nn}` is not a map number"))?;
-    if !(1..=25).contains(&n) {
-        return Err(format!("map number {n} is not in 01..25"));
-    }
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
-    let map = PathBuf::from(f("--map").ok_or("publish-map needs --map TINY.Map.Gbx")?);
-    let name = f("--name").unwrap_or_else(|| format!("Tiny Summer 2026 - {n:02}"));
+    let nums: Vec<usize> = args.iter().take_while(|a| !a.starts_with("--")).map(|a| a.parse::<usize>().map_err(|_| format!("`{a}` is not a map number"))).collect::<Result<_, _>>()?;
+    if nums.is_empty() {
+        return Err("publish-map needs NN (the map number, 01..25)".into());
+    }
+    if let Some(bad) = nums.iter().find(|n| !(1..=25).contains(*n)) {
+        return Err(format!("map number {bad} is not in 01..25"));
+    }
+    let Some(tag) = f("--tag") else {
+        if nums.len() != 1 {
+            return Err("several map numbers need --tag T (the build directories /tmp/tinyNN/T)".into());
+        }
+        let line = publish_one(nums[0], args, None)?;
+        println!("{line}");
+        return Ok(());
+    };
+    let root = f("--out-root").unwrap_or_else(|| "/tmp".into());
+    let mut verdicts: Vec<String> = Vec::new();
+    for &n in &nums {
+        let dir = PathBuf::from(&root).join(format!("tiny{n:02}")).join(&tag);
+        println!("\n===== map {n:02}: {} =====", dir.display());
+        let t0 = Instant::now();
+        match publish_one(n, args, Some(&dir)) {
+            Ok(line) => verdicts.push(format!("{n:02}\tOK\t{:.0}s\t{line}", t0.elapsed().as_secs_f64())),
+            Err(e) => {
+                eprintln!("map {n:02}: FAILED: {e}");
+                verdicts.push(format!("{n:02}\tFAILED\t{:.0}s\t{}", t0.elapsed().as_secs_f64(), e.lines().next().unwrap_or("")));
+            }
+        }
+    }
+    println!("\n===== publish-map --tag {tag}: {} maps =====", nums.len());
+    for v in &verdicts {
+        println!("{v}");
+    }
+    let failed = verdicts.iter().filter(|v| v.contains("\tFAILED\t")).count();
+    if failed > 0 {
+        return Err(format!("{failed} of {} maps failed", nums.len()));
+    }
+    Ok(())
+}
+
+/// One map. `build_dir` (the --tag form) derives --map, --items-dir, --paks and
+/// --name; the flags still win when given. Returns the one-line verdict
+/// (name, uid, mapId, stored md5 verdict, playcheck).
+fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Result<String, String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let map = match (f("--map"), build_dir) {
+        (Some(m), _) => PathBuf::from(m),
+        (None, Some(d)) => d.join(format!("Summer-{n:02}-Tiny.Map.Gbx")),
+        (None, None) => return Err("publish-map needs --map TINY.Map.Gbx (or --tag T)".into()),
+    };
+    if !map.exists() {
+        return Err(format!("{}: no such file", map.display()));
+    }
+    let hdr0 = tmmaps::header::read(map.to_str().ok_or("map path")?)?;
+    let name = match f("--name") {
+        Some(nm) => nm,
+        None if build_dir.is_some() && !hdr0.name.is_empty() && hdr0.name != "-" => hdr0.name.clone(),
+        None => format!("Tiny Summer 2026 - {n:02}"),
+    };
+    let (items_dir, paks) = match (f("--items-dir"), f("--paks"), build_dir) {
+        (Some(d), p, _) => (Some(d), p),
+        (None, _, Some(dir)) => {
+            let src_dir = f("--src-dir").unwrap_or_else(|| "/tmp/summer2026".into());
+            let src = std::fs::read_dir(&src_dir).map_err(|e| format!("{src_dir}: {e}"))?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.file_name().and_then(|s| s.to_str()).map_or(false, |s| s.starts_with(&format!("{n:02}-")) && s.ends_with(".Map.Gbx"))).ok_or_else(|| format!("{src_dir}: no {n:02}-*.Map.Gbx source"))?;
+            let coll = crate::views::collection_of(&tmmaps::map::MapFile::load(&src));
+            let paks = crate::build::paks_for(coll)?.join(" ");
+            (Some(dir.join("libx").join("Items").to_string_lossy().into_owned()), Some(paks))
+        }
+        (None, _, None) => (None, None),
+    };
     let outdir = PathBuf::from(f("--outdir").unwrap_or_else(|| "/tmp/tiny3".into()));
     std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
     let hdr = tmmaps::header::read(map.to_str().ok_or("map path")?)?;
@@ -378,7 +448,7 @@ pub fn publish_map_cmd(args: &[String]) -> Result<(), String> {
     }
     // gate: item-check over the library items when given (in-process: the
     // same code `mapgeom item-check` runs; prints one line per item)
-    if let Some(dir) = f("--items-dir") {
+    if let Some(dir) = items_dir.clone() {
         let mut items: Vec<String> = std::fs::read_dir(&dir).map_err(|e| format!("{dir}: {e}"))?.filter_map(|e| e.ok()).map(|e| e.path().to_string_lossy().into_owned()).filter(|p| p.ends_with(".Item.Gbx")).collect();
         items.sort();
         if items.is_empty() {
@@ -388,7 +458,7 @@ pub fn publish_map_cmd(args: &[String]) -> Result<(), String> {
         rest.extend(items.iter().cloned());
         // the material-link rule needs the packs: `--paks "--pak F:KEY …"`
         // like probe (an empty store fails every link as "no .Material.Gbx")
-        let paks = f("--paks").ok_or("publish-map --items-dir needs --paks \"--pak FILE:KEY …\" so item-check can resolve the material links (or drop --items-dir)")?;
+        let paks = paks.clone().ok_or("publish-map --items-dir needs --paks \"--pak FILE:KEY …\" so item-check can resolve the material links (or drop --items-dir)")?;
         let mut open = || {
             let mut store = mapgeom::store::DataStore::empty();
             let toks: Vec<&str> = paks.split_whitespace().collect();
@@ -437,7 +507,15 @@ pub fn publish_map_cmd(args: &[String]) -> Result<(), String> {
             Err(e) => eprintln!("playcheck screenshot: {e}"),
         }
     }
-    Ok(())
+    // the verdict line: name, uid, mapId, stored-bytes verdict, playcheck
+    let pick = |prefix: &str, k: &str| -> String {
+        done.lines().find(|l| l.starts_with(prefix)).and_then(|l| l.split('\t').find(|c| c.trim_start().starts_with(k))).map(|s| s.trim().to_string()).unwrap_or_else(|| format!("{k} ?"))
+    };
+    let stored = if done.lines().any(|l| l.starts_with("stored") && l.contains("IDENTICAL")) { "stored IDENTICAL" } else { "stored ?" };
+    let play = done.lines().find(|l| l.starts_with("playcheck")).map(|l| l.replace('\t', " ")).unwrap_or_else(|| "playcheck: not run".into());
+    let play_short: String = play.chars().take(110).collect();
+    let how = done.lines().find(|l| l.starts_with("upload")).and_then(|l| l.split('\t').nth(1)).unwrap_or("?").to_uppercase();
+    Ok(format!("{name}\tuid {}\t{}\t{how}\t{}\t{play_short}", hdr.uid, pick("upload", "mapId"), stored))
 }
 
 /// Lowercase hex md5 — what `md5sum` prints, so the numbers here can be
