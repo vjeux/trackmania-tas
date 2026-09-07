@@ -16,6 +16,7 @@
 //! `selfbuild`; the shooting half is `shootctl shootset`.
 
 mod boxbuild;
+mod camcheck;
 mod compare;
 mod play;
 mod png;
@@ -47,6 +48,9 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
                [--drive-ms MS [--drive-at-ms 13500]]
         the map in PLAY mode on the box (shootctl playshots): N timed frames from
         the playground opening — the MediaTracker intro — as one stacked sheet
+  tinyctl camcheck --orig cam-O.tsv --tiny cam-T.tsv --anchor sx,sy,sz:tx,ty,tz [--scale 0.5] [--trigger lo:hi]
+        two --camlog-ms logs aligned on the intro's first camera cut: the tiny camera
+        vs the original's through the transform, per 250 ms; the in-game trigger jump
   tinyctl compare --views VIEWS.tsv --dir DIR --tag sNN [--color 50] [--edge 16] [--keep-hud]
                   [--max-crops 16] [--hstack-ffmpeg BIN] [--out-prefix P]
   tinyctl compare --pair ORIG.png TINY.png [--out-prefix P]
@@ -88,6 +92,7 @@ fn main() {
         "shoot" => shoot::cmd(rest),
         "compare" => compare::cmd(rest),
         "play" => play::cmd(rest),
+        "camcheck" => camcheck::cmd(rest),
         "publish-map" => publish::publish_map_cmd(rest),
         "publish-here" => publish::publish_here_cmd(rest),
         "upload" => upload::cmd(rest),
