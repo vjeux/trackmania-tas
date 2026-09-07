@@ -628,6 +628,15 @@ fn main() {
             let mut open_store = || open(&a);
             mapgeom::static_item::check::run(&a.rest, &mut open_store).unwrap_or_else(die);
         }
+        // surfhist <pack prefab | pack .StaticObject.Gbx | local .Item.Gbx>...:
+        // the collision census source by source — per surface its material
+        // nodes and id table, per (physics, gameplay, index) the triangles,
+        // how many face up, the height range (the Rubber-vs-Asphalt road
+        // question of 2026-09-07).
+        "surfhist" => {
+            let mut open_store = || open(&a);
+            mapgeom::static_item::surfhist::run(&a.rest, &mut open_store).unwrap_or_else(die);
+        }
         // item-fields <pack .Item.Gbx | file>: every chunk of a CGameItemModel
         // as the item writer's classes read it, one line each (node contents
         // elided) — what a pack item declares that ours does not (the

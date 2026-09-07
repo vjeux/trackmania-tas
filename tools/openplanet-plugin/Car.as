@@ -88,3 +88,59 @@ string CamLog(int ms) {
     }
     return sb;
 }
+
+// WHAT THE PHYSICS FEELS UNDER EACH WHEEL, per frame. The surface question
+// of the tiny campaign (2026-09-07): a road item baked from a Nadeo prefab
+// carries the prefab's own collision ids — but does the ENGINE read them the
+// same way? The only honest readout is the live vehicle state: its four
+// `*GroundContactMaterial` fields are the EPlugSurfaceMaterialId the physics
+// resolved for each wheel this frame (the enum is the pack's table: 16
+// Asphalt, 9 Rubber, 2 Grass, 6 Dirt …), next to the speed and the pedals, so
+// an acceleration trace on the original and on the tiny build can be laid
+// side by side with the surface each wheel was on.
+//
+// `VehicleState::ViewingPlayerState()` is the bundled VehicleState plugin's
+// export (Openplanet/Plugins/VehicleState/Export.as; info.toml lists the
+// dependency). It is null before the vehicle exists (intro, loading), which
+// leaves a comment row rather than ending the log.
+string WheelRow(CSceneVehicleVisState@ vs, CSmScriptPlayer@ s) {
+    string race = (s is null) ? "" : ("" + s.CurrentRaceTime);
+    return "" + Time::Now + "\t" + race
+        + "\t" + vs.Position.x + "\t" + vs.Position.y + "\t" + vs.Position.z
+        + "\t" + vs.WorldVel.x + "\t" + vs.WorldVel.y + "\t" + vs.WorldVel.z
+        + "\t" + vs.FrontSpeed
+        + "\t" + vs.InputGasPedal + "\t" + vs.InputBrakePedal + "\t" + vs.InputSteer
+        + "\t" + (vs.IsGroundContact ? 1 : 0)
+        + "\t" + int(vs.FLGroundContactMaterial) + "\t" + int(vs.FRGroundContactMaterial)
+        + "\t" + int(vs.RLGroundContactMaterial) + "\t" + int(vs.RRGroundContactMaterial)
+        + "\t" + vs.FLSlipCoef + "\t" + vs.FRSlipCoef + "\t" + vs.RLSlipCoef + "\t" + vs.RRSlipCoef
+        + "\t" + vs.FLDamperLen + "\t" + vs.FRDamperLen + "\t" + vs.RLDamperLen + "\t" + vs.RRDamperLen
+        + "\t" + vs.CurGear + "\t" + vs.GroundDist;
+}
+
+string WheelHeader() {
+    return "wall_ms\tt_ms\tx\ty\tz\tvx\tvy\tvz\tfrontspeed\tgas\tbrake\tsteer\tground\tfl\tfr\trl\trr\tflslip\tfrslip\trlslip\trrslip\tfldamp\tfrdamp\trldamp\trrdamp\tgear\tgrounddist\n";
+}
+
+string WheelState() {
+    CSceneVehicleVisState@ vs = VehicleState::ViewingPlayerState();
+    if (vs is null) return "err: no vehicle state";
+    return WheelHeader() + WheelRow(vs, ScriptPlayer()) + "\n";
+}
+
+string WheelLog(int ms) {
+    if (ms <= 0) ms = 3000;
+    if (ms > 30000) ms = 30000;
+    uint t0 = Time::Now;
+    string sb = WheelHeader();
+    while (int(Time::Now - t0) < ms) {
+        CSceneVehicleVisState@ vs = VehicleState::ViewingPlayerState();
+        if (vs is null) {
+            sb += "# no vehicle state\n";
+        } else {
+            sb += WheelRow(vs, ScriptPlayer()) + "\n";
+        }
+        yield();
+    }
+    return sb;
+}

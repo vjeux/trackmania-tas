@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! tinyctl play --map MAP --tag T [--shots 4] [--every-ms 200] [--first-ms 300]
-//!              [--drive-ms MS [--drive-at-ms 13500]] [--timeout 600] [--outdir /tmp/tiny3] [--wsx P] [-v]
+//!              [--drive-ms MS [--drive-at-ms 13500]] [--camlog-ms MS] [--wheels-ms MS] [--timeout 600] [--outdir /tmp/tiny3] [--wsx P] [-v]
 //! ```
 //!
 //! The MediaTracker intro plays when a map opens in play (a 10 s camera
@@ -54,7 +54,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         (None, _) => String::new(),
     };
     let camlog = f("--camlog-ms").map(|ms| format!(" --camlog-ms {ms}")).unwrap_or_default();
-    let cmd = format!("{shootctl} playshots --detach --map {remote_map} --outdir {remote_dir} --tag {tag} --shots {shots} --every-ms {every_ms} --first-ms {first_ms} --timeout {timeout}{drive}{camlog}");
+    // --wheels-ms MS: the surface under each wheel per frame (wheels-<tag>.tsv, pulled back)
+    let wheels = f("--wheels-ms").map(|ms| format!(" --wheels-ms {ms}")).unwrap_or_default();
+    let cmd = format!("{shootctl} playshots --detach --map {remote_map} --outdir {remote_dir} --tag {tag} --shots {shots} --every-ms {every_ms} --first-ms {first_ms} --timeout {timeout}{drive}{camlog}{wheels}");
     eprintln!("playing {tag} on the box ({shots} frames) — waits for the render lock if another thread holds the game …");
     let started = wsx.sh(&cmd)?;
     if wsx.verbose {
@@ -80,6 +82,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     wsx.sh(&ff).map_err(|e| format!("contact sheet: {e}"))?;
     if !camlog.is_empty() {
         let tsv = format!("cam-{tag}.tsv");
+        match wsx.pull(&format!("{remote_dir}/{tsv}"), &outdir.join(&tsv)) {
+            Ok(n) => eprintln!("  pulled {tsv} ({n} B)"),
+            Err(e) => eprintln!("  {tsv}: {e}"),
+        }
+    }
+    if !wheels.is_empty() {
+        let tsv = format!("wheels-{tag}.tsv");
         match wsx.pull(&format!("{remote_dir}/{tsv}"), &outdir.join(&tsv)) {
             Ok(n) => eprintln!("  pulled {tsv} ({n} B)"),
             Err(e) => eprintln!("  {tsv}: {e}"),

@@ -39,6 +39,12 @@ pub struct Opts {
     /// the drive: the intro's camera path (the tiny build's must be the
     /// original's through the transform) and the in-game clip's jump.
     pub camlog_ms: u64,
+    /// `--wheels-ms MS`: the surface under each WHEEL per frame (`/wheels`,
+    /// the VehicleState readout: the four `*GroundContactMaterial` ids, the
+    /// speed, the pedals) for MS milliseconds into `OUTDIR/wheels-<tag>.tsv`,
+    /// on its own thread like the camera log — what the PHYSICS resolved
+    /// under the car on the original vs the tiny build (2026-09-07).
+    pub wheels_ms: u64,
     pub detach: bool,
 }
 
@@ -61,6 +67,7 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         drive_ms: num("--drive-ms", 0)?,
         drive_at_ms: num("--drive-at-ms", 13500)?,
         camlog_ms: num("--camlog-ms", 0)?,
+        wheels_ms: num("--wheels-ms", 0)?,
         detach: args.iter().any(|a| a == "--detach"),
     })
 }
@@ -70,7 +77,7 @@ pub fn run(args: &[String]) -> i32 {
         Ok(o) => o,
         Err(e) => {
             eprintln!("{e}");
-            eprintln!("usage: shootctl playshots --map MAP --outdir /mnt/c/... [--tag T] [--shots N] [--every-ms MS] [--first-ms MS] [--carlog-ms MS] [--drive-ms MS [--drive-at-ms MS]] [--camlog-ms MS] [--timeout S] [--detach]");
+            eprintln!("usage: shootctl playshots --map MAP --outdir /mnt/c/... [--tag T] [--shots N] [--every-ms MS] [--first-ms MS] [--carlog-ms MS] [--drive-ms MS [--drive-at-ms MS]] [--camlog-ms MS] [--wheels-ms MS] [--timeout S] [--detach]");
             return 2;
         }
     };
@@ -141,6 +148,30 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     let mut lines = Vec::new();
     let mut driver: Option<std::thread::JoinHandle<Result<String, String>>> = None;
     let mut camlog: Option<std::thread::JoinHandle<Result<String, String>>> = None;
+    let mut wheels: Option<std::thread::JoinHandle<Result<String, String>>> = None;
+    if opts.wheels_ms > 0 {
+        // the wheel log, sliced like the camera log, on its own thread
+        let (file, total) = (opts.outdir.join(format!("wheels-{}.tsv", opts.tag)), opts.wheels_ms);
+        wheels = Some(std::thread::spawn(move || {
+            let mut tsv = String::new();
+            let mut left = total;
+            let t0 = Instant::now();
+            while left > 0 {
+                let chunk = left.min(5_000);
+                let body = super::http_get(&format!("/wheels?ms={chunk}"), chunk / 1000 + 20)?;
+                for (i, row) in body.lines().enumerate() {
+                    if i == 0 && !tsv.is_empty() {
+                        continue;
+                    }
+                    tsv.push_str(row);
+                    tsv.push('\n');
+                }
+                left -= chunk;
+            }
+            std::fs::write(&file, &tsv).map_err(|e| format!("{}: {e}", file.display()))?;
+            Ok(format!("wheels\t{} rows over {:.1} s\t{}", tsv.lines().count().saturating_sub(1), t0.elapsed().as_secs_f64(), file.display()))
+        }));
+    }
     if opts.camlog_ms > 0 {
         let (file, total) = (opts.outdir.join(format!("cam-{}.tsv", opts.tag)), opts.camlog_ms);
         camlog = Some(std::thread::spawn(move || {
@@ -225,6 +256,13 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
             Ok(Ok(text)) => lines.push(text),
             Ok(Err(e)) => lines.push(format!("camlog\tFAILED: {e}")),
             Err(_) => lines.push("camlog\tFAILED: the camera thread panicked".to_string()),
+        }
+    }
+    if let Some(w) = wheels {
+        match w.join() {
+            Ok(Ok(text)) => lines.push(text),
+            Ok(Err(e)) => lines.push(format!("wheels\tFAILED: {e}")),
+            Err(_) => lines.push("wheels\tFAILED: the wheel thread panicked".to_string()),
         }
     }
     if let Some(d) = driver {
@@ -319,5 +357,135 @@ pub fn summarize(args: &[String]) -> i32 {
         Some(r) => println!("  left the spawn (> 0.5 m) at +{:.1} s: ({:.2}, {:.2}, {:.2})", (r.0 - first.0) as f64 / 1000.0, r.1[0], r.1[1], r.1[2]),
         None => println!("  never left the spawn"),
     }
+    0
+}
+
+/// The physics name of an `EPlugSurfaceMaterialId` (the pack's table; the
+/// same list `mapgeom` prints — kept short here, the rest print as numbers).
+fn surface_name(id: i64) -> String {
+    match id {
+        0 => "Concrete".into(),
+        1 => "Pavement".into(),
+        2 => "Grass".into(),
+        3 => "Ice".into(),
+        4 => "Metal".into(),
+        5 => "Sand".into(),
+        6 => "Dirt".into(),
+        8 => "DirtRoad".into(),
+        9 => "Rubber".into(),
+        10 => "SlidingRubber".into(),
+        12 => "Rock".into(),
+        13 => "Water".into(),
+        14 => "Wood".into(),
+        16 => "Asphalt".into(),
+        21 => "Snow".into(),
+        28 => "NotCollidable".into(),
+        33 => "Stone".into(),
+        74 => "RoadIce".into(),
+        75 => "RoadSynthetic".into(),
+        76 => "Green".into(),
+        77 => "Plastic".into(),
+        n => format!("id{n}"),
+    }
+}
+
+/// `shootctl wheels FILE.tsv [--from-gas]`: a wheel log read as the surface
+/// census it is — per wheel, how many frames on which material (ground-contact
+/// frames only) — and the acceleration trace from the first frame the gas
+/// pedal is down: speed and distance at 0.5 s steps, with the surface under
+/// the wheels at each step. Two such tables, original and tiny, side by side,
+/// ARE the physics comparison.
+pub fn summarize_wheels(args: &[String]) -> i32 {
+    let Some(file) = args.first() else {
+        eprintln!("usage: shootctl wheels FILE.tsv");
+        return 2;
+    };
+    let text = match std::fs::read_to_string(file) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{file}: {e}");
+            return 2;
+        }
+    };
+    // wall_ms t_ms x y z vx vy vz frontspeed gas brake steer ground fl fr rl rr …
+    struct Row {
+        wall: u64,
+        race: i64,
+        pos: [f64; 3],
+        speed: f64,
+        gas: f64,
+        ground: bool,
+        mats: [i64; 4],
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    let mut comments = 0usize;
+    for line in text.lines().skip(1) {
+        if line.starts_with('#') {
+            comments += 1;
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 17 {
+            continue;
+        }
+        let num = |i: usize| f[i].parse::<f64>().unwrap_or(0.0);
+        let int = |i: usize| f[i].parse::<f64>().map(|x| x as i64).unwrap_or(-1);
+        rows.push(Row {
+            wall: num(0) as u64,
+            race: if f[1].is_empty() { i64::MIN } else { int(1) },
+            pos: [num(2), num(3), num(4)],
+            speed: num(8),
+            gas: num(9),
+            ground: int(12) != 0,
+            mats: [int(13), int(14), int(15), int(16)],
+        });
+    }
+    if rows.is_empty() {
+        println!("{file}: no vehicle rows ({comments} frames without a vehicle)");
+        return 1;
+    }
+    let span = (rows.last().unwrap().wall - rows[0].wall) as f64 / 1000.0;
+    println!("{file}: {} vehicle rows over {span:.1} s ({comments} frames without a vehicle)", rows.len());
+    // per-wheel census over ground-contact frames
+    let names = ["FL", "FR", "RL", "RR"];
+    for (w, name) in names.iter().enumerate() {
+        let mut counts: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
+        let mut n = 0usize;
+        for r in rows.iter().filter(|r| r.ground) {
+            *counts.entry(r.mats[w]).or_insert(0) += 1;
+            n += 1;
+        }
+        let mut v: Vec<(i64, usize)> = counts.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1));
+        let desc: Vec<String> = v.iter().map(|(id, c)| format!("{} {c} ({:.0}%)", surface_name(*id), 100.0 * *c as f64 / n.max(1) as f64)).collect();
+        println!("  {name}: {} ground frames: {}", n, desc.join(", "));
+    }
+    // the acceleration trace from the first gas frame
+    let Some(g0) = rows.iter().position(|r| r.gas > 0.5) else {
+        println!("  no frame with the gas pedal down");
+        return 0;
+    };
+    let t0 = rows[g0].wall;
+    let p0 = rows[g0].pos;
+    println!("  gas from wall {t0} (race time {}), at ({:.2}, {:.2}, {:.2}); speed and distance every 0.5 s:", if rows[g0].race == i64::MIN { "-".to_string() } else { rows[g0].race.to_string() }, p0[0], p0[1], p0[2]);
+    println!("    t(s)   speed   dist(m)   wheels");
+    let mut next = 0u64;
+    let mut last_gas = t0;
+    for r in rows[g0..].iter() {
+        if r.gas > 0.5 {
+            last_gas = r.wall;
+        }
+        let dt = r.wall - t0;
+        if dt >= next {
+            let d = ((r.pos[0] - p0[0]).powi(2) + (r.pos[1] - p0[1]).powi(2) + (r.pos[2] - p0[2]).powi(2)).sqrt();
+            let mats: Vec<String> = r.mats.iter().map(|m| surface_name(*m)).collect();
+            println!("    {:5.1}  {:6.1}  {:8.2}   {}{}", dt as f64 / 1000.0, r.speed, d, mats.join("/"), if r.ground { "" } else { " (airborne)" });
+            next += 500;
+        }
+        if dt > 30_000 {
+            break;
+        }
+    }
+    println!("  gas pedal last down at +{:.1} s", (last_gas - t0) as f64 / 1000.0);
     0
 }
