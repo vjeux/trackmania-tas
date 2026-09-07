@@ -378,14 +378,23 @@ fn trajectory_csv_has_the_columns_the_rest_of_the_project_reads() {
     }
 }
 
-/// The fitted line is `clock = 36141 + 25.483 * race_ms`, and it is only ever
-/// used to CHOOSE a checkpoint — never to label a sample, because the count is
-/// not a fixed simulation point.
+/// The checkpoint clock. Under the tick hook (the default) it is EXACT: the
+/// engine's simulation time in ticks, `(2200 + race_ms) / 10`. Under
+/// `FK_CLOCK=lroundf` it is the fitted line `36141 + 25.483 * race_ms`, only
+/// ever used to CHOOSE a checkpoint — never to label a sample, because that
+/// count is not a fixed simulation point.
 #[test]
-fn the_checkpoint_line_is_the_fitted_one() {
-    assert_eq!(fk::session::clock_for_race_ms(22730), 615_369);
-    assert_eq!(fk::session::clock_for_race_ms(0), 36_141);
-    assert!(fk::session::clock_for_race_ms(-100_000) >= 1000, "clamped, never negative");
+fn the_checkpoint_clock_is_the_documented_one() {
+    if forkoracle::clock::tick_mode() {
+        assert_eq!(fk::session::clock_for_race_ms(22730), 2493);
+        assert_eq!(fk::session::clock_for_race_ms(0), 220);
+        assert_eq!(fk::session::clock_for_race_ms(-1580), 62);
+        assert!(fk::session::clock_for_race_ms(-100_000) >= 101, "clamped to the first tick");
+    } else {
+        assert_eq!(fk::session::clock_for_race_ms(22730), 615_369);
+        assert_eq!(fk::session::clock_for_race_ms(0), 36_141);
+        assert!(fk::session::clock_for_race_ms(-100_000) >= 1000, "clamped, never negative");
+    }
 }
 
 // =========================================================================

@@ -65,9 +65,10 @@ pub struct BranchReq<'a> {
     /// boundary, and `tree::Node::branch` refuses otherwise.
     pub from: usize,
     pub recs: &'a [Rec],
-    /// How many more `lroundf` calls the child simulates before it re-enters
-    /// the fork server. ~255 to the tick.
-    pub stop_after_lroundf: u64,
+    /// How many more CLOCK UNITS the child simulates before it re-enters the
+    /// fork server: ticks under the tick hook, `lroundf` calls (~255 to the
+    /// tick) under the legacy clock. See `clock::per_tick`.
+    pub stop_after: u64,
     /// The driver's listening unix socket. The node connects to it and serves
     /// the same protocol down it.
     pub sock: &'a str,
@@ -86,7 +87,7 @@ pub fn payload_branch(b: &BranchReq) -> Vec<u8> {
     let mut p = Vec::with_capacity(64 + b.sock.len() + b.recs.len() * 16);
     p.push(b'B');
     p.extend_from_slice(&(b.recs.len() as u32).to_le_bytes());
-    p.extend_from_slice(&b.stop_after_lroundf.to_le_bytes());
+    p.extend_from_slice(&b.stop_after.to_le_bytes());
     p.extend_from_slice(&(b.sock.len() as u32).to_le_bytes());
     p.extend_from_slice(b.sock.as_bytes());
     p.extend_from_slice(&(b.trace_path.len() as u32).to_le_bytes());
@@ -192,6 +193,11 @@ pub struct ForkServer {
     pub validator_controller: u64,
     /// The simulation object passed in rcx at that same callback.
     pub validation_sim: u64,
+    /// `true` when the checkpoint is the tick hook. `clock` is then in ticks
+    /// (`sim_ms / 10`) and `sim_ms` is the engine's simulation time of the
+    /// tick the stopped server is about to run -- nothing of it consumed.
+    pub tick_mode: bool,
+    pub sim_ms: u64,
     pub dir: PathBuf,
 }
 
@@ -327,6 +333,9 @@ impl ForkServer {
             // simulation-binding callback. `start_raw` deliberately does not
             // set this: its shimhost tests do not contain that server code.
             .env("FKSHIM_VALIDATOR_CAR", "1");
+        // Which clock the shim keys the checkpoint on. `tick` makes the shim
+        // install the per-tick hook or die; it never falls back.
+        c.env("FKSHIM_CLOCK", crate::clock::shim_env());
         let srv = ForkServer::start_raw(dir, c, key, shim, ckpt)?;
         if srv.validator_controller == 0 || srv.validation_sim == 0 {
             return Err(
@@ -403,6 +412,8 @@ impl ForkServer {
             clock: 0,
             validator_controller: 0,
             validation_sim: 0,
+            tick_mode: false,
+            sim_ms: 0,
             dir: dir.to_path_buf(),
         };
 
@@ -421,6 +432,8 @@ impl ForkServer {
         srv.clock = ready.clock;
         srv.validator_controller = ready.validator_controller.unwrap_or(0);
         srv.validation_sim = ready.validation_sim.unwrap_or(0);
+        srv.tick_mode = ready.tick_mode;
+        srv.sim_ms = ready.sim_ms;
         Ok(srv)
     }
 
@@ -436,7 +449,7 @@ impl ForkServer {
     }
 
     /// THE BRANCH: fork a child that appends `req.recs`, consumes
-    /// `req.stop_after_lroundf` more calls, and then re-enters the fork server
+    /// `req.stop_after` more clock units, and then re-enters the fork server
     /// on `req.sock` as a node of its own. Returns the node's pid.
     ///
     /// This call does NOT wait for the node. The server answers `BRANCHED
@@ -728,6 +741,42 @@ impl ForkServer {
         parse_probe(&String::from_utf8_lossy(&v))
     }
 
+    /// The page-fault probe, WITH THE TICK-HOOK CONTROL.
+    ///
+    /// The probe's reply is `(fault_addr - base) / 32`, and `base` is where the
+    /// shim found the tape's STEER sequence -- which sits 4 bytes into the
+    /// engine's 32-byte record (engine record = `[?, steer, gas, brake, ...]`).
+    /// A fault on the first byte of engine record `i` therefore reports
+    /// `i - 1`: **the probe names the last record the engine has finished
+    /// with, and `probe + 1` is the first unconsumed one.** That is the
+    /// `probe + 1` every resume already applies (it was found empirically as
+    /// "tick p is partly consumed"; this is why).
+    ///
+    /// Under the tick hook the same boundary is a function of the tick the
+    /// engine reported: the server is stopped at the START of the tick whose
+    /// simulation time is `sim_ms`, and that tick's input application copies
+    /// record `(sim_ms - SIM_RACE_ORIGIN_MS - start_offset_ms) / 10`. So on
+    /// every server, every time, `probe + 1` must equal that -- a disagreement
+    /// means the hook is not where TICKHOOK.md says, or the origin constant does
+    /// not hold for this build/map, and it is a hard error rather than a number
+    /// to pick between. Under the legacy clock the probe is the only source.
+    pub fn boundary_tick(&mut self, start_offset_ms: i32) -> Result<usize, String> {
+        let probe = self.probe_tick()?;
+        if self.tick_mode {
+            // A checkpoint inside the countdown is in front of records the engine
+            // never reads; the first read is then the first race-time record.
+            let want = crate::clock::tape_tick_at_sim_ms(self.sim_ms, start_offset_ms)
+                .max(crate::clock::first_read_tick(start_offset_ms));
+            if probe as i64 + 1 != want {
+                return Err(format!(
+                    "tick hook / probe disagreement: server stopped at sim_ms {} (about to read tape tick {} with start_offset {}), but the probe says the engine has finished record {} (so reads {} next)",
+                    self.sim_ms, want, start_offset_ms, probe, probe + 1
+                ));
+            }
+        }
+        Ok(probe)
+    }
+
     pub fn pid(&self) -> i32 {
         self.child.id() as i32
     }
@@ -851,6 +900,10 @@ pub struct Ready {
     pub pid: Option<i32>,
     pub validator_controller: Option<u64>,
     pub validation_sim: Option<u64>,
+    /// `true` when the shim stopped on the tick hook; `sim_ms` is then the
+    /// engine's simulation time of the tick it is about to run.
+    pub tick_mode: bool,
+    pub sim_ms: u64,
 }
 
 pub fn parse_ready_full(s: &str) -> Result<Ready, String> {
@@ -869,12 +922,20 @@ pub fn parse_ready_full(s: &str) -> Result<Ready, String> {
             s.trim()
         ));
     }
+    // Trailing `tick <sim_ms>` or `lroundf 0`; absent from older shims.
+    let (tick_mode, sim_ms) = match (it.next(), it.next()) {
+        (Some("tick"), Some(v)) => (true, v.parse().map_err(|_| format!("bad sim_ms in handshake: {}", s.trim()))?),
+        (Some("lroundf"), _) | (None, _) => (false, 0),
+        (Some(other), _) => return Err(format!("unknown clock `{}` in handshake: {}", other, s.trim())),
+    };
     Ok(Ready {
         base,
         clock,
         pid,
         validator_controller,
         validation_sim,
+        tick_mode,
+        sim_ms,
     })
 }
 

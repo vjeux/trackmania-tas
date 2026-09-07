@@ -72,6 +72,12 @@ use std::path::{Path, PathBuf};
 /// never allowed to name one.
 pub const LROUNDF_PER_TICK: u64 = 255;
 
+/// Clock units per tick for the clock the shim is actually running: 1 under
+/// the tick hook (exact), `LROUNDF_PER_TICK` under `FK_CLOCK=lroundf`.
+pub fn clock_per_tick() -> u64 {
+    forkoracle::clock::per_tick()
+}
+
 /// A live paused simulation.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct Handle(pub u64);
@@ -269,7 +275,7 @@ impl Forest {
             recs: inputs,
             // ~255 calls to the tick. Where the child ACTUALLY stops is what
             // its probe says; this only decides roughly how far it goes.
-            stop_after_lroundf: (k_ticks * LROUNDF_PER_TICK).max(1),
+            stop_after: (k_ticks * clock_per_tick()).max(1),
             sock: &sock,
             trace_path: &tp,
             segs: &segs,

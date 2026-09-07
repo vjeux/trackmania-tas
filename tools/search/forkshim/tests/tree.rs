@@ -135,7 +135,7 @@ fn branch_req<'a>(sock: &'a str, from: usize, recs: &'a [Rec], k: u64) -> Branch
     BranchReq {
         from,
         recs,
-        stop_after_lroundf: (k * PER_TICK as u64).max(1),
+        stop_after: (k * PER_TICK as u64).max(1),
         sock,
         trace_path: "",
         segs: &[],

@@ -41,7 +41,7 @@
 //! asked for **by the pid the node names in its own handshake**.
 
 use crate::forksrv::{
-    parse_probe, parse_ready, payload_branch, payload_probe, payload_run, read_frame, write_frame,
+    parse_probe, payload_branch, payload_probe, payload_run, read_frame, write_frame,
     BranchReq, Rec,
 };
 use std::os::raw::c_int;
@@ -114,10 +114,13 @@ impl Tree {
             }
         };
         stream.set_nonblocking(false).map_err(|e| e.to_string())?;
-        let mut n = Node { sock: stream, base: 0, clock: 0, pid: -1, boundary: None, dead: false };
+        let mut n = Node { sock: stream, base: 0, clock: 0, pid: -1, boundary: None, dead: false, tick_mode: false, sim_ms: 0 };
         let hello = read_frame(&mut n.sock).ok_or("a branch node connected and said nothing")?;
         let s = String::from_utf8_lossy(&hello).into_owned();
-        let (base, clock, pid) = parse_ready(&s)?;
+        let ready = crate::forksrv::parse_ready_full(&s)?;
+        let (base, clock, pid) = (ready.base, ready.clock, ready.pid);
+        n.tick_mode = ready.tick_mode;
+        n.sim_ms = ready.sim_ms;
         let pid = pid.ok_or_else(|| {
             format!(
                 "a branch node handshook without naming its pid ({:?}) -- a node the driver \
@@ -156,13 +159,16 @@ pub struct Node {
     sock: UnixStream,
     /// The decoded input array, at the address every descendant shares.
     pub base: u64,
-    /// The `lroundf` count at which this node stopped. **Not a simulation
-    /// point**: it is where THIS process happened to stop, and it differs
-    /// between nodes of one tree. Never label anything from it.
+    /// The clock at which this node stopped. Under the legacy lroundf clock
+    /// this is **not a simulation point** (it differs between nodes of one
+    /// tree; never label anything from it). Under the tick hook it is the
+    /// engine's own tick, and `sim_ms` its simulation time.
     pub clock: u64,
     pub pid: i32,
     boundary: Option<usize>,
     dead: bool,
+    pub tick_mode: bool,
+    pub sim_ms: u64,
 }
 
 impl Node {

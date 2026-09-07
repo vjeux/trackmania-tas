@@ -17,6 +17,7 @@
 //! so a predicate means exactly one thing on both sides of the fork.
 
 pub mod pred_core;
+pub mod clock;
 pub mod forksrv;
 pub mod tree;
 pub mod pred;

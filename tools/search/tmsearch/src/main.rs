@@ -713,7 +713,7 @@ fn run_fork(
         ckpt,
     )
     .unwrap_or_else(|e| die(format!("the calibration fork server did not start: {}", e)));
-    let probe = cal.probe_tick().unwrap_or_else(|e| {
+    let probe = cal.boundary_tick(p.start_offset_ms).unwrap_or_else(|e| {
         die(format!("the boundary probe failed ({}) -- a resume cannot be trusted without it", e))
     });
     let boundary = calibrate_boundary(&mut cal, server, map, &p, &root.path, probe, p.n())

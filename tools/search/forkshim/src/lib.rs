@@ -799,6 +799,232 @@ unsafe extern "C" fn install_validator_trace() {
 #[cfg_attr(target_os = "linux", link_section = ".init_array")]
 static VALIDATOR_TRACE_INIT: unsafe extern "C" fn() = install_validator_trace;
 
+// ------------------------------------------------------------- the TICK HOOK
+//
+// THE CLOCK IS THE ENGINE'S OWN TICK, NOT A FLOAT ROUNDING.
+//
+// `lroundf` was a proxy: ~255 calls per simulated tick, bit-identical on an
+// idle box and NOT under load. The validator's frame loop (`0x1218db0`, the
+// function the /validatepath job calls with `dt = 10`) steps the simulation in
+// 10 ms ticks until it reaches the frame's target time OR a wall-clock budget
+// runs out (`0x121979b: cmp eax,[rbp-0xc0]; ja 121a150`). Under contention the
+// budget branch fires, the same run is cut into more frames, and every frame
+// costs ~62 extra `lroundf` calls of per-frame overhead -- which is exactly the
+// whole-chunk drift measured across 120 and 352 concurrent servers. Anything
+// derived from an lroundf count is therefore per-process.
+//
+// The tick loop body, build 128182 (see TICKHOOK.md for the evidence):
+//
+//     0x1219786  [rbp-0x30] = new_time  (= sim.time + 10)
+//     0x12197eb  call 0x119e060 (players, n_players, new_time, dt)   <-- HOOK
+//     0x1219f89  call 0x119f0f0  per player: copy input record (new_time-start)/10
+//     0x121a071  call 0x119f1b0  physics step
+//     0x1219750  sim.time (= [sim+0x48]) = new_time; loop
+//
+// `0x119e060` is entered exactly once per tick (2401 entries on a 2401-tick
+// run, under gdb), first thing in the body, BEFORE the tick's input record is
+// read. Hooking its entry gives:
+//   * an exact tick index -- the engine's own `new_time`, read from `edx`;
+//   * a stop point at which every record with index >= (new_time - start)/10
+//     is provably unconsumed, so the resume boundary is a function of the
+//     tick and the page-fault probe becomes a control on it;
+//   * a per-tick sampling instant at which the previous tick's state is final
+//     and the race clock in memory already carries its label.
+//
+// MECHANISM. The first 17 bytes of `0x119e060` are a plain prologue (push rbp;
+// mov rbp,rsp; push r15..rbx; sub rsp,0x18) -- position-independent, so they
+// can be re-executed anywhere. They are replaced by a 14-byte absolute
+// `jmp [rip+0]` into a trampoline that saves the argument registers, calls
+// `tick_entry(new_time, dt)`, restores them, runs the 17 displaced bytes
+// and jumps back to `0x119e060 + 17`. No ±2 GB constraint, no relocation of
+// RIP-relative code. Three byte signatures (the prologue, the call site in the
+// loop, the loop's clock write) must ALL match before a single byte is
+// written; a mismatch under `FKSHIM_CLOCK=tick` is a hard exit, never a fall
+// back to the lroundf clock.
+
+/// 1 = the tick hook is the clock; `lroundf` only counts. 0 = legacy lroundf
+/// clock (`FKSHIM_CLOCK=lroundf`), kept for A/B measurements.
+static CLOCK_TICK: AtomicUsize = AtomicUsize::new(0);
+static N_TICK: AtomicU64 = AtomicU64::new(0);
+/// The engine's simulation time (ms) of the tick being entered.
+static SIM_MS: AtomicU64 = AtomicU64::new(0);
+/// `new_time - dt` at the first entry: the simulation's start time.
+static SIM_MS0: AtomicU64 = AtomicU64::new(u64::MAX);
+/// Entries whose `new_time - old_time != 10`. Must be 0; reported at exit.
+static TICK_ANOMALIES: AtomicU64 = AtomicU64::new(0);
+static TICK_HOOK_INSTALLED: AtomicUsize = AtomicUsize::new(0);
+
+/// Build 128182: the per-tick entry called first in the validator's tick loop.
+pub const TICK_FN_OFF: usize = 0x119e060;
+/// Its first 32 bytes. The first 17 are displaced into the trampoline.
+pub const TICK_FN_SIGNATURE: [u8; 32] = [
+    0x55, 0x48, 0x89, 0xe5, 0x41, 0x57, 0x41, 0x56, 0x41, 0x55, 0x41, 0x54, 0x53, 0x48, 0x83, 0xec,
+    0x18, 0x48, 0x89, 0x7d, 0xc8, 0x85, 0xf6, 0x0f, 0x84, 0xe3, 0x00, 0x00, 0x00, 0x89, 0xf0, 0x48,
+];
+pub const TICK_FN_DISPLACED: usize = 17;
+/// The loop's call site: `mov ecx,r14d; call rel32` whose target must be
+/// `TICK_FN_OFF`.
+pub const TICK_CALL_SITE_OFF: usize = 0x12197e8;
+pub const TICK_CALL_SITE_SIGNATURE: [u8; 8] = [0x44, 0x89, 0xf1, 0xe8, 0x70, 0x48, 0xf8, 0xff];
+/// The loop's clock write: `mov ebx,[rbp-0x30]; mov [r15+0x48],ebx`.
+pub const TICK_CLOCK_WRITE_OFF: usize = 0x1219750;
+pub const TICK_CLOCK_WRITE_SIGNATURE: [u8; 7] = [0x8b, 0x5d, 0xd0, 0x41, 0x89, 0x5f, 0x48];
+
+/// Check every signature against the mapped image. Pure; used by the
+/// installer and by `fk tickhook check` through the shared constants.
+pub fn tick_hook_signatures_match(base: usize) -> Result<(), &'static str> {
+    let at = |off: usize, n: usize| unsafe { std::slice::from_raw_parts((base + off) as *const u8, n) };
+    if at(TICK_FN_OFF, TICK_FN_SIGNATURE.len()) != TICK_FN_SIGNATURE {
+        return Err("tick function prologue");
+    }
+    if at(TICK_CALL_SITE_OFF, TICK_CALL_SITE_SIGNATURE.len()) != TICK_CALL_SITE_SIGNATURE {
+        return Err("tick loop call site");
+    }
+    let rel = i32::from_le_bytes(TICK_CALL_SITE_SIGNATURE[4..8].try_into().unwrap()) as i64;
+    if (TICK_CALL_SITE_OFF as i64 + 8 + rel) as usize != TICK_FN_OFF {
+        return Err("tick loop call site does not target the tick function");
+    }
+    if at(TICK_CLOCK_WRITE_OFF, TICK_CLOCK_WRITE_SIGNATURE.len()) != TICK_CLOCK_WRITE_SIGNATURE {
+        return Err("tick loop clock write");
+    }
+    Ok(())
+}
+
+/// Called from the trampoline at every entry of the tick function, with the
+/// engine's own `(new_time, dt)` (`edx`, `ecx`; `esi` is the player count). Runs the same clock dispatch the
+/// lroundf interposer used to, keyed on `new_time / 10`.
+unsafe extern "C" fn tick_entry(new: u32, dt: u32) {
+    if INIT.load(Ordering::Relaxed) == 0 {
+        init();
+    }
+    if dt != 10 {
+        TICK_ANOMALIES.fetch_add(1, Ordering::Relaxed);
+    }
+    if SIM_MS0.load(Ordering::Relaxed) == u64::MAX {
+        SIM_MS0.store(new as u64 - dt as u64, Ordering::Relaxed);
+    }
+    N_TICK.fetch_add(1, Ordering::Relaxed);
+    SIM_MS.store(new as u64, Ordering::Relaxed);
+    on_clock((new / 10) as u64);
+}
+
+/// Build the trampoline and patch the entry. Only under `FKSHIM_CLOCK=tick`;
+/// any failure is fatal (exit 92) -- the driver asked for the tick clock and
+/// must never silently get the other one.
+unsafe fn install_tick_hook() {
+    let base = MODULE_BASE.load(Ordering::SeqCst);
+    if base == 0 {
+        log(b"FKSHIM tickhook: no module base\n");
+        _exit(92)
+    }
+    // Every signature range must sit inside an executable mapping of the main
+    // module BEFORE it is read: a host without server text (shimhost, a
+    // different build) must be refused, not segfaulted.
+    let exe = std::fs::read_link("/proc/self/exe").map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    let maps = std::fs::read_to_string("/proc/self/maps").unwrap_or_default();
+    let inside = |off: usize, n: usize| -> bool {
+        let (a, b) = (base + off, base + off + n);
+        maps.lines().any(|l| {
+            let mut it = l.split_whitespace();
+            let range = it.next().unwrap_or("");
+            let perms = it.next().unwrap_or("");
+            let path = it.nth(3).unwrap_or("");
+            let Some((s, e)) = range.split_once('-') else { return false };
+            let (s, e) = (usize::from_str_radix(s, 16).unwrap_or(0), usize::from_str_radix(e, 16).unwrap_or(0));
+            path == exe && perms.starts_with("r-x") && s <= a && b <= e
+        })
+    };
+    if !inside(TICK_FN_OFF, TICK_FN_SIGNATURE.len())
+        || !inside(TICK_CALL_SITE_OFF, TICK_CALL_SITE_SIGNATURE.len())
+        || !inside(TICK_CLOCK_WRITE_OFF, TICK_CLOCK_WRITE_SIGNATURE.len())
+    {
+        log(b"FKSHIM tickhook: REFUSED, signature offsets are not inside the main module's text\n");
+        _exit(92)
+    }
+    if let Err(what) = tick_hook_signatures_match(base) {
+        log(b"FKSHIM tickhook: REFUSED, signature mismatch: ");
+        log(what.as_bytes());
+        log(b"\n");
+        _exit(92)
+    }
+    let target = base + TICK_FN_OFF;
+    let resume = target + TICK_FN_DISPLACED;
+
+    // Trampoline. 9 GPR pushes + 0x80 for xmm0-7 keep the call 16-aligned
+    // (entry rsp = 8 mod 16, +72 +128 = 0 mod 16).
+    let mut t: Vec<u8> = Vec::with_capacity(256);
+    t.extend_from_slice(&[0x50, 0x51, 0x52, 0x56, 0x57, 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x53]);
+    t.extend_from_slice(&[0x48, 0x81, 0xec, 0x80, 0x00, 0x00, 0x00]); // sub rsp,0x80
+    t.extend_from_slice(&[0x0f, 0x11, 0x04, 0x24]); // movups [rsp],xmm0
+    for (i, r) in [0x4cu8, 0x54, 0x5c, 0x64, 0x6c, 0x74, 0x7c].iter().enumerate() {
+        t.extend_from_slice(&[0x0f, 0x11, *r, 0x24, (0x10 * (i + 1)) as u8]);
+    }
+    t.extend_from_slice(&[0x89, 0xd7, 0x89, 0xce]); // mov edi,edx ; mov esi,ecx
+    t.extend_from_slice(&[0x48, 0xb8]); // movabs rax, imm64
+    t.extend_from_slice(&(tick_entry as usize as u64).to_le_bytes());
+    t.extend_from_slice(&[0xff, 0xd0]); // call rax
+    t.extend_from_slice(&[0x0f, 0x10, 0x04, 0x24]); // movups xmm0,[rsp]
+    for (i, r) in [0x4cu8, 0x54, 0x5c, 0x64, 0x6c, 0x74, 0x7c].iter().enumerate() {
+        t.extend_from_slice(&[0x0f, 0x10, *r, 0x24, (0x10 * (i + 1)) as u8]);
+    }
+    t.extend_from_slice(&[0x48, 0x81, 0xc4, 0x80, 0x00, 0x00, 0x00]); // add rsp,0x80
+    t.extend_from_slice(&[0x41, 0x5b, 0x41, 0x5a, 0x41, 0x59, 0x41, 0x58, 0x5f, 0x5e, 0x5a, 0x59, 0x58]);
+    t.extend_from_slice(&TICK_FN_SIGNATURE[..TICK_FN_DISPLACED]);
+    t.extend_from_slice(&[0xff, 0x25, 0x00, 0x00, 0x00, 0x00]); // jmp [rip+0]
+    t.extend_from_slice(&(resume as u64).to_le_bytes());
+
+    let ps = getpagesize() as usize;
+    let page = mmap(std::ptr::null_mut(), ps, 7, 0x22 /* PRIVATE|ANON */, -1, 0);
+    if page as isize == -1 || page.is_null() {
+        log(b"FKSHIM tickhook: trampoline mmap failed\n");
+        _exit(92)
+    }
+    std::ptr::copy_nonoverlapping(t.as_ptr(), page as *mut u8, t.len());
+    // Text becomes RX again afterwards; the trampoline page stays RWX only
+    // because it is never written again and W is harmless there.
+
+    let mut patch = [0xccu8; TICK_FN_DISPLACED];
+    patch[..6].copy_from_slice(&[0xff, 0x25, 0x00, 0x00, 0x00, 0x00]);
+    patch[6..14].copy_from_slice(&(page as usize as u64).to_le_bytes());
+    let lo = target / ps * ps;
+    let hi = (target + TICK_FN_DISPLACED + ps - 1) / ps * ps;
+    if mprotect(lo as *mut c_void, hi - lo, 7) != 0 {
+        log(b"FKSHIM tickhook: mprotect(text, rwx) failed\n");
+        _exit(92)
+    }
+    std::ptr::copy_nonoverlapping(patch.as_ptr(), target as *mut u8, patch.len());
+    if mprotect(lo as *mut c_void, hi - lo, PROT_READ_EXEC) != 0 {
+        log(b"FKSHIM tickhook: mprotect(text, rx) failed\n");
+        _exit(92)
+    }
+    TICK_HOOK_INSTALLED.store(1, Ordering::SeqCst);
+    CLOCK_TICK.store(1, Ordering::SeqCst);
+}
+
+/// Before `main`: pick the clock. `FKSHIM_CLOCK=tick` installs the hook or
+/// dies; `lroundf` (or unset) keeps the legacy clock. `shimhost` has no server
+/// text and runs with the env unset.
+unsafe extern "C" fn init_clock_mode() {
+    let mode = std::env::var_os("FKSHIM_CLOCK");
+    let is_tick = mode.as_deref().map(|v| v == "tick").unwrap_or(false);
+    if !is_tick {
+        if let Some(v) = mode {
+            if v != "lroundf" {
+                log(b"FKSHIM: FKSHIM_CLOCK must be `tick` or `lroundf`\n");
+                _exit(92)
+            }
+        }
+        return;
+    }
+    let base = main_module_base();
+    MODULE_BASE.store(base, Ordering::SeqCst);
+    install_tick_hook();
+}
+
+#[used]
+#[cfg_attr(target_os = "linux", link_section = ".init_array")]
+static CLOCK_MODE_INIT: unsafe extern "C" fn() = init_clock_mode;
+
 unsafe extern "C" fn validator_trap_handler(_sig: c_int, _info: *const u8, ctx: *mut c_void) {
     let at = VALIDATOR_TRAP_ADDR.load(Ordering::Relaxed);
     if at == 0 || ctx.is_null() {
@@ -1507,7 +1733,7 @@ unsafe fn forkserver() {
     hello.extend_from_slice(b"READY ");
     utoa(base as u64, &mut hello);
     hello.push(b' ');
-    utoa(N_LROUNDF.load(Ordering::Relaxed), &mut hello);
+    utoa(clock_now(), &mut hello);
     // The branch's own pid, so the driver that now owns this node can end it.
     // A node the driver cannot kill is an orphan holding a 150 MB address
     // space, and a beam of them is how a box dies.
@@ -1523,6 +1749,17 @@ unsafe fn forkserver() {
     );
     hello.push(b' ');
     utoa(VALIDATOR_SIM.load(Ordering::SeqCst) as u64, &mut hello);
+    // The clock the checkpoint is keyed on, and where the engine actually is:
+    // `tick <sim_ms>` under the tick hook (the stop is at the START of the
+    // tick whose new_time is sim_ms; nothing of it has been consumed), or
+    // `lroundf 0` under the legacy clock.
+    hello.push(b' ');
+    if CLOCK_TICK.load(Ordering::Relaxed) != 0 {
+        hello.extend_from_slice(b"tick ");
+        utoa(SIM_MS.load(Ordering::Relaxed), &mut hello);
+    } else {
+        hello.extend_from_slice(b"lroundf 0");
+    }
     send_frame(res, &hello);
 
     loop {
@@ -1748,9 +1985,7 @@ unsafe fn forkserver() {
             // process entering the fork server twice, and `BRANCH_ARMED` is the
             // one-use licence that lets THIS child past the `IS_CHILD` guard.
             CKPT_AT.store(
-                N_LROUNDF
-                    .load(Ordering::Relaxed)
-                    .saturating_add(stop_after.max(1)),
+                clock_now().saturating_add(stop_after.max(1)),
                 Ordering::SeqCst,
             );
             ARMED.store(0, Ordering::SeqCst);
@@ -1875,7 +2110,7 @@ unsafe fn forkserver() {
                     if sbudget == 0 {
                         0
                     } else {
-                        N_LROUNDF.load(Ordering::Relaxed) + sbudget
+                        clock_now() + sbudget
                     },
                     Ordering::SeqCst,
                 );
@@ -2386,6 +2621,30 @@ pub unsafe extern "C" fn lroundf(x: f32) -> i64 {
         REAL_LROUNDF.store(p, Ordering::Relaxed);
     }
     let n = N_LROUNDF.fetch_add(1, Ordering::Relaxed) + 1;
+    if CLOCK_TICK.load(Ordering::Relaxed) == 0 {
+        on_clock(n);
+    }
+    let f: unsafe extern "C" fn(f32) -> i64 = std::mem::transmute(p);
+    f(x)
+}
+
+/// The current clock reading: ticks (`sim_ms / 10`) under the tick hook,
+/// `lroundf` calls otherwise. Every stride, deadline, budget and checkpoint in
+/// this file is in these units.
+#[inline(always)]
+fn clock_now() -> u64 {
+    if CLOCK_TICK.load(Ordering::Relaxed) != 0 {
+        SIM_MS.load(Ordering::Relaxed) / 10
+    } else {
+        N_LROUNDF.load(Ordering::Relaxed)
+    }
+}
+
+/// The clock dispatch: sampling / watchdog, the SIGSTOP checkpoint, and the
+/// fork-server checkpoint. Called once per clock unit -- per tick from
+/// `tick_entry`, per `lroundf` call in the legacy mode.
+#[inline(always)]
+unsafe fn on_clock(n: u64) {
     if n >= SAMPLE_NEXT.load(Ordering::Relaxed) {
         if WATCH_ON.load(Ordering::Relaxed) != 0 {
             do_watch(n);
@@ -2403,13 +2662,17 @@ pub unsafe extern "C" fn lroundf(x: f32) -> i64 {
     {
         forkserver();
     }
-    let f: unsafe extern "C" fn(f32) -> i64 = std::mem::transmute(p);
-    f(x)
 }
 
 fn emit() {
     if IS_CHILD.load(Ordering::Relaxed) == 0 {
         logn(b"FKSHIM lroundf_total ", N_LROUNDF.load(Ordering::Relaxed));
+        if TICK_HOOK_INSTALLED.load(Ordering::Relaxed) != 0 {
+            logn(b"FKSHIM tick_total ", N_TICK.load(Ordering::Relaxed));
+            logn(b"FKSHIM sim_ms0 ", SIM_MS0.load(Ordering::Relaxed));
+            logn(b"FKSHIM sim_ms_end ", SIM_MS.load(Ordering::Relaxed));
+            logn(b"FKSHIM tick_anomalies ", TICK_ANOMALIES.load(Ordering::Relaxed));
+        }
     }
 }
 

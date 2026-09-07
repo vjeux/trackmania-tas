@@ -41,9 +41,6 @@ use tmexplore::action::Input;
 use tmexplore::branch::{Advance, Branch, BranchErr, CarState, Handle};
 use tmexplore::outcome::Verdict;
 
-/// `lroundf` calls per simulated 10 ms tick, measured on this engine. Used
-/// ONLY to bound how far a child runs. Nothing is ever labelled from it.
-const LROUNDF_PER_TICK: u64 = 255;
 
 pub struct ForkOpts {
     pub work: PathBuf,
@@ -226,7 +223,10 @@ impl ForkBranch {
         // Bit 31 of `max` makes the child exit as soon as the sample budget is
         // spent rather than simulating on in silence.
         let samples = (n as u32).saturating_add(4);
-        let budget = ((n as u64 + 4) * LROUNDF_PER_TICK).min(u32::MAX as u64) as u32;
+        // Clock units per tick: 1 under the tick hook, ~255 lroundf calls under
+        // the legacy clock. Only bounds how far the child runs; nothing is
+        // labelled from it.
+        let budget = ((n as u64 + 4) * forkoracle::clock::per_tick()).min(u32::MAX as u64) as u32;
         let (json, blob) = self.srv.run_sampled_segs_ex(
             self.from,
             &recs,

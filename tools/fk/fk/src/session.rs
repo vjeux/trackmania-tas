@@ -100,7 +100,10 @@ pub enum Checkpoint {
 /// [`Session::probe_tick`] to learn where the server actually stopped, and
 /// never label a sample from this.
 pub fn clock_for_race_ms(ms: i64) -> u64 {
-    (36141.0 + 25.483 * ms as f64).max(1000.0) as u64
+    // Under the tick hook (the default) this is exact and the fit above is
+    // history; `FK_CLOCK=lroundf` brings the fit back. One definition, in
+    // `forkoracle::clock`.
+    forkoracle::clock::ckpt_for_race_ms(ms)
 }
 
 /// The TOTAL `lroundf` count for one full validation of `ghost` on `map`.
@@ -143,14 +146,20 @@ pub fn total_clock(
         .args(["/nodaemon", "/validatepath=."])
         .current_dir(&dir)
         .env("LD_PRELOAD", shim.canonicalize().map_err(|e| e.to_string())?)
+        .env("FKSHIM_CLOCK", forkoracle::clock::shim_env())
         .output()
         .map_err(|e| format!("launching the server: {}", e))?;
     let _ = std::fs::remove_dir_all(&dir);
+    // Tick mode: the total is the engine's final simulation time in ticks
+    // (`sim_ms_end / 10`), which is the unit the checkpoint is in.
+    let prefix = if forkoracle::clock::tick_mode() { "FKSHIM sim_ms_end " } else { "FKSHIM lroundf_total " };
+    let div = if forkoracle::clock::tick_mode() { 10 } else { 1 };
     String::from_utf8_lossy(&out.stderr)
         .lines()
-        .find_map(|l| l.strip_prefix("FKSHIM lroundf_total ")?.trim().parse().ok())
+        .find_map(|l| l.strip_prefix(prefix)?.trim().parse::<u64>().ok())
+        .map(|v| v / div)
         .ok_or_else(|| {
-            "the shim did not report an lroundf total -- is LD_PRELOAD reaching the server?"
+            "the shim did not report a clock total -- is LD_PRELOAD reaching the server?"
                 .to_string()
         })
 }
@@ -248,7 +257,9 @@ impl Session {
     /// the incumbent's score, so `delta == 0` is accepted and that lineage is
     /// contaminated for free.
     pub fn probe_tick(&mut self) -> Result<usize, String> {
-        self.srv.probe_tick()
+        // With the control: under the tick hook the probe must equal the tick
+        // the engine says it stopped in front of.
+        self.srv.boundary_tick(self.tape.start_offset_ms)
     }
 }
 
