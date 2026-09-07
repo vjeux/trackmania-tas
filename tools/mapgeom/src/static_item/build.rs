@@ -1755,6 +1755,12 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
     if geometry_externals.len() > 1 {
         m.notes.push(format!("{} geometry variants; baked the first ({})", geometry_externals.len(), first.rsplit('\\').next().unwrap_or(&first)));
     }
+    // A vegetation CLUSTER item (Stadium's `Spring` / `SpringCherryTree`:
+    // a prefab of tree entities and nothing else) has no mesh to bake; the
+    // caller places its trees as stock items from `m.veget`.
+    if m.visuals.is_empty() && !m.veget.is_empty() {
+        return Ok((Vec::new(), m));
+    }
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors };
     let f = assemble(&m, &opts)?;
     Ok((super::write_file(&f), m))

@@ -394,15 +394,22 @@ pub fn cmd(args: &[String]) {
     let mut specs = Vec::with_capacity(source.blocks.len() + source.items.len());
     // Preserve original item records and their lookback IDs in place. They only
     // need fixed-size placement edits.
+    let mut prefab_trees = 0usize;
+    // Trees of dropped vegetation-cluster items, appended AFTER the original
+    // item slots (spec i is item slot i up to original_items).
+    let mut cluster_trees: Vec<Spec> = Vec::new();
     let mut repointed_items = 0usize;
     let mut dropped_items = 0usize;
     for it in &source.items {
         match mapping.items_by_index.get(&it.index) {
             // "-": intentionally gone (procedural vegetation the tiny map
-            // cannot shrink); the slot is parked far below the map.
+            // cannot shrink); the slot is parked far below the map. A
+            // vegetation CLUSTER item leaves its trees behind as stock items
+            // (`v@<model>` rows) at the placement's position and yaw.
             Some(map) if map.model == "-" => {
                 dropped_items += 1;
                 specs.push(Spec { model: it.model.clone(), pos: [8.0, -900.0, 8.0], yaw: 0.0, frame: None, scale: 1.0, tag: None, color: 0 });
+                prefab_trees += push_veget(&mut cluster_trees, &mapping, &it.model, transform(it.pos, source_anchor, target_anchor, scale), it.yaw, colors.item(it.index));
             }
             // Re-pointed at an embedded copy whose geometry already carries
             // the scale: the placement stays where it is at scale 1.
@@ -430,6 +437,7 @@ pub fn cmd(args: &[String]) {
         }
     }
     let original_items = specs.len();
+    specs.extend(cluster_trees);
     let mut empty_blocks = 0usize;
     // Zone (terrain) blocks REPLACED by a block designed for that terrain: a
     // `PlatformGrassOnLandHillSlopeBase` / `PlatformGrassBaseOnLandHill2` /
@@ -460,7 +468,6 @@ pub fn cmd(args: &[String]) {
         }
     }
     let mut replaced_terrain = 0usize;
-    let mut prefab_trees = 0usize;
     // Authored blocks occupy appended clones.
     for b in &source.blocks {
         let map = mapping

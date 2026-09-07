@@ -60,6 +60,17 @@ fn veget_substitute(collection: u32, model: &str) -> Option<&'static str> {
     // becomes one thin small tree (the original forest is tall thin trunks
     // with light canopies), a Grove one small bushy tree, an Ecotone (the
     // forest edge) one medium bush.
+    // Stadium (0x1a) "Japan" set (Summer 05: 384 `Spring` clusters, 69
+    // `SpringCherryTree`, 18 CypressTall): SpringTree in Big / Tall / Medium /
+    // Small / VerySmall, CherryTreeMedium, CypressTall, SpringPalmTree.
+    if collection == 0x1a {
+        return Some(match model {
+            "SpringTreeBig" | "SpringTreeTall" | "SpringTreeMedium" => "SpringTreeSmall",
+            "SpringTreeSmall" => "SpringTreeVerySmall",
+            "Spring" | "SpringCherryTree" => "CherryTreeMedium",
+            _ => return None,
+        });
+    }
     if collection == 0xf {
         return Some(match model {
             "Forest" => "TreeThinSmallA",
@@ -403,6 +414,22 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 files.insert(format!("Items/{ident}"), out);
                 item_map.insert(model.clone(), ident.clone());
                 outcomes.push(Outcome { alias: ident, kind: "item", source: model.clone(), placements: *n, result: Ok(summary) });
+            }
+            // A vegetation cluster (a prefab of tree entities, no mesh): the
+            // placement is dropped and its trees placed as stock items
+            // (`v@<model>` rows, keyed by the ITEM model name), each one step
+            // smaller, at the item's position and yaw — Stadium's `Spring`
+            // (384 in Summer 05) is 3-6 spring trees and a cypress.
+            Ok((_, m)) if !m.veget.is_empty() && veget_mode == "substitute" => {
+                let mut placed = 0usize;
+                for (p, iso) in &m.veget {
+                    let Some(item) = veget_item(store, collection, p, &mut veget_cache) else { continue };
+                    let yaw = (-iso[2]).atan2(iso[0]);
+                    veget_rows.push_str(&format!("v@{model}\t{item}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\n", iso[9] * scale, iso[10] * scale, iso[11] * scale, yaw));
+                    placed += 1;
+                }
+                item_map.insert(model.clone(), "-".into());
+                outcomes.push(Outcome { alias: "-".into(), kind: "item", source: model.clone(), placements: *n, result: Ok(format!("vegetation cluster: {} of {} trees re-emitted as stock items per placement", placed, m.veget.len())) });
             }
             Ok((_, m)) => outcomes.push(Outcome { alias: String::new(), kind: "item", source: model.clone(), placements: *n, result: Err(format!("no visuals; notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | "))) }),
             Err(e) if e.contains("procedural vegetation") => match veget_mode {
