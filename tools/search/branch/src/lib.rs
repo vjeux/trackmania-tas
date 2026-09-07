@@ -110,6 +110,17 @@ pub struct ForkAnswer {
     pub raw: String,
 }
 
+/// What an `advance_budget` produced.
+pub enum Advanced {
+    /// A new paused node, and the rows on the way to it.
+    Node(StateTrace, Handle),
+    /// The engine ENDED THE RUN inside the macro (the car left the world, the
+    /// validator declared the replay invalid, the declared time was reached):
+    /// the child exited instead of pausing. The rows it traced before that
+    /// are returned; there is no node.
+    RunEnded(StateTrace),
+}
+
 /// What [`Forest::calibrate_clock`] measured.
 #[derive(Clone, Copy, Debug)]
 pub struct ClockCal {
@@ -246,7 +257,14 @@ impl Forest {
         from: usize,
         k_ticks: u64,
     ) -> Result<(StateTrace, Handle), String> {
-        self.advance_budget(h, inputs, from, (k_ticks * LROUNDF_PER_TICK).max(1))
+        match self.advance_budget(h, inputs, from, (k_ticks * LROUNDF_PER_TICK).max(1))? {
+            Advanced::Node(t, id) => Ok((t, id)),
+            Advanced::RunEnded(_) => Err(format!(
+                "the branch child exited before reaching its stop point: the engine ended the run \
+                 inside this macro (handle {:?}, from tick {})",
+                h, from
+            )),
+        }
     }
 
     /// [`Forest::advance`] with the child's stop given as a raw `lroundf`
@@ -259,7 +277,7 @@ impl Forest {
         inputs: &[Rec],
         from: usize,
         lroundf_budget: u64,
-    ) -> Result<(StateTrace, Handle), String> {
+    ) -> Result<Advanced, String> {
         // THE FORWARD-ONLY REFUSAL. Checked here against the parent's own
         // probe, and again inside `tree::Node::branch` for a node, so a caller
         // reaching past this API still cannot get underneath it.
@@ -314,7 +332,22 @@ impl Forest {
             _ => self.held_mut(h)?.node.branch(&req)?,
         };
 
-        let mut node = self.tree.accept(forkoracle::forksrv::frame_timeout_ms())?;
+        let mut node = match self.tree.accept_expecting(pid, forkoracle::forksrv::frame_timeout_ms())? {
+            Some(n) => n,
+            None => {
+                // The engine ended the run inside this macro. Whatever the
+                // child traced before it stopped simulating is real state;
+                // the caller decides what an ended run means.
+                let trace = if trace_path.as_os_str().is_empty() {
+                    Vec::new()
+                } else {
+                    let t = self.read_trace(&trace_path).unwrap_or_default();
+                    let _ = std::fs::remove_file(&trace_path);
+                    t
+                };
+                return Ok(Advanced::RunEnded(trace));
+            }
+        };
         if node.pid != pid {
             // A node is only the node you asked for if it says so itself. Two
             // branches in flight on one server would otherwise be told apart by
@@ -354,7 +387,7 @@ impl Forest {
         };
 
         self.nodes.insert(id, Held { node, trace: trace_path, written });
-        Ok((trace, id))
+        Ok(Advanced::Node(trace, id))
     }
 
     /// **`finish(handle) -> the facts a Verdict is made of`** — fork a child

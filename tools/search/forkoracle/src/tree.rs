@@ -132,6 +132,73 @@ impl Tree {
         Ok(n)
     }
 
+    /// [`Tree::accept`], but give up EARLY if `pid` -- the child that was told
+    /// to connect -- has already exited.
+    ///
+    /// A branch child stops at an `lroundf` count. When the engine ENDS THE
+    /// RUN inside the child's budget (the car fell off the world, the validator
+    /// declared the replay invalid, the declared time was reached) it stops
+    /// calling `lroundf`, finishes the validation and exits -- and the plain
+    /// `accept` waits the whole 120 s watchdog for a node that will never
+    /// come. Measured on Summer 2026 - 01: one such child per ~200 random
+    /// tapes, each a 120 s hang. Distinguishing "exited" from "not yet" turns
+    /// the hang into an episode end.
+    pub fn accept_expecting(&mut self, pid: i32, timeout_ms: i32) -> Result<Option<Node>, String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(0) as u64);
+        let proc_path = format!("/proc/{}", pid);
+        let mut polls = 0u32;
+        let stream = loop {
+            match self.listener.accept() {
+                Ok((s, _)) => break s,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(format!(
+                            "no branch node connected within {} ms -- the child either never \
+                             reached its stop point or could not reach {}",
+                            timeout_ms,
+                            self.path.display()
+                        ));
+                    }
+                    polls += 1;
+                    // /proc/<pid> vanishes when the child is reaped; a zombie
+                    // still has one but reads as State: Z.
+                    if polls % 50 == 0 {
+                        let gone = match std::fs::read_to_string(format!("{}/stat", proc_path)) {
+                            Err(_) => true,
+                            Ok(s) => s.split(')').nth(1).map(|r| r.trim_start().starts_with('Z')).unwrap_or(true),
+                        };
+                        if gone {
+                            // one last look, in case it connected just before exiting
+                            if let Ok((s, _)) = self.listener.accept() {
+                                break s;
+                            }
+                            return Ok(None);
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                }
+                Err(e) => return Err(format!("accept: {}", e)),
+            }
+        };
+        stream.set_nonblocking(false).map_err(|e| e.to_string())?;
+        let mut n = Node { sock: stream, base: 0, clock: 0, pid: -1, boundary: None, dead: false };
+        let hello = read_frame(&mut n.sock).ok_or("a branch node connected and said nothing")?;
+        let s = String::from_utf8_lossy(&hello).into_owned();
+        let (base, clock, pid) = parse_ready(&s)?;
+        let pid = pid.ok_or_else(|| {
+            format!(
+                "a branch node handshook without naming its pid ({:?}) -- a node the driver \
+                 cannot kill is an orphan holding a 150 MB address space",
+                s.trim()
+            )
+        })?;
+        n.base = base;
+        n.clock = clock;
+        n.pid = pid;
+        self.live.push(pid);
+        Ok(Some(n))
+    }
+
     /// Forget a node the caller has already destroyed.
     pub fn reaped(&mut self, pid: i32) {
         self.live.retain(|p| *p != pid);

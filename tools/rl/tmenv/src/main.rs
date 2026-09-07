@@ -94,6 +94,8 @@ fn main() {
         Some("probe-scan") => probe_scan(&a),
         Some("geom-export") => geom_export(&a),
         Some("cpfind") => cpfind_cmd(&a),
+        Some("oracle-cut") => oracle_cut(&a),
+        Some("cp-oracle-control") => cp_oracle_control(&a),
         Some("bench-sweep") => bench_sweep(&a),
         Some("reset-anywhere-control") => reset_anywhere_control(&a),
         _ => {
@@ -2597,4 +2599,290 @@ fn cpfind_cmd(a: &[String]) {
         }
         println!("{} stable (object, offset) pair(s)", n);
     }
+}
+
+// ---------------------------------------------------------- cp-oracle-control
+
+/// G1 stage 2: the engine counter the env reads per tick vs the plain
+/// oracle's count on the SAME tape, over many varied tapes. See
+/// env/controls/2026-09-06-G1-cp-counter/BAR.md.
+fn cp_oracle_control(a: &[String]) {
+    let p = paths(a);
+    let n_tapes: usize = num(a, "--tapes", 200);
+    let workers: usize = num(a, "--workers", 40);
+    let seed: u64 = num(a, "--seed", 20260906);
+    let bank = PathBuf::from(flag(a, "--bank").unwrap_or_else(|| p.work.join("cpo").to_string_lossy().into_owned()));
+    std::fs::create_dir_all(&bank).unwrap_or_else(|e| die(e.to_string()));
+    println!("# tmenv cp-oracle-control  {n_tapes} tapes  {workers} workers  seed {seed}");
+    let track = std::sync::Arc::new(measured_track(&p).unwrap_or_else(|e| die(e)));
+    let n_gates = track.n_gates();
+    println!("map        {}  {} gates (finish last)", track.pack.name, n_gates);
+    // Donor tapes (steer, gas, brake per tick) for the prefixes: `--ghosts A,B,...`
+    let donors: std::sync::Arc<Vec<(Vec<u8>, Vec<u8>, Vec<u8>, i32)>> = std::sync::Arc::new(
+        flag(a, "--ghosts")
+            .map(|s| {
+                s.split(',')
+                    .map(|g| {
+                        let t = fk::tape::Tape::load(g.trim()).unwrap_or_else(|e| die(e));
+                        (t.steer.clone(), t.accel.clone(), t.brake.clone(), t.start_offset_ms)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    );
+    println!("donors     {} ghost tape(s) for the prefixes", donors.len());
+
+    struct Out {
+        i: usize,
+        policy: &'static str,
+        engine_cps: Option<u32>,
+        geom_cps: usize,
+        ticks: usize,
+        path: PathBuf,
+    }
+    let t0 = Instant::now();
+    let mut outs: Vec<Out> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..workers)
+            .map(|w| {
+                let p = &p;
+                let a = a.to_vec();
+                let track = track.clone();
+                let bank = bank.clone();
+                let donors = donors.clone();
+                sc.spawn(move || {
+                    let work = p.work.join(format!("cpo-w{w}"));
+                    let (mut env, _rig, tape) = build_env_shared(p, &a, &work, track);
+                    env.allow_after_done = true;
+                    let n_act = env.n_actions();
+                    let fwd = ActionSpace::default().forward();
+                    let mut outs = Vec::new();
+                    let mut i = w;
+                    while i < n_tapes {
+                        let mut rng = Sm(seed.wrapping_add(i as u64 * 0x9E37_79B9));
+                        let policy = match i % 4 {
+                            0 => "forward-biased (25% random)",
+                            1 => "pure random, held",
+                            2 => "forward with rare hard steer",
+                            _ => "forward, gentle steer only",
+                        };
+                        env.reset().unwrap_or_else(|e| die(e));
+                        // A real ghost's tape up to a random cut, then the policy: the
+                        // only way random driving ever reaches the later checkpoints,
+                        // so the oracle's counts are VARIED (0..=4, finishes included)
+                        // and the agreement is tested where it matters. The ghost
+                        // inputs are the CONTROL's, fed tick by tick through
+                        // step_ticks like any other action; the env learns nothing.
+                        let cut = if donors.is_empty() {
+                            0
+                        } else {
+                            let d = &donors[i % donors.len()];
+                            // align by RACE time: donor tick k <-> env tick t when
+                            // k*10 + donor_offset == t*10 + template_offset
+                            let shift: i64 = (tape.start_offset_ms as i64 - d.3 as i64) / 10;
+                            let cut = 200 + rng.below(d.0.len().saturating_sub(300));
+                            let mut t = env.core.tick().max(0);
+                            let mut stop = false;
+                            while t + 10 <= cut && !stop {
+                                let chunk: Vec<tmstate::Action> = (t..t + 10)
+                                    .map(|k| {
+                                        let j = ((k as i64 + shift).max(0) as usize).min(d.0.len() - 1);
+                                        tmstate::Action { steer: d.0[j] as i8, gas: d.1[j] != 0, brake: d.2[j] != 0 }
+                                    })
+                                    .collect();
+                                let (_o, _r, dn, _i) = env.step_ticks(&chunk).unwrap_or_else(|e| die(e));
+                                stop = matches!(dn, Some(Done::Finished) | Some(Done::TickCap) | Some(Done::RunEnded));
+                                t = env.core.tick();
+                            }
+                            cut
+                        };
+                        let mut held = fwd;
+                        let mut stalled = 0usize;
+                        loop {
+                            if matches!(env.core.done(), Some(Done::Finished) | Some(Done::TickCap) | Some(Done::RunEnded)) {
+                                break;
+                            }
+                            let idx = match i % 4 {
+                                0 => if rng.below(4) == 0 { rng.below(n_act) } else { fwd },
+                                1 => {
+                                    if rng.below(3) == 0 {
+                                        held = rng.below(n_act);
+                                    }
+                                    held
+                                }
+                                2 => if rng.below(12) == 0 { [0usize, 16][rng.below(2)] } else { fwd },
+                                _ => [4usize, 8, 12][rng.below(3)],
+                            };
+                            let t_before = env.core.tick();
+                            let (_o, _r, d, _i) = env.step(idx).unwrap_or_else(|e| die(e));
+                            // A FINISH ends the validator's simulation; so does the
+                            // declared time. A child asked to run past either never
+                            // reaches its stop point (a 120 s hang), so stop at the
+                            // finish, 30 ticks short of the tape, and after three
+                            // steps that advanced no tick at all.
+                            stalled = if env.core.tick() == t_before { stalled + 1 } else { 0 };
+                            if d == Some(Done::TickCap)
+                                || d == Some(Done::Finished)
+                                || d == Some(Done::RunEnded)
+                                || d == Some(Done::RunEnded)
+                                || env.core.tick() + 30 >= tape.n()
+                                || stalled >= 3
+                            {
+                                break;
+                            }
+                        }
+                        let _ = cut;
+                        let rec = env.rollout_record();
+                        let engine_cps = rec.trace.last().and_then(|r| if r.cps == u32::MAX { None } else { Some(r.cps) });
+                        let path = bank.join(format!("tape-{i:03}.Ghost.Gbx"));
+                        // the driven prefix, then brake: the oracle judges THIS file
+                        let (s, g, b) = env.banked_tape(&tape);
+                        tape.write_candidate(&s, &g, &b, &path).unwrap_or_else(|e| die(e));
+                        outs.push(Out {
+                            i,
+                            policy,
+                            engine_cps,
+                            geom_cps: env.core.geometric_gates_hit(),
+                            ticks: rec.trace.len(),
+                            path,
+                        });
+                        i += workers;
+                    }
+                    outs
+                })
+            })
+            .collect();
+        hs.into_iter().flat_map(|h| h.join().expect("worker panicked")).collect()
+    });
+    outs.sort_by_key(|o| o.i);
+    println!("drove {} tapes in {:.1} s; handing them to the plain oracle", outs.len(), t0.elapsed().as_secs_f64());
+
+    let files: Vec<PathBuf> = outs.iter().map(|o| o.path.clone()).collect();
+    let t1 = Instant::now();
+    let batch = tmauto::oracle::validate_raw(&p.server, &files, tmauto::oracle::Maps::One(&p.map), "cpo")
+        .unwrap_or_else(|e| die(e));
+    let _ = std::fs::write(bank.join("oracle-transcript.json"), &batch.raw);
+    let _ = std::fs::write(bank.join("oracle-stderr.txt"), &batch.err);
+    if batch.answers.len() != files.len() {
+        die(format!(
+            "the oracle answered {} of {} files -- answers are matched by ORDER and the count must agree",
+            batch.answers.len(),
+            files.len()
+        ));
+    }
+    println!("oracle     {} answers in {:.1} s", batch.answers.len(), t1.elapsed().as_secs_f64());
+
+    let mut agree = 0usize;
+    let mut disagree = 0usize;
+    let mut geom_agree = 0usize;
+    let mut refused = 0usize;
+    let mut finishes = 0usize;
+    let mut unreported = 0usize;
+    let mut by_count: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
+    let mut lines = String::from("tape\tpolicy\toracle\toracle_cps\tengine_cps\tgeom_cps\tticks\n");
+    for (o, ans) in outs.iter().zip(batch.answers.iter()) {
+        let ov = ans.verdict();
+        let oracle_cps: Option<u32> = match ov {
+            Some(tmauto::Verdict::Dnf { cps }) => Some(cps),
+            Some(tmauto::Verdict::Finish { .. }) => {
+                finishes += 1;
+                Some(n_gates as u32)
+            }
+            None => {
+                refused += 1;
+                None
+            }
+        };
+        if let Some(c) = oracle_cps {
+            *by_count.entry(c).or_default() += 1;
+        }
+        // The server prints a DNF's count only from 2 up (tmauto
+        // `Answer::cps_reported`): a bare "wrong simu" is 0 OR 1, and the
+        // engine's 0 or 1 both agree with it. From 2 up, and for a finish, the
+        // count is exact and must match exactly.
+        let reported = ans.cps_reported();
+        let ok = match (oracle_cps, o.engine_cps) {
+            (Some(oc), Some(ec)) if reported => oc == ec,
+            (Some(_), Some(ec)) => ec <= 1,
+            _ => false,
+        };
+        if !reported && oracle_cps.is_some() {
+            unreported += 1;
+        }
+        if ok {
+            agree += 1;
+        } else {
+            disagree += 1;
+            println!(
+                "  tape {:03} [{}]: oracle {:?} -> {:?}, engine cps {:?}, geometric {}  DISAGREE",
+                o.i, o.policy, ov, oracle_cps, o.engine_cps, o.geom_cps
+            );
+        }
+        if oracle_cps == Some(o.geom_cps as u32) {
+            geom_agree += 1;
+        }
+        lines.push_str(&format!(
+            "{}\t{}\t{:?}\t{:?}\t{:?}\t{}\t{}\n",
+            o.i, o.policy, ov, oracle_cps, o.engine_cps, o.geom_cps, o.ticks
+        ));
+    }
+    let _ = std::fs::write(bank.join("per-tape.tsv"), lines);
+    println!();
+    println!("oracle checkpoint counts over the {} tapes: {:?}  (finishes {}, refusals {}, counts UNREPORTED -- bare wrong simu = 0 or 1 -- {})", outs.len(), by_count, finishes, refused, unreported);
+    println!("ENGINE COUNTER vs oracle : {agree} agree, {disagree} disagree");
+    println!("geometric detector vs oracle: {geom_agree} agree, {} disagree  (the number it replaces)", outs.len() - geom_agree);
+    let pass = disagree == 0 && refused == 0 && agree == outs.len();
+    println!("G1 oracle agreement      {}", if pass { "PASS" } else { "FAIL" });
+    if !pass {
+        std::process::exit(1);
+    }
+}
+
+// -------------------------------------------------------------- oracle-cut
+
+/// What does the plain oracle SAY about a ghost's own tape cut at tick T and
+/// braked to the end? The answer decides whether the oracle reports a
+/// checkpoint count for a DNF at all on this container (LEARN: a bare
+/// "wrong simu" was being read as `Dnf { cps: 0 }`).
+fn oracle_cut(a: &[String]) {
+    let p = paths(a);
+    let g = flag(a, "--ghost").unwrap_or_else(|| die("--ghost FILE is required".into()));
+    let cuts: Vec<usize> = flag(a, "--cuts")
+        .unwrap_or_else(|| "600,1200,1700,2050".into())
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    std::fs::create_dir_all(&p.work).unwrap_or_else(|e| die(e.to_string()));
+    let t = fk::tape::Tape::load(&g).unwrap_or_else(|e| die(e));
+    let n = t.n();
+    let mut files = Vec::new();
+    for c in &cuts {
+        let c = (*c).min(n);
+        let mut s = t.steer.clone();
+        let mut ga = t.accel.clone();
+        let mut b = t.brake.clone();
+        for k in c..n {
+            s[k] = 0;
+            ga[k] = 0;
+            b[k] = 1;
+        }
+        let out = p.work.join(format!("cut-{c:05}.Ghost.Gbx"));
+        t.write_candidate(&s, &ga, &b, &out).unwrap_or_else(|e| die(e));
+        files.push(out);
+    }
+    let batch = tmauto::oracle::validate_raw(&p.server, &files, tmauto::oracle::Maps::One(&p.map), "cut")
+        .unwrap_or_else(|e| die(e));
+    println!("ghost {g}  ({n} ticks, start offset {} ms)", t.start_offset_ms);
+    for (f, ans) in files.iter().zip(batch.answers.iter()) {
+        println!(
+            "{}: verdict {:?}  time {:?}  cps {:?}  is_valid {:?}  desc {:?}",
+            f.file_name().unwrap().to_string_lossy(),
+            ans.verdict(),
+            ans.time_ms,
+            ans.cps,
+            ans.is_valid,
+            ans.desc.trim()
+        );
+    }
+    let _ = std::fs::write(p.work.join("oracle-cut-transcript.json"), &batch.raw);
+    println!("transcript {}", p.work.join("oracle-cut-transcript.json").display());
 }

@@ -37,6 +37,10 @@ pub enum Done {
     NoProgress,
     /// Ran out of tape.
     TickCap,
+    /// The ENGINE ended the run inside a step: the car left the world, the
+    /// validator declared the replay invalid, or the declared time was
+    /// reached. The rows up to that point are real; nothing follows them.
+    RunEnded,
 }
 
 #[derive(Clone, Debug)]
@@ -249,6 +253,15 @@ impl Core {
 
     pub fn done(&self) -> Option<Done> {
         self.done
+    }
+
+    /// End the episode from outside (the engine ended the run). Sticky, like
+    /// every other termination; a crash penalty is not charged for it.
+    pub fn end(&mut self, why: Done) {
+        // Overrides a softer verdict already recorded (OffRoute, NoProgress):
+        // there is no engine left to step, and that is the fact a caller that
+        // kept stepping past the soft cut must see.
+        self.done = Some(why);
     }
 
     pub fn tick(&self) -> usize {

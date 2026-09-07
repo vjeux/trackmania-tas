@@ -80,6 +80,13 @@ pub struct ForkEnv {
     snaps: std::collections::HashMap<u64, Snap>,
     pinned: std::collections::HashSet<Handle>,
     next_snap: u64,
+    /// Keep stepping (and tracing) after the core says the episode is over.
+    /// For controls that must run a WHOLE tape so the oracle and the env are
+    /// judging the same file; the core stops scoring at `done` regardless.
+    pub allow_after_done: bool,
+    /// The engine ended the run on the current node; nothing can be stepped
+    /// until `reset`/`reset_to`.
+    run_ended: bool,
 }
 
 /// A kept state, for `reset_to`.
@@ -166,6 +173,8 @@ impl ForkEnv {
             snaps: std::collections::HashMap::new(),
             pinned: std::collections::HashSet::new(),
             next_snap: 1,
+            allow_after_done: false,
+            run_ended: false,
         })
     }
 
@@ -181,6 +190,7 @@ impl ForkEnv {
     pub fn reset(&mut self) -> Result<Vec<f32>, String> {
         self.leave_cur();
         self.cur = ROOT;
+        self.run_ended = false;
         self.spans.clear();
         self.trace.clear();
         self.last_end = self.forest.floor(ROOT, None)?;
@@ -240,6 +250,7 @@ impl ForkEnv {
         self.leave_cur();
         let s = &self.snaps[&id.0];
         self.cur = s.node;
+        self.run_ended = false;
         self.core = s.core.clone();
         self.spans = s.spans.clone();
         self.trace = s.trace.clone();
@@ -283,7 +294,10 @@ impl ForkEnv {
     /// fork.** Reward is summed over the chunk, `done` is the first
     /// termination inside it, the observation is the state at its end.
     pub fn step_ticks(&mut self, chunk: &[Action]) -> Result<(Vec<f32>, f32, Option<Done>, Info), String> {
-        if self.core.done().is_some() {
+        if self.run_ended {
+            return Err("step after the engine ended the run: call reset".into());
+        }
+        if self.core.done().is_some() && !self.allow_after_done {
             return Err("step on a finished episode: call reset".into());
         }
         if chunk.is_empty() || chunk.len() > MAX_CHUNK {
@@ -322,9 +336,16 @@ impl ForkEnv {
         // ticks per k = 1 step before this). `lroundf` counts are ~263 per tick
         // against the crate's 255 estimate, so ticks/step reads ~0.97 k; the
         // tick hook (agentcloud/tickhook) makes this exact later.
-        let (all_rows, h) = self.forest.advance_budget(self.cur, &recs, from, k as u64 * branch::LROUNDF_PER_TICK + 32)?;
-        self.leave_cur();
-        self.cur = h;
+        let (all_rows, ended) = match self.forest.advance_budget(self.cur, &recs, from, k as u64 * branch::LROUNDF_PER_TICK + 32)? {
+            branch::Advanced::Node(rows, h) => {
+                self.leave_cur();
+                self.cur = h;
+                (rows, false)
+            }
+            // The engine ended the run inside this step. No node: the episode
+            // stands on the parent it was forked from, and it is over.
+            branch::Advanced::RunEnded(rows) => (rows, true),
+        };
         for (i, a) in chunk.iter().enumerate() {
             let k1 = if i + 1 == k { 2 } else { 1 };
             self.spans.push(Span { from: from + i, k: k1, act: Act { steer: a.steer as u8, gas: a.gas as u8, brake: a.brake as u8 } });
@@ -332,14 +353,24 @@ impl ForkEnv {
         self.last_end = from + held;
 
         let last_clock = all_rows.last().map(|r| r.time_ms);
+        // When the run ended the last row is the engine's final state, not a
+        // partial tick: keep it.
         let rows: Vec<Row> = match last_clock {
-            Some(lc) if all_rows.len() > 1 => all_rows.iter().filter(|r| r.time_ms < lc).cloned().collect(),
+            Some(lc) if all_rows.len() > 1 && !ended => all_rows.iter().filter(|r| r.time_ms < lc).cloned().collect(),
             _ => all_rows.clone(),
         };
 
         let before = self.core.gates_hit();
         self.trace.extend(rows.iter().cloned());
-        let out = self.core.ingest(chunk, &rows);
+        let mut out = self.core.ingest(chunk, &rows);
+        if ended {
+            // Reported whatever the core had already decided: there is no
+            // engine left to step, and a caller that keeps stepping (as a
+            // whole-tape control does past OffRoute) must see THIS.
+            self.core.end(Done::RunEnded);
+            self.run_ended = true;
+            out.2 = Some(Done::RunEnded);
+        }
         if self.finish_ms.is_none()
             && before < self.core.track.n_gates()
             && self.core.gates_hit() >= self.core.track.n_gates()

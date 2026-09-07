@@ -83,7 +83,9 @@ impl Answer {
     /// The server writes `wrong simu` at the site that reports a simulated run
     /// which collected too few checkpoints — the neighbouring branch is
     /// `wrong simu, but reached some checkpoints (%d out of %d)`. So a bare
-    /// `wrong simu` means *simulated, reached zero checkpoints*: a DNF.
+    /// `wrong simu` means *simulated, reached fewer than TWO checkpoints*: the
+    /// count is only printed from 2 up (measured 2026-09-06 on the WR tape cut
+    /// at 11 points; see [`Answer::cps_reported`]), so a bare one is 0 OR 1.
     ///
     /// A REFUSAL is different, and it looks different: the refusal reasons are
     /// appended to the same description, so `wrong simu` followed by
@@ -99,6 +101,15 @@ impl Answer {
             return false;
         }
         d.contains("wrong simu") || d.contains("checkpoint") || d.contains("did not finish")
+    }
+
+    /// Did the server PRINT a checkpoint count? It does for a finish and for a
+    /// DNF that reached at least 2 checkpoints; a bare "wrong simu" (0 or 1)
+    /// carries none, and `verdict()` renders it as `Dnf { cps: 0 }` -- a LOWER
+    /// BOUND, not a zero. Measured on the WR tape cut at 11 points (tmenv
+    /// oracle-cut, 2026-09-06).
+    pub fn cps_reported(&self) -> bool {
+        self.time_ms.is_some() || self.cps.is_some()
     }
 
     pub fn eval(&self) -> Option<Eval> {
