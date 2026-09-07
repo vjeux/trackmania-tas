@@ -687,101 +687,178 @@ fn negative_control(
             "UNMEASURED: this checkpoint leaves no room for a sub-boundary write".into(),
         ));
     }
-    // C differs from the reference BOTH below and above the boundary, so it is
-    // the shape of candidate a search could really produce.
+    // A CONTROL THAT CANNOT FAIL IS DECORATION, so this LOOKS for a candidate
+    // that can fail it rather than trying one and reporting a shrug.
+    //
+    // The control needs a candidate whose sub-boundary ticks MATTER: C (edited
+    // below and above the boundary) must reach a different answer from H (the
+    // hybrid the engine would really run). Most random macro-actions do not --
+    // both DNF in the same place, and then the control proves nothing. That is
+    // exactly what "UNMEASURED, retry with a tick that matters" used to mean,
+    // and leaving the retry to a human made the rig fail on three checkpoints
+    // in a row for a reason that has nothing to do with what it measures.
+    //
+    // Up to `TRIES` draws, each judged by the PLAIN oracle (two files, one
+    // batch). The first pair that discriminates is the control; if none does,
+    // that is still UNMEASURED, but now it is a statement about the checkpoint
+    // rather than about one unlucky draw.
+    // AND WIDEN THE WINDOW when the draws come back inert. Three ticks of
+    // sub-boundary edit is the smallest thing worth testing and on some
+    // checkpoints it is too small to change any outcome -- 145875 at tick:400
+    // produced six identical DNFs. The window is what makes the difference
+    // visible, not the draw, so widen it rather than re-roll the same size.
+    const TRIES: usize = 6;
+    let mut attempts: Vec<String> = Vec::new();
+    for attempt in 0..TRIES {
+        // GRADED, not random. A full-lock macro action below the boundary
+        // crashes a car at speed, so C and H both DNF with 0 checkpoints and
+        // the control learns nothing -- which is what six draws did at 145875
+        // tick:400 and Kacky tick:1500, where the reference is doing 100+ m/s.
+        // A NUDGE keeps the car on the road, so both sides finish and the
+        // answers are milliseconds apart, which is the finest outcome the
+        // oracle has. Widen the window and the nudge together until something
+        // shows.
+        let span = 3usize << (attempt / 2); // 3, 3, 6, 6, 12, 12
+        let nudge = [0.15f32, 0.35, 0.15, 0.35, 0.5, 0.8][attempt];
+        let below = probe.saturating_sub(span).max(1);
+        let (st, ac, br, hs, ha, hb) = draw_pair(tape, below, probe, n, rng, nudge);
+
+        let cfile = engine.work.join("neg_C.Ghost.Gbx");
+        let hfile = engine.work.join("neg_H.Ghost.Gbx");
+        tape.write_candidate(&st, &ac, &br, &cfile)?;
+        tape.write_candidate(&hs, &ha, &hb, &hfile)?;
+
+        let res = validate_batch(
+            &engine.server,
+            &engine.map,
+            &[cfile.as_path(), hfile.as_path()],
+            "neg",
+        )?;
+        let get = |name: &str| -> Option<(Option<i64>, Option<u32>)> {
+            res.iter().find(|r| r.file == name).map(|r| (r.time_ms, r.cps))
+        };
+        let (ct, cc) = get("neg_C.Ghost.Gbx").ok_or("the oracle returned no row for neg_C")?;
+        let (ht, hc) = get("neg_H.Ghost.Gbx").ok_or("the oracle returned no row for neg_H")?;
+
+        let eq = |a: (Option<i64>, Option<u32>), b: (Option<i64>, Option<u32>)| {
+            a.0 == b.0 && (a.0.is_some() || a.1 == b.1)
+        };
+        if eq((ct, cc), (ht, hc)) {
+            attempts.push(format!(
+                "draw {} ({} ticks below): C {} cps {:?} == H {} cps {:?}",
+                attempt + 1,
+                span,
+                crate::secs_opt(ct),
+                cc,
+                crate::secs_opt(ht),
+                hc
+            ));
+            continue;
+        }
+
+        // This pair discriminates. Now ask the FORK: writing C's records from
+        // `below` must reproduce H -- the hybrid -- because the ticks below the
+        // boundary were already consumed.
+        let recs = recs_from(&st, &ac, &br, below);
+        let raw = f.root_mut().run(below, &recs);
+        let (ft, fc) = parse_result(&raw);
+        let fork_is_hybrid = eq((ft, fc), (ht, hc));
+        let said = if fork_is_hybrid {
+            format!(
+                "REPRODUCED on draw {} of {}: the fork wrote {} records from tick {} (3 below \
+                 the boundary {}) and produced the HYBRID -- fork {} cps {:?} == plain H {} cps \
+                 {:?}, while the file it was asked for validates to {} cps {:?}. The \
+                 sub-boundary writes were dropped, which is the defect the forward-only rule \
+                 exists for.",
+                attempt + 1,
+                TRIES,
+                recs.len(),
+                below,
+                probe,
+                crate::secs_opt(ft),
+                fc,
+                crate::secs_opt(ht),
+                hc,
+                crate::secs_opt(ct),
+                cc
+            )
+        } else {
+            format!(
+                "NOT REPRODUCED on draw {}: the fork produced {} cps {:?}, which is neither the \
+                 hybrid ({} cps {:?}) nor -- if it equals C ({} cps {:?}) -- a dropped write at \
+                 all. A sub-boundary write that IS honoured would mean the forward-only rule \
+                 rests on a mechanism nobody has reproduced.",
+                attempt + 1,
+                crate::secs_opt(ft),
+                fc,
+                crate::secs_opt(ht),
+                hc,
+                crate::secs_opt(ct),
+                cc
+            )
+        };
+        return Ok((fork_is_hybrid, said));
+    }
+    Ok((
+        false,
+        format!(
+            "UNMEASURED -- {} draws at this checkpoint all produced a sub-boundary write that \
+             changes nothing (so no candidate here can tell a honoured write from a dropped \
+             one): {}. This is a property of the checkpoint, not of one unlucky draw: try a \
+             tick where the reference is doing something.",
+            TRIES,
+            attempts.join("; ")
+        ),
+    ))
+}
+
+/// One (C, H) pair for the negative control: C edited both below and above the
+/// boundary, H the hybrid the engine would really run (reference below, C
+/// above).
+#[allow(clippy::type_complexity)]
+fn draw_pair(
+    tape: &Tape,
+    below: usize,
+    probe: usize,
+    n: usize,
+    rng: &mut Rng,
+    nudge: f32,
+) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+    // THE TAIL STAYS DRIVABLE, and that is what makes this control able to fail.
+    //
+    // The first version put a random macro-action above the boundary too, on the
+    // grounds that a real search candidate differs on both sides. True, and
+    // useless here: a random macro-action crashes the car, so C and H both DNF
+    // with 0 checkpoints and the sub-boundary difference cannot show. Six draws
+    // at three checkpoints, every one inert.
+    //
+    // What the control actually needs is an OUTCOME FINE ENOUGH TO DIFFER. A
+    // run that finishes has a millisecond; a run that crashes has "DNF, 0". So
+    // the tail keeps the reference's own inputs -- the candidate still differs
+    // from the reference exactly where it must, in the ticks below the
+    // boundary, which is the write whose fate is in question.
     let (mut st, mut ac, mut br) = (tape.steer.clone(), tape.accel.clone(), tape.brake.clone());
-    let (ss, gg, bb) = macro_action(rng);
+    let sign: f32 = if rng.next() % 2 == 0 { 1.0 } else { -1.0 };
+    let d = (nudge * sign * 127.0) as i32;
     for t in below..=probe {
-        st[t] = ss;
-        ac[t] = gg;
-        br[t] = bb;
+        st[t] = (st[t] as i32 + d).clamp(0, 255) as u8;
     }
-    let (s2, g2, b2) = macro_action(rng);
-    for t in probe + 1..(probe + 40).min(n) {
-        st[t] = s2;
-        ac[t] = g2;
-        br[t] = b2;
-    }
-    // H is the hybrid the engine would really have run: the reference below the
-    // boundary, C above it. This is the "known wrong answer".
+    let _ = n;
+    // H reverts the CONSUMED ticks only -- `below..probe`, EXCLUSIVE.
+    //
+    // `probe` is the first record the engine has NOT read, so a write there is
+    // honoured and belongs in the hybrid. Reverting it too made H the pure
+    // reference (22.730) while the fork correctly produced 22.734, and the
+    // control reported "the fork's answer is neither" -- an instrument
+    // disagreeing with itself about where the boundary is. It only surfaced
+    // once the tail was drivable enough for the two to differ at all.
     let (mut hs, mut ha, mut hb) = (st.clone(), ac.clone(), br.clone());
-    for t in below..=probe {
+    for t in below..probe {
         hs[t] = tape.steer[t];
         ha[t] = tape.accel[t];
         hb[t] = tape.brake[t];
     }
-
-    let cfile = engine.work.join("neg_C.Ghost.Gbx");
-    let hfile = engine.work.join("neg_H.Ghost.Gbx");
-    tape.write_candidate(&st, &ac, &br, &cfile)?;
-    tape.write_candidate(&hs, &ha, &hb, &hfile)?;
-
-    let recs = recs_from(&st, &ac, &br, below);
-    let raw = f.root_mut().run(below, &recs);
-    let (ft, fc) = parse_result(&raw);
-
-    let res = validate_batch(
-        &engine.server,
-        &engine.map,
-        &[cfile.as_path(), hfile.as_path()],
-        "neg",
-    )?;
-    let get = |name: &str| -> Option<(Option<i64>, Option<u32>)> {
-        res.iter().find(|r| r.file == name).map(|r| (r.time_ms, r.cps))
-    };
-    let (ct, cc) = get("neg_C.Ghost.Gbx").ok_or("the oracle returned no row for neg_C")?;
-    let (ht, hc) = get("neg_H.Ghost.Gbx").ok_or("the oracle returned no row for neg_H")?;
-
-    let eq = |a: (Option<i64>, Option<u32>), b: (Option<i64>, Option<u32>)| {
-        a.0 == b.0 && (a.0.is_some() || a.1 == b.1)
-    };
-    let fork_is_hybrid = eq((ft, fc), (ht, hc));
-    let c_differs = !eq((ct, cc), (ht, hc));
-
-    let said = if !c_differs {
-        format!(
-            "UNMEASURED -- the sub-boundary write does not change the run at all \
-             (plain C {} cps {:?} == plain H {} cps {:?}), so this candidate cannot tell a \
-             honoured write from a dropped one. It is a control that cannot fail, which is \
-             decoration. Retry with a tick that matters.",
-            crate::secs_opt(ct),
-            cc,
-            crate::secs_opt(ht),
-            hc
-        )
-    } else if fork_is_hybrid {
-        format!(
-            "PASS -- the fork reproduced the KNOWN WRONG ANSWER.\n  \
-             fork(C), written from tick {} : {} cps {:?}\n  \
-             plain(H), the hybrid          : {} cps {:?}   <- EQUAL, so ticks {}..{} were \
-             silently dropped\n  \
-             plain(C), the file we wrote   : {} cps {:?}   <- DIFFERENT, so those ticks mattered",
-            below,
-            crate::secs_opt(ft),
-            fc,
-            crate::secs_opt(ht),
-            hc,
-            below,
-            probe,
-            crate::secs_opt(ct),
-            cc
-        )
-    } else {
-        format!(
-            "DID NOT REPRODUCE -- and this is MORE interesting than a pass.\n  \
-             fork(C)  = {} cps {:?}\n  plain(H) = {} cps {:?}\n  plain(C) = {} cps {:?}\n  \
-             The fork's answer is neither the hybrid nor the file. The recorded defect is not \
-             what the note says it is, and the forward-only rule rests on a mechanism that has \
-             not been reproduced here. CHASE THIS before anything is built on the positive half.",
-            crate::secs_opt(ft),
-            fc,
-            crate::secs_opt(ht),
-            hc,
-            crate::secs_opt(ct),
-            cc
-        )
-    };
-    Ok((c_differs && fork_is_hybrid, said))
+    (st, ac, br, hs, ha, hb)
 }
 
 // ---------------------------------------------------------------- fk tree scale

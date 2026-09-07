@@ -704,7 +704,24 @@ maps × three checkpoints. The guarded 10-minute stress search: 278 850 evals,
 
 ---
 
-## 11. FK_FAST_LOCATE: named, half fixed, still off
+## 11. FK_FAST_LOCATE: named, half fixed, and SUPERSEDED
+
+> **SUPERSEDED by `LOCATE.md` (session 680fa62f, branch `agentcloud/locate`).**
+> The open problem below -- "no phase rule can choose", because the vis state
+> lags the validator's car by a tick on map 2 and not on 126859 -- was an
+> artefact of the sweep, not a fact about maps. `phy+0x12f0` is the per-tick
+> COPY-OUT of the dyna body record the solver integrates, and the phases belong
+> to the COPIES: prev-Iso4 `phy+0x2a0` and `participant+0xe24` are lag +1, the
+> copy-out and the body are lag 0, on every map. The blind sweep, `locate_fast`,
+> `CAR_CHAINS`, `find_clock` and `measured_clock_bias` are deleted there; the
+> car is derived, not searched. I verified that branch against this project's
+> own controls: `finishcheck` 0 disagreements, `reads` PASS, `fk server check`
+> 50/50 on two maps, and `fk trace` at 3.1 mm -- plus it honours a checkpoint
+> that this build silently backed away from.
+>
+> The section is kept because the two decoys it names are still the reason the
+> derivation is worth what it costs.
+
 
 §9.3 reported a locator that answers in 0.2 s where the sweep takes 3.6 s, and
 an unexplained difference: with it the watchdog stopped tripping (4 of 8 → 0 of

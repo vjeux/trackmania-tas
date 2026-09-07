@@ -515,27 +515,6 @@ no label computation to cache once. Nothing to do here.
 
 ---
 
-## Summary
-
-| # | lever | before → after | proof | deleted |
-|---|---|---|---|---|
-| 1 | deep fork points (ladder, warm nodes) | 538 → 1,060 evals/s (10 min A/B, 24 workers); ×4.4 at a 90 % window | 3000/3000 identical time+summary on 3 maps; 0 phantoms | the single-checkpoint fork path |
-| 2 | incumbent-lag predicate | +4–7 % throughput at 0 false positives on 2000 | `fk watch measure`, score-safety 2000/2000 | — (new predicate) |
-| 3 | exit marker + standby child | late candidate 7.65 → 4.00 ms; fixed cost 54 % → 11 %; search +21 % | `fk tickhook cost`, 300/300 watched, 50/50, suites | two launch paths, two parent loops |
-| 4 | frame overhead | measured: ≤ 0.5 % of a run | inter-tick gap census | nothing to change |
-| 5 | sample ring | 3.2 µs per sample; sampled run 64.6 → 57.4 ms | shimhost test; CSVs byte-identical | the per-sample write |
-| 6 | box saturation | knee at ¾ of the cores; pinning −4.5 % | 6-point sweep, 2 min each | the pinning experiment |
-| 7 | batched certification | 500 claims: 954 s → 86 s (11.1×) | 500/500 identical verdicts alone vs batched | one launch per claim |
-| 8–9 | designs | `MPPI.md` | — | — |
-| 10 | dataset labels | nothing to cache | player coordinator | — |
-
-Cumulative, the tape search on map 2 at 24 workers: **569 evals/s (tickhook @
-485319b) → 1,384 evals/s (this branch), 2.43×, in the same ten minutes on the
-same box, both guarded, both 0 phantoms** — and 3,419 evals/s at 64 workers
-alone on the box.
-
----
-
 ## 11. The branch, itemised — and the probe that was a fork spent on a known number
 
 The RL env's step is a branch: `'B'` to the current node, the new node's hello,
@@ -598,3 +577,43 @@ THP would trade the 1.4 ms fork for ~40 MB of copy-on-write per branch — no.
 fork, at the price of a dead child the first time a map or a tape touches a
 region the census never saw; the census tool is there (`heap pages written`)
 if the ENV arm ever wants to weigh that.
+
+---
+
+## The record of the arm
+
+Branch `agentcloud/perf`, final head tagged `perf-2026-09-07-g`, carrying
+`agentcloud/locate` 5d8430e3's commits on `agentcloud/tickhook` f15003e (the
+integration line is tickhook → locate → perf). Every proven head carries a
+`perf-2026-09-07-<letter>` tag. Suites at the head: 172 search tests (10 of
+them end to end against the engine), 34 fk, 74 branch + forkoracle, 0 failures.
+
+| # | what | proof (controls) | before → after | deleted |
+|---|---|---|---|---|
+| 1 | **Deep fork points** — `forkoracle::ladder`: savestate nodes every 100 ticks per worker, a candidate forks from the deepest node whose tape equals its own on every consumed tick; nodes are WARM (carry the watchdog's state) | 3000/3000 candidates on 3 maps: same time AND byte-identical 152-byte summary from the root and from the ladder; the full validation agrees on every candidate inside its tape; guarded searches 0 phantoms | 538 → 1,060 evals/s (10-min A/B, 24 workers, concurrent); ×1.40 / 2.41 / 2.53 / 4.39 at windows 736…2206; a 90 %-window run ×4.4 | the single-checkpoint fork path in the evaluator |
+| 2 | **Incumbent-lag predicate** `lag:ms=X` (K_LAG) — behind the incumbent at the same line point, judged every tick; `Summary::lag_max_ms` always recorded | `fk watch measure` on 2000: 0 false positives at X = 100 and 200; every candidate that beat the incumbent had max lag 0 ms; score-safety 2000/2000 | +4–7 % throughput; recommended `behind:lag:ms=100,need=10,after=200` | — (new) |
+| 3 | **Exit marker + standby child** — a leaving child writes `FKEXIT` before `_exit` (the parent no longer waits through its teardown); one child pre-forked per fork point, handed the next candidate down a pipe | `fk tickhook cost` per phase; 300/300 watched identical; `fk server check` 50/50; `fk ladder check` 200/200; 0 processes left after every run | last tick → answer 2.34 → 0.07 ms; fork → child alive 1.0–1.5 → 0.07 ms; a late candidate 7.65 → 4.00 ms (fixed cost 54 % → 11 %); search +21 % over the ladder alone | the two copies of the candidate launch and the two parent loops |
+| 3.3 | **Census** (`FKSHIM_CENSUS=1`): faults, resident, dirtied, inter-tick gaps, heap pages by 2 MB region | measured, not argued: a 119-tick child writes 133 heap pages in 20 distinct 2 MB regions; a full one 2849 in 44 | THP would copy 40–88 MB per candidate to save a 1.4 ms fork — **rejected by measurement**; `MADV_DONTFORK` not tried (a dead child on an unseen region) | — |
+| 4 | **Frame overhead** | inter-tick gaps > 80 µs: 6 per 2261-tick run idle (0.30 ms), 11.5 loaded (0.35 ms) | ≤ 0.5 % of a run — nothing to change | — |
+| 5 | **Sample ring** — an `'S'` child's samples through a fresh MAP_SHARED buffer per run (a reused one raced a dying child), pipe only past 64 MB | shimhost test (500 samples: count, order, every field); `fk trace` CSVs byte-identical to the previous build on map 2 (3 runs) and get jiggy with it; Kacky's trace is intermittent in both builds (finish-word calibration, tickhook's) | 3.2 µs per sample; a 3159-tick sampled run 64.6 → 57.4 ms | the per-sample `write` |
+| 6 | **Box saturation** | 6-point sweep, 2 min each, alone on 96 cores; pinning tried at 80 | linear to ⅔ of the cores (53 evals/s per worker), +12 % to ⅚, +1.5 % after; `sched_setaffinity` −4.5 % | the pinning experiment; `--workers` default all → **¾ of the cores** |
+| 7 | **Batched certification** — `Bank::offer_many`, one launch per batch; the search's queue (2 s / 15 claims); **a finish after the tape's own last record is refused** (`PHANTOM_pastend_*`); `tmauto verdict` marks `AFTER-TAPE` | 500 claims one at a time vs batched: 500/500 identical verdicts (391 confirmed, 109 phantoms of which 92 past-end); e2e tests for the refusal | 954 s → 86 s (11.1×); 1.9 s per launch alone, 0.17 s per file batched | one launch per claim |
+| 8–9 | `MPPI.md` — the policy as an MPPI proposal over the tree (costed); the learned progress critic as a per-tick lag threshold first | — | — | — |
+| 10 | Dataset labels | player coordinator: raw shards, `observe` at load | nothing to cache | — |
+| 11 | **The branch** — the probe's `waitpid` deleted; every node's boundary from its own hello's clock (`record_read_at`), the fork probe kept as the control (root always, 1 in 50, hard error on disagreement); `Tree::accept` polls | `fk tree clockprobe`: 4275 nodes (3 maps × 1000 fresh+chained, a countdown checkpoint, YOU LOVE WATER incl. 155 nodes inside/just past its 31 respawn windows), residual 0 on every one; `Forest::new` gained `start_offset_ms` | a k = 10 branch **5.61 → 3.61 → 2.11 → 2.0 ms** (fit 1.9 ms + 12–14 µs/tick) | the per-node fork probe, the `waitpid`, the 200 µs sleep |
+| — | **NOT done: a standby for `'B'` children** | the env's node lives hello → `'P'` → one `'B'` → killed, with microseconds of driver time between; a single-threaded node can only hide a fork behind idle time, and there is none there (pre-fork before the hello delays the hello by the fork; after the probe it is still in flight when the `'B'` arrives) | would pay only on pinned nodes and the ladder's rungs, which the R/W standby already serves | — |
+| — | **NOT done: a standby for `'S'` runs** | every caller of `run_sampled*` on perf, player-env and route is a one-off (locate/tickhook calibration, `finish::calibrate` once per server, `cpfind`, tmexplore's legacy backend); the env's step is a `'B'`, route's is `Forest::advance` | a 1.4 ms fork once per one-off run buys nothing anyone runs at scale | — |
+
+### The whole stack, before and after
+
+The two workloads that matter, each alone on this 96-core box, seed 42, the
+shipped three predicates, the guard on:
+
+| workload | before (2026-09-06 17:57, `e152ee0c`, before the tick hook) | after (`perf-2026-09-07-f`, defaults) |
+|---|---|---|
+| `tmsearch search`, map 2 from tick 171, 10 min, each build at ITS default worker count | **1,076,220 evals (1,794/s)** at 96 workers, 7 confirmed, 0 phantoms, best 22.711 | **2,293,530 evals (3,822/s)** at 72 workers, **57 confirmed, 0 phantoms, best 22.708** — 2.13× the box, 2.84× per worker |
+| the RL env's step, `fk tree cost` k = 10 (one branch + its boundary) | 5.61 ms (tickhook @ bd07d41, this morning) | 2.0 ms |
+
+The `tmenv` env-steps/s figure at the new defaults is the ENV arm's to report
+on this tag (their known-answer run is the license for it); the branch row
+above is the same operation measured from the shared crate.
