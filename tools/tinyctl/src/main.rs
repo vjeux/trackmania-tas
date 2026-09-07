@@ -24,6 +24,7 @@ mod play;
 mod png;
 mod probe;
 mod publish;
+mod startcheck;
 mod shoot;
 mod upload;
 mod views;
@@ -99,6 +100,7 @@ fn main() {
         "lightmap" => lightmap::cmd(rest),
         "compare" => compare::cmd(rest),
         "play" => play::cmd(rest),
+        "startcheck" => startcheck::run(rest),
         "camcheck" => camcheck::cmd(rest),
         "publish-map" => publish::publish_map_cmd(rest),
         "publish-here" => publish::publish_here_cmd(rest),
