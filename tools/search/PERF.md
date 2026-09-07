@@ -322,3 +322,82 @@ which 3.54 ms is the 119 ticks of physics.
 The two copies of the candidate launch (the `'R'` child, the `'W'` child) and
 the two parent loops: one `launch`, one `apply_candidate`, one loop. There is no
 flag that disables the marker or the standby.
+
+---
+
+## 4. Frame overhead: measured, not material
+
+The tick loop lives inside the validator's frame function, which has a
+wall-clock budget exit and per-frame bookkeeping (TICKHOOK.md §1: the `lroundf`
+drift was the frame partition). Is any of the 24–30 µs a tick something other
+than physics?
+
+Measured from inside the child (`FKSHIM_CENSUS=1`): the interval between
+consecutive entries of the tick function, counting every gap over 80 µs (a
+tick is ~24 µs idle, ~30 µs loaded) and summing what those gaps exceed 80 µs
+by — a frame boundary inside the loop shows up there, and so does a
+preemption. Map 2, 2261-tick candidates from tick 171:
+
+| box | gaps > 80 µs per run | total excess per run | largest gap | share of the run |
+|---|---|---|---|---|
+| idle | 6.0 | 0.30 ms | 0.30 ms | 0.5 % of 54 ms |
+| 48 search workers running | 11.5 | 0.35 ms | 0.27 ms | 0.5 % of 66 ms |
+
+So at most six frame boundaries (or preemptions) per full-length candidate on
+an idle box, costing 0.3 ms in total. The per-tick cost IS the physics; driving
+the loop back-to-back or neutralising the budget exit in the child would buy
+under 1 %, and nothing was changed. (The whole fixed cost outside the ticks is
+now 0.5 ms of a 55 ms early candidate — `fk tickhook cost`, tick 171: 1 %.)
+
+---
+
+## 5. Per-tick sampling through a shared page — the sample ring
+
+### What
+
+An `'S'` child (the RL env's per-tick car state, `fk trace`, every locate scan)
+used to `write` each sample down a pipe: a syscall and a wake-up of the polling
+parent per tick. Now the parent maps a fresh `MAP_SHARED` buffer —
+`[u64 used][samples…]` — before every `'S'` fork, the child copies each sample
+into it, and the parent reads it once after the child has said it is done. The
+blob is byte-for-byte what the pipe carried, in the same order; when the ring
+(capped at 64 MB) fills the child goes on down the pipe and the blob is
+`ring ++ pipe`, so nothing is lost. The wire protocol and the drivers are
+unchanged — `tmenv`'s `Forest`, `fk trace`, `locate` all get it for free.
+
+**A fresh mapping per run, never a reused one.** A child that has been told to
+die can still be on another core for a few microseconds, and a reused ring
+whose header the parent has just reset is exactly where its last sample would
+land: on top of the next run's first. Each child keeps its own pages until it
+is gone; the parent unmaps its reference after reading (~20 µs a run).
+
+The child also marks its exit (§3.1) when it leaves at its sample budget or
+deadline, and the parent stops waiting for the sample pipe's EOF once the child
+has said it is done — it drains what the pipe already holds and moves on.
+
+### Proof
+
+* `forkshim/tests/ladder.rs::sampled_records_arrive_intact_and_in_order_through_the_ring`
+  (shimhost, every `cargo test`): 500 samples of a known input record — count,
+  consecutive clocks, every field of every record against the tape, and a
+  second run on the same server sees none of the first's samples.
+* `fk trace` CSVs (2260 rows, 29 columns) byte-identical to the previous build:
+  map 2, three runs of each build, one md5; "get jiggy with it", identical.
+  On Kacky Reloaded #290 the first 1694 rows are identical and the trace itself
+  is intermittent in BOTH builds (the finish-word calibration succeeds on some
+  runs and the armed child then leaves at the finish; on others the locate's
+  self-check fails) — a `fk trace`/locate matter, reported to the tickhook arm,
+  not a sampling one.
+
+### Cost
+
+Map 2, the trajectory run of `fk trace` (a 3159-tick sampled child, 2260 rows
+after dedup), three runs each: **64.6 ms → 57.4 ms** (62.7/66.4/64.7 vs
+58.1/56.0/58.1), i.e. 3.2 µs per sample. For a k-tick RL macro that is
+3.2 µs × k; for the route project's 200–400-tick rollouts with a per-tick read,
+0.6–1.3 ms of the 23 ms measured per rollout.
+
+### What was deleted
+
+The per-sample `write` is gone from the common path; the pipe remains only as
+the overflow beyond 64 MB of samples, which no caller reaches.
