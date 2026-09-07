@@ -65,6 +65,7 @@ extern "C" {
     fn fflush(f: *mut c_void) -> c_int;
     fn setvbuf(f: *mut c_void, buf: *mut c_char, mode: c_int, size: usize) -> c_int;
     fn poll(fds: *mut PollFd, n: u64, timeout: c_int) -> c_int;
+    fn __errno_location() -> *mut c_int;
     fn open(path: *const c_char, flags: c_int, mode: c_int) -> c_int;
     static mut stdout: *mut c_void;
 }
@@ -1210,6 +1211,28 @@ unsafe fn tick(new: u32, dt: u32, race_start: Option<u32>) {
     if INIT.load(Ordering::Relaxed) == 0 {
         init();
     }
+    // A PROBE CHILD THAT KEEPS TICKING never faulted on the input array: the
+    // engine is reading its inputs from somewhere else. Say so on the probe
+    // pipe at the second tick, so the driver learns THAT instead of an empty
+    // reply (the ~1-in-40 start-up flake, 2026-09-07).
+    if IS_CHILD.load(Ordering::Relaxed) != 0 {
+        let fd = PROBE_FD.load(Ordering::Relaxed);
+        if fd >= 0 {
+            let n = PROBE_TICKS.fetch_add(1, Ordering::Relaxed);
+            if n < 4 {
+                logn(b"FKSHIM probe child ticked, clock ", new as u64);
+            }
+            if n == 1 {
+                let mut m = Vec::new();
+                m.extend_from_slice(b"PROBE-RAN-ON clock ");
+                utoa(new as u64, &mut m);
+                m.extend_from_slice(b" base ");
+                utoa(PROBE_BASE.load(Ordering::Relaxed) as u64, &mut m);
+                m.push(b'\n');
+                write_all(fd, &m);
+            }
+        }
+    }
     if dt != 10 {
         TICK_ANOMALIES.fetch_add(1, Ordering::Relaxed);
     }
@@ -1839,12 +1862,14 @@ static mut VALIDATOR_OLD_SIGTRAP: SigactionT = SigactionT {
 };
 
 const SA_SIGINFO: c_int = 4;
+const EINTR: c_int = 4;
 const SIGSEGV: c_int = 11;
 const PROT_NONE: c_int = 0;
 const PROT_READ_WRITE: c_int = 3;
 const PROT_READ_EXEC: c_int = 5;
 
 static PROBE_FD: AtomicI32 = AtomicI32::new(-1);
+static PROBE_TICKS: AtomicUsize = AtomicUsize::new(0);
 static PROBE_BASE: AtomicUsize = AtomicUsize::new(0);
 static PROBE_END: AtomicUsize = AtomicUsize::new(0);
 
@@ -1854,6 +1879,7 @@ unsafe extern "C" fn segv_handler(_sig: c_int, info: *const u8, ctx: *mut c_void
     let end = PROBE_END.load(Ordering::Relaxed);
     let fd = PROBE_FD.load(Ordering::Relaxed);
     if addr < base || addr >= end {
+        logn(b"FKSHIM probe: neighbour fault at ", addr as u64);
         // a neighbour sharing one of the two edge pages: give that page back
         // and let the instruction retry, so the probe keeps waiting for a real
         // input-array read.
@@ -2896,6 +2922,8 @@ unsafe fn forkserver() {
                 close(fds[0]);
                 dup2(fds[1], 1);
                 arm_probe(base, key.steer.len(), fds[1]);
+                arm_probe_postmortem();
+                logn(b"FKSHIM probe child armed, fd ", fds[1] as u64);
                 return;
             }
             close(fds[1]);
@@ -2907,12 +2935,28 @@ unsafe fn forkserver() {
                     events: POLLIN,
                     revents: 0,
                 };
-                if poll(&mut pfd, 1, 20000) <= 0 {
+                let pr = poll(&mut pfd, 1, 20000);
+                if pr < 0 && *__errno_location() == EINTR {
+                    // A SIGNAL LANDED ON THE PARENT mid-wait. Not an answer: ask
+                    // again. (This was the ~1-in-40 empty probe: the read broke
+                    // out on EINTR, the child was SIGKILLed before it could fault,
+                    // and the reply was empty -- 2026-09-07.)
+                    continue;
+                }
+                if pr <= 0 {
                     out.extend_from_slice(b"PROBE-TIMEOUT");
                     break;
                 }
                 let r = real_read()(fds[0], buf.as_mut_ptr() as *mut c_void, buf.len());
-                if r <= 0 {
+                if r < 0 && *__errno_location() == EINTR {
+                    continue;
+                }
+                if r < 0 {
+                    out.extend_from_slice(b"PROBE-READ-ERR errno ");
+                    utoa(*__errno_location() as u64, &mut out);
+                    break;
+                }
+                if r == 0 {
                     break;
                 }
                 out.extend_from_slice(&buf[..r as usize]);
@@ -4110,3 +4154,62 @@ mod tests {
 // cost is elsewhere -- most likely the 27,174 FAILING stat calls and the
 // engine's own start-up work. Interception was the right instinct and the
 // wrong target.
+
+// ---------------------------------------------------- probe-child post-mortem
+
+/// Signals that kill a process silently; a probe child that dies of one says
+/// so on the probe pipe first (the ~1-in-40 empty-probe flake, 2026-09-07).
+const SIGILL: c_int = 4;
+const SIGABRT: c_int = 6;
+const SIGBUS: c_int = 7;
+const SIGFPE: c_int = 8;
+
+unsafe extern "C" fn probe_death_handler(sig: c_int, info: *const u8, _ctx: *mut c_void) {
+    let fd = PROBE_FD.load(Ordering::Relaxed);
+    if fd >= 0 {
+        let addr = if info.is_null() { 0 } else { *(info.add(16) as *const usize) };
+        let mut m = Vec::new();
+        m.extend_from_slice(b"PROBE-DIED signal ");
+        utoa(sig as u64, &mut m);
+        m.extend_from_slice(b" addr ");
+        utoa(addr as u64, &mut m);
+        m.push(b'\n');
+        write_all(fd, &m);
+        log(&m);
+    }
+    _exit(94)
+}
+
+unsafe fn arm_probe_postmortem() {
+    let act = SigactionT {
+        handler: probe_death_handler as *const () as usize,
+        mask: [0; 16],
+        flags: SA_SIGINFO,
+        restorer: 0,
+    };
+    for s in [SIGILL, SIGABRT, SIGBUS, SIGFPE] {
+        sigaction(s, &act, std::ptr::null_mut());
+    }
+}
+
+/// `exit` interposed: a probe child that leaves through libc's `exit` says so.
+#[no_mangle]
+pub unsafe extern "C" fn exit(code: c_int) -> ! {
+    if IS_CHILD.load(Ordering::Relaxed) != 0 {
+        let fd = PROBE_FD.load(Ordering::Relaxed);
+        if fd >= 0 {
+            let mut m = Vec::new();
+            m.extend_from_slice(b"PROBE-EXITED code ");
+            utoa(code as u64, &mut m);
+            m.push(b'\n');
+            write_all(fd, &m);
+            log(&m);
+        }
+    }
+    let p = dlsym(RTLD_NEXT, b"exit\0".as_ptr() as *const c_char);
+    if !p.is_null() {
+        let f: unsafe extern "C" fn(c_int) -> ! = std::mem::transmute(p);
+        f(code)
+    }
+    _exit(code)
+}

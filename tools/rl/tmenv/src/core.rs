@@ -375,6 +375,9 @@ impl Core {
     pub fn ingest(&mut self, actions: &[Action], rows: &[Row]) -> (Vec<f32>, f32, Option<Done>, Info) {
         let mut info = Info::default();
         if self.done.is_some() {
+            // the episode is over, but a caller stepping past the end (a
+            // whole-tape control) still gets the car it is looking at
+            info.state = self.state();
             return (self.observe(), 0.0, self.done, info);
         }
         let mut reward = 0.0f32;

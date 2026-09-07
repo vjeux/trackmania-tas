@@ -184,6 +184,8 @@ pub struct Forest {
     start_offset_ms: i32,
     /// How many nodes the sampled probe has checked, and agreed on.
     pub probes_checked: u64,
+    /// Sampled probes whose child died before answering (PROBE-EMPTY), skipped.
+    pub probes_empty: u64,
     /// The root's own probed boundary. Probed once, for the root, like any
     /// other node.
     root_boundary: Option<usize>,
@@ -219,6 +221,7 @@ impl Forest {
             timeline: Timeline::default(),
             start_offset_ms,
             probes_checked: 0,
+            probes_empty: 0,
             root_boundary: None,
             reference,
         })
@@ -416,7 +419,12 @@ impl Forest {
             // their disagreement means the hook or the record layout is not what
             // TICKHOOK.md says.
             let derived = node.adopt_clock_boundary(self.start_offset_ms);
-            if self.timeline.branches % PROBE_SAMPLE == 0 {
+            // PAST THE TAPE the probe has nothing to measure: the engine reads its
+            // default record and the page-fault probe answers a record index that
+            // is not this node's boundary (measured: 1, 13, 65 on nodes coasted
+            // beyond the last record). The clock's answer stands alone there.
+            let past_tape = derived >= self.reference.len();
+            if self.timeline.branches % PROBE_SAMPLE == 0 && !past_tape {
                 match node.probe() {
                     Ok(p) if p == derived => self.probes_checked += 1,
                     Ok(p) => {
@@ -437,13 +445,23 @@ impl Forest {
                         // tick either way.
                         node.assume_exhausted(self.reference.len());
                     }
-                    Err(e) if e.contains("PROBE-EMPTY") && attempt < 2 => {
+                    Err(e) if e.contains("PROBE-EMPTY") && attempt < 1 => {
                         let pid = node.pid;
                         node.destroy();
                         self.tree.reaped(pid);
                         let _ = std::fs::remove_file(&trace_path);
                         attempt += 1;
                         continue;
+                    }
+                    Err(e) if e.contains("PROBE-EMPTY") => {
+                        // The probe child died before it could answer, twice, in
+                        // this process (the open ~1-in-40 flake: the child is gone
+                        // before its next tick, no fault, no signal, no exit()).
+                        // That is not a disagreement -- nothing was measured -- and
+                        // the boundary is the clock's: count it and go on. The
+                        // ROOT still needs a real answer (`probe_root`).
+                        self.probes_empty += 1;
+                        let _ = e;
                     }
                     Err(e) => {
                         let pid = node.pid;

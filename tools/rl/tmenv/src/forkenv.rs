@@ -745,6 +745,11 @@ impl Rig {
                 Ok(_) => return Ok(s),
                 Err(e) if e.contains("PROBE-EMPTY") => {
                     eprintln!("tmenv: a server's first probe came back empty ({e}); starting another");
+                    // keep the failed server's log beside the work dir: the next
+                    // server overwrites srv/server.log
+                    let src = self.engine.work.join("srv").join("server.log");
+                    let dst = self.engine.work.join(format!("probe-empty-{}.log", std::process::id()));
+                    let _ = std::fs::copy(&src, &dst);
                     last = e;
                 }
                 Err(e) => return Err(e),
