@@ -294,7 +294,14 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                     }
                 }
                 let start_speed = start_state.map(|s| s.speed as f64).unwrap_or(0.0);
-                let (mut outcome, path, vmin, vmax) = classify(&win, start_speed, cfg.floor_y, rolled.exited && !complete, finished_gate);
+                // a FINISHED rollout is classified over its rows up to the finish crossing (the rows
+                // past it are however many the exiting child flushed, run to run)
+                let finish_idx0 = if finished_gate { first.iter().enumerate().find(|(gi, t)| **t >= 0 && gates.gates[*gi].kind == GateKind::Finish).map(|(_, t)| *t as usize) } else { None };
+                let win_cls: &[Row] = match finish_idx0 {
+                    Some(i) if i < win.len() => &win[..=i],
+                    _ => &win,
+                };
+                let (mut outcome, path, vmin, vmax) = classify(win_cls, start_speed, cfg.floor_y, rolled.exited && !complete, finished_gate);
                 if !complete && !rolled.exited {
                     outcome = OUTCOME_ABORTED;
                 }
