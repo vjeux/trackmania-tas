@@ -46,6 +46,15 @@ pub struct MapSanity {
     pub const_done: String,
     pub const_ticks: Option<usize>,
     pub const_speed: Option<f32>,
+    /// Wheel ground materials at the end of CONST (engine ids; 0 = none/air).
+    pub const_materials: Vec<u8>,
+    /// Lateral offset from the route at the end of CONST, metres.
+    pub const_lateral: Option<f32>,
+    /// The rank-1 ghost's OWN file through the plain oracle: does the current
+    /// engine reproduce it at all? (Old-campaign ghosts often do not.)
+    pub ghost_oracle: String,
+    pub ghost_reproducible: Option<bool>,
+    pub crawl_complete: Option<bool>,
     pub error: String,
     pub seconds: f64,
 }
@@ -87,6 +96,7 @@ impl MapSanity {
              \"car_switch_blocks\": [{}],\n  \"identity_ok\": {},\n  \"identity_declared_ms\": {},\n  \"identity_oracle\": {},\n  \
              \"identity_env_gates\": {},\n  \"identity_n_gates\": {},\n  \"identity_max_jump_m\": {},\n  \
              \"const_m\": {},\n  \"const_best_s\": {},\n  \"const_done\": {},\n  \"const_ticks\": {},\n  \"const_speed\": {},\n  \
+             \"const_materials\": [{}],\n  \"const_lateral\": {},\n  \"ghost_oracle\": {},\n  \"ghost_reproducible\": {},\n  \"crawl_complete\": {},\n  
              \"error\": {},\n  \"seconds\": {:.1}\n}}\n",
             jstr(&self.uid),
             jstr(&self.name),
@@ -109,6 +119,11 @@ impl MapSanity {
             jstr(&self.const_done),
             jopt(&self.const_ticks),
             jopt(&self.const_speed.map(|v| format!("{v:.2}"))),
+            self.const_materials.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(", "),
+            jopt(&self.const_lateral.map(|v| format!("{v:.2}"))),
+            jstr(&self.ghost_oracle),
+            jopt(&self.ghost_reproducible),
+            jopt(&self.crawl_complete),
             jstr(&self.error),
             self.seconds
         )
@@ -213,6 +228,32 @@ pub fn sanity_one(cfg: &SanityCfg, map_dir: &Path) -> MapSanity {
         let (ghost, ms) = fastest_ghost_in(&gdir)?;
         r.ghost = ghost.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         r.ghost_ms = ms;
+        // 0. the crawl must be complete (DATA: downstream stages only touch complete maps);
+        // a truncated ghosts.tar is what an in-progress crawl looks like
+        if let Ok(cj) = std::fs::read_to_string(map_dir.join("crawl.json")) {
+            r.crawl_complete = Some(cj.contains("\"complete\": true") || cj.contains("\"complete\":true"));
+        }
+        if r.crawl_complete == Some(false) {
+            return Err("crawl incomplete".into());
+        }
+        // 0b. does the CURRENT engine reproduce the ghost's own file at all? Old
+        // campaigns were driven under other physics; their identity replay cannot
+        // be the env's failure.
+        {
+            let batch = tmauto::oracle::validate_raw(&cfg.server, &[ghost.clone()], tmauto::oracle::Maps::One(&map), "ghost")?;
+            let d0 = fk::tape::Tape::load(&ghost.to_string_lossy())?;
+            match batch.answers.first() {
+                Some(ans) => {
+                    let v = ans.verdict();
+                    r.ghost_oracle = format!("{:?}", v);
+                    r.ghost_reproducible = Some(matches!(v, Some(tmauto::Verdict::Finish { ms }) if Some(ms) == d0.declared_ms));
+                }
+                None => {
+                    r.ghost_oracle = "no answer".into();
+                    r.ghost_reproducible = Some(false);
+                }
+            }
+        }
         let tpl = crate::template::Template::load(&ghost)?;
         let n = tpl.facts().ticks;
         let s: Vec<u8> = (0..n).map(|t| ((((t as i64 * 7919 + 13) % 25) - 12) as i8) as u8).collect();
@@ -318,6 +359,8 @@ pub fn sanity_one(cfg: &SanityCfg, map_dir: &Path) -> MapSanity {
         r.const_best_s = Some(env.core.best_s());
         r.const_m = Some(((st.pos[0] - spawn[0]).powi(2) + (st.pos[1] - spawn[1]).powi(2) + (st.pos[2] - spawn[2]).powi(2)).sqrt());
         r.const_speed = Some(st.speed);
+        r.const_materials = st.wheel_material.to_vec();
+        r.const_lateral = Some(crate::core::lateral_of(&env.core));
         r.const_done = match done {
             Some(d) => format!("{:?}", d),
             None => "running".into(),

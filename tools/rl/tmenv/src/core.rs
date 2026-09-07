@@ -659,3 +659,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// The car's lateral offset from the route at the core's current row, metres
+/// (signed), for diagnostics that want it without a step.
+pub fn lateral_of(c: &Core) -> f32 {
+    let r = c.last_row();
+    let pr = c.track.probe_near([r.x as f32, r.y as f32, r.z as f32], Some(c.cur_s));
+    pr.lateral
+}

@@ -3695,14 +3695,16 @@ fn start_sanity(a: &[String]) {
     // the summary: failure classes with counts
     let mut identity_ok = 0usize;
     let mut identity_fail: Vec<String> = Vec::new();
+    let mut ghost_unrepro: Vec<String> = Vec::new();
+    let mut offroute_on_road: Vec<String> = Vec::new();
     let mut errors: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut const_done: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     let mut const_short: Vec<String> = Vec::new();
     let mut spawn_far: Vec<String> = Vec::new();
-    let mut tsv = String::from("uid\tname\tidentity_ok\tidentity_oracle\tdeclared_ms\tconst_m\tconst_done\tconst_ticks\tspawn_vs_geom_m\tstart_blocks\tcar_switch\terror\n");
+    let mut tsv = String::from("uid\tname\tidentity_ok\tidentity_oracle\tdeclared_ms\tconst_m\tconst_done\tconst_ticks\tspawn_vs_geom_m\tstart_blocks\tcar_switch\terror\tghost_oracle\tghost_reproducible\tconst_materials\tconst_lateral\tcrawl_complete\n");
     for r in &rows {
         tsv.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             r.uid,
             r.name,
             r.identity_ok.map(|b| b.to_string()).unwrap_or("-".into()),
@@ -3714,7 +3716,12 @@ fn start_sanity(a: &[String]) {
             r.spawn_vs_geom_m.map(|v| format!("{v:.2}")).unwrap_or("-".into()),
             r.start_blocks.join("|"),
             r.car_switch_blocks.join("|"),
-            r.error.replace('\t', " ").replace('\n', " ")
+            r.error.replace('\t', " ").replace('\n', " "),
+            r.ghost_oracle,
+            r.ghost_reproducible.map(|b| b.to_string()).unwrap_or("-".into()),
+            r.const_materials.iter().map(|m| m.to_string()).collect::<Vec<_>>().join("|"),
+            r.const_lateral.map(|v| format!("{v:.2}")).unwrap_or("-".into()),
+            r.crawl_complete.map(|b| b.to_string()).unwrap_or("-".into())
         ));
         if !r.error.is_empty() {
             // class by the first clause of the error
@@ -3722,9 +3729,22 @@ fn start_sanity(a: &[String]) {
             *errors.entry(k).or_default() += 1;
             continue;
         }
-        match r.identity_ok {
-            Some(true) => identity_ok += 1,
-            _ => identity_fail.push(format!("{} ({}: {})", r.name, r.uid, r.identity_oracle)),
+        if r.ghost_reproducible == Some(false) {
+            ghost_unrepro.push(format!("{} ({}: the ghost's own file -> {})", r.name, r.uid, r.ghost_oracle));
+        } else {
+            match r.identity_ok {
+                Some(true) => identity_ok += 1,
+                _ => identity_fail.push(format!("{} ({}: {})", r.name, r.uid, r.identity_oracle)),
+            }
+        }
+        if r.const_done == "OffRoute" {
+            // off the corridor but the wheels still on a road material (16 = the
+            // road we drive on; 0 = air): the GEOMETRY's corridor is wrong there,
+            // not the car
+            let on_road = r.const_materials.iter().filter(|m| **m != 0).count() >= 3;
+            if on_road {
+                offroute_on_road.push(format!("{} ({:.0} m, lateral {:.1} m, materials {:?})", r.name, r.const_m.unwrap_or(0.0), r.const_lateral.unwrap_or(0.0), r.const_materials));
+            }
         }
         *const_done.entry(r.const_done.clone()).or_default() += 1;
         if r.const_m.map(|m| m < 60.0).unwrap_or(false) && r.const_done != "running" {
@@ -3736,7 +3756,15 @@ fn start_sanity(a: &[String]) {
     }
     let _ = std::fs::write(out_dir.join("env-sanity.tsv"), &tsv);
     println!("\n{} maps in {:.0} s -> {}", rows.len(), t0.elapsed().as_secs_f64(), out_dir.display());
-    println!("identity replay OK: {} / {} (of maps without an env error)", identity_ok, rows.len() - errors.values().sum::<usize>());
+    println!(
+        "identity replay OK: {} / {} (of maps without an env error whose ghost the engine reproduces; {} ghosts the current engine does NOT reproduce on their own -- old physics, not the env)",
+        identity_ok,
+        rows.len() - errors.values().sum::<usize>() - ghost_unrepro.len(),
+        ghost_unrepro.len()
+    );
+    for s in &ghost_unrepro {
+        println!("  not reproducible: {s}");
+    }
     if !identity_fail.is_empty() {
         println!("identity FAIL ({}):", identity_fail.len());
         for s in &identity_fail {
@@ -3747,6 +3775,12 @@ fn start_sanity(a: &[String]) {
     if !const_short.is_empty() {
         println!("CONST ended before 60 m ({}):", const_short.len());
         for s in &const_short {
+            println!("  {s}");
+        }
+    }
+    if !offroute_on_road.is_empty() {
+        println!("CONST OffRoute with the wheels still on a road surface = the corridor is wrong there, a GEOMETRY defect ({}):", offroute_on_road.len());
+        for s in &offroute_on_road {
             println!("  {s}");
         }
     }
