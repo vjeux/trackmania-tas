@@ -98,6 +98,7 @@ fn main() {
         Some("probe-scan") => probe_scan(&a),
         Some("geom-export") => geom_export(&a),
         Some("cpfind") => cpfind_cmd(&a),
+        Some("start-sanity") => start_sanity(&a),
         Some("threeway") => threeway(&a),
         Some("clock-probe") => clock_probe(&a),
         Some("sample-diff") => sample_diff(&a),
@@ -3641,4 +3642,114 @@ fn threeway(a: &[String]) {
     pair("env row T      vs dump-truth row T+Δt", &env, &dump);
     pair("env row T      vs telemetry T+Δt    ", &env, &tel);
     pair("dump-truth T   vs telemetry T+Δt    ", &dump, &tel);
+}
+
+// ------------------------------------------------------------ start-sanity
+
+/// `tmenv start-sanity --maps-dir DIR [--threads N] [--seconds S] [--only uid,uid]
+///  [--out-dir DIR] [--no-write-map-dir]` -- see `tmenv::sanity`.
+fn start_sanity(a: &[String]) {
+    let p = paths(a);
+    let maps_dir = PathBuf::from(flag(a, "--maps-dir").unwrap_or_else(|| die("--maps-dir DIR is required".into())));
+    let threads: usize = num(a, "--threads", 40);
+    let seconds: f32 = num(a, "--seconds", 3.0);
+    let only: Vec<String> = flag(a, "--only").map(|s| s.split(',').map(|x| x.trim().to_string()).collect()).unwrap_or_default();
+    let out_dir = PathBuf::from(flag(a, "--out-dir").unwrap_or_else(|| p.work.join("env-sanity").to_string_lossy().into_owned()));
+    std::fs::create_dir_all(&p.work).unwrap_or_else(|e| die(e.to_string()));
+    let mut maps: Vec<PathBuf> = Vec::new();
+    for e in std::fs::read_dir(&maps_dir).unwrap_or_else(|e| die(format!("{}: {e}", maps_dir.display()))) {
+        let d = match e {
+            Ok(e) => e.path(),
+            Err(_) => continue,
+        };
+        let uid = d.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        if !only.is_empty() && !only.iter().any(|u| *u == uid) {
+            continue;
+        }
+        if d.join("map.Map.Gbx").exists() && d.join("ghosts").is_dir() {
+            maps.push(d);
+        }
+    }
+    maps.sort();
+    println!("# tmenv start-sanity  {} map(s) under {}  {} threads  CONST {:.1} s", maps.len(), maps_dir.display(), threads, seconds);
+    let cfg = tmenv::sanity::SanityCfg {
+        server: p.server.clone(),
+        shim: p.shim.clone(),
+        work: p.work.clone(),
+        seconds,
+        write_into_map_dir: !has(a, "--no-write-map-dir"),
+        out_dir: out_dir.clone(),
+    };
+    let t0 = Instant::now();
+    let rows = tmenv::sanity::sanity_all(&cfg, &maps, threads);
+    // the summary: failure classes with counts
+    let mut identity_ok = 0usize;
+    let mut identity_fail: Vec<String> = Vec::new();
+    let mut errors: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut const_done: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut const_short: Vec<String> = Vec::new();
+    let mut spawn_far: Vec<String> = Vec::new();
+    let mut tsv = String::from("uid\tname\tidentity_ok\tidentity_oracle\tdeclared_ms\tconst_m\tconst_done\tconst_ticks\tspawn_vs_geom_m\tstart_blocks\tcar_switch\terror\n");
+    for r in &rows {
+        tsv.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            r.uid,
+            r.name,
+            r.identity_ok.map(|b| b.to_string()).unwrap_or("-".into()),
+            r.identity_oracle,
+            r.identity_declared_ms.map(|v| v.to_string()).unwrap_or("-".into()),
+            r.const_m.map(|v| format!("{v:.1}")).unwrap_or("-".into()),
+            r.const_done,
+            r.const_ticks.map(|v| v.to_string()).unwrap_or("-".into()),
+            r.spawn_vs_geom_m.map(|v| format!("{v:.2}")).unwrap_or("-".into()),
+            r.start_blocks.join("|"),
+            r.car_switch_blocks.join("|"),
+            r.error.replace('\t', " ").replace('\n', " ")
+        ));
+        if !r.error.is_empty() {
+            // class by the first clause of the error
+            let k: String = r.error.split(|c| c == ':' || c == '(').next().unwrap_or("").trim().chars().take(70).collect();
+            *errors.entry(k).or_default() += 1;
+            continue;
+        }
+        match r.identity_ok {
+            Some(true) => identity_ok += 1,
+            _ => identity_fail.push(format!("{} ({}: {})", r.name, r.uid, r.identity_oracle)),
+        }
+        *const_done.entry(r.const_done.clone()).or_default() += 1;
+        if r.const_m.map(|m| m < 60.0).unwrap_or(false) && r.const_done != "running" {
+            const_short.push(format!("{} ({:.0} m, {})", r.name, r.const_m.unwrap_or(0.0), r.const_done));
+        }
+        if r.spawn_vs_geom_m.map(|d| d > 6.0).unwrap_or(false) {
+            spawn_far.push(format!("{} ({:.1} m)", r.name, r.spawn_vs_geom_m.unwrap_or(0.0)));
+        }
+    }
+    let _ = std::fs::write(out_dir.join("env-sanity.tsv"), &tsv);
+    println!("\n{} maps in {:.0} s -> {}", rows.len(), t0.elapsed().as_secs_f64(), out_dir.display());
+    println!("identity replay OK: {} / {} (of maps without an env error)", identity_ok, rows.len() - errors.values().sum::<usize>());
+    if !identity_fail.is_empty() {
+        println!("identity FAIL ({}):", identity_fail.len());
+        for s in &identity_fail {
+            println!("  {s}");
+        }
+    }
+    println!("CONST outcomes: {:?}", const_done);
+    if !const_short.is_empty() {
+        println!("CONST ended before 60 m ({}):", const_short.len());
+        for s in &const_short {
+            println!("  {s}");
+        }
+    }
+    if !spawn_far.is_empty() {
+        println!("measured spawn > 6 m from the geometry's ({}):", spawn_far.len());
+        for s in &spawn_far {
+            println!("  {s}");
+        }
+    }
+    if !errors.is_empty() {
+        println!("env errors by class:");
+        for (k, n) in &errors {
+            println!("  {n:4}  {k}");
+        }
+    }
 }
