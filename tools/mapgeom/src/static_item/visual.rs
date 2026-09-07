@@ -405,7 +405,7 @@ impl CPlugVisualIndexedTriangles {
         elems.push(Elem::Word(tu));
         decls.push(d(N_TANGENT_V, T_DEC3N, SPACE_LOCAL3D, off + 20, stride));
         elems.push(Elem::Word(tv));
-        let stream = CPlugVertexStream { version: 1, count: n as i32, flags: 1, base: super::null_ref(), decls, compress_local3d: Some(true), elems };
+        let stream = CPlugVertexStream { version: 1, count: n as i32, flags: 3, base: super::null_ref(), decls, compress_local3d: Some(true), elems };
         m.vertex_streams = vec![NodeRef { index: 0, inline: Some(Box::new(Node::VertexStream(stream))) }];
         m.tex_coord_sets.clear();
         m.chunk_flags = 0x38;

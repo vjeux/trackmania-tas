@@ -123,6 +123,15 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                         if facts && rest.iter().any(|a| a == "--decls") {
                             decl_desc.push_str(&format!("[{:x}/{:x}/{:?}]", d.flags1, d.flags2, d.extra));
                         }
+                        if facts && rest.iter().any(|a| a == "--values") {
+                            decl_desc.push_str(&elem_summary(e));
+                            if let (5 | 18 | 20, super::vstream::Elem::Word(w)) = (d.name(), e) {
+                                let mut lens: Vec<f32> = w.iter().map(|x| { let n = super::build::dec3n_unpack(*x); (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() }).collect();
+                                lens.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                                let first: Vec<String> = w.iter().take(3).map(|x| { let n = super::build::dec3n_unpack(*x); format!("[{:.2},{:.2},{:.2}]", n[0], n[1], n[2]) }).collect();
+                                decl_desc.push_str(&format!("<len {:.2}..{:.2} first {}>", lens.first().copied().unwrap_or(0.0), lens.last().copied().unwrap_or(0.0), first.join("")));
+                            }
+                        }
                     }
                     if s.decls.len() != s.elems.len() {
                         problems.push(format!("visual {vi}: {} decls but {} element arrays", s.decls.len(), s.elems.len()));
@@ -167,6 +176,80 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                     0
                 }
             };
+            if facts && rest.iter().any(|a| a == "--uvhist") {
+                if let Some(s) = v.stream() {
+                    let pos = match s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == 0).map(|(_, e)| e) {
+                        Some(super::vstream::Elem::Float3(p)) => p.clone(),
+                        _ => Vec::new(),
+                    };
+                    let uv = match s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == 10).map(|(_, e)| e) {
+                        Some(super::vstream::Elem::Float2(p)) => p.clone(),
+                        _ => Vec::new(),
+                    };
+                    if let (Some(ib), false, false) = (v.index_buffer.as_ref(), pos.is_empty(), uv.is_empty()) {
+                        let nrm: Vec<[f32; 3]> = match s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == 5).map(|(_, e)| e) {
+                            Some(super::vstream::Elem::Word(w)) => w.iter().map(|x| super::build::dec3n_unpack(*x)).collect(),
+                            _ => Vec::new(),
+                        };
+                        let (mut agree, mut disagree) = (0usize, 0usize);
+                        if nrm.len() == pos.len() {
+                            for t in ib.indices.chunks(3) {
+                                if t.len() < 3 { continue; }
+                                let [a, b, c] = [pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]];
+                                let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                                let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                                let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                                let vn = [0, 1, 2].map(|k| nrm[t[0] as usize][k] + nrm[t[1] as usize][k] + nrm[t[2] as usize][k]);
+                                if n[0] * vn[0] + n[1] * vn[1] + n[2] * vn[2] >= 0.0 { agree += 1 } else { disagree += 1 }
+                            }
+                        }
+                        println!("{path}: visual {vi} winding vs vertex normals: {agree} agree, {disagree} disagree");
+                        let tan = |name: u32| -> Vec<[f32; 3]> { match s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == name).map(|(_, e)| e) { Some(super::vstream::Elem::Word(w)) => w.iter().map(|x| super::build::dec3n_unpack(*x)).collect(), _ => Vec::new() } };
+                        let (tu, tv) = (tan(18), tan(20));
+                        if tu.len() == nrm.len() && tv.len() == nrm.len() {
+                            let (mut pos_h, mut neg_h, mut perp) = (0usize, 0usize, 0usize);
+                            for i in 0..nrm.len() {
+                                let c = [tu[i][1] * tv[i][2] - tu[i][2] * tv[i][1], tu[i][2] * tv[i][0] - tu[i][0] * tv[i][2], tu[i][0] * tv[i][1] - tu[i][1] * tv[i][0]];
+                                let d = c[0] * nrm[i][0] + c[1] * nrm[i][1] + c[2] * nrm[i][2];
+                                let un = tu[i][0] * nrm[i][0] + tu[i][1] * nrm[i][1] + tu[i][2] * nrm[i][2];
+                                if un.abs() > 0.3 { perp += 1 }
+                                if d > 0.0 { pos_h += 1 } else { neg_h += 1 }
+                            }
+                            println!("{path}: visual {vi} tangent frame: cross(tu,tv).n > 0 for {pos_h}, < 0 for {neg_h}; tu not perpendicular to n: {perp}");
+                        }
+                        // (uv cell 1/20, dominant normal axis) -> area
+                        let mut cells: std::collections::BTreeMap<(i32, i32, &'static str), f32> = Default::default();
+                        for t in ib.indices.chunks(3) {
+                            if t.len() < 3 {
+                                continue;
+                            }
+                            let [a, b, c] = [pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]];
+                            let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                            let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                            let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                            let area = 0.5 * (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                            let ax = if n[0].abs() >= n[1].abs() && n[0].abs() >= n[2].abs() {
+                                if n[0] > 0.0 { "+x" } else { "-x" }
+                            } else if n[1].abs() >= n[2].abs() {
+                                if n[1] > 0.0 { "+y" } else { "-y" }
+                            } else if n[2] > 0.0 { "+z" } else { "-z" };
+                            let cu = (uv[t[0] as usize][0] + uv[t[1] as usize][0] + uv[t[2] as usize][0]) / 3.0;
+                            let cv = (uv[t[0] as usize][1] + uv[t[1] as usize][1] + uv[t[2] as usize][1]) / 3.0;
+                            *cells.entry(((cu * 20.0).floor() as i32, (cv * 20.0).floor() as i32, ax)).or_default() += area;
+                        }
+                        let mut per_axis: std::collections::BTreeMap<&str, f32> = Default::default();
+                        for ((_, _, ax), a) in cells.iter() {
+                            *per_axis.entry(ax).or_default() += a;
+                        }
+                        println!("{path}: visual {vi} area by normal axis {per_axis:?}");
+                        let mut rows: Vec<_> = cells.into_iter().collect();
+                        rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+                        for ((cu, cv, ax), area) in rows.iter().take(12) {
+                            println!("{path}: visual {vi} uv0 cell u{:.2} v{:.2} {ax} area {area:.3}", *cu as f32 / 20.0, *cv as f32 / 20.0);
+                        }
+                    }
+                }
+            }
             if facts {
                 let mat = s2.shaded_geoms.iter().find(|g| g.visual_index as usize == vi).map(|g| g.material_index).unwrap_or(-1);
                 println!("{path}: visual {vi} mat {mat} verts {count} tris {ntri} decls{decl_desc} cflags {:x} sflags {:x} u03 {} tangents {:?} bbox {:?}", m.chunk_flags, v.stream().map(|s| s.flags).unwrap_or(0), m.u03, v.tangents.as_ref().map(|(a, b)| (a.len(), b.len())), m.bounding_box);
@@ -204,4 +287,34 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         return Err(format!("{bad} item(s) failed"));
     }
     Ok(())
+}
+
+/// One-line value summary of a vertex element: per-component min..max for
+/// float elements, distinct count and first values for one-word ones.
+fn elem_summary(e: &super::vstream::Elem) -> String {
+    use super::vstream::Elem;
+    fn range<const N: usize>(v: &[[f32; N]]) -> String {
+        let mut lo = [f32::INFINITY; N];
+        let mut hi = [f32::NEG_INFINITY; N];
+        for x in v {
+            for i in 0..N {
+                lo[i] = lo[i].min(x[i]);
+                hi[i] = hi[i].max(x[i]);
+            }
+        }
+        (0..N).map(|i| format!("{:.3}..{:.3}", lo[i], hi[i])).collect::<Vec<_>>().join(",")
+    }
+    match e {
+        Elem::Float2(v) => format!("{{{}}}", range(v)),
+        Elem::Float3(v) => format!("{{{}}}", range(v)),
+        Elem::Float4(v) => format!("{{{}}}", range(v)),
+        Elem::Word(v) => {
+            let mut d: Vec<u32> = v.clone();
+            d.sort_unstable();
+            d.dedup();
+            let first: Vec<String> = d.iter().take(6).map(|x| format!("{x:08x}")).collect();
+            format!("{{{} distinct: {}}}", d.len(), first.join(" "))
+        }
+        Elem::Raw { size, bytes } => format!("{{raw {size}x{}}}", bytes.len() / size.max(&1)),
+    }
 }

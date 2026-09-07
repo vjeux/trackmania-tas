@@ -1641,12 +1641,24 @@ pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at:
                     for (d, e) in s.decls.iter().zip(s.elems.iter_mut()) {
                         if d.name() == N_TEXCOORD0 {
                             if let Elem::Float2(uv) = e {
+                                // An affine map into the band the road shoulders use (v 0.75..0.80 of
+                                // TrackBorders_D: mid-grey albedo hue-masked to the placement colour,
+                                // rough, non-metal — the light band at v 0.125..0.5 is smooth METAL in
+                                // TrackBorders_R (r 0x30, b 0xb1) and drew a black chrome flag), NOT a constant:
+                                // a constant uv has zero screen derivatives and the
+                                // shader's per-pixel tangent frame divides by them —
+                                // the cloth drew pitch black (flagslow2, 2026-09-06).
                                 for q in uv.iter_mut() {
-                                    *q = [0.4, 0.3];
+                                    *q = [q[0].rem_euclid(1.0), 0.755 + 0.05 * q[1].rem_euclid(1.0)];
                                 }
                             }
                         }
                     }
+                    // The cloth mesh carries a vertex colour (0xFFFFFFFF) that no
+                    // TrackBorders visual in the pack has; the Techno3 shader reads
+                    // it as a blend/decal weight and drew the cloth black (flagslow2,
+                    // 2026-09-06). Drop it: the layout becomes the pack's own.
+                    drop_element(s, N_COLOR0);
                 }
             }
         }
@@ -1764,4 +1776,27 @@ pub fn skinned_material(inst: &CPlugMaterialUserInst, collection: u32) -> CPlugM
         main.link = crate::crystal_model::Id::Str(format!("BlueBay\\Media\\Modifier\\StadiumOnTerrain\\{slot}"));
     }
     owned
+}
+
+/// Remove one declared element from a vertex stream; the remaining
+/// declarations keep their order and get fresh cumulative offsets and stride.
+pub fn drop_element(s: &mut super::vstream::CPlugVertexStream, name: u32) {
+    use super::vstream::Decl;
+    if !s.decls.iter().any(|d| d.name() == name) {
+        return;
+    }
+    let compress = s.compress_local3d.unwrap_or(false);
+    let kept: Vec<(Decl, Elem)> = s.decls.iter().zip(s.elems.iter()).filter(|(d, _)| d.name() != name).map(|(d, e)| (d.clone(), e.clone())).collect();
+    let stride: u32 = kept.iter().map(|(d, _)| super::vstream::type_size(d.stored_type(compress)).unwrap_or(4) as u32).sum();
+    let mut offset = 0u32;
+    let mut decls = Vec::new();
+    let mut elems = Vec::new();
+    for (d, e) in kept {
+        let size = super::vstream::type_size(d.stored_type(compress)).unwrap_or(4) as u32;
+        decls.push(Decl::with_stride(d.name(), d.ty(), d.space(), offset, stride / 4));
+        offset += size;
+        elems.push(e);
+    }
+    s.decls = decls;
+    s.elems = elems;
 }
