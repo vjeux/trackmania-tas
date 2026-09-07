@@ -1665,14 +1665,6 @@ pub fn build_surface(m: &Merged) -> CPlugSurface {
     CPlugSurface::mesh(m.surf_vertices.clone(), m.surf_triangles.clone(), m.surf_ids.clone(), [0.0, 0.0, 1.0])
 }
 
-/// Which item layout carries a prefab entity model (moving parts):
-/// `TINY_DYNA_FORM=common` wraps it in a `CGameCommonItemEntityModel` like a
-/// static item; the default puts the prefab straight under `CGameItemModel`,
-/// as the pack's own obstacle items do.
-fn dyna_form_common() -> bool {
-    std::env::var("TINY_DYNA_FORM").map(|v| v == "common").unwrap_or(false)
-}
-
 /// `TINY_STATIC_FORM=prefab`: a static item laid out like the pack's own
 /// items — `CGameItemModel -> CPlugPrefab { CPlugStaticObjectModel }` — instead
 /// of the item editor's `CGameCommonItemEntityModel` wrapper (the 2026-09-07
@@ -1735,7 +1727,6 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         // parts first (each a CPlugDynaObjectModel with its own mesh and two
         // hulls, its instance params carried), then the static part, then one
         // kinematic constraint per moving part binding the world (-1) to it.
-        let prefab_index = if dyna_form_common() { next_index(&mut next) } else { 1 };
         let mut ents: Vec<super::prefab::Entity> = Vec::new();
         let static_entity = |next: &mut i32, so: CPlugStaticObjectModel| {
             let i = next_index(next);
@@ -1777,11 +1768,10 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             ents.push(super::prefab::Entity { model: inline(i, Node::Kinematic(constraint.clone())), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: super::dyna::P_CONSTRAINT, params: cp.bytes(), u01: Vec::new() });
         }
         let prefab = super::prefab::CPlugPrefab { version: 11, file_write_time: 0, url: String::new(), u01: 0, u02: 0, ents };
-        if dyna_form_common() {
-            inline(1, Node::EntityModel(common(inline(prefab_index, Node::Prefab(prefab)))))
-        } else {
-            inline(prefab_index, Node::Prefab(prefab))
-        }
+        // straight under CGameItemModel, as the pack's own obstacle items do:
+        // wrapped in a CGameCommonItemEntityModel the game drops the item
+        // silently (MovD, 2026-09-07)
+        inline(1, Node::Prefab(prefab))
     };
     let placement_index = next_index(&mut next);
     let sclass_index = next_index(&mut next);
