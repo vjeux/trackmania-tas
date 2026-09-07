@@ -64,17 +64,7 @@ impl SurfaceModel {
     /// track alone (the cartographer's fallback rule, INTERFACE.md §7b: only when
     /// the track-only grid produced no route — Summer 2026 - 05 and 10 needed it).
     pub fn build(map: &std::path::Path, gates: &GatesFile, verbose: bool, deco_grid: bool) -> Result<(SurfaceModel, Nodes), String> {
-        let server = std::env::var("TM_SERVER").map_err(|_| "TM_SERVER not set")?;
-        let mut paths = Vec::new();
-        for name in ["dedicated_TMStadium.pak", "dedicated.pak", "resource.pak"] {
-            let p = format!("{server}/Packs/{name}");
-            if std::path::Path::new(&p).exists() {
-                paths.push(p);
-            }
-        }
-        if paths.is_empty() {
-            return Err(format!("no .pak in {server}/Packs"));
-        }
+        let paths = crate::pak_paths()?;
         let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY)?;
         let m = tmmaps::map::MapFile::load(map);
         let mut notes = Vec::new();
