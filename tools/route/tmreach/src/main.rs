@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use tmreach::gates::MapGates;
+use tmreach::gates::{GateKind, MapGates};
 use tmreach::rig::Worker;
 use tmreach::starts::{run_on_worker, starts_tsv_header, starts_tsv_row, StartsOpts};
 use tmreach::tele::Telemetry;
@@ -102,6 +102,7 @@ fn main() {
         "explore" => cmd_explore(&a),
         "replay" => cmd_replay(&a),
         "effects" => cmd_effects(&a),
+        "bank-table" => cmd_bank_table(&a),
         _ => usage(),
     };
     if let Err(e) = r {
@@ -405,6 +406,9 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
                 }
                 tot.reached_next += fo.stats.reached_next;
                 tot.reached_other += fo.stats.reached_other;
+                tot.run_ended_unfinished += fo.stats.run_ended_unfinished;
+                tot.end_extrapolated += fo.stats.end_extrapolated;
+                tot.finish_from_exit += fo.stats.finish_from_exit;
                 tot.distinct_cells.extend(fo.stats.distinct_cells.iter());
                 tot.switches += fo.stats.switches;
                 for (fam, v) in &fo.stats.family_cells {
@@ -435,7 +439,7 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
     let med = cells.get(cells.len() / 2).copied().unwrap_or(0);
     let summary = format!(
         "fanout {} on {} ({}): {}/{} work items (ghost x shard) ok, {} rollouts ({} records) in {:.1} s wall = {:.1} rollouts/s/box with {} workers; per-rollout engine time {:.1} ms mean\n\
-         outcomes ok {} crash-stop {} offworld {} finished {} aborted {}; reached the human's next gate {} ({:.1} %), some OTHER gate first {} ({:.2} %); no-op macros {}, out-of-tape {}, errors {}\n\
+         outcomes ok {} crash-stop {} offworld {} finished {} aborted {}; reached the human's next gate {} ({:.1} %), some OTHER gate first {} ({:.2} %); no-op macros {}, out-of-tape {}, errors {}; children that ENDED before their stop point without finishing {} (records ABORTED), end labels inside the extrapolated span {} (records ABORTED), finishes credited at the exit {}\n\
          identity (macro 0 end state vs the human's trajectory): max {:.4} m, {} fails over {} starts; start-row blend by a macro's first record: max {:.4} m\n\
          distinct end cells (2 m x 2 m x 5 m/s) per start over {} macros x {} horizons: median {}, min {}, max {}; {} starts were switches (<= 2 cells)\n\
          human legs (positives) {}, respawn negatives {}\n\
@@ -445,7 +449,7 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
         tot.outcomes[0], tot.outcomes[1], tot.outcomes[2], tot.outcomes[3], tot.outcomes[4],
         tot.reached_next, 100.0 * tot.reached_next as f64 / tot.rollouts.max(1) as f64,
         tot.reached_other, 100.0 * tot.reached_other as f64 / tot.rollouts.max(1) as f64,
-        tot.noop, tot.out_of_tape, tot.errors, tot.identity_max_m, tot.identity_fail, cells.len(), tot.start_blend_max_m,
+        tot.noop, tot.out_of_tape, tot.errors, tot.run_ended_unfinished, tot.end_extrapolated, tot.finish_from_exit, tot.identity_max_m, tot.identity_fail, cells.len(), tot.start_blend_max_m,
         lib.len(), horizons.len(), med, cells.first().copied().unwrap_or(0), cells.last().copied().unwrap_or(0), tot.switches, human_legs, human_resp,
         fam_cells.iter().map(|(f, v)| { let mut v = v.clone(); v.sort(); format!("{f} {}", v.get(v.len() / 2).copied().unwrap_or(0)) }).collect::<Vec<_>>().join(", ")
     );
@@ -466,8 +470,27 @@ fn cmd_verify(a: &Args) -> Result<(), String> {
     let mut bad_ticks = 0;
     let mut gates_hit = 0;
     let mut by_start: std::collections::BTreeMap<u32, usize> = Default::default();
+    // FINISHED records without the engine's own finish flag: the pre-11:24Z builds labelled a
+    // child that ENDED without finishing as FINISHED (the F10 varying records); such records
+    // are ABORTED under the current rule -- counted here so a bank can be judged
+    let mut finished_no_flag = 0;
+    // with --map (and --geom) the finish waypoints are known: a FINISHED record with no finish
+    // gate credited is the old exit-as-finish class
+    let finish_wps: Option<Vec<usize>> = a.get("map").map(|m| {
+        let g = MapGates::load(std::path::Path::new(m), a.get("geom").map(std::path::Path::new)).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
+        g.gates.iter().filter(|g| g.kind == GateKind::Finish).map(|g| g.waypoint as usize).collect()
+    });
     for r in &shard.records {
         hist[(r.outcome as usize).min(4)] += 1;
+        if r.outcome == tmreach::tmr::OUTCOME_FINISHED {
+            let has_finish = match &finish_wps {
+                Some(f) => f.iter().any(|w| *w < 32 && r.gate_tick[*w] >= 0),
+                None => r.end.finished,
+            };
+            if !has_finish {
+                finished_no_flag += 1;
+            }
+        }
         *by_start.entry(r.start_id).or_default() += 1;
         for g in &r.gate_tick {
             if *g >= 0 {
@@ -480,8 +503,8 @@ fn cmd_verify(a: &Args) -> Result<(), String> {
     }
     let starts = std::fs::read_to_string(dir.join("starts.tsv")).map(|s| s.lines().count().saturating_sub(1)).unwrap_or(0);
     println!(
-        "{}: TMR0 v{} md5 {} : {} records, {} gates, {} starts in starts.tsv, {} distinct start_ids in the shard; outcomes ok {} crash-stop {} offworld {} finished {} aborted {}; {} gate crossings, {} with a tick outside the horizon",
-        p.display(), shard.version, md5, shard.records.len(), shard.n_gates, starts, by_start.len(), hist[0], hist[1], hist[2], hist[3], hist[4], gates_hit, bad_ticks
+        "{}: TMR0 v{} md5 {} : {} records, {} gates, {} starts in starts.tsv, {} distinct start_ids in the shard; outcomes ok {} crash-stop {} offworld {} finished {} aborted {}; {} gate crossings, {} with a tick outside the horizon; FINISHED without a finish gate credited {} (the pre-11:24Z exit-as-finish class; ABORTED under the end-state rule)",
+        p.display(), shard.version, md5, shard.records.len(), shard.n_gates, starts, by_start.len(), hist[0], hist[1], hist[2], hist[3], hist[4], gates_hit, bad_ticks, finished_no_flag
     );
     // the TMP4 sidecar, when present: same count, last point == the record's end
     let p4_path = dir.join("path4.tmp4");
@@ -1284,5 +1307,49 @@ fn cmd_effects(a: &Args) -> Result<(), String> {
         println!("  {} +{:#x} ({}): {}  series {:?}", c.window, c.offset, c.kind, c.note, c.series.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>());
     }
     println!("{} timer candidates, {} flag candidates, {} appearing; dumps in {}", timers.len(), flags.len(), app.len(), out.display());
+    Ok(())
+}
+
+/// `tmreach bank-table --bank DIR [--out FILE]`: one row per banked map from its
+/// CONTROL.md (name, uid, ghosts, records, counter attribution, oracle control,
+/// human legs, workers) — the campaign table the coordinator reads.
+fn cmd_bank_table(a: &Args) -> Result<(), String> {
+    let bank = PathBuf::from(a.req("bank"));
+    let pick = |s: &str, re_start: &str, re_end: &str| -> String {
+        s.find(re_start).map(|i| {
+            let rest = &s[i + re_start.len()..];
+            let j = rest.find(re_end).unwrap_or(rest.len());
+            rest[..j].trim().to_string()
+        }).unwrap_or_default()
+    };
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for e in std::fs::read_dir(&bank).map_err(|e| e.to_string())? {
+        let e = e.map_err(|e| e.to_string())?;
+        let uid = e.file_name().to_string_lossy().into_owned();
+        let Ok(c) = std::fs::read_to_string(e.path().join("CONTROL.md")) else { continue };
+        if !e.path().join("samples.tmr").exists() {
+            continue;
+        }
+        let name = pick(&c, "# CONTROL.md — ", " (");
+        let ghosts = pick(&c, "Ghosts: ", " in the player manifest");
+        let excluded = c.matches(".Ghost.Gbx").count();
+        let records = pick(&c, "work items (ghost x shard) ok, ", " rollouts (").to_string() + " rollouts, " + &pick(&c, " rollouts (", " records)") + " records";
+        let counter = pick(&c, "finish included): ", " matched by a detector crossing on the same row").replace(" counter steps: ", " steps, ");
+        let oracle = pick(&c, "ORACLE CONTROL: ", ", unanswered");
+        let legs = pick(&c, "human legs (positives) ", ",");
+        let workers = pick(&c, "## fanout (", " workers");
+        let git = pick(&c, "tmreach campaign ", " on ");
+        rows.push((name.clone(), format!("{name}\t{uid}\t{ghosts}\texcluded {excluded}\t{records}\tcounter steps {counter} same-row\t{oracle}\tlegs {legs}\tworkers {workers}\ttmreach {git}\n")));
+    }
+    rows.sort();
+    let mut s = String::from("map\tuid\tghosts\texcluded\trecords\tcounter attribution\toracle control\thuman legs\tworkers\tbuild\n");
+    for (_, r) in &rows {
+        s.push_str(r);
+    }
+    print!("{s}");
+    println!("{} maps banked", rows.len());
+    if let Some(out) = a.get("out") {
+        std::fs::write(out, &s).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }

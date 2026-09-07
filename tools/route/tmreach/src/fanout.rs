@@ -60,6 +60,12 @@ pub struct Stats {
     pub geometric_only: usize,
     /// Finishes credited from the child's exit + geometry (the counter step was among the lost samples).
     pub finish_from_exit: usize,
+    /// Children that ENDED before their stop point without a finish crossing (RunEnded on a
+    /// non-finishing rollout: an early death) -- their records are ABORTED, fail closed.
+    pub run_ended_unfinished: usize,
+    /// End labels that fell inside the extrapolated span past the child's last real row --
+    /// ABORTED, fail closed (perf arm, PERF.md §12: the varying records were these).
+    pub end_extrapolated: usize,
     pub distinct_cells: Vec<usize>,
     /// Distinct end cells per start, per macro family.
     pub family_cells: std::collections::BTreeMap<String, Vec<usize>>,
@@ -111,8 +117,11 @@ pub fn classify(rows: &[Row], start_speed: f64, floor_y: f64, exited: bool, fini
         }
     }
     let end_v = rows.last().map(speed).unwrap_or(0.0);
-    let outcome = if finished_gate || exited {
+    let outcome = if finished_gate {
         OUTCOME_FINISHED
+    } else if exited {
+        // the child ended before its stop point without finishing: fail closed
+        OUTCOME_ABORTED
     } else if off {
         OUTCOME_OFFWORLD
     } else if rows.is_empty() {
@@ -256,9 +265,10 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                         }
                     }
                 }
+                // rows past this label are EXTRAPOLATED (constant velocity, attitude/rpm frozen):
+                // they may attribute a finish crossing, never provide an end state
+                let real_end_label: i64 = rolled.rows.last().map(|r| r.time_ms).unwrap_or(i64::MIN);
                 if rolled.exited {
-                    // the last samples of an exiting child are lost: extend at constant velocity so a
-                    // finish crossing at the exit is in the rows (its end row is then ±3 ticks run to run)
                     crate::rig::extrapolate_exit(&mut rolled.rows);
                 }
                 let win: Vec<Row> = rolled.rows.iter().filter(|r| r.time_ms >= first_label && r.time_ms <= end_label).cloned().collect();
@@ -342,19 +352,35 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                 if !complete && !rolled.exited {
                     outcome = OUTCOME_ABORTED;
                 }
-                out.stats.outcomes[outcome as usize] += 1;
+                if rolled.exited && !finished_gate {
+                    out.stats.run_ended_unfinished += 1;
+                }
                 // a FINISHED rollout ends at its finish-crossing row (the rows past it
                 // are however many the exiting child flushed: 0..3, run to run)
                 let finish_idx = if finished_gate { first.iter().enumerate().find(|(gi, t)| **t >= 0 && gates.gates[*gi].kind == GateKind::Finish).map(|(_, t)| *t as usize) } else { None };
-                let end_row = match finish_idx {
-                    Some(i) => win.get(i).cloned(),
-                    None => win.last().cloned(),
+                let mut end_idx = match finish_idx {
+                    Some(i) if i < win.len() => i,
+                    _ => win.len().saturating_sub(1),
                 };
+                // NEVER an end state from an extrapolated row (rule from the perf arm's F10 reading):
+                // an end label past the child's last real row => ABORTED, the end at the last real row
+                if !win.is_empty() && win[end_idx].time_ms > real_end_label {
+                    let last_real = win.iter().rposition(|r| r.time_ms <= real_end_label);
+                    match last_real {
+                        Some(i) => end_idx = i,
+                        None => {
+                            out.stats.errors += 1;
+                            out.log.push(format!("  start {start_id} macro {} h {h}: every row in the window is extrapolated", m.id));
+                            continue;
+                        }
+                    }
+                    outcome = OUTCOME_ABORTED;
+                    out.stats.end_extrapolated += 1;
+                }
+                out.stats.outcomes[outcome as usize] += 1;
+                let end_row = win.get(end_idx).cloned();
                 // the sampled path ends where the record does
-                let win_eff: &[Row] = match finish_idx {
-                    Some(i) if i < win.len() => &win[..=i],
-                    _ => &win,
-                };
+                let win_eff: &[Row] = if end_idx < win.len() { &win[..=end_idx] } else { &win };
                 let Some(end_row) = end_row else {
                     out.stats.errors += 1;
                     out.log.push(format!("  start {start_id} macro {} h {h}: no rows in the window", m.id));
@@ -371,7 +397,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                         }
                     }
                 }
-                let end = CarState::from_row(&end_row, w.race_of(&end_row), cps_before + n_new as u8, finished_gate || (rolled.exited && !complete));
+                let end = CarState::from_row(&end_row, w.race_of(&end_row), cps_before + n_new as u8, finished_gate);
                 let cell = ((end_row.x / 2.0).floor() as i64, (end_row.z / 2.0).floor() as i64, (speed(&end_row) / 5.0).floor() as i64);
                 cells.insert(cell);
                 fam_cells.entry(m.shape.family()).or_default().insert(cell);
