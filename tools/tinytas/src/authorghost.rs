@@ -205,12 +205,13 @@ pub fn find_embedded_ghost(body: &[u8]) -> Vec<EmbeddedGhost> {
             if end + 4 <= body.len() && u32at(body, end) == FACADE && i >= 4 {
                 // the enclosing skippable chunk, if the class id sits right
                 // after `0x0305B00F PIKS size nodeIndex`
-                let chunk_payload = if i >= 16
-                    && u32at(body, i - 16) == CHUNK_RACE_VALIDATE_GHOST
-                    && &body[i - 12..i - 8] == b"PIKS"
+                // layout: id | PIKS | size | u32 0 | u32 len | classId(i) | stream
+                let chunk_payload = if i >= 20
+                    && u32at(body, i - 20) == CHUNK_RACE_VALIDATE_GHOST
+                    && &body[i - 16..i - 12] == b"PIKS"
                 {
-                    let sz = u32at(body, i - 8) as usize;
-                    Some((i - 4, i - 4 + sz))
+                    let sz = u32at(body, i - 12) as usize;
+                    Some((i - 8, i - 8 + sz))
                 } else {
                     None
                 };

@@ -87,3 +87,73 @@ from that point at 11.7 m/s — consistent with a standing start there.
   the latter (`tmexplore-real state --csv DIR`, added) for traces.
 - `tmexplore-real state` needs a `--route`; the original's cartographer route
   was used as a placeholder for the locator bounds. The scaled route is stage 6.
+
+## G2 (partial) — fork server on the tiny map
+
+`fk server check --tape g1/w03_3.Ghost.Gbx --map tiny --at tick:100 --n 50`:
+identity resume EXACT (DNF = DNF), boundary tick 194 (probe 194), oracle
+repeatability 0/50 differ, exactness **50/50** (all DNF — a weak control until a
+reference that reaches checkpoints is used; the 31.769 tape below is that
+reference; not yet run against it).
+
+## Stage C — scaled reference set. **TRANSFORM CONTROL PASS**
+
+`tinytas scale-ref` with anchor (1584,16,784)→(1584,11.5,784), k 0.5: every
+scaled ORIGINAL gate centre lands on a tiny waypoint item centre (origin +
+R(yaw)·(8,·,8), yaw convention +1) at **0.000 m** — Spawn, 3 Checkpoints (one
+an item gate, kept as an item), Goal. Output `ref/tiny/Tin2buNz….{pack,route}.json`
+(route 950.1 m, gates at s = 255.8 / 557.3 / 741.6 / 950.1).
+
+## Stage D — seed: FIRST CERTIFIED FINISH **31.769** (2026-09-06 17:53 PDT)
+
+`tmexplore-real run` (the ghost-free archive explorer) on the tiny map with
+the scaled pack+route, 80 threads, fork boundary tick 77, 25 min:
+- its own two-sided identity control PASS (do-nothing vs full-throttle tapes
+  decode to different echoes; map uid confirmed); start-position control
+  PASS on every worker (first sample 4.6 m from the spawn cell base at 0.77 s);
+- first plain-oracle **FINISH 31.769 after 51 s / 29 107 evals**; 413 486
+  evals in 1517 s; the archive's "best" ordering later reported 33.989 while
+  the confirmed best stayed 31.769 (`best.tape.tsv`, 2553 search ticks, frame 77).
+- Route-ladder note: the fork's gate ladder collects a gate within 8 m of its
+  centre; the item gate `AI00000001` is a 32 m-wide gate kept unscaled, so
+  the ladder saturated at station ~57 while the engine counted cps 3 — the
+  "FINISH at station 68" is that saturation, not a physics anomaly.
+
+Certification chain (all on box 0; a second box has NOT re-simulated it yet):
+| step | result |
+|---|---|
+| `tinytas tape assemble` (template[0..77] + 2553 search ticks + template tail to 6000) | 6000-tick whole-file tape, md5 `3473fbd8c0f10765f48a571a4301b353` |
+| `tmauto synth write --tape full.tsv --declared 31769` (fresh container from tick 0) | `cert/run.declared.Ghost.Gbx` md5 `8fb2ecf50e4bac8885db98370efbbddb` |
+| `tmauto verdict` ×3 (three server processes) | **31.769, 4 cps, IsValid true** every time |
+| control: the same search tape WITHOUT the template tail (last input repeated) | **DNF cps 3** — the finish depends on the template's wobble inputs after tick 2630; `tape assemble` now always appends the tail |
+| control: `ghost declare --from-oracle` alone leaves the walltime pair at 60 s → server says 31.769 but "unexcepted walltime (60s)" (IsValid false) | use `synth write --declared MS` (moves the walltime pair) |
+
+## Stage G — the VALIDATED MAP writer works end to end
+
+`tinytas authorghost embed --map in/Summer-01-Tiny.Map.Gbx --ghost cert/run.declared.Ghost.Gbx`:
+- skeleton = the map's existing embedded Nadeo ghost (13 148-byte 0x0305B00F
+  payload: `u32 0 | u32 len | 0x03092000 | chunks | FACADE01`); ours replaces
+  0x03092000 (record node-index word dropped), 005, 00F, 010, 014, 01D, 02B,
+  02D; skeleton keeps the rest with 0x0309201B redeclared;
+- Id literals `["CarSport","Nadeo",<uid>]` → same count/order, uid slot only;
+- times [35000,28000,25000,23144] → author **31.769**, gold 35.000, silver
+  39.000, bronze 48.000 (1.08/1.20/1.50 ceil-to-second; calibrated: 23.144 →
+  25/28/35 s exactly), in header 0x03043002 (×1), header XML, body
+  0x0305B004 + 0x0305B00A (×2); `validated="1"`;
+- **proof**: `tinytas authorghost extract` from the OUTPUT map → the dedicated
+  server, loading the OUTPUT map, re-simulates it to **31.769, IsValid true**.
+- Reader control: Nadeo's own author ghost extracted from the ORIGINAL map
+  re-simulates to **23.144** (= the AT); the same ghost against the tiny map
+  DNFs cps 0 (the maps differ).
+
+| file | md5 |
+|---|---|
+| `in/Summer-01-Tiny.Map.Gbx` (frozen input) | `1b9318c8e1507295485bc9db2fc0fd26` |
+| `out/Summer-01-Tiny-validated.Map.Gbx` | `7f5ff34a64a5fc30fe80ea97394fc7f9` |
+| `cert/run.declared.Ghost.Gbx` | `8fb2ecf50e4bac8885db98370efbbddb` |
+
+Unfinished (stop order 2026-09-06 17:54 PDT): client load of the validated
+map; regenerated telemetry for the embedded ghost (it carries the minimal
+first-sample record, so it validates but is not a watchable car — `fk regen`
+/ `ghost regen` is the tool); second-box re-simulation; parity probes;
+`--must` route hypotheses; tape polish; ARM.md.

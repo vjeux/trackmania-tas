@@ -133,7 +133,7 @@ fn cmd_scale_ref(args: &[String]) -> Result<(), String> {
 
 fn cmd_authorghost(args: &[String]) -> Result<(), String> {
     use tinytas::authorghost as ag;
-    if let Some(gp) = arg(args, "--ghost") {
+    if let (Some("probe"), Some(gp)) = (args.first().map(|s| s.as_str()), arg(args, "--ghost")) {
         // A standalone ghost: list its chunks the same way, for the differential.
         let g = tmmaps::gbx::Gbx::load(std::path::Path::new(&gp)).map_err(|e| format!("{gp}: {e}"))?;
         println!("ghost {} body {} bytes num_nodes {} class 0x{:08X}", gp, g.body.len(), g.num_nodes, g.class_id);
@@ -270,7 +270,16 @@ fn cmd_tape(args: &[String]) -> Result<(), String> {
     for (k, (st, g, b)) in rows.iter().enumerate() {
         s.push_str(&format!("{}\t{}\t{}\t{}\n", frame + k, st, *g as u8, *b as u8));
     }
+    // THE TEMPLATE'S TAIL. The search wrote its tape INTO the container; the
+    // container's own inputs continue after it, and a finish that came 5 s
+    // after the search tape ended was driven by them. Without the tail the
+    // same tape re-synthesised alone (last input repeated) DNFs at cps 3 --
+    // measured on the first tiny finish, 31.769 vs DNF.
+    let tail_from = frame + rows.len();
+    for i in tail_from..steer.len() {
+        s.push_str(&format!("{}\t{}\t{}\t{}\n", i, steer[i], gas[i], brake[i]));
+    }
     std::fs::write(&out, s).map_err(|e| format!("{}: {}", out.display(), e))?;
-    println!("wrote {} ({} ticks = {} prefix + {} search; frame {})", out.display(), frame + rows.len(), frame, rows.len(), frame);
+    println!("wrote {} ({} ticks = {} prefix + {} search + {} template tail; frame {})", out.display(), steer.len().max(frame + rows.len()), frame, rows.len(), steer.len().saturating_sub(frame + rows.len()), frame);
     Ok(())
 }
