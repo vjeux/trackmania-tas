@@ -229,7 +229,8 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                     }
                 }
                 if facts {
-                    println!("{path}: material {mi} custom {model_name} textures [{}] phys {} used by {} geoms", textures.iter().map(|t| format!("{}={}", t.u01, t.texture)).collect::<Vec<_>>().join(" "), inst.physics(), used.get(mi).copied().unwrap_or(0));
+                    let anims = if textures.is_empty() { String::new() } else { inst.main.as_ref().map(|m| if m.uv_anims.is_empty() { String::new() } else { format!(" uvanims [{}]", m.uv_anims.iter().map(|a| format!("{:?}/{:?}/{}/{:#x}/{:?}", a.u01, a.u02, a.u03, a.u04, a.u05)).collect::<Vec<_>>().join(", ")) }).unwrap_or_default() };
+                    println!("{path}: material {mi} custom {model_name} textures [{}] phys {} used by {} geoms{anims}", textures.iter().map(|t| format!("{}={}", t.u01, t.texture)).collect::<Vec<_>>().join(" "), inst.physics(), used.get(mi).copied().unwrap_or(0));
                 }
                 continue;
             }
@@ -243,7 +244,8 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                 }
             }
             if facts {
-                println!("{path}: material {mi} {link} phys {} used by {} geoms", inst.physics(), used.get(mi).copied().unwrap_or(0));
+                let extra = inst.main.as_ref().map(|m| { let mut s = String::new(); if !m.uv_anims.is_empty() { s.push_str(&format!(" uvanims [{}]", m.uv_anims.iter().map(|a| format!("{:?}/{:?}/{}/{:#x}/{:?}", a.u01, a.u02, a.u03, a.u04, a.u05)).collect::<Vec<_>>().join(", "))); } if !m.csts.is_empty() { s.push_str(&format!(" csts {}", m.csts.len())); } if !m.color.is_empty() { s.push_str(&format!(" color {:?}", m.color)); } if !m.user_textures.is_empty() { s.push_str(&format!(" textures [{}]", m.user_textures.iter().map(|t| format!("{}={}", t.u01, t.texture)).collect::<Vec<_>>().join(" "))); } s }).unwrap_or_default();
+                println!("{path}: material {mi} {link} phys {} used by {} geoms{extra}", inst.physics(), used.get(mi).copied().unwrap_or(0));
             }
         }
         for (vi, vr) in s2.visuals.iter().enumerate() {

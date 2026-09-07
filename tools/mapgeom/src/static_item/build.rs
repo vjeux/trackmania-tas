@@ -3253,6 +3253,23 @@ pub fn custom_texture_material(inst: &CPlugMaterialUserInst, ident: &str) -> CPl
             }
             _ => {}
         }
+        // TINY_MAT_UVANIM="u01|u02|u03|u04hex|u05": one UvAnim entry on the
+        // rewritten material (the chunk's v3+ list: Id, Id, f32, u64, Id) —
+        // the 2026-09-07 probe of whether a custom material can scroll its
+        // texture. Ids: `-` = null, else the string.
+        if let Ok(spec) = std::env::var("TINY_MAT_UVANIM") {
+            let f: Vec<&str> = spec.split('|').collect();
+            if f.len() == 5 {
+                let id = |s: &str| if s == "-" { crate::crystal_model::Id::Null } else { crate::crystal_model::Id::Str(s.to_string()) };
+                main.uv_anims = vec![crate::crystal_model::UvAnim {
+                    u01: id(f[0]),
+                    u02: id(f[1]),
+                    u03: f[2].parse().unwrap_or(1.0),
+                    u04: u64::from_str_radix(f[3].trim_start_matches("0x"), 16).unwrap_or(0),
+                    u05: id(f[4]),
+                }];
+            }
+        }
         return owned;
     }
     inst.clone()
