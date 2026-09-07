@@ -2739,9 +2739,13 @@ unsafe fn forkserver() {
                     break;
                 }
             }
+            // The probe child has said its tick (or timed out): SIGKILL it and walk
+            // away. There used to be a `waitpid` here, and it made the probe cost
+            // 3.5 ms instead of 1.6: waitpid returns only after the kernel has
+            // torn the child's 150 MB address space down, the same wait the
+            // exit marker took off the candidate path (PERF.md §3.1, §11).
+            // SIGCHLD is ignored, so there is no zombie to reap.
             kill(pid, SIGKILL);
-            let mut st = 0i32;
-            waitpid(pid, &mut st, 0);
             close(fds[0]);
             send_frame(res, &out);
             continue;

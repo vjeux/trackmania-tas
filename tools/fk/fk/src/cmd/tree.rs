@@ -309,8 +309,10 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
         "\n      k    branch(ms)   probe(ms)    total(ms)   ticks consumed   trace rows"
     );
     let mut rows: Vec<(f64, f64)> = Vec::new();
+    let mut phases: Vec<(u64, branch::Timeline)> = Vec::new();
     for &k in &o.ks {
         let reps = if k > 500 { o.reps.min(3).max(1) } else { o.reps };
+        let tl0 = f.timeline();
         let (mut bt, mut pt) = (Vec::new(), Vec::new());
         let (mut trace_rows, mut consumed) = (0usize, 0usize);
         let mut trace_err: Option<String> = None;
@@ -357,6 +359,25 @@ pub fn cost(engine: &Engine, tape: Tape, at: Checkpoint, o: CostOpts) -> Result<
             if layout.is_some() { trace_rows.to_string() } else { "UNMEASURED".into() }
         );
         rows.push((k as f64, b));
+        let tl1 = f.timeline();
+        phases.push((
+            k,
+            branch::Timeline {
+                branches: tl1.branches - tl0.branches,
+                branch_us: tl1.branch_us - tl0.branch_us,
+                accept_us: tl1.accept_us - tl0.accept_us,
+                probe_us: tl1.probe_us - tl0.probe_us,
+                trace_us: tl1.trace_us - tl0.trace_us,
+            },
+        ));
+    }
+    // WHERE THE TIME GOES, phase by phase (PERF.md §11): the request and the
+    // parent's fork; from the reply to the new node's hello (the child's
+    // setup, its k ticks, its socket, the driver's polling); the node's own
+    // boundary probe; reading the trace file back.
+    println!("\nwhere a branch's time goes, by phase (means):");
+    for (k, tl) in &phases {
+        println!("  k={:<5} {}", k, tl);
     }
 
     if rows.len() >= 2 {
@@ -854,6 +875,61 @@ fn scale_worker(
         let (_, h) = f.advance(ROOT, &[], 0, k)?;
         f.release(h);
         done.fetch_add(1, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// `fk tree clockprobe`: does the node's own clock say where its boundary is?
+///
+/// Every node probes its boundary by forking a child that walks into the
+/// protected input array (1.5 ms, PERF.md §11). The tick hook's clock is
+/// published in the node's hello for free. If `boundary - f(clock)` is one
+/// constant on every node of a map, the clock IS the probe, and the fork is
+/// spent on a number already known. This measures the residual over many
+/// branches at several `k`, and prints its distribution; it decides nothing
+/// by itself.
+pub fn clockprobe(engine: &Engine, tape: Tape, at: Checkpoint, ks: &[u64], reps: usize) -> Result<(), String> {
+    let mut s = Session::start(engine, tape, at)?;
+    let probe = s.probe_tick()?;
+    s.assert_running_our_tape()?;
+    let (srv, tape, _) = split(s);
+    let reference = recs_from(&tape.steer, &tape.accel, &tape.brake, 0);
+    let mut f = Forest::new(srv, &engine.work, reference, None)?;
+    f.probe_root()?;
+    let root_b = f.probed_boundary(ROOT).unwrap_or(probe);
+    println!("root: probed boundary {} (start offset {} ms)", root_b, tape.start_offset_ms);
+    println!("{:>6} {:>10} {:>10} {:>12} {:>10}  {}", "k", "boundary", "clock", "sim_ms", "race_start", "boundary - (sim_ms - race_start - start_offset)/10");
+    let mut residuals: std::collections::BTreeMap<i64, usize> = std::collections::BTreeMap::new();
+    let mut chain: Vec<Handle> = Vec::new();
+    for &k in ks {
+        for r in 0..reps {
+            // alternate: from the root, and from the previous node (a chain),
+            // so both fresh and deep nodes are in the sample
+            let parent = if r % 2 == 0 || chain.is_empty() { ROOT } else { *chain.last().unwrap() };
+            let from = f.probed_boundary(parent).unwrap_or(0);
+            let (_, h) = f.advance(parent, &[], from, k)?;
+            let (clock, sim_ms, race_start, b) = f.node_clock(h).ok_or("no node")?;
+            let b = b.ok_or("node without a boundary")? as i64;
+            let derived = (sim_ms as i64 - race_start as i64 - tape.start_offset_ms as i64) / 10;
+            let res = b - derived;
+            *residuals.entry(res).or_insert(0) += 1;
+            if r < 2 {
+                println!("{:>6} {:>10} {:>10} {:>12} {:>10}  {}", k, b, clock, sim_ms, race_start, res);
+            }
+            if parent != ROOT && chain.len() > 4 {
+                f.release(chain.remove(0));
+            }
+            chain.push(h);
+        }
+    }
+    println!("\nresidual boundary - (sim_ms - race_start - start_offset)/10 over {} nodes:", residuals.values().sum::<usize>());
+    for (r, n) in &residuals {
+        println!("  {:>6}: {}", r, n);
+    }
+    if residuals.len() == 1 {
+        println!("ONE constant on every node: the clock says where the boundary is.");
+    } else {
+        println!("{} distinct residuals: the clock alone does not give the boundary here.", residuals.len());
     }
     Ok(())
 }

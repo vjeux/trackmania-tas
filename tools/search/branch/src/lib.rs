@@ -126,12 +126,44 @@ struct Held {
 }
 
 /// The tree, and everything alive in it.
+/// WHERE A BRANCH'S TIME GOES (PERF.md §11): the four phases of `advance`,
+/// summed over every branch this forest made, in microseconds. `branch` is the
+/// request to the parent and its reply (the fork); `accept` is from that reply
+/// to the new node's hello (the child's setup, its ticks to the stop point,
+/// its socket, and the driver's own polling); `probe` is the new node's
+/// boundary probe; `trace` is reading the per-tick trace file back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Timeline {
+    pub branches: u64,
+    pub branch_us: u64,
+    pub accept_us: u64,
+    pub probe_us: u64,
+    pub trace_us: u64,
+}
+
+impl std::fmt::Display for Timeline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let n = self.branches.max(1) as f64 * 1000.0; // us -> ms per branch
+        write!(
+            f,
+            "{} branches: request+fork {:.2} ms | to the hello {:.2} ms | probe {:.2} ms | trace read {:.2} ms | total {:.2} ms each",
+            self.branches,
+            self.branch_us as f64 / n,
+            self.accept_us as f64 / n,
+            self.probe_us as f64 / n,
+            self.trace_us as f64 / n,
+            (self.branch_us + self.accept_us + self.probe_us + self.trace_us) as f64 / n
+        )
+    }
+}
+
 pub struct Forest {
     root: ForkServer,
     tree: Tree,
     cfg: Option<TraceCfg>,
     nodes: HashMap<Handle, Held>,
     next: u64,
+    timeline: Timeline,
     /// The root's own probed boundary. Probed once, for the root, like any
     /// other node.
     root_boundary: Option<usize>,
@@ -158,9 +190,15 @@ impl Forest {
             cfg,
             nodes: HashMap::new(),
             next: 1,
+            timeline: Timeline::default(),
             root_boundary: None,
             reference,
         })
+    }
+
+    /// Where the time of every branch so far went.
+    pub fn timeline(&self) -> Timeline {
+        self.timeline
     }
 
     /// Probe the root's own consumed boundary. Must be called before the first
@@ -274,12 +312,15 @@ impl Forest {
             watched: false,
         };
 
+        let t0 = std::time::Instant::now();
         let pid = match h {
             ROOT => self.root.branch(&req)?,
             _ => self.held_mut(h)?.node.branch(&req)?,
         };
+        let t1 = std::time::Instant::now();
 
         let mut node = self.tree.accept(forkoracle::forksrv::frame_timeout_ms())?;
+        let t2 = std::time::Instant::now();
         if node.pid != pid {
             // A node is only the node you asked for if it says so itself. Two
             // branches in flight on one server would otherwise be told apart by
@@ -299,6 +340,7 @@ impl Forest {
             self.tree.reaped(pid);
             return Err(format!("node {} could not probe its own boundary: {}", pid, e));
         }
+        let t3 = std::time::Instant::now();
 
         let mut written = match h {
             ROOT => Vec::new(),
@@ -317,6 +359,12 @@ impl Forest {
         } else {
             self.read_trace(&trace_path)?
         };
+        let t4 = std::time::Instant::now();
+        self.timeline.branches += 1;
+        self.timeline.branch_us += (t1 - t0).as_micros() as u64;
+        self.timeline.accept_us += (t2 - t1).as_micros() as u64;
+        self.timeline.probe_us += (t3 - t2).as_micros() as u64;
+        self.timeline.trace_us += (t4 - t3).as_micros() as u64;
 
         self.nodes.insert(id, Held { node, trace: trace_path, written });
         Ok((trace, id))
@@ -416,6 +464,14 @@ impl Forest {
             ));
         }
         Ok(rows)
+    }
+
+    /// What a node said about itself in its hello -- `(clock, sim_ms, race_start)`
+    /// -- beside what its probe measured. For checking the one against the
+    /// other (PERF.md §11).
+    pub fn node_clock(&self, h: Handle) -> Option<(u64, u64, u64, Option<usize>)> {
+        let x = self.nodes.get(&h)?;
+        Some((x.node.clock, x.node.sim_ms, x.node.race_start, x.node.probed_boundary()))
     }
 
     fn held(&self, h: Handle) -> Result<&Held, String> {

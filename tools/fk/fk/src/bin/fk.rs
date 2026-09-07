@@ -377,6 +377,13 @@ fn dispatch(a: &[String]) -> Result<(), String> {
                         trace: has(rest, "--trace"),
                     },
                 ),
+                "clockprobe" => cmd::tree::clockprobe(
+                    &engine,
+                    tape,
+                    at,
+                    &ns("--ks", "1,10,50,200"),
+                    num(rest, "--reps").unwrap_or(50) as usize,
+                ),
                 "exact" => match cmd::tree::exact(
                     &engine,
                     tape,
