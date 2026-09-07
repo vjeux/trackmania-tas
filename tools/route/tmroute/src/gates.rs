@@ -271,6 +271,8 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         yaw: f32,
         model: String,
         from_item: bool,
+        // a grid-placed block (cell coordinates, no free position)
+        grid: bool,
     }
     let mut raws: Vec<Raw> = Vec::new();
     let mut parked = 0;
@@ -317,6 +319,7 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             yaw: w.yaw.unwrap_or(0.0),
             model: w.name.clone(),
             from_item,
+            grid: w.pos.is_none(),
         });
     }
 
@@ -342,7 +345,12 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             let dxz = (dx * dx + dz * dz).sqrt();
             let dy = (a.centre[1] - b.centre[1]).abs();
             let linked = a.tag == "LinkedCheckpoint" && b.tag == "LinkedCheckpoint" && a.order == b.order;
-            let near = same_tag && dxz <= GROUP_XZ && dy <= GROUP_Y;
+            // Two GRID blocks are two gates however close: Spring 2026 - 17 has
+            // RoadBumpCheckpointSlopeUp/SlopeDown in adjacent cells (32 m apart) and
+            // the header counts them as two checkpoints. Rows of one gate are built
+            // from items or free blocks, and only those merge by distance.
+            let grid_pair = a.grid && b.grid;
+            let near = same_tag && !grid_pair && dxz <= GROUP_XZ && dy <= GROUP_Y;
             let stacked = same_tag && dxz <= STACK_XZ;
             if linked || near || stacked {
                 let (ra, rb) = (find(&mut parent, i), find(&mut parent, j));
