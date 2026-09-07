@@ -126,7 +126,7 @@ impl<'a> EdgeEstimator for Geometric<'a> {
         let (horiz, dy) = chord(self.nodes.pos[from], self.nodes.pos[to]);
         if cost.is_finite() {
             if self.time_model == TimeModel::Cost {
-                return Edge { p_reach: 1.0, expected_ms: cost.round() as i32, arrival: bucket, length_m: self.len[from][to], kind: EdgeKind::Surface };
+                return Edge { p_reach: 1.0, expected_ms: (cost * 10.0).round() as i32, arrival: bucket, length_m: self.len[from][to], kind: EdgeKind::Surface }; // decimetres: keeps near-ties (Summer 2026 - 13: 1614.6 vs 1615.2) honest
             }
             let length = self.len[from][to];
             let (ms, v_end) = Self::leg_time_ms(v_in, length, 0.0);
@@ -139,7 +139,7 @@ impl<'a> EdgeEstimator for Geometric<'a> {
             if horiz <= f.max_horiz && dy <= f.max_rise {
                 let len = (horiz * horiz + dy * dy).sqrt() * f.cost_mult;
                 if self.time_model == TimeModel::Cost {
-                    return Edge { p_reach: f.p_reach, expected_ms: len.round() as i32, arrival: bucket, length_m: len, kind: EdgeKind::Flight };
+                    return Edge { p_reach: f.p_reach, expected_ms: (len * 10.0).round() as i32, arrival: bucket, length_m: len, kind: EdgeKind::Flight };
                 }
                 let (ms, v_end) = Self::leg_time_ms(v_in, len, 0.0);
                 return Edge { p_reach: f.p_reach, expected_ms: ms, arrival: StateBucket::of_speed(v_end), length_m: len, kind: EdgeKind::Flight };

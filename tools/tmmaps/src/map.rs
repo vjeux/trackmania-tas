@@ -199,6 +199,11 @@ pub struct Waypoint {
     pub yaw: Option<f32>,
     /// Grid-block direction 0..3. `None` for item-carried waypoints.
     pub dir: Option<u8>,
+    /// A FREE block's full (yaw, pitch, roll) from chunk 0x0304305F; `None` for
+    /// grid blocks and items. Its position is the block's ORIGIN CORNER (the same
+    /// corner a grid placement anchors), so the road centre of a 1×1 block is the
+    /// local point (16, 2, 16) through this rotation.
+    pub free_rot: Option<[f32; 3]>,
 }
 
 impl std::fmt::Display for Waypoint {
@@ -694,6 +699,7 @@ impl MapFile {
                 // triple; its `dir` byte is as dead as its cell bytes.
                 yaw: Some(b.free_rot.map(|r| r[0]).unwrap_or(yaw)),
                 dir: Some(b.dir),
+                free_rot: b.free_rot,
             });
         }
         for it in &self.items {
@@ -711,6 +717,7 @@ impl MapFile {
                 pos: Some(it.pos),
                 yaw: Some(it.yaw),
                 dir: None,
+                free_rot: None,
             });
         }
         out

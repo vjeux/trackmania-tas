@@ -24,7 +24,7 @@ use crate::gates::{GatesFile, WpKind};
 use crate::types::*;
 use std::path::Path;
 
-pub const MATCH_DY: f32 = 12.0;
+pub const MATCH_DY: f32 = 16.0;
 pub const RESPAWN_JUMP_M: f32 = 60.0;
 /// Resampling step of the consensus corridor.
 pub const STEP_M: f32 = 2.0;

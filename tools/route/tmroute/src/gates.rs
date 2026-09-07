@@ -30,7 +30,12 @@
 //!   `(-cos yaw, 0, sin yaw)`; the gate's normal axis is `(sin yaw, 0, cos yaw)`.
 //! * Grid blocks: centre = cell centre in XZ, `y = 8*cy + yoff + 2` (road
 //!   surface); `dir` 0|2 → normal along Z, 1|3 → along X (same axis rule with
-//!   yaw 0 / π/2). Free blocks: absolute position and their own yaw.
+//!   yaw 0 / π/2). Free ROAD/PLATFORM blocks: the position is the block's origin
+//!   corner, so the road centre is local (16, 2, 16) through the full (yaw,
+//!   pitch, roll) placement and the axis is local +Z — verified on Summer 2026 - 07
+//!   (human crossings within 2–8 m of three tilted free pieces; a 2-cell diagonal
+//!   piece is ~30 m off: its local centre is not (16, 2, 16), noted). Free GATE
+//!   blocks (GateCheckpoint, GateExpandable*) keep their absolute position.
 //! * The SIGN of the normal is not in the map file. `normal_source` says who
 //!   settled it: "cartographer" (its tour tangent), "human" (the corpus'
 //!   crossing direction), or "placement" (unsigned axis, +z/+x side).
@@ -278,9 +283,19 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             continue;
         }
         let from_item = w.kind == tmmaps::map::Kind::Item;
-        let centre = match w.pos {
-            Some(p) => p,
-            None => [
+        // A FREE block's position is its origin CORNER; the road centre of its
+        // 1×1 cell is local (16, 2, 16) through the placement rotation, and the
+        // road axis is local +Z through the same rotation (tilted pieces included).
+        let mut free_axis: Option<[f32; 3]> = None;
+        let road_piece = w.name.starts_with("Road") || w.name.starts_with("Platform");
+        let centre = match (w.pos, w.free_rot.filter(|_| road_piece)) {
+            (Some(p), Some(rot)) => {
+                let m = turned(p, rot);
+                free_axis = Some(apply(&m, [16.0, 2.0, 17.0]).iter().zip(apply(&m, [16.0, 2.0, 16.0]).iter()).map(|(a, b)| a - b).collect::<Vec<f32>>().try_into().unwrap());
+                apply(&m, [16.0, ROAD_ABOVE_BASE, 16.0])
+            }
+            (Some(p), None) => p,
+            (None, _) => [
                 32.0 * w.coords.0 as f32 + 16.0,
                 8.0 * w.coords.1 as f32 + yoff + ROAD_ABOVE_BASE,
                 32.0 * w.coords.2 as f32 + 16.0,
@@ -450,4 +465,52 @@ pub fn orient(g: &mut GatesFile, dirs: &BTreeMap<u32, [f32; 3]>, source: &str) -
         }
     }
     n
+}
+
+// ---------------------------------------------------------------------------
+// placement maths — a copy of mapgeom::geom / mapgeom::place (yaw, then pitch,
+// then roll about the already-turned axes), kept here so tmroute does not pull
+// the pak reader in. x' = c·x + s·z ; z' = −s·x + c·z (clockwise looking down).
+// ---------------------------------------------------------------------------
+pub type Xform = [f32; 12];
+
+pub fn apply(m: &Xform, v: [f32; 3]) -> [f32; 3] {
+    [
+        m[0] * v[0] + m[3] * v[1] + m[6] * v[2] + m[9],
+        m[1] * v[0] + m[4] * v[1] + m[7] * v[2] + m[10],
+        m[2] * v[0] + m[5] * v[1] + m[8] * v[2] + m[11],
+    ]
+}
+
+fn compose(outer: &Xform, inner: &Xform) -> Xform {
+    let mut out = [0f32; 12];
+    for c in 0..3 {
+        let col = [inner[c * 3], inner[c * 3 + 1], inner[c * 3 + 2]];
+        out[c * 3] = outer[0] * col[0] + outer[3] * col[1] + outer[6] * col[2];
+        out[c * 3 + 1] = outer[1] * col[0] + outer[4] * col[1] + outer[7] * col[2];
+        out[c * 3 + 2] = outer[2] * col[0] + outer[5] * col[1] + outer[8] * col[2];
+    }
+    let t = apply(outer, [inner[9], inner[10], inner[11]]);
+    out[9] = t[0];
+    out[10] = t[1];
+    out[11] = t[2];
+    out
+}
+
+fn yaw_xf(angle: f32, t: [f32; 3]) -> Xform {
+    let (s, c) = angle.sin_cos();
+    [c, 0.0, -s, 0.0, 1.0, 0.0, s, 0.0, c, t[0], t[1], t[2]]
+}
+
+/// Position + (yaw, pitch, roll) as one transform — `mapgeom::place::turned`.
+pub fn turned(pos: [f32; 3], rot: [f32; 3]) -> Xform {
+    let m = yaw_xf(rot[0], pos);
+    if rot[1] == 0.0 && rot[2] == 0.0 {
+        return m;
+    }
+    let (sp, cp) = rot[1].sin_cos();
+    let pitch = [1.0, 0.0, 0.0, 0.0, cp, sp, 0.0, -sp, cp, 0.0, 0.0, 0.0];
+    let (sr, cr) = rot[2].sin_cos();
+    let roll = [cr, sr, 0.0, -sr, cr, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+    compose(&compose(&m, &pitch), &roll)
 }

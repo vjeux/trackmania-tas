@@ -89,6 +89,16 @@ fn cmd_plan(args: &[String]) {
     let width: usize = flag(args, "--beam").and_then(|s| s.parse().ok()).unwrap_or(4000);
     let top_k: usize = flag(args, "--top-k").and_then(|s| s.parse().ok()).unwrap_or(3);
     let plans = planner::beam(&nodes, &est, width, top_k, StateBucket::of_speed(0.0));
+    if has(args, "--exact") {
+        match planner::exact_cost(&nodes, &d) {
+            Some((visit, cost)) => {
+                let (g, w) = order_str(&nodes, &gates, &visit);
+                let beam0 = plans.first().map(|p| p.visit.clone());
+                println!("  exact Held–Karp on COST: cost {:.0}  groups [{}]  waypoints [{}]  beam rank 0 {}", cost, g, w, if beam0.as_ref() == Some(&visit) { "== exact" } else { "DIFFERS" });
+            }
+            None => println!("  exact Held–Karp: not run (> 16 checkpoints or no tour)"),
+        }
+    }
     let inf_pairs = d.iter().flatten().filter(|v| !v.is_finite()).count();
     println!(
         "{}\t{}\tcp_groups {}\tfinish_groups {}\testimator {}\tbeam {}\tinf_pairs {}/{}\tplans {}",

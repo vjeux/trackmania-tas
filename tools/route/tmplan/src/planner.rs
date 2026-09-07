@@ -93,3 +93,28 @@ pub fn beam(nodes: &Nodes, est: &dyn EdgeEstimator, width: usize, top_k: usize, 
     plans.truncate(top_k);
     plans
 }
+
+/// Exact Held–Karp over the COST matrix (the cartographer's objective): spawn
+/// first, every checkpoint once, one finish group last (each tried). For the
+/// beam's control on maps with ≤ 16 checkpoints. Returns the visit order and cost.
+pub fn exact_cost(nodes: &Nodes, d: &[Vec<f32>]) -> Option<(Vec<usize>, f32)> {
+    let n_cp = nodes.n_cp;
+    if n_cp > mapgeom::surf::EXACT_MAX {
+        return None;
+    }
+    let mut best: Option<(Vec<usize>, f32)> = None;
+    for f in nodes.finish_range() {
+        // sub-matrix: 0 = spawn, 1..=n_cp = checkpoints, last = this finish
+        let idx: Vec<usize> = std::iter::once(0).chain(1..=n_cp).chain(std::iter::once(f)).collect();
+        let sub: Vec<Vec<f32>> = idx.iter().map(|&i| idx.iter().map(|&j| d[i][j]).collect()).collect();
+        let o = mapgeom::surf::order_gates(&sub);
+        if o.cost >= mapgeom::surf::UNREACHABLE {
+            continue;
+        }
+        let visit: Vec<usize> = o.visit.iter().map(|&k| idx[k]).collect();
+        if best.as_ref().map_or(true, |b| o.cost < b.1) {
+            best = Some((visit, o.cost));
+        }
+    }
+    best
+}
