@@ -777,6 +777,83 @@ impl MapFile {
         self.renames.push((false, f, name.to_string()));
     }
 
+    /// Rename the MAP itself: the name the game shows in the map list, the
+    /// editor's title bar and the playground HUD. It is written in three
+    /// places, all length-prefixed GBX strings — header chunk 0x03043003
+    /// (`CGameCtnChallenge::Common`: uid, author, NAME), the community XML
+    /// chunk 0x03043005 (`<ident name="…">`, one string holding the whole
+    /// document), and the body's own copy of the same Common chunk — and a
+    /// name that reaches only some of them shows the old one somewhere. The
+    /// length changes, so the header table is rebuilt and the body edit goes
+    /// through the splice path (apply it LAST, after a write+reload, like
+    /// every other variable-length edit).
+    ///
+    /// Returns how many occurrences were rewritten (header, body). Both being
+    /// zero means the map does not declare the name this call was given.
+    pub fn set_map_name(&mut self, old: &str, new: &str) -> (usize, usize) {
+        let pat = gbx_string(old);
+        let rep = gbx_string(new);
+        // --- header: rewrite the affected chunks, then rebuild the table
+        let ud = self.gbx.user_data.clone();
+        let n = u32::from_le_bytes(ud[0..4].try_into().unwrap()) as usize;
+        let mut heads: Vec<(u32, bool, Vec<u8>)> = Vec::new();
+        let mut off = 4 + n * 8;
+        for i in 0..n {
+            let o = 4 + i * 8;
+            let id = u32::from_le_bytes(ud[o..o + 4].try_into().unwrap());
+            let raw = u32::from_le_bytes(ud[o + 4..o + 8].try_into().unwrap());
+            let size = (raw & 0x7fff_ffff) as usize;
+            heads.push((id, raw & 0x8000_0000 != 0, ud[off..off + size].to_vec()));
+            off += size;
+        }
+        let mut header_hits = 0;
+        for (id, _, data) in heads.iter_mut() {
+            if *id == 0x0304_3005 {
+                // the XML chunk is ONE string: patch the text, then its length
+                if data.len() >= 4 {
+                    let len = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+                    if data.len() >= 4 + len {
+                        let xml = String::from_utf8_lossy(&data[4..4 + len]).to_string();
+                        let want = format!("name=\"{}\"", esc_xml(old));
+                        if xml.contains(&want) {
+                            let xml2 = xml.replace(&want, &format!("name=\"{}\"", esc_xml(new)));
+                            let mut d = (xml2.len() as u32).to_le_bytes().to_vec();
+                            d.extend_from_slice(xml2.as_bytes());
+                            d.extend_from_slice(&data[4 + len..]);
+                            *data = d;
+                            header_hits += 1;
+                        }
+                    }
+                }
+                continue;
+            }
+            let hits = replace_all(data, &pat, &rep);
+            header_hits += hits;
+        }
+        if header_hits > 0 {
+            let mut out = Vec::new();
+            out.extend_from_slice(&(heads.len() as u32).to_le_bytes());
+            for (id, heavy, data) in &heads {
+                out.extend_from_slice(&id.to_le_bytes());
+                out.extend_from_slice(&((data.len() as u32) | if *heavy { 0x8000_0000 } else { 0 }).to_le_bytes());
+            }
+            for (_, _, data) in &heads {
+                out.extend_from_slice(data);
+            }
+            self.gbx.user_data = out;
+        }
+        // --- body: every occurrence of the same string, as a splice each
+        let mut body_hits = 0;
+        let mut at = 0;
+        while let Some(p) = find_sub(&self.gbx.body[at..], &pat) {
+            let s = at + p;
+            self.raw_splices.push(((s, s + pat.len()), rep.clone()));
+            body_hits += 1;
+            at = s + pat.len();
+        }
+        (header_hits, body_hits)
+    }
+
     pub fn set_map_uid(&mut self, uid: &str) {
         let old = self
             .body_ids
@@ -2055,7 +2132,44 @@ impl MapFile {
     }
 }
 
-/// The whole payload of chunk 0x03043054: version 1, a zero, the byte count
+/// A GBX string as it sits in a file: 4-byte little-endian length, then the
+/// bytes. Searching for one of these (rather than the bare text) is what makes
+/// a name replacement safe — the text alone also occurs inside the XML chunk
+/// and in any string that merely contains it.
+fn gbx_string(s: &str) -> Vec<u8> {
+    let mut v = (s.len() as u32).to_le_bytes().to_vec();
+    v.extend_from_slice(s.as_bytes());
+    v
+}
+
+fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || hay.len() < needle.len() {
+        return None;
+    }
+    (0..=hay.len() - needle.len()).find(|&i| &hay[i..i + needle.len()] == needle)
+}
+
+/// Replace every occurrence, in place; returns how many.
+fn replace_all(data: &mut Vec<u8>, pat: &[u8], rep: &[u8]) -> usize {
+    let mut hits = 0;
+    let mut at = 0;
+    while let Some(p) = find_sub(&data[at..], pat) {
+        let s = at + p;
+        data.splice(s..s + pat.len(), rep.iter().copied());
+        at = s + rep.len();
+        hits += 1;
+    }
+    hits
+}
+
+/// The five predefined XML entities, for a name going into the header's XML
+/// chunk. Map names in this project are plain text; this is the guard, not a
+/// general escaper.
+fn esc_xml(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;")
+}
+
+/// The payload of chunk 0x03043054: version 1, a zero, the byte count
 /// of what follows, the manifest of (Ident, collection, author), the ZIP with
 /// its length, and a trailing zero. `items` are (item ident, author).
 pub fn embedded_objects_payload(items: &[(&str, &str)], zip: &[u8], collection: u32) -> Vec<u8> {

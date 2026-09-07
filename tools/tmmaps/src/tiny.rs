@@ -824,6 +824,23 @@ pub fn cmd(args: &[String]) {
     }
     let mut m = MapFile::load(&tmp2);
     m.remove_password();
+    // The map's own NAME: "Summer 2026 - 15" becomes "Tiny Summer 2026 - 15",
+    // so the editor title bar, the map list and the playground HUD say which
+    // one you are looking at (the Nadeo record has said "Tiny …" since map 01;
+    // the file kept the original's name, so every screenshot of a tiny map was
+    // labelled like the original — vjeux, 2026-09-07). `TINY_MAP_NAME=<name>`
+    // sets it outright, `=keep` leaves the source name.
+    let name_mode = std::env::var("TINY_MAP_NAME").unwrap_or_default();
+    if name_mode != "keep" {
+        let old = crate::header::read(&src.display().to_string()).ok().map(|h| h.name).unwrap_or_default();
+        if old.is_empty() || old == "-" {
+            println!("  map name: the source declares none; left alone");
+        } else {
+            let new = if name_mode.is_empty() { format!("Tiny {old}") } else { name_mode.clone() };
+            let (h, b) = m.set_map_name(&old, &new);
+            println!("  map name: {old:?} -> {new:?} ({h} in the header, {b} in the body)");
+        }
+    }
     // The source's stored lightmap goes (TINY_LIGHTMAP=keep keeps it). It was
     // computed for the full-size layout and the game applies it BY OBJECT
     // INDEX: in PLAY mode a parked build of Summer 15 (2026-09-07) drew every
