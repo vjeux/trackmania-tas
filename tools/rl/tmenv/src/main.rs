@@ -2292,6 +2292,8 @@ fn reset_anywhere_control(a: &[String]) {
     }
     println!("# tmenv reset-anywhere-control  states {n_states}  tail {tail_steps} steps  seed {seed}");
     let (mut env, _rig, _tape) = build_env(&p, a, &p.work.join("ra"));
+    env.set_pin_budget(num(a, "--pin-budget", 64));
+    println!("pin budget {} live nodes; states past it are re-materialised by replaying their prefix", num::<usize>(a, "--pin-budget", 64));
     let n_act = env.n_actions();
     let mut rng = Sm(seed);
 
@@ -2330,7 +2332,7 @@ fn reset_anywhere_control(a: &[String]) {
             }
         }
     }
-    println!("kept {} states over {} episodes; {} live snapshots", kept.len(), episodes, env.snapshots());
+    println!("kept {} states over {} episodes; {} snapshots, {} live pinned nodes", kept.len(), episodes, env.snapshots(), env.live_pinned());
 
     // ---- for each: resume + tail (A), replay from root (B), a different tail (C)
     let mut agree = 0usize;

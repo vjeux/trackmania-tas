@@ -79,6 +79,8 @@ pub struct ForkEnv {
     /// Reset-anywhere: kept states, and the nodes no step may release.
     snaps: std::collections::HashMap<u64, Snap>,
     pinned: std::collections::HashSet<Handle>,
+    pin_lru: std::collections::VecDeque<Handle>,
+    pin_budget: usize,
     next_snap: u64,
     /// Keep stepping (and tracing) after the core says the episode is over.
     /// For controls that must run a WHOLE tape so the oracle and the env are
@@ -97,7 +99,11 @@ pub struct StateId(pub u64);
 pub const MAX_CHUNK: usize = 50;
 
 struct Snap {
-    node: Handle,
+    /// The live paused node, while it is pinned; `None` once evicted (the
+    /// prefix re-materialises it).
+    node: Option<Handle>,
+    /// Every per-tick action from the root to this state.
+    prefix: Vec<Action>,
     core: Core,
     spans: Vec<Span>,
     trace: Vec<Row>,
@@ -164,6 +170,8 @@ impl ForkEnv {
             finish_ms: None,
             snaps: std::collections::HashMap::new(),
             pinned: std::collections::HashSet::new(),
+            pin_lru: std::collections::VecDeque::new(),
+            pin_budget: 64,
             next_snap: 1,
             allow_after_done: false,
             run_ended: false,
@@ -202,21 +210,35 @@ impl ForkEnv {
 
     /// **Reset-anywhere, half one: keep THIS state.**
     ///
-    /// The current node -- a live paused engine -- is pinned so no later step
-    /// releases it, and everything the core and the bookkeeping know about the
-    /// episode so far is copied beside it. Costs nothing now (the node already
-    /// exists) and one paused process for as long as the snapshot is held;
-    /// `drop_snapshot` frees it. Snapshotting at the root is allowed and cheap.
+    /// What is kept is the ACTION PREFIX from the root (per tick) plus the
+    /// core's bookkeeping; the paused node itself is kept too, as a cache, up
+    /// to `pin_budget` live nodes (each is a paused engine, ~50 MB). Past the
+    /// budget the least recently used pinned node is released and its state
+    /// is re-materialised on demand by replaying the prefix from the root
+    /// (k-tick chunks: ~0.4 s for a 20 s prefix) -- so the archive's memory
+    /// is bounded by config, not by how many states it holds (LEARN's 1,200
+    /// snapshots would have been 60 GB of live processes).
     pub fn snapshot(&mut self) -> StateId {
         let id = StateId(self.next_snap);
         self.next_snap += 1;
-        if self.cur != ROOT {
+        let prefix: Vec<Action> = self
+            .spans
+            .iter()
+            .map(|s| Action { steer: s.act.steer as i8, gas: s.act.gas != 0, brake: s.act.brake != 0 })
+            .collect();
+        let node = if self.cur != ROOT {
             self.pinned.insert(self.cur);
-        }
+            self.pin_lru.retain(|x| *x != self.cur);
+            self.pin_lru.push_back(self.cur);
+            Some(self.cur)
+        } else {
+            None
+        };
         self.snaps.insert(
             id.0,
             Snap {
-                node: self.cur,
+                node,
+                prefix,
                 core: self.core.clone(),
                 spans: self.spans.clone(),
                 trace: self.trace.clone(),
@@ -226,23 +248,89 @@ impl ForkEnv {
                 finish_ms: self.finish_ms,
             },
         );
+        self.enforce_pin_budget();
         id
+    }
+
+    /// Release the least recently used pinned nodes past `pin_budget`. A node
+    /// the episode currently stands on is never released here.
+    fn enforce_pin_budget(&mut self) {
+        while self.pin_lru.len() > self.pin_budget {
+            let Some(victim) = self.pin_lru.iter().position(|h| *h != self.cur) else { break };
+            let h = self.pin_lru.remove(victim).unwrap();
+            self.pinned.remove(&h);
+            for s in self.snaps.values_mut() {
+                if s.node == Some(h) {
+                    s.node = None;
+                }
+            }
+            self.forest.release(h);
+        }
+    }
+
+    /// The pinned-node budget (default 64). Lowering it releases nodes now.
+    pub fn set_pin_budget(&mut self, n: usize) {
+        self.pin_budget = n.max(1);
+        self.enforce_pin_budget();
+    }
+
+    pub fn live_pinned(&self) -> usize {
+        self.pin_lru.len()
     }
 
     /// **Reset-anywhere, half two: continue from a kept state.**
     ///
-    /// The episode resumes from the snapshot's node -- forking it, so the
-    /// snapshot itself survives and can be reset to again -- with the core and
-    /// the tape bookkeeping exactly as they were. The next `step` writes from
-    /// that node's own probed floor, like any other step.
+    /// From the snapshot's live node when it is still pinned (one fork), else
+    /// by replaying its prefix from the root and pinning the node that
+    /// produces -- WITH THE CONTROL that the replayed core equals the kept
+    /// one bit for bit (position, velocity, orientation, clock, gates): a
+    /// re-materialisation that lands elsewhere is refused, not returned.
     pub fn reset_to(&mut self, id: &StateId) -> Result<Vec<f32>, String> {
         if !self.snaps.contains_key(&id.0) {
             return Err(format!("no such snapshot: {:?}", id));
         }
-        self.leave_cur();
-        let s = &self.snaps[&id.0];
-        self.cur = s.node;
+        let node = self.snaps[&id.0].node;
+        match node {
+            Some(h) => {
+                self.leave_cur();
+                self.cur = h;
+                self.pin_lru.retain(|x| *x != h);
+                self.pin_lru.push_back(h);
+            }
+            None => {
+                // re-materialise: replay the prefix from the root
+                let prefix = self.snaps[&id.0].prefix.clone();
+                let kept = self.snaps[&id.0].core.state();
+                self.reset()?;
+                let saved = self.allow_after_done;
+                self.allow_after_done = true;
+                for chunk in prefix.chunks(MAX_CHUNK) {
+                    let (_o, _r, d, _i) = self.step_ticks(chunk)?;
+                    if d == Some(Done::RunEnded) || d == Some(Done::TickCap) {
+                        break;
+                    }
+                }
+                self.allow_after_done = saved;
+                let got = self.core.state();
+                if format!("{:?}", got) != format!("{:?}", kept) {
+                    return Err(format!(
+                        "re-materialising snapshot {:?} landed on a different state:\n  kept {:?}\n  got  {:?}",
+                        id, kept, got
+                    ));
+                }
+                if self.cur != ROOT {
+                    self.pinned.insert(self.cur);
+                    self.pin_lru.push_back(self.cur);
+                    let h = self.cur;
+                    if let Some(s) = self.snaps.get_mut(&id.0) {
+                        s.node = Some(h);
+                    }
+                    self.enforce_pin_budget();
+                }
+            }
+        }
         self.run_ended = false;
+        let s = &self.snaps[&id.0];
         self.core = s.core.clone();
         self.spans = s.spans.clone();
         self.trace = s.trace.clone();
@@ -254,18 +342,19 @@ impl ForkEnv {
     }
 
     /// Forget a snapshot and, unless another snapshot or the episode still
-    /// stands on it, kill its node.
+    /// stands on its node, kill the node.
     pub fn drop_snapshot(&mut self, id: &StateId) {
         if let Some(s) = self.snaps.remove(&id.0) {
-            let still_used = s.node == ROOT
-                || s.node == self.cur
-                || self.snaps.values().any(|o| o.node == s.node);
-            if !still_used {
-                self.pinned.remove(&s.node);
-                self.forest.release(s.node);
-            } else if !self.snaps.values().any(|o| o.node == s.node) {
-                // the episode stands on it: unpin, so leaving it releases it
-                self.pinned.remove(&s.node);
+            if let Some(h) = s.node {
+                let still_used = h == ROOT || h == self.cur || self.snaps.values().any(|o| o.node == Some(h));
+                if !still_used {
+                    self.pinned.remove(&h);
+                    self.pin_lru.retain(|x| *x != h);
+                    self.forest.release(h);
+                } else if !self.snaps.values().any(|o| o.node == Some(h)) {
+                    self.pinned.remove(&h);
+                    self.pin_lru.retain(|x| *x != h);
+                }
             }
         }
     }
