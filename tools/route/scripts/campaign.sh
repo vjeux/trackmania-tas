@@ -54,9 +54,8 @@ fi
 if [ $step = plan ] || [ $step = all ]; then
   pull_maps; pull tm-route/geom tm-route/routes tm-route/plan
   mkdir -p $P/plan-cost $P/plan-geometric $P/human-legs
-  # incremental: a map with plan-cost output is skipped unless FORCE_PLAN=1 (or its gates.json is newer)
-  for u in $(uids); do f=$(mapfile_of $u); [ -n "$f" ] || continue; [ -f $G/$u/gates.json ] || continue
-    if [ -z "${FORCE_PLAN:-}" ] && [ -f $P/plan-cost/$u.txt ] && [ ! $G/$u/gates.json -nt $P/plan-cost/$u.txt ]; then continue; fi
+  # one map (cost + speed [+ flight]); run PAR_PLAN-wide (single-threaded planner, ~20 s per map locally)
+  plan_one() { u=$1; f=$(mapfile_of $u); [ -n "$f" ] || return 0; [ -f $G/$u/gates.json ] || return 0
     ho=$G/$u/human-orders.tsv; [ -f $ho ] || ho=$G/$u/human-orders.unverified.tsv; hoarg=""; [ -f $ho ] && hoarg="--human-orders $ho --legs-out $P/human-legs/$u.tsv"
     for grid in track deco; do
       nice $R/tmplan plan $f --gates $G/$u/gates.json --out-dir $RT --top-k 3 --matrix --quiet --time cost --exact --grid $grid --source router-plan-cost $hoarg > $P/plan-cost/$u.txt 2>&1
@@ -68,7 +67,14 @@ if [ $step = plan ] || [ $step = all ]; then
       nice $R/tmplan plan $f --gates $G/$u/gates.json --out-dir $RT --top-k 3 --quiet --flight ballistic --source router-plan-flight > $P/plan-geometric/$u.flight.txt 2>&1
     fi
     grep -E "cp_groups|rank 0|NO PLAN" $P/plan-cost/$u.txt | head -2 | cut -c1-160
-  done
+  }
+  # incremental: a map with plan-cost output is skipped unless FORCE_PLAN=1 (or its gates.json is newer)
+  for u in $(uids); do [ -f $G/$u/gates.json ] || continue
+    if [ -z "${FORCE_PLAN:-}" ] && [ -f $P/plan-cost/$u.txt ] && [ ! $G/$u/gates.json -nt $P/plan-cost/$u.txt ]; then continue; fi
+    echo $u; done > /tmp/plan.uids
+  echo "plan over $(wc -l < /tmp/plan.uids) maps"
+  export -f plan_one mapfile_of; export R G RT P B V
+  cat /tmp/plan.uids | xargs -P ${PAR_PLAN:-8} -n 1 bash -c 'plan_one "$0"'
   cat $P/human-legs/*.tsv | grep -v "^map" | sort > $P/human-legs/ALL.tsv
   push tm-route/routes tm-route/plan
 fi
