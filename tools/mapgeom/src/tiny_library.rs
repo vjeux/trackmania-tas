@@ -54,6 +54,25 @@ fn veget_substitute(collection: u32, model: &str) -> Option<&'static str> {
     // MediumA / SmallA / SmallB, dead pines in Big / Medium / Small /
     // VerySmall — no Plant* or Palm* here, so the generic ladder below
     // would point at species the pack does not have.
+    // GreenCoast (0xf) species (Summer 04: 2821 Forest + 1472 Grove + 1249
+    // Ecotone patches, no individual trees): Tree/TreeThin/TreeBushy in
+    // Big/Medium/Small, Bush in Big/Medium/Small, Flower*. A Forest patch
+    // becomes one small tree, a Grove one small bushy tree, an Ecotone (the
+    // forest edge) one medium bush.
+    if collection == 0xf {
+        return Some(match model {
+            "Forest" => "TreeSmallA",
+            "Grove" => "TreeBushySmallA",
+            "Ecotone" => "BushMediumA",
+            m if m.starts_with("TreeThinBushyBig") => "TreeThinBushySmallA",
+            m if m.starts_with("TreeThinBig") || m.starts_with("TreeThinMedium") => "TreeThinSmallA",
+            m if m.starts_with("TreeBushyMedium") => "TreeBushySmallA",
+            m if m.starts_with("TreeBig") || m.starts_with("TreeMedium") => "TreeSmallA",
+            m if m.starts_with("BushBig") => "BushMediumA",
+            m if m.starts_with("BushMedium") => "BushSmallA",
+            _ => return None,
+        });
+    }
     if collection == 0x1d {
         return Some(match model {
             "Forest" | "Grove" => "TreeFirSmall",

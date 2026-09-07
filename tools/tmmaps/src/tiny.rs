@@ -134,6 +134,9 @@ fn fixed_plane(collection: u32) -> f32 {
         // WhiteShore sea surface: `Zone\Water\Base.Prefab` water quad at local
         // +7 (its bottom at +2), the Water zone at cell 14 -> 14*8 - 120 + 7
         0x1d => -1.0,
+        // GreenCoast lake surface: `Zone\Lake\Base.Prefab` water quad at local
+        // +7.2 (bottom +2), the Lake zone at cell 4 -> 4*8 - 40 + 7.2
+        0xf => -0.8,
         _ => 10.0,
     }
 }
