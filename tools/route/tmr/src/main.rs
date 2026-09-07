@@ -669,7 +669,8 @@ fn cmd_plan(args: &[String]) {
     // memoised: the beam asks the same (bucket, prev, from, to) thousands of times
     let chained_memo = chained.as_ref().map(|c| tmplan::estimator::Memo::new(c as &dyn EdgeEstimator));
     let chained_h_memo = chained_h.as_ref().map(|c| tmplan::estimator::Memo::new(c as &dyn EdgeEstimator));
-    let hybrid = chained_h_memo.as_ref().map(|c| tmplan::estimator::Hybrid { geo: &geo, learned: c, detour_ratio: flag(args, "--detour").and_then(|s| s.parse().ok()).unwrap_or(4.0), detour_speed: flag(args, "--detour-speed").and_then(|s| s.parse().ok()).unwrap_or(50.0), nodes, len: &len_m, counts: std::cell::Cell::new((0, 0)) });
+    let geo_speed = tmplan::estimator::Geometric { time_model: tmplan::estimator::TimeModel::Speed, d: &d_m, len: &len_m, nodes, flight: None, surface: Some(surf), dirs: Some(&dirs_m), drop: Some(&drop_m), drop_penalty: 0.0, specials: Some((&leg_specials, gates)) };
+    let hybrid = chained_h_memo.as_ref().map(|c| tmplan::estimator::Hybrid { geo: &geo, learned: c, geo_time: Some(&geo_speed), override_p: flag(args, "--override-p").and_then(|s| s.parse().ok()).unwrap_or(0.8), override_frac: flag(args, "--override-frac").and_then(|s| s.parse().ok()).unwrap_or(0.5), detour_ratio: flag(args, "--detour").and_then(|s| s.parse().ok()).unwrap_or(4.0), detour_speed: flag(args, "--detour-speed").and_then(|s| s.parse().ok()).unwrap_or(50.0), nodes, len: &len_m, counts: std::cell::Cell::new((0, 0)) });
     let est_dyn: &dyn EdgeEstimator = match (&hybrid, &chained_memo) {
         (Some(h), _) => h,
         (None, Some(c)) => c,
@@ -696,10 +697,11 @@ fn cmd_plan(args: &[String]) {
                     let p = nodes.pos[from]; let q = nodes.pos[to];
                     let chord = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
                     let gs = g.expected_ms as f32 / 1000.0; let rs = r.expected_ms as f32 / 1000.0;
-                    let ratio = if gs > 0.0 && rs > 0.0 { (gs / rs).max(rs / gs) } else { f32::INFINITY };
+                    let ts = h.geo_time.map(|t| t.estimate(b, None, from, to).expected_ms as f32 / 1000.0).unwrap_or(f32::NAN);
+                    let ratio = if ts > 0.0 && rs > 0.0 { (ts / rs).max(rs / ts) } else { f32::INFINITY };
                     if ratio > 2.0 || len.is_infinite() {
-                        let (gn, tn) = (order_str(nodes, gates, &[from]).0, order_str(nodes, gates, &[to]).0);
-                        println!("    {gn:>2} → {tn:<2}  geo {} {:?}  R {} p {:.2}  ratio {:.1}  path {:.0} m  chord {:.0} m  cost-speed {:.0}", if gs > 0.0 { format!("{gs:.3}") } else { "none".into() }, g.kind, if rs > 0.0 { format!("{rs:.3}") } else { "none".into() }, r.p_reach, ratio, len, chord, if gs > 0.0 { len / gs } else { f32::NAN });
+                        let lab = |i: usize| -> String { if i == 0 { "spawn".into() } else { format!("g{}", nodes.groups[i]) } };
+                        println!("    {:>5} → {:<5}  geo cost {} speed {:.3}s {:?}  R {} p {:.2}  speed/R ratio {:.1}  path {:.0} m  chord {:.0} m  cost-speed {:.0}{}", lab(from), lab(to), if gs > 0.0 { format!("{gs:.3}") } else { "none".into() }, ts, g.kind, if rs > 0.0 { format!("{rs:.3}") } else { "none".into() }, r.p_reach, ratio, len, chord, if gs > 0.0 { len / gs } else { f32::NAN }, if rs > 0.0 && r.p_reach >= 0.8 && rs < 0.5 * ts { "  ← R OVERRIDES" } else { "" });
                     }
                 }
             }
