@@ -229,7 +229,7 @@ pub fn gate_dims(model: &str) -> (f32, f32) {
         return (16.0, 4.0); // a full 32 m platform cell
     }
     if m.starts_with("Road") {
-        return (8.0, 4.0); // the road inside a 32 m cell is ~16 m wide
+        return (12.5, 4.0); // GEN arm: humans cross road blocks out to |lat| 11.8 m, the walls sit at 12.75
     }
     (8.0, 4.0)
 }
@@ -316,12 +316,17 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         // −90° about its road axis (lying flat) and the car finishes 17 m BELOW its anchor,
         // exactly where the rotated local frame puts the arch.
         let road_piece = w.name.starts_with("Road") || w.name.starts_with("Platform");
-        let local_c = if road_piece { [16.0, ROAD_ABOVE_BASE, 16.0] } else { [16.0, 8.0, 16.0] };
+        // A 2×2-cell DIAGONAL piece: the GEN arm measured Summer 2026 - 07's `RoadDirtDiagLeftCheckpoint`
+        // crediting at local (46.7, 0.5, 30.7) — the road crosses the block at (48, ~0.5, 32); DiagRight is the
+        // mirror (16, 0.5, 32) — a GUESS until a DiagRight gate is measured. Its axis runs along the diagonal.
+        let diag = w.name.contains("Diag");
+        let local_c = if diag && w.name.contains("DiagRight") { [16.0, 0.5, 32.0] } else if diag { [48.0, 0.5, 32.0] } else if road_piece { [16.0, ROAD_ABOVE_BASE, 16.0] } else { [16.0, 8.0, 16.0] };
+        let local_axis: [f32; 3] = if diag && w.name.contains("DiagRight") { [0.7071, 0.0, -0.7071] } else if diag { [0.7071, 0.0, 0.7071] } else { [0.0, 0.0, 1.0] };
         let centre = match (w.pos, w.free_rot) {
             (Some(p), Some(rot)) => {
                 let m = turned(p, rot);
                 let c = apply(&m, local_c);
-                let c2 = apply(&m, [local_c[0], local_c[1], local_c[2] + 1.0]);
+                let c2 = apply(&m, [local_c[0] + local_axis[0], local_c[1] + local_axis[1], local_c[2] + local_axis[2]]);
                 free_axis = Some([c2[0] - c[0], c2[1] - c[1], c2[2] - c[2]]);
                 c
             }
@@ -338,7 +343,8 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             tag: w.tag.clone(),
             order: w.order,
             centre,
-            yaw: w.yaw.unwrap_or(0.0),
+            // yaw such that (sin yaw, 0, cos yaw) is the road axis: a free block's rotated local axis, else the placement yaw
+            yaw: match free_axis { Some(a) => a[0].atan2(a[2]), None => w.yaw.unwrap_or(0.0) },
             model: w.name.clone(),
             from_item,
             grid: w.pos.is_none(),
@@ -715,4 +721,29 @@ pub fn specials(m: &tmmaps::map::MapFile, yoff: f32) -> Vec<SpecialRec> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod diag_tests {
+    use super::*;
+    /// GEN arm measurement (gen/g2/GEOM-GATE-FRAMES.md): Summer 2026 - 07 wp5 `RoadDirtDiagLeftCheckpoint`, a FREE
+    /// block at anchor (1014, 101.067, 576) rot (−π, 0, 0.5236), credits its checkpoint with the car centre at
+    /// world mean (973.85, 124.84, 545.27). Which LOCAL point is that? (rigid transform → R^T (g − t))
+    #[test]
+    fn diag_left_local_trigger() {
+        let m = turned([1014.0, 101.067, 576.0], [-3.1416, 0.0, 0.5236]);
+        let g = [973.85f32, 124.84, 545.27];
+        let d = [g[0] - m[9], g[1] - m[10], g[2] - m[11]];
+        // columns of R are m[0..3], m[3..6], m[6..9]; local = R^T d
+        let local = [
+            m[0] * d[0] + m[1] * d[1] + m[2] * d[2],
+            m[3] * d[0] + m[4] * d[1] + m[5] * d[2],
+            m[6] * d[0] + m[7] * d[1] + m[8] * d[2],
+        ];
+        eprintln!("DIAG local trigger = ({:.2}, {:.2}, {:.2})", local[0], local[1], local[2]);
+        // and where (16, 2, 16) lands, for the record
+        let c = apply(&m, [16.0, 2.0, 16.0]);
+        eprintln!("(16,2,16) → ({:.2}, {:.2}, {:.2})", c[0], c[1], c[2]);
+        assert!(local[0].is_finite());
+    }
 }
