@@ -251,6 +251,9 @@ impl Anchors {
     /// gather then cannot read. A chain ignores `srv_base` — it walks from the
     /// module's static data by construction.
     pub fn resolve_in(&self, pid: i32, srv_base: u64) -> Result<u64, String> {
+        if self.chain == "validator" {
+            return Err("the validator anchor is resolved from the fork server itself (record::run_clean), not from a pid".into());
+        }
         // "live" means the SAMPLER resolves the address at every instant (see
         // `GatherOpts::live_chain`), so there is nothing to resolve here. The
         // value returned is a placeholder the gather overwrites; it only has
@@ -683,7 +686,23 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
     let ladder: Vec<u64> = if c.ckpt > 0 {
         vec![c.ckpt]
     } else {
-        vec![600, 1000, 1600, 2600, 4200, 7000, 12000, 20000, 34000, 56000]
+        // TICK-CLOCK units (forkoracle::clock): stop 999 is the start of the tick
+        // at race -10 ms, the first one the engine reads by index, and the
+        // validator's vehicle exists there (the ENV arm roots its env on it on
+        // every server). The old lroundf ladder started at 600, which under the
+        // tick clock is ~4 s before the race: the participant has no vehicle yet
+        // ("primary vehicle class is 0x0") and every anchor failed -- the
+        // `fk regen` regression DATA reported on the tick-hook merge.
+        vec![
+            forkoracle::clock::ckpt_for_race_ms(-10),
+            forkoracle::clock::ckpt_for_race_ms(0),
+            forkoracle::clock::ckpt_for_race_ms(20),
+            forkoracle::clock::ckpt_for_race_ms(50),
+            forkoracle::clock::ckpt_for_race_ms(100),
+            forkoracle::clock::ckpt_for_race_ms(200),
+            forkoracle::clock::ckpt_for_race_ms(500),
+            forkoracle::clock::ckpt_for_race_ms(1000),
+        ]
     };
     let mut srv = None;
     let mut used = 0u64;
@@ -773,6 +792,28 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
         // 252289 the transferred clock address read 0 in the clean process, the
         // grid gate then matched every call, and the whole run collapsed to a
         // single deduplicated instant.
+        Some(a) if a.chain == "validator" => {
+            // THE VALIDATOR'S OWN CAR, resolved IN THIS PROCESS: controller ->
+            // sim -> playground -> participant -> CGameVehiclePhy, every hop a
+            // pointer read, no scan, and the clock found and labelled beside
+            // it. Under the tick hook the pointer chains below read null (the
+            // default one is a dead stack frame -- POINTER.md §5 -- and the
+            // process now stops at the start of a tick, where that frame is
+            // not live), so `fk regen` lost the car on every map until this
+            // path existed (DATA, 2026-09-06). It is tried first; the chains
+            // stay as fallbacks.
+            let car = crate::validator::ValidatorCar::locate(
+                &mut srv,
+                probe,
+                &lrecs,
+                f.start_offset_ms,
+                bounds,
+                100000,
+                verbose,
+            )
+            .map_err(|e| format!("validator car: {}", e))?;
+            car.layout().clone()
+        }
         Some(a) => {
             let ck = crate::locate::find_clock2(
                 &mut srv,

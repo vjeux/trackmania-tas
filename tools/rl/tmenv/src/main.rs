@@ -94,6 +94,8 @@ fn main() {
         Some("probe-scan") => probe_scan(&a),
         Some("geom-export") => geom_export(&a),
         Some("cpfind") => cpfind_cmd(&a),
+        Some("tape-diff") => tape_diff(&a),
+        Some("open-loop-control") => open_loop_control(&a),
         Some("oracle-cut") => oracle_cut(&a),
         Some("cp-oracle-control") => cp_oracle_control(&a),
         Some("bench-sweep") => bench_sweep(&a),
@@ -2885,4 +2887,169 @@ fn oracle_cut(a: &[String]) {
     }
     let _ = std::fs::write(p.work.join("oracle-cut-transcript.json"), &batch.raw);
     println!("transcript {}", p.work.join("oracle-cut-transcript.json").display());
+}
+
+// -------------------------------------------------------- open-loop-control
+
+/// THE TICK-CONVENTION CONTROL (LEARN's standing test): a game-recorded
+/// ghost's own inputs, fed through `step_ticks` at offset 0 (aligned by RACE
+/// time between the ghost's `start_offset_ms` and the template's), must
+/// reproduce the ghost's run -- the plain oracle on the banked tape reports the
+/// ghost's own time, and the env's counter reaches every gate at the ghost's
+/// split tick. Any label/index shift between the env and the tape shows up
+/// here as a car that leaves the road within seconds.
+fn open_loop_control(a: &[String]) {
+    let p = paths(a);
+    let ghosts: Vec<String> = flag(a, "--ghosts")
+        .unwrap_or_else(|| die("--ghosts FILE[,FILE...] is required".into()))
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
+    let bank = PathBuf::from(flag(a, "--bank").unwrap_or_else(|| p.work.join("olc").to_string_lossy().into_owned()));
+    std::fs::create_dir_all(&bank).unwrap_or_else(|e| die(e.to_string()));
+    println!("# tmenv open-loop-control  {} ghost(s)", ghosts.len());
+    let (mut env, _rig, tape) = build_env(&p, a, &p.work.join("olc-env"));
+    env.allow_after_done = true;
+    let n_gates = env.core.track.n_gates();
+    let mut files = Vec::new();
+    let mut expect: Vec<(String, i32, Vec<i32>, Option<i64>, usize)> = Vec::new();
+    for (gi, g) in ghosts.iter().enumerate() {
+        let d = fk::tape::Tape::load(g).unwrap_or_else(|e| die(e));
+        let splits = tmenv::cpfind::ghost_splits(Path::new(g)).unwrap_or_else(|e| die(e));
+        let declared = *splits.last().unwrap();
+        let shift: i64 = (tape.start_offset_ms as i64 - d.start_offset_ms as i64) / 10 + num::<i64>(a, "--shift-adjust", 0);
+        println!("  {g}: donor offset {} ms, template {} ms -> donor index = env tick {shift:+}", d.start_offset_ms, tape.start_offset_ms);
+        env.reset().unwrap_or_else(|e| die(e));
+        let mut t = env.next_tick().unwrap_or_else(|e| die(e));
+        let mut finish_tick: Option<i64> = None;
+        let mut drift = 0usize;
+        let mut gate_ticks: Vec<i64> = Vec::new();
+        let mut last_cps = 0usize;
+        loop {
+            if t >= tape.n() {
+                break;
+            }
+            let k = 10.min(tape.n() - t);
+            let chunk: Vec<tmstate::Action> = (t..t + k)
+                .map(|k| {
+                    let j = ((k as i64 + shift).max(0) as usize).min(d.n() - 1);
+                    tmstate::Action { steer: d.steer[j] as i8, gas: d.accel[j] != 0, brake: d.brake[j] != 0 }
+                })
+                .collect();
+            let (_o, _r, dn, info) = env.step_ticks(&chunk).unwrap_or_else(|e| die(e));
+            let nt = env.next_tick().unwrap_or(t + k);
+            if nt != t + k {
+                drift += 1;
+            }
+            t = nt;
+            // every gate the counter credited inside this chunk, at its row's clock
+            let rec = env.rollout_record();
+            for r in rec.trace.iter().rev().take(10).collect::<Vec<_>>().into_iter().rev() {
+                if r.cps != u32::MAX && r.cps as usize > last_cps {
+                    for _ in last_cps..r.cps as usize {
+                        gate_ticks.push(r.time_ms);
+                    }
+                    last_cps = r.cps as usize;
+                }
+            }
+            if info.state.finished && finish_tick.is_none() {
+                finish_tick = Some(info.state.race_ms as i64);
+            }
+            if matches!(dn, Some(Done::Finished) | Some(Done::TickCap) | Some(Done::RunEnded)) {
+                break;
+            }
+        }
+        let path = bank.join(format!("olc-{gi:02}.Ghost.Gbx"));
+        let (s, ga, b) = env.banked_tape(&tape);
+        tape.write_candidate(&s, &ga, &b, &path).unwrap_or_else(|e| die(e));
+        files.push(path);
+        if drift > 0 {
+            println!("  NOTE: the probe landed off from+10 on {drift} step(s) for {g}");
+        }
+        expect.push((g.clone(), declared, splits, finish_tick, last_cps));
+    }
+    let batch = tmauto::oracle::validate_raw(&p.server, &files, tmauto::oracle::Maps::One(&p.map), "olc")
+        .unwrap_or_else(|e| die(e));
+    let _ = std::fs::write(bank.join("oracle-transcript.json"), &batch.raw);
+    if batch.answers.len() != files.len() {
+        die(format!("the oracle answered {} of {} files", batch.answers.len(), files.len()));
+    }
+    let mut pass = true;
+    for ((g, declared, splits, finish_tick, cps), ans) in expect.iter().zip(batch.answers.iter()) {
+        let ov = ans.verdict();
+        let ok_oracle = matches!(ov, Some(tmauto::Verdict::Finish { ms }) if ms as i32 == *declared);
+        let ok_env = *cps == n_gates && finish_tick.map(|f| (f - *declared as i64).abs() <= 10).unwrap_or(false);
+        println!(
+            "{}\n  declared {:.3}  splits {}\n  oracle on the env's tape: {:?}  {}\n  env counter: {} of {} gates, finish at env race {:?}  {}",
+            g,
+            *declared as f64 / 1000.0,
+            splits.iter().map(|s| format!("{:.3}", *s as f64 / 1000.0)).collect::<Vec<_>>().join(" "),
+            ov,
+            if ok_oracle { "== the ghost's own time  PASS" } else { "!= the ghost's time  FAIL" },
+            cps,
+            n_gates,
+            finish_tick.map(|f| format!("{:.3}", f as f64 / 1000.0)),
+            if ok_env { "PASS" } else { "FAIL" }
+        );
+        pass &= ok_oracle && ok_env;
+    }
+    println!("OPEN-LOOP  {}", if pass { "PASS -- the env's tick is the tape's tick" } else { "FAIL" });
+    if !pass {
+        std::process::exit(1);
+    }
+}
+
+// --------------------------------------------------------------- tape-diff
+
+/// Where two containers' input tapes differ, tick by tick.
+fn tape_diff(a: &[String]) {
+    let x = fk::tape::Tape::load(&a[1]).unwrap_or_else(|e| die(e));
+    let y = fk::tape::Tape::load(&a[2]).unwrap_or_else(|e| die(e));
+    println!("{}: {} ticks, offset {} ms, declared {:?}", a[1], x.n(), x.start_offset_ms, x.declared_ms);
+    println!("{}: {} ticks, offset {} ms, declared {:?}", a[2], y.n(), y.start_offset_ms, y.declared_ms);
+    let n = x.n().min(y.n());
+    let mut diffs = 0usize;
+    let mut first = None;
+    for t in 0..n {
+        if x.steer[t] != y.steer[t] || x.accel[t] != y.accel[t] || x.brake[t] != y.brake[t] {
+            diffs += 1;
+            if first.is_none() {
+                first = Some(t);
+            }
+            if diffs <= 12 {
+                println!(
+                    "  tick {t:5} (race {:.3}): steer {:4} vs {:4}  gas {} vs {}  brake {} vs {}",
+                    x.race_ms(t) as f64 / 1000.0,
+                    x.steer[t] as i8,
+                    y.steer[t] as i8,
+                    x.accel[t],
+                    y.accel[t],
+                    x.brake[t],
+                    y.brake[t]
+                );
+            }
+        }
+    }
+    println!("{diffs} of {n} ticks differ (first at {:?})", first);
+    let (wx, wy) = (state_words(&a[1]), state_words(&a[2]));
+    let mut sd = 0usize;
+    let mut hist: std::collections::BTreeMap<(u32, u32), usize> = std::collections::BTreeMap::new();
+    for t in 0..wx.len().min(wy.len()) {
+        *hist.entry(wx[t]).or_default() += 1;
+        if wx[t] != wy[t] {
+            sd += 1;
+            if sd <= 6 {
+                println!("  state tick {t:5}: word0/flags {:#x}/{:#x} vs {:#x}/{:#x}", wx[t].0, wx[t].1, wy[t].0, wy[t].1);
+            }
+        }
+    }
+    println!("{sd} ticks differ in the STATE word; {} distinct (word0, flags) in the first: {:?}", hist.len(), hist);
+}
+
+/// The per-packet STATE words of a tape (word0, flags), for `tape-diff`.
+fn state_words(path: &str) -> Vec<(u32, u32)> {
+    match gbx::tape::Tape::from_file(path) {
+        Ok(t) => t.archives.first().map(|a| a.packets.iter().map(|p| (p.word0, p.flags)).collect()).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
 }
