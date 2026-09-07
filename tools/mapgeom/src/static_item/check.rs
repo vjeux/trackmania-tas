@@ -423,6 +423,23 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                 }
                 if facts {
                     println!("{path}: {label}collision {} vertices {} triangles physics {:?}", vertices.len(), triangles.len(), sf.material_ids);
+                    // Per-triangle physics, two ways: the triangle's own u8 and
+                    // the surface's material table indexed by the triangle's
+                    // surface index. They disagree on some Nadeo hulls (road
+                    // tops read 9/Rubber as the byte and 16/Asphalt through the
+                    // table — reported by the route project, 2026-09-07), and
+                    // the game believes the TABLE.
+                    let mut pairs: std::collections::BTreeMap<(u8, i32), usize> = std::collections::BTreeMap::new();
+                    for t in triangles {
+                        let via_table = sf.material_ids.get(t.surface_index.max(0) as usize).map(|id| (id & 0xFF) as i32).unwrap_or(-1);
+                        *pairs.entry((t.material_id, via_table)).or_default() += 1;
+                    }
+                    let mut rows: Vec<_> = pairs.into_iter().collect();
+                    rows.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+                    for ((byte, table), n) in rows.into_iter().take(8) {
+                        let flag = if table >= 0 && i32::from(byte) != table { "  <-- DISAGREE" } else { "" };
+                        println!("{path}: {label}  {n} triangles: byte {byte}, table[idx] {table}{flag}");
+                    }
                 }
             } else if facts {
                 let (v, t) = sf.surf.counts();

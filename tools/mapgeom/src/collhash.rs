@@ -302,11 +302,15 @@ pub fn run(rest: &[String]) -> Result<(), String> {
             ih.hex(),
             per_item.len()
         );
-        // The engine's start, predicted from the rule above, and whether it is
-        // the placement tagged Spawn. A map where these disagree spawns the car
-        // on a checkpoint — the defect that made 19 of 20 published maps
-        // unplayable. This is an ORDER check: the model's own waypoint type
-        // does not decide it.
+        // A PREDICTION, currently UNRELIABLE (2026-09-07): it encodes the rule
+        // "the engine starts on the last non-Goal waypoint record", which the
+        // player project measured on Summer 02 and then REFUTED the same hour —
+        // with the Spawn record last, 02 spawned at the Goal, and 20 still at a
+        // checkpoint. Their 24-permutation test points at a FIXED item slot
+        // (#715 on 02), i.e. a marker in some chunk our conversion re-indexes,
+        // not at record order. The line stays because "which record is last"
+        // is still worth seeing next to the hashes — but do not act on it, and
+        // delete it (or fix the rule) once the marker is known.
         match &predicted_start {
             Some((i, model, pos, tag)) => {
                 let spawn = m.items.iter().find(|it| it.waypoint_tag.as_deref() == Some("Spawn"));
@@ -321,9 +325,9 @@ pub fn run(rest: &[String]) -> Result<(), String> {
                         }
                     }
                 };
-                println!("  engine start: record {i} {model} {tag} at [{:.1}, {:.1}, {:.1}] — {verdict}", pos[0], pos[1], pos[2]);
+                println!("  last non-Goal waypoint record (start rule UNCONFIRMED): record {i} {model} {tag} at [{:.1}, {:.1}, {:.1}] — {verdict}", pos[0], pos[1], pos[2]);
             }
-            None => println!("  engine start: NO waypoint placement in this map"),
+            None => println!("  last non-Goal waypoint record: NONE in this map"),
         }
         if parts_wanted {
             for (name, hex) in &per_item {
