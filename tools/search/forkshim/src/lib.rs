@@ -761,6 +761,31 @@ fn main_module_base() -> usize {
 /// Install the one-shot validator callback trap before `main` starts. Gating it
 /// keeps `forkshim` usable with `shimhost`, whose text obviously has no server
 /// instruction at this offset.
+/// Is `[base+off, base+off+n)` inside an executable mapping of the main
+/// module? Reading a signature without asking this is a segfault on any host
+/// that is not the server -- and the shim is LD_PRELOADed into whatever the
+/// driver launches, `/usr/bin/time` and `/bin/true` included.
+fn in_main_text(base: usize, off: usize, n: usize) -> bool {
+    let exe = match std::fs::read_link("/proc/self/exe") {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => return false,
+    };
+    let maps = match std::fs::read_to_string("/proc/self/maps") {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let (a, b) = (base + off, base + off + n);
+    maps.lines().any(|l| {
+        let mut it = l.split_whitespace();
+        let range = it.next().unwrap_or("");
+        let perms = it.next().unwrap_or("");
+        let path = it.nth(3).unwrap_or("");
+        let Some((s, e)) = range.split_once('-') else { return false };
+        let (s, e) = (usize::from_str_radix(s, 16).unwrap_or(0), usize::from_str_radix(e, 16).unwrap_or(0));
+        path == exe && perms.starts_with("r-x") && s <= a && b <= e
+    })
+}
+
 unsafe extern "C" fn install_validator_trace() {
     // Also under the tick clock: the race-keyed clock reads the race start
     // through the captured validation simulation (see `race_start_now`).
@@ -771,6 +796,9 @@ unsafe extern "C" fn install_validator_trace() {
     let base = main_module_base();
     MODULE_BASE.store(base, Ordering::SeqCst);
     if base == 0 {
+        return;
+    }
+    if !in_main_text(base, VALIDATOR_SIM_BIND_OFF, VALIDATOR_SIM_BIND_SIGNATURE.len()) {
         return;
     }
     let at = base + VALIDATOR_SIM_BIND_OFF;
@@ -984,20 +1012,7 @@ unsafe fn install_tick_hook() {
     // Every signature range must sit inside an executable mapping of the main
     // module BEFORE it is read: a host without server text (shimhost, a
     // different build) must be refused, not segfaulted.
-    let exe = std::fs::read_link("/proc/self/exe").map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-    let maps = std::fs::read_to_string("/proc/self/maps").unwrap_or_default();
-    let inside = |off: usize, n: usize| -> bool {
-        let (a, b) = (base + off, base + off + n);
-        maps.lines().any(|l| {
-            let mut it = l.split_whitespace();
-            let range = it.next().unwrap_or("");
-            let perms = it.next().unwrap_or("");
-            let path = it.nth(3).unwrap_or("");
-            let Some((s, e)) = range.split_once('-') else { return false };
-            let (s, e) = (usize::from_str_radix(s, 16).unwrap_or(0), usize::from_str_radix(e, 16).unwrap_or(0));
-            path == exe && perms.starts_with("r-x") && s <= a && b <= e
-        })
-    };
+    let inside = |off: usize, n: usize| in_main_text(base, off, n);
     // FINDER MODE. `FKSHIM_TICK_FN_OFF=0x...` with `FKSHIM_TICK_UNSAFE=1` hooks
     // an arbitrary offset with only a prologue-shape check, so `fk tickhook
     // find` can test candidates on a new build by their dynamic behaviour

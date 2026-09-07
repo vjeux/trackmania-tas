@@ -310,6 +310,9 @@ mod tests {
             pid: 1,
             boundary: None,
             dead: false,
+            tick_mode: false,
+            sim_ms: 0,
+            race_start: 0,
         };
         let e = n.check_forward(500).unwrap_err();
         assert!(e.contains("has not probed"), "{}", e);
@@ -328,6 +331,9 @@ mod tests {
             pid: 1,
             boundary: Some(171),
             dead: false,
+            tick_mode: false,
+            sim_ms: 0,
+            race_start: 0,
         };
         for t in [0usize, 1, 170, 171] {
             let e = n.check_forward(t).unwrap_err();
@@ -350,6 +356,9 @@ mod tests {
             pid: 1,
             boundary: Some(171),
             dead: false,
+            tick_mode: false,
+            sim_ms: 0,
+            race_start: 0,
         };
         assert_eq!(n.floor(None).unwrap(), 172);
         assert_eq!(n.floor(Some(100)).unwrap(), 172, "an EARLIER estimate must be ignored");

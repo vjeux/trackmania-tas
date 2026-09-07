@@ -379,17 +379,20 @@ fn trajectory_csv_has_the_columns_the_rest_of_the_project_reads() {
 }
 
 /// The checkpoint clock. Under the tick hook (the default) it is EXACT: the
-/// engine's simulation time in ticks, `(2200 + race_ms) / 10`. Under
+/// engine's own race tick, `race_ms / 10 + 1000` (the bias keeps countdown
+/// ticks positive; the race START is read out of the engine per process and is
+/// not always 2200 -- see `forkoracle::clock`). Under
 /// `FK_CLOCK=lroundf` it is the fitted line `36141 + 25.483 * race_ms`, only
 /// ever used to CHOOSE a checkpoint — never to label a sample, because that
 /// count is not a fixed simulation point.
 #[test]
 fn the_checkpoint_clock_is_the_documented_one() {
     if forkoracle::clock::tick_mode() {
-        assert_eq!(fk::session::clock_for_race_ms(22730), 2493);
-        assert_eq!(fk::session::clock_for_race_ms(0), 220);
-        assert_eq!(fk::session::clock_for_race_ms(-1580), 62);
-        assert!(fk::session::clock_for_race_ms(-100_000) >= 101, "clamped to the first tick");
+        // race ms / 10, plus the bias that keeps countdown ticks positive
+        assert_eq!(fk::session::clock_for_race_ms(22730), 3273);
+        assert_eq!(fk::session::clock_for_race_ms(0), 1000);
+        assert_eq!(fk::session::clock_for_race_ms(-1580), 842);
+        assert_eq!(fk::session::clock_for_race_ms(-100_000), 0, "clamped, never negative");
     } else {
         assert_eq!(fk::session::clock_for_race_ms(22730), 615_369);
         assert_eq!(fk::session::clock_for_race_ms(0), 36_141);
