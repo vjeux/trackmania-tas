@@ -53,41 +53,14 @@ pub fn cps_before(cps_ms: &[i32], ms: i64) -> u8 {
 }
 
 pub fn run_on_worker(w: &mut Worker, tel: &Telemetry, gates: &MapGates, o: &StartsOpts) -> Result<StartsReport, String> {
-    // ---- (a) start-position control on the ROOT state (live, tick 0-ish)
     let r0 = w.root_row.clone();
     let sp = gates.spawn.as_ref().ok_or("the map has no Spawn waypoint")?;
-    let dxz = ((r0.x - sp.centre[0]).powi(2) + (r0.z - sp.centre[2]).powi(2)).sqrt();
-    let dy = r0.y - sp.centre[1];
     let v0 = speed(&r0);
-    let d3 = dist(pos(&r0), sp.centre);
-    let pass_a = dxz <= 6.0 && dy.abs() <= 12.0 && v0 <= 4.0;
-    println!(
-        "START-POSITION control: root tick {} race {} at ({:.3}, {:.3}, {:.3}) {:.2} m/s; map Spawn wp{} {:?} cell {:?} -> \
-         ({:.1}, {:.1}, {:.1}); d_xz {:.2} m, dy {:+.2} m, d3 {:.2} m  => {}",
-        w.root_probe,
-        crate::secs(r0.time_ms),
-        r0.x,
-        r0.y,
-        r0.z,
-        v0,
-        sp.waypoint,
-        sp.model,
-        sp.cell,
-        sp.centre[0],
-        sp.centre[1],
-        sp.centre[2],
-        dxz,
-        dy,
-        d3,
-        if pass_a { "PASS" } else { "FAIL" }
-    );
     // ---- flat run of the whole tape, one child
     let n = w.n_ticks();
-    // Stop the walk 20 ticks before the finish: a child that crosses the finish
-    // line runs the race to its end instead of pausing (handled, but a savestate
-    // 0.2 s before the line is not one anybody fans out from).
-    let finish_tick = tel.checkpoints_ms.last().map(|c| crate::rig::tick_of_ms(&w.tape, *c as i64)).unwrap_or(n);
-    let ticks = (finish_tick.min(n).saturating_sub(20)).saturating_sub(w.root_probe) as u64;
+    // Run the whole tape, off its end: the last chunk exits with the race
+    // (Advanced::Exited), so the finish crossing is in the rows.
+    let ticks = n.saturating_sub(w.root_probe) as u64;
     let t0 = std::time::Instant::now();
     let flat = w.flat(ticks)?;
     let dt = t0.elapsed().as_secs_f64();
@@ -101,6 +74,9 @@ pub fn run_on_worker(w: &mut Worker, tel: &Telemetry, gates: &MapGates, o: &Star
         dt,
         flat.len() as f64 / (dt * 1000.0)
     );
+    if let Some(p) = &o.trace_out {
+        write_trace(p, &flat)?;
+    }
     // ---- (b) identity control
     let id0 = compare(&flat, tel);
     let (shift, id) = crate::tele::best_shift(&flat, tel);
@@ -115,8 +91,41 @@ pub fn run_on_worker(w: &mut Worker, tel: &Telemetry, gates: &MapGates, o: &Star
     if shift.abs() > 10 {
         return Err(format!("the engine trajectory matches the telemetry only {shift:+} ms away: not one label convention, a different run"));
     }
-    if let Some(p) = &o.trace_out {
-        write_trace(p, &flat)?;
+    // ---- (a) START-POSITION control. Two forms, and the transcript says which:
+    //  LIVE  -- the root is pre-race (a countdown tape): the live root state must
+    //           be at the map's Spawn, at rest.
+    //  ORIGIN -- the root is inside the race (an offset-0 tape, whose pre-race
+    //           pause is broken -- see rig::root_clock_for): the telemetry's
+    //           first sample must be at the Spawn at rest, AND the live root
+    //           state must lie on that telemetry to 5 cm (the identity control
+    //           then ties the whole run to it). A stated substitute, not the
+    //           live clause.
+    let dxz = ((r0.x - sp.centre[0]).powi(2) + (r0.z - sp.centre[2]).powi(2)).sqrt();
+    let dy = r0.y - sp.centre[1];
+    let d3 = dist(pos(&r0), sp.centre);
+    let pre_race = v0 <= 4.0 && dxz <= 6.0;
+    let pass_a;
+    if pre_race {
+        pass_a = dxz <= 6.0 && dy.abs() <= 12.0 && v0 <= 4.0;
+        println!(
+            "START-POSITION control (LIVE): root tick {} race {} at ({:.3}, {:.3}, {:.3}) {:.2} m/s; map Spawn wp{} {:?} cell {:?} -> \
+             ({:.1}, {:.1}, {:.1}); d_xz {:.2} m, dy {:+.2} m, d3 {:.2} m  => {}",
+            w.root_probe, crate::secs(r0.time_ms), r0.x, r0.y, r0.z, v0, sp.waypoint, sp.model, sp.cell,
+            sp.centre[0], sp.centre[1], sp.centre[2], dxz, dy, d3, if pass_a { "PASS" } else { "FAIL" }
+        );
+    } else {
+        let s0 = &tel.dec.samples[0];
+        let t0 = [s0.x as f64, s0.y as f64, s0.z as f64];
+        let t0_dxz = ((t0[0] - sp.centre[0]).powi(2) + (t0[2] - sp.centre[2]).powi(2)).sqrt();
+        let t0_v = (s0.vx as f64).hypot(s0.vy as f64).hypot(s0.vz as f64);
+        let root_on_tel = tel.pos_at(r0.time_ms + shift).map(|p| dist(pos(&r0), p)).unwrap_or(f64::NAN);
+        pass_a = t0_dxz <= 6.0 && (t0[1] - sp.centre[1]).abs() <= 12.0 && t0_v <= 4.0 && root_on_tel < 0.05;
+        println!(
+            "START-POSITION control (ORIGIN; root is inside the race at tick {} race {}, {:.1} m/s): telemetry t=0 at ({:.3}, {:.3}, {:.3}) {:.2} m/s, \
+             d_xz {:.2} m from Spawn ({:.1}, {:.1}, {:.1}); live root state {:.4} m off that telemetry  => {}",
+            w.root_probe, crate::secs(r0.time_ms), v0, t0[0], t0[1], t0[2], t0_v, t0_dxz, sp.centre[0], sp.centre[1], sp.centre[2], root_on_tel,
+            if pass_a { "PASS" } else { "FAIL" }
+        );
     }
     // ---- savestates every `every_ms` of race time, from 0 (or the root) to the end
     let mut starts = Vec::new();

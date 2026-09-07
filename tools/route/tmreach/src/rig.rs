@@ -18,6 +18,22 @@ use std::path::{Path, PathBuf};
 /// validator's ownership chain already built (a7aa56c `control::EARLIEST_CLOCK`).
 pub const EARLIEST_CLOCK: u64 = 11_000;
 
+/// The root for a tape WITHOUT countdown records (`start_offset_ms` near 0).
+///
+/// MEASURED (Summer 2026 - 01, p00003 19.552, 2026-09-07): a pause inside the
+/// pre-race phase of an offset-0 tape gives a DIFFERENT RUN from the plain
+/// oracle's. Paused at lroundf 6000/8000/9500/11000/14000 the root had consumed
+/// 51/33/95/52/52 records (non-monotone in the clock) with the car still at
+/// rest, and the continued run then matched the telemetry only shifted by that
+/// many ticks and diverged to 40–125 m by 17 s. The plain oracle on the same
+/// file, and on the re-encoded reference, returns the declared 19.552, and
+/// hard-left on ticks 0..40 turns it into "wrong simu" -- so in the oracle tick
+/// 0 IS race 0. Paused AFTER the race start (30000 → tick 70, 40000 → 108,
+/// 90000 → 296) the run matches the telemetry to RMS 0.007 m. A countdown tape
+/// (offset −1550: 155 pre-race records) is unaffected at 11000 (44 ghosts).
+/// The mechanism is UNKNOWN and is a task; the rule is a description.
+pub const OFFSET0_CLOCKS: &[u64] = &[36_000, 60_000, 90_000, 140_000];
+
 /// What one rollout produced.
 pub struct Rolled {
     pub rows: Vec<Row>,
@@ -58,6 +74,63 @@ impl Worker {
         ghost: &Path,
         verbose: bool,
     ) -> Result<Worker, String> {
+        let tape = Tape::load(&ghost.to_string_lossy())?;
+        if tape.start_offset_ms <= -1000 {
+            return Self::start_at(server, map, shim, work, ghost, verbose, EARLIEST_CLOCK);
+        }
+        // An offset-0 tape: the pre-race pause is broken (see OFFSET0_CLOCKS), and
+        // how many lroundf calls the pre-race dwell takes is not repeatable
+        // (36000 landed once at tick 51 pre-race, 30000 twice at tick 70 in the
+        // race). So the STATE decides: a root with the car at rest is pre-race
+        // and is thrown away for a later clock.
+        let mut last_err = String::new();
+        for &c in OFFSET0_CLOCKS {
+            match Self::start_at(server, map, shim, work, ghost, verbose, c) {
+                Ok(mut w) => {
+                    if speed(&w.root_row) > 4.0 {
+                        // Mid-race root. One more thing can be wrong: the probe can
+                        // run AHEAD of the physics (measured once: probe tick 97
+                        // with the car in its tick-93 state, labels 40 ms off), so
+                        // a short flat run must sit on the telemetry at exactly
+                        // the +10 ms label convention every good run has.
+                        let tel = crate::tele::Telemetry::load(&ghost.to_string_lossy())?;
+                        let rows = w.flat(300)?;
+                        let (shift, cmp) = crate::tele::best_shift(&rows, &tel);
+                        if shift == 10 && cmp.rms < 0.05 {
+                            return Ok(w);
+                        }
+                        last_err = format!(
+                            "clock {} root tick {}: 300-tick flat run sits on the telemetry at shift {:+} ms (RMS {:.4} m), not the +10 ms convention: probe/physics disagree",
+                            c, w.root_probe, shift, cmp.rms
+                        );
+                        if verbose {
+                            eprintln!("  offset-0 tape: {last_err}; retrying later");
+                        }
+                        drop(w);
+                        continue;
+                    }
+                    last_err = format!("clock {} paused pre-race (root tick {}, car at rest)", c, w.root_probe);
+                    if verbose {
+                        eprintln!("  offset-0 tape: {last_err}; retrying later");
+                    }
+                    drop(w);
+                }
+                Err(e) => last_err = e,
+            }
+        }
+        Err(format!("no root inside the race for an offset-0 tape: {last_err}"))
+    }
+
+    /// `start` with an explicit root `lroundf` count (diagnostics).
+    pub fn start_at(
+        server: &Path,
+        map: &Path,
+        shim: &Path,
+        work: &Path,
+        ghost: &Path,
+        verbose: bool,
+        clock: u64,
+    ) -> Result<Worker, String> {
         let t0 = std::time::Instant::now();
         let engine = Engine {
             server: server.to_path_buf(),
@@ -71,7 +144,7 @@ impl Worker {
         std::fs::create_dir_all(work).map_err(|e| e.to_string())?;
         let tape = Tape::load(&ghost.to_string_lossy())?;
         tape.codec_is_lossless()?;
-        let mut s = Session::start(&engine, tape.clone(), Checkpoint::Clock(EARLIEST_CLOCK))?;
+        let mut s = Session::start(&engine, tape.clone(), Checkpoint::Clock(clock))?;
         let probe = s.probe_tick()?;
         let recs = s.tape.tail_records(0);
         let wide = (-1.0e6, 1.0e6, -1.0e6, 1.0e6, -1.0e6, 1.0e6);
@@ -107,9 +180,13 @@ impl Worker {
     /// return the per-tick rows. The flat trajectory of the human's own run.
     pub fn flat(&mut self, ticks: u64) -> Result<Vec<Row>, String> {
         // `k_ticks` places the stop through ~255 lroundf/tick, which drifts over
-        // a long run (a 1956-tick request stopped 90 ticks short); walk in
-        // chained chunks until the rows reach the requested tick.
-        let target = self.root_probe + ticks as usize;
+        // a long run (a 1956-tick request stopped 90 ticks short, another
+        // overshot into the finish); walk in chained chunks that each ask for
+        // 90 % of what is left, so the target is approached from below. A
+        // target at or past the tape's end is reached by running OFF the end
+        // (`Advanced::Exited`), which is how the finish crossing is traced.
+        let to_end = self.root_probe + ticks as usize + 5 >= self.tape.n();
+        let target = (self.root_probe + ticks as usize).min(self.tape.n());
         let mut all: Vec<Row> = Vec::new();
         let mut h = ROOT;
         let mut left = ticks;
@@ -117,8 +194,19 @@ impl Worker {
             // tree::Node::branch checks `from` against the floor even for an
             // empty write, so a chained chunk is addressed at the floor.
             let from = if h == ROOT { 0 } else { self.forest.floor(h, None)? };
-            let (rows, c) = match self.forest.advance_ex(h, &[], from, left.clamp(1, 1500))? {
-                Advanced::Paused(rows, c) => (rows, c),
+            let ask = if left <= 60 {
+                if to_end { left + 400 } else { left }
+            } else {
+                ((left as f64 * 0.9) as u64).clamp(1, 1500)
+            };
+            let (rows, c) = match self.forest.advance_ex(h, &[], from, ask)? {
+                Advanced::Paused(mut rows, c) => {
+                    drop_stale_tail(&mut rows);
+                    if std::env::var("TMREACH_SEAMS").is_ok() {
+                        eprintln!("seam: chunk rows {} .. {}", rows.first().map(|r| r.time_ms).unwrap_or(0), rows.last().map(|r| r.time_ms).unwrap_or(0));
+                    }
+                    (rows, c)
+                }
                 Advanced::Exited(rows) => {
                     all.extend(rows);
                     h = ROOT;
@@ -132,10 +220,10 @@ impl Worker {
             let got = rows.len();
             all.extend(rows);
             let at = self.forest.floor(h, None)?;
-            if at >= target || got == 0 || at + 1 >= self.tape.n() {
+            if got == 0 || (at >= target && !to_end) {
                 break;
             }
-            left = (target - at) as u64;
+            left = target.saturating_sub(at).max(1) as u64;
         }
         if h != ROOT {
             self.forest.release(h);
@@ -168,8 +256,9 @@ impl Worker {
     /// end (finish, or out of tape) instead of pausing.
     pub fn rollout(&mut self, h: Handle, recs: &[Rec], from: usize, k: u64) -> Result<Rolled, String> {
         match self.forest.advance_ex(h, recs, from, k)? {
-            Advanced::Paused(rows, c) => {
+            Advanced::Paused(mut rows, c) => {
                 self.forest.release(c);
+                drop_stale_tail(&mut rows);
                 Ok(Rolled { rows, exited: false })
             }
             Advanced::Exited(rows) => Ok(Rolled { rows, exited: true }),
@@ -216,4 +305,17 @@ pub fn dist(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 pub fn pos(r: &Row) -> [f64; 3] {
     [r.x, r.y, r.z]
+}
+
+/// THE LAST ROW OF A PAUSED CHILD IS STALE. The shim stops the engine inside
+/// `lroundf`, after the race clock has stepped and before the physics has
+/// integrated the tick: the final sample carries clock T with the position of
+/// T−10. Measured: a 19.552 run paused at race 19.340 ended with two rows of
+/// identical position, and the identity control read it as a 1.21 m error (one
+/// tick at 121 m/s). The row is dropped; the state at T comes from the next
+/// child, whose first sample is a full tick.
+pub fn drop_stale_tail(rows: &mut Vec<Row>) {
+    if rows.len() >= 2 {
+        rows.pop();
+    }
 }
