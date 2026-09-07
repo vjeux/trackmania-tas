@@ -8,7 +8,7 @@
 //!             [--epochs N] [--hidden 256,256,256] [--batch B] [--lr X] [--wd X] [--noise σ] [--dropout p] [--geo-dropout p] [--no-mirror] [--held-out uid,..] [--report F] [--threads T]
 //!   tmr eval [--kind gate|local] --model r.tmw --cache DIR [--held-out uid,..] [--report F]
 //!   tmr selftest --model r.tmw           agrees_with (flat vs candle) + the negative half (a perturbed copy must be REFUSED)
-//!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--local rl.tmw --estimator chained [--chain-beam 24] [--p-step 0.05] [--penalty 3000]]
+//!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--local rl.tmw --estimator chained [--chain-beam 24] [--p-step 0.05] [--penalty 3000] [--fast-fan] [--budget-s 300] [--chain-threads 32]]
 //!            [--top-k 3] [--beam 4000] [--p-floor 0.02] [--out-dir DIR] [--source NAME]
 //!                                        the planner over R (tmplan's beam, R as the EdgeEstimator) — the M2 seam
 //!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--max-rows-total N] [--geo-dropout p] [--held-out uid,..] [--batch B] [--lr X] [--force-first] [--interval S] [--once] [--epochs N] [--threads T]
@@ -603,7 +603,7 @@ fn cmd_plan(args: &[String]) {
     let PlanCtx { gates, surf, nodes, w, h_min, h_max, keep, .. } = &ctx;
     let (h_min, h_max, keep) = (*h_min, *h_max, keep.clone());
     let feat = ctx.feat();
-    let est = tmr::estimator::REstimator { w, feat: &feat, gates, nodes, surf, h_max, h_min, keep, p_floor: flag(args, "--p-floor").and_then(|s| s.parse().ok()).unwrap_or(0.02) };
+    let est = tmr::estimator::REstimator { w, feat: &feat, gates, nodes, surf, h_max, h_min, keep: keep.clone(), p_floor: flag(args, "--p-floor").and_then(|s| s.parse().ok()).unwrap_or(0.02) };
     let width: usize = flag(args, "--beam").and_then(|s| s.parse().ok()).unwrap_or(4000);
     let top_k: usize = flag(args, "--top-k").and_then(|s| s.parse().ok()).unwrap_or(3);
     if has(args, "--matrix") {
@@ -631,6 +631,13 @@ fn cmd_plan(args: &[String]) {
         if let Some(b) = flag(args, "--chain-beam") { c.beam = b.parse().unwrap_or(24); }
         if let Some(f) = flag(args, "--p-step") { c.p_step_floor = f.parse().unwrap_or(0.05); }
         if let Some(p) = flag(args, "--penalty") { c.penalty_ms = p.parse().unwrap_or(3000.0); }
+        c.fast = has(args, "--fast-fan");
+        // budget: price every (bucket, from, to) edge in parallel first, the gate head prices the rest
+        let budget = std::time::Duration::from_secs_f64(flag(args, "--budget-s").and_then(|s| s.parse().ok()).unwrap_or(300.0));
+        let cthreads: usize = flag(args, "--chain-threads").and_then(|s| s.parse().ok()).unwrap_or(32);
+        let (done, total, secs) = c.precompute(cthreads, budget);
+        println!("  chained precompute: {done}/{total} edges priced in {secs:.1} s on {cthreads} threads (budget {:.0} s, {} fan){}", budget.as_secs_f64(), if c.fast { "fast" } else { "full" }, if done < total { " — the rest fall back to the gate head" } else { "" });
+        c.fallback = Some(tmr::estimator::REstimator { w, feat: &feat, gates, nodes, surf, h_max, h_min, keep: keep.clone(), p_floor: 0.0 });
         Some(c)
     } else {
         None
@@ -641,7 +648,8 @@ fn cmd_plan(args: &[String]) {
     };
     let t0 = std::time::Instant::now();
     let plans = tmplan::planner::beam(nodes, est_dyn, width, top_k, StateBucket::of_speed(0.0));
-    println!("{}\t{}\tcp_groups {}\tfinish_groups {}\testimator {}\tbeam {}\tplans {}\t{:.1} s", gates.map_name, gates.map_uid, nodes.n_cp, nodes.n_fin, est_dyn.name(), width, plans.len(), t0.elapsed().as_secs_f64());
+    let fb = chained.as_ref().map(|c| c.fallbacks_used.load(std::sync::atomic::Ordering::Relaxed)).unwrap_or(0);
+    println!("{}\t{}\tcp_groups {}\tfinish_groups {}\testimator {}\tbeam {}\tplans {}\t{:.1} s\tgate-head fallbacks {}", gates.map_name, gates.map_uid, nodes.n_cp, nodes.n_fin, est_dyn.name(), width, plans.len(), t0.elapsed().as_secs_f64(), fb);
     let prov = provenance("plan");
     let out_dir = flag(args, "--out-dir");
     let (_d, _len, _drop, fields) = surf.distance_matrix_full(&nodes);
@@ -683,6 +691,7 @@ fn cmd_legs(args: &[String]) {
         if let Some(b) = flag(args, "--beam") { c.beam = b.parse().unwrap_or(24); }
         if let Some(f) = flag(args, "--p-step") { c.p_step_floor = f.parse().unwrap_or(0.05); }
         if let Some(p) = flag(args, "--penalty") { c.penalty_ms = p.parse().unwrap_or(3000.0); }
+        c.fast = has(args, "--fast-fan");
         c
     });
     let ho = flag(args, "--human-orders").unwrap_or_else(|| die("--human-orders human-orders.tsv"));
