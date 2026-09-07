@@ -11,7 +11,7 @@
 //!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--local rl.tmw --estimator chained [--chain-beam 24] [--p-step 0.05] [--penalty 3000] [--fast-fan] [--budget-s 300] [--chain-threads 32]]
 //!            [--top-k 3] [--beam 4000] [--p-floor 0.02] [--out-dir DIR] [--source NAME]
 //!                                        the planner over R (tmplan's beam, R as the EdgeEstimator) — the M2 seam
-//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--max-rows-total N] [--geo-dropout p] [--held-out uid,..] [--batch B] [--lr X] [--force-first] [--interval S] [--once] [--epochs N] [--threads T]
+//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--max-rows-total N] [--keep-fast M_S] [--geo-dropout p] [--held-out uid,..] [--batch B] [--lr X] [--force-first] [--interval S] [--once] [--epochs N] [--threads T]
 //!                                        rebuild rows for new/changed shards, retrain both heads, publish bank/r-v<N>.tmw + rl-v<N>.tmw + reports
 //!   tmr report --bank DIR [--bank DIR2] [--out REPORT.md]   one table per watcher bank: every version's held-out numbers
 //!   tmr split UID..                      which maps the fnv1a64 rule holds out
@@ -136,6 +136,8 @@ struct BuildOpts {
     max_rows: usize,
     /// Featurisation threads.
     threads: usize,
+    /// Keep every row whose start speed ≥ this (m/s) before subsampling the rest; 0 = off.
+    keep_fast: f32,
     geom: PathBuf,
     maps: Vec<PathBuf>,
     no_geom: bool,
@@ -181,11 +183,11 @@ fn build_one(d: &Path, o: &BuildOpts, log: &mut Vec<String>) -> Result<(String, 
     };
     let feat = featurizer(&geo);
     let (rows, manifest_tail) = if o.kind == "local" {
-        let (rows, st) = data::build_local_map(d, &gates, &gdir, &feat, 1, o.max_rows, o.threads, log)?;
+        let (rows, st) = data::build_local_map(d, &gates, &gdir, &feat, 1, o.max_rows, o.threads, o.keep_fast, log)?;
         let m = format!("{}\t{}\t{}\t{:.4}\t0\t0\t{}\t0\t0\t0\t{}", st.groups, rows.n, st.positives, st.positives as f64 / rows.n.max(1) as f64, st.negatives, st.rejected_near_endpoint);
         (rows, m)
     } else {
-        let (rows, st) = data::build_map(d, &gates, &gdir, &feat, o.max_rows, o.threads, log)?;
+        let (rows, st) = data::build_map(d, &gates, &gdir, &feat, o.max_rows, o.threads, o.keep_fast, log)?;
         (rows, format!("{}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", st.records, st.rows, st.positives, st.positives as f64 / st.rows.max(1) as f64, st.human_rows, st.human_pos, st.band_rows, st.finish_candidates, st.positives_beyond_400, st.positives_outside_radius, st.unknown_ghost_starts))
     };
     let _ = &rows;
@@ -211,7 +213,7 @@ fn build_opts(args: &[String]) -> BuildOpts {
     if let Some(m) = flag(args, "--maps") {
         maps.insert(0, PathBuf::from(m));
     }
-    BuildOpts { kind: kind_of(args), fv: fv_of(args), max_rows: flag(args, "--max-rows").and_then(|s| s.parse().ok()).unwrap_or(0), threads: flag(args, "--build-threads").and_then(|s| s.parse().ok()).unwrap_or(8), geom: flag(args, "--geom").map(PathBuf::from).unwrap_or_else(default_geom), maps, no_geom: has(args, "--no-geometry"), out }
+    BuildOpts { kind: kind_of(args), fv: fv_of(args), max_rows: flag(args, "--max-rows").and_then(|s| s.parse().ok()).unwrap_or(0), threads: flag(args, "--build-threads").and_then(|s| s.parse().ok()).unwrap_or(8), keep_fast: flag(args, "--keep-fast").and_then(|s| s.parse().ok()).unwrap_or(0.0), geom: flag(args, "--geom").map(PathBuf::from).unwrap_or_else(default_geom), maps, no_geom: has(args, "--no-geometry"), out }
 }
 
 fn reach_dirs(args: &[String]) -> Vec<PathBuf> {
@@ -895,7 +897,7 @@ fn cmd_watch(args: &[String]) {
             }
             let mut ok = true;
             for kind in ["gate", "local"] {
-                let ok_ = BuildOpts { kind: kind.into(), fv: o.fv, max_rows: o.max_rows, threads: o.threads, geom: o.geom.clone(), maps: o.maps.clone(), no_geom: o.no_geom, out: o.out.clone() };
+                let ok_ = BuildOpts { kind: kind.into(), fv: o.fv, max_rows: o.max_rows, threads: o.threads, keep_fast: o.keep_fast, geom: o.geom.clone(), maps: o.maps.clone(), no_geom: o.no_geom, out: o.out.clone() };
                 match build_one(&d, &ok_, &mut log) {
                     Ok((_, line)) => println!("{line}"),
                     Err(e) => {
