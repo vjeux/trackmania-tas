@@ -846,7 +846,20 @@ impl Merged {
                     // it indexes on every Nadeo prefab measured).
                     self.add_surface_mesh(vertices, triangles, iso, scale);
                 }
-                other => self.notes.push(format!("collision surf type {} is not a mesh; skipped", other.type_id())),
+                // A primitive collision (sphere / ellipsoid / axis box, or a
+                // compound of them) is meshed: the item has ONE collision mesh,
+                // and a skipped primitive was a drive-through prop (2026-09-07).
+                // Its triangles take the shape's surface index as physics id,
+                // resolved through the surface's material table like a mesh's.
+                other => match other.triangulate() {
+                    Some((verts, tris)) if !tris.is_empty() => {
+                        let phys_of = |t: &Triangle| -> u8 { sf.material_ids.get(t.surface_index.max(0) as usize).map(|id| (id & 0xFF) as u8).unwrap_or(t.material_id) };
+                        let tris: Vec<Triangle> = tris.iter().map(|t| Triangle { material_id: phys_of(t), ..*t }).collect();
+                        self.notes.push(format!("collision surf type {} meshed: {} triangles", other.type_id(), tris.len()));
+                        self.add_surface_mesh(&verts, &tris, iso, scale);
+                    }
+                    _ => self.notes.push(format!("collision surf type {} is not a mesh and could not be meshed; skipped", other.type_id())),
+                },
             }
         } else if so.is_mesh_collidable {
             // Collide against the visuals themselves.

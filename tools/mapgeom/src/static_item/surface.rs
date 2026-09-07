@@ -92,6 +92,62 @@ impl Surf {
         }
     }
 
+    /// The shape as triangles in its own frame, for merging into an item's one
+    /// collision mesh: a mesh as is; a box (centre + half extents, axis
+    /// aligned — the six floats carry no rotation) as 12 triangles; a sphere or
+    /// ellipsoid as a 16×8 UV sphere (128 triangles, radius error < 2 %); a
+    /// convex polyhedron fanned from its face runs; a compound as its children
+    /// placed by their Iso4. `None` when nothing can be produced. Every
+    /// triangle carries the shape's surface index as its physics id (the
+    /// caller maps it through the surface's material table like a mesh
+    /// triangle's u8).
+    pub fn triangulate(&self) -> Option<(Vec<[f32; 3]>, Vec<Triangle>)> {
+        let tri = |i: [u32; 3], si: Option<i16>| Triangle { indices: i, material_id: si.unwrap_or(0).max(0) as u8, u03: 0, surface_index: si.unwrap_or(0) };
+        match self {
+            Surf::Mesh { vertices, triangles, .. } => Some((vertices.clone(), triangles.clone())),
+            Surf::Box { transform, surface_index } => {
+                let c = [transform[0], transform[1], transform[2]];
+                let h = [transform[3].abs(), transform[4].abs(), transform[5].abs()];
+                let v: Vec<[f32; 3]> = (0..8).map(|k| [c[0] + if k & 1 == 0 { -h[0] } else { h[0] }, c[1] + if k & 2 == 0 { -h[1] } else { h[1] }, c[2] + if k & 4 == 0 { -h[2] } else { h[2] }]).collect();
+                // outward-facing (counter-clockwise seen from outside)
+                let faces: [[u32; 3]; 12] = [[0, 2, 3], [0, 3, 1], [4, 5, 7], [4, 7, 6], [0, 1, 5], [0, 5, 4], [2, 6, 7], [2, 7, 3], [0, 4, 6], [0, 6, 2], [1, 3, 7], [1, 7, 5]];
+                Some((v, faces.iter().map(|f| tri(*f, *surface_index)).collect()))
+            }
+            Surf::Sphere { size, surface_index } => Some(uv_sphere([0.0; 3], [*size, *size, *size], *surface_index, &tri)),
+            Surf::Ellipsoid { size, surface_index } => Some(uv_sphere([0.0; 3], *size, *surface_index, &tri)),
+            Surf::ConvexPolyhedron { vertices, indices, faces, surface_index, .. } => {
+                let mut out = Vec::new();
+                for (start, count) in faces {
+                    let (s, n) = (*start as usize, *count as usize);
+                    if n < 3 || s + n > indices.len() {
+                        continue;
+                    }
+                    let a = indices[s] as u32;
+                    for k in 1..n - 1 {
+                        out.push(tri([a, indices[s + k] as u32, indices[s + k + 1] as u32], *surface_index));
+                    }
+                }
+                Some((vertices.clone(), out))
+            }
+            Surf::Compound { surfs, locs, .. } => {
+                let mut verts: Vec<[f32; 3]> = Vec::new();
+                let mut tris: Vec<Triangle> = Vec::new();
+                for (k, (child, _)) in surfs.iter().enumerate() {
+                    let Some((cv, ct)) = child.triangulate() else { continue };
+                    let base = verts.len() as u32;
+                    let loc = locs.get(k).copied().unwrap_or([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
+                    for p in cv {
+                        verts.push(crate::geom::apply(&loc, p));
+                    }
+                    for t in ct {
+                        tris.push(Triangle { indices: [t.indices[0] + base, t.indices[1] + base, t.indices[2] + base], ..t });
+                    }
+                }
+                if tris.is_empty() { None } else { Some((verts, tris)) }
+            }
+        }
+    }
+
     /// Triangle / vertex counts for reports (a polyhedron counts its faces).
     pub fn counts(&self) -> (usize, usize) {
         match self {
@@ -101,6 +157,37 @@ impl Surf {
             _ => (0, 0),
         }
     }
+}
+
+/// A UV sphere / ellipsoid (`radii` per axis) about `c`: 16 segments × 8
+/// rings, outward-facing triangles.
+fn uv_sphere(c: [f32; 3], radii: [f32; 3], si: Option<i16>, tri: &dyn Fn([u32; 3], Option<i16>) -> Triangle) -> (Vec<[f32; 3]>, Vec<Triangle>) {
+    const SEG: u32 = 16;
+    const RINGS: u32 = 8;
+    let mut v: Vec<[f32; 3]> = Vec::new();
+    for ring in 0..=RINGS {
+        let phi = std::f32::consts::PI * ring as f32 / RINGS as f32; // 0 = top
+        let (sp, cp) = phi.sin_cos();
+        for seg in 0..SEG {
+            let th = 2.0 * std::f32::consts::PI * seg as f32 / SEG as f32;
+            let (st, ct) = th.sin_cos();
+            v.push([c[0] + radii[0] * sp * ct, c[1] + radii[1] * cp, c[2] + radii[2] * sp * st]);
+        }
+    }
+    let mut t: Vec<Triangle> = Vec::new();
+    let at = |ring: u32, seg: u32| ring * SEG + (seg % SEG);
+    for ring in 0..RINGS {
+        for seg in 0..SEG {
+            let (a, b, c2, d) = (at(ring, seg), at(ring, seg + 1), at(ring + 1, seg + 1), at(ring + 1, seg));
+            if ring > 0 {
+                t.push(tri([a, c2, b], si));
+            }
+            if ring < RINGS - 1 {
+                t.push(tri([a, d, c2], si));
+            }
+        }
+    }
+    (v, t)
 }
 
 /// `ReadSurf`: type id, the surf, and (surf version 2+) the gameplay main
