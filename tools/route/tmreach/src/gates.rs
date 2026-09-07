@@ -94,8 +94,21 @@ impl MapGates {
     }
 
     pub fn load_geom(p: &Path) -> Result<MapGates, String> {
-        let txt = std::fs::read_to_string(p).map_err(|e| format!("{}: {}", p.display(), e))?;
-        let j = crate::json::parse(&txt).map_err(|e| format!("{}: {}", p.display(), e))?;
+        // gates.json lives on a network mount the GEOM arm rewrites: a read can catch a
+        // partial file ("unterminated string", seen three times). Re-read up to 5 times,
+        // 2 s apart, then fail closed.
+        let mut j = Err(String::new());
+        for attempt in 0..5 {
+            let txt = std::fs::read_to_string(p).map_err(|e| format!("{}: {}", p.display(), e))?;
+            j = crate::json::parse(&txt).map_err(|e| format!("{}: {}", p.display(), e));
+            if j.is_ok() {
+                break;
+            }
+            if attempt < 4 {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        }
+        let j = j?;
         fn need<'a>(v: Option<&'a Json>, p: &Path, what: &str) -> Result<&'a Json, String> {
             v.ok_or_else(|| format!("{}: missing {}", p.display(), what))
         }
