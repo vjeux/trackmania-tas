@@ -54,6 +54,33 @@ fn read_owner(d: &Path) -> (String, u64) {
     (who.trim().to_string(), at)
 }
 
+/// The holder's pid, when the lock recorded one (locks taken before 2026-09-07
+/// have none).
+fn read_pid(d: &Path) -> Option<u32> {
+    std::fs::read_to_string(d.join("pid")).ok().and_then(|s| s.trim().parse().ok())
+}
+
+/// Whether a process with this pid is alive on THIS machine. The lock and every
+/// driver live on the render box, so `/proc/<pid>` is the truth; a pid recorded
+/// by another machine would read as dead — which is why the pid is only
+/// written by drivers running on the box (all of them do).
+fn pid_alive(pid: u32) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// A held lock whose holder PROCESS is gone. Eight sessions queue on this one
+/// game (2026-09-07): a driver killed by the bridge's timeout, a `pkill`, or a
+/// panic leaves its lock behind, and with no `--max-age` every waiter sat on it
+/// for its full 1500 s while the game idled. The pid inside the lock makes the
+/// check exact: no age guessing, a live long render is never broken, a dead
+/// holder is broken at once. Locks without a pid fall back to `--max-age`.
+fn holder_dead(d: &Path) -> Option<u32> {
+    match read_pid(d) {
+        Some(pid) if !pid_alive(pid) => Some(pid),
+        _ => None,
+    }
+}
+
 /// Take the lock, or say who has it. Returns `Ok(())` only when this process
 /// now holds it.
 ///
@@ -73,12 +100,23 @@ pub fn acquire(d: &Path, owner: &str, wait_s: u64, max_age_s: u64) -> Result<(),
                 // while the first was still writing its name into it.
                 let _ = std::fs::write(d.join("owner"), owner);
                 let _ = std::fs::write(d.join("since"), now_s().to_string());
+                let _ = std::fs::write(d.join("pid"), std::process::id().to_string());
                 println!("render lock: held by {owner}");
                 return Ok(());
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 let (who, at) = read_owner(d);
                 let age = now_s().saturating_sub(at);
+                if let Some(pid) = holder_dead(d) {
+                    // The holder died: the lock is a leftover, not a render.
+                    // Loud all the same — a dead driver is worth knowing about.
+                    println!(
+                        "render lock: BREAKING a lock held by {who} (pid {pid}, gone) after {age}s \
+                         -- that driver died mid-render, which is worth looking into"
+                    );
+                    let _ = std::fs::remove_dir_all(d);
+                    continue;
+                }
                 if max_age_s > 0 && at > 0 && age > max_age_s {
                     // BREAKING IS LOUD. A stale lock means a render died, and
                     // silently stepping over it hides that.
@@ -123,14 +161,19 @@ pub fn release(d: &Path, owner: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Who holds it, if anyone.
+/// Who holds it, if anyone — and whether that holder is still alive.
 pub fn status(d: &Path) -> i32 {
     if !d.exists() {
         println!("render lock: free");
         return 0;
     }
     let (who, at) = read_owner(d);
-    println!("render lock: held by {who} for {}s", now_s().saturating_sub(at));
+    let alive = match read_pid(d) {
+        Some(pid) if pid_alive(pid) => format!("pid {pid}, alive"),
+        Some(pid) => format!("pid {pid}, DEAD -- the next acquire breaks it"),
+        None => "no pid recorded".to_string(),
+    };
+    println!("render lock: held by {who} for {}s ({alive})", now_s().saturating_sub(at));
     1
 }
 
@@ -149,6 +192,26 @@ mod tests {
             .join(format!("shootctl-lock-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         p
+    }
+
+    /// A lock whose holder process is gone is broken by the next acquire, at
+    /// once, without any --max-age: eight sessions queue on one game, and a
+    /// dead holder used to cost every waiter its full wait.
+    #[test]
+    fn a_dead_holders_lock_is_broken_at_once() {
+        let d = tmp_lock("dead");
+        let d = d.as_path();
+        acquire(d, "arm-dead", 0, 0).expect("first acquire must succeed");
+        // forge a holder pid that cannot be alive (pid_max is 2^22 on Linux)
+        std::fs::write(d.join("pid"), "4194000").unwrap();
+        acquire(d, "arm-b", 0, 0).expect("a dead holder's lock must be broken");
+        let (who, _) = read_owner(d);
+        assert_eq!(who, "arm-b");
+        release(d, "arm-b").unwrap();
+        // and a LIVE holder (this very process) is still refused
+        acquire(d, "arm-a", 0, 0).unwrap();
+        acquire(d, "arm-b", 0, 0).expect_err("a live holder is never broken");
+        release(d, "arm-a").unwrap();
     }
 
     /// THE SECOND DRIVER MUST BE REFUSED. This is the whole point: two
