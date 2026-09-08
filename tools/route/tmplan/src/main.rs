@@ -247,6 +247,7 @@ fn main() {
         "leg-scan" => cmd_leg_scan(&args[1..]),
         "road-centreline" => cmd_road_centreline(&args[1..]),
         "author-line" => cmd_author_line(&args[1..]),
+        "author-ground" => cmd_author_ground(&args[1..]),
         other => die(&format!("unknown command {other}")),
     }
 }
@@ -1138,4 +1139,64 @@ fn cmd_author_line(args: &[String]) {
             src, author.iter().map(|p| format!("[{:.2},{:.2},{:.2}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(","), rows.iter().map(|r| format!("{:.1}", r.1)).collect::<Vec<_>>().join(","));
         io::write_atomic(Path::new(&out), js.as_bytes()).unwrap_or_else(|e| die(&e));
     }
+}
+
+/// `author-ground A.Map.Gbx B.Map.Gbx --gates deck.json --author-line author.json`: for every author-line sample, the
+/// ground under it (downward ray from y+1, 8 m) in build A and in build B; rows where A has a surface within 1.5 m
+/// below the car and B has none within 3 m = a surface the author drove that B no longer has (ship10 dropped the
+/// tiny-15 pool shelf, 22:43Z). Prints the runs of such samples with their extent.
+fn cmd_author_ground(args: &[String]) {
+    let maps: Vec<String> = args.iter().filter(|a| a.ends_with(".Map.Gbx")).cloned().collect();
+    if maps.len() != 2 { die("two maps: A.Map.Gbx B.Map.Gbx"); }
+    let gp = flag(args, "--gates").unwrap_or_else(|| die("--gates deck.json"));
+    let gates = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+    let ap = flag(args, "--author-line").unwrap_or_else(|| die("--author-line author.json"));
+    let txt = std::fs::read_to_string(&ap).unwrap_or_else(|e| die(&format!("{ap}: {e}")));
+    let k = "\"pts\": [";
+    let i = txt.find(k).unwrap_or_else(|| die("no pts"));
+    let rest = &txt[i + k.len()..];
+    let end = rest.find("]]").map(|e| e + 1).unwrap_or(rest.len());
+    let flat: Vec<f32> = rest[..end].split(|c: char| c == ',' || c == '[' || c == ']').filter_map(|x| x.trim().parse::<f32>().ok()).collect();
+    let pts: Vec<[f32; 3]> = flat.chunks(3).filter(|c| c.len() == 3).map(|c| [c[0], c[1], c[2]]).collect();
+    let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
+    let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
+    let opts = mapgeom::local::BuildOpts { with_deco: true, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() };
+    let ground = |mp: &str, store: &mut mapgeom::store::DataStore| -> Vec<Option<(f32, &'static str)>> {
+        let m = tmmaps::map::MapFile::load(Path::new(mp));
+        let s = mapgeom::local::LocalScene::build(store, &m, gates.yoff, &opts);
+        // water planes are not solid for the car (tiny 15: the car fell through the Water at 46 once the Concrete shelf
+        // under it was gone) — skip Water/Sea/Lake hits and keep casting below them
+        pts.iter().map(|p| {
+            // from 0.3 m above the ghost's contact point: a non-solid plane 0.5 m up (tiny 15's pool surface, Rubber at 46 over the shelf at 45.5) must not count
+            let mut o = [p[0], p[1] + 0.3, p[2]];
+            for _ in 0..4 {
+                match s.raycast(o, [0.0, -1.0, 0.0], 9.0 - (p[1] + 0.3 - o[1]), true) {
+                    Some(h) if matches!(h.material_name, "Water" | "Sea" | "Lake" | "WaterSurface") => { o = [h.point[0], h.point[1] - 0.05, h.point[2]]; }
+                    Some(h) => return Some((p[1] - h.point[1], h.material_name)),
+                    None => return None,
+                }
+            }
+            None
+        }).collect()
+    };
+    let ga = ground(&maps[0], &mut store);
+    let gb = ground(&maps[1], &mut store);
+    let mut run_start: Option<usize> = None;
+    let mut n_bad = 0usize;
+    let mut flush = |a: usize, b: usize| {
+        let (p0, p1) = (pts[a], pts[b]);
+        println!("  MISSING in B: samples {a}..{b} ({} pts, t {:.1}–{:.1} s) from ({:.1}, {:.1}, {:.1}) to ({:.1}, {:.1}, {:.1}); A ground {} at {:+.1} m, B {}",
+            b - a + 1, a as f32 / 10.0, b as f32 / 10.0, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
+            ga[a].map(|g| g.1).unwrap_or("-"), ga[a].map(|g| -g.0).unwrap_or(0.0),
+            gb[a].map(|g| format!("{} at {:+.1} m", g.1, -g.0)).unwrap_or_else(|| "nothing within 8 m".into()));
+    };
+    for i in 0..pts.len() {
+        let a_ok = ga[i].map(|g| g.0 >= -0.3 && g.0 <= 1.5).unwrap_or(false);
+        let b_bad = gb[i].map(|g| g.0 > 3.0).unwrap_or(true);
+        if a_ok && b_bad { n_bad += 1; if run_start.is_none() { run_start = Some(i); } }
+        else if let Some(rs) = run_start.take() { if i - rs >= 2 { flush(rs, i - 1); } }
+    }
+    if let Some(rs) = run_start { flush(rs, pts.len() - 1); }
+    let a_air = ga.iter().filter(|g| g.map(|g| g.0 > 1.5).unwrap_or(true)).count();
+    println!("{}: {} samples, A airborne/unsupported {} ({:.0} %), A-supported-but-B-missing {}", Path::new(&maps[1]).file_name().unwrap().to_string_lossy(), pts.len(), a_air, 100.0 * a_air as f32 / pts.len().max(1) as f32, n_bad);
 }
