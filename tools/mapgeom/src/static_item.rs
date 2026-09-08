@@ -86,9 +86,25 @@ pub enum Node {
     Prefab(prefab::CPlugPrefab),
     Dyna(dyna::CPlugDynaObjectModel),
     Kinematic(dyna::KinematicConstraint),
+    /// `NPlugTrigger_SGateSpecial` (0x09179000): a gameplay gate's effect
+    /// volume as a prefab entity — { version 2, trigger shape ref, u32 }, the
+    /// pack's own layout (Special24m.Prefab entity 1).
+    GateSpecial(GateSpecialTrigger),
     /// A class with no reader here, made only of skippable chunks.
     Opaque(OpaqueNode),
 }
+
+/// The body of `NPlugTrigger_SGateSpecial` (0x09179000): plain, no chunk
+/// framing, no FACADE. Read off `Special24m.Prefab.Gbx`: `02 00 00 00 |
+/// <ref: Special_Trigger24m.Shape.Gbx> | 00 00 00 00`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GateSpecialTrigger {
+    pub version: u32,
+    pub shape: Ref,
+    pub u01: u32,
+}
+
+pub const C_GATE_SPECIAL_TRIGGER: u32 = 0x09179000;
 
 impl Node {
     pub fn class_id(&self) -> u32 {
@@ -109,6 +125,7 @@ impl Node {
             Node::Prefab(_) => C_PREFAB,
             Node::Dyna(_) => dyna::C_DYNA_OBJECT_MODEL,
             Node::Kinematic(_) => dyna::C_KINEMATIC_CONSTRAINT,
+            Node::GateSpecial(_) => C_GATE_SPECIAL_TRIGGER,
             Node::Opaque(o) => o.class_id,
         }
     }
@@ -136,7 +153,13 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
         // Trigger-side and path classes of the gate / special prefabs: no
         // geometry, unskippable bodies. Read as the generic walker
         // (`classes.rs`) does and kept raw so the entity list stays walkable.
-        0x09178000 | 0x09179000 | 0x0917A000 | 0x0917B000 | 0x09119000 | 0x09118000 => Node::Opaque(read_fixed_opaque(r, class_id)?),
+        C_GATE_SPECIAL_TRIGGER => {
+            let version = r.u32()?;
+            let shape = read_ref(r)?;
+            let u01 = r.u32()?;
+            Node::GateSpecial(GateSpecialTrigger { version, shape, u01 })
+        }
+        0x09178000 | 0x0917A000 | 0x0917B000 | 0x09119000 | 0x09118000 => Node::Opaque(read_fixed_opaque(r, class_id)?),
         other => Node::Opaque(read_opaque(r, other)?),
     })
 }
@@ -160,6 +183,11 @@ pub fn write_node(w: &mut Wr, n: &Node) {
         Node::Prefab(x) => x.write_in(w),
         Node::Dyna(x) => x.write(w),
         Node::Kinematic(x) => x.write(w),
+        Node::GateSpecial(x) => {
+            w.u32(x.version);
+            write_ref(w, &x.shape);
+            w.u32(x.u01);
+        }
         Node::Opaque(o) => w.bytes(&o.raw),
     }
 }

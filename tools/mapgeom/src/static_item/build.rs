@@ -226,6 +226,11 @@ pub struct Merged {
     /// Explicit waypoint type (0 start, 1 finish, 2 checkpoint, 4 start+finish);
     /// None writes 3 (not a waypoint). A start has a type and NO trigger.
     pub waypoint_type: Option<i32>,
+    /// A gameplay gate's effect volume in the PREFAB form: the item is laid
+    /// out like the pack's own (`CGameItemModel -> CPlugPrefab { static
+    /// object, NPlugTrigger_SGateSpecial }`), this is the trigger surface of
+    /// that second entity (item space, ids = physics | gameplay << 8).
+    pub special: Option<CPlugSurface>,
     /// Entity-model iso translation: the spawn point for waypoint items
     /// (Granady: block spawn_loc x scale, e.g. RoadTechStart [16,2,16] ->
     /// [8,1,8]). Zero = identity.
@@ -1804,7 +1809,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     // node 1 = the entity model; a static item fixes 2 (static object) and 3
     // (its solid) like the reference items, a moving item hands indices out
     // in write order from 2
-    let prefab_form = !m.dyna.is_empty() || static_form_prefab();
+    let prefab_form = !m.dyna.is_empty() || static_form_prefab() || m.special.is_some();
     let mut next = if !prefab_form { 4i32 } else { 2i32 };
     let no_wp = std::env::var_os("TINY_NO_WAYPOINT").is_some();
     // The static geometry: one static object (mesh + collision) — the whole
@@ -1820,7 +1825,16 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     let trigger = match m.trigger.as_ref().filter(|_| !no_wp) {
         Some(t) => {
             let i = next_index(&mut next);
-            inline(i, Node::Surface(t.clone()))
+            let mut t = t.clone();
+            // inline material nodes of the trigger surface take their indices here
+            for sm in t.materials.iter_mut() {
+                if let super::surface::SurfMaterial::Node(r) = sm {
+                    if r.inline.is_some() {
+                        r.index = next_index(&mut next);
+                    }
+                }
+            }
+            inline(i, Node::Surface(t))
         }
         None => super::null_ref(),
     };
@@ -1839,7 +1853,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         expr_validator: 0,
         u_byte: 1,
     };
-    let entity_model: Ref = if m.dyna.is_empty() && !static_form_prefab() {
+    let entity_model: Ref = if !prefab_form {
         let so = static_object.ok_or("no visuals: nothing to build")?;
         inline(1, Node::EntityModel(common(inline(2, Node::StaticObject(so)))))
     } else {
@@ -1876,6 +1890,14 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         }
         if let Some(so) = static_object {
             ents.push(static_entity(&mut next, so));
+        }
+        // the gameplay gate's effect volume, the pack's entity 1: an
+        // NPlugTrigger_SGateSpecial at the identity with its shape inline
+        if let Some(sp) = &m.special {
+            let si = next_index(&mut next);
+            let gi = next_index(&mut next);
+            let g = super::GateSpecialTrigger { version: 2, shape: inline(si, Node::Surface(sp.clone())), u01: 0 };
+            ents.push(super::prefab::Entity { model: inline(gi, Node::GateSpecial(g)), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
         }
         for (k, part) in m.dyna.iter().enumerate() {
             // Ent2 ranks the dyna objects of the prefab (the k-th
@@ -2005,6 +2027,43 @@ pub fn material_physics(store: &mut crate::store::DataStore, path: &str) -> Opti
     }
 }
 
+/// A `.Material.Gbx`'s (physics, gameplay) surface ids, read off the chunks
+/// that carry them: `0x09079017` = { version 1, [physics u8, gameplay u8,
+/// u8, flags u8], f32, u32, string } (`Modifier\Boost\Collision`: 00 12 00
+/// 80 = Concrete, ReactorBoost_Oriented; `RoadTech`: 10 00 0f 80 = Asphalt,
+/// none) — and, for the older files that lack it, `0x0907900E` = { physics
+/// u16, u16 } (TechnicsTrims: Metal). The bodies are short and chunk-framed
+/// without sizes for these chunks, so the ids are located by their chunk
+/// header rather than by a full walk.
+pub fn material_surface_ids(store: &mut crate::store::DataStore, path: &str) -> Option<(u8, u8)> {
+    let model = store.load_model(path).ok()?;
+    let b = &model.body;
+    let find = |pat: &[u8]| b.windows(pat.len()).position(|w| w == pat);
+    if let Some(i) = find(&[0x17, 0x90, 0x07, 0x09, 0x01, 0x00, 0x00, 0x00]) {
+        if let Some(w) = b.get(i + 8..i + 12) {
+            return Some((w[0], w[1]));
+        }
+    }
+    if let Some(i) = find(&[0x0e, 0x90, 0x07, 0x09]) {
+        if let Some(w) = b.get(i + 4..i + 8) {
+            return Some((w[0], 0));
+        }
+    }
+    None
+}
+
+/// The special gate's effect: the item's modifier folder names a
+/// `Collision` material (`Stadium\Media\Modifier\Boost\Collision`), whose
+/// surface ids are what the trigger slab carries under that dress. `None`
+/// when the modifier has no such file (Turbo: the prefab's own dress) or
+/// there is no modifier.
+pub fn special_collision_ids(store: &mut crate::store::DataStore, m: &Merged) -> Option<(String, (u8, u8))> {
+    let want = format!("collision{}", m.modifier_suffix.to_ascii_lowercase());
+    let link = m.modifier.iter().find(|l| l.rsplit('\\').next().map(|s| s.to_ascii_lowercase()) == Some(want.clone()))?.clone();
+    let ids = material_surface_ids(store, &format!("{link}.Material.Gbx"))?;
+    Some((link, ids))
+}
+
 /// `Stadium\Media\Material\RoadTech.Material.Gbx` -> `Stadium\Media\Material\RoadTech`.
 pub fn material_link(path: &str) -> String {
     let lower = path.to_ascii_lowercase();
@@ -2027,12 +2086,28 @@ pub fn trigger_from_shape_file(store: &mut crate::store::DataStore, shape_path: 
     lb.defined_nodes.extend(sm.external_indices().iter().copied());
     let mut r = super::Rd::new(&sm.body, 0, lb);
     let sf = super::surface::CPlugSurface::parse(&mut r).map_err(|e| format!("{shape_path}: {e}"))?;
-    let super::surface::Surf::Mesh { vertices, triangles, .. } = &sf.surf else {
-        return Err(format!("{shape_path}: trigger shape is not a mesh surface"));
-    };
+    trigger_mesh(&sf, at, scale, (0, 0)).ok_or_else(|| format!("{shape_path}: trigger shape has no triangles (surf type {})", sf.surf.type_id()))
+}
+
+/// A trigger shape's surface as the ONE mesh the item form takes: every
+/// child of a compound placed by its Iso4 (the block gates' `Gate\
+/// Checkpoint_Trigger.Shape.Gbx` is a Compound of one 36-vertex disc —
+/// until 2026-09-08 "not a mesh surface" sent the GateFinish block to the
+/// unit-box fallback, a 32 m cube where the game fires on a 0.9 m disc:
+/// vjeux, tiny 20, "the finish trigger seems to be too big"), the primitives
+/// meshed, the vertices through `at` and `scale`, every triangle carrying
+/// `ids` = (physics, gameplay) — (0, 0) for a waypoint, the effect for a
+/// gameplay gate — in its bytes and in the one-entry id table.
+pub fn trigger_mesh(sf: &super::surface::CPlugSurface, at: &Xform, scale: f32, ids: (u8, u8)) -> Option<super::surface::CPlugSurface> {
+    let (vertices, triangles) = sf.surf.triangulate()?;
+    if triangles.is_empty() {
+        return None;
+    }
     let verts: Vec<[f32; 3]> = vertices.iter().map(|v| { let t = apply(at, *v); [t[0] * scale, t[1] * scale, t[2] * scale] }).collect();
-    let tris: Vec<super::surface::Triangle> = triangles.iter().map(|t| super::surface::Triangle { indices: t.indices, material_id: 0, u03: 0, surface_index: 0 }).collect();
-    Ok(super::surface::CPlugSurface::mesh(verts, tris, vec![0], [0.0, 0.0, 1.0]))
+    let tris: Vec<super::surface::Triangle> = triangles.iter().map(|t| super::surface::Triangle { indices: t.indices, material_id: ids.0, u03: ids.1, surface_index: 0 }).collect();
+    let dir = sf.gameplay_main_dir.unwrap_or([0.0, 0.0, 1.0]);
+    let d = [at[0] * dir[0] + at[1] * dir[1] + at[2] * dir[2], at[3] * dir[0] + at[4] * dir[1] + at[5] * dir[2], at[6] * dir[0] + at[7] * dir[1] + at[8] * dir[2]];
+    Some(super::surface::CPlugSurface::mesh(verts, tris, vec![ids.0 as u16 | ((ids.1 as u16) << 8)], d))
 }
 
 pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, scale: f32, m: &mut Merged, depth: usize) -> R<()> {
@@ -2113,13 +2188,11 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                                     // triggers use: the pack shape kept verbatim
                                     // (its materials/ids) made the game drop the
                                     // whole item (GateCheckpointLeft32m, 2026-09-06)
-                                    let super::surface::Surf::Mesh { vertices, triangles, .. } = &sf.surf else {
-                                        m.notes.push(format!("{path} entity {i}: trigger shape {sp} is not a mesh surface; skipped"));
+                                    let Some(t) = trigger_mesh(&sf, &iso, scale, (0, 0)) else {
+                                        m.notes.push(format!("{path} entity {i}: trigger shape {sp} has no triangles (surf type {}); skipped", sf.surf.type_id()));
                                         continue;
                                     };
-                                    let verts: Vec<[f32; 3]> = vertices.iter().map(|v| { let t = apply(&iso, *v); [t[0] * scale, t[1] * scale, t[2] * scale] }).collect();
-                                    let tris: Vec<super::surface::Triangle> = triangles.iter().map(|t| super::surface::Triangle { indices: t.indices, material_id: 0, u03: 0, surface_index: 0 }).collect();
-                                    m.trigger = Some(super::surface::CPlugSurface::mesh(verts, tris, vec![0], [0.0, 0.0, 1.0]));
+                                    m.trigger = Some(t);
                                     m.waypoint_type = Some(wtype);
                                     m.notes.push(format!("{path} entity {i}: waypoint trigger type {wtype} from {sp}"));
                                 }
@@ -2129,6 +2202,73 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                         Err(e) => m.notes.push(format!("{path} entity {i}: trigger shape {sp} failed: {e}")),
                     },
                     _ => m.notes.push(format!("{path} entity {i}: waypoint trigger type {wtype} with shape node {shape_idx} (not an external shape) skipped")),
+                }
+            }
+            // NPlugTrigger_SGateSpecial (0x09179000): { version, trigger shape
+            // ref, u32 } — the GAMEPLAY gate's effect volume (Special24m.Prefab
+            // entity 1: `Special_Trigger24m.Shape.Gbx`, a 24×7.18×0.9 m slab
+            // whose 12 triangles carry (physics 0, gameplay 1 Turbo) — the
+            // prefab is authored in its Turbo dress; the item's
+            // `<Kind>.TerrainModifier` folder re-dresses it with
+            // `Modifier\<Kind>\Collision.Material.Gbx`, chunk 0x09079017 =
+            // [physics, gameplay, …]: Boost 18 ReactorBoost_Oriented, NoEngine
+            // 4 FreeWheeling, Reset 8; Turbo has no Collision file, the shape's
+            // own 1 stands). Until this arm existed the entity was "skipped"
+            // and every tiny special gate was a plain metal arch (vjeux drove
+            // tiny 20, 2026-09-08: "all the special blocks are not working").
+            // The item form of the same thing is what the mesh editor writes
+            // for Nadeo.zip's crystal GateSpecialNoEngine: a TRIGGER layer in
+            // material `Modifier\NoEngine\Collision` (physics 0, gameplay 4) —
+            // i.e. the entity model's trigger shape with the gameplay id on its
+            // triangles and in its id table, waypoint type None.
+            Some(Node::GateSpecial(g)) => {
+                let shape_idx = g.shape.index;
+                let word = g.u01;
+                match ext_name(shape_idx) {
+                    Some(sp) if sp.to_ascii_lowercase().ends_with(".shape.gbx") => match store.load_model(&sp) {
+                        Ok(sm) => {
+                            let mut lb = super::LookbackState::default();
+                            lb.defined_nodes.extend(sm.external_indices().iter().copied());
+                            let mut r = super::Rd::new(&sm.body, 0, lb);
+                            match super::surface::CPlugSurface::parse(&mut r) {
+                                Ok(sf) => {
+                                    // the modifier's Collision material decides; the shape's own bytes otherwise
+                                    let own = match &sf.surf {
+                                        super::surface::Surf::Mesh { triangles, .. } => triangles.first().map(|t| (t.material_id, t.u03)).unwrap_or((0, 0)),
+                                        _ => (0, 0),
+                                    };
+                                    let (ids, from) = match special_collision_ids(store, m) {
+                                        Some((link, ids)) => (ids, link),
+                                        None => (own, format!("{sp} (no modifier Collision material)")),
+                                    };
+                                    if ids.1 == 0 {
+                                        m.notes.push(format!("{path} entity {i}: special trigger from {from} has gameplay 0 — the gate would do nothing; skipped"));
+                                        continue;
+                                    }
+                                    let Some(t) = trigger_mesh(&sf, &iso, scale, ids) else {
+                                        m.notes.push(format!("{path} entity {i}: special trigger shape {sp} has no triangles (surf type {}); skipped", sf.surf.type_id()));
+                                        continue;
+                                    };
+                                    if m.special.is_some() {
+                                        m.notes.push(format!("{path} entity {i}: a second special trigger ({sp}) replaces the first"));
+                                    }
+                                    let (n, d) = (t.surf.counts().1, t.gameplay_main_dir);
+                                    // ENGINE-VERIFIED 2026-09-08 (tiny 20, full-throttle drive
+                                    // through the Boost gate, wheel log): the effect fires ONLY
+                                    // from a prefab entity of this class — the same slab as the
+                                    // entity model's trigger shape (with or without a material
+                                    // node, gameplay 1/12/18), or in the collision hull as
+                                    // NotCollidable + gameplay (a wall), did nothing. So the
+                                    // item takes the pack's own PREFAB layout (`assemble`).
+                                    m.special = Some(t);
+                                    m.notes.push(format!("{path} entity {i}: special trigger physics {} gameplay {} from {from} ({n} triangles, word 0x{word:08x}, main dir {:?}) — prefab form", ids.0, ids.1, d));
+                                }
+                                Err(e) => m.notes.push(format!("{path} entity {i}: special trigger shape {sp} failed: {e}")),
+                            }
+                        }
+                        Err(e) => m.notes.push(format!("{path} entity {i}: special trigger shape {sp} failed: {e}")),
+                    },
+                    _ => m.notes.push(format!("{path} entity {i}: special trigger with shape node {shape_idx} (not an external shape) skipped")),
                 }
             }
             // NPlugTrigger_SSpawn (0x0917A000): the START gate's spawn point —
