@@ -15,8 +15,10 @@
 //!    renders as a car flying off a half-size map, and the night of 2026-09-08
 //!    was spent believing that. So sample 0 must sit where the client puts the
 //!    car at rest on THIS map — the Spawn placement plus the start block's
-//!    centre, (8, ·, 8) turned by the placement's yaw — within a metre on the
-//!    ground and inside a metre and a half in height. `--no-guard` renders
+//!    centre, (8, ·, 8) turned by the placement's yaw — within three metres (a
+//!    start GATE item spawns a metre or two off its pivot) — AND its last sample
+//!    within 20 m of a Goal placement, which a donor line (twice as far from the
+//!    anchor) never is. `--no-guard` renders
 //!    anyway and says so in capitals.
 //! 2. the map and the ghost are pushed to the box's staging dir (the map only
 //!    when its md5 is not already there — 45 MB over a bridge eight sessions
@@ -182,13 +184,31 @@ fn one(args: &[String]) -> Result<Done, String> {
         "guard: sample 0 at [{:.2}, {:.2}, {:.2}]; Spawn placement [{:.2}, {:.2}, {:.2}] yaw {:.4} → start centre [{:.2}, ·, {:.2}]: {dh:.2} m off on the ground, {dy:+.2} m in height",
         s0.x, s0.y, s0.z, spawn.pos[0], spawn.pos[1], spawn.pos[2], spawn.yaw, want[0], want[2]
     );
-    let on_start = dh <= 1.0 && (-0.5..=1.5).contains(&dy);
-    if !on_start {
+    // A block-derived start puts the car exactly at the centre; a start GATE
+    // item (Summer 14: a free-positioned Spawn) carries the pack prefab's own
+    // spawn point, a metre or two off the placement's pivot — so the start
+    // check is loose, and the FINISH check below is what a donor line cannot
+    // pass: its last sample sits at the full-size finish, twice as far from the
+    // anchor as this map's Goal.
+    let on_start = dh <= 3.0 && (-3.0..=3.0).contains(&dy);
+    let last = g.samples.last().unwrap();
+    let goals: Vec<&tmmaps::map::ItemRec> = m.items.iter().filter(|it| matches!(it.waypoint_tag.as_deref(), Some("Goal") | Some("StartFinish") | Some("Finish"))).collect();
+    let goal_d = goals
+        .iter()
+        .map(|it| ((last.x - it.pos[0]).powi(2) + (last.y - it.pos[1]).powi(2) + (last.z - it.pos[2]).powi(2)).sqrt())
+        .fold(f32::INFINITY, f32::min);
+    if goals.is_empty() {
+        println!("guard: this map has no Goal placement — finish not checked");
+    } else {
+        println!("guard: last sample at [{:.2}, {:.2}, {:.2}], {goal_d:.1} m from the nearest of {} Goal placement(s)", last.x, last.y, last.z, goals.len());
+    }
+    let on_finish = goals.is_empty() || goal_d <= 20.0;
+    if !on_start || !on_finish {
         if tmmaps::cli::has(args, "--no-guard") {
-            println!("GUARD OVERRIDDEN (--no-guard): THIS GHOST'S SAMPLES DO NOT START ON THIS MAP'S START LINE — the clip shows the samples, not this map's physics");
+            println!("GUARD OVERRIDDEN (--no-guard): THIS GHOST'S SAMPLES DO NOT RUN FROM THIS MAP'S START TO ITS FINISH — the clip shows the samples, not this map's physics");
         } else {
             return Err(format!(
-                "REFUSED: the ghost's first sample is {dh:.1} m / {dy:+.1} m from where this map starts the car. A ghost = inputs + samples, and a render plays the SAMPLES; \
+                "REFUSED: the ghost's first sample is {dh:.1} m / {dy:+.1} m from where this map starts the car and its last sample {goal_d:.1} m from the nearest Goal. A ghost = inputs + samples, and a render plays the SAMPLES; \
                  this looks like a validation container carrying a donor's line (or a ghost for another build). Ask the player project for the REGENERATED ghost; --no-guard renders it anyway."
             ));
         }
