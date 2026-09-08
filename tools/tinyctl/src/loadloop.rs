@@ -106,7 +106,14 @@ pub fn summarize(tsv: &str) -> String {
         out.push_str(&format!("  {no_car} opened WITHOUT a car\n"));
     }
     for r in rows.iter().filter(|r| r.get(2) != Some(&"OPENED")) {
-        out.push_str(&format!("  #{} {} {} after {} s: {} {}\n", r.first().unwrap_or(&""), r.get(1).unwrap_or(&""), r.get(2).unwrap_or(&""), r.get(3).unwrap_or(&""), r.get(5).unwrap_or(&""), r.get(6).unwrap_or(&"")));
+        // a "Missing Items:" dialog names every missing item: ONE name is a
+        // single item lost, hundreds is the whole archive gone — different
+        // diagnoses, so the count is part of the tally
+        let text = r.get(6).copied().unwrap_or("");
+        let named = text.matches(".Item.Gbx").count();
+        let cut = text.char_indices().nth(300).map(|(i, _)| i);
+        let short: String = match cut { Some(i) => format!("{}… [{} chars]", &text[..i], text.len()), None => text.to_string() };
+        out.push_str(&format!("  #{} {} {} after {} s: {} {}{}\n", r.first().unwrap_or(&""), r.get(1).unwrap_or(&""), r.get(2).unwrap_or(&""), r.get(3).unwrap_or(&""), r.get(5).unwrap_or(&""), short, if named > 0 { format!(" [{named} item names in the dialog]") } else { String::new() }));
     }
     // per map, when several
     let mut maps: Vec<&str> = rows.iter().filter_map(|r| r.get(1).copied()).collect();
