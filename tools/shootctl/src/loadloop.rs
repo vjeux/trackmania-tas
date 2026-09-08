@@ -207,11 +207,12 @@ fn run_loop(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
             if load0.elapsed().as_secs() > opts.timeout_s {
                 v.seconds = load0.elapsed().as_secs_f64();
                 v.ctx = tsv_clean(&last);
+                v.outcome = if v.outcome == "DIALOG+" { "DIALOG+TIMEOUT" } else { "TIMEOUT" };
                 println!("{} #{iter} TIMEOUT after {:.1}s; last ctx {last}", el(), v.seconds);
                 break;
             }
             if !super::tm_running() {
-                v.outcome = "CRASH";
+                v.outcome = if v.outcome == "DIALOG+" { "DIALOG+CRASH" } else { "CRASH" };
                 v.seconds = load0.elapsed().as_secs_f64();
                 println!("{} #{iter} CRASH: the game process is gone at +{:.1}s", el(), v.seconds);
                 break;
@@ -228,7 +229,7 @@ fn run_loop(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
             if ctx_reply.is_err() {
                 dead_polls += 1;
                 if dead_polls >= 3 {
-                    v.outcome = "CRASH";
+                    v.outcome = if v.outcome == "DIALOG+" { "DIALOG+CRASH" } else { "CRASH" };
                     v.seconds = load0.elapsed().as_secs_f64();
                     v.note = format!("plugin unreachable {dead_polls} polls; process {}", if super::tm_running() { "still present (crash reporter?) — killed" } else { "gone" });
                     println!("{} #{iter} CRASH: the plugin stopped answering at +{:.1}s ({})", el(), v.seconds, v.note);
@@ -267,6 +268,15 @@ fn run_loop(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
                 };
                 println!("{} #{iter} answered: {}", el(), ans.unwrap_or_default().trim());
                 let _ = super::await_cond("nodialog", 10);
+                // A "Missing Items … load anyway?" answered yes goes on
+                // loading: keep watching, so the row says whether the map
+                // then OPENED (outcome DIALOG+OPENED), timed out or crashed
+                // — a lineup with a misspelt stock name (2026-09-08) is
+                // otherwise a wasted load. A second dialog is recorded too.
+                if frame == "FrameAskYesNo" && !text.contains("Updating data") || text.contains("Missing") {
+                    v.outcome = "DIALOG+";
+                    continue;
+                }
                 break;
             }
             // the playground is ctx 3 (CurrentPlayground, no editor), the map
@@ -281,7 +291,7 @@ fn run_loop(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
                 stable = 0;
             }
             if stable >= 3 {
-                v.outcome = "OPENED";
+                v.outcome = if v.outcome == "DIALOG+" { "DIALOG+OPENED" } else { "OPENED" };
                 v.seconds = load0.elapsed().as_secs_f64();
                 v.ctx = tsv_clean(&c);
                 println!("{} #{iter} OPENED after {:.1}s ({c})", el(), v.seconds);
@@ -289,7 +299,7 @@ fn run_loop(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
             }
             std::thread::sleep(Duration::from_millis(if stable > 0 { 1000 } else { 250 }));
         }
-        if v.outcome == "OPENED" {
+                if v.outcome.ends_with("OPENED") {
             std::thread::sleep(Duration::from_millis(opts.settle_ms));
             if opts.how == "play" {
                 // a car in the playground? (the VehicleState readout)
@@ -323,7 +333,7 @@ fn run_loop(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         tsv.push('\n');
         std::fs::write(&tsv_path, &tsv).map_err(|e| format!("{}: {e}", tsv_path.display()))?;
         lines.push(row);
-        if v.outcome == "CRASH" {
+        if v.outcome.ends_with("CRASH") {
             crashes += 1;
             if crashes >= 2 {
                 // a map that crashes the client twice is a finding, not a
@@ -340,7 +350,7 @@ fn run_loop(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
             println!("{} #{iter} back to menu: {e}", el());
         }
     }
-    let opened = lines.iter().filter(|l| l.split('\t').nth(2) == Some("OPENED")).count();
+    let opened = lines.iter().filter(|l| l.split('\t').nth(2).map(|o| o.ends_with("OPENED")).unwrap_or(false)).count();
     println!("{} {} of {} loads OPENED; table {}", el(), opened, lines.len(), tsv_path.display());
     lines.push(format!("table\t{}", tsv_path.display()));
     Ok(lines)

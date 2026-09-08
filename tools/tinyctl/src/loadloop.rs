@@ -94,18 +94,25 @@ pub fn summarize(tsv: &str) -> String {
     let rows: Vec<Vec<&str>> = tsv.lines().skip(1).filter(|l| !l.trim().is_empty()).map(|l| l.split('\t').collect()).collect();
     let n = rows.len();
     let count = |o: &str| rows.iter().filter(|r| r.get(2) == Some(&o)).count();
+    let opened_like = |r: &Vec<&str>| r.get(2).map(|o| o.ends_with("OPENED")).unwrap_or(false);
     let (opened, dialog, timeout, crash) = (count("OPENED"), count("DIALOG"), count("TIMEOUT"), count("CRASH"));
-    out.push_str(&format!("{n} loads: {opened} OPENED, {dialog} DIALOG, {timeout} TIMEOUT, {crash} CRASH\n"));
-    let mut secs: Vec<f64> = rows.iter().filter(|r| r.get(2) == Some(&"OPENED")).filter_map(|r| r.get(3).and_then(|s| s.parse().ok())).collect();
+    // a "Missing Items … load anyway?" answered yes, then the load went on
+    let (d_open, d_timeout, d_crash) = (count("DIALOG+OPENED"), count("DIALOG+TIMEOUT"), count("DIALOG+CRASH"));
+    out.push_str(&format!("{n} loads: {opened} OPENED, {dialog} DIALOG, {timeout} TIMEOUT, {crash} CRASH"));
+    if d_open + d_timeout + d_crash > 0 {
+        out.push_str(&format!("; after a load-anyway dialog: {d_open} opened, {d_timeout} timed out, {d_crash} crashed"));
+    }
+    out.push('\n');
+    let mut secs: Vec<f64> = rows.iter().filter(|r| opened_like(r)).filter_map(|r| r.get(3).and_then(|s| s.parse().ok())).collect();
     if !secs.is_empty() {
         secs.sort_by(|a, b| a.partial_cmp(b).unwrap());
         out.push_str(&format!("  open times: min {:.1} s, median {:.1} s, max {:.1} s\n", secs[0], secs[secs.len() / 2], secs[secs.len() - 1]));
     }
-    let no_car = rows.iter().filter(|r| r.get(2) == Some(&"OPENED") && r.get(4).map(|c| c.starts_with("NO")).unwrap_or(false)).count();
+    let no_car = rows.iter().filter(|r| opened_like(r) && r.get(4).map(|c| c.starts_with("NO")).unwrap_or(false)).count();
     if no_car > 0 {
         out.push_str(&format!("  {no_car} opened WITHOUT a car\n"));
     }
-    for r in rows.iter().filter(|r| r.get(2) != Some(&"OPENED")) {
+    for r in rows.iter().filter(|r| !opened_like(r) || r.get(2) != Some(&"OPENED")) {
         // a "Missing Items:" dialog names every missing item: ONE name is a
         // single item lost, hundreds is the whole archive gone — different
         // diagnoses, so the count is part of the tally
