@@ -1663,6 +1663,26 @@ fn cmd_chain_replay(a: &Args) -> Result<(), String> {
     if let Some(p) = a.get("dump-chain") {
         std::fs::write(p, tmreach::lap::tsv_text(&chain)).map_err(|e| e.to_string())?;
     }
+    // --write-candidate PATH: the chain written into the base tape the way a lap candidate is (fk write_candidate)
+    if let Some(p) = a.get("write-candidate") {
+        let n = w.n_ticks();
+        let root = w.root_probe;
+        let (mut st, mut gs, mut br) = (w.tape.steer.clone(), w.tape.accel.clone(), w.tape.brake.clone());
+        for (i, r) in chain.iter().enumerate() {
+            if root + i < n {
+                st[root + i] = (r.steer * 127.0).round() as i8 as u8;
+                gs[root + i] = (r.gas > 0.5) as u8;
+                br[root + i] = (r.brake > 0.5) as u8;
+            }
+        }
+        for k in (root + chain.len()).min(n)..n {
+            st[k] = 0;
+            gs[k] = 0;
+            br[k] = 1;
+        }
+        w.tape.write_candidate(&st, &gs, &br, Path::new(p))?;
+        println!("wrote candidate {p} ({} chain ticks from root {root})", chain.len());
+    }
     let rows = if a.has("reference") && !a.has("fork") {
         // the run ends at the ghost's finish: use the flat walk (handles the end of the run)
         w.flat(chain.len() as u64)?
