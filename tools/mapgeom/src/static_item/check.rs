@@ -160,6 +160,14 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                             None => problems.push(format!("entity {i}: constraint with {}-byte params", e.params.len())),
                         }
                     }
+                    // a gameplay gate's effect volume (NPlugTrigger_SGateSpecial,
+                    // 3f5da2a): its shape is reported above under --facts; the
+                    // entity itself is the pack's own layout, nothing to check
+                    Some(super::Node::GateSpecial(g)) => {
+                        if !matches!(g.shape.inline.as_deref(), Some(super::Node::Surface(_))) {
+                            problems.push(format!("entity {i}: gate special trigger without an inline shape (node {})", g.shape.index));
+                        }
+                    }
                     Some(other) => problems.push(format!("entity {i}: class 0x{:08X} in the prefab", other.class_id())),
                     None => problems.push(format!("entity {i}: external model node {}", e.model.index)),
                 }
