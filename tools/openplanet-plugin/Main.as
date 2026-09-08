@@ -124,6 +124,9 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/tree") return HttpResponse(200, DumpTree());
     if (r == "/dialogtree") return HttpResponse(200, DumpDialogTree());
     if (r == "/mtclip") return HttpResponse(200, DumpMTClip());
+    if (r == "/mtclips") return HttpResponse(200, DumpMTClips());
+    if (r == "/ourclip") return HttpResponse(200, OurClip());
+    if (r == "/setclip") return HttpResponse(200, SetClipIndex(Text::ParseInt(QArg(qs,"i"))));
     if (r == "/yes")    return HttpResponse(200, AnswerDialog("yes"));
     if (r == "/no")     return HttpResponse(200, AnswerDialog("no"));
     if (r == "/dlgok")  return HttpResponse(200, AnswerDialog("ok"));
@@ -240,6 +243,72 @@ string DumpDialogTree() {
     string sb = ""; WalkControl(dlg.Dialogs.CurrentFrame, 0, sb, 8);
     IO::File f(IO::FromStorageFolder("dialog.txt"), IO::FileMode::Write); f.Write(sb); f.Close();
     return sb;
+}
+
+// ---- THE CLIP OUR RENDER LANDS IN ------------------------------------------
+//
+// /mt2 opens the map's IN-GAME clip group on whatever clip is current, and the
+// import + camera land there. Summer 12's group already holds a "Trigger 1"
+// clip: with our two tracks in it the shoot renders a static overview of the
+// map with no car at all, for the whole clip length, with the External and
+// the Helico camera alike (2026-09-08, three renders). Summer 08's "Cam 3"
+// takes the same two tracks and renders the lap -- so it is a property of the
+// inherited clip, not of the group or the ghost. The render therefore gets a
+// clip of ITS OWN: /ourclip finds the group's "GhostShooter" clip or creates
+// it, makes it current and empties it. /mtclips shows the group with the
+// per-clip flags, /setclip?i=N picks one by hand.
+string DumpMTClips() {
+    auto api = MTApi();
+    if (api is null) return "not MT editor";
+    auto g = api.ClipGroup;
+    if (g is null) return "no clip group";
+    string sb = "clips=" + g.Clips.Length + " selected=" + api.GetSelectedClip() + "\n";
+    for (uint i = 0; i < g.Clips.Length; i++) {
+        auto c = g.Clips[i];
+        sb += "  clip[" + i + "] name=" + c.Name + " tracks=" + c.Tracks.Length
+            + " localPlayerEnt=" + c.LocalPlayerClipEntIndex
+            + " stopWhenRespawn=" + (c.StopWhenRespawn ? "1" : "0")
+            + " stopWhenLeave=" + (c.StopWhenLeave ? "1" : "0")
+            + " triggersBeforeRaceStart=" + (c.TriggersBeforeRaceStart ? "1" : "0")
+            + ((c is api.Clip) ? " CURRENT" : "") + "\n";
+    }
+    return sb;
+}
+
+string OurClip() {
+    auto api = MTApi();
+    if (api is null) return "not MT editor";
+    auto g = api.ClipGroup;
+    if (g is null) return "no clip group";
+    int found = -1;
+    for (uint i = 0; i < g.Clips.Length; i++) {
+        if (g.Clips[i].Name == "GhostShooter") { found = int(i); break; }
+    }
+    string how;
+    if (found < 0) {
+        uint before = g.Clips.Length;
+        api.CreateClip();
+        if (g.Clips.Length != before + 1) return "CreateClip did not add a clip (" + before + " -> " + g.Clips.Length + ")";
+        // the new clip is the last one; name it so the next render finds it
+        found = int(g.Clips.Length) - 1;
+        api.SetClipName(uint(found), "GhostShooter");
+        how = "created";
+    } else {
+        how = "found";
+    }
+    api.SetClip(g.Clips[found]);
+    if (api.Clip is null || api.Clip.Name != "GhostShooter") return "SetClip did not take (current=" + (api.Clip is null ? "null" : string(api.Clip.Name)) + ")";
+    api.RemoveAllTracks();
+    return how + " clip[" + found + "] GhostShooter, current, tracks=" + api.Clip.Tracks.Length + " of " + g.Clips.Length + " clips";
+}
+
+string SetClipIndex(int i) {
+    auto api = MTApi();
+    if (api is null) return "not MT editor";
+    auto g = api.ClipGroup;
+    if (g is null || i < 0 || uint(i) >= g.Clips.Length) return "no clip " + i;
+    api.SetClip(g.Clips[i]);
+    return "current=" + api.Clip.Name;
 }
 
 string DumpMTClip() {

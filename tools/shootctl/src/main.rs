@@ -1736,8 +1736,6 @@ fn setup(map: &str, ghosts: &[String], cam: u8) -> i32 {
             let _ = http_get("/mt2", 30);
             if let Err(e) = wait_ctx(2, 60) { eprintln!("{e}"); return 1; }
         }
-        // A previous render's tracks are still in the clip; start clean.
-        let _ = http_get("/rmtracks", 20);
     } else {
         // EditMap refuses while any editor is open, so get to the menu FIRST and
         // prove it -- the old code slept and hoped.
@@ -1766,6 +1764,19 @@ fn setup(map: &str, ghosts: &[String], cam: u8) -> i32 {
                 return 1;
             }
         }
+    }
+    // A CLIP OF OUR OWN. /mt2 opens the in-game clip group on whatever clip is
+    // current -- on Summer 12 that is the map's own "Trigger 1", and a ghost
+    // imported into it renders as a static overview with NO CAR for the whole
+    // clip, External and Helico camera alike (2026-09-08, three renders); the
+    // same tracks in Summer 08's inherited "Cam 3" render the lap. So the
+    // render works in a clip named GhostShooter, found or created, emptied
+    // (this also replaces the old /rmtracks, which emptied whatever was there).
+    let own = http_get("/ourclip", 20).unwrap_or_default();
+    println!("  clip: {}", own.trim());
+    if !own.contains("GhostShooter, current") {
+        eprintln!("could not get a clip of our own: {own}");
+        return 1;
     }
     let rc = stage_and_import(ghosts);
     if rc != 0 { return rc; }
