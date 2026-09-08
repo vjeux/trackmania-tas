@@ -1538,6 +1538,21 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
         verbose: a.has("verbose"),
         prefix_ticks: a.get("prefix-ticks").map(|s| s.parse().unwrap()).unwrap_or(0),
         lat_tol: a.get("lat-tol").map(|s| s.parse().unwrap()).unwrap_or(6.0),
+        seed_chain: match a.get("seed-chain") {
+            Some(f) => {
+                let txt = std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;
+                let mut c = Vec::new();
+                for l in txt.lines().skip(1) {
+                    let v: Vec<&str> = l.split('\t').collect();
+                    if v.len() >= 4 {
+                        c.push(forkoracle::forksrv::Rec { steer: v[1].parse::<f32>().unwrap_or(0.0) / 127.0, gas: v[2].parse::<f32>().unwrap_or(0.0), brake: v[3].parse::<f32>().unwrap_or(0.0) });
+                    }
+                }
+                println!("seed chain {f}: {} ticks", c.len());
+                Some(c)
+            }
+            None => None,
+        },
     };
     let t0 = std::time::Instant::now();
     let mut w = Worker::start(&server, &map, &shim, &work.join("search"), &tape, a.has("verbose"))?;
