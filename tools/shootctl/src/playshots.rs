@@ -142,8 +142,23 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         // menu. `n != 0` took a transient editor context 0.3 s after /playmap
         // for the playground (2026-09-08: startcheck shot the main menu, read
         // "no vehicle", and failed a map that opened fine seconds later).
+        //
+        // And ctx 3 alone is not enough either: 0.3 s after /playmap the game
+        // reports ctx 3 / playground:true with the PREVIOUS map's name (or
+        // the requested one, before the load has even begun) and then drops
+        // to 0 for the real load (map-25 thread, 06:00Z). Four maps in a row
+        // "opened" at 0.3 s, shot the menu carousel and read no vehicle
+        // (verification pass, 06:20Z). The playground is open when ctx 3 has
+        // held for a full second AND a vehicle answers — /wheels with a car
+        // row, not "# no vehicle state".
         if super::ctx() == Some(3) {
-            break;
+            std::thread::sleep(Duration::from_millis(1000));
+            if super::ctx() == Some(3) {
+                let probe = super::http_get("/wheels?ms=100", 15).unwrap_or_default();
+                if probe.lines().any(|l| !l.starts_with('#') && !l.starts_with("wall_ms") && l.split('\t').count() > 4) {
+                    break;
+                }
+            }
         }
         std::thread::sleep(Duration::from_millis(500));
     }
