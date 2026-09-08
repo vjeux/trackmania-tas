@@ -718,3 +718,70 @@ pub fn rename_ident_same_len(item: &[u8], from: &str, to: &str) -> Vec<u8> {
     assert!(nb + nh > 0, "ident {from} not found");
     g.write_body_recompressed(&body)
 }
+
+/// Rename an item's ident everywhere it is spelled as a length-prefixed
+/// string (the header ident chunk, the body ident chunk, the author when it
+/// equals the name) — any length, unlike `rename_ident_same_len`: the header
+/// chunk table's size of every chunk an occurrence lies in, and the size of a
+/// skippable body chunk holding one, follow the edit. Written for the
+/// 2026-09-08 flag probes: a byte copy of the pack's `Flag16m` item embedded
+/// under a name of its own (`Items/FlagCopy.Item.Gbx`) next to our own bake.
+pub fn rename_ident(item: &[u8], from: &str, to: &str) -> Vec<u8> {
+    let mut g = Gbx::parse(item);
+    // every `u32 len` + `from` occurrence, replaced; the offsets (in the OLD
+    // buffer) of the replaced strings come back for the size fix-ups
+    fn replace(buf: &[u8], from: &str, to: &str) -> (Vec<u8>, Vec<usize>) {
+        let f = from.as_bytes();
+        let mut out = Vec::with_capacity(buf.len() + 64);
+        let mut hits = Vec::new();
+        let mut i = 0;
+        while i < buf.len() {
+            if i + 4 + f.len() <= buf.len() && u32::from_le_bytes(buf[i..i + 4].try_into().unwrap()) as usize == f.len() && &buf[i + 4..i + 4 + f.len()] == f {
+                hits.push(i);
+                out.extend_from_slice(&(to.len() as u32).to_le_bytes());
+                out.extend_from_slice(to.as_bytes());
+                i += 4 + f.len();
+            } else {
+                out.push(buf[i]);
+                i += 1;
+            }
+        }
+        (out, hits)
+    }
+    let delta = to.len() as i64 - from.len() as i64;
+    // body: skippable chunk sizes first (they are read from the OLD layout)
+    let skips = tmmaps::gbx::all_skip_chunks(&g.body);
+    let (mut body, hits) = replace(&g.body, from, to);
+    // a skippable chunk's size word sits at chunk offset + 8; its new offset
+    // in the rewritten body is shifted by every hit before it
+    for (_, off, payload, size) in &skips {
+        let inside = hits.iter().filter(|h| **h >= *payload && **h < payload + size).count() as i64;
+        if inside == 0 {
+            continue;
+        }
+        let before = hits.iter().filter(|h| **h < *off).count() as i64;
+        let so = (*off as i64 + 8 + before * delta) as usize;
+        let old = u32::from_le_bytes(body[so..so + 4].try_into().unwrap()) as i64;
+        body[so..so + 4].copy_from_slice(&((old + inside * delta) as u32).to_le_bytes());
+    }
+    // header: the chunk table (u32 n, n x (id, size|flag)) then the data
+    let ud = &g.user_data;
+    let n = u32::from_le_bytes(ud[0..4].try_into().unwrap()) as usize;
+    let data0 = 4 + n * 8;
+    let (new_data, hhits) = replace(&ud[data0..], from, to);
+    let mut new_ud = ud[..data0].to_vec();
+    let mut cursor = 0usize;
+    for k in 0..n {
+        let o = 4 + k * 8 + 4;
+        let raw = u32::from_le_bytes(ud[o..o + 4].try_into().unwrap());
+        let size = (raw & 0x7fff_ffff) as usize;
+        let inside = hhits.iter().filter(|h| **h >= cursor && **h < cursor + size).count() as i64;
+        let new_size = (size as i64 + inside * delta) as u32;
+        new_ud[o..o + 4].copy_from_slice(&(new_size | (raw & 0x8000_0000)).to_le_bytes());
+        cursor += size;
+    }
+    new_ud.extend_from_slice(&new_data);
+    assert!(!hits.is_empty() || !hhits.is_empty(), "ident {from} not found");
+    g.user_data = new_ud;
+    if g.comp.is_some() { g.write_body_recompressed(&body) } else { g.write_body_uncompressed(&body) }
+}

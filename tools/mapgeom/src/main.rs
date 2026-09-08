@@ -20,6 +20,9 @@ COMMANDS
       [--scale 0.5] [--collection 26]
                                 a static-object item from every static object
                                 of a pack prefab, or from a static/crystal item
+  rename-item IN.Item.Gbx --out F --to NAME [--from NAME]
+                                the same item file under another ident (header and
+                                body, any length: a pack item as an embedded copy)
   items <file.Map.Gbx> [--out D]   the models a map embeds inside itself
   crash <DUMP.dmp> [--exe Trackmania.exe] [--read ADDR LEN] [--find PAT]
       [--disasm ADDR [N]] [--no-stack] [--quiet]
@@ -574,6 +577,22 @@ fn main() {
             let n = files.len();
             std::fs::write(&out, mapgeom::tiny_assets::zip(&files)).expect("write");
             println!("wrote {out} ({n} items)");
+        }
+        "rename-item" => {
+            // rename-item IN.Item.Gbx --out OUT --to NAME [--from NAME] : the same file under
+            // another ident (header + body, any length; the pack item Flag16m -> FlagCopy.Item.Gbx)
+            let inp = a.rest.get(1).unwrap_or_else(|| die("rename-item IN.Item.Gbx --out OUT --to NAME".into()));
+            let bytes = std::fs::read(inp).unwrap_or_else(|e| die(format!("{inp}: {e}")));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));
+            let to = flag(&a.rest, "--to").unwrap_or_else(|| die("--to NAME".into()));
+            let from = match flag(&a.rest, "--from") {
+                Some(f) => f,
+                None => tmmaps::header::item_ident_author(&bytes).map(|(i, _)| i).unwrap_or_else(|| die("no ident in the header; pass --from".into())),
+            };
+            let renamed = mapgeom::crystal::rename_ident(&bytes, &from, &to);
+            let check = tmmaps::header::item_ident_author(&renamed);
+            std::fs::write(&out, &renamed).expect("write");
+            println!("wrote {out}: ident {from:?} -> {to:?} (header now reads {check:?}, {} -> {} bytes)", bytes.len(), renamed.len());
         }
         "scale-item" => {
             // scale-item IN.Item.Gbx --out OUT --scale S : geometry-scaled copy

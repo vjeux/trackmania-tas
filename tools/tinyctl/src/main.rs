@@ -21,6 +21,7 @@ mod loadloop;
 mod camcheck;
 mod build;
 mod compare;
+mod cropstats;
 mod play;
 mod png;
 mod probe;
@@ -75,6 +76,10 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
                   [--max-crops 16] [--hstack-ffmpeg BIN] [--out-prefix P]
   tinyctl compare --pair ORIG.png TINY.png [--out-prefix P]
         per-cell colour/edge diff of cmp-<tag><view>-o.png vs -t.png
+  tinyctl cropstats IMG… --crop x,y,w,h [--cells N] [--sheet OUT.png]
+        a lineup row shot several times from one camera, as numbers: per image and
+        cell (one per item) the non-sky share, the dark share, the foreground colour
+        and the difference to the previous frame; --sheet stacks the crops
   tinyctl publish-map NN --map TINY.Map.Gbx [--items-dir DIR --paks "--pak F:KEY …"] [--name N]
                 [--club 43788] [--campaign 155555] [--position P] [--playcheck]
         item-check gate, push, upload/update on Nadeo Services, campaign
@@ -113,6 +118,7 @@ fn main() {
         "shoot" => shoot::cmd(rest),
         "lightmap" => lightmap::cmd(rest),
         "compare" => compare::cmd(rest),
+        "cropstats" => cropstats::cmd(rest),
         "play" => play::cmd(rest),
         "startcheck" => startcheck::run(rest),
         "loadloop" => loadloop::cmd(rest),
