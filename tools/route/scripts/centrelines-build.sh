@@ -3,9 +3,9 @@
 # rank 1; engine spawns, verdicts, exclusions, hand drive lines, author-line oracle; one drop per build.
 source /tmp/tmp/env.sh; cd /tmp/tmp/repo/tools/route
 M=/tmp/tmp/bank-mirror; REAL=$HOME/persistent/private-30d/tm-route
-B7=$M/tm-route/tiny-builds/ship7-3adf1f85; B8=$M/tm-route/tiny-builds/ship8-ca2c04fd; T7=$M/tm-player/tiny/ship7-3adf1f85
-A=$HOME/persistent/private-30d/tm-player/tiny/incoming/ship8-ca2c04fd/ANCHORS.tsv
-V=$M/tm-route/tiny/gap-verdicts-ship7-3adf1f85.tsv; X=$M/tm-route/tiny/road-exclusions.tsv; LL=$M/tm-route/tiny/leg-lines.tsv
+BUILD=${1:?build}; B7=$M/tm-route/tiny-builds/$BUILD; T7=$M/tm-player/tiny/$BUILD
+A=$HOME/persistent/private-30d/tm-player/tiny/incoming/$BUILD/ANCHORS.tsv; [ -f $A ] || A=$HOME/persistent/private-30d/tm-player/tiny/incoming/ship8-ca2c04fd/ANCHORS.tsv
+V=$M/tm-route/tiny/gap-verdicts-$BUILD.tsv; [ -f $V ] || V=$M/tm-route/tiny/gap-verdicts-ship7-3adf1f85.tsv; X=$M/tm-route/tiny/road-exclusions.tsv; LL=$M/tm-route/tiny/leg-lines.tsv
 : > $B7/centreline/ORDERS.tsv
 for f in $B7/centreline/*.road-centreline.json; do
   b=$(basename $f .road-centreline.json); nn=${b:0:2}
@@ -14,12 +14,12 @@ for f in $B7/centreline/*.road-centreline.json; do
   echo "$plan_order" > $B7/centreline/$b.planner-order.txt
   n_groups=$(echo "$plan_order" | tr ',' '\n' | wc -l)
   note=$(grep -o '"produced_by": "[^"]*' $f | sed 's/"produced_by": "//; s/^tmplan road-centreline[^;]*; //; s/; verdicts 08:50Z applied.*$//; s/; spawn = engine.*$//; s/; order = AUTHOR.*$//')
-  sp=$(awk -F'\t' -v n="$nn" '$1==n {print $2","$3","$4}' $M/tm-player/tiny/gate-crossings/ENGINE-SPAWNS-ship8.tsv 2>/dev/null | head -1); SPAWN=""; [ -n "$sp" ] && SPAWN="--spawn $sp"
+  sp=$(awk -F'\t' -v n="$nn" '$1==n {print $2","$3","$4}' $M/tm-player/tiny/gate-crossings/ENGINE-SPAWNS-*.tsv 2>/dev/null | head -1); SPAWN=""; [ -n "$sp" ] && SPAWN="--spawn $sp"
   # the author's order from the source ghost
   author_order=""; row=$(awk -F'\t' -v n=$nn '$1==n' $A 2>/dev/null); GH=""
   if [ -n "$row" ]; then
     src=/tmp/summer2026/$(basename "$(echo "$row" | cut -f2)"); anc=$(echo "$row" | awk -F'\t' '{print $3","$4","$5":"$6","$7","$8}')
-    if [ "$(echo "$row" | cut -f10)" -gt 12 ]; then GH="$src"; else
+    ghost_bytes=$(echo "$row" | cut -f10); if [ -n "$ghost_bytes" ] && [ "$ghost_bytes" -gt 12 ] 2>/dev/null || { [ -z "$ghost_bytes" ] && target/release/tmplan author-line "$src" --anchor $anc --centreline $f 2>/dev/null | grep -q "author line vs"; }; then GH="$src"; else
       # no author ghost in the source: the bank's best full-size human ghost of the same map (tm-player crawl, rank 1)
       fu=$(target/release/tmroute gates "$src" 2>/dev/null | head -1 | cut -f2); tarf=$HOME/persistent/private-30d/tm-player/data/v0/maps/$fu/ghosts.tar
       if [ -n "$fu" ] && [ -f "$tarf" ]; then mkdir -p /tmp/ghosts-$fu; [ -n "$(ls /tmp/ghosts-$fu/ghosts 2>/dev/null)" ] || tar xf "$tarf" -C /tmp/ghosts-$fu; GH=$(ls /tmp/ghosts-$fu/ghosts/1-*.Ghost.Gbx 2>/dev/null | head -1); fi
@@ -38,8 +38,8 @@ for f in $B7/centreline/*.road-centreline.json; do
   else rm -f $B7/centreline/$b.road-centreline.planner-order.json $B7/centreline/$b.route-router-road-centreline-1.json; fi
   echo "$b [$([ -n "$author_order" ] && echo author || echo planner) order $main_order] $(grep -o 'pts,.*%' $B7/centreline/$b.centreline.txt | head -1) $(grep -o '"connection":"[A-Za-z]*"' $B7/centreline/$b.route-router-road-centreline-0.json | sort | uniq -c | tr -s ' \n' ' ')"
 done
-bash /tmp/author-lines.sh > /dev/null 2>&1
-rm -rf $B8/centreline && cp -r $B7/centreline $B8/centreline
+bash /tmp/author-lines-build.sh $BUILD > /dev/null 2>&1
+
 ts=$(date -u +%Y%m%dT%H%MZ)
-for B in ship7-3adf1f85 ship8-ca2c04fd; do tar czf /tmp/tiny-$B-$ts.tgz -C $M/tm-route/tiny-builds $B && cp /tmp/tiny-$B-$ts.tgz $REAL/drops/ && echo -e "$ts\ttiny-$B-$ts.tgz\ttiny build $B: centrelines in the AUTHOR's order where the source has a ghost (planner order as rank 1), engine spawns, stubs, credit-plane gates, hand drive lines, author-line oracle\t$(stat -c %s /tmp/tiny-$B-$ts.tgz)\t$(md5sum < /tmp/tiny-$B-$ts.tgz | cut -c1-12)" >> $REAL/drops/MANIFEST.tsv; rm -rf $REAL/tiny/$B/centreline; tar xzf /tmp/tiny-$B-$ts.tgz -C $REAL/tiny/ $B/centreline; done
+for B in $BUILD; do tar czf /tmp/tiny-$B-$ts.tgz -C $M/tm-route/tiny-builds $B && cp /tmp/tiny-$B-$ts.tgz $REAL/drops/ && echo -e "$ts\ttiny-$B-$ts.tgz\ttiny build $B: centrelines in the AUTHOR's order where the source has a ghost (planner order as rank 1), engine spawns, stubs, credit-plane gates, hand drive lines, author-line oracle\t$(stat -c %s /tmp/tiny-$B-$ts.tgz)\t$(md5sum < /tmp/tiny-$B-$ts.tgz | cut -c1-12)" >> $REAL/drops/MANIFEST.tsv; rm -rf $REAL/tiny/$B/centreline; tar xzf /tmp/tiny-$B-$ts.tgz -C $REAL/tiny/ $B/centreline; done
 echo "done $ts"
