@@ -169,11 +169,25 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
         *next += if has_stream { 2 } else { 1 };
     }
     s2.lod_max_dist = ladder;
+    if let Some(u) = m.solid2_u13 {
+        s2.u13 = u;
+    }
     for inst in used.iter().map(|u| &m.materials[*u]) {
         let inst = skinned_material(inst, opts.collection);
         let inst = custom_texture_material(&inst, &opts.ident);
         let inst = sign_logo_material(&inst, m);
         let inst = light_skin_material(&inst, m);
+        if m.materials_external {
+            // the pack mesh's form: the material is a FILE the reference table
+            // names (`Stadium\Media\Material\ItemFlag.Material.Gbx`), not a
+            // user-inst node; the Solid2 writer emits the `materials` refs
+            // when there is no custom material
+            let link = inst.link().ok_or("external material form: the material has no link")?.to_string();
+            let i = next_index(next);
+            EXTERNALS.with(|e| e.borrow_mut().push((i as u32, format!("{link}.Material.Gbx"))));
+            s2.materials.push(super::NodeRef { index: i, inline: None });
+            continue;
+        }
         s2.custom_materials.push(Material { name: String::new(), node: Some(inline(*next, Node::Material(inst))) });
         *next += 1;
     }

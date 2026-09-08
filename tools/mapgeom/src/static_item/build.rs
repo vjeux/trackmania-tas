@@ -1334,6 +1334,13 @@ pub fn add_dyna_tween_part(store: &mut crate::store::DataStore, path: &str, at: 
     // its ladder ([16, 64, 128, 512], five levels) is registered, scaled, by
     // add_static_object like every part's
     mesh.solid2_u07 = Some(src.s2.u07);
+    // TINY_FLAG_U13=pack / TINY_FLAG_MATREF=ext: the 2026-09-08 probes of what
+    // the pack mesh has that a re-baked copy lacks (see `Merged`)
+    mesh.solid2_u13 = match std::env::var("TINY_FLAG_U13").as_deref() {
+        Ok("pack") => Some(src.s2.u13),
+        _ => None,
+    };
+    mesh.materials_external = std::env::var("TINY_FLAG_MATREF").as_deref() == Ok("ext");
     mesh.no_prelight = src.s2.pre_light_gen.is_none();
     let mesh_ext = src.mesh_ext.clone();
     let so = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(src.s2.clone())), is_mesh_collidable: false, shape: super::null_ref() };

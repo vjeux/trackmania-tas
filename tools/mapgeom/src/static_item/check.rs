@@ -263,8 +263,11 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         for (part_index, (label, s2, surface)) in parts.into_iter().enumerate() {
         let p0 = problems.len();
         total_visuals += s2.visuals.len();
-        total_mats += s2.custom_materials.len();
-        let nmat = s2.custom_materials.len();
+        // the material table is the custom (user-inst) materials, or — the
+        // pack meshes' form, and `TINY_FLAG_MATREF=ext` — the `materials`
+        // file references when there is no custom material
+        let nmat = if s2.custom_materials.is_empty() { s2.materials.len() } else { s2.custom_materials.len() };
+        total_mats += nmat;
         let mut used = vec![0usize; nmat];
         if s2.shaded_geoms.is_empty() {
             problems.push("no shaded geoms".into());

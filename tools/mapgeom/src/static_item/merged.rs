@@ -212,6 +212,18 @@ pub struct Merged {
     /// the frames), `u07` -1; a static item says 1 and 1.
     pub vis_cst_type: Option<i32>,
     pub solid2_u07: Option<i32>,
+    /// Solid2 word `u13` carried from the source (`TINY_FLAG_U13=pack` on the
+    /// tween cloth): every pack DYNA mesh carries a value with bit 31 set
+    /// (Flag.Mesh.Gbx 0x80024108, the pusher piston and rotor 0x8001C779),
+    /// every static mesh 0 — the runtime keeps it at Solid2+0x2d8.
+    pub solid2_u13: Option<i32>,
+    /// Write the materials as the pack meshes do (`TINY_FLAG_MATREF=ext` on
+    /// the tween cloth): EXTERNAL references to the pack's own
+    /// `<link>.Material.Gbx` files in the Solid2's `materials` array, no
+    /// `CPlugMaterialUserInst` at all. The 2026-09-08 exe reading of
+    /// CHmsMgrVisDyna::ModelCreate found the material array (`Solid2+0xc8`,
+    /// the file refs) is what the animated-model checks look at.
+    pub materials_external: bool,
     /// Write NO PreLightGen (the pack's dyna meshes — Flag.Mesh.Gbx — carry
     /// none; a static item always gets one).
     pub no_prelight: bool,
