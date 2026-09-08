@@ -115,7 +115,11 @@ impl SurfaceModel {
         if span > 2600.0 {
             return Err(format!("track spans {span:.0} m — too large for the 2 m surface grid (NOSEDIVE class); no surface model"));
         }
-        let mut grid = Grid::build_within(if deco_grid { &full } else { &scene }, Some(clip));
+        // clip only when the scene itself is oversized (a stray placement far away): a normal map keeps every
+        // surface — Summer 2026 - 10's route runs > 400 m outside its gates' box and lost its legs under a blind clip
+        let src = if deco_grid { &full } else { &scene };
+        let oversized = src.bounds().map_or(false, |(lo, hi)| ((hi[0] - lo[0]) / 2.0) * ((hi[2] - lo[2]) / 2.0) > 4_000_000.0);
+        let mut grid = Grid::build_within(src, if oversized { Some(clip) } else { None });
         if deco_grid {
             notes.push("route grid built from track + DECORATION (fallback; the track-only grid had no route)".into());
         }
