@@ -393,3 +393,38 @@ impl SurfaceModel {
         out
     }
 }
+
+impl SurfaceModel {
+    /// Move a path point to the MIDDLE of the road it stands on: walk left and right of the travel direction
+    /// (1 m steps, up to `cap` m each side) while the grid has a road surface within 4 m of the point's height, and
+    /// return the midpoint of that span (the point itself when there is no road under it or the span is one-sided
+    /// beyond `cap`). A shortest path hugs the inside of every bend; the centreline the player wants is the deck
+    /// midline (coordinator, 2026-09-08 01:26Z).
+    pub fn recentre(&self, p: [f32; 3], dir: [f32; 2], cap: f32) -> [f32; 3] {
+        let has_road = |x: f32, z: f32, y: f32| -> bool {
+            match self.grid.cell_of(x, z) {
+                Some((ix, iz)) => self.grid.cells[iz * self.grid.nx + ix].iter().any(|s| s.road && (s.y - y).abs() <= 4.0),
+                None => false,
+            }
+        };
+        if !has_road(p[0], p[2], p[1]) {
+            return p;
+        }
+        let l = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
+        if l < 1e-3 {
+            return p;
+        }
+        let perp = [-dir[1] / l, dir[0] / l];
+        let mut left = 0.0f32;
+        let mut right = 0.0f32;
+        let mut k = 1.0f32;
+        while k <= cap && has_road(p[0] + perp[0] * k, p[2] + perp[1] * k, p[1]) { left = k; k += 1.0; }
+        k = 1.0;
+        while k <= cap && has_road(p[0] - perp[0] * k, p[2] - perp[1] * k, p[1]) { right = k; k += 1.0; }
+        if left >= cap || right >= cap {
+            return p; // an open platform, not a road: no midline to speak of
+        }
+        let shift = (left - right) / 2.0;
+        [p[0] + perp[0] * shift, p[1], p[2] + perp[1] * shift]
+    }
+}
