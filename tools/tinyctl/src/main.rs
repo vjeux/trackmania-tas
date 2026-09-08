@@ -29,6 +29,7 @@ mod publish;
 mod replaypull;
 mod startcheck;
 mod shoot;
+mod unproject;
 mod upload;
 mod views;
 mod wsx;
@@ -76,6 +77,11 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
                   [--max-crops 16] [--hstack-ffmpeg BIN] [--out-prefix P]
   tinyctl compare --pair ORIG.png TINY.png [--out-prefix P]
         per-cell colour/edge diff of cmp-<tag><view>-o.png vs -t.png
+  tinyctl unproject --view "ox,oy,oz,dist,h,v" --px X,Y [--size 1920,1080] [--fov 85]
+                    [--ground Y] [--anchor sx,sy,sz:tx,ty,tz [--scale 0.5]] [--side o|t]
+        where in the world a pixel of a shot is: the view row's orbital camera,
+        the pixel's ray met with the plane y = ground (default the target's);
+        --side t = the tiny side (camera through the anchor), answer in both maps
   tinyctl cropstats IMG… --crop x,y,w,h [--cells N] [--sheet OUT.png]
         a lineup row shot several times from one camera, as numbers: per image and
         cell (one per item) the non-sky share, the dark share, the foreground colour
@@ -126,6 +132,7 @@ fn main() {
         "camcheck" => camcheck::cmd(rest),
         "publish-map" => publish::publish_map_cmd(rest),
         "publish-here" => publish::publish_here_cmd(rest),
+        "unproject" => unproject::cmd(rest),
         "upload" => upload::cmd(rest),
         "box-build" => boxbuild::box_build_cmd(rest),
         "selfbuild" => boxbuild::selfbuild_cmd(rest),

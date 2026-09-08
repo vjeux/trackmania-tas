@@ -674,6 +674,22 @@ pub fn cmd(args: &[String]) {
                 let mut pos = transform(it.pos, source_anchor, target_anchor, scale);
                 if let Some(dy) = mapping.sink_by_index.get(&it.index) {
                     pos[1] -= dy;
+                    // A parked placement (the club's custom items: re-pointed
+                    // at the first block item and "sunk 1 000 m") stays INSIDE
+                    // the map's volume, 4 m above the lowest cell row like the
+                    // flag driver. Summer 24 (2026-09-08): the tiny map showed
+                    // one red DecoPlatformBase slab — the stand-in — floating
+                    // at the water surface at the exact CENTRE of the map,
+                    // cell (32,32), where nothing is placed; the 15 stand-ins
+                    // at y ≈ −990 are the only placements outside the volume
+                    // with that model, and an out-of-volume embedded item is
+                    // apparently put back at the map's centre by the game.
+                    // (The parked stock trees at (8,−900,8) showed no such
+                    // pile — stock items seem exempt — and are left alone.)
+                    let floor = crate::map::ground_y(collection) + 4.0;
+                    if pos[1] < floor {
+                        pos[1] = floor;
+                    }
                     sunk_items += 1;
                 }
                 specs.push(Spec {
