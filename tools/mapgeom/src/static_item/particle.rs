@@ -324,6 +324,12 @@ pub enum PChunk {
     BitmapFrames { version: u32, r1: Ref, u01: u32, frames: Vec<Ref>, r2: Ref, u02: u32, u03: u32 },
     /// 0x0901102A / 0x0901102C (CPlugBitmap): one reference.
     SingleRef { id: u32, node: Ref },
+    /// 0x09011036 v1 (CPlugBitmap): a reference, an Id (a LOOKBACK string —
+    /// in the pack file it is preceded by the body's lookback version word,
+    /// which an inline copy inside an item must NOT carry: copied raw it
+    /// misaligned the engine's read and crashed the client, 2026-09-08
+    /// 06:33Z), a reference.
+    BitmapNamed { version: u32, r1: Ref, name: Id, r2: Ref },
     /// Any other chunk: id and payload (its size is a function of the id).
     Raw { id: u32, payload: Vec<u8> },
 }
@@ -361,7 +367,6 @@ pub fn raw_payload_len(id: u32) -> Option<usize> {
         0x09011032 => 8,
         0x09011033 => 4,
         0x09011035 => 6,
-        0x09011036 => 20,
         0x09011037 => 36,
         0x09011038 => 12,
         _ => return None,
@@ -494,6 +499,16 @@ impl ParticleNode {
                     PChunk::BitmapFrames { version, r1, u01, frames, r2, u02, u03 }
                 }
                 0x0901102A | 0x0901102C => PChunk::SingleRef { id: cid, node: read_ref(r)? },
+                0x09011036 => {
+                    let version = r.u32()?;
+                    if version != 1 {
+                        return Err(format!("CPlugBitmap chunk 036 version {version} (only 1 is read)"));
+                    }
+                    let r1 = read_ref(r)?;
+                    let name = r.id()?;
+                    let r2 = read_ref(r)?;
+                    PChunk::BitmapNamed { version, r1, name, r2 }
+                }
                 c => match raw_payload_len(c) {
                     Some(n) => PChunk::Raw { id: c, payload: r.take(n)?.to_vec() },
                     None if super::is_skippable_here(r) => {
@@ -587,6 +602,13 @@ impl ParticleNode {
                     w.u32(*id);
                     write_ref(w, node);
                 }
+                PChunk::BitmapNamed { version, r1, name, r2 } => {
+                    w.u32(0x09011036);
+                    w.u32(*version);
+                    write_ref(w, r1);
+                    w.id(name);
+                    write_ref(w, r2);
+                }
                 PChunk::Raw { id, payload } if id & 0x8000_0000 != 0 => super::write_skippable(w, id & 0x7FFF_FFFF, payload),
                 PChunk::Raw { id, payload } => {
                     w.u32(*id);
@@ -628,6 +650,10 @@ impl ParticleNode {
                     out.push(r2);
                 }
                 PChunk::SingleRef { node, .. } => out.push(node),
+                PChunk::BitmapNamed { r1, r2, .. } => {
+                    out.push(r1);
+                    out.push(r2);
+                }
                 _ => {}
             }
         }
@@ -684,6 +710,9 @@ impl ParticleNode {
                 PChunk::SingleRef { id, node } => {
                     let _ = writeln!(out, "{pad}  {:03X}: ref node {}", id & 0xFFF, node.index);
                 }
+                PChunk::BitmapNamed { r1, name, r2, .. } => {
+                    let _ = writeln!(out, "{pad}  036: ref {} name {:?} ref {}", r1.index, name.as_str().unwrap_or("(null)"), r2.index);
+                }
                 PChunk::Raw { id, payload } => {
                     let words: Vec<String> = payload.chunks(4).map(|c| if c.len() == 4 { fmt_word(u32::from_le_bytes([c[0], c[1], c[2], c[3]])) } else { format!("{c:02x?}") }).collect();
                     let _ = writeln!(out, "{pad}  {:03X}: {} bytes [{}]", id & 0xFFF, payload.len(), words.join(" "));
@@ -710,7 +739,7 @@ fn fmt_word(w: u32) -> String {
 /// Every chunk id of the effect-system and particle classes this module
 /// reads (the generic walker's `known`).
 pub fn is_particle_chunk(cid: u32) -> bool {
-    matches!(cid, C_FX_SYSTEM | 0x090B3000 | 0x090B3001 | 0x090B202D | 0x090B202E | 0x090B2036 | 0x090B203A | 0x090C5000 | 0x09011030 | 0x09011034 | 0x0901102A | 0x0901102C) || raw_payload_len(cid).is_some()
+    matches!(cid, C_FX_SYSTEM | 0x090B3000 | 0x090B3001 | 0x090B202D | 0x090B202E | 0x090B2036 | 0x090B203A | 0x090C5000 | 0x09011030 | 0x09011034 | 0x09011036 | 0x0901102A | 0x0901102C) || raw_payload_len(cid).is_some()
 }
 
 /// A CPlugBitmap chunk this exe's reader does NOT know from a user file
@@ -724,6 +753,7 @@ pub fn is_legacy_bitmap_chunk(c: &PChunk) -> bool {
         PChunk::SingleRef { id, .. } => *id,
         PChunk::BitmapImage { .. } => 0x09011030,
         PChunk::BitmapFrames { .. } => 0x09011034,
+        PChunk::BitmapNamed { .. } => 0x09011036,
         _ => return false,
     };
     id >> 12 == 0x09011 && !matches!(id & 0xFFF, 0x02B..=0x02E | 0x030 | 0x032..=0x03A)

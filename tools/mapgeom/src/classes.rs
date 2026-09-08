@@ -2518,6 +2518,13 @@ impl<'a> Graph<'a> {
                 Ok(())
             })(),
             0x0901102A | 0x0901102C => self.noderef().map(|_| ()),
+            0x09011036 => (|| {
+                let _version = self.r.u32()?;
+                self.noderef()?;
+                self.r.lookback()?;
+                self.noderef()?;
+                Ok(())
+            })(),
             c => match p::raw_payload_len(c) {
                 Some(n) => self.r.take(n).map(|_| ()),
                 None => return None,
