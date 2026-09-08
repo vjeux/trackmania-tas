@@ -287,7 +287,13 @@ fn one(args: &[String]) -> Result<Done, String> {
 
     // --- the clip where vjeux watches them, on the box (MOVED, not copied:
     // one 30 MB copy per lap on a nearly full C:)
-    let name = format!("{nn}-ghost-{time}");
+    // --suffix S: `NN-ghost-<time>-S.webm` — the set the clip was rendered on,
+    // when one videos folder holds more than one set (ship9 and ship10 clips of
+    // the same lap side by side)
+    let name = match f("--suffix") {
+        Some(s) => format!("{nn}-ghost-{time}-{s}"),
+        None => format!("{nn}-ghost-{time}"),
+    };
     let r_keep = format!("{box_videos}/{name}.webm");
     let mv = wsx.sh(&format!("mkdir -p '{box_videos}' && mv -f '{webm}' '{r_keep}' && stat -c %s '{r_keep}'"))?;
     let kept: u64 = mv.trim().parse().unwrap_or(0);
