@@ -441,6 +441,268 @@ fn unit_box_trigger(units: &[[i32; 3]], scale: f32) -> CPlugSurface {
     CPlugSurface::mesh(verts, tris, vec![0], [0.0, 0.0, 1.0])
 }
 
+/// One distinct block key of the map: the block name, its placement flags
+/// (variant bits) and the material modifier a generated filler inherits from
+/// the authored block it finishes (`inherited_mod`; empty for an authored
+/// block), with how many placements share it.
+struct BlockKey<'k> {
+    name: &'k str,
+    flags: u32,
+    modk: &'k str,
+    placements: usize,
+}
+
+impl BlockKey<'_> {
+    /// `Name FLAGS`, the report's source column for a key without a variant.
+    fn source(&self) -> String {
+        format!("{} {:08X}", self.name, self.flags)
+    }
+
+    fn map_key(&self) -> (String, u32, String) {
+        (self.name.to_string(), self.flags, self.modk.to_string())
+    }
+
+    fn outcome(&self, alias: &str, source: String, result: Result<String, String>) -> Outcome {
+        Outcome { alias: alias.to_string(), kind: "block", source, placements: self.placements, result }
+    }
+}
+
+/// The picked variant's footprint: the unit cells in the block's frame, the
+/// footprint they span, and the terrain tiles the variant brings with it
+/// (`auto_terrains`, offset + zone, and the place type; `None` for a terrain
+/// tile itself — only the OTHER blocks hide tiles).
+struct Footprint {
+    sx: u32,
+    sz: u32,
+    units: Vec<[i32; 3]>,
+    auto_terrain: Option<(Vec<([i32; 3], String)>, i32)>,
+}
+
+/// What the library does about one distinct block key, decided before
+/// anything is baked.
+enum BlockPlan<'b> {
+    /// No item, on purpose (an ambient zone the genealogy regenerates, the
+    /// Stadium grass floor, a variant without geometry): `why` is the report
+    /// line, `label` the variant's when one was picked.
+    Nothing { why: String, label: Option<String>, footprint: Option<Footprint> },
+    /// Refused: the report's FAIL line (source detail, error).
+    Refused { source: String, error: String },
+    /// The same recipe was baked already under `alias`.
+    Reuse { alias: String, footprint: Footprint },
+    /// Bake a new item from this variant.
+    Bake(Box<BlockBake<'b>>),
+}
+
+/// Everything a block bake needs, resolved from the block info.
+struct BlockBake<'b> {
+    pk: crate::blockinfo::Picked<'b>,
+    footprint: Footprint,
+    /// The variant's prefabs: path, mobil translation, mobil rotation.
+    prefabs: Vec<(String, Option<[f32; 3]>, Option<[f32; 3]>)>,
+    /// A converted-archive item standing in for a prefab-less model (`LEGACY`).
+    legacy_item: Option<&'static str>,
+    /// The recipe key: what gets baked + waypoint + modifier (two keys with
+    /// the same recipe share one item).
+    recipe: String,
+    /// The block's own modifier refs plus the inherited one.
+    effective_mods: Vec<String>,
+    /// A terrain tile (Flat/Frontier/Transition zone block).
+    terrain: bool,
+}
+
+/// The block info of a key, through the index (`--debug lookup` says why a
+/// name has none).
+fn load_block_info(idx: &mut crate::blockmap::BlockInfoIndex, store: &mut DataStore, name: &str) -> Result<(String, crate::blockinfo::BlockInfo), String> {
+    let Some(path) = idx.path_for(name) else {
+        if crate::debug::on("lookup") {
+            eprintln!("  lookup {name:?}: no path; index knows {} stems; store has {} entries", idx.stem_count(), store.entries().count());
+        }
+        return Err("no block info file with this name".into());
+    };
+    let bi = idx.load(store, &path).map_err(|e| format!("block info: {e}"))?.clone();
+    Ok((path, bi))
+}
+
+/// The decision ladder for one block key.
+fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collection: u32, ambient: &str, tile_zones: &std::collections::BTreeSet<String>, alias_of_recipe: &BTreeMap<String, String>) -> BlockPlan<'b> {
+    let name = key.name;
+    let flags = key.flags;
+    // Stadium's Grass floor is the one terrain the tiny map keeps FULL
+    // size: `tmmaps tiny` leaves the Stadium genealogy in place, so the
+    // game regenerates the floor under the tiny map (the reference
+    // maps' foundation); a half-scale copy would only z-fight it.
+    // RedIsland's Water is the lake the island sits in: `tmmaps tiny` fills
+    // the genealogy with it, so the game regenerates it full size under
+    // and around the tiny map — its surface (-0.5) is the tiny map's
+    // fixed plane, so a half-scale copy would only z-fight it.
+    // WhiteShore's Water is the sea around its island, the same way
+    // (Summer 03: 3148 of 4096 cells; surface -1 = the fixed plane), and
+    // GreenCoast's Lake (Summer 04: 2418 cells). The block is the map's
+    // most common genealogy zone — what `tmmaps tiny` fills with.
+    if matches!(collection, 0x10 | 0x1d | 0xf) && !ambient.is_empty() && name == ambient {
+        return BlockPlan::Nothing { why: format!("{} ambient {name}: regenerated full size by the genealogy, no item", crate::static_item::build::env_name(collection)), label: None, footprint: None };
+    }
+    if collection == 0x1a && name == "Grass" {
+        return BlockPlan::Nothing { why: "Stadium grass floor: regenerated full size by the genealogy, no item".into(), label: None, footprint: None };
+    }
+    let ground = flags & crate::blockmap::FLAG_GROUND != 0;
+    let vindex = (flags & crate::blockmap::FLAG_VARIANT_MASK) as usize;
+    let sub = ((flags >> crate::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
+    let addv = ((flags >> crate::blockmap::FLAG_ADDITIONAL_SHIFT) & 0x7F) as usize;
+    let Some(pk) = bi.pick_placement_add(ground, vindex, sub, addv) else {
+        return BlockPlan::Refused { source: key.source(), error: "block info has no variant with units or mobils".into() };
+    };
+    let units: Vec<[i32; 3]> = pk.variant.block_units.iter().map(|u| u.offset).collect();
+    let (sx, sz) = units.iter().fold((1u32, 1u32), |(sx, sz), u| (sx.max(u[0] as u32 + 1), sz.max(u[2] as u32 + 1)));
+    // a terrain tile's auto terrain is itself: only the OTHER blocks hide tiles
+    let auto_terrain = if !tile_zones.contains(name) && !pk.variant.auto_terrains.is_empty() {
+        Some((pk.variant.auto_terrains.iter().map(|(off, _, cur)| (*off, cur.clone())).collect(), pk.variant.auto_terrain_place_type))
+    } else {
+        None
+    };
+    let footprint = Footprint { sx, sz, units: units.clone(), auto_terrain };
+    let prefabs: Vec<(String, Option<[f32; 3]>, Option<[f32; 3]>)> = pk.mobils.iter().filter_map(|mb| mb.prefab.clone().map(|p| (p, mb.translation, mb.rotation))).collect();
+    let solids: Vec<String> = pk.mobils.iter().filter_map(|mb| mb.solid.clone()).collect();
+    let legacy_item = LEGACY.iter().find(|(n, _)| *n == name).map(|(_, p)| *p);
+    // recipe key: what gets baked (prefab set or legacy item) + waypoint
+    // + the block's material modifier — PlatformGrass*/PlatformDirt*/
+    // PlatformIce* share the PlatformTech prefabs and differ ONLY by the
+    // modifier folder their materials are taken from (Summer 03: the tech
+    // slopes next to the first checkpoint came out grass, keyed to the
+    // PlatformGrassSlope2Straight item built first).
+    // the block's own modifier plus the one a filler inherits from the
+    // authored block it finishes (`modk`, see `inherited_mod`)
+    let effective_mods: Vec<String> = bi.material_modifier.iter().cloned().chain(key.modk.split('|').filter(|s| !s.is_empty()).map(String::from)).collect();
+    let recipe = if let Some(l) = legacy_item { format!("legacy:{l}") } else { format!("{}|wp{:?}|units{:?}|mod{:?}", prefabs.iter().map(|p| format!("{}@{:?}/{:?}", p.0, p.1, p.2)).collect::<Vec<_>>().join(","), bi.waypoint_type, units, effective_mods) };
+    if prefabs.is_empty() && legacy_item.is_none() {
+        if solids.is_empty() {
+            // intentionally empty variant (e.g. the hidden pillar)
+            return BlockPlan::Nothing { why: "no geometry in this variant: intentionally no item".into(), label: Some(pk.label.clone()), footprint: Some(footprint) };
+        }
+        return BlockPlan::Refused { source: format!("{} [{}] solids {:?}", key.source(), pk.label, solids), error: "legacy CPlugSolid model without a converted archive item".into() };
+    }
+    if let Some(alias) = alias_of_recipe.get(&recipe) {
+        return BlockPlan::Reuse { alias: alias.clone(), footprint };
+    }
+    let terrain = matches!(bi.kind, crate::blockinfo::Kind::Flat | crate::blockinfo::Kind::Frontier | crate::blockinfo::Kind::Transition);
+    BlockPlan::Bake(Box::new(BlockBake { pk, footprint, prefabs, legacy_item, recipe, effective_mods, terrain }))
+}
+
+/// The bake of one block key into an item: the legacy archive item
+/// re-identified, or the variant's prefabs merged with the block's
+/// modifier, sea-floor depth, special trigger, waypoint and skin. `water`:
+/// the collection's water row and the surface's height above that row's
+/// floor; `at_water_row`: whether every placement of this key sits on it.
+#[allow(clippy::too_many_arguments)]
+fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, bi: &crate::blockinfo::BlockInfo, ident: &str, scale: f32, collection: u32, legacy: &BTreeMap<String, Vec<u8>>, water: Option<(u8, f32)>, at_water_row: bool) -> Result<(Vec<u8>, crate::static_item::build::Merged, bool), String> {
+    if let Some(l) = plan.legacy_item {
+        return match legacy.get(l) {
+            Some(bytes) => crate::static_item::build::static_item_from_item_report(bytes, ident, ident, scale, collection).map(|(b, m)| (b, m, false)),
+            None => Err(format!("{l} absent from the legacy archive (pass --legacy-zip)")),
+        };
+    }
+    let mut m = crate::static_item::build::Merged::default();
+    m.keep_water = crate::static_item::build::keep_water_for(collection);
+    m.modifier = modifier_links(store, &plan.effective_mods);
+    m.collision_redress = modifier_collision_redress(store, &plan.effective_mods);
+    m.collision_redress_by_name = modifier_folder_redress(store, &m.modifier);
+    // (The DecoPlatform blocks — Slope2Start, SlopeBase, … — keep their
+    // `Deco` material: it IS what the game draws, the grass-topped
+    // decorative platform, phys 2. 70d461c re-dressed them as grey
+    // PlatformTech for a day; the original's cp3 slopes are green grass.)
+    // Terrain (Flat/Frontier/Transition zone blocks) sits where the
+    // source puts it. (A 0.2 m drop hid the coplanar deck/Land pairs
+    // of 2026-09-06; since `tmmaps tiny` hides the tile under every
+    // deck the drop only opened a 0.1 m step to the lowered
+    // neighbours — a black line across Summer 06's sand; gone.)
+    for (p, tr, rot) in &plan.prefabs {
+        let mut at = crate::geom::IDENTITY;
+        if let Some(t) = tr {
+            at[9] = t[0];
+            at[10] = t[1];
+            at[11] = t[2];
+        }
+        if rot.map(|r| r.iter().any(|v| v.abs() > 1e-6)).unwrap_or(false) {
+            m.notes.push(format!("mobil rotation {:?} ignored for {p}", rot));
+        }
+        crate::static_item::build::add_prefab(store, p, &at, scale, &mut m, 0)?;
+    }
+    // A terrain tile at the water row: the sea floor regains its depth (the
+    // apron under the water would otherwise sit at half depth and shade the
+    // sea a cell wide).
+    let mut deepened = false;
+    if let (true, Some((_, wlocal)), true) = (plan.terrain, water, at_water_row) {
+        crate::static_item::build::restore_depth(&mut m, wlocal * scale, scale);
+        deepened = true;
+    }
+    // A gameplay gate BLOCK (GateSpecialBoost/Reset/…): its trigger
+    // disc lives in the block info, not the prefab (`blockinfo_special_
+    // trigger`); the effect is the block's modifier Collision material
+    // (the disc's own bytes say Turbo). The item takes the prefab form.
+    if m.special.is_none() && name.starts_with("GateSpecial") {
+        match crate::static_item::build::blockinfo_special_trigger(store, path) {
+            Some((verts, tris, own, dir)) => {
+                let (ids, from) = match crate::static_item::build::special_collision_ids(store, &m) {
+                    Some((link, ids)) => (ids, link),
+                    None => (own, "the block info's own disc".to_string()),
+                };
+                if ids.1 != 0 {
+                    let sf = CPlugSurface::mesh(verts, tris, vec![ids.0 as u16 | ((ids.1 as u16) << 8)], dir);
+                    match crate::static_item::build::trigger_mesh(&sf, &crate::geom::IDENTITY, scale, ids) {
+                        Some(t) => {
+                            m.notes.push(format!("special trigger from the block info: physics {} gameplay {} from {from} ({} triangles, main dir {:?}) — prefab form", ids.0, ids.1, t.surf.counts().1, dir));
+                            m.special = Some(t);
+                        }
+                        None => m.notes.push("special trigger from the block info has no triangles".to_string()),
+                    }
+                } else {
+                    m.notes.push(format!("special trigger from the block info has gameplay 0 ({from}); not emitted"));
+                }
+            }
+            None => m.notes.push("GateSpecial block without a Collision-material trigger disc in its block info".to_string()),
+        }
+    }
+    // waypoint: type from the block info; the trigger is the
+    // variant's own `*_Trigger.Shape.Gbx` scaled (for the road
+    // checkpoints a 0.1 m plane across the middle of the block,
+    // deck to ~8 m — where the original fires), the unit-box
+    // volume only for a block without one; spawn = variant
+    // spawn_loc scaled (Granady's items)
+    if let Some(wt) = bi.waypoint_type.filter(|t| (0..=2).contains(t) || *t == 4) {
+        m.waypoint_type = Some(wt);
+        if wt != 0 {
+            let mut trig = None;
+            for sp in &plan.pk.variant.trigger_shapes {
+                match crate::static_item::build::trigger_from_shape_file(store, sp, &crate::geom::IDENTITY, scale) {
+                    Ok(t) => {
+                        m.notes.push(format!("waypoint trigger from {}", sp.rsplit('\\').next().unwrap_or(sp)));
+                        trig = Some(t);
+                        break;
+                    }
+                    Err(e) => m.notes.push(format!("trigger shape {sp}: {e}; next")),
+                }
+            }
+            m.trigger = Some(trig.unwrap_or_else(|| {
+                m.notes.push("waypoint trigger: no shape in the block info, unit box".to_string());
+                unit_box_trigger(&plan.footprint.units, scale)
+            }));
+        }
+        let sl = plan.pk.variant.spawn_loc;
+        m.spawn = [sl[0] * scale, sl[1] * scale, sl[2] * scale];
+    }
+    // the block info's skin declaration (the screen blocks'
+    // `Any\Advertisement16x9\`) travels into the item header
+    if let Some(chunk) = store.read(path).ok().and_then(|b| tmmaps::header::game_skin_chunk(&b)) {
+        if let Some(s) = tmmaps::header::GameSkin::decode(&chunk) {
+            m.notes.push(format!("skin {} ({} slots)", s.dir, s.fids.len()));
+        }
+        m.skin = Some(chunk);
+    }
+    let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: ident.to_string(), scale, collection, skin: m.skin.clone() };
+    let f = crate::static_item::build::assemble(&m, &opts)?;
+    Ok((crate::static_item::file::write_file(&f), m, deepened))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Path, report: Option<&Path>, scale: f32, legacy_zip: Option<&Path>, items_dir: Option<&Path>, veget_mode: &str, collection_name: &str, only: Option<&str>) {
     let source = MapFile::load(map);
@@ -626,205 +888,60 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         if !wanted(name) {
             continue;
         }
-        let ground = flags & crate::blockmap::FLAG_GROUND != 0;
-        let vindex = (flags & crate::blockmap::FLAG_VARIANT_MASK) as usize;
-        let sub = ((flags >> crate::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
-        let Some(path) = idx.path_for(name) else {
-            if crate::debug::on("lookup") {
-                eprintln!("  lookup {name:?}: no path; index knows {} stems; store has {} entries", idx.stem_count(), store.entries().count());
-            }
-            outcomes.push(Outcome { alias: String::new(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Err("no block info file with this name".into()) });
-            continue;
-        };
-        let bi = match idx.load(store, &path) {
-            Ok(b) => b.clone(),
+        let key = BlockKey { name, flags: *flags, modk, placements: *n };
+        let (path, bi) = match load_block_info(&mut idx, store, name) {
+            Ok(x) => x,
             Err(e) => {
-                outcomes.push(Outcome { alias: String::new(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Err(format!("block info: {e}")) });
+                outcomes.push(key.outcome("", key.source(), Err(e)));
                 continue;
             }
         };
-        // Stadium's Grass floor is the one terrain the tiny map keeps FULL
-        // size: `tmmaps tiny` leaves the Stadium genealogy in place, so the
-        // game regenerates the floor under the tiny map (the reference
-        // maps' foundation); a half-scale copy would only z-fight it.
-        // RedIsland's Water is the lake the island sits in: `tmmaps tiny` fills
-        // the genealogy with it, so the game regenerates it full size under
-        // and around the tiny map — its surface (-0.5) is the tiny map's
-        // fixed plane, so a half-scale copy would only z-fight it.
-        // WhiteShore's Water is the sea around its island, the same way
-        // (Summer 03: 3148 of 4096 cells; surface -1 = the fixed plane), and
-        // GreenCoast's Lake (Summer 04: 2418 cells). The block is the map's
-        // most common genealogy zone — what `tmmaps tiny` fills with.
-        if matches!(collection, 0x10 | 0x1d | 0xf) && !ambient.is_empty() && *name == ambient {
-            block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), 1, 1, Vec::new()));
-            outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok(format!("{} ambient {name}: regenerated full size by the genealogy, no item", crate::static_item::build::env_name(collection))) });
-            continue;
-        }
-        if collection == 0x1a && name == "Grass" {
-            block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), 1, 1, Vec::new()));
-            outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Ok("Stadium grass floor: regenerated full size by the genealogy, no item".into()) });
-            continue;
-        }
-        let addv = ((flags >> crate::blockmap::FLAG_ADDITIONAL_SHIFT) & 0x7F) as usize;
-        let Some(pk) = bi.pick_placement_add(ground, vindex, sub, addv) else {
-            outcomes.push(Outcome { alias: String::new(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Err("block info has no variant with units or mobils".into()) });
-            continue;
-        };
-        let units: Vec<[i32; 3]> = pk.variant.block_units.iter().map(|u| u.offset).collect();
-        let (sx, sz) = units.iter().fold((1u32, 1u32), |(sx, sz), u| (sx.max(u[0] as u32 + 1), sz.max(u[2] as u32 + 1)));
-        // a terrain tile's auto terrain is itself: only the OTHER blocks hide tiles
-        if !tile_zones.contains(name) && !pk.variant.auto_terrains.is_empty() {
-            auto_terrain.insert((name.clone(), *flags, modk.clone()), (pk.variant.auto_terrains.iter().map(|(off, _, cur)| (*off, cur.clone())).collect(), pk.variant.auto_terrain_place_type));
-        }
-        let prefabs: Vec<(String, Option<[f32; 3]>, Option<[f32; 3]>)> = pk.mobils.iter().filter_map(|mb| mb.prefab.clone().map(|p| (p, mb.translation, mb.rotation))).collect();
-        let solids: Vec<String> = pk.mobils.iter().filter_map(|mb| mb.solid.clone()).collect();
-        let legacy_item = LEGACY.iter().find(|(n, _)| n == name).map(|(_, p)| *p);
-        // recipe key: what gets baked (prefab set or legacy item) + waypoint
-        // + the block's material modifier — PlatformGrass*/PlatformDirt*/
-        // PlatformIce* share the PlatformTech prefabs and differ ONLY by the
-        // modifier folder their materials are taken from (Summer 03: the tech
-        // slopes next to the first checkpoint came out grass, keyed to the
-        // PlatformGrassSlope2Straight item built first).
-        // the block's own modifier plus the one a filler inherits from the
-        // authored block it finishes (`modk`, see `inherited_mod`)
-        let effective_mods: Vec<String> = bi.material_modifier.iter().cloned().chain(modk.split('|').filter(|s| !s.is_empty()).map(String::from)).collect();
-        let recipe = if let Some(l) = legacy_item { format!("legacy:{l}") } else { format!("{}|wp{:?}|units{:?}|mod{:?}", prefabs.iter().map(|p| format!("{}@{:?}/{:?}", p.0, p.1, p.2)).collect::<Vec<_>>().join(","), bi.waypoint_type, units, effective_mods) };
-        if prefabs.is_empty() && legacy_item.is_none() {
-            if solids.is_empty() {
-                // intentionally empty variant (e.g. the hidden pillar)
-                block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), sx, sz, units.clone()));
-                outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X} [{}]", pk.label), placements: *n, result: Ok("no geometry in this variant: intentionally no item".into()) });
-            } else {
-                outcomes.push(Outcome { alias: String::new(), kind: "block", source: format!("{name} {flags:08X} [{}] solids {:?}", pk.label, solids), placements: *n, result: Err("legacy CPlugSolid model without a converted archive item".into()) });
+        let plan = match plan_block(&bi, &key, collection, &ambient, &tile_zones, &alias_of_recipe) {
+            BlockPlan::Nothing { why, label, footprint } => {
+                let (sx, sz, units) = match &footprint {
+                    Some(f) => (f.sx, f.sz, f.units.clone()),
+                    None => (1, 1, Vec::new()),
+                };
+                if let Some(Footprint { auto_terrain: Some(auto), .. }) = footprint {
+                    auto_terrain.insert(key.map_key(), auto);
+                }
+                block_map.insert(key.map_key(), ("-".into(), sx, sz, units));
+                let source = match label {
+                    Some(l) => format!("{} [{l}]", key.source()),
+                    None => key.source(),
+                };
+                outcomes.push(key.outcome("-", source, Ok(why)));
+                continue;
             }
-            continue;
-        }
-        if let Some(alias) = alias_of_recipe.get(&recipe) {
-            block_map.insert((name.clone(), *flags, modk.clone()), (alias.clone(), sx, sz, units.clone()));
-            continue;
+            BlockPlan::Refused { source, error } => {
+                outcomes.push(key.outcome("", source, Err(error)));
+                continue;
+            }
+            BlockPlan::Reuse { alias, footprint } => {
+                if let Some(auto) = footprint.auto_terrain {
+                    auto_terrain.insert(key.map_key(), auto);
+                }
+                block_map.insert(key.map_key(), (alias, footprint.sx, footprint.sz, footprint.units));
+                continue;
+            }
+            BlockPlan::Bake(plan) => plan,
+        };
+        if let Some(auto) = plan.footprint.auto_terrain.clone() {
+            auto_terrain.insert(key.map_key(), auto);
         }
         let alias = format!("AC{next_alias:08}");
         next_alias += 1;
         let ident = format!("{alias}.Item.Gbx");
-        let res: Result<(Vec<u8>, crate::static_item::build::Merged), String> = if let Some(l) = legacy_item {
-            match legacy.get(l) {
-                Some(bytes) => crate::static_item::build::static_item_from_item_report(bytes, &ident, &ident, scale, collection),
-                None => Err(format!("{l} absent from the legacy archive (pass --legacy-zip)")),
-            }
-        } else {
-            let mut m = crate::static_item::build::Merged::default();
-            m.keep_water = crate::static_item::build::keep_water_for(collection);
-            m.modifier = modifier_links(store, &effective_mods);
-            m.collision_redress = modifier_collision_redress(store, &effective_mods);
-            m.collision_redress_by_name = modifier_folder_redress(store, &m.modifier);
-            // (The DecoPlatform blocks — Slope2Start, SlopeBase, … — keep their
-            // `Deco` material: it IS what the game draws, the grass-topped
-            // decorative platform, phys 2. 70d461c re-dressed them as grey
-            // PlatformTech for a day; the original's cp3 slopes are green grass.)
-            let mut err = None;
-            // Terrain (Flat/Frontier/Transition zone blocks) sits where the
-            // source puts it. (A 0.2 m drop hid the coplanar deck/Land pairs
-            // of 2026-09-06; since `tmmaps tiny` hides the tile under every
-            // deck the drop only opened a 0.1 m step to the lowered
-            // neighbours — a black line across Summer 06's sand; gone.)
-            let terrain = matches!(bi.kind, crate::blockinfo::Kind::Flat | crate::blockinfo::Kind::Frontier | crate::blockinfo::Kind::Transition);
-            for (p, tr, rot) in &prefabs {
-                let mut at = crate::geom::IDENTITY;
-                if let Some(t) = tr {
-                    at[9] = t[0];
-                    at[10] = t[1];
-                    at[11] = t[2];
-                }
-                if rot.map(|r| r.iter().any(|v| v.abs() > 1e-6)).unwrap_or(false) {
-                    m.notes.push(format!("mobil rotation {:?} ignored for {p}", rot));
-                }
-                if let Err(e) = crate::static_item::build::add_prefab(store, p, &at, scale, &mut m, 0) {
-                    err = Some(e);
-                    break;
-                }
-            }
-            match err {
-                Some(e) => Err(e),
-                None => {
-                    // A terrain tile at the water row: the sea floor regains
-                    // its depth (the apron under the water would otherwise
-                    // sit at half depth and shade the sea a cell wide).
-                    if let (true, Some((wrow, wlocal))) = (terrain, water) {
-                        if rows_by_key.get(&(name.clone(), *flags)).map(|r| r.len() == 1 && r.contains(&wrow)).unwrap_or(false) {
-                            crate::static_item::build::restore_depth(&mut m, wlocal * scale, scale);
-                            deepened.push(format!("{name} {flags:08X}"));
-                        }
-                    }
-                    // A gameplay gate BLOCK (GateSpecialBoost/Reset/…): its trigger
-                    // disc lives in the block info, not the prefab (`blockinfo_special_
-                    // trigger`); the effect is the block's modifier Collision material
-                    // (the disc's own bytes say Turbo). The item takes the prefab form.
-                    if m.special.is_none() && name.starts_with("GateSpecial") {
-                        match crate::static_item::build::blockinfo_special_trigger(store, &path) {
-                            Some((verts, tris, own, dir)) => {
-                                let (ids, from) = match crate::static_item::build::special_collision_ids(store, &m) {
-                                    Some((link, ids)) => (ids, link),
-                                    None => (own, "the block info's own disc".to_string()),
-                                };
-                                if ids.1 != 0 {
-                                    let sf = CPlugSurface::mesh(verts, tris, vec![ids.0 as u16 | ((ids.1 as u16) << 8)], dir);
-                                    match crate::static_item::build::trigger_mesh(&sf, &crate::geom::IDENTITY, scale, ids) {
-                                        Some(t) => {
-                                            m.notes.push(format!("special trigger from the block info: physics {} gameplay {} from {from} ({} triangles, main dir {:?}) — prefab form", ids.0, ids.1, t.surf.counts().1, dir));
-                                            m.special = Some(t);
-                                        }
-                                        None => m.notes.push("special trigger from the block info has no triangles".to_string()),
-                                    }
-                                } else {
-                                    m.notes.push(format!("special trigger from the block info has gameplay 0 ({from}); not emitted"));
-                                }
-                            }
-                            None => m.notes.push("GateSpecial block without a Collision-material trigger disc in its block info".to_string()),
-                        }
-                    }
-                    // waypoint: type from the block info; the trigger is the
-                    // variant's own `*_Trigger.Shape.Gbx` scaled (for the road
-                    // checkpoints a 0.1 m plane across the middle of the block,
-                    // deck to ~8 m — where the original fires), the unit-box
-                    // volume only for a block without one; spawn = variant
-                    // spawn_loc scaled (Granady's items)
-                    if let Some(wt) = bi.waypoint_type.filter(|t| (0..=2).contains(t) || *t == 4) {
-                        m.waypoint_type = Some(wt);
-                        if wt != 0 {
-                            let mut trig = None;
-                            for sp in &pk.variant.trigger_shapes {
-                                match crate::static_item::build::trigger_from_shape_file(store, sp, &crate::geom::IDENTITY, scale) {
-                                    Ok(t) => {
-                                        m.notes.push(format!("waypoint trigger from {}", sp.rsplit('\\').next().unwrap_or(sp)));
-                                        trig = Some(t);
-                                        break;
-                                    }
-                                    Err(e) => m.notes.push(format!("trigger shape {sp}: {e}; next")),
-                                }
-                            }
-                            m.trigger = Some(trig.unwrap_or_else(|| {
-                                m.notes.push("waypoint trigger: no shape in the block info, unit box".to_string());
-                                unit_box_trigger(&units, scale)
-                            }));
-                        }
-                        let sl = pk.variant.spawn_loc;
-                        m.spawn = [sl[0] * scale, sl[1] * scale, sl[2] * scale];
-                    }
-                    // the block info's skin declaration (the screen blocks'
-                    // `Any\Advertisement16x9\`) travels into the item header
-                    if let Some(chunk) = store.read(&path).ok().and_then(|b| tmmaps::header::game_skin_chunk(&b)) {
-                        if let Some(s) = tmmaps::header::GameSkin::decode(&chunk) {
-                            m.notes.push(format!("skin {} ({} slots)", s.dir, s.fids.len()));
-                        }
-                        m.skin = Some(chunk);
-                    }
-                    let opts = crate::static_item::build::BuildOpts { ident: ident.clone(), author: ident.clone(), scale, collection, skin: m.skin.clone() };
-                    crate::static_item::build::assemble(&m, &opts).map(|f| (crate::static_item::file::write_file(&f), m))
-                }
-            }
-        };
+        let at_water_row = water.map(|(wrow, _)| rows_by_key.get(&(name.clone(), *flags)).map(|r| r.len() == 1 && r.contains(&wrow)).unwrap_or(false)).unwrap_or(false);
+        let res = bake_block(store, &plan, name, &path, &bi, &ident, scale, collection, &legacy, water, at_water_row);
+        let (sx, sz, units) = (plan.footprint.sx, plan.footprint.sz, &plan.footprint.units);
+        let label = &plan.pk.label;
+        let recipe = &plan.recipe;
         match res {
-            Ok((bytes, m)) => {
+            Ok((bytes, m, deepened_here)) => {
+                if deepened_here {
+                    deepened.push(key.source());
+                }
                 let nv = m.visuals.len();
                 let veget = m.notes.iter().filter(|n| n.to_ascii_lowercase().contains(".vegettreemodel.gbx")).count();
                 let other_skips = m.notes.iter().filter(|n| (n.contains("skipped") || n.contains("failed") || n.contains("unnamed")) && !n.to_ascii_lowercase().contains(".vegettreemodel.gbx")).count();
@@ -857,28 +974,28 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 }
                 let summary = format!("{} bytes, {} visuals, {} collision tris, {} vegetation entities ({} re-emitted as items), {} other skips{wp}{}", bytes.len(), nv, m.surf_triangles.len(), veget, re_emitted, other_skips, lod_summary(&m));
                 if nv == 0 {
-                    outcomes.push(Outcome { alias: alias.clone(), kind: "block", source: format!("{name} {flags:08X} [{}] {}", pk.label, recipe), placements: *n, result: Err(format!("no visuals ({summary}); notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | "))) });
+                    outcomes.push(key.outcome(&alias, format!("{} [{label}] {recipe}", key.source()), Err(format!("no visuals ({summary}); notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | ")))));
                     continue;
                 }
-                outcomes.push(Outcome { alias: alias.clone(), kind: "block", source: format!("{name} {flags:08X} [{}] {}", pk.label, prefabs.iter().map(|p| p.0.rsplit('\\').next().unwrap_or(&p.0).to_string()).collect::<Vec<_>>().join("+")), placements: *n, result: Ok(summary) });
+                outcomes.push(key.outcome(&alias, format!("{} [{label}] {}", key.source(), plan.prefabs.iter().map(|p| p.0.rsplit('\\').next().unwrap_or(&p.0).to_string()).collect::<Vec<_>>().join("+")), Ok(summary)));
                 files.insert(format!("Items/{ident}"), bytes);
-                alias_of_recipe.insert(recipe, alias.clone());
+                alias_of_recipe.insert(recipe.clone(), alias.clone());
                 // a deck block's driving surface, for the tree clearance below
                 if crate::tree_clear::is_deck_block(name) {
                     deck_tris.insert(ident.clone(), crate::tree_clear::up_facing(&m.surf_vertices, &m.surf_triangles));
                     deck_name.insert(ident.clone(), name.clone());
                 }
-                block_map.insert((name.clone(), *flags, modk.clone()), (alias, sx, sz, units.clone()));
+                block_map.insert(key.map_key(), (alias, sx, sz, units.clone()));
             }
             // a prefab with no entities at all (Stadium\Structure\PillarToFlat_ACB
             // is one): the game draws nothing there either
             Err(e) if e.starts_with("no visuals: nothing to build") => {
                 next_alias -= 1;
-                block_map.insert((name.clone(), *flags, modk.clone()), ("-".into(), sx, sz, units.clone()));
+                block_map.insert(key.map_key(), ("-".into(), sx, sz, units.clone()));
                 alias_of_recipe.insert(recipe.clone(), "-".into());
-                outcomes.push(Outcome { alias: "-".into(), kind: "block", source: format!("{name} {flags:08X} [{}] {}", pk.label, recipe), placements: *n, result: Ok("empty prefab (no entities): intentionally no item".into()) });
+                outcomes.push(key.outcome("-", format!("{} [{label}] {recipe}", key.source()), Ok("empty prefab (no entities): intentionally no item".into())));
             }
-            Err(e) => outcomes.push(Outcome { alias: alias.clone(), kind: "block", source: format!("{name} {flags:08X} [{}] {}", pk.label, recipe), placements: *n, result: Err(e) }),
+            Err(e) => outcomes.push(key.outcome(&alias, format!("{} [{label}] {recipe}", key.source()), Err(e))),
         }
     }
     // item models — one library entry per (model, VARIANT): the placement's
