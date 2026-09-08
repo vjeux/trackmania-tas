@@ -1043,6 +1043,32 @@ fn cmd_author_line(args: &[String]) {
     }
     println!("author line vs polyline: {} samples ({:.3} s), lateral median {med:.1} m, p90 {p90:.1} m, within half-width+2 m {:.0} %, worst {:.1} m at s {:.0} (author at ({:.0}, {:.0}, {:.0}), t {:.3} s); longest off-line (> 12 m) stretch {:.1} s from t {:.3} s at ({:.0}, {:.0}, {:.0})",
         rows.len(), d.end_ms as f32 / 1000.0, 100.0 * within as f32 / rows.len() as f32, worst.1, worst.0, worst.3[0], worst.3[1], worst.3[2], worst.4 as f32 / 1000.0, best_run.0 as f32 / 1000.0, best_run.1 as f32 / 1000.0, best_run.2[0], best_run.2[1], best_run.2[2]);
+    // --gates deck.json: the AUTHOR's gate order = the order in which the ghost first comes within 10 m (XZ) and 6 m (y)
+    // of each gate group's centre — the ground truth of a finishing lap on the tiny map
+    let mut author_order: Vec<u32> = Vec::new();
+    if let Some(gp) = flag(args, "--gates") {
+        let g = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+        let mut firsts: Vec<(i32, u32)> = Vec::new();
+        let mut groups: Vec<u32> = g.gates.iter().filter(|r| r.group != u32::MAX).map(|r| r.group).collect();
+        groups.sort_unstable();
+        groups.dedup();
+        for grp in groups {
+            let mut t_first: Option<i32> = None;
+            for r in &rows {
+                // within the gate's own half-width (+4 m) laterally and 8 m in height of any gate of the group
+                let hit = g.gates.iter().filter(|x| x.group == grp).any(|x| ((x.centre[0] - r.3[0]).powi(2) + (x.centre[2] - r.3[2]).powi(2)).sqrt() <= x.half_width + 6.0 && (x.centre[1] - r.3[1]).abs() <= 10.0);
+                if hit { t_first = Some(r.4); break; }
+            }
+            if let Some(t) = t_first { firsts.push((t, grp)); } else {
+                let (mut dmin, mut at) = (f32::INFINITY, [0.0f32; 3]);
+                for r in &rows { for x in g.gates.iter().filter(|x| x.group == grp) { let dd = ((x.centre[0] - r.3[0]).powi(2) + (x.centre[1] - r.3[1]).powi(2) + (x.centre[2] - r.3[2]).powi(2)).sqrt(); if dd < dmin { dmin = dd; at = r.3; } } }
+                eprintln!("  author never at group {grp}: nearest {dmin:.1} m at ({:.0}, {:.0}, {:.0})", at[0], at[1], at[2]);
+            }
+        }
+        firsts.sort();
+        author_order = firsts.iter().map(|f| f.1).collect();
+        println!("author order (groups, first pass): {}", author_order.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(","));
+    }
     if let Some(label) = flag(args, "--row") {
         println!("| {label} | {} ({:.1} s) | {med:.1} | {p90:.1} | {:.0} % | {:.1} @ s {:.0} (author at ({:.0}, {:.0}, {:.0}), t {:.1}) | {:.1} s from t {:.1} at ({:.0}, {:.0}, {:.0}) |", rows.len(), d.end_ms as f32 / 1000.0, 100.0 * within as f32 / rows.len() as f32, worst.1, worst.0, worst.3[0], worst.3[1], worst.3[2], worst.4 as f32 / 1000.0, best_run.0 as f32 / 1000.0, best_run.1 as f32 / 1000.0, best_run.2[0], best_run.2[1], best_run.2[2]);
     }
