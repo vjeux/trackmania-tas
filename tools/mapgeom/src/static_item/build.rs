@@ -4509,10 +4509,17 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
     let mut slots: Vec<usize> = Vec::with_capacity(t.materials.len());
     for mat in &t.materials {
         let mut files: Vec<(i32, String)> = Vec::new();
-        for (slot, image) in [(0i32, &mat.images[0]), (1, &mat.images[1])] {
-            if slot == 1 && !normal_map {
-                continue;
-            }
+        // TINY_TREE_LEAF_SLOTS=0,4 / TINY_TREE_BARK_SLOTS=0: the user-texture
+        // slots the diffuse image fills (the slot enum is the game's: 0 is the
+        // diffuse, 5 the self-illumination; which one a model reads its opacity
+        // from is what the lineups measure)
+        let slots_env = if mat.leaf { "TINY_TREE_LEAF_SLOTS" } else { "TINY_TREE_BARK_SLOTS" };
+        let d_slots: Vec<i32> = std::env::var(slots_env).ok().map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect()).filter(|v: &Vec<i32>| !v.is_empty()).unwrap_or_else(|| vec![0]);
+        let mut wanted: Vec<(i32, &Option<String>)> = d_slots.iter().map(|s| (*s, &mat.images[0])).collect();
+        if normal_map {
+            wanted.push((1, &mat.images[1]));
+        }
+        for (slot, image) in wanted {
             let Some(path) = image else { continue };
             let file = path.rsplit('\\').next().unwrap_or(path).to_string();
             if !m.pictures.iter().any(|(f, _)| *f == file) {
@@ -4565,6 +4572,24 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                 }
             }
             transform_visual(&mut v, &IDENTITY, scale)?;
+            // Leaf cards are seen from both sides. A shading model without a
+            // two-sided variant gets its back faces as a second, reversed copy
+            // of the index list (the normals stay the front ones — a lit back
+            // face, not a dark one); TINY_TREE_LEAF_BACKFACES=0 leaves it.
+            let leaf = t.materials[e.material as usize].leaf;
+            if leaf && !leaf_model.contains("2Sided") && std::env::var("TINY_TREE_LEAF_BACKFACES").map(|x| x != "0").unwrap_or(true) {
+                if let Some(ib) = v.index_buffer.as_mut() {
+                    let n = ib.indices.len() / 3 * 3;
+                    let mut back = Vec::with_capacity(n);
+                    for tri in ib.indices[..n].chunks(3) {
+                        back.extend_from_slice(&[tri[0], tri[2], tri[1]]);
+                    }
+                    ib.indices.extend(back);
+                    if !out.stripped.contains(&"+backfaces") {
+                        out.stripped.push("+backfaces");
+                    }
+                }
+            }
             m.visuals.push(MergedVisual { visual: v, material: slots[e.material as usize], lod_mask: if pick.is_some() { 0 } else { 1 << bit }, lod_ladder: ladder.clone() });
             n += 1;
         }

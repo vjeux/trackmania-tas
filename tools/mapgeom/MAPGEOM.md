@@ -542,11 +542,19 @@ the run directory's transcripts.
    `0x0304E023 / 0x0304E027 / 0x0304E02C` → `CGameCtnBlockInfoVariant`
    `0x0315B005` → `CGameCtnBlockInfoMobil` `0x03122003` — the same body readers
    item (1) needs.
-5. **`VegetTreeModel` (`0x2F086000`) has no reader** — 1 800 placements of
-   `WinterFrozenTree` and 536 of `FirSnowTall` on 210218 alone. Trees are
-   almost certainly not collidable, so this is probably worth nothing to
-   coverage; it is listed because the count is large enough to look alarming in
-   a transcript and should not be mistaken for track.
+5. ~~**`VegetTreeModel` (`0x2F086000`) has no reader**~~ — SOLVED 2026-09-08
+   (`veget.rs`): the whole struct reads — inline materials (name, D/N/R
+   image refs, a leaf flag), the detail levels as inline
+   `CPlugVisualIndexedTriangles` nodes, the switch/far distances, and the
+   trunk hull (kind 7: vertices + (a, b, c, Wood 14) triangles; -1 = none,
+   so grass and flowers are indeed not collidable — the trees ARE, a trunk
+   cylinder of a few dozen triangles). `mapgeom veget-info PATH…` prints it;
+   the tiny campaign bakes each species as a half-size static item from it
+   (`veget-bake`, `tiny-library --veget bake`). The files are the pack's
+   LZ4 + dummy-written kind: the decode schedule needs the node-start scan to
+   know a visual opens with CPlugVisual's chunk and that an index buffer
+   inside chunk 0x0906A001 is a node (pakfile.rs); all 193 species files of
+   the five collections decode.
 6. **Two crystal layer types, 13 and 18**, `KinematicConstraint`
    (`0x2F0CA000`), and `LightRay.DynaObject.Gbx`, which fails in the pack
    reader rather than the chunk walk (`bad match offset 49599`) and is the one

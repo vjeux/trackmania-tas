@@ -30,7 +30,7 @@ COMMANDS
                                 faulting instruction, heuristic stack walk as
                                 exe RVAs / objdump addresses (CRASH.md)
   tiny-library <file.Map.Gbx> --library-out ZIP --mapping-out TSV [--report TSV]
-      [--scale 0.5] [--legacy-zip Nadeo.zip] [--items-dir DIR] [--veget substitute|keep|drop]
+      [--scale 0.5] [--legacy-zip Nadeo.zip] [--items-dir DIR] [--veget bake|substitute|keep|drop]
       [--collection BlueBay] [--only N,..]
                                 every block/item model of the map as a half-scale
                                 STATIC item (stage-1 path) + tmmaps tiny mapping

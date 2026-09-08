@@ -6,7 +6,10 @@
 //! mechanisms (`static_item/bake.rs`; recipe env vars apply), under the map's
 //! own collection. Every item model of the map is baked from its pack file
 //! (external prefab / static object) or, when it is procedural vegetation,
-//! re-pointed at a smaller stock species (`--veget substitute|keep|drop`).
+//! BAKED from its `.VegetTreeModel.Gbx` as a half-size static item too
+//! (`--veget bake`, the default; species under 2 m stay stock items) — or,
+//! with `--veget substitute|keep|drop`, re-pointed at a smaller stock
+//! species / kept / dropped (the 2026-09-05..07 stand-in path).
 //! Legacy prefab-less blocks come from the converted Nadeo item archive
 //! (`--legacy-zip`). A variant with no geometry (an intentionally empty
 //! pillar) maps to `-`: no item, on purpose.
@@ -16,7 +19,7 @@
 //!
 //! Usage: mapgeom tiny-library MAP.Map.Gbx --library-out ITEMS.zip --mapping-out placements.tsv
 //!        [--report REPORT.tsv] [--scale 0.5] [--legacy-zip Nadeo.zip] [--items-dir DIR]
-//!        [--veget substitute|keep|drop] [--collection BlueBay] [--only NAME[,NAME]]
+//!        [--veget bake|substitute|keep|drop] [--collection BlueBay] [--only NAME[,NAME]]
 //! Needs the client packs (`--pak FILE:KEY` for BlueBay.pak and the Stadium pak).
 
 use crate::static_item::surface::{CPlugSurface, Triangle};
