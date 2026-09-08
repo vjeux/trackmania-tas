@@ -257,7 +257,7 @@ impl<'a> Chained<'a> {
     pub fn local_query(&self, s: &ChainState, target: [f32; 3], h: u16) -> crate::net::Estimate {
         let cs = self.state_of(s);
         let dir = frame::unit3([target[0] - s.pos[0], target[1] - s.pos[1], target[2] - s.pos[2]]).unwrap_or([0.0, 0.0, 1.0]);
-        let t = TargetSpec { centre: target, normal: dir, half_width: crate::data::R_LOCAL, group_size: 0, kind: TargetKind::LocalPoint, collected_share: 0.0 };
+        let t = TargetSpec { centre: target, normal: dir, half_width: crate::data::r_local(frame::norm3([target[0] - s.pos[0], target[1] - s.pos[1], target[2] - s.pos[2]])), group_size: 0, kind: TargetKind::LocalPoint, collected_share: 0.0 };
         let mut x = vec![0f32; self.feat.dim()];
         self.feat.fill(&cs, &t, h, &mut x);
         crate::feat::mask_blocks(self.feat.version(), &mut x, &self.keep);
@@ -268,7 +268,7 @@ impl<'a> Chained<'a> {
     /// The local head on a REAL car state → a point target at h (the coordinator's F22 separation: head or fan).
     pub fn local_query_state(&self, cs: &CarState, target: [f32; 3], h: u16) -> crate::net::Estimate {
         let dir = frame::unit3([target[0] - cs.pos[0], target[1] - cs.pos[1], target[2] - cs.pos[2]]).unwrap_or([0.0, 0.0, 1.0]);
-        let t = TargetSpec { centre: target, normal: dir, half_width: crate::data::R_LOCAL, group_size: 0, kind: TargetKind::LocalPoint, collected_share: 0.0 };
+        let t = TargetSpec { centre: target, normal: dir, half_width: crate::data::r_local(frame::norm3([target[0] - cs.pos[0], target[1] - cs.pos[1], target[2] - cs.pos[2]])), group_size: 0, kind: TargetKind::LocalPoint, collected_share: 0.0 };
         let mut x = vec![0f32; self.feat.dim()];
         self.feat.fill(cs, &t, h, &mut x);
         crate::feat::mask_blocks(self.feat.version(), &mut x, &self.keep);
