@@ -269,17 +269,25 @@ standing upright inside a bigger mass, or measure what the culling tests), or
 handler → SInstanceParams → CHmsMgrVisDyna::InstanceCreate, unlocated in the
 exe; `tm2020-tween-anim-re.md` has the reading so far).
 
-**Pushers, phase (2026-09-08).** The stroke of an embedded Level pusher IS
-halved (top-down beside the stock 8mL1: ours extends exactly half at every
-sampled instant). Summer 15's two facing Level1 pistons meet mid-channel in the
-tiny because OURS RUN IN PHASE while the ORIGINAL's two run out of phase — and
-the phase is not in the placement bytes: the two records are identical except
-position/yaw, the skippable 0x03101005 word is 4 on all nine pushers of the
-area, and `tmmaps lineup --phases 0,4,0,4` (`MapFile::set_item_anim_phase`)
-on two stock and two embedded pushers changes nothing visible. Two paths for
-the successor: (1) find the per-instance seed the game uses for stock kinematic
-items (position along the piston axis? the stock instance's FID? test: two
-stock 8mL1 at different positions along their own axis — do THEY differ?); (2)
-bake Level pushers in two phase variants (SInstanceParams.Phase01 explicit 0 /
-0.5, word 5 of the 32-byte params) and alternate them across the pairs that
-face each other — a guess about WHICH pairs face, so (1) is the real fix.
+**Pushers, phase — RESOLVED, no defect (2026-09-08 21:00Z).** The phase of a
+kinematic item is the map's per-item **AnimPhaseOffset** byte — chunk
+0x03043063, one byte per anchored object in eighths of the period
+(`CGameCtnAnchoredObject::AnimPhaseOffset`, EPhaseOffset: 4 = Half); `tmmaps
+phases MAP` prints it. Summer 15 is the only campaign map that uses it: the two
+facing channel pistons carry 0 and 4 (i131/i132, and i133/i134 on the second
+channel), the two Level1 rotors 4 and 2, sixty inflatable mats 2; every other
+placement of every map is 0. `tmmaps tiny` keeps the original items in their
+slots, so the bytes ride along unchanged, and the game honours them for an
+EMBEDDED kinematic item exactly as for a stock one (lineup PH1: four stock
+8mL1 and four of our half copies at bytes 0/2/4/6 in one frame extend the same
+way; the ship10 tiny 15 pair runs complementary — sum of the two extensions
+constant — like the original). The earlier "ours run in phase and meet
+mid-channel" was a misreading of a perspective frame: the pads never meet in
+either world; the free gap between them is constant (≈7.8 m original, ≈3.9 m
+tiny — half, faithful) and slides across the road once per 4 s. What vjeux hit
+is the SCALE POLICY, not a phase bug: the car is not halved, so a 3.9 m gap for
+a 2.1 m car is a tighter timing window than the original's 7.8 m. What does
+NOT set a kinematic part's phase: `SInstanceParams.Phase01` (three copies baked
+with Phase01 unset / 0.25 / 0.5 move identically — the `mapgeom static-item
+--phase01` knob stays as a probe) and the in-record 0x03101005 word (4 on
+every placement; `tmmaps lineup --rec-word5`).

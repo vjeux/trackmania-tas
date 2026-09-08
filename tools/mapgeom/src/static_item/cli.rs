@@ -26,6 +26,15 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         Some(name) => Some(crate::light_skin::lookup(&name).ok_or_else(|| format!("--light-skin {name}: not one of the game's LightColors swatches"))?),
         None => None,
     };
+    // --phase01 F: an explicit animation phase (0..1 of the period) written into
+    // the SInstanceParams of every constrained moving part (pack pushers say
+    // -1 = unset there); the 2026-09-08 probe of whether an embedded kinematic
+    // dyna honours its own Phase01 (the map's per-placement AnimPhaseOffset
+    // byte, chunk 0x03043063, does nothing for an embedded item)
+    if let Some(p) = flag(rest, "--phase01") {
+        let p: f32 = p.parse().map_err(|e| format!("--phase01: {e}"))?;
+        build::DYNA_PHASE01.with(|o| o.set(Some(p)));
+    }
     let is_file = std::path::Path::new(&src).is_file();
     let (bytes, merged) = if is_file {
         let data = std::fs::read(&src).map_err(|e| format!("{src}: {e}"))?;

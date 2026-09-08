@@ -952,6 +952,30 @@ pub fn tween_parts_enabled() -> bool {
 }
 
 thread_local! {
+    /// An explicit animation phase (0..1 of the period) for every constrained
+    /// moving part baked while set: written into the part's SInstanceParams
+    /// (Phase01 and Phase01Max, the pack pushers carry -1 = unset in both).
+    /// `mapgeom static-item --phase01`, and tiny-library's per-placement
+    /// phase variants (the map's AnimPhaseOffset byte, chunk 0x03043063).
+    pub static DYNA_PHASE01: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+}
+
+/// `NPlugDynaObjectModel_SInstanceParams` (0x2F0B6000) bytes with Phase01 and
+/// Phase01Max (words 5 and 6 after the version) set to `phase`. The struct is
+/// {version, PeriodSc, TextureId, IsKinematic, [v>=1: PeriodScMax, Phase01,
+/// Phase01Max], [v>=2: CastStaticShadow]}; a version-0 record (no phase
+/// words) is returned unchanged.
+pub fn with_phase01(params: &[u8], phase: f32) -> Vec<u8> {
+    let mut out = params.to_vec();
+    if out.len() < 28 || u32::from_le_bytes(out[0..4].try_into().unwrap()) < 1 {
+        return out;
+    }
+    out[20..24].copy_from_slice(&phase.to_le_bytes());
+    out[24..28].copy_from_slice(&phase.to_le_bytes());
+    out
+}
+
+thread_local! {
     /// A per-bake override of `tween_parts_enabled` (tiny-library bakes the
     /// STILL copy of a flag for the placements whose driver has nowhere to
     /// hide): `Some(false)` while that copy is built, `None` otherwise.
@@ -1276,6 +1300,15 @@ pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform
         constraint.summary()
     ));
     m.notes.extend(mesh.notes.drain(..).map(|n| format!("  (moving part) {n}")));
+    // an explicit phase for this part (DYNA_PHASE01): the placement's
+    // AnimPhaseOffset baked into the instance params
+    let instance_params = match DYNA_PHASE01.with(|o| o.get()) {
+        Some(p) => {
+            m.notes.push(format!("  (moving part) instance params Phase01 = Phase01Max = {p:.3}"));
+            with_phase01(&ent.params, p)
+        }
+        None => ent.params.clone(),
+    };
     m.dyna.push(DynaPart {
         path: path.to_string(),
         rot,
@@ -1285,7 +1318,7 @@ pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform
         hit_shape,
         model: src.model.clone(),
         instance_params_id: ent.params_id,
-        instance_params: ent.params.clone(),
+        instance_params,
         constraint: Some((constraint, cparams)),
         pack_ref: None,
     });

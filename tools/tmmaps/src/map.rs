@@ -1890,11 +1890,26 @@ impl MapFile {
             .push((it.yaw_off, yaw.to_le_bytes().to_vec()));
     }
 
-    /// The anchored object's animation phase word — the int of its skippable
-    /// chunk 0x03101005 (`version 1, int, byte`; every animated item of the
-    /// Summer maps carries 4 there). Patched in place inside the record; false
-    /// when the record has no such chunk (an older map).
-    pub fn set_item_anim_phase(&mut self, item_index: usize, phase: u32) -> bool {
+    /// The map's per-item ANIMATION PHASE OFFSET byte — chunk 0x03043063
+    /// (`CGameCtnAnchoredObject::AnimPhaseOffset`, EPhaseOffset in eighths of
+    /// the period: 4 = half). Summer 15's two facing channel pistons carry 0
+    /// and 4 — that is why the original's never meet. Must run on a file whose
+    /// item array is already its final size (like `set_item_color`).
+    pub fn set_item_phase8(&mut self, item_index: usize, phase8: u8) {
+        let chunks = crate::gbx::all_skip_chunks(&self.gbx.body);
+        let &(_, _, payload, size) = chunks.iter().find(|(c, ..)| *c == 0x0304_3063).expect("phase chunk 0x03043063");
+        let off = payload + 4 + item_index;
+        assert!(off < payload + size, "item {item_index} past the phase chunk ({} bytes)", size - 4);
+        self.raw_patches.push((off, vec![phase8]));
+    }
+
+    /// The int of the anchored object's skippable in-record chunk 0x03101005
+    /// (`version 1, int, byte`; 4 on every Summer placement). NOT the
+    /// animation phase — that is the per-item byte of chunk 0x03043063
+    /// (`set_item_phase8`); this word was probed as the phase on 2026-09-08
+    /// (0 vs 4 changed nothing) before the real chunk was found. Patched in
+    /// place inside the record; false when the record has no such chunk.
+    pub fn set_item_record_word5(&mut self, item_index: usize, phase: u32) -> bool {
         let it = self.items[item_index].clone();
         let rec = &self.gbx.body[it.record_region.0..it.record_region.1];
         // chunk id, PIKS, size 9, version 1 — then the int

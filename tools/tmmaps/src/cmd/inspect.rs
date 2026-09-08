@@ -262,3 +262,43 @@ pub fn colors(args: &[String]) {
             println!("{k}\tcolor {c}\t{n}");
         }
 }
+
+/// `tmmaps phases MAP [--filter PAT] [--all]` — chunk 0x03043063: the map's
+/// per-item ANIMATION PHASE OFFSET (`CGameCtnAnchoredObject::AnimPhaseOffset`,
+/// EPhaseOffset in eighths of the period: 0 None, 1 One8th, 2 One4th,
+/// 3 Three8th, 4 Half, 5 Five8th, 6 Three4th, 7 Seven8th), one byte per
+/// anchored object after the version word. This is where the map editor
+/// stores the phase the author gives a kinematic item (pushers, rotors,
+/// tubes, turnstiles — Summer 15's two facing channel pistons carry 0 and 4,
+/// which is why the original's never meet). Prints every item with a
+/// non-zero phase (all items with --all, or those matching --filter), and a
+/// histogram.
+pub fn phases(args: &[String]) {
+    let m = map::MapFile::load(Path::new(&args[2]));
+    let chunks = map::skip_chunks(&m.gbx.body);
+    let Some(&(_, _, payload, size)) = chunks.iter().find(|(c, ..)| *c == 0x0304_3063) else {
+        println!("no phase chunk 0x03043063 ({} items)", m.items.len());
+        return;
+    };
+    let bytes = &m.gbx.body[payload + 4..payload + size];
+    let ni = m.items.len();
+    eprintln!("{} phase bytes for {} items (chunk version {})", bytes.len(), ni, u32::from_le_bytes(m.gbx.body[payload..payload + 4].try_into().unwrap()));
+    let filter = tmmaps::cli::flag(&args, "--filter");
+    let all = args.iter().any(|a| a == "--all");
+    let mut hist = std::collections::BTreeMap::new();
+    println!("item\tmodel\tphase8\tx\ty\tz\tyaw");
+    for (i, it) in m.items.iter().enumerate() {
+        let p = bytes.get(i).copied().unwrap_or(255);
+        *hist.entry(p).or_insert(0usize) += 1;
+        let show = match filter.as_deref() {
+            Some(f) => it.model.contains(f),
+            None => all || p != 0,
+        };
+        if show {
+            println!("i{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.4}", it.index, it.model, p, it.pos[0], it.pos[1], it.pos[2], it.yaw);
+        }
+    }
+    for (p, n) in hist {
+        println!("phase {p}\t{n}");
+    }
+}

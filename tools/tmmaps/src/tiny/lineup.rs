@@ -401,14 +401,26 @@ pub fn lineup_cmd(args: &[String]) {
             println!("  skin on {} ({}): {path}", names[k], n + k);
         }
     }
-    // --phases P0,P1,…: the anchored object's animation phase word (chunk
-    // 0x03101005, 4 on every Summer placement) per item of the row — the
-    // 2026-09-08 probe of whether it de-synchronises two kinematic pushers
-    if let Some(list) = cli::flag(args, "--phases") {
+    // --phases8 P0,P1,…: the map's per-item ANIMATION PHASE OFFSET byte (chunk
+    // 0x03043063, eighths of the period: 4 = half — the editor's item phase,
+    // what Summer 15's two facing channel pistons carry as 0 and 4) per item
+    // of the row — the 2026-09-08 probe of whether an embedded kinematic item
+    // honours it like a stock one
+    if let Some(list) = cli::flag(args, "--phases8") {
         for (k, p) in list.split(',').filter(|s| !s.is_empty()).enumerate() {
-            let p: u32 = p.trim().parse().unwrap_or_else(|_| panic!("--phases wants integers, got {p:?}"));
-            let ok = m.set_item_anim_phase(n + k, p);
-            println!("  anim phase {p} on row item {k} ({}){}", n + k, if ok { "" } else { " — record has no 0x03101005 chunk" });
+            let p: u8 = p.trim().parse().unwrap_or_else(|_| panic!("--phases8 wants bytes 0..7, got {p:?}"));
+            m.set_item_phase8(n + k, p);
+            println!("  anim phase {p}/8 on row item {k} ({})", n + k);
+        }
+    }
+    // --rec-word5 W0,W1,…: the int of the in-record chunk 0x03101005 — NOT the
+    // phase (probed as one on 2026-09-08 before the real chunk was found; kept
+    // as a knob, see MapFile::set_item_record_word5)
+    if let Some(list) = cli::flag(args, "--rec-word5") {
+        for (k, p) in list.split(',').filter(|s| !s.is_empty()).enumerate() {
+            let p: u32 = p.trim().parse().unwrap_or_else(|_| panic!("--rec-word5 wants integers, got {p:?}"));
+            let ok = m.set_item_record_word5(n + k, p);
+            println!("  record word5 {p} on row item {k} ({}){}", n + k, if ok { "" } else { " — record has no 0x03101005 chunk" });
         }
     }
     if !embedded.is_empty() {

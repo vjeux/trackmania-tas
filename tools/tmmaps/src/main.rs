@@ -80,7 +80,7 @@ fn main() {
     // missing that is `index out of bounds: the len is 2 but the index is 2` —
     // a panic where a usage line belongs. Say what is missing instead.
     const WANTS_MAP: &[&str] = &[
-        "waypoints", "census", "fillers", "region", "colors", "genealogy", "tiny-catalog", "lineup", "shared-cells", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
+        "waypoints", "census", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
         "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "delblocks", "mediatracker",
     ];
@@ -143,6 +143,7 @@ fn main() {
         "blockrefs" => inspect::blockrefs(&args),
         "genealogy" => inspect::genealogy(&args),
         "colors" => inspect::colors(&args),
+        "phases" => inspect::phases(&args),
         "help" | "--help" | "-h" => println!("{}", USAGE),
         other => {
             eprintln!("tmmaps: unknown subcommand `{}`\n\n{}", other, USAGE);
@@ -177,6 +178,10 @@ READING A MAP
   tmmaps region MAP --box X0,Y0,Z0:X1,Y1,Z1 [--filter PAT] [--items] [--blocks]
         everything whose position lies inside a world box. A GATE IS A
         STRUCTURE, NOT A BLOCK: run this before and after any move.
+  tmmaps phases MAP [--filter PAT] [--all]
+        the per-item ANIMATION PHASE OFFSET (chunk 0x03043063, one byte per item
+        in eighths of the period: 4 = half) — what the editor stores when the
+        author phases a pusher/rotor/tube; non-zero items, or --filter/--all
   tmmaps chunks MAP [--only 0xCHUNK --hex N]
         every skippable body chunk with its size (--only/--hex: one chunk, head dump)
   tmmaps blockrefs MAP [--groups]
