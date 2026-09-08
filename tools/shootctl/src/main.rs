@@ -1268,7 +1268,7 @@ usage:
                         }
                         i += 2;
                     }
-                    "--force" => { i += 1; }   // handled below; not a ghost
+                    "--force" | "--keep-game" => { i += 1; }   // handled below; not ghosts
                     other if other.starts_with("--") => {
                         // An unknown flag silently became a GHOST PATH and the
                         // run died on "stage --force: No such file". Refuse.
