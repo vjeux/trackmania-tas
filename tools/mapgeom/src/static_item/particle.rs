@@ -712,3 +712,19 @@ fn fmt_word(w: u32) -> String {
 pub fn is_particle_chunk(cid: u32) -> bool {
     matches!(cid, C_FX_SYSTEM | 0x090B3000 | 0x090B3001 | 0x090B202D | 0x090B202E | 0x090B2036 | 0x090B203A | 0x090C5000 | 0x09011030 | 0x09011034 | 0x0901102A | 0x0901102C) || raw_payload_len(cid).is_some()
 }
+
+/// A CPlugBitmap chunk this exe's reader does NOT know from a user file
+/// (the pack textures' 0x19, 0x20, 0x23, 0x25, 0x28, 0x2A): the switch at
+/// exe+0x3f78eb dispatches 0x2B-0x2E, 0x30, 0x32-0x3A; the legacy ids reach
+/// the fallback, which knows only the CPlug chunks, and the stream is
+/// misread from there (2026-09-08).
+pub fn is_legacy_bitmap_chunk(c: &PChunk) -> bool {
+    let id = match c {
+        PChunk::Raw { id, .. } => *id & 0x7FFF_FFFF,
+        PChunk::SingleRef { id, .. } => *id,
+        PChunk::BitmapImage { .. } => 0x09011030,
+        PChunk::BitmapFrames { .. } => 0x09011034,
+        _ => return false,
+    };
+    id >> 12 == 0x09011 && !matches!(id & 0xFFF, 0x02B..=0x02E | 0x030 | 0x032..=0x03A)
+}

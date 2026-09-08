@@ -2753,6 +2753,13 @@ fn place_particle_node(node: &mut super::particle::ParticleNode, externals: &[(u
                         Some((_, bitmap, name, _)) => {
                             let i = next_index(next);
                             let mut b = bitmap.clone();
+                            // only the chunks THIS exe's CPlugBitmap reader knows in a
+                            // user file: its switch (exe+0x3f78eb) handles 0x2B-0x2E, 0x30,
+                            // 0x32-0x38 and up; the pack files' legacy 0x19/0x20/0x23/0x25/
+                            // 0x28/0x2A come through a pak-side descriptor table, and read
+                            // from user space they misparse (ReadString on chunk id
+                            // 0x09011023 → "class 0x40000000" → crash, 2026-09-08)
+                            b.chunks.retain(|c| !super::particle::is_legacy_bitmap_chunk(c));
                             for ir in b.refs_mut() {
                                 if ir.index >= 0 && ir.inline.is_none() {
                                     let k = next_index(next);

@@ -192,7 +192,16 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                                 for (k, t) in fx_textures(pm).iter().enumerate() {
                                     match (t.index, t.inline.is_some()) {
                                         (ti, _) if ti < 0 => problems.push(format!("entity {i}: emitter {:?} sub-model {k}: NULL texture (FX-01: the engine dereferences it)", em.name.as_str().unwrap_or(""))),
-                                        (_, true) => problems.push(format!("entity {i}: emitter {:?} sub-model {k}: INLINE texture (FX-01: the engine misreads an inline CPlugBitmap)", em.name.as_str().unwrap_or(""))),
+                                        // an inline bitmap is fine ONLY without the legacy chunks this exe
+                                        // cannot read from a user file (particle::is_legacy_bitmap_chunk)
+                                        (_, true) => {
+                                            if let Some(super::Node::Particle(b)) = t.inline.as_deref() {
+                                                let legacy: Vec<String> = b.chunks.iter().filter(|c| super::particle::is_legacy_bitmap_chunk(c)).map(|c| match c { super::particle::PChunk::Raw { id, .. } => format!("{:03X}", id & 0xFFF), super::particle::PChunk::SingleRef { id, .. } => format!("{:03X}", id & 0xFFF), _ => "?".into() }).collect();
+                                                if !legacy.is_empty() {
+                                                    problems.push(format!("entity {i}: emitter {:?} sub-model {k}: INLINE texture with legacy chunk(s) {} (FX-01: this exe misreads them from a user file)", em.name.as_str().unwrap_or(""), legacy.join(" ")));
+                                                }
+                                            }
+                                        }
                                         // a `.Texture.gbx` FILE next to the item is read by the same
                                         // misreading path and crashed the client too (FxF, LogCrash
                                         // 2EDBA8 again, 2026-09-08 06:11Z): the pack path is the one form
