@@ -995,7 +995,8 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
                 // the persistent-storage FUSE mount serves STALE objects for hours after another
                 // box's write (MODEL arm); a remount refreshes it instantly
                 println!("   ghosts.tar read partial: remounting private-30d and retrying");
-                let _ = std::process::Command::new("persistent-storage").args(["remount", "private-30d"]).status();
+                // in its own systemd scope: a FUSE daemon started inside this process's unit dies with the unit
+                let _ = std::process::Command::new("systemd-run").args(["--user", "--scope", "--unit", &format!("gen-mount-{}", std::process::id()), "--", "persistent-storage", "remount", "private-30d"]).status();
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 ok = extract(&tdir);
             }
@@ -1097,7 +1098,16 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
         let stages: Result<(String, String, String, String), String> = (|| {
             let gc_workers = workers.parse::<usize>().unwrap_or(32).min(n_linked).max(1).to_string();
             let gc = run(&["gatecal", "--map", &m, "--ghosts", &g, "--workers", &gc_workers, "--out", &gc_out, "--work", &w, "--geom", &geom_arg])?;
-            let oc = run(&["oraclectl", "--map", &m, "--ghosts", &g, "--detector", &det, "--out", &oc_out, "--work", &w, "--workers", "12", "--ghost-stride", "4", "--every", "2500", "--macros", "0,2,9,21,26,29,33,38", "--geom", &geom_arg])?;
+            // the oracle control's start spacing scales with the run length so a long map does not
+            // take an hour of plain-oracle time (Summer 2025 - 25, 3.4 min runs: 4648 tapes, 53 min):
+            // ~600 cases = starts x ~5 ghosts x 8 macros -> every = declared x 40 / 600, at least 2.5 s
+            let decl_med: i64 = {
+                let mut d: Vec<i64> = exact.iter().filter_map(|e| e.1.parse::<i64>().ok()).collect();
+                d.sort();
+                d.get(d.len() / 2).copied().unwrap_or(30000)
+            };
+            let every = ((decl_med * 40 / 600) / 100 * 100).max(2500).to_string();
+            let oc = run(&["oraclectl", "--map", &m, "--ghosts", &g, "--detector", &det, "--out", &oc_out, "--work", &w, "--workers", "12", "--ghost-stride", "4", "--every", &every, "--macros", "0,2,9,21,26,29,33,38", "--geom", &geom_arg])?;
             let fo = run(&["fanout", "--map", &m, "--ghosts", &g, "--detector", &det, "--out", &fo_out, "--work", &w, "--workers", &workers, "--shards", &shards, "--horizons", "200,400", "--geom", &geom_arg])?;
             let ve = run(&["verify", "--dir", &fo_out])?;
             Ok((gc, oc, fo, ve))

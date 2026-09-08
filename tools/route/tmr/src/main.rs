@@ -286,7 +286,15 @@ fn load_cache(args: &[String]) -> (Vec<Rows>, Vec<u8>) {
                 continue;
             }
         }
+        let mut r = r;
         let h = if data::held_out(&r.map_uid) { 1 } else if force.contains(&r.map_uid) { 2 } else { 0 };
+        // --train-rows N: subsample each TRAINING map's rows at load (seed 7, uniform) — the memory lever when the
+        // cache holds more than the box can train (v2 rows are 10.8 KB each; held-out rows stay whole)
+        if h == 0 {
+            if let Some(n) = flag(args, "--train-rows").and_then(|s| s.parse::<usize>().ok()) {
+                r.subsample(n, 7);
+            }
+        }
         held.push(h);
         rows.push(r);
     }
@@ -1067,7 +1075,7 @@ fn cmd_watch(args: &[String]) {
                 if let Some(h) = flag(args, "--held-out") {
                     cmd.args(["--held-out", &h]);
                 }
-                for pass in ["--batch", "--lr", "--wd", "--hidden", "--patience", "--max-rss-gb"] {
+                for pass in ["--batch", "--lr", "--wd", "--hidden", "--patience", "--max-rss-gb", "--train-rows"] {
                     if let Some(v) = flag(args, pass) {
                         cmd.args([pass, &v]);
                     }

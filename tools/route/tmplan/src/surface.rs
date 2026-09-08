@@ -440,7 +440,15 @@ impl SurfaceModel {
     /// Road-only path between two gate nodes (no off-road cell, no leap) as world points, or None = a GAP.
     pub fn road_path(&self, nodes: &Nodes, i: usize, j: usize) -> Option<Vec<[f32; 3]>> {
         let gi = nodes.graph_node[i]?;
-        let gj = nodes.graph_node[j]?;
+        self.road_path_nodes(gi, nodes.graph_node[j]?)
+    }
+    /// Road-only path from a world POINT (the spot 6 m past a gate, so the next leg starts THROUGH the gate plane
+    /// instead of hair-pinning before it — INPUT arm, Argentina 2026 gate 1) to a gate node.
+    pub fn road_path_from_point(&self, p: [f32; 3], nodes: &Nodes, j: usize) -> Option<Vec<[f32; 3]>> {
+        let gi = self.graph.nearest_window(&self.grid, p, 2, -3.0, 3.0)?;
+        self.road_path_nodes(gi, nodes.graph_node[j]?)
+    }
+    fn road_path_nodes(&self, gi: usize, gj: usize) -> Option<Vec<[f32; 3]>> {
         let (dist, prev) = self.graph.dijkstra_road(gi);
         if !dist[gj].is_finite() {
             return None;
@@ -451,24 +459,45 @@ impl SurfaceModel {
         let mut run = 0.0f32;
         let mut worst = 0.0f32;
         let mut along = 0.0f32;
+        // an off-road run that DESCENDS more than 2 m is a fall (Argentina 2026: 13 m of Metal girder tops dropping 7 m
+        // between the start deck and the gate road — the engine trace fell there)
+        let mut run_top = f32::NEG_INFINITY;
+        let mut fell = false;
         let total: f32 = path.windows(2).map(|w| { let a = self.graph.world(&self.grid, w[0]); let b = self.graph.world(&self.grid, w[1]); ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt() }).sum();
         for w in path.windows(2) {
             let a = self.graph.world(&self.grid, w[0]);
             let b = self.graph.world(&self.grid, w[1]);
             let step = ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
             along += step;
-            if self.graph.node_road[w[1] as usize] || along < 20.0 || total - along < 20.0 { run = 0.0; } else { run += step; worst = worst.max(run); }
+            let y = b[1];
+            // a road narrower than 4 m (a girder beam, a rail top) is not a road the line may use: Argentina 2026's
+            // start leg ran over Metal beam tops 1.5–5 m above the real deck and the car went over the deck's edge
+            let narrow = false; // (a width test at tol 1 m broke banked roads; exclusions carry the stand cases)
+            if (self.graph.node_road[w[1] as usize] && !narrow) || along < 20.0 || total - along < 20.0 {
+                run = 0.0;
+                run_top = f32::NEG_INFINITY;
+            } else {
+                run += step;
+                worst = worst.max(run);
+                run_top = run_top.max(y);
+                if run_top - y > 2.0 { fell = true; }
+            }
         }
-        if worst > 12.0 {
+        if worst > 8.0 || fell {
             return None;
         }
         Some(path.into_iter().map(|n| self.graph.world(&self.grid, n)).collect())
     }
     /// The lateral road span at a point: (left, right) metres of road beside it, up to `cap` each; None off-road.
     pub fn road_span(&self, p: [f32; 3], dir: [f32; 2], cap: f32) -> Option<(f32, f32)> {
+        self.road_span_tol(p, dir, cap, 4.0)
+    }
+    /// `tol`: how far (m) a neighbouring road surface may sit above/below the point's height and still count as the
+    /// same road — 4 m for the corridor, ~1 m to tell a beam top from the deck beside it
+    pub fn road_span_tol(&self, p: [f32; 3], dir: [f32; 2], cap: f32, tol: f32) -> Option<(f32, f32)> {
         let has_road = |x: f32, z: f32, y: f32| -> bool {
             match self.grid.cell_of(x, z) {
-                Some((ix, iz)) => self.grid.cells[iz * self.grid.nx + ix].iter().any(|s| s.road && (s.y - y).abs() <= 4.0),
+                Some((ix, iz)) => self.grid.cells[iz * self.grid.nx + ix].iter().any(|s| s.road && (s.y - y).abs() <= tol),
                 None => false,
             }
         };
