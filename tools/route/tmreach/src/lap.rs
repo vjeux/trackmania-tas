@@ -644,7 +644,10 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             }
         }
         let k_pref = (0..track.n_groups).take_while(|i| mask & (1 << i) != 0).count();
-        let seed = Entry { key: Key { cs: (s / 4.0).floor() as i32, cv: (speed(&end) / 5.0).floor() as i32, cy: (end.y / 3.0).floor() as i32, mask }, chain: recs, cps, mask, s, seg, progress: k_pref as f64 * 10_000.0 + s, visits: 0, end: end.clone(), macro_desc: vec![format!("seed chain {} ticks", recs_len)] };
+        // the same cap as a rollout: past the next uncredited gate without its credit = off the route
+        let s_gate_seed = track.gate_s.get(k_pref).copied().unwrap_or(f64::INFINITY);
+        let s_eff_seed = if s > s_gate_seed + 6.0 { s_gate_seed - 20.0 } else { s };
+        let seed = Entry { key: Key { cs: (s / 4.0).floor() as i32, cv: (speed(&end) / 5.0).floor() as i32, cy: (end.y / 3.0).floor() as i32, mask }, chain: recs, cps, mask, s, seg, progress: k_pref as f64 * 10_000.0 + s_eff_seed, visits: 0, end: end.clone(), macro_desc: vec![format!("seed chain {} ticks", recs_len)] };
         out.log.push(format!("seed from a {} tick chain: ({:.1}, {:.1}, {:.1}) v {:.1} cps {cps} mask {mask:#x} s {s:.1}", recs_len, end.x, end.y, end.z, speed(&end)));
         let from = w.floor(nh)?;
         out.best = Some(seed.clone());
