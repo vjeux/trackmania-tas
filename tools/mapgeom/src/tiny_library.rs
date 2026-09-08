@@ -1,5 +1,5 @@
 //! Build the complete tiny library of a map through the STATIC-ITEM path (the
-//! item kind Granady's tiny blocks are). Driven by the game's own block infos:
+//! item kind Granady' tiny blocks are). Driven by the game's own block infos:
 //! for every authored block (name + flags) the picked variant gives the
 //! prefab(s), the unit footprint, the waypoint kind and the spawn point; each
 //! becomes a half-scale `CPlugStaticObjectModel` item with the stage-1
@@ -1135,23 +1135,76 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // the start", the "hollow platforms", the "missing undersides" vjeux
     // drove into on 2026-09-08 (see `tmmaps fillers MAP --summary`).
     let drop_baked: Vec<String> = std::env::var("TINY_DROP_BAKED").unwrap_or_default().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != "-").collect();
-    // TINY_VFC_RULE=free,ghost — hypotheses for the fillers the game records
-    // but (maybe) does not draw, for the in-game A/B on Summer 20 cp3:
-    //   free   a vertical clip (`*VFC*`) recorded in a cell an authored
-    //          non-pillar block occupies is left out (the bar's fillers sat in
-    //          the DecoPlatformSlopeBase / Slope2Start / WaterBase cells);
-    //   ghost  a filler carrying bit 28 (generated for a ghost-mode block) is
-    //          left out.
-    // Unset: every recorded filler with geometry is emitted (what the game's
-    // own baked list says).
-    let vfc_rules: Vec<String> = std::env::var("TINY_VFC_RULE").unwrap_or_default().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    // TINY_FILLER_RULE — which of the game's recorded fillers are emitted.
+    // The editor bakes a clip for every unit side that meets no matching
+    // clip, into the neighbouring cell, whether or not a block already stands
+    // there. Which of those the game DRAWS is not settled (2026-09-08,
+    // pillars thread, A/Bs on the box, Summer 20 cp3 and Summer 10 start):
+    //   all (default) every recorded filler with geometry is emitted — what
+    //          the baked list says. Known leftovers on 20 cp3 the original
+    //          does not show: the white/red TechnicsTrims of `*_Ground`
+    //          pillar walls recorded in the DecoPlatformSlopeBase cells (their
+    //          trims sit at the cell floor, 2 m under the grass the original
+    //          keeps there and `hidden_tiles` removes), and a grey slab with a
+    //          red-lit rail = the checkpoint's OpenTechRoadSlope2FC* /
+    //          OpenTechZoneSlope2FCRacing* skirts recorded in the second
+    //          unit's cell of the 3-tall DecoHillSlope2Curve1Out beside it.
+    //   occupied (probe) a filler recorded in a cell that any UNIT of an
+    //          authored non-pillar, non-terrain-tile block covers (the whole
+    //          footprint, turned like `blockmap::footprint`) is left out.
+    //          Cures cp3 (eight views match the original; cp5/8/9/10/finish
+    //          lose nothing) but DELETES the tower walls of Summer 10's start:
+    //          a pillar standing in a pool has its walls recorded in the
+    //          WaterBase / WaterGrass* cells and the game draws them. Not the
+    //          rule either — or not with pools counted as occupants.
+    //   free   (probe) only `*VFC*` pieces, only the occupant's origin cell.
+    //   ghost  (probe) fillers carrying bit 28 (ghost-mode blocks) left out —
+    //          not the rule: the ghost build still showed the rail.
+    let vfc_rules: Vec<String> = std::env::var("TINY_FILLER_RULE").or_else(|_| std::env::var("TINY_VFC_RULE")).unwrap_or_else(|_| "all".to_string()).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != "all").collect();
     let occupied_cells: std::collections::HashSet<[u8; 3]> = source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0 && b.flags & crate::blockmap::FLAG_PILLAR == 0).map(|b| b.raw_coords).collect();
+    //   occupied  EVERY filler (VFC, FC, HFC…) recorded in a cell that any UNIT
+    //             of an authored non-pillar, non-terrain block covers is left out
+    //             — the whole footprint, turned like `blockmap::footprint`, not
+    //             just the origin cell (Summer 20 cp3: the checkpoint's
+    //             OpenTechRoadSlope2FC skirts sit in the second unit's cell of
+    //             the 3-tall DecoHillSlope2Curve1Out next to it, and the game
+    //             shows no skirt; a pillar's ground wall in a Land/Grass tile's
+    //             cell IS drawn, so terrain tiles do not count as occupants).
+    let mut footprint_cells: std::collections::HashSet<[u8; 3]> = std::collections::HashSet::new();
+    for b in source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0 && b.flags & crate::blockmap::FLAG_PILLAR == 0 && !tile_zones.contains(&b.name)) {
+        let units: Vec<[i32; 3]> = block_map.get(&(b.name.clone(), b.flags, String::new())).map(|(_, _, _, u)| u.clone()).unwrap_or_default();
+        let units = if units.is_empty() { vec![[0, 0, 0]] } else { units };
+        let (mut minx, mut maxx, mut minz, mut maxz) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+        for u in &units {
+            minx = minx.min(u[0]);
+            maxx = maxx.max(u[0]);
+            minz = minz.min(u[2]);
+            maxz = maxz.max(u[2]);
+        }
+        let (w, d) = (maxx - minx + 1, maxz - minz + 1);
+        for u in &units {
+            let (x, z) = (u[0] - minx, u[2] - minz);
+            let (rx, rz) = match b.dir & 3 {
+                0 => (x, z),
+                1 => (d - 1 - z, x),
+                2 => (w - 1 - x, d - 1 - z),
+                _ => (z, w - 1 - x),
+            };
+            let (cx, cy, cz) = (b.raw_coords[0] as i32 + rx, b.raw_coords[1] as i32 + u[1], b.raw_coords[2] as i32 + rz);
+            if (0..=255).contains(&cx) && (0..=255).contains(&cy) && (0..=255).contains(&cz) {
+                footprint_cells.insert([cx as u8, cy as u8, cz as u8]);
+            }
+        }
+    }
     let vfc_left_out = |b: &tmmaps::map::BlockRec| -> Option<&'static str> {
         if vfc_rules.iter().any(|r| r == "ghost") && b.flags & (1 << 28) != 0 {
             return Some("ghost");
         }
         if vfc_rules.iter().any(|r| r == "free") && b.name.contains("VFC") && occupied_cells.contains(&b.raw_coords) {
             return Some("occupied cell");
+        }
+        if vfc_rules.iter().any(|r| r == "occupied") && footprint_cells.contains(&b.raw_coords) {
+            return Some("in a block's footprint");
         }
         None
     };
@@ -1370,7 +1423,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         println!("  ⚠ HACK baked fillers left out by name (TINY_DROP_BAKED): {}", dropped_baked.iter().map(|(k, v)| format!("{k} x{v}")).collect::<Vec<_>>().join(", "));
     }
     if !rule_left_out.is_empty() {
-        println!("  fillers left out by TINY_VFC_RULE={}: {}", vfc_rules.join(","), rule_left_out.iter().map(|(k, v)| format!("{k} x{v}")).collect::<Vec<_>>().join(", "));
+        println!("  fillers left out by TINY_FILLER_RULE={}: {}", vfc_rules.join(","), rule_left_out.iter().map(|(k, v)| format!("{k} x{v}")).collect::<Vec<_>>().join(", "));
     }
     if !missing_blocks.is_empty() {
         println!("  BLOCK PLACEMENTS WITHOUT A MODEL:");
