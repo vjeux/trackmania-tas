@@ -1787,7 +1787,10 @@ impl<'a> Graph<'a> {
             c => return Err(format!("surface shape type {} has no reader", c)),
         }
         if surf_version >= 2 {
-            self.r.vec3()?; // GameplayMainDir
+            let d = self.r.vec3()?; // GameplayMainDir
+            if out.main_dir.is_none() {
+                out.main_dir = Some(d);
+            }
         }
         Ok(())
     }

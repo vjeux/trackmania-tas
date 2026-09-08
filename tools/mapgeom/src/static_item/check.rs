@@ -44,6 +44,21 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                 Some(super::Node::Surface(s)) => Some(s),
                 _ => None,
             });
+            // a gameplay gate in prefab form: its NPlugTrigger_SGateSpecial entity's shape
+            if let Some(p) = f.item.prefab() {
+                for (ei, e) in p.ents.iter().enumerate() {
+                    if let Some(super::Node::GateSpecial(g)) = e.model.inline.as_deref() {
+                        match g.shape.inline.as_deref() {
+                            Some(super::Node::Surface(sf)) => {
+                                let ids: Vec<String> = sf.material_ids.iter().map(|x| format!("{x} (phys {} gp {})", x & 0xff, x >> 8)).collect();
+                                let (nv, nt) = sf.surf.counts();
+                                println!("{path}: prefab entity {ei} special trigger v{} {nv} vertices {nt} triangles ids [{}] main dir {:?}", g.version, ids.join(", "), sf.gameplay_main_dir);
+                            }
+                            _ => println!("{path}: prefab entity {ei} special trigger v{} with shape node {} (not inline)", g.version, g.shape.index),
+                        }
+                    }
+                }
+            }
             match trig {
                 Some(sf) => {
                     let ids: Vec<String> = sf.material_ids.iter().map(|x| format!("{x} (phys {} gp {})", x & 0xff, x >> 8)).collect();

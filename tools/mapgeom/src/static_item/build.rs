@@ -2052,6 +2052,47 @@ pub fn material_surface_ids(store: &mut crate::store::DataStore, path: &str) -> 
     None
 }
 
+/// A gameplay gate BLOCK's trigger disc: the block info (GateSpecialBoost…
+/// .EDClassic.Gbx) carries it inline — a CPlugSolid → CPlugTree →
+/// CPlugSurface of 68 triangles whose one material is
+/// `Effects\Media\Material\CollisionTurbo` (the prefab itself,
+/// `Special_AirV2.Prefab.Gbx`, is the arch alone: one static-object entity,
+/// no NPlugTrigger_SGateSpecial). Found as the file's surface whose material
+/// path names `\Collision`; returned in block space with the disc's own
+/// (physics, gameplay) bytes.
+pub fn blockinfo_special_trigger(store: &mut crate::store::DataStore, blockinfo_path: &str) -> Option<(Vec<[f32; 3]>, Vec<super::surface::Triangle>, (u8, u8), [f32; 3])> {
+    let model = store.load_model(blockinfo_path).ok()?;
+    let g = model.graph().ok()?;
+    let path_of = |i: i32| -> Option<String> {
+        match g.slots.get(i.max(0) as usize) {
+            Some(crate::node::Slot::External(p)) => Some(p.clone()),
+            _ => None,
+        }
+    };
+    for slot in &g.slots {
+        let crate::node::Slot::Node(crate::node::Node::Surface(sf)) = slot else { continue };
+        let is_collision = sf.materials.iter().any(|m| path_of(*m).map(|p| p.to_ascii_lowercase().contains("\\collision")).unwrap_or(false));
+        if !is_collision || sf.meshes.is_empty() {
+            continue;
+        }
+        let mut verts: Vec<[f32; 3]> = Vec::new();
+        let mut tris: Vec<super::surface::Triangle> = Vec::new();
+        let mut ids = (0u8, 0u8);
+        for mesh in &sf.meshes {
+            let base = verts.len() as u32;
+            verts.extend(mesh.verts.iter().copied());
+            for (f, phys, gp) in &mesh.tris {
+                ids = (*phys, *gp);
+                tris.push(super::surface::Triangle { indices: [f[0] as u32 + base, f[1] as u32 + base, f[2] as u32 + base], material_id: *phys, u03: *gp, surface_index: 0 });
+            }
+        }
+        if !tris.is_empty() {
+            return Some((verts, tris, ids, sf.main_dir.unwrap_or([0.0, 0.0, 1.0])));
+        }
+    }
+    None
+}
+
 /// The special gate's effect: the item's modifier folder names a
 /// `Collision` material (`Stadium\Media\Modifier\Boost\Collision`), whose
 /// surface ids are what the trigger slab carries under that dress. `None`

@@ -676,6 +676,33 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                             deepened.push(format!("{name} {flags:08X}"));
                         }
                     }
+                    // A gameplay gate BLOCK (GateSpecialBoost/Reset/…): its trigger
+                    // disc lives in the block info, not the prefab (`blockinfo_special_
+                    // trigger`); the effect is the block's modifier Collision material
+                    // (the disc's own bytes say Turbo). The item takes the prefab form.
+                    if m.special.is_none() && name.starts_with("GateSpecial") {
+                        match crate::static_item::build::blockinfo_special_trigger(store, &path) {
+                            Some((verts, tris, own, dir)) => {
+                                let (ids, from) = match crate::static_item::build::special_collision_ids(store, &m) {
+                                    Some((link, ids)) => (ids, link),
+                                    None => (own, "the block info's own disc".to_string()),
+                                };
+                                if ids.1 != 0 {
+                                    let sf = CPlugSurface::mesh(verts, tris, vec![ids.0 as u16 | ((ids.1 as u16) << 8)], dir);
+                                    match crate::static_item::build::trigger_mesh(&sf, &crate::geom::IDENTITY, scale, ids) {
+                                        Some(t) => {
+                                            m.notes.push(format!("special trigger from the block info: physics {} gameplay {} from {from} ({} triangles, main dir {:?}) — prefab form", ids.0, ids.1, t.surf.counts().1, dir));
+                                            m.special = Some(t);
+                                        }
+                                        None => m.notes.push("special trigger from the block info has no triangles".to_string()),
+                                    }
+                                } else {
+                                    m.notes.push(format!("special trigger from the block info has gameplay 0 ({from}); not emitted"));
+                                }
+                            }
+                            None => m.notes.push("GateSpecial block without a Collision-material trigger disc in its block info".to_string()),
+                        }
+                    }
                     // waypoint: type from the block info; the trigger is the
                     // variant's own `*_Trigger.Shape.Gbx` scaled (for the road
                     // checkpoints a 0.1 m plane across the middle of the block,

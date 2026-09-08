@@ -114,6 +114,9 @@ pub struct Surface {
     /// cylinders. Reported rather than dropped: a block whose collision is a
     /// primitive is a real answer, not a failure.
     pub primitives: Vec<i32>,
+    /// The GameplayMainDir of the outermost shape (surf v2+): the axis an
+    /// oriented gameplay gate pushes along.
+    pub main_dir: Option<[f32; 3]>,
 }
 
 #[derive(Clone, Debug, Default)]
