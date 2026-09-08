@@ -29,9 +29,6 @@ pub struct BuildOpts {
     pub scale: f32,
     /// Collection id (26 = Stadium).
     pub collection: u32,
-    /// Remap every material link onto the mesh-editor family (BlueBay
-    /// embedded items: only `Editors\...` links are known to render there).
-    pub editors: bool,
     /// The source model's CPlugGameSkin HEADER chunk (0x090F4000), copied
     /// verbatim: the declaration (`Any\Advertisement6x1\`, `*Image` slot)
     /// that makes the game paint the current in-game advertisement — the
@@ -68,42 +65,52 @@ impl MergedVisual {
         MergedVisual { visual, material, lod_mask: 0, lod_ladder: Vec::new() }
     }
 }
-
-/// `TINY_LOD0_ONLY=1`: the bake of before 2026-09-07 — keep only the nearest
-/// detail level of every source model and write no switch distances (every
-/// tiny item at full detail at every distance).
+/// `--lod-pick N [--lod-pick-min-verts V]`: keep ONE detail level of every
+/// source model — level N (its geoms; a part without a level N keeps its
+/// nearest) — and write no switch distances, so every tiny item draws that
+/// level at every distance. `--lod-pick 0` is the bake of before 2026-09-07
+/// (the nearest level everywhere); a higher N is the size lever for a map
+/// Nadeo refuses to store (Summer 21 at 36 MB: HTTP 413; the visual meshes of
+/// the nearest level are a third of the bytes). `min_verts`: a part whose
+/// nearest level has fewer vertices keeps that level — small parts stay
+/// sharp, only the heavy ones (a 50 000-vertex gate arch) go coarser.
 ///
-/// How the game reads the ladder (measured 2026-09-07 on Summer 15's grass
-/// with `tmmaps lineup` probes of a half-size GateCheckpointCenter24m, ladder
-/// [32, 64, 128]): a geom draws when its mask has the current level's bit —
-/// an item whose geoms all lack bit 0 is invisible near, one with level-0
-/// geoms only is culled far — and the level advances with the CAMERA
-/// distance times the game's LOD bias: the level-0-only item was still drawn
-/// at 100 m and gone at 150 m, i.e. the 32 m step fired between 100 and
-/// 150 m (~x4; a stock ShowLights rig whose own ladder culls at 256 m was
-/// still drawn at 400 m, so the bias is the game's, not ours — resolution
-/// and quality settings of the render box). Both the item editor's
-/// CGameCommonItemEntityModel form and the pack's CPlugPrefab form behave the
-/// same, in the editor and in play. Nothing else was needed: the Solid2
-/// header words (flags, u05, u07, vis_cst_type, 0x090BB002) match the pack's.
+/// Without it every level rides with its ladder. How the game reads the
+/// ladder (measured 2026-09-07 on Summer 15's grass with `tmmaps lineup`
+/// probes of a half-size GateCheckpointCenter24m, ladder [32, 64, 128]): a
+/// geom draws when its mask has the current level's bit — an item whose geoms
+/// all lack bit 0 is invisible near, one with level-0 geoms only is culled
+/// far — and the level advances with the CAMERA distance times the game's LOD
+/// bias: the level-0-only item was still drawn at 100 m and gone at 150 m,
+/// i.e. the 32 m step fired between 100 and 150 m (~x4; a stock ShowLights rig
+/// whose own ladder culls at 256 m was still drawn at 400 m, so the bias is
+/// the game's, not ours). Both the item editor's CGameCommonItemEntityModel
+/// form and the pack's CPlugPrefab form behave the same, in the editor and in
+/// play. The switch distances are scaled with the geometry (the half-size
+/// object subtends the same angle at half the distance); the box A/B of
+/// 2026-09-08 on tiny 05 (13 views, ×0.5 vs ×1.0) showed 12 identical and one
+/// differing in a distant stand's detail.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LodPick {
+    pub level: u32,
+    pub min_verts: i32,
+}
+
+static LOD_PICK: std::sync::OnceLock<LodPick> = std::sync::OnceLock::new();
+
+/// Install the pick for this process (the `--lod-pick` flag, once).
+pub fn set_lod_pick(pick: LodPick) -> Result<(), String> {
+    LOD_PICK.set(pick).map_err(|_| "--lod-pick given twice".to_string())
+}
+
+/// The pick, when one was asked for.
+pub fn lod_pick() -> Option<LodPick> {
+    LOD_PICK.get().copied()
+}
+
+/// One level only, no ladder (a pick is in force).
 pub fn lod0_only() -> bool {
-    std::env::var_os("TINY_LOD0_ONLY").is_some() || lod_pick().is_some()
-}
-
-/// The multiplier applied to a part's LOD switch distances. `TINY_LOD_DIST_SCALE=<f>`
-/// sets it outright (`1` = the pack's own distances, `0.5` = halved with the
-/// geometry); unset, the item scale — the pre-2026-09-08 behaviour, kept as
-/// the default only until the box A/B decides (see `add_static_object`).
-pub fn lod_dist_scale(scale: f32) -> f32 {
-    std::env::var("TINY_LOD_DIST_SCALE").ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(scale)
-}
-
-/// `TINY_LOD_PICK=N`: like TINY_LOD0_ONLY but the single level kept is level
-/// N (its geoms; a part without a level N keeps its nearest) — the size
-/// lever for a map Nadeo refuses to store (Summer 21 at 36 MB: HTTP 413;
-/// the visual meshes of the nearest level are a third of the bytes).
-pub fn lod_pick() -> Option<u32> {
-    std::env::var("TINY_LOD_PICK").ok().and_then(|v| v.parse().ok())
+    lod_pick().is_some()
 }
 
 /// A source part's detail ladder length: one more level than it has switch
@@ -293,9 +300,6 @@ pub struct Merged {
     /// A gameplay gate's kind (`Turbo2`, `Boost`, …) from its own
     /// `<Kind>.TerrainModifier.Gbx`; the sign panels' logo (signlogo.rs).
     pub gate_kind: Option<String>,
-    /// A DecoPlatform block: its `Deco` material is drawn as the coloured
-    /// platform plastic (`PlatformTech`), the way the game shows it.
-    pub deco_as_platform: bool,
     /// Picture files the item's custom-texture materials name, to ride in
     /// the library archive next to the item: (file name, DDS bytes).
     pub pictures: Vec<(String, Vec<u8>)>,
@@ -346,9 +350,7 @@ pub struct Merged {
     pub modifier_suffix: String,
     /// Keep `…\Material\Water` visuals (Stadium: the pool blocks draw their
     /// own water; the terrain collections regenerate theirs from the zone).
-    /// `TINY_WATER=keep|drop` overrides.
     pub keep_water: bool,
-    pub editors: bool,
     /// The source model's CPlugGameSkin header chunk (0x090F4000), verbatim
     /// — see `BuildOpts::skin`. Set from the pack item file or the block
     /// info file; the built item carries it in its own header.
@@ -371,7 +373,7 @@ pub struct Merged {
     /// assembly, `remap_lod_mask`; the union is capped at `MAX_LOD_LEVELS`
     /// there). Empty = one level, no switching.
     pub lod_max_dist: Vec<f32>,
-    /// Keep every detail level of the source whatever `TINY_LOD0_ONLY` says,
+    /// Keep every detail level of the source whatever `--lod-pick` says,
     /// and never cap or fold its ladder — the tween cloth: ten or more
     /// instances of a LOD0-only copy drew as garbage (giant black sails, or
     /// nothing) while one or two drew right (2026-09-07); the pack's five
@@ -383,7 +385,7 @@ pub struct Merged {
     /// — the 2026-09-08 finding that the tween draw follows the driver's LOD).
     pub ladder_scale: Option<f32>,
     /// Keep ONE detail level of every part merged into this `Merged`, level
-    /// N, whatever `TINY_LOD0_ONLY`/`TINY_LOD_PICK` say (`TINY_FLAG_LODS=N` on
+    /// N, whatever `--lod-pick` says (`TINY_FLAG_LODS=N` on
     /// the tween cloth): every instance of the model then renders the same
     /// visual at every distance — the 2026-09-08 finding is that the tween
     /// draw of identical placements goes wrong as soon as they sit at
@@ -576,15 +578,13 @@ impl Merged {
         // material — so the row and the beam square are one draw, not two
         // equal materials (which the format rules refuse).
         let pseudo;
-        let (link, physics) = match super::signlogo::enabled().then(|| super::signlogo::sign_kind(link, self.gate_kind.as_deref())).flatten() {
+        let (link, physics) = match super::signlogo::sign_kind(link, self.gate_kind.as_deref()) {
             Some(kind) => {
                 pseudo = super::signlogo::pseudo_link(&kind);
                 (pseudo.as_str(), 32u8)
             }
             None => (link, physics),
         };
-        // a DecoPlatform block's `Deco` is the coloured platform plastic
-        let (link, physics) = if self.deco_as_platform && link == "Stadium\\Media\\Material\\Deco" { ("Stadium\\Media\\Material\\PlatformTech", 16u8) } else { (link, physics) };
         let modified;
         let link = match link.strip_prefix("Stadium\\Media\\Material\\") {
             Some(stem) if !self.modifier.is_empty() => {
@@ -614,10 +614,9 @@ impl Merged {
         self.materials.len() - 1
     }
 
-    /// Slot of a link, remapped onto the editor family when asked.
-    pub fn link_slot(&mut self, link: &str, physics: u8, editors: bool) -> usize {
-        let link = if editors { crate::tiny_assets::editors_link_for_stadium_material(link.rsplit('\\').next().unwrap_or(link)).to_string() } else { link.to_string() };
-        self.material_slot(&link, physics)
+    /// Slot of a game-material link.
+    pub fn link_slot(&mut self, link: &str, physics: u8) -> usize {
+        self.material_slot(link, physics)
     }
 
     /// The plain (`_Ids`, no decal) variant of a BlueBay terrain layer material:
@@ -805,7 +804,7 @@ impl Merged {
                 if phys == 0 {
                     phys = physics_for_link(&link).or(common).unwrap_or(0);
                 }
-                Some(self.link_slot(&link, phys, self.editors))
+                Some(self.link_slot(&link, phys))
             }
             None => {
                 self.notes.push("old material with no .Material.Gbx ref".into());
@@ -827,7 +826,7 @@ impl Merged {
         // the item scale and merged into the item's ladder (the union of the
         // parts' distances; each part's masks are moved onto it by range at
         // assembly, `remap_lod_mask`) — see `Merged::lod_max_dist`.
-        // `TINY_LOD0_ONLY=1` keeps the nearest level only, no ladder.
+        // A `--lod-pick` keeps one level only, no ladder.
         let lod0_only = (lod0_only() && !self.all_lods) || self.one_level.is_some();
         let part_levels = if lod0_only { 1 } else { lod_levels_of(&s2.lod_max_dist, &s2.shaded_geoms) };
         let mut part_ladder: Vec<f32> = Vec::new();
@@ -836,19 +835,12 @@ impl Merged {
             // a ladder shorter than its masks (a mask bit past the last
             // distance): the extra levels take the last distance doubled
             //
-            // How far to scale the switch distances is an ENGINE question, and
-            // it was A/B-tested on the box (2026-09-08, tiny 05, 13 editor
-            // views, ×0.5 vs ×1.0): 12 of 13 views IDENTICAL, one differing in
-            // a distant stand's detail. The hollow platforms vjeux saw ("side
-            // of these platforms is missing", "blocks missing their underside")
-            // are therefore NOT the ladder — the geometry that should be there
-            // is not in the item at any level. ×scale stays the default (the
-            // half-size object subtends the same angle at half the distance,
-            // so the same level is the visually equivalent choice);
-            // `TINY_LOD_DIST_SCALE=<f>` remains for the next A/B.
-            // A part with `ladder_scale` set (the tween cloth under
+            // The switch distances scale with the geometry (see `LodPick`: the
+            // box A/B of 2026-09-08 found ×0.5 and ×1.0 indistinguishable on 12
+            // of 13 views — the hollow platforms were never the ladder). A part
+            // with `ladder_scale` set (the tween cloth under
             // TINY_FLAG_LADDER=pack) keeps its own factor instead.
-            let dist_scale = self.ladder_scale.unwrap_or_else(|| lod_dist_scale(scale));
+            let dist_scale = self.ladder_scale.unwrap_or(scale);
             let mut dists: Vec<f32> = s2.lod_max_dist.iter().map(|d| d * dist_scale).collect();
             while (dists.len() as u32) + 1 < part_levels {
                 let last = dists.last().copied().unwrap_or(32.0 * dist_scale);
@@ -861,7 +853,7 @@ impl Merged {
             }
         }
         // Which geoms are coarser levels only (no bit 0). Kept with their
-        // masks unless `TINY_LOD0_ONLY`.
+        // masks unless one level is picked.
         let coarser = |g: &ShadedGeom| g.lod_mask > 0 && g.lod_mask & 1 == 0;
         // Light sources: a Solid2 `lights` socket = a name, an Iso4 in model
         // space and (in the packs) an EXTERNAL CPlugLight ref — Lamp.Mesh.Gbx
@@ -929,21 +921,13 @@ impl Merged {
                 let is_old = matches!(m.node.as_ref().and_then(|r| r.inline.as_deref()), Some(super::Node::OldMaterial(_))) && m.inst().is_none() && m.name.is_empty();
                 if is_old {
                     if let Some((link, phys)) = votes.get(mi).and_then(|v| v.clone()) {
-                        slots.push(Some(self.link_slot(&link, phys, self.editors)));
+                        slots.push(Some(self.link_slot(&link, phys)));
                         continue;
                     }
                 }
                 slots.push(match m.inst() {
-                    Some(inst) => {
-                        if self.editors {
-                            let link = inst.link().unwrap_or("").to_string();
-                            let stem = link.rsplit('\\').next().unwrap_or(&link);
-                            Some(self.material_slot(crate::tiny_assets::editors_link_for_stadium_material(stem), inst.physics()))
-                        } else {
-                            Some(self.material_inst_slot(inst, &s2.materials_folder))
-                        }
-                    }
-                    None if !m.name.is_empty() => Some(self.link_slot(&m.name, 0, self.editors)),
+                    Some(inst) => Some(self.material_inst_slot(inst, &s2.materials_folder)),
+                    None if !m.name.is_empty() => Some(self.link_slot(&m.name, 0)),
                     None => match m.node.as_ref().and_then(|r| r.inline.as_deref()) {
                         Some(super::Node::OldMaterial(om)) => {
                             let om = om.clone();
@@ -959,7 +943,7 @@ impl Merged {
                 let is_old = matches!(r.inline.as_deref(), Some(super::Node::OldMaterial(_)));
                 if is_old {
                     if let Some((link, phys)) = votes.get(mi).and_then(|v| v.clone()) {
-                        slots.push(Some(self.link_slot(&link, phys, self.editors)));
+                        slots.push(Some(self.link_slot(&link, phys)));
                         continue;
                     }
                 }
@@ -978,7 +962,7 @@ impl Merged {
                     continue;
                 }
                 slots.push(match resolve(r.index).map(|(_, l, p)| (l, p)) {
-                    Some((link, phys)) => Some(self.link_slot(&link, phys, self.editors)),
+                    Some((link, phys)) => Some(self.link_slot(&link, phys)),
                     None => {
                         self.notes.push(format!("material node {} unresolved", r.index));
                         None
@@ -1000,7 +984,7 @@ impl Merged {
             })
             .collect();
         let mut visual_slots: Vec<(usize, usize)> = Vec::new();
-        if std::env::var_os("TINY_DUMP_DECLS").is_some() {
+        if crate::debug::on("decls") {
             self.notes.push(format!(
                 "solid2 v{} material_ids {:?} folder {:?} u03 {:?} u04 {:?} lod_max_dist {:?} vis_cst_type {} damage_zone {} flags {:#x} u05 {} u07 {} u11 {} u13 {} u15 {} u16 {} u18 {} u10 {:?} u12 {:?} u14 {} u17 {:?} u19 {:?} joints {:?} chunks {:x?} raw {:?} prelight {:?} geoms {:?} material refs {:?}",
                 s2.version,
@@ -1038,7 +1022,7 @@ impl Merged {
         // layer in every visual of the prefab (Beach: 0 Land, 1 SeaFloor,
         // 2 Sand; LandHill: 1 HillPxz; LandCliff: 1 CliffPxz).
         let mut layer_votes: std::collections::BTreeMap<u32, std::collections::BTreeMap<usize, usize>> = Default::default();
-        if !smap.is_empty() && !self.no_split && std::env::var_os("TINY_NO_SPLIT").is_none() {
+        if !smap.is_empty() && !self.no_split {
             for g in &s2.shaded_geoms {
                 // the table is voted from the nearest level only: the collision
                 // mesh coincides with LOD0's triangles, not with a coarser sheet's
@@ -1063,7 +1047,7 @@ impl Merged {
                     let mut k = [mm(&pos[t[0] as usize]), mm(&pos[t[1] as usize]), mm(&pos[t[2] as usize])];
                     k.sort();
                     if let Some((link, phys)) = smap.get(&k) {
-                        let slot = self.link_slot(link, *phys, self.editors);
+                        let slot = self.link_slot(link, *phys);
                         *layer_votes.entry(a).or_default().entry(slot).or_default() += 1;
                     }
                 }
@@ -1082,21 +1066,19 @@ impl Merged {
             // coplanar (Beach: a coarse 22-vertex LOD1 sheet voted SeaFloor
             // over the LOD0 grass = the "wide bright beaches with hard
             // seams"), which is why the nearest level alone was kept;
-            // `TINY_LOD0_ONLY=1` restores that bake.
+            // `--lod-pick 0` restores that bake.
             if lod0_only {
-                // the one level kept: N of TINY_LOD_PICK when the part has it, else the nearest
-                // TINY_LOD_PICK_MIN_VERTS=N: a part whose nearest level has fewer than N
-                // vertices keeps that level (small parts stay sharp; only the heavy
-                // ones — a 50 000-vertex gate arch — go one level coarser)
+                // the one level kept: the pick's level when the part has it and
+                // its nearest level is heavy enough (`LodPick::min_verts`), else
+                // the nearest
                 let level0_verts: i32 = s2.shaded_geoms.iter().filter(|h| h.lod_mask == 0 || h.lod_mask & 1 != 0).filter_map(|h| s2.visuals.get(h.visual_index as usize).and_then(|r| r.inline.as_deref())).filter_map(|n| if let Node::Visual(v) = n { v.main.as_ref().map(|m| m.count) } else { None }).sum();
-                let min_verts: i32 = std::env::var("TINY_LOD_PICK_MIN_VERTS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
                 let pick = match self.one_level {
                     Some(n) => n,
-                    None => lod_pick().filter(|_| level0_verts >= min_verts).filter(|p| s2.shaded_geoms.iter().any(|h| h.lod_mask & (1 << p) != 0)).unwrap_or(0),
+                    None => lod_pick().filter(|p| level0_verts >= p.min_verts).map(|p| p.level).filter(|p| s2.shaded_geoms.iter().any(|h| h.lod_mask & (1 << p) != 0)).unwrap_or(0),
                 };
                 let keep = g.lod_mask == 0 || g.lod_mask & (1 << pick) != 0;
                 if !keep {
-                    self.notes.push(format!("visual {} (lod mask {}) skipped: not level {pick} (TINY_LOD0_ONLY/TINY_LOD_PICK)", g.visual_index, g.lod_mask));
+                    self.notes.push(format!("visual {} (lod mask {}) skipped: not level {pick} (--lod-pick)", g.visual_index, g.lod_mask));
                     continue;
                 }
             }
@@ -1119,7 +1101,7 @@ impl Merged {
             // layer table (voted from LOD0) dresses it, starting from the
             // table entry of its most common layer id.
             let is_id_pass = |m: &Merged, slot: usize| m.materials.get(slot).and_then(|m| m.link()).map(|l| l.contains("_Ids")).unwrap_or(false);
-            if !is_voted && coarser(g) && is_id_pass(self, mat) && !layer_table.is_empty() && !self.no_split && std::env::var_os("TINY_NO_SPLIT").is_none() {
+            if !is_voted && coarser(g) && is_id_pass(self, mat) && !layer_table.is_empty() && !self.no_split {
                 if let Some(eff) = effective_layer_ids(vis) {
                     let mut counts: std::collections::BTreeMap<u32, usize> = Default::default();
                     for id in &eff {
@@ -1157,15 +1139,6 @@ impl Merged {
                 self.notes.push("water surface visual dropped (the zone water draws it)".to_string());
                 continue;
             }
-            // TINY_DROP_MATS=sub1,sub2: drop visuals whose material link contains
-            // a substring (bisecting which material makes the game drop an item)
-            if let Ok(drop) = std::env::var("TINY_DROP_MATS") {
-                let link = self.materials.get(mat).and_then(|m| m.link()).unwrap_or("").to_string();
-                if drop.split(',').any(|s| !s.is_empty() && link.contains(s)) {
-                    self.notes.push(format!("visual {link} dropped (TINY_DROP_MATS)"));
-                    continue;
-                }
-            }
             // (A gameplay gate's sign panels — the row along the arch on
             // `SpecialSign<Kind>` / the kind folder's `Sign`, the beam square on
             // `SpecialSignOff` / `SignOff` — are kept as geometry: their LED
@@ -1173,7 +1146,7 @@ impl Merged {
             // fixed at the material (signlogo.rs / `sign_logo_material`), not by
             // dropping one of them. Checked in the data first: the two panels
             // are ordinary geoms of the same Solid2 with identical records
-            // (TINY_DUMP_DECLS on Special24m.Prefab.Gbx: u01 -1, same lod
+            // (`--debug decls` on Special24m.Prefab.Gbx: u01 -1, same lod
             // mask, u02 0; no u10/u12/u19 tables, flags 0) — no on/off flag.)
             let mut v = vis.clone();
             // A visual read in the pack's inline-vertex form is written back
@@ -1183,10 +1156,10 @@ impl Merged {
             if v.sub_visuals.is_empty() {
                 v.inline_form = false;
             }
-            // TINY_DUMP_DECLS=1: one note per visual with its vertex
+            // `--debug decls`: one note per visual with its vertex
             // declarations and the distinct values of every one-word element
             // (colour / int32 ids), for reading a shader's per-vertex inputs.
-            if std::env::var_os("TINY_DUMP_DECLS").is_some() {
+            if crate::debug::on("decls") {
                 if let Some(Node::VertexStream(s)) = v.main.as_ref().and_then(|m| m.vertex_streams.first()).and_then(|r| r.inline.as_deref()) {
                     let compress = s.compress_local3d.unwrap_or(false);
                     let mut parts = Vec::new();
@@ -1241,8 +1214,8 @@ impl Merged {
             // and sea floor where the original shows grass). Split the visual
             // by the collision material under each triangle instead — one
             // sub-visual per coincident surface material, unmatched triangles
-            // staying with the voted majority. `TINY_NO_SPLIT=1` disables.
-            if is_voted && !smap.is_empty() && !self.no_split && std::env::var_os("TINY_NO_SPLIT").is_none() {
+            // staying with the voted majority.
+            if is_voted && !smap.is_empty() && !self.no_split {
                 let (pos, idx) = visual_triangles(&v);
                 let ntri = idx.len() / 3;
                 // Per-triangle collision material (None where no collision
@@ -1253,7 +1226,7 @@ impl Merged {
                     .map(|t| {
                         let mut k = [mm(&pos[t[0] as usize]), mm(&pos[t[1] as usize]), mm(&pos[t[2] as usize])];
                         k.sort();
-                        smap.get(&k).map(|(link, phys)| self.link_slot(link, *phys, self.editors))
+                        smap.get(&k).map(|(link, phys)| self.link_slot(link, *phys))
                     })
                     .collect();
                 // The prefab's own painting: vertex element 4 (Int32) is the
@@ -1266,7 +1239,7 @@ impl Merged {
                 let eff_ids = effective_layer_ids(&v);
                 let mut tri_mat: Vec<usize> = Vec::with_capacity(ntri);
                 match eff_ids {
-                    Some(eff) if !layer_table.is_empty() && std::env::var_os("TINY_SPLIT_SURFACE").is_none() => {
+                    Some(eff) if !layer_table.is_empty() => {
                         let table = &layer_table;
                         for (ti, t) in idx.chunks(3).take(ntri).enumerate() {
                             let (a, b, c) = (eff[t[0] as usize], eff[t[1] as usize], eff[t[2] as usize]);
@@ -1296,23 +1269,6 @@ impl Merged {
                         let mut sv = sub_visual(&v, &keep)?;
                         transform_visual(&mut sv, iso, scale)?;
                         self.notes.push(format!("visual {} split: {} triangles -> {}", g.visual_index, keep.iter().filter(|k| **k).count(), self.materials[gm].link().unwrap_or("?")));
-                        // TINY_SPLIT_KEEPMAT=1: split the geometry but keep the voted material (bisecting a crash)
-                        let gm = if std::env::var_os("TINY_SPLIT_KEEPMAT").is_some() { mat } else { gm };
-                        // TINY_SPLIT_MATS=a,b: only pieces whose new material link contains one of these take it (bisecting)
-                        let gm = match std::env::var("TINY_SPLIT_MATS") {
-                            Ok(list) => {
-                                let link = self.materials[gm].link().unwrap_or("").to_string();
-                                if list.split(',').any(|s| !s.is_empty() && link.ends_with(s)) { gm } else { mat }
-                            }
-                            Err(_) => gm,
-                        };
-                        // TINY_SPLIT_MINVERTS / TINY_SPLIT_MAXVERTS: pieces outside the range keep the voted material (bisecting)
-                        let nv = sv.main.as_ref().map(|m| m.count).unwrap_or(0);
-                        let lo: i32 = std::env::var("TINY_SPLIT_MINVERTS").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
-                        let hi: i32 = std::env::var("TINY_SPLIT_MAXVERTS").ok().and_then(|s| s.parse().ok()).unwrap_or(i32::MAX);
-                        let gm = if nv < lo || nv > hi { mat } else { gm };
-                        let skip: Vec<i32> = std::env::var("TINY_SPLIT_SKIPVERTS").ok().map(|s| s.split(',').filter_map(|x| x.parse().ok()).collect()).unwrap_or_default();
-                        let gm = if skip.contains(&nv) { mat } else { gm };
                         // A piece without vertex colours takes the PLAIN variant of its layer
                         // (Land, not TransitionToLand): the Transition* materials are the
                         // `_Ids_Tex` shader whose decal is driven by the vertex colour, and a
@@ -1691,18 +1647,17 @@ pub fn placement_param(sclass_index: i32) -> super::item::CGameItemPlacementPara
     }
 }
 
-/// The merged visuals + materials as one `CPlugSolid2Model`, node indices
-/// taken from `next` (visual, its stream, then the materials).
-/// External files the solid names (node index, pack path) — the item's reference
-/// table (`TINY_LIGHT_FORM=extern|socket-tex`, a probe of whether an embedded
-/// item can reach the packs by path). Empty in the production forms.
 thread_local! {
+    /// External files the item names (node index, pack path) — its reference
+    /// table: the effect systems' particle textures (`fx_entities`), which
+    /// the game resolves by pack path. (A light's `.Light.Gbx` or bitmaps by
+    /// path were probed on 2026-09-07 and resolve to NOTHING — every such light
+    /// was dark — so nothing else goes here.)
     pub static EXTERNALS: std::cell::RefCell<Vec<(u32, String)>> = const { std::cell::RefCell::new(Vec::new()) };
-    /// The `.Light.Gbx` files the `file` light form writes next to the item:
-    /// (file name, bytes), drained by the caller into the library archive.
-    pub static LIGHT_FILES: std::cell::RefCell<Vec<(String, Vec<u8>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// The merged visuals + materials as one `CPlugSolid2Model`, node indices
+/// taken from `next` (visual, its stream, then the materials).
 pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSolid2Model> {
     if m.visuals.is_empty() {
         return Err("no visuals: nothing to build".into());
@@ -1717,7 +1672,7 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
     let mut pre = m.visuals.clone();
     // The item's detail ladder (see `Merged::lod_max_dist`): the union of the
     // parts' distances, sorted; every visual's mask moved onto it by range
-    // (`remap_lod_mask`). With `TINY_LOD0_ONLY` nothing but level 0 was
+    // (`remap_lod_mask`). With a `--lod-pick` nothing but one level was
     // merged and the ladder is empty. A tween mesh (`all_lods`) keeps the
     // pack's ladder whole — five levels are what its draw path expects.
     let mut ladder: Vec<f32> = if lod0_only() && !m.all_lods { Vec::new() } else { m.lod_max_dist.clone() };
@@ -1737,31 +1692,8 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
             return Err("every visual fell off the capped detail ladder".into());
         }
     }
-    if std::env::var_os("TINY_NO_HARMONIZE").is_none() {
-        harmonize_layouts(&mut pre);
-    }
-    let visuals = if std::env::var_os("TINY_NO_COALESCE").is_some() { pre } else { coalesce(&pre) };
-    // TINY_LOD_TEST=vanish: the ladder is written but only the nearest level's
-    // geoms are kept, masked to level 0 alone — an item that must DISAPPEAR
-    // past its first switch distance if the game honours an embedded item's
-    // detail ladder (the 2026-09-07 probe: LOD1..3 of a gate look like LOD0
-    // at 100 m, as they should, so a switch cannot be seen on the real geometry).
-    let visuals: Vec<MergedVisual> = match std::env::var("TINY_LOD_TEST").as_deref() {
-        Ok("vanish") => visuals.into_iter().filter(|mv| mv.lod_mask & 1 != 0).map(|mut mv| { mv.lod_mask = 1; mv }).collect(),
-        // TINY_LOD_TEST=far: the coarser levels only (no level-0 geom): invisible
-        // near if the game reads the masks, visible everywhere if it draws
-        // every geom regardless
-        Ok("far") => visuals.into_iter().filter(|mv| mv.lod_mask & 1 == 0).collect(),
-        _ => visuals,
-    };
-    // TINY_ONLY_MATS=a,b: keep only the visuals whose material link ends with one of these (minimising a crasher)
-    let visuals: Vec<MergedVisual> = match std::env::var("TINY_ONLY_MATS") {
-        Ok(list) => visuals.into_iter().filter(|mv| { let l = m.materials[mv.material].link().unwrap_or(""); list.split(',').any(|s| !s.is_empty() && l.ends_with(s)) }).collect(),
-        Err(_) => visuals,
-    };
-    if visuals.is_empty() {
-        return Err("TINY_ONLY_MATS left no visual".into());
-    }
+    harmonize_layouts(&mut pre);
+    let visuals = coalesce(&pre);
     // Only the materials some visual draws with, in first-use order (the
     // reference items list exactly one material per visual).
     let mut used: Vec<usize> = Vec::new();
@@ -1780,38 +1712,14 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
     // is non-decreasing in material index (the first split terrain items
     // with (0,1,2,0,1,2,3,4) crashed the client at 0x140456507 reading a
     // garbage material index, 2026-09-06), and a one-level item keeps
-    // exactly that order. `TINY_LOD_ORDER=material` sorts material-major
-    // instead (level minor). Stable, so same-material same-level visuals
-    // keep their relative order.
+    // exactly that order. Stable, so same-material same-level visuals keep
+    // their relative order.
     let mut visuals = visuals;
     let level_of = |mask: u32| -> u32 { if mask == 0 { 0 } else { mask.trailing_zeros() } };
-    let material_major = std::env::var("TINY_LOD_ORDER").map(|v| v == "material").unwrap_or(false);
-    if material_major {
-        visuals.sort_by_key(|mv| (used.iter().position(|u| *u == mv.material).unwrap_or(usize::MAX), level_of(mv.lod_mask), mv.lod_mask));
-    } else {
-        visuals.sort_by_key(|mv| (level_of(mv.lod_mask), used.iter().position(|u| *u == mv.material).unwrap_or(usize::MAX), mv.lod_mask));
-    }
-    let per_visual = std::env::var_os("TINY_MAT_PER_VISUAL").is_some();
+    visuals.sort_by_key(|mv| (level_of(mv.lod_mask), used.iter().position(|u| *u == mv.material).unwrap_or(usize::MAX), mv.lod_mask));
     for mv in &visuals {
         let mut v = mv.visual.clone();
         let main = v.main.as_mut().unwrap();
-        // TINY_STRIP_U04=1: drop the version-6 trailing blob (u02/u03/u04) the pack visuals carry;
-        // the reference items have none. TINY_SFLAGS=N: force the vertex stream flags word.
-        if std::env::var_os("TINY_STRIP_U04").is_some() {
-            main.u02 = 0;
-            main.u03 = 0;
-            main.u04.clear();
-        }
-        // TINY_STRIP_TANGENT_CHUNK=1: drop the empty CPlugVisual3D tangent-array chunk 0x0902C004
-        if std::env::var_os("TINY_STRIP_TANGENT_CHUNK").is_some() {
-            v.tangents = None;
-            v.chunks.retain(|c| *c != 0x0902C004);
-        }
-        if let Ok(f) = std::env::var("TINY_SFLAGS") {
-            if let Some(Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) {
-                s.flags = f.parse().unwrap_or(s.flags);
-            }
-        }
         // the stream sits right after its visual (an inline-form visual has
         // none and takes one index)
         let mut has_stream = false;
@@ -1821,16 +1729,13 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
                 has_stream = true;
             }
         }
-        // TINY_MAT_PER_VISUAL=1: one custom material entry per visual (duplicating the
-        // inst), the way the reference items are built.
-        let material_index = if per_visual { s2.visuals.len() as i32 } else { used.iter().position(|u| *u == mv.material).unwrap() as i32 };
+        let material_index = used.iter().position(|u| *u == mv.material).unwrap() as i32;
         s2.shaded_geoms.push(ShadedGeom { visual_index: s2.visuals.len() as i32, material_index, u01: -1, lod_mask: mv.lod_mask as i32, u02: 0 });
         s2.visuals.push(inline(*next, Node::Visual(v)));
         *next += if has_stream { 2 } else { 1 };
     }
     s2.lod_max_dist = ladder;
-    let mat_list: Vec<usize> = if per_visual { visuals.iter().map(|mv| mv.material).collect() } else { used.clone() };
-    for inst in mat_list.iter().map(|u| &m.materials[*u]) {
+    for inst in used.iter().map(|u| &m.materials[*u]) {
         let inst = skinned_material(inst, opts.collection);
         let inst = custom_texture_material(&inst, &opts.ident);
         let inst = sign_logo_material(&inst, m);
@@ -1838,105 +1743,35 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
         s2.custom_materials.push(Material { name: String::new(), node: Some(inline(*next, Node::Material(inst))) });
         *next += 1;
     }
-    // The source model's lights. Two forms (TINY_LIGHT_FORM):
-    //  * `socket`: each socket points at an INLINE CPlugLight whose GxLight
-    //    rides inline in turn (two node indices) — the pack's own form; the
-    //    EDITOR renders these, PLAY mode did not (Summer 09's start deck dark,
-    //    2026-09-07);
-    //  * `user`: the item editor's form — a CPlugLightUserModel per light in
-    //    `light_user_models`, the socket carrying no node (u02 false, name
-    //    string), `light_insts` tying model k to socket k;
-    //  * `both`: the socket carries the CPlugLight AND a user model instance
-    //    points at it.
-    // ⚠ `user` and `both` CRASHED the client at map load (Trackmania.exe+0x4c9062:
-    // the light-inst loop reads [r14+0x78] = NULL; 2026-09-07, two dumps) — the
-    // CPlugLightUserModel layout or the inst semantics are still guesses (no
-    // reference item with editor lights was found: none of 95 TME items or the
-    // ItemExchange "light" items carries one). They stay as experiment knobs.
-    // The default `socket` form renders in the editor AND in play once the
-    // source map's stale lightmap is stripped (`tmmaps tiny` does since 1b7adc5;
-    // with it kept every converted-block item was BLACK in play, lights or not).
-    // TINY_LIGHTS=drop leaves them out (the unlit bake of before 2026-09-07).
-    if std::env::var("TINY_LIGHTS").map(|v| v != "drop").unwrap_or(true) {
-        let form = std::env::var("TINY_LIGHT_FORM").unwrap_or_else(|_| "socket".into());
-        for (k, ml) in m.lights_out.iter().enumerate() {
-            let mut socket = ml.socket.clone();
-            // ⚠ `extern`, `file` and `socket-tex` are PROBES THAT FAILED (2026-09-07):
-            // an embedded item's reference table resolves NOTHING — neither a
-            // pack path (`Stadium\Media\Light\ItemLampSpot.Light.Gbx`, ancestor
-            // levels 0-3) nor a file placed next to the item in the archive
-            // (use-file 0/1, with or without `Items\`); every such light was
-            // dark on Summer 09's grass 60 m from any stock lamp. (Two earlier
-            // "successes" were the stock Lamp's 50 m pool spilling onto a probe
-            // placed 22 m from it.) So the projector cookie and the light sprite
-            // (both texture fids) cannot be had; the inline `socket` form is what
-            // works, and the material system's by-name texture lookup is the only
-            // file an embedded item reaches.
-            if form == "extern" {
-                // probe: the socket names the PACK's `.Light.Gbx` as an EXTERNAL
-                // node (reference table) — unscaled, untinted
-                socket.u02 = true;
-                socket.u04.clear();
-                socket.node = super::NodeRef { index: *next, inline: None };
-                EXTERNALS.with(|e| e.borrow_mut().push((*next as u32, ml.source.clone())));
-                *next += 1;
-            } else if form == "file" {
-                // PRODUCTION: our scaled, tinted copy of the light as its own
-                // `.Light.Gbx` next to the item, its projector/flare textures
-                // referenced in the packs; the socket names that file
-                let stem = opts.ident.trim_end_matches(".Item.Gbx");
-                let file = format!("{stem}_L{k}.Light.Gbx");
-                // TINY_LIGHT_EXT_PREFIX=Items\: how the socket spells the file's folder (probe)
-                let spelled = format!("{}{file}", std::env::var("TINY_LIGHT_EXT_PREFIX").unwrap_or_default());
-                let mut light = ml.light.clone();
-                let mut ext: Vec<(u32, String)> = Vec::new();
-                for (path, slot) in ml.bitmaps.iter().cloned() {
-                    let idx = 2 + ext.len() as u32;
-                    light.set_bitmap(slot, super::NodeRef { index: idx as i32, inline: None });
-                    ext.push((idx, path));
-                }
-                LIGHT_FILES.with(|f| f.borrow_mut().push((file.clone(), super::light::light_file(&light, &ext))));
-                socket.u02 = true;
-                socket.u04.clear();
-                socket.node = super::NodeRef { index: *next, inline: None };
-                EXTERNALS.with(|e| e.borrow_mut().push((*next as u32, spelled)));
-                *next += 1;
-            } else if form == "socket" || form == "both" || form == "socket-tex" {
-                let mut light = ml.light.clone();
-                match light.gx_mut() {
-                    Some(gx) if gx.inline.is_some() => gx.index = *next + 1,
-                    Some(gx) => *gx = super::null_ref(),
-                    None => {}
-                }
-                socket.u02 = true;
-                socket.u04.clear();
-                let mut used = 2;
-                if form == "socket-tex" {
-                    // the projector / flare bitmaps as EXTERNAL nodes again
-                    for (path, slot) in ml.bitmaps.iter().cloned() {
-                        let idx = *next + used;
-                        light.set_bitmap(slot, super::NodeRef { index: idx, inline: None });
-                        EXTERNALS.with(|e| e.borrow_mut().push((idx as u32, path)));
-                        used += 1;
-                    }
-                }
-                socket.node = inline(*next, Node::Light(light));
-                *next += used;
-            } else {
-                socket.u02 = false;
-                socket.u04 = format!("Light{k}");
-                socket.node = super::null_ref();
-            }
-            if form == "user" || form == "both" {
-                if let Some(g) = ml.light.gx_light() {
-                    let um = super::light::CPlugLightUserModel::from_gx(g);
-                    s2.light_user_models.push(inline(*next, Node::LightUserModel(um)));
-                    *next += 1;
-                    s2.light_insts.push((s2.light_user_models.len() as i32 - 1, s2.lights.len() as i32));
-                }
-            }
-            s2.lights.push(socket);
+    // The source model's lights, in the pack's own form: each socket points at
+    // an INLINE CPlugLight whose GxLight rides inline in turn (two node
+    // indices). It renders in the editor AND in play once the source map's
+    // stale lightmap is out of the way (`tmmaps tiny`; with it kept every
+    // converted-block item was BLACK in play, lights or not).
+    //
+    // The forms tried and refused (2026-09-07): the item editor's
+    // CPlugLightUserModel per light + `light_insts` (alone or beside the
+    // socket) CRASHED the client at map load (Trackmania.exe+0x4c9062, the
+    // light-inst loop reading [r14+0x78] = NULL — no reference item with
+    // editor lights exists to read the layout off); a socket naming the pack's
+    // `.Light.Gbx` as an external, or a `.Light.Gbx` written next to the item
+    // (with or without `Items\`, use-file 0/1, ancestor levels 0–3), resolved
+    // NOTHING — every such light was dark 60 m from any stock lamp. So the
+    // projector cookie and the flare sprite (both texture fids) cannot be had;
+    // the inline socket form is what works.
+    for ml in m.lights_out.iter() {
+        let mut socket = ml.socket.clone();
+        let mut light = ml.light.clone();
+        match light.gx_mut() {
+            Some(gx) if gx.inline.is_some() => gx.index = *next + 1,
+            Some(gx) => *gx = super::null_ref(),
+            None => {}
         }
+        socket.u02 = true;
+        socket.u04.clear();
+        socket.node = inline(*next, Node::Light(light));
+        *next += 2;
+        s2.lights.push(socket);
     }
     s2.pre_light_gen = if m.no_prelight { None } else { Some(m.pre_light_gen.clone().unwrap_or_else(default_prelight)) };
     s2.file_write_time = m.file_write_time;
@@ -1950,28 +1785,15 @@ pub fn build_surface(m: &Merged) -> CPlugSurface {
         // DecalPlatform quads, 8 of Summer 09's models) is DROPPED by the
         // editor on re-save — all 122 placements of exactly those 8 models were
         // gone after SaveMap, everything else kept (2026-09-07). Play mode
-        // draws them. TINY_EMPTY_SURFACE=empty keeps the empty mesh; `tri`
-        // (default) gives it one 1 mm triangle 4 m under the item's origin —
+        // draws them. So it gets one 1 mm triangle 4 m under the item's origin —
         // a shape the editor accepts and nothing can hit.
-        let form = std::env::var("TINY_EMPTY_SURFACE").unwrap_or_else(|_| "tri".into());
-        if form == "tri" {
-            let v = vec![[0.0, -4.0, 0.0], [0.001, -4.0, 0.0], [0.0, -4.0, 0.001]];
-            // byte and table both NotCollidable (28): the one place the two
-            // disagreed in a whole library (surfhist, 2026-09-07)
-            let t = vec![super::surface::Triangle { indices: [0, 1, 2], material_id: 28, u03: 0, surface_index: 0 }];
-            return CPlugSurface::mesh(v, t, vec![28], [0.0, 0.0, 1.0]);
-        }
+        let v = vec![[0.0, -4.0, 0.0], [0.001, -4.0, 0.0], [0.0, -4.0, 0.001]];
+        // byte and table both NotCollidable (28): the one place the two
+        // disagreed in a whole library (surfhist, 2026-09-07)
+        let t = vec![super::surface::Triangle { indices: [0, 1, 2], material_id: 28, u03: 0, surface_index: 0 }];
+        return CPlugSurface::mesh(v, t, vec![28], [0.0, 0.0, 1.0]);
     }
     CPlugSurface::mesh(m.surf_vertices.clone(), m.surf_triangles.clone(), m.surf_ids.clone(), [0.0, 0.0, 1.0])
-}
-
-/// `TINY_STATIC_FORM=prefab`: a static item laid out like the pack's own
-/// items — `CGameItemModel -> CPlugPrefab { CPlugStaticObjectModel }` — instead
-/// of the item editor's `CGameCommonItemEntityModel` wrapper (the 2026-09-07
-/// probe of which form the game reads a detail ladder from; no waypoint
-/// trigger in this form yet).
-fn static_form_prefab() -> bool {
-    std::env::var("TINY_STATIC_FORM").map(|v| v == "prefab").unwrap_or(false)
 }
 
 /// Build the whole item tree from the merged geometry.
@@ -1982,11 +1804,13 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         return Err("no visuals: nothing to build".into());
     }
     // node 1 = the entity model; a static item fixes 2 (static object) and 3
-    // (its solid) like the reference items, a moving item hands indices out
-    // in write order from 2
-    let prefab_form = !m.dyna.is_empty() || static_form_prefab() || m.special.is_some() || !m.fx.is_empty();
+    // (its solid) like the reference items — the item editor's
+    // CGameCommonItemEntityModel form; a moving item, a gameplay gate or an
+    // effect carrier takes the pack's own CPlugPrefab form (both read a detail
+    // ladder the same way, probed 2026-09-07) and hands indices out in write
+    // order from 2
+    let prefab_form = !m.dyna.is_empty() || m.special.is_some() || !m.fx.is_empty();
     let mut next = if !prefab_form { 4i32 } else { 2i32 };
-    let no_wp = std::env::var_os("TINY_NO_WAYPOINT").is_some();
     // The static geometry: one static object (mesh + collision) — the whole
     // item when nothing moves, else one entity of the prefab.
     let static_object = if m.visuals.is_empty() {
@@ -1997,7 +1821,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         let surface_index = next_index(&mut next);
         Some(CPlugStaticObjectModel { version: 3, mesh: inline(mesh_index, Node::Solid2(s2)), is_mesh_collidable: false, shape: inline(surface_index, Node::Surface(build_surface(m))) })
     };
-    let trigger = match m.trigger.as_ref().filter(|_| !no_wp) {
+    let trigger = match m.trigger.as_ref() {
         Some(t) => {
             let i = next_index(&mut next);
             let mut t = t.clone();
@@ -2126,7 +1950,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         ItemChunk::Node201A(super::null_ref()),
         ItemChunk::DefaultPlacement { version: 5, placement: inline(placement_index, Node::Placement(placement_param(sclass_index))) },
         ItemChunk::Archetype { version: 7, archetype_ref: String::new(), archetype_fid: Some(super::null_ref()), skin_dir: Some(String::new()), u01: Some(-1) },
-        ItemChunk::Waypoint { version: 12, waypoint_type: if no_wp { 3 } else { m.waypoint_type.unwrap_or(3) }, disable_lightmap: false, u_node: Some(super::null_ref()), u_byte: Some(0), u_ints: Some((-1, -1)) },
+        ItemChunk::Waypoint { version: 12, waypoint_type: m.waypoint_type.unwrap_or(3), disable_lightmap: false, u_node: Some(super::null_ref()), u_byte: Some(0), u_ints: Some((-1, -1)) },
         ItemChunk::Icon { version: 3, icon_fid: String::new(), u_byte: Some(1) },
         ItemChunk::Skippable(super::RawChunk { id: 0x2E002025, payload: vec![0; 8] }),
         ItemChunk::Skippable(super::RawChunk { id: 0x2E002026, payload: vec![0; 8] }),
@@ -2141,13 +1965,11 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         class_id: super::C_ITEM_MODEL,
         header_chunks: header_chunks(opts),
         num_nodes: next as u32,
-        // the reference table: the pack files the `extern` light probes name,
-        // relative to the item's own folder after TINY_LIGHT_EXT_UP steps up
-        // (default 0: the paths as the packs spell them)
+        // the reference table: the pack files the effect systems name, as the
+        // packs spell them
         ref_table: {
             let ext = EXTERNALS.with(|e| std::mem::take(&mut *e.borrow_mut()));
-            let up: u32 = std::env::var("TINY_LIGHT_EXT_UP").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-            super::file::ref_table(up, &ext)
+            super::file::ref_table(&ext)
         },
         item: CGameItemModel { chunks },
     })
@@ -2182,8 +2004,7 @@ pub fn header_chunks(opts: &BuildOpts) -> Vec<super::file::HeaderChunk> {
         w.u8(3);
     }
     let mut out = vec![HeaderChunk { id: 0x2E001003, heavy: false, payload: d }];
-    // TINY_ITEM_SKIN=0 leaves the declaration out (the A/B of 2026-09-07)
-    if let Some(skin) = opts.skin.as_ref().filter(|_| std::env::var("TINY_ITEM_SKIN").as_deref() != Ok("0")) {
+    if let Some(skin) = opts.skin.as_ref() {
         out.push(HeaderChunk { id: tmmaps::header::GAME_SKIN_CHUNK, heavy: false, payload: skin.clone() });
     }
     out.extend([
@@ -2384,7 +2205,6 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
         };
         constraints.push((target, modified_constraint_path(store, m, &cp), params));
     }
-    let dyna_static = std::env::var("TINY_DYNA").map(|v| v == "static").unwrap_or(false);
     for (i, e) in prefab.ents.iter().enumerate() {
         let iso = compose(at, &super::prefab::CPlugPrefab::entity_iso(e));
         match e.model.inline.as_deref() {
@@ -2540,11 +2360,11 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                 // prefab binds it (pusher pistons, rotor discs — kept as a
                 // dyna entity with its constraint, see `DynaPart`); otherwise
                 // (the flag cloth of Flag16m/Flag8m) its mesh at rest, no
-                // collision. `TINY_DYNA=static` bakes every one at rest.
+                // collision.
                 Some(p) if p.to_ascii_lowercase().ends_with(".dynaobject.gbx") => {
                     let bound = constraints.iter().find(|(target, _, _)| *target == i as i32).cloned();
                     match bound {
-                        Some((_, cpath, cparams)) if !dyna_static => {
+                        Some((_, cpath, cparams)) => {
                             if let Err(err) = add_dyna_part(store, &p, &iso, scale, m, &cpath, cparams, e) {
                                 m.notes.push(format!("{path} entity {i}: moving part {p} failed ({err}); baked at rest"));
                                 if let Err(e2) = add_dyna_object_file(store, &p, &iso, scale, m) {
@@ -2554,7 +2374,7 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                         }
                         // a self-animating mesh (the flag cloth's vertex tween):
                         // a dyna entity of its own, no constraint
-                        None if !dyna_static && tween_parts_enabled() && dyna_has_tween_material(store, &p) => {
+                        None if tween_parts_enabled() && dyna_has_tween_material(store, &p) => {
                             if let Err(err) = add_dyna_tween_part(store, &p, &iso, scale, m, e) {
                                 m.notes.push(format!("{path} entity {i}: tween part {p} failed ({err}); baked at rest"));
                                 if let Err(e2) = add_dyna_object_file(store, &p, &iso, scale, m) {
@@ -2919,11 +2739,9 @@ pub fn static_item_from_prefab(store: &mut crate::store::DataStore, prefab: &str
 /// Same, also returning the merge notes.
 pub fn static_item_from_prefab_report(store: &mut crate::store::DataStore, prefab: &str, ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged)> {
     let mut m = Merged::default();
-    m.editors = std::env::var_os("TINY_EDITORS").is_some();
     add_prefab(store, prefab, &IDENTITY, scale, &mut m, 0)?;
-    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors, skin: m.skin.clone() };
+    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
-    m.pictures.extend(LIGHT_FILES.with(|l| std::mem::take(&mut *l.borrow_mut())));
     Ok((super::write_file(&f), m))
 }
 
@@ -2937,7 +2755,6 @@ pub fn static_item_from_item(item_bytes: &[u8], ident: &str, author: &str, scale
 
 pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged)> {
     let mut m = Merged::default();
-    m.editors = std::env::var_os("TINY_EDITORS").is_some();
     // the source item's skin declaration (header chunk 0x090F4000) travels
     let skin = tmmaps::header::game_skin_chunk(item_bytes);
     match super::parse_file(item_bytes) {
@@ -2970,7 +2787,6 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
                 }
                 m2.spawn = [ent.iso[9] * scale, ent.iso[10] * scale, ent.iso[11] * scale];
             }
-            m2.editors = std::env::var_os("TINY_EDITORS").is_some();
             m2.notes.extend(m.notes.drain(..));
             m = m2;
         }
@@ -2983,16 +2799,15 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
         }
     }
     m.skin = skin;
-    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors, skin: m.skin.clone() };
+    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
-    m.pictures.extend(LIGHT_FILES.with(|l| std::mem::take(&mut *l.borrow_mut())));
     Ok((super::write_file(&f), m))
 }
 
 /// A gameplay gate's LED sign panel as a plain picture of the kind's logo on
 /// black (signlogo.rs: the live gate feeds the panels' `_DispIn` shader a
-/// display the static item cannot). `TINY_SIGN_LOGO=off` keeps the game
-/// material (dark row, ⊗ on the beam).
+/// display the static item cannot; the game material alone is a dark row and
+/// a ⊗ on the beam).
 pub fn sign_logo_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMaterialUserInst {
     let Some(link) = inst.link().map(|s| s.to_string()) else { return inst.clone() };
     let Some(kind) = super::signlogo::kind_of_pseudo(&link).map(|s| s.to_string()) else { return inst.clone() };
@@ -3009,7 +2824,7 @@ pub fn sign_logo_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMate
     let mut owned = inst.clone();
     if let Some(main) = owned.main.as_mut() {
         main.is_using_game_material = false;
-        // TINY_SIGN_MODEL=TDSN (default) — the shading model of the panel.
+        // The shading model of the panel: TDSN, the picture in slot 0.
         // Measured on a lineup of the 16m Turbo gate (Summer 20 host, close-up
         // frames, panel corners sampled): TDSN with the picture in slot 0
         // alone gives BLACK cells (0x0a0e12) and a sunlit logo (0x919712);
@@ -3022,25 +2837,10 @@ pub fn sign_logo_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMate
         // TDSNE draw a checker/lighter panel, TDSNEM a flat colour. So the
         // panel is a plain diffuse: black cells like the original, the logo
         // lit by the sun instead of glowing.
-        main.model = crate::crystal_model::Id::Str(std::env::var("TINY_SIGN_MODEL").unwrap_or_else(|_| "TDSN".into()));
+        main.model = crate::crystal_model::Id::Str("TDSN".to_string());
         main.material_name = crate::crystal_model::Id::Str(format!("SignLogo{kind}"));
         main.link = crate::crystal_model::Id::Null;
-        // `TINY_SIGN_SLOTS=0` (the default) names the texture slots the picture
-        // fills (0 = diffuse; 5 = self-illumination, see above); the token `b`
-        // puts the file into BaseTexture instead (draws a checker — no).
-        let tokens: Vec<String> = std::env::var("TINY_SIGN_SLOTS")
-            .ok()
-            .map(|s| s.split(',').filter(|c| !c.trim().is_empty()).map(|c| c.trim().to_string()).collect())
-            .unwrap_or_else(|| vec!["0".into()]);
-        main.user_textures.clear();
-        for t in tokens {
-            if t == "b" {
-                main.base_texture = file.clone();
-            } else {
-                let u01: i32 = t.parse().unwrap_or_else(|_| panic!("TINY_SIGN_SLOTS: {t:?} is not a slot index"));
-                main.user_textures.push(crate::crystal_model::UserTexture { u01, texture: file.clone() });
-            }
-        }
+        main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: file }];
     }
     owned
 }
@@ -3707,7 +3507,6 @@ pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform
     let mut constraint = super::dyna::KinematicConstraint::parse_body(&kmodel.body).map_err(|e| format!("{constraint_path}: {e}"))?;
     constraint.scale(scale);
     let mut mesh = Merged::default();
-    mesh.editors = m.editors;
     mesh.keep_water = m.keep_water;
     mesh.modifier = m.modifier.clone();
     mesh.collision_redress = m.collision_redress.clone();
@@ -3815,7 +3614,6 @@ pub fn add_dyna_tween_part(store: &mut crate::store::DataStore, path: &str, at: 
         return Err(format!("{path}: no vertex-tween material"));
     }
     let mut mesh = Merged::default();
-    mesh.editors = m.editors;
     mesh.keep_water = m.keep_water;
     mesh.modifier = m.modifier.clone();
     mesh.collision_redress = m.collision_redress.clone();
@@ -3971,7 +3769,6 @@ pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStor
     let variants = pack_item_variants(store, item_path)?;
     let mut m = Merged::default();
     m.light_skin = light_skin;
-    m.editors = std::env::var_os("TINY_EDITORS").is_some();
     m.keep_water = keep_water_for(collection);
     if variants.is_empty() {
         let model = store.load_model(item_path)?;
@@ -4041,7 +3838,7 @@ pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStor
     }
     // The gate sign panels' pictures (signlogo.rs), one per kind the item's
     // materials name; `sign_logo_material` re-points the panels at them.
-    if super::signlogo::enabled() {
+    {
         let kinds: Vec<String> = m.materials.iter().filter_map(|mat| mat.link().and_then(super::signlogo::kind_of_pseudo).map(|s| s.to_string())).collect();
         for kind in kinds {
             let file = super::signlogo::logo_file(&kind);
@@ -4075,9 +3872,8 @@ pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStor
             m.pictures.push((skin.file(), skin.dds.to_vec()));
         }
     }
-    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors, skin: m.skin.clone() };
+    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
-    m.pictures.extend(LIGHT_FILES.with(|l| std::mem::take(&mut *l.borrow_mut())));
     Ok((super::write_file(&f), m))
 }
 
@@ -4112,18 +3908,12 @@ pub fn pack_item_waypoint_type(item_bytes: &[u8]) -> Option<i32> {
 /// skins, so the link is remapped here: without it the wall faces under the
 /// stands drew Stadium's wooden `TrackWallClips` where the original shows
 /// BlueBay's concrete `TrackWallClipsInWorld` (2026-09-06).
-/// `TINY_NO_SKIN=1` disables the remap.
 /// Whether a collection's `Water` visuals stay in the bake: Stadium's pools
 /// are drawn by the `WaterBase` blocks themselves (no water zone to fall back
 /// on); BlueBay / RedIsland / WhiteShore / GreenCoast regenerate their sea or
-/// lake from the genealogy at that very height. `TINY_WATER=keep|drop`
-/// overrides for experiments.
+/// lake from the genealogy at that very height.
 pub fn keep_water_for(collection: u32) -> bool {
-    match std::env::var("TINY_WATER").as_deref() {
-        Ok("keep") => true,
-        Ok("drop") => false,
-        _ => collection == 0x1a,
-    }
+    collection == 0x1a
 }
 
 /// The environment folder of a map collection id (the pack's root folder).
@@ -4138,14 +3928,12 @@ pub fn env_name(collection: u32) -> &'static str {
     }
 }
 
-/// `TINY_MAT_CUSTOM="Stem=mode[:path],…"`: rewrite one material link into
-/// the engine's CUSTOM-texture form (the ManiaPlanet item-editor material:
-/// `IsUsingGameMaterial` off, a shading `Model`, textures named by path) —
-/// the probe of 2026-09-07 for whether a texture referenced by PATH becomes
-/// a fid the game's skin remap (the in-game advertisement) can reach.
-/// Modes: `base` (Model TDSN, BaseTexture = path), `basefile` (same with the
-/// file name), `user` (UserTextures slot 0 = path, Model TDSN), `linkuser`
-/// (game link kept, UserTextures slot 0 = path). Experiments only.
+/// A material link rewritten into the engine's CUSTOM-texture form (the
+/// ManiaPlanet item-editor material: `IsUsingGameMaterial` off, a shading
+/// `Model`, textures named by file) when a picture for its stem is provided —
+/// the one way a texture of our own reaches an embedded item (the 2026-09-07
+/// probes: a texture named by pack PATH becomes no fid the skin remap can
+/// reach; a bare file name is resolved in the item's own archive folder).
 pub fn custom_texture_material(inst: &CPlugMaterialUserInst, ident: &str) -> CPlugMaterialUserInst {
     // TINY_PICTURES=DIR: the production form. A material whose link stem has a
     // `<stem>.dds` in DIR draws that picture — a custom-texture material with
@@ -4187,94 +3975,10 @@ pub fn custom_texture_material(inst: &CPlugMaterialUserInst, ident: &str) -> CPl
             }
         }
     }
-    let Ok(list) = std::env::var("TINY_MAT_CUSTOM") else { return inst.clone() };
-    let Some(link) = inst.link().map(|s| s.to_string()) else { return inst.clone() };
-    let stem = link.rsplit('\\').next().unwrap_or(&link).to_string();
-    for entry in list.split(',') {
-        let Some((from, spec)) = entry.split_once('=') else { continue };
-        if from != stem {
-            continue;
-        }
-        let (mode, path) = spec.split_once(':').unwrap_or((spec, ""));
-        let mut owned = inst.clone();
-        let Some(main) = owned.main.as_mut() else { return owned };
-        match mode {
-            "base" | "basefile" => {
-                main.is_using_game_material = false;
-                main.model = crate::crystal_model::Id::Str("TDSN".into());
-                main.material_name = crate::crystal_model::Id::Str(stem.clone());
-                main.base_texture = path.to_string();
-                main.link = crate::crystal_model::Id::Null;
-            }
-            "user" => {
-                main.is_using_game_material = false;
-                main.model = crate::crystal_model::Id::Str("TDSN".into());
-                main.material_name = crate::crystal_model::Id::Str(stem.clone());
-                main.link = crate::crystal_model::Id::Null;
-                main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: path.to_string() }];
-            }
-            "linkuser" => {
-                main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: path.to_string() }];
-            }
-            // tex:MODEL:slot=path;slot=path — any shading model, any slots
-            "tex" => {
-                let (model, slots) = path.split_once(':').unwrap_or((path, ""));
-                main.is_using_game_material = false;
-                main.model = crate::crystal_model::Id::Str(model.to_string());
-                main.material_name = crate::crystal_model::Id::Str(stem.clone());
-                main.link = crate::crystal_model::Id::Null;
-                main.user_textures = slots
-                    .split(';')
-                    .filter(|s| !s.is_empty())
-                    .filter_map(|s| s.split_once('='))
-                    .map(|(slot, p)| crate::crystal_model::UserTexture { u01: slot.parse().unwrap_or(0), texture: p.to_string() })
-                    .collect();
-            }
-            _ => {}
-        }
-        // TINY_MAT_UVANIM="u01|u02|u03|u04hex|u05": one UvAnim entry on the
-        // rewritten material (the chunk's v3+ list: Id, Id, f32, u64, Id) —
-        // the 2026-09-07 probe of whether a custom material can scroll its
-        // texture. Ids: `-` = null, else the string.
-        if let Ok(spec) = std::env::var("TINY_MAT_UVANIM") {
-            let f: Vec<&str> = spec.split('|').collect();
-            if f.len() == 5 {
-                let id = |s: &str| if s == "-" { crate::crystal_model::Id::Null } else { crate::crystal_model::Id::Str(s.to_string()) };
-                main.uv_anims = vec![crate::crystal_model::UvAnim {
-                    u01: id(f[0]),
-                    u02: id(f[1]),
-                    u03: f[2].parse().unwrap_or(1.0),
-                    u04: u64::from_str_radix(f[3].trim_start_matches("0x"), 16).unwrap_or(0),
-                    u05: id(f[4]),
-                }];
-            }
-        }
-        return owned;
-    }
     inst.clone()
 }
 
 pub fn skinned_material(inst: &CPlugMaterialUserInst, collection: u32) -> CPlugMaterialUserInst {
-    // TINY_MAT_SUBST="Stem=Other,…": rewrite a material link stem (any family) before the skin remap — experiments.
-    let inst = &match std::env::var("TINY_MAT_SUBST") {
-        Ok(list) => {
-            let mut owned = inst.clone();
-            if let Some(link) = inst.link().map(|s| s.to_string()) {
-                let (dir, stem) = match link.rfind('\\') { Some(i) => (&link[..=i], &link[i + 1..]), None => ("", link.as_str()) };
-                for pair in list.split(',') {
-                    if let Some((from, to)) = pair.split_once('=') {
-                        if from == stem {
-                            if let Some(main) = owned.main.as_mut() {
-                                main.link = crate::crystal_model::Id::Str(format!("{dir}{to}"));
-                            }
-                        }
-                    }
-                }
-            }
-            owned
-        }
-        Err(_) => inst.clone(),
-    };
     const SKIN: &[(&str, &str)] = &[
         ("TrackWallClips", "TrackWallClipsInWorld"),
         ("TrackWall", "TrackWallInWorld"),
@@ -4291,7 +3995,7 @@ pub fn skinned_material(inst: &CPlugMaterialUserInst, collection: u32) -> CPlugM
     ];
     // every terrain environment carries `<Env>\Media\Modifier\StadiumOnTerrain\`
     // with the same slots (BlueBay and RedIsland checked); Stadium itself has none
-    if collection == 0x1a || std::env::var_os("TINY_NO_SKIN").is_some() {
+    if collection == 0x1a {
         return inst.clone();
     }
     let env = env_name(collection);
@@ -4424,43 +4128,28 @@ mod lod_tests {
 /// material whose pack file carries a self-illumination texture becomes a
 /// self-lit custom-texture material with the swatch as diffuse AND
 /// illumination (`Items/LightColor_<Name>.dds`), the way the skin replaces the
-/// stock item's `_I` textures. `Off` glows black. `TINY_LIGHT_SKIN_GLASS=off`
-/// keeps the game material (white glow).
+/// stock item's `_I` textures. `Off` glows black.
 pub fn light_skin_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMaterialUserInst {
     let Some(skin) = m.light_skin.as_ref() else { return inst.clone() };
-    if std::env::var("TINY_LIGHT_SKIN_GLASS").map(|v| v == "off").unwrap_or(false) {
-        return inst.clone();
-    }
     let Some(link) = inst.link().map(|s| s.to_string()) else { return inst.clone() };
     if !m.illum_links.iter().any(|l| *l == link) {
         return inst.clone();
     }
     let stem = link.rsplit('\\').next().unwrap_or(&link).to_string();
     let file = skin.file();
-    // TINY_LIGHT_SKIN_GLASS=<Model>[+cst=Name:value;…]: the shading model of the
-    // glass (default TDSNI) and optional material constants (a Cst row: name,
-    // "", the f32 bits). Probed 2026-09-07 on a Red LightTubeBig4m against the
-    // stock skinned tube (whose pack material has SelfIllumScale 1.5 + a
-    // refract layer + a _G glow map): TDSNI and TDSNEM glow red but dimmer,
-    // TDSNE/TDSNI_Night dimmer still, TIAdd invisible, a SelfIllumScale cst
-    // turned the glass BLACK (the row is read, the encoding is not this).
-    let spec = std::env::var("TINY_LIGHT_SKIN_GLASS").unwrap_or_else(|_| "TDSNI".into());
-    let (model, extra) = spec.split_once('+').unwrap_or((spec.as_str(), ""));
+    // The shading model of the glass: TDSNI. Probed 2026-09-07 on a Red
+    // LightTubeBig4m against the stock skinned tube (whose pack material has
+    // SelfIllumScale 1.5 + a refract layer + a _G glow map): TDSNI and TDSNEM
+    // glow red but dimmer, TDSNE/TDSNI_Night dimmer still, TIAdd invisible, a
+    // SelfIllumScale material constant turned the glass BLACK (the row is
+    // read, the encoding is not this).
     let mut owned = inst.clone();
     if let Some(main) = owned.main.as_mut() {
         main.is_using_game_material = false;
-        main.model = crate::crystal_model::Id::Str(model.to_string());
+        main.model = crate::crystal_model::Id::Str("TDSNI".to_string());
         main.material_name = crate::crystal_model::Id::Str(format!("{stem}{}", skin.name));
         main.link = crate::crystal_model::Id::Null;
         main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: file.clone() }, crate::crystal_model::UserTexture { u01: 5, texture: file }];
-        if let Some((_, list)) = extra.split_once("cst=") {
-            for kv in list.split(';') {
-                if let Some((name, v)) = kv.split_once(':') {
-                    let f: f32 = v.parse().unwrap_or(1.0);
-                    main.csts.push(crate::crystal_model::Cst { u01: crate::crystal_model::Id::Str(name.to_string()), u02: crate::crystal_model::Id::Null, u03: f.to_bits() as i32 });
-                }
-            }
-        }
     }
     owned
 }
@@ -4607,18 +4296,16 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
     let normal_map = std::env::var_os("TINY_TREE_NORMAL_MAP").is_some();
     let keep_color = std::env::var_os("TINY_TREE_KEEP_COLOR").is_some();
     let mut lod_min: usize = std::env::var("TINY_TREE_LOD_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-    // The campaign's size knobs apply to trees like to blocks: TINY_LOD_PICK=N
-    // (with TINY_LOD_PICK_MIN_VERTS) keeps level N alone, every distance, for
-    // a species whose nearest level has that many vertices; TINY_LOD0_ONLY
-    // keeps level 0 alone. Otherwise every level rides with the model's own
-    // ladder (`all_lods`: the ladder is kept whatever the knobs say).
+    // The campaign's size lever applies to trees like to blocks: `--lod-pick N`
+    // (with its min-verts) keeps level N alone, every distance, for a species
+    // whose nearest level has that many vertices. Otherwise every level rides
+    // with the model's own ladder (`all_lods`: the ladder is kept whatever
+    // the pick says).
     let level0_verts: i32 = t.lods.first().map(|l| l.iter().map(|e| e.visual.main.as_ref().map(|mm| mm.count).unwrap_or(0)).sum()).unwrap_or(0);
-    let min_verts: i32 = std::env::var("TINY_LOD_PICK_MIN_VERTS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let pick: Option<usize> = match lod_pick() {
-        Some(p) if level0_verts >= min_verts => Some((p as usize).min(t.lods.len() - 1)),
+        Some(p) if level0_verts >= p.min_verts => Some((p.level as usize).min(t.lods.len() - 1)),
         // a species under the vertex floor keeps level TINY_TREE_LOD_MIN alone
         Some(_) => Some(lod_min.min(t.lods.len() - 1)),
-        None if std::env::var_os("TINY_LOD0_ONLY").is_some() => Some(0),
         None => None,
     };
     if let Some(p) = pick {
@@ -4754,7 +4441,7 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
     m.all_lods = pick.is_none();
     out.switch = ladder;
     if let Some(p) = pick {
-        m.notes.push(format!("vegetation bake: level {p} of {} alone (TINY_LOD_PICK/TINY_LOD0_ONLY; nearest level {level0_verts} vertices)", t.lods.len()));
+        m.notes.push(format!("vegetation bake: level {p} of {} alone (--lod-pick; nearest level {level0_verts} vertices)", t.lods.len()));
     }
     // the trunk hull as the collision (Wood, 14 — what the model says)
     if !t.hull_triangles.is_empty() {
@@ -4776,10 +4463,9 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
 pub fn static_item_from_veget_report(store: &mut crate::store::DataStore, path: &str, ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged, VegetBake)> {
     let model_path = crate::veget::tree_model_path(store, path)?;
     let mut m = Merged::default();
-    m.editors = std::env::var_os("TINY_EDITORS").is_some();
     m.keep_water = keep_water_for(collection);
     let bake = add_veget_tree_model(store, &model_path, scale, &mut m)?;
-    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors, skin: None };
+    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: None };
     let file = assemble(&m, &opts)?;
     Ok((super::file::write_file(&file), m, bake))
 }

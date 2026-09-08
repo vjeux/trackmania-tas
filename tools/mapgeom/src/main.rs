@@ -10,6 +10,10 @@ mapgeom -- TM2020 map geometry
   --key <hex>       Stadium pack key (default: the known one)
   --pak <file[:key]>  a client pack (repeatable; the key is the 32-hex derived key)
   --debug <name,..> diagnostic prints: lookup, decls, trees (`--debug help`)
+  --lod-pick <N> [--lod-pick-min-verts <V>]
+                    bake ONE detail level of every model (N; 0 = the nearest) at
+                    every distance — the size lever for a map over the upload cap;
+                    a part whose nearest level has under V vertices keeps it
 
 COMMANDS
   ls [<substring>]              pack entries whose path contains <substring>
@@ -94,6 +98,8 @@ fn parse_args() -> Args {
     let mut paks = Vec::new();
     let mut key = STADIUM_KEY.to_string();
     let mut rest = Vec::new();
+    let mut lod_pick: Option<u32> = None;
+    let mut lod_min_verts: i32 = 0;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -101,8 +107,13 @@ fn parse_args() -> Args {
             "--pak" => paks.push(it.next().unwrap_or_default()),
             "--key" => key = it.next().unwrap_or_default(),
             "--debug" => mapgeom::debug::set(&it.next().unwrap_or_default()).unwrap_or_else(|e| die(e)),
+            "--lod-pick" => lod_pick = Some(it.next().unwrap_or_default().parse().unwrap_or_else(|_| die("--lod-pick N (a detail level, 0 = nearest)".into()))),
+            "--lod-pick-min-verts" => lod_min_verts = it.next().unwrap_or_default().parse().unwrap_or_else(|_| die("--lod-pick-min-verts N (vertices)".into())),
             _ => rest.push(a),
         }
+    }
+    if let Some(level) = lod_pick {
+        mapgeom::static_item::build::set_lod_pick(mapgeom::static_item::build::LodPick { level, min_verts: lod_min_verts }).unwrap_or_else(|e| die(e));
     }
     Args { packs, paks, key, rest }
 }

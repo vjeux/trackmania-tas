@@ -6,13 +6,16 @@
 //! ```text
 //! tinyctl build 20 21 [--src-dir /tmp/summer2026] [--out-root /tmp] [--tag auto]
 //!               [--recipe /tmp/tiny3/recipe.env] [--env K=V …] [--bin-dir DIR]
+//!               [--lod-pick N [--lod-pick-min-verts V]] [--debug NAMES]
 //! ```
 //!
 //! Output for map NN goes to `<out-root>/tinyNN/<tag>/` (default tag `auto`):
 //! lib.zip, placements.tsv, report.tsv, build.log, Summer-NN-Tiny.Map.Gbx,
 //! tiny.log, libx/. The packs are the fixed campaign set: the collection's
 //! pack (key 660C…) plus the Stadium pack (key B773…); a Stadium map gets the
-//! Stadium pack alone. `--env` adds or overrides variables (TINY_FLAG_TWEEN=0 …).
+//! Stadium pack alone. `--env` adds or overrides variables (TINY_FLAG_TWEEN=0 …);
+//! `--lod-pick` / `--lod-pick-min-verts` / `--debug` are handed to `mapgeom`
+//! as its global flags.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -99,6 +102,14 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let out_root = PathBuf::from(f("--out-root").unwrap_or_else(|| "/tmp".into()));
     let tag = f("--tag").unwrap_or_else(|| "auto".into());
     let recipe = PathBuf::from(f("--recipe").unwrap_or_else(|| "/tmp/tiny3/recipe.env".into()));
+    // mapgeom's global flags, passed through
+    let mut mapgeom_flags: Vec<String> = Vec::new();
+    for k in ["--lod-pick", "--lod-pick-min-verts", "--debug"] {
+        if let Some(v) = f(k) {
+            mapgeom_flags.push(k.to_string());
+            mapgeom_flags.push(v);
+        }
+    }
     let bin_dir = f("--bin-dir").map(PathBuf::from).or_else(|| std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()))).ok_or("--bin-dir DIR")?;
     // --env K=V (repeatable)
     let mut extra: Vec<(String, String)> = Vec::new();
@@ -159,7 +170,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         println!("{nn}: {} ({}) -> {}", src.file_name().unwrap_or_default().to_string_lossy(), collection_name(coll), out.display());
         let t0 = std::time::Instant::now();
         let mut lib = Command::new(&mapgeom);
-        lib.args(&paks).arg("tiny-library").arg(&src).arg("--library-out").arg(out.join("lib.zip")).arg("--mapping-out").arg(out.join("placements.tsv")).arg("--report").arg(out.join("report.tsv"));
+        lib.args(&paks).args(&mapgeom_flags).arg("tiny-library").arg(&src).arg("--library-out").arg(out.join("lib.zip")).arg("--mapping-out").arg(out.join("placements.tsv")).arg("--report").arg(out.join("report.tsv"));
         lib.envs(env.iter());
         match run(&mut lib, &out.join("build.log")) {
             Ok(text) => {

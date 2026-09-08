@@ -149,18 +149,16 @@ pub fn write_file(f: &StaticItemFile) -> Vec<u8> {
     out
 }
 
-/// A Gbx reference table naming external files: `(node index, path)` where
-/// the path is relative to the file's own folder after `ancestor_level` steps
-/// up (`Media\Texture\ItemLamp_I.Texture.gbx` from `Stadium\Items\` with
-/// level 1 = `Stadium\Media\Texture\...`). Folders are numbered depth-first
-/// from 1 (0 = the ancestor directory itself), each external carries flags 1,
-/// its file name, node index, use-file 0 and its folder index — the layout
-/// the pack's own files carry (`ItemLampSpot.Light.Gbx`: level 1, folders
-/// `Light`, `Texture`, one external in folder 2).
-pub fn ref_table(ancestor_level: u32, externals: &[(u32, String)]) -> Vec<u8> {
-    // TINY_LIGHT_EXT_USEFILE=1: the entries' use-file word (probe: does it make
-    // the game look the name up on disk / in the archive rather than the packs?)
-    let use_file: u32 = std::env::var("TINY_LIGHT_EXT_USEFILE").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+/// A Gbx reference table naming external files: `(node index, path)`, the
+/// paths as the packs spell them (ancestor level 0: relative to the item's own
+/// folder, no steps up). Folders are numbered depth-first from 1 (0 = the
+/// ancestor directory itself), each external carries flags 1, its file name,
+/// node index, use-file 0 and its folder index — the layout the pack's own
+/// files carry (`ItemLampSpot.Light.Gbx`: level 1, folders `Light`, `Texture`,
+/// one external in folder 2).
+pub fn ref_table(externals: &[(u32, String)]) -> Vec<u8> {
+    let ancestor_level: u32 = 0;
+    let use_file: u32 = 0;
     let mut out = Vec::new();
     out.extend_from_slice(&(externals.len() as u32).to_le_bytes());
     if externals.is_empty() {

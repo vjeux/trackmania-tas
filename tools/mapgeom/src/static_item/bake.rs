@@ -1337,25 +1337,15 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
         let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         m.file_write_time = unix * 10_000_000 + 116444736000000000;
     }
-    // material slot per crystal material index (editors mode remaps onto
-    // the mesh-editor family, like the prefab path; otherwise the
-    // editor-resolved link, so the baked item carries real
-    // `.Material.Gbx` paths instead of dangling virtual names).
-    let editors = m.editors;
+    // material slot per crystal material index: the editor-resolved link, so
+    // the baked item carries real `.Material.Gbx` paths instead of dangling
+    // virtual names
     let slots: Vec<usize> = c
         .materials
         .iter()
         .map(|mat| match mat.inst() {
-            Some(inst) => {
-                if editors {
-                    let link = inst.link().unwrap_or("").to_string();
-                    let stem = link.rsplit('\\').next().unwrap_or(&link).to_string();
-                    m.material_slot(crate::tiny_assets::editors_link_for_stadium_material(&stem), inst.physics())
-                } else {
-                    m.resolved_inst_slot(inst)
-                }
-            }
-            None => m.link_slot(&mat.name, 0, editors),
+            Some(inst) => m.resolved_inst_slot(inst),
+            None => m.link_slot(&mat.name, 0),
         })
         .collect();
     let mut per_material: Vec<Vec<[Corner; 3]>> = vec![Vec::new(); slots.len().max(1)];

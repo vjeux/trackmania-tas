@@ -654,7 +654,7 @@ pub fn cmd_batch(args: &[String]) {
     // --mapgeom BIN --paks "--pak A:HASH --pak B:HASH": build EVERY map its own
     // item library first (`mapgeom tiny-library`, a subprocess: the mapping is
     // indexed by the map's own block indices, so one library cannot serve
-    // two maps); the TINY_* recipe comes from the environment. Without it the
+    // two maps); the TINY_* variables of the environment are passed on. Without it the
     // old form applies: one --mapping/--library shared by every map.
     let mapgeom = cli::flag(args, "--mapgeom").map(PathBuf::from);
     let paks: Vec<String> = cli::flag(args, "--paks").map(|p| p.split_whitespace().map(str::to_string).collect()).unwrap_or_default();
@@ -1173,12 +1173,10 @@ pub fn cmd(args: &[String]) {
 
     // Stage 4: embed the converted block models. The source's own archive
     // (custom items: the TME nation items) is replaced; a custom item still
-    // placed after the mapping — the club's custom-material items, which the
-    // library builder leaves out (TINY_DROP_ITEMS) and `tmmaps tiny` parks —
-    // keeps its ORIGINAL file, carried over into the new archive, so the game
-    // finds every model the map names (a dangling name is "Missing Items" on
-    // load). Anything still placed whose file the source does not carry is a
-    // refusal.
+    // placed after the mapping keeps its ORIGINAL file, carried over into the new
+    // archive, so the game finds every model the map names (a dangling name is
+    // "Missing Items" on load). Anything still placed whose file the source does
+    // not carry is a refusal.
     let mut carried: Vec<(String, Vec<u8>)> = Vec::new();
     if let Some((src_zip, names)) = crate::header::embedded_zip_bytes(&source.gbx.body) {
         let files: Vec<String> = names.iter().map(|n| n.replace('/', "\\").to_ascii_lowercase()).collect();

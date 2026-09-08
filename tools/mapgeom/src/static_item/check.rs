@@ -265,7 +265,7 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         let level_of = |mask: i32| -> u32 { if mask <= 0 { 0 } else { (mask as u32).trailing_zeros() } };
         // Order: level-major with the materials sorted inside a level (the
         // pack prefabs' layout, ours since 2026-09-07), or material-major with
-        // the levels sorted inside a material (`TINY_LOD_ORDER=material`);
+        // the levels sorted inside a material (a pack item may carry that order);
         // a one-level item is material-sorted either way (SH rule: the first
         // unsorted split items crashed the client reading a garbage index).
         let keys: Vec<(u32, i32)> = s2.shaded_geoms.iter().map(|g| (level_of(g.lod_mask), g.material_index)).collect();

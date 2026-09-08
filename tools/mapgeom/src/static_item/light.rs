@@ -613,7 +613,7 @@ impl CPlugLightUserModel {
             }
         }
         if g.class_id == 0x0400B000 {
-            m.kind = std::env::var("TINY_LIGHT_SPOT_KIND").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+            m.kind = 1;
             m.spot_emission_size_x = m.point_emission_radius;
             m.spot_emission_size_y = m.point_emission_radius;
         }
@@ -692,43 +692,4 @@ impl CPlugLight {
             }
         }
     }
-}
-
-/// A standalone `.Light.Gbx` (class 0x0901D000, GBX version 6, uncompressed)
-/// holding `light` with its GxLight inline as node 1 and `externals` as the
-/// reference table (node index, path) — the file the production bake puts
-/// NEXT TO THE ITEM (`Items/<stem>_L<k>.Light.Gbx`) and points the socket at:
-/// an embedded item resolves a level-0 reference-table path both against its
-/// own archive folder and against the game's packs (probe of 2026-09-07: a
-/// socket naming `Stadium\Media\Light\ItemLampSpot.Light.Gbx` lit the grass
-/// exactly like the stock Lamp; an INLINE CPlugLight rendered no sprite and
-/// could not reach its projector texture).
-pub fn light_file(light: &CPlugLight, externals: &[(u32, String)]) -> Vec<u8> {
-    let mut light = light.clone();
-    if let Some(gx) = light.gx_mut() {
-        if gx.inline.is_some() {
-            gx.index = 1;
-        }
-    }
-    let mut body = Vec::new();
-    let mut lb = super::LookbackState::default();
-    lb.defined_nodes.extend(externals.iter().map(|(i, _)| *i));
-    {
-        let mut w = Wr { w: &mut body, lb: &mut lb };
-        light.write(&mut w);
-    }
-    let num_nodes = externals.iter().map(|(i, _)| *i + 1).max().unwrap_or(2).max(2);
-    let mut out = Vec::with_capacity(body.len() + 256);
-    out.extend_from_slice(b"GBX");
-    out.extend_from_slice(&6u16.to_le_bytes());
-    out.push(b'B');
-    out.push(b'U');
-    out.push(b'U');
-    out.push(b'R');
-    out.extend_from_slice(&C_PLUG_LIGHT.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes()); // no header chunks
-    out.extend_from_slice(&num_nodes.to_le_bytes());
-    out.extend_from_slice(&super::file::ref_table(0, externals));
-    out.extend_from_slice(&body);
-    out
 }

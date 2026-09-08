@@ -334,9 +334,6 @@ impl CPlugVisualIndexedTriangles {
         use super::{Node, NodeRef};
         let m = v.main.as_mut().ok_or("chunk 0x0902C004 before 0x0900600F")?;
         let w = m.chunk_flags;
-        if std::env::var_os("TINY_DEBUG_INLINE").is_some() {
-            eprintln!("inline visual: chunk_flags {:#x} (unpacked {:#x}) count {} texcoord sets {} skin {:?} sub_visuals {:?} splits {} morph {:?} chunks {:x?}", w, m.flags(), m.count, m.tex_coord_sets.len(), m.skin, v.sub_visuals, v.splits.len(), v.morph, v.chunks);
-        }
         let (use_normal, use_color, compress3, compress4, bit22) = (w & (1 << 5) != 0, w & (1 << 6) != 0, w & (1 << 7) != 0, w & (1 << 8) != 0, w & (1 << 9) != 0);
         let n = m.count.max(0) as usize;
         let mut pos = Vec::with_capacity(n);

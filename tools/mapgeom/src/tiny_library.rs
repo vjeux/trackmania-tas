@@ -818,7 +818,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                         }
                         m.skin = Some(chunk);
                     }
-                    let opts = crate::static_item::build::BuildOpts { ident: ident.clone(), author: ident.clone(), scale, collection, editors: m.editors, skin: m.skin.clone() };
+                    let opts = crate::static_item::build::BuildOpts { ident: ident.clone(), author: ident.clone(), scale, collection, skin: m.skin.clone() };
                     crate::static_item::build::assemble(&m, &opts).map(|f| (crate::static_item::file::write_file(&f), m))
                 }
             }
