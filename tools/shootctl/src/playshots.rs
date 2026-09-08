@@ -137,8 +137,12 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
             println!("{} DIALOG {}", el(), text);
             let _ = super::http_get("/yes", 10);
         }
-        // anywhere but the menu: the playground is up (ctx 2 in play)
-        if matches!(super::ctx(), Some(n) if n != 0) {
+        // THE PLAYGROUND, not merely "not the menu": /ctx is 3 with a
+        // CurrentPlayground and no editor, 1/2/9 inside an editor, 0 at the
+        // menu. `n != 0` took a transient editor context 0.3 s after /playmap
+        // for the playground (2026-09-08: startcheck shot the main menu, read
+        // "no vehicle", and failed a map that opened fine seconds later).
+        if super::ctx() == Some(3) {
             break;
         }
         std::thread::sleep(Duration::from_millis(500));
