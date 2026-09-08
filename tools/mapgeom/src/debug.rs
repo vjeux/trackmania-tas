@@ -9,6 +9,7 @@
 //! | `lookup` | why a block name has no block-info file (the index and store sizes) |
 //! | `decls`  | every source Solid2 header word and, per visual, the vertex declarations with the distinct values of each one-word element (a shader's per-vertex inputs) |
 //! | `trees`  | every tree the clearance drops, with its deck                       |
+//! | `fillers` | every recorded filler the `accepted` filler rule judges: occupants, face lists, verdict |
 //!
 //! `mapgeom --debug help` lists them.
 
@@ -20,6 +21,7 @@ pub const NAMES: &[(&str, &str)] = &[
     ("lookup", "why a block name has no block-info file (index and store sizes)"),
     ("decls", "source Solid2 header words and per-visual vertex declarations with distinct element values"),
     ("trees", "every tree the clearance drops, with the deck it hit"),
+    ("fillers", "every recorded filler TINY_FILLER_RULE=accepted judges: the occupants of its cell, their clip lists on the shared face, the verdict"),
 ];
 
 static ENABLED: OnceLock<BTreeSet<String>> = OnceLock::new();
