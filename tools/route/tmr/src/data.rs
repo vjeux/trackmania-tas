@@ -50,11 +50,22 @@ pub struct StartInfo {
     pub source: String,
 }
 
+/// Shards written with GEN's INTERIM effects dialect (bits 0–1 level, 2–3 type): their effects byte is unknown until
+/// GEN's --redo replaces them (coordinator 01:56Z; CAMPAIGN.tsv effects_dialect).
+pub const DIALECT_INTERIM: &[&str] = &["YzTFETagiqGYvGYtuQN2EyY60K3", "Nub2tB4j4rpdQ2M9LSUmuHegTV8"];
+
 pub fn read_starts(p: &Path) -> Result<HashMap<u32, StartInfo>, String> {
     let s = std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
     let mut out = HashMap::new();
+    // the `effects` column (tmstate v3 flags byte, hex) arrived on 2026-09-08; older files have none
+    let interim = p.parent().and_then(shard_map_uid).map(|u| DIALECT_INTERIM.contains(&u.as_str())).unwrap_or(false);
+    let mut effects_col: Option<usize> = None;
     for (i, line) in s.lines().enumerate() {
-        if i == 0 || line.is_empty() {
+        if i == 0 {
+            effects_col = line.split('\t').position(|h| h == "effects");
+            continue;
+        }
+        if line.is_empty() {
             continue;
         }
         let f: Vec<&str> = line.split('\t').collect();
@@ -82,6 +93,10 @@ pub fn read_starts(p: &Path) -> Result<HashMap<u32, StartInfo>, String> {
             cps: cps_before,
             finished: false,
             car: u8::MAX, // starts.tsv has no car column; the records' end state carries it (copied per row)
+            effects: match effects_col.and_then(|c| f.get(c)) {
+                Some(v) if !interim => u8::from_str_radix(v.trim().trim_start_matches("0x"), 16).unwrap_or(0),
+                _ => 0, // unknown (no column, or an interim-dialect shard)
+            },
             ..CarState::unknown()
         };
         st.cps = cps_before;
