@@ -155,7 +155,6 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
                 path_len_m: path,
                 min_speed: vmin,
                 max_speed: vmax,
-                effects: crate::tmr::effects_byte(&flat[rr].vis),
             });
             start_id += 1;
             out.respawns += 1;
@@ -182,7 +181,6 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
             path_len_m: path,
             min_speed: vmin,
             max_speed: vmax,
-            effects: crate::tmr::effects_byte(&flat[row_idx].vis),
         });
         start_id += 1;
         out.legs += 1;

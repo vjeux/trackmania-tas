@@ -97,6 +97,7 @@ impl<'a> REstimator<'a> {
             cps: 0,
             finished: false,
             car: u8::MAX,
+            ..CarState::unknown()
         }
     }
 
@@ -242,6 +243,7 @@ impl<'a> Chained<'a> {
             cps: 0,
             finished: false,
             car: u8::MAX,
+            ..CarState::unknown()
         }
     }
 

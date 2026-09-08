@@ -82,6 +82,7 @@ pub fn read_starts(p: &Path) -> Result<HashMap<u32, StartInfo>, String> {
             cps: cps_before,
             finished: false,
             car: u8::MAX, // starts.tsv has no car column; the records' end state carries it (copied per row)
+            ..CarState::unknown()
         };
         st.cps = cps_before;
         out.insert(id, StartInfo { ghost_md5: f[1].to_string(), race_ms, state: st, cps_before, source: f[15].to_string() });
