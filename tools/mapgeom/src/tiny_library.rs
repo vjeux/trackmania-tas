@@ -1796,7 +1796,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 mapping.push_str(&format!("i@{}\t{}\t{}\n", it.index, target, ms));
                 rows += 1;
                 // a converted flag (our tween cloth): does its hidden stock driver fit?
-                if matches!(it.model.as_str(), "Flag16m" | "Flag8m") && target.ends_with(".Item.Gbx") {
+                if is_flag(it) && target.ends_with(".Item.Gbx") && crate::static_item::build::tween_parts_enabled() {
                     if driver_hidden(it) {
                         drivers += 1;
                     } else {

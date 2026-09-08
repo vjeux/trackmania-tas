@@ -930,10 +930,10 @@ fn is_tween_material(store: &mut crate::store::DataStore, p: &str) -> bool {
 
 /// A vertex-tweened cloth (the flag) kept as a dyna entity of its own with
 /// its frames, frame table, tween material and the pack's inline-vertex form.
-/// ON by default since 2026-09-08 evening (`TINY_FLAG_TWEEN=0` = the still
-/// cloth under `ItemFlagNoAnim`). What the day's lineups established: an
-/// embedded tween cloth never gets tween state of its own — its draw borrows
-/// the per-material frame state a STOCK flag's draw fills, so it is right
+/// OPT-IN (`TINY_FLAG_TWEEN=1`; the default is the still cloth under `ItemFlagNoAnim`,
+/// until the hidden-driver form passes a full-map check — coordinator, 20:06Z). What
+/// the day's lineups established: an embedded tween cloth never gets tween state
+/// of its own — its draw borrows the per-material frame state a STOCK flag's draw fills, so it is right
 /// only while a stock flag is DRAWN in the same view at the SAME detail level
 /// (the state indexes the level's frame table); no stock in view → bare pole,
 /// stock in the map but out of view → nothing or shards, different level →
@@ -948,7 +948,7 @@ pub fn tween_parts_enabled() -> bool {
     if let Some(v) = TWEEN_OVERRIDE.with(|o| o.get()) {
         return v;
     }
-    std::env::var("TINY_FLAG_TWEEN").as_deref() != Ok("0")
+    std::env::var("TINY_FLAG_TWEEN").as_deref() == Ok("1")
 }
 
 thread_local! {

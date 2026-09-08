@@ -488,7 +488,7 @@ pub fn cmd(args: &[String]) {
     // ⚠ HACK, named in TINY.md "Animated items" and in the build report: the
     // proper form is a self-contained embedded tween, not found yet.
     let driver = std::env::var("TINY_FLAG_DRIVER").unwrap_or_else(|_| "twins".into());
-    let tween_on = std::env::var("TINY_FLAG_TWEEN").as_deref() != Ok("0");
+    let tween_on = std::env::var("TINY_FLAG_TWEEN").as_deref() == Ok("1");
     if driver != "0" && tween_on {
         let is_converted_flag = |it: &crate::map::ItemRec| matches!(it.model.as_str(), "Flag16m" | "Flag8m") && mapping.items_by_index.get(&it.index).map(|m| m.model.ends_with(".Item.Gbx")).unwrap_or(false);
         if driver == "anchor" {

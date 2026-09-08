@@ -254,3 +254,32 @@ skin key `still`) instead of a bare pole. Both counts are printed as
 elevated roads). The proper form is a self-contained embedded tween; the
 registration the pack flag gets (kind-0x16 handler → SInstanceParams →
 CHmsMgrVisDyna::InstanceCreate) is still unlocated in the exe.
+
+**Status 2026-09-08 20:07Z — the driver hack is OPT-IN (`TINY_FLAG_TWEEN=1`),
+the default is yesterday's still cloth.** The hidden driver is not yet reliable:
+stable at ~35 m on the tiny-18 snow (four frames, colour-independent) and
+always stable with drivers standing in the OPEN air 8 m below the cloth (10 to
+200 m, one or four drivers), but at 12 m the poles are bare and in tiny 13 at
+25 m the cloths flicker frame to frame (0.5 m and 3 m of the inverted pole
+above the ground alike). Best guess: the buried driver is occlusion-culled on
+some frames, and a culled frame is a frame with no state. Open for the
+successor: (a) find a hiding place the culling does not reject (a driver
+standing upright inside a bigger mass, or measure what the culling tests), or
+(b) the proper fix — the registration a pack flag's visual dyna gets (kind-0x16
+handler → SInstanceParams → CHmsMgrVisDyna::InstanceCreate, unlocated in the
+exe; `tm2020-tween-anim-re.md` has the reading so far).
+
+**Pushers, phase (2026-09-08).** The stroke of an embedded Level pusher IS
+halved (top-down beside the stock 8mL1: ours extends exactly half at every
+sampled instant). Summer 15's two facing Level1 pistons meet mid-channel in the
+tiny because OURS RUN IN PHASE while the ORIGINAL's two run out of phase — and
+the phase is not in the placement bytes: the two records are identical except
+position/yaw, the skippable 0x03101005 word is 4 on all nine pushers of the
+area, and `tmmaps lineup --phases 0,4,0,4` (`MapFile::set_item_anim_phase`)
+on two stock and two embedded pushers changes nothing visible. Two paths for
+the successor: (1) find the per-instance seed the game uses for stock kinematic
+items (position along the piston axis? the stock instance's FID? test: two
+stock 8mL1 at different positions along their own axis — do THEY differ?); (2)
+bake Level pushers in two phase variants (SInstanceParams.Phase01 explicit 0 /
+0.5, word 5 of the 32-byte params) and alternate them across the pairs that
+face each other — a guess about WHICH pairs face, so (1) is the real fix.
