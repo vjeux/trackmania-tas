@@ -281,6 +281,58 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                 problems.push(format!("material {mi} used by no geom"));
             }
         }
+        // SH-02: EVERY VISUAL OF ONE MATERIAL CARRIES THE SAME VERTEX
+        // DECLARATION. The client merges same-material visuals into one draw
+        // with the FIRST visual's declaration and fetches each element by
+        // name from every visual's stream; a visual lacking one the first has
+        // is a NULL element pointer → the DEC3N decode at 0x140456c35 reads
+        // address 0 (e5, 2026-09-06; tiny 25 mv1500, 2026-09-08: a 130-vertex
+        // visual without TangentU). The builder's `harmonize_layouts` is what
+        // keeps this true; this is the check that it did. Per material INDEX
+        // it is a failure; per material LINK (two slots of the same game
+        // material, e.g. a physics variant) it is reported as a fact — the
+        // game may well batch those too.
+        {
+            let decl_names = |vi: usize| -> Option<Vec<u32>> {
+                let super::Node::Visual(v) = s2.visuals.get(vi)?.inline.as_deref()? else { return None };
+                let s = v.stream()?;
+                let mut names: Vec<u32> = s.decls.iter().map(|d| d.name()).collect();
+                names.sort_unstable();
+                Some(names)
+            };
+            let mut by_index: std::collections::BTreeMap<i32, Vec<(usize, Vec<u32>)>> = std::collections::BTreeMap::new();
+            for g in &s2.shaded_geoms {
+                if let Some(n) = decl_names(g.visual_index as usize) {
+                    by_index.entry(g.material_index).or_default().push((g.visual_index as usize, n));
+                }
+            }
+            for (mi, vs) in &by_index {
+                let first = &vs[0].1;
+                for (vi, n) in vs.iter().skip(1) {
+                    if n != first {
+                        problems.push(format!(
+                            "SH-02 material {mi}: visual {} declares elements {:?} but visual {vi} declares {:?} — the merged draw reads a missing element through NULL (crash 0x140456c35)",
+                            vs[0].0, first, n
+                        ));
+                    }
+                }
+            }
+            if facts {
+                let mut by_link: std::collections::BTreeMap<String, Vec<(i32, Vec<u32>)>> = std::collections::BTreeMap::new();
+                for (mi, vs) in &by_index {
+                    let link = s2.custom_materials.get(*mi as usize).and_then(|m| m.inst()).and_then(|i| i.link().map(|l| l.to_string())).unwrap_or_default();
+                    if let Some((_, n)) = vs.first() {
+                        by_link.entry(link).or_default().push((*mi, n.clone()));
+                    }
+                }
+                for (link, ms) in &by_link {
+                    let first = &ms[0].1;
+                    if ms.iter().any(|(_, n)| n != first) {
+                        println!("{path}: SH-02L link {link}: material slots with different declarations: {}", ms.iter().map(|(mi, n)| format!("mat {mi} {:?}", n)).collect::<Vec<_>>().join("; "));
+                    }
+                }
+            }
+        }
         // Two slots are duplicates when they draw the same (`same_look`: link,
         // physics and every constant, names aside). A mesh-modeler item
         // (Summer 21's TME nation items) legitimately carries one game

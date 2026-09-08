@@ -159,6 +159,7 @@ fn run_loop(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         _ => ("/editmap", 1i64),
     };
     let mut lines = Vec::new();
+    let mut crashes = 0u32;
     for (iter, &mi) in opts.seq.iter().enumerate() {
         let game_map = &staged[mi];
         let short = std::path::Path::new(&opts.maps[mi]).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -200,6 +201,7 @@ fn run_loop(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         println!("{} #{iter} {short}: {door} -> {ack}", el());
         let mut last = String::new();
         let mut stable = 0u32;
+        let mut dead_polls = 0u32;
         let mut v = Load { outcome: "TIMEOUT", seconds: 0.0, car: "-".into(), frame: "-".into(), text: "-".into(), ctx: "-".into(), note: String::new() };
         loop {
             if load0.elapsed().as_secs() > opts.timeout_s {
@@ -214,7 +216,29 @@ fn run_loop(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
                 println!("{} #{iter} CRASH: the game process is gone at +{:.1}s", el(), v.seconds);
                 break;
             }
-            let c = super::http_get("/ctx", 10).unwrap_or_default().trim().to_string();
+            let ctx_reply = super::http_get("/ctx", 10);
+            // THE GAME DIED BUT THE PROCESS IS STILL THERE: after a crash the
+            // crash reporter keeps Trackmania.exe alive (a report window,
+            // WerFault writing its dump) while the plugin is gone, so
+            // `tm_running()` stays true and the plugin refuses every connect.
+            // Three refusals in a row (~30 s) are that, not a slow load — the
+            // first version sat on the render lock for the whole timeout with
+            // a dead game and every other driver queued behind it
+            // (2026-09-08, 14 minutes).
+            if ctx_reply.is_err() {
+                dead_polls += 1;
+                if dead_polls >= 3 {
+                    v.outcome = "CRASH";
+                    v.seconds = load0.elapsed().as_secs_f64();
+                    v.note = format!("plugin unreachable {dead_polls} polls; process {}", if super::tm_running() { "still present (crash reporter?) — killed" } else { "gone" });
+                    println!("{} #{iter} CRASH: the plugin stopped answering at +{:.1}s ({})", el(), v.seconds, v.note);
+                    super::quit_game();
+                    break;
+                }
+            } else {
+                dead_polls = 0;
+            }
+            let c = ctx_reply.unwrap_or_default().trim().to_string();
             // the timeline: every change of /ctx or /ready, like loadprof
             let ready = super::http_get("/ready", 10).unwrap_or_default().trim().to_string();
             let line = format!("{c} | {ready}");
@@ -300,6 +324,14 @@ fn run_loop(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         std::fs::write(&tsv_path, &tsv).map_err(|e| format!("{}: {e}", tsv_path.display()))?;
         lines.push(row);
         if v.outcome == "CRASH" {
+            crashes += 1;
+            if crashes >= 2 {
+                // a map that crashes the client twice is a finding, not a
+                // retry: stop here (the lock guard releases on return)
+                println!("{} #{iter} second crash of this run — stopping the loop", el());
+                lines.push(format!("stopped\tafter {crashes} crashes"));
+                break;
+            }
             // the next iteration relaunches; give the crash handler its time
             std::thread::sleep(Duration::from_secs(5));
             continue;
