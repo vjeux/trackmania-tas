@@ -856,45 +856,65 @@ impl MapFile {
     }
 
     /// Remove the author's validation ghost — chunk 0x0305B00F of the
-    /// challenge parameters, which carries the ORIGINAL map's full-size run
-    /// as an encapsulated CGameCtnGhost (`[version][byte length][stream]`) —
-    /// and mark the map unvalidated in the header XML (`validated="0"`).
-    ///
-    /// The tiny map replays that ghost as a car driving the full-size line
-    /// metres above the half-size track (vjeux, 2026-09-08: "why is there a
-    /// car driving on top of me"). It cannot be scaled — it is a physics
-    /// record — so it goes; a tiny map is validated by driving IT. Emptying
-    /// the chunk to `[0][0]` was tried first and the game refused the file
-    /// ("Couldn't load map!"): a skippable chunk is dropped whole instead.
+    /// original map, replayed over the tiny map as a car driving the
+    /// full-size line in the air — and mark the map unvalidated.
     /// Returns the bytes removed (0 = no ghost chunk).
     pub fn strip_validation_ghost(&mut self) -> usize {
-        self.strip_validation_ghost_to(true)
+        self.strip_validation_ghost_to(GhostForm::Dummy)
     }
 
-    /// `strip_validation_ghost`, keeping the chunk as the game's own EMPTY
-    /// skeleton when `skeleton` (12 bytes: `00000000 04000000 FFFFFFFF` — the
-    /// form every unvalidated Nadeo map carries, Summer 21/22 among them) —
-    /// the player project's `authorghost embed` replaces an existing chunk
-    /// byte-safely but cannot INSERT one (the ghost stream defines Ids inline
-    /// and every later chunk's raw indices would shift) — or removing the
-    /// chunk outright when not.
-    pub fn strip_validation_ghost_to(&mut self, skeleton: bool) -> usize {
+    /// `strip_validation_ghost` with the chunk's replacement chosen. The
+    /// chunk's payload is `u32 version (0)`, `u32 byte length`, then the
+    /// CGameCtnGhost node written inline (class id + chunks; no node index) —
+    /// a null node is the 4-byte `FFFFFFFF`, the form every unvalidated Nadeo
+    /// map carries (Summer 20/21/22/23/25's sources). A REAL ghost defines
+    /// lookback Ids (CarSport, Nadeo, the ghost uid, two empty ones) that the
+    /// game numbers BEFORE every other Id of the body, so a map written with a
+    /// real ghost and one written with the skeleton differ in every later
+    /// chunk's raw indices: the player project's `authorghost embed` replaces
+    /// a real ghost byte-safely but cannot insert one into a skeleton map
+    /// ("Can't load map"). Hence `Dummy`: a real ghost — Summer 2026 - 01's
+    /// validation ghost, 13 148 bytes, `assets/dummy-ghost-summer01.bin` —
+    /// stands in for the map's own, header validated="0" either way.
+    pub fn strip_validation_ghost_to(&mut self, form: GhostForm) -> usize {
         let Some(&(_, off, payload, size)) = crate::gbx::all_skip_chunks(&self.gbx.body).iter().find(|(c, ..)| *c == 0x0305_B00F) else { return 0 };
-        if skeleton {
-            if size == 12 && self.gbx.body[payload..payload + 12] == [0, 0, 0, 0, 4, 0, 0, 0, 0xff, 0xff, 0xff, 0xff] {
-                return 0;
-            }
-            let mut chunk = Vec::with_capacity(24);
+        const SKELETON: [u8; 12] = [0, 0, 0, 0, 4, 0, 0, 0, 0xff, 0xff, 0xff, 0xff];
+        let current = &self.gbx.body[payload..payload + size];
+        let chunk_with = |data: &[u8]| -> Vec<u8> {
+            let mut chunk = Vec::with_capacity(12 + data.len());
             chunk.extend_from_slice(&0x0305_B00Fu32.to_le_bytes());
             chunk.extend_from_slice(b"PIKS");
-            chunk.extend_from_slice(&12u32.to_le_bytes());
-            chunk.extend_from_slice(&[0, 0, 0, 0, 4, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]);
-            self.raw_splices.push(((off, payload + size), chunk));
-        } else {
-            // the whole skippable chunk: id, `PIKS`, size, payload
-            self.raw_splices.push(((off, payload + size), Vec::new()));
+            chunk.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            chunk.extend_from_slice(data);
+            chunk
+        };
+        let changed = match form {
+            GhostForm::Remove => {
+                self.raw_splices.push(((off, payload + size), Vec::new()));
+                true
+            }
+            GhostForm::Skeleton => {
+                if current == SKELETON {
+                    false
+                } else {
+                    self.raw_splices.push(((off, payload + size), chunk_with(&SKELETON)));
+                    true
+                }
+            }
+            GhostForm::Dummy => {
+                if current == DUMMY_GHOST {
+                    false
+                } else {
+                    self.raw_splices.push(((off, payload + size), chunk_with(DUMMY_GHOST)));
+                    true
+                }
+            }
+            GhostForm::Keep => false,
+        };
+        let unvalidated = self.edit_header_xml(&|xml| if xml.contains("validated=\"1\"") { Some(xml.replace("validated=\"1\"", "validated=\"0\"")) } else { None });
+        if !changed && !unvalidated {
+            return 0;
         }
-        self.edit_header_xml(&|xml| Some(xml.replace("validated=\"1\"", "validated=\"0\"")));
         payload + size - off
     }
 
@@ -3035,3 +3055,20 @@ impl MapFile {
         size - 16
     }
 }
+
+/// What `MapFile::strip_validation_ghost_to` leaves in chunk 0x0305B00F.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum GhostForm {
+    /// A real ghost (Summer 2026 - 01's), the same on every map.
+    Dummy,
+    /// The game's own 12-byte empty node.
+    Skeleton,
+    /// No chunk at all.
+    Remove,
+    /// The map's own chunk untouched (only the header is unvalidated).
+    Keep,
+}
+
+/// Summer 2026 - 01's validation ghost, the whole 0x0305B00F payload (13 148
+/// bytes): `tmmaps chunks 01-Summer-2026---01.Map.Gbx --only 0x0305B00F --hex 13148`.
+pub const DUMMY_GHOST: &[u8] = include_bytes!("../assets/dummy-ghost-summer01.bin");
