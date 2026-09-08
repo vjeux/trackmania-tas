@@ -244,6 +244,58 @@ string MapItems(const string &in qs) {
 }
 
 
+// Blocks straight from the GAME's parse, with coordinates — the authored list
+// (`Blocks`) or the generated clip fillers (`BakedBlocks`), boxed like
+// /mapitems. The tiny converter re-emits every filler the FILE records; which
+// of them the game actually keeps is what this answers (2026-09-08: Summer 20
+// cp3's OpenTech skirts recorded in the deco hill's cells, Summer 10's pillar
+// walls recorded in the pool cells — the file has both, the original shows
+// only the walls). `Coord` is the editor's integer cell; `mobil`/`mobilVar`
+// are the mobil list / variant the engine picked (the file's flag bits 0..5 /
+// 6..11), `ground` the ground variant, `ghost` a ghost-mode block.
+//
+//   /mapblocks2?list=blocks|baked&x0=&x1=&y0=&y1=&z0=&z1=[&name=SUBSTR]
+//     -> {"list":"baked","total":N,"blocks":[{"i":N,"name":..,"cell":[x,y,z],"dir":N,
+//                                             "mobil":N,"mobilVar":N,"ground":b,"ghost":b}, ...]}
+//
+// Bounds are CELL numbers (a missing bound is open). The full baked array is
+// several thousand entries — box it, or ask by name.
+string MapBlocks2(const string &in qs) {
+    auto ed = cast<CGameCtnEditorFree>(GetApp().Editor);
+    if (ed is null) return "not in an editor -- /editmap3 first";
+    auto ch = ed.Challenge;
+    if (ch is null) return "no Challenge on this editor";
+    string which = QArg(qs, "list");
+    if (which == "") which = "baked";
+    string sx0 = QArg(qs, "x0"), sx1 = QArg(qs, "x1"), sz0 = QArg(qs, "z0"), sz1 = QArg(qs, "z1"), sy0 = QArg(qs, "y0"), sy1 = QArg(qs, "y1");
+    string needle = QArg(qs, "name");
+    int x0 = sx0 == "" ? -1000000 : Text::ParseInt(sx0);
+    int x1 = sx1 == "" ? 1000000 : Text::ParseInt(sx1);
+    int z0 = sz0 == "" ? -1000000 : Text::ParseInt(sz0);
+    int z1 = sz1 == "" ? 1000000 : Text::ParseInt(sz1);
+    int y0 = sy0 == "" ? -1000000 : Text::ParseInt(sy0);
+    int y1 = sy1 == "" ? 1000000 : Text::ParseInt(sy1);
+    uint total = which == "blocks" ? ch.Blocks.Length : ch.BakedBlocks.Length;
+    string js = "{\"list\":\"" + which + "\",\"total\":" + total + ",\"blocks\":[";
+    bool first = true;
+    for (uint i = 0; i < total; i++) {
+        CGameCtnBlock@ b = which == "blocks" ? ch.Blocks[i] : ch.BakedBlocks[i];
+        if (b is null) continue;
+        int cx = int(b.Coord.x), cy = int(b.Coord.y), cz = int(b.Coord.z);
+        if (cx < x0 || cx > x1 || cz < z0 || cz > z1 || cy < y0 || cy > y1) continue;
+        string n = "<null model>";
+        if (b.BlockModel !is null) n = b.BlockModel.Name;
+        if (needle != "" && n.IndexOf(needle) < 0) continue;
+        if (!first) js += ",";
+        first = false;
+        js += "{\"i\":" + i + ",\"name\":\"" + n + "\",\"cell\":[" + cx + "," + cy + "," + cz + "]"
+            + ",\"dir\":" + int(b.Direction) + ",\"mobil\":" + b.MobilIndex + ",\"mobilVar\":" + b.MobilVariantIndex
+            + ",\"ground\":" + (b.IsGround ? "true" : "false") + ",\"ghost\":" + (b.IsGhostBlock() ? "true" : "false") + "}";
+    }
+    return js + "]}";
+}
+
+
 // The editor's block cursor: where it is and what it shows. Summer 24's
 // "red slab in the water at the map centre" (2026-09-08) was in no file list
 // and in no game list of items — the one thing drawn at cell (32,y,32) of a

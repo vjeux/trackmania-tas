@@ -99,6 +99,7 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/mapblocks") return HttpResponse(200, MapBlocks());
     if (r == "/mapgates") return HttpResponse(200, MapGates());
     if (r == "/mapitems") return HttpResponse(200, MapItems(qs));
+    if (r == "/mapblocks2") return HttpResponse(200, MapBlocks2(qs));
     if (r == "/cursor") return HttpResponse(200, EditorCursor());
     if (r == "/rmenu") return HttpResponse(200, ReplayMenuState());
     if (r == "/rselall") return HttpResponse(200, ReplaySelectAll());

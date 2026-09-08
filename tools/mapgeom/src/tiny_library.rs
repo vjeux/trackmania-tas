@@ -1325,6 +1325,26 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     //   free   (probe) only `*VFC*` pieces, only the occupant's origin cell.
     //   ghost  (probe) fillers carrying bit 28 (ghost-mode blocks) left out —
     //          not the rule: the ghost build still showed the rail.
+    //   covered  a filler whose block info is a plain clip (`Clip` /
+    //          `ClipHorizontal`: the FC end caps, skirts, FCB/FCT plates)
+    //          recorded in a cell that any UNIT of an authored non-pillar,
+    //          non-terrain-tile block covers (ghost-mode blocks included) is
+    //          left out; a VERTICAL clip (`ClipVertical`: the DecoWall*VFC
+    //          pillar walls, PlatformWall*VFC, WaterWall*VFC…) is emitted
+    //          wherever it is recorded. Derived 2026-09-08 from three maps:
+    //          Summer 09's `OpenTechRoadFC` cap (b482) is recorded in the
+    //          upper-unit cell of the hill road tile east of the first
+    //          checkpoint — drawn, it walls the checkpoint off (the map is
+    //          playable, so the game does not draw it); Summer 20 cp3's
+    //          OpenTech skirts in the deco hill's 2nd-unit cells (the grey
+    //          slab + rail the original hides); Summer 10's `OpenTechRoad
+    //          Slope2FCUp` cap at the top of the rally slope, recorded in the
+    //          cell of the (ghost) quarter-pipe the route continues into —
+    //          while the DecoWallBaseVFC pillar walls recorded in Summer 10's
+    //          pool cells ARE drawn (the `occupied` probe deleted them). The
+    //          editor records a clip piece for every unit side that meets no
+    //          matching clip; the game draws the plain ones only into cells
+    //          nothing else stands in, and the wall pieces always.
     let vfc_rules: Vec<String> = std::env::var("TINY_FILLER_RULE").or_else(|_| std::env::var("TINY_VFC_RULE")).unwrap_or_else(|_| "all".to_string()).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != "all").collect();
     let occupied_cells: std::collections::HashSet<[u8; 3]> = source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0 && b.flags & crate::blockmap::FLAG_PILLAR == 0).map(|b| b.file_cell).collect();
     //   occupied  EVERY filler (VFC, FC, HFC…) recorded in a cell that any UNIT
@@ -1361,7 +1381,35 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             }
         }
     }
+    // TINY_GAME_BAKED=FILE (probe, 2026-09-08): the editor's own baked list
+    // for this map (GhostShooter `/mapblocks2?list=baked` JSON, see
+    // `tmmaps fillers --game`) — only the recorded fillers the game itself
+    // holds after loading the original are emitted, matched by (name, cell,
+    // side). What the game drops at load is the rule the `covered` mode
+    // approximates; this knob is the ground truth it is checked against.
+    let game_baked: Option<tmmaps::fillers::GameList> = std::env::var("TINY_GAME_BAKED").ok().filter(|s| !s.is_empty()).map(|p| tmmaps::fillers::GameList::load(std::path::Path::new(&p)));
+    if let Some(g) = &game_baked {
+        println!("  game baked list: {} records (TINY_GAME_BAKED)", g.total);
+    }
+    // the recorded fillers whose block info is a PLAIN clip (kind Clip /
+    // ClipHorizontal: end caps, skirts, FCB/FCT plates) — what the `covered`
+    // rule leaves out of a covered cell; vertical clips (kind ClipVertical,
+    // class 0x03340000: the wall pieces) and everything else the baked list
+    // holds (terrain tiles, whose rule is `hidden_tiles`) are untouched
+    let plain_clips: std::collections::HashSet<String> = {
+        let names: std::collections::BTreeSet<String> = source.baked.iter().filter(|b| b.name != "Sea").map(|b| b.name.clone()).collect();
+        names
+            .into_iter()
+            .filter(|n| idx.path_for(n).and_then(|p| idx.load(store, &p).ok().map(|bi| matches!(bi.kind, crate::blockinfo::Kind::Clip | crate::blockinfo::Kind::ClipHorizontal))).unwrap_or(false))
+            .collect()
+    };
     let vfc_left_out = |b: &tmmaps::map::BlockRec| -> Option<&'static str> {
+        if let Some(g) = &game_baked {
+            let key = (b.name.clone(), b.coords(), b.dir & 3);
+            if g.counts.get(&key).copied().unwrap_or(0) == 0 {
+                return Some("not in the game's baked list");
+            }
+        }
         if vfc_rules.iter().any(|r| r == "ghost") && b.flags & (1 << 28) != 0 {
             return Some("ghost");
         }
@@ -1370,6 +1418,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         }
         if vfc_rules.iter().any(|r| r == "occupied") && footprint_cells.contains(&b.file_cell) {
             return Some("in a block's footprint");
+        }
+        if vfc_rules.iter().any(|r| r == "covered") && footprint_cells.contains(&b.file_cell) && plain_clips.contains(&b.name) {
+            return Some("plain clip in a block's footprint");
         }
         None
     };

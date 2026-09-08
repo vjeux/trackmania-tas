@@ -1,4 +1,5 @@
 use mapgeom::coverage::RESTING;
+use std::collections::BTreeMap;
 use mapgeom::node::{Node, Slot};
 use mapgeom::{names, store::DataStore, store::STADIUM_KEY};
 
@@ -74,6 +75,11 @@ COMMANDS
                                 triangle is -- absent, or merely too narrow
   plumb <file.Map.Gbx> --at X,Z... [--yoff N]
                                 every surface in one vertical column
+  who <file.Map.Gbx> --at X,Y,Z... [--dy M] [--yoff N]
+                                WHICH placement owns each surface within M
+                                metres (default 4) of Y in the column at X,Z:
+                                item index + model, or authored block name
+                                (generated fillers are not modelled here)
 
 `dump` and `model` take either a pack path or a local file, so a model pulled
 out of a map with `items --out` can be inspected directly.
@@ -1115,11 +1121,16 @@ fn main() {
         }
         "blockinfo" => {
             let mut store = open(&a);
-            let paths: Vec<String> = a.rest.iter().skip(1).filter(|x| !x.starts_with("--")).cloned().collect();
+            // a bare block NAME (no backslash) resolves through the block-info
+            // index of --collection (default Stadium), the way tiny-library does
+            let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "Stadium".to_string());
+            let paths: Vec<String> = a.rest.iter().skip(1).filter(|x| !x.starts_with("--") && **x != coll).cloned().collect();
             if paths.is_empty() {
-                die::<()>("blockinfo needs a logical path".into());
+                die::<()>("blockinfo needs a logical path or a block name".into());
             }
             let mut bad = 0;
+            let idx = mapgeom::blockmap::BlockInfoIndex::build(&store, &coll);
+            let paths: Vec<String> = paths.into_iter().map(|p| if p.contains('\\') { p } else { idx.path_for(&p).unwrap_or(p) }).collect();
             for p in &paths {
                 match mapgeom::blockinfo::load(&mut store, p) {
                     Ok(b) => {
@@ -1618,6 +1629,231 @@ fn main() {
                     "  item  {:<52} at ({:.2}, {:.2}, {:.2}) yaw {:.3} pivot {:?} scale {}  {} triangles",
                     it.model, it.pos[0], it.pos[1], it.pos[2], it.yaw, it.pivot, it.scale, tris
                 );
+            }
+        }
+        "ghostclash" => {
+            // The ORIGINAL's validation ghost is the author driving the
+            // original: every piece of the tiny that the author's car passes
+            // THROUGH (positions halved through the anchor) is geometry the
+            // game does not have there — a recorded clip filler the game hides
+            // (Summer 09's `OpenTechRoadFC` end cap across the first
+            // checkpoint's entrance, 2026-09-08), a tree that is not solid, a
+            // misplaced piece. Needs no render box: the ghost is in the source
+            // file, the geometry in the tiny's items.
+            //
+            //   ghostclash TINY.Map.Gbx --src SRC.Map.Gbx --anchor sx,sy,sz:tx,ty,tz
+            //              [--scale 0.5] [--radius R] [--report report.tsv] [--every MS]
+            //
+            // A hit = a triangle of an item within R (tiny metres, default 0.9:
+            // the car is 2 m wide at full size, 1 m in the tiny's frame) of a
+            // sample's centre (the ghost position lifted by 0.35 m, half of the
+            // car's 0.7 m body height at the tiny's scale). Rows: item, alias
+            // (and the source block name from --report), first/last sample
+            // time, nearest distance, the item's tiny and source positions.
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let src = flag(&a.rest, "--src").unwrap_or_else(|| die("ghostclash needs --src SRC.Map.Gbx (the file with the author's ghost)".into()));
+            let anchor = flag(&a.rest, "--anchor").unwrap_or_else(|| die("ghostclash needs --anchor sx,sy,sz:tx,ty,tz".into()));
+            let scale: f32 = flag(&a.rest, "--scale").and_then(|s| s.parse().ok()).unwrap_or(0.5);
+            let radius: f32 = flag(&a.rest, "--radius").and_then(|s| s.parse().ok()).unwrap_or(0.9);
+            let every: i32 = flag(&a.rest, "--every").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let (sa, ta) = {
+                let (s, t) = anchor.split_once(':').unwrap_or_else(|| die("--anchor sx,sy,sz:tx,ty,tz".into()));
+                let v = |q: &str| -> [f32; 3] {
+                    let f: Vec<f32> = q.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    if f.len() != 3 {
+                        die::<()>("--anchor needs two x,y,z triples".into());
+                    }
+                    [f[0], f[1], f[2]]
+                };
+                (v(s), v(t))
+            };
+            let names: BTreeMap<String, String> = flag(&a.rest, "--report")
+                .and_then(|r| std::fs::read_to_string(r).ok())
+                .map(|text| {
+                    text.lines()
+                        .filter_map(|l| {
+                            let f: Vec<&str> = l.split('\t').collect();
+                            (f.len() >= 5 && f[0] == "block").then(|| (format!("{}.Item.Gbx", f[1]), f[4].split(' ').next().unwrap_or("").to_string()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let d = gbx::record::decode_ghost(&src).unwrap_or_else(|e| die(format!("{src}: no validation ghost ({e})")));
+            // the car's body centre in the tiny's frame: the ghost position is
+            // the ground contact, the body ~0.75 m tall at full size
+            let lift = 0.75 * scale;
+            let floor = 0.15 * scale;
+            let mut pts: Vec<([f32; 3], [f32; 3], i32)> = Vec::new();
+            let mut next = i32::MIN;
+            for s in &d.samples {
+                if every > 0 && s.time_ms < next {
+                    continue;
+                }
+                next = s.time_ms + every;
+                // the car's own up axis (a wall-ride's car lies on its side; a
+                // loop's hangs upside down): the body centre is `lift` along it
+                let up = gbx::record::quat_rotate([s.qx as f64, s.qy as f64, s.qz as f64, s.qw as f64], [0.0, 1.0, 0.0]);
+                let up = [up[0] as f32, up[1] as f32, up[2] as f32];
+                let ground = [ta[0] + (s.x - sa[0]) * scale, ta[1] + (s.y - sa[1]) * scale, ta[2] + (s.z - sa[2]) * scale];
+                pts.push(([ground[0] + up[0] * lift, ground[1] + up[1] * lift, ground[2] + up[2] * lift], up, s.time_ms));
+            }
+            println!("{} ghost samples ({:.3} s) from {}", pts.len(), d.end_ms as f64 / 1000.0, src);
+            // spatial hash of the samples, cells of 4 m
+            let cell = 4.0f32;
+            let mut hash: std::collections::HashMap<(i32, i32, i32), Vec<usize>> = std::collections::HashMap::new();
+            let key = |q: [f32; 3]| -> (i32, i32, i32) { ((q[0] / cell).floor() as i32, (q[1] / cell).floor() as i32, (q[2] / cell).floor() as i32) };
+            for (i, (q, _, _)) in pts.iter().enumerate() {
+                hash.entry(key(*q)).or_default().push(i);
+            }
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+            let mut asm = mapgeom::assemble::Assembler::new(&mut store);
+            asm.with_embedded(&m).ok();
+            let mut rows: Vec<(f32, i32, i32, usize, String, [f32; 3])> = Vec::new();
+            for it in &m.items {
+                let Some(lm) = asm.item_model(&it.model) else { continue };
+                let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                let mut best: Option<(f32, i32, i32)> = None;
+                for g in lm.scene.groups.values() {
+                    for t in &g.tris {
+                        let a3 = mapgeom::geom::apply(&xf, g.verts[t[0] as usize]);
+                        let b3 = mapgeom::geom::apply(&xf, g.verts[t[1] as usize]);
+                        let c3 = mapgeom::geom::apply(&xf, g.verts[t[2] as usize]);
+                        let lo = [a3[0].min(b3[0]).min(c3[0]) - radius, a3[1].min(b3[1]).min(c3[1]) - radius, a3[2].min(b3[2]).min(c3[2]) - radius];
+                        let hi = [a3[0].max(b3[0]).max(c3[0]) + radius, a3[1].max(b3[1]).max(c3[1]) + radius, a3[2].max(b3[2]).max(c3[2]) + radius];
+                        let (k0, k1) = (key(lo), key(hi));
+                        if (k1.0 - k0.0) * (k1.1 - k0.1) * (k1.2 - k0.2) > 4096 {
+                            continue; // a giant triangle (a terrain sheet): not what this looks for
+                        }
+                        for kx in k0.0..=k1.0 {
+                            for ky in k0.1..=k1.1 {
+                                for kz in k0.2..=k1.2 {
+                                    let Some(list) = hash.get(&(kx, ky, kz)) else { continue };
+                                    for &i in list {
+                                        let (q, up, tms) = pts[i];
+                                        let cp = mapgeom::probe::closest_point_on_triangle(q, a3, b3, c3);
+                                        // the surface the car RESTS on is not a clash: only geometry
+                                        // above the ground contact (along the car's own up) counts
+                                        let h = (cp[0] - q[0]) * up[0] + (cp[1] - q[1]) * up[1] + (cp[2] - q[2]) * up[2];
+                                        if h < -lift + floor {
+                                            continue;
+                                        }
+                                        let dd = ((q[0] - cp[0]).powi(2) + (q[1] - cp[1]).powi(2) + (q[2] - cp[2]).powi(2)).sqrt();
+                                        if dd < radius {
+                                            best = Some(match best {
+                                                None => (dd, tms, tms),
+                                                Some((bd, t0, t1)) => (bd.min(dd), t0.min(tms), t1.max(tms)),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some((dd, t0, t1)) = best {
+                    rows.push((dd, t0, t1, it.index, it.model.clone(), it.pos));
+                }
+            }
+            rows.sort_by(|p, q| p.1.cmp(&q.1));
+            println!("{} items within {radius} m of the author's path:", rows.len());
+            println!("t_first\tt_last\tdist\titem\tmodel\tsource_block\ttiny_pos\tsource_pos");
+            for (dd, t0, t1, idx, model, pos) in &rows {
+                let sp = [sa[0] + (pos[0] - ta[0]) / scale, sa[1] + (pos[1] - ta[1]) / scale, sa[2] + (pos[2] - ta[2]) / scale];
+                println!(
+                    "{:.3}\t{:.3}\t{:.2}\ti{}\t{}\t{}\t{:.1},{:.1},{:.1}\t{:.0},{:.0},{:.0}",
+                    *t0 as f64 / 1000.0,
+                    *t1 as f64 / 1000.0,
+                    dd,
+                    idx,
+                    model,
+                    names.get(model).cloned().unwrap_or_default(),
+                    pos[0], pos[1], pos[2],
+                    sp[0], sp[1], sp[2]
+                );
+            }
+        }
+        "who" => {
+            // `plumb` says WHAT is in the column; `who` says WHOSE it is.
+            // Every item (and every authored grid/free block the packs model)
+            // is placed exactly as `Assembler::map` places it, and each of its
+            // triangles is tested for a surface at (x, z); the ones within
+            // `--dy` of the asked y are listed with their owner. On a tiny
+            // map every surface is an item's, so the row names the library
+            // alias — the build report maps it back to the source block
+            // (2026-09-08: the stray road pieces vjeux drove into).
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let yoff: f32 = flag(&a.rest, "--yoff").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+            let dy: f32 = flag(&a.rest, "--dy").and_then(|s| s.parse().ok()).unwrap_or(4.0);
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+            let ats: Vec<[f32; 3]> = a
+                .rest
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| *s == "--at")
+                .filter_map(|(i, _)| a.rest.get(i + 1))
+                .filter_map(|s| {
+                    let v: Vec<f32> = s.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+                    (v.len() == 3).then(|| [v[0], v[1], v[2]])
+                })
+                .collect();
+            if ats.is_empty() {
+                die::<()>("who needs --at X,Y,Z, repeatable".into());
+            }
+            let mut asm = mapgeom::assemble::Assembler::new(&mut store);
+            asm.with_embedded(&m).ok();
+            // (owner, placement position, yaw) -> transformed triangles are
+            // tested lazily per column; models are small, the map has a few
+            // thousand placements, so this is milliseconds per column.
+            let mut owners: Vec<(String, [f32; 3], f32, mapgeom::geom::Xform, String)> = Vec::new();
+            for b in &m.blocks {
+                let free = b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0;
+                let Some(lm) = asm.block_model(&b.name) else { continue };
+                let size = lm.size;
+                let xf = if free {
+                    match (b.free_pos, b.free_rot) {
+                        (Some(p), Some(r)) => mapgeom::place::free(p, r),
+                        (Some(p), None) => mapgeom::place::free(p, [0.0; 3]),
+                        _ => continue,
+                    }
+                } else {
+                    mapgeom::place::grid_block(b.coords(), b.dir, size, yoff)
+                };
+                let c = b.coords();
+                owners.push((format!("block {} {} {:?} dir {}", b.index, b.name, c, b.dir), [xf[9], xf[10], xf[11]], 0.0, xf, b.name.clone()));
+            }
+            for it in &m.items {
+                if asm.item_model(&it.model).is_none() {
+                    continue;
+                }
+                let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                owners.push((format!("item i{} {}", it.index, it.model), it.pos, it.yaw, xf, it.model.clone()));
+            }
+            for at in &ats {
+                let mut hits: Vec<(f32, String, String)> = Vec::new();
+                for (who, pos, yaw, xf, model) in &owners {
+                    let lm = if who.starts_with("block ") { asm.block_model(model) } else { asm.item_model(model) };
+                    let Some(lm) = lm else { continue };
+                    for (mat, g) in &lm.scene.groups {
+                        for t in &g.tris {
+                            let a3 = mapgeom::geom::apply(xf, g.verts[t[0] as usize]);
+                            let b3 = mapgeom::geom::apply(xf, g.verts[t[1] as usize]);
+                            let c3 = mapgeom::geom::apply(xf, g.verts[t[2] as usize]);
+                            if let Some(y) = mapgeom::probe::height_at(a3, b3, c3, at[0], at[2]) {
+                                if (y - at[1]).abs() <= dy {
+                                    hits.push((y, mat.clone(), format!("{who} at ({:.2}, {:.2}, {:.2}) yaw {:.4}", pos[0], pos[1], pos[2], yaw)));
+                                }
+                            }
+                        }
+                    }
+                }
+                hits.sort_by(|p, q| q.0.partial_cmp(&p.0).unwrap_or(std::cmp::Ordering::Equal));
+                hits.dedup_by(|p, q| (p.0 - q.0).abs() < 0.002 && p.1 == q.1 && p.2 == q.2);
+                println!("surfaces within {dy} m of y {} at x {} z {}: {}", at[1], at[0], at[2], hits.len());
+                for (y, mat, who) in &hits {
+                    println!("  y {:>9.3}  {:<14} {}", y, mat, who);
+                }
             }
         }
         "plumb" => {

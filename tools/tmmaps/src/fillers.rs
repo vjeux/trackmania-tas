@@ -70,6 +70,12 @@ pub fn cmd(args: &[String]) {
     let m = MapFile::load(Path::new(&args[2]));
     let pat = crate::cli::flag(args, "--filter").map(|s| s.to_string());
     let summary = crate::cli::has(args, "--summary");
+    // --game FILE: the editor's own baked list (GhostShooter `/mapblocks2?list=baked`
+    // JSON) — every file record is looked up there by (name, cell, side) and the
+    // listing gains a `game` column (Y kept / N absent); the summary counts them,
+    // and the game records no file record explains are listed at the end.
+    let game: Option<GameList> = crate::cli::flag(args, "--game").map(|p| GameList::load(Path::new(p)));
+    let mut game_left: BTreeMap<(String, (i32, i32, i32), u8), usize> = game.as_ref().map(|g| g.counts.clone()).unwrap_or_default();
     // --cells X0,Z0:X1,Z1 in the census's (gbx-py) cell numbers
     let cells = crate::cli::flag(args, "--cells").map(|s| {
         let (a, b) = s.split_once(':').expect("--cells X0,Z0:X1,Z1");
@@ -81,10 +87,10 @@ pub fn cmd(args: &[String]) {
     });
     let occ = occupants(&m);
     let mut rows = 0usize;
-    // (name, variant word) -> [free, pillar-only, occupied] counts, ghost count
-    let mut tally: BTreeMap<(String, String), ([usize; 3], usize)> = BTreeMap::new();
+    // (name, variant word) -> [free, pillar-only, occupied] counts, ghost count, [game kept, game absent]
+    let mut tally: BTreeMap<(String, String), ([usize; 3], usize, [usize; 2])> = BTreeMap::new();
     if !summary {
-        println!("id\tname\tflags\tvariant\tground\tghost\tcx\tcy\tcz\tside\town_cell\tacross");
+        println!("id\tname\tflags\tvariant\tground\tghost\tcx\tcy\tcz\tside\town_cell\tacross{}", if game.is_some() { "\tgame" } else { "" });
     }
     for b in m.baked.iter().filter(|b| b.name != "Sea" && b.flags & FREE_BLOCK_FLAG == 0) {
         if let Some(p) = &pat {
@@ -114,10 +120,23 @@ pub fn cmd(args: &[String]) {
         if ghost {
             e.1 += 1;
         }
+        let kept = game.as_ref().map(|_| {
+            let key = (b.name.clone(), c, b.dir & 3);
+            match game_left.get_mut(&key) {
+                Some(n) if *n > 0 => {
+                    *n -= 1;
+                    true
+                }
+                _ => false,
+            }
+        });
+        if let Some(k) = kept {
+            e.2[if k { 0 } else { 1 }] += 1;
+        }
         rows += 1;
         if !summary {
             println!(
-                "b{}\t{}\t{:08X}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "b{}\t{}\t{:08X}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}{}",
                 b.index,
                 b.name,
                 b.flags,
@@ -129,15 +148,68 @@ pub fn cmd(args: &[String]) {
                 c.2,
                 SIDE_NAMES[(b.dir & 3) as usize],
                 describe(own),
-                describe(acr)
+                describe(acr),
+                match kept {
+                    Some(true) => "\tY",
+                    Some(false) => "\tN",
+                    None => "",
+                }
             );
         }
     }
     if summary {
-        println!("name\tvariant\ttotal\tfree_cell\tpillar_cell\toccupied_cell\tghost");
-        for ((name, v), (n, g)) in &tally {
-            println!("{name}\t{v}\t{}\t{}\t{}\t{}\t{g}", n[0] + n[1] + n[2], n[0], n[1], n[2]);
+        println!("name\tvariant\ttotal\tfree_cell\tpillar_cell\toccupied_cell\tghost{}", if game.is_some() { "\tgame_kept\tgame_absent" } else { "" });
+        for ((name, v), (n, g, k)) in &tally {
+            println!("{name}\t{v}\t{}\t{}\t{}\t{}\t{g}{}", n[0] + n[1] + n[2], n[0], n[1], n[2], if game.is_some() { format!("\t{}\t{}", k[0], k[1]) } else { String::new() });
+        }
+    }
+    if let Some(g) = &game {
+        let extra: usize = game_left.values().sum();
+        eprintln!("game list: {} records, {} matched a file record, {} unexplained by the file", g.total, g.total - extra, extra);
+        for ((name, c, dir), n) in game_left.iter().filter(|(_, n)| **n > 0) {
+            eprintln!("  game-only x{n}: {name} at {:?} side {}", c, SIDE_NAMES[*dir as usize]);
         }
     }
     eprintln!("{rows} fillers listed ({} baked records, {} authored blocks)", m.baked.len(), m.blocks.len());
+}
+
+/// The editor's list of blocks as GhostShooter's `/mapblocks2` prints it:
+/// `{"list":..,"total":N,"blocks":[{"i":N,"name":"..","cell":[x,y,z],"dir":N,...}, ...]}`.
+/// Read by scanning for the fields (the shape is fixed; no JSON library here).
+pub struct GameList {
+    pub total: usize,
+    /// (name, cell, dir & 3) -> how many the game holds
+    pub counts: BTreeMap<(String, (i32, i32, i32), u8), usize>,
+}
+
+impl GameList {
+    pub fn load(p: &Path) -> GameList {
+        let text = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+        let field = |obj: &str, key: &str| -> Option<String> {
+            let k = format!("\"{key}\":");
+            let at = obj.find(&k)? + k.len();
+            let rest = &obj[at..];
+            let end = rest.find(|ch: char| ch == ',' || ch == '}').unwrap_or(rest.len());
+            Some(rest[..end].trim().trim_matches('"').to_string())
+        };
+        let mut counts: BTreeMap<(String, (i32, i32, i32), u8), usize> = BTreeMap::new();
+        let mut total = 0usize;
+        for obj in text.split("{\"i\":").skip(1) {
+            let name = field(obj, "name").unwrap_or_default();
+            let cell = {
+                let k = "\"cell\":[";
+                let at = obj.find(k).map(|a| a + k.len());
+                let v: Vec<i32> = at.map(|a| obj[a..].split(']').next().unwrap_or("").split(',').filter_map(|s| s.trim().parse().ok()).collect()).unwrap_or_default();
+                if v.len() == 3 {
+                    (v[0], v[1], v[2])
+                } else {
+                    continue;
+                }
+            };
+            let dir: u8 = field(obj, "dir").and_then(|s| s.parse::<i32>().ok()).map(|d| (d & 3) as u8).unwrap_or(0);
+            *counts.entry((name, cell, dir)).or_insert(0) += 1;
+            total += 1;
+        }
+        GameList { total, counts }
+    }
 }
