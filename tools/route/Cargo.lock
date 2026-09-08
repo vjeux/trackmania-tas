@@ -1043,12 +1043,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmauto"
+version = "1.0.0"
+dependencies = [
+ "gbx",
+ "ghost",
+ "tmmaps",
+]
+
+[[package]]
+name = "tmenv"
+version = "0.1.0"
+dependencies = [
+ "branch",
+ "fk",
+ "forkoracle",
+ "gbx",
+ "ghost",
+ "mapgeom",
+ "serde",
+ "serde_json",
+ "tmauto",
+ "tmmaps",
+ "tmobs",
+ "tmstate",
+]
+
+[[package]]
 name = "tmmaps"
 version = "1.0.0"
 dependencies = [
  "gbx",
  "ghost",
  "miniz_oxide",
+]
+
+[[package]]
+name = "tmobs"
+version = "0.1.0"
+dependencies = [
+ "tmstate",
 ]
 
 [[package]]
@@ -1087,7 +1121,28 @@ dependencies = [
  "forkoracle",
  "gbx",
  "ghost",
+ "tmenv",
  "tmmaps",
+ "tmobs",
+ "tmrl",
+ "tmstate",
+]
+
+[[package]]
+name = "tmrl"
+version = "0.1.0"
+dependencies = [
+ "branch",
+ "candle-core",
+ "candle-nn",
+ "fk",
+ "forkoracle",
+ "gbx",
+ "serde",
+ "serde_json",
+ "tmauto",
+ "tmenv",
+ "tmobs",
  "tmstate",
 ]
 

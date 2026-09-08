@@ -1540,6 +1540,13 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
         lat_tol: a.get("lat-tol").map(|s| s.parse().unwrap()).unwrap_or(6.0),
         below_tol: a.get("below-tol").map(|s| s.parse().unwrap()).unwrap_or(25.0),
         clinic: a.has("clinic"),
+        policy: match a.get("policy") {
+            Some(p) => {
+                let geom = a.get("policy-geom").ok_or("--policy needs --policy-geom geom.json (the geometry the policy observes)")?;
+                Some(tmreach::policy_src::PolicySrc::load(&p, std::path::Path::new(&geom), a.get("obs-version").map(|s| s.parse().unwrap()), a.get("policy-temp").map(|s| s.parse().unwrap()).unwrap_or(0.6), a.get("policy-n").map(|s| s.parse().unwrap()).unwrap_or(3))?)
+            }
+            None => None,
+        },
         seed_chain: match a.get("seed-chain") {
             Some(f) => {
                 let txt = std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;

@@ -20,3 +20,6 @@ ghost = { path = "../../ghost" }
 gbx = { path = "../../gbx" }
 tmmaps = { path = "../../tmmaps" }
 tmstate = { path = "../../rl/tmstate" }
+tmobs = { path = "../../rl/tmobs" }
+tmrl = { path = "../../rl/tmrl" }
+tmenv = { path = "../../rl/tmenv" }

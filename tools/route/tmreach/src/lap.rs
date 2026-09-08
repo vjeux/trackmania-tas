@@ -342,6 +342,8 @@ pub struct LapCfg {
     /// CLINIC mode: the objective is the NEXT gate only — stop when it is credited with a good arrival
     /// (laterally on the line, speed within 30 % of the human's there) and hand the chain on
     pub clinic: bool,
+    /// Policy proposals (MODEL arm): the per-map tmrl policy rolled forward in closed loop as extra macros.
+    pub policy: Option<crate::policy_src::PolicySrc>,
 }
 
 struct Rng(u64);
@@ -511,6 +513,63 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             if !rows.is_empty() {
                 count += 1;
                 results.push((recs, rows, exited, desc.to_string()));
+            }
+        }
+        // POLICY proposals (MODEL arm): the per-map tmrl policy in closed loop, k-tick chunks, N independent
+        // samples at temperature T (T = 0 → one deterministic proposal)
+        if let Some(ps) = &cfg.policy {
+            let n_prop = if ps.temp > 0.0 { ps.n } else { 1 };
+            for pi in 0..n_prop {
+                let mut cur = node;
+                let mut recs: Vec<Rec> = Vec::with_capacity(h);
+                let mut rows: Vec<Row> = Vec::new();
+                let mut last = base.map(|e| e.end.clone()).unwrap_or_else(|| root_row.clone());
+                // the actions the base chain ended with (the observation carries the last 5)
+                let mut prev: Vec<tmstate::Action> = chain0.iter().rev().take(tmobs::N_PREV).rev().map(|r| tmstate::Action { steer: (r.steer * 127.0).round().clamp(-127.0, 127.0) as i8, gas: r.gas > 0.5, brake: r.brake > 0.5 }).collect();
+                let mut exited = false;
+                let mut done = 0usize;
+                let mut unit = || rng.unit() as f32;
+                while done < h {
+                    let k = ps.k().min(h - done);
+                    let (chunk_full, acts) = ps.propose(&last, w.race_of(&last), cps_of(&last), &prev, &mut unit);
+                    let chunk: Vec<Rec> = chunk_full.into_iter().take(k).collect();
+                    crate::policy_src::push_prev(&mut prev, &acts[..k.min(acts.len())]);
+                    match w.rollout_keep(cur, &chunk, from + done, k as u64) {
+                        Ok((rr, nh)) => {
+                            if cur != node {
+                                w.release(cur);
+                            }
+                            cur = nh;
+                            recs.extend(chunk);
+                            if let Some(l) = rr.last() {
+                                last = l.clone();
+                            }
+                            rows.extend(rr);
+                            done += k;
+                            if rows.last().map(|r| r.y < -50.0).unwrap_or(false) {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            if !e.contains("ended") {
+                                out.log.push(format!("  policy chunk failed: {e}"));
+                            }
+                            exited = true;
+                            break;
+                        }
+                    }
+                }
+                if cur != node {
+                    w.release(cur);
+                }
+                if debug {
+                    let e = rows.last();
+                    eprintln!("    policy proposal #{pi}: {} rows, {} ticks of inputs, end {:?} speed {:.1}, exited {exited}", rows.len(), recs.len(), e.map(|r| (r.x as i32, r.y as i32, r.z as i32)), e.map(speed).unwrap_or(0.0));
+                }
+                if !rows.is_empty() {
+                    count += 1;
+                    results.push((recs, rows, exited, format!("POLICY {} T{:.2} #{pi}", ps.label, ps.temp)));
+                }
             }
         }
         for (recs, rows, exited, desc) in results {
