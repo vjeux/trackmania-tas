@@ -46,9 +46,10 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
   tinyctl build NN… [--src-dir /tmp/summer2026] [--out-root /tmp] [--tag auto] [--recipe /tmp/tiny3/recipe.env] [--env K=V …]
         the tiny build of campaign maps end to end (packs by collection, recipe env,
         mapgeom tiny-library, tmmaps tiny, library unzipped) into <out-root>/tinyNN/<tag>/
-  tinyctl views SRC.Map.Gbx [--out VIEWS.tsv] [--gate-dist 48]
+  tinyctl views SRC.Map.Gbx [--out VIEWS.tsv] [--gate-dist 48] [--ghost G --at MS[,MS…] [--chase-dist 30] [--chase-v 0.3] [--only-chase]]
         start / every checkpoint / finish looked at along the gate, the
-        whole map from above and its four quadrants; the anchor as a comment
+        whole map from above and its four quadrants; the anchor as a comment;
+        --ghost/--at add chase views (camera behind the car) at instants of a driven lap
   tinyctl shoot --orig SRC --tiny TINY --views VIEWS.tsv --tag sNN --anchor A
                 [--outdir /tmp/tiny3] [--only o|t] [--pull-full] [--ab] [-v]
         push, one editor load per side on the render box (shootctl shootset),

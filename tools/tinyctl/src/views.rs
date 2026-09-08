@@ -154,7 +154,24 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let src = Path::new(args.get(0).ok_or("views needs SRC.Map.Gbx")?);
     let m = MapFile::load(src);
     let gate_dist: f32 = tmmaps::cli::flag(args, "--gate-dist").unwrap_or("48").parse().map_err(|_| "--gate-dist number")?;
-    let views = derive(&m, gate_dist);
+    let mut views = derive(&m, gate_dist);
+    // --ghost G --at 4000,16250 [--chase-dist 30] [--chase-v 0.3] [--only-chase]:
+    // chase views at instants of a driven lap (ms), see `chase_views`
+    if let Some(g) = tmmaps::cli::flag(args, "--ghost") {
+        let at: Vec<i32> = tmmaps::cli::flag(args, "--at")
+            .ok_or("--ghost needs --at T[,T…] (ms into the lap)")?
+            .split(',')
+            .map(|s| s.trim().parse::<i32>().map_err(|_| format!("--at: `{s}` is not a millisecond count")))
+            .collect::<Result<_, _>>()?;
+        let dist: f32 = tmmaps::cli::flag(args, "--chase-dist").unwrap_or("30").parse().map_err(|_| "--chase-dist number")?;
+        let v: f32 = tmmaps::cli::flag(args, "--chase-v").unwrap_or("0.3").parse().map_err(|_| "--chase-v number")?;
+        let chase = chase_views(&m, Path::new(g), &at, dist, v)?;
+        if tmmaps::cli::has(args, "--only-chase") {
+            views = chase;
+        } else {
+            views.extend(chase);
+        }
+    }
     let text = write_tsv(&m, &views, src);
     match tmmaps::cli::flag(args, "--out") {
         Some(p) => {
@@ -170,4 +187,26 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     }
     eprintln!("waypoints: {kinds:?}");
     Ok(())
+}
+
+/// `--ghost G --at T[,T…]`: a chase view at each instant of a driven lap — the
+/// camera behind the car along its velocity, at the car's position mapped from
+/// the tiny map back into SOURCE coordinates through the default anchor (the
+/// views file is in source coordinates; `shootset --side t` maps it back). The
+/// spot-check camera: the frame of the clip that looked wrong, shot on both
+/// maps from the same place.
+pub fn chase_views(m: &MapFile, ghost: &Path, at_ms: &[i32], dist: f32, v: f32) -> Result<Vec<View>, String> {
+    let g = gbx::record::decode_ghost(ghost.to_str().ok_or("ghost path is not utf-8")?)?;
+    let (a, b) = default_anchor(m, 0.5).ok_or("this map has no Spawn to anchor on")?;
+    let mut out = Vec::new();
+    for &t in at_ms {
+        let s = g.samples.iter().min_by_key(|s| (s.time_ms - t).abs()).ok_or("the ghost has no samples")?;
+        let src = [a[0] + (s.x - b[0]) / 0.5, a[1] + (s.y - b[1]) / 0.5, a[2] + (s.z - b[2]) / 0.5];
+        // behind the car: the camera sits at target + dist·(−sin h, ·, −cos h),
+        // so h = atan2(vx, vz) puts it on the far side of the velocity
+        let (vx, vz) = (s.vx, s.vz);
+        let h = if vx.hypot(vz) > 0.5 { vx.atan2(vz) } else { 0.0 };
+        out.push(View { name: format!("g{t}"), target: [src[0], src[1] + 3.0, src[2]], dist, h, v });
+    }
+    Ok(out)
 }
