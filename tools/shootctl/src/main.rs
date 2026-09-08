@@ -1322,12 +1322,20 @@ usage:
                         Err(e) => { eprintln!("{e}"); 1 }
                         Ok(()) => {
                             let code = probe(&map, "edit", "", 420);
-                            let st = http_get("/mapstate", 25).unwrap_or_default();
-                            println!("mapstate\t{}", st.trim());
-                            for g in &gets {
-                                match http_get(g, 60) {
-                                    Ok(b) => println!("{g}\t{}", b.trim()),
-                                    Err(e) => println!("{g}\tERROR {e}"),
+                            // the probe refused or the load failed: whatever the editor
+                            // holds now is SOMEBODY ELSE's map (2026-09-08: a WSL-home
+                            // path was refused and the gets read Summer 15 from another
+                            // driver's editor) — answer nothing rather than the wrong map
+                            if code != 0 {
+                                println!("mapstate\tNOT OPENED (probe rc {code}); no queries made");
+                            } else {
+                                let st = http_get("/mapstate", 25).unwrap_or_default();
+                                println!("mapstate\t{}", st.trim());
+                                for g in &gets {
+                                    match http_get(g, 60) {
+                                        Ok(b) => println!("{g}\t{}", b.trim()),
+                                        Err(e) => println!("{g}\tERROR {e}"),
+                                    }
                                 }
                             }
                             let _ = http_get("/back", 10);
