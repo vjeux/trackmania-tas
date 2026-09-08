@@ -12,8 +12,7 @@
 //! lib.zip, placements.tsv, report.tsv, build.log, Summer-NN-Tiny.Map.Gbx,
 //! tiny.log, libx/. The packs are the fixed campaign set: the collection's
 //! pack (key 660C…) plus the Stadium pack (key B773…); a Stadium map gets the
-//! Stadium pack alone and the `TINY_DROP_BLOCKS` water-wall rule of the
-//! recipe. `--env` adds or overrides variables (TINY_FLAG_TWEEN=0 …).
+//! Stadium pack alone. `--env` adds or overrides variables (TINY_FLAG_TWEEN=0 …).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -23,7 +22,6 @@ use crate::views::{collection_name, collection_of};
 
 const STADIUM_PAK: &str = "/tmp/current-Stadium.pak:B773D73047A4104857722366D78D28A6";
 const TERRAIN_KEY: &str = "660C4C156B80337E296A1034B0AA05B8";
-const STADIUM_DROP: &str = "DecoWallWaterHFCInside,DecoWallWaterFCBInside,TrackWallWaterCurve";
 
 /// The `--pak F:KEY` arguments for a collection.
 pub fn paks_for(collection: u32) -> Result<Vec<String>, String> {
@@ -155,9 +153,6 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let out = out_root.join(format!("tiny{nn}")).join(&tag);
         std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
         let mut env = base_env.clone();
-        if coll == 0x1a {
-            env.insert("TINY_DROP_BLOCKS".into(), STADIUM_DROP.into());
-        }
         for (k, v) in &extra {
             env.insert(k.clone(), v.clone());
         }
