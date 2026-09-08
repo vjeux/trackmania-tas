@@ -1055,6 +1055,8 @@ usage:
         DIR/NAME-sheet.png (16 tiles over the clip) + DIR/NAME-dense.png (2 fps),
         DIR/done-render.txt = `OK <webm> <bytes> <seconds>` | `FAILED …`.
         --detach as above; the log is DIR/render.log.
+  shootctl render --sheets-only WEBM --outdir /mnt/c/DIR --name N
+        just the two sheets for a clip that already exists (no game, no lock)
   shootctl playshots --map MAP --outdir /mnt/c/DIR [--tag T] [--shots 4] [--every-ms 3000]
                     [--drive-ms MS [--drive-at-ms 13500]] (hold the accelerator: the car rolls off the start)
                     [--first-ms 4000] [--timeout S] [--detach]

@@ -97,13 +97,14 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         JPG/PNG sheets into the agentcloud attachment store (intern GraphQL
         xfb_metamate_nest_bulk_file_upload through `meta`); prints NAME<TAB>ID,
         embed as ![..](/api/attachments/view?file_id=ID); --record appends the rows
-  tinyctl video --map NN [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9] [--ghosts-dir /tmp/ghosts]
+  tinyctl video --map NN | --all [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9] [--ghosts-dir /tmp/ghosts]
                 [--cam 2] [--load-timeout 120] [--no-guard] [--store host:dir|dir] [--pull-webm] [--box-videos DIR]
         the map's driven lap as a video: REFUSES a ghost whose sample 0 is not on this
         map's start line (a render plays samples — a donor container flies off the map),
         pushes map (md5-skipped) + ghost, `shootctl render` on the box under the render
         lock, the clip to Maps\Tiny\videos\NN-ghost-<time>.webm, the 16-tile contact
-        sheet (+ a 2 fps dense one) pulled into --out; --store copies clip + sheet on
+        sheet (+ a 2 fps dense one) pulled into --out; --store copies clip + sheet on;
+        --all renders every NN.Ghost.Gbx in --ghosts-dir not yet in <out>/videos.tsv (by md5)
 
   box-side halves: tinyctl publish-here …   tinyctl selfbuild …
   every bridge command takes --wsx PATH (default ~/bin/wsx)

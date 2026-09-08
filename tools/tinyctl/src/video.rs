@@ -2,7 +2,7 @@
 //! the devserver, through the render box.
 //!
 //! ```text
-//! tinyctl video --map NN [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9]
+//! tinyctl video --map NN | --all [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9]
 //!               [--ghosts-dir /tmp/ghosts] [--cam 2] [--load-timeout 120] [--no-guard]
 //!               [--box-videos "…/Maps/Tiny/videos"] [--store host:dir | dir] [--pull-webm]
 //!               [--box-shootctl P] [--wsx P] [-v]
@@ -43,7 +43,108 @@ const VID: &str = "/mnt/c/Users/vjeux/tinyvid";
 const BOX_TOOLS: &str = "/home/vjeux/trackmania-tas/tools/target/release";
 const BOX_VIDEOS: &str = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/Maps/Tiny/videos";
 
+/// One rendered lap, as the state file records it.
+struct Done {
+    nn: String,
+    ghost_md5: String,
+    time: String,
+    cps: usize,
+    clip: String,
+    sheet: PathBuf,
+}
+
 pub fn cmd(args: &[String]) -> Result<(), String> {
+    if tmmaps::cli::has(args, "--all") {
+        return all(args);
+    }
+    one(args).map(|_| ())
+}
+
+/// `--all`: every `NN.Ghost.Gbx` in `--ghosts-dir` whose md5 is not yet in
+/// `<out>/videos.tsv` (nn, ghost md5, time, cps, clip, sheet, when), rendered in
+/// turn — the loop of a day when laps land every half hour. A ghost REPLACED
+/// under the same name (a better lap, a regenerated file) has a new md5 and is
+/// rendered again; a failure is printed and the loop goes on to the next map.
+fn all(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let ghosts_dir = PathBuf::from(f("--ghosts-dir").unwrap_or_else(|| "/tmp/ghosts".into()));
+    let out = PathBuf::from(f("--out").unwrap_or_else(|| "/tmp/tinyvid".into()));
+    std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let state = out.join("videos.tsv");
+    let seen: Vec<(String, String)> = std::fs::read_to_string(&state)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| {
+            let mut c = l.split('\t');
+            Some((c.next()?.to_string(), c.next()?.to_string()))
+        })
+        .collect();
+    let mut names: Vec<String> = std::fs::read_dir(&ghosts_dir)
+        .map_err(|e| format!("{}: {e}", ghosts_dir.display()))?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .filter(|n| n.len() == 12 && n.ends_with(".Ghost.Gbx") && n[..2].chars().all(|c| c.is_ascii_digit()))
+        .collect();
+    names.sort();
+    let mut todo = Vec::new();
+    for n in &names {
+        let nn = n[..2].to_string();
+        let md5 = md5_of(&ghosts_dir.join(n))?;
+        if seen.iter().any(|(a, b)| *a == nn && *b == md5) {
+            continue;
+        }
+        todo.push(nn);
+    }
+    if todo.is_empty() {
+        println!("nothing new in {} ({} ghosts, all rendered)", ghosts_dir.display(), names.len());
+        return Ok(());
+    }
+    println!("{} to render: {}", todo.len(), todo.join(" "));
+    let base: Vec<String> = {
+        // the per-map call gets the same flags minus --all and any --map/--ghost
+        let mut v = Vec::new();
+        let mut skip = false;
+        for a in args {
+            if skip {
+                skip = false;
+                continue;
+            }
+            match a.as_str() {
+                "--all" => {}
+                "--map" | "--ghost" | "--map-file" => skip = true,
+                _ => v.push(a.clone()),
+            }
+        }
+        v
+    };
+    let mut failed = Vec::new();
+    for nn in &todo {
+        let mut a = base.clone();
+        a.push("--map".into());
+        a.push(nn.clone());
+        println!("\n=== {nn} ===");
+        match one(&a) {
+            Ok(d) => {
+                let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let row = format!("{}\t{}\t{}\t{}\t{}\t{}\t{when}\n", d.nn, d.ghost_md5, d.time, d.cps, d.clip, d.sheet.display());
+                let header = if state.exists() { String::new() } else { "# nn\tghost_md5\ttime\tcps\tclip\tsheet\tunix\n".to_string() };
+                let mut text = std::fs::read_to_string(&state).unwrap_or_default();
+                text.push_str(&header);
+                text.push_str(&row);
+                std::fs::write(&state, text).map_err(|e| format!("{}: {e}", state.display()))?;
+            }
+            Err(e) => {
+                eprintln!("{nn}: FAILED — {e}");
+                failed.push(nn.clone());
+            }
+        }
+    }
+    println!("\n{} rendered, {} failed{}", todo.len() - failed.len(), failed.len(), if failed.is_empty() { String::new() } else { format!(" ({})", failed.join(" ")) });
+    if failed.is_empty() { Ok(()) } else { Err("some renders failed (above)".into()) }
+}
+
+fn one(args: &[String]) -> Result<Done, String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let nn = f("--map").ok_or("video needs --map NN (01..25)")?;
     if nn.len() != 2 || !nn.chars().all(|c| c.is_ascii_digit()) {
@@ -176,7 +277,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     // the finish is the last "checkpoint" the decoder lists
     let cps = g.checkpoints_ms.iter().filter(|c| **c < race_ms - 50).count();
     println!("| {nn} | {time} | {cps} cps | on-road: ? | look at {} |", sheet.display());
-    Ok(())
+    Ok(Done { nn, ghost_md5, time, cps, clip: format!("{name}.webm"), sheet })
 }
 
 /// Where the start block puts the car relative to its Spawn placement: the

@@ -29,6 +29,8 @@
 //! image), and `DIR/NAME-dense.png`, 2 fps in rows of six, for when the coarse
 //! sheet shows something worth a closer look. The clip itself stays where the
 //! game wrote it (`ScreenShots/NAME.webm`); it is the caller's to copy.
+//! `render --sheets-only WEBM --outdir DIR --name N` writes just the two sheets
+//! for a clip that already exists — no game, no lock.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -85,6 +87,12 @@ fn parse(args: &[String]) -> Result<Opts, String> {
 }
 
 pub fn run(args: &[String]) -> i32 {
+    // `render --sheets-only WEBM --outdir DIR --name N`: the two contact sheets
+    // for a clip that already exists (rendered by `run`/vid.sh before this
+    // command did), no game, no lock.
+    if args.iter().any(|a| a == "--sheets-only") {
+        return sheets_only(args);
+    }
     let opts = match parse(args) {
         Ok(o) => o,
         Err(e) => {
@@ -152,18 +160,7 @@ fn render(opts: &Opts, t0: Instant) -> Result<(String, u64, f64), String> {
     }
     let secs = duration_s(&webm)?;
     println!("{} clip {} ({bytes} bytes, {secs:.3} s)", el(), webm);
-    let sheet = opts.outdir.join(format!("{}-sheet.png", opts.name));
-    let dense = opts.outdir.join(format!("{}-dense.png", opts.name));
-    // 16 tiles over the whole clip: 0.5 fps until the lap outgrows 32 s.
-    let fps = (15.9 / secs).min(0.5);
-    contact_sheet(&webm, &sheet, fps, 480, 4, 4)?;
-    println!("{} sheet {} ({fps:.3} fps, 4x4)", el(), sheet.display());
-    // 2 fps in rows of six; slower for a lap that would need more than 12 rows.
-    let dfps = (71.9 / secs).min(2.0);
-    let frames = (secs * dfps).ceil() as u32;
-    let rows = frames.div_ceil(6).max(1);
-    contact_sheet(&webm, &dense, dfps, 320, 6, rows)?;
-    println!("{} dense {} ({dfps:.3} fps, 6x{rows})", el(), dense.display());
+    let (_, _sheet, _dense) = sheets(&webm, &opts.outdir, &opts.name)?;
     Ok((webm, bytes, secs))
 }
 
@@ -199,4 +196,45 @@ fn contact_sheet(webm: &str, out: &Path, fps: f64, tile_w: u32, cols: u32, rows:
         return Err(format!("{}: ffmpeg wrote nothing", out.display()));
     }
     Ok(())
+}
+
+fn sheets_only(args: &[String]) -> i32 {
+    let val = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
+    let webm = args.iter().enumerate().find(|(i, a)| !a.starts_with("--") && (*i == 0 || !matches!(args[i - 1].as_str(), "--outdir" | "--name"))).map(|(_, a)| a.clone());
+    let (Some(webm), Some(outdir), Some(name)) = (webm, val("--outdir"), val("--name")) else {
+        eprintln!("render --sheets-only WEBM --outdir /mnt/c/DIR --name N");
+        return 2;
+    };
+    if let Err(e) = std::fs::create_dir_all(&outdir) {
+        eprintln!("{outdir}: {e}");
+        return 2;
+    }
+    match sheets(&webm, Path::new(&outdir), &name) {
+        Ok((secs, sheet, dense)) => {
+            println!("OK {webm} {secs:.3} {} {}", sheet.display(), dense.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
+}
+
+/// The two contact sheets of a clip: (duration, coarse sheet, dense sheet).
+fn sheets(webm: &str, outdir: &Path, name: &str) -> Result<(f64, PathBuf, PathBuf), String> {
+    let secs = duration_s(webm)?;
+    let sheet = outdir.join(format!("{name}-sheet.png"));
+    let dense = outdir.join(format!("{name}-dense.png"));
+    // 16 tiles over the whole clip: 0.5 fps until the lap outgrows 32 s.
+    let fps = (15.9 / secs).min(0.5);
+    contact_sheet(webm, &sheet, fps, 480, 4, 4)?;
+    println!("sheet {} ({fps:.3} fps, 4x4)", sheet.display());
+    // 2 fps in rows of six; slower for a lap that would need more than 12 rows.
+    let dfps = (71.9 / secs).min(2.0);
+    let frames = (secs * dfps).ceil() as u32;
+    let rows = frames.div_ceil(6).max(1);
+    contact_sheet(webm, &dense, dfps, 320, 6, rows)?;
+    println!("dense {} ({dfps:.3} fps, 6x{rows})", dense.display());
+    Ok((secs, sheet, dense))
 }
