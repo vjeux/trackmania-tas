@@ -45,7 +45,7 @@ order=${ORDER:-${hyb:-$geo}}; src=hybrid; [ -z "$hyb" ] && src=geometric
 if [ -n "$order" ]; then
   # the engine's tick-0 pose when the INPUT arm has measured it for this build (ENGINE-SPAWNS-<build-short>.tsv)
   nn=${b:0:2}; short=${BUILD%%-*}; ES=$M/tm-player/tiny/gate-crossings/ENGINE-SPAWNS-$short.tsv; [ -f $ES ] || ES=$(ls -t $M/tm-player/tiny/gate-crossings/ENGINE-SPAWNS-*.tsv 2>/dev/null | head -1); sp=$(awk -F'\t' -v n="$nn" '$1==n {print $2","$3","$4}' "$ES" 2>/dev/null | head -1); SPAWN=""; [ -n "$sp" ] && SPAWN="--spawn $sp"
-  nice $R/tmplan road-centreline "$MAP" --gates $GT/$b.deck.json --order $order $SPAWN --out $C/$b.road-centreline.json --route-out $C/$b.route-router-road-centreline-0.json --verdicts $VERD --exclusions $M/tm-route/tiny/road-exclusions.tsv --map-stem $b --note "order from the $src route; $note; gates $b.deck.json" > $C/$b.centreline.txt 2>&1
+  nice $R/tmplan road-centreline "$MAP" --gates $GT/$b.deck.json --order $order $SPAWN --out $C/$b.road-centreline.json --route-out $C/$b.route-router-road-centreline-0.json --verdicts $VERD --exclusions $M/tm-route/tiny/road-exclusions.tsv --leg-lines $M/tm-route/tiny/leg-lines.tsv --map-stem $b --note "order from the $src route; $note; gates $b.deck.json" > $C/$b.centreline.txt 2>&1
   cl=$(grep "pts," $C/$b.centreline.txt | sed -E 's/.*: ([0-9]+) pts, ([0-9]+) m, ([0-9]+) segments, ([0-9]+) gaps, on-road ([0-9.]+) %(.*)→.*/\1 pts \2 m, \4 gaps of \3 legs, on-road \5 %\6/')
 else cl="no route order — no centreline"; fi
 # 4. one tarball per map into the bank

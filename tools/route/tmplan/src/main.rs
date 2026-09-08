@@ -836,7 +836,9 @@ fn cmd_road_centreline(args: &[String]) {
             None => {
                 // SURFACE WALK before declaring a gap: over the collision triangles, from around where the line stands
                 // (the through-point or the from-gate) to the to-gate deck; accepted when ≤ 4 × chord + 40 m
-                let walked = if walk_on && !jumpy.iter().any(|(f, t)| *f == grp(&nodes, i).trim_matches('"') && *t == grp_id_of(&nodes, j)) {
+                // a Jump/Drop verdict INTO this gate from any gate counts: an isolated deck (21's gate 15) is a jump from
+                // wherever the order arrives (the order moved 2→15 to 6→15 and the walk built a fake path, 16:11Z)
+                let walked = if walk_on && !jumpy.iter().any(|(f, t)| *t == grp_id_of(&nodes, j)) {
                     if walk.is_none() { walk = build_walk(); }
                     walk.as_ref().and_then(|w| {
                         let start = *pts.last().unwrap();
@@ -948,8 +950,11 @@ fn cmd_road_centreline(args: &[String]) {
             tg_gates.push(Gate { kind, centre: centre_c, normal: gate_normal, half_width: half, s: s[i1], map_waypoint: rep.waypoint });
             // a gap leg's class from the converter's verdicts (--verdicts TSV: map_stem, from_group, to_group, class, note)
             let from_lab = grp(&nodes, w[0]).trim_matches('"').to_string();
-            let verdict = verdicts.iter().find(|v| v.0 == from_lab && v.1 == grp_id.to_string()).cloned();
-            let conn = if !gap { ConnectionClass::Road } else { match verdict.as_ref().map(|v| v.2.as_str()) { Some("Jump") => ConnectionClass::Jump, Some("Drop") => ConnectionClass::Drop, Some("Road") => ConnectionClass::Road, _ => ConnectionClass::Unknown } };
+            // exact (from, to) first, else any Jump/Drop verdict INTO this gate (orders move between builds)
+            let verdict = verdicts.iter().find(|v| v.0 == from_lab && v.1 == grp_id.to_string()).cloned().or_else(|| verdicts.iter().find(|v| v.1 == grp_id.to_string() && (v.2 == "Jump" || v.2 == "Drop")).cloned());
+            // a manual drive line or a gap keeps the verdict class (a Jump stays a Jump even with points to follow)
+            let manual = seg.contains("\"via\": \"manual\"");
+            let conn = if !gap && !manual { ConnectionClass::Road } else { match verdict.as_ref().map(|v| v.2.as_str()) { Some("Jump") => ConnectionClass::Jump, Some("Drop") => ConnectionClass::Drop, Some("Road") => ConnectionClass::Road, _ => if manual { ConnectionClass::Road } else { ConnectionClass::Unknown } } };
             if let Some(v) = &verdict { verdict_notes.push(format!("{}→{} {}{}", v.0, v.1, v.2, if v.3.is_empty() { String::new() } else { format!(" ({})", v.3) })); }
             legs.push(Leg { gate_idx: li as u32, map_waypoint: rep.waypoint, s_start: s[i0], s_end: s[i1], connection: conn, arrival_speed: [5.0, 80.0], arrival_heading: gate_normal, arrival_heading_tol: 0.5, arrival_height: [centre[1] - rep.half_height - 1.0, centre[1] - rep.half_height + 3.0], p_reach: if gap { 0.0 } else { 1.0 }, expected_ms: -1, evidence: LegEvidence::Predicted });
             gate_order.push(rep.waypoint);
