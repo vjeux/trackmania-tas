@@ -305,6 +305,8 @@ pub struct LapCfg {
     /// Seed the search from the base tape's OWN inputs replayed for this many ticks (a savestate
     /// inside a known run, e.g. 50 m before a jump), instead of from the root only.
     pub prefix_ticks: usize,
+    /// Seed from an explicit chain (a previous run's best.tsv) instead of the base tape's inputs.
+    pub seed_chain: Option<Vec<Rec>>,
     /// lateral tolerance beyond the half width on road legs (m): 6 on roads, 25+ on open terrain
     pub lat_tol: f64,
 }
@@ -607,8 +609,12 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
     };
 
     // SEED: the root, or the base tape replayed for --prefix-ticks (its state becomes the first cell)
-    if cfg.prefix_ticks > 0 {
-        let recs = w.reference_recs(root, cfg.prefix_ticks);
+    if cfg.prefix_ticks > 0 || cfg.seed_chain.is_some() {
+        let recs = match &cfg.seed_chain {
+            Some(c) => c.clone(),
+            None => w.reference_recs(root, cfg.prefix_ticks),
+        };
+        let recs_len = recs.len();
         let (rows, nh) = w.rollout_keep(branch::ROOT, &recs, root, recs.len() as u64)?;
         let end = rows.last().cloned().unwrap_or_else(|| root_row.clone());
         let (s, _lat, seg, _) = track.project(pos(&end), track.pts.len() / 2, track.pts.len());
@@ -635,8 +641,8 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             }
         }
         let k_pref = (0..track.n_groups).take_while(|i| mask & (1 << i) != 0).count();
-        let seed = Entry { key: Key { cs: (s / 4.0).floor() as i32, cv: (speed(&end) / 5.0).floor() as i32, cy: (end.y / 3.0).floor() as i32, mask }, chain: recs, cps, mask, s, seg, progress: k_pref as f64 * 10_000.0 + s, visits: 0, end: end.clone(), macro_desc: vec![format!("base tape prefix {} ticks", cfg.prefix_ticks)] };
-        out.log.push(format!("seed from the base tape at tick {}: ({:.1}, {:.1}, {:.1}) v {:.1} cps {cps} mask {mask:#x} s {s:.1}", cfg.prefix_ticks, end.x, end.y, end.z, speed(&end)));
+        let seed = Entry { key: Key { cs: (s / 4.0).floor() as i32, cv: (speed(&end) / 5.0).floor() as i32, cy: (end.y / 3.0).floor() as i32, mask }, chain: recs, cps, mask, s, seg, progress: k_pref as f64 * 10_000.0 + s, visits: 0, end: end.clone(), macro_desc: vec![format!("seed chain {} ticks", recs_len)] };
+        out.log.push(format!("seed from a {} tick chain: ({:.1}, {:.1}, {:.1}) v {:.1} cps {cps} mask {mask:#x} s {s:.1}", recs_len, end.x, end.y, end.z, speed(&end)));
         let from = w.floor(nh)?;
         out.best = Some(seed.clone());
         out.rollouts += fan(w, nh, from, Some(&seed), &mut archive, &mut out, &mut rng, h)?;
