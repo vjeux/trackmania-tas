@@ -963,6 +963,17 @@ fn probe(map: &str, how: &str, mode: &str, timeout_s: u64) -> i32 {
         // Anywhere but the menu is a load that happened. Which context it is
         // says which door opened, and the line above has already printed it.
         if matches!(ctx_now, Some(n) if n != 0) { settled = true; break; }
+        // A FrameAskYesNo on the way in is the game's "load anyway?" prompt
+        // (missing items / an item it could not read). shootset answers yes and
+        // records it; the probe sat behind it until the timeout (mapstate on a
+        // tiny 24, 2026-09-08: 291 s at "Updating data… (???)", then nothing).
+        if c.contains("FrameAskYesNo") {
+            let text = http_get("/dlgtext", 10).unwrap_or_default().trim().to_string();
+            println!("  [{:5.1}s] DIALOG {text} — answering yes", t0.elapsed().as_secs_f64());
+            let _ = http_get("/yes", 10);
+            let _ = await_cond("nodialog", 5);
+            let _ = http_get("/yes", 10);
+        }
     }
     println!("  [{:5.1}s] final /ctx   {}", t0.elapsed().as_secs_f64(),
              http_get("/ctx", 10).unwrap_or_default().trim());
