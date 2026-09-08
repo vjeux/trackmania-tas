@@ -208,7 +208,7 @@ fn main() {
     // missing that is `index out of bounds: the len is 2 but the index is 2` —
     // a panic where a usage line belongs. Say what is missing instead.
     const WANTS_MAP: &[&str] = &[
-        "waypoints", "census", "region", "colors", "genealogy", "tiny-catalog", "lineup", "shared-cells", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
+        "waypoints", "census", "fillers", "region", "colors", "genealogy", "tiny-catalog", "lineup", "shared-cells", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
         "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "delblocks", "mediatracker",
     ];
@@ -1357,6 +1357,7 @@ fn main() {
             println!("wrote {} ({} blocks, {} items)", out.display(), m.blocks.len(), m.items.len());
         }
         "census" => census::cmd_census(&args),
+        "fillers" => tmmaps::fillers::cmd(&args),
         // archive-only variants of a tiny map for the load-failure bisect (zippad.rs)
         "zippad" => tmmaps::zippad::cmd(&args),
         "header" => header::cmd(&args),
@@ -1568,6 +1569,12 @@ READING A MAP
         OWN list, so a bare `2461` pasted from a census row addresses an
         unrelated unbaked block — movers spell baked indices `bN` and REFUSE
         them rather than moving the wrong block.
+  tmmaps fillers MAP [--filter PAT] [--cells X0,Z0:X1,Z1] [--summary]
+        the generated clip fillers (the game's own pillar walls, skirts, end
+        caps: baked records) with their variant word (a0 Middle .. a4 nothing,
+        g1 TopBottom_Ground), the side they stand on, what their own cell holds
+        (`-` free, `P:` pillars only) and what stands across the side;
+        --summary tallies free / pillar / occupied cells per name and variant
   tmmaps region MAP --box X0,Y0,Z0:X1,Y1,Z1 [--filter PAT] [--items] [--blocks]
         everything whose position lies inside a world box. A GATE IS A
         STRUCTURE, NOT A BLOCK: run this before and after any move.

@@ -1215,15 +1215,41 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut mapping = String::from("# tiny-library mapping: @block_index<TAB>ITEM|-<TAB>model_scale<TAB>sx<TAB>sz<TAB>units(x,y,z;...)<TAB>auto_terrain(dx,dy,dz=Zone;...|placetype) ; i@item_index<TAB>ITEM|stock model|-\n");
     let mut missing_blocks: BTreeMap<String, usize> = BTreeMap::new();
     let mut rows = 0usize;
-    // Generated fillers the game does not draw but the tiny did: the Deco
-    // WALL vertical clips (`DecoWall*VFC*`) recorded in the cells of the
-    // DecoPlatform slopes and the water — Summer 20 cp3 (vjeux: "Ground
-    // texture looks off and there's a big bar"): a grey band across the red
-    // platform and a white bar at the water's edge, gone with exactly those
-    // 11 fillers dropped (A/B/C shoots 2026-09-07 15:19: OpenTech and the
-    // rest changed nothing). TINY_DROP_BAKED=glob,glob (default
-    // `DecoWall*VFC*`; `-` for none) names the baked blocks left out.
-    let drop_baked: Vec<String> = std::env::var("TINY_DROP_BAKED").unwrap_or_else(|_| "DecoWall*VFC*".to_string()).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != "-").collect();
+    // TINY_DROP_BAKED=glob,glob names generated fillers left out of the map
+    // wholesale (`-` / unset: none). ⚠ HACK KNOB — a hand-written deletion
+    // list, never a rule of the game's. Its former DEFAULT, `DecoWall*VFC*`
+    // (d668446, 2026-09-07, after Summer 20 cp3's "big bar": eleven such
+    // fillers in the DecoPlatform slope and water cells drew a bar the
+    // original does not show), deleted EVERY DecoWall vertical clip of every
+    // map — and those clips ARE the pillars: a `DecoWallBasePillar` block has
+    // no prefab of its own, its four walls are the `DecoWallBaseVFC` pieces
+    // the game generates into the neighbouring cells (variant word: 0 Middle,
+    // 1 Top, 2 Bottom, 3 TopBottom, 4 nothing/covered, 5..10 Middle x2/3/4/8/
+    // 16/32; ground 0/1 Bottom/TopBottom_Ground). Summer 10 lost its 2 864
+    // pillars' walls (1 429 VFC records), 05 its 1 210 — the "road block at
+    // the start", the "hollow platforms", the "missing undersides" vjeux
+    // drove into on 2026-09-08 (see `tmmaps fillers MAP --summary`).
+    let drop_baked: Vec<String> = std::env::var("TINY_DROP_BAKED").unwrap_or_default().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != "-").collect();
+    // TINY_VFC_RULE=free,ghost — hypotheses for the fillers the game records
+    // but (maybe) does not draw, for the in-game A/B on Summer 20 cp3:
+    //   free   a vertical clip (`*VFC*`) recorded in a cell an authored
+    //          non-pillar block occupies is left out (the bar's fillers sat in
+    //          the DecoPlatformSlopeBase / Slope2Start / WaterBase cells);
+    //   ghost  a filler carrying bit 28 (generated for a ghost-mode block) is
+    //          left out.
+    // Unset: every recorded filler with geometry is emitted (what the game's
+    // own baked list says).
+    let vfc_rules: Vec<String> = std::env::var("TINY_VFC_RULE").unwrap_or_default().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let occupied_cells: std::collections::HashSet<[u8; 3]> = source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0 && b.flags & crate::blockmap::FLAG_PILLAR == 0).map(|b| b.raw_coords).collect();
+    let vfc_left_out = |b: &tmmaps::map::BlockRec| -> Option<&'static str> {
+        if vfc_rules.iter().any(|r| r == "ghost") && b.flags & (1 << 28) != 0 {
+            return Some("ghost");
+        }
+        if vfc_rules.iter().any(|r| r == "free") && b.name.contains("VFC") && occupied_cells.contains(&b.raw_coords) {
+            return Some("occupied cell");
+        }
+        None
+    };
     let glob_match = |pat: &str, name: &str| -> bool {
         // `*` matches any run; anchored at both ends
         let parts: Vec<&str> = pat.split('*').collect();
@@ -1248,6 +1274,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         true
     };
     let mut dropped_baked: BTreeMap<String, usize> = BTreeMap::new();
+    let mut rule_left_out: BTreeMap<String, usize> = BTreeMap::new();
     // The tree clearance (tree_clear.rs): every deck placement's driving
     // surface and every tree, in the scaled source frame, placed the way
     // `tmmaps tiny` places them.
@@ -1262,6 +1289,14 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             *dropped_baked.entry(b.name.clone()).or_insert(0) += 1;
             rows += 1;
             continue;
+        }
+        if prefix == "b@" {
+            if let Some(why) = vfc_left_out(b) {
+                mapping.push_str(&format!("b@{}\t-\n", b.index));
+                *rule_left_out.entry(format!("{} ({why})", b.name)).or_insert(0) += 1;
+                rows += 1;
+                continue;
+            }
         }
         let modk = if prefix == "b@" { baked_key.get(&b.index).cloned().unwrap_or_default() } else { String::new() };
         match block_map.get(&(b.name.clone(), b.flags, modk.clone())) {
@@ -1430,7 +1465,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     }
     println!("  mapping: {} rows -> {} ({} vegetation placements sunk to half-tree crown height; {} tree placements on {} baked half-size species, {} KB of items + {} KB of textures)", rows, out_mapping.display(), sunk_rows, baked_tree_rows, baker.next, baker.item_bytes / 1024, baker.texture_bytes / 1024);
     if !dropped_baked.is_empty() {
-        println!("  baked fillers left out (TINY_DROP_BAKED): {}", dropped_baked.iter().map(|(k, v)| format!("{k} x{v}")).collect::<Vec<_>>().join(", "));
+        println!("  ⚠ HACK baked fillers left out by name (TINY_DROP_BAKED): {}", dropped_baked.iter().map(|(k, v)| format!("{k} x{v}")).collect::<Vec<_>>().join(", "));
+    }
+    if !rule_left_out.is_empty() {
+        println!("  fillers left out by TINY_VFC_RULE={}: {}", vfc_rules.join(","), rule_left_out.iter().map(|(k, v)| format!("{k} x{v}")).collect::<Vec<_>>().join(", "));
     }
     if !missing_blocks.is_empty() {
         println!("  BLOCK PLACEMENTS WITHOUT A MODEL:");
