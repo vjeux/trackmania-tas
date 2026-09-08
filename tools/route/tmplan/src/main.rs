@@ -559,7 +559,10 @@ fn cmd_deck_gates(args: &[String]) {
         // where the engine credits it, in THIS frame (deck centroid): measured on tiny 02/06 crossings (INPUT arm)
         let mb = g.model.as_bytes();
         if mb.len() > 2 && mb[0] == b'A' && mb[2].is_ascii_digit() {
-            g.credit_offset_m = match (mb[1], g.kind) { (b'C', tmroute::gates::WpKind::Checkpoint) => -9.5, (b'C', tmroute::gates::WpKind::Finish) => -7.6, (b'I', _) => -2.07, _ => g.credit_offset_m };
+            // MEASURED on ship8 (real disc triggers; INPUT arm crossings 2026-09-08 12:18Z, 39 gates on 7 maps), deck frame:
+            // AC checkpoints −2.1 (n 26, sd 0.36; one slope checkpoint at −3.8), AC finishes −6.5 (n 6, sd 0.27), AI gate
+            // items −2.1 (n 7, sd 0.19). The pre-3f5da2a fit (−9.5 / −7.6 / −2.07) measured whole-block triggers.
+            g.credit_offset_m = match (mb[1], g.kind) { (b'C', tmroute::gates::WpKind::Checkpoint) => -2.1, (b'C', tmroute::gates::WpKind::Finish) => -6.5, (b'I', _) => -2.1, _ => g.credit_offset_m };
         }
         moved += 1;
         lines.push(format!("  wp {:>2} {}: anchor ({:.1}, {:.1}, {:.1}) → deck centre ({:.1}, {:.1}, {:.1}) top {:.1} (hull {} tris, deck area {:.0} m²)", g.waypoint, g.model, old[0], old[1] - g.half_height, old[2], c[0], c[1], c[2], top, (0..scene.tris.len()).filter(|&i| scene.tris[i].tag as usize == k).count(), d.0));
@@ -676,7 +679,18 @@ fn cmd_road_centreline(args: &[String]) {
     // decks; Saudi Arabia 2026: Sand) — opt-in here so the planner's exhibit road set is untouched
     if std::env::var("TMPLAN_DECK_PHYSICS").is_err() { std::env::set_var("TMPLAN_DECK_PHYSICS", "Concrete,Grass,Sand"); }
     let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
-    let gates = io::read_gates(Path::new(&flag(args, "--gates").unwrap_or_else(|| die("--gates")))).unwrap_or_else(|e| die(&e));
+    let mut gates = io::read_gates(Path::new(&flag(args, "--gates").unwrap_or_else(|| die("--gates")))).unwrap_or_else(|e| die(&e));
+    // --spawn x,y,z: the ENGINE's tick-0 pose (what the env resets to) instead of the start deck centroid — the INPUT arm
+    // measures it per build (tm-player/tiny/gate-crossings/ENGINE-SPAWNS-<build>.tsv); 14's pitched free-placed start
+    // item put the centroid 4 m off (12:25Z)
+    let mut spawn_note = String::new();
+    if let Some(sp) = flag(args, "--spawn") {
+        let v: Vec<f32> = sp.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        if v.len() == 3 {
+            spawn_note = format!("; spawn = engine tick-0 pose ({:.1}, {:.1}, {:.1}) (was deck centroid ({:.1}, {:.1}, {:.1}))", v[0], v[1], v[2], gates.spawn.pos[0], gates.spawn.pos[1], gates.spawn.pos[2]);
+            gates.spawn.pos = [v[0], v[1], v[2]];
+        }
+    }
     let out = flag(args, "--out").unwrap_or_else(|| die("--out"));
     let order: Vec<u32> = flag(args, "--order").unwrap_or_else(|| die("--order g,g,g")).split(',').filter_map(|x| x.trim().parse().ok()).collect();
     let (mut surf, nodes) = SurfaceModel::build(Path::new(&map), &gates, false, false).unwrap_or_else(|e| die(&e));
@@ -696,6 +710,25 @@ fn cmd_road_centreline(args: &[String]) {
         }
         eprintln!("  exclusions: {} boxes, {n_ex} road nodes turned off", boxes.len());
     }
+    // the SURFACE-FOLLOWING fallback for gap legs (wallrides, loops, inverted roads, the pool, terrain hills): a walk over
+    // the collision triangles themselves (tmplan::walk), built once, lazily; --no-walk disables it. Legs whose verdict
+    // is Jump/Drop never get one (air is not a surface).
+    let walk_on = !has(args, "--no-walk");
+    let mut walk: Option<tmplan::walk::SurfaceWalk> = None;
+    let mut build_walk = || -> Option<tmplan::walk::SurfaceWalk> {
+        let paths = tmplan::pak_paths().ok()?;
+        let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).ok()?;
+        let m = tmmaps::map::MapFile::load(Path::new(&map));
+        let opts = mapgeom::local::BuildOpts { with_deco: false, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), cell: 4.0 };
+        let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &opts);
+        let t0 = std::time::Instant::now();
+        let w = tmplan::walk::SurfaceWalk::build(&scene, 1.0, &|mat: u8| mat != 255);
+        eprintln!("  surface walk: {} shell voxels of {} m from {} triangles, built in {:.1} s", w.key.len(), w.cell, scene.tris.len(), t0.elapsed().as_secs_f32());
+        Some(w)
+    };
+    // verdict classes by (from label, to group) — a Jump/Drop leg is never walked
+    let stem_v = flag(args, "--map-stem").unwrap_or_default();
+    let jumpy: Vec<(String, String)> = flag(args, "--verdicts").and_then(|p| std::fs::read_to_string(p).ok()).map(|t| t.lines().filter(|l| !l.starts_with('#')).filter_map(|l| { let f: Vec<&str> = l.split('\t').collect(); if f.len() >= 4 && f[0] == stem_v && (f[3] == "Jump" || f[3] == "Drop") { Some((f[1].to_string(), f[2].to_string())) } else { None } }).collect()).unwrap_or_default();
     let node_of_group: BTreeMap<u32, usize> = nodes.groups.iter().enumerate().map(|(i, g)| (*g, i)).collect();
     let mut seq: Vec<usize> = vec![0];
     for g in &order { seq.push(*node_of_group.get(g).unwrap_or_else(|| die(&format!("group {g} not in gates")))); }
@@ -748,6 +781,29 @@ fn cmd_road_centreline(args: &[String]) {
                 segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {gate_i}, \"gap\": false}}", grp(&nodes, i), grp(&nodes, j)));
             }
             None => {
+                // SURFACE WALK before declaring a gap: over the collision triangles, from around where the line stands
+                // (the through-point or the from-gate) to the to-gate deck; accepted when ≤ 4 × chord + 40 m
+                let walked = if walk_on && !jumpy.iter().any(|(f, t)| *f == grp(&nodes, i).trim_matches('"') && *t == grp_id_of(&nodes, j)) {
+                    if walk.is_none() { walk = build_walk(); }
+                    walk.as_ref().and_then(|w| {
+                        let start = *pts.last().unwrap();
+                        let goal = nodes.pos[j];
+                        let chord = ((goal[0] - start[0]).powi(2) + (goal[1] - start[1]).powi(2) + (goal[2] - start[2]).powi(2)).sqrt();
+                        let from_set = w.near(start, 8.0, 4.0);
+                        let to_set = w.near(goal, 8.0, 4.0);
+                        w.walk(&from_set, &to_set, 4.0 * chord + 40.0).map(|(p, l)| (p, l, chord))
+                    })
+                } else { None };
+                if let Some((raw, wlen, chord)) = walked {
+                    let leg = tmroute::human::resample(&raw, 2.0);
+                    eprintln!("  surface walk {} → {}: {:.0} m over the triangles (chord {:.0} m), {} pts", grp(&nodes, i), grp(&nodes, j), wlen, chord, leg.len());
+                    for p in leg.iter().skip(1) {
+                        hw.push(3.0);
+                        pts.push(*p);
+                    }
+                    segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {}, \"gap\": false, \"via\": \"surface\"}}", grp(&nodes, i), grp(&nodes, j), pts.len() - 1));
+                    continue;
+                }
                 // stay on the last deck: the polyline does not move; the segment is a gap the consumer must bridge
                 gaps += 1;
                 let road_at = |k: usize| nodes.graph_node[k].map_or("no graph node".to_string(), |n| if surf.graph.node_road[n] { "road".into() } else { "off-road".into() });
@@ -787,7 +843,7 @@ fn cmd_road_centreline(args: &[String]) {
     }
     let mut s = vec![0.0f32];
     for k in 1..pts.len() { let a = pts[k - 1]; let b = pts[k]; s.push(s[k - 1] + ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()); }
-    let note = flag(args, "--note").unwrap_or_default();
+    let note = format!("{}{}", flag(args, "--note").unwrap_or_default(), spawn_note);
     // optional per-point advisory speed (player, 06:44Z): lateral 25 m/s², leave-ground at 2.5 g of required
     // downward acceleration, 80 m/s ceiling, braking 12 m/s², acceleration 7 m/s², ±16 m curvature window
     let hint = tmplan::speed_hints(&pts, &s, 16.0, 25.0, 9.81 * 2.5, 80.0, 12.0, 7.0);
@@ -825,13 +881,20 @@ fn cmd_road_centreline(args: &[String]) {
             let i0: usize = seg.split("\"i0\": ").nth(1).and_then(|x| x.split(',').next()).and_then(|x| x.trim().parse().ok()).unwrap_or(0);
             let heading = if i1 >= 1 && i1 < pts.len() && i1 > i0 { let a = pts[i1 - 1]; let b = pts[i1]; let l = ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt().max(1e-3); [(b[0] - a[0]) / l, 0.0, (b[2] - a[2]) / l] } else { rep.normal };
             let kind = if li + 1 == seq.len() - 1 { GateKind::Finish } else { match rep.kind { tmroute::gates::WpKind::Finish => GateKind::Finish, tmroute::gates::WpKind::Multilap => GateKind::Multilap, _ => GateKind::Checkpoint } };
-            tg_gates.push(Gate { kind, centre, normal: heading, half_width: half, s: s[i1], map_waypoint: rep.waypoint });
+            // the gate's plane is the ITEM's facing (its trigger disc), signed along the line's travel — the polyline's
+            // arrival heading can be 30° off on a curve into the gate (ENV's crossing test missed 04 wp12/wp3, 12:23Z)
+            let gate_normal = {
+                let n = rep.normal;
+                let horiz = (n[0] * n[0] + n[2] * n[2]).sqrt();
+                if horiz > 0.5 { let s = if n[0] * heading[0] + n[2] * heading[2] >= 0.0 { 1.0 } else { -1.0 }; [s * n[0] / horiz, 0.0, s * n[2] / horiz] } else { heading }
+            };
+            tg_gates.push(Gate { kind, centre, normal: gate_normal, half_width: half, s: s[i1], map_waypoint: rep.waypoint });
             // a gap leg's class from the converter's verdicts (--verdicts TSV: map_stem, from_group, to_group, class, note)
             let from_lab = grp(&nodes, w[0]).trim_matches('"').to_string();
             let verdict = verdicts.iter().find(|v| v.0 == from_lab && v.1 == grp_id.to_string()).cloned();
             let conn = if !gap { ConnectionClass::Road } else { match verdict.as_ref().map(|v| v.2.as_str()) { Some("Jump") => ConnectionClass::Jump, Some("Drop") => ConnectionClass::Drop, Some("Road") => ConnectionClass::Road, _ => ConnectionClass::Unknown } };
             if let Some(v) = &verdict { verdict_notes.push(format!("{}→{} {}{}", v.0, v.1, v.2, if v.3.is_empty() { String::new() } else { format!(" ({})", v.3) })); }
-            legs.push(Leg { gate_idx: li as u32, map_waypoint: rep.waypoint, s_start: s[i0], s_end: s[i1], connection: conn, arrival_speed: [5.0, 80.0], arrival_heading: heading, arrival_heading_tol: 0.5, arrival_height: [centre[1] - rep.half_height - 1.0, centre[1] - rep.half_height + 3.0], p_reach: if gap { 0.0 } else { 1.0 }, expected_ms: -1, evidence: LegEvidence::Predicted });
+            legs.push(Leg { gate_idx: li as u32, map_waypoint: rep.waypoint, s_start: s[i0], s_end: s[i1], connection: conn, arrival_speed: [5.0, 80.0], arrival_heading: gate_normal, arrival_heading_tol: 0.5, arrival_height: [centre[1] - rep.half_height - 1.0, centre[1] - rep.half_height + 3.0], p_reach: if gap { 0.0 } else { 1.0 }, expected_ms: -1, evidence: LegEvidence::Predicted });
             gate_order.push(rep.waypoint);
         }
         let tg = TrackGeom {
@@ -856,4 +919,5 @@ fn cmd_road_centreline(args: &[String]) {
     let flag = if y0 - min50 > 5.0 { format!("  FLAG: first 50 m descend {:.1} m", y0 - min50) } else { String::new() };
     println!("{}: {} pts, {:.0} m, {} segments, {gaps} gaps, on-road {:.1} %{flag} → {out}", gates.map_name, pts.len(), s.last().unwrap(), segs.len(), 100.0 * on_road as f32 / pts.len().max(1) as f32);
     fn grp(n: &Nodes, i: usize) -> String { if i == 0 { "\"spawn\"".into() } else { n.groups[i].to_string() } }
+    fn grp_id_of(n: &Nodes, i: usize) -> String { n.groups[i].to_string() }
 }
