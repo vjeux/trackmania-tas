@@ -27,12 +27,12 @@ for f in $B7/centreline/*.road-centreline.json; do
   fi
   if [ -n "$GH" ]; then
     src="$GH"
-    author_order=$(target/release/tmplan author-line "$src" --anchor $anc --centreline $f --gates $B7/geom/$b.deck.json 2>/dev/null | grep "author order" | sed 's/.*: //')
+    author_order=$(target/release/tmplan author-line "$src" --anchor $anc --centreline $f --gates $B7/geom/$b.deck.json --out $B7/centreline/$b.author-line.json 2>/dev/null | grep "author order" | sed 's/.*: //')
     [ "$(echo "$author_order" | tr ',' '\n' | grep -c .)" -eq "$n_groups" ] || { echo "$b: author order incomplete ($author_order) — planner order kept" >&2; author_order=""; }
   fi
-  main_order=${author_order:-$plan_order}; src_note="order = planner (hybrid)"; [ -n "$author_order" ] && src_note="order = AUTHOR (source ghost first-pass); planner order kept as rank 1"
+  main_order=${author_order:-$plan_order}; src_note="order = planner (hybrid)"; AL=""; [ -n "$author_order" ] && { src_note="order = AUTHOR (source ghost first-pass); planner order kept as rank 1"; AL="--author-line $B7/centreline/$b.author-line.json"; }
   echo -e "$b\t$plan_order\t${author_order:--}\t$([ "$author_order" = "$plan_order" ] && echo same || ([ -z "$author_order" ] && echo n/a || echo DIFFER))" >> $B7/centreline/ORDERS.tsv
-  nice target/release/tmplan road-centreline "$T7/by-stem/$b.Map.Gbx" --gates $B7/geom/$b.deck.json --order $main_order --out $f --route-out $B7/centreline/$b.route-router-road-centreline-0.json --verdicts $V --exclusions $X --leg-lines $LL --map-stem $b $SPAWN --note "$note; $src_note" > $B7/centreline/$b.centreline.txt 2>&1
+  nice target/release/tmplan road-centreline "$T7/by-stem/$b.Map.Gbx" --gates $B7/geom/$b.deck.json --order $main_order --out $f --route-out $B7/centreline/$b.route-router-road-centreline-0.json --verdicts $V --exclusions $X --leg-lines $LL --map-stem $b $SPAWN $AL --note "$note; $src_note" > $B7/centreline/$b.centreline.txt 2>&1
   if [ -n "$author_order" ] && [ "$author_order" != "$plan_order" ]; then
     nice target/release/tmplan road-centreline "$T7/by-stem/$b.Map.Gbx" --gates $B7/geom/$b.deck.json --order $plan_order --out $B7/centreline/$b.road-centreline.planner-order.json --route-out $B7/centreline/$b.route-router-road-centreline-1.json --verdicts $V --exclusions $X --leg-lines $LL --map-stem $b $SPAWN --note "$note; order = planner (hybrid), rank 1" > /dev/null 2>&1
   else rm -f $B7/centreline/$b.road-centreline.planner-order.json $B7/centreline/$b.route-router-road-centreline-1.json; fi

@@ -808,7 +808,11 @@ impl Graph {
                     continue;
                 }
                 // prime road ×1, deck/anchor-voted road ×2 (a Grass platform beside a rally road loses to the road), off-road ×5
-                let nd = d + if self.node_prime[v] { step } else if self.node_road[v] { 3.0 * step } else { 5.0 * step };
+                // steep steps cost more (grade above 35 %: ×(1 + 4·excess)) — a flank rasterised at 42° must not beat the
+                // author's 13° diagonal down the same hill (tiny 19, s ≈ 640, player 17:20Z); a 42° step costs ×3.2
+                let grade = (self.node_y[v] - self.node_y[u]).abs() / step;
+                let steep = 1.0 + 4.0 * (grade - 0.35).max(0.0);
+                let nd = d + steep * if self.node_prime[v] { step } else if self.node_road[v] { 3.0 * step } else { 5.0 * step };
                 if nd < dist[v] {
                     dist[v] = nd;
                     prev[v] = u as u32;

@@ -897,9 +897,66 @@ fn cmd_road_centreline(args: &[String]) {
             }
         }
     }
+    // --author-line author.json: the HUMAN line replaces the polyline wholesale (the coordinator's lap directive, 17:23Z:
+    // "the human line is a better guide than the planner polyline everywhere"). Points resampled at 2 m and smoothed
+    // (5-point), half-width = the road span where the point is on road, else 4 m; the segments are re-cut at each gate's
+    // first pass (finish: last pass) in `seq` order; a leg the human never passes within reach of stays as it was.
+    let mut author_note = String::new();
+    if let Some(ap) = flag(args, "--author-line") {
+        let txt = std::fs::read_to_string(&ap).unwrap_or_else(|e| die(&format!("{ap}: {e}")));
+        let k = "\"pts\": [";
+        let i = txt.find(k).unwrap_or_else(|| die(&format!("{ap}: no pts")));
+        let rest = &txt[i + k.len()..];
+        let end = rest.find("]]").map(|e| e + 1).unwrap_or(rest.len());
+        let flat: Vec<f32> = rest[..end].split(|c: char| c == ',' || c == '[' || c == ']').filter_map(|x| x.trim().parse::<f32>().ok()).collect();
+        let raw: Vec<[f32; 3]> = flat.chunks(3).filter(|c| c.len() == 3).map(|c| [c[0], c[1], c[2]]).collect();
+        if raw.len() >= 10 {
+            let mut line = tmroute::human::resample(&raw, 2.0);
+            let orig = line.clone();
+            for k in 2..orig.len().saturating_sub(2) {
+                let mut acc = [0.0f32; 3];
+                for j in k - 2..=k + 2 { acc[0] += orig[j][0]; acc[1] += orig[j][1]; acc[2] += orig[j][2]; }
+                line[k] = [acc[0] / 5.0, acc[1] / 5.0, acc[2] / 5.0];
+            }
+            // gate passes along the human line → segment cuts
+            let mut cuts: Vec<(usize, usize)> = Vec::new(); // (index in line, seq position)
+            let mut ok = true;
+            for (si, &nd) in seq.iter().enumerate().skip(1) {
+                let grp_id = nodes.groups[nd];
+                let is_fin = gates.gates.iter().any(|x| x.group == grp_id && matches!(x.kind, tmroute::gates::WpKind::Finish));
+                let mut found: Option<usize> = None;
+                for (li, p) in line.iter().enumerate() {
+                    let hit = gates.gates.iter().filter(|x| x.group == grp_id).any(|x| ((x.centre[0] - p[0]).powi(2) + (x.centre[2] - p[2]).powi(2)).sqrt() <= x.half_width + 6.0 && (x.centre[1] - p[1]).abs() <= 10.0);
+                    if hit { found = Some(li); if !is_fin { break; } }
+                }
+                match found { Some(li) => cuts.push((li, si)), None => { ok = false; eprintln!("  author line never passes group {grp_id} — author line NOT used"); break; } }
+            }
+            let monotone = cuts.windows(2).all(|w| w[1].0 > w[0].0);
+            if ok && monotone {
+                pts = line;
+                hw = Vec::with_capacity(pts.len());
+                for k in 0..pts.len() {
+                    let d = if k + 1 < pts.len() { [pts[k + 1][0] - pts[k][0], pts[k + 1][2] - pts[k][2]] } else { [pts[k][0] - pts[k - 1][0], pts[k][2] - pts[k - 1][2]] };
+                    hw.push(surf.road_span(pts[k], d, 24.0).map_or(4.0, |(l, r)| ((l + r) / 2.0).max(3.0)));
+                }
+                segs.clear();
+                gaps = 0;
+                let mut i0 = 0usize;
+                for (li, si) in &cuts {
+                    let from = if *si == 1 { "\"spawn\"".to_string() } else { nodes.groups[seq[*si - 1]].to_string() };
+                    segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {li}, \"gap\": false, \"via\": \"author\"}}", from, nodes.groups[seq[*si]]));
+                    i0 = *li;
+                }
+                author_note = format!("; POLYLINE = the human line ({ap}), {} pts, gates cut at the human's passes", pts.len());
+                eprintln!("  author line used as the centreline: {} pts, {} legs", pts.len(), cuts.len());
+            } else if ok {
+                eprintln!("  author line passes the gates out of the given order — author line NOT used");
+            }
+        }
+    }
     let mut s = vec![0.0f32];
     for k in 1..pts.len() { let a = pts[k - 1]; let b = pts[k]; s.push(s[k - 1] + ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()); }
-    let note = format!("{}{}", flag(args, "--note").unwrap_or_default(), spawn_note);
+    let note = format!("{}{}{}", flag(args, "--note").unwrap_or_default(), spawn_note, author_note);
     // optional per-point advisory speed (player, 06:44Z): lateral 25 m/s², leave-ground at 2.5 g of required
     // downward acceleration, 80 m/s ceiling, braking 12 m/s², acceleration 7 m/s², ±16 m curvature window
     let hint = tmplan::speed_hints(&pts, &s, 16.0, 25.0, 9.81 * 2.5, 80.0, 12.0, 7.0);
