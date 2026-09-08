@@ -79,7 +79,13 @@ fn plugin_up() -> bool {
 // ---------------------------------------------------------------------------
 
 fn http_get(route: &str, timeout_s: u64) -> Result<String, String> {
-    let mut s = TcpStream::connect(plugin_addr().as_str()).map_err(|e| format!("connect: {e}"))?;
+    // connect WITH a timeout: a WSL connect to a Windows port nobody listens
+    // on is dropped, not refused, and a plain `connect` then sits in the
+    // kernel's SYN retries for ~2 minutes — which is how a dead game kept a
+    // loadloop (and its render lock) busy long after the process was gone
+    // (2026-09-08). Three seconds is generous for a loopback-class hop.
+    let sa: SocketAddr = plugin_addr().parse().map_err(|e| format!("plugin address: {e}"))?;
+    let mut s = TcpStream::connect_timeout(&sa, Duration::from_secs(timeout_s.clamp(1, 3))).map_err(|e| format!("connect: {e}"))?;
     s.set_read_timeout(Some(Duration::from_secs(timeout_s))).ok();
     s.set_write_timeout(Some(Duration::from_secs(timeout_s))).ok();
     let req = format!("GET {route} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
