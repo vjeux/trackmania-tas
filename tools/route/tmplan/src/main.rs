@@ -786,13 +786,17 @@ fn cmd_road_centreline(args: &[String]) {
     let mut s = vec![0.0f32];
     for k in 1..pts.len() { let a = pts[k - 1]; let b = pts[k]; s.push(s[k - 1] + ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()); }
     let note = flag(args, "--note").unwrap_or_default();
+    // optional per-point advisory speed (player, 06:44Z): lateral 25 m/s², leave-ground at 2.5 g of required
+    // downward acceleration, 80 m/s ceiling, braking 12 m/s², acceleration 7 m/s², ±16 m curvature window
+    let hint = tmplan::speed_hints(&pts, &s, 16.0, 25.0, 9.81 * 2.5, 80.0, 12.0, 7.0);
     let js = format!(
-        "{{\n  \"map_uid\": \"{}\",\n  \"map_name\": \"{}\",\n  \"order_groups\": [{}],\n  \"pts\": [{}],\n  \"s\": [{}],\n  \"half_width\": [{}],\n  \"segments\": [{}],\n  \"gaps\": {gaps},\n  \"produced_by\": \"{}{}\"\n}}\n",
+        "{{\n  \"map_uid\": \"{}\",\n  \"map_name\": \"{}\",\n  \"order_groups\": [{}],\n  \"pts\": [{}],\n  \"s\": [{}],\n  \"half_width\": [{}],\n  \"speed_hint\": [{}],\n  \"speed_hint_note\": \"m/s, advisory: min of lateral-grip (25 m/s²) curvature limit, leave-ground limit on crests/dip exits (2.5 g of required downward acceleration), 80 m/s ceiling; braking 12 m/s² and acceleration 7 m/s² propagated along s; ±16 m curvature window; standing start\",\n  \"segments\": [{}],\n  \"gaps\": {gaps},\n  \"produced_by\": \"{}{}\"\n}}\n",
         gates.map_uid, gates.map_name,
         order.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(","),
         pts.iter().map(|p| format!("[{:.2},{:.2},{:.2}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(","),
         s.iter().map(|v| format!("{v:.1}")).collect::<Vec<_>>().join(","),
         hw.iter().map(|v| format!("{v:.1}")).collect::<Vec<_>>().join(","),
+        hint.iter().map(|v| format!("{v:.1}")).collect::<Vec<_>>().join(","),
         segs.join(", "),
         tmroute::provenance("tmplan road-centreline"), if note.is_empty() { String::new() } else { format!("; {note}") }
     );
