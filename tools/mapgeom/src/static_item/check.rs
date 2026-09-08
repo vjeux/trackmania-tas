@@ -31,6 +31,44 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
             }
         };
         let mut problems: Vec<String> = Vec::new();
+        // The item's waypoint type and trigger shape: what a checkpoint /
+        // finish fires on, or a gameplay gate's effect volume (the id table
+        // carries physics | gameplay << 8; a special gate's gameplay is the
+        // effect — 18 ReactorBoost_Oriented, 4 FreeWheeling, 8 Reset, 1 Turbo).
+        if facts {
+            let wt = f.item.chunks.iter().find_map(|c| match c {
+                super::item::ItemChunk::Waypoint { waypoint_type, .. } => Some(*waypoint_type),
+                _ => None,
+            });
+            let trig = f.item.model().and_then(|mc| mc.entity_model()).and_then(|e| match e.trigger_shape.inline.as_deref() {
+                Some(super::Node::Surface(s)) => Some(s),
+                _ => None,
+            });
+            match trig {
+                Some(sf) => {
+                    let ids: Vec<String> = sf.material_ids.iter().map(|x| format!("{x} (phys {} gp {})", x & 0xff, x >> 8)).collect();
+                    match &sf.surf {
+                        super::surface::Surf::Mesh { vertices, triangles, .. } => {
+                            let mut lo = [f32::MAX; 3];
+                            let mut hi = [f32::MIN; 3];
+                            for v in vertices {
+                                for k in 0..3 {
+                                    lo[k] = lo[k].min(v[k]);
+                                    hi[k] = hi[k].max(v[k]);
+                                }
+                            }
+                            let mut bytes: std::collections::BTreeMap<(u8, u8), usize> = Default::default();
+                            for t in triangles {
+                                *bytes.entry((t.material_id, t.u03)).or_default() += 1;
+                            }
+                            println!("{path}: waypoint type {:?} trigger {} vertices {} triangles bounds [{:.2}, {:.2}, {:.2}]..[{:.2}, {:.2}, {:.2}] ids [{}] tri (phys, gp) {:?} main dir {:?} materials {}", wt, vertices.len(), triangles.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], ids.join(", "), bytes, sf.gameplay_main_dir, sf.materials.len());
+                        }
+                        other => println!("{path}: waypoint type {:?} trigger surf type {} ids [{}]", wt, other.type_id(), ids.join(", ")),
+                    }
+                }
+                None => println!("{path}: waypoint type {:?} no trigger shape", wt),
+            }
+        }
         // The solids to check: a static item's one, or every entity of a
         // moving item's prefab (each dyna part's mesh, the static part's).
         let mut parts: Vec<(String, &super::solid2::CPlugSolid2Model, Option<&super::surface::CPlugSurface>)> = Vec::new();

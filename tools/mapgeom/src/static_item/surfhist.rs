@@ -289,3 +289,64 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
     }
     Ok(())
 }
+
+/// `mapgeom surf <pack .Shape.Gbx | local file>`: one CPlugSurface as
+/// parsed — version, surf kind, gameplay main direction, the material list,
+/// `u05`, the u16 id table, and for a mesh its bounds and the (physics,
+/// gameplay, index) triangle histogram. The trigger slabs of the gate
+/// prefabs are surfaces of their own file; this reads them without a bake.
+pub fn surf(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), String> {
+    let paths: Vec<&String> = rest.iter().skip(1).collect();
+    if paths.is_empty() {
+        return Err("surf <pack .Shape.Gbx | local file>...".into());
+    }
+    let mut store: Option<DataStore> = None;
+    for path in paths {
+        let (body, externals): (Vec<u8>, Vec<(u32, String)>) = if std::path::Path::new(path).is_file() {
+            let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+            let m = crate::store::Model::parse(&data, path).map_err(|e| format!("{path}: {e}"))?;
+            (m.body, m.externals)
+        } else {
+            let st = store.get_or_insert_with(|| open());
+            let m = st.load_model(path)?;
+            (m.body, m.externals)
+        };
+        let mut lb = super::LookbackState::default();
+        lb.defined_nodes.extend(externals.iter().map(|(i, _)| *i));
+        let mut r = super::Rd::new(&body, 0, lb);
+        let sf = CPlugSurface::parse(&mut r).map_err(|e| format!("{path}: {e}"))?;
+        println!("{path}: CPlugSurface v{} surf v{} main dir {:?} u05 {:?}", sf.version, sf.surf_version, sf.gameplay_main_dir, sf.u05);
+        for (i, m) in sf.materials.iter().enumerate() {
+            match m {
+                SurfMaterial::Node(r) => {
+                    let ext = externals.iter().find(|(k, _)| *k as i32 == r.index).map(|(_, p)| p.as_str()).unwrap_or("");
+                    println!("  material {i}: node {} {}{}", r.index, if r.inline.is_some() { "(inline) " } else { "" }, ext);
+                }
+                SurfMaterial::Id(x) => println!("  material {i}: id {x}"),
+            }
+        }
+        println!("  id table ({}): {}", sf.material_ids.len(), sf.material_ids.iter().map(|x| format!("{x} (phys {} gp {})", x & 0xff, x >> 8)).collect::<Vec<_>>().join(", "));
+        match &sf.surf {
+            super::surface::Surf::Mesh { version, vertices, triangles } => {
+                let mut lo = [f32::MAX; 3];
+                let mut hi = [f32::MIN; 3];
+                for v in vertices {
+                    for k in 0..3 {
+                        lo[k] = lo[k].min(v[k]);
+                        hi[k] = hi[k].max(v[k]);
+                    }
+                }
+                println!("  mesh v{version}: {} vertices, {} triangles, bounds {:?}..{:?}", vertices.len(), triangles.len(), lo, hi);
+                let mut h: BTreeMap<(u8, u8, i16), usize> = BTreeMap::new();
+                for t in triangles {
+                    *h.entry((t.material_id, t.u03, t.surface_index)).or_default() += 1;
+                }
+                for ((p, g, i), n) in h {
+                    println!("    physics {p} ({}) gameplay {g} index {i}: {n} triangles", crate::scene::physics_name(p));
+                }
+            }
+            other => println!("  {other:?}"),
+        }
+    }
+    Ok(())
+}

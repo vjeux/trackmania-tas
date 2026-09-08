@@ -637,6 +637,13 @@ fn main() {
             let mut open_store = || open(&a);
             mapgeom::static_item::surfhist::run(&a.rest, &mut open_store).unwrap_or_else(die);
         }
+        // surf <pack .Shape.Gbx | local file>...: one CPlugSurface as parsed —
+        // materials, id table, main direction, triangle (physics, gameplay)
+        // histogram (the gate trigger slabs, 2026-09-08).
+        "surf" => {
+            let mut open_store = || open(&a);
+            mapgeom::static_item::surfhist::surf(&a.rest, &mut open_store).unwrap_or_else(die);
+        }
         // item-fields <pack .Item.Gbx | file>: every chunk of a CGameItemModel
         // as the item writer's classes read it, one line each (node contents
         // elided) — what a pack item declares that ours does not (the
@@ -825,6 +832,64 @@ fn main() {
                     println!("stuck: {msg}; {} folds found so far:", folds.len());
                     show(&folds);
                     std::process::exit(2);
+                }
+            }
+        }
+        // crystal-layers <Item.Gbx>: a mesh-editor (crystal) item's layers —
+        // kind, faces, bounds, and per material the face count with the
+        // material's link / physics / gameplay ids. What the game's own item
+        // editor writes for a gameplay gate (Nadeo.zip GateSpecialNoEngine: a
+        // Trigger layer in `Modifier\NoEngine\Collision`, physics 0 gameplay 4)
+        // — the reference for the static form's trigger (2026-09-08).
+        "crystal-layers" => {
+            for path in a.rest.iter().skip(1) {
+                let bytes = std::fs::read(path).unwrap_or_else(|e| die(format!("{path}: {e}")));
+                let it = mapgeom::crystal::ItemCrystal::open(&bytes).unwrap_or_else(|e| die(format!("{path}: {e}")));
+                println!("{path}: {} materials, {} layers", it.model.materials.len(), it.model.layers.len());
+                for (i, m) in it.model.materials.iter().enumerate() {
+                    match m.inst().and_then(|x| x.main.as_ref()) {
+                        Some(main) => println!("  material {i}: {:?} physics {} gameplay {} (v{}{})", main.link, main.surface_physic_id, main.surface_gameplay_id, main.version, if main.is_using_game_material { ", game material" } else { "" }),
+                        None => println!("  material {i}: {} (no inline user inst)", m.name),
+                    }
+                }
+                for (li, l) in it.model.layers.iter().enumerate() {
+                    match l.kind.crystal() {
+                        Some(c) => {
+                            let mut lo = [f32::MAX; 3];
+                            let mut hi = [f32::MIN; 3];
+                            for p in &c.positions {
+                                for k in 0..3 {
+                                    lo[k] = lo[k].min(p[k]);
+                                    hi[k] = hi[k].max(p[k]);
+                                }
+                            }
+                            let mut h: std::collections::BTreeMap<i32, usize> = Default::default();
+                            for f in &c.faces {
+                                *h.entry(f.material).or_default() += 1;
+                            }
+                            println!("  layer {li} {}: {} positions, {} faces, bounds [{:.2}, {:.2}, {:.2}]..[{:.2}, {:.2}, {:.2}], faces per material {:?}", l.kind.name(), c.positions.len(), c.faces.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], h);
+                        }
+                        None => println!("  layer {li} {}", l.kind.name()),
+                    }
+                }
+            }
+        }
+        // prefab-ents <pack .Prefab.Gbx>: every entity of a prefab — model
+        // class (or external file), position, rotation, params chunk id and
+        // size — the layout an item in prefab form has to reproduce.
+        "prefab-ents" => {
+            let mut store = open(&a);
+            for path in a.rest.iter().skip(1) {
+                let model = store.load_model(path).unwrap_or_else(die);
+                let prefab = mapgeom::static_item::prefab::CPlugPrefab::from_model(&model).unwrap_or_else(die);
+                println!("{path}: prefab v{} {} entities", prefab.version, prefab.ents.len());
+                for (i, e) in prefab.ents.iter().enumerate() {
+                    let what = match e.model.inline.as_deref() {
+                        Some(n) => format!("inline class 0x{:08X}", n.class_id()),
+                        None if e.model.index < 0 => "null".to_string(),
+                        None => model.externals.iter().find(|(k, _)| *k as i32 == e.model.index).map(|(_, p)| format!("external {p}")).unwrap_or_else(|| format!("node {}", e.model.index)),
+                    };
+                    println!("  entity {i}: {what} pos {:?} rot {:?} params_id {} ({} bytes) u01 {} bytes", e.pos, e.rot, e.params_id, e.params.len(), e.u01.len());
                 }
             }
         }
