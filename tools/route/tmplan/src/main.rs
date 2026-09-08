@@ -990,7 +990,7 @@ fn cmd_road_centreline(args: &[String]) {
 /// against our polyline: lateral offset per sample (nearest polyline point, XZ), summary and worst stretch. The
 /// route-sanity oracle the coordinator asked for (16:06Z); the author line itself is written as points for the player.
 fn cmd_author_line(args: &[String]) {
-    let src = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("SRC.Map.Gbx required"));
+    let src = args.iter().find(|a| a.ends_with(".Map.Gbx") || a.ends_with(".Ghost.Gbx") || a.ends_with(".Replay.Gbx")).cloned().unwrap_or_else(|| die("SRC.Map.Gbx / Ghost.Gbx required"));
     let anchor = flag(args, "--anchor").unwrap_or_else(|| die("--anchor sx,sy,sz:tx,ty,tz"));
     let (sa, ta) = {
         let mut it = anchor.split(':');
@@ -1012,7 +1012,8 @@ fn cmd_author_line(args: &[String]) {
     let pts: Vec<[f32; 3]> = flat.chunks(3).filter(|c| c.len() == 3).map(|c| [c[0], c[1], c[2]]).collect();
     let s = grab("s");
     let hw = grab("half_width");
-    let d = gbx::record::decode_ghost(&src).unwrap_or_else(|e| die(&format!("{src}: no validation ghost ({e})")));
+    // every vehicle entity merged (a car-switch or multi-entity ghost keeps only a stretch per entity)
+    let d = gbx::record::decode_ghost_all_vehicles(&src).unwrap_or_else(|e| die(&format!("{src}: no ghost ({e})")));
     let mut rows: Vec<(f32, f32, f32, [f32; 3], i32)> = Vec::new(); // (s_nearest, lateral, dy, tiny pos, t)
     let mut author: Vec<[f32; 3]> = Vec::new();
     let mut last_t = i32::MIN;
