@@ -559,7 +559,10 @@ fn cmd_deck_gates(args: &[String]) {
         // where the engine credits it, in THIS frame (deck centroid): measured on tiny 02/06 crossings (INPUT arm)
         let mb = g.model.as_bytes();
         if mb.len() > 2 && mb[0] == b'A' && mb[2].is_ascii_digit() {
-            g.credit_offset_m = match (mb[1], g.kind) { (b'C', tmroute::gates::WpKind::Checkpoint) => -9.5, (b'C', tmroute::gates::WpKind::Finish) => -7.6, (b'I', _) => -2.07, _ => g.credit_offset_m };
+            // MEASURED on ship8 (real disc triggers; INPUT arm crossings 2026-09-08 12:18Z, 39 gates on 7 maps), deck frame:
+            // AC checkpoints −2.1 (n 26, sd 0.36; one slope checkpoint at −3.8), AC finishes −6.5 (n 6, sd 0.27), AI gate
+            // items −2.1 (n 7, sd 0.19). The pre-3f5da2a fit (−9.5 / −7.6 / −2.07) measured whole-block triggers.
+            g.credit_offset_m = match (mb[1], g.kind) { (b'C', tmroute::gates::WpKind::Checkpoint) => -2.1, (b'C', tmroute::gates::WpKind::Finish) => -6.5, (b'I', _) => -2.1, _ => g.credit_offset_m };
         }
         moved += 1;
         lines.push(format!("  wp {:>2} {}: anchor ({:.1}, {:.1}, {:.1}) → deck centre ({:.1}, {:.1}, {:.1}) top {:.1} (hull {} tris, deck area {:.0} m²)", g.waypoint, g.model, old[0], old[1] - g.half_height, old[2], c[0], c[1], c[2], top, (0..scene.tris.len()).filter(|&i| scene.tris[i].tag as usize == k).count(), d.0));
