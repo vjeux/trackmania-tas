@@ -1146,8 +1146,10 @@ fn cmd_author_line(args: &[String]) {
 /// below the car and B has none within 3 m = a surface the author drove that B no longer has (ship10 dropped the
 /// tiny-15 pool shelf, 22:43Z). Prints the runs of such samples with their extent.
 fn cmd_author_ground(args: &[String]) {
+    // optional third map = the SOURCE (full size) with --anchor sx,sy,sz:tx,ty,tz and --source-gates gates.json: a stretch
+    // with no surface under the raw ghost sample in the original either is a FLIGHT, not a converter loss (04's apex, 23:02Z)
     let maps: Vec<String> = args.iter().filter(|a| a.ends_with(".Map.Gbx")).cloned().collect();
-    if maps.len() != 2 { die("two maps: A.Map.Gbx B.Map.Gbx"); }
+    if maps.len() < 2 || maps.len() > 3 { die("two maps: A.Map.Gbx B.Map.Gbx [SOURCE.Map.Gbx --anchor sx,sy,sz:tx,ty,tz --source-gates gates.json]"); }
     let gp = flag(args, "--gates").unwrap_or_else(|| die("--gates deck.json"));
     let gates = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
     let ap = flag(args, "--author-line").unwrap_or_else(|| die("--author-line author.json"));
@@ -1181,6 +1183,30 @@ fn cmd_author_ground(args: &[String]) {
     };
     let ga = ground(&maps[0], &mut store);
     let gb = ground(&maps[1], &mut store);
+    // the original: sample back to source coordinates, rays on the source scene (baked terrain on)
+    let gs: Option<Vec<Option<(f32, &'static str)>>> = if maps.len() == 3 {
+        let anchor = flag(args, "--anchor").unwrap_or_else(|| die("--anchor sx,sy,sz:tx,ty,tz with a source map"));
+        let mut it = anchor.split(':');
+        let pa = |s: &str| -> [f32; 3] { let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() != 3 { die("--anchor sx,sy,sz:tx,ty,tz") } [v[0], v[1], v[2]] };
+        let (sa, ta) = (pa(it.next().unwrap_or("")), pa(it.next().unwrap_or("")));
+        let scale: f32 = flag(args, "--scale").and_then(|s| s.parse().ok()).unwrap_or(0.5);
+        let sg = flag(args, "--source-gates").map(|p| io::read_gates(Path::new(&p)).unwrap_or_else(|e| die(&e)));
+        let yoff = sg.as_ref().map(|g| g.yoff).unwrap_or(gates.yoff);
+        let m = tmmaps::map::MapFile::load(Path::new(&maps[2]));
+        let s = mapgeom::local::LocalScene::build(&mut store, &m, yoff, &mapgeom::local::BuildOpts::default());
+        Some(pts.iter().map(|p| {
+            let q = [sa[0] + (p[0] - ta[0]) / scale, sa[1] + (p[1] - ta[1]) / scale, sa[2] + (p[2] - ta[2]) / scale];
+            let mut o = [q[0], q[1] + 0.6, q[2]];
+            for _ in 0..4 {
+                match s.raycast(o, [0.0, -1.0, 0.0], 18.0 - (q[1] + 0.6 - o[1]), true) {
+                    Some(h) if matches!(h.material_name, "Water" | "Sea" | "Lake" | "WaterSurface") => { o = [h.point[0], h.point[1] - 0.05, h.point[2]]; }
+                    Some(h) => return Some(((q[1] - h.point[1]) * scale, h.material_name)),
+                    None => return None,
+                }
+            }
+            None
+        }).collect())
+    } else { None };
     let mut run_start: Option<usize> = None;
     let mut n_bad = 0usize;
     let mut flush = |a: usize, b: usize| {
@@ -1189,10 +1215,16 @@ fn cmd_author_ground(args: &[String]) {
             b - a + 1, a as f32 / 10.0, b as f32 / 10.0, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
             ga[a].map(|g| g.1).unwrap_or("-"), ga[a].map(|g| -g.0).unwrap_or(0.0),
             gb[a].map(|g| format!("{} at {:+.1} m", g.1, -g.0)).unwrap_or_else(|| "nothing within 8 m".into()));
+        if let Some(g) = &gs { println!("      original under the source sample: {}", g[a].map(|g| format!("{} at {:+.1} m (tiny scale)", g.1, -g.0)).unwrap_or_else(|| "nothing within 18 m — a flight OR a generated filler the source scene does not build (converter plumb decides)".into())); }
     };
     for i in 0..pts.len() {
         let a_ok = ga[i].map(|g| g.0 >= -0.3 && g.0 <= 1.5).unwrap_or(false);
         let b_bad = gb[i].map(|g| g.0 > 3.0).unwrap_or(true);
+        // with a source map: only a stretch the ORIGINAL supports counts (no surface under the source sample = flight)
+        let src_ok = gs.as_ref().map(|g| g[i].map(|g| g.0 >= -0.6 && g.0 <= 1.5).unwrap_or(false)).unwrap_or(true);
+        // the source filter is ADVISORY: the full-size LocalScene has no generated fillers (the original's water-road floor
+        // under 05 reads as "no surface" although the converter's plumb finds it), so a "flight" verdict is printed, not applied
+        let _ = src_ok;
         if a_ok && b_bad { n_bad += 1; if run_start.is_none() { run_start = Some(i); } }
         else if let Some(rs) = run_start.take() { if i - rs >= 2 { flush(rs, i - 1); } }
     }
