@@ -22,6 +22,7 @@
 //!        [--veget bake|substitute|keep|drop] [--collection BlueBay] [--only NAME[,NAME]]
 //! Needs the client packs (`--pak FILE:KEY` for BlueBay.pak and the Stadium pak).
 
+use crate::static_item::build::{Redress, RedressKey};
 use crate::static_item::surface::{CPlugSurface, Triangle};
 use crate::store::DataStore;
 use std::collections::BTreeMap;
@@ -604,8 +605,7 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     let mut m = crate::static_item::build::Merged::default();
     m.keep_water = crate::static_item::build::keep_water_for(collection);
     m.modifier = modifier_links(store, &plan.effective_mods);
-    m.collision_redress = modifier_collision_redress(store, &plan.effective_mods);
-    m.collision_redress_by_name = modifier_folder_redress(store, &m.modifier);
+    m.collision_redress = modifier_redress(store, &plan.effective_mods, &m.modifier);
     // (The DecoPlatform blocks — Slope2Start, SlopeBase, … — keep their
     // `Deco` material: it IS what the game draws, the grass-topped
     // decorative platform, phys 2. 70d461c re-dressed them as grey
@@ -1614,8 +1614,8 @@ pub fn terrain_modifier_base(r: &str) -> Option<&str> {
 /// the gate ITEMS were already re-dressed through their prefab trigger entity
 /// (`special_collision_ids`). The modifier file is loaded under the pack's
 /// own spelling: the ref as given, else with Nadeo's space put back.
-pub fn modifier_collision_redress(store: &mut DataStore, refs: &[String]) -> Vec<(String, String, (u8, u8))> {
-    let mut out: Vec<(String, String, (u8, u8))> = Vec::new();
+pub fn modifier_collision_redress(store: &mut DataStore, refs: &[String]) -> Vec<Redress> {
+    let mut out: Vec<Redress> = Vec::new();
     for r in refs {
         let Some(base) = terrain_modifier_base(r) else { continue };
         let folder = format!("{base}\\");
@@ -1631,9 +1631,9 @@ pub fn modifier_collision_redress(store: &mut DataStore, refs: &[String]) -> Vec
             }
             let link = format!("{folder}{}", f.name);
             let Some(ids) = crate::static_item::build::material_surface_ids(store, &format!("{link}.Material.Gbx")) else { continue };
-            let default = f.file.to_ascii_lowercase();
-            if !out.iter().any(|(d, _, _)| *d == default) {
-                out.push((default, link, ids));
+            let default = RedressKey::Path(f.file.to_ascii_lowercase());
+            if !out.iter().any(|r| r.matches == default) {
+                out.push(Redress { matches: default, link, ids });
             }
         }
     }
@@ -1641,23 +1641,32 @@ pub fn modifier_collision_redress(store: &mut DataStore, refs: &[String]) -> Vec
 }
 
 /// The re-dress a modifier FOLDER implies for the hull, by material file name
-/// (see `Merged::collision_redress_by_name`): for every material link the
-/// folder provides — `…\Modifier\X\S` — the row (`s.material.gbx`, the link,
-/// that material's (physics, gameplay)). Materials without a surface chunk
-/// (decals, pure shaders) contribute nothing, so a triangle they would have
-/// matched keeps the prefab's own id.
-pub fn modifier_folder_redress(store: &mut DataStore, links: &[String]) -> Vec<(String, String, (u8, u8))> {
-    let mut out: Vec<(String, String, (u8, u8))> = Vec::new();
+/// (`RedressKey::File`): for every material link the folder provides —
+/// `…\Modifier\X\S` — the row (`s.material.gbx`, the link, that material's
+/// (physics, gameplay)). Materials without a surface chunk (decals, pure
+/// shaders) contribute nothing, so a triangle they would have matched keeps
+/// the prefab's own id.
+pub fn modifier_folder_redress(store: &mut DataStore, links: &[String]) -> Vec<Redress> {
+    let mut out: Vec<Redress> = Vec::new();
     for link in links {
-        let file = format!("{}.material.gbx", link.rsplit('\\').next().unwrap_or(link).to_ascii_lowercase());
-        if out.iter().any(|(f, _, _)| *f == file) {
+        let file = RedressKey::File(format!("{}.material.gbx", link.rsplit('\\').next().unwrap_or(link).to_ascii_lowercase()));
+        if out.iter().any(|r| r.matches == file) {
             continue;
         }
         if let Some(ids) = crate::static_item::build::material_surface_ids(store, &format!("{link}.Material.Gbx")) {
-            out.push((file, link.clone(), ids));
+            out.push(Redress { matches: file, link: link.clone(), ids });
         }
     }
     out
+}
+
+/// The whole re-dress table of a block's modifiers: the GameSkin slot-table
+/// rows first, then the folder shadows of every material link the folders
+/// provide (the first matching row wins in `Merged::redress_collision`).
+pub fn modifier_redress(store: &mut DataStore, refs: &[String], links: &[String]) -> Vec<Redress> {
+    let mut rows = modifier_collision_redress(store, refs);
+    rows.extend(modifier_folder_redress(store, links));
+    rows
 }
 
 /// The material links a block's modifier folder provides: for each

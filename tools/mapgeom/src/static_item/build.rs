@@ -320,26 +320,16 @@ pub struct Merged {
     /// folder is taken from there (PlatformDirt: the dirt-brown
     /// PlatformTech/TrackWall/Deco…; the gate specials likewise). Full links.
     pub modifier: Vec<String>,
-    /// The modifier's re-dress of the prefab's COLLISION materials, from its
-    /// GameSkin slot table (`tiny_library::modifier_collision_redress`): rows
-    /// of (default material path, lower-cased; replacement link; (physics,
-    /// gameplay)). A hull triangle whose surface material is a listed default
-    /// takes the replacement's ids — the deck of a Boost/Reset/NoEngine
-    /// platform special is authored as `CollisionTurbo*` (gameplay 1) and
-    /// drove as a Turbo until this (Summer 24 cp10, 2026-09-08).
-    pub collision_redress: Vec<(String, String, (u8, u8))>,
-    /// The modifier's re-dress BY MATERIAL NAME — the mechanism the platform
-    /// surface modifiers use (PlatformDirt / Grass / Ice / Snow / Plastic…).
-    /// Those modifiers carry no GameSkin: their folder simply SHADOWS the base
-    /// materials by file name (`Modifier\PlatformIce\PlatformTech.Material.Gbx`
-    /// stands in for `Material\PlatformTech.Material.Gbx`), and the physics id
-    /// rides on the material. A hull triangle whose surface material has a
-    /// shadow in the folder takes the shadow's ids. Rows of (material file
-    /// name, lower-cased, e.g. `platformtech.material.gbx`; the shadow link;
-    /// (physics, gameplay)). Until this, every modified platform baked with the
-    /// prefab's Asphalt (16): vjeux, tiny 18, 2026-09-08 — "the texture is ice
-    /// but the driving is also not ice".
-    pub collision_redress_by_name: Vec<(String, String, (u8, u8))>,
+    /// The modifier's re-dress of the prefab's COLLISION materials: the rows
+    /// of the block's modifier, GameSkin slot table first, folder shadows
+    /// after (`tiny_library::modifier_redress`). A hull triangle whose
+    /// surface material matches a row takes the row's (physics, gameplay) —
+    /// the deck of a Boost/Reset/NoEngine platform special is authored as
+    /// `CollisionTurbo*` (gameplay 1) and drove as a Turbo until the slot-table
+    /// rows (Summer 24 cp10, 2026-09-08); every modified platform baked with
+    /// the prefab's Asphalt (16) until the shadow rows (vjeux, tiny 18,
+    /// 2026-09-08 — "the texture is ice but the driving is also not ice").
+    pub collision_redress: Vec<Redress>,
     /// An ITEM modifier names its materials with a suffix: the obstacle items
     /// (Summer 15's pushers and rotors) reference
     /// `Stadium\Media\Modifier\ItemObstacleLevel1.Gbx`, whose materials live
@@ -716,33 +706,22 @@ impl Merged {
 
     /// The block modifier's re-dress of a hull (`collision_redress`): every
     /// triangle whose surface material — `sf.materials[t.surface_index]`, an
-    /// external `.Material.Gbx` resolved through `resolve` — is one of the
-    /// modifier GameSkin's Collision* defaults takes the replacement's
-    /// (physics, gameplay); the prefab's `Effects\Media\Material\CollisionTurbo`
-    /// deck (Concrete, Turbo 1) under a Reset modifier becomes
-    /// `Modifier\Reset\Collision` (Concrete, Reset 8), `CollisionTurboGreen`
-    /// under Boost becomes `Modifier\Boost\CollisionGrass` (Green, ReactorBoost
-    /// 12) — what the game does to the block. None when no triangle matched.
+    /// external `.Material.Gbx` resolved through `resolve` — matches a row
+    /// takes the row's (physics, gameplay); the prefab's
+    /// `Effects\Media\Material\CollisionTurbo` deck (Concrete, Turbo 1) under
+    /// a Reset modifier becomes `Modifier\Reset\Collision` (Concrete, Reset 8),
+    /// `CollisionTurboGreen` under Boost becomes `Modifier\Boost\CollisionGrass`
+    /// (Green, ReactorBoost 12) — what the game does to the block. The first
+    /// matching row wins (slot-table rows come before folder shadows). None
+    /// when no triangle matched.
     fn redress_collision(&mut self, sf: &CPlugSurface, triangles: &[Triangle], resolve: &mut MaterialResolver) -> Option<Vec<Triangle>> {
-        if self.collision_redress.is_empty() && self.collision_redress_by_name.is_empty() {
+        if self.collision_redress.is_empty() {
             return None;
         }
         let mut by_index: Vec<Option<(String, String, (u8, u8))>> = Vec::new();
         for sm in &sf.materials {
             let hit = match sm {
-                super::surface::SurfMaterial::Node(nr) if nr.inline.is_none() && nr.index >= 0 => resolve(nr.index).and_then(|(path, _, _)| {
-                    let low = path.to_ascii_lowercase();
-                    // the GameSkin slot table first (full default path), then
-                    // the folder shadow by file name
-                    self.collision_redress
-                        .iter()
-                        .find(|(d, _, _)| *d == low)
-                        .or_else(|| {
-                            let file = low.rsplit('\\').next().unwrap_or(&low).to_string();
-                            self.collision_redress_by_name.iter().find(|(d, _, _)| *d == file)
-                        })
-                        .map(|(_, link, ids)| (path.clone(), link.clone(), *ids))
-                }),
+                super::surface::SurfMaterial::Node(nr) if nr.inline.is_none() && nr.index >= 0 => resolve(nr.index).and_then(|(path, _, _)| self.collision_redress.iter().find(|r| r.matches_path(&path)).map(|r| (path.clone(), r.link.clone(), r.ids))),
                 _ => None,
             };
             by_index.push(hit);
@@ -770,6 +749,42 @@ impl Merged {
             }
         }
         Some(out)
+    }
+}
+
+/// One row of a modifier's hull re-dress: the prefab material it replaces,
+/// the replacement link and that material's (physics, gameplay).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Redress {
+    pub matches: RedressKey,
+    pub link: String,
+    pub ids: (u8, u8),
+}
+
+/// How a re-dress row names the material it replaces.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RedressKey {
+    /// The modifier GameSkin's slot table: the full default material path,
+    /// lower-cased (`effects\media\material\collisionturbo.material.gbx`).
+    Path(String),
+    /// A folder shadow — the mechanism the platform surface modifiers use
+    /// (PlatformDirt / Grass / Ice / Snow / Plastic…): no GameSkin, the folder
+    /// simply carries a file of the same name as the base material
+    /// (`Modifier\PlatformIce\PlatformTech.Material.Gbx` stands in for
+    /// `Material\PlatformTech.Material.Gbx`), so the row names the material
+    /// FILE, lower-cased (`platformtech.material.gbx`).
+    File(String),
+}
+
+impl Redress {
+    /// Whether the row replaces the material at `path` (a prefab's external
+    /// `.Material.Gbx`).
+    pub fn matches_path(&self, path: &str) -> bool {
+        let low = path.to_ascii_lowercase();
+        match &self.matches {
+            RedressKey::Path(p) => *p == low,
+            RedressKey::File(f) => low.rsplit('\\').next().unwrap_or(&low) == f,
+        }
     }
 }
 
