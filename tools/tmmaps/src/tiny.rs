@@ -886,8 +886,12 @@ pub fn cmd(args: &[String]) {
     //     2026-09-07 form, one stock flag per kind under the spawn — drives
     //     nothing beyond ~100 m, so a published map's flags are garbage;
     //   `0`: none.
+    // Only a TWEEN cloth (TINY_FLAG_TWEEN=1) needs a driver: the default flags
+    // are the stock Flag8m (Flag16m placements) and a still ItemFlagNoAnim
+    // cloth (Flag8m placements), neither of which animates.
     let driver = std::env::var("TINY_FLAG_DRIVER").unwrap_or_else(|_| "anchor".into());
-    if driver != "0" {
+    let tween_on = std::env::var("TINY_FLAG_TWEEN").as_deref() == Ok("1");
+    if driver != "0" && tween_on {
         let is_converted_flag = |it: &crate::map::ItemRec| matches!(it.model.as_str(), "Flag16m" | "Flag8m") && mapping.items_by_index.get(&it.index).map(|m| m.model.ends_with(".Item.Gbx")).unwrap_or(false);
         if driver == "anchor" {
             let converted: BTreeSet<&str> = source.items.iter().filter(|it| is_converted_flag(it)).map(|it| it.model.as_str()).collect();

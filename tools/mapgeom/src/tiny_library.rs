@@ -172,6 +172,19 @@ pub fn stock_half_variant(model: &str) -> Option<&'static str> {
     if let Some((_, small)) = SCREENS.iter().find(|(big, _)| *big == model) {
         return Some(small);
     }
+    // The flag (2026-09-08): `Flag8m` IS the half-size `Flag16m` — its cloth
+    // (`FlagSmall.Mesh.Gbx`) is the 16 m flag's cloth at exactly x0.5, frame for
+    // frame, the same 5 detail levels; only its pole is 5 m where a strict half
+    // would be 6.5 m (the cloth rides 1.5 m lower). As a stock item its cloth is
+    // driven by the game's own vertex-tween machinery, which no embedded copy
+    // gets right: an embedded tween cloth draws only while a stock flag is
+    // loaded and near, and is garbage (crumpled shards, giant sails) as soon as
+    // the flags sit at different detail levels — the state of every tiny map
+    // with converted flags until today. TINY_FLAG_STOCK=0 bakes the flag instead
+    // (still cloth under ItemFlagNoAnim, or the tween part with TINY_FLAG_TWEEN=1).
+    if model == "Flag16m" && std::env::var("TINY_FLAG_STOCK").as_deref() != Ok("0") {
+        return Some("Flag8m");
+    }
     if mode != "gates" {
         return None;
     }
@@ -1027,7 +1040,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 single_variant.insert(model.clone(), small.to_string());
                 item_map.insert(key, small.to_string());
                 half_stock.insert(small.to_string());
-                outcomes.push(Outcome { alias: small.to_string(), kind: "item", source: model.clone(), placements: *n, result: Ok(format!("stock half-size variant {small}: the game's own item, its screen keeps the live advertisement")) });
+                let why = if small == "Flag8m" { "its cloth waves under the game's own vertex tween" } else { "its screen keeps the live advertisement" };
+                outcomes.push(Outcome { alias: small.to_string(), kind: "item", source: model.clone(), placements: *n, result: Ok(format!("stock half-size variant {small}: the game's own item, {why}")) });
                 continue;
             }
         }

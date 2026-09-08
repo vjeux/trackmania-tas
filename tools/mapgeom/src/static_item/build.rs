@@ -3366,21 +3366,57 @@ pub struct DynaSource {
     pub tween_mats: Vec<bool>,
 }
 
+/// The material a STILL cloth is drawn with in place of its vertex-tween one
+/// (a static visual under a tween material reads a frame table it does not
+/// have: the 0x140a9c174 crash). `TINY_FLAG_STILL_MAT`:
+///   `noanim` (default): the pack's own `ItemFlagNoAnim` — the flag texture,
+///     hue mask and roughness under the plain `Tech3_Block_TDSN_CubeOut`
+///     shader, what `FlagSmall.Mesh.Gbx` itself uses for its farthest level
+///     (a 4-vertex quad). The cloth keeps its own uv0: green with the logo,
+///     exactly the stock flag's look at rest (2026-09-08);
+///   `trackborders`: the 2026-09-07 form — TrackBorders with uv0 remapped into
+///     its hue-masked stripe (a plain cloth in the placement colour; white).
+fn still_cloth_material(tween: &str) -> (String, String) {
+    match std::env::var("TINY_FLAG_STILL_MAT").as_deref() {
+        Ok("trackborders") => (
+            "Stadium\\Media\\Material\\TrackBorders".to_string(),
+            format!("{tween}: vertex-tween shader; drawn as TrackBorders (uv0 in the hue-masked stripe band)"),
+        ),
+        _ => (
+            "Stadium\\Media\\Material\\ItemFlagNoAnim".to_string(),
+            format!("{tween}: vertex-tween shader; drawn still under ItemFlagNoAnim (the pack's own non-animated flag material, own uv0)"),
+        ),
+    }
+}
+
+/// Whether the still cloth keeps its own uv0 (ItemFlagNoAnim) or takes the
+/// TrackBorders stripe band.
+fn still_cloth_keeps_uv() -> bool {
+    std::env::var("TINY_FLAG_STILL_MAT").as_deref() != Ok("trackborders")
+}
+
 /// A material whose shader tweens between vertex frames
 /// (`Tech3_Warp_TDiffSpec_VertexTween`, the flag cloth's `ItemFlag`).
 fn is_tween_material(store: &mut crate::store::DataStore, p: &str) -> bool {
     store.load_model(p).map(|mm| mm.externals.iter().any(|(_, e)| e.to_ascii_lowercase().contains("tween"))).unwrap_or(false)
 }
 
-/// A vertex-tweened cloth (the flag) is kept as a dyna entity of its own with
+/// A vertex-tweened cloth (the flag) kept as a dyna entity of its own with
 /// its frames, frame table, tween material and the pack's inline-vertex form
-/// — the waving, hue-masked flag of 2026-09-07. `TINY_FLAG_TWEEN=0` bakes it
-/// as frame 0 under TrackBorders instead (the still white flag of before).
+/// (`TINY_FLAG_TWEEN=1`, an experiment knob). OFF by default, and not because
+/// of a count: measured on 2026-09-08 (lineups on a flag-free tiny host), an
+/// embedded tween cloth is drawn ONLY while a stock Flag item is loaded in
+/// the map and within ~100 m — no stock, or one 300 m away, and the cloths
+/// are absent or garbage (crumpled shards, giant sails) — and even with a
+/// stock flag beside them, identical placements at DIFFERENT detail levels
+/// draw as garbage (39 in one row were fine; the same 39 spread over map 10
+/// were not; a single-level cloth, `TINY_FLAG_LODS=1`, fixed that lineup).
+/// The engine's frame table for the tween draw evidently comes from the
+/// stock visual, not ours. Production therefore uses no embedded tween at
+/// all: `Flag16m` placements become the stock `Flag8m` (the game's own
+/// half-size flag, `stock_half_variant`) and `Flag8m` placements a still
+/// cloth under the pack's `ItemFlagNoAnim` material (`add_dyna_object_file`).
 pub fn tween_parts_enabled() -> bool {
-    // OFF by default until the many-instance draw is right: ten or more
-    // copies of the tween item in one map drew as giant black sails or
-    // nothing (Summer 20, 2026-09-07), two copies drew right. TINY_FLAG_TWEEN=1
-    // turns it on.
     std::env::var("TINY_FLAG_TWEEN").map(|v| v == "1").unwrap_or(false)
 }
 
@@ -3456,6 +3492,7 @@ pub fn load_dyna_source(store: &mut crate::store::DataStore, path: &str, m: &mut
     // bottom, so uv v 0.90..0.97): a plain cloth in the placement colour.
     let tween_mats: Vec<bool> = s2.materials.iter().map(|r| r.inline.is_none() && r.index >= 0 && name_in(&mesh_ext, r.index).map(|p| is_tween_material(store, &p)).unwrap_or(false)).collect();
     if !keep_frames && tween_mats.iter().any(|t| *t) {
+        let remap_uv = !still_cloth_keeps_uv();
         // TINY_FLAG_BAND=v0,v1: the TrackBorders_D band (v range) the cloth's
         // uv0 is mapped into — the 2026-09-07 hue-mask ladder (which band the
         // placement colour reaches: the mask's alpha is 0xff only at texture
@@ -3468,7 +3505,7 @@ pub fn load_dyna_source(store: &mut crate::store::DataStore, path: &str, m: &mut
                 (f.len() == 2).then(|| [f[0], f[1]])
             })
             .unwrap_or([0.90, 0.97]);
-        if band != [0.90, 0.97] {
+        if remap_uv && band != [0.90, 0.97] {
             m.notes.push(format!("TINY_FLAG_BAND={},{}: cloth uv0 mapped into that TrackBorders v band", band[0], band[1]));
         }
         for g in &s2.shaded_geoms {
@@ -3478,7 +3515,7 @@ pub fn load_dyna_source(store: &mut crate::store::DataStore, path: &str, m: &mut
             if let Some(Node::Visual(v)) = s2.visuals.get_mut(g.visual_index as usize).and_then(|r| r.inline.as_deref_mut()) {
                 if let Some(Node::VertexStream(s)) = v.main.as_mut().and_then(|mn| mn.vertex_streams.first_mut()).and_then(|r| r.inline.as_deref_mut()) {
                     for (d, e) in s.decls.iter().zip(s.elems.iter_mut()) {
-                        if d.name() == N_TEXCOORD0 {
+                        if remap_uv && d.name() == N_TEXCOORD0 {
                             if let Elem::Float2(uv) = e {
                                 // An affine map into the band (measured 2026-09-07 with three bands
                                 // on a lineup: uv v 0.755..0.805 = the unmasked white panel, white at
@@ -3568,8 +3605,9 @@ pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at:
         }
         let p = name_in(&mesh_ext, idx)?;
         if is_tween_material(store, &p) {
-            tween_notes.push(format!("{p}: vertex-tween shader; drawn as TrackBorders (uv0 in the hue-masked stripe band)"));
-            return Some((p, "Stadium\\Media\\Material\\TrackBorders".to_string(), 9));
+            let (link, note) = still_cloth_material(&p);
+            tween_notes.push(note);
+            return Some((p, link, 28));
         }
         let link = material_link(&p);
         let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).unwrap_or(28);
@@ -3650,8 +3688,9 @@ pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform
     let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
         let p = name_in(&mesh_ext, idx)?;
         if is_tween_material(store, &p) {
-            tween_notes.push(format!("{p}: vertex-tween shader; drawn as TrackBorders (uv0 in the hue-masked stripe band)"));
-            return Some((p, "Stadium\\Media\\Material\\TrackBorders".to_string(), 9));
+            let (link, note) = still_cloth_material(&p);
+            tween_notes.push(note);
+            return Some((p, link, 28));
         }
         let link = material_link(&p);
         let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).unwrap_or(28);
