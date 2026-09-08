@@ -458,6 +458,19 @@ fn main() {
                 std::fs::write(&out, &m.body).unwrap_or_else(|e| die(e.to_string()));
                 println!("wrote {} ({} bytes of body)", out, m.body.len());
             }
+            // a kinematic constraint file (0x2F0CA000) has no chunk framing:
+            // the dyna reader prints it as one summary line plus its curves
+            if m.class_id == 0x2F0CA000 {
+                let k = mapgeom::static_item::dyna::KinematicConstraint::parse_body(&m.body).unwrap_or_else(die);
+                println!("{}  class 0x{:08X}  kinematic constraint v{}.{}", m.path, m.class_id, k.version, k.sub_version);
+                println!("  {}", k.summary());
+                println!("  trans curve: {:?}", k.trans);
+                println!("  rot curve:   {:?}", k.rot);
+                if !k.shader_tc_anim.is_empty() {
+                    println!("  shader tc keyframes (ms, sub texture): {:?}  trans-sub {:?}", k.shader_tc_anim, k.shader_tc_trans_sub);
+                }
+                return;
+            }
             let g = m.graph().unwrap_or_else(die);
             println!(
                 "{}  class 0x{:08X}  {} nodes",
