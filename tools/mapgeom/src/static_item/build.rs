@@ -21,7 +21,7 @@
 //! entry points.
 
 use super::surface::{CPlugSurface, Surf, Triangle};
-use super::vstream::{Elem, N_COLOR0, N_TEXCOORD0};
+use super::vstream::{Elem, N_COLOR0, N_NORMAL, N_TANGENT_U, N_TANGENT_V, N_TEXCOORD0};
 use super::{Node, Ref, R};
 use crate::crystal_model::CPlugMaterialUserInst;
 use crate::geom::{apply, compose, Xform, IDENTITY};
@@ -2000,7 +2000,7 @@ pub fn ensure_texcoord1(s: &mut super::vstream::CPlugVertexStream) -> bool {
 /// and the item shading models answer that with a blown-out yellow-white
 /// glare wherever the sun stands behind the card (the "crumpled paper"
 /// bushes of tiny 24's cp8, 2026-09-08).
-pub fn double_sided(v: &mut CPlugVisualIndexedTriangles) -> Result<(), String> {
+pub fn double_sided(v: &mut super::visual::CPlugVisualIndexedTriangles) -> Result<(), String> {
     use super::vstream::T_DEC3N;
     let Some(main) = v.main.as_mut() else { return Ok(()) };
     let n = main.count.max(0) as usize;
