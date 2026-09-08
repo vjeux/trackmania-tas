@@ -80,6 +80,32 @@ pub struct GateRec {
     /// Checkpoint group id: all gates that fire the same checkpoint share it.
     /// Finish gates get their own groups after the checkpoints; spawn = u32::MAX.
     pub group: u32,
+    /// Where the ENGINE credits this gate, metres along `normal` from `centre` (GEN arm, engine-credited rows of 19
+    /// ghosts per map, F18): road/platform checkpoint blocks −2.2, 32 m gate items −2.15, GateExpandableFinish −2.5,
+    /// Road* finish blocks −15.2 (the cell's entry edge), wall checkpoints +14.0 (the far end). 0 = not measured.
+    /// Halved on a tiny (half-scale) map. The dedicated pack has no trigger shapes, so this is the measured plane.
+    #[serde(default)]
+    pub credit_offset_m: f32,
+}
+
+/// GEN's per-model credited-plane offsets (metres along the travel normal from the gate centre).
+pub fn credit_offset(model: &str, from_item: bool, kind: WpKind, pitched: bool) -> f32 {
+    let m = model;
+    // the tiny converter's items: AC… = a converted block (deck 2 m above the origin, credit 2.2 m before the
+    // centre), AI… = an original gate item; the finish/lap classes are unknown there
+    if m.len() > 2 && m.starts_with('A') && m.as_bytes()[2].is_ascii_digit() {
+        return match (m.as_bytes()[1], kind) { (b'C', WpKind::Checkpoint) => -2.2, (b'I', WpKind::Checkpoint) => -2.15, _ => 0.0 };
+    }
+    if m.contains("WallCheckpoint") { return 14.0; }
+    if m.contains("ExpandableFinish") { return -2.5; }
+    if from_item {
+        if pitched { return -1.5; }
+        if m.contains("32m") || m.contains("16m") || m.contains("8m") { return -2.15; }
+        return 0.0;
+    }
+    if (m.starts_with("Road") || m.starts_with("Platform")) && kind == WpKind::Finish && m.starts_with("Road") { return -15.2; }
+    if (m.starts_with("Road") || m.starts_with("Platform")) && kind == WpKind::Checkpoint { return -2.2; }
+    0.0
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -478,6 +504,8 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         yaw: raws[spawn_i].yaw,
         waypoint: raws[spawn_i].wp,
     };
+    // a tiny (half-scale) map: uid "Tin2…" or name "Tiny …" — the credited-plane offsets halve with it
+    let tiny = h.uid.starts_with("Tin2") || strip_fmt(&h.name).starts_with("Tiny ");
 
     let gates = raws
         .iter()
@@ -499,6 +527,7 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
                 model: r.model.clone(),
                 from_item: r.from_item,
                 group: gid[i],
+                credit_offset_m: credit_offset(&r.model, r.from_item, r.kind, r.up3.is_some() && !r.wall) * if tiny { 0.5 } else { 1.0 },
             }
         })
         .collect();

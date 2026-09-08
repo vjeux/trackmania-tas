@@ -94,6 +94,7 @@ fn cmd_plan(args: &[String]) {
     let width: usize = flag(args, "--beam").and_then(|s| s.parse().ok()).unwrap_or(4000);
     let top_k: usize = flag(args, "--top-k").and_then(|s| s.parse().ok()).unwrap_or(3);
     planner::BEAM_BUDGET_S.store(flag(args, "--beam-budget-s").and_then(|s| s.parse().ok()).unwrap_or(600), std::sync::atomic::Ordering::Relaxed);
+    tmplan::estimator::SPAWN_TURN_M.store(flag(args, "--spawn-turn").and_then(|s| s.parse::<f32>().ok()).unwrap_or(80.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
     human_legs(args, &nodes, &gates, &est, &len, Some(&surf), &fields);
     let plans = planner::beam_laps(&nodes, &nodes.kinds, gates.laps, &est, width, top_k, StateBucket::of_speed(0.0));
     if gates.laps > 1 {

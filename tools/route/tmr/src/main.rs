@@ -620,6 +620,8 @@ fn cmd_plan(args: &[String]) {
     let top_k: usize = flag(args, "--top-k").and_then(|s| s.parse().ok()).unwrap_or(3);
     // --beam-budget-s: wall-clock cap on the beam; past it the best partials are completed greedily (BEAM-CAPPED)
     tmplan::planner::BEAM_BUDGET_S.store(flag(args, "--beam-budget-s").and_then(|s| s.parse().ok()).unwrap_or(600), std::sync::atomic::Ordering::Relaxed);
+    // --spawn-turn M: cost-metres per radian of U-turn on the first leg (default 80; 0 off)
+    tmplan::estimator::SPAWN_TURN_M.store(flag(args, "--spawn-turn").and_then(|s| s.parse::<f32>().ok()).unwrap_or(80.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
     if has(args, "--matrix") {
         println!("R edge matrix from rest (p_reach / expected s / h used), spawn = node 0:");
         for i in 0..nodes.pos.len() {

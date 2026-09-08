@@ -26,6 +26,10 @@ pub struct Nodes {
     pub graph_node: Vec<Option<usize>>,
     pub n_cp: usize,
     pub n_fin: usize,
+    /// The car's facing at the spawn (unit XZ): a first leg that departs against it is a U-turn from standstill.
+    /// 9 of 14 τ < 0.4 honest maps (F22) were the human tour driven BACKWARDS — a symmetric cost matrix cannot
+    /// tell the two directions apart; the spawn heading can.
+    pub spawn_dir: [f32; 2],
 }
 
 impl Nodes {
@@ -44,7 +48,7 @@ impl Nodes {
             pos.push([c[0], c[1] - rep.half_height, c[2]]);
         }
         let n = groups.len();
-        Nodes { groups, kinds, pos, graph_node: vec![None; n], n_cp: cps.len(), n_fin: fins.len() }
+        Nodes { groups, kinds, pos, graph_node: vec![None; n], n_cp: cps.len(), n_fin: fins.len(), spawn_dir: [g.spawn.yaw.sin(), g.spawn.yaw.cos()] }
     }
     pub fn finish_range(&self) -> std::ops::Range<usize> {
         1 + self.n_cp..1 + self.n_cp + self.n_fin

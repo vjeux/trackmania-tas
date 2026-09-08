@@ -196,6 +196,9 @@ pub enum Node {
     Genealogy(crate::blockinfo::GenealogyRaw),
     /// `CPlugRoadChunk` / `CPlugPlacementPatch`.
     RoadChunk(Box<crate::blockinfo::RoadChunkRaw>),
+    /// `NPlugTrigger_SWaypoint`: the volume a checkpoint/finish FIRES on — the referenced shape node. Its
+    /// triangles come out in the group "Trigger" (never collidable): the gate plane a planner should anchor on.
+    Trigger(i32),
     Other(u32),
 }
 
@@ -219,6 +222,7 @@ impl Node {
             Node::AutoTerrain(_) => crate::blockinfo::C_AUTO_TERRAIN,
             Node::Genealogy(_) => crate::blockinfo::C_ZONE_GENEALOGY,
             Node::RoadChunk(_) => crate::blockinfo::C_ROAD_CHUNK,
+            Node::Trigger(_) => 0x09178000,
             Node::Other(c) => *c,
         }
     }
@@ -471,6 +475,7 @@ pub fn is_visual(class_id: u32) -> bool {
 pub fn node_kind_name(n: &Node) -> &'static str {
     match n {
         Node::Prefab(_) => "CPlugPrefab",
+        Node::Trigger(_) => "NPlugTrigger_SWaypoint",
         Node::StaticObject(_) => "CPlugStaticObjectModel",
         Node::Dyna(_) => "CPlugDynaObjectModel",
         Node::Surface(_) => "CPlugSurface",
