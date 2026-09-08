@@ -238,15 +238,17 @@ fn one(args: &[String]) -> Result<Done, String> {
         println!("NOTE: the clip is {secs:.3} s for a {time} lap — the render did not cover the lap (a camera that never attached plays the whole clip static)");
     }
 
-    // --- the clip where vjeux watches them, on the box
+    // --- the clip where vjeux watches them, on the box (MOVED, not copied:
+    // one 30 MB copy per lap on a nearly full C:)
     let name = format!("{nn}-ghost-{time}");
     let r_keep = format!("{box_videos}/{name}.webm");
-    let cp = wsx.sh(&format!("mkdir -p '{box_videos}' && cp -f '{webm}' '{r_keep}' && stat -c %s '{r_keep}'"))?;
-    let kept: u64 = cp.trim().parse().unwrap_or(0);
+    let mv = wsx.sh(&format!("mkdir -p '{box_videos}' && mv -f '{webm}' '{r_keep}' && stat -c %s '{r_keep}'"))?;
+    let kept: u64 = mv.trim().parse().unwrap_or(0);
     if kept != bytes {
-        return Err(format!("{r_keep}: {kept} bytes after the copy, the clip is {bytes}"));
+        return Err(format!("{r_keep}: {kept} bytes after the move, the clip was {bytes}"));
     }
     println!("box: {} ({kept} bytes)", to_win(&r_keep));
+    let webm = r_keep;
 
     // --- pull: sheets always, the clip on request or for the store
     let sheet = out.join(format!("{name}-sheet.png"));

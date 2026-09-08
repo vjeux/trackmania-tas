@@ -37,6 +37,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 const SCREENSHOTS: &str = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/ScreenShots";
+const MAPS_SHOOT: &str = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot";
 const FFMPEG: &str = "/mnt/c/Users/vjeux/ffmpeg_extracted/ffmpeg-9.0.1-essentials_build/bin/ffmpeg.exe";
 const FFPROBE: &str = "/mnt/c/Users/vjeux/ffmpeg_extracted/ffmpeg-9.0.1-essentials_build/bin/ffprobe.exe";
 
@@ -145,9 +146,29 @@ fn render(opts: &Opts, t0: Instant) -> Result<(String, u64, f64), String> {
             return Err(format!("setup failed (rc {rc}) — see the lines above"));
         }
         println!("{} scene ready, shooting {}", el(), opts.name);
+        let before = super::webm_snapshot();
         let rc = super::shoot(3600, &opts.name);
         if rc != 0 {
             return Err(format!("shoot failed (rc {rc}) — see the lines above"));
+        }
+        // DISK HYGIENE. `shoot` copies the game's VideoNN.webm to NAME.webm and
+        // leaves the original: two 30 MB copies per lap on a C: drive that
+        // was 99 % full the morning this was written. The original goes.
+        for p in super::webms_changed(&before) {
+            if !super::same_file(&p, &webm) && p != webm {
+                match std::fs::remove_file(&p) {
+                    Ok(()) => println!("{} removed the game's own copy {}", el(), p),
+                    Err(e) => println!("{} could not remove {p}: {e}", el()),
+                }
+            }
+        }
+        // The Maps/_shoot copy `stage_map` made is a copy of the staged file;
+        // the next render stages it again from `_stage` in a second.
+        if staged != opts.map && !opts.map.starts_with(MAPS_SHOOT) {
+            match std::fs::remove_file(&staged) {
+                Ok(()) => println!("{} removed the staged copy {}", el(), staged),
+                Err(e) => println!("{} could not remove {staged}: {e}", el()),
+            }
         }
         if opts.quit {
             super::quit_game();
