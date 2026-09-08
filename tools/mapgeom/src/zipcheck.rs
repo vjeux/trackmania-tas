@@ -420,7 +420,7 @@ pub fn check_map(m: &MapFile, verbose: bool) -> Result<(), String> {
     let mut man_hdr_bad = Vec::new();
     for (name, coll, author) in &c.manifest {
         let key = format!("Items/{}", slashed(name));
-        let Some(e) = locs.iter().find(|e| slashed(&e.name) == key) else {
+        let Some(e) = locs.iter().find(|e| slashed(&e.name) == key).or_else(|| locs.iter().find(|e| basename(&e.name) == basename(name))) else {
             man_missing.push(name.clone());
             continue;
         };
@@ -439,12 +439,13 @@ pub fn check_map(m: &MapFile, verbose: bool) -> Result<(), String> {
         }
     }
     let man_slashed: BTreeSet<String> = man_names.iter().map(|n| slashed(n)).collect();
+    let man_base: BTreeSet<&str> = man_names.iter().map(|n| basename(n)).collect();
     let unlisted: Vec<&String> = item_entries
         .iter()
         .filter(|n| {
-            let base = slashed(n);
-            let base = base.trim_start_matches("Items/");
-            !man_slashed.contains(base)
+            let full = slashed(n);
+            let full = full.trim_start_matches("Items/");
+            !man_slashed.contains(full) && !man_base.contains(basename(n))
         })
         .collect();
     let unlisted_bytes: u64 = locs.iter().filter(|e| unlisted.iter().any(|u| **u == e.name)).map(|e| e.csize as u64).sum();
@@ -477,7 +478,7 @@ pub fn check_map(m: &MapFile, verbose: bool) -> Result<(), String> {
     for it in &m.items {
         *placed.entry(it.model.as_str()).or_default() += 1;
         if it.model.ends_with(".Item.Gbx") {
-            match c.manifest.iter().find(|(n, ..)| *n == it.model) {
+            match c.manifest.iter().find(|(n, ..)| *n == it.model || basename(n) == basename(&it.model)) {
                 None => {
                     unresolved.insert(it.model.clone());
                 }
@@ -497,7 +498,8 @@ pub fn check_map(m: &MapFile, verbose: bool) -> Result<(), String> {
         problems.push(format!("{} placements whose COLLECTION differs from their manifest row's (the game resolves the full ident → Missing Items): {}", coll_mismatch.len(), coll_mismatch.iter().take(5).cloned().collect::<Vec<_>>().join("; ")));
     }
     let placed_embedded = placed.iter().filter(|(n, _)| n.ends_with(".Item.Gbx")).count();
-    let unplaced: Vec<&str> = man_names.iter().filter(|n| !placed.contains_key(**n)).copied().collect();
+    let placed_base: BTreeSet<&str> = placed.keys().map(|k| basename(k)).collect();
+    let unplaced: Vec<&str> = man_names.iter().filter(|n| !placed.contains_key(**n) && !placed_base.contains(basename(n))).copied().collect();
     println!(
         "placements: {} items, {} distinct embedded models placed, {} manifest rows never placed, {} placed models missing from the manifest, {} placements whose author differs from the manifest's",
         m.items.len(),
@@ -597,4 +599,13 @@ pub fn dups(m: &MapFile, verbose: bool) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The item's own name: the last path component, slashes of either kind.
+/// A game-written map may list a club item in the manifest as the bare
+/// `TME_Argentina_Obelisk.Item.Gbx` while the entry and the placement carry
+/// `TME\Nations\…\` (club-items thread, 2026-09-08) — the game resolves by
+/// this name, so the checker matches on it.
+pub fn basename(s: &str) -> &str {
+    s.rsplit(['/', '\\']).next().unwrap_or(s)
 }
