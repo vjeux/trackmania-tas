@@ -68,7 +68,7 @@ impl FromRow for CarState {
             reactor_lvl: u8::MAX,
             reactor_type: u8::MAX,
             boost_enum: u8::MAX,
-            _pad3: 0,
+            car_slot: u8::MAX,
             reactor_air: [f32::NAN; 3],
             sim_time_coef: f32::NAN,
         };
@@ -87,7 +87,8 @@ impl FromRow for CarState {
                 st.wheel_slip[i] = vis.wheel_slip[*k];
             }
             st.turbo = vis.turbo_time;
-            st.car = vis.car;
+            st.car = vis.car; // the vehicle KIND (model fingerprint), ded1ac47
+            st.car_slot = vis.car_slot;
             // v3 effects (tmstate v3, the player's dialect): flags 0x01 turbo, 0x02 ground contact,
             // 0x04 reactor ground mode, 0x08 reactor inputs-x, 0x80 KNOWN; then level, type, boost enum,
             // reactor air control, simulation time coefficient
@@ -128,7 +129,7 @@ impl FromRow for CarState {
         o.push(self.reactor_lvl);
         o.push(self.reactor_type);
         o.push(self.boost_enum);
-        o.push(0);
+        o.push(self.car_slot); // byte 103 (was pad): the vehicle slot; `car` is the KIND from the model fingerprint
         for x in &self.reactor_air {
             o.extend_from_slice(&x.to_le_bytes());
         }
@@ -159,7 +160,7 @@ impl FromRow for CarState {
             reactor_lvl: if b.len() >= CARSTATE_BYTES { b[100] } else { u8::MAX },
             reactor_type: if b.len() >= CARSTATE_BYTES { b[101] } else { u8::MAX },
             boost_enum: if b.len() >= CARSTATE_BYTES { b[102] } else { u8::MAX },
-            _pad3: 0,
+            car_slot: u8::MAX,
             reactor_air: if b.len() >= CARSTATE_BYTES { [f(104), f(108), f(112)] } else { [f32::NAN; 3] },
             sim_time_coef: if b.len() >= CARSTATE_BYTES { f(116) } else { f32::NAN },
         }

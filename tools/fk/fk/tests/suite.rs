@@ -345,6 +345,7 @@ fn agreement_is_robust_to_a_respawn_sized_outlier() {
         // does not build reports nothing at all.
         wetness: 0.0,
         cps: u32::MAX,
+        vis: forkoracle::layout::Vis::UNKNOWN,
     };
     let samples: Vec<fk::traj::Sample> = (0..100)
         .map(|i| fk::traj::Sample {
