@@ -63,6 +63,37 @@ pub fn chunks(args: &[String]) {
             }
             return;
         }
+        // `--find 0x03043025 [--hex N] [--floats N]`: every occurrence of a chunk
+        // id's four bytes in the body (a NON-skippable chunk is found by its id,
+        // nothing else marks it), with the bytes that follow — as hex, or as N
+        // little-endian f32 (the coordinate chunks: MapCoordOrigin/Target
+        // 0x03043025 = 4 f32, the thumbnail camera 0x03043036 = 10 f32).
+        if let Some(find) = flag(&args, "--find").map(|s| u32::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16).expect("--find CHUNKID (hex)")) {
+            let floats: usize = flag(&args, "--floats").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let id = find.to_le_bytes();
+            let mut n = 0;
+            for at in 0..g.body.len().saturating_sub(4) {
+                if g.body[at..at + 4] != id {
+                    continue;
+                }
+                n += 1;
+                let p = at + 4;
+                if floats > 0 {
+                    let vals: Vec<String> = g.body[p..(p + 4 * floats).min(g.body.len())].chunks_exact(4).map(|w| format!("{:.3}", f32::from_le_bytes(w.try_into().unwrap()))).collect();
+                    println!("0x{find:08X} at body {at}: {}", vals.join(" "));
+                } else {
+                    let end = (p + hex.max(32)).min(g.body.len());
+                    println!("0x{find:08X} at body {at}:");
+                    for (i, row) in g.body[p..end].chunks(16).enumerate() {
+                        println!("  {:08x}: {:<48} {}", p + i * 16, row.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" "), row.iter().map(|x| if x.is_ascii_graphic() { *x as char } else { '.' }).collect::<String>());
+                    }
+                }
+            }
+            if n == 0 {
+                println!("0x{find:08X}: not in the body");
+            }
+            return;
+        }
         println!("chunk\toff\tpayload\tsize");
         for (cid, off, payload, size) in map::skip_chunks(&g.body) {
             if only.map(|c| c != cid).unwrap_or(false) {
