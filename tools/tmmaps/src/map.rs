@@ -868,9 +868,32 @@ impl MapFile {
     /// ("Couldn't load map!"): a skippable chunk is dropped whole instead.
     /// Returns the bytes removed (0 = no ghost chunk).
     pub fn strip_validation_ghost(&mut self) -> usize {
+        self.strip_validation_ghost_to(true)
+    }
+
+    /// `strip_validation_ghost`, keeping the chunk as the game's own EMPTY
+    /// skeleton when `skeleton` (12 bytes: `00000000 04000000 FFFFFFFF` — the
+    /// form every unvalidated Nadeo map carries, Summer 21/22 among them) —
+    /// the player project's `authorghost embed` replaces an existing chunk
+    /// byte-safely but cannot INSERT one (the ghost stream defines Ids inline
+    /// and every later chunk's raw indices would shift) — or removing the
+    /// chunk outright when not.
+    pub fn strip_validation_ghost_to(&mut self, skeleton: bool) -> usize {
         let Some(&(_, off, payload, size)) = crate::gbx::all_skip_chunks(&self.gbx.body).iter().find(|(c, ..)| *c == 0x0305_B00F) else { return 0 };
-        // the whole skippable chunk: id, `PIKS`, size, payload
-        self.raw_splices.push(((off, payload + size), Vec::new()));
+        if skeleton {
+            if size == 12 && self.gbx.body[payload..payload + 12] == [0, 0, 0, 0, 4, 0, 0, 0, 0xff, 0xff, 0xff, 0xff] {
+                return 0;
+            }
+            let mut chunk = Vec::with_capacity(24);
+            chunk.extend_from_slice(&0x0305_B00Fu32.to_le_bytes());
+            chunk.extend_from_slice(b"PIKS");
+            chunk.extend_from_slice(&12u32.to_le_bytes());
+            chunk.extend_from_slice(&[0, 0, 0, 0, 4, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]);
+            self.raw_splices.push(((off, payload + size), chunk));
+        } else {
+            // the whole skippable chunk: id, `PIKS`, size, payload
+            self.raw_splices.push(((off, payload + size), Vec::new()));
+        }
         self.edit_header_xml(&|xml| Some(xml.replace("validated=\"1\"", "validated=\"0\"")));
         payload + size - off
     }

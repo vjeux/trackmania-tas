@@ -476,14 +476,18 @@ pub fn stripghost(args: &[String]) {
         // `MapFile::strip_validation_ghost`.
         let path = std::path::Path::new(&args[2]);
         let out = args.iter().position(|a| a == "--out").map(|i| args[i + 1].clone()).expect("--out F");
+        // Default: the chunk stays as the game's own empty 12-byte skeleton (a
+        // later `authorghost embed` can replace it byte-safely; inserting a
+        // missing chunk shifts the body's Id table); `--remove-chunk` drops it.
+        let skeleton = !args.iter().any(|a| a == "--remove-chunk");
         let mut m = map::MapFile::load(path);
-        let removed = m.strip_validation_ghost();
+        let removed = m.strip_validation_ghost_to(skeleton);
         if removed == 0 {
-            println!("{}: no validation ghost chunk — nothing to strip", path.display());
+            println!("{}: no validation ghost to strip (no chunk, or already the empty skeleton)", path.display());
             std::process::exit(1);
         }
         m.write_to(std::path::Path::new(&out)).expect("write");
-        println!("{}: validation ghost dropped ({removed} bytes), header validated=\"0\" -> {out}", path.display());
+        println!("{}: validation ghost dropped ({removed} bytes; chunk {}), header validated=\"0\" -> {out}", path.display(), if skeleton { "kept as the empty skeleton" } else { "removed" });
 }
 
 /// `tmmaps setuid`.
