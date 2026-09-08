@@ -182,7 +182,7 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                             if let Some(super::Node::Particle(pm)) = em.model.inline.as_deref() {
                                 for (k, t) in fx_textures(pm).iter().enumerate() {
                                     match (t.index, t.inline.is_some()) {
-                                        (i, _) if i < 0 => problems.push(format!("entity {i}: emitter {:?} sub-model {k}: NULL texture (FX-01: the engine dereferences it)", em.name.as_str().unwrap_or(""))),
+                                        (ti, _) if ti < 0 => problems.push(format!("entity {i}: emitter {:?} sub-model {k}: NULL texture (FX-01: the engine dereferences it)", em.name.as_str().unwrap_or(""))),
                                         (_, true) => problems.push(format!("entity {i}: emitter {:?} sub-model {k}: INLINE texture (FX-01: the engine misreads an inline CPlugBitmap)", em.name.as_str().unwrap_or(""))),
                                         _ => {}
                                     }
