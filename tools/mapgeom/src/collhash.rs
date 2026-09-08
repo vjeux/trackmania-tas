@@ -216,13 +216,12 @@ pub fn run(rest: &[String]) -> Result<(), String> {
 
         // --- 1. placements. The loop is SEQUENTIAL over the map's record
         // order, and FNV is order-sensitive, so a reordering of identical
-        // placements changes this hash — which is required, because record
-        // ORDER is physics-bearing: the dedicated server takes as the start
-        // the LAST non-Goal waypoint placement in file order, whatever its
-        // model, tag, cell or position (measured by the player project on a
-        // scratch copy of Summer 02, 2026-09-07).
+        // placements changes this hash. That is worth keeping: a validation
+        // record names the start waypoint by INDEX (chunk 0x0309202D, the u32
+        // after the settings-flags word — resolved 2026-09-08), so which
+        // placement sits at which index is part of what a validated map means.
         let mut ph = Fnv::default();
-        let mut predicted_start: Option<(usize, String, [f32; 3], String)> = None;
+        let mut spawn_index: Option<usize> = None;
         for (i, it) in m.items.iter().enumerate() {
             ph.str(&it.model);
             ph.f32q(it.pos[0], POS_Q);
@@ -237,8 +236,8 @@ pub fn run(rest: &[String]) -> Result<(), String> {
             ph.f32q(it.scale, 1.0e-6);
             let tag = it.waypoint_tag.as_deref().unwrap_or("");
             ph.str(tag);
-            if !tag.is_empty() && tag != "Goal" {
-                predicted_start = Some((i, it.model.clone(), it.pos, tag.to_string()));
+            if tag == "Spawn" {
+                spawn_index = Some(i);
             }
         }
 
@@ -302,32 +301,19 @@ pub fn run(rest: &[String]) -> Result<(), String> {
             ih.hex(),
             per_item.len()
         );
-        // A PREDICTION, currently UNRELIABLE (2026-09-07): it encodes the rule
-        // "the engine starts on the last non-Goal waypoint record", which the
-        // player project measured on Summer 02 and then REFUTED the same hour —
-        // with the Spawn record last, 02 spawned at the Goal, and 20 still at a
-        // checkpoint. Their 24-permutation test points at a FIXED item slot
-        // (#715 on 02), i.e. a marker in some chunk our conversion re-indexes,
-        // not at record order. The line stays because "which record is last"
-        // is still worth seeing next to the hashes — but do not act on it, and
-        // delete it (or fix the rule) once the marker is known.
-        match &predicted_start {
-            Some((i, model, pos, tag)) => {
-                let spawn = m.items.iter().find(|it| it.waypoint_tag.as_deref() == Some("Spawn"));
-                let verdict = match spawn {
-                    None => "NO SPAWN PLACEMENT".to_string(),
-                    Some(s) => {
-                        let d = ((s.pos[0] - pos[0]).powi(2) + (s.pos[1] - pos[1]).powi(2) + (s.pos[2] - pos[2]).powi(2)).sqrt();
-                        if d < 0.01 {
-                            "ok (the Spawn placement is last)".to_string()
-                        } else {
-                            format!("WRONG: {d:.1} m from the Spawn placement at [{:.1}, {:.1}, {:.1}] — emit the start AFTER every checkpoint", s.pos[0], s.pos[1], s.pos[2])
-                        }
-                    }
-                };
-                println!("  last non-Goal waypoint record (start rule UNCONFIRMED): record {i} {model} {tag} at [{:.1}, {:.1}, {:.1}] — {verdict}", pos[0], pos[1], pos[2]);
+        // A plain FILE FACT: which placement index carries the Spawn tag. A
+        // validation record names the start waypoint by index (chunk
+        // 0x0309202D), so this is the number that has to match — and it is
+        // what a synthetic container gets wrong when it borrows a donor's
+        // validation record. No prediction, no rule: the earlier
+        // "last non-Goal record" reading was refuted (2026-09-07) and the
+        // real mechanism was found on the container side (2026-09-08).
+        match spawn_index {
+            Some(i) => {
+                let s = &m.items[i];
+                println!("  Spawn placement: index {i} {} at [{:.1}, {:.1}, {:.1}]", s.model, s.pos[0], s.pos[1], s.pos[2]);
             }
-            None => println!("  last non-Goal waypoint record: NONE in this map"),
+            None => println!("  Spawn placement: NONE — this map has no start"),
         }
         if parts_wanted {
             for (name, hex) in &per_item {
