@@ -105,7 +105,8 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         pushes map (md5-skipped) + ghost, `shootctl render` on the box under the render
         lock, the clip to Maps\Tiny\videos\NN-ghost-<time>.webm, the 16-tile contact
         sheet (+ a 2 fps dense one) pulled into --out; --store copies clip + sheet on;
-        --all renders every NN.Ghost.Gbx in --ghosts-dir not yet in <out>/videos.tsv (by md5)
+        --all renders every NN.Ghost.Gbx in --ghosts-dir whose TRAJECTORY (samples + race time, not
+        the file md5: a metadata rewrite is not a new lap) is not yet in <out>/videos.tsv; --adopt records them as done
 
   box-side halves: tinyctl publish-here …   tinyctl selfbuild …
   every bridge command takes --wsx PATH (default ~/bin/wsx)

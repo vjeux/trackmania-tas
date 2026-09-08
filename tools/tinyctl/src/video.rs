@@ -92,7 +92,8 @@ fn all(args: &[String]) -> Result<(), String> {
     let mut todo = Vec::new();
     for n in &names {
         let nn = n[..2].to_string();
-        let md5 = md5_of(&ghosts_dir.join(n))?;
+        let path = ghosts_dir.join(n);
+        let md5 = trajectory_id(&gbx::record::decode_ghost(path.to_str().ok_or("ghost path is not utf-8")?)?);
         if seen.iter().any(|(a, b)| *a == nn && *b == md5) {
             continue;
         }
@@ -100,6 +101,26 @@ fn all(args: &[String]) -> Result<(), String> {
     }
     if todo.is_empty() {
         println!("nothing new in {} ({} ghosts, all rendered)", ghosts_dir.display(), names.len());
+        return Ok(());
+    }
+    // --adopt: the clips of these ghosts already exist (rendered before this
+    // tool, or before the state keyed on trajectories) — record them as done
+    // instead of rendering.
+    if tmmaps::cli::has(args, "--adopt") {
+        let mut text = std::fs::read_to_string(&state).unwrap_or_default();
+        if !state.exists() {
+            text.push_str("# nn\ttrajectory_id\ttime\tcps\tclip\tsheet\tunix\n");
+        }
+        for nn in &todo {
+            let g = gbx::record::decode_ghost(ghosts_dir.join(format!("{nn}.Ghost.Gbx")).to_str().ok_or("ghost path is not utf-8")?)?;
+            let race_ms = g.race_time_ms.or_else(|| g.samples.last().map(|s| s.time_ms)).unwrap_or(0);
+            let time = format!("{}.{:03}", race_ms / 1000, race_ms % 1000);
+            let cps = g.checkpoints_ms.iter().filter(|c| **c < race_ms - 50).count();
+            let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            text.push_str(&format!("{nn}\t{}\t{time}\t{cps}\t{nn}-ghost-{time}.webm\t(adopted)\t{when}\n", trajectory_id(&g)));
+            println!("{nn}: adopted ({time}, {cps} cps)");
+        }
+        std::fs::write(&state, text).map_err(|e| format!("{}: {e}", state.display()))?;
         return Ok(());
     }
     println!("{} to render: {}", todo.len(), todo.join(" "));
@@ -130,7 +151,7 @@ fn all(args: &[String]) -> Result<(), String> {
             Ok(d) => {
                 let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
                 let row = format!("{}\t{}\t{}\t{}\t{}\t{}\t{when}\n", d.nn, d.ghost_md5, d.time, d.cps, d.clip, d.sheet.display());
-                let header = if state.exists() { String::new() } else { "# nn\tghost_md5\ttime\tcps\tclip\tsheet\tunix\n".to_string() };
+                let header = if state.exists() { String::new() } else { "# nn\ttrajectory_id\ttime\tcps\tclip\tsheet\tunix\n".to_string() };
                 let mut text = std::fs::read_to_string(&state).unwrap_or_default();
                 text.push_str(&header);
                 text.push_str(&row);
@@ -233,6 +254,7 @@ fn one(args: &[String]) -> Result<Done, String> {
     }
     wsx.push(&ghost, &r_ghost)?;
     let ghost_md5 = md5_of(&ghost)?;
+    let traj_id = trajectory_id(&g);
     let rg = wsx.sh(&format!("md5sum '{r_ghost}' | cut -c1-32")).unwrap_or_default().trim().to_string();
     if rg != ghost_md5 {
         return Err(format!("{r_ghost} on the box reads md5 {rg}, pushed {ghost_md5}"));
@@ -299,7 +321,7 @@ fn one(args: &[String]) -> Result<Done, String> {
     // the finish is the last "checkpoint" the decoder lists
     let cps = g.checkpoints_ms.iter().filter(|c| **c < race_ms - 50).count();
     println!("| {nn} | {time} | {cps} cps | on-road: ? | look at {} |", sheet.display());
-    Ok(Done { nn, ghost_md5, time, cps, clip: format!("{name}.webm"), sheet })
+    Ok(Done { nn, ghost_md5: traj_id, time, cps, clip: format!("{name}.webm"), sheet })
 }
 
 /// Where the start block puts the car relative to its Spawn placement: the
@@ -354,4 +376,28 @@ mod tests {
         assert!(close(start_centre(-std::f32::consts::FRAC_PI_2), (-8.0, 8.0)));
         assert!(close(start_centre(std::f32::consts::PI), (-8.0, -8.0)));
     }
+}
+
+/// What a clip depends on: the samples the render PLAYS and the race time.
+/// A ghost re-written with new metadata (the INPUT arm refreshed all eleven
+/// files at 18:55Z with a different zone string and identical trajectories)
+/// must not cost eleven re-renders, so the state file keys on this, not on the
+/// file's md5. FNV-1a over the little-endian bytes of (race time, every
+/// sample's time and position), as 16 hex digits.
+pub fn trajectory_id(g: &gbx::record::Decoded) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    feed(&g.race_time_ms.unwrap_or(0).to_le_bytes());
+    for s in &g.samples {
+        feed(&s.time_ms.to_le_bytes());
+        feed(&s.x.to_le_bytes());
+        feed(&s.y.to_le_bytes());
+        feed(&s.z.to_le_bytes());
+    }
+    format!("{h:016x}")
 }
