@@ -47,13 +47,17 @@ struct Opts {
     outdir: PathBuf,
     cam: u8,
     load_timeout_s: u64,
+    /// seconds of footage, when the caller knows the lap: the lock owner name
+    /// then carries the expected hold (`render-vid23 ~9min`), so the eight
+    /// sessions queueing on this game can see what they are waiting for
+    footage_s: f64,
     quit: bool,
     detach: bool,
     ghosts: Vec<String>,
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
-    let mut o = Opts { map: String::new(), name: String::new(), outdir: PathBuf::new(), cam: 2, load_timeout_s: 120, quit: false, detach: false, ghosts: Vec::new() };
+    let mut o = Opts { map: String::new(), name: String::new(), outdir: PathBuf::new(), cam: 2, load_timeout_s: 120, footage_s: 0.0, quit: false, detach: false, ghosts: Vec::new() };
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -67,6 +71,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
                 i += 2;
             }
             "--load-timeout" => { o.load_timeout_s = val(i)?.parse().map_err(|_| "--load-timeout wants seconds")?; i += 2; }
+            "--footage" => { o.footage_s = val(i)?.parse().map_err(|_| "--footage wants seconds of clip")?; i += 2; }
             "--quit" => { o.quit = true; i += 1; }
             "--detach" => { o.detach = true; i += 1; }
             other if other.starts_with("--") => return Err(format!("unknown option: {other}")),
@@ -132,7 +137,13 @@ fn render(opts: &Opts, t0: Instant) -> Result<(String, u64, f64), String> {
     {
         // THE GAME-DRIVING PART, and only that, under the lock.
         let d = super::lock::lock_dir();
-        let owner = format!("render-{}", opts.name);
+        // ~5 frames/s offline at 1080p hq (measured 87–380 s for 17–55 s laps),
+        // plus a minute of load + import
+        let owner = if opts.footage_s > 0.0 {
+            format!("render-{} ~{}min", opts.name, ((opts.footage_s * 30.0 / 5.0 + 60.0) / 60.0).ceil() as u64)
+        } else {
+            format!("render-{}", opts.name)
+        };
         super::lock::acquire(&d, &owner, 1500, 0).map_err(|e| format!("lock: {e}"))?;
         let _guard = super::shootset::LockGuard::new(d, owner);
         super::LOAD_TIMEOUT_S.store(opts.load_timeout_s, Ordering::Relaxed);

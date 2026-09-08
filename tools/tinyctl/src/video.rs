@@ -267,7 +267,7 @@ fn one(args: &[String]) -> Result<Done, String> {
 
     // --- render there, poll here
     let r_dir = format!("{VID}/{tag}");
-    let cmd = format!("{shootctl} render --detach --map {r_map} --name {tag} --outdir {r_dir} --cam {cam} --load-timeout {load_timeout} {r_ghost}");
+    let cmd = format!("{shootctl} render --detach --map {r_map} --name {tag} --outdir {r_dir} --cam {cam} --load-timeout {load_timeout} --footage {:.1} {r_ghost}", race_ms as f64 / 1000.0);
     eprintln!("rendering {tag} on the box — waits for the render lock if another thread holds the game …");
     let started = wsx.sh(&cmd)?;
     if wsx.verbose {

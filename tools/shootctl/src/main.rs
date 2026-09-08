@@ -1048,7 +1048,7 @@ usage:
         DIST<TAB>H<TAB>V, radians) to DIR/cmp-<T><NAME>-<side>.png; side t
         maps the camera through the tiny anchor at half the distance.
         --detach returns at once; DIR/done-<side>.txt appears when finished.
-  shootctl render --map MAP --name NAME --outdir /mnt/c/DIR [--cam 2] [--load-timeout 120]
+  shootctl render --map MAP --name NAME --outdir /mnt/c/DIR [--cam 2] [--load-timeout 120] [--footage S]
                   [--quit] [--detach] GHOST...
         one ghost video on the SHARED game: the render lock for the game part
         only, the game left up (--quit closes it), ScreenShots/NAME.webm kept,
