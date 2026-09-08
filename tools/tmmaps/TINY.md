@@ -87,3 +87,69 @@ full throttle from the spawn through the Boost gate, `tinyctl play --wheels-ms`)
    must be flattened (`Surf::triangulate`), or the bake falls back to the unit
    box and a finish fires on its whole 32 m cube. The item editor writes the
    same 36/68 disc for Granady's `Tiny_Ring1`.
+
+## Trees: half-size static snapshots of the vegetation (2026-09-08)
+
+A `VegetTreeModel` placement cannot be resized — the game instances the
+species at its authored size — so until 2026-09-08 every source tree was
+placed as a STOCK species one size class down and stood ~2× too tall beside
+the half-size track ("the trees look really weird at double the size, can we
+make a static model half the size?" — vjeux, after playtesting all 25).
+`mapgeom tiny-library --veget bake` (the default) bakes every species the map
+places as ONE half-scale static item, `AV%08d.Item.Gbx`, from the pack's
+`.VegetTreeModel.Gbx` (`mapgeom veget-info PATH` prints one; all 193 species
+files of the five collections decode), placed at the source position × 0.5
+with the source yaw like every block: no stand-in species, no sink, and the
+tree clearance judges baked trees for the census only (a half-size tree at a
+half-size place meets a deck exactly when the original did).
+
+What the bake keeps and what it gives up:
+
+* **Kept**: every detail level's visuals at 0.5, under one item material per
+  model material; the trunk hull as the collision (Wood); the model's own LOD
+  switch distances, UNSCALED (a half-size tree switches where the full one
+  did); `--lod-pick` applies like to blocks (level N alone, no ladder).
+* **Materials**: the vegetation materials are inline (name + D/N/R images, no
+  pack `.Material.Gbx`), so each becomes an item-editor custom material —
+  `TDSN` for bark AND leaves, the pack's diffuse (DXT5 with alpha, mips cut to
+  256 px a side) in user-texture slot 0, riding next to the items as
+  `Items/<image>.dds`. Three facts cost a probe each: a visual without a
+  TexCoord1 set is NOT DRAWN under any valid material (the pack leaf visuals
+  carry uv0 alone → `ensure_texcoord1`); TDSN alpha-tests a diffuse that has
+  an alpha channel while TDOSN/TDOBSN/TIAdd draw such cards invisible and
+  TDOSN2Sided is not a model the item loader knows (red); custom materials of
+  one NAME are one material to the game (thirteen palms whose `PalmTree_Leaf`
+  differed only by model crashed the client at 0x140456513), so the name
+  spells the model and the image (`TDSN_ItemPalmTreeBranch_D`).
+* **Two-sided**: a reversed copy of every leaf triangle on the same vertices
+  (`TINY_TREE_LEAF_BACKFACES=shared`; `flip` duplicates the vertices with
+  reversed normals — no visible gain, +60 % leaf bytes).
+* **Given up, stated once**: no wind animation (the vertex-colour wind weights
+  are stripped), no impostor past the far distance (the last level is drawn
+  at every distance), no placement-colour hue mask (the default look is baked
+  — Summer 20's palms are placed Red, 10's Spring set Green; those tints are
+  gone).
+* **Count rule**: a species is baked only if it is ≥ 2 m tall AND carries a
+  collision hull. Hull-less species (grass, ferns, BlueBay's JungleForestA/B/C
+  — 7 m one-material trunkless cards the game instances by the tens of
+  thousands) stay on the stock path exactly as before: tiny 01 is 5 255 item
+  placements, not the 34 090 the first bake produced.
+* **Known cosmetic limit — dynamic lights**: the item shading models answer
+  local lights (stadium ShowLights rigs, the checkpoint gates' embedded
+  lights) with a yellow-white glare the game's vegetation shader never shows;
+  bushes standing inside a gate's beams (tiny 24, cp8) look like crumpled
+  paper while the tall species escape because their crowns sit above the
+  beams. Proven both ways — lights moved out of the box: the same bush goes
+  from mean RGB (166,175,100) with 12.5 % blown pixels to (69,77,56) and 0 %;
+  at source scale the glare is identical, so it is not a half-radius
+  intensity artefact. Nothing material-side moves it (alpha clamps, constant
+  textures in every slot, normal maps, vertex colours, back-face variants,
+  every other model). Decision 2026-09-08: ship as is; the light itself is
+  what is off (the road under those gates is too white in the tiny as well)
+  and goes to a lights follow-up, not a tree workaround.
+
+Sizes with `--lod-pick 1 --lod-pick-min-verts 2000`: 01 8.1 MB (5.9 without
+trees), 20 13.8, 17 12.3, 24 25.4 (45 MB without the pick), 25 26.9, 21 29.2
+(25.5 without trees; 28.3 with `TINY_TREE_TEX_MAX=128 TINY_TREE_LOD_MIN=1`).
+Playground open time is unchanged within noise (01: 4.4 s with trees, 4.0 s
+without; 20: 4.5 s; 17: 4.6 s).
