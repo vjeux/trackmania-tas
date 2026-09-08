@@ -136,6 +136,12 @@ pub mod build128182 {
     pub const POS_IN_PHY: u64 = 0x12f0;
     pub const VEL_IN_PHY: u64 = 0x12fc;
     pub const ANGVEL_IN_PHY: u64 = 0x1308;
+    /// The vehicle KIND fingerprint: a wheel-geometry float of the vehicle model at `phy + 0x1d14`,
+    /// constant per kind and per map (S12 / King of the Hillclimb / Winter 2026 - 05, all four slots
+    /// compared, ENV 2026-09-07): Stadium 0x3f5cee5b, Snow 0x3f6c2e02, Rally 0x3f5b29e9, Desert
+    /// 0x3f350cc4. A slot is NOT a kind: a whole-map Rally map holds Rally in all four slots, a
+    /// Stadium map with a Rally gate holds Stadium in slots 0/1/3 and Rally in slot 2.
+    pub const KIND_WORD_IN_PHY: u64 = 0x1d14;
     /// The two `CSceneVehicleVisState`s (0x360 bytes each) inside the phy:
     /// refreshed from the body BEFORE the solver (`+0x4e8`, so one tick
     /// behind) and AFTER the copy-out (`+0x848`). Both quantise to 1 mm.
@@ -167,6 +173,9 @@ pub struct Body {
 /// The car, and every object on the way to it.
 #[derive(Clone, Debug)]
 pub struct Car {
+    /// The vehicle KIND of the driven slot (0 Stadium, 1 Snow, 2 Rally, 3 Desert; u8::MAX unknown),
+    /// from the model fingerprint at `phy + KIND_WORD_IN_PHY` -- not the slot index.
+    pub kind: u8,
     pub controller: u64,
     pub sim: u64,
     pub playground: u64,
@@ -252,7 +261,8 @@ impl Car {
             max_dev: 0.0,
             cps: 0,
             vis: 0,
-            car: self.slot as u8,
+            car: if self.kind != u8::MAX { self.kind } else { self.slot as u8 },
+            car_slot: self.slot as u8,
         }
     }
 
@@ -500,7 +510,9 @@ pub fn resolve_with(
     if (qn - 1.0).abs() > 1e-3 {
         return Err(format!("phy {:#x}: |q| = {} -- not an attitude", phy, qn));
     }
+    let kind = word::<4>(&mut read, phy + KIND_WORD_IN_PHY, "kind word").ok().map(|w| kind_from_word(u32::from_le_bytes(w))).unwrap_or(u8::MAX);
     Ok(Car {
+        kind,
         controller,
         sim,
         playground,
@@ -777,5 +789,17 @@ mod tests {
             ]
         );
         assert_eq!(segs.iter().map(|s| s.1 as usize).sum::<usize>(), crate::layout::REC_LEN);
+    }
+}
+
+/// The vehicle kind from the model fingerprint word (`KIND_WORD_IN_PHY`): 0 Stadium, 1 Snow, 2 Rally,
+/// 3 Desert; `u8::MAX` for a value not in the table.
+pub fn kind_from_word(w: u32) -> u8 {
+    match w {
+        0x3f5cee5b => 0,
+        0x3f6c2e02 => 1,
+        0x3f5b29e9 => 2,
+        0x3f350cc4 => 3,
+        _ => u8::MAX,
     }
 }

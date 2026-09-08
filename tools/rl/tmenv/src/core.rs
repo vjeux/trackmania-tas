@@ -470,14 +470,22 @@ impl Core {
     /// agree with it on Summer 2026 - 01 (RL-agentG §5.1). Gap G1 replaces it
     /// with the engine's own counter in this same field.
     pub fn state(&self) -> CarState {
+        row_state(&self.cur, self.prev.as_ref(), self.gates_hit().min(u8::MAX as usize) as u8, self.is_finished())
+    }
+}
+
+/// A trace row as a `CarState` (the one conversion; `Core::state` is this on
+/// the current row). `prev` gives the angular velocity; gates/finished are the
+/// core's counters.
+pub fn row_state(r: &Row, prev: Option<&Row>, gates: u8, finished: bool) -> CarState {
+    {
         let mut st = CarState::unknown();
-        let r = &self.cur;
         st.race_ms = r.time_ms as i32;
         st.pos = [r.x as f32, r.y as f32, r.z as f32];
         st.vel = [r.vx as f32, r.vy as f32, r.vz as f32];
         st.quat = [r.qw as f32, r.qx as f32, r.qy as f32, r.qz as f32];
         st.speed = norm(st.vel);
-        st.ang_vel = match self.prev {
+        st.ang_vel = match prev {
             Some(pv) => tmobs::ang_vel_from_quats(
                 [pv.qw as f32, pv.qx as f32, pv.qy as f32, pv.qz as f32],
                 st.quat,
@@ -485,8 +493,8 @@ impl Core {
             ),
             None => [f32::NAN; 3],
         };
-        st.cps = self.gates_hit().min(u8::MAX as usize) as u8;
-        st.finished = self.is_finished();
+        st.cps = gates;
+        st.finished = finished;
         // G3: the live vis state (gear, rpm, wheels, turbo, car). Wheel order is
         // remapped from the engine's FL, FR, RR, RL to tmstate's FL, FR, RL, RR.
         // They are what the ghost's telemetry sample stamped `race_ms` carries
@@ -504,10 +512,24 @@ impl Core {
             }
             st.turbo = v.turbo_time;
             st.car = v.car;
+            st.car_slot = v.car_slot;
+            // v3 effects (INPUT arm EFFECTS.md): all from the same vis state
+            st.effects = 0x80
+                | (v.is_turbo as u8)
+                | ((v.ground_contact as u8) << 1)
+                | ((v.reactor_ground_mode as u8) << 2)
+                | ((v.reactor_inputs_x as u8) << 3);
+            st.reactor_lvl = v.reactor_lvl;
+            st.reactor_type = v.reactor_type;
+            st.boost_enum = v.boost_enum;
+            st.reactor_air = v.reactor_air;
+            st.sim_time_coef = v.sim_time_coef;
         }
         st
     }
+}
 
+impl Core {
     /// The action history the observation sees, oldest first.
     pub fn prev_actions(&self) -> &[Action] {
         &self.prev_actions

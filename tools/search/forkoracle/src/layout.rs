@@ -42,9 +42,11 @@ pub struct Layout {
     /// 0x360 bytes: gear, rpm, wheels, turbo, applied steer -- WHEELS.md), or 0
     /// when not carried. See [`Vis`].
     pub vis: u64,
-    /// The participant slot the driven vehicle came from (0 Stadium, 1 Snow,
-    /// 2 Rally, 3 Desert); meaningful only with `vis != 0`.
+    /// The driven vehicle's KIND (0 Stadium, 1 Snow, 2 Rally, 3 Desert) from the model
+    /// fingerprint (`car::KIND_WORD_IN_PHY`); the slot index when the fingerprint is unknown.
     pub car: u8,
+    /// The participant slot the driven vehicle came from (0..3) -- not a kind.
+    pub car_slot: u8,
 }
 
 /// Offsets within the gathered record, once the segments are concatenated.
@@ -143,7 +145,7 @@ pub fn decode_rows(blob: &[u8], l: &Layout, label_shift: i64) -> (Vec<Row>, Vec<
             qz: getf32(b, R_QUAT + 12),
             wetness: getf32(b, R_WET),
             cps: if l.cps != 0 { u32::from_le_bytes(b[R_CPS..R_CPS + 4].try_into().unwrap()) } else { u32::MAX },
-            vis: if l.vis != 0 { Vis::decode(&b[r_vis(l)..r_vis(l) + VIS_LEN], l.car) } else { Vis::UNKNOWN },
+            vis: if l.vis != 0 { Vis::decode(&b[r_vis(l)..r_vis(l) + VIS_LEN], l.car, l.car_slot) } else { Vis::UNKNOWN },
         };
         match rows.last_mut() {
             Some(last) if last.time_ms == t => *last = row,
@@ -352,9 +354,11 @@ pub struct Vis {
     /// False when the layout carries no vis segment: every field below is
     /// then meaningless and a consumer must say UNKNOWN, not zero.
     pub known: bool,
-    /// Which of the participant's four vehicle slots was live: 0 Stadium,
-    /// 1 Snow, 2 Rally, 3 Desert.
+    /// The driven vehicle's KIND: 0 Stadium, 1 Snow, 2 Rally, 3 Desert (the model fingerprint;
+    /// `Layout::car`) -- a whole-map Rally map reads 2 in slot 0.
     pub car: u8,
+    /// The participant slot the vehicle came from (0..3).
+    pub car_slot: u8,
     pub gear: u8,
     pub rpm: f32,
     /// The steer the engine applied, after the action-key cap, -1..1.
@@ -390,6 +394,7 @@ impl Vis {
     pub const UNKNOWN: Vis = Vis {
         known: false,
         car: u8::MAX,
+        car_slot: u8::MAX,
         gear: u8::MAX,
         rpm: f32::NAN,
         steer_applied: f32::NAN,
@@ -416,13 +421,14 @@ impl Vis {
     };
 
     /// Decode a gathered 0x360-byte vis state.
-    pub fn decode(s: &[u8], car: u8) -> Vis {
+    pub fn decode(s: &[u8], car: u8, car_slot: u8) -> Vis {
         let f = |o: usize| f32::from_le_bytes(s[o..o + 4].try_into().unwrap());
         let u = |o: usize| u32::from_le_bytes(s[o..o + 4].try_into().unwrap());
         let flags = u(0x88);
         let mut v = Vis {
             known: true,
             car,
+            car_slot,
             gear: (u(0x1a4) & 0xf) as u8,
             rpm: f(0x198),
             steer_applied: f(0x10),

@@ -42,13 +42,13 @@ pub struct CarState {
     pub turbo: f32,              // NaN unknown
     pub cps: u8,                 // checkpoints credited so far (engine-authoritative when available)
     pub finished: bool,
-    pub car: u8,                 // v2: 0 Stadium, 1 Snow, 2 Rally, 3 Desert (the participant's live vehicle slot); u8::MAX unknown
+    pub car: u8,                 // v2: the vehicle KIND 0 Stadium, 1 Snow, 2 Rally, 3 Desert (the model fingerprint at phy+0x1d14 since 2026-09-07; before that the participant slot, which is the kind only on Stadium maps); u8::MAX unknown
     // --- v3: CarState.effects (INPUT arm EFFECTS.md; all from the vis state the env already gathers) ---
     pub effects: u8,             // v3 bit flags: 0x01 turbo, 0x02 ground contact, 0x04 reactor ground mode, 0x08 reactor inputs-x, 0x80 KNOWN (0 = unknown; lives in v2's padding byte at offset 99)
     pub reactor_lvl: u8,         // v3: reactor boost level 0/1/2, u8::MAX unknown
     pub reactor_type: u8,        // v3: 1 down, 2 up, 0 none, u8::MAX unknown
     pub boost_enum: u8,          // v3: boost enum (u32(+0x19c) & 7), u8::MAX unknown
-    pub _pad3: u8,               // v3: reserved, 0
+    pub car_slot: u8,            // v3 (was _pad3): the participant vehicle slot the car came from, 0..3; u8::MAX unknown -- NOT a kind
     pub reactor_air: [f32; 3],   // v3: reactor air control, NaN unknown
     pub sim_time_coef: f32,      // v3: simulation time coefficient (slow-motion), 1.0 normally, NaN unknown
 }
@@ -187,7 +187,7 @@ impl CarState {
             reactor_lvl: u8::MAX,
             reactor_type: u8::MAX,
             boost_enum: u8::MAX,
-            _pad3: 0,
+            car_slot: u8::MAX,
             reactor_air: [f32::NAN; 3],
             sim_time_coef: f32::NAN,
         }

@@ -834,6 +834,7 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
             cps: 0,
             vis: 0,
             car: 0,
+            car_slot: 0,
         },
         None => unreachable!("the derived anchor is always present"),
     };
