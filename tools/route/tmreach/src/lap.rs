@@ -498,6 +498,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
     out.log.push(format!("root at ({:.1}, {:.1}, {:.1}): centreline s {:.1} m (segment {seg0}, {:.1} m off), track {:.0} m, {} groups at s {:?}, h {h}, steer sign {:+}", root_row.x, root_row.y, root_row.z, s0, d0, track.len_m(), n_groups, track.gate_s.iter().map(|x| format!("{x:.0}")).collect::<Vec<_>>(), cfg.steer_sign));
     let cps_of = |r: &Row| -> u8 { if r.cps == u32::MAX { 0 } else { r.cps as u8 } };
     let debug = std::env::var("TMREACH_LAP_DEBUG").is_ok();
+    let debug_fan = std::env::var("TMREACH_LAP_DEBUG_FAN").is_ok();
     let root_cps = cps_of(&root_row);
     let track_min_y = track.pts.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
 
@@ -706,6 +707,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let lat_abs = lat.abs();
             if !on_gap && (lat_abs > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol) {
                 out.deaths[1] += 1;
+                if debug_fan {
+                    eprintln!("    OFFROUTE {desc:34}: end ({:.1}, {:.1}, {:.1}) v {:.1} s {s:.1} lat {lat:.1} d3 {d3:.1} hw {hw:.1}", end.x, end.y, end.z, speed(&end));
+                }
                 continue;
             }
             // fell off: far below the nearest centreline point on a road leg; on a GAP leg (jump, drop,
@@ -717,6 +721,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             // (below the polyline while laterally ON the road = a dip the centreline's y does not follow: 08 at s 585)
             if (!on_gap && end.y < road_y - 5.0 && (lat_abs > hw + 1.0 || end.y < road_y_min - cfg.below_tol)) || (on_gap && (end.y < track_min_y - 5.0 || d3 > 120.0)) {
                 out.deaths[2] += 1;
+                if debug_fan {
+                    eprintln!("    FELL {desc:38}: end ({:.1}, {:.1}, {:.1}) v {:.1} s {s:.1} lat {lat:.1} d3 {d3:.1} road_y {road_y:.1} min15 {road_y_min:.1} hw {hw:.1}", end.x, end.y, end.z, speed(&end));
+                }
                 continue;
             }
             // dead: stopped and not at the start
@@ -752,7 +759,11 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 // past the next gate without its credit: worth only the leg start (20 m before the gate
                 // ranked level with a legit approach; 20's lower deck under gate 3 sat there for 2 h)
                 let s_eff = if s > s_gate + 6.0 { s_prev + 10.0 } else { s };
-                k_pref as f64 * 10_000.0 + s_eff - 0.02 * lat_abs.min(20.0)
+                // SPEED matters on jump/ramp/wall legs (21: 31 m/s at the foot or the car drops in the gap):
+                // a cell at the human's speed ranks 30 m ahead of a stopped one at the same arc length
+                let vh = track.human_speed_at(s);
+                let speed_bonus = if vh > 3.0 { 30.0 * (speed(&end) / vh).clamp(0.0, 1.2) } else { 0.0 };
+                k_pref as f64 * 10_000.0 + s_eff - 0.02 * lat_abs.min(20.0) + speed_bonus
             };
             // on a gap leg the arc length says little: the cell is the 4 m x 4 m ground square there
             // on a road leg the cell also carries a 2 m LATERAL bucket (14's ramp: the line's x on the ramp decides the flight)
@@ -818,7 +829,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let road_y = track.at(s)[1];
             let hw = track.half_width.get(seg).copied().unwrap_or(5.5);
             let road_y_min = track.min_y_near(s, 15.0);
-            let bad = speed(&end) < 3.0 || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y_min - cfg.below_tol));
+            let bad = speed(&end) < 3.0 || end.vy < -3.0 || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y_min - cfg.below_tol));
             if !bad || tries >= 12 || recs.len() <= 300 {
                 break (rows, nh, end, s, seg);
             }
@@ -826,7 +837,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             tries += 1;
             let cut = recs.len() - 300;
             recs.truncate(cut);
-            out.log.push(format!("seed ends in a dead state (v {:.1}, {:.1} m below the line, lat {:.1}); chain cut to {} ticks", speed(&end), road_y - end.y, lat, cut));
+            out.log.push(format!("seed ends in a dead state (v {:.1}, vy {:+.1}, {:.1} m below the line, lat {:.1}); chain cut to {} ticks", speed(&end), end.vy, road_y - end.y, lat, cut));
             if cfg.verbose {
                 eprintln!("{}", out.log.last().unwrap());
             }

@@ -30,6 +30,8 @@ pub struct SweepCfg {
     pub head_pulses: Vec<i32>,
     pub lat_len: usize,
     pub head_len: usize,
+    /// report the speed when the car first passes this arc length (the ramp foot), 0 = off
+    pub mark_s: f64,
 }
 
 pub struct Entry {
@@ -43,6 +45,7 @@ pub struct Entry {
     pub lat_m: f64,
     pub dy: f64,
     pub speed_at_pre: f64,
+    pub speed_at_mark: f64,
     pub stopped: bool,
     pub rows: usize,
 }
@@ -121,6 +124,23 @@ pub fn run(w: &mut Worker, track: &Track, cfg: &SweepCfg) -> Result<Vec<Entry>, 
                 let Some(end) = r.rows.last().cloned() else { continue };
                 let apex_y = r.rows.iter().map(|x| x.y).fold(f64::MIN, f64::max);
                 let speed_at_pre = r.rows.get(cfg.pre.min(r.rows.len().saturating_sub(1))).map(speed).unwrap_or(0.0);
+                let mut speed_at_mark = 0.0;
+                if cfg.mark_s > 0.0 {
+                    let mut hint = track.pts.len() / 2;
+                    let mut win = track.pts.len();
+                    for (i, row) in r.rows.iter().enumerate() {
+                        if i % 3 != 0 {
+                            continue;
+                        }
+                        let (ss, _, sg, _) = track.project(pos(row), hint, win);
+                        hint = sg;
+                        win = 80;
+                        if ss >= cfg.mark_s {
+                            speed_at_mark = speed(row);
+                            break;
+                        }
+                    }
+                }
                 let (s, lat_m, seg, _) = track.project(pos(&end), track.pts.len() / 2, track.pts.len());
                 let _ = seg;
                 let dy = end.y - track.at(s)[1];
@@ -134,6 +154,7 @@ pub fn run(w: &mut Worker, track: &Track, cfg: &SweepCfg) -> Result<Vec<Entry>, 
                     lat_m,
                     dy,
                     speed_at_pre,
+                    speed_at_mark,
                     stopped: speed(&end) < 2.0,
                     rows: r.rows.len(),
                     end,
@@ -146,11 +167,11 @@ pub fn run(w: &mut Worker, track: &Track, cfg: &SweepCfg) -> Result<Vec<Entry>, 
 }
 
 pub fn table(entries: &[Entry]) -> String {
-    let mut s = String::from("brake_ticks\tlat_pulse\thead_pulse\tspeed_at_launch\tcredits\tend_s\tend_lat\tend_dy\tapex_y\tend_x\tend_y\tend_z\tend_speed\tstopped\trows\n");
+    let mut s = String::from("brake_ticks\tlat_pulse\thead_pulse\tspeed_at_launch\tspeed_at_mark\tcredits\tend_s\tend_lat\tend_dy\tapex_y\tend_x\tend_y\tend_z\tend_speed\tstopped\trows\n");
     for e in entries {
         s.push_str(&format!(
-            "{}\t{}\t{}\t{:.1}\t{}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{}\t{}\n",
-            e.brake, e.lat, e.head, e.speed_at_pre, e.credits, e.s, e.lat_m, e.dy, e.apex_y, e.end.x, e.end.y, e.end.z, speed(&e.end), e.stopped as u8, e.rows
+            "{}\t{}\t{}\t{:.1}\t{:.1}\t{}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{}\t{}\n",
+            e.brake, e.lat, e.head, e.speed_at_pre, e.speed_at_mark, e.credits, e.s, e.lat_m, e.dy, e.apex_y, e.end.x, e.end.y, e.end.z, speed(&e.end), e.stopped as u8, e.rows
         ));
     }
     s
