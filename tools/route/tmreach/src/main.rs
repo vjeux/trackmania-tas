@@ -1534,11 +1534,12 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
         seed: a.get("seed").map(|s| s.parse().unwrap()).unwrap_or(1),
         steer_sign: a.get("steer-sign").map(|s| s.parse().unwrap()).unwrap_or(1.0),
         out: out.clone(),
-        max_chain_ticks: a.get("max-chain-ticks").map(|s| s.parse().unwrap()).unwrap_or(14000),
+        max_chain_ticks: a.get("max-chain-ticks").map(|s| s.parse().unwrap()).unwrap_or(usize::MAX),
         verbose: a.has("verbose"),
         prefix_ticks: a.get("prefix-ticks").map(|s| s.parse().unwrap()).unwrap_or(0),
         lat_tol: a.get("lat-tol").map(|s| s.parse().unwrap()).unwrap_or(6.0),
         below_tol: a.get("below-tol").map(|s| s.parse().unwrap()).unwrap_or(25.0),
+        clinic: a.has("clinic"),
         seed_chain: match a.get("seed-chain") {
             Some(f) => {
                 let txt = std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;
@@ -1571,6 +1572,13 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
         println!("NO FINISH within the budget");
         return Ok(());
     };
+    // CLINIC: a completed leg is handed on as a chain, not a candidate tape
+    if let (Some(k), true) = (res.leg_done, (f.cps as usize) < cfg.track.n_groups) {
+        let p = out.join(format!("leg-{k:02}.tape.tsv"));
+        std::fs::write(&p, tmreach::lap::tsv_text(&f.chain)).map_err(|e| e.to_string())?;
+        println!("LEG {k} DONE — chain {} ({} ticks, cps {}, mask {:#x})", p.display(), f.chain.len(), f.cps, f.mask);
+        return Ok(());
+    }
     // the candidate tape: the chain from the root, then brake to the end of the tape
     let n = w.n_ticks();
     let root = w.root_probe;
