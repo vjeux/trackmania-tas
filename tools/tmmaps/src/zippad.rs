@@ -1,4 +1,4 @@
-//! `tmmaps zippad SRC.Map.Gbx --out F [--prune-unplaced] [--pad-items N] [--pad-bytes M] [--keep-models K]`
+//! `tmmaps zippad SRC.Map.Gbx --out F [--prune-unplaced] [--drop-ext dds] [--pad-items N] [--pad-bytes M] [--keep-models K]`
 //!
 //! Variants of one tiny map that differ ONLY in the embedded archive — the
 //! instrument of the load-failure bisect (2026-09-08): the "Missing Items:
@@ -96,6 +96,17 @@ pub fn cmd(args: &[String]) {
         let before = entries.len();
         entries.retain(|name, _| !name.ends_with(".Item.Gbx") || placed.contains(name.trim_start_matches("Items/")));
         println!("  --prune-unplaced: {} unplaced item entries dropped", before - entries.len());
+    }
+    // --drop-ext dds: every entry with that extension goes (the sign-logo and
+    // light-colour pictures the items' custom-texture materials name — the
+    // one kind of entry the game reads on ANOTHER thread, the texture
+    // streamer's, while the main thread walks the items through the same
+    // archive: the race suspect of 2026-09-08)
+    if let Some(ext) = crate::cli::flag(args, "--drop-ext") {
+        let suffix = format!(".{}", ext.trim_start_matches('.').to_lowercase());
+        let before = entries.len();
+        entries.retain(|name, _| !name.to_lowercase().ends_with(&suffix));
+        println!("  --drop-ext {ext}: {} entries dropped", before - entries.len());
     }
     if pad_items > 0 {
         // the smallest placed item is the template
