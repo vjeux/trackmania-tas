@@ -184,6 +184,12 @@ Pivots need no correction — every pair shares the origin convention (fogger
 base at y −0.088, sparkler base at 0, torch stake below 0), measured with
 `mapgeom dump` / `mapgeom model … --out X.obj` on the pack prefabs.
 
+The stand-in's NAME is the item file's header ident, case-exact, never the pack
+path: `Stadium\Items\ShowFogger8M.Item.Gbx` says `ShowFogger8m` inside, and a
+`ShowFogger8M` placement is silently DROPPED by the game (no dialog; the item
+census the probe plugin writes after a load is the tell — `items=N` under the
+file's placement count). `build` reads every stand-in's ident back from its file.
+
 Verified in the editor on tiny 15 (22 foggers, 13 sparklers) against the
 original from the same cameras at half distance: plumes and spark bursts at
 the original spots, the machines on their decks, the same apparent size (=
