@@ -1,4 +1,4 @@
-//! `tinyctl startcheck --map M [--tag T]` — where does the CLIENT put the car?
+//! `tinyctl startcheck --map M [--tag T] [--wheels-ms 15000]` — where does the CLIENT put the car?
 //!
 //! The freeze pass needs this per map. A published tiny map is only sound if
 //! the dedicated server (the oracle that certifies laps and the author ghost)
@@ -39,12 +39,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
     let sp = spawn.pos;
     println!("{}: Spawn placement i{} {} at [{:.2}, {:.2}, {:.2}]", map.display(), spawn.index, spawn.model, sp[0], sp[1], sp[2]);
 
-    // Open the playground and read the car at rest.
+    // Open the playground and read the car at rest. The wheel log runs for
+    // `--wheels-ms` (default 15 000): the vehicle state is null through the
+    // MediaTracker intro and the first frames of a big map (tiny 24 with
+    // 22 662 items, 2026-09-08: a 100 ms window right after the playground
+    // opened held two "# no vehicle state" rows and the check said NO VEHICLE
+    // while the screenshot 5 s later showed the car on the start line), so
+    // the window is long and the FIRST row with a position is the answer —
+    // without input the car does not move.
+    let wheels_ms = f("--wheels-ms").unwrap_or_else(|| "15000".into());
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let out = Command::new(&exe)
         .args(["play", "--map"])
         .arg(&map)
-        .args(["--tag", &tag, "--shots", "1", "--first-ms", "600", "--wheels-ms", "100", "--outdir"])
+        .args(["--tag", &tag, "--shots", "1", "--first-ms", "600", "--wheels-ms", &wheels_ms, "--outdir"])
         .arg(&outdir)
         .output()
         .map_err(|e| format!("tinyctl play: {e}"))?;
@@ -62,7 +70,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .map(|l| l.split('\t').collect::<Vec<_>>())
         .find(|c| c.len() > 4);
     let Some(c) = row else {
-        return Err(format!("{}: no car row — the playground opened with NO VEHICLE (this map cannot be driven)", wheels.display()));
+        return Err(format!("{}: no car row in {wheels_ms} ms — the playground opened with NO VEHICLE (this map cannot be driven), or the vehicle state never came up: look at the play sheet", wheels.display()));
     };
     let car = [c[2].parse::<f32>().unwrap_or(f32::NAN), c[3].parse::<f32>().unwrap_or(f32::NAN), c[4].parse::<f32>().unwrap_or(f32::NAN)];
     let d = ((car[0] - sp[0]).powi(2) + (car[1] - sp[1]).powi(2) + (car[2] - sp[2]).powi(2)).sqrt();
