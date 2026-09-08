@@ -693,11 +693,31 @@ fn cmd_plan(args: &[String]) {
         if let Some(f) = flag(args, "--p-step") { c.p_step_floor = f.parse().unwrap_or(0.05); }
         if let Some(p) = flag(args, "--penalty") { c.penalty_ms = p.parse().unwrap_or(3000.0); }
         c.fast = has(args, "--fast-fan");
-        // the same parallel precompute + budget as the pure chain (the cost is inside Chained; a memo on top saw 0 hits)
+        // price ONLY the hybrid's R-set (graph-missing, detour, override candidates — decided from geometry before
+        // planning) so the budget never truncates and two runs of the same models agree (MODEL F21, 12:59Z);
+        // --precompute-all restores the full n²×5 set
         let budget = std::time::Duration::from_secs_f64(flag(args, "--budget-s").and_then(|s| s.parse().ok()).unwrap_or(300.0));
         let cthreads: usize = flag(args, "--chain-threads").and_then(|s| s.parse().ok()).unwrap_or(32);
-        let (done, total, secs) = c.precompute(cthreads, budget);
-        println!("  chained precompute (hybrid): {done}/{total} edges priced in {secs:.1} s on {cthreads} threads (budget {:.0} s){}", budget.as_secs_f64(), if done < total { " — the rest fall back to the gate head" } else { "" });
+        let (done, total, secs) = if has(args, "--precompute-all") {
+            c.precompute(cthreads, budget)
+        } else {
+            let cand_ratio: f32 = flag(args, "--override-cand").and_then(|s| s.parse().ok()).unwrap_or(1.5);
+            let probe = tmplan::estimator::Hybrid { geo: &geo, learned: &geo, geo_time: Some(&geo), override_p: 1.0, override_frac: 0.0, detour_ratio: flag(args, "--detour").and_then(|s| s.parse().ok()).unwrap_or(4.0), detour_speed: flag(args, "--detour-speed").and_then(|s| s.parse().ok()).unwrap_or(50.0), nodes, len: &len_m, counts: std::cell::Cell::new((0, 0)) };
+            let (mut set, nm, nd, nc) = probe.r_set(cand_ratio);
+            let n = nodes.pos.len();
+            // DETERMINISTIC order (graph-missing, then detour, then candidates; each by chord) and an optional job cap
+            // (--max-r-jobs K: the first K (bucket, from, to) jobs of that order — the SAME jobs every run, unlike a
+            // wall-clock cut) so two runs of the same models agree
+            let chord = |a: usize, b: usize| { let p = nodes.pos[a]; let q = nodes.pos[b]; ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt() };
+            let class = |from: usize, to: usize| -> u8 { let g = geo.estimate(StateBucket::of_speed(0.0), None, from, to); let has_path = len_m[from][to].is_finite() && g.kind == tmplan::estimator::EdgeKind::Surface; if !has_path { 0 } else { let implied = if g.expected_ms > 0 { len_m[from][to] / (g.expected_ms as f32 / 1000.0) } else { f32::INFINITY }; if len_m[from][to] > probe.detour_ratio * chord(from, to).max(20.0) || implied < probe.detour_speed { 1 } else { 2 } } };
+            set.sort_by(|a, b| (class(a.0, a.1), chord(a.0, a.1)).partial_cmp(&(class(b.0, b.1), chord(b.0, b.1))).unwrap());
+            let max_jobs: usize = flag(args, "--max-r-jobs").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let mut capped = 0usize;
+            if max_jobs > 0 { let mut jobs = 0usize; let mut keep = Vec::new(); for &(f, t) in &set { let j = if f == 0 { 1 } else { 5 }; if jobs + j > max_jobs { capped += 1; continue; } jobs += j; keep.push((f, t)); } set = keep; }
+            println!("  hybrid R-set: {} of {} edges (graph-missing {nm}, detour {nd}, override candidates path > {cand_ratio:.1}× chord {nc}){}", set.len() + capped, n * (n - 1), if capped > 0 { format!(" — --max-r-jobs {max_jobs}: {capped} edges beyond the cap left to the gate head (deterministic)") } else { String::new() });
+            c.precompute_only(cthreads, budget, &set)
+        };
+        println!("  chained precompute (hybrid): {done}/{total} (bucket, from, to) jobs priced in {secs:.1} s on {cthreads} threads (budget {:.0} s){}", budget.as_secs_f64(), if done < total { " — BUDGET CUT: the rest fall back to the gate head" } else { "" });
         c.fallback = Some(tmr::estimator::REstimator { w, feat: &feat, gates, nodes, surf, h_max, h_min, keep: keep.clone(), p_floor: 0.0 });
         Some(c)
     } else { None };
