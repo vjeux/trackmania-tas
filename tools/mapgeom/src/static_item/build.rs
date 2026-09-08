@@ -577,14 +577,38 @@ impl Merged {
         self.material_slot(&plain, phys)
     }
 
-    /// Slot of a material instance copied from a source (deduplicated by
-    /// link + physics like the rest).
-    pub fn material_inst_slot(&mut self, inst: &CPlugMaterialUserInst) -> usize {
-        let link = inst.link().unwrap_or("").to_string();
-        if let Some(i) = self.materials.iter().position(|m| m.link() == Some(link.as_str()) && m.physics() == inst.physics()) {
+    /// Slot of a material instance copied from a source, deduplicated by its
+    /// whole LOOK — link, physics and every constant — not by link alone.
+    ///
+    /// A mesh-modeler item (the club's TME nation items, Summer 21–25) dresses
+    /// its parts in one game material many times over with a different
+    /// `TargetColor` constant per part: the Guanako is seven
+    /// `Material_BlockCustom\CustomPlastic` slots (fur, belly, hooves…), each
+    /// with its own `color`. Keyed by link + physics they collapsed into the
+    /// first slot's colour (2026-09-08: the whole animal in one plastic). Two
+    /// slots merge only when everything but their author-side names agrees.
+    ///
+    /// `folder` is the source Solid2's `materials_folder`: a modeler material
+    /// (`is_using_game_material` false, a bare `TechnicsTrims`) names its file
+    /// relative to it. The copy is rewritten as the equivalent game material
+    /// with the full link (`Stadium\Media\Material\TechnicsTrims`) — the form
+    /// every other baked item uses and `item-check` can resolve.
+    pub fn material_inst_slot(&mut self, inst: &CPlugMaterialUserInst, folder: &str) -> usize {
+        let mut owned = inst.clone();
+        if let Some(main) = owned.main.as_mut() {
+            if !main.is_using_game_material && main.version >= 11 {
+                if let Some(bare) = main.link.as_str().filter(|l| !l.is_empty() && !l.contains('\\')).map(|s| s.to_string()) {
+                    let folder = if folder.is_empty() { "Stadium\\Media\\Material\\" } else { folder };
+                    let full = format!("{}{bare}", folder.strip_suffix('\\').map(|f| format!("{f}\\")).unwrap_or_else(|| folder.to_string()));
+                    main.link = crate::crystal_model::Id::Str(full);
+                    main.is_using_game_material = true;
+                }
+            }
+        }
+        if let Some(i) = self.materials.iter().position(|m| same_look(m, &owned)) {
             return i;
         }
-        self.materials.push(inst.clone());
+        self.materials.push(owned);
         self.materials.len() - 1
     }
 
@@ -828,7 +852,7 @@ impl Merged {
                             let stem = link.rsplit('\\').next().unwrap_or(&link);
                             Some(self.material_slot(crate::tiny_assets::editors_link_for_stadium_material(stem), inst.physics()))
                         } else {
-                            Some(self.material_inst_slot(inst))
+                            Some(self.material_inst_slot(inst, &s2.materials_folder))
                         }
                     }
                     None if !m.name.is_empty() => Some(self.link_slot(&m.name, 0, self.editors)),
@@ -2172,6 +2196,21 @@ pub fn material_link(path: &str) -> String {
         Some(i) => path[..i].to_string(),
         None => path.to_string(),
     }
+}
+
+/// Two material instances draw the same: every field of the main chunk but
+/// the author-side `material_name` (`TM_Argentina_CustomPlastic43` vs
+/// `…43S1` — the same plastic, the same colour), and the tiling chunk, agree.
+/// The dedup key of [`Merged::material_inst_slot`]; `item-check` refuses two
+/// slots that are the same by this measure.
+pub fn same_look(a: &CPlugMaterialUserInst, b: &CPlugMaterialUserInst) -> bool {
+    let strip = |m: &CPlugMaterialUserInst| {
+        m.main.clone().map(|mut main| {
+            main.material_name = crate::crystal_model::Id::Null;
+            main
+        })
+    };
+    strip(a) == strip(b) && a.tiling == b.tiling
 }
 
 /// Walk a prefab (and its external prefabs, recursively) adding every static
@@ -3951,4 +3990,60 @@ pub fn light_skin_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMat
         }
     }
     owned
+}
+
+#[cfg(test)]
+mod material_slot_tests {
+    use super::*;
+    use crate::crystal_model::{Cst, Id};
+
+    /// A modeler item's `CustomPlastic` slot with one `TargetColor`.
+    fn plastic(name: &str, rgb: [f32; 3]) -> CPlugMaterialUserInst {
+        let mut m = CPlugMaterialUserInst::game_material("Stadium\\Media\\Material_BlockCustom\\CustomPlastic", 77);
+        let main = m.main.as_mut().unwrap();
+        main.material_name = Id::Str(name.to_string());
+        main.csts = vec![Cst { u01: Id::Str("TargetColor".into()), u02: Id::Str("Real".into()), u03: 3 }];
+        main.color = rgb.iter().map(|c| c.to_bits() as i32).collect();
+        m
+    }
+
+    #[test]
+    fn colour_slots_stay_distinct_and_equal_looks_merge() {
+        // the Guanako: same link + physics, seven colours → seven slots
+        let mut m = Merged::default();
+        let fur = m.material_inst_slot(&plastic("TM_Argentina_CustomPlastic43", [0.462, 0.130, 0.053]), "Stadium\\Media\\Material\\");
+        let belly = m.material_inst_slot(&plastic("TM_Argentina_CustomPlastic44", [0.723, 0.730, 0.687]), "Stadium\\Media\\Material\\");
+        assert_ne!(fur, belly);
+        // the same colour under another author-side name is the same slot
+        let fur_again = m.material_inst_slot(&plastic("TM_Argentina_CustomPlastic43S1", [0.462, 0.130, 0.053]), "Stadium\\Media\\Material\\");
+        assert_eq!(fur, fur_again);
+        assert_eq!(m.materials.len(), 2);
+        // the constants travel
+        let main = m.materials[fur].main.as_ref().unwrap();
+        assert_eq!(main.csts.len(), 1);
+        assert_eq!(f32::from_bits(main.color[0] as u32), 0.462);
+    }
+
+    #[test]
+    fn a_bare_modeler_link_becomes_the_full_game_material() {
+        let mut inst = CPlugMaterialUserInst::game_material("TechnicsTrims", 4);
+        let main = inst.main.as_mut().unwrap();
+        main.is_using_game_material = false;
+        main.material_name = Id::Str("TM_TechnicsTrims_asset".into());
+        let mut m = Merged::default();
+        let slot = m.material_inst_slot(&inst, "Stadium\\Media\\Material\\");
+        let out = m.materials[slot].main.as_ref().unwrap();
+        assert!(out.is_using_game_material);
+        assert_eq!(out.link.as_str(), Some("Stadium\\Media\\Material\\TechnicsTrims"));
+        // an empty folder means the collection's material folder
+        let mut m2 = Merged::default();
+        let slot2 = m2.material_inst_slot(&inst, "");
+        assert_eq!(m2.materials[slot2].link(), Some("Stadium\\Media\\Material\\TechnicsTrims"));
+        // and a full game link is left alone (`Stadium256\…\WarpTechnic`)
+        let full = CPlugMaterialUserInst::game_material("Stadium256\\Media\\Material_BlockCustom\\WarpTechnic", 4);
+        let slot3 = m2.material_inst_slot(&full, "Stadium\\Media\\Material\\");
+        assert_eq!(m2.materials[slot3].link(), Some("Stadium256\\Media\\Material_BlockCustom\\WarpTechnic"));
+        // the same look again is the same slot
+        assert_eq!(m2.material_inst_slot(&full, ""), slot3);
+    }
 }

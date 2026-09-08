@@ -91,7 +91,18 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         let mut hull_optional: Vec<usize> = Vec::new();
         if let Some(so) = f.item.static_object() {
             match so.solid2() {
-                Some(s2) => parts.push((String::new(), s2, so.surface())),
+                Some(s2) => {
+                    // a mesh-collidable static object (the modeler's items:
+                    // `is_mesh_collidable`, no shape) collides on its visual
+                    // mesh — no separate hull to check
+                    if so.is_mesh_collidable && so.surface().is_none() {
+                        hull_optional.push(parts.len());
+                        if facts {
+                            println!("{path}: collision is the visual mesh (is_mesh_collidable, no shape)");
+                        }
+                    }
+                    parts.push((String::new(), s2, so.surface()))
+                }
                 None => {
                     println!("{path}: FAIL no solid2");
                     bad += 1;
@@ -248,7 +259,11 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                 problems.push(format!("material {mi} used by no geom"));
             }
         }
-        let mut slots: Vec<(String, u8)> = Vec::new();
+        // Two slots are duplicates when they draw the same (`same_look`: link,
+        // physics and every constant, names aside). A mesh-modeler item
+        // (Summer 21's TME nation items) legitimately carries one game
+        // material many times with a different `TargetColor` per part.
+        let mut seen: Vec<&crate::crystal_model::CPlugMaterialUserInst> = Vec::new();
         for (mi, m) in s2.custom_materials.iter().enumerate() {
             let Some(inst) = m.inst() else {
                 problems.push(format!("material {mi}: not a CPlugMaterialUserInst"));
@@ -260,11 +275,11 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
             // files must ride in the same archive folder as the item, which
             // the check cannot see; it requires the form to be complete.
             let custom = inst.main.as_ref().filter(|m| !m.is_using_game_material && link.is_empty()).map(|m| (m.model.clone(), m.user_textures.clone()));
-            let key = (if let Some((_, t)) = &custom { format!("custom:{}", t.iter().map(|t| format!("{}={}", t.u01, t.texture)).collect::<Vec<_>>().join(";")) } else { link.clone() }, inst.physics());
-            if slots.contains(&key) {
-                problems.push(format!("material {mi}: duplicate slot {} ({})", key.0, inst.physics()));
+            if let Some(prev) = seen.iter().find(|p| super::build::same_look(p, inst)) {
+                let what = prev.link().filter(|l| !l.is_empty()).map(|l| l.to_string()).unwrap_or_else(|| "custom-texture material".into());
+                problems.push(format!("material {mi}: duplicate slot {what} ({})", inst.physics()));
             }
-            slots.push(key.clone());
+            seen.push(inst);
             if let Some((model, textures)) = &custom {
                 let model_name = match model {
                     crate::crystal_model::Id::Str(s) => s.clone(),
@@ -291,13 +306,45 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                 problems.push(format!("material {mi}: empty link"));
             } else {
                 let st = store.get_or_insert_with(|| open());
-                let file = format!("{link}.Material.Gbx");
+                // A modeler material (`is_using_game_material` false) names its
+                // file relative to the Solid2's `materials_folder`
+                // (`TechnicsTrims` under `Stadium\Media\Material\`).
+                let modeler = inst.main.as_ref().map(|m| !m.is_using_game_material).unwrap_or(false) && !link.contains('\\');
+                let file = if modeler {
+                    let folder = if s2.materials_folder.is_empty() { "Stadium\\Media\\Material\\" } else { s2.materials_folder.as_str() };
+                    format!("{}{link}.Material.Gbx", folder.strip_suffix('\\').map(|f| format!("{f}\\")).unwrap_or_else(|| folder.to_string()))
+                } else {
+                    format!("{link}.Material.Gbx")
+                };
                 if st.resolve(&file).is_none() {
-                    problems.push(format!("material {mi}: link {link} resolves to no .Material.Gbx in the packs"));
+                    problems.push(format!("material {mi}: link {link} resolves to no .Material.Gbx in the packs{}", if modeler { format!(" (modeler material, tried {file})") } else { String::new() }));
                 }
             }
             if facts {
-                let extra = inst.main.as_ref().map(|m| { let mut s = String::new(); if !m.uv_anims.is_empty() { s.push_str(&format!(" uvanims [{}]", m.uv_anims.iter().map(|a| format!("{:?}/{:?}/{}/{:#x}/{:?}", a.u01, a.u02, a.u03, a.u04, a.u05)).collect::<Vec<_>>().join(", "))); } if !m.csts.is_empty() { s.push_str(&format!(" csts {}", m.csts.len())); } if !m.color.is_empty() { s.push_str(&format!(" color {:?}", m.color)); } if !m.user_textures.is_empty() { s.push_str(&format!(" textures [{}]", m.user_textures.iter().map(|t| format!("{}={}", t.u01, t.texture)).collect::<Vec<_>>().join(" "))); } s }).unwrap_or_default();
+                let extra = inst
+                    .main
+                    .as_ref()
+                    .map(|m| {
+                        let mut s = String::new();
+                        if !m.is_using_game_material {
+                            s.push_str(" modeler");
+                        }
+                        if !m.uv_anims.is_empty() {
+                            s.push_str(&format!(" uvanims [{}]", m.uv_anims.iter().map(|a| format!("{:?}/{:?}/{}/{:#x}/{:?}", a.u01, a.u02, a.u03, a.u04, a.u05)).collect::<Vec<_>>().join(", ")));
+                        }
+                        // constants: `TargetColor Real 3` + three f32 bits in `color`
+                        for c in &m.csts {
+                            s.push_str(&format!(" cst {}:{}x{}", c.u01.as_str().unwrap_or("?"), c.u02.as_str().unwrap_or("?"), c.u03));
+                        }
+                        if !m.color.is_empty() {
+                            s.push_str(&format!(" color [{}]", m.color.iter().map(|v| format!("{:.3}", f32::from_bits(*v as u32))).collect::<Vec<_>>().join(", ")));
+                        }
+                        if !m.user_textures.is_empty() {
+                            s.push_str(&format!(" textures [{}]", m.user_textures.iter().map(|t| format!("{}={}", t.u01, t.texture)).collect::<Vec<_>>().join(" ")));
+                        }
+                        s
+                    })
+                    .unwrap_or_default();
                 println!("{path}: material {mi} {link} phys {} used by {} geoms{extra}", inst.physics(), used.get(mi).copied().unwrap_or(0));
             }
         }
