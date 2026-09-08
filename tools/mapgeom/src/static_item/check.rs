@@ -686,7 +686,18 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                     }
                 }
                 if facts {
-                    println!("{path}: {label}collision {} vertices {} triangles physics {:?}", vertices.len(), triangles.len(), sf.material_ids);
+                    println!("{path}: {label}collision {} vertices {} triangles physics {:?} gameplay_main_dir {:?} surf_version {}", vertices.len(), triangles.len(), sf.material_ids, sf.gameplay_main_dir, sf.surf_version);
+                    // the gameplay id rides the table's high byte (Turbo 1, Reset 8, …)
+                    let mut gp: std::collections::BTreeMap<(u8, u8), usize> = std::collections::BTreeMap::new();
+                    for t in triangles {
+                        let via_table = sf.material_ids.get(t.surface_index.max(0) as usize).map(|id| ((id >> 8) & 0xFF) as u8).unwrap_or(0);
+                        *gp.entry((t.gameplay, via_table)).or_default() += 1;
+                    }
+                    for ((byte, table), n) in &gp {
+                        if *byte != 0 || *table != 0 {
+                            println!("{path}:   {n} triangles: gameplay byte {byte}, table[idx]>>8 {table}");
+                        }
+                    }
                     // Per-triangle physics, two ways: the triangle's own u8 and
                     // the surface's material table indexed by the triangle's
                     // surface index. They disagree on some Nadeo hulls (road
