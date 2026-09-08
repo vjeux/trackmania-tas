@@ -450,30 +450,31 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                 if st.resolve(&file).is_none() {
                     problems.push(format!("material {mi}: link {link} resolves to no .Material.Gbx in the packs{}", if modeler { format!(" (modeler material, tried {file})") } else { String::new() }));
                 } else {
-                    // SH-03: A VISUAL WITHOUT A TANGENT FRAME UNDER A MATERIAL
-                    // WHOSE LOADER READS ONE. The loader of
-                    // `Modifier\PlatformIce\PlatformTech` reads TangentU/V off
-                    // every visual it dresses and dereferences NULL when the
-                    // stream has none — the DEC3N decode at 0x140456c35 (tiny 25,
-                    // 2026-09-08: DecoPlatform parts authored in `Deco`
-                    // (position, normal, uv0) re-dressed into the ice plastic;
-                    // bisected on the box from 266 items to the four whose only
-                    // shared material this was). The plain `PlatformTech` and
-                    // `Canopy` loaders tolerate the gap (21 and 25's other items
-                    // open) — a normal-mapped material without a tangent frame
-                    // is lit wrong, not fatal — so those are a --facts note and
-                    // the known crasher is a FAIL.
+                    // SH-03: A (POSITION, NORMAL, UV0) VISUAL UNDER THE PLATFORM
+                    // PLASTIC CRASHES THE CLIENT. Tiny 25's DecoPlatform parts are
+                    // authored in `Deco` (no tangent frame, no uv1); re-dressed as
+                    // `PlatformTech` / `Modifier\PlatformIce\PlatformTech` they made
+                    // the loader read TangentU through NULL (the DEC3N decode at
+                    // 0x140456c35) — nondeterministically: the same item opened
+                    // once and crashed twice in single-item lineups, 21's
+                    // re-dressed items opened 5/5, 25 itself crashed 3/3. The
+                    // same items with `Deco` kept (main since 1636869) opened
+                    // every time at identical geometry. The pack never authors a
+                    // Deco-layout visual under the plastic, so this only fires
+                    // on a re-dress — a FAIL, so it cannot come back quietly.
+                    // Any other normal-mapped material over such a visual is a
+                    // --facts note (lit without a frame; `Canopy` opens).
                     if let Ok(mm) = st.load_model(&file) {
                         let normal_mapped = mm.externals.iter().any(|(_, e)| e.to_ascii_lowercase().ends_with("_n.texture.gbx"));
-                        let known_crasher = link.ends_with("\\Modifier\\PlatformIce\\PlatformTech");
+                        let known_crasher = link.ends_with("\\PlatformTech");
                         if normal_mapped || known_crasher {
                             for g in s2.shaded_geoms.iter().filter(|g| g.material_index as usize == mi) {
                                 let vi = g.visual_index as usize;
                                 let lacks = s2.visuals.get(vi).and_then(|vr| vr.inline.as_deref()).and_then(|n| match n { super::Node::Visual(v) => v.stream().map(|s| !s.decls.iter().any(|d| d.name() == super::vstream::N_TANGENT_U)), _ => None }).unwrap_or(false);
                                 if lacks && known_crasher {
-                                    problems.push(format!("SH-03 material {mi} {link}: visual {vi} carries no tangent frame — this material's loader reads TangentU through NULL (crash 0x140456c35, tiny 25)"));
+                                    problems.push(format!("SH-03 material {mi} {link}: visual {vi} carries no tangent frame — a Deco-layout visual re-dressed as the platform plastic; the loader reads TangentU through NULL (crash 0x140456c35, tiny 25 2026-09-08)"));
                                 } else if lacks && facts {
-                                    println!("{path}: SH-03 note: material {mi} {link} has a normal map but visual {vi} carries no tangent frame (lit without one; the ice plastic variant crashes)");
+                                    println!("{path}: SH-03 note: material {mi} {link} has a normal map but visual {vi} carries no tangent frame (lit without one)");
                                 }
                             }
                         }
