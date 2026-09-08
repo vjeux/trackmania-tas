@@ -41,27 +41,41 @@ https://github.com/user-attachments/assets/4b087b52-c356-4865-aa00-e1adeaca386f
 
 https://github.com/user-attachments/assets/08398840-ae55-4060-9509-2c416d3e5d6a
 
-**Tiny Summer 2026 - 09** — original author time `32.983` · tiny ghost **42.924** (build ship10) — *video pending*
+**Tiny Summer 2026 - 09** — original author time `32.983` · tiny ghost **42.924** (build ship10)
 
-**Tiny Summer 2026 - 10** — original author time `35.578` · tiny ghost **25.293** (build ship10) — *video pending*
+https://github.com/user-attachments/assets/ec3588c4-6558-4587-b538-26f8c1733dee
+
+**Tiny Summer 2026 - 10** — original author time `35.578` · tiny ghost **25.293** (build ship10)
+
+https://github.com/user-attachments/assets/91de62dc-049c-4ef7-9cf9-4cc2e2699e02
 
 **Tiny Summer 2026 - 11** — original author time `38.371` · *no lap yet*
 
 **Tiny Summer 2026 - 12** — original author time `28.447` · tiny ghost **20.752** (build ship10) — *no video yet: the MediaTracker places the ghost off the track on this map only; under investigation*
 
-**Tiny Summer 2026 - 13** — original author time `31.462` · tiny ghost **26.324** (build ship10) — *video pending*
+**Tiny Summer 2026 - 13** — original author time `31.462` · tiny ghost **26.324** (build ship10)
 
-**Tiny Summer 2026 - 14** — original author time `34.752` · tiny ghost **30.339** (build ship10) — *video pending*
+https://github.com/user-attachments/assets/116d3bf7-e4a1-4f77-bf02-07cbaf167bb9
+
+**Tiny Summer 2026 - 14** — original author time `34.752` · tiny ghost **30.339** (build ship10)
+
+https://github.com/user-attachments/assets/f7e891df-a0d1-4770-9ee4-0c04352056fa
 
 **Tiny Summer 2026 - 15** — original author time `36.888` · *no lap yet*
 
-**Tiny Summer 2026 - 16** — original author time `50.966` · tiny ghost **39.328** (build ship10) — *video pending*
+**Tiny Summer 2026 - 16** — original author time `50.966` · tiny ghost **39.328** (build ship10)
 
-**Tiny Summer 2026 - 17** — original author time `44.891` · tiny ghost **49.786** (build ship10) — *video pending*
+https://github.com/user-attachments/assets/67000f00-5920-4927-8c4e-be8428832ad4
+
+**Tiny Summer 2026 - 17** — original author time `44.891` · tiny ghost **49.786** (build ship10)
+
+https://github.com/user-attachments/assets/58e5ac20-3080-427b-9817-2e0669da467a
 
 **Tiny Summer 2026 - 18** — original author time `51.352` · *no lap yet*
 
-**Tiny Summer 2026 - 19** — original author time `43.841` · tiny ghost **54.657** (build ship10) — *video pending*
+**Tiny Summer 2026 - 19** — original author time `43.841` · tiny ghost **54.657** (build ship10)
+
+https://github.com/user-attachments/assets/71cacd13-73f8-45af-86c6-46575b14e0f3
 
 **Tiny Summer 2026 - 20** — original author time `50.598` · *no lap yet*
 
@@ -69,7 +83,9 @@ https://github.com/user-attachments/assets/08398840-ae55-4060-9509-2c416d3e5d6a
 
 **Tiny Summer 2026 - 22** — original author time `73.418` · *no lap yet*
 
-**Tiny Summer 2026 - 23** — original author time `75.112` · tiny ghost **104.711** (build ship10) — *video pending*
+**Tiny Summer 2026 - 23** — original author time `75.112` · tiny ghost **104.711** (build ship10)
+
+https://github.com/user-attachments/assets/d0815199-d7aa-4006-a4e2-dfc1809f2785
 
 **Tiny Summer 2026 - 24** — original author time `72.708` · *no lap yet*
 
