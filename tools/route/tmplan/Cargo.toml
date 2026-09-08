@@ -18,3 +18,4 @@ tmroute = { path = "../tmroute" }
 tmmaps = { path = "../../tmmaps" }
 # The cartographer's surface graph (mapgeom::surf/pack/packrun/yoff), ported from its bundle.
 mapgeom = { path = "../../mapgeom" }
+gbx = { path = "../../gbx" }

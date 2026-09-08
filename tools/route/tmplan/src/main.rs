@@ -246,6 +246,7 @@ fn main() {
         "deck-gates" => cmd_deck_gates(&args[1..]),
         "leg-scan" => cmd_leg_scan(&args[1..]),
         "road-centreline" => cmd_road_centreline(&args[1..]),
+        "author-line" => cmd_author_line(&args[1..]),
         other => die(&format!("unknown command {other}")),
     }
 }
@@ -982,4 +983,69 @@ fn cmd_road_centreline(args: &[String]) {
     println!("{}: {} pts, {:.0} m, {} segments, {gaps} gaps, on-road {:.1} %{flag} → {out}", gates.map_name, pts.len(), s.last().unwrap(), segs.len(), 100.0 * on_road as f32 / pts.len().max(1) as f32);
     fn grp(n: &Nodes, i: usize) -> String { if i == 0 { "\"spawn\"".into() } else { n.groups[i].to_string() } }
     fn grp_id_of(n: &Nodes, i: usize) -> String { n.groups[i].to_string() }
+}
+
+/// `author-line SRC.Map.Gbx --anchor sx,sy,sz:tx,ty,tz [--scale 0.5] --centreline X.road-centreline.json [--out author.json]`
+/// The ORIGINAL author's validation ghost mapped into the tiny frame (converter anchors: tiny = ta + (src − sa) × scale)
+/// against our polyline: lateral offset per sample (nearest polyline point, XZ), summary and worst stretch. The
+/// route-sanity oracle the coordinator asked for (16:06Z); the author line itself is written as points for the player.
+fn cmd_author_line(args: &[String]) {
+    let src = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("SRC.Map.Gbx required"));
+    let anchor = flag(args, "--anchor").unwrap_or_else(|| die("--anchor sx,sy,sz:tx,ty,tz"));
+    let (sa, ta) = {
+        let mut it = anchor.split(':');
+        let p = |s: &str| -> [f32; 3] { let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() != 3 { die("--anchor sx,sy,sz:tx,ty,tz") } [v[0], v[1], v[2]] };
+        (p(it.next().unwrap_or("")), p(it.next().unwrap_or("")))
+    };
+    let scale: f32 = flag(args, "--scale").and_then(|s| s.parse().ok()).unwrap_or(0.5);
+    let cl = flag(args, "--centreline").unwrap_or_else(|| die("--centreline X.road-centreline.json"));
+    let txt = std::fs::read_to_string(&cl).unwrap_or_else(|e| die(&format!("{cl}: {e}")));
+    let grab = |key: &str| -> Vec<f32> {
+        let k = format!("\"{key}\": [");
+        let i = txt.find(&k).unwrap_or_else(|| die(&format!("{cl}: no {key}")));
+        let rest = &txt[i + k.len()..];
+        // pts is an array of arrays: take everything up to "]]," ; scalars up to "]"
+        let end = if key == "pts" { rest.find("]]").map(|e| e + 1).unwrap_or(rest.len()) } else { rest.find(']').unwrap_or(rest.len()) };
+        rest[..end].split(|c: char| c == ',' || c == '[' || c == ']').filter_map(|x| x.trim().parse::<f32>().ok()).collect()
+    };
+    let flat = grab("pts");
+    let pts: Vec<[f32; 3]> = flat.chunks(3).filter(|c| c.len() == 3).map(|c| [c[0], c[1], c[2]]).collect();
+    let s = grab("s");
+    let hw = grab("half_width");
+    let d = gbx::record::decode_ghost(&src).unwrap_or_else(|e| die(&format!("{src}: no validation ghost ({e})")));
+    let mut rows: Vec<(f32, f32, f32, [f32; 3], i32)> = Vec::new(); // (s_nearest, lateral, dy, tiny pos, t)
+    let mut author: Vec<[f32; 3]> = Vec::new();
+    let mut last_t = i32::MIN;
+    for smp in &d.samples {
+        if smp.time_ms < last_t + 100 { continue; }
+        last_t = smp.time_ms;
+        let q = [ta[0] + (smp.x - sa[0]) * scale, ta[1] + (smp.y - sa[1]) * scale, ta[2] + (smp.z - sa[2]) * scale];
+        author.push(q);
+        let mut best = (f32::INFINITY, 0usize);
+        for (k, p) in pts.iter().enumerate() {
+            let dd = (p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2);
+            if dd < best.0 { best = (dd, k); }
+        }
+        let k = best.1;
+        rows.push((s.get(k).copied().unwrap_or(0.0), best.0.sqrt(), q[1] - pts[k][1], q, smp.time_ms));
+    }
+    if rows.is_empty() { die("no ghost samples"); }
+    let mut lat: Vec<f32> = rows.iter().map(|r| r.1).collect();
+    lat.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let med = lat[lat.len() / 2];
+    let p90 = lat[(lat.len() as f32 * 0.9) as usize];
+    let within: usize = rows.iter().filter(|r| { let k = s.iter().position(|v| *v >= r.0).unwrap_or(0); r.1 <= hw.get(k).copied().unwrap_or(4.0) + 2.0 }).count();
+    let worst = rows.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap();
+    // the longest stretch (in ghost time) more than 12 m off the line
+    let mut run_start: Option<i32> = None; let mut best_run = (0i32, 0i32, [0.0f32; 3]);
+    for r in &rows {
+        if r.1 > 12.0 { if run_start.is_none() { run_start = Some(r.4); } let len = r.4 - run_start.unwrap(); if len > best_run.0 { best_run = (len, run_start.unwrap(), r.3); } } else { run_start = None; }
+    }
+    println!("author line vs polyline: {} samples ({:.3} s), lateral median {med:.1} m, p90 {p90:.1} m, within half-width+2 m {:.0} %, worst {:.1} m at s {:.0} (author at ({:.0}, {:.0}, {:.0}), t {:.3} s); longest off-line (> 12 m) stretch {:.1} s from t {:.3} s at ({:.0}, {:.0}, {:.0})",
+        rows.len(), d.end_ms as f32 / 1000.0, 100.0 * within as f32 / rows.len() as f32, worst.1, worst.0, worst.3[0], worst.3[1], worst.3[2], worst.4 as f32 / 1000.0, best_run.0 as f32 / 1000.0, best_run.1 as f32 / 1000.0, best_run.2[0], best_run.2[1], best_run.2[2]);
+    if let Some(out) = flag(args, "--out") {
+        let js = format!("{{\n  \"source\": \"{}\",\n  \"anchor\": \"{anchor}\",\n  \"scale\": {scale},\n  \"pts\": [{}],\n  \"lateral_to_centreline\": [{}],\n  \"note\": \"the ORIGINAL author's validation ghost mapped into the tiny frame (100 ms samples, ground contact point); lateral = XZ distance to the nearest centreline point\"\n}}\n",
+            src, author.iter().map(|p| format!("[{:.2},{:.2},{:.2}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(","), rows.iter().map(|r| format!("{:.1}", r.1)).collect::<Vec<_>>().join(","));
+        io::write_atomic(Path::new(&out), js.as_bytes()).unwrap_or_else(|e| die(&e));
+    }
 }
