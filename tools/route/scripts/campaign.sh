@@ -95,9 +95,9 @@ TMR=${TMR:-$R/tmr}
 # floors OFF so a ranking always exists (with the 05:12Z r-latest every leg is below the 0.02/0.05 defaults on
 # Summer 2026 - 01; with them off rank 0 is the human order there). Agreed with the MODEL arm: see plan/plan-r/MODELS.txt.
 TMR_FLAGS=${TMR_FLAGS:---p-floor 0 --p-step 0.02}
-# MODEL arm (13:09Z): gate prior = the geo-dropout variant r-latest-gd.tmw, chain = rl-latest.tmw; p-floor 0 (the gate
+# MODEL arm (13:09Z): gate prior = the geo-dropout variant r-latest-gd.tmw; from round 11 (2026-09-08 09:26Z) a SINGLE variant is trained and the pair is (r-latest, rl-latest) — r-latest-gd stays frozen at r-v10-gd
 # head prices nothing under chained), p-step 0.02 bounds the fan. Both pointers move every ~40 min.
-MODEL_R=${MODEL_R:-$BANK/model/watch/r-latest-gd.tmw}; MODEL_RL=${MODEL_RL:-$BANK/model/watch/rl-latest.tmw}
+MODEL_R=${MODEL_R:-$BANK/model/watch/r-latest.tmw}; MODEL_RL=${MODEL_RL:-$BANK/model/watch/rl-latest.tmw}
 if [ $step = plan-r ]; then
   pull_maps; pull tm-route/geom tm-route/model/watch tm-route/plan/plan-r
   mkdir -p $P/plan-r

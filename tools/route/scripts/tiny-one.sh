@@ -28,7 +28,7 @@ else cver="measured"; fi
 note="tiny build $BUILD; map md5 $md5; collhash $coll ($cver)"
 # models: the frozen exhibit pair when snapshotted, else LATEST
 S=$(ls -d /tmp/tmr-models-* 2>/dev/null | tail -1)
-if [ -n "$S" ] && [ -f $S/r.tmw ]; then MODEL_R=$S/r.tmw; MODEL_RL=$S/rl.tmw; else MODEL_R=$W/$(grep "r-latest-gd.tmw" $W/LATEST.txt | awk '{print $3}'); MODEL_RL=$W/$(grep "^rl-latest.tmw" $W/LATEST.txt | awk '{print $3}'); fi
+if [ -n "$S" ] && [ -f $S/r.tmw ]; then MODEL_R=$S/r.tmw; MODEL_RL=$S/rl.tmw; else MODEL_R=$W/$(grep "^r-latest.tmw" $W/LATEST.txt | awk '{print $3}'); MODEL_RL=$W/$(grep "^rl-latest.tmw" $W/LATEST.txt | awk '{print $3}'); fi
 # 1. gates + deck gates
 $R/tmroute gates "$MAP" --out $GT/$b.gates.json > $GT/$b.gates.txt 2>&1
 nice $R/tmplan deck-gates "$MAP" --gates $GT/$b.gates.json --out $GT/$b.deck.json > $GT/$b.deck.txt 2>&1
