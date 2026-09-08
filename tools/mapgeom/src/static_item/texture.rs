@@ -148,3 +148,134 @@ mod tests {
         assert_eq!(dds_cap(&d, 512).unwrap(), d);
     }
 }
+
+/// The 16 colours of one BC1 block (5:6:5 endpoints, 2-bit indices; the
+/// `c0 <= c1` mode's fourth entry is transparent black).
+fn bc1_block(block: &[u8], out: &mut [[u8; 4]; 16]) {
+    let c0 = u16::from_le_bytes([block[0], block[1]]);
+    let c1 = u16::from_le_bytes([block[2], block[3]]);
+    let c565 = |v: u16| -> [u8; 3] {
+        let r = ((v >> 11) & 31) as u32;
+        let g = ((v >> 5) & 63) as u32;
+        let b = (v & 31) as u32;
+        [((r * 255 + 15) / 31) as u8, ((g * 255 + 31) / 63) as u8, ((b * 255 + 15) / 31) as u8]
+    };
+    let (p0, p1) = (c565(c0), c565(c1));
+    let mix = |a: [u8; 3], b: [u8; 3], wa: u32, wb: u32| -> [u8; 3] { [((a[0] as u32 * wa + b[0] as u32 * wb) / (wa + wb)) as u8, ((a[1] as u32 * wa + b[1] as u32 * wb) / (wa + wb)) as u8, ((a[2] as u32 * wa + b[2] as u32 * wb) / (wa + wb)) as u8] };
+    let (p2, p3, a3) = if c0 > c1 { (mix(p0, p1, 2, 1), mix(p0, p1, 1, 2), 255u8) } else { (mix(p0, p1, 1, 1), [0, 0, 0], 0u8) };
+    let pal = [[p0[0], p0[1], p0[2], 255], [p1[0], p1[1], p1[2], 255], [p2[0], p2[1], p2[2], 255], [p3[0], p3[1], p3[2], a3]];
+    let bits = u32::from_le_bytes([block[4], block[5], block[6], block[7]]);
+    for i in 0..16 {
+        out[i] = pal[((bits >> (2 * i)) & 3) as usize];
+    }
+}
+
+/// The 16 alphas of one BC3 alpha block (two 8-bit endpoints, 3-bit indices).
+fn bc3_alpha_block(block: &[u8], out: &mut [u8; 16]) {
+    let (a0, a1) = (block[0] as u32, block[1] as u32);
+    let mut pal = [0u8; 8];
+    pal[0] = a0 as u8;
+    pal[1] = a1 as u8;
+    if a0 > a1 {
+        for i in 1..7u32 {
+            pal[(i + 1) as usize] = (((7 - i) * a0 + i * a1) / 7) as u8;
+        }
+    } else {
+        for i in 1..5u32 {
+            pal[(i + 1) as usize] = (((5 - i) * a0 + i * a1) / 5) as u8;
+        }
+        pal[6] = 0;
+        pal[7] = 255;
+    }
+    let mut bits: u64 = 0;
+    for (i, b) in block[2..8].iter().enumerate() {
+        bits |= (*b as u64) << (8 * i);
+    }
+    for i in 0..16 {
+        out[i] = pal[((bits >> (3 * i)) & 7) as usize];
+    }
+}
+
+/// The level of a BC1/BC3 (DXT1/DXT5) DDS that `dds_cap` would make the top,
+/// decoded to RGBA8: (width, height, pixels).
+pub fn decode_capped_rgba(dds: &[u8], max_side: u32) -> R<(u32, u32, Vec<u8>)> {
+    let capped = dds_cap(dds, max_side)?;
+    let (w, h, _) = dds_dims(&capped).ok_or("not a DDS")?;
+    let fourcc = &capped[84..88];
+    let (bpb, dxt5) = match fourcc {
+        b"DXT1" => (8usize, false),
+        b"DXT5" => (16usize, true),
+        _ => return Err(format!("{}: only DXT1/DXT5 decode here", String::from_utf8_lossy(fourcc))),
+    };
+    let (bw, bh) = (w.max(1).div_ceil(4) as usize, h.max(1).div_ceil(4) as usize);
+    if capped.len() < 128 + bw * bh * bpb {
+        return Err("DDS shorter than its top level".into());
+    }
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    let mut colours = [[0u8; 4]; 16];
+    let mut alphas = [255u8; 16];
+    for by in 0..bh {
+        for bx in 0..bw {
+            let o = 128 + (by * bw + bx) * bpb;
+            if dxt5 {
+                bc3_alpha_block(&capped[o..o + 8], &mut alphas);
+                bc1_block(&capped[o + 8..o + 16], &mut colours);
+            } else {
+                bc1_block(&capped[o..o + 8], &mut colours);
+            }
+            for py in 0..4 {
+                for px in 0..4 {
+                    let (x, y) = (bx * 4 + px, by * 4 + py);
+                    if x >= w as usize || y >= h as usize {
+                        continue;
+                    }
+                    let c = colours[py * 4 + px];
+                    let a = if dxt5 { alphas[py * 4 + px] } else { c[3] };
+                    let at = (y * w as usize + x) * 4;
+                    rgba[at..at + 4].copy_from_slice(&[c[0], c[1], c[2], a]);
+                }
+            }
+        }
+    }
+    Ok((w, h, rgba))
+}
+
+/// An uncompressed A8R8G8B8 DDS with one mip (the item editor's own texture
+/// form), from RGBA8 pixels.
+pub fn write_dds_rgba(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(128 + rgba.len());
+    out.extend_from_slice(b"DDS ");
+    let mut hdr = [0u32; 31];
+    hdr[0] = 124;
+    hdr[1] = 0x1 | 0x2 | 0x4 | 0x1000 | 0x8;
+    hdr[2] = h;
+    hdr[3] = w;
+    hdr[4] = w * 4;
+    hdr[6] = 1;
+    hdr[18] = 32;
+    hdr[19] = 0x40 | 0x1;
+    hdr[21] = 32;
+    hdr[22] = 0x00FF_0000;
+    hdr[23] = 0x0000_FF00;
+    hdr[24] = 0x0000_00FF;
+    hdr[25] = 0xFF00_0000;
+    hdr[26] = 0x1000;
+    for v in hdr {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    for px in rgba.chunks(4) {
+        out.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+    }
+    out
+}
+
+/// A BC1/BC3 DDS re-expressed as an uncompressed 32-bit DDS at the capped
+/// level (no mips) — the form the item editor writes for its own custom
+/// textures. Four times the bytes of the compressed level, but the alpha
+/// channel survives whatever the loader does to a DXT5 (the leaf cards of
+/// the first tree probes drew nothing under every opacity model with a DXT5
+/// diffuse, 2026-09-08).
+pub fn dds_uncompressed(dds: &[u8], max_side: u32) -> R<Vec<u8>> {
+    let (w, h, rgba) = decode_capped_rgba(dds, max_side)?;
+    Ok(write_dds_rgba(w, h, &rgba))
+}

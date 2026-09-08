@@ -37,7 +37,12 @@ pub struct BuildOpts {
     /// that makes the game paint the current in-game advertisement — the
     /// campaign artwork — onto the model's `Image` texture, and lets a
     /// placement's own skin file (a light colour) apply. Without it a screen
-    /// draws the material's default yellow `RaceAd6x1.dds` panel.
+    /// draws the material's default yellow `RaceAd6x1.                // TINY_TREE_TEX_FORMAT=dds|rgba|leaf-rgba (default dds): the pack's
+                // block-compressed image with its mips, cut to the cap — a DXT5
+                // leaf atlas alpha-tests fine under TDSN once the visual has its
+                // TexCoord1 (2026-09-08 probe G: DXT5 and uncompressed crowns
+                // identical). `leaf-rgba` ships the leaf images UNCOMPRESSED 32-bit
+                // at the capped level (three times the bytes), `rgba` everything.` panel.
     pub skin: Option<Vec<u8>>,
 }
 
@@ -4547,8 +4552,12 @@ pub struct VegetBake {
 /// materials — the model's inline materials name no `.Material.Gbx`, so
 /// each becomes an item-editor material (`is_using_game_material` false)
 /// on the game's own shading models with the pack's diffuse image in slot 0:
-/// `TDSN` for bark, `TDOSN2Sided` for the leaf cards (two-sided, the alpha
-/// of the diffuse as the opacity mask). The images ride next to the item
+/// `TDSN` for bark AND for the leaf cards — TDSN alpha-tests a diffuse that
+/// carries an alpha channel (measured 2026-09-08: proper fronds, clean
+/// edges), while TDOSN / TDOBSN draw such cards invisible and TDOSN2Sided
+/// is not a model the item loader knows (red). Two-sidedness comes from a
+/// reversed copy of every leaf triangle. Every visual gets a TexCoord1 set
+/// (`ensure_texcoord1`): without one a visual is not drawn at all. The images ride next to the item
 /// (`Merged::pictures`, `Items/<name>.dds` in the library archive), their
 /// top mip levels cut to `TINY_TREE_TEX_MAX` pixels a side (default 256: the
 /// 31 leaf and bark atlases of a BlueBay map weighed 5.2 MB at 512, 1.3 at
@@ -4566,7 +4575,7 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
     use super::vstream::N_COLOR0;
     let t = crate::veget::parse_tree_model(store, model_path)?;
     let stats = t.stats();
-    let leaf_model = std::env::var("TINY_TREE_LEAF_MODEL").unwrap_or_else(|_| "TDOSN2Sided".into());
+    let leaf_model = std::env::var("TINY_TREE_LEAF_MODEL").unwrap_or_else(|_| "TDSN".into());
     let bark_model = std::env::var("TINY_TREE_BARK_MODEL").unwrap_or_else(|_| "TDSN".into());
     let tex_max: u32 = std::env::var("TINY_TREE_TEX_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
     let normal_map = std::env::var_os("TINY_TREE_NORMAL_MAP").is_some();
@@ -4581,7 +4590,8 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
     let min_verts: i32 = std::env::var("TINY_LOD_PICK_MIN_VERTS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     let pick: Option<usize> = match lod_pick() {
         Some(p) if level0_verts >= min_verts => Some((p as usize).min(t.lods.len() - 1)),
-        Some(_) => Some(0),
+        // a species under the vertex floor keeps level TINY_TREE_LOD_MIN alone
+        Some(_) => Some(lod_min.min(t.lods.len() - 1)),
         None if std::env::var_os("TINY_LOD0_ONLY").is_some() => Some(0),
         None => None,
     };
@@ -4605,10 +4615,22 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
         }
         for (slot, image) in wanted {
             let Some(path) = image else { continue };
-            let file = path.rsplit('\\').next().unwrap_or(path).to_string();
+            // (TINY_TREE_MAT_SUFFIX tags the image file names too: one lineup can
+            // then carry the same image in two encodings)
+            let base = path.rsplit('\\').next().unwrap_or(path);
+            let file = match std::env::var("TINY_TREE_MAT_SUFFIX") {
+                Ok(sfx) if !sfx.is_empty() => format!("{}{sfx}.dds", base.trim_end_matches(".dds")),
+                _ => base.to_string(),
+            };
             if !m.pictures.iter().any(|(f, _)| *f == file) {
                 let bytes = store.read(path).map_err(|e| format!("{path}: {e}"))?;
-                let bytes = super::texture::dds_cap(&bytes, tex_max).map_err(|e| format!("{path}: {e}"))?;
+                // TINY_TREE_TEX_FORMAT=rgba|dds|leaf-rgba (default leaf-rgba): the
+                // leaf images, whose alpha is the opacity mask, ship UNCOMPRESSED
+                // 32-bit at the capped level; the bark stays block-compressed with
+                // its mips. `rgba` uncompresses everything, `dds` nothing.
+                let fmt = std::env::var("TINY_TREE_TEX_FORMAT").unwrap_or_else(|_| "dds".into());
+                let uncompressed = fmt == "rgba" || (fmt == "leaf-rgba" && mat.leaf);
+                let bytes = if uncompressed { super::texture::dds_uncompressed(&bytes, tex_max).map_err(|e| format!("{path}: {e}"))? } else { super::texture::dds_cap(&bytes, tex_max).map_err(|e| format!("{path}: {e}"))? };
                 out.textures.push((file.clone(), bytes.len()));
                 m.pictures.push((file.clone(), bytes));
             }
@@ -4620,8 +4642,19 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
         let mut inst = CPlugMaterialUserInst::game_material("", 14);
         if let Some(main) = inst.main.as_mut() {
             main.is_using_game_material = false;
-            main.model = crate::crystal_model::Id::Str(if mat.leaf { leaf_model.clone() } else { bark_model.clone() });
-            main.material_name = crate::crystal_model::Id::Str(mat.name.clone());
+            // The name is the material's IDENTITY to the game (custom materials of
+            // one name are shared across items): it spells the shading model and
+            // the diffuse image, so equal definitions share and different ones
+            // never collide — the probe lineup of 13 palms whose "PalmTree_Leaf"
+            // differed only by model crashed the client at the visual-merge site
+            // 0x140456513 (element 3 of a 186-vertex visual read through NULL,
+            // 2026-09-08). RedIsland names its materials plainly "_Leaf" / "_Bark".
+            // TINY_TREE_MAT_SUFFIX tags the names further (one lineup, many variants).
+            let model_name = if mat.leaf { leaf_model.clone() } else { bark_model.clone() };
+            let d_stem = files.first().map(|(_, f)| f.trim_end_matches(".dds").to_string()).unwrap_or_default();
+            let suffix = std::env::var("TINY_TREE_MAT_SUFFIX").unwrap_or_default();
+            main.material_name = crate::crystal_model::Id::Str(format!("{model_name}_{d_stem}{suffix}"));
+            main.model = crate::crystal_model::Id::Str(model_name.clone());
             main.link = crate::crystal_model::Id::Null;
             main.user_textures = files.into_iter().map(|(u01, texture)| crate::crystal_model::UserTexture { u01, texture }).collect();
         }
@@ -4652,6 +4685,14 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                                 }
                             }
                         }
+                    }
+                }
+            }
+            // every visual carries a second texcoord set (see `ensure_texcoord1`)
+            if let Some(main) = v.main.as_mut() {
+                if let Some(Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) {
+                    if ensure_texcoord1(s) && !out.stripped.contains(&"+uv1") {
+                        out.stripped.push("+uv1");
                     }
                 }
             }
@@ -4715,4 +4756,42 @@ pub fn static_item_from_veget_report(store: &mut crate::store::DataStore, path: 
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors, skin: None };
     let file = assemble(&m, &opts)?;
     Ok((super::file::write_file(&file), m, bake))
+}
+
+/// Give a vertex stream a second texcoord set (name 11, Float2) when it has
+/// none: a copy of the first. The static shaders sample the lightmap through
+/// TexCoord1 and a visual without one is not drawn at all — every leaf card
+/// of the first tree probes was invisible under every valid material while
+/// the same cards drew red under an unknown one (2026-09-08; the pack's
+/// vegetation shader has no lightmap and its leaf visuals carry uv0 alone).
+/// Declarations are rebuilt in ascending name order like `harmonize_layouts`.
+pub fn ensure_texcoord1(s: &mut super::vstream::CPlugVertexStream) -> bool {
+    use super::vstream::{Decl, T_FLOAT2};
+    if s.decls.iter().any(|d| d.name() == N_TEXCOORD0 + 1) {
+        return false;
+    }
+    let compress = s.compress_local3d.unwrap_or(false);
+    let n = s.count.max(0) as usize;
+    let uv0 = s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == N_TEXCOORD0).map(|(_, e)| e.clone());
+    let uv1 = match uv0 {
+        Some(Elem::Float2(v)) => Elem::Float2(v),
+        _ => Elem::Float2(vec![[0.0, 0.0]; n]),
+    };
+    let donor_uv0 = s.decls.iter().find(|d| d.name() == N_TEXCOORD0).cloned();
+    let mut items: Vec<(Decl, u32, Elem)> = s.decls.iter().zip(s.elems.iter()).map(|(d, e)| (d.clone(), d.stored_type(compress), e.clone())).collect();
+    let (ty, space) = donor_uv0.map(|d| (d.ty(), d.space())).unwrap_or((T_FLOAT2, 0));
+    items.push((Decl::with_stride(N_TEXCOORD0 + 1, ty, space, 0, 0), T_FLOAT2, uv1));
+    items.sort_by_key(|(d, _, _)| d.name());
+    let stride: u32 = items.iter().map(|(_, st, _)| super::vstream::type_size(*st).unwrap_or(4) as u32).sum();
+    let mut offset = 0u32;
+    let mut decls = Vec::with_capacity(items.len());
+    let mut elems = Vec::with_capacity(items.len());
+    for (d, st, e) in items {
+        decls.push(Decl::with_stride(d.name(), d.ty(), d.space(), offset, stride / 4));
+        offset += super::vstream::type_size(st).unwrap_or(4) as u32;
+        elems.push(e);
+    }
+    s.decls = decls;
+    s.elems = elems;
+    true
 }

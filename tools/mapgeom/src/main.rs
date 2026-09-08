@@ -730,6 +730,24 @@ fn main() {
                                 println!("  level {l}: material {} ({}) node {} flag {} {} verts {} indices; centre ({:.2}, {:.2}, {:.2}) half ({:.2}, {:.2}, {:.2}); decl [{}]", e.material, m.materials.get(e.material as usize).map(|x| x.name.as_str()).unwrap_or("?"), e.node_index, e.flag, mm.map(|x| x.count).unwrap_or(0), e.visual.index_buffer.as_ref().map(|ib| ib.indices.len()).unwrap_or(0), mm.map(|x| x.bounding_box[0]).unwrap_or(0.0), mm.map(|x| x.bounding_box[1]).unwrap_or(0.0), mm.map(|x| x.bounding_box[2]).unwrap_or(0.0), mm.map(|x| x.bounding_box[3]).unwrap_or(0.0), mm.map(|x| x.bounding_box[4]).unwrap_or(0.0), mm.map(|x| x.bounding_box[5]).unwrap_or(0.0), decl);
                             }
                         }
+                        // twin visuals (same level, material and vertex count): the same
+                        // mesh again, its mirror (reversed winding: an explicit back face),
+                        // or a different one
+                        for (l, lod) in m.lods.iter().enumerate() {
+                            for a in 0..lod.len() {
+                                for b in a + 1..lod.len() {
+                                    let (ea, eb) = (&lod[a], &lod[b]);
+                                    let same_count = ea.visual.main.as_ref().map(|x| x.count) == eb.visual.main.as_ref().map(|x| x.count);
+                                    if ea.material != eb.material || !same_count {
+                                        continue;
+                                    }
+                                    let (ia, ib) = (ea.visual.index_buffer.as_ref().map(|x| x.indices.clone()).unwrap_or_default(), eb.visual.index_buffer.as_ref().map(|x| x.indices.clone()).unwrap_or_default());
+                                    let reversed = ia.len() == ib.len() && ia.chunks(3).zip(ib.chunks(3)).all(|(p, q)| p.len() == 3 && q.len() == 3 && p[0] == q[0] && p[1] == q[2] && p[2] == q[1]);
+                                    let (pa, pb) = (mapgeom::static_item::build::visual_triangles(&ea.visual).0, mapgeom::static_item::build::visual_triangles(&eb.visual).0);
+                                    println!("  level {l}: visuals {a} and {b} share material {} and {} vertices: indices {}, positions {}", ea.material, ea.visual.main.as_ref().map(|x| x.count).unwrap_or(0), if ia == ib { "IDENTICAL" } else if reversed { "REVERSED (a back-face copy)" } else { "different" }, if pa == pb { "identical" } else { "different" });
+                                }
+                            }
+                        }
                         let hull_ids: std::collections::BTreeSet<u32> = m.hull_triangles.iter().map(|(_, id)| *id).collect();
                         println!("  hull material ids {:?}; file time {:#x}; tail {} bytes at {:#x}", hull_ids, m.file_write_time, m.tail.len(), m.tail_at);
                     }
@@ -1037,9 +1055,9 @@ fn main() {
             let items_dir = flag(&a.rest, "--items-dir").map(std::path::PathBuf::from);
             let only = flag(&a.rest, "--only");
             let legacy = flag(&a.rest, "--legacy-zip").map(std::path::PathBuf::from);
-            // `bake` becomes the default once the leaf material renders (the crowns
-            // draw red on TDOSN2Sided — the shading-model lineup is queued on the box)
-            let veget = flag(&a.rest, "--veget").unwrap_or_else(|| "substitute".into());
+            // the tree bake is the default since 2026-09-08 (the leaf cards draw
+            // under TDSN + an alpha diffuse once the visuals carry a TexCoord1)
+            let veget = flag(&a.rest, "--veget").unwrap_or_else(|| "bake".into());
             let coll = flag(&a.rest, "--collection").unwrap_or_default();
             mapgeom::tiny_library::build(
                 &mut store,
