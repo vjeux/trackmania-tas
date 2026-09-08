@@ -1037,7 +1037,9 @@ fn main() {
             let items_dir = flag(&a.rest, "--items-dir").map(std::path::PathBuf::from);
             let only = flag(&a.rest, "--only");
             let legacy = flag(&a.rest, "--legacy-zip").map(std::path::PathBuf::from);
-            let veget = flag(&a.rest, "--veget").unwrap_or_else(|| "bake".into());
+            // `bake` becomes the default once the leaf material renders (the crowns
+            // draw red on TDOSN2Sided — the shading-model lineup is queued on the box)
+            let veget = flag(&a.rest, "--veget").unwrap_or_else(|| "substitute".into());
             let coll = flag(&a.rest, "--collection").unwrap_or_default();
             mapgeom::tiny_library::build(
                 &mut store,
