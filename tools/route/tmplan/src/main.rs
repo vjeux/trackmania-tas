@@ -351,7 +351,7 @@ fn cmd_local(args: &[String]) {
             let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
             let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
             let m = tmmaps::map::MapFile::load(Path::new(&map));
-            let opts = mapgeom::local::BuildOpts { with_deco: !has(args, "--no-deco"), with_baked: !has(args, "--no-baked"), cell: flag(args, "--cell").and_then(|s| s.parse().ok()).unwrap_or(4.0) };
+            let opts = mapgeom::local::BuildOpts { with_deco: !has(args, "--no-deco"), with_baked: !has(args, "--no-baked") && !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), cell: flag(args, "--cell").and_then(|s| s.parse().ok()).unwrap_or(4.0) };
             let s = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &opts);
             println!("built {} triangles, {} placements, grid {}x{}x{} @ {} m in {:.1} s", s.tri_count(), s.placements.len(), s.dims[0], s.dims[1], s.dims[2], s.cell, t0.elapsed().as_secs_f32());
             if let Some(c) = flag(args, "--cache") {
@@ -599,7 +599,7 @@ fn cmd_leg_scan(args: &[String]) {
     let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
     let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
     let m = tmmaps::map::MapFile::load(Path::new(&map));
-    let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts { with_deco: true, with_baked: true, cell: 4.0 });
+    let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts { with_deco: true, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), cell: 4.0 });
     let specials = tmroute::gates::specials(&m, gates.yoff);
     // ghosts
     let mut runs = Vec::new();

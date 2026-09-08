@@ -874,3 +874,13 @@ pub fn read_flips(path: &std::path::Path) -> Result<BTreeMap<String, Vec<u32>>, 
     }
     Ok(out)
 }
+
+/// A tiny (half-scale converter) map: uid "Tin2…" or name "Tiny …". Its .Map.Gbx keeps ONE kind of baked record on
+/// purpose — the collection's water floor (Sea / Water / Lake blocks at the ORIGINAL's sea level, unscaled; the game
+/// needs them or it regenerates the full-size island under the tiny one) — and their collision slab reads at
+/// full-size heights (Sea at y 15 over a tiny road at 8.5). Every other baked block was re-emitted as a half-size
+/// item. So a scene built for a tiny map skips the whole baked list; the real water plane (cell top, e.g. −14 on
+/// BlueBay) lies well below the tiny roads (converter, 2026-09-08 09:07Z).
+pub fn is_tiny_map(uid: &str, name: &str) -> bool {
+    uid.starts_with("Tin2") || name.trim_start().starts_with("Tiny ")
+}

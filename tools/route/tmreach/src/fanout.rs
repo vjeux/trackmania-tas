@@ -24,6 +24,9 @@ pub struct FanoutCfg {
     pub keep_rows: bool,
     /// A longer horizon on a subsample of starts: (ticks, every k-th start).
     pub long_horizon: Option<(u16, usize)>,
+    /// Emit the human legs (positives) and respawn negatives; false for a supplementary shard
+    /// (long horizons) beside a shard that already carries them.
+    pub human: bool,
 }
 
 /// One savestate, as the fan-out actually used it.
@@ -436,7 +439,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
     // G4: the human's own legs (positives) and respawn negatives, ids after the
     // fan-out's starts.
     let hb = start_id_base + 500;
-    if shard.0 == 0 {
+    if shard.0 == 0 && cfg.human {
     match crate::human::human_from_flat(w, tel, flat.clone(), gates, det, hb) {
         Ok(h) => {
             out.human_legs = h.legs;

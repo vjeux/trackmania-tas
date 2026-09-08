@@ -343,6 +343,7 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
             }
             None => Some((600, 3)),
         },
+        human: !a.has("no-human"),
     });
     let pcfg = pool_cfg(a, &map, "fanout");
     println!(

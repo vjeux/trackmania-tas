@@ -5,7 +5,7 @@
 use crate::data::{Rows, L_AANG, L_ADY, L_ASPEED, L_BAND, L_TICKS, L_Y, NLAB};
 use crate::feat;
 use crate::data::L_DIST;
-use crate::net::{Trainable, Weights, MAX_MEAN_SPEED, OUT, O_ANG, O_DY, O_MEANSPEED, O_REACH, O_SPEED};
+use crate::net::{Trainable, Weights, OUT, O_ANG, O_DY, O_MEANSPEED, O_REACH, O_SPEED};
 use candle_core::{Device, Tensor, D};
 use candle_nn::{Optimizer, ParamsAdamW};
 
@@ -28,11 +28,13 @@ pub struct TrainCfg {
     pub dropout: f64,
     /// Per-row probability of zeroing every geometry column (block dropout).
     pub geo_drop: f64,
+    /// Speed ceiling of the speed heads (saved into the .tmw meta as "max_speed").
+    pub max_speed: f32,
 }
 
 impl Default for TrainCfg {
     fn default() -> TrainCfg {
-        TrainCfg { hidden: vec![256, 256, 256], epochs: 40, batch: 2048, lr: 5e-4, weight_decay: 1e-4, w_ticks: 0.5, w_band: 0.1, ablation: "full".into(), seed: 1, patience: 8, clip: 5.0, noise: 0.0, dropout: 0.0, geo_drop: 0.0 }
+        TrainCfg { hidden: vec![256, 256, 256], epochs: 40, batch: 2048, lr: 5e-4, weight_decay: 1e-4, w_ticks: 0.5, w_band: 0.1, ablation: "full".into(), seed: 1, patience: 8, clip: 5.0, noise: 0.0, dropout: 0.0, geo_drop: 0.0, max_speed: crate::net::NEW_MAX_SPEED }
     }
 }
 
@@ -128,7 +130,7 @@ struct Batch {
     band: Tensor, // (B, 3): speed/100, dy/10, ang
 }
 
-fn batch(set: &Set, idx: &[usize], dev: &Device) -> candle_core::Result<Batch> {
+fn batch(set: &Set, idx: &[usize], dev: &Device, max_speed: f32) -> candle_core::Result<Batch> {
     let b = idx.len();
     let dim = set.dim;
     let mut x = Vec::with_capacity(b * dim);
@@ -144,7 +146,7 @@ fn batch(set: &Set, idx: &[usize], dev: &Device) -> candle_core::Result<Batch> {
         let pos = l[L_Y] > 0.5 && l[L_TICKS] >= 0.0;
         tmask.push(if pos { 1.0 } else { 0.0 });
         // target: ln of the mean speed over the straight distance, m/s, clamped to what a car does
-        lnt.push(if pos { (l[L_DIST] / (l[L_TICKS].max(1.0) * 0.01)).clamp(0.5, MAX_MEAN_SPEED).ln() } else { 0.0 });
+        lnt.push(if pos { (l[L_DIST] / (l[L_TICKS].max(1.0) * 0.01)).clamp(0.5, max_speed).ln() } else { 0.0 });
         let bok = l[L_BAND] > 0.5;
         bmask.push(if bok { 1.0 } else { 0.0 });
         band.push(if bok { l[L_ASPEED] / 100.0 } else { 0.0 });
@@ -173,7 +175,7 @@ fn losses(t: &Trainable, bt: &Batch, cfg: &TrainCfg, training: bool) -> candle_c
     let eps = 1e-3f64;
     // ln(150·σ(u)) = ln 150 − softplus(−u) = ln 150 − ln(1 + e^{−u})
     let u = out.narrow(1, O_MEANSPEED, 1)?.squeeze(1)?;
-    let lnt = ((u.neg()?.exp()? + 1.0)?.log()?.neg()? + (MAX_MEAN_SPEED as f64).ln())?;
+    let lnt = ((u.neg()?.exp()? + 1.0)?.log()?.neg()? + (cfg.max_speed as f64).ln())?;
     let tm = (((lnt - &bt.lnt)?.sqr()? * &bt.tmask)?.sum_all()? / (bt.tmask.sum_all()? + eps)?)?;
     // band: gaussian NLL per component, masked
     let mut nll: Option<Tensor> = None;
@@ -262,7 +264,7 @@ pub fn train(train_set: &Set, cfg: &TrainCfg, dev: &Device, verbose: bool) -> Re
         let (mut t_batch, mut t_loss, mut t_back, mut t_step) = (0f64, 0f64, 0f64, 0f64);
         for chunk in fit.chunks(cfg.batch) {
             let t0b = std::time::Instant::now();
-            let bt = batch(train_set, chunk, dev).map_err(|e| e.to_string())?;
+            let bt = batch(train_set, chunk, dev, cfg.max_speed).map_err(|e| e.to_string())?;
             t_batch += t0b.elapsed().as_secs_f64();
             let t0l = std::time::Instant::now();
             let (loss, b, tk, bn) = losses(&t, &bt, cfg, true).map_err(|e| e.to_string())?;
@@ -303,7 +305,7 @@ pub fn train(train_set: &Set, cfg: &TrainCfg, dev: &Device, verbose: bool) -> Re
         let (mut vl, mut vb, mut vt, mut vn, mut vnb) = (0f64, 0f64, 0f64, 0f64, 0usize);
         let vidx: Vec<usize> = (0..val_set.n).collect();
         for chunk in vidx.chunks(8192) {
-            let bt = batch(&val_set, chunk, dev).map_err(|e| e.to_string())?;
+            let bt = batch(&val_set, chunk, dev, cfg.max_speed).map_err(|e| e.to_string())?;
             let (loss, b, tk, bn) = losses(&t, &bt, cfg, false).map_err(|e| e.to_string())?;
             let w = chunk.len() as f64;
             vl += loss.to_scalar::<f32>().map_err(|e| e.to_string())? as f64 * w;
@@ -345,6 +347,7 @@ pub fn train(train_set: &Set, cfg: &TrainCfg, dev: &Device, verbose: bool) -> Re
     log.push(format!("agrees_with: flat vs candle forward, worst |Δ| {worst:.3e} over 64 random inputs (tol 1e-4) → PASS"));
     weights.meta = String::new();
     weights.fv = fv;
+    weights.max_speed = cfg.max_speed;
     Ok(TrainReport { weights, epochs_run, best_epoch, best_val, log })
 }
 
