@@ -738,6 +738,36 @@ fn main() {
                                 let mm = e.visual.main.as_ref();
                                 let decl = mm.and_then(|mm| mm.vertex_streams.first()).and_then(|r| r.inline.as_deref()).map(|n| if let mapgeom::static_item::Node::VertexStream(s) = n { s.decls.iter().map(|d| format!("{:x}", d.name())).collect::<Vec<_>>().join(",") } else { "?".into() }).unwrap_or_default();
                                 println!("  level {l}: material {} ({}) node {} flag {} {} verts {} indices; centre ({:.2}, {:.2}, {:.2}) half ({:.2}, {:.2}, {:.2}); decl [{}]", e.material, m.materials.get(e.material as usize).map(|x| x.name.as_str()).unwrap_or("?"), e.node_index, e.flag, mm.map(|x| x.count).unwrap_or(0), e.visual.index_buffer.as_ref().map(|ib| ib.indices.len()).unwrap_or(0), mm.map(|x| x.bounding_box[0]).unwrap_or(0.0), mm.map(|x| x.bounding_box[1]).unwrap_or(0.0), mm.map(|x| x.bounding_box[2]).unwrap_or(0.0), mm.map(|x| x.bounding_box[3]).unwrap_or(0.0), mm.map(|x| x.bounding_box[4]).unwrap_or(0.0), mm.map(|x| x.bounding_box[5]).unwrap_or(0.0), decl);
+                                if std::env::var_os("MAPGEOM_VEGET_NORMALS").is_some() {
+                                    if let Some(s) = e.visual.stream() {
+                                        let compress = s.compress_local3d.unwrap_or(false);
+                                        for (d, el) in s.decls.iter().zip(s.elems.iter()) {
+                                            let name = d.name();
+                                            if !(name == 5 || name == 0x12 || name == 0x14 || name == 8 || name == 9) {
+                                                continue;
+                                            }
+                                            let vecs: Vec<[f32; 3]> = match el {
+                                                mapgeom::static_item::vstream::Elem::Word(w) if d.stored_type(compress) == mapgeom::static_item::vstream::T_DEC3N => w.iter().map(|x| mapgeom::static_item::build::dec3n_unpack(*x)).collect(),
+                                                mapgeom::static_item::vstream::Elem::Float3(p) => p.clone(),
+                                                mapgeom::static_item::vstream::Elem::Word(w) => {
+                                                    let mut hist = std::collections::BTreeMap::new();
+                                                    for x in w { *hist.entry(*x).or_insert(0usize) += 1; }
+                                                    let mut top: Vec<_> = hist.into_iter().collect();
+                                                    top.sort_by(|a, b| b.1.cmp(&a.1));
+                                                    println!("      elem 0x{name:x} (word): {} distinct, top {:?}", top.len(), top.iter().take(6).map(|(v, n)| format!("{v:08x} x{n}")).collect::<Vec<_>>());
+                                                    continue;
+                                                }
+                                                _ => continue,
+                                            };
+                                            let n = vecs.len().max(1) as f32;
+                                            let mean_len = vecs.iter().map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()).sum::<f32>() / n;
+                                            let short = vecs.iter().filter(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt() < 0.5).count();
+                                            let mean = vecs.iter().fold([0.0f32; 3], |a, v| [a[0] + v[0] / n, a[1] + v[1] / n, a[2] + v[2] / n]);
+                                            let up = vecs.iter().filter(|v| v[1] > 0.5).count();
+                                            println!("      elem 0x{name:x}: mean |v| {mean_len:.3}, {short} shorter than 0.5, mean ({:.2}, {:.2}, {:.2}), {up} with y > 0.5, first {:?}", mean[0], mean[1], mean[2], vecs.iter().take(3).map(|v| format!("({:.2},{:.2},{:.2})", v[0], v[1], v[2])).collect::<Vec<_>>());
+                                        }
+                                    }
+                                }
                             }
                         }
                         // twin visuals (same level, material and vertex count): the same

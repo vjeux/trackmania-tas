@@ -1711,7 +1711,9 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
         let d_slots: Vec<i32> = std::env::var(slots_env).ok().map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect()).filter(|v: &Vec<i32>| !v.is_empty()).unwrap_or_else(|| vec![0]);
         let mut wanted: Vec<(i32, &Option<String>)> = d_slots.iter().map(|s| (*s, &mat.images[0])).collect();
         if normal_map {
-            wanted.push((1, &mat.images[1]));
+            // TINY_TREE_NORMAL_SLOT (default 1): the user-texture slot the _N image fills
+            let n_slot: i32 = std::env::var("TINY_TREE_NORMAL_SLOT").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+            wanted.push((n_slot, &mat.images[1]));
         }
         for (slot, image) in wanted {
             let Some(path) = image else { continue };
@@ -1730,11 +1732,44 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                 // its mips. `rgba` uncompresses everything, `dds` nothing.
                 let fmt = std::env::var("TINY_TREE_TEX_FORMAT").unwrap_or_else(|_| "dds".into());
                 let uncompressed = fmt == "rgba" || (fmt == "leaf-rgba" && mat.leaf);
-                let bytes = if uncompressed { super::texture::dds_uncompressed(&bytes, tex_max).map_err(|e| format!("{path}: {e}"))? } else { super::texture::dds_cap(&bytes, tex_max).map_err(|e| format!("{path}: {e}"))? };
+                // TINY_TREE_LEAF_ALPHA_MAX=N (uncompressed leaf path only): opaque alpha
+                // clamped to N — the probe for "alpha doubles as the gloss mask"
+                let alpha_max: Option<u8> = if mat.leaf { std::env::var("TINY_TREE_LEAF_ALPHA_MAX").ok().and_then(|v| v.parse().ok()) } else { None };
+                let bytes = if uncompressed || alpha_max.is_some() {
+                    let (w, h, mut rgba) = super::texture::decode_capped_rgba(&bytes, tex_max).map_err(|e| format!("{path}: {e}"))?;
+                    if let Some(cap) = alpha_max {
+                        for px in rgba.chunks_mut(4) {
+                            px[3] = px[3].min(cap);
+                        }
+                    }
+                    super::texture::write_dds_rgba(w, h, &rgba)
+                } else {
+                    super::texture::dds_cap(&bytes, tex_max).map_err(|e| format!("{path}: {e}"))?
+                };
                 out.textures.push((file.clone(), bytes.len()));
                 m.pictures.push((file.clone(), bytes));
             }
             files.push((slot, file));
+        }
+        // TINY_TREE_LEAF_CONST=SLOT:RRGGBB[AA] (bark: TINY_TREE_BARK_CONST): a 4x4
+        // constant-colour texture in one more slot — the probe for which slot a
+        // shading model reads its specular / roughness from (black in the
+        // specular slot = matte).
+        let const_env = if mat.leaf { "TINY_TREE_LEAF_CONST" } else { "TINY_TREE_BARK_CONST" };
+        if let Ok(spec) = std::env::var(const_env) {
+            if let Some((slot, hex)) = spec.split_once(':') {
+                let slot: i32 = slot.trim().parse().map_err(|_| format!("{const_env}: bad slot in {spec}"))?;
+                let v = u32::from_str_radix(hex.trim(), 16).map_err(|_| format!("{const_env}: bad colour in {spec}"))?;
+                let (r, g, b, a) = if hex.trim().len() > 6 { ((v >> 24) as u8, (v >> 16) as u8, (v >> 8) as u8, v as u8) } else { ((v >> 16) as u8, (v >> 8) as u8, v as u8, 255u8) };
+                let file = format!("Const_{}{}.dds", hex.trim(), std::env::var("TINY_TREE_MAT_SUFFIX").unwrap_or_default());
+                if !m.pictures.iter().any(|(f, _)| *f == file) {
+                    let px: Vec<u8> = (0..16).flat_map(|_| [r, g, b, a]).collect();
+                    let bytes = super::texture::write_dds_rgba(4, 4, &px);
+                    out.textures.push((file.clone(), bytes.len()));
+                    m.pictures.push((file.clone(), bytes));
+                }
+                files.push((slot, file));
+            }
         }
         if files.is_empty() {
             return Err(format!("material {} names no diffuse image", mat.name));
@@ -1756,6 +1791,11 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
             main.material_name = crate::crystal_model::Id::Str(format!("{model_name}_{d_stem}{suffix}"));
             main.model = crate::crystal_model::Id::Str(model_name.clone());
             main.link = crate::crystal_model::Id::Null;
+            // TINY_TREE_BASE_TEXTURE=1: the diffuse file name in the BaseTexture string
+            // too (the probe for which field a model reads its opacity from)
+            if std::env::var("TINY_TREE_BASE_TEXTURE").map(|v| v == "1").unwrap_or(false) {
+                main.base_texture = files.first().map(|(_, f)| f.trim_end_matches(".dds").to_string()).unwrap_or_default();
+            }
             main.user_textures = files.into_iter().map(|(u01, texture)| crate::crystal_model::UserTexture { u01, texture }).collect();
         }
         // Two model materials of one look (TreeBigB's two bark materials both
@@ -1799,6 +1839,40 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                     }
                 }
             }
+            // TINY_TREE_COLOR=AARRGGBB (word, as stored): every vertex gets this
+            // colour0 — the probe for what the shading models do with the vertex
+            // colour (a lighting multiplier? an AO term?)
+            if let Ok(hex) = std::env::var("TINY_TREE_COLOR") {
+                if let Ok(word) = u32::from_str_radix(hex.trim_start_matches("0x"), 16) {
+                    if let Some(main) = v.main.as_mut() {
+                        if let Some(Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) {
+                            let n = s.count.max(0) as usize;
+                            if let Some(i) = s.decls.iter().position(|d| d.name() == N_COLOR0) {
+                                s.elems[i] = Elem::Word(vec![word; n]);
+                            } else {
+                                use super::vstream::{Decl, T_COLOR};
+                                let compress = s.compress_local3d.unwrap_or(false);
+                                let mut items: Vec<(Decl, u32, Elem)> = s.decls.iter().zip(s.elems.iter()).map(|(d, e)| (d.clone(), d.stored_type(compress), e.clone())).collect();
+                                items.push((Decl::with_stride(N_COLOR0, T_COLOR, 0, 0, 0), T_COLOR, Elem::Word(vec![word; n])));
+                                items.sort_by_key(|(d, _, _)| d.name());
+                                let stride: u32 = items.iter().map(|(_, st, _)| super::vstream::type_size(*st).unwrap_or(4) as u32).sum();
+                                let mut offset = 0u32;
+                                let (mut decls, mut elems) = (Vec::new(), Vec::new());
+                                for (d, st, e) in items {
+                                    decls.push(Decl::with_stride(d.name(), d.ty(), d.space(), offset, stride / 4));
+                                    offset += super::vstream::type_size(st).unwrap_or(4) as u32;
+                                    elems.push(e);
+                                }
+                                s.decls = decls;
+                                s.elems = elems;
+                            }
+                            if !out.stripped.contains(&"=color") {
+                                out.stripped.push("=color");
+                            }
+                        }
+                    }
+                }
+            }
             // every visual carries a second texcoord set (see `ensure_texcoord1`)
             if let Some(main) = v.main.as_mut() {
                 if let Some(Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) {
@@ -1813,7 +1887,19 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
             // of the index list (the normals stay the front ones — a lit back
             // face, not a dark one); TINY_TREE_LEAF_BACKFACES=0 leaves it.
             let leaf = t.materials[e.material as usize].leaf;
-            if leaf && !leaf_model.contains("2Sided") && std::env::var("TINY_TREE_LEAF_BACKFACES").map(|x| x != "0").unwrap_or(true) {
+            // TINY_TREE_LEAF_BACKFACES=shared (default: reversed winding on the same
+            // vertices — a back face lit like its front, the translucent look of
+            // real foliage, no extra vertices) | flip (duplicated vertices with
+            // reversed normals, `double_sided`; +60% leaf bytes, no visible gain in
+            // the cp8 probes) | 0 (none)
+            let backfaces = std::env::var("TINY_TREE_LEAF_BACKFACES").unwrap_or_else(|_| "shared".into());
+            if leaf && !leaf_model.contains("2Sided") && backfaces == "flip" {
+                // duplicated vertices with reversed normals (see `double_sided`)
+                double_sided(&mut v)?;
+                if !out.stripped.contains(&"+2sided") {
+                    out.stripped.push("+2sided");
+                }
+            } else if leaf && !leaf_model.contains("2Sided") && backfaces == "shared" {
                 if let Some(ib) = v.index_buffer.as_mut() {
                     let n = ib.indices.len() / 3 * 3;
                     let mut back = Vec::with_capacity(n);
@@ -1904,4 +1990,67 @@ pub fn ensure_texcoord1(s: &mut super::vstream::CPlugVertexStream) -> bool {
     s.decls = decls;
     s.elems = elems;
     true
+}
+
+/// Make a visual two-sided PROPERLY: every vertex is duplicated with its
+/// normal and tangent frame reversed, and every triangle is repeated with
+/// reversed winding on the duplicates. A back face then carries a normal that
+/// faces its viewer — the shared-normal shortcut (reversed winding on the
+/// same vertices) hands the shader a normal pointing AWAY from the camera,
+/// and the item shading models answer that with a blown-out yellow-white
+/// glare wherever the sun stands behind the card (the "crumpled paper"
+/// bushes of tiny 24's cp8, 2026-09-08).
+pub fn double_sided(v: &mut CPlugVisualIndexedTriangles) -> Result<(), String> {
+    use super::vstream::T_DEC3N;
+    let Some(main) = v.main.as_mut() else { return Ok(()) };
+    let n = main.count.max(0) as usize;
+    let Some(Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { return Ok(()) };
+    let compress = s.compress_local3d.unwrap_or(false);
+    for (d, e) in s.decls.iter().zip(s.elems.iter_mut()) {
+        let flip = matches!(d.name(), N_NORMAL | N_TANGENT_U | N_TANGENT_V);
+        match e {
+            Elem::Float2(x) => {
+                let c = x.clone();
+                x.extend(c);
+            }
+            Elem::Float3(x) => {
+                let mut c = x.clone();
+                if flip {
+                    for p in c.iter_mut() {
+                        *p = [-p[0], -p[1], -p[2]];
+                    }
+                }
+                x.extend(c);
+            }
+            Elem::Float4(x) => {
+                let c = x.clone();
+                x.extend(c);
+            }
+            Elem::Word(x) => {
+                let mut c = x.clone();
+                if flip && d.stored_type(compress) == T_DEC3N {
+                    for w in c.iter_mut() {
+                        let p = dec3n_unpack(*w);
+                        *w = dec3n_pack([-p[0], -p[1], -p[2]]);
+                    }
+                }
+                x.extend(c);
+            }
+            Elem::Raw { size, bytes } => {
+                let c = bytes[..n * *size].to_vec();
+                bytes.extend(c);
+            }
+        }
+    }
+    s.count = (n * 2) as i32;
+    main.count = (n * 2) as i32;
+    if let Some(ib) = v.index_buffer.as_mut() {
+        let m = ib.indices.len() / 3 * 3;
+        let mut back = Vec::with_capacity(m);
+        for tri in ib.indices[..m].chunks(3) {
+            back.extend_from_slice(&[tri[0] + n as u32, tri[2] + n as u32, tri[1] + n as u32]);
+        }
+        ib.indices.extend(back);
+    }
+    Ok(())
 }
