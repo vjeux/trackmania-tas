@@ -705,6 +705,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         let s_eff_seed = if s > s_gate_seed + 6.0 { s_prev_seed + 10.0 } else { s };
         let seed = Entry { key: Key { cs: (s / 4.0).floor() as i32, cv: (speed(&end) / 5.0).floor() as i32, cy: (end.y / 3.0).floor() as i32, mask }, chain: recs, cps, mask, s, seg, progress: k_pref as f64 * 10_000.0 + s_eff_seed, visits: 0, end: end.clone(), macro_desc: vec![format!("seed chain {} ticks", recs_len)] };
         out.log.push(format!("seed from a {} tick chain: ({:.1}, {:.1}, {:.1}) v {:.1} cps {cps} mask {mask:#x} s {s:.1}", recs_len, end.x, end.y, end.z, speed(&end)));
+        if cfg.verbose {
+            eprintln!("{}", out.log.last().unwrap());
+        }
         let from = w.floor(nh)?;
         out.best = Some(seed.clone());
         out.rollouts += fan(w, nh, from, Some(&seed), &mut archive, &mut out, &mut rng, h)?;
