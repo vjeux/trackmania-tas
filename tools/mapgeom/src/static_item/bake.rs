@@ -438,7 +438,6 @@ pub fn smooth_u_vprim(tris: &mut [[Corner; 3]], max_deg: f32, angle_weight: bool
                 continue;
             }
             let mut acc = [0.0f64; 3];
-            let mut wsum = 0.0f64;
             for &oi in &members {
                 let (ti, k) = corners[oi];
                 let w = if mag_weight {
@@ -451,7 +450,6 @@ pub fn smooth_u_vprim(tris: &mut [[Corner; 3]], max_deg: f32, angle_weight: bool
                 for d in 0..3 {
                     acc[d] += tris[ti][k].tan_u[d] as f64 * w;
                 }
-                wsum += w;
             }
             let lavg = (acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]).sqrt().max(1e-30);
             let uavg = [(acc[0] / lavg) as f32, (acc[1] / lavg) as f32, (acc[2] / lavg) as f32];
