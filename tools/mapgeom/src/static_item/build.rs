@@ -2728,6 +2728,14 @@ fn fx_entities(m: &Merged, scale: f32, next: &mut i32) -> Vec<super::prefab::Ent
                     }
                     None => e.model = super::null_ref(),
                 }
+                // the emitter's literal offsets follow the item scale: LocalOffsetExpr
+                // (string 1: SparklerEnd16m sits `float3(0,0,10)` up the stick, 5 m
+                // on the half-size stick) and WorldOffsetExpr (string 2)
+                for s in e.exprs.iter_mut().take(2) {
+                    if let Some(scaled) = scale_float3_literal(s, scale) {
+                        *s = scaled;
+                    }
+                }
                 for k in 1..=12usize {
                     if let Ok(v) = std::env::var(format!("TINY_FX_EXPR_{k}")) {
                         if k <= 10 {
@@ -4309,5 +4317,35 @@ mod material_slot_tests {
         assert_eq!(m2.materials[slot3].link(), Some("Stadium256\\Media\\Material_BlockCustom\\WarpTechnic"));
         // the same look again is the same slot
         assert_eq!(m2.material_inst_slot(&full, ""), slot3);
+    }
+}
+
+/// `float3(a)` / `float3(a,b,c)` with numeric literals, every component
+/// multiplied by `scale`; `None` for any other expression (left as is).
+fn scale_float3_literal(expr: &str, scale: f32) -> Option<String> {
+    let inner = expr.trim().strip_prefix("float3(")?.strip_suffix(')')?;
+    let parts: Vec<f32> = inner.split(',').map(|p| p.trim().parse::<f32>()).collect::<Result<_, _>>().ok()?;
+    if parts.len() != 1 && parts.len() != 3 {
+        return None;
+    }
+    let fmt = |v: f32| {
+        let s = format!("{}", v * scale);
+        if s.contains('.') || s.contains('e') { s } else { format!("{s}.0") }
+    };
+    if parts.iter().all(|v| *v == 0.0) {
+        return Some(expr.to_string());
+    }
+    Some(format!("float3({})", parts.iter().map(|v| fmt(*v)).collect::<Vec<_>>().join(",")))
+}
+
+#[cfg(test)]
+mod fx_tests {
+    #[test]
+    fn float3_literals_scale() {
+        assert_eq!(super::scale_float3_literal("float3(0,0,10)", 0.5).as_deref(), Some("float3(0.0,0.0,5.0)"));
+        assert_eq!(super::scale_float3_literal("float3(0)", 0.5).as_deref(), Some("float3(0)"));
+        assert_eq!(super::scale_float3_literal("float3(0,0,0)", 0.5).as_deref(), Some("float3(0,0,0)"));
+        assert_eq!(super::scale_float3_literal("cos(Time/500)", 0.5), None);
+        assert_eq!(super::scale_float3_literal("float3(1.5,-2,3)", 0.5).as_deref(), Some("float3(0.75,-1.0,1.5)"));
     }
 }
