@@ -38,6 +38,8 @@ pub struct Track {
     pub leg_gap: Vec<bool>,
     /// the ordered group ids (deck/gates.json groups) — credits are matched to gates and to this order
     pub order_groups: Vec<u32>,
+    /// the human's speed at each point (author line only: 100 ms samples), empty otherwise
+    pub human_speed: Vec<f64>,
 }
 
 impl Track {
@@ -98,7 +100,7 @@ impl Track {
         if gate_s.len() != n_groups {
             eprintln!("centreline: {} segments but {} ordered groups; progress capped by the segments", gate_s.len(), n_groups);
         }
-        Ok(Track { pts, s, half_width, speed_hint, n_groups, gap_seg, gate_s, leg_gap, order_groups })
+        Ok(Track { pts, s, half_width, speed_hint, n_groups, gap_seg, gate_s, leg_gap, order_groups, human_speed: Vec::new() })
     }
 
     /// Replace the FIRST leg (spawn -> first gate) by an explicit waypoint polyline (x y z per line):
@@ -160,6 +162,10 @@ impl Track {
         }
         self.pts = pts;
         self.s = s;
+        // a replaced leg has no human speed profile: drop it (the clinic then skips the speed band there)
+        if !self.human_speed.is_empty() {
+            self.human_speed = vec![0.0; self.pts.len()];
+        }
         self.half_width = half_width;
         self.speed_hint = speed_hint;
         self.gap_seg = gap_seg;
@@ -180,7 +186,16 @@ impl Track {
             s[i] = s[i - 1] + ((pts[i][0] - pts[i - 1][0]).powi(2) + (pts[i][1] - pts[i - 1][1]).powi(2) + (pts[i][2] - pts[i - 1][2]).powi(2)).sqrt();
         }
         let n = pts.len();
-        let mut t = Track { pts, s, half_width: vec![6.0; n], speed_hint: vec![80.0; n], n_groups: 0, gap_seg: vec![false; n - 1], gate_s: Vec::new(), leg_gap: Vec::new(), order_groups: Vec::new() };
+        // 100 ms samples: the human's speed is the sample spacing x 10 (smoothed over 5 samples)
+        let mut human_speed = vec![0.0; n];
+        for i in 0..n {
+            let a = i.saturating_sub(2);
+            let b = (i + 2).min(n - 1);
+            if b > a {
+                human_speed[i] = (s[b] - s[a]) / (0.1 * (b - a) as f64);
+            }
+        }
+        let mut t = Track { pts, s, half_width: vec![6.0; n], speed_hint: vec![80.0; n], n_groups: 0, gap_seg: vec![false; n - 1], gate_s: Vec::new(), leg_gap: Vec::new(), order_groups: Vec::new(), human_speed };
         // each gate group: the arc length where the line passes nearest its (first) gate
         let mut groups: Vec<(f64, u32)> = Vec::new();
         for g in &gates.gates {
@@ -202,6 +217,18 @@ impl Track {
         t.n_groups = groups.len();
         t.leg_gap = vec![false; t.n_groups];
         Ok(t)
+    }
+
+    /// the human's speed at arc length s (0 when unknown)
+    pub fn human_speed_at(&self, s: f64) -> f64 {
+        if self.human_speed.is_empty() {
+            return 0.0;
+        }
+        let i = match self.s.binary_search_by(|x| x.partial_cmp(&s).unwrap()) {
+            Ok(i) => i,
+            Err(i) => i.min(self.s.len() - 1),
+        };
+        self.human_speed[i]
     }
 
     pub fn len_m(&self) -> f64 {
@@ -312,6 +339,9 @@ pub struct LapCfg {
     /// how far below the line a car may be while laterally on it (m): 25 = dips allowed (08), 4 = the
     /// line is an elevated ledge/rim and the floor under it is a dead end (15's pool)
     pub below_tol: f64,
+    /// CLINIC mode: the objective is the NEXT gate only — stop when it is credited with a good arrival
+    /// (laterally on the line, speed within 30 % of the human's there) and hand the chain on
+    pub clinic: bool,
 }
 
 struct Rng(u64);
@@ -373,6 +403,8 @@ fn follow_steer(cfg: &LapCfg, r: &Row, seg_hint: usize, look_scale: f64) -> (f32
 
 pub struct LapOut {
     pub finished: Option<Entry>,
+    /// clinic mode: the leg (gate index) that was completed
+    pub leg_done: Option<usize>,
     pub rollouts: usize,
     pub steps: usize,
     pub cells: usize,
@@ -387,7 +419,10 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
     let h = cfg.h;
     let mut rng = Rng(cfg.seed ^ 0x9E3779B97F4A7C15);
     let mut archive: std::collections::HashMap<Key, Entry> = Default::default();
-    let mut out = LapOut { finished: None, rollouts: 0, steps: 0, cells: 0, best: None, log: Vec::new() };
+    let mut out = LapOut { finished: None, leg_done: None, rollouts: 0, steps: 0, cells: 0, best: None, log: Vec::new() };
+    let mut near_misses: usize = 0;
+    // clinic: the leg index the seed sits on (credits in order at the seed)
+    let seed_k = std::cell::Cell::new(0usize);
     let track = &cfg.track;
     let n_groups = track.n_groups as u8;
     let root_row = w.root_row.clone();
@@ -577,13 +612,32 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let dg = ((end.x - g[0]).powi(2) + (2.0 * (end.y - g[1])).powi(2) + (end.z - g[2]).powi(2)).sqrt();
                 k_pref as f64 * 10_000.0 + s_prev + 0.5 * (1.0 - dg / 300.0).clamp(0.0, 1.0)
             } else {
-                let s_eff = if s > s_gate + 6.0 { s_gate - 20.0 } else { s };
+                // past the next gate without its credit: worth only the leg start (20 m before the gate
+                // ranked level with a legit approach; 20's lower deck under gate 3 sat there for 2 h)
+                let s_eff = if s > s_gate + 6.0 { s_prev + 10.0 } else { s };
                 k_pref as f64 * 10_000.0 + s_eff - 0.02 * lat_abs.min(20.0)
             };
             // on a gap leg the arc length says little: the cell is the 4 m x 4 m ground square there
             // on a road leg the cell also carries a 2 m LATERAL bucket (14's ramp: the line's x on the ramp decides the flight)
             let cs = if on_gap { ((end.x / 4.0).floor() as i32) * 100_000 + (end.z / 4.0).floor() as i32 } else { ((s / 4.0).floor() as i32) * 64 + ((lat / 2.0).floor() as i32 + 32).clamp(0, 63) };
             let e = Entry { key: Key { cs, cv: (speed(&end) / 5.0).floor() as i32, cy: (end.y / 3.0).floor() as i32, mask }, chain, cps, mask, s, seg, progress, visits: 0, end: end.clone(), macro_desc: descs };
+            // CLINIC: the next gate credited with a good arrival ends this leg
+            if cfg.clinic && out.finished.is_none() && k_pref > seed_k.get() {
+                let vh = track.human_speed_at(s);
+                let v = speed(&end);
+                let speed_ok = vh <= 0.0 || ((v - vh).abs() <= 0.3 * vh.max(5.0));
+                let lat_ok = lat_abs <= hw + 0.5;
+                if speed_ok && lat_ok {
+                    out.log.push(format!("LEG DONE: gate {} (order position {}) credited with a good arrival at race {}: s {s:.1} lat {lat:.1} v {v:.1} (human {vh:.1}) after {} ticks ({} macros)", k_pref, k_pref - 1, crate::secs(w.race_of(&end)), e.chain.len(), e.macro_desc.len()));
+                    out.leg_done = Some(k_pref);
+                    out.finished = Some(e.clone());
+                } else {
+                    near_misses += 1;
+                    if near_misses <= 20 {
+                        out.log.push(format!("  clinic: gate {} credited but arrival poor: lat {lat:.1} (hw {hw:.1}) v {v:.1} vs human {vh:.1}", k_pref));
+                    }
+                }
+            }
             // the finish: the engine counter reached every group (the finish only credits with all checkpoints)
             if cps >= n_groups && out.finished.is_none() {
                 out.log.push(format!("FINISH credited: cps {cps} at race {} after {} ticks of inputs ({} macros)", crate::secs(w.race_of(&end)), e.chain.len(), e.macro_desc.len()));
@@ -644,7 +698,12 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             }
         }
         let k_pref = (0..track.n_groups).take_while(|i| mask & (1 << i) != 0).count();
-        let seed = Entry { key: Key { cs: (s / 4.0).floor() as i32, cv: (speed(&end) / 5.0).floor() as i32, cy: (end.y / 3.0).floor() as i32, mask }, chain: recs, cps, mask, s, seg, progress: k_pref as f64 * 10_000.0 + s, visits: 0, end: end.clone(), macro_desc: vec![format!("seed chain {} ticks", recs_len)] };
+        seed_k.set(k_pref);
+        // the same cap as a rollout: past the next uncredited gate without its credit = off the route
+        let s_gate_seed = track.gate_s.get(k_pref).copied().unwrap_or(f64::INFINITY);
+        let s_prev_seed = if k_pref == 0 { 0.0 } else { track.gate_s.get(k_pref - 1).copied().unwrap_or(0.0) };
+        let s_eff_seed = if s > s_gate_seed + 6.0 { s_prev_seed + 10.0 } else { s };
+        let seed = Entry { key: Key { cs: (s / 4.0).floor() as i32, cv: (speed(&end) / 5.0).floor() as i32, cy: (end.y / 3.0).floor() as i32, mask }, chain: recs, cps, mask, s, seg, progress: k_pref as f64 * 10_000.0 + s_eff_seed, visits: 0, end: end.clone(), macro_desc: vec![format!("seed chain {} ticks", recs_len)] };
         out.log.push(format!("seed from a {} tick chain: ({:.1}, {:.1}, {:.1}) v {:.1} cps {cps} mask {mask:#x} s {s:.1}", recs_len, end.x, end.y, end.z, speed(&end)));
         let from = w.floor(nh)?;
         out.best = Some(seed.clone());
@@ -662,7 +721,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         if archive.is_empty() {
             break;
         }
-        let mut keys: Vec<(Key, f64)> = archive.values().filter(|e| e.chain.len() + h <= cfg.max_chain_ticks).map(|e| (e.key.clone(), e.progress)).collect();
+        // expandable: the chain plus a macro must fit the tape (and any explicit cap)
+        let cap = cfg.max_chain_ticks.min(n.saturating_sub(root + 10));
+        let mut keys: Vec<(Key, f64)> = archive.values().filter(|e| e.chain.len() + h <= cap).map(|e| (e.key.clone(), e.progress)).collect();
         if keys.is_empty() {
             break;
         }
