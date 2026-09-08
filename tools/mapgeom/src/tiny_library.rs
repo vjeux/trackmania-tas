@@ -378,7 +378,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // block: the authored block of its own cell decides (its modifier, or
     // none); a cell without an authored block asks its four horizontal
     // neighbours and takes the modifier they agree on most.
-    let terrain_mods = |bi: &crate::blockinfo::BlockInfo| -> Vec<String> { bi.material_modifier.iter().filter(|r| r.ends_with(".TerrainModifier.Gbx")).cloned().collect() };
+    // (`Reset.TerrainModifier .Gbx` — the pack spells the Reset gates' modifier
+    // with a space before the extension, block info and item alike; until
+    // 2026-09-08 every GateSpecialReset block was baked in its Turbo dress)
+    let terrain_mods = |bi: &crate::blockinfo::BlockInfo| -> Vec<String> { bi.material_modifier.iter().map(|r| r.replace(' ', "")).filter(|r| r.ends_with(".TerrainModifier.Gbx")).collect() };
     let mut cell_mod: std::collections::HashMap<(u8, u8, u8), Vec<String>> = std::collections::HashMap::new();
     // (x, z) column -> [(y, is_pillar, mods)] for the pillar rule below
     let mut columns: std::collections::HashMap<(u8, u8), Vec<(u8, bool, Vec<String>)>> = std::collections::HashMap::new();
@@ -1276,6 +1279,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
 pub fn modifier_links(store: &DataStore, refs: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for r in refs {
+        let r = r.replace(' ', "");
         let Some(base) = r.strip_suffix(".TerrainModifier.Gbx") else { continue };
         let prefix = format!("{base}\\").to_uppercase();
         for e in store.entries() {
