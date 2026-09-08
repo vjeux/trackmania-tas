@@ -220,6 +220,11 @@ pub struct FxPart {
     /// (source node index, pack path, the parsed `.ParticleModel.Gbx` with its
     /// own externals — the texture the sub-model names).
     pub models: Vec<(u32, String, super::particle::ParticleNode, Vec<(u32, String)>)>,
+    /// The textures those models name, for `TINY_FX_TEXTURE=archive`: (pack
+    /// path of the `.Texture.gbx`, its CPlugBitmap parsed, the image file's
+    /// bare name, the image bytes) — the bitmap rides inline, the image as
+    /// `Items/<name>` in the library archive.
+    pub textures: Vec<(String, super::particle::ParticleNode, String, Vec<u8>)>,
     /// The entity's pose in the item's unscaled frame.
     pub at: Xform,
 }
@@ -2513,6 +2518,11 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                     } else {
                         match add_fx_system(store, &p, &iso) {
                             Ok(part) => {
+                                for (_, _, name, bytes) in &part.textures {
+                                    if !m.pictures.iter().any(|(n, _)| n == name) {
+                                        m.pictures.push((name.clone(), bytes.clone()));
+                                    }
+                                }
                                 m.notes.push(format!("{path} entity {i}: effect system {p}: {} emitter(s), {} particle model(s)", part.fx.root.emitters().len(), part.models.len()));
                                 m.fx.push(part);
                             }
@@ -2564,7 +2574,36 @@ pub fn add_fx_system(store: &mut crate::store::DataStore, path: &str, at: &Xform
         }
         models.push((idx, mp, node, pm.externals.clone()));
     }
-    Ok(FxPart { path: path.to_string(), fx, models, at: *at })
+    // the textures, for the in-archive form: each `.Texture.gbx` the models
+    // name, parsed, and its image file read out of the pack
+    let mut textures: Vec<(String, super::particle::ParticleNode, String, Vec<u8>)> = Vec::new();
+    if std::env::var("TINY_FX_TEXTURE").map(|v| v == "archive").unwrap_or(false) {
+        for (_, mp, node, ext) in &models {
+            for tref in node_texture_refs(node) {
+                let Some(tp) = ext.iter().find(|(k, _)| *k as i32 == tref).map(|(_, p)| p.clone()) else { continue };
+                if textures.iter().any(|(p, _, _, _)| *p == tp) {
+                    continue;
+                }
+                let tm = store.load_model(&tp).map_err(|e| format!("{mp}: texture {tp}: {e}"))?;
+                if tm.class_id != super::particle::C_BITMAP {
+                    return Err(format!("{tp}: class 0x{:08X} is not CPlugBitmap", tm.class_id));
+                }
+                let mut lb = super::LookbackState::default();
+                lb.defined_nodes.extend(tm.external_indices().iter().copied());
+                let mut r = super::Rd::new(&tm.body, 0, lb);
+                let bitmap = super::particle::ParticleNode::parse(&mut r, tm.class_id).map_err(|e| format!("{tp}: {e}"))?;
+                let image_idx = bitmap.chunks.iter().find_map(|c| match c {
+                    super::particle::PChunk::BitmapImage { image, .. } => Some(image.index),
+                    _ => None,
+                }).ok_or_else(|| format!("{tp}: no image chunk (0x09011030)"))?;
+                let ip = tm.externals.iter().find(|(k, _)| *k as i32 == image_idx).map(|(_, p)| p.clone()).ok_or_else(|| format!("{tp}: image node {image_idx} is not an external file"))?;
+                let bytes = store.read(&ip).map_err(|e| format!("{ip}: {e}"))?;
+                let name = ip.rsplit('\\').next().unwrap_or(&ip).to_string();
+                textures.push((tp, bitmap, name, bytes));
+            }
+        }
+    }
+    Ok(FxPart { path: path.to_string(), fx, models, textures, at: *at })
 }
 
 /// Give every inline node of a particle chain its index in the item's node
@@ -2572,7 +2611,27 @@ pub fn add_fx_system(store: &mut crate::store::DataStore, path: &str, at: &Xform
 /// the texture the sub-model names is kept as an external reference to the
 /// pack path (`TINY_FX_TEXTURE=extern`, default — the game resolves it or
 /// not; the probe of 2026-09-08) or dropped (`null`).
-fn place_particle_node(node: &mut super::particle::ParticleNode, externals: &[(u32, String)], next: &mut i32) {
+/// The external node indices a particle model's sub-models name as their
+/// texture (chunk 0x090B2036).
+fn node_texture_refs(node: &super::particle::ParticleNode) -> Vec<i32> {
+    let mut out = Vec::new();
+    for c in &node.chunks {
+        match c {
+            super::particle::PChunk::Texture { texture, .. } if texture.inline.is_none() && texture.index >= 0 => out.push(texture.index),
+            super::particle::PChunk::SubModels { models, .. } => {
+                for m in models {
+                    if let Some(Node::Particle(inner)) = m.inline.as_deref() {
+                        out.extend(node_texture_refs(inner));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn place_particle_node(node: &mut super::particle::ParticleNode, externals: &[(u32, String)], textures: &[(String, super::particle::ParticleNode, String, Vec<u8>)], next: &mut i32) {
     let texture_mode = std::env::var("TINY_FX_TEXTURE").unwrap_or_else(|_| "extern".into());
     for r in node.refs_mut() {
         if r.index < 0 {
@@ -2581,13 +2640,13 @@ fn place_particle_node(node: &mut super::particle::ParticleNode, externals: &[(u
         match r.inline.as_deref_mut() {
             Some(Node::Particle(inner)) => {
                 r.index = next_index(next);
-                place_particle_node(inner, externals, next);
+                place_particle_node(inner, externals, textures, next);
             }
             Some(_) => {
                 r.index = next_index(next);
             }
             None => {
-                // an external of the source file (the texture)
+                // an external of the source file (the texture, or a bitmap's image)
                 let path = externals.iter().find(|(k, _)| *k as i32 == r.index).map(|(_, p)| p.clone());
                 match (path, texture_mode.as_str()) {
                     (Some(p), "extern") => {
@@ -2595,6 +2654,29 @@ fn place_particle_node(node: &mut super::particle::ParticleNode, externals: &[(u
                         EXTERNALS.with(|e| e.borrow_mut().push((i as u32, p)));
                         r.index = i;
                     }
+                    (Some(p), "archive") => match textures.iter().find(|(tp, _, _, _)| *tp == p) {
+                        // the `.Texture.gbx` inline; its image named by its bare file
+                        // name (folder 0 = the item's own folder in the archive)
+                        Some((_, bitmap, name, _)) => {
+                            let i = next_index(next);
+                            let mut b = bitmap.clone();
+                            for ir in b.refs_mut() {
+                                if ir.index >= 0 && ir.inline.is_none() {
+                                    let k = next_index(next);
+                                    EXTERNALS.with(|e| e.borrow_mut().push((k as u32, name.clone())));
+                                    ir.index = k;
+                                }
+                            }
+                            *r = inline(i, Node::Particle(b));
+                        }
+                        // not a texture we carried (a bitmap's own image reached
+                        // through the recursion is handled above): the pack path
+                        None => {
+                            let i = next_index(next);
+                            EXTERNALS.with(|e| e.borrow_mut().push((i as u32, p)));
+                            r.index = i;
+                        }
+                    },
                     _ => *r = super::null_ref(),
                 }
             }
@@ -2640,7 +2722,7 @@ fn fx_entities(m: &Merged, scale: f32, next: &mut i32) -> Vec<super::prefab::Ent
                     Some((_, _, node, ext)) => {
                         let i = next_index(next);
                         let mut node = node.clone();
-                        place_particle_node(&mut node, ext, next);
+                        place_particle_node(&mut node, ext, &part.textures, next);
                         e.model = inline(i, Node::Particle(node));
                         placed.push((src, i));
                     }

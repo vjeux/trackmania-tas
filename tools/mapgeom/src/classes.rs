@@ -2496,6 +2496,28 @@ impl<'a> Graph<'a> {
                 self.r.take(16 * n)?;
                 Ok(())
             })(),
+            0x09011030 => (|| {
+                let _version = self.r.u32()?;
+                self.noderef()?;
+                self.r.take(28)?;
+                Ok(())
+            })(),
+            0x09011034 => (|| {
+                let _version = self.r.u32()?;
+                self.noderef()?;
+                self.r.u32()?;
+                let n = self.r.u32()? as usize;
+                if n > 64 {
+                    return Err(format!("bitmap claims {n} frames"));
+                }
+                for _ in 0..n {
+                    self.noderef()?;
+                }
+                self.noderef()?;
+                self.r.take(8)?;
+                Ok(())
+            })(),
+            0x0901102A | 0x0901102C => self.noderef().map(|_| ()),
             c => match p::raw_payload_len(c) {
                 Some(n) => self.r.take(n).map(|_| ()),
                 None => return None,

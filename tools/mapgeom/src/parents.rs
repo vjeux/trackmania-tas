@@ -134,6 +134,7 @@ const PARENTS: &[(u32, u32)] = &[
     (0x090B5000, 0x0902B000), // particle shape/spawn model (sub-model node 2) : CPlug
     (0x090C5000, 0x0902B000), // particle sub-node 3 : CPlug
     (0x090C6000, 0x0902B000), // particle sub-node 4 : CPlug
+    (0x09011000, 0x0902B000), // CPlugBitmap (`*.Texture.gbx`) : CPlug — decodes with it (2026-09-08)
     (0x0A02B000, 0x0A02B000), // CSceneVehicleCar : CSceneVehicle
     (0x24005000, 0x24005000), // CGameCtnBlockInfo : CGameCtnCollector
 ];

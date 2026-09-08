@@ -47,9 +47,16 @@ pub const C_PARTICLE_EMITTER_SUB_MODEL: u32 = 0x090B2000;
 pub const C_PARTICLE_SUB_NODE: u32 = 0x090B5000;
 pub const C_PARTICLE_GPU_SPAWN: u32 = 0x090C5000;
 pub const C_PARTICLE_GPU_MODEL: u32 = 0x090C6000;
+/// `CPlugBitmap` (`*.Texture.gbx`): the sub-model's texture, read here so it
+/// can ride INLINE in an item with its image as an archive file
+/// (`TINY_FX_TEXTURE=archive`). Chunk 0x09011030 = {version 5, ref image,
+/// 28 bytes}; 0x09011034 = {version 4, ref, u32, count, refs, ref, u32,
+/// u32} (the frame list of the multi-image screen textures); 0x0901102A/2C
+/// single refs; the rest fixed-size (measured on 40 Stadium textures).
+pub const C_BITMAP: u32 = 0x09011000;
 
 pub fn is_particle_class(c: u32) -> bool {
-    matches!(c, C_FX_SYSTEM | C_PARTICLE_EMITTER_MODEL | C_PARTICLE_EMITTER_SUB_MODEL | C_PARTICLE_SUB_NODE | C_PARTICLE_GPU_SPAWN | C_PARTICLE_GPU_MODEL)
+    matches!(c, C_FX_SYSTEM | C_PARTICLE_EMITTER_MODEL | C_PARTICLE_EMITTER_SUB_MODEL | C_PARTICLE_SUB_NODE | C_PARTICLE_GPU_SPAWN | C_PARTICLE_GPU_MODEL | C_BITMAP)
 }
 
 // ------------------------------------------------------------- CPlugFxSystem
@@ -308,6 +315,12 @@ pub enum PChunk {
     Gpu { version: u32, spawn: Ref, model: Ref },
     /// 0x090C5000 v1: fifteen words, then `count` keys of four words each.
     GpuSpawn { version: u32, words: [u32; 15], keys: Vec<[u32; 4]> },
+    /// 0x09011030 v5 (CPlugBitmap): the image (`Image\X.dds`), 28 bytes.
+    BitmapImage { version: u32, image: Ref, tail: Vec<u8> },
+    /// 0x09011034 v4 (CPlugBitmap): the frame list.
+    BitmapFrames { version: u32, r1: Ref, u01: u32, frames: Vec<Ref>, r2: Ref, u02: u32, u03: u32 },
+    /// 0x0901102A / 0x0901102C (CPlugBitmap): one reference.
+    SingleRef { id: u32, node: Ref },
     /// Any other chunk: id and payload (its size is a function of the id).
     Raw { id: u32, payload: Vec<u8> },
 }
@@ -335,6 +348,19 @@ pub fn raw_payload_len(id: u32) -> Option<usize> {
         0x090C6001 => 28,
         0x090C6002 => 188,
         0x090C6003 => 16,
+        // CPlugBitmap
+        0x09011019 => 4,
+        0x09011020 => 4,
+        0x09011023 => 4,
+        0x09011025 => 24,
+        0x09011028 => 8,
+        0x0901102D => 8,
+        0x09011032 => 8,
+        0x09011033 => 4,
+        0x09011035 => 6,
+        0x09011036 => 20,
+        0x09011037 => 36,
+        0x09011038 => 12,
         _ => return None,
     })
 }
@@ -435,6 +461,36 @@ impl ParticleNode {
                     }
                     PChunk::GpuSpawn { version, words, keys }
                 }
+                0x09011030 => {
+                    let version = r.u32()?;
+                    if version != 5 {
+                        return Err(format!("CPlugBitmap chunk 030 version {version} (only 5 is read)"));
+                    }
+                    let image = read_ref(r)?;
+                    let tail = r.take(28)?.to_vec();
+                    PChunk::BitmapImage { version, image, tail }
+                }
+                0x09011034 => {
+                    let version = r.u32()?;
+                    if version != 4 {
+                        return Err(format!("CPlugBitmap chunk 034 version {version} (only 4 is read)"));
+                    }
+                    let r1 = read_ref(r)?;
+                    let u01 = r.u32()?;
+                    let n = r.count()?;
+                    if n > 64 {
+                        return Err(format!("bitmap claims {n} frames"));
+                    }
+                    let mut frames = Vec::with_capacity(n);
+                    for _ in 0..n {
+                        frames.push(read_ref(r)?);
+                    }
+                    let r2 = read_ref(r)?;
+                    let u02 = r.u32()?;
+                    let u03 = r.u32()?;
+                    PChunk::BitmapFrames { version, r1, u01, frames, r2, u02, u03 }
+                }
+                0x0901102A | 0x0901102C => PChunk::SingleRef { id: cid, node: read_ref(r)? },
                 c => match raw_payload_len(c) {
                     Some(n) => PChunk::Raw { id: c, payload: r.take(n)?.to_vec() },
                     None if super::is_skippable_here(r) => {
@@ -505,6 +561,29 @@ impl ParticleNode {
                         }
                     }
                 }
+                PChunk::BitmapImage { version, image, tail } => {
+                    w.u32(0x09011030);
+                    w.u32(*version);
+                    write_ref(w, image);
+                    w.bytes(tail);
+                }
+                PChunk::BitmapFrames { version, r1, u01, frames, r2, u02, u03 } => {
+                    w.u32(0x09011034);
+                    w.u32(*version);
+                    write_ref(w, r1);
+                    w.u32(*u01);
+                    w.u32(frames.len() as u32);
+                    for f in frames {
+                        write_ref(w, f);
+                    }
+                    write_ref(w, r2);
+                    w.u32(*u02);
+                    w.u32(*u03);
+                }
+                PChunk::SingleRef { id, node } => {
+                    w.u32(*id);
+                    write_ref(w, node);
+                }
                 PChunk::Raw { id, payload } if id & 0x8000_0000 != 0 => super::write_skippable(w, id & 0x7FFF_FFFF, payload),
                 PChunk::Raw { id, payload } => {
                     w.u32(*id);
@@ -539,6 +618,13 @@ impl ParticleNode {
                     out.push(spawn);
                     out.push(model);
                 }
+                PChunk::BitmapImage { image, .. } => out.push(image),
+                PChunk::BitmapFrames { r1, frames, r2, .. } => {
+                    out.push(r1);
+                    out.extend(frames.iter_mut());
+                    out.push(r2);
+                }
+                PChunk::SingleRef { node, .. } => out.push(node),
                 _ => {}
             }
         }
@@ -586,6 +672,15 @@ impl ParticleNode {
                     let f: Vec<String> = words.iter().map(|w| fmt_word(*w)).collect();
                     let _ = writeln!(out, "{pad}  0C5000: [{}] keys {:?}", f.join(" "), keys.iter().map(|k| k.iter().map(|w| fmt_word(*w)).collect::<Vec<_>>().join(",")).collect::<Vec<_>>());
                 }
+                PChunk::BitmapImage { image, .. } => {
+                    let _ = writeln!(out, "{pad}  030: image node {}", image.index);
+                }
+                PChunk::BitmapFrames { frames, .. } => {
+                    let _ = writeln!(out, "{pad}  034: {} frame refs {:?}", frames.len(), frames.iter().map(|f| f.index).collect::<Vec<_>>());
+                }
+                PChunk::SingleRef { id, node } => {
+                    let _ = writeln!(out, "{pad}  {:03X}: ref node {}", id & 0xFFF, node.index);
+                }
                 PChunk::Raw { id, payload } => {
                     let words: Vec<String> = payload.chunks(4).map(|c| if c.len() == 4 { fmt_word(u32::from_le_bytes([c[0], c[1], c[2], c[3]])) } else { format!("{c:02x?}") }).collect();
                     let _ = writeln!(out, "{pad}  {:03X}: {} bytes [{}]", id & 0xFFF, payload.len(), words.join(" "));
@@ -612,5 +707,5 @@ fn fmt_word(w: u32) -> String {
 /// Every chunk id of the effect-system and particle classes this module
 /// reads (the generic walker's `known`).
 pub fn is_particle_chunk(cid: u32) -> bool {
-    matches!(cid, C_FX_SYSTEM | 0x090B3000 | 0x090B3001 | 0x090B202D | 0x090B202E | 0x090B2036 | 0x090B203A | 0x090C5000) || raw_payload_len(cid).is_some()
+    matches!(cid, C_FX_SYSTEM | 0x090B3000 | 0x090B3001 | 0x090B202D | 0x090B202E | 0x090B2036 | 0x090B203A | 0x090C5000 | 0x09011030 | 0x09011034 | 0x0901102A | 0x0901102C) || raw_payload_len(cid).is_some()
 }
