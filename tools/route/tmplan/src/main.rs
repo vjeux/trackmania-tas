@@ -768,9 +768,32 @@ fn cmd_road_centreline(args: &[String]) {
             eprintln!("  spawn stub: no road along yaw {yaw:.2} from the spawn — none written");
         }
     }
+    // --leg-lines FILE.tsv (map_stem \t from_group|spawn \t to_group \t half_width \t x,y,z;x,y,z;… \t note): an explicit
+    // drive line for a leg the graph cannot carry (Argentina 21's turbo jump — player/LEARN 16:04Z); the polyline
+    // takes these points (resampled 2 m), the segment is "via": "manual", the Leg keeps its verdict class
+    let leg_lines: Vec<(String, String, f32, Vec<[f32; 3]>)> = flag(args, "--leg-lines").and_then(|p| std::fs::read_to_string(p).ok()).map(|t| t.lines().filter(|l| !l.starts_with('#')).filter_map(|l| {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() >= 5 && f[0] == stem_v {
+            let pts: Vec<[f32; 3]> = f[4].split(';').filter_map(|p| { let v: Vec<f32> = p.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 3 { Some([v[0], v[1], v[2]]) } else { None } }).collect();
+            if pts.len() >= 2 { Some((f[1].to_string(), f[2].to_string(), f[3].trim().parse().unwrap_or(8.0), pts)) } else { None }
+        } else { None }
+    }).collect()).unwrap_or_default();
     for w in seq.windows(2) {
         let (i, j) = (w[0], w[1]);
         let i0 = pts.len() - 1;
+        if let Some((_, _, hwid, line)) = leg_lines.iter().find(|(f, t, _, _)| *f == grp(&nodes, i).trim_matches('"') && *t == grp_id_of(&nodes, j)) {
+            let mut raw = vec![*pts.last().unwrap()];
+            raw.extend_from_slice(line);
+            let leg = tmroute::human::resample(&raw, 2.0);
+            for p in leg.iter().skip(1) {
+                hw.push(*hwid);
+                pts.push(*p);
+            }
+            eprintln!("  manual drive line {} → {}: {} points given, {} pts, half-width {hwid}", grp(&nodes, i), grp(&nodes, j), line.len(), leg.len());
+            segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {}, \"gap\": false, \"via\": \"manual\"}}", grp(&nodes, i), grp(&nodes, j), pts.len() - 1));
+            through = None;
+            continue;
+        }
         let path = match through { Some(p) => surf.road_path_from_point(p, &nodes, j).or_else(|| surf.road_path(&nodes, i, j)), None => surf.road_path(&nodes, i, j) };
         through = None;
         match path {
