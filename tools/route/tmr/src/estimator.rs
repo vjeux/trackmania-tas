@@ -168,6 +168,8 @@ struct ChainState {
     ticks: i32,
     logp: f32,
     steps: usize,
+    /// mean vertical speed over the last step (m/s; 0 at a gate node) — the BALLISTIC fan (F20) extrapolates it
+    vy: f32,
 }
 
 pub struct Chained<'a> {
@@ -252,7 +254,8 @@ impl<'a> Chained<'a> {
     /// Ground height for a target at (x, z): the highest surface at or below y_ref + 3 within 40 m, else y_ref.
     fn ground_y(&self, x: f32, y_ref: f32, z: f32) -> f32 {
         let col = self.surf.full.column(x, z);
-        col.iter().find(|(sy, _)| *sy <= y_ref + 3.0 && *sy >= y_ref - 40.0).map(|(sy, _)| *sy).unwrap_or(y_ref)
+        // the first surface at or below the car, down to 200 m (drops of 50–180 m are the F22 class); none → the car's height
+        col.iter().find(|(sy, _)| *sy <= y_ref + 3.0 && *sy >= y_ref - 200.0).map(|(sy, _)| *sy).unwrap_or(y_ref)
     }
 
     /// The local head on (state → target at h).
@@ -284,7 +287,7 @@ impl<'a> Chained<'a> {
         let goal = self.nodes.pos[to];
         let (gc, gn, ghw) = self.gates.group_geometry(self.nodes.groups[to])?;
         let _ = gc;
-        let start = ChainState { pos: from_pos, speed: v_in, dir, ticks: 0, logp: 0.0, steps: 0 };
+        let start = ChainState { pos: from_pos, speed: v_in, dir, ticks: 0, logp: 0.0, steps: 0, vy: 0.0 };
         let mut frontier = vec![start];
         let mut paths: Vec<Vec<[f32; 3]>> = vec![vec![from_pos]];
         let mut best: Option<(f32, ChainState, Vec<[f32; 3]>)> = None;
@@ -308,7 +311,7 @@ impl<'a> Chained<'a> {
                         if e.p_reach >= self.p_step_floor {
                             // time to the gate = the head's first-passage time (PASSAGE labels), ≤ h
                             let t = (e.expected_ticks.round() as i32).clamp(10, *h as i32);
-                            let cand = ChainState { pos: goal, speed: e.speed_mu.max(0.0), dir: [gn[0], gn[2]], ticks: s.ticks + t, logp: s.logp + e.p_reach.ln(), steps: s.steps + 1 };
+                            let cand = ChainState { pos: goal, speed: e.speed_mu.max(0.0), dir: [gn[0], gn[2]], ticks: s.ticks + t, logp: s.logp + e.p_reach.ln(), steps: s.steps + 1, vy: 0.0 };
                             let score = cand.ticks as f32 * 10.0 - self.penalty_ms * cand.logp;
                             if best.as_ref().map_or(true, |(b, _, _)| score < *b) {
                                 let mut p = path.clone();
@@ -340,20 +343,31 @@ impl<'a> Chained<'a> {
                         for tdir in dirs {
                             let x = s.pos[0] + tdir[0] * d;
                             let z = s.pos[2] + tdir[1] * d;
-                            let y = self.ground_y(x, s.pos[1], z);
-                            let target = [x, y, z];
-                            let e = self.local_query(s, target, *h);
-                            if e.p_reach < self.p_step_floor {
-                                continue;
+                            let y_ground = self.ground_y(x, s.pos[1], z);
+                            // BALLISTIC candidate (F20): where the car would BE at the target's XZ if it flew — the
+                            // passage labels put positives along the flight arc, the ground fan never asked there
+                            let tf = *d / s.speed.max(20.0);
+                            let y_air = s.pos[1] + s.vy * tf - 4.905 * tf * tf;
+                            let mut ys = vec![y_ground];
+                            if y_air > y_ground + 3.0 {
+                                ys.push(y_air);
                             }
-                            // step time = first-passage time at the target (the head's ticks), not h: a near target is
-                            // passed early, not braked for
-                            let t = (e.expected_ticks.round() as i32).clamp(10, *h as i32);
-                            let cand = ChainState { pos: target, speed: e.speed_mu.clamp(0.0, 150.0), dir: tdir, ticks: s.ticks + t, logp: s.logp + e.p_reach.ln(), steps: s.steps + 1 };
-                            let mut p = path.clone();
-                            p.push(target);
-                            let score = cand.ticks as f32 * 10.0 - self.penalty_ms * cand.logp;
-                            next.push((score, cand, p));
+                            for y in ys {
+                                let target = [x, y, z];
+                                let e = self.local_query(s, target, *h);
+                                if e.p_reach < self.p_step_floor {
+                                    continue;
+                                }
+                                // step time = first-passage time at the target (the head's ticks), not h: a near target is
+                                // passed early, not braked for
+                                let t = (e.expected_ticks.round() as i32).clamp(10, *h as i32);
+                                let vy = (y - s.pos[1]) / (t as f32 * 0.01).max(0.1);
+                                let cand = ChainState { pos: target, speed: e.speed_mu.clamp(0.0, 150.0), dir: tdir, ticks: s.ticks + t, logp: s.logp + e.p_reach.ln(), steps: s.steps + 1, vy };
+                                let mut p = path.clone();
+                                p.push(target);
+                                let score = cand.ticks as f32 * 10.0 - self.penalty_ms * cand.logp;
+                                next.push((score, cand, p));
+                            }
                         }
                     }
                 }
