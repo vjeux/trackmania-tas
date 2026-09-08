@@ -287,6 +287,9 @@ impl<'a> Graph<'a> {
         if let Some(res) = self.bi_chunk(class_id, cid) {
             return res;
         }
+        if let Some(res) = self.fx_chunk(cid) {
+            return res;
+        }
         match cid {
             // ---------------------------------------------- CPlugSurface
             0x0900C003 => {
@@ -2269,7 +2272,7 @@ fn compose(outer: &[f32; 12], inner: &[f32; 12]) -> [f32; 12] {
 }
 
 fn known(_class_id: u32, cid: u32) -> bool {
-    crate::blockinfo::known(cid) || matches!(
+    crate::blockinfo::known(cid) || crate::static_item::particle::is_particle_chunk(cid) || matches!(
         cid,
         0x090F9000
             | 0x0901D000
@@ -2406,5 +2409,140 @@ fn opt_int_size(max: usize) -> usize {
         2
     } else {
         4
+    }
+}
+
+impl<'a> Graph<'a> {
+    /// The effect-system and particle classes (`static_item::particle` holds
+    /// the typed model and the layout notes): `CPlugFxSystem` 0x0915C000,
+    /// `CPlugParticleEmitterModel` 0x090B3000 and the sub-model chain. Read
+    /// here so the generic walk (dump, the pak decrypt's node starts) gets
+    /// through them; the geometry accumulator learns nothing from them.
+    fn fx_chunk(&mut self, cid: u32) -> Option<R<()>> {
+        use crate::static_item::particle as p;
+        let r: R<()> = match cid {
+            p::C_FX_SYSTEM => (|| {
+                let version = self.r.u32()?;
+                if version != 1 {
+                    return Err(format!("CPlugFxSystem version {version} (only 1 is read)"));
+                }
+                let _u01 = self.r.u32()?;
+                self.fx_node(0)?;
+                let _context = self.r.i32()?;
+                let _extra = self.r.i32()?;
+                let n = self.r.u32()? as usize;
+                let _tag = self.r.u32()?;
+                for _ in 0..n {
+                    let name = self.r.lookback()?;
+                    let kind = self.r.u8()?;
+                    let len = match kind {
+                        2 => 13,
+                        6 => 2,
+                        other => return Err(format!("FxSystem var {name:?} of type {other}: unknown value size")),
+                    };
+                    self.r.take(len)?;
+                }
+                Ok(())
+            })(),
+            0x090B3000 => (|| {
+                let version = self.r.u32()?;
+                if version != 10 {
+                    return Err(format!("CPlugParticleEmitterModel chunk 000 version {version} (only 10 is read)"));
+                }
+                let n = self.r.u32()? as usize;
+                if n > 64 {
+                    return Err(format!("particle model claims {n} sub-models"));
+                }
+                for _ in 0..n {
+                    self.noderef()?;
+                }
+                Ok(())
+            })(),
+            0x090B3001 => self.r.lookback().map(|_| ()),
+            0x090B202D => (|| {
+                let _version = self.r.u32()?;
+                self.r.take(32)?;
+                self.r.lookback()?;
+                self.r.u32()?;
+                Ok(())
+            })(),
+            0x090B202E => (|| {
+                let _version = self.r.u32()?;
+                self.noderef()?;
+                Ok(())
+            })(),
+            0x090B2036 => (|| {
+                let _version = self.r.u32()?;
+                self.r.take(8)?;
+                self.noderef()?;
+                Ok(())
+            })(),
+            0x090B203A => (|| {
+                let _version = self.r.u32()?;
+                self.noderef()?;
+                self.noderef()?;
+                Ok(())
+            })(),
+            0x090C5000 => (|| {
+                let version = self.r.u32()?;
+                if version != 1 {
+                    return Err(format!("CPlugParticleGpuSpawn chunk 000 version {version} (only 1 is read)"));
+                }
+                self.r.take(60)?;
+                let n = self.r.u32()? as usize;
+                if n > 64 {
+                    return Err(format!("GPU spawn claims {n} keys"));
+                }
+                self.r.take(16 * n)?;
+                Ok(())
+            })(),
+            c => match p::raw_payload_len(c) {
+                Some(n) => self.r.take(n).map(|_| ()),
+                None => return None,
+            },
+        };
+        Some(r)
+    }
+
+    /// One FxSystem node (`particle.rs` grammar), recursively.
+    fn fx_node(&mut self, depth: usize) -> R<()> {
+        if depth > 16 {
+            return Err("FxSystem node tree deeper than 16".into());
+        }
+        let at = self.r.o;
+        let ty = self.r.u32()?;
+        let _name = self.r.lookback()?;
+        match ty {
+            0 => {
+                let n = self.r.u32()? as usize;
+                if n > 256 {
+                    return Err(format!("FxSystem parallel node at 0x{at:x} claims {n} children"));
+                }
+                for _ in 0..n {
+                    self.fx_node(depth + 1)?;
+                }
+            }
+            1 => {
+                self.r.string()?;
+                self.fx_node(depth + 1)?;
+            }
+            3 => {
+                self.r.lookback()?;
+                self.r.u32()?;
+                self.r.string()?;
+            }
+            4 => {
+                self.noderef()?;
+                self.r.lookback()?;
+                for _ in 0..10 {
+                    self.r.string()?;
+                }
+                self.r.u32()?;
+                self.r.string()?;
+                self.r.string()?;
+            }
+            other => return Err(format!("FxSystem node type {other} at 0x{at:x} has no reader")),
+        }
+        Ok(())
     }
 }

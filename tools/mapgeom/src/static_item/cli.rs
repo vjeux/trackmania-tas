@@ -148,3 +148,63 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
     );
     Ok(())
 }
+
+/// `mapgeom fx-dump [--check] FILE…`: a `.FxSys.Gbx` or `.ParticleModel.Gbx`
+/// (pulled out of a pack with `extract`) parsed by the typed particle
+/// reader and described; `--check` re-serialises it and demands the body
+/// come back byte-identical (the proof the reader can move these nodes into
+/// an item). Exits non-zero on the first file that fails.
+pub fn fx_dump(rest: &[String]) -> Result<(), String> {
+    let check = rest.iter().any(|a| a == "--check");
+    let files: Vec<&String> = rest.iter().skip(1).filter(|a| !a.starts_with("--")).collect();
+    if files.is_empty() {
+        return Err("fx-dump [--check] FILE…".into());
+    }
+    let mut failed = 0;
+    for path in files {
+        let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        let g = tmmaps::gbx::Gbx::parse(&data);
+        let externals = super::file::ref_table_nodes(&g.ref_table);
+        let mut lb = super::LookbackState::default();
+        lb.defined_nodes.extend(externals.iter().copied());
+        let mut r = super::Rd::new(&g.body, 0, lb);
+        let parsed = super::read_node(&mut r, g.class_id);
+        let node = match parsed {
+            Ok(n) => n,
+            Err(e) => {
+                println!("{path}: class 0x{:08X}: FAILED at 0x{:x} of {} body bytes: {e}", g.class_id, r.o, g.body.len());
+                failed += 1;
+                continue;
+            }
+        };
+        let trailing = g.body.len() - r.o;
+        println!("{path}: class 0x{:08X}, {} nodes, {} body bytes{}", g.class_id, g.num_nodes, g.body.len(), if trailing > 0 { format!(", {trailing} TRAILING BYTES") } else { String::new() });
+        match &node {
+            super::Node::FxSystem(fx) => print!("{}", fx.describe()),
+            super::Node::Particle(p) => {
+                let mut s = String::new();
+                p.describe(1, &mut s);
+                print!("{s}");
+            }
+            other => println!("  (a {:?} node, not a particle class)", other.class_id()),
+        }
+        if check {
+            let mut out = Vec::new();
+            let mut lb2 = super::LookbackState::default();
+            lb2.defined_nodes.extend(externals.iter().copied());
+            let mut w = super::Wr { w: &mut out, lb: &mut lb2 };
+            super::write_node(&mut w, &node);
+            if out == g.body {
+                println!("  round trip: IDENTICAL ({} bytes)", out.len());
+            } else {
+                let first = out.iter().zip(g.body.iter()).position(|(a, b)| a != b).unwrap_or(out.len().min(g.body.len()));
+                println!("  round trip: DIFFERS at 0x{first:x} ({} written vs {} read)", out.len(), g.body.len());
+                failed += 1;
+            }
+        }
+    }
+    if failed > 0 {
+        return Err(format!("{failed} file(s) failed"));
+    }
+    Ok(())
+}

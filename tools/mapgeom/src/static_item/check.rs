@@ -168,6 +168,20 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                             problems.push(format!("entity {i}: gate special trigger without an inline shape (node {})", g.shape.index));
                         }
                     }
+                    // an effect system (the Show items' smoke / sparks): an entity
+                    // of its own, no mesh; its emitters must name inline models
+                    Some(super::Node::FxSystem(fx)) => {
+                        let emitters = fx.root.emitters();
+                        for em in &emitters {
+                            if em.model.index >= 0 && em.model.inline.is_none() && !emitters.iter().any(|o| o.model.index == em.model.index && o.model.inline.is_some()) {
+                                problems.push(format!("entity {i}: emitter {:?} names model node {} which is not inline", em.name.as_str().unwrap_or(""), em.model.index));
+                            }
+                        }
+                        if facts {
+                            println!("{path}: entity {i} effect system at {:?}: {} emitter(s)", e.pos, emitters.len());
+                            print!("{}", fx.describe());
+                        }
+                    }
                     Some(other) => problems.push(format!("entity {i}: class 0x{:08X} in the prefab", other.class_id())),
                     None => problems.push(format!("entity {i}: external model node {}", e.model.index)),
                 }

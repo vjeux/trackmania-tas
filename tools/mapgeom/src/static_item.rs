@@ -41,6 +41,7 @@ pub mod light;
 pub mod signlogo;
 pub mod cli;
 pub mod surfhist;
+pub mod particle;
 
 pub use crate::crystal_model::{Id, LookbackState, NodeRef, OpaqueNode, Rd, Wr, R, FACADE};
 pub use file::{parse_file, write_file, StaticItemFile};
@@ -90,6 +91,12 @@ pub enum Node {
     /// volume as a prefab entity — { version 2, trigger shape ref, u32 }, the
     /// pack's own layout (Special24m.Prefab entity 1).
     GateSpecial(GateSpecialTrigger),
+    /// `CPlugFxSystem` (0x0915C000): a Show item's effect script — a prefab
+    /// entity in the packs, inlined by the static-item builder.
+    FxSystem(particle::CPlugFxSystem),
+    /// A node of the particle-model chain an FxSystem drives (emitter
+    /// model, sub-model, render node, GPU spawn, GPU model).
+    Particle(particle::ParticleNode),
     /// A class with no reader here, made only of skippable chunks.
     Opaque(OpaqueNode),
 }
@@ -126,6 +133,8 @@ impl Node {
             Node::Dyna(_) => dyna::C_DYNA_OBJECT_MODEL,
             Node::Kinematic(_) => dyna::C_KINEMATIC_CONSTRAINT,
             Node::GateSpecial(_) => C_GATE_SPECIAL_TRIGGER,
+            Node::FxSystem(_) => particle::C_FX_SYSTEM,
+            Node::Particle(p) => p.class_id,
             Node::Opaque(o) => o.class_id,
         }
     }
@@ -160,6 +169,8 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
             Node::GateSpecial(GateSpecialTrigger { version, shape, u01 })
         }
         0x09178000 | 0x0917A000 | 0x0917B000 | 0x09119000 | 0x09118000 => Node::Opaque(read_fixed_opaque(r, class_id)?),
+        particle::C_FX_SYSTEM => Node::FxSystem(particle::CPlugFxSystem::parse(r)?),
+        c if particle::is_particle_class(c) => Node::Particle(particle::ParticleNode::parse(r, c)?),
         other => Node::Opaque(read_opaque(r, other)?),
     })
 }
@@ -188,6 +199,8 @@ pub fn write_node(w: &mut Wr, n: &Node) {
             write_ref(w, &x.shape);
             w.u32(x.u01);
         }
+        Node::FxSystem(x) => x.write(w),
+        Node::Particle(x) => x.write(w),
         Node::Opaque(o) => w.bytes(&o.raw),
     }
 }

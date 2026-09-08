@@ -179,7 +179,7 @@ fn dummy_write_points(plain: &[u8], class_id: u32) -> Vec<(usize, u32)> {
     let mut out: Vec<(usize, u32)> = main_fold.map(|c| (body_start, c)).into_iter().collect();
     let externals: Vec<(u32, String)> = g.refs.iter().map(|e| (e.node_index, e.name.clone())).collect();
     let mut graph = crate::node::Graph::new(&g.body, g.num_nodes, &externals);
-    let _ = graph.node_body(class_id);
+    let walked = graph.node_body(class_id);
     for (off, c) in &graph.node_starts {
         // the main node's own start is `body_start` (its class id sits in
         // the header, not in the body)
@@ -190,6 +190,37 @@ fn dummy_write_points(plain: &[u8], class_id: u32) -> Vec<(usize, u32)> {
             out.push((body_start + off, fold));
         }
     }
+    // A class the walker has no reader for (the particle-model files: the
+    // sub-model, shape and render nodes of `Fogger16M.ParticleModel.Gbx`)
+    // stops the typed walk at its first unknown chunk, and every inline node
+    // after that point went unfolded. Fallback: scan the plaintext for the
+    // shape an inline node ALWAYS has — `[u32 index in 1..=num_nodes]
+    // [u32 class id, low 12 bits clear][u32 first chunk id of that class]` —
+    // and fold the class's parent right after the class id. The bytes the
+    // scan reads are right up to the next 0x100 boundary past the newest
+    // fold; everything it finds before then is real, and a later round sees
+    // further. Only when the typed walk failed: a file the walker reads
+    // whole keeps its exact schedule.
+    if walked.is_err() {
+        let n = g.num_nodes as usize;
+        let known: Vec<usize> = out.iter().map(|(o, _)| *o).collect();
+        let mut i = body_start;
+        while i + 12 <= plain.len() {
+            let idx = u32::from_le_bytes([plain[i], plain[i + 1], plain[i + 2], plain[i + 3]]) as usize;
+            let class = u32::from_le_bytes([plain[i + 4], plain[i + 5], plain[i + 6], plain[i + 7]]);
+            let chunk = u32::from_le_bytes([plain[i + 8], plain[i + 9], plain[i + 10], plain[i + 11]]);
+            let plausible_class = class & 0xFFF == 0 && matches!(class >> 24, 0x03 | 0x04 | 0x05 | 0x09 | 0x0A | 0x24 | 0x2E | 0x2F);
+            if idx >= 1 && idx <= n && plausible_class && (chunk & !0xFFF) == class && !known.contains(&(i + 8)) {
+                let fold = crate::parents::dummy_write_class(class).unwrap_or(crate::parents::C_PLUG);
+                out.push((i + 8, fold));
+                i += 8;
+                continue;
+            }
+            i += 1;
+        }
+        out.sort();
+        out.dedup();
+    }
     out
 }
 
@@ -199,6 +230,23 @@ fn dummy_write_points(plain: &[u8], class_id: u32) -> Vec<(usize, u32)> {
 /// past at least one more 0x100 boundary, so it ends within `num_nodes` rounds.
 fn decrypt_with_dummy_writes(data: &[u8], base: usize, e: &crate::pak::PakEntry, key: &[u8; 16], version: i32) -> Result<Vec<u8>, String> {
     let n = e.compressed_size.max(0) as usize;
+    // MAPGEOM_FOLDS=fileoff:class,fileoff:class,…: an explicit fold schedule
+    // (hex file offsets = the byte after each node's class id, hex class = the
+    // parent folded there) — the probe for a file whose classes the walker
+    // cannot read yet: decode as far as it goes, read the next inline node's
+    // class id off the plaintext, add its fold, repeat (that is how the
+    // particle-model files were opened, 2026-09-08).
+    if let Ok(v) = std::env::var("MAPGEOM_FOLDS") {
+        let mut schedule: Vec<(usize, u32)> = Vec::new();
+        for item in v.split(',').filter(|s| !s.trim().is_empty()) {
+            let (off, class) = item.split_once(':').ok_or_else(|| format!("MAPGEOM_FOLDS: `{item}` is not off:class"))?;
+            let off = usize::from_str_radix(off.trim().trim_start_matches("0x"), 16).map_err(|e| format!("MAPGEOM_FOLDS offset `{off}`: {e}"))?;
+            let class = u32::from_str_radix(class.trim().trim_start_matches("0x"), 16).map_err(|e| format!("MAPGEOM_FOLDS class `{class}`: {e}"))?;
+            schedule.push((off, class));
+        }
+        schedule.sort();
+        return Ok(decrypt_scheduled(data, base, key, version, n, &schedule));
+    }
     let mut schedule: Vec<(usize, u32)> = Vec::new();
     let mut plain = decrypt_scheduled(data, base, key, version, n, &schedule);
     for _round in 0..256 {

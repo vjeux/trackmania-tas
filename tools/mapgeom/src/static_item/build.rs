@@ -209,6 +209,21 @@ pub struct MergedLight {
     pub bitmaps: Vec<(String, u8)>,
 }
 
+/// One `.FxSys.Gbx` entity of the source prefab, ready to inline.
+#[derive(Clone, Debug)]
+pub struct FxPart {
+    /// The pack path of the `.FxSys.Gbx`.
+    pub path: String,
+    /// The effect script; its emitters' `model` refs are EXTERNAL indices of
+    /// the source file, resolved through `models`.
+    pub fx: super::particle::CPlugFxSystem,
+    /// (source node index, pack path, the parsed `.ParticleModel.Gbx` with its
+    /// own externals — the texture the sub-model names).
+    pub models: Vec<(u32, String, super::particle::ParticleNode, Vec<(u32, String)>)>,
+    /// The entity's pose in the item's unscaled frame.
+    pub at: Xform,
+}
+
 /// The accumulator.
 #[derive(Clone, Debug, Default)]
 pub struct Merged {
@@ -242,6 +257,11 @@ pub struct Merged {
     /// UNSCALED frame) — `tiny-library` re-emits them as stock tree items next
     /// to the block's item (a DecoLake shore carries hundreds of trees).
     pub veget: Vec<(String, Xform)>,
+    /// The prefab's effect systems (`.FxSys.Gbx` entities: the Show items'
+    /// smoke and sparks), each parsed with the particle models it drives,
+    /// posed in the item's UNSCALED frame. `assemble` inlines them as
+    /// entities of the prefab form (`add_fx_system`).
+    pub fx: Vec<FxPart>,
     /// Light sources the source model carries (Solid2 `lights` +
     /// `light_insts`): how many were found (report).
     pub lights: usize,
@@ -1893,7 +1913,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     // node 1 = the entity model; a static item fixes 2 (static object) and 3
     // (its solid) like the reference items, a moving item hands indices out
     // in write order from 2
-    let prefab_form = !m.dyna.is_empty() || static_form_prefab() || m.special.is_some();
+    let prefab_form = !m.dyna.is_empty() || static_form_prefab() || m.special.is_some() || !m.fx.is_empty();
     let mut next = if !prefab_form { 4i32 } else { 2i32 };
     let no_wp = std::env::var_os("TINY_NO_WAYPOINT").is_some();
     // The static geometry: one static object (mesh + collision) — the whole
@@ -1983,6 +2003,9 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             let g = super::GateSpecialTrigger { version: 2, shape: inline(si, Node::Surface(sp.clone())), u01: 0 };
             ents.push(super::prefab::Entity { model: inline(gi, Node::GateSpecial(g)), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
         }
+        // the effect systems (smoke, sparks), after the static part like the
+        // pack's Show prefabs (Fogger16M: entity 0 the box, entity 1 the FxSys)
+        ents.extend(fx_entities(m, opts.scale, &mut next));
         for (k, part) in m.dyna.iter().enumerate() {
             // Ent2 ranks the dyna objects of the prefab (the k-th
             // CPlugDynaObjectModel entity), whatever sits between them
@@ -2481,12 +2504,171 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                     m.veget.push((p.clone(), iso));
                     m.notes.push(format!("{path} entity {i}: external {p} skipped (vegetation, re-emitted as an item)"));
                 }
+                // an effect system (the Show items' smoke / sparks): parsed
+                // with its particle models, inlined by `assemble` as an
+                // entity of the prefab form. TINY_FX=drop leaves them out.
+                Some(p) if p.to_ascii_lowercase().ends_with(".fxsys.gbx") => {
+                    if std::env::var("TINY_FX").map(|v| v == "drop").unwrap_or(false) {
+                        m.notes.push(format!("{path} entity {i}: external {p} dropped (TINY_FX=drop)"));
+                    } else {
+                        match add_fx_system(store, &p, &iso) {
+                            Ok(part) => {
+                                m.notes.push(format!("{path} entity {i}: effect system {p}: {} emitter(s), {} particle model(s)", part.fx.root.emitters().len(), part.models.len()));
+                                m.fx.push(part);
+                            }
+                            Err(e) => m.notes.push(format!("{path} entity {i}: external {p} failed: {e}")),
+                        }
+                    }
+                }
                 Some(p) => m.notes.push(format!("{path} entity {i}: external {p} skipped")),
                 None => m.notes.push(format!("{path} entity {i}: external node {} unnamed", e.model.index)),
             },
         }
     }
     Ok(())
+}
+
+/// An effect system entity of a prefab (`Fogger16M.FxSys.Gbx`): the
+/// `CPlugFxSystem` parsed, and every `.ParticleModel.Gbx` its emitters name
+/// loaded and parsed too (their externals — the smoke texture — kept as
+/// paths). Nothing is scaled here; `assemble` poses and scales it.
+pub fn add_fx_system(store: &mut crate::store::DataStore, path: &str, at: &Xform) -> R<FxPart> {
+    let model = store.load_model(path)?;
+    if model.class_id != super::particle::C_FX_SYSTEM {
+        return Err(format!("{path}: class 0x{:08X} is not CPlugFxSystem", model.class_id));
+    }
+    let mut lb = super::LookbackState::default();
+    lb.defined_nodes.extend(model.external_indices().iter().copied());
+    let mut r = super::Rd::new(&model.body, 0, lb);
+    let fx = super::particle::CPlugFxSystem::parse(&mut r).map_err(|e| format!("{path}: {e}"))?;
+    let mut models = Vec::new();
+    for e in fx.root.emitters() {
+        if e.model.inline.is_some() || e.model.index < 0 {
+            continue;
+        }
+        let idx = e.model.index as u32;
+        if models.iter().any(|(k, _, _, _)| *k == idx) {
+            continue;
+        }
+        let mp = model.externals.iter().find(|(k, _)| *k == idx).map(|(_, p)| p.clone()).ok_or_else(|| format!("{path}: emitter {:?} names model node {idx}, which is neither inline nor external", e.name.as_str().unwrap_or("")))?;
+        let pm = store.load_model(&mp)?;
+        if pm.class_id != super::particle::C_PARTICLE_EMITTER_MODEL {
+            return Err(format!("{mp}: class 0x{:08X} is not CPlugParticleEmitterModel", pm.class_id));
+        }
+        let mut lb = super::LookbackState::default();
+        lb.defined_nodes.extend(pm.external_indices().iter().copied());
+        let mut r = super::Rd::new(&pm.body, 0, lb);
+        let node = super::particle::ParticleNode::parse(&mut r, pm.class_id).map_err(|e| format!("{mp}: {e}"))?;
+        if r.o != pm.body.len() {
+            return Err(format!("{mp}: {} trailing bytes after the particle model", pm.body.len() - r.o));
+        }
+        models.push((idx, mp, node, pm.externals.clone()));
+    }
+    Ok(FxPart { path: path.to_string(), fx, models, at: *at })
+}
+
+/// Give every inline node of a particle chain its index in the item's node
+/// space (depth first, in write order) and settle its external references:
+/// the texture the sub-model names is kept as an external reference to the
+/// pack path (`TINY_FX_TEXTURE=extern`, default — the game resolves it or
+/// not; the probe of 2026-09-08) or dropped (`null`).
+fn place_particle_node(node: &mut super::particle::ParticleNode, externals: &[(u32, String)], next: &mut i32) {
+    let texture_mode = std::env::var("TINY_FX_TEXTURE").unwrap_or_else(|_| "extern".into());
+    for r in node.refs_mut() {
+        if r.index < 0 {
+            continue;
+        }
+        match r.inline.as_deref_mut() {
+            Some(Node::Particle(inner)) => {
+                r.index = next_index(next);
+                place_particle_node(inner, externals, next);
+            }
+            Some(_) => {
+                r.index = next_index(next);
+            }
+            None => {
+                // an external of the source file (the texture)
+                let path = externals.iter().find(|(k, _)| *k as i32 == r.index).map(|(_, p)| p.clone());
+                match (path, texture_mode.as_str()) {
+                    (Some(p), "extern") => {
+                        let i = next_index(next);
+                        EXTERNALS.with(|e| e.borrow_mut().push((i as u32, p)));
+                        r.index = i;
+                    }
+                    _ => *r = super::null_ref(),
+                }
+            }
+        }
+    }
+}
+
+/// The effect systems as prefab entities, laid out like the pack's Show
+/// prefabs (entity 1 of `Fogger16M.Prefab.Gbx` = the FxSys at its offset):
+/// each `CPlugFxSystem` inlined with its particle models inlined under its
+/// emitters, the entity pose scaled. Knobs (probes, 2026-09-08):
+/// `TINY_FX_FORM=extern` keeps the pack `.FxSys.Gbx` as an EXTERNAL entity
+/// model instead (route a of the feasibility test); `TINY_FX_EXPR_K=text`
+/// overrides expression K (1..12) of every emitter — K=3 is the candidate
+/// ScaleExpr; `TINY_FX_SCALE_EXPR=K` writes the item scale into expression K.
+fn fx_entities(m: &Merged, scale: f32, next: &mut i32) -> Vec<super::prefab::Entity> {
+    let form = std::env::var("TINY_FX_FORM").unwrap_or_else(|_| "inline".into());
+    let scale_expr: Option<usize> = std::env::var("TINY_FX_SCALE_EXPR").ok().and_then(|v| v.parse().ok());
+    let mut ents = Vec::new();
+    for part in &m.fx {
+        let rot = crate::geom::to_quat(&part.at);
+        let pos = [part.at[9] * scale, part.at[10] * scale, part.at[11] * scale];
+        let model: Ref = if form == "extern" {
+            let i = next_index(next);
+            EXTERNALS.with(|e| e.borrow_mut().push((i as u32, part.path.clone())));
+            super::NodeRef { index: i, inline: None }
+        } else {
+            let mut fx = part.fx.clone();
+            let fx_index = next_index(next);
+            // the particle models: one inline copy per emitter that names it
+            // the first time, a back reference afterwards
+            let mut placed: Vec<(u32, i32)> = Vec::new();
+            for e in fx.root.emitters_mut() {
+                if e.model.index < 0 || e.model.inline.is_some() {
+                    continue;
+                }
+                let src = e.model.index as u32;
+                if let Some((_, i)) = placed.iter().find(|(k, _)| *k == src) {
+                    e.model = super::NodeRef { index: *i, inline: None };
+                    continue;
+                }
+                match part.models.iter().find(|(k, _, _, _)| *k == src) {
+                    Some((_, _, node, ext)) => {
+                        let i = next_index(next);
+                        let mut node = node.clone();
+                        place_particle_node(&mut node, ext, next);
+                        e.model = inline(i, Node::Particle(node));
+                        placed.push((src, i));
+                    }
+                    None => e.model = super::null_ref(),
+                }
+                for k in 1..=12usize {
+                    if let Ok(v) = std::env::var(format!("TINY_FX_EXPR_{k}")) {
+                        if k <= 10 {
+                            e.exprs[k - 1] = v;
+                        } else {
+                            e.tail[k - 11] = v;
+                        }
+                    }
+                }
+                if let Some(k) = scale_expr {
+                    let v = format!("{scale}");
+                    if (1..=10).contains(&k) {
+                        e.exprs[k - 1] = v;
+                    } else if k == 11 || k == 12 {
+                        e.tail[k - 11] = v;
+                    }
+                }
+            }
+            inline(fx_index, Node::FxSystem(fx))
+        };
+        ents.push(super::prefab::Entity { model, rot, pos, params_id: -1, params: Vec::new(), u01: Vec::new() });
+    }
+    ents
 }
 
 /// Every `CPlugStaticObjectModel` entity of `prefab` (recursively), merged

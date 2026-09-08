@@ -643,6 +643,11 @@ fn main() {
             let mut open_store = || open(&a);
             mapgeom::static_item::cli::run(&a.rest, &mut open_store).unwrap_or_else(die);
         }
+        // fx-dump [--check] FILE…: the typed particle reader on an extracted
+        // FxSys / ParticleModel file, with a byte-identical round-trip check.
+        "fx-dump" => {
+            mapgeom::static_item::cli::fx_dump(&a.rest).unwrap_or_else(die);
+        }
         "item-check" => {
             let mut open_store = || open(&a);
             mapgeom::static_item::check::run(&a.rest, &mut open_store).unwrap_or_else(die);
@@ -806,6 +811,12 @@ fn main() {
             }
             std::fs::write(&out, &d).unwrap_or_else(|e| die(e.to_string()));
             println!("wrote {out}: {w}x{h} RGBA8 DDS, {} bytes", d.len());
+        }
+        // The engine's reflection tables off the exe: a class's members in
+        // declaration order (name, offset, type fn) — the key to a chunk
+        // layout the packs do not explain (the particle classes, 2026-09-08).
+        "exe-class" => {
+            mapgeom::classinfo::run(&a.rest[1..]).unwrap_or_else(die);
         }
         // A client crash dump: where it died, in objdump addresses. CRASH.md.
         "crash" => {

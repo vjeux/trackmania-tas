@@ -124,6 +124,16 @@ const PARENTS: &[(u32, u32)] = &[
     (0x09079000, 0x0902B000), // CPlugMaterial : CPlug
     (0x090BB000, 0x0902B000), // CPlugSolid2Model : CPlug
     (0x090FD000, 0x0902B000), // CPlugMaterialUserInst : CPlug
+    // The particle chain of the Show items (measured 2026-09-08 on
+    // `Fogger16M.FxSys.Gbx` + `Fogger16M.ParticleModel.Gbx`: each main node
+    // and every inline node needs its fold, and CPlug's fold decodes them —
+    // CPlug and CMwNod fold to the same bytes, `(b | 0xAA)` per byte).
+    (0x0915C000, 0x0902B000), // CPlugFxSystem : CPlug
+    (0x090B3000, 0x0902B000), // CPlugParticleEmitterModel : CPlug
+    (0x090B2000, 0x0902B000), // CPlugParticleEmitterSubModel : CPlug
+    (0x090B5000, 0x0902B000), // particle shape/spawn model (sub-model node 2) : CPlug
+    (0x090C5000, 0x0902B000), // particle sub-node 3 : CPlug
+    (0x090C6000, 0x0902B000), // particle sub-node 4 : CPlug
     (0x0A02B000, 0x0A02B000), // CSceneVehicleCar : CSceneVehicle
     (0x24005000, 0x24005000), // CGameCtnBlockInfo : CGameCtnCollector
 ];
