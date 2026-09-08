@@ -181,6 +181,30 @@ pub fn stock_half_variant(model: &str) -> Option<&'static str> {
     if model == "Flag16m" && std::env::var("TINY_FLAG_STOCK").as_deref() != Ok("0") {
         return Some("Flag8m");
     }
+    // The particle items (2026-09-08): an embedded item cannot carry a live
+    // emitter in this build — the game silently DROPS any item whose prefab
+    // has an FxSystem entity with a model (sixteen one-item probes, FX thread),
+    // so the baked fogger/sparkler/torch stood in the map with no smoke or
+    // sparks. Nadeo ships each of them in a smaller version whose NAME is the
+    // effect's reach, not the machine's size: `ShowFogger8M` is the same
+    // 0.6 m box as `ShowFogger16M` with a plume that carries half as far,
+    // `Sparkler8m` the same for the sparks, `ShowTorchSmall` a 1.6 m torch for
+    // the 2.8 m one (measured on the pack prefabs). Placed as STOCK items the
+    // game runs its own particle systems for them — the half-reach effect on
+    // a half-size map, for free (vjeux: "can we use a smaller version of the
+    // fog machine so we still get the effect?"). TINY_FX_STOCK=0 bakes them
+    // (static, no effect) as before.
+    if std::env::var("TINY_FX_STOCK").as_deref() != Ok("0") {
+        const FX: &[(&str, &str)] = &[
+            ("ShowFogger16M", "ShowFogger8M"),
+            ("ShowFoggerWithLight16m", "ShowFoggerWithLight8m"),
+            ("Sparkler16m", "Sparkler8m"),
+            ("ShowTorch", "ShowTorchSmall"),
+        ];
+        if let Some((_, small)) = FX.iter().find(|(big, _)| *big == model) {
+            return Some(small);
+        }
+    }
     None
 }
 
@@ -1062,7 +1086,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 single_variant.insert(model.clone(), small.to_string());
                 item_map.insert(key, small.to_string());
                 half_stock.insert(small.to_string());
-                let why = if small == "Flag8m" { "its cloth waves under the game's own vertex tween" } else { "its screen keeps the live advertisement" };
+                let why = match small {
+                    "Flag8m" => "its cloth waves under the game's own vertex tween",
+                    "ShowFogger8M" | "ShowFoggerWithLight8m" => "its smoke is the game's own particle system, at half reach",
+                    "Sparkler8m" => "its sparks are the game's own particle system, at half reach",
+                    "ShowTorchSmall" => "its flame is the game's own particle system, on the small torch",
+                    _ => "its screen keeps the live advertisement",
+                };
                 outcomes.push(Outcome { alias: small.to_string(), kind: "item", source: model.clone(), placements: *n, result: Ok(format!("stock half-size variant {small}: the game's own item, {why}")) });
                 continue;
             }
