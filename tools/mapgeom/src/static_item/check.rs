@@ -173,6 +173,12 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                     Some(super::Node::FxSystem(fx)) => {
                         let emitters = fx.root.emitters();
                         for em in &emitters {
+                            // FX-02: an emitter without a particle model crashes the client at
+                            // load (exe+0x75C0C8 indexes the emitters' model table and reads
+                            // through the null entry; LogCrash 75C0C8, 2026-09-08)
+                            if em.model.index < 0 {
+                                problems.push(format!("entity {i}: emitter {:?} has NO particle model (FX-02: the engine dereferences it)", em.name.as_str().unwrap_or("")));
+                            }
                             if em.model.index >= 0 && em.model.inline.is_none() && !emitters.iter().any(|o| o.model.index == em.model.index && o.model.inline.is_some()) {
                                 problems.push(format!("entity {i}: emitter {:?} names model node {} which is not inline", em.name.as_str().unwrap_or(""), em.model.index));
                             }

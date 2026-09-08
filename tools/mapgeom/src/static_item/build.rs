@@ -2771,10 +2771,28 @@ fn fx_entities(m: &Merged, scale: f32, next: &mut i32) -> Vec<super::prefab::Ent
         } else {
             let mut fx = part.fx.clone();
             let fx_index = next_index(next);
+            // probes (2026-09-08, the game DROPS an item with an FX entity):
+            // TINY_FX_EMPTY=1 writes the FxSystem with an empty root (the class
+            // alone), TINY_FX_CONTEXT=hex sets ContextClassId, TINY_FX_NOMODEL=1
+            // nulls the emitters' particle-model refs
+            if std::env::var("TINY_FX_EMPTY").map(|v| v == "1").unwrap_or(false) {
+                let name = match &fx.root {
+                    super::particle::FxNode::Parallel { name, .. } => name.clone(),
+                    _ => super::Id::Str("Fx".into()),
+                };
+                fx.root = super::particle::FxNode::Parallel { name, children: Vec::new() };
+            }
+            if let Some(c) = std::env::var("TINY_FX_CONTEXT").ok().and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()) {
+                fx.context_class_id = c as i32;
+            }
+            let no_model = std::env::var("TINY_FX_NOMODEL").map(|v| v == "1").unwrap_or(false);
             // the particle models: one inline copy per emitter that names it
             // the first time, a back reference afterwards
             let mut placed: Vec<(u32, i32)> = Vec::new();
             for e in fx.root.emitters_mut() {
+                if no_model {
+                    e.model = super::null_ref();
+                }
                 if e.model.index < 0 || e.model.inline.is_some() {
                     continue;
                 }
