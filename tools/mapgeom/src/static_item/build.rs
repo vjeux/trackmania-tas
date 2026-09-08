@@ -4371,8 +4371,19 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
             main.link = crate::crystal_model::Id::Null;
             main.user_textures = files.into_iter().map(|(u01, texture)| crate::crystal_model::UserTexture { u01, texture }).collect();
         }
-        m.materials.push(inst);
-        slots.push(m.materials.len() - 1);
+        // Two model materials of one look (TreeBigB's two bark materials both
+        // read VegetOakBark_D) are ONE item material — the name spells the
+        // look, so the game would merge them anyway, and item-check refuses
+        // the duplicate slot (Summer 24 at ae694aa9, 2026-09-08: the one item
+        // of 720 that failed, and the publish gate with it).
+        let slot = match m.materials.iter().position(|x| same_look(x, &inst)) {
+            Some(i) => i,
+            None => {
+                m.materials.push(inst);
+                m.materials.len() - 1
+            }
+        };
+        slots.push(slot);
     }
     // the visuals, level by level; the ladder is the model's own switch
     // distances, unscaled (see the doc comment)
