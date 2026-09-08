@@ -59,6 +59,13 @@ pub struct Mappings {
     pub skip_baked_trees: BTreeMap<usize, BTreeSet<usize>>,
     pub skip_item_trees: BTreeMap<usize, BTreeSet<usize>>,
     pub drop_items: BTreeSet<usize>,
+    /// `iv@INDEX<TAB>V` rows: the variant byte an item placement carries after
+    /// its re-point — the byte indexes the SOURCE model's variant list, and a
+    /// stock stand-in has its own: `Show` variant 28 (its fogger rig, 60
+    /// placements over ten maps) becomes `ShowFogger8M` variant 0 (2026-09-08).
+    /// Placements without a row keep their byte (embedded copies are cleared
+    /// regardless: built for one variant).
+    pub variant_by_index: BTreeMap<usize, u8>,
 }
 
 /// `BLOCK<TAB>ITEM[<TAB>MODEL_SCALE]`, or `@INDEX<TAB>...` for an exact block
@@ -88,6 +95,13 @@ pub fn read_mapping(path: &Path) -> Mappings {
             let k: usize = fields[1].parse().unwrap_or_else(|_| panic!("{}:{}: tree index expected", path.display(), line_no + 1));
             let set = match rest.1 { 0 => &mut out.skip_block_trees, 1 => &mut out.skip_baked_trees, _ => &mut out.skip_item_trees };
             set.entry(idx).or_default().insert(k);
+            continue;
+        }
+        if let Some(index) = fields[0].strip_prefix("iv@") {
+            assert!(fields.len() == 2, "{}:{}: expected iv@INDEX<TAB>VARIANT", path.display(), line_no + 1);
+            let idx: usize = index.parse().unwrap_or_else(|_| panic!("{}:{}: item index expected", path.display(), line_no + 1));
+            let v: u8 = fields[1].parse().unwrap_or_else(|_| panic!("{}:{}: variant byte expected", path.display(), line_no + 1));
+            out.variant_by_index.insert(idx, v);
             continue;
         }
         if let Some(index) = fields[0].strip_prefix("xi@") {

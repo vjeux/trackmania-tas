@@ -154,7 +154,7 @@ pub fn find_item_file(store: &DataStore, model: &str) -> Option<String> {
 /// height; the frame depth stays 0.86 m on all of them). The gates have no
 /// such twin: the half-WIDTH family member (32 m → 16 m) keeps the same 11 m
 /// posts — twice the tiny height, a visible mismatch — so gates are baked.
-pub fn stock_half_variant(model: &str) -> Option<&'static str> {
+pub fn stock_half_variant(model: &str, variant: u8) -> Option<&'static str> {
     const SCREENS: &[(&str, &str)] = &[
         ("RaceScreen6x1", "RaceScreen6x1Small"),
         ("Screen16x9", "Screen16x9Small"),
@@ -203,6 +203,17 @@ pub fn stock_half_variant(model: &str) -> Option<&'static str> {
         ];
         if let Some((_, small)) = FX.iter().find(|(big, _)| *big == model) {
             return Some(small);
+        }
+        // The generic `Show` rig is one item in 37 variants (its prefab list:
+        // rigs, supports, `Light4Spots` 23, `LightRamp4m` 24, `LightRamp8m` 25,
+        // speakers 26/27, `Fogger16M` at 28, stage supports, front, up); the
+        // fogger variant is the same prefab `ShowFogger16M` wraps — 60
+        // placements over ten maps (02 ×4, 03 ×10, 04 ×14, 07 ×6, 08 ×2,
+        // 09 ×4, 10 ×2, 11 ×6, 18 ×4, 21 ×8), smokeless as baked copies. The
+        // other variants bake as before; the placement's variant byte is
+        // rewritten to 0 for the stand-in (`iv@` mapping row).
+        if model == "Show" && variant == 28 {
+            return Some("ShowFogger8M");
         }
     }
     None
@@ -1080,10 +1091,15 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // file). The mapping row carries model_scale = scale so the placement
         // is treated like a half-size copy (scale 1, pivot halved).
         // (The gates have no such twin, see `stock_half_variant`.)
-        if let Some(small) = stock_half_variant(model) {
+        if let Some(small) = stock_half_variant(model, *variant) {
             if find_item_file(store, small).is_some() {
                 let key = (model.clone(), *variant, lskin.clone());
-                single_variant.insert(model.clone(), small.to_string());
+                // a stand-in for the model as a whole is remembered for its
+                // later variants; one for a single variant (`Show` 28, the
+                // fogger rig) leaves the others to the bake
+                if stock_half_variant(model, 0) == Some(small) {
+                    single_variant.insert(model.clone(), small.to_string());
+                }
                 item_map.insert(key, small.to_string());
                 half_stock.insert(small.to_string());
                 let why = match small {
@@ -1093,7 +1109,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     "ShowTorchSmall" => "its flame is the game's own particle system, on the small torch",
                     _ => "its screen keeps the live advertisement",
                 };
-                outcomes.push(Outcome { alias: small.to_string(), kind: "item", source: model.clone(), placements: *n, result: Ok(format!("stock half-size variant {small}: the game's own item, {why}")) });
+                // the report names the variant when only that one stands in
+                let source = if stock_half_variant(model, 0) == Some(small) { model.clone() } else { format!("{model} v{variant}") };
+                outcomes.push(Outcome { alias: small.to_string(), kind: "item", source, placements: *n, result: Ok(format!("stock half-size variant {small}: the game's own item, {why}")) });
                 continue;
             }
         }
@@ -1451,6 +1469,12 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 let ms = if target.ends_with(".Item.Gbx") || half_stock.contains(target) { scale } else { 1.0 };
                 mapping.push_str(&format!("i@{}\t{}\t{}\n", it.index, target, ms));
                 rows += 1;
+                // `iv@INDEX<TAB>0`: a stock stand-in has its own variant list —
+                // the placement's byte (an index into the SOURCE model's) is
+                // rewritten to 0 (`Show` 28 → `ShowFogger8M`'s only variant)
+                if half_stock.contains(target) && it.variant() != 0 {
+                    mapping.push_str(&format!("iv@{}\t0\n", it.index));
+                }
                 // `y@INDEX<TAB>DY`: the vegetation stand-in is lowered by DY metres
                 let sink = sink_map.get(&(it.model.clone(), it.variant(), light_skin_of(it))).copied();
                 if let Some(sink) = sink {
@@ -1598,8 +1622,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     for line in mapping.lines() {
         let mut f = line.split('\t');
         let (Some(head), Some(model)) = (f.next(), f.next()) else { continue };
-        // (`y@` sink rows and the `xv@`/`xvb@`/`xvi@` clearance rows carry a number, not a model)
-        if head.starts_with('#') || head.starts_with("y@") || head.starts_with("xv") || model == "-" || model.ends_with(".Item.Gbx") {
+        // (`y@` sink rows, `iv@` variant rows and the `xv@`/`xvb@`/`xvi@` clearance rows carry a number, not a model)
+        if head.starts_with('#') || head.starts_with("y@") || head.starts_with("iv@") || head.starts_with("xv") || model == "-" || model.ends_with(".Item.Gbx") {
             continue;
         }
         *stock.entry(model.to_string()).or_insert(0) += 1;

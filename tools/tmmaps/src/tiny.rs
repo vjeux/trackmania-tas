@@ -742,8 +742,15 @@ pub fn cmd(args: &[String]) {
             m.set_item_frame(i, rot, pivot);
         }
         m.set_item_scale(i, s.scale);
+        // The variant byte indexes the SOURCE model's variant list: an
+        // embedded copy is built for one variant (always 0); a stock stand-in
+        // keeps the byte unless the mapping says otherwise (`iv@` row —
+        // `Show` variant 28, the fogger rig, re-pointed at `ShowFogger8M`,
+        // whose only variant is 0; 2026-09-08).
         if s.model.ends_with(".Item.Gbx") {
             m.clear_item_variant(i);
+        } else if let Some(v) = mapping.variant_by_index.get(&i) {
+            m.set_item_variant(i, *v);
         }
         m.set_item_color(i, s.color);
     }
