@@ -300,6 +300,15 @@ pub fn verdict_with(f: &Faces, b: &BlockRec, pillars: bool, closes: Closes) -> O
                 }
             }
             Closes::Any | Closes::SideOnly => {
+                // a HORIZONTAL clip (an HFC rim along the top of a wall) whose
+                // neighbour hangs a rim of the same horizontal group on the shared
+                // face: the two rims run on (the editor never pairs HFC clips —
+                // both are baked — and the game draws both: Summer 20's two facing
+                // WaterRampZoneCurveOut, b4087/b4115, the ResonantMetal rim the
+                // author drives at t 27.1–27.5 s, gone from ship10)
+                if !mine.horiz.is_empty() && list.iter().any(|c| f.clips.get(c).map(|x| x.horiz == mine.horiz).unwrap_or(false)) {
+                    continue;
+                }
                 let wall = list.iter().any(|c| f.clips.get(c).map(|x| x.full_free).unwrap_or(false));
                 if wall {
                     if mine.deletable {
@@ -528,5 +537,26 @@ mod tests {
         let mut f = table();
         f.occupants.insert(C, vec![occupant("Wedge", false, [vec!["firm"], vec![], vec![], vec![], vec![], vec![]])]);
         assert!(verdict(&f, &rec("Grass", C, 0), false).is_none(), "a terrain tile in the baked list is not a filler");
+    }
+}
+
+#[cfg(test)]
+mod tests_horizontal {
+    use super::*;
+
+    #[test]
+    fn a_rim_meeting_a_rim_of_its_horizontal_group_runs_on() {
+        let mut clips = HashMap::new();
+        clips.insert("rim".to_string(), ClipId { ty: Some(1), horiz: "WaterRampZoneHFClips".into(), ..Default::default() });
+        clips.insert("wall".to_string(), ClipId { ty: Some(1), deletable: true, vert: "DecoWallBaseVFC".into(), ..Default::default() });
+        clips.insert("skirt".to_string(), ClipId { ty: Some(1), ..Default::default() });
+        let mut occupants = HashMap::new();
+        let cell = [5u8, 5, 5];
+        let faces: [Vec<String>; 6] = [vec!["wall".into(), "rim".into()], vec!["skirt".into()], vec![], vec![], vec![], vec![]];
+        occupants.insert(cell, vec![Occupant { index: 0, name: "WaterRampZoneCurveOut".into(), pillar: false, tile: false, ghost: false, unit: 0, faces }]);
+        let f = Faces { occupants, clips };
+        let rec = |dir: u8| BlockRec { index: 0, name: "rim".into(), name_field: 0, dir, file_cell: cell, coord_off: 0, flags: 0, waypoint_tag: None, free_off: None, free_pos: None, free_rot: None };
+        assert!(verdict(&f, &rec(0), false).is_none(), "the face carries a rim of the same horizontal group");
+        assert!(verdict(&f, &rec(1), false).is_some(), "a skirt face still closes a rim");
     }
 }

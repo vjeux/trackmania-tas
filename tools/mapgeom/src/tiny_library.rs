@@ -1856,7 +1856,19 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut missing_items: BTreeMap<String, usize> = BTreeMap::new();
     let mut driver_skipped: Vec<usize> = Vec::new();
     let mut drivers = 0usize;
+    // TINY_DROP_ITEMS=glob,glob: source ITEMS whose model matches are left out of
+    // the map (`i@N<TAB>-`). ⚠ DIAGNOSTIC KNOB, never a rule: the player
+    // project's "Summer 15 without its 35 moving obstacles" build (2026-09-08),
+    // to tell whether a fork-vs-validator disagreement is the pushers' clock.
+    let drop_items: Vec<String> = std::env::var("TINY_DROP_ITEMS").unwrap_or_default().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != "-").collect();
+    let mut dropped_items: BTreeMap<String, usize> = BTreeMap::new();
     for it in &source.items {
+        if drop_items.iter().any(|g| glob_match(g, &it.model)) {
+            mapping.push_str(&format!("i@{}\t-\n", it.index));
+            *dropped_items.entry(it.model.clone()).or_insert(0) += 1;
+            rows += 1;
+            continue;
+        }
         match item_map.get(&(it.model.clone(), it.variant(), key_skin_of(it))) {
             Some(target) => {
                 let ms = if target.ends_with(".Item.Gbx") || half_stock.contains(target) { scale } else { 1.0 };
@@ -1994,6 +2006,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     println!("  mapping: {} rows -> {} ({} vegetation placements sunk to half-tree crown height; {} tree placements on {} baked half-size species, {} KB of items + {} KB of textures)", rows, out_mapping.display(), sunk_rows, baked_tree_rows, baker.next, baker.item_bytes / 1024, baker.texture_bytes / 1024);
     if drivers + driver_skipped.len() > 0 {
         println!("  ⚠ HACK hidden stock flag driver per converted flag placement (our tween cloth borrows the frame state of a drawn stock tween; TINY.md \"Animated items\"): {drivers} drivers, {} placements left still (deck over open air, no place to hide one){}", driver_skipped.len(), if driver_skipped.is_empty() { String::new() } else { format!(": items {}", driver_skipped.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")) });
+    }
+    if !dropped_items.is_empty() {
+        println!("  ⚠ HACK TINY_DROP_ITEMS: {} source items left out: {}", dropped_items.values().sum::<usize>(), dropped_items.iter().map(|(k, v)| format!("{k} x{v}")).collect::<Vec<_>>().join(", "));
     }
     if !dropped_baked.is_empty() {
         println!("  ⚠ HACK baked fillers left out by name (TINY_DROP_BAKED): {}", dropped_baked.iter().map(|(k, v)| format!("{k} x{v}")).collect::<Vec<_>>().join(", "));
