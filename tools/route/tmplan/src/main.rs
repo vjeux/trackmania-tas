@@ -761,6 +761,10 @@ fn cmd_road_centreline(args: &[String]) {
     // with s_start == s_end — the consumer bridges it), source "router-road-centreline"
     if let Some(ro) = flag(args, "--route-out") {
         use tmroute::types::*;
+        // --verdicts FILE.tsv (map_stem \t from_group \t to_group \t class \t note), filtered to this map by --map-stem
+        let stem = flag(args, "--map-stem").unwrap_or_default();
+        let verdicts: Vec<(String, String, String, String)> = flag(args, "--verdicts").and_then(|p| std::fs::read_to_string(p).ok()).map(|t| t.lines().filter(|l| !l.starts_with('#')).filter_map(|l| { let f: Vec<&str> = l.split('\t').collect(); if f.len() >= 4 && f[0] == stem { Some((f[1].to_string(), f[2].to_string(), f[3].to_string(), f.get(4).unwrap_or(&"").to_string())) } else { None } }).collect()).unwrap_or_default();
+        let mut verdict_notes: Vec<String> = Vec::new();
         let mut tg_gates = Vec::new();
         let mut legs = Vec::new();
         let mut gate_order = Vec::new();
@@ -776,7 +780,12 @@ fn cmd_road_centreline(args: &[String]) {
             let heading = if i1 >= 1 && i1 < pts.len() && i1 > i0 { let a = pts[i1 - 1]; let b = pts[i1]; let l = ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt().max(1e-3); [(b[0] - a[0]) / l, 0.0, (b[2] - a[2]) / l] } else { rep.normal };
             let kind = if li + 1 == seq.len() - 1 { GateKind::Finish } else { match rep.kind { tmroute::gates::WpKind::Finish => GateKind::Finish, tmroute::gates::WpKind::Multilap => GateKind::Multilap, _ => GateKind::Checkpoint } };
             tg_gates.push(Gate { kind, centre, normal: heading, half_width: half, s: s[i1], map_waypoint: rep.waypoint });
-            legs.push(Leg { gate_idx: li as u32, map_waypoint: rep.waypoint, s_start: s[i0], s_end: s[i1], connection: if gap { ConnectionClass::Unknown } else { ConnectionClass::Road }, arrival_speed: [5.0, 80.0], arrival_heading: heading, arrival_heading_tol: 0.5, arrival_height: [centre[1] - rep.half_height - 1.0, centre[1] - rep.half_height + 3.0], p_reach: if gap { 0.0 } else { 1.0 }, expected_ms: -1, evidence: LegEvidence::Predicted });
+            // a gap leg's class from the converter's verdicts (--verdicts TSV: map_stem, from_group, to_group, class, note)
+            let from_lab = grp(&nodes, w[0]).trim_matches('"').to_string();
+            let verdict = verdicts.iter().find(|v| v.0 == from_lab && v.1 == grp_id.to_string()).cloned();
+            let conn = if !gap { ConnectionClass::Road } else { match verdict.as_ref().map(|v| v.2.as_str()) { Some("Jump") => ConnectionClass::Jump, Some("Drop") => ConnectionClass::Drop, Some("Road") => ConnectionClass::Road, _ => ConnectionClass::Unknown } };
+            if let Some(v) = &verdict { verdict_notes.push(format!("{}→{} {}{}", v.0, v.1, v.2, if v.3.is_empty() { String::new() } else { format!(" ({})", v.3) })); }
+            legs.push(Leg { gate_idx: li as u32, map_waypoint: rep.waypoint, s_start: s[i0], s_end: s[i1], connection: conn, arrival_speed: [5.0, 80.0], arrival_heading: heading, arrival_heading_tol: 0.5, arrival_height: [centre[1] - rep.half_height - 1.0, centre[1] - rep.half_height + 3.0], p_reach: if gap { 0.0 } else { 1.0 }, expected_ms: -1, evidence: LegEvidence::Predicted });
             gate_order.push(rep.waypoint);
         }
         let tg = TrackGeom {
@@ -790,7 +799,7 @@ fn cmd_road_centreline(args: &[String]) {
             spawn_yaw: gates.spawn.yaw,
             source: "router-road-centreline".into(),
             legs: Some(legs),
-            route: Some(RouteMeta { route_version: ROUTE_VERSION, source: "router-road-centreline".into(), rank: 0, predicted_ms: -1, status: RouteStatus::Hypothesis, gate_order, produced_by: format!("{}{}; road-following centreline, {gaps} gap legs (ConnectionClass::Unknown, s_start == s_end)", tmroute::provenance("tmplan road-centreline"), if note.is_empty() { String::new() } else { format!("; {note}") }) }),
+            route: Some(RouteMeta { route_version: ROUTE_VERSION, source: "router-road-centreline".into(), rank: 0, predicted_ms: -1, status: RouteStatus::Hypothesis, gate_order, produced_by: format!("{}{}; road-following centreline, {gaps} gap legs (s_start == s_end; class Unknown unless a converter verdict says Jump/Drop){}", tmroute::provenance("tmplan road-centreline"), if note.is_empty() { String::new() } else { format!("; {note}") }, if verdict_notes.is_empty() { String::new() } else { format!("; verdicts: {}", verdict_notes.join(", ")) }) }),
         };
         io::write_route(Path::new(&ro), &tg).unwrap_or_else(|e| die(&e));
     }
