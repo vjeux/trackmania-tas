@@ -1276,6 +1276,7 @@ pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform
         instance_params_id: ent.params_id,
         instance_params: ent.params.clone(),
         constraint: Some((constraint, cparams)),
+        pack_ref: None,
     });
     Ok(())
 }
@@ -1366,9 +1367,14 @@ pub fn add_dyna_tween_part(store: &mut crate::store::DataStore, path: &str, at: 
     let iso = *at;
     let rot = crate::geom::to_quat(&iso);
     let pos = [iso[9] * scale, iso[10] * scale, iso[11] * scale];
+    let pack_ref = match std::env::var("TINY_FLAG_REF").as_deref() {
+        Ok("dyna") => Some(super::merged::PackRef::Dyna),
+        Ok("mesh") => Some(super::merged::PackRef::Mesh(src.mesh_path.clone())),
+        _ => None,
+    };
     m.notes.push(format!("{}: TWEEN part, {} visuals [{}], no constraint, params 0x{:X} ({} bytes)", path.rsplit('\\').next().unwrap_or(path), mesh.visuals.len(), frames.join("; "), ent.params_id, ent.params.len()));
     m.notes.extend(mesh.notes.drain(..).map(|n| format!("  (tween part) {n}")));
-    m.dyna.push(DynaPart { path: path.to_string(), rot, pos, mesh, move_shape, hit_shape, model: src.model.clone(), instance_params_id: ent.params_id, instance_params: ent.params.clone(), constraint: None });
+    m.dyna.push(DynaPart { path: path.to_string(), rot, pos, mesh, move_shape, hit_shape, model: src.model.clone(), instance_params_id: ent.params_id, instance_params: ent.params.clone(), constraint: None, pack_ref });
     Ok(())
 }
 

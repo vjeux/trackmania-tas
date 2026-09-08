@@ -314,10 +314,28 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             super::prefab::Entity { model: inline(i, Node::StaticObject(so)), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() }
         };
         for part in &m.dyna {
+            // TINY_FLAG_REF=dyna: the entity model is the pack's own dyna FILE
+            // (reference table), nothing of ours but the pose and the params
+            if part.pack_ref == Some(super::merged::PackRef::Dyna) {
+                let i = next_index(&mut next);
+                EXTERNALS.with(|e| e.borrow_mut().push((i as u32, part.path.clone())));
+                ents.push(super::prefab::Entity { model: super::NodeRef { index: i, inline: None }, rot: part.rot, pos: part.pos, params_id: part.instance_params_id, params: part.instance_params.clone(), u01: Vec::new() });
+                continue;
+            }
             let mesh_index = next_index(&mut next);
-            let s2 = build_solid2(&part.mesh, opts, &mut next).map_err(|e| format!("{}: {e}", part.path))?;
             let mut model = part.model.clone();
-            model.mesh = inline(mesh_index, Node::Solid2(s2));
+            model.mesh = match &part.pack_ref {
+                // TINY_FLAG_REF=mesh: our CPlugDynaObjectModel over the pack's
+                // own mesh FILE (full size)
+                Some(super::merged::PackRef::Mesh(mp)) => {
+                    EXTERNALS.with(|e| e.borrow_mut().push((mesh_index as u32, mp.clone())));
+                    super::NodeRef { index: mesh_index, inline: None }
+                }
+                _ => {
+                    let s2 = build_solid2(&part.mesh, opts, &mut next).map_err(|e| format!("{}: {e}", part.path))?;
+                    inline(mesh_index, Node::Solid2(s2))
+                }
+            };
             model.dyna_shape = match &part.move_shape {
                 Some(s) => {
                     let i = next_index(&mut next);

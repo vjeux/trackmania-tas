@@ -252,6 +252,20 @@ pub struct DynaPart {
     /// part the pack drives without one (the flag cloth: its motion is the
     /// mesh's own vertex tween, played by the material).
     pub constraint: Option<(super::dyna::KinematicConstraint, super::dyna::ConstraintParams)>,
+    /// Diagnostic forms (`TINY_FLAG_REF=dyna|mesh` on the tween cloth,
+    /// 2026-09-08): write the entity model as an EXTERNAL reference to the
+    /// pack's own `.DynaObject.Gbx` (`Dyna`: nothing of ours but the prefab
+    /// entity and its params) or keep our CPlugDynaObjectModel but point its
+    /// mesh at the pack's `.Mesh.Gbx` file (`Mesh`, full size). Neither is a
+    /// half-size flag; both say whether an embedded item's dyna entity is
+    /// animated at all when its bytes are the pack's.
+    pub pack_ref: Option<PackRef>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PackRef {
+    Dyna,
+    Mesh(String),
 }
 
 pub fn dec3n_unpack(v: u32) -> [f32; 3] {
