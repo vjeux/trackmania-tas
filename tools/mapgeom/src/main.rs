@@ -680,11 +680,41 @@ fn main() {
         // followed to its VegetTreeModel reference.
         "veget-info" => {
             let mut store = open(&a);
-            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("veget-info <path>".into()));
-            let stats = mapgeom::veget::tree_model_stats(&mut store, &p).unwrap_or_else(die);
-            println!("{p}: {} visuals; bottom {:.2} top {:.2} (height {:.2}) radius {:.2} m", stats.visuals.len(), stats.bottom, stats.top, stats.top - stats.bottom, stats.radius);
-            for v in &stats.visuals {
-                println!("  visual {} verts: centre ({:.2}, {:.2}, {:.2}) half ({:.2}, {:.2}, {:.2})", v.vertices, v.bbox[0], v.bbox[1], v.bbox[2], v.bbox[3], v.bbox[4], v.bbox[5]);
+            let paths: Vec<String> = a.rest.iter().skip(1).filter(|p| !p.starts_with("--")).cloned().collect();
+            if paths.is_empty() {
+                die::<()>("veget-info <path>…".into());
+            }
+            let brief = paths.len() > 1 || a.rest.iter().any(|x| x == "--brief");
+            for p in &paths {
+                match mapgeom::veget::parse_tree_model(&mut store, p) {
+                    Ok(m) => {
+                        let s = m.stats();
+                        let lods: Vec<String> = m.lods.iter().map(|l| format!("{}", l.iter().map(|e| format!("{}v", e.visual.main.as_ref().map(|mm| mm.count).unwrap_or(0))).collect::<Vec<_>>().join("+"))).collect();
+                        println!("{p}: {} levels [{}] switch {:?} far {} ; {} materials ({}); hull {} verts {} tris; bottom {:.2} top {:.2} (height {:.2}) radius {:.2} m", m.lods.len(), lods.join(" | "), m.switch, m.far, m.materials.len(), m.materials.iter().map(|mt| format!("{}{}", mt.name, if mt.leaf { "*" } else { "" })).collect::<Vec<_>>().join(", "), m.hull_vertices.len(), m.hull_triangles.len(), s.bottom, s.top, s.top - s.bottom, s.radius);
+                        if brief {
+                            continue;
+                        }
+                        for (i, mt) in m.materials.iter().enumerate() {
+                            println!("  material {i} {} leaf {} f {}: images {:?} texture nodes {:?} extra {:?}", mt.name, mt.leaf, mt.f, mt.images.iter().map(|t| t.as_deref().map(|s| s.rsplit('\\').next().unwrap_or(s)).unwrap_or("-")).collect::<Vec<_>>(), mt.texture_nodes.iter().map(|t| t.as_deref().map(|s| s.rsplit('\\').next().unwrap_or(s)).unwrap_or("-")).collect::<Vec<_>>(), mt.extra);
+                        }
+                        for (l, lod) in m.lods.iter().enumerate() {
+                            for e in lod {
+                                let mm = e.visual.main.as_ref();
+                                let decl = mm.and_then(|mm| mm.vertex_streams.first()).and_then(|r| r.inline.as_deref()).map(|n| if let mapgeom::static_item::Node::VertexStream(s) = n { s.decls.iter().map(|d| format!("{:x}", d.name())).collect::<Vec<_>>().join(",") } else { "?".into() }).unwrap_or_default();
+                                println!("  level {l}: material {} ({}) node {} flag {} {} verts {} indices; centre ({:.2}, {:.2}, {:.2}) half ({:.2}, {:.2}, {:.2}); decl [{}]", e.material, m.materials.get(e.material as usize).map(|x| x.name.as_str()).unwrap_or("?"), e.node_index, e.flag, mm.map(|x| x.count).unwrap_or(0), e.visual.index_buffer.as_ref().map(|ib| ib.indices.len()).unwrap_or(0), mm.map(|x| x.bounding_box[0]).unwrap_or(0.0), mm.map(|x| x.bounding_box[1]).unwrap_or(0.0), mm.map(|x| x.bounding_box[2]).unwrap_or(0.0), mm.map(|x| x.bounding_box[3]).unwrap_or(0.0), mm.map(|x| x.bounding_box[4]).unwrap_or(0.0), mm.map(|x| x.bounding_box[5]).unwrap_or(0.0), decl);
+                            }
+                        }
+                        let hull_ids: std::collections::BTreeSet<u32> = m.hull_triangles.iter().map(|(_, id)| *id).collect();
+                        println!("  hull material ids {:?}; file time {:#x}; tail {} bytes at {:#x}", hull_ids, m.file_write_time, m.tail.len(), m.tail_at);
+                    }
+                    Err(e) => {
+                        // the box-scan fallback: heights of a species whose typed parse fails
+                        match mapgeom::veget::tree_model_stats(&mut store, p) {
+                            Ok(s) => println!("{p}: TYPED PARSE FAILED ({e}); scan: {} visuals; bottom {:.2} top {:.2} (height {:.2}) radius {:.2} m", s.visuals.len(), s.bottom, s.top, s.top - s.bottom, s.radius),
+                            Err(e2) => println!("{p}: FAILED: {e}; scan: {e2}"),
+                        }
+                    }
+                }
             }
         }
         "item-fields" => {

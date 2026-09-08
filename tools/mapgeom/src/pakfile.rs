@@ -204,16 +204,48 @@ fn dummy_write_points(plain: &[u8], class_id: u32) -> Vec<(usize, u32)> {
     if walked.is_err() {
         let n = g.num_nodes as usize;
         let known: Vec<usize> = out.iter().map(|(o, _)| *o).collect();
+        // a node's first chunk may belong to an ANCESTOR class: every
+        // CPlugVisualIndexedTriangles (0x0901E000) opens with CPlugVisual's
+        // 0x09006001 — the tree models' visuals were invisible to this scan
+        // until 2026-09-08, and the fold hunt that stood in for it placed a
+        // fold at the wrong boundary whenever an incompressible chunk (a
+        // literal run, which decodes "right" with any bytes) sat between the
+        // node start and the chunk that finally failed (CherryTreeMedium)
+        let chunk_of = |class: u32, chunk_class: u32| -> bool {
+            let mut c = class;
+            for _ in 0..8 {
+                if c == chunk_class {
+                    return true;
+                }
+                match crate::parents::dummy_write_class(c) {
+                    Some(p) if p != c => c = p,
+                    _ => return false,
+                }
+            }
+            false
+        };
         let mut i = body_start;
         while i + 12 <= plain.len() {
             let idx = u32::from_le_bytes([plain[i], plain[i + 1], plain[i + 2], plain[i + 3]]) as usize;
             let class = u32::from_le_bytes([plain[i + 4], plain[i + 5], plain[i + 6], plain[i + 7]]);
             let chunk = u32::from_le_bytes([plain[i + 8], plain[i + 9], plain[i + 10], plain[i + 11]]);
             let plausible_class = class & 0xFFF == 0 && matches!(class >> 24, 0x03 | 0x04 | 0x05 | 0x09 | 0x0A | 0x24 | 0x2E | 0x2F);
-            if idx >= 1 && idx <= n && plausible_class && (chunk & !0xFFF) == class && !known.contains(&(i + 8)) {
+            if idx >= 1 && idx <= n && plausible_class && chunk_of(class, chunk & !0xFFF) && !known.contains(&(i + 8)) {
                 let fold = crate::parents::dummy_write_class(class).unwrap_or(crate::parents::C_PLUG);
                 out.push((i + 8, fold));
                 i += 8;
+                continue;
+            }
+            // an index buffer written INSIDE its visual's chunk 0x0906A001 —
+            // `[0x0906A001][bool 1][0x09057000|0x09057001 chunk][flags][count]…`
+            // — has no node index or class id of its own, yet the reader
+            // creates a CPlugIndexBuffer node for it and folds its parent
+            // (CPlug): the third fold of every tree visual (PalmTreeSmall's
+            // chunk 2 needed [CPlug, CPlugVisualIndexed, CPlug])
+            if idx == 0x0906A001 && class == 1 && (chunk & !0xFFF) == 0x09057000 && !known.contains(&(i + 12)) {
+                let fold = crate::parents::dummy_write_class(0x09057000).unwrap_or(crate::parents::C_PLUG);
+                out.push((i + 12, fold));
+                i += 12;
                 continue;
             }
             i += 1;
@@ -391,7 +423,33 @@ fn decrypt_scheduled_ordered(data: &[u8], base: usize, key: &[u8; 16], version: 
 /// — until the whole file decodes or a round finds nothing new. Schedule
 /// entries are (compressed offset, plain offset, class), kept in plain order
 /// within one compressed offset (the fold is order-dependent).
+///
+/// `MAPGEOM_LENIENT_LZ4` (a partial body is better than none) applies to the
+/// LAST resort only: while the schedule is being found the decoder must
+/// report every bad chunk, or a chunk that fails mid-way reads as "the file
+/// ends here" and the search stops with the first visual (BlueBay's BushBigD,
+/// 2026-09-08).
 fn read_compressed_with_dummy_writes(data: &[u8], base: usize, e: &crate::pak::PakEntry, key: &[u8; 16], version: i32) -> Result<Vec<u8>, String> {
+    let lenient = std::env::var_os("MAPGEOM_LENIENT_LZ4").is_some();
+    if lenient {
+        std::env::remove_var("MAPGEOM_LENIENT_LZ4");
+    }
+    let r = read_compressed_inner(data, base, e, key, version, lenient);
+    if lenient {
+        std::env::set_var("MAPGEOM_LENIENT_LZ4", "1");
+    }
+    r
+}
+
+/// `lz4_stream` with the lenient decoder: whatever decodes, bad chunk included.
+fn lz4_stream_lenient(raw: &[u8], want: usize) -> Vec<u8> {
+    std::env::set_var("MAPGEOM_LENIENT_LZ4", "1");
+    let out = lz4_stream(raw, want).0;
+    std::env::remove_var("MAPGEOM_LENIENT_LZ4");
+    out
+}
+
+fn read_compressed_inner(data: &[u8], base: usize, e: &crate::pak::PakEntry, key: &[u8; 16], version: i32, lenient: bool) -> Result<Vec<u8>, String> {
     let n = e.compressed_size.max(0) as usize;
     let want = e.uncompressed_size.max(0) as usize;
     // MAPGEOM_LZ4_RESYNC=skipK|newiv: at the first 0x100 boundary after each
@@ -451,15 +509,29 @@ fn read_compressed_with_dummy_writes(data: &[u8], base: usize, e: &crate::pak::P
     for _round in 0..512 {
         let raw = decrypt_scheduled_ordered(data, base, key, version, n, &schedule);
         let (plain, chunk_starts, status) = lz4_stream(&raw, want);
-        if status.is_ok() {
-            return Ok(plain);
+        if std::env::var_os("MAPGEOM_FOLD_TRACE").is_some() {
+            eprintln!("  schedule round {_round}: {} plain bytes of {want}, {} chunks, {} folds ({}); {}", plain.len(), chunk_starts.len().saturating_sub(1), schedule.len(), schedule.iter().map(|(o, p, c)| format!("{o:#x}@{p:#x}:{c:08X}")).collect::<Vec<_>>().join(" "), status.as_ref().err().cloned().unwrap_or_else(|| "ok".into()));
         }
-        last_err = status.err().unwrap_or_default();
         let points = dummy_write_points(&plain, e.class_id);
         // (compressed fold position, plain offset, class); a start whose chunk
         // has not been decoded yet cannot be placed — the next round will
         let mut mapped: Vec<(usize, usize, u32)> = points.iter().filter_map(|&(p, c)| fold_position(p, &chunk_starts).map(|off| (off, p, c))).collect();
         mapped.sort();
+        // A decode that reaches the end is trusted only once every node start
+        // it shows has its fold scheduled: the LAST chunk of a file is short
+        // and often a plain literal run, which "decodes" whatever bytes the
+        // cipher hands it — BlueBay's BushSmallB came out whole with the
+        // seventh visual's folds missing and its hull garbled (2026-09-08).
+        if status.is_ok() {
+            let missing: Vec<(usize, usize, u32)> = mapped.iter().filter(|m| !schedule.contains(m)).copied().collect();
+            if missing.is_empty() {
+                return Ok(plain);
+            }
+            schedule.extend(missing);
+            schedule.sort();
+            continue;
+        }
+        last_err = status.err().unwrap_or_default();
         let Some(first_new) = mapped.iter().find(|m| !schedule.contains(m)) else { break };
         // bytes before the first unscheduled fold's boundary were decrypted
         // right, so every start folding up to that boundary is real
@@ -472,35 +544,51 @@ fn read_compressed_with_dummy_writes(data: &[u8], base: usize, e: &crate::pak::P
         }
         schedule.sort();
     }
+    // How far the schedule got (the hunt starts from it; a cached failure
+    // that knew less is not a reason to skip the hunt)
+    let rounds_len = {
+        let raw = decrypt_scheduled_ordered(data, base, key, version, n, &schedule);
+        lz4_stream(&raw, want).0.len()
+    };
     // The table knows no node of this file (a table-less class, e.g. the
-    // VegetTreeModels): find the folds by search — the compressed stream
-    // itself says which sequence decodes each chunk — and remember them in
-    // a cache next to the user's home (one hunt per file, ~1 s to minutes).
-    let lenient = std::env::var_os("MAPGEOM_LENIENT_LZ4").is_some();
+    // VegetTreeModels): find the remaining folds by search — the compressed
+    // stream itself says which sequence decodes each chunk — seeded with
+    // every fold the schedule found, and remember them in a cache next to
+    // the user's home (one hunt per file, ~1 s to minutes). A hunt that
+    // failed is remembered with the plain length it reached, and not repeated
+    // until the schedule knows more (MAPGEOM_REHUNT=1 always repeats).
     let decode_with = |folds: &[(usize, u32)]| -> (Vec<u8>, bool) {
         let sched: Vec<(usize, usize, u32)> = folds.iter().enumerate().map(|(i, &(o, c))| (o, i, c)).collect();
         let raw = decrypt_scheduled_ordered(data, base, key, version, n, &sched);
         let (plain, _, status) = lz4_stream(&raw, want);
         (plain, status.is_ok())
     };
-    if let Some(folds) = cached_folds(e) {
-        let (plain, ok) = decode_with(&folds);
-        if ok {
-            return Ok(plain);
-        }
-        // a hunt that stopped short before: its folds decode a prefix; not
-        // repeated (MAPGEOM_REHUNT=1 retries)
-        if std::env::var_os("MAPGEOM_REHUNT").is_none() {
-            if lenient {
+    let lenient_with = |sched: &[(usize, usize, u32)]| -> Vec<u8> { lz4_stream_lenient(&decrypt_scheduled_ordered(data, base, key, version, n, sched), want) };
+    let cached = cached_folds(e);
+    if let Some((folds, failed_at)) = &cached {
+        if failed_at.is_none() {
+            let (plain, ok) = decode_with(folds);
+            if ok {
                 return Ok(plain);
             }
-            return Err(format!("{last_err} (a fold hunt stopped short earlier at {} folds; MAPGEOM_REHUNT=1 retries)", folds.len()));
+        }
+        // a hunt that stopped short before, and the schedule knows no more
+        // than it did: not repeated (MAPGEOM_REHUNT=1 retries)
+        if failed_at.map(|l| l >= rounds_len).unwrap_or(false) && std::env::var_os("MAPGEOM_REHUNT").is_none() {
+            if lenient {
+                let sched: Vec<(usize, usize, u32)> = folds.iter().enumerate().map(|(i, &(o, c))| (o, i, c)).collect();
+                let cached_plain = lenient_with(&sched);
+                let rounds_plain = lenient_with(&schedule);
+                return Ok(if cached_plain.len() >= rounds_plain.len() { cached_plain } else { rounds_plain });
+            }
+            return Err(format!("{last_err} (a fold hunt stopped short earlier at {} folds / {} plain bytes; MAPGEOM_REHUNT=1 retries)", folds.len(), failed_at.unwrap_or(0)));
         }
     }
     if std::env::var_os("MAPGEOM_NO_FOLD_HUNT").is_none() {
-        match fold_hunt(data, base - e.offset as usize, e, key, version, 4) {
+        let seed: Vec<(usize, u32)> = schedule.iter().map(|&(o, _, c)| (o, c)).collect();
+        match fold_hunt_seeded(data, base - e.offset as usize, e, key, version, 4, &seed) {
             Ok(folds) => {
-                store_folds(e, &folds);
+                store_folds(e, &folds, None);
                 let (plain, ok) = decode_with(&folds);
                 if ok {
                     return Ok(plain);
@@ -508,24 +596,27 @@ fn read_compressed_with_dummy_writes(data: &[u8], base: usize, e: &crate::pak::P
                 last_err = format!("hunt found {} folds but the stream still fails", folds.len());
             }
             Err((msg, partial)) => {
-                // remembered (with the folds found) so the next build does not pay again
-                store_folds(e, &partial);
+                // remembered (with the folds found and how far they reach) so
+                // the next build does not pay again
+                let sched: Vec<(usize, usize, u32)> = partial.iter().enumerate().map(|(i, &(o, c))| (o, i, c)).collect();
+                let reach = lz4_stream(&decrypt_scheduled_ordered(data, base, key, version, n, &sched), want).0.len();
+                store_folds(e, &partial, Some(reach.max(rounds_len)));
                 if lenient {
-                    return Ok(decode_with(&partial).0);
+                    return Ok(lenient_with(&sched));
                 }
                 last_err = format!("{last_err}; fold hunt: {msg}");
             }
         }
     }
     if lenient {
-        let raw = decrypt_scheduled_ordered(data, base, key, version, n, &schedule);
-        return Ok(lz4_stream(&raw, want).0);
+        return Ok(lenient_with(&schedule));
     }
     Err(format!("{last_err} ({} dummy-write folds scheduled)", schedule.len()))
 }
 
 /// The fold cache: `$HOME/.cache/mapgeom/folds/<class>-<name>-<sizes>.tsv`,
-/// one `offset<TAB>class` line per fold (hex).
+/// one `offset<TAB>class` line per fold (hex); a hunt that failed adds a
+/// `#failed<TAB><plain bytes reached>` line.
 fn fold_cache_path(e: &crate::pak::PakEntry) -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME")?;
     let dir = std::path::Path::new(&home).join(".cache").join("mapgeom").join("folds");
@@ -533,23 +624,39 @@ fn fold_cache_path(e: &crate::pak::PakEntry) -> Option<std::path::PathBuf> {
     Some(dir.join(format!("{:08X}-{name}-{}-{}.tsv", e.class_id, e.compressed_size, e.uncompressed_size)))
 }
 
-fn cached_folds(e: &crate::pak::PakEntry) -> Option<Vec<(usize, u32)>> {
+/// (folds, plain length a failed hunt reached — None for a complete schedule).
+fn cached_folds(e: &crate::pak::PakEntry) -> Option<(Vec<(usize, u32)>, Option<usize>)> {
     let path = fold_cache_path(e)?;
     let text = std::fs::read_to_string(path).ok()?;
     let mut out = Vec::new();
+    let mut failed_at = None;
     for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("#failed\t") {
+            failed_at = Some(rest.trim().parse::<usize>().ok()?);
+            continue;
+        }
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
         let (o, c) = line.split_once('\t')?;
         out.push((usize::from_str_radix(o.trim_start_matches("0x"), 16).ok()?, u32::from_str_radix(c, 16).ok()?));
     }
-    Some(out)
+    // an old-format failure (an empty file) counts as knowing nothing
+    if out.is_empty() && failed_at.is_none() {
+        failed_at = Some(0);
+    }
+    Some((out, failed_at))
 }
 
-fn store_folds(e: &crate::pak::PakEntry, folds: &[(usize, u32)]) {
+fn store_folds(e: &crate::pak::PakEntry, folds: &[(usize, u32)], failed_at: Option<usize>) {
     let Some(path) = fold_cache_path(e) else { return };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let text: String = folds.iter().map(|(o, c)| format!("{o:#x}\t{c:08X}\n")).collect();
+    let mut text: String = folds.iter().map(|(o, c)| format!("{o:#x}\t{c:08X}\n")).collect();
+    if let Some(l) = failed_at {
+        text.push_str(&format!("#failed\t{l}\n"));
+    }
     let _ = std::fs::write(path, text);
 }
 
@@ -574,6 +681,12 @@ pub fn fold_canonical(class: u32) -> u32 {
 /// chunks 1–2 decoded whole. Returns the schedule as (compressed offset,
 /// class) pairs; `Ok` when the whole file decodes.
 pub fn fold_hunt(data: &[u8], header_max_size: usize, e: &crate::pak::PakEntry, key: &[u8; 16], version: i32, max_len: usize) -> Result<Vec<(usize, u32)>, (String, Vec<(usize, u32)>)> {
+    fold_hunt_seeded(data, header_max_size, e, key, version, max_len, &[])
+}
+
+/// `fold_hunt` starting from folds already known (the schedule the node-start
+/// scan found): only the boundaries past them are searched.
+pub fn fold_hunt_seeded(data: &[u8], header_max_size: usize, e: &crate::pak::PakEntry, key: &[u8; 16], version: i32, max_len: usize, seed: &[(usize, u32)]) -> Result<Vec<(usize, u32)>, (String, Vec<(usize, u32)>)> {
     let base = header_max_size + e.offset as usize;
     let n = e.compressed_size.max(0) as usize;
     let want = e.uncompressed_size.max(0) as usize;
@@ -596,9 +709,10 @@ pub fn fold_hunt(data: &[u8], header_max_size: usize, e: &crate::pak::PakEntry, 
         v.dedup();
         v
     };
-    let mut schedule: Vec<(usize, usize, u32)> = Vec::new();
+    let mut schedule: Vec<(usize, usize, u32)> = seed.iter().enumerate().map(|(i, &(o, c))| (o, i, c)).collect();
     // MAPGEOM_FOLD_SEED=off:class,off:class,… (hex): folds already known
     if let Ok(seed) = std::env::var("MAPGEOM_FOLD_SEED") {
+        schedule.clear();
         for (i, entry) in seed.split(',').filter(|s| !s.is_empty()).enumerate() {
             if let Some((o, c)) = entry.split_once(':') {
                 let off = usize::from_str_radix(o.trim_start_matches("0x"), 16).map_err(|e| (format!("seed offset {o}: {e}"), Vec::new()))?;
@@ -627,6 +741,9 @@ pub fn fold_hunt(data: &[u8], header_max_size: usize, e: &crate::pak::PakEntry, 
         // the failing chunk (not pushed by the decoder) begins at the last start
         let f = starts.len() - 1;
         let chunk_start = *starts.last().unwrap_or(&0);
+        if std::env::var_os("MAPGEOM_FOLD_TRACE").is_some() {
+            eprintln!("  round: {} plain bytes, {} chunks decoded, reach {reach0:#x}; chunk starts (compressed): {}", plain.len(), f, starts.iter().enumerate().map(|(i, s)| format!("{i}:{s:#x}")).collect::<Vec<_>>().join(" "));
+        }
         let b = (chunk_start + 0xFF) & !0xFF;
         if b >= n {
             return Err((format!("chunk {f} starts at {chunk_start:#x}, past the stream"), schedule.iter().map(|&(o, _, c)| (o, c)).collect()));
