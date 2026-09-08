@@ -86,11 +86,11 @@ impl<'a> REstimator<'a> {
             pos: self.nodes.pos[from],
             vel,
             quat: frame::yaw_quat(dir),
-            ang_vel: [f32::NAN; 3],
+            ang_vel: [0.0; 3], // a steady driving state (the training rows all carry angular velocity: a NaN → present flag 0 is off-distribution)
             speed: v,
             gear: u8::MAX,
             rpm: f32::NAN,
-            wheel_contact: [u8::MAX; 4],
+            wheel_contact: [1; 4], // four wheels on the ground, as every training row of a car on the road
             wheel_material: [u8::MAX; 4],
             wheel_slip: [f32::NAN; 4],
             turbo: f32::NAN,
@@ -231,11 +231,11 @@ impl<'a> Chained<'a> {
             pos: s.pos,
             vel: [s.dir[0] * s.speed, 0.0, s.dir[1] * s.speed],
             quat: frame::yaw_quat(s.dir),
-            ang_vel: [f32::NAN; 3],
+            ang_vel: [0.0; 3], // a steady driving state (the training rows all carry angular velocity: a NaN → present flag 0 is off-distribution)
             speed: s.speed,
             gear: u8::MAX,
             rpm: f32::NAN,
-            wheel_contact: [u8::MAX; 4],
+            wheel_contact: [1; 4], // four wheels on the ground, as every training row of a car on the road
             wheel_material: [u8::MAX; 4],
             wheel_slip: [f32::NAN; 4],
             turbo: f32::NAN,
