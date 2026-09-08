@@ -175,6 +175,16 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                     // of its own, no mesh; its emitters must name inline models
                     Some(super::Node::FxSystem(fx)) => {
                         let emitters = fx.root.emitters();
+                        // FX-03: an FX entity with a live emitter makes the GAME DROP the
+                        // whole item — the fogger / sparkler / torch geometry vanishes from
+                        // the map with no dialog and nothing in UGCErrorsLog (proved
+                        // 2026-09-08 with /mapitems over a lineup: an emitter-less FxSystem
+                        // entity is kept, every emitter form — inline model, pack model by
+                        // path, ContextClassId set — is dropped). Until that is solved, an
+                        // item carrying one must not ship.
+                        if !emitters.is_empty() {
+                            problems.push(format!("entity {i}: effect system with {} live emitter(s) (FX-03: the game DROPS an embedded item whose FX entity has an emitter — the item's geometry disappears from the map)", emitters.len()));
+                        }
                         for em in &emitters {
                             // FX-02: an emitter without a particle model crashes the client at
                             // load (exe+0x75C0C8 indexes the emitters' model table and reads

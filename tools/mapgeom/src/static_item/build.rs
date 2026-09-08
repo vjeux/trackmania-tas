@@ -2410,18 +2410,28 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                     m.veget.push((p.clone(), iso));
                     m.notes.push(format!("{path} entity {i}: external {p} skipped (vegetation, re-emitted as an item)"));
                 }
-                // an effect system (the Show items' smoke / sparks): parsed
-                // with its particle models, inlined by `assemble` as an
-                // entity of the prefab form — ON by default (TINY_FX=drop
-                // leaves them out). The 2026-09-08 load crash was a PROBE
-                // variant with the emitter's texture reference nulled (the
-                // engine instantiates the texture through a null class
-                // descriptor: exe+0x2EDBA8 walks the class chain of rdx=0);
-                // the writer never emits that form and item-check FX-01
-                // refuses it. The pack-path texture form loads.
+                // An effect system (the Show items' smoke / sparks): parsed with
+                // its particle models and inlined by `assemble` as an entity of
+                // the prefab form — but LEFT OUT by default, because THE GAME
+                // DROPS AN EMBEDDED ITEM WHOSE FX ENTITY HAS A LIVE EMITTER.
+                //
+                // Proved in the editor on 2026-09-08 (`shootctl mapstate --get
+                // /mapitems` over a lineup on Summer 15, one item per map):
+                //   kept    - the same item without the FX entity (control)
+                //   kept    - an FxSystem entity whose root has NO emitters
+                //   dropped - an emitter with an inline particle model (whole,
+                //             and cut to four chunks); with the model as the
+                //             pack's own `.ParticleModel.Gbx` by path; and with
+                //             the FxSystem's ContextClassId set to the value the
+                //             two context-carrying pack FX systems use
+                //             (0x2F0DD000)
+                // A dropped item is worse than no FX: the fogger / sparkler /
+                // torch geometry disappears from the map (map 11 carries 183
+                // torches) and the game says nothing - no dialog, nothing in
+                // UGCErrorsLog. `TINY_FX=1` puts them back for further work.
                 Some(p) if p.to_ascii_lowercase().ends_with(".fxsys.gbx") => {
-                    if std::env::var("TINY_FX").map(|v| v == "drop" || v == "0").unwrap_or(false) {
-                        m.notes.push(format!("{path} entity {i}: external {p} dropped (TINY_FX=drop)"));
+                    if !std::env::var("TINY_FX").map(|v| v == "1" || v == "on").unwrap_or(false) {
+                        m.notes.push(format!("{path} entity {i}: external {p} left out (the game drops an item whose FX entity has an emitter; TINY_FX=1 to include)"));
                     } else {
                         match add_fx_system(store, &p, &iso) {
                             Ok(part) => {
