@@ -264,7 +264,11 @@ string EditorCursor() {
             + ",\"freePos\":[" + c.FreePosInMap.x + "," + c.FreePosInMap.y + "," + c.FreePosInMap.z + "]"
             + ",\"color\":[" + c.Color.x + "," + c.Color.y + "," + c.Color.z + "],";
     }
-    js += "\"block\":\"" + (ed.CurrentBlockInfo is null ? "" : ed.CurrentBlockInfo.Name) + "\"";
-    js += ",\"item\":\"" + (ed.CurrentItemModel is null ? "" : ed.CurrentItemModel.IdName) + "\"";
+    string blockName = "";
+    if (ed.CurrentBlockInfo !is null) blockName = ed.CurrentBlockInfo.Name;
+    string itemName = "";
+    if (ed.CurrentItemModel !is null) itemName = ed.CurrentItemModel.IdName;
+    js += "\"block\":\"" + blockName + "\"";
+    js += ",\"item\":\"" + itemName + "\"";
     return js + "}";
 }
