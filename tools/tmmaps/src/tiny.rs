@@ -969,6 +969,15 @@ pub fn cmd(args: &[String]) {
             // an embedded library item (any *.Item.Gbx) is its own author; a
             // stock model (vegetation substitute) is Nadeo's
             m.set_item_author(i, if s.model.ends_with(".Item.Gbx") { &s.model } else { "Nadeo" });
+            // … and the map's collection, which is what the manifest row
+            // says: a source placement of a club item (a Stadium-collection
+            // ident inside a BlueBay map, Summer 21's TME items) keeps its
+            // Stadium word through the re-pointing otherwise, and the game,
+            // resolving the FULL ident, finds no (AC00000000, Stadium,
+            // AC00000000) → "Missing Items" on every load (2026-09-08).
+            if s.model.ends_with(".Item.Gbx") {
+                m.set_item_collection(i, collection);
+            }
         }
         m.move_item(i, s.pos, s.yaw, cell_for(s.pos));
         if let Some((rot, pivot)) = s.frame {

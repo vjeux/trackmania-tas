@@ -14,7 +14,7 @@
 /// Only the ones this project has ever seen in Stadium data are named; an
 /// unnamed id renders as `U<n>` rather than being silently dropped, because a
 /// collection id in an unexpected place is evidence the walk desynchronised.
-fn collection_id(idx: u32) -> String {
+pub fn collection_id(idx: u32) -> String {
     match idx {
         0 => "Desert".into(),
         1 => "Snow".into(),

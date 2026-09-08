@@ -470,6 +470,10 @@ pub fn check_map(m: &MapFile, verbose: bool) -> Result<(), String> {
     let mut placed: BTreeMap<&str, usize> = BTreeMap::new();
     let mut unresolved: BTreeSet<String> = BTreeSet::new();
     let mut author_mismatch = 0;
+    // a placement resolves by its FULL ident (name, collection, author): a
+    // model name the manifest lists under another collection or author is a
+    // missing item to the game, however present the file is
+    let mut coll_mismatch: Vec<String> = Vec::new();
     for it in &m.items {
         *placed.entry(it.model.as_str()).or_default() += 1;
         if it.model.ends_with(".Item.Gbx") {
@@ -477,13 +481,20 @@ pub fn check_map(m: &MapFile, verbose: bool) -> Result<(), String> {
                 None => {
                     unresolved.insert(it.model.clone());
                 }
-                Some((_, _, a)) => {
+                Some((_, coll, a)) => {
                     if it.author.as_deref() != Some(a.as_str()) {
                         author_mismatch += 1;
+                    }
+                    let pc = crate::reader::collection_id(it.collection_raw);
+                    if pc != *coll {
+                        coll_mismatch.push(format!("i{} {} at [{:.0}, {:.0}, {:.0}]: placement collection {} (raw {}) vs manifest {}", it.index, it.model, it.pos[0], it.pos[1], it.pos[2], pc, it.collection_raw, coll));
                     }
                 }
             }
         }
+    }
+    if !coll_mismatch.is_empty() {
+        problems.push(format!("{} placements whose COLLECTION differs from their manifest row's (the game resolves the full ident → Missing Items): {}", coll_mismatch.len(), coll_mismatch.iter().take(5).cloned().collect::<Vec<_>>().join("; ")));
     }
     let placed_embedded = placed.iter().filter(|(n, _)| n.ends_with(".Item.Gbx")).count();
     let unplaced: Vec<&str> = man_names.iter().filter(|n| !placed.contains_key(**n)).copied().collect();

@@ -154,6 +154,8 @@ pub struct ItemRec {
     pub model: String,
     pub model_field: usize,
     pub collection_raw: u32,
+    /// the collection word (a plain u32 collection number, 4 bytes) — see `set_item_collection`
+    pub collection_field: usize,
     pub author: Option<String>,
     pub author_field: usize,
     /// offsets of the mutable fixed-size fields, absolute in the body
@@ -314,6 +316,9 @@ pub struct MapFile {
     pub items: Vec<ItemRec>,
     /// pending edits
     pub renames: Vec<(bool, usize, String)>, // (is_item, field index, new name)
+    /// (item Id-field index, new raw word) for the collection words the
+    /// re-encoder would otherwise copy verbatim (`set_item_collection`)
+    pub item_raw_overrides: Vec<(usize, u32)>,
     pub raw_patches: Vec<(usize, Vec<u8>)>,
     /// Variable-length body replacements. Kept separate from fixed patches so
     /// offsets stay in the source body's coordinate system.
@@ -721,6 +726,7 @@ impl MapFile {
             item_ids,
             items,
             renames: Vec::new(),
+            item_raw_overrides: Vec::new(),
             raw_patches: Vec::new(),
             raw_splices: Vec::new(),
         }
@@ -909,6 +915,32 @@ impl MapFile {
     pub fn set_item_author(&mut self, item_index: usize, author: &str) {
         let f = self.items[item_index].author_field;
         self.renames.push((true, f, author.to_string()));
+    }
+
+    /// The placement's collection word. A placement resolves its model by the
+    /// FULL ident (name, collection, author): tiny 21's dropped club items
+    /// were re-pointed at `AC00000000.Item.Gbx` with their model and author
+    /// renamed but their collection left at the source's Stadium (26), while
+    /// the manifest listed the item under the map's BlueBay (28) — so the game
+    /// found no such item and asked "Missing Items: AC00000000.Item.Gbx …
+    /// load anyway?" on EVERY load of 21 (2026-09-08; read as a 1-in-3 loader
+    /// flake for a day). A collection number is a plain 4-byte word, so this
+    /// is a fixed-size patch; a lookback-string collection is refused.
+    pub fn set_item_collection(&mut self, item_index: usize, collection: u32) {
+        let f = &self.item_ids[self.items[item_index].collection_field];
+        assert!(
+            f.len == 4 && f.name.is_none(),
+            "item {item_index}: collection is not a plain collection number (len {}, {:?})",
+            f.len,
+            f.name
+        );
+        if f.raw != collection {
+            // the patch serves the no-rename write; the override serves the
+            // re-encoded write (which copies a raw word from the field, not
+            // from the patched body)
+            self.raw_patches.push((f.off, collection.to_le_bytes().to_vec()));
+            self.item_raw_overrides.push((self.items[item_index].collection_field, collection));
+        }
     }
 
     /// w612: rotate a GRID block in place (the `dir` byte immediately before
@@ -1136,6 +1168,9 @@ impl MapFile {
         }
         let mut bf = self.body_ids.clone();
         let mut itf = self.item_ids.clone();
+        for (field, raw) in &self.item_raw_overrides {
+            itf[*field].raw = *raw;
+        }
         for (is_item, field, name) in &self.renames {
             let f = if *is_item {
                 &mut itf[*field]
@@ -1535,6 +1570,7 @@ fn parse_items(
             let model_field = ids.len() - 1;
             let model = ids[model_field].name.clone().unwrap_or_default();
             ids.push(read_id(&mut r, &mut table)); // collection (raw u32)
+            let collection_field = ids.len() - 1;
             let collection_raw = ids.last().unwrap().raw;
             ids.push(read_id(&mut r, &mut table)); // author
             let author_field = ids.len() - 1;
@@ -1591,6 +1627,7 @@ fn parse_items(
                 model,
                 model_field,
                 collection_raw,
+                collection_field,
                 author,
                 author_field,
                 yaw_off,
