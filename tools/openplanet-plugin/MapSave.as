@@ -195,3 +195,50 @@ string StripGroundCheckpoints() {
     return "removed " + ok + "/" + doomed.Length + " ground checkpoints; blocks now " + ch.Blocks.Length;
 }
 
+
+
+// Items straight from the GAME's parse, AFTER its load-time fix-ups: where the
+// engine actually put each anchored object. Summer 24 (2026-09-08): a red slab
+// floated at the map's exact centre that no offline census explained (no
+// placement of ours within 40 m of it) — the file says one thing, the engine
+// shows another, so ask the engine.
+//
+//   /mapitems?x0=&x1=&z0=&z1=[&y0=&y1=][&name=SUBSTR]
+//     -> {"total":N,"items":[{"i":N,"name":"<ItemModel.IdName>","x":..,"y":..,"z":..,
+//                             "cell":[cx,cy,cz],"yaw":..,"scale":..,"var":N}, ...]}
+//
+// Only objects whose AbsolutePositionInMap lies in the box (a missing bound is
+// open; `name` keeps only models containing the substring). The full array is
+// ~23000 entries on a tiny map — always give a box.
+string MapItems(const string &in qs) {
+    auto ed = cast<CGameCtnEditorFree>(GetApp().Editor);
+    if (ed is null) return "not in an editor -- /editmap3 first";
+    auto ch = ed.Challenge;
+    if (ch is null) return "no Challenge on this editor";
+    string sx0 = QArg(qs, "x0"), sx1 = QArg(qs, "x1"), sz0 = QArg(qs, "z0"), sz1 = QArg(qs, "z1"), sy0 = QArg(qs, "y0"), sy1 = QArg(qs, "y1");
+    string needle = QArg(qs, "name");
+    float x0 = sx0 == "" ? -1e9f : Text::ParseFloat(sx0);
+    float x1 = sx1 == "" ? 1e9f : Text::ParseFloat(sx1);
+    float z0 = sz0 == "" ? -1e9f : Text::ParseFloat(sz0);
+    float z1 = sz1 == "" ? 1e9f : Text::ParseFloat(sz1);
+    float y0 = sy0 == "" ? -1e9f : Text::ParseFloat(sy0);
+    float y1 = sy1 == "" ? 1e9f : Text::ParseFloat(sy1);
+    uint total = ch.AnchoredObjects.Length;
+    string js = "{\"total\":" + total + ",\"items\":[";
+    bool first = true;
+    for (uint i = 0; i < total; i++) {
+        auto o = ch.AnchoredObjects[i];
+        if (o is null) continue;
+        vec3 p = o.AbsolutePositionInMap;
+        if (p.x < x0 || p.x > x1 || p.z < z0 || p.z > z1 || p.y < y0 || p.y > y1) continue;
+        string n = "<null model>";
+        if (o.ItemModel !is null) n = o.ItemModel.IdName;
+        if (needle != "" && n.IndexOf(needle) < 0) continue;
+        if (!first) js += ",";
+        first = false;
+        js += "{\"i\":" + i + ",\"name\":\"" + n + "\",\"x\":" + p.x + ",\"y\":" + p.y + ",\"z\":" + p.z
+            + ",\"cell\":[" + o.BlockUnitCoord.x + "," + o.BlockUnitCoord.y + "," + o.BlockUnitCoord.z + "]"
+            + ",\"yaw\":" + o.Yaw + ",\"scale\":" + o.Scale + ",\"var\":" + o.IVariant + "}";
+    }
+    return js + "]}";
+}

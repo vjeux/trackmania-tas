@@ -95,6 +95,10 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/mapsave") return HttpResponse(200, MapSave(PathArg()));
     if (r == "/mapvalidate") return HttpResponse(200, MapValidate());
     if (r == "/mapstate") return HttpResponse(200, MapEditorState());
+    // the GAME's own block and item lists after its load-time fix-ups (MapSave.as)
+    if (r == "/mapblocks") return HttpResponse(200, MapBlocks());
+    if (r == "/mapgates") return HttpResponse(200, MapGates());
+    if (r == "/mapitems") return HttpResponse(200, MapItems(qs));
     if (r == "/rmenu") return HttpResponse(200, ReplayMenuState());
     if (r == "/rselall") return HttpResponse(200, ReplaySelectAll());
     if (r == "/rok") return HttpResponse(200, ReplayOk());
