@@ -995,7 +995,8 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
                 // the persistent-storage FUSE mount serves STALE objects for hours after another
                 // box's write (MODEL arm); a remount refreshes it instantly
                 println!("   ghosts.tar read partial: remounting private-30d and retrying");
-                let _ = std::process::Command::new("persistent-storage").args(["remount", "private-30d"]).status();
+                // in its own systemd scope: a FUSE daemon started inside this process's unit dies with the unit
+                let _ = std::process::Command::new("systemd-run").args(["--user", "--scope", "--unit", &format!("gen-mount-{}", std::process::id()), "--", "persistent-storage", "remount", "private-30d"]).status();
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 ok = extract(&tdir);
             }
