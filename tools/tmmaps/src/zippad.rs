@@ -85,6 +85,12 @@ pub fn cmd(args: &[String]) {
             placed.remove(g);
         }
         println!("  --keep-models {keep_models}: {repointed} placements re-pointed at {stand_in}; {} model files dropped", gone.len());
+        // renames are fixed-size patches, the archive splice is not: write
+        // the renamed map and reload it before touching the archive
+        let tmp = out.with_extension("keep0.Map.Gbx");
+        m.write_to(&tmp).expect("write the renamed map");
+        m = MapFile::load(&tmp);
+        let _ = std::fs::remove_file(&tmp);
     }
     if prune {
         let before = entries.len();
