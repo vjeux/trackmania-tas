@@ -789,8 +789,24 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // original placements are parked like procedural vegetation.
         let drop_items = std::env::var("TINY_DROP_ITEMS").unwrap_or_else(|_| "TME\\".to_string());
         if drop_items.split(',').any(|s| !s.is_empty() && s != "-" && model.contains(s)) {
-            item_map.insert((model.clone(), *variant, lskin.clone()), "-".into());
-            outcomes.push(Outcome { alias: "-".into(), kind: "item", source: model.clone(), placements: *n, result: Ok("dropped by TINY_DROP_ITEMS (custom-material item)".into()) });
+            // The placement is re-pointed at a stand-in the archive HAS (the
+            // first converted block) and sunk 1 000 m (a `y@` row): the custom
+            // model's name leaves the map, so its file need not be carried —
+            // a map that carried the 19 club originals showed the game's
+            // "Missing Items" dialog on one load in three (the last entries of
+            // a 776-file archive; a race in the game's extraction), a map
+            // without them never did.
+            match outcomes.iter().find(|o| o.kind == "block" && o.result.is_ok() && o.alias != "-" && !o.alias.is_empty()).map(|o| o.alias.clone()) {
+                Some(stand_in) => {
+                    sink_map.insert((model.clone(), *variant, lskin.clone()), 1000.0);
+                    item_map.insert((model.clone(), *variant, lskin.clone()), format!("{stand_in}.Item.Gbx"));
+                    outcomes.push(Outcome { alias: format!("{stand_in}.Item.Gbx"), kind: "item", source: model.clone(), placements: *n, result: Ok(format!("dropped by TINY_DROP_ITEMS (custom-material item): parked 1 000 m down as {stand_in}")) });
+                }
+                None => {
+                    item_map.insert((model.clone(), *variant, lskin.clone()), "-".into());
+                    outcomes.push(Outcome { alias: "-".into(), kind: "item", source: model.clone(), placements: *n, result: Ok("dropped by TINY_DROP_ITEMS (custom-material item)".into()) });
+                }
+            }
             continue;
         }
         if lskin.is_none() {
