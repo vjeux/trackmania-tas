@@ -35,8 +35,11 @@
 //! known from the files: string 1 is LocalOffsetExpr (`float3(0,0,5)` on
 //! SparklerEnd8m = the end emitter 5 m along the axis), string 4 is the
 //! SpawnFreqModifierExpr (`cos(Time/800-1)` on the pulsing sparklers),
-//! string 11 is the hue (`-1.0`, or the `Hue` variable). The rest is
-//! settled in-game (`TINY_FX_EXPR_K=expr` overrides string K).
+//! string 11 is the hue (`-1.0`, or the `Hue` variable). The exe's own
+//! serialiser (exe+0x62098c) settles the rest: 1 LocalOffset, 2 WorldOffset,
+//! 3 LinearVelInW, 4 SpawnFreqModifier, 5 Scale, 6 LAmbient, 7 Up, 8 DOV,
+//! 9 Opacity, 10 WaterTop, [bool DOVAndUpAreLocalSpace], 11 LinearHue01,
+//! 12 HueLightness (`TINY_FX_EXPR_K=expr` overrides string K).
 
 use super::{read_ref, write_ref, Id, Rd, Ref, Wr, R, FACADE};
 

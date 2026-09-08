@@ -2751,8 +2751,8 @@ fn place_particle_node(node: &mut super::particle::ParticleNode, externals: &[(u
 /// emitters, the entity pose scaled. Knobs (probes, 2026-09-08):
 /// `TINY_FX_FORM=extern` keeps the pack `.FxSys.Gbx` as an EXTERNAL entity
 /// model instead (route a of the feasibility test); `TINY_FX_EXPR_K=text`
-/// overrides expression K (1..12) of every emitter — K=3 is the candidate
-/// ScaleExpr; `TINY_FX_SCALE_EXPR=K` writes the item scale into expression K.
+/// overrides expression K (1..12) of every emitter; the item scale goes into
+/// ScaleExpr (string 5) — `TINY_FX_SCALE_EXPR=K` moves it, 0 leaves it out.
 fn fx_entities(m: &Merged, scale: f32, next: &mut i32) -> Vec<super::prefab::Entity> {
     let form = std::env::var("TINY_FX_FORM").unwrap_or_else(|_| "inline".into());
     let scale_expr: Option<usize> = std::env::var("TINY_FX_SCALE_EXPR").ok().and_then(|v| v.parse().ok());
@@ -2806,8 +2806,19 @@ fn fx_entities(m: &Merged, scale: f32, next: &mut i32) -> Vec<super::prefab::Ent
                         }
                     }
                 }
-                if let Some(k) = scale_expr {
-                    let v = format!("{scale}");
+                // ScaleExpr is string 5: the archive order read off the exe's
+                // CPlugFxSystemNode_ParticleEmitter serialiser (exe+0x62098c: strings
+                // into +0x30 LocalOffset, +0x40 WorldOffset, +0x78 LinearVelInW,
+                // +0x88 SpawnFreqModifier, +0x98 Scale, +0xb8 LAmbient, +0x58 Up,
+                // +0x68 DOV, +0xa8 Opacity, +0xc8 WaterTop, u32 DOVAndUpAreLocalSpace,
+                // +0xd8 LinearHue01, +0xe8 HueLightness — consistent with every known
+                // slot: the cos() pulse at 4, Up/DOV at 7/8, hue/lightness at 11/12).
+                // The item scale goes there (TINY_FX_SCALE_EXPR=K overrides the slot,
+                // 0 = leave the emitter unscaled).
+                let k = scale_expr.unwrap_or(5);
+                if k >= 1 && (scale - 1.0).abs() > 1e-6 {
+                    let cur = if k <= 10 { e.exprs[k - 1].clone() } else { e.tail[(k - 11).min(1)].clone() };
+                    let v = if cur.trim() == "1" { format!("{scale}") } else { format!("({cur})*{scale}") };
                     if (1..=10).contains(&k) {
                         e.exprs[k - 1] = v;
                     } else if k == 11 || k == 12 {
