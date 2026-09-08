@@ -278,6 +278,14 @@ pub struct Merged {
     /// folder is taken from there (PlatformDirt: the dirt-brown
     /// PlatformTech/TrackWall/Deco…; the gate specials likewise). Full links.
     pub modifier: Vec<String>,
+    /// The modifier's re-dress of the prefab's COLLISION materials, from its
+    /// GameSkin slot table (`tiny_library::modifier_collision_redress`): rows
+    /// of (default material path, lower-cased; replacement link; (physics,
+    /// gameplay)). A hull triangle whose surface material is a listed default
+    /// takes the replacement's ids — the deck of a Boost/Reset/NoEngine
+    /// platform special is authored as `CollisionTurbo*` (gameplay 1) and
+    /// drove as a Turbo until this (Summer 24 cp10, 2026-09-08).
+    pub collision_redress: Vec<(String, String, (u8, u8))>,
     /// An ITEM modifier names its materials with a suffix: the obstacle items
     /// (Summer 15's pushers and rotors) reference
     /// `Stadium\Media\Modifier\ItemObstacleLevel1.Gbx`, whose materials live
@@ -616,6 +624,55 @@ impl Merged {
             let si = self.surf_id_slot(t.material_id as u16 | ((t.u03 as u16) << 8));
             self.surf_triangles.push(Triangle { indices: [t.indices[0] + base, t.indices[1] + base, t.indices[2] + base], material_id: t.material_id, u03: t.u03, surface_index: si });
         }
+    }
+
+    /// The block modifier's re-dress of a hull (`collision_redress`): every
+    /// triangle whose surface material — `sf.materials[t.surface_index]`, an
+    /// external `.Material.Gbx` resolved through `resolve` — is one of the
+    /// modifier GameSkin's Collision* defaults takes the replacement's
+    /// (physics, gameplay); the prefab's `Effects\Media\Material\CollisionTurbo`
+    /// deck (Concrete, Turbo 1) under a Reset modifier becomes
+    /// `Modifier\Reset\Collision` (Concrete, Reset 8), `CollisionTurboGreen`
+    /// under Boost becomes `Modifier\Boost\CollisionGrass` (Green, ReactorBoost
+    /// 12) — what the game does to the block. None when no triangle matched.
+    fn redress_collision(&mut self, sf: &CPlugSurface, triangles: &[Triangle], resolve: &mut MaterialResolver) -> Option<Vec<Triangle>> {
+        if self.collision_redress.is_empty() {
+            return None;
+        }
+        let mut by_index: Vec<Option<(String, String, (u8, u8))>> = Vec::new();
+        for sm in &sf.materials {
+            let hit = match sm {
+                super::surface::SurfMaterial::Node(nr) if nr.inline.is_none() && nr.index >= 0 => resolve(nr.index).and_then(|(path, _, _)| {
+                    let low = path.to_ascii_lowercase();
+                    self.collision_redress.iter().find(|(d, _, _)| *d == low).map(|(_, link, ids)| (path.clone(), link.clone(), *ids))
+                }),
+                _ => None,
+            };
+            by_index.push(hit);
+        }
+        if by_index.iter().all(|h| h.is_none()) {
+            return None;
+        }
+        let mut out = triangles.to_vec();
+        let mut counts: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+        for t in out.iter_mut() {
+            let si = t.surface_index.max(0) as usize;
+            if let Some(Some((_, _, ids))) = by_index.get(si) {
+                t.material_id = ids.0;
+                t.u03 = ids.1;
+                *counts.entry(si).or_default() += 1;
+            }
+        }
+        if counts.is_empty() {
+            return None;
+        }
+        for (si, n) in counts {
+            if let Some(Some((path, link, ids))) = by_index.get(si) {
+                let file = path.rsplit('\\').next().unwrap_or(path);
+                self.notes.push(format!("hull: {n} triangles of {file} re-dressed by the modifier as {link} (physics {}, gameplay {})", ids.0, ids.1));
+            }
+        }
+        Some(out)
     }
 }
 
@@ -1175,7 +1232,10 @@ impl Merged {
                 Surf::Mesh { vertices, triangles, .. } => {
                     // A triangle's u8 is its physics id (matches the u16 list
                     // it indexes on every Nadeo prefab measured).
-                    self.add_surface_mesh(vertices, triangles, iso, scale);
+                    match self.redress_collision(sf, triangles, resolve) {
+                        Some(redressed) => self.add_surface_mesh(vertices, &redressed, iso, scale),
+                        None => self.add_surface_mesh(vertices, triangles, iso, scale),
+                    }
                 }
                 // A primitive collision (sphere / ellipsoid / axis box, or a
                 // compound of them) is meshed: the item has ONE collision mesh,
@@ -3153,6 +3213,7 @@ pub fn add_dyna_part(store: &mut crate::store::DataStore, path: &str, at: &Xform
     mesh.editors = m.editors;
     mesh.keep_water = m.keep_water;
     mesh.modifier = m.modifier.clone();
+    mesh.collision_redress = m.collision_redress.clone();
     mesh.modifier_suffix = m.modifier_suffix.clone();
     mesh.no_split = true;
     let mesh_ext = src.mesh_ext.clone();
@@ -3259,6 +3320,7 @@ pub fn add_dyna_tween_part(store: &mut crate::store::DataStore, path: &str, at: 
     mesh.editors = m.editors;
     mesh.keep_water = m.keep_water;
     mesh.modifier = m.modifier.clone();
+    mesh.collision_redress = m.collision_redress.clone();
     mesh.modifier_suffix = m.modifier_suffix.clone();
     mesh.no_split = true;
     mesh.all_lods = true;

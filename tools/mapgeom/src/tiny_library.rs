@@ -624,6 +624,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             m.editors = std::env::var_os("TINY_EDITORS").is_some();
             m.keep_water = crate::static_item::build::keep_water_for(collection);
             m.modifier = modifier_links(store, &effective_mods);
+            m.collision_redress = modifier_collision_redress(store, &effective_mods);
             // TINY_NO_SPLIT_FOR=name,name (default DecoBeachMangrove): models baked
             // without the per-layer split (the Mangrove split crashes the client;
             // minimal repro var-m1, open bug).
@@ -1270,6 +1271,62 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         }
         std::process::exit(2);
     }
+}
+
+/// `Stadium\Media\Modifier\Reset.TerrainModifier .Gbx` -> `Stadium\Media\Modifier\Reset`,
+/// with or without Nadeo's space before the extension (the Reset blocks' infos
+/// and the pack entry itself spell it with one — 93acd7bb strips it before the
+/// folder lookup; this accepts either spelling). Anything that is not a
+/// terrain modifier (the parent block info, a `TrackWallToDecoCliff.Gbx` game
+/// skin) is None.
+pub fn terrain_modifier_base(r: &str) -> Option<&str> {
+    let t = r.trim_end();
+    let t = t.strip_suffix(".Gbx").or_else(|| t.strip_suffix(".gbx"))?;
+    t.trim_end().strip_suffix(".TerrainModifier")
+}
+
+/// What a block's modifier does to the prefab's COLLISION materials — the
+/// game's own mechanism, read from the data instead of guessed by stem:
+/// `X.TerrainModifier.Gbx` names a GameSkin (`Specials.GameSkin.gbx` for
+/// Reset, `SpecialsOriented` for Boost, `Platform` for PlatformGrass…) whose
+/// entries are `slot name = the pack material the prefab is authored with`,
+/// and the modifier's folder holds a `<slot>.Material.Gbx` for the slots it
+/// re-dresses. One row per `Collision*` slot whose folder file exists:
+/// (default material path, lower-cased; replacement link; its (physics,
+/// gameplay) surface ids). `Effects\Media\Material\CollisionTurboGreen.Material.Gbx`
+/// -> slot `CollisionGrass` -> `Stadium\Media\Modifier\Boost\CollisionGrass` =
+/// (Green 76, ReactorBoost 12); `CollisionTurbo` -> `Collision` ->
+/// `Modifier\Reset\Collision` = (Concrete 0, Reset 8). The platform-special
+/// prefabs are authored in their Turbo dress (gameplay 1 on the deck hull), so
+/// until this table was applied to the hull every tiny Boost/Reset/NoEngine
+/// PLATFORM drove as a Turbo (Summer 24 cp10, 2026-09-08: a Reset slope) —
+/// the gate ITEMS were already re-dressed through their prefab trigger entity
+/// (`special_collision_ids`). The modifier file is loaded under the pack's
+/// own spelling: the ref as given, else with Nadeo's space put back.
+pub fn modifier_collision_redress(store: &mut DataStore, refs: &[String]) -> Vec<(String, String, (u8, u8))> {
+    let mut out: Vec<(String, String, (u8, u8))> = Vec::new();
+    for r in refs {
+        let Some(base) = terrain_modifier_base(r) else { continue };
+        let folder = format!("{base}\\");
+        let spaced = format!("{base}.TerrainModifier .Gbx");
+        let Ok(model) = store.load_model(r).or_else(|_| store.load_model(&spaced)) else { continue };
+        let Some(skin_path) = model.externals.iter().map(|(_, p)| p.clone()).find(|p| p.to_ascii_lowercase().ends_with(".gameskin.gbx")) else { continue };
+        let Ok(bytes) = store.read(&skin_path) else { continue };
+        let Some(chunk) = tmmaps::header::game_skin_chunk(&bytes) else { continue };
+        let Some(skin) = tmmaps::header::GameSkin::decode(&chunk) else { continue };
+        for f in &skin.fids {
+            if !f.name.to_ascii_lowercase().starts_with("collision") {
+                continue;
+            }
+            let link = format!("{folder}{}", f.name);
+            let Some(ids) = crate::static_item::build::material_surface_ids(store, &format!("{link}.Material.Gbx")) else { continue };
+            let default = f.file.to_ascii_lowercase();
+            if !out.iter().any(|(d, _, _)| *d == default) {
+                out.push((default, link, ids));
+            }
+        }
+    }
+    out
 }
 
 /// The material links a block's modifier folder provides: for each
