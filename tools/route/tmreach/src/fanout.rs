@@ -35,6 +35,8 @@ pub struct StartRow {
     pub tick: usize,
     pub state: CarState,
     pub cps_before: u8,
+    /// The start row's effect byte (see `tmr::effects_byte`).
+    pub effects: u8,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -214,6 +216,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
         let next_gate: Option<usize> = human_order.iter().find(|wp| !credited[gates.gates.iter().position(|g| g.waypoint == **wp).unwrap()]).map(|wp| gates.gates.iter().position(|g| g.waypoint == *wp).unwrap());
         let start_id = start_id_base + this_index;
         let mut start_state: Option<CarState> = None;
+        let mut start_effects: u8 = 0xFF;
         let mut cells: std::collections::HashSet<(i64, i64, i64)> = Default::default();
         let mut fam_cells: std::collections::BTreeMap<&str, std::collections::HashSet<(i64, i64, i64)>> = Default::default();
         let flat_at = |label: i64| flat.iter().find(|r| r.time_ms == label);
@@ -258,6 +261,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                 // 2960 rollouts). A boundary violation would be metres.
                 if start_state.is_none() {
                     start_state = flat_at(start_label).map(|r| CarState::from_row(r, w.race_of(r), cps_before, false));
+                    start_effects = flat_at(start_label).map(|r| crate::tmr::effects_byte(&r.vis)).unwrap_or(0xFF);
                 }
                 if let Some(r) = rolled.rows.iter().find(|r| r.time_ms == start_label) {
                     if let Some(s0) = &start_state {
@@ -408,7 +412,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                 cells.insert(cell);
                 fam_cells.entry(m.shape.family()).or_default().insert(cell);
                 out.endpoints.push((start_id, m.id, h as u16, end.pos));
-                out.records.push(Record { start_id, macro_id: m.id, horizon_ticks: h as u16, outcome, end, gate_tick, path_len_m: path, min_speed: vmin, max_speed: vmax });
+                out.records.push(Record { start_id, macro_id: m.id, horizon_ticks: h as u16, outcome, end, gate_tick, path_len_m: path, min_speed: vmin, max_speed: vmax, effects: crate::tmr::effects_byte(&end_row.vis) });
                 out.paths.push(crate::tmr::path4(win_eff, &|r| w.race_of(r)));
             }
         }
@@ -416,7 +420,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
             out.log.push(format!("  start {start_id}: no rollout produced the start row; skipped"));
             continue;
         };
-        out.starts.push(StartRow { start_id, ghost_md5: tel.md5.clone(), tick: f, state: st, cps_before });
+        out.starts.push(StartRow { start_id, ghost_md5: tel.md5.clone(), tick: f, state: st, cps_before, effects: start_effects });
         out.stats.distinct_cells.push(cells.len());
         for (fam, c) in &fam_cells {
             out.stats.family_cells.entry(fam.to_string()).or_default().push(c.len());

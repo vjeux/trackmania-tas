@@ -137,6 +137,20 @@ pub struct Record {
     pub path_len_m: f32,
     pub min_speed: f32,
     pub max_speed: f32,
+    /// The END state's active EFFECT byte, stored in the CarState's last byte (record offset 12 + 99):
+    /// bit 7 set = valid; bits 0-1 reactor boost level (0 none, 1, 2); bits 2-3 reactor type (0 none,
+    /// 1 down, 2 up); bit 4 reactor ground mode; bit 5 turbo active. 0xFF = vis unknown; 0x00 = a
+    /// record written before 2026-09-08 (the byte was padding).
+    pub effects: u8,
+}
+
+/// The effect byte from the engine's vis state (reactor from CSceneVehicleVisState +0x174/+0x178,
+/// the INPUT arm's EFFECTS.md; turbo from flags bit 24).
+pub fn effects_byte(v: &forkoracle::layout::Vis) -> u8 {
+    if !v.known || v.reactor_lvl == u8::MAX {
+        return 0xFF;
+    }
+    0x80 | (v.reactor_lvl & 3) | ((v.reactor_type & 3) << 2) | ((v.reactor_ground_mode as u8) << 4) | ((v.is_turbo as u8) << 5)
 }
 
 impl Record {
@@ -148,6 +162,7 @@ impl Record {
         o.push(self.outcome);
         o.extend_from_slice(&[0u8; 3]);
         self.end.write(o);
+        o[start + 12 + 99] = self.effects;
         for g in &self.gate_tick {
             o.extend_from_slice(&g.to_le_bytes());
         }
@@ -175,6 +190,7 @@ impl Record {
             path_len_m: f(t),
             min_speed: f(t + 4),
             max_speed: f(t + 8),
+            effects: b[12 + 99],
         }
     }
 }
