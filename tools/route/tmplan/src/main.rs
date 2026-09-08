@@ -706,7 +706,7 @@ fn cmd_road_centreline(args: &[String]) {
         let mut n_ex = 0usize;
         for k in 0..surf.graph.len() {
             let w = surf.graph.world(&surf.grid, k);
-            if boxes.iter().any(|b| w[0] >= b[0] && w[0] <= b[2] && w[2] >= b[1] && w[2] <= b[3]) && surf.graph.node_road[k] { surf.graph.node_road[k] = false; n_ex += 1; }
+            if boxes.iter().any(|b| w[0] >= b[0] && w[0] <= b[2] && w[2] >= b[1] && w[2] <= b[3]) && surf.graph.node_road[k] { surf.graph.node_road[k] = false; surf.graph.node_prime[k] = false; n_ex += 1; }
         }
         eprintln!("  exclusions: {} boxes, {n_ex} road nodes turned off", boxes.len());
     }
