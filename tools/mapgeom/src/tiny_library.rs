@@ -1457,15 +1457,18 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     } else {
         Default::default()
     };
-    // pillars count as occupants for the full-free rule (a StructurePillar's
-    // cell held Summer 16's PlatformLoopStartFCRight, which the author drove
-    // through; a DecoWallBasePillar is a solid column)
+    // pillars are NOT occupants: a DecoWallBasePillar / WaterWallPillar is a
+    // hollow shell of its own VFC wall pieces (no prefab of its own), so a
+    // neighbour's wall recorded in a pillar cell is seen — Summer 20 cp3's
+    // pool rim is the deco platform's `DecoWallSlopeBaseVFCRight` standing in
+    // the pillar cell (37,9,14), drawn by the game (dropped, the pool stands
+    // open). The count is printed for the record.
     let mut pillar_cells: std::collections::HashSet<[u8; 3]> = std::collections::HashSet::new();
     if full_free_rule {
         for b in source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0 && b.flags & crate::blockmap::FLAG_PILLAR != 0) {
             pillar_cells.insert(b.file_cell);
         }
-        println!("  filler rule fullfree: {} full-free clip kinds ({}); {} covered cells, {} pillar cells", full_free_clips.len(), { let mut v: Vec<&String> = full_free_clips.iter().collect(); v.sort(); v.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ") }, footprint_cells.len(), pillar_cells.len());
+        println!("  filler rule fullfree: {} full-free clip kinds ({}); {} covered cells ({} pillar cells, not occupants)", full_free_clips.len(), { let mut v: Vec<&String> = full_free_clips.iter().collect(); v.sort(); v.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ") }, footprint_cells.len(), pillar_cells.len());
     }
     // `accepted` (probe, 2026-09-08): the occupant decides. For every
     // covered cell, the clip lists the occupying UNIT hangs on each world
@@ -1479,7 +1482,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // fall out of it. Pillars count as occupants here: a DecoWallBasePillar
     // lists DecoWallBaseVFC on its four sides.
     let mut cell_faces: std::collections::HashMap<[u8; 3], Vec<(String, [Vec<String>; 6])>> = std::collections::HashMap::new();
-    if vfc_rules.iter().any(|r| r == "accepted") {
+    if vfc_rules.iter().any(|r| r == "accepted") || full_free_rule {
         let stem = |p: &str| -> String { p.rsplit('\\').next().unwrap_or(p).split('.').next().unwrap_or("").to_ascii_lowercase() };
         for b in source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0 && !tile_zones.contains(&b.name)) {
             let Some(path) = idx.path_for(&b.name) else { continue };
@@ -1605,8 +1608,23 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         if vfc_rules.iter().any(|r| r == "covered") && footprint_cells.contains(&b.file_cell) && plain_clips.contains(&b.name) {
             return Some("plain clip in a block's footprint");
         }
-        if full_free_rule && (footprint_cells.contains(&b.file_cell) || pillar_cells.contains(&b.file_cell)) && !full_free_clips.contains(&b.name) {
-            return Some("not a full-free clip, in a covered cell");
+        if full_free_rule && footprint_cells.contains(&b.file_cell) && !full_free_clips.contains(&b.name) {
+            // …unless the occupant's own clip list on the shared face NAMES
+            // this clip: Summer 20's pool (WaterGrassCornerOut) lists
+            // DecoPlatformFCSmall on its sides, and the deco platform's
+            // skirt recorded in the pool's cell is the pool rim the original
+            // shows (dropped, the pool stands open). An exact name only — the
+            // clip-group / vertical-group connection of the `accepted` probe
+            // kept the plastic ramp's DecoWallSlope2StartVFC in the
+            // DecoPlatformSlopeBase cell, which the game hides.
+            let named = cell_faces.get(&b.file_cell).map(|occupants| {
+                let me = b.name.to_ascii_lowercase();
+                let face = ((b.dir & 3) as usize + 2) % 4;
+                occupants.iter().any(|(_, faces)| faces[face].iter().any(|c| *c == me))
+            }).unwrap_or(false);
+            if !named {
+                return Some("not a full-free clip, in a covered cell");
+            }
         }
         None
     };
