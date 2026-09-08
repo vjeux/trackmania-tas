@@ -203,6 +203,9 @@ pub fn cmd_census(args: &[String]) {
         n += 1;
         nfree += 1;
         let c = it.coords();
+        // the flags column carries the placement's u16 flags: the variant
+        // index is its high byte (`ItemRec::variant`) — `Show` on 02 is one
+        // model in several variants, and only one of them is the fogger
         println!(
             "I\t{}\t{}\t{}\t{}\t{}\t{:08X}\tITEM\t{:.3}\t{:.3}\t{:.3}\t{:.4}\t{:.4}\t{:.4}\t{}",
             e.id,
@@ -210,7 +213,7 @@ pub fn cmd_census(args: &[String]) {
             c.0,
             c.1,
             c.2,
-            0,
+            it.flags,
             e.pos[0],
             e.pos[1],
             e.pos[2],
