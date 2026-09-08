@@ -173,6 +173,18 @@ impl Grid {
                 let a = verts[t[0] as usize];
                 let b = verts[t[1] as usize];
                 let c = verts[t[2] as usize];
+                // a near-vertical face (|n.y| < 0.35, steeper than 70°) is a wall, not a surface the car stands on: the
+                // side of a deck rasterized as heights made a fake ramp down to the road below (Argentina 2026)
+                {
+                    let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                    let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                    let ny = e1[2] * e2[0] - e1[0] * e2[2];
+                    let nl = ((e1[1] * e2[2] - e1[2] * e2[1]).powi(2) + ny * ny + (e1[0] * e2[1] - e1[1] * e2[0]).powi(2)).sqrt();
+                    let wall_ny: f32 = std::env::var("TMPLAN_WALL_NY").ok().and_then(|s| s.parse().ok()).unwrap_or(0.35);
+                    if nl > 1e-9 && ny.abs() / nl < wall_ny {
+                        continue;
+                    }
+                }
                 let minx = a[0].min(b[0]).min(c[0]);
                 let maxx = a[0].max(b[0]).max(c[0]);
                 let minz = a[2].min(b[2]).min(c[2]);
@@ -772,7 +784,7 @@ impl Graph {
                 let step = if raw & DIAG != 0 { CELL * std::f32::consts::SQRT_2 } else { CELL };
                 // vertical continuity: a road follows its own slope (≤ 45°); a step down of more than the cell size is
                 // a fall off the deck onto whatever lies below (Argentina 2026's start deck, 16 m above a road)
-                if (self.node_y[v] - self.node_y[u]).abs() > 1.5 * step {
+                if (self.node_y[v] - self.node_y[u]).abs() > 2.5 * step {
                     continue;
                 }
                 let nd = d + if self.node_road[v] { step } else { 5.0 * step };
