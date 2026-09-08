@@ -728,6 +728,43 @@ fn cmd_road_centreline(args: &[String]) {
         tmroute::provenance("tmplan road-centreline"), if note.is_empty() { String::new() } else { format!("; {note}") }
     );
     io::write_atomic(Path::new(&out), js.as_bytes()).unwrap_or_else(|e| die(&e));
+    // --route-out: the same centreline as a route file (TrackGeom + Leg per gate; a gap leg is ConnectionClass::Unknown
+    // with s_start == s_end — the consumer bridges it), source "router-road-centreline"
+    if let Some(ro) = flag(args, "--route-out") {
+        use tmroute::types::*;
+        let mut tg_gates = Vec::new();
+        let mut legs = Vec::new();
+        let mut gate_order = Vec::new();
+        for (li, w) in seq.windows(2).enumerate() {
+            let to = w[1];
+            let grp_id = nodes.groups[to];
+            let (centre, _axis, half) = gates.group_geometry(grp_id).unwrap();
+            let rep = gates.group_rep(grp_id).unwrap();
+            let seg = &segs[li];
+            let gap = seg.contains("\"gap\": true");
+            let i1: usize = seg.split("\"i1\": ").nth(1).and_then(|x| x.split(',').next()).and_then(|x| x.trim().parse().ok()).unwrap_or(0);
+            let i0: usize = seg.split("\"i0\": ").nth(1).and_then(|x| x.split(',').next()).and_then(|x| x.trim().parse().ok()).unwrap_or(0);
+            let heading = if i1 >= 1 && i1 < pts.len() && i1 > i0 { let a = pts[i1 - 1]; let b = pts[i1]; let l = ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt().max(1e-3); [(b[0] - a[0]) / l, 0.0, (b[2] - a[2]) / l] } else { rep.normal };
+            let kind = if li + 1 == seq.len() - 1 { GateKind::Finish } else { match rep.kind { tmroute::gates::WpKind::Finish => GateKind::Finish, tmroute::gates::WpKind::Multilap => GateKind::Multilap, _ => GateKind::Checkpoint } };
+            tg_gates.push(Gate { kind, centre, normal: heading, half_width: half, s: s[i1], map_waypoint: rep.waypoint });
+            legs.push(Leg { gate_idx: li as u32, map_waypoint: rep.waypoint, s_start: s[i0], s_end: s[i1], connection: if gap { ConnectionClass::Unknown } else { ConnectionClass::Road }, arrival_speed: [5.0, 80.0], arrival_heading: heading, arrival_heading_tol: 0.5, arrival_height: [centre[1] - rep.half_height - 1.0, centre[1] - rep.half_height + 3.0], p_reach: if gap { 0.0 } else { 1.0 }, expected_ms: -1, evidence: LegEvidence::Predicted });
+            gate_order.push(rep.waypoint);
+        }
+        let tg = TrackGeom {
+            geom_version: GEOM_VERSION,
+            map_uid: gates.map_uid.clone(),
+            pts: pts.clone(),
+            half_width: hw.clone(),
+            s: s.clone(),
+            gates: tg_gates,
+            spawn: gates.spawn.pos,
+            spawn_yaw: gates.spawn.yaw,
+            source: "router-road-centreline".into(),
+            legs: Some(legs),
+            route: Some(RouteMeta { route_version: ROUTE_VERSION, source: "router-road-centreline".into(), rank: 0, predicted_ms: -1, status: RouteStatus::Hypothesis, gate_order, produced_by: format!("{}{}; road-following centreline, {gaps} gap legs (ConnectionClass::Unknown, s_start == s_end)", tmroute::provenance("tmplan road-centreline"), if note.is_empty() { String::new() } else { format!("; {note}") }) }),
+        };
+        io::write_route(Path::new(&ro), &tg).unwrap_or_else(|e| die(&e));
+    }
     let on_road = pts.iter().enumerate().filter(|(k, p)| { let d = if *k + 1 < pts.len() { [pts[k + 1][0] - p[0], pts[k + 1][2] - p[2]] } else { [0.0, 1.0] }; surf.road_span(**p, d, 24.0).is_some() }).count();
     println!("{}: {} pts, {:.0} m, {} segments, {gaps} gaps, on-road {:.1} % → {out}", gates.map_name, pts.len(), s.last().unwrap(), segs.len(), 100.0 * on_road as f32 / pts.len().max(1) as f32);
     fn grp(n: &Nodes, i: usize) -> String { if i == 0 { "\"spawn\"".into() } else { n.groups[i].to_string() } }
