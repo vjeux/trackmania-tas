@@ -577,7 +577,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let dg = ((end.x - g[0]).powi(2) + (2.0 * (end.y - g[1])).powi(2) + (end.z - g[2]).powi(2)).sqrt();
                 k_pref as f64 * 10_000.0 + s_prev + 0.5 * (1.0 - dg / 300.0).clamp(0.0, 1.0)
             } else {
-                let s_eff = if s > s_gate + 6.0 { s_gate - 20.0 } else { s };
+                // past the next gate without its credit: worth only the leg start (20 m before the gate
+                // ranked level with a legit approach; 20's lower deck under gate 3 sat there for 2 h)
+                let s_eff = if s > s_gate + 6.0 { s_prev + 10.0 } else { s };
                 k_pref as f64 * 10_000.0 + s_eff - 0.02 * lat_abs.min(20.0)
             };
             // on a gap leg the arc length says little: the cell is the 4 m x 4 m ground square there
@@ -646,7 +648,8 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         let k_pref = (0..track.n_groups).take_while(|i| mask & (1 << i) != 0).count();
         // the same cap as a rollout: past the next uncredited gate without its credit = off the route
         let s_gate_seed = track.gate_s.get(k_pref).copied().unwrap_or(f64::INFINITY);
-        let s_eff_seed = if s > s_gate_seed + 6.0 { s_gate_seed - 20.0 } else { s };
+        let s_prev_seed = if k_pref == 0 { 0.0 } else { track.gate_s.get(k_pref - 1).copied().unwrap_or(0.0) };
+        let s_eff_seed = if s > s_gate_seed + 6.0 { s_prev_seed + 10.0 } else { s };
         let seed = Entry { key: Key { cs: (s / 4.0).floor() as i32, cv: (speed(&end) / 5.0).floor() as i32, cy: (end.y / 3.0).floor() as i32, mask }, chain: recs, cps, mask, s, seg, progress: k_pref as f64 * 10_000.0 + s_eff_seed, visits: 0, end: end.clone(), macro_desc: vec![format!("seed chain {} ticks", recs_len)] };
         out.log.push(format!("seed from a {} tick chain: ({:.1}, {:.1}, {:.1}) v {:.1} cps {cps} mask {mask:#x} s {s:.1}", recs_len, end.x, end.y, end.z, speed(&end)));
         let from = w.floor(nh)?;
