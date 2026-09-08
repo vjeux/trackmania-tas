@@ -296,16 +296,17 @@ pub fn lineup_cmd(args: &[String]) {
         names.push(name);
         variants.push(v);
     }
-    // --place "x,y,z,yaw;x,y,z,yaw;…": one pose per item instead of the row
-    // (the play-mode collision test: pushers on four sides of the spawn)
-    let places: Vec<[f32; 4]> = cli::flag(args, "--place")
+    // --place "x,y,z,yaw[,pitch,roll];…": one pose per item instead of the row
+    // (the play-mode collision test: pushers on four sides of the spawn; a
+    // fogger hanging from a show rig is yaw −π/2, pitch −π — 2026-09-08)
+    let places: Vec<[f32; 6]> = cli::flag(args, "--place")
         .map(|s| {
             s.split(';')
                 .filter(|p| !p.is_empty())
                 .map(|p| {
-                    let v: Vec<f32> = p.split(',').map(|x| x.trim().parse().expect("--place x,y,z,yaw")).collect();
-                    assert_eq!(v.len(), 4, "--place wants x,y,z,yaw per item");
-                    [v[0], v[1], v[2], v[3]]
+                    let v: Vec<f32> = p.split(',').map(|x| x.trim().parse().expect("--place x,y,z,yaw[,pitch,roll]")).collect();
+                    assert!(v.len() == 4 || v.len() == 6, "--place wants x,y,z,yaw or x,y,z,yaw,pitch,roll per item");
+                    [v[0], v[1], v[2], v[3], v.get(4).copied().unwrap_or(0.0), v.get(5).copied().unwrap_or(0.0)]
                 })
                 .collect()
         })
@@ -359,9 +360,9 @@ pub fn lineup_cmd(args: &[String]) {
     for (k, name) in names.iter().enumerate() {
         let i = n + k;
         // --step X,Y,Z: the offset between two items (default pitch along +x)
-        let (pos, yaw) = match places.get(k) {
-            Some(p) => ([p[0], p[1], p[2]], p[3]),
-            None => ([at[0] + step[0] * k as f32, at[1] + step[1] * k as f32, at[2] + step[2] * k as f32], yaw),
+        let (pos, yaw, pitch, roll) = match places.get(k) {
+            Some(p) => ([p[0], p[1], p[2]], p[3], p[4], p[5]),
+            None => ([at[0] + step[0] * k as f32, at[1] + step[1] * k as f32, at[2] + step[2] * k as f32], yaw, 0.0, 0.0),
         };
         m.set_item_model(i, name);
         let author = embedded.iter().find(|(id, _, _)| id == name).map(|(_, a, _)| a.as_str()).unwrap_or("Nadeo");
@@ -371,7 +372,7 @@ pub fn lineup_cmd(args: &[String]) {
         // pitch/roll) come along, and the game puts the PIVOT at `pos` —
         // a donor pivot of a few metres turned every yawed pusher of the
         // play-mode tests 3-4 m sideways of the car (2026-09-07)
-        m.set_item_frame(i, [yaw, 0.0, 0.0], [0.0; 3]);
+        m.set_item_frame(i, [yaw, pitch, roll], [0.0; 3]);
         m.set_item_scale(i, scales.get(k).copied().unwrap_or(1.0));
         m.set_item_variant(i, variants.get(k).copied().unwrap_or(0));
         let color = colors.get(k).copied().unwrap_or(if k < n_stock { 0 } else { 1 });

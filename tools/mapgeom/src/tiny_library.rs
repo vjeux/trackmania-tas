@@ -196,7 +196,7 @@ pub fn stock_half_variant(model: &str, variant: u8) -> Option<&'static str> {
     // (static, no effect) as before.
     if std::env::var("TINY_FX_STOCK").as_deref() != Ok("0") {
         const FX: &[(&str, &str)] = &[
-            ("ShowFogger16M", "ShowFogger8M"),
+            ("ShowFogger16m", "ShowFogger8m"),
             ("ShowFoggerWithLight16m", "ShowFoggerWithLight8m"),
             ("Sparkler16m", "Sparkler8m"),
             ("ShowTorch", "ShowTorchSmall"),
@@ -213,7 +213,16 @@ pub fn stock_half_variant(model: &str, variant: u8) -> Option<&'static str> {
         // other variants bake as before; the placement's variant byte is
         // rewritten to 0 for the stand-in (`iv@` mapping row).
         if model == "Show" && variant == 28 {
-            return Some("ShowFogger8M");
+            return Some("ShowFogger8m");
+        }
+        // The maps' own 8 m sparklers (168 placements: 03 ×15, 06 ×25, 10 ×8,
+        // 19 ×29, 20 ×55, 21 ×28, 24 ×8) have no 4 m stock sibling. A/B knob
+        // (2026-09-08, this thread): TINY_FX_SPARK8=stock keeps them as the
+        // stock item — live sparks, at the FULL 8 m reach in a half-size
+        // world (the 0.5 m box is what every stock sparkler is anyway);
+        // unset/bake = the static half-size copy, no sparks (as before).
+        if model == "Sparkler8m" && std::env::var("TINY_FX_SPARK8").as_deref() == Ok("stock") {
+            return Some("Sparkler8m");
         }
     }
     None
@@ -1092,7 +1101,21 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // is treated like a half-size copy (scale 1, pivot halved).
         // (The gates have no such twin, see `stock_half_variant`.)
         if let Some(small) = stock_half_variant(model, *variant) {
-            if find_item_file(store, small).is_some() {
+            if let Some(logical) = find_item_file(store, small) {
+                // The placement must carry the item's OWN ident, case-exact: the
+                // pack stores `Stadium\Items\ShowFogger8M.Item.Gbx` whose header
+                // says `ShowFogger8m`, and the game resolves a stock ident by the
+                // exact string — a `ShowFogger8M` placement is silently DROPPED
+                // (tiny 02, 2026-09-08: four foggers gone, no dialog). Every
+                // stand-in name is read back from its file here.
+                let ident = store.read(&logical).ok().and_then(|b| tmmaps::header::item_ident_author(&b)).map(|(id, _)| id);
+                let small: &str = match ident.as_deref() {
+                    Some(id) if id != small => {
+                        eprintln!("  stock stand-in {small}: the item file's ident is `{id}` (pack path {logical}); the placement gets the ident");
+                        id
+                    }
+                    _ => small,
+                };
                 let key = (model.clone(), *variant, lskin.clone());
                 // a stand-in for the model as a whole is remembered for its
                 // later variants; one for a single variant (`Show` 28, the
@@ -1104,7 +1127,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 half_stock.insert(small.to_string());
                 let why = match small {
                     "Flag8m" => "its cloth waves under the game's own vertex tween",
-                    "ShowFogger8M" | "ShowFoggerWithLight8m" => "its smoke is the game's own particle system, at half reach",
+                    "ShowFogger8m" | "ShowFoggerWithLight8m" => "its smoke is the game's own particle system, at half reach",
+                    "Sparkler8m" if model == "Sparkler8m" => "kept as the stock item, its sparks are the game's own particle system at their full 8 m reach (no 4 m sibling exists)",
                     "Sparkler8m" => "its sparks are the game's own particle system, at half reach",
                     "ShowTorchSmall" => "its flame is the game's own particle system, on the small torch",
                     _ => "its screen keeps the live advertisement",

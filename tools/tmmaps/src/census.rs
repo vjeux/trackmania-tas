@@ -278,7 +278,7 @@ pub fn cmd_region(args: &[String]) {
     // would live in, for reading a layout off real placements. `skin` is the
     // decoded placement skin FileRef (flags bit 2), `-` without one.
     if crate::cli::has(args, "--raw") {
-        println!("id\tflags\tvariant\tyaw,pitch,roll\tpivot\tscale\tskin\ttail_hex");
+        println!("id\tmodel\tcoll\tauthor\tflags\tvariant\tyaw,pitch,roll\tpivot\tscale\tskin\ttail_hex");
         for e in found.iter().filter(|e| e.item) {
             let i: usize = e.id[1..].parse().unwrap();
             let rec = &m.items[i];
@@ -290,8 +290,8 @@ pub fn cmd_region(args: &[String]) {
                 None => "-".to_string(),
             };
             println!(
-                "{}\t{:#06x}\t{}\t{:.4},{:.4},{:.4}\t{:.3},{:.3},{:.3}\t{:.3}\t{}\t{}",
-                e.id, rec.flags, rec.variant(), rec.yaw, rec.pitch, rec.roll, rec.pivot[0], rec.pivot[1], rec.pivot[2], rec.scale, skin, rest
+                "{}\t{}\t{:#x}\t{}\t{:#06x}\t{}\t{:.4},{:.4},{:.4}\t{:.3},{:.3},{:.3}\t{:.3}\t{}\t{}",
+                e.id, rec.model, rec.collection_raw, rec.author.as_deref().unwrap_or("-"), rec.flags, rec.variant(), rec.yaw, rec.pitch, rec.roll, rec.pivot[0], rec.pivot[1], rec.pivot[2], rec.scale, skin, rest
             );
         }
     }
