@@ -415,13 +415,13 @@ const FOLLOW: &[(&str, bool, u8, f64)] = &[
     ("follow centreline (long lookahead), gas", true, 0, 1.5),
 ];
 
-fn yaw_of(r: &Row) -> f64 {
+pub fn yaw_of(r: &Row) -> f64 {
     let v = speed(r);
     let (fx, fz) = if v > 2.0 { (r.vx, r.vz) } else { let f = crate::gatecal::rotate(r, [0.0, 0.0, 1.0]); (f[0], f[2]) };
     fx.atan2(fz)
 }
 
-fn wrap(a: f64) -> f64 {
+pub fn wrap(a: f64) -> f64 {
     let mut a = a;
     while a > std::f64::consts::PI {
         a -= 2.0 * std::f64::consts::PI;
@@ -907,6 +907,63 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         out.rollouts += fan(w, nc, from, Some(&entry), &mut archive, &mut out, &mut rng, hh)?;
         w.release(nc);
         out.steps += 1;
+        // CLINIC viability check: a "good arrival" must also CONTINUE — replay the chain and follow the
+        // line for 3 s; a car that stalls (21: 20.6 m/s on a 32-degree ramp, 2 m below the deck) is
+        // not a leg done. Refused arrivals are penalised so the search moves on.
+        if cfg.clinic && out.leg_done.is_some() {
+            if let Some(f) = out.finished.clone() {
+                if (f.cps as usize) < track.n_groups {
+                    let (rows0, nf) = w.rollout_keep(branch::ROOT, &f.chain, root, f.chain.len() as u64)?;
+                    let start = rows0.last().cloned().unwrap_or_else(|| f.end.clone());
+                    let from_f = w.floor(nf)?;
+                    let mut cur = nf;
+                    let mut last = start.clone();
+                    let mut seg_h = f.seg;
+                    let mut ok = true;
+                    let mut done_t = 0usize;
+                    while done_t < 300 {
+                        let (st, sg, _s_now) = follow_steer(cfg, &last, seg_h, 1.0);
+                        seg_h = sg;
+                        let recs: Vec<Rec> = (0..10).map(|_| Rec { steer: st, gas: 1.0, brake: 0.0 }).collect();
+                        match w.forest.advance_or_end(cur, &recs, from_f + done_t, 10)? {
+                            branch::Advanced::Node(rs, c) => {
+                                if cur != nf {
+                                    w.release(cur);
+                                }
+                                cur = c;
+                                if let Some(x) = rs.last() {
+                                    last = x.clone();
+                                }
+                            }
+                            branch::Advanced::RunEnded(_) => break,
+                        }
+                        done_t += 10;
+                    }
+                    if cur != nf {
+                        w.release(cur);
+                    }
+                    w.release(nf);
+                    let (s_after, _, _, _) = track.project(pos(&last), seg_h, 200);
+                    let gained = s_after - f.s;
+                    if speed(&last) < 8.0 || gained < 25.0 {
+                        ok = false;
+                    }
+                    if !ok {
+                        out.log.push(format!("  clinic: arrival at s {:.1} refused — 3 s later v {:.1}, s +{:.1} m (stalled/fell); searching on", f.s, speed(&last), gained));
+                        if cfg.verbose {
+                            eprintln!("{}", out.log.last().unwrap());
+                        }
+                        out.finished = None;
+                        out.leg_done = None;
+                        if let Some(e) = archive.get_mut(&f.key) {
+                            e.visits += 8;
+                        }
+                    } else {
+                        out.log.push(format!("  clinic: arrival viable — 3 s later v {:.1}, s +{:.1} m", speed(&last), gained));
+                    }
+                }
+            }
+        }
         if out.best.as_ref().map(|b| b.progress).unwrap_or(0.0) > best_before + 0.5 { stagnant = 0 } else { stagnant += 1 }
         if cfg.verbose && last_report.elapsed().as_secs() >= 30 {
             last_report = std::time::Instant::now();

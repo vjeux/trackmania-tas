@@ -31,4 +31,5 @@ pub mod fitbox;
 pub mod explore;
 pub mod effects;
 pub mod lap;
+pub mod sweep;
 pub mod policy_src;
