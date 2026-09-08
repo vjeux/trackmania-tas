@@ -213,8 +213,9 @@ pub fn reach_m(v: f32, h: u16) -> f32 {
     let mut v = v.max(0.0);
     let mut s = 0.0f32;
     for _ in 0..h {
-        let a = if v < 50.0 { 20.0 } else { 5.0 };
-        v = (v + a * 0.01).min(140.0);
+        // a car already above the 140 m/s engine top (boosters, drops: 157–211 m/s on Before) keeps its speed
+        let a = if v < 50.0 { 20.0 } else if v < 140.0 { 5.0 } else { 0.0 };
+        v = (v + a * 0.01).min(v.max(140.0));
         s += v * 0.01;
     }
     s
@@ -362,7 +363,7 @@ impl<'a> Chained<'a> {
                                 // passed early, not braked for
                                 let t = (e.expected_ticks.round() as i32).clamp(10, *h as i32);
                                 let vy = (y - s.pos[1]) / (t as f32 * 0.01).max(0.1);
-                                let cand = ChainState { pos: target, speed: e.speed_mu.clamp(0.0, 150.0), dir: tdir, ticks: s.ticks + t, logp: s.logp + e.p_reach.ln(), steps: s.steps + 1, vy };
+                                let cand = ChainState { pos: target, speed: e.speed_mu.clamp(0.0, self.local.max_speed + 10.0), dir: tdir, ticks: s.ticks + t, logp: s.logp + e.p_reach.ln(), steps: s.steps + 1, vy };
                                 let mut p = path.clone();
                                 p.push(target);
                                 let score = cand.ticks as f32 * 10.0 - self.penalty_ms * cand.logp;

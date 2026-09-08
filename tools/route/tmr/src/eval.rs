@@ -115,7 +115,7 @@ fn xorshift(s: &mut u64) -> u64 {
 }
 
 /// `pred[i]` = raw head outputs of row i.
-pub fn evaluate(set: &Set, pred: &[Vec<f32>], seed: u64) -> Report {
+pub fn evaluate(set: &Set, pred: &[Vec<f32>], seed: u64, max_speed: f32) -> Report {
     let mut rng = seed.max(1) ^ 0xdead_beef_cafe_f00d;
     // group rows by record
     let mut by_rec: HashMap<u32, Vec<usize>> = HashMap::new();
@@ -176,7 +176,7 @@ pub fn evaluate(set: &Set, pred: &[Vec<f32>], seed: u64) -> Report {
     let mut brier = 0f64;
     let mut npos = 0usize;
     for i in 0..set.n {
-        let p = decode(&pred[i], set.lab(i)[L_DIST]).p_reach;
+        let p = decode(&pred[i], set.lab(i)[L_DIST], max_speed).p_reach;
         let y = set.lab(i)[L_Y] > 0.5;
         let b = ((p * 10.0) as usize).min(9);
         cal.bins[b].0 += 1;
@@ -228,7 +228,7 @@ pub fn evaluate(set: &Set, pred: &[Vec<f32>], seed: u64) -> Report {
             if l[L_Y] <= 0.5 || l[L_TICKS] < 0.0 || !filter(l) {
                 continue;
             }
-            let pred_ticks = decode(&pred[i], l[L_DIST]).expected_ticks as f64;
+            let pred_ticks = decode(&pred[i], l[L_DIST], max_speed).expected_ticks as f64;
             let e = (pred_ticks - l[L_TICKS] as f64) * 0.010;
             bias += e;
             errs.push(e.abs());
@@ -261,7 +261,7 @@ pub fn evaluate(set: &Set, pred: &[Vec<f32>], seed: u64) -> Report {
     for i in 0..set.n {
         let l = set.lab(i);
         if l[L_Y] > 0.5 && l[crate::data::L_BAND] > 0.5 {
-            let mu = (pred[i][crate::net::O_SPEED] as f64 * 100.0).clamp(0.0, 160.0);
+            let mu = (pred[i][crate::net::O_SPEED] as f64 * 100.0).clamp(0.0, max_speed as f64 + 10.0);
             let e = mu - l[crate::data::L_ASPEED] as f64;
             asp.0 += 1;
             asp.1 += e.abs();
