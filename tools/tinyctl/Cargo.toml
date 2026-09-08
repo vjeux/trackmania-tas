@@ -14,4 +14,5 @@ path = "src/main.rs"
 [dependencies]
 tmmaps = { path = "../tmmaps" }
 mapgeom = { path = "../mapgeom" }
+gbx = { path = "../gbx" }
 miniz_oxide = "0.9.1"

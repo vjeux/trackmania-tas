@@ -113,6 +113,7 @@ dependencies = [
 name = "tinyctl"
 version = "1.0.0"
 dependencies = [
+ "gbx",
  "mapgeom",
  "miniz_oxide",
  "tmmaps",

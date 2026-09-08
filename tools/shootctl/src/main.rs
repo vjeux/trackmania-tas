@@ -29,10 +29,16 @@ mod loadprof;
 mod lock;
 mod perfsum;
 mod playshots;
+mod render;
 mod shootset;
 
 use std::sync::OnceLock;
 static ADDR: OnceLock<String> = OnceLock::new();
+/// How long `setup` waits for the track editor after EditMap. 120 s was the
+/// hardcoded figure and it is right for the maps this pipeline grew up on; a
+/// 25 000-item tiny map on a busy box can take longer, and the caller that
+/// knows its map (`render --load-timeout`) sets it here.
+static LOAD_TIMEOUT_S: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(120);
 
 /// The first candidate address that accepts a connection, remembered for the
 /// rest of the run.
@@ -1042,6 +1048,13 @@ usage:
         DIST<TAB>H<TAB>V, radians) to DIR/cmp-<T><NAME>-<side>.png; side t
         maps the camera through the tiny anchor at half the distance.
         --detach returns at once; DIR/done-<side>.txt appears when finished.
+  shootctl render --map MAP --name NAME --outdir /mnt/c/DIR [--cam 2] [--load-timeout 120]
+                  [--quit] [--detach] GHOST...
+        one ghost video on the SHARED game: the render lock for the game part
+        only, the game left up (--quit closes it), ScreenShots/NAME.webm kept,
+        DIR/NAME-sheet.png (16 tiles over the clip) + DIR/NAME-dense.png (2 fps),
+        DIR/done-render.txt = `OK <webm> <bytes> <seconds>` | `FAILED …`.
+        --detach as above; the log is DIR/render.log.
   shootctl playshots --map MAP --outdir /mnt/c/DIR [--tag T] [--shots 4] [--every-ms 3000]
                     [--drive-ms MS [--drive-at-ms 13500]] (hold the accelerator: the car rolls off the start)
                     [--first-ms 4000] [--timeout S] [--detach]
@@ -1206,6 +1219,9 @@ usage:
         // PLAY-mode timed screenshots under the lock: does a moving item's
         // collision move (pushers around the spawn shove the car)? playshots.rs.
         "playshots" => playshots::run(&args[1..]),
+        // ONE ghost video on the SHARED game: lock held for the game part only,
+        // game left up, done file + contact sheets for a remote caller. render.rs.
+        "render" => render::run(&args[1..]),
         "loadprof" => loadprof::run(&args[1..]),
         // N loads of one map (or an A,B,A,B sequence), each classified from the object graph. loadloop.rs.
         "loadloop" => loadloop::run(&args[1..]),
@@ -1731,7 +1747,7 @@ fn setup(map: &str, ghosts: &[String], cam: u8) -> i32 {
         // only be asked once to_menu() has proved we left it.
         if let Err(e) = await_cond("ready", 60) { eprintln!("{e}"); return 1; }
         println!("editmap: {}", http_get("/editmap", 30).unwrap_or_default().trim());
-        match wait_ctx(1, 120) {
+        match wait_ctx(1, LOAD_TIMEOUT_S.load(std::sync::atomic::Ordering::Relaxed)) {
             Ok(t) => println!("  editor after {t:.1}s"),
             Err(e) => { eprintln!("{e}"); return 1; }
         }
