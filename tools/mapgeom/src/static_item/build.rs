@@ -2570,12 +2570,16 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                 }
                 // an effect system (the Show items' smoke / sparks): parsed
                 // with its particle models, inlined by `assemble` as an
-                // entity of the prefab form. OPT-IN (`TINY_FX=1`) until the
-                // in-game probe is done: a texture-less emitter crashed the
-                // client at load (2026-09-08), and every thread builds from main.
+                // entity of the prefab form — ON by default (TINY_FX=drop
+                // leaves them out). The 2026-09-08 load crash was a PROBE
+                // variant with the emitter's texture reference nulled (the
+                // engine instantiates the texture through a null class
+                // descriptor: exe+0x2EDBA8 walks the class chain of rdx=0);
+                // the writer never emits that form and item-check FX-01
+                // refuses it. The pack-path texture form loads.
                 Some(p) if p.to_ascii_lowercase().ends_with(".fxsys.gbx") => {
-                    if !std::env::var("TINY_FX").map(|v| v == "1" || v == "on").unwrap_or(false) {
-                        m.notes.push(format!("{path} entity {i}: external {p} skipped (effect system; TINY_FX=1 inlines it)"));
+                    if std::env::var("TINY_FX").map(|v| v == "drop" || v == "0").unwrap_or(false) {
+                        m.notes.push(format!("{path} entity {i}: external {p} dropped (TINY_FX=drop)"));
                     } else {
                         match add_fx_system(store, &p, &iso) {
                             Ok(part) => {
