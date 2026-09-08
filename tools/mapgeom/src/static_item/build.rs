@@ -2498,11 +2498,11 @@ pub fn add_fx_system(store: &mut crate::store::DataStore, path: &str, at: &Xform
                     continue;
                 }
                 if tex_mode == "file" {
-                    // the `.Texture.gbx` itself as a FILE next to the item (the pack's
-                    // bytes verbatim, its own `Image\X.dds` ref kept) + the image under
-                    // `Image/`; the sub-model names the file by its bare name
+                    // the `.Texture.gbx` as a FILE next to the item — REWRITTEN for a
+                    // user file (legacy chunks stripped, `particle::texture_file`) with
+                    // its image under `Image/`; the sub-model names it by bare name
                     let tname = tp.rsplit('\\').next().unwrap_or(&tp).to_string();
-                    let tbytes = store.read(&tp).map_err(|e| format!("{tp}: {e}"))?;
+                    let tbytes = super::particle::texture_file(&bitmap, &name);
                     textures.push((tp.clone(), bitmap.clone(), tname, tbytes));
                     textures.push((format!("{tp}#image"), bitmap, format!("Image/{name}"), bytes));
                     continue;

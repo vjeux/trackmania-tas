@@ -758,3 +758,51 @@ pub fn is_legacy_bitmap_chunk(c: &PChunk) -> bool {
     };
     id >> 12 == 0x09011 && !matches!(id & 0xFFF, 0x02B..=0x02E | 0x030 | 0x032..=0x03A)
 }
+
+/// A standalone `.Texture.gbx` for the archive: the pack's CPlugBitmap with
+/// the legacy chunks this exe cannot read from a user file stripped, its
+/// image named `Image\<image>` (folder `Image`, ancestor 0 — the pack file's
+/// own layout), as a version-6 uncompressed Gbx (`B U U R`, no header
+/// chunks, two nodes). The engine resolves an embedded item's reference-table
+/// entry against the item's own archive folder (PFxP1, 2026-09-08: a bare
+/// `.dds` there was loaded — and misread as a Gbx — so the lookup works; a
+/// proper Gbx is what it wants).
+pub fn texture_file(bitmap: &ParticleNode, image: &str) -> Vec<u8> {
+    let mut b = bitmap.clone();
+    b.chunks.retain(|c| !is_legacy_bitmap_chunk(c));
+    // every reference the bitmap keeps points at the image (node 1)
+    for r in b.refs_mut() {
+        if r.index >= 0 {
+            *r = super::NodeRef { index: 1, inline: None };
+        }
+    }
+    let mut body = Vec::new();
+    {
+        let mut lb = super::LookbackState::default();
+        lb.defined_nodes.insert(1);
+        let mut w = super::Wr { w: &mut body, lb: &mut lb };
+        b.write(&mut w);
+    }
+    let mut out = Vec::with_capacity(body.len() + 128);
+    out.extend_from_slice(b"GBX");
+    out.extend_from_slice(&6u16.to_le_bytes());
+    out.extend_from_slice(b"BUUR");
+    out.extend_from_slice(&C_BITMAP.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes()); // no header chunks
+    out.extend_from_slice(&2u32.to_le_bytes()); // nodes: the bitmap + the image
+    // reference table: 1 external, ancestor 0, one folder `Image`, the image in it
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes());
+    out.extend_from_slice(&5u32.to_le_bytes());
+    out.extend_from_slice(b"Image");
+    out.extend_from_slice(&0u32.to_le_bytes()); // no subfolders
+    out.extend_from_slice(&1u32.to_le_bytes()); // flags: a file name follows
+    out.extend_from_slice(&(image.len() as u32).to_le_bytes());
+    out.extend_from_slice(image.as_bytes());
+    out.extend_from_slice(&1u32.to_le_bytes()); // node index
+    out.extend_from_slice(&0u32.to_le_bytes()); // use file
+    out.extend_from_slice(&1u32.to_le_bytes()); // folder 1 = Image
+    out.extend_from_slice(&body);
+    out
+}

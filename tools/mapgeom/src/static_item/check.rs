@@ -206,7 +206,11 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                                         // misreading path and crashed the client too (FxF, LogCrash
                                         // 2EDBA8 again, 2026-09-08 06:11Z): the pack path is the one form
                                         (ti, false) => match externals.iter().find(|(k, _)| *k as i32 == ti) {
-                                            Some((_, p)) if !p.contains('\\') || p.starts_with("..") => problems.push(format!("entity {i}: emitter {:?} sub-model {k}: texture {p:?} is not a pack path (FX-01: a texture FILE in the archive is misread by the engine)", em.name.as_str().unwrap_or(""))),
+                                            // the engine loads the entry as a Gbx NODE: a `.dds` there is misread
+                                            // and crashes the client (PFxP1, 2026-09-08 07:12Z); a `.Texture.gbx`
+                                            // is fine as a pack path or as a bare archive name (the rewritten file)
+                                            Some((_, p)) if p.to_ascii_lowercase().ends_with(".dds") => problems.push(format!("entity {i}: emitter {:?} sub-model {k}: texture {p:?} is a DDS (FX-01: the engine loads the entry as a Gbx node and crashes on an image)", em.name.as_str().unwrap_or(""))),
+                                            Some((_, p)) if p.starts_with("..") => problems.push(format!("entity {i}: emitter {:?} sub-model {k}: texture {p:?} climbs out of the archive (FX-01)", em.name.as_str().unwrap_or(""))),
                                             Some(_) => {}
                                             None => problems.push(format!("entity {i}: emitter {:?} sub-model {k}: texture node {ti} is neither inline nor in the reference table", em.name.as_str().unwrap_or(""))),
                                         },
