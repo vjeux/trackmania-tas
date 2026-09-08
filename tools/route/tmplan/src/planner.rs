@@ -15,7 +15,13 @@ pub struct Plan {
     pub total_ms: i32,
     pub p_reach: f32,
     pub score: f32,
+    /// The beam hit its time budget and this plan is the greedy completion of the best partial tour then —
+    /// a best-so-far answer, not the beam's (coordinator 2026-09-07: "beam-capped").
+    pub capped: bool,
 }
+
+/// Wall-clock budget for one beam search (seconds); set by the CLI, 0 = none.
+pub static BEAM_BUDGET_S: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(600);
 
 #[derive(Clone)]
 struct Partial {
@@ -44,8 +50,42 @@ pub fn beam_from(nodes: &Nodes, est: &dyn EdgeEstimator, width: usize, top_k: us
     let n_cp = nodes.n_cp;
     assert!(n_cp <= 60, "beam mask is u64");
     let full = if n_cp == 0 { 0 } else { (1u64 << n_cp) - 1 };
+    // width scales with the node count: 4000 is for ≤ 10 groups (a 25-group map at 4000 × 25 successors per layer
+    // spent > 15 min in the beam); floor 500
+    let width = if n_cp > 10 { (width * 10 / n_cp).max(500) } else { width };
+    let budget = BEAM_BUDGET_S.load(std::sync::atomic::Ordering::Relaxed);
+    let t0 = std::time::Instant::now();
+    let mut capped = false;
     let mut frontier = vec![Partial { mask: 0, at: start, bucket: start_bucket, visit: vec![start], edges: vec![], ms: 0, logp: 0.0 }];
     for _ in 0..n_cp {
+        if budget > 0 && t0.elapsed().as_secs() > budget {
+            // out of time: complete the best partials GREEDILY (best-scoring next edge each step) and mark the result
+            capped = true;
+            frontier.truncate(top_k.max(1));
+            for p in frontier.iter_mut() {
+                while p.mask != full {
+                    let prev = if p.visit.len() >= 2 { Some(p.visit[p.visit.len() - 2]) } else { None };
+                    let mut best: Option<(f32, usize, Edge)> = None;
+                    for cp in 0..n_cp {
+                        if p.mask & (1 << cp) != 0 { continue; }
+                        let e = est.estimate(p.bucket, prev, p.at, 1 + cp);
+                        if e.kind == EdgeKind::None || e.p_reach <= 0.0 { continue; }
+                        let s = e.expected_ms as f32 - PENALTY_MS * e.p_reach.ln();
+                        if best.as_ref().map_or(true, |b| s < b.0) { best = Some((s, cp, e)); }
+                    }
+                    let Some((_, cp, e)) = best else { break };
+                    p.mask |= 1 << cp;
+                    p.at = 1 + cp;
+                    p.bucket = e.arrival;
+                    p.visit.push(1 + cp);
+                    p.edges.push(e);
+                    p.ms += e.expected_ms;
+                    p.logp += e.p_reach.ln();
+                }
+            }
+            frontier.retain(|p| p.mask == full);
+            break;
+        }
         let mut next: Vec<Partial> = Vec::new();
         for p in &frontier {
             for cp in 0..n_cp {
@@ -99,7 +139,7 @@ pub fn beam_from(nodes: &Nodes, est: &dyn EdgeEstimator, width: usize, top_k: us
             edges.push(e);
             let ms = p.ms + e.expected_ms;
             let logp = p.logp + e.p_reach.ln();
-            plans.push(Plan { visit, edges, total_ms: ms, p_reach: logp.exp(), score: ms as f32 - PENALTY_MS * logp });
+            plans.push(Plan { visit, edges, total_ms: ms, p_reach: logp.exp(), score: ms as f32 - PENALTY_MS * logp, capped });
         }
     }
     plans.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap());
@@ -168,7 +208,7 @@ pub fn beam_laps(nodes: &Nodes, kinds: &[tmroute::gates::WpKind], laps: u32, est
                     edges.push(e);
                 }
             }
-            Plan { visit, edges, total_ms: ms, p_reach: logp.exp(), score: ms as f32 - PENALTY_MS * logp }
+            Plan { visit, edges, total_ms: ms, p_reach: logp.exp(), score: ms as f32 - PENALTY_MS * logp, capped: p1.capped }
         })
         .collect()
 }

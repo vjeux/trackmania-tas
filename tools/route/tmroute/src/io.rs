@@ -45,10 +45,10 @@ pub fn route_file_name(source: &str, rank: u32) -> String {
 }
 
 pub const INDEX_HEADER: &str =
-    "map_uid\tmap_name\tsource\trank\tstatus\tpredicted_ms\tcertified_ms\tgate_order\tfile";
+    "map_uid\tmap_name\tsource\trank\tstatus\tpredicted_ms\tcertified_ms\tgate_order\tfile\tsig";
 
 /// One index row for a route file.
-pub fn index_row(g: &TrackGeom, map_name: &str, file: &str) -> String {
+pub fn index_row(g: &TrackGeom, map_name: &str, file: &str, sig: &str) -> String {
     let (source, rank, pred, status, cert) = match &g.route {
         Some(r) => {
             let (st, cert) = match &r.status {
@@ -61,7 +61,7 @@ pub fn index_row(g: &TrackGeom, map_name: &str, file: &str) -> String {
     };
     let order: Vec<String> = g.gate_order().iter().map(|x| x.to_string()).collect();
     format!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         g.map_uid,
         map_name,
         source,
@@ -70,13 +70,26 @@ pub fn index_row(g: &TrackGeom, map_name: &str, file: &str) -> String {
         pred,
         cert,
         order.join(","),
-        file
+        file,
+        sig
     )
 }
 
 /// Rebuild `routes.tsv` from every `<root>/<uid>/route-*.json`. Map names come
 /// from `names` (uid → name) or the uid when unknown.
 pub fn rebuild_index(root: &Path, names: &dyn Fn(&str) -> String) -> Result<(usize, PathBuf), String> {
+    // INCREMENTAL: a route file whose (size, mtime) signature matches its row in the existing routes.tsv keeps
+    // that row without being read — a full re-read of 2 200 files over the bank mount took > 40 min (16:07Z).
+    let mut old: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    if let Ok(s) = std::fs::read_to_string(root.join("routes.tsv")) {
+        for l in s.lines().skip(1) {
+            let cols: Vec<&str> = l.split('\t').collect();
+            if cols.len() >= 10 {
+                old.insert(format!("{}|{}", cols[8], cols[9]), l.to_string());
+            }
+        }
+    }
+    let mut reused = 0usize;
     let mut rows = vec![INDEX_HEADER.to_string()];
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)
         .map_err(|e| format!("{}: {e}", root.display()))?
@@ -93,16 +106,24 @@ pub fn rebuild_index(root: &Path, names: &dyn Fn(&str) -> String) -> Result<(usi
             .collect();
         files.sort();
         for f in files {
-            let g = read_route(&f)?;
             let rel = format!(
                 "{}/{}",
                 d.file_name().unwrap().to_string_lossy(),
                 f.file_name().unwrap().to_string_lossy()
             );
-            rows.push(index_row(&g, &names(&g.map_uid), &rel));
+            let sig = std::fs::metadata(&f).ok().map(|m| format!("{}:{}", m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs()))).unwrap_or_default();
+            if let Some(row) = old.get(&format!("{rel}|{sig}")) {
+                rows.push(row.clone());
+                reused += 1;
+                n += 1;
+                continue;
+            }
+            let g = read_route(&f)?;
+            rows.push(index_row(&g, &names(&g.map_uid), &rel, &sig));
             n += 1;
         }
     }
+    eprintln!("index: {n} routes, {reused} rows reused unchanged");
     let out = root.join("routes.tsv");
     write_atomic(&out, (rows.join("\n") + "\n").as_bytes())?;
     Ok((n, out))

@@ -270,8 +270,20 @@ impl<'a> EdgeEstimator for Geometric<'a> {
 pub struct Hybrid<'a> {
     pub geo: &'a dyn EdgeEstimator,
     pub learned: &'a dyn EdgeEstimator,
-    /// Surface path length / chord above which the graph is not trusted (2.0: the F8 detours are 2.4–5×).
+    /// Surface path length / chord above which the graph is not trusted (4.0; hairpin roads on Spring 2026 - 17
+    /// reach 3×, the F8 detours 2.4–5×).
     pub detour_ratio: f32,
+    /// COST-implied speed (path length / the geometric estimator's own leg time) below which the graph path is a
+    /// penalised detour (off-road / decoration crossing): a road leg prices at ~100 m/s in cost units, Summer
+    /// 2026 - 04's two F8 detour legs at 20. Default 50.
+    pub detour_speed: f32,
+    /// The geometric estimator in its SPEED time model (real seconds) — only for comparing against R's real
+    /// seconds; cost-mode "seconds" are ~path/100 m/s and cannot be compared to a physical time.
+    pub geo_time: Option<&'a dyn EdgeEstimator>,
+    /// R overrides a connected non-detour leg when its chained p ≥ `override_p` AND its time is below
+    /// `override_frac` × the geometric SPEED-model time — a jump/drop the graph walks around (coordinator, 16:43Z).
+    pub override_p: f32,
+    pub override_frac: f32,
     /// Node positions (for the chord) and the surface path lengths.
     pub nodes: &'a Nodes,
     pub len: &'a [Vec<f32>],
@@ -291,8 +303,19 @@ impl<'a> EdgeEstimator for Hybrid<'a> {
     fn estimate(&self, bucket: StateBucket, prev: Option<usize>, from: usize, to: usize) -> Edge {
         let g = self.geo.estimate(bucket, prev, from, to);
         let has_path = self.len[from][to].is_finite() && g.kind == EdgeKind::Surface;
-        let detour = has_path && self.len[from][to] > self.detour_ratio * self.chord(from, to).max(20.0);
+        let implied = if g.expected_ms > 0 { self.len[from][to] / (g.expected_ms as f32 / 1000.0) } else { f32::INFINITY };
+        let detour = has_path && (self.len[from][to] > self.detour_ratio * self.chord(from, to).max(20.0) || implied < self.detour_speed);
         if has_path && !detour {
+            // the override: R confident AND much faster than the physical time along the graph path
+            if let Some(gt) = self.geo_time {
+                let r = self.learned.estimate(bucket, prev, from, to);
+                let t_geo = gt.estimate(bucket, prev, from, to).expected_ms;
+                if r.kind != EdgeKind::None && r.expected_ms > 0 && t_geo > 0 && r.p_reach >= self.override_p && (r.expected_ms as f32) < self.override_frac * t_geo as f32 {
+                    let (a, b) = self.counts.get();
+                    self.counts.set((a, b + 1));
+                    return Edge { kind: EdgeKind::Learned, ..r };
+                }
+            }
             let (a, b) = self.counts.get();
             self.counts.set((a + 1, b));
             return g;
@@ -309,7 +332,7 @@ impl<'a> EdgeEstimator for Hybrid<'a> {
         g
     }
     fn name(&self) -> String {
-        format!("hybrid(geo: {}, learned: {}, detour > {:.1}×)", self.geo.name(), self.learned.name(), self.detour_ratio)
+        format!("hybrid(geo: {}, learned: {}, detour > {:.1}× or cost-speed < {:.0})", self.geo.name(), self.learned.name(), self.detour_ratio, self.detour_speed)
     }
 }
 

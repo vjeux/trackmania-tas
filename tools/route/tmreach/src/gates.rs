@@ -217,11 +217,22 @@ pub struct Detector {
     /// Gates whose GEOM normal points AGAINST the humans' travel (measured at
     /// their crossings): the detector uses the negated normal for these.
     pub flipped: Vec<u32>,
+    /// Gates whose normal is REPLACED by the humans' mean travel direction at their credited
+    /// rows (unit, pointing along travel): a frame whose normal is wrong (a wall-mounted item
+    /// read as pitched 90°, Spring 2025 - 24 wp14) is refitted from the rows. Applied by every
+    /// loader with the flips (`MapGates::apply_flips`).
+    pub normals: Vec<(u32, [f64; 3])>,
 }
 
 impl Detector {
     pub fn trigger_for(&self, g: &Gate) -> Trigger {
-        self.per_model.iter().find(|(m, _)| *m == g.model).map(|(_, t)| *t).unwrap_or(self.default)
+        let key = model_key(g);
+        // a per-gate plane first (fitted where the model's gates do not share one), then the model's
+        let gate_key = format!("{key}@wp{}", g.waypoint);
+        if let Some((_, t)) = self.per_model.iter().find(|(m, _)| *m == gate_key) {
+            return *t;
+        }
+        self.per_model.iter().find(|(m, _)| *m == key).map(|(_, t)| *t).unwrap_or(self.default)
     }
 
     /// First row index at which the car is inside each gate's trigger, or -1;
@@ -311,7 +322,9 @@ impl Detector {
         for (i, (m, t)) in self.per_model.iter().enumerate() {
             s.push_str(&format!("    {{\"model\": {}, \"trigger\": {}}}{}\n", crate::json::quote(m), trig_json(t), if i + 1 < self.per_model.len() { "," } else { "" }));
         }
-        s.push_str("  ]\n}\n");
+        s.push_str("  ],\n  \"normals\": [");
+        s.push_str(&self.normals.iter().map(|(w, n)| format!("[{w}, {:.6}, {:.6}, {:.6}]", n[0], n[1], n[2])).collect::<Vec<_>>().join(", "));
+        s.push_str("]\n}\n");
         s
     }
 
@@ -331,11 +344,17 @@ impl Detector {
             per_model.push((e.get("model").and_then(|v| v.str()).ok_or("model")?.to_string(), trig(e.get("trigger").ok_or("trigger")?)?));
         }
         let flipped = j.get("flipped_waypoints").and_then(|v| v.arr()).map(|a| a.iter().filter_map(|x| x.f64()).map(|x| x as u32).collect()).unwrap_or_default();
+        let normals = j
+            .get("normals")
+            .and_then(|v| v.arr())
+            .map(|a| a.iter().filter_map(|e| { let q = e.arr()?; if q.len() == 4 { Some((q[0].f64()? as u32, [q[1].f64()?, q[2].f64()?, q[3].f64()?])) } else { None } }).collect())
+            .unwrap_or_default();
         Ok(Detector {
             per_model,
             default: trig(j.get("default").ok_or("default")?)?,
             provenance: j.get("provenance").and_then(|v| v.str()).unwrap_or("").to_string(),
             flipped,
+            normals,
         })
     }
 }
@@ -472,6 +491,13 @@ impl MapGates {
     /// Negate the normals of the detector's flipped gates (idempotent per load).
     pub fn apply_flips(&mut self, det: &Detector) {
         self.apply_flip_list(&det.flipped);
+        for (wp, n) in &det.normals {
+            for g in &mut self.gates {
+                if g.waypoint == *wp {
+                    g.normal = *n;
+                }
+            }
+        }
     }
 
     pub fn apply_flip_list(&mut self, flipped: &[u32]) {
@@ -494,4 +520,11 @@ impl MapGates {
         }
         out
     }
+}
+
+/// The detector's per-model key: a block and an ITEM of the same model do not
+/// share a plane (an item gate credits ~1.4 m before its anchor, a block 2.2 m
+/// before its centre — Fall 2025 - 12, GEOM 14:22Z).
+pub fn model_key(g: &Gate) -> String {
+    if g.from_item { format!("{}@item", g.model) } else { g.model.clone() }
 }

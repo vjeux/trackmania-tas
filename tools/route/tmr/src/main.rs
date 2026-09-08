@@ -621,6 +621,8 @@ fn cmd_plan(args: &[String]) {
     let est = tmr::estimator::REstimator { w, feat: &feat, gates, nodes, surf, h_max, h_min, keep: keep.clone(), p_floor: flag(args, "--p-floor").and_then(|s| s.parse().ok()).unwrap_or(0.02) };
     let width: usize = flag(args, "--beam").and_then(|s| s.parse().ok()).unwrap_or(4000);
     let top_k: usize = flag(args, "--top-k").and_then(|s| s.parse().ok()).unwrap_or(3);
+    // --beam-budget-s: wall-clock cap on the beam; past it the best partials are completed greedily (BEAM-CAPPED)
+    tmplan::planner::BEAM_BUDGET_S.store(flag(args, "--beam-budget-s").and_then(|s| s.parse().ok()).unwrap_or(600), std::sync::atomic::Ordering::Relaxed);
     if has(args, "--matrix") {
         println!("R edge matrix from rest (p_reach / expected s / h used), spawn = node 0:");
         for i in 0..nodes.pos.len() {
@@ -684,7 +686,8 @@ fn cmd_plan(args: &[String]) {
     // memoised: the beam asks the same (bucket, prev, from, to) thousands of times
     let chained_memo = chained.as_ref().map(|c| tmplan::estimator::Memo::new(c as &dyn EdgeEstimator));
     let chained_h_memo = chained_h.as_ref().map(|c| tmplan::estimator::Memo::new(c as &dyn EdgeEstimator));
-    let hybrid = chained_h_memo.as_ref().map(|c| tmplan::estimator::Hybrid { geo: &geo, learned: c, detour_ratio: flag(args, "--detour").and_then(|s| s.parse().ok()).unwrap_or(2.0), nodes, len: &len_m, counts: std::cell::Cell::new((0, 0)) });
+    let geo_speed = tmplan::estimator::Geometric { time_model: tmplan::estimator::TimeModel::Speed, d: &d_m, len: &len_m, nodes, flight: None, surface: Some(surf), dirs: Some(&dirs_m), drop: Some(&drop_m), drop_penalty: 0.0, specials: Some((&leg_specials, gates)) };
+    let hybrid = chained_h_memo.as_ref().map(|c| tmplan::estimator::Hybrid { geo: &geo, learned: c, geo_time: Some(&geo_speed), override_p: flag(args, "--override-p").and_then(|s| s.parse().ok()).unwrap_or(0.8), override_frac: flag(args, "--override-frac").and_then(|s| s.parse().ok()).unwrap_or(0.5), detour_ratio: flag(args, "--detour").and_then(|s| s.parse().ok()).unwrap_or(4.0), detour_speed: flag(args, "--detour-speed").and_then(|s| s.parse().ok()).unwrap_or(50.0), nodes, len: &len_m, counts: std::cell::Cell::new((0, 0)) });
     let est_dyn: &dyn EdgeEstimator = match (&hybrid, &chained_memo) {
         (Some(h), _) => h,
         (None, Some(c)) => c,
@@ -697,20 +700,43 @@ fn cmd_plan(args: &[String]) {
     if let Some(h) = &hybrid {
         let (ng, nr) = h.counts.get();
         println!("  hybrid pricing: {ng} edge queries geometric, {nr} learned");
+        // --diag: where geometry and R DISAGREE by > 2× on a leg (from rest), with the surface path behind it
+        if has(args, "--diag") {
+            println!("  disagreement (from rest; geo = cost-mode s, R = chained s/p; path len / chord / cost-speed):");
+            let n = nodes.pos.len();
+            for from in 0..n {
+                for to in 0..n {
+                    if from == to || (to == 0) { continue; }
+                    let b = StateBucket::of_speed(0.0);
+                    let g = h.geo.estimate(b, None, from, to);
+                    let r = h.learned.estimate(b, None, from, to);
+                    let len = len_m[from][to];
+                    let p = nodes.pos[from]; let q = nodes.pos[to];
+                    let chord = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+                    let gs = g.expected_ms as f32 / 1000.0; let rs = r.expected_ms as f32 / 1000.0;
+                    let ts = h.geo_time.map(|t| t.estimate(b, None, from, to).expected_ms as f32 / 1000.0).unwrap_or(f32::NAN);
+                    let ratio = if ts > 0.0 && rs > 0.0 { (ts / rs).max(rs / ts) } else { f32::INFINITY };
+                    if ratio > 2.0 || len.is_infinite() {
+                        let lab = |i: usize| -> String { if i == 0 { "spawn".into() } else { format!("g{}", nodes.groups[i]) } };
+                        println!("    {:>5} → {:<5}  geo cost {} speed {:.3}s {:?}  R {} p {:.2}  speed/R ratio {:.1}  path {:.0} m  chord {:.0} m  cost-speed {:.0}{}", lab(from), lab(to), if gs > 0.0 { format!("{gs:.3}") } else { "none".into() }, ts, g.kind, if rs > 0.0 { format!("{rs:.3}") } else { "none".into() }, r.p_reach, ratio, len, chord, if gs > 0.0 { len / gs } else { f32::NAN }, if rs > 0.0 && r.p_reach >= 0.8 && rs < 0.5 * ts { "  ← R OVERRIDES" } else { "" });
+                    }
+                }
+            }
+        }
     }
     for m in [&chained_memo, &chained_h_memo].into_iter().flatten() {
         println!("  memo: {} chain evaluations, {} cache hits", m.misses.get(), m.hits.get());
     }
-    let prov = provenance("plan");
+    let prov = match flag(args, "--note") { Some(n) => format!("{}; {n}", provenance("plan")), None => provenance("plan") };
     let out_dir = flag(args, "--out-dir");
     let (_d, _len, _drop, fields) = surf.distance_matrix_full(&nodes);
     for (k, p) in plans.iter().enumerate() {
         let (g, wp) = order_str(&nodes, &gates, &p.visit);
         let legs: Vec<String> = p.edges.iter().map(|e| format!("{:.2}@{}{}", e.p_reach, tmr::secs(e.expected_ms as i64), match e.kind { tmplan::estimator::EdgeKind::Learned => "R", tmplan::estimator::EdgeKind::Flight => "F", _ => "" })).collect();
-        println!("  rank {k}: predicted {}  P(reach) {:.3}  groups [{}]  waypoints [{}]  legs p@t [{}]", tmr::secs(p.total_ms as i64), p.p_reach, g, wp, legs.join(" "));
+        println!("  rank {k}: predicted {}  P(reach) {:.3}  groups [{}]  waypoints [{}]  legs p@t [{}]{}", tmr::secs(p.total_ms as i64), p.p_reach, g, wp, legs.join(" "), if p.capped { "  BEAM-CAPPED (greedy completion of the best partial at the time budget)" } else { "" });
         if let Some(dir) = &out_dir {
             let source = flag(args, "--source").unwrap_or_else(|| if hybrid_on { "router-plan-hyb".into() } else { "router-plan-r".into() });
-            let mut route = tmplan::export::export(gates, nodes, surf, &fields, p, k as u32, &est_dyn.name(), &prov);
+            let mut route = tmplan::export::export(gates, nodes, surf, &fields, p, k as u32, &est_dyn.name(), &if p.capped { format!("{prov}; BEAM-CAPPED (greedy completion at the time budget)") } else { prov.clone() });
             route.source = source.clone();
             if let Some(r) = route.route.as_mut() {
                 r.source = source.clone();

@@ -90,6 +90,16 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
                             r.vx = v[0];
                             r.vy = v[1];
                             r.vz = v[2];
+                            // attitude from the ghost's own last sample; the vis state (rpm, gear,
+                            // wheels) is UNKNOWN here -- the engine row at this label is whatever the
+                            // exiting child flushed or an extrapolated (frozen) one, run to run
+                            if let Some(s) = tel.dec.samples.iter().rev().find(|s| (s.time_ms as i64) <= te) {
+                                r.qw = s.qw as f64;
+                                r.qx = s.qx as f64;
+                                r.qy = s.qy as f64;
+                                r.qz = s.qz as f64;
+                            }
+                            r.vis = forkoracle::layout::Vis::UNKNOWN;
                             flat[i] = r;
                         } else {
                             out.log.push(format!("  finish leg: no telemetry at race {} -- engine row kept (may differ run to run)", crate::secs(want)));

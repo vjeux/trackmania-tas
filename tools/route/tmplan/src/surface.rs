@@ -54,7 +54,8 @@ impl Nodes {
 /// Item / free gates carry an absolute road-level position: look DOWN a little.
 /// Grid gates' anchor is `cell base + 2` (the road): look up into the cell too.
 fn window(from_item: bool) -> (f32, f32) {
-    if from_item { (-6.0, 0.5) } else { (-2.5, 7.0) }
+    // +2.5 above: the tiny converter's gate items sit 1 m under their own road surface
+    if from_item { (-6.0, 2.5) } else { (-2.5, 7.0) }
 }
 
 impl SurfaceModel {
@@ -98,7 +99,19 @@ impl SurfaceModel {
         }
 
         let mut nodes = Nodes::from_gates(gates);
-        let mut grid = Grid::build(if deco_grid { &full } else { &scene });
+        // the grid covers the TRACK (spawn + gates ± 40 % of their span, ≥ 400 m), not every placement on the map
+        let clip = {
+            let mut lo = [f32::INFINITY; 3];
+            let mut hi = [f32::NEG_INFINITY; 3];
+            for p in &nodes.pos { for a in 0..3 { lo[a] = lo[a].min(p[a]); hi[a] = hi[a].max(p[a]); } }
+            let m = [0usize, 2].iter().map(|&a| (hi[a] - lo[a]) * 0.4).fold(400.0f32, f32::max);
+            ([lo[0] - m, lo[1], lo[2] - m], [hi[0] + m, hi[1], hi[2] + m])
+        };
+        let span = (clip.1[0] - clip.0[0]).max(clip.1[2] - clip.0[2]);
+        if span > 2600.0 {
+            return Err(format!("track spans {span:.0} m — too large for the 2 m surface grid (NOSEDIVE class); no surface model"));
+        }
+        let mut grid = Grid::build_within(if deco_grid { &full } else { &scene }, Some(clip));
         if deco_grid {
             notes.push("route grid built from track + DECORATION (fallback; the track-only grid had no route)".into());
         }

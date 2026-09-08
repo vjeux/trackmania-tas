@@ -306,29 +306,102 @@ pub fn model_stats(runs: &[GhostRun], gates: &MapGates) -> Vec<(String, usize, f
 pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, Vec<String>) {
     // per model: (outside s, inside s) pairs, GEOM half_width, from_item, and the human crossings' |lat| max and up range
     let mut by: std::collections::BTreeMap<String, (Vec<(f64, f64)>, f64, bool, f64, f64, f64)> = Default::default();
+    // PHASE 1 -- per gate, in the GEOM frame: when no plane perpendicular to the gate's normal
+    // separates the rows before the credit from the credited rows by more than 0.3 m, the
+    // NORMAL is wrong (a wall-mounted item read as pitched 90°): replace it by the humans' mean
+    // travel direction at the credit and refit that gate alone (Spring 2025 - 24 wp14)
+    let pair_of = |c: &Crossing| match (c.p_step, c.p_step_prev) {
+        (Some(a), Some(b)) => Some((a, b)),
+        _ => c.pm.zip(c.pmm),
+    };
+    let mut per_gate_pairs: std::collections::BTreeMap<u32, Vec<([f64; 3], [f64; 3])>> = Default::default();
     for run in runs {
         for c in &run.crossings {
-            let g = gates.gate(c.gate_wp).unwrap();
-            // the engine's counter step row when present, else T-1/T-2 from the notice
-            let pair = match (c.p_step, c.p_step_prev) {
-                (Some(a), Some(b)) => Some((a, b)),
-                _ => c.pm.zip(c.pmm),
-            };
-            if let Some((pin, pout)) = pair {
-                let (s1, lat1, up1) = g.local(pin);
-                let s2 = g.local(pout).0;
-                let key = if std::env::var("TMREACH_FIT_PER_GATE").is_ok() { format!("{}@wp{}", g.model, g.waypoint) } else { g.model.clone() };
-                let e = by.entry(key).or_insert((Vec::new(), g.half_width, g.from_item, 0.0, f64::INFINITY, f64::NEG_INFINITY));
-                e.0.push((s2, s1));
-                e.3 = e.3.max(lat1.abs());
-                e.4 = e.4.min(up1);
-                e.5 = e.5.max(up1);
+            if let Some(p) = pair_of(c) {
+                per_gate_pairs.entry(c.gate_wp).or_default().push(p);
             }
         }
     }
+    let mut normals: Vec<(u32, [f64; 3])> = Vec::new();
+    let mut overridden: std::collections::BTreeMap<u32, crate::gates::Gate> = Default::default();
+    for (wp, pairs) in &per_gate_pairs {
+        let Some(g) = gates.gate(*wp) else { continue };
+        if pairs.len() < 3 {
+            continue;
+        }
+        let lo = pairs.iter().map(|(_, o)| g.local(*o).0).fold(f64::NEG_INFINITY, f64::max);
+        let hi = pairs.iter().map(|(i, _)| g.local(*i).0).fold(f64::INFINITY, f64::min);
+        if hi - lo >= -0.3 {
+            continue;
+        }
+        let mut t = [0.0f64; 3];
+        for (i, o) in pairs {
+            for k in 0..3 {
+                t[k] += i[k] - o[k];
+            }
+        }
+        let tn = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
+        if tn < 1e-6 {
+            continue;
+        }
+        let n_new = [t[0] / tn, t[1] / tn, t[2] / tn];
+        let mut g2 = g.clone();
+        g2.normal = n_new;
+        let lo2 = pairs.iter().map(|(_, o)| g2.local(*o).0).fold(f64::NEG_INFINITY, f64::max);
+        let hi2 = pairs.iter().map(|(i, _)| g2.local(*i).0).fold(f64::INFINITY, f64::min);
+        // only when the travel normal explains the rows BETTER (a wall-riding car credited
+        // mid-box is not a plane crossing in any frame: Spring 2025 - 24 wp14 got worse, -15.7 m)
+        if hi2 - lo2 > hi - lo + 0.05 {
+            normals.push((*wp, n_new));
+            overridden.insert(*wp, g2);
+            eprintln!("  wp{wp} {}: GEOM normal ({:.2}, {:.2}, {:.2}) inconsistent by {:.2} m; NORMAL REFITTED from the humans' travel -> ({:.3}, {:.3}, {:.3}), slack now {:+.3} m", g.model, g.normal[0], g.normal[1], g.normal[2], lo - hi, n_new[0], n_new[1], n_new[2], hi2 - lo2);
+        } else {
+            eprintln!("  wp{wp} {}: GEOM normal ({:.2}, {:.2}, {:.2}) inconsistent by {:.2} m and the humans' travel normal ({:.2}, {:.2}, {:.2}) is no better ({:+.2} m): not a plane crossing; frame kept", g.model, g.normal[0], g.normal[1], g.normal[2], lo - hi, n_new[0], n_new[1], n_new[2], hi2 - lo2);
+        }
+    }
+    for run in runs {
+        for c in &run.crossings {
+            let g0 = gates.gate(c.gate_wp).unwrap();
+            let g = overridden.get(&c.gate_wp).unwrap_or(g0);
+            // the engine's counter step row when present, else T-1/T-2 from the notice
+            let pair = pair_of(c);
+            if let Some((pin, pout)) = pair {
+                let (s1, lat1, up1) = g.local(pin);
+                let s2 = g.local(pout).0;
+                // collected under the model key AND the per-gate key: a model whose gates do not share a
+                // plane (GateCheckpointCenter32mv2 items: -1.1 on one gate, -1.7 on another, Spring
+                // 2025 - 24) gets per-gate planes where a gate has >= 3 credits
+                let mk = crate::gates::model_key(g);
+                for key in [mk.clone(), format!("{mk}@wp{}", g.waypoint)] {
+                    let e = by.entry(key).or_insert((Vec::new(), g.half_width, g.from_item, 0.0, f64::INFINITY, f64::NEG_INFINITY));
+                    e.0.push((s2, s1));
+                    e.3 = e.3.max(lat1.abs());
+                    e.4 = e.4.min(up1);
+                    e.5 = e.5.max(up1);
+                }
+            }
+        }
+    }
+    // models whose plane is inconsistent by more than 0.3 m: their gates get their own planes
+    let inconsistent: std::collections::BTreeSet<String> = by
+        .iter()
+        .filter(|(m, _)| !m.contains("@wp"))
+        .filter(|(m, (v, ..))| {
+            let lo = v.iter().map(|x| x.0).fold(f64::NEG_INFINITY, f64::max).max(oracle_refused_max_s(m));
+            let hi = v.iter().map(|x| x.1).fold(f64::INFINITY, f64::min);
+            hi - lo < -0.3
+        })
+        .map(|(m, _)| m.clone())
+        .collect();
     let mut per_model = Vec::new();
     let mut notes = Vec::new();
     for (m, (v, hw, item, lat_max, up_min, up_max)) in by {
+        if m.contains("@wp") {
+            let model = m.split("@wp").next().unwrap_or("");
+            if !(inconsistent.contains(model) && v.len() >= 3) {
+                continue;
+            }
+        }
         let lo = v.iter().map(|x| x.0).fold(f64::NEG_INFINITY, f64::max).max(oracle_refused_max_s(&m)); // max s(T-2) and oracle refusals: must be OUTSIDE
         let hi = v.iter().map(|x| x.1).fold(f64::INFINITY, f64::min); // min s(T-1): must be INSIDE
         // an INCONSISTENT model (no plane separates all outside from all inside rows) fires
@@ -338,7 +411,10 @@ pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, 
         let s_off = if hi <= lo { hi - 0.02 } else { 0.5 * (lo + hi) };
         // lateral: the model rule, widened to the humans' own crossings + 2 m; vertical:
         // the humans' up range widened by 3 m below and 6 m above (jumps), at least −6..+8
-        let lat_half = lateral_half_extent(&m, hw, item).max(lat_max + 2.0);
+        // widened to the humans' lateral range only when at least 3 humans support it: one credit
+        // at |lat| 9.5 on a 4 m gate is a misattribution (Spring 2026 - 20: an 8 m gate beside a
+        // 32 m gate of the same group), not evidence of a wider trigger
+        let lat_half = if v.len() >= 3 { lateral_half_extent(&m, hw, item).max(lat_max + 2.0) } else { lateral_half_extent(&m, hw, item) };
         let (up_lo, up_hi) = ((up_min - 3.0).min(-6.0), (up_max + 6.0).max(8.0));
         notes.push(format!("{m}: n {}  s(T-2) max {lo:+.3}  s(T-1) min {hi:+.3}  slack {:.3} m  -> s_off {s_off:+.3}{}; human |lat| max {lat_max:.2} -> lat_half {lat_half:.1}; up {up_min:+.2}..{up_max:+.2} -> {up_lo:+.1}..{up_hi:+.1}", v.len(), hi - lo, if hi <= lo { "  INCONSISTENT (plane 2 cm before the earliest credited row)" } else { "" }));
         per_model.push((m.clone(), Trigger { s_off, depth: 8.0, lat_half, up_lo, up_hi }));
@@ -349,6 +425,7 @@ pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, 
             default: Trigger { s_off: -2.0, depth: 8.0, lat_half: 10.0, up_lo: -6.0, up_hi: 8.0 },
             provenance: provenance.to_string(),
             flipped: Vec::new(),
+            normals,
         },
         notes,
     )
@@ -363,6 +440,7 @@ pub fn fit(runs: &[GhostRun], gates: &MapGates, provenance: &str) -> (Detector, 
 /// Unknown models: the GEOM half_width + 2 m, flagged in CONTROL.md until a
 /// control bounds them.
 pub fn lateral_half_extent(model: &str, geom_half_width: f64, _item: bool) -> f64 {
+    let model = model.split('@').next().unwrap_or(model);
     match model {
         "RoadTechCheckpoint" => 12.5,
         "RoadTechFinish" => 12.5,
@@ -379,7 +457,8 @@ pub fn lateral_half_extent(model: &str, geom_half_width: f64, _item: bool) -> f6
 ///   GateCheckpointLeft32m: refused at s −2.150 (lat +10.95, up −3.24; p00301 t1355 m29),
 ///   while a human at s(T−1) = −2.143 was credited → the plane is in (−2.150, −2.143].
 pub fn oracle_refused_max_s(model: &str) -> f64 {
-    match model {
+    match model.split('@').next().unwrap_or(model) {
+
         "GateCheckpointLeft32m" => -2.150,
         _ => f64::NEG_INFINITY,
     }

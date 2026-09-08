@@ -42,6 +42,9 @@ where
     for wi in 0..workers {
         let (queue, results, ghosts, f) = (queue.clone(), results.clone(), ghosts.clone(), f.clone());
         let (server, map, shim, root) = (server.clone(), map.clone(), shim.clone(), root.clone());
+        // STAGGERED starts: 40 servers booting in the same second is a boot storm (PROBE-EMPTY
+        // on 7 of 19 ghosts in one fan-out, Spring 2025 - 04, two campaigns on one box)
+        std::thread::sleep(std::time::Duration::from_millis(120));
         hs.push(std::thread::spawn(move || loop {
             let gi = match queue.lock().unwrap().pop_front() {
                 Some(g) => g,
@@ -55,6 +58,35 @@ where
     for h in hs {
         let _ = h.join();
     }
+    // a SECOND ROUND for the items that failed at worker start (probe/boot failures), run
+    // with at most 4 workers once the storm is over; a control failure is not retried
+    let retry: Vec<usize> = {
+        let res = results.lock().unwrap();
+        (0..n).filter(|i| matches!(&res[*i], Some(Err(e)) if e.contains("PROBE-EMPTY") || e.contains("probe failed") || e.contains("worker up") && e.contains("timed out"))).collect()
+    };
+    if !retry.is_empty() {
+        eprintln!("  second round for {} work item(s) whose worker failed to start", retry.len());
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        let queue2: Arc<Mutex<std::collections::VecDeque<usize>>> = Arc::new(Mutex::new(retry.iter().copied().collect()));
+        let mut hs2 = Vec::new();
+        for wi in 0..retry.len().min(4) {
+            let (queue, results, ghosts, f) = (queue2.clone(), results.clone(), ghosts.clone(), f.clone());
+            let (server, map, shim, root) = (server.clone(), map.clone(), shim.clone(), root.clone());
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            hs2.push(std::thread::spawn(move || loop {
+                let gi = match queue.lock().unwrap().pop_front() {
+                    Some(g) => g,
+                    None => break,
+                };
+                let work = root.join(format!("r{}", wi));
+                let r = one(&server, &map, &shim, &work, &ghosts[gi], verbose, gi, &*f);
+                results.lock().unwrap()[gi] = Some(r);
+            }));
+        }
+        for h in hs2 {
+            let _ = h.join();
+        }
+    }
     let mut out = results.lock().unwrap();
     out.drain(..).map(|r| r.unwrap_or_else(|| Err("worker panicked".into()))).collect()
 }
@@ -67,11 +99,17 @@ where
     // a worker start (server boot + car derivation) can fail transiently under load (Summer
     // 2026 - 01 p00041 under 30 workers + two campaigns: failed once, passed twice alone):
     // one retry after 2 s before the ghost is failed closed
-    let mut w = match Worker::start(server, map, shim, work, ghost, verbose) {
-        Ok(w) => w,
-        Err(e1) => {
-            std::thread::sleep(std::time::Duration::from_secs(2));
-            Worker::start(server, map, shim, work, ghost, verbose).map_err(|e2| format!("{e2} (first attempt: {e1})"))?
+    // (PROBE-EMPTY under many concurrent starts: the ENV arm sees ~1 in 40; two retries, 5 s apart)
+    let mut attempt = 0;
+    let mut w = loop {
+        match Worker::start(server, map, shim, work, ghost, verbose) {
+            Ok(w) => break w,
+            Err(e) if attempt < 2 && !e.contains("no dedicated server") => {
+                attempt += 1;
+                eprintln!("  worker start failed ({e}); retry {attempt} in 5 s");
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+            Err(e) => return Err(if attempt > 0 { format!("{e} (after {attempt} retries)") } else { e }),
         }
     };
     let r = f(gi, &mut w, &tel);
