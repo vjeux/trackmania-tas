@@ -334,6 +334,115 @@ pub fn species_siblings(name: &str) -> Vec<String> {
     out
 }
 
+
+/// The tree bake of `tiny-library --veget bake` (the default since
+/// 2026-09-08): every vegetation SPECIES the map places — the map's own
+/// vegetation items, the trees inside the prefabs, the cluster items' trees —
+/// becomes ONE half-size static item (`AV00000000.Item.Gbx`…, built by
+/// `static_item::build::add_veget_tree_model` from the pack's
+/// `.VegetTreeModel.Gbx`), placed at the source position × scale with the
+/// source yaw, exactly like a block. No stand-in species, no sink, no
+/// clearance drop: a half-size tree at a half-size position meets a road
+/// exactly when the original did (vjeux, 2026-09-08: "the trees look really
+/// weird at double the size, can we make a static model half the size?").
+/// Species under `TINY_TREE_BAKE_MIN_HEIGHT` metres (default 2: grass,
+/// flowers, the small bushes) keep the stock-item path — the game's own
+/// vegetation renderer draws thousands of those cheaply and their size
+/// hardly reads. `TINY_TREE_BAKE=0` turns the bake off (the old substitute
+/// path everywhere).
+struct TreeBaker {
+    enabled: bool,
+    min_height: f32,
+    /// species model path (lower-cased) -> the baked ident, or None when the
+    /// species stays a stock item (too small, or its bake failed)
+    baked: BTreeMap<String, Option<String>>,
+    /// baked ident -> (radius, height) in the SCALED frame, for the
+    /// clearance census
+    dims: BTreeMap<String, (f32, f32)>,
+    next: usize,
+    /// bytes of the items and their textures added to the library
+    item_bytes: usize,
+    texture_bytes: usize,
+}
+
+impl TreeBaker {
+    fn new(mode: &str) -> TreeBaker {
+        let enabled = mode == "bake" && std::env::var("TINY_TREE_BAKE").map(|v| v != "0").unwrap_or(true);
+        let min_height: f32 = std::env::var("TINY_TREE_BAKE_MIN_HEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(2.0);
+        TreeBaker { enabled, min_height, baked: BTreeMap::new(), dims: BTreeMap::new(), next: 0, item_bytes: 0, texture_bytes: 0 }
+    }
+
+    /// The baked item ident for a species model path (an `.Item.Gbx` of the
+    /// packs is followed to its model), building it on first sight.
+    #[allow(clippy::too_many_arguments)]
+    fn ident_for(&mut self, store: &mut DataStore, species: &str, scale: f32, collection: u32, files: &mut BTreeMap<String, Vec<u8>>, pictures: &mut BTreeMap<String, Vec<u8>>, outcomes: &mut Vec<Outcome>) -> Option<String> {
+        if !self.enabled {
+            return None;
+        }
+        let model_path = match crate::veget::tree_model_path(store, species) {
+            Ok(p) => p,
+            Err(e) => {
+                outcomes.push(Outcome { alias: String::new(), kind: "tree", source: species.to_string(), placements: 0, result: Err(format!("no VegetTreeModel: {e}")) });
+                return None;
+            }
+        };
+        let key = model_path.to_ascii_lowercase();
+        if let Some(v) = self.baked.get(&key) {
+            return v.clone();
+        }
+        let stem = model_path.rsplit('\\').next().unwrap_or(&model_path).trim_end_matches(".VegetTreeModel.Gbx").to_string();
+        let ident = format!("AV{:08}.Item.Gbx", self.next);
+        let result = crate::static_item::build::static_item_from_veget_report(store, &model_path, &ident, &ident, scale, collection);
+        let out = match result {
+            Ok((bytes, m, bake)) => {
+                if bake.height < self.min_height {
+                    outcomes.push(Outcome { alias: "-".into(), kind: "tree", source: stem.clone(), placements: 0, result: Ok(format!("{:.1} m tall: under TINY_TREE_BAKE_MIN_HEIGHT {:.1}, stays a stock item", bake.height, self.min_height)) });
+                    None
+                } else {
+                    self.next += 1;
+                    self.item_bytes += bytes.len();
+                    for (file, dds) in &m.pictures {
+                        let name = format!("Items/{file}");
+                        if !pictures.contains_key(&name) {
+                            self.texture_bytes += dds.len();
+                            pictures.insert(name, dds.clone());
+                        }
+                    }
+                    files.insert(format!("Items/{ident}"), bytes.clone());
+                    self.dims.insert(ident.clone(), (bake.radius * scale, bake.height * scale));
+                    outcomes.push(Outcome {
+                        alias: ident.clone(),
+                        kind: "tree",
+                        source: stem.clone(),
+                        placements: 0,
+                        result: Ok(format!(
+                            "{} bytes, {} visuals in {} levels {:?}, switch {:?} m (unscaled), {} materials, hull {} tris, {:.1} m tall r {:.1} -> {:.1} m; textures {}",
+                            bytes.len(),
+                            m.visuals.len(),
+                            bake.levels.len(),
+                            bake.levels,
+                            bake.switch,
+                            m.materials.len(),
+                            bake.hull_triangles,
+                            bake.height,
+                            bake.radius,
+                            bake.height * scale,
+                            bake.textures.iter().map(|(f, n)| format!("{f} {n} B")).collect::<Vec<_>>().join(", ")
+                        )),
+                    });
+                    Some(ident)
+                }
+            }
+            Err(e) => {
+                outcomes.push(Outcome { alias: String::new(), kind: "tree", source: stem.clone(), placements: 0, result: Err(format!("bake failed, stock stand-in kept: {e}")) });
+                None
+            }
+        };
+        self.baked.insert(key, out.clone());
+        out
+    }
+}
+
 /// Closed box mesh over the block's units (each 32 x 8 x 32 m in block
 /// space), scaled: the waypoint trigger, as the game triggers blocks on their
 /// whole unit volume.
@@ -533,6 +642,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut height_cache: BTreeMap<String, Option<f32>> = BTreeMap::new();
     let mut sink_map: BTreeMap<(String, u8, Option<String>), f32> = BTreeMap::new();
     let mut sunk_rows = 0usize;
+    // the tree bake (`--veget bake`, the default): species -> half-size item
+    let mut baker = TreeBaker::new(veget_mode);
+    let substitute = veget_mode == "substitute" || veget_mode == "bake";
+    let mut baked_tree_rows = 0usize;
     let ambient = source.ambient_zone().unwrap_or_default();
     for ((name, flags, modk), n) in &keys {
         if !wanted(name) {
@@ -774,10 +887,18 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 // scaled frame, yaw), the species one step smaller like the
                 // map's own vegetation. Only in `substitute` mode.
                 let mut re_emitted = 0usize;
-                if veget_mode == "substitute" {
+                if substitute {
                     for (p, iso) in &m.veget {
-                        let Some((orig, item)) = veget_item_pair(store, collection, p, &mut veget_cache) else { continue };
                         let yaw = (-iso[2]).atan2(iso[0]);
+                        // a baked species: its half-size item at the scaled position, no sink
+                        if let Some(tree) = baker.ident_for(store, p, scale, collection, &mut files, &mut pictures, &mut outcomes) {
+                            veget_rows.push_str(&format!("v@{ident}\t{tree}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\n", iso[9] * scale, iso[10] * scale, iso[11] * scale, yaw));
+                            veget_list.entry(ident.clone()).or_default().push((tree, [iso[9] * scale, iso[10] * scale, iso[11] * scale]));
+                            re_emitted += 1;
+                            baked_tree_rows += 1;
+                            continue;
+                        }
+                        let Some((orig, item)) = veget_item_pair(store, collection, p, &mut veget_cache) else { continue };
                         let sink = veget_sink(store, &orig, &item, scale, &mut height_cache);
                         if sink > 0.0 {
                             sunk_rows += 1;
@@ -963,11 +1084,18 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             // (`v@<model>` rows, keyed by the ITEM model name), each one step
             // smaller, at the item's position and yaw — Stadium's `Spring`
             // (384 in Summer 05) is 3-6 spring trees and a cypress.
-            Ok((_, m)) if !m.veget.is_empty() && veget_mode == "substitute" => {
+            Ok((_, m)) if !m.veget.is_empty() && substitute => {
                 let mut placed = 0usize;
                 for (p, iso) in &m.veget {
-                    let Some((orig, item)) = veget_item_pair(store, collection, p, &mut veget_cache) else { continue };
                     let yaw = (-iso[2]).atan2(iso[0]);
+                    if let Some(tree) = baker.ident_for(store, p, scale, collection, &mut files, &mut pictures, &mut outcomes) {
+                        veget_rows.push_str(&format!("v@{model}\t{tree}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\n", iso[9] * scale, iso[10] * scale, iso[11] * scale, yaw));
+                        veget_list.entry(model.clone()).or_default().push((tree, [iso[9] * scale, iso[10] * scale, iso[11] * scale]));
+                        placed += 1;
+                        baked_tree_rows += 1;
+                        continue;
+                    }
+                    let Some((orig, item)) = veget_item_pair(store, collection, p, &mut veget_cache) else { continue };
                     let sink = veget_sink(store, &orig, &item, scale, &mut height_cache);
                     if sink > 0.0 {
                         sunk_rows += 1;
@@ -981,12 +1109,22 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 outcomes.push(Outcome { alias: "-".into(), kind: "item", source: source_name, placements: *n, result: Ok(format!("vegetation cluster: {} of {} trees re-emitted as stock items per placement", placed, m.veget.len())) });
             }
             Ok((_, m)) => outcomes.push(Outcome { alias: String::new(), kind: "item", source: source_name, placements: *n, result: Err(format!("no visuals; notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | "))) }),
-            Err(e) if e.contains("procedural vegetation") => match veget_mode {
+            Err(e) if e.contains("procedural vegetation") => match if substitute { "substitute" } else { veget_mode } {
                 "substitute" => {
                     // the variant names the SPECIES (`…\PalmTreeBigB1.VegetTreeModel.Gbx`):
                     // the stock item of that species one size down; else the
                     // collection ladder for the item's own name
                     let species = e.split_once("procedural vegetation: ").and_then(|(_, rest)| rest.split(" (").next()).filter(|p| p.to_ascii_lowercase().ends_with(".vegettreemodel.gbx")).map(|s| s.to_string());
+                    // a baked species: the placement is re-pointed at its half-size item
+                    // (model_scale = scale like any embedded copy), no sink
+                    let species_or_item = species.clone().or_else(|| find_item_file(store, model));
+                    if let Some(tree) = species_or_item.as_deref().and_then(|p| baker.ident_for(store, p, scale, collection, &mut files, &mut pictures, &mut outcomes)) {
+                        remember(&tree);
+                        item_map.insert(key, tree.clone());
+                        baked_tree_rows += *n;
+                        outcomes.push(Outcome { alias: tree, kind: "item", source: source_name, placements: *n, result: Ok("vegetation: baked half-size (see the tree row)".into()) });
+                        continue;
+                    }
                     let by_species = species.as_deref().and_then(|p| veget_item_pair(store, collection, p, &mut veget_cache));
                     let by_name = || veget_substitute(collection, model).filter(|s| find_item_file(store, s).is_some()).map(|s| (model.clone(), s.to_string()));
                     match by_species.or_else(by_name) {
@@ -1138,7 +1276,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     if let Some(list) = veget_list.get(&model) {
                         let (s, c) = yaw.sin_cos();
                         for (k, (item, local)) in list.iter().enumerate() {
-                            let Some((radius, height)) = crate::tree_clear::species_dims(store, item, &mut dims_cache) else { continue };
+                            let Some((radius, height)) = baker.dims.get(item).copied().or_else(|| crate::tree_clear::species_dims(store, item, &mut dims_cache)) else { continue };
                             let pos = [origin[0] + local[0] * c + local[2] * s, origin[1] + local[1], origin[2] - local[0] * s + local[2] * c];
                             let row = if prefix == "b@" { format!("xvb@{}\t{k}", b.index) } else { format!("xv@{}\t{k}", b.index) };
                             trees.push(crate::tree_clear::Tree { row, species: item.clone(), pos, radius, height, owner: format!("{} {} #{k}", b.name, model), from: key.clone() });
@@ -1162,9 +1300,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     mapping.push_str(&format!("y@{}\t{:.3}\n", it.index, sink));
                     sunk_rows += 1;
                 }
-                // a stock tree standing in for the map's own vegetation item
-                if target != "-" && !target.ends_with(".Item.Gbx") {
-                    if let Some((radius, height)) = crate::tree_clear::species_dims(store, target, &mut dims_cache) {
+                // a stock tree standing in for the map's own vegetation item, or a baked one
+                if target != "-" && (!target.ends_with(".Item.Gbx") || baker.dims.contains_key(target)) {
+                    if let Some((radius, height)) = baker.dims.get(target).copied().or_else(|| crate::tree_clear::species_dims(store, target, &mut dims_cache)) {
                         let pos = [it.pos[0] * scale, it.pos[1] * scale - sink.unwrap_or(0.0), it.pos[2] * scale];
                         trees.push(crate::tree_clear::Tree { row: format!("xi@{}", it.index), species: target.clone(), pos, radius, height, owner: format!("item {} {}", it.index, it.model), from: format!("i@{}", it.index) });
                     }
@@ -1175,7 +1313,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                         let (s, c) = it.yaw.sin_cos();
                         let origin = [it.pos[0] * scale, it.pos[1] * scale, it.pos[2] * scale];
                         for (k, (item, local)) in list.iter().enumerate() {
-                            let Some((radius, height)) = crate::tree_clear::species_dims(store, item, &mut dims_cache) else { continue };
+                            let Some((radius, height)) = baker.dims.get(item).copied().or_else(|| crate::tree_clear::species_dims(store, item, &mut dims_cache)) else { continue };
                             let pos = [origin[0] + local[0] * c + local[2] * s, origin[1] + local[1], origin[2] - local[0] * s + local[2] * c];
                             trees.push(crate::tree_clear::Tree { row: format!("xvi@{}\t{k}", it.index), species: item.clone(), pos, radius, height, owner: format!("cluster item {} {} #{k}", it.index, it.model), from: format!("i@{}", it.index) });
                         }
@@ -1188,10 +1326,35 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     mapping.push_str(&veget_rows);
     // the verdicts: `xv@N\tK` / `xvb@N\tK` / `xvi@N\tK` / `xi@N` rows, one per dropped tree
     let verdict = crate::tree_clear::judge(&grid, &trees);
+    // A BAKED tree is judged for the census only: at half size in a half-size
+    // place it meets a deck exactly when the original did — the verdicts are
+    // printed, not written (TINY_TREE_CLEAR_BAKED=1 writes them too).
+    let drop_baked_trees = std::env::var("TINY_TREE_CLEAR_BAKED").map(|v| v == "1").unwrap_or(false);
+    let is_baked = |t: &crate::tree_clear::Tree| baker.dims.contains_key(&t.species);
+    let baked_dropped = verdict.dropped.iter().filter(|(t, _, _)| is_baked(t)).count();
+    let baked_tested = trees.iter().filter(|t| is_baked(t)).count();
     if std::env::var("TINY_TREE_CLEAR").map(|v| v != "0").unwrap_or(true) {
         for (t, _, _) in &verdict.dropped {
+            if is_baked(t) && !drop_baked_trees {
+                continue;
+            }
             mapping.push_str(&t.row);
             mapping.push('\n');
+        }
+    }
+    if baked_tested > 0 {
+        println!("  baked trees: {baked_tested} judged against the decks, {baked_dropped} would be dropped{}", if drop_baked_trees { " (TINY_TREE_CLEAR_BAKED=1: written)" } else { " (census only, none dropped)" });
+        if baked_dropped > 0 {
+            let mut by_species: BTreeMap<&str, usize> = BTreeMap::new();
+            for (t, _, _) in verdict.dropped.iter().filter(|(t, _, _)| is_baked(t)) {
+                *by_species.entry(t.species.as_str()).or_default() += 1;
+            }
+            println!("    baked by species: {}", by_species.iter().map(|(k, n)| format!("{k} x{n}")).collect::<Vec<_>>().join(", "));
+            if std::env::var_os("TINY_TREE_CLEAR_LIST").is_some() {
+                for (t, owner, y) in verdict.dropped.iter().filter(|(t, _, _)| is_baked(t)) {
+                    println!("    baked {}\t{} {} r {:.1} h {:.1} at {:.1},{:.1},{:.1} — {} at y {:.1}", t.row.replace('\t', " "), t.species, t.owner, t.radius, t.height, t.pos[0], t.pos[1], t.pos[2], owner, y);
+                }
+            }
         }
     }
     {
@@ -1248,7 +1411,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     if !deepened.is_empty() {
         println!("  sea floor at source depth under {} shore tile models at the water row (TINY_DEEPEN=0 to keep it halved): {}", deepened.len(), deepened.join(", "));
     }
-    println!("  mapping: {} rows -> {} ({} vegetation placements sunk to half-tree crown height)", rows, out_mapping.display(), sunk_rows);
+    println!("  mapping: {} rows -> {} ({} vegetation placements sunk to half-tree crown height; {} tree placements on {} baked half-size species, {} KB of items + {} KB of textures)", rows, out_mapping.display(), sunk_rows, baked_tree_rows, baker.next, baker.item_bytes / 1024, baker.texture_bytes / 1024);
     if !dropped_baked.is_empty() {
         println!("  baked fillers left out (TINY_DROP_BAKED): {}", dropped_baked.iter().map(|(k, v)| format!("{k} x{v}")).collect::<Vec<_>>().join(", "));
     }

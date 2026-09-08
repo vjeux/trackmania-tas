@@ -678,6 +678,32 @@ fn main() {
         // species' height and radius, for sinking a full-size tree so its crown
         // sits where a half tree's would (vjeux, 2026-09-07). An .Item.Gbx is
         // followed to its VegetTreeModel reference.
+        // veget-bake <VegetTreeModel path | vegetation Item.Gbx> --out F.Item.Gbx
+        //   --ident NAME.Item.Gbx [--author A] [--scale 0.5] [--collection N]
+        //   [--pictures DIR]: one species as a half-size static item (the tree
+        //   bake of tiny-library, on its own); its textures go to DIR (default:
+        //   next to F) — they must ride next to the item in the map archive.
+        "veget-bake" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("veget-bake <path> --out F --ident NAME.Item.Gbx".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out F.Item.Gbx".into()));
+            let ident = flag(&a.rest, "--ident").unwrap_or_else(|| std::path::Path::new(&out).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default());
+            let author = flag(&a.rest, "--author").unwrap_or_else(|| ident.clone());
+            let scale: f32 = flag(&a.rest, "--scale").and_then(|s| s.parse().ok()).unwrap_or(0.5);
+            let collection: u32 = flag(&a.rest, "--collection").and_then(|s| s.parse().ok()).unwrap_or(26);
+            let (bytes, m, bake) = mapgeom::static_item::build::static_item_from_veget_report(&mut store, &p, &ident, &author, scale, collection).unwrap_or_else(|e| die(format!("{p}: {e}")));
+            let bytes = mapgeom::tiny_assets::set_ident_collection(&bytes, collection);
+            std::fs::write(&out, &bytes).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            let dir = flag(&a.rest, "--pictures").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::Path::new(&out).parent().map(|d| d.to_path_buf()).unwrap_or_default());
+            for (file, dds) in &m.pictures {
+                let target = dir.join(file);
+                std::fs::write(&target, dds).unwrap_or_else(|e| die(format!("{}: {e}", target.display())));
+            }
+            println!("{p}: {} bytes -> {out}; {} visuals in {} levels {:?}, switch {:?}, {} materials, hull {} tris, height {:.2} radius {:.2} (source metres); textures: {}", bytes.len(), m.visuals.len(), bake.levels.len(), bake.levels, bake.switch, m.materials.len(), bake.hull_triangles, bake.height, bake.radius, bake.textures.iter().map(|(f, n)| format!("{f} {n} B")).collect::<Vec<_>>().join(", "));
+            for n in &m.notes {
+                println!("  {n}");
+            }
+        }
         "veget-info" => {
             let mut store = open(&a);
             let paths: Vec<String> = a.rest.iter().skip(1).filter(|p| !p.starts_with("--")).cloned().collect();
@@ -1011,7 +1037,7 @@ fn main() {
             let items_dir = flag(&a.rest, "--items-dir").map(std::path::PathBuf::from);
             let only = flag(&a.rest, "--only");
             let legacy = flag(&a.rest, "--legacy-zip").map(std::path::PathBuf::from);
-            let veget = flag(&a.rest, "--veget").unwrap_or_else(|| "substitute".into());
+            let veget = flag(&a.rest, "--veget").unwrap_or_else(|| "bake".into());
             let coll = flag(&a.rest, "--collection").unwrap_or_default();
             mapgeom::tiny_library::build(
                 &mut store,

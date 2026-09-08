@@ -42,6 +42,7 @@ pub mod signlogo;
 pub mod cli;
 pub mod surfhist;
 pub mod particle;
+pub mod texture;
 
 pub use crate::crystal_model::{Id, LookbackState, NodeRef, OpaqueNode, Rd, Wr, R, FACADE};
 pub use file::{parse_file, write_file, StaticItemFile};

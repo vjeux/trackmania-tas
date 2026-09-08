@@ -4435,3 +4435,175 @@ mod fx_tests {
         assert_eq!(super::scale_float3_literal("float3(1.5,-2,3)", 0.5).as_deref(), Some("float3(0.75,-1.0,1.5)"));
     }
 }
+
+/// What a vegetation bake did, for the report.
+#[derive(Clone, Debug, Default)]
+pub struct VegetBake {
+    /// The `.VegetTreeModel.Gbx` baked.
+    pub model: String,
+    /// Visuals per detail level, and the switch distances written (metres,
+    /// the model's own — NOT scaled: a half-size tree switches where the
+    /// full-size one did).
+    pub levels: Vec<usize>,
+    pub switch: Vec<f32>,
+    /// (archive file name, bytes) of every texture the item names.
+    pub textures: Vec<(String, usize)>,
+    /// Model-space height and radius of the source (metres, unscaled).
+    pub height: f32,
+    pub radius: f32,
+    /// Trunk hull triangles carried (0: the species has none).
+    pub hull_triangles: usize,
+    /// Vertex elements stripped from the visuals (the vegetation shader's
+    /// wind weights ride as vertex colours the static shaders would tint by).
+    pub stripped: Vec<&'static str>,
+}
+
+/// A procedural vegetation model (`crate::veget`) baked as STATIC geometry
+/// into `m`, scaled: every detail level's visuals under custom-texture
+/// materials — the model's inline materials name no `.Material.Gbx`, so
+/// each becomes an item-editor material (`is_using_game_material` false)
+/// on the game's own shading models with the pack's diffuse image in slot 0:
+/// `TDSN` for bark, `TDOSN2Sided` for the leaf cards (two-sided, the alpha
+/// of the diffuse as the opacity mask). The images ride next to the item
+/// (`Merged::pictures`, `Items/<name>.dds` in the library archive), their
+/// top mip levels cut to `TINY_TREE_TEX_MAX` pixels a side (default 256: the
+/// 31 leaf and bark atlases of a BlueBay map weighed 5.2 MB at 512, 1.3 at
+/// 256, against a ~25 MB upload cap).
+/// The trunk hull becomes the collision (Wood). What the bake cannot carry:
+/// the wind animation, the game's impostors past the far distance (the last
+/// level is drawn at every distance instead) and the placement-colour hue
+/// mask (the species' default look is baked).
+///
+/// Knobs: TINY_TREE_LEAF_MODEL / TINY_TREE_BARK_MODEL (shading model names),
+/// TINY_TREE_TEX_MAX (pixels), TINY_TREE_KEEP_COLOR=1 (keep the vertex
+/// colour elements), TINY_TREE_LOD_MIN=N (drop the levels finer than N: the
+/// size lever), TINY_TREE_NORMAL_MAP=1 (also name the `_N` image in slot 1).
+pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &str, scale: f32, m: &mut Merged) -> R<VegetBake> {
+    use super::vstream::N_COLOR0;
+    let t = crate::veget::parse_tree_model(store, model_path)?;
+    let stats = t.stats();
+    let leaf_model = std::env::var("TINY_TREE_LEAF_MODEL").unwrap_or_else(|_| "TDOSN2Sided".into());
+    let bark_model = std::env::var("TINY_TREE_BARK_MODEL").unwrap_or_else(|_| "TDSN".into());
+    let tex_max: u32 = std::env::var("TINY_TREE_TEX_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
+    let normal_map = std::env::var_os("TINY_TREE_NORMAL_MAP").is_some();
+    let keep_color = std::env::var_os("TINY_TREE_KEEP_COLOR").is_some();
+    let mut lod_min: usize = std::env::var("TINY_TREE_LOD_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    // The campaign's size knobs apply to trees like to blocks: TINY_LOD_PICK=N
+    // (with TINY_LOD_PICK_MIN_VERTS) keeps level N alone, every distance, for
+    // a species whose nearest level has that many vertices; TINY_LOD0_ONLY
+    // keeps level 0 alone. Otherwise every level rides with the model's own
+    // ladder (`all_lods`: the ladder is kept whatever the knobs say).
+    let level0_verts: i32 = t.lods.first().map(|l| l.iter().map(|e| e.visual.main.as_ref().map(|mm| mm.count).unwrap_or(0)).sum()).unwrap_or(0);
+    let min_verts: i32 = std::env::var("TINY_LOD_PICK_MIN_VERTS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let pick: Option<usize> = match lod_pick() {
+        Some(p) if level0_verts >= min_verts => Some((p as usize).min(t.lods.len() - 1)),
+        Some(_) => Some(0),
+        None if std::env::var_os("TINY_LOD0_ONLY").is_some() => Some(0),
+        None => None,
+    };
+    if let Some(p) = pick {
+        lod_min = p;
+    }
+    let mut out = VegetBake { model: model_path.to_string(), height: stats.top, radius: stats.radius, ..Default::default() };
+    // one item material per model material, in model order
+    let mut slots: Vec<usize> = Vec::with_capacity(t.materials.len());
+    for mat in &t.materials {
+        let mut files: Vec<(i32, String)> = Vec::new();
+        for (slot, image) in [(0i32, &mat.images[0]), (1, &mat.images[1])] {
+            if slot == 1 && !normal_map {
+                continue;
+            }
+            let Some(path) = image else { continue };
+            let file = path.rsplit('\\').next().unwrap_or(path).to_string();
+            if !m.pictures.iter().any(|(f, _)| *f == file) {
+                let bytes = store.read(path).map_err(|e| format!("{path}: {e}"))?;
+                let bytes = super::texture::dds_cap(&bytes, tex_max).map_err(|e| format!("{path}: {e}"))?;
+                out.textures.push((file.clone(), bytes.len()));
+                m.pictures.push((file.clone(), bytes));
+            }
+            files.push((slot, file));
+        }
+        if files.is_empty() {
+            return Err(format!("material {} names no diffuse image", mat.name));
+        }
+        let mut inst = CPlugMaterialUserInst::game_material("", 14);
+        if let Some(main) = inst.main.as_mut() {
+            main.is_using_game_material = false;
+            main.model = crate::crystal_model::Id::Str(if mat.leaf { leaf_model.clone() } else { bark_model.clone() });
+            main.material_name = crate::crystal_model::Id::Str(mat.name.clone());
+            main.link = crate::crystal_model::Id::Null;
+            main.user_textures = files.into_iter().map(|(u01, texture)| crate::crystal_model::UserTexture { u01, texture }).collect();
+        }
+        m.materials.push(inst);
+        slots.push(m.materials.len() - 1);
+    }
+    // the visuals, level by level; the ladder is the model's own switch
+    // distances, unscaled (see the doc comment)
+    let ladder: Vec<f32> = if pick.is_some() { Vec::new() } else { t.switch.iter().skip(lod_min).copied().collect() };
+    let mut kept_levels = 0usize;
+    for (l, lod) in t.lods.iter().enumerate() {
+        if l < lod_min || (pick.is_some() && l != lod_min) {
+            continue;
+        }
+        let bit = l - lod_min;
+        let mut n = 0usize;
+        for e in lod {
+            let mut v = e.visual.clone();
+            if !keep_color {
+                if let Some(main) = v.main.as_mut() {
+                    if let Some(Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) {
+                        for name in [N_COLOR0, N_COLOR0 + 1] {
+                            if s.decls.iter().any(|d| d.name() == name) {
+                                drop_element(s, name);
+                                let tag = if name == N_COLOR0 { "color0" } else { "color1" };
+                                if !out.stripped.contains(&tag) {
+                                    out.stripped.push(tag);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            transform_visual(&mut v, &IDENTITY, scale)?;
+            m.visuals.push(MergedVisual { visual: v, material: slots[e.material as usize], lod_mask: if pick.is_some() { 0 } else { 1 << bit }, lod_ladder: ladder.clone() });
+            n += 1;
+        }
+        out.levels.push(n);
+        kept_levels += 1;
+    }
+    if kept_levels == 0 {
+        return Err(format!("TINY_TREE_LOD_MIN={lod_min} leaves no detail level of {}", t.lods.len()));
+    }
+    merge_lod_ladder(&mut m.lod_max_dist, &ladder);
+    m.all_lods = pick.is_none();
+    out.switch = ladder;
+    if let Some(p) = pick {
+        m.notes.push(format!("vegetation bake: level {p} of {} alone (TINY_LOD_PICK/TINY_LOD0_ONLY; nearest level {level0_verts} vertices)", t.lods.len()));
+    }
+    // the trunk hull as the collision (Wood, 14 — what the model says)
+    if !t.hull_triangles.is_empty() {
+        let tris: Vec<Triangle> = t.hull_triangles.iter().map(|(idx, mat)| Triangle { indices: *idx, material_id: (*mat).min(255) as u8, u03: 0, surface_index: 0 }).collect();
+        m.add_surface_mesh(&t.hull_vertices, &tris, &IDENTITY, scale);
+        out.hull_triangles = tris.len();
+    }
+    if m.file_write_time == 0 {
+        m.file_write_time = t.file_write_time;
+    }
+    m.notes.push(format!("vegetation bake: {} levels {:?}, switch {:?} (unscaled), {} textures, hull {} tris{}", out.levels.len(), out.levels, out.switch, out.textures.len(), out.hull_triangles, if out.stripped.is_empty() { String::new() } else { format!(", stripped {}", out.stripped.join("+")) }));
+    Ok(out)
+}
+
+/// A vegetation species as a half-size static item, on its own: the
+/// `.VegetTreeModel.Gbx` (or a vegetation `.Item.Gbx`, followed to its model)
+/// baked, assembled and written. The item bytes and the accumulator (its
+/// `pictures` are the textures to ship next to the item).
+pub fn static_item_from_veget_report(store: &mut crate::store::DataStore, path: &str, ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged, VegetBake)> {
+    let model_path = crate::veget::tree_model_path(store, path)?;
+    let mut m = Merged::default();
+    m.editors = std::env::var_os("TINY_EDITORS").is_some();
+    m.keep_water = keep_water_for(collection);
+    let bake = add_veget_tree_model(store, &model_path, scale, &mut m)?;
+    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, editors: m.editors, skin: None };
+    let file = assemble(&m, &opts)?;
+    Ok((super::file::write_file(&file), m, bake))
+}
