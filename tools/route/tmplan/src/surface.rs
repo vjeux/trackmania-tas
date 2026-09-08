@@ -51,7 +51,9 @@ impl Nodes {
             pos.push([c[0], c[1] - rep.half_height, c[2]]);
         }
         let n = groups.len();
-        Nodes { groups, kinds, pos, graph_node: vec![None; n], n_cp: cps.len(), n_fin: fins.len(), spawn_dir: [g.spawn.yaw.sin(), g.spawn.yaw.cos()], spawn_dir_known: g.spawn.yaw_source.starts_with("human") }
+        Nodes { groups, kinds, pos, graph_node: vec![None; n], n_cp: cps.len(), n_fin: fins.len(), spawn_dir: [g.spawn.yaw.sin(), g.spawn.yaw.cos()], // a placement yaw is a guess on full-size maps (Summer 2026 - 12 was 180° off) but the converter's tiny start items keep the
+            // engine facing (verified on tiny 15: +x, and 21: −z — player/INPUT 2026-09-08 14:36Z), so it counts there
+            spawn_dir_known: g.spawn.yaw_source.starts_with("human") || tmroute::gates::is_tiny_map(&g.map_uid, &g.map_name) }
     }
     pub fn finish_range(&self) -> std::ops::Range<usize> {
         1 + self.n_cp..1 + self.n_cp + self.n_fin
