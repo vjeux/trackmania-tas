@@ -275,6 +275,26 @@ impl Track {
         self.human_speed[i]
     }
 
+    /// the lowest line height within `w` m of arc length around s
+    pub fn min_y_near(&self, s: f64, w: f64) -> f64 {
+        let i = match self.s.binary_search_by(|x| x.partial_cmp(&s).unwrap()) {
+            Ok(i) => i,
+            Err(i) => i.min(self.s.len() - 1),
+        };
+        let mut m = self.pts[i][1];
+        let mut j = i;
+        while j > 0 && self.s[i] - self.s[j - 1] <= w {
+            j -= 1;
+            m = m.min(self.pts[j][1]);
+        }
+        let mut j = i;
+        while j + 1 < self.s.len() && self.s[j + 1] - self.s[i] <= w {
+            j += 1;
+            m = m.min(self.pts[j][1]);
+        }
+        m
+    }
+
     pub fn len_m(&self) -> f64 {
         *self.s.last().unwrap()
     }
@@ -691,8 +711,11 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             // fell off: far below the nearest centreline point on a road leg; on a GAP leg (jump, drop,
             // bowl) anything above the track's lowest point - 5 m and within 120 m of the polyline lives
             let road_y = track.at(s)[1];
+            // on a steep climb the car is legitimately below the line point at its own s (21's 32-degree ramp:
+            // 4-6 m); "below" is measured against the line's LOWEST point within 15 m of arc length
+            let road_y_min = track.min_y_near(s, 15.0);
             // (below the polyline while laterally ON the road = a dip the centreline's y does not follow: 08 at s 585)
-            if (!on_gap && end.y < road_y - 5.0 && (lat_abs > hw + 1.0 || end.y < road_y - cfg.below_tol)) || (on_gap && (end.y < track_min_y - 5.0 || d3 > 120.0)) {
+            if (!on_gap && end.y < road_y - 5.0 && (lat_abs > hw + 1.0 || end.y < road_y_min - cfg.below_tol)) || (on_gap && (end.y < track_min_y - 5.0 || d3 > 120.0)) {
                 out.deaths[2] += 1;
                 continue;
             }
@@ -794,7 +817,8 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let (s, lat, seg, d3) = track.project(pos(&end), track.pts.len() / 2, track.pts.len());
             let road_y = track.at(s)[1];
             let hw = track.half_width.get(seg).copied().unwrap_or(5.5);
-            let bad = speed(&end) < 3.0 || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y - cfg.below_tol));
+            let road_y_min = track.min_y_near(s, 15.0);
+            let bad = speed(&end) < 3.0 || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y_min - cfg.below_tol));
             if !bad || tries >= 12 || recs.len() <= 300 {
                 break (rows, nh, end, s, seg);
             }
