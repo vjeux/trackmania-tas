@@ -358,6 +358,7 @@ fn main() {
         "engine" => engine::cmd(rest),
         "manifest" => cmd_manifest(rest),
         "chunks" => cmd_chunks(rest),
+        "samples" => cmd_samples(rest),
         "dump" => {
             let c = Container::load(&rest[0]).unwrap_or_else(|e| die(e));
             let at = num(rest, "--at").unwrap_or(0) as usize;
@@ -1721,3 +1722,36 @@ fn cmd_map(a: &[String]) {
     }
 }
 
+
+/// `ghost samples FILE [--every MS]`: the telemetry record as CSV — one row a
+/// sample: `t_s,x,y,z,speed_kmh,yaw,pitch,roll,ground,gas,brake,steer,wetness`.
+/// The trajectory the CLIENT replays for a ghost (it plays these positions
+/// back; only record validation re-simulates the tape), so the file's own
+/// answer to "where does this ghost's car go" needs no engine.
+fn cmd_samples(args: &[String]) {
+    let Some(path) = args.first() else {
+        eprintln!("ghost samples FILE [--every MS]");
+        std::process::exit(2);
+    };
+    let every: i32 = args.iter().position(|a| a == "--every").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let d = match gbx::record::decode_ghost(path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{path}: no telemetry record ({e})");
+            std::process::exit(1);
+        }
+    };
+    println!("t_s,x,y,z,speed_kmh,yaw,pitch,roll,ground,gas,brake,steer,wetness");
+    let mut next = i32::MIN;
+    for s in &d.samples {
+        if every > 0 && s.time_ms < next {
+            continue;
+        }
+        next = s.time_ms + every;
+        println!(
+            "{:.3},{:.3},{:.3},{:.3},{:.1},{:.3},{:.3},{:.3},{},{:.2},{:.2},{:.3},{:.2}",
+            s.time_ms as f64 / 1000.0, s.x, s.y, s.z, s.speed_kmh, s.yaw, s.pitch, s.roll,
+            if s.is_ground_contact { 1 } else { 0 }, s.gas, s.brake, s.steer, s.wetness
+        );
+    }
+}
