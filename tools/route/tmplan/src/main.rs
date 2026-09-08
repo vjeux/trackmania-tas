@@ -1054,11 +1054,13 @@ fn cmd_author_line(args: &[String]) {
         groups.sort_unstable();
         groups.dedup();
         for grp in groups {
+            // FIRST pass for a checkpoint; LAST pass for a finish group (the lap ends there — a finish tower passed under
+            // earlier must not be ordered early; tiny 13)
+            let is_fin = g.gates.iter().any(|x| x.group == grp && matches!(x.kind, tmroute::gates::WpKind::Finish));
             let mut t_first: Option<i32> = None;
             for r in &rows {
-                // within the gate's own half-width (+4 m) laterally and 8 m in height of any gate of the group
                 let hit = g.gates.iter().filter(|x| x.group == grp).any(|x| ((x.centre[0] - r.3[0]).powi(2) + (x.centre[2] - r.3[2]).powi(2)).sqrt() <= x.half_width + 6.0 && (x.centre[1] - r.3[1]).abs() <= 10.0);
-                if hit { t_first = Some(r.4); break; }
+                if hit { t_first = Some(r.4); if !is_fin { break; } }
             }
             if let Some(t) = t_first { firsts.push((t, grp)); } else {
                 let (mut dmin, mut at) = (f32::INFINITY, [0.0f32; 3]);
