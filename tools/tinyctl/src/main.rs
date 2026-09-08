@@ -17,6 +17,7 @@
 
 mod boxbuild;
 mod lightmap;
+mod loadloop;
 mod camcheck;
 mod build;
 mod compare;
@@ -58,6 +59,10 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
   tinyctl startcheck --map MAP [--tag T] [--tolerance 12] [--outdir D]
         where does the CLIENT put the car? opens the playground, reads the car at
         rest, PASS/FAIL against the map's Spawn placement (no vehicle = loud FAIL)
+  tinyctl loadloop --maps A[,B…] --tag T [--seq 0,1,…] [--n N] [--how play|edit] [--timeout 300]
+                 [--settle-ms 3000] [--fresh|--fresh-first] [--shot-on-fail] [--outdir D]
+        N loads of one map (or an A,B,A,B switch sequence) on the box, each classified
+        from the object graph: OPENED (seconds, car?) / DIALOG (frame + text) / TIMEOUT / CRASH
   tinyctl replay-pull [--map MAP] [--tag T] [--drive-ms MS] [--wait-only] [--wait 900] [--out DIR]
         a REAL client recording: parks the box's autosaved replays, opens the map
         in play mode (or waits while somebody drives it), then pulls the new
@@ -110,6 +115,7 @@ fn main() {
         "compare" => compare::cmd(rest),
         "play" => play::cmd(rest),
         "startcheck" => startcheck::run(rest),
+        "loadloop" => loadloop::cmd(rest),
         "replay-pull" => replaypull::cmd(rest),
         "camcheck" => camcheck::cmd(rest),
         "publish-map" => publish::publish_map_cmd(rest),

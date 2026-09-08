@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 mod host;
 mod lightmap;
 use host::plugin_addrs;
+mod loadloop;
 mod loadprof;
 mod lock;
 mod perfsum;
@@ -1166,6 +1167,8 @@ usage:
         // collision move (pushers around the spawn shove the car)? playshots.rs.
         "playshots" => playshots::run(&args[1..]),
         "loadprof" => loadprof::run(&args[1..]),
+        // N loads of one map (or an A,B,A,B sequence), each classified from the object graph. loadloop.rs.
+        "loadloop" => loadloop::run(&args[1..]),
         "perfsum" => perfsum::run(&args[1..]),
         // the EDITOR's lightmap for a tiny build, re-saved into a new file. lightmap.rs.
         "lightmap" => lightmap::run(&args[1..]),
