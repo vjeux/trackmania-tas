@@ -94,9 +94,14 @@ pub fn up_facing(vertices: &[[f32; 3]], triangles: &[crate::static_item::surface
 
 /// A tree's cylinder from its stand-in species: (crown radius, height).
 /// Trunk-only meshes (the Stadium palms: radius under a metre, procedural
-/// fronds) get the sink's crown allowance (`TINY_VEGET_CROWN`, 3 m) on top
+/// fronds) get the sink's crown allowance (`CROWN_ALLOWANCE`, 3 m) on top
 /// and a crown radius of 0.4 × the height; a species whose model does not
 /// read borrows a sibling's (PalmTreeDirtSmall → PalmTreeSmall).
+/// The crown a trunk-only tree model (the Stadium palms: radius under a
+/// metre, procedural fronds) is given on top of its trunk, metres unscaled —
+/// the fronds a half tree would carry are what the roads must clear.
+pub const CROWN_ALLOWANCE: f32 = 3.0;
+
 pub fn species_dims(store: &mut DataStore, name: &str, cache: &mut BTreeMap<String, Option<(f32, f32)>>) -> Option<(f32, f32)> {
     if let Some(d) = cache.get(name) {
         return *d;
@@ -104,8 +109,7 @@ pub fn species_dims(store: &mut DataStore, name: &str, cache: &mut BTreeMap<Stri
     fn measured(store: &mut DataStore, name: &str) -> Option<(f32, f32)> {
         let path = crate::tiny_library::find_item_file(store, name)?;
         let s = crate::veget::tree_model_stats(store, &path).ok()?;
-        let crown: f32 = std::env::var("TINY_VEGET_CROWN").ok().and_then(|v| v.parse().ok()).unwrap_or(3.0);
-        let height = if s.radius < 1.0 { s.top + crown } else { s.top };
+        let height = if s.radius < 1.0 { s.top + CROWN_ALLOWANCE } else { s.top };
         let radius = s.radius.max(0.4 * height);
         Some((radius, height))
     }

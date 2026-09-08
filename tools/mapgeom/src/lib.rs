@@ -54,6 +54,7 @@ pub mod render;
 pub mod scene;
 pub mod store;
 pub mod crystal;
+pub mod debug;
 pub mod crystal_model;
 pub mod rescale;
 pub mod tables;

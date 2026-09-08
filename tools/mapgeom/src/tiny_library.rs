@@ -150,15 +150,10 @@ pub fn find_item_file(store: &DataStore, model: &str) -> Option<String> {
 
 /// The stock item that is exactly the HALF of `model` — Nadeo's `Small`
 /// screens (measured 2026-09-07 on the pack: every pair halves both width and
-/// height; the frame depth stays 0.86 m on all of them). `TINY_STOCK_HALF=0`
-/// turns the table off; `=gates` adds the gate families' half-WIDTH member
-/// (same 11 m posts — twice the tiny height; the 24 m gates have no 12 m twin
-/// and the `Special`/`Gameplay` 4 m ends have nothing below them).
+/// height; the frame depth stays 0.86 m on all of them). The gates have no
+/// such twin: the half-WIDTH family member (32 m → 16 m) keeps the same 11 m
+/// posts — twice the tiny height, a visible mismatch — so gates are baked.
 pub fn stock_half_variant(model: &str) -> Option<&'static str> {
-    let mode = std::env::var("TINY_STOCK_HALF").unwrap_or_default();
-    if mode == "0" {
-        return None;
-    }
     const SCREENS: &[(&str, &str)] = &[
         ("RaceScreen6x1", "RaceScreen6x1Small"),
         ("Screen16x9", "Screen16x9Small"),
@@ -185,55 +180,15 @@ pub fn stock_half_variant(model: &str) -> Option<&'static str> {
     if model == "Flag16m" && std::env::var("TINY_FLAG_STOCK").as_deref() != Ok("0") {
         return Some("Flag8m");
     }
-    if mode != "gates" {
-        return None;
-    }
-    // gates: <Family><Size>m[<Suffix>] -> the same family one size down
-    for (from, to) in [("32m", "16m"), ("16m", "8m"), ("8m", "4m")] {
-        if let Some(i) = model.find(from) {
-            let (head, tail) = (&model[..i], &model[i + from.len()..]);
-            if head.starts_with("Gate") && head.chars().last().map(|c| !c.is_ascii_digit()).unwrap_or(false) {
-                // 4 m exists only for the Special / Gameplay families
-                if to == "4m" && !(head.starts_with("GateSpecial") || head.starts_with("GateGameplay")) {
-                    return None;
-                }
-                let name = format!("{head}{to}{tail}");
-                return GATE_NAMES.iter().find(|g| **g == name).copied();
-            }
-        }
-    }
     None
 }
 
-/// Every gate item of the Stadium pack (the target of the gate ladder must be
-/// a real file; `find_item_file` confirms it again against the store).
-const GATE_NAMES: &[&str] = &[
-    "GateCheckpointCenter16m", "GateCheckpointCenter16mv2", "GateCheckpointCenter8m", "GateCheckpointCenter8mv2",
-    "GateCheckpointLeft16m", "GateCheckpointLeft8m", "GateCheckpointRight16m", "GateCheckpointRight8m",
-    "GateFinish16m", "GateFinish8m", "GateFinishCenter16m", "GateFinishCenter16mv2", "GateFinishCenter8m", "GateFinishCenter8mv2",
-    "GateMultilapCenter16m", "GateMultilapCenter8m", "GateMultilapLeft16m", "GateMultilapLeft8m", "GateMultilapRight16m", "GateMultilapRight8m",
-    "GateStartCenter16m", "GateStartCenter8m", "GateStartLeft16m", "GateStartLeft8m", "GateStartRight16m", "GateStartRight8m",
-    "GateSpecial16mBoost", "GateSpecial16mBoost2", "GateSpecial16mCruise", "GateSpecial16mFragile", "GateSpecial16mNoBrake", "GateSpecial16mNoEngine",
-    "GateSpecial16mNoSteering", "GateSpecial16mReset", "GateSpecial16mSlowMotion", "GateSpecial16mTurbo", "GateSpecial16mTurbo2", "GateSpecial16mTurboRoulette",
-    "GateSpecial8mBoost", "GateSpecial8mBoost2", "GateSpecial8mCruise", "GateSpecial8mFragile", "GateSpecial8mNoBrake", "GateSpecial8mNoEngine",
-    "GateSpecial8mNoSteering", "GateSpecial8mReset", "GateSpecial8mSlowMotion", "GateSpecial8mTurbo", "GateSpecial8mTurbo2", "GateSpecial8mTurboRoulette",
-    "GateSpecial4mBoost", "GateSpecial4mBoost2", "GateSpecial4mCruise", "GateSpecial4mFragile", "GateSpecial4mNoBrake", "GateSpecial4mNoEngine",
-    "GateSpecial4mNoSteering", "GateSpecial4mReset", "GateSpecial4mSlowMotion", "GateSpecial4mTurbo", "GateSpecial4mTurbo2", "GateSpecial4mTurboRoulette",
-    "GateGameplayDesert16m", "GateGameplayDesert8m", "GateGameplayDesert4m", "GateGameplayRally16m", "GateGameplayRally8m", "GateGameplayRally4m",
-    "GateGameplaySnow16m", "GateGameplaySnow8m", "GateGameplaySnow4m", "GateGameplayStadium16m", "GateGameplayStadium8m", "GateGameplayStadium4m",
-];
-
 /// The stock vegetation item standing in for a prefab's `.VegetTreeModel.Gbx`
-/// entity: `…\TreeBigA1.VegetTreeModel.Gbx` -> the pack item `TreeBigA` (an
-/// item carries its A1/A2/A3 variants; `PalmTreeBigB3` -> `PalmTreeBigB`),
-/// then the collection's smaller species for it. None when no item matches.
-fn veget_item(store: &DataStore, collection: u32, model_path: &str, cache: &mut BTreeMap<String, Option<String>>) -> Option<String> {
-    veget_item_pair(store, collection, model_path, cache).map(|(_, sub)| sub)
-}
-
-/// `veget_item` with the species the entity NAMED as well: (original item,
-/// substitute item) — the substitute is the original when no smaller species
-/// exists in the packs.
+/// entity — `…\TreeBigA1.VegetTreeModel.Gbx` -> the pack item `TreeBigA` (an
+/// item carries its A1/A2/A3 variants; `PalmTreeBigB3` -> `PalmTreeBigB`) —
+/// with the collection's smaller species for it: (original item, substitute
+/// item), the substitute being the original when no smaller species exists in
+/// the packs. None when no item matches.
 fn veget_item_pair(store: &DataStore, collection: u32, model_path: &str, cache: &mut BTreeMap<String, Option<String>>) -> Option<(String, String)> {
     let file = model_path.rsplit('\\').next().unwrap_or(model_path);
     let low = file.to_ascii_lowercase();
@@ -276,26 +231,22 @@ fn veget_item_pair(store: &DataStore, collection: u32, model_path: &str, cache: 
 /// road and making the map impossible to play"). Heights come from the tree
 /// models' own visual boxes (`veget::tree_model_stats`; the trunk mesh — the
 /// procedural crown is not in the file, so the reference is the trunk top,
-/// which is where a palm's crown sits). `TINY_VEGET_SINK=0` turns it off; a
-/// species whose model does not read sinks 0 (noted once).
+/// which is where a palm's crown sits). A species whose model does not read
+/// sinks 0 (noted once).
 fn veget_sink(store: &mut DataStore, orig: &str, sub: &str, scale: f32, cache: &mut BTreeMap<String, Option<f32>>) -> f32 {
-    if std::env::var("TINY_VEGET_SINK").map(|v| v == "0").unwrap_or(false) {
-        return 0.0;
-    }
     // the model's own height: a trunk-only mesh (the Stadium palms: radius
     // under a metre, the crown is procedural) gets a crown allowance on top —
-    // TINY_VEGET_CROWN metres (default 3): the fronds a half tree would
+    // `tree_clear::CROWN_ALLOWANCE` metres: the fronds a half tree would
     // carry are what the roads must clear
     fn measured(store: &mut DataStore, name: &str) -> Result<f32, String> {
         let path = find_item_file(store, name).ok_or_else(|| format!("no item file for {name}"))?;
         let s = crate::veget::tree_model_stats(store, &path)?;
-        let crown: f32 = std::env::var("TINY_VEGET_CROWN").ok().and_then(|v| v.parse().ok()).unwrap_or(3.0);
-        Ok(if s.radius < 1.0 { s.top + crown } else { s.top })
+        Ok(if s.radius < 1.0 { s.top + crate::tree_clear::CROWN_ALLOWANCE } else { s.top })
     }
     // a species whose model does not read borrows a sibling's height
     // (`species_siblings`); a species with no sibling either sinks 0 (noted once)
     let siblings = species_siblings;
-    let mut top = |name: &str, store: &mut DataStore, cache: &mut BTreeMap<String, Option<f32>>| -> Option<f32> {
+    let top = |name: &str, store: &mut DataStore, cache: &mut BTreeMap<String, Option<f32>>| -> Option<f32> {
         if let Some(t) = cache.get(name) {
             return *t;
         }
@@ -361,11 +312,10 @@ pub fn species_siblings(name: &str) -> Vec<String> {
 /// clearance drop: a half-size tree at a half-size position meets a road
 /// exactly when the original did (vjeux, 2026-09-08: "the trees look really
 /// weird at double the size, can we make a static model half the size?").
-/// Species under `TINY_TREE_BAKE_MIN_HEIGHT` metres (default 2: grass,
-/// flowers, the small bushes) keep the stock-item path — the game's own
-/// vegetation renderer draws thousands of those cheaply and their size
-/// hardly reads. `TINY_TREE_BAKE=0` turns the bake off (the old substitute
-/// path everywhere).
+/// Species under [`TreeBaker::MIN_HEIGHT`] metres (grass, flowers, the small
+/// bushes) keep the stock-item path — the game's own vegetation renderer
+/// draws thousands of those cheaply and their size hardly reads.
+/// `--veget substitute` is the old stand-in path everywhere.
 struct TreeBaker {
     enabled: bool,
     min_height: f32,
@@ -383,9 +333,12 @@ struct TreeBaker {
 }
 
 impl TreeBaker {
+    /// Species shorter than this (metres, unscaled) stay stock items.
+    const MIN_HEIGHT: f32 = 2.0;
+
     fn new(mode: &str) -> TreeBaker {
-        let enabled = mode == "bake" && std::env::var("TINY_TREE_BAKE").map(|v| v != "0").unwrap_or(true);
-        let min_height: f32 = std::env::var("TINY_TREE_BAKE_MIN_HEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(2.0);
+        let enabled = mode == "bake";
+        let min_height = Self::MIN_HEIGHT;
         let bake_hullless = std::env::var("TINY_TREE_BAKE_HULLLESS").map(|v| v == "1").unwrap_or(false);
         TreeBaker { enabled, min_height, bake_hullless, baked: BTreeMap::new(), dims: BTreeMap::new(), next: 0, item_bytes: 0, texture_bytes: 0 }
     }
@@ -414,7 +367,7 @@ impl TreeBaker {
         let out = match result {
             Ok((bytes, m, bake)) => {
                 if bake.height < self.min_height {
-                    outcomes.push(Outcome { alias: "-".into(), kind: "tree", source: stem.clone(), placements: 0, result: Ok(format!("{:.1} m tall: under TINY_TREE_BAKE_MIN_HEIGHT {:.1}, stays a stock item", bake.height, self.min_height)) });
+                    outcomes.push(Outcome { alias: "-".into(), kind: "tree", source: stem.clone(), placements: 0, result: Ok(format!("{:.1} m tall: under the {:.1} m bake threshold, stays a stock item", bake.height, self.min_height)) });
                     None
                 } else if bake.hull_triangles == 0 && !self.bake_hullless {
                     // No collision hull = filler foliage the car never touches (grass,
@@ -628,13 +581,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     } else {
         None
     };
-    // TINY_DEEPEN=0 leaves the halved sea floor; TINY_DEPTH_KEEP=m (tiny
-    // metres below the surface that keep the tile's scale, default 0: the
-    // Beach apron is only 0.8..3 m deep in the source and the sea over it
-    // reads as open sea from 3 m down, so every underwater vertex takes its
-    // source depth)
-    let deepen = std::env::var("TINY_DEEPEN").map(|v| v != "0").unwrap_or(true);
-    let depth_keep: f32 = std::env::var("TINY_DEPTH_KEEP").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    // (every underwater vertex takes its source depth: the Beach apron is
+    // only 0.8..3 m deep in the source and the sea over it reads as open sea
+    // from 3 m down — see `restore_depth`)
     let mut deepened: Vec<String> = Vec::new();
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     // picture files (gate sign logos) the items name: added after the ident pass below (they are not GBX)
@@ -681,7 +630,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         let vindex = (flags & crate::blockmap::FLAG_VARIANT_MASK) as usize;
         let sub = ((flags >> crate::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
         let Some(path) = idx.path_for(name) else {
-            if std::env::var_os("TINY_DEBUG_LOOKUP").is_some() {
+            if crate::debug::on("lookup") {
                 eprintln!("  lookup {name:?}: no path; index knows {} stems; store has {} entries", idx.stem_count(), store.entries().count());
             }
             outcomes.push(Outcome { alias: String::new(), kind: "block", source: format!("{name} {flags:08X}"), placements: *n, result: Err("no block info file with this name".into()) });
@@ -764,49 +713,27 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             }
         } else {
             let mut m = crate::static_item::build::Merged::default();
-            m.editors = std::env::var_os("TINY_EDITORS").is_some();
             m.keep_water = crate::static_item::build::keep_water_for(collection);
             m.modifier = modifier_links(store, &effective_mods);
             m.collision_redress = modifier_collision_redress(store, &effective_mods);
             m.collision_redress_by_name = modifier_folder_redress(store, &m.modifier);
-            // TINY_NO_SPLIT_FOR=name,name (default DecoBeachMangrove): models baked
-            // without the per-layer split (the Mangrove split crashes the client;
-            // minimal repro var-m1, open bug).
-            let no_split_for = std::env::var("TINY_NO_SPLIT_FOR").unwrap_or_default();
-            m.no_split = no_split_for.split(',').any(|s| !s.is_empty() && s == name);
-            // The DecoPlatform blocks (Slope2Start, SlopeBase, …) keep their
-            // `Deco` material: it IS what the game draws — the grass-topped
-            // decorative platform (phys 2, grass). 70d461c (2026-09-07 15:00)
-            // had re-dressed them as `PlatformTech` (grey, phys 16) on the
-            // guess that Summer 20 cp3's "grey strip" was Deco drawn wrong;
-            // shot from the original on 2026-09-08 (cp3w/cp3pool, pillars
-            // thread) the DecoPlatformSlopeBase / Slope2Start cells beside
-            // the red plastic are GREEN GRASS slopes, and the grey strip was
-            // the re-dress itself. TINY_DECO_PLATFORM=1 restores the re-dress.
-            m.deco_as_platform = name.starts_with("DecoPlatform") && std::env::var("TINY_DECO_PLATFORM").map(|v| v == "1").unwrap_or(false);
+            // (The DecoPlatform blocks — Slope2Start, SlopeBase, … — keep their
+            // `Deco` material: it IS what the game draws, the grass-topped
+            // decorative platform, phys 2. 70d461c re-dressed them as grey
+            // PlatformTech for a day; the original's cp3 slopes are green grass.)
             let mut err = None;
-            // Terrain (Flat/Frontier/Transition zone blocks) may be lowered by
-            // TINY_TERRAIN_DROP (full-scale metres; default 0). The drop was
-            // 0.2 while a road deck and the Land plane of the same cell were
-            // both items (coplanar at +2 in the source: grass stripes across
-            // the road, 2026-09-06); since `tmmaps tiny` hides the tile under
-            // every deck (`stands_in_for_tile`) the drop only opened a 0.1 m
-            // step between a deck and its lowered neighbours — a black line
-            // across the sand in front of Summer 06's start (the tile meshes
-            // have no skirts). The pairs that still share a cell (pillar feet,
-            // DecoTerrainHD, deco shores: `tmmaps shared-cells`) coexist with
-            // their tile in the original too, so they are not coplanar.
+            // Terrain (Flat/Frontier/Transition zone blocks) sits where the
+            // source puts it. (A 0.2 m drop hid the coplanar deck/Land pairs
+            // of 2026-09-06; since `tmmaps tiny` hides the tile under every
+            // deck the drop only opened a 0.1 m step to the lowered
+            // neighbours — a black line across Summer 06's sand; gone.)
             let terrain = matches!(bi.kind, crate::blockinfo::Kind::Flat | crate::blockinfo::Kind::Frontier | crate::blockinfo::Kind::Transition);
-            let drop: f32 = std::env::var("TINY_TERRAIN_DROP").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
             for (p, tr, rot) in &prefabs {
                 let mut at = crate::geom::IDENTITY;
                 if let Some(t) = tr {
                     at[9] = t[0];
                     at[10] = t[1];
                     at[11] = t[2];
-                }
-                if terrain {
-                    at[10] -= drop;
                 }
                 if rot.map(|r| r.iter().any(|v| v.abs() > 1e-6)).unwrap_or(false) {
                     m.notes.push(format!("mobil rotation {:?} ignored for {p}", rot));
@@ -822,9 +749,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     // A terrain tile at the water row: the sea floor regains
                     // its depth (the apron under the water would otherwise
                     // sit at half depth and shade the sea a cell wide).
-                    if let (true, true, Some((wrow, wlocal))) = (deepen, terrain, water) {
+                    if let (true, Some((wrow, wlocal))) = (terrain, water) {
                         if rows_by_key.get(&(name.clone(), *flags)).map(|r| r.len() == 1 && r.contains(&wrow)).unwrap_or(false) {
-                            crate::static_item::build::restore_depth(&mut m, wlocal * scale, depth_keep, scale);
+                            crate::static_item::build::restore_depth(&mut m, wlocal * scale, scale);
                             deepened.push(format!("{name} {flags:08X}"));
                         }
                     }
@@ -981,36 +908,12 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         if model.is_empty() || !wanted(model) {
             continue;
         }
-        // TINY_DROP_ITEMS=sub,sub: item models whose name contains a substring
-        // are left out (`-` rows). Default: nothing is dropped. Until
-        // 2026-09-08 the default was `TME\` — the club's custom nation items
-        // (Summer 21–25's gauchos, guanacos, glacier, houses…) were believed
-        // to carry custom textures the bake could not embed. They do not: they
-        // are mesh-modeler items dressed in the game's `Material_BlockCustom`
-        // materials with a `TargetColor` constant per part, plus a bare
-        // modeler link (`TechnicsTrims`) — and the bake collapsed every
-        // same-link slot into one colour and left the bare link unresolved
-        // (`Merged::material_inst_slot` carries both now). They bake like any
-        // other embedded item.
-        let drop_items = std::env::var("TINY_DROP_ITEMS").unwrap_or_default();
-        if drop_items.split(',').any(|s| !s.is_empty() && s != "-" && model.contains(s)) {
-            // The placement is re-pointed at a stand-in the archive HAS (the
-            // first converted block) and sunk 1 000 m (a `y@` row): the
-            // dropped model's name leaves the map, so its file need not be
-            // carried.
-            match outcomes.iter().find(|o| o.kind == "block" && o.result.is_ok() && o.alias != "-" && !o.alias.is_empty()).map(|o| o.alias.clone()) {
-                Some(stand_in) => {
-                    sink_map.insert((model.clone(), *variant, lskin.clone()), 1000.0);
-                    item_map.insert((model.clone(), *variant, lskin.clone()), format!("{stand_in}.Item.Gbx"));
-                    outcomes.push(Outcome { alias: format!("{stand_in}.Item.Gbx"), kind: "item", source: model.clone(), placements: *n, result: Ok(format!("dropped by TINY_DROP_ITEMS: parked 1 000 m down as {stand_in}")) });
-                }
-                None => {
-                    item_map.insert((model.clone(), *variant, lskin.clone()), "-".into());
-                    outcomes.push(Outcome { alias: "-".into(), kind: "item", source: model.clone(), placements: *n, result: Ok("dropped by TINY_DROP_ITEMS".into()) });
-                }
-            }
-            continue;
-        }
+        // (Every item model bakes — the club's custom nation items included:
+        // until 2026-09-08 the `TME\` items were left out on the belief that
+        // they carried custom textures the bake could not embed. They are
+        // mesh-modeler items in the game's `Material_BlockCustom` materials
+        // with a `TargetColor` constant per part plus a bare modeler link, and
+        // `Merged::material_inst_slot` carries both now.)
         if lskin.is_none() {
             if let Some(target) = single_variant.get(model) {
                 item_map.insert((model.clone(), *variant, None), target.clone());
@@ -1035,9 +938,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // baked copy can have (the skin remap needs the model's own texture
         // file). The mapping row carries model_scale = scale so the placement
         // is treated like a half-size copy (scale 1, pivot halved).
-        // TINY_STOCK_HALF=0 bakes them instead; TINY_STOCK_HALF=gates also
-        // maps the gates to their half-WIDTH family member (32 m → 16 m: the
-        // same 11 m posts, so twice the tiny height — a visible mismatch).
+        // (The gates have no such twin, see `stock_half_variant`.)
         if let Some(small) = stock_half_variant(model) {
             if find_item_file(store, small).is_some() {
                 let key = (model.clone(), *variant, lskin.clone());
@@ -1384,29 +1285,26 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let verdict = crate::tree_clear::judge(&grid, &trees);
     // A BAKED tree is judged for the census only: at half size in a half-size
     // place it meets a deck exactly when the original did — the verdicts are
-    // printed, not written (TINY_TREE_CLEAR_BAKED=1 writes them too).
-    let drop_baked_trees = std::env::var("TINY_TREE_CLEAR_BAKED").map(|v| v == "1").unwrap_or(false);
+    // printed, not written.
     let is_baked = |t: &crate::tree_clear::Tree| baker.dims.contains_key(&t.species);
     let baked_dropped = verdict.dropped.iter().filter(|(t, _, _)| is_baked(t)).count();
     let baked_tested = trees.iter().filter(|t| is_baked(t)).count();
-    if std::env::var("TINY_TREE_CLEAR").map(|v| v != "0").unwrap_or(true) {
-        for (t, _, _) in &verdict.dropped {
-            if is_baked(t) && !drop_baked_trees {
-                continue;
-            }
-            mapping.push_str(&t.row);
-            mapping.push('\n');
+    for (t, _, _) in &verdict.dropped {
+        if is_baked(t) {
+            continue;
         }
+        mapping.push_str(&t.row);
+        mapping.push('\n');
     }
     if baked_tested > 0 {
-        println!("  baked trees: {baked_tested} judged against the decks, {baked_dropped} would be dropped{}", if drop_baked_trees { " (TINY_TREE_CLEAR_BAKED=1: written)" } else { " (census only, none dropped)" });
+        println!("  baked trees: {baked_tested} judged against the decks, {baked_dropped} would be dropped (census only, none dropped)");
         if baked_dropped > 0 {
             let mut by_species: BTreeMap<&str, usize> = BTreeMap::new();
             for (t, _, _) in verdict.dropped.iter().filter(|(t, _, _)| is_baked(t)) {
                 *by_species.entry(t.species.as_str()).or_default() += 1;
             }
             println!("    baked by species: {}", by_species.iter().map(|(k, n)| format!("{k} x{n}")).collect::<Vec<_>>().join(", "));
-            if std::env::var_os("TINY_TREE_CLEAR_LIST").is_some() {
+            if crate::debug::on("trees") {
                 for (t, owner, y) in verdict.dropped.iter().filter(|(t, _, _)| is_baked(t)) {
                     println!("    baked {}\t{} {} r {:.1} h {:.1} at {:.1},{:.1},{:.1} — {} at y {:.1}", t.row.replace('\t', " "), t.species, t.owner, t.radius, t.height, t.pos[0], t.pos[1], t.pos[2], owner, y);
                 }
@@ -1420,7 +1318,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             *by_species.entry(t.species.as_str()).or_default() += 1;
             *by_owner.entry(owner.as_str()).or_default() += 1;
         }
-        println!("  tree clearance: {} trees tested against {} up-facing triangles of {} deck placements; {} DROPPED (overlapping a deck), {} kept{}", trees.len(), grid.len(), deck_placements, verdict.dropped.len(), verdict.kept, if std::env::var("TINY_TREE_CLEAR").map(|v| v == "0").unwrap_or(false) { " — TINY_TREE_CLEAR=0: verdicts NOT written" } else { "" });
+        println!("  tree clearance: {} trees tested against {} up-facing triangles of {} deck placements; {} DROPPED (overlapping a deck), {} kept", trees.len(), grid.len(), deck_placements, verdict.dropped.len(), verdict.kept);
         if !verdict.dropped.is_empty() {
             let mut sp: Vec<_> = by_species.into_iter().collect();
             sp.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
@@ -1437,7 +1335,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 }
             }
             println!("    worst spot: {} dropped trees within 24 m of scaled-source {:.1},{:.1},{:.1} (source {:.1},{:.1},{:.1})", best.0, best.1[0], best.1[1], best.1[2], best.1[0] / scale, best.1[1] / scale, best.1[2] / scale);
-            if std::env::var_os("TINY_TREE_CLEAR_LIST").is_some() {
+            if crate::debug::on("trees") {
                 for (t, owner, y) in &verdict.dropped {
                     println!("    drop {}\t{} {} r {:.1} h {:.1} at {:.1},{:.1},{:.1} — {} at y {:.1}", t.row.replace('\t', " "), t.species, t.owner, t.radius, t.height, t.pos[0], t.pos[1], t.pos[2], owner, y);
                 }
@@ -1465,7 +1363,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     }
     println!("  library: {} embedded items; {} models ok, {} failed -> {}", files.len(), ok, bad, out_zip.display());
     if !deepened.is_empty() {
-        println!("  sea floor at source depth under {} shore tile models at the water row (TINY_DEEPEN=0 to keep it halved): {}", deepened.len(), deepened.join(", "));
+        println!("  sea floor at source depth under {} shore tile models at the water row: {}", deepened.len(), deepened.join(", "));
     }
     println!("  mapping: {} rows -> {} ({} vegetation placements sunk to half-tree crown height; {} tree placements on {} baked half-size species, {} KB of items + {} KB of textures)", rows, out_mapping.display(), sunk_rows, baked_tree_rows, baker.next, baker.item_bytes / 1024, baker.texture_bytes / 1024);
     if !dropped_baked.is_empty() {

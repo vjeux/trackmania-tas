@@ -8,6 +8,8 @@ mapgeom -- TM2020 map geometry
   --packs <dir>     directory holding the game's .pak files
                     (default $TM_SERVER/Packs, else /tmp/tmoracle/server/Packs)
   --key <hex>       Stadium pack key (default: the known one)
+  --pak <file[:key]>  a client pack (repeatable; the key is the 32-hex derived key)
+  --debug <name,..> diagnostic prints: lookup, decls, trees (`--debug help`)
 
 COMMANDS
   ls [<substring>]              pack entries whose path contains <substring>
@@ -98,6 +100,7 @@ fn parse_args() -> Args {
             "--packs" => packs = it.next().unwrap_or_default(),
             "--pak" => paks.push(it.next().unwrap_or_default()),
             "--key" => key = it.next().unwrap_or_default(),
+            "--debug" => mapgeom::debug::set(&it.next().unwrap_or_default()).unwrap_or_else(|e| die(e)),
             _ => rest.push(a),
         }
     }

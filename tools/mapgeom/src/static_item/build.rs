@@ -551,17 +551,19 @@ pub fn remap_positions(m: &mut Merged, f: &dyn Fn([f32; 3]) -> [f32; 3]) {
 /// a cell wide; halved with the rest of the tile that apron sits at half its
 /// depth, and the water over it turns dark: a rectangle of shaded sea around
 /// every island, one tiny cell wide, where the original shows open sea
-/// (Summer 06 start island, top-down). Below `water` (the surface, in the
-/// item's scaled frame) the first `keep` metres keep the tile's scale — the
-/// visible shallows — and every metre beyond regains its source depth
-/// (divided by `scale`), so the apron sinks back to where the water hides it.
-pub fn restore_depth(m: &mut Merged, water: f32, keep: f32, scale: f32) {
+/// (Summer 06 start island, top-down). Every metre below `water` (the surface,
+/// in the item's scaled frame) regains its source depth (divided by `scale`),
+/// so the apron sinks back to where the water hides it.
+/// Every underwater vertex takes its source depth: the Beach apron is only
+/// 0.8..3 m deep in the source and the sea over it reads as open sea from
+/// 3 m down, so no band of the shallows keeps the tile's scale.
+pub fn restore_depth(m: &mut Merged, water: f32, scale: f32) {
     remap_positions(m, &|p| {
         let depth = water - p[1];
-        if depth <= keep {
+        if depth <= 0.0 {
             p
         } else {
-            [p[0], water - keep - (depth - keep) / scale, p[2]]
+            [p[0], water - depth / scale, p[2]]
         }
     });
 }
