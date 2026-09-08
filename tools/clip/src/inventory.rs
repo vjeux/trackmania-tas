@@ -225,7 +225,9 @@ pub fn treatment_from_clip(
     let Some(tas) = tas else {
         return (
             Treatment::Unknown,
-            format!("{secs:.3}s at {width}x{height}, but the page states no TAS time to compare it to"),
+            format!(
+                "{secs:.3}s at {width}x{height}, but the page states no TAS time to compare it to"
+            ),
         );
     };
     // NO RECORD MEANS NO OPPONENT. Two pages here are maps nobody has ever set
@@ -234,13 +236,19 @@ pub fn treatment_from_clip(
     let Some(wr) = wr else {
         return (
             Treatment::SingleCar,
-            format!("no human has ever recorded a time here, so there was no opponent ghost to film"),
+            format!(
+                "no human has ever recorded a time here, so there was no opponent ghost to film"
+            ),
         );
     };
     let slower = tas.max(wr);
     let fit = |target: f64| {
         let d = secs - target;
-        if d < -EARLY || d > LATE { None } else { Some(d.abs()) }
+        if d < -EARLY || d > LATE {
+            None
+        } else {
+            Some(d.abs())
+        }
     };
     let (f_tas, f_slow) = (fit(tas), fit(slower));
     let (t, d, loser) = match (f_tas, f_slow) {
@@ -398,8 +406,12 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let mut probe_all = false;
     let mut verify = false;
     let mut markdown = false;
-    let mut store = std::env::var("TM_STORE")
-        .unwrap_or_else(|_| format!("{}/persistent/private-30d/tm-unbeaten", std::env::var("HOME").unwrap_or_default()));
+    let mut store = std::env::var("TM_STORE").unwrap_or_else(|_| {
+        format!(
+            "{}/persistent/private-30d/tm-unbeaten",
+            std::env::var("HOME").unwrap_or_default()
+        )
+    });
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -451,9 +463,17 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let pages = read_root(Path::new(&root))?;
     // Only built when asked: the probe needs ffprobe and the open internet, and
     // the plain listing must keep working on a box with neither.
-    let ff = if probe { Some(crate::platform::from_env()?) } else { None };
+    let ff = if probe {
+        Some(crate::platform::from_env()?)
+    } else {
+        None
+    };
     let cfg = crate::ship::Cfg::from_env();
-    let scratch = if probe { Some(crate::proc::scratch_dir("clip-probe")?) } else { None };
+    let scratch = if probe {
+        Some(crate::proc::scratch_dir("clip-probe")?)
+    } else {
+        None
+    };
 
     let mut out = String::new();
     let (mut with, mut without, mut unknown) = (0, 0, 0);
@@ -529,7 +549,11 @@ pub fn main(args: &[String]) -> Result<(), String> {
             Some(c) => (c.tas.clone(), c.at.clone(), c.wr.clone()),
             None => ("?".into(), "?".into(), "?".into()),
         };
-        let plan = if v.is_none() { "two-car (no video)" } else { treatment.label() };
+        let plan = if v.is_none() {
+            "two-car (no video)"
+        } else {
+            treatment.label()
+        };
         if tsv {
             let _ = writeln!(
                 out,
@@ -657,6 +681,9 @@ mod tests {
     #[test]
     fn the_overlay_panel_is_not_a_split_view() {
         // "the panel is this run's own inputs" appears on nearly every page.
-        assert_eq!(treatment_of("The panel is this run's own inputs."), Treatment::Unknown);
+        assert_eq!(
+            treatment_of("The panel is this run's own inputs."),
+            Treatment::Unknown
+        );
     }
 }

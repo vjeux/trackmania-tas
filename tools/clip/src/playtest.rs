@@ -58,11 +58,7 @@ pub fn assemble(index_html: &str, pump_js: &str, drive_js: &str) -> Result<Strin
         &format!("<script>{pump_js}</script><script>"),
         1,
     );
-    Ok(with_pump.replacen(
-        "</body>",
-        &format!("<script>{drive_js}</script></body>"),
-        1,
-    ))
+    Ok(with_pump.replacen("</body>", &format!("<script>{drive_js}</script></body>"), 1))
 }
 
 pub fn chrome_argv(profile: &Path, page_url: &str) -> Vec<String> {
@@ -234,7 +230,10 @@ fn run_in(
     // real file handed to the child as its stdout, which is a redirect and not
     // a pipe; `Stdio::piped()` here would reintroduce exactly that hang.
     let mut child = Command::new(chrome)
-        .args(chrome_argv(&dir.join("profile"), &format!("file://{}", html.display())))
+        .args(chrome_argv(
+            &dir.join("profile"),
+            &format!("file://{}", html.display()),
+        ))
         .stdout(Stdio::from(dom_file))
         .stderr(Stdio::null())
         .stdin(Stdio::null())
@@ -284,7 +283,10 @@ mod tests {
         let pump = out.find("PUMP();").unwrap();
         let page = out.find("PAGE();").unwrap();
         let drive = out.find("DRIVE();").unwrap();
-        assert!(pump < page, "the pump must replace rAF before a frame is scheduled");
+        assert!(
+            pump < page,
+            "the pump must replace rAF before a frame is scheduled"
+        );
         assert!(page < drive, "the driver needs the page's DOM to exist");
         assert!(out.find("DRIVE();").unwrap() < out.find("</body>").unwrap());
     }
@@ -331,7 +333,10 @@ mod tests {
     fn a_page_that_never_scored_is_not_a_pass() {
         // the page's own title, and the driver's boot placeholder: both mean
         // "no verdict", and both used to exit 0
-        assert_eq!(read_verdict("<title>TAS Trainer — 6.323</title>"), Verdict::None);
+        assert_eq!(
+            read_verdict("<title>TAS Trainer — 6.323</title>"),
+            Verdict::None
+        );
         assert_eq!(read_verdict("<title>D boot</title>"), Verdict::None);
         assert_eq!(read_verdict(""), Verdict::None);
         assert_eq!(read_verdict("<title>unterminated"), Verdict::None);

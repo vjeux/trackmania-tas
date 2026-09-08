@@ -71,7 +71,9 @@ pub struct Input {
 /// is a different situation from "the run ended", and clamping to zero would be
 /// worse than the defect.
 fn keep_to(tape_end_ms: i64, declared_ms: Option<i64>) -> i64 {
-    declared_ms.map(|e| e.min(tape_end_ms)).unwrap_or(tape_end_ms)
+    declared_ms
+        .map(|e| e.min(tape_end_ms))
+        .unwrap_or(tape_end_ms)
 }
 
 /// The run's inputs on a 10 ms race-time grid, indexed by `(race_ms / 10)`.
@@ -100,7 +102,9 @@ pub fn inputs_by_race_ms(path: &str) -> Result<Vec<Input>, String> {
     }
     let last = t.race_ms(st.len() - 1);
     if last < 0 {
-        return Err(format!("{path}'s tape ends at race {last} ms -- it is all countdown"));
+        return Err(format!(
+            "{path}'s tape ends at race {last} ms -- it is all countdown"
+        ));
     }
     // The declared time, when the file states one. A file with no declared time
     // keeps the whole tape: dropping to zero would be worse than a stranger's
@@ -139,7 +143,11 @@ struct Canvas {
 
 impl Canvas {
     fn new(w: usize, h: usize) -> Self {
-        Canvas { w, h, px: vec![0; w * h * 4] }
+        Canvas {
+            w,
+            h,
+            px: vec![0; w * h * 4],
+        }
     }
     fn clear(&mut self) {
         self.px.iter_mut().for_each(|b| *b = 0);
@@ -291,7 +299,14 @@ pub fn draw(cv: &mut Canvas, ins: &[Input], ms: i64, history_ms: i64, future_ms:
     text(cv, 10, 10, &format!("{:.3}", ms as f64 / 1000.0), 2, WHITE);
     let lamp = |cv: &mut Canvas, x: i64, on: bool, c: [u8; 4], label: &str| {
         cv.rect(x, 8, 74, 20, if on { c } else { [40, 40, 40, 200] });
-        text(cv, x + 8, 14, label, 1, if on { [0, 0, 0, 255] } else { DIM });
+        text(
+            cv,
+            x + 8,
+            14,
+            label,
+            1,
+            if on { [0, 0, 0, 255] } else { DIM },
+        );
     };
     lamp(cv, 150, now.gas, GREEN, "GAS");
     lamp(cv, 232, now.brake, RED, "BRAKE");
@@ -308,7 +323,14 @@ pub fn draw(cv: &mut Canvas, ins: &[Input], ms: i64, history_ms: i64, future_ms:
     let sx = cx + (now.steer as i64 * half) / 127;
     cv.span(cx, sx, 38, 13, BLUE);
     text(cv, 20, 38, if now.steer < 0 { "L" } else { " " }, 1, DIM);
-    text(cv, PANEL_W as i64 - 26, 38, if now.steer > 0 { "R" } else { " " }, 1, DIM);
+    text(
+        cv,
+        PANEL_W as i64 - 26,
+        38,
+        if now.steer > 0 { "R" } else { " " },
+        1,
+        DIM,
+    );
 
     // --- the strip: steering across the window, with the throttle and brake as
     //     a band underneath it, and NOW at the playhead.
@@ -349,12 +371,30 @@ pub fn draw(cv: &mut Canvas, ins: &[Input], ms: i64, history_ms: i64, future_ms:
         } else {
             BLUE
         };
-        cv.span(20 + px, 20 + px, y.min(sy + sh / 2), (y - (sy + sh / 2)).abs().max(1), c);
+        cv.span(
+            20 + px,
+            20 + px,
+            y.min(sy + sh / 2),
+            (y - (sy + sh / 2)).abs().max(1),
+            c,
+        );
         if gas {
-            cv.rect(20 + px, sy + sh + 2, 1, 4, if future { GREEN_DIM } else { GREEN });
+            cv.rect(
+                20 + px,
+                sy + sh + 2,
+                1,
+                4,
+                if future { GREEN_DIM } else { GREEN },
+            );
         }
         if brake {
-            cv.rect(20 + px, sy + sh + 8, 1, 4, if future { RED_DIM } else { RED });
+            cv.rect(
+                20 + px,
+                sy + sh + 8,
+                1,
+                4,
+                if future { RED_DIM } else { RED },
+            );
         }
         if respawn {
             cv.rect(20 + px, sy, 1, sh, if future { AMBER_DIM } else { AMBER });
@@ -365,10 +405,24 @@ pub fn draw(cv: &mut Canvas, ins: &[Input], ms: i64, history_ms: i64, future_ms:
     // above the label row: run through the text and it cuts "NOW" in half,
     // which is what the first version of this did.
     cv.rect(20 + ph, sy - 2, 1, sh + 6, WHITE);
-    text(cv, 20, PANEL_H as i64 - 12, &format!("-{:.1}S", history_ms as f64 / 1000.0), 1, DIM);
+    text(
+        cv,
+        20,
+        PANEL_H as i64 - 12,
+        &format!("-{:.1}S", history_ms as f64 / 1000.0),
+        1,
+        DIM,
+    );
     text(cv, 20 + ph - 9, PANEL_H as i64 - 12, "NOW", 1, WHITE);
     let right = format!("+{:.1}S", future_ms as f64 / 1000.0);
-    text(cv, PANEL_W as i64 - 20 - right.len() as i64 * 6, PANEL_H as i64 - 12, &right, 1, DIM);
+    text(
+        cv,
+        PANEL_W as i64 - 20 - right.len() as i64 * 6,
+        PANEL_H as i64 - 12,
+        &right,
+        1,
+        DIM,
+    );
 }
 
 pub struct Opts {
@@ -392,7 +446,15 @@ pub struct Opts {
 
 impl Default for Opts {
     fn default() -> Self {
-        Opts { offset_ms: 0, fps: 30.0, to: None, history_ms: 3000, future_ms: 3000, margin: 24, crf: 19 }
+        Opts {
+            offset_ms: 0,
+            fps: 30.0,
+            to: None,
+            history_ms: 3000,
+            future_ms: 3000,
+            margin: 24,
+            crf: 19,
+        }
     }
 }
 
@@ -402,7 +464,13 @@ impl Default for Opts {
 /// keyframe. The overlay is anchored bottom-left with a margin, in `main_h`
 /// terms, so it sits correctly whatever the clip's height is.
 pub fn ffmpeg_argv(video: &str, out: &str, o: &Opts) -> Vec<String> {
-    let mut v: Vec<String> = vec!["-v".into(), "error".into(), "-y".into(), "-i".into(), video.into()];
+    let mut v: Vec<String> = vec![
+        "-v".into(),
+        "error".into(),
+        "-y".into(),
+        "-i".into(),
+        video.into(),
+    ];
     v.extend([
         "-f".into(),
         "rawvideo".into(),
@@ -415,7 +483,10 @@ pub fn ffmpeg_argv(video: &str, out: &str, o: &Opts) -> Vec<String> {
         "-i".into(),
         "-".into(),
         "-filter_complex".into(),
-        format!("[0:v][1:v]overlay={m}:main_h-overlay_h-{m}:format=auto", m = o.margin),
+        format!(
+            "[0:v][1:v]overlay={m}:main_h-overlay_h-{m}:format=auto",
+            m = o.margin
+        ),
     ]);
     if let Some(t) = o.to {
         v.extend(["-t".into(), format!("{t:.3}")]);
@@ -506,10 +577,18 @@ pub fn run(ff: &Ff, ghost: &Path, video: &Path, out: &Path, o: &Opts) -> Result<
     // Look at what you made (FILMING.md section 6).
     let dout = ff.probe_duration(out)?;
     if (dout - dur).abs() > 1.0 {
-        return Err(format!("asked for {}s and the output is {}s", secs(dur), secs(dout)));
+        return Err(format!(
+            "asked for {}s and the output is {}s",
+            secs(dur),
+            secs(dout)
+        ));
     }
     let bytes = crate::proc::filesize(out)?;
-    println!("overlay: {}s {bytes} bytes -> {}", secs(dout), out.display());
+    println!(
+        "overlay: {}s {bytes} bytes -> {}",
+        secs(dout),
+        out.display()
+    );
     Ok(())
 }
 
@@ -609,7 +688,9 @@ pub fn alignment(ghost: &str, span_ms: i64) -> Result<(i64, f64, f64), String> {
             if t < 0 {
                 continue;
             }
-            let Some(i) = ins.get((t / 10) as usize) else { continue };
+            let Some(i) = ins.get((t / 10) as usize) else {
+                continue;
+            };
             // The record stores steer as `floor((steer_i8 + 127) * 255 / 254)`;
             // comparing in i8 space avoids re-deriving that here.
             err += (s.steer as f64 * 127.0 - i.steer as f64).abs();
@@ -622,8 +703,16 @@ pub fn alignment(ghost: &str, span_ms: i64) -> Result<(i64, f64, f64), String> {
     if at_lag.is_empty() {
         return Err("no shared instants between the tape and the record".into());
     }
-    let zero = at_lag.iter().find(|(l, _)| *l == 0).map(|(_, e)| *e).unwrap_or(f64::NAN);
-    let best = at_lag.iter().copied().min_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
+    let zero = at_lag
+        .iter()
+        .find(|(l, _)| *l == 0)
+        .map(|(_, e)| *e)
+        .unwrap_or(f64::NAN);
+    let best = at_lag
+        .iter()
+        .copied()
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .unwrap();
     Ok((best.0, best.1, zero))
 }
 
@@ -633,11 +722,17 @@ mod tests {
 
     #[test]
     fn the_length_is_an_output_option_not_an_input_seek() {
-        let o = Opts { to: Some(222.0), ..Default::default() };
+        let o = Opts {
+            to: Some(222.0),
+            ..Default::default()
+        };
         let a = ffmpeg_argv("in.webm", "out.mp4", &o);
         let last_i = a.iter().rposition(|x| x == "-i").unwrap();
         let t = a.iter().position(|x| x == "-t").unwrap();
-        assert!(t > last_i, "-t must follow every -i or the cut snaps to a keyframe");
+        assert!(
+            t > last_i,
+            "-t must follow every -i or the cut snaps to a keyframe"
+        );
         assert_eq!(a[t + 1], "222.000");
     }
 
@@ -655,7 +750,12 @@ mod tests {
     /// tests the label, which is how the first version of this test failed on
     /// correct output.
     fn bar_extent(steer: i8) -> i64 {
-        let ins = vec![Input { steer, gas: true, brake: false, respawn: false }];
+        let ins = vec![Input {
+            steer,
+            gas: true,
+            brake: false,
+            respawn: false,
+        }];
         let mut cv = Canvas::new(PANEL_W, PANEL_H);
         draw(&mut cv, &ins, 0, 3000, 3000);
         let cx = (PANEL_W / 2) as i64;
@@ -672,7 +772,11 @@ mod tests {
         while cx + right + 1 < PANEL_W as i64 && is_bar(cx + right + 1) {
             right += 1;
         }
-        if left > right { -left } else { right }
+        if left > right {
+            -left
+        } else {
+            right
+        }
     }
 
     #[test]
@@ -681,9 +785,16 @@ mod tests {
         // Full left reaches the left end -- allowing for the label glyph, which
         // paints over the last few pixels of the bar.
         let l = bar_extent(-127);
-        assert!(l < -(half - 12), "full left reached only {l}, expected about {}", -half);
+        assert!(
+            l < -(half - 12),
+            "full left reached only {l}, expected about {}",
+            -half
+        );
         let r = bar_extent(127);
-        assert!(r > half - 12, "full right reached only {r}, expected about {half}");
+        assert!(
+            r > half - 12,
+            "full right reached only {r}, expected about {half}"
+        );
         // A NEGATIVE STEER MUST NOT DRAW RIGHT. Steer is an i8 in a u8 field,
         // and a naive unsigned read makes every left input full right -- the
         // exact defect this test exists for.
@@ -703,7 +814,12 @@ mod tests {
     /// `at_ms`, then report which strip pixels are painted.
     fn strip_pixels(at_ms: i64, now_ms: i64, past: i64, future: i64) -> Vec<i64> {
         let mut ins = vec![Input::default(); (at_ms / 10) as usize + 64];
-        ins[(at_ms / 10) as usize] = Input { steer: 127, gas: false, brake: false, respawn: false };
+        ins[(at_ms / 10) as usize] = Input {
+            steer: 127,
+            gas: false,
+            brake: false,
+            respawn: false,
+        };
         let mut cv = Canvas::new(PANEL_W, PANEL_H);
         draw(&mut cv, &ins, now_ms, past, future);
         // Only the STEERING TRACE counts, matched by its own two colours. A
@@ -730,7 +846,10 @@ mod tests {
         let w = PANEL_W as i64 - 40;
         let ph = (3000 * w) / 6000;
         let ahead = strip_pixels(4500, 3000, 3000, 3000);
-        assert!(!ahead.is_empty(), "an input 1.5 s ahead drew nothing -- the future is not rendered");
+        assert!(
+            !ahead.is_empty(),
+            "an input 1.5 s ahead drew nothing -- the future is not rendered"
+        );
         assert!(
             ahead.iter().all(|px| *px > ph),
             "a future input painted at or behind the playhead ({ph}): {ahead:?}"
@@ -799,7 +918,11 @@ mod tests {
     #[test]
     fn no_letter_renders_as_a_silent_blank() {
         for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".chars() {
-            assert_ne!(glyph(c), [0u8; 7], "{c} draws nothing -- it would render as a space");
+            assert_ne!(
+                glyph(c),
+                [0u8; 7],
+                "{c} draws nothing -- it would render as a space"
+            );
         }
         // A space is the ONE thing allowed to be blank.
         assert_eq!(glyph(' '), [0u8; 7]);

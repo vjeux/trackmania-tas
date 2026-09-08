@@ -117,7 +117,10 @@ mod tests {
         let a = ffmpeg_argv("in.webm", 219.812, "out.mp4");
         let i = a.iter().position(|x| x == "-i").unwrap();
         let t = a.iter().position(|x| x == "-t").unwrap();
-        assert!(t > i, "-t must come after -i or the cut snaps to a keyframe");
+        assert!(
+            t > i,
+            "-t must come after -i or the cut snaps to a keyframe"
+        );
         assert_eq!(a[t + 1], "219.812");
     }
 

@@ -169,7 +169,10 @@ mod tests {
     fn the_shorter_run_is_held_not_blacked_out() {
         let g = filtergraph(36.049, "TAS 29.988", "ShcrTM 36.049", FONT);
         // both halves hold their final frame ...
-        assert_eq!(g.matches("tpad=stop_mode=clone:stop_duration=60").count(), 2);
+        assert_eq!(
+            g.matches("tpad=stop_mode=clone:stop_duration=60").count(),
+            2
+        );
         // ... and both are cut to the LONGER run, so the gap reads as time
         assert_eq!(g.matches("trim=duration=36.049").count(), 2);
         // tpad's DEFAULT stop_mode is `add`, which pads with black frames --
@@ -209,7 +212,12 @@ mod tests {
     #[test]
     fn encoder_flags_are_the_published_encode() {
         let a = ffmpeg_argv("l.mp4", "r.mp4", "G", "o.mp4");
-        for pair in [("-c:v", "libx264"), ("-crf", "19"), ("-preset", "medium"), ("-pix_fmt", "yuv420p")] {
+        for pair in [
+            ("-c:v", "libx264"),
+            ("-crf", "19"),
+            ("-preset", "medium"),
+            ("-pix_fmt", "yuv420p"),
+        ] {
             assert!(
                 a.windows(2).any(|w| w[0] == pair.0 && w[1] == pair.1),
                 "{pair:?} missing from {a:?}"

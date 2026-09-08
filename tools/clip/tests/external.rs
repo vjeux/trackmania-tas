@@ -112,7 +112,9 @@ fn curl_or_skip(test: &str) -> Option<PathBuf> {
 #[test]
 fn gate_waits_out_the_registration_delay_and_then_passes() {
     let name = "gate_waits_out_the_registration_delay_and_then_passes";
-    let Some(curl) = curl_or_skip(name) else { return };
+    let Some(curl) = curl_or_skip(name) else {
+        return;
+    };
     // Exactly the shape 208024 produced: 404 while the release-body edit
     // propagates, then a 200 whose bytes are still short, then the real file.
     let full = vec![7u8; 4096];
@@ -135,14 +137,20 @@ fn gate_waits_out_the_registration_delay_and_then_passes() {
     let passed = ship::gate(&gate_cfg(curl), &url, &out, probe).expect("gate should pass");
     assert_eq!(passed.bytes, full.len() as u64);
     assert_eq!(passed.duration, 12.345);
-    assert_eq!(served.load(Ordering::SeqCst), 4, "one reading is not a verdict");
+    assert_eq!(
+        served.load(Ordering::SeqCst),
+        4,
+        "one reading is not a verdict"
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn gate_refuses_an_asset_that_stays_404() {
     let name = "gate_refuses_an_asset_that_stays_404";
-    let Some(curl) = curl_or_skip(name) else { return };
+    let Some(curl) = curl_or_skip(name) else {
+        return;
+    };
     let (url, served) = stub_server(vec![(404, vec![])]);
     let dir = tempdir("gate-404");
     let e = ship::gate(&gate_cfg(curl), &url, &dir.join("a.mp4"), |_| Ok(1.0)).unwrap_err();
@@ -155,7 +163,9 @@ fn gate_refuses_an_asset_that_stays_404() {
 #[test]
 fn gate_refuses_bytes_that_never_probe() {
     let name = "gate_refuses_bytes_that_never_probe";
-    let Some(curl) = curl_or_skip(name) else { return };
+    let Some(curl) = curl_or_skip(name) else {
+        return;
+    };
     // 200 all the way, but the body is never a playable file: published would
     // be a link that serves an error page with a video extension.
     let (url, _) = stub_server(vec![(200, b"<html>not a video</html>".to_vec())]);
@@ -181,7 +191,9 @@ fn gate_refuses_bytes_that_never_probe() {
 #[test]
 fn gate_runs_with_a_scrubbed_environment() {
     let name = "gate_runs_with_a_scrubbed_environment";
-    let Some(curl) = curl_or_skip(name) else { return };
+    let Some(curl) = curl_or_skip(name) else {
+        return;
+    };
     let dead = TcpListener::bind("127.0.0.1:0").unwrap();
     let dead_port = dead.local_addr().unwrap().port();
     drop(dead); // nothing is listening there now
@@ -299,7 +311,10 @@ fn split_holds_the_shorter_run_to_the_length_of_the_longer() {
         Err(e) => return skip(name, &e),
     };
     if ff.font.is_none() {
-        return skip(name, "an ffmpeg is present but no drawtext font is — split refuses");
+        return skip(
+            name,
+            "an ffmpeg is present but no drawtext font is — split refuses",
+        );
     }
     if !ff.has_drawtext() {
         return skip(
@@ -316,9 +331,17 @@ fn split_holds_the_shorter_run_to_the_length_of_the_longer() {
     for (p, d) in [(&short, "2"), (&long, "5")] {
         let ok = Command::new(&ff.ffmpeg)
             .args([
-                "-v", "error", "-y", "-f", "lavfi", "-i",
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
                 &format!("testsrc=size=320x240:rate=30:duration={d}"),
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
             ])
             .arg(p)
             .status();
@@ -326,7 +349,10 @@ fn split_holds_the_shorter_run_to_the_length_of_the_longer() {
     }
     split::run(&ff, &short, &long, "TAS", "HUMAN", &out).expect("split");
     let d = ff.probe_duration(&out).expect("output probes");
-    assert!((4.9..5.3).contains(&d), "output was {d}s, expected the longer run's 5s");
+    assert!(
+        (4.9..5.3).contains(&d),
+        "output was {d}s, expected the longer run's 5s"
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -376,7 +402,10 @@ fn the_trainer_page_scores_a_run_in_a_real_browser() {
 fn assembly_matches_the_node_splice_it_replaces() {
     let name = "assembly_matches_the_node_splice_it_replaces";
     let Some(node) = which("node") else {
-        return skip(name, "no node on this box — the assembly is covered by unit tests only");
+        return skip(
+            name,
+            "no node on this box — the assembly is covered by unit tests only",
+        );
     };
     let dir = trainer_dir();
     if !dir.join("index.html").is_file() {
@@ -405,8 +434,15 @@ fs.writeFileSync(o+"/pt.html",h);"#;
         &read("playtest-drive.js"),
     )
     .expect("assemble");
-    assert_eq!(ours.len(), reference.len(), "assembled pages differ in length");
-    assert!(ours == reference, "assembled page differs from the node splice");
+    assert_eq!(
+        ours.len(),
+        reference.len(),
+        "assembled pages differ in length"
+    );
+    assert!(
+        ours == reference,
+        "assembled page differs from the node splice"
+    );
     let _ = std::fs::remove_dir_all(out);
 }
 

@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use clip::{cut, frames, inventory, overlay, platform, ship, split};
 
 const USAGE: &str = "\
-clip ship  <file.mp4> <map-dir> [release-asset-name]
+clip ship  <file.mp4> <map-dir> [release-asset-name] [--no-mirror]
     Publish one clip so a LOGGED-OUT visitor can watch it: settle and probe the
     file, upload it to the release, upload it to user-attachments, register the
     URL in the release body (this is what makes it public), then fetch it back
@@ -100,18 +100,22 @@ fn go(args: &[String]) -> Result<(), String> {
     };
     match cmd {
         "ship" => {
-            let (file, mapdir) = match args.len() {
-                3 | 4 => (&args[1], &args[2]),
+            let pos: Vec<&String> = args.iter().skip(1).filter(|a| !a.starts_with("--")).collect();
+            let (file, mapdir) = match pos.len() {
+                2 | 3 => (pos[0], pos[1]),
                 _ => return Err(format!("usage:\n{USAGE}")),
             };
             let ff = platform::from_env()?;
-            let cfg = ship::Cfg::from_env();
+            let mut cfg = ship::Cfg::from_env();
+            if args.iter().any(|a| a == "--no-mirror") {
+                cfg.mirror = false;
+            }
             ship::run(
                 &ff,
                 &cfg,
                 Path::new(file),
                 Path::new(mapdir),
-                args.get(3).map(String::as_str),
+                pos.get(2).map(|s| s.as_str()),
             )
         }
         "cut" => {

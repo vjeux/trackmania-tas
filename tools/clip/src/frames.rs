@@ -92,7 +92,13 @@ pub fn spread(duration: f64, n: usize) -> Vec<f64> {
         _ => (0..n)
             .map(|i| duration * i as f64 / (n - 1) as f64)
             // The very last frame of a file is a coin toss; step just inside it.
-            .map(|t| if t >= duration { (duration - 0.05).max(0.0) } else { t })
+            .map(|t| {
+                if t >= duration {
+                    (duration - 0.05).max(0.0)
+                } else {
+                    t
+                }
+            })
             .collect(),
     }
 }
@@ -148,7 +154,10 @@ pub fn run(ff: &Ff, input: &Path, outdir: &Path, o: &Opts) -> Result<(), String>
     std::fs::create_dir_all(outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
 
     if o.stream {
-        println!("frames: {} as a STREAM (no duration read from the file)", times.len());
+        println!(
+            "frames: {} as a STREAM (no duration read from the file)",
+            times.len()
+        );
     } else {
         println!("frames: {} of {}s", times.len(), secs(dur));
     }
@@ -161,7 +170,11 @@ pub fn run(ff: &Ff, input: &Path, outdir: &Path, o: &Opts) -> Result<(), String>
                 secs(dur)
             ));
         }
-        let out = outdir.join(still_name(&o.prefix, at, if o.thumb.is_some() { "jpg" } else { "png" }));
+        let out = outdir.join(still_name(
+            &o.prefix,
+            at,
+            if o.thumb.is_some() { "jpg" } else { "png" },
+        ));
         let args = ffmpeg_argv(&ff.arg_path(input)?, at, &ff.arg_path(&out)?, o.thumb);
         let r = capture(Command::new(&ff.ffmpeg).args(&args))?;
         if !r.ok() {
@@ -169,7 +182,10 @@ pub fn run(ff: &Ff, input: &Path, outdir: &Path, o: &Opts) -> Result<(), String>
         }
         // A seek past the end exits 0 and writes nothing.
         let bytes = crate::proc::filesize(&out).map_err(|e| {
-            format!("no still came out at {}s ({e}) -- ffmpeg reported no error", secs(at))
+            format!(
+                "no still came out at {}s ({e}) -- ffmpeg reported no error",
+                secs(at)
+            )
         })?;
         if bytes == 0 {
             return Err(format!("the still at {}s is empty", secs(at)));
@@ -252,8 +268,19 @@ mod tests {
         assert_eq!(still_name("u01_", 4.25, "png"), "u01_t004_250.png");
         assert_eq!(still_name("", 4.25, "jpg"), "t004_250.jpg");
         assert_eq!(still_name("", 12.0, "png"), "t012_000.png");
-        let mut v = [still_name("", 10.0, "png"), still_name("", 2.0, "png"), still_name("", 1.5, "png")];
+        let mut v = [
+            still_name("", 10.0, "png"),
+            still_name("", 2.0, "png"),
+            still_name("", 1.5, "png"),
+        ];
         v.sort();
-        assert_eq!(v, [still_name("", 1.5, "png"), still_name("", 2.0, "png"), still_name("", 10.0, "png")]);
+        assert_eq!(
+            v,
+            [
+                still_name("", 1.5, "png"),
+                still_name("", 2.0, "png"),
+                still_name("", 10.0, "png")
+            ]
+        );
     }
 }

@@ -27,7 +27,8 @@ use crate::fmt::parse_probe_duration;
 use crate::proc::{capture, unique_suffix};
 
 /// The render box's Windows ffmpeg build, and the directory it stages through.
-pub const WIN_FF_BIN: &str = "/mnt/c/Users/vjeux/ffmpeg_extracted/ffmpeg-9.0.1-essentials_build/bin";
+pub const WIN_FF_BIN: &str =
+    "/mnt/c/Users/vjeux/ffmpeg_extracted/ffmpeg-9.0.1-essentials_build/bin";
 pub const WIN_STAGE_DIR: &str = "/mnt/c/Users/vjeux/tm-video";
 /// drawtext's own spelling of a Windows font path: the drive colon is escaped
 /// because `:` separates drawtext's options.
@@ -138,8 +139,12 @@ pub fn resolve(i: &Inputs) -> Result<Ff, String> {
     // pair only if it was given for that side.
     let (dflt_ffmpeg, dflt_ffprobe) = match kind {
         FfKind::Native => (
-            i.path_ffmpeg.clone().unwrap_or_else(|| PathBuf::from("ffmpeg")),
-            i.path_ffprobe.clone().unwrap_or_else(|| PathBuf::from("ffprobe")),
+            i.path_ffmpeg
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("ffmpeg")),
+            i.path_ffprobe
+                .clone()
+                .unwrap_or_else(|| PathBuf::from("ffprobe")),
         ),
         FfKind::WindowsExe => (i.win_bin.join("ffmpeg.exe"), i.win_bin.join("ffprobe.exe")),
     };
@@ -206,10 +211,7 @@ pub fn from_env() -> Result<Ff, String> {
         win_ffmpeg_exists: win_bin.join("ffmpeg.exe").is_file(),
         win_ffprobe_exists: win_bin.join("ffprobe.exe").is_file(),
         win_bin,
-        native_font: NATIVE_FONTS
-            .iter()
-            .map(PathBuf::from)
-            .find(|p| p.is_file()),
+        native_font: NATIVE_FONTS.iter().map(PathBuf::from).find(|p| p.is_file()),
     };
     resolve(&i)
 }
@@ -287,7 +289,10 @@ impl Ff {
     pub fn probe_duration(&self, file: &Path) -> Result<f64, String> {
         let out = self.ffprobe_entries(file, "format=duration", None)?;
         parse_probe_duration(&out).ok_or_else(|| {
-            format!("{} does not probe as playable (duration: {out:?})", file.display())
+            format!(
+                "{} does not probe as playable (duration: {out:?})",
+                file.display()
+            )
         })
     }
 
@@ -299,9 +304,9 @@ impl Ff {
     pub fn probe_dims(&self, file: &Path) -> Result<(u32, u32), String> {
         let out = self.ffprobe_entries(file, "stream=width,height", Some("v:0"))?;
         let t = out.trim();
-        let (w, h) = t.split_once(['x', ',']).ok_or_else(|| {
-            format!("{} does not probe as video ({t:?})", file.display())
-        })?;
+        let (w, h) = t
+            .split_once(['x', ','])
+            .ok_or_else(|| format!("{} does not probe as video ({t:?})", file.display()))?;
         Ok((
             w.trim().parse().map_err(|_| format!("width {w:?}"))?,
             h.trim().parse().map_err(|_| format!("height {h:?}"))?,
@@ -330,9 +335,12 @@ impl Ff {
                     .extension()
                     .map(|e| format!(".{}", e.to_string_lossy()))
                     .unwrap_or_default();
-                let t = self.stage_dir.join(format!("_probe_{}{}", unique_suffix(), ext));
-                std::fs::copy(file, &t)
-                    .map_err(|e| format!("cannot stage {} to {}: {e}", file.display(), t.display()))?;
+                let t = self
+                    .stage_dir
+                    .join(format!("_probe_{}{}", unique_suffix(), ext));
+                std::fs::copy(file, &t).map_err(|e| {
+                    format!("cannot stage {} to {}: {e}", file.display(), t.display())
+                })?;
                 Some(t)
             }
             _ => None,

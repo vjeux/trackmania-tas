@@ -39,7 +39,11 @@ pub struct Audited {
 
 /// Milliseconds from a caption time like `23.416`.
 fn ms_of(t: &str) -> Option<u64> {
-    let t: String = t.trim().chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let t: String = t
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
     let f: f64 = t.parse().ok()?;
     Some((f * 1000.0).round() as u64)
 }
@@ -91,12 +95,17 @@ fn map_for(store: &Path, id: &str) -> Option<PathBuf> {
         .collect();
     hits.sort();
     // A segment or rig map is not the map the page is about.
-    hits.iter().find(|p| {
-        let n = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
-        !n.contains("seg") && !n.contains("spawn") && !n.contains("backup")
-    })
-    .cloned()
-    .or_else(|| hits.first().cloned())
+    hits.iter()
+        .find(|p| {
+            let n = p
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
+            !n.contains("seg") && !n.contains("spawn") && !n.contains("backup")
+        })
+        .cloned()
+        .or_else(|| hits.first().cloned())
 }
 
 /// The `ghost` binary beside this one.
@@ -125,7 +134,14 @@ fn audit_one(page: MapPage, root: &Path, store: &Path) -> Audited {
     let ghost = match headline_ghost(&root.join(&page.dir), ms) {
         Ok(g) => g,
         Err(e) => {
-            return Audited { page, ghost: None, map: None, kappa: None, oracle: None, verdict: e }
+            return Audited {
+                page,
+                ghost: None,
+                map: None,
+                kappa: None,
+                oracle: None,
+                verdict: e,
+            }
         }
     };
     let Some(map) = map_for(store, &id) else {
@@ -175,7 +191,10 @@ fn audit_one(page: MapPage, root: &Path, store: &Path) -> Audited {
     let checks = crate::audit_json::checks(&text);
     for (id, v, msg) in &checks {
         if id == "V6" {
-            if let Some(k) = msg.split("kappa ").nth(1).and_then(|s| s.split_whitespace().next())
+            if let Some(k) = msg
+                .split("kappa ")
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
             {
                 kappa = k.parse().ok();
             }
@@ -204,10 +223,24 @@ fn audit_one(page: MapPage, root: &Path, store: &Path) -> Audited {
         verdict = if fails.is_empty() {
             "OK".into()
         } else {
-            format!("REFUSED: {} failed", fails.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" "))
+            format!(
+                "REFUSED: {} failed",
+                fails
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
         };
     }
-    Audited { page, ghost: Some(ghost), map: Some(map), kappa, oracle, verdict }
+    Audited {
+        page,
+        ghost: Some(ghost),
+        map: Some(map),
+        kappa,
+        oracle,
+        verdict,
+    }
 }
 
 /// `clip inventory --verify [--store D]`
@@ -224,8 +257,16 @@ pub fn main(root: &Path, store: &Path, markdown: bool) -> Result<(), String> {
     }
     let (mut sound, mut foreign, mut unchecked) = (0, 0, 0);
     for r in &rows {
-        let tas = r.page.headline.as_ref().map(|c| c.tas.clone()).unwrap_or_else(|| "?".into());
-        let k = r.kappa.map(|k| format!("{k:.3}")).unwrap_or_else(|| "-".into());
+        let tas = r
+            .page
+            .headline
+            .as_ref()
+            .map(|c| c.tas.clone())
+            .unwrap_or_else(|| "?".into());
+        let k = r
+            .kappa
+            .map(|k| format!("{k:.3}"))
+            .unwrap_or_else(|| "-".into());
         let o = r.oracle.clone().unwrap_or_else(|| "-".into());
         match (r.kappa, r.verdict.as_str()) {
             (Some(k), _) if k >= 0.999 => sound += 1,
@@ -244,7 +285,11 @@ pub fn main(root: &Path, store: &Path, markdown: bool) -> Result<(), String> {
                 r.page.name, tas, k, o, r.verdict, flag
             );
         } else {
-            let _ = writeln!(out, "{:<40} TAS {:>10}  kappa {:>6}  oracle {:>10}  {}", r.page.dir, tas, k, o, r.verdict);
+            let _ = writeln!(
+                out,
+                "{:<40} TAS {:>10}  kappa {:>6}  oracle {:>10}  {}",
+                r.page.dir, tas, k, o, r.verdict
+            );
         }
     }
     print!("{out}");

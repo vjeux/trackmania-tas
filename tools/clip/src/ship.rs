@@ -61,6 +61,11 @@ pub struct Cfg {
     /// credential: the environment is still scrubbed, and the proxy is
     /// handed to curl as `-x`, which carries no cookie jar and no netrc.
     pub proxy: Option<String>,
+    /// `--no-mirror`: skip step 2, the release-asset download mirror. The
+    /// tiny campaign publishes through the inline player alone (vjeux,
+    /// 2026-09-08: "not in releases"); the release BODY registration (step 4)
+    /// still happens — it is what makes the attachment public.
+    pub mirror: bool,
 }
 
 impl Default for Cfg {
@@ -75,6 +80,7 @@ impl Default for Cfg {
             retry_delay: Duration::from_secs(10),
             settle_delay: Duration::from_secs(1),
             proxy: None,
+            mirror: true,
         }
     }
 }
@@ -348,29 +354,42 @@ pub fn run(
     }
 
     // --- 2. the stable download mirror -------------------------------------
-    // Staged in a private directory, not /tmp/<asset-name>: the shell copied
-    // with `|| true`, so a failed copy silently uploaded whatever file of that
-    // name was already in /tmp -- yesterday's clip, under today's name.
-    let stage = scratch_dir("clip-ship")?;
-    let staged = stage.join(&asset_name);
-    let copy = std::fs::copy(file, &staged)
-        .map_err(|e| format!("cannot stage {} as {}: {e}", file.display(), staged.display()));
-    let upload = copy.and_then(|_| {
-        let mut c = Command::new(&cfg.gh);
-        c.args(release_upload_argv(&cfg.release, &staged, &cfg.repo));
-        capture(&mut c)
-    });
-    let upload = finish(&stage, upload)?;
-    if !upload.ok() {
-        return Err(format!("release upload failed: {}", upload.why()));
+    if !cfg.mirror {
+        println!("ship: --no-mirror — no release asset, the inline player is the only copy");
+    } else {
+        // Staged in a private directory, not /tmp/<asset-name>: the shell copied
+        // with `|| true`, so a failed copy silently uploaded whatever file of that
+        // name was already in /tmp -- yesterday's clip, under today's name.
+        let stage = scratch_dir("clip-ship")?;
+        let staged = stage.join(&asset_name);
+        let copy = std::fs::copy(file, &staged).map_err(|e| {
+            format!(
+                "cannot stage {} as {}: {e}",
+                file.display(),
+                staged.display()
+            )
+        });
+        let upload = copy.and_then(|_| {
+            let mut c = Command::new(&cfg.gh);
+            c.args(release_upload_argv(&cfg.release, &staged, &cfg.repo));
+            capture(&mut c)
+        });
+        let upload = finish(&stage, upload)?;
+        if !upload.ok() {
+            return Err(format!("release upload failed: {}", upload.why()));
+        }
+        println!("ship: release asset {asset_name} uploaded");
     }
-    println!("ship: release asset {asset_name} uploaded");
 
     // --- 3. the inline player ----------------------------------------------
     let mut c = Command::new(&cfg.ghvid);
     c.arg(file);
-    let up = capture(&mut c)
-        .map_err(|e| format!("attachment upload failed: {e} (uploader: {})", cfg.ghvid.display()))?;
+    let up = capture(&mut c).map_err(|e| {
+        format!(
+            "attachment upload failed: {e} (uploader: {})",
+            cfg.ghvid.display()
+        )
+    })?;
     if !up.ok() {
         // Exit 3 is the uploader's "no upload CSRF token": the browser session
         // cookie at ~/.gh-upload/cookie has expired and needs replacing from a
@@ -391,7 +410,11 @@ pub fn run(
     c.args(release_view_argv(&cfg.release, &cfg.repo));
     let view = capture(&mut c)?;
     if !view.ok() {
-        return Err(format!("cannot read the {} body: {}", cfg.release, view.why()));
+        return Err(format!(
+            "cannot read the {} body: {}",
+            cfg.release,
+            view.why()
+        ));
     }
     let body = view.stdout.trim_end_matches('\n').to_string();
     if let Some(new_body) = insert_registration(&body, &map_name, &url) {
@@ -475,8 +498,14 @@ mod tests {
         let out = insert_registration(body, "208024-mirus-hell-2", URL).unwrap();
         let at_new = out.find("208024-mirus-hell-2").unwrap();
         let at_close = out.find("</details>").unwrap();
-        assert!(at_new < at_close, "must land before the closing tag:\n{out}");
-        assert!(out.contains("126859: https://x/1"), "must keep what was there");
+        assert!(
+            at_new < at_close,
+            "must land before the closing tag:\n{out}"
+        );
+        assert!(
+            out.contains("126859: https://x/1"),
+            "must keep what was there"
+        );
         assert!(out.ends_with("tail\n"));
     }
 
@@ -506,7 +535,11 @@ mod tests {
     #[test]
     fn gh_argv_is_what_the_release_needs() {
         assert_eq!(
-            release_upload_argv("videos-v1", Path::new("/tmp/x/a.mp4"), "vjeux/trackmania-tas"),
+            release_upload_argv(
+                "videos-v1",
+                Path::new("/tmp/x/a.mp4"),
+                "vjeux/trackmania-tas"
+            ),
             vec![
                 "release",
                 "upload",
@@ -519,11 +552,29 @@ mod tests {
         );
         assert_eq!(
             release_view_argv("videos-v1", "r"),
-            vec!["release", "view", "videos-v1", "-R", "r", "--json", "body", "-q", ".body"]
+            vec![
+                "release",
+                "view",
+                "videos-v1",
+                "-R",
+                "r",
+                "--json",
+                "body",
+                "-q",
+                ".body"
+            ]
         );
         assert_eq!(
             release_edit_argv("videos-v1", "r", Path::new("/tmp/n/body.md")),
-            vec!["release", "edit", "videos-v1", "-R", "r", "--notes-file", "/tmp/n/body.md"]
+            vec![
+                "release",
+                "edit",
+                "videos-v1",
+                "-R",
+                "r",
+                "--notes-file",
+                "/tmp/n/body.md"
+            ]
         );
     }
 
@@ -541,7 +592,10 @@ mod tests {
 
     #[test]
     fn a_relative_curl_is_refused_before_anything_is_fetched() {
-        let cfg = Cfg { curl: PathBuf::from("curl"), ..Cfg::default() };
+        let cfg = Cfg {
+            curl: PathBuf::from("curl"),
+            ..Cfg::default()
+        };
         let e = gate(&cfg, URL, Path::new("/tmp/none"), |_| Ok(1.0)).unwrap_err();
         assert!(e.contains("absolute curl path"), "{e}");
         assert!(e.contains("not a gate"), "{e}");
@@ -549,7 +603,13 @@ mod tests {
 
     #[test]
     fn basenames() {
-        assert_eq!(basename(Path::new("/a/b/208024-mirus-hell-2")), "208024-mirus-hell-2");
-        assert_eq!(basename(Path::new("208024-mirus-hell-2/")), "208024-mirus-hell-2");
+        assert_eq!(
+            basename(Path::new("/a/b/208024-mirus-hell-2")),
+            "208024-mirus-hell-2"
+        );
+        assert_eq!(
+            basename(Path::new("208024-mirus-hell-2/")),
+            "208024-mirus-hell-2"
+        );
     }
 }

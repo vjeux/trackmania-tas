@@ -19,9 +19,13 @@
 /// Every check in the report, as `(id, verdict, message)`.
 pub fn checks(s: &str) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
-    let Some(start) = s.find("\"checks\"") else { return out };
+    let Some(start) = s.find("\"checks\"") else {
+        return out;
+    };
     let rest = &s[start..];
-    let Some(open) = rest.find('[') else { return out };
+    let Some(open) = rest.find('[') else {
+        return out;
+    };
     // Brace counting must IGNORE braces inside strings. Gate messages carry
     // real punctuation -- `declared 19.538, found {19.539}` -- and counting
     // those as structure ends the object early and truncates the message.
@@ -120,8 +124,15 @@ mod tests {
     fn the_number_a_caller_wants_survives_the_round_trip() {
         let c = checks(SAMPLE);
         let v6 = c.iter().find(|(id, _, _)| id == "V6").unwrap();
-        let k: f64 = v6.2.split("kappa ").nth(1).unwrap().split_whitespace().next().unwrap()
-            .parse().unwrap();
+        let k: f64 =
+            v6.2.split("kappa ")
+                .nth(1)
+                .unwrap()
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap();
         assert!((k - 1.0).abs() < 1e-9);
     }
 
@@ -133,8 +144,16 @@ mod tests {
         let c = checks(s);
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].0, "V2");
-        assert!(c[0].2.contains("{19.539}"), "message truncated: {:?}", c[0].2);
-        assert!(c[0].2.contains("\"foo.Ghost.Gbx\""), "escapes lost: {:?}", c[0].2);
+        assert!(
+            c[0].2.contains("{19.539}"),
+            "message truncated: {:?}",
+            c[0].2
+        );
+        assert!(
+            c[0].2.contains("\"foo.Ghost.Gbx\""),
+            "escapes lost: {:?}",
+            c[0].2
+        );
     }
 
     #[test]
