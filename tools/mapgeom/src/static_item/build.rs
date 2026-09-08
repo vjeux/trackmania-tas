@@ -2532,10 +2532,12 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                 }
                 // an effect system (the Show items' smoke / sparks): parsed
                 // with its particle models, inlined by `assemble` as an
-                // entity of the prefab form. TINY_FX=drop leaves them out.
+                // entity of the prefab form. OPT-IN (`TINY_FX=1`) until the
+                // in-game probe is done: a texture-less emitter crashed the
+                // client at load (2026-09-08), and every thread builds from main.
                 Some(p) if p.to_ascii_lowercase().ends_with(".fxsys.gbx") => {
-                    if std::env::var("TINY_FX").map(|v| v == "drop").unwrap_or(false) {
-                        m.notes.push(format!("{path} entity {i}: external {p} dropped (TINY_FX=drop)"));
+                    if !std::env::var("TINY_FX").map(|v| v == "1" || v == "on").unwrap_or(false) {
+                        m.notes.push(format!("{path} entity {i}: external {p} skipped (effect system; TINY_FX=1 inlines it)"));
                     } else {
                         match add_fx_system(store, &p, &iso) {
                             Ok(part) => {
