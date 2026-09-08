@@ -372,6 +372,19 @@ pub struct Merged {
     /// nothing) while one or two drew right (2026-09-07); the pack's five
     /// levels are the layout the many-instance draw path expects.
     pub all_lods: bool,
+    /// The scale the part ladder is registered with instead of the item scale
+    /// (`TINY_FLAG_LADDER=pack` on the tween cloth: the PACK distances, so the
+    /// cloth switches detail level together with the stock flag that drives it
+    /// — the 2026-09-08 finding that the tween draw follows the driver's LOD).
+    pub ladder_scale: Option<f32>,
+    /// Keep ONE detail level of every part merged into this `Merged`, level
+    /// N, whatever `TINY_LOD0_ONLY`/`TINY_LOD_PICK` say (`TINY_FLAG_LODS=N` on
+    /// the tween cloth): every instance of the model then renders the same
+    /// visual at every distance — the 2026-09-08 finding is that the tween
+    /// draw of identical placements goes wrong as soon as they sit at
+    /// different detail levels (crumpled shards, giant sails: the full map 10
+    /// with its 39 flags spread over 400 m, while 39 in one row were fine).
+    pub one_level: Option<u32>,
     /// Solid2 fields carried from the source mesh for a tween part: the pack's
     /// Flag.Mesh.Gbx says `vis_cst_type` 2 (its vertices are not constant —
     /// the frames), `u07` -1; a static item says 1 and 1.
@@ -808,7 +821,7 @@ impl Merged {
         // parts' distances; each part's masks are moved onto it by range at
         // assembly, `remap_lod_mask`) — see `Merged::lod_max_dist`.
         // `TINY_LOD0_ONLY=1` keeps the nearest level only, no ladder.
-        let lod0_only = lod0_only() && !self.all_lods;
+        let lod0_only = (lod0_only() && !self.all_lods) || self.one_level.is_some();
         let part_levels = if lod0_only { 1 } else { lod_levels_of(&s2.lod_max_dist, &s2.shaded_geoms) };
         let mut part_ladder: Vec<f32> = Vec::new();
         if part_levels > 1 {
@@ -826,7 +839,9 @@ impl Merged {
             // half-size object subtends the same angle at half the distance,
             // so the same level is the visually equivalent choice);
             // `TINY_LOD_DIST_SCALE=<f>` remains for the next A/B.
-            let dist_scale = lod_dist_scale(scale);
+            // A part with `ladder_scale` set (the tween cloth under
+            // TINY_FLAG_LADDER=pack) keeps its own factor instead.
+            let dist_scale = self.ladder_scale.unwrap_or_else(|| lod_dist_scale(scale));
             let mut dists: Vec<f32> = s2.lod_max_dist.iter().map(|d| d * dist_scale).collect();
             while (dists.len() as u32) + 1 < part_levels {
                 let last = dists.last().copied().unwrap_or(32.0 * dist_scale);
@@ -835,7 +850,7 @@ impl Merged {
             merge_lod_ladder(&mut part_ladder, &dists);
             merge_lod_ladder(&mut self.lod_max_dist, &dists);
             if self.lod_max_dist != before {
-                self.notes.push(format!("lod ladder: {} levels, distances {:?} (x{scale}); item ladder now {:?}", part_levels, s2.lod_max_dist, self.lod_max_dist));
+                self.notes.push(format!("lod ladder: {} levels, distances {:?} (x{dist_scale}); item ladder now {:?}", part_levels, s2.lod_max_dist, self.lod_max_dist));
             }
         }
         // Which geoms are coarser levels only (no bit 0). Kept with their
@@ -1068,7 +1083,10 @@ impl Merged {
                 // ones — a 50 000-vertex gate arch — go one level coarser)
                 let level0_verts: i32 = s2.shaded_geoms.iter().filter(|h| h.lod_mask == 0 || h.lod_mask & 1 != 0).filter_map(|h| s2.visuals.get(h.visual_index as usize).and_then(|r| r.inline.as_deref())).filter_map(|n| if let Node::Visual(v) = n { v.main.as_ref().map(|m| m.count) } else { None }).sum();
                 let min_verts: i32 = std::env::var("TINY_LOD_PICK_MIN_VERTS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-                let pick = lod_pick().filter(|_| level0_verts >= min_verts).filter(|p| s2.shaded_geoms.iter().any(|h| h.lod_mask & (1 << p) != 0)).unwrap_or(0);
+                let pick = match self.one_level {
+                    Some(n) => n,
+                    None => lod_pick().filter(|_| level0_verts >= min_verts).filter(|p| s2.shaded_geoms.iter().any(|h| h.lod_mask & (1 << p) != 0)).unwrap_or(0),
+                };
                 let keep = g.lod_mask == 0 || g.lod_mask & (1 << pick) != 0;
                 if !keep {
                     self.notes.push(format!("visual {} (lod mask {}) skipped: not level {pick} (TINY_LOD0_ONLY/TINY_LOD_PICK)", g.visual_index, g.lod_mask));
@@ -3678,6 +3696,20 @@ pub fn add_dyna_tween_part(store: &mut crate::store::DataStore, path: &str, at: 
     mesh.modifier_suffix = m.modifier_suffix.clone();
     mesh.no_split = true;
     mesh.all_lods = true;
+    // TINY_FLAG_LADDER=pack: the cloth's detail ladder keeps the PACK distances
+    // ([16, 64, 128, 512]) instead of the halved ones — the stock flag that
+    // drives the tween switches level at those, and the draw is right only
+    // while driver and cloth are at the same level (2026-09-08, L11/L17)
+    mesh.ladder_scale = match std::env::var("TINY_FLAG_LADDER").as_deref() {
+        Ok("pack") => Some(1.0),
+        _ => None,
+    };
+    // TINY_FLAG_LODS=all|N: every pack level with the ladder (all), or the ONE
+    // level N for every distance (the 2026-09-08 probe of the mixed-level draw)
+    mesh.one_level = match std::env::var("TINY_FLAG_LODS").ok().as_deref() {
+        None | Some("all") => None,
+        Some(n) => Some(n.parse::<u32>().unwrap_or(0)),
+    };
     mesh.vis_cst_type = Some(src.s2.vis_cst_type);
     // its ladder ([16, 64, 128, 512], five levels) is registered, scaled, by
     // add_static_object like every part's
