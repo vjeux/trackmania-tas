@@ -571,8 +571,10 @@ fn cmd_deck_gates(args: &[String]) {
         cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
         if let Some(&(_, k)) = cands.first() {
             let d = &deck[k];
-            lines.push(format!("  spawn ({:.1}, {:.1}, {:.1}) → deck top {:.1} at ({:.1}, {:.1})", s[0], s[1], s[2], d.2, d.1[0] / d.0, d.1[2] / d.0));
-            gates.spawn.pos = [s[0], d.2 + 0.5, s[2]];
+            let c = [(d.1[0] / d.0) as f32, (d.1[1] / d.0) as f32, (d.1[2] / d.0) as f32];
+            lines.push(format!("  spawn ({:.1}, {:.1}, {:.1}) → start deck centroid ({:.1}, {:.1}, {:.1})", s[0], s[1], s[2], c[0], c[1], c[2]));
+            // the start item anchors at a corner of its deck: the car spawns on the deck, so does the polyline
+            gates.spawn.pos = [c[0], c[1] + 0.5, c[2]];
         }
     }
     gates.produced_by = format!("{}; deck-gates: {moved} item gates re-anchored on their own hull deck ({})", gates.produced_by, tmroute::provenance("tmplan deck-gates"));
@@ -804,6 +806,10 @@ fn cmd_road_centreline(args: &[String]) {
         io::write_route(Path::new(&ro), &tg).unwrap_or_else(|e| die(&e));
     }
     let on_road = pts.iter().enumerate().filter(|(k, p)| { let d = if *k + 1 < pts.len() { [pts[k + 1][0] - p[0], pts[k + 1][2] - p[2]] } else { [0.0, 1.0] }; surf.road_span(**p, d, 24.0).is_some() }).count();
-    println!("{}: {} pts, {:.0} m, {} segments, {gaps} gaps, on-road {:.1} % → {out}", gates.map_name, pts.len(), s.last().unwrap(), segs.len(), 100.0 * on_road as f32 / pts.len().max(1) as f32);
+    // control: a centreline whose first 50 m descend more than 5 m stepped off its start deck (Argentina 2026)
+    let y0 = pts[0][1];
+    let min50 = pts.iter().zip(s.iter()).filter(|(_, si)| **si <= 50.0).map(|(p, _)| p[1]).fold(y0, f32::min);
+    let flag = if y0 - min50 > 5.0 { format!("  FLAG: first 50 m descend {:.1} m", y0 - min50) } else { String::new() };
+    println!("{}: {} pts, {:.0} m, {} segments, {gaps} gaps, on-road {:.1} %{flag} → {out}", gates.map_name, pts.len(), s.last().unwrap(), segs.len(), 100.0 * on_road as f32 / pts.len().max(1) as f32);
     fn grp(n: &Nodes, i: usize) -> String { if i == 0 { "\"spawn\"".into() } else { n.groups[i].to_string() } }
 }

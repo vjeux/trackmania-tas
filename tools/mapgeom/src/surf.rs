@@ -770,6 +770,11 @@ impl Graph {
                 // an off-road cell costs 5×: a kerb strip or a start deck of another material is crossed, a field is
                 // not (the caller rejects paths with a long off-road run)
                 let step = if raw & DIAG != 0 { CELL * std::f32::consts::SQRT_2 } else { CELL };
+                // vertical continuity: a road follows its own slope (≤ 45°); a step down of more than the cell size is
+                // a fall off the deck onto whatever lies below (Argentina 2026's start deck, 16 m above a road)
+                if (self.node_y[v] - self.node_y[u]).abs() > 1.5 * step {
+                    continue;
+                }
                 let nd = d + if self.node_road[v] { step } else { 5.0 * step };
                 if nd < dist[v] {
                     dist[v] = nd;
@@ -784,7 +789,7 @@ impl Graph {
                     let (v, w) = self.leaps[e as usize];
                     let v = v as usize;
                     let dxz = w / LEAP_COST;
-                    if dxz > 8.0 || !self.node_road[v] {
+                    if dxz > 8.0 || !self.node_road[v] || (self.node_y[v] - self.node_y[u]).abs() > 2.0 {
                         continue;
                     }
                     let nd = d + dxz;
@@ -895,7 +900,9 @@ impl Graph {
                         if dy < lo || dy > hi {
                             continue;
                         }
-                        let score = (dy - lo).abs() + if self.node_road[k] { 0.0 } else { 6.0 };
+                        // the surface CLOSEST to the anchor height wins (an item anchor sits on its deck); scoring from the
+                        // window's floor picked a road 6 m under Argentina 2026's start deck (player, 2026-09-08)
+                        let score = dy.abs() + if self.node_road[k] { 0.0 } else { 6.0 };
                         if best.map_or(true, |(b, _)| score < b) {
                             best = Some((score, k));
                         }
