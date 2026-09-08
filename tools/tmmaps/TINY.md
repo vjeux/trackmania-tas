@@ -291,3 +291,27 @@ NOT set a kinematic part's phase: `SInstanceParams.Phase01` (three copies baked
 with Phase01 unset / 0.25 / 0.5 move identically — the `mapgeom static-item
 --phase01` knob stays as a probe) and the in-record 0x03101005 word (4 on
 every placement; `tmmaps lineup --rec-word5`).
+
+**Flag driver — VERDICT (2026-09-08 21:30Z): the hidden-driver hack cannot pass a
+full-map check; the still cloth stays the default.** Lineups PH2–PH4 on the
+tiny-18 host: a VISIBLE stock Flag8m drives our half cloth from any relative
+place — 8 m below, 8 m above, 6 m beside, top-down or side view, every frame
+(the borrowing does not depend on draw order or distance order). A HIDDEN
+driver fails for reasons no hiding place cures: (1) frustum — a driver
+displaced 4–8 m from our cloth leaves the view whenever the camera is within
+~15 m (a chase camera looking at the car: the flags beside the road go bare
+exactly where the player looks); (2) the detail bands switch at 16/64/128 m —
+a displaced driver sits in the other band in a ring around each threshold
+(garbage shards / a giant sail there); (3) a driver under terrain or a deck is
+culled on some frames (tiny 13 flicker). The stock item cannot be shrunk
+(placement scale is ignored) or made transparent (Flag8m has no skin slot).
+The material-as-sidecar form (`TINY_FLAG_MATREF=bare`: the mesh names
+`ItemFlag.Material.Gbx` by bare file name, copies of the two pack material
+files in the archive next to the item) loads and counts as an item but draws
+NOTHING — pole included. The proper form (the registration a pack flag's
+visual dyna gets) is still unlocated: the anim handle is the u64 at +8 of the
+params struct handed to `CHmsMgrVisDyna::InstanceCreate` (wrapper 0x1401de990,
+r9; 14 call sites), the entity-kind → handler table lives in BSS (built at
+run time, not readable statically). Our cloth does render its OWN half-size
+mesh when driven (PH3 Ah1: half the stock's pole and cloth), so the state is
+the only thing borrowed.

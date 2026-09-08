@@ -224,6 +224,11 @@ pub struct Merged {
     /// CHmsMgrVisDyna::ModelCreate found the material array (`Solid2+0xc8`,
     /// the file refs) is what the animated-model checks look at.
     pub materials_external: bool,
+    /// With `materials_external`: the reference names the BARE file
+    /// (`ItemFlag.Material.Gbx`, a copy carried in the map archive next to the
+    /// item) instead of the pack path — the 2026-09-08 probe of a sidecar
+    /// material file (`TINY_FLAG_MATREF=bare`).
+    pub materials_bare: bool,
     /// Write NO PreLightGen (the pack's dyna meshes — Flag.Mesh.Gbx — carry
     /// none; a static item always gets one).
     pub no_prelight: bool,

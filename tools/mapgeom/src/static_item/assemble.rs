@@ -188,7 +188,10 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
             // when there is no custom material
             let link = inst.link().ok_or("external material form: the material has no link")?.to_string();
             let i = next_index(next);
-            EXTERNALS.with(|e| e.borrow_mut().push((i as u32, format!("{link}.Material.Gbx"))));
+            // `materials_bare`: the bare file name (a copy of the material file
+            // carried in the map archive next to the item) instead of the pack path
+            let file = if m.materials_bare { format!("{}.Material.Gbx", link.rsplit('\\').next().unwrap_or(&link)) } else { format!("{link}.Material.Gbx") };
+            EXTERNALS.with(|e| e.borrow_mut().push((i as u32, file)));
             s2.materials.push(super::NodeRef { index: i, inline: None });
             continue;
         }
