@@ -1304,6 +1304,22 @@ fn main() {
         // embedded items by UID: a rebuilt test copy under the published UID
         // plays with the OLD build's baked light (Summer 09's start deck read
         // dark in play mode until this, 2026-09-07).
+        "stripghost" => {
+            // `tmmaps stripghost MAP --out F`: drop the author's validation ghost
+            // (the ORIGINAL map's full-size run, replayed over the tiny map as a
+            // car driving in the air) and mark the map unvalidated. See
+            // `MapFile::strip_validation_ghost`.
+            let path = std::path::Path::new(&args[2]);
+            let out = args.iter().position(|a| a == "--out").map(|i| args[i + 1].clone()).expect("--out F");
+            let mut m = map::MapFile::load(path);
+            let removed = m.strip_validation_ghost();
+            if removed == 0 {
+                println!("{}: no validation ghost chunk — nothing to strip", path.display());
+                std::process::exit(1);
+            }
+            m.write_to(std::path::Path::new(&out)).expect("write");
+            println!("{}: validation ghost dropped ({removed} bytes), header validated=\"0\" -> {out}", path.display());
+        }
         "setuid" => {
             let src = std::path::PathBuf::from(&args[2]);
             let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("setuid needs --out MAP"));
