@@ -2707,6 +2707,19 @@ fn fx_entities(m: &Merged, scale: f32, next: &mut i32) -> Vec<super::prefab::Ent
                     e.model = super::NodeRef { index: *i, inline: None };
                     continue;
                 }
+                // TINY_FX_MODEL=extern: the emitter names the PACK's own
+                // `.ParticleModel.Gbx` by path instead of carrying an inline copy
+                // (the model — and with it the texture — stays the game's; only the
+                // emitter expressions, where our 0.5 ScaleExpr lives, are ours)
+                let model_extern = std::env::var("TINY_FX_MODEL").map(|v| v == "extern").unwrap_or(false);
+                if model_extern {
+                    if let Some((_, mp, _, _)) = part.models.iter().find(|(k, _, _, _)| *k == src) {
+                        let i = next_index(next);
+                        EXTERNALS.with(|e| e.borrow_mut().push((i as u32, mp.clone())));
+                        e.model = super::NodeRef { index: i, inline: None };
+                        continue;
+                    }
+                }
                 match part.models.iter().find(|(k, _, _, _)| *k == src) {
                     Some((_, _, node, ext)) => {
                         let i = next_index(next);

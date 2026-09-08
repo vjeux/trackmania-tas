@@ -182,8 +182,14 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                             if em.model.index < 0 {
                                 problems.push(format!("entity {i}: emitter {:?} has NO particle model (FX-02: the engine dereferences it)", em.name.as_str().unwrap_or("")));
                             }
-                            if em.model.index >= 0 && em.model.inline.is_none() && !emitters.iter().any(|o| o.model.index == em.model.index && o.model.inline.is_some()) {
-                                problems.push(format!("entity {i}: emitter {:?} names model node {} which is not inline", em.name.as_str().unwrap_or(""), em.model.index));
+                            // an emitter model may be inline, or an external the reference table
+                            // names (a pack `.ParticleModel.Gbx`)
+                            if em.model.index >= 0
+                                && em.model.inline.is_none()
+                                && !emitters.iter().any(|o| o.model.index == em.model.index && o.model.inline.is_some())
+                                && !externals.iter().any(|(k, _)| *k as i32 == em.model.index)
+                            {
+                                problems.push(format!("entity {i}: emitter {:?} names model node {} which is neither inline nor in the reference table", em.name.as_str().unwrap_or(""), em.model.index));
                             }
                             // FX-01: the sub-model's texture must be an EXTERNAL reference — a
                             // null one crashed the client at load (null deref, LogCrash 2EDBA8),
