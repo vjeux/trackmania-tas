@@ -176,6 +176,18 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                             if em.model.index >= 0 && em.model.inline.is_none() && !emitters.iter().any(|o| o.model.index == em.model.index && o.model.inline.is_some()) {
                                 problems.push(format!("entity {i}: emitter {:?} names model node {} which is not inline", em.name.as_str().unwrap_or(""), em.model.index));
                             }
+                            // FX-01: the sub-model's texture must be an EXTERNAL reference — a
+                            // null one crashed the client at load (null deref, LogCrash 2EDBA8),
+                            // an inline CPlugBitmap is misread by the engine (2026-09-08)
+                            if let Some(super::Node::Particle(pm)) = em.model.inline.as_deref() {
+                                for (k, t) in fx_textures(pm).iter().enumerate() {
+                                    match (t.index, t.inline.is_some()) {
+                                        (i, _) if i < 0 => problems.push(format!("entity {i}: emitter {:?} sub-model {k}: NULL texture (FX-01: the engine dereferences it)", em.name.as_str().unwrap_or(""))),
+                                        (_, true) => problems.push(format!("entity {i}: emitter {:?} sub-model {k}: INLINE texture (FX-01: the engine misreads an inline CPlugBitmap)", em.name.as_str().unwrap_or(""))),
+                                        _ => {}
+                                    }
+                                }
+                            }
                         }
                         if facts {
                             println!("{path}: entity {i} effect system at {:?}: {} emitter(s)", e.pos, emitters.len());
@@ -669,4 +681,24 @@ fn elem_summary(e: &super::vstream::Elem) -> String {
         }
         Elem::Raw { size, bytes } => format!("{{raw {size}x{}}}", bytes.len() / size.max(&1)),
     }
+}
+
+/// The texture references of a particle model's sub-models (chunk
+/// 0x090B2036), depth first.
+fn fx_textures(pm: &super::particle::ParticleNode) -> Vec<super::Ref> {
+    let mut out = Vec::new();
+    for c in &pm.chunks {
+        match c {
+            super::particle::PChunk::Texture { texture, .. } => out.push(texture.clone()),
+            super::particle::PChunk::SubModels { models, .. } => {
+                for m in models {
+                    if let Some(super::Node::Particle(inner)) = m.inline.as_deref() {
+                        out.extend(fx_textures(inner));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
