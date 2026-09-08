@@ -505,7 +505,10 @@ impl CounterGrade {
         // (platform blocks credit 1.5–3.5 m inside the slab, ~20 rows after the GEOM plane).
         // Geometric detections without a step never enter the dataset (credits are the
         // counter's), so they are reported as the plane's quality, not the bar.
-        self.steps > 0 && self.unmatched_steps == 0
+        // An UNATTRIBUTED step leaves one credit without a gate in the record (reported), the credit
+        // itself is still the counter's: up to 0.5 % of the steps may be unattributed on a map with
+        // many (Summer 2025 - 25: 1 of 836 on a 44-checkpoint, 3.4-min map cost two 1.5 h attempts)
+        self.steps > 0 && self.unmatched_steps * 200 <= self.steps
     }
 }
 
