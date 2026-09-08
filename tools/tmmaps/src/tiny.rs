@@ -862,14 +862,34 @@ pub fn cmd(args: &[String]) {
             .collect();
         let n_blocks = m.blocks.len();
         let n_baked = m.baked.len();
-        let r = m.remove_blocks(|_| true, |b| !keep_baked.contains(&b.name));
+        // TINY_KEEP_ZONE_BLOCK=1: ONE authored block stays — the first one named
+        // after the map's ambient terrain zone (GreenCoast `Lake`, RedIsland /
+        // WhiteShore `Water`, Stadium `Grass`), in place, full size. The game
+        // regenerates exactly that tile from the genealogy at load anyway (a
+        // 0-block 09 re-saved by the editor holds 4096 Lake tiles at −30 m), so
+        // it is invisible — but the editor's ComputeShadows pass crashes with a
+        // STACK_OVERFLOW on a map with NO authored block (3 of 3 on 09, 2026-09-07)
+        // and works with one, so `tinyctl lightmap` needs this. Off by default:
+        // the published form has zero authored blocks like the reference maps.
+        let keep_zone_block: Option<usize> = if std::env::var_os("TINY_KEEP_ZONE_BLOCK").is_some() {
+            let zone = source.ambient_zone();
+            let pick = m.blocks.iter().find(|b| zone.as_deref() == Some(b.name.as_str())).or_else(|| m.blocks.first()).map(|b| b.index);
+            if let Some(i) = pick {
+                let b = &m.blocks[i];
+                println!("  kept authored block {} `{}` at cell {:?} (TINY_KEEP_ZONE_BLOCK; zone {:?})", b.index, b.name, b.coords(), zone);
+            }
+            pick
+        } else {
+            None
+        };
+        let r = m.remove_blocks(|b| Some(b.index) != keep_zone_block, |b| !keep_baked.contains(&b.name));
         println!(
             "  deleted {} of {} authored blocks and {} of {} generated (baked) blocks (kept: {}); {} free-block entries, {} snapped-on groups ({} items un-snapped); lookback table {} -> {} strings",
             r.blocks, n_blocks, r.baked, n_baked, keep_baked.iter().cloned().collect::<Vec<_>>().join(","), r.free_entries, r.snap_groups, r.snapped_items_cleared, r.table_before, r.table_after
         );
         m.write_to(&tmp1).expect("write block-deletion stage");
         m = MapFile::load(&tmp1);
-        assert!(m.blocks.is_empty(), "{} authored blocks survived the deletion", m.blocks.len());
+        assert_eq!(m.blocks.len(), usize::from(keep_zone_block.is_some()), "{} authored blocks survived the deletion", m.blocks.len());
         assert!(m.baked.iter().all(|b| keep_baked.contains(&b.name)), "a generated block outside the keep set survived the deletion");
     }
     m.set_map_uid(&new_uid);
