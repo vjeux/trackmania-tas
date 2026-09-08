@@ -1485,7 +1485,29 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
     let work = PathBuf::from(a.req("work"));
     let out = PathBuf::from(a.req("out"));
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-    let mut track = tmreach::lap::Track::load(&PathBuf::from(a.req("centreline")))?;
+    // --gates FILE: GEOM's gates.json for this map (its groups are the centreline's order ids)
+    let gates = match (a.get("gates"), a.get("geom")) {
+        (Some(f), _) => Some(MapGates::load_geom(Path::new(f))?),
+        (None, Some(g)) => Some(MapGates::load(&map, Some(Path::new(g)))?),
+        _ => None,
+    };
+    // --author-line FILE (needs --gates): GEOM's author line as THE centreline, gates in the author's order
+    let mut track = match a.get("author-line") {
+        Some(al) => tmreach::lap::Track::from_author_line(Path::new(al), gates.as_ref().ok_or("--author-line needs --gates")?)?,
+        None => tmreach::lap::Track::load(&PathBuf::from(a.req("centreline")))?,
+    };
+    // --leg-waypoints k:FILE (repeatable via commas k:FILE,k:FILE): replace ordered leg k by a waypoint polyline
+    if let Some(spec) = a.get("leg-waypoints") {
+        for item in spec.split(',') {
+            if let Some((k, f)) = item.split_once(':') {
+                let txt = std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;
+                let wps: Vec<[f64; 3]> = txt.lines().filter_map(|l| { let v: Vec<f64> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect(); if v.len() == 3 { Some([v[0], v[1], v[2]]) } else { None } }).collect();
+                let k: usize = k.parse().map_err(|_| "--leg-waypoints k:FILE")?;
+                track.replace_leg(k, &wps);
+                println!("leg {k} replaced by {} waypoints ({f}); gates now at s {:?}", wps.len(), track.gate_s.iter().map(|x| format!("{x:.0}")).collect::<Vec<_>>());
+            }
+        }
+    }
     if let Some(wp) = a.get("waypoints") {
         let txt = std::fs::read_to_string(wp).map_err(|e| format!("{wp}: {e}"))?;
         let wps: Vec<[f64; 3]> = txt.lines().filter_map(|l| { let f: Vec<f64> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect(); if f.len() == 3 { Some([f[0], f[1], f[2]]) } else { None } }).collect();
@@ -1501,12 +1523,6 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
             }
         }
     }
-    // --gates FILE: GEOM's gates.json for this map (its groups are the centreline's order ids)
-    let gates = match (a.get("gates"), a.get("geom")) {
-        (Some(f), _) => Some(MapGates::load_geom(Path::new(f))?),
-        (None, Some(g)) => Some(MapGates::load(&map, Some(Path::new(g)))?),
-        _ => None,
-    };
     if let Some(g) = &gates {
         println!("gates for credit attribution: {} ({} groups in the order)", g.gates.len(), track.order_groups.len());
     }
@@ -1520,6 +1536,8 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
         out: out.clone(),
         max_chain_ticks: a.get("max-chain-ticks").map(|s| s.parse().unwrap()).unwrap_or(9000),
         verbose: a.has("verbose"),
+        prefix_ticks: a.get("prefix-ticks").map(|s| s.parse().unwrap()).unwrap_or(0),
+        lat_tol: a.get("lat-tol").map(|s| s.parse().unwrap()).unwrap_or(6.0),
     };
     let t0 = std::time::Instant::now();
     let mut w = Worker::start(&server, &map, &shim, &work.join("search"), &tape, a.has("verbose"))?;

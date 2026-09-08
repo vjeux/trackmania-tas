@@ -105,36 +105,57 @@ impl Track {
     /// GEOM's rayed human line where the centreline's gap leg is a straight line through the air.
     /// The leg becomes a road leg with a wide tolerance; every later arc length shifts by the new length.
     pub fn replace_first_leg(&mut self, wps: &[[f64; 3]]) {
-        if wps.len() < 2 || self.gate_s.is_empty() {
+        self.replace_leg(0, wps)
+    }
+
+    /// Replace ordered leg `k` (from gate k-1, or the spawn, to gate k) by an explicit waypoint polyline.
+    pub fn replace_leg(&mut self, k: usize, wps: &[[f64; 3]]) {
+        if wps.len() < 2 || k >= self.gate_s.len() {
             return;
         }
-        // the first gate's polyline index: the point whose s is gate_s[0]
-        let g_idx = self.s.iter().position(|x| (*x - self.gate_s[0]).abs() < 1e-6).unwrap_or(1);
-        let mut pts: Vec<[f64; 3]> = wps.to_vec();
+        let idx_of = |t: &Track, s_target: f64| -> usize {
+            let mut best = (f64::INFINITY, 0usize);
+            for (i, x) in t.s.iter().enumerate() {
+                if (*x - s_target).abs() < best.0 {
+                    best = ((*x - s_target).abs(), i);
+                }
+            }
+            best.1
+        };
+        let g_idx = idx_of(self, self.gate_s[k]);
+        let p_idx = if k == 0 { 0 } else { idx_of(self, self.gate_s[k - 1]) };
+        let mut pts: Vec<[f64; 3]> = self.pts[..p_idx].to_vec();
+        let removed_len = self.s[g_idx] - self.s[p_idx];
+        pts.extend_from_slice(wps);
         pts.extend_from_slice(&self.pts[g_idx..]);
         let mut s = vec![0.0; pts.len()];
         for i in 1..pts.len() {
             let (a, b) = (pts[i - 1], pts[i]);
             s[i] = s[i - 1] + ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
         }
-        let new_gate0 = s[wps.len() - 1].max(s[wps.len().saturating_sub(1)]);
-        let shift = new_gate0 - self.gate_s[0];
+        let new_gate_k = s[p_idx + wps.len() - 1];
+        let shift = new_gate_k - self.gate_s[k];
+        let _ = removed_len;
         let hw0 = 8.0;
-        let mut half_width = vec![hw0; wps.len()];
+        let mut half_width: Vec<f64> = self.half_width[..p_idx.min(self.half_width.len())].to_vec();
+        half_width.extend(std::iter::repeat(hw0).take(wps.len()));
         half_width.extend_from_slice(&self.half_width[g_idx.min(self.half_width.len())..]);
-        let mut speed_hint = vec![80.0; wps.len()];
+        let mut speed_hint: Vec<f64> = self.speed_hint[..p_idx.min(self.speed_hint.len())].to_vec();
+        speed_hint.extend(std::iter::repeat(80.0).take(wps.len()));
         speed_hint.extend_from_slice(&self.speed_hint[g_idx.min(self.speed_hint.len())..]);
-        let mut gap_seg = vec![false; wps.len() - 1];
-        gap_seg.push(false);
+        let mut gap_seg: Vec<bool> = self.gap_seg[..p_idx.min(self.gap_seg.len())].to_vec();
+        gap_seg.extend(std::iter::repeat(false).take(wps.len()));
         gap_seg.extend_from_slice(&self.gap_seg[g_idx.min(self.gap_seg.len())..]);
         gap_seg.truncate(pts.len() - 1);
         half_width.truncate(pts.len());
         speed_hint.truncate(pts.len());
-        for g in self.gate_s.iter_mut() {
-            *g += shift;
+        for (i, g) in self.gate_s.iter_mut().enumerate() {
+            if i >= k {
+                *g += shift;
+            }
         }
-        self.gate_s[0] = new_gate0;
-        if let Some(l) = self.leg_gap.get_mut(0) {
+        self.gate_s[k] = new_gate_k;
+        if let Some(l) = self.leg_gap.get_mut(k) {
             *l = false;
         }
         self.pts = pts;
@@ -142,6 +163,45 @@ impl Track {
         self.half_width = half_width;
         self.speed_hint = speed_hint;
         self.gap_seg = gap_seg;
+    }
+
+    /// A track from GEOM's AUTHOR-LINE (the original author's validation ghost in the tiny frame, 100 ms
+    /// samples) and the map's gates: s along the author's line, gates ordered by where the line passes
+    /// them (the author's order), every leg a road leg (the author drove it).
+    pub fn from_author_line(path: &std::path::Path, gates: &crate::gates::MapGates) -> Result<Track, String> {
+        let txt = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let j = crate::json::parse(&txt)?;
+        let pts: Vec<[f64; 3]> = j.get("pts").and_then(|v| v.arr()).ok_or("pts")?.iter().filter_map(|p| p.vec3()).collect();
+        if pts.len() < 2 {
+            return Err("author line: fewer than 2 points".into());
+        }
+        let mut s = vec![0.0; pts.len()];
+        for i in 1..pts.len() {
+            s[i] = s[i - 1] + ((pts[i][0] - pts[i - 1][0]).powi(2) + (pts[i][1] - pts[i - 1][1]).powi(2) + (pts[i][2] - pts[i - 1][2]).powi(2)).sqrt();
+        }
+        let n = pts.len();
+        let mut t = Track { pts, s, half_width: vec![6.0; n], speed_hint: vec![80.0; n], n_groups: 0, gap_seg: vec![false; n - 1], gate_s: Vec::new(), leg_gap: Vec::new(), order_groups: Vec::new() };
+        // each gate group: the arc length where the line passes nearest its (first) gate
+        let mut groups: Vec<(f64, u32)> = Vec::new();
+        for g in &gates.gates {
+            if g.kind == crate::gates::GateKind::Start {
+                continue;
+            }
+            let (gs, _, _, d) = t.project(g.centre, n / 2, n);
+            if d > 40.0 {
+                eprintln!("author line: gate wp{} (group {}) is {d:.1} m from the line; ordered by nearest s anyway", g.waypoint, g.group);
+            }
+            match groups.iter_mut().find(|(_, grp)| *grp == g.group) {
+                Some(e) => e.0 = e.0.min(gs),
+                None => groups.push((gs, g.group)),
+            }
+        }
+        groups.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        t.gate_s = groups.iter().map(|x| x.0).collect();
+        t.order_groups = groups.iter().map(|x| x.1).collect();
+        t.n_groups = groups.len();
+        t.leg_gap = vec![false; t.n_groups];
+        Ok(t)
     }
 
     pub fn len_m(&self) -> f64 {
@@ -169,7 +229,9 @@ impl Track {
             let q = [a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]];
             let d = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
             // horizontal lateral distance (the road frame is mostly horizontal)
-            let dh = ((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+            // signed: positive on the right of the direction of travel (xz cross product)
+            let cross = ab[0] * (p[2] - q[2]) - ab[2] * (p[0] - q[0]);
+            let dh = ((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt() * if cross < 0.0 { -1.0 } else { 1.0 };
             let cand = (d, self.s[i] + t * (self.s[i + 1] - self.s[i]), i, dh);
             if d < best.0 {
                 best = cand;
@@ -240,6 +302,11 @@ pub struct LapCfg {
     pub out: std::path::PathBuf,
     pub max_chain_ticks: usize,
     pub verbose: bool,
+    /// Seed the search from the base tape's OWN inputs replayed for this many ticks (a savestate
+    /// inside a known run, e.g. 50 m before a jump), instead of from the root only.
+    pub prefix_ticks: usize,
+    /// lateral tolerance beyond the half width on road legs (m): 6 on roads, 25+ on open terrain
+    pub lat_tol: f64,
 }
 
 struct Rng(u64);
@@ -470,13 +537,15 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             // the LEG toward the next uncredited gate decides (a jump's flight projects onto whatever road is near)
             let on_gap = track.leg_gap.get(k_pref).copied().unwrap_or(false) || track.gap_seg.get(seg).copied().unwrap_or(false);
             let hw = track.half_width.get(seg).copied().unwrap_or(5.5);
-            if !on_gap && (lat > hw + 6.0 || d3 > 25.0) {
+            let lat_abs = lat.abs();
+            if !on_gap && (lat_abs > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol) {
                 continue;
             }
             // fell off: far below the nearest centreline point on a road leg; on a GAP leg (jump, drop,
             // bowl) anything above the track's lowest point - 5 m and within 120 m of the polyline lives
             let road_y = track.at(s)[1];
-            if (!on_gap && end.y < road_y - 5.0) || (on_gap && (end.y < track_min_y - 5.0 || d3 > 120.0)) {
+            // (below the polyline while laterally ON the road = a dip the centreline's y does not follow: 08 at s 585)
+            if (!on_gap && end.y < road_y - 5.0 && (lat_abs > hw + 1.0 || end.y < road_y - 25.0)) || (on_gap && (end.y < track_min_y - 5.0 || d3 > 120.0)) {
                 continue;
             }
             // dead: stopped and not at the start
@@ -504,10 +573,11 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 k_pref as f64 * 10_000.0 + s_prev + 0.5 * (1.0 - dg / 300.0).clamp(0.0, 1.0)
             } else {
                 let s_eff = if s > s_gate + 6.0 { s_gate - 20.0 } else { s };
-                k_pref as f64 * 10_000.0 + s_eff - 0.02 * lat.min(20.0)
+                k_pref as f64 * 10_000.0 + s_eff - 0.02 * lat_abs.min(20.0)
             };
             // on a gap leg the arc length says little: the cell is the 4 m x 4 m ground square there
-            let cs = if on_gap { ((end.x / 4.0).floor() as i32) * 100_000 + (end.z / 4.0).floor() as i32 } else { (s / 4.0).floor() as i32 };
+            // on a road leg the cell also carries a 2 m LATERAL bucket (14's ramp: the line's x on the ramp decides the flight)
+            let cs = if on_gap { ((end.x / 4.0).floor() as i32) * 100_000 + (end.z / 4.0).floor() as i32 } else { ((s / 4.0).floor() as i32) * 64 + ((lat / 2.0).floor() as i32 + 32).clamp(0, 63) };
             let e = Entry { key: Key { cs, cv: (speed(&end) / 5.0).floor() as i32, cy: (end.y / 3.0).floor() as i32, mask }, chain, cps, mask, s, seg, progress, visits: 0, end: end.clone(), macro_desc: descs };
             // the finish: the engine counter reached every group (the finish only credits with all checkpoints)
             if cps >= n_groups && out.finished.is_none() {
@@ -536,8 +606,45 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         Ok(count)
     };
 
-    // SEED: the root
-    out.rollouts += fan(w, branch::ROOT, root, None, &mut archive, &mut out, &mut rng, h)?;
+    // SEED: the root, or the base tape replayed for --prefix-ticks (its state becomes the first cell)
+    if cfg.prefix_ticks > 0 {
+        let recs = w.reference_recs(root, cfg.prefix_ticks);
+        let (rows, nh) = w.rollout_keep(branch::ROOT, &recs, root, recs.len() as u64)?;
+        let end = rows.last().cloned().unwrap_or_else(|| root_row.clone());
+        let (s, _lat, seg, _) = track.project(pos(&end), track.pts.len() / 2, track.pts.len());
+        let cps = cps_of(&end);
+        // credits along the prefix, attributed like a rollout's
+        let mut mask = 0u32;
+        let mut prev = root_cps;
+        for r in &rows {
+            let c = cps_of(r);
+            if c > prev {
+                let mut bit = 31u32;
+                if let Some(g) = &cfg.gates {
+                    let best = g.gates.iter().filter(|gg| gg.kind != crate::gates::GateKind::Start).map(|gg| (crate::rig::dist(pos(r), gg.centre), gg.group)).fold((30.0f64, None), |a, b| if b.0 < a.0 { (b.0, Some(b.1)) } else { a });
+                    if let Some(grp) = best.1 {
+                        if let Some(p) = track.order_groups.iter().position(|x| *x == grp) {
+                            bit = p as u32;
+                        }
+                    }
+                } else {
+                    bit = (c as u32 - 1).min(30);
+                }
+                mask |= 1 << bit;
+                prev = c;
+            }
+        }
+        let k_pref = (0..track.n_groups).take_while(|i| mask & (1 << i) != 0).count();
+        let seed = Entry { key: Key { cs: (s / 4.0).floor() as i32, cv: (speed(&end) / 5.0).floor() as i32, cy: (end.y / 3.0).floor() as i32, mask }, chain: recs, cps, mask, s, seg, progress: k_pref as f64 * 10_000.0 + s, visits: 0, end: end.clone(), macro_desc: vec![format!("base tape prefix {} ticks", cfg.prefix_ticks)] };
+        out.log.push(format!("seed from the base tape at tick {}: ({:.1}, {:.1}, {:.1}) v {:.1} cps {cps} mask {mask:#x} s {s:.1}", cfg.prefix_ticks, end.x, end.y, end.z, speed(&end)));
+        let from = w.floor(nh)?;
+        out.best = Some(seed.clone());
+        out.rollouts += fan(w, nh, from, Some(&seed), &mut archive, &mut out, &mut rng, h)?;
+        w.release(nh);
+        archive.entry(seed.key.clone()).or_insert(seed);
+    } else {
+        out.rollouts += fan(w, branch::ROOT, root, None, &mut archive, &mut out, &mut rng, h)?;
+    }
     out.log.push(format!("seed: {} rollouts -> {} cells, best s {:.1} cps {}", out.rollouts, archive.len(), out.best.as_ref().map(|b| b.s).unwrap_or(0.0), out.best.as_ref().map(|b| b.cps).unwrap_or(0)));
     let mut last_report = std::time::Instant::now();
     let mut stagnant: usize = 0;
