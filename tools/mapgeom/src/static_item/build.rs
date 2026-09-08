@@ -2434,6 +2434,14 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
 /// `CPlugFxSystem` parsed, and every `.ParticleModel.Gbx` its emitters name
 /// loaded and parsed too (their externals — the smoke texture — kept as
 /// paths). Nothing is scaled here; `assemble` poses and scales it.
+/// TINY_FX_KEEP=02D,036,… — keep only these sub-model / particle chunks (by their
+/// low 12 bits, hex) when inlining a particle model: the bisect of which raw-copied
+/// chunk payload the engine misreads inside an item body (2026-09-08).
+fn fx_keep_filter() -> Option<Vec<u32>> {
+    let v = std::env::var("TINY_FX_KEEP").ok()?;
+    Some(v.split(',').filter_map(|s| u32::from_str_radix(s.trim().trim_start_matches("0x"), 16).ok()).collect())
+}
+
 pub fn add_fx_system(store: &mut crate::store::DataStore, path: &str, at: &Xform) -> R<FxPart> {
     let model = store.load_model(path)?;
     if model.class_id != super::particle::C_FX_SYSTEM {
@@ -2539,8 +2547,17 @@ fn node_texture_refs(node: &super::particle::ParticleNode) -> Vec<i32> {
     out
 }
 
+// (see fx_keep_filter)
 fn place_particle_node(node: &mut super::particle::ParticleNode, externals: &[(u32, String)], textures: &[(String, super::particle::ParticleNode, String, Vec<u8>)], next: &mut i32) {
     let texture_mode = std::env::var("TINY_FX_TEXTURE").unwrap_or_else(|_| "extern".into());
+    if let Some(keep) = fx_keep_filter() {
+        if node.class_id == 0x090B2000 {
+            node.chunks.retain(|c| {
+                let id = super::particle::chunk_id(c);
+                keep.contains(&(id & 0xFFF))
+            });
+        }
+    }
     for r in node.refs_mut() {
         if r.index < 0 {
             continue;

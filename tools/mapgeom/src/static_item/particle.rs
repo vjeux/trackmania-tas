@@ -806,3 +806,21 @@ pub fn texture_file(bitmap: &ParticleNode, image: &str) -> Vec<u8> {
     out.extend_from_slice(&body);
     out
 }
+
+/// The chunk id a `PChunk` writes (its low 12 bits identify it within the class).
+pub fn chunk_id(c: &PChunk) -> u32 {
+    match c {
+        PChunk::SubModels { .. } => 0x090B3000,
+        PChunk::ModelName { .. } => 0x090B3001,
+        PChunk::SubModelHead { .. } => 0x090B202D,
+        PChunk::RenderNode { .. } => 0x090B202E,
+        PChunk::Texture { .. } => 0x090B2036,
+        PChunk::Gpu { .. } => 0x090B203A,
+        PChunk::GpuSpawn { .. } => 0x090C5000,
+        PChunk::BitmapImage { .. } => 0x09011030,
+        PChunk::BitmapFrames { .. } => 0x09011034,
+        PChunk::BitmapNamed { .. } => 0x09011036,
+        PChunk::SingleRef { id, .. } => *id,
+        PChunk::Raw { id, .. } => *id & 0x7FFF_FFFF,
+    }
+}
