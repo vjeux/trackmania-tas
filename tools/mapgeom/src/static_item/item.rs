@@ -347,6 +347,10 @@ impl CGameItemModel {
                 super::Node::Prefab(p) => Some(p),
                 _ => None,
             },
+            super::Node::VariantList(v) => match v.variants.first()?.model.inline.as_deref()? {
+                super::Node::Prefab(p) => Some(p),
+                _ => None,
+            },
             _ => None,
         }
     }

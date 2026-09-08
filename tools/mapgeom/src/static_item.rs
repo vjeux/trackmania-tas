@@ -104,7 +104,28 @@ pub enum Node {
     Particle(particle::ParticleNode),
     /// A class with no reader here, made only of skippable chunks.
     Opaque(OpaqueNode),
+    /// `NPlugItem_SVariantList` (0x2F0BC000): the wrapper the pack's Flag16m /
+    /// Flag8m items put between the model chunk and their prefab — variants
+    /// tagged (MatModifier Grass/Dirt/Ice, Type Flag), each naming an entity
+    /// model. Plain body: version, then per variant the tags, the model ref
+    /// and one u32 (HiddenInManualCycle).
+    VariantList(VariantList),
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VariantList {
+    pub version: u32,
+    pub variants: Vec<Variant>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Variant {
+    pub tags: Vec<(String, String)>,
+    pub model: Ref,
+    pub hidden: u32,
+}
+
+pub const C_VARIANT_LIST: u32 = 0x2F0BC000;
 
 /// The body of `NPlugTrigger_SGateSpecial` (0x09179000): plain, no chunk
 /// framing, no FACADE. Read off `Special24m.Prefab.Gbx`: `02 00 00 00 |
@@ -141,6 +162,7 @@ impl Node {
             Node::FxSystem(_) => particle::C_FX_SYSTEM,
             Node::Particle(p) => p.class_id,
             Node::Opaque(o) => o.class_id,
+            Node::VariantList(_) => C_VARIANT_LIST,
         }
     }
 }
@@ -174,6 +196,24 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
             Node::GateSpecial(GateSpecialTrigger { version, shape, u01 })
         }
         0x09178000 | 0x0917A000 | 0x0917B000 | 0x09119000 | 0x09118000 => Node::Opaque(read_fixed_opaque(r, class_id)?),
+        C_VARIANT_LIST => {
+            let version = r.u32()?;
+            let n = r.count()?;
+            let mut variants = Vec::with_capacity(n);
+            for _ in 0..n {
+                let nt = r.count()?;
+                let mut tags = Vec::with_capacity(nt);
+                for _ in 0..nt {
+                    let k = r.string()?;
+                    let v = r.string()?;
+                    tags.push((k, v));
+                }
+                let model = read_ref(r)?;
+                let hidden = r.u32()?;
+                variants.push(Variant { tags, model, hidden });
+            }
+            Node::VariantList(VariantList { version, variants })
+        }| 0x0917A000 | 0x0917B000 | 0x09119000 | 0x09118000 => Node::Opaque(read_fixed_opaque(r, class_id)?),
         particle::C_FX_SYSTEM => Node::FxSystem(particle::CPlugFxSystem::parse(r)?),
         c if particle::is_particle_class(c) => Node::Particle(particle::ParticleNode::parse(r, c)?),
         other => Node::Opaque(read_opaque(r, other)?),
@@ -207,6 +247,19 @@ pub fn write_node(w: &mut Wr, n: &Node) {
         Node::FxSystem(x) => x.write(w),
         Node::Particle(x) => x.write(w),
         Node::Opaque(o) => w.bytes(&o.raw),
+        Node::VariantList(v) => {
+            w.u32(v.version);
+            w.u32(v.variants.len() as u32);
+            for var in &v.variants {
+                w.u32(var.tags.len() as u32);
+                for (k, val) in &var.tags {
+                    w.string(k);
+                    w.string(val);
+                }
+                write_ref(w, &var.model);
+                w.u32(var.hidden);
+            }
+        }
     }
 }
 

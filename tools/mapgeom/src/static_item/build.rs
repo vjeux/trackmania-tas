@@ -1384,10 +1384,22 @@ pub fn add_dyna_tween_part(store: &mut crate::store::DataStore, path: &str, at: 
     // kinematic part.
     let mut instance_params = ent.params.clone();
     let mut constraint = None;
+    let (mut k_move_shape, mut k_hit_shape) = (None, None);
     match std::env::var("TINY_FLAG_KINEMATIC").as_deref() {
         Ok(v) if v == "1" || v == "constraint" => {
             if instance_params.len() >= 16 {
                 instance_params[12..16].copy_from_slice(&1u32.to_le_bytes());
+            }
+            // a kinematic dyna without hulls crashes the loader (NULL DynaShape
+            // at Trackmania.exe+0xb7088c — an5, 2026-09-08): the pusher piston's
+            // own hulls, at 5 % (a stub the size of the pole's base)
+            for (path, slot) in [("Stadium\\Media\\Dyna\\ObstaclePusher\\ObstaclePusher8mPiston.MoveShape.Gbx", &mut k_move_shape), ("Stadium\\Media\\Dyna\\ObstaclePusher\\ObstaclePusher8mPiston.HitShape.Gbx", &mut k_hit_shape)] {
+                let sm = store.load_model(path)?;
+                let mut lb = super::LookbackState::default();
+                lb.defined_nodes.extend(sm.external_indices().iter().copied());
+                let mut r = super::Rd::new(&sm.body, 0, lb);
+                let sf = super::surface::CPlugSurface::parse(&mut r).map_err(|e| format!("{path}: {e}"))?;
+                *slot = canonical_surface(&sf, 0.05);
             }
             if v == "constraint" {
                 let cpath = "Stadium\\Media\\KinematicConstraints\\ObstaclePusher8m.KinematicConstraint.Gbx";
@@ -1400,6 +1412,8 @@ pub fn add_dyna_tween_part(store: &mut crate::store::DataStore, path: &str, at: 
     }
     m.notes.push(format!("{}: TWEEN part, {} visuals [{}], no constraint, params 0x{:X} ({} bytes)", path.rsplit('\\').next().unwrap_or(path), mesh.visuals.len(), frames.join("; "), ent.params_id, ent.params.len()));
     m.notes.extend(mesh.notes.drain(..).map(|n| format!("  (tween part) {n}")));
+    let move_shape = move_shape.or(k_move_shape);
+    let hit_shape = hit_shape.or(k_hit_shape);
     m.dyna.push(DynaPart { path: path.to_string(), rot, pos, mesh, move_shape, hit_shape, model: src.model.clone(), instance_params_id: ent.params_id, instance_params, constraint, pack_ref });
     Ok(())
 }

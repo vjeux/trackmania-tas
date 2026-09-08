@@ -430,7 +430,17 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         // straight under CGameItemModel, as the pack's own obstacle items do:
         // wrapped in a CGameCommonItemEntityModel the game drops the item
         // silently (MovD, 2026-09-07)
-        inline(1, Node::Prefab(prefab))
+        // TINY_FLAG_VARIANTLIST=1 (2026-09-08 probe): the pack FLAG items wrap
+        // their prefab in an NPlugItem_SVariantList (one variant, tags
+        // MatModifier Grass/Dirt/Ice + Type Flag) — the obstacles do not; does
+        // the wrapper decide how the item's visual dynas are instantiated?
+        if std::env::var("TINY_FLAG_VARIANTLIST").as_deref() == Ok("1") {
+            let pi = next_index(&mut next);
+            let tags = vec![("MatModifier".to_string(), "Grass".to_string()), ("MatModifier".to_string(), "Dirt".to_string()), ("MatModifier".to_string(), "Ice".to_string()), ("Type".to_string(), "Flag".to_string())];
+            inline(1, Node::VariantList(super::VariantList { version: 1, variants: vec![super::Variant { tags, model: inline(pi, Node::Prefab(prefab)), hidden: 0 }] }))
+        } else {
+            inline(1, Node::Prefab(prefab))
+        }
     };
     let placement_index = next_index(&mut next);
     let sclass_index = next_index(&mut next);
