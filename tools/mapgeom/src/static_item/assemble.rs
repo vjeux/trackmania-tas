@@ -88,6 +88,10 @@ thread_local! {
     /// path were probed on 2026-09-07 and resolve to NOTHING — every such light
     /// was dark — so nothing else goes here.)
     pub static EXTERNALS: std::cell::RefCell<Vec<(u32, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Sidecar files an item form writes next to the item (`TINY_FLAG_REF=file`:
+    /// the dyna object and its mesh as files): (bare file name, bytes). The
+    /// `static-item` command writes them into the --out directory.
+    pub static SIDECARS: std::cell::RefCell<Vec<(String, Vec<u8>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// The merged visuals + materials as one `CPlugSolid2Model`, node indices
@@ -319,6 +323,51 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             if part.pack_ref == Some(super::merged::PackRef::Dyna) {
                 let i = next_index(&mut next);
                 EXTERNALS.with(|e| e.borrow_mut().push((i as u32, part.path.clone())));
+                ents.push(super::prefab::Entity { model: super::NodeRef { index: i, inline: None }, rot: part.rot, pos: part.pos, params_id: part.instance_params_id, params: part.instance_params.clone(), u01: Vec::new() });
+                continue;
+            }
+            // TINY_FLAG_REF=file: our dyna object and our mesh as two sidecar
+            // FILES next to the item, named bare in the reference tables (the
+            // in-archive form); the item's entity names the dyna file
+            if part.pack_ref == Some(super::merged::PackRef::File) {
+                let stem = opts.ident.strip_suffix(".Item.Gbx").unwrap_or(&opts.ident).to_string();
+                let mesh_name = format!("{stem}.Mesh.Gbx");
+                let dyna_name = format!("{stem}.DynaObject.Gbx");
+                // the mesh file: root node 0 = the Solid2, its visuals/streams/
+                // materials inline from 1 (its own numbering, its own strings)
+                let mut mnext = 1;
+                let s2 = build_solid2(&part.mesh, opts, &mut mnext).map_err(|e| format!("{}: {e}", part.path))?;
+                let mesh_body = {
+                    let mut out = Vec::new();
+                    let mut lb = super::LookbackState::default();
+                    let mut w = super::Wr { w: &mut out, lb: &mut lb };
+                    super::write_node(&mut w, &Node::Solid2(s2));
+                    out
+                };
+                SIDECARS.with(|s| s.borrow_mut().push((mesh_name.clone(), super::file::write_node_file(super::C_SOLID2_MODEL, &mesh_body, mnext as u32, &[]))));
+                // the dyna file: root node 0 = the model, node 1 = the mesh file,
+                // the hulls inline after it
+                let mut model = part.model.clone();
+                let mut dnext = 2;
+                model.mesh = super::NodeRef { index: 1, inline: None };
+                model.dyna_shape = match &part.move_shape {
+                    Some(s) => inline(next_index(&mut dnext), Node::Surface(s.clone())),
+                    None => super::null_ref(),
+                };
+                model.static_shape = match &part.hit_shape {
+                    Some(s) => inline(next_index(&mut dnext), Node::Surface(s.clone())),
+                    None => super::null_ref(),
+                };
+                let dyna_body = {
+                    let mut out = Vec::new();
+                    let mut lb = super::LookbackState::default();
+                    let mut w = super::Wr { w: &mut out, lb: &mut lb };
+                    super::write_node(&mut w, &Node::Dyna(model));
+                    out
+                };
+                SIDECARS.with(|s| s.borrow_mut().push((dyna_name.clone(), super::file::write_node_file(super::dyna::C_DYNA_OBJECT_MODEL, &dyna_body, dnext as u32, &[(1, mesh_name.clone())]))));
+                let i = next_index(&mut next);
+                EXTERNALS.with(|e| e.borrow_mut().push((i as u32, dyna_name)));
                 ents.push(super::prefab::Entity { model: super::NodeRef { index: i, inline: None }, rot: part.rot, pos: part.pos, params_id: part.instance_params_id, params: part.instance_params.clone(), u01: Vec::new() });
                 continue;
             }

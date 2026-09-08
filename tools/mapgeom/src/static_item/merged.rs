@@ -266,6 +266,12 @@ pub struct DynaPart {
 pub enum PackRef {
     Dyna,
     Mesh(String),
+    /// `TINY_FLAG_REF=file`: OUR dyna object and OUR mesh written as two
+    /// sidecar FILES next to the item (`<stem>.DynaObject.Gbx`,
+    /// `<stem>.Mesh.Gbx`, bare names in the reference tables — the in-archive
+    /// form the FX textures proved), so the runtime sees file-backed nodes
+    /// with FIDs like the pack's instead of inline ones.
+    File,
 }
 
 pub fn dec3n_unpack(v: u32) -> [f32; 3] {

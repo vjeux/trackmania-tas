@@ -1370,11 +1370,37 @@ pub fn add_dyna_tween_part(store: &mut crate::store::DataStore, path: &str, at: 
     let pack_ref = match std::env::var("TINY_FLAG_REF").as_deref() {
         Ok("dyna") => Some(super::merged::PackRef::Dyna),
         Ok("mesh") => Some(super::merged::PackRef::Mesh(src.mesh_path.clone())),
+        Ok("file") => Some(super::merged::PackRef::File),
         _ => None,
     };
+    // TINY_FLAG_KINEMATIC=1|constraint (2026-09-08 probe): the cloth entity as
+    // a KINEMATIC dyna — SInstanceParams.IsKinematic (word 3) set, which puts
+    // it in the entity kind the obstacle pistons use (0x914F000, the kind the
+    // game does animate in an embedded item: lineup an4 showed our half-size
+    // ObstaclePusher8mLevel1 piston travelling and its screen texture cycling)
+    // instead of the visual-only dyna kind (0x914E000) the pack flag gets;
+    // `constraint` also binds it with the pack's zero-range pusher constraint
+    // (KinematicConstraints\ObstaclePusher8m: trans Z 0..0 m) like a real
+    // kinematic part.
+    let mut instance_params = ent.params.clone();
+    let mut constraint = None;
+    match std::env::var("TINY_FLAG_KINEMATIC").as_deref() {
+        Ok(v) if v == "1" || v == "constraint" => {
+            if instance_params.len() >= 16 {
+                instance_params[12..16].copy_from_slice(&1u32.to_le_bytes());
+            }
+            if v == "constraint" {
+                let cpath = "Stadium\\Media\\KinematicConstraints\\ObstaclePusher8m.KinematicConstraint.Gbx";
+                let kmodel = store.load_model(cpath)?;
+                let kc = super::dyna::KinematicConstraint::parse_body(&kmodel.body).map_err(|e| format!("{cpath}: {e}"))?;
+                constraint = Some((kc, super::dyna::ConstraintParams { version: 0, ent1: -1, ent2: 0, pos1: [0.0; 3], pos2: [0.0; 3] }));
+            }
+        }
+        _ => {}
+    }
     m.notes.push(format!("{}: TWEEN part, {} visuals [{}], no constraint, params 0x{:X} ({} bytes)", path.rsplit('\\').next().unwrap_or(path), mesh.visuals.len(), frames.join("; "), ent.params_id, ent.params.len()));
     m.notes.extend(mesh.notes.drain(..).map(|n| format!("  (tween part) {n}")));
-    m.dyna.push(DynaPart { path: path.to_string(), rot, pos, mesh, move_shape, hit_shape, model: src.model.clone(), instance_params_id: ent.params_id, instance_params: ent.params.clone(), constraint: None, pack_ref });
+    m.dyna.push(DynaPart { path: path.to_string(), rot, pos, mesh, move_shape, hit_shape, model: src.model.clone(), instance_params_id: ent.params_id, instance_params, constraint, pack_ref });
     Ok(())
 }
 

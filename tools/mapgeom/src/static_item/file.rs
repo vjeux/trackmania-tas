@@ -246,3 +246,22 @@ pub fn ref_table_nodes(raw: &[u8]) -> Vec<u32> {
     }
     out
 }
+
+/// A plain node file (no header chunks): the `.Mesh.Gbx` / `.DynaObject.Gbx`
+/// sidecars an item can name from its own archive folder. `body` is the
+/// node's chunks as `write_node` emits them (the class id rides in the
+/// header), `num_nodes` counts the file's root plus its inline nodes and
+/// externals, `externals` = (node index, bare file name) for the reference
+/// table (ancestor level 0 = the file's own folder).
+pub fn write_node_file(class_id: u32, body: &[u8], num_nodes: u32, externals: &[(u32, String)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(body.len() + 64);
+    out.extend_from_slice(b"GBX");
+    out.extend_from_slice(&6u16.to_le_bytes());
+    out.extend_from_slice(b"BUUR");
+    out.extend_from_slice(&class_id.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes()); // no header chunks
+    out.extend_from_slice(&num_nodes.to_le_bytes());
+    out.extend_from_slice(&ref_table(externals));
+    out.extend_from_slice(body);
+    out
+}

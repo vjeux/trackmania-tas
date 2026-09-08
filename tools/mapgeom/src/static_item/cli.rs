@@ -49,6 +49,14 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         std::fs::write(&p, data).map_err(|e| format!("{}: {e}", p.display()))?;
         println!("  side file {} ({} bytes)", p.display(), data.len());
     }
+    // the sidecar node files of the `TINY_FLAG_REF=file` form (the dyna
+    // object and its mesh as files the item names by bare name)
+    let sidecars = super::assemble::SIDECARS.with(|s| std::mem::take(&mut *s.borrow_mut()));
+    for (name, data) in &sidecars {
+        let p = std::path::Path::new(&out).with_file_name(name);
+        std::fs::write(&p, data).map_err(|e| format!("{}: {e}", p.display()))?;
+        println!("  sidecar {} ({} bytes)", p.display(), data.len());
+    }
     for n in &merged.notes {
         println!("  note: {n}");
     }
