@@ -456,6 +456,8 @@ pub struct LapOut {
     pub cells: usize,
     pub best: Option<Entry>,
     pub log: Vec<String>,
+    /// rollout end-state census: [off-world, off-route (lateral/d3), fell below the line, stopped-no-credit, alive-but-crawling (<3 m/s), alive]
+    pub deaths: [usize; 6],
 }
 
 pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
@@ -465,7 +467,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
     let h = cfg.h;
     let mut rng = Rng(cfg.seed ^ 0x9E3779B97F4A7C15);
     let mut archive: std::collections::HashMap<Key, Entry> = Default::default();
-    let mut out = LapOut { finished: None, leg_done: None, rollouts: 0, steps: 0, cells: 0, best: None, log: Vec::new() };
+    let mut out = LapOut { finished: None, leg_done: None, rollouts: 0, steps: 0, cells: 0, best: None, log: Vec::new(), deaths: [0; 6] };
     let mut near_misses: usize = 0;
     // clinic: the leg index the seed sits on (credits in order at the seed)
     let seed_k = std::cell::Cell::new(0usize);
@@ -675,6 +677,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             }
             // off the world / far off the road on a road leg: no cell
             if end.y < -20.0 {
+                out.deaths[0] += 1;
                 continue;
             }
             // the LEG toward the next uncredited gate decides (a jump's flight projects onto whatever road is near)
@@ -682,6 +685,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let hw = track.half_width.get(seg).copied().unwrap_or(5.5);
             let lat_abs = lat.abs();
             if !on_gap && (lat_abs > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol) {
+                out.deaths[1] += 1;
                 continue;
             }
             // fell off: far below the nearest centreline point on a road leg; on a GAP leg (jump, drop,
@@ -689,11 +693,18 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let road_y = track.at(s)[1];
             // (below the polyline while laterally ON the road = a dip the centreline's y does not follow: 08 at s 585)
             if (!on_gap && end.y < road_y - 5.0 && (lat_abs > hw + 1.0 || end.y < road_y - cfg.below_tol)) || (on_gap && (end.y < track_min_y - 5.0 || d3 > 120.0)) {
+                out.deaths[2] += 1;
                 continue;
             }
             // dead: stopped and not at the start
             if speed(&end) < 1.0 && s > 5.0 && cps == root_cps {
+                out.deaths[3] += 1;
                 continue;
+            }
+            if speed(&end) < 3.0 {
+                out.deaths[4] += 1;
+            } else {
+                out.deaths[5] += 1;
             }
             let mut chain = chain0.clone();
             chain.extend(recs);
@@ -972,7 +983,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let _ = std::fs::write(cfg.out.join("best.tsv"), tsv_text(&b.chain));
             }
             let b = out.best.as_ref().unwrap();
-            eprintln!("  [{} rollouts, {} steps, {} cells] best: mask {:#x} cps {} s {:.1} m ({:.0} %) speed {:.1} m/s after {:.2} s, chain {:?}", out.rollouts, out.steps, archive.len(), b.mask, b.cps, b.s, 100.0 * b.s / track.len_m(), speed(&b.end), b.chain.len() as f64 / 100.0, b.macro_desc.iter().rev().take(3).collect::<Vec<_>>());
+            eprintln!("  [{} rollouts, {} steps, {} cells; ends: offworld {} offroute {} fell {} stopped {} crawl {} alive {}] best: mask {:#x} cps {} s {:.1} m ({:.0} %) speed {:.1} m/s after {:.2} s, chain {:?}", out.rollouts, out.steps, archive.len(), out.deaths[0], out.deaths[1], out.deaths[2], out.deaths[3], out.deaths[4], out.deaths[5], b.mask, b.cps, b.s, 100.0 * b.s / track.len_m(), speed(&b.end), b.chain.len() as f64 / 100.0, b.macro_desc.iter().rev().take(3).collect::<Vec<_>>());
         }
     }
     out.cells = archive.len();
