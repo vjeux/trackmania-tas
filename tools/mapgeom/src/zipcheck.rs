@@ -235,10 +235,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
         return Err("zipcheck MAP.Map.Gbx… [--verbose]".into());
     }
     let verbose = args.iter().any(|a| a == "--verbose" || a == "-v");
+    let want_dups = args.iter().any(|a| a == "--dups");
     for p in maps {
         println!("== {p}");
         let m = MapFile::load(std::path::Path::new(p));
-        check_map(&m, verbose)?;
+        if want_dups {
+            dups(&m, verbose)?;
+        } else {
+            check_map(&m, verbose)?;
+        }
     }
     Ok(())
 }
@@ -499,6 +504,85 @@ pub fn check_map(m: &MapFile, verbose: bool) -> Result<(), String> {
         println!("VERDICT: {} problem(s)", problems.len());
         for p in &problems {
             println!("  ! {p}");
+        }
+    }
+    Ok(())
+}
+
+/// The item's bytes with its own name neutralised: every occurrence of the
+/// ident (`AC00000123.Item.Gbx`, in the header ident and the body ident) is
+/// replaced by a same-length placeholder, so two items that differ ONLY by
+/// name hash alike.
+pub fn nameless(bytes: &[u8], name: &str) -> Vec<u8> {
+    let n = name.as_bytes();
+    if n.is_empty() {
+        return bytes.to_vec();
+    }
+    let ph: Vec<u8> = std::iter::repeat(b'#').take(n.len()).collect();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes.len() - i >= n.len() && &bytes[i..i + n.len()] == n {
+            out.extend_from_slice(&ph);
+            i += n.len();
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// `mapgeom zipcheck --dups MAP…`: groups of byte-identical items (name
+/// neutralised) in the embedded archive, and what dropping the copies saves.
+pub fn dups(m: &MapFile, verbose: bool) -> Result<(), String> {
+    let c = read_chunk(m)?;
+    let locs = locals(c.zip)?;
+    let mut groups: BTreeMap<[u8; 16], Vec<(String, usize, usize)>> = BTreeMap::new();
+    let mut placed: BTreeMap<String, usize> = BTreeMap::new();
+    for it in &m.items {
+        *placed.entry(it.model.clone()).or_default() += 1;
+    }
+    for e in &locs {
+        if !e.name.to_lowercase().ends_with(".item.gbx") {
+            continue;
+        }
+        let data = &c.zip[e.data_start..e.data_start + e.csize as usize];
+        let raw = match e.method {
+            0 => data.to_vec(),
+            _ => miniz_oxide::inflate::decompress_to_vec(data).map_err(|err| format!("{}: inflate: {err:?}", e.name))?,
+        };
+        let base = e.name.rsplit('/').next().unwrap_or(&e.name).to_string();
+        let h = crate::md5::md5(&nameless(&raw, &base));
+        groups.entry(h).or_default().push((base, raw.len(), e.csize as usize));
+    }
+    let n_items = groups.values().map(|g| g.len()).sum::<usize>();
+    let dup_groups: Vec<&Vec<(String, usize, usize)>> = groups.values().filter(|g| g.len() > 1).collect();
+    let copies: usize = dup_groups.iter().map(|g| g.len() - 1).sum();
+    let saved_c: usize = dup_groups.iter().map(|g| g[1..].iter().map(|x| x.2).sum::<usize>()).sum();
+    let saved_u: usize = dup_groups.iter().map(|g| g[1..].iter().map(|x| x.1).sum::<usize>()).sum();
+    let unplaced: Vec<&(String, usize, usize)> = groups.values().flatten().filter(|(n, ..)| !placed.contains_key(n)).collect();
+    let unplaced_c: usize = unplaced.iter().map(|x| x.2).sum();
+    println!(
+        "{} items: {} distinct by content; {} duplicate copies in {} groups ({} compressed / {} uncompressed bytes); {} items never placed ({} compressed bytes)",
+        n_items,
+        groups.len(),
+        copies,
+        dup_groups.len(),
+        saved_c,
+        saved_u,
+        unplaced.len(),
+        unplaced_c
+    );
+    // the two savings overlap: an unplaced copy counts once
+    let overlap: Vec<&(String, usize, usize)> = dup_groups.iter().flat_map(|g| g[1..].iter()).filter(|x| !placed.contains_key(&x.0)).collect();
+    let overlap_c: usize = overlap.iter().map(|x| x.2).sum();
+    println!("  pruning unplaced + dropping duplicate copies together: {} entries and {} compressed bytes fewer", copies + unplaced.len() - overlap.len(), saved_c + unplaced_c - overlap_c);
+    if verbose {
+        let mut sorted: Vec<&Vec<(String, usize, usize)>> = dup_groups.clone();
+        sorted.sort_by_key(|g| std::cmp::Reverse(g.len() * g[0].1));
+        for g in sorted.iter().take(25) {
+            println!("  {} x {} B: {}", g.len(), g[0].1, g.iter().map(|x| format!("{}{}", x.0.trim_end_matches(".Item.Gbx"), if placed.contains_key(&x.0) { "" } else { "(unplaced)" })).collect::<Vec<_>>().join(" "));
         }
     }
     Ok(())

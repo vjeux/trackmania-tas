@@ -1127,6 +1127,30 @@ pub fn cmd(args: &[String]) {
         }
         embedded_names.sort();
         embedded_names.dedup();
+        // The archive carries ONLY what the manifest names (plus the non-item
+        // support files — the sign-logo DDS). The library builds one item per
+        // block recipe and per item variant, and a model whose every placement
+        // was dropped (a tree over the track, a parked custom item) used to
+        // travel along unlisted: 40 dead entries in 21, 114 in 25
+        // (2026-09-08). Every entry counts against the loader's flakiness
+        // band (≥ ~757 entries flaky) and the upload cap, so the dead ones go.
+        // TINY_PRUNE_UNPLACED=0 keeps the whole library.
+        if std::env::var("TINY_PRUNE_UNPLACED").map(|v| v != "0").unwrap_or(true) {
+            let listed: std::collections::BTreeSet<&str> = embedded_names.iter().map(|s| s.as_str()).collect();
+            let entries = crate::header::zip_entries(&zip);
+            let before = entries.len();
+            let kept: std::collections::BTreeMap<String, Vec<u8>> = entries
+                .into_iter()
+                .filter(|(name, _)| {
+                    let base = name.trim_start_matches("Items/");
+                    !name.ends_with(".Item.Gbx") || listed.contains(base)
+                })
+                .collect();
+            if kept.len() != before {
+                println!("  archive: {} of {} entries kept ({} unplaced item models pruned)", kept.len(), before, before - kept.len());
+                zip = crate::header::deflated_zip(&kept);
+            }
+        }
         let manifest: Vec<(&str, &str)> = embedded_names
             .iter()
             .map(|name| (name.as_str(), name.as_str()))

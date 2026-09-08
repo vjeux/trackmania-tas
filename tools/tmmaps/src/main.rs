@@ -1341,6 +1341,8 @@ fn main() {
             println!("wrote {} ({} blocks, {} items)", out.display(), m.blocks.len(), m.items.len());
         }
         "census" => census::cmd_census(&args),
+        // archive-only variants of a tiny map for the load-failure bisect (zippad.rs)
+        "zippad" => tmmaps::zippad::cmd(&args),
         "header" => header::cmd(&args),
         "dropscan" => dropscan::cmd(&args),
         "mediatracker" => tmmaps::mediatracker::cmd(&args),
