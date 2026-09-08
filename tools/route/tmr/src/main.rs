@@ -772,6 +772,15 @@ fn cmd_legs(args: &[String]) {
         c
     });
     let ho = flag(args, "--human-orders").unwrap_or_else(|| die("--human-orders human-orders.tsv"));
+    // --starts starts.tsv: the HUMAN's real states (GEN's sampled starts) — for each leg, the local head is asked
+    // directly from the human's first state after gate A to gate B's centre at h 400 and 600 (F22: head or fan?)
+    let human_starts: Vec<tmr::data::StartInfo> = flag(args, "--starts").map(|p| {
+        let m = tmr::data::read_starts(Path::new(&p)).unwrap_or_else(|e| die(&e));
+        // "human-leg" rows are the human's states AT the gate crossings; plain "human" rows are the 1.5 s samples
+        let mut v: Vec<tmr::data::StartInfo> = m.into_values().filter(|s| s.source.starts_with("human")).collect();
+        v.sort_by_key(|s| (if s.source == "human-leg" { 0 } else { 1 }, s.race_ms));
+        v
+    }).unwrap_or_default();
     let s = std::fs::read_to_string(&ho).unwrap_or_else(|e| die(&e.to_string()));
     // group → node index
     let node_of_group: HashMap<u32, usize> = nodes.groups.iter().enumerate().skip(1).map(|(i, g)| (*g, i)).collect();
@@ -817,6 +826,18 @@ fn cmd_legs(args: &[String]) {
             }
             let mine = scored.iter().find(|x| x.0 == to);
             let human_leg = if k == 0 { cp_ms.get(0).cloned() } else { cp_ms.get(k).zip(cp_ms.get(k - 1)).map(|(a, b)| a - b) };
+            // direct local-head query from the human's real state just after gate A (cps_before == k)
+            let direct_line = match (&chained, human_starts.iter().find(|s| s.cps_before as usize == k)) {
+                (Some(c), Some(hs)) => {
+                    // target = where the human actually crossed gate B (the next human-leg row), else the gate base
+                    let tgt = human_starts.iter().find(|s| s.cps_before as usize == k + 1 && s.ghost_md5 == hs.ghost_md5).map(|s| s.state.pos).unwrap_or(nodes.pos[to]);
+                    let d = ((tgt[0] - hs.state.pos[0]).powi(2) + (tgt[2] - hs.state.pos[2]).powi(2)).sqrt();
+                    let e4 = c.local_query_state(&hs.state, tgt, 400);
+                    let e6 = c.local_query_state(&hs.state, tgt, 600);
+                    format!("; DIRECT from the human state (speed {:.0} m/s, {:.0} m, dy {:+.0} m): p {:.3} t {} · p {:.3} t {}", hs.state.speed, d, tgt[1] - hs.state.pos[1], e4.p_reach, tmr::secs((e4.expected_ticks * 10.0) as i64), e6.p_reach, tmr::secs((e6.expected_ticks * 10.0) as i64))
+                }
+                _ => String::new(),
+            };
             let chained_line = match &chained {
                 Some(c) => {
                     let dir = est.heading_public(prev, at);
@@ -826,11 +847,11 @@ fn cmd_legs(args: &[String]) {
                             if has(args, "--trace") {
                                 println!("      chained path: {}", path.iter().map(|q| format!("({:.0},{:.0},{:.0})", q[0], q[1], q[2])).collect::<Vec<_>>().join(" → "));
                             }
-                            format!("; CHAINED p {:.3} time {} ({} steps, arrives {:.0} m/s)", p, tmr::secs(ticks as i64 * 10), steps, v)
+                            format!("; CHAINED p {:.3} time {} ({} steps, arrives {:.0} m/s){direct_line}", p, tmr::secs(ticks as i64 * 10), steps, v)
                         }
                         None => {
                             chained_fail += 1;
-                            "; CHAINED: no path above p_step floor".to_string()
+                            format!("; CHAINED: no path above p_step floor{direct_line}")
                         }
                     }
                 }

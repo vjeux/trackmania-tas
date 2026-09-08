@@ -265,6 +265,17 @@ impl<'a> Chained<'a> {
         self.local.estimate(&x, d)
     }
 
+    /// The local head on a REAL car state → a point target at h (the coordinator's F22 separation: head or fan).
+    pub fn local_query_state(&self, cs: &CarState, target: [f32; 3], h: u16) -> crate::net::Estimate {
+        let dir = frame::unit3([target[0] - cs.pos[0], target[1] - cs.pos[1], target[2] - cs.pos[2]]).unwrap_or([0.0, 0.0, 1.0]);
+        let t = TargetSpec { centre: target, normal: dir, half_width: crate::data::R_LOCAL, group_size: 0, kind: TargetKind::LocalPoint, collected_share: 0.0 };
+        let mut x = vec![0f32; self.feat.dim()];
+        self.feat.fill(cs, &t, h, &mut x);
+        crate::feat::mask_blocks(self.feat.version(), &mut x, &self.keep);
+        let d = frame::norm3([target[0] - cs.pos[0], target[1] - cs.pos[1], target[2] - cs.pos[2]]);
+        self.local.estimate(&x, d)
+    }
+
     /// Chain from a synthetic state at `from` (speed v_in, heading `dir`) to the gate node `to`.
     /// Returns (p, ticks, arrival speed, steps, path) of the best terminal state, or None.
     pub fn chain(&self, from_pos: [f32; 3], v_in: f32, dir: [f32; 2], to: usize) -> Option<(f32, i32, f32, usize, Vec<[f32; 3]>)> {
