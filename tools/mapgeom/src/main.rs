@@ -1699,6 +1699,23 @@ fn main() {
                 );
             }
         }
+        "ghostpath" => {
+            // the author's validation ghost of a SOURCE map as a path: t (s), x, y, z in
+            // the source frame, one row per sample (--every MS thins it) — the route order
+            // of a map's waypoints, for framing a shot along the direction of travel
+            let src = a.rest.get(1).cloned().unwrap_or_default();
+            let every: i32 = flag(&a.rest, "--every").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let d = gbx::record::decode_ghost(&src).unwrap_or_else(|e| die(format!("{src}: no validation ghost ({e})")));
+            println!("t\tx\ty\tz");
+            let mut next = i32::MIN;
+            for s in &d.samples {
+                if every > 0 && s.time_ms < next {
+                    continue;
+                }
+                next = s.time_ms + every;
+                println!("{:.3}\t{:.1}\t{:.1}\t{:.1}", s.time_ms as f64 / 1000.0, s.x, s.y, s.z);
+            }
+        }
         "ghostclash" => {
             // The ORIGINAL's validation ghost is the author driving the
             // original: every piece of the tiny that the author's car passes

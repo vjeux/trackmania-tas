@@ -28,6 +28,15 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         None => (1..=25).map(|n| format!("{n:02}")).collect(),
     };
     let startcheck = tmmaps::cli::has(args, "--startcheck");
+    // --startcheck-maps 05,10: run the client check on these maps only, and carry
+    // the other rows over from --startcheck-carry FILE (a previous set's
+    // STARTCHECK.tsv) — for a rebuild that changed a few files: an unchanged
+    // file (same md5) starts the car where it did
+    let sc_maps: Option<Vec<String>> = f("--startcheck-maps").map(|l| l.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect());
+    let sc_carry: std::collections::BTreeMap<String, String> = f("--startcheck-carry")
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| t.lines().skip(1).filter_map(|l| l.split_once('\t').map(|(k, rest)| (k.to_string(), rest.to_string()))).collect())
+        .unwrap_or_default();
     let sc_outdir = PathBuf::from(f("--startcheck-outdir").unwrap_or_else(|| "/tmp/tiny3".into()));
     let src_dir = PathBuf::from(f("--src-dir").unwrap_or_else(|| "/tmp/summer2026".into()));
     std::fs::create_dir_all(&dest).map_err(|e| format!("{}: {e}", dest.display()))?;
@@ -74,6 +83,16 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let mut tsv = String::from("map\tresult\tdetail\n");
         for nn in &maps {
+            if let Some(list) = &sc_maps {
+                if !list.contains(nn) {
+                    if let Some(rest) = sc_carry.get(nn) {
+                        println!("{nn}\t{rest} (carried)");
+                        tsv.push_str(&format!("{nn}\t{rest}\n"));
+                        std::fs::write(dest.join("STARTCHECK.tsv"), &tsv).map_err(|e| e.to_string())?;
+                    }
+                    continue;
+                }
+            }
             let map = dest.join(format!("Tiny Summer 2026 - {nn}.Map.Gbx"));
             let out = std::process::Command::new(&exe)
                 .args(["startcheck", "--map"])

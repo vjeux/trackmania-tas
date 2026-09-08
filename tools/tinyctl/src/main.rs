@@ -101,7 +101,7 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         xfb_metamate_nest_bulk_file_upload through `meta`); prints NAME<TAB>ID,
         embed as ![..](/api/attachments/view?file_id=ID); --record appends the rows
   tinyctl ship --set ship11-<commit> --dest DIR [--out-root /tmp] [--tag v2] [--maps 01,…] [--note "…"] [--src-dir /tmp/summer2026]
-              [--startcheck [--startcheck-outdir D]]
+              [--startcheck [--startcheck-outdir D] [--startcheck-maps 05,10 --startcheck-carry PREV.tsv]]
         the certified set out of the per-map builds: the maps under their published names,
         MANIFEST.txt (map, MB, items, md5, collhash, fillers_left_out), ANCHORS.tsv, and with
         --startcheck every map's client start check, one at a time, into STARTCHECK.tsv

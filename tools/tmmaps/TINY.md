@@ -411,6 +411,12 @@ every record), lives in `mapgeom::fillers::verdict` and reads like this:
   wedge's face is the full-free `DecoWallBaseVFC`) — drawn, the rim the cell
   rule lost; the pillar's `DecoWallBaseVFC` beside the wedge and the wedge's
   `DecoWallSlopeBaseVFCRight` in the pillar cell — drawn.
+* a HORIZONTAL clip (an HFC rim along the top of a wall) whose neighbour hangs
+  a rim of the same horizontal group on the shared face runs on: the editor
+  never pairs HFC clips (both sides are baked) and the game draws both —
+  Summer 20's two facing WaterRampZoneCurveOut (b4087/b4115), the
+  ResonantMetal rim the author drives at t 27.1–27.5 s (the route project's
+  author-ground sweep; gone from ship10).
 * only CLIP records are judged; terrain tiles in the baked list belong to the
   `hidden_tiles` logic.
 
