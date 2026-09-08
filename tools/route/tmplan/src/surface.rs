@@ -51,7 +51,9 @@ impl Nodes {
             pos.push([c[0], c[1] - rep.half_height, c[2]]);
         }
         let n = groups.len();
-        Nodes { groups, kinds, pos, graph_node: vec![None; n], n_cp: cps.len(), n_fin: fins.len(), spawn_dir: [g.spawn.yaw.sin(), g.spawn.yaw.cos()], spawn_dir_known: g.spawn.yaw_source.starts_with("human") }
+        Nodes { groups, kinds, pos, graph_node: vec![None; n], n_cp: cps.len(), n_fin: fins.len(), spawn_dir: [g.spawn.yaw.sin(), g.spawn.yaw.cos()], // a placement yaw is a guess on full-size maps (Summer 2026 - 12 was 180° off) but the converter's tiny start items keep the
+            // engine facing (verified on tiny 15: +x, and 21: −z — player/INPUT 2026-09-08 14:36Z), so it counts there
+            spawn_dir_known: g.spawn.yaw_source.starts_with("human") || tmroute::gates::is_tiny_map(&g.map_uid, &g.map_name) }
     }
     pub fn finish_range(&self) -> std::ops::Range<usize> {
         1 + self.n_cp..1 + self.n_cp + self.n_fin
@@ -408,13 +410,13 @@ impl SurfaceModel {
     /// beyond `cap`). A shortest path hugs the inside of every bend; the centreline the player wants is the deck
     /// midline (coordinator, 2026-09-08 01:26Z).
     pub fn recentre(&self, p: [f32; 3], dir: [f32; 2], cap: f32) -> [f32; 3] {
-        let has_road = |x: f32, z: f32, y: f32| -> bool {
+        let has = |x: f32, z: f32, y: f32, prime_only: bool| -> bool {
             match self.grid.cell_of(x, z) {
-                Some((ix, iz)) => self.grid.cells[iz * self.grid.nx + ix].iter().any(|s| s.road && (s.y - y).abs() <= 4.0),
+                Some((ix, iz)) => self.grid.cells[iz * self.grid.nx + ix].iter().any(|s| s.road && (s.y - y).abs() <= 4.0 && (!prime_only || self.grid.prime.contains(&s.mat))),
                 None => false,
             }
         };
-        if !has_road(p[0], p[2], p[1]) {
+        if !has(p[0], p[2], p[1], false) {
             return p;
         }
         let l = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
@@ -422,12 +424,16 @@ impl SurfaceModel {
             return p;
         }
         let perp = [-dir[1] / l, dir[0] / l];
+        // when the point stands on PRIME road, the span counts prime cells only (a Grass shoulder or platform beside a
+        // rally road must not pull the midline onto it); a wider lateral search for prime road was tried and jittered
+        // between two prime roads 8 m apart (tiny 10) — dropped
+        let prime_only = has(p[0], p[2], p[1], true);
         let mut left = 0.0f32;
         let mut right = 0.0f32;
         let mut k = 1.0f32;
-        while k <= cap && has_road(p[0] + perp[0] * k, p[2] + perp[1] * k, p[1]) { left = k; k += 1.0; }
+        while k <= cap && has(p[0] + perp[0] * k, p[2] + perp[1] * k, p[1], prime_only) { left = k; k += 1.0; }
         k = 1.0;
-        while k <= cap && has_road(p[0] - perp[0] * k, p[2] - perp[1] * k, p[1]) { right = k; k += 1.0; }
+        while k <= cap && has(p[0] - perp[0] * k, p[2] - perp[1] * k, p[1], prime_only) { right = k; k += 1.0; }
         if left >= cap || right >= cap {
             return p; // an open platform, not a road: no midline to speak of
         }
@@ -495,12 +501,16 @@ impl SurfaceModel {
     /// `tol`: how far (m) a neighbouring road surface may sit above/below the point's height and still count as the
     /// same road — 4 m for the corridor, ~1 m to tell a beam top from the deck beside it
     pub fn road_span_tol(&self, p: [f32; 3], dir: [f32; 2], cap: f32, tol: f32) -> Option<(f32, f32)> {
-        let has_road = |x: f32, z: f32, y: f32| -> bool {
+        // when the point stands on PRIME road (the game's road physics) the span counts prime cells only — a Grass
+        // platform beside a rally road must not widen the road and pull the midline onto it (tiny 10, 15:43Z)
+        let has = |x: f32, z: f32, y: f32, prime_only: bool| -> bool {
             match self.grid.cell_of(x, z) {
-                Some((ix, iz)) => self.grid.cells[iz * self.grid.nx + ix].iter().any(|s| s.road && (s.y - y).abs() <= tol),
+                Some((ix, iz)) => self.grid.cells[iz * self.grid.nx + ix].iter().any(|s| s.road && (s.y - y).abs() <= tol && (!prime_only || self.grid.prime.contains(&s.mat))),
                 None => false,
             }
         };
+        let prime_only = has(p[0], p[2], p[1], true);
+        let has_road = |x: f32, z: f32, y: f32| -> bool { has(x, z, y, prime_only) };
         if !has_road(p[0], p[2], p[1]) {
             return None;
         }

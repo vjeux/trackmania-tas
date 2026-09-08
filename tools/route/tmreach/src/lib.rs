@@ -30,3 +30,4 @@ pub mod gateprobe;
 pub mod fitbox;
 pub mod explore;
 pub mod effects;
+pub mod lap;

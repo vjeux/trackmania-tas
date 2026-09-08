@@ -104,6 +104,8 @@ fn main() {
         "effects" => cmd_effects(&a),
         "bank-table" => cmd_bank_table(&a),
         "load-control" => cmd_load_control(&a),
+        "lap" => cmd_lap(&a),
+        "chain-replay" => cmd_chain_replay(&a),
         _ => usage(),
     };
     if let Err(e) = r {
@@ -1466,8 +1468,173 @@ fn cmd_load_control(a: &Args) -> Result<(), String> {
         }
         Err(e) => {
             let loads = if e.contains("car") || e.contains("locate") || e.contains("probe") { "yes" } else { "no" };
-            println!("loads={loads}\tcar=no\troot=-\tspeed=-\tspawn_dxyz=-\tspawn_dxz=-\tcps={n_cp}\tgates={}\tstartup_s={:.1}\terror={}", gates.as_ref().map(|g| g.gates.len()).unwrap_or(0), t0.elapsed().as_secs_f64(), e.replace('\n', " ").chars().take(160).collect::<String>());
+            println!("loads={loads}\tcar=no\troot=-\tspeed=-\tspawn_dxyz=-\tspawn_dxz=-\tcps={n_cp}\tgates={}\tstartup_s={:.1}\terror={}", gates.as_ref().map(|g| g.gates.len()).unwrap_or(0), t0.elapsed().as_secs_f64(), e.replace('\n', " ").chars().take(600).collect::<String>());
         }
     }
+    Ok(())
+}
+
+/// `tmreach lap --map M --tape BASE.Ghost.Gbx --centreline C.json --work DIR --out DIR
+///   [--budget N] [--seed S] [--h TICKS] [--steer-sign +1|-1] [--max-chain-ticks N] [--verbose]`
+/// Route-guided savestate search for a FINISHING tape (see lap.rs). On a finish the chain is
+/// replayed from the spawn in ONE fresh run (no forks) and the counter's credits are read back.
+fn cmd_lap(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let tape = PathBuf::from(a.req("tape"));
+    let (server, shim) = engine_paths(a);
+    let work = PathBuf::from(a.req("work"));
+    let out = PathBuf::from(a.req("out"));
+    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    let mut track = tmreach::lap::Track::load(&PathBuf::from(a.req("centreline")))?;
+    if let Some(wp) = a.get("waypoints") {
+        let txt = std::fs::read_to_string(wp).map_err(|e| format!("{wp}: {e}"))?;
+        let wps: Vec<[f64; 3]> = txt.lines().filter_map(|l| { let f: Vec<f64> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect(); if f.len() == 3 { Some([f[0], f[1], f[2]]) } else { None } }).collect();
+        track.replace_first_leg(&wps);
+        println!("first leg replaced by {} waypoints ({wp}); gate 0 now at s {:.1} m, track {:.0} m", wps.len(), track.gate_s[0], track.len_m());
+    }
+    // --gap-legs k,l: force ordered legs to GAP mode (unknown connections: 21's 5->1 runs over a grandstand)
+    if let Some(gl) = a.get("gap-legs") {
+        for k in gl.split(',').filter_map(|x| x.parse::<usize>().ok()) {
+            if let Some(f) = track.leg_gap.get_mut(k) {
+                *f = true;
+                println!("leg {k} forced to GAP mode");
+            }
+        }
+    }
+    // --gates FILE: GEOM's gates.json for this map (its groups are the centreline's order ids)
+    let gates = match (a.get("gates"), a.get("geom")) {
+        (Some(f), _) => Some(MapGates::load_geom(Path::new(f))?),
+        (None, Some(g)) => Some(MapGates::load(&map, Some(Path::new(g)))?),
+        _ => None,
+    };
+    if let Some(g) = &gates {
+        println!("gates for credit attribution: {} ({} groups in the order)", g.gates.len(), track.order_groups.len());
+    }
+    let cfg = tmreach::lap::LapCfg {
+        track,
+        gates,
+        h: a.get("h").map(|s| s.parse().unwrap()).unwrap_or(100),
+        budget: a.get("budget").map(|s| s.parse().unwrap()).unwrap_or(20_000),
+        seed: a.get("seed").map(|s| s.parse().unwrap()).unwrap_or(1),
+        steer_sign: a.get("steer-sign").map(|s| s.parse().unwrap()).unwrap_or(1.0),
+        out: out.clone(),
+        max_chain_ticks: a.get("max-chain-ticks").map(|s| s.parse().unwrap()).unwrap_or(9000),
+        verbose: a.has("verbose"),
+    };
+    let t0 = std::time::Instant::now();
+    let mut w = Worker::start(&server, &map, &shim, &work.join("search"), &tape, a.has("verbose"))?;
+    println!("lap search: worker up in {:.1} s, root tick {} race {}, tape {} ticks", t0.elapsed().as_secs_f64(), w.root_probe, tmreach::secs(w.race_of(&w.root_row)), w.n_ticks());
+    let res = tmreach::lap::run(&mut w, &cfg)?;
+    for l in &res.log {
+        println!("{l}");
+    }
+    println!("lap search: {} rollouts, {} steps, {} cells in {:.0} s", res.rollouts, res.steps, res.cells, t0.elapsed().as_secs_f64());
+    if let Some(b) = &res.best {
+        println!("best: cps {} s {:.1} m ({:.0} % of {:.0} m) speed {:.1} m/s after {:.2} s of inputs; macros {:?}", b.cps, b.s, 100.0 * b.s / cfg.track.len_m(), cfg.track.len_m(), tmreach::rig::speed(&b.end), b.chain.len() as f64 / 100.0, b.macro_desc);
+        std::fs::write(out.join("best.tsv"), tmreach::lap::tsv_text(&b.chain)).map_err(|e| e.to_string())?;
+    }
+    let Some(f) = &res.finished else {
+        println!("NO FINISH within the budget");
+        return Ok(());
+    };
+    // the candidate tape: the chain from the root, then brake to the end of the tape
+    let n = w.n_ticks();
+    let root = w.root_probe;
+    let (mut st, mut gs, mut br) = (w.tape.steer.clone(), w.tape.accel.clone(), w.tape.brake.clone());
+    for (i, r) in f.chain.iter().enumerate() {
+        if root + i < n {
+            st[root + i] = (r.steer * 127.0).round() as i8 as u8;
+            gs[root + i] = (r.gas > 0.5) as u8;
+            br[root + i] = (r.brake > 0.5) as u8;
+        }
+    }
+    for k in (root + f.chain.len()).min(n)..n {
+        st[k] = 0;
+        gs[k] = 0;
+        br[k] = 1;
+    }
+    let race_ms = w.race_of(&f.end);
+    let stem = format!("lap-{}", tmreach::secs(race_ms).replace('.', "_"));
+    let cand = out.join(format!("{stem}.Ghost.Gbx"));
+    w.tape.write_candidate(&st, &gs, &br, &cand)?;
+    std::fs::write(out.join(format!("{stem}.gtape.txt")), tmreach::lap::gtape_text(&f.chain)).map_err(|e| e.to_string())?;
+    std::fs::write(out.join(format!("{stem}.tape.tsv")), tmreach::lap::tsv_text(&f.chain)).map_err(|e| e.to_string())?;
+    println!("FINISH found: race {} cps {} — candidate {} ({} input ticks from race 0)", tmreach::secs(race_ms), f.cps, cand.display(), f.chain.len());
+    // VALIDATION REPLAY: a fresh worker on the candidate tape, the whole run walked flat (no forks)
+    drop(w);
+    let mut v = Worker::start(&server, &map, &shim, &work.join("validate"), &cand, false)?;
+    let flat = v.flat((f.chain.len() + 300) as u64)?;
+    let last = flat.last().ok_or("empty replay")?;
+    let cps_end = if last.cps == u32::MAX { 0 } else { last.cps };
+    let steps: Vec<(i64, u32)> = flat.windows(2).filter(|p| p[1].cps != p[0].cps && p[1].cps != u32::MAX).map(|p| (v.race_of(&p[1]), p[1].cps)).collect();
+    let finish_row = steps.iter().find(|(_, c)| *c as usize >= cfg.track.n_groups).map(|(t, _)| *t);
+    let verdict = if finish_row.is_some() { "PASS" } else { "FAIL" };
+    println!("VALIDATION REPLAY (fresh run, no forks): counter steps {:?}; cps at the end {cps_end} of {} groups => {verdict}{}", steps.iter().map(|(t, c)| format!("{}:{c}", tmreach::secs(*t))).collect::<Vec<_>>(), cfg.track.n_groups, finish_row.map(|t| format!(", finish credited at {}", tmreach::secs(t))).unwrap_or_default());
+    let md = format!(
+        "# LAP — {}\n\nmap: {} (md5 {})\ncentreline: {}\nsearch: {} rollouts, {} steps, {} cells, seed {}, h {}, {:.0} s wall; tmreach {} on {}\nchain: {} input ticks from race 0 ({} macros): {:?}\nsearch finish: race {} cps {}\nvalidation replay (fresh run from the spawn, no forks): {verdict}; counter steps {:?}\nfiles: {stem}.gtape.txt (player gtape lines, t = tick from race 0), {stem}.tape.tsv (tick steer gas brake), {stem}.Ghost.Gbx (fk candidate on the base container)\n",
+        map.file_name().unwrap().to_string_lossy(), map.display(), md5_of(&map), a.req("centreline"), res.rollouts, res.steps, res.cells, cfg.seed, cfg.h, t0.elapsed().as_secs_f64(), tmreach::GIT_HASH, hostname(), f.chain.len(), f.macro_desc.len(), f.macro_desc, tmreach::secs(race_ms), f.cps, steps.iter().map(|(t, c)| format!("{}:{c}", tmreach::secs(*t))).collect::<Vec<_>>()
+    );
+    std::fs::write(out.join("LAP.md"), md).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn md5_of(p: &Path) -> String {
+    std::process::Command::new("md5sum").arg(p).output().ok().and_then(|o| String::from_utf8(o.stdout).ok()).and_then(|s| s.split_whitespace().next().map(|x| x.to_string())).unwrap_or_default()
+}
+
+/// `tmreach replay --map M --tape BASE --chain CHAIN.tsv --out ROWS.tsv [--extra TICKS]`: replay an input chain
+/// (tick steer gas brake from race 0) from the root in one fork and write every row (x y z speed cps).
+fn cmd_chain_replay(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let tape = PathBuf::from(a.req("tape"));
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/replay-{}", std::process::id())));
+    let txt = std::fs::read_to_string(a.req("chain")).map_err(|e| e.to_string())?;
+    let mut chain: Vec<forkoracle::forksrv::Rec> = Vec::new();
+    for l in txt.lines().skip(1) {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() >= 4 {
+            chain.push(forkoracle::forksrv::Rec { steer: f[1].parse::<f32>().unwrap_or(0.0) / 127.0, gas: f[2].parse::<f32>().unwrap_or(0.0), brake: f[3].parse::<f32>().unwrap_or(0.0) });
+        }
+    }
+    // --from-tape OTHER.Ghost.Gbx: the chain = OTHER's own inputs from ITS race 0 (tick -start_offset/10)
+    if let Some(other) = a.get("from-tape") {
+        let t = fk::tape::Tape::load(other)?;
+        // the root probe tick = race -0.010 = one tick before race 0 (chain[0] is applied there)
+        let r0 = (((-(t.start_offset_ms as i64)) / 10) - 1).max(0) as usize;
+        chain = (r0..t.n()).map(|k| forkoracle::forksrv::rec_of(t.steer[k], t.accel[k], t.brake[k])).collect();
+        println!("chain from {other}: {} ticks from its tick {r0} (start offset {} ms)", chain.len(), t.start_offset_ms);
+    }
+    let extra: usize = a.get("extra").map(|s| s.parse().unwrap()).unwrap_or(0);
+    for _ in 0..extra {
+        chain.push(forkoracle::forksrv::Rec { steer: 0.0, gas: 1.0, brake: 0.0 });
+    }
+    let mut w = Worker::start(&server, &map, &shim, &work, &tape, false)?;
+    let root = w.root_probe;
+    // --reference: replay the base tape's own inputs (a human ghost as the base) instead of a chain
+    if a.has("reference") {
+        chain = w.reference_recs(root, w.n_ticks() - root);
+        if let Some(n) = a.get("ticks") {
+            chain.truncate(n.parse().unwrap());
+        }
+    }
+    if let Some(p) = a.get("dump-chain") {
+        std::fs::write(p, tmreach::lap::tsv_text(&chain)).map_err(|e| e.to_string())?;
+    }
+    let rows = if a.has("reference") && !a.has("fork") {
+        // the run ends at the ghost's finish: use the flat walk (handles the end of the run)
+        w.flat(chain.len() as u64)?
+    } else {
+        let (rows, h) = w.rollout_keep(branch::ROOT, &chain, root, chain.len() as u64)?;
+        w.release(h);
+        rows
+    };
+    let mut s = String::from("tick\trace_ms\tx\ty\tz\tspeed\tvy\tcps\n");
+    for (i, r) in rows.iter().enumerate() {
+        s.push_str(&format!("{i}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\t{:+.1}\t{}\n", w.race_of(r), r.x, r.y, r.z, tmreach::rig::speed(r), r.vy, if r.cps == u32::MAX { -1 } else { r.cps as i64 }));
+    }
+    std::fs::write(a.req("out"), s).map_err(|e| e.to_string())?;
+    let last = rows.last().ok_or("no rows")?;
+    println!("replayed {} ticks: end ({:.1}, {:.1}, {:.1}) speed {:.1} cps {}", rows.len(), last.x, last.y, last.z, tmreach::rig::speed(last), last.cps as i64);
     Ok(())
 }

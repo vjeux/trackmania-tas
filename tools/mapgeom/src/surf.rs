@@ -92,6 +92,10 @@ pub struct Grid {
     /// Surfaces per cell, highest first. Flattened: cell `iz*nx + ix`.
     pub cells: Vec<Vec<Surf>>,
     pub mats: Vec<String>,
+    /// Material ids that are the game's own ROAD physics (ROAD_NAMES) — "prime" road; anchor-voted and deck physics
+    /// (Metal tiers, Grass/Concrete platforms) are road too but rank BELOW it in `dijkstra_road` (a deco platform beside
+    /// the road must not outrank the road; coordinator 15:43Z).
+    pub prime: Vec<u16>,
 }
 
 impl Grid {
@@ -154,6 +158,7 @@ impl Grid {
             nz,
             cells: vec![Vec::new(); nx * nz],
             mats: Vec::new(),
+            prime: Vec::new(),
         };
         let mut giant = 0usize;
         let mut total = 0usize;
@@ -337,6 +342,7 @@ impl Grid {
                 s.road = want.contains(&s.mat);
             }
         }
+        self.prime = want.iter().copied().filter(|m| road_by_physics.contains(m)).collect();
         (want.iter().map(|m| self.mats[*m as usize].clone()).collect(), dropped)
     }
 
@@ -359,6 +365,8 @@ pub struct Graph {
     pub node_layer: Vec<u8>,
     pub node_y: Vec<f32>,
     pub node_road: Vec<bool>,
+    /// Road by the game's own road physics (Grid::prime): ranks above deck/anchor-voted road in `dijkstra_road`.
+    pub node_prime: Vec<bool>,
     pub node_mat: Vec<u16>,
     /// Adjacency, flattened: `edges[edge_start[n] .. edge_start[n+1]]`.
     /// The top bit of each entry marks a **diagonal** step, which is `√2`
@@ -416,6 +424,7 @@ impl Graph {
         let mut node_layer = Vec::new();
         let mut node_y = Vec::new();
         let mut node_road = Vec::new();
+        let mut node_prime = Vec::new();
         let mut node_mat = Vec::new();
         for (ci, c) in g.cells.iter().enumerate() {
             start.push(node_cell.len() as u32);
@@ -424,6 +433,7 @@ impl Graph {
                 node_layer.push(li.min(255) as u8);
                 node_y.push(s.y);
                 node_road.push(s.road);
+                node_prime.push(s.road && g.prime.contains(&s.mat));
                 node_mat.push(s.mat);
             }
         }
@@ -483,6 +493,7 @@ impl Graph {
             node_layer,
             node_y,
             node_road,
+            node_prime,
             node_mat,
             edge_start,
             edges,
@@ -796,7 +807,8 @@ impl Graph {
                 if (self.node_y[v] - self.node_y[u]).abs() > 2.5 * step {
                     continue;
                 }
-                let nd = d + if self.node_road[v] { step } else { 5.0 * step };
+                // prime road ×1, deck/anchor-voted road ×2 (a Grass platform beside a rally road loses to the road), off-road ×5
+                let nd = d + if self.node_prime[v] { step } else if self.node_road[v] { 3.0 * step } else { 5.0 * step };
                 if nd < dist[v] {
                     dist[v] = nd;
                     prev[v] = u as u32;

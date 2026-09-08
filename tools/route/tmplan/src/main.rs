@@ -706,7 +706,7 @@ fn cmd_road_centreline(args: &[String]) {
         let mut n_ex = 0usize;
         for k in 0..surf.graph.len() {
             let w = surf.graph.world(&surf.grid, k);
-            if boxes.iter().any(|b| w[0] >= b[0] && w[0] <= b[2] && w[2] >= b[1] && w[2] <= b[3]) && surf.graph.node_road[k] { surf.graph.node_road[k] = false; n_ex += 1; }
+            if boxes.iter().any(|b| w[0] >= b[0] && w[0] <= b[2] && w[2] >= b[1] && w[2] <= b[3]) && surf.graph.node_road[k] { surf.graph.node_road[k] = false; surf.graph.node_prime[k] = false; n_ex += 1; }
         }
         eprintln!("  exclusions: {} boxes, {n_ex} road nodes turned off", boxes.len());
     }
@@ -738,6 +738,36 @@ fn cmd_road_centreline(args: &[String]) {
     let mut gaps = 0;
     // where the previous leg left the car: 6 m THROUGH the gate along its arrival direction when the road continues
     let mut through: Option<[f32; 3]> = None;
+    // a straight STUB along the spawn heading first (12 m, while the road is there): the car starts at rest facing
+    // spawn.yaw and an OffRoute check at t = 0 must not see the line leave at 110° (player, 14:36Z); the first leg
+    // then starts from the stub's end. --spawn-yaw overrides the heading (radians, TM convention: yaw 0 = +x… as in
+    // gates.json), --no-stub disables.
+    if !has(args, "--no-stub") {
+        let yaw = flag(args, "--spawn-yaw").and_then(|s| s.parse::<f32>().ok()).unwrap_or(gates.spawn.yaw);
+        let d = [yaw.sin(), 0.0f32, yaw.cos()];
+        let p0 = pts[0];
+        let mut stub: Vec<[f32; 3]> = Vec::new();
+        for k in 1..=6 {
+            let q = [p0[0] + d[0] * 2.0 * k as f32, p0[1], p0[2] + d[2] * 2.0 * k as f32];
+            match surf.graph.nearest_window(&surf.grid, q, 1, -8.0, 3.0) {
+                Some(n) if surf.graph.node_road[n] => {
+                    let w = surf.graph.world(&surf.grid, n);
+                    stub.push([q[0], w[1], q[2]]);
+                }
+                _ => break,
+            }
+        }
+        if stub.len() >= 3 {
+            for q in &stub {
+                hw.push(surf.road_span(*q, [d[0], d[2]], 24.0).map_or(4.0, |(l, r)| ((l + r) / 2.0).max(3.0)));
+                pts.push(*q);
+            }
+            through = Some(*stub.last().unwrap());
+            eprintln!("  spawn stub: {} m along yaw {:.2} ({:.2}, {:.2}) from ({:.1}, {:.1}, {:.1})", 2 * stub.len(), yaw, d[0], d[2], p0[0], p0[1], p0[2]);
+        } else {
+            eprintln!("  spawn stub: no road along yaw {yaw:.2} from the spawn — none written");
+        }
+    }
     for w in seq.windows(2) {
         let (i, j) = (w[0], w[1]);
         let i0 = pts.len() - 1;
@@ -888,7 +918,11 @@ fn cmd_road_centreline(args: &[String]) {
                 let horiz = (n[0] * n[0] + n[2] * n[2]).sqrt();
                 if horiz > 0.5 { let s = if n[0] * heading[0] + n[2] * heading[2] >= 0.0 { 1.0 } else { -1.0 }; [s * n[0] / horiz, 0.0, s * n[2] / horiz] } else { heading }
             };
-            tg_gates.push(Gate { kind, centre, normal: gate_normal, half_width: half, s: s[i1], map_waypoint: rep.waypoint });
+            // the gate's centre in the route file is the CREDIT plane: the geometric centre moved by credit_offset_m along the
+            // signed normal (F25 fit on the disc triggers) — the player's crossing test needs the plane the engine credits
+            let co = rep.credit_offset_m;
+            let centre_c = [centre[0] + gate_normal[0] * co, centre[1], centre[2] + gate_normal[2] * co];
+            tg_gates.push(Gate { kind, centre: centre_c, normal: gate_normal, half_width: half, s: s[i1], map_waypoint: rep.waypoint });
             // a gap leg's class from the converter's verdicts (--verdicts TSV: map_stem, from_group, to_group, class, note)
             let from_lab = grp(&nodes, w[0]).trim_matches('"').to_string();
             let verdict = verdicts.iter().find(|v| v.0 == from_lab && v.1 == grp_id.to_string()).cloned();
