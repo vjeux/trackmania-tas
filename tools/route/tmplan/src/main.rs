@@ -749,7 +749,7 @@ fn cmd_road_centreline(args: &[String]) {
         let mut stub: Vec<[f32; 3]> = Vec::new();
         for k in 1..=6 {
             let q = [p0[0] + d[0] * 2.0 * k as f32, p0[1], p0[2] + d[2] * 2.0 * k as f32];
-            match surf.graph.nearest_window(&surf.grid, q, 1, -3.0, 3.0) {
+            match surf.graph.nearest_window(&surf.grid, q, 1, -8.0, 3.0) {
                 Some(n) if surf.graph.node_road[n] => {
                     let w = surf.graph.world(&surf.grid, n);
                     stub.push([q[0], w[1], q[2]]);
