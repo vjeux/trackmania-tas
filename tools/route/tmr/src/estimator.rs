@@ -187,6 +187,8 @@ pub struct Chained<'a> {
     pub trace: bool,
     /// Fast fan (fewer bearings/fractions) — see FAN_FRAC_FAST.
     pub fast: bool,
+    /// When set, `max_steps` is a hard cap (no chord scaling) — `--chain-steps N`.
+    pub fixed_steps: bool,
     /// Fallback when an edge was not chained (budget exhausted): the gate head, if given.
     pub fallback: Option<REstimator<'a>>,
     pub fallbacks_used: std::sync::atomic::AtomicUsize,
@@ -222,7 +224,7 @@ const BEARINGS_DEG: &[f32] = &[-90.0, -60.0, -40.0, -25.0, -12.0, 0.0, 12.0, 25.
 
 impl<'a> Chained<'a> {
     pub fn new(local: &'a Weights, feat: &'a Featurizer<'a>, gates: &'a GatesFile, nodes: &'a Nodes, surf: &'a SurfaceModel, keep: Vec<&'static str>) -> Chained<'a> {
-        Chained { local, feat, gates, nodes, surf, keep, beam: 24, max_steps: 10, p_step_floor: 0.05, penalty_ms: tmplan::planner::PENALTY_MS, cache: std::sync::Mutex::new(HashMap::new()), trace: false, fast: false, fallback: None, fallbacks_used: std::sync::atomic::AtomicUsize::new(0) }
+        Chained { local, feat, gates, nodes, surf, keep, beam: 24, max_steps: 10, p_step_floor: 0.05, penalty_ms: tmplan::planner::PENALTY_MS, cache: std::sync::Mutex::new(HashMap::new()), trace: false, fast: false, fixed_steps: false, fallback: None, fallbacks_used: std::sync::atomic::AtomicUsize::new(0) }
     }
 
     fn state_of(&self, s: &ChainState) -> CarState {
@@ -276,7 +278,7 @@ impl<'a> Chained<'a> {
         // step budget scales with the leg: a 10-step cap cannot cross a long leg when the head keeps the steps
         // short (GEOM's 14 "p = 0 on every tour" maps, 23:33Z). ~1 step per 40 m of chord + 5, between max_steps and 40.
         let chord_m = ((goal[0] - from_pos[0]).powi(2) + (goal[2] - from_pos[2]).powi(2)).sqrt();
-        let steps = self.max_steps.max((chord_m / 40.0) as usize + 5).min(40);
+        let steps = if self.fixed_steps { self.max_steps } else { self.max_steps.max((chord_m / 40.0) as usize + 5).min(40) };
         for _step in 0..steps {
             let mut next: Vec<(f32, ChainState, Vec<[f32; 3]>)> = Vec::new();
             for (s, path) in frontier.iter().zip(&paths) {

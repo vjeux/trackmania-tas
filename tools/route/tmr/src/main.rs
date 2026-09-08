@@ -8,7 +8,7 @@
 //!             [--epochs N] [--hidden 256,256,256] [--batch B] [--lr X] [--wd X] [--noise σ] [--dropout p] [--geo-dropout p] [--no-mirror] [--held-out uid,..] [--report F] [--threads T]
 //!   tmr eval [--kind gate|local] --model r.tmw --cache DIR [--held-out uid,..] [--report F]
 //!   tmr selftest --model r.tmw           agrees_with (flat vs candle) + the negative half (a perturbed copy must be REFUSED)
-//!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--local rl.tmw --estimator chained [--chain-beam 24] [--p-step 0.05] [--penalty 3000] [--fast-fan] [--budget-s 300] [--chain-threads 32]]
+//!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--local rl.tmw --estimator chained [--chain-beam 24] [--p-step 0.05] [--penalty 3000] [--fast-fan] [--budget-s 300] [--chain-threads 32] [--chain-steps N] [--max-rss-gb G]]
 //!            [--top-k 3] [--beam 4000] [--p-floor 0.02] [--out-dir DIR] [--source NAME]
 //!                                        the planner over R (tmplan's beam, R as the EdgeEstimator) — the M2 seam
 //!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--max-rows-total N] [--gate-rows N] [--keep-fast M_S] [--wide HIDDEN] [--geo-dropout p] [--held-out uid,..] [--batch B] [--lr X] [--force-first] [--interval S] [--once] [--epochs N] [--threads T]
@@ -451,6 +451,7 @@ fn cmd_train(args: &[String]) {
     let mirror = !has(args, "--no-mirror");
     let t_set = std::time::Instant::now();
     let train_set = Set::from_rows_aug(&train_rows, &keep, mirror);
+    rss_guard(args, "the training set");
     eprintln!("set: {} rows in {:.1} s", train_set.n, t_set.elapsed().as_secs_f64());
     let h_max = (0..train_set.n).map(|i| train_set.lab(i)[data::L_H]).fold(0f32, f32::max);
     let h_min = (0..train_set.n).map(|i| train_set.lab(i)[data::L_H]).fold(f32::INFINITY, f32::min);
@@ -613,6 +614,7 @@ fn order_str(nodes: &tmplan::surface::Nodes, gates: &tmroute::gates::GatesFile, 
 fn cmd_plan(args: &[String]) {
     use tmplan::estimator::{EdgeEstimator, StateBucket};
     let ctx = load_plan_ctx(args);
+    rss_guard(args, "the plan context (map geometry)");
     let PlanCtx { gates, surf, nodes, w, h_min, h_max, keep, .. } = &ctx;
     let (h_min, h_max, keep) = (*h_min, *h_max, keep.clone());
     let feat = ctx.feat();
@@ -642,6 +644,7 @@ fn cmd_plan(args: &[String]) {
         let lw = ctx.local_w.as_ref().unwrap_or_else(|| die("--estimator chained needs --local rl.tmw"));
         let mut c = tmr::estimator::Chained::new(lw, &feat_local, gates, nodes, surf, tmr::feat::ablation_keep(lw.fv, "full").unwrap());
         if let Some(b) = flag(args, "--chain-beam") { c.beam = b.parse().unwrap_or(24); }
+        if let Some(n) = flag(args, "--chain-steps") { c.max_steps = n.parse().unwrap_or(10); c.fixed_steps = true; }
         if let Some(f) = flag(args, "--p-step") { c.p_step_floor = f.parse().unwrap_or(0.05); }
         if let Some(p) = flag(args, "--penalty") { c.penalty_ms = p.parse().unwrap_or(3000.0); }
         c.fast = has(args, "--fast-fan");
@@ -666,6 +669,7 @@ fn cmd_plan(args: &[String]) {
         let lw = ctx.local_w.as_ref().unwrap_or_else(|| die("--estimator hybrid needs --local rl.tmw"));
         let mut c = tmr::estimator::Chained::new(lw, &feat_local, gates, nodes, surf, tmr::feat::ablation_keep(lw.fv, "full").unwrap());
         if let Some(b) = flag(args, "--chain-beam") { c.beam = b.parse().unwrap_or(24); }
+        if let Some(n) = flag(args, "--chain-steps") { c.max_steps = n.parse().unwrap_or(10); c.fixed_steps = true; }
         if let Some(f) = flag(args, "--p-step") { c.p_step_floor = f.parse().unwrap_or(0.05); }
         if let Some(p) = flag(args, "--penalty") { c.penalty_ms = p.parse().unwrap_or(3000.0); }
         c.fast = has(args, "--fast-fan");
@@ -975,7 +979,7 @@ fn cmd_watch(args: &[String]) {
                 if let Some(h) = flag(args, "--held-out") {
                     cmd.args(["--held-out", &h]);
                 }
-                for pass in ["--batch", "--lr", "--wd", "--hidden", "--patience"] {
+                for pass in ["--batch", "--lr", "--wd", "--hidden", "--patience", "--max-rss-gb"] {
                     if let Some(v) = flag(args, pass) {
                         cmd.args([pass, &v]);
                     }
@@ -1240,4 +1244,26 @@ fn frame_gate(dirs: &[PathBuf], log: &mut Vec<String>) -> std::collections::Hash
         }
     }
     refused
+}
+
+/// Resident set size of this process in GB (Linux /proc).
+fn rss_gb() -> f64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| s.lines().find(|l| l.starts_with("VmRSS:")).and_then(|l| l.split_whitespace().nth(1).and_then(|k| k.parse::<f64>().ok())))
+        .map(|kb| kb / 1_048_576.0)
+        .unwrap_or(0.0)
+}
+
+/// `--max-rss-gb G`: refuse to go on (exit 3) when this process already holds more than G GB — a
+/// shared box must not be pushed into swap (devvm62717 00:00Z, GEOM's boxes D and G).
+fn rss_guard(args: &[String], stage: &str) {
+    if let Some(g) = flag(args, "--max-rss-gb").and_then(|s| s.parse::<f64>().ok()) {
+        let r = rss_gb();
+        eprintln!("rss after {stage}: {r:.1} GB (cap {g:.0} GB)");
+        if r > g {
+            eprintln!("REFUSED: {r:.1} GB resident > --max-rss-gb {g:.0} — lower the row budget / map count");
+            std::process::exit(3);
+        }
+    }
 }
