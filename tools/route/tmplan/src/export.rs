@@ -38,7 +38,20 @@ pub fn export(
             EdgeKind::Surface | EdgeKind::Learned => surf.path_points(nodes, fields, from, to).unwrap_or_else(|| vec![nodes.pos[from], nodes.pos[to]]),
             _ => vec![nodes.pos[from], nodes.pos[to]],
         };
-        let leg_pts = tmroute::human::resample(&raw, 2.0);
+        let mut leg_pts = tmroute::human::resample(&raw, 2.0);
+        // a surface path hugs the inside of bends: move each point to the road midline (interior points only —
+        // the gate ends stay where the gates are), then smooth once so the re-centred line does not zigzag
+        if e.kind == EdgeKind::Surface && leg_pts.len() > 2 {
+            let orig = leg_pts.clone();
+            for i in 1..orig.len() - 1 {
+                let d = [orig[i + 1][0] - orig[i - 1][0], orig[i + 1][2] - orig[i - 1][2]];
+                leg_pts[i] = surf.recentre(orig[i], d, 24.0);
+            }
+            let c = leg_pts.clone();
+            for i in 1..c.len() - 1 {
+                for a in [0usize, 2] { leg_pts[i][a] = 0.25 * c[i - 1][a] + 0.5 * c[i][a] + 0.25 * c[i + 1][a]; }
+            }
+        }
         let s_start = s_acc;
         for p in leg_pts.iter().skip(1) {
             s_acc += dist(*pts.last().unwrap(), *p);

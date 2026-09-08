@@ -139,9 +139,9 @@ impl<'a> Graph<'a> {
             // shape that already exists.
             0x09178000 => {
                 let _version = self.r.u32()?;
-                self.noderef()?; // TriggerShape
+                let shape = self.noderef()?; // TriggerShape
                 self.r.take(8)?;
-                Ok(Node::Other(class_id))
+                Ok(Node::Trigger(shape))
             }
             // Two more trigger-side classes in the gate prefabs, both eight
             // and sixteen bytes of metadata with no geometry. Same file, same

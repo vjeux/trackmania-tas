@@ -395,6 +395,8 @@ fn cmd_consensus(args: &[String]) {
                 }
             }
             let n = tmroute::gates::orient(&mut gates, &dirs, "human");
+            gates.spawn.yaw = route.spawn_yaw;
+            gates.spawn.yaw_source = "human".into();
             io::write_gates(Path::new(&go), &gates).unwrap_or_else(|e| die(&e));
             println!("oriented {n} gate normals from human crossings → {go}");
         }
@@ -436,6 +438,7 @@ fn main() {
         "table-r" => cmd_table_r(rest),
         "split" => cmd_split(rest),
         "tiny-map" => cmd_tiny_map(rest),
+        "credit-fit" => cmd_credit_fit(rest),
         "human-batch" => cmd_human_batch(rest),
         other => die(&format!("unknown command {other}")),
     }
@@ -624,6 +627,9 @@ pub fn cmd_human_batch(args: &[String]) {
                         for r in gates.gates_of_group(g) { dirs.insert(r.waypoint, l.arrival_heading); }
                     }
                     let n = tmroute::gates::orient(gates, &dirs, if bank_route { "human" } else { "human-unverified" });
+                    // and the spawn facing from the humans' first metres (the start block's direction sign is a guess)
+                    gates.spawn.yaw = route.spawn_yaw;
+                    gates.spawn.yaw_source = if bank_route { "human".into() } else { "human-unverified".into() };
                     io::write_gates(&gp, gates).unwrap_or_else(|e| die(&e));
                     out.push_str(&format!("oriented {n} gate normals from human crossings ({})\n", if bank_route { "verified" } else { "unverified" }));
                 }
@@ -821,5 +827,46 @@ fn cmd_tiny_map(args: &[String]) {
                 println!("{key}: {} τ={:.2}{}", if ex { "EXACT" } else { "differ" }, metrics::kendall_tau(&po, &mapped), if cp_ex && !ex { " (CP order EXACT, other finish)" } else { "" });
             }
         }
+    }
+}
+
+/// `tmroute credit-fit --gates gates.json --crossings X.tsv`
+/// Engine-credited crossings (the INPUT arm's per-gate car states around the CP-counter split, 10 ms ticks) against
+/// our gate frames: per credited gate, s = (p − centre)·normal at the last row BEFORE the split and at the split row
+/// (the counter increments between them), the lateral offset, our `credit_offset_m`, and the fitted offset (midpoint).
+fn cmd_credit_fit(args: &[String]) {
+    let g = io::read_gates(Path::new(&flag(args, "--gates").unwrap_or_else(|| die("--gates")))).unwrap_or_else(|e| die(&e));
+    let text = std::fs::read_to_string(flag(args, "--crossings").unwrap_or_else(|| die("--crossings"))).unwrap_or_else(|e| die(&e.to_string()));
+    let mut rows: Vec<(u32, i32, i32, [f32; 3], [f32; 3])> = Vec::new(); // gate, split, t, pos, vel
+    for l in text.lines().skip(2) {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() < 9 { continue; }
+        let p = |i: usize| f[i].trim().parse::<f32>().unwrap_or(f32::NAN);
+        rows.push((f[0].trim().parse().unwrap_or(0), f[1].trim().parse().unwrap_or(0), f[2].trim().parse().unwrap_or(0), [p(3), p(4), p(5)], [p(6), p(7), p(8)]));
+    }
+    println!("{}\t{} crossing rows", g.map_name, rows.len());
+    println!("gate\tsplit_ms\tour wp\tmodel\tfrom_item\ts_before\ts_at\tlat\tour_offset\tfitted_offset\ttravel·n\tspeed_kmh");
+    let mut gates: Vec<u32> = rows.iter().map(|r| r.0).collect();
+    gates.sort(); gates.dedup();
+    for gi in gates {
+        let rs: Vec<_> = rows.iter().filter(|r| r.0 == gi).collect();
+        let split = rs[0].1;
+        let Some(at) = rs.iter().find(|r| r.2 == split) else { println!("{gi}\t{split}\t-\tno row at the split"); continue };
+        let Some(before) = rs.iter().find(|r| r.2 == split - 10) else { println!("{gi}\t{split}\t-\tno row 10 ms before the split"); continue };
+        // our gate: nearest gate centre to the crossing row (no group knowledge in the file)
+        let (wi, gate) = g.gates.iter().enumerate().filter(|(_, x)| x.kind != tmroute::gates::WpKind::Start).min_by(|a, b| {
+            let da = (0..3).map(|k| (a.1.centre[k] - at.3[k]).powi(2)).sum::<f32>();
+            let db = (0..3).map(|k| (b.1.centre[k] - at.3[k]).powi(2)).sum::<f32>();
+            da.partial_cmp(&db).unwrap()
+        }).unwrap();
+        let n = gate.normal;
+        let s = |p: [f32; 3]| (0..3).map(|k| (p[k] - gate.centre[k]) * n[k]).sum::<f32>();
+        let s_b = s(before.3); let s_a = s(at.3);
+        let d = [at.3[0] - gate.centre[0], at.3[1] - gate.centre[1], at.3[2] - gate.centre[2]];
+        let lat = { let along = s_a; let r = [d[0] - along * n[0], d[1] - along * n[1], d[2] - along * n[2]]; (r[0] * r[0] + r[2] * r[2]).sqrt() };
+        let v = at.4; let vl = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-3);
+        let tn = (v[0] * n[0] + v[1] * n[1] + v[2] * n[2]) / vl;
+        println!("{gi}\t{split}\t{}\t{}\t{}\t{s_b:.2}\t{s_a:.2}\t{lat:.2}\t{:.2}\t{:.2}\t{tn:+.2}\t{:.0}", gate.waypoint, gate.model, gate.from_item, gate.credit_offset_m, 0.5 * (s_b + s_a), vl * 3.6);
+        let _ = wi;
     }
 }

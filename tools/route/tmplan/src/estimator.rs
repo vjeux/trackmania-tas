@@ -192,20 +192,42 @@ impl<'a> Geometric<'a> {
     }
 }
 
+/// Cost-metres per radian of U-turn at the SPAWN (the first leg against the car's facing); 0 disables. Set by the CLI
+/// (`--spawn-turn`). Stored as f32 bits.
+pub static SPAWN_TURN_M: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x42a00000); // 80.0
+pub fn spawn_turn_m() -> f32 { f32::from_bits(SPAWN_TURN_M.load(std::sync::atomic::Ordering::Relaxed)) }
+
+/// The turn the car makes leaving the spawn towards `to`: its facing vs the departure direction (the path's first
+/// direction when known, else the chord). Radians, 0..π.
+pub fn spawn_turn(nodes: &Nodes, dirs: Option<&(Vec<Vec<[f32; 2]>>, Vec<Vec<[f32; 2]>>)>, to: usize) -> f32 {
+    if !nodes.spawn_dir_known {
+        return 0.0;
+    }
+    let f = nodes.spawn_dir;
+    let mut b = match dirs { Some((out, _)) if !out[0][to][0].is_nan() => out[0][to], _ => [f32::NAN, f32::NAN] };
+    if b[0].is_nan() {
+        let p = nodes.pos[0]; let q = nodes.pos[to];
+        let (dx, dz) = (q[0] - p[0], q[2] - p[2]);
+        let l = (dx * dx + dz * dz).sqrt().max(1e-3);
+        b = [dx / l, dz / l];
+    }
+    (f[0] * b[0] + f[1] * b[1]).clamp(-1.0, 1.0).acos()
+}
+
 impl<'a> EdgeEstimator for Geometric<'a> {
     fn estimate(&self, bucket: StateBucket, prev: Option<usize>, from: usize, to: usize) -> Edge {
         let v_in = bucket.speed();
         let cost = self.d[from][to];
         let (horiz, dy) = chord(self.nodes.pos[from], self.nodes.pos[to]);
-        // the turn at `from`: arrival direction (prev→from) vs departure (from→to)
-        let turn = match (prev, self.dirs) {
+        // the turn at `from`: arrival direction (prev→from) vs departure (from→to); at the spawn, the car's facing
+        let turn = if from == 0 && prev.is_none() && spawn_turn_m() > 0.0 { spawn_turn(self.nodes, self.dirs, to) } else { match (prev, self.dirs) {
             (Some(p), Some((out, inn))) => {
                 let a = inn[p][from];
                 let b = out[from][to];
                 if a[0].is_nan() || b[0].is_nan() { 0.0 } else { (a[0] * b[0] + a[1] * b[1]).clamp(-1.0, 1.0).acos() }
             }
             _ => 0.0,
-        };
+        } };
         // what sits on this leg: car change, boost, reset
         let mut car = bucket.car;
         let mut boost = 1.0f32;
@@ -228,7 +250,7 @@ impl<'a> EdgeEstimator for Geometric<'a> {
             if self.time_model == TimeModel::Cost {
                 let dr = self.drop.map_or(0.0, |m| m[from][to]);
                 let dr = if dr.is_finite() { dr } else { 0.0 };
-                let cost = cost + self.drop_penalty * dr;
+                let cost = cost + self.drop_penalty * dr + if from == 0 && prev.is_none() { spawn_turn_m() * turn } else { 0.0 };
                 return Edge { p_reach: 1.0, expected_ms: (cost * 10.0).round() as i32, arrival: bucket.with_car(car), length_m: self.len[from][to], kind: EdgeKind::Surface }; // decimetres: keeps near-ties (Summer 2026 - 13: 1614.6 vs 1615.2) honest
             }
             let length = self.len[from][to];
@@ -302,6 +324,9 @@ impl<'a> Hybrid<'a> {
 impl<'a> EdgeEstimator for Hybrid<'a> {
     fn estimate(&self, bucket: StateBucket, prev: Option<usize>, from: usize, to: usize) -> Edge {
         let g = self.geo.estimate(bucket, prev, from, to);
+        // an R-priced FIRST leg carries the same spawn U-turn penalty as a geometric one (cost-metres × 10, the
+        // hybrid's unit), or the reversed tour wins whenever R prices the spawn leg
+        let spawn_pen = if from == 0 && prev.is_none() && spawn_turn_m() > 0.0 { (spawn_turn_m() * spawn_turn(self.nodes, None, to) * 10.0).round() as i32 } else { 0 };
         let has_path = self.len[from][to].is_finite() && g.kind == EdgeKind::Surface;
         let implied = if g.expected_ms > 0 { self.len[from][to] / (g.expected_ms as f32 / 1000.0) } else { f32::INFINITY };
         let detour = has_path && (self.len[from][to] > self.detour_ratio * self.chord(from, to).max(20.0) || implied < self.detour_speed);
@@ -313,7 +338,7 @@ impl<'a> EdgeEstimator for Hybrid<'a> {
                 if r.kind != EdgeKind::None && r.expected_ms > 0 && t_geo > 0 && r.p_reach >= self.override_p && (r.expected_ms as f32) < self.override_frac * t_geo as f32 {
                     let (a, b) = self.counts.get();
                     self.counts.set((a, b + 1));
-                    return Edge { kind: EdgeKind::Learned, ..r };
+                    return Edge { kind: EdgeKind::Learned, expected_ms: r.expected_ms + spawn_pen, ..r };
                 }
             }
             let (a, b) = self.counts.get();
@@ -324,7 +349,7 @@ impl<'a> EdgeEstimator for Hybrid<'a> {
         if r.kind != EdgeKind::None && r.expected_ms > 0 {
             let (a, b) = self.counts.get();
             self.counts.set((a, b + 1));
-            return Edge { kind: EdgeKind::Learned, ..r };
+            return Edge { kind: EdgeKind::Learned, expected_ms: r.expected_ms + spawn_pen, ..r };
         }
         // R refused: fall back to whatever geometry had (a detour path or a flight chord, or nothing)
         let (a, b) = self.counts.get();

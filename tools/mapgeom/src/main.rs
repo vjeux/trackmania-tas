@@ -1677,6 +1677,7 @@ fn describe(n: &Node) -> String {
             r.version, (r.u01, r.u02), r.u03.len(), r.u04.len(), r.u05.len(), r.u07.len(), r.u14, r.u17,
             r.u04.first(), r.u04.last(), r.u05.first(), r.u05.last()
         ),
+        Node::Trigger(s) => format!("NPlugTrigger_SWaypoint(shape {s})"),
         Node::Other(c) => format!("class 0x{:08X}", c),
     }
 }

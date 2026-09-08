@@ -636,6 +636,8 @@ fn cmd_plan(args: &[String]) {
     let top_k: usize = flag(args, "--top-k").and_then(|s| s.parse().ok()).unwrap_or(3);
     // --beam-budget-s: wall-clock cap on the beam; past it the best partials are completed greedily (BEAM-CAPPED)
     tmplan::planner::BEAM_BUDGET_S.store(flag(args, "--beam-budget-s").and_then(|s| s.parse().ok()).unwrap_or(600), std::sync::atomic::Ordering::Relaxed);
+    // --spawn-turn M: cost-metres per radian of U-turn on the first leg (default 80; 0 off)
+    tmplan::estimator::SPAWN_TURN_M.store(flag(args, "--spawn-turn").and_then(|s| s.parse::<f32>().ok()).unwrap_or(80.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
     if has(args, "--matrix") {
         println!("R edge matrix from rest (p_reach / expected s / h used), spawn = node 0:");
         for i in 0..nodes.pos.len() {
@@ -1169,7 +1171,7 @@ fn build_geometry(fv: u32, map: &Path, gates: &tmroute::gates::GatesFile, verbos
             let mut store = open_store()?;
             let m = tmmaps::map::MapFile::load(map);
             let t0 = std::time::Instant::now();
-            let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts::default());
+            let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts { with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() });
             if scene.tris.len() < 1000 {
                 return Err(format!("LocalScene has only {} triangles — the pak or the map is not what it should be (a wiped /tmp/tmp/server reads as an empty scene); refusing to build features on it", scene.tris.len()));
             }

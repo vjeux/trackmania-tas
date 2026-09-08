@@ -80,6 +80,36 @@ pub struct GateRec {
     /// Checkpoint group id: all gates that fire the same checkpoint share it.
     /// Finish gates get their own groups after the checkpoints; spawn = u32::MAX.
     pub group: u32,
+    /// Where the ENGINE credits this gate, metres along `normal` from `centre` (GEN arm, engine-credited rows of 19
+    /// ghosts per map, F18): road/platform checkpoint blocks −2.2, 32 m gate items −2.15, GateExpandableFinish −2.5,
+    /// Road* finish blocks −15.2 (the cell's entry edge), wall checkpoints +14.0 (the far end). 0 = not measured.
+    /// Halved on a tiny (half-scale) map. The dedicated pack has no trigger shapes, so this is the measured plane.
+    #[serde(default)]
+    pub credit_offset_m: f32,
+}
+
+/// GEN's per-model credited-plane offsets (metres along the travel normal from the gate centre).
+pub fn credit_offset(model: &str, from_item: bool, kind: WpKind, pitched: bool) -> f32 {
+    let m = model;
+    // the tiny converter's items: AC… = a converted block (deck 2 m above the origin, credit 2.2 m before the
+    // centre), AI… = an original gate item; the finish/lap classes are unknown there
+    if m.len() > 2 && m.starts_with('A') && m.as_bytes()[2].is_ascii_digit() {
+        // MEASURED on the engine-credited crossings of tiny 02 and 06 (INPUT arm, 2026-09-08): relative to the item
+        // ANCHOR, AC checkpoints −1.65, AC finishes −1.60, AI gate items −2.08 (the item keeps its full-size trigger);
+        // `tmplan deck-gates` rewrites these for its deck frames (−9.5 / −7.6 / −2.07). Already tiny-scale: the
+        // caller's ×0.5 is undone below.
+        return 2.0 * match (m.as_bytes()[1], kind) { (b'C', WpKind::Checkpoint) => -1.65, (b'C', WpKind::Finish) => -1.60, (b'I', _) => -2.08, _ => 0.0 };
+    }
+    if m.contains("WallCheckpoint") { return 14.0; }
+    if m.contains("ExpandableFinish") { return -2.5; }
+    if from_item {
+        if pitched { return -1.5; }
+        if m.contains("32m") || m.contains("16m") || m.contains("8m") { return -2.15; }
+        return 0.0;
+    }
+    if (m.starts_with("Road") || m.starts_with("Platform")) && kind == WpKind::Finish && m.starts_with("Road") { return -15.2; }
+    if (m.starts_with("Road") || m.starts_with("Platform")) && kind == WpKind::Checkpoint { return -2.2; }
+    0.0
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -87,6 +117,10 @@ pub struct Spawn {
     pub pos: [f32; 3],
     pub yaw: f32,
     pub waypoint: u32,
+    /// "placement" (the start block's direction — SIGN unverified, like every placement normal) or "human" (the
+    /// humans' first second of travel). The planner's spawn-heading term only trusts "human".
+    #[serde(default)]
+    pub yaw_source: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -477,7 +511,10 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         pos: raws[spawn_i].centre,
         yaw: raws[spawn_i].yaw,
         waypoint: raws[spawn_i].wp,
+        yaw_source: "placement".into(),
     };
+    // a tiny (half-scale) map: uid "Tin2…" or name "Tiny …" — the credited-plane offsets halve with it
+    let tiny = h.uid.starts_with("Tin2") || strip_fmt(&h.name).starts_with("Tiny ");
 
     let gates = raws
         .iter()
@@ -499,6 +536,7 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
                 model: r.model.clone(),
                 from_item: r.from_item,
                 group: gid[i],
+                credit_offset_m: credit_offset(&r.model, r.from_item, r.kind, r.up3.is_some() && !r.wall) * if tiny { 0.5 } else { 1.0 },
             }
         })
         .collect();
@@ -835,4 +873,14 @@ pub fn read_flips(path: &std::path::Path) -> Result<BTreeMap<String, Vec<u32>>, 
         out.insert(cols[0].to_string(), wps);
     }
     Ok(out)
+}
+
+/// A tiny (half-scale converter) map: uid "Tin2…" or name "Tiny …". Its .Map.Gbx keeps ONE kind of baked record on
+/// purpose — the collection's water floor (Sea / Water / Lake blocks at the ORIGINAL's sea level, unscaled; the game
+/// needs them or it regenerates the full-size island under the tiny one) — and their collision slab reads at
+/// full-size heights (Sea at y 15 over a tiny road at 8.5). Every other baked block was re-emitted as a half-size
+/// item. So a scene built for a tiny map skips the whole baked list; the real water plane (cell top, e.g. −14 on
+/// BlueBay) lies well below the tiny roads (converter, 2026-09-08 09:07Z).
+pub fn is_tiny_map(uid: &str, name: &str) -> bool {
+    uid.starts_with("Tin2") || name.trim_start().starts_with("Tiny ")
 }

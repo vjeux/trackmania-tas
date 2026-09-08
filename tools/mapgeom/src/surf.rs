@@ -173,6 +173,18 @@ impl Grid {
                 let a = verts[t[0] as usize];
                 let b = verts[t[1] as usize];
                 let c = verts[t[2] as usize];
+                // a near-vertical face (|n.y| < 0.35, steeper than 70°) is a wall, not a surface the car stands on: the
+                // side of a deck rasterized as heights made a fake ramp down to the road below (Argentina 2026)
+                {
+                    let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                    let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                    let ny = e1[2] * e2[0] - e1[0] * e2[2];
+                    let nl = ((e1[1] * e2[2] - e1[2] * e2[1]).powi(2) + ny * ny + (e1[0] * e2[1] - e1[1] * e2[0]).powi(2)).sqrt();
+                    let wall_ny: f32 = std::env::var("TMPLAN_WALL_NY").ok().and_then(|s| s.parse().ok()).unwrap_or(0.35);
+                    if nl > 1e-9 && ny.abs() / nl < wall_ny {
+                        continue;
+                    }
+                }
                 let minx = a[0].min(b[0]).min(c[0]);
                 let maxx = a[0].max(b[0]).max(c[0]);
                 let minz = a[2].min(b[2]).min(c[2]);
@@ -274,10 +286,47 @@ impl Grid {
         // 2026-09-07 — every road is one converter material) makes the track itself the majority of the
         // surfaces. The Summer 2026 - 16 false positives were single-gate votes.
         let n_votes: usize = votes.values().sum();
+        // …and the game's own ROAD surfaces are track wherever they appear (a gate anchor votes only for the material
+        // under IT — Argentina 2026's ice sections between the gates were "off-road" and the road-following
+        // centreline broke into six gaps). Terrain (Grass, Sand, Rock, Water, Metal…) stays out of this list.
+        // Physics ids, never model names: 16 Asphalt, 6 Dirt, 76 Green (the grass ON a platform deck — PlatformGrass),
+        // 74 RoadIce… A platform map (Summer 2026 - 10: 200 Platform* placements, every checkpoint an Asphalt-physics
+        // deck) has its decks as MOST of a scene without decoration, so these are exempt from the terrain share test.
+        const ROAD_NAMES: [&str; 12] = ["Asphalt", "WetAsphalt", "Dirt", "WetDirtRoad", "DirtRoad", "RoadIce", "Ice", "Snow", "Wood", "Tech", "RoadSynthetic", "Green"];
+        // Concrete (0) and Grass (2) are DECK physics too (platform decks, the converter's default id) — candidates,
+        // but they stay under the terrain share test (grass fields are Grass as well)
+        // Opt-in (env TMPLAN_DECK_PHYSICS="Concrete,Grass,Sand"): the road-following centreline sets it for the tiny
+        // platform maps; the planner's road set for the exhibit does not change under it.
+        let deck_env = std::env::var("TMPLAN_DECK_PHYSICS").unwrap_or_default();
+        let deck_names: Vec<String> = deck_env.split(',').filter(|s| !s.is_empty()).map(|s| s.trim().to_string()).collect();
+        let mut votes = votes;
+        let mut road_by_physics: Vec<u16> = Vec::new();
+        let mut deck_by_physics: Vec<u16> = Vec::new();
+        for (mi, name) in self.mats.iter().enumerate() {
+            let a = area.get(&(mi as u16)).copied().unwrap_or(0);
+            if ROAD_NAMES.contains(&name.as_str()) && a > 0 {
+                votes.entry(mi as u16).or_insert(1);
+                road_by_physics.push(mi as u16);
+            } else if deck_names.iter().any(|d| d == name) && a > 0 {
+                votes.entry(mi as u16).or_insert(1);
+                deck_by_physics.push(mi as u16);
+            }
+        }
+        // centreline mode (deck physics opted in): ONLY the whitelisted physics are road — an anchor over a Metal girder
+        // (Argentina 2026's isolated gate 15) must not make every girder top drivable
+        // (strict whitelisting was tried on 2026-09-08 and dropped: anchor-voted materials such as Metal ARE decks — girder
+        // stacks, StructureBase platforms — on 10 of the 25 tiny maps; the fall rule in road_path is the right filter)
+        let strict = false;
         for (m, n) in &votes {
+            if strict && !road_by_physics.contains(m) && !deck_by_physics.contains(m) {
+                dropped.push(format!("{} (anchor vote, not a road/deck physics — centreline mode)", self.mats[*m as usize]));
+                continue;
+            }
             let share = *area.get(m).unwrap_or(&0) as f32 / total.max(1) as f32;
-            let majority = *n >= 3 && *n * 2 >= n_votes;
-            if share > MAX_SHARE && !majority {
+            let majority = (*n >= 3 && *n * 2 >= n_votes) || road_by_physics.contains(m);
+            // a deck physics (Concrete/Grass) is track up to 60 % of a scene — a tiny map has no stadium around it
+            let limit = if deck_by_physics.contains(m) { 0.60 } else { MAX_SHARE };
+            if share > limit && !majority {
                 dropped.push(format!("{} ({:.0} % of the map)", self.mats[*m as usize], 100.0 * share));
             } else {
                 want.push(*m);
@@ -722,6 +771,60 @@ impl Graph {
         }
     }
 
+    /// Dijkstra over ROAD nodes only (no off-road cell, no leap): the path a road-following centreline may take;
+    /// unreachable is `INFINITY` — a gap, not a detour.
+    pub fn dijkstra_road(&self, from: usize) -> (Vec<f32>, Vec<u32>) {
+        let n = self.len();
+        let mut dist = vec![f32::INFINITY; n];
+        let mut prev = vec![u32::MAX; n];
+        let mut heap: BinaryHeap<Step> = BinaryHeap::new();
+        dist[from] = 0.0;
+        heap.push(Step { d: 0.0, n: from as u32 });
+        while let Some(Step { d, n: u }) = heap.pop() {
+            let u = u as usize;
+            if d > dist[u] + 1e-6 {
+                continue;
+            }
+            for e in self.edge_start[u]..self.edge_start[u + 1] {
+                let raw = self.edges[e as usize];
+                let v = (raw & !DIAG) as usize;
+                // an off-road cell costs 5×: a kerb strip or a start deck of another material is crossed, a field is
+                // not (the caller rejects paths with a long off-road run)
+                let step = if raw & DIAG != 0 { CELL * std::f32::consts::SQRT_2 } else { CELL };
+                // vertical continuity: a road follows its own slope (≤ 45°); a step down of more than the cell size is
+                // a fall off the deck onto whatever lies below (Argentina 2026's start deck, 16 m above a road)
+                if (self.node_y[v] - self.node_y[u]).abs() > 2.5 * step {
+                    continue;
+                }
+                let nd = d + if self.node_road[v] { step } else { 5.0 * step };
+                if nd < dist[v] {
+                    dist[v] = nd;
+                    prev[v] = u as u32;
+                    heap.push(Step { d: nd, n: v as u32 });
+                }
+            }
+            // a short leap (≤ 8 m in XZ) between road cells bridges the seam between two converted decks; longer
+            // leaps are jumps, not road
+            if !self.leap_start.is_empty() {
+                for e in self.leap_start[u]..self.leap_start[u + 1] {
+                    let (v, w) = self.leaps[e as usize];
+                    let v = v as usize;
+                    let dxz = w / LEAP_COST;
+                    if dxz > 8.0 || !self.node_road[v] || (self.node_y[v] - self.node_y[u]).abs() > 2.0 {
+                        continue;
+                    }
+                    let nd = d + dxz;
+                    if nd < dist[v] {
+                        dist[v] = nd;
+                        prev[v] = u as u32;
+                        heap.push(Step { d: nd, n: v as u32 });
+                    }
+                }
+            }
+        }
+        (dist, prev)
+    }
+
     /// Dijkstra from one node. Returns `(dist, prev)`; unreachable is `INFINITY`.
     pub fn dijkstra(&self, from: usize) -> (Vec<f32>, Vec<u32>) {
         let n = self.len();
@@ -818,7 +921,9 @@ impl Graph {
                         if dy < lo || dy > hi {
                             continue;
                         }
-                        let score = (dy - lo).abs() + if self.node_road[k] { 0.0 } else { 6.0 };
+                        // the surface CLOSEST to the anchor height wins (an item anchor sits on its deck); scoring from the
+                        // window's floor picked a road 6 m under Argentina 2026's start deck (player, 2026-09-08)
+                        let score = dy.abs() + if self.node_road[k] { 0.0 } else { 6.0 };
                         if best.map_or(true, |(b, _)| score < b) {
                             best = Some((score, k));
                         }

@@ -125,6 +125,8 @@ pub struct Collector<'a> {
     pub veget_places: Vec<(String, [f32; 3])>,
     /// Inside a moving block: triangles collected now are named `(moving)`.
     moving: bool,
+    /// Inside a waypoint TRIGGER shape: its triangles go to the "Trigger" group (not collidable).
+    in_trigger: bool,
     /// Depth guard: prefab trees are shallow, and a cycle would otherwise
     /// spin forever.
     max_depth: usize,
@@ -142,6 +144,7 @@ impl<'a> Collector<'a> {
             surface_links: Vec::new(),
             veget_places: Vec::new(),
             moving: false,
+            in_trigger: false,
             max_depth: 24,
         }
     }
@@ -149,6 +152,9 @@ impl<'a> Collector<'a> {
     /// The scene group a triangle joins: its physics material, marked when it
     /// belongs to the hull of a block that moves.
     fn group_name(&self, phys: u8) -> String {
+        if self.in_trigger {
+            return "Trigger".to_string();
+        }
         let m = crate::scene::material_name(phys);
         if self.moving {
             format!("{} (moving)", m)
@@ -236,8 +242,15 @@ impl<'a> Collector<'a> {
                     self.moving = was;
                 }
             }
+            Node::Trigger(shape) => {
+                if *shape >= 0 {
+                    let was = std::mem::replace(&mut self.in_trigger, true);
+                    self.slot(*shape, slots, at, depth);
+                    self.in_trigger = was;
+                }
+            }
             Node::Surface(s) => {
-                if self.link_labels {
+                if self.link_labels && !self.in_trigger {
                     for m in &s.materials {
                         if let Some(Slot::External(p)) = slots.get((*m).max(0) as usize) {
                             if p.to_ascii_lowercase().ends_with(".material.gbx") {

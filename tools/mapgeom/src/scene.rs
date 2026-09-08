@@ -121,7 +121,7 @@ pub fn physics_name(id: u8) -> &'static str {
 /// currently a change of nothing — no map has a sample over either — which is
 /// worth knowing and is not the same as not checking.
 pub fn is_collidable(name: &str) -> bool {
-    !matches!(name, "NotCollidable" | "OffZone")
+    !matches!(name, "NotCollidable" | "OffZone" | "Trigger")
 }
 
 /// The name a triangle's group carries: the physics material, and where the
