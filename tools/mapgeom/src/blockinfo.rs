@@ -1215,6 +1215,10 @@ pub struct BlockInfo {
     pub prod_state: Option<i32>,
     pub mat_modifier: Option<(String, String)>,
     pub material_modifier: Vec<String>,
+    /// The same three refs of chunk 0x0304E031 by SLOT (None = null or inline):
+    /// which slot a modifier sits in tells the mechanisms apart
+    /// (`TrackWallToDecoCliff.Gbx` vs `X.TerrainModifier.Gbx`, 2026-09-08).
+    pub material_modifier_slots: [Option<String>; 3],
     pub variant_base_ground: Option<Variant>,
     pub variant_base_air: Option<Variant>,
     pub additional_ground: Vec<Variant>,
@@ -1490,6 +1494,7 @@ impl BlockInfo {
             prod_state: root.prod_state,
             mat_modifier: root.mat_modifier.clone(),
             material_modifier: root.material_modifier.iter().filter_map(|i| ext(*i)).collect(),
+            material_modifier_slots: [ext(root.material_modifier[0]), ext(root.material_modifier[1]), ext(root.material_modifier[2])],
             variant_base_ground: variant(root.variant_base_ground),
             variant_base_air: variant(root.variant_base_air),
             additional_ground: root.additional_ground.iter().filter_map(|i| variant(*i)).collect(),
@@ -1526,6 +1531,7 @@ impl BlockInfo {
         }
         if !self.material_modifier.is_empty() {
             p(&mut s, format!("  material modifier refs {:?}", self.material_modifier));
+            p(&mut s, format!("  material modifier slots {:?}", self.material_modifier_slots));
         }
         if let Some(f) = self.frontier_flag {
             p(&mut s, format!("  frontier flag {}", f));

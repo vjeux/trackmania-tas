@@ -599,14 +599,17 @@ pub fn cmd(args: &[String]) {
     // authored structures (pillar feet, screen caps, wall faces) -- become
     // items too; the baked chunk itself is rewritten to all-Sea below.
     let mut baked_items = 0usize;
-    // the filler colour rule (see the `color` block below): `default` is what
-    // the game draws; `file` and `inherit` (the behaviour until 2026-09-08)
-    // stay for A/Bs
-    let filler_color_rule = std::env::var("TINY_FILLER_COLOR").unwrap_or_else(|_| "default".to_string());
-    if !matches!(filler_color_rule.as_str(), "default" | "file" | "inherit") {
-        panic!("TINY_FILLER_COLOR={filler_color_rule}: want default | file | inherit");
+    // the filler colour rule (see the `color` block below): `owner` is what
+    // the game draws; `default`, `file` and `inherit` (the behaviour until
+    // 2026-09-08) stay for A/Bs
+    let filler_color_rule = std::env::var("TINY_FILLER_COLOR").unwrap_or_else(|_| "file".to_string());
+    if !matches!(filler_color_rule.as_str(), "owner" | "default" | "file" | "inherit") {
+        panic!("TINY_FILLER_COLOR={filler_color_rule}: want owner | default | file | inherit");
     }
     println!("  filler colour rule: {filler_color_rule}");
+    // the authored grid blocks per cell, for the `owner` rule
+    let occupants = crate::fillers::occupants(&source);
+    let mut pillar_fillers = 0usize;
     // cell -> colour of the authored (non-free) block there, for the fillers
     let cell_colors: BTreeMap<(i32, i32, i32), u8> = source
         .blocks
@@ -638,23 +641,47 @@ pub fn cmd(args: &[String]) {
         };
         baked_items += 1;
         let pos = transform(origin, source_anchor, target_anchor, scale);
-        // The colour byte of a GENERATED filler: Default (0), whatever the file
-        // records. THE GAME DOES NOT PAINT ITS CLIP FILLERS. The file records
-        // the generating block's byte for them (Summer 20: 4956 of 7287 baked
-        // are Red like the 1966 Red blocks; the editor holds the same bytes —
-        // /mapblocks2 on the original: DecoWallBaseVFC, DecoCliffVFC, Water*FC,
-        // PlatformBaseFCB … all `color 4`), yet the original DRAWS every filler
-        // face untinted: 20 cp3's wall of DecoWallBaseVFC panels is TrackWall
-        // tan (TrackWallPxz_D) where a red byte on the item painted it red
-        // (TrackWall's hue mask covers the whole wall — an AUTHORED TrackWall
-        // pillar with byte 4 IS red in both worlds); 10's pillar walls and 15's
-        // pool wall the same, green and blue for tan. Same-camera A/Bs of
-        // 2026-09-08 (memory `tm2020-tiny-campaign.md`). Until then a
-        // colourless filler even INHERITED a colour from its cell's authored
-        // block — the opposite of the game. `TINY_FILLER_COLOR`: `default`
-        // (the game's rendering), `file` (the recorded byte), `inherit` (the
-        // old rule) — the last two for A/Bs.
+        // The colour byte of a GENERATED filler: the byte the file records for
+        // it — the generating block's colour, written by the editor (Summer 20:
+        // 4956 of 7287 baked are Red like the 1966 Red blocks; the editor holds
+        // the same bytes, /mapblocks2 on the original) — EXCEPT for the walls of
+        // a PILLAR, which the game draws untinted. Same-camera frames of the
+        // originals (2026-09-08, `tinyctl shoot` own10/col20/col15): a
+        // DecoWallBaseVFC panel owned by a colour-2 DecoWallBaseGrass or a
+        // PlatformPlasticSlope2LoopStart is GREEN (TrackWall's hue mask covers
+        // the whole wall: TrackWallPxz_D_HueMask is (0,f6,06) alpha 0.95
+        // everywhere), a VFC between two empty cells too; but every panel of a
+        // generated pillar (DecoWallBasePillar, WaterWallPillar — flag 0x4000,
+        // byte 4/2/3 in the file) is the untinted TrackWall tan: 20 cp3's tall
+        // wall, 10's start pillar and pool walls, 15's pool wall. Recorded in
+        // the cell the panel is drawn in, a vertical clip belongs to the block
+        // ACROSS its side (fillers.rs); with nothing across, to the block of its
+        // own cell. A pillar there -> Default. Until 2026-09-08 a colourless
+        // filler even INHERITED a colour from its cell's authored block, else
+        // its vertical, else its horizontal neighbours (`inherit`, the wrong
+        // way round for the pillars). `TINY_FILLER_COLOR`: `owner` (the rule),
+        // `default` (every filler 0), `file` (the byte), `inherit` — A/Bs.
         let color = match filler_color_rule.as_str() {
+            "owner" => {
+                let own_byte = colors.baked(b.index);
+                if b.free_rot.is_some() {
+                    own_byte
+                } else {
+                    let pillar_only = |cell: Option<&Vec<&BlockRec>>| -> bool { cell.map(|v| !v.is_empty() && v.iter().all(|x| x.flags & crate::fillers::FLAG_PILLAR != 0)).unwrap_or(false) };
+                    let own = occupants.get(&b.file_cell);
+                    let acr = crate::fillers::across(b.file_cell, b.dir).and_then(|k| occupants.get(&k));
+                    let owner_is_pillar = match acr {
+                        Some(_) => pillar_only(acr),
+                        None => pillar_only(own),
+                    };
+                    if owner_is_pillar {
+                        pillar_fillers += 1;
+                        0
+                    } else {
+                        own_byte
+                    }
+                }
+            }
             "default" => 0,
             "file" => colors.baked(b.index),
             _ => {
@@ -1070,9 +1097,10 @@ pub fn cmd(args: &[String]) {
         specs.len()
     );
     println!(
-        "  baked foundation: {} generated blocks in the source ({} re-emitted as items)",
+        "  baked foundation: {} generated blocks in the source ({} re-emitted as items, {} of them pillar walls placed Default)",
         source.baked.len(),
-        baked_items
+        baked_items,
+        pillar_fillers
     );
     println!(
         "  anchor: source {:?} -> target {:?}; scale {:.3}",

@@ -813,7 +813,35 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // (`Reset.TerrainModifier .Gbx` — the pack spells the Reset gates' modifier
     // with a space before the extension, block info and item alike; until
     // 2026-09-08 every GateSpecialReset block was baked in its Turbo dress)
-    let terrain_mods = |bi: &crate::blockinfo::BlockInfo| -> Vec<String> { bi.material_modifier.iter().map(|r| r.replace(' ', "")).filter(|r| r.ends_with(".TerrainModifier.Gbx")).collect() };
+    // `TrackWallToDecoCliff.Gbx` (DecoHill*, DecoPlatformBase, PlatformTechBase,
+    // WaterBase, WaterWall, DecoCliff*: the Tech-family deco blocks) is a
+    // material modifier too — the same class as the terrain modifiers, its
+    // folder `Modifier\PlatformGrass\`, its skin the TrackWall slot: the
+    // block's TrackWall clip panels are drawn as DecoCliff concrete (grey, no
+    // hue mask) — see `modifier_links`. Skipped until 2026-09-08: Summer 20
+    // cp3's hill sides and 15's pool walls came out plain TrackWall, tinted
+    // red / blue by the map's colour where the original shows grey concrete.
+    //
+    // WHICH blocks dress their clips at all: those with a `MatModifier`
+    // PLACEMENT TAG (CGameCtnBlockInfo::MatModifierPlacementTag, chunk
+    // 0x0304E023 v8: ("MatModifier", "Grass" | "Dirt" | …)). DecoHill*,
+    // WaterBase, WaterWall, DecoPlatformBase, DecoCliff*, OpenTechRoad/Zone*
+    // carry `Grass` (their modifier `TrackWallToDecoCliff`, folder
+    // PlatformGrass), OpenDirtRoad/Zone*, DecoHillDirt*, WaterWallDirt,
+    // DecoPlatformDirtBase carry `Dirt` (modifier PlatformDirt). A block with a
+    // terrain modifier but NO tag — DecoWallBaseGrass, DecoWallLoopEndGrass,
+    // PlatformGrassBase, every PlatformPlastic*, the plastic checkpoints — wears
+    // the modifier on its OWN prefab only; its clip panels stay the plain
+    // material and take the placement colour: Summer 10's DecoWallBaseGrass
+    // walls are GREEN-tinted TrackWall in the original where the folder's
+    // TrackWall (grey DecoCliff) had been baked (same-camera frames own10 /
+    // dc10, 2026-09-08). The tag is the whole difference between the two.
+    let terrain_mods = |bi: &crate::blockinfo::BlockInfo| -> Vec<String> {
+        if bi.mat_modifier.is_none() {
+            return Vec::new();
+        }
+        bi.material_modifier.iter().map(|r| r.replace(' ', "")).filter(|r| r.ends_with(".TerrainModifier.Gbx") || is_track_wall_to_deco_cliff(r)).collect()
+    };
     let mut cell_mod: std::collections::HashMap<(u8, u8, u8), Vec<String>> = std::collections::HashMap::new();
     // (x, z) column -> [(y, is_pillar, mods)] for the pillar rule below
     let mut columns: std::collections::HashMap<(u8, u8), Vec<(u8, bool, Vec<String>)>> = std::collections::HashMap::new();
@@ -858,33 +886,38 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             return Vec::new();
         }
         let c = (b.file_cell[0], b.file_cell[1], b.file_cell[2]);
-        // the cell's own authored block, when it has a modifier
-        if let Some(m) = cell_mod.get(&c).filter(|m| !m.is_empty()) {
+        // The block the clip BELONGS to first: a vertical clip is the wall on
+        // its cell's side `dir`, completing the block ACROSS that side
+        // (tmmaps::fillers) — Summer 20 cp3's DecoWallSlope2StraightVFCLeft
+        // panels stand in the pillar cells and finish the DecoHillSlope2Straight
+        // across, whose TrackWallToDecoCliff dresses them grey; the pillar's
+        // cell gave them nothing and they came out red (2026-09-08).
+        if let Some(a) = tmmaps::fillers::across(b.file_cell, b.dir) {
+            if let Some(m) = cell_mod.get(&(a[0], a[1], a[2])) {
+                return m.clone();
+            }
+        }
+        // then the cell's own authored block (its tagged modifier, or none)
+        if let Some(m) = cell_mod.get(&c) {
             return m.clone();
         }
-        // else the neighbours: the vertical pair first (a VFC filler sits at
-        // the interface of two stacked blocks and is recorded in the cell of
-        // the plain one — Summer 15's dirt hill faces), then the horizontal four
-        let vote = |offsets: &[(i32, i32, i32)]| -> Vec<String> {
-            let mut votes: BTreeMap<Vec<String>, usize> = BTreeMap::new();
-            for (dx, dy, dz) in offsets {
-                let (x, y, z) = (c.0 as i32 + dx, c.1 as i32 + dy, c.2 as i32 + dz);
-                if !(0..=255).contains(&x) || !(0..=255).contains(&y) || !(0..=255).contains(&z) {
-                    continue;
-                }
-                if let Some(m) = cell_mod.get(&(x as u8, y as u8, z as u8)) {
-                    if !m.is_empty() {
-                        *votes.entry(m.clone()).or_insert(0) += 1;
-                    }
-                }
-            }
-            votes.into_iter().max_by_key(|(_, n)| *n).map(|(m, _)| m).unwrap_or_default()
+        // Nothing on either side of the panel's own row: a MERGED panel
+        // (`DecoWallBaseVFC` variants 5..10 = Middle×2/3/4/8/16/32) is recorded
+        // in the bottom cell of its span and completes the blocks stacked above
+        // — the first block up the ACROSS column decides, else the first up the
+        // own column; nothing at all -> the plain material. (The old vote over
+        // the vertical pair and the four horizontal neighbours dressed 10's
+        // green-tinted b2412 as grey DecoCliff from a WaterGrassCornerOut one
+        // cell below, which does not own it.)
+        let first_up = |x: u8, z: u8| -> Option<Vec<String>> {
+            (1..32u32).map(|dy| c.1 as u32 + dy).take_while(|y| *y <= 255).find_map(|y| cell_mod.get(&(x, y as u8, z)).cloned())
         };
-        let v = vote(&[(0, 1, 0), (0, -1, 0)]);
-        if !v.is_empty() {
-            return v;
+        if let Some(a) = tmmaps::fillers::across(b.file_cell, b.dir) {
+            if let Some(m) = first_up(a[0], a[2]) {
+                return m;
+            }
         }
-        vote(&[(1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)])
+        first_up(c.0, c.2).unwrap_or_default()
     };
     let mods_key = |mods: &[String]| -> String { mods.join("|") };
 
@@ -1976,6 +2009,20 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     }
 }
 
+/// The folder `Stadium\Media\Modifier\TrackWallToDecoCliff.Gbx` names in its
+/// chunk 0x0915D000 (read off the file: the string is the PlatformGrass
+/// folder, the skin ref `TrackWallToDecoCliff.GameSkin.gbx` — a skin the pack
+/// does not ship, so the slot set is taken from its name: TrackWall).
+pub const TRACK_WALL_TO_DECO_CLIFF_FOLDER: &str = "Stadium\\Media\\Modifier\\PlatformGrass\\";
+
+/// A block info's `…\Modifier\TrackWallToDecoCliff.Gbx` material modifier ref
+/// (DecoHill*, DecoPlatformBase, PlatformTechBase, WaterBase, WaterWall,
+/// DecoCliff*…). The generated pillars carry `TrackWallFromParent.Gbx`
+/// instead, which the pillar rule above resolves through the parent block.
+pub fn is_track_wall_to_deco_cliff(r: &str) -> bool {
+    r.trim_end().replace(' ', "").to_ascii_lowercase().ends_with("\\trackwalltodecocliff.gbx")
+}
+
 /// `Stadium\Media\Modifier\Reset.TerrainModifier .Gbx` -> `Stadium\Media\Modifier\Reset`,
 /// with or without Nadeo's space before the extension (the Reset blocks' infos
 /// and the pack entry itself spell it with one — 93acd7bb strips it before the
@@ -2065,10 +2112,22 @@ pub fn modifier_redress(store: &mut DataStore, refs: &[String], links: &[String]
 /// `…\Modifier\X.TerrainModifier.Gbx` among the block info's material
 /// modifier refs, every `…\Modifier\X\S.Material.Gbx` in the packs, as the
 /// link `…\Modifier\X\S`. (The modifier file itself only names that folder.)
+/// `…\Modifier\TrackWallToDecoCliff.Gbx` provides ONE link: the TrackWall of
+/// the folder its file names (`Stadium\Media\Modifier\PlatformGrass\` —
+/// `PlatformGrass\TrackWall` is the DecoCliffPxz concrete, no hue mask); its
+/// skin is named for that one slot, and the other materials of that folder
+/// (PlatformTech, DecalPlatform…) are not what a Tech deco block wears.
 pub fn modifier_links(store: &DataStore, refs: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for r in refs {
         let r = r.replace(' ', "");
+        if is_track_wall_to_deco_cliff(&r) {
+            let link = format!("{TRACK_WALL_TO_DECO_CLIFF_FOLDER}TrackWall");
+            if store.entries().any(|e| e.path().eq_ignore_ascii_case(&format!("{link}.Material.Gbx"))) {
+                out.push(link);
+            }
+            continue;
+        }
         let Some(base) = r.strip_suffix(".TerrainModifier.Gbx") else { continue };
         let prefix = format!("{base}\\").to_uppercase();
         for e in store.entries() {

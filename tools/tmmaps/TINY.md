@@ -315,3 +315,58 @@ r9; 14 call sites), the entity-kind → handler table lives in BSS (built at
 run time, not readable statically). Our cloth does render its OWN half-size
 mesh when driven (PH3 Ah1: half the stock's pole and cloth), so the state is
 the only thing borrowed.
+
+## Placement colours and the clip walls' materials (2026-09-08)
+
+Chunk 0x03043062 carries one colour byte per block, baked block and item (0
+Default, 1 White, 2 Green, 3 Blue, 4 Red, 5 Black). A material tints where its
+`_D_HueMask` texture's alpha says so, to the entry its `ColorTargetTable`
+(`Stadium\Media\ColorTargetTables\*.ColorTable.gbx.json`) names for the byte:
+`TrackWall` (the whole wall — the mask is 0.95 everywhere), `TrackBorders` /
+`TrackBordersOff` (the bands), `Technics`, `TrackWallClips`, `RoadTech`,
+`DecalPlatform`, the plastic floor; `TechnicsTrims`, `PlatformTech`,
+`PoolBorders`, `WaterBorders`, `DecoCliff` (and the `Modifier\PlatformGrass\
+TrackWall` = DecoCliffPxz), the terrain skins' `TrackWallInWorld` carry no mask
+and never tint. `tmmaps tiny` copies the byte of every authored block, item
+AND generated filler onto its clone (`TINY_FILLER_COLOR=file`; `default` /
+`owner` / `inherit` are A/B knobs — `inherit`, the rule until 2026-09-08, gave
+a colourless filler its neighbours' colour). Summer 20 is all Red, 10 all
+Green, 15 all Blue: the authors painted whole maps, and the editor holds the
+file's byte for every filler too (`/mapblocks2` prints `color`), so a wrong
+hue on a tiny wall was never a wrong byte — it was the wrong MATERIAL.
+
+**Which block dresses its clip fillers, and with what.** A block info's
+material modifier (chunk 0x0304E031 slot 1; slot 0 is the `EDClassic` parent
+info it copies) is one of two files of class 0x0915D000, both `{folder, game
+skin}`: `X.TerrainModifier.Gbx` = folder `Modifier\X\` + `Platform.GameSkin`
+(slots PlatformTech, DecalPlatform, DecoHill, OpenTechBorders, DecoHill2,
+DecoCliff, DecoCliffBase, TrackWall, DecoGrass, Deco, Penalty), and
+`TrackWallToDecoCliff.Gbx` = folder `Modifier\PlatformGrass\` + a TrackWall-only
+skin (the Tech-family deco blocks: DecoHill*, DecoPlatformBase, PlatformTechBase,
+WaterBase, WaterWall, DecoCliff*, OpenTechRoad/Zone*). The block's OWN prefab
+always wears its modifier. Its GENERATED CLIPS wear it only when the block also
+carries a `MatModifier` PLACEMENT TAG (`MatModifierPlacementTag`, chunk
+0x0304E023 v8: ("MatModifier", "Grass"|"Dirt"|…)): DecoHill*, WaterBase,
+WaterWall, DecoPlatformBase, DecoCliff*, OpenTechRoad/Zone* carry `Grass`,
+OpenDirtRoad/Zone*, DecoHillDirt*, WaterWallDirt, DecoPlatformDirtBase carry
+`Dirt`; DecoWallBaseGrass, DecoWallLoopEndGrass, PlatformGrassBase, every
+PlatformPlastic* and the plastic checkpoints carry NONE. The generated pillars
+(`DecoWallBasePillar`, `WaterWallPillar`… `TrackWallFromParent.Gbx`) take the
+block above them (the pillar rule), tag-gated the same way. A vertical clip
+belongs to the block ACROSS the side it stands on (`fillers.rs`), else to its
+own cell's block, else — a merged Middle×N panel recorded in the bottom cell
+of its span — to the first block up the across column, then its own column.
+
+Same-camera frames of the originals (`tinyctl shoot` own10 / ownf20 / col20 /
+dc / tg, 2026-09-08): a `DecoWallBaseGrass`'s panel and a pillar's under a
+`PlatformPlasticSlope2LoopStart` are GREEN-tinted TrackWall on 10 (the folder's
+grey TrackWall had been baked there); a `PlatformPlasticTiltTransition2
+DownRight`'s panel is red on 20 and an authored `TrackWallStraightPillar` red
+in both worlds; every panel of a `DecoHill*` side, a `WaterBase` pool, a
+pillar under a `DecoPlatformBase` is the grey DecoCliff concrete — 20 cp3's
+tall wall and hill sides, 10's start pillar and pool walls, 15's pool wall,
+which the tiny had painted red / green / blue as plain TrackWall
+(`terrain_modifier_base` skipped the TrackWallToDecoCliff ref as "a game
+skin", and every filler inherited a modifier tag or no tag). `modifier_links`
+resolves the ref to its one link; `terrain_mods` gates the inheritance on the
+tag; `inherited_mod` walks across → own → up the columns.
