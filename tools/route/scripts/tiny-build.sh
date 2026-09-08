@@ -16,7 +16,10 @@ for f in $T/*.Map.Gbx; do bn=$(basename "$f" .Map.Gbx); if [[ "$bn" =~ \ -\ ([0-
 n=$(ls $L/*.Map.Gbx | wc -l); echo "$BUILD: $n maps"
 OUT=$M/tm-route/tiny-builds/$BUILD; mkdir -p $OUT
 : > $OUT/RUN.txt
-for f in $L/*.Map.Gbx; do bash /tmp/tmp/repo/tools/route/scripts/tiny-one.sh "$f" --build $BUILD --manifest $T/MANIFEST.txt 2>&1 | tail -1 | tee -a $OUT/RUN.txt; done
+# 3 maps at a time (each tmr run is 16 threads, ~10 GB at most)
+export BUILD T OUT
+ls $L/*.Map.Gbx | xargs -P ${PAR:-3} -I{} bash -c 'bash /tmp/tmp/repo/tools/route/scripts/tiny-one.sh "{}" --build $BUILD --manifest $T/MANIFEST.txt 2>&1 | tail -1' | tee -a $OUT/RUN.txt
+sort -o $OUT/RUN.txt $OUT/RUN.txt
 # README: per-map line + every gap leg with the verdict carried over from the previous build (same group ids are
 # NOT guaranteed across builds — verdicts are re-keyed by the converter when they re-verify)
 { echo "# Tiny build $BUILD — gates, deck gates (credit offsets), routes, road-following centrelines (+ speed_hint), $(date -u +%Y-%m-%dT%H:%MZ)"; echo; echo '```'; cat $OUT/RUN.txt | cut -c1-260; echo '```'; echo; echo "Every artefact stamps build/md5/collhash (collhash verified against the build's MANIFEST). Gap verdicts (tiny/gap-verdicts.tsv) and road exclusions (tiny/road-exclusions.tsv) were written for out2 and are applied by map stem — re-verify on this build."; } > $OUT/README.md
