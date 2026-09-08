@@ -954,6 +954,13 @@ fn cmd_campaign(a: &Args) -> Result<(), String> {
             report.push_str(&format!("{name}\t{uid}\tSKIPPED: no resim-exact ghost ({total} in the manifest)\n"));
             continue;
         }
+        // fewer than 3 exact ghosts: planes cannot be fitted per model, the oracle control has no
+        // power and one excluded ghost fails the quarter rule (Fall 2020 - 15 with 1, Spring 2021 - 01 with 5/2 excluded)
+        if exact.len() < 3 {
+            report.push_str(&format!("{name}\t{uid}\tSKIPPED: only {} resim-exact ghost(s) of {total} (need >= 3)\n", exact.len()));
+            println!("   only {} exact ghost(s): skipped", exact.len());
+            continue;
+        }
         // the map file: <maps-dir>/<uid>.Map.Gbx (cartographer bank) or the player's maps/<uid>/map.Map.Gbx,
         // copied into scratch (a mount read can be partial; tmroute gates then refuses it)
         let map_src = [maps_dir.join(format!("{uid}.Map.Gbx")), ghosts_root.join(uid).join("map.Map.Gbx")].into_iter().find(|p| p.exists());
