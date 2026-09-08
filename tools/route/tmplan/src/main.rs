@@ -670,6 +670,9 @@ fn cmd_leg_scan(args: &[String]) {
 /// lateral road span; where no road path exists the polyline STAYS on the last deck and the segment is a `gap`
 /// (never a straight line off the road — Argentina 21, the car fell at s ≈ 60 m). The player's ask, 2026-09-08.
 fn cmd_road_centreline(args: &[String]) {
+    // platform decks of any physics are road for a centreline that must follow the decks (Summer 2026 - 10: Grass/Concrete
+    // decks; Saudi Arabia 2026: Sand) — opt-in here so the planner's exhibit road set is untouched
+    if std::env::var("TMPLAN_DECK_PHYSICS").is_err() { std::env::set_var("TMPLAN_DECK_PHYSICS", "Concrete,Grass,Sand"); }
     let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
     let gates = io::read_gates(Path::new(&flag(args, "--gates").unwrap_or_else(|| die("--gates")))).unwrap_or_else(|e| die(&e));
     let out = flag(args, "--out").unwrap_or_else(|| die("--out"));
@@ -710,6 +713,32 @@ fn cmd_road_centreline(args: &[String]) {
                 let road_at = |k: usize| nodes.graph_node[k].map_or("no graph node".to_string(), |n| if surf.graph.node_road[n] { "road".into() } else { "off-road".into() });
                 let any = surf.path_points(&nodes, &surf.distance_matrix(&nodes).2, i, j).map_or("none".to_string(), |p| format!("{} pts", p.len()));
                 eprintln!("  gap {} → {}: from node {}, to node {}, full-graph path {any}", grp(&nodes, i), grp(&nodes, j), road_at(i), road_at(j));
+                // what the full-graph path crosses: consecutive off-road runs > 4 m with the surface under them
+                if let Some(fp) = surf.path_points(&nodes, &surf.distance_matrix(&nodes).2, i, j) {
+                    let mut cur = 0.0f32;
+                    let mut mats: BTreeMap<String, usize> = BTreeMap::new();
+                    let flush = |cur: f32, mats: &BTreeMap<String, usize>| {
+                        if cur > 4.0 {
+                            let m: Vec<String> = mats.iter().map(|(k, v)| format!("{k}×{v}")).collect();
+                            eprintln!("      off-road run {cur:.0} m over {}", m.join(" "));
+                        }
+                    };
+                    for w in fp.windows(2) {
+                        let (a, b) = (w[0], w[1]);
+                        let step = ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
+                        let on = surf.road_span(b, [b[0] - a[0], b[2] - a[2]], 2.0).is_some();
+                        if on {
+                            flush(cur, &mats);
+                            cur = 0.0;
+                            mats.clear();
+                        } else {
+                            cur += step;
+                            let m = surf.grid.cell_of(b[0], b[2]).and_then(|(ix, iz)| surf.grid.cells[iz * surf.grid.nx + ix].iter().min_by(|p, q| (p.y - b[1]).abs().partial_cmp(&(q.y - b[1]).abs()).unwrap()).map(|s| format!("{}@{:+.1}", surf.grid.mats[s.mat as usize], s.y - b[1]))).unwrap_or_else(|| "void".to_string());
+                            *mats.entry(m).or_default() += 1;
+                        }
+                    }
+                    flush(cur, &mats);
+                }
                 segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {i0}, \"gap\": true, \"to_pos\": [{:.2}, {:.2}, {:.2}]}}", grp(&nodes, i), grp(&nodes, j), nodes.pos[j][0], nodes.pos[j][1], nodes.pos[j][2]));
             }
         }

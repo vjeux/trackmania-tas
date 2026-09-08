@@ -277,17 +277,35 @@ impl Grid {
         // …and the game's own ROAD surfaces are track wherever they appear (a gate anchor votes only for the material
         // under IT — Argentina 2026's ice sections between the gates were "off-road" and the road-following
         // centreline broke into six gaps). Terrain (Grass, Sand, Rock, Water, Metal…) stays out of this list.
-        const ROAD_NAMES: [&str; 10] = ["Asphalt", "WetAsphalt", "Dirt", "WetDirt", "RoadIce", "Ice", "Snow", "Wood", "Tech", "RoadSynthetic"];
+        // Physics ids, never model names: 16 Asphalt, 6 Dirt, 76 Green (the grass ON a platform deck — PlatformGrass),
+        // 74 RoadIce… A platform map (Summer 2026 - 10: 200 Platform* placements, every checkpoint an Asphalt-physics
+        // deck) has its decks as MOST of a scene without decoration, so these are exempt from the terrain share test.
+        const ROAD_NAMES: [&str; 12] = ["Asphalt", "WetAsphalt", "Dirt", "WetDirtRoad", "DirtRoad", "RoadIce", "Ice", "Snow", "Wood", "Tech", "RoadSynthetic", "Green"];
+        // Concrete (0) and Grass (2) are DECK physics too (platform decks, the converter's default id) — candidates,
+        // but they stay under the terrain share test (grass fields are Grass as well)
+        // Opt-in (env TMPLAN_DECK_PHYSICS="Concrete,Grass,Sand"): the road-following centreline sets it for the tiny
+        // platform maps; the planner's road set for the exhibit does not change under it.
+        let deck_env = std::env::var("TMPLAN_DECK_PHYSICS").unwrap_or_default();
+        let deck_names: Vec<String> = deck_env.split(',').filter(|s| !s.is_empty()).map(|s| s.trim().to_string()).collect();
         let mut votes = votes;
+        let mut road_by_physics: Vec<u16> = Vec::new();
+        let mut deck_by_physics: Vec<u16> = Vec::new();
         for (mi, name) in self.mats.iter().enumerate() {
-            if ROAD_NAMES.contains(&name.as_str()) && area.get(&(mi as u16)).copied().unwrap_or(0) > 0 {
+            let a = area.get(&(mi as u16)).copied().unwrap_or(0);
+            if ROAD_NAMES.contains(&name.as_str()) && a > 0 {
                 votes.entry(mi as u16).or_insert(1);
+                road_by_physics.push(mi as u16);
+            } else if deck_names.iter().any(|d| d == name) && a > 0 {
+                votes.entry(mi as u16).or_insert(1);
+                deck_by_physics.push(mi as u16);
             }
         }
         for (m, n) in &votes {
             let share = *area.get(m).unwrap_or(&0) as f32 / total.max(1) as f32;
-            let majority = *n >= 3 && *n * 2 >= n_votes;
-            if share > MAX_SHARE && !majority {
+            let majority = (*n >= 3 && *n * 2 >= n_votes) || road_by_physics.contains(m);
+            // a deck physics (Concrete/Grass) is track up to 60 % of a scene — a tiny map has no stadium around it
+            let limit = if deck_by_physics.contains(m) { 0.60 } else { MAX_SHARE };
+            if share > limit && !majority {
                 dropped.push(format!("{} ({:.0} % of the map)", self.mats[*m as usize], 100.0 * share));
             } else {
                 want.push(*m);
