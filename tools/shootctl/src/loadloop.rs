@@ -183,6 +183,7 @@ fn run_loop(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         let ack = super::http_get(door, 30).unwrap_or_default().trim().to_string();
         println!("{} #{iter} {short}: {door} -> {ack}", el());
         let mut last = String::new();
+        let mut stable = 0u32;
         let mut v = Load { outcome: "TIMEOUT", seconds: 0.0, car: "-".into(), frame: "-".into(), text: "-".into(), ctx: "-".into(), note: String::new() };
         loop {
             if load0.elapsed().as_secs() > opts.timeout_s {
@@ -226,16 +227,24 @@ fn run_loop(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
                 break;
             }
             // the playground is ctx 3 (CurrentPlayground, no editor), the map
-            // editor ctx 1; a transient editor context 0.3 s after /playmap is
-            // NOT the playground (f9916a8)
-            if super::ctx() == Some(want_ctx) {
+            // editor ctx 1 — and 0.3 s after /playmap the game shows a TRANSIENT
+            // ctx 3 with playground:true and map:null before dropping back to 0
+            // for the load itself (measured 2026-09-08, 3 of 3 loads). So the
+            // open is the SNAPSHOT saying ctx == want with RootMap set, held
+            // over three consecutive polls a second apart.
+            if ctx_of(&c) == Some(want_ctx) && !c.contains("\"map\":null") {
+                stable += 1;
+            } else {
+                stable = 0;
+            }
+            if stable >= 3 {
                 v.outcome = "OPENED";
                 v.seconds = load0.elapsed().as_secs_f64();
                 v.ctx = tsv_clean(&c);
                 println!("{} #{iter} OPENED after {:.1}s ({c})", el(), v.seconds);
                 break;
             }
-            std::thread::sleep(Duration::from_millis(250));
+            std::thread::sleep(Duration::from_millis(if stable > 0 { 1000 } else { 250 }));
         }
         if v.outcome == "OPENED" {
             std::thread::sleep(Duration::from_millis(opts.settle_ms));
@@ -286,6 +295,15 @@ fn run_loop(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     Ok(lines)
 }
 
+/// The `"ctx":N` of a `/ctx` reply.
+fn ctx_of(ctx: &str) -> Option<i64> {
+    let key = "\"ctx\":";
+    let i = ctx.find(key)? + key.len();
+    let rest = &ctx[i..];
+    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
 /// The `"dialog":"FrameX"` of a `/ctx` reply, `None` for `"dialog":null`.
 fn dialog_frame(ctx: &str) -> Option<String> {
     let key = "\"dialog\":\"";
@@ -298,6 +316,12 @@ fn dialog_frame(ctx: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ctx_of_reads_the_number() {
+        assert_eq!(ctx_of(r#"{"ctx":3,"editor":"none","playground":true,"map":null}"#), Some(3));
+        assert_eq!(ctx_of("nonsense"), None);
+    }
 
     #[test]
     fn dialog_frame_reads_ctx() {

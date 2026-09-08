@@ -60,6 +60,7 @@ pub mod tiny_assets;
 pub mod tiny_library;
 pub mod tree_clear;
 pub mod veget;
+pub mod zipcheck;
 pub mod static_item;
 
 pub use store::{DataStore, Model};
