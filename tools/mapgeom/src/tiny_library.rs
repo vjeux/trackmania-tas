@@ -655,6 +655,17 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     m.keep_water = crate::static_item::build::keep_water_for(collection);
     m.modifier = modifier_links(store, &plan.effective_mods);
     m.collision_redress = modifier_redress(store, &plan.effective_mods, &m.modifier);
+    // A gameplay gate BLOCK (GateSpecialBoost / Boost2 / Reset / …) is the
+    // Turbo-dressed Special prefab re-dressed by its `<Kind>.TerrainModifier`
+    // folder; the ring's sign panels resolve through `gate_kind` (signlogo.rs),
+    // exactly as the gate ITEMS do — without it every gate block wore the
+    // Turbo chevrons (Summer 15's reactor gate by the inflatable loop, vjeux
+    // 2026-09-08 23:27Z: "the ring turned from a REACTOR ring to a BOOSTER").
+    if m.modifier.iter().any(|l| l.ends_with("\\Sign")) {
+        if let Some(kind) = m.modifier.iter().find(|l| l.ends_with("\\Sign")).and_then(|l| l.strip_prefix("Stadium\\Media\\Modifier\\")).and_then(|r| r.split('\\').next()) {
+            m.gate_kind = Some(kind.to_string());
+        }
+    }
     // (The DecoPlatform blocks — Slope2Start, SlopeBase, … — keep their
     // `Deco` material: it IS what the game draws, the grass-topped
     // decorative platform, phys 2. 70d461c re-dressed them as grey
@@ -836,11 +847,24 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // walls are GREEN-tinted TrackWall in the original where the folder's
     // TrackWall (grey DecoCliff) had been baked (same-camera frames own10 /
     // dc10, 2026-09-08). The tag is the whole difference between the two.
+    // …EXCEPT a GAMEPLAY kind: a special pad's `<Kind>.TerrainModifier` (Turbo,
+    // Turbo2, Boost, Reset, NoEngine, … — the folders that carry a `Sign`
+    // material, the LED panel picture) dresses the pad's own side clips
+    // (`PlatformSpecialFCLeft/Right`, the generic special skirts with the LED
+    // strip) whether or not the pad carries a placement tag: Summer 16's
+    // PlatformDirtSpecialTurbo2 (no tag) had its skirts baked with the prefab's
+    // Turbo dress (yellow) where the pad is Turbo2 (red) — audit of 2026-09-08.
+    let gameplay_folders: std::collections::HashSet<String> = store
+        .entries()
+        .filter_map(|e| e.path().strip_suffix("\\Sign.Material.Gbx").map(|s| s.to_uppercase()))
+        .filter(|s| s.contains("\\MEDIA\\MODIFIER\\"))
+        .collect();
     let terrain_mods = |bi: &crate::blockinfo::BlockInfo| -> Vec<String> {
+        let refs = bi.material_modifier.iter().map(|r| r.replace(' ', "")).filter(|r| r.ends_with(".TerrainModifier.Gbx") || is_track_wall_to_deco_cliff(r));
         if bi.mat_modifier.is_none() {
-            return Vec::new();
+            return refs.filter(|r| r.strip_suffix(".TerrainModifier.Gbx").map(|b| gameplay_folders.contains(&b.to_uppercase())).unwrap_or(false)).collect();
         }
-        bi.material_modifier.iter().map(|r| r.replace(' ', "")).filter(|r| r.ends_with(".TerrainModifier.Gbx") || is_track_wall_to_deco_cliff(r)).collect()
+        refs.collect()
     };
     let mut cell_mod: std::collections::HashMap<(u8, u8, u8), Vec<String>> = std::collections::HashMap::new();
     // (x, z) column -> [(y, is_pillar, mods)] for the pillar rule below

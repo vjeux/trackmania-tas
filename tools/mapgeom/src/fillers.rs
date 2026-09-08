@@ -275,16 +275,42 @@ pub fn closes_default_for(v: Option<&str>) -> Closes {
 
 pub fn verdict_with(f: &Faces, b: &BlockRec, pillars: bool, closes: Closes) -> Option<String> {
     let me = b.name.to_ascii_lowercase();
-    let mine = f.clips.get(&me).cloned().unwrap_or_default();
-    if mine.full_free {
-        return None;
-    }
     // only CLIP records are judged (a terrain tile in the baked list is not a
     // filler; `hidden_tiles` owns those)
-    f.clips.get(&me)?;
-    let Some(occ) = f.occupants.get(&b.file_cell) else { return None };
+    let mine = f.clips.get(&me)?.clone();
     let face = facing_face(mine.ty, b.dir);
+    // a full-free SIDE piece (a pillar or deco wall panel) is drawn wherever it
+    // is recorded (Summer 10's start, 20 cp3); a full-free TOP / BOTTOM plate
+    // (PlatformBaseFCT / FCB, the pillar and platform plates: full-free AND
+    // deletable) follows the plate rule below
+    if mine.full_free && face < 4 {
+        return None;
+    }
+    let Some(occ) = f.occupants.get(&b.file_cell) else { return None };
     if closes == Closes::SideOnly && face >= 4 {
+        // A TOP / BOTTOM piece — a plate or floor hanging between stacked
+        // blocks. A NON-deletable one (the water roads' channel floors
+        // `TrackWallWaterStraightFCBInside*`, del=0) is drawn wherever it is
+        // recorded: Summer 05 over the wedge and over the road's own pillar,
+        // Summer 15 over the arch top — the frames of 22:00Z. A DELETABLE one
+        // (`TrackWallStraightFCB`, a road's underside plate; `PlatformBaseFCT`,
+        // a pillar's top plate — the pack marks them CanBeDeletedByFullFreeClip)
+        // is the optional dressing of a free face: hidden as soon as the block
+        // it faces hangs its own top / bottom clips there. Summer 15, the water
+        // channel through the reactor gate (vjeux, 2026-09-08 23:26Z): the
+        // road slope's FCB plates and the pillars' FCT plates recorded in the
+        // DecoWallWaterBase cells (Top [DecoWallWaterBaseFCT|…FCTInside], Bottom
+        // [DecoWallWaterBaseFCB|…FCBInside]) came out as grey slabs in the water;
+        // the original shows water.
+        if !mine.deletable {
+            return None;
+        }
+        for o in occ.iter().filter(|o| !o.tile && (pillars || !o.pillar)) {
+            let list = &o.faces[face];
+            if !list.is_empty() {
+                return Some(format!("deletable plate against {}'s {} face [{}]", o.name, if face == 4 { "Top" } else { "Bottom" }, list.join("|")));
+            }
+        }
         return None;
     }
     for o in occ.iter().filter(|o| !o.tile && (pillars || !o.pillar)) {
@@ -514,13 +540,16 @@ mod tests {
     }
 
     #[test]
-    fn top_and_bottom_pieces_are_always_drawn() {
+    fn top_and_bottom_pieces_follow_their_own_deletable_flag() {
         let mut f = table();
         f.occupants.insert(C, vec![occupant("ArchTop", false, [vec![], vec![], vec![], vec![], vec!["plate"], vec!["firm"]])]);
-        // Summer 15's water floor over TrackWallArch1x2SideTop (top face carries a firm FCT)
+        // Summer 15's water floor (del=0) over TrackWallArch1x2SideTop (top face carries a firm FCT)
         assert!(verdict_with(&f, &rec("floor", C, 0), false, Closes::SideOnly).is_none());
         assert!(verdict_with(&f, &rec("floor", C, 0), false, Closes::Any).is_some(), "the `any` variant hid it — the variant the 15 frame refuted");
-        assert!(verdict_with(&f, &rec("plate", C, 0), false, Closes::SideOnly).is_none(), "an FCT plate under a block whose Bottom carries a clip");
+        // a DELETABLE FCT plate (a pillar's top) under a block whose Bottom hangs its own clips: hidden (15's water channel)
+        assert!(verdict_with(&f, &rec("plate", C, 0), false, Closes::SideOnly).is_some(), "a deletable plate against an occupied Bottom face");
+        f.occupants.insert(C, vec![occupant("Deck", false, [vec![], vec![], vec![], vec![], vec!["plate"], vec![]])]);
+        assert!(verdict_with(&f, &rec("plate", C, 0), false, Closes::SideOnly).is_none(), "the same plate under a block with an empty Bottom face is drawn");
         assert_eq!(closes_default_for(None), Closes::SideOnly);
     }
 

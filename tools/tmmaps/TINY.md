@@ -417,6 +417,17 @@ every record), lives in `mapgeom::fillers::verdict` and reads like this:
   Summer 20's two facing WaterRampZoneCurveOut (b4087/b4115), the
   ResonantMetal rim the author drives at t 27.1–27.5 s (the route project's
   author-ground sweep; gone from ship10).
+* **a TOP / BOTTOM piece follows its own `CanBeDeletedByFullFreeClip` flag**
+  (2026-09-08 23:45Z, vjeux's 15 loop frame): a NON-deletable floor (the water
+  roads' `TrackWallWaterStraightFCBInside*`, del=0) is drawn wherever it is
+  recorded — the 05/15 floors above; a DELETABLE plate (`TrackWallStraightFCB`,
+  a road's underside; `PlatformBaseFCT`/`FCB`, the pillar and platform plates —
+  full-free AND deletable) is the optional dressing of a free face and is hidden
+  as soon as the block it faces hangs its own top/bottom clips there. Summer
+  15's water channel through the reactor gate: the road slope's FCB plates and
+  the pillars' FCT plates recorded in the `DecoWallWaterBase` cells came out as
+  grey slabs in the water ("road blocks in the water"); the original shows
+  water. Full-free-always-drawn therefore applies to SIDE pieces only.
 * only CLIP records are judged; terrain tiles in the baked list belong to the
   `hidden_tiles` logic.
 
