@@ -8,10 +8,10 @@
 //!             [--epochs N] [--hidden 256,256,256] [--batch B] [--lr X] [--wd X] [--noise σ] [--dropout p] [--geo-dropout p] [--no-mirror] [--held-out uid,..] [--report F] [--threads T]
 //!   tmr eval [--kind gate|local] --model r.tmw --cache DIR [--held-out uid,..] [--report F]
 //!   tmr selftest --model r.tmw           agrees_with (flat vs candle) + the negative half (a perturbed copy must be REFUSED)
-//!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--local rl.tmw --estimator chained [--chain-beam 24] [--p-step 0.05] [--penalty 3000] [--fast-fan] [--budget-s 300] [--chain-threads 32]]
+//!   tmr plan MAP.Map.Gbx --gates gates.json --model r.tmw [--local rl.tmw --estimator chained [--chain-beam 24] [--p-step 0.05] [--penalty 3000] [--fast-fan] [--budget-s 300] [--chain-threads 32] [--chain-steps N] [--max-rss-gb G]]
 //!            [--top-k 3] [--beam 4000] [--p-floor 0.02] [--out-dir DIR] [--source NAME]
 //!                                        the planner over R (tmplan's beam, R as the EdgeEstimator) — the M2 seam
-//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--max-rows-total N] [--gate-rows N] [--keep-fast M_S] [--geo-dropout p] [--held-out uid,..] [--batch B] [--lr X] [--force-first] [--interval S] [--once] [--epochs N] [--threads T]
+//!   tmr watch --reach DIR .. --cache DIR --bank DIR [--fv 1|2] [--max-rows N] [--max-rows-total N] [--gate-rows N] [--keep-fast M_S] [--wide HIDDEN] [--geo-dropout p] [--held-out uid,..] [--batch B] [--lr X] [--force-first] [--interval S] [--once] [--epochs N] [--threads T]
 //!                                        rebuild rows for new/changed shards, retrain both heads, publish bank/r-v<N>.tmw + rl-v<N>.tmw + reports
 //!   tmr report --bank DIR [--bank DIR2] [--out REPORT.md]   one table per watcher bank: every version's held-out numbers
 //!   tmr split UID..                      which maps the fnv1a64 rule holds out
@@ -153,17 +153,13 @@ struct BuildOpts {
 fn build_one(d: &Path, o: &BuildOpts, log: &mut Vec<String>) -> Result<(String, String), String> {
     let uid = data::shard_map_uid(d).ok_or_else(|| format!("{}: cannot tell its map uid (dir name or FANOUT.log)", d.display()))?;
     let build_hash = data::shard_build_hash(d);
-    // FRAME control before anything is built from this shard (fail closed)
-    // A convention change shows as ANOTHER axis carrying the velocity (or none); a low +Z mean alone is
-    // physics: Spring 2026 - 08 has 140 of 675 starts driving in REVERSE (dot < −0.9), Summer 2026 - 18
-    // 297 of 1812 sideways at ~90 m/s (|dot| < 0.3). Fail only when +Z is not the dominant axis.
+    // FRAME control is per generator BUILD, pooled over the build's shards (`frame_gate`, run by the caller before
+    // any shard of that build is built): "velocity along +Z" per MAP is a physics assertion that fails on ice, dirt
+    // and drift (Winter 2026 - 16: 35 % of starts sideways, an ICE map driven by the Stadium car — coordinator
+    // 22:33Z), while a convention change moves the velocity to ANOTHER body axis across ALL shards of a build.
+    // Per shard only the alignment is logged.
     let (acc, nf) = data::frame_control_axes(d)?;
-    let fz = acc[2];
-    let other = acc[0].abs().max(acc[1].abs());
-    if nf >= 20 && (fz < 0.3 || other > fz) {
-        return Err(format!("{uid} (build {build_hash}): FRAME control FAILED — mean dot(velocity, rotated local axis): +X {:+.3} +Y {:+.3} +Z {:+.3} over {nf} starts; forward is not local +Z, fix frame.rs before building rows", acc[0], acc[1], fz));
-    }
-    log.push(format!("  {uid}: generator build {build_hash}, frame control +Z {fz:.3} (X {:+.3}, Y {:+.3}) over {nf} starts → PASS{}", acc[0], acc[1], if fz < 0.9 { " (low mean: reverse / sideways driving on this map, not a convention change)" } else { "" }));
+    log.push(format!("  {uid}: generator build {build_hash}, alignment +X {:+.3} +Y {:+.3} +Z {:+.3} over {nf} starts{}", acc[0], acc[1], acc[2], if acc[2] < 0.6 { " (low +Z: drift / reverse on this map — the build-level gate decides)" } else { "" }));
     let gdir = o.geom.join(&uid);
     // the bank is an object store another box writes into: a gates.json mid-rewrite reads truncated.
     // Keep the last good copy in the cache and fall back to it, saying so.
@@ -242,7 +238,12 @@ fn cmd_build(args: &[String]) {
     }
     let mut manifest = String::from(MANIFEST_HEADER);
     let mut log = Vec::new();
+    let refused = frame_gate(&dirs, &mut log);
     for d in dirs {
+        if refused.contains(&data::shard_build_hash(&d)) {
+            eprintln!("  {}: skipped — its generator build failed the FRAME gate", d.display());
+            continue;
+        }
         match build_one(&d, &o, &mut log) {
             Ok((m, line)) => {
                 println!("{line}");
@@ -450,6 +451,7 @@ fn cmd_train(args: &[String]) {
     let mirror = !has(args, "--no-mirror");
     let t_set = std::time::Instant::now();
     let train_set = Set::from_rows_aug(&train_rows, &keep, mirror);
+    rss_guard(args, "the training set");
     eprintln!("set: {} rows in {:.1} s", train_set.n, t_set.elapsed().as_secs_f64());
     let h_max = (0..train_set.n).map(|i| train_set.lab(i)[data::L_H]).fold(0f32, f32::max);
     let h_min = (0..train_set.n).map(|i| train_set.lab(i)[data::L_H]).fold(f32::INFINITY, f32::min);
@@ -612,6 +614,7 @@ fn order_str(nodes: &tmplan::surface::Nodes, gates: &tmroute::gates::GatesFile, 
 fn cmd_plan(args: &[String]) {
     use tmplan::estimator::{EdgeEstimator, StateBucket};
     let ctx = load_plan_ctx(args);
+    rss_guard(args, "the plan context (map geometry)");
     let PlanCtx { gates, surf, nodes, w, h_min, h_max, keep, .. } = &ctx;
     let (h_min, h_max, keep) = (*h_min, *h_max, keep.clone());
     let feat = ctx.feat();
@@ -645,6 +648,7 @@ fn cmd_plan(args: &[String]) {
         let lw = ctx.local_w.as_ref().unwrap_or_else(|| die("--estimator chained needs --local rl.tmw"));
         let mut c = tmr::estimator::Chained::new(lw, &feat_local, gates, nodes, surf, tmr::feat::ablation_keep(lw.fv, "full").unwrap());
         if let Some(b) = flag(args, "--chain-beam") { c.beam = b.parse().unwrap_or(24); }
+        if let Some(n) = flag(args, "--chain-steps") { c.max_steps = n.parse().unwrap_or(10); c.fixed_steps = true; }
         if let Some(f) = flag(args, "--p-step") { c.p_step_floor = f.parse().unwrap_or(0.05); }
         if let Some(p) = flag(args, "--penalty") { c.penalty_ms = p.parse().unwrap_or(3000.0); }
         c.fast = has(args, "--fast-fan");
@@ -669,6 +673,7 @@ fn cmd_plan(args: &[String]) {
         let lw = ctx.local_w.as_ref().unwrap_or_else(|| die("--estimator hybrid needs --local rl.tmw"));
         let mut c = tmr::estimator::Chained::new(lw, &feat_local, gates, nodes, surf, tmr::feat::ablation_keep(lw.fv, "full").unwrap());
         if let Some(b) = flag(args, "--chain-beam") { c.beam = b.parse().unwrap_or(24); }
+        if let Some(n) = flag(args, "--chain-steps") { c.max_steps = n.parse().unwrap_or(10); c.fixed_steps = true; }
         if let Some(f) = flag(args, "--p-step") { c.p_step_floor = f.parse().unwrap_or(0.05); }
         if let Some(p) = flag(args, "--penalty") { c.penalty_ms = p.parse().unwrap_or(3000.0); }
         c.fast = has(args, "--fast-fan");
@@ -769,6 +774,15 @@ fn cmd_legs(args: &[String]) {
         c
     });
     let ho = flag(args, "--human-orders").unwrap_or_else(|| die("--human-orders human-orders.tsv"));
+    // --starts starts.tsv: the HUMAN's real states (GEN's sampled starts) — for each leg, the local head is asked
+    // directly from the human's first state after gate A to gate B's centre at h 400 and 600 (F22: head or fan?)
+    let human_starts: Vec<tmr::data::StartInfo> = flag(args, "--starts").map(|p| {
+        let m = tmr::data::read_starts(Path::new(&p)).unwrap_or_else(|e| die(&e));
+        // "human-leg" rows are the human's states AT the gate crossings; plain "human" rows are the 1.5 s samples
+        let mut v: Vec<tmr::data::StartInfo> = m.into_values().filter(|s| s.source.starts_with("human")).collect();
+        v.sort_by_key(|s| (if s.source == "human-leg" { 0 } else { 1 }, s.race_ms));
+        v
+    }).unwrap_or_default();
     let s = std::fs::read_to_string(&ho).unwrap_or_else(|e| die(&e.to_string()));
     // group → node index
     let node_of_group: HashMap<u32, usize> = nodes.groups.iter().enumerate().skip(1).map(|(i, g)| (*g, i)).collect();
@@ -814,6 +828,18 @@ fn cmd_legs(args: &[String]) {
             }
             let mine = scored.iter().find(|x| x.0 == to);
             let human_leg = if k == 0 { cp_ms.get(0).cloned() } else { cp_ms.get(k).zip(cp_ms.get(k - 1)).map(|(a, b)| a - b) };
+            // direct local-head query from the human's real state just after gate A (cps_before == k)
+            let direct_line = match (&chained, human_starts.iter().find(|s| s.cps_before as usize == k)) {
+                (Some(c), Some(hs)) => {
+                    // target = where the human actually crossed gate B (the next human-leg row), else the gate base
+                    let tgt = human_starts.iter().find(|s| s.cps_before as usize == k + 1 && s.ghost_md5 == hs.ghost_md5).map(|s| s.state.pos).unwrap_or(nodes.pos[to]);
+                    let d = ((tgt[0] - hs.state.pos[0]).powi(2) + (tgt[2] - hs.state.pos[2]).powi(2)).sqrt();
+                    let e4 = c.local_query_state(&hs.state, tgt, 400);
+                    let e6 = c.local_query_state(&hs.state, tgt, 600);
+                    format!("; DIRECT from the human state (speed {:.0} m/s, {:.0} m, dy {:+.0} m): p {:.3} t {} · p {:.3} t {}", hs.state.speed, d, tgt[1] - hs.state.pos[1], e4.p_reach, tmr::secs((e4.expected_ticks * 10.0) as i64), e6.p_reach, tmr::secs((e6.expected_ticks * 10.0) as i64))
+                }
+                _ => String::new(),
+            };
             let chained_line = match &chained {
                 Some(c) => {
                     let dir = est.heading_public(prev, at);
@@ -823,11 +849,11 @@ fn cmd_legs(args: &[String]) {
                             if has(args, "--trace") {
                                 println!("      chained path: {}", path.iter().map(|q| format!("({:.0},{:.0},{:.0})", q[0], q[1], q[2])).collect::<Vec<_>>().join(" → "));
                             }
-                            format!("; CHAINED p {:.3} time {} ({} steps, arrives {:.0} m/s)", p, tmr::secs(ticks as i64 * 10), steps, v)
+                            format!("; CHAINED p {:.3} time {} ({} steps, arrives {:.0} m/s){direct_line}", p, tmr::secs(ticks as i64 * 10), steps, v)
                         }
                         None => {
                             chained_fail += 1;
-                            "; CHAINED: no path above p_step floor".to_string()
+                            format!("; CHAINED: no path above p_step floor{direct_line}")
                         }
                     }
                 }
@@ -918,8 +944,24 @@ fn cmd_watch(args: &[String]) {
             }
             o.max_rows = cap;
         }
+        // FRAME gate per generator build (pooled over its shards) — only for shards that need building
+        let pending: Vec<PathBuf> = dirs
+            .iter()
+            .filter(|d| {
+                let Some(uid) = data::shard_map_uid(d) else { return false };
+                let Ok(meta) = std::fs::metadata(d.join("samples.tmr")) else { return false };
+                let fresh = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok().zip(meta.modified().ok()).map_or(false, |(a, b)| a > b);
+                !(fresh(&o.out.join(rows_file_name(&uid, "gate"))) && fresh(&o.out.join(rows_file_name(&uid, "local"))))
+            })
+            .cloned()
+            .collect();
+        let refused = if pending.is_empty() { std::collections::HashSet::new() } else { frame_gate(&pending, &mut log) };
         for d in dirs {
             let Some(uid) = data::shard_map_uid(&d) else { continue };
+            if refused.contains(&data::shard_build_hash(&d)) {
+                log.push(format!("  {uid}: skipped — its generator build failed the FRAME gate"));
+                continue;
+            }
             let shard = d.join("samples.tmr");
             let Ok(meta) = std::fs::metadata(&shard) else { continue };
             let rows_f = o.out.join(rows_file_name(&uid, "gate"));
@@ -969,6 +1011,11 @@ fn cmd_watch(args: &[String]) {
             if let Some(p) = flag(args, "--geo-dropout") {
                 variants.push(("-gd".into(), vec!["--geo-dropout".into(), p]));
             }
+            // --wide N: a capacity variant (hidden N) — the multi-map LOCAL head prices Summer 01's legs 2× worse
+            // than a single-map model with the same architecture (23:51Z), capacity is the first suspect
+            if let Some(h) = flag(args, "--wide") {
+                variants.push((format!("-w{h}"), vec!["--hidden".into(), h]));
+            }
             // the variants of a kind run CONCURRENTLY (a candle CPU training uses ~4 cores whatever the thread
             // count: the matmuls parallelise, the rest does not), the kinds one after the other (RAM).
             for (kind, prefix) in [("gate", "r"), ("local", "rl")] {
@@ -981,7 +1028,7 @@ fn cmd_watch(args: &[String]) {
                 if let Some(h) = flag(args, "--held-out") {
                     cmd.args(["--held-out", &h]);
                 }
-                for pass in ["--batch", "--lr", "--wd", "--hidden", "--patience"] {
+                for pass in ["--batch", "--lr", "--wd", "--hidden", "--patience", "--max-rss-gb"] {
                     if let Some(v) = flag(args, pass) {
                         cmd.args([pass, &v]);
                     }
@@ -1206,5 +1253,66 @@ fn cmd_report(args: &[String]) {
     print!("{s}");
     if let Some(o) = out {
         std::fs::write(&o, &s).unwrap_or_else(|e| die(&e.to_string()));
+    }
+}
+
+/// The build-level FRAME gate: pool the velocity/axis alignment over every shard of each generator build; a
+/// build whose pooled +Z is not the dominant axis (or < 0.3) is refused — its shards are skipped with a loud
+/// line. Returns the set of refused build hashes.
+fn frame_gate(dirs: &[PathBuf], log: &mut Vec<String>) -> std::collections::HashSet<String> {
+    let mut by_build: HashMap<String, ([f64; 3], usize, Vec<String>)> = HashMap::new();
+    for d in dirs {
+        let Some(uid) = data::shard_map_uid(d) else { continue };
+        let h = data::shard_build_hash(d);
+        if let Ok((acc, n)) = data::frame_control_axes(d) {
+            let e = by_build.entry(h).or_insert(([0.0; 3], 0, Vec::new()));
+            for a in 0..3 {
+                e.0[a] += acc[a] as f64 * n as f64;
+            }
+            e.1 += n;
+            e.2.push(uid);
+        }
+    }
+    let mut refused = std::collections::HashSet::new();
+    let mut builds: Vec<_> = by_build.into_iter().collect();
+    builds.sort_by(|a, b| a.0.cmp(&b.0));
+    for (h, (sum, n, maps)) in builds {
+        if n == 0 {
+            continue;
+        }
+        let m = [sum[0] / n as f64, sum[1] / n as f64, sum[2] / n as f64];
+        let other = m[0].abs().max(m[1].abs());
+        // dominance only: an ice map alone in its build pools to +Z 0.296 (Winter 2026 - 16) and is physics
+        let ok = m[2] > 0.1 && m[2] > other;
+        log.push(format!(
+            "  FRAME gate build {h}: {} shards, {n} starts, pooled mean dot +X {:+.3} +Y {:+.3} +Z {:+.3} → {}",
+            maps.len(), m[0], m[1], m[2], if ok { "PASS (+Z dominant)" } else { "REFUSED — forward is not local +Z for this build; fix frame.rs before building its rows" }
+        ));
+        if !ok {
+            refused.insert(h);
+        }
+    }
+    refused
+}
+
+/// Resident set size of this process in GB (Linux /proc).
+fn rss_gb() -> f64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| s.lines().find(|l| l.starts_with("VmRSS:")).and_then(|l| l.split_whitespace().nth(1).and_then(|k| k.parse::<f64>().ok())))
+        .map(|kb| kb / 1_048_576.0)
+        .unwrap_or(0.0)
+}
+
+/// `--max-rss-gb G`: refuse to go on (exit 3) when this process already holds more than G GB — a
+/// shared box must not be pushed into swap (devvm62717 00:00Z, GEOM's boxes D and G).
+fn rss_guard(args: &[String], stage: &str) {
+    if let Some(g) = flag(args, "--max-rss-gb").and_then(|s| s.parse::<f64>().ok()) {
+        let r = rss_gb();
+        eprintln!("rss after {stage}: {r:.1} GB (cap {g:.0} GB)");
+        if r > g {
+            eprintln!("REFUSED: {r:.1} GB resident > --max-rss-gb {g:.0} — lower the row budget / map count");
+            std::process::exit(3);
+        }
     }
 }

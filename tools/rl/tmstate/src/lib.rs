@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// v2 (2026-09-06, ENV): `car: u8` joins the struct in what was the padding after `finished`, so the
 /// 100-byte layout is unchanged and a v1 reader sees 0 (= Stadium) there; the wheel/gear/rpm/turbo fields
 /// are now FILLED by the env (G3: the live `CSceneVehicleVisState`), with the PHASE convention below.
-pub const STATE_VERSION: u32 = 2;
+pub const STATE_VERSION: u32 = 3;
 
 /// LABEL CONVENTION (2026-09-07, the three-way check on Summer 2026 - 01 WR and Summer 2026 - 02 rank-1): a record
 /// labelled `race_ms = T` holds the PHYSICS state (pos, vel, quat, speed) at race time T -- the state before input
@@ -43,6 +43,14 @@ pub struct CarState {
     pub cps: u8,                 // checkpoints credited so far (engine-authoritative when available)
     pub finished: bool,
     pub car: u8,                 // v2: 0 Stadium, 1 Snow, 2 Rally, 3 Desert (the participant's live vehicle slot); u8::MAX unknown
+    // --- v3: CarState.effects (INPUT arm EFFECTS.md; all from the vis state the env already gathers) ---
+    pub effects: u8,             // v3 bit flags: 0x01 turbo, 0x02 ground contact, 0x04 reactor ground mode, 0x08 reactor inputs-x, 0x80 KNOWN (0 = unknown; lives in v2's padding byte at offset 99)
+    pub reactor_lvl: u8,         // v3: reactor boost level 0/1/2, u8::MAX unknown
+    pub reactor_type: u8,        // v3: 1 down, 2 up, 0 none, u8::MAX unknown
+    pub boost_enum: u8,          // v3: boost enum (u32(+0x19c) & 7), u8::MAX unknown
+    pub _pad3: u8,               // v3: reserved, 0
+    pub reactor_air: [f32; 3],   // v3: reactor air control, NaN unknown
+    pub sim_time_coef: f32,      // v3: simulation time coefficient (slow-motion), 1.0 normally, NaN unknown
 }
 
 /// One 10 ms tick of driver input.
@@ -175,6 +183,13 @@ impl CarState {
             cps: 0,
             finished: false,
             car: u8::MAX,
+            effects: 0,
+            reactor_lvl: u8::MAX,
+            reactor_type: u8::MAX,
+            boost_enum: u8::MAX,
+            _pad3: 0,
+            reactor_air: [f32::NAN; 3],
+            sim_time_coef: f32::NAN,
         }
     }
 }
@@ -195,15 +210,20 @@ mod tests {
 
     /// The dataset writer depends on this exact size; a field added without a version bump must fail here.
     #[test]
-    fn car_state_is_100_bytes_repr_c() {
-        assert_eq!(std::mem::size_of::<CarState>(), 100);
+    fn car_state_is_120_bytes_repr_c() {
+        // v3 = the 100-byte v2 record as an identical prefix (car at 98, the
+        // effects flags in v2's padding byte 99) + 20 bytes of effects.
+        assert_eq!(std::mem::size_of::<CarState>(), 120);
         assert_eq!(std::mem::size_of::<Action>(), 3);
-        assert_eq!(STATE_VERSION, 2);
-        // `car` lives in the former padding: offset 98, the layout of v1 is untouched
+        assert_eq!(STATE_VERSION, 3);
         let s = CarState::unknown();
         let base = &s as *const CarState as usize;
-        assert_eq!(&s.car as *const u8 as usize - base, 98);
         assert_eq!(&s.finished as *const bool as usize - base, 97);
+        assert_eq!(&s.car as *const u8 as usize - base, 98);
+        assert_eq!(&s.effects as *const u8 as usize - base, 99);
+        assert_eq!(&s.reactor_lvl as *const u8 as usize - base, 100);
+        assert_eq!(&s.reactor_air as *const [f32; 3] as usize - base, 104);
+        assert_eq!(&s.sim_time_coef as *const f32 as usize - base, 116);
     }
 }
 

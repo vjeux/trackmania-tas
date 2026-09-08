@@ -341,7 +341,28 @@ pub fn features2(s: &CarState, t: &Target2, geo: &Geo2, h_ticks: u16, out: &mut 
         out[o + 51] = s.rpm / 12000.0;
         out[o + 52] = if s.turbo.is_finite() { s.turbo } else { 0.0 };
     }
-    // o+53 effects flag + 10 one-hot + remaining + strength (o+53..o+66): reserved, 0
+    // o+53 effects: flag (KNOWN) + kind one-hot 10 [none, reactor-up, reactor-down, turbo, slow-mo, no-engine, no-brake,
+    // no-steer, cruise, fragile] + "remaining" slot (here: reactor ground mode 0/1) + strength (reactor level /2).
+    // From tmstate v3 (coordinator 01:56Z): effects flags 0x01 turbo, 0x02 ground contact, 0x04 reactor ground mode,
+    // 0x80 KNOWN; reactor_lvl 0/1/2; reactor_type 1 down / 2 up; sim_time_coef < 1 = slow-motion. Unknown → all 0.
+    if s.effects & 0x80 != 0 {
+        out[o + 53] = 1.0;
+        let lvl = if s.reactor_lvl == u8::MAX { 0 } else { s.reactor_lvl.min(2) };
+        let kind = if s.effects & 0x01 != 0 {
+            3
+        } else if lvl > 0 && s.reactor_type == 2 {
+            1
+        } else if lvl > 0 && s.reactor_type == 1 {
+            2
+        } else if s.sim_time_coef.is_finite() && s.sim_time_coef < 0.99 {
+            4
+        } else {
+            0
+        };
+        out[o + 54 + kind] = 1.0;
+        out[o + 64] = if s.effects & 0x04 != 0 { 1.0 } else { 0.0 };
+        out[o + 65] = lvl as f32 / 2.0;
+    }
     // o+66 car kind: flag + one-hot (Stadium, Snow, Rally, Desert) when the record carries it
     if s.car != u8::MAX {
         out[o + 66] = 1.0;
@@ -522,7 +543,7 @@ pub fn describe2() -> String {
     s.push_str("Everything in the CAR frame (full attitude for rays and vectors; yaw frame for the path lateral offsets and the cell grid); gravity enters only as normal·gravity and the vertical speed. Geometry = GEOM's `mapgeom::local::LocalScene` (every collision triangle tagged with placement family + gameplay special), coarse classes: family 8 (road, dirt/grass/sand, ice/bump/water-road, platform, gate, wall/structure/special-track, terrain/water, other/none), material 5 (hard road, dirt/sand, grass, ice/snow, water/other).\n\n");
     s.push_str("| block | offset | len | content |\n|---|---|---|---|\n");
     let d = [
-        "speed/100, velocity car (3)/100, vy/50, up car (3), angvel flag+3, wheels flag + contact 4 + material class 4×5 + contact normal 4×3 (reserved), gear/rpm/turbo flag+3, active effects flag + 10 one-hot + remaining + strength (reserved), car kind flag + 4 (reserved)",
+        "speed/100, velocity car (3)/100, vy/50, up car (3), angvel flag+3, wheels flag + contact 4 + material class 4×5 + contact normal 4×3 (reserved), gear/rpm/turbo flag+3, active effects KNOWN flag + kind one-hot 10 [none, reactor-up, reactor-down, turbo, slow-mo, …] + reactor ground mode + reactor level/2 (tmstate v3), car kind flag + 4",
         "10 samples along the ground-following/ballistic arc for h at current speed × 3 lateral offsets (−8, 0, +8 m); per sample: surface normal car-frame (3), (surface y − car y)/20, below dist/12, above dist/30, hit, material 5, family 8, special",
         "13 yaws (−90..+90) × 5 pitches (−30,−10,0,+15,+40) in the car frame; per ray: dist/120, hit, normal·gravity, material 5, family 8, special",
         "8 nearest collidable ITEM placements within 80 m: rel pos car-frame /50 (3), radius/10, family 8; padded with zeros",

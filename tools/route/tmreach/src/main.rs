@@ -245,6 +245,16 @@ fn cmd_gatecal(a: &Args) -> Result<(), String> {
     }
     let (mut det, notes) = fit(&runs, &gates, &prov);
     det.flipped = flips;
+    // the refitted normals (Detector.normals) take effect in this process too: the grades and the
+    // gate clouds below use the frame the detector will use
+    let mut gates = gates;
+    for (wp, n) in &det.normals {
+        for g in &mut gates.gates {
+            if g.waypoint == *wp {
+                g.normal = *n;
+            }
+        }
+    }
     println!("\nFITTED DETECTOR (plane at per-model s_off from the crediting geometry, credited tick = T-1; lat 10 m road / GEOM item, up -6..+8: see gatecal::fit):");
     for n in &notes {
         println!("  {n}");
@@ -367,16 +377,23 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
     let mut ok = 0;
     let (mut human_legs, mut human_resp) = (0usize, 0usize);
     let mut fam_cells: std::collections::BTreeMap<String, Vec<usize>> = Default::default();
+    // per-ghost identity statistics (trimmed RMS): ghosts passing only under the 10 cm bar are named
+    let mut id_stats: Vec<(String, f64, f64, f64, f64)> = Vec::new();
     for (g, r) in items.iter().zip(results) {
         match r {
             Ok(fo) => {
                 ok += 1;
+                let gname = g.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                if !id_stats.iter().any(|(n, ..)| *n == gname) {
+                    id_stats.push((gname, fo.identity.rms_trim, fo.identity.p995, fo.identity.rms, fo.identity.max));
+                }
                 for s in &fo.starts {
                     let st = &s.state;
                     starts.push_str(&format!(
-                        "{}\t{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\n",
+                        "{}\t{}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{:.4}\t{:.3}\t{}\t{:#04x}\n",
                         s.start_id, s.ghost_md5, s.tick, st.race_ms, st.pos[0], st.pos[1], st.pos[2], st.vel[0], st.vel[1], st.vel[2], st.quat[0], st.quat[1], st.quat[2], st.quat[3], s.cps_before,
-                        if fo.records.iter().any(|r| r.start_id == s.start_id && r.macro_id >= tmreach::human::RESPAWN_MACRO) { "human-leg" } else { "human" }
+                        if fo.records.iter().any(|r| r.start_id == s.start_id && r.macro_id >= tmreach::human::RESPAWN_MACRO) { "human-leg" } else { "human" },
+                        fo.identity.rms_trim, fo.identity.p995, if fo.identity.rms_trim < 0.05 { "5cm" } else { "10cm" }, s.effects
                     ));
                 }
                 for (i, r) in fo.records.iter().enumerate() {
@@ -444,7 +461,8 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
          identity (macro 0 end state vs the human's trajectory): max {:.4} m, {} fails over {} starts; start-row blend by a macro's first record: max {:.4} m\n\
          distinct end cells (2 m x 2 m x 5 m/s) per start over {} macros x {} horizons: median {}, min {}, max {}; {} starts were switches (<= 2 cells)\n\
          human legs (positives) {}, respawn negatives {}\n\
-         distinct end cells per start by macro family (median over starts): {}\n",
+         distinct end cells per start by macro family (median over starts): {}\n\
+         identity per ghost (trimmed RMS m): {} under the 5 cm bar, {} only under the 10 cm bar{}\n",
         tmreach::GIT_HASH, gates.map_uid, hostname(), ok, items.len(), tot.rollouts, count, wall, tot.rollouts as f64 / wall, tmreach::pool::cap(pcfg.workers),
         1000.0 * tot.rollout_secs / tot.rollouts.max(1) as f64,
         tot.outcomes[0], tot.outcomes[1], tot.outcomes[2], tot.outcomes[3], tot.outcomes[4],
@@ -452,7 +470,13 @@ fn cmd_fanout(a: &Args) -> Result<(), String> {
         tot.reached_other, 100.0 * tot.reached_other as f64 / tot.rollouts.max(1) as f64,
         tot.noop, tot.out_of_tape, tot.errors, tot.run_ended_unfinished, tot.end_extrapolated, tot.finish_from_exit, tot.identity_max_m, tot.identity_fail, cells.len(), tot.start_blend_max_m,
         lib.len(), horizons.len(), med, cells.first().copied().unwrap_or(0), cells.last().copied().unwrap_or(0), tot.switches, human_legs, human_resp,
-        fam_cells.iter().map(|(f, v)| { let mut v = v.clone(); v.sort(); format!("{f} {}", v.get(v.len() / 2).copied().unwrap_or(0)) }).collect::<Vec<_>>().join(", ")
+        fam_cells.iter().map(|(f, v)| { let mut v = v.clone(); v.sort(); format!("{f} {}", v.get(v.len() / 2).copied().unwrap_or(0)) }).collect::<Vec<_>>().join(", "),
+        id_stats.iter().filter(|s| s.1 < 0.05).count(),
+        id_stats.iter().filter(|s| s.1 >= 0.05).count(),
+        {
+            let v: Vec<String> = id_stats.iter().filter(|s| s.1 >= 0.05).map(|s| format!("{} (trimmed {:.3}, p99.5 {:.2}, RMS {:.3}, max {:.2})", s.0, s.1, s.2, s.3, s.4)).collect();
+            if v.is_empty() { String::new() } else { format!(": {}", v.join("; ")) }
+        }
     );
     print!("{summary}");
     log.push_str(&summary);
@@ -531,12 +555,12 @@ fn cmd_verify(a: &Args) -> Result<(), String> {
     if let Some(p) = a.get("dump") {
         // keyed by (start_id, macro, horizon) -- a diff of two dumps is keyed, a lost work item shows
         // as missing lines; `idx` is the record's position in the file (for cmp -l offsets)
-        let mut s = String::from("start_id\tmacro\th\toutcome\trace_ms\tx\ty\tz\tspeed\tcps\tfin\tgates\tpath\tvmin\tvmax\tidx\tquat\trpm\n");
+        let mut s = String::from("start_id\tmacro\th\toutcome\trace_ms\tx\ty\tz\tspeed\tcps\tfin\tgates\tpath\tvmin\tvmax\tidx\tquat\trpm\tcar\teffects\treactor_lvl\treactor_type\n");
         let mut recs: Vec<(usize, &tmreach::tmr::Record)> = shard.records.iter().enumerate().collect();
         recs.sort_by_key(|(_, r)| (r.start_id, r.macro_id, r.horizon_ticks));
         for (i, r) in &recs {
             let g: Vec<String> = r.gate_tick.iter().enumerate().filter(|(_, t)| **t >= 0).map(|(w, _)| format!("wp{w}")).collect();
-            s.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.2}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{:.2}\t{}\t{:.5},{:.5},{:.5},{:.5}\t{:.1}\n", r.start_id, r.macro_id, r.horizon_ticks, r.outcome, r.end.race_ms, r.end.pos[0], r.end.pos[1], r.end.pos[2], r.end.speed, r.end.cps, r.end.finished as u8, g.join(","), r.path_len_m, r.min_speed, r.max_speed, i, r.end.quat[0], r.end.quat[1], r.end.quat[2], r.end.quat[3], r.end.rpm));
+            s.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.2}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{:.2}\t{}\t{:.5},{:.5},{:.5},{:.5}\t{:.1}\t{}\t{:#04x}\t{}\t{}\n", r.start_id, r.macro_id, r.horizon_ticks, r.outcome, r.end.race_ms, r.end.pos[0], r.end.pos[1], r.end.pos[2], r.end.speed, r.end.cps, r.end.finished as u8, g.join(","), r.path_len_m, r.min_speed, r.max_speed, i, r.end.quat[0], r.end.quat[1], r.end.quat[2], r.end.quat[3], r.end.rpm, r.end.car, r.end.effects, r.end.reactor_lvl, r.end.reactor_type));
         }
         std::fs::write(p, s).map_err(|e| e.to_string())?;
     }
@@ -1373,10 +1397,17 @@ fn cmd_bank_table(a: &Args) -> Result<(), String> {
         let legs = pick(&c, "human legs (positives) ", ",");
         let workers = pick(&c, "## fanout (", " workers");
         let git = pick(&c, "tmreach campaign ", " on ");
-        rows.push((name.clone(), format!("{name}\t{uid}\t{ghosts}\texcluded {excluded}\t{records}\tcounter steps {counter} same-row\t{oracle}\tlegs {legs}\tworkers {workers}\ttmreach {git}\n")));
+        // the effects dialect from the shard header (state version byte 17) and record 0's byte 99
+        let dialect = std::fs::File::open(e.path().join("samples.tmr")).ok().and_then(|mut f| { use std::io::Read; let mut b = vec![0u8; 24 + 12 + 100]; f.read_exact(&mut b).ok().map(|_| b) }).map(|b| {
+            if b.len() < 24 + 12 + 100 { "?".to_string() }
+            else if b[17] >= 3 { "tmstate-v3".to_string() }
+            else if c.contains("effects_dialect=gen-01:16") || b[24 + 12 + 99] != 0 { "gen-01:16 (re-run)".to_string() }
+            else { "none (v2 records)".to_string() }
+        }).unwrap_or_default();
+        rows.push((name.clone(), format!("{name}\t{uid}\t{ghosts}\texcluded {excluded}\t{records}\tcounter steps {counter} same-row\t{oracle}\tlegs {legs}\tworkers {workers}\ttmreach {git}\teffects_dialect={dialect}\n")));
     }
     rows.sort();
-    let mut s = String::from("map\tuid\tghosts\texcluded\trecords\tcounter attribution\toracle control\thuman legs\tworkers\tbuild\n");
+    let mut s = String::from("map\tuid\tghosts\texcluded\trecords\tcounter attribution\toracle control\thuman legs\tworkers\tbuild\teffects_dialect\n");
     for (_, r) in &rows {
         s.push_str(r);
     }
