@@ -153,3 +153,53 @@ trees), 20 13.8, 17 12.3, 24 25.4 (45 MB without the pick), 25 26.9, 21 29.2
 (25.5 without trees; 28.3 with `TINY_TREE_TEX_MAX=128 TINY_TREE_LOD_MIN=1`).
 Playground open time is unchanged within noise (01: 4.4 s with trees, 4.0 s
 without; 20: 4.5 s; 17: 4.6 s).
+
+## Particle effects: the small stock siblings (2026-09-08)
+
+An embedded item cannot carry a live particle emitter in this build: the game
+silently DROPS any item whose prefab has an FxSystem entity with a model —
+geometry included, no dialog (sixteen one-item probes; `item-check` FX-03
+refuses the form). So the foggers, sparklers and torches baked as static
+machines with no smoke, sparks or flame — until vjeux asked "can we use a
+smaller version of the fog machine so we still get the effect?", the flags'
+trick (`Flag16m` → the stock `Flag8m`, whose cloth is the 16 m cloth at ×0.5).
+
+Nadeo ships each particle item in a smaller version whose NAME is the effect's
+REACH, not the machine's size, and `stock_half_variant` maps to it:
+
+| source | stock stand-in | the machine | the effect |
+|---|---|---|---|
+| `ShowFogger16M` | `ShowFogger8M` | same 0.6 m wide box, 0.7 m long for 1.0 | plume carries 8 m for 16 |
+| `ShowFoggerWithLight16m` | `ShowFoggerWithLight8m` | same, `FoggerSpot` light at the nozzle | same |
+| `Sparkler16m` | `Sparkler8m` | 0.40 m box for 0.51 | sparks reach 8 m for 16 |
+| `ShowTorch` | `ShowTorchSmall` | 1.64 m torch for 2.77 (fire at 0.97 m for 1.88) | `TorchSmoke` + `ItemTorchFlame` + `TorchLight`, the game's |
+| `Show` variant 28 | `ShowFogger8M` | the generic show rig's fogger variant IS the `Fogger16M` prefab | as the fogger |
+
+Placed as STOCK items (mapping row `model_scale = scale`, so the placement
+stays at scale 1 with its pivot halved; the variant byte rewritten by an `iv@`
+row where the source's indexes a different list) the game runs its own
+particle systems for them: the half-reach effect on the half-size map for
+free, no archive bytes (a map loses one embedded item per stand-in, ~20–30 KB).
+Pivots need no correction — every pair shares the origin convention (fogger
+base at y −0.088, sparkler base at 0, torch stake below 0), measured with
+`mapgeom dump` / `mapgeom model … --out X.obj` on the pack prefabs.
+
+Verified in the editor on tiny 15 (22 foggers, 13 sparklers) against the
+original from the same cameras at half distance: plumes and spark bursts at
+the original spots, the machines on their decks, the same apparent size (=
+half reach). Sparks are periodic bursts — repeat a view row under several
+names to sample the animation; a single frame may miss them.
+
+The FX family, surveyed on the pack (`mapgeom refs` over every `Show*`,
+`Sparkler*`, `Torch*` item's prefabs): the emitters live ONLY in the eight
+prefabs above (`Fogger16M/8M.FxSys`, `Sparkler16m/8m.FxSys`, `TorchSmoke.FxSys`
+shared by both torches). `ShowLights`, `ShowScreen`, `ShowRace`, `ShowSpeakers`,
+`ShowLight4Spots`, `ShowLightRamp*`, `ShowSpeaker*`, `ShowRig*` carry none —
+nothing is lost baking them.
+
+Given up: the maps' own `Sparkler8m` placements (168 over 03 06 10 19 20 21 24)
+have no 4 m sibling and stay static, sparkless (`TINY_FX_SPARK8=stock` keeps
+them as the stock item: live sparks at their full 8 m reach — an A/B knob).
+The stock machine is the ORIGINAL's size, i.e. twice the relative size of a
+baked half copy; at 0.6 m it reads as a small box beside a half-size car.
+`TINY_FX_STOCK=0` bakes the family static as before.
