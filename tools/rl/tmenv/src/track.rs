@@ -130,6 +130,7 @@ impl Track {
             source: "cartographer".into(),
             legs: None,
             route: None,
+            speed_hint: None,
         };
         Self::assemble(pack, route, geom)
     }
@@ -474,10 +475,7 @@ impl GateTracker {
 /// readout follows the live slot, an env on such a map silently reports a
 /// frozen car -- so it is refused, by name, before any server starts.
 pub fn car_switch_blocks(map: &std::path::Path) -> Vec<String> {
-    let mf = match tmmaps::map::MapFile::try_load(map) {
-        Ok(m) => m,
-        Err(_) => return Vec::new(),
-    };
+    let Some(mf) = map_load_tolerant(map) else { return Vec::new() };
     let is_switch = |n: &str| {
         let l = n.to_ascii_lowercase();
         l.contains("gameplay") && (l.contains("snow") || l.contains("rally") || l.contains("desert"))
@@ -494,4 +492,17 @@ pub fn car_switch_blocks(map: &std::path::Path) -> Vec<String> {
         }
     }
     out
+}
+
+/// `tmmaps::map::MapFile::try_load` that also survives tmmaps' own assertions
+/// (free-block maps: "chunk 0x0304305F holds N entries but the map has M free
+/// blocks", 30+ of the pool's TOTD maps on 2026-09-07). The env does not need
+/// the block list to run -- the geometry comes from geom.json and the engine
+/// reads the map itself -- so a map tmmaps cannot parse is `None`, not a panic.
+pub fn map_load_tolerant(map: &std::path::Path) -> Option<tmmaps::map::MapFile> {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let r = std::panic::catch_unwind(|| tmmaps::map::MapFile::try_load(map).ok());
+    std::panic::set_hook(prev);
+    r.ok().flatten()
 }

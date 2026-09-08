@@ -55,6 +55,7 @@ fn paths(a: &[String]) -> Paths {
     let work = PathBuf::from(
         flag(a, "--work").unwrap_or_else(|| format!("/tmp/tmenv/work-{}", std::process::id())),
     );
+    tmenv::warn_if_not_tmpfs(&work);
     Paths {
         server,
         map: PathBuf::from(flag(a, "--map").unwrap_or_default()),
@@ -96,9 +97,19 @@ fn main() {
         Some("accept") => accept(&a),
         Some("from-template") => from_template(&a),
         Some("probe-scan") => probe_scan(&a),
+        Some("mem-find") => mem_find(&a),
+        Some("start-table") => start_table(&a),
+        Some("velcheck") => velcheck(&a),
+        Some("parity") => parity(&a),
+        Some("set-start-waypoint") => set_start_waypoint(&a),
+        Some("car-kind-probe") => car_kind_probe(&a),
+        Some("gbx-strings") => gbx_strings(&a),
+        Some("branch-off") => branch_off(&a),
+        Some("gate-check") => gate_check(&a),
         Some("geom-export") => geom_export(&a),
         Some("cpfind") => cpfind_cmd(&a),
         Some("start-sanity") => start_sanity(&a),
+        Some("sanity-summary") => sanity_summary_cmd(&a),
         Some("threeway") => threeway(&a),
         Some("sample-diff") => sample_diff(&a),
         Some("transplant") => transplant(&a),
@@ -334,9 +345,14 @@ fn build_env_shared(
     work: &Path,
     track: std::sync::Arc<tmenv::Track>,
 ) -> (ForkEnv, Rig, fk::tape::Tape) {
+    // `--max-ticks` defaults to THE TAPE: its record count less one, i.e. the
+    // template's declared time plus its tail. A fixed 3000 cut every run over
+    // 30 s (LEARN, INPUT: a 31.8 s map, a 103 s template) and refused tapes
+    // shorter than it; the tape is the only bound the engine itself has.
+    let tape_ticks = fk::tape::Tape::load(&p.reference.to_string_lossy()).map(|t| t.n()).unwrap_or(3001);
     let cfg = CoreCfg {
         k_ticks: num(a, "--k", 10),
-        max_ticks: num(a, "--max-ticks", 3000),
+        max_ticks: num(a, "--max-ticks", tape_ticks.saturating_sub(1).max(1)),
         obs_version: num(a, "--obs-version", 1),
         ..Default::default()
     };
@@ -630,7 +646,7 @@ fn bench(a: &[String]) {
     // times costs 40 pak stores and ~4.7 s each, and that is setup being
     // measured as if it were stepping.
     let t_track = Instant::now();
-    let track = std::sync::Arc::new(measured_track(&p).unwrap_or_else(|e| die(e)));
+    let track = std::sync::Arc::new(measured_track(&p).unwrap_or_else(|e| die(format!("geometry: {e}"))));
     println!("track built once in {:.2} s, shared by every worker", t_track.elapsed().as_secs_f64());
 
     let t_all = Instant::now();
@@ -2195,6 +2211,50 @@ fn from_template(a: &[String]) {
     if let Some(d) = out.parent() {
         std::fs::create_dir_all(d).unwrap_or_else(|e| die(e.to_string()));
     }
+    // THE NO-GHOST CASE (INPUT's recipe, `tminput template-from-borrowed`): a map
+    // with no recorded ghost gets its template from ANY recorded container --
+    // a synthesized one never drives the engine's checkpoint counter -- rebound
+    // to the map (`ghost map rebind`), its archive sized to the declared time
+    // (`ghost trim --to --declare`), the time and the checkpoint count declared
+    // (`ghost declare --time --cps`), the walltime span set to declared + 2 s
+    // (the validator refuses a span far from the declared time and stops the
+    // run ~2 s after it), then our inputs and seed 0 as for any template.
+    // `--map M --declare-ms T --cps N` selects it.
+    let tplp = match (flag(a, "--declare-ms"), flag(a, "--cps")) {
+        (Some(dms), Some(cps)) => {
+            let dms: u32 = dms.parse().unwrap_or_else(|_| die("--declare-ms MS".into()));
+            let cps: u32 = cps.parse().unwrap_or_else(|_| die("--cps N".into()));
+            let margin_s: u32 = num(a, "--wall-margin-s", 2u32);
+            let dir = out.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+            let t = |n: &str| dir.join(n);
+            let run = |args: &[&str]| {
+                let o = std::process::Command::new(args[0]).args(&args[1..]).output().unwrap_or_else(|e| die(format!("{}: {e}", args[0])));
+                if !o.status.success() {
+                    die(format!("{} failed:\n{}{}", args.join(" "), String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)));
+                }
+            };
+            let t1 = t("tpl-rebound.Ghost.Gbx");
+            let t2 = t("tpl-sized.Ghost.Gbx");
+            let t3 = t("tpl-declared.Ghost.Gbx");
+            run(&["ghost", "map", "rebind", &tplp.to_string_lossy(), &t1.to_string_lossy(), "--map", &p.map.to_string_lossy()]);
+            run(&["ghost", "trim", &t1.to_string_lossy(), &t2.to_string_lossy(), "--to", &dms.to_string(), "--declare", &dms.to_string()]);
+            run(&["ghost", "declare", &t2.to_string_lossy(), &t3.to_string_lossy(), "--time", &dms.to_string(), "--cps", &cps.to_string()]);
+            let ws = tmenv::template::validation_u32(&t3, "wall_start").unwrap_or_else(|e| die(e));
+            let we = ws + (dms + 999) / 1000 + margin_s;
+            tmenv::template::set_validation_u32(&t3, "wall_end", we).unwrap_or_else(|e| die(e));
+            println!(
+                "no-ghost template: {} rebound to {}, archive sized to {:.3} s, declared {:.3} with {cps} checkpoint(s), wall span {} s",
+                tplp.display(),
+                p.map.display(),
+                dms as f64 / 1000.0,
+                dms as f64 / 1000.0,
+                we - ws
+            );
+            t3
+        }
+        (None, None) => tplp,
+        _ => die("the no-ghost template needs BOTH --declare-ms MS and --cps N".into()),
+    };
     let tpl = tmenv::template::Template::load(&tplp).unwrap_or_else(|e| die(e));
     let n = tpl.facts().ticks;
     let s: Vec<u8> = (0..n).map(|t| ((((t as i64 * 7919 + 13) % 25) - 12) as i8) as u8).collect();
@@ -2203,7 +2263,9 @@ fn from_template(a: &[String]) {
     // THE SEED. A policy template gets validation seed 0 (`--keep-seed` keeps the
     // donor's, for an identity replay of the donor's own tape).
     let seed_note = if has(a, "--keep-seed") {
-        tpl.write_with_inputs(&s, &g, &b, &out).unwrap_or_else(|e| die(e));
+        // an identity replay's reference: the donor's seed AND the donor's countdown records
+        tmenv::template::write_identity_reference(&tplp, &out).unwrap_or_else(|e| die(e));
+        let _ = (&s, &g, &b);
         format!("validation seed kept: {:?}", tmenv::template::validation_seed(&out).ok())
     } else {
         match tpl.write_with_inputs_seed0(&s, &g, &b, &out).unwrap_or_else(|e| die(e)) {
@@ -2211,8 +2273,26 @@ fn from_template(a: &[String]) {
             None => "no validation block (synthesized container)".into(),
         }
     };
+    // THE START WAYPOINT. The validation record's u03 is the 0-based index of the
+    // waypoint the validator places the car at; a donor's value is right only on
+    // its own map. `--start-waypoint auto` (the default when --map is given)
+    // computes the Spawn's index in the new map; `N` sets it; `keep` leaves the donor's.
+    let sw = flag(a, "--start-waypoint").unwrap_or_else(|| if flag(a, "--map").is_some() && has(a, "--declare-ms") { "auto".into() } else { "keep".into() });
+    let sw_note = match sw.as_str() {
+        "keep" => format!("start waypoint kept: u03 = {:?}", tmenv::template::validation_u32(&out, "u03").ok()),
+        "auto" => {
+            let (idx, what) = tmenv::template::start_waypoint_index_opts(&p.map, has(a, "--count-placeholders")).unwrap_or_else(|e| die(format!("--start-waypoint auto: {e}")));
+            let old = tmenv::template::set_validation_u32(&out, "u03", idx).unwrap_or_else(|e| die(e));
+            format!("start waypoint u03 {old} -> {idx} (the Spawn: {what})")
+        }
+        n => {
+            let idx: u32 = n.parse().unwrap_or_else(|_| die("--start-waypoint auto|keep|N".into()));
+            let old = tmenv::template::set_validation_u32(&out, "u03", idx).unwrap_or_else(|e| die(e));
+            format!("start waypoint u03 {old} -> {idx} (given)")
+        }
+    };
     println!("template  {}  ({n} ticks, {:.3} s)", tplp.display(), n as f64 * 0.01);
-    println!("reference {}  {seed_note}", out.display());
+    println!("reference {}  {seed_note}; {sw_note}", out.display());
     println!("the archive is OURS in full; the donor contributes the wrapper and the startup state");
 }
 
@@ -2484,6 +2564,54 @@ fn reset_anywhere_control(a: &[String]) {
     println!("different tail differs: {neg_differ} differ, {neg_same} same ({neg_same_slow} of those at < 1 m/s)");
     let pass = disagree == 0 && agree == kept.len() && neg_differ >= (kept.len() * 9 + 9) / 10 && neg_same == neg_same_slow;
     println!("G4 reset-anywhere    {}", if pass { "PASS" } else { "FAIL" });
+    // ---- PERSISTENCE: the archive to disk and back, every loaded state the same bytes
+    let mut pass = pass;
+    {
+        let mut arch = tmenv::archive::StateArchive::new(10.0, 1000);
+        for (i, k) in kept.iter().enumerate() {
+            let st = k.state;
+            // the score carries the kept index, so a loaded entry names its state
+            arch.offer(tmenv::archive::Entry { id: k.id, progress_m: st.pos[2], race_ms: st.race_ms, score: i as f32, origin: 1 });
+        }
+        let file = p.work.join("archive.json");
+        let tpl = p.reference.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let n = arch.save(&env, &tpl, &file).unwrap_or_else(|e| die(e));
+        let bytes = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+        let loaded = tmenv::archive::StateArchive::load(&file, &mut env, &tpl).unwrap_or_else(|e| die(e));
+        let mut same = 0usize;
+        let mut differ = 0usize;
+        // the archive orders its entries by bucket and score, not by insertion:
+        // match a loaded entry to the kept state by its race clock (unique here)
+        let loaded_entries: Vec<tmenv::archive::Entry> = loaded.entries().copied().collect();
+        for e in &loaded_entries {
+            let Some(k) = kept.get(e.score as usize).filter(|k| k.state.race_ms == e.race_ms) else {
+                differ += 1;
+                println!("  loaded state {:?}: no kept state at race {}", e.id, e.race_ms);
+                continue;
+            };
+            env.reset_to(&e.id).unwrap_or_else(|er| die(er));
+            let got = env.core.state();
+            if format!("{:?}", got) == format!("{:?}", k.state) {
+                same += 1;
+            } else {
+                differ += 1;
+                println!("  loaded state {:?}: DIFFERS\n    kept {:?}\n    got  {:?}", e.id, k.state, got);
+            }
+            env.drop_snapshot(&e.id);
+        }
+        println!(
+            "archive persistence: saved {n} states ({bytes} B) -> loaded {} -> re-materialised {same} same, {differ} differ  {}",
+            loaded.len(),
+            if differ == 0 && same == kept.len() { "PASS" } else { "FAIL" }
+        );
+        pass = pass && differ == 0 && same == kept.len();
+        if tmenv::archive::StateArchive::load(&file, &mut env, "another-template.Ghost.Gbx").is_err() {
+            println!("archive persistence: a load into another template is REFUSED  PASS");
+        } else {
+            println!("archive persistence: a load into another template was ACCEPTED  FAIL");
+            pass = false;
+        }
+    }
     for k in &kept {
         env.drop_snapshot(&k.id);
     }
@@ -2526,7 +2654,7 @@ fn bench_sweep(a: &[String]) {
             die(format!("{w} workers on {cores} cores leaves fewer than 8 free; refusing"));
         }
     }
-    let track = std::sync::Arc::new(measured_track(&p).unwrap_or_else(|e| die(e)));
+    let track = std::sync::Arc::new(measured_track(&p).unwrap_or_else(|e| die(format!("geometry: {e}"))));
     println!();
     println!("workers   k   env-steps/s   game-ticks/s   x-realtime   ms/step   ticks/step   episodes   setup-median-s   load-end");
 
@@ -2675,7 +2803,7 @@ fn cp_oracle_control(a: &[String]) {
     let bank = PathBuf::from(flag(a, "--bank").unwrap_or_else(|| p.work.join("cpo").to_string_lossy().into_owned()));
     std::fs::create_dir_all(&bank).unwrap_or_else(|e| die(e.to_string()));
     println!("# tmenv cp-oracle-control  {n_tapes} tapes  {workers} workers  seed {seed}");
-    let track = std::sync::Arc::new(measured_track(&p).unwrap_or_else(|e| die(e)));
+    let track = std::sync::Arc::new(measured_track(&p).unwrap_or_else(|e| die(format!("geometry: {e}"))));
     let n_gates = track.n_gates();
     println!("map        {}  {} gates (finish last)", track.pack.name, n_gates);
     // Donor tapes (steer, gas, brake per tick) for the prefixes: `--ghosts A,B,...`
@@ -2705,12 +2833,10 @@ fn cp_oracle_control(a: &[String]) {
         .iter()
         .enumerate()
         .map(|(i, g)| {
-            let tpl = tmenv::template::Template::load(Path::new(g)).unwrap_or_else(|e| die(e));
-            let n = tpl.facts().ticks;
-            let s: Vec<u8> = (0..n).map(|t| ((((t as i64 * 7919 + 13) % 25) - 12) as i8) as u8).collect();
+            // the donor's own container, our archive, the donor's countdown
             let out = p.work.join(format!("ref-donor{i}.Ghost.Gbx"));
             std::fs::create_dir_all(&p.work).unwrap_or_else(|e| die(e.to_string()));
-            tpl.write_with_inputs(&s, &vec![1u8; n], &vec![0u8; n], &out).unwrap_or_else(|e| die(e));
+            tmenv::template::write_identity_reference(Path::new(g), &out).unwrap_or_else(|e| die(e));
             out
         })
         .collect();
@@ -3071,7 +3197,13 @@ fn open_loop_control(a: &[String]) {
     for (gi, g) in ghosts.iter().enumerate() {
         let d = fk::tape::Tape::load(g).unwrap_or_else(|e| die(e));
         let splits = tmenv::cpfind::ghost_splits(Path::new(g)).unwrap_or_else(|e| die(e));
-        let declared = *splits.last().unwrap();
+        // the DECLARED time is the record's own field; the split list is a
+        // fallback for a container that carries none (INPUT: a `ghost declare
+        // --cps` file has the time but no splits worth reading)
+        let declared: i32 = fk::tape::Tape::load(g)
+            .ok()
+            .and_then(|t| t.declared_ms.map(|v| v as i32))
+            .unwrap_or_else(|| *splits.last().unwrap_or_else(|| die(format!("{g}: neither a declared time nor splits"))));
         let shift: i64 = (tape.start_offset_ms as i64 - d.start_offset_ms as i64) / 10 + num::<i64>(a, "--shift-adjust", 0);
         println!("  {g}: donor offset {} ms, template {} ms -> donor index = env tick {shift:+}", d.start_offset_ms, tape.start_offset_ms);
         env.reset().unwrap_or_else(|e| die(e));
@@ -3119,9 +3251,13 @@ fn open_loop_control(a: &[String]) {
         }
         if let Some(dir) = flag(a, "--dump-trace") {
             let rec = env.rollout_record();
-            let mut s = String::from("race_ms\tx\ty\tz\tvx\tvy\tvz\tcps\tcar\tgear\n");
+            // the quaternion as the body carries it: (w, x, y, z), identity at the spawn facing +z
+            let mut s = String::from("race_ms\tx\ty\tz\tvx\tvy\tvz\tcps\tcar\tgear\tqw\tqx\tqy\tqz\n");
             for r in &rec.trace {
-                s.push_str(&format!("{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}\n", r.time_ms, r.x, r.y, r.z, r.vx, r.vy, r.vz, r.cps, r.vis.car, r.vis.gear));
+                s.push_str(&format!(
+                    "{}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}\n",
+                    r.time_ms, r.x, r.y, r.z, r.vx, r.vy, r.vz, r.cps, r.vis.car, r.vis.gear, r.qw, r.qx, r.qy, r.qz
+                ));
             }
             std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
             std::fs::write(Path::new(&dir).join(format!("olc-{gi:02}.tsv")), s).unwrap_or_else(|e| die(e.to_string()));
@@ -3390,6 +3526,14 @@ fn wheels_control(a: &[String]) {
         ("materials b24/26/28/30", &[24, 26, 28, 30]),
         ("contact/turbo b31", &[31]),
         ("wheel rot b25/27/29 (u16 lo)", &[25, 27, 29]),
+        // CarState.effects (EFFECTS.md): reactor level/type/ground-mode/inputs-x
+        // + ground contact in b89, air control b90/91, turbo time b21, the
+        // unidentified flags in b76, slow-motion coefficient b102
+        ("effects: reactor b89", &[89]),
+        ("effects: reactor air b90/91", &[90, 91]),
+        ("effects: turbo time b21", &[21]),
+        ("effects: flags b76", &[76]),
+        ("effects: sim-time coef b102", &[102]),
     ];
     println!("# tmenv wheels-control  {} ghost(s)  shifts {:?} ms", ghosts.len(), shifts);
     let mut all_pass = true;
@@ -3453,6 +3597,7 @@ fn wheels_control(a: &[String]) {
             let rate = if n > 0 { ok as f64 / n as f64 } else { 0.0 };
             let bar = match *name {
                 "gear b91" | "rpm b16-17" | "applied steer b14" | "contact/turbo b31" => 0.99,
+                n if n.starts_with("effects:") => 0.99,
                 _ => 0.95,
             };
             let verdict = if rate >= bar { "PASS" } else { "FAIL" };
@@ -3621,6 +3766,64 @@ fn threeway(a: &[String]) {
     pair("env row T      vs dump-truth row T+Δt", &env, &dump);
     pair("env row T      vs telemetry T+Δt    ", &env, &tel);
     pair("dump-truth T   vs telemetry T+Δt    ", &dump, &tel);
+    // THE QUATERNION (INPUT 2026-09-07 08:00: fk regen's validator anchor wrote the record's (x,y,z,w) slots
+    // from the body's (w,x,y,z) -- positions exact, attitude rotated, and every position-only control passed):
+    // the env row's (qw,qx,qy,qz) against the ghost's own sample (qx,qy,qz,qw), as the angle between them.
+    let env_q: std::collections::BTreeMap<i64, [f64; 4]> = {
+        let s = std::fs::read_to_string(&trace).unwrap_or_default();
+        let mut m = std::collections::BTreeMap::new();
+        let mut cols: Option<(usize, usize, usize, usize)> = None;
+        for (i, l) in s.lines().enumerate() {
+            let f: Vec<&str> = l.split('\t').collect();
+            if i == 0 {
+                let idx = |n: &str| f.iter().position(|c| *c == n);
+                if let (Some(a), Some(b), Some(c), Some(d)) = (idx("qw"), idx("qx"), idx("qy"), idx("qz")) {
+                    cols = Some((a, b, c, d));
+                }
+                continue;
+            }
+            let Some((a, b, c, d)) = cols else { break };
+            if f.len() <= d.max(a).max(b).max(c) {
+                continue;
+            }
+            if let (Ok(t), Ok(w), Ok(x), Ok(y), Ok(z)) = (f[0].parse::<i64>(), f[a].parse::<f64>(), f[b].parse::<f64>(), f[c].parse::<f64>(), f[d].parse::<f64>()) {
+                m.insert(t, [w, x, y, z]);
+            }
+        }
+        m
+    };
+    if env_q.is_empty() {
+        println!("  quaternion: the trace has no qw..qz columns (an older --dump-trace); rerun open-loop-control --dump-trace");
+        return;
+    }
+    let tel_q: std::collections::BTreeMap<i64, [f64; 4]> =
+        dec.samples.iter().map(|s| (s.time_ms as i64, [s.qw as f64, s.qx as f64, s.qy as f64, s.qz as f64])).collect();
+    let mut angs: Vec<f64> = Vec::new();
+    let mut worst: Option<(i64, [f64; 4], [f64; 4])> = None;
+    for (t, a) in &env_q {
+        if let Some(b) = tel_q.get(t) {
+            let dot = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]).abs().min(1.0);
+            let ang = 2.0 * dot.acos().to_degrees();
+            if worst.map(|w| ang > 2.0 * (w.1[0] * w.2[0] + w.1[1] * w.2[1] + w.1[2] * w.2[2] + w.1[3] * w.2[3]).abs().min(1.0).acos().to_degrees()).unwrap_or(true) {
+                worst = Some((*t, *a, *b));
+            }
+            angs.push(ang);
+        }
+    }
+    if angs.is_empty() {
+        println!("  quaternion: no pairs");
+        return;
+    }
+    angs.sort_by(|x, y| x.total_cmp(y));
+    let (t, a, b) = worst.unwrap();
+    println!(
+        "  quaternion env (w,x,y,z) vs telemetry sample at Δt 0: {} pairs, angle median {:.3}°, max {:.3}° (at {} ms: env {:+.4} {:+.4} {:+.4} {:+.4}  sample {:+.4} {:+.4} {:+.4} {:+.4})  {}",
+        angs.len(),
+        angs[angs.len() / 2],
+        angs[angs.len() - 1],
+        t, a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3],
+        if angs[angs.len() - 1] < 1.0 { "PASS (< 1°: same components in the same slots)" } else { "FAIL (a slot order or convention differs)" }
+    );
 }
 
 // ------------------------------------------------------------ start-sanity
@@ -3645,6 +3848,10 @@ fn start_sanity(a: &[String]) {
         if !only.is_empty() && !only.iter().any(|u| *u == uid) {
             continue;
         }
+        // `--resume`: skip maps that already have a result in the out dir
+        if has(a, "--resume") && out_dir.join(format!("{uid}.json")).exists() {
+            continue;
+        }
         if d.join("map.Map.Gbx").exists() && (d.join("ghosts").is_dir() || d.join("ghosts.tar").exists()) {
             maps.push(d);
         }
@@ -3661,7 +3868,19 @@ fn start_sanity(a: &[String]) {
     };
     let t0 = Instant::now();
     let rows = tmenv::sanity::sanity_all(&cfg, &maps, threads);
-    // the summary: failure classes with counts
+    sanity_summary(&rows, &out_dir, t0.elapsed().as_secs_f64());
+}
+
+/// `tmenv sanity-summary --out-dir DIR`: the summary over every result in DIR
+/// (a sweep resumed in parts).
+fn sanity_summary_cmd(a: &[String]) {
+    let out_dir = PathBuf::from(flag(a, "--out-dir").unwrap_or_else(|| die("--out-dir DIR".into())));
+    let rows = tmenv::sanity::load_results(&out_dir);
+    sanity_summary(&rows, &out_dir, 0.0);
+}
+
+fn sanity_summary(rows: &[tmenv::sanity::MapSanity], out_dir: &Path, secs: f64) {
+    let _ = secs;
     let mut identity_ok = 0usize;
     let mut identity_fail: Vec<String> = Vec::new();
     let mut ghost_unrepro: Vec<String> = Vec::new();
@@ -3671,7 +3890,7 @@ fn start_sanity(a: &[String]) {
     let mut const_short: Vec<String> = Vec::new();
     let mut spawn_far: Vec<String> = Vec::new();
     let mut tsv = String::from("uid\tname\tidentity_ok\tidentity_oracle\tdeclared_ms\tconst_m\tconst_done\tconst_ticks\tspawn_vs_geom_m\tstart_blocks\tcar_switch\terror\tghost_oracle\tghost_reproducible\tconst_materials\tconst_lateral\tcrawl_complete\n");
-    for r in &rows {
+    for r in rows {
         tsv.push_str(&format!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             r.uid,
@@ -3724,7 +3943,7 @@ fn start_sanity(a: &[String]) {
         }
     }
     let _ = std::fs::write(out_dir.join("env-sanity.tsv"), &tsv);
-    println!("\n{} maps in {:.0} s -> {}", rows.len(), t0.elapsed().as_secs_f64(), out_dir.display());
+    println!("\n{} maps in {:.0} s -> {}", rows.len(), secs, out_dir.display());
     println!(
         "identity replay OK: {} / {} (of maps without an env error whose ghost the engine reproduces; {} ghosts the current engine does NOT reproduce on their own -- old physics, not the env)",
         identity_ok,
@@ -3741,6 +3960,15 @@ fn start_sanity(a: &[String]) {
         }
     }
     println!("CONST outcomes: {:?}", const_done);
+    {
+        let mut kinds: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for r in rows {
+            if !r.start_kind.is_empty() {
+                *kinds.entry(r.start_kind.clone()).or_default() += 1;
+            }
+        }
+        println!("start kinds (from the rank-1 ghost's first samples): {:?}", kinds);
+    }
     if !const_short.is_empty() {
         println!("CONST ended before 60 m ({}):", const_short.len());
         for s in &const_short {
@@ -3765,4 +3993,888 @@ fn start_sanity(a: &[String]) {
             println!("  {n:4}  {k}");
         }
     }
+}
+
+// ------------------------------------------------------------- mem-find
+
+/// `tmenv mem-find --map M --ref T --floats x,y,z[;x,y,z...] [--clock 999] [--around 96]`:
+/// the engine paused at the root; every readable region scanned for each
+/// float triple (f32 LE, 4-byte aligned); the bytes around every hit dumped.
+/// The tiny-campaign start hunt: which runtime structure carries an item
+/// placement's position, and what its neighbours say (a type word, a flag).
+fn mem_find(a: &[String]) {
+    let p = paths(a);
+    let clock: u64 = num(a, "--clock", 999);
+    let around: usize = num(a, "--around", 96);
+    let sets: Vec<Vec<f32>> = flag(a, "--floats")
+        .unwrap_or_else(|| die("--floats x,y,z[;x,y,z]".into()))
+        .split(';')
+        .map(|s| s.split(',').map(|v| v.trim().parse::<f32>().unwrap_or_else(|_| die(format!("bad float {v}")))).collect())
+        .collect();
+    let work = p.work.join("memfind");
+    let rig = Rig::new(&p.server, &p.map, &p.shim, &work, &p.reference).unwrap_or_else(|e| die(e));
+    let s = rig.session_clock(clock).unwrap_or_else(|e| die(e));
+    let pid = s.srv.pid();
+    let regions = forkoracle::procmem::maps(pid);
+    let mut f = std::fs::File::open(format!("/proc/{pid}/mem")).unwrap_or_else(|e| die(e.to_string()));
+    println!("# tmenv mem-find  pid {pid}  {} regions  {} pattern(s)", regions.len(), sets.len());
+    for (si, set) in sets.iter().enumerate() {
+        let pat: Vec<u8> = set.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let mut hits = 0usize;
+        for r in &regions {
+            let Some(buf) = forkoracle::procmem::read_region(&mut f, r) else { continue };
+            let mut i = 0usize;
+            while i + pat.len() <= buf.len() {
+                if buf[i..i + pat.len()] == pat[..] {
+                    hits += 1;
+                    let addr = r.start + i as u64;
+                    let lo = i.saturating_sub(around);
+                    let hi = (i + pat.len() + around).min(buf.len());
+                    println!("pattern {si} {:?}: hit at {:#x} (region {:#x}-{:#x} {})", set, addr, r.start, r.end, r.path);
+                    let words: Vec<String> = buf[lo..hi]
+                        .chunks(4)
+                        .enumerate()
+                        .map(|(k, w)| {
+                            let off = lo as i64 + (k * 4) as i64 - i as i64;
+                            let u = u32::from_le_bytes([w[0], w.get(1).copied().unwrap_or(0), w.get(2).copied().unwrap_or(0), w.get(3).copied().unwrap_or(0)]);
+                            let fl = f32::from_bits(u);
+                            if fl.is_finite() && fl.abs() > 1e-3 && fl.abs() < 1e6 { format!("{off:+}:{fl:.3}") } else { format!("{off:+}:{u:#x}") }
+                        })
+                        .collect();
+                    println!("    {}", words.join(" "));
+                    i += 4;
+                } else {
+                    i += 4;
+                }
+            }
+        }
+        println!("pattern {si}: {hits} hit(s)");
+    }
+    // --ptr-near N: for every hit of pattern 0, scan for 8-byte pointers to any 8-aligned address in
+    // [hit - N, hit + 16] (the object base is somewhere before the pose) and dump the pointer's surroundings
+    if let Some(n) = flag(a, "--ptr-near") {
+        let n: usize = n.parse().unwrap_or_else(|_| die("--ptr-near N".into()));
+        let pat0: Vec<u8> = sets[0].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let mut bufs: Vec<(u64, String, Vec<u8>)> = Vec::new();
+        for r in &regions {
+            if let Some(b) = forkoracle::procmem::read_region(&mut f, r) {
+                bufs.push((r.start, r.path.clone(), b));
+            }
+        }
+        let mut hits: Vec<u64> = Vec::new();
+        for (start, _, buf) in &bufs {
+            let mut i = 0usize;
+            while i + pat0.len() <= buf.len() {
+                if buf[i..i + pat0.len()] == pat0[..] {
+                    hits.push(start + i as u64);
+                }
+                i += 4;
+            }
+        }
+        println!("# pointer-near scan: {} hit(s), window [hit-{n}, hit+16]", hits.len());
+        for h in hits {
+            let lo = (h - n as u64) & !7u64;
+            let mut t = lo;
+            while t <= h + 16 {
+                let pat = t.to_le_bytes();
+                for (start, path, buf) in &bufs {
+                    let mut i = 0usize;
+                    while i + 8 <= buf.len() {
+                        if buf[i..i + 8] == pat[..] {
+                            let addr = start + i as u64;
+                            let l = i.saturating_sub(around);
+                            let hi = (i + 8 + around).min(buf.len());
+                            println!("hit {h:#x}: pointer to {t:#x} (= hit {:+}) at {addr:#x} ({path})", t as i64 - h as i64);
+                            let words: Vec<String> = buf[l..hi].chunks(8).enumerate().map(|(k, w)| { let off = l as i64 + (k * 8) as i64 - i as i64; let mut b = [0u8; 8]; b[..w.len()].copy_from_slice(w); format!("{off:+}:{:#x}", u64::from_le_bytes(b)) }).collect();
+                            println!("    {}", words.join(" "));
+                        }
+                        i += 8;
+                    }
+                }
+                t += 8;
+            }
+        }
+    }
+    // --ptr-to-hit DELTA: for every hit of pattern 0, scan for the 8-byte POINTER to (hit + DELTA) and dump its
+    // surroundings -- the structure that references the object (the start hunt: who points at the chosen waypoint)
+    if let Some(delta) = flag(a, "--ptr-to-hit") {
+        let delta: i64 = delta.parse().unwrap_or_else(|_| die("--ptr-to-hit DELTA (signed bytes)".into()));
+        let pat0: Vec<u8> = sets[0].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let mut targets: Vec<u64> = Vec::new();
+        for r in &regions {
+            let Some(buf) = forkoracle::procmem::read_region(&mut f, r) else { continue };
+            let mut i = 0usize;
+            while i + pat0.len() <= buf.len() {
+                if buf[i..i + pat0.len()] == pat0[..] {
+                    targets.push((r.start as i64 + i as i64 + delta) as u64);
+                }
+                i += 4;
+            }
+        }
+        println!("# pointer scan: {} target address(es) = hit + {delta}", targets.len());
+        for t in targets {
+            let pat = t.to_le_bytes();
+            for r in &regions {
+                let Some(buf) = forkoracle::procmem::read_region(&mut f, r) else { continue };
+                let mut i = 0usize;
+                while i + 8 <= buf.len() {
+                    if buf[i..i + 8] == pat[..] {
+                        let addr = r.start + i as u64;
+                        let lo = i.saturating_sub(around);
+                        let hi = (i + 8 + around).min(buf.len());
+                        println!("ptr to {t:#x}: at {addr:#x} (region {:#x}-{:#x} {})", r.start, r.end, r.path);
+                        let words: Vec<String> = buf[lo..hi].chunks(8).enumerate().map(|(k, w)| { let off = lo as i64 + (k * 8) as i64 - i as i64; let mut b = [0u8; 8]; b[..w.len()].copy_from_slice(w); format!("{off:+}:{:#x}", u64::from_le_bytes(b)) }).collect();
+                        println!("    {}", words.join(" "));
+                    }
+                    i += 8;
+                }
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------- start-table
+
+/// The engine's root pose (race −10 ms) for one map + template: position and quaternion (w,x,y,z).
+fn root_pose(server: &Path, map: &Path, shim: &Path, work: &Path, reference: &Path) -> Result<([f32; 3], [f32; 4]), String> {
+    let rig = Rig::new(server, map, shim, work, reference)?;
+    let mut s = rig.session_clock(999)?;
+    let probe = s.probe_tick()?;
+    let recs = s.tape.tail_records(0);
+    let car = control::resolve_car(&mut s.srv, probe, &recs, s.tape.start_offset_ms, false)?;
+    let dir = work.join("traces");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let cfg = branch::TraceCfg { layout: control::env_layout(&car), dir, stride: 1, max: 4000 };
+    let off = s.tape.start_offset_ms;
+    let fk::session::Session { srv, .. } = s;
+    let mut f = branch::Forest::new(srv, work, recs, Some(cfg), off)?;
+    f.probe_root()?;
+    let (rows, h) = f.advance(branch::ROOT, &[], 0, 2)?;
+    f.release(h);
+    let row = rows.first().ok_or("no rows at the root")?;
+    Ok(([row.x as f32, row.y as f32, row.z as f32], [row.qw as f32, row.qx as f32, row.qy as f32, row.qz as f32]))
+}
+
+/// `tmenv start-table --maps-dir DIR (--templates-dir D | --template T) [--jobs N] [--work W] [--tsv F]`
+///
+/// The converter's acceptance table, one line per .Map.Gbx: md5, the engine's
+/// start (position, quaternion), the waypoint placement the car sits on (the
+/// nearest waypoint-tagged item), the Spawn-tagged item, the distance between
+/// the start and the Spawn anchor, PASS when the car sits on the Spawn (nearest
+/// waypoint item is the Spawn and Δ ≤ 12 m: a 16 m start item's centre is 11.4 m
+/// from its corner anchor; an item-native GateStart's spawn point 5.3 m).
+/// Templates: `--templates-dir` holds `*.ref.Ghost.Gbx` matched to a map by the
+/// two-digit number in both file names (`Summer-07-Tiny.Map.Gbx` ↔
+/// `07.ref.Ghost.Gbx` / `Summer-07-Tiny.ref.Ghost.Gbx`); `--template` is one
+/// container for every map (rebuilt per map through from-template).
+fn start_table(a: &[String]) {
+    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let dir = PathBuf::from(flag(a, "--maps-dir").unwrap_or_else(|| die("--maps-dir DIR".into())));
+    let tdir = flag(a, "--templates-dir").map(PathBuf::from);
+    let tone = flag(a, "--template").map(PathBuf::from);
+    if tdir.is_none() && tone.is_none() {
+        die("--templates-dir D or --template T".into());
+    }
+    let jobs: usize = num(a, "--jobs", 6);
+    let work = PathBuf::from(flag(a, "--work").unwrap_or_else(|| "/dev/shm/tmenv/start-table".into()));
+    let server = PathBuf::from(flag(a, "--server").or_else(|| std::env::var("TM_SERVER").ok()).unwrap_or_else(|| die("--server DIR or $TM_SERVER".into())));
+    let shim = PathBuf::from(flag(a, "--shim").or_else(|| std::env::var("FK_SHIM").ok()).unwrap_or_else(|| "/tmp/tmp/repo/tools/search/target/release/libforkshim.so".into()));
+    let tsv = flag(a, "--tsv");
+    let mut maps: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| die(format!("{}: {e}", dir.display())))
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.to_string_lossy().ends_with(".Map.Gbx"))
+        .collect();
+    maps.sort();
+    // the map number: the LAST isolated two-digit group ("06-Summer-2026---06" → 06, "v10fix2-Summer-20-Tiny" → 20,
+    // "01.ref" → 01; a 4-digit year and a "v10" prefix never win)
+    let two_digits = |s: &str| -> Option<String> {
+        let b = s.as_bytes();
+        (0..b.len().saturating_sub(1)).rev().find(|&i| b[i].is_ascii_digit() && b[i + 1].is_ascii_digit() && (i == 0 || !b[i - 1].is_ascii_digit()) && (i + 2 >= b.len() || !b[i + 2].is_ascii_digit())).map(|i| s[i..i + 2].to_string())
+    };
+    let templates: Vec<PathBuf> = tdir
+        .as_ref()
+        .map(|d| std::fs::read_dir(d).map(|it| it.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.to_string_lossy().ends_with(".Ghost.Gbx")).collect()).unwrap_or_default())
+        .unwrap_or_default();
+    println!("# tmenv start-table  {} map(s) under {}  {} template(s)  {jobs} jobs", maps.len(), dir.display(), templates.len());
+    println!("map\tmd5\tengine_start\tquat_wxyz\tsits_on\tspawn_item\tdelta_m\tverdict");
+    let results: Arc<Mutex<Vec<(usize, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let next = Arc::new(AtomicUsize::new(0));
+    let maps = Arc::new(maps);
+    let templates = Arc::new(templates);
+    std::thread::scope(|sc| {
+        for _ in 0..jobs.min(maps.len()).max(1) {
+            let (maps, templates, results, next, work, server, shim, tone) = (maps.clone(), templates.clone(), results.clone(), next.clone(), work.clone(), server.clone(), shim.clone(), tone.clone());
+            sc.spawn(move || loop {
+                let i = next.fetch_add(1, Ordering::SeqCst);
+                if i >= maps.len() {
+                    break;
+                }
+                let m = &maps[i];
+                let name = m.file_name().unwrap().to_string_lossy().to_string();
+                let md5 = std::process::Command::new("md5sum").arg(m).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).chars().take(8).collect::<String>()).unwrap_or_default();
+                let w = work.join(format!("st-{i}"));
+                let _ = std::fs::remove_dir_all(&w);
+                std::fs::create_dir_all(&w).ok();
+                // the template: matched by number, or rebuilt from the one given
+                let nn = two_digits(&name);
+                let mut tpl = templates.iter().find(|t| nn.is_some() && two_digits(&t.file_name().unwrap().to_string_lossy()) == nn).cloned();
+                if tpl.is_none() {
+                    if let Some(t) = &tone {
+                        let out = w.join("template.Ghost.Gbx");
+                        let st = std::process::Command::new(std::env::current_exe().unwrap())
+                            .args(["from-template", "--template", &t.to_string_lossy(), "--map", &m.to_string_lossy(), "--declare-ms", "60000", "--cps", "0", "--out", &out.to_string_lossy()])
+                            .output();
+                        if st.map(|o| o.status.success()).unwrap_or(false) {
+                            tpl = Some(out);
+                        }
+                    }
+                }
+                let line = match tpl {
+                    None => format!("{name}\t{md5}\t-\t-\t-\t-\t-\tNO TEMPLATE"),
+                    Some(t) => match root_pose(&server, m, &shim, &w, &t).or_else(|_| {
+                        // one retry: a server that never reaches its checkpoint is usually a transient start failure
+                        let _ = std::fs::remove_dir_all(&w);
+                        std::fs::create_dir_all(&w).ok();
+                        root_pose(&server, m, &shim, &w, &t)
+                    }) {
+                        Err(e) => format!("{name}\t{md5}\t-\t-\t-\t-\t-\tENGINE: {}", e.chars().take(100).collect::<String>().replace('\n', " ")),
+                        Ok((p, q)) => {
+                            // waypoint placements
+                            let mf = tmenv::track::map_load_tolerant(m);
+                            let wps: Vec<(usize, String, String, [f32; 3])> = mf
+                                .as_ref()
+                                .map(|mf| mf.items.iter().filter_map(|it| it.waypoint_tag.clone().map(|t| (it.index, it.model.clone(), t, it.pos))).collect())
+                                .unwrap_or_default();
+                            let d = |a: [f32; 3]| ((a[0] - p[0]).powi(2) + (a[1] - p[1]).powi(2) + (a[2] - p[2]).powi(2)).sqrt();
+                            let nearest = wps.iter().min_by(|a, b| d(a.3).partial_cmp(&d(b.3)).unwrap());
+                            let spawn = wps.iter().find(|w| w.2 == "Spawn");
+                            let sits = nearest.map(|n| format!("#{} {} {} {:.1}m", n.0, n.1.trim_end_matches(".Item.Gbx"), n.2, d(n.3))).unwrap_or("-".into());
+                            let sp = spawn.map(|s| format!("#{} {} at ({:.1},{:.1},{:.1})", s.0, s.1.trim_end_matches(".Item.Gbx"), s.3[0], s.3[1], s.3[2])).unwrap_or("none".into());
+                            let delta = spawn.map(|s| d(s.3));
+                            let verdict = match (spawn, nearest, delta) {
+                                (Some(s), Some(n), Some(dl)) if s.0 == n.0 && dl <= 12.0 => "PASS".to_string(),
+                                (Some(_), Some(n), _) => format!("FAIL: car on #{} ({})", n.0, n.2),
+                                (None, _, _) => "FAIL: no Spawn item".to_string(),
+                                _ => "FAIL".to_string(),
+                            };
+                            format!(
+                                "{name}\t{md5}\t({:.2}, {:.2}, {:.2})\t({:+.3} {:+.3} {:+.3} {:+.3})\t{sits}\t{sp}\t{}\t{verdict}",
+                                p[0], p[1], p[2], q[0], q[1], q[2], q[3],
+                                delta.map(|v| format!("{v:.1}")).unwrap_or("-".into())
+                            )
+                        }
+                    },
+                };
+                println!("{line}");
+                results.lock().unwrap().push((i, line));
+            });
+        }
+    });
+    let mut rows = results.lock().unwrap().clone();
+    rows.sort();
+    let pass = rows.iter().filter(|(_, l)| l.ends_with("PASS")).count();
+    println!("# {pass} PASS / {} maps", rows.len());
+    if let Some(f) = tsv {
+        let mut s = String::from("map\tmd5\tengine_start\tquat_wxyz\tsits_on\tspawn_item\tdelta_m\tverdict\n");
+        for (_, l) in &rows {
+            s.push_str(l);
+            s.push('\n');
+        }
+        std::fs::write(&f, s).unwrap_or_else(|e| die(e.to_string()));
+        println!("# wrote {f}");
+    }
+}
+
+// ------------------------------------------------------------- velcheck
+
+/// `tmenv velcheck --trace TSV [--min-speed 5]`: is the velocity triple the derivative of the
+/// position? Per car type: median |d(pos)/dt − v| with forward and centred differences, then a
+/// least-squares fit of a constant BODY-FRAME offset r such that d(pos)/dt ≈ v + ω × (R r)
+/// (ω from consecutive quaternions): if a fixed r explains the residual, the velocity is the
+/// velocity of a different reference point (the Rally/Snow/Desert question, 2026-09-07).
+fn velcheck(a: &[String]) {
+    let path = flag(a, "--trace").unwrap_or_else(|| die("--trace TSV (open-loop-control --dump-trace)".into()));
+    let min_speed: f64 = flag(a, "--min-speed").and_then(|v| v.parse().ok()).unwrap_or(5.0);
+    let txt = std::fs::read_to_string(&path).unwrap_or_else(|e| die(format!("{path}: {e}")));
+    let mut lines = txt.lines();
+    let hdr: Vec<&str> = lines.next().unwrap_or("").split('\t').collect();
+    let col = |n: &str| hdr.iter().position(|h| *h == n).unwrap_or_else(|| die(format!("no column {n}")));
+    let (ct, cx, cy, cz, cvx, cvy, cvz, ccar) = (col("race_ms"), col("x"), col("y"), col("z"), col("vx"), col("vy"), col("vz"), col("car"));
+    let (cqw, cqx, cqy, cqz) = (col("qw"), col("qx"), col("qy"), col("qz"));
+    #[derive(Clone, Copy)]
+    struct R { t: f64, p: [f64; 3], v: [f64; 3], q: [f64; 4], car: u32 }
+    let rows: Vec<R> = lines
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            let g = |i: usize| f.get(i).and_then(|s| s.parse::<f64>().ok());
+            Some(R { t: g(ct)? / 1000.0, p: [g(cx)?, g(cy)?, g(cz)?], v: [g(cvx)?, g(cvy)?, g(cvz)?], q: [g(cqw)?, g(cqx)?, g(cqy)?, g(cqz)?], car: g(ccar)? as u32 })
+        })
+        .collect();
+    let norm = |a: [f64; 3]| (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let cross = |a: [f64; 3], b: [f64; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    // rotate body vector r by quaternion (w,x,y,z)
+    let rot = |q: [f64; 4], r: [f64; 3]| {
+        let (w, x, y, z) = (q[0], q[1], q[2], q[3]);
+        let u = [x, y, z];
+        let uv = cross(u, r);
+        let uuv = cross(u, uv);
+        [r[0] + 2.0 * (w * uv[0] + uuv[0]), r[1] + 2.0 * (w * uv[1] + uuv[1]), r[2] + 2.0 * (w * uv[2] + uuv[2])]
+    };
+    let median = |v: &mut Vec<f64>| { v.sort_by(|a, b| a.partial_cmp(b).unwrap()); if v.is_empty() { f64::NAN } else { v[v.len() / 2] } };
+    let mut cars: Vec<u32> = rows.iter().map(|r| r.car).collect();
+    cars.sort();
+    cars.dedup();
+    println!("# tmenv velcheck  {}  {} rows  cars {:?}  (rows with speed >= {min_speed} m/s)", path, rows.len(), cars);
+    for car in cars {
+        let mut fwd = Vec::new();
+        let mut ctr = Vec::new();
+        let mut lag_next = Vec::new(); // (p[i+1]-p[i])/dt vs v[i+1]
+        let mut lag_prev = Vec::new(); // (p[i]-p[i-1])/dt vs v[i]
+        let mut ratio = Vec::new();
+        let mut speeds = Vec::new();
+        // normal equations for r (3 unknowns): residual e_i = d_i - v_i ≈ ω_i × (R_i r) = -(R_i r) × ω_i = [ω_i]_x (R_i r)
+        // linear in r: A_i r = e_i with A_i = [ω_i]_x R_i  (3x3); accumulate AᵀA and Aᵀe
+        let mut ata = [[0f64; 3]; 3];
+        let mut ate = [0f64; 3];
+        let mut n_fit = 0usize;
+        for i in 1..rows.len().saturating_sub(1) {
+            let (a0, b, c) = (rows[i - 1], rows[i], rows[i + 1]);
+            if b.car != car || a0.car != car || c.car != car || (c.t - a0.t - 0.02).abs() > 1e-6 {
+                continue;
+            }
+            let sp = norm(b.v);
+            if sp < min_speed {
+                continue;
+            }
+            speeds.push(sp);
+            let df = [(c.p[0] - b.p[0]) / 0.01, (c.p[1] - b.p[1]) / 0.01, (c.p[2] - b.p[2]) / 0.01];
+            let dc = [(c.p[0] - a0.p[0]) / 0.02, (c.p[1] - a0.p[1]) / 0.02, (c.p[2] - a0.p[2]) / 0.02];
+            fwd.push(norm(sub(df, b.v)));
+            ctr.push(norm(sub(dc, b.v)));
+            lag_next.push(norm(sub(df, c.v)));
+            lag_prev.push(norm(sub([(b.p[0] - a0.p[0]) / 0.01, (b.p[1] - a0.p[1]) / 0.01, (b.p[2] - a0.p[2]) / 0.01], b.v)));
+            ratio.push(norm(dc) / sp);
+            // angular velocity from q_{i-1} -> q_{i+1}: dq = q_c * conj(q_a); ω ≈ 2 * vec(dq) / dt (small angle)
+            let qa = a0.q;
+            let qc = c.q;
+            let conj = [qa[0], -qa[1], -qa[2], -qa[3]];
+            let mul = |p: [f64; 4], q: [f64; 4]| [
+                p[0] * q[0] - p[1] * q[1] - p[2] * q[2] - p[3] * q[3],
+                p[0] * q[1] + p[1] * q[0] + p[2] * q[3] - p[3] * q[2],
+                p[0] * q[2] - p[1] * q[3] + p[2] * q[0] + p[3] * q[1],
+                p[0] * q[3] + p[1] * q[2] - p[2] * q[1] + p[3] * q[0],
+            ];
+            let dq = mul(qc, conj);
+            let sgn = if dq[0] < 0.0 { -1.0 } else { 1.0 };
+            let w = [sgn * 2.0 * dq[1] / 0.02, sgn * 2.0 * dq[2] / 0.02, sgn * 2.0 * dq[3] / 0.02];
+            // A = [ω]_x R : columns are ω × (R e_j)
+            let e = sub(dc, b.v);
+            let mut acol = [[0f64; 3]; 3];
+            for j in 0..3 {
+                let mut ej = [0f64; 3];
+                ej[j] = 1.0;
+                acol[j] = cross(w, rot(b.q, ej));
+            }
+            for j in 0..3 {
+                for k in 0..3 {
+                    ata[j][k] += acol[j][0] * acol[k][0] + acol[j][1] * acol[k][1] + acol[j][2] * acol[k][2];
+                }
+                ate[j] += acol[j][0] * e[0] + acol[j][1] * e[1] + acol[j][2] * e[2];
+            }
+            n_fit += 1;
+        }
+        // solve 3x3 (Cramer)
+        let det3 = |m: [[f64; 3]; 3]| m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+        let d = det3(ata);
+        let mut r = [f64::NAN; 3];
+        if d.abs() > 1e-9 {
+            for j in 0..3 {
+                let mut m = ata;
+                for k in 0..3 {
+                    m[k][j] = ate[k];
+                }
+                r[j] = det3(m) / d;
+            }
+        }
+        // residual after the fit
+        let mut after = Vec::new();
+        for i in 1..rows.len().saturating_sub(1) {
+            let (a0, b, c) = (rows[i - 1], rows[i], rows[i + 1]);
+            if b.car != car || a0.car != car || c.car != car || (c.t - a0.t - 0.02).abs() > 1e-6 || norm(b.v) < min_speed || r[0].is_nan() {
+                continue;
+            }
+            let dc = [(c.p[0] - a0.p[0]) / 0.02, (c.p[1] - a0.p[1]) / 0.02, (c.p[2] - a0.p[2]) / 0.02];
+            let qa = a0.q;
+            let qc = c.q;
+            let conj = [qa[0], -qa[1], -qa[2], -qa[3]];
+            let mul = |p: [f64; 4], q: [f64; 4]| [
+                p[0] * q[0] - p[1] * q[1] - p[2] * q[2] - p[3] * q[3],
+                p[0] * q[1] + p[1] * q[0] + p[2] * q[3] - p[3] * q[2],
+                p[0] * q[2] - p[1] * q[3] + p[2] * q[0] + p[3] * q[1],
+                p[0] * q[3] + p[1] * q[2] - p[2] * q[1] + p[3] * q[0],
+            ];
+            let dq = mul(qc, conj);
+            let sgn = if dq[0] < 0.0 { -1.0 } else { 1.0 };
+            let w = [sgn * 2.0 * dq[1] / 0.02, sgn * 2.0 * dq[2] / 0.02, sgn * 2.0 * dq[3] / 0.02];
+            let pred = cross(w, rot(b.q, r));
+            after.push(norm(sub(sub(dc, b.v), pred)));
+        }
+        let ms = if speeds.is_empty() { 0.0 } else { speeds.iter().sum::<f64>() / speeds.len() as f64 };
+        println!(
+            "car {car}: {} rows, mean speed {ms:.1} m/s; median |d(pos)/dt - v|: forward {:.3} m/s, centred {:.3}, vs NEXT tick's v {:.3}, backward vs v {:.3}; median |d|/|v| {:.4}; body-frame offset fit r = ({:.3}, {:.3}, {:.3}) m (|r| {:.3}) over {n_fit} rows -> residual median {:.3} m/s",
+            speeds.len(), median(&mut fwd), median(&mut ctr), median(&mut lag_next), median(&mut lag_prev), median(&mut ratio), r[0], r[1], r[2], norm(r), median(&mut after)
+        );
+    }
+}
+
+// ------------------------------------------------------------- parity
+
+/// `tmenv parity --orig MAP --orig-ref REF --tiny MAP --tiny-ref REF [--scale 0.5] [--ticks 6000] [--radius 12]
+///  [--dump DIR]`
+///
+/// THE GAMEPLAY-PARITY PROBE (coordinator, 2026-09-07): drive each container on its
+/// map through a flat fork, read CarState v3 per tick (turbo flag + value, reactor
+/// type/level, boost enum, sim-time coefficient, gear/rpm, speed, checkpoints),
+/// find the EFFECT EVENTS on the original (turbo firing, reactor active, engine
+/// off, speed reset, checkpoint/finish), map each event's position onto the tiny
+/// map (tiny = tiny_spawn + scale · (p − orig_spawn); spawns = the first rows), and
+/// ask whether the tiny run passed within --radius of that point and whether the
+/// same effect fired there. One line per family: PASS (every event the tiny run
+/// reached fired), DEAD (reached, no effect), UNREACHED (the tiny tape never
+/// passed there), NONE (the original has no such event).
+fn parity(a: &[String]) {
+    let need = |k: &str| PathBuf::from(flag(a, k).unwrap_or_else(|| die(format!("{k} FILE"))));
+    let (orig, orig_ref) = (need("--orig"), need("--orig-ref"));
+    // --tiny absent: inventory mode -- list the original's effect events only
+    let tiny_side = flag(a, "--tiny").map(|t| (PathBuf::from(t), need("--tiny-ref")));
+    let scale: f64 = flag(a, "--scale").and_then(|v| v.parse().ok()).unwrap_or(0.5);
+    let ticks: u64 = num(a, "--ticks", 6000);
+    let radius: f64 = flag(a, "--radius").and_then(|v| v.parse().ok()).unwrap_or(12.0);
+    let server = PathBuf::from(flag(a, "--server").or_else(|| std::env::var("TM_SERVER").ok()).unwrap_or_else(|| die("--server DIR or $TM_SERVER".into())));
+    let shim = PathBuf::from(flag(a, "--shim").or_else(|| std::env::var("FK_SHIM").ok()).unwrap_or_else(|| "/tmp/tmp/repo/tools/search/target/release/libforkshim.so".into()));
+    let work = PathBuf::from(flag(a, "--work").unwrap_or_else(|| "/dev/shm/tmenv/parity".into()));
+    let dump = flag(a, "--dump").map(PathBuf::from);
+    // Each side is replayed THROUGH THE ENV (build_at_start + the tape's decoded per-tick actions), the way
+    // start-sanity's identity replay does: a flat fork following a HUMAN container's own records derails
+    // (analog state packets), the env path reproduces it. The tape doubles as the reference container
+    // (its u03 must fit the map: `tmenv set-start-waypoint`). Geometry: --orig-geom / --tiny-geom, default
+    // <map dir>/geom.json. NOTE: an identity REFERENCE never holds the donor's inputs (our archive + the donor's
+    // wrapper/seed/countdown, by design) -- decode the actions from the donor ghost (--orig-tape).
+    let geom_for = |k: &str, map: &Path| -> PathBuf { flag(a, k).map(PathBuf::from).unwrap_or_else(|| map.parent().unwrap_or(Path::new(".")).join("geom.json")) };
+    // --orig-tape / --tiny-tape: the file the ACTIONS are decoded from (default: the reference itself)
+    let states = |tag: &str, map: &Path, reference: &Path, geom: &Path, tape_file: &Path| -> Vec<tmstate::CarState> {
+        let w = work.join(tag);
+        let _ = std::fs::remove_dir_all(&w);
+        std::fs::create_dir_all(&w).ok();
+        let track = std::sync::Arc::new(tmenv::Track::load_geom_json(geom).unwrap_or_else(|e| die(format!("{tag}: {}: {e}", geom.display()))));
+        let d = fk::tape::Tape::load(&tape_file.to_string_lossy()).unwrap_or_else(|e| die(format!("{tag}: {e}")));
+        let core_cfg = CoreCfg { k_ticks: 10, max_ticks: (ticks as usize).min(d.n().saturating_sub(1)).max(100), ..Default::default() };
+        // require_start: the root must hold the car at the geometry's spawn -- it also pins the participant whose
+        // counter word the rows carry (without it the S01 identity run reproduced but read a counter that stepped once)
+        let spawn = track.geom.spawn;
+        let root = tmenv::forkenv::RootCfg { require_start: Some((spawn, 6.0, 4.0)), verbose: false, ..Default::default() };
+        let (mut env, _rig, tape) = tmenv::forkenv::build_at_start(&server, map, &shim, &w, reference, track, ActionSpace::default(), core_cfg, &root).unwrap_or_else(|e| die(format!("{tag}: {e}")));
+        env.allow_after_done = true;
+        env.reset().unwrap_or_else(|e| die(format!("{tag}: {e}")));
+        let mut t = env.next_tick().unwrap_or(0);
+        loop {
+            if t >= tape.n() || t as u64 >= ticks {
+                break;
+            }
+            let k = 10.min(tape.n() - t);
+            let chunk: Vec<tmstate::Action> = (t..t + k).map(|j| { let j = j.min(d.n() - 1); tmstate::Action { steer: d.steer[j] as i8, gas: d.accel[j] != 0, brake: d.brake[j] != 0 } }).collect();
+            let (_o, _rw, dn, _info) = match env.step_ticks(&chunk) { Ok(x) => x, Err(e) => { eprintln!("{tag}: step: {e}"); break; } };
+            t = env.next_tick().unwrap_or(t + k);
+            if matches!(dn, Some(Done::Finished) | Some(Done::TickCap) | Some(Done::RunEnded)) {
+                break;
+            }
+        }
+        let rows = env.rollout_record().trace;
+        if std::env::var("TMENV_PARITY_DEBUG").is_ok() {
+            let mut last = u32::MAX - 1;
+            for r in &rows { if r.cps != last { eprintln!("{tag}: raw row cps {} at {} ms", r.cps, r.time_ms); last = r.cps; } }
+        }
+        let mut out = Vec::with_capacity(rows.len());
+        let mut wet = Vec::with_capacity(rows.len());
+        let mut prev: Option<&forkoracle::layout::Row> = None;
+        let mut gates = 0u8;
+        for r in &rows {
+            if r.cps != u32::MAX {
+                gates = r.cps.min(255) as u8;
+            }
+            out.push(tmenv::core::row_state(r, prev, gates, false));
+            wet.push(r.wetness);
+            prev = Some(r);
+        }
+        if let Some(d) = &dump {
+            std::fs::create_dir_all(d).ok();
+            let mut s = String::from("race_ms\tx\ty\tz\tspeed\tgear\trpm\tturbo\teffects\treactor_type\treactor_lvl\tboost_enum\tsim_time_coef\tcps\tcar\twetness\tground\tmat_fl\tmat_fr\tmat_rl\tmat_rr\n");
+            for (st, w) in out.iter().zip(wet.iter()) {
+                s.push_str(&format!("{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{}\t{:.1}\t{:.3}\t{:#x}\t{}\t{}\t{}\t{:.3}\t{}\t{}\t{:.3}\t{}\t{}\t{}\t{}\t{}\n", st.race_ms, st.pos[0], st.pos[1], st.pos[2], st.speed, st.gear, st.rpm, st.turbo, st.effects, st.reactor_type, st.reactor_lvl, st.boost_enum, st.sim_time_coef, st.cps, st.car, w, if st.effects & 0x80 != 0 { if st.effects & 0x02 != 0 { 1 } else { 0 } } else { -1 }, st.wheel_material[0], st.wheel_material[1], st.wheel_material[2], st.wheel_material[3]));
+            }
+            std::fs::write(d.join(format!("{tag}.tsv")), s).ok();
+        }
+        out
+    };
+    let so = states("orig", &orig, &orig_ref, &geom_for("--orig-geom", &orig), &flag(a, "--orig-tape").map(PathBuf::from).unwrap_or(orig_ref.clone()));
+    let Some((tiny, tiny_ref)) = tiny_side else {
+        // inventory: families and events on the original
+        type Pred0 = fn(&tmstate::CarState, Option<&tmstate::CarState>) -> bool;
+        let fams: Vec<(&str, Pred0)> = vec![
+            ("turbo", |s, _| s.effects & 0x80 != 0 && (s.effects & 0x01 != 0 || (s.turbo.is_finite() && s.turbo > 0.0))),
+            ("reactor", |s, _| s.reactor_type != u8::MAX && s.reactor_type != 0 && s.reactor_lvl != u8::MAX && s.reactor_lvl > 0),
+            ("noengine", |s, _| s.rpm.is_finite() && s.rpm == 0.0 && s.speed > 3.0 && s.effects & 0x82 == 0x82),
+            ("slowmo", |s, _| s.sim_time_coef.is_finite() && s.sim_time_coef < 0.99),
+            ("reset", |s, p| p.map(|p| p.speed > 8.0 && s.speed < 0.5 && s.race_ms > 0).unwrap_or(false)),
+            ("checkpoint", |s, p| p.map(|p| s.cps > p.cps && s.cps != u8::MAX).unwrap_or(false)),
+        ];
+        let mut parts = Vec::new();
+        for (name, f) in &fams {
+            let mut n = 0usize;
+            let mut open = false;
+            let mut detail = Vec::new();
+            for i in 0..so.len() {
+                let on = f(&so[i], if i > 0 { Some(&so[i - 1]) } else { None });
+                if on && !open { n += 1; detail.push(format!("{:.2}s({:.0},{:.0},{:.0})", so[i].race_ms as f64 / 1000.0, so[i].pos[0], so[i].pos[1], so[i].pos[2])); }
+                open = on;
+            }
+            if n > 0 { parts.push(format!("{name} x{n} [{}]", detail.join(" "))); }
+        }
+        println!("INVENTORY {}  {} ticks  {}", orig.display(), so.len(), if parts.is_empty() { "no effect events".to_string() } else { parts.join("  ") });
+        return;
+    };
+    let st = states("tiny", &tiny, &tiny_ref, &geom_for("--tiny-geom", &tiny), &flag(a, "--tiny-tape").map(PathBuf::from).unwrap_or(tiny_ref.clone()));
+    if so.is_empty() || st.is_empty() {
+        die(format!("no rows: orig {} tiny {}", so.len(), st.len()));
+    }
+    let (o0, t0) = (so[0].pos, st[0].pos);
+    println!("# tmenv parity  orig {} ({} ticks, spawn ({:.1}, {:.1}, {:.1}))  tiny {} ({} ticks, spawn ({:.1}, {:.1}, {:.1}))  scale {scale}  radius {radius} m",
+        orig.display(), so.len(), o0[0], o0[1], o0[2], tiny.display(), st.len(), t0[0], t0[1], t0[2]);
+    // event detectors: (family, predicate on a state, magnitude label)
+    type Pred = fn(&tmstate::CarState, Option<&tmstate::CarState>) -> bool;
+    let fams: Vec<(&str, Pred)> = vec![
+        ("turbo", |s, _| s.effects & 0x80 != 0 && (s.effects & 0x01 != 0 || (s.turbo.is_finite() && s.turbo > 0.0))),
+        ("reactor", |s, _| s.reactor_type != u8::MAX && s.reactor_type != 0 && s.reactor_lvl != u8::MAX && s.reactor_lvl > 0),
+        ("noengine", |s, _| s.rpm.is_finite() && s.rpm == 0.0 && s.speed > 3.0 && s.effects & 0x82 == 0x82),
+        ("slowmo", |s, _| s.sim_time_coef.is_finite() && s.sim_time_coef < 0.99),
+        ("reset", |s, p| p.map(|p| p.speed > 8.0 && s.speed < 0.5 && s.race_ms > 0).unwrap_or(false)),
+        ("checkpoint", |s, p| p.map(|p| s.cps > p.cps && s.cps != u8::MAX).unwrap_or(false)),
+    ];
+    // events on a trace: contiguous stretches where the predicate holds -> (start idx, end idx)
+    let events = |tr: &[tmstate::CarState], f: Pred| -> Vec<(usize, usize)> {
+        let mut ev = Vec::new();
+        let mut open: Option<usize> = None;
+        for i in 0..tr.len() {
+            let on = f(&tr[i], if i > 0 { Some(&tr[i - 1]) } else { None });
+            match (on, open) {
+                (true, None) => open = Some(i),
+                (false, Some(s)) => { ev.push((s, i - 1)); open = None; }
+                _ => {}
+            }
+        }
+        if let Some(s) = open { ev.push((s, tr.len() - 1)); }
+        ev
+    };
+    let dist = |a: [f32; 3], b: [f64; 3]| ((a[0] as f64 - b[0]).powi(2) + (a[1] as f64 - b[1]).powi(2) + (a[2] as f64 - b[2]).powi(2)).sqrt();
+    println!("family      orig events  reached  fired  verdict   detail");
+    let mut all_ok = true;
+    for (name, f) in &fams {
+        let eo = events(&so, *f);
+        if eo.is_empty() {
+            println!("{name:<11} {:>11}  {:>7}  {:>5}  NONE", 0, "-", "-");
+            continue;
+        }
+        let et = events(&st, *f);
+        let mut reached = 0usize;
+        let mut fired = 0usize;
+        let mut detail = Vec::new();
+        for (s, e) in &eo {
+            let p = so[*s].pos;
+            let m = [t0[0] as f64 + scale * (p[0] as f64 - o0[0] as f64), t0[1] as f64 + scale * (p[1] as f64 - o0[1] as f64), t0[2] as f64 + scale * (p[2] as f64 - o0[2] as f64)];
+            // did the tiny run pass within radius of the mapped point?
+            let near: Vec<usize> = (0..st.len()).filter(|&i| dist(st[i].pos, m) <= radius).collect();
+            let gain_o = so[*e].speed - so[*s].speed;
+            if near.is_empty() {
+                detail.push(format!("orig t={:.2}s ({:.0},{:.0},{:.0}) {}t Δv{:+.1} → tiny point ({:.0},{:.0},{:.0}) UNREACHED", so[*s].race_ms as f64 / 1000.0, p[0], p[1], p[2], e - s + 1, gain_o, m[0], m[1], m[2]));
+                continue;
+            }
+            reached += 1;
+            // any tiny event overlapping the near window (± 100 ticks)?
+            let lo = near[0].saturating_sub(100);
+            let hi = (near[near.len() - 1] + 100).min(st.len() - 1);
+            match et.iter().find(|(ts, te)| *te >= lo && *ts <= hi) {
+                Some((ts, te)) => {
+                    fired += 1;
+                    let gain_t = st[*te].speed - st[*ts].speed;
+                    detail.push(format!("orig t={:.2}s {}t Δv{:+.1} → tiny t={:.2}s {}t Δv{:+.1} FIRED", so[*s].race_ms as f64 / 1000.0, e - s + 1, gain_o, st[*ts].race_ms as f64 / 1000.0, te - ts + 1, gain_t));
+                }
+                None => detail.push(format!("orig t={:.2}s {}t Δv{:+.1} → tiny passed ({:.0},{:.0},{:.0}) at t={:.2}s, speed {:.1}: NO EFFECT", so[*s].race_ms as f64 / 1000.0, e - s + 1, gain_o, m[0], m[1], m[2], st[near[0]].race_ms as f64 / 1000.0, st[near[0]].speed)),
+            }
+        }
+        let verdict = if reached == 0 { "UNREACHED" } else if fired == reached { "PASS" } else if fired == 0 { "DEAD" } else { "PARTIAL" };
+        if verdict == "DEAD" || verdict == "PARTIAL" { all_ok = false; }
+        println!("{name:<11} {:>11}  {reached:>7}  {fired:>5}  {verdict:<9} {}", eo.len(), detail.join(" | "));
+    }
+    println!("# PARITY {}", if all_ok { "no dead effect among the reached ones" } else { "DEAD/PARTIAL effects present" });
+}
+
+/// `tmenv set-start-waypoint IN OUT --map MAP [--index N]`: copy a container and set its
+/// validation-record start waypoint (u03) for MAP (auto = the Spawn's slot) -- a tape recorded
+/// on one build of a map, replayed on another build whose waypoint list differs.
+fn set_start_waypoint(a: &[String]) {
+    let inp = PathBuf::from(a.get(1).cloned().unwrap_or_else(|| die("set-start-waypoint IN OUT --map MAP".into())));
+    let out = PathBuf::from(a.get(2).cloned().unwrap_or_else(|| die("set-start-waypoint IN OUT --map MAP".into())));
+    let map = PathBuf::from(flag(a, "--map").unwrap_or_else(|| die("--map MAP".into())));
+    std::fs::copy(&inp, &out).unwrap_or_else(|e| die(format!("{}: {e}", inp.display())));
+    let (idx, what) = match flag(a, "--index") {
+        Some(n) => (n.parse::<u32>().unwrap_or_else(|_| die("--index N".into())), "given".to_string()),
+        None => tmenv::template::start_waypoint_index(&map).unwrap_or_else(|e| die(e)),
+    };
+    let old = tmenv::template::set_validation_u32(&out, "u03", idx).unwrap_or_else(|e| die(e));
+    println!("{}: start waypoint u03 {old} -> {idx} ({what})", out.display());
+}
+
+// ------------------------------------------------------------- car-kind-probe
+
+/// `tmenv car-kind-probe --map M --ref R [--depth 2] [--span 0x2400]`: for each of the four vehicle
+/// slots of the paused root, which word inside the CGameVehiclePhy (first --span bytes) leads, in
+/// ≤ depth pointer hops, to one of the model name strings CarSport / CarSnow / CarRally / CarDesert.
+/// The vehicle KIND per slot (CarState.car must be the kind, not the slot — coordinator 2026-09-07).
+fn car_kind_probe(a: &[String]) {
+    let p = paths(a);
+    let depth: usize = num(a, "--depth", 2);
+    let span: usize = flag(a, "--span").map(|s| usize::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(0x2400)).unwrap_or(0x2400);
+    let work = p.work.join("ckp");
+    let rig = Rig::new(&p.server, &p.map, &p.shim, &work, &p.reference).unwrap_or_else(|e| die(e));
+    let mut s = rig.session_clock(999).unwrap_or_else(|e| die(e));
+    let probe = s.probe_tick().unwrap_or_else(|e| die(e));
+    let recs = s.tape.tail_records(0);
+    let car = control::resolve_car(&mut s.srv, probe, &recs, s.tape.start_offset_ms, false).unwrap_or_else(|e| die(e));
+    let pid = s.srv.pid();
+    let regions = forkoracle::procmem::maps(pid);
+    let readable = |addr: u64| regions.iter().any(|r| r.start <= addr && addr < r.end && r.perms.starts_with('r'));
+    let names = ["CarSport", "CarSnow", "CarRally", "CarDesert"];
+    let find_name = |buf: &[u8]| -> Option<&'static str> {
+        names.iter().find(|n| buf.windows(n.len()).any(|w| w == n.as_bytes())).copied()
+    };
+    println!("# car-kind-probe  driven slot {}  slots {:?}", car.slot, car.vehicles.iter().map(|v| format!("{v:#x}")).collect::<Vec<_>>());
+    if let Some(d) = flag(a, "--dump-words") {
+        // --dump-words FILE: the first --span bytes of each slot's phy as u32 words (one line per slot) for a
+        // cross-map diff: a kind-specific constant sits at the same offset with the same value on every map
+        let mut s = String::new();
+        for (k, phy) in car.vehicles.iter().enumerate() {
+            let obj = if *phy != 0 && readable(*phy) { forkoracle::procmem::read_at(pid, *phy, span).unwrap_or_default() } else { Vec::new() };
+            s.push_str(&format!("slot{k}"));
+            for w in obj.chunks(4) { if w.len() == 4 { s.push_str(&format!(" {:08x}", u32::from_le_bytes(w.try_into().unwrap()))); } }
+            s.push('\n');
+        }
+        std::fs::write(&d, s).unwrap_or_else(|e| die(e.to_string()));
+        println!("wrote {d}");
+        return;
+    }
+    for (k, phy) in car.vehicles.iter().enumerate() {
+        if *phy == 0 || !readable(*phy) {
+            println!("slot {k}: phy {phy:#x} not readable");
+            continue;
+        }
+        let Some(obj) = forkoracle::procmem::read_at(pid, *phy, span) else { println!("slot {k}: read failed"); continue };
+        let mut found: Vec<String> = Vec::new();
+        // depth-1: a word in the phy points at bytes holding a name (within 256 B) ; depth-2: one more hop
+        for off in (0..span.saturating_sub(8)).step_by(8) {
+            let ptr = u64::from_le_bytes(obj[off..off + 8].try_into().unwrap());
+            if ptr < 0x10000 || !readable(ptr) { continue; }
+            let Some(b1) = forkoracle::procmem::read_at(pid, ptr, 256) else { continue };
+            if let Some(n) = find_name(&b1) {
+                let at = b1.windows(n.len()).position(|w| w == n.as_bytes()).unwrap();
+                found.push(format!("phy+{off:#x} -> {ptr:#x} (+{at:#x}) \"{n}\""));
+                continue;
+            }
+            if depth >= 2 {
+                for o2 in (0..248).step_by(8) {
+                    let p2 = u64::from_le_bytes(b1[o2..o2 + 8].try_into().unwrap());
+                    if p2 < 0x10000 || !readable(p2) { continue; }
+                    if let Some(b2) = forkoracle::procmem::read_at(pid, p2, 256) {
+                        if let Some(n) = find_name(&b2) {
+                            let at = b2.windows(n.len()).position(|w| w == n.as_bytes()).unwrap();
+                            found.push(format!("phy+{off:#x} -> {ptr:#x} +{o2:#x} -> {p2:#x} (+{at:#x}) \"{n}\""));
+                        }
+                    }
+                }
+            }
+        }
+        println!("slot {k}: phy {phy:#x}: {} path(s) to a car name{}", found.len(), if found.is_empty() { String::new() } else { format!(":\n    {}", found.join("\n    ")) });
+    }
+    // the other way round: where do the name strings live, who points near them, and is any such
+    // pointer inside a slot's phy (first 0x8000 bytes) or inside an object a phy word points to?
+    let mut bufs: Vec<(u64, Vec<u8>)> = Vec::new();
+    let mut f = std::fs::File::open(format!("/proc/{pid}/mem")).unwrap_or_else(|e| die(e.to_string()));
+    for r in &regions {
+        if !r.perms.starts_with('r') { continue; }
+        if let Some(b) = forkoracle::procmem::read_region(&mut f, r) { bufs.push((r.start, b)); }
+    }
+    for n in names {
+        let pat = format!("{n}\0");
+        let mut occ: Vec<u64> = Vec::new();
+        for (start, b) in &bufs {
+            let mut i = 0usize;
+            while i + pat.len() <= b.len() {
+                if &b[i..i + pat.len()] == pat.as_bytes() && (i == 0 || b[i - 1] == 0 || !b[i - 1].is_ascii_alphanumeric()) { occ.push(start + i as u64); }
+                i += 1;
+            }
+        }
+        println!("name \"{n}\": {} occurrence(s) {}", occ.len(), occ.iter().take(6).map(|a| format!("{a:#x}")).collect::<Vec<_>>().join(" "));
+        for a in occ.iter().take(6) {
+            // pointers to [a-64, a+8]
+            let mut t = (a - 64) & !7u64;
+            while t <= *a {
+                let pat8 = t.to_le_bytes();
+                for (start, b) in &bufs {
+                    let mut i = 0usize;
+                    while i + 8 <= b.len() {
+                        if b[i..i + 8] == pat8 {
+                            let at = start + i as u64;
+                            let in_slot = car.vehicles.iter().position(|&p| p != 0 && at >= p && at < p + 0x8000).map(|k| format!(" IN SLOT {k} phy+{:#x}", at - car.vehicles[k]));
+                            println!("    ptr to {t:#x} (= name {:+}) at {at:#x}{}", t as i64 - *a as i64, in_slot.unwrap_or_default());
+                        }
+                        i += 8;
+                    }
+                }
+                t += 8;
+            }
+        }
+    }
+}
+
+/// `tmenv gbx-strings FILE [--min 6]`: printable ASCII runs in a Gbx file's DECOMPRESSED body (model names,
+/// material ids, source item names) -- what an embedded item model actually is.
+fn gbx_strings(a: &[String]) {
+    let f = a.get(1).cloned().unwrap_or_else(|| die("gbx-strings FILE".into()));
+    let min: usize = num(a, "--min", 6);
+    let c = gbx::container::Container::load(&f).unwrap_or_else(|e| die(format!("{f}: {e}")));
+    let b = c.body();
+    let mut cur = String::new();
+    let mut seen = std::collections::BTreeMap::<String, usize>::new();
+    for &x in b {
+        if (0x20..0x7f).contains(&x) {
+            cur.push(x as char);
+        } else {
+            if cur.len() >= min {
+                *seen.entry(std::mem::take(&mut cur)).or_insert(0) += 1;
+            }
+            cur.clear();
+        }
+    }
+    println!("# {f}: body {} B, {} distinct strings >= {min} chars", b.len(), seen.len());
+    for (s, n) in &seen {
+        println!("{n:>4}  {s}");
+    }
+}
+
+/// `tmenv branch-off --map M --ref R --tape T --geom G --until-ms MS --steer S [--gas 1] [--brake 0] [--ticks N]
+///  [--dump FILE]`: replay the tape's actions through the env until race MS, then hold a constant action for N
+/// ticks and print the trajectory (pos, speed, ground, materials) every 10 ticks -- aim the car at a placement
+/// to learn whether the SERVER treats it as solid (the ship8 02 question, 2026-09-08).
+fn branch_off(a: &[String]) {
+    let p = paths(a);
+    let tape_f = flag(a, "--tape").unwrap_or_else(|| p.reference.to_string_lossy().into_owned());
+    let geom = PathBuf::from(flag(a, "--geom").unwrap_or_else(|| die("--geom geom.json".into())));
+    let until_ms: i64 = num(a, "--until-ms", 0);
+    let steer: i8 = num::<i64>(a, "--steer", 0) as i8;
+    let gas = num::<i64>(a, "--gas", 1) != 0;
+    let brake = num::<i64>(a, "--brake", 0) != 0;
+    let hold: usize = num(a, "--ticks", 150);
+    let track = std::sync::Arc::new(tmenv::Track::load_geom_json(&geom).unwrap_or_else(|e| die(e)));
+    let d = fk::tape::Tape::load(&tape_f).unwrap_or_else(|e| die(e));
+    let ref_n = fk::tape::Tape::load(&p.reference.to_string_lossy()).map(|t| t.n()).unwrap_or(d.n());
+    let core_cfg = CoreCfg { k_ticks: 10, max_ticks: (d.n() + hold + 100).min(ref_n.saturating_sub(1)), ..Default::default() };
+    let spawn = track.geom.spawn;
+    let root = tmenv::forkenv::RootCfg { require_start: Some((spawn, 6.0, 4.0)), verbose: false, ..Default::default() };
+    let (mut env, _rig, _tape) = tmenv::forkenv::build_at_start(&p.server, &p.map, &p.shim, &p.work, &p.reference, track, ActionSpace::default(), core_cfg, &root).unwrap_or_else(|e| die(e));
+    env.allow_after_done = true;
+    env.reset().unwrap_or_else(|e| die(e));
+    let mut t = env.next_tick().unwrap_or(0);
+    // phase 1: the tape until race until_ms (tick index = race_ms/10 + countdown ticks: use the row clock)
+    loop {
+        let rows = env.rollout_record().trace;
+        if rows.last().map(|r| r.time_ms >= until_ms).unwrap_or(false) || t >= d.n() {
+            break;
+        }
+        let k = 10.min(d.n() - t);
+        let chunk: Vec<tmstate::Action> = (t..t + k).map(|j| tmstate::Action { steer: d.steer[j] as i8, gas: d.accel[j] != 0, brake: d.brake[j] != 0 }).collect();
+        if env.step_ticks(&chunk).is_err() { break; }
+        t = env.next_tick().unwrap_or(t + k);
+    }
+    let n0 = env.rollout_record().trace.len();
+    // phase 2: the constant action
+    let act = tmstate::Action { steer, gas, brake };
+    let mut done = 0;
+    while done < hold {
+        let k = 10.min(hold - done);
+        match env.step_ticks(&vec![act; k]) {
+            Ok((_, _, dn, _)) => { if matches!(dn, Some(Done::RunEnded)) { break; } }
+            Err(e) => { eprintln!("step: {e}"); break; }
+        }
+        done += k;
+    }
+    let rows = env.rollout_record().trace;
+    println!("# branch-off at race {until_ms} ms: steer {steer} gas {gas} brake {brake} for {hold} ticks ({} rows before, {} after)", n0, rows.len() - n0);
+    println!("race_ms\tx\ty\tz\tspeed\twheels_with_material\tmat_fl\tmat_fr");
+    for (i, r) in rows.iter().enumerate().skip(n0.saturating_sub(20)) {
+        if i % 10 != 0 && i + 1 != rows.len() { continue; }
+        let sp = (r.vx * r.vx + r.vy * r.vy + r.vz * r.vz).sqrt();
+        let (g, m0, m1) = if r.vis.known { (r.vis.wheel_material.iter().filter(|m| **m != 0 && **m != u8::MAX).count() as i32, r.vis.wheel_material[0] as i32, r.vis.wheel_material[1] as i32) } else { (-1, -1, -1) };
+        println!("{}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\t{}\t{}\t{}", r.time_ms, r.x, r.y, r.z, sp, g, m0, m1);
+    }
+    if let Some(f) = flag(a, "--dump") {
+        let mut s = String::from("race_ms\tx\ty\tz\tspeed\n");
+        for r in &rows { s.push_str(&format!("{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\n", r.time_ms, r.x, r.y, r.z, (r.vx * r.vx + r.vy * r.vy + r.vz * r.vz).sqrt())); }
+        std::fs::write(&f, s).ok();
+    }
+}
+
+/// `tmenv gate-check --trace TSV --geom G [--radius 12]`: run the GEOMETRIC gate tracker (the fallback the
+/// env uses when the engine counter is not carried) over a dumped trace and print each gate's crossing.
+fn gate_check(a: &[String]) {
+    let tr = flag(a, "--trace").unwrap_or_else(|| die("--trace TSV".into()));
+    let geom = PathBuf::from(flag(a, "--geom").unwrap_or_else(|| die("--geom G".into())));
+    let radius: f32 = flag(a, "--radius").and_then(|v| v.parse().ok()).unwrap_or(12.0);
+    let track = tmenv::Track::load_geom_json(&geom).unwrap_or_else(|e| die(e));
+    let txt = std::fs::read_to_string(&tr).unwrap_or_else(|e| die(e.to_string()));
+    let mut lines = txt.lines();
+    let hdr: Vec<&str> = lines.next().unwrap_or("").split('\t').collect();
+    let col = |n: &str| hdr.iter().position(|h| *h == n).unwrap_or_else(|| die(format!("no column {n}")));
+    let (ct, cx, cy, cz) = (col("race_ms"), col("x"), col("y"), col("z"));
+    let ccps = hdr.iter().position(|h| *h == "cps");
+    let mut gt = tmenv::track::GateTracker::new(radius, 1.0e9);
+    let mut hit_before = 0usize;
+    let mut last_cps = 0u32;
+    for l in lines {
+        let f: Vec<&str> = l.split('\t').collect();
+        let g = |i: usize| f.get(i).and_then(|s| s.parse::<f64>().ok()).unwrap_or(f64::NAN);
+        let p = [g(cx) as f32, g(cy) as f32, g(cz) as f32];
+        let pr = track.probe(p);
+        if let Some(every) = flag(a, "--s-every").and_then(|v| v.parse::<i64>().ok()) {
+            let t = g(ct) as i64;
+            if every > 0 && t % every == 0 {
+                println!("  t={} ms  route s {:.1}  lateral {:.1}  cps {}", t, pr.s, pr.lateral, ccps.map(|c| f.get(c).copied().unwrap_or("-")).unwrap_or("-"));
+            }
+        }
+        gt.observe(&track, p, pr.s);
+        let h = gt.hit();
+        if h > hit_before {
+            println!("geometric gate {} hit at race {} ms, car ({:.1}, {:.1}, {:.1}), route s {:.1} lateral {:.1}", h, g(ct), p[0], p[1], p[2], pr.s, pr.lateral);
+            hit_before = h;
+        }
+        if let Some(c) = ccps {
+            let v = f.get(c).and_then(|s| s.parse::<u32>().ok()).unwrap_or(u32::MAX);
+            if v != u32::MAX && v > last_cps {
+                println!("  engine counter -> {v} at race {} ms, car ({:.1}, {:.1}, {:.1})", g(ct), p[0], p[1], p[2]);
+                last_cps = v;
+            }
+        }
+    }
+    println!("# geometric gates hit {} of {}; engine counter {last_cps}; radius {radius} m, either direction", gt.hit(), track.n_gates());
 }

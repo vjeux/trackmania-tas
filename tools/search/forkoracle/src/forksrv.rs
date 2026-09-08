@@ -245,6 +245,10 @@ pub struct ForkServer {
     child: Child,
     cmd_w: std::fs::File,
     res_r: std::fs::File,
+    /// The root's boundary once probed and checked against the clock: a stopped
+    /// server never moves, so a second `boundary_tick` is the same answer and
+    /// not another fork (each fork is one more chance for the open probe flake).
+    boundary_cache: Option<usize>,
     pub base: u64,
     pub clock: u64,
     /// `this` captured at the validator's simulation-binding callback.
@@ -467,6 +471,7 @@ impl ForkServer {
             sim_ms: 0,
             race_start: 0,
             dir: dir.to_path_buf(),
+            boundary_cache: None,
         };
 
         let hello = match read_frame(&mut srv.res_r) {
@@ -830,6 +835,9 @@ impl ForkServer {
     /// between. It means the hook is not where TICKHOOK.md says it is, or the
     /// record layout of this build is not what `STRIDE` documents.
     pub fn boundary_tick(&mut self, start_offset_ms: i32) -> Result<usize, String> {
+        if let Some(p) = self.boundary_cache {
+            return Ok(p);
+        }
         let probe = self.probe_tick()?;
         // A checkpoint inside the countdown stops in front of RECORD 0: before
         // race time -10 ms the engine copies record 0 verbatim as that tick's
@@ -842,6 +850,7 @@ impl ForkServer {
                 self.sim_ms, self.race_start, want, start_offset_ms, probe
             ));
         }
+        self.boundary_cache = Some(probe);
         Ok(probe)
     }
 

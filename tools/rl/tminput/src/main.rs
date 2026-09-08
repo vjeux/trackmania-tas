@@ -198,6 +198,12 @@ fn main() {
         "codec" => codec_cmd(rest),
         "squash" => squash_cmd(rest),
         "rescale" => rescale_cmd(rest),
+        "certify" => certify_cmd(rest),
+        "field0" => field0_cmd(rest),
+        "transplant" => transplant_cmd(rest),
+        "swaparchive" => swaparchive_cmd(rest),
+        "chunkcopy" => chunkcopy_cmd(rest),
+        "valset" => valset_cmd(rest),
         o => die(format!("unknown op {o}")),
     }
 }
@@ -279,6 +285,12 @@ pub fn tdiff_cmd(rest: &[String]) {
     let b = rest.get(1).unwrap_or_else(|| die("tminput tdiff A.csv B.csv"));
     let tol: f64 = flag(rest, "--tol").map(|s| s.parse().unwrap_or_else(|_| die("--tol M"))).unwrap_or(1e-4);
     // --to MS: only compare ticks up to this race time (a press window, say)
+    // --shift-b MS: add MS to B's time labels before pairing (fk trace labels are 10 ms
+    // behind the telemetry convention since player)
+    let shift_b: i64 = flag(rest, "--shift-b").map(|s| s.parse().unwrap_or_else(|_| die("--shift-b MS"))).unwrap_or(0);
+    // --from MS --every MS: print |dpos| on that grid over the whole run (no 30-row cap)
+    let from_ms: i64 = flag(rest, "--from").map(|s| s.parse().unwrap_or_else(|_| die("--from MS"))).unwrap_or(i64::MIN);
+    let every_ms: Option<i64> = flag(rest, "--every").map(|s| s.parse().unwrap_or_else(|_| die("--every MS")));
     let to_ms: i64 = flag(rest, "--to").map(|s| s.parse().unwrap_or_else(|_| die("--to MS"))).unwrap_or(i64::MAX);
     // Reads `fk trace` / `tmtraj` 30-column CSVs (time_ms,x,y,z,...,yaw at 9,
     // steer at 18) and tminput's own 16-column trace (yaw at 14, yaw_rate 15).
@@ -313,7 +325,7 @@ pub fn tdiff_cmd(rest: &[String]) {
     };
     let ra = load(a);
     let rb = load(b);
-    let mb: std::collections::HashMap<i64, ([f64; 3], f64, f64)> = rb.iter().map(|r| (r.0, (r.1, r.2, r.3))).collect();
+    let mb: std::collections::HashMap<i64, ([f64; 3], f64, f64)> = rb.iter().map(|r| (r.0 + shift_b, (r.1, r.2, r.3))).collect();
     let mut first: Option<i64> = None;
     let mut shared = 0;
     let mut maxd = 0.0f64;
@@ -329,7 +341,11 @@ pub fn tdiff_cmd(rest: &[String]) {
             if d > tol && first.is_none() {
                 first = Some(*t);
             }
-            if first.is_some() && printed < 30 && (*t - first.unwrap()) % 10 == 0 {
+            let show = match every_ms {
+                Some(e) => *t >= from_ms && (*t - from_ms.max(0)) % e == 0,
+                None => first.is_some() && printed < 30 && (*t - first.unwrap()) % 10 == 0,
+            };
+            if show {
                 println!(
                     "race {:.3}  |dpos| {:.6} m  yaw A {:.5} B {:.5}  steer|rate A {:.4} B {:.4}",
                     *t as f64 / 1000.0,
@@ -616,4 +632,207 @@ pub fn rescale_cmd(rest: &[String]) {
     println!("rescaled {n} ticks in {a}..{b}");
     write_back(&c, &t, out, Encoding::Verbatim);
     println!("wrote {out}");
+}
+
+// ---------------------------------------------------------------------------
+// Cross-box certification of a finish: fresh plain oracle, control beside it.
+// ---------------------------------------------------------------------------
+
+/// `tminput certify --tape T.Ghost.Gbx --map M.Map.Gbx --control C.Ghost.Gbx --out CERT.md [--expect MS]`
+/// Runs `tmauto verdict` (a separate process, no shim) on the tape and the
+/// control in one batch, prints the transcript, and writes a certificate with
+/// the md5s, the map md5, the box, the verdicts and the timestamp. Exit 3 when
+/// the tape did not finish or the control did not reproduce its declared time.
+pub fn certify_cmd(rest: &[String]) {
+    let tape = need(rest, "--tape");
+    let map = need(rest, "--map");
+    let control = need(rest, "--control");
+    let out = need(rest, "--out");
+    let expect: Option<i64> = flag(rest, "--expect").map(|s| s.parse().unwrap_or_else(|_| die("--expect MS")));
+    let md5 = |p: &str| -> String {
+        let o = std::process::Command::new("md5sum").arg(p).output().unwrap_or_else(|e| die(format!("md5sum: {e}")));
+        String::from_utf8_lossy(&o.stdout).split_whitespace().next().unwrap_or("").to_string()
+    };
+    let o = std::process::Command::new("tmauto")
+        .args(["verdict", tape, control, "--map", map])
+        .output()
+        .unwrap_or_else(|e| die(format!("tmauto: {e}")));
+    let txt = String::from_utf8_lossy(&o.stdout).to_string();
+    print!("{txt}");
+    let verdict_of = |name: &str| -> String {
+        let base = std::path::Path::new(name).file_name().unwrap().to_string_lossy().to_string();
+        txt.lines().find(|l| l.starts_with(&base)).map(|l| l[base.len()..].trim().to_string()).unwrap_or_else(|| "(no verdict line)".into())
+    };
+    let vt = verdict_of(tape);
+    let vc = verdict_of(control);
+    let ctrl_declared = gbx::tape::Tape::from_file(control).ok().and_then(|_| {
+        Container::load(control).ok().and_then(|c| c.declared_times().first().map(|t| t.1))
+    });
+    let tape_ms: Option<i64> = vt.split_whitespace().next().and_then(|s| s.parse::<f64>().ok()).map(|s| (s * 1000.0).round() as i64);
+    let ctrl_ms: Option<i64> = vc.split_whitespace().next().and_then(|s| s.parse::<f64>().ok()).map(|s| (s * 1000.0).round() as i64);
+    let host = std::process::Command::new("hostname").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let ok_tape = tape_ms.is_some() && expect.map(|e| Some(e) == tape_ms).unwrap_or(true);
+    let ok_ctrl = ctrl_ms.is_some() && ctrl_declared.map(|d| d as i64 == ctrl_ms.unwrap()).unwrap_or(true);
+    let now = std::process::Command::new("date").arg("+%Y-%m-%d %H:%M %Z").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let cert = format!(
+        "# {} — cross-box re-simulation ({now}, box {host}, plain `tmauto verdict`, no shim)\n\
+         Tape: {tape} (md5 {})\nMap: {map} (md5 {})\nControl: {control} (md5 {}, declared {})\n\n\
+         | file | verdict |\n|---|---|\n| tape | {vt} |\n| control | {vc} |\n\n{}\n",
+        match tape_ms { Some(ms) => format!("{}: {:.3}", if ok_tape { "CERTIFIED" } else { "NOT CERTIFIED" }, ms as f64 / 1000.0), None => "NOT CERTIFIED: no finish".to_string() },
+        md5(tape), md5(map), md5(control),
+        ctrl_declared.map(|d| format!("{:.3}", d as f64 / 1000.0)).unwrap_or_else(|| "?".into()),
+        if ok_tape && ok_ctrl { "Both hold: the tape finishes at the time claimed and the control reproduces its declared time on this box.".to_string() }
+        else { format!("PROBLEM: tape ok = {ok_tape}, control ok = {ok_ctrl}{}", expect.map(|e| format!(" (expected {:.3})", e as f64 / 1000.0)).unwrap_or_default()) }
+    );
+    std::fs::write(out, &cert).unwrap_or_else(|e| die(format!("{out}: {e}")));
+    print!("{cert}");
+    if !(ok_tape && ok_ctrl) {
+        std::process::exit(3);
+    }
+}
+
+/// `tminput field0 IN OUT --value N`: rewrite archive 0's `field0` header word
+/// (the u32 after format_version) and nothing else. For the container-identity
+/// question: what in a ghost, outside the packets, changes how the engine reads
+/// a partial steer?
+pub fn field0_cmd(rest: &[String]) {
+    let inp = rest.first().unwrap_or_else(|| die("tminput field0 IN OUT --value N"));
+    let out = rest.get(1).unwrap_or_else(|| die("tminput field0 IN OUT --value N"));
+    let v: u32 = need(rest, "--value").parse().unwrap_or_else(|_| die("--value N"));
+    let c = Container::load(inp).unwrap_or_else(|e| die(e));
+    let mut t = Tape::from_file(inp).unwrap_or_else(|e| die(e));
+    t.verbatim_is_identity().unwrap_or_else(|e| die(e));
+    println!("field0 {} -> {}", t.archives[0].field0, v);
+    t.archives[0].field0 = v;
+    write_back(&c, &t, out, Encoding::Verbatim);
+    println!("wrote {out}");
+}
+
+/// `tminput transplant --from A --into B --out OUT [--explicit]`: B's container and
+/// packets, with A's steer/accel/brake at every tick whose RACE time A also has
+/// (race = start_offset + 10·tick, so containers with different countdown
+/// lengths align on race time, not tick index). Ticks A does not cover keep B's.
+pub fn transplant_cmd(rest: &[String]) {
+    let a = need(rest, "--from");
+    let b = need(rest, "--into");
+    let out = need(rest, "--out");
+    let ta = Tape::from_file(a).unwrap_or_else(|e| die(e));
+    let c = Container::load(b).unwrap_or_else(|e| die(e));
+    let mut tb = Tape::from_file(b).unwrap_or_else(|e| die(e));
+    tb.verbatim_is_identity().unwrap_or_else(|e| die(e));
+    let (aa, ab) = (&ta.archives[0], &mut tb.archives[0]);
+    let (mut copied, mut kept) = (0, 0);
+    for (i, p) in ab.packets.iter_mut().enumerate() {
+        let race = ab.start_offset_ms as i64 + 10 * i as i64;
+        let j = (race - aa.start_offset_ms as i64) / 10;
+        if j >= 0 && (j as usize) < aa.packets.len() && (race - aa.start_offset_ms as i64) % 10 == 0 {
+            let q = &aa.packets[j as usize];
+            if p.steer != q.steer || p.accel != q.accel || p.brake != q.brake {
+                p.steer = q.steer;
+                p.accel = q.accel;
+                p.brake = q.brake;
+                p.vsame = false;
+            }
+            copied += 1;
+        } else {
+            kept += 1;
+        }
+    }
+    println!("transplanted {copied} ticks by race time ({kept} of B's ticks outside A kept); A start {} B start {}", aa.start_offset_ms, ab.start_offset_ms);
+    let enc = if rest.iter().any(|s| s == "--explicit") { Encoding::Explicit } else { Encoding::Verbatim };
+    write_back(&c, &tb, out, enc);
+    println!("wrote {out}");
+}
+
+/// `tminput swaparchive --from A --into B --out OUT`: B's container with A's WHOLE
+/// input archive (every packet, start_offset, length) in place of B's.
+pub fn swaparchive_cmd(rest: &[String]) {
+    let a = need(rest, "--from");
+    let b = need(rest, "--into");
+    let out = need(rest, "--out");
+    let ta = Tape::from_file(a).unwrap_or_else(|e| die(e));
+    let c = Container::load(b).unwrap_or_else(|e| die(e));
+    let mut tb = Tape::from_file(b).unwrap_or_else(|e| die(e));
+    tb.archives[0] = ta.archives[0].clone();
+    let body = tb.splice_into(c.body(), Encoding::Verbatim).unwrap_or_else(|e| die(e));
+    container::write_gbx(&c.gbx, body, out).unwrap_or_else(|e| die(e));
+    let back = Tape::from_file(out).unwrap_or_else(|e| die(e));
+    println!("wrote {out}: {} ticks, start_offset {} (A had {} ticks, {})", back.n(), back.archives[0].start_offset_ms, ta.n(), ta.archives[0].start_offset_ms);
+}
+
+fn find_skippable(body: &[u8], id: u32) -> Option<(usize, usize, usize)> {
+    let mut i = 0usize;
+    while i + 12 <= body.len() {
+        if u32::from_le_bytes(body[i..i + 4].try_into().unwrap()) == id && &body[i + 4..i + 8] == gbx::container::SKIP_MAGIC {
+            let size = u32::from_le_bytes(body[i + 8..i + 12].try_into().unwrap()) as usize;
+            if i + 12 + size <= body.len() {
+                return Some((i, i + 12, size));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `tminput chunkcopy --from A --into B --out OUT --chunk 0x0309202D`: B with A's
+/// payload for one skippable chunk (the validation block 0x0309202D, say).
+/// For the container-identity question: which chunk carries the input setting?
+pub fn chunkcopy_cmd(rest: &[String]) {
+    let a = need(rest, "--from");
+    let b = need(rest, "--into");
+    let out = need(rest, "--out");
+    let id = hex(need(rest, "--chunk"));
+    let ca = Container::load(a).unwrap_or_else(|e| die(e));
+    let cb = Container::load(b).unwrap_or_else(|e| die(e));
+    let (_, pa, sa) = find_skippable(ca.body(), id).unwrap_or_else(|| die(format!("{a}: no chunk {id:#x}")));
+    let (ob, pb, sb) = find_skippable(cb.body(), id).unwrap_or_else(|| die(format!("{b}: no chunk {id:#x}")));
+    let mut body = Vec::with_capacity(cb.body().len() + sa);
+    body.extend_from_slice(&cb.body()[..ob + 8]);
+    body.extend_from_slice(&(sa as u32).to_le_bytes());
+    body.extend_from_slice(&ca.body()[pa..pa + sa]);
+    body.extend_from_slice(&cb.body()[pb + sb..]);
+    container::write_gbx(&cb.gbx, body, out).unwrap_or_else(|e| die(e));
+    println!("wrote {out}: chunk {id:#x} payload {sb} B -> {sa} B from {a}");
+}
+
+/// `tminput valset IN OUT --field seed|u02|u03|u04|wall_start|wall_end|checksum|os|cpu --value N`
+/// Rewrite one u32 of the validation block (0x0309202D) in place. Layout (gbx::manifest):
+/// u01, exe string, checksum, os, cpu, wall_start, wall_end, title string, 32-byte title checksum,
+/// u02 (settings flags), u03 (start cp index), seed, u04, settings string.
+pub fn valset_cmd(rest: &[String]) {
+    let inp = rest.first().unwrap_or_else(|| die("tminput valset IN OUT --field F --value N"));
+    let out = rest.get(1).unwrap_or_else(|| die("tminput valset IN OUT --field F --value N"));
+    let field = need(rest, "--field").as_str();
+    let value: i64 = need(rest, "--value").parse().unwrap_or_else(|_| die("--value N"));
+    let c = Container::load(inp).unwrap_or_else(|e| die(e));
+    let mut body = c.body().to_vec();
+    let (_, p, n) = find_skippable(&body, 0x0309_202D).unwrap_or_else(|| die("no validation chunk"));
+    let end = p + n;
+    let mut o = p;
+    let rd = |o: &mut usize, body: &[u8]| -> u32 { let v = u32::from_le_bytes(body[*o..*o + 4].try_into().unwrap()); *o += 4; v };
+    let skip_string = |o: &mut usize, body: &[u8]| { let l = u32::from_le_bytes(body[*o..*o + 4].try_into().unwrap()) as usize; *o += 4 + l; };
+    let flag = rd(&mut o, &body);
+    if flag != 0 { die::<()>("embedded-inputs validation block: unsupported"); }
+    skip_string(&mut o, &body); // exe
+    let off_checksum = o; o += 4;
+    let off_os = o; o += 4;
+    let off_cpu = o; o += 4;
+    let off_ws = o; o += 4;
+    let off_we = o; o += 4;
+    skip_string(&mut o, &body); // title
+    o += 32; // title checksum
+    let off_u02 = o; o += 4;
+    let off_u03 = o; o += 4;
+    let off_seed = o; o += 4;
+    let off_u04 = o;
+    let _ = end;
+    let off = match field {
+        "seed" => off_seed, "u02" | "settings_flags" => off_u02, "u03" => off_u03, "u04" => off_u04,
+        "wall_start" => off_ws, "wall_end" => off_we, "checksum" => off_checksum, "os" => off_os, "cpu" => off_cpu,
+        _ => die(format!("unknown field {field}")),
+    };
+    let old = u32::from_le_bytes(body[off..off + 4].try_into().unwrap());
+    body[off..off + 4].copy_from_slice(&(value as u32).to_le_bytes());
+    container::write_gbx(&c.gbx, body, out).unwrap_or_else(|e| die(e));
+    println!("wrote {out}: {field} {old} ({}) -> {value}", old as i32);
 }

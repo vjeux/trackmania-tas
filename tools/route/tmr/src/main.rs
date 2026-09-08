@@ -180,6 +180,10 @@ fn build_one(d: &Path, o: &BuildOpts, log: &mut Vec<String>) -> Result<(String, 
         Geometry::None
     } else {
         let mp = find_map(&uid, &o.maps).ok_or_else(|| format!("{uid}: no .Map.Gbx in {:?} (use --maps or --no-geometry)", o.maps))?;
+        let kind = data::set_car_kind_from_map(&mp);
+        if kind != 0 {
+            log.push(format!("  {uid}: map.json car kind {kind} (0 Stadium, 1 Snow, 2 Rally, 3 Desert) → every row's car"));
+        }
         build_geometry(o.fv, &mp, &gates, false).map_err(|e| format!("{uid}: geometry build failed: {e}"))?
     };
     let feat = featurizer(&geo);
@@ -282,7 +286,15 @@ fn load_cache(args: &[String]) -> (Vec<Rows>, Vec<u8>) {
                 continue;
             }
         }
+        let mut r = r;
         let h = if data::held_out(&r.map_uid) { 1 } else if force.contains(&r.map_uid) { 2 } else { 0 };
+        // --train-rows N: subsample each TRAINING map's rows at load (seed 7, uniform) — the memory lever when the
+        // cache holds more than the box can train (v2 rows are 10.8 KB each; held-out rows stay whole)
+        if h == 0 {
+            if let Some(n) = flag(args, "--train-rows").and_then(|s| s.parse::<usize>().ok()) {
+                r.subsample(n, 7);
+            }
+        }
         held.push(h);
         rows.push(r);
     }
@@ -356,7 +368,7 @@ fn eval_sets(w: &Weights, rows: &[Rows], held: &[u8], keep: &[&str], dev: &candl
     let per_map = |r: &Rows| -> tmr::eval::Report {
         let s1 = Set::from_rows(&[r], keep);
         let p1 = tmr::train::predict_all_candle(w, &s1, dev).unwrap_or_else(|e| die(&e));
-        tmr::eval::evaluate(&s1, &p1, 7)
+        tmr::eval::evaluate(&s1, &p1, 7, w.max_speed)
     };
     out.push_str("### Per map (two-gate pairs: one random negative per positive; DW = distance-wrong pairs)\n");
     out.push_str("| split | map | pairs | R % | distance % | margin | informative | nearest-neg R/dist | DW pairs (share) | R on DW % | ECE | AUC | human-leg MAE |\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
@@ -391,7 +403,7 @@ fn eval_sets(w: &Weights, rows: &[Rows], held: &[u8], keep: &[&str], dev: &candl
         }
         let set = Set::from_rows(&set_rows, keep);
         let pred = tmr::train::predict_all_candle(w, &set, dev).unwrap_or_else(|e| die(&e));
-        let rep = tmr::eval::evaluate(&set, &pred, 7);
+        let rep = tmr::eval::evaluate(&set, &pred, 7, w.max_speed);
         out.push_str(&format!("[{name}] {} maps\n", set_rows.len()));
         out.push_str(&tmr::eval::render(name, &rep));
     }
@@ -441,6 +453,9 @@ fn cmd_train(args: &[String]) {
     if let Some(p) = flag(args, "--patience") {
         cfg.patience = p.parse().unwrap_or_else(|_| die("--patience N"));
     }
+    if let Some(m) = flag(args, "--max-speed") {
+        cfg.max_speed = m.parse().unwrap_or_else(|_| die("--max-speed M_S"));
+    }
     let out = PathBuf::from(flag(args, "--out").unwrap_or_else(|| die("--out r.tmw")));
     let dev = candle_core::Device::Cpu;
     let mut report = format!("# tmr train — {}\n\n## Split (by MAP: fnv1a64(uid) % 10 == 0 held out; --held-out adds {:?})\n{}\n", provenance("train"), flag(args, "--held-out").unwrap_or_default(), split_summary(&rows, &held, &names));
@@ -466,7 +481,7 @@ fn cmd_train(args: &[String]) {
         "ablation": cfg.ablation,
         "kind": kind_of(args),
         "mirror_augmentation": mirror,
-        "noise": cfg.noise, "dropout": cfg.dropout, "geo_drop": cfg.geo_drop, "weight_decay": cfg.weight_decay, "lr": cfg.lr, "hidden_cfg": cfg.hidden,
+        "noise": cfg.noise, "dropout": cfg.dropout, "geo_drop": cfg.geo_drop, "max_speed": cfg.max_speed, "weight_decay": cfg.weight_decay, "lr": cfg.lr, "hidden_cfg": cfg.hidden,
         "hidden": cfg.hidden,
         "epochs_run": rep.epochs_run,
         "best_epoch": rep.best_epoch,
@@ -565,6 +580,7 @@ struct PlanCtx {
 
 fn load_plan_ctx(args: &[String]) -> PlanCtx {
     let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
+    let _ = tmr::data::set_car_kind_from_map(Path::new(&map));
     let gp = flag(args, "--gates").unwrap_or_else(|| die("--gates gates.json required"));
     let gates = tmroute::io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
     let model = PathBuf::from(flag(args, "--model").unwrap_or_else(|| die("--model r.tmw")));
@@ -677,11 +693,31 @@ fn cmd_plan(args: &[String]) {
         if let Some(f) = flag(args, "--p-step") { c.p_step_floor = f.parse().unwrap_or(0.05); }
         if let Some(p) = flag(args, "--penalty") { c.penalty_ms = p.parse().unwrap_or(3000.0); }
         c.fast = has(args, "--fast-fan");
-        // the same parallel precompute + budget as the pure chain (the cost is inside Chained; a memo on top saw 0 hits)
+        // price ONLY the hybrid's R-set (graph-missing, detour, override candidates — decided from geometry before
+        // planning) so the budget never truncates and two runs of the same models agree (MODEL F21, 12:59Z);
+        // --precompute-all restores the full n²×5 set
         let budget = std::time::Duration::from_secs_f64(flag(args, "--budget-s").and_then(|s| s.parse().ok()).unwrap_or(300.0));
         let cthreads: usize = flag(args, "--chain-threads").and_then(|s| s.parse().ok()).unwrap_or(32);
-        let (done, total, secs) = c.precompute(cthreads, budget);
-        println!("  chained precompute (hybrid): {done}/{total} edges priced in {secs:.1} s on {cthreads} threads (budget {:.0} s){}", budget.as_secs_f64(), if done < total { " — the rest fall back to the gate head" } else { "" });
+        let (done, total, secs) = if has(args, "--precompute-all") {
+            c.precompute(cthreads, budget)
+        } else {
+            let cand_ratio: f32 = flag(args, "--override-cand").and_then(|s| s.parse().ok()).unwrap_or(1.5);
+            let probe = tmplan::estimator::Hybrid { geo: &geo, learned: &geo, geo_time: Some(&geo), override_p: 1.0, override_frac: 0.0, detour_ratio: flag(args, "--detour").and_then(|s| s.parse().ok()).unwrap_or(4.0), detour_speed: flag(args, "--detour-speed").and_then(|s| s.parse().ok()).unwrap_or(50.0), nodes, len: &len_m, counts: std::cell::Cell::new((0, 0)) };
+            let (mut set, nm, nd, nc) = probe.r_set(cand_ratio);
+            let n = nodes.pos.len();
+            // DETERMINISTIC order (graph-missing, then detour, then candidates; each by chord) and an optional job cap
+            // (--max-r-jobs K: the first K (bucket, from, to) jobs of that order — the SAME jobs every run, unlike a
+            // wall-clock cut) so two runs of the same models agree
+            let chord = |a: usize, b: usize| { let p = nodes.pos[a]; let q = nodes.pos[b]; ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt() };
+            let class = |from: usize, to: usize| -> u8 { let g = geo.estimate(StateBucket::of_speed(0.0), None, from, to); let has_path = len_m[from][to].is_finite() && g.kind == tmplan::estimator::EdgeKind::Surface; if !has_path { 0 } else { let implied = if g.expected_ms > 0 { len_m[from][to] / (g.expected_ms as f32 / 1000.0) } else { f32::INFINITY }; if len_m[from][to] > probe.detour_ratio * chord(from, to).max(20.0) || implied < probe.detour_speed { 1 } else { 2 } } };
+            set.sort_by(|a, b| (class(a.0, a.1), chord(a.0, a.1)).partial_cmp(&(class(b.0, b.1), chord(b.0, b.1))).unwrap());
+            let max_jobs: usize = flag(args, "--max-r-jobs").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let mut capped = 0usize;
+            if max_jobs > 0 { let mut jobs = 0usize; let mut keep = Vec::new(); for &(f, t) in &set { let j = if f == 0 { 1 } else { 5 }; if jobs + j > max_jobs { capped += 1; continue; } jobs += j; keep.push((f, t)); } set = keep; }
+            println!("  hybrid R-set: {} of {} edges (graph-missing {nm}, detour {nd}, override candidates path > {cand_ratio:.1}× chord {nc}){}", set.len() + capped, n * (n - 1), if capped > 0 { format!(" — --max-r-jobs {max_jobs}: {capped} edges beyond the cap left to the gate head (deterministic)") } else { String::new() });
+            c.precompute_only(cthreads, budget, &set)
+        };
+        println!("  chained precompute (hybrid): {done}/{total} (bucket, from, to) jobs priced in {secs:.1} s on {cthreads} threads (budget {:.0} s){}", budget.as_secs_f64(), if done < total { " — BUDGET CUT: the rest fall back to the gate head" } else { "" });
         c.fallback = Some(tmr::estimator::REstimator { w, feat: &feat, gates, nodes, surf, h_max, h_min, keep: keep.clone(), p_floor: 0.0 });
         Some(c)
     } else { None };
@@ -773,7 +809,7 @@ fn cmd_legs(args: &[String]) {
         c.fast = has(args, "--fast-fan");
         c
     });
-    let ho = flag(args, "--human-orders").unwrap_or_else(|| die("--human-orders human-orders.tsv"));
+    let ho = flag(args, "--human-orders");
     // --starts starts.tsv: the HUMAN's real states (GEN's sampled starts) — for each leg, the local head is asked
     // directly from the human's first state after gate A to gate B's centre at h 400 and 600 (F22: head or fan?)
     let human_starts: Vec<tmr::data::StartInfo> = flag(args, "--starts").map(|p| {
@@ -783,10 +819,44 @@ fn cmd_legs(args: &[String]) {
         v.sort_by_key(|s| (if s.source == "human-leg" { 0 } else { 1 }, s.race_ms));
         v
     }).unwrap_or_default();
-    let s = std::fs::read_to_string(&ho).unwrap_or_else(|e| die(&e.to_string()));
     // group → node index
     let node_of_group: HashMap<u32, usize> = nodes.groups.iter().enumerate().skip(1).map(|(i, g)| (*g, i)).collect();
     let mut orders: HashMap<Vec<u32>, (usize, Vec<i32>)> = HashMap::new(); // order (groups) → (count, cp_ms of the first)
+    if ho.is_none() {
+        // no human-orders file (the F22 community maps): derive each ghost's order from its human-leg rows — the
+        // gate GROUP nearest to where the car was at each crossing (cps_before = k), in k order
+        if human_starts.is_empty() {
+            die("--human-orders human-orders.tsv, or --starts starts.tsv with human-leg rows");
+        }
+        let mut by_ghost: HashMap<String, Vec<&tmr::data::StartInfo>> = HashMap::new();
+        for s in human_starts.iter().filter(|s| s.source == "human-leg" && s.cps_before >= 1) {
+            by_ghost.entry(s.ghost_md5.clone()).or_default().push(s);
+        }
+        for (_g, mut rows) in by_ghost {
+            rows.sort_by_key(|s| s.cps_before);
+            let mut groups = Vec::new();
+            let mut cp_ms = Vec::new();
+            for (k, s) in rows.iter().enumerate() {
+                if s.cps_before as usize != k + 1 {
+                    break; // a gap: this ghost's crossings are incomplete
+                }
+                let g = gates.gates.iter().min_by(|a, b| {
+                    let da = (a.centre[0] - s.state.pos[0]).powi(2) + (a.centre[2] - s.state.pos[2]).powi(2);
+                    let db = (b.centre[0] - s.state.pos[0]).powi(2) + (b.centre[2] - s.state.pos[2]).powi(2);
+                    da.partial_cmp(&db).unwrap()
+                });
+                let Some(g) = g else { break };
+                groups.push(g.group);
+                cp_ms.push(s.race_ms);
+            }
+            if groups.is_empty() {
+                continue;
+            }
+            let e = orders.entry(groups).or_insert((0, cp_ms));
+            e.0 += 1;
+        }
+    }
+    let s = ho.as_ref().map(|p| std::fs::read_to_string(p).unwrap_or_else(|e| die(&e.to_string()))).unwrap_or_default();
     for (i, line) in s.lines().enumerate() {
         if i == 0 {
             continue;
@@ -1028,7 +1098,7 @@ fn cmd_watch(args: &[String]) {
                 if let Some(h) = flag(args, "--held-out") {
                     cmd.args(["--held-out", &h]);
                 }
-                for pass in ["--batch", "--lr", "--wd", "--hidden", "--patience", "--max-rss-gb"] {
+                for pass in ["--batch", "--lr", "--wd", "--hidden", "--patience", "--max-rss-gb", "--train-rows"] {
                     if let Some(v) = flag(args, pass) {
                         cmd.args([pass, &v]);
                     }
@@ -1124,7 +1194,7 @@ fn build_geometry(fv: u32, map: &Path, gates: &tmroute::gates::GatesFile, verbos
             let mut store = open_store()?;
             let m = tmmaps::map::MapFile::load(map);
             let t0 = std::time::Instant::now();
-            let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts::default());
+            let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts { with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() });
             if scene.tris.len() < 1000 {
                 return Err(format!("LocalScene has only {} triangles — the pak or the map is not what it should be (a wiped /tmp/tmp/server reads as an empty scene); refusing to build features on it", scene.tris.len()));
             }

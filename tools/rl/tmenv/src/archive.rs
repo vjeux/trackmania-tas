@@ -19,6 +19,10 @@ pub struct Entry {
     pub race_ms: i32,
     /// Higher is better; ties broken by the earlier race clock.
     pub score: f32,
+    /// 0 = a human-line snapshot (the donor tape replayed: its prefix carries
+    /// HUMAN inputs and must never be banked as a policy best), 1 = a policy
+    /// snapshot. LEARN's rule since 2719fe0f.
+    pub origin: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -133,5 +137,83 @@ mod tests {
         let mut a = StateArchive::new(50.0, 1);
         a.offer(e(1, 10.0, 2000, 1.0));
         assert_eq!(a.offer(e(2, 12.0, 1500, 1.0)), Some(StateId(1)));
+    }
+}
+
+/// One persisted state: the archive's entry plus the action prefix that
+/// re-materialises it (`ForkEnv::import_snapshot`). Steer as i8, gas/brake as
+/// 0/1, one triple per tick from the root.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SavedEntry {
+    pub progress_m: f32,
+    pub race_ms: i32,
+    pub score: f32,
+    #[serde(default)]
+    pub origin: u8,
+    pub prefix: Vec<[i8; 3]>,
+}
+
+/// The archive on disk (JSON): its parameters and every entry with its prefix.
+/// A state IS its prefix in this env (G4: replaying it from the root lands on
+/// the same bytes), so nothing engine-side is stored -- a new run on the same
+/// map and template loads the file and starts from the human line without
+/// replaying it first; each state is re-materialised the first time it is
+/// reset to (k-tick chunks, ~0.4 s for a 20 s prefix) and cached under the pin
+/// budget after that.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct SavedArchive {
+    pub bucket_m: f32,
+    pub per_bucket: usize,
+    /// The template the prefixes were driven in (its file name); a different
+    /// template makes the prefixes meaningless, so `load` refuses a mismatch.
+    pub template: String,
+    pub entries: Vec<SavedEntry>,
+}
+
+impl StateArchive {
+    /// Write the archive, prefixes included, for `env`'s snapshots.
+    pub fn save(&self, env: &crate::forkenv::ForkEnv, template: &str, path: &std::path::Path) -> Result<usize, String> {
+        let mut entries = Vec::new();
+        for e in self.entries() {
+            let Some(p) = env.snapshot_prefix(&e.id) else { continue };
+            entries.push(SavedEntry {
+                progress_m: e.progress_m,
+                race_ms: e.race_ms,
+                score: e.score,
+                origin: e.origin,
+                prefix: p.iter().map(|a| [a.steer, a.gas as i8, a.brake as i8]).collect(),
+            });
+        }
+        let n = entries.len();
+        let s = SavedArchive { bucket_m: self.bucket_m, per_bucket: self.per_bucket, template: template.to_string(), entries };
+        let j = serde_json::to_string(&s).map_err(|e| e.to_string())?;
+        std::fs::write(path, j).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(n)
+    }
+
+    /// Read an archive back into `env`: every prefix becomes an imported
+    /// snapshot, every entry is offered as saved. `template` must be the one
+    /// the file names.
+    pub fn load(path: &std::path::Path, env: &mut crate::forkenv::ForkEnv, template: &str) -> Result<StateArchive, String> {
+        let j = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let s: SavedArchive = serde_json::from_str(&j).map_err(|e| format!("{}: {e}", path.display()))?;
+        if s.template != template {
+            return Err(format!(
+                "{}: the archive was driven in template {:?}, this env runs {:?} -- the prefixes would not be the same states",
+                path.display(),
+                s.template,
+                template
+            ));
+        }
+        let mut a = StateArchive::new(s.bucket_m, s.per_bucket);
+        for e in s.entries {
+            let prefix: Vec<tmstate::Action> =
+                e.prefix.iter().map(|t| tmstate::Action { steer: t[0], gas: t[1] != 0, brake: t[2] != 0 }).collect();
+            let id = env.import_snapshot(prefix)?;
+            if let Some(evicted) = a.offer(Entry { id, progress_m: e.progress_m, race_ms: e.race_ms, score: e.score, origin: e.origin }) {
+                env.drop_snapshot(&evicted);
+            }
+        }
+        Ok(a)
     }
 }

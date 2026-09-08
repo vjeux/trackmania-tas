@@ -330,8 +330,10 @@ pub fn check_rows(rows: &[Row]) -> Result<RowCheck, String> {
     if c.quat_err > 1e-3 {
         return Err(format!("not a unit quaternion (p99.5 |q|-1 = {:.3e}): {}", c.quat_err, c));
     }
-    // floor 1.0 m/s (ENV velcheck 2026-09-07: the residual is the solver's per-tick contact-projection
-    // correction, ~1.5 mm/tick on tarmac and ~6 mm/tick on a bouncing Rally car = 0.6 m/s at 100 Hz)
+    // Floor 1.0 m/s: a standing-start car at full gas reads 0.55-0.8 m/s here over
+    // its first 2 s (Bear's Valley, A Crumpled Up Piece of Paper, Never Odd or
+    // Even, Against the Current -- all identity-exact through the env), and the
+    // S01 WR at 95 m/s reads 0.5; a wrong slot reads tens. (ENV 2026-09-07)
     if c.vel_err > (0.02 * c.mean_speed).max(1.0) {
         return Err(format!("position derivative disagrees with the velocity triple: {}", c));
     }
@@ -370,24 +372,31 @@ pub struct Vis {
     pub turbo_time: f32,
     pub is_turbo: bool,
     pub ground_contact: bool,
-    /// Reactor boost level (0 none, 1, 2) and type (0 none, 1 down, 2 up) -- the INPUT arm's
-    /// EFFECTS.md (u32 at vis +0x174 / +0x178, 100 % against ghost telemetry b89 bits 5-6 / 3-4);
-    /// decoded from the vis block already gathered (no new read). u8::MAX when unknown.
-    pub reactor_lvl: u8,
-    pub reactor_type: u8,
-    /// IsReactorGroundMode (flags bit 19), ReactorInputsX (bit 18), the boost enum (u32 +0x19c & 7),
-    /// reactor air control (+0x180..), simulation time coefficient (+0x230; slow-motion) -- EFFECTS.md.
-    pub reactor_ground_mode: bool,
-    pub reactor_inputs_x: bool,
-    pub boost_enum: u8,
-    pub reactor_air: [f32; 3],
-    pub sim_time_coef: f32,
     pub wheel_contact: [bool; 4],
     pub wheel_material: [u8; 4],
     pub wheel_slip: [f32; 4],
     pub wheel_damper: [f32; 4],
     pub wheel_steer: [f32; 4],
     pub wetness: f32,
+    // --- effects (INPUT arm, EFFECTS.md, 2026-09-07; verified 100 % against ghost
+    // samples on the Summer 2026 - 07 reactor run and the 18/20 reset/down runs) ---
+    /// The raw flags word at +0x88 (bits 18/19/20/24 named below; 4,6,7,8,9,10,
+    /// 12,17 unidentified -- likely no-engine/cruise/fragile).
+    pub flags_raw: u32,
+    /// Boost enum, u32(+0x19c) & 7.
+    pub boost_enum: u8,
+    /// Reactor boost level, u32(+0x174) & 3 (0 none, 1, 2).
+    pub reactor_lvl: u8,
+    /// Reactor type, u32(+0x178) & 3: 1 down, 2 up.
+    pub reactor_type: u8,
+    /// flags bit 19.
+    pub reactor_ground_mode: bool,
+    /// flags bit 18.
+    pub reactor_inputs_x: bool,
+    /// Reactor air control, f32 x3 at +0x180.
+    pub reactor_air: [f32; 3],
+    /// Simulation time coefficient (slow-motion), f32 +0x230; 1.0 normally.
+    pub sim_time_coef: f32,
 }
 
 impl Vis {
@@ -404,13 +413,6 @@ impl Vis {
         lateral_speed: f32::NAN,
         turbo_time: f32::NAN,
         is_turbo: false,
-        reactor_lvl: u8::MAX,
-        reactor_type: u8::MAX,
-        reactor_ground_mode: false,
-        reactor_inputs_x: false,
-        boost_enum: u8::MAX,
-        reactor_air: [f32::NAN; 3],
-        sim_time_coef: f32::NAN,
         ground_contact: false,
         wheel_contact: [false; 4],
         wheel_material: [u8::MAX; 4],
@@ -418,6 +420,14 @@ impl Vis {
         wheel_damper: [f32::NAN; 4],
         wheel_steer: [f32::NAN; 4],
         wetness: f32::NAN,
+        flags_raw: 0,
+        boost_enum: u8::MAX,
+        reactor_lvl: u8::MAX,
+        reactor_type: u8::MAX,
+        reactor_ground_mode: false,
+        reactor_inputs_x: false,
+        reactor_air: [f32::NAN; 3],
+        sim_time_coef: f32::NAN,
     };
 
     /// Decode a gathered 0x360-byte vis state.
@@ -439,19 +449,20 @@ impl Vis {
             turbo_time: f(0x1ac),
             is_turbo: flags & (1 << 24) != 0,
             ground_contact: flags & (1 << 20) != 0,
-            reactor_lvl: u(0x174).min(3) as u8,
-            reactor_type: u(0x178).min(3) as u8,
-            reactor_ground_mode: flags & (1 << 19) != 0,
-            reactor_inputs_x: flags & (1 << 18) != 0,
-            boost_enum: (u(0x19c) & 7) as u8,
-            reactor_air: [f(0x180), f(0x184), f(0x188)],
-            sim_time_coef: f(0x230),
             wheel_contact: [false; 4],
             wheel_material: [0; 4],
             wheel_slip: [0.0; 4],
             wheel_damper: [0.0; 4],
             wheel_steer: [0.0; 4],
             wetness: f(0x328),
+            flags_raw: flags,
+            boost_enum: (u(0x19c) & 7) as u8,
+            reactor_lvl: (u(0x174) & 3) as u8,
+            reactor_type: (u(0x178) & 3) as u8,
+            reactor_ground_mode: flags & (1 << 19) != 0,
+            reactor_inputs_x: flags & (1 << 18) != 0,
+            reactor_air: [f(0x180), f(0x184), f(0x188)],
+            sim_time_coef: f(0x230),
         };
         for k in 0..4 {
             let w = 0xa8 + 44 * k;

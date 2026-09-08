@@ -503,12 +503,14 @@ pub fn resolve_with(
     // 8. the state itself must be a state.
     let copy = word::<0x34>(&mut read, phy + QUAT_IN_PHY, "phy copy-out")?;
     let f = |o: usize| f32::from_le_bytes(copy[o..o + 4].try_into().unwrap());
+    // the words as read, for the error: quat (w,x,y,z) at 0, position at 16, velocity at 28
+    let words = || format!("quat ({}, {}, {}, {}) pos ({}, {}, {}) vel ({}, {}, {})", f(0), f(4), f(8), f(12), f(16), f(20), f(24), f(28), f(32), f(36));
     if !(0..0x34).step_by(4).all(|o| f(o).is_finite()) {
-        return Err(format!("phy {:#x} holds non-finite state", phy));
+        return Err(format!("phy {:#x} holds non-finite state: {}", phy, words()));
     }
     let qn = (f(0).powi(2) + f(4).powi(2) + f(8).powi(2) + f(12).powi(2)).sqrt();
     if (qn - 1.0).abs() > 1e-3 {
-        return Err(format!("phy {:#x}: |q| = {} -- not an attitude", phy, qn));
+        return Err(format!("phy {:#x}: |q| = {} -- not an attitude: {}", phy, qn, words()));
     }
     let kind = word::<4>(&mut read, phy + KIND_WORD_IN_PHY, "kind word").ok().map(|w| kind_from_word(u32::from_le_bytes(w))).unwrap_or(u8::MAX);
     Ok(Car {

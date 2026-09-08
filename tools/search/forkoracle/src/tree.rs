@@ -561,8 +561,6 @@ mod tests {
             pid: 1,
             boundary: Some(171),
             dead: false,
-            sim_ms: 0,
-            race_start: 0,
         };
         assert!(n.check_forward(0, 0).is_ok(), "an empty branch from tick 0 must be allowed");
         assert!(n.check_forward(0, 1).is_err(), "a non-empty write at tick 0 must not be");

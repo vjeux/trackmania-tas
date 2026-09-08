@@ -488,6 +488,7 @@ pub fn consensus(gates: &GatesFile, runs: &[Run], rows: &[OrderRow], produced_by
         spawn: gates.spawn.pos,
         spawn_yaw: spawn_dir[0].atan2(spawn_dir[2]),
         source: "router-human".into(),
+        speed_hint: None,
         legs: Some(legs),
         route: Some(RouteMeta {
             route_version: ROUTE_VERSION,

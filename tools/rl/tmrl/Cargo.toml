@@ -2,15 +2,27 @@
 name = "tmrl"
 version = "0.1.0"
 edition = "2021"
+description = "LEARN arm: BC trainer, PPO (a7aa56c port), tracking reward, per-map fine-tune, eval harness, expert iteration."
 
 [dependencies]
+tmstate = { path = "../tmstate" }
 tmenv = { path = "../tmenv" }
+tmobs = { path = "../tmobs" }
 branch = { path = "../../search/branch" }
 forkoracle = { path = "../../search/forkoracle" }
 fk = { path = "../../fk/fk" }
 tmauto = { path = "../../tmauto" }
-candle-core = "0.9"
-candle-nn = "0.9"
+# The ghost container: the 10 ms input tape and the 50 ms telemetry record. std-only crate.
+gbx = { path = "../../gbx" }
+# 0.9.2 needs rust >= 1.87 (`is_multiple_of`); the boxes have 1.85.
+candle-core = "=0.9.1"
+candle-nn = "=0.9.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lib]
+name = "tmrl"
+path = "src/lib.rs"
 
 [[bin]]
 name = "tmrl"

@@ -1,0 +1,18 @@
+[package]
+name = "tmroll"
+version = "0.1.0"
+edition = "2021"
+description = "The multi-box rollout worker: one process per box, episodes over TCP (ROLLOUT-WORKER.md)"
+
+[dependencies]
+tmenv = { path = "../tmenv" }
+tmstate = { path = "../tmstate" }
+tmobs = { path = "../tmobs" }
+tmproto = { path = "../tmproto" }
+fk = { path = "../../fk/fk" }
+tmrl = { path = "../tmrl" }
+serde_json = "1"
+
+[[bin]]
+name = "tmroll"
+path = "src/main.rs"

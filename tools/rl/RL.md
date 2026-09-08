@@ -600,3 +600,27 @@ that reports green when it examined nothing is the worst kind of green.
    which is the semantic clause of §9.4 and fails by 394 m today.
 3. Re-run `tmenv reset-control` and `tmenv template-control` together.
 4. Only then re-measure throughput and resume training.
+
+## 11. Operating rules learned 2026-09-07 (ENV arm)
+
+* **Work dirs on tmpfs.** `--work /dev/shm/<name>` for every `tmenv`/`tmrl` run. On a disk filesystem (`/tmp` on
+  the devvms is btrfs on a virtual disk) the per-step trace-file churn caps a whole 166-core box at ~7.8k env-steps/s
+  whatever the worker count, CPUs idle; on `/dev/shm` the same box gives 12.9k (k=1) to 14.6k (k=10) env-steps/s at
+  96 workers — the reference table for the launcher is
+  `env/controls/2026-09-07-merge-locate-perf-9f81d1d0/G5-reference-96workers-tmpfs-cfa96ecf.log`. Both binaries
+  WARN when `--work` is not on tmpfs (`tmenv::warn_if_not_tmpfs`).
+* **The label convention** (tmstate `LABEL CONVENTION`): env row T ≡ `fk regen --dump-truth` row T ≡ the ghost's
+  telemetry sample T, all the physics at race T (three-way check, 0.5 mm at Δt = 0 on Summer 2026 - 01/02). No lag
+  constant anywhere; `Layout.clock = sim+0x48`, `clock_bias = race_start` (LOCATE.md).
+* **The car is derived, not located** (`forkoracle::car::locate`, LOCATE.md); the env re-derives the driven vehicle
+  in the paused node before every fork and redoes a step that crossed a car-switch gate tick by tick.
+* **Templates:** a policy template has validation seed 0 (`tmenv from-template`); an identity replay keeps the donor's
+  seed and countdown records (`--keep-seed`); a map with no ghost gets `--map M --declare-ms T --cps N` (a borrowed
+  recorded container, INPUT's recipe). Human tapes reproduce only in their own container (the validation seed
+  quantizes inputs).
+* **Probes:** the boundary comes from the node's own hello clock (PERF); the page-fault probe is a 1-in-50 control.
+  Its SIGSEGV handler runs on an alternate stack and allocates nothing — the input array is a heap chunk whose edge
+  pages hold neighbouring chunk headers, so the engine faults on them from inside malloc (that was the 10 % start-up
+  flake and the `main_arena` hang; both gone).
+* **Before consuming another box's fresh bank files** run `persistent-storage remount private-30d` INTERACTIVELY (over a
+  non-interactive ssh it fails for want of an identity and leaves the store unmounted).
