@@ -929,22 +929,33 @@ fn is_tween_material(store: &mut crate::store::DataStore, p: &str) -> bool {
 }
 
 /// A vertex-tweened cloth (the flag) kept as a dyna entity of its own with
-/// its frames, frame table, tween material and the pack's inline-vertex form
-/// (`TINY_FLAG_TWEEN=1`, an experiment knob). OFF by default, and not because
-/// of a count: measured on 2026-09-08 (lineups on a flag-free tiny host), an
-/// embedded tween cloth is drawn ONLY while a stock Flag item is loaded in
-/// the map and within ~100 m — no stock, or one 300 m away, and the cloths
-/// are absent or garbage (crumpled shards, giant sails) — and even with a
-/// stock flag beside them, identical placements at DIFFERENT detail levels
-/// draw as garbage (39 in one row were fine; the same 39 spread over map 10
-/// were not; a single-level cloth, `TINY_FLAG_LODS=1`, fixed that lineup).
-/// The engine's frame table for the tween draw evidently comes from the
-/// stock visual, not ours. Production therefore uses no embedded tween at
-/// all: `Flag16m` placements become the stock `Flag8m` (the game's own
-/// half-size flag, `stock_half_variant`) and `Flag8m` placements a still
-/// cloth under the pack's `ItemFlagNoAnim` material (`add_dyna_object_file`).
+/// its frames, frame table, tween material and the pack's inline-vertex form.
+/// ON by default since 2026-09-08 evening (`TINY_FLAG_TWEEN=0` = the still
+/// cloth under `ItemFlagNoAnim`). What the day's lineups established: an
+/// embedded tween cloth never gets tween state of its own — its draw borrows
+/// the per-material frame state a STOCK flag's draw fills, so it is right
+/// only while a stock flag is DRAWN in the same view at the SAME detail level
+/// (the state indexes the level's frame table); no stock in view → bare pole,
+/// stock in the map but out of view → nothing or shards, different level →
+/// garbage (crumpled shards, giant sails). Hence the two halves of the form:
+/// the cloth keeps the PACK detail ladder (`add_dyna_tween_part`), and
+/// `tmmaps tiny` hangs a stock flag of the same kind upside down under every
+/// converted placement (`TINY_FLAG_DRIVER`, TINY.md "Animated items" — a
+/// named HACK; the proper self-contained form is still wanted). `Flag16m`
+/// placements are the stock `Flag8m` anyway (`stock_half_variant`); this is
+/// for the `Flag8m` ones.
 pub fn tween_parts_enabled() -> bool {
-    std::env::var("TINY_FLAG_TWEEN").map(|v| v == "1").unwrap_or(false)
+    if let Some(v) = TWEEN_OVERRIDE.with(|o| o.get()) {
+        return v;
+    }
+    std::env::var("TINY_FLAG_TWEEN").as_deref() != Ok("0")
+}
+
+thread_local! {
+    /// A per-bake override of `tween_parts_enabled` (tiny-library bakes the
+    /// STILL copy of a flag for the placements whose driver has nowhere to
+    /// hide): `Some(false)` while that copy is built, `None` otherwise.
+    pub static TWEEN_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
 fn name_in(tbl: &[(u32, String)], i: i32) -> Option<String> {
@@ -1317,13 +1328,16 @@ pub fn add_dyna_tween_part(store: &mut crate::store::DataStore, path: &str, at: 
     mesh.modifier_suffix = m.modifier_suffix.clone();
     mesh.no_split = true;
     mesh.all_lods = true;
-    // TINY_FLAG_LADDER=pack: the cloth's detail ladder keeps the PACK distances
-    // ([16, 64, 128, 512]) instead of the halved ones — the stock flag that
-    // drives the tween switches level at those, and the draw is right only
-    // while driver and cloth are at the same level (2026-09-08, L11/L17)
+    // The cloth's detail ladder keeps the PACK distances ([16, 64, 128, 256]
+    // on FlagSmall, [16, 64, 128, 512] on Flag) instead of the halved ones:
+    // the stock flag that drives the tween switches level at those, and the
+    // draw is right only while driver and cloth are at the same level (an13,
+    // 2026-09-08: proper cloth at 10–200 m with the pack ladder; the halved
+    // ladder is garbage in every band where the two disagree).
+    // `TINY_FLAG_LADDER=half` restores the halved ladder for A/B.
     mesh.ladder_scale = match std::env::var("TINY_FLAG_LADDER").as_deref() {
-        Ok("pack") => Some(1.0),
-        _ => None,
+        Ok("half") => None,
+        _ => Some(1.0),
     };
     // TINY_FLAG_LODS=all|N: every pack level with the ladder (all), or the ONE
     // level N for every distance (the 2026-09-08 probe of the mixed-level draw)

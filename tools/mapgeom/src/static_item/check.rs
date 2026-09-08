@@ -125,17 +125,30 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                                     _ => None,
                                 }
                             }
-                            // A self-animating part (the flag cloth: every visual carries a
-                            // frame table, 0x09006005, for its vertex-tween material) rides
+                            // A self-animating part (the flag cloth: its tween visuals carry a
+                            // frame table, 0x09006005, for the vertex-tween material; FlagSmall's
+                            // farthest level is a plain ItemFlagNoAnim cloth without one) rides
                             // without a constraint and without a hull, as in the pack
                             // (Flag.DynaObject.Gbx: both shape refs null; measured drawing and
                             // waving in a Summer 15 lineup, 2026-09-07).
-                            let is_tween = !s2.visuals.is_empty() && s2.visuals.iter().all(|vr| matches!(vr.inline.as_deref(), Some(super::Node::Visual(v)) if !v.sub_visuals.is_empty()));
+                            let is_tween = s2.visuals.iter().any(|vr| matches!(vr.inline.as_deref(), Some(super::Node::Visual(v)) if !v.sub_visuals.is_empty()));
                             if is_tween {
                                 tween_parts += 1;
                                 let hull = hull(&d.static_shape).or_else(|| hull(&d.dyna_shape));
                                 if hull.is_none() {
                                     hull_optional.push(parts.len());
+                                }
+                                // TW-01 (2026-09-08, anim thread): an embedded tween cloth borrows
+                                // the frame state of the stock flag drawn beside it, per detail
+                                // level — it is right only while both are at the same level, so
+                                // its ladder must be the PACK's ([16, 64, 128, 256] FlagSmall /
+                                // [16, 64, 128, 512] Flag), never the halved one and never a
+                                // single level (garbage shards or a bare pole in every band where
+                                // driver and cloth disagree; lineups an2–an13).
+                                let ladder: Vec<f32> = s2.lod_max_dist.clone();
+                                let pack_ladders: [&[f32]; 2] = [&[16.0, 64.0, 128.0, 256.0], &[16.0, 64.0, 128.0, 512.0]];
+                                if !pack_ladders.iter().any(|p| p.len() == ladder.len() && p.iter().zip(&ladder).all(|(a, b)| (a - b).abs() < 0.01)) {
+                                    problems.push(format!("entity {i}: TW-01 tween cloth ladder {ladder:?} is not the stock flag's ([16, 64, 128, 256] or [16, 64, 128, 512]) — the cloth borrows the stock driver's frame state per detail level and draws as garbage wherever the two levels differ"));
                                 }
                                 parts.push((format!("entity {i} (tween): "), s2, hull));
                             } else {

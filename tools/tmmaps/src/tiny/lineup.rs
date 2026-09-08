@@ -401,6 +401,16 @@ pub fn lineup_cmd(args: &[String]) {
             println!("  skin on {} ({}): {path}", names[k], n + k);
         }
     }
+    // --phases P0,P1,…: the anchored object's animation phase word (chunk
+    // 0x03101005, 4 on every Summer placement) per item of the row — the
+    // 2026-09-08 probe of whether it de-synchronises two kinematic pushers
+    if let Some(list) = cli::flag(args, "--phases") {
+        for (k, p) in list.split(',').filter(|s| !s.is_empty()).enumerate() {
+            let p: u32 = p.trim().parse().unwrap_or_else(|_| panic!("--phases wants integers, got {p:?}"));
+            let ok = m.set_item_anim_phase(n + k, p);
+            println!("  anim phase {p} on row item {k} ({}){}", n + k, if ok { "" } else { " — record has no 0x03101005 chunk" });
+        }
+    }
     if !embedded.is_empty() {
         // the same file placed several times is ONE archive entry / manifest row
         let mut seen: Vec<&str> = Vec::new();

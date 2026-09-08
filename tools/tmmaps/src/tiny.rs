@@ -134,14 +134,14 @@ fn push_veget(specs: &mut Vec<Spec>, mapping: &Mappings, alias: &str, origin: [f
     let Some(rows) = mapping.veget_by_alias.get(alias) else { return (0, 0) };
     let (s, c) = yaw.sin_cos();
     let mut skipped = 0usize;
-    for (k, (item, local, tree_yaw)) in rows.iter().enumerate() {
+    for (k, (item, local, tree_yaw, pitch)) in rows.iter().enumerate() {
         if skip.map(|set| set.contains(&k)).unwrap_or(false) {
             skipped += 1;
             continue;
         }
         let pos = [origin[0] + local[0] * c + local[2] * s, origin[1] + local[1], origin[2] - local[0] * s + local[2] * c];
         let y = yaw + tree_yaw;
-        specs.push(Spec { model: item.clone(), pos, yaw: y, frame: Some(([y, 0.0, 0.0], [0.0, 0.0, 0.0])), scale: 1.0, tag: None, order: 0, color });
+        specs.push(Spec { model: item.clone(), pos, yaw: y, frame: Some(([y, *pitch, 0.0], [0.0, 0.0, 0.0])), scale: 1.0, tag: None, order: 0, color });
     }
     (rows.len() - skipped, skipped)
 }
@@ -465,24 +465,30 @@ pub fn cmd(args: &[String]) {
     let original_items = specs.len();
     specs.extend(cluster_trees);
     // The flag cloth (Flag16m / Flag8m re-pointed at our vertex-tween copies)
-    // draws only while a STOCK flag item is loaded in the map AND NEAR: the
-    // tween draw follows the stock flag's frame table, so our cloth is right
-    // only while that flag renders the same detail level as ours — with the
-    // stock 300 m away or parked under the anchor the cloths are crumpled
-    // shards or giant sails (measured 2026-09-08, lineups L1/L2/L10/L11, full
-    // map 10). `TINY_FLAG_DRIVER` picks the form:
-    //   `twins[:DEPTH]` (depth 12 m): one stock flag of the same kind DEPTH
-    //     metres under EVERY converted flag placement — always about as far
-    //     from the camera as the cloth it drives (under test);
-    //   `anchor` (default until the twins are verified on a full map): the
-    //     2026-09-07 form, one stock flag per kind under the spawn — drives
-    //     nothing beyond ~100 m, so a published map's flags are garbage;
-    //   `0`: none.
-    // Only a TWEEN cloth (TINY_FLAG_TWEEN=1) needs a driver: the default flags
-    // are the stock Flag8m (Flag16m placements) and a still ItemFlagNoAnim
-    // cloth (Flag8m placements), neither of which animates.
-    let driver = std::env::var("TINY_FLAG_DRIVER").unwrap_or_else(|_| "anchor".into());
-    let tween_on = std::env::var("TINY_FLAG_TWEEN").as_deref() == Ok("1");
+    // draws only while a STOCK flag item is DRAWN in the same view: our tween
+    // draw borrows the per-material frame state the stock's draw fills each
+    // frame, and reads it right only at the SAME detail level (the state is a
+    // vertex base into the level's frame table). So (2026-09-08, anim thread,
+    // lineups an9–an13 on tiny 18): our cloth keeps the PACK detail ladder
+    // (`TINY_FLAG_LADDER=pack`, the builder's default for the tween part) and a
+    // stock flag of the same kind hangs UPSIDE DOWN at every converted flag
+    // placement — the same distance from the camera as the cloth it drives, so
+    // both switch level together; its pole and cloth point into the ground.
+    // Measured: proper waving cloth in the placement's own colour at 10–200 m
+    // with the driver in view (colour is not borrowed: green/blue/default
+    // cloths over red drivers). No stock drawn → bare pole; stock in the map
+    // but out of view → nothing or shards. `TINY_FLAG_DRIVER` picks the form:
+    //   `twins` (default): the upside-down stock flag at each placement, except
+    //     the placements the library marked `xf@` (nothing below to hide it in:
+    //     a deck over open air — those cloths stay at frame 0);
+    //   `twins:DEPTH`: upright, DEPTH metres under the placement (the 2026-09-08
+    //     morning probe form);
+    //   `anchor`: one stock flag per kind under the spawn (drives nothing
+    //     beyond ~100 m; kept for A/B); `0`: none.
+    // ⚠ HACK, named in TINY.md "Animated items" and in the build report: the
+    // proper form is a self-contained embedded tween, not found yet.
+    let driver = std::env::var("TINY_FLAG_DRIVER").unwrap_or_else(|_| "twins".into());
+    let tween_on = std::env::var("TINY_FLAG_TWEEN").as_deref() != Ok("0");
     if driver != "0" && tween_on {
         let is_converted_flag = |it: &crate::map::ItemRec| matches!(it.model.as_str(), "Flag16m" | "Flag8m") && mapping.items_by_index.get(&it.index).map(|m| m.model.ends_with(".Item.Gbx")).unwrap_or(false);
         if driver == "anchor" {
@@ -493,16 +499,40 @@ pub fn cmd(args: &[String]) {
                 println!("  flag driver: one stock {name} parked at {:.0},{:.0},{:.0} (keeps the tween cloths animating)", pos[0], pos[1], pos[2]);
             }
         } else {
-            let depth: f32 = driver.strip_prefix("twins").and_then(|s| s.strip_prefix(':')).and_then(|s| s.parse().ok()).unwrap_or(12.0);
-            let mut n = 0usize;
+            let depth: Option<f32> = driver.strip_prefix("twins").and_then(|s| s.strip_prefix(':')).and_then(|s| s.parse().ok());
+            let (mut n, mut skipped) = (0usize, 0usize);
             for it in source.items.iter().filter(|it| is_converted_flag(it)) {
+                if mapping.no_driver.contains(&it.index) {
+                    skipped += 1;
+                    continue;
+                }
                 let mut pos = transform(it.pos, source_anchor, target_anchor, scale);
-                pos[1] -= depth;
-                specs.push(Spec { model: it.model.clone(), pos, yaw: it.yaw, frame: None, scale: 1.0, tag: None, order: 0, color: 0 });
+                let frame = match depth {
+                    Some(d) => {
+                        pos[1] -= d;
+                        None
+                    }
+                    // upside down about the placement point: the pole goes down.
+                    // Raised by TINY_FLAG_DRIVER_LIFT metres (default 0.5): a driver
+                    // wholly under the ground is occlusion-culled on and off, and
+                    // every culled frame is a frame our cloth has no state — the
+                    // cloths flickered on tiny 13 (drv13, 2026-09-08). With the
+                    // stub of its pole base above the ground its box passes the
+                    // test and it is drawn every frame.
+                    None => {
+                        let lift: f32 = std::env::var("TINY_FLAG_DRIVER_LIFT").ok().and_then(|s| s.parse().ok()).unwrap_or(0.5);
+                        pos[1] += lift;
+                        Some(([it.yaw, std::f32::consts::PI, 0.0], [0.0, 0.0, 0.0]))
+                    }
+                };
+                specs.push(Spec { model: it.model.clone(), pos, yaw: it.yaw, frame, scale: 1.0, tag: None, order: 0, color: colors.item(it.index) });
                 n += 1;
             }
-            if n > 0 {
-                println!("  flag driver: {n} stock flag twins {depth} m under the converted flags (each drives the tween cloth above it)");
+            if n + skipped > 0 {
+                match depth {
+                    Some(d) => println!("  ⚠ HACK flag driver: {n} stock flag twins {d} m under the converted flags (each drives the tween cloth above it); {skipped} placements without one (xf@ rows)"),
+                    None => println!("  ⚠ HACK flag driver: {n} stock flags hung upside down under the converted flag placements (each drives the tween cloth above it, TINY.md \"Animated items\"); {skipped} placements without one (deck over open air — still cloth)"),
+                }
             }
         }
     }

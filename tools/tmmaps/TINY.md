@@ -209,3 +209,48 @@ them as the stock item: live sparks at their full 8 m reach — an A/B knob).
 The stock machine is the ORIGINAL's size, i.e. twice the relative size of a
 baked half copy; at 0.6 m it reads as a small box beside a half-size car.
 `TINY_FX_STOCK=0` bakes the family static as before.
+
+## Animated items: what moves by itself and what borrows (2026-09-08)
+
+Measured in the editor on a tiny-18 host with one-item lineups (thread
+dc2cf9dc, `/tmp/anim` on devvm63031, frames in `tinyshots/an2..an13`):
+
+**Kinematic parts animate.** Our half-size `ObstaclePusher8mLevel1` piston
+travels and its screen texture cycles (four frames beside the stock 8 m and
+4 m Level1 pushers); our half-size `ObstacleRotor16mHolesX4Level1` turns. The
+kinematic dyna kind (the prefab entity's `SInstanceParams.IsKinematic`, the
+game's kind 0x914F000) needs nothing more than what `add_dyna_part` writes:
+the inline mesh, both hulls (a missing hull crashes the loader at
+`Trackmania.exe+0xb7088c`), the Level modifier's constraint. The plain
+`ObstaclePusher8m` is the OFF pusher (its own constraint has zero travel); the
+Level modifiers swap in `AnimPusher8mLevel0/1/2` = 8 m over 8/4/2 s.
+
+**The tween cloth borrows.** The flag cloth is a visual-only dyna (kind
+0x914E000) whose vertex-tween frame state the game never gives an embedded
+copy: alone in a map our cloth is a bare pole. With ANY stock flag DRAWN in the
+same view it waves — properly, in its own placement colour — because its draw
+reads the per-material frame state the stock's draw filled, and that state
+indexes the stock's frame table at the stock's CURRENT detail level: the cloth
+is right only while driver and cloth are at the same level, garbage shards or
+a giant sail wherever they differ, nothing when the stock is in the map but
+out of view. Every byte-level variant of the item tested the same (u13,
+collector flags, one level, the dyna and mesh as sidecar files, the cloth as
+a kinematic dyna with hulls, the pack flags' `NPlugItem_SVariantList`
+wrapper); any reference to a PACK file gets the item dropped.
+
+⚠ **HACK — hidden stock Flag8m driver per Flag8m placement** (`tmmaps tiny`,
+`TINY_FLAG_DRIVER`, default `twins`): our cloth keeps the PACK detail ladder
+(`[16, 64, 128, 256]` on FlagSmall — `item-check` TW-01 refuses any other) and
+a stock `Flag8m` hangs UPSIDE DOWN at every converted placement, pole and cloth
+into the ground, so both are the same distance from the camera and switch
+level together. Measured: proper waving cloth in the placement's own colour at
+10–200 m (green/blue/default cloths over red drivers). The guard in
+`tiny-library`: a placement whose two cells below are neither terrain nor
+covered by an authored non-pillar block (a flag on a deck over open air) gets
+an `xf@INDEX` row — no driver there, and the placement uses a second copy of
+the item with the STILL cloth (frame 0 under `ItemFlagNoAnim`, the pseudo
+skin key `still`) instead of a bare pole. Both counts are printed as
+`⚠ HACK` lines in the build report. Summer 13: 22 driven, 68 still (flags on
+elevated roads). The proper form is a self-contained embedded tween; the
+registration the pack flag gets (kind-0x16 handler → SInstanceParams →
+CHmsMgrVisDyna::InstanceCreate) is still unlocated in the exe.

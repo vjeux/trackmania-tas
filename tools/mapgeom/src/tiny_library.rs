@@ -154,6 +154,11 @@ pub fn find_item_file(store: &DataStore, model: &str) -> Option<String> {
 /// height; the frame depth stays 0.86 m on all of them). The gates have no
 /// such twin: the half-WIDTH family member (32 m → 16 m) keeps the same 11 m
 /// posts — twice the tiny height, a visible mismatch — so gates are baked.
+/// The pseudo light-skin key of a converted flag placement baked with the STILL
+/// cloth (no stock driver can hide under it, see `covered_cells` and the guard
+/// in `build`).
+pub const STILL_FLAG_KEY: &str = "still";
+
 pub fn stock_half_variant(model: &str, variant: u8) -> Option<&'static str> {
     const SCREENS: &[(&str, &str)] = &[
         ("RaceScreen6x1", "RaceScreen6x1Small"),
@@ -748,6 +753,39 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
 }
 
 #[allow(clippy::too_many_arguments)]
+/// The cells covered by any UNIT of an authored non-pillar, non-terrain block
+/// (the footprint turned like `blockmap::footprint`): what the `covered` filler
+/// rule and the flag-driver guard both read.
+fn covered_cells(source: &MapFile, block_map: &BTreeMap<(String, u32, String), (String, u32, u32, Vec<[i32; 3]>)>, tile_zones: &std::collections::BTreeSet<String>) -> std::collections::HashSet<[u8; 3]> {
+    let mut footprint_cells: std::collections::HashSet<[u8; 3]> = std::collections::HashSet::new();
+    for b in source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0 && b.flags & crate::blockmap::FLAG_PILLAR == 0 && !tile_zones.contains(&b.name)) {
+        let units: Vec<[i32; 3]> = block_map.get(&(b.name.clone(), b.flags, String::new())).map(|(_, _, _, u)| u.clone()).unwrap_or_default();
+        let units = if units.is_empty() { vec![[0, 0, 0]] } else { units };
+        let (mut minx, mut maxx, mut minz, mut maxz) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+        for u in &units {
+            minx = minx.min(u[0]);
+            maxx = maxx.max(u[0]);
+            minz = minz.min(u[2]);
+            maxz = maxz.max(u[2]);
+        }
+        let (w, d) = (maxx - minx + 1, maxz - minz + 1);
+        for u in &units {
+            let (x, z) = (u[0] - minx, u[2] - minz);
+            let (rx, rz) = match b.dir & 3 {
+                0 => (x, z),
+                1 => (d - 1 - z, x),
+                2 => (w - 1 - x, d - 1 - z),
+                _ => (z, w - 1 - x),
+            };
+            let (cx, cy, cz) = (b.file_cell[0] as i32 + rx, b.file_cell[1] as i32 + u[1], b.file_cell[2] as i32 + rz);
+            if (0..=255).contains(&cx) && (0..=255).contains(&cy) && (0..=255).contains(&cz) {
+                footprint_cells.insert([cx as u8, cy as u8, cz as u8]);
+            }
+        }
+    }
+    footprint_cells
+}
+
 pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Path, report: Option<&Path>, scale: f32, legacy_zip: Option<&Path>, items_dir: Option<&Path>, veget_mode: &str, collection_name: &str, only: Option<&str>) {
     let source = MapFile::load(map);
     let collection = source.items.first().map(|it| it.collection_raw).unwrap_or(26);
@@ -1050,10 +1088,57 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // …and per LIGHT COLOUR SKIN (light_skin.rs): a placement whose skin is
     // `Skins\Stadium\LightColors\Coral.dds` gets its own copy with coral
     // lights and glass (Summer 17: 108 Orange lamps; 20: 115 Green tubes).
+    let footprint_cells = covered_cells(&source, &block_map, &tile_zones);
+    // The flag driver guard (2026-09-08, anim thread). An embedded tween cloth
+    // draws right only while a STOCK flag is drawn in the same view at the
+    // same detail level (its tween draw borrows the stock's per-material frame
+    // state), so `tmmaps tiny` hangs a stock flag upside down under every
+    // converted flag placement (`TINY_FLAG_DRIVER`, TINY.md "Animated items").
+    // That driver is a full-size 7.5 m flag reaching 15 m below the placement
+    // in source metres; it must be HIDDEN: under the terrain (below is the
+    // void, never seen) or inside a closed block. A placement whose two cells
+    // below are neither terrain nor covered by an authored non-pillar block
+    // (a flag on a deck over open air) gets an `xf@INDEX` row: no driver, its
+    // cloth stays still (frame 0) rather than showing a stock flag in the air.
+    let terrain_top: std::collections::HashMap<(u8, u8), u8> = {
+        let mut m: std::collections::HashMap<(u8, u8), u8> = std::collections::HashMap::new();
+        for b in source.blocks.iter().chain(source.baked.iter()).filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0 && tile_zones.contains(&b.name)) {
+            let e = m.entry((b.file_cell[0], b.file_cell[2])).or_insert(0);
+            *e = (*e).max(b.file_cell[1]);
+        }
+        m
+    };
+    let ground_y = tmmaps::map::ground_y(collection);
+    let driver_hidden = |it: &tmmaps::map::ItemRec| -> bool {
+        // the FILE cell (game cell + (1, 0, 1), see BlockRec::file_cell)
+        let cx = (it.pos[0] / 32.0).floor() as i64 + 1;
+        let cz = (it.pos[2] / 32.0).floor() as i64 + 1;
+        let cy_base = ((it.pos[1] - ground_y) / 8.0).floor() as i64;
+        if !(0..=255).contains(&cx) || !(0..=255).contains(&cz) {
+            return false;
+        }
+        let top = terrain_top.get(&(cx as u8, cz as u8)).map(|t| *t as i64);
+        (1..=2).all(|d| {
+            let cy = cy_base - d;
+            top.map(|t| cy <= t).unwrap_or(false) || (0..=255).contains(&cy) && footprint_cells.contains(&[cx as u8, cy as u8, cz as u8])
+        })
+    };
     let light_skin_of = |it: &tmmaps::map::ItemRec| -> Option<String> { it.skin(&source.gbx.body).and_then(|f| crate::light_skin::skin_name(&f.path)) };
+    // A converted flag placement with nowhere to hide its driver gets the
+    // STILL cloth (frame 0 under ItemFlagNoAnim) — a tween cloth with no stock
+    // flag drawn in view is a bare pole. The still copy is a variant of its
+    // own under the pseudo light-skin key `still` (baked with the tween off).
+    let is_flag = |it: &tmmaps::map::ItemRec| matches!(it.model.as_str(), "Flag16m" | "Flag8m");
+    let key_skin_of = |it: &tmmaps::map::ItemRec| -> Option<String> {
+        if is_flag(it) && crate::static_item::build::tween_parts_enabled() && !driver_hidden(it) {
+            Some(STILL_FLAG_KEY.to_string())
+        } else {
+            light_skin_of(it)
+        }
+    };
     let mut item_counts: BTreeMap<(String, u8, Option<String>), usize> = BTreeMap::new();
     for it in &source.items {
-        *item_counts.entry((it.model.clone(), it.variant(), light_skin_of(it))).or_insert(0) += 1;
+        *item_counts.entry((it.model.clone(), it.variant(), key_skin_of(it))).or_insert(0) += 1;
     }
     // (model, variant, light skin) -> new model name: an embedded alias (AI...Item.Gbx) or a stock species
     let mut item_map: BTreeMap<(String, u8, Option<String>), String> = BTreeMap::new();
@@ -1081,7 +1166,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 continue;
             }
         }
+        // the STILL copy of a converted flag (pseudo skin key, see `key_skin_of`)
+        let still_flag = lskin.as_deref() == Some(STILL_FLAG_KEY);
         let light_skin = match lskin {
+            Some(_) if still_flag => None,
             Some(name) => match crate::light_skin::lookup(name) {
                 Some(s) => Some(s),
                 None => {
@@ -1152,7 +1240,14 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 None => match find_item_file(store, model) {
                     Some(logical) => {
                         variants = crate::static_item::build::pack_item_variants(store, &logical).unwrap_or_default();
-                        crate::static_item::build::static_item_from_pack_item_report_skin(store, &logical, &ident, &ident, scale, collection, *variant as usize, light_skin.clone())
+                        {
+                            if still_flag {
+                                crate::static_item::build::TWEEN_OVERRIDE.with(|o| o.set(Some(false)));
+                            }
+                            let r = crate::static_item::build::static_item_from_pack_item_report_skin(store, &logical, &ident, &ident, scale, collection, *variant as usize, light_skin.clone());
+                            crate::static_item::build::TWEEN_OVERRIDE.with(|o| o.set(None));
+                            r
+                        }
                     }
                     None => Err("no .Item.Gbx in the client packs, the map's embedded files, or --items-dir".into()),
                 },
@@ -1166,7 +1261,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             model.clone()
         };
         if let Some(name) = lskin {
-            source_name.push_str(&format!(" skin {name}"));
+            source_name.push_str(&if still_flag { " still cloth (no place to hide a stock driver)".to_string() } else { format!(" skin {name}") });
         }
         let key = (model.clone(), *variant, lskin.clone());
         let mut remember = |target: &str| {
@@ -1379,32 +1474,6 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     //             the 3-tall DecoHillSlope2Curve1Out next to it, and the game
     //             shows no skirt; a pillar's ground wall in a Land/Grass tile's
     //             cell IS drawn, so terrain tiles do not count as occupants).
-    let mut footprint_cells: std::collections::HashSet<[u8; 3]> = std::collections::HashSet::new();
-    for b in source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0 && b.flags & crate::blockmap::FLAG_PILLAR == 0 && !tile_zones.contains(&b.name)) {
-        let units: Vec<[i32; 3]> = block_map.get(&(b.name.clone(), b.flags, String::new())).map(|(_, _, _, u)| u.clone()).unwrap_or_default();
-        let units = if units.is_empty() { vec![[0, 0, 0]] } else { units };
-        let (mut minx, mut maxx, mut minz, mut maxz) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
-        for u in &units {
-            minx = minx.min(u[0]);
-            maxx = maxx.max(u[0]);
-            minz = minz.min(u[2]);
-            maxz = maxz.max(u[2]);
-        }
-        let (w, d) = (maxx - minx + 1, maxz - minz + 1);
-        for u in &units {
-            let (x, z) = (u[0] - minx, u[2] - minz);
-            let (rx, rz) = match b.dir & 3 {
-                0 => (x, z),
-                1 => (d - 1 - z, x),
-                2 => (w - 1 - x, d - 1 - z),
-                _ => (z, w - 1 - x),
-            };
-            let (cx, cy, cz) = (b.file_cell[0] as i32 + rx, b.file_cell[1] as i32 + u[1], b.file_cell[2] as i32 + rz);
-            if (0..=255).contains(&cx) && (0..=255).contains(&cy) && (0..=255).contains(&cz) {
-                footprint_cells.insert([cx as u8, cy as u8, cz as u8]);
-            }
-        }
-    }
     // TINY_GAME_BAKED=FILE (probe, 2026-09-08): the editor's own baked list
     // for this map (GhostShooter `/mapblocks2?list=baked` JSON, see
     // `tmmaps fillers --game`) — only the recorded fillers the game itself
@@ -1718,12 +1787,23 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         }
     }
     let mut missing_items: BTreeMap<String, usize> = BTreeMap::new();
+    let mut driver_skipped: Vec<usize> = Vec::new();
+    let mut drivers = 0usize;
     for it in &source.items {
-        match item_map.get(&(it.model.clone(), it.variant(), light_skin_of(it))) {
+        match item_map.get(&(it.model.clone(), it.variant(), key_skin_of(it))) {
             Some(target) => {
                 let ms = if target.ends_with(".Item.Gbx") || half_stock.contains(target) { scale } else { 1.0 };
                 mapping.push_str(&format!("i@{}\t{}\t{}\n", it.index, target, ms));
                 rows += 1;
+                // a converted flag (our tween cloth): does its hidden stock driver fit?
+                if matches!(it.model.as_str(), "Flag16m" | "Flag8m") && target.ends_with(".Item.Gbx") {
+                    if driver_hidden(it) {
+                        drivers += 1;
+                    } else {
+                        mapping.push_str(&format!("xf@{}\n", it.index));
+                        driver_skipped.push(it.index);
+                    }
+                }
                 // `iv@INDEX<TAB>0`: a stock stand-in has its own variant list —
                 // the placement's byte (an index into the SOURCE model's) is
                 // rewritten to 0 (`Show` 28 → `ShowFogger8M`'s only variant)
@@ -1731,7 +1811,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     mapping.push_str(&format!("iv@{}\t0\n", it.index));
                 }
                 // `y@INDEX<TAB>DY`: the vegetation stand-in is lowered by DY metres
-                let sink = sink_map.get(&(it.model.clone(), it.variant(), light_skin_of(it))).copied();
+                let sink = sink_map.get(&(it.model.clone(), it.variant(), key_skin_of(it))).copied();
                 if let Some(sink) = sink {
                     mapping.push_str(&format!("y@{}\t{:.3}\n", it.index, sink));
                     sunk_rows += 1;
@@ -1845,6 +1925,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         println!("  sea floor at source depth under {} shore tile models at the water row: {}", deepened.len(), deepened.join(", "));
     }
     println!("  mapping: {} rows -> {} ({} vegetation placements sunk to half-tree crown height; {} tree placements on {} baked half-size species, {} KB of items + {} KB of textures)", rows, out_mapping.display(), sunk_rows, baked_tree_rows, baker.next, baker.item_bytes / 1024, baker.texture_bytes / 1024);
+    if drivers + driver_skipped.len() > 0 {
+        println!("  ⚠ HACK hidden stock flag driver per converted flag placement (our tween cloth borrows the frame state of a drawn stock tween; TINY.md \"Animated items\"): {drivers} drivers, {} placements left still (deck over open air, no place to hide one){}", driver_skipped.len(), if driver_skipped.is_empty() { String::new() } else { format!(": items {}", driver_skipped.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(" ")) });
+    }
     if !dropped_baked.is_empty() {
         println!("  ⚠ HACK baked fillers left out by name (TINY_DROP_BAKED): {}", dropped_baked.iter().map(|(k, v)| format!("{k} x{v}")).collect::<Vec<_>>().join(", "));
     }

@@ -1890,6 +1890,20 @@ impl MapFile {
             .push((it.yaw_off, yaw.to_le_bytes().to_vec()));
     }
 
+    /// The anchored object's animation phase word — the int of its skippable
+    /// chunk 0x03101005 (`version 1, int, byte`; every animated item of the
+    /// Summer maps carries 4 there). Patched in place inside the record; false
+    /// when the record has no such chunk (an older map).
+    pub fn set_item_anim_phase(&mut self, item_index: usize, phase: u32) -> bool {
+        let it = self.items[item_index].clone();
+        let rec = &self.gbx.body[it.record_region.0..it.record_region.1];
+        // chunk id, PIKS, size 9, version 1 — then the int
+        const HEAD: [u8; 16] = [0x05, 0x10, 0x10, 0x03, b'P', b'I', b'K', b'S', 9, 0, 0, 0, 1, 0, 0, 0];
+        let Some(k) = rec.windows(HEAD.len()).position(|w| w == HEAD) else { return false };
+        self.raw_patches.push((it.record_region.0 + k + HEAD.len(), phase.to_le_bytes().to_vec()));
+        true
+    }
+
     pub fn append_item_clones(&mut self, total_items: usize) {
         assert!(
             total_items >= self.items.len(),

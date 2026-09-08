@@ -42,9 +42,11 @@ pub struct Mappings {
     pub items_by_index: BTreeMap<usize, Mapping>,
     /// `v@ALIAS` rows: the vegetation a block's prefab carried, as stock
     /// items to place with every placement of that alias — (item, position
-    /// in the item's scaled frame, yaw). A DecoLake shore carries hundreds of
-    /// trees the static item cannot bake (VegetTreeModel: no mesh).
-    pub veget_by_alias: BTreeMap<String, Vec<(String, [f32; 3], f32)>>,
+    /// in the item's scaled frame, yaw, pitch). A DecoLake shore carries hundreds
+    /// of trees the static item cannot bake (VegetTreeModel: no mesh). The
+    /// optional 7th field is a PITCH (radians): the hidden stock flag that
+    /// drives an embedded tween cloth hangs upside down under it (pi).
+    pub veget_by_alias: BTreeMap<String, Vec<(String, [f32; 3], f32, f32)>>,
     /// `y@INDEX` rows: metres an existing item placement is LOWERED by after the
     /// transform — a full-size stock tree standing in for a species the game
     /// cannot scale, sunk so its crown top sits where the original's would.
@@ -59,6 +61,10 @@ pub struct Mappings {
     pub skip_baked_trees: BTreeMap<usize, BTreeSet<usize>>,
     pub skip_item_trees: BTreeMap<usize, BTreeSet<usize>>,
     pub drop_items: BTreeSet<usize>,
+    /// `xf` rows: converted flag placements that get NO hidden stock
+    /// driver (nothing below to hide it in — a deck over open air); their
+    /// tween cloth stays at frame 0.
+    pub no_driver: BTreeSet<usize>,
     /// `iv@INDEX<TAB>V` rows: the variant byte an item placement carries after
     /// its re-point — the byte indexes the SOURCE model's variant list, and a
     /// stock stand-in has its own: `Show` variant 28 (its fogger rig, 60
@@ -110,10 +116,17 @@ pub fn read_mapping(path: &Path) -> Mappings {
             out.drop_items.insert(idx);
             continue;
         }
+        if let Some(index) = fields[0].strip_prefix("xf@") {
+            assert!(fields.len() == 1, "{}:{}: expected xf@INDEX", path.display(), line_no + 1);
+            let idx: usize = index.parse().unwrap_or_else(|_| panic!("{}:{}: item index expected", path.display(), line_no + 1));
+            out.no_driver.insert(idx);
+            continue;
+        }
         if let Some(alias) = fields[0].strip_prefix("v@") {
-            assert!(fields.len() == 6, "{}:{}: expected v@ALIAS<TAB>ITEM<TAB>X<TAB>Y<TAB>Z<TAB>YAW", path.display(), line_no + 1);
+            assert!(fields.len() == 6 || fields.len() == 7, "{}:{}: expected v@ALIAS<TAB>ITEM<TAB>X<TAB>Y<TAB>Z<TAB>YAW[<TAB>PITCH]", path.display(), line_no + 1);
             let f = |i: usize| fields[i].parse::<f32>().unwrap_or_else(|_| panic!("{}:{}: number expected", path.display(), line_no + 1));
-            out.veget_by_alias.entry(alias.to_string()).or_default().push((fields[1].to_string(), [f(2), f(3), f(4)], f(5)));
+            let pitch = if fields.len() == 7 { f(6) } else { 0.0 };
+            out.veget_by_alias.entry(alias.to_string()).or_default().push((fields[1].to_string(), [f(2), f(3), f(4)], f(5), pitch));
             continue;
         }
         assert!(
