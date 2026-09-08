@@ -57,3 +57,33 @@ The transformation is intentionally split into three write/reload stages. Item m
 Summer 2026 - 01 contains 2,430 authored blocks, 1,704 existing items, and 2,214 baked/generated foundation blocks. The public converted-Nadeo archive provides exact Item.Gbx models for only 23 of the map's 46 distinct authored block models. The remaining 23 are mostly BlueBay terrain (`Land*`, `Beach`, `LandHill*`, `LandCliff12`) plus several support/decor variants.
 
 The command therefore **refuses** Summer 01 today rather than silently dropping half the map. The earlier route-only artifact is not a complete conversion and should not be used as one. Once the 23 missing items are exported from the game, adding them to the mapping/library is enough; the all-object writer and its item-array growth path are implemented and tested.
+
+## Triggers: what the engine reads from an embedded item (measured 2026-09-08)
+
+Three facts, each paid for with a drive on the render box (tiny Summer 20,
+full throttle from the spawn through the Boost gate, `tinyctl play --wheels-ms`):
+
+1. **A gameplay gate's effect is an `NPlugTrigger_SGateSpecial` prefab entity
+   (class 0x09179000: version 2, trigger shape ref, u32), nothing else.** The
+   same slab written as the entity model's `TriggerShape` — with or without a
+   material node, gameplay 1/12/18 — does nothing; in the collision hull as
+   NotCollidable + gameplay it is a wall (physics 28 does not make hull
+   triangles pass-through). So a special-gate item is written in the pack's
+   own layout, `CGameItemModel -> CPlugPrefab { static object, SGateSpecial }`
+   (`Merged::special`), and fires: 23.6 → 36.8 → 45.6 → 50.9 → 54.9 m/s past the
+   gate where the original does 30 → 62.
+2. **The effect id is the gate kind's `Modifier\<Kind>\Collision.Material.Gbx`**,
+   chunk 0x09079017 = `{ v1, [physics, gameplay, u8, 0x80], f32, u32, string }`:
+   Boost 18 (ReactorBoost_Oriented), NoEngine 4 (FreeWheeling), Reset 8; Turbo
+   has no Collision file and the prefab's own slab bytes (physics 0, gameplay 1)
+   stand. The id table entry is `physics | gameplay << 8`, as everywhere else.
+   Item gates carry the slab in their prefab (`Special24m.Prefab.Gbx` entity 1,
+   shape `Special_Trigger24m.Shape.Gbx`); BLOCK gates (GateSpecialBoost…) carry
+   the disc inline in the block info (CPlugSolid → CPlugTree → a 68-triangle
+   surface in `Effects\Media\Material\CollisionTurbo`), the prefab being the
+   arch alone. `Reset.TerrainModifier .Gbx` is spelled with a space.
+3. **Block waypoint triggers are Compound surfaces** (`Gate\Checkpoint_Trigger
+   .Shape.Gbx`: one 36-vertex disc; the platform checkpoints a 0.1 m plane) and
+   must be flattened (`Surf::triangulate`), or the bake falls back to the unit
+   box and a finish fires on its whole 32 m cube. The item editor writes the
+   same 36/68 disc for Granady's `Tiny_Ring1`.
