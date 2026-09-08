@@ -58,6 +58,7 @@ pub mod rescale;
 pub mod tables;
 pub mod tiny_assets;
 pub mod tiny_library;
+pub mod tree_clear;
 pub mod veget;
 pub mod static_item;
 

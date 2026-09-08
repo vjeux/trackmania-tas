@@ -79,6 +79,16 @@ struct Mappings {
     /// transform — a full-size stock tree standing in for a species the game
     /// cannot scale, sunk so its crown top sits where the original's would.
     sink_by_index: BTreeMap<usize, f32>,
+    /// The tree clearance verdicts (mapgeom tree_clear, 2026-09-08: a tree
+    /// whose crown meets a driving deck is dropped). `xv@N<TAB>K`: the K-th
+    /// `v@` tree of authored block placement N; `xvb@N<TAB>K`: of baked block
+    /// N; `xvi@N<TAB>K`: of the vegetation-cluster item N; `xi@N`: the item
+    /// placement N itself (a stock tree standing in for the map's own
+    /// vegetation item) — parked like a dropped item.
+    skip_block_trees: BTreeMap<usize, BTreeSet<usize>>,
+    skip_baked_trees: BTreeMap<usize, BTreeSet<usize>>,
+    skip_item_trees: BTreeMap<usize, BTreeSet<usize>>,
+    drop_items: BTreeSet<usize>,
 }
 
 /// `BLOCK<TAB>ITEM[<TAB>MODEL_SCALE]`, or `@INDEX<TAB>...` for an exact block
@@ -100,6 +110,20 @@ fn read_mapping(path: &Path) -> Mappings {
             let idx: usize = index.parse().unwrap_or_else(|_| panic!("{}:{}: item index expected", path.display(), line_no + 1));
             let dy: f32 = fields[1].parse().unwrap_or_else(|_| panic!("{}:{}: number expected", path.display(), line_no + 1));
             out.sink_by_index.insert(idx, dy);
+            continue;
+        }
+        if let Some(rest) = fields[0].strip_prefix("xv@").map(|r| (r, 0)).or_else(|| fields[0].strip_prefix("xvb@").map(|r| (r, 1))).or_else(|| fields[0].strip_prefix("xvi@").map(|r| (r, 2))) {
+            assert!(fields.len() == 2, "{}:{}: expected xv@INDEX<TAB>K", path.display(), line_no + 1);
+            let idx: usize = rest.0.parse().unwrap_or_else(|_| panic!("{}:{}: placement index expected", path.display(), line_no + 1));
+            let k: usize = fields[1].parse().unwrap_or_else(|_| panic!("{}:{}: tree index expected", path.display(), line_no + 1));
+            let set = match rest.1 { 0 => &mut out.skip_block_trees, 1 => &mut out.skip_baked_trees, _ => &mut out.skip_item_trees };
+            set.entry(idx).or_default().insert(k);
+            continue;
+        }
+        if let Some(index) = fields[0].strip_prefix("xi@") {
+            assert!(fields.len() == 1, "{}:{}: expected xi@INDEX", path.display(), line_no + 1);
+            let idx: usize = index.parse().unwrap_or_else(|_| panic!("{}:{}: item index expected", path.display(), line_no + 1));
+            out.drop_items.insert(idx);
             continue;
         }
         if let Some(alias) = fields[0].strip_prefix("v@") {
@@ -306,7 +330,7 @@ thread_local! {
     /// World y of cell row 0 for the map being converted (see `map::ground_y`).
     static GROUND_Y: std::cell::Cell<f32> = const { std::cell::Cell::new(-62.0) };
 }
-fn set_ground(collection: u32) {
+pub fn set_ground(collection: u32) {
     GROUND_Y.with(|g| g.set(crate::map::ground_y(collection)));
     println!("  ground: cell row 0 at y {} (collection {collection:#x})", crate::map::ground_y(collection));
 }
@@ -314,7 +338,7 @@ fn ground() -> f32 {
     GROUND_Y.with(|g| g.get())
 }
 
-fn block_pos(b: &crate::map::BlockRec) -> [f32; 3] {
+pub fn block_pos(b: &crate::map::BlockRec) -> [f32; 3] {
     b.free_pos.unwrap_or_else(|| {
         let mut p = census::cell_world(b);
         p[1] = p[1] + 62.0 + ground();
@@ -325,7 +349,7 @@ fn block_pos(b: &crate::map::BlockRec) -> [f32; 3] {
 /// The world point a block's prefab geometry is authored from: the cell's
 /// low corner, shifted by the footprint so a quarter-turned block still covers
 /// its own cells (the pairing measured in `mapgeom::place::grid_block`).
-fn block_origin(b: &crate::map::BlockRec, footprint: (u32, u32)) -> [f32; 3] {
+pub fn block_origin(b: &crate::map::BlockRec, footprint: (u32, u32)) -> [f32; 3] {
     if let Some(p) = b.free_pos {
         return p;
     }
@@ -345,7 +369,7 @@ fn block_origin(b: &crate::map::BlockRec, footprint: (u32, u32)) -> [f32; 3] {
     ]
 }
 
-fn block_yaw(b: &crate::map::BlockRec) -> f32 {
+pub fn block_yaw(b: &crate::map::BlockRec) -> f32 {
     if let Some(rot) = b.free_rot {
         return rot[0];
     }
@@ -362,15 +386,22 @@ fn block_yaw(b: &crate::map::BlockRec) -> f32 {
 /// so it turns with the block's yaw the way `block_origin` turns footprints
 /// (dir 1 = yaw -pi/2 maps local +x onto world +z, local +z onto world -x).
 /// Returns how many were added.
-fn push_veget(specs: &mut Vec<Spec>, mapping: &Mappings, alias: &str, origin: [f32; 3], yaw: f32, color: u8) -> usize {
-    let Some(rows) = mapping.veget_by_alias.get(alias) else { return 0 };
+/// `skip`: the tree indices of this placement the clearance dropped (the
+/// `xv@`/`xvb@`/`xvi@` rows); returns (placed, skipped).
+fn push_veget(specs: &mut Vec<Spec>, mapping: &Mappings, alias: &str, origin: [f32; 3], yaw: f32, color: u8, skip: Option<&BTreeSet<usize>>) -> (usize, usize) {
+    let Some(rows) = mapping.veget_by_alias.get(alias) else { return (0, 0) };
     let (s, c) = yaw.sin_cos();
-    for (item, local, tree_yaw) in rows {
+    let mut skipped = 0usize;
+    for (k, (item, local, tree_yaw)) in rows.iter().enumerate() {
+        if skip.map(|set| set.contains(&k)).unwrap_or(false) {
+            skipped += 1;
+            continue;
+        }
         let pos = [origin[0] + local[0] * c + local[2] * s, origin[1] + local[1], origin[2] - local[0] * s + local[2] * c];
         let y = yaw + tree_yaw;
         specs.push(Spec { model: item.clone(), pos, yaw: y, frame: Some(([y, 0.0, 0.0], [0.0, 0.0, 0.0])), scale: 1.0, tag: None, order: 0, color });
     }
-    rows.len()
+    (rows.len() - skipped, skipped)
 }
 
 fn transform(
@@ -599,7 +630,16 @@ pub fn cmd(args: &[String]) {
     let mut repointed_items = 0usize;
     let mut dropped_items = 0usize;
     let mut sunk_items = 0usize;
+    // the tree clearance: trees left out (tree_clear verdicts in the mapping)
+    let mut cleared_trees = 0usize;
     for it in &source.items {
+        // a stock tree standing in for the map's own vegetation item, dropped
+        // by the clearance: the slot is parked like a dropped item
+        if mapping.drop_items.contains(&it.index) {
+            cleared_trees += 1;
+            specs.push(Spec { model: it.model.clone(), pos: [8.0, -900.0, 8.0], yaw: 0.0, frame: None, scale: 1.0, tag: None, order: 0, color: 0 });
+            continue;
+        }
         match mapping.items_by_index.get(&it.index) {
             // "-": intentionally gone (procedural vegetation the tiny map
             // cannot shrink); the slot is parked far below the map. A
@@ -608,7 +648,9 @@ pub fn cmd(args: &[String]) {
             Some(map) if map.model == "-" => {
                 dropped_items += 1;
                 specs.push(Spec { model: it.model.clone(), pos: [8.0, -900.0, 8.0], yaw: 0.0, frame: None, scale: 1.0, tag: None, order: 0, color: 0 });
-                prefab_trees += push_veget(&mut cluster_trees, &mapping, &it.model, transform(it.pos, source_anchor, target_anchor, scale), it.yaw, colors.item(it.index));
+                let (placed, skipped) = push_veget(&mut cluster_trees, &mapping, &it.model, transform(it.pos, source_anchor, target_anchor, scale), it.yaw, colors.item(it.index), mapping.skip_item_trees.get(&it.index));
+                prefab_trees += placed;
+                cleared_trees += skipped;
             }
             // Re-pointed at an embedded copy whose geometry already carries
             // the scale: the placement stays where it is at scale 1. Its PIVOT
@@ -725,7 +767,9 @@ pub fn cmd(args: &[String]) {
             tag: b.waypoint_tag.clone(), order: 0,
             color: colors.block(b.index),
         });
-        prefab_trees += push_veget(&mut specs, &mapping, &map.model, pos, rot[0], colors.block(b.index));
+        let (placed, skipped) = push_veget(&mut specs, &mapping, &map.model, pos, rot[0], colors.block(b.index), mapping.skip_block_trees.get(&b.index));
+        prefab_trees += placed;
+        cleared_trees += skipped;
     }
     // Baked (generated) non-Sea blocks -- the FC clip fillers that finish the
     // authored structures (pillar feet, screen caps, wall faces) -- become
@@ -789,7 +833,9 @@ pub fn cmd(args: &[String]) {
             tag: None,
             order: 0,
         });
-        prefab_trees += push_veget(&mut specs, &mapping, &map.model, pos, rot[0], color);
+        let (placed, skipped) = push_veget(&mut specs, &mapping, &map.model, pos, rot[0], color, mapping.skip_baked_trees.get(&b.index));
+        prefab_trees += placed;
+        cleared_trees += skipped;
     }
     assert!(specs.iter().any(|s| s.tag.as_deref() == Some("Spawn")));
     assert!(specs.iter().any(|s| s.tag.as_deref() == Some("Goal")));
@@ -1151,7 +1197,7 @@ pub fn cmd(args: &[String]) {
     }
     println!("wrote {}", out.display());
     println!("  uid: {}", new_uid);
-    println!("  {} existing items re-pointed at scaled copies ({} vegetation stand-ins sunk to half-tree crown height); {} dropped (procedural vegetation); {} blocks intentionally without an item (empty variants); {} terrain tiles replaced by the block standing in for them; {} prefab trees placed as stock items", repointed_items, sunk_items, dropped_items, empty_blocks, replaced_terrain, prefab_trees);
+    println!("  {} existing items re-pointed at scaled copies ({} vegetation stand-ins sunk to half-tree crown height); {} dropped (procedural vegetation); {} blocks intentionally without an item (empty variants); {} terrain tiles replaced by the block standing in for them; {} prefab trees placed as stock items; {} trees left out by the clearance (overlapping a deck)", repointed_items, sunk_items, dropped_items, empty_blocks, replaced_terrain, prefab_trees, cleared_trees);
     println!(
         "  scaled every authored object: {} blocks + {} items = {} item placements",
         source.blocks.len(),

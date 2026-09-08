@@ -138,7 +138,7 @@ fn veget_substitute(collection: u32, model: &str) -> Option<&'static str> {
 /// (scaled) in the static item — `static_item::build::MergedLight`. Before
 /// that a `light_substitute` ladder kept them as STOCK items one size down
 /// (lit, but twice the relative size); it is gone.
-fn find_item_file(store: &DataStore, model: &str) -> Option<String> {
+pub fn find_item_file(store: &DataStore, model: &str) -> Option<String> {
     let want = format!("\\{}.ITEM.GBX", model.to_uppercase());
     let mut hits: Vec<String> = store.entries().map(|e| e.path()).filter(|p| p.to_uppercase().ends_with(&want)).collect();
     hits.sort_by_key(|p| (!p.to_uppercase().contains("\\ITEMS\\"), p.len()));
@@ -276,32 +276,9 @@ fn veget_sink(store: &mut DataStore, orig: &str, sub: &str, scale: f32, cache: &
         let crown: f32 = std::env::var("TINY_VEGET_CROWN").ok().and_then(|v| v.parse().ok()).unwrap_or(3.0);
         Ok(if s.radius < 1.0 { s.top + crown } else { s.top })
     }
-    // a species whose model does not read borrows a sibling's height: the
-    // name without its terrain word (PalmTreeDirtSmall -> PalmTreeSmall),
-    // then without its variant letter/digit (PalmTreeSmallB -> PalmTreeSmallA
-    // -> PalmTreeSmall); a species with no sibling either sinks 0 (noted once)
-    fn siblings(name: &str) -> Vec<String> {
-        let mut out = Vec::new();
-        for word in ["Dirt", "Grass", "Snow", "Sand", "Rock", "Water", "Ice"] {
-            if name.contains(word) {
-                out.push(name.replacen(word, "", 1));
-            }
-        }
-        let no_digits = name.trim_end_matches(|c: char| c.is_ascii_digit());
-        if no_digits != name {
-            out.push(no_digits.to_string());
-        }
-        if let Some(last) = no_digits.chars().last() {
-            if last.is_ascii_uppercase() && no_digits.len() > 1 {
-                let stem = &no_digits[..no_digits.len() - 1];
-                if last != 'A' {
-                    out.push(format!("{stem}A"));
-                }
-                out.push(stem.to_string());
-            }
-        }
-        out
-    }
+    // a species whose model does not read borrows a sibling's height
+    // (`species_siblings`); a species with no sibling either sinks 0 (noted once)
+    let siblings = species_siblings;
     let mut top = |name: &str, store: &mut DataStore, cache: &mut BTreeMap<String, Option<f32>>| -> Option<f32> {
         if let Some(t) = cache.get(name) {
             return *t;
@@ -328,6 +305,33 @@ fn veget_sink(store: &mut DataStore, orig: &str, sub: &str, scale: f32, cache: &
     };
     let (Some(t_orig), Some(t_sub)) = (top(orig, store, cache), top(sub, store, cache)) else { return 0.0 };
     (t_sub - t_orig * scale).max(0.0)
+}
+
+/// A species' siblings, for borrowing a height or a crown from a model that
+/// reads: the name without its terrain word (PalmTreeDirtSmall ->
+/// PalmTreeSmall), then without its variant letter/digit (PalmTreeSmallB ->
+/// PalmTreeSmallA -> PalmTreeSmall).
+pub fn species_siblings(name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for word in ["Dirt", "Grass", "Snow", "Sand", "Rock", "Water", "Ice"] {
+        if name.contains(word) {
+            out.push(name.replacen(word, "", 1));
+        }
+    }
+    let no_digits = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    if no_digits != name {
+        out.push(no_digits.to_string());
+    }
+    if let Some(last) = no_digits.chars().last() {
+        if last.is_ascii_uppercase() && no_digits.len() > 1 {
+            let stem = &no_digits[..no_digits.len() - 1];
+            if last != 'A' {
+                out.push(format!("{stem}A"));
+            }
+            out.push(stem.to_string());
+        }
+    }
+    out
 }
 
 /// Closed box mesh over the block's units (each 32 x 8 x 32 m in block
@@ -505,6 +509,12 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // `v@ALIAS` rows (the prefabs' vegetation as stock items) and the
     // VegetTreeModel stem -> stock item cache behind them.
     let mut veget_rows = String::new();
+    // the same rows structured, per alias in row order: (stock item, position in the item's scaled frame)
+    let mut veget_list: BTreeMap<String, Vec<(String, [f32; 3])>> = BTreeMap::new();
+    // alias -> up-facing collision triangles (item space, scaled) of a DECK block model (tree_clear)
+    let mut deck_tris: BTreeMap<String, Vec<crate::tree_clear::Tri>> = BTreeMap::new();
+    // deck-block alias -> block name (the tree_clear report)
+    let mut deck_name: BTreeMap<String, String> = BTreeMap::new();
     let mut veget_cache: BTreeMap<String, Option<String>> = BTreeMap::new();
     // species -> trunk top (metres) for the sink; (model, variant, skin) key -> sink of re-pointed vegetation items
     let mut height_cache: BTreeMap<String, Option<f32>> = BTreeMap::new();
@@ -727,6 +737,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                             sunk_rows += 1;
                         }
                         veget_rows.push_str(&format!("v@{ident}\t{item}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\n", iso[9] * scale, iso[10] * scale - sink, iso[11] * scale, yaw));
+                        veget_list.entry(ident.clone()).or_default().push((item.clone(), [iso[9] * scale, iso[10] * scale - sink, iso[11] * scale]));
                         re_emitted += 1;
                     }
                 }
@@ -738,6 +749,11 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 outcomes.push(Outcome { alias: alias.clone(), kind: "block", source: format!("{name} {flags:08X} [{}] {}", pk.label, prefabs.iter().map(|p| p.0.rsplit('\\').next().unwrap_or(&p.0).to_string()).collect::<Vec<_>>().join("+")), placements: *n, result: Ok(summary) });
                 files.insert(format!("Items/{ident}"), bytes);
                 alias_of_recipe.insert(recipe, alias.clone());
+                // a deck block's driving surface, for the tree clearance below
+                if crate::tree_clear::is_deck_block(name) {
+                    deck_tris.insert(ident.clone(), crate::tree_clear::up_facing(&m.surf_vertices, &m.surf_triangles));
+                    deck_name.insert(ident.clone(), name.clone());
+                }
                 block_map.insert((name.clone(), *flags, modk.clone()), (alias, sx, sz, units.clone()));
             }
             // a prefab with no entities at all (Stadium\Structure\PillarToFlat_ACB
@@ -912,6 +928,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                         sunk_rows += 1;
                     }
                     veget_rows.push_str(&format!("v@{model}\t{item}\t{:.3}\t{:.3}\t{:.3}\t{:.4}\n", iso[9] * scale, iso[10] * scale - sink, iso[11] * scale, yaw));
+                    veget_list.entry(model.clone()).or_default().push((item.clone(), [iso[9] * scale, iso[10] * scale - sink, iso[11] * scale]));
                     placed += 1;
                 }
                 remember("-");
@@ -1031,6 +1048,14 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         true
     };
     let mut dropped_baked: BTreeMap<String, usize> = BTreeMap::new();
+    // The tree clearance (tree_clear.rs): every deck placement's driving
+    // surface and every tree, in the scaled source frame, placed the way
+    // `tmmaps tiny` places them.
+    tmmaps::tiny::set_ground(collection);
+    let mut grid = crate::tree_clear::Grid::new();
+    let mut trees: Vec<crate::tree_clear::Tree> = Vec::new();
+    let mut dims_cache: BTreeMap<String, Option<(f32, f32)>> = BTreeMap::new();
+    let mut deck_placements = 0usize;
     for (prefix, b) in source.blocks.iter().map(|b| ("@", b)).chain(source.baked.iter().filter(|b| b.name != "Sea").map(|b| ("b@", b))) {
         if prefix == "b@" && drop_baked.iter().any(|g| glob_match(g, &b.name)) {
             mapping.push_str(&format!("b@{}\t-\n", b.index));
@@ -1048,6 +1073,25 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 let cells = units.iter().map(|u| format!("{},{},{}", u[0], u[1], u[2])).collect::<Vec<_>>().join(";");
                 mapping.push_str(&format!("{prefix}{}\t{}\t{}\t{}\t{}\t{}\n", b.index, model, scale, sx, sz, cells));
                 rows += 1;
+                if alias != "-" {
+                    // where `tmmaps tiny` puts this item: origin (source metres) and yaw
+                    let origin = tmmaps::tiny::block_origin(b, (*sx, *sz));
+                    let origin = [origin[0] * scale, origin[1] * scale, origin[2] * scale];
+                    let yaw = b.free_rot.map(|r| r[0]).unwrap_or_else(|| tmmaps::tiny::block_yaw(b));
+                    if let Some(tris) = deck_tris.get(&model) {
+                        crate::tree_clear::add_deck(&mut grid, &crate::tree_clear::Deck { alias: model.clone(), name: deck_name.get(&model).cloned().unwrap_or_default(), origin, yaw, tris });
+                        deck_placements += 1;
+                    }
+                    if let Some(list) = veget_list.get(&model) {
+                        let (s, c) = yaw.sin_cos();
+                        for (k, (item, local)) in list.iter().enumerate() {
+                            let Some((radius, height)) = crate::tree_clear::species_dims(store, item, &mut dims_cache) else { continue };
+                            let pos = [origin[0] + local[0] * c + local[2] * s, origin[1] + local[1], origin[2] - local[0] * s + local[2] * c];
+                            let row = if prefix == "b@" { format!("xvb@{}\t{k}", b.index) } else { format!("xv@{}\t{k}", b.index) };
+                            trees.push(crate::tree_clear::Tree { row, species: item.clone(), pos, radius, height, owner: format!("{} {} #{k}", b.name, model) });
+                        }
+                    }
+                }
             }
             None => *missing_blocks.entry(format!("{} {:08X}", b.name, b.flags)).or_insert(0) += 1,
         }
@@ -1060,15 +1104,74 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 mapping.push_str(&format!("i@{}\t{}\t{}\n", it.index, target, ms));
                 rows += 1;
                 // `y@INDEX<TAB>DY`: the vegetation stand-in is lowered by DY metres
-                if let Some(sink) = sink_map.get(&(it.model.clone(), it.variant(), light_skin_of(it))) {
+                let sink = sink_map.get(&(it.model.clone(), it.variant(), light_skin_of(it))).copied();
+                if let Some(sink) = sink {
                     mapping.push_str(&format!("y@{}\t{:.3}\n", it.index, sink));
                     sunk_rows += 1;
+                }
+                // a stock tree standing in for the map's own vegetation item
+                if target != "-" && !target.ends_with(".Item.Gbx") {
+                    if let Some((radius, height)) = crate::tree_clear::species_dims(store, target, &mut dims_cache) {
+                        let pos = [it.pos[0] * scale, it.pos[1] * scale - sink.unwrap_or(0.0), it.pos[2] * scale];
+                        trees.push(crate::tree_clear::Tree { row: format!("xi@{}", it.index), species: target.clone(), pos, radius, height, owner: format!("item {} {}", it.index, it.model) });
+                    }
+                }
+                // a vegetation CLUSTER item's trees (`v@<model>` rows, placed at the item)
+                if target == "-" {
+                    if let Some(list) = veget_list.get(&it.model) {
+                        let (s, c) = it.yaw.sin_cos();
+                        let origin = [it.pos[0] * scale, it.pos[1] * scale, it.pos[2] * scale];
+                        for (k, (item, local)) in list.iter().enumerate() {
+                            let Some((radius, height)) = crate::tree_clear::species_dims(store, item, &mut dims_cache) else { continue };
+                            let pos = [origin[0] + local[0] * c + local[2] * s, origin[1] + local[1], origin[2] - local[0] * s + local[2] * c];
+                            trees.push(crate::tree_clear::Tree { row: format!("xvi@{}\t{k}", it.index), species: item.clone(), pos, radius, height, owner: format!("cluster item {} {} #{k}", it.index, it.model) });
+                        }
+                    }
                 }
             }
             None => *missing_items.entry(it.model.clone()).or_insert(0) += 1,
         }
     }
     mapping.push_str(&veget_rows);
+    // the verdicts: `xv@N\tK` / `xvb@N\tK` / `xvi@N\tK` / `xi@N` rows, one per dropped tree
+    let verdict = crate::tree_clear::judge(&grid, &trees);
+    if std::env::var("TINY_TREE_CLEAR").map(|v| v != "0").unwrap_or(true) {
+        for (t, _, _) in &verdict.dropped {
+            mapping.push_str(&t.row);
+            mapping.push('\n');
+        }
+    }
+    {
+        let mut by_species: BTreeMap<&str, usize> = BTreeMap::new();
+        let mut by_owner: BTreeMap<&str, usize> = BTreeMap::new();
+        for (t, owner, _) in &verdict.dropped {
+            *by_species.entry(t.species.as_str()).or_default() += 1;
+            *by_owner.entry(owner.as_str()).or_default() += 1;
+        }
+        println!("  tree clearance: {} trees tested against {} up-facing triangles of {} deck placements; {} DROPPED (overlapping a deck), {} kept{}", trees.len(), grid.len(), deck_placements, verdict.dropped.len(), verdict.kept, if std::env::var("TINY_TREE_CLEAR").map(|v| v == "0").unwrap_or(false) { " — TINY_TREE_CLEAR=0: verdicts NOT written" } else { "" });
+        if !verdict.dropped.is_empty() {
+            let mut sp: Vec<_> = by_species.into_iter().collect();
+            sp.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+            println!("    by species: {}", sp.iter().map(|(k, n)| format!("{k} x{n}")).collect::<Vec<_>>().join(", "));
+            let mut ow: Vec<_> = by_owner.into_iter().collect();
+            ow.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+            println!("    decks hit most: {}", ow.iter().take(6).map(|(k, n)| format!("{k} x{n}")).collect::<Vec<_>>().join(", "));
+            // the worst spot: the dropped tree with the most dropped neighbours within 24 m
+            let mut best = (0usize, [0.0f32; 3]);
+            for (t, _, _) in &verdict.dropped {
+                let n = verdict.dropped.iter().filter(|(u, _, _)| (u.pos[0] - t.pos[0]).powi(2) + (u.pos[2] - t.pos[2]).powi(2) < 24.0 * 24.0).count();
+                if n > best.0 {
+                    best = (n, t.pos);
+                }
+            }
+            println!("    worst spot: {} dropped trees within 24 m of scaled-source {:.1},{:.1},{:.1} (source {:.1},{:.1},{:.1})", best.0, best.1[0], best.1[1], best.1[2], best.1[0] / scale, best.1[1] / scale, best.1[2] / scale);
+            if std::env::var_os("TINY_TREE_CLEAR_LIST").is_some() {
+                for (t, owner, y) in &verdict.dropped {
+                    println!("    drop {}\t{} {} r {:.1} h {:.1} at {:.1},{:.1},{:.1} — {} at y {:.1}", t.row.replace('\t', " "), t.species, t.owner, t.radius, t.height, t.pos[0], t.pos[1], t.pos[2], owner, y);
+                }
+            }
+        }
+    }
     std::fs::write(out_mapping, &mapping).unwrap();
     // report
     let mut rep = String::from("kind\talias\tplacements\tstatus\tsource\tdetail\n");
