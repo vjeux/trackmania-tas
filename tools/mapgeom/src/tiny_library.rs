@@ -1403,7 +1403,117 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             .filter(|n| idx.path_for(n).and_then(|p| idx.load(store, &p).ok().map(|bi| matches!(bi.kind, crate::blockinfo::Kind::Clip | crate::blockinfo::Kind::ClipHorizontal))).unwrap_or(false))
             .collect()
     };
+    // `accepted` (probe, 2026-09-08): the occupant decides. For every
+    // covered cell, the clip lists the occupying UNIT hangs on each world
+    // side (its picked variant's units, turned by the block's dir the way
+    // `footprint_cells` turns the offsets; local N/E/S/W → world side
+    // (local + dir) mod 4, Top/Bottom fixed). A filler recorded in such a
+    // cell stays only if that unit's list on the shared face names the
+    // filler's own clip — the pool case (WaterBase lists DecoWallBaseVFC on
+    // every side, so the pillar walls in the pool cells stay) and the cp3
+    // case (a DecoHill unit lists no OpenTech clip, so the skirts go) both
+    // fall out of it. Pillars count as occupants here: a DecoWallBasePillar
+    // lists DecoWallBaseVFC on its four sides.
+    let mut cell_faces: std::collections::HashMap<[u8; 3], Vec<(String, [Vec<String>; 6])>> = std::collections::HashMap::new();
+    if vfc_rules.iter().any(|r| r == "accepted") {
+        let stem = |p: &str| -> String { p.rsplit('\\').next().unwrap_or(p).split('.').next().unwrap_or("").to_ascii_lowercase() };
+        for b in source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0 && !tile_zones.contains(&b.name)) {
+            let Some(path) = idx.path_for(&b.name) else { continue };
+            let Ok(bi) = idx.load(store, &path) else { continue };
+            let ground = b.flags & crate::blockmap::FLAG_GROUND != 0;
+            let vindex = (b.flags & crate::blockmap::FLAG_VARIANT_MASK) as usize;
+            let sub = ((b.flags >> crate::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
+            let addv = ((b.flags >> crate::blockmap::FLAG_ADDITIONAL_SHIFT) & 0x7F) as usize;
+            let Some(pk) = bi.pick_placement_add(ground, vindex, sub, addv) else { continue };
+            let units = &pk.variant.block_units;
+            let (mut minx, mut maxx, mut minz, mut maxz) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+            for u in units {
+                minx = minx.min(u.offset[0]);
+                maxx = maxx.max(u.offset[0]);
+                minz = minz.min(u.offset[2]);
+                maxz = maxz.max(u.offset[2]);
+            }
+            let (w, d) = (maxx - minx + 1, maxz - minz + 1);
+            let dir = (b.dir & 3) as usize;
+            for u in units {
+                let (x, z) = (u.offset[0] - minx, u.offset[2] - minz);
+                let (rx, rz) = match dir {
+                    0 => (x, z),
+                    1 => (d - 1 - z, x),
+                    2 => (w - 1 - x, d - 1 - z),
+                    _ => (z, w - 1 - x),
+                };
+                let (cx, cy, cz) = (b.file_cell[0] as i32 + rx, b.file_cell[1] as i32 + u.offset[1], b.file_cell[2] as i32 + rz);
+                if !((0..=255).contains(&cx) && (0..=255).contains(&cy) && (0..=255).contains(&cz)) {
+                    continue;
+                }
+                // world side w holds the local side (w - dir) mod 4
+                let mut faces: [Vec<String>; 6] = Default::default();
+                for wside in 0..4 {
+                    let local = (wside + 4 - dir) % 4;
+                    faces[wside] = u.clips[local].iter().map(|p| stem(p)).collect();
+                }
+                faces[4] = u.clips[4].iter().map(|p| stem(p)).collect();
+                faces[5] = u.clips[5].iter().map(|p| stem(p)).collect();
+                cell_faces.entry([cx as u8, cy as u8, cz as u8]).or_default().push((b.name.clone(), faces));
+            }
+        }
+    }
+    // the filler's own clip type (side / top / bottom) by name, for `accepted`
+    // the clip identity of every clip block info this map touches (fillers
+    // AND the clips the occupants hang on their faces), for `accepted`:
+    // (type, group, symmetric group, vertical group, horizontal group)
+    #[derive(Clone, Default)]
+    struct ClipId {
+        ty: Option<i32>,
+        group: String,
+        sym: String,
+        vert: String,
+        horiz: String,
+    }
+    let mut clip_ids: std::collections::HashMap<String, ClipId> = std::collections::HashMap::new();
+    if vfc_rules.iter().any(|r| r == "accepted") {
+        let mut names: std::collections::BTreeSet<String> = source.baked.iter().filter(|b| b.name != "Sea").map(|b| b.name.clone()).collect();
+        for (_, faces) in cell_faces.values().flatten() {
+            for f in faces.iter().flatten() {
+                names.insert(f.clone());
+            }
+        }
+        for n in names {
+            let Some(p) = idx.path_for(&n) else { continue };
+            let Ok(bi) = idx.load(store, &p) else { continue };
+            let Some(c) = bi.clip.as_ref() else { continue };
+            let s = |o: &Option<String>| o.clone().unwrap_or_default();
+            clip_ids.insert(n.to_ascii_lowercase(), ClipId { ty: c.clip_type, group: s(&c.clip_group_id), sym: s(&c.symmetrical_clip_group_id), vert: s(&c.vertical_clip_group_id), horiz: s(&c.horizontal_clip_group_id) });
+        }
+    }
+    // two clips CONNECT when they share a group, are each other's symmetric
+    // pair (Left ↔ Right), or share a vertical / horizontal group (every
+    // DecoWall*VFC panel is vertical group "DecoWallBaseVFC": a pillar's wall
+    // and a pool's DecoWallWaterBaseVFC side are one wall)
+    let connects = |a: &ClipId, b: &ClipId| -> bool {
+        (!a.group.is_empty() && (a.group == b.group || a.group == b.sym)) || (!a.sym.is_empty() && a.sym == b.group) || (!a.vert.is_empty() && a.vert == b.vert) || (!a.horiz.is_empty() && a.horiz == b.horiz)
+    };
     let vfc_left_out = |b: &tmmaps::map::BlockRec| -> Option<&'static str> {
+        if vfc_rules.iter().any(|r| r == "accepted") {
+            if let Some(occupants) = cell_faces.get(&b.file_cell) {
+                let me = b.name.to_ascii_lowercase();
+                let mine = clip_ids.get(&me).cloned().unwrap_or_default();
+                // FreeClipSide (1): the face the piece stands on; FreeClipTop
+                // (2): a top plate of the block below sits at this cell's floor
+                // = the occupant's Bottom list; FreeClipBottom (3): the
+                // occupant's Top list; unknown types: the side
+                let face = match mine.ty {
+                    Some(2) => 5,
+                    Some(3) => 4,
+                    _ => (b.dir & 3) as usize,
+                };
+                let accepted = occupants.iter().any(|(_, faces)| faces[face].iter().any(|c| *c == me || clip_ids.get(c).map(|theirs| connects(&mine, theirs)).unwrap_or(false)));
+                if !accepted {
+                    return Some("no connecting clip on the occupant's face");
+                }
+            }
+        }
         if let Some(g) = &game_baked {
             let key = (b.name.clone(), b.coords(), b.dir & 3);
             if g.counts.get(&key).copied().unwrap_or(0) == 0 {
