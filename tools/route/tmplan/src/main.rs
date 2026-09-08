@@ -679,7 +679,18 @@ fn cmd_road_centreline(args: &[String]) {
     // decks; Saudi Arabia 2026: Sand) — opt-in here so the planner's exhibit road set is untouched
     if std::env::var("TMPLAN_DECK_PHYSICS").is_err() { std::env::set_var("TMPLAN_DECK_PHYSICS", "Concrete,Grass,Sand"); }
     let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
-    let gates = io::read_gates(Path::new(&flag(args, "--gates").unwrap_or_else(|| die("--gates")))).unwrap_or_else(|e| die(&e));
+    let mut gates = io::read_gates(Path::new(&flag(args, "--gates").unwrap_or_else(|| die("--gates")))).unwrap_or_else(|e| die(&e));
+    // --spawn x,y,z: the ENGINE's tick-0 pose (what the env resets to) instead of the start deck centroid — the INPUT arm
+    // measures it per build (tm-player/tiny/gate-crossings/ENGINE-SPAWNS-<build>.tsv); 14's pitched free-placed start
+    // item put the centroid 4 m off (12:25Z)
+    let mut spawn_note = String::new();
+    if let Some(sp) = flag(args, "--spawn") {
+        let v: Vec<f32> = sp.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        if v.len() == 3 {
+            spawn_note = format!("; spawn = engine tick-0 pose ({:.1}, {:.1}, {:.1}) (was deck centroid ({:.1}, {:.1}, {:.1}))", v[0], v[1], v[2], gates.spawn.pos[0], gates.spawn.pos[1], gates.spawn.pos[2]);
+            gates.spawn.pos = [v[0], v[1], v[2]];
+        }
+    }
     let out = flag(args, "--out").unwrap_or_else(|| die("--out"));
     let order: Vec<u32> = flag(args, "--order").unwrap_or_else(|| die("--order g,g,g")).split(',').filter_map(|x| x.trim().parse().ok()).collect();
     let (mut surf, nodes) = SurfaceModel::build(Path::new(&map), &gates, false, false).unwrap_or_else(|e| die(&e));
@@ -790,7 +801,7 @@ fn cmd_road_centreline(args: &[String]) {
     }
     let mut s = vec![0.0f32];
     for k in 1..pts.len() { let a = pts[k - 1]; let b = pts[k]; s.push(s[k - 1] + ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()); }
-    let note = flag(args, "--note").unwrap_or_default();
+    let note = format!("{}{}", flag(args, "--note").unwrap_or_default(), spawn_note);
     // optional per-point advisory speed (player, 06:44Z): lateral 25 m/s², leave-ground at 2.5 g of required
     // downward acceleration, 80 m/s ceiling, braking 12 m/s², acceleration 7 m/s², ±16 m curvature window
     let hint = tmplan::speed_hints(&pts, &s, 16.0, 25.0, 9.81 * 2.5, 80.0, 12.0, 7.0);
