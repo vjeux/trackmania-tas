@@ -199,10 +199,15 @@ fn one(args: &[String]) -> Result<Done, String> {
     let spawn = m.items.iter().find(|it| it.waypoint_tag.as_deref() == Some("Spawn")).ok_or_else(|| format!("{}: no placement tagged Spawn", map.display()))?;
     let (dx, dz) = start_centre(spawn.yaw);
     let want = [spawn.pos[0] + dx, spawn.pos[1], spawn.pos[2] + dz];
-    let dh = ((s0.x - want[0]).powi(2) + (s0.z - want[2]).powi(2)).sqrt();
+    // the block-centre model (a block-derived start) or the placement itself (a
+    // start GATE item spawns a few metres from its pivot: Summer 19, 5.0 m) —
+    // whichever is nearer
+    let d_centre = ((s0.x - want[0]).powi(2) + (s0.z - want[2]).powi(2)).sqrt();
+    let d_pivot = ((s0.x - spawn.pos[0]).powi(2) + (s0.z - spawn.pos[2]).powi(2)).sqrt();
+    let dh = d_centre.min(d_pivot);
     let dy = s0.y - want[1];
     println!(
-        "guard: sample 0 at [{:.2}, {:.2}, {:.2}]; Spawn placement [{:.2}, {:.2}, {:.2}] yaw {:.4} → start centre [{:.2}, ·, {:.2}]: {dh:.2} m off on the ground, {dy:+.2} m in height",
+        "guard: sample 0 at [{:.2}, {:.2}, {:.2}]; Spawn placement [{:.2}, {:.2}, {:.2}] yaw {:.4} → start centre [{:.2}, ·, {:.2}]: {d_centre:.2} m from the centre, {d_pivot:.2} m from the pivot, {dy:+.2} m in height",
         s0.x, s0.y, s0.z, spawn.pos[0], spawn.pos[1], spawn.pos[2], spawn.yaw, want[0], want[2]
     );
     // A block-derived start puts the car exactly at the centre; a start GATE
@@ -211,7 +216,7 @@ fn one(args: &[String]) -> Result<Done, String> {
     // check is loose, and the FINISH check below is what a donor line cannot
     // pass: its last sample sits at the full-size finish, twice as far from the
     // anchor as this map's Goal.
-    let on_start = dh <= 3.0 && (-3.0..=3.0).contains(&dy);
+    let on_start = dh <= 8.0 && (-3.0..=3.0).contains(&dy);
     let last = g.samples.last().unwrap();
     let goals: Vec<&tmmaps::map::ItemRec> = m.items.iter().filter(|it| matches!(it.waypoint_tag.as_deref(), Some("Goal") | Some("StartFinish") | Some("Finish"))).collect();
     let goal_d = goals
