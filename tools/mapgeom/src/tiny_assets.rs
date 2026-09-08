@@ -1,138 +1,46 @@
-//! Build a complete tiny-map item library from the game's client packs.
-//!
-//! Modern block placements become thin CGameItemModel wrappers around the exact
-//! prefab selected by the source map. The three legacy, prefab-less models used
-//! by Summer 01 come from the public Nadeo converted-item archive; their Ident
-//! strings are rewritten here, in Rust. An intentionally empty pillar mobil is
-//! represented by the bundled empty item template so it remains an explicit
-//! placement rather than a silent omission.
+//! Item-file helpers shared by the item builders: Ident rewriting (header
+//! and body), the library archive (`zip`), the crystal-from-pack-model bake
+//! of the `crystal-item` / `catalog-lib` commands, and the mesh-editor
+//! material tables of the crystal era (2026-09-05; the static-item path of
+//! `tiny_library` superseded the crystal map library that lived here).
 
-use crate::{container, embedded, names, rescale::{self, Rescale}, store::DataStore};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-    path::Path,
-};
-use tmmaps::{gbx::Gbx, map::MapFile};
+use crate::{container, names, rescale::{self, Rescale}, store::DataStore};
+use std::collections::BTreeMap;
+use tmmaps::gbx::Gbx;
 
 pub const AUTHOR: &str = "KTaOsd-lTR2zkoskETSfPA";
 pub const BLUEBAY_KEY: &str = "660C4C156B80337E296A1034B0AA05B8";
 pub const STADIUM_KEY: &str = "B773D73047A4104857722366D78D28A6";
 
-const LEGACY_PLATFORM: &str = "Walls/DecoWall/Platform/Platform/PlatformBase.Item.Gbx";
-const LEGACY_SLOPE: &str = "Walls/DecoWall/Unnamed_1/SlopeStraight/DecoWallSlope2Straight.Item.Gbx";
-const LEGACY_WALL: &str = "Walls/DecoWall/Platform/Platform/DecoWallBase.Item.Gbx";
-/// The archive crystal every generated item is written around.
-const CRYSTAL_TEMPLATE: &str = "RoadTech/Main/Main/RoadTechStraight.Item.Gbx";
-
-/// The archive's waypoint crystal for a start/checkpoint/finish prefab.
-fn waypoint_archive_item(prefab: &str) -> Option<&'static str> {
-    let stem = prefab.rsplit('\\').next().unwrap_or(prefab);
-    match stem {
-        "Start_Air.Prefab.Gbx" => Some("RoadTech/Racing/StartFinish/RoadTechStart.Item.Gbx"),
-        "Finish_Air.Prefab.Gbx" => Some("RoadTech/Racing/StartFinish/RoadTechFinish.Item.Gbx"),
-        "Checkpoint_Air.Prefab.Gbx" => Some("RoadTech/Racing/Checkpoints/RoadTechCheckpoint.Item.Gbx"),
-        _ => None,
-    }
-}
-
-/// An archive item re-identified as `ident` (header and body; the body's
-/// author reads as the ident, see `set_body_ident_nameless`).
-pub fn nameless_ident(bytes: &[u8], ident: &str) -> Vec<u8> {
-    let out = set_header_ident(bytes, ident, ident);
-    set_body_ident_nameless(&out, ident)
-}
-
-/// A crystal item from a pack model's COLLISION geometry: (item bytes, faces).
-/// The collision surface is exact (verified against every prefab's bounds),
-/// consistently wound, and carries the physics the car feels; each physics
-/// group becomes one material. The visual meshes would look richer, but the
-/// walker's read of their index streams is not yet trustworthy (fragmented
-/// decks in game), so they are not used.
-pub fn crystal_from_model(store: &mut DataStore, logical: &str, template: &[u8], ident: &str) -> Result<(Vec<u8>, usize), String> {
-    crystal_from_model_in(store, logical, template, ident, 26)
-}
-
-/// `crystal_from_model` with the map's collection deciding the material family.
+/// A crystal item from a pack model's VISUAL geometry (finest detail level):
+/// (item bytes, faces). The collision mesh was tried first and is a
+/// simplification that lacks kerbs, trims and end pieces (one-block test
+/// 2026-09-05). The map's collection decides the material family.
 pub fn crystal_from_model_in(store: &mut DataStore, logical: &str, template: &[u8], ident: &str, collection: u32) -> Result<(Vec<u8>, usize), String> {
     let m = store.load_model(logical)?;
     let mut c = crate::geom::Collector::new(store);
-    // Visual geometry (finest LOD) is the default: the collision mesh is a
-    // simplification that lacks kerbs, trims and end pieces (one-block test
-    // 2026-09-05). TINY_COLLISION=1 goes back to the collision surfaces.
-    let visual = std::env::var_os("TINY_COLLISION").is_none();
-    c.link_labels = visual;
-    c.finest_lod_only = visual;
+    c.link_labels = true;
+    c.finest_lod_only = true;
     c.model(&m, &crate::geom::IDENTITY, 0);
     let surface_links = c.surface_links.clone();
     let scene = c.scene;
     let mut mesh = crate::crystal::CrystalMesh::default();
     let mut materials = Vec::new();
-    if visual {
-        for (label, g) in &scene.groups {
-            if g.tris.is_empty() || !label.contains('|') {
-                continue;
-            }
-            // Terrain visuals shade through a shared id material; the look
-            // material is the one the collision surface names.
-            let label: &str = if label.starts_with("Techno3\\") && !surface_links.is_empty() { &surface_links[0] } else { label };
-            let Some(spec) = visual_material_for(label, collection) else { continue };
-            // TINY_SWAP_XZ=1: mirror the mesh across the x=z diagonal
-            // (winding reversed to keep the normals outward) -- A/B knob for
-            // the block-vs-item axis convention.
-            if std::env::var_os("TINY_SWAP_XZ").is_some() {
-                let verts: Vec<[f32; 3]> = g.verts.iter().map(|v| [v[2], v[1], v[0]]).collect();
-                let tris: Vec<[u32; 3]> = g.tris.iter().map(|t| [t[0], t[2], t[1]]).collect();
-                mesh.add_tris(&verts, &tris, materials.len() as u32, 32.0);
-            } else {
-                mesh.add_tris(&g.verts, &g.tris, materials.len() as u32, 32.0);
-            }
-            materials.push(spec);
-        }
-    }
     for (label, g) in &scene.groups {
-        if visual {
-            break;
-        }
-        // Collision groups carry a bare physics name; visual groups are
-        // named "Visual"/"CustomMesh"/material paths and are skipped.
-        let phys = label.trim_end_matches(" (moving)");
-        if g.tris.is_empty() || crate::scene::physics_id(phys).is_none() {
+        if g.tris.is_empty() || !label.contains('|') {
             continue;
         }
-        if matches!(phys, "NotCollidable" | "Water") {
-            continue;
-        }
-        // Terrain prefabs' side and underside faces carry the default physics
-        // (Concrete, id 0) while being cliff in the game's own look.
-        let phys = if phys == "Concrete" && logical.contains("\\Zone") { "Rock" } else { phys };
-        let mut spec = crate::crystal::material_for_physics_name_in(phys, collection);
-        if let Ok(p) = std::env::var("TINY_FORCE_PHYS") { spec.physics = p.parse().unwrap(); }
-        // The collision mesh's own winding IS the crystal's (the physics
-        // engine needs outward normals). The reversal this used to apply came
-        // from an early "items are black" reading that was a lighting problem;
-        // with it the road deck was back-face culled from above (one-block
-        // test, 2026-09-05). TINY_REVERSE_WINDING=1 brings it back for A/B.
-        let rev = std::env::var_os("TINY_REVERSE_WINDING").is_some();
-        let tris: Vec<[u32; 3]> = g.tris.iter().map(|t| if rev { [t[0], t[2], t[1]] } else { *t }).collect();
-        mesh.add_tris(&g.verts, &tris, materials.len() as u32, 32.0);
+        // Terrain visuals shade through a shared id material; the look
+        // material is the one the collision surface names.
+        let label: &str = if label.starts_with("Techno3\\") && !surface_links.is_empty() { &surface_links[0] } else { label };
+        let Some(spec) = visual_material_for(label, collection) else { continue };
+        mesh.add_tris(&g.verts, &g.tris, materials.len() as u32, 32.0);
         materials.push(spec);
     }
-    if collection != 26 && std::env::var_os("TINY_NO_FLAT").is_none() {
+    if collection != 26 {
         // The mesh-editor materials are checker/tint textures: sampling one
         // point of each gives clean flat colours instead of checkerboards.
         mesh.flatten_uvs();
-    }
-    if std::env::var_os("TINY_BOUNDS").is_some() && !mesh.positions.is_empty() {
-        let mut lo = [f32::INFINITY; 3];
-        let mut hi = [f32::NEG_INFINITY; 3];
-        for p in &mesh.positions {
-            for k in 0..3 {
-                lo[k] = lo[k].min(p[k]);
-                hi[k] = hi[k].max(p[k]);
-            }
-        }
-        println!("  bounds {ident} {logical}: x {:.1}..{:.1} y {:.1}..{:.1} z {:.1}..{:.1} ({} faces)", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], mesh.faces.len());
     }
     if mesh.faces.is_empty() {
         return Err("no visual geometry the walker can read (procedural or unparsed model)".into());
@@ -280,7 +188,7 @@ pub fn set_header_ident(bytes: &[u8], name: &str, author: &str) -> Vec<u8> {
         let d = if id == 0x2E001003 {
             let mut r = Reader::new(&d);
             let mut table: Vec<String> = Vec::new();
-            let mut lb = |r: &mut Reader, table: &mut Vec<String>| -> Option<String> {
+            let lb = |r: &mut Reader, table: &mut Vec<String>| -> Option<String> {
                 let w = r.u32();
                 if w == 0xFFFF_FFFF { return None; }
                 if (w & 0x3FFF_FFFF) == 0 { let s = r.string(); table.push(s.clone()); return Some(s); }
@@ -424,7 +332,7 @@ pub fn visual_material_for(label: &str, collection: u32) -> Option<crate::crysta
     }
     // Water surfaces: the game's water is a separate system; a flat blue
     // plate at sea level is what the tile draws and it is not the race.
-    if name == "Water" && std::env::var_os("TINY_KEEP_WATER").is_none() {
+    if name == "Water" {
         return None;
     }
     if collection == 26 {
@@ -534,28 +442,6 @@ pub fn item_copy(
     Ok(Some(out.write_body_recompressed(&body)))
 }
 
-/// Where the game keeps the item file for a placed model name.
-fn find_item_file(store: &DataStore, model: &str) -> Option<String> {
-    let want = format!("\\{}.ITEM.GBX", model.to_uppercase());
-    let mut hits: Vec<String> = store
-        .entries()
-        .map(|e| e.path())
-        .filter(|p| p.to_uppercase().ends_with(&want))
-        .collect();
-    hits.sort_by_key(|p| (!p.to_uppercase().contains("\\ITEMS\\"), p.len()));
-    hits.into_iter().next()
-}
-
-fn crc32(bytes: &[u8]) -> u32 {
-    let mut c = !0u32;
-    for &x in bytes {
-        c ^= x as u32;
-        for _ in 0..8 {
-            c = (c >> 1) ^ ((0u32.wrapping_sub(c & 1)) & 0xEDB_88320);
-        }
-    }
-    !c
-}
 
 /// Minimal stored ZIP with explicit directory rows for Trackmania's browser.
 /// The archive the map carries its custom files in, laid out the way the
@@ -573,346 +459,4 @@ pub fn zip(files: &BTreeMap<String, Vec<u8>>) -> Vec<u8> {
     // loaded (bisected on U10S_01 [Tiny], 2026-09-05). Small crystal items
     // happened to survive stored, which hid this for a day.
     tmmaps::header::deflated_zip(files)
-}
-
-fn fallback_alias(name: &str, flags: u32) -> Option<&'static str> {
-    match name {
-        "PlatformBase" => Some("AC00000101"),
-        "DecoWallSlope2Straight" => Some("AC00000102"),
-        "DecoWallBasePillar" => Some("AC00000103"),
-        "StructurePillar" if flags == 0x0000_4001 => Some("AC00000104"),
-        _ => None,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn build(
-    map: &Path,
-    catalog: &Path,
-    footprints: &Path,
-    nadeo_zip: &Path,
-    empty_template: &Path,
-    blue_pak: &Path,
-    stadium_pak: &Path,
-    out_zip: &Path,
-    out_map: &Path,
-    scale: f32,
-    keep_unscaled: bool,
-) {
-    assert!(scale.is_finite() && scale > 0.0, "scale must be positive");
-    let source = MapFile::load(map);
-    // The map's collection picks the material family (see crystal.rs).
-    // TINY_HOST=MAP builds into that map (its collection picks the materials).
-    let host: Option<String> = std::env::var("TINY_HOST").ok();
-    let collection = match &host {
-        Some(h) => MapFile::load(Path::new(h)).items.first().map(|it| it.collection_raw).unwrap_or(26),
-        None => source.items.first().map(|it| it.collection_raw).unwrap_or(26),
-    };
-    println!("  target collection {collection:#x}{}", host.as_ref().map(|h| format!(" (host {h})")).unwrap_or_default());
-    let mut catalog_map = BTreeMap::new();
-    for (line_no, line) in fs::read_to_string(catalog).unwrap().lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let f: Vec<&str> = line.split('\t').collect();
-        if f.len() != 3 {
-            panic!(
-                "{}:{}: expected NAME<TAB>FLAGS<TAB>PREFAB",
-                catalog.display(),
-                line_no + 1
-            );
-        }
-        let flags = u32::from_str_radix(f[1], 16).expect("hex block flags");
-        assert!(catalog_map
-            .insert((f[0].to_string(), flags), f[2].to_string())
-            .is_none());
-    }
-
-    let mut footprint_map: BTreeMap<String, (u32, u32)> = BTreeMap::new();
-    for (line_no, line) in fs::read_to_string(footprints).unwrap().lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let f: Vec<&str> = line.split('\t').collect();
-        if f.len() != 3 {
-            panic!(
-                "{}:{}: expected NAME<TAB>SX<TAB>SZ",
-                footprints.display(),
-                line_no + 1
-            );
-        }
-        let sx: u32 = f[1].parse().expect("SX cells");
-        let sz: u32 = f[2].parse().expect("SZ cells");
-        assert!(footprint_map
-            .insert(f[0].to_string(), (sx, sz))
-            .is_none());
-    }
-    for b in &source.blocks {
-        assert!(
-            footprint_map.contains_key(&b.name),
-            "no footprint for block model {}",
-            b.name
-        );
-    }
-
-    let mut paths = BTreeSet::new();
-    for b in &source.blocks {
-        if fallback_alias(&b.name, b.flags).is_none() {
-            let p = catalog_map
-                .get(&(b.name.clone(), b.flags))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "no resolved prefab for block#{} {} flags {:08X}",
-                        b.index, b.name, b.flags
-                    )
-                });
-            paths.insert(p.clone());
-        }
-    }
-    let aliases: BTreeMap<String, String> = paths
-        .into_iter()
-        .enumerate()
-        .map(|(i, p)| (p, format!("AC{i:08}")))
-        .collect();
-    assert_eq!(aliases.len(), 101, "Summer 01 direct-prefab count changed");
-
-    // One store over both client packs: BlueBay prefabs name Stadium files
-    // (pillars, slope bases) and each pack has its own key.
-    let mut store = DataStore::empty();
-    store.add_pak(&blue_pak.display().to_string(), BLUEBAY_KEY).unwrap();
-    store.add_pak(&stadium_pak.display().to_string(), STADIUM_KEY).unwrap();
-    let legacy = embedded::unzip(&fs::read(nadeo_zip).unwrap()).expect("read Nadeo item archive");
-    // Every generated item is a mesh-modeler crystal written around this
-    // archive crystal (the only item kind the game embeds AND scales); its
-    // placement carries the scale, so the geometry stays authored-size.
-    let template = legacy
-        .get(CRYSTAL_TEMPLATE)
-        .unwrap_or_else(|| panic!("{CRYSTAL_TEMPLATE} absent from Nadeo archive"))
-        .clone();
-    let mut files = BTreeMap::new();
-    let mut faces_total = 0usize;
-    for (prefab, alias) in &aliases {
-        let ident = format!("{alias}.Item.Gbx");
-        // Start, checkpoint and finish keep their race function only as the
-        // archive's waypoint crystals; a generated crystal would be decor.
-        if let Some(src) = waypoint_archive_item(prefab) {
-            let bytes = legacy.get(src).unwrap_or_else(|| panic!("{src} absent from Nadeo archive"));
-            if collection == 26 || std::env::var_os("TINY_WAYPOINT_ORIGINAL").is_some() {
-                files.insert(format!("Items/{ident}"), nameless_ident(bytes, &ident));
-            } else {
-                // Outside Stadium the archive's Stadium material links are
-                // culled or red. Re-emit the mesh through our writer with the
-                // environment's family: it deduplicates the slots that then
-                // share a link (the game crashes on duplicates), and copies the
-                // waypoint trigger chunks outside the crystal verbatim. Decal
-                // and light slots (physics 28/32) are dropped with their faces.
-                let (mats, mesh) = crate::crystal::decode_template(bytes);
-                let keep: Vec<bool> = mats.iter().map(|m| !matches!(m.physics, 28 | 32)).collect();
-                let mut mesh2 = crate::crystal::CrystalMesh::default();
-                mesh2.positions = mesh.positions.clone();
-                for f in &mesh.faces {
-                    if keep[f.material as usize] {
-                        let mut f2 = f.clone();
-                        f2.uvs = f.uvs.iter().map(|uv| [0.25 + (uv[0] - 0.5) * 0.01, 0.25 + (uv[1] - 0.5) * 0.01]).collect();
-                        mesh2.faces.push(f2);
-                    }
-                }
-                let mats: Vec<_> = mats
-                    .iter()
-                    .map(|m| {
-                        let phys = crate::scene::physics_name(m.physics);
-                        crate::crystal::material_for_physics_name_in(phys, collection)
-                    })
-                    .collect();
-                let item = crate::crystal::build_item(bytes, &ident, &ident, &mats, &mesh2);
-                faces_total += mesh2.faces.len();
-                files.insert(format!("Items/{ident}"), item);
-            }
-            continue;
-        }
-        let (item, faces) = crystal_from_model_in(&mut store, prefab, &template, &ident, collection)
-            .unwrap_or_else(|e| panic!("{prefab}: {e}"));
-        faces_total += faces;
-        files.insert(format!("Items/{ident}"), item);
-    }
-    // The map's own items: a crystal from each model's entity geometry, or a
-    // report of why not. Vegetation is procedural (no mesh to copy); a
-    // waypoint gate must keep its function, so it stays the game's own item.
-    let mut item_models: Vec<String> = source.items.iter().map(|it| it.model.clone()).collect();
-    item_models.sort();
-    item_models.dedup();
-    let mut item_aliases: BTreeMap<String, String> = BTreeMap::new();
-    for (i, model) in item_models.iter().enumerate() {
-        let n = source.items.iter().filter(|it| &it.model == model).count();
-        let logical = find_item_file(&store, model)
-            .unwrap_or_else(|| panic!("item model {model} has no .Item.Gbx in the client packs"));
-        if source.items.iter().any(|it| &it.model == model && it.waypoint_tag.is_some()) {
-            println!("  KEPT AS IS ({n} placements): {model} -- a waypoint item; a generated crystal would lose the trigger");
-            continue;
-        }
-        let alias = format!("AC{:08}", 200 + i);
-        let ident = format!("{alias}.Item.Gbx");
-        match crystal_from_model_in(&mut store, &logical, &template, &ident, collection) {
-            Ok((item, faces)) => {
-                faces_total += faces;
-                files.insert(format!("Items/{ident}"), item);
-                item_aliases.insert(model.clone(), alias);
-            }
-            Err(e) => {
-                // Procedural vegetation cannot be shrunk and would tower over
-                // the half-scale terrain at full size: those placements point
-                // at the invisible item instead (the tiny look wins over a
-                // full-size palm). `--keep-unscaled` leaves them in place.
-                if keep_unscaled {
-                    println!("  KEPT FULL SIZE ({n} placements): {model} -- {e}");
-                } else {
-                    println!("  REMOVED ({n} placements): {model} -- {e}");
-                    item_aliases.insert(model.clone(), "AC00000104".to_string());
-                }
-            }
-        }
-    }
-
-    for (src, alias) in [
-        (LEGACY_PLATFORM, "AC00000101"),
-        (LEGACY_SLOPE, "AC00000102"),
-        (LEGACY_WALL, "AC00000103"),
-    ] {
-        let bytes = legacy
-            .get(src)
-            .unwrap_or_else(|| panic!("{src} absent from Nadeo archive"));
-        files.insert(format!("Items/{alias}.Item.Gbx"), nameless_ident(bytes, &format!("{alias}.Item.Gbx")));
-    }
-    // The "empty" item (an invisible structural pillar): a single tiny
-    // triangle well below the ground, so the placement exists and draws nothing.
-    let _ = empty_template;
-    let mut tiny = crate::crystal::CrystalMesh::default();
-    tiny.add_tris(&[[0.0, -50.0, 0.0], [0.01, -50.0, 0.0], [0.0, -50.0, 0.01]], &[[0, 1, 2]], 0, 8.0);
-    let mat = vec![crate::crystal::MaterialSpec { link: "Stadium\\Media\\Material\\RoadTech".into(), physics: 16 }];
-    files.insert(
-        "Items/AC00000104.Item.Gbx".into(),
-        crate::crystal::build_item(&template, "AC00000104.Item.Gbx", "AC00000104.Item.Gbx", &mat, &tiny),
-    );
-    // Every item must claim the map's own collection inside (header and body
-    // idents), or a BlueBay map drops it without a word.
-    for bytes in files.values_mut() {
-        *bytes = set_ident_collection(bytes, collection);
-    }
-    // The game does NOT apply the placement's Scale field to items (Nadeo's
-    // own road item at placement scale 0.5 rendered full size, one-block
-    // test 2026-09-05). The scale therefore lives in the geometry: every
-    // library item -- block wrappers, item conversions, waypoints -- is
-    // mesh-scaled here, and the mapping declares model_scale = scale so the
-    // placements go out at 1.
-    if (scale - 1.0).abs() > 1e-6 {
-        for bytes in files.values_mut() {
-            *bytes = crate::crystal::scale_item(bytes, scale);
-        }
-        println!("  library geometry scaled x{scale} (placement scale stays 1)");
-    }
-    // Bisection aid: TINY_ONLY=lo-hi keeps only aliases AC000000lo..hi loadable
-    // (the rest get a foreign ident inside, which the game drops silently).
-    if let Ok(range) = std::env::var("TINY_ONLY") {
-        let (lo, hi) = range.split_once('-').expect("TINY_ONLY=lo-hi");
-        let (lo, hi): (usize, usize) = (lo.parse().unwrap(), hi.parse().unwrap());
-        let mut dropped = 0;
-        for (name, bytes) in files.iter_mut() {
-            let idx: usize = name.trim_start_matches("Items/AC").trim_end_matches(".Item.Gbx").parse().unwrap_or(usize::MAX);
-            if idx >= lo && idx <= hi {
-                continue;
-            }
-            // A known-good stand-in (a plain box) under the alias's own ident.
-            let ident = name.trim_start_matches("Items/");
-            let v = [[0.0, 0.0, 0.0], [32.0, 0.0, 0.0], [32.0, 0.0, 32.0], [0.0, 0.0, 32.0], [0.0, 2.0, 0.0], [32.0, 2.0, 0.0], [32.0, 2.0, 32.0], [0.0, 2.0, 32.0]];
-            let tris = [[4, 6, 5], [4, 7, 6], [0, 1, 2], [0, 2, 3], [0, 4, 5], [0, 5, 1], [3, 2, 6], [3, 6, 7], [0, 3, 7], [0, 7, 4], [1, 5, 6], [1, 6, 2]];
-            let mut mesh = crate::crystal::CrystalMesh::default();
-            mesh.add_tris(&v, &tris, 0, 32.0);
-            let mats = vec![crate::crystal::material_for_physics_name_in("Concrete", collection)];
-            *bytes = crate::crystal::build_item(&template, ident, ident, &mats, &mesh);
-            dropped += 1;
-        }
-        println!("  TINY_ONLY {lo}-{hi}: {dropped} items made undroppable-mismatched");
-    }
-    // Visual isolation: TINY_KEEP_NAMES=sub1,sub2 keeps only the block items
-    // whose prefab path contains one of the substrings; every other alias
-    // becomes the invisible stand-in (a tiny triangle far below ground).
-    if let Ok(keep) = std::env::var("TINY_KEEP_NAMES") {
-        let subs: Vec<&str> = keep.split(',').filter(|s| !s.is_empty()).collect();
-        let by_alias: BTreeMap<&str, &str> = aliases.iter().map(|(p, a)| (a.as_str(), p.as_str())).collect();
-        let mut hidden = 0;
-        for (name, bytes) in files.iter_mut() {
-            let alias = name.trim_start_matches("Items/").trim_end_matches(".Item.Gbx");
-            let Some(path) = by_alias.get(alias) else { continue };
-            if subs.iter().any(|s| path.contains(s)) {
-                continue;
-            }
-            let ident = format!("{alias}.Item.Gbx");
-            let hidden_item = crate::crystal::build_item(&template, &ident, &ident, &mat, &tiny);
-            *bytes = set_ident_collection(&hidden_item, collection);
-            hidden += 1;
-        }
-        println!("  TINY_KEEP_NAMES {keep}: {hidden} block items hidden");
-    }
-    println!("  {} crystal items, {} faces, collection {:#x}", files.len(), faces_total, collection);
-
-    let archive = zip(&files);
-    fs::write(out_zip, &archive).unwrap();
-    let mut mapping = String::new();
-    for b in &source.blocks {
-        let alias = fallback_alias(&b.name, b.flags)
-            .unwrap_or_else(|| aliases[&catalog_map[&(b.name.clone(), b.flags)]].as_str());
-        let (sx, sz) = footprint_map[&b.name];
-        // Every item is authored at size 1; the placement carries the scale.
-        mapping.push_str(&format!(
-            "@{}\t{}.Item.Gbx\t{}\t{}\t{}\n",
-            b.index, alias, scale, sx, sz
-        ));
-    }
-    for it in &source.items {
-        if let Some(alias) = item_aliases.get(&it.model) {
-            mapping.push_str(&format!("i@{}\t{}.Item.Gbx\t{}\n", it.index, alias, scale));
-        }
-    }
-    let mapping_path = out_zip.with_extension("placements.tsv");
-    fs::write(&mapping_path, mapping).unwrap();
-    let args = vec![
-        "tmmaps".into(),
-        "tiny".into(),
-        map.display().to_string(),
-        "--out".into(),
-        out_map.display().to_string(),
-        "--mapping".into(),
-        mapping_path.display().to_string(),
-        "--library".into(),
-        out_zip.display().to_string(),
-        "--scale".into(),
-        scale.to_string(),
-        "--anchor".into(),
-        // Sea level: the original's Land tops sit at y=-12 (block y -14, top
-        // +2); with the start block (y -6) as source anchor, -9 puts the
-        // half-scale tops at the same height. TINY_ANCHOR overrides.
-        std::env::var("TINY_ANCHOR").unwrap_or_else(|_| if host.is_some() { "768,12,768".into() } else { "1024,-9,1024".into() }),
-    ];
-    let mut args = args;
-    if let Some(h) = &host {
-        args.push("--host".into());
-        args.push(h.clone());
-    }
-    tmmaps::tiny::cmd(&args);
-    // The original's baked terrain would otherwise stay at full size under
-    // the copy; the game regenerates Sea/clips from the (parked) blocks.
-    if std::env::var_os("TINY_KEEP_TERRAIN").is_none() && host.is_none() {
-        match tmmaps::map::MapFile::clear_genealogy_file(out_map) {
-            Ok(n) => println!("  terrain genealogy cleared ({n} zone records): no island regenerates under the copy"),
-            Err(e) => println!("  terrain genealogy NOT cleared: {e}"),
-        }
-    }
-    println!(
-        "  generated {} block items + {} item conversions",
-        aliases.len() + 4,
-        item_aliases.len()
-    );
-    println!("  library: {} ({} bytes)", out_zip.display(), archive.len());
 }

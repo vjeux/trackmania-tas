@@ -422,10 +422,7 @@ fn lightmap_atlas(model: &CPlugCrystal) -> Lightmap {
         .collect();
     let n_faces: usize = lit.iter().map(|c| c.faces.len()).sum();
     let grid = (n_faces as f64).sqrt().ceil().max(1.0) as usize;
-    // TINY_LM_SCALE shrinks the atlas into a corner (experiment knob; the
-    // "lightmap budget" theory it served was the duplicate-material crash).
-    let lm_scale: f64 = std::env::var("TINY_LM_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
-    let cell = lm_scale / grid as f64;
+    let cell = 1.0 / grid as f64;
     let mut coords: Vec<[u16; 2]> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
     let mut fi = 0usize;
@@ -546,17 +543,7 @@ pub fn material_for_physics_name_in(name: &str, collection: u32) -> MaterialSpec
             "RoadSynthetic" => "Editors\\MeshEditorMedia\\Materials\\Plastic",
             _ => "Editors\\MeshEditorMedia\\Materials\\Concrete",
         };
-        let mut link = link.to_string();
-        if let Ok(ov) = std::env::var("TINY_LINK_OVERRIDE") {
-            for kv in ov.split(';') {
-                if let Some((k, v)) = kv.split_once('=') {
-                    if k == name {
-                        link = format!("Editors\\MeshEditorMedia\\Materials\\{v}");
-                    }
-                }
-            }
-        }
-        return MaterialSpec { link, physics: phys };
+        return MaterialSpec { link: link.to_string(), physics: phys };
     }
     let link = match name {
         "Asphalt" | "WetAsphalt" => "Stadium\\Media\\Material\\RoadTech",

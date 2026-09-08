@@ -34,10 +34,6 @@ COMMANDS
       [--collection BlueBay] [--only N,..]
                                 every block/item model of the map as a half-scale
                                 STATIC item (stage-1 path) + tmmaps tiny mapping
-  tiny-assets <file.Map.Gbx> --out F --library-out ZIP --catalog TSV
-      --footprints TSV --nadeo-zip ZIP --empty-template ITEM --blue-pak PAK
-      --stadium-pak PAK [--scale 0.5] [--keep-unscaled]
-                                build exact scalable wrappers and the tiny map
   extract <logical-path> <file>    one pack file, decrypted and decompressed
   blockinfo <logical-path>...    a CGameCtnBlockInfo file, fully typed: kind,
                                 variants, units, clips per side, mobil prefabs
@@ -1071,30 +1067,6 @@ fn main() {
                 &veget,
                 &coll,
                 only.as_deref(),
-            );
-        }
-        "tiny-assets" => {
-            let map = std::path::Path::new(a.rest.get(1).expect("tiny-assets needs MAP"));
-            let req = |name: &str| {
-                std::path::PathBuf::from(
-                    flag(&a.rest, name).unwrap_or_else(|| die(format!("tiny-assets needs {name}"))),
-                )
-            };
-            mapgeom::tiny_assets::build(
-                map,
-                &req("--catalog"),
-                &req("--footprints"),
-                &req("--nadeo-zip"),
-                &req("--empty-template"),
-                &req("--blue-pak"),
-                &req("--stadium-pak"),
-                &req("--library-out"),
-                &req("--out"),
-                flag(&a.rest, "--scale")
-                    .unwrap_or_else(|| "0.5".into())
-                    .parse()
-                    .unwrap_or_else(|_| die("--scale number".into())),
-                a.rest.iter().any(|x| x == "--keep-unscaled"),
             );
         }
         "blockinfo" => {
