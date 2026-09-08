@@ -85,6 +85,14 @@ pub fn lod0_only() -> bool {
     std::env::var_os("TINY_LOD0_ONLY").is_some() || lod_pick().is_some()
 }
 
+/// The multiplier applied to a part's LOD switch distances. `TINY_LOD_DIST_SCALE=<f>`
+/// sets it outright (`1` = the pack's own distances, `0.5` = halved with the
+/// geometry); unset, the item scale — the pre-2026-09-08 behaviour, kept as
+/// the default only until the box A/B decides (see `add_static_object`).
+pub fn lod_dist_scale(scale: f32) -> f32 {
+    std::env::var("TINY_LOD_DIST_SCALE").ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite() && *v > 0.0).unwrap_or(scale)
+}
+
 /// `TINY_LOD_PICK=N`: like TINY_LOD0_ONLY but the single level kept is level
 /// N (its geoms; a part without a level N keeps its nearest) — the size
 /// lever for a map Nadeo refuses to store (Summer 21 at 36 MB: HTTP 413;
@@ -807,9 +815,21 @@ impl Merged {
             let before = self.lod_max_dist.clone();
             // a ladder shorter than its masks (a mask bit past the last
             // distance): the extra levels take the last distance doubled
-            let mut dists: Vec<f32> = s2.lod_max_dist.iter().map(|d| d * scale).collect();
+            //
+            // How far to scale the switch distances is an ENGINE question, and
+            // it was A/B-tested on the box (2026-09-08, tiny 05, 13 editor
+            // views, ×0.5 vs ×1.0): 12 of 13 views IDENTICAL, one differing in
+            // a distant stand's detail. The hollow platforms vjeux saw ("side
+            // of these platforms is missing", "blocks missing their underside")
+            // are therefore NOT the ladder — the geometry that should be there
+            // is not in the item at any level. ×scale stays the default (the
+            // half-size object subtends the same angle at half the distance,
+            // so the same level is the visually equivalent choice);
+            // `TINY_LOD_DIST_SCALE=<f>` remains for the next A/B.
+            let dist_scale = lod_dist_scale(scale);
+            let mut dists: Vec<f32> = s2.lod_max_dist.iter().map(|d| d * dist_scale).collect();
             while (dists.len() as u32) + 1 < part_levels {
-                let last = dists.last().copied().unwrap_or(32.0 * scale);
+                let last = dists.last().copied().unwrap_or(32.0 * dist_scale);
                 dists.push(last * 2.0);
             }
             merge_lod_ladder(&mut part_ladder, &dists);

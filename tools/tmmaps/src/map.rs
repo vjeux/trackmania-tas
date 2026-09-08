@@ -802,6 +802,78 @@ impl MapFile {
     /// through the splice path (apply it LAST, after a write+reload, like
     /// every other variable-length edit).
     ///
+    /// Rewrite the header's XML chunk (0x03043005) with `f`, rebuilding the
+    /// user-data table around the new length. Returns whether `f` changed it.
+    pub fn edit_header_xml(&mut self, f: &dyn Fn(&str) -> Option<String>) -> bool {
+        let ud = self.gbx.user_data.clone();
+        if ud.len() < 4 {
+            return false;
+        }
+        let n = u32::from_le_bytes(ud[0..4].try_into().unwrap()) as usize;
+        let mut heads: Vec<(u32, bool, Vec<u8>)> = Vec::new();
+        let mut off = 4 + n * 8;
+        for i in 0..n {
+            let o = 4 + i * 8;
+            let id = u32::from_le_bytes(ud[o..o + 4].try_into().unwrap());
+            let raw = u32::from_le_bytes(ud[o + 4..o + 8].try_into().unwrap());
+            let size = (raw & 0x7fff_ffff) as usize;
+            heads.push((id, raw & 0x8000_0000 != 0, ud[off..off + size].to_vec()));
+            off += size;
+        }
+        let mut changed = false;
+        for (id, _, data) in heads.iter_mut() {
+            if *id != 0x0304_3005 || data.len() < 4 {
+                continue;
+            }
+            let len = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+            if data.len() < 4 + len {
+                continue;
+            }
+            let xml = String::from_utf8_lossy(&data[4..4 + len]).to_string();
+            if let Some(xml2) = f(&xml) {
+                if xml2 != xml {
+                    let mut d = (xml2.len() as u32).to_le_bytes().to_vec();
+                    d.extend_from_slice(xml2.as_bytes());
+                    *data = d;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let mut out = Vec::new();
+            out.extend_from_slice(&(heads.len() as u32).to_le_bytes());
+            for (id, heavy, data) in &heads {
+                out.extend_from_slice(&id.to_le_bytes());
+                out.extend_from_slice(&((data.len() as u32) | if *heavy { 0x8000_0000 } else { 0 }).to_le_bytes());
+            }
+            for (_, _, data) in &heads {
+                out.extend_from_slice(data);
+            }
+            self.gbx.user_data = out;
+        }
+        changed
+    }
+
+    /// Remove the author's validation ghost — chunk 0x0305B00F of the
+    /// challenge parameters, which carries the ORIGINAL map's full-size run
+    /// as an encapsulated CGameCtnGhost (`[version][byte length][stream]`) —
+    /// and mark the map unvalidated in the header XML (`validated="0"`).
+    ///
+    /// The tiny map replays that ghost as a car driving the full-size line
+    /// metres above the half-size track (vjeux, 2026-09-08: "why is there a
+    /// car driving on top of me"). It cannot be scaled — it is a physics
+    /// record — so it goes; a tiny map is validated by driving IT. Emptying
+    /// the chunk to `[0][0]` was tried first and the game refused the file
+    /// ("Couldn't load map!"): a skippable chunk is dropped whole instead.
+    /// Returns the bytes removed (0 = no ghost chunk).
+    pub fn strip_validation_ghost(&mut self) -> usize {
+        let Some(&(_, off, payload, size)) = crate::gbx::all_skip_chunks(&self.gbx.body).iter().find(|(c, ..)| *c == 0x0305_B00F) else { return 0 };
+        // the whole skippable chunk: id, `PIKS`, size, payload
+        self.raw_splices.push(((off, payload + size), Vec::new()));
+        self.edit_header_xml(&|xml| Some(xml.replace("validated=\"1\"", "validated=\"0\"")));
+        payload + size - off
+    }
+
     /// Returns how many occurrences were rewritten (header, body). Both being
     /// zero means the map does not declare the name this call was given.
     pub fn set_map_name(&mut self, old: &str, new: &str) -> (usize, usize) {
