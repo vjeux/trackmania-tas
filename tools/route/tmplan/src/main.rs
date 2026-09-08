@@ -828,13 +828,20 @@ fn cmd_road_centreline(args: &[String]) {
             let i0: usize = seg.split("\"i0\": ").nth(1).and_then(|x| x.split(',').next()).and_then(|x| x.trim().parse().ok()).unwrap_or(0);
             let heading = if i1 >= 1 && i1 < pts.len() && i1 > i0 { let a = pts[i1 - 1]; let b = pts[i1]; let l = ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt().max(1e-3); [(b[0] - a[0]) / l, 0.0, (b[2] - a[2]) / l] } else { rep.normal };
             let kind = if li + 1 == seq.len() - 1 { GateKind::Finish } else { match rep.kind { tmroute::gates::WpKind::Finish => GateKind::Finish, tmroute::gates::WpKind::Multilap => GateKind::Multilap, _ => GateKind::Checkpoint } };
-            tg_gates.push(Gate { kind, centre, normal: heading, half_width: half, s: s[i1], map_waypoint: rep.waypoint });
+            // the gate's plane is the ITEM's facing (its trigger disc), signed along the line's travel — the polyline's
+            // arrival heading can be 30° off on a curve into the gate (ENV's crossing test missed 04 wp12/wp3, 12:23Z)
+            let gate_normal = {
+                let n = rep.normal;
+                let horiz = (n[0] * n[0] + n[2] * n[2]).sqrt();
+                if horiz > 0.5 { let s = if n[0] * heading[0] + n[2] * heading[2] >= 0.0 { 1.0 } else { -1.0 }; [s * n[0] / horiz, 0.0, s * n[2] / horiz] } else { heading }
+            };
+            tg_gates.push(Gate { kind, centre, normal: gate_normal, half_width: half, s: s[i1], map_waypoint: rep.waypoint });
             // a gap leg's class from the converter's verdicts (--verdicts TSV: map_stem, from_group, to_group, class, note)
             let from_lab = grp(&nodes, w[0]).trim_matches('"').to_string();
             let verdict = verdicts.iter().find(|v| v.0 == from_lab && v.1 == grp_id.to_string()).cloned();
             let conn = if !gap { ConnectionClass::Road } else { match verdict.as_ref().map(|v| v.2.as_str()) { Some("Jump") => ConnectionClass::Jump, Some("Drop") => ConnectionClass::Drop, Some("Road") => ConnectionClass::Road, _ => ConnectionClass::Unknown } };
             if let Some(v) = &verdict { verdict_notes.push(format!("{}→{} {}{}", v.0, v.1, v.2, if v.3.is_empty() { String::new() } else { format!(" ({})", v.3) })); }
-            legs.push(Leg { gate_idx: li as u32, map_waypoint: rep.waypoint, s_start: s[i0], s_end: s[i1], connection: conn, arrival_speed: [5.0, 80.0], arrival_heading: heading, arrival_heading_tol: 0.5, arrival_height: [centre[1] - rep.half_height - 1.0, centre[1] - rep.half_height + 3.0], p_reach: if gap { 0.0 } else { 1.0 }, expected_ms: -1, evidence: LegEvidence::Predicted });
+            legs.push(Leg { gate_idx: li as u32, map_waypoint: rep.waypoint, s_start: s[i0], s_end: s[i1], connection: conn, arrival_speed: [5.0, 80.0], arrival_heading: gate_normal, arrival_heading_tol: 0.5, arrival_height: [centre[1] - rep.half_height - 1.0, centre[1] - rep.half_height + 3.0], p_reach: if gap { 0.0 } else { 1.0 }, expected_ms: -1, evidence: LegEvidence::Predicted });
             gate_order.push(rep.waypoint);
         }
         let tg = TrackGeom {
