@@ -42,7 +42,10 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
     // the side files the item names (its `.Light.Gbx` copies, sign logos):
     // next to the output, as they ride next to the item in a library archive
     for (name, data) in &merged.pictures {
-        let p = std::path::Path::new(&out).with_file_name(name);
+        let p = std::path::Path::new(&out).with_file_name(name.replace('\\', "/"));
+        if let Some(d) = p.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
         std::fs::write(&p, data).map_err(|e| format!("{}: {e}", p.display()))?;
         println!("  side file {} ({} bytes)", p.display(), data.len());
     }

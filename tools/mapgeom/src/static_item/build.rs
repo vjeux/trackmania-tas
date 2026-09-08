@@ -2642,7 +2642,8 @@ pub fn add_fx_system(store: &mut crate::store::DataStore, path: &str, at: &Xform
     // the textures, for the in-archive form: each `.Texture.gbx` the models
     // name, parsed, and its image file read out of the pack
     let mut textures: Vec<(String, super::particle::ParticleNode, String, Vec<u8>)> = Vec::new();
-    if std::env::var("TINY_FX_TEXTURE").map(|v| v == "archive").unwrap_or(false) {
+    let tex_mode = std::env::var("TINY_FX_TEXTURE").unwrap_or_else(|_| "extern".into());
+    if tex_mode == "archive" || tex_mode == "file" {
         for (_, mp, node, ext) in &models {
             for tref in node_texture_refs(node) {
                 let Some(tp) = ext.iter().find(|(k, _)| *k as i32 == tref).map(|(_, p)| p.clone()) else { continue };
@@ -2664,6 +2665,16 @@ pub fn add_fx_system(store: &mut crate::store::DataStore, path: &str, at: &Xform
                 let ip = tm.externals.iter().find(|(k, _)| *k as i32 == image_idx).map(|(_, p)| p.clone()).ok_or_else(|| format!("{tp}: image node {image_idx} is not an external file"))?;
                 let bytes = store.read(&ip).map_err(|e| format!("{ip}: {e}"))?;
                 let name = ip.rsplit('\\').next().unwrap_or(&ip).to_string();
+                if tex_mode == "file" {
+                    // the `.Texture.gbx` itself as a FILE next to the item (the pack's
+                    // bytes verbatim, its own `Image\X.dds` ref kept) + the image under
+                    // `Image/`; the sub-model names the file by its bare name
+                    let tname = tp.rsplit('\\').next().unwrap_or(&tp).to_string();
+                    let tbytes = store.read(&tp).map_err(|e| format!("{tp}: {e}"))?;
+                    textures.push((tp.clone(), bitmap.clone(), tname, tbytes));
+                    textures.push((format!("{tp}#image"), bitmap, format!("Image/{name}"), bytes));
+                    continue;
+                }
                 textures.push((tp, bitmap, name, bytes));
             }
         }
@@ -2719,6 +2730,18 @@ fn place_particle_node(node: &mut super::particle::ParticleNode, externals: &[(u
                         EXTERNALS.with(|e| e.borrow_mut().push((i as u32, p)));
                         r.index = i;
                     }
+                    (Some(p), "file") => match textures.iter().find(|(tp, _, _, _)| *tp == p) {
+                        Some((_, _, tname, _)) => {
+                            let i = next_index(next);
+                            EXTERNALS.with(|e| e.borrow_mut().push((i as u32, tname.clone())));
+                            r.index = i;
+                        }
+                        None => {
+                            let i = next_index(next);
+                            EXTERNALS.with(|e| e.borrow_mut().push((i as u32, p)));
+                            r.index = i;
+                        }
+                    },
                     (Some(p), "archive") => match textures.iter().find(|(tp, _, _, _)| *tp == p) {
                         // the `.Texture.gbx` inline; its image named by its bare file
                         // name (folder 0 = the item's own folder in the archive)
