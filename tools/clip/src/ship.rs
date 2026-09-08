@@ -56,6 +56,11 @@ pub struct Cfg {
     pub attempts: u32,
     pub retry_delay: Duration,
     pub settle_delay: Duration,
+    /// `CLIP_PROXY`: a forward proxy the anonymous fetch goes THROUGH (a
+    /// devserver reaches github.com only via fwdproxy). A route, not a
+    /// credential: the environment is still scrubbed, and the proxy is
+    /// handed to curl as `-x`, which carries no cookie jar and no netrc.
+    pub proxy: Option<String>,
 }
 
 impl Default for Cfg {
@@ -69,6 +74,7 @@ impl Default for Cfg {
             attempts: 10,
             retry_delay: Duration::from_secs(10),
             settle_delay: Duration::from_secs(1),
+            proxy: None,
         }
     }
 }
@@ -84,6 +90,7 @@ impl Cfg {
             gh: var("CLIP_GH").map(PathBuf::from).unwrap_or(d.gh),
             ghvid: var("GHVID").map(PathBuf::from).unwrap_or(d.ghvid),
             curl: var("CLIP_CURL").map(PathBuf::from).unwrap_or(d.curl),
+            proxy: var("CLIP_PROXY"),
             ..d
         }
     }
@@ -233,6 +240,9 @@ where
         // env -i: no cookie jar, no GH_TOKEN, no netrc, no proxy can leak in.
         let mut c = Command::new(&cfg.curl);
         c.env_clear().args(curl_argv(out, url));
+        if let Some(p) = &cfg.proxy {
+            c.arg("-x").arg(p);
+        }
         let r = capture(&mut c).map_err(|e| {
             format!("ANONYMOUS GATE CANNOT RUN: {e} -- a gate that did not run is not a pass")
         })?;

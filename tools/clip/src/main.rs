@@ -12,7 +12,7 @@ clip ship  <file.mp4> <map-dir> [release-asset-name]
     URL in the release body (this is what makes it public), then fetch it back
     with no credential and require 200 and playable bytes. Refuses at every step.
 
-clip cut   <in.webm> <out.mp4> [--to SECONDS]
+clip cut   <in.webm> <out.mp4> [--to SECONDS] [--crf Q]
     The game's VP8/WebM into the mp4 `ship` takes, cut to the length the run
     actually is. The MediaTracker renders the LONGEST ghost in the scene, so a
     218.812 run filmed against a 441.002 human record comes out 441 s long.
@@ -67,7 +67,7 @@ clip inventory [--root D] [--tsv] [--probe] [--probe-all] [--verify [--store D] 
 Environment:
     CLIP_PLATFORM   native | wsl          (default: native if ffmpeg is on PATH)
     CLIP_FFMPEG CLIP_FFPROBE CLIP_WINFF_BIN CLIP_STAGE_DIR CLIP_FONT
-    REPO RELEASE GHVID CLIP_GH CLIP_CURL
+    REPO RELEASE GHVID CLIP_GH CLIP_CURL CLIP_PROXY (the gate's forward proxy, e.g. http://fwdproxy:8080 on a devserver)
 ";
 
 fn main() -> ExitCode {
@@ -124,8 +124,15 @@ fn go(args: &[String]) -> Result<(), String> {
                 .and_then(|i| args.get(i + 1))
                 .map(|v| v.parse::<f64>().map_err(|e| format!("--to: {e}")))
                 .transpose()?;
+            let crf = args
+                .iter()
+                .position(|a| a == "--crf")
+                .and_then(|i| args.get(i + 1))
+                .map(|v| v.parse::<u32>().map_err(|e| format!("--crf: {e}")))
+                .transpose()?
+                .unwrap_or(19);
             let ff = platform::from_env()?;
-            cut::run(&ff, Path::new(&args[1]), Path::new(&args[2]), to)
+            cut::run_crf(&ff, Path::new(&args[1]), Path::new(&args[2]), to, crf)
         }
         "frames" => {
             if args.len() < 3 {

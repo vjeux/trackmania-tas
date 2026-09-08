@@ -2,6 +2,8 @@
 
 Tool-assisted runs on Trackmania 2020 maps whose **author time no human has beaten**. All times in seconds. Watch:
 
+Side project: the Summer 2026 campaign rebuilt at half scale, with TAS laps on every converted map — **[Tiny Summer 2026](tiny/README.md)**.
+
 # 1 · Author time unbeaten by any human — and this TAS takes it
 
 **[untitled 01](276874-untitled-01)** — author time `23.839` · ours **12.759** (−11.080) · best human *none — the board is empty, and the empty board is real: 36 other boards came back populated in the same pass* · 0 records

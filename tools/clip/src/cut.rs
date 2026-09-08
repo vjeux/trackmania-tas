@@ -36,7 +36,13 @@ use crate::proc::capture;
 /// and the cut lands exactly on the second asked for. `-t` before `-i` would
 /// seek the input and land on the nearest keyframe instead, which on a 441 s
 /// VP8 is up to several seconds early.
+/// `crf` 19 unless the caller says otherwise (`--crf`): a 105 s lap at 19 is
+/// over the 100 MB the inline player takes, and +5 is roughly -40 % of the bytes.
 pub fn ffmpeg_argv(input: &str, to: f64, out: &str) -> Vec<String> {
+    ffmpeg_argv_crf(input, to, out, 19)
+}
+
+pub fn ffmpeg_argv_crf(input: &str, to: f64, out: &str, crf: u32) -> Vec<String> {
     vec![
         "-v".into(),
         "error".into(),
@@ -48,7 +54,7 @@ pub fn ffmpeg_argv(input: &str, to: f64, out: &str) -> Vec<String> {
         "-c:v".into(),
         "libx264".into(),
         "-crf".into(),
-        "19".into(),
+        crf.to_string(),
         "-preset".into(),
         "medium".into(),
         "-pix_fmt".into(),
@@ -59,6 +65,10 @@ pub fn ffmpeg_argv(input: &str, to: f64, out: &str) -> Vec<String> {
 }
 
 pub fn run(ff: &Ff, input: &Path, out: &Path, to: Option<f64>) -> Result<(), String> {
+    run_crf(ff, input, out, to, 19)
+}
+
+pub fn run_crf(ff: &Ff, input: &Path, out: &Path, to: Option<f64>, crf: u32) -> Result<(), String> {
     let din = ff.probe_duration(input)?;
     let to = to.unwrap_or(din);
     if to <= 0.0 {
@@ -75,7 +85,7 @@ pub fn run(ff: &Ff, input: &Path, out: &Path, to: Option<f64>) -> Result<(), Str
     }
     println!("cut: {}s -> {}s", secs(din), secs(to));
 
-    let args = ffmpeg_argv(&ff.arg_path(input)?, to, &ff.arg_path(out)?);
+    let args = ffmpeg_argv_crf(&ff.arg_path(input)?, to, &ff.arg_path(out)?, crf);
     let mut c = Command::new(&ff.ffmpeg);
     c.args(&args);
     let r = capture(&mut c)?;
