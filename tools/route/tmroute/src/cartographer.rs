@@ -146,6 +146,7 @@ pub fn import(pack: &Path, route: &Path, gates: &GatesFile, produced_by: &str) -
         spawn,
         spawn_yaw: start_dir[0].atan2(start_dir[2]),
         source: "router-cartographer".into(),
+        speed_hint: None,
         legs: Some(legs),
         route: Some(RouteMeta {
             route_version: ROUTE_VERSION,

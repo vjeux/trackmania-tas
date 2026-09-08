@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 /// are now FILLED by the env (G3: the live `CSceneVehicleVisState`), with the PHASE convention below.
 pub const STATE_VERSION: u32 = 3;
 
+/// tmstate v1.2 (2026-09-07, ENV): `TrackGeom::speed_hint` (optional per-point m/s, ROUTE's) and `CarState.car`
+/// = the vehicle KIND (was the slot), `car_slot` in the former v3 pad byte. No wire-layout change: STATE_VERSION stays 3.
+
 /// LABEL CONVENTION (2026-09-07, the three-way check on Summer 2026 - 01 WR and Summer 2026 - 02 rank-1): a record
 /// labelled `race_ms = T` holds the PHYSICS state (pos, vel, quat, speed) at race time T -- the state before input
 /// record `(T - start_offset) / 10` is read -- and **the ghost's own telemetry sample stamped T, `fk regen
@@ -80,6 +83,11 @@ pub struct TrackGeom {
     pub legs: Option<Vec<Leg>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<RouteMeta>,
+    /// ROUTE's optional per-point speed hint (m/s, one per `pts` entry): a suggested speed along the
+    /// route, observed by OBS_VERSION 4 at the 9 lookahead points. None = no hints (v4 reads 0 there).
+    /// Added 2026-09-07 (tmstate v1.2, no CarState change).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_hint: Option<Vec<f32>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,4 +282,17 @@ pub mod nanf {
     }
     arr!(arr2, 2);
     arr!(arr3, 3);
+}
+
+impl CarState {
+    /// The struct's C layout as bytes (120 for STATE_VERSION 3) -- what the
+    /// dataset shards and the rollout worker's `rows` carry.
+    pub fn to_bytes(&self) -> [u8; std::mem::size_of::<CarState>()] {
+        // SAFETY: CarState is repr(C), plain old data (f32/u8/bool/i32), no
+        // pointers; padding bytes are zeroed by the copy below.
+        let mut out = [0u8; std::mem::size_of::<CarState>()];
+        let src = self as *const CarState as *const u8;
+        unsafe { std::ptr::copy_nonoverlapping(src, out.as_mut_ptr(), out.len()) };
+        out
+    }
 }

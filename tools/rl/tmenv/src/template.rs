@@ -236,3 +236,163 @@ fn find_skippable(body: &[u8], id: u32) -> Option<(usize, usize, usize)> {
     }
     None
 }
+
+/// One u32 of the validation block, by name (`tminput valset`'s fields).
+pub fn set_validation_u32(path: &std::path::Path, field: &str, value: u32) -> Result<u32, String> {
+    let c = gbx::container::Container::load(&path.to_string_lossy())?;
+    let mut body = c.body().to_vec();
+    let (_, p, _) = find_skippable(&body, 0x0309_202D).ok_or("no validation block (0x0309202D)")?;
+    let off = val_offset(&body, p, field)?;
+    let old = u32::from_le_bytes(body[off..off + 4].try_into().unwrap());
+    body[off..off + 4].copy_from_slice(&value.to_le_bytes());
+    gbx::container::write_gbx(&c.gbx, body, &path.to_string_lossy())?;
+    Ok(old)
+}
+
+pub fn validation_u32(path: &std::path::Path, field: &str) -> Result<u32, String> {
+    let c = gbx::container::Container::load(&path.to_string_lossy())?;
+    let body = c.body();
+    let (_, p, _) = find_skippable(body, 0x0309_202D).ok_or("no validation block (0x0309202D)")?;
+    let off = val_offset(body, p, field)?;
+    Ok(u32::from_le_bytes(body[off..off + 4].try_into().unwrap()))
+}
+
+fn val_offset(body: &[u8], p: usize, field: &str) -> Result<usize, String> {
+    let rd = |o: usize| -> Result<u32, String> {
+        body.get(o..o + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).ok_or_else(|| "validation block truncated".to_string())
+    };
+    let mut o = p;
+    if rd(o)? != 0 {
+        return Err("embedded-inputs validation block: unsupported".into());
+    }
+    o += 4;
+    let l = rd(o)? as usize; // exe string
+    o += 4 + l;
+    let checksum = o;
+    let os = o + 4;
+    let cpu = o + 8;
+    let wall_start = o + 12;
+    let wall_end = o + 16;
+    o += 20;
+    let l = rd(o)? as usize; // title string
+    o += 4 + l + 32; // title, title checksum
+    let u02 = o;
+    let u03 = o + 4;
+    let seed = o + 8;
+    let u04 = o + 12;
+    rd(u04)?;
+    Ok(match field {
+        "checksum" => checksum,
+        "os" => os,
+        "cpu" => cpu,
+        "wall_start" => wall_start,
+        "wall_end" => wall_end,
+        "u02" | "settings_flags" => u02,
+        "u03" | "start_waypoint" => u03,
+        "seed" => seed,
+        "u04" => u04,
+        _ => return Err(format!("unknown validation field {field}")),
+    })
+}
+
+/// The reference for an IDENTITY REPLAY of a donor's own tape: our jittered
+/// archive, except the COUNTDOWN records (race time < 0), which are the donor's
+/// own. The env's root probe sits at race −10 and every record before it is
+/// read from the reference, never written by the replay -- so a countdown that
+/// differs from the donor's (full gas on the line where the donor idled) starts
+/// the race from a state a hair off the donor's. Measured: Fall 2023 - 21's own
+/// tape replayed 42.998 against its 42.997, deterministically, from that alone.
+/// Only for identity replays: a policy template keeps the jitter everywhere
+/// (the countdown must not carry a human's inputs into a policy's run).
+pub fn write_identity_reference(donor: &std::path::Path, out: &std::path::Path) -> Result<(), String> {
+    let tpl = Template::load(donor)?;
+    let d = fk::tape::Tape::load(&donor.to_string_lossy())?;
+    let n = tpl.facts().ticks;
+    let countdown = ((-(d.start_offset_ms as i64)).max(0) / 10) as usize;
+    let mut s: Vec<u8> = (0..n).map(|t| ((((t as i64 * 7919 + 13) % 25) - 12) as i8) as u8).collect();
+    let mut g = vec![1u8; n];
+    let mut b = vec![0u8; n];
+    for t in 0..countdown.min(n).min(d.n()) {
+        s[t] = d.steer[t];
+        g[t] = d.accel[t];
+        b[t] = d.brake[t];
+    }
+    tpl.write_with_inputs(&s, &g, &b, out)
+}
+
+/// The validator's START WAYPOINT INDEX for a map: the 0-based position of the
+/// Spawn-tagged placement in the validator's own waypoint list — every tagged
+/// BLOCK, plus every ITEM whose model is waypoint-typed (chunk 0x2E00201F type
+/// ≠ 3) and not an empty placeholder (< 4 KB), in file order; tags irrelevant.
+/// The validation record's `u03` (0x0309202D) must carry it: a borrowed donor's
+/// value points at whatever sits at that index in the NEW map (tiny campaign,
+/// 2026-09-07: INPUT's finding, logic from tminput `start_waypoint_index`).
+/// Shells out to `mapgeom items` (embedded models) and `tmmaps waypoints`.
+pub fn start_waypoint_index(map: &std::path::Path) -> Result<(u32, String), String> {
+    start_waypoint_index_opts(map, false)
+}
+
+/// `count_placeholders`: give the small placeholder models a slot too (the published tiny set's 2,558-byte
+/// Goal placeholders DO get one from the engine, the out2 set's 2,504-byte ones do not -- 2026-09-07 17:20).
+pub fn start_waypoint_index_opts(map: &std::path::Path, count_placeholders: bool) -> Result<(u32, String), String> {
+    let tmp = std::env::temp_dir().join(format!("swi-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0)));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    let st = std::process::Command::new("mapgeom").args(["items", &map.to_string_lossy(), "--out"]).arg(&tmp).output().map_err(|e| format!("mapgeom items: {e} (is tools/target/release on PATH?)"))?;
+    if !st.status.success() {
+        return Err(format!("mapgeom items failed: {}", String::from_utf8_lossy(&st.stderr).chars().take(200).collect::<String>()));
+    }
+    let txt = std::process::Command::new("tmmaps").args(["waypoints", &map.to_string_lossy()]).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).map_err(|e| format!("tmmaps waypoints: {e}"))?;
+    let mut types: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut k: u32 = 0;
+    let mut found: Option<(u32, String)> = None;
+    for l in txt.lines().filter(|l| l.contains("<block#") || l.contains("<item#")) {
+        let is_spawn = l.contains("tag=Spawn");
+        let model = l.split_whitespace().nth(2).unwrap_or("").to_string();
+        let ty = if l.contains("<block#") {
+            0u32
+        } else {
+            *types.entry(model.clone()).or_insert_with(|| {
+                let p = tmp.join("Items").join(&model);
+                match gbx::container::Container::load(&p.to_string_lossy()) {
+                    Ok(c) => {
+                        let b = c.body();
+                        if std::env::var("TMENV_SWI_DEBUG").is_ok() {
+                            let pat = [0x1f, 0x20, 0x00, 0x2e, 0x0c, 0x00, 0x00, 0x00];
+                            let ty = b.windows(8).position(|w| w == pat).map(|o| u32::from_le_bytes(b[o + 8..o + 12].try_into().unwrap()));
+                            eprintln!("swi: model {model}: body {} B, 0x2E00201F type {:?}", b.len(), ty);
+                        }
+                        // THE SLOT RULE (INPUT, 17:25): a waypoint-typed model gets a validator slot iff its FIRST
+                        // CPlugSolid2Model chunk 0x0900C003 -- the visual mesh -- has vertices: words
+                        // [0900c000][0900c003][ver 4][2][7][7][VERTEX COUNT], the count at +24 from the class id.
+                        // 0 vertices (the out2 placeholders) -> no slot; 3 (the published placeholders) -> slot.
+                        // `count_placeholders` forces a slot regardless (the old size stopgap, kept for experiments).
+                        if !count_placeholders {
+                            let hdr = [0x00, 0xc0, 0x00, 0x09, 0x03, 0xc0, 0x00, 0x09];
+                            if let Some(o) = b.windows(8).position(|w| w == hdr) {
+                                let verts = b.get(o + 24..o + 28).map(|w| u32::from_le_bytes(w.try_into().unwrap())).unwrap_or(0);
+                                if std::env::var("TMENV_SWI_DEBUG").is_ok() {
+                                    eprintln!("swi:   first 0x0900C003 at +{o}: {verts} vertices");
+                                }
+                                if verts == 0 {
+                                    return 3;
+                                }
+                            }
+                        }
+                        let pat = [0x1f, 0x20, 0x00, 0x2e, 0x0c, 0x00, 0x00, 0x00]; // chunk 0x2E00201F v12, then the type
+                        b.windows(8).position(|w| w == pat).map(|o| u32::from_le_bytes(b[o + 8..o + 12].try_into().unwrap())).unwrap_or(3)
+                    }
+                    Err(_) => 3,
+                }
+            })
+        };
+        if is_spawn && found.is_none() {
+            found = Some((k, format!("{} (model {model} type {ty})", l.trim())));
+        }
+        if ty != 3 {
+            k += 1;
+        }
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    found.ok_or_else(|| "no Spawn-tagged waypoint in the map".to_string())
+}

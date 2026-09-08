@@ -1,0 +1,7 @@
+[package]
+name = "tmproto"
+version = "0.1.0"
+edition = "2021"
+description = "The rollout-worker wire protocol (ROLLOUT-WORKER.md), shared by tmroll (worker) and tmrl (master)"
+
+[dependencies]

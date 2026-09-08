@@ -1027,6 +1027,7 @@ fn cmd_road_centreline(args: &[String]) {
             spawn: gates.spawn.pos,
             spawn_yaw: gates.spawn.yaw,
             source: "router-road-centreline".into(),
+            speed_hint: None,
             legs: Some(legs),
             route: Some(RouteMeta { route_version: ROUTE_VERSION, source: "router-road-centreline".into(), rank: 0, predicted_ms: -1, status: RouteStatus::Hypothesis, gate_order, produced_by: format!("{}{}; road-following centreline, {gaps} gap legs (s_start == s_end; class Unknown unless a converter verdict says Jump/Drop){}", tmroute::provenance("tmplan road-centreline"), if note.is_empty() { String::new() } else { format!("; {note}") }, if verdict_notes.is_empty() { String::new() } else { format!("; verdicts: {}", verdict_notes.join(", ")) }) }),
         };
