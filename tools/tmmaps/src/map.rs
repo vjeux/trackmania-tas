@@ -2187,12 +2187,39 @@ impl Colors {
     }
 }
 
+/// One decoded `CGameCtnZoneGenealogy` record of chunk 0x03043043.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GenealogyRec {
+    /// Byte range of the record within the chunk payload.
+    pub start: usize,
+    pub end: usize,
+    /// The zone chain (`ZoneIds`), root first.
+    pub ids: Vec<String>,
+    pub current_index: u32,
+    pub dir: u32,
+    /// `CurrentZoneId`: the terrain block the game regenerates for the cell.
+    pub current: String,
+}
+
+impl GenealogyRec {
+    /// `Lake>LakeShore>Grass @1 d2 = LakeShore` — the chain, the current index
+    /// and direction, and the current zone; the form the histograms print.
+    pub fn describe(&self) -> String {
+        format!("{} @{} d{} = {}", self.ids.join(">"), self.current_index, self.dir, self.current)
+    }
+}
+
 /// The genealogy chunk (0x03043043) decoded: one record per cell in the
 /// chunk's own order (64 x 64 = 4096 records, no coordinates stored), each
 /// a `CGameCtnZoneGenealogy` node: `count`, [lookback version 3 once],
 /// `count` zone Ids, CurrentIndex, Dir, CurrentZoneId, FACADE. Returns
 /// (record byte ranges within the chunk payload, current zone names).
 pub fn genealogy_records(payload: &[u8]) -> Result<Vec<(usize, usize, String)>, String> {
+    Ok(genealogy_full(payload)?.into_iter().map(|r| (r.start, r.end, r.current)).collect())
+}
+
+/// Every field of every genealogy record (see `genealogy_records`).
+pub fn genealogy_full(payload: &[u8]) -> Result<Vec<GenealogyRec>, String> {
     let count = u32::from_le_bytes(payload[8..12].try_into().unwrap()) as usize;
     let mut table: Vec<String> = Vec::new();
     let mut seen_version = false;
@@ -2230,17 +2257,18 @@ pub fn genealogy_records(payload: &[u8]) -> Result<Vec<(usize, usize, String)>, 
                 format!("#{v}")
             }
         };
+        let mut ids = Vec::with_capacity(n);
         for _ in 0..n {
-            id(&mut o, &mut table, &mut seen_version);
+            ids.push(id(&mut o, &mut table, &mut seen_version));
         }
-        let _current_index = rd(&mut o);
-        let _dir = rd(&mut o);
+        let current_index = rd(&mut o);
+        let dir = rd(&mut o);
         let cur = id(&mut o, &mut table, &mut seen_version);
         let facade = rd(&mut o);
         if facade != 0xFACA_DE01 {
             return Err(format!("genealogy record at {start:#x}: no terminator ({facade:#010x})"));
         }
-        out.push((start, o, cur));
+        out.push(GenealogyRec { start, end: o, ids, current_index, dir, current: cur });
     }
     Ok(out)
 }

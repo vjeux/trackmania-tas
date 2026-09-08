@@ -25,6 +25,12 @@ struct Mapping {
     /// deck hides the terrain tile under EVERY one of them, not just under
     /// its origin cell (`replaced_cells`).
     units: Vec<[i32; 3]>,
+    /// The variant's AUTO TERRAIN (the mapping row's 7th field): the terrain
+    /// tiles the block brings along, as (offset in the block's frame, zone
+    /// block name), plus the variant's place type. `None` when the row has no
+    /// 7th field (an older mapping — the name rule of `stands_in_for_tile`
+    /// stands in); `Some(empty)` when the variant declares none.
+    auto_terrain: Option<(Vec<([i32; 3], String)>, i32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -133,8 +139,8 @@ fn read_mapping(path: &Path) -> Mappings {
             continue;
         }
         assert!(
-            (2..=6).contains(&fields.len()) && fields.len() != 4,
-            "{}:{}: expected BLOCK<TAB>ITEM[<TAB>MODEL_SCALE[<TAB>SX<TAB>SZ[<TAB>UNITS]]]",
+            (2..=7).contains(&fields.len()) && fields.len() != 4,
+            "{}:{}: expected BLOCK<TAB>ITEM[<TAB>MODEL_SCALE[<TAB>SX<TAB>SZ[<TAB>UNITS[<TAB>AUTO_TERRAIN]]]]",
             path.display(),
             line_no + 1
         );
@@ -162,11 +168,28 @@ fn read_mapping(path: &Path) -> Mappings {
                 .collect(),
             _ => Vec::new(),
         };
+        // 7th field: `dx,dy,dz=Zone;…|placetype` (empty = the variant declares no auto terrain)
+        let auto_terrain: Option<(Vec<([i32; 3], String)>, i32)> = fields.get(6).map(|s| {
+            let s = s.trim();
+            let (list, place) = s.split_once('|').unwrap_or((s, "0"));
+            let entries = list
+                .split(';')
+                .filter(|e| !e.trim().is_empty())
+                .map(|e| {
+                    let (off, zone) = e.split_once('=').unwrap_or_else(|| panic!("{}:{}: auto terrain `dx,dy,dz=Zone` expected, got {e:?}", path.display(), line_no + 1));
+                    let v: Vec<i32> = off.split(',').map(|x| x.trim().parse::<i32>().unwrap_or_else(|_| panic!("{}:{}: auto terrain offset x,y,z expected, got {off:?}", path.display(), line_no + 1))).collect();
+                    assert!(v.len() == 3, "{}:{}: auto terrain offset x,y,z expected, got {off:?}", path.display(), line_no + 1);
+                    ([v[0], v[1], v[2]], zone.to_string())
+                })
+                .collect();
+            (entries, place.trim().parse::<i32>().unwrap_or(0))
+        });
         let mapping = Mapping {
             model: fields[1].to_string(),
             model_scale,
             footprint,
             units,
+            auto_terrain,
         };
         let prev = if let Some(index) = fields[0].strip_prefix("i@") {
             out.items_by_index
@@ -237,18 +260,127 @@ pub fn replaced_cells(source: &MapFile, zones: &BTreeSet<String>, units_of: &dyn
         if units.len() <= 1 {
             continue;
         }
-        let (sx, sz) = units.iter().fold((1i32, 1i32), |(sx, sz), u| (sx.max(u[0] + 1), sz.max(u[2] + 1)));
-        let [cx, cy, cz] = b.raw_coords.map(|c| c as i32);
+        let fp = footprint_of(&units);
         for u in &units {
-            let (x, z) = match b.dir & 3 {
-                0 => (cx + u[0], cz + u[2]),
-                1 => (cx + sz - 1 - u[2], cz + u[0]),
-                2 => (cx + sx - 1 - u[0], cz + sz - 1 - u[2]),
-                _ => (cx + u[2], cz + sx - 1 - u[0]),
-            };
-            let y = cy + u[1];
-            if (0..=255).contains(&x) && (0..=255).contains(&y) && (0..=255).contains(&z) {
-                out.insert([x as u8, y as u8, z as u8]);
+            if let Some(c) = turned_cell(b, fp, *u) {
+                out.insert(c);
+            }
+        }
+    }
+    out
+}
+
+/// The footprint (sx, sz) a variant's unit cells span — the pivot the game
+/// turns the block about.
+fn footprint_of(units: &[[i32; 3]]) -> (i32, i32) {
+    units.iter().fold((1i32, 1i32), |(sx, sz), u| (sx.max(u[0] + 1), sz.max(u[2] + 1)))
+}
+
+/// The raw file cell an offset in a block's own frame lands on, turned by the
+/// block's direction about its footprint (the way `block_origin` turns it);
+/// `None` off the 256³ grid.
+fn turned_cell(b: &BlockRec, (sx, sz): (i32, i32), u: [i32; 3]) -> Option<[u8; 3]> {
+    let [cx, cy, cz] = b.raw_coords.map(|c| c as i32);
+    let (x, z) = match b.dir & 3 {
+        0 => (cx + u[0], cz + u[2]),
+        1 => (cx + sz - 1 - u[2], cz + u[0]),
+        2 => (cx + sx - 1 - u[0], cz + sz - 1 - u[2]),
+        _ => (cx + u[2], cz + sx - 1 - u[0]),
+    };
+    let y = cy + u[1];
+    ((0..=255).contains(&x) && (0..=255).contains(&y) && (0..=255).contains(&z)).then(|| [x as u8, y as u8, z as u8])
+}
+
+/// A zone or tile name without its trailing digit(s): `LandHill2` -> `LandHill`
+/// (a block info's auto terrain names the zone, the file's tile record the
+/// zone's block — `PlatformGrassOnLandHillSlopeBase` brings `LandHill`, the
+/// cell holds `LandHill1`); `Land` stays `Land`, a transition
+/// `Grass0_Grass1_Grass2` stays distinct from the flat `Grass`.
+fn zone_stem(name: &str) -> &str {
+    name.trim_end_matches(|c: char| c.is_ascii_digit())
+}
+
+/// Which terrain tiles — authored or GENERATED — the tiny map leaves out
+/// because a block stands in their cell.
+///
+/// The game's rule, read off Summer 04's file and block infos (2026-09-08):
+/// a terrain tile is never drawn in a cell one of a block's UNITS occupies.
+/// The editor still records the tile — every ground variant declares an
+/// AUTO TERRAIN (`[0,0,0] Grass` on a RoadTechStart, a PlatformTechBase, a
+/// StructurePillar on the flat; a Curve5 lists its 14 units) and places it,
+/// so Summer 04's 633 flat Grass tiles are BAKED and 38 of them sit under
+/// the start road, the finish plaza's platforms and its gates — but what the
+/// game draws there is the block: its variant's prefab, made for the terrain
+/// it stands on (`StructurePillarOnLake`, `…OnLakeShoreDeadend`,
+/// `PlatformTechBaseOnGrassCliff2`, a DecoLakeCurve that IS the shore over
+/// its 2×2 footprint), plus its `…FCBGround` fillers, full-footprint planes
+/// at exactly the tile's height (`TrackToDeco…FCBGround` the apron round a
+/// road, `StructurePillarFCBGround` the plate under a pillar,
+/// `PlatformToDecoDiag1FCBGround` the half beside a diagonal deck). Drawn
+/// together with the tile they would z-fight in Nadeo's own maps.
+///
+/// The tiny map drew both: a half-size Grass tile and a half-size deck at
+/// the same height — vjeux, playing 04: "the road and grass are mixed
+/// together and flash like crazy". Before this the tile was hidden only
+/// under a short list of deck families (`stands_in_for_tile`), and only when
+/// authored.
+///
+/// A block that maps to no geometry (`-`: an empty pillar variant, a wall
+/// pillar whose faces are generated fillers) hides nothing — with no block
+/// drawn there, the tile is the only ground the cell has. A free block sits
+/// in no cell. The variant's declared auto terrain (the mapping's 7th
+/// column) is kept as a cross-check: a tile hidden under a block that did
+/// not declare its zone is counted (`undeclared`) — the place to look if a
+/// hole ever shows.
+pub struct HiddenTiles {
+    /// the cells a block with geometry occupies, with the block's index
+    occupied: BTreeMap<[u8; 3], usize>,
+    /// (cell, zone stem) some block declares as its own auto terrain
+    declared: BTreeSet<([u8; 3], String)>,
+    /// blocks whose footprint hides tiles / blocks that declare auto terrain
+    pub blocks: usize,
+    pub declaring: usize,
+}
+
+impl HiddenTiles {
+    pub fn hides(&self, tile: &BlockRec) -> bool {
+        self.occupied.contains_key(&tile.raw_coords)
+    }
+    /// The tile is hidden by a block that did not declare its zone as auto terrain.
+    pub fn undeclared(&self, tile: &BlockRec) -> bool {
+        self.hides(tile) && !self.declared.contains(&(tile.raw_coords, zone_stem(&tile.name).to_string()))
+    }
+    /// Index of the block occupying the tile's cell.
+    pub fn occupant(&self, tile: &BlockRec) -> Option<usize> {
+        self.occupied.get(&tile.raw_coords).copied()
+    }
+}
+
+/// `info_of` gives a block's mapping data: its model (`-` = no geometry), its
+/// variant's unit cells and, when the mapping carries the column, its auto
+/// terrain (offsets, zone) + place type.
+pub fn hidden_tiles(source: &MapFile, zones: &BTreeSet<String>, info_of: &dyn Fn(&BlockRec) -> Option<(String, Vec<[i32; 3]>, Option<(Vec<([i32; 3], String)>, i32)>)>) -> HiddenTiles {
+    let mut out = HiddenTiles { occupied: BTreeMap::new(), declared: BTreeSet::new(), blocks: 0, declaring: 0 };
+    for b in source.blocks.iter().filter(|b| !zones.contains(&b.name) && b.free_pos.is_none()) {
+        let Some((model, units, auto)) = info_of(b) else { continue };
+        if let Some((list, _place)) = &auto {
+            out.declaring += 1;
+            let fp = footprint_of(&units);
+            for (off, zone) in list {
+                if let Some(c) = turned_cell(b, fp, *off) {
+                    out.declared.insert((c, zone_stem(zone).to_string()));
+                }
+            }
+        }
+        if model == "-" {
+            continue;
+        }
+        out.blocks += 1;
+        out.occupied.entry(b.raw_coords).or_insert(b.index);
+        let fp = footprint_of(&units);
+        for u in &units {
+            if let Some(c) = turned_cell(b, fp, *u) {
+                out.occupied.entry(c).or_insert(b.index);
             }
         }
     }
@@ -266,10 +398,18 @@ pub fn shared_cells_cmd(args: &[String]) {
     let source = MapFile::load(Path::new(&args[2]));
     let all = args.iter().any(|a| a == "--all");
     let zones: BTreeSet<String> = source.genealogy_zones().into_iter().collect();
-    // `--mapping placements.tsv`: the units per block, so multi-cell decks hide every cell they cover
+    // `--mapping placements.tsv`: the model, units and auto terrain per block —
+    // every block with geometry hides the tiles of the cells its units occupy.
+    // Without a mapping every non-tile block counts as one cell of geometry.
     let mapping = crate::cli::flag(args, "--mapping").map(|p| read_mapping(Path::new(p)));
-    let units_of = |b: &BlockRec| -> Vec<[i32; 3]> { mapping.as_ref().and_then(|m| m.by_index.get(&b.index).or_else(|| m.by_name.get(&b.name))).map(|m| m.units.clone()).unwrap_or_default() };
-    let replaced = replaced_cells(&source, &zones, &units_of);
+    let info_of = |b: &BlockRec| -> Option<(String, Vec<[i32; 3]>, Option<(Vec<([i32; 3], String)>, i32)>)> {
+        match mapping.as_ref() {
+            Some(m) => m.by_index.get(&b.index).or_else(|| m.by_name.get(&b.name)).map(|m| (m.model.clone(), m.units.clone(), m.auto_terrain.clone())),
+            None => Some((b.name.clone(), Vec::new(), None)),
+        }
+    };
+    let hidden = hidden_tiles(&source, &zones, &info_of);
+    eprintln!("{} blocks with geometry occupy tile cells; {} declare their auto terrain", hidden.blocks, hidden.declaring);
     let mut by_cell: BTreeMap<[u8; 3], (Vec<&BlockRec>, Vec<&BlockRec>)> = BTreeMap::new();
     for b in &source.blocks {
         let e = by_cell.entry(b.raw_coords).or_default();
@@ -279,30 +419,47 @@ pub fn shared_cells_cmd(args: &[String]) {
             e.1.push(b);
         }
     }
+    // The GENERATED tiles count too: GreenCoast's flat base Grass is baked, not
+    // authored (Summer 04: 633 baked Grass, 38 of them under the start road, the
+    // finish plaza's platforms and gates — emitted as items they were coplanar
+    // with the decks, the Z-fight of 2026-09-08). Listed with a `b` prefix.
+    for b in source.baked.iter().filter(|b| zones.contains(&b.name)) {
+        by_cell.entry(b.raw_coords).or_default().0.push(b);
+    }
     let mut pairs: BTreeMap<(String, String, &str), usize> = BTreeMap::new();
     let mut listed = 0usize;
+    // a generated tile prints as `b:<zone>` (the same tile, but from the baked chunk)
+    let is_baked = |t: &BlockRec| source.baked.iter().any(|x| std::ptr::eq(x, t));
+    let tile_label = |t: &BlockRec| if is_baked(t) { format!("b:{}", t.name) } else { t.name.clone() };
     println!("cell\ttile\tstatus\tother blocks (flags)");
-    for (cell, (tiles, others)) in &by_cell {
+    for (_cell, (tiles, others)) in &by_cell {
         if tiles.is_empty() || others.is_empty() {
             continue;
         }
-        let status = if replaced.contains(cell) { "hidden" } else { "kept" };
+        // hidden = a block with geometry occupies the cell; `hidden?` = the same,
+        // but no block declared this zone as its auto terrain (look there first
+        // if a hole ever shows)
+        let status = if tiles.iter().all(|t| hidden.hides(t)) {
+            if tiles.iter().any(|t| hidden.undeclared(t)) { "hidden?" } else { "hidden" }
+        } else {
+            "kept"
+        };
         if !all && status == "hidden" {
             for t in tiles {
                 for o in others {
-                    *pairs.entry((t.name.clone(), o.name.clone(), status)).or_default() += 1;
+                    *pairs.entry((tile_label(t), o.name.clone(), status)).or_default() += 1;
                 }
             }
             continue;
         }
         listed += 1;
         let (x, y, z) = tiles[0].coords();
-        let tile_names: Vec<&str> = tiles.iter().map(|t| t.name.as_str()).collect();
+        let tile_names: Vec<String> = tiles.iter().map(|t| tile_label(t)).collect();
         let other_names: Vec<String> = others.iter().map(|o| format!("{} ({:08X}{})", o.name, o.flags, if o.flags & (1 << 12) != 0 { " ground" } else { "" })).collect();
         println!("{x},{y},{z}\t{}\t{status}\t{}", tile_names.join("+"), other_names.join(", "));
         for t in tiles {
             for o in others {
-                *pairs.entry((t.name.clone(), o.name.clone(), status)).or_default() += 1;
+                *pairs.entry((tile_label(t), o.name.clone(), status)).or_default() += 1;
             }
         }
     }
@@ -738,19 +895,28 @@ pub fn cmd(args: &[String]) {
         }
     }
     let mut empty_blocks = 0usize;
-    // Zone (terrain) blocks REPLACED by a block designed for that terrain: a
-    // `PlatformGrassOnLandHillSlopeBase` / `PlatformGrassBaseOnLandHill2` /
-    // `RoadTechStraightOnWaterShore1` shares its cell with the LandHill /
-    // WaterShore tile it stands in for, and the game draws only the
-    // replacement. Both as items (Summer 03, cells (37,17,22) and (38,17,22):
-    // LandHill1 Deadend under the OnLandHill slope base) the hill's bumps poke
-    // through the deck — a snow blob in the grass. Zone names come from the
-    // genealogy chunk; a replacement block names its zone after "On", with or
-    // without the zone's trailing digit (OnLandHill covers LandHill1/2).
+    // Terrain (zone) tiles under blocks are left out — authored or generated
+    // (`hidden_tiles`: the game draws the block and its fillers there, never
+    // the tile; drawn as items both were coplanar). Zone names come from the
+    // genealogy chunk. The special case this began as (2026-09-06): a
+    // `PlatformGrassOnLandHillSlopeBase` sharing its cell with the LandHill1
+    // Deadend it stands in for (Summer 03, cells (37,17,22) and (38,17,22)) —
+    // both as items, the hill's bumps poked through the deck as a snow blob.
     let zones: BTreeSet<String> = source.genealogy_zones().into_iter().collect();
-    let units_of = |b: &BlockRec| -> Vec<[i32; 3]> { mapping.by_index.get(&b.index).or_else(|| mapping.by_name.get(&b.name)).map(|m| m.units.clone()).unwrap_or_default() };
-    let replaced_cells = replaced_cells(&source, &zones, &units_of);
+    let info_of = |b: &BlockRec| -> Option<(String, Vec<[i32; 3]>, Option<(Vec<([i32; 3], String)>, i32)>)> {
+        mapping.by_index.get(&b.index).or_else(|| mapping.by_name.get(&b.name)).map(|m| (m.model.clone(), m.units.clone(), m.auto_terrain.clone()))
+    };
+    let hidden = hidden_tiles(&source, &zones, &info_of);
+    let undeclared: Vec<String> = source
+        .blocks
+        .iter()
+        .chain(source.baked.iter())
+        .filter(|t| zones.contains(&t.name) && hidden.undeclared(t))
+        .map(|t| format!("{} at {:?} under {}", t.name, t.coords(), hidden.occupant(t).and_then(|i| source.blocks.get(i)).map(|b| b.name.as_str()).unwrap_or("?")))
+        .collect();
+    println!("  terrain tiles under blocks: {} blocks with geometry occupy tile cells, {} declare their auto terrain; {} tiles hidden under a block that did not declare their zone{}", hidden.blocks, hidden.declaring, undeclared.len(), if undeclared.is_empty() { String::new() } else { format!(" ({})", undeclared.iter().take(12).cloned().collect::<Vec<_>>().join("; ")) });
     let mut replaced_terrain = 0usize;
+    let mut replaced_baked_terrain = 0usize;
     // Authored blocks occupy appended clones.
     for b in &source.blocks {
         let map = mapping
@@ -764,7 +930,7 @@ pub fn cmd(args: &[String]) {
             empty_blocks += 1;
             continue;
         }
-        if zones.contains(&b.name) && replaced_cells.contains(&b.raw_coords) {
+        if zones.contains(&b.name) && hidden.hides(b) {
             replaced_terrain += 1;
             continue;
         }
@@ -801,6 +967,14 @@ pub fn cmd(args: &[String]) {
     for b in &source.baked {
         let Some(map) = mapping.baked_by_index.get(&b.index) else { continue };
         if map.model == "-" {
+            continue;
+        }
+        // A GENERATED terrain tile under a block that declares it as its own
+        // ground is not drawn by the game either (Summer 04's flat Grass is
+        // baked: the start road, the finish platforms and gates stood on 38 of
+        // them — see `hidden_tiles`).
+        if zones.contains(&b.name) && hidden.hides(b) {
+            replaced_baked_terrain += 1;
             continue;
         }
         // A generated filler of a FREE block is free too, with the parent's
@@ -1246,7 +1420,7 @@ pub fn cmd(args: &[String]) {
     }
     println!("wrote {}", out.display());
     println!("  uid: {}", new_uid);
-    println!("  {} existing items re-pointed at scaled copies ({} vegetation stand-ins sunk to half-tree crown height); {} dropped (procedural vegetation); {} blocks intentionally without an item (empty variants); {} terrain tiles replaced by the block standing in for them; {} prefab trees placed as stock items; {} trees left out by the clearance (overlapping a deck)", repointed_items, sunk_items, dropped_items, empty_blocks, replaced_terrain, prefab_trees, cleared_trees);
+    println!("  {} existing items re-pointed at scaled copies ({} vegetation stand-ins sunk to half-tree crown height); {} dropped (procedural vegetation); {} blocks intentionally without an item (empty variants); {} terrain tiles replaced by the block standing in for them ({} authored + {} generated); {} prefab trees placed as stock items; {} trees left out by the clearance (overlapping a deck)", repointed_items, sunk_items, dropped_items, empty_blocks, replaced_terrain + replaced_baked_terrain, replaced_terrain, replaced_baked_terrain, prefab_trees, cleared_trees);
     println!(
         "  scaled every authored object: {} blocks + {} items = {} item placements",
         source.blocks.len(),

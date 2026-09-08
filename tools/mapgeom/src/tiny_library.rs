@@ -507,6 +507,16 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut outcomes: Vec<Outcome> = Vec::new();
     // key -> (alias or "-", footprint sx, sz, the variant's unit cells in the block's frame)
     let mut block_map: BTreeMap<(String, u32, String), (String, u32, u32, Vec<[i32; 3]>)> = BTreeMap::new();
+    // key -> the picked variant's AUTO TERRAIN: the terrain tiles the block
+    // brings with it, (offset in the block's frame, zone block name), and the
+    // variant's place type. The game does not draw a tile that is a block's
+    // own auto terrain — the block's ground prefab and FCBGround fillers are
+    // the ground there (a RoadTechStart's Grass cell: TrackToDeco…FCBGround
+    // is the apron; a StructurePillar's: StructurePillarFCBGround is the
+    // plate). Summer 04's start straight and finish plaza stood on BAKED
+    // Grass that the tiny drew as items under the decks, coplanar (2026-09-08).
+    let mut auto_terrain: BTreeMap<(String, u32, String), (Vec<([i32; 3], String)>, i32)> = BTreeMap::new();
+    let tile_zones: std::collections::BTreeSet<String> = source.genealogy_zones().into_iter().collect();
     let mut alias_of_recipe: BTreeMap<String, String> = BTreeMap::new();
     let mut next_alias = 0usize;
     // `v@ALIAS` rows (the prefabs' vegetation as stock items) and the
@@ -584,6 +594,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         };
         let units: Vec<[i32; 3]> = pk.variant.block_units.iter().map(|u| u.offset).collect();
         let (sx, sz) = units.iter().fold((1u32, 1u32), |(sx, sz), u| (sx.max(u[0] as u32 + 1), sz.max(u[2] as u32 + 1)));
+        // a terrain tile's auto terrain is itself: only the OTHER blocks hide tiles
+        if !tile_zones.contains(name) && !pk.variant.auto_terrains.is_empty() {
+            auto_terrain.insert((name.clone(), *flags, modk.clone()), (pk.variant.auto_terrains.iter().map(|(off, _, cur)| (*off, cur.clone())).collect(), pk.variant.auto_terrain_place_type));
+        }
         let prefabs: Vec<(String, Option<[f32; 3]>, Option<[f32; 3]>)> = pk.mobils.iter().filter_map(|mb| mb.prefab.clone().map(|p| (p, mb.translation, mb.rotation))).collect();
         let solids: Vec<String> = pk.mobils.iter().filter_map(|mb| mb.solid.clone()).collect();
         let legacy_item = LEGACY.iter().find(|(n, _)| n == name).map(|(_, p)| *p);
@@ -1043,7 +1057,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let archive = crate::tiny_assets::zip(&files);
     std::fs::write(out_zip, &archive).unwrap();
     // mapping: @index rows for blocks (alias or "-" = intentionally nothing), i@ rows for items
-    let mut mapping = String::from("# tiny-library mapping: @block_index<TAB>ITEM|-<TAB>model_scale<TAB>sx<TAB>sz<TAB>units(x,y,z;...) ; i@item_index<TAB>ITEM|stock model|-\n");
+    let mut mapping = String::from("# tiny-library mapping: @block_index<TAB>ITEM|-<TAB>model_scale<TAB>sx<TAB>sz<TAB>units(x,y,z;...)<TAB>auto_terrain(dx,dy,dz=Zone;...|placetype) ; i@item_index<TAB>ITEM|stock model|-\n");
     let mut missing_blocks: BTreeMap<String, usize> = BTreeMap::new();
     let mut rows = 0usize;
     // Generated fillers the game does not draw but the tiny did: the Deco
@@ -1095,14 +1109,21 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             continue;
         }
         let modk = if prefix == "b@" { baked_key.get(&b.index).cloned().unwrap_or_default() } else { String::new() };
-        match block_map.get(&(b.name.clone(), b.flags, modk)) {
+        match block_map.get(&(b.name.clone(), b.flags, modk.clone())) {
             Some((alias, sx, sz, units)) => {
                 let model = if alias == "-" { "-".to_string() } else { format!("{alias}.Item.Gbx") };
                 // the unit cells, so `tmmaps tiny` can hide the terrain tile under EVERY
                 // cell a ground deck covers (a Curve5 kept the Grass tiles of its 12
                 // other cells at deck height: the physics read Grass on the road, 2026-09-07)
                 let cells = units.iter().map(|u| format!("{},{},{}", u[0], u[1], u[2])).collect::<Vec<_>>().join(";");
-                mapping.push_str(&format!("{prefix}{}\t{}\t{}\t{}\t{}\t{}\n", b.index, model, scale, sx, sz, cells));
+                // 7th field: the variant's auto terrain, `dx,dy,dz=Zone;…|placetype`
+                // (empty when the variant declares none) — `tmmaps tiny` hides a
+                // tile the block declares as its own ground, authored or baked
+                let auto = match auto_terrain.get(&(b.name.clone(), b.flags, modk.clone())) {
+                    Some((list, place)) => format!("{}|{place}", list.iter().map(|(o, z)| format!("{},{},{}={z}", o[0], o[1], o[2])).collect::<Vec<_>>().join(";")),
+                    None => String::new(),
+                };
+                mapping.push_str(&format!("{prefix}{}\t{}\t{}\t{}\t{}\t{}\t{}\n", b.index, model, scale, sx, sz, cells, auto));
                 rows += 1;
                 if alias != "-" {
                     // where `tmmaps tiny` puts this item: origin (source metres) and yaw

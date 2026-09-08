@@ -1457,16 +1457,30 @@ fn main() {
             let &(_, _, payload, size) = map::skip_chunks(&g.body).iter().find(|(c, ..)| *c == 0x0304_3043).expect("no genealogy chunk");
             let b = &g.body[payload..payload + size];
             println!("version {} buffer {} count {}", u32::from_le_bytes(b[0..4].try_into().unwrap()), u32::from_le_bytes(b[4..8].try_into().unwrap()), u32::from_le_bytes(b[8..12].try_into().unwrap()));
-            if let Ok(recs) = map::genealogy_records(b) {
-                let mut hist = std::collections::BTreeMap::new();
-                for (_, _, z) in &recs { *hist.entry(z.clone()).or_insert(0) += 1; }
-                println!("zones: {hist:?}");
-                if tmmaps::cli::has(&args, "--grid") {
-                    // 64 rows of 64 first letters, record order
-                    for row in recs.chunks(64) {
-                        println!("{}", row.iter().map(|(_, _, z)| z.chars().next().unwrap_or('.')).collect::<String>());
+            match map::genealogy_full(b) {
+                Ok(recs) => {
+                    let mut hist = std::collections::BTreeMap::new();
+                    for r in &recs { *hist.entry(r.current.clone()).or_insert(0) += 1; }
+                    println!("zones: {hist:?}");
+                    // --chains: the distinct full records (zone chain, current
+                    // index, direction) with their counts — what the game
+                    // regenerates per cell, not just the current zone's name
+                    if tmmaps::cli::has(&args, "--chains") {
+                        let mut chains: std::collections::BTreeMap<String, usize> = Default::default();
+                        for r in &recs { *chains.entry(r.describe()).or_insert(0) += 1; }
+                        let mut rows: Vec<_> = chains.into_iter().collect();
+                        rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                        println!("{} distinct records:", rows.len());
+                        for (chain, n) in rows { println!("  {n:5}  {chain}"); }
+                    }
+                    if tmmaps::cli::has(&args, "--grid") {
+                        // 64 rows of 64 first letters, record order
+                        for row in recs.chunks(64) {
+                            println!("{}", row.iter().map(|r| r.current.chars().next().unwrap_or('.')).collect::<String>());
+                        }
                     }
                 }
+                Err(e) => println!("records: {e}"),
             }
             let n: usize = tmmaps::cli::flag(&args, "--bytes").and_then(|s| s.parse().ok()).unwrap_or(256);
             for (i, row) in b[12..(12 + n).min(b.len())].chunks(16).enumerate() {
