@@ -874,3 +874,10 @@ pub fn read_flips(path: &std::path::Path) -> Result<BTreeMap<String, Vec<u32>>, 
     }
     Ok(out)
 }
+
+/// A tiny (half-scale converter) map: uid "Tin2…" or name "Tiny …". Its .Map.Gbx still carries the ORIGINAL's
+/// baked terrain blocks (Sea at y 15, sand at 12 — full-size heights; the game regenerates the collection ground
+/// itself), so a scene built for it must skip the baked list (converter, 2026-09-08 09:02Z).
+pub fn is_tiny_map(uid: &str, name: &str) -> bool {
+    uid.starts_with("Tin2") || name.trim_start().starts_with("Tiny ")
+}

@@ -1077,7 +1077,7 @@ fn build_geometry(fv: u32, map: &Path, gates: &tmroute::gates::GatesFile, verbos
             let mut store = open_store()?;
             let m = tmmaps::map::MapFile::load(map);
             let t0 = std::time::Instant::now();
-            let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts::default());
+            let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts { with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() });
             if scene.tris.len() < 1000 {
                 return Err(format!("LocalScene has only {} triangles — the pak or the map is not what it should be (a wiped /tmp/tmp/server reads as an empty scene); refusing to build features on it", scene.tris.len()));
             }
