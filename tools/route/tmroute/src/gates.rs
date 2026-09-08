@@ -117,6 +117,10 @@ pub struct Spawn {
     pub pos: [f32; 3],
     pub yaw: f32,
     pub waypoint: u32,
+    /// "placement" (the start block's direction — SIGN unverified, like every placement normal) or "human" (the
+    /// humans' first second of travel). The planner's spawn-heading term only trusts "human".
+    #[serde(default)]
+    pub yaw_source: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -507,6 +511,7 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         pos: raws[spawn_i].centre,
         yaw: raws[spawn_i].yaw,
         waypoint: raws[spawn_i].wp,
+        yaw_source: "placement".into(),
     };
     // a tiny (half-scale) map: uid "Tin2…" or name "Tiny …" — the credited-plane offsets halve with it
     let tiny = h.uid.starts_with("Tin2") || strip_fmt(&h.name).starts_with("Tiny ");

@@ -30,6 +30,9 @@ pub struct Nodes {
     /// 9 of 14 τ < 0.4 honest maps (F22) were the human tour driven BACKWARDS — a symmetric cost matrix cannot
     /// tell the two directions apart; the spawn heading can.
     pub spawn_dir: [f32; 2],
+    /// Only a human-derived spawn facing is trusted (gates.json spawn.yaw_source "human*"); a placement yaw's sign
+    /// is a guess and the penalty would flip tours the wrong way (Summer 2026 - 12, 02:10Z).
+    pub spawn_dir_known: bool,
 }
 
 impl Nodes {
@@ -48,7 +51,7 @@ impl Nodes {
             pos.push([c[0], c[1] - rep.half_height, c[2]]);
         }
         let n = groups.len();
-        Nodes { groups, kinds, pos, graph_node: vec![None; n], n_cp: cps.len(), n_fin: fins.len(), spawn_dir: [g.spawn.yaw.sin(), g.spawn.yaw.cos()] }
+        Nodes { groups, kinds, pos, graph_node: vec![None; n], n_cp: cps.len(), n_fin: fins.len(), spawn_dir: [g.spawn.yaw.sin(), g.spawn.yaw.cos()], spawn_dir_known: g.spawn.yaw_source.starts_with("human") }
     }
     pub fn finish_range(&self) -> std::ops::Range<usize> {
         1 + self.n_cp..1 + self.n_cp + self.n_fin

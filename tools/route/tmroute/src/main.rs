@@ -395,6 +395,8 @@ fn cmd_consensus(args: &[String]) {
                 }
             }
             let n = tmroute::gates::orient(&mut gates, &dirs, "human");
+            gates.spawn.yaw = route.spawn_yaw;
+            gates.spawn.yaw_source = "human".into();
             io::write_gates(Path::new(&go), &gates).unwrap_or_else(|e| die(&e));
             println!("oriented {n} gate normals from human crossings → {go}");
         }
@@ -625,6 +627,9 @@ pub fn cmd_human_batch(args: &[String]) {
                         for r in gates.gates_of_group(g) { dirs.insert(r.waypoint, l.arrival_heading); }
                     }
                     let n = tmroute::gates::orient(gates, &dirs, if bank_route { "human" } else { "human-unverified" });
+                    // and the spawn facing from the humans' first metres (the start block's direction sign is a guess)
+                    gates.spawn.yaw = route.spawn_yaw;
+                    gates.spawn.yaw_source = if bank_route { "human".into() } else { "human-unverified".into() };
                     io::write_gates(&gp, gates).unwrap_or_else(|e| die(&e));
                     out.push_str(&format!("oriented {n} gate normals from human crossings ({})\n", if bank_route { "verified" } else { "unverified" }));
                 }

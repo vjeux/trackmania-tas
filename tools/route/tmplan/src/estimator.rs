@@ -200,6 +200,9 @@ pub fn spawn_turn_m() -> f32 { f32::from_bits(SPAWN_TURN_M.load(std::sync::atomi
 /// The turn the car makes leaving the spawn towards `to`: its facing vs the departure direction (the path's first
 /// direction when known, else the chord). Radians, 0..π.
 pub fn spawn_turn(nodes: &Nodes, dirs: Option<&(Vec<Vec<[f32; 2]>>, Vec<Vec<[f32; 2]>>)>, to: usize) -> f32 {
+    if !nodes.spawn_dir_known {
+        return 0.0;
+    }
     let f = nodes.spawn_dir;
     let mut b = match dirs { Some((out, _)) if !out[0][to][0].is_nan() => out[0][to], _ => [f32::NAN, f32::NAN] };
     if b[0].is_nan() {
