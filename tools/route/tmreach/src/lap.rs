@@ -648,6 +648,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
     out.log.push(format!("seed: {} rollouts -> {} cells, best s {:.1} cps {}", out.rollouts, archive.len(), out.best.as_ref().map(|b| b.s).unwrap_or(0.0), out.best.as_ref().map(|b| b.cps).unwrap_or(0)));
     let mut last_report = std::time::Instant::now();
     let mut stagnant: usize = 0;
+    let mut consecutive_failures: usize = 0;
     while out.rollouts < cfg.budget && out.finished.is_none() {
         if archive.is_empty() {
             break;
@@ -681,9 +682,20 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         archive.get_mut(&key).unwrap().visits += 1;
         // return: replay the chain from the root
         let (rows, nc) = match w.rollout_keep(branch::ROOT, &entry.chain, root, entry.chain.len() as u64) {
-            Ok(x) => x,
+            Ok(x) => {
+                consecutive_failures = 0;
+                x
+            }
             Err(e) => {
-                out.log.push(format!("  return failed (chain {} ticks): {e}", entry.chain.len()));
+                consecutive_failures += 1;
+                if out.log.len() < 200 {
+                    out.log.push(format!("  return failed (chain {} ticks): {e}", entry.chain.len()));
+                }
+                // a dead fork server (its socket gone: EPIPE) fails every return; spinning on it burns
+                // a core for ever (2026-09-08 18:28Z, four boxes) -- abort so a supervisor can relaunch
+                if consecutive_failures >= 20 {
+                    return Err(format!("the fork server is gone: {consecutive_failures} consecutive return failures, last: {e}"));
+                }
                 continue;
             }
         };
