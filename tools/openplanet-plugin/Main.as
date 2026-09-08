@@ -260,11 +260,11 @@ string DumpDialogTree() {
 string DumpMTClips() {
     auto api = MTApi();
     if (api is null) return "not MT editor";
-    auto g = api.ClipGroup;
+    CGameCtnMediaClipGroup@ g = api.ClipGroup;
     if (g is null) return "no clip group";
     string sb = "clips=" + g.Clips.Length + " selected=" + api.GetSelectedClip() + "\n";
     for (uint i = 0; i < g.Clips.Length; i++) {
-        auto c = g.Clips[i];
+        CGameCtnMediaClip@ c = g.Clips[i];
         sb += "  clip[" + i + "] name=" + c.Name + " tracks=" + c.Tracks.Length
             + " localPlayerEnt=" + c.LocalPlayerClipEntIndex
             + " stopWhenRespawn=" + (c.StopWhenRespawn ? "1" : "0")
@@ -278,7 +278,7 @@ string DumpMTClips() {
 string OurClip() {
     auto api = MTApi();
     if (api is null) return "not MT editor";
-    auto g = api.ClipGroup;
+    CGameCtnMediaClipGroup@ g = api.ClipGroup;
     if (g is null) return "no clip group";
     int found = -1;
     for (uint i = 0; i < g.Clips.Length; i++) {
@@ -305,7 +305,7 @@ string OurClip() {
 string SetClipIndex(int i) {
     auto api = MTApi();
     if (api is null) return "not MT editor";
-    auto g = api.ClipGroup;
+    CGameCtnMediaClipGroup@ g = api.ClipGroup;
     if (g is null || i < 0 || uint(i) >= g.Clips.Length) return "no clip " + i;
     api.SetClip(g.Clips[i]);
     return "current=" + api.Clip.Name;
