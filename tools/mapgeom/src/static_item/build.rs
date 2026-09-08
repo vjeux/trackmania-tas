@@ -311,6 +311,18 @@ pub struct Merged {
     /// platform special is authored as `CollisionTurbo*` (gameplay 1) and
     /// drove as a Turbo until this (Summer 24 cp10, 2026-09-08).
     pub collision_redress: Vec<(String, String, (u8, u8))>,
+    /// The modifier's re-dress BY MATERIAL NAME — the mechanism the platform
+    /// surface modifiers use (PlatformDirt / Grass / Ice / Snow / Plastic…).
+    /// Those modifiers carry no GameSkin: their folder simply SHADOWS the base
+    /// materials by file name (`Modifier\PlatformIce\PlatformTech.Material.Gbx`
+    /// stands in for `Material\PlatformTech.Material.Gbx`), and the physics id
+    /// rides on the material. A hull triangle whose surface material has a
+    /// shadow in the folder takes the shadow's ids. Rows of (material file
+    /// name, lower-cased, e.g. `platformtech.material.gbx`; the shadow link;
+    /// (physics, gameplay)). Until this, every modified platform baked with the
+    /// prefab's Asphalt (16): vjeux, tiny 18, 2026-09-08 — "the texture is ice
+    /// but the driving is also not ice".
+    pub collision_redress_by_name: Vec<(String, String, (u8, u8))>,
     /// An ITEM modifier names its materials with a suffix: the obstacle items
     /// (Summer 15's pushers and rotors) reference
     /// `Stadium\Media\Modifier\ItemObstacleLevel1.Gbx`, whose materials live
@@ -685,7 +697,7 @@ impl Merged {
     /// under Boost becomes `Modifier\Boost\CollisionGrass` (Green, ReactorBoost
     /// 12) — what the game does to the block. None when no triangle matched.
     fn redress_collision(&mut self, sf: &CPlugSurface, triangles: &[Triangle], resolve: &mut MaterialResolver) -> Option<Vec<Triangle>> {
-        if self.collision_redress.is_empty() {
+        if self.collision_redress.is_empty() && self.collision_redress_by_name.is_empty() {
             return None;
         }
         let mut by_index: Vec<Option<(String, String, (u8, u8))>> = Vec::new();
@@ -693,7 +705,16 @@ impl Merged {
             let hit = match sm {
                 super::surface::SurfMaterial::Node(nr) if nr.inline.is_none() && nr.index >= 0 => resolve(nr.index).and_then(|(path, _, _)| {
                     let low = path.to_ascii_lowercase();
-                    self.collision_redress.iter().find(|(d, _, _)| *d == low).map(|(_, link, ids)| (path.clone(), link.clone(), *ids))
+                    // the GameSkin slot table first (full default path), then
+                    // the folder shadow by file name
+                    self.collision_redress
+                        .iter()
+                        .find(|(d, _, _)| *d == low)
+                        .or_else(|| {
+                            let file = low.rsplit('\\').next().unwrap_or(&low).to_string();
+                            self.collision_redress_by_name.iter().find(|(d, _, _)| *d == file)
+                        })
+                        .map(|(_, link, ids)| (path.clone(), link.clone(), *ids))
                 }),
                 _ => None,
             };

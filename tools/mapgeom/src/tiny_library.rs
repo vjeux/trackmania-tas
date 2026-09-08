@@ -625,6 +625,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             m.keep_water = crate::static_item::build::keep_water_for(collection);
             m.modifier = modifier_links(store, &effective_mods);
             m.collision_redress = modifier_collision_redress(store, &effective_mods);
+            m.collision_redress_by_name = modifier_folder_redress(store, &m.modifier);
             // TINY_NO_SPLIT_FOR=name,name (default DecoBeachMangrove): models baked
             // without the per-layer split (the Mangrove split crashes the client;
             // minimal repro var-m1, open bug).
@@ -1323,6 +1324,26 @@ pub fn modifier_collision_redress(store: &mut DataStore, refs: &[String]) -> Vec
             if !out.iter().any(|(d, _, _)| *d == default) {
                 out.push((default, link, ids));
             }
+        }
+    }
+    out
+}
+
+/// The re-dress a modifier FOLDER implies for the hull, by material file name
+/// (see `Merged::collision_redress_by_name`): for every material link the
+/// folder provides — `…\Modifier\X\S` — the row (`s.material.gbx`, the link,
+/// that material's (physics, gameplay)). Materials without a surface chunk
+/// (decals, pure shaders) contribute nothing, so a triangle they would have
+/// matched keeps the prefab's own id.
+pub fn modifier_folder_redress(store: &mut DataStore, links: &[String]) -> Vec<(String, String, (u8, u8))> {
+    let mut out: Vec<(String, String, (u8, u8))> = Vec::new();
+    for link in links {
+        let file = format!("{}.material.gbx", link.rsplit('\\').next().unwrap_or(link).to_ascii_lowercase());
+        if out.iter().any(|(f, _, _)| *f == file) {
+            continue;
+        }
+        if let Some(ids) = crate::static_item::build::material_surface_ids(store, &format!("{link}.Material.Gbx")) {
+            out.push((file, link.clone(), ids));
         }
     }
     out
