@@ -1389,27 +1389,35 @@ pub fn cmd(args: &[String]) {
     // that writer is gone.)
     // Stadium keeps it: its zones are the grass floor, full size under the
     // tiny map like the reference maps (and there is no sea to fall into).
-    if std::env::var_os("TINY_KEEP_GENEALOGY").is_none() {
-        match collection {
-            // BlueBay: the sea around the island is decoration, so no zone
-            // at all leaves plain sea under the tiny map.
-            0x1c => {
-                let zones = MapFile::clear_genealogy_file(&out).expect("clear genealogies");
-                println!("  genealogy chunk cleared: {zones} terrain zone records dropped");
-            }
-            // RedIsland: the ambient terrain is a zone BLOCK (Water, 2568 of
-            // the 4096 cells of Summer 02); every cell gets it, so the game
-            // regenerates the lake full size around and under the tiny
-            // island, whose water items sit on the same surface (-0.5).
-            // WhiteShore likewise: Water is a zone block (3148 of the 4096
-            // cells of Summer 03), the sea the island sits in, surface -1.
-            // GreenCoast: Lake (2418 of 4096 cells of Summer 04), the same way.
-            0x10 | 0x1d | 0xf => {
-                let (zone, n) = MapFile::fill_genealogy_file(&out).expect("fill genealogies");
-                println!("  genealogy chunk filled: {n} cells of {zone}");
-            }
-            _ => {}
+    // TINY_GENEALOGY=clear|fill|keep overrides the per-collection policy (a
+    // diagnostic: what the game regenerates under the island is only visible
+    // in the game). TINY_KEEP_GENEALOGY is the old spelling of `keep`.
+    let policy: Option<String> = std::env::var("TINY_GENEALOGY").ok().or_else(|| std::env::var_os("TINY_KEEP_GENEALOGY").map(|_| "keep".to_string()));
+    let policy = policy.as_deref().unwrap_or(match collection {
+        0x1c => "clear",
+        0x10 | 0x1d | 0xf => "fill",
+        _ => "keep",
+    });
+    match policy {
+        // BlueBay: the sea around the island is decoration, so no zone
+        // at all leaves plain sea under the tiny map.
+        "clear" => {
+            let zones = MapFile::clear_genealogy_file(&out).expect("clear genealogies");
+            println!("  genealogy chunk cleared: {zones} terrain zone records dropped");
         }
+        // RedIsland: the ambient terrain is a zone BLOCK (Water, 2568 of
+        // the 4096 cells of Summer 02); every cell gets it, so the game
+        // regenerates the lake full size around and under the tiny
+        // island, whose water items sit on the same surface (-0.5).
+        // WhiteShore likewise: Water is a zone block (3148 of the 4096
+        // cells of Summer 03), the sea the island sits in, surface -1.
+        // GreenCoast: Lake (2418 of 4096 cells of Summer 04), the same way.
+        "fill" => {
+            let (zone, n) = MapFile::fill_genealogy_file(&out).expect("fill genealogies");
+            println!("  genealogy chunk filled: {n} cells of {zone}");
+        }
+        "keep" => println!("  genealogy chunk kept as the source's"),
+        other => panic!("TINY_GENEALOGY={other}: clear, fill or keep"),
     }
 
     let check = MapFile::load(&out);
