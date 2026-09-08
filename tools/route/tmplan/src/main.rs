@@ -757,10 +757,11 @@ fn cmd_road_centreline(args: &[String]) {
                 if let Some(fp) = surf.path_points(&nodes, &surf.distance_matrix(&nodes).2, i, j) {
                     let mut cur = 0.0f32;
                     let mut mats: BTreeMap<String, usize> = BTreeMap::new();
-                    let flush = |cur: f32, mats: &BTreeMap<String, usize>| {
+                    let mut run_start = [0.0f32; 3];
+                    let flush = |cur: f32, mats: &BTreeMap<String, usize>, at: [f32; 3]| {
                         if cur > 4.0 {
                             let m: Vec<String> = mats.iter().map(|(k, v)| format!("{k}×{v}")).collect();
-                            eprintln!("      off-road run {cur:.0} m over {}", m.join(" "));
+                            eprintln!("      off-road run {cur:.0} m over {} from ({:.0}, {:.1}, {:.0})", m.join(" "), at[0], at[1], at[2]);
                         }
                     };
                     for w in fp.windows(2) {
@@ -768,16 +769,17 @@ fn cmd_road_centreline(args: &[String]) {
                         let step = ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
                         let on = surf.road_span(b, [b[0] - a[0], b[2] - a[2]], 2.0).is_some();
                         if on {
-                            flush(cur, &mats);
+                            flush(cur, &mats, run_start);
                             cur = 0.0;
                             mats.clear();
                         } else {
+                            if cur == 0.0 { run_start = a; }
                             cur += step;
                             let m = surf.grid.cell_of(b[0], b[2]).and_then(|(ix, iz)| surf.grid.cells[iz * surf.grid.nx + ix].iter().min_by(|p, q| (p.y - b[1]).abs().partial_cmp(&(q.y - b[1]).abs()).unwrap()).map(|s| format!("{}@{:+.1}", surf.grid.mats[s.mat as usize], s.y - b[1]))).unwrap_or_else(|| "void".to_string());
                             *mats.entry(m).or_default() += 1;
                         }
                     }
-                    flush(cur, &mats);
+                    flush(cur, &mats, run_start);
                 }
                 segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {i0}, \"gap\": true, \"to_pos\": [{:.2}, {:.2}, {:.2}]}}", grp(&nodes, i), grp(&nodes, j), nodes.pos[j][0], nodes.pos[j][1], nodes.pos[j][2]));
             }

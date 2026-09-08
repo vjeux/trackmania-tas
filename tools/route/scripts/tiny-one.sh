@@ -39,10 +39,11 @@ grep -q "NO PLAN" $P/$b.cost.txt && nice $R/tmplan plan "$MAP" --gates $GT/$b.de
 timeout 900 nice $R/tmr plan "$MAP" --gates $GT/$b.deck.json --model $MODEL_R --local $MODEL_RL --estimator hybrid --p-floor 0 --p-step 0.02 --threads 16 --top-k 3 --quiet --out-dir $RT --source router-plan-hyb --note "$note" > $P/$b.hyb.txt 2>&1 || echo "EXIT $?" >> $P/$b.hyb.txt
 geo=$(grep -E 'rank 0' $P/$b.cost.txt | head -1 | grep -o 'groups \[[0-9,]*\]' | tr -d 'groups []')
 hyb=$(grep -E 'rank 0' $P/$b.hyb.txt | head -1 | grep -o 'groups \[[0-9,]*\]' | tr -d 'groups []')
+VERD=$M/tm-route/tiny/gap-verdicts-$BUILD.tsv; [ -f $VERD ] || VERD=$M/tm-route/tiny/gap-verdicts.tsv
 # 3. centreline in the route order (hybrid, else geometric, else --order)
 order=${ORDER:-${hyb:-$geo}}; src=hybrid; [ -z "$hyb" ] && src=geometric
 if [ -n "$order" ]; then
-  nice $R/tmplan road-centreline "$MAP" --gates $GT/$b.deck.json --order $order --out $C/$b.road-centreline.json --route-out $C/$b.route-router-road-centreline-0.json --verdicts $M/tm-route/tiny/gap-verdicts.tsv --exclusions $M/tm-route/tiny/road-exclusions.tsv --map-stem $b --note "order from the $src route; $note; gates $b.deck.json" > $C/$b.centreline.txt 2>&1
+  nice $R/tmplan road-centreline "$MAP" --gates $GT/$b.deck.json --order $order --out $C/$b.road-centreline.json --route-out $C/$b.route-router-road-centreline-0.json --verdicts $VERD --exclusions $M/tm-route/tiny/road-exclusions.tsv --map-stem $b --note "order from the $src route; $note; gates $b.deck.json" > $C/$b.centreline.txt 2>&1
   cl=$(grep "pts," $C/$b.centreline.txt | sed -E 's/.*: ([0-9]+) pts, ([0-9]+) m, ([0-9]+) segments, ([0-9]+) gaps, on-road ([0-9.]+) %(.*)→.*/\1 pts \2 m, \4 gaps of \3 legs, on-road \5 %\6/')
 else cl="no route order — no centreline"; fi
 # 4. one tarball per map into the bank
