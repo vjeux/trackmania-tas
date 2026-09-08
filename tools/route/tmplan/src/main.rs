@@ -687,10 +687,14 @@ fn cmd_road_centreline(args: &[String]) {
     let mut hw: Vec<f32> = vec![surf.road_span(nodes.pos[0], [0.0, 1.0], 24.0).map_or(6.0, |(l, r)| ((l + r) / 2.0).max(3.0))];
     let mut segs: Vec<String> = Vec::new();
     let mut gaps = 0;
+    // where the previous leg left the car: 6 m THROUGH the gate along its arrival direction when the road continues
+    let mut through: Option<[f32; 3]> = None;
     for w in seq.windows(2) {
         let (i, j) = (w[0], w[1]);
         let i0 = pts.len() - 1;
-        match surf.road_path(&nodes, i, j) {
+        let path = match through { Some(p) => surf.road_path_from_point(p, &nodes, j).or_else(|| surf.road_path(&nodes, i, j)), None => surf.road_path(&nodes, i, j) };
+        through = None;
+        match path {
             Some(raw) => {
                 let mut leg = tmroute::human::resample(&raw, 2.0);
                 if leg.len() > 2 {
@@ -707,7 +711,25 @@ fn cmd_road_centreline(args: &[String]) {
                     hw.push(surf.road_span(*p, d, 24.0).map_or(4.0, |(l, r)| ((l + r) / 2.0).max(3.0)));
                     pts.push(*p);
                 }
-                segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {}, \"gap\": false}}", grp(&nodes, i), grp(&nodes, j), pts.len() - 1));
+                let gate_i = pts.len() - 1;
+                // continue 2, 4, 6 m past the gate along the arrival direction while the road is there (the credit plane
+                // lies 1–2 m past the deck centroid: the line must CROSS it before it turns)
+                if leg.len() >= 3 && j != *seq.last().unwrap() {
+                    let a = leg[leg.len() - 3]; let b = leg[leg.len() - 1];
+                    let l = ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt().max(1e-3);
+                    let d = [(b[0] - a[0]) / l, (b[2] - a[2]) / l];
+                    for k in [2.0f32, 4.0, 6.0] {
+                        let q = [b[0] + d[0] * k, b[1], b[2] + d[1] * k];
+                        let Some(n) = surf.graph.nearest_window(&surf.grid, q, 1, -3.0, 3.0) else { break };
+                        if !surf.graph.node_road[n] { break; }
+                        let qw = surf.graph.world(&surf.grid, n);
+                        let qq = [q[0], qw[1], q[2]];
+                        hw.push(surf.road_span(qq, d, 24.0).map_or(4.0, |(l2, r2)| ((l2 + r2) / 2.0).max(3.0)));
+                        pts.push(qq);
+                        through = Some(qq);
+                    }
+                }
+                segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {gate_i}, \"gap\": false}}", grp(&nodes, i), grp(&nodes, j)));
             }
             None => {
                 // stay on the last deck: the polyline does not move; the segment is a gap the consumer must bridge

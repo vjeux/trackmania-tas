@@ -312,7 +312,16 @@ impl Grid {
                 deck_by_physics.push(mi as u16);
             }
         }
+        // centreline mode (deck physics opted in): ONLY the whitelisted physics are road — an anchor over a Metal girder
+        // (Argentina 2026's isolated gate 15) must not make every girder top drivable
+        // (strict whitelisting was tried on 2026-09-08 and dropped: anchor-voted materials such as Metal ARE decks — girder
+        // stacks, StructureBase platforms — on 10 of the 25 tiny maps; the fall rule in road_path is the right filter)
+        let strict = false;
         for (m, n) in &votes {
+            if strict && !road_by_physics.contains(m) && !deck_by_physics.contains(m) {
+                dropped.push(format!("{} (anchor vote, not a road/deck physics — centreline mode)", self.mats[*m as usize]));
+                continue;
+            }
             let share = *area.get(m).unwrap_or(&0) as f32 / total.max(1) as f32;
             let majority = (*n >= 3 && *n * 2 >= n_votes) || road_by_physics.contains(m);
             // a deck physics (Concrete/Grass) is track up to 60 % of a scene — a tiny map has no stadium around it
