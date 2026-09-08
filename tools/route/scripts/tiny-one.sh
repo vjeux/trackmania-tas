@@ -23,7 +23,7 @@ if [ -n "$MANI" ]; then
   if [ -z "$row" ]; then row=$(awk -v m="$(basename "$real")" '$1==m' "$MANI" | head -1); fi
   wmd5=$(echo "$row" | grep -oE "\b[0-9a-f]{8,32}\b" | head -1); wcoll=$(echo "$row" | grep -oE "\b[0-9a-f]{16}\b" | tail -1)
   [ -n "$wmd5" ] && [ "${md5:0:${#wmd5}}" = "$wmd5" ] || { echo "$b: md5 $md5 != MANIFEST $wmd5 — REFUSED"; exit 2; }
-  if [ "$coll" = "$wcoll" ]; then cver="verified against $(basename $MANI)"; else cver="MANIFEST says $wcoll (the converter's collhash build), measured $coll with mapgeom collhash @ upstream-main 69164def — tool versions differ, md5 verified"; fi
+  if [ "$coll" = "$wcoll" ]; then cver="verified against $(basename $MANI)"; else cver="MANIFEST says $wcoll (the converter's collhash build), measured $coll with mapgeom collhash @ upstream-main 49da4bf7 — tool versions differ, md5 verified"; fi
 else cver="measured"; fi
 note="tiny build $BUILD; map md5 $md5; collhash $coll ($cver)"
 # models: the frozen exhibit pair when snapshotted, else LATEST
