@@ -125,6 +125,7 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
         tick: crate::rig::tick_of_ms(&w.tape, row.time_ms) + 1,
         state: CarState::from_row(row, w.race_of(row), cps, false),
         cps_before: cps,
+        effects: crate::tmr::effects_byte(&row.vis),
     };
     // respawns inside a leg are negatives from the leg's start
     let respawn_rows: Vec<usize> = respawns
@@ -154,6 +155,7 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
                 path_len_m: path,
                 min_speed: vmin,
                 max_speed: vmax,
+                effects: crate::tmr::effects_byte(&flat[rr].vis),
             });
             start_id += 1;
             out.respawns += 1;
@@ -180,6 +182,7 @@ pub fn human_from_flat(w: &Worker, tel: &Telemetry, mut flat: Vec<Row>, gates: &
             path_len_m: path,
             min_speed: vmin,
             max_speed: vmax,
+            effects: crate::tmr::effects_byte(&flat[row_idx].vis),
         });
         start_id += 1;
         out.legs += 1;

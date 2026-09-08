@@ -364,6 +364,13 @@ pub struct Vis {
     pub turbo_time: f32,
     pub is_turbo: bool,
     pub ground_contact: bool,
+    /// Reactor boost level (0 none, 1, 2) and type (0 none, 1 down, 2 up) -- the INPUT arm's
+    /// EFFECTS.md (u32 at vis +0x174 / +0x178, 100 % against ghost telemetry b89 bits 5-6 / 3-4);
+    /// decoded from the vis block already gathered (no new read). u8::MAX when unknown.
+    pub reactor_lvl: u8,
+    pub reactor_type: u8,
+    /// IsReactorGroundMode (flags bit 19).
+    pub reactor_ground_mode: bool,
     pub wheel_contact: [bool; 4],
     pub wheel_material: [u8; 4],
     pub wheel_slip: [f32; 4],
@@ -385,6 +392,9 @@ impl Vis {
         lateral_speed: f32::NAN,
         turbo_time: f32::NAN,
         is_turbo: false,
+        reactor_lvl: u8::MAX,
+        reactor_type: u8::MAX,
+        reactor_ground_mode: false,
         ground_contact: false,
         wheel_contact: [false; 4],
         wheel_material: [u8::MAX; 4],
@@ -412,6 +422,9 @@ impl Vis {
             turbo_time: f(0x1ac),
             is_turbo: flags & (1 << 24) != 0,
             ground_contact: flags & (1 << 20) != 0,
+            reactor_lvl: u(0x174).min(3) as u8,
+            reactor_type: u(0x178).min(3) as u8,
+            reactor_ground_mode: flags & (1 << 19) != 0,
             wheel_contact: [false; 4],
             wheel_material: [0; 4],
             wheel_slip: [0.0; 4],
