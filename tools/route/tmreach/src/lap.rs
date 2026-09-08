@@ -726,14 +726,33 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
 
     // SEED: the root, or the base tape replayed for --prefix-ticks (its state becomes the first cell)
     if cfg.prefix_ticks > 0 || cfg.seed_chain.is_some() {
-        let recs = match &cfg.seed_chain {
+        let mut recs = match &cfg.seed_chain {
             Some(c) => c.clone(),
             None => w.reference_recs(root, cfg.prefix_ticks),
         };
+        // a seed whose end state the search would drop (stopped, fallen under the line, off the road) is a
+        // dead end: cut the chain back 3 s at a time (up to 12 times) until it ends in a live state
+        let mut tries = 0;
+        let (rows, nh, end, s, seg) = loop {
+            let (rows, nh) = w.rollout_keep(branch::ROOT, &recs, root, recs.len() as u64)?;
+            let end = rows.last().cloned().unwrap_or_else(|| root_row.clone());
+            let (s, lat, seg, d3) = track.project(pos(&end), track.pts.len() / 2, track.pts.len());
+            let road_y = track.at(s)[1];
+            let hw = track.half_width.get(seg).copied().unwrap_or(5.5);
+            let bad = speed(&end) < 3.0 || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y - cfg.below_tol));
+            if !bad || tries >= 12 || recs.len() <= 300 {
+                break (rows, nh, end, s, seg);
+            }
+            w.release(nh);
+            tries += 1;
+            let cut = recs.len() - 300;
+            recs.truncate(cut);
+            out.log.push(format!("seed ends in a dead state (v {:.1}, {:.1} m below the line, lat {:.1}); chain cut to {} ticks", speed(&end), road_y - end.y, lat, cut));
+            if cfg.verbose {
+                eprintln!("{}", out.log.last().unwrap());
+            }
+        };
         let recs_len = recs.len();
-        let (rows, nh) = w.rollout_keep(branch::ROOT, &recs, root, recs.len() as u64)?;
-        let end = rows.last().cloned().unwrap_or_else(|| root_row.clone());
-        let (s, _lat, seg, _) = track.project(pos(&end), track.pts.len() / 2, track.pts.len());
         let cps = cps_of(&end);
         // credits along the prefix, attributed like a rollout's
         let mut mask = 0u32;
