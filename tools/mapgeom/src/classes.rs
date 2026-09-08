@@ -139,9 +139,9 @@ impl<'a> Graph<'a> {
             // shape that already exists.
             0x09178000 => {
                 let _version = self.r.u32()?;
-                self.noderef()?; // TriggerShape
+                let shape = self.noderef()?; // TriggerShape
                 self.r.take(8)?;
-                Ok(Node::Other(class_id))
+                Ok(Node::Trigger(shape))
             }
             // Two more trigger-side classes in the gate prefabs, both eight
             // and sixteen bytes of metadata with no geometry. Same file, same
@@ -1129,6 +1129,232 @@ impl<'a> Graph<'a> {
                 Ok(())
             }
 
+            // ------------------------------------ CPlugLight (0x0901D000)
+            // The wrapper a Solid2 `lights` socket names (`.Light.Gbx`):
+            // its GxLight, an optional animation, and (0x002) the NightOnly /
+            // ReflectByGround flags. Layouts: GBX.NET CPlugLight.chunkl.
+            // CPlugLightUserModel (0x090F9000): the item editor's light —
+            // version, kind, colour, intensity, distance, point emission
+            // radius/length, spot inner/outer angle, spot emission size x/y,
+            // v1+ NightOnly (GBX.NET CPlugLightUserModel.chunkl).
+            0x090F9000 => {
+                let v = self.r.u32()?;
+                // (light state discarded on this branch)
+                let _kind = self.r.i32()?;
+                let _ = self.r.vec3()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                self.r.f32()?;
+                self.r.f32()?;
+                if v >= 1 {
+                    let _ = if self.r.bool32()? { 1 } else { 0 };
+                }
+                Ok(())
+            }
+            0x0901D000 | 0x0901D002 => {
+                let gx = self.noderef()?;
+                let _func_light = self.noderef()?;
+                let _bitmap_flare = self.noderef()?;
+                let _bitmap_projector = self.noderef()?;
+                // (light state discarded on this branch)
+                let _ = gx;
+                if cid == 0x0901D002 {
+                    let _ = self.r.u32()?;
+                }
+                Ok(())
+            }
+            0x0901D003 => {
+                let v = self.r.u32()?;
+                let image_anim = self.noderef()?;
+                let a = self.r.f32()?;
+                let b = self.r.f32()?;
+                if v >= 1 {
+                    self.r.lookback()?;
+                }
+                // (light state discarded on this branch)
+                let _ = image_anim;
+                let _ = [a, b];
+                Ok(())
+            }
+            0x0901D004 => {
+                let _v = self.r.u32()?;
+                let gx = self.noderef()?;
+                let mut tail = [0i32; 5];
+                for t in tail.iter_mut() {
+                    *t = self.r.i32()?;
+                }
+                // (light state discarded on this branch)
+                let _ = gx;
+                let _ = tail;
+                Ok(())
+            }
+            // GxLight (0x04001000) and its subclasses, inline in a CPlugLight.
+            0x04001008 => {
+                // (light state discarded on this branch)
+                let _ = self.r.vec3()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.u32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.vec3()?;
+                Ok(())
+            }
+            0x04001009 => {
+                // (light state discarded on this branch)
+                let _ = self.r.vec3()?;
+                let _ = self.r.u32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _specular_intens = self.r.f32()?;
+                let _specular_power = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.vec3()?;
+                Ok(())
+            }
+            0x0400100A => {
+                let _v = self.r.u32()?;
+                // (light state discarded on this branch)
+                let _ = self.r.vec3()?;
+                let _ = self.r.u32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.vec3()?;
+                Ok(())
+            }
+            // GxLightAmbient: ShadeMinY, ShadeMaxY
+            0x04005000 => {
+                // light
+                self.r.take(8)?;
+                Ok(())
+            }
+            // GxLightPoint: FlareSize [, FlareBiasZ]
+            0x04003003 | 0x04003004 => {
+                // (light state discarded on this branch)
+                let _ = self.r.f32()?;
+                if cid == 0x04003004 {
+                    let _ = self.r.f32()?;
+                }
+                Ok(())
+            }
+            // GxLightBall
+            0x04002002 => {
+                // (light state discarded on this branch)
+                let _ = self.r.f32()?;
+                let _ = [self.r.f32()?, self.r.f32()?];
+                let _ = self.r.f32()?;
+                let _ = self.r.vec3()?;
+                Ok(())
+            }
+            0x04002006 => {
+                // (light state discarded on this branch)
+                let _ = self.r.u32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = [self.r.f32()?, self.r.f32()?];
+                let _ = self.r.vec3()?;
+                Ok(())
+            }
+            0x04002008 => {
+                // (light state discarded on this branch)
+                let _ = self.r.u32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = [self.r.f32()?, self.r.f32()?];
+                let _ = self.r.vec3()?;
+                let _ = [self.r.f32()?, self.r.f32()?];
+                Ok(())
+            }
+            0x04002009 => {
+                let _ = self.r.f32()?;
+                Ok(())
+            }
+            0x0400200A => {
+                let _ = self.r.f32()?;
+                Ok(())
+            }
+            // GxLightFrustum
+            0x0400A004 => {
+                // light
+                self.r.take(32)?;
+                Ok(())
+            }
+            0x0400A006 => {
+                // light
+                self.r.take(4 + 24 + 4)?;
+                Ok(())
+            }
+            // GxLightSpot
+            0x0400B001 => {
+                // (light state discarded on this branch)
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                Ok(())
+            }
+            0x0400B002 | 0x0400B003 => {
+                let v = if cid == 0x0400B003 { self.r.u32()? } else { 0 };
+                // (light state discarded on this branch)
+                let _ = self.r.u32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                let _ = self.r.f32()?;
+                if cid == 0x0400B003 {
+                    if v >= 1 {
+                        let _ = [self.r.u8()?, self.r.u8()?];
+                    } else {
+                        self.r.i32()?;
+                    }
+                }
+                Ok(())
+            }
+            // GxLightDirectional
+            0x04007001 => {
+                // light
+                self.r.take(16)?;
+                Ok(())
+            }
+            0x04007002 => {
+                // light
+                self.r.take(24)?;
+                Ok(())
+            }
+            0x04007003 => {
+                // light
+                self.r.take(12)?;
+                Ok(())
+            }
+            0x04007004 => {
+                // light
+                self.r.take(16)?;
+                Ok(())
+            }
+            0x04007005 => {
+                // light
+                self.r.take(8)?;
+                Ok(())
+            }
+
+            // CPlugSpawnModel: where the car appears on a start/checkpoint
+            // gate. The location's translation is geometry; the gravity
+            // vector is a direction.
             // CPlugSpawnModel: where the car appears on a start/checkpoint
             // gate. The location's translation is geometry; the gravity
             // vector is a direction.
@@ -2011,6 +2237,7 @@ fn compose(outer: &[f32; 12], inner: &[f32; 12]) -> [f32; 12] {
 fn known(_class_id: u32, cid: u32) -> bool {
     crate::blockinfo::known(cid) || matches!(
         cid,
+        0x090F9000 | 0x0901D000 | 0x0901D002 | 0x0901D003 | 0x0901D004 | 0x04001008 | 0x04001009 | 0x0400100A | 0x04005000 | 0x04003003 | 0x04003004 | 0x04002002 | 0x04002006 | 0x04002008 | 0x04002009 | 0x0400200A | 0x0400A004 | 0x0400A006 | 0x0400B001 | 0x0400B002 | 0x0400B003 | 0x04007001 | 0x04007002 | 0x04007003 | 0x04007004 | 0x04007005 |
         0x09005000
             | 0x09005010
             | 0x09005011

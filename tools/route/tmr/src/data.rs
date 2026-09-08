@@ -50,11 +50,22 @@ pub struct StartInfo {
     pub source: String,
 }
 
+/// Shards written with GEN's INTERIM effects dialect (bits 0–1 level, 2–3 type): their effects byte is unknown until
+/// GEN's --redo replaces them (coordinator 01:56Z; CAMPAIGN.tsv effects_dialect).
+pub const DIALECT_INTERIM: &[&str] = &["YzTFETagiqGYvGYtuQN2EyY60K3", "Nub2tB4j4rpdQ2M9LSUmuHegTV8"];
+
 pub fn read_starts(p: &Path) -> Result<HashMap<u32, StartInfo>, String> {
     let s = std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
     let mut out = HashMap::new();
+    // the `effects` column (tmstate v3 flags byte, hex) arrived on 2026-09-08; older files have none
+    let interim = p.parent().and_then(shard_map_uid).map(|u| DIALECT_INTERIM.contains(&u.as_str())).unwrap_or(false);
+    let mut effects_col: Option<usize> = None;
     for (i, line) in s.lines().enumerate() {
-        if i == 0 || line.is_empty() {
+        if i == 0 {
+            effects_col = line.split('\t').position(|h| h == "effects");
+            continue;
+        }
+        if line.is_empty() {
             continue;
         }
         let f: Vec<&str> = line.split('\t').collect();
@@ -82,6 +93,10 @@ pub fn read_starts(p: &Path) -> Result<HashMap<u32, StartInfo>, String> {
             cps: cps_before,
             finished: false,
             car: u8::MAX, // starts.tsv has no car column; the records' end state carries it (copied per row)
+            effects: match effects_col.and_then(|c| f.get(c)) {
+                Some(v) if !interim => u8::from_str_radix(v.trim().trim_start_matches("0x"), 16).unwrap_or(0),
+                _ => 0, // unknown (no column, or an interim-dialect shard)
+            },
             ..CarState::unknown()
         };
         st.cps = cps_before;
@@ -409,8 +424,20 @@ pub fn shard_map_uid(dir: &Path) -> Option<String> {
 pub const R_LOCAL: f32 = 8.0;
 /// A sampled target is a negative only if no endpoint of the (start, h) cloud is within this.
 pub const R_NEG: f32 = 14.0;
-/// Local targets beyond this from the start are not sampled (the head is LOCAL).
-pub const LOCAL_MAX_M: f32 = 450.0;
+/// Local targets beyond this from the start are not sampled (the head is LOCAL). 900 m since 01:10Z (F16): the
+/// h = 600 rollouts' far endpoints need matched negatives, and a 128 m/s car covers 500 m in 4 s.
+pub const LOCAL_MAX_M: f32 = 900.0;
+
+/// Distance-scaled passage radius (F16): "within 8 m at 400 m range" asks the head for a 1° bearing resolution it
+/// cannot have from the features, so far positives came out as p ≈ 0.1–0.5 hedges. The radius grows 3 cm per metre
+/// (8 m at 0, 20 m at 400 m); the negative exclusion likewise (14 m + 5 cm/m). The TargetSpec carries the radius, so
+/// the model sees it, and the chain asks with the same rule.
+pub fn r_local(d: f32) -> f32 {
+    R_LOCAL + 0.03 * d
+}
+pub fn r_neg(d: f32) -> f32 {
+    R_NEG + 0.05 * d
+}
 
 pub const L_WP_LOCAL: f32 = -1.0;
 /// Interior passage points of the straight start → endpoint segment used as positives (f · h ticks).
@@ -483,7 +510,7 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, fea
     let mut push_row = |rows: &mut (Vec<Spec>, Vec<f32>), s: &StartInfo, sid: u32, target: [f32; 3], h: u16, ticks: f32, y: f32, end: Option<&CarState>, key: f32, car: u8| {
         let d = dist3(s.state.pos, target);
         let dir = crate::frame::unit3([target[0] - s.state.pos[0], target[1] - s.state.pos[1], target[2] - s.state.pos[2]]).unwrap_or([0.0, 0.0, 1.0]);
-        let t = TargetSpec { centre: target, normal: dir, half_width: R_LOCAL, group_size: 0, kind: TargetKind::LocalPoint, collected_share: s.cps_before as f32 / n_cp_groups.max(1.0) };
+        let t = TargetSpec { centre: target, normal: dir, half_width: r_local(dist3(s.state.pos, target)), group_size: 0, kind: TargetKind::LocalPoint, collected_share: s.cps_before as f32 / n_cp_groups.max(1.0) };
         let mut st = s.state;
         st.car = car;
         rows.0.push(Spec { state: st, target: t, h });
@@ -590,7 +617,8 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, fea
             if dist3(sp, p) > LOCAL_MAX_M {
                 continue;
             }
-            if ends.iter().any(|e| seg_dist(sp, e.pos, p) < R_NEG) {
+            let rn = r_neg(dist3(sp, p));
+            if ends.iter().any(|e| seg_dist(sp, e.pos, p) < rn) {
                 st.rejected_near_endpoint += 1;
                 continue;
             }

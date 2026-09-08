@@ -26,6 +26,13 @@ pub struct Nodes {
     pub graph_node: Vec<Option<usize>>,
     pub n_cp: usize,
     pub n_fin: usize,
+    /// The car's facing at the spawn (unit XZ): a first leg that departs against it is a U-turn from standstill.
+    /// 9 of 14 τ < 0.4 honest maps (F22) were the human tour driven BACKWARDS — a symmetric cost matrix cannot
+    /// tell the two directions apart; the spawn heading can.
+    pub spawn_dir: [f32; 2],
+    /// Only a human-derived spawn facing is trusted (gates.json spawn.yaw_source "human*"); a placement yaw's sign
+    /// is a guess and the penalty would flip tours the wrong way (Summer 2026 - 12, 02:10Z).
+    pub spawn_dir_known: bool,
 }
 
 impl Nodes {
@@ -44,7 +51,7 @@ impl Nodes {
             pos.push([c[0], c[1] - rep.half_height, c[2]]);
         }
         let n = groups.len();
-        Nodes { groups, kinds, pos, graph_node: vec![None; n], n_cp: cps.len(), n_fin: fins.len() }
+        Nodes { groups, kinds, pos, graph_node: vec![None; n], n_cp: cps.len(), n_fin: fins.len(), spawn_dir: [g.spawn.yaw.sin(), g.spawn.yaw.cos()], spawn_dir_known: g.spawn.yaw_source.starts_with("human") }
     }
     pub fn finish_range(&self) -> std::ops::Range<usize> {
         1 + self.n_cp..1 + self.n_cp + self.n_fin
@@ -54,7 +61,8 @@ impl Nodes {
 /// Item / free gates carry an absolute road-level position: look DOWN a little.
 /// Grid gates' anchor is `cell base + 2` (the road): look up into the cell too.
 fn window(from_item: bool) -> (f32, f32) {
-    if from_item { (-6.0, 0.5) } else { (-2.5, 7.0) }
+    // +2.5 above: the tiny converter's gate items sit 1 m under their own road surface
+    if from_item { (-6.0, 2.5) } else { (-2.5, 7.0) }
 }
 
 impl SurfaceModel {
@@ -98,7 +106,23 @@ impl SurfaceModel {
         }
 
         let mut nodes = Nodes::from_gates(gates);
-        let mut grid = Grid::build(if deco_grid { &full } else { &scene });
+        // the grid covers the TRACK (spawn + gates ± 40 % of their span, ≥ 400 m), not every placement on the map
+        let clip = {
+            let mut lo = [f32::INFINITY; 3];
+            let mut hi = [f32::NEG_INFINITY; 3];
+            for p in &nodes.pos { for a in 0..3 { lo[a] = lo[a].min(p[a]); hi[a] = hi[a].max(p[a]); } }
+            let m = [0usize, 2].iter().map(|&a| (hi[a] - lo[a]) * 0.4).fold(400.0f32, f32::max);
+            ([lo[0] - m, lo[1], lo[2] - m], [hi[0] + m, hi[1], hi[2] + m])
+        };
+        let span = (clip.1[0] - clip.0[0]).max(clip.1[2] - clip.0[2]);
+        if span > 2600.0 {
+            return Err(format!("track spans {span:.0} m — too large for the 2 m surface grid (NOSEDIVE class); no surface model"));
+        }
+        // clip only when the scene itself is oversized (a stray placement far away): a normal map keeps every
+        // surface — Summer 2026 - 10's route runs > 400 m outside its gates' box and lost its legs under a blind clip
+        let src = if deco_grid { &full } else { &scene };
+        let oversized = src.bounds().map_or(false, |(lo, hi)| ((hi[0] - lo[0]) / 2.0) * ((hi[2] - lo[2]) / 2.0) > 4_000_000.0);
+        let mut grid = Grid::build_within(src, if oversized { Some(clip) } else { None });
         if deco_grid {
             notes.push("route grid built from track + DECORATION (fallback; the track-only grid had no route)".into());
         }
@@ -374,5 +398,40 @@ impl SurfaceModel {
             }
         }
         out
+    }
+}
+
+impl SurfaceModel {
+    /// Move a path point to the MIDDLE of the road it stands on: walk left and right of the travel direction
+    /// (1 m steps, up to `cap` m each side) while the grid has a road surface within 4 m of the point's height, and
+    /// return the midpoint of that span (the point itself when there is no road under it or the span is one-sided
+    /// beyond `cap`). A shortest path hugs the inside of every bend; the centreline the player wants is the deck
+    /// midline (coordinator, 2026-09-08 01:26Z).
+    pub fn recentre(&self, p: [f32; 3], dir: [f32; 2], cap: f32) -> [f32; 3] {
+        let has_road = |x: f32, z: f32, y: f32| -> bool {
+            match self.grid.cell_of(x, z) {
+                Some((ix, iz)) => self.grid.cells[iz * self.grid.nx + ix].iter().any(|s| s.road && (s.y - y).abs() <= 4.0),
+                None => false,
+            }
+        };
+        if !has_road(p[0], p[2], p[1]) {
+            return p;
+        }
+        let l = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
+        if l < 1e-3 {
+            return p;
+        }
+        let perp = [-dir[1] / l, dir[0] / l];
+        let mut left = 0.0f32;
+        let mut right = 0.0f32;
+        let mut k = 1.0f32;
+        while k <= cap && has_road(p[0] + perp[0] * k, p[2] + perp[1] * k, p[1]) { left = k; k += 1.0; }
+        k = 1.0;
+        while k <= cap && has_road(p[0] - perp[0] * k, p[2] - perp[1] * k, p[1]) { right = k; k += 1.0; }
+        if left >= cap || right >= cap {
+            return p; // an open platform, not a road: no midline to speak of
+        }
+        let shift = (left - right) / 2.0;
+        [p[0] + perp[0] * shift, p[1], p[2] + perp[1] * shift]
     }
 }

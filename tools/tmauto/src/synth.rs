@@ -321,6 +321,7 @@ pub fn inputs_payload(inputs: &[Input], meta: &GhostMeta) -> Vec<u8> {
         orig_bits_used: 0,
         tail: Vec::new(),
         orig_bitstream: Vec::new(),
+        short_by: 0,
     };
     GbxTape {
         chunk_version: meta.input_chunk_version,

@@ -395,6 +395,8 @@ fn cmd_consensus(args: &[String]) {
                 }
             }
             let n = tmroute::gates::orient(&mut gates, &dirs, "human");
+            gates.spawn.yaw = route.spawn_yaw;
+            gates.spawn.yaw_source = "human".into();
             io::write_gates(Path::new(&go), &gates).unwrap_or_else(|e| die(&e));
             println!("oriented {n} gate normals from human crossings → {go}");
         }
@@ -434,6 +436,9 @@ fn main() {
         "index" => cmd_index(rest),
         "table" => cmd_table(rest),
         "table-r" => cmd_table_r(rest),
+        "split" => cmd_split(rest),
+        "tiny-map" => cmd_tiny_map(rest),
+        "credit-fit" => cmd_credit_fit(rest),
         "human-batch" => cmd_human_batch(rest),
         other => die(&format!("unknown command {other}")),
     }
@@ -622,6 +627,9 @@ pub fn cmd_human_batch(args: &[String]) {
                         for r in gates.gates_of_group(g) { dirs.insert(r.waypoint, l.arrival_heading); }
                     }
                     let n = tmroute::gates::orient(gates, &dirs, if bank_route { "human" } else { "human-unverified" });
+                    // and the spawn facing from the humans' first metres (the start block's direction sign is a guess)
+                    gates.spawn.yaw = route.spawn_yaw;
+                    gates.spawn.yaw_source = if bank_route { "human".into() } else { "human-unverified".into() };
                     io::write_gates(&gp, gates).unwrap_or_else(|e| die(&e));
                     out.push_str(&format!("oriented {n} gate normals from human crossings ({})\n", if bank_route { "verified" } else { "unverified" }));
                 }
@@ -657,6 +665,9 @@ pub fn cmd_table_r(args: &[String]) {
     let r_src = flag(args, "--r").unwrap_or_else(|| "router-plan-r".into());
     let hyb_src = flag(args, "--hyb").unwrap_or_else(|| "router-plan-hyb".into());
     let (mut hyb_ex, mut n_hyb_plans, mut unseen_hyb_ex, mut hyb_tau, mut n_hyb_tau) = (0usize, 0usize, 0usize, 0.0f64, 0usize);
+    let (mut geo_cp, mut r_cp, mut hyb_cp, mut unseen_hyb_cp) = (0usize, 0usize, 0usize, 0usize);
+    let (mut hon_hyb_legs, mut hon_hyb_tau, mut hon_hyb_n, mut hon_hyb_wrong) = ((0usize, 0usize), 0.0f64, 0usize, 0usize);
+    let (mut hon_geo_legs, mut hon_geo_tau, mut hon_geo_n, mut hon_geo_wrong) = ((0usize, 0usize), 0.0f64, 0usize, 0usize);
     let also: Vec<String> = flag(args, "--also").map(|s| s.split(',').map(|x| x.trim().to_string()).collect()).unwrap_or_default();
     let list = |k: &str| -> Vec<String> { flag(args, k).map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default() };
     let (train, held) = (list("--train"), list("--held-out"));
@@ -695,12 +706,16 @@ pub fn cmd_table_r(args: &[String]) {
         let geo = load(&geo_src);
         let r = load(&r_src);
         let hyb = load(&hyb_src);
-        let cmp = |a: &Option<Vec<u32>>| -> (String, Option<(bool, f64)>) {
+        // full order (checkpoints + the finish line chosen) and the CP ORDER alone (everything but the last group):
+        // a map with several finish lines (Summer 2026 - 05) can have the human CP order and another finish
+        let cmp = |a: &Option<Vec<u32>>| -> (String, Option<(bool, f64, bool, usize, usize)>) {
             match (a, &human) {
                 (Some(a), Some(h)) => {
                     let tau = metrics::kendall_tau(a, h);
                     let ex = metrics::exact(a, h);
-                    (format!("{} τ={:.2}", if ex { "EXACT" } else { "differ" }, tau), Some((ex, tau)))
+                    let cp_ex = a.len() == h.len() && a.len() > 1 && a[..a.len() - 1] == h[..h.len() - 1];
+                    let (lm, ln) = metrics::leg_agreement(a, h);
+                    (format!("{} τ={:.2} legs {lm}/{ln}{}", if ex { "EXACT" } else { "differ" }, tau, if cp_ex && !ex { " (CP order EXACT, other finish)" } else { "" }), Some((ex, tau, cp_ex, lm, ln)))
                 }
                 _ => ("-".into(), None),
             }
@@ -712,11 +727,11 @@ pub fn cmd_table_r(args: &[String]) {
             n_h += 1;
             if geo.is_some() { n_geo_plans += 1; }
             if r.is_some() { n_r_plans += 1; }
-            if let Some((ex, _)) = gv { if ex { geo_ex += 1; } }
-            if let Some((ex, _)) = rv { if ex { r_ex += 1; } }
+            if let Some((ex, _, cp, _, _)) = gv { if ex { geo_ex += 1; } if cp { geo_cp += 1; } }
+            if let Some((ex, _, cp, _, _)) = rv { if ex { r_ex += 1; } if cp { r_cp += 1; } }
             if hyb.is_some() { n_hyb_plans += 1; }
-            if let Some((ex, t)) = hv { if ex { hyb_ex += 1; } hyb_tau += t; n_hyb_tau += 1; }
-            if let (Some((_, tg)), Some((_, tr))) = (gv, rv) {
+            if let Some((ex, t, cp, _, _)) = hv { if ex { hyb_ex += 1; } if cp { hyb_cp += 1; } hyb_tau += t; n_hyb_tau += 1; }
+            if let (Some((_, tg, _, _, _)), Some((_, tr, _, _, _))) = (gv, rv) {
                 both_have += 1;
                 geo_tau += tg;
                 r_tau += tr;
@@ -724,12 +739,19 @@ pub fn cmd_table_r(args: &[String]) {
             }
         }
         let hyp = also.contains(&uid);
-        let seen = if train.contains(&uid) { "train" } else if held.contains(&uid) { "held-out" } else { "unseen" };
+        // MODEL's split: fnv1a64(uid) % 10 == 0 is held out of R's training forever
+        let seen = if metrics::fnv_held_out(&uid) { "held-out(fnv)" } else if train.contains(&uid) { "train" } else if held.contains(&uid) { "held-out" } else { "unseen" };
         if human.is_some() && seen != "train" {
             unseen_n += 1;
-            if let Some((true, _)) = rv { unseen_r_ex += 1; }
-            if let Some((true, _)) = gv { unseen_geo_ex += 1; }
-            if let Some((true, _)) = hv { unseen_hyb_ex += 1; }
+            if let Some((true, _, _, _, _)) = rv { unseen_r_ex += 1; }
+            if let Some((true, _, _, _, _)) = gv { unseen_geo_ex += 1; }
+            if let Some((true, _, _, _, _)) = hv { unseen_hyb_ex += 1; }
+            if let Some((_, _, true, _, _)) = hv { unseen_hyb_cp += 1; }
+            // the M2 reading, pooled over the honest rows: legs, τ, exact, τ < 0.4 ("genuinely wrong")
+            if let Some((_, t, _, lm, ln)) = hv { hon_hyb_legs.0 += lm; hon_hyb_legs.1 += ln; hon_hyb_tau += t; hon_hyb_n += 1; if t < 0.4 { hon_hyb_wrong += 1; } }
+            if let Some((_, t, _, lm, ln)) = gv { hon_geo_legs.0 += lm; hon_geo_legs.1 += ln; hon_geo_tau += t; hon_geo_n += 1; if t < 0.4 { hon_geo_wrong += 1; } }
+            // a map with a human order and NO hybrid plan counts as 0 legs matched of its legs
+            if hv.is_none() { if let Some(h) = &human { hon_hyb_legs.1 += h.len().saturating_sub(1); } }
         }
         rows.push((g.map_name.clone(), format!("| {}{} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |", g.map_name, if hyp { " †" } else { "" }, g.checkpoint_groups, human.as_ref().map_or("—".into(), |v| j(v)), share, geo.as_ref().map_or("— (no plan)".into(), |v| j(v)), gs, r.as_ref().map_or("— (no plan)".into(), |v| j(v)), rs, hyb.as_ref().map_or("— (no plan)".into(), |v| j(v)), hs, seen)));
     }
@@ -743,5 +765,108 @@ pub fn cmd_table_r(args: &[String]) {
         println!("{r}");
     }
     println!();
-    println!("maps with a human order: {n_h}; geometric planner has a plan on {n_geo_plans}, == human on {geo_ex}; R planner has a plan on {n_r_plans}, == human on {r_ex}; over the {both_have} maps both planned: mean τ geometric {:.3}, R {:.3}. HYBRID: plan on {n_hyb_plans}, == human on {hyb_ex}, mean τ {:.3}. HONEST ROWS (held-out + unseen by R): {unseen_n} maps, R == human on {unseen_r_ex}, geometric == human on {unseen_geo_ex}, hybrid == human on {unseen_hyb_ex}. † = added without a human order (failed / hypothesis maps). τ = Kendall tau over the checkpoint groups.", if n_tau > 0 { geo_tau / n_tau as f64 } else { f64::NAN }, if n_tau > 0 { r_tau / n_tau as f64 } else { f64::NAN }, if n_hyb_tau > 0 { hyb_tau / n_hyb_tau as f64 } else { f64::NAN });
+    println!("maps with a human order: {n_h}; geometric planner has a plan on {n_geo_plans}, == human on {geo_ex}; R planner has a plan on {n_r_plans}, == human on {r_ex}; over the {both_have} maps both planned: mean τ geometric {:.3}, R {:.3}. HYBRID: plan on {n_hyb_plans}, == human on {hyb_ex}, mean τ {:.3}. CP-ORDER agreement (finish-line choice ignored): geometric {geo_cp}, R {r_cp}, hybrid {hyb_cp}. HONEST ROWS (held-out + unseen by R): {unseen_n} maps, R == human on {unseen_r_ex}, geometric == human on {unseen_geo_ex}, hybrid == human on {unseen_hyb_ex} (CP order {unseen_hyb_cp}). † = added without a human order (failed / hypothesis maps). τ = Kendall tau over the checkpoint groups.", if n_tau > 0 { geo_tau / n_tau as f64 } else { f64::NAN }, if n_tau > 0 { r_tau / n_tau as f64 } else { f64::NAN }, if n_hyb_tau > 0 { hyb_tau / n_hyb_tau as f64 } else { f64::NAN });
+    println!("M2 READING over the {unseen_n} honest rows — HYBRID: per-leg agreement {}/{} = {:.1} % (a map with no plan counts all its legs missed), mean τ {:.3} over {hon_hyb_n} planned, exact {unseen_hyb_ex}, τ < 0.4 (genuinely wrong route) {hon_hyb_wrong}; GEOMETRIC: per-leg {}/{} = {:.1} % over its {hon_geo_n} planned maps, mean τ {:.3}, exact {unseen_geo_ex}, τ < 0.4 {hon_geo_wrong}.", hon_hyb_legs.0, hon_hyb_legs.1, if hon_hyb_legs.1 > 0 { 100.0 * hon_hyb_legs.0 as f64 / hon_hyb_legs.1 as f64 } else { f64::NAN }, if hon_hyb_n > 0 { hon_hyb_tau / hon_hyb_n as f64 } else { f64::NAN }, hon_geo_legs.0, hon_geo_legs.1, if hon_geo_legs.1 > 0 { 100.0 * hon_geo_legs.0 as f64 / hon_geo_legs.1 as f64 } else { f64::NAN }, if hon_geo_n > 0 { hon_geo_tau / hon_geo_n as f64 } else { f64::NAN });
+}
+
+/// `tmroute split UID...` — MODEL's fnv1a64 % 10 rule: HELD-OUT (== 0) or train, per uid.
+fn cmd_split(args: &[String]) {
+    for u in args.iter().filter(|a| !a.starts_with("--")) {
+        println!("{u}\t{}\t{}", metrics::fnv1a64(u) % 10, if metrics::fnv_held_out(u) { "HELD-OUT" } else { "train" });
+    }
+}
+
+/// `tmroute tiny-map --full gates.json --tiny gates.json [--order 1,2,0,3]`
+/// Gate-for-gate correspondence between a full-size map and its TINY copy (uniform scale 0.5 about a
+/// centre c; c is solved from the two spawns: c = 2·tiny_spawn − full_spawn), then every full gate group
+/// is mapped to the nearest tiny gate group. With --order (a full-size GROUP order, e.g. the human modal
+/// order) prints the same order in tiny group ids.
+fn cmd_tiny_map(args: &[String]) {
+    let full = io::read_gates(Path::new(&flag(args, "--full").unwrap_or_else(|| die("--full gates.json")))).unwrap_or_else(|e| die(&e));
+    let tiny = io::read_gates(Path::new(&flag(args, "--tiny").unwrap_or_else(|| die("--tiny gates.json")))).unwrap_or_else(|e| die(&e));
+    let fs = full.spawn.pos;
+    let ts = tiny.spawn.pos;
+    let c = [2.0 * ts[0] - fs[0], 2.0 * ts[1] - fs[1], 2.0 * ts[2] - fs[2]];
+    let to_tiny = |p: [f32; 3]| [c[0] + 0.5 * (p[0] - c[0]), c[1] + 0.5 * (p[1] - c[1]), c[2] + 0.5 * (p[2] - c[2])];
+    // group centres
+    let centres = |g: &tmroute::gates::GatesFile| -> BTreeMap<u32, [f32; 3]> {
+        let mut acc: BTreeMap<u32, (usize, [f32; 3])> = BTreeMap::new();
+        for r in &g.gates {
+            if r.kind == tmroute::gates::WpKind::Start { continue; }
+            let e = acc.entry(r.group).or_insert((0, [0.0; 3]));
+            e.0 += 1;
+            for a in 0..3 { e.1[a] += r.centre[a]; }
+        }
+        acc.into_iter().map(|(k, (n, s))| (k, [s[0] / n as f32, s[1] / n as f32, s[2] / n as f32])).collect()
+    };
+    let fc = centres(&full);
+    let tc = centres(&tiny);
+    println!("scale centre c = ({:.1}, {:.1}, {:.1}); full groups {}, tiny groups {}", c[0], c[1], c[2], fc.len(), tc.len());
+    let mut m: BTreeMap<u32, (u32, f32)> = BTreeMap::new();
+    for (fg, fp) in &fc {
+        let p = to_tiny(*fp);
+        let (best, d) = tc.iter().map(|(tg, tp)| (*tg, ((tp[0] - p[0]).powi(2) + (tp[2] - p[2]).powi(2)).sqrt())).min_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap();
+        m.insert(*fg, (best, d));
+        println!("  full group {fg:>2} → tiny group {best:>2}  (XZ residual {d:.1} m)");
+    }
+    let worst = m.values().map(|v| v.1).fold(0.0f32, f32::max);
+    let distinct: std::collections::BTreeSet<u32> = m.values().map(|v| v.0).collect();
+    let ok = distinct.len() == fc.len() && worst < 40.0;
+    println!("mapping {}: worst residual {worst:.1} m, {} of {} tiny groups hit", if ok { "OK" } else { "AMBIGUOUS" }, distinct.len(), tc.len());
+    if let Some(o) = flag(args, "--order") {
+        let order: Vec<u32> = o.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        let mapped: Vec<u32> = order.iter().filter_map(|g| m.get(g).map(|v| v.0)).collect();
+        println!("tiny order: {}", mapped.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
+        // --geo / --hyb: tiny planner orders to compare with the mapped human order
+        for key in ["--geo", "--hyb"] {
+            if let Some(p) = flag(args, key) {
+                let po: Vec<u32> = p.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                if po.is_empty() { println!("{key}: no plan"); continue; }
+                let ex = metrics::exact(&po, &mapped);
+                let cp_ex = po.len() == mapped.len() && po.len() > 1 && po[..po.len() - 1] == mapped[..mapped.len() - 1];
+                println!("{key}: {} τ={:.2}{}", if ex { "EXACT" } else { "differ" }, metrics::kendall_tau(&po, &mapped), if cp_ex && !ex { " (CP order EXACT, other finish)" } else { "" });
+            }
+        }
+    }
+}
+
+/// `tmroute credit-fit --gates gates.json --crossings X.tsv`
+/// Engine-credited crossings (the INPUT arm's per-gate car states around the CP-counter split, 10 ms ticks) against
+/// our gate frames: per credited gate, s = (p − centre)·normal at the last row BEFORE the split and at the split row
+/// (the counter increments between them), the lateral offset, our `credit_offset_m`, and the fitted offset (midpoint).
+fn cmd_credit_fit(args: &[String]) {
+    let g = io::read_gates(Path::new(&flag(args, "--gates").unwrap_or_else(|| die("--gates")))).unwrap_or_else(|e| die(&e));
+    let text = std::fs::read_to_string(flag(args, "--crossings").unwrap_or_else(|| die("--crossings"))).unwrap_or_else(|e| die(&e.to_string()));
+    let mut rows: Vec<(u32, i32, i32, [f32; 3], [f32; 3])> = Vec::new(); // gate, split, t, pos, vel
+    for l in text.lines().skip(2) {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() < 9 { continue; }
+        let p = |i: usize| f[i].trim().parse::<f32>().unwrap_or(f32::NAN);
+        rows.push((f[0].trim().parse().unwrap_or(0), f[1].trim().parse().unwrap_or(0), f[2].trim().parse().unwrap_or(0), [p(3), p(4), p(5)], [p(6), p(7), p(8)]));
+    }
+    println!("{}\t{} crossing rows", g.map_name, rows.len());
+    println!("gate\tsplit_ms\tour wp\tmodel\tfrom_item\ts_before\ts_at\tlat\tour_offset\tfitted_offset\ttravel·n\tspeed_kmh");
+    let mut gates: Vec<u32> = rows.iter().map(|r| r.0).collect();
+    gates.sort(); gates.dedup();
+    for gi in gates {
+        let rs: Vec<_> = rows.iter().filter(|r| r.0 == gi).collect();
+        let split = rs[0].1;
+        let Some(at) = rs.iter().find(|r| r.2 == split) else { println!("{gi}\t{split}\t-\tno row at the split"); continue };
+        let Some(before) = rs.iter().find(|r| r.2 == split - 10) else { println!("{gi}\t{split}\t-\tno row 10 ms before the split"); continue };
+        // our gate: nearest gate centre to the crossing row (no group knowledge in the file)
+        let (wi, gate) = g.gates.iter().enumerate().filter(|(_, x)| x.kind != tmroute::gates::WpKind::Start).min_by(|a, b| {
+            let da = (0..3).map(|k| (a.1.centre[k] - at.3[k]).powi(2)).sum::<f32>();
+            let db = (0..3).map(|k| (b.1.centre[k] - at.3[k]).powi(2)).sum::<f32>();
+            da.partial_cmp(&db).unwrap()
+        }).unwrap();
+        let n = gate.normal;
+        let s = |p: [f32; 3]| (0..3).map(|k| (p[k] - gate.centre[k]) * n[k]).sum::<f32>();
+        let s_b = s(before.3); let s_a = s(at.3);
+        let d = [at.3[0] - gate.centre[0], at.3[1] - gate.centre[1], at.3[2] - gate.centre[2]];
+        let lat = { let along = s_a; let r = [d[0] - along * n[0], d[1] - along * n[1], d[2] - along * n[2]]; (r[0] * r[0] + r[2] * r[2]).sqrt() };
+        let v = at.4; let vl = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-3);
+        let tn = (v[0] * n[0] + v[1] * n[1] + v[2] * n[2]) / vl;
+        println!("{gi}\t{split}\t{}\t{}\t{}\t{s_b:.2}\t{s_a:.2}\t{lat:.2}\t{:.2}\t{:.2}\t{tn:+.2}\t{:.0}", gate.waypoint, gate.model, gate.from_item, gate.credit_offset_m, 0.5 * (s_b + s_a), vl * 3.6);
+        let _ = wi;
+    }
 }

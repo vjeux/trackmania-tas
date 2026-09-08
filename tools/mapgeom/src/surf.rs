@@ -129,7 +129,20 @@ impl Grid {
     /// leaves them out: a car cannot rest on one, and a route that plans over
     /// one is planning through the map.
     pub fn build(scene: &Scene) -> Grid {
-        let (lo, hi) = scene.bounds().unwrap_or(([0.0; 3], [1.0; 3]));
+        Self::build_within(scene, None)
+    }
+
+    /// `clip`: an XZ box the grid is limited to — the track's (spawn + gates ± margin). A stray placement 40 km
+    /// away (NOSEDIVE, 2026-09-08: 22 339 × 20 318 cells, 42 M surfaces, 30 GB) must not size the grid.
+    pub fn build_within(scene: &Scene, clip: Option<([f32; 3], [f32; 3])>) -> Grid {
+        let (mut lo, mut hi) = scene.bounds().unwrap_or(([0.0; 3], [1.0; 3]));
+        if let Some((cl, ch)) = clip {
+            for a in [0usize, 2] {
+                lo[a] = lo[a].max(cl[a]);
+                hi[a] = hi[a].min(ch[a]);
+                if hi[a] <= lo[a] { hi[a] = lo[a] + 1.0; }
+            }
+        }
         let ox = (lo[0] / CELL).floor() * CELL;
         let oz = (lo[2] / CELL).floor() * CELL;
         let nx = (((hi[0] - ox) / CELL).ceil() as usize + 1).max(1);
@@ -142,6 +155,8 @@ impl Grid {
             cells: vec![Vec::new(); nx * nz],
             mats: Vec::new(),
         };
+        let mut giant = 0usize;
+        let mut total = 0usize;
         for (name, grp) in &scene.groups {
             if !crate::scene::is_collidable(name) {
                 continue;
@@ -169,8 +184,18 @@ impl Grid {
                 if i0 > i1 || j0 > j1 {
                     continue;
                 }
-                for j in j0..=j1 {
-                    for i in i0..=i1 {
+                // a giant slab (NOSEDIVE, 2026-09-08: one map rasterized to > 30 GB of cell entries) is sampled at a
+                // stride so it costs ≤ 200 000 entries; the probe still finds it, the graph loses nothing it had
+                let cover = (i1 - i0 + 1) * (j1 - j0 + 1);
+                let stride = ((cover as f32 / 200_000.0).sqrt().ceil() as usize).max(1);
+                if stride > 1 { giant += 1; }
+                total += cover / (stride * stride);
+                if total > 400_000_000 {
+                    eprintln!("  surface grid: > 400 M cell entries — the map is too large for the 2 m grid; stopping the rasterization here");
+                    break;
+                }
+                for j in (j0..=j1).step_by(stride) {
+                    for i in (i0..=i1).step_by(stride) {
                         let (cx, cz) = (ox + (i as f32 + 0.5) * CELL, oz + (j as f32 + 0.5) * CELL);
                         if let Some(y) = height_at(a, b, c, cx, cz) {
                             g.cells[j * nx + i].push(Surf { y, mat: mi, road: false });
@@ -178,6 +203,9 @@ impl Grid {
                     }
                 }
             }
+        }
+        if giant > 0 {
+            eprintln!("  surface grid: {giant} giant triangles sampled at a stride ({total} cell entries)");
         }
         // Highest first, and collapse surfaces closer than a wheel's width:
         // a road slab and its kerb cap are one thing to drive on.
@@ -242,9 +270,14 @@ impl Grid {
         const MAX_SHARE: f32 = 0.25;
         let mut want: Vec<u16> = Vec::new();
         let mut dropped: Vec<String> = Vec::new();
-        for (m, _n) in &votes {
+        // …unless MOST anchors voted for it: a map whose scene has no decoration (the tiny campaign copies,
+        // 2026-09-07 — every road is one converter material) makes the track itself the majority of the
+        // surfaces. The Summer 2026 - 16 false positives were single-gate votes.
+        let n_votes: usize = votes.values().sum();
+        for (m, n) in &votes {
             let share = *area.get(m).unwrap_or(&0) as f32 / total.max(1) as f32;
-            if share > MAX_SHARE {
+            let majority = *n >= 3 && *n * 2 >= n_votes;
+            if share > MAX_SHARE && !majority {
                 dropped.push(format!("{} ({:.0} % of the map)", self.mats[*m as usize], 100.0 * share));
             } else {
                 want.push(*m);

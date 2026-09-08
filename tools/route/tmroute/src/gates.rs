@@ -80,6 +80,36 @@ pub struct GateRec {
     /// Checkpoint group id: all gates that fire the same checkpoint share it.
     /// Finish gates get their own groups after the checkpoints; spawn = u32::MAX.
     pub group: u32,
+    /// Where the ENGINE credits this gate, metres along `normal` from `centre` (GEN arm, engine-credited rows of 19
+    /// ghosts per map, F18): road/platform checkpoint blocks −2.2, 32 m gate items −2.15, GateExpandableFinish −2.5,
+    /// Road* finish blocks −15.2 (the cell's entry edge), wall checkpoints +14.0 (the far end). 0 = not measured.
+    /// Halved on a tiny (half-scale) map. The dedicated pack has no trigger shapes, so this is the measured plane.
+    #[serde(default)]
+    pub credit_offset_m: f32,
+}
+
+/// GEN's per-model credited-plane offsets (metres along the travel normal from the gate centre).
+pub fn credit_offset(model: &str, from_item: bool, kind: WpKind, pitched: bool) -> f32 {
+    let m = model;
+    // the tiny converter's items: AC… = a converted block (deck 2 m above the origin, credit 2.2 m before the
+    // centre), AI… = an original gate item; the finish/lap classes are unknown there
+    if m.len() > 2 && m.starts_with('A') && m.as_bytes()[2].is_ascii_digit() {
+        // MEASURED on the engine-credited crossings of tiny 02 and 06 (INPUT arm, 2026-09-08): relative to the item
+        // ANCHOR, AC checkpoints −1.65, AC finishes −1.60, AI gate items −2.08 (the item keeps its full-size trigger);
+        // `tmplan deck-gates` rewrites these for its deck frames (−9.5 / −7.6 / −2.07). Already tiny-scale: the
+        // caller's ×0.5 is undone below.
+        return 2.0 * match (m.as_bytes()[1], kind) { (b'C', WpKind::Checkpoint) => -1.65, (b'C', WpKind::Finish) => -1.60, (b'I', _) => -2.08, _ => 0.0 };
+    }
+    if m.contains("WallCheckpoint") { return 14.0; }
+    if m.contains("ExpandableFinish") { return -2.5; }
+    if from_item {
+        if pitched { return -1.5; }
+        if m.contains("32m") || m.contains("16m") || m.contains("8m") { return -2.15; }
+        return 0.0;
+    }
+    if (m.starts_with("Road") || m.starts_with("Platform")) && kind == WpKind::Finish && m.starts_with("Road") { return -15.2; }
+    if (m.starts_with("Road") || m.starts_with("Platform")) && kind == WpKind::Checkpoint { return -2.2; }
+    0.0
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -87,6 +117,10 @@ pub struct Spawn {
     pub pos: [f32; 3],
     pub yaw: f32,
     pub waypoint: u32,
+    /// "placement" (the start block's direction — SIGN unverified, like every placement normal) or "human" (the
+    /// humans' first second of travel). The planner's spawn-heading term only trusts "human".
+    #[serde(default)]
+    pub yaw_source: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -295,6 +329,9 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         axis3: Option<[f32; 3]>,
         /// The placement's local UP in world (unit) when pitched/rolled; the arch centre is hh along it.
         up3: Option<[f32; 3]>,
+        /// A wall-mounted item (|pitch| ≈ 90°): through-axis INTO the wall (the yaw normal); the car rides the
+        /// trigger slab (normal_source "placement-wall").
+        wall: bool,
         model: String,
         from_item: bool,
         // a grid-placed block (cell coordinates, no free position)
@@ -316,17 +353,21 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         // road axis is local +Z through the same rotation (tilted pieces included).
         let mut free_axis: Option<[f32; 3]> = None;
         let mut free_up: Option<[f32; 3]> = None;
+        let mut wall_item = false;
         // A road/platform piece's crossing point is its road centre (16, 2, 16); a gate
         // structure's is mid-arch (16, 8, 16) — Poland 2026's finish is a GateFinish rolled
         // −90° about its road axis (lying flat) and the car finishes 17 m BELOW its anchor,
         // exactly where the rotated local frame puts the arch.
         let road_piece = w.name.starts_with("Road") || w.name.starts_with("Platform");
         // A 2×2-cell DIAGONAL piece: the GEN arm measured Summer 2026 - 07's `RoadDirtDiagLeftCheckpoint`
-        // crediting at local (46.7, 0.5, 30.7) — the road crosses the block at (48, ~0.5, 32); DiagRight is the
-        // mirror (16, 0.5, 32) — a GUESS until a DiagRight gate is measured. Its axis runs along the diagonal.
+        // crediting at local (46.7, 0.5, 30.7) — the road crosses the block at (48, ~0.5, 32). DiagRight MEASURED
+        // (GEN, Spring 2024 - 05 wp2, 19 engine-credited rows to 0.10 m; a GRID placement with dir 1, so the
+        // 2×2 footprint turned 90° about its centre): local (23.4, 0.5, 37.3), travel axis (0.45, 0, −0.893) —
+        // not the mirror of DiagLeft; the credit line follows the 2:1 slant of the piece. One specimen: verify.
+
         let diag = w.name.contains("Diag");
-        let local_c = if diag && w.name.contains("DiagRight") { [16.0, 0.5, 32.0] } else if diag { [48.0, 0.5, 32.0] } else if road_piece { [16.0, ROAD_ABOVE_BASE, 16.0] } else { [16.0, 8.0, 16.0] };
-        let local_axis: [f32; 3] = if diag && w.name.contains("DiagRight") { [0.7071, 0.0, -0.7071] } else if diag { [0.7071, 0.0, 0.7071] } else { [0.0, 0.0, 1.0] };
+        let local_c = if diag && w.name.contains("DiagRight") { [23.4, 0.5, 37.3] } else if diag { [48.0, 0.5, 32.0] } else if road_piece { [16.0, ROAD_ABOVE_BASE, 16.0] } else { [16.0, 8.0, 16.0] };
+        let local_axis: [f32; 3] = if diag && w.name.contains("DiagRight") { [0.45, 0.0, -0.893] } else if diag { [0.7071, 0.0, 0.7071] } else { [0.0, 0.0, 1.0] };
         let centre = match (w.pos, w.free_rot) {
             (Some(p), Some(rot)) => {
                 let m = turned(p, rot);
@@ -339,7 +380,12 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
                 // an ITEM: its trigger plane turns with the item's full (yaw, pitch, roll) — Fall 2025 - 12's
                 // 32 m gates are pitched 66–83° on a wall section (GEN arm, engine-credited rows)
                 if let Some(rot) = w.item_rot {
-                    if rot[1].abs() > 0.05 || rot[2].abs() > 0.05 {
+                    // a WALL placement (|pitch| ≈ 90°, Spring 2025 - 24 wp14): the through-axis is INTO the wall = the
+                    // yaw normal; the car RIDES inside the trigger slab along the wall and is credited mid-box (GEN,
+                    // 21:33Z), so a pitched plane would be wrong — keep the yaw normal, flag it "placement-wall".
+                    let wall = (rot[1].abs() - std::f32::consts::FRAC_PI_2).abs() < 0.05;
+                    wall_item = wall;
+                    if !wall && (rot[1].abs() > 0.05 || rot[2].abs() > 0.05) {
                         let m = turned(p, rot);
                         let a = apply(&m, [0.0, 0.0, 1.0]);
                         free_axis = Some([a[0] - p[0], a[1] - p[1], a[2] - p[2]]);
@@ -348,6 +394,18 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
                     }
                 }
                 p
+            }
+            (None, _) if diag => {
+                // a GRID diagonal piece (Spring 2024 - 05 wp2, GEN's rows 31 m from the cell centre): the 2×2
+                // footprint turns about its own centre (32, ·, 32) by the placement yaw; the crossing point and
+                // its slant axis turn with it
+                let yaw = w.yaw.unwrap_or(0.0);
+                let (s, c) = yaw.sin_cos();
+                let rot = |x: f32, z: f32| -> (f32, f32) { (x * c + z * s, -x * s + z * c) };
+                let (dx, dz) = rot(local_c[0] - 32.0, local_c[2] - 32.0);
+                let (ax, az) = rot(local_axis[0], local_axis[2]);
+                free_axis = Some([ax, 0.0, az]);
+                [32.0 * w.coords.0 as f32 + 32.0 + dx, 8.0 * w.coords.1 as f32 + yoff + ROAD_ABOVE_BASE, 32.0 * w.coords.2 as f32 + 32.0 + dz]
             }
             (None, _) => [
                 32.0 * w.coords.0 as f32 + 16.0,
@@ -365,6 +423,7 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             yaw: match free_axis { Some(a) if (a[0] * a[0] + a[2] * a[2]).sqrt() > 0.3 => a[0].atan2(a[2]), Some(_) => w.yaw.unwrap_or(0.0), None => w.yaw.unwrap_or(0.0) },
             axis3: free_axis.filter(|a| a[1].abs() > 0.05),
             up3: free_up,
+            wall: wall_item,
             model: w.name.clone(),
             from_item,
             grid: w.pos.is_none(),
@@ -392,7 +451,9 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             let dz = a.centre[2] - b.centre[2];
             let dxz = (dx * dx + dz * dz).sqrt();
             let dy = (a.centre[1] - b.centre[1]).abs();
-            let linked = a.tag == "LinkedCheckpoint" && b.tag == "LinkedCheckpoint" && a.order == b.order;
+            // order 0 is "unset": the tiny converter (2026-09-07) tags every piece LinkedCheckpoint with order 0 — those
+            // are grouped by geometry like plain pieces, not all into one
+            let linked = a.tag == "LinkedCheckpoint" && b.tag == "LinkedCheckpoint" && a.order == b.order && a.order != 0;
             // Two GRID blocks are two gates however close: Spring 2026 - 17 has
             // RoadBumpCheckpointSlopeUp/SlopeDown in adjacent cells (32 m apart) and
             // the header counts them as two checkpoints. Rows of one gate are built
@@ -406,7 +467,10 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
             let is_finish = matches!(a.kind, WpKind::Finish | WpKind::Multilap);
             // a ROW is pieces of one kind (item–item or free–free) with parallel axes; Summer 2024 - 23 has a
             // free `GateCheckpoint` 22 m from an item `GateCheckpointLeft32m`, at right angles: two checkpoints
-            let same_regime = a.from_item == b.from_item;
+            // tiny maps: the converter names block-derived items AC…, original items AI… — a block and an item
+            // 12 m apart were two checkpoints in the full-size map (Norway 2026) and stay two here
+            let conv_class = |m: &str| -> String { if m.len() > 2 && m.starts_with('A') && (m.as_bytes()[1] == b'C' || m.as_bytes()[1] == b'I') && m.as_bytes()[2].is_ascii_digit() { m[..2].to_string() } else { "std".to_string() } };
+            let same_regime = a.from_item == b.from_item && conv_class(&a.model) == conv_class(&b.model);
             let parallel = ((a.yaw - b.yaw).cos()).abs() > 0.9;
             let near = same_tag && ((both_placed && same_regime && parallel) || is_finish) && dxz <= GROUP_XZ && dy <= GROUP_Y;
             // two touching pieces are one gate whatever their tags (Fall 2024 - 24 has a
@@ -447,7 +511,10 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
         pos: raws[spawn_i].centre,
         yaw: raws[spawn_i].yaw,
         waypoint: raws[spawn_i].wp,
+        yaw_source: "placement".into(),
     };
+    // a tiny (half-scale) map: uid "Tin2…" or name "Tiny …" — the credited-plane offsets halve with it
+    let tiny = h.uid.starts_with("Tin2") || strip_fmt(&h.name).starts_with("Tiny ");
 
     let gates = raws
         .iter()
@@ -463,12 +530,13 @@ pub fn build(path: &Path, produced_by: &str) -> Result<GatesFile, String> {
                 centre: match r.up3 { Some(u) => [r.centre[0] + hh * u[0], r.centre[1] + hh * u[1], r.centre[2] + hh * u[2]], None => [r.centre[0], r.centre[1] + hh, r.centre[2]] },
                 // a pitched/rolled placement keeps its 3-D axis (unit); the sign is oriented later
                 normal: match r.axis3 { Some(a) => { let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt(); [a[0] / l, a[1] / l, a[2] / l] } None => [sy, 0.0, cy] },
-                normal_source: "placement".into(),
+                normal_source: if r.wall { "placement-wall".into() } else { "placement".into() },
                 half_width: hw,
                 half_height: hh,
                 model: r.model.clone(),
                 from_item: r.from_item,
                 group: gid[i],
+                credit_offset_m: credit_offset(&r.model, r.from_item, r.kind, r.up3.is_some() && !r.wall) * if tiny { 0.5 } else { 1.0 },
             }
         })
         .collect();

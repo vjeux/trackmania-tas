@@ -93,6 +93,8 @@ fn cmd_plan(args: &[String]) {
     let est = Geometric { time_model: tm(args), d: &d, len: &len, nodes: &nodes, flight, surface: Some(&surf), dirs: Some(&dirs), drop: Some(&drop), drop_penalty: flag(args, "--drop-penalty").and_then(|s| s.parse().ok()).unwrap_or(0.0), specials: Some((&leg_specials, &gates)) };
     let width: usize = flag(args, "--beam").and_then(|s| s.parse().ok()).unwrap_or(4000);
     let top_k: usize = flag(args, "--top-k").and_then(|s| s.parse().ok()).unwrap_or(3);
+    planner::BEAM_BUDGET_S.store(flag(args, "--beam-budget-s").and_then(|s| s.parse().ok()).unwrap_or(600), std::sync::atomic::Ordering::Relaxed);
+    tmplan::estimator::SPAWN_TURN_M.store(flag(args, "--spawn-turn").and_then(|s| s.parse::<f32>().ok()).unwrap_or(80.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
     human_legs(args, &nodes, &gates, &est, &len, Some(&surf), &fields);
     let plans = planner::beam_laps(&nodes, &nodes.kinds, gates.laps, &est, width, top_k, StateBucket::of_speed(0.0));
     if gates.laps > 1 {
@@ -113,14 +115,15 @@ fn cmd_plan(args: &[String]) {
         "{}\t{}\tcp_groups {}\tfinish_groups {}\testimator {}\tbeam {}\tinf_pairs {}/{}\tplans {}",
         gates.map_name, gates.map_uid, nodes.n_cp, nodes.n_fin, est.name(), width, inf_pairs, d.len() * d.len(), plans.len()
     );
-    let prov = tmroute::provenance("tmplan plan");
+    // --note: appended to produced_by (e.g. the tiny converter build + the map md5 and collhash it was planned on)
+    let prov = match flag(args, "--note") { Some(n) => format!("{}; {n}", tmroute::provenance("tmplan plan")), None => tmroute::provenance("tmplan plan") };
     let out_dir = flag(args, "--out-dir");
     for (k, p) in plans.iter().enumerate() {
         let (g, w) = order_str(&nodes, &gates, &p.visit);
         let flights = p.edges.iter().filter(|e| e.kind == EdgeKind::Flight).count();
         let len: f32 = p.edges.iter().map(|e| e.length_m).sum();
         let drop: f32 = p.visit.windows(2).map(|w| surf.path_drop(&nodes, &fields, w[0], w[1])).filter(|d| d.is_finite()).sum();
-        println!("  rank {k}: predicted {}  P(reach) {:.3}  length {:.0} m  drop {:.0} m  flight legs {}  groups [{}]  waypoints [{}]", io::secs(p.total_ms), p.p_reach, len, drop, flights, g, w);
+        println!("  rank {k}: predicted {}  P(reach) {:.3}  length {:.0} m  drop {:.0} m  flight legs {}  groups [{}]  waypoints [{}]{}", io::secs(p.total_ms), p.p_reach, len, drop, flights, g, w, if p.capped { "  BEAM-CAPPED" } else { "" });
         if let Some(dir) = &out_dir {
             let source = flag(args, "--source").unwrap_or_else(|| "router-plan".into());
             let mut route = tmplan::export::export(&gates, &nodes, &surf, &fields, p, k as u32, &est.name(), &prov);
@@ -182,7 +185,7 @@ fn cmd_legs(args: &[String]) {
         }
         let ms: i32 = edges.iter().map(|e| e.expected_ms.max(0)).sum();
         let logp: f32 = edges.iter().map(|e| e.p_reach.max(1e-6).ln()).sum();
-        plans = vec![planner::Plan { visit, edges, total_ms: ms, p_reach: logp.exp(), score: ms as f32 }];
+        plans = vec![planner::Plan { visit, edges, total_ms: ms, p_reach: logp.exp(), score: ms as f32, capped: false }];
     }
     let step: f32 = flag(args, "--step").and_then(|s| s.parse().ok()).unwrap_or(4.0);
     let reach: f32 = flag(args, "--reach").and_then(|s| s.parse().ok()).unwrap_or(40.0);
@@ -240,6 +243,8 @@ fn main() {
         "classify" => cmd_classify(&args[1..]),
         "local" => cmd_local(&args[1..]),
         "families" => cmd_families(&args[1..]),
+        "deck-gates" => cmd_deck_gates(&args[1..]),
+        "leg-scan" => cmd_leg_scan(&args[1..]),
         other => die(&format!("unknown command {other}")),
     }
 }
@@ -356,6 +361,29 @@ fn cmd_local(args: &[String]) {
             s
         }
     };
+    // --materials: triangle count per (placement kind, material) — the reader check the converter asked for
+    if has(args, "--materials") {
+        // AREA-weighted, up-facing (n.y > 0.7): a road deck is 256 big Asphalt triangles, its lips 4 480 tiny Rubber
+        // ones — counting triangles called the tiny roads Rubber (F20)
+        let mut hist: BTreeMap<(String, &'static str), (usize, f64)> = BTreeMap::new();
+        for t in &scene.tris {
+            let e1 = [t.v[1][0] - t.v[0][0], t.v[1][1] - t.v[0][1], t.v[1][2] - t.v[0][2]];
+            let e2 = [t.v[2][0] - t.v[0][0], t.v[2][1] - t.v[0][1], t.v[2][2] - t.v[0][2]];
+            let nrm = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+            let l = (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt();
+            if l < 1e-6 || nrm[1].abs() / l < 0.7 { continue; }
+            let k = format!("{:?}", scene.placements[t.tag as usize].kind);
+            let e = hist.entry((k, mapgeom::scene::physics_name(t.mat))).or_insert((0, 0.0));
+            e.0 += 1;
+            e.1 += (l / 2.0) as f64;
+        }
+        let mut v: Vec<_> = hist.into_iter().collect();
+        v.sort_by(|a, b| b.1 .1.partial_cmp(&a.1 .1).unwrap());
+        println!("  up-facing surfaces (kind, physics → area m², triangles):");
+        for ((k, m), (n, a)) in v.iter().take(30) {
+            println!("    {k:<10} {m:<20} {a:>10.0} m²  {n:>8} tris");
+        }
+    }
     // specials census
     let mut specials: BTreeMap<String, usize> = BTreeMap::new();
     for p in &scene.placements {
@@ -464,5 +492,173 @@ fn cmd_families(args: &[String]) {
     println!("family\tplacements\ttriangles\tid");
     for (f, a, b) in &v {
         println!("{f}\t{a}\t{b}\t{}", mapgeom::local::family_id(f));
+    }
+}
+
+/// `tmplan deck-gates MAP.Map.Gbx --gates in.json --out out.json`
+/// Re-anchor every ITEM gate on the DECK of its own collision hull: the converter's block-derived items
+/// (tiny campaign, AC…) anchor at the block ORIGIN corner with the drivable deck 0–6 m above and, for a
+/// diagonal piece, 30 m away in XZ — a ray down from the anchor misses it (coordinator, 22:08Z). For each
+/// item gate: the smallest placement whose XZ box contains the anchor (or the nearest small one within 40 m),
+/// its upward-facing triangles (n.y > 0.7), area-weighted centroid → the gate's new XZ, top → its road y.
+fn cmd_deck_gates(args: &[String]) {
+    let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
+    let gp = flag(args, "--gates").unwrap_or_else(|| die("--gates in.json"));
+    let out = flag(args, "--out").unwrap_or_else(|| die("--out out.json"));
+    let mut gates = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+    let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
+    let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
+    let m = tmmaps::map::MapFile::load(Path::new(&map));
+    let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts { with_deco: false, with_baked: false, cell: 4.0 });
+    // per placement: XZ bounds, and the upward-facing deck (area-weighted centroid, top y)
+    let n = scene.placements.len();
+    let mut lo = vec![[f32::INFINITY; 3]; n];
+    let mut hi = vec![[f32::NEG_INFINITY; 3]; n];
+    let mut deck: Vec<(f64, [f64; 3], f32)> = vec![(0.0, [0.0; 3], f32::NEG_INFINITY); n]; // (area, Σ area·centroid, top y)
+    for t in &scene.tris {
+        let k = t.tag as usize;
+        for v in &t.v { for a in 0..3 { lo[k][a] = lo[k][a].min(v[a]); hi[k][a] = hi[k][a].max(v[a]); } }
+        let e1 = [t.v[1][0] - t.v[0][0], t.v[1][1] - t.v[0][1], t.v[1][2] - t.v[0][2]];
+        let e2 = [t.v[2][0] - t.v[0][0], t.v[2][1] - t.v[0][1], t.v[2][2] - t.v[0][2]];
+        let nrm = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+        let l = (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt();
+        if l < 1e-6 { continue; }
+        let ny = nrm[1].abs() / l; // either winding
+        if ny > 0.7 {
+            let area = (l / 2.0) as f64;
+            let c = [(t.v[0][0] + t.v[1][0] + t.v[2][0]) / 3.0, (t.v[0][1] + t.v[1][1] + t.v[2][1]) / 3.0, (t.v[0][2] + t.v[1][2] + t.v[2][2]) / 3.0];
+            let d = &mut deck[k];
+            d.0 += area;
+            for a in 0..3 { d.1[a] += area * c[a] as f64; }
+            d.2 = d.2.max(c[1]);
+        }
+    }
+    let mut moved = 0;
+    let mut lines = Vec::new();
+    for g in gates.gates.iter_mut() {
+        if !g.from_item { continue; }
+        let anchor = [g.centre[0], g.centre[1] - g.half_height, g.centre[2]];
+        // the gate's OWN placement: same model name, nearest box to the anchor (a diagonal piece's origin corner
+        // lies outside its own deck, so containment is not the test)
+        let dist_box = |k: usize| -> f32 { let mut d2 = 0.0f32; for a in [0usize, 2] { let v = anchor[a]; let c = v.clamp(lo[k][a], hi[k][a]); d2 += (v - c) * (v - c); } let vy = anchor[1]; let cy = vy.clamp(lo[k][1], hi[k][1]); d2 += (vy - cy) * (vy - cy); d2.sqrt() };
+        let mut cands: Vec<(f32, usize)> = (0..n)
+            .filter(|&k| scene.placements[k].kind == mapgeom::local::PlacementKind::Item && deck[k].0 > 1.0 && scene.placements[k].name == g.model)
+            .map(|k| (dist_box(k), k))
+            .collect();
+        cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let Some(&(dd, k)) = cands.first().filter(|c| c.0 < 40.0) else { lines.push(format!("  wp {:>2} {}: no placement of that model within 40 m of the anchor — left as is", g.waypoint, g.model)); continue };
+        let _ = dd;
+        let d = &deck[k];
+        let c = [(d.1[0] / d.0) as f32, (d.1[1] / d.0) as f32, (d.1[2] / d.0) as f32];
+        let top = d.2;
+        let old = g.centre;
+        // the deck's mean height (a sloped piece) rather than its highest face
+        g.centre = [c[0], c[1] + g.half_height, c[2]];
+        let _ = top;
+        // where the engine credits it, in THIS frame (deck centroid): measured on tiny 02/06 crossings (INPUT arm)
+        let mb = g.model.as_bytes();
+        if mb.len() > 2 && mb[0] == b'A' && mb[2].is_ascii_digit() {
+            g.credit_offset_m = match (mb[1], g.kind) { (b'C', tmroute::gates::WpKind::Checkpoint) => -9.5, (b'C', tmroute::gates::WpKind::Finish) => -7.6, (b'I', _) => -2.07, _ => g.credit_offset_m };
+        }
+        moved += 1;
+        lines.push(format!("  wp {:>2} {}: anchor ({:.1}, {:.1}, {:.1}) → deck centre ({:.1}, {:.1}, {:.1}) top {:.1} (hull {} tris, deck area {:.0} m²)", g.waypoint, g.model, old[0], old[1] - g.half_height, old[2], c[0], c[1], c[2], top, (0..scene.tris.len()).filter(|&i| scene.tris[i].tag as usize == k).count(), d.0));
+    }
+    // spawn too
+    {
+        let s = gates.spawn.pos;
+        let mut cands: Vec<(f32, usize)> = (0..n).filter(|&k| scene.placements[k].kind == mapgeom::local::PlacementKind::Item && deck[k].0 > 1.0).filter(|&k| s[0] >= lo[k][0] - 2.0 && s[0] <= hi[k][0] + 2.0 && s[2] >= lo[k][2] - 2.0 && s[2] <= hi[k][2] + 2.0 && s[1] >= lo[k][1] - 4.0 && s[1] <= hi[k][1] + 4.0).map(|k| ((hi[k][0] - lo[k][0]) * (hi[k][2] - lo[k][2]), k)).collect();
+        cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        if let Some(&(_, k)) = cands.first() {
+            let d = &deck[k];
+            lines.push(format!("  spawn ({:.1}, {:.1}, {:.1}) → deck top {:.1} at ({:.1}, {:.1})", s[0], s[1], s[2], d.2, d.1[0] / d.0, d.1[2] / d.0));
+            gates.spawn.pos = [s[0], d.2 + 0.5, s[2]];
+        }
+    }
+    gates.produced_by = format!("{}; deck-gates: {moved} item gates re-anchored on their own hull deck ({})", gates.produced_by, tmroute::provenance("tmplan deck-gates"));
+    for l in &lines { println!("{l}"); }
+    io::write_gates(Path::new(&out), &gates).unwrap_or_else(|e| die(&e));
+    println!("wrote {out} ({moved} gates moved)");
+}
+
+/// `tmplan leg-scan MAP.Map.Gbx --gates gates.json --ghosts DIR [--legs 3-5,5-0]`
+/// What the HUMANS do on each consecutive leg of their order (median over ghosts): chord, height delta, time,
+/// speeds, airborne share (no surface within 1.5 m below the car), largest fall, wallride share (surface below with
+/// |n.y| < 0.5), specials (booster/reactor/turbo…) within 8 m of the trajectory — beside the surface graph's
+/// verdict on the leg (path length or MISSING). For the M2 failure list (coordinator, 2026-09-07 23:33Z).
+fn cmd_leg_scan(args: &[String]) {
+    let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
+    let gp = flag(args, "--gates").unwrap_or_else(|| die("--gates gates.json"));
+    let gdir = flag(args, "--ghosts").unwrap_or_else(|| die("--ghosts DIR"));
+    let gates = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+    let (surf, nodes) = SurfaceModel::build(Path::new(&map), &gates, false, false).unwrap_or_else(|e| die(&e));
+    let (d, len, _fields) = surf.distance_matrix(&nodes);
+    let node_of_group: BTreeMap<u32, usize> = nodes.groups.iter().enumerate().map(|(i, g)| (*g, i)).collect();
+    let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
+    let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
+    let m = tmmaps::map::MapFile::load(Path::new(&map));
+    let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts { with_deco: true, with_baked: true, cell: 4.0 });
+    let specials = tmroute::gates::specials(&m, gates.yoff);
+    // ghosts
+    let mut runs = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&gdir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().map_or(false, |x| x == "Gbx") && p.to_string_lossy().ends_with(".Ghost.Gbx") {
+                if let Ok(r) = tmroute::human::load_run(&p) { runs.push(r); }
+            }
+        }
+    }
+    if runs.is_empty() { die("no ghosts"); }
+    let only: Option<Vec<(u32, u32)>> = flag(args, "--legs").map(|s| s.split(',').filter_map(|l| { let mut it = l.split('-'); Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?)) }).collect());
+    // per leg (from group, to group) → per-ghost measurements
+    #[derive(Default)]
+    struct Acc { chord: Vec<f32>, dy: Vec<f32>, ms: Vec<f32>, vmax: Vec<f32>, vmean: Vec<f32>, air: Vec<f32>, fall: Vec<f32>, wall: Vec<f32>, specials: BTreeMap<String, usize>, path: Vec<f32> }
+    let mut legs: BTreeMap<(u32, u32), Acc> = BTreeMap::new();
+    for run in &runs {
+        let cr: Vec<tmroute::human::Crossing> = tmroute::human::crossings(run, &gates, 40.0).into_iter().flatten().collect();
+        // spawn first
+        let mut seq: Vec<(u32, i32, [f32; 3])> = vec![(u32::MAX, 0, gates.spawn.pos)];
+        for c in &cr { seq.push((c.group, c.ms, c.pos)); }
+        for w in seq.windows(2) {
+            let (ga, ta, pa) = w[0];
+            let (gb, tb, pb) = w[1];
+            if let Some(o) = &only { if !o.contains(&(ga, gb)) { continue; } }
+            if tb <= ta { continue; }
+            let a = legs.entry((ga, gb)).or_default();
+            let ch = ((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2) + (pb[2] - pa[2]).powi(2)).sqrt();
+            a.chord.push(ch);
+            a.dy.push(pb[1] - pa[1]);
+            a.ms.push((tb - ta) as f32);
+            let seg: Vec<&tmroute::human::Sample> = run.samples.iter().filter(|s| s.t_ms >= ta && s.t_ms <= tb).collect();
+            if seg.is_empty() { continue; }
+            let mut vmax = 0.0f32; let mut vsum = 0.0f32; let mut air = 0usize; let mut wall = 0usize; let mut fall = 0.0f32; let mut ymax = f32::NEG_INFINITY; let mut plen = 0.0f32;
+            for (i, s) in seg.iter().enumerate() {
+                vmax = vmax.max(s.speed); vsum += s.speed;
+                if i > 0 { let q = seg[i - 1].pos; plen += ((s.pos[0] - q[0]).powi(2) + (s.pos[1] - q[1]).powi(2) + (s.pos[2] - q[2]).powi(2)).sqrt(); }
+                ymax = ymax.max(s.pos[1]);
+                fall = fall.max(ymax - s.pos[1]);
+                let (below, _) = scene.layers_below_above(s.pos, 60.0, true);
+                match below {
+                    Some(h) if h.dist <= 1.5 => { if h.normal[1].abs() < 0.5 { wall += 1; } }
+                    _ => air += 1,
+                }
+                for sp in &specials {
+                    let dd = ((s.pos[0] - sp.centre[0]).powi(2) + (s.pos[1] - sp.centre[1]).powi(2) + (s.pos[2] - sp.centre[2]).powi(2)).sqrt();
+                    if dd < 8.0 { *a.specials.entry(sp.kind.clone()).or_default() += 1; }
+                }
+            }
+            a.vmax.push(vmax); a.vmean.push(vsum / seg.len() as f32); a.air.push(air as f32 / seg.len() as f32); a.wall.push(wall as f32 / seg.len() as f32); a.fall.push(fall); a.path.push(plen);
+        }
+    }
+    let med = |v: &Vec<f32>| -> f32 { if v.is_empty() { f32::NAN } else { let mut w = v.clone(); tmroute::human::percentile(&mut w, 50.0) } };
+    println!("{}\t{} ghosts\tleg\tn\tchord_m\tdy_m\thuman_s\tv_mean\tv_max\thuman_path_m\tair_share\tmax_fall_m\twall_share\tgraph_path_m\tgraph_cost\tspecials", gates.map_name, runs.len());
+    for ((ga, gb), a) in &legs {
+        let lab = |g: u32| if g == u32::MAX { "spawn".to_string() } else { format!("g{g}") };
+        let (gl, gc) = match (if *ga == u32::MAX { Some(&0usize) } else { node_of_group.get(ga) }, node_of_group.get(gb)) {
+            (Some(&i), Some(&j)) => (len[i][j], d[i][j]),
+            _ => (f32::NAN, f32::NAN),
+        };
+        let sp: Vec<String> = a.specials.iter().map(|(k, n)| format!("{k}×{}", (*n as f32 / a.ms.len().max(1) as f32).round() as usize)).collect();
+        println!("\t\t{}→{}\t{}\t{:.0}\t{:+.0}\t{:.3}\t{:.0}\t{:.0}\t{:.0}\t{:.2}\t{:.1}\t{:.2}\t{}\t{}\t{}", lab(*ga), lab(*gb), a.ms.len(), med(&a.chord), med(&a.dy), med(&a.ms) / 1000.0, med(&a.vmean) * 3.6, med(&a.vmax) * 3.6, med(&a.path), med(&a.air), med(&a.fall), med(&a.wall), if gl.is_finite() { format!("{gl:.0}") } else { "MISSING".into() }, if gc.is_finite() { format!("{gc:.0}") } else { "∞".into() }, if sp.is_empty() { "-".into() } else { sp.join(" ") });
     }
 }
