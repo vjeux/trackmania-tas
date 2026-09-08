@@ -464,7 +464,13 @@ pub fn header_chunks(opts: &BuildOpts) -> Vec<super::file::HeaderChunk> {
         w.u32(8);
         w.string("Items");
         w.id(&super::Id::Null);
-        w.i32(8);
+        // the collector flags word: 8 on every item-editor item, 0x10 on
+        // every pack item (Flag16m, ObstaclePusher8mLevel1: flags 0x10,
+        // catalog position 101/233, prod state 3). TINY_ITEM_DESC_FLAGS=N
+        // (decimal or 0xHEX) is the 2026-09-08 probe of whether that word
+        // gates anything at runtime (the dyna animation driver).
+        let desc_flags: i32 = std::env::var("TINY_ITEM_DESC_FLAGS").ok().and_then(|v| v.strip_prefix("0x").map(|h| i32::from_str_radix(h, 16).ok()).unwrap_or_else(|| v.parse().ok())).unwrap_or(8);
+        w.i32(desc_flags);
         w.i16(1);
         w.string("New Item");
         w.u8(3);
