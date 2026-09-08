@@ -409,23 +409,43 @@ fn main() {
         "refs" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
+            // --deep [N]: follow the externals transitively (N levels, default
+            // 6), each line indented by depth, a file printed once — the
+            // survey of what a pack item is made of (its prefab's dyna
+            // objects, their meshes, the meshes' materials)
+            let deep: Option<usize> = if a.rest.iter().any(|x| x == "--deep") { Some(flag(&a.rest, "--deep").and_then(|v| v.parse().ok()).unwrap_or(6)) } else { None };
             let m = load_any(&mut store, &p);
             println!(
                 "{}  class 0x{:08X}  {} nodes",
                 m.path, m.class_id, m.num_nodes
             );
-            for (idx, path) in &m.externals {
-                let hit = store.resolve(path);
+            let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            let mut stack: Vec<(usize, u32, String)> = m.externals.iter().rev().map(|(i, p)| (1usize, *i, p.clone())).collect();
+            while let Some((depth, idx, path)) = stack.pop() {
+                let hit = store.resolve(&path);
                 println!(
-                    "  node {:>4}  {}  {}",
+                    "{}  node {:>4}  {}  {}",
+                    "  ".repeat(depth - 1),
                     idx,
                     path,
-                    match hit {
-                        Some(h) if h == *path => "(stored by name)".to_string(),
+                    match &hit {
+                        Some(h) if *h == path => "(stored by name)".to_string(),
                         Some(h) => format!("-> {}", h),
                         None => "*** NOT IN PACK ***".to_string(),
                     }
                 );
+                let Some(max) = deep else { continue };
+                if depth >= max || hit.is_none() || !seen.insert(path.to_ascii_lowercase()) {
+                    continue;
+                }
+                match store.load_model(&path) {
+                    Ok(child) => {
+                        let mut kids: Vec<(usize, u32, String)> = child.externals.iter().map(|(i, p)| (depth + 1, *i, p.clone())).collect();
+                        kids.reverse();
+                        stack.extend(kids);
+                    }
+                    Err(e) => println!("{}    ({e})", "  ".repeat(depth - 1)),
+                }
             }
         }
         "dump" => {
