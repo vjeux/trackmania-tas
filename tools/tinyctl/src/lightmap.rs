@@ -2,7 +2,7 @@
 //! editor's lightmap for a tiny build, computed on the render box and the
 //! re-saved map pulled back (the devserver half of `shootctl lightmap`).
 //!
-//! MAP should be a PARKED build (`TINY_PARK_BLOCKS=1 tmmaps tiny …`, lightmap
+//! MAP should be a build with ONE authored block kept (`tmmaps tiny … --keep-zone-block`; lightmap
 //! stripped): a 0-block build crashes the lightmapper. `--name` is the map
 //! name the saved file carries (SaveMap renames the map to the file's stem);
 //! default: the source map's name with a `Tiny ` prefix, as `tmmaps tiny`

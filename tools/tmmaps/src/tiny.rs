@@ -739,6 +739,13 @@ pub fn cmd(args: &[String]) {
     // Stadium map, where real Stadium materials are accepted) instead of into
     // the parked source. Placements still come from the source.
     let host: Option<PathBuf> = cli::flag(args, "--host").map(PathBuf::from);
+    // --keep-zone-block: one authored block survives the deletion (the editor's
+    // lightmap pass crashes on a map with none; `tinyctl lightmap`)
+    let keep_zone_flag = args.iter().any(|a| a == "--keep-zone-block");
+    // --name NAME sets the map's name outright; --keep-name leaves the source's
+    // (default: "Tiny " + the source name)
+    let name_flag: Option<String> = cli::flag(args, "--name").map(String::from);
+    let keep_name = args.iter().any(|a| a == "--keep-name");
 
     let source = MapFile::load(&src);
     let colors = source.colors().unwrap_or(crate::map::Colors { bytes: Vec::new(), n_blocks: 0, n_baked: 0 });
@@ -1014,12 +1021,9 @@ pub fn cmd(args: &[String]) {
         // original, a white bar across the tiny road with colour 0). So a
         // colourless filler takes the colour of its cell's authored block,
         // else its vertical, else its horizontal neighbours (the modifier
-        // inheritance of tiny-library, cell for cell). TINY_BAKED_COLOR=N forces one.
-        let color = std::env::var("TINY_BAKED_COLOR").ok().and_then(|s| s.parse().ok()).unwrap_or_else(|| {
+        // inheritance of tiny-library, cell for cell).
+        let color = {
             let own = colors.baked(b.index);
-            if own != 0 || b.free_rot.is_some() {
-                return own;
-            }
             let c = (b.raw_coords[0] as i32, b.raw_coords[1] as i32, b.raw_coords[2] as i32);
             let at = |dx: i32, dy: i32, dz: i32| -> Option<u8> { cell_colors.get(&(c.0 + dx, c.1 + dy, c.2 + dz)).copied() };
             let vote = |offsets: &[(i32, i32, i32)]| -> Option<u8> {
@@ -1031,8 +1035,12 @@ pub fn cmd(args: &[String]) {
                 }
                 votes.into_iter().max_by_key(|(_, n)| *n).map(|(col, _)| col)
             };
-            at(0, 0, 0).or_else(|| vote(&[(0, 1, 0), (0, -1, 0)])).or_else(|| vote(&[(1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)])).unwrap_or(0)
-        });
+            if own != 0 || b.free_rot.is_some() {
+                own
+            } else {
+                at(0, 0, 0).or_else(|| vote(&[(0, 1, 0), (0, -1, 0)])).or_else(|| vote(&[(1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)])).unwrap_or(0)
+            }
+        };
         specs.push(Spec {
             model: map.model.clone(),
             pos,
@@ -1049,31 +1057,9 @@ pub fn cmd(args: &[String]) {
     }
     assert!(specs.iter().any(|s| s.tag.as_deref() == Some("Spawn")));
     assert!(specs.iter().any(|s| s.tag.as_deref() == Some("Goal")));
-    // The engine's START is not the Spawn-tagged placement or the Start-typed
-    // model: it is the LAST non-Goal waypoint placement in item-file order
-    // (the player project's engine readout on the fp1 set, 2026-09-07: on 17
-    // of 21 maps the car spawned at a checkpoint item's SpawnLoc; swapping
-    // the Spawn record behind the checkpoints fixed 02, putting it first
-    // changed nothing — DEFECTS-fp1.md rows m–r). So the Spawn placement
-    // goes LAST: a converted block's spec moves to the end of the appended
-    // list; an original item's slot (the GateStart items of 15/19/20/25) must
-    // keep its record in place for the lookback table, so it is parked
-    // under the map without its tag and a copy carries the start at the end.
-    // REFUTED the same afternoon (fp2: 02 spawned at the Goal, 20 at a checkpoint; the engine picks a FIXED item slot per map, the player project is locating the chunk that names it) — off unless `TINY_START_LAST=1`.
-    if std::env::var("TINY_START_LAST").map(|v| v == "1").unwrap_or(false) {
-        let idx = specs.iter().position(|s| s.tag.as_deref() == Some("Spawn")).unwrap();
-        if idx >= original_items {
-            let s = specs.remove(idx);
-            specs.push(s);
-        } else {
-            let mut copy = specs[idx].clone();
-            copy.model = specs[idx].model.clone();
-            specs[idx].tag = None;
-            specs[idx].pos = [8.0, -900.0, 8.0];
-            copy.tag = Some("Spawn".to_string());
-            specs.push(copy);
-        }
-    }
+    // (The engine's START is a fixed item slot per map — a validation record
+    // names the start waypoint by index, see collhash — not the last non-Goal
+    // record: the record-order rule of 2026-09-07 was refuted within the hour.)
 
     let tmp0 = out.with_extension(format!("tiny-{}.slots.Map.Gbx", std::process::id()));
     let tmp1 = out.with_extension(format!("tiny-{}.models.Map.Gbx", std::process::id()));
@@ -1107,18 +1093,11 @@ pub fn cmd(args: &[String]) {
         .expect("map uid");
     let new_uid = format!("Tin2{}", &old_uid[..23]);
     {
-        // The foundation records stay: `Sea` (BlueBay's water). TINY_KEEP_BAKED=
-        // Sea,Grass widens it (a Stadium map's baked Grass tiles in place instead
-        // of regenerated from the kept genealogy).
-        let keep_baked: BTreeSet<String> = std::env::var("TINY_KEEP_BAKED")
-            .unwrap_or_else(|_| "Sea".to_string())
-            .split(',')
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect();
+        // The foundation records stay: `Sea` (BlueBay's water).
+        let keep_baked: BTreeSet<String> = ["Sea".to_string()].into_iter().collect();
         let n_blocks = m.blocks.len();
         let n_baked = m.baked.len();
-        // TINY_KEEP_ZONE_BLOCK=1: ONE authored block stays — the first one named
+        // --keep-zone-block: ONE authored block stays — the first one named
         // after the map's ambient terrain zone (GreenCoast `Lake`, RedIsland /
         // WhiteShore `Water`, Stadium `Grass`), in place, full size. The game
         // regenerates exactly that tile from the genealogy at load anyway (a
@@ -1127,12 +1106,12 @@ pub fn cmd(args: &[String]) {
         // STACK_OVERFLOW on a map with NO authored block (3 of 3 on 09, 2026-09-07)
         // and works with one, so `tinyctl lightmap` needs this. Off by default:
         // the published form has zero authored blocks like the reference maps.
-        let keep_zone_block: Option<usize> = if std::env::var_os("TINY_KEEP_ZONE_BLOCK").is_some() {
+        let keep_zone_block: Option<usize> = if keep_zone_flag {
             let zone = source.ambient_zone();
             let pick = m.blocks.iter().find(|b| zone.as_deref() == Some(b.name.as_str())).or_else(|| m.blocks.first()).map(|b| b.index);
             if let Some(i) = pick {
                 let b = &m.blocks[i];
-                println!("  kept authored block {} `{}` at cell {:?} (TINY_KEEP_ZONE_BLOCK; zone {:?})", b.index, b.name, b.coords(), zone);
+                println!("  kept authored block {} `{}` at cell {:?} (--keep-zone-block; zone {:?})", b.index, b.name, b.coords(), zone);
             }
             pick
         } else {
@@ -1230,20 +1209,19 @@ pub fn cmd(args: &[String]) {
     // so the editor title bar, the map list and the playground HUD say which
     // one you are looking at (the Nadeo record has said "Tiny …" since map 01;
     // the file kept the original's name, so every screenshot of a tiny map was
-    // labelled like the original — vjeux, 2026-09-07). `TINY_MAP_NAME=<name>`
-    // sets it outright, `=keep` leaves the source name.
-    let name_mode = std::env::var("TINY_MAP_NAME").unwrap_or_default();
-    if name_mode != "keep" {
+    // labelled like the original — vjeux, 2026-09-07). `--name NAME` sets it
+    // outright, `--keep-name` leaves the source name.
+    if !keep_name {
         let old = crate::header::read(&src.display().to_string()).ok().map(|h| h.name).unwrap_or_default();
         if old.is_empty() || old == "-" {
             println!("  map name: the source declares none; left alone");
         } else {
-            let new = if name_mode.is_empty() { format!("Tiny {old}") } else { name_mode.clone() };
+            let new = name_flag.clone().unwrap_or_else(|| format!("Tiny {old}"));
             let (h, b) = m.set_map_name(&old, &new);
             println!("  map name: {old:?} -> {new:?} ({h} in the header, {b} in the body)");
         }
     }
-    // The source's stored lightmap STAYS (TINY_LIGHTMAP=strip strips it). It
+    // The source's stored lightmap STAYS. It
     // was computed for the full-size layout and the game applies it BY OBJECT
     // INDEX — in PLAY mode a build that kept its blocks (Summer 15, 2026-09-07)
     // drew every converted-block item BLACK, the appended items falling
@@ -1256,32 +1234,19 @@ pub fn cmd(args: &[String]) {
     // under an Openplanet frame — the editor's automatic lightmap pass over a
     // map with no blocks, presumably), which kills every shootset comparison.
     // The game recomputes a default-settings lightmap at every load anyway
-    // (0.4 s on a 0-block map, measured 2026-09-07). TINY_LIGHTMAP=strip
-    // strips it (A/B only).
-    let strip = matches!(std::env::var("TINY_LIGHTMAP").as_deref(), Ok("strip"));
-    if strip {
-        let n = m.strip_lightmap();
-        println!("  stored lightmap stripped ({n} bytes)");
-    } else {
-        println!("  stored lightmap kept (0 blocks: the game rejects it; without one the editor crashes)");
-    }
+    // (0.4 s on a 0-block map, measured 2026-09-07).
+    println!("  stored lightmap kept (0 blocks: the game rejects it; without one the editor crashes)");
     // The MediaTracker (chunk 0x03043049, `mediatracker.rs`): the intro, the
     // in-game and the end-race clips fly cameras over FULL-SIZE coordinates
     // and fire from full-size trigger cells; both go through the items'
     // transform (times, angles and fields of view stay: the clip lasts the
     // same seconds over a half-size map). Blocks whose layout the reader does
-    // not know are copied verbatim and listed. TINY_MEDIATRACKER=keep leaves
-    // the chunk alone, =strip drops every clip (A/B).
-    let mt_mode = std::env::var("TINY_MEDIATRACKER").unwrap_or_default();
-    if mt_mode != "keep" {
-        match m.mediatracker() {
-            None => println!("  MediaTracker: no chunk 0x03043049 in this map"),
-            Some(Err(e)) => eprintln!("  WARNING: MediaTracker left untouched, its cameras fly over the full-size layout: {e}"),
-            Some(Ok(mut mt)) => {
-                if mt_mode == "strip" {
-                    mt.strip = true;
-                    println!("  MediaTracker: every clip dropped (TINY_MEDIATRACKER=strip)");
-                } else {
+    // not know are copied verbatim and listed.
+    match m.mediatracker() {
+        None => println!("  MediaTracker: no chunk 0x03043049 in this map"),
+        Some(Err(e)) => eprintln!("  WARNING: MediaTracker left untouched, its cameras fly over the full-size layout: {e}"),
+        Some(Ok(mut mt)) => {
+            {
                     // The trigger grid is doubled first (3x1x3 -> 6x2x6 cells per
                     // block, every source cell re-expressed as its 2x2x2 finer
                     // cells, exactly): a half-size volume then lands on cells of
@@ -1291,13 +1256,10 @@ pub fn cmd(args: &[String]) {
                     // honours the chunk's trigger size — measured 2026-09-07: the
                     // same clip fired at the same car position with the 3x1x3 and
                     // the 6x2x6 encoding (camera jump 12.96 s / 13.01 s into the
-                    // logs, entry 12.97 / 13.03). TINY_TRIGGER_SIZE=keep leaves the
-                    // source grid.
-                    if std::env::var("TINY_TRIGGER_SIZE").map(|v| v != "keep").unwrap_or(true) {
-                        if let Some(t0) = mt.trigger_size {
-                            if let Err(e) = mt.set_trigger_size([t0[0] * 2, t0[1] * 2, t0[2] * 2]) {
-                                eprintln!("  WARNING: trigger grid kept at {t0:?}: {e}");
-                            }
+                    // logs, entry 12.97 / 13.03).
+                    if let Some(t0) = mt.trigger_size {
+                        if let Err(e) = mt.set_trigger_size([t0[0] * 2, t0[1] * 2, t0[2] * 2]) {
+                            eprintln!("  WARNING: trigger grid kept at {t0:?}: {e}");
                         }
                     }
                     let ts = mt.trigger_size.unwrap_or([3, 1, 3]);
@@ -1316,12 +1278,9 @@ pub fn cmd(args: &[String]) {
                         opaque.len(),
                         kinds.iter().map(|(k, v)| format!("{k}×{v}")).collect::<Vec<_>>().join(" ")
                     );
-                }
-                m.set_mediatracker(&mt);
             }
+            m.set_mediatracker(&mt);
         }
-    } else {
-        println!("  MediaTracker kept untouched (TINY_MEDIATRACKER=keep)");
     }
     if library.as_os_str() != "-" {
         let mut zip = std::fs::read(&library).unwrap_or_else(|e| panic!("{}: {e}", library.display()));
@@ -1353,8 +1312,7 @@ pub fn cmd(args: &[String]) {
         // travel along unlisted: 40 dead entries in 21, 114 in 25
         // (2026-09-08). Every entry counts against the loader's flakiness
         // band (≥ ~757 entries flaky) and the upload cap, so the dead ones go.
-        // TINY_PRUNE_UNPLACED=0 keeps the whole library.
-        if std::env::var("TINY_PRUNE_UNPLACED").map(|v| v != "0").unwrap_or(true) {
+        {
             let listed: std::collections::BTreeSet<&str> = embedded_names.iter().map(|s| s.as_str()).collect();
             let entries = crate::header::zip_entries(&zip);
             let before = entries.len();
@@ -1687,9 +1645,6 @@ pub fn catalog_cmd(args: &[String]) {
         m.set_item_scale(i, s.scale);
         m.clear_item_variant(i);
         m.set_item_color(i, s.color);
-        if let Ok(f) = std::env::var("TINY_ITEM_FLAGS") {
-            m.set_item_flags(i, u16::from_str_radix(f.trim_start_matches("0x"), 16).expect("TINY_ITEM_FLAGS hex"));
-        }
     }
     m.write_to(&tmp2).expect("write models");
 

@@ -639,8 +639,7 @@ pub fn deflated_zip(files: &std::collections::BTreeMap<String, Vec<u8>>) -> Vec<
         let off = out.len() as u32;
         let crc = crc32(data);
         let n = name.as_bytes();
-        // TINY_DEFLATE_LEVEL (default 6; 10 = miniz_oxide's best, ~2 % smaller, slower)
-        let comp = miniz_oxide::deflate::compress_to_vec(data, deflate_level());
+        let comp = miniz_oxide::deflate::compress_to_vec(data, DEFLATE_LEVEL);
         out.extend_from_slice(b"PK\x03\x04");
         out.extend_from_slice(&[20, 0, 0, 0, 8, 0, 0, 0, 0, 0]);
         out.extend_from_slice(&crc.to_le_bytes());
@@ -986,10 +985,7 @@ pub fn embedded_zip_bytes(body: &[u8]) -> Option<(Vec<u8>, Vec<String>)> {
     Some((zip, names))
 }
 
-/// The deflate level of the embedded archive's entries: `TINY_DEFLATE_LEVEL`,
-/// default 6, clamped to 1..=10 (miniz_oxide's range; 10 is its exhaustive
-/// search, a few percent smaller than 6 at several times the compression
-/// time — worth it for a map sitting on the upload cap).
-pub fn deflate_level() -> u8 {
-    std::env::var("TINY_DEFLATE_LEVEL").ok().and_then(|v| v.parse::<u8>().ok()).map(|l| l.clamp(1, 10)).unwrap_or(6)
-}
+/// The deflate level of the embedded archive's entries: 6 (miniz_oxide's 10 is
+/// an exhaustive search, ~2 % smaller at several times the compression time —
+/// not what moves a map off the upload cap; the detail-level pick is).
+pub const DEFLATE_LEVEL: u8 = 6;

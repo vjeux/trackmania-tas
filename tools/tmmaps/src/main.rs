@@ -1600,7 +1600,7 @@ READING A MAP
 
 TINY MAPS (half-scale campaign: every authored block/item -> an embedded static item)
   tmmaps tiny MAP --mapping placements.tsv --library ITEMS.zip --out F [--scale 0.5]
-      [--anchor x,y,z] [--host HOST.Map.Gbx]
+      [--anchor x,y,z] [--host HOST.Map.Gbx] [--name NAME | --keep-name] [--keep-zone-block]
         replace every authored block by its library item (mapping rows
         `@index<TAB>ITEM|-<TAB>model_scale<TAB>sx<TAB>sz`; `-` = intentionally
         nothing) and re-point/drop items (`i@index<TAB>ITEM|stock model|-`);

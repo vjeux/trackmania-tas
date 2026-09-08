@@ -20,7 +20,7 @@
 //!   `_FC_Ground` decals) — the bake gives those a 1 mm triangle now.
 //! - A 0-block build with no lightmap crashes the editor's automatic
 //!   lightmap pass (STACK_OVERFLOW); `/shadows` on one crashes the same way.
-//!   Compute on the PARKED build (`TINY_PARK_BLOCKS=1`, lightmap stripped).
+//!   Compute on a build with one authored block kept (`tmmaps tiny --keep-zone-block`, lightmap stripped).
 //! - `/shadowsq` reports `ready:true` between the request and the start of
 //!   the work; the wait accepts `ready` only after seeing `busy`, or after
 //!   20 s without ever seeing it (a Fast pass on a small map is that quick).
