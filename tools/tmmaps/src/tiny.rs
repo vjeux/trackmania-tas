@@ -917,6 +917,21 @@ pub fn cmd(args: &[String]) {
             .collect();
         m.replace_embedded_objects(&manifest, &zip);
     }
+    // The source's VALIDATION GHOST (chunk 0x0305B00F) is the original's
+    // full-size author run: kept, the game replays it over the half-size
+    // track as a car driving in the air (vjeux, 2026-09-08: "why is there a
+    // car driving on top of me" — every map published before this carried
+    // it). It is replaced by the dummy real ghost of `tmmaps stripghost`
+    // (the form the player project's author-ghost embed replaces in place)
+    // and the header goes unvalidated. `--keep-ghost` keeps the source's.
+    if !args.iter().any(|a| a == "--keep-ghost") {
+        let removed = m.strip_validation_ghost_to(crate::map::GhostForm::Dummy);
+        if removed > 0 {
+            println!("  validation ghost: the source's ({removed} bytes) replaced by the dummy ghost, header validated=\"0\"");
+        } else {
+            println!("  validation ghost: none in the source (the header goes unvalidated)");
+        }
+    }
     m.write_to(&out).expect("write output");
     for p in [&tmp0, &tmp1, &tmp2] {
         let _ = std::fs::remove_file(p);
