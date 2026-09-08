@@ -308,7 +308,7 @@ pub fn build_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, feat: &Fe
             cand_total += 1;
             let t = TargetSpec { centre: g.centre, normal: g.normal, half_width: g.half_width, group_size: *group_size.get(&g.group).unwrap_or(&1), kind: TargetKind::of_wp(g.kind), collected_share: s.cps_before as f32 / n_cp_groups.max(1) as f32 };
             let mut cs = s.state;
-            cs.car = r.end.car;
+            cs.car = car_kind(); // the map's car kind (map.json), not the record's slot index
             specs.push(Spec { state: cs, target: t, h: r.horizon_ticks });
             let mut lab = [0f32; NLAB];
             lab[L_Y] = if reached { 1.0 } else { 0.0 };
@@ -562,7 +562,7 @@ pub fn build_local_map(reach_dir: &Path, gates: &GatesFile, geom_dir: &Path, fea
             }
         }
         extent_sum += ends.iter().map(|e| dist3(c, e.pos) as f64).sum::<f64>() / ends.len() as f64;
-        let car = ends[0].car;
+        let car = car_kind(); // the map's car kind (map.json), not the record's slot index
         // positives: the endpoints (real arrival state) and the interior passage points
         for e in &ends {
             push_row(&mut rows, s, key.0, e.pos, h, h as f32, 1.0, Some(e), gi as f32, car);
@@ -916,4 +916,29 @@ pub fn frame_control_axes(reach_dir: &Path) -> Result<([f32; 3], usize), String>
     let starts = read_starts(&reach_dir.join("starts.tsv"))?;
     let rows: Vec<([f32; 3], [f32; 4])> = starts.values().map(|s| (s.state.vel, s.state.quat)).collect();
     Ok(crate::frame::alignment(&rows, 5.0))
+}
+
+/// The map's default CAR KIND (0 Stadium, 1 Snow, 2 Rally, 3 Desert) from the player's map.json "car" field —
+/// per MAP, not per tick: `CarState.car` is the derivation's SLOT index, not the kind (coordinator 03:46Z:
+/// King of the Hillclimb runs the Rally car in slot 0). Process-wide because a build/plan handles one map
+/// at a time; the featurisers read it through `car_kind()`.
+pub static CAR_KIND: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+pub fn car_kind() -> u8 {
+    CAR_KIND.load(std::sync::atomic::Ordering::Relaxed)
+}
+pub fn set_car_kind_from_map(map_file: &Path) -> u8 {
+    let json = map_file.parent().map(|d| d.join("map.json")).filter(|p| p.exists());
+    let kind = json
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| {
+            let i = s.find("\"car\"")?;
+            let rest = &s[i + 5..];
+            let q1 = rest.find('"')?;
+            let rest = &rest[q1 + 1..];
+            let q2 = rest.find('"')?;
+            Some(match &rest[..q2] { "Snow" | "SnowCar" => 1u8, "Rally" | "RallyCar" => 2, "Desert" | "DesertCar" => 3, _ => 0 })
+        })
+        .unwrap_or(0);
+    CAR_KIND.store(kind, std::sync::atomic::Ordering::Relaxed);
+    kind
 }

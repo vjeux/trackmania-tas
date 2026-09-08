@@ -180,6 +180,10 @@ fn build_one(d: &Path, o: &BuildOpts, log: &mut Vec<String>) -> Result<(String, 
         Geometry::None
     } else {
         let mp = find_map(&uid, &o.maps).ok_or_else(|| format!("{uid}: no .Map.Gbx in {:?} (use --maps or --no-geometry)", o.maps))?;
+        let kind = data::set_car_kind_from_map(&mp);
+        if kind != 0 {
+            log.push(format!("  {uid}: map.json car kind {kind} (0 Stadium, 1 Snow, 2 Rally, 3 Desert) → every row's car"));
+        }
         build_geometry(o.fv, &mp, &gates, false).map_err(|e| format!("{uid}: geometry build failed: {e}"))?
     };
     let feat = featurizer(&geo);
@@ -565,6 +569,7 @@ struct PlanCtx {
 
 fn load_plan_ctx(args: &[String]) -> PlanCtx {
     let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
+    let _ = tmr::data::set_car_kind_from_map(Path::new(&map));
     let gp = flag(args, "--gates").unwrap_or_else(|| die("--gates gates.json required"));
     let gates = tmroute::io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
     let model = PathBuf::from(flag(args, "--model").unwrap_or_else(|| die("--model r.tmw")));
@@ -773,7 +778,7 @@ fn cmd_legs(args: &[String]) {
         c.fast = has(args, "--fast-fan");
         c
     });
-    let ho = flag(args, "--human-orders").unwrap_or_else(|| die("--human-orders human-orders.tsv"));
+    let ho = flag(args, "--human-orders");
     // --starts starts.tsv: the HUMAN's real states (GEN's sampled starts) — for each leg, the local head is asked
     // directly from the human's first state after gate A to gate B's centre at h 400 and 600 (F22: head or fan?)
     let human_starts: Vec<tmr::data::StartInfo> = flag(args, "--starts").map(|p| {
@@ -783,10 +788,44 @@ fn cmd_legs(args: &[String]) {
         v.sort_by_key(|s| (if s.source == "human-leg" { 0 } else { 1 }, s.race_ms));
         v
     }).unwrap_or_default();
-    let s = std::fs::read_to_string(&ho).unwrap_or_else(|e| die(&e.to_string()));
     // group → node index
     let node_of_group: HashMap<u32, usize> = nodes.groups.iter().enumerate().skip(1).map(|(i, g)| (*g, i)).collect();
     let mut orders: HashMap<Vec<u32>, (usize, Vec<i32>)> = HashMap::new(); // order (groups) → (count, cp_ms of the first)
+    if ho.is_none() {
+        // no human-orders file (the F22 community maps): derive each ghost's order from its human-leg rows — the
+        // gate GROUP nearest to where the car was at each crossing (cps_before = k), in k order
+        if human_starts.is_empty() {
+            die("--human-orders human-orders.tsv, or --starts starts.tsv with human-leg rows");
+        }
+        let mut by_ghost: HashMap<String, Vec<&tmr::data::StartInfo>> = HashMap::new();
+        for s in human_starts.iter().filter(|s| s.source == "human-leg" && s.cps_before >= 1) {
+            by_ghost.entry(s.ghost_md5.clone()).or_default().push(s);
+        }
+        for (_g, mut rows) in by_ghost {
+            rows.sort_by_key(|s| s.cps_before);
+            let mut groups = Vec::new();
+            let mut cp_ms = Vec::new();
+            for (k, s) in rows.iter().enumerate() {
+                if s.cps_before as usize != k + 1 {
+                    break; // a gap: this ghost's crossings are incomplete
+                }
+                let g = gates.gates.iter().min_by(|a, b| {
+                    let da = (a.centre[0] - s.state.pos[0]).powi(2) + (a.centre[2] - s.state.pos[2]).powi(2);
+                    let db = (b.centre[0] - s.state.pos[0]).powi(2) + (b.centre[2] - s.state.pos[2]).powi(2);
+                    da.partial_cmp(&db).unwrap()
+                });
+                let Some(g) = g else { break };
+                groups.push(g.group);
+                cp_ms.push(s.race_ms);
+            }
+            if groups.is_empty() {
+                continue;
+            }
+            let e = orders.entry(groups).or_insert((0, cp_ms));
+            e.0 += 1;
+        }
+    }
+    let s = ho.as_ref().map(|p| std::fs::read_to_string(p).unwrap_or_else(|e| die(&e.to_string()))).unwrap_or_default();
     for (i, line) in s.lines().enumerate() {
         if i == 0 {
             continue;

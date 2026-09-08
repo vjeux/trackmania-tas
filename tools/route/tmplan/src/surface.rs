@@ -435,3 +435,57 @@ impl SurfaceModel {
         [p[0] + perp[0] * shift, p[1], p[2] + perp[1] * shift]
     }
 }
+
+impl SurfaceModel {
+    /// Road-only path between two gate nodes (no off-road cell, no leap) as world points, or None = a GAP.
+    pub fn road_path(&self, nodes: &Nodes, i: usize, j: usize) -> Option<Vec<[f32; 3]>> {
+        let gi = nodes.graph_node[i]?;
+        let gj = nodes.graph_node[j]?;
+        let (dist, prev) = self.graph.dijkstra_road(gi);
+        if !dist[gj].is_finite() {
+            return None;
+        }
+        let path = self.graph.path(&prev, gj);
+        // an off-road RUN longer than 12 m (a field, a jump landing) makes it a gap; short kerb/deck seams pass
+        // (the first and last 20 m are exempt: a start deck or a gate platform of another material)
+        let mut run = 0.0f32;
+        let mut worst = 0.0f32;
+        let mut along = 0.0f32;
+        let total: f32 = path.windows(2).map(|w| { let a = self.graph.world(&self.grid, w[0]); let b = self.graph.world(&self.grid, w[1]); ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt() }).sum();
+        for w in path.windows(2) {
+            let a = self.graph.world(&self.grid, w[0]);
+            let b = self.graph.world(&self.grid, w[1]);
+            let step = ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
+            along += step;
+            if self.graph.node_road[w[1] as usize] || along < 20.0 || total - along < 20.0 { run = 0.0; } else { run += step; worst = worst.max(run); }
+        }
+        if worst > 12.0 {
+            return None;
+        }
+        Some(path.into_iter().map(|n| self.graph.world(&self.grid, n)).collect())
+    }
+    /// The lateral road span at a point: (left, right) metres of road beside it, up to `cap` each; None off-road.
+    pub fn road_span(&self, p: [f32; 3], dir: [f32; 2], cap: f32) -> Option<(f32, f32)> {
+        let has_road = |x: f32, z: f32, y: f32| -> bool {
+            match self.grid.cell_of(x, z) {
+                Some((ix, iz)) => self.grid.cells[iz * self.grid.nx + ix].iter().any(|s| s.road && (s.y - y).abs() <= 4.0),
+                None => false,
+            }
+        };
+        if !has_road(p[0], p[2], p[1]) {
+            return None;
+        }
+        let l = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
+        if l < 1e-3 {
+            return Some((0.0, 0.0));
+        }
+        let perp = [-dir[1] / l, dir[0] / l];
+        let mut left = 0.0f32;
+        let mut right = 0.0f32;
+        let mut k = 1.0f32;
+        while k <= cap && has_road(p[0] + perp[0] * k, p[2] + perp[1] * k, p[1]) { left = k; k += 1.0; }
+        k = 1.0;
+        while k <= cap && has_road(p[0] - perp[0] * k, p[2] - perp[1] * k, p[1]) { right = k; k += 1.0; }
+        Some((left, right))
+    }
+}
