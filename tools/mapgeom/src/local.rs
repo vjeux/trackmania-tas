@@ -329,8 +329,17 @@ impl LocalScene {
             hi = [1.0; 3];
         }
         let origin = [lo[0] - 1.0, lo[1] - 1.0, lo[2] - 1.0];
-        let dims = [0, 1, 2].map(|a| (((hi[a] + 1.0 - origin[a]) / cell).ceil() as usize).max(1));
+        // a stray placement kilometres away (King of the Hillclimb, 2026-09-08: one `tmplan leg-scan` reached 122 GB)
+        // must not size the grid: grow the cell until the grid is ≤ 40 M cells
+        let mut cell = cell;
+        let mut dims = [0, 1, 2].map(|a| (((hi[a] + 1.0 - origin[a]) / cell).ceil() as usize).max(1));
+        while dims[0] * dims[1] * dims[2] > 40_000_000 {
+            cell *= 2.0;
+            dims = [0, 1, 2].map(|a| (((hi[a] + 1.0 - origin[a]) / cell).ceil() as usize).max(1));
+        }
         let n_cells = dims[0] * dims[1] * dims[2];
+        // and a single triangle spanning thousands of cells (a sky dome, a degenerate hull) is not indexed
+        const MAX_SPAN_CELLS: usize = 20_000;
         // two passes: count, then fill
         let mut count = vec![0u32; n_cells + 1];
         let cell_range = |t: &Tri| -> ([usize; 3], [usize; 3]) {
@@ -346,8 +355,11 @@ impl LocalScene {
             (a, b)
         };
         let idx = |x: usize, y: usize, z: usize| (z * dims[1] + y) * dims[0] + x;
+        let span = |a: &[usize; 3], b: &[usize; 3]| (b[0] - a[0] + 1) * (b[1] - a[1] + 1) * (b[2] - a[2] + 1);
+        let mut skipped = 0usize;
         for t in &tris {
             let (a, b) = cell_range(t);
+            if span(&a, &b) > MAX_SPAN_CELLS { skipped += 1; continue; }
             for z in a[2]..=b[2] {
                 for y in a[1]..=b[1] {
                     for x in a[0]..=b[0] {
@@ -363,6 +375,7 @@ impl LocalScene {
         let mut cell_tris = vec![0u32; count[n_cells] as usize];
         for (ti, t) in tris.iter().enumerate() {
             let (a, b) = cell_range(t);
+            if span(&a, &b) > MAX_SPAN_CELLS { continue; }
             for z in a[2]..=b[2] {
                 for y in a[1]..=b[1] {
                     for x in a[0]..=b[0] {
@@ -373,6 +386,7 @@ impl LocalScene {
                 }
             }
         }
+        if skipped > 0 { eprintln!("  local scene: {skipped} giant triangles (> {MAX_SPAN_CELLS} cells each) not indexed"); }
         LocalScene { tris, placements, cell, origin, dims, cell_start: count, cell_tris }
     }
 
