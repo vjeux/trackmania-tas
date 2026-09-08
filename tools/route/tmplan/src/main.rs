@@ -245,6 +245,8 @@ fn main() {
         "families" => cmd_families(&args[1..]),
         "deck-gates" => cmd_deck_gates(&args[1..]),
         "leg-scan" => cmd_leg_scan(&args[1..]),
+        "road-centreline" => cmd_road_centreline(&args[1..]),
+        "author-line" => cmd_author_line(&args[1..]),
         other => die(&format!("unknown command {other}")),
     }
 }
@@ -350,7 +352,7 @@ fn cmd_local(args: &[String]) {
             let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
             let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
             let m = tmmaps::map::MapFile::load(Path::new(&map));
-            let opts = mapgeom::local::BuildOpts { with_deco: !has(args, "--no-deco"), with_baked: !has(args, "--no-baked"), cell: flag(args, "--cell").and_then(|s| s.parse().ok()).unwrap_or(4.0) };
+            let opts = mapgeom::local::BuildOpts { with_deco: !has(args, "--no-deco"), with_baked: !has(args, "--no-baked") && !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), cell: flag(args, "--cell").and_then(|s| s.parse().ok()).unwrap_or(4.0) };
             let s = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &opts);
             println!("built {} triangles, {} placements, grid {}x{}x{} @ {} m in {:.1} s", s.tri_count(), s.placements.len(), s.dims[0], s.dims[1], s.dims[2], s.cell, t0.elapsed().as_secs_f32());
             if let Some(c) = flag(args, "--cache") {
@@ -558,7 +560,10 @@ fn cmd_deck_gates(args: &[String]) {
         // where the engine credits it, in THIS frame (deck centroid): measured on tiny 02/06 crossings (INPUT arm)
         let mb = g.model.as_bytes();
         if mb.len() > 2 && mb[0] == b'A' && mb[2].is_ascii_digit() {
-            g.credit_offset_m = match (mb[1], g.kind) { (b'C', tmroute::gates::WpKind::Checkpoint) => -9.5, (b'C', tmroute::gates::WpKind::Finish) => -7.6, (b'I', _) => -2.07, _ => g.credit_offset_m };
+            // MEASURED on ship8 (real disc triggers; INPUT arm crossings 2026-09-08 12:18Z, 39 gates on 7 maps), deck frame:
+            // AC checkpoints −2.1 (n 26, sd 0.36; one slope checkpoint at −3.8), AC finishes −6.5 (n 6, sd 0.27), AI gate
+            // items −2.1 (n 7, sd 0.19). The pre-3f5da2a fit (−9.5 / −7.6 / −2.07) measured whole-block triggers.
+            g.credit_offset_m = match (mb[1], g.kind) { (b'C', tmroute::gates::WpKind::Checkpoint) => -2.1, (b'C', tmroute::gates::WpKind::Finish) => -6.5, (b'I', _) => -2.1, _ => g.credit_offset_m };
         }
         moved += 1;
         lines.push(format!("  wp {:>2} {}: anchor ({:.1}, {:.1}, {:.1}) → deck centre ({:.1}, {:.1}, {:.1}) top {:.1} (hull {} tris, deck area {:.0} m²)", g.waypoint, g.model, old[0], old[1] - g.half_height, old[2], c[0], c[1], c[2], top, (0..scene.tris.len()).filter(|&i| scene.tris[i].tag as usize == k).count(), d.0));
@@ -570,8 +575,10 @@ fn cmd_deck_gates(args: &[String]) {
         cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
         if let Some(&(_, k)) = cands.first() {
             let d = &deck[k];
-            lines.push(format!("  spawn ({:.1}, {:.1}, {:.1}) → deck top {:.1} at ({:.1}, {:.1})", s[0], s[1], s[2], d.2, d.1[0] / d.0, d.1[2] / d.0));
-            gates.spawn.pos = [s[0], d.2 + 0.5, s[2]];
+            let c = [(d.1[0] / d.0) as f32, (d.1[1] / d.0) as f32, (d.1[2] / d.0) as f32];
+            lines.push(format!("  spawn ({:.1}, {:.1}, {:.1}) → start deck centroid ({:.1}, {:.1}, {:.1})", s[0], s[1], s[2], c[0], c[1], c[2]));
+            // the start item anchors at a corner of its deck: the car spawns on the deck, so does the polyline
+            gates.spawn.pos = [c[0], c[1] + 0.5, c[2]];
         }
     }
     gates.produced_by = format!("{}; deck-gates: {moved} item gates re-anchored on their own hull deck ({})", gates.produced_by, tmroute::provenance("tmplan deck-gates"));
@@ -596,7 +603,7 @@ fn cmd_leg_scan(args: &[String]) {
     let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
     let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
     let m = tmmaps::map::MapFile::load(Path::new(&map));
-    let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts { with_deco: true, with_baked: true, cell: 4.0 });
+    let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts { with_deco: true, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), cell: 4.0 });
     let specials = tmroute::gates::specials(&m, gates.yoff);
     // ghosts
     let mut runs = Vec::new();
@@ -660,5 +667,475 @@ fn cmd_leg_scan(args: &[String]) {
         };
         let sp: Vec<String> = a.specials.iter().map(|(k, n)| format!("{k}×{}", (*n as f32 / a.ms.len().max(1) as f32).round() as usize)).collect();
         println!("\t\t{}→{}\t{}\t{:.0}\t{:+.0}\t{:.3}\t{:.0}\t{:.0}\t{:.0}\t{:.2}\t{:.1}\t{:.2}\t{}\t{}\t{}", lab(*ga), lab(*gb), a.ms.len(), med(&a.chord), med(&a.dy), med(&a.ms) / 1000.0, med(&a.vmean) * 3.6, med(&a.vmax) * 3.6, med(&a.path), med(&a.air), med(&a.fall), med(&a.wall), if gl.is_finite() { format!("{gl:.0}") } else { "MISSING".into() }, if gc.is_finite() { format!("{gc:.0}") } else { "∞".into() }, if sp.is_empty() { "-".into() } else { sp.join(" ") });
+    }
+}
+
+/// `tmplan road-centreline MAP.Map.Gbx --gates deck.json --order 3,1,2,0,4 --out road-centreline.json [--note ...]`
+/// A ROAD-FOLLOWING centreline through the gate decks in the given group order (the route's): per leg the road-only
+/// shortest path (no off-road cell, no leap), re-centred to the road midline and smoothed, half-width from the
+/// lateral road span; where no road path exists the polyline STAYS on the last deck and the segment is a `gap`
+/// (never a straight line off the road — Argentina 21, the car fell at s ≈ 60 m). The player's ask, 2026-09-08.
+fn cmd_road_centreline(args: &[String]) {
+    // platform decks of any physics are road for a centreline that must follow the decks (Summer 2026 - 10: Grass/Concrete
+    // decks; Saudi Arabia 2026: Sand) — opt-in here so the planner's exhibit road set is untouched
+    if std::env::var("TMPLAN_DECK_PHYSICS").is_err() { std::env::set_var("TMPLAN_DECK_PHYSICS", "Concrete,Grass,Sand"); }
+    let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
+    let mut gates = io::read_gates(Path::new(&flag(args, "--gates").unwrap_or_else(|| die("--gates")))).unwrap_or_else(|e| die(&e));
+    // --spawn x,y,z: the ENGINE's tick-0 pose (what the env resets to) instead of the start deck centroid — the INPUT arm
+    // measures it per build (tm-player/tiny/gate-crossings/ENGINE-SPAWNS-<build>.tsv); 14's pitched free-placed start
+    // item put the centroid 4 m off (12:25Z)
+    let mut spawn_note = String::new();
+    if let Some(sp) = flag(args, "--spawn") {
+        let v: Vec<f32> = sp.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        if v.len() == 3 {
+            spawn_note = format!("; spawn = engine tick-0 pose ({:.1}, {:.1}, {:.1}) (was deck centroid ({:.1}, {:.1}, {:.1}))", v[0], v[1], v[2], gates.spawn.pos[0], gates.spawn.pos[1], gates.spawn.pos[2]);
+            gates.spawn.pos = [v[0], v[1], v[2]];
+        }
+    }
+    let out = flag(args, "--out").unwrap_or_else(|| die("--out"));
+    let order: Vec<u32> = flag(args, "--order").unwrap_or_else(|| die("--order g,g,g")).split(',').filter_map(|x| x.trim().parse().ok()).collect();
+    let (mut surf, nodes) = SurfaceModel::build(Path::new(&map), &gates, false, false).unwrap_or_else(|e| die(&e));
+    // --exclude x0,z0,x1,z1[;…] (or --exclusions FILE.tsv: map_stem\tx0\tz0\tx1\tz1\tnote, filtered by --map-stem): XZ boxes
+    // whose surfaces are NOT road for this line — Argentina 2026's grandstand tiers (Metal, like the tech decks) stood
+    // between the two roads and the line cut across them; the converter's census names such structures
+    let mut boxes: Vec<[f32; 4]> = Vec::new();
+    if let Some(e) = flag(args, "--exclude") { for b in e.split(';') { let v: Vec<f32> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 4 { boxes.push([v[0].min(v[2]), v[1].min(v[3]), v[0].max(v[2]), v[1].max(v[3])]); } } }
+    if let (Some(f), Some(stem)) = (flag(args, "--exclusions"), flag(args, "--map-stem")) {
+        if let Ok(t) = std::fs::read_to_string(f) { for l in t.lines().filter(|l| !l.starts_with('#')) { let c: Vec<&str> = l.split('\t').collect(); if c.len() >= 5 && c[0] == stem { let v: Vec<f32> = c[1..5].iter().filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 4 { boxes.push([v[0].min(v[2]), v[1].min(v[3]), v[0].max(v[2]), v[1].max(v[3])]); } } } }
+    }
+    if !boxes.is_empty() {
+        let mut n_ex = 0usize;
+        for k in 0..surf.graph.len() {
+            let w = surf.graph.world(&surf.grid, k);
+            if boxes.iter().any(|b| w[0] >= b[0] && w[0] <= b[2] && w[2] >= b[1] && w[2] <= b[3]) && surf.graph.node_road[k] { surf.graph.node_road[k] = false; surf.graph.node_prime[k] = false; n_ex += 1; }
+        }
+        eprintln!("  exclusions: {} boxes, {n_ex} road nodes turned off", boxes.len());
+    }
+    // the SURFACE-FOLLOWING fallback for gap legs (wallrides, loops, inverted roads, the pool, terrain hills): a walk over
+    // the collision triangles themselves (tmplan::walk), built once, lazily; --no-walk disables it. Legs whose verdict
+    // is Jump/Drop never get one (air is not a surface).
+    let walk_on = !has(args, "--no-walk");
+    let mut walk: Option<tmplan::walk::SurfaceWalk> = None;
+    let mut build_walk = || -> Option<tmplan::walk::SurfaceWalk> {
+        let paths = tmplan::pak_paths().ok()?;
+        let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).ok()?;
+        let m = tmmaps::map::MapFile::load(Path::new(&map));
+        let opts = mapgeom::local::BuildOpts { with_deco: false, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), cell: 4.0 };
+        let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &opts);
+        let t0 = std::time::Instant::now();
+        let w = tmplan::walk::SurfaceWalk::build(&scene, 1.0, &|mat: u8| mat != 255);
+        eprintln!("  surface walk: {} shell voxels of {} m from {} triangles, built in {:.1} s", w.key.len(), w.cell, scene.tris.len(), t0.elapsed().as_secs_f32());
+        Some(w)
+    };
+    // verdict classes by (from label, to group) — a Jump/Drop leg is never walked
+    let stem_v = flag(args, "--map-stem").unwrap_or_default();
+    let jumpy: Vec<(String, String)> = flag(args, "--verdicts").and_then(|p| std::fs::read_to_string(p).ok()).map(|t| t.lines().filter(|l| !l.starts_with('#')).filter_map(|l| { let f: Vec<&str> = l.split('\t').collect(); if f.len() >= 4 && f[0] == stem_v && (f[3] == "Jump" || f[3] == "Drop") { Some((f[1].to_string(), f[2].to_string())) } else { None } }).collect()).unwrap_or_default();
+    let node_of_group: BTreeMap<u32, usize> = nodes.groups.iter().enumerate().map(|(i, g)| (*g, i)).collect();
+    let mut seq: Vec<usize> = vec![0];
+    for g in &order { seq.push(*node_of_group.get(g).unwrap_or_else(|| die(&format!("group {g} not in gates")))); }
+    let mut pts: Vec<[f32; 3]> = vec![nodes.pos[0]];
+    let mut hw: Vec<f32> = vec![surf.road_span(nodes.pos[0], [0.0, 1.0], 24.0).map_or(6.0, |(l, r)| ((l + r) / 2.0).max(3.0))];
+    let mut segs: Vec<String> = Vec::new();
+    let mut gaps = 0;
+    // where the previous leg left the car: 6 m THROUGH the gate along its arrival direction when the road continues
+    let mut through: Option<[f32; 3]> = None;
+    // a straight STUB along the spawn heading first (12 m, while the road is there): the car starts at rest facing
+    // spawn.yaw and an OffRoute check at t = 0 must not see the line leave at 110° (player, 14:36Z); the first leg
+    // then starts from the stub's end. --spawn-yaw overrides the heading (radians, TM convention: yaw 0 = +x… as in
+    // gates.json), --no-stub disables.
+    if !has(args, "--no-stub") {
+        let yaw = flag(args, "--spawn-yaw").and_then(|s| s.parse::<f32>().ok()).unwrap_or(gates.spawn.yaw);
+        let d = [yaw.sin(), 0.0f32, yaw.cos()];
+        let p0 = pts[0];
+        let mut stub: Vec<[f32; 3]> = Vec::new();
+        for k in 1..=6 {
+            let q = [p0[0] + d[0] * 2.0 * k as f32, p0[1], p0[2] + d[2] * 2.0 * k as f32];
+            match surf.graph.nearest_window(&surf.grid, q, 1, -8.0, 3.0) {
+                Some(n) if surf.graph.node_road[n] => {
+                    let w = surf.graph.world(&surf.grid, n);
+                    stub.push([q[0], w[1], q[2]]);
+                }
+                _ => break,
+            }
+        }
+        if stub.len() >= 3 {
+            for q in &stub {
+                hw.push(surf.road_span(*q, [d[0], d[2]], 24.0).map_or(4.0, |(l, r)| ((l + r) / 2.0).max(3.0)));
+                pts.push(*q);
+            }
+            through = Some(*stub.last().unwrap());
+            eprintln!("  spawn stub: {} m along yaw {:.2} ({:.2}, {:.2}) from ({:.1}, {:.1}, {:.1})", 2 * stub.len(), yaw, d[0], d[2], p0[0], p0[1], p0[2]);
+        } else {
+            eprintln!("  spawn stub: no road along yaw {yaw:.2} from the spawn — none written");
+        }
+    }
+    // --leg-lines FILE.tsv (map_stem \t from_group|spawn \t to_group \t half_width \t x,y,z;x,y,z;… \t note): an explicit
+    // drive line for a leg the graph cannot carry (Argentina 21's turbo jump — player/LEARN 16:04Z); the polyline
+    // takes these points (resampled 2 m), the segment is "via": "manual", the Leg keeps its verdict class
+    let leg_lines: Vec<(String, String, f32, Vec<[f32; 3]>)> = flag(args, "--leg-lines").and_then(|p| std::fs::read_to_string(p).ok()).map(|t| t.lines().filter(|l| !l.starts_with('#')).filter_map(|l| {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() >= 5 && f[0] == stem_v {
+            let pts: Vec<[f32; 3]> = f[4].split(';').filter_map(|p| { let v: Vec<f32> = p.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 3 { Some([v[0], v[1], v[2]]) } else { None } }).collect();
+            if pts.len() >= 2 { Some((f[1].to_string(), f[2].to_string(), f[3].trim().parse().unwrap_or(8.0), pts)) } else { None }
+        } else { None }
+    }).collect()).unwrap_or_default();
+    for w in seq.windows(2) {
+        let (i, j) = (w[0], w[1]);
+        let i0 = pts.len() - 1;
+        if let Some((_, _, hwid, line)) = leg_lines.iter().find(|(f, t, _, _)| *f == grp(&nodes, i).trim_matches('"') && *t == grp_id_of(&nodes, j)) {
+            let mut raw = vec![*pts.last().unwrap()];
+            raw.extend_from_slice(line);
+            let leg = tmroute::human::resample(&raw, 2.0);
+            for p in leg.iter().skip(1) {
+                hw.push(*hwid);
+                pts.push(*p);
+            }
+            eprintln!("  manual drive line {} → {}: {} points given, {} pts, half-width {hwid}", grp(&nodes, i), grp(&nodes, j), line.len(), leg.len());
+            segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {}, \"gap\": false, \"via\": \"manual\"}}", grp(&nodes, i), grp(&nodes, j), pts.len() - 1));
+            through = None;
+            continue;
+        }
+        let path = match through { Some(p) => surf.road_path_from_point(p, &nodes, j).or_else(|| surf.road_path(&nodes, i, j)), None => surf.road_path(&nodes, i, j) };
+        through = None;
+        match path {
+            Some(raw) => {
+                let mut leg = tmroute::human::resample(&raw, 2.0);
+                if leg.len() > 2 {
+                    let orig = leg.clone();
+                    for k in 1..orig.len() - 1 {
+                        let d = [orig[k + 1][0] - orig[k - 1][0], orig[k + 1][2] - orig[k - 1][2]];
+                        leg[k] = surf.recentre(orig[k], d, 24.0);
+                    }
+                    let c = leg.clone();
+                    for k in 1..c.len() - 1 { for a in [0usize, 2] { leg[k][a] = 0.25 * c[k - 1][a] + 0.5 * c[k][a] + 0.25 * c[k + 1][a]; } }
+                }
+                for (k, p) in leg.iter().enumerate().skip(1) {
+                    let d = [leg[k][0] - leg[k - 1][0], leg[k][2] - leg[k - 1][2]];
+                    hw.push(surf.road_span(*p, d, 24.0).map_or(4.0, |(l, r)| ((l + r) / 2.0).max(3.0)));
+                    pts.push(*p);
+                }
+                let gate_i = pts.len() - 1;
+                // continue 2, 4, 6 m past the gate along the arrival direction while the road is there (the credit plane
+                // lies 1–2 m past the deck centroid: the line must CROSS it before it turns)
+                if leg.len() >= 3 && j != *seq.last().unwrap() {
+                    let a = leg[leg.len() - 3]; let b = leg[leg.len() - 1];
+                    let l = ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt().max(1e-3);
+                    let d = [(b[0] - a[0]) / l, (b[2] - a[2]) / l];
+                    for k in [2.0f32, 4.0, 6.0] {
+                        let q = [b[0] + d[0] * k, b[1], b[2] + d[1] * k];
+                        let Some(n) = surf.graph.nearest_window(&surf.grid, q, 1, -3.0, 3.0) else { break };
+                        if !surf.graph.node_road[n] { break; }
+                        let qw = surf.graph.world(&surf.grid, n);
+                        let qq = [q[0], qw[1], q[2]];
+                        hw.push(surf.road_span(qq, d, 24.0).map_or(4.0, |(l2, r2)| ((l2 + r2) / 2.0).max(3.0)));
+                        pts.push(qq);
+                        through = Some(qq);
+                    }
+                }
+                segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {gate_i}, \"gap\": false}}", grp(&nodes, i), grp(&nodes, j)));
+            }
+            None => {
+                // SURFACE WALK before declaring a gap: over the collision triangles, from around where the line stands
+                // (the through-point or the from-gate) to the to-gate deck; accepted when ≤ 4 × chord + 40 m
+                // a Jump/Drop verdict INTO this gate from any gate counts: an isolated deck (21's gate 15) is a jump from
+                // wherever the order arrives (the order moved 2→15 to 6→15 and the walk built a fake path, 16:11Z)
+                let walked = if walk_on && !jumpy.iter().any(|(f, t)| *t == grp_id_of(&nodes, j)) {
+                    if walk.is_none() { walk = build_walk(); }
+                    walk.as_ref().and_then(|w| {
+                        let start = *pts.last().unwrap();
+                        let goal = nodes.pos[j];
+                        let chord = ((goal[0] - start[0]).powi(2) + (goal[1] - start[1]).powi(2) + (goal[2] - start[2]).powi(2)).sqrt();
+                        let from_set = w.near(start, 8.0, 4.0);
+                        let to_set = w.near(goal, 8.0, 4.0);
+                        w.walk(&from_set, &to_set, 4.0 * chord + 40.0).map(|(p, l)| (p, l, chord))
+                    })
+                } else { None };
+                if let Some((raw, wlen, chord)) = walked {
+                    let leg = tmroute::human::resample(&raw, 2.0);
+                    eprintln!("  surface walk {} → {}: {:.0} m over the triangles (chord {:.0} m), {} pts", grp(&nodes, i), grp(&nodes, j), wlen, chord, leg.len());
+                    for p in leg.iter().skip(1) {
+                        hw.push(3.0);
+                        pts.push(*p);
+                    }
+                    segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {}, \"gap\": false, \"via\": \"surface\"}}", grp(&nodes, i), grp(&nodes, j), pts.len() - 1));
+                    continue;
+                }
+                // stay on the last deck: the polyline does not move; the segment is a gap the consumer must bridge
+                gaps += 1;
+                let road_at = |k: usize| nodes.graph_node[k].map_or("no graph node".to_string(), |n| if surf.graph.node_road[n] { "road".into() } else { "off-road".into() });
+                let any = surf.path_points(&nodes, &surf.distance_matrix(&nodes).2, i, j).map_or("none".to_string(), |p| format!("{} pts", p.len()));
+                eprintln!("  gap {} → {}: from node {}, to node {}, full-graph path {any}", grp(&nodes, i), grp(&nodes, j), road_at(i), road_at(j));
+                // what the full-graph path crosses: consecutive off-road runs > 4 m with the surface under them
+                if let Some(fp) = surf.path_points(&nodes, &surf.distance_matrix(&nodes).2, i, j) {
+                    let mut cur = 0.0f32;
+                    let mut mats: BTreeMap<String, usize> = BTreeMap::new();
+                    let mut run_start = [0.0f32; 3];
+                    let flush = |cur: f32, mats: &BTreeMap<String, usize>, at: [f32; 3]| {
+                        if cur > 4.0 {
+                            let m: Vec<String> = mats.iter().map(|(k, v)| format!("{k}×{v}")).collect();
+                            eprintln!("      off-road run {cur:.0} m over {} from ({:.0}, {:.1}, {:.0})", m.join(" "), at[0], at[1], at[2]);
+                        }
+                    };
+                    for w in fp.windows(2) {
+                        let (a, b) = (w[0], w[1]);
+                        let step = ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
+                        let on = surf.road_span(b, [b[0] - a[0], b[2] - a[2]], 2.0).is_some();
+                        if on {
+                            flush(cur, &mats, run_start);
+                            cur = 0.0;
+                            mats.clear();
+                        } else {
+                            if cur == 0.0 { run_start = a; }
+                            cur += step;
+                            let m = surf.grid.cell_of(b[0], b[2]).and_then(|(ix, iz)| surf.grid.cells[iz * surf.grid.nx + ix].iter().min_by(|p, q| (p.y - b[1]).abs().partial_cmp(&(q.y - b[1]).abs()).unwrap()).map(|s| format!("{}@{:+.1}", surf.grid.mats[s.mat as usize], s.y - b[1]))).unwrap_or_else(|| "void".to_string());
+                            *mats.entry(m).or_default() += 1;
+                        }
+                    }
+                    flush(cur, &mats, run_start);
+                }
+                segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {i0}, \"gap\": true, \"to_pos\": [{:.2}, {:.2}, {:.2}]}}", grp(&nodes, i), grp(&nodes, j), nodes.pos[j][0], nodes.pos[j][1], nodes.pos[j][2]));
+            }
+        }
+    }
+    // --author-line author.json: the HUMAN line replaces the polyline wholesale (the coordinator's lap directive, 17:23Z:
+    // "the human line is a better guide than the planner polyline everywhere"). Points resampled at 2 m and smoothed
+    // (5-point), half-width = the road span where the point is on road, else 4 m; the segments are re-cut at each gate's
+    // first pass (finish: last pass) in `seq` order; a leg the human never passes within reach of stays as it was.
+    let mut author_note = String::new();
+    if let Some(ap) = flag(args, "--author-line") {
+        let txt = std::fs::read_to_string(&ap).unwrap_or_else(|e| die(&format!("{ap}: {e}")));
+        let k = "\"pts\": [";
+        let i = txt.find(k).unwrap_or_else(|| die(&format!("{ap}: no pts")));
+        let rest = &txt[i + k.len()..];
+        let end = rest.find("]]").map(|e| e + 1).unwrap_or(rest.len());
+        let flat: Vec<f32> = rest[..end].split(|c: char| c == ',' || c == '[' || c == ']').filter_map(|x| x.trim().parse::<f32>().ok()).collect();
+        let raw: Vec<[f32; 3]> = flat.chunks(3).filter(|c| c.len() == 3).map(|c| [c[0], c[1], c[2]]).collect();
+        if raw.len() >= 10 {
+            let mut line = tmroute::human::resample(&raw, 2.0);
+            let orig = line.clone();
+            for k in 2..orig.len().saturating_sub(2) {
+                let mut acc = [0.0f32; 3];
+                for j in k - 2..=k + 2 { acc[0] += orig[j][0]; acc[1] += orig[j][1]; acc[2] += orig[j][2]; }
+                line[k] = [acc[0] / 5.0, acc[1] / 5.0, acc[2] / 5.0];
+            }
+            // gate passes along the human line → segment cuts
+            let mut cuts: Vec<(usize, usize)> = Vec::new(); // (index in line, seq position)
+            let mut ok = true;
+            for (si, &nd) in seq.iter().enumerate().skip(1) {
+                let grp_id = nodes.groups[nd];
+                let is_fin = gates.gates.iter().any(|x| x.group == grp_id && matches!(x.kind, tmroute::gates::WpKind::Finish));
+                let mut found: Option<usize> = None;
+                for (li, p) in line.iter().enumerate() {
+                    let hit = gates.gates.iter().filter(|x| x.group == grp_id).any(|x| ((x.centre[0] - p[0]).powi(2) + (x.centre[2] - p[2]).powi(2)).sqrt() <= x.half_width + 6.0 && (x.centre[1] - p[1]).abs() <= 10.0);
+                    if hit { found = Some(li); if !is_fin { break; } }
+                }
+                match found { Some(li) => cuts.push((li, si)), None => { ok = false; eprintln!("  author line never passes group {grp_id} — author line NOT used"); break; } }
+            }
+            let monotone = cuts.windows(2).all(|w| w[1].0 > w[0].0);
+            if ok && monotone {
+                pts = line;
+                hw = Vec::with_capacity(pts.len());
+                for k in 0..pts.len() {
+                    let d = if k + 1 < pts.len() { [pts[k + 1][0] - pts[k][0], pts[k + 1][2] - pts[k][2]] } else { [pts[k][0] - pts[k - 1][0], pts[k][2] - pts[k - 1][2]] };
+                    hw.push(surf.road_span(pts[k], d, 24.0).map_or(4.0, |(l, r)| ((l + r) / 2.0).max(3.0)));
+                }
+                segs.clear();
+                gaps = 0;
+                let mut i0 = 0usize;
+                for (li, si) in &cuts {
+                    let from = if *si == 1 { "\"spawn\"".to_string() } else { nodes.groups[seq[*si - 1]].to_string() };
+                    segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {li}, \"gap\": false, \"via\": \"author\"}}", from, nodes.groups[seq[*si]]));
+                    i0 = *li;
+                }
+                author_note = format!("; POLYLINE = the human line ({ap}), {} pts, gates cut at the human's passes", pts.len());
+                eprintln!("  author line used as the centreline: {} pts, {} legs", pts.len(), cuts.len());
+            } else if ok {
+                eprintln!("  author line passes the gates out of the given order — author line NOT used");
+            }
+        }
+    }
+    let mut s = vec![0.0f32];
+    for k in 1..pts.len() { let a = pts[k - 1]; let b = pts[k]; s.push(s[k - 1] + ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()); }
+    let note = format!("{}{}{}", flag(args, "--note").unwrap_or_default(), spawn_note, author_note);
+    // optional per-point advisory speed (player, 06:44Z): lateral 25 m/s², leave-ground at 2.5 g of required
+    // downward acceleration, 80 m/s ceiling, braking 12 m/s², acceleration 7 m/s², ±16 m curvature window
+    let hint = tmplan::speed_hints(&pts, &s, 16.0, 25.0, 9.81 * 2.5, 80.0, 12.0, 7.0);
+    let js = format!(
+        "{{\n  \"map_uid\": \"{}\",\n  \"map_name\": \"{}\",\n  \"order_groups\": [{}],\n  \"pts\": [{}],\n  \"s\": [{}],\n  \"half_width\": [{}],\n  \"speed_hint\": [{}],\n  \"speed_hint_note\": \"m/s, advisory: min of lateral-grip (25 m/s²) curvature limit, leave-ground limit on crests/dip exits (2.5 g of required downward acceleration), 80 m/s ceiling; braking 12 m/s² and acceleration 7 m/s² propagated along s; ±16 m curvature window; standing start\",\n  \"segments\": [{}],\n  \"gaps\": {gaps},\n  \"produced_by\": \"{}{}\"\n}}\n",
+        gates.map_uid, gates.map_name,
+        order.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(","),
+        pts.iter().map(|p| format!("[{:.2},{:.2},{:.2}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(","),
+        s.iter().map(|v| format!("{v:.1}")).collect::<Vec<_>>().join(","),
+        hw.iter().map(|v| format!("{v:.1}")).collect::<Vec<_>>().join(","),
+        hint.iter().map(|v| format!("{v:.1}")).collect::<Vec<_>>().join(","),
+        segs.join(", "),
+        tmroute::provenance("tmplan road-centreline"), if note.is_empty() { String::new() } else { format!("; {note}") }
+    );
+    io::write_atomic(Path::new(&out), js.as_bytes()).unwrap_or_else(|e| die(&e));
+    // --route-out: the same centreline as a route file (TrackGeom + Leg per gate; a gap leg is ConnectionClass::Unknown
+    // with s_start == s_end — the consumer bridges it), source "router-road-centreline"
+    if let Some(ro) = flag(args, "--route-out") {
+        use tmroute::types::*;
+        // --verdicts FILE.tsv (map_stem \t from_group \t to_group \t class \t note), filtered to this map by --map-stem
+        let stem = flag(args, "--map-stem").unwrap_or_default();
+        let verdicts: Vec<(String, String, String, String)> = flag(args, "--verdicts").and_then(|p| std::fs::read_to_string(p).ok()).map(|t| t.lines().filter(|l| !l.starts_with('#')).filter_map(|l| { let f: Vec<&str> = l.split('\t').collect(); if f.len() >= 4 && f[0] == stem { Some((f[1].to_string(), f[2].to_string(), f[3].to_string(), f.get(4).unwrap_or(&"").to_string())) } else { None } }).collect()).unwrap_or_default();
+        let mut verdict_notes: Vec<String> = Vec::new();
+        let mut tg_gates = Vec::new();
+        let mut legs = Vec::new();
+        let mut gate_order = Vec::new();
+        for (li, w) in seq.windows(2).enumerate() {
+            let to = w[1];
+            let grp_id = nodes.groups[to];
+            let (centre, _axis, half) = gates.group_geometry(grp_id).unwrap();
+            let rep = gates.group_rep(grp_id).unwrap();
+            let seg = &segs[li];
+            let gap = seg.contains("\"gap\": true");
+            let i1: usize = seg.split("\"i1\": ").nth(1).and_then(|x| x.split(',').next()).and_then(|x| x.trim().parse().ok()).unwrap_or(0);
+            let i0: usize = seg.split("\"i0\": ").nth(1).and_then(|x| x.split(',').next()).and_then(|x| x.trim().parse().ok()).unwrap_or(0);
+            let heading = if i1 >= 1 && i1 < pts.len() && i1 > i0 { let a = pts[i1 - 1]; let b = pts[i1]; let l = ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt().max(1e-3); [(b[0] - a[0]) / l, 0.0, (b[2] - a[2]) / l] } else { rep.normal };
+            let kind = if li + 1 == seq.len() - 1 { GateKind::Finish } else { match rep.kind { tmroute::gates::WpKind::Finish => GateKind::Finish, tmroute::gates::WpKind::Multilap => GateKind::Multilap, _ => GateKind::Checkpoint } };
+            // the gate's plane is the ITEM's facing (its trigger disc), signed along the line's travel — the polyline's
+            // arrival heading can be 30° off on a curve into the gate (ENV's crossing test missed 04 wp12/wp3, 12:23Z)
+            let gate_normal = {
+                let n = rep.normal;
+                let horiz = (n[0] * n[0] + n[2] * n[2]).sqrt();
+                if horiz > 0.5 { let s = if n[0] * heading[0] + n[2] * heading[2] >= 0.0 { 1.0 } else { -1.0 }; [s * n[0] / horiz, 0.0, s * n[2] / horiz] } else { heading }
+            };
+            // the gate's centre in the route file is the CREDIT plane: the geometric centre moved by credit_offset_m along the
+            // signed normal (F25 fit on the disc triggers) — the player's crossing test needs the plane the engine credits
+            let co = rep.credit_offset_m;
+            let centre_c = [centre[0] + gate_normal[0] * co, centre[1], centre[2] + gate_normal[2] * co];
+            tg_gates.push(Gate { kind, centre: centre_c, normal: gate_normal, half_width: half, s: s[i1], map_waypoint: rep.waypoint });
+            // a gap leg's class from the converter's verdicts (--verdicts TSV: map_stem, from_group, to_group, class, note)
+            let from_lab = grp(&nodes, w[0]).trim_matches('"').to_string();
+            // exact (from, to) first, else any Jump/Drop verdict INTO this gate (orders move between builds)
+            let verdict = verdicts.iter().find(|v| v.0 == from_lab && v.1 == grp_id.to_string()).cloned().or_else(|| verdicts.iter().find(|v| v.1 == grp_id.to_string() && (v.2 == "Jump" || v.2 == "Drop")).cloned());
+            // a manual drive line or a gap keeps the verdict class (a Jump stays a Jump even with points to follow)
+            let manual = seg.contains("\"via\": \"manual\"");
+            let conn = if !gap && !manual { ConnectionClass::Road } else { match verdict.as_ref().map(|v| v.2.as_str()) { Some("Jump") => ConnectionClass::Jump, Some("Drop") => ConnectionClass::Drop, Some("Road") => ConnectionClass::Road, _ => if manual { ConnectionClass::Road } else { ConnectionClass::Unknown } } };
+            if let Some(v) = &verdict { verdict_notes.push(format!("{}→{} {}{}", v.0, v.1, v.2, if v.3.is_empty() { String::new() } else { format!(" ({})", v.3) })); }
+            legs.push(Leg { gate_idx: li as u32, map_waypoint: rep.waypoint, s_start: s[i0], s_end: s[i1], connection: conn, arrival_speed: [5.0, 80.0], arrival_heading: gate_normal, arrival_heading_tol: 0.5, arrival_height: [centre[1] - rep.half_height - 1.0, centre[1] - rep.half_height + 3.0], p_reach: if gap { 0.0 } else { 1.0 }, expected_ms: -1, evidence: LegEvidence::Predicted });
+            gate_order.push(rep.waypoint);
+        }
+        let tg = TrackGeom {
+            geom_version: GEOM_VERSION,
+            map_uid: gates.map_uid.clone(),
+            pts: pts.clone(),
+            half_width: hw.clone(),
+            s: s.clone(),
+            gates: tg_gates,
+            spawn: gates.spawn.pos,
+            spawn_yaw: gates.spawn.yaw,
+            source: "router-road-centreline".into(),
+            speed_hint: None,
+            legs: Some(legs),
+            route: Some(RouteMeta { route_version: ROUTE_VERSION, source: "router-road-centreline".into(), rank: 0, predicted_ms: -1, status: RouteStatus::Hypothesis, gate_order, produced_by: format!("{}{}; road-following centreline, {gaps} gap legs (s_start == s_end; class Unknown unless a converter verdict says Jump/Drop){}", tmroute::provenance("tmplan road-centreline"), if note.is_empty() { String::new() } else { format!("; {note}") }, if verdict_notes.is_empty() { String::new() } else { format!("; verdicts: {}", verdict_notes.join(", ")) }) }),
+        };
+        io::write_route(Path::new(&ro), &tg).unwrap_or_else(|e| die(&e));
+    }
+    let on_road = pts.iter().enumerate().filter(|(k, p)| { let d = if *k + 1 < pts.len() { [pts[k + 1][0] - p[0], pts[k + 1][2] - p[2]] } else { [0.0, 1.0] }; surf.road_span(**p, d, 24.0).is_some() }).count();
+    // control: a centreline whose first 50 m descend more than 5 m stepped off its start deck (Argentina 2026)
+    let y0 = pts[0][1];
+    let min50 = pts.iter().zip(s.iter()).filter(|(_, si)| **si <= 50.0).map(|(p, _)| p[1]).fold(y0, f32::min);
+    let flag = if y0 - min50 > 5.0 { format!("  FLAG: first 50 m descend {:.1} m", y0 - min50) } else { String::new() };
+    println!("{}: {} pts, {:.0} m, {} segments, {gaps} gaps, on-road {:.1} %{flag} → {out}", gates.map_name, pts.len(), s.last().unwrap(), segs.len(), 100.0 * on_road as f32 / pts.len().max(1) as f32);
+    fn grp(n: &Nodes, i: usize) -> String { if i == 0 { "\"spawn\"".into() } else { n.groups[i].to_string() } }
+    fn grp_id_of(n: &Nodes, i: usize) -> String { n.groups[i].to_string() }
+}
+
+/// `author-line SRC.Map.Gbx --anchor sx,sy,sz:tx,ty,tz [--scale 0.5] --centreline X.road-centreline.json [--out author.json]`
+/// The ORIGINAL author's validation ghost mapped into the tiny frame (converter anchors: tiny = ta + (src − sa) × scale)
+/// against our polyline: lateral offset per sample (nearest polyline point, XZ), summary and worst stretch. The
+/// route-sanity oracle the coordinator asked for (16:06Z); the author line itself is written as points for the player.
+fn cmd_author_line(args: &[String]) {
+    let src = args.iter().find(|a| a.ends_with(".Map.Gbx") || a.ends_with(".Ghost.Gbx") || a.ends_with(".Replay.Gbx")).cloned().unwrap_or_else(|| die("SRC.Map.Gbx / Ghost.Gbx required"));
+    let anchor = flag(args, "--anchor").unwrap_or_else(|| die("--anchor sx,sy,sz:tx,ty,tz"));
+    let (sa, ta) = {
+        let mut it = anchor.split(':');
+        let p = |s: &str| -> [f32; 3] { let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() != 3 { die("--anchor sx,sy,sz:tx,ty,tz") } [v[0], v[1], v[2]] };
+        (p(it.next().unwrap_or("")), p(it.next().unwrap_or("")))
+    };
+    let scale: f32 = flag(args, "--scale").and_then(|s| s.parse().ok()).unwrap_or(0.5);
+    let cl = flag(args, "--centreline").unwrap_or_else(|| die("--centreline X.road-centreline.json"));
+    let txt = std::fs::read_to_string(&cl).unwrap_or_else(|e| die(&format!("{cl}: {e}")));
+    let grab = |key: &str| -> Vec<f32> {
+        let k = format!("\"{key}\": [");
+        let i = txt.find(&k).unwrap_or_else(|| die(&format!("{cl}: no {key}")));
+        let rest = &txt[i + k.len()..];
+        // pts is an array of arrays: take everything up to "]]," ; scalars up to "]"
+        let end = if key == "pts" { rest.find("]]").map(|e| e + 1).unwrap_or(rest.len()) } else { rest.find(']').unwrap_or(rest.len()) };
+        rest[..end].split(|c: char| c == ',' || c == '[' || c == ']').filter_map(|x| x.trim().parse::<f32>().ok()).collect()
+    };
+    let flat = grab("pts");
+    let pts: Vec<[f32; 3]> = flat.chunks(3).filter(|c| c.len() == 3).map(|c| [c[0], c[1], c[2]]).collect();
+    let s = grab("s");
+    let hw = grab("half_width");
+    // every vehicle entity merged (a car-switch or multi-entity ghost keeps only a stretch per entity)
+    let d = gbx::record::decode_ghost_all_vehicles(&src).unwrap_or_else(|e| die(&format!("{src}: no ghost ({e})")));
+    let mut rows: Vec<(f32, f32, f32, [f32; 3], i32)> = Vec::new(); // (s_nearest, lateral, dy, tiny pos, t)
+    let mut author: Vec<[f32; 3]> = Vec::new();
+    let mut last_t = i32::MIN;
+    for smp in &d.samples {
+        if smp.time_ms < last_t + 100 { continue; }
+        last_t = smp.time_ms;
+        let q = [ta[0] + (smp.x - sa[0]) * scale, ta[1] + (smp.y - sa[1]) * scale, ta[2] + (smp.z - sa[2]) * scale];
+        author.push(q);
+        let mut best = (f32::INFINITY, 0usize);
+        for (k, p) in pts.iter().enumerate() {
+            let dd = (p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2);
+            if dd < best.0 { best = (dd, k); }
+        }
+        let k = best.1;
+        rows.push((s.get(k).copied().unwrap_or(0.0), best.0.sqrt(), q[1] - pts[k][1], q, smp.time_ms));
+    }
+    if rows.is_empty() { die("no ghost samples"); }
+    let mut lat: Vec<f32> = rows.iter().map(|r| r.1).collect();
+    lat.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let med = lat[lat.len() / 2];
+    let p90 = lat[(lat.len() as f32 * 0.9) as usize];
+    let within: usize = rows.iter().filter(|r| { let k = s.iter().position(|v| *v >= r.0).unwrap_or(0); r.1 <= hw.get(k).copied().unwrap_or(4.0) + 2.0 }).count();
+    let worst = rows.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap();
+    // the longest stretch (in ghost time) more than 12 m off the line
+    let mut run_start: Option<i32> = None; let mut best_run = (0i32, 0i32, [0.0f32; 3]);
+    for r in &rows {
+        if r.1 > 12.0 { if run_start.is_none() { run_start = Some(r.4); } let len = r.4 - run_start.unwrap(); if len > best_run.0 { best_run = (len, run_start.unwrap(), r.3); } } else { run_start = None; }
+    }
+    println!("author line vs polyline: {} samples ({:.3} s), lateral median {med:.1} m, p90 {p90:.1} m, within half-width+2 m {:.0} %, worst {:.1} m at s {:.0} (author at ({:.0}, {:.0}, {:.0}), t {:.3} s); longest off-line (> 12 m) stretch {:.1} s from t {:.3} s at ({:.0}, {:.0}, {:.0})",
+        rows.len(), d.end_ms as f32 / 1000.0, 100.0 * within as f32 / rows.len() as f32, worst.1, worst.0, worst.3[0], worst.3[1], worst.3[2], worst.4 as f32 / 1000.0, best_run.0 as f32 / 1000.0, best_run.1 as f32 / 1000.0, best_run.2[0], best_run.2[1], best_run.2[2]);
+    // --gates deck.json: the AUTHOR's gate order = the order in which the ghost first comes within 10 m (XZ) and 6 m (y)
+    // of each gate group's centre — the ground truth of a finishing lap on the tiny map
+    let mut author_order: Vec<u32> = Vec::new();
+    if let Some(gp) = flag(args, "--gates") {
+        let g = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+        let mut firsts: Vec<(i32, u32)> = Vec::new();
+        let mut groups: Vec<u32> = g.gates.iter().filter(|r| r.group != u32::MAX).map(|r| r.group).collect();
+        groups.sort_unstable();
+        groups.dedup();
+        for grp in groups {
+            // FIRST pass for a checkpoint; LAST pass for a finish group (the lap ends there — a finish tower passed under
+            // earlier must not be ordered early; tiny 13)
+            let is_fin = g.gates.iter().any(|x| x.group == grp && matches!(x.kind, tmroute::gates::WpKind::Finish));
+            let mut t_first: Option<i32> = None;
+            for r in &rows {
+                let hit = g.gates.iter().filter(|x| x.group == grp).any(|x| ((x.centre[0] - r.3[0]).powi(2) + (x.centre[2] - r.3[2]).powi(2)).sqrt() <= x.half_width + 6.0 && (x.centre[1] - r.3[1]).abs() <= 10.0);
+                if hit { t_first = Some(r.4); if !is_fin { break; } }
+            }
+            if let Some(t) = t_first { firsts.push((t, grp)); } else {
+                let (mut dmin, mut at) = (f32::INFINITY, [0.0f32; 3]);
+                for r in &rows { for x in g.gates.iter().filter(|x| x.group == grp) { let dd = ((x.centre[0] - r.3[0]).powi(2) + (x.centre[1] - r.3[1]).powi(2) + (x.centre[2] - r.3[2]).powi(2)).sqrt(); if dd < dmin { dmin = dd; at = r.3; } } }
+                eprintln!("  author never at group {grp}: nearest {dmin:.1} m at ({:.0}, {:.0}, {:.0})", at[0], at[1], at[2]);
+            }
+        }
+        firsts.sort();
+        author_order = firsts.iter().map(|f| f.1).collect();
+        println!("author order (groups, first pass): {}", author_order.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(","));
+    }
+    if let Some(label) = flag(args, "--row") {
+        println!("| {label} | {} ({:.1} s) | {med:.1} | {p90:.1} | {:.0} % | {:.1} @ s {:.0} (author at ({:.0}, {:.0}, {:.0}), t {:.1}) | {:.1} s from t {:.1} at ({:.0}, {:.0}, {:.0}) |", rows.len(), d.end_ms as f32 / 1000.0, 100.0 * within as f32 / rows.len() as f32, worst.1, worst.0, worst.3[0], worst.3[1], worst.3[2], worst.4 as f32 / 1000.0, best_run.0 as f32 / 1000.0, best_run.1 as f32 / 1000.0, best_run.2[0], best_run.2[1], best_run.2[2]);
+    }
+    if let Some(out) = flag(args, "--out") {
+        let js = format!("{{\n  \"source\": \"{}\",\n  \"anchor\": \"{anchor}\",\n  \"scale\": {scale},\n  \"pts\": [{}],\n  \"lateral_to_centreline\": [{}],\n  \"note\": \"the ORIGINAL author's validation ghost mapped into the tiny frame (100 ms samples, ground contact point); lateral = XZ distance to the nearest centreline point\"\n}}\n",
+            src, author.iter().map(|p| format!("[{:.2},{:.2},{:.2}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(","), rows.iter().map(|r| format!("{:.1}", r.1)).collect::<Vec<_>>().join(","));
+        io::write_atomic(Path::new(&out), js.as_bytes()).unwrap_or_else(|e| die(&e));
     }
 }

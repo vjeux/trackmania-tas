@@ -37,6 +37,9 @@
 //!
 //! Every constant here is part of the observation's definition: change one and
 //! bump `OBS_VERSION`.
+//!
+//! Later versions extend the layout with the earlier one as an exact prefix: v2 (100) adds the wheel/gear/turbo
+//! block, v3 (108) the effects block, v4 (117) ROUTE's speed hints at the 9 lookahead points (`observe_v4`).
 
 use tmstate::{Action, CarState, GateKind, TrackGeom};
 
@@ -227,7 +230,11 @@ pub fn leg_range(g: &TrackGeom, cps: u8) -> (f32, f32) {
     // -- it becomes the span between the two.
     let (lo, hi) = (lo.min(hi), lo.max(hi));
     let a = (lo - LEG_MARGIN).max(0.0);
-    let b = (hi + LEG_MARGIN).min(g.length()).max(a);
+    // the far side gets the larger of LEG_MARGIN and 15 % of the leg: a geometry gate that sits well before
+    // the engine's credit line must not freeze the projection at the gate until the credit lands
+    // (LEARN's tiny-map stall, 2026-09-08; the same slack as tmenv's progress cap)
+    let slack = LEG_MARGIN.max(0.15 * (hi - lo).max(0.0));
+    let b = (hi + slack).min(g.length()).max(a);
     (a, b)
 }
 
@@ -421,13 +428,89 @@ pub fn observe_v2(g: &TrackGeom, st: &CarState, prev: &[Action]) -> ObsV2 {
     o
 }
 
+/// OBS_VERSION 3 = v2 (100 floats, identical prefix) + 8 effects floats
+/// (`CarState.effects`, STATE_VERSION 3): reactor level / 2, reactor type one-hot
+/// (down, up), reactor air control x3 (clamped ±1), sim-time coefficient − 1
+/// (0 normally; slow-motion reads negative), effects-known flag. Turbo is
+/// already in v2; boost_enum and the ground-mode/inputs-x bits are not observed
+/// (no specimen where a policy needs them yet).
+pub const OBS_VERSION_V3: u32 = 3;
+pub const OBS_DIM_V3: usize = 108;
+pub type ObsV3 = [f32; OBS_DIM_V3];
+
+pub fn observe_v3(g: &TrackGeom, st: &CarState, prev: &[Action]) -> ObsV3 {
+    let v2 = observe_v2(g, st, prev);
+    let mut o = [0.0f32; OBS_DIM_V3];
+    o[..OBS_DIM_V2].copy_from_slice(&v2);
+    let mut i = OBS_DIM_V2;
+    let mut push = |v: f32| {
+        o[i] = if v.is_finite() { v } else { 0.0 };
+        i += 1;
+    };
+    let known = st.effects & 0x80 != 0;
+    push(if known && st.reactor_lvl != u8::MAX { st.reactor_lvl as f32 / 2.0 } else { 0.0 });
+    push(if known && st.reactor_type == 1 { 1.0 } else { 0.0 });
+    push(if known && st.reactor_type == 2 { 1.0 } else { 0.0 });
+    for k in 0..3 {
+        push(if known { st.reactor_air[k].clamp(-1.0, 1.0) } else { 0.0 });
+    }
+    push(if known { (st.sim_time_coef - 1.0).clamp(-1.0, 1.0) } else { 0.0 });
+    push(if known { 1.0 } else { 0.0 });
+    assert_eq!(i, OBS_DIM_V3, "the v3 layout table and the code disagree");
+    o
+}
+
+/// OBS_VERSION 4 = v3 (108 floats, identical prefix) + 9 floats: ROUTE's optional per-point
+/// `TrackGeom::speed_hint` (m/s) sampled at the 9 `LOOKAHEAD` points along the route, / 80 m/s
+/// (`SPEED_HINT_SCALE`); 0 when the geometry carries no hints, so v4 == v3 there and every
+/// pre-v4 feature keeps its index (coordinator 2026-09-07; LEARN A/Bs it on tiny 08/13).
+pub const OBS_VERSION_V4: u32 = 4;
+pub const OBS_DIM_V4: usize = 117;
+pub type ObsV4 = [f32; OBS_DIM_V4];
+pub const SPEED_HINT_SCALE: f32 = 80.0;
+
+/// The speed hint at arc length `s` (nearest `pts` entry, like `half_width`); None without hints.
+pub fn speed_hint(g: &TrackGeom, s: f32) -> Option<f32> {
+    let h = g.speed_hint.as_ref()?;
+    let n = g.pts.len();
+    if n == 0 || h.is_empty() {
+        return None;
+    }
+    let mut lo = 0usize;
+    let mut hi = n - 1;
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        if g.s[mid] <= s { lo = mid } else { hi = mid }
+    }
+    let i = if (g.s[hi] - s).abs() < (s - g.s[lo]).abs() { hi } else { lo };
+    h.get(i.min(h.len() - 1)).copied().filter(|v| v.is_finite())
+}
+
+pub fn observe_v4(g: &TrackGeom, st: &CarState, prev: &[Action]) -> ObsV4 {
+    let v3 = observe_v3(g, st, prev);
+    let mut o = [0.0f32; OBS_DIM_V4];
+    o[..OBS_DIM_V3].copy_from_slice(&v3);
+    let mut i = OBS_DIM_V3;
+    let pr = probe(g, st);
+    for la in LOOKAHEAD {
+        let s2 = (pr.s + la).min(g.length());
+        o[i] = speed_hint(g, s2).map(|v| (v / SPEED_HINT_SCALE).clamp(0.0, 4.0)).unwrap_or(0.0);
+        i += 1;
+    }
+    assert_eq!(i, OBS_DIM_V4, "the v4 layout table and the code disagree");
+    o
+}
+
 /// Observe at a given version: 1 → the 80 floats, 2 → the 100 floats (v1 as a
-/// prefix). Any other version is a caller error.
+/// prefix), 3 → the 108 floats (v2 as a prefix), 4 → the 117 floats (v3 as a prefix).
+/// Any other version is a caller error.
 pub fn observe_version(version: u32, g: &TrackGeom, st: &CarState, prev: &[Action]) -> Vec<f32> {
     match version {
         1 => observe(g, st, prev).to_vec(),
         2 => observe_v2(g, st, prev).to_vec(),
-        v => panic!("tmobs: no OBS_VERSION {v} (1 or 2)"),
+        3 => observe_v3(g, st, prev).to_vec(),
+        4 => observe_v4(g, st, prev).to_vec(),
+        v => panic!("tmobs: no OBS_VERSION {v} (1, 2, 3 or 4)"),
     }
 }
 
@@ -435,7 +518,9 @@ pub fn obs_dim(version: u32) -> usize {
     match version {
         1 => OBS_DIM,
         2 => OBS_DIM_V2,
-        v => panic!("tmobs: no OBS_VERSION {v} (1 or 2)"),
+        3 => OBS_DIM_V3,
+        4 => OBS_DIM_V4,
+        v => panic!("tmobs: no OBS_VERSION {v} (1, 2, 3 or 4)"),
     }
 }
 
@@ -470,6 +555,7 @@ mod tests {
             source: "test".into(),
             legs: None,
             route: None,
+            speed_hint: None,
         }
     }
 
@@ -621,6 +707,7 @@ mod guard_tests {
             source: "test".into(),
             legs: None,
             route: None,
+            speed_hint: None,
         };
         let mut st = CarState::unknown();
         st.pos = [0.0, 10.0, -100.0];
@@ -658,6 +745,7 @@ mod v2_tests {
             source: "test".into(),
             legs: None,
             route: None,
+            speed_hint: None,
         }
     }
 
@@ -692,5 +780,55 @@ mod v2_tests {
         assert_eq!(v2[99], 0.0);
         assert_eq!(obs_dim(2), OBS_DIM_V2);
         assert_eq!(observe_version(1, &g, &st, &[]).len(), 80);
+    }
+
+    #[test]
+    fn v3_is_v2_plus_the_effects_block() {
+        let g = geom();
+        let mut st = CarState::unknown();
+        st.pos = [10.0, 0.0, 0.0];
+        st.vel = [20.0, 0.0, 0.0];
+        st.quat = [1.0, 0.0, 0.0, 0.0];
+        st.speed = 20.0;
+        let v2 = observe_v2(&g, &st, &[]);
+        let v3 = observe_v3(&g, &st, &[]);
+        assert_eq!(&v3[..OBS_DIM_V2], &v2[..], "v2 is the prefix of v3");
+        assert!(v3[OBS_DIM_V2..].iter().all(|x| *x == 0.0), "unknown effects observe as zeros");
+        st.effects = 0x80 | 0x01;
+        st.reactor_lvl = 2;
+        st.reactor_type = 2;
+        st.reactor_air = [0.5, -2.0, f32::NAN];
+        st.sim_time_coef = 0.5;
+        let v3 = observe_v3(&g, &st, &[]);
+        assert_eq!(&v3[100..103], &[1.0, 0.0, 1.0]);
+        assert_eq!(&v3[103..106], &[0.5, -1.0, 0.0]);
+        assert!((v3[106] + 0.5).abs() < 1e-6);
+        assert_eq!(v3[107], 1.0);
+        assert_eq!(obs_dim(3), OBS_DIM_V3);
+        assert_eq!(observe_version(3, &g, &st, &[]).len(), 108);
+    }
+
+    #[test]
+    fn v4_is_v3_plus_speed_hints_and_equals_v1_without_hints() {
+        let mut g = geom();
+        let mut st = CarState::unknown();
+        st.pos = [10.0, 0.0, 0.0];
+        st.vel = [20.0, 0.0, 0.0];
+        st.quat = [1.0, 0.0, 0.0, 0.0];
+        st.speed = 20.0;
+        // no hints: v4 = v3 = v2 = v1 on their shared prefixes, and the 9 hint floats are 0
+        let v1 = observe(&g, &st, &[]);
+        let v3 = observe_v3(&g, &st, &[]);
+        let v4 = observe_v4(&g, &st, &[]);
+        assert_eq!(&v4[..OBS_DIM], &v1[..], "v1 is the prefix of v4");
+        assert_eq!(&v4[..OBS_DIM_V3], &v3[..], "v3 is the prefix of v4");
+        assert!(v4[OBS_DIM_V3..].iter().all(|x| *x == 0.0), "no hints observe as zeros");
+        assert_eq!(obs_dim(4), OBS_DIM_V4);
+        assert_eq!(observe_version(4, &g, &st, &[]).len(), OBS_DIM_V4);
+        // hints: 40 m/s everywhere -> 0.5 at every lookahead point
+        g.speed_hint = Some(vec![40.0; g.pts.len()]);
+        let v4h = observe_v4(&g, &st, &[]);
+        assert_eq!(&v4h[..OBS_DIM_V3], &v3[..], "hints change only the v4 block");
+        assert!(v4h[OBS_DIM_V3..].iter().all(|x| (*x - 0.5).abs() < 1e-6), "40 m/s / 80 = 0.5: {:?}", &v4h[OBS_DIM_V3..]);
     }
 }

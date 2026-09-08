@@ -1061,6 +1061,7 @@ dependencies = [
  "gbx",
  "ghost",
  "mapgeom",
+ "serde",
  "serde_json",
  "tmauto",
  "tmmaps",
@@ -1094,6 +1095,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmproto"
+version = "0.1.0"
+
+[[package]]
 name = "tmrl"
 version = "0.1.0"
 dependencies = [
@@ -1102,8 +1107,26 @@ dependencies = [
  "candle-nn",
  "fk",
  "forkoracle",
+ "gbx",
+ "serde",
+ "serde_json",
  "tmauto",
  "tmenv",
+ "tmobs",
+ "tmstate",
+]
+
+[[package]]
+name = "tmroll"
+version = "0.1.0"
+dependencies = [
+ "fk",
+ "serde_json",
+ "tmenv",
+ "tmobs",
+ "tmproto",
+ "tmrl",
+ "tmstate",
 ]
 
 [[package]]

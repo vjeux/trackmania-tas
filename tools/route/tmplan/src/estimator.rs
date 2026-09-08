@@ -393,3 +393,41 @@ impl<'a> EdgeEstimator for Memo<'a> {
         self.inner.name()
     }
 }
+
+impl<'a> Hybrid<'a> {
+    /// The edges the hybrid sends to R, decided BEFORE planning from geometry alone (bucket-independent): the graph-
+    /// missing and detour legs, plus the override candidates — connected legs whose surface path is > `cand_ratio` ×
+    /// the chord (a jump/drop could beat the road). Pricing only these with `Chained::precompute_only` keeps the chain
+    /// precompute inside its budget on 11–30-group maps (the full n²×5 set was cut by the wall clock, and WHICH edges
+    /// made it was a race — two runs of the same models differed; MODEL F21, coordinator 12:59Z).
+    /// Returns (r_set, n_missing, n_detour, n_candidates).
+    pub fn r_set(&self, cand_ratio: f32) -> (Vec<(usize, usize)>, usize, usize, usize) {
+        let n = self.nodes.pos.len();
+        let b = StateBucket::of_speed(0.0);
+        let mut set = Vec::new();
+        let (mut nm, mut nd, mut nc) = (0, 0, 0);
+        for from in 0..n {
+            for to in 1..n {
+                if from == to {
+                    continue;
+                }
+                let g = self.geo.estimate(b, None, from, to);
+                let has_path = self.len[from][to].is_finite() && g.kind == EdgeKind::Surface;
+                let implied = if g.expected_ms > 0 { self.len[from][to] / (g.expected_ms as f32 / 1000.0) } else { f32::INFINITY };
+                let chord = self.chord(from, to).max(20.0);
+                let detour = has_path && (self.len[from][to] > self.detour_ratio * chord || implied < self.detour_speed);
+                if !has_path {
+                    nm += 1;
+                    set.push((from, to));
+                } else if detour {
+                    nd += 1;
+                    set.push((from, to));
+                } else if self.geo_time.is_some() && self.len[from][to] > cand_ratio * chord {
+                    nc += 1;
+                    set.push((from, to));
+                }
+            }
+        }
+        (set, nm, nd, nc)
+    }
+}

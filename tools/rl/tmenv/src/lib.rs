@@ -235,3 +235,41 @@ fn short_hash(p: &Path) -> String {
         }
     }
 }
+
+/// Is `path` on tmpfs (or ramfs)? `None` when it cannot be told.
+///
+/// THE WORK DIR MUST BE ON TMPFS. Measured 2026-09-07 on box A (166 cores): with
+/// the work dirs on `/tmp` (btrfs on a virtual disk) the per-step trace-file
+/// churn capped the whole box at ~7.8k env-steps/s whatever the worker count,
+/// ms/step growing linearly with workers while the CPUs sat idle; on `/dev/shm`
+/// the same table read 13.8–14.6k env-steps/s at 96–128 workers (2.4× at k = 10).
+pub fn is_tmpfs(path: &Path) -> Option<bool> {
+    let canon = std::fs::canonicalize(path).or_else(|_| path.parent().map(std::fs::canonicalize).unwrap_or_else(|| Ok(path.to_path_buf()))).ok()?;
+    let mounts = std::fs::read_to_string("/proc/mounts").ok()?;
+    let mut best: Option<(usize, String)> = None;
+    for l in mounts.lines() {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        if f.len() < 3 {
+            continue;
+        }
+        let mp = Path::new(f[1]);
+        if canon.starts_with(mp) {
+            let n = f[1].len();
+            if best.as_ref().map(|b| n > b.0).unwrap_or(true) {
+                best = Some((n, f[2].to_string()));
+            }
+        }
+    }
+    best.map(|(_, t)| t == "tmpfs" || t == "ramfs")
+}
+
+/// Print the tmpfs rule once when `work` is not on tmpfs.
+pub fn warn_if_not_tmpfs(work: &Path) {
+    if is_tmpfs(work) == Some(false) {
+        eprintln!(
+            "tmenv: WARNING -- the work dir {} is not on tmpfs. The per-step trace files cap a box at ~7.8k env-steps/s \
+             on a disk filesystem (measured: btrfs /tmp) against ~14k on /dev/shm; use --work /dev/shm/<name>.",
+            work.display()
+        );
+    }
+}

@@ -18,7 +18,10 @@ pub const O_REACH: usize = 0;
 /// head extrapolated to 1e18 s on a held-out map), and it transfers: a speed is
 /// a car property, a tick count is a map property.
 pub const O_MEANSPEED: usize = 1;
+/// Legacy speed ceiling of the mean-speed / arrival-speed parameterisation (models without "max_speed" in their meta).
 pub const MAX_MEAN_SPEED: f32 = 150.0;
+/// Ceiling for NEW trainings (F20: humans carry 157–211 m/s into the F22 legs; 150 could not price them).
+pub const NEW_MAX_SPEED: f32 = 260.0;
 pub const O_SPEED: usize = 2;
 pub const O_DY: usize = 4;
 pub const O_ANG: usize = 6;
@@ -118,7 +121,7 @@ impl Trainable {
         }
         let mean = self.mean.flatten_all()?.to_vec1::<f32>()?;
         let std = self.inv_std.flatten_all()?.to_vec1::<f32>()?.iter().map(|v| 1.0 / v).collect();
-        Ok(Weights { fv: 1, dims: self.dims.clone(), mean, std, layers, meta: String::new() })
+        Ok(Weights { fv: 1, dims: self.dims.clone(), mean, std, layers, meta: String::new(), max_speed: MAX_MEAN_SPEED })
     }
 
     pub fn n_params(&self) -> usize {
@@ -136,6 +139,13 @@ pub struct Weights {
     pub std: Vec<f32>,
     pub layers: Vec<(Vec<f32>, Vec<f32>)>,
     pub meta: String,
+    /// Speed ceiling of the speed heads (from meta "max_speed"; MAX_MEAN_SPEED for files without it).
+    pub max_speed: f32,
+}
+
+/// "max_speed" from a .tmw meta JSON, or the legacy ceiling.
+pub fn max_speed_of_meta(meta: &str) -> f32 {
+    serde_json::from_str::<serde_json::Value>(meta).ok().and_then(|v| v.get("max_speed").and_then(|m| m.as_f64())).map(|m| m as f32).unwrap_or(MAX_MEAN_SPEED)
 }
 
 fn dense(w: &[f32], b: &[f32], x: &[f32], out: &mut [f32], relu: bool) {
@@ -164,12 +174,12 @@ pub struct Estimate {
 }
 
 /// `dist_m` = straight distance start → gate centre (the feature block carries it too).
-pub fn decode(o: &[f32], dist_m: f32) -> Estimate {
-    let s = MAX_MEAN_SPEED / (1.0 + (-o[O_MEANSPEED]).exp());
+pub fn decode(o: &[f32], dist_m: f32, max_speed: f32) -> Estimate {
+    let s = max_speed / (1.0 + (-o[O_MEANSPEED]).exp());
     Estimate {
         p_reach: 1.0 / (1.0 + (-o[O_REACH]).exp()),
         expected_ticks: (100.0 * dist_m.max(0.0) / s.max(0.5)).min(6000.0),
-        speed_mu: (o[O_SPEED] * 100.0).clamp(0.0, 160.0),
+        speed_mu: (o[O_SPEED] * 100.0).clamp(0.0, max_speed + 10.0),
         speed_sd: o[O_SPEED + 1].exp() * 100.0,
         dy_mu: o[O_DY] * 10.0,
         dy_sd: o[O_DY + 1].exp() * 10.0,
@@ -194,7 +204,7 @@ impl Weights {
         cur
     }
     pub fn estimate(&self, x: &[f32], dist_m: f32) -> Estimate {
-        decode(&self.forward(x), dist_m)
+        decode(&self.forward(x), dist_m, self.max_speed)
     }
 
     /// THE CONTROL on two implementations of one function (RL-agentG §4).
@@ -322,7 +332,8 @@ impl Weights {
         if dims[0] != crate::feat::dim_of(fv) {
             return bad(&format!("input dim {} does not match feature version {fv} (dim {})", dims[0], crate::feat::dim_of(fv)));
         }
-        Ok(Weights { fv, dims, mean, std, layers, meta })
+        let max_speed = max_speed_of_meta(&meta);
+        Ok(Weights { fv, dims, mean, std, layers, meta, max_speed })
     }
 }
 

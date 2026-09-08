@@ -95,9 +95,9 @@ TMR=${TMR:-$R/tmr}
 # floors OFF so a ranking always exists (with the 05:12Z r-latest every leg is below the 0.02/0.05 defaults on
 # Summer 2026 - 01; with them off rank 0 is the human order there). Agreed with the MODEL arm: see plan/plan-r/MODELS.txt.
 TMR_FLAGS=${TMR_FLAGS:---p-floor 0 --p-step 0.02}
-# MODEL arm (13:09Z): gate prior = the geo-dropout variant r-latest-gd.tmw, chain = rl-latest.tmw; p-floor 0 (the gate
+# MODEL arm (13:09Z): gate prior = the geo-dropout variant r-latest-gd.tmw; from round 11 (2026-09-08 09:26Z) a SINGLE variant is trained and the pair is (r-latest, rl-latest) — r-latest-gd stays frozen at r-v10-gd
 # head prices nothing under chained), p-step 0.02 bounds the fan. Both pointers move every ~40 min.
-MODEL_R=${MODEL_R:-$BANK/model/watch/r-latest-gd.tmw}; MODEL_RL=${MODEL_RL:-$BANK/model/watch/rl-latest.tmw}
+MODEL_R=${MODEL_R:-$BANK/model/watch/r-latest.tmw}; MODEL_RL=${MODEL_RL:-$BANK/model/watch/rl-latest.tmw}
 if [ $step = plan-r ]; then
   pull_maps; pull tm-route/geom tm-route/model/watch tm-route/plan/plan-r
   mkdir -p $P/plan-r
@@ -121,6 +121,7 @@ if [ $step = plan-r ]; then
   RLV=""; for f in $W/rl-v*.tmw; do [ "$(md5sum < $f)" = "$(md5sum < $MODEL_RL)" ] && RLV=$(basename $f .tmw); done
   TRAIN=$( [ -n "$RV" ] && grep -E "^  train " $W/$RV.md 2>/dev/null | awk '{print $2}' | tr '\n' ',' )
   HELD=$( [ -n "$RV" ] && grep -E "^  HELD-OUT " $W/$RV.md 2>/dev/null | awk '{print $2}' | tr '\n' ',' )
+  [ -f $P/plan-r/MODELS.txt ] && cp -p $P/plan-r/MODELS.txt $P/plan-r/MODELS.prev
   echo "gate prior $RV ($(md5sum < $MODEL_R | cut -c1-8)) chain $RLV ($(md5sum < $MODEL_RL | cut -c1-8)) flags $TMR_FLAGS run $(date -u +%Y-%m-%dT%H:%MZ); trained on: $TRAIN held-out: $HELD" | tee $P/plan-r/MODELS.txt
   # the exhibit's map set: geom/human-maps.tsv (written by human-batch) + the hypothesis maps; the old walk over
   # every dir of the bank mount took 16 min
@@ -130,13 +131,15 @@ if [ $step = plan-r ]; then
   # per map: the HYBRID first (geometric on roads, R where the graph has nothing — fast), then pure R; each under a
   # wall-clock cap (the chained estimator costs ~5 s per edge evaluation: Poland 2026 ran > 90 min un-capped)
   plan_r_one() { u=$1; f=$(mapfile_of $u); [ -n "$f" ] || return 0; [ -f $G/$u/gates.json ] || return 0
+    # SKIP_DONE=1: a hybrid output newer than MODELS.txt that already holds a verdict is kept (a restart resumes)
+    if [ -n "${SKIP_DONE:-}" ] && [ -f $P/plan-r/$u.hyb.txt ] && [ $P/plan-r/$u.hyb.txt -nt $P/plan-r/MODELS.prev ] && grep -qE "rank 0|NO PLAN|^tmr:" $P/plan-r/$u.hyb.txt; then return 0; fi
     timeout ${CAP_HYB:-900} nice $TMR plan $f --gates $G/$u/gates.json --model $MODEL_R --local $MODEL_RL --estimator hybrid $TMR_FLAGS ${HYB_FLAGS:-} --threads ${TMR_THREADS:-24} --top-k 3 --quiet --out-dir $RT --source router-plan-hyb > $P/plan-r/$u.hyb.txt 2>&1 || echo "EXIT $? (cap ${CAP_HYB:-900} s)" >> $P/plan-r/$u.hyb.txt
     grep -E "cp_groups|rank 0|NO PLAN|TIMEOUT|hybrid pricing" $P/plan-r/$u.hyb.txt | head -3 | cut -c1-160
     [ -n "${SKIP_R:-}" ] && return 0
     timeout ${CAP_R:-1500} nice $TMR plan $f --gates $G/$u/gates.json --model $MODEL_R --local $MODEL_RL --estimator chained $TMR_FLAGS --threads ${TMR_THREADS:-24} --top-k 3 --quiet --out-dir $RT --source router-plan-r > $P/plan-r/$u.txt 2>&1 || echo "EXIT $? (cap ${CAP_R:-1500} s)" >> $P/plan-r/$u.txt
     grep -E "cp_groups|rank 0|NO PLAN|TIMEOUT" $P/plan-r/$u.txt | head -2 | cut -c1-160; }
   CAP_HYB=${CAP_HYB:-900}; CAP_R=${CAP_R:-1500}; TMR_THREADS=${TMR_THREADS:-24}
-  export -f plan_r_one mapfile_of; SKIP_R=${SKIP_R:-}; HYB_FLAGS=${HYB_FLAGS:-}; export HYB_FLAGS TMR TMR_FLAGS TMR_THREADS MODEL_R MODEL_RL G RT P B V CAP_HYB CAP_R SKIP_R
+  export -f plan_r_one mapfile_of; SKIP_R=${SKIP_R:-}; HYB_FLAGS=${HYB_FLAGS:-}; SKIP_DONE=${SKIP_DONE:-}; export SKIP_DONE HYB_FLAGS TMR TMR_FLAGS TMR_THREADS MODEL_R MODEL_RL G RT P B V CAP_HYB CAP_R SKIP_R
   cat /tmp/plan-r.uids | xargs -P ${PAR:-2} -n 1 bash -c 'plan_r_one "$0"'
   # no `index` here (a full walk of the bank mount is > 40 min); table-r reads only the exhibit's maps
   $R/tmroute table-r $RT --geom $G --geo router-plan-cost --r router-plan-r --hyb router-plan-hyb --uids $(cat /tmp/plan-r.uids | tr "\n" ",") --also $(echo $HYP | tr " " ",") --train "$TRAIN" --held-out "$HELD" --title "$(cat $P/plan-r/MODELS.txt)" > $P/table-r.md

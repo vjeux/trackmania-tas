@@ -113,6 +113,14 @@ struct Snap {
     node: Option<Handle>,
     /// Every per-tick action from the root to this state.
     prefix: Vec<Action>,
+    /// The env's bookkeeping at the state; `None` for a snapshot IMPORTED from
+    /// disk (only its prefix is known) until its first re-materialisation
+    /// rebuilds it -- the same replay that makes the node.
+    kept: Option<SnapKept>,
+}
+
+#[derive(Clone)]
+struct SnapKept {
     core: Core,
     spans: Vec<Span>,
     trace: Vec<Row>,
@@ -146,7 +154,8 @@ impl ForkEnv {
             ));
         }
         let reference = tape.tail_records(0);
-        let probe = srv.probe_tick()?;
+        // the root's boundary, cached from the session's first probe (no second fork)
+        let probe = srv.boundary_tick(tape.start_offset_ms)?;
         let _ = probe;
         let mut forest = Forest::new(srv, &engine.work, reference.clone(), trace_cfg, tape.start_offset_ms)?;
         forest.probe_root()?;
@@ -160,6 +169,14 @@ impl ForkEnv {
             .cloned()
             .ok_or("the root produced no state rows: the car was not located, so every \
                     observation this env would return is UNMEASURED rather than wrong")?;
+        forest.release(h);
+        // (c) say once, at env start, whether the rows carry the engine's checkpoint counter -- without it the
+        // env falls back to the geometric gate tracker and a consumer cannot tell from the outside
+        if root_row.cps == u32::MAX {
+            eprintln!("tmenv: engine checkpoint counter NOT carried by this env's rows (participant counter unresolved) -- gates and finish fall back to the geometric tracker");
+        } else if std::env::var("TMENV_QUIET").is_err() {
+            eprintln!("tmenv: engine checkpoint counter carried (root reads {})", root_row.cps);
+        }
         forest.release(h);
 
         let core = Core::new(cfg, track, acts);
@@ -252,13 +269,15 @@ impl ForkEnv {
             Snap {
                 node,
                 prefix,
-                core: self.core.clone(),
-                spans: self.spans.clone(),
-                trace: self.trace.clone(),
-                last_end: self.last_end,
-                gap: self.gap,
-                overlap: self.overlap,
-                finish_ms: self.finish_ms,
+                kept: Some(SnapKept {
+                    core: self.core.clone(),
+                    spans: self.spans.clone(),
+                    trace: self.trace.clone(),
+                    last_end: self.last_end,
+                    gap: self.gap,
+                    overlap: self.overlap,
+                    finish_ms: self.finish_ms,
+                }),
             },
         );
         self.enforce_pin_budget();
@@ -318,7 +337,7 @@ impl ForkEnv {
             None => {
                 // re-materialise: replay the prefix from the root
                 let prefix = self.snaps[&id.0].prefix.clone();
-                let kept = self.snaps[&id.0].core.state();
+                let kept = self.snaps[&id.0].kept.as_ref().map(|k| k.core.state());
                 self.reset()?;
                 let saved = self.allow_after_done;
                 self.allow_after_done = true;
@@ -330,11 +349,30 @@ impl ForkEnv {
                 }
                 self.allow_after_done = saved;
                 let got = self.core.state();
-                if format!("{:?}", got) != format!("{:?}", kept) {
-                    return Err(format!(
-                        "re-materialising snapshot {:?} landed on a different state:\n  kept {:?}\n  got  {:?}",
-                        id, kept, got
-                    ));
+                match kept {
+                    Some(kept) => {
+                        if format!("{:?}", got) != format!("{:?}", kept) {
+                            return Err(format!(
+                                "re-materialising snapshot {:?} landed on a different state:\n  kept {:?}\n  got  {:?}",
+                                id, kept, got
+                            ));
+                        }
+                    }
+                    None => {
+                        // an IMPORTED snapshot: this replay IS its bookkeeping from now on
+                        let k = SnapKept {
+                            core: self.core.clone(),
+                            spans: self.spans.clone(),
+                            trace: self.trace.clone(),
+                            last_end: self.last_end,
+                            gap: self.gap,
+                            overlap: self.overlap,
+                            finish_ms: self.finish_ms,
+                        };
+                        if let Some(s) = self.snaps.get_mut(&id.0) {
+                            s.kept = Some(k);
+                        }
+                    }
                 }
                 if self.cur != ROOT {
                     self.pinned.insert(self.cur);
@@ -348,15 +386,38 @@ impl ForkEnv {
             }
         }
         self.run_ended = false;
-        let s = &self.snaps[&id.0];
-        self.core = s.core.clone();
-        self.spans = s.spans.clone();
-        self.trace = s.trace.clone();
-        self.last_end = s.last_end;
-        self.gap = s.gap;
-        self.overlap = s.overlap;
-        self.finish_ms = s.finish_ms;
+        let k = self.snaps[&id.0].kept.clone().ok_or("snapshot has no bookkeeping after re-materialisation")?;
+        self.core = k.core;
+        self.spans = k.spans;
+        self.trace = k.trace;
+        self.last_end = k.last_end;
+        self.gap = k.gap;
+        self.overlap = k.overlap;
+        self.finish_ms = k.finish_ms;
         Ok(self.core.observe())
+    }
+
+    /// The per-tick action prefix that defines a snapshot (what persists it).
+    pub fn snapshot_prefix(&self, id: &StateId) -> Option<&[Action]> {
+        self.snaps.get(&id.0).map(|s| s.prefix.as_slice())
+    }
+
+    /// The state a snapshot holds, when known (a fresh or re-materialised one).
+    pub fn snapshot_state(&self, id: &StateId) -> Option<tmstate::CarState> {
+        self.snaps.get(&id.0).and_then(|s| s.kept.as_ref()).map(|k| k.core.state())
+    }
+
+    /// Register a snapshot known only by its PREFIX (loaded from disk): no node,
+    /// no bookkeeping; the first `reset_to` replays the prefix from the root and
+    /// keeps what it finds. A prefix longer than the tape is refused.
+    pub fn import_snapshot(&mut self, prefix: Vec<Action>) -> Result<StateId, String> {
+        if prefix.len() >= self.n_ticks {
+            return Err(format!("imported prefix of {} ticks is not shorter than the tape ({})", prefix.len(), self.n_ticks));
+        }
+        let id = StateId(self.next_snap);
+        self.next_snap += 1;
+        self.snaps.insert(id.0, Snap { node: None, prefix, kept: None });
+        Ok(id)
     }
 
     /// Forget a snapshot and, unless another snapshot or the episode still
@@ -384,6 +445,16 @@ impl ForkEnv {
     /// The tape tick the next `step` writes from: the current node's own probed
     /// boundary. THIS is the index to align an external tape against -- the
     /// core's tick counter counts ingested rows and can drift from it.
+    /// The per-tick rows of the current episode (trace), root row first.
+    pub fn trace_rows(&self) -> &[Row] {
+        &self.trace
+    }
+
+    /// The engine's finish word for this episode, when it crossed.
+    pub fn finish(&self) -> Option<i64> {
+        self.finish_ms
+    }
+
     pub fn next_tick(&self) -> Result<usize, String> {
         self.forest.floor(self.cur, None)
     }
@@ -443,7 +514,54 @@ impl ForkEnv {
         self.car_switched = false;
         let _ = self.follow_live_car()?;
         let recs: Vec<Rec> = chunk.iter().map(|a| rec_of(a.steer as u8, a.gas as u8, a.brake as u8)).collect();
-        let (rows, ended) = match self.forest.advance_or_end(self.cur, &recs, from, k as u64)? {
+        let mut advanced = self.forest.advance_or_end(self.cur, &recs, from, k as u64)?;
+        // A CAR SWITCH INSIDE THE STEP (ROUTE's refinement, tmreach::rig
+        // advance_following): if the driven vehicle changed during these k ticks,
+        // the rows after the gate were read from the old car -- so release the
+        // node and redo the stretch from the same parent ONE TICK AT A TIME, the
+        // layout following between ticks. Costs k forks on the few steps that
+        // cross a gate; every row is then the live car's (Spring 2026 - 12: 27
+        // stale rows of 3708 before, none after).
+        if self.root_car.is_some() {
+            if let branch::Advanced::Node(_, h) = &advanced {
+                let h = *h;
+                if self.follow_live_car_at(h)? {
+                    self.forest.release(h);
+                    let _ = self.follow_live_car_at(self.cur)?; // back to the parent's car
+                    let mut all: Vec<Row> = Vec::new();
+                    let mut cur = self.cur;
+                    let mut ended = false;
+                    let mut last: Option<Handle> = None;
+                    for i in 0..k {
+                        let _ = self.follow_live_car_at(cur)?;
+                        match self.forest.advance_or_end(cur, &recs[i..i + 1], from + i, 1)? {
+                            branch::Advanced::Node(rows, c) => {
+                                all.extend(rows);
+                                if cur != self.cur {
+                                    self.forest.release(cur);
+                                }
+                                cur = c;
+                                last = Some(c);
+                            }
+                            branch::Advanced::RunEnded(rows) => {
+                                all.extend(rows);
+                                if cur != self.cur {
+                                    self.forest.release(cur);
+                                }
+                                ended = true;
+                                break;
+                            }
+                        }
+                    }
+                    advanced = match (ended, last) {
+                        (false, Some(c)) => branch::Advanced::Node(all, c),
+                        _ => branch::Advanced::RunEnded(all),
+                    };
+                    self.car_switched = true;
+                }
+            }
+        }
+        let (rows, ended) = match advanced {
             branch::Advanced::Node(rows, h) => {
                 self.leave_cur();
                 self.cur = h;
@@ -469,21 +587,32 @@ impl ForkEnv {
 
         let before = self.core.gates_hit();
         self.trace.extend(rows.iter().cloned());
+        // the engine's finish shows as the run ending right after the last credit; an archive that ends AT the
+        // finish (an identity reference = the donor's own length) never reports RunEnded, so reaching the
+        // tape's end counts as the run ending too
+        let at_tape_end = self.last_end >= self.n_ticks;
+        self.core.set_run_ended_now(ended || at_tape_end);
         let mut out = self.core.ingest(chunk, &rows);
         out.3.car_switched = self.car_switched;
         if ended {
-            // Reported whatever the core had already decided: there is no
-            // engine left to step, and a caller that keeps stepping (as a
-            // whole-tape control does past OffRoute) must see THIS.
-            self.core.end(Done::RunEnded);
             self.run_ended = true;
-            out.2 = Some(Done::RunEnded);
+            if out.2 != Some(Done::Finished) {
+                // Reported whatever the core had already decided: there is no
+                // engine left to step, and a caller that keeps stepping (as a
+                // whole-tape control does past OffRoute) must see THIS. A FINISH
+                // stands: the validator ends the run AT the finish line, and the
+                // core recognised it (counter stepped in this chunk).
+                self.core.end(Done::RunEnded);
+                out.2 = Some(Done::RunEnded);
+            }
         }
-        if self.finish_ms.is_none()
-            && before < self.core.track.n_gates()
-            && self.core.gates_hit() >= self.core.track.n_gates()
-        {
-            self.finish_ms = rows.last().map(|r| r.time_ms);
+        // the finish is the ENGINE's verdict (Core::is_finished: run ended + counter stepped), never the count
+        let _ = before;
+        if self.finish_ms.is_none() && out.2 == Some(Done::Finished) {
+            // the finish time is the row the engine credited it on (the validator stops a few ticks later)
+            let n = self.trace.len();
+            let credit = (1..n.min(80)).map(|k| n - k).find(|&i| self.trace[i].cps != u32::MAX && self.trace[i - 1].cps != u32::MAX && self.trace[i].cps > self.trace[i - 1].cps);
+            self.finish_ms = credit.map(|i| self.trace[i].time_ms).or_else(|| rows.last().map(|r| r.time_ms));
         }
         Ok(out)
     }
@@ -511,20 +640,29 @@ impl ForkEnv {
     /// points at? If not, move the layout (car block, vis; clock/counter stay).
     /// Returns whether it moved. Cheap: 8 small reads of the paused process.
     fn follow_live_car(&mut self) -> Result<bool, String> {
+        let h = self.cur;
+        self.follow_live_car_at(h)
+    }
+
+    /// [`ForkEnv::follow_live_car`] for the node `h` (the parent about to be
+    /// forked from, or the node just made).
+    fn follow_live_car_at(&mut self, h: Handle) -> Result<bool, String> {
         let Some(root) = self.root_car.as_ref() else { return Ok(false) };
         let Some(cur) = self.forest.layout().cloned() else { return Ok(false) };
-        let pid = self.forest.pid_of(self.cur)?;
-        let (sim_ms, race_start) = self.forest.clock_of(self.cur)?;
+        let pid = self.forest.pid_of(h)?;
+        let (sim_ms, race_start) = self.forest.clock_of(h)?;
         // THE SAME DERIVATION AS AT THE ROOT, in this process: the driven slot
         // is the one the copy-out loop does not skip (LOCATE.md §2), which is
         // how a car transform is followed -- no heuristic on a flag word.
+        // one open of /proc/<pid>/mem for the ~30 reads, not one per read
+        let Some(mut mem) = forkoracle::procmem::Mem::open(pid) else { return Ok(false) };
         let car = match forkoracle::car::resolve_with(
             root.controller,
             root.sim,
             self.module_base,
             sim_ms,
             race_start,
-            |a, n| forkoracle::procmem::read_at(pid, a, n),
+            |a, n| mem.read(a, n),
         ) {
             Ok(c) => c,
             // inside a respawn window or before the spawn the derivation can
@@ -743,8 +881,8 @@ impl Rig {
             let mut s = self.session_clock(clock)?;
             match s.probe_tick() {
                 Ok(_) => return Ok(s),
-                Err(e) if e.contains("PROBE-EMPTY") => {
-                    eprintln!("tmenv: a server's first probe came back empty ({e}); starting another");
+                Err(e) if e.contains("PROBE-EMPTY") || e.contains("PROBE-TIMEOUT") => {
+                    eprintln!("tmenv: a server's first probe came back empty or timed out ({e}); starting another");
                     // keep the failed server's log beside the work dir: the next
                     // server overwrites srv/server.log
                     let src = self.engine.work.join("srv").join("server.log");
@@ -910,16 +1048,25 @@ pub fn build_at_start(
             root.max_root_floor_ms as f64 / 1000.0
         ));
     }
-    let refrecs = s.tape.tail_records(0);
-    let car = crate::control::resolve_car(
-        &mut s.srv,
-        probe,
-        &refrecs,
-        s.tape.start_offset_ms,
-        root.verbose,
-    )?;
-    let tcfg = TraceCfg { layout: crate::control::env_layout(&car), dir, stride: 1, max: 200_000 };
-    let mut env = ForkEnv::new(s, &rig.engine, track, acts, cfg, Some(tcfg))?;
+    // A server whose root probe dies or hangs (PROBE-EMPTY / PROBE-TIMEOUT, the
+    // open start-up flake) is thrown away and another started, up to three
+    // times -- here too, not only at the first probe (`Rig::session_probed`).
+    let mut attempts = 0usize;
+    let (mut env, car) = loop {
+        let refrecs = s.tape.tail_records(0);
+        let car = crate::control::resolve_car(&mut s.srv, probe, &refrecs, s.tape.start_offset_ms, root.verbose)?;
+        let tcfg = TraceCfg { layout: crate::control::env_layout(&car), dir: dir.clone(), stride: 1, max: 200_000 };
+        match ForkEnv::new(s, &rig.engine, track.clone(), acts.clone(), cfg.clone(), Some(tcfg)) {
+            Ok(env) => break (env, car),
+            Err(e) if (e.contains("PROBE-EMPTY") || e.contains("PROBE-TIMEOUT")) && attempts < 3 => {
+                eprintln!("tmenv: the root server's probe failed ({e}); starting another");
+                attempts += 1;
+                s = rig.session_probed(root_clock)?;
+                probe = s.probe_tick()?;
+            }
+            Err(e) => return Err(e),
+        }
+    };
     env.set_root_car(car.clone());
     let row = {
         env.reset()?;

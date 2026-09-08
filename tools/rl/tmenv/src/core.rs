@@ -115,6 +115,12 @@ pub struct CoreCfg {
     /// tape the plain oracle re-simulates, so a shaping term that flatters a
     /// shortcut costs signal quality and can never make a false result true.
     pub gate_cap: bool,
+    /// Slack past the credited gate the cap allows: `max(gate_cap_slack_m, gate_cap_slack_frac * leg)` metres
+    /// beyond `gate_s[k]`. A geometry gate that sits BEFORE the engine's credit line (deck-anchored gates vs the
+    /// credit volume) used to freeze progress at the geom gate until the credit landed, and NoProgress cut the
+    /// episode first (LEARN, tiny maps, 2026-09-08).
+    pub gate_cap_slack_m: f32,
+    pub gate_cap_slack_frac: f32,
 }
 
 impl Default for CoreCfg {
@@ -154,6 +160,8 @@ impl Default for CoreCfg {
             v_scale: 100.0,
             d_scale: 100.0,
             gate_cap: false,
+            gate_cap_slack_m: 40.0,
+            gate_cap_slack_frac: 0.15,
         }
     }
 }
@@ -220,6 +228,22 @@ pub struct Core {
     cur_s: f32,
     /// Sticky: an episode that already ended stays ended.
     done: Option<Done>,
+    /// Set by the driver BEFORE `ingest` when the engine ended the run inside this chunk: the validator
+    /// stops at the finish line, so "run ended AND the counter stepped in this chunk" is the engine's
+    /// own finish verdict. The geometry's gate COUNT is only a cross-check (a geom with fewer gates than
+    /// the map used to yield a false finish -- INPUT's 08 run, 2026-09-08).
+    run_ended_now: bool,
+    cps_at_chunk_start: u32,
+    /// The tick of the engine counter's latest step (the validator stops the run a few ticks AFTER the
+    /// finish credit, which may fall in the next chunk).
+    last_cps_step_tick: Option<usize>,
+    /// The engine counter on the LAST row of the chunk being ingested (the finish credit may sit on the
+    /// final row, past the tick cap that stops the per-row loop).
+    chunk_last_cps: u32,
+    count_warned: bool,
+    /// The tick at which the engine's credits first reached the geometry's gate count (the count warning
+    /// waits half a second for the validator to end the run before calling the geometry short).
+    count_reached_tick: Option<usize>,
     obs_dim: usize,
 }
 
@@ -240,6 +264,12 @@ impl Core {
             prev_actions: Vec::new(),
             cur_s: 0.0,
             done: None,
+            run_ended_now: false,
+            cps_at_chunk_start: u32::MAX,
+            last_cps_step_tick: None,
+            chunk_last_cps: u32::MAX,
+            count_warned: false,
+            count_reached_tick: None,
             obs_dim: 0,
         };
         c.obs_dim = c.observe().len();
@@ -309,23 +339,63 @@ impl Core {
         self.gates.hit()
     }
 
+    /// Tell the core the engine ended the run inside the chunk about to be ingested.
+    pub fn set_run_ended_now(&mut self, v: bool) {
+        self.run_ended_now = v;
+    }
+
+    /// THE ENGINE'S FINISH: the validator stops the run at the finish line and credits the finish on the
+    /// counter, so finished = the run ended in this chunk AND the engine's counter stepped since the chunk
+    /// began. The geometry's gate count is NOT consulted (a 5-gate fit on a 7-gate map used to report a
+    /// finish at the 5th credit); without an engine counter the geometric tracker still decides.
     fn is_finished(&self) -> bool {
         if self.cur.cps != u32::MAX {
-            self.track.n_gates() > 0 && self.cur.cps as usize >= self.track.n_gates()
+            // the credit lands a few ticks before the validator stops the run (possibly in the previous chunk)
+            let recent_step = self.last_cps_step_tick.map(|t| self.tick.saturating_sub(t) <= 50).unwrap_or(false);
+            let step_in_chunk = self.cps_at_chunk_start != u32::MAX && self.chunk_last_cps != u32::MAX && self.chunk_last_cps > self.cps_at_chunk_start;
+            self.run_ended_now && (recent_step || step_in_chunk)
         } else {
             self.gates.finished(&self.track)
+        }
+    }
+
+    /// The count cross-check, once per episode: the geometry's gate count against the engine's credits.
+    fn count_check(&mut self) {
+        if self.count_warned || self.cur.cps == u32::MAX {
+            return;
+        }
+        let n = self.track.n_gates();
+        // at a finish the credit may sit on the chunk's last row, past the row the decision was taken on
+        let m = if matches!(self.done, Some(Done::Finished)) && self.chunk_last_cps != u32::MAX { self.chunk_last_cps.max(self.cur.cps) as usize } else { self.cur.cps as usize };
+        if m >= n && n > 0 && !matches!(self.done, Some(Done::Finished)) {
+            let first = *self.count_reached_tick.get_or_insert(self.tick);
+            if self.tick.saturating_sub(first) > 50 {
+                eprintln!("tmenv: geom lists {n} gates, engine credited {m} and the race goes on -- the geometry is missing gates (finish is the engine's, not the count's)");
+                self.count_warned = true;
+            }
+        } else if matches!(self.done, Some(Done::Finished)) && m != n {
+            eprintln!("tmenv: geom lists {n} gates, engine credited {m} at the finish -- the geometry's gate list disagrees with the map");
+            self.count_warned = true;
         }
     }
 
     /// The arc length progress may not exceed: the first gate still owed,
     /// by the engine's count when it has one.
     fn progress_cap(&self) -> f32 {
-        if self.cur.cps != u32::MAX {
+        let n = self.track.n_gates();
+        let (k, base) = if self.cur.cps != u32::MAX {
             let k = self.cur.cps as usize;
-            if k < self.track.n_gates() { self.track.gate_s[k] } else { self.track.length() }
+            (k, if k < n { self.track.gate_s[k] } else { self.track.length() })
         } else {
-            self.gates.cap(&self.track)
+            let c = self.gates.cap(&self.track);
+            ((0..n).position(|i| (self.track.gate_s[i] - c).abs() < 1e-3).unwrap_or(n), c)
+        };
+        if k >= n {
+            return self.track.length();
         }
+        let leg = base - if k > 0 { self.track.gate_s[k - 1] } else { 0.0 };
+        let slack = self.cfg.gate_cap_slack_m.max(self.cfg.gate_cap_slack_frac * leg.max(0.0));
+        (base + slack).min(self.track.length())
     }
 
     /// Start an episode from the state the engine is in at `row0`.
@@ -334,6 +404,10 @@ impl Core {
         self.cur = row0;
         self.gates.reset();
         self.tick = tick0;
+        self.last_cps_step_tick = None;
+        self.run_ended_now = false;
+        self.count_warned = false;
+        self.count_reached_tick = None;
         self.last_gain_tick = tick0;
         self.off_run = 0;
         self.prev_actions.clear();
@@ -382,11 +456,27 @@ impl Core {
         }
         let mut reward = 0.0f32;
         let ticks = rows.len();
+        self.cps_at_chunk_start = self.cur.cps;
+        self.chunk_last_cps = rows.last().map(|r| r.cps).unwrap_or(u32::MAX);
 
         for (j, r) in rows.iter().enumerate() {
             self.prev = Some(self.cur);
             self.cur = *r;
             self.tick += 1;
+            if let Some(p) = self.prev {
+                if r.cps != u32::MAX && p.cps != u32::MAX && r.cps > p.cps {
+                    self.last_cps_step_tick = Some(self.tick);
+                    // where the engine credited gate k against where the geometry put it
+                    let k = (r.cps as usize).saturating_sub(1);
+                    if k < self.track.n_gates() {
+                        let gs = self.track.gate_s[k];
+                        let d = self.cur_s - gs;
+                        if d.abs() > 40.0 {
+                            eprintln!("tmenv: gate {} credited by the engine at route s {:.1} m, the geometry puts it at s {:.1} m ({:+.0} m) -- {}", k + 1, self.cur_s, gs, d, if d > 0.0 { "the geom gate sits BEFORE the credit line (progress cap slack covers it)" } else { "the geom gate sits AFTER the credit line" });
+                        }
+                    }
+                }
+            }
             if let Some(a) = actions.get(j.min(actions.len().saturating_sub(1))) {
                 self.push_action(*a);
             }
@@ -420,6 +510,9 @@ impl Core {
                 info.air_guarded = true;
             }
 
+            if std::env::var("TMENV_DEBUG").is_ok() && self.run_ended_now {
+                eprintln!("  finish check: tick {} cps {} last step {:?} run_ended_now {} -> {}", self.tick, self.cur.cps, self.last_cps_step_tick, self.run_ended_now, self.is_finished());
+            }
             if self.is_finished() {
                 self.done = Some(Done::Finished);
             } else if self.off_run >= self.cfg.offroute_ticks {
@@ -437,6 +530,7 @@ impl Core {
                 break;
             }
         }
+        self.count_check();
 
         reward += self.cfg.c_prog * info.dprog;
         reward -= self.cfg.c_time * (ticks as f32) * TICK_S;
@@ -606,6 +700,7 @@ mod tests {
             source: "test".into(),
             legs: None,
             route: None,
+            speed_hint: None,
         }
     }
 
