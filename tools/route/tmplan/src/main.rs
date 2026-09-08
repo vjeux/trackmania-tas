@@ -1043,6 +1043,9 @@ fn cmd_author_line(args: &[String]) {
     }
     println!("author line vs polyline: {} samples ({:.3} s), lateral median {med:.1} m, p90 {p90:.1} m, within half-width+2 m {:.0} %, worst {:.1} m at s {:.0} (author at ({:.0}, {:.0}, {:.0}), t {:.3} s); longest off-line (> 12 m) stretch {:.1} s from t {:.3} s at ({:.0}, {:.0}, {:.0})",
         rows.len(), d.end_ms as f32 / 1000.0, 100.0 * within as f32 / rows.len() as f32, worst.1, worst.0, worst.3[0], worst.3[1], worst.3[2], worst.4 as f32 / 1000.0, best_run.0 as f32 / 1000.0, best_run.1 as f32 / 1000.0, best_run.2[0], best_run.2[1], best_run.2[2]);
+    if let Some(label) = flag(args, "--row") {
+        println!("| {label} | {} ({:.1} s) | {med:.1} | {p90:.1} | {:.0} % | {:.1} @ s {:.0} (author at ({:.0}, {:.0}, {:.0}), t {:.1}) | {:.1} s from t {:.1} at ({:.0}, {:.0}, {:.0}) |", rows.len(), d.end_ms as f32 / 1000.0, 100.0 * within as f32 / rows.len() as f32, worst.1, worst.0, worst.3[0], worst.3[1], worst.3[2], worst.4 as f32 / 1000.0, best_run.0 as f32 / 1000.0, best_run.1 as f32 / 1000.0, best_run.2[0], best_run.2[1], best_run.2[2]);
+    }
     if let Some(out) = flag(args, "--out") {
         let js = format!("{{\n  \"source\": \"{}\",\n  \"anchor\": \"{anchor}\",\n  \"scale\": {scale},\n  \"pts\": [{}],\n  \"lateral_to_centreline\": [{}],\n  \"note\": \"the ORIGINAL author's validation ghost mapped into the tiny frame (100 ms samples, ground contact point); lateral = XZ distance to the nearest centreline point\"\n}}\n",
             src, author.iter().map(|p| format!("[{:.2},{:.2},{:.2}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(","), rows.iter().map(|r| format!("{:.1}", r.1)).collect::<Vec<_>>().join(","));
