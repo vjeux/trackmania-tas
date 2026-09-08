@@ -2650,7 +2650,7 @@ pub fn add_fx_system(store: &mut crate::store::DataStore, path: &str, at: &Xform
     // name, parsed, and its image file read out of the pack
     let mut textures: Vec<(String, super::particle::ParticleNode, String, Vec<u8>)> = Vec::new();
     let tex_mode = std::env::var("TINY_FX_TEXTURE").unwrap_or_else(|_| "extern".into());
-    if tex_mode == "archive" || tex_mode == "file" {
+    if tex_mode == "archive" || tex_mode == "file" || tex_mode.starts_with("path:") {
         for (_, mp, node, ext) in &models {
             for tref in node_texture_refs(node) {
                 let Some(tp) = ext.iter().find(|(k, _)| *k as i32 == tref).map(|(_, p)| p.clone()) else { continue };
@@ -2672,6 +2672,11 @@ pub fn add_fx_system(store: &mut crate::store::DataStore, path: &str, at: &Xform
                 let ip = tm.externals.iter().find(|(k, _)| *k as i32 == image_idx).map(|(_, p)| p.clone()).ok_or_else(|| format!("{tp}: image node {image_idx} is not an external file"))?;
                 let bytes = store.read(&ip).map_err(|e| format!("{ip}: {e}"))?;
                 let name = ip.rsplit('\\').next().unwrap_or(&ip).to_string();
+                if tex_mode.starts_with("path:") {
+                    // the image alone rides in the archive (bare name), for a `{dds}` spelling
+                    textures.push((tp.clone(), bitmap.clone(), name.clone(), bytes.clone()));
+                    continue;
+                }
                 if tex_mode == "file" {
                     // the `.Texture.gbx` itself as a FILE next to the item (the pack's
                     // bytes verbatim, its own `Image\X.dds` ref kept) + the image under
@@ -2735,6 +2740,18 @@ fn place_particle_node(node: &mut super::particle::ParticleNode, externals: &[(u
                     (Some(p), "extern") => {
                         let i = next_index(next);
                         EXTERNALS.with(|e| e.borrow_mut().push((i as u32, p)));
+                        r.index = i;
+                    }
+                    // TINY_FX_TEXTURE=path:SPELLING — the reference-table entry spelled
+                    // as given (the probe of what an embedded item's table can reach:
+                    // the chunk-036 word is a plain u32 that names a reference-table
+                    // entry, 2026-09-08). `{dds}` in the spelling = the image's bare
+                    // file name (the DDS rides in the archive as `Items/<name>`).
+                    (Some(p), m) if m.starts_with("path:") => {
+                        let dds = p.rsplit('\\').next().unwrap_or(&p).replace(".Texture.gbx", ".dds");
+                        let spelled = m["path:".len()..].replace("{dds}", &dds);
+                        let i = next_index(next);
+                        EXTERNALS.with(|e| e.borrow_mut().push((i as u32, spelled)));
                         r.index = i;
                     }
                     (Some(p), "file") => match textures.iter().find(|(tp, _, _, _)| *tp == p) {
