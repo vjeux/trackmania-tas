@@ -309,6 +309,9 @@ pub struct LapCfg {
     pub seed_chain: Option<Vec<Rec>>,
     /// lateral tolerance beyond the half width on road legs (m): 6 on roads, 25+ on open terrain
     pub lat_tol: f64,
+    /// how far below the line a car may be while laterally on it (m): 25 = dips allowed (08), 4 = the
+    /// line is an elevated ledge/rim and the floor under it is a dead end (15's pool)
+    pub below_tol: f64,
 }
 
 struct Rng(u64);
@@ -547,7 +550,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             // bowl) anything above the track's lowest point - 5 m and within 120 m of the polyline lives
             let road_y = track.at(s)[1];
             // (below the polyline while laterally ON the road = a dip the centreline's y does not follow: 08 at s 585)
-            if (!on_gap && end.y < road_y - 5.0 && (lat_abs > hw + 1.0 || end.y < road_y - 25.0)) || (on_gap && (end.y < track_min_y - 5.0 || d3 > 120.0)) {
+            if (!on_gap && end.y < road_y - 5.0 && (lat_abs > hw + 1.0 || end.y < road_y - cfg.below_tol)) || (on_gap && (end.y < track_min_y - 5.0 || d3 > 120.0)) {
                 continue;
             }
             // dead: stopped and not at the start

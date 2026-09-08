@@ -1534,10 +1534,11 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
         seed: a.get("seed").map(|s| s.parse().unwrap()).unwrap_or(1),
         steer_sign: a.get("steer-sign").map(|s| s.parse().unwrap()).unwrap_or(1.0),
         out: out.clone(),
-        max_chain_ticks: a.get("max-chain-ticks").map(|s| s.parse().unwrap()).unwrap_or(9000),
+        max_chain_ticks: a.get("max-chain-ticks").map(|s| s.parse().unwrap()).unwrap_or(14000),
         verbose: a.has("verbose"),
         prefix_ticks: a.get("prefix-ticks").map(|s| s.parse().unwrap()).unwrap_or(0),
         lat_tol: a.get("lat-tol").map(|s| s.parse().unwrap()).unwrap_or(6.0),
+        below_tol: a.get("below-tol").map(|s| s.parse().unwrap()).unwrap_or(25.0),
         seed_chain: match a.get("seed-chain") {
             Some(f) => {
                 let txt = std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;
