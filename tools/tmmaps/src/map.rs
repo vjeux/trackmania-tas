@@ -1933,112 +1933,6 @@ impl MapFile {
         self.raw_splices.push((region, bytes));
     }
 
-    /// Remove both editor-password controls. `needUnlock` lives in the block
-    /// chunk; `0x03043029` carries the 16-byte password hash plus CRC32.
-    /// Rewrite the baked-blocks chunk 0x03043048 of a written map so that
-    /// EVERY cell of the 64x64 grid is `Sea`: the game fills the cells the
-    /// baked list leaves out with land, which is how a parked map kept the
-    /// original's full-size island. The first record (which defines the
-    /// lookback string "Sea") is kept verbatim, then one reference record per
-    /// cell, then every non-Sea record verbatim (their ids and any string they
-    /// define stay valid for later chunks). Returns (sea cells, kept records).
-    pub fn all_sea_file(path: &std::path::Path) -> Result<(usize, usize), String> {
-        Self::all_sea_file_keeping(path, true)
-    }
-
-    /// `all_sea_file` with a switch for the non-Sea baked records (the FC
-    /// clip fillers): a tiny map drops them -- they belong to the full-size
-    /// structures that are parked, and the tiny build re-emits them as items.
-    pub fn all_sea_file_keeping(path: &std::path::Path, keep_non_sea: bool) -> Result<(usize, usize), String> {
-        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-        let m = MapFile::load(path);
-        let g = Gbx::parse(&bytes);
-        let body = g.body.clone();
-        let (_, off, payload, size) = *crate::gbx::all_skip_chunks(&body)
-            .iter()
-            .find(|(cid, ..)| *cid == 0x03043048)
-            .ok_or("no baked-blocks chunk")?;
-        let first = m.baked.first().ok_or("no baked records")?;
-        if first.name != "Sea" {
-            return Err(format!("first baked record is {}, not Sea", first.name));
-        }
-        // record i spans [rec_start(i), rec_start(i+1)); a record starts 5
-        // bytes before its coords (name word, dir) except the first, whose
-        // name word carries the string definition.
-        let starts: Vec<usize> = m.baked.iter().map(|b| b.coord_off - 5).collect();
-        // payload: version u32, U01 u32, nb u32, records..., nb_clips u32
-        let first_start = payload + 12;
-        let first_end = starts.get(1).copied().unwrap_or(payload + size);
-        let first_rec = &body[first_start..first_end];
-        // a plain reference record for Sea: take record 1's name word
-        let sea_y = first.raw_coords[1];
-        let sea_flags = &body[first.coord_off + 3..first.coord_off + 7];
-        let sea_ref_word: [u8; 4] = body[starts[1]..starts[1] + 4].try_into().unwrap();
-        let mut out = Vec::with_capacity(body.len() + 4096 * 12);
-        out.extend_from_slice(&body[..off]);
-        let mut chunk: Vec<u8> = Vec::new();
-        chunk.extend_from_slice(&body[payload..payload + 8]); // version, U01
-        let mut recs: Vec<u8> = Vec::new();
-        let mut n = 0usize;
-        recs.extend_from_slice(first_rec);
-        n += 1;
-        // raw coords are cell + (1, 0, 1): cells 0..63 are raw 1..=64
-        for x in 1..=64u8 {
-            for z in 1..=64u8 {
-                if x == first.raw_coords[0] && z == first.raw_coords[2] {
-                    continue;
-                }
-                // the parked blocks' column (cell 0,0) stays free of generated terrain
-                if x == 1 && z == 1 {
-                    continue;
-                }
-                recs.extend_from_slice(&sea_ref_word);
-                recs.push(0);
-                recs.extend_from_slice(&[x, sea_y, z]);
-                recs.extend_from_slice(sea_flags);
-                n += 1;
-            }
-        }
-        let recs_end = payload + size - 4;
-        let mut kept = 0usize;
-        for (i, b) in m.baked.iter().enumerate() {
-            if b.name == "Sea" {
-                continue;
-            }
-            let s0 = starts[i];
-            let s1 = starts.get(i + 1).copied().unwrap_or(recs_end);
-            let mut rec = body[s0..s1].to_vec();
-            if !keep_non_sea {
-                // kept for its lookback words (a dropped definition would
-                // renumber every later string), parked at cell (0,0,0)
-                let c = b.coord_off - s0;
-                rec[c..c + 3].copy_from_slice(&[1, 0, 1]);
-            }
-            recs.extend_from_slice(&rec);
-            n += 1;
-            kept += 1;
-        }
-        // whatever follows the last record in the chunk (the baked-clip count
-        // and friends) is kept verbatim; the last record must be a plain Sea
-        // (name word, dir, xyz, flags = 12 bytes) for its end to be known.
-        // The records run to the chunk's last 4 bytes (the baked-clip count,
-        // 0 on every map parse_baked accepts).
-        let tail = &body[recs_end..payload + size];
-        chunk.extend_from_slice(&(n as u32).to_le_bytes());
-        chunk.extend_from_slice(&recs);
-        chunk.extend_from_slice(tail);
-        out.extend_from_slice(&0x03043048u32.to_le_bytes());
-        out.extend_from_slice(&body[off + 4..off + 8]); // PIKS
-        out.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
-        out.extend_from_slice(&chunk);
-        out.extend_from_slice(&body[payload + size..]);
-        // header chunk sizes are unaffected; the body prefix before the chunk is
-        // byte-identical, so `all_skip_chunks` offsets before it still hold.
-        let _ = off;
-        std::fs::write(path, g.write_body_recompressed(&out)).map_err(|e| e.to_string())?;
-        Ok((4096, kept))
-    }
-
     /// Empty chunk 0x03043043 (genealogies): the per-cell terrain zone
     /// records the game regenerates Land/Beach/Hill/Cliff blocks from at load
     /// (1656 Land + 852 Beach + ... showed up in the loaded map with every
@@ -2066,6 +1960,8 @@ impl MapFile {
         Ok(n)
     }
 
+    /// Remove both editor-password controls. `needUnlock` lives in the block
+    /// chunk; `0x03043029` carries the 16-byte password hash plus CRC32.
     pub fn remove_password(&mut self) {
         // Header chunk 0x03043002 (TM2020 version 13): version byte, then
         // NeedUnlock byte. This is the flag the menu checks before body load.

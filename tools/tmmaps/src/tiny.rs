@@ -1073,10 +1073,11 @@ pub fn cmd(args: &[String]) {
     }
     // Genealogies (chunk 0x03043043) are the per-cell terrain zones the game
     // regenerates Land/Beach/Hill/Cliff blocks from at load: with the authored
-    // terrain parked they rebuilt the full-size island under the tiny one
+    // terrain gone they rebuilt the full-size island under the tiny one
     // (2026-09-06). Cleared, the floor cells without a block are plain sea.
-    // (Rewriting the baked chunk to all-Sea -- `all_sea_file` -- is NOT
-    // needed and makes the game refuse the map: "Couldn't load map!".)
+    // (Rewriting the baked chunk to one Sea record per cell is NOT needed —
+    // fabricated records make the game refuse the map: "Couldn't load map!";
+    // that writer is gone.)
     // Stadium keeps it: its zones are the grass floor, full size under the
     // tiny map like the reference maps (and there is no sea to fall into).
     if std::env::var_os("TINY_KEEP_GENEALOGY").is_none() {
