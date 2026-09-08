@@ -274,6 +274,16 @@ impl Grid {
         // 2026-09-07 — every road is one converter material) makes the track itself the majority of the
         // surfaces. The Summer 2026 - 16 false positives were single-gate votes.
         let n_votes: usize = votes.values().sum();
+        // …and the game's own ROAD surfaces are track wherever they appear (a gate anchor votes only for the material
+        // under IT — Argentina 2026's ice sections between the gates were "off-road" and the road-following
+        // centreline broke into six gaps). Terrain (Grass, Sand, Rock, Water, Metal…) stays out of this list.
+        const ROAD_NAMES: [&str; 10] = ["Asphalt", "WetAsphalt", "Dirt", "WetDirt", "RoadIce", "Ice", "Snow", "Wood", "Tech", "RoadSynthetic"];
+        let mut votes = votes;
+        for (mi, name) in self.mats.iter().enumerate() {
+            if ROAD_NAMES.contains(&name.as_str()) && area.get(&(mi as u16)).copied().unwrap_or(0) > 0 {
+                votes.entry(mi as u16).or_insert(1);
+            }
+        }
         for (m, n) in &votes {
             let share = *area.get(m).unwrap_or(&0) as f32 / total.max(1) as f32;
             let majority = *n >= 3 && *n * 2 >= n_votes;
@@ -720,6 +730,55 @@ impl Graph {
         } else {
             base * OFFROAD
         }
+    }
+
+    /// Dijkstra over ROAD nodes only (no off-road cell, no leap): the path a road-following centreline may take;
+    /// unreachable is `INFINITY` — a gap, not a detour.
+    pub fn dijkstra_road(&self, from: usize) -> (Vec<f32>, Vec<u32>) {
+        let n = self.len();
+        let mut dist = vec![f32::INFINITY; n];
+        let mut prev = vec![u32::MAX; n];
+        let mut heap: BinaryHeap<Step> = BinaryHeap::new();
+        dist[from] = 0.0;
+        heap.push(Step { d: 0.0, n: from as u32 });
+        while let Some(Step { d, n: u }) = heap.pop() {
+            let u = u as usize;
+            if d > dist[u] + 1e-6 {
+                continue;
+            }
+            for e in self.edge_start[u]..self.edge_start[u + 1] {
+                let raw = self.edges[e as usize];
+                let v = (raw & !DIAG) as usize;
+                // an off-road cell costs 5×: a kerb strip or a start deck of another material is crossed, a field is
+                // not (the caller rejects paths with a long off-road run)
+                let step = if raw & DIAG != 0 { CELL * std::f32::consts::SQRT_2 } else { CELL };
+                let nd = d + if self.node_road[v] { step } else { 5.0 * step };
+                if nd < dist[v] {
+                    dist[v] = nd;
+                    prev[v] = u as u32;
+                    heap.push(Step { d: nd, n: v as u32 });
+                }
+            }
+            // a short leap (≤ 8 m in XZ) between road cells bridges the seam between two converted decks; longer
+            // leaps are jumps, not road
+            if !self.leap_start.is_empty() {
+                for e in self.leap_start[u]..self.leap_start[u + 1] {
+                    let (v, w) = self.leaps[e as usize];
+                    let v = v as usize;
+                    let dxz = w / LEAP_COST;
+                    if dxz > 8.0 || !self.node_road[v] {
+                        continue;
+                    }
+                    let nd = d + dxz;
+                    if nd < dist[v] {
+                        dist[v] = nd;
+                        prev[v] = u as u32;
+                        heap.push(Step { d: nd, n: v as u32 });
+                    }
+                }
+            }
+        }
+        (dist, prev)
     }
 
     /// Dijkstra from one node. Returns `(dist, prev)`; unreachable is `INFINITY`.

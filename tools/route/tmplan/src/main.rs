@@ -245,6 +245,7 @@ fn main() {
         "families" => cmd_families(&args[1..]),
         "deck-gates" => cmd_deck_gates(&args[1..]),
         "leg-scan" => cmd_leg_scan(&args[1..]),
+        "road-centreline" => cmd_road_centreline(&args[1..]),
         other => die(&format!("unknown command {other}")),
     }
 }
@@ -661,4 +662,73 @@ fn cmd_leg_scan(args: &[String]) {
         let sp: Vec<String> = a.specials.iter().map(|(k, n)| format!("{k}×{}", (*n as f32 / a.ms.len().max(1) as f32).round() as usize)).collect();
         println!("\t\t{}→{}\t{}\t{:.0}\t{:+.0}\t{:.3}\t{:.0}\t{:.0}\t{:.0}\t{:.2}\t{:.1}\t{:.2}\t{}\t{}\t{}", lab(*ga), lab(*gb), a.ms.len(), med(&a.chord), med(&a.dy), med(&a.ms) / 1000.0, med(&a.vmean) * 3.6, med(&a.vmax) * 3.6, med(&a.path), med(&a.air), med(&a.fall), med(&a.wall), if gl.is_finite() { format!("{gl:.0}") } else { "MISSING".into() }, if gc.is_finite() { format!("{gc:.0}") } else { "∞".into() }, if sp.is_empty() { "-".into() } else { sp.join(" ") });
     }
+}
+
+/// `tmplan road-centreline MAP.Map.Gbx --gates deck.json --order 3,1,2,0,4 --out road-centreline.json [--note ...]`
+/// A ROAD-FOLLOWING centreline through the gate decks in the given group order (the route's): per leg the road-only
+/// shortest path (no off-road cell, no leap), re-centred to the road midline and smoothed, half-width from the
+/// lateral road span; where no road path exists the polyline STAYS on the last deck and the segment is a `gap`
+/// (never a straight line off the road — Argentina 21, the car fell at s ≈ 60 m). The player's ask, 2026-09-08.
+fn cmd_road_centreline(args: &[String]) {
+    let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
+    let gates = io::read_gates(Path::new(&flag(args, "--gates").unwrap_or_else(|| die("--gates")))).unwrap_or_else(|e| die(&e));
+    let out = flag(args, "--out").unwrap_or_else(|| die("--out"));
+    let order: Vec<u32> = flag(args, "--order").unwrap_or_else(|| die("--order g,g,g")).split(',').filter_map(|x| x.trim().parse().ok()).collect();
+    let (surf, nodes) = SurfaceModel::build(Path::new(&map), &gates, false, false).unwrap_or_else(|e| die(&e));
+    let node_of_group: BTreeMap<u32, usize> = nodes.groups.iter().enumerate().map(|(i, g)| (*g, i)).collect();
+    let mut seq: Vec<usize> = vec![0];
+    for g in &order { seq.push(*node_of_group.get(g).unwrap_or_else(|| die(&format!("group {g} not in gates")))); }
+    let mut pts: Vec<[f32; 3]> = vec![nodes.pos[0]];
+    let mut hw: Vec<f32> = vec![surf.road_span(nodes.pos[0], [0.0, 1.0], 24.0).map_or(6.0, |(l, r)| ((l + r) / 2.0).max(3.0))];
+    let mut segs: Vec<String> = Vec::new();
+    let mut gaps = 0;
+    for w in seq.windows(2) {
+        let (i, j) = (w[0], w[1]);
+        let i0 = pts.len() - 1;
+        match surf.road_path(&nodes, i, j) {
+            Some(raw) => {
+                let mut leg = tmroute::human::resample(&raw, 2.0);
+                if leg.len() > 2 {
+                    let orig = leg.clone();
+                    for k in 1..orig.len() - 1 {
+                        let d = [orig[k + 1][0] - orig[k - 1][0], orig[k + 1][2] - orig[k - 1][2]];
+                        leg[k] = surf.recentre(orig[k], d, 24.0);
+                    }
+                    let c = leg.clone();
+                    for k in 1..c.len() - 1 { for a in [0usize, 2] { leg[k][a] = 0.25 * c[k - 1][a] + 0.5 * c[k][a] + 0.25 * c[k + 1][a]; } }
+                }
+                for (k, p) in leg.iter().enumerate().skip(1) {
+                    let d = [leg[k][0] - leg[k - 1][0], leg[k][2] - leg[k - 1][2]];
+                    hw.push(surf.road_span(*p, d, 24.0).map_or(4.0, |(l, r)| ((l + r) / 2.0).max(3.0)));
+                    pts.push(*p);
+                }
+                segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {}, \"gap\": false}}", grp(&nodes, i), grp(&nodes, j), pts.len() - 1));
+            }
+            None => {
+                // stay on the last deck: the polyline does not move; the segment is a gap the consumer must bridge
+                gaps += 1;
+                let road_at = |k: usize| nodes.graph_node[k].map_or("no graph node".to_string(), |n| if surf.graph.node_road[n] { "road".into() } else { "off-road".into() });
+                let any = surf.path_points(&nodes, &surf.distance_matrix(&nodes).2, i, j).map_or("none".to_string(), |p| format!("{} pts", p.len()));
+                eprintln!("  gap {} → {}: from node {}, to node {}, full-graph path {any}", grp(&nodes, i), grp(&nodes, j), road_at(i), road_at(j));
+                segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {i0}, \"gap\": true, \"to_pos\": [{:.2}, {:.2}, {:.2}]}}", grp(&nodes, i), grp(&nodes, j), nodes.pos[j][0], nodes.pos[j][1], nodes.pos[j][2]));
+            }
+        }
+    }
+    let mut s = vec![0.0f32];
+    for k in 1..pts.len() { let a = pts[k - 1]; let b = pts[k]; s.push(s[k - 1] + ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()); }
+    let note = flag(args, "--note").unwrap_or_default();
+    let js = format!(
+        "{{\n  \"map_uid\": \"{}\",\n  \"map_name\": \"{}\",\n  \"order_groups\": [{}],\n  \"pts\": [{}],\n  \"s\": [{}],\n  \"half_width\": [{}],\n  \"segments\": [{}],\n  \"gaps\": {gaps},\n  \"produced_by\": \"{}{}\"\n}}\n",
+        gates.map_uid, gates.map_name,
+        order.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(","),
+        pts.iter().map(|p| format!("[{:.2},{:.2},{:.2}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(","),
+        s.iter().map(|v| format!("{v:.1}")).collect::<Vec<_>>().join(","),
+        hw.iter().map(|v| format!("{v:.1}")).collect::<Vec<_>>().join(","),
+        segs.join(", "),
+        tmroute::provenance("tmplan road-centreline"), if note.is_empty() { String::new() } else { format!("; {note}") }
+    );
+    io::write_atomic(Path::new(&out), js.as_bytes()).unwrap_or_else(|e| die(&e));
+    let on_road = pts.iter().enumerate().filter(|(k, p)| { let d = if *k + 1 < pts.len() { [pts[k + 1][0] - p[0], pts[k + 1][2] - p[2]] } else { [0.0, 1.0] }; surf.road_span(**p, d, 24.0).is_some() }).count();
+    println!("{}: {} pts, {:.0} m, {} segments, {gaps} gaps, on-road {:.1} % → {out}", gates.map_name, pts.len(), s.last().unwrap(), segs.len(), 100.0 * on_road as f32 / pts.len().max(1) as f32);
+    fn grp(n: &Nodes, i: usize) -> String { if i == 0 { "\"spawn\"".into() } else { n.groups[i].to_string() } }
 }
