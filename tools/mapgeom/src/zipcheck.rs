@@ -72,11 +72,12 @@ fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
-/// The chunk's fields: (version, u01, inner_len, manifest rows (name, collection, author), zip bytes, trailing textures).
+/// The chunk's fields.
 pub struct Chunk054<'a> {
     pub version: u32,
     pub u01: i32,
     pub inner_len: usize,
+    /// (name, collection, author) per manifest row
     pub manifest: Vec<(String, String, String)>,
     pub zip: &'a [u8],
     pub textures: Vec<String>,
@@ -158,14 +159,16 @@ pub struct Central {
     pub n_this_disk: u16,
     pub n_total: u16,
     pub comment_len: u16,
-    pub gap_before_cd: i64,
 }
 
 pub fn central(zip: &[u8]) -> Result<Central, String> {
     // the end-of-central-directory record: last 22 bytes when there is no comment
+    if zip.len() < 22 {
+        return Err("archive shorter than an EOCD record".into());
+    }
     let mut eocd = None;
     let lo = zip.len().saturating_sub(22 + 65535);
-    let mut k = zip.len().saturating_sub(22);
+    let mut k = zip.len() - 22;
     loop {
         if &zip[k..k + 4] == b"PK\x05\x06" {
             eocd = Some(k);
@@ -210,7 +213,7 @@ pub fn central(zip: &[u8]) -> Result<Central, String> {
     if i != cd_end {
         return Err(format!("central directory entries end at {i:#x}, the record says {cd_end:#x}"));
     }
-    Ok(Central { entries, cd_offset, cd_size, eocd_offset: e, n_this_disk, n_total, comment_len, gap_before_cd: 0 })
+    Ok(Central { entries, cd_offset, cd_size, eocd_offset: e, n_this_disk, n_total, comment_len })
 }
 
 fn dos_date(d: u16, t: u16) -> String {
@@ -219,8 +222,15 @@ fn dos_date(d: u16, t: u16) -> String {
     format!("{y:04}-{mo:02}-{da:02} {h:02}:{mi:02}:{s:02}")
 }
 
+/// Slash-insensitive: the game writes entries with forward slashes and
+/// manifest idents with backslashes (original Summer 21: `Items/TME/Nations/…`
+/// vs `TME\Nations\…`).
+fn slashed(s: &str) -> String {
+    s.replace('\\', "/")
+}
+
 pub fn run(args: &[String]) -> Result<(), String> {
-    let maps: Vec<&String> = args.iter().skip(1).filter(|a| !a.starts_with("--")).collect();
+    let maps: Vec<&String> = args.iter().skip(1).filter(|a| !a.starts_with('-')).collect();
     if maps.is_empty() {
         return Err("zipcheck MAP.Map.Gbx… [--verbose]".into());
     }
@@ -346,18 +356,32 @@ pub fn check_map(m: &MapFile, verbose: bool) -> Result<(), String> {
             Some(ce) => {
                 versions.insert((ce.made_by, ce.version, e.version));
                 let mut diffs = Vec::new();
-                if ce.name != e.name { diffs.push(format!("name {:?}", ce.name)); }
-                if ce.crc != e.crc { diffs.push("crc".into()); }
-                if ce.csize != e.csize { diffs.push("csize".into()); }
-                if ce.usize_ != e.usize_ { diffs.push("usize".into()); }
-                if ce.method != e.method { diffs.push("method".into()); }
-                if ce.flags != e.flags { diffs.push("flags".into()); }
-                if ce.time != e.time || ce.date != e.date { diffs.push("time/date".into()); }
+                if ce.name != e.name {
+                    diffs.push(format!("name {:?}", ce.name));
+                }
+                if ce.crc != e.crc {
+                    diffs.push("crc".into());
+                }
+                if ce.csize != e.csize {
+                    diffs.push("csize".into());
+                }
+                if ce.usize_ != e.usize_ {
+                    diffs.push("usize".into());
+                }
+                if ce.method != e.method {
+                    diffs.push("method".into());
+                }
+                if ce.flags != e.flags {
+                    diffs.push("flags".into());
+                }
+                if ce.time != e.time || ce.date != e.date {
+                    diffs.push("time/date".into());
+                }
                 if !diffs.is_empty() {
                     problems.push(format!("{}: central directory differs in {}", e.name, diffs.join(", ")));
                 }
-                if ce.extra_len != 0 || ce.comment_len != 0 || ce.disk != 0 {
-                    if verbose { println!("  {}: central extra {} comment {} disk {}", e.name, ce.extra_len, ce.comment_len, ce.disk); }
+                if verbose && (ce.extra_len != 0 || ce.comment_len != 0 || ce.disk != 0) {
+                    println!("  {}: central extra {} comment {} disk {}", e.name, ce.extra_len, ce.comment_len, ce.disk);
                 }
             }
         }
@@ -390,15 +414,17 @@ pub fn check_map(m: &MapFile, verbose: bool) -> Result<(), String> {
     let mut man_missing = Vec::new();
     let mut man_hdr_bad = Vec::new();
     for (name, coll, author) in &c.manifest {
-        let key = format!("Items/{name}");
-        let key2 = format!("Items\\{name}");
-        let Some(e) = locs.iter().find(|e| e.name == key || e.name == key2 || e.name == *name) else {
+        let key = format!("Items/{}", slashed(name));
+        let Some(e) = locs.iter().find(|e| slashed(&e.name) == key) else {
             man_missing.push(name.clone());
             continue;
         };
         // the item file's own header ident
         let data = &zip[e.data_start..e.data_start + e.csize as usize];
-        let raw = match e.method { 0 => data.to_vec(), _ => miniz_oxide::inflate::decompress_to_vec(data).unwrap_or_default() };
+        let raw = match e.method {
+            0 => data.to_vec(),
+            _ => miniz_oxide::inflate::decompress_to_vec(data).unwrap_or_default(),
+        };
         if let Some((hn, ha)) = tmmaps::header::item_ident_author(&raw) {
             if hn != *name || ha != *author {
                 man_hdr_bad.push(format!("{name}: file header ident ({hn}, {ha}) vs manifest ({name}, {coll}, {author})"));
@@ -407,8 +433,25 @@ pub fn check_map(m: &MapFile, verbose: bool) -> Result<(), String> {
             man_hdr_bad.push(format!("{name}: no header ident chunk 0x2E001003 readable"));
         }
     }
-    let unlisted: Vec<&String> = item_entries.iter().filter(|n| { let base = n.trim_start_matches("Items/").trim_start_matches("Items\\"); !man_names.contains(base) }).collect();
-    println!("manifest vs archive: {} manifest rows, {} .Item.Gbx entries; {} rows without an entry; {} item entries not in the manifest; {} header-ident mismatches", c.manifest.len(), item_entries.len(), man_missing.len(), unlisted.len(), man_hdr_bad.len());
+    let man_slashed: BTreeSet<String> = man_names.iter().map(|n| slashed(n)).collect();
+    let unlisted: Vec<&String> = item_entries
+        .iter()
+        .filter(|n| {
+            let base = slashed(n);
+            let base = base.trim_start_matches("Items/");
+            !man_slashed.contains(base)
+        })
+        .collect();
+    let unlisted_bytes: u64 = locs.iter().filter(|e| unlisted.iter().any(|u| **u == e.name)).map(|e| e.csize as u64).sum();
+    println!(
+        "manifest vs archive: {} manifest rows, {} .Item.Gbx entries; {} rows without an entry; {} item entries not in the manifest ({} compressed bytes); {} header-ident mismatches",
+        c.manifest.len(),
+        item_entries.len(),
+        man_missing.len(),
+        unlisted.len(),
+        unlisted_bytes,
+        man_hdr_bad.len()
+    );
     if !man_missing.is_empty() {
         problems.push(format!("manifest rows without a zip entry: {:?}", &man_missing[..man_missing.len().min(10)]));
     }
@@ -426,7 +469,9 @@ pub fn check_map(m: &MapFile, verbose: bool) -> Result<(), String> {
         *placed.entry(it.model.as_str()).or_default() += 1;
         if it.model.ends_with(".Item.Gbx") {
             match c.manifest.iter().find(|(n, ..)| *n == it.model) {
-                None => { unresolved.insert(it.model.clone()); }
+                None => {
+                    unresolved.insert(it.model.clone());
+                }
                 Some((_, _, a)) => {
                     if it.author.as_deref() != Some(a.as_str()) {
                         author_mismatch += 1;
@@ -437,7 +482,14 @@ pub fn check_map(m: &MapFile, verbose: bool) -> Result<(), String> {
     }
     let placed_embedded = placed.iter().filter(|(n, _)| n.ends_with(".Item.Gbx")).count();
     let unplaced: Vec<&str> = man_names.iter().filter(|n| !placed.contains_key(**n)).copied().collect();
-    println!("placements: {} items, {} distinct embedded models placed, {} manifest rows never placed, {} placed models missing from the manifest, {} placements whose author differs from the manifest's", m.items.len(), placed_embedded, unplaced.len(), unresolved.len(), author_mismatch);
+    println!(
+        "placements: {} items, {} distinct embedded models placed, {} manifest rows never placed, {} placed models missing from the manifest, {} placements whose author differs from the manifest's",
+        m.items.len(),
+        placed_embedded,
+        unplaced.len(),
+        unresolved.len(),
+        author_mismatch
+    );
     if !unresolved.is_empty() {
         problems.push(format!("placed models missing from the manifest: {:?}", unresolved.iter().take(10).collect::<Vec<_>>()));
     }

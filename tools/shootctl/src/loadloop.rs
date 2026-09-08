@@ -170,13 +170,29 @@ fn run_loop(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         if super::launch(180, false) != 0 {
             return Err("the game did not come up".into());
         }
+        // THE MENU, PROVEN: ctx 0 is not enough (a playground the plugin reads
+        // as ctx 0 / playground:false was on screen for minutes on 2026-09-08
+        // while every /playmap into it raised an AskYesNo within a second);
+        // the title API's IsReady is the fact that a load can be asked for.
+        // Not ready after the menu round trip → one Escape (a menu popup),
+        // then a game restart — never a load into an unknown state.
         super::to_menu()?;
-        if let Err(e) = super::await_cond("ready", 60) {
-            // a popup on the main menu (password prompt, 2026-09-07) swallows
-            // every load; Escape clears it
-            println!("{} #{iter} title not ready ({e}); tapping ESC", el());
+        if let Err(e) = super::await_cond("ready", 20) {
+            println!("{} #{iter} title not ready after the menu round trip ({e}); tapping ESC", el());
+            let f = opts.outdir.join(format!("notready-{}-{iter:02}.png", opts.tag));
+            let _ = super::shootset::screenshot(&f);
             let _ = super::playshots::tap_key("ESC", 60);
-            super::await_cond("ready", 60)?;
+            let _ = super::to_menu();
+            if super::await_cond("ready", 15).is_err() {
+                println!("{} #{iter} still not ready; restarting the game", el());
+                super::quit_game();
+                std::thread::sleep(Duration::from_secs(3));
+                if super::launch(180, false) != 0 {
+                    return Err("the game did not come up after the restart".into());
+                }
+                super::to_menu()?;
+                super::await_cond("ready", 60)?;
+            }
         }
         std::fs::write(format!("{store}/editmap.txt"), game_map).map_err(|e| format!("editmap.txt: {e}"))?;
         let load0 = Instant::now();
@@ -199,9 +215,12 @@ fn run_loop(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
                 break;
             }
             let c = super::http_get("/ctx", 10).unwrap_or_default().trim().to_string();
-            if c != last {
-                println!("{} #{iter} +{:6.1}s {c}", el(), load0.elapsed().as_secs_f64());
-                last = c.clone();
+            // the timeline: every change of /ctx or /ready, like loadprof
+            let ready = super::http_get("/ready", 10).unwrap_or_default().trim().to_string();
+            let line = format!("{c} | {ready}");
+            if line != last {
+                println!("{} #{iter} +{:6.1}s {line}", el(), load0.elapsed().as_secs_f64());
+                last = line;
             }
             // any modal on CGameDialogs while loading
             if let Some(frame) = dialog_frame(&c) {
