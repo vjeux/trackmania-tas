@@ -1078,8 +1078,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     let origin = tmmaps::tiny::block_origin(b, (*sx, *sz));
                     let origin = [origin[0] * scale, origin[1] * scale, origin[2] * scale];
                     let yaw = b.free_rot.map(|r| r[0]).unwrap_or_else(|| tmmaps::tiny::block_yaw(b));
+                    let key = format!("{prefix}{}", b.index);
                     if let Some(tris) = deck_tris.get(&model) {
-                        crate::tree_clear::add_deck(&mut grid, &crate::tree_clear::Deck { alias: model.clone(), name: deck_name.get(&model).cloned().unwrap_or_default(), origin, yaw, tris });
+                        crate::tree_clear::add_deck(&mut grid, &crate::tree_clear::Deck { alias: model.clone(), name: deck_name.get(&model).cloned().unwrap_or_default(), key: key.clone(), origin, yaw, tris });
                         deck_placements += 1;
                     }
                     if let Some(list) = veget_list.get(&model) {
@@ -1088,7 +1089,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                             let Some((radius, height)) = crate::tree_clear::species_dims(store, item, &mut dims_cache) else { continue };
                             let pos = [origin[0] + local[0] * c + local[2] * s, origin[1] + local[1], origin[2] - local[0] * s + local[2] * c];
                             let row = if prefix == "b@" { format!("xvb@{}\t{k}", b.index) } else { format!("xv@{}\t{k}", b.index) };
-                            trees.push(crate::tree_clear::Tree { row, species: item.clone(), pos, radius, height, owner: format!("{} {} #{k}", b.name, model) });
+                            trees.push(crate::tree_clear::Tree { row, species: item.clone(), pos, radius, height, owner: format!("{} {} #{k}", b.name, model), from: key.clone() });
                         }
                     }
                 }
@@ -1113,7 +1114,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 if target != "-" && !target.ends_with(".Item.Gbx") {
                     if let Some((radius, height)) = crate::tree_clear::species_dims(store, target, &mut dims_cache) {
                         let pos = [it.pos[0] * scale, it.pos[1] * scale - sink.unwrap_or(0.0), it.pos[2] * scale];
-                        trees.push(crate::tree_clear::Tree { row: format!("xi@{}", it.index), species: target.clone(), pos, radius, height, owner: format!("item {} {}", it.index, it.model) });
+                        trees.push(crate::tree_clear::Tree { row: format!("xi@{}", it.index), species: target.clone(), pos, radius, height, owner: format!("item {} {}", it.index, it.model), from: format!("i@{}", it.index) });
                     }
                 }
                 // a vegetation CLUSTER item's trees (`v@<model>` rows, placed at the item)
@@ -1124,7 +1125,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                         for (k, (item, local)) in list.iter().enumerate() {
                             let Some((radius, height)) = crate::tree_clear::species_dims(store, item, &mut dims_cache) else { continue };
                             let pos = [origin[0] + local[0] * c + local[2] * s, origin[1] + local[1], origin[2] - local[0] * s + local[2] * c];
-                            trees.push(crate::tree_clear::Tree { row: format!("xvi@{}\t{k}", it.index), species: item.clone(), pos, radius, height, owner: format!("cluster item {} {} #{k}", it.index, it.model) });
+                            trees.push(crate::tree_clear::Tree { row: format!("xvi@{}\t{k}", it.index), species: item.clone(), pos, radius, height, owner: format!("cluster item {} {} #{k}", it.index, it.model), from: format!("i@{}", it.index) });
                         }
                     }
                 }
@@ -1152,7 +1153,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         if !verdict.dropped.is_empty() {
             let mut sp: Vec<_> = by_species.into_iter().collect();
             sp.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-            println!("    by species: {}", sp.iter().map(|(k, n)| format!("{k} x{n}")).collect::<Vec<_>>().join(", "));
+            println!("    by species: {}", sp.iter().map(|(k, n)| { let d = dims_cache.get(*k).copied().flatten().unwrap_or((0.0, 0.0)); format!("{k} x{n} (r {:.1} h {:.1})", d.0, d.1) }).collect::<Vec<_>>().join(", "));
             let mut ow: Vec<_> = by_owner.into_iter().collect();
             ow.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
             println!("    decks hit most: {}", ow.iter().take(6).map(|(k, n)| format!("{k} x{n}")).collect::<Vec<_>>().join(", "));
@@ -1225,7 +1226,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     for line in mapping.lines() {
         let mut f = line.split('\t');
         let (Some(head), Some(model)) = (f.next(), f.next()) else { continue };
-        if head.starts_with('#') || head.starts_with("y@") || model == "-" || model.ends_with(".Item.Gbx") {
+        // (`y@` sink rows and the `xv@`/`xvb@`/`xvi@` clearance rows carry a number, not a model)
+        if head.starts_with('#') || head.starts_with("y@") || head.starts_with("xv") || model == "-" || model.ends_with(".Item.Gbx") {
             continue;
         }
         *stock.entry(model.to_string()).or_insert(0) += 1;

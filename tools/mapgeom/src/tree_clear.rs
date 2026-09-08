@@ -47,6 +47,12 @@ pub struct Tree {
     pub height: f32,
     /// What the tree belongs to, for the report (block name, alias).
     pub owner: String,
+    /// The placement the tree came out of (`@N` / `b@N` / `i@N`): a prefab's
+    /// own vegetation is never tested against that prefab's own decks — it
+    /// was authored standing on them (Summer 12: the 699 grass tufts and
+    /// bushes of ONE RoadDirtStraightOnDirtHill2 stand on the hill that IS
+    /// the model's collision; every one of them went, 726 of the map's 754).
+    pub from: String,
 }
 
 /// A deck placement: the block's alias, its world origin and yaw, the block
@@ -54,6 +60,8 @@ pub struct Tree {
 pub struct Deck<'a> {
     pub alias: String,
     pub name: String,
+    /// The placement (`@N` / `b@N`), matched against `Tree::from`.
+    pub key: String,
     pub origin: [f32; 3],
     pub yaw: f32,
     pub tris: &'a [Tri],
@@ -139,7 +147,8 @@ fn dist2_xz(px: f32, pz: f32, t: &Tri) -> f32 {
 /// A world triangle set in 8 m xz buckets.
 pub struct Grid {
     cell: f32,
-    tris: Vec<(Tri, String)>,
+    /// (triangle, display owner, placement key)
+    tris: Vec<(Tri, String, String)>,
     buckets: HashMap<(i32, i32), Vec<usize>>,
 }
 
@@ -147,9 +156,9 @@ impl Grid {
     pub fn new() -> Grid {
         Grid { cell: 8.0, tris: Vec::new(), buckets: HashMap::new() }
     }
-    pub fn add(&mut self, t: Tri, owner: &str) {
+    pub fn add(&mut self, t: Tri, owner: &str, key: &str) {
         let i = self.tris.len();
-        self.tris.push((t, owner.to_string()));
+        self.tris.push((t, owner.to_string(), key.to_string()));
         let (mut x0, mut x1, mut z0, mut z1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
         for v in &t {
             x0 = x0.min(v[0]);
@@ -168,8 +177,9 @@ impl Grid {
     pub fn len(&self) -> usize {
         self.tris.len()
     }
-    /// The first deck triangle the cylinder meets: (owner, triangle y).
-    pub fn hit(&self, pos: [f32; 3], radius: f32, ylo: f32, yhi: f32) -> Option<(String, f32)> {
+    /// The nearest deck triangle the cylinder meets, ignoring the placement
+    /// `from` (the tree's own): (owner, triangle y).
+    pub fn hit(&self, pos: [f32; 3], radius: f32, ylo: f32, yhi: f32, from: &str) -> Option<(String, f32)> {
         let r2 = radius * radius;
         let (bx0, bx1) = (((pos[0] - radius) / self.cell).floor() as i32, ((pos[0] + radius) / self.cell).floor() as i32);
         let (bz0, bz1) = (((pos[2] - radius) / self.cell).floor() as i32, ((pos[2] + radius) / self.cell).floor() as i32);
@@ -178,7 +188,10 @@ impl Grid {
             for bz in bz0..=bz1 {
                 let Some(list) = self.buckets.get(&(bx, bz)) else { continue };
                 for &i in list {
-                    let (t, owner) = &self.tris[i];
+                    let (t, owner, key) = &self.tris[i];
+                    if key == from {
+                        continue;
+                    }
                     let tlo = t[0][1].min(t[1][1]).min(t[2][1]);
                     let thi = t[0][1].max(t[1][1]).max(t[2][1]);
                     if thi < ylo || tlo > yhi {
@@ -207,7 +220,7 @@ pub fn add_deck(grid: &mut Grid, d: &Deck) {
         for (k, v) in t.iter().enumerate() {
             w[k] = [d.origin[0] + v[0] * c + v[2] * s, d.origin[1] + v[1], d.origin[2] - v[0] * s + v[2] * c];
         }
-        grid.add(w, &owner);
+        grid.add(w, &owner, &d.key);
     }
 }
 
@@ -223,7 +236,7 @@ pub fn judge(grid: &Grid, trees: &[Tree]) -> Verdict {
     for t in trees {
         let ylo = t.pos[1] + 0.5;
         let yhi = t.pos[1] + t.height;
-        match grid.hit(t.pos, t.radius, ylo, yhi) {
+        match grid.hit(t.pos, t.radius, ylo, yhi, &t.from) {
             Some((owner, y)) => dropped.push((t.clone(), owner, y)),
             None => kept += 1,
         }
