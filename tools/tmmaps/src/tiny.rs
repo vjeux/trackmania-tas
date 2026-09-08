@@ -569,6 +569,14 @@ pub fn cmd(args: &[String]) {
     // authored structures (pillar feet, screen caps, wall faces) -- become
     // items too; the baked chunk itself is rewritten to all-Sea below.
     let mut baked_items = 0usize;
+    // the filler colour rule (see the `color` block below): `default` is what
+    // the game draws; `file` and `inherit` (the behaviour until 2026-09-08)
+    // stay for A/Bs
+    let filler_color_rule = std::env::var("TINY_FILLER_COLOR").unwrap_or_else(|_| "default".to_string());
+    if !matches!(filler_color_rule.as_str(), "default" | "file" | "inherit") {
+        panic!("TINY_FILLER_COLOR={filler_color_rule}: want default | file | inherit");
+    }
+    println!("  filler colour rule: {filler_color_rule}");
     // cell -> colour of the authored (non-free) block there, for the fillers
     let cell_colors: BTreeMap<(i32, i32, i32), u8> = source
         .blocks
@@ -600,30 +608,43 @@ pub fn cmd(args: &[String]) {
         };
         baked_items += 1;
         let pos = transform(origin, source_anchor, target_anchor, scale);
-        // A generated filler's colour byte is 0 in the file: the game paints
-        // it with the authored block it finishes (Summer 20 cp3: the
-        // PlatformSlope2StartFCRightSmall filler is red plastic in the
-        // original, a white bar across the tiny road with colour 0). So a
-        // colourless filler takes the colour of its cell's authored block,
-        // else its vertical, else its horizontal neighbours (the modifier
-        // inheritance of tiny-library, cell for cell).
-        let color = {
-            let own = colors.baked(b.index);
-            let c = (b.file_cell[0] as i32, b.file_cell[1] as i32, b.file_cell[2] as i32);
-            let at = |dx: i32, dy: i32, dz: i32| -> Option<u8> { cell_colors.get(&(c.0 + dx, c.1 + dy, c.2 + dz)).copied() };
-            let vote = |offsets: &[(i32, i32, i32)]| -> Option<u8> {
-                let mut votes: BTreeMap<u8, usize> = BTreeMap::new();
-                for &(dx, dy, dz) in offsets {
-                    if let Some(col) = at(dx, dy, dz) {
-                        *votes.entry(col).or_insert(0) += 1;
+        // The colour byte of a GENERATED filler: Default (0), whatever the file
+        // records. THE GAME DOES NOT PAINT ITS CLIP FILLERS. The file records
+        // the generating block's byte for them (Summer 20: 4956 of 7287 baked
+        // are Red like the 1966 Red blocks; the editor holds the same bytes —
+        // /mapblocks2 on the original: DecoWallBaseVFC, DecoCliffVFC, Water*FC,
+        // PlatformBaseFCB … all `color 4`), yet the original DRAWS every filler
+        // face untinted: 20 cp3's wall of DecoWallBaseVFC panels is TrackWall
+        // tan (TrackWallPxz_D) where a red byte on the item painted it red
+        // (TrackWall's hue mask covers the whole wall — an AUTHORED TrackWall
+        // pillar with byte 4 IS red in both worlds); 10's pillar walls and 15's
+        // pool wall the same, green and blue for tan. Same-camera A/Bs of
+        // 2026-09-08 (memory `tm2020-tiny-campaign.md`). Until then a
+        // colourless filler even INHERITED a colour from its cell's authored
+        // block — the opposite of the game. `TINY_FILLER_COLOR`: `default`
+        // (the game's rendering), `file` (the recorded byte), `inherit` (the
+        // old rule) — the last two for A/Bs.
+        let color = match filler_color_rule.as_str() {
+            "default" => 0,
+            "file" => colors.baked(b.index),
+            _ => {
+                let own = colors.baked(b.index);
+                let c = (b.file_cell[0] as i32, b.file_cell[1] as i32, b.file_cell[2] as i32);
+                let at = |dx: i32, dy: i32, dz: i32| -> Option<u8> { cell_colors.get(&(c.0 + dx, c.1 + dy, c.2 + dz)).copied() };
+                let vote = |offsets: &[(i32, i32, i32)]| -> Option<u8> {
+                    let mut votes: BTreeMap<u8, usize> = BTreeMap::new();
+                    for &(dx, dy, dz) in offsets {
+                        if let Some(col) = at(dx, dy, dz) {
+                            *votes.entry(col).or_insert(0) += 1;
+                        }
                     }
+                    votes.into_iter().max_by_key(|(_, n)| *n).map(|(col, _)| col)
+                };
+                if own != 0 || b.free_rot.is_some() {
+                    own
+                } else {
+                    at(0, 0, 0).or_else(|| vote(&[(0, 1, 0), (0, -1, 0)])).or_else(|| vote(&[(1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)])).unwrap_or(0)
                 }
-                votes.into_iter().max_by_key(|(_, n)| *n).map(|(col, _)| col)
-            };
-            if own != 0 || b.free_rot.is_some() {
-                own
-            } else {
-                at(0, 0, 0).or_else(|| vote(&[(0, 1, 0), (0, -1, 0)])).or_else(|| vote(&[(1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)])).unwrap_or(0)
             }
         };
         specs.push(Spec {

@@ -238,7 +238,11 @@ string MapItems(const string &in qs) {
         first = false;
         js += "{\"i\":" + i + ",\"name\":\"" + n + "\",\"x\":" + p.x + ",\"y\":" + p.y + ",\"z\":" + p.z
             + ",\"cell\":[" + o.BlockUnitCoord.x + "," + o.BlockUnitCoord.y + "," + o.BlockUnitCoord.z + "]"
-            + ",\"yaw\":" + o.Yaw + ",\"scale\":" + o.Scale + ",\"var\":" + o.IVariant + "}";
+            + ",\"yaw\":" + o.Yaw + ",\"scale\":" + o.Scale + ",\"var\":" + o.IVariant
+            // the placement colour the engine holds (EMapElemColor: 0 Default,
+            // 1 White, 2 Green, 3 Blue, 4 Red, 5 Black) — the file's chunk
+            // 0x03043062 byte as the game read it (colour thread, 2026-09-08)
+            + ",\"color\":" + int(o.MapElemColor) + "}";
     }
     return js + "]}";
 }
@@ -290,7 +294,11 @@ string MapBlocks2(const string &in qs) {
         first = false;
         js += "{\"i\":" + i + ",\"name\":\"" + n + "\",\"cell\":[" + cx + "," + cy + "," + cz + "]"
             + ",\"dir\":" + int(b.Direction) + ",\"mobil\":" + b.MobilIndex + ",\"mobilVar\":" + b.MobilVariantIndex
-            + ",\"ground\":" + (b.IsGround ? "true" : "false") + ",\"ghost\":" + (b.IsGhostBlock() ? "true" : "false") + "}";
+            + ",\"ground\":" + (b.IsGround ? "true" : "false") + ",\"ghost\":" + (b.IsGhostBlock() ? "true" : "false")
+            // the colour the engine holds for the block (EMapElemColor, see
+            // /mapitems): for a generated filler this is what the game paints
+            // it with — the oracle for the converter's filler colour rule
+            + ",\"color\":" + int(b.MapElemColor) + "}";
     }
     return js + "]}";
 }
