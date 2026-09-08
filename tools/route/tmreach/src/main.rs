@@ -1397,10 +1397,17 @@ fn cmd_bank_table(a: &Args) -> Result<(), String> {
         let legs = pick(&c, "human legs (positives) ", ",");
         let workers = pick(&c, "## fanout (", " workers");
         let git = pick(&c, "tmreach campaign ", " on ");
-        rows.push((name.clone(), format!("{name}\t{uid}\t{ghosts}\texcluded {excluded}\t{records}\tcounter steps {counter} same-row\t{oracle}\tlegs {legs}\tworkers {workers}\ttmreach {git}\n")));
+        // the effects dialect from the shard header (state version byte 17) and record 0's byte 99
+        let dialect = std::fs::File::open(e.path().join("samples.tmr")).ok().and_then(|mut f| { use std::io::Read; let mut b = vec![0u8; 24 + 12 + 100]; f.read_exact(&mut b).ok().map(|_| b) }).map(|b| {
+            if b.len() < 24 + 12 + 100 { "?".to_string() }
+            else if b[17] >= 3 { "tmstate-v3".to_string() }
+            else if c.contains("effects_dialect=gen-01:16") || b[24 + 12 + 99] != 0 { "gen-01:16 (re-run)".to_string() }
+            else { "none (v2 records)".to_string() }
+        }).unwrap_or_default();
+        rows.push((name.clone(), format!("{name}\t{uid}\t{ghosts}\texcluded {excluded}\t{records}\tcounter steps {counter} same-row\t{oracle}\tlegs {legs}\tworkers {workers}\ttmreach {git}\teffects_dialect={dialect}\n")));
     }
     rows.sort();
-    let mut s = String::from("map\tuid\tghosts\texcluded\trecords\tcounter attribution\toracle control\thuman legs\tworkers\tbuild\n");
+    let mut s = String::from("map\tuid\tghosts\texcluded\trecords\tcounter attribution\toracle control\thuman legs\tworkers\tbuild\teffects_dialect\n");
     for (_, r) in &rows {
         s.push_str(r);
     }

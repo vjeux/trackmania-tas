@@ -155,7 +155,7 @@ impl FromRow for CarState {
             finished: b[97] != 0,
             car: b[98],
             // a 100-byte (state v2) slice: byte 99 was padding (0) -> effects 0 = unknown, the rest unknown
-            effects: if b.len() >= CARSTATE_BYTES { b[99] } else { 0 },
+            effects: b[99], // (a v1 shard written 01:16-01:38Z 2026-09-08 carries the GEN dialect here: bit 7 valid, bits 0-1 lvl, 2-3 type, 4 ground, 5 turbo)
             reactor_lvl: if b.len() >= CARSTATE_BYTES { b[100] } else { u8::MAX },
             reactor_type: if b.len() >= CARSTATE_BYTES { b[101] } else { u8::MAX },
             boost_enum: if b.len() >= CARSTATE_BYTES { b[102] } else { u8::MAX },
