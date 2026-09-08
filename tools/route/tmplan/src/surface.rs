@@ -470,7 +470,10 @@ impl SurfaceModel {
             let step = ((b[0] - a[0]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
             along += step;
             let y = b[1];
-            if self.graph.node_road[w[1] as usize] || along < 20.0 || total - along < 20.0 {
+            // a road narrower than 4 m (a girder beam, a rail top) is not a road the line may use: Argentina 2026's
+            // start leg ran over Metal beam tops 1.5–5 m above the real deck and the car went over the deck's edge
+            let narrow = false; // (a width test at tol 1 m broke banked roads; exclusions carry the stand cases)
+            if (self.graph.node_road[w[1] as usize] && !narrow) || along < 20.0 || total - along < 20.0 {
                 run = 0.0;
                 run_top = f32::NEG_INFINITY;
             } else {
@@ -487,9 +490,14 @@ impl SurfaceModel {
     }
     /// The lateral road span at a point: (left, right) metres of road beside it, up to `cap` each; None off-road.
     pub fn road_span(&self, p: [f32; 3], dir: [f32; 2], cap: f32) -> Option<(f32, f32)> {
+        self.road_span_tol(p, dir, cap, 4.0)
+    }
+    /// `tol`: how far (m) a neighbouring road surface may sit above/below the point's height and still count as the
+    /// same road — 4 m for the corridor, ~1 m to tell a beam top from the deck beside it
+    pub fn road_span_tol(&self, p: [f32; 3], dir: [f32; 2], cap: f32, tol: f32) -> Option<(f32, f32)> {
         let has_road = |x: f32, z: f32, y: f32| -> bool {
             match self.grid.cell_of(x, z) {
-                Some((ix, iz)) => self.grid.cells[iz * self.grid.nx + ix].iter().any(|s| s.road && (s.y - y).abs() <= 4.0),
+                Some((ix, iz)) => self.grid.cells[iz * self.grid.nx + ix].iter().any(|s| s.road && (s.y - y).abs() <= tol),
                 None => false,
             }
         };

@@ -679,7 +679,23 @@ fn cmd_road_centreline(args: &[String]) {
     let gates = io::read_gates(Path::new(&flag(args, "--gates").unwrap_or_else(|| die("--gates")))).unwrap_or_else(|e| die(&e));
     let out = flag(args, "--out").unwrap_or_else(|| die("--out"));
     let order: Vec<u32> = flag(args, "--order").unwrap_or_else(|| die("--order g,g,g")).split(',').filter_map(|x| x.trim().parse().ok()).collect();
-    let (surf, nodes) = SurfaceModel::build(Path::new(&map), &gates, false, false).unwrap_or_else(|e| die(&e));
+    let (mut surf, nodes) = SurfaceModel::build(Path::new(&map), &gates, false, false).unwrap_or_else(|e| die(&e));
+    // --exclude x0,z0,x1,z1[;…] (or --exclusions FILE.tsv: map_stem\tx0\tz0\tx1\tz1\tnote, filtered by --map-stem): XZ boxes
+    // whose surfaces are NOT road for this line — Argentina 2026's grandstand tiers (Metal, like the tech decks) stood
+    // between the two roads and the line cut across them; the converter's census names such structures
+    let mut boxes: Vec<[f32; 4]> = Vec::new();
+    if let Some(e) = flag(args, "--exclude") { for b in e.split(';') { let v: Vec<f32> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 4 { boxes.push([v[0].min(v[2]), v[1].min(v[3]), v[0].max(v[2]), v[1].max(v[3])]); } } }
+    if let (Some(f), Some(stem)) = (flag(args, "--exclusions"), flag(args, "--map-stem")) {
+        if let Ok(t) = std::fs::read_to_string(f) { for l in t.lines().filter(|l| !l.starts_with('#')) { let c: Vec<&str> = l.split('\t').collect(); if c.len() >= 5 && c[0] == stem { let v: Vec<f32> = c[1..5].iter().filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 4 { boxes.push([v[0].min(v[2]), v[1].min(v[3]), v[0].max(v[2]), v[1].max(v[3])]); } } } }
+    }
+    if !boxes.is_empty() {
+        let mut n_ex = 0usize;
+        for k in 0..surf.graph.len() {
+            let w = surf.graph.world(&surf.grid, k);
+            if boxes.iter().any(|b| w[0] >= b[0] && w[0] <= b[2] && w[2] >= b[1] && w[2] <= b[3]) && surf.graph.node_road[k] { surf.graph.node_road[k] = false; n_ex += 1; }
+        }
+        eprintln!("  exclusions: {} boxes, {n_ex} road nodes turned off", boxes.len());
+    }
     let node_of_group: BTreeMap<u32, usize> = nodes.groups.iter().enumerate().map(|(i, g)| (*g, i)).collect();
     let mut seq: Vec<usize> = vec![0];
     for g in &order { seq.push(*node_of_group.get(g).unwrap_or_else(|| die(&format!("group {g} not in gates")))); }
