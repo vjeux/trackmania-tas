@@ -11,7 +11,9 @@ clip is published the way every clip in this repo is.
 
 **Tiny Summer 2026 - 01** — original author time `23.144` · tiny ghost **19.381** (build ship10) — *video pending*
 
-**Tiny Summer 2026 - 02** — original author time `27.097` · tiny ghost **16.746** (build ship10) — *video pending*
+**Tiny Summer 2026 - 02** — original author time `27.097` · tiny ghost **16.746** (build ship10)
+
+https://github.com/user-attachments/assets/ac560075-da81-4154-9ed9-8e3f62fdc64e
 
 **Tiny Summer 2026 - 03** — original author time `24.213` · tiny ghost **33.169** (build ship10) — *video pending*
 
