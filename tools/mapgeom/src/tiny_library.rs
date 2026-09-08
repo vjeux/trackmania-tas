@@ -369,6 +369,7 @@ pub fn species_siblings(name: &str) -> Vec<String> {
 struct TreeBaker {
     enabled: bool,
     min_height: f32,
+    bake_hullless: bool,
     /// species model path (lower-cased) -> the baked ident, or None when the
     /// species stays a stock item (too small, or its bake failed)
     baked: BTreeMap<String, Option<String>>,
@@ -385,7 +386,8 @@ impl TreeBaker {
     fn new(mode: &str) -> TreeBaker {
         let enabled = mode == "bake" && std::env::var("TINY_TREE_BAKE").map(|v| v != "0").unwrap_or(true);
         let min_height: f32 = std::env::var("TINY_TREE_BAKE_MIN_HEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(2.0);
-        TreeBaker { enabled, min_height, baked: BTreeMap::new(), dims: BTreeMap::new(), next: 0, item_bytes: 0, texture_bytes: 0 }
+        let bake_hullless = std::env::var("TINY_TREE_BAKE_HULLLESS").map(|v| v == "1").unwrap_or(false);
+        TreeBaker { enabled, min_height, bake_hullless, baked: BTreeMap::new(), dims: BTreeMap::new(), next: 0, item_bytes: 0, texture_bytes: 0 }
     }
 
     /// The baked item ident for a species model path (an `.Item.Gbx` of the
@@ -413,6 +415,14 @@ impl TreeBaker {
             Ok((bytes, m, bake)) => {
                 if bake.height < self.min_height {
                     outcomes.push(Outcome { alias: "-".into(), kind: "tree", source: stem.clone(), placements: 0, result: Ok(format!("{:.1} m tall: under TINY_TREE_BAKE_MIN_HEIGHT {:.1}, stays a stock item", bake.height, self.min_height)) });
+                    None
+                } else if bake.hull_triangles == 0 && !self.bake_hullless {
+                    // No collision hull = filler foliage the car never touches (grass,
+                    // ferns, the JungleForest cards: 7 m tall, one material, no trunk):
+                    // the game instances those by the tens of thousands (tiny 01 would
+                    // carry 29 000 of them as items, 34 106 placements against 4 755),
+                    // so they keep the stock path. TINY_TREE_BAKE_HULLLESS=1 bakes them.
+                    outcomes.push(Outcome { alias: "-".into(), kind: "tree", source: stem.clone(), placements: 0, result: Ok(format!("{:.1} m tall but no collision hull: filler foliage, stays on the stock path", bake.height)) });
                     None
                 } else {
                     self.next += 1;
