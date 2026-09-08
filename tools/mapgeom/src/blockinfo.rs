@@ -185,6 +185,16 @@ pub struct BlockInfoRaw {
     pub chunks: Vec<u32>,
 }
 
+/// One water volume of a block variant (chunk 0x0315B00B): the cell boxes it
+/// fills (`[x0, y0, z0, x1, y1, z1]` in block units), seven words the engine
+/// reads (level, flags — kept raw), and its id (the water kind).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WaterVolume {
+    pub boxes: Vec<[i32; 6]>,
+    pub words: [u32; 7],
+    pub id: String,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct VariantRaw {
     pub multi_dir: i32,
@@ -218,6 +228,7 @@ pub struct VariantRaw {
     pub replaced_pillars: Vec<(i32, [i32; 4], u8)>,
     pub compound_model: i32,
     pub water_volumes: usize,
+    pub water_volume_list: Vec<WaterVolume>,
     pub u00c: i32,
     pub u00d: [i32; 2],
     // ---- VariantGround
@@ -777,15 +788,30 @@ impl<'a> Graph<'a> {
                     v.compound_model = self.noderef()?;
                 }
             }
+            // Water volumes: the ENGINE data behind a pool block's water — per
+            // volume a list of cell boxes (int3 min, int3 max), seven words and
+            // (v1+) a lookback id. The engine renders the water SURFACE, the
+            // underwater look and the OVERFLOW of an open face (the falling
+            // sheet with its three white foam lips on Summer 15's raised pools)
+            // from these, never from the prefab (`Base_Air` carries one plain
+            // Water quad). An ITEM has no water volume: a pool baked as an item
+            // keeps the quad and loses the overflow (2026-09-08).
             0x0315B00B => {
                 let ver = self.r.u32()?;
                 let n = self.r.u32()? as usize;
                 for _ in 0..n {
-                    self.r.array(|r| r.take(24).map(|_| ()))?; // boxint3[]
-                    self.r.take(7 * 4)?;
-                    if ver >= 1 {
-                        self.r.lookback()?;
+                    let boxes = self.r.array(|r| {
+                        let b = r.take(24)?;
+                        let w = |o: usize| i32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+                        Ok([w(0), w(4), w(8), w(12), w(16), w(20)])
+                    })?;
+                    let raw = self.r.take(7 * 4)?;
+                    let mut words = [0u32; 7];
+                    for (i, w) in words.iter_mut().enumerate() {
+                        *w = u32::from_le_bytes(raw[i * 4..i * 4 + 4].try_into().unwrap());
                     }
+                    let id = if ver >= 1 { self.r.lookback()? } else { String::new() };
+                    v.water_volume_list.push(WaterVolume { boxes, words, id });
                 }
                 v.water_volumes = n;
             }
@@ -1124,6 +1150,7 @@ pub struct Variant {
     pub trigger_shapes: Vec<String>,
     pub gate: Option<String>,
     pub water_volumes: usize,
+    pub water_volume_list: Vec<WaterVolume>,
     pub placed_pillars: Vec<(Option<String>, [i32; 4])>,
     pub replaced_pillars: Vec<(Option<String>, [i32; 4], u8)>,
     pub auto_terrains: Vec<([i32; 3], Vec<String>, String)>,
@@ -1394,6 +1421,7 @@ impl BlockInfo {
                 trigger_shapes: v.trigger_shapes.iter().filter_map(|i| ext(*i)).collect(),
                 gate: ext(v.gate),
                 water_volumes: v.water_volumes,
+                water_volume_list: v.water_volume_list.clone(),
                 placed_pillars: v.placed_pillars.iter().map(|(n, p)| (ext(*n), *p)).collect(),
                 replaced_pillars: v.replaced_pillars.iter().map(|(n, p, u)| (ext(*n), *p, *u)).collect(),
                 auto_terrain_height_offset: v.auto_terrain_height_offset,
@@ -1563,6 +1591,10 @@ impl BlockInfo {
             }
             if v.water_volumes > 0 {
                 p(&mut s, format!("    water volumes {}", v.water_volumes));
+                for wv in &v.water_volume_list {
+                    let f = |w: u32| f32::from_bits(w);
+                    p(&mut s, format!("      volume id {:?} boxes {:?} words {:?} (as f32 {:?})", wv.id, wv.boxes, wv.words, wv.words.iter().map(|w| f(*w)).collect::<Vec<_>>()));
+                }
             }
             for (n, prm) in &v.placed_pillars {
                 p(&mut s, format!("    placed pillar {:?} {:?}", n, prm));

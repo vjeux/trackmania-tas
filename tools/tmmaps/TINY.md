@@ -433,3 +433,45 @@ The `can_be_deleted_by_full_free_clip` flag is NOT a draw criterion:
 TrackWallStraightFCT carries it and TrackWallCurve3FCT does not, and the game
 draws the water floor over both (`TINY_FILLER_CLOSE=nondeletable` was the
 variant that read it; `any` closes top/bottom faces too — both refuted).
+
+## Pool water, overflow spouts and the inflatables (2026-09-08, night)
+
+"The white inflatable tube ends hanging over the pool wall" of Summer 15
+(same-camera views fog2 / fogwide at cp2) are not items at all. Measured on
+the render box with one-item lineups and item moves on a copy of the original:
+
+* **Every `Inflatable*` item bakes, loads and draws.** The sixteen species of
+  Summer 15 (mats, slopes, borders, tubes, `InflatableMat4mToTube6mCenterX2`)
+  are plain `CPlugStaticObjectModel` prefabs under `ItemInflatableTube` /
+  `ItemInflatableMat` / `ItemInflatableFloor` (`Tech3_Block_TDSN_CubeOut`,
+  the ordinary block shader) plus `DecalMarksItems`, `TechnicsTrims` and
+  `Pylon` — no dyna part, no tween, no soft body. The `AnimPhaseOffset` byte
+  the author left on sixty mats moves nothing (there is no kinematic part for
+  it to phase). The game keeps all 5542 placements of the tiny 15 (`/mapitems`
+  total = the file), and the same-camera frames show the mat ramp out of the
+  pool, the blue tube with its orange collar and the 14 rings in both worlds.
+* **The white lips are the ENGINE's water overflow.** A pool block carries a
+  water VOLUME (blockinfo variant chunk 0x0315B00B — `WaterBase`, `WaterWall*`,
+  `RoadWater*`: id `Shallow`, one box, 32 × 1 × 32 m; `mapgeom blockinfo`
+  prints them). The engine renders the volume's surface (the smooth,
+  reflective water), the underwater tint, and where a volume's vertical face
+  is open it pours: a falling sheet with three white foam lips at the crest —
+  the "spouts" on the raised pools of 15. No prefab holds that geometry
+  (`Base_Air` is one Water quad at local y 7 over a `Waterground` floor at 4;
+  the rim clips `WaterFCCenter` / `WaterHFC*` are the kerb; `WaterWallVFC` is
+  the `GlassWaterWall` pane). An ITEM has no water volume, so a pool baked as
+  an item keeps the quad — drawn by the plain `Water` material as the busy
+  cellular pattern, opaque — and loses the overflow. Not reproducible with
+  items; a hand-modelled still stand-in (three lips + a sheet quad per open
+  face) is the only way to put the look back, and it would be invented
+  geometry.
+* **`TunnelSupportArch16m` draws** (in the game's list at 1034,31,487 and
+  1034,31,518 on the tiny 15; leg and beam in the same-camera frames, and
+  beside its stock twin in a lineup) — an embedded item with embedded LIGHTS
+  is NOT dropped (`LightCube*`, `LightCylinderQuarter2m`, the gates: all kept
+  and drawn). The blue "twisted inflatable body" on the cp2 deck that only the
+  original shows is `Checkpoint_Helper.Prefab` (material `Effects\Media\
+  Material\EditorHelpers`, an 8 × 4 × 19 m arrow) of `GateCheckpointCenter24m`
+  — an editor-only helper like the yellow FC caps: moving the gate away in a
+  copy of the original removes it; play mode never shows it; the bake leaves
+  it out on purpose.
