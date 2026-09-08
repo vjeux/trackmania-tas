@@ -9,10 +9,14 @@ M=/tmp/tmp/bank-mirror; REAL=$HOME/persistent/private-30d/tm-route
 T=$M/tm-player/tiny/$BUILD; mkdir -p $T
 rsync -a "$SRC/" $T/
 [ -f $T/MANIFEST.txt ] || { echo "no MANIFEST.txt in $SRC"; exit 2; }
-n=$(ls $T/*.Map.Gbx | wc -l); echo "$BUILD: $n maps, MANIFEST $(grep -c Map.Gbx $T/MANIFEST.txt) lines"
+# out2-style stems (the keys of gap-verdicts.tsv / road-exclusions.tsv) for builds that name maps "Tiny Summer 2026 - NN"
+L=$T/by-stem; mkdir -p $L
+declare -A COUNTRY=([21]=Argentina-2026 [22]=Saudi-Arabia-2026 [23]=Norway-2026 [24]=Poland-2026 [25]=Japan-2026)
+for f in $T/*.Map.Gbx; do bn=$(basename "$f" .Map.Gbx); if [[ "$bn" =~ \ -\ ([0-9][0-9])$ ]]; then nn=${BASH_REMATCH[1]}; stem=${COUNTRY[$nn]:-$nn-Summer-2026---$nn}; [ -n "${COUNTRY[$nn]:-}" ] && stem="$nn-${COUNTRY[$nn]}"; ln -sf "$f" "$L/$stem.Map.Gbx"; else ln -sf "$f" "$L/$(echo "$bn" | tr ' ' '-').Map.Gbx"; fi; done
+n=$(ls $L/*.Map.Gbx | wc -l); echo "$BUILD: $n maps"
 OUT=$M/tm-route/tiny-builds/$BUILD; mkdir -p $OUT
 : > $OUT/RUN.txt
-for f in $T/*.Map.Gbx; do bash /tmp/tmp/repo/tools/route/scripts/tiny-one.sh "$f" --build $BUILD --manifest $T/MANIFEST.txt 2>&1 | tail -1 | tee -a $OUT/RUN.txt; done
+for f in $L/*.Map.Gbx; do bash /tmp/tmp/repo/tools/route/scripts/tiny-one.sh "$f" --build $BUILD --manifest $T/MANIFEST.txt 2>&1 | tail -1 | tee -a $OUT/RUN.txt; done
 # README: per-map line + every gap leg with the verdict carried over from the previous build (same group ids are
 # NOT guaranteed across builds — verdicts are re-keyed by the converter when they re-verify)
 { echo "# Tiny build $BUILD — gates, deck gates (credit offsets), routes, road-following centrelines (+ speed_hint), $(date -u +%Y-%m-%dT%H:%MZ)"; echo; echo '```'; cat $OUT/RUN.txt | cut -c1-260; echo '```'; echo; echo "Every artefact stamps build/md5/collhash (collhash verified against the build's MANIFEST). Gap verdicts (tiny/gap-verdicts.tsv) and road exclusions (tiny/road-exclusions.tsv) were written for out2 and are applied by map stem — re-verify on this build."; } > $OUT/README.md

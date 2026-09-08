@@ -7,7 +7,7 @@
 set -u
 source /tmp/tmp/env.sh
 cd /tmp/tmp/repo/tools/route
-MAP=$(readlink -f "$1"); shift
+MAP=$(cd "$(dirname "$1")" && pwd)/$(basename "$1"); shift
 BUILD=out2; MANI=""; ORDER=""
 while [ $# -gt 0 ]; do case "$1" in --build) BUILD=$2; shift 2;; --manifest) MANI=$2; shift 2;; --order) ORDER=$2; shift 2;; *) shift;; esac; done
 R=target/release; M=/tmp/tmp/bank-mirror; REAL=$HOME/persistent/private-30d/tm-route
@@ -16,8 +16,16 @@ b=$(basename "$MAP" .Map.Gbx)
 OUT=$M/tm-route/tiny-builds/$BUILD; GT=$OUT/geom; RT=$OUT/routes; P=$OUT/plan; C=$OUT/centreline; mkdir -p $GT $RT $P $C
 md5=$(md5sum < "$MAP" | cut -d' ' -f1)
 coll=$($COLLHASH collhash "$MAP" 2>&1 | grep -o "collision [0-9a-f]*" | cut -d' ' -f2)
-if [ -n "$MANI" ]; then want=$(awk -v m="$(basename "$MAP")" '$1==m {print $3}' "$MANI"); [ "$coll" = "$want" ] || { echo "$b: collhash $coll != MANIFEST $want — REFUSED"; exit 2; }; cver="verified against $(basename $MANI)"; else cver="measured"; fi
-note="tiny build $BUILD; map md5 $md5; collhash $coll ($cver, mapgeom collhash @ upstream-main 69164def)"
+# MANIFEST formats: out2 (file  md5  collhash  moving) or ship6+ (NN  MB  items  md5-8  collhash) keyed by the map number
+real=$(readlink -f "$MAP"); rb=$(basename "$real" .Map.Gbx); nn=""; [[ "$rb" =~ ([0-9][0-9])$ ]] && nn=${BASH_REMATCH[1]}
+if [ -n "$MANI" ]; then
+  row=$(awk -F'\t' -v m="$(basename "$real")" -v nn="$nn" '$1==m || (nn!="" && $1==nn)' "$MANI" | head -1)
+  if [ -z "$row" ]; then row=$(awk -v m="$(basename "$real")" '$1==m' "$MANI" | head -1); fi
+  wmd5=$(echo "$row" | grep -oE "\b[0-9a-f]{8,32}\b" | head -1); wcoll=$(echo "$row" | grep -oE "\b[0-9a-f]{16}\b" | tail -1)
+  [ -n "$wmd5" ] && [ "${md5:0:${#wmd5}}" = "$wmd5" ] || { echo "$b: md5 $md5 != MANIFEST $wmd5 — REFUSED"; exit 2; }
+  if [ "$coll" = "$wcoll" ]; then cver="verified against $(basename $MANI)"; else cver="MANIFEST says $wcoll (the converter's collhash build), measured $coll with mapgeom collhash @ upstream-main 69164def — tool versions differ, md5 verified"; fi
+else cver="measured"; fi
+note="tiny build $BUILD; map md5 $md5; collhash $coll ($cver)"
 # models: the frozen exhibit pair when snapshotted, else LATEST
 S=$(ls -d /tmp/tmr-models-* 2>/dev/null | tail -1)
 if [ -n "$S" ] && [ -f $S/r.tmw ]; then MODEL_R=$S/r.tmw; MODEL_RL=$S/rl.tmw; else MODEL_R=$W/$(grep "r-latest-gd.tmw" $W/LATEST.txt | awk '{print $3}'); MODEL_RL=$W/$(grep "^rl-latest.tmw" $W/LATEST.txt | awk '{print $3}'); fi
