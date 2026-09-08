@@ -242,3 +242,29 @@ string MapItems(const string &in qs) {
     }
     return js + "]}";
 }
+
+
+// The editor's block cursor: where it is and what it shows. Summer 24's
+// "red slab in the water at the map centre" (2026-09-08) was in no file list
+// and in no game list of items — the one thing drawn at cell (32,y,32) of a
+// 64-cell map that is not part of the map is the editor's own cursor, red
+// where the block cannot be placed (open water on a tiny map, whose terrain
+// is all regenerated Lake).
+//
+//   /cursor -> {"coord":[x,y,z],"dir":N,"freePos":[..],"useFreePos":b,"color":[r,g,b],
+//               "block":"<CurrentBlockInfo.Name>","item":"<CurrentItemModel.IdName>"}
+string EditorCursor() {
+    auto ed = cast<CGameCtnEditorFree>(GetApp().Editor);
+    if (ed is null) return "{\"editor\":null}";
+    auto c = ed.Cursor;
+    string js = "{";
+    if (c !is null) {
+        js += "\"coord\":[" + c.Coord.x + "," + c.Coord.y + "," + c.Coord.z + "],\"dir\":" + int(c.Dir)
+            + ",\"useFreePos\":" + (c.UseFreePos ? "true" : "false")
+            + ",\"freePos\":[" + c.FreePosInMap.x + "," + c.FreePosInMap.y + "," + c.FreePosInMap.z + "]"
+            + ",\"color\":[" + c.Color.x + "," + c.Color.y + "," + c.Color.z + "],";
+    }
+    js += "\"block\":\"" + (ed.CurrentBlockInfo is null ? "" : ed.CurrentBlockInfo.Name) + "\"";
+    js += ",\"item\":\"" + (ed.CurrentItemModel is null ? "" : ed.CurrentItemModel.IdName) + "\"";
+    return js + "}";
+}
