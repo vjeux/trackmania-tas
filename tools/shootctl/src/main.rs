@@ -1098,7 +1098,30 @@ usage:
                         // game. The holder that matters is the PARENT: it lives
                         // exactly as long as the job. Recorded 2026-09-07 after
                         // reading the rule against the publish flow.
-                        let _ = std::fs::write(d.join("pid"), std::os::unix::process::parent_id().to_string());
+                        //
+                        // UNLESS the parent is the WhiteStick bridge daemon
+                        // itself: a bare `wsx sh 'shootctl lock acquire …'` is
+                        // dispatched straight from the daemon, and recording
+                        // ITS pid made the daemon "the holder" — a thread
+                        // clearing a hung lock then killed it, and every
+                        // session lost the box (2026-09-08 05:05Z). A holder
+                        // pid must name a process that is fair to kill: one of
+                        // OUR tools or a shell wrapping them. Anything else is
+                        // recorded as no pid, so the lock falls back to the
+                        // `--max-age` rule instead of naming an innocent.
+                        let ppid = std::os::unix::process::parent_id();
+                        match lock::pid_comm(ppid) {
+                            Some(comm) if lock::killable_holder(&comm) => {
+                                let _ = std::fs::write(d.join("pid"), ppid.to_string());
+                            }
+                            Some(comm) => {
+                                let _ = std::fs::remove_file(d.join("pid"));
+                                eprintln!("render lock: parent is `{comm}` (pid {ppid}) — not a driver, so NO holder pid is recorded (the lock ages out instead); wrap the job in `sh -c 'acquire; job; release'` to record a real holder");
+                            }
+                            None => {
+                                let _ = std::fs::remove_file(d.join("pid"));
+                            }
+                        }
                         0
                     }
                     Err(e) => {

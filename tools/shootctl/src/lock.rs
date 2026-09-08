@@ -68,6 +68,22 @@ fn pid_alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
+/// The command name of a live process (`/proc/<pid>/comm`), None if gone.
+pub fn pid_comm(pid: u32) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{pid}/comm")).ok().map(|s| s.trim().to_string())
+}
+
+/// Whether a process with this command name is a legitimate lock holder — one
+/// of our drivers, or a shell wrapping one. The WhiteStick bridge daemon
+/// (`navi-node`, `whitestick`, `node`…) is NOT: it dispatches every remote
+/// command, so a bare `wsx sh 'shootctl lock acquire'` has it as parent, and a
+/// lock naming it invites the one kill that takes the whole box offline
+/// (2026-09-08 05:05Z: every session lost the game for the night's remainder
+/// until vjeux restarted the daemon by hand).
+pub fn killable_holder(comm: &str) -> bool {
+    matches!(comm, "shootctl" | "tinyctl" | "tmmaps" | "mapgeom" | "sh" | "bash" | "dash" | "zsh" | "timeout" | "setsid" | "nohup")
+}
+
 /// A held lock whose holder PROCESS is gone. Eight sessions queue on this one
 /// game (2026-09-07): a driver killed by the bridge's timeout, a `pkill`, or a
 /// panic leaves its lock behind, and with no `--max-age` every waiter sat on it
@@ -169,7 +185,14 @@ pub fn status(d: &Path) -> i32 {
     }
     let (who, at) = read_owner(d);
     let alive = match read_pid(d) {
-        Some(pid) if pid_alive(pid) => format!("pid {pid}, alive"),
+        Some(pid) if pid_alive(pid) => {
+            let comm = pid_comm(pid).unwrap_or_else(|| "?".into());
+            if killable_holder(&comm) {
+                format!("pid {pid} `{comm}`, alive")
+            } else {
+                format!("pid {pid} `{comm}`, alive -- NOT A DRIVER: DO NOT KILL IT (it is the bridge or a system process; wait for --max-age instead)")
+            }
+        }
         Some(pid) => format!("pid {pid}, DEAD -- the next acquire breaks it"),
         None => "no pid recorded".to_string(),
     };
