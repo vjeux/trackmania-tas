@@ -33,6 +33,7 @@ mod ship;
 mod unproject;
 mod upload;
 mod video;
+mod motion;
 mod views;
 mod wsx;
 
@@ -114,6 +115,15 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         --suffix S names the clip NN-ghost-<time>-S (the set it was rendered on);
         --all renders every NN.Ghost.Gbx in --ghosts-dir whose TRAJECTORY (samples + race time, not
         the file md5: a metadata rewrite is not a new lap) is not yet in <out>/videos.tsv; --adopt records them as done
+  tinyctl motion --orig SRC --tiny TINY --views V.tsv --anchor A --tag T [--seconds 8] [--fps 20]
+                 [--outdir /tmp/tinyvid/motion] [--settle-ms 5000] [--shift-ms N] [--only o|t]
+        side-by-side VIDEO of the moving blocks (pushers, rotors, turnstiles): each view
+        captured for S seconds in the editor on both sides (same relative camera: the tiny
+        through the anchor at half the distance), stitched original LEFT | tiny RIGHT into
+        motion-<T><view>.webm (also in Maps\Tiny\videos) plus a 2x4 sheet of t = 0..7 s
+        (row-major) pulled into --outdir; the log line per side says how long after the
+        editor opened the capture started (the kinematic clock starts at map load) —
+        --shift-ms slides the tiny pane when the phases differ
 
   box-side halves: tinyctl publish-here …   tinyctl selfbuild …
   every bridge command takes --wsx PATH (default ~/bin/wsx)
@@ -154,6 +164,7 @@ fn main() {
         "unproject" => unproject::cmd(rest),
         "upload" => upload::cmd(rest),
         "video" => video::cmd(rest),
+        "motion" => motion::cmd(rest),
         "box-build" => boxbuild::box_build_cmd(rest),
         "selfbuild" => boxbuild::selfbuild_cmd(rest),
         "help" | "--help" | "-h" => {

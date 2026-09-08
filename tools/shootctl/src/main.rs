@@ -1044,10 +1044,13 @@ usage:
   shootctl shootset --map MAP --views VIEWS.tsv --side o|t --outdir /mnt/c/DIR
                     [--tag T] [--anchor sx,sy,sz:tx,ty,tz] [--scale 0.5]
                     [--load-timeout S] [--settle-ms MS] [--no-lock] [--detach]
+                    [--video S [--video-fps 20]]
         open the map ONCE and screenshot every view row (NAME<TAB>x,y,z<TAB>
         DIST<TAB>H<TAB>V, radians) to DIR/cmp-<T><NAME>-<side>.png; side t
         maps the camera through the tiny anchor at half the distance.
         --detach returns at once; DIR/done-<side>.txt appears when finished.
+        --video S captures S seconds of the screen per view instead (ffmpeg
+        gdigrab, 1920x1080) to DIR/cmp-<T><NAME>-<side>.mp4 — moving blocks.
   shootctl render --map MAP --name NAME --outdir /mnt/c/DIR [--cam 2] [--load-timeout 120] [--footage S]
                   [--quit] [--detach] GHOST...
         one ghost video on the SHARED game: the render lock for the game part

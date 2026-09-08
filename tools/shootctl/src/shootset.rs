@@ -120,6 +120,13 @@ pub struct Opts {
     /// `--shadows Q`: compute the lightmap (1 VeryFast .. 5 Ultra) after the
     /// map opens, before the first view; 0 = leave the editor as it is.
     pub shadows: u64,
+    /// `--video S`: after the camera settles on a view, capture S seconds of
+    /// the screen with ffmpeg (gdigrab, full 3840x2160 desktop scaled to
+    /// 1920x1080, `--video-fps` frames per second) into
+    /// `cmp-<tag><view>-<side>.mp4` instead of the PNG — the moving blocks
+    /// (pushers, rotors, turnstiles) need a clip, not a still (vjeux, 2026-09-08).
+    pub video_s: f64,
+    pub video_fps: u64,
 }
 
 pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
@@ -155,6 +162,8 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         lock: !args.iter().any(|a| a == "--no-lock"),
         detach: args.iter().any(|a| a == "--detach"),
         shadows: num("--shadows", 0)?,
+        video_s: val("--video").map(|s| s.parse::<f64>().map_err(|_| "--video wants seconds")).transpose()?.unwrap_or(0.0),
+        video_fps: num("--video-fps", 20)?,
     })
 }
 
@@ -373,6 +382,23 @@ fn run_set(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         // identical camera (new nonce) re-applies it, then the settle.
         aim(&format!("{i}b"))?;
         std::thread::sleep(Duration::from_millis(opts.settle_ms));
+        if opts.video_s > 0.0 {
+            // A CLIP of the view. The capture starts a known time after the
+            // editor opened (the kinematic clock starts at map load), and that
+            // offset is in the line so two worlds' clips can be phase-aligned.
+            let file = opts.outdir.join(format!("cmp-{}{}-{}.mp4", opts.tag, v.name, opts.side));
+            let _ = std::fs::remove_file(&file);
+            let since_open = load0.elapsed().as_secs_f64();
+            capture_video(&file, opts.video_s, opts.video_fps)?;
+            let size = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+            if size == 0 {
+                return Err(format!("{}: the capture is empty", file.display()));
+            }
+            let line = format!("{}\t{}\t{}\t{}\t{}\tvideo {:.1}s@{}fps from {:.1}s after the editor opened", v.name, opts.side, cam, kept, size, opts.video_s, opts.video_fps, since_open);
+            println!("{} {line}", el());
+            lines.push(line);
+            continue;
+        }
         let file = opts.outdir.join(format!("cmp-{}{}-{}.png", opts.tag, v.name, opts.side));
         let _ = std::fs::remove_file(&file);
         screenshot(&file)?;
@@ -506,4 +532,25 @@ pub fn screenshot(file: &Path) -> Result<(), String> {
         std::thread::sleep(Duration::from_millis(200));
     }
     Err(format!("{}: not written", file.display()))
+}
+
+/// `seconds` of the whole screen as an H.264 clip: ffmpeg's gdigrab reads the
+/// full 3840x2160 desktop (measured 2026-09-08: unlike shot.ps1 it is not cut
+/// by the 150 % DPI scaling), scaled to 1920x1080 on the way in, x264
+/// ultrafast so a 4K desktop at 20 fps encodes in real time next to the game.
+/// Blocks for the duration; the game keeps rendering.
+pub fn capture_video(file: &Path, seconds: f64, fps: u64) -> Result<(), String> {
+    let win = super::game_path(file.to_str().ok_or("capture path is not utf-8")?)?;
+    let ffmpeg = "/mnt/c/Users/vjeux/ffmpeg_extracted/ffmpeg-9.0.1-essentials_build/bin/ffmpeg.exe";
+    let out = std::process::Command::new(ffmpeg)
+        .args(["-nostdin", "-y", "-loglevel", "error", "-f", "gdigrab", "-framerate", &fps.to_string(), "-t", &format!("{seconds:.2}"), "-i", "desktop"])
+        .args(["-vf", "scale=1920:1080", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p", "-r", &fps.to_string()])
+        .arg(&win)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("ffmpeg gdigrab: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("ffmpeg gdigrab failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(())
 }

@@ -344,7 +344,7 @@ fn start_centre(yaw: f32) -> (f32, f32) {
     (8.0 * c + 8.0 * s, -8.0 * s + 8.0 * c)
 }
 
-fn md5_of(p: &Path) -> Result<String, String> {
+pub fn md5_of(p: &Path) -> Result<String, String> {
     let out = Command::new("md5sum").arg(p).output().map_err(|e| format!("md5sum: {e}"))?;
     let s = String::from_utf8_lossy(&out.stdout);
     s.get(..32).map(String::from).ok_or_else(|| format!("md5sum {}: {}", p.display(), String::from_utf8_lossy(&out.stderr).trim()))
