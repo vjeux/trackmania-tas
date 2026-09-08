@@ -175,6 +175,13 @@ impl Track {
     /// samples) and the map's gates: s along the author's line, gates ordered by where the line passes
     /// them (the author's order), every leg a road leg (the author drove it).
     pub fn from_author_line(path: &std::path::Path, gates: &crate::gates::MapGates) -> Result<Track, String> {
+        Self::from_author_line_ordered(path, gates, None)
+    }
+
+    /// Same, with an explicit gate ORDER (GEOM's human order from the centreline file): each gate is placed
+    /// at the line's first pass within 12 m AFTER the previous gate's arc length (a line that runs under
+    /// or beside a gate earlier must not pull it forward -- 21's deck gate 1 sits 16 m above leg 1).
+    pub fn from_author_line_ordered(path: &std::path::Path, gates: &crate::gates::MapGates, order: Option<&[u32]>) -> Result<Track, String> {
         let txt = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let j = crate::json::parse(&txt)?;
         let pts: Vec<[f64; 3]> = j.get("pts").and_then(|v| v.arr()).ok_or("pts")?.iter().filter_map(|p| p.vec3()).collect();
@@ -196,6 +203,43 @@ impl Track {
             }
         }
         let mut t = Track { pts, s, half_width: vec![6.0; n], speed_hint: vec![80.0; n], n_groups: 0, gap_seg: vec![false; n - 1], gate_s: Vec::new(), leg_gap: Vec::new(), order_groups: Vec::new(), human_speed };
+        if let Some(ord) = order {
+            let mut gate_s = Vec::new();
+            let mut s_from = 0.0f64;
+            for grp in ord {
+                // the group's gates; the first pass of the line within 12 m after s_from, else the nearest after s_from
+                let mut best: Option<(f64, f64)> = None; // (s, d)
+                for g in gates.gates.iter().filter(|g| g.group == *grp && g.kind != crate::gates::GateKind::Start) {
+                    for i in 0..n {
+                        if t.s[i] < s_from {
+                            continue;
+                        }
+                        let p = t.pts[i];
+                        let d = ((p[0] - g.centre[0]).powi(2) + (p[1] - g.centre[1]).powi(2) + (p[2] - g.centre[2]).powi(2)).sqrt();
+                        if d < 20.0 {
+                            if best.map(|b| t.s[i] < b.0).unwrap_or(true) {
+                                best = Some((t.s[i], d));
+                            }
+                            break;
+                        }
+                        if best.is_none() || (best.unwrap().1 >= 20.0 && d < best.unwrap().1) {
+                            best = Some((t.s[i], d));
+                        }
+                    }
+                }
+                let (gs, d) = best.unwrap_or((s_from, f64::INFINITY));
+                if d > 20.0 {
+                    eprintln!("author line: group {grp} is {d:.1} m from the line after s {s_from:.0}; placed at s {gs:.0}");
+                }
+                gate_s.push(gs);
+                s_from = gs;
+            }
+            t.gate_s = gate_s;
+            t.order_groups = ord.to_vec();
+            t.n_groups = ord.len();
+            t.leg_gap = vec![false; t.n_groups];
+            return Ok(t);
+        }
         // each gate group: the arc length where the line passes nearest its (first) gate
         let mut groups: Vec<(f64, u32)> = Vec::new();
         for g in &gates.gates {

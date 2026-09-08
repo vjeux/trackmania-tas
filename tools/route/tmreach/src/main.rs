@@ -1493,7 +1493,14 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
     };
     // --author-line FILE (needs --gates): GEOM's author line as THE centreline, gates in the author's order
     let mut track = match a.get("author-line") {
-        Some(al) => tmreach::lap::Track::from_author_line(Path::new(al), gates.as_ref().ok_or("--author-line needs --gates")?)?,
+        Some(al) => {
+            // the gate order comes from the centreline file (GEOM's human order when "via": "author")
+            let ord: Option<Vec<u32>> = a.get("centreline").and_then(|c| std::fs::read_to_string(c).ok()).and_then(|txt| tmreach::json::parse(&txt).ok()).and_then(|j| j.get("order_groups").and_then(|v| v.arr()).map(|arr| arr.iter().filter_map(|x| x.f64()).map(|x| x as u32).collect()));
+            if let Some(o) = &ord {
+                println!("gate order from the centreline file: {o:?}");
+            }
+            tmreach::lap::Track::from_author_line_ordered(Path::new(al), gates.as_ref().ok_or("--author-line needs --gates")?, ord.as_deref())?
+        }
         None => tmreach::lap::Track::load(&PathBuf::from(a.req("centreline")))?,
     };
     // --leg-waypoints k:FILE (repeatable via commas k:FILE,k:FILE): replace ordered leg k by a waypoint polyline
