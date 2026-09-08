@@ -1512,7 +1512,7 @@ pub fn add_crystal(c: &CPlugCrystal, scale: f32, m: &mut Merged) -> R<()> {
         }
         for (key, phys, gameplay, ps) in &surf_recs {
             if let Some(si) = si_of.get(key) {
-                surf_tris.push((Triangle { indices: [0; 3], material_id: *phys, u03: *gameplay, surface_index: *si as i16 }, *ps));
+                surf_tris.push((Triangle { indices: [0; 3], material_id: *phys, gameplay: *gameplay, surface_index: *si as i16 }, *ps));
             } else {
                 m.notes.push(format!("surface slot {key} missing from entry table"));
             }

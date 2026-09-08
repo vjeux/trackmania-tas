@@ -106,8 +106,9 @@ pub struct BlockRec {
     /// index into `MapFile::block_ids`
     pub name_field: usize,
     pub dir: u8,
-    /// raw file cell; the game's / gbx-py's cell is this minus (1,0,1)
-    pub raw_coords: [u8; 3],
+    /// The cell as the FILE stores it: the game's (and gbx-py's) cell is this
+    /// minus (1, 0, 1) — see `coords()`.
+    pub file_cell: [u8; 3],
     /// w612: absolute body offset of the three cell bytes, immediately after
     /// the `dir` byte in this block's record in chunk 0x0304301F. Overwriting
     /// them in place moves a GRID block: no field changes length, the
@@ -138,9 +139,9 @@ impl BlockRec {
     /// higher than the world grid.
     pub fn coords(&self) -> (i32, i32, i32) {
         (
-            self.raw_coords[0] as i32 - 1,
-            self.raw_coords[1] as i32,
-            self.raw_coords[2] as i32 - 1,
+            self.file_cell[0] as i32 - 1,
+            self.file_cell[1] as i32,
+            self.file_cell[2] as i32 - 1,
         )
     }
     pub fn is_waypoint(&self) -> bool {
@@ -166,7 +167,7 @@ pub struct ItemRec {
     pub pos_off: usize,
     pub pivot_off: usize,
     pub yaw: f32,
-    pub raw_coords: [u8; 3],
+    pub file_cell: [u8; 3],
     pub pos: [f32; 3],
     pub pitch: f32,
     pub roll: f32,
@@ -214,9 +215,9 @@ impl ItemRec {
 
     pub fn coords(&self) -> (i32, i32, i32) {
         (
-            self.raw_coords[0] as i32,
-            self.raw_coords[1] as i32,
-            self.raw_coords[2] as i32,
+            self.file_cell[0] as i32,
+            self.file_cell[1] as i32,
+            self.file_cell[2] as i32,
         )
     }
 }
@@ -1406,7 +1407,7 @@ fn parse_blocks(
         let name = ids[nf].name.clone().unwrap_or_default();
         let dir = r.u8();
         let coord_off = r.o;
-        let raw_coords = [r.u8(), r.u8(), r.u8()];
+        let file_cell = [r.u8(), r.u8(), r.u8()];
         let flags = r.u32();
         if flags == 0xFFFF_FFFF {
             // "unassigned" placeholder: does not count towards nbBlocks
@@ -1415,7 +1416,7 @@ fn parse_blocks(
                 name,
                 name_field: nf,
                 dir,
-                raw_coords,
+                file_cell,
                 coord_off,
                 flags,
                 waypoint_tag: None,
@@ -1438,7 +1439,7 @@ fn parse_blocks(
             name,
             name_field: nf,
             dir,
-            raw_coords,
+            file_cell,
             coord_off,
             flags,
             waypoint_tag: tag,
@@ -1482,7 +1483,7 @@ fn parse_baked(
         let name = ids[nf].name.clone().unwrap_or_default();
         let dir = r.u8();
         let coord_off = r.o;
-        let raw_coords = [r.u8(), r.u8(), r.u8()];
+        let file_cell = [r.u8(), r.u8(), r.u8()];
         let flags = r.u32();
         if flags == 0xFFFF_FFFF {
             continue;
@@ -1503,7 +1504,7 @@ fn parse_baked(
             name,
             name_field: nf,
             dir,
-            raw_coords,
+            file_cell,
             coord_off,
             flags,
             waypoint_tag: tag,
@@ -1654,7 +1655,7 @@ fn parse_items(
             let roll_off = r.o;
             let roll = r.f32();
             let coord_off = r.o;
-            let raw_coords = [r.u8(), r.u8(), r.u8()];
+            let file_cell = [r.u8(), r.u8(), r.u8()];
             ids.push(read_id(&mut r, &mut table)); // anchorTreeId
             let pos_off = r.o;
             let pos = [r.f32(), r.f32(), r.f32()];
@@ -1709,7 +1710,7 @@ fn parse_items(
                 pos_off,
                 pivot_off,
                 yaw,
-                raw_coords,
+                file_cell,
                 pos,
                 pitch,
                 roll,

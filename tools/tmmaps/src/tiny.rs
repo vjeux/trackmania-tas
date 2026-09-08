@@ -252,7 +252,7 @@ pub fn stands_in_for_tile(name: &str, flags: u32, zones: &BTreeSet<String>) -> b
 pub fn replaced_cells(source: &MapFile, zones: &BTreeSet<String>, units_of: &dyn Fn(&BlockRec) -> Vec<[i32; 3]>) -> BTreeSet<[u8; 3]> {
     let mut out = BTreeSet::new();
     for b in source.blocks.iter().filter(|b| stands_in_for_tile(&b.name, b.flags, zones)) {
-        out.insert(b.raw_coords);
+        out.insert(b.file_cell);
         if b.free_pos.is_some() {
             continue; // a free block has no cell footprint to turn
         }
@@ -280,7 +280,7 @@ fn footprint_of(units: &[[i32; 3]]) -> (i32, i32) {
 /// block's direction about its footprint (the way `block_origin` turns it);
 /// `None` off the 256³ grid.
 fn turned_cell(b: &BlockRec, (sx, sz): (i32, i32), u: [i32; 3]) -> Option<[u8; 3]> {
-    let [cx, cy, cz] = b.raw_coords.map(|c| c as i32);
+    let [cx, cy, cz] = b.file_cell.map(|c| c as i32);
     let (x, z) = match b.dir & 3 {
         0 => (cx + u[0], cz + u[2]),
         1 => (cx + sz - 1 - u[2], cz + u[0]),
@@ -344,15 +344,15 @@ pub struct HiddenTiles {
 
 impl HiddenTiles {
     pub fn hides(&self, tile: &BlockRec) -> bool {
-        self.occupied.contains_key(&tile.raw_coords)
+        self.occupied.contains_key(&tile.file_cell)
     }
     /// The tile is hidden by a block that did not declare its zone as auto terrain.
     pub fn undeclared(&self, tile: &BlockRec) -> bool {
-        self.hides(tile) && !self.declared.contains(&(tile.raw_coords, zone_stem(&tile.name).to_string()))
+        self.hides(tile) && !self.declared.contains(&(tile.file_cell, zone_stem(&tile.name).to_string()))
     }
     /// Index of the block occupying the tile's cell.
     pub fn occupant(&self, tile: &BlockRec) -> Option<usize> {
-        self.occupied.get(&tile.raw_coords).copied()
+        self.occupied.get(&tile.file_cell).copied()
     }
 }
 
@@ -376,7 +376,7 @@ pub fn hidden_tiles(source: &MapFile, zones: &BTreeSet<String>, info_of: &dyn Fn
             continue;
         }
         out.blocks += 1;
-        out.occupied.entry(b.raw_coords).or_insert(b.index);
+        out.occupied.entry(b.file_cell).or_insert(b.index);
         let fp = footprint_of(&units);
         for u in &units {
             if let Some(c) = turned_cell(b, fp, *u) {
@@ -412,7 +412,7 @@ pub fn shared_cells_cmd(args: &[String]) {
     eprintln!("{} blocks with geometry occupy tile cells; {} declare their auto terrain", hidden.blocks, hidden.declaring);
     let mut by_cell: BTreeMap<[u8; 3], (Vec<&BlockRec>, Vec<&BlockRec>)> = BTreeMap::new();
     for b in &source.blocks {
-        let e = by_cell.entry(b.raw_coords).or_default();
+        let e = by_cell.entry(b.file_cell).or_default();
         if zones.contains(&b.name) {
             e.0.push(b);
         } else {
@@ -424,7 +424,7 @@ pub fn shared_cells_cmd(args: &[String]) {
     // finish plaza's platforms and gates — emitted as items they were coplanar
     // with the decks, the Z-fight of 2026-09-08). Listed with a `b` prefix.
     for b in source.baked.iter().filter(|b| zones.contains(&b.name)) {
-        by_cell.entry(b.raw_coords).or_default().0.push(b);
+        by_cell.entry(b.file_cell).or_default().0.push(b);
     }
     let mut pairs: BTreeMap<(String, String, &str), usize> = BTreeMap::new();
     let mut listed = 0usize;
@@ -989,7 +989,7 @@ pub fn cmd(args: &[String]) {
         .blocks
         .iter()
         .filter(|b| b.free_rot.is_none() && colors.block(b.index) != 0)
-        .map(|b| ((b.raw_coords[0] as i32, b.raw_coords[1] as i32, b.raw_coords[2] as i32), colors.block(b.index)))
+        .map(|b| ((b.file_cell[0] as i32, b.file_cell[1] as i32, b.file_cell[2] as i32), colors.block(b.index)))
         .collect();
     for b in &source.baked {
         let Some(map) = mapping.baked_by_index.get(&b.index) else { continue };
@@ -1024,7 +1024,7 @@ pub fn cmd(args: &[String]) {
         // inheritance of tiny-library, cell for cell).
         let color = {
             let own = colors.baked(b.index);
-            let c = (b.raw_coords[0] as i32, b.raw_coords[1] as i32, b.raw_coords[2] as i32);
+            let c = (b.file_cell[0] as i32, b.file_cell[1] as i32, b.file_cell[2] as i32);
             let at = |dx: i32, dy: i32, dz: i32| -> Option<u8> { cell_colors.get(&(c.0 + dx, c.1 + dy, c.2 + dz)).copied() };
             let vote = |offsets: &[(i32, i32, i32)]| -> Option<u8> {
                 let mut votes: BTreeMap<u8, usize> = BTreeMap::new();
@@ -1486,7 +1486,7 @@ pub fn catalog_cmd(args: &[String]) {
         let map = mapping.by_index.get(&bi).or_else(|| mapping.by_name.get(&b.name)).unwrap();
         // the block's origin once moved: recompute from the new cell
         let mut moved = b.clone();
-        moved.raw_coords = [(cell.0 + 1) as u8, cell.1 as u8, (cell.2 + 1) as u8];
+        moved.file_cell = [(cell.0 + 1) as u8, cell.1 as u8, (cell.2 + 1) as u8];
         let origin = match map.footprint {
             Some(fp) => block_origin(&moved, fp),
             None => block_pos(&moved),

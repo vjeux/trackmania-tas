@@ -59,7 +59,7 @@ fn equivalent(a: &mapgeom::static_item::StaticItemFile, b: &mapgeom::static_item
     let tris = |so: &mapgeom::static_item::item::CPlugStaticObjectModel| -> Vec<([f32; 3], [f32; 3], [f32; 3], u8, u8)> {
         let sf = so.surface().unwrap();
         match &sf.surf {
-            Surf::Mesh { vertices, triangles, .. } => triangles.iter().map(|t| (vertices[t.indices[0] as usize], vertices[t.indices[1] as usize], vertices[t.indices[2] as usize], t.material_id, t.u03)).collect(),
+            Surf::Mesh { vertices, triangles, .. } => triangles.iter().map(|t| (vertices[t.indices[0] as usize], vertices[t.indices[1] as usize], vertices[t.indices[2] as usize], t.material_id, t.gameplay)).collect(),
             _ => Vec::new(),
         }
     };

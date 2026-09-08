@@ -76,8 +76,8 @@ pub fn swapplace(args: &[String]) {
         m.raw_patches.push((ra.yaw_off, rot));
         let mut rot = Vec::new(); for v in [ra.yaw, ra.pitch, ra.roll] { rot.extend_from_slice(&v.to_le_bytes()); }
         m.raw_patches.push((rb.yaw_off, rot));
-        m.raw_patches.push((ra.coord_off, rb.raw_coords.to_vec()));
-        m.raw_patches.push((rb.coord_off, ra.raw_coords.to_vec()));
+        m.raw_patches.push((ra.coord_off, rb.file_cell.to_vec()));
+        m.raw_patches.push((rb.coord_off, ra.file_cell.to_vec()));
         let mut p = Vec::new(); for v in rb.pos { p.extend_from_slice(&v.to_le_bytes()); }
         m.raw_patches.push((ra.pos_off, p));
         let mut p = Vec::new(); for v in ra.pos { p.extend_from_slice(&v.to_le_bytes()); }
@@ -162,7 +162,7 @@ pub fn swaprec(args: &[String]) {
 
 /// `tmmaps swapcell`.
 pub fn swapcell(args: &[String]) {
-        // swap the CELL bytes (raw_coords) of two item placements; positions untouched
+        // swap the CELL bytes (file_cell) of two item placements; positions untouched
         let m = map::MapFile::load(Path::new(&args[2]));
         let out = args.iter().position(|a| a == "--out").map(|i| args[i + 1].clone()).expect("--out F");
         let pa: usize = args.iter().position(|a| a == "--a").map(|i| args[i + 1].trim_start_matches('i').parse().unwrap()).expect("--a iN");
@@ -170,9 +170,9 @@ pub fn swapcell(args: &[String]) {
         let ia = m.items.iter().find(|it| it.index == pa).expect("--a not an item").clone();
         let ib = m.items.iter().find(|it| it.index == pb).expect("--b not an item").clone();
         let mut m = m;
-        m.raw_patches.push((ia.coord_off, ib.raw_coords.to_vec()));
-        m.raw_patches.push((ib.coord_off, ia.raw_coords.to_vec()));
-        println!("swapped cells: i{} {:?} <-> i{} {:?}", pa, ia.raw_coords, pb, ib.raw_coords);
+        m.raw_patches.push((ia.coord_off, ib.file_cell.to_vec()));
+        m.raw_patches.push((ib.coord_off, ia.file_cell.to_vec()));
+        println!("swapped cells: i{} {:?} <-> i{} {:?}", pa, ia.file_cell, pb, ib.file_cell);
         m.write_to_reporting(Path::new(&out)).expect("write");
         println!("wrote {out}");
 }
@@ -223,7 +223,7 @@ pub fn wpdump(args: &[String]) {
             let tail_start = it.scale_off + 4 + if flags & 4 != 0 { 0 } else { 0 };
             let tail: Vec<f32> = (0..6).map(|k| f32::from_le_bytes(b[tail_start + 4 * k..tail_start + 4 * k + 4].try_into().unwrap())).collect();
             let wp_hex: String = b[ws..we].iter().map(|x| format!("{:02x}", x)).collect();
-            println!("{}\t{}\t{}\t{:#x}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:?}\t({:.3},{:.3},{:.3})\t{:#06x}\t({:.3},{:.3},{:.3})\t{:.3}\t{:?}\t{}\t{}", it.index, it.model, it.author.clone().unwrap_or_default(), it.collection_raw, it.waypoint_tag.clone().unwrap_or_default(), order, it.yaw, it.pitch, it.roll, it.raw_coords, it.pos[0], it.pos[1], it.pos[2], flags, it.pivot[0], it.pivot[1], it.pivot[2], it.scale, tail, wp_hex, it.record_region.1 - it.record_region.0);
+            println!("{}\t{}\t{}\t{:#x}\t{}\t{}\t{:.4}\t{:.4}\t{:.4}\t{:?}\t({:.3},{:.3},{:.3})\t{:#06x}\t({:.3},{:.3},{:.3})\t{:.3}\t{:?}\t{}\t{}", it.index, it.model, it.author.clone().unwrap_or_default(), it.collection_raw, it.waypoint_tag.clone().unwrap_or_default(), order, it.yaw, it.pitch, it.roll, it.file_cell, it.pos[0], it.pos[1], it.pos[2], flags, it.pivot[0], it.pivot[1], it.pivot[2], it.scale, tail, wp_hex, it.record_region.1 - it.record_region.0);
         }
 }
 
@@ -361,7 +361,7 @@ pub fn renamecheck(args: &[String]) {
                     ));
                 }
                 if a.waypoint_tag != b.waypoint_tag
-                    || a.raw_coords != b.raw_coords
+                    || a.file_cell != b.file_cell
                     || a.dir != b.dir
                     || a.free_pos != b.free_pos
                 {

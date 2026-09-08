@@ -71,7 +71,7 @@ pub fn census(label: &str, sf: &CPlugSurface, at: &Xform, up_cos: f32, mat_name:
         let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
         let ny = if len > 0.0 { n[1] / len } else { 0.0 };
         let area = (len / 2.0) as f64;
-        let row = rows.entry((t.material_id, t.u03, t.surface_index)).or_insert_with(|| Row { ymin: f32::MAX, ymax: f32::MIN, ..Default::default() });
+        let row = rows.entry((t.material_id, t.gameplay, t.surface_index)).or_insert_with(|| Row { ymin: f32::MAX, ymax: f32::MIN, ..Default::default() });
         row.count += 1;
         row.area += area;
         if ny > up_cos {
@@ -339,7 +339,7 @@ pub fn surf(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), 
                 println!("  mesh v{version}: {} vertices, {} triangles, bounds {:?}..{:?}", vertices.len(), triangles.len(), lo, hi);
                 let mut h: BTreeMap<(u8, u8, i16), usize> = BTreeMap::new();
                 for t in triangles {
-                    *h.entry((t.material_id, t.u03, t.surface_index)).or_default() += 1;
+                    *h.entry((t.material_id, t.gameplay, t.surface_index)).or_default() += 1;
                 }
                 for ((p, g, i), n) in h {
                     println!("    physics {p} ({}) gameplay {g} index {i}: {n} triangles", crate::scene::physics_name(p));

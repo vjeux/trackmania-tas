@@ -101,7 +101,7 @@ fn main() {
                             let mut tails: BTreeMap<(u8, u8, i16), usize> = BTreeMap::new();
                             if let mapgeom::static_item::surface::Surf::Mesh { triangles, .. } = &sf.surf {
                                 for t in triangles {
-                                    *tails.entry((t.material_id, t.u03, t.surface_index)).or_default() += 1;
+                                    *tails.entry((t.material_id, t.gameplay, t.surface_index)).or_default() += 1;
                                 }
                             }
                             println!("  surface: material_ids {:?}, materials {}, dir {:?}, triangle (phys, u03, index) counts {:?}", sf.material_ids, sf.materials.len(), sf.gameplay_main_dir, tails);

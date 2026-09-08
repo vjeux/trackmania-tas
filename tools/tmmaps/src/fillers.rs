@@ -41,7 +41,7 @@ pub const SIDE_VEC: [(i32, i32); 4] = [(0, 1), (-1, 0), (0, -1), (1, 0)];
 pub fn occupants(m: &MapFile) -> BTreeMap<[u8; 3], Vec<&BlockRec>> {
     let mut occ: BTreeMap<[u8; 3], Vec<&BlockRec>> = BTreeMap::new();
     for b in m.blocks.iter().filter(|b| b.flags & FREE_BLOCK_FLAG == 0) {
-        occ.entry(b.raw_coords).or_default().push(b);
+        occ.entry(b.file_cell).or_default().push(b);
     }
     occ
 }
@@ -98,8 +98,8 @@ pub fn cmd(args: &[String]) {
                 continue;
             }
         }
-        let own = occ.get(&b.raw_coords);
-        let acr = across(b.raw_coords, b.dir).and_then(|k| occ.get(&k));
+        let own = occ.get(&b.file_cell);
+        let acr = across(b.file_cell, b.dir).and_then(|k| occ.get(&k));
         let class = match own {
             None => 0,
             Some(v) if v.iter().all(|x| x.flags & FLAG_PILLAR != 0) => 1,

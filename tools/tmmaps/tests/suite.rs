@@ -142,11 +142,11 @@ fn block_removal_roundtrips_and_reparses() {
         assert_eq!(reread.items.len(), original.items.len(), "{name}: items untouched");
         let kept: Vec<&tmmaps::map::BlockRec> = original.blocks.iter().filter(|b| b.index % 2 == 0).collect();
         for (a, b) in kept.iter().zip(&reread.blocks) {
-            assert_eq!((a.name.as_str(), a.dir, a.raw_coords, a.flags, a.free_pos), (b.name.as_str(), b.dir, b.raw_coords, b.flags, b.free_pos), "{name}: block {} changed", a.index);
+            assert_eq!((a.name.as_str(), a.dir, a.file_cell, a.flags, a.free_pos), (b.name.as_str(), b.dir, b.file_cell, b.flags, b.free_pos), "{name}: block {} changed", a.index);
         }
         let kept_baked: Vec<&tmmaps::map::BlockRec> = original.baked.iter().filter(|b| !b.name.starts_with('D')).collect();
         for (a, b) in kept_baked.iter().zip(&reread.baked) {
-            assert_eq!((a.name.as_str(), a.raw_coords, a.flags, a.free_pos), (b.name.as_str(), b.raw_coords, b.flags, b.free_pos), "{name}: baked {} changed", a.index);
+            assert_eq!((a.name.as_str(), a.file_cell, a.flags, a.free_pos), (b.name.as_str(), b.file_cell, b.flags, b.free_pos), "{name}: baked {} changed", a.index);
         }
         if let (Some(c0), Some(c1)) = (original.colors(), reread.colors()) {
             for (a, b) in kept.iter().zip(0..) {

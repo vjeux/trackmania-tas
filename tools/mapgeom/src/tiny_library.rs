@@ -435,7 +435,7 @@ fn unit_box_trigger(units: &[[i32; 3]], scale: f32) -> CPlugSurface {
         verts.extend([[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], [x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]]);
         let faces: [[u32; 3]; 12] = [[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]];
         for f in faces {
-            tris.push(Triangle { indices: [b + f[0], b + f[1], b + f[2]], material_id: 0, u03: 0, surface_index: 0 });
+            tris.push(Triangle { indices: [b + f[0], b + f[1], b + f[2]], material_id: 0, gameplay: 0, surface_index: 0 });
         }
     }
     CPlugSurface::mesh(verts, tris, vec![0], [0.0, 0.0, 1.0])
@@ -448,7 +448,7 @@ fn unit_box_trigger(units: &[[i32; 3]], scale: f32) -> CPlugSurface {
 struct BlockKey<'k> {
     name: &'k str,
     flags: u32,
-    modk: &'k str,
+    inherited_mods: &'k str,
     placements: usize,
 }
 
@@ -459,7 +459,7 @@ impl BlockKey<'_> {
     }
 
     fn map_key(&self) -> (String, u32, String) {
-        (self.name.to_string(), self.flags, self.modk.to_string())
+        (self.name.to_string(), self.flags, self.inherited_mods.to_string())
     }
 
     fn outcome(&self, alias: &str, source: String, result: Result<String, String>) -> Outcome {
@@ -571,8 +571,8 @@ fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collectio
     // slopes next to the first checkpoint came out grass, keyed to the
     // PlatformGrassSlope2Straight item built first).
     // the block's own modifier plus the one a filler inherits from the
-    // authored block it finishes (`modk`, see `inherited_mod`)
-    let effective_mods: Vec<String> = bi.material_modifier.iter().cloned().chain(key.modk.split('|').filter(|s| !s.is_empty()).map(String::from)).collect();
+    // authored block it finishes (`inherited_mods`, see `inherited_mod`)
+    let effective_mods: Vec<String> = bi.material_modifier.iter().cloned().chain(key.inherited_mods.split('|').filter(|s| !s.is_empty()).map(String::from)).collect();
     let recipe = if let Some(l) = legacy_item { format!("legacy:{l}") } else { format!("{}|wp{:?}|units{:?}|mod{:?}", prefabs.iter().map(|p| format!("{}@{:?}/{:?}", p.0, p.1, p.2)).collect::<Vec<_>>().join(","), bi.waypoint_type, units, effective_mods) };
     if prefabs.is_empty() && legacy_item.is_none() {
         if solids.is_empty() {
@@ -741,7 +741,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             Ok(bi) => terrain_mods(bi),
             Err(_) => Vec::new(),
         };
-        let c = (b.raw_coords[0], b.raw_coords[1], b.raw_coords[2]);
+        let c = (b.file_cell[0], b.file_cell[1], b.file_cell[2]);
         let pillar = b.flags & crate::blockmap::FLAG_PILLAR != 0;
         columns.entry((c.0, c.2)).or_default().push((c.1, pillar, mods.clone()));
         // several authored blocks in one cell (a pillar under a deck): a
@@ -775,7 +775,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         if b.flags & crate::blockmap::FLAG_FREE != 0 {
             return Vec::new();
         }
-        let c = (b.raw_coords[0], b.raw_coords[1], b.raw_coords[2]);
+        let c = (b.file_cell[0], b.file_cell[1], b.file_cell[2]);
         // the cell's own authored block, when it has a modifier
         if let Some(m) = cell_mod.get(&c).filter(|m| !m.is_empty()) {
             return m.clone();
@@ -804,7 +804,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         }
         vote(&[(1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)])
     };
-    let mod_key = |mods: &[String]| -> String { mods.join("|") };
+    let mods_key = |mods: &[String]| -> String { mods.join("|") };
 
     // distinct (name, flags, inherited modifier) among authored grid blocks AND
     // the generated (baked) non-Sea blocks -- the FC clip fillers that finish
@@ -818,7 +818,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     }
     let mut baked_key: BTreeMap<usize, String> = BTreeMap::new();
     for b in source.baked.iter().filter(|b| b.name != "Sea") {
-        let mk = mod_key(&inherited_mod(b));
+        let mk = mods_key(&inherited_mod(b));
         baked_key.insert(b.index, mk.clone());
         *keys.entry((b.name.clone(), b.flags, mk)).or_insert(0) += 1;
     }
@@ -830,7 +830,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // row gets its sea floor back at source depth (`restore_depth`).
     let mut rows_by_key: BTreeMap<(String, u32), std::collections::BTreeSet<u8>> = BTreeMap::new();
     for b in source.blocks.iter().chain(source.baked.iter()) {
-        rows_by_key.entry((b.name.clone(), b.flags)).or_default().insert(b.raw_coords[1]);
+        rows_by_key.entry((b.name.clone(), b.flags)).or_default().insert(b.file_cell[1]);
     }
     // The water row and the surface's height above that row's floor, from the
     // collection's fixed plane: the zone prefabs put their water quad about
@@ -884,11 +884,11 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let substitute = veget_mode == "substitute" || veget_mode == "bake";
     let mut baked_tree_rows = 0usize;
     let ambient = source.ambient_zone().unwrap_or_default();
-    for ((name, flags, modk), n) in &keys {
+    for ((name, flags, inherited_mods), n) in &keys {
         if !wanted(name) {
             continue;
         }
-        let key = BlockKey { name, flags: *flags, modk, placements: *n };
+        let key = BlockKey { name, flags: *flags, inherited_mods, placements: *n };
         let (path, bi) = match load_block_info(&mut idx, store, name) {
             Ok(x) => x,
             Err(e) => {
@@ -1278,7 +1278,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     //   ghost  (probe) fillers carrying bit 28 (ghost-mode blocks) left out —
     //          not the rule: the ghost build still showed the rail.
     let vfc_rules: Vec<String> = std::env::var("TINY_FILLER_RULE").or_else(|_| std::env::var("TINY_VFC_RULE")).unwrap_or_else(|_| "all".to_string()).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != "all").collect();
-    let occupied_cells: std::collections::HashSet<[u8; 3]> = source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0 && b.flags & crate::blockmap::FLAG_PILLAR == 0).map(|b| b.raw_coords).collect();
+    let occupied_cells: std::collections::HashSet<[u8; 3]> = source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0 && b.flags & crate::blockmap::FLAG_PILLAR == 0).map(|b| b.file_cell).collect();
     //   occupied  EVERY filler (VFC, FC, HFC…) recorded in a cell that any UNIT
     //             of an authored non-pillar, non-terrain block covers is left out
     //             — the whole footprint, turned like `blockmap::footprint`, not
@@ -1307,7 +1307,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 2 => (w - 1 - x, d - 1 - z),
                 _ => (z, w - 1 - x),
             };
-            let (cx, cy, cz) = (b.raw_coords[0] as i32 + rx, b.raw_coords[1] as i32 + u[1], b.raw_coords[2] as i32 + rz);
+            let (cx, cy, cz) = (b.file_cell[0] as i32 + rx, b.file_cell[1] as i32 + u[1], b.file_cell[2] as i32 + rz);
             if (0..=255).contains(&cx) && (0..=255).contains(&cy) && (0..=255).contains(&cz) {
                 footprint_cells.insert([cx as u8, cy as u8, cz as u8]);
             }
@@ -1317,10 +1317,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         if vfc_rules.iter().any(|r| r == "ghost") && b.flags & (1 << 28) != 0 {
             return Some("ghost");
         }
-        if vfc_rules.iter().any(|r| r == "free") && b.name.contains("VFC") && occupied_cells.contains(&b.raw_coords) {
+        if vfc_rules.iter().any(|r| r == "free") && b.name.contains("VFC") && occupied_cells.contains(&b.file_cell) {
             return Some("occupied cell");
         }
-        if vfc_rules.iter().any(|r| r == "occupied") && footprint_cells.contains(&b.raw_coords) {
+        if vfc_rules.iter().any(|r| r == "occupied") && footprint_cells.contains(&b.file_cell) {
             return Some("in a block's footprint");
         }
         None
@@ -1373,8 +1373,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 continue;
             }
         }
-        let modk = if prefix == "b@" { baked_key.get(&b.index).cloned().unwrap_or_default() } else { String::new() };
-        match block_map.get(&(b.name.clone(), b.flags, modk.clone())) {
+        let inherited_mods = if prefix == "b@" { baked_key.get(&b.index).cloned().unwrap_or_default() } else { String::new() };
+        match block_map.get(&(b.name.clone(), b.flags, inherited_mods.clone())) {
             Some((alias, sx, sz, units)) => {
                 let model = if alias == "-" { "-".to_string() } else { format!("{alias}.Item.Gbx") };
                 // the unit cells, so `tmmaps tiny` can hide the terrain tile under EVERY
@@ -1384,7 +1384,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 // 7th field: the variant's auto terrain, `dx,dy,dz=Zone;…|placetype`
                 // (empty when the variant declares none) — `tmmaps tiny` hides a
                 // tile the block declares as its own ground, authored or baked
-                let auto = match auto_terrain.get(&(b.name.clone(), b.flags, modk.clone())) {
+                let auto = match auto_terrain.get(&(b.name.clone(), b.flags, inherited_mods.clone())) {
                     Some((list, place)) => format!("{}|{place}", list.iter().map(|(o, z)| format!("{},{},{}={z}", o[0], o[1], o[2])).collect::<Vec<_>>().join(";")),
                     None => String::new(),
                 };

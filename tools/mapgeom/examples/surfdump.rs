@@ -14,7 +14,7 @@ fn main() {
                 println!("  verts={} tris={}", vertices.len(), triangles.len());
                 let mut hist = std::collections::BTreeMap::new();
                 for t in triangles {
-                    *hist.entry((t.material_id, t.u03, t.surface_index)).or_insert(0) += 1;
+                    *hist.entry((t.material_id, t.gameplay, t.surface_index)).or_insert(0) += 1;
                 }
                 for ((m, u, si), n) in hist {
                     println!("    mat={m} u03={u} si={si} tris={n}");

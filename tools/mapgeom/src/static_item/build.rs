@@ -709,8 +709,8 @@ impl Merged {
         for t in triangles {
             // The u16 list entry is physics | gameplay << 8 (Z_Mini_Pltf_Flat_Turbo1_Grass:
             // Green (76) with Turbo (1) is listed as 332).
-            let si = self.surf_id_slot(t.material_id as u16 | ((t.u03 as u16) << 8));
-            self.surf_triangles.push(Triangle { indices: [t.indices[0] + base, t.indices[1] + base, t.indices[2] + base], material_id: t.material_id, u03: t.u03, surface_index: si });
+            let si = self.surf_id_slot(t.material_id as u16 | ((t.gameplay as u16) << 8));
+            self.surf_triangles.push(Triangle { indices: [t.indices[0] + base, t.indices[1] + base, t.indices[2] + base], material_id: t.material_id, gameplay: t.gameplay, surface_index: si });
         }
     }
 
@@ -756,7 +756,7 @@ impl Merged {
             let si = t.surface_index.max(0) as usize;
             if let Some(Some((_, _, ids))) = by_index.get(si) {
                 t.material_id = ids.0;
-                t.u03 = ids.1;
+                t.gameplay = ids.1;
                 *counts.entry(si).or_default() += 1;
             }
         }
@@ -1333,7 +1333,7 @@ impl Merged {
                 let v = &self.visuals[vi].visual;
                 let phys = self.materials[mat].physics();
                 let (pos, idx) = visual_triangles(v);
-                let tris: Vec<Triangle> = idx.chunks(3).filter(|c| c.len() == 3).map(|c| Triangle { indices: [c[0], c[1], c[2]], material_id: phys, u03: 0, surface_index: 0 }).collect();
+                let tris: Vec<Triangle> = idx.chunks(3).filter(|c| c.len() == 3).map(|c| Triangle { indices: [c[0], c[1], c[2]], material_id: phys, gameplay: 0, surface_index: 0 }).collect();
                 self.add_surface_mesh(&pos, &tris, &IDENTITY, 1.0);
             }
         }
@@ -1790,7 +1790,7 @@ pub fn build_surface(m: &Merged) -> CPlugSurface {
         let v = vec![[0.0, -4.0, 0.0], [0.001, -4.0, 0.0], [0.0, -4.0, 0.001]];
         // byte and table both NotCollidable (28): the one place the two
         // disagreed in a whole library (surfhist, 2026-09-07)
-        let t = vec![super::surface::Triangle { indices: [0, 1, 2], material_id: 28, u03: 0, surface_index: 0 }];
+        let t = vec![super::surface::Triangle { indices: [0, 1, 2], material_id: 28, gameplay: 0, surface_index: 0 }];
         return CPlugSurface::mesh(v, t, vec![28], [0.0, 0.0, 1.0]);
     }
     CPlugSurface::mesh(m.surf_vertices.clone(), m.surf_triangles.clone(), m.surf_ids.clone(), [0.0, 0.0, 1.0])
@@ -2082,7 +2082,7 @@ pub fn blockinfo_special_trigger(store: &mut crate::store::DataStore, blockinfo_
             verts.extend(mesh.verts.iter().copied());
             for (f, phys, gp) in &mesh.tris {
                 ids = (*phys, *gp);
-                tris.push(super::surface::Triangle { indices: [f[0] as u32 + base, f[1] as u32 + base, f[2] as u32 + base], material_id: *phys, u03: *gp, surface_index: 0 });
+                tris.push(super::surface::Triangle { indices: [f[0] as u32 + base, f[1] as u32 + base, f[2] as u32 + base], material_id: *phys, gameplay: *gp, surface_index: 0 });
             }
         }
         if !tris.is_empty() {
@@ -2159,7 +2159,7 @@ pub fn trigger_mesh(sf: &super::surface::CPlugSurface, at: &Xform, scale: f32, i
         return None;
     }
     let verts: Vec<[f32; 3]> = vertices.iter().map(|v| { let t = apply(at, *v); [t[0] * scale, t[1] * scale, t[2] * scale] }).collect();
-    let tris: Vec<super::surface::Triangle> = triangles.iter().map(|t| super::surface::Triangle { indices: t.indices, material_id: ids.0, u03: ids.1, surface_index: 0 }).collect();
+    let tris: Vec<super::surface::Triangle> = triangles.iter().map(|t| super::surface::Triangle { indices: t.indices, material_id: ids.0, gameplay: ids.1, surface_index: 0 }).collect();
     let dir = sf.gameplay_main_dir.unwrap_or([0.0, 0.0, 1.0]);
     let d = [at[0] * dir[0] + at[1] * dir[1] + at[2] * dir[2], at[3] * dir[0] + at[4] * dir[1] + at[5] * dir[2], at[6] * dir[0] + at[7] * dir[1] + at[8] * dir[2]];
     Some(super::surface::CPlugSurface::mesh(verts, tris, vec![ids.0 as u16 | ((ids.1 as u16) << 8)], d))
@@ -2288,7 +2288,7 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                                 Ok(sf) => {
                                     // the modifier's Collision material decides; the shape's own bytes otherwise
                                     let own = match &sf.surf {
-                                        super::surface::Surf::Mesh { triangles, .. } => triangles.first().map(|t| (t.material_id, t.u03)).unwrap_or((0, 0)),
+                                        super::surface::Surf::Mesh { triangles, .. } => triangles.first().map(|t| (t.material_id, t.gameplay)).unwrap_or((0, 0)),
                                         _ => (0, 0),
                                     };
                                     let (ids, from) = match special_collision_ids(store, m) {
@@ -4456,7 +4456,7 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
     }
     // the trunk hull as the collision (Wood, 14 — what the model says)
     if !t.hull_triangles.is_empty() {
-        let tris: Vec<Triangle> = t.hull_triangles.iter().map(|(idx, mat)| Triangle { indices: *idx, material_id: (*mat).min(255) as u8, u03: 0, surface_index: 0 }).collect();
+        let tris: Vec<Triangle> = t.hull_triangles.iter().map(|(idx, mat)| Triangle { indices: *idx, material_id: (*mat).min(255) as u8, gameplay: 0, surface_index: 0 }).collect();
         m.add_surface_mesh(&t.hull_vertices, &tris, &IDENTITY, scale);
         out.hull_triangles = tris.len();
     }

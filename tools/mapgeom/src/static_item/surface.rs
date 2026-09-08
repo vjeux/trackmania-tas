@@ -11,8 +11,11 @@ use super::{read_ref, write_ref, Id, Rd, Ref, Wr, R, FACADE};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Triangle {
     pub indices: [u32; 3],
+    /// The physics id (the surface material: Asphalt 16, Grass 76, …).
     pub material_id: u8,
-    pub u03: u8,
+    /// The gameplay id (Turbo 1, ReactorBoost 12, Reset 8, …; 0 none) — the
+    /// high byte of the `material_ids` table entry this triangle indexes.
+    pub gameplay: u8,
     pub surface_index: i16,
 }
 
@@ -102,7 +105,7 @@ impl Surf {
     /// caller maps it through the surface's material table like a mesh
     /// triangle's u8).
     pub fn triangulate(&self) -> Option<(Vec<[f32; 3]>, Vec<Triangle>)> {
-        let tri = |i: [u32; 3], si: Option<i16>| Triangle { indices: i, material_id: si.unwrap_or(0).max(0) as u8, u03: 0, surface_index: si.unwrap_or(0) };
+        let tri = |i: [u32; 3], si: Option<i16>| Triangle { indices: i, material_id: si.unwrap_or(0).max(0) as u8, gameplay: 0, surface_index: si.unwrap_or(0) };
         match self {
             Surf::Mesh { vertices, triangles, .. } => Some((vertices.clone(), triangles.clone())),
             Surf::Box { transform, surface_index } => {
@@ -215,7 +218,7 @@ pub fn read_surf(r: &mut Rd, sv: u32) -> R<(Surf, Option<[f32; 3]>)> {
             }
             let vertices = r.array(|r| r.vec3())?;
             let triangles = r.array(|r| {
-                Ok(Triangle { indices: [r.u32()?, r.u32()?, r.u32()?], material_id: r.u8()?, u03: r.u8()?, surface_index: r.i16()? })
+                Ok(Triangle { indices: [r.u32()?, r.u32()?, r.u32()?], material_id: r.u8()?, gameplay: r.u8()?, surface_index: r.i16()? })
             })?;
             Surf::Mesh { version, vertices, triangles }
         }
@@ -276,7 +279,7 @@ pub fn write_surf(w: &mut Wr, s: &Surf, dir: &Option<[f32; 3]>, sv: u32) {
             for t in triangles {
                 t.indices.iter().for_each(|i| w.u32(*i));
                 w.u8(t.material_id);
-                w.u8(t.u03);
+                w.u8(t.gameplay);
                 w.i16(t.surface_index);
             }
         }

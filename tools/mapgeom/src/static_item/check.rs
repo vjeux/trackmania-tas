@@ -77,7 +77,7 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                             }
                             let mut bytes: std::collections::BTreeMap<(u8, u8), usize> = Default::default();
                             for t in triangles {
-                                *bytes.entry((t.material_id, t.u03)).or_default() += 1;
+                                *bytes.entry((t.material_id, t.gameplay)).or_default() += 1;
                             }
                             println!("{path}: waypoint type {:?} trigger {} vertices {} triangles bounds [{:.2}, {:.2}, {:.2}]..[{:.2}, {:.2}, {:.2}] ids [{}] tri (phys, gp) {:?} main dir {:?} materials {}", wt, vertices.len(), triangles.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], ids.join(", "), bytes, sf.gameplay_main_dir, sf.materials.len());
                         }

@@ -248,7 +248,7 @@ pub fn run(rest: &[String]) -> Result<(), String> {
             nblocks += 1;
             bh.str(kind);
             bh.str(&b.name);
-            bh.write(&b.raw_coords);
+            bh.write(&b.file_cell);
             bh.write(&[b.dir]);
             bh.u32(b.flags);
             if let Some(p) = b.free_pos {
