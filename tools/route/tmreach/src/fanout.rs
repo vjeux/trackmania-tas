@@ -412,7 +412,7 @@ pub fn fanout_ghost(w: &mut Worker, tel: &Telemetry, cfg: &FanoutCfg, start_id_b
                 cells.insert(cell);
                 fam_cells.entry(m.shape.family()).or_default().insert(cell);
                 out.endpoints.push((start_id, m.id, h as u16, end.pos));
-                out.records.push(Record { start_id, macro_id: m.id, horizon_ticks: h as u16, outcome, end, gate_tick, path_len_m: path, min_speed: vmin, max_speed: vmax, effects: crate::tmr::effects_byte(&end_row.vis) });
+                out.records.push(Record { start_id, macro_id: m.id, horizon_ticks: h as u16, outcome, end, gate_tick, path_len_m: path, min_speed: vmin, max_speed: vmax });
                 out.paths.push(crate::tmr::path4(win_eff, &|r| w.race_of(r)));
             }
         }

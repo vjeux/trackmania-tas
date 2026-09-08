@@ -555,12 +555,12 @@ fn cmd_verify(a: &Args) -> Result<(), String> {
     if let Some(p) = a.get("dump") {
         // keyed by (start_id, macro, horizon) -- a diff of two dumps is keyed, a lost work item shows
         // as missing lines; `idx` is the record's position in the file (for cmp -l offsets)
-        let mut s = String::from("start_id\tmacro\th\toutcome\trace_ms\tx\ty\tz\tspeed\tcps\tfin\tgates\tpath\tvmin\tvmax\tidx\tquat\trpm\tcar\teffects\n");
+        let mut s = String::from("start_id\tmacro\th\toutcome\trace_ms\tx\ty\tz\tspeed\tcps\tfin\tgates\tpath\tvmin\tvmax\tidx\tquat\trpm\tcar\teffects\treactor_lvl\treactor_type\n");
         let mut recs: Vec<(usize, &tmreach::tmr::Record)> = shard.records.iter().enumerate().collect();
         recs.sort_by_key(|(_, r)| (r.start_id, r.macro_id, r.horizon_ticks));
         for (i, r) in &recs {
             let g: Vec<String> = r.gate_tick.iter().enumerate().filter(|(_, t)| **t >= 0).map(|(w, _)| format!("wp{w}")).collect();
-            s.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.2}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{:.2}\t{}\t{:.5},{:.5},{:.5},{:.5}\t{:.1}\t{}\t{:#04x}\n", r.start_id, r.macro_id, r.horizon_ticks, r.outcome, r.end.race_ms, r.end.pos[0], r.end.pos[1], r.end.pos[2], r.end.speed, r.end.cps, r.end.finished as u8, g.join(","), r.path_len_m, r.min_speed, r.max_speed, i, r.end.quat[0], r.end.quat[1], r.end.quat[2], r.end.quat[3], r.end.rpm, r.end.car, r.effects));
+            s.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.2}\t{}\t{}\t{}\t{:.2}\t{:.2}\t{:.2}\t{}\t{:.5},{:.5},{:.5},{:.5}\t{:.1}\t{}\t{:#04x}\t{}\t{}\n", r.start_id, r.macro_id, r.horizon_ticks, r.outcome, r.end.race_ms, r.end.pos[0], r.end.pos[1], r.end.pos[2], r.end.speed, r.end.cps, r.end.finished as u8, g.join(","), r.path_len_m, r.min_speed, r.max_speed, i, r.end.quat[0], r.end.quat[1], r.end.quat[2], r.end.quat[3], r.end.rpm, r.end.car, r.end.effects, r.end.reactor_lvl, r.end.reactor_type));
         }
         std::fs::write(p, s).map_err(|e| e.to_string())?;
     }
@@ -1397,10 +1397,17 @@ fn cmd_bank_table(a: &Args) -> Result<(), String> {
         let legs = pick(&c, "human legs (positives) ", ",");
         let workers = pick(&c, "## fanout (", " workers");
         let git = pick(&c, "tmreach campaign ", " on ");
-        rows.push((name.clone(), format!("{name}\t{uid}\t{ghosts}\texcluded {excluded}\t{records}\tcounter steps {counter} same-row\t{oracle}\tlegs {legs}\tworkers {workers}\ttmreach {git}\n")));
+        // the effects dialect from the shard header (state version byte 17) and record 0's byte 99
+        let dialect = std::fs::File::open(e.path().join("samples.tmr")).ok().and_then(|mut f| { use std::io::Read; let mut b = vec![0u8; 24 + 12 + 100]; f.read_exact(&mut b).ok().map(|_| b) }).map(|b| {
+            if b.len() < 24 + 12 + 100 { "?".to_string() }
+            else if b[17] >= 3 { "tmstate-v3".to_string() }
+            else if c.contains("effects_dialect=gen-01:16") || b[24 + 12 + 99] != 0 { "gen-01:16 (re-run)".to_string() }
+            else { "none (v2 records)".to_string() }
+        }).unwrap_or_default();
+        rows.push((name.clone(), format!("{name}\t{uid}\t{ghosts}\texcluded {excluded}\t{records}\tcounter steps {counter} same-row\t{oracle}\tlegs {legs}\tworkers {workers}\ttmreach {git}\teffects_dialect={dialect}\n")));
     }
     rows.sort();
-    let mut s = String::from("map\tuid\tghosts\texcluded\trecords\tcounter attribution\toracle control\thuman legs\tworkers\tbuild\n");
+    let mut s = String::from("map\tuid\tghosts\texcluded\trecords\tcounter attribution\toracle control\thuman legs\tworkers\tbuild\teffects_dialect\n");
     for (_, r) in &rows {
         s.push_str(r);
     }
