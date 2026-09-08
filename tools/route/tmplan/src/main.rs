@@ -555,6 +555,11 @@ fn cmd_deck_gates(args: &[String]) {
         // the deck's mean height (a sloped piece) rather than its highest face
         g.centre = [c[0], c[1] + g.half_height, c[2]];
         let _ = top;
+        // where the engine credits it, in THIS frame (deck centroid): measured on tiny 02/06 crossings (INPUT arm)
+        let mb = g.model.as_bytes();
+        if mb.len() > 2 && mb[0] == b'A' && mb[2].is_ascii_digit() {
+            g.credit_offset_m = match (mb[1], g.kind) { (b'C', tmroute::gates::WpKind::Checkpoint) => -9.5, (b'C', tmroute::gates::WpKind::Finish) => -7.6, (b'I', _) => -2.07, _ => g.credit_offset_m };
+        }
         moved += 1;
         lines.push(format!("  wp {:>2} {}: anchor ({:.1}, {:.1}, {:.1}) → deck centre ({:.1}, {:.1}, {:.1}) top {:.1} (hull {} tris, deck area {:.0} m²)", g.waypoint, g.model, old[0], old[1] - g.half_height, old[2], c[0], c[1], c[2], top, (0..scene.tris.len()).filter(|&i| scene.tris[i].tag as usize == k).count(), d.0));
     }

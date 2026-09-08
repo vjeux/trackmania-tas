@@ -94,7 +94,11 @@ pub fn credit_offset(model: &str, from_item: bool, kind: WpKind, pitched: bool) 
     // the tiny converter's items: AC… = a converted block (deck 2 m above the origin, credit 2.2 m before the
     // centre), AI… = an original gate item; the finish/lap classes are unknown there
     if m.len() > 2 && m.starts_with('A') && m.as_bytes()[2].is_ascii_digit() {
-        return match (m.as_bytes()[1], kind) { (b'C', WpKind::Checkpoint) => -2.2, (b'I', WpKind::Checkpoint) => -2.15, _ => 0.0 };
+        // MEASURED on the engine-credited crossings of tiny 02 and 06 (INPUT arm, 2026-09-08): relative to the item
+        // ANCHOR, AC checkpoints −1.65, AC finishes −1.60, AI gate items −2.08 (the item keeps its full-size trigger);
+        // `tmplan deck-gates` rewrites these for its deck frames (−9.5 / −7.6 / −2.07). Already tiny-scale: the
+        // caller's ×0.5 is undone below.
+        return 2.0 * match (m.as_bytes()[1], kind) { (b'C', WpKind::Checkpoint) => -1.65, (b'C', WpKind::Finish) => -1.60, (b'I', _) => -2.08, _ => 0.0 };
     }
     if m.contains("WallCheckpoint") { return 14.0; }
     if m.contains("ExpandableFinish") { return -2.5; }
