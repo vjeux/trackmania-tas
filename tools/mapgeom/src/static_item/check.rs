@@ -31,6 +31,9 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
             }
         };
         let mut problems: Vec<String> = Vec::new();
+        // the external files the item names, by node index (FX-01 wants the
+        // texture to be a PACK path: `Stadium\Media\Texture\X.Texture.gbx`)
+        let externals: Vec<(u32, String)> = crate::container::Gbx::parse(&data).map(|g| g.refs.iter().map(|e| (e.node_index, g.ref_path(e))).collect()).unwrap_or_default();
         // The item's waypoint type and trigger shape: what a checkpoint /
         // finish fires on, or a gameplay gate's effect volume (the id table
         // carries physics | gameplay << 8; a special gate's gameplay is the
@@ -190,7 +193,14 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                                     match (t.index, t.inline.is_some()) {
                                         (ti, _) if ti < 0 => problems.push(format!("entity {i}: emitter {:?} sub-model {k}: NULL texture (FX-01: the engine dereferences it)", em.name.as_str().unwrap_or(""))),
                                         (_, true) => problems.push(format!("entity {i}: emitter {:?} sub-model {k}: INLINE texture (FX-01: the engine misreads an inline CPlugBitmap)", em.name.as_str().unwrap_or(""))),
-                                        _ => {}
+                                        // a `.Texture.gbx` FILE next to the item is read by the same
+                                        // misreading path and crashed the client too (FxF, LogCrash
+                                        // 2EDBA8 again, 2026-09-08 06:11Z): the pack path is the one form
+                                        (ti, false) => match externals.iter().find(|(k, _)| *k as i32 == ti) {
+                                            Some((_, p)) if !p.contains('\\') || p.starts_with("..") => problems.push(format!("entity {i}: emitter {:?} sub-model {k}: texture {p:?} is not a pack path (FX-01: a texture FILE in the archive is misread by the engine)", em.name.as_str().unwrap_or(""))),
+                                            Some(_) => {}
+                                            None => problems.push(format!("entity {i}: emitter {:?} sub-model {k}: texture node {ti} is neither inline nor in the reference table", em.name.as_str().unwrap_or(""))),
+                                        },
                                     }
                                 }
                             }
