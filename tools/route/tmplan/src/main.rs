@@ -246,6 +246,7 @@ fn main() {
         "deck-gates" => cmd_deck_gates(&args[1..]),
         "leg-scan" => cmd_leg_scan(&args[1..]),
         "road-centreline" => cmd_road_centreline(&args[1..]),
+        "author-line" => cmd_author_line(&args[1..]),
         other => die(&format!("unknown command {other}")),
     }
 }
@@ -768,9 +769,32 @@ fn cmd_road_centreline(args: &[String]) {
             eprintln!("  spawn stub: no road along yaw {yaw:.2} from the spawn — none written");
         }
     }
+    // --leg-lines FILE.tsv (map_stem \t from_group|spawn \t to_group \t half_width \t x,y,z;x,y,z;… \t note): an explicit
+    // drive line for a leg the graph cannot carry (Argentina 21's turbo jump — player/LEARN 16:04Z); the polyline
+    // takes these points (resampled 2 m), the segment is "via": "manual", the Leg keeps its verdict class
+    let leg_lines: Vec<(String, String, f32, Vec<[f32; 3]>)> = flag(args, "--leg-lines").and_then(|p| std::fs::read_to_string(p).ok()).map(|t| t.lines().filter(|l| !l.starts_with('#')).filter_map(|l| {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() >= 5 && f[0] == stem_v {
+            let pts: Vec<[f32; 3]> = f[4].split(';').filter_map(|p| { let v: Vec<f32> = p.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 3 { Some([v[0], v[1], v[2]]) } else { None } }).collect();
+            if pts.len() >= 2 { Some((f[1].to_string(), f[2].to_string(), f[3].trim().parse().unwrap_or(8.0), pts)) } else { None }
+        } else { None }
+    }).collect()).unwrap_or_default();
     for w in seq.windows(2) {
         let (i, j) = (w[0], w[1]);
         let i0 = pts.len() - 1;
+        if let Some((_, _, hwid, line)) = leg_lines.iter().find(|(f, t, _, _)| *f == grp(&nodes, i).trim_matches('"') && *t == grp_id_of(&nodes, j)) {
+            let mut raw = vec![*pts.last().unwrap()];
+            raw.extend_from_slice(line);
+            let leg = tmroute::human::resample(&raw, 2.0);
+            for p in leg.iter().skip(1) {
+                hw.push(*hwid);
+                pts.push(*p);
+            }
+            eprintln!("  manual drive line {} → {}: {} points given, {} pts, half-width {hwid}", grp(&nodes, i), grp(&nodes, j), line.len(), leg.len());
+            segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {}, \"gap\": false, \"via\": \"manual\"}}", grp(&nodes, i), grp(&nodes, j), pts.len() - 1));
+            through = None;
+            continue;
+        }
         let path = match through { Some(p) => surf.road_path_from_point(p, &nodes, j).or_else(|| surf.road_path(&nodes, i, j)), None => surf.road_path(&nodes, i, j) };
         through = None;
         match path {
@@ -813,7 +837,9 @@ fn cmd_road_centreline(args: &[String]) {
             None => {
                 // SURFACE WALK before declaring a gap: over the collision triangles, from around where the line stands
                 // (the through-point or the from-gate) to the to-gate deck; accepted when ≤ 4 × chord + 40 m
-                let walked = if walk_on && !jumpy.iter().any(|(f, t)| *f == grp(&nodes, i).trim_matches('"') && *t == grp_id_of(&nodes, j)) {
+                // a Jump/Drop verdict INTO this gate from any gate counts: an isolated deck (21's gate 15) is a jump from
+                // wherever the order arrives (the order moved 2→15 to 6→15 and the walk built a fake path, 16:11Z)
+                let walked = if walk_on && !jumpy.iter().any(|(f, t)| *t == grp_id_of(&nodes, j)) {
                     if walk.is_none() { walk = build_walk(); }
                     walk.as_ref().and_then(|w| {
                         let start = *pts.last().unwrap();
@@ -925,8 +951,11 @@ fn cmd_road_centreline(args: &[String]) {
             tg_gates.push(Gate { kind, centre: centre_c, normal: gate_normal, half_width: half, s: s[i1], map_waypoint: rep.waypoint });
             // a gap leg's class from the converter's verdicts (--verdicts TSV: map_stem, from_group, to_group, class, note)
             let from_lab = grp(&nodes, w[0]).trim_matches('"').to_string();
-            let verdict = verdicts.iter().find(|v| v.0 == from_lab && v.1 == grp_id.to_string()).cloned();
-            let conn = if !gap { ConnectionClass::Road } else { match verdict.as_ref().map(|v| v.2.as_str()) { Some("Jump") => ConnectionClass::Jump, Some("Drop") => ConnectionClass::Drop, Some("Road") => ConnectionClass::Road, _ => ConnectionClass::Unknown } };
+            // exact (from, to) first, else any Jump/Drop verdict INTO this gate (orders move between builds)
+            let verdict = verdicts.iter().find(|v| v.0 == from_lab && v.1 == grp_id.to_string()).cloned().or_else(|| verdicts.iter().find(|v| v.1 == grp_id.to_string() && (v.2 == "Jump" || v.2 == "Drop")).cloned());
+            // a manual drive line or a gap keeps the verdict class (a Jump stays a Jump even with points to follow)
+            let manual = seg.contains("\"via\": \"manual\"");
+            let conn = if !gap && !manual { ConnectionClass::Road } else { match verdict.as_ref().map(|v| v.2.as_str()) { Some("Jump") => ConnectionClass::Jump, Some("Drop") => ConnectionClass::Drop, Some("Road") => ConnectionClass::Road, _ => if manual { ConnectionClass::Road } else { ConnectionClass::Unknown } } };
             if let Some(v) = &verdict { verdict_notes.push(format!("{}→{} {}{}", v.0, v.1, v.2, if v.3.is_empty() { String::new() } else { format!(" ({})", v.3) })); }
             legs.push(Leg { gate_idx: li as u32, map_waypoint: rep.waypoint, s_start: s[i0], s_end: s[i1], connection: conn, arrival_speed: [5.0, 80.0], arrival_heading: gate_normal, arrival_heading_tol: 0.5, arrival_height: [centre[1] - rep.half_height - 1.0, centre[1] - rep.half_height + 3.0], p_reach: if gap { 0.0 } else { 1.0 }, expected_ms: -1, evidence: LegEvidence::Predicted });
             gate_order.push(rep.waypoint);
@@ -954,4 +983,101 @@ fn cmd_road_centreline(args: &[String]) {
     println!("{}: {} pts, {:.0} m, {} segments, {gaps} gaps, on-road {:.1} %{flag} → {out}", gates.map_name, pts.len(), s.last().unwrap(), segs.len(), 100.0 * on_road as f32 / pts.len().max(1) as f32);
     fn grp(n: &Nodes, i: usize) -> String { if i == 0 { "\"spawn\"".into() } else { n.groups[i].to_string() } }
     fn grp_id_of(n: &Nodes, i: usize) -> String { n.groups[i].to_string() }
+}
+
+/// `author-line SRC.Map.Gbx --anchor sx,sy,sz:tx,ty,tz [--scale 0.5] --centreline X.road-centreline.json [--out author.json]`
+/// The ORIGINAL author's validation ghost mapped into the tiny frame (converter anchors: tiny = ta + (src − sa) × scale)
+/// against our polyline: lateral offset per sample (nearest polyline point, XZ), summary and worst stretch. The
+/// route-sanity oracle the coordinator asked for (16:06Z); the author line itself is written as points for the player.
+fn cmd_author_line(args: &[String]) {
+    let src = args.iter().find(|a| a.ends_with(".Map.Gbx") || a.ends_with(".Ghost.Gbx") || a.ends_with(".Replay.Gbx")).cloned().unwrap_or_else(|| die("SRC.Map.Gbx / Ghost.Gbx required"));
+    let anchor = flag(args, "--anchor").unwrap_or_else(|| die("--anchor sx,sy,sz:tx,ty,tz"));
+    let (sa, ta) = {
+        let mut it = anchor.split(':');
+        let p = |s: &str| -> [f32; 3] { let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() != 3 { die("--anchor sx,sy,sz:tx,ty,tz") } [v[0], v[1], v[2]] };
+        (p(it.next().unwrap_or("")), p(it.next().unwrap_or("")))
+    };
+    let scale: f32 = flag(args, "--scale").and_then(|s| s.parse().ok()).unwrap_or(0.5);
+    let cl = flag(args, "--centreline").unwrap_or_else(|| die("--centreline X.road-centreline.json"));
+    let txt = std::fs::read_to_string(&cl).unwrap_or_else(|e| die(&format!("{cl}: {e}")));
+    let grab = |key: &str| -> Vec<f32> {
+        let k = format!("\"{key}\": [");
+        let i = txt.find(&k).unwrap_or_else(|| die(&format!("{cl}: no {key}")));
+        let rest = &txt[i + k.len()..];
+        // pts is an array of arrays: take everything up to "]]," ; scalars up to "]"
+        let end = if key == "pts" { rest.find("]]").map(|e| e + 1).unwrap_or(rest.len()) } else { rest.find(']').unwrap_or(rest.len()) };
+        rest[..end].split(|c: char| c == ',' || c == '[' || c == ']').filter_map(|x| x.trim().parse::<f32>().ok()).collect()
+    };
+    let flat = grab("pts");
+    let pts: Vec<[f32; 3]> = flat.chunks(3).filter(|c| c.len() == 3).map(|c| [c[0], c[1], c[2]]).collect();
+    let s = grab("s");
+    let hw = grab("half_width");
+    // every vehicle entity merged (a car-switch or multi-entity ghost keeps only a stretch per entity)
+    let d = gbx::record::decode_ghost_all_vehicles(&src).unwrap_or_else(|e| die(&format!("{src}: no ghost ({e})")));
+    let mut rows: Vec<(f32, f32, f32, [f32; 3], i32)> = Vec::new(); // (s_nearest, lateral, dy, tiny pos, t)
+    let mut author: Vec<[f32; 3]> = Vec::new();
+    let mut last_t = i32::MIN;
+    for smp in &d.samples {
+        if smp.time_ms < last_t + 100 { continue; }
+        last_t = smp.time_ms;
+        let q = [ta[0] + (smp.x - sa[0]) * scale, ta[1] + (smp.y - sa[1]) * scale, ta[2] + (smp.z - sa[2]) * scale];
+        author.push(q);
+        let mut best = (f32::INFINITY, 0usize);
+        for (k, p) in pts.iter().enumerate() {
+            let dd = (p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2);
+            if dd < best.0 { best = (dd, k); }
+        }
+        let k = best.1;
+        rows.push((s.get(k).copied().unwrap_or(0.0), best.0.sqrt(), q[1] - pts[k][1], q, smp.time_ms));
+    }
+    if rows.is_empty() { die("no ghost samples"); }
+    let mut lat: Vec<f32> = rows.iter().map(|r| r.1).collect();
+    lat.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let med = lat[lat.len() / 2];
+    let p90 = lat[(lat.len() as f32 * 0.9) as usize];
+    let within: usize = rows.iter().filter(|r| { let k = s.iter().position(|v| *v >= r.0).unwrap_or(0); r.1 <= hw.get(k).copied().unwrap_or(4.0) + 2.0 }).count();
+    let worst = rows.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap();
+    // the longest stretch (in ghost time) more than 12 m off the line
+    let mut run_start: Option<i32> = None; let mut best_run = (0i32, 0i32, [0.0f32; 3]);
+    for r in &rows {
+        if r.1 > 12.0 { if run_start.is_none() { run_start = Some(r.4); } let len = r.4 - run_start.unwrap(); if len > best_run.0 { best_run = (len, run_start.unwrap(), r.3); } } else { run_start = None; }
+    }
+    println!("author line vs polyline: {} samples ({:.3} s), lateral median {med:.1} m, p90 {p90:.1} m, within half-width+2 m {:.0} %, worst {:.1} m at s {:.0} (author at ({:.0}, {:.0}, {:.0}), t {:.3} s); longest off-line (> 12 m) stretch {:.1} s from t {:.3} s at ({:.0}, {:.0}, {:.0})",
+        rows.len(), d.end_ms as f32 / 1000.0, 100.0 * within as f32 / rows.len() as f32, worst.1, worst.0, worst.3[0], worst.3[1], worst.3[2], worst.4 as f32 / 1000.0, best_run.0 as f32 / 1000.0, best_run.1 as f32 / 1000.0, best_run.2[0], best_run.2[1], best_run.2[2]);
+    // --gates deck.json: the AUTHOR's gate order = the order in which the ghost first comes within 10 m (XZ) and 6 m (y)
+    // of each gate group's centre — the ground truth of a finishing lap on the tiny map
+    let mut author_order: Vec<u32> = Vec::new();
+    if let Some(gp) = flag(args, "--gates") {
+        let g = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+        let mut firsts: Vec<(i32, u32)> = Vec::new();
+        let mut groups: Vec<u32> = g.gates.iter().filter(|r| r.group != u32::MAX).map(|r| r.group).collect();
+        groups.sort_unstable();
+        groups.dedup();
+        for grp in groups {
+            // FIRST pass for a checkpoint; LAST pass for a finish group (the lap ends there — a finish tower passed under
+            // earlier must not be ordered early; tiny 13)
+            let is_fin = g.gates.iter().any(|x| x.group == grp && matches!(x.kind, tmroute::gates::WpKind::Finish));
+            let mut t_first: Option<i32> = None;
+            for r in &rows {
+                let hit = g.gates.iter().filter(|x| x.group == grp).any(|x| ((x.centre[0] - r.3[0]).powi(2) + (x.centre[2] - r.3[2]).powi(2)).sqrt() <= x.half_width + 6.0 && (x.centre[1] - r.3[1]).abs() <= 10.0);
+                if hit { t_first = Some(r.4); if !is_fin { break; } }
+            }
+            if let Some(t) = t_first { firsts.push((t, grp)); } else {
+                let (mut dmin, mut at) = (f32::INFINITY, [0.0f32; 3]);
+                for r in &rows { for x in g.gates.iter().filter(|x| x.group == grp) { let dd = ((x.centre[0] - r.3[0]).powi(2) + (x.centre[1] - r.3[1]).powi(2) + (x.centre[2] - r.3[2]).powi(2)).sqrt(); if dd < dmin { dmin = dd; at = r.3; } } }
+                eprintln!("  author never at group {grp}: nearest {dmin:.1} m at ({:.0}, {:.0}, {:.0})", at[0], at[1], at[2]);
+            }
+        }
+        firsts.sort();
+        author_order = firsts.iter().map(|f| f.1).collect();
+        println!("author order (groups, first pass): {}", author_order.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(","));
+    }
+    if let Some(label) = flag(args, "--row") {
+        println!("| {label} | {} ({:.1} s) | {med:.1} | {p90:.1} | {:.0} % | {:.1} @ s {:.0} (author at ({:.0}, {:.0}, {:.0}), t {:.1}) | {:.1} s from t {:.1} at ({:.0}, {:.0}, {:.0}) |", rows.len(), d.end_ms as f32 / 1000.0, 100.0 * within as f32 / rows.len() as f32, worst.1, worst.0, worst.3[0], worst.3[1], worst.3[2], worst.4 as f32 / 1000.0, best_run.0 as f32 / 1000.0, best_run.1 as f32 / 1000.0, best_run.2[0], best_run.2[1], best_run.2[2]);
+    }
+    if let Some(out) = flag(args, "--out") {
+        let js = format!("{{\n  \"source\": \"{}\",\n  \"anchor\": \"{anchor}\",\n  \"scale\": {scale},\n  \"pts\": [{}],\n  \"lateral_to_centreline\": [{}],\n  \"note\": \"the ORIGINAL author's validation ghost mapped into the tiny frame (100 ms samples, ground contact point); lateral = XZ distance to the nearest centreline point\"\n}}\n",
+            src, author.iter().map(|p| format!("[{:.2},{:.2},{:.2}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(","), rows.iter().map(|r| format!("{:.1}", r.1)).collect::<Vec<_>>().join(","));
+        io::write_atomic(Path::new(&out), js.as_bytes()).unwrap_or_else(|e| die(&e));
+    }
 }
