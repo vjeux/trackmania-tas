@@ -9,23 +9,37 @@ author time is Nadeo's medal time on the full-size map, for reference — the tw
 Each clip is the ghost played back in the game's MediaTracker, chase camera. A map reads *video pending* until its
 clip is published the way every clip in this repo is.
 
-**Tiny Summer 2026 - 01** — original author time `23.144` · tiny ghost **19.381** (build ship10) — *video pending*
+**Tiny Summer 2026 - 01** — original author time `23.144` · tiny ghost **19.381** (build ship10)
+
+https://github.com/user-attachments/assets/0e5276d7-7553-4ddf-9a64-3bfc267d7f48
 
 **Tiny Summer 2026 - 02** — original author time `27.097` · tiny ghost **16.746** (build ship10)
 
 https://github.com/user-attachments/assets/ac560075-da81-4154-9ed9-8e3f62fdc64e
 
-**Tiny Summer 2026 - 03** — original author time `24.213` · tiny ghost **33.169** (build ship10) — *video pending*
+**Tiny Summer 2026 - 03** — original author time `24.213` · tiny ghost **33.169** (build ship10)
 
-**Tiny Summer 2026 - 04** — original author time `26.622` · tiny ghost **29.444** (build ship10) — *video pending*
+https://github.com/user-attachments/assets/9255035f-f4a3-4ed5-a0d9-4428144758ce
 
-**Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **17.402** (build ship9) — *video pending*
+**Tiny Summer 2026 - 04** — original author time `26.622` · tiny ghost **29.444** (build ship10)
 
-**Tiny Summer 2026 - 06** — original author time `29.014` · tiny ghost **23.038** (build ship10) — *video pending*
+https://github.com/user-attachments/assets/7f16b99c-33dc-4b45-9350-d75cb6306b19
 
-**Tiny Summer 2026 - 07** — original author time `27.725` · tiny ghost **19.002** (build ship10) — *video pending*
+**Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **17.402** (build ship9)
 
-**Tiny Summer 2026 - 08** — original author time `28.620` · tiny ghost **22.300** (build ship10) — *video pending*
+https://github.com/user-attachments/assets/dab84a78-99c8-477e-9700-0fd0943c0184
+
+**Tiny Summer 2026 - 06** — original author time `29.014` · tiny ghost **23.038** (build ship10)
+
+https://github.com/user-attachments/assets/a37dd515-5bee-4712-9f17-1d72d131ebf1
+
+**Tiny Summer 2026 - 07** — original author time `27.725` · tiny ghost **19.002** (build ship10)
+
+https://github.com/user-attachments/assets/4b087b52-c356-4865-aa00-e1adeaca386f
+
+**Tiny Summer 2026 - 08** — original author time `28.620` · tiny ghost **22.300** (build ship10)
+
+https://github.com/user-attachments/assets/08398840-ae55-4060-9509-2c416d3e5d6a
 
 **Tiny Summer 2026 - 09** — original author time `32.983` · tiny ghost **42.924** (build ship10) — *video pending*
 
