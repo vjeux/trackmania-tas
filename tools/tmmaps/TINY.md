@@ -370,3 +370,60 @@ which the tiny had painted red / green / blue as plain TrackWall
 skin", and every filler inherited a modifier tag or no tag). `modifier_links`
 resolves the ref to its one link; `terrain_mods` gates the inheritance on the
 tag; `inherited_mod` walks across → own → up the columns.
+
+## Which generated fillers the game draws — the FACE rule (2026-09-08, evening)
+
+The editor bakes a clip piece for every unit side whose clip meets no matching
+clip across it (same group id, the asymmetric FCB↔FCT pair, or a full-free
+clip deleting a `can_be_deleted_by_full_free_clip` one) — into the neighbouring
+cell, whether or not a block stands there. The game keeps every record at load
+(`/mapblocks2?list=baked` == the file) and decides at DRAW time. The rule,
+`TINY_FILLER_RULE=face` (default; `fullfree` = the morning's cell rule, `all` =
+every record), lives in `mapgeom::fillers::verdict` and reads like this:
+
+* a recorded piece with `dir` d stands on side d of its cell and its OWNER is
+  the block unit across side d (`Base_VFCMiddle_Air` is the local z = 32 =
+  North plane; dir turns it like a block). An FCB piece — the underside or
+  channel floor of the block ABOVE — is recorded in the cell below and lies at
+  the top of its cell; an FCT piece — the top plate of the block BELOW — in the
+  cell above, at its floor.
+* **an FCB / FCT piece is always drawn.** Summer 05's elevated water road: its
+  floor is `TrackWallWaterStraightFCBInsideV2` recorded in the cell below,
+  which is the upper unit of a `DecoPlatformSlopeBase` (the wedge prefab stops
+  6 m short of the road floor — the cell rule dropped it and the channel was a
+  hole); the same floor over the road's own `TrackWallStraightPillar` (top
+  face `TrackWallStraightFCT`) and Summer 15's over `TrackWallArch1x2SideTop`
+  (top face `TrackWallArch1x2SideFCT`) — the original draws all three
+  (same-camera frames f05/f05b/f15, 22:00Z).
+* **a SIDE piece is drawn only where the face it stands on is FREE**: nothing
+  stands in its cell (a pillar cell counts as empty — `TINY_FILLER_PILLARS=
+  occupant` makes pillar faces decide), or the occupant's unit hangs no clip on
+  that face, or that face carries a FULL-FREE clip (a complete wall — the
+  pillar / deco-wall family; the neighbour dresses its side against it as if
+  the cell were empty, minus the pieces the wall makes redundant, its
+  `can_be_deleted_by_full_free_clip` ones). A full-free piece is drawn wherever
+  it is recorded. Everything else — a free clip against a neighbour's face that
+  carries its own (non-full-free) clips, two blocks joined — is hidden.
+  Summer 20 cp3: the plastic ramp's `DecoWallSlope2StartVFCLeft` in the wedge
+  cell (the wedge's face carries `DecoPlatformSlopeBaseFCSmall`) — hidden, the
+  grey slab of ship9; the checkpoint's OpenTech skirts in the DecoHill cells —
+  hidden; the pool's `WaterFCCenter`/`WaterHFC*` rim in the wedge cell (the
+  wedge's face is the full-free `DecoWallBaseVFC`) — drawn, the rim the cell
+  rule lost; the pillar's `DecoWallBaseVFC` beside the wedge and the wedge's
+  `DecoWallSlopeBaseVFCRight` in the pillar cell — drawn.
+* only CLIP records are judged; terrain tiles in the baked list belong to the
+  `hidden_tiles` logic.
+
+`mapgeom fillers MAP [--collection C] [--filter PAT] [--cells X0,Z0:X1,Z1]
+[--covered] [--summary]` prints every record with its owner, the occupant unit
+and that unit's clip list on the shared face, the piece's clip flags (F full
+free, X exclusive, d deletable) and the verdict under `fullfree` / `face` /
+`face` with pillars as occupants. `mapgeom blockinfo-all GameCtnBlockInfoClip
+--clips --out T` is the table of every clip block info's flags and group ids
+(`clip_group_ids_v1` is a second (group, symmetric group) pair: OpenTechRoadFC
+("PlatformFCSmallClipsRemove", "PlatformFCSmallClips") pairs with
+PlatFormFCSmall (group PlatformFCSmallClips, second sym …ClipsRemove)).
+The `can_be_deleted_by_full_free_clip` flag is NOT a draw criterion:
+TrackWallStraightFCT carries it and TrackWallCurve3FCT does not, and the game
+draws the water floor over both (`TINY_FILLER_CLOSE=nondeletable` was the
+variant that read it; `any` closes top/bottom faces too — both refuted).

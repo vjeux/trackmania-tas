@@ -44,12 +44,17 @@ COMMANDS
   extract <logical-path> <file>    one pack file, decrypted and decompressed
   blockinfo <logical-path>...    a CGameCtnBlockInfo file, fully typed: kind,
                                 variants, units, clips per side, mobil prefabs
+  fillers <file.Map.Gbx> [--collection Stadium] [--filter PAT]
+      [--cells X0,Z0:X1,Z1] [--covered] [--summary]
+                                every recorded clip filler against the block
+                                unit face it stands on: occupant, that face's
+                                clip list, owner, the piece's clip flags
   blockinfo-map <file.Map.Gbx> --out TSV [--no-baked] [--report TSV]
       [--collection BlueBay]
       [--collection BlueBay]
                                 every authored block with its picked variant,
                                 cells, prefabs and what each side faces
-  blockinfo-all [<substring>] [--out TSV]
+  blockinfo-all [<substring>] [--out TSV] [--clips]
                                 parse every block info in the packs and report
   map <file.Map.Gbx> --out F [--yoff N] [--no-items] [--no-deco]
       [--ghost G]... [--png P] [--clip-y Y]
@@ -1190,10 +1195,36 @@ fn main() {
                 .map(|e| e.path())
                 .filter(|p| p.to_uppercase().contains("\\GAMECTNBLOCKINFO\\") && (pat.is_empty() || p.to_uppercase().contains(&pat)))
                 .collect();
-            let mut rows = String::from("path\tclass\tstatus\tconsumed\tbody\tkind\tvariants\tdetail\n");
+            // --clips: one row per CLIP block info with the fields the clip
+            // system decides on (type, full-free / exclusive / deletable, the
+            // group ids, the v1 pair, horizontal / vertical group) and which
+            // variants carry a prefab — the table the filler draw rule is read
+            // off (2026-09-08)
+            let clips_only = a.rest.iter().any(|x| x == "--clips");
+            let mut rows = if clips_only {
+                String::from("name\tkind\tclip_type\tfull_free\texclusive\tdeletable\ttop_bottom_multidir\tasym_id\tgroup\tsym_group\tv1_a\tv1_b\thorizontal\tvertical\tground_prefabs\tair_prefabs\n")
+            } else {
+                String::from("path\tclass\tstatus\tconsumed\tbody\tkind\tvariants\tdetail\n")
+            };
             let (mut ok, mut short, mut fail) = (0, 0, 0);
             for p in &names {
                 match mapgeom::blockinfo::load(&mut store, p) {
+                    Ok(b) if clips_only => {
+                        let Some(c) = b.clip.as_ref() else { continue };
+                        if b.parsed_to_end() { ok += 1 } else { short += 1 }
+                        let s = |o: &Option<String>| o.clone().unwrap_or_default();
+                        let f = |o: Option<bool>| o.map(|v| if v { "1" } else { "0" }).unwrap_or("-");
+                        let prefabs = |v: &Option<mapgeom::blockinfo::Variant>| -> String {
+                            v.as_ref().map(|v| v.mobils.iter().map(|l| l.iter().filter_map(|m| m.prefab.as_ref()).map(|p| p.rsplit('\\').next().unwrap_or(p).trim_end_matches(".Prefab.Gbx").to_string()).collect::<Vec<_>>().join("+")).map(|s| if s.is_empty() { "-".to_string() } else { s }).collect::<Vec<_>>().join(",")).unwrap_or_default()
+                        };
+                        let (v1a, v1b) = c.clip_group_ids_v1.clone().unwrap_or_default();
+                        rows.push_str(&format!(
+                            "{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                            b.name, b.kind, c.clip_type.map(mapgeom::blockinfo::clip_type_name).unwrap_or("-"), f(c.is_full_free_clip), f(c.is_exclusive_free_clip), f(c.can_be_deleted_by_full_free_clip),
+                            c.top_bottom_multi_dir.map(mapgeom::blockinfo::multi_dir_name).unwrap_or("-"), s(&c.asym_clip_id), s(&c.clip_group_id), s(&c.symmetrical_clip_group_id), v1a, v1b, s(&c.horizontal_clip_group_id), s(&c.vertical_clip_group_id),
+                            prefabs(&b.variant_base_ground), prefabs(&b.variant_base_air)
+                        ));
+                    }
                     Ok(b) => {
                         let st = if b.parsed_to_end() { ok += 1; "OK" } else { short += 1; "SHORT" };
                         rows.push_str(&format!(
@@ -1215,6 +1246,10 @@ fn main() {
                 print!("{}", rows);
             }
             println!("{} files: {} parsed to the end, {} short, {} failed", names.len(), ok, short, fail);
+        }
+        "fillers" => {
+            let mut store = open(&a);
+            mapgeom::fillers::cmd(&mut store, &a.rest[1..]);
         }
         "blockinfo-map" => {
             let mut store = open(&a);

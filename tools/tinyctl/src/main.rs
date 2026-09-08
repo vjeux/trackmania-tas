@@ -29,6 +29,7 @@ mod publish;
 mod replaypull;
 mod startcheck;
 mod shoot;
+mod ship;
 mod unproject;
 mod upload;
 mod video;
@@ -98,6 +99,11 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         JPG/PNG sheets into the agentcloud attachment store (intern GraphQL
         xfb_metamate_nest_bulk_file_upload through `meta`); prints NAME<TAB>ID,
         embed as ![..](/api/attachments/view?file_id=ID); --record appends the rows
+  tinyctl ship --set ship11-<commit> --dest DIR [--out-root /tmp] [--tag v2] [--maps 01,…] [--note "…"] [--src-dir /tmp/summer2026]
+              [--startcheck [--startcheck-outdir D]]
+        the certified set out of the per-map builds: the maps under their published names,
+        MANIFEST.txt (map, MB, items, md5, collhash, fillers_left_out), ANCHORS.tsv, and with
+        --startcheck every map's client start check, one at a time, into STARTCHECK.tsv
   tinyctl video --map NN | --all [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9] [--ghosts-dir /tmp/ghosts]
                 [--cam 2] [--load-timeout 120] [--no-guard] [--store host:dir|dir] [--pull-webm] [--box-videos DIR]
         the map's driven lap as a video: REFUSES a ghost whose sample 0 is not on this
@@ -134,6 +140,7 @@ fn main() {
         "build" => build::cmd(rest),
         "views" => views::cmd(rest),
         "shoot" => shoot::cmd(rest),
+        "ship" => ship::cmd(rest),
         "lightmap" => lightmap::cmd(rest),
         "compare" => compare::cmd(rest),
         "cropstats" => cropstats::cmd(rest),

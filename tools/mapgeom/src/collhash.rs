@@ -205,6 +205,20 @@ fn item_collision(bytes: &[u8], h: &mut Fnv) -> Result<(), String> {
     Ok(())
 }
 
+/// The fingerprint, as `run` prints it: total, placements, blocks, items hashes;
+/// placement / block / model counts; the Spawn placement index; per-item hashes.
+pub struct Summary {
+    pub total: String,
+    pub placements: String,
+    pub blocks: String,
+    pub items: String,
+    pub n_items: usize,
+    pub n_blocks: usize,
+    pub n_models: usize,
+    pub spawn_index: Option<usize>,
+    pub per_item: BTreeMap<String, String>,
+}
+
 pub fn run(rest: &[String]) -> Result<(), String> {
     let paths: Vec<&String> = rest.iter().skip(1).filter(|a| !a.starts_with("--")).collect();
     if paths.is_empty() {
@@ -213,6 +227,31 @@ pub fn run(rest: &[String]) -> Result<(), String> {
     let parts_wanted = rest.iter().any(|a| a == "--parts");
     for path in paths {
         let m = tmmaps::map::MapFile::load(std::path::Path::new(path));
+        let s = summary(&m);
+        println!(
+            "{path}\tcollision {}\tplacements {} ({} items)\tblocks {} ({})\titems {} ({} models)",
+            s.total, s.placements, s.n_items, s.blocks, s.n_blocks, s.items, s.n_models
+        );
+        match s.spawn_index {
+            Some(i) => {
+                let sp = &m.items[i];
+                println!("  Spawn placement: index {i} {} at [{:.1}, {:.1}, {:.1}]", sp.model, sp.pos[0], sp.pos[1], sp.pos[2]);
+            }
+            None => println!("  Spawn placement: NONE — this map has no start"),
+        }
+        if parts_wanted {
+            for (name, hex) in &s.per_item {
+                println!("  {hex}  {name}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The fingerprint of a loaded map (what `run` prints), for callers that want
+/// the numbers (`tinyctl ship`'s MANIFEST).
+pub fn summary(m: &tmmaps::map::MapFile) -> Summary {
+    {
 
         // --- 1. placements. The loop is SEQUENTIAL over the map's record
         // order, and FNV is order-sensitive, so a reordering of identical
@@ -292,34 +331,6 @@ pub fn run(rest: &[String]) -> Result<(), String> {
         total.str(&bh.hex());
         total.str(&ih.hex());
 
-        println!(
-            "{path}\tcollision {}\tplacements {} ({} items)\tblocks {} ({nblocks})\titems {} ({} models)",
-            total.hex(),
-            ph.hex(),
-            m.items.len(),
-            bh.hex(),
-            ih.hex(),
-            per_item.len()
-        );
-        // A plain FILE FACT: which placement index carries the Spawn tag. A
-        // validation record names the start waypoint by index (chunk
-        // 0x0309202D), so this is the number that has to match — and it is
-        // what a synthetic container gets wrong when it borrows a donor's
-        // validation record. No prediction, no rule: the earlier
-        // "last non-Goal record" reading was refuted (2026-09-07) and the
-        // real mechanism was found on the container side (2026-09-08).
-        match spawn_index {
-            Some(i) => {
-                let s = &m.items[i];
-                println!("  Spawn placement: index {i} {} at [{:.1}, {:.1}, {:.1}]", s.model, s.pos[0], s.pos[1], s.pos[2]);
-            }
-            None => println!("  Spawn placement: NONE — this map has no start"),
-        }
-        if parts_wanted {
-            for (name, hex) in &per_item {
-                println!("  {hex}  {name}");
-            }
-        }
+        Summary { total: total.hex(), placements: ph.hex(), blocks: bh.hex(), items: ih.hex(), n_items: m.items.len(), n_blocks: nblocks, n_models: per_item.len(), spawn_index, per_item }
     }
-    Ok(())
 }

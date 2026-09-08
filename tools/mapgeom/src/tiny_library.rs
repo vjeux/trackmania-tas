@@ -1455,9 +1455,14 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // TINY_FILLER_RULE — which of the game's recorded fillers are emitted.
     // The editor bakes a clip for every unit side that meets no matching
     // clip, into the neighbouring cell, whether or not a block already stands
-    // there. Which of those the game DRAWS is not settled (2026-09-08,
-    // pillars thread, A/Bs on the box, Summer 20 cp3 and Summer 10 start):
-    //   all (default) every recorded filler with geometry is emitted — what
+    // there. Which of those the game DRAWS: the FACE rule, `face` (default
+    // since 2026-09-08 evening, `crate::fillers::verdict`, TINY.md "Which
+    // generated fillers the game draws"): an FCB/FCT piece always; a side
+    // piece only where the face it stands on is free — empty cell (pillar
+    // cells included), a face with no clips, or a face with a full-free wall
+    // (minus the deletable pieces the wall replaces); a full-free piece
+    // always. The earlier readings, kept as knobs:
+    //   all    every recorded filler with geometry is emitted — what
     //          the baked list says. Known leftovers on 20 cp3 the original
     //          does not show: the white/red TechnicsTrims of `*_Ground`
     //          pillar walls recorded in the DecoPlatformSlopeBase cells (their
@@ -1497,7 +1502,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     //          editor records a clip piece for every unit side that meets no
     //          matching clip; the game draws the plain ones only into cells
     //          nothing else stands in, and the wall pieces always.
-    let vfc_rules: Vec<String> = std::env::var("TINY_FILLER_RULE").or_else(|_| std::env::var("TINY_VFC_RULE")).unwrap_or_else(|_| "fullfree".to_string()).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != "all").collect();
+    let vfc_rules: Vec<String> = std::env::var("TINY_FILLER_RULE").or_else(|_| std::env::var("TINY_VFC_RULE")).unwrap_or_else(|_| "face".to_string()).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != "all").collect();
     let occupied_cells: std::collections::HashSet<[u8; 3]> = source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0 && b.flags & crate::blockmap::FLAG_PILLAR == 0).map(|b| b.file_cell).collect();
     //   occupied  EVERY filler (VFC, FC, HFC…) recorded in a cell that any UNIT
     //             of an authored non-pillar, non-terrain block covers is left out
@@ -1529,7 +1534,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             .filter(|n| idx.path_for(n).and_then(|p| idx.load(store, &p).ok().map(|bi| matches!(bi.kind, crate::blockinfo::Kind::Clip | crate::blockinfo::Kind::ClipHorizontal))).unwrap_or(false))
             .collect()
     };
-    // THE RULE (default since 2026-09-08, `fullfree`; `all` turns it off): a
+    // `fullfree` (the 2026-09-08 morning rule, ship10; superseded by `face`): a
     // recorded filler standing in a cell that another authored block's unit
     // covers — pillars included — is drawn by the game only if its clip block
     // info is a FULL FREE clip (`is_full_free_clip`: the pack's own flag on
@@ -1549,6 +1554,30 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // covered only by terrain tiles do not count. Probes `occupied` /
     // `covered` / `accepted` (clip-list connection) each got one of these
     // wrong and stay for A/Bs.
+    // THE RULE (default since 2026-09-08 evening, `face`; the morning's
+    // `fullfree` and `all` stay as knobs): the game draws a recorded free-clip
+    // piece only where the face it stands on is FREE — nothing in its cell, or
+    // the occupant's unit hangs NO clip on that face, or that face carries a
+    // FULL-FREE clip (a complete wall, against which the neighbour dresses its
+    // side as if the cell were empty, minus its `can_be_deleted_by_full_free_
+    // clip` pieces); a full-free piece is drawn wherever it is recorded. The
+    // `fullfree` rule read "covered cell" instead of "closed face" and so
+    // dropped the floor of every elevated water road (Summer 05 / 15: the
+    // `TrackWallWaterStraightFCBInsideV2` piece recorded in the cell below the
+    // road, whose occupant — a DecoPlatformSlopeBase's upper unit — hangs no
+    // clip on its top; the wedge's own geometry stops 6 m short of the road
+    // floor) and the pool rims beside full-free walls. `crate::fillers::verdict`
+    // is the rule; `mapgeom fillers MAP` prints every record's face and
+    // verdict. TINY_FILLER_PILLARS=occupant (default) | open: whether a pillar
+    // block's faces count (DecoWallBasePillar: four full-free walls;
+    // StructurePillar: open sides; TrackWallStraightPillar: N/S TrackWallVFC,
+    // top TrackWallStraightFCT).
+    let face_rule = vfc_rules.iter().any(|r| r == "face");
+    let pillars_occupy = std::env::var("TINY_FILLER_PILLARS").map(|v| v == "occupant").unwrap_or(false);
+    let face_table = if face_rule { Some(crate::fillers::faces(store, &mut idx, &source)) } else { None };
+    if let Some(t) = &face_table {
+        println!("  filler rule face: {} occupied cells, {} clip kinds; pillars {}", t.occupants.len(), t.clips.len(), if pillars_occupy { "count as occupants" } else { "are open cells" });
+    }
     let full_free_rule = vfc_rules.iter().any(|r| r == "fullfree");
     let full_free_clips: std::collections::HashSet<String> = if full_free_rule {
         let names: std::collections::BTreeSet<String> = source.baked.iter().filter(|b| b.name != "Sea").map(|b| b.name.clone()).collect();
@@ -1663,7 +1692,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let connects = |a: &ClipId, b: &ClipId| -> bool {
         (!a.group.is_empty() && (a.group == b.group || a.group == b.sym)) || (!a.sym.is_empty() && a.sym == b.group) || (!a.vert.is_empty() && a.vert == b.vert) || (!a.horiz.is_empty() && a.horiz == b.horiz)
     };
-    let vfc_left_out = |b: &tmmaps::map::BlockRec| -> Option<&'static str> {
+    let vfc_left_out = |b: &tmmaps::map::BlockRec| -> Option<String> {
         if vfc_rules.iter().any(|r| r == "accepted") {
             if let Some(occupants) = cell_faces.get(&b.file_cell) {
                 let me = b.name.to_ascii_lowercase();
@@ -1688,27 +1717,32 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     println!("  filler b{} {} cell {:?} side {} (clip type {:?}, group {:?}, vert {:?}): occupants {} -> {}", b.index, b.name, b.file_cell, face, mine.ty, mine.group, mine.vert, occ.join(" ; "), if accepted { "kept" } else { "LEFT OUT" });
                 }
                 if !accepted {
-                    return Some("no connecting clip on the occupant's face");
+                    return Some("no connecting clip on the occupant's face".to_string());
                 }
             }
         }
         if let Some(g) = &game_baked {
             let key = (b.name.clone(), b.coords(), b.dir & 3);
             if g.counts.get(&key).copied().unwrap_or(0) == 0 {
-                return Some("not in the game's baked list");
+                return Some("not in the game's baked list".to_string());
             }
         }
         if vfc_rules.iter().any(|r| r == "ghost") && b.flags & (1 << 28) != 0 {
-            return Some("ghost");
+            return Some("ghost".to_string());
         }
         if vfc_rules.iter().any(|r| r == "free") && b.name.contains("VFC") && occupied_cells.contains(&b.file_cell) {
-            return Some("occupied cell");
+            return Some("occupied cell".to_string());
         }
         if vfc_rules.iter().any(|r| r == "occupied") && footprint_cells.contains(&b.file_cell) {
-            return Some("in a block's footprint");
+            return Some("in a block's footprint".to_string());
         }
         if vfc_rules.iter().any(|r| r == "covered") && footprint_cells.contains(&b.file_cell) && plain_clips.contains(&b.name) {
-            return Some("plain clip in a block's footprint");
+            return Some("plain clip in a block's footprint".to_string());
+        }
+        if let Some(t) = &face_table {
+            if let Some(why) = crate::fillers::verdict(t, b, pillars_occupy) {
+                return Some(why);
+            }
         }
         if full_free_rule && footprint_cells.contains(&b.file_cell) && !full_free_clips.contains(&b.name) {
             // …unless the occupant's own clip list on the shared face NAMES
@@ -1725,7 +1759,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 occupants.iter().any(|(_, faces)| faces[face].iter().any(|c| *c == me))
             }).unwrap_or(false);
             if !named {
-                return Some("not a full-free clip, in a covered cell");
+                return Some("not a full-free clip, in a covered cell".to_string());
             }
         }
         None
