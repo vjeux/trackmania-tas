@@ -328,7 +328,9 @@ pub fn check_rows(rows: &[Row]) -> Result<RowCheck, String> {
     if c.quat_err > 1e-3 {
         return Err(format!("not a unit quaternion (p99.5 |q|-1 = {:.3e}): {}", c.quat_err, c));
     }
-    if c.vel_err > (0.02 * c.mean_speed).max(0.5) {
+    // floor 1.0 m/s (ENV velcheck 2026-09-07: the residual is the solver's per-tick contact-projection
+    // correction, ~1.5 mm/tick on tarmac and ~6 mm/tick on a bouncing Rally car = 0.6 m/s at 100 Hz)
+    if c.vel_err > (0.02 * c.mean_speed).max(1.0) {
         return Err(format!("position derivative disagrees with the velocity triple: {}", c));
     }
     if c.gaps * 200 > c.rows {
@@ -364,6 +366,18 @@ pub struct Vis {
     pub turbo_time: f32,
     pub is_turbo: bool,
     pub ground_contact: bool,
+    /// Reactor boost level (0 none, 1, 2) and type (0 none, 1 down, 2 up) -- the INPUT arm's
+    /// EFFECTS.md (u32 at vis +0x174 / +0x178, 100 % against ghost telemetry b89 bits 5-6 / 3-4);
+    /// decoded from the vis block already gathered (no new read). u8::MAX when unknown.
+    pub reactor_lvl: u8,
+    pub reactor_type: u8,
+    /// IsReactorGroundMode (flags bit 19), ReactorInputsX (bit 18), the boost enum (u32 +0x19c & 7),
+    /// reactor air control (+0x180..), simulation time coefficient (+0x230; slow-motion) -- EFFECTS.md.
+    pub reactor_ground_mode: bool,
+    pub reactor_inputs_x: bool,
+    pub boost_enum: u8,
+    pub reactor_air: [f32; 3],
+    pub sim_time_coef: f32,
     pub wheel_contact: [bool; 4],
     pub wheel_material: [u8; 4],
     pub wheel_slip: [f32; 4],
@@ -385,6 +399,13 @@ impl Vis {
         lateral_speed: f32::NAN,
         turbo_time: f32::NAN,
         is_turbo: false,
+        reactor_lvl: u8::MAX,
+        reactor_type: u8::MAX,
+        reactor_ground_mode: false,
+        reactor_inputs_x: false,
+        boost_enum: u8::MAX,
+        reactor_air: [f32::NAN; 3],
+        sim_time_coef: f32::NAN,
         ground_contact: false,
         wheel_contact: [false; 4],
         wheel_material: [u8::MAX; 4],
@@ -412,6 +433,13 @@ impl Vis {
             turbo_time: f(0x1ac),
             is_turbo: flags & (1 << 24) != 0,
             ground_contact: flags & (1 << 20) != 0,
+            reactor_lvl: u(0x174).min(3) as u8,
+            reactor_type: u(0x178).min(3) as u8,
+            reactor_ground_mode: flags & (1 << 19) != 0,
+            reactor_inputs_x: flags & (1 << 18) != 0,
+            boost_enum: (u(0x19c) & 7) as u8,
+            reactor_air: [f(0x180), f(0x184), f(0x188)],
+            sim_time_coef: f(0x230),
             wheel_contact: [false; 4],
             wheel_material: [0; 4],
             wheel_slip: [0.0; 4],

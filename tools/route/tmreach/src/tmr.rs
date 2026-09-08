@@ -12,8 +12,11 @@
 
 use std::io::Write;
 
-pub const TMR_VERSION: u32 = 1;
-pub const STATE_VERSION: u32 = 1;
+/// TMR0 v2 (2026-09-08): the CarState is tmstate v3 (120 bytes: v2's 100 as a prefix, then the effect
+/// fields), the header carries the state version at byte 17; a v1 shard (state v2, 100 bytes) is
+/// still read.
+pub const TMR_VERSION: u32 = 2;
+pub const STATE_VERSION: u32 = tmstate::STATE_VERSION;
 
 pub const OUTCOME_OK: u8 = 0;
 pub const OUTCOME_CRASH_STOP: u8 = 1;
@@ -25,8 +28,10 @@ pub const OUTCOME_ABORTED: u8 = 4;
 /// MODEL arm reads it through the same crate), not a copy.
 pub use tmstate::CarState;
 
-pub const CARSTATE_BYTES: usize = 100;
+pub const CARSTATE_BYTES: usize = 120;
+pub const CARSTATE_BYTES_V2: usize = 100;
 pub const RECORD_BYTES: usize = 4 + 2 + 2 + 1 + 3 + CARSTATE_BYTES + 64 + 4 + 4 + 4;
+pub const RECORD_BYTES_V1: usize = 4 + 2 + 2 + 1 + 3 + CARSTATE_BYTES_V2 + 64 + 4 + 4 + 4;
 pub const HEADER_BYTES: usize = 24;
 
 /// Building a `CarState` from an engine row.
@@ -59,6 +64,13 @@ impl FromRow for CarState {
             cps,
             finished,
             car: u8::MAX,
+            effects: 0,
+            reactor_lvl: u8::MAX,
+            reactor_type: u8::MAX,
+            boost_enum: u8::MAX,
+            _pad3: 0,
+            reactor_air: [f32::NAN; 3],
+            sim_time_coef: f32::NAN,
         };
         // v2: the live vis state (gear, rpm, wheels, turbo, car kind) from the merged
         // forkoracle::layout::Vis readout, exactly as the player's tmenv fills it (wheel
@@ -76,6 +88,17 @@ impl FromRow for CarState {
             }
             st.turbo = vis.turbo_time;
             st.car = vis.car;
+            // v3 effects (tmstate v3, the player's dialect): flags 0x01 turbo, 0x02 ground contact,
+            // 0x04 reactor ground mode, 0x08 reactor inputs-x, 0x80 KNOWN; then level, type, boost enum,
+            // reactor air control, simulation time coefficient
+            if vis.reactor_lvl != u8::MAX {
+                st.effects = 0x80 | (vis.is_turbo as u8) | ((vis.ground_contact as u8) << 1) | ((vis.reactor_ground_mode as u8) << 2) | ((vis.reactor_inputs_x as u8) << 3);
+                st.reactor_lvl = vis.reactor_lvl;
+                st.reactor_type = vis.reactor_type;
+                st.boost_enum = vis.boost_enum;
+                st.reactor_air = vis.reactor_air;
+                st.sim_time_coef = vis.sim_time_coef;
+            }
         }
         st
     }
@@ -99,7 +122,17 @@ impl FromRow for CarState {
         o.push(self.cps);
         o.push(self.finished as u8);
         o.push(self.car); // v2: byte 98, the former padding
-        o.push(0); // struct tail pad
+        // v3 (tmstate STATE_VERSION 3): byte 99 effect flags, 100 reactor level, 101 type, 102 boost
+        // enum, 103 pad, 104..116 reactor air control, 116..120 simulation time coefficient
+        o.push(self.effects);
+        o.push(self.reactor_lvl);
+        o.push(self.reactor_type);
+        o.push(self.boost_enum);
+        o.push(0);
+        for x in &self.reactor_air {
+            o.extend_from_slice(&x.to_le_bytes());
+        }
+        o.extend_from_slice(&self.sim_time_coef.to_le_bytes());
         debug_assert_eq!(o.len() - start, CARSTATE_BYTES);
     }
 
@@ -121,6 +154,14 @@ impl FromRow for CarState {
             cps: b[96],
             finished: b[97] != 0,
             car: b[98],
+            // a 100-byte (state v2) slice: byte 99 was padding (0) -> effects 0 = unknown, the rest unknown
+            effects: b[99], // (a v1 shard written 01:16-01:38Z 2026-09-08 carries the GEN dialect here: bit 7 valid, bits 0-1 lvl, 2-3 type, 4 ground, 5 turbo)
+            reactor_lvl: if b.len() >= CARSTATE_BYTES { b[100] } else { u8::MAX },
+            reactor_type: if b.len() >= CARSTATE_BYTES { b[101] } else { u8::MAX },
+            boost_enum: if b.len() >= CARSTATE_BYTES { b[102] } else { u8::MAX },
+            _pad3: 0,
+            reactor_air: if b.len() >= CARSTATE_BYTES { [f(104), f(108), f(112)] } else { [f32::NAN; 3] },
+            sim_time_coef: if b.len() >= CARSTATE_BYTES { f(116) } else { f32::NAN },
         }
     }
 }
@@ -137,6 +178,15 @@ pub struct Record {
     pub path_len_m: f32,
     pub min_speed: f32,
     pub max_speed: f32,
+}
+
+/// The effect FLAGS byte of a row's vis state in tmstate v3's dialect (0x01 turbo, 0x02 ground
+/// contact, 0x04 reactor ground mode, 0x08 reactor inputs-x, 0x80 KNOWN; 0 unknown).
+pub fn effects_byte(v: &forkoracle::layout::Vis) -> u8 {
+    if !v.known || v.reactor_lvl == u8::MAX {
+        return 0;
+    }
+    0x80 | (v.is_turbo as u8) | ((v.ground_contact as u8) << 1) | ((v.reactor_ground_mode as u8) << 2) | ((v.reactor_inputs_x as u8) << 3)
 }
 
 impl Record {
@@ -157,20 +207,22 @@ impl Record {
         debug_assert_eq!(o.len() - start, RECORD_BYTES);
     }
 
+    /// Read one record; `b` is RECORD_BYTES (state v3) or RECORD_BYTES_V1 (a v1 shard: 100-byte state).
     pub fn read(b: &[u8]) -> Record {
+        let cs = if b.len() >= RECORD_BYTES { CARSTATE_BYTES } else { CARSTATE_BYTES_V2 };
         let mut gate_tick = [0i16; 32];
         for (i, g) in gate_tick.iter_mut().enumerate() {
-            let o = 12 + CARSTATE_BYTES + 2 * i;
+            let o = 12 + cs + 2 * i;
             *g = i16::from_le_bytes(b[o..o + 2].try_into().unwrap());
         }
-        let t = 12 + CARSTATE_BYTES + 64;
+        let t = 12 + cs + 64;
         let f = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
         Record {
             start_id: u32::from_le_bytes(b[0..4].try_into().unwrap()),
             macro_id: u16::from_le_bytes(b[4..6].try_into().unwrap()),
             horizon_ticks: u16::from_le_bytes(b[6..8].try_into().unwrap()),
             outcome: b[8],
-            end: CarState::read(&b[12..12 + CARSTATE_BYTES]),
+            end: CarState::read(&b[12..12 + cs]),
             gate_tick,
             path_len_m: f(t),
             min_speed: f(t + 4),
@@ -195,7 +247,8 @@ impl Writer {
         h.extend_from_slice(&TMR_VERSION.to_le_bytes());
         h.extend_from_slice(&0u64.to_le_bytes());
         h.push(n_gates);
-        h.extend_from_slice(&[0u8; 7]);
+        h.push(STATE_VERSION as u8); // byte 17: the CarState version (3 = 120 bytes; a v1 shard has 0 here = state v2, 100 bytes)
+        h.extend_from_slice(&[0u8; 6]);
         f.write_all(&h).map_err(|e| e.to_string())?;
         Ok(Writer { f, path: path.to_path_buf(), count: 0, buf: Vec::new() })
     }
@@ -245,17 +298,19 @@ pub fn read_shard(path: &std::path::Path) -> Result<Shard, String> {
     let version = u32::from_le_bytes(b[4..8].try_into().unwrap());
     let count = u64::from_le_bytes(b[8..16].try_into().unwrap()) as usize;
     let n_gates = b[16];
+    let state_version = b[17];
+    let rb = if version >= 2 && state_version >= 3 { RECORD_BYTES } else { RECORD_BYTES_V1 };
     let body = &b[HEADER_BYTES..];
-    if body.len() != count * RECORD_BYTES {
+    if body.len() != count * rb {
         return Err(format!(
             "{}: header says {} records ({} bytes) but the body is {} bytes: an unclosed or truncated shard",
             path.display(),
             count,
-            count * RECORD_BYTES,
+            count * rb,
             body.len()
         ));
     }
-    let records = body.chunks(RECORD_BYTES).map(Record::read).collect();
+    let records = body.chunks(rb).map(Record::read).collect();
     Ok(Shard { version, n_gates, records })
 }
 

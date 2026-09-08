@@ -88,6 +88,23 @@ pub struct Report {
     pub calib: Calib,
     pub time_human: TimeErr,
     pub time_all_pos: TimeErr,
+    /// Absolute-p grid (F14): rows binned by target distance (0–50, 50–100, 100–200, 200+ m) × start speed
+    /// (< 50, 50–100, ≥ 100 m/s): [pos_n, pos_mean_p, pos_recall_at_0.5, neg_n, neg_mean_p] per cell.
+    pub pgrid: Vec<[f64; 5]>,
+    /// Arrival-speed head on positives with a band label: (n, MAE m/s, bias m/s, mean label m/s) — the chain
+    /// feeds the predicted arrival speed into its next step, so an under-prediction compounds (F14).
+    pub aspeed: (usize, f64, f64, f64),
+}
+
+pub const PGRID_DIST: [f32; 3] = [50.0, 100.0, 200.0];
+pub const PGRID_SPEED: [f32; 2] = [50.0, 100.0];
+
+/// Start speed (m/s) of a raw feature row.
+pub fn speed_of(fv: u32, feat: &[f32]) -> f32 {
+    match fv {
+        2 => feat[crate::features2::OFF2_STATE] * 100.0,
+        _ => feat[crate::features::OFF_MOTION] * 100.0,
+    }
 }
 
 fn xorshift(s: &mut u64) -> u64 {
@@ -98,7 +115,7 @@ fn xorshift(s: &mut u64) -> u64 {
 }
 
 /// `pred[i]` = raw head outputs of row i.
-pub fn evaluate(set: &Set, pred: &[Vec<f32>], seed: u64) -> Report {
+pub fn evaluate(set: &Set, pred: &[Vec<f32>], seed: u64, max_speed: f32) -> Report {
     let mut rng = seed.max(1) ^ 0xdead_beef_cafe_f00d;
     // group rows by record
     let mut by_rec: HashMap<u32, Vec<usize>> = HashMap::new();
@@ -159,7 +176,7 @@ pub fn evaluate(set: &Set, pred: &[Vec<f32>], seed: u64) -> Report {
     let mut brier = 0f64;
     let mut npos = 0usize;
     for i in 0..set.n {
-        let p = decode(&pred[i], set.lab(i)[L_DIST]).p_reach;
+        let p = decode(&pred[i], set.lab(i)[L_DIST], max_speed).p_reach;
         let y = set.lab(i)[L_Y] > 0.5;
         let b = ((p * 10.0) as usize).min(9);
         cal.bins[b].0 += 1;
@@ -211,7 +228,7 @@ pub fn evaluate(set: &Set, pred: &[Vec<f32>], seed: u64) -> Report {
             if l[L_Y] <= 0.5 || l[L_TICKS] < 0.0 || !filter(l) {
                 continue;
             }
-            let pred_ticks = decode(&pred[i], l[L_DIST]).expected_ticks as f64;
+            let pred_ticks = decode(&pred[i], l[L_DIST], max_speed).expected_ticks as f64;
             let e = (pred_ticks - l[L_TICKS] as f64) * 0.010;
             bias += e;
             errs.push(e.abs());
@@ -220,7 +237,40 @@ pub fn evaluate(set: &Set, pred: &[Vec<f32>], seed: u64) -> Report {
         errs.sort_by(|a, b| a.partial_cmp(b).unwrap());
         TimeErr { n, mae_s: errs.iter().sum::<f64>() / n.max(1) as f64, bias_s: bias / n.max(1) as f64, median_abs_s: errs.get(n / 2).cloned().unwrap_or(0.0) }
     };
-    Report { two_gate: tg, calib: cal, time_human: time_of(&|l| l[L_HUMAN] > 0.5), time_all_pos: time_of(&|_| true) }
+    // absolute-p grid
+    let mut acc = vec![[0.0f64; 5]; 12];
+    for i in 0..set.n {
+        let l = set.lab(i);
+        let d = l[L_DIST];
+        let v = speed_of(set.fv, set.feat(i));
+        let di = PGRID_DIST.iter().position(|&t| d < t).unwrap_or(3);
+        let si = PGRID_SPEED.iter().position(|&t| v < t).unwrap_or(2);
+        let c = &mut acc[di * 3 + si];
+        let p = 1.0 / (1.0 + (-pred[i][O_REACH] as f64).exp());
+        if l[L_Y] > 0.5 {
+            c[0] += 1.0;
+            c[1] += p;
+            if p >= 0.5 { c[2] += 1.0; }
+        } else {
+            c[3] += 1.0;
+            c[4] += p;
+        }
+    }
+    let pgrid = acc.into_iter().map(|c| [c[0], if c[0] > 0.0 { c[1] / c[0] } else { 0.0 }, if c[0] > 0.0 { c[2] / c[0] } else { 0.0 }, c[3], if c[3] > 0.0 { c[4] / c[3] } else { 0.0 }]).collect();
+    let mut asp = (0usize, 0f64, 0f64, 0f64);
+    for i in 0..set.n {
+        let l = set.lab(i);
+        if l[L_Y] > 0.5 && l[crate::data::L_BAND] > 0.5 {
+            let mu = (pred[i][crate::net::O_SPEED] as f64 * 100.0).clamp(0.0, max_speed as f64 + 10.0);
+            let e = mu - l[crate::data::L_ASPEED] as f64;
+            asp.0 += 1;
+            asp.1 += e.abs();
+            asp.2 += e;
+            asp.3 += l[crate::data::L_ASPEED] as f64;
+        }
+    }
+    let aspeed = if asp.0 > 0 { (asp.0, asp.1 / asp.0 as f64, asp.2 / asp.0 as f64, asp.3 / asp.0 as f64) } else { (0, 0.0, 0.0, 0.0) };
+    Report { two_gate: tg, calib: cal, time_human: time_of(&|l| l[L_HUMAN] > 0.5), time_all_pos: time_of(&|_| true), pgrid, aspeed }
 }
 
 pub fn render(name: &str, r: &Report) -> String {
@@ -238,6 +288,23 @@ pub fn render(name: &str, r: &Report) -> String {
             s.push_str(&format!("[{name}]   {:.1}-{:.1} {:>7}   {:.3}    {:.3}\n", b as f64 / 10.0, (b + 1) as f64 / 10.0, n, mp, fp));
         }
     }
+    // absolute-p grid (F14): is the far / fast positive believed?
+    s.push_str(&format!("[{name}] absolute p by target distance × start speed — positives: n / mean p / recall.5; negatives: n / mean p
+"));
+    let dl = ["0-50 m", "50-100 m", "100-200 m", "200+ m"];
+    let sl = ["< 50 m/s", "50-100 m/s", "≥ 100 m/s"];
+    for di in 0..4 {
+        for si in 0..3 {
+            let c = r.pgrid[di * 3 + si];
+            if c[0] + c[3] > 0.0 {
+                s.push_str(&format!("[{name}]   {:<10} {:<11} pos {:>8} / {:.3} / {:.3}   neg {:>8} / {:.3}
+", dl[di], sl[si], c[0] as u64, c[1], c[2], c[3] as u64, c[4]));
+            }
+        }
+    }
+    let a = r.aspeed;
+    s.push_str(&format!("[{name}] arrival SPEED head on positives with a band label: {} rows, MAE {:.1} m/s, bias {:+.1} m/s (mean label {:.1} m/s)
+", a.0, a.1, a.2, a.3));
     let t = &r.time_human;
     s.push_str(&format!("[{name}] expected time vs the HUMAN leg time: {} legs, MAE {:.3} s, median |err| {:.3} s, bias {:+.3} s\n", t.n, t.mae_s, t.median_abs_s, t.bias_s));
     let t = &r.time_all_pos;

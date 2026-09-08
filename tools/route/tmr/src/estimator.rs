@@ -86,17 +86,18 @@ impl<'a> REstimator<'a> {
             pos: self.nodes.pos[from],
             vel,
             quat: frame::yaw_quat(dir),
-            ang_vel: [f32::NAN; 3],
+            ang_vel: [0.0; 3], // a steady driving state (the training rows all carry angular velocity: a NaN → present flag 0 is off-distribution)
             speed: v,
             gear: u8::MAX,
             rpm: f32::NAN,
-            wheel_contact: [u8::MAX; 4],
+            wheel_contact: [1; 4], // four wheels on the ground, as every training row of a car on the road
             wheel_material: [u8::MAX; 4],
             wheel_slip: [f32::NAN; 4],
             turbo: f32::NAN,
             cps: 0,
             finished: false,
-            car: u8::MAX,
+            car: crate::data::car_kind(),
+            ..CarState::unknown()
         }
     }
 
@@ -167,6 +168,8 @@ struct ChainState {
     ticks: i32,
     logp: f32,
     steps: usize,
+    /// mean vertical speed over the last step (m/s; 0 at a gate node) — the BALLISTIC fan (F20) extrapolates it
+    vy: f32,
 }
 
 pub struct Chained<'a> {
@@ -187,6 +190,8 @@ pub struct Chained<'a> {
     pub trace: bool,
     /// Fast fan (fewer bearings/fractions) — see FAN_FRAC_FAST.
     pub fast: bool,
+    /// When set, `max_steps` is a hard cap (no chord scaling) — `--chain-steps N`.
+    pub fixed_steps: bool,
     /// Fallback when an edge was not chained (budget exhausted): the gate head, if given.
     pub fallback: Option<REstimator<'a>>,
     pub fallbacks_used: std::sync::atomic::AtomicUsize,
@@ -208,8 +213,9 @@ pub fn reach_m(v: f32, h: u16) -> f32 {
     let mut v = v.max(0.0);
     let mut s = 0.0f32;
     for _ in 0..h {
-        let a = if v < 50.0 { 20.0 } else { 5.0 };
-        v = (v + a * 0.01).min(140.0);
+        // a car already above the 140 m/s engine top (boosters, drops: 157–211 m/s on Before) keeps its speed
+        let a = if v < 50.0 { 20.0 } else if v < 140.0 { 5.0 } else { 0.0 };
+        v = (v + a * 0.01).min(v.max(140.0));
         s += v * 0.01;
     }
     s
@@ -222,7 +228,7 @@ const BEARINGS_DEG: &[f32] = &[-90.0, -60.0, -40.0, -25.0, -12.0, 0.0, 12.0, 25.
 
 impl<'a> Chained<'a> {
     pub fn new(local: &'a Weights, feat: &'a Featurizer<'a>, gates: &'a GatesFile, nodes: &'a Nodes, surf: &'a SurfaceModel, keep: Vec<&'static str>) -> Chained<'a> {
-        Chained { local, feat, gates, nodes, surf, keep, beam: 24, max_steps: 10, p_step_floor: 0.05, penalty_ms: tmplan::planner::PENALTY_MS, cache: std::sync::Mutex::new(HashMap::new()), trace: false, fast: false, fallback: None, fallbacks_used: std::sync::atomic::AtomicUsize::new(0) }
+        Chained { local, feat, gates, nodes, surf, keep, beam: 24, max_steps: 10, p_step_floor: 0.05, penalty_ms: tmplan::planner::PENALTY_MS, cache: std::sync::Mutex::new(HashMap::new()), trace: false, fast: false, fixed_steps: false, fallback: None, fallbacks_used: std::sync::atomic::AtomicUsize::new(0) }
     }
 
     fn state_of(&self, s: &ChainState) -> CarState {
@@ -231,35 +237,48 @@ impl<'a> Chained<'a> {
             pos: s.pos,
             vel: [s.dir[0] * s.speed, 0.0, s.dir[1] * s.speed],
             quat: frame::yaw_quat(s.dir),
-            ang_vel: [f32::NAN; 3],
+            ang_vel: [0.0; 3], // a steady driving state (the training rows all carry angular velocity: a NaN → present flag 0 is off-distribution)
             speed: s.speed,
             gear: u8::MAX,
             rpm: f32::NAN,
-            wheel_contact: [u8::MAX; 4],
+            wheel_contact: [1; 4], // four wheels on the ground, as every training row of a car on the road
             wheel_material: [u8::MAX; 4],
             wheel_slip: [f32::NAN; 4],
             turbo: f32::NAN,
             cps: 0,
             finished: false,
-            car: u8::MAX,
+            car: crate::data::car_kind(),
+            ..CarState::unknown()
         }
     }
 
     /// Ground height for a target at (x, z): the highest surface at or below y_ref + 3 within 40 m, else y_ref.
     fn ground_y(&self, x: f32, y_ref: f32, z: f32) -> f32 {
         let col = self.surf.full.column(x, z);
-        col.iter().find(|(sy, _)| *sy <= y_ref + 3.0 && *sy >= y_ref - 40.0).map(|(sy, _)| *sy).unwrap_or(y_ref)
+        // the first surface at or below the car, down to 200 m (drops of 50–180 m are the F22 class); none → the car's height
+        col.iter().find(|(sy, _)| *sy <= y_ref + 3.0 && *sy >= y_ref - 200.0).map(|(sy, _)| *sy).unwrap_or(y_ref)
     }
 
     /// The local head on (state → target at h).
     pub fn local_query(&self, s: &ChainState, target: [f32; 3], h: u16) -> crate::net::Estimate {
         let cs = self.state_of(s);
         let dir = frame::unit3([target[0] - s.pos[0], target[1] - s.pos[1], target[2] - s.pos[2]]).unwrap_or([0.0, 0.0, 1.0]);
-        let t = TargetSpec { centre: target, normal: dir, half_width: crate::data::R_LOCAL, group_size: 0, kind: TargetKind::LocalPoint, collected_share: 0.0 };
+        let t = TargetSpec { centre: target, normal: dir, half_width: crate::data::r_local(frame::norm3([target[0] - s.pos[0], target[1] - s.pos[1], target[2] - s.pos[2]])), group_size: 0, kind: TargetKind::LocalPoint, collected_share: 0.0 };
         let mut x = vec![0f32; self.feat.dim()];
         self.feat.fill(&cs, &t, h, &mut x);
         crate::feat::mask_blocks(self.feat.version(), &mut x, &self.keep);
         let d = frame::norm3([target[0] - s.pos[0], target[1] - s.pos[1], target[2] - s.pos[2]]);
+        self.local.estimate(&x, d)
+    }
+
+    /// The local head on a REAL car state → a point target at h (the coordinator's F22 separation: head or fan).
+    pub fn local_query_state(&self, cs: &CarState, target: [f32; 3], h: u16) -> crate::net::Estimate {
+        let dir = frame::unit3([target[0] - cs.pos[0], target[1] - cs.pos[1], target[2] - cs.pos[2]]).unwrap_or([0.0, 0.0, 1.0]);
+        let t = TargetSpec { centre: target, normal: dir, half_width: crate::data::r_local(frame::norm3([target[0] - cs.pos[0], target[1] - cs.pos[1], target[2] - cs.pos[2]])), group_size: 0, kind: TargetKind::LocalPoint, collected_share: 0.0 };
+        let mut x = vec![0f32; self.feat.dim()];
+        self.feat.fill(cs, &t, h, &mut x);
+        crate::feat::mask_blocks(self.feat.version(), &mut x, &self.keep);
+        let d = frame::norm3([target[0] - cs.pos[0], target[1] - cs.pos[1], target[2] - cs.pos[2]]);
         self.local.estimate(&x, d)
     }
 
@@ -269,11 +288,15 @@ impl<'a> Chained<'a> {
         let goal = self.nodes.pos[to];
         let (gc, gn, ghw) = self.gates.group_geometry(self.nodes.groups[to])?;
         let _ = gc;
-        let start = ChainState { pos: from_pos, speed: v_in, dir, ticks: 0, logp: 0.0, steps: 0 };
+        let start = ChainState { pos: from_pos, speed: v_in, dir, ticks: 0, logp: 0.0, steps: 0, vy: 0.0 };
         let mut frontier = vec![start];
         let mut paths: Vec<Vec<[f32; 3]>> = vec![vec![from_pos]];
         let mut best: Option<(f32, ChainState, Vec<[f32; 3]>)> = None;
-        for _step in 0..self.max_steps {
+        // step budget scales with the leg: a 10-step cap cannot cross a long leg when the head keeps the steps
+        // short (GEOM's 14 "p = 0 on every tour" maps, 23:33Z). ~1 step per 40 m of chord + 5, between max_steps and 40.
+        let chord_m = ((goal[0] - from_pos[0]).powi(2) + (goal[2] - from_pos[2]).powi(2)).sqrt();
+        let steps = if self.fixed_steps { self.max_steps } else { self.max_steps.max((chord_m / 40.0) as usize + 5).min(40) };
+        for _step in 0..steps {
             let mut next: Vec<(f32, ChainState, Vec<[f32; 3]>)> = Vec::new();
             for (s, path) in frontier.iter().zip(&paths) {
                 let to_goal = [goal[0] - s.pos[0], goal[2] - s.pos[2]];
@@ -289,7 +312,7 @@ impl<'a> Chained<'a> {
                         if e.p_reach >= self.p_step_floor {
                             // time to the gate = the head's first-passage time (PASSAGE labels), ≤ h
                             let t = (e.expected_ticks.round() as i32).clamp(10, *h as i32);
-                            let cand = ChainState { pos: goal, speed: e.speed_mu.max(0.0), dir: [gn[0], gn[2]], ticks: s.ticks + t, logp: s.logp + e.p_reach.ln(), steps: s.steps + 1 };
+                            let cand = ChainState { pos: goal, speed: e.speed_mu.max(0.0), dir: [gn[0], gn[2]], ticks: s.ticks + t, logp: s.logp + e.p_reach.ln(), steps: s.steps + 1, vy: 0.0 };
                             let score = cand.ticks as f32 * 10.0 - self.penalty_ms * cand.logp;
                             if best.as_ref().map_or(true, |(b, _, _)| score < *b) {
                                 let mut p = path.clone();
@@ -321,20 +344,31 @@ impl<'a> Chained<'a> {
                         for tdir in dirs {
                             let x = s.pos[0] + tdir[0] * d;
                             let z = s.pos[2] + tdir[1] * d;
-                            let y = self.ground_y(x, s.pos[1], z);
-                            let target = [x, y, z];
-                            let e = self.local_query(s, target, *h);
-                            if e.p_reach < self.p_step_floor {
-                                continue;
+                            let y_ground = self.ground_y(x, s.pos[1], z);
+                            // BALLISTIC candidate (F20): where the car would BE at the target's XZ if it flew — the
+                            // passage labels put positives along the flight arc, the ground fan never asked there
+                            let tf = *d / s.speed.max(20.0);
+                            let y_air = s.pos[1] + s.vy * tf - 4.905 * tf * tf;
+                            let mut ys = vec![y_ground];
+                            if y_air > y_ground + 3.0 {
+                                ys.push(y_air);
                             }
-                            // step time = first-passage time at the target (the head's ticks), not h: a near target is
-                            // passed early, not braked for
-                            let t = (e.expected_ticks.round() as i32).clamp(10, *h as i32);
-                            let cand = ChainState { pos: target, speed: e.speed_mu.clamp(0.0, 150.0), dir: tdir, ticks: s.ticks + t, logp: s.logp + e.p_reach.ln(), steps: s.steps + 1 };
-                            let mut p = path.clone();
-                            p.push(target);
-                            let score = cand.ticks as f32 * 10.0 - self.penalty_ms * cand.logp;
-                            next.push((score, cand, p));
+                            for y in ys {
+                                let target = [x, y, z];
+                                let e = self.local_query(s, target, *h);
+                                if e.p_reach < self.p_step_floor {
+                                    continue;
+                                }
+                                // step time = first-passage time at the target (the head's ticks), not h: a near target is
+                                // passed early, not braked for
+                                let t = (e.expected_ticks.round() as i32).clamp(10, *h as i32);
+                                let vy = (y - s.pos[1]) / (t as f32 * 0.01).max(0.1);
+                                let cand = ChainState { pos: target, speed: e.speed_mu.clamp(0.0, self.local.max_speed + 10.0), dir: tdir, ticks: s.ticks + t, logp: s.logp + e.p_reach.ln(), steps: s.steps + 1, vy };
+                                let mut p = path.clone();
+                                p.push(target);
+                                let score = cand.ticks as f32 * 10.0 - self.penalty_ms * cand.logp;
+                                next.push((score, cand, p));
+                            }
                         }
                     }
                 }
@@ -390,18 +424,30 @@ impl<'a> Chained<'a> {
     /// (spawn edges first, then by from/to/bucket) so a budget cut drops the same edges every run.
     pub fn precompute(&self, threads: usize, budget: std::time::Duration) -> (usize, usize, f64) {
         let n = self.nodes.pos.len();
-        let mut jobs: Vec<(u8, usize, usize)> = Vec::new();
+        let mut edges: Vec<(usize, usize)> = Vec::new();
         for from in 0..n {
             for to in 1..n {
-                if from == to {
-                    continue;
+                if from != to {
+                    edges.push((from, to));
                 }
-                for b in 0..5u8 {
-                    if from == 0 && b != 0 {
-                        continue; // the spawn is left from rest only
-                    }
-                    jobs.push((b, from, to));
+            }
+        }
+        self.precompute_only(threads, budget, &edges)
+    }
+
+    /// Price all 5 arrival buckets for just these (from, to) edges — the hybrid's R-priced set (graph-missing,
+    /// detour and override-candidate legs, 10–25 % of the edges on a 30-group map; GEOM 23:33Z).
+    pub fn precompute_only(&self, threads: usize, budget: std::time::Duration, edges: &[(usize, usize)]) -> (usize, usize, f64) {
+        let mut jobs: Vec<(u8, usize, usize)> = Vec::new();
+        for &(from, to) in edges {
+            if from == to || to == 0 {
+                continue;
+            }
+            for b in 0..5u8 {
+                if from == 0 && b != 0 {
+                    continue; // the spawn is left from rest only
                 }
+                jobs.push((b, from, to));
             }
         }
         let total = jobs.len();
