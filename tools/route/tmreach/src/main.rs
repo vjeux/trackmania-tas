@@ -1591,7 +1591,10 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
     // CLINIC: a completed leg is handed on as a chain, not a candidate tape
     if let (Some(k), true) = (res.leg_done, (f.cps as usize) < cfg.track.n_groups) {
         let p = out.join(format!("leg-{k:02}.tape.tsv"));
-        std::fs::write(&p, tmreach::lap::tsv_text(&f.chain)).map_err(|e| e.to_string())?;
+        // + 0.3 s of straight gas: a credit on the chain's last tick must be INSIDE the seed replay (24z re-credited gate 5 eight times)
+        let mut chain = f.chain.clone();
+        chain.extend((0..30).map(|_| forkoracle::forksrv::Rec { steer: 0.0, gas: 1.0, brake: 0.0 }));
+        std::fs::write(&p, tmreach::lap::tsv_text(&chain)).map_err(|e| e.to_string())?;
         println!("LEG {k} DONE — chain {} ({} ticks, cps {}, mask {:#x})", p.display(), f.chain.len(), f.cps, f.mask);
         return Ok(());
     }
