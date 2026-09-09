@@ -210,24 +210,45 @@ impl Track {
                 // the group's gates; the first pass of the line within 12 m after s_from, else the nearest after s_from
                 let mut best: Option<(f64, f64)> = None; // (s, d)
                 for g in gates.gates.iter().filter(|g| g.group == *grp && g.kind != crate::gates::GateKind::Start) {
+                    let mut inside: Option<(f64, f64)> = None; // the closest sample of the FIRST pass within 20 m
                     for i in 0..n {
                         if t.s[i] < s_from {
                             continue;
                         }
                         let p = t.pts[i];
                         let d = ((p[0] - g.centre[0]).powi(2) + (p[1] - g.centre[1]).powi(2) + (p[2] - g.centre[2]).powi(2)).sqrt();
+                        if let Some(inn) = inside {
+                            if d < 20.0 {
+                                if d < inn.1 {
+                                    inside = Some((t.s[i], d));
+                                }
+                                continue;
+                            }
+                            // left the 20 m sphere: the closest sample of this pass is the crossing
+                            if best.map(|b| b.1 >= 20.0 || inn.0 < b.0).unwrap_or(true) {
+                                best = Some(inn);
+                            }
+                            break;
+                        }
                         if d < 20.0 {
+                            inside = Some((t.s[i], d));
+                            continue;
+                        }
+                        if false {
                             // a pass within 20 m wins over a nearest-so-far fallback (d >= 20) and over a later pass
                             // (BUG until 2026-09-09 10:20Z: the fallback entry blocked this update, so every gate was
                             // "placed" at the first sample after the previous gate and the off-route cap fired 40 m
                             // after every credit)
-                            if best.map(|b| b.1 >= 20.0 || t.s[i] < b.0).unwrap_or(true) {
-                                best = Some((t.s[i], d));
-                            }
-                            break;
+                            unreachable!();
                         }
                         if best.is_none() || (best.unwrap().1 >= 20.0 && d < best.unwrap().1) {
                             best = Some((t.s[i], d));
+                        }
+                    }
+                    // the line ended inside the sphere (a finish gate at the very end)
+                    if let Some(inn) = inside {
+                        if best.map(|b| b.1 >= 20.0 || inn.0 < b.0).unwrap_or(true) {
+                            best = Some(inn);
                         }
                     }
                 }

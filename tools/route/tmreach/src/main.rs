@@ -108,6 +108,7 @@ fn main() {
         "chain-replay" => cmd_chain_replay(&a),
         "sweep" => cmd_sweep(&a),
         "track-project" => cmd_track_project(&a),
+        "identity" => cmd_identity(&a),
         _ => usage(),
     };
     if let Err(e) = r {
@@ -1882,5 +1883,50 @@ fn cmd_track_project(a: &Args) -> Result<(), String> {
     let q = track.at(s);
     println!("first pts {:?} .. last {:?}", &track.pts[..3], &track.pts[track.pts.len()-2..]);
     println!("track: {} pts, {:.1} m; point ({:.1}, {:.1}, {:.1}) -> s {s:.1} (segment {seg}) lat {lat:.1} d3 {d3:.1}; line point there ({:.1}, {:.1}, {:.1}); min y within 15 m {:.1}; human speed {:.1}", track.pts.len(), track.len_m(), p[0], p[1], p[2], q[0], q[1], q[2], track.min_y_near(s, 15.0), track.human_speed_at(s));
+    Ok(())
+}
+
+
+/// `tmreach identity --centreline C --author-line A --gates G` — IDENTITY CONTROL of the scorer (parent, 2026-09-09
+/// 11:34Z), engine-free: the human line itself walked through the scorer must project to monotone arc length and pass
+/// every placed gate within reach of its centre in the human order (the templates are BORROWED containers, so no
+/// tiny-map human tape exists to replay).
+fn cmd_identity(a: &Args) -> Result<(), String> {
+    let gates = MapGates::load_geom(Path::new(&a.req("gates")))?;
+    let ord: Option<Vec<u32>> = a.get("centreline").and_then(|c| std::fs::read_to_string(c).ok()).and_then(|txt| tmreach::json::parse(&txt).ok()).and_then(|j| j.get("order_groups").and_then(|v| v.arr()).map(|arr| arr.iter().filter_map(|x| x.f64()).map(|x| x as u32).collect()));
+    let track = tmreach::lap::Track::from_author_line_ordered(Path::new(&a.req("author-line")), &gates, ord.as_deref())?;
+    // walk the line's own points through the projector: monotone?
+    let mut hint = 0usize;
+    let mut max_s = 0.0f64;
+    let mut worst_drop = 0.0f64;
+    let mut worst_at = 0.0f64;
+    for (i, p) in track.pts.iter().enumerate() {
+        let (s, _l, sg, _d) = track.project(*p, hint, if i == 0 { track.pts.len() } else { 80 });
+        hint = sg;
+        if max_s - s > worst_drop {
+            worst_drop = max_s - s;
+            worst_at = track.s[i];
+        }
+        max_s = max_s.max(s);
+    }
+    // every placed gate: the line's point at the placed s within 12 m of a gate of that group
+    let mut far = Vec::new();
+    for (k, grp) in track.order_groups.iter().enumerate() {
+        let p = track.at(track.gate_s[k]);
+        let d = gates.gates.iter().filter(|g| g.group == *grp && g.kind != GateKind::Start).map(|g| ((p[0] - g.centre[0]).powi(2) + (p[1] - g.centre[1]).powi(2) + (p[2] - g.centre[2]).powi(2)).sqrt()).fold(f64::INFINITY, f64::min);
+        if d > 15.0 {
+            far.push(format!("#{k} gate {grp} {d:.1} m"));
+        }
+    }
+    let ok = worst_drop < 30.0 && far.is_empty();
+    println!(
+        "IDENTITY {}: line projects monotone (worst drop {:.1} m at s {:.0}), {}/{} placed gates within 15 m of the line{}",
+        if ok { "OK" } else { "FAIL" },
+        worst_drop,
+        worst_at,
+        track.n_groups - far.len(),
+        track.n_groups,
+        if far.is_empty() { String::new() } else { format!(" — far: {}", far.join(", ")) }
+    );
     Ok(())
 }
