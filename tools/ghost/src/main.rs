@@ -232,6 +232,12 @@ const DEBUG_HELP: &str = r#"ghost debug -- forensic probes
         Move the car entity to index 0. Tests whether entity ORDER matters
         (it does not -- measured, and the theory died).
 
+  ghost debug keep-ents IN OUT --keep I,J,K
+        Keep only the named entity indices (as `ghost manifest` lists them) and
+        drop the rest: the repair for a regenerated ghost whose multi-client
+        carrier left other players' 0x2D001000 / 0x032CB000 streams in the
+        record (tiny 11: 7 entities; the client imports 0 -> 0, FrameMessage).
+
   ghost debug set-u01 IN OUT --value N
         Rewrite the car entity's u01 word.
 
@@ -282,6 +288,7 @@ fn main() {
         "codeccheck",
         "swap-samples",
         "car-first",
+        "keep-ents",
         "split-car",
         "set-u01",
         "strip-events",
@@ -471,6 +478,50 @@ fn main() {
             }) {
                 Ok(_) => println!("moved the car entity to index 0 -> {}", outp),
                 Err(e) => die(format!("car-first: {}", e)),
+            }
+        }
+        "keep-ents" => {
+            // A regenerated ghost whose CARRIER was a multi-client server
+            // recording keeps every other player's 0x2D001000 / 0x032CB000
+            // streams (tiny 11, 2026-09-09: 7 entities, three players' ids), and
+            // the client answers the import with 0 -> 0 ghost blocks and a
+            // FrameMessage -- the film.rs soft refusal. Keep the named entity
+            // indices (the car and ITS two streams), drop the rest; the car's
+            // samples are untouched.
+            let inp = rest.first().unwrap_or_else(|| die("ghost debug keep-ents IN OUT --keep I,J,K"));
+            let outp = rest.get(1).unwrap_or_else(|| die("ghost debug keep-ents IN OUT --keep I,J,K"));
+            let keep: Vec<usize> = flag(rest, "--keep")
+                .unwrap_or_else(|| die("--keep I,J,K (entity indices as `ghost manifest` lists them)"))
+                .split(',')
+                .map(|s| s.trim().parse::<usize>().unwrap_or_else(|_| die(format!("--keep: `{}` is not an index", s))))
+                .collect();
+            let mut note = String::new();
+            match gbx::recwrite::rewrite_ghost(inp, outp, |rd| {
+                let n = rd.ents.len();
+                for k in &keep {
+                    if *k >= n {
+                        return Err(format!("--keep {}: the record has {} entities", k, n));
+                    }
+                }
+                let kept: Vec<_> = rd
+                    .ents
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| keep.contains(i))
+                    .map(|(_, e)| e.clone())
+                    .collect();
+                note = format!(
+                    "{} of {} entities kept ({}); dropped {}",
+                    kept.len(),
+                    n,
+                    kept.iter().map(|e| format!("type {} u01 {} samples {}", e.type_, e.u01, e.times.len())).collect::<Vec<_>>().join("; "),
+                    rd.ents.iter().enumerate().filter(|(i, _)| !keep.contains(i)).map(|(_, e)| format!("type {} u01 {}", e.type_, e.u01)).collect::<Vec<_>>().join("; ")
+                );
+                rd.ents = kept;
+                Ok(())
+            }) {
+                Ok(_) => println!("{} -> {}", note, outp),
+                Err(e) => die(format!("keep-ents: {}", e)),
             }
         }
         "split-car" => {
