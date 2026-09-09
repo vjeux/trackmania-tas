@@ -930,10 +930,13 @@ fn cmd_road_centreline(args: &[String]) {
                 // the first-in-range sample sat 10–12 m before every credit on 15 certified laps (INPUT tables, 05:20Z)
                 let mut found: Option<usize> = None;
                 let mut run_best: Option<(usize, f32)> = None;
+                let mut best_run: Option<(usize, f32)> = None;
                 let mut in_run = false;
                 let (mut lo, mut hi) = (0usize, 0usize);
                 let _ = (lo, hi);
-                for (li, p) in line.iter().enumerate() {
+                // scan from the previous gate's cut: the pass AFTER the previous gate (GEN's 22:59Z rule; 23's overlapping runs)
+                let start = cuts.last().map(|c| c.0 + 1).unwrap_or(0);
+                for (li, p) in line.iter().enumerate().skip(start) {
                     let dmin = gates.gates.iter().filter(|x| x.group == grp_id).filter(|x| { let dy = p[1] - x.centre[1]; dy >= -9.0 && dy <= 3.0 }).map(|x| ((x.centre[0] - p[0]).powi(2) + (x.centre[2] - p[2]).powi(2)).sqrt() - x.half_width).fold(f32::INFINITY, f32::min);
                     let hit = dmin <= 6.0;
                     if hit {
@@ -942,11 +945,11 @@ fn cmd_road_centreline(args: &[String]) {
                         if run_best.map(|(_, d)| dmin < d).unwrap_or(true) { run_best = Some((li, dmin)); }
                     } else if in_run {
                         in_run = false;
-                        found = run_best.map(|(i, _)| i);
-                        if !is_fin { break; }
+                        if is_fin || best_run.map(|(_, d)| run_best.map(|(_, rd)| rd < d).unwrap_or(false)).unwrap_or(true) { best_run = run_best; }
                     }
                 }
-                if in_run { found = run_best.map(|(i, _)| i); }
+                if in_run && (is_fin || best_run.map(|(_, d)| run_best.map(|(_, rd)| rd < d).unwrap_or(false)).unwrap_or(true)) { best_run = run_best; }
+                found = best_run.map(|(i, _)| i);
                 match found { Some(li) => cuts.push((li, si)), None => { ok = false; eprintln!("  author line never passes group {grp_id} — author line NOT used"); break; } }
             }
             let monotone = cuts.windows(2).all(|w| w[1].0 > w[0].0);
@@ -1133,11 +1136,26 @@ fn cmd_author_line(args: &[String]) {
             // FIRST pass for a checkpoint; LAST pass for a finish group (the lap ends there — a finish tower passed under
             // earlier must not be ordered early; tiny 13)
             let is_fin = g.gates.iter().any(|x| x.group == grp && matches!(x.kind, tmroute::gates::WpKind::Finish));
+            // the CROSSING time: within the first (finish: last) in-range run, the sample nearest the gate plane — the same
+            // rule as road-centreline's cuts, so the order and the cuts agree (23: two gates with overlapping runs)
             let mut t_first: Option<i32> = None;
+            let mut run_best: Option<(i32, f32)> = None;
+            let mut best_run: Option<(i32, f32)> = None;
+            let mut in_run = false;
             for r in &rows {
-                let hit = g.gates.iter().filter(|x| x.group == grp).any(|x| ((x.centre[0] - r.3[0]).powi(2) + (x.centre[2] - r.3[2]).powi(2)).sqrt() <= x.half_width + 6.0 && { let dy = r.3[1] - x.centre[1]; dy >= -9.0 && dy <= 3.0 });
-                if hit { t_first = Some(r.4); if !is_fin { break; } }
+                let dmin = g.gates.iter().filter(|x| x.group == grp).filter(|x| { let dy = r.3[1] - x.centre[1]; dy >= -9.0 && dy <= 3.0 }).map(|x| ((x.centre[0] - r.3[0]).powi(2) + (x.centre[2] - r.3[2]).powi(2)).sqrt() - x.half_width).fold(f32::INFINITY, f32::min);
+                if dmin <= 6.0 {
+                    if !in_run { in_run = true; run_best = None; }
+                    if run_best.map(|(_, d)| dmin < d).unwrap_or(true) { run_best = Some((r.4, dmin)); }
+                } else if in_run {
+                    in_run = false;
+                    // checkpoints: the DEEPEST run (smallest lateral distance = through the ring; 23's helix passes 4 m under
+                    // gate 11 before crossing it); finish: the last run
+                    if is_fin || best_run.map(|(_, d)| run_best.map(|(_, rd)| rd < d).unwrap_or(false)).unwrap_or(true) { best_run = run_best; }
+                }
             }
+            if in_run && (is_fin || best_run.map(|(_, d)| run_best.map(|(_, rd)| rd < d).unwrap_or(false)).unwrap_or(true)) { best_run = run_best; }
+            t_first = best_run.map(|(t, _)| t);
             if let Some(t) = t_first { firsts.push((t, grp)); } else {
                 let (mut dmin, mut at) = (f32::INFINITY, [0.0f32; 3]);
                 for r in &rows { for x in g.gates.iter().filter(|x| x.group == grp) { let dd = ((x.centre[0] - r.3[0]).powi(2) + (x.centre[1] - r.3[1]).powi(2) + (x.centre[2] - r.3[2]).powi(2)).sqrt(); if dd < dmin { dmin = dd; at = r.3; } } }
