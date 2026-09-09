@@ -814,24 +814,39 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 let url = url.as_str();
                 println!("{} {nn} {time}: PUBLISHED {url}", chrono_now());
                 if let Some(readme) = &readme {
-                    let page = std::fs::read_to_string(readme).map_err(|e| format!("{}: {e}", readme.display()))?;
-                    // the driver label, read NOW from the ghosts README (a row can
-                    // land after the cut): TAS = tiny ghost; vjeux's own run says so
-                    let label = match &ghosts_dir {
-                        Some(d) => lap_label(&std::fs::read_to_string(d.join("README.md")).unwrap_or_default(), nn, time),
-                        None => "tiny ghost".to_string(),
-                    };
-                    let new = page_swap(&page, nn, time, &label, &build_note, url)?;
-                    std::fs::write(readme, &new).map_err(|e| format!("{}: {e}", readme.display()))?;
-                    println!("  page: row {} swapped in {} ({label})", map_title(nn), readme.display());
-                    if commit {
-                        let repo = repo.clone().ok_or("--commit needs --repo (or a --readme inside the repo)")?;
-                        let msg = format!("tiny page: {} = {time} ({label}, build ship15) with the controls overlay ({name}.mp4)", map_title(nn));
-                        git(&repo, &["add", &readme.strip_prefix(&repo).unwrap_or(readme).display().to_string()])?;
-                        git(&repo, &["commit", "-q", "-m", &msg])?;
-                        git(&repo, &["pull", "-q", "--rebase"])?;
-                        git(&repo, &["push", "-q"])?;
-                        println!("  pushed: {msg}");
+                    // THE PAGE IS BEST-EFFORT, THE QUEUE IS NOT. A git failure
+                    // here — nothing to commit because a duplicate watcher got
+                    // there first, a rejected push, a rebase conflict — used to
+                    // propagate and KILL the watcher, so a drain stopped dead
+                    // with clips still staged. It is logged and the queue goes on;
+                    // the next published clip re-swaps and re-pushes anyway.
+                    let swap = (|| -> Result<(), String> {
+                        let page = std::fs::read_to_string(readme).map_err(|e| format!("{}: {e}", readme.display()))?;
+                        // the driver label, read NOW from the ghosts README (a row can
+                        // land after the cut): TAS = tiny ghost; vjeux's own run says so
+                        let label = match &ghosts_dir {
+                            Some(d) => lap_label(&std::fs::read_to_string(d.join("README.md")).unwrap_or_default(), nn, time),
+                            None => "tiny ghost".to_string(),
+                        };
+                        let new = page_swap(&page, nn, time, &label, &build_note, url)?;
+                        let unchanged = new == page;
+                        std::fs::write(readme, &new).map_err(|e| format!("{}: {e}", readme.display()))?;
+                        println!("  page: row {} swapped in {} ({label})", map_title(nn), readme.display());
+                        if commit && !unchanged {
+                            let repo = repo.clone().ok_or("--commit needs --repo (or a --readme inside the repo)")?;
+                            let msg = format!("tiny page: {} = {time} ({label}, build ship15) with the controls overlay ({name}.mp4)", map_title(nn));
+                            git(&repo, &["add", &readme.strip_prefix(&repo).unwrap_or(readme).display().to_string()])?;
+                            git(&repo, &["commit", "-q", "-m", &msg])?;
+                            git(&repo, &["pull", "-q", "--rebase"])?;
+                            git(&repo, &["push", "-q"])?;
+                            println!("  pushed: {msg}");
+                        } else if commit {
+                            println!("  page already carries this row — nothing to commit");
+                        }
+                        Ok(())
+                    })();
+                    if let Err(e) = swap {
+                        println!("  PAGE NOT UPDATED for {nn} {time} (the clip IS published at {url}): {e}");
                     }
                 }
                 *row = format!("{nn}\t{time}\t{name}\t{done_file}\t{url}");
