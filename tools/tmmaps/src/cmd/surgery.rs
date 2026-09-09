@@ -528,3 +528,39 @@ pub fn delblocks(args: &[String]) {
         let _ = std::fs::remove_file(&tmp);
         println!("wrote {} ({} blocks, {} items)", out.display(), m.blocks.len(), m.items.len());
 }
+
+/// `tmmaps dropbaked SRC --out MAP [--baked b12,b40,…] [--name PAT[,PAT…]] [--flags HEX]`
+/// — the ORIGINAL map minus exact generated (baked) records: by `bN` index,
+/// by name substring, and/or by an exact flags word (the ground-truth probe of
+/// 2026-09-09: shoot the original and the original-minus-X from one camera;
+/// no changed pixel ⇒ the engine draws nothing for X). Authored blocks, items
+/// and everything else stay; the file is rewritten by `remove_blocks`.
+pub fn dropbaked(args: &[String]) {
+    let src = std::path::PathBuf::from(&args[2]);
+    let out = std::path::PathBuf::from(tmmaps::cli::flag(args, "--out").expect("dropbaked needs --out MAP"));
+    let ids: std::collections::BTreeSet<usize> = tmmaps::cli::flag(args, "--baked").unwrap_or("").split(',').filter(|s| !s.is_empty()).map(|s| s.trim().trim_start_matches('b').parse::<usize>().expect("--baked bN,bN,…")).collect();
+    let names: Vec<String> = tmmaps::cli::flag(args, "--name").unwrap_or("").split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
+    let flags: Option<u32> = tmmaps::cli::flag(args, "--flags").map(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16).expect("--flags HEX"));
+    if ids.is_empty() && names.is_empty() {
+        panic!("dropbaked: nothing selected (--baked and/or --name)");
+    }
+    let mut m = tmmaps::map::MapFile::load(&src);
+    let nk = m.baked.len();
+    let selected = |b: &tmmaps::map::BlockRec| -> bool {
+        let by_id = ids.contains(&b.index);
+        let by_name = !names.is_empty() && names.iter().any(|n| b.name.contains(n.as_str())) && flags.map(|f| b.flags == f).unwrap_or(true);
+        by_id || by_name
+    };
+    let hit: Vec<String> = m.baked.iter().filter(|b| selected(b)).map(|b| format!("b{} {} {:08X} {:?}", b.index, b.name, b.flags, b.coords())).collect();
+    let r = m.remove_blocks(|_| false, selected);
+    println!("dropped {} of {nk} generated records ({} authored blocks touched):", r.baked, r.blocks);
+    for h in &hit {
+        println!("  {h}");
+    }
+    let tmp = out.with_extension("drop0.Map.Gbx");
+    m.write_to(&tmp).expect("write");
+    let m = tmmaps::map::MapFile::load(&tmp);
+    m.write_to(&out).expect("write output");
+    let _ = std::fs::remove_file(&tmp);
+    println!("wrote {} ({} blocks, {} baked, {} items)", out.display(), m.blocks.len(), m.baked.len(), m.items.len());
+}

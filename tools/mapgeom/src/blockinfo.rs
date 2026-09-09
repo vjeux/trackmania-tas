@@ -1320,8 +1320,21 @@ impl BlockInfo {
         let has_units = |v: &Option<Variant>| v.as_ref().is_some_and(|v| !v.block_units.is_empty() || v.mobils.iter().any(|l| !l.is_empty()));
         let adds = if ground { &self.additional_ground } else { &self.additional_air };
         let has_content = |v: &Variant| !v.block_units.is_empty() || v.mobils.iter().any(|l| !l.is_empty());
+        // A CLIP whose asked-for family is PRESENT but EMPTY (no units, an empty
+        // mobil list) draws nothing — the engine does not fall back to the other
+        // family. Measured 2026-09-09 on Summer 13: `WaterShore1_Rocky_FCLeft`
+        // is recorded 52 times as an AIR clip (the row above the shore tiles)
+        // and its air variant is exactly that; the original and the original
+        // minus those 52 records render identically from two cameras (tinyctl
+        // compare 0/144 cells), while the ground-variant fallback drew a rocky
+        // skirt floating at snow level over 08/13/23. Non-clip infos keep the
+        // fallback (support blocks with an empty ground variant, unmeasured).
+        let is_clip = matches!(self.kind, Kind::Clip | Kind::ClipHorizontal | Kind::ClipVertical);
+        let asked = if ground { &self.variant_base_ground } else { &self.variant_base_air };
         let (v, label) = if additional > 0 && additional - 1 < adds.len() && has_content(&adds[additional - 1]) {
             (&adds[additional - 1], if ground { "ground/add" } else { "air/add" })
+        } else if is_clip && asked.as_ref().is_some_and(|v| !has_content(v)) {
+            (asked.as_ref()?, if ground { "ground/base(empty)" } else { "air/base(empty)" })
         } else if ground && has_units(&self.variant_base_ground) {
             (self.variant_base_ground.as_ref()?, "ground/base")
         } else if !ground && has_units(&self.variant_base_air) {
@@ -1658,4 +1671,101 @@ pub fn load(store: &mut crate::store::DataStore, logical: &str) -> Result<BlockI
     let m = store.load_model(logical)?;
     let g = m.graph()?;
     BlockInfo::from_graph(&g, &m.path, m.class_id, m.body.len())
+}
+
+#[cfg(test)]
+mod pick_tests {
+    use super::*;
+
+    fn variant(units: usize, mobils: Vec<Vec<Option<&str>>>) -> Variant {
+        Variant {
+            name: String::new(),
+            cardinal_dir: 0,
+            symmetrical_variant_index: -1,
+            variant_base_type: 0,
+            no_pillar_below_index: 255,
+            multi_dir: 0,
+            block_units: (0..units).map(|_| BlockUnit::default()).collect(),
+            mobils: mobils.into_iter().map(|l| l.into_iter().map(|p| Mobil { prefab: p.map(String::from), ..Mobil::default() }).collect()).collect(),
+            spawn_loc: [0.0; 6],
+            manual_symmetry: [false; 4],
+            helper_solid: None,
+            waypoint_trigger_solid: None,
+            trigger_shapes: Vec::new(),
+            gate: None,
+            water_volumes: 0,
+            water_volume_list: Vec::new(),
+            placed_pillars: Vec::new(),
+            replaced_pillars: Vec::new(),
+            auto_terrains: Vec::new(),
+            auto_terrain_height_offset: 0,
+            auto_terrain_place_type: 0,
+            chunks: Vec::new(),
+        }
+    }
+
+    fn info(kind: Kind, ground: Option<Variant>, air: Option<Variant>) -> BlockInfo {
+        BlockInfo {
+            path: String::new(),
+            class_id: 0,
+            kind,
+            name: String::new(),
+            waypoint_type: None,
+            no_respawn: false,
+            is_pillar: None,
+            pillar_shape_multi_dir: None,
+            symmetrical_block_info_id: String::new(),
+            dir: 0,
+            base_type: None,
+            prod_state: None,
+            mat_modifier: None,
+            material_modifier: Vec::new(),
+            material_modifier_slots: [None, None, None],
+            variant_base_ground: ground,
+            variant_base_air: air,
+            additional_ground: Vec::new(),
+            additional_air: Vec::new(),
+            clip: None,
+            frontier_flag: None,
+            chunks: Vec::new(),
+            consumed: (0, 0),
+            recovered: Vec::new(),
+            skipped_chunks: Vec::new(),
+        }
+    }
+
+    /// WaterShore1_Rocky_FCLeft: ground variant = one FCLeft prefab, air
+    /// variant present with no units and one empty mobil list. An AIR record
+    /// draws nothing (Summer 13, measured); a GROUND record draws FCLeft.
+    #[test]
+    fn a_clip_with_an_empty_asked_for_variant_draws_nothing() {
+        let bi = info(Kind::Clip, Some(variant(1, vec![vec![Some("FCLeft.Prefab.Gbx")]])), Some(variant(0, vec![vec![]])));
+        let air = bi.pick_placement_add(false, 0, 0, 0).expect("a pick");
+        assert_eq!(air.label, "air/base(empty)");
+        assert!(air.mobils.is_empty() && air.prefabs().is_empty());
+        let ground = bi.pick_placement_add(true, 0, 0, 0).expect("a pick");
+        assert_eq!(ground.label, "ground/base");
+        assert_eq!(ground.prefabs(), vec!["FCLeft.Prefab.Gbx".to_string()]);
+    }
+
+    /// A clip whose asked-for family is ABSENT still takes the other one
+    /// (TrackWallWaterStraightFCBInsideV2: a ground variant with no units, an
+    /// air variant with the floor — a ground record is not the empty case
+    /// when the ground variant is missing altogether).
+    #[test]
+    fn an_absent_family_falls_back() {
+        let bi = info(Kind::Clip, None, Some(variant(1, vec![vec![Some("Straight_FCBInside.Prefab.Gbx")]])));
+        let p = bi.pick_placement_add(true, 0, 0, 0).expect("a pick");
+        assert_eq!(p.label, "air/base(fallback)");
+        assert_eq!(p.prefabs(), vec!["Straight_FCBInside.Prefab.Gbx".to_string()]);
+    }
+
+    /// A non-clip keeps the old behaviour: an empty ground variant is skipped
+    /// for the air one (the support blocks of 2026-09-06, unmeasured).
+    #[test]
+    fn a_classic_with_an_empty_ground_variant_still_falls_back() {
+        let bi = info(Kind::Classic, Some(variant(0, vec![vec![]])), Some(variant(1, vec![vec![Some("Base_Air.Prefab.Gbx")]])));
+        let p = bi.pick_placement_add(true, 0, 0, 0).expect("a pick");
+        assert_eq!(p.label, "air/base(fallback)");
+    }
 }

@@ -132,6 +132,7 @@ fn main() {
         // items kept — the 0-block form of `tmmaps tiny` on ANY map, for the
         // lightmapper-crash bisect of 2026-09-07
         "delblocks" => surgery::delblocks(&args),
+        "dropbaked" => surgery::dropbaked(&args),
         "census" => census::cmd_census(&args),
         "fillers" => tmmaps::fillers::cmd(&args),
         // archive-only variants of a tiny map for the load-failure bisect (zippad.rs)
@@ -175,6 +176,11 @@ READING A MAP
         g1 TopBottom_Ground), the side they stand on, what their own cell holds
         (`-` free, `P:` pillars only) and what stands across the side;
         --summary tallies free / pillar / occupied cells per name and variant
+  tmmaps dropbaked SRC --out MAP [--baked b12,b40,…] [--name PAT[,PAT…]] [--flags HEX]
+        the ORIGINAL minus exact generated records (by bN index, by name
+        substring and/or an exact flags word) — the ground-truth probe: shoot
+        SRC and MAP from one camera; no changed pixel ⇒ the engine draws
+        nothing for those records
   tmmaps region MAP --box X0,Y0,Z0:X1,Y1,Z1 [--filter PAT] [--items] [--blocks]
         everything whose position lies inside a world box. A GATE IS A
         STRUCTURE, NOT A BLOCK: run this before and after any move.
