@@ -607,3 +607,31 @@ pub fn striplightmap(args: &[String]) {
         m.write_to(&out).expect("write output");
         println!("wrote {} (lightmap stripped: {n} bytes)", out.display());
 }
+
+/// `tmmaps itembytes MAP --item N[,N…]` — the per-item bytes of chunks
+/// 0x03043062 (colour), 0x03043063 (animation phase), 0x03043065 and
+/// 0x03043068 (lightmap quality) for the given item indices, plus the
+/// placement's scale and pivot: what two placements of one item differ by
+/// when they render differently (the 2026-09-09 tree-glare thread).
+pub fn itembytes(args: &[String]) {
+    let src = std::path::PathBuf::from(&args[2]);
+    let list = tmmaps::cli::flag(args, "--item").expect("itembytes needs --item N[,N…]");
+    let m = tmmaps::map::MapFile::load(&src);
+    let chunks = tmmaps::gbx::all_skip_chunks(&m.gbx.body);
+    let base = m.blocks.len() + m.baked.len();
+    println!("item\tmodel\tc62\tc63\tc65\tc68\tscale\tpos");
+    for s in list.split(',').filter(|s| !s.is_empty()) {
+        let i: usize = s.trim().parse().expect("--item wants indices");
+        let it = &m.items[i];
+        let mut cols = Vec::new();
+        for cid in [0x0304_3062u32, 0x0304_3063, 0x0304_3065, 0x0304_3068] {
+            let v = chunks.iter().find(|(c, ..)| *c == cid).and_then(|&(_, _, payload, size)| {
+                let off = payload + 4 + base + i;
+                if off < payload + size { Some(m.gbx.body[off]) } else { None }
+            });
+            cols.push(v.map(|b| format!("{b}")).unwrap_or_else(|| "-".into()));
+        }
+        let scale = f32::from_le_bytes(m.gbx.body[it.scale_off..it.scale_off + 4].try_into().unwrap());
+        println!("{i}\t{}\t{}\t{scale}\t{:.1},{:.1},{:.1}", it.model, cols.join("\t"), it.pos[0], it.pos[1], it.pos[2]);
+    }
+}

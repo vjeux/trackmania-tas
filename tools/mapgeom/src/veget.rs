@@ -335,3 +335,112 @@ pub fn tree_model_stats(store: &mut DataStore, path: &str) -> Result<TreeStats, 
     }
     Ok(stats_of(visuals))
 }
+
+/// What the leaf cards' vertex data encodes — the questions of the 2026-09-09
+/// "trees look horrible" thread, answered from the model rather than guessed:
+/// are the normals the cards' own face normals (flat paper) or a shell round
+/// the crown (the sphere the vegetation shader lights), and does the one
+/// varying byte of the vertex colour follow the radius (ambient occlusion:
+/// bright outside, dark inside) or the height (a wind weight)?
+/// One line per visual: material, vertex count, mean cos(normal, face normal),
+/// mean cos(normal, vertex − crown centre), and the correlation of the colour
+/// byte with the radial distance and with the height.
+pub fn shape_report(m: &VegetTreeModel) -> Vec<String> {
+    use crate::static_item::vstream::{Elem, T_DEC3N, T_FLOAT3};
+    let mut out = Vec::new();
+    for (l, lod) in m.lods.iter().enumerate() {
+        for e in lod {
+            let Some(main) = e.visual.main.as_ref() else { continue };
+            let Some(s) = e.visual.stream() else { continue };
+            let compress = s.compress_local3d.unwrap_or(false);
+            let mut pos: Vec<[f32; 3]> = Vec::new();
+            let mut nrm: Vec<[f32; 3]> = Vec::new();
+            let mut col: Vec<u32> = Vec::new();
+            for (d, el) in s.decls.iter().zip(s.elems.iter()) {
+                match (d.name(), d.stored_type(compress), el) {
+                    (0, T_FLOAT3, Elem::Float3(p)) => pos = p.clone(),
+                    (5, T_DEC3N, Elem::Word(w)) => nrm = w.iter().map(|x| crate::static_item::build::dec3n_unpack(*x)).collect(),
+                    (5, T_FLOAT3, Elem::Float3(p)) => nrm = p.clone(),
+                    (8, _, Elem::Word(w)) => col = w.clone(),
+                    _ => {}
+                }
+            }
+            let n = pos.len();
+            if n == 0 || nrm.len() != n {
+                continue;
+            }
+            let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+            let norm = |a: [f32; 3]| {
+                let l = dot(a, a).sqrt();
+                if l > 1e-6 { [a[0] / l, a[1] / l, a[2] / l] } else { [0.0; 3] }
+            };
+            // the crown centre: the box centre of this visual
+            let c = [main.bounding_box[0], main.bounding_box[1], main.bounding_box[2]];
+            // per-vertex face normal: the area-weighted mean of the triangles that use it
+            let mut face = vec![[0.0f32; 3]; n];
+            if let Some(ib) = e.visual.index_buffer.as_ref() {
+                for t in ib.indices.chunks(3) {
+                    if t.len() < 3 {
+                        break;
+                    }
+                    let (a, b, cc) = (t[0] as usize, t[1] as usize, t[2] as usize);
+                    if a >= n || b >= n || cc >= n {
+                        continue;
+                    }
+                    let u = [pos[b][0] - pos[a][0], pos[b][1] - pos[a][1], pos[b][2] - pos[a][2]];
+                    let v = [pos[cc][0] - pos[a][0], pos[cc][1] - pos[a][1], pos[cc][2] - pos[a][2]];
+                    let fnrm = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                    for k in [a, b, cc] {
+                        for i in 0..3 {
+                            face[k][i] += fnrm[i];
+                        }
+                    }
+                }
+            }
+            let mut cos_face = 0.0f32;
+            let mut abs_cos_face = 0.0f32;
+            let mut cos_shell = 0.0f32;
+            let mut cnt = 0usize;
+            for i in 0..n {
+                let fn_ = norm(face[i]);
+                if dot(fn_, fn_) < 0.5 {
+                    continue;
+                }
+                let nn = norm(nrm[i]);
+                let r = norm([pos[i][0] - c[0], pos[i][1] - c[1], pos[i][2] - c[2]]);
+                cos_face += dot(nn, fn_);
+                abs_cos_face += dot(nn, fn_).abs();
+                cos_shell += dot(nn, r);
+                cnt += 1;
+            }
+            let k = cnt.max(1) as f32;
+            // the colour byte that varies (the others read 0xff on every file): each of
+            // the four against the radial distance and the height
+            let mut colinfo = String::new();
+            if col.len() == n {
+                for byte in 0..4 {
+                    let vals: Vec<f32> = col.iter().map(|w| ((w >> (8 * byte)) & 0xff) as f32).collect();
+                    let mean = vals.iter().sum::<f32>() / n as f32;
+                    let var = vals.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / n as f32;
+                    if var < 1.0 {
+                        continue;
+                    }
+                    let corr = |xs: &[f32]| {
+                        let mx = xs.iter().sum::<f32>() / n as f32;
+                        let vx = xs.iter().map(|v| (v - mx) * (v - mx)).sum::<f32>() / n as f32;
+                        let cov = xs.iter().zip(vals.iter()).map(|(x, v)| (x - mx) * (v - mean)).sum::<f32>() / n as f32;
+                        if vx > 1e-6 { cov / (vx.sqrt() * var.sqrt()) } else { 0.0 }
+                    };
+                    let radial: Vec<f32> = pos.iter().map(|p| ((p[0] - c[0]).powi(2) + (p[2] - c[2]).powi(2)).sqrt()).collect();
+                    let dist3: Vec<f32> = pos.iter().map(|p| ((p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2) + (p[2] - c[2]).powi(2)).sqrt()).collect();
+                    let height: Vec<f32> = pos.iter().map(|p| p[1]).collect();
+                    let lo = vals.iter().cloned().fold(255.0f32, f32::min);
+                    colinfo.push_str(&format!("; colour byte {byte}: mean {mean:.0} min {lo:.0} sd {:.0}, corr radial {:+.2} dist3 {:+.2} height {:+.2}", var.sqrt(), corr(&radial), corr(&dist3), corr(&height)));
+                }
+            }
+            let mat = m.materials.get(e.material as usize).map(|x| x.name.as_str()).unwrap_or("?");
+            out.push(format!("  level {l} {mat}{}: {n} v; normal·face {:+.2} (|·| {:.2}), normal·shell {:+.2}{colinfo}", if m.materials.get(e.material as usize).map(|x| x.leaf).unwrap_or(false) { " (leaf)" } else { "" }, cos_face / k, abs_cos_face / k, cos_shell / k));
+        }
+    }
+    out
+}

@@ -857,7 +857,17 @@ pub fn cmd(args: &[String]) {
         } else if let Some(v) = mapping.variant_by_index.get(&i) {
             m.set_item_variant(i, *v);
         }
-        m.set_item_color(i, s.color);
+        // TINY_TREE_PLACEMENT_COLOR=N: every BAKED TREE (the library's `AV…`
+        // vegetation snapshots) placed with colour byte N instead of the source
+        // item's (the vegetation items carry Green, 2). Probe knob of the
+        // 2026-09-09 trees thread: before the lightmap-uv1 fix the placement
+        // colour scaled the broken lightmap term on custom materials (White was
+        // the neutral one); whether it still matters after f9039561 is untested.
+        let color = match std::env::var("TINY_TREE_PLACEMENT_COLOR").ok().and_then(|v| v.parse::<u8>().ok()) {
+            Some(c) if s.model.starts_with("AV") && s.model.ends_with(".Item.Gbx") => c,
+            _ => s.color,
+        };
+        m.set_item_color(i, color);
     }
     m.write_to(&tmp2).expect("write model stage");
 

@@ -821,6 +821,11 @@ fn main() {
                                 }
                             }
                         }
+                        if std::env::var_os("MAPGEOM_VEGET_SHAPE").is_some() {
+                            for line in mapgeom::veget::shape_report(&m) {
+                                println!("{line}");
+                            }
+                        }
                         // twin visuals (same level, material and vertex count): the same
                         // mesh again, its mirror (reversed winding: an explicit back face),
                         // or a different one
@@ -1308,6 +1313,40 @@ fn main() {
             println!("{} block info files loaded: {} parsed to the end, {} did not", rep.lines().count(), n_ok, n_bad);
             for l in rep.lines().filter(|l| !l.contains("\tOK\t")) {
                 println!("  {}", l);
+            }
+        }
+        // tex-stats <pack .dds path>… [--max N]: a pack image decoded (BC1/BC3) at
+        // the level `dds_cap` would ship, per-channel histograms in eight bins —
+        // where a leaf atlas keeps its cut-out mask (the 2026-09-09 tree thread:
+        // GreenCoast leaf cards drew as opaque quads under TDSN)
+        "tex-stats" => {
+            let mut store = open(&a);
+            let max: u32 = flag(&a.rest, "--max").and_then(|s| s.parse().ok()).unwrap_or(4096);
+            for p in a.rest.iter().skip(1).filter(|x| !x.starts_with("--")) {
+                // a path that exists on disk is read as a file (a shipped Items/*.dds)
+                let bytes = match std::fs::read(p) { Ok(b) => b, Err(_) => match store.read(p) { Ok(b) => b, Err(e) => { println!("{p}: {e}"); continue; } } };
+                let dims = mapgeom::static_item::texture::dds_dims(&bytes);
+                let fourcc = if bytes.len() >= 88 { String::from_utf8_lossy(&bytes[84..88]).to_string() } else { String::new() };
+                match mapgeom::static_item::texture::decode_capped_rgba(&bytes, max) {
+                    Ok((w, h, rgba)) => {
+                        let n = (w * h) as usize;
+                        let mut hist = [[0usize; 8]; 4];
+                        let mut sum = [0u64; 4];
+                        for px in rgba.chunks(4) {
+                            for c in 0..4 { hist[c][(px[c] >> 5) as usize] += 1; sum[c] += px[c] as u64; }
+                        }
+                        let names = ["R", "G", "B", "A"];
+                        println!("{p}: {fourcc} {:?} -> {w}x{h} decoded", dims);
+                        for c in 0..4 {
+                            println!("  {}: mean {:5.1}  bins(0-31..224-255) {}", names[c], sum[c] as f64 / n as f64, hist[c].iter().map(|k| format!("{:5.1}%", 100.0 * *k as f64 / n as f64)).collect::<Vec<_>>().join(" "));
+                        }
+                        // the colour under the transparent pixels (a < 32)
+                        let (mut cnt, mut s) = (0usize, [0u64; 3]);
+                        for px in rgba.chunks(4) { if px[3] < 32 { cnt += 1; for c in 0..3 { s[c] += px[c] as u64; } } }
+                        if cnt > 0 { println!("  under alpha<32 ({cnt} px): mean RGB ({}, {}, {})", s[0] / cnt as u64, s[1] / cnt as u64, s[2] / cnt as u64); }
+                    }
+                    Err(e) => println!("{p}: {fourcc} {:?}: {e}", dims),
+                }
             }
         }
         "extract" => {

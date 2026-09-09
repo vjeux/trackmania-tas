@@ -1806,8 +1806,26 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
     let leaf_model = std::env::var("TINY_TREE_LEAF_MODEL").unwrap_or_else(|_| "TDSN".into());
     let bark_model = std::env::var("TINY_TREE_BARK_MODEL").unwrap_or_else(|_| "TDSN".into());
     let tex_max: u32 = std::env::var("TINY_TREE_TEX_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
+    // The leaf atlases may keep one more level than the bark (TINY_TREE_LEAF_TEX_MAX;
+    // default = TINY_TREE_TEX_MAX): the big oaks' branch atlas is authored at
+    // 1024×512 and a 256-px cut of it is a sixteenth of the pixels. Measured
+    // 2026-09-09: 512 costs ~1.1 MB on the big maps (24: 47.8 → 48.9 MB) and
+    // buys little while the cards are not alpha-cut (see the trees thread note),
+    // so it stays a knob.
+    let leaf_tex_max: u32 = std::env::var("TINY_TREE_LEAF_TEX_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(tex_max);
     let normal_map = std::env::var_os("TINY_TREE_NORMAL_MAP").is_some();
     let keep_color = std::env::var_os("TINY_TREE_KEEP_COLOR").is_some();
+    // Vertex colour probes of 2026-09-09 (tiny 19, six-variant lineups of
+    // TreeBigA and BushMediumD, BEFORE the lightmap-uv1 fix f9039561): a tree
+    // visual without a colour element or with a white one drew as a blazing
+    // yellow-white ball where the same item with RGB black (any alpha), alpha 0
+    // or mid grey drew dark green — the vertex colour scaled the broken
+    // lightmap term. With the per-card uv1 charts the black and the stripped
+    // form render identically (x2 lineup), so the default stays the stripped
+    // form; TINY_TREE_BLACK_COLOR=1 writes an explicit black colour0 on every
+    // tree vertex, TINY_TREE_COLOR=AARRGGBB any word, TINY_TREE_KEEP_COLOR=1
+    // the model's own (RGB 0xFF, the self-AO byte in alpha).
+    let default_color: Option<u32> = if std::env::var_os("TINY_TREE_BLACK_COLOR").is_some() && !keep_color { Some(0xFF00_0000) } else { None };
     let mut lod_min: usize = std::env::var("TINY_TREE_LOD_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
     // The campaign's size lever applies to trees like to blocks: `--lod-pick N`
     // (with its min-verts) keeps level N alone, every distance, for a species
@@ -1861,8 +1879,9 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                 // TINY_TREE_LEAF_ALPHA_MAX=N (uncompressed leaf path only): opaque alpha
                 // clamped to N — the probe for "alpha doubles as the gloss mask"
                 let alpha_max: Option<u8> = if mat.leaf { std::env::var("TINY_TREE_LEAF_ALPHA_MAX").ok().and_then(|v| v.parse().ok()) } else { None };
+                let cap = if mat.leaf { leaf_tex_max } else { tex_max };
                 let bytes = if uncompressed || alpha_max.is_some() {
-                    let (w, h, mut rgba) = super::texture::decode_capped_rgba(&bytes, tex_max).map_err(|e| format!("{path}: {e}"))?;
+                    let (w, h, mut rgba) = super::texture::decode_capped_rgba(&bytes, cap).map_err(|e| format!("{path}: {e}"))?;
                     if let Some(cap) = alpha_max {
                         for px in rgba.chunks_mut(4) {
                             px[3] = px[3].min(cap);
@@ -1870,7 +1889,7 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                     }
                     super::texture::write_dds_rgba(w, h, &rgba)
                 } else {
-                    super::texture::dds_cap(&bytes, tex_max).map_err(|e| format!("{path}: {e}"))?
+                    super::texture::dds_cap(&bytes, cap).map_err(|e| format!("{path}: {e}"))?
                 };
                 out.textures.push((file.clone(), bytes.len()));
                 m.pictures.push((file.clone(), bytes));
@@ -1974,10 +1993,11 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                 }
             }
             // TINY_TREE_COLOR=AARRGGBB (word, as stored): every vertex gets this
-            // colour0 — the probe for what the shading models do with the vertex
-            // colour (a lighting multiplier? an AO term?)
-            if let Ok(hex) = std::env::var("TINY_TREE_COLOR") {
-                if let Ok(word) = u32::from_str_radix(hex.trim_start_matches("0x"), 16) {
+            // colour0 — the probe knob that found the glare; the default is the
+            // black it measured (see `default_color`)
+            {
+                let forced: Option<u32> = std::env::var("TINY_TREE_COLOR").ok().and_then(|hex| u32::from_str_radix(hex.trim_start_matches("0x"), 16).ok()).or(default_color);
+                if let Some(word) = forced {
                     if let Some(main) = v.main.as_mut() {
                         if let Some(Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) {
                             let n = s.count.max(0) as usize;
