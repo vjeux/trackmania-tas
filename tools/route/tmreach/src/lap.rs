@@ -513,6 +513,9 @@ const FOLLOW: &[(&str, bool, u8, f64)] = &[
     // bmode 6/7: the human's pedals on a line 5 m RIGHT / LEFT of the human line (the outside of a bend)
     ("follow the human, 5 m right of the line", true, 6, 0.9),
     ("follow the human, 5 m left of the line", true, 7, 0.9),
+    // bmode 8: RAMP LIP (20, coordinator 18:19Z): aim at the line 12 m ahead for 0.3 s (centre the car on the ramp), then
+    // FREEZE the steer at 0 and hold gas to the lip and through the flight — no corrections on the ramp
+    ("ramp lip: centre on the line, then steer frozen, gas", true, 8, 0.5),
     // bmode 4 (only with --respawn): press RESPAWN on the first tick (the engine re-places the car at its last credited
     // checkpoint ~1 s later, at that crossing's speed), hold gas through the dead second, then follow the human
     ("RESPAWN, then follow the human", true, 4, 0.9),
