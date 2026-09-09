@@ -741,7 +741,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
     let commit = tmmaps::cli::has(args, "--commit");
     let wsx = Wsx::new(args);
     let ships = out.join("ships.tsv");
-    let retry_after = Duration::from_secs(f("--retry-min").and_then(|s| s.parse::<u64>().ok()).unwrap_or(10) * 60);
+    let retry_after = Duration::from_secs(f("--retry-min").and_then(|s| s.parse::<u64>().ok()).unwrap_or(3) * 60);
     let mut last_probe: Option<std::time::Instant> = None;
     loop {
         let text = std::fs::read_to_string(&ships).unwrap_or_default();
@@ -854,7 +854,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
         // session therefore costs one 302 per tick, by one client, and the queue
         // resumes by itself when a fresh cookie lands.
         if !dead_cookie.is_empty() {
-            let due = last_probe.map(|t: std::time::Instant| t.elapsed() >= Duration::from_secs(60)).unwrap_or(true);
+            let due = last_probe.map(|t: std::time::Instant| t.elapsed() >= retry_after).unwrap_or(true);
             let busy = wsx
                 .sh("ps aux | grep -c '[t]inyship.sh'")
                 .map(|s| s.trim().parse::<u32>().unwrap_or(0))
