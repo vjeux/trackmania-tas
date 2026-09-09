@@ -275,6 +275,26 @@ impl Track {
         self.human_speed[i]
     }
 
+    /// the lowest line height within `w` m of arc length around s
+    pub fn min_y_near(&self, s: f64, w: f64) -> f64 {
+        let i = match self.s.binary_search_by(|x| x.partial_cmp(&s).unwrap()) {
+            Ok(i) => i,
+            Err(i) => i.min(self.s.len() - 1),
+        };
+        let mut m = self.pts[i][1];
+        let mut j = i;
+        while j > 0 && self.s[i] - self.s[j - 1] <= w {
+            j -= 1;
+            m = m.min(self.pts[j][1]);
+        }
+        let mut j = i;
+        while j + 1 < self.s.len() && self.s[j + 1] - self.s[i] <= w {
+            j += 1;
+            m = m.min(self.pts[j][1]);
+        }
+        m
+    }
+
     pub fn len_m(&self) -> f64 {
         *self.s.last().unwrap()
     }
@@ -415,13 +435,13 @@ const FOLLOW: &[(&str, bool, u8, f64)] = &[
     ("follow centreline (long lookahead), gas", true, 0, 1.5),
 ];
 
-fn yaw_of(r: &Row) -> f64 {
+pub fn yaw_of(r: &Row) -> f64 {
     let v = speed(r);
     let (fx, fz) = if v > 2.0 { (r.vx, r.vz) } else { let f = crate::gatecal::rotate(r, [0.0, 0.0, 1.0]); (f[0], f[2]) };
     fx.atan2(fz)
 }
 
-fn wrap(a: f64) -> f64 {
+pub fn wrap(a: f64) -> f64 {
     let mut a = a;
     while a > std::f64::consts::PI {
         a -= 2.0 * std::f64::consts::PI;
@@ -456,6 +476,8 @@ pub struct LapOut {
     pub cells: usize,
     pub best: Option<Entry>,
     pub log: Vec<String>,
+    /// rollout end-state census: [off-world, off-route (lateral/d3), fell below the line, stopped-no-credit, alive-but-crawling (<3 m/s), alive]
+    pub deaths: [usize; 6],
 }
 
 pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
@@ -465,7 +487,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
     let h = cfg.h;
     let mut rng = Rng(cfg.seed ^ 0x9E3779B97F4A7C15);
     let mut archive: std::collections::HashMap<Key, Entry> = Default::default();
-    let mut out = LapOut { finished: None, leg_done: None, rollouts: 0, steps: 0, cells: 0, best: None, log: Vec::new() };
+    let mut out = LapOut { finished: None, leg_done: None, rollouts: 0, steps: 0, cells: 0, best: None, log: Vec::new(), deaths: [0; 6] };
     let mut near_misses: usize = 0;
     // clinic: the leg index the seed sits on (credits in order at the seed)
     let seed_k = std::cell::Cell::new(0usize);
@@ -476,6 +498,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
     out.log.push(format!("root at ({:.1}, {:.1}, {:.1}): centreline s {:.1} m (segment {seg0}, {:.1} m off), track {:.0} m, {} groups at s {:?}, h {h}, steer sign {:+}", root_row.x, root_row.y, root_row.z, s0, d0, track.len_m(), n_groups, track.gate_s.iter().map(|x| format!("{x:.0}")).collect::<Vec<_>>(), cfg.steer_sign));
     let cps_of = |r: &Row| -> u8 { if r.cps == u32::MAX { 0 } else { r.cps as u8 } };
     let debug = std::env::var("TMREACH_LAP_DEBUG").is_ok();
+    let debug_fan = std::env::var("TMREACH_LAP_DEBUG_FAN").is_ok();
     let root_cps = cps_of(&root_row);
     let track_min_y = track.pts.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
 
@@ -675,6 +698,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             }
             // off the world / far off the road on a road leg: no cell
             if end.y < -20.0 {
+                out.deaths[0] += 1;
                 continue;
             }
             // the LEG toward the next uncredited gate decides (a jump's flight projects onto whatever road is near)
@@ -682,18 +706,35 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let hw = track.half_width.get(seg).copied().unwrap_or(5.5);
             let lat_abs = lat.abs();
             if !on_gap && (lat_abs > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol) {
+                out.deaths[1] += 1;
+                if debug_fan {
+                    eprintln!("    OFFROUTE {desc:34}: end ({:.1}, {:.1}, {:.1}) v {:.1} s {s:.1} lat {lat:.1} d3 {d3:.1} hw {hw:.1}", end.x, end.y, end.z, speed(&end));
+                }
                 continue;
             }
             // fell off: far below the nearest centreline point on a road leg; on a GAP leg (jump, drop,
             // bowl) anything above the track's lowest point - 5 m and within 120 m of the polyline lives
             let road_y = track.at(s)[1];
+            // on a steep climb the car is legitimately below the line point at its own s (21's 32-degree ramp:
+            // 4-6 m); "below" is measured against the line's LOWEST point within 15 m of arc length
+            let road_y_min = track.min_y_near(s, 15.0);
             // (below the polyline while laterally ON the road = a dip the centreline's y does not follow: 08 at s 585)
-            if (!on_gap && end.y < road_y - 5.0 && (lat_abs > hw + 1.0 || end.y < road_y - cfg.below_tol)) || (on_gap && (end.y < track_min_y - 5.0 || d3 > 120.0)) {
+            if (!on_gap && end.y < road_y - 5.0 && (lat_abs > hw + 1.0 || end.y < road_y_min - cfg.below_tol)) || (on_gap && (end.y < track_min_y - 5.0 || d3 > 120.0)) {
+                out.deaths[2] += 1;
+                if debug_fan {
+                    eprintln!("    FELL {desc:38}: end ({:.1}, {:.1}, {:.1}) v {:.1} s {s:.1} lat {lat:.1} d3 {d3:.1} road_y {road_y:.1} min15 {road_y_min:.1} hw {hw:.1}", end.x, end.y, end.z, speed(&end));
+                }
                 continue;
             }
             // dead: stopped and not at the start
             if speed(&end) < 1.0 && s > 5.0 && cps == root_cps {
+                out.deaths[3] += 1;
                 continue;
+            }
+            if speed(&end) < 3.0 {
+                out.deaths[4] += 1;
+            } else {
+                out.deaths[5] += 1;
             }
             let mut chain = chain0.clone();
             chain.extend(recs);
@@ -718,7 +759,11 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 // past the next gate without its credit: worth only the leg start (20 m before the gate
                 // ranked level with a legit approach; 20's lower deck under gate 3 sat there for 2 h)
                 let s_eff = if s > s_gate + 6.0 { s_prev + 10.0 } else { s };
-                k_pref as f64 * 10_000.0 + s_eff - 0.02 * lat_abs.min(20.0)
+                // SPEED matters on jump/ramp/wall legs (21: 31 m/s at the foot or the car drops in the gap):
+                // a cell at the human's speed ranks 30 m ahead of a stopped one at the same arc length
+                let vh = track.human_speed_at(s);
+                let speed_bonus = if vh > 3.0 { 30.0 * (speed(&end) / vh).clamp(0.0, 1.2) } else { 0.0 };
+                k_pref as f64 * 10_000.0 + s_eff - 0.02 * lat_abs.min(20.0) + speed_bonus
             };
             // on a gap leg the arc length says little: the cell is the 4 m x 4 m ground square there
             // on a road leg the cell also carries a 2 m LATERAL bucket (14's ramp: the line's x on the ramp decides the flight)
@@ -783,7 +828,8 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let (s, lat, seg, d3) = track.project(pos(&end), track.pts.len() / 2, track.pts.len());
             let road_y = track.at(s)[1];
             let hw = track.half_width.get(seg).copied().unwrap_or(5.5);
-            let bad = speed(&end) < 3.0 || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y - cfg.below_tol));
+            let road_y_min = track.min_y_near(s, 15.0);
+            let bad = speed(&end) < 3.0 || end.vy < -3.0 || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y_min - cfg.below_tol));
             if !bad || tries >= 12 || recs.len() <= 300 {
                 break (rows, nh, end, s, seg);
             }
@@ -791,7 +837,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             tries += 1;
             let cut = recs.len() - 300;
             recs.truncate(cut);
-            out.log.push(format!("seed ends in a dead state (v {:.1}, {:.1} m below the line, lat {:.1}); chain cut to {} ticks", speed(&end), road_y - end.y, lat, cut));
+            out.log.push(format!("seed ends in a dead state (v {:.1}, vy {:+.1}, {:.1} m below the line, lat {:.1}); chain cut to {} ticks", speed(&end), end.vy, road_y - end.y, lat, cut));
             if cfg.verbose {
                 eprintln!("{}", out.log.last().unwrap());
             }
@@ -907,6 +953,63 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         out.rollouts += fan(w, nc, from, Some(&entry), &mut archive, &mut out, &mut rng, hh)?;
         w.release(nc);
         out.steps += 1;
+        // CLINIC viability check: a "good arrival" must also CONTINUE — replay the chain and follow the
+        // line for 3 s; a car that stalls (21: 20.6 m/s on a 32-degree ramp, 2 m below the deck) is
+        // not a leg done. Refused arrivals are penalised so the search moves on.
+        if cfg.clinic && out.leg_done.is_some() {
+            if let Some(f) = out.finished.clone() {
+                if (f.cps as usize) < track.n_groups {
+                    let (rows0, nf) = w.rollout_keep(branch::ROOT, &f.chain, root, f.chain.len() as u64)?;
+                    let start = rows0.last().cloned().unwrap_or_else(|| f.end.clone());
+                    let from_f = w.floor(nf)?;
+                    let mut cur = nf;
+                    let mut last = start.clone();
+                    let mut seg_h = f.seg;
+                    let mut ok = true;
+                    let mut done_t = 0usize;
+                    while done_t < 300 {
+                        let (st, sg, _s_now) = follow_steer(cfg, &last, seg_h, 1.0);
+                        seg_h = sg;
+                        let recs: Vec<Rec> = (0..10).map(|_| Rec { steer: st, gas: 1.0, brake: 0.0 }).collect();
+                        match w.forest.advance_or_end(cur, &recs, from_f + done_t, 10)? {
+                            branch::Advanced::Node(rs, c) => {
+                                if cur != nf {
+                                    w.release(cur);
+                                }
+                                cur = c;
+                                if let Some(x) = rs.last() {
+                                    last = x.clone();
+                                }
+                            }
+                            branch::Advanced::RunEnded(_) => break,
+                        }
+                        done_t += 10;
+                    }
+                    if cur != nf {
+                        w.release(cur);
+                    }
+                    w.release(nf);
+                    let (s_after, _, _, _) = track.project(pos(&last), seg_h, 200);
+                    let gained = s_after - f.s;
+                    if speed(&last) < 8.0 || gained < 25.0 {
+                        ok = false;
+                    }
+                    if !ok {
+                        out.log.push(format!("  clinic: arrival at s {:.1} refused — 3 s later v {:.1}, s +{:.1} m (stalled/fell); searching on", f.s, speed(&last), gained));
+                        if cfg.verbose {
+                            eprintln!("{}", out.log.last().unwrap());
+                        }
+                        out.finished = None;
+                        out.leg_done = None;
+                        if let Some(e) = archive.get_mut(&f.key) {
+                            e.visits += 8;
+                        }
+                    } else {
+                        out.log.push(format!("  clinic: arrival viable — 3 s later v {:.1}, s +{:.1} m", speed(&last), gained));
+                    }
+                }
+            }
+        }
         if out.best.as_ref().map(|b| b.progress).unwrap_or(0.0) > best_before + 0.5 { stagnant = 0 } else { stagnant += 1 }
         if cfg.verbose && last_report.elapsed().as_secs() >= 30 {
             last_report = std::time::Instant::now();
@@ -915,7 +1018,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let _ = std::fs::write(cfg.out.join("best.tsv"), tsv_text(&b.chain));
             }
             let b = out.best.as_ref().unwrap();
-            eprintln!("  [{} rollouts, {} steps, {} cells] best: mask {:#x} cps {} s {:.1} m ({:.0} %) speed {:.1} m/s after {:.2} s, chain {:?}", out.rollouts, out.steps, archive.len(), b.mask, b.cps, b.s, 100.0 * b.s / track.len_m(), speed(&b.end), b.chain.len() as f64 / 100.0, b.macro_desc.iter().rev().take(3).collect::<Vec<_>>());
+            eprintln!("  [{} rollouts, {} steps, {} cells; ends: offworld {} offroute {} fell {} stopped {} crawl {} alive {}] best: mask {:#x} cps {} s {:.1} m ({:.0} %) speed {:.1} m/s after {:.2} s, chain {:?}", out.rollouts, out.steps, archive.len(), out.deaths[0], out.deaths[1], out.deaths[2], out.deaths[3], out.deaths[4], out.deaths[5], b.mask, b.cps, b.s, 100.0 * b.s / track.len_m(), speed(&b.end), b.chain.len() as f64 / 100.0, b.macro_desc.iter().rev().take(3).collect::<Vec<_>>());
         }
     }
     out.cells = archive.len();
