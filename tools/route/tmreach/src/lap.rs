@@ -474,6 +474,10 @@ pub struct LapCfg {
     /// rendezvous target state [x, y, z, vx, vy, vz] (reaching it within rdv_tol / 3 m/s / 10 deg ends the run)
     pub rendezvous: Option<[f64; 6]>,
     pub rdv_tol: f64,
+    /// arc-length window where the brake is masked off (full gas) in every macro
+    pub no_brake: Option<(f64, f64)>,
+    /// vjeux launched-checkpoint csv (ghost lcp --csv): his approach samples become macros
+    pub vjeux_csv: Option<String>,
 }
 
 struct Rng(u64);
@@ -578,6 +582,12 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         let n0 = macros.len() as u16;
         macros.extend(crate::macros::library_compound(n0));
     }
+    if let Some(csv) = &cfg.vjeux_csv {
+        let n0 = macros.len() as u16;
+        let fam = crate::macros::library_vjeux_approach(csv, n0);
+        eprintln!("vjeux approach macros: {}", fam.len());
+        macros.extend(fam);
+    }
     let h = cfg.h;
     let mut rng = Rng(cfg.seed ^ 0x9E3779B97F4A7C15);
     let mut archive: std::collections::HashMap<Key, Entry> = Default::default();
@@ -609,11 +619,29 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         let mut count = 0;
         // (recs, rows, exited, description)
         let mut results: Vec<(Vec<Rec>, Vec<Row>, bool, String)> = Vec::new();
+        // NO-BRAKE WINDOW (22 Saudi, coordinator 16:34Z: full gas from G8 to the crest): inside [no_brake.0, no_brake.1] of
+        // arc length the brake is masked off in every open-loop macro and the gas forced on
+        let s_base = base.map(|e| e.s).unwrap_or(s0);
+        let brake_masked = cfg.no_brake.map(|(a, b)| s_base >= a && s_base <= b).unwrap_or(false);
         for m in &macros {
-            let recs = match build(m, &base_recs, false) {
+            let mut recs = match build(m, &base_recs, false) {
                 Built::Recs(r) => r,
                 Built::NoOp => continue,
             };
+            if brake_masked {
+                let mut any = false;
+                for r in recs.iter_mut() {
+                    if r.brake_value() > 0.5 {
+                        r.brake = if r.respawn() { 2.0 } else { 0.0 };
+                        r.gas = 1.0;
+                        any = true;
+                    }
+                }
+                if any && m.description.contains("brake") {
+                    // a pure brake macro with the brake removed duplicates the gas hold: skip it
+                    continue;
+                }
+            }
             match w.rollout(node, &recs, from, h as u64) {
                 Ok(r) => {
                     count += 1;

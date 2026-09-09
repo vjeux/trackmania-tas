@@ -904,6 +904,9 @@ fn cmd_road_centreline(args: &[String]) {
     // (5-point), half-width = the road span where the point is on road, else 4 m; the segments are re-cut at each gate's
     // first pass (finish: last pass) in `seq` order; a leg the human never passes within reach of stays as it was.
     let mut author_note = String::new();
+    // with --author-line the speed hint is the HUMAN's measured speed (100 ms sample spacing × 10, 5-sample smoothed),
+    // not the curvature estimate (11's plateau: the estimate said 63 m/s, the human drives it at 96–114 — 16:47Z)
+    let mut human_speed: Option<Vec<f32>> = None;
     if let Some(ap) = flag(args, "--author-line") {
         let txt = std::fs::read_to_string(&ap).unwrap_or_else(|e| die(&format!("{ap}: {e}")));
         let k = "\"pts\": [";
@@ -914,6 +917,12 @@ fn cmd_road_centreline(args: &[String]) {
         let raw: Vec<[f32; 3]> = flat.chunks(3).filter(|c| c.len() == 3).map(|c| [c[0], c[1], c[2]]).collect();
         if raw.len() >= 10 {
             let mut line = tmroute::human::resample(&raw, 2.0);
+            {
+                let mut vraw: Vec<f32> = (0..raw.len()).map(|i| if i + 1 < raw.len() { let (a, b) = (raw[i], raw[i + 1]); ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt() * 10.0 } else { 0.0 }).collect();
+                if vraw.len() > 1 { let n = vraw.len(); vraw[n - 1] = vraw[n - 2]; }
+                let sm: Vec<f32> = (0..vraw.len()).map(|i| { let lo = i.saturating_sub(2); let hi = (i + 2).min(vraw.len() - 1); vraw[lo..=hi].iter().sum::<f32>() / (hi - lo + 1) as f32 }).collect();
+                human_speed = Some(line.iter().map(|p| { let mut best = (f32::INFINITY, 0usize); for (k, q) in raw.iter().enumerate() { let d = (q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2) + (q[2] - p[2]).powi(2); if d < best.0 { best = (d, k); } } sm[best.1] }).collect());
+            }
             let orig = line.clone();
             for k in 2..orig.len().saturating_sub(2) {
                 let mut acc = [0.0f32; 3];
@@ -969,7 +978,7 @@ fn cmd_road_centreline(args: &[String]) {
                     segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {li}, \"gap\": false, \"via\": \"author\"}}", from, nodes.groups[seq[*si]]));
                     i0 = *li;
                 }
-                author_note = format!("; POLYLINE = the human line ({ap}), {} pts, gates cut at the human's passes", pts.len());
+                author_note = format!("; POLYLINE = the human line ({ap}), {} pts, gates cut at the human's passes; speed_hint = the human's measured speed", pts.len());
                 eprintln!("  author line used as the centreline: {} pts, {} legs", pts.len(), cuts.len());
             } else if ok {
                 eprintln!("  author line passes the gates out of the given order — author line NOT used");
@@ -981,7 +990,7 @@ fn cmd_road_centreline(args: &[String]) {
     let note = format!("{}{}{}", flag(args, "--note").unwrap_or_default(), spawn_note, author_note);
     // optional per-point advisory speed (player, 06:44Z): lateral 25 m/s², leave-ground at 2.5 g of required
     // downward acceleration, 80 m/s ceiling, braking 12 m/s², acceleration 7 m/s², ±16 m curvature window
-    let hint = tmplan::speed_hints(&pts, &s, 16.0, 25.0, 9.81 * 2.5, 80.0, 12.0, 7.0);
+    let hint = match &human_speed { Some(h) if h.len() == pts.len() => h.clone(), _ => tmplan::speed_hints(&pts, &s, 16.0, 25.0, 9.81 * 2.5, 80.0, 12.0, 7.0) };
     let js = format!(
         "{{\n  \"map_uid\": \"{}\",\n  \"map_name\": \"{}\",\n  \"order_groups\": [{}],\n  \"pts\": [{}],\n  \"s\": [{}],\n  \"half_width\": [{}],\n  \"speed_hint\": [{}],\n  \"speed_hint_note\": \"m/s, advisory: min of lateral-grip (25 m/s²) curvature limit, leave-ground limit on crests/dip exits (2.5 g of required downward acceleration), 80 m/s ceiling; braking 12 m/s² and acceleration 7 m/s² propagated along s; ±16 m curvature window; standing start\",\n  \"segments\": [{}],\n  \"gaps\": {gaps},\n  \"produced_by\": \"{}{}\"\n}}\n",
         gates.map_uid, gates.map_name,
