@@ -410,6 +410,8 @@ pub struct LapCfg {
     pub clinic: bool,
     /// Policy proposals (MODEL arm): the per-map tmrl policy rolled forward in closed loop as extra macros.
     pub policy: Option<crate::policy_src::PolicySrc>,
+    /// allow the RESPAWN macro (a legal fallback: back to the last credited checkpoint at its crossing speed)
+    pub respawn: bool,
 }
 
 struct Rng(u64);
@@ -438,6 +440,9 @@ const FOLLOW: &[(&str, bool, u8, f64)] = &[
     // bmode 3: pedals like the human (author line): gas below the human's speed 15 m ahead, coast above, brake well above
     ("follow the human (line + pedals)", true, 3, 0.9),
     ("follow the human (line + pedals), long lookahead", true, 3, 1.5),
+    // bmode 4 (only with --respawn): press RESPAWN on the first tick (the engine re-places the car at its last credited
+    // checkpoint ~1 s later, at that crossing's speed), hold gas through the dead second, then follow the human
+    ("RESPAWN, then follow the human", true, 4, 0.9),
 ];
 
 pub fn yaw_of(r: &Row) -> f64 {
@@ -534,6 +539,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         }
         // closed-loop follow macros: 10-tick chunks, steer recomputed from the last row
         for (desc, gas, bmode, look) in FOLLOW {
+            if *bmode == 4 && !cfg.respawn {
+                continue;
+            }
             let mut cur = node;
             let mut recs: Vec<Rec> = Vec::with_capacity(h);
             let mut rows: Vec<Row> = Vec::new();
@@ -553,10 +561,20 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                         let vh = track.human_speed_at(s_now + 15.0);
                         if vh <= 3.0 || v <= vh * 1.05 { (true, false) } else if v > vh * 1.3 { (false, true) } else { (false, false) }
                     }
+                    4 => {
+                        if done < 110 { (true, false) } else {
+                            let vh = track.human_speed_at(s_now + 15.0);
+                            if vh <= 3.0 || v <= vh * 1.05 { (true, false) } else if v > vh * 1.3 { (false, true) } else { (false, false) }
+                        }
+                    }
                     2 => (false, false),
                     _ => (*gas, false),
                 };
-                let chunk: Vec<Rec> = (0..k).map(|_| Rec { steer: st, gas: g as u8 as f32, brake: b as u8 as f32 }).collect();
+                let st = if *bmode == 4 && done < 110 { 0.0 } else { st };
+                let mut chunk: Vec<Rec> = (0..k).map(|_| Rec { steer: st, gas: g as u8 as f32, brake: b as u8 as f32 }).collect();
+                if *bmode == 4 && done == 0 {
+                    chunk[0] = chunk[0].with_respawn();
+                }
                 match w.rollout_keep(cur, &chunk, from + done, k as u64) {
                     Ok((rr, nh)) => {
                         if cur != node {
@@ -1091,7 +1109,9 @@ fn dump_archive(archive: &std::collections::HashMap<Key, Entry>, out: &std::path
 pub fn gtape_text(chain: &[Rec]) -> String {
     let mut s = String::new();
     for (t, r) in chain.iter().enumerate() {
-        s.push_str(&format!("t={t} mode=2 w=prev respawn=0 mouse=none vsame=0 steer={} accel={} brake={} flags=0x000000\n", (r.steer as f64 * 65536.0).round() as i64, (r.gas > 0.5) as u8, (r.brake > 0.5) as u8));
+        // a RESPAWN tick is a literal-word packet with the respawn bit (ENV 2026-09-09: w=lit:0x80000002 respawn=1)
+        let (w, rs) = if r.respawn() { ("lit:0x80000002", 1) } else { ("prev", 0) };
+        s.push_str(&format!("t={t} mode=2 w={w} respawn={rs} mouse=none vsame=0 steer={} accel={} brake={} flags=0x000000\n", (r.steer as f64 * 65536.0).round() as i64, (r.gas > 0.5) as u8, (r.brake_value() > 0.5) as u8));
     }
     s
 }
@@ -1100,7 +1120,8 @@ pub fn gtape_text(chain: &[Rec]) -> String {
 pub fn tsv_text(chain: &[Rec]) -> String {
     let mut s = String::from("tick\tsteer\tgas\tbrake\n");
     for (t, r) in chain.iter().enumerate() {
-        s.push_str(&format!("{t}\t{}\t{}\t{}\n", (r.steer * 127.0).round() as i32, (r.gas > 0.5) as u8, (r.brake > 0.5) as u8));
+        // brake column: 0/1, +2 on a RESPAWN tick (round-trips through the chain parsers as brake >= 2.0)
+        s.push_str(&format!("{t}\t{}\t{}\t{}\n", (r.steer * 127.0).round() as i32, (r.gas > 0.5) as u8, (r.brake_value() > 0.5) as u8 + if r.respawn() { 2 } else { 0 }));
     }
     s
 }

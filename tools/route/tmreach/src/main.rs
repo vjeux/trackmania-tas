@@ -1557,6 +1557,7 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
             None => None,
         },
         seed_to_gate: a.get("seed-to-gate").map(|s| s.parse().unwrap()).unwrap_or(0),
+        respawn: a.has("respawn"),
         seed_chain: match a.get("seed-chain") {
             Some(f) => {
                 let txt = std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;
