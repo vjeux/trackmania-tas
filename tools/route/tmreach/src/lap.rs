@@ -217,7 +217,11 @@ impl Track {
                         let p = t.pts[i];
                         let d = ((p[0] - g.centre[0]).powi(2) + (p[1] - g.centre[1]).powi(2) + (p[2] - g.centre[2]).powi(2)).sqrt();
                         if d < 20.0 {
-                            if best.map(|b| t.s[i] < b.0).unwrap_or(true) {
+                            // a pass within 20 m wins over a nearest-so-far fallback (d >= 20) and over a later pass
+                            // (BUG until 2026-09-09 10:20Z: the fallback entry blocked this update, so every gate was
+                            // "placed" at the first sample after the previous gate and the off-route cap fired 40 m
+                            // after every credit)
+                            if best.map(|b| b.1 >= 20.0 || t.s[i] < b.0).unwrap_or(true) {
                                 best = Some((t.s[i], d));
                             }
                             break;
@@ -233,6 +237,24 @@ impl Track {
                 }
                 gate_s.push(gs);
                 s_from = gs;
+            }
+            // GUARD (coordinator 2026-09-09 10:26Z): every placed gate within 20 m of the line and the placed arc lengths
+            // strictly increasing in the human order — else refuse (a broken placement disables the search's progress)
+            let mut bad = Vec::new();
+            for (k, grp) in ord.iter().enumerate() {
+                let gs = gate_s[k];
+                let p = t.at(gs);
+                let d = gates.gates.iter().filter(|g| g.group == *grp && g.kind != crate::gates::GateKind::Start).map(|g| ((p[0] - g.centre[0]).powi(2) + (p[1] - g.centre[1]).powi(2) + (p[2] - g.centre[2]).powi(2)).sqrt()).fold(f64::INFINITY, f64::min);
+                if d > 20.0 {
+                    bad.push(format!("gate {grp} (#{k}) {d:.1} m from the line at s {gs:.0}"));
+                }
+                if k > 0 && gs <= gate_s[k - 1] {
+                    bad.push(format!("gate {grp} (#{k}) at s {gs:.0} not after gate {} at s {:.0}", ord[k - 1], gate_s[k - 1]));
+                }
+            }
+            eprintln!("gate placement: {}/{} within 20 m, s {}: {:?}", ord.len() - bad.iter().filter(|b| b.contains(" m from the line")).count(), ord.len(), if bad.iter().any(|b| b.contains("not after")) { "NOT monotone" } else { "monotone" }, gate_s.iter().map(|x| format!("{x:.0}")).collect::<Vec<_>>());
+            if !bad.is_empty() {
+                return Err(format!("gate placement REFUSED: {}", bad.join("; ")));
             }
             t.gate_s = gate_s;
             t.order_groups = ord.to_vec();
