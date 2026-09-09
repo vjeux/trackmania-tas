@@ -1006,13 +1006,22 @@ pub fn cmd(args: &[String]) {
     // full-size author run: kept, the game replays it over the half-size
     // track as a car driving in the air (vjeux, 2026-09-08: "why is there a
     // car driving on top of me" — every map published before this carried
-    // it). It is replaced by the dummy real ghost of `tmmaps stripghost`
-    // (the form the player project's author-ghost embed replaces in place)
-    // and the header goes unvalidated. `--keep-ghost` keeps the source's.
+    // it). The chunk is REMOVED and the header goes unvalidated.
+    //
+    // Not the dummy form (2026-09-09): the "dummy real ghost" was Summer 01's
+    // own validation ghost, so on tiny 01 it replayed the ORIGINAL 01 lap
+    // straight over the track ("Map 01. The original ghost still appears at
+    // the top of the player. I thought we removed it") — and on every other
+    // map it was a foreign full-size lap flying somewhere off-track. The
+    // player project's `authorghost embed` inserts its own real ghost; a
+    // map without the chunk is the verified-in-game form (tiny 02 loaded and
+    // passed startcheck without it). `--dummy-ghost` restores the old form
+    // for the embed experiments, `--keep-ghost` keeps the source's.
     if !args.iter().any(|a| a == "--keep-ghost") {
-        let removed = m.strip_validation_ghost_to(crate::map::GhostForm::Dummy);
+        let form = if args.iter().any(|a| a == "--dummy-ghost") { crate::map::GhostForm::Dummy } else { crate::map::GhostForm::Remove };
+        let removed = m.strip_validation_ghost_to(form);
         if removed > 0 {
-            println!("  validation ghost: the source's ({removed} bytes) replaced by the dummy ghost, header validated=\"0\"");
+            println!("  validation ghost: the source's ({removed} bytes) {}, header validated=\"0\"", if matches!(form, crate::map::GhostForm::Dummy) { "replaced by the dummy ghost" } else { "removed" });
         } else {
             println!("  validation ghost: none in the source (the header goes unvalidated)");
         }

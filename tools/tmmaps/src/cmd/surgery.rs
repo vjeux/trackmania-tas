@@ -482,7 +482,7 @@ pub fn stripghost(args: &[String]) {
         // `--skeleton` = the game's empty 12-byte node, `--remove-chunk` = no
         // chunk (both re-number the body: an embed cannot follow), `--keep-ghost`
         // = only the header goes unvalidated.
-        let form = if args.iter().any(|a| a == "--remove-chunk") { map::GhostForm::Remove } else if args.iter().any(|a| a == "--skeleton") { map::GhostForm::Skeleton } else if args.iter().any(|a| a == "--keep-ghost") { map::GhostForm::Keep } else { map::GhostForm::Dummy };
+        let form = if args.iter().any(|a| a == "--dummy-ghost") { map::GhostForm::Dummy } else if args.iter().any(|a| a == "--skeleton") { map::GhostForm::Skeleton } else if args.iter().any(|a| a == "--keep-ghost") { map::GhostForm::Keep } else { map::GhostForm::Remove };
         let mut m = map::MapFile::load(path);
         let removed = m.strip_validation_ghost_to(form);
         if removed == 0 {

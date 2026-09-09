@@ -860,7 +860,7 @@ impl MapFile {
     /// full-size line in the air — and mark the map unvalidated.
     /// Returns the bytes removed (0 = no ghost chunk).
     pub fn strip_validation_ghost(&mut self) -> usize {
-        self.strip_validation_ghost_to(GhostForm::Dummy)
+        self.strip_validation_ghost_to(GhostForm::Remove)
     }
 
     /// `strip_validation_ghost` with the chunk's replacement chosen. The
