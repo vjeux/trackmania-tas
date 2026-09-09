@@ -49,6 +49,7 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         the tiny build of campaign maps end to end (packs by collection, recipe env,
         mapgeom tiny-library, tmmaps tiny, library unzipped) into <out-root>/tinyNN/<tag>/
   tinyctl views SRC.Map.Gbx [--out VIEWS.tsv] [--gate-dist 48] [--ghost G --at MS[,MS…] [--chase-dist 30] [--chase-v 0.3] [--only-chase]]
+                [--trees N --mapping placements.tsv [--tree-dist 30] [--only-trees]]
         start / every checkpoint / finish looked at along the gate, the
         whole map from above and its four quadrants; the anchor as a comment;
         --ghost/--at add chase views (camera behind the car) at instants of a driven lap

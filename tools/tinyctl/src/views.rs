@@ -172,6 +172,19 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             views.extend(chase);
         }
     }
+    // --trees N --mapping placements.tsv [--tree-dist 30] [--only-trees]: cameras
+    // on the N densest clusters of BAKED trees, see `tree_views`
+    if let Some(n) = tmmaps::cli::flag(args, "--trees") {
+        let n: usize = n.parse().map_err(|_| "--trees N (clusters)")?;
+        let mapping = tmmaps::cli::flag(args, "--mapping").ok_or("--trees needs --mapping placements.tsv (the tiny-library mapping: which source items were baked as trees)")?;
+        let dist: f32 = tmmaps::cli::flag(args, "--tree-dist").unwrap_or("30").parse().map_err(|_| "--tree-dist number")?;
+        let trees = tree_views(&m, Path::new(mapping), n, dist)?;
+        if tmmaps::cli::has(args, "--only-trees") {
+            views = trees;
+        } else {
+            views.extend(trees);
+        }
+    }
     let text = write_tsv(&m, &views, src);
     match tmmaps::cli::flag(args, "--out") {
         Some(p) => {
@@ -207,6 +220,87 @@ pub fn chase_views(m: &MapFile, ghost: &Path, at_ms: &[i32], dist: f32, v: f32) 
         let (vx, vz) = (s.vx, s.vz);
         let h = if vx.hypot(vz) > 0.5 { vx.atan2(vz) } else { 0.0 };
         out.push(View { name: format!("g{t}"), target: [src[0], src[1] + 3.0, src[2]], dist, h, v });
+    }
+    Ok(out)
+}
+
+/// `--trees N --mapping placements.tsv`: a camera on each of the N densest
+/// clusters of BAKED trees — the source items the tiny-library mapping turned
+/// into `AV…` items (`i@<index><TAB>AV….Item.Gbx` rows). Positions are binned
+/// on a 24 m grid; a cluster is a bin plus its eight neighbours, taken
+/// greedily by tree count with a 48 m exclusion, the first cluster preferring
+/// the neighbourhood of the spawn (the player's first look) when one holds at
+/// least three trees. Each cluster gets two rows in SOURCE coordinates: `treeK`
+/// at `dist` from the south (h = π, the player's side; v 0.25) aimed 6 m up the
+/// trunks, and `treeKc` a close-up at dist/4 aimed 4 m up — the 30 m / 7 m pair
+/// the trees thread judged crowns and single leaves by (2026-09-09).
+pub fn tree_views(m: &MapFile, mapping: &Path, n: usize, dist: f32) -> Result<Vec<View>, String> {
+    let text = std::fs::read_to_string(mapping).map_err(|e| format!("{}: {e}", mapping.display()))?;
+    let mut pts: Vec<[f32; 3]> = Vec::new();
+    for line in text.lines() {
+        let mut cols = line.split('\t');
+        let (Some(key), Some(item)) = (cols.next(), cols.next()) else { continue };
+        let Some(idx) = key.strip_prefix("i@") else { continue };
+        let Ok(idx) = idx.parse::<usize>() else { continue };
+        let stem = item.rsplit(['/', '\\']).next().unwrap_or(item);
+        if !stem.starts_with("AV") {
+            continue;
+        }
+        if let Some(it) = m.items.get(idx) {
+            pts.push(it.pos);
+        }
+    }
+    if pts.is_empty() {
+        return Err(format!("{}: no `i@N<TAB>AV…` rows — this map bakes no trees, or the mapping is not a tiny-library one", mapping.display()));
+    }
+    let cell = 24.0f32;
+    let mut bins: BTreeMap<(i32, i32), Vec<usize>> = BTreeMap::new();
+    for (i, p) in pts.iter().enumerate() {
+        bins.entry(((p[0] / cell).floor() as i32, (p[2] / cell).floor() as i32)).or_default().push(i);
+    }
+    // a candidate per bin: the trees of the bin and its eight neighbours
+    let mut cands: Vec<(usize, [f32; 3], Vec<usize>)> = Vec::new();
+    for (&(bx, bz), _) in &bins {
+        let mut members: Vec<usize> = Vec::new();
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                if let Some(v) = bins.get(&(bx + dx, bz + dz)) {
+                    members.extend(v.iter().copied());
+                }
+            }
+        }
+        let k = members.len() as f32;
+        let mut c = [0.0f32; 3];
+        for &i in &members {
+            for a in 0..3 {
+                c[a] += pts[i][a] / k;
+            }
+        }
+        cands.push((members.len(), c, members));
+    }
+    cands.sort_by(|a, b| b.0.cmp(&a.0));
+    let spawn = default_anchor(m, 0.5).map(|(a, _)| a);
+    let mut picked: Vec<(usize, [f32; 3])> = Vec::new();
+    // the spawn's neighbourhood first, when it has trees
+    if let Some(s) = spawn {
+        if let Some(c) = cands.iter().filter(|c| c.0 >= 3 && (c.1[0] - s[0]).hypot(c.1[2] - s[2]) < 120.0).max_by_key(|c| c.0) {
+            picked.push((c.0, c.1));
+        }
+    }
+    for c in &cands {
+        if picked.len() >= n {
+            break;
+        }
+        if picked.iter().any(|(_, p)| (p[0] - c.1[0]).hypot(p[2] - c.1[2]) < 48.0) {
+            continue;
+        }
+        picked.push((c.0, c.1));
+    }
+    let mut out = Vec::new();
+    for (k, (count, c)) in picked.iter().enumerate() {
+        eprintln!("tree cluster {}: {count} baked trees around {:.1},{:.1},{:.1}", k + 1, c[0], c[1], c[2]);
+        out.push(View { name: format!("tree{}", k + 1), target: [c[0], c[1] + 6.0, c[2]], dist, h: std::f32::consts::PI, v: 0.25 });
+        out.push(View { name: format!("tree{}c", k + 1), target: [c[0], c[1] + 4.0, c[2]], dist: (dist / 4.0).max(5.0), h: std::f32::consts::PI, v: 0.12 });
     }
     Ok(out)
 }
