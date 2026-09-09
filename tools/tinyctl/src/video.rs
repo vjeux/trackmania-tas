@@ -768,6 +768,30 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
         let mut dead_cookie: Vec<(String, String, String, String)> = Vec::new();
         let mut changed = false;
         let mut pending = 0;
+        // ALL THE DONE FILES IN ONE BRIDGE CALL. One `wsx cat` per pending row
+        // was ~15 calls a minute, and every call authorizes: after a few hours
+        // the WhiteStick bridge answered "Too many requests … more than 6000
+        // (api-connex-oauth-authorize-client)" and the box went unreachable for
+        // everyone. One call per tick reads them all.
+        let pending_files: Vec<String> = rows
+            .iter()
+            .filter(|r| !r.starts_with('#'))
+            .filter_map(|r| {
+                let c: Vec<&str> = r.split('\t').collect();
+                (c.len() >= 5 && c[4] == "pending").then(|| c[3].to_string())
+            })
+            .collect();
+        let mut done_of: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if !pending_files.is_empty() {
+            let list = pending_files.iter().map(|f| format!("'{f}'")).collect::<Vec<_>>().join(" ");
+            if let Ok(out) = wsx.sh(&format!("for f in {list}; do [ -f \"$f\" ] && printf '%s\\t%s\\n' \"$f\" \"$(tr '\\n' ' ' < \"$f\" | cut -c1-200)\"; done; true")) {
+                for l in out.lines() {
+                    if let Some((f, c)) = l.split_once('\t') {
+                        done_of.insert(f.trim().to_string(), c.trim().to_string());
+                    }
+                }
+            }
+        }
         for (i, row) in rows.iter_mut().enumerate() {
             if row.starts_with('#') {
                 continue;
@@ -784,7 +808,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
             }
             pending += 1;
             let (nn, time, name, done_file) = (&cells[0], &cells[1], &cells[2], &cells[3]);
-            let Some(done) = wsx.cat(done_file) else { continue };
+            let Some(done) = done_of.get(done_file.as_str()).cloned() else { continue };
             let done = done.trim().to_string();
             // PENDING <url>: uploaded and registered, the gate not yet 200 when the
             // box gave up (a big asset can take an hour) — probe it from here,
@@ -934,7 +958,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
             println!("{pending} pending");
             return Ok(());
         }
-        std::thread::sleep(Duration::from_secs(60));
+        std::thread::sleep(Duration::from_secs(f("--tick-s").and_then(|s| s.parse().ok()).unwrap_or(120)));
     }
 }
 
