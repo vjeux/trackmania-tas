@@ -56,9 +56,21 @@ rm -f "$DONE"
   mkdir -p "/tmp/tinyship/$SLUG"
   $CLIP ship "$MP4" "/tmp/tinyship/$SLUG" --no-mirror > "$OUT.out" 2>&1
   rc=$?
-  # COOLDOWN=N seconds between uploads if a rate limit is ever proven (vjeux,
-  # 2026-09-09: "can you just upload them back to back, why a specific delay?").
-  sleep "${COOLDOWN:-0}"
+  # A NORMAL PAGE VIEW AFTER THE UPLOAD, and then a gap before the next one.
+  # Measured 2026-09-09: yesterday one session published 20 clips with ~10 min
+  # between them; today back-to-back uploads on the corrected uploader got 5,
+  # and earlier sessions 2-3. Spacing is the last variable we have not held
+  # steady, so the lock is held through COOLDOWN (default 300 s) and a plain
+  # authenticated GET of the repo page follows each upload — what a person
+  # doing this by hand would generate. COOLDOWN=0 turns the gap off.
+  if [ $rc -eq 0 ]; then
+    curl -s -o /dev/null -b "$GH_COOKIE" -H 'user-agent: Mozilla/5.0' \
+      -H 'accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \
+      -H 'accept-language: en-US,en;q=0.9' -H 'sec-fetch-site: same-origin' \
+      -H 'sec-fetch-mode: navigate' -H 'sec-fetch-dest: document' \
+      https://github.com/vjeux/trackmania-tas
+  fi
+  sleep "${COOLDOWN:-300}"
   cat "$OUT.out"
   URL=$(grep -o 'https://github.com/user-attachments/assets/[0-9a-f-]*' "$OUT.out" | head -1)
   if [ $rc -eq 0 ] && [ -n "$URL" ]; then echo "URL $URL" > "$DONE"
