@@ -877,7 +877,25 @@ impl MapFile {
     /// validation ghost, 13 148 bytes, `assets/dummy-ghost-summer01.bin` —
     /// stands in for the map's own, header validated="0" either way.
     pub fn strip_validation_ghost_to(&mut self, form: GhostForm) -> usize {
-        let Some(&(_, off, payload, size)) = crate::gbx::all_skip_chunks(&self.gbx.body).iter().find(|(c, ..)| *c == 0x0305_B00F) else { return 0 };
+        let found = crate::gbx::all_skip_chunks(&self.gbx.body).iter().find(|(c, ..)| *c == 0x0305_B00F).copied();
+        let Some((_, off, payload, size)) = found else {
+            // No ghost chunk at all (the chunk-REMOVED form). Dummy INSERTS one right after 0x0305B00E --
+            // the ghost chunk carries its own lookback context, so the later chunks' Id numbering is untouched
+            // (converter, 2026-09-08: the 21 test). The other forms have nothing to do.
+            if let GhostForm::Dummy = form {
+                if let Some(&(_, _o, p, s)) = crate::gbx::all_skip_chunks(&self.gbx.body).iter().find(|(c, ..)| *c == 0x0305_B00E) {
+                    let mut chunk = Vec::with_capacity(12 + DUMMY_GHOST.len());
+                    chunk.extend_from_slice(&0x0305_B00Fu32.to_le_bytes());
+                    chunk.extend_from_slice(b"PIKS");
+                    chunk.extend_from_slice(&(DUMMY_GHOST.len() as u32).to_le_bytes());
+                    chunk.extend_from_slice(DUMMY_GHOST);
+                    let n = chunk.len();
+                    self.raw_splices.push(((p + s, p + s), chunk));
+                    return n;
+                }
+            }
+            return 0;
+        };
         const SKELETON: [u8; 12] = [0, 0, 0, 0, 4, 0, 0, 0, 0xff, 0xff, 0xff, 0xff];
         let current = &self.gbx.body[payload..payload + size];
         let chunk_with = |data: &[u8]| -> Vec<u8> {
