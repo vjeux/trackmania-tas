@@ -4,13 +4,19 @@
 # gate), from the render box with the browser cookie. Started detached by
 # `tinyctl video --ship`; writes
 #   OUTBASE.log   (everything)
-#   OUTBASE.done  (URL <url> | FAILED <why>)
+#   OUTBASE.done  (URL <url> | PENDING <url> | FAILED <why>)
+# PENDING = uploaded AND registered, but the anonymous gate had not turned 200
+# within clip ship's ~100 s (a big asset can take an hour; 24 took 80 min on
+# 2026-09-09) — `tinyctl shipwatch` keeps probing the URL; NEVER re-upload.
+# The ships are SERIALISED (flock): two at once race on the release body's
+# read-modify-write and one registration is lost.
 # The mp4 arrives finished: `tinyctl video` cut it WITH THE CONTROLS OVERLAY and
 # stamped it; `clip ship` here REFUSES a file without that stamp, so nothing
 # bare can pass through this script by accident (2026-09-09).
 export PATH=/home/vjeux/bin:/usr/local/bin:/usr/bin:/bin
 MP4=$1; SLUG=$2; OUT=$3
 CLIP=/home/vjeux/trackmania-tas/tools/target/release/clip
+LOCK=/home/vjeux/shoot/tinyship.lock
 LOG="$OUT.log"; DONE="$OUT.done"
 mkdir -p "$(dirname "$OUT")"
 rm -f "$DONE"
@@ -26,10 +32,13 @@ rm -f "$DONE"
   echo "cookie probe: HTTP $code"
   case "$code" in 200) ;; *) echo "FAILED cookie probe HTTP $code (302 = logged out) — STOP" > "$DONE"; exit 1;; esac
   mkdir -p "/tmp/tinyship/$SLUG"
-  $CLIP ship "$MP4" "/tmp/tinyship/$SLUG" --no-mirror > "$OUT.out" 2>&1
+  echo "waiting for the ship lock $LOCK …"
+  flock "$LOCK" $CLIP ship "$MP4" "/tmp/tinyship/$SLUG" --no-mirror > "$OUT.out" 2>&1
   rc=$?
   cat "$OUT.out"
   URL=$(grep -o 'https://github.com/user-attachments/assets/[0-9a-f-]*' "$OUT.out" | head -1)
-  if [ $rc -eq 0 ] && [ -n "$URL" ]; then echo "URL $URL" > "$DONE"; else echo "FAILED ship rc=$rc $(grep -m1 'clip:' "$OUT.out")" > "$DONE"; fi
+  if [ $rc -eq 0 ] && [ -n "$URL" ]; then echo "URL $URL" > "$DONE"
+  elif [ -n "$URL" ] && grep -q "registered in the videos-v1 body\|ANONYMOUS GATE FAILED" "$OUT.out"; then echo "PENDING $URL" > "$DONE"
+  else echo "FAILED ship rc=$rc $(grep -m1 'clip:' "$OUT.out")" > "$DONE"; fi
   echo "== $(date -u +%FT%TZ) done: $(cat "$DONE")"
 } >> "$LOG" 2>&1

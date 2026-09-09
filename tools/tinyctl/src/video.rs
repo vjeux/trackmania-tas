@@ -736,8 +736,32 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
             let (nn, time, name, done_file) = (&cells[0], &cells[1], &cells[2], &cells[3]);
             let Some(done) = wsx.cat(done_file) else { continue };
             let done = done.trim().to_string();
-            if let Some(url) = done.strip_prefix("URL ") {
-                let url = url.trim();
+            // PENDING <url>: uploaded and registered, the gate not yet 200 when the
+            // box gave up (a big asset can take an hour) — probe it from here,
+            // anonymously, and never re-upload
+            let published: Option<String> = if let Some(url) = done.strip_prefix("URL ") {
+                Some(url.trim().to_string())
+            } else if let Some(url) = done.strip_prefix("PENDING ") {
+                let url = url.trim().to_string();
+                match anon_probe(&url) {
+                    Ok((200, bytes)) if bytes > 1_000_000 => {
+                        println!("{} {nn} {time}: the gate turned 200 ({bytes} bytes) for {url}", chrono_now());
+                        Some(url)
+                    }
+                    Ok((code, bytes)) => {
+                        println!("{} {nn} {time}: still pending — anonymous fetch http {code} ({bytes} bytes) for {url}", chrono_now());
+                        None
+                    }
+                    Err(e) => {
+                        println!("{} {nn} {time}: gate probe failed to run: {e}", chrono_now());
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            if let Some(url) = published {
+                let url = url.as_str();
                 println!("{} {nn} {time}: PUBLISHED {url}", chrono_now());
                 if let Some(readme) = &readme {
                     let page = std::fs::read_to_string(readme).map_err(|e| format!("{}: {e}", readme.display()))?;
@@ -757,7 +781,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 *row = format!("{nn}\t{time}\t{name}\t{done_file}\t{url}");
                 changed = true;
                 pending -= 1;
-            } else {
+            } else if !done.starts_with("PENDING ") {
                 println!("{} {nn} {time}: {done}", chrono_now());
             }
         }
@@ -770,6 +794,29 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_secs(60));
     }
+}
+
+/// The anonymous gate, from this side: `/usr/bin/curl` with a CLEARED
+/// environment (no cookie jar, no token, no netrc — a gate with credentials is
+/// not a gate), through `CLIP_PROXY` (default `http://fwdproxy:8080`: a
+/// devserver or OD reaches github.com only that way; a route, not a
+/// credential). Returns the status and the bytes fetched.
+fn anon_probe(url: &str) -> Result<(u16, u64), String> {
+    let proxy = std::env::var("CLIP_PROXY").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "http://fwdproxy:8080".into());
+    let dir = std::env::temp_dir().join(format!("tinyctl-anon-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let body = dir.join("anon.mp4");
+    let out = Command::new("/usr/bin/curl")
+        .env_clear()
+        .args(["-s", "-L", "--max-time", "300", "-o"])
+        .arg(&body)
+        .args(["-w", "%{http_code}", "-x", &proxy, url])
+        .output()
+        .map_err(|e| format!("curl: {e}"))?;
+    let code: u16 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0);
+    let bytes = std::fs::metadata(&body).map(|m| m.len()).unwrap_or(0);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok((code, bytes))
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<(), String> {

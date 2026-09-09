@@ -6,7 +6,8 @@ The **car is not scaled** — it drives the same, so every gap, arch and corrido
 The times are the **TAS ghosts** driven on the current build of each map (the build is in each caption); the original
 author time is Nadeo's medal time on the full-size map, for reference — the two are not comparable, the track is half as long.
 
-Each clip is the ghost played back in the game's MediaTracker, chase camera. A map reads *video pending* until its
+Each clip is the ghost played back in the game's MediaTracker, chase camera, with the run's controls drawn on it
+(steering, throttle, brake, and the strip of them over time — "controls overlay" in the caption). A map reads *video pending* until its
 clip is published the way every clip in this repo is.
 
 **Tiny Summer 2026 - 01** — original author time `23.144` · tiny ghost **19.381** (build ship15)
