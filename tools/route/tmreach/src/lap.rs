@@ -1043,7 +1043,15 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         let (rows, nh, end, s, seg) = loop {
             let (rows, nh) = w.rollout_keep(branch::ROOT, &recs, root, recs.len() as u64)?;
             let end = rows.last().cloned().unwrap_or_else(|| root_row.clone());
-            let (s, lat, seg, d3) = track.project(pos(&end), track.pts.len() / 2, track.pts.len());
+            // project the seed by WALKING its rows from the root with the hinted projector (a self-crossing line must not snap
+            // the seed to a later pass — 20 G3-first route, 22:05Z)
+            let mut hint = seg0;
+            for (i, r) in rows.iter().enumerate() {
+                if i % 10 == 0 {
+                    hint = track.project(pos(r), hint, 30).2;
+                }
+            }
+            let (s, lat, seg, d3) = track.project(pos(&end), hint, 30);
             let road_y = track.at(s)[1];
             let hw = track.half_width.get(seg).copied().unwrap_or(5.5);
             let road_y_min = track.min_y_near(s, 15.0);
