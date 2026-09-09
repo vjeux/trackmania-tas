@@ -150,14 +150,22 @@ pub fn write_file(f: &StaticItemFile) -> Vec<u8> {
 }
 
 /// A Gbx reference table naming external files: `(node index, path)`, the
-/// paths as the packs spell them (ancestor level 0: relative to the item's own
-/// folder, no steps up). Folders are numbered depth-first from 1 (0 = the
-/// ancestor directory itself), each external carries flags 1, its file name,
-/// node index, use-file 0 and its folder index — the layout the pack's own
-/// files carry (`ItemLampSpot.Light.Gbx`: level 1, folders `Light`, `Texture`,
-/// one external in folder 2).
+/// paths as the packs spell them. Folders are a NESTED tree numbered
+/// depth-first from 1 (0 = the ancestor directory itself), each external
+/// carries flags 1, its file name, node index, use-file 0 and its folder index
+/// — the layout the pack's own files carry (`FlagSmall.Mesh.Gbx`: ancestor
+/// level 4 up to GameData, folders `Stadium` > `Media` > `Material`, two
+/// externals in the last one).
+///
+/// The ancestor level (how many directories the resolver climbs from the
+/// file's own folder before descending the tree) is 0 by default — a sidecar
+/// next to the item — and `TINY_REF_ANCESTOR=N` sets it. What it reaches from
+/// an embedded item (2026-09-09, `/fids`): the item lives at
+/// `<fake>\MemoryTemp\CurrentMap_EmbeddedFiles\ContentLoaded\Items\`, so level 1
+/// is `ContentLoaded` — a `Stadium\Media\Material\X.Material.Gbx` carried in the
+/// map archive at that path is one level up and three folders down.
 pub fn ref_table(externals: &[(u32, String)]) -> Vec<u8> {
-    let ancestor_level: u32 = 0;
+    let ancestor_level: u32 = std::env::var("TINY_REF_ANCESTOR").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
     let use_file: u32 = 0;
     let mut out = Vec::new();
     out.extend_from_slice(&(externals.len() as u32).to_le_bytes());
@@ -165,42 +173,63 @@ pub fn ref_table(externals: &[(u32, String)]) -> Vec<u8> {
         return out;
     }
     out.extend_from_slice(&ancestor_level.to_le_bytes());
-    // one flat folder per distinct directory (no nesting: every directory
-    // path becomes ONE root folder whose name carries the backslashes — the
-    // game joins names with `\`, so `Media\Texture` as one name is the same
-    // path as the nested pair)
-    let mut dirs: Vec<String> = Vec::new();
-    let mut entries: Vec<(u32, String, u32)> = Vec::new();
+    #[derive(Default)]
+    struct Folder {
+        name: String,
+        subs: Vec<Folder>,
+    }
+    fn insert(f: &mut Folder, parts: &[&str]) {
+        if parts.is_empty() {
+            return;
+        }
+        let pos = match f.subs.iter().position(|s| s.name == parts[0]) {
+            Some(p) => p,
+            None => {
+                f.subs.push(Folder { name: parts[0].to_string(), subs: Vec::new() });
+                f.subs.len() - 1
+            }
+        };
+        insert(&mut f.subs[pos], &parts[1..]);
+    }
+    fn number(f: &Folder, prefix: &str, next: &mut u32, out: &mut std::collections::BTreeMap<String, u32>) {
+        for sub in &f.subs {
+            let path = if prefix.is_empty() { sub.name.clone() } else { format!("{prefix}\\{}", sub.name) };
+            out.insert(path.clone(), *next);
+            *next += 1;
+            number(sub, &path, next, out);
+        }
+    }
+    fn write(f: &Folder, v: &mut Vec<u8>) {
+        v.extend_from_slice(&(f.subs.len() as u32).to_le_bytes());
+        for sub in &f.subs {
+            v.extend_from_slice(&(sub.name.len() as u32).to_le_bytes());
+            v.extend_from_slice(sub.name.as_bytes());
+            write(sub, v);
+        }
+    }
+    let mut root = Folder::default();
+    let mut entries: Vec<(u32, String, String)> = Vec::new();
     for (node, path) in externals {
         let (dir, name) = match path.rfind('\\') {
             Some(i) => (path[..i].to_string(), path[i + 1..].to_string()),
             None => (String::new(), path.clone()),
         };
-        let folder = if dir.is_empty() {
-            0
-        } else {
-            match dirs.iter().position(|d| *d == dir) {
-                Some(p) => p as u32 + 1,
-                None => {
-                    dirs.push(dir);
-                    dirs.len() as u32
-                }
-            }
-        };
-        entries.push((*node, name, folder));
+        if !dir.is_empty() {
+            insert(&mut root, &dir.split('\\').collect::<Vec<_>>());
+        }
+        entries.push((*node, dir, name));
     }
-    out.extend_from_slice(&(dirs.len() as u32).to_le_bytes());
-    for d in &dirs {
-        out.extend_from_slice(&(d.len() as u32).to_le_bytes());
-        out.extend_from_slice(d.as_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes()); // no subfolders
-    }
-    for (node, name, folder) in &entries {
+    let mut index = std::collections::BTreeMap::new();
+    let mut next = 1u32;
+    number(&root, "", &mut next, &mut index);
+    write(&root, &mut out);
+    for (node, dir, name) in &entries {
         out.extend_from_slice(&1u32.to_le_bytes()); // flags: a file name follows
         out.extend_from_slice(&(name.len() as u32).to_le_bytes());
         out.extend_from_slice(name.as_bytes());
         out.extend_from_slice(&node.to_le_bytes());
         out.extend_from_slice(&use_file.to_le_bytes()); // use file
+        let folder = if dir.is_empty() { 0 } else { index[dir] };
         out.extend_from_slice(&folder.to_le_bytes());
     }
     out

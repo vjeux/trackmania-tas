@@ -342,6 +342,73 @@ run time, not readable statically). Our cloth does render its OWN half-size
 mesh when driven (PH3 Ah1: half the stock's pole and cloth), so the state is
 the only thing borrowed.
 
+
+**The registration — LOCATED, and it is a wall (2026-09-09 06:00Z, thread
+dcb0a83f; `tm2020-tween-anim-re.md` has every address).** Read from the exe
+with `asmdig` (now a PE reader) and confirmed in the live game with the
+GhostShooter routes `/meshflags` and `/fids` (MeshFlags.as) on one-item
+lineups (frames `tinyshots/flt1..flt9`):
+
+1. The spawner of a prefab's entities (`0x140b72d20`, the InstDyna2 branch at
+   `0x140b73ae1`) tests ONE bit — `CPlugSolid2Model+0x1f0 & 1` on the entity
+   model's Mesh — and only then computes the cloth's period and phase from
+   the entity's `SInstanceParams` (`0x14061bdf0`; the item's seed at
+   ctx+0x2c) and packs the u32 anim handle (`0x140260ea0`: 11-bit log period
+   0.25..60 s, 12-bit phase, 8-bit TextureId) it hands
+   `NHmsMgrInstDyna2` (`0x140262cf0`). Our embedded cloth PASSES this: bit 0
+   is "some visual has ≥ 2 sub-visual frames", set by `UpdateFlags`
+   (`0x140438340`) from `CPlugSolid2Model::OnNodLoaded` (vtable slot 20,
+   `0x140438330` → `0x140438670`), which `CMwNod::ReadChunks` (`0x1402d0720`)
+   runs at the end of every node's chunk stream — inline nodes included.
+   Live: stock cloth `flags=0x3`, ours `flags=0x3`, both `frames0=86`.
+2. What our cloth LACKS is **`CPlugVisual+0x24` bit 27** (the VMorph / tween
+   visual mark): stock cloth visual `vflags0=0x80800a8`, ours `0x800a8`. The
+   visual's device data (`0x14040496d`) builds the morph streams only for a
+   visual with bit 27 (or 29); without them the VertexTween shader draws
+   nothing on its own and whatever the previous tween draw left bound when a
+   stock flag is in view — the "borrowing", the shards across LOD bands, the
+   bare pole. Bit 27 is set in exactly one place at run time,
+   `0x1404059b0`, called from `OnNodLoaded`'s first loop (and from the old
+   `CPlugSolid::OnNodLoaded`), and ONLY when the geom's material, taken from
+   the Solid2's per-geom array (+0xb8/+0xc0, empty at load) or else from the
+   plain **`Materials` list (+0xc8/+0xd0 — `CPlugMaterial` node refs, class
+   0x9079000)** through `0x14040f750` (the material's shader record for the
+   current quality) has the vertex-tween property (`[record+0x84] != 0`). The
+   version-29 **`CustomMaterials` list (+0xf8/+0x100, the
+   `CPlugMaterialUserInst` records every embedded item uses) is never
+   consulted** — it is resolved later into +0x1f8/+0x200 (live: stock
+   `mats=0/2/0`, ours `mats=0/0/2`). The file cannot carry bit 27 either: the
+   visual chunk readers mask the file flags (`and [+0x24],0xff8ffe50`), the
+   ctor sets 0x804f0.
+3. So the tween mark needs a REAL `CPlugMaterial` in the mesh's plain
+   `Materials` list at load time, i.e. an external `.Material.Gbx`
+   reference — which is what the pack's `FlagSmall.Mesh.Gbx` has
+   (`Stadium\Media\Material\ItemFlag.Material.Gbx`, `ItemFlagNoAnim`). An
+   embedded item cannot: its files are mounted at
+   `<fake>\MemoryTemp\CurrentMap_EmbeddedFiles\ContentLoaded\Items\` (`/fids`),
+   a Fid tree with no path to `GameData`; a reference with the pack's own
+   folder chain and any ancestor level (`TINY_FLAG_MATREF=ext`,
+   `TINY_REF_ANCESTOR=1|4`, the reference table now nested like the packs')
+   drops the item, files carried in the archive under `Stadium/Media/Material/`
+   are not found (lineup flt8: `items=7316`, the two items gone), and a
+   sidecar copy next to the item (the 2026-09-08 `bare` form) loads a
+   material whose own chain — textures, the parent
+   `Techno3\Media\Material\Tech3_Warp_TDiffSpec_VertexTween.Material.gbx` in
+   a Maniaplanet pack, the colour table — is unreachable, so nothing draws.
+   The only material form an embedded item can hold (a user inst by name) is
+   exactly the form the tween mark ignores.
+
+**Verdict: a self-animating vertex-tween cloth cannot live in an embedded
+item; the game reserves the tween mark for meshes whose materials are pack
+files.** What remains for the Flag8m placements is a choice, not a fix: the
+still half-size cloth (today's default, skinned, right size, no motion), the
+stock `Flag8m` at every Flag8m placement as well (moving and skinned like the
+Flag16m stand-ins already are, at twice the world's scale — frames flt9:
+stock and half copy side by side, two instants), or a mechanical flag built
+from kinematic strips (the pusher form, which does animate embedded, one
+strip item per phase eighth) — not built. The `TINY_FLAG_*` knobs stay as
+the probes they are.
+
 ## Placement colours and the clip walls' materials (2026-09-08)
 
 Chunk 0x03043062 carries one colour byte per block, baked block and item (0
