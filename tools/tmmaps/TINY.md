@@ -371,79 +371,55 @@ skin", and every filler inherited a modifier tag or no tag). `modifier_links`
 resolves the ref to its one link; `terrain_mods` gates the inheritance on the
 tag; `inherited_mod` walks across → own → up the columns.
 
-## Which generated fillers the game draws — the FACE rule (2026-09-08, evening)
+## Which generated fillers the game draws — ALL OF THEM (2026-09-09, from the exe)
 
-The editor bakes a clip piece for every unit side whose clip meets no matching
-clip across it (same group id, the asymmetric FCB↔FCT pair, or a full-free
-clip deleting a `can_be_deleted_by_full_free_clip` one) — into the neighbouring
-cell, whether or not a block stands there. The game keeps every record at load
-(`/mapblocks2?list=baked` == the file) and decides at DRAW time. The rule,
-`TINY_FILLER_RULE=face` (default; `fullfree` = the morning's cell rule, `all` =
-every record), lives in `mapgeom::fillers::verdict` and reads like this:
+Settled by disassembling Trackmania.exe (the profiler strings name the load
+pipeline: `CGameCtnChallenge::InitChallengeData_FreeClipsBaked`, `…_Clips`,
+`…::CreateFreeClips`). At map load the client does NOT draw the file's
+BakedBlocks. `InitChallengeData_Clips` walks every authored block unit (Flat /
+Frontier terrain and clip blocks excepted), every face, every clip with
+`ClipType != 0`, allocates a brand-new clip block for it (the file's record for
+that owner face only donates attributes: variant alternate, lightmap id,
+colour) and decides against the neighbour's clips whether it is instantiated:
 
-* a recorded piece with `dir` d stands on side d of its cell and its OWNER is
-  the block unit across side d (`Base_VFCMiddle_Air` is the local z = 32 =
-  North plane; dir turns it like a block). An FCB piece — the underside or
-  channel floor of the block ABOVE — is recorded in the cell below and lies at
-  the top of its cell; an FCT piece — the top plate of the block BELOW — in the
-  cell above, at its floor.
-* **an FCB / FCT piece is always drawn.** Summer 05's elevated water road: its
-  floor is `TrackWallWaterStraightFCBInsideV2` recorded in the cell below,
-  which is the upper unit of a `DecoPlatformSlopeBase` (the wedge prefab stops
-  6 m short of the road floor — the cell rule dropped it and the channel was a
-  hole); the same floor over the road's own `TrackWallStraightPillar` (top
-  face `TrackWallStraightFCT`) and Summer 15's over `TrackWallArch1x2SideTop`
-  (top face `TrackWallArch1x2SideFCT`) — the original draws all three
-  (same-camera frames f05/f05b/f15, 22:00Z).
-* **a SIDE piece is drawn only where the face it stands on is FREE**: nothing
-  stands in its cell (a pillar cell counts as empty — `TINY_FILLER_PILLARS=
-  occupant` makes pillar faces decide), or the occupant's unit hangs no clip on
-  that face, or that face carries a FULL-FREE clip (a complete wall — the
-  pillar / deco-wall family; the neighbour dresses its side against it as if
-  the cell were empty, minus the pieces the wall makes redundant, its
-  `can_be_deleted_by_full_free_clip` ones). A full-free piece is drawn wherever
-  it is recorded. Everything else — a free clip against a neighbour's face that
-  carries its own (non-full-free) clips, two blocks joined — is hidden.
-  Summer 20 cp3: the plastic ramp's `DecoWallSlope2StartVFCLeft` in the wedge
-  cell (the wedge's face carries `DecoPlatformSlopeBaseFCSmall`) — hidden, the
-  grey slab of ship9; the checkpoint's OpenTech skirts in the DecoHill cells —
-  hidden; the pool's `WaterFCCenter`/`WaterHFC*` rim in the wedge cell (the
-  wedge's face is the full-free `DecoWallBaseVFC`) — drawn, the rim the cell
-  rule lost; the pillar's `DecoWallBaseVFC` beside the wedge and the wedge's
-  `DecoWallSlopeBaseVFCRight` in the pillar cell — drawn.
-* a HORIZONTAL clip (an HFC rim along the top of a wall) whose neighbour hangs
-  a rim of the same horizontal group on the shared face runs on: the editor
-  never pairs HFC clips (both sides are baked) and the game draws both —
-  Summer 20's two facing WaterRampZoneCurveOut (b4087/b4115), the
-  ResonantMetal rim the author drives at t 27.1–27.5 s (the route project's
-  author-ground sweep; gone from ship10).
-* **a TOP / BOTTOM piece follows its own `CanBeDeletedByFullFreeClip` flag**
-  (2026-09-08 23:45Z, vjeux's 15 loop frame): a NON-deletable floor (the water
-  roads' `TrackWallWaterStraightFCBInside*`, del=0) is drawn wherever it is
-  recorded — the 05/15 floors above; a DELETABLE plate (`TrackWallStraightFCB`,
-  a road's underside; `PlatformBaseFCT`/`FCB`, the pillar and platform plates —
-  full-free AND deletable) is the optional dressing of a free face and is hidden
-  as soon as the block it faces hangs its own top/bottom clips there. Summer
-  15's water channel through the reactor gate: the road slope's FCB plates and
-  the pillars' FCT plates recorded in the `DecoWallWaterBase` cells came out as
-  grey slabs in the water ("road blocks in the water"); the original shows
-  water. Full-free-always-drawn therefore applies to SIDE pieces only.
-* only CLIP records are judged; terrain tiles in the baked list belong to the
-  `hidden_tiles` logic.
+```
+for each B in the clips of the neighbour cell's opposite face:
+    if !ClipsConnect(A, B) continue           // free & non-exclusive → always
+    if IsFreeClipDeletedBy(A, B) deletedA = true
+    if IsFreeClipDeletedBy(B, A) remove(B)    // an anti-clip: instantiate(B)
+keep(A) = A.IsAntiClip ? deletedA : !deletedA
+```
 
-`mapgeom fillers MAP [--collection C] [--filter PAT] [--cells X0,Z0:X1,Z1]
-[--covered] [--summary]` prints every record with its owner, the occupant unit
-and that unit's clip list on the shared face, the piece's clip flags (F full
-free, X exclusive, d deletable) and the verdict under `fullfree` / `face` /
-`face` with pillars as occupants. `mapgeom blockinfo-all GameCtnBlockInfoClip
---clips --out T` is the table of every clip block info's flags and group ids
-(`clip_group_ids_v1` is a second (group, symmetric group) pair: OpenTechRoadFC
-("PlatformFCSmallClipsRemove", "PlatformFCSmallClips") pairs with
-PlatFormFCSmall (group PlatformFCSmallClips, second sym …ClipsRemove)).
-The `can_be_deleted_by_full_free_clip` flag is NOT a draw criterion:
-TrackWallStraightFCT carries it and TrackWallCurve3FCT does not, and the game
-draws the water floor over both (`TINY_FILLER_CLOSE=nondeletable` was the
-variant that read it; `any` closes top/bottom faces too — both refuted).
+`IsFreeClipDeletedBy(a, b)`: both free; same ground bit; `a.IsAlwaysVisibleFreeClip`
+→ never; `b.IsFullFreeClip && a.CanBeDeletedByFullFreeClip` → deleted; else a
+Top needs a Bottom (and vice versa) with the two directions compatible under
+each clip's `TopBottomMultiDir` (0 SameDir, 1 SymmetricalDirs, 2 AllDir,
+3 Opposed, 4 Perpendicular, 5 Next, 6 Previous), a Side needs opposite
+directions; then `Match(a, b)`: a's symmetrical group ids ∩ b's group ids if a
+has any, else a's group ids ∩ b's, else `a.SymmetricalClipId == b.name`, else
+the same name. A side clip block's ground bit is the RECORD's (a ground block's
+upper units bake air clips); a top/bottom clip block's direction is (owner dir +
+the clip's own 2-bit direction from block-unit chunk 0x0303600C's trailing
+words) mod 4 (`mapgeom blockinfo` prints them as `clipdirs … 00c`).
+
+The editor bakes with the same code, so **the file's baked records are exactly
+what the game draws**. `mapgeom bake MAP [--collection C] --diff` runs the
+simulation and reports it against the file: 0 stale records on all 25 Summer
+2026 maps (46 304 records confirmed). `tiny-library` runs the same check on
+every conversion (`engine bake check: N confirmed / S stale / M sim-only`;
+`TINY_BAKE_STRICT=1` makes S > 0 fatal). Pixel proofs on Summer 20: the
+original minus a VISIBLE pool-rim record renders identically (the rim is
+regenerated); three records moved into an empty field show nothing there; the
+original minus the 679 records the old face rule hid is identical over 204
+cameras.
+
+Consequence: every hiding rule this file used to describe (fullfree, face,
+covered, occupied, the plate clause) hid pieces the game draws, and they are
+gone (3201a7cc). Where an original does not SHOW a record's piece, neighbouring
+geometry occludes it (a hill, the engine's volume water, a grass tile); those
+are shape/terrain differences of our conversion, to be fixed at the geometry
+level — never by leaving a record out. `mapgeom fillers MAP` remains as the
+per-record listing (cell occupants, facing clip lists, owner).
 
 ## Pool water, overflow spouts and the inflatables (2026-09-08, night)
 
