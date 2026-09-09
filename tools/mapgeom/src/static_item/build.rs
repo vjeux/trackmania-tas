@@ -1551,6 +1551,34 @@ pub fn item_modifier_links(store: &mut crate::store::DataStore, item_path: &str)
     Some((links, suffix))
 }
 
+/// The gate sign panels' pictures (signlogo.rs), one per kind the item's
+/// materials name through the `SignLogo<Kind>` pseudo link;
+/// `sign_logo_material` re-points the panels at them at assembly. Without the
+/// picture the panel falls back to the kind's `Modifier\<Kind>\Sign` game
+/// material, whose unfed display shows the material's own `_I` picture (white
+/// chevrons pointing UP on red for Turbo2) where the live gate shows the lit
+/// logo (red chevrons pointing down on black). Until 2026-09-09 only the pack
+/// gate ITEMS took this step; every BLOCK-baked pad and gate (the pads' kerb
+/// signs, GateSpecialReset, Summer 15's Boost ring) fell back — Argentina 21's
+/// PlatformGrassSpecialTurbo2 kerb sign was vjeux's "the super turbo decal is
+/// wrong" (frame sp21b pgB).
+pub fn add_sign_logo_pictures(store: &mut crate::store::DataStore, m: &mut Merged) {
+    let kinds: Vec<String> = m.materials.iter().filter_map(|mat| mat.link().and_then(super::signlogo::kind_of_pseudo).map(|s| s.to_string())).collect();
+    for kind in kinds {
+        let file = super::signlogo::logo_file(&kind);
+        if m.pictures.iter().any(|(f, _)| *f == file) {
+            continue;
+        }
+        match super::signlogo::logo_dds(store, &kind) {
+            Ok(dds) => {
+                m.notes.push(format!("sign logo {kind}: {} ({} bytes)", file, dds.len()));
+                m.pictures.push((file, dds));
+            }
+            Err(e) => m.notes.push(format!("sign logo {kind}: {e}; game material kept")),
+        }
+    }
+}
+
 /// A pack ITEM (`CGameItemModel` wrapper whose entity model -- a static
 /// object, a prefab, or a variant list of them -- lives in EXTERNAL files):
 /// bake the geometry the placement's `variant` external points at (index
@@ -1638,22 +1666,7 @@ pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStor
     }
     // The gate sign panels' pictures (signlogo.rs), one per kind the item's
     // materials name; `sign_logo_material` re-points the panels at them.
-    {
-        let kinds: Vec<String> = m.materials.iter().filter_map(|mat| mat.link().and_then(super::signlogo::kind_of_pseudo).map(|s| s.to_string())).collect();
-        for kind in kinds {
-            let file = super::signlogo::logo_file(&kind);
-            if m.pictures.iter().any(|(f, _)| *f == file) {
-                continue;
-            }
-            match super::signlogo::logo_dds(store, &kind) {
-                Ok(dds) => {
-                    m.notes.push(format!("sign logo {kind}: {} ({} bytes)", file, dds.len()));
-                    m.pictures.push((file, dds));
-                }
-                Err(e) => m.notes.push(format!("sign logo {kind}: {e}; game material kept")),
-            }
-        }
-    }
+    add_sign_logo_pictures(store, &mut m);
     // A light colour skin: which of the item's materials are the glass (their
     // pack material has a self-illumination `_I` texture) — those get the
     // swatch as a self-lit custom material at assembly; the swatch file rides

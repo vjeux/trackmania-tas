@@ -816,6 +816,10 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             m.notes.push(format!("{n} Water-physics collision triangles made NotCollidable (water is a volume, not a wall)"));
         }
     }
+    // the sign panels of a pad / gate block: the kind's logo picture rides next
+    // to the item (add_sign_logo_pictures) — the pack gate items had it, the
+    // block-baked pads and gates did not (2026-09-09)
+    crate::static_item::build::add_sign_logo_pictures(store, &mut m);
     let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: ident.to_string(), scale, collection, skin: m.skin.clone() };
     let f = crate::static_item::build::assemble(&m, &opts)?;
     Ok((crate::static_item::file::write_file(&f), m, deepened))
@@ -925,6 +929,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         refs.collect()
     };
     let mut cell_mod: std::collections::HashMap<(u8, u8, u8), Vec<String>> = std::collections::HashMap::new();
+    // every authored block of a cell with its modifier links, for the
+    // by-name owner rule of the gameplay clips below
+    let mut cell_blocks: std::collections::HashMap<(u8, u8, u8), Vec<(String, Vec<String>)>> = std::collections::HashMap::new();
     // (x, z) column -> [(y, is_pillar, mods)] for the pillar rule below
     let mut columns: std::collections::HashMap<(u8, u8), Vec<(u8, bool, Vec<String>)>> = std::collections::HashMap::new();
     for b in source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0) {
@@ -936,6 +943,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         let c = (b.file_cell[0], b.file_cell[1], b.file_cell[2]);
         let pillar = b.flags & crate::blockmap::FLAG_PILLAR != 0;
         columns.entry((c.0, c.2)).or_default().push((c.1, pillar, mods.clone()));
+        cell_blocks.entry(c).or_default().push((b.name.clone(), mods.clone()));
         // several authored blocks in one cell (a pillar under a deck): a
         // modifier wins over none
         let e = cell_mod.entry(c).or_default();
@@ -963,11 +971,95 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             }
         }
     }
+    // FREE gameplay blocks (Argentina 21's six GateExpandableSpecialNoEngine
+    // gates, its two PlatformIceSpecialResetTilt2 pads) for their free clip
+    // records: (name, position, modifier refs)
+    let free_gameplay: Vec<(String, [f32; 3], Vec<String>)> = source
+        .blocks
+        .iter()
+        .filter(|b| b.flags & crate::blockmap::FLAG_FREE != 0 && b.name.contains("Special"))
+        .filter_map(|b| {
+            let pos = b.free_pos?;
+            let path = idx.path_for(&b.name)?;
+            let mods = idx.load(store, &path).map(|bi| terrain_mods(bi)).unwrap_or_default();
+            let gameplay = mods.iter().any(|r| r.strip_suffix(".TerrainModifier.Gbx").map(|f| gameplay_folders.contains(&f.to_uppercase())).unwrap_or(false));
+            gameplay.then(|| (b.name.clone(), pos, mods))
+        })
+        .collect();
     let inherited_mod = |b: &tmmaps::map::BlockRec| -> Vec<String> {
         if b.flags & crate::blockmap::FLAG_FREE != 0 {
+            // a FREE block's clip is free too: the free gameplay block of the
+            // same family nearest to it (a clip stands within its owner's
+            // footprint, ≤ 64 m of the owner's origin) dresses it — else the
+            // plain (Turbo) dress of the prefab, as before
+            if b.name.contains("Special") {
+                if let Some(p) = b.free_pos {
+                    let mut best: Option<(f32, Vec<String>)> = None;
+                    for (name, q, mods) in &free_gameplay {
+                        if !same_special_family(&b.name, name) {
+                            continue;
+                        }
+                        // a Tilt2 pad's skirt stands two cells from the pad's origin
+                        let d = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+                        if d <= 100.0 && best.as_ref().map(|(bd, _)| d < *bd).unwrap_or(true) {
+                            best = Some((d, mods.clone()));
+                        }
+                    }
+                    if let Some((_, mods)) = best {
+                        return mods;
+                    }
+                }
+            }
             return Vec::new();
         }
         let c = (b.file_cell[0], b.file_cell[1], b.file_cell[2]);
+        // A GAMEPLAY clip is named after the block it finishes
+        // (`GateExpandableSpecialLeftVFC`, `GateExpandableSpecialFCT`,
+        // `GateExpandableSpecialInPillarFCB`, `PlatformSpecialFCRight`, …) and
+        // wears THAT block's kind: its LED sign panels show the kind's logo.
+        // The cell-modifier rule below took the first modifier of the cell
+        // across, which on Argentina 21 was the ghost DecoPlatformDiag1 sharing
+        // the gate's cell (grass dress, no kind) — the NoSteering gate's left
+        // pillar and top came out with TURBO chevrons while its right pillar
+        // showed NoSteering (2026-09-09; the same gate's bottom cap looked up
+        // from its own cell, the Land tile's dress). Look for the owner by
+        // name in the cell across, the own cell, the cell below (an FCT top
+        // cap sits in the cell above its owner) and the cell above (an FCB
+        // bottom cap sits below its owner); the longest name prefix shared
+        // with a block that has a gameplay kind wins.
+        if b.name.contains("Special") {
+            let stem_len = |a: &str, k: &str| a.chars().zip(k.chars()).take_while(|(x, y)| x == y).count();
+            let mut best: Option<(usize, Vec<String>)> = None;
+            let mut cells: Vec<(u8, u8, u8)> = vec![c];
+            if let Some(a) = tmmaps::fillers::across(b.file_cell, b.dir) {
+                cells.push((a[0], a[1], a[2]));
+            }
+            if c.1 > 0 {
+                cells.push((c.0, c.1 - 1, c.2));
+            }
+            if c.1 < 255 {
+                cells.push((c.0, c.1 + 1, c.2));
+            }
+            for cell in cells {
+                for (name, mods) in cell_blocks.get(&cell).map(|v| v.as_slice()).unwrap_or(&[]) {
+                    // a block with a gameplay kind: its modifier ref names a
+                    // folder that carries a `Sign` material
+                    if !mods.iter().any(|r| r.strip_suffix(".TerrainModifier.Gbx").map(|f| gameplay_folders.contains(&f.to_uppercase())).unwrap_or(false)) {
+                        continue;
+                    }
+                    if !same_special_family(&b.name, name) {
+                        continue;
+                    }
+                    let n = stem_len(&b.name, &special_family_name(name));
+                    if best.as_ref().map(|(bn, _)| n > *bn).unwrap_or(true) {
+                        best = Some((n, mods.clone()));
+                    }
+                }
+            }
+            if let Some((_, mods)) = best {
+                return mods;
+            }
+        }
         // The block the clip BELONGS to first: a vertical clip is the wall on
         // its cell's side `dir`, completing the block ACROSS that side
         // (tmmaps::fillers) — Summer 20 cp3's DecoWallSlope2StraightVFCLeft
@@ -1138,6 +1230,11 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             Ok((bytes, m, deepened_here)) => {
                 if deepened_here {
                     deepened.push(key.source());
+                }
+                // the block's sign-logo pictures ride next to the items like the
+                // pack gate items' (the library zip's Items/SignLogo<Kind>.dds)
+                for (file, dds) in &m.pictures {
+                    pictures.entry(format!("Items/{file}")).or_insert_with(|| dds.clone());
                 }
                 let nv = m.visuals.len();
                 let veget = m.notes.iter().filter(|n| n.to_ascii_lowercase().contains(".vegettreemodel.gbx")).count();
@@ -1955,6 +2052,40 @@ pub fn modifier_redress(store: &mut DataStore, refs: &[String], links: &[String]
 /// `PlatformGrass\TrackWall` is the DecoCliffPxz concrete, no hue mask); its
 /// skin is named for that one slot, and the other materials of that folder
 /// (PlatformTech, DecalPlatform…) are not what a Tech deco block wears.
+/// A gameplay block's name without its surface family: `PlatformIceSpecialResetTilt2`
+/// -> `PlatformSpecialResetTilt2`, `RoadTechSpecialTurbo2` -> `RoadSpecialTurbo2`,
+/// `GateExpandableSpecialNoEngine` unchanged. The generated clips of a pad are named
+/// without the surface (`PlatformSpecialFCRight`, `PlatformSpecialTilt2RightFCLeft`),
+/// the gates' clips after the gate (`GateExpandableSpecialLeftVFC`).
+pub fn special_family_name(name: &str) -> String {
+    let Some(i) = name.find("Special") else { return name.to_string() };
+    let head = &name[..i];
+    for root in ["Platform", "Road", "OpenTechRoad", "OpenDirtRoad", "Gate", "GateExpandable"] {
+        if head == root {
+            return name.to_string();
+        }
+    }
+    for root in ["Platform", "Road"] {
+        if head.starts_with(root) && head.len() > root.len() {
+            return format!("{root}{}", &name[i..]);
+        }
+    }
+    name.to_string()
+}
+
+/// Whether a generated clip (`clip`, e.g. `GateExpandableSpecialFCT`,
+/// `PlatformSpecialTilt2RightFCLeft`) belongs to the family of the gameplay block
+/// `owner` (`GateExpandableSpecialNoSteering`, `PlatformIceSpecialResetTilt2`):
+/// the same text up to and including `Special` once the owner's surface family
+/// is dropped.
+pub fn same_special_family(clip: &str, owner: &str) -> bool {
+    let o = special_family_name(owner);
+    match (clip.find("Special"), o.find("Special")) {
+        (Some(a), Some(b)) => clip[..a + 7] == o[..b + 7],
+        _ => false,
+    }
+}
+
 pub fn modifier_links(store: &DataStore, refs: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for r in refs {
@@ -1980,4 +2111,33 @@ pub fn modifier_links(store: &DataStore, refs: &[String]) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+#[cfg(test)]
+mod special_family_tests {
+    use super::*;
+
+    #[test]
+    fn surface_family_is_dropped_from_the_owner() {
+        assert_eq!(special_family_name("PlatformIceSpecialResetTilt2"), "PlatformSpecialResetTilt2");
+        assert_eq!(special_family_name("PlatformGrassSpecialTurbo2"), "PlatformSpecialTurbo2");
+        assert_eq!(special_family_name("RoadTechSpecialTurbo2"), "RoadSpecialTurbo2");
+        assert_eq!(special_family_name("GateExpandableSpecialNoEngine"), "GateExpandableSpecialNoEngine");
+        assert_eq!(special_family_name("GateSpecialReset"), "GateSpecialReset");
+        assert_eq!(special_family_name("DecoWallBaseVFC"), "DecoWallBaseVFC");
+    }
+
+    #[test]
+    fn clips_match_their_owner_family_only() {
+        // Argentina 21 (2026-09-09): the NoSteering gate's pieces, the Reset pad's skirts
+        assert!(same_special_family("GateExpandableSpecialLeftVFC", "GateExpandableSpecialNoSteering"));
+        assert!(same_special_family("GateExpandableSpecialFCT", "GateExpandableSpecialNoEngine"));
+        assert!(same_special_family("GateExpandableSpecialInPillarFCB", "GateExpandableSpecialFragile"));
+        assert!(same_special_family("PlatformSpecialTilt2RightFCLeft", "PlatformIceSpecialResetTilt2"));
+        assert!(same_special_family("PlatformSpecialFCRight", "PlatformGrassSpecialTurbo2"));
+        // a gate is not a pad, a pad is not a gate
+        assert!(!same_special_family("GateExpandableSpecialFCT", "PlatformTechSpecialNoEngine"));
+        assert!(!same_special_family("PlatformSpecialFCLeft", "GateSpecialReset"));
+        assert!(!same_special_family("DecoWallBaseVFC", "GateSpecialReset"));
+    }
 }
