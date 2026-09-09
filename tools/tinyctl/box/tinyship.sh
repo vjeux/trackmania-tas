@@ -31,10 +31,16 @@ rm -f "$DONE"
   # Through the SAME session state ghvid.sh keeps (GitHub rotates _gh_sess and
   # logs out a client that replays a stale one), never through the credential
   # file, which every tool here only ever READS — see the warning in ghvid.sh.
+  # (An unquoted $COOKIEARG here once split the header on its spaces and handed
+  # curl a dozen garbage URLs: the probe printed 000000000000000 and asked
+  # GitHub nothing at all. Two explicit calls instead of one clever one.)
   STATE=/home/vjeux/.gh-upload/session-state
-  [ -s "$STATE" ] && [ ! /home/vjeux/.gh-upload/cookie -nt "$STATE" ] \
-    && COOKIEARG="-b $STATE -c $STATE" || COOKIEARG="-b $GH_COOKIE"
-  code=$(curl -s -o /dev/null -w '%{http_code}' $COOKIEARG -H 'user-agent: Mozilla/5.0' https://github.com/vjeux/trackmania-tas/edit/main/README.md)
+  EDIT=https://github.com/vjeux/trackmania-tas/edit/main/README.md
+  if [ -s "$STATE" ] && [ ! /home/vjeux/.gh-upload/cookie -nt "$STATE" ]; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' -b "$STATE" -c "$STATE" -H 'user-agent: Mozilla/5.0' "$EDIT")
+  else
+    code=$(curl -s -o /dev/null -w '%{http_code}' -b "$GH_COOKIE" -H 'user-agent: Mozilla/5.0' "$EDIT")
+  fi
   echo "cookie probe: HTTP $code"
   case "$code" in 200) ;; *) echo "FAILED cookie probe HTTP $code (302 = logged out) — STOP" > "$DONE"; exit 1;; esac
   mkdir -p "/tmp/tinyship/$SLUG"
