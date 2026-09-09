@@ -47,6 +47,8 @@ pub enum Shape {
     Air { steer: i8, gas: bool, brake: bool, ticks: usize },
     /// ATTITUDE at take-off: a small steer offset for the first `ticks` (roll on the ramp), then straight gas
     Attitude { steer: i8, ticks: usize },
+    /// a fixed input sequence (vjeux's 1.5 s approach samples resampled to ticks); after it the last record holds
+    Tape { recs: Vec<(i8, u8, u8)> },
 }
 
 impl Shape {
@@ -65,6 +67,7 @@ impl Shape {
             Shape::LiftOff { .. } => "lift-off",
             Shape::Air { .. } => "air",
             Shape::Attitude { .. } => "attitude",
+            Shape::Tape { .. } => "vjeux-approach",
         }
     }
 }
@@ -206,6 +209,12 @@ pub fn build(m: &Macro, base: &[(u8, u8, u8)], airborne: bool) -> Built {
                 out.push(rec_of(if i < *ticks { *steer as u8 } else { 0 }, 1, 0));
             }
         }
+        Shape::Tape { recs } => {
+            for i in 0..h {
+                let (s, g, b) = recs.get(i).or(recs.last()).copied().unwrap_or((0, 1, 0));
+                out.push(rec_of(s as u8, g, b));
+            }
+        }
     }
     Built::Recs(out)
 }
@@ -246,4 +255,46 @@ pub fn macros_tsv(lib: &[Macro]) -> String {
         s.push_str(&format!("{}\t{}\t{:?}\n", m.id, m.description, m.shape));
     }
     s
+}
+
+/// vjeux's launched-checkpoint approach samples (`ghost lcp --csv`: rows `entry,landmark,kind,time_ms,t_window_ms,x,y,z,
+/// qx,qy,qz,qw,vx,vy,vz,speed_fwd_ms,steer,gas,brake`; kind = approach, ~53 ms apart) → one macro per crossing: his
+/// last 1.5 s of inputs resampled to 10 ms ticks, the last record held afterwards.
+pub fn library_vjeux_approach(csv: &str, start_id: u16) -> Vec<Macro> {
+    let mut by_entry: std::collections::BTreeMap<(u32, u32), Vec<(f64, i8, u8, u8)>> = Default::default();
+    for l in csv.lines().skip(1) {
+        let f: Vec<&str> = l.split(',').collect();
+        if f.len() < 19 || f[2] != "approach" {
+            continue;
+        }
+        let entry: u32 = f[0].parse().unwrap_or(0);
+        let lm: u32 = f[1].parse().unwrap_or(0);
+        let tw: f64 = f[4].parse().unwrap_or(0.0);
+        let steer: f64 = f[16].parse().unwrap_or(0.0);
+        let gas: u8 = (f[17].parse::<f64>().unwrap_or(0.0) > 0.5) as u8;
+        let brake: u8 = (f[18].parse::<f64>().unwrap_or(0.0) > 0.5) as u8;
+        by_entry.entry((entry, lm)).or_default().push((tw, (steer * 127.0).round().clamp(-127.0, 127.0) as i8, gas, brake));
+    }
+    let mut v = Vec::new();
+    let mut id = start_id;
+    for ((entry, lm), mut samples) in by_entry {
+        samples.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        if samples.len() < 4 {
+            continue;
+        }
+        // t_window_ms counts sample slots (~53 ms each); resample to 10 ms ticks over the window
+        let t0 = samples.first().unwrap().0;
+        let t1 = samples.last().unwrap().0;
+        let span_ms = ((t1 - t0).max(1.0)) * 53.0;
+        let ticks = (span_ms / 10.0).round() as usize;
+        let mut recs = Vec::with_capacity(ticks.max(1));
+        for i in 0..ticks.max(1) {
+            let tw = t0 + (i as f64) * (t1 - t0) / (ticks.max(1) as f64);
+            let s = samples.iter().min_by(|a, b| (a.0 - tw).abs().partial_cmp(&(b.0 - tw).abs()).unwrap()).unwrap();
+            recs.push((s.1, s.2, s.3));
+        }
+        id += 1;
+        v.push(Macro { id, description: format!("vjeux approach to landmark {lm} (entry {entry}, {} ticks)", recs.len()), shape: Shape::Tape { recs } });
+    }
+    v
 }

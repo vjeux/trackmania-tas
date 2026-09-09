@@ -476,6 +476,8 @@ pub struct LapCfg {
     pub rdv_tol: f64,
     /// arc-length window where the brake is masked off (full gas) in every macro
     pub no_brake: Option<(f64, f64)>,
+    /// vjeux launched-checkpoint csv (ghost lcp --csv): his approach samples become macros
+    pub vjeux_csv: Option<String>,
 }
 
 struct Rng(u64);
@@ -579,6 +581,12 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
     if cfg.compound {
         let n0 = macros.len() as u16;
         macros.extend(crate::macros::library_compound(n0));
+    }
+    if let Some(csv) = &cfg.vjeux_csv {
+        let n0 = macros.len() as u16;
+        let fam = crate::macros::library_vjeux_approach(csv, n0);
+        eprintln!("vjeux approach macros: {}", fam.len());
+        macros.extend(fam);
     }
     let h = cfg.h;
     let mut rng = Rng(cfg.seed ^ 0x9E3779B97F4A7C15);
