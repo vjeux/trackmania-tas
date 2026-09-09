@@ -1,5 +1,5 @@
 //! `clip cut` -- the game's `.webm` into the published `.mp4`, at the length
-//! the run actually is.
+//! the run actually is, **with the run's own controls drawn on it.**
 //!
 //! Two facts about what comes out of the MediaTracker, both measured
 //! 2026-08-22 on 286279:
@@ -20,11 +20,23 @@
 //! are the same encode. The output is probed afterwards rather than assumed —
 //! FILMING.md §6 — and a duration that does not match what was asked for is an
 //! error, not a note.
+//!
+//! **And since 2026-09-09 the cut IS the overlay.** Every published clip
+//! carries the controls overlay (vjeux: "add the controls overlay on the videos
+//! you generate" — "do not make it a rule, change the renderer to do it by
+//! default"). So `cut` takes the run's ghost and draws its inputs in the same
+//! ffmpeg pass that trims and re-encodes (`clip overlay` does the drawing; this
+//! is its front door for a fresh render), settles the video↔tape offset by
+//! MEASURING it against the picture ([`crate::sync`]) and refuses when the
+//! measurement is unsound or off the expected value, and stamps the file with
+//! the marker `clip ship` checks. A bare cut needs `--no-overlay`, spelled
+//! out, and says in capitals what it is making.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::fmt::secs;
+use crate::overlay::{self, Marker, Timing};
 use crate::platform::Ff;
 use crate::proc::capture;
 
@@ -64,10 +76,57 @@ pub fn ffmpeg_argv_crf(input: &str, to: f64, out: &str, crf: u32) -> Vec<String>
     ]
 }
 
+/// What a cut is asked for.
+pub struct CutOpts {
+    pub to: Option<f64>,
+    pub crf: u32,
+    /// The run's ghost: the overlay is drawn from its input chunk. `None` is
+    /// only legal with `bare`.
+    pub ghost: Option<PathBuf>,
+    /// `--offset-ms N`: force the video↔tape offset instead of measuring it.
+    pub offset_ms: Option<i64>,
+    /// `--nominal-ms N`: the offset the pipeline expects and draws at (its clips
+    /// start at race 0, so 0); the picture check is made against it.
+    pub nominal_ms: i64,
+    /// `--no-overlay`: the old bare cut. Says so in capitals.
+    pub bare: bool,
+}
+
+impl Default for CutOpts {
+    fn default() -> Self {
+        CutOpts { to: None, crf: 19, ghost: None, offset_ms: None, nominal_ms: 0, bare: false }
+    }
+}
+
+/// The decision a cut makes before it touches ffmpeg: overlay from this ghost,
+/// a bare cut because the caller said so, or a refusal. Split out so it can be
+/// tested without a video.
+pub fn decide(o: &CutOpts) -> Result<Option<(PathBuf, Timing)>, String> {
+    match (&o.ghost, o.bare) {
+        (Some(g), false) => {
+            let timing = match o.offset_ms {
+                Some(ms) => Timing::Given(ms),
+                None => Timing::Checked(o.nominal_ms),
+            };
+            Ok(Some((g.clone(), timing)))
+        }
+        (Some(_), true) => Err("cut: --ghost and --no-overlay together — decide which".into()),
+        (None, true) => Ok(None),
+        (None, false) => Err(
+            "cut: no --ghost. EVERY PUBLISHED CLIP CARRIES THE CONTROLS OVERLAY (vjeux, 2026-09-09), so a cut \
+             draws the run's inputs from its ghost: `clip cut <in.webm> <out.mp4> --ghost <run.Ghost.Gbx>`. \
+             A bare cut is `--no-overlay`, and `clip ship` will refuse the result."
+                .into(),
+        ),
+    }
+}
+
 pub fn run(ff: &Ff, input: &Path, out: &Path, to: Option<f64>) -> Result<(), String> {
     run_crf(ff, input, out, to, 19)
 }
 
+/// The bare cut. Kept for the callers that know what they are doing
+/// (`--no-overlay`); the pipeline goes through [`run_opts`].
 pub fn run_crf(ff: &Ff, input: &Path, out: &Path, to: Option<f64>, crf: u32) -> Result<(), String> {
     let din = ff.probe_duration(input)?;
     let to = to.unwrap_or(din);
@@ -108,6 +167,37 @@ pub fn run_crf(ff: &Ff, input: &Path, out: &Path, to: Option<f64>, crf: u32) -> 
     Ok(())
 }
 
+/// The cut the pipeline makes: overlaid, timing-checked, marked — or, with
+/// `--no-overlay`, bare and loud about it. Returns the marker written (`None`
+/// for a bare cut).
+pub fn run_opts(ff: &Ff, input: &Path, out: &Path, o: &CutOpts) -> Result<Option<Marker>, String> {
+    match decide(o)? {
+        None => {
+            println!("CUTTING A BARE CLIP (--no-overlay): NO CONTROLS OVERLAY — `clip ship` will refuse it without --no-overlay");
+            run_crf(ff, input, out, o.to, o.crf).map(|_| None)
+        }
+        Some((ghost, timing)) => {
+            let din = ff.probe_duration(input)?;
+            let to = o.to.unwrap_or(din);
+            if to <= 0.0 {
+                return Err(format!("--to {to} is not a length"));
+            }
+            if to > din + 0.5 {
+                return Err(format!(
+                    "asked to cut to {}s from a {}s file -- `cut` only shortens, and a clip that \
+                     is shorter than the run means the RENDER was short, which is a defect in the \
+                     recording rather than something to paper over here",
+                    secs(to),
+                    secs(din)
+                ));
+            }
+            println!("cut: {}s -> {}s, with the controls overlay from {}", secs(din), secs(to), ghost.display());
+            let oo = overlay::Opts { to: Some(to), crf: o.crf, ..overlay::Opts::default() };
+            overlay::run(ff, &ghost, input, out, &oo, &timing).map(Some)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,5 +220,28 @@ mod tests {
         for want in ["libx264", "19", "yuv420p", "-an"] {
             assert!(a.iter().any(|x| x == want), "missing {want}");
         }
+    }
+
+    /// THE DEFAULT IS THE OVERLAY, AND A BARE CUT MUST BE ASKED FOR BY NAME.
+    /// This is the whole point of the 2026-09-09 change: a clip cannot come
+    /// out bare because someone forgot a step.
+    #[test]
+    fn a_cut_without_a_ghost_is_refused_unless_bare_is_spelled_out() {
+        let e = decide(&CutOpts::default()).unwrap_err();
+        assert!(e.contains("CONTROLS OVERLAY"), "{e}");
+        assert!(e.contains("--no-overlay"), "{e}");
+        assert!(decide(&CutOpts { bare: true, ..CutOpts::default() }).unwrap().is_none());
+        let both = CutOpts { bare: true, ghost: Some(PathBuf::from("g.Ghost.Gbx")), ..CutOpts::default() };
+        assert!(decide(&both).is_err(), "ghost + bare is a contradiction");
+    }
+
+    /// With a ghost, the timing is CHECKED against the picture unless an offset is forced.
+    #[test]
+    fn the_offset_is_measured_by_default_and_forced_only_on_request() {
+        let g = Some(PathBuf::from("g.Ghost.Gbx"));
+        let (_, t) = decide(&CutOpts { ghost: g.clone(), ..CutOpts::default() }).unwrap().unwrap();
+        assert!(matches!(t, Timing::Checked(0)));
+        let (_, t) = decide(&CutOpts { ghost: g, offset_ms: Some(-40), ..CutOpts::default() }).unwrap().unwrap();
+        assert!(matches!(t, Timing::Given(-40)));
     }
 }

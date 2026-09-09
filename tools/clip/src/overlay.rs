@@ -463,7 +463,10 @@ impl Default for Opts {
 /// `-t` goes on the OUTPUT so the cut is exact; on the input it would seek to a
 /// keyframe. The overlay is anchored bottom-left with a margin, in `main_h`
 /// terms, so it sits correctly whatever the clip's height is.
-pub fn ffmpeg_argv(video: &str, out: &str, o: &Opts) -> Vec<String> {
+///
+/// `marker` is the tag [`Marker::tag`] produces, written into the container so
+/// the file itself says it carries an overlay (see [`Marker`]).
+pub fn ffmpeg_argv(video: &str, out: &str, o: &Opts, marker: Option<&str>) -> Vec<String> {
     let mut v: Vec<String> = vec![
         "-v".into(),
         "error".into(),
@@ -491,6 +494,9 @@ pub fn ffmpeg_argv(video: &str, out: &str, o: &Opts) -> Vec<String> {
     if let Some(t) = o.to {
         v.extend(["-t".into(), format!("{t:.3}")]);
     }
+    if let Some(m) = marker {
+        v.extend(["-metadata".into(), format!("{MARKER_KEY}={m}")]);
+    }
     v.extend([
         "-c:v".into(),
         "libx264".into(),
@@ -506,7 +512,132 @@ pub fn ffmpeg_argv(video: &str, out: &str, o: &Opts) -> Vec<String> {
     v
 }
 
-pub fn run(ff: &Ff, ghost: &Path, video: &Path, out: &Path, o: &Opts) -> Result<(), String> {
+// ---------------------------------------------------------------------------
+// The mark a published clip carries
+// ---------------------------------------------------------------------------
+
+/// The container tag the marker lives in. `comment` because every muxer this
+/// crate writes (mp4, webm) keeps it and every ffprobe reads it back as
+/// `format_tags.comment`; an invented key needs `-movflags use_metadata_tags`
+/// and is dropped by anything that re-muxes.
+pub const MARKER_KEY: &str = "comment";
+pub const MARKER_PREFIX: &str = "tas-overlay v1";
+
+/// **EVERY PUBLISHED CLIP CARRIES THE CONTROLS OVERLAY** (vjeux, 2026-09-09:
+/// "can you add the controls overlay on the videos you generate" -- and "do
+/// not make it a rule, change the renderer to do it by default"). So the
+/// overlay is not a step someone remembers; it is what `clip cut` produces
+/// unless told `--no-overlay`, and `clip ship` REFUSES a file that does not
+/// carry this marker. The marker travels inside the mp4 (a container tag, see
+/// [`MARKER_KEY`]), so the check works on the file alone, on any box, after
+/// any copy -- and a published asset fetched back still answers it.
+///
+/// It records what was drawn and how the timing was settled: which ghost
+/// (an FNV-1a of the file's bytes), the offset applied, the strip window, and
+/// `how` -- `sync/r0.83/w40ms` when the offset was MEASURED against the picture
+/// ([`crate::sync`]), `given` when a caller forced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Marker {
+    pub ghost: String,
+    pub offset_ms: i64,
+    pub history_ms: i64,
+    pub future_ms: i64,
+    pub how: String,
+}
+
+impl Marker {
+    pub fn tag(&self) -> String {
+        format!(
+            "{MARKER_PREFIX} ghost={} offset_ms={} window=-{}/+{} how={}",
+            self.ghost, self.offset_ms, self.history_ms, self.future_ms, self.how
+        )
+    }
+
+    /// The tag back into a marker; `None` for anything that is not one.
+    pub fn parse(tag: &str) -> Option<Marker> {
+        let rest = tag.trim().strip_prefix(MARKER_PREFIX)?;
+        let mut m = Marker {
+            ghost: String::new(),
+            offset_ms: 0,
+            history_ms: 0,
+            future_ms: 0,
+            how: String::new(),
+        };
+        let mut seen_offset = false;
+        for kv in rest.split_whitespace() {
+            let (k, v) = kv.split_once('=')?;
+            match k {
+                "ghost" => m.ghost = v.to_string(),
+                "offset_ms" => {
+                    m.offset_ms = v.parse().ok()?;
+                    seen_offset = true;
+                }
+                "window" => {
+                    let (h, f) = v.split_once('/')?;
+                    m.history_ms = h.trim_start_matches('-').parse().ok()?;
+                    m.future_ms = f.trim_start_matches('+').parse().ok()?;
+                }
+                "how" => m.how = v.to_string(),
+                _ => {}
+            }
+        }
+        if m.ghost.is_empty() || !seen_offset {
+            return None;
+        }
+        Some(m)
+    }
+
+    /// One phrase for a report: `offset +0 ms, sync/r0.83/w40ms`.
+    pub fn summary(&self) -> String {
+        format!("offset {:+} ms, {}", self.offset_ms, self.how)
+    }
+}
+
+/// FNV-1a over a file's bytes, 16 hex digits -- the ghost's identity in the
+/// marker. Not md5 (this crate has no dependencies, and gbx has no md5); it
+/// only has to say "the same file" and "a different file".
+pub fn file_id(p: &Path) -> Result<String, String> {
+    let data = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in &data {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    Ok(format!("{h:016x}"))
+}
+
+/// How the offset between the video and the tape is settled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Timing {
+    /// Use this offset. No measurement; the marker says `given`.
+    Given(i64),
+    /// Draw at this offset AND CHECK IT against the picture: the world's
+    /// sideways motion is fitted to the tape's yaw rate ([`crate::sync`]) and
+    /// the overlay is REFUSED unless the fit is sound and lands where a correct
+    /// clip lands. The marker records the fit. This is the default of the
+    /// render pipeline: every clip is checked, by the tool, every time.
+    Checked(i64),
+}
+
+pub fn run(ff: &Ff, ghost: &Path, video: &Path, out: &Path, o: &Opts, timing: &Timing) -> Result<Marker, String> {
+    // --- the offset, and how it was settled
+    let (offset_ms, how) = match timing {
+        Timing::Given(ms) => (*ms, "given".to_string()),
+        Timing::Checked(ms) => {
+            let f = crate::sync::run(ff, ghost, video, 1500)?;
+            f.check(*ms)
+                .map_err(|e| format!("TIMING CHECK FAILED on {}: {e}\n  (--offset-ms N skips the check when the picture has been looked at)", video.display()))?;
+            (*ms, f.compact())
+        }
+    };
+    let o = Opts { offset_ms, ..*o };
+    let marker = Marker {
+        ghost: file_id(ghost)?,
+        offset_ms,
+        history_ms: o.history_ms,
+        future_ms: o.future_ms,
+        how,
+    };
     let ins = inputs_by_race_ms(&ghost.to_string_lossy())?;
     let din = ff.probe_duration(video)?;
     let dur = o.to.unwrap_or(din);
@@ -519,12 +650,13 @@ pub fn run(ff: &Ff, ghost: &Path, video: &Path, out: &Path, o: &Opts) -> Result<
     }
     let tape_end = (ins.len() as i64 - 1) * 10;
     println!(
-        "overlay: {} inputs to race {}s onto {}s of video (writing {}s), offset {:+} ms",
+        "overlay: {} inputs to race {}s onto {}s of video (writing {}s), offset {:+} ms ({})",
         ins.len(),
         secs(tape_end as f64 / 1000.0),
         secs(din),
         secs(dur),
-        o.offset_ms
+        o.offset_ms,
+        marker.how
     );
     // THE RUN MUST FIT THE CLIP. An overlay that runs out of inputs half way
     // draws a car sitting at neutral for the rest of the video, which reads as
@@ -539,7 +671,8 @@ pub fn run(ff: &Ff, ghost: &Path, video: &Path, out: &Path, o: &Opts) -> Result<
         ));
     }
 
-    let args = ffmpeg_argv(&ff.arg_path(video)?, &ff.arg_path(out)?, o);
+    let tag = marker.tag();
+    let args = ffmpeg_argv(&ff.arg_path(video)?, &ff.arg_path(out)?, &o, Some(&tag));
     let mut child = Command::new(&ff.ffmpeg)
         .args(&args)
         .stdin(Stdio::piped())
@@ -583,13 +716,25 @@ pub fn run(ff: &Ff, ghost: &Path, video: &Path, out: &Path, o: &Opts) -> Result<
             secs(dout)
         ));
     }
+    // ... including the marker: the file must SAY it carries the overlay, or
+    // `clip ship` will refuse it later for a reason that started here.
+    match ff.probe_tag(out, MARKER_KEY)? {
+        Some(t) if Marker::parse(&t).as_ref() == Some(&marker) => {}
+        other => {
+            return Err(format!(
+                "{} does not carry the overlay marker it was written with (tag {other:?})",
+                out.display()
+            ))
+        }
+    }
     let bytes = crate::proc::filesize(out)?;
     println!(
-        "overlay: {}s {bytes} bytes -> {}",
+        "overlay: {}s {bytes} bytes -> {} [{}]",
         secs(dout),
-        out.display()
+        out.display(),
+        marker.summary()
     );
-    Ok(())
+    Ok(marker)
 }
 
 // ---------------------------------------------------------------------------
@@ -726,7 +871,7 @@ mod tests {
             to: Some(222.0),
             ..Default::default()
         };
-        let a = ffmpeg_argv("in.webm", "out.mp4", &o);
+        let a = ffmpeg_argv("in.webm", "out.mp4", &o, None);
         let last_i = a.iter().rposition(|x| x == "-i").unwrap();
         let t = a.iter().position(|x| x == "-t").unwrap();
         assert!(
@@ -738,7 +883,7 @@ mod tests {
 
     #[test]
     fn the_panel_is_a_second_input_not_a_filter() {
-        let a = ffmpeg_argv("in.webm", "out.mp4", &Opts::default());
+        let a = ffmpeg_argv("in.webm", "out.mp4", &Opts::default(), None);
         assert_eq!(a.iter().filter(|x| *x == "-i").count(), 2);
         assert!(a.iter().any(|x| x == "-"), "the frames arrive on stdin");
         assert!(a.iter().any(|x| x.starts_with("[0:v][1:v]overlay=")));
@@ -974,5 +1119,58 @@ mod tests {
         assert_eq!(keep_to(48_480, None), 48_480);
         // And a declared time LONGER than the tape cannot invent input.
         assert_eq!(keep_to(9_000, Some(12_759)), 9_000);
+    }
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+
+    /// THE MARKER SURVIVES ITS OWN ROUND TRIP, AND NOTHING ELSE PARSES AS ONE.
+    /// `clip ship` decides publication on this parse; a tag that reads back
+    /// differently from what was written would refuse every clip, and a lax
+    /// parse would let a bare clip through on a stray comment.
+    #[test]
+    fn the_marker_round_trips_and_rejects_strangers() {
+        let m = Marker {
+            ghost: "0123456789abcdef".into(),
+            offset_ms: -40,
+            history_ms: 3000,
+            future_ms: 3000,
+            how: "sync/r0.83/w40ms".into(),
+        };
+        let tag = m.tag();
+        assert!(tag.starts_with(MARKER_PREFIX), "{tag}");
+        assert_eq!(Marker::parse(&tag).as_ref(), Some(&m));
+        // the Windows ffprobe's CRLF and a stray space do not matter
+        assert_eq!(Marker::parse(&format!("{tag} \r\n")).as_ref(), Some(&m));
+        // anything else is not a marker
+        assert_eq!(Marker::parse(""), None);
+        assert_eq!(Marker::parse("Lavf61.7.100"), None);
+        assert_eq!(Marker::parse("tas-overlay v1"), None);
+        assert_eq!(Marker::parse("tas-overlay v1 ghost=abc"), None, "no offset");
+        assert_eq!(Marker::parse("tas-overlay v2 ghost=abc offset_ms=0"), None, "other version");
+    }
+
+    /// The tag is written as ONE container comment, after the inputs and before
+    /// the codec, where ffmpeg applies it to the output.
+    #[test]
+    fn the_marker_is_written_as_the_comment_tag() {
+        let m = Marker {
+            ghost: "f".repeat(16),
+            offset_ms: 0,
+            history_ms: 3000,
+            future_ms: 3000,
+            how: "given".into(),
+        };
+        let tag = m.tag();
+        let a = ffmpeg_argv("in.webm", "out.mp4", &Opts::default(), Some(&tag));
+        let i = a.iter().position(|x| x == "-metadata").expect("-metadata");
+        assert_eq!(a[i + 1], format!("{MARKER_KEY}={tag}"));
+        let last_i = a.iter().rposition(|x| x == "-i").unwrap();
+        let codec = a.iter().position(|x| x == "-c:v").unwrap();
+        assert!(i > last_i && i < codec, "{a:?}");
+        // and a bare argv writes none
+        assert!(!ffmpeg_argv("in.webm", "out.mp4", &Opts::default(), None).iter().any(|x| x == "-metadata"));
     }
 }

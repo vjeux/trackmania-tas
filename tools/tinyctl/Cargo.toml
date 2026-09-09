@@ -15,4 +15,5 @@ path = "src/main.rs"
 tmmaps = { path = "../tmmaps" }
 mapgeom = { path = "../mapgeom" }
 gbx = { path = "../gbx" }
+clip = { path = "../clip" }
 miniz_oxide = "0.9.1"

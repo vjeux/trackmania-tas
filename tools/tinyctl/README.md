@@ -47,3 +47,19 @@ tinyctl publish-map NN --map /tmp/tinyNN/Summer-NN-Tiny.Map.Gbx --items-dir /tmp
 Long jobs on the box (`shootset`, `publish-here`, `selfbuild`) detach
 themselves and write a done file; the devserver side polls it, because the
 bridge cuts a command at ~90 s and forwards no stdin.
+
+## video — the lap's clip, with the controls overlay by default
+
+`tinyctl video --map NN` renders the lap on the box (renamed render copy, the
+guard on sample 0 and the finish), pulls the webm, and **cuts the publishable
+mp4 with the controls overlay** (`clip cut --ghost`: crf by lap length under
+100 MB, the timing checked against the picture, the file stamped), pushes the
+mp4 beside the webm on the box, copies webm + mp4 + sheet to `--store`, and with
+`--ship` starts the box-side publish (`box/tinyship.sh`, whose `clip ship`
+refuses an unstamped file). `--from-webm F` runs the same cut + overlay + ship
+on an existing render; `--no-overlay` is the bare mp4, in capitals. `--all
+--watch 60 --ghosts-sync host:dir --build ship15 --ship` is the day loop: every
+ship15 ghost whose trajectory is new gets rendered and shipped; `tinyctl
+shipwatch --out DIR --readme tiny/README.md --commit` collects the URLs and
+swaps the page rows (21–25 by their country names). Per-lap REPORT rows land
+in `<out>/REPORT.md` with the overlay column (offset, how it was checked).

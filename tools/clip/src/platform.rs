@@ -321,11 +321,52 @@ impl Ff {
     /// That staging copy is the whole reason this is not two lines, and it is
     /// here rather than in each caller so a second kind of probe cannot get it
     /// wrong.
+    /// The frame rate the first video stream declares (`r_frame_rate`, a
+    /// ratio such as `30/1`), as frames per second.
+    pub fn probe_fps(&self, file: &Path) -> Result<f64, String> {
+        let out = self.ffprobe_entries(file, "stream=r_frame_rate", Some("v:0"))?;
+        let t = out.trim().trim_end_matches('\r').trim();
+        let v = match t.split_once('/') {
+            Some((n, d)) => {
+                let n: f64 = n.trim().parse().map_err(|_| format!("frame rate {t:?}"))?;
+                let d: f64 = d.trim().parse().map_err(|_| format!("frame rate {t:?}"))?;
+                if d == 0.0 {
+                    return Err(format!("{}: frame rate {t:?}", file.display()));
+                }
+                n / d
+            }
+            None => t.parse().map_err(|_| format!("frame rate {t:?}"))?,
+        };
+        if !(v.is_finite() && v > 0.0) {
+            return Err(format!("{}: frame rate {t:?}", file.display()));
+        }
+        Ok(v)
+    }
+
+    /// One container-level tag (`format_tags=<key>`), or `None` when the file
+    /// carries none of that name. This is how `clip ship` reads the overlay
+    /// marker `clip overlay` writes into the mp4.
+    pub fn probe_tag(&self, file: &Path, key: &str) -> Result<Option<String>, String> {
+        let out = self.ffprobe_entries_of(file, &format!("format_tags={key}"), None, "default=nw=1:nk=1")?;
+        let t = out.trim().trim_end_matches('\r').trim().to_string();
+        Ok(if t.is_empty() { None } else { Some(t) })
+    }
+
     fn ffprobe_entries(
         &self,
         file: &Path,
         entries: &str,
         stream: Option<&str>,
+    ) -> Result<String, String> {
+        self.ffprobe_entries_of(file, entries, stream, "csv=p=0")
+    }
+
+    fn ffprobe_entries_of(
+        &self,
+        file: &Path,
+        entries: &str,
+        stream: Option<&str>,
+        of: &str,
     ) -> Result<String, String> {
         let staged = match self.kind {
             FfKind::WindowsExe if wsl_to_windows(file).is_none() => {
@@ -356,7 +397,7 @@ impl Ff {
             v.push("-show_entries".into());
             v.push(entries.to_string());
             v.push("-of".into());
-            v.push("csv=p=0".into());
+            v.push(of.to_string());
             v.push(a);
             capture(Command::new(&self.ffprobe).args(&v))
         });

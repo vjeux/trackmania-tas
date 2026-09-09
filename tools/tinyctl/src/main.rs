@@ -108,7 +108,10 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         the certified set out of the per-map builds: the maps under their published names,
         MANIFEST.txt (map, MB, items, md5, collhash, fillers_left_out), ANCHORS.tsv, and with
         --startcheck every map's client start check, one at a time, into STARTCHECK.tsv
-  tinyctl video --map NN | --all [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9] [--ghosts-dir /tmp/ghosts]
+  tinyctl video --map NN | --all [--watch SECS] [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9] [--ghosts-dir /tmp/ghosts]
+                [--ghosts-sync host:dir] [--build ship15] [--cam 2] [--load-timeout 120] [--no-guard] [--store host:dir|dir]
+                [--box-videos DIR] [--suffix S] [--from-webm F] [--no-overlay] [--crf N] [--offset-ms N] [--ship]
+| --all [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9] [--ghosts-dir /tmp/ghosts]
                 [--cam 2] [--load-timeout 120] [--no-guard] [--store host:dir|dir] [--pull-webm] [--box-videos DIR]
         the map's driven lap as a video: REFUSES a ghost whose sample 0 is not on this
         map's start line (a render plays samples — a donor container flies off the map),
@@ -117,7 +120,15 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         sheet (+ a 2 fps dense one) pulled into --out; --store copies clip + sheet on;
         --suffix S names the clip NN-ghost-<time>-S (the set it was rendered on);
         --all renders every NN.Ghost.Gbx in --ghosts-dir whose TRAJECTORY (samples + race time, not
-        the file md5: a metadata rewrite is not a new lap) is not yet in <out>/videos.tsv; --adopt records them as done
+        the file md5: a metadata rewrite is not a new lap) is not yet in <out>/videos.tsv; --adopt records them as done;
+        --watch SECS rescans forever, --ghosts-sync rsyncs the ghosts dir first, --build takes the README's ship15 rows only.
+        THE MP4 CARRIES THE CONTROLS OVERLAY BY DEFAULT (2026-09-09): `clip cut --ghost` here — trimmed to the lap,
+        crf by lap length (<99 MB), the run's inputs drawn on, the timing CHECKED against the picture (clip sync),
+        the file stamped for `clip ship`; --no-overlay makes a bare mp4 (in capitals; ship refuses it); --from-webm F
+        runs cut+overlay(+ship) on an existing render; --ship starts the box-side publish (tinyship.sh) detached
+  tinyctl shipwatch --out /tmp/tinyvid --readme tiny/README.md [--repo DIR] [--once] [--commit] [--build-note "…"]
+        collects the ships --ship started (done files on the box): swaps the map's page row (time, build note,
+        asset URL; 21–25 by their country names) and with --commit commits + pushes the page
   tinyctl motion --orig SRC --tiny TINY --views V.tsv --anchor A --tag T [--seconds 8] [--fps 20]
                  [--outdir /tmp/tinyvid/motion] [--settle-ms 5000] [--shift-ms N] [--only o|t]
         side-by-side VIDEO of the moving blocks (pushers, rotors, turnstiles): each view
@@ -167,6 +178,7 @@ fn main() {
         "unproject" => unproject::cmd(rest),
         "upload" => upload::cmd(rest),
         "video" => video::cmd(rest),
+        "shipwatch" => video::shipwatch_cmd(rest),
         "motion" => motion::cmd(rest),
         "mtrender" => mtrender::cmd(rest),
         "box-build" => boxbuild::box_build_cmd(rest),

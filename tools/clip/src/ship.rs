@@ -31,6 +31,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::fmt::secs;
+use crate::overlay::{self, Marker};
 use crate::platform::Ff;
 use crate::proc::{capture, filesize, scratch_dir};
 
@@ -66,6 +67,9 @@ pub struct Cfg {
     /// 2026-09-08: "not in releases"); the release BODY registration (step 4)
     /// still happens — it is what makes the attachment public.
     pub mirror: bool,
+    /// `--no-overlay`: ship a clip that carries NO controls overlay. Off by
+    /// default since 2026-09-09 -- see [`check_overlay`].
+    pub allow_bare: bool,
 }
 
 impl Default for Cfg {
@@ -81,6 +85,7 @@ impl Default for Cfg {
             settle_delay: Duration::from_secs(1),
             proxy: None,
             mirror: true,
+            allow_bare: false,
         }
     }
 }
@@ -125,6 +130,32 @@ pub fn check_asset_url(url: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("unexpected asset url: {url}"))
+    }
+}
+
+/// STEP 1b. **NO CLIP SHIPS WITHOUT THE CONTROLS OVERLAY** unless the caller
+/// says `--no-overlay` in so many words.
+///
+/// vjeux, 2026-09-09: every video published from now on carries the input
+/// overlay, and a clip published without it is replaced by one that has it.
+/// The overlay tool stamps the file it writes ([`Marker`], a container tag),
+/// so this reads the file alone and needs no memory of how it was made: a
+/// bare `clip cut --no-overlay`, a webm re-muxed by hand, a clip from before
+/// the rule -- all of them carry no marker and are refused here, before any
+/// byte is uploaded. The marker is returned so the caller can print what the
+/// clip claims about its timing.
+pub fn check_overlay(tag: Option<&str>, allow_bare: bool) -> Result<Option<Marker>, String> {
+    match tag.and_then(Marker::parse) {
+        Some(m) => Ok(Some(m)),
+        None if allow_bare => Ok(None),
+        None => Err(format!(
+            "NO CONTROLS OVERLAY: the clip carries no `{}` marker in its `{}` tag (found {tag:?}). Every \
+             published clip carries the controls overlay (vjeux, 2026-09-09) -- make it with \
+             `clip cut <in.webm> <out.mp4> --ghost <run.Ghost.Gbx>` (or `clip overlay` on an existing mp4). \
+             `--no-overlay` ships a bare clip and says so.",
+            overlay::MARKER_PREFIX,
+            overlay::MARKER_KEY
+        )),
     }
 }
 
@@ -330,6 +361,11 @@ pub fn run(
         file.display(),
         secs(local_dur)
     );
+    // --- 1b. the controls overlay, or an explicit --no-overlay --------------
+    match check_overlay(ff.probe_tag(file, overlay::MARKER_KEY)?.as_deref(), cfg.allow_bare)? {
+        Some(m) => println!("ship: controls overlay: ghost {} {}", m.ghost, m.summary()),
+        None => println!("ship: SHIPPING A BARE CLIP (--no-overlay): NO CONTROLS OVERLAY"),
+    }
     // GITHUB'S ATTACHMENT CAP, CHECKED BEFORE ANYTHING IS UPLOADED.
     //
     // The inline-player store refuses anything over 100 MB — with a 422 whose
@@ -599,6 +635,23 @@ mod tests {
         let e = gate(&cfg, URL, Path::new("/tmp/none"), |_| Ok(1.0)).unwrap_err();
         assert!(e.contains("absolute curl path"), "{e}");
         assert!(e.contains("not a gate"), "{e}");
+    }
+
+    /// THE GATE ON THE OVERLAY. A file that does not say it carries the controls
+    /// overlay is refused before a byte goes up; the only way past is the flag,
+    /// by name.
+    #[test]
+    fn a_clip_without_the_overlay_marker_is_refused_unless_asked_for_by_name() {
+        let m = Marker { ghost: "ab".repeat(8), offset_ms: 0, history_ms: 3000, future_ms: 3000, how: "sync/r0.80/w40ms".into() };
+        let tag = m.tag();
+        assert_eq!(check_overlay(Some(&tag), false).unwrap().as_ref(), Some(&m));
+        // no tag at all, and a tag that is somebody else's comment
+        for bad in [None, Some(""), Some("Lavf61.7.100"), Some("tas-overlay v1")] {
+            let e = check_overlay(bad, false).unwrap_err();
+            assert!(e.contains("NO CONTROLS OVERLAY"), "{e}");
+            assert!(e.contains("--no-overlay"), "{e}");
+            assert_eq!(check_overlay(bad, true).unwrap(), None, "--no-overlay lets a bare clip through");
+        }
     }
 
     #[test]

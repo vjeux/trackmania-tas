@@ -79,3 +79,20 @@ code; the tests that drive `gh`, `ffmpeg` or Chrome live in
 `tests/external.rs` and **skip out loud, naming what was missing**, rather than
 passing quietly. The `gh` chain is never run end to end anywhere: the only
 thing it could be run against is the live release.
+
+## cut, overlay, sync — the controls overlay is the default (2026-09-09)
+
+`clip cut <in.webm> <out.mp4> --ghost <run.Ghost.Gbx>` is the publishable mp4:
+trimmed, re-encoded, **with the run's inputs drawn on it** in the same pass, the
+video↔tape timing **checked against the picture** (`clip sync`: the world's
+sideways motion must follow the tape's yaw rate where a correct clip's does —
+120–290 ms behind it, the chase camera's spring), and the file **stamped** in
+its `comment` tag (`tas-overlay v1 ghost=… offset_ms=… window=… how=…`).
+`--no-overlay` is the old bare cut and says so in capitals; `--offset-ms N`
+skips the check for a clip whose frames were looked at. `clip ship` **refuses a
+file without the stamp** unless told `--no-overlay`. `clip overlay` draws onto an
+existing mp4 (`--sync` checks the same way) and stamps it too. `clip sync` alone
+prints the fit; `--all` prints the speed fit beside it (it does not work on
+these maps — kept as the record of why yaw was chosen). FILMING.md §7 has the
+rule, the one-time frame check that fixed the pipeline's offset at 0, and what
+the guard can and cannot see.
