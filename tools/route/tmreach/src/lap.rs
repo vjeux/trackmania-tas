@@ -929,7 +929,10 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 // symmetric since 2026-09-09 15:20Z: matching the author's speed scores 30 m, both too slow AND too fast lose it
                 // (20: cars arrive at the wood ramp 12 m/s faster than the author and get thrown)
                 let speed_bonus = if vh > 3.0 { 30.0 * (1.0 - ((speed(&end) - vh) / vh).abs()).clamp(0.0, 1.0) } else { 0.0 };
-                k_pref as f64 * 10_000.0 + s_eff - 0.02 * lat_abs.min(20.0) + speed_bonus
+                // RANKING (not a drop): every metre the car sits below the line's lowest point nearby costs 3 m of progress (a car that fell
+                // 45 m off a deck must not outrank the cars on it — 23 polish lane, 19:10Z); the first 3 m are free
+                let below_pen = 3.0 * (road_y_min - end.y - 3.0).max(0.0);
+                k_pref as f64 * 10_000.0 + s_eff - 0.02 * lat_abs.min(20.0) + speed_bonus - below_pen
             };
             // on a gap leg the arc length says little: the cell is the 4 m x 4 m ground square there
             // on a road leg the cell also carries a 2 m LATERAL bucket (14's ramp: the line's x on the ramp decides the flight)
