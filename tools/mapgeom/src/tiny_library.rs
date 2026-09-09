@@ -186,6 +186,16 @@ pub fn stock_half_variant(model: &str, variant: u8) -> Option<&'static str> {
     if model == "Flag16m" && std::env::var("TINY_FLAG_STOCK").as_deref() != Ok("0") {
         return Some("Flag8m");
     }
+    // 2026-09-09: no embedded item can carry a self-animating tween cloth (the
+    // game marks a visual as tween only for meshes whose materials are pack
+    // files — TINY.md "Animated items", the verdict). So a Flag8m placement is a
+    // CHOICE: today's default, the still half-size copy (skinned, right size),
+    // or `TINY_FLAG8M=stock` — the stock Flag8m itself, waving and skinned like
+    // the Flag16m stand-ins, at twice the world's scale (no smaller stock flag
+    // exists and the placement scale is ignored).
+    if model == "Flag8m" && std::env::var("TINY_FLAG8M").as_deref() == Ok("stock") {
+        return Some("Flag8m");
+    }
     // The particle items (2026-09-08): an embedded item cannot carry a live
     // emitter in this build — the game silently DROPS any item whose prefab
     // has an FxSystem entity with a model (sixteen one-item probes, FX thread),
