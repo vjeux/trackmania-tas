@@ -98,7 +98,7 @@ https://github.com/user-attachments/assets/6ae6ddd3-011d-4cd9-b264-84be3bcbe2e8
 
 https://github.com/user-attachments/assets/3808d227-72b0-4af8-84a4-f39c2b64e318
 
-**Tiny Summer 2026 - 25** — original author time `78.928` · tiny ghost **149.619** (build ship10)
+**Tiny Japan 2026** — original author time `78.928` · tiny ghost **121.235** (build ship15, controls overlay)
 
-https://github.com/user-attachments/assets/d2f335ab-beb1-4ba1-9ea4-749eda8effb3
+https://github.com/user-attachments/assets/b9ef4dcf-0c75-4adb-9acb-3b9b836ca031
 
