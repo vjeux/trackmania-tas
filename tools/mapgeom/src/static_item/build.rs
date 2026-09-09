@@ -168,13 +168,16 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                 m.resolve_pending_lights(store);
             }
             // NPlugTrigger_SWaypoint: { version, waypoint type, trigger shape ref,
-            // u32 } (read off Items\Gate\CheckpointLeft32m: 01 00 00 00 | 02 00 00
+            // NoRespawn } (read off Items\Gate\CheckpointLeft32m: 01 00 00 00 | 02 00 00
             // 00 = checkpoint | 1d 00 00 00 = node 29, the external
-            // *_Trigger.Shape.Gbx | 00 00 00 00). The item gets that type and the
-            // shape, transformed like the geometry.
-            Some(Node::Opaque(o)) if o.class_id == 0x09178000 && o.raw.len() >= 16 => {
-                let wtype = i32::from_le_bytes(o.raw[4..8].try_into().unwrap());
-                let shape_idx = i32::from_le_bytes(o.raw[8..12].try_into().unwrap());
+            // *_Trigger.Shape.Gbx | 00 00 00 00). The item gets that type, the
+            // shape, transformed like the geometry, and the no-respawn flag.
+            Some(Node::WaypointTrigger(wp)) => {
+                let wtype = wp.wtype;
+                let shape_idx = wp.shape.index;
+                if wp.no_respawn != 0 {
+                    m.no_respawn = true;
+                }
                 match ext_name(shape_idx) {
                     Some(sp) if sp.to_ascii_lowercase().ends_with(".shape.gbx") => match store.load_model(&sp) {
                         Ok(sm) => {

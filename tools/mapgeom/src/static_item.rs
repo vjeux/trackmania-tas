@@ -96,6 +96,13 @@ pub enum Node {
     /// volume as a prefab entity — { version 2, trigger shape ref, u32 }, the
     /// pack's own layout (Special24m.Prefab entity 1).
     GateSpecial(GateSpecialTrigger),
+    /// `NPlugTrigger_SWaypoint` (0x09178000): a waypoint item's trigger as a
+    /// prefab entity — { version 1, type, trigger shape ref, NoRespawn }, the
+    /// pack's own layout (Items\Gate\CheckpointRight32m.Prefab entity 5). The
+    /// one place an ITEM says "no respawn here": the ring checkpoint block
+    /// (`GateCheckpoint`, block info NoRespawn) has no equivalent in the
+    /// entity-model form.
+    WaypointTrigger(WaypointTrigger),
     /// `CPlugFxSystem` (0x0915C000): a Show item's effect script — a prefab
     /// entity in the packs, inlined by the static-item builder.
     FxSystem(particle::CPlugFxSystem),
@@ -139,6 +146,24 @@ pub struct GateSpecialTrigger {
 
 pub const C_GATE_SPECIAL_TRIGGER: u32 = 0x09179000;
 
+/// The body of `NPlugTrigger_SWaypoint` (0x09178000): plain, no chunk
+/// framing, no FACADE. Read off `Items\Gate\CheckpointRight32m.Prefab.Gbx`
+/// entity 5: `01 00 00 00 | 02 00 00 00 (Checkpoint) | <ref: the
+/// *_Trigger.Shape.Gbx> | 00 00 00 00 (NoRespawn false)`; the finish gates
+/// carry type 1, the multilap gates 4 — the item chunk's own waypoint
+/// numbering (0 Start, 1 Finish, 2 Checkpoint, 4 StartFinish).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WaypointTrigger {
+    pub version: u32,
+    pub wtype: i32,
+    pub shape: Ref,
+    /// The game never respawns AT this waypoint: a respawn goes back to the
+    /// previous waypoint that allows one (Argentina 21's ring, 2026-09-09).
+    pub no_respawn: u32,
+}
+
+pub const C_WAYPOINT_TRIGGER: u32 = 0x09178000;
+
 impl Node {
     pub fn class_id(&self) -> u32 {
         match self {
@@ -159,6 +184,7 @@ impl Node {
             Node::Dyna(_) => dyna::C_DYNA_OBJECT_MODEL,
             Node::Kinematic(_) => dyna::C_KINEMATIC_CONSTRAINT,
             Node::GateSpecial(_) => C_GATE_SPECIAL_TRIGGER,
+            Node::WaypointTrigger(_) => C_WAYPOINT_TRIGGER,
             Node::FxSystem(_) => particle::C_FX_SYSTEM,
             Node::Particle(p) => p.class_id,
             Node::Opaque(o) => o.class_id,
@@ -195,7 +221,14 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
             let u01 = r.u32()?;
             Node::GateSpecial(GateSpecialTrigger { version, shape, u01 })
         }
-        0x09178000 | 0x0917A000 | 0x0917B000 | 0x09119000 | 0x09118000 => Node::Opaque(read_fixed_opaque(r, class_id)?),
+        C_WAYPOINT_TRIGGER => {
+            let version = r.u32()?;
+            let wtype = r.i32()?;
+            let shape = read_ref(r)?;
+            let no_respawn = r.u32()?;
+            Node::WaypointTrigger(WaypointTrigger { version, wtype, shape, no_respawn })
+        }
+        0x0917A000 | 0x0917B000 | 0x09119000 | 0x09118000 => Node::Opaque(read_fixed_opaque(r, class_id)?),
         C_VARIANT_LIST => {
             let version = r.u32()?;
             let n = r.count()?;
@@ -243,6 +276,12 @@ pub fn write_node(w: &mut Wr, n: &Node) {
             w.u32(x.version);
             write_ref(w, &x.shape);
             w.u32(x.u01);
+        }
+        Node::WaypointTrigger(x) => {
+            w.u32(x.version);
+            w.i32(x.wtype);
+            write_ref(w, &x.shape);
+            w.u32(x.no_respawn);
         }
         Node::FxSystem(x) => x.write(w),
         Node::Particle(x) => x.write(w),
@@ -452,4 +491,40 @@ fn read_fixed_opaque(r: &mut Rd, class_id: u32) -> R<OpaqueNode> {
         _ => unreachable!(),
     }
     Ok(OpaqueNode { class_id, raw: r.b[start..r.o].to_vec() })
+}
+
+#[cfg(test)]
+mod waypoint_trigger_tests {
+    use super::*;
+
+    /// `Items\Gate\CheckpointRight32m.Prefab.Gbx` entity 5, the plain body of
+    /// its NPlugTrigger_SWaypoint: version 1, Checkpoint, shape = node 0x1a
+    /// (external), NoRespawn false — as `mapgeom prefab-ents` dumps it.
+    const RING_GATE_SWAYPOINT: &[u8] = &[0x01, 0, 0, 0, 0x02, 0, 0, 0, 0x1a, 0, 0, 0, 0, 0, 0, 0];
+
+    #[test]
+    fn pack_swaypoint_reads_and_writes_back() {
+        let mut lb = LookbackState::default();
+        lb.defined_nodes.insert(0x1a);
+        let mut r = Rd::new(RING_GATE_SWAYPOINT, 0, lb);
+        let n = read_node(&mut r, C_WAYPOINT_TRIGGER).expect("read");
+        let Node::WaypointTrigger(wp) = &n else { panic!("not a waypoint trigger: {n:?}") };
+        assert_eq!((wp.version, wp.wtype, wp.shape.index, wp.no_respawn), (1, 2, 0x1a, 0));
+        let mut out = Vec::new();
+        let mut lb2 = LookbackState::default();
+        lb2.defined_nodes.insert(0x1a);
+        let mut w = Wr { w: &mut out, lb: &mut lb2 };
+        write_node(&mut w, &n);
+        assert_eq!(out, RING_GATE_SWAYPOINT);
+    }
+
+    #[test]
+    fn no_respawn_flag_is_the_last_word() {
+        let ring = Node::WaypointTrigger(WaypointTrigger { version: 1, wtype: 2, shape: null_ref(), no_respawn: 1 });
+        let mut out = Vec::new();
+        let mut lb = LookbackState::default();
+        let mut w = Wr { w: &mut out, lb: &mut lb };
+        write_node(&mut w, &ring);
+        assert_eq!(out, &[1, 0, 0, 0, 2, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 1, 0, 0, 0]);
+    }
 }

@@ -100,6 +100,12 @@ pub struct Merged {
     /// (Granady: block spawn_loc x scale, e.g. RoadTechStart [16,2,16] ->
     /// [8,1,8]). Zero = identity.
     pub spawn: [f32; 3],
+    /// The game never respawns at this waypoint (the block info's NoRespawn —
+    /// the `GateCheckpoint` ring — or a pack prefab's `NPlugTrigger_SWaypoint`
+    /// flag): a respawn goes back to the previous waypoint that allows one.
+    /// Written as the pack's own prefab layout, the only item form that
+    /// carries the flag (assemble.rs).
+    pub no_respawn: bool,
     /// Things skipped, for the report.
     pub notes: Vec<String>,
     /// The prefab's procedural vegetation entities (`.VegetTreeModel.Gbx`

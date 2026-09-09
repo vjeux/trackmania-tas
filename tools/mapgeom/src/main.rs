@@ -1085,6 +1085,21 @@ fn main() {
                         None => model.externals.iter().find(|(k, _)| *k as i32 == e.model.index).map(|(_, p)| format!("external {p}")).unwrap_or_else(|| format!("node {}", e.model.index)),
                     };
                     println!("  entity {i}: {what} pos {:?} rot {:?} params_id {} ({} bytes) u01 {} bytes", e.pos, e.rot, e.params_id, e.params.len(), e.u01.len());
+                    // the trigger structs' own bytes (NPlugTrigger_SWaypoint
+                    // {version, type, shape ref, NoRespawn}, SSpawn, 0x0917B000):
+                    // small plain bodies whose every word means something
+                    if let Some(mapgeom::static_item::Node::Opaque(o)) = e.model.inline.as_deref() {
+                        if o.raw.len() <= 96 {
+                            let words: Vec<String> = o.raw.chunks(4).map(|c| c.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join("")).collect();
+                            println!("           raw: {}", words.join(" "));
+                        }
+                    }
+                    if let Some(mapgeom::static_item::Node::GateSpecial(g)) = e.model.inline.as_deref() {
+                        println!("           NPlugTrigger_SGateSpecial version {} shape node {} u01 {}", g.version, g.shape.index, g.u01);
+                    }
+                    if let Some(mapgeom::static_item::Node::WaypointTrigger(wp)) = e.model.inline.as_deref() {
+                        println!("           NPlugTrigger_SWaypoint version {} type {} shape node {} no_respawn {}", wp.version, wp.wtype, wp.shape.index, wp.no_respawn);
+                    }
                 }
             }
         }

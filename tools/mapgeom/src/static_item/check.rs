@@ -50,12 +50,36 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
             // a gameplay gate in prefab form: its NPlugTrigger_SGateSpecial entity's shape
             if let Some(p) = f.item.prefab() {
                 for (ei, e) in p.ents.iter().enumerate() {
+                    if let Some(super::Node::WaypointTrigger(wp)) = e.model.inline.as_deref() {
+                        let shape = match wp.shape.inline.as_deref() {
+                            Some(super::Node::Surface(sf)) => format!("{} vertices {} triangles", sf.surf.counts().0, sf.surf.counts().1),
+                            _ => format!("shape node {} (not inline)", wp.shape.index),
+                        };
+                        println!("{path}: prefab entity {ei} waypoint trigger v{} type {} no_respawn {} {shape}", wp.version, wp.wtype, wp.no_respawn);
+                    }
                     if let Some(super::Node::GateSpecial(g)) = e.model.inline.as_deref() {
                         match g.shape.inline.as_deref() {
                             Some(super::Node::Surface(sf)) => {
                                 let ids: Vec<String> = sf.material_ids.iter().map(|x| format!("{x} (phys {} gp {})", x & 0xff, x >> 8)).collect();
                                 let (nv, nt) = sf.surf.counts();
-                                println!("{path}: prefab entity {ei} special trigger v{} {nv} vertices {nt} triangles ids [{}] main dir {:?}", g.version, ids.join(", "), sf.gameplay_main_dir);
+                                // where the effect volume sits in the item's frame
+                                // (Argentina 21's gate boosters, 2026-09-09: is
+                                // the slab inside the ring at all?)
+                                let bounds = match &sf.surf {
+                                    super::surface::Surf::Mesh { vertices, .. } if !vertices.is_empty() => {
+                                        let mut lo = [f32::MAX; 3];
+                                        let mut hi = [f32::MIN; 3];
+                                        for v in vertices {
+                                            for k in 0..3 {
+                                                lo[k] = lo[k].min(v[k]);
+                                                hi[k] = hi[k].max(v[k]);
+                                            }
+                                        }
+                                        format!(" bounds [{:.2}, {:.2}, {:.2}]..[{:.2}, {:.2}, {:.2}]", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2])
+                                    }
+                                    _ => String::new(),
+                                };
+                                println!("{path}: prefab entity {ei} special trigger v{} {nv} vertices {nt} triangles ids [{}] main dir {:?}{bounds}", g.version, ids.join(", "), sf.gameplay_main_dir);
                             }
                             _ => println!("{path}: prefab entity {ei} special trigger v{} with shape node {} (not inline)", g.version, g.shape.index),
                         }
@@ -182,6 +206,24 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                     Some(super::Node::GateSpecial(g)) => {
                         if !matches!(g.shape.inline.as_deref(), Some(super::Node::Surface(_))) {
                             problems.push(format!("entity {i}: gate special trigger without an inline shape (node {})", g.shape.index));
+                        }
+                    }
+                    // a no-respawn waypoint's trigger (NPlugTrigger_SWaypoint, the
+                    // pack's gate layout): shape inline, type the item chunk's,
+                    // and the flag set — nothing else takes this form
+                    Some(super::Node::WaypointTrigger(wp)) => {
+                        if !matches!(wp.shape.inline.as_deref(), Some(super::Node::Surface(_))) {
+                            problems.push(format!("entity {i}: waypoint trigger without an inline shape (node {})", wp.shape.index));
+                        }
+                        let item_type = f.item.chunks.iter().find_map(|c| match c {
+                            super::item::ItemChunk::Waypoint { waypoint_type, .. } => Some(*waypoint_type),
+                            _ => None,
+                        });
+                        if item_type != Some(wp.wtype) {
+                            problems.push(format!("entity {i}: waypoint trigger type {} but the item chunk says {:?}", wp.wtype, item_type));
+                        }
+                        if wp.no_respawn == 0 {
+                            problems.push(format!("entity {i}: waypoint trigger in prefab form without NoRespawn — the entity-model form is the one for a respawnable waypoint"));
                         }
                     }
                     // an effect system (the Show items' smoke / sparks): an entity

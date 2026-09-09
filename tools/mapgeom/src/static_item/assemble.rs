@@ -270,7 +270,15 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     // effect carrier takes the pack's own CPlugPrefab form (both read a detail
     // ladder the same way, probed 2026-09-07) and hands indices out in write
     // order from 2
-    let prefab_form = !m.dyna.is_empty() || m.special.is_some() || !m.fx.is_empty();
+    // A no-respawn CHECKPOINT (the `GateCheckpoint` ring block's info says
+    // NoRespawn; a pack prefab's NPlugTrigger_SWaypoint may) exists only in the
+    // prefab form: the flag is a field of that entity, the entity-model form
+    // has none — and a ring written as an entity model respawned the car at
+    // its own origin, beside the ring (Argentina 21, 2026-09-09). A finish
+    // (GateFinish, GateExpandableFinish: NoRespawn too) keeps the entity-model
+    // form — nobody respawns at a finish, and the form is the proven one.
+    let no_respawn_wp = m.no_respawn && m.trigger.is_some() && m.waypoint_type == Some(2);
+    let prefab_form = !m.dyna.is_empty() || m.special.is_some() || !m.fx.is_empty() || no_respawn_wp;
     let mut next = if !prefab_form { 4i32 } else { 2i32 };
     // The static geometry: one static object (mesh + collision) — the whole
     // item when nothing moves, else one entity of the prefab.
@@ -421,6 +429,16 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             let gi = next_index(&mut next);
             let g = super::GateSpecialTrigger { version: 2, shape: inline(si, Node::Surface(sp.clone())), u01: 0 };
             ents.push(super::prefab::Entity { model: inline(gi, Node::GateSpecial(g)), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
+        }
+        // the no-respawn waypoint's trigger, the pack's own layout
+        // (Items\Gate\CheckpointRight32m.Prefab entity 5): an
+        // NPlugTrigger_SWaypoint at the identity with the trigger shape inline
+        // and NoRespawn set; no NPlugTrigger_SSpawn follows — the game never
+        // spawns here
+        if no_respawn_wp {
+            let wi = next_index(&mut next);
+            let wp = super::WaypointTrigger { version: 1, wtype: m.waypoint_type.unwrap_or(2), shape: trigger.clone(), no_respawn: 1 };
+            ents.push(super::prefab::Entity { model: inline(wi, Node::WaypointTrigger(wp)), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
         }
         // the effect systems (smoke, sparks), after the static part like the
         // pack's Show prefabs (Fogger16M: entity 0 the box, entity 1 the FxSys)

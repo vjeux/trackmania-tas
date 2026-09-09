@@ -682,8 +682,24 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             at[10] = t[1];
             at[11] = t[2];
         }
-        if rot.map(|r| r.iter().any(|v| v.abs() > 1e-6)).unwrap_or(false) {
-            m.notes.push(format!("mobil rotation {:?} ignored for {p}", rot));
+        // The mobil's own rotation, degrees about (x, y, z). The four BlueBay
+        // `Road*OnLandHillSlopeBase2x1` block infos author their ground
+        // variant as "OnLandHill 180°": the prefab turned 180° about Y and
+        // moved by (32, 0, 64) so it lands back on the 1×2 footprint. Ignored
+        // until 2026-09-09, the translation alone put Argentina 21's first ice
+        // slope one cell east and two north of its cell — in the sea — while
+        // the cell itself stayed empty (vjeux: "missing an entire ice block at
+        // the beginning"). Only Y rotations exist in the packs (surveyed:
+        // every OnLand* block info); any other axis is still refused loudly.
+        if let Some(r) = rot.filter(|r| r.iter().any(|v| v.abs() > 1e-6)) {
+            if r[0].abs() > 1e-6 || r[2].abs() > 1e-6 {
+                return Err(format!("{p}: mobil rotation {r:?} has an x/z component; only a yaw is implemented"));
+            }
+            // yaw_quarter(2) == 180° either way; for other angles the sign
+            // convention is the grid dir's (clockwise looking down)
+            let yaw = crate::geom::yaw(r[1].to_radians(), [at[9], at[10], at[11]]);
+            at = yaw;
+            m.notes.push(format!("mobil rotation {:?} applied for {p} (translation {:?})", r, tr));
         }
         crate::static_item::build::add_prefab(store, p, &at, scale, &mut m, 0)?;
     }
@@ -730,6 +746,17 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     // spawn_loc scaled (Granady's items)
     if let Some(wt) = bi.waypoint_type.filter(|t| (0..=2).contains(t) || *t == 4) {
         m.waypoint_type = Some(wt);
+        // The block info's NoRespawn (chunk 0x0304E00F): the `GateCheckpoint`
+        // ring. The game never respawns at it — a respawn goes back to the
+        // previous checkpoint with a spawn. The item form that carries the
+        // flag is the pack's prefab layout (NPlugTrigger_SWaypoint.NoRespawn);
+        // without it Argentina 21's ring dropped the car at the item's origin,
+        // beside the ring (vjeux, 2026-09-09: "the double respawn of the ring
+        // … drops you to the side").
+        if bi.no_respawn && wt == 2 {
+            m.no_respawn = true;
+            m.notes.push("no-respawn waypoint (block info NoRespawn): prefab form".to_string());
+        }
         if wt != 0 {
             let mut trig = None;
             for sp in &plan.pk.variant.trigger_shapes {
