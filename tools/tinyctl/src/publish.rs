@@ -128,12 +128,21 @@ pub fn publish_here_cmd(args: &[String]) -> Result<(), String> {
     // or playshots has it loading a map (Summer 19's first publish died on
     // `/nadeotoken: Resource temporarily unavailable`; 17's and 18's
     // playchecks waited out their 600 s). Hold the same render lock those
-    // take — the upload itself is Nadeo-side, but it is short next to a wait.
+    // take — for the TOKENS only (two seconds), unless a playcheck follows:
+    // the upload is Nadeo-side and, on a slow link, minutes long (pub4,
+    // 2026-09-09: 6–8 min a map at ~60 KB/s), during which the game is idle
+    // and every other driver waited on this lock for nothing.
     let owner = format!("publish-{}", o_stem(&opts.map));
     let res = match render_lock(&opts.shootctl, &owner, "acquire", &["--wait", "900"]) {
         Ok(()) => {
-            let r = publish_here(&opts);
-            let _ = render_lock(&opts.shootctl, &owner, "release", &[]);
+            let toks = token(&opts.shootctl, "NadeoServices").and_then(|core| token(&opts.shootctl, "NadeoLiveServices").map(|live| (core, live)));
+            if !opts.playcheck {
+                let _ = render_lock(&opts.shootctl, &owner, "release", &[]);
+            }
+            let r = toks.and_then(|(core, live)| publish_here(&opts, &core, &live));
+            if opts.playcheck {
+                let _ = render_lock(&opts.shootctl, &owner, "release", &[]);
+            }
             r
         }
         Err(e) => Err(format!("render lock: {e}")),
@@ -182,7 +191,7 @@ fn detach(outdir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn publish_here(o: &PublishOpts) -> Result<Vec<String>, String> {
+fn publish_here(o: &PublishOpts, core: &str, live: &str) -> Result<Vec<String>, String> {
     let mut lines = Vec::new();
     let map = o.map.to_str().ok_or("map path is not utf-8")?;
     let hdr = tmmaps::header::read(map)?;
@@ -196,8 +205,6 @@ fn publish_here(o: &PublishOpts) -> Result<Vec<String>, String> {
     let md5_local = md5_hex(&std::fs::read(&o.map).map_err(|e| format!("{map}: {e}"))?);
     lines.push(format!("map\t{map}\tuid {uid}\tenvir {envir}\tAT {at}\tmd5 {md5_local}"));
 
-    let core = token(&o.shootctl, "NadeoServices")?;
-    let live = token(&o.shootctl, "NadeoLiveServices")?;
     let auth_core = format!("Authorization: {core}");
     let auth_live = format!("Authorization: {live}");
 
