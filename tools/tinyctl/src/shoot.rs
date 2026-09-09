@@ -75,6 +75,16 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         Some("t") => vec!["t"],
         _ => vec!["o", "t"],
     };
+    // --get [N:]/route (repeatable) goes through to shootset: a plugin route
+    // fired once the map is open (N: before view N), its answer in the log
+    let mut get_args = String::new();
+    for (i, a) in args.iter().enumerate() {
+        if a == "--get" {
+            if let Some(route) = args.get(i + 1) {
+                get_args.push_str(&format!(" --get '{route}'"));
+            }
+        }
+    }
     // --settle-ms MS goes through to shootset (the pause before each shot; the
     // in-game advertisements rotate, so a skin probe repeats one view with a
     // longer pause to see every state)
@@ -94,7 +104,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let anchor_arg = if shoot_side == "t" { format!(" --anchor {anchor}{scale_arg}") } else { String::new() };
         // --shadows Q: compute the lightmap on both sides before shooting
         let shadows_arg = f("--shadows").map(|q| format!(" --shadows {q}")).unwrap_or_default();
-        let cmd = format!("{shootctl} shootset --detach --map {map} --views {r_views} --side {shoot_side} --tag {shoot_tag} --outdir {shoot_dir}{anchor_arg}{shadows_arg}{settle_arg}");
+        let cmd = format!("{shootctl} shootset --detach --map {map} --views {r_views} --side {shoot_side} --tag {shoot_tag} --outdir {shoot_dir}{anchor_arg}{shadows_arg}{settle_arg}{get_args}");
         eprintln!("shooting side {side}{} …", if as_t { " (a tiny build: through the anchor)" } else { "" });
         let started = wsx.sh(&cmd)?;
         if wsx.verbose {

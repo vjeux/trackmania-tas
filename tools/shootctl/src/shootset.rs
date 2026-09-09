@@ -127,6 +127,12 @@ pub struct Opts {
     /// (pushers, rotors, turnstiles) need a clip, not a still (vjeux, 2026-09-08).
     pub video_s: f64,
     pub video_fps: u64,
+    /// `--get [N:]ROUTE` (repeatable): plugin routes to GET once the map is
+    /// open — before the views (no prefix) or right before view N — with the
+    /// answer logged as a `get` line. The 2026-09-08 flag work reads and
+    /// pokes the live scene between two frames of one editor load
+    /// (`/meshflags`, `/meshflags?set=1`, `/respawn?name=…`).
+    pub gets: Vec<(Option<usize>, String)>,
 }
 
 pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
@@ -164,6 +170,24 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         shadows: num("--shadows", 0)?,
         video_s: val("--video").map(|s| s.parse::<f64>().map_err(|_| "--video wants seconds")).transpose()?.unwrap_or(0.0),
         video_fps: num("--video-fps", 20)?,
+        gets: {
+            let mut v = Vec::new();
+            let mut i = 0;
+            while i < args.len() {
+                if args[i] == "--get" {
+                    let spec = args.get(i + 1).ok_or("--get wants [N:]/route")?;
+                    let (at, route) = match spec.split_once(':') {
+                        Some((n, r)) if r.starts_with('/') && n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty() => (Some(n.parse::<usize>().unwrap()), r.to_string()),
+                        _ => (None, spec.clone()),
+                    };
+                    v.push((at, route));
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            v
+        },
     })
 }
 
@@ -361,7 +385,19 @@ fn run_set(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         }
         std::thread::sleep(Duration::from_millis(opts.settle_ms.max(3000)));
     }
+    // --get ROUTE: plugin routes once the map is open (the answer goes into the
+    // log and the done file); `--get N:ROUTE` fires right before view N.
+    let fire_gets = |at: Option<usize>, lines: &mut Vec<String>| {
+        for (when, route) in opts.gets.iter().filter(|(w, _)| *w == at) {
+            let r = super::http_get(route, 30).unwrap_or_else(|e| format!("ERROR {e}"));
+            let one = r.trim().replace('\n', " // ");
+            println!("{} get {}{}: {}", el(), when.map(|n| format!("{n}:")).unwrap_or_default(), route, one);
+            lines.push(format!("get\t{}{}\t{}", when.map(|n| format!("{n}:")).unwrap_or_default(), route, one));
+        }
+    };
+    fire_gets(None, &mut lines);
     for (i, v) in views.iter().enumerate() {
+        fire_gets(Some(i), &mut lines);
         let (target, dist) = match (&opts.side[..], &opts.anchor) {
             ("t", Some(a)) => (a.map(v.target), v.dist * a.scale),
             _ => (v.target, v.dist),

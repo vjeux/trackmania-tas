@@ -1044,10 +1044,12 @@ usage:
   shootctl shootset --map MAP --views VIEWS.tsv --side o|t --outdir /mnt/c/DIR
                     [--tag T] [--anchor sx,sy,sz:tx,ty,tz] [--scale 0.5]
                     [--load-timeout S] [--settle-ms MS] [--no-lock] [--detach]
-                    [--video S [--video-fps 20]]
+                    [--video S [--video-fps 20]] [--get [N:]/route …]
         open the map ONCE and screenshot every view row (NAME<TAB>x,y,z<TAB>
         DIST<TAB>H<TAB>V, radians) to DIR/cmp-<T><NAME>-<side>.png; side t
-        maps the camera through the tiny anchor at half the distance.
+        maps the camera through the tiny anchor at half the distance;
+        --get fires a plugin route once the map is open (N: right before
+        view N) and logs its answer (a `get` line in the done file).
         --detach returns at once; DIR/done-<side>.txt appears when finished.
         --video S captures S seconds of the screen per view instead (ffmpeg
         gdigrab, 1920x1080) to DIR/cmp-<T><NAME>-<side>.mp4 — moving blocks.

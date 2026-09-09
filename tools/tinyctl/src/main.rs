@@ -53,7 +53,7 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         whole map from above and its four quadrants; the anchor as a comment;
         --ghost/--at add chase views (camera behind the car) at instants of a driven lap
   tinyctl shoot --orig SRC --tiny TINY --views VIEWS.tsv --tag sNN --anchor A
-                [--outdir /tmp/tiny3] [--only o|t] [--pull-full] [--ab] [-v]
+                [--outdir /tmp/tiny3] [--only o|t] [--pull-full] [--ab] [-v] [--get [N:]/route …]
         push, one editor load per side on the render box (shootctl shootset),
         compare there, pull the sheets: cmpdiff-sNN-crops.png / -overview.png
         (--ab: --orig is a tiny build too — an A/B of two tiny outputs — and is
