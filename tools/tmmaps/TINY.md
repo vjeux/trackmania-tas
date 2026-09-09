@@ -162,6 +162,17 @@ What the bake keeps and what it gives up:
   (default 0) and the `static-item --light-*` flags stay as A/B knobs. The
   deck under Poland's cp8 rigs is +10 % vs the original with the lights as
   they are and 20 % DARKER at ×0.25.
+* **Merged items: one lightmap cell per PART** (`repack_lightmap_parts`,
+  assemble.rs, default on; `TINY_LIGHTMAP_REPACK=0` restores the overlap). A
+  pack Solid2 lays its lightmap atlas over the whole unit square, so an item
+  merged from several (a block's mobils, a rig's entities, a gate's arch +
+  sign + lights) stacked their charts and the game's per-item bake wrote every
+  part's light into the same texels — the trees' problem in a milder form.
+  Every part now gets its own grid cell (single-part items keep Nadeo's layout
+  untouched). Poland at f9039561 + repack, same cameras: cp1 whole-frame
+  saturation 8.3 → 2.9 % (original 4.5), the cp8 deck 0.7 → 0.2 % (= the
+  original), five other views within noise; 291 of 24's 716 items are
+  multi-part and change bytes.)
 
 Sizes with `--lod-pick 1 --lod-pick-min-verts 2000`: 01 8.1 MB (5.9 without
 trees), 20 13.8, 17 12.3, 24 25.4 (45 MB without the pick), 25 26.9, 21 29.2

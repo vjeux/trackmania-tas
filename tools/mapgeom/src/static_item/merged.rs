@@ -30,12 +30,18 @@ pub struct MergedVisual {
     /// moves the mask onto it by distance range at assembly.
     pub lod_mask: u32,
     pub lod_ladder: Vec<f32>,
+    /// The source PART (one `CPlugSolid2Model` merged into the item) this
+    /// visual came from: a part's visuals share ONE lightmap atlas over the
+    /// unit square, so two parts' charts overlap once merged — `repack_lightmap_parts`
+    /// at assembly gives every part its own cell (2026-09-09). 0 = unknown
+    /// (never repacked).
+    pub part: u32,
 }
 
 impl MergedVisual {
     /// A visual drawn at every distance (a part without detail levels).
     pub fn every_level(visual: CPlugVisualIndexedTriangles, material: usize) -> MergedVisual {
-        MergedVisual { visual, material, lod_mask: 0, lod_ladder: Vec::new() }
+        MergedVisual { visual, material, lod_mask: 0, lod_ladder: Vec::new(), part: 0 }
     }
 }
 
@@ -78,6 +84,9 @@ pub struct FxPart {
 #[derive(Clone, Debug, Default)]
 pub struct Merged {
     pub visuals: Vec<MergedVisual>,
+    /// Parts (source Solid2s) merged so far; the next `add_static_object` is
+    /// part `parts + 1` (`MergedVisual::part`).
+    pub parts: u32,
     /// Deduplicated by (link, physics).
     pub materials: Vec<CPlugMaterialUserInst>,
     pub surf_vertices: Vec<[f32; 3]>,
@@ -701,6 +710,8 @@ impl Merged {
     pub fn add_static_object(&mut self, so: &super::item::CPlugStaticObjectModel, iso: &Xform, scale: f32, resolve: &mut MaterialResolver) -> R<()> {
         let iso_entity_only = *iso;
         let s2 = so.solid2().ok_or("static object without an inline CPlugSolid2Model")?;
+        self.parts += 1;
+        let part = self.parts;
         // The part's detail ladder. Every pack model measured (2026-09-07:
         // RoadTech Straight_Air [64, 128] + masks 1/2/4, the gate prefabs
         // [64, 128, 256] + masks 1/2/4/8, Beach Base1A [64] + masks 1/2)
@@ -1161,7 +1172,7 @@ impl Merged {
                         let has_color = sv.stream().map(|s| s.decls.iter().any(|d| d.name() == N_COLOR0)).unwrap_or(false);
                         let gm = if !has_color { self.plain_variant_slot(gm) } else { gm };
                         visual_slots.push((self.visuals.len(), gm));
-                        self.visuals.push(MergedVisual { visual: sv, material: gm, lod_mask: lod.0, lod_ladder: lod.1.clone() });
+                        self.visuals.push(MergedVisual { visual: sv, material: gm, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
                     }
                     continue;
                 }
@@ -1172,14 +1183,14 @@ impl Merged {
                         // triangles — but keep the per-triangle answer)
                         transform_visual(&mut v, iso, scale)?;
                         visual_slots.push((self.visuals.len(), only));
-                        self.visuals.push(MergedVisual { visual: v, material: only, lod_mask: lod.0, lod_ladder: lod.1.clone() });
+                        self.visuals.push(MergedVisual { visual: v, material: only, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
                         continue;
                     }
                 }
             }
             transform_visual(&mut v, iso, scale)?;
             visual_slots.push((self.visuals.len(), mat));
-            self.visuals.push(MergedVisual { visual: v, material: mat, lod_mask: lod.0, lod_ladder: lod.1.clone() });
+            self.visuals.push(MergedVisual { visual: v, material: mat, lod_mask: lod.0, lod_ladder: lod.1.clone(), part });
         }
         if let Some(sf) = so.surface() {
             match &sf.surf {

@@ -685,4 +685,13 @@ impl CPlugVisualIndexedTriangles {
             _ => None,
         }
     }
+
+    /// Same, mutable.
+    pub fn stream_mut(&mut self) -> Option<&mut super::vstream::CPlugVertexStream> {
+        let m = self.main.as_mut()?;
+        match m.vertex_streams.first_mut()?.inline.as_deref_mut()? {
+            super::Node::VertexStream(s) => Some(s),
+            _ => None,
+        }
+    }
 }

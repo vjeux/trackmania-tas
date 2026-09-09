@@ -730,6 +730,9 @@ pub fn static_item_from_prefab_report(store: &mut crate::store::DataStore, prefa
     add_prefab(store, prefab, &IDENTITY, scale, &mut m, 0)?;
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
+    if let Some(n) = super::assemble::REPACK_NOTE.with(|c| c.get()) {
+        m.notes.push(format!("lightmap atlas: {n} parts repacked into disjoint cells"));
+    }
     Ok((super::write_file(&f), m))
 }
 
@@ -789,6 +792,9 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
     m.skin = skin;
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
+    if let Some(n) = super::assemble::REPACK_NOTE.with(|c| c.get()) {
+        m.notes.push(format!("lightmap atlas: {n} parts repacked into disjoint cells"));
+    }
     Ok((super::write_file(&f), m))
 }
 
@@ -1687,6 +1693,9 @@ pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStor
     }
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
+    if let Some(n) = super::assemble::REPACK_NOTE.with(|c| c.get()) {
+        m.notes.push(format!("lightmap atlas: {n} parts repacked into disjoint cells"));
+    }
     Ok((super::write_file(&f), m))
 }
 
@@ -2057,7 +2066,7 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                     }
                 }
             }
-            m.visuals.push(MergedVisual { visual: v, material: slots[e.material as usize], lod_mask: if pick.is_some() { 0 } else { 1 << bit }, lod_ladder: ladder.clone() });
+            m.visuals.push(MergedVisual { visual: v, material: slots[e.material as usize], lod_mask: if pick.is_some() { 0 } else { 1 << bit }, lod_ladder: ladder.clone(), part: 0 });
             n += 1;
         }
         out.levels.push(n);

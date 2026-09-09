@@ -92,6 +92,9 @@ thread_local! {
     /// the dyna object and its mesh as files): (bare file name, bytes). The
     /// `static-item` command writes them into the --out directory.
     pub static SIDECARS: std::cell::RefCell<Vec<(String, Vec<u8>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// How many parts the last `build_solid2` repacked lightmap atlases for
+    /// (`repack_lightmap_parts`); None = nothing to repack. For the report.
+    pub static REPACK_NOTE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
 /// The merged visuals + materials as one `CPlugSolid2Model`, node indices
@@ -136,6 +139,13 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
     // synthesised round the normal when the pack gave none (Nadeo's own
     // PlatformDirt / PlatformPlastic Turbo slopes).
     let want_tangents: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map(|l| l.ends_with("\\PlatformTech")).unwrap_or(false)).map(|(i, _)| i).collect();
+    // Every merged PART's lightmap atlas into its own cell (see
+    // `repack_lightmap_parts`); TINY_LIGHTMAP_REPACK=0 keeps the overlap.
+    if std::env::var("TINY_LIGHTMAP_REPACK").map(|v| v != "0").unwrap_or(true) {
+        if let Some(n) = repack_lightmap_parts(&mut pre) {
+            REPACK_NOTE.with(|c| c.set(Some(n)));
+        }
+    }
     harmonize_layouts_with(&mut pre, &want_tangents);
     let visuals = coalesce(&pre);
     // Only the materials some visual draws with, in first-use order (the
@@ -259,6 +269,7 @@ pub fn build_surface(m: &Merged) -> CPlugSurface {
 
 /// Build the whole item tree from the merged geometry.
 pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
+    REPACK_NOTE.with(|c| c.set(None));
     use super::item::*;
     use super::Id;
     if m.visuals.is_empty() && m.dyna.is_empty() {
@@ -573,3 +584,135 @@ pub fn header_chunks(opts: &BuildOpts) -> Vec<super::file::HeaderChunk> {
     out
 }
 
+
+/// Every merged PART's lightmap atlas into its own cell of a grid over the
+/// unit square, so no two parts' charts share lightmap texels.
+///
+/// A pack `CPlugSolid2Model` lays its own lightmap atlas (TexCoord1) over
+/// the whole [0,1]²; merging several into one item (a block's mobils, a
+/// rig's entities, a gate's arch + sign + lights) stacked their charts on
+/// top of each other, and the game's per-item lightmap bake — redone at
+/// every load — then wrote every part's light into the same texels: a
+/// cross-talk the trees showed at its extreme (every leaf on one region,
+/// 2026-09-09). Parts are found by `MergedVisual::part`; a visual without
+/// uv1, or a part id of 0, is left alone. With ONE part nothing moves
+/// (Nadeo's layout is kept as authored). Returns the number of parts
+/// repacked, or None when there was nothing to do.
+pub fn repack_lightmap_parts(visuals: &mut [super::merged::MergedVisual]) -> Option<usize> {
+    use super::vstream::{Elem, N_TEXCOORD0};
+    let mut parts: Vec<u32> = visuals.iter().map(|v| v.part).filter(|p| *p != 0).collect();
+    parts.sort_unstable();
+    parts.dedup();
+    if parts.len() < 2 {
+        return None;
+    }
+    let n = parts.len();
+    let grid = (n as f64).sqrt().ceil().max(1.0);
+    let cell = 1.0 / grid;
+    // the pack margin (0.001) scaled with the cell, plus a gutter between cells
+    let margin = cell * 0.01;
+    let inner = cell - 2.0 * margin;
+    for mv in visuals.iter_mut() {
+        if mv.part == 0 {
+            continue;
+        }
+        let k = parts.iter().position(|p| *p == mv.part).unwrap_or(0) as f64;
+        let (cx, cy) = ((k % grid) * cell + margin, (k / grid).floor() * cell + margin);
+        let Some(s) = mv.visual.stream_mut() else { continue };
+        let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
+        if let Elem::Float2(uv) = &mut s.elems[i] {
+            for p in uv.iter_mut() {
+                p[0] = (cx + p[0].clamp(0.0, 1.0) as f64 * inner) as f32;
+                p[1] = (cy + p[1].clamp(0.0, 1.0) as f64 * inner) as f32;
+            }
+        }
+    }
+    Some(n)
+}
+
+#[cfg(test)]
+mod repack_tests {
+    use super::super::merged::MergedVisual;
+    use super::super::visual::CPlugVisualIndexedTriangles;
+    use super::super::vstream::{CPlugVertexStream, Decl, Elem, N_POSITION, N_TEXCOORD0, T_FLOAT2, T_FLOAT3};
+    use super::super::null_ref;
+
+    fn visual(part: u32, uv1: Vec<[f32; 2]>) -> MergedVisual {
+        let n = uv1.len();
+        let s = CPlugVertexStream {
+            version: 1,
+            count: n as i32,
+            flags: 0,
+            base: null_ref(),
+            decls: vec![Decl::with_stride(N_POSITION, T_FLOAT3, 0, 0, 7), Decl::with_stride(N_TEXCOORD0, T_FLOAT2, 0, 12, 7), Decl::with_stride(N_TEXCOORD0 + 1, T_FLOAT2, 0, 20, 7)],
+            compress_local3d: Some(false),
+            elems: vec![Elem::Float3(vec![[0.0; 3]; n]), Elem::Float2(vec![[0.0; 2]; n]), Elem::Float2(uv1)],
+        };
+        let main = super::super::visual::VisualMain {
+            version: 6,
+            chunk_flags: 0,
+            tex_coord_sets: Vec::new(),
+            count: n as i32,
+            vertex_streams: vec![super::super::Ref { index: 0, inline: Some(Box::new(super::super::Node::VertexStream(s))) }],
+            skin: None,
+            bounding_box: [0.0; 6],
+            bitmap_elems: Vec::new(),
+            uv_groups: Vec::new(),
+            u02: 0,
+            u03: 0,
+            u04: Vec::new(),
+        };
+        let v = CPlugVisualIndexedTriangles {
+            chunks: Vec::new(),
+            id: super::super::Id::Null,
+            u_node: null_ref(),
+            sub_visuals: Vec::new(),
+            u_float: 0.0,
+            splits: Vec::new(),
+            main: Some(main),
+            morph: None,
+            v3d_node: null_ref(),
+            tangents: None,
+            index_buffer: None,
+            inline_form: false,
+            inline_uv_sets: 1,
+            inline_uv_flags: 256,
+            inline_tangents: false,
+        };
+        MergedVisual { visual: v, material: 0, lod_mask: 0, lod_ladder: Vec::new(), part }
+    }
+
+    fn uv1_of(mv: &MergedVisual) -> Vec<[f32; 2]> {
+        match &mv.visual.stream().unwrap().elems[2] {
+            Elem::Float2(v) => v.clone(),
+            _ => panic!("uv1 gone"),
+        }
+    }
+
+    /// One part: Nadeo's layout is kept. Three parts: a 2x2 grid, every
+    /// part inside its own cell, the full-square chart of one part never
+    /// touching another's cell.
+    #[test]
+    fn parts_land_in_disjoint_cells() {
+        let full = vec![[0.001, 0.001], [0.999, 0.001], [0.999, 0.999], [0.001, 0.999]];
+        let mut one = vec![visual(1, full.clone()), visual(1, full.clone())];
+        assert_eq!(super::repack_lightmap_parts(&mut one), None);
+        assert_eq!(uv1_of(&one[0]), full);
+        let mut three = vec![visual(1, full.clone()), visual(2, full.clone()), visual(1, full.clone()), visual(3, full.clone())];
+        assert_eq!(super::repack_lightmap_parts(&mut three), Some(3));
+        let cell = |uv: [f32; 2]| ((uv[0] * 2.0).floor() as i32, (uv[1] * 2.0).floor() as i32);
+        let cells: Vec<(i32, i32)> = three.iter().map(|mv| {
+            let uv = uv1_of(mv);
+            let c = cell(uv[0]);
+            for p in &uv {
+                assert_eq!(cell(*p), c, "a chart crossed a cell border: {p:?}");
+                assert!((0.0..=1.0).contains(&p[0]) && (0.0..=1.0).contains(&p[1]));
+            }
+            c
+        }).collect();
+        assert_eq!(cells[0], cells[2], "the two visuals of part 1 share a cell");
+        assert_ne!(cells[0], cells[1]);
+        assert_ne!(cells[1], cells[3]);
+        assert_ne!(cells[0], cells[3]);
+    }
+}
