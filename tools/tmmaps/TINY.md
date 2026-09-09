@@ -583,6 +583,22 @@ target; `shootctl shootset` now switches to FreeLook after every load
 (`/freelook`, openplanet-plugin/Cursor.as). `TINY_OCCUPIED_RULE=1` still builds
 the occupied-cell probe; it is not a rule and off by default.
 
+Cache-safe confirmation at 20 cp3 (colour thread, 2026-09-09 07:00Z), the same
+three cameras vjeux's "pool right of the checkpoint is missing its border" frame
+came from (cpwide, plus poolBsideW / poolAsideS): the full geometry built with
+its own numbering and shot as the FIRST load of a fresh game (`tinyctl shoot
+--fresh`) shows pool B's coping on every edge and NO slab; the deployed ship14
+file shot minutes earlier in a session that had loaded other AC000-numbered 20
+builds differs from that fresh frame in 17 / 5 / 87 of 255 pixel-fractions
+(>40 levels) — the slabs, the item cache. And the ship11 face rule reinstated
+with a "group-less side clips (WaterFC*/WaterHFC*, hill sides) are always
+drawn" clause — which alone made the rim complete where the bare face rule had
+bared three of pool B's edges — renders 0 / 0 / 0 of 255 differently from the
+full geometry at those cameras: the 555 records it hides are inside the
+neighbours' geometry there. No hiding rule is needed for cp3; `fillers::verdict`
+stays deleted. vjeux's frame was a ship10–12 build (the `fullfree` / plate rules
+dropped the rim; ship13+ draws it) — the deployed ship14 has the border.
+
 Caveats worth keeping: the E2 pixel probe (679 face-rule records removed from
 the ORIGINAL, 203/204 views unchanged) used 110 m-high grid cameras that cannot
 see a plate inside a cell — it is not evidence about occupied cells either way.
