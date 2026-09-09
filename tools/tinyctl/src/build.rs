@@ -167,6 +167,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         for (k, v) in &extra {
             env.insert(k.clone(), v.clone());
         }
+        // Item names unique per map AND per build: the game caches an embedded
+        // item MODEL by its file name for the whole session, so two maps (or two
+        // builds of one map) embedding different pieces under "AC00000200.Item.Gbx"
+        // show the first-loaded model in the second map. Found 2026-09-09 chasing
+        // "slabs" on tiny 20 that were ship13's pieces under ship14's names;
+        // vjeux plays several tiny maps in one session. AC{map:02}{minute%1000:03}{idx:03}.
+        if !env.contains_key("TINY_ALIAS_BASE") {
+            let minutes = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() / 60).unwrap_or(0) as usize;
+            let map_no: usize = nn.parse().unwrap_or(0);
+            env.insert("TINY_ALIAS_BASE".to_string(), format!("{}", map_no * 1_000_000 + (minutes % 1000) * 1000));
+        }
         println!("{nn}: {} ({}) -> {}", src.file_name().unwrap_or_default().to_string_lossy(), collection_name(coll), out.display());
         let t0 = std::time::Instant::now();
         let mut lib = Command::new(&mapgeom);

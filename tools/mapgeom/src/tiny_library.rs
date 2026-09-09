@@ -390,7 +390,7 @@ impl TreeBaker {
         let enabled = mode == "bake";
         let min_height = Self::MIN_HEIGHT;
         let bake_hullless = std::env::var("TINY_TREE_BAKE_HULLLESS").map(|v| v == "1").unwrap_or(false);
-        TreeBaker { enabled, min_height, bake_hullless, baked: BTreeMap::new(), dims: BTreeMap::new(), next: 0, item_bytes: 0, texture_bytes: 0 }
+        TreeBaker { enabled, min_height, bake_hullless, baked: BTreeMap::new(), dims: BTreeMap::new(), next: alias_base(), item_bytes: 0, texture_bytes: 0 }
     }
 
     /// The baked item ident for a species model path (an `.Item.Gbx` of the
@@ -1153,7 +1153,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut auto_terrain: BTreeMap<(String, u32, String), (Vec<([i32; 3], String)>, i32)> = BTreeMap::new();
     let tile_zones: std::collections::BTreeSet<String> = source.genealogy_zones().into_iter().collect();
     let mut alias_of_recipe: BTreeMap<String, String> = BTreeMap::new();
-    let mut next_alias = 0usize;
+    // TINY_ALIAS_BASE=N starts the AC item numbering at N. The game caches an
+    // embedded item MODEL by its file name for the session: two builds of one map
+    // loaded in turn, whose libraries differ so that "AC00000200.Item.Gbx" is a
+    // slope cap in one and a pillar wall in the other, show the FIRST build's
+    // model at the second's placements (2026-09-09: the occupied-cell probe of
+    // Summer 20 "lost" its caps that way). A probe build takes a base of its own.
+    let mut next_alias = alias_base();
     // `v@ALIAS` rows (the prefabs' vegetation as stock items) and the
     // VegetTreeModel stem -> stock item cache behind them.
     let mut veget_rows = String::new();
@@ -1356,7 +1362,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut item_map: BTreeMap<(String, u8, Option<String>), String> = BTreeMap::new();
     // the map's own embedded files (custom items live under Items\…)
     let embedded: BTreeMap<String, Vec<u8>> = crate::embedded::files(&source).unwrap_or_default();
-    let mut item_alias_n = 0usize;
+    let mut item_alias_n = alias_base();
     // a model without a variant list is built once; later variants reuse it
     let mut single_variant: BTreeMap<String, String> = BTreeMap::new();
     // stock half-size variants used as targets: their mapping rows carry
@@ -2175,4 +2181,14 @@ mod special_family_tests {
         assert!(!same_special_family("PlatformSpecialFCLeft", "GateSpecialReset"));
         assert!(!same_special_family("DecoWallBaseVFC", "GateSpecialReset"));
     }
+}
+
+/// `TINY_ALIAS_BASE`: where the AC/AI/AV item numbering of this build starts
+/// (`tinyctl build` sets it per map and per build). The game caches an embedded
+/// item MODEL by its file name for the whole session: two maps — or two builds
+/// of one map — embedding different pieces as `AC00000200.Item.Gbx` show the
+/// first-loaded model in the second (2026-09-09: tiny 20's "slabs" were ship13's
+/// pieces under ship14's names; vjeux plays several tiny maps in one session).
+pub fn alias_base() -> usize {
+    std::env::var("TINY_ALIAS_BASE").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0)
 }

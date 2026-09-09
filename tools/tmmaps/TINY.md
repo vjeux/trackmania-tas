@@ -435,26 +435,34 @@ keeps AND the game draws (fullfree / face / accepted / ghost / free: Summer
 15's arch floor and pool-approach plate, 21's gate floor, 05's water-road
 floor came back with 3201a7cc).
 
-**2. What the runtime draws of that list — the occupied-cell question is OPEN
-(2026-09-09 night).** vjeux on ship13: "15, 20 — road blocks in the middle of
-the path". 15's was physics (water surfaces solid, 5380c805). For 20, drive-
-through cameras behind a run line showed, in ours only, a "grey road slab over
-cp3", a "white Tech slab with a red LED strip and the TM logo across the grass
-bowl", a "dark deck underside filling the sky at the pool". A probe that
-removed every record standing in a cell occupied by another block's unit
-(`mapgeom fillers` class `covered:*`, 1 905 of 20's 7 287) made those frames
-match the original — and the rule was nearly shipped. Then the same build shot
-again showed the slab back, and the pixel-level read of the frames settled it:
-the "slabs" were the REAR OF THE STADIUM CAR (wing, LED tail bar, mirrored TM
-letters on the roof) — the editor's cursor preview (a start block carries a car)
-standing at the cursor, which projects onto the grid near the camera target.
-Present in the tiny shots (empty cells: the cursor can stand there), absent in
-the original's (cells full of blocks) and absent whenever the previous user of
-the box had nothing selected. `shootctl shootset` now switches the editor to
-FreeLook (no cursor) after every load (`/freelook`, openplanet-plugin/Cursor.as).
-So: no record-hiding rule is established; `TINY_OCCUPIED_RULE=1` builds the
-probe for a car-free re-test, off by default. Whatever blocks vjeux on 20 is
-still to be found with car-free frames.
+**2. What the runtime draws of that list — no hiding rule is established; the
+"slabs" were the game's ITEM CACHE (2026-09-09 night).** vjeux on ship13: "15,
+20 — road blocks in the middle of the path". 15's was physics (water surfaces
+solid, 5380c805). For 20, drive-through cameras behind a run line showed, in
+ours only, a "grey road slab over cp3", a "white Tech slab with a red LED strip
+and the TM logo across the grass bowl", a "dark deck underside at the pool". A
+probe that removed every record standing in a cell occupied by another block's
+unit (`mapgeom fillers` class `covered:*`, 1 905 of 20's 7 287) made those frames
+match the original, and an occupied-cell rule was nearly shipped. It was
+wrong. The same full geometry rebuilt with UNIQUE item names (`TINY_ALIAS_BASE`)
+renders the bowl camera at 10/144 cells from the original — the slab was never
+in our file: **the game caches an embedded item model by its file name for the
+whole session**, so ship14's 20, loaded after ship13's 20 in one editor session,
+showed ship13's pieces wherever the two libraries' `AC000xxxxx` numbering had
+drifted apart. Every A/B of this campaign that loaded two builds with colliding
+names in one game session is suspect; the probe's "clean" frames were clean
+because its numbering happened to differ. Since ba36675c+ `tinyctl build` gives
+every map and every build its own numbering (`AC{map:02}{minute%1000:03}{idx:03}`,
+same for AI/AV) — which also protects a player who plays several tiny maps in
+one session. What remains open for 20: one camera at the pool (~39 s) where the
+full geometry and the probe still differ (75 vs 43 cells, both cache-safe);
+whatever that is will be named by eye, not by a rule.
+
+The editor's cursor was a second red herring on the way: with a block selected
+in the inventory its preview (a start block carries a car) stands at the camera
+target; `shootctl shootset` now switches to FreeLook after every load
+(`/freelook`, openplanet-plugin/Cursor.as). `TINY_OCCUPIED_RULE=1` still builds
+the occupied-cell probe; it is not a rule and off by default.
 
 Caveats worth keeping: the E2 pixel probe (679 face-rule records removed from
 the ORIGINAL, 203/204 views unchanged) used 110 m-high grid cameras that cannot
