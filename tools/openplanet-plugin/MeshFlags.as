@@ -12,7 +12,7 @@
 //        (a mesh whose first visual has >= 2 sub-visuals) -- the in-game proof
 //        that the bit alone is what the spawner wants; instances already spawned
 //        keep their handle, so respawn afterwards
-//   /respawn?name=SUBSTR[&dx=8][&dz=0] -> places a NEW copy of the first anchored
+//   /respawn?name=SUBSTR[&dx=8][&dz=0] -> (stub: no placement API bound yet) a NEW copy of the first anchored
 //        object whose item name contains SUBSTR, dx/dz metres away (the editor's
 //        PlaceAnchoredObject: a fresh spawn reads the mesh flags again)
 //
@@ -104,9 +104,11 @@ string RespawnItem(const string &in qs) {
         if (o is null || o.ItemModel is null) continue;
         if (o.ItemModel.IdName.IndexOf(needle) < 0) continue;
         vec3 p = o.AbsolutePositionInMap + vec3(dx, 0.0f, dz);
-        auto placed = pmt.PlaceAnchoredObject(o.ItemModel, p, vec3(o.Pitch, o.Yaw, o.Roll), vec3(0.0f, 0.0f, 0.0f));
-        if (placed is null) return "PlaceAnchoredObject returned null for " + o.ItemModel.IdName + " at " + p.ToString();
-        return "placed " + o.ItemModel.IdName + " at " + p.ToString() + " (copy of #" + i + "); items now " + ch.AnchoredObjects.Length;
+        // 2026-09-09: CGameEditorPluginMap::PlaceAnchoredObject is NOT bound in this
+        // Openplanet build ("No matching symbol" at compile time, one game restart
+        // learnt it). Until a bound placement call is found this route only
+        // says what it would do.
+        return "would place " + o.ItemModel.IdName + " at " + p.ToString() + " (copy of #" + i + ") -- no bound placement API (PlaceAnchoredObject missing); items " + ch.AnchoredObjects.Length;
     }
     return "no anchored object matches " + needle;
 }
