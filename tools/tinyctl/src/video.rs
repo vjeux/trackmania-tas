@@ -597,17 +597,13 @@ fn one(args: &[String]) -> Result<Done, String> {
     // --- the store
     if let Some(dest) = f("--store") {
         let mut sent = Vec::new();
-        let dest_dir = dest.split_once(':').map(|(_, d)| d.to_string()).unwrap_or_else(|| dest.clone());
         for p in [&local_webm, &mp4, &sheet] {
             if !p.is_file() {
                 continue;
             }
-            if let Some(w) = &from_webm {
-                // the store copy IS the source: do not copy the webm onto itself
-                let src_dir = w.parent().map(|d| d.display().to_string()).unwrap_or_default();
-                if *p == local_webm && src_dir == dest_dir {
-                    continue;
-                }
+            // an existing render came FROM a store: only what is new here goes back
+            if from_webm.is_some() && *p == local_webm {
+                continue;
             }
             copy_to_store(p, &dest)?;
             sent.push(p.file_name().unwrap().to_string_lossy().into_owned());
