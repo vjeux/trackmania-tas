@@ -837,6 +837,10 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 *row = format!("{nn}\t{time}\t{name}\t{done_file}\t{url}");
                 changed = true;
                 pending -= 1;
+                // A ship that WORKED means the session is good: let the next one
+                // start on this tick instead of waiting out the retry interval,
+                // which exists for a session being renewed by hand.
+                last_probe = None;
             } else if !done.starts_with("PENDING ") {
                 println!("{} {nn} {time}: {done}", chrono_now());
                 // A dead browser cookie fails a ship in two places — at the probe
