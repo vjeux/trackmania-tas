@@ -80,7 +80,7 @@ fn main() {
     // missing that is `index out of bounds: the len is 2 but the index is 2` —
     // a panic where a usage line belongs. Say what is missing instead.
     const WANTS_MAP: &[&str] = &[
-        "waypoints", "census", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
+        "waypoints", "census", "skins", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
         "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "delblocks", "striplightmap", "itembytes", "mediatracker",
     ];
@@ -141,6 +141,7 @@ fn main() {
         "dropbaked" => surgery::dropbaked(&args),
         "movebaked" => surgery::movebaked(&args),
         "census" => census::cmd_census(&args),
+        "skins" => census::cmd_skins(&args),
         "fillers" => tmmaps::fillers::cmd(&args),
         // archive-only variants of a tiny map for the load-failure bisect (zippad.rs)
         "zippad" => tmmaps::zippad::cmd(&args),
@@ -169,6 +170,7 @@ READING A MAP
         the map's waypoints: spawn, checkpoints, goal — block# / item# indices,
         tags, cells, free positions. These indices are what every mover takes.
   tmmaps census MAP [--filter PAT] [--free]
+  tmmaps skins MAP [--name SUBSTR]      item placements carrying a skin FileRef (path, url) + per-model counts
         EVERY block, unbaked (0x0304301F) and BAKED (0x03043048), tagged U/B,
         with its free-block position when it has one, as TSV. `waypoints` and
         any single-chunk listing show only one of the two: across the store

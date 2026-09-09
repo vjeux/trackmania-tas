@@ -415,12 +415,51 @@ lineups (frames `tinyshots/flt1..flt9`):
 item; the game reserves the tween mark for meshes whose materials are pack
 files.** What remains for the Flag8m placements is a choice, not a fix: the
 still half-size cloth (today's default, skinned, right size, no motion), the
-stock `Flag8m` at every Flag8m placement as well (moving and skinned like the
-Flag16m stand-ins already are, at twice the world's scale — frames flt9:
-stock and half copy side by side, two instants), or a mechanical flag built
+stock `Flag8m` at every Flag8m placement as well (`TINY_FLAG8M=stock`, one
+knob in `stock_half_variant`: moving and skinned like the Flag16m stand-ins
+already are, at twice the world's scale — frames flt9: stock and half copy
+side by side, two instants), or a mechanical flag built
 from kinematic strips (the pusher form, which does animate embedded, one
 strip item per phase eighth) — not built. The `TINY_FLAG_*` knobs stay as
 the probes they are.
+
+**How (c), a mechanical flag of kinematic strips, would be built (not built;
+for a future thread).** Everything it needs is measured and in the tree:
+the kinematic dyna kind (0x914F000) animates in an embedded item exactly like
+a stock one (pushers, rotors, lineup PH1), `add_dyna_part` writes it (inline
+mesh, BOTH hulls — a kinematic part without hulls crashes the loader at
+`Trackmania.exe+0xb7088c`, so give each strip the pusher piston's hulls at
+~5 %, as `TINY_FLAG_KINEMATIC` already does), the constraint is
+`NPlugDyna_SKinematicConstraint` (TransAxis + TransMin/TransMax +
+TransAnimFunc, RotAxis + AngleMinDeg/AngleMaxDeg + RotAnimFunc; an anim func
+is a list of `{FuncBase Constant|Linear|EaseInQuad|EaseOutQuad|EaseInOutQuad,
+InverseY, DurationMs}` pieces whose durations sum to the period), and the
+phase of a kinematic ITEM is the map's per-placement `AnimPhaseOffset` byte
+(chunk 0x03043063, eighths of the period; `MapFile::set_item_phase8`,
+`tmmaps lineup --phases8`). A phase per strip is therefore a phase per ITEM:
+1. Split the cloth's frame-0 mesh (the `FlagSmall` visual at the pack ladder,
+   5 levels) into N vertical strips by x (6–8 strips over the 2 m half cloth,
+   UVs untouched so the placement skin still maps); strip k becomes its own
+   `CPlugDynaObjectModel` entity with `IsKinematic`, TransAxis = the cloth's
+   normal, TransMin/Max = ∓A (A ≈ 0.12–0.15 m at half scale), anim
+   `[EaseInOutQuad T/2, EaseInOutQuad T/2 InverseY]`, T ≈ 2 s (the stock
+   cloth's `PeriodSc` 8 is the tween's, pick by eye).
+2. One item PER STRIP, not one item with N entities: the phase byte is per
+   placement, so `tmmaps tiny` emits, for every Flag8m placement, the pole
+   item plus N strip items at the same pose with phase bytes k·8/N (the
+   `iv@`/`--phases8` machinery). 90 placements on Summer 13 → 90 + 90·N
+   items; the models are N+1 shared aliases, the map grows by the
+   placements only.
+3. Seams: adjacent strips differ by at most A·sin(2π/N) at any instant
+   (≈ 0.1 m for N = 8) — invisible past ~20 m, visible up close; a small
+   rotation about each strip's inner edge (RotAxis vertical, ±(A/strip
+   width) rad, same anim func, same phase) closes most of the gap but needs
+   the strip's origin on that edge. Check the result with `tinyctl motion`
+   (two instants, same camera) beside a stock Flag8m before touching the
+   converter.
+What it will never be: cloth. It is a segmented banner whose silhouette
+travels; whether that beats a still cloth or a double-size stock flag is
+vjeux's call, hence unbuilt.
 
 ## Placement colours and the clip walls' materials (2026-09-08)
 

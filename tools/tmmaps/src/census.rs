@@ -493,3 +493,32 @@ mod tests {
         assert!(a.holds([10.0, 0.0, 20.0]));
     }
 }
+
+/// `tmmaps skins MAP [--name SUBSTR]`: every item placement that carries a
+/// SKIN reference (chunk 0x03101002's FileRef — the custom image of a flag,
+/// the Summer.zip of 15), as `id<TAB>model<TAB>x<TAB>y<TAB>z<TAB>skin path<TAB>url`,
+/// then a per-model count. Written 2026-09-09 to prove a stock stand-in keeps
+/// its placement's skin (TINY_FLAG8M=stock: the source's 90 skinned Flag8m
+/// against the tiny build's 90 stock Flag8m).
+pub fn cmd_skins(args: &[String]) {
+    let m = MapFile::load(Path::new(&args[2]));
+    let needle = crate::cli::flag(args, "--name").unwrap_or("");
+    println!("id\tmodel\tx\ty\tz\tskin\turl");
+    let mut per_model: std::collections::BTreeMap<String, (usize, usize)> = std::collections::BTreeMap::new();
+    for (i, it) in m.items.iter().enumerate() {
+        if !needle.is_empty() && !it.model.contains(needle) {
+            continue;
+        }
+        let e = per_model.entry(it.model.clone()).or_insert((0, 0));
+        e.0 += 1;
+        if let Some(skin) = it.skin(&m.gbx.body) {
+            e.1 += 1;
+            println!("i{i}\t{}\t{:.3}\t{:.3}\t{:.3}\t{}\t{}", it.model, it.pos[0], it.pos[1], it.pos[2], skin.path, skin.url);
+        }
+    }
+    for (model, (n, skinned)) in &per_model {
+        if *skinned > 0 || !needle.is_empty() {
+            eprintln!("{model}: {skinned} of {n} placements carry a skin");
+        }
+    }
+}
