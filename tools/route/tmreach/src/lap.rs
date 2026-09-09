@@ -765,7 +765,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             } else {
                 // past the next gate without its credit: worth only the leg start (20 m before the gate
                 // ranked level with a legit approach; 20's lower deck under gate 3 sat there for 2 h)
-                let s_eff = if s > s_gate + 6.0 { s_prev + 10.0 } else { s };
+                let s_eff = if s > s_gate + 40.0 { s_prev + 10.0 } else { s };
                 // SPEED matters on jump/ramp/wall legs (21: 31 m/s at the foot or the car drops in the gap):
                 // a cell at the human's speed ranks 30 m ahead of a stopped one at the same arc length
                 let vh = track.human_speed_at(s);
@@ -877,7 +877,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         // the same cap as a rollout: past the next uncredited gate without its credit = off the route
         let s_gate_seed = track.gate_s.get(k_pref).copied().unwrap_or(f64::INFINITY);
         let s_prev_seed = if k_pref == 0 { 0.0 } else { track.gate_s.get(k_pref - 1).copied().unwrap_or(0.0) };
-        let s_eff_seed = if s > s_gate_seed + 6.0 { s_prev_seed + 10.0 } else { s };
+        let s_eff_seed = if s > s_gate_seed + 40.0 { s_prev_seed + 10.0 } else { s };
         let seed = Entry { key: Key { cs: (s / 4.0).floor() as i32, cv: (speed(&end) / 5.0).floor() as i32, cy: (end.y / 3.0).floor() as i32, mask }, chain: recs, cps, mask, s, seg, progress: k_pref as f64 * 10_000.0 + s_eff_seed, visits: 0, end: end.clone(), macro_desc: vec![format!("seed chain {} ticks", recs_len)] };
         out.log.push(format!("seed from a {} tick chain: ({:.1}, {:.1}, {:.1}) v {:.1} cps {cps} mask {mask:#x} s {s:.1}", recs_len, end.x, end.y, end.z, speed(&end)));
         if cfg.verbose {
