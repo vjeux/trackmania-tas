@@ -1577,7 +1577,7 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
                 }
                 // without --respawn a seed is cut BEFORE its first respawn tick: the state after a respawn is not
                 // reproduced across processes (24, 07:14Z: ten finishes refused by the self-validation)
-                if !a.has("respawn") {
+                if !a.has("respawn") && !a.has("keep-seed-respawns") {
                     if let Some(i) = c.iter().position(|r| r.respawn()) {
                         println!("seed chain {f}: respawn at tick {i} — chain cut there (no --respawn)");
                         c.truncate(i.saturating_sub(10));
