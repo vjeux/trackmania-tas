@@ -4,8 +4,7 @@
 //! finish 20, 21 or 22, so no MediaTrackerCache ghost exists for them. But the
 //! client keeps a second per-map file, written on every checkpoint crossing in
 //! test mode so the player can "start from checkpoint":
-//!
-//!     C:\ProgramData\Trackmania\LaunchedCheckpointsCache\<map name>.LaunchedCP.gbx
+//! `C:\ProgramData\Trackmania\LaunchedCheckpointsCache\<map name>.LaunchedCP.gbx`.
 //!
 //! For every checkpoint reached it stores the FULL car state at the crossing and
 //! the last ~1.5 s of the approach as vehicle samples -- the route skeleton of an
