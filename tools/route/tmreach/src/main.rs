@@ -1560,6 +1560,8 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
         seed_to_gate: a.get("seed-to-gate").map(|s| s.parse().unwrap()).unwrap_or(0),
         respawn: a.has("respawn"),
         compound: a.has("compound"),
+        rendezvous: a.get("rendezvous").map(|s| { let v: Vec<f64> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); [v[0], v[1], v[2], v[3], v[4], v[5]] }),
+        rdv_tol: a.get("rdv-tol").map(|s| s.parse().unwrap()).unwrap_or(3.0),
         seed_chain: match a.get("seed-chain") {
             Some(f) => {
                 let txt = std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;
