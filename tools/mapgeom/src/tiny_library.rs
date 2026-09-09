@@ -1668,7 +1668,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     //    others, and the "slabs" were that car. So the rule is NOT established:
     //    off by default, TINY_OCCUPIED_RULE=1 enables it for a probe. Decide it
     //    with car-free frames (`shootctl shootset` now hides the cursor).
-    let occupied_rule = std::env::var("TINY_OCCUPIED_RULE").map(|v| v == "1").unwrap_or(false);
+    let occupied_rule = std::env::var("TINY_OCCUPIED_RULE").map(|v| v == "1" || v == "2").unwrap_or(false);
     let mut occupied_hidden: std::collections::HashSet<usize> = std::collections::HashSet::new();
     if std::env::var("TINY_FILLER_RULE").is_ok() || std::env::var("TINY_VFC_RULE").is_ok() {
         println!("  ⚠ TINY_FILLER_RULE/TINY_VFC_RULE are gone: every generated filler the game draws is emitted (a1b91d23); the variable is ignored");
@@ -1676,10 +1676,22 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     {
         let faces = crate::fillers::faces(store, &mut idx, &source);
         if occupied_rule {
+            // TINY_OCCUPIED_RULE=1: every covered record (the crude probe);
+            // TINY_OCCUPIED_RULE=2: covered AND the clip's CanBeDeletedByFullFreeClip
+            // flag set — the occupied neighbour face acting as a full free clip
+            // (the engine's own flag; 2026-09-09 06:37Z: it separates every
+            // observed case — DecoPlatformFCSmall, TechnicsScreen*FCB, SnowRoad*
+            // InsideVFC hidden in the original (del=1); Water FC/HFC rims,
+            // PlatformSlope2UTopVFC, PlatformSlope2Curve3InHFCI drawn (del=0)).
+            let strict = std::env::var("TINY_OCCUPIED_RULE").map(|v| v == "2").unwrap_or(false);
             for b in source.baked.iter().filter(|b| b.name != "Sea") {
-                if crate::fillers::classify(&faces, b).class.starts_with("covered:") {
-                    occupied_hidden.insert(b.index);
+                if !crate::fillers::classify(&faces, b).class.starts_with("covered:") {
+                    continue;
                 }
+                if strict && !faces.clips.get(&b.name.to_ascii_lowercase()).map(|c| c.deletable).unwrap_or(false) {
+                    continue;
+                }
+                occupied_hidden.insert(b.index);
             }
         }
         let dirs: std::collections::HashMap<usize, u8> = source.blocks.iter().map(|b| (b.index, b.dir)).collect();
