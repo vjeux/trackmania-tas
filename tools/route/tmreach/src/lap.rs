@@ -837,12 +837,14 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let hw = track.half_width.get(seg).copied().unwrap_or(5.5);
             let road_y_min = track.min_y_near(s, 15.0);
             let bad = speed(&end) < 3.0 || (end.vy < -3.0 && end.y < road_y_min - 3.0) || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y_min - cfg.below_tol));
-            if !bad || tries >= 12 || recs.len() <= 300 {
+            if !bad || tries >= 40 || recs.len() <= 300 {
                 break (rows, nh, end, s, seg);
             }
             w.release(nh);
             tries += 1;
-            let cut = recs.len() - 300;
+            // 3 s per cut for the first 12, then 15 s (a car that stopped at 24 s of a 106 s chain)
+            let step = if tries <= 12 { 300 } else { 1500 };
+            let cut = recs.len().saturating_sub(step).max(300);
             recs.truncate(cut);
             out.log.push(format!("seed ends in a dead state (v {:.1}, vy {:+.1}, {:.1} m below the line, lat {:.1}); chain cut to {} ticks", speed(&end), end.vy, road_y - end.y, lat, cut));
             if cfg.verbose {
