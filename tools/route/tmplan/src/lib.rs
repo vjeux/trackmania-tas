@@ -10,6 +10,7 @@ pub mod export;
 pub mod planner;
 pub mod surface;
 pub mod walk;
+pub mod plot;
 
 /// The pak files the geometry comes from: `TM_PAKS` (colon-separated paths) when set, else the dedicated
 /// server's `$TM_SERVER/Packs/{dedicated_TMStadium,dedicated,resource}.pak`. The server tree under /tmp was

@@ -248,6 +248,7 @@ fn main() {
         "road-centreline" => cmd_road_centreline(&args[1..]),
         "author-line" => cmd_author_line(&args[1..]),
         "author-ground" => cmd_author_ground(&args[1..]),
+        "leg-plot" => cmd_leg_plot(&args[1..]),
         other => die(&format!("unknown command {other}")),
     }
 }
@@ -1316,4 +1317,261 @@ fn cmd_author_ground(args: &[String]) {
     if let Some(rs) = run_start { flush(rs, pts.len() - 1); }
     let a_air = ga.iter().filter(|g| g.map(|g| g.0 > 1.5).unwrap_or(true)).count();
     println!("{}: {} samples, A airborne/unsupported {} ({:.0} %), A-supported-but-B-missing {}", Path::new(&maps[1]).file_name().unwrap().to_string_lossy(), pts.len(), a_air, 100.0 * a_air as f32 / pts.len().max(1) as f32, n_bad);
+}
+
+/// `leg-plot MAP.Map.Gbx --gates deck.json --author-line author.json (--leg K | --s A:B) [--chains rows.tsv]... --out X.png [--ppm 2]`
+/// One picture of a leg: top-down surfaces by physics (walls dark), the human line by speed, the chains by death cause
+/// with a marker where each dies, the gates; below it the side elevation along the human's arc length (surface under the
+/// line, the human's height, the chains' heights) and the speeds. Coordinator 15:56Z.
+fn cmd_leg_plot(args: &[String]) {
+    use tmplan::plot::*;
+    let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
+    let gp = flag(args, "--gates").unwrap_or_else(|| die("--gates deck.json"));
+    let gates = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+    let ap = flag(args, "--author-line").unwrap_or_else(|| die("--author-line author.json"));
+    let txt = std::fs::read_to_string(&ap).unwrap_or_else(|e| die(&format!("{ap}: {e}")));
+    let k = "\"pts\": [";
+    let i = txt.find(k).unwrap_or_else(|| die("no pts"));
+    let rest = &txt[i + k.len()..];
+    let end = rest.find("]]").map(|e| e + 1).unwrap_or(rest.len());
+    let flat: Vec<f32> = rest[..end].split(|c: char| c == ',' || c == '[' || c == ']').filter_map(|x| x.trim().parse::<f32>().ok()).collect();
+    let line: Vec<[f32; 3]> = flat.chunks(3).filter(|c| c.len() == 3).map(|c| [c[0], c[1], c[2]]).collect();
+    // arc length and speed (100 ms samples) along the human line
+    let mut s = vec![0.0f32];
+    for i in 1..line.len() { let (a, b) = (line[i - 1], line[i]); s.push(s[i - 1] + ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()); }
+    let vh: Vec<f32> = (0..line.len()).map(|i| if i == 0 { 0.0 } else { (s[i] - s[i - 1]) * 10.0 }).collect();
+    // the gate crossings along the line (same rule as the route files: deepest in-range run, finish = last run)
+    let mut groups: Vec<u32> = gates.gates.iter().filter(|g| g.group != u32::MAX).map(|g| g.group).collect();
+    groups.sort_unstable();
+    groups.dedup();
+    let mut crossings: Vec<(usize, u32)> = Vec::new();
+    for grp in &groups {
+        let is_fin = gates.gates.iter().any(|x| x.group == *grp && matches!(x.kind, tmroute::gates::WpKind::Finish));
+        let (mut best_run, mut run_best, mut in_run): (Option<(usize, f32)>, Option<(usize, f32)>, bool) = (None, None, false);
+        for (li, p) in line.iter().enumerate() {
+            let dmin = gates.gates.iter().filter(|x| x.group == *grp).filter(|x| { let dy = p[1] - x.centre[1]; dy >= -9.0 && dy <= 3.0 }).map(|x| ((x.centre[0] - p[0]).powi(2) + (x.centre[2] - p[2]).powi(2)).sqrt() - x.half_width).fold(f32::INFINITY, f32::min);
+            if dmin <= 6.0 { if !in_run { in_run = true; run_best = None; } if run_best.map(|(_, d)| dmin < d).unwrap_or(true) { run_best = Some((li, dmin)); } }
+            else if in_run { in_run = false; if is_fin || best_run.map(|(_, d)| run_best.map(|(_, rd)| rd < d).unwrap_or(false)).unwrap_or(true) { best_run = run_best; } }
+        }
+        if in_run && (is_fin || best_run.map(|(_, d)| run_best.map(|(_, rd)| rd < d).unwrap_or(false)).unwrap_or(true)) { best_run = run_best; }
+        if let Some((li, _)) = best_run { crossings.push((li, *grp)); }
+    }
+    crossings.sort();
+    // the window: --leg K (gate K-1 → K in the human order; K = 0 is spawn → first gate) or --s A:B
+    let (i0, i1, title) = if let Some(k) = flag(args, "--leg").and_then(|v| v.parse::<usize>().ok()) {
+        let a = if k == 0 { 0 } else { crossings.get(k - 1).map(|c| c.0).unwrap_or(0) };
+        let b = crossings.get(k).map(|c| c.0).unwrap_or(line.len() - 1);
+        (a, b, format!("LEG {k}: {} > GROUP {}", if k == 0 { "SPAWN".to_string() } else { format!("GROUP {}", crossings[k - 1].1) }, crossings.get(k).map(|c| c.1.to_string()).unwrap_or("END".into())))
+    } else if let Some(w) = flag(args, "--s") {
+        let mut it = w.split(':');
+        let a: f32 = it.next().and_then(|x| x.parse().ok()).unwrap_or(0.0);
+        let b: f32 = it.next().and_then(|x| x.parse().ok()).unwrap_or(f32::INFINITY);
+        let ia = s.iter().position(|&v| v >= a).unwrap_or(0);
+        let ib = s.iter().position(|&v| v >= b).unwrap_or(line.len() - 1);
+        (ia, ib, format!("S {a:.0}-{b:.0}"))
+    } else { die("--leg K or --s A:B") };
+    let seg = &line[i0..=i1];
+    let mut chains: Vec<Chain> = args.iter().enumerate().filter(|(_, a)| *a == "--chains").filter_map(|(i, _)| args.get(i + 1)).flat_map(|p| read_chains(p).unwrap_or_else(|e| die(&e))).collect();
+    // GEN's archive dumps (gen/plots/FORMAT.md): best-rows (tick race_ms x y z speed vy cps) = one chain "best";
+    // deaths (cause x y z v s macro) = one marker each; cells (x y z v cps s macro) = alive end states, small dots
+    let tsv = |p: &str| -> Vec<Vec<String>> { std::fs::read_to_string(p).unwrap_or_else(|e| die(&format!("{p}: {e}"))).lines().skip(1).map(|l| l.split('\t').map(|x| x.trim().to_string()).collect()).filter(|f: &Vec<String>| f.len() >= 4).collect() };
+    if let Some(p) = flag(args, "--gen-best") {
+        let rows: Vec<ChainRow> = tsv(&p).iter().filter_map(|f| Some(ChainRow { t: f.get(1)?.parse::<f32>().ok()? / 1000.0, p: [f.get(2)?.parse().ok()?, f.get(3)?.parse().ok()?, f.get(4)?.parse().ok()?], v: f.get(5)?.parse().ok()? })).collect();
+        let rows: Vec<ChainRow> = rows.into_iter().enumerate().filter(|(i, _)| i % 10 == 0).map(|(_, r)| r).collect();
+        chains.push(Chain { id: "best".into(), rows, cause: "alive".into() });
+    }
+    if let Some(p) = flag(args, "--gen-deaths") {
+        for f in tsv(&p) { if let (Ok(x), Ok(y), Ok(z), Ok(v)) = (f[1].parse::<f32>(), f[2].parse::<f32>(), f[3].parse::<f32>(), f.get(4).map(|s| s.parse::<f32>()).unwrap_or(Ok(0.0))) { chains.push(Chain { id: format!("death{}", chains.len()), rows: vec![ChainRow { t: 0.0, p: [x, y, z], v }], cause: f[0].to_lowercase() }); } }
+    }
+    let mut cells: Vec<([f32; 3], f32)> = Vec::new();
+    if let Some(p) = flag(args, "--gen-cells") {
+        for f in tsv(&p) { if let (Ok(x), Ok(y), Ok(z), Ok(v)) = (f[0].parse::<f32>(), f[1].parse::<f32>(), f[2].parse::<f32>(), f[3].parse::<f32>()) { cells.push(([x, y, z], v)); } }
+    }
+    // clip every chain to the leg: rows within 30 m (XZ) of a leg sample (a whole-lap replay would frame the whole map)
+    let near_leg = |p: [f32; 3]| -> bool { seg.iter().any(|q| (q[0] - p[0]).powi(2) + (q[2] - p[2]).powi(2) < 900.0) };
+    for c in chains.iter_mut() { if c.rows.len() > 1 { c.rows.retain(|r| near_leg(r.p)); } }
+    chains.retain(|c| !c.rows.is_empty() && (c.rows.len() > 1 || near_leg(c.rows[0].p)));
+    cells.retain(|(p, _)| near_leg(*p));
+    // bounding box: the leg ± 25 m, plus the chains
+    let (mut xmin, mut xmax, mut zmin, mut zmax) = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+    let mut ymax = f32::NEG_INFINITY;
+    for p in seg.iter().chain(chains.iter().flat_map(|c| c.rows.iter().map(|r| &r.p))) { xmin = xmin.min(p[0]); xmax = xmax.max(p[0]); zmin = zmin.min(p[2]); zmax = zmax.max(p[2]); ymax = ymax.max(p[1]); }
+    let margin = 25.0;
+    xmin -= margin; xmax += margin; zmin -= margin; zmax += margin;
+    let ppm: f32 = flag(args, "--ppm").and_then(|v| v.parse().ok()).unwrap_or(2.0);
+    let (tw, th) = (((xmax - xmin) * ppm) as usize + 1, ((zmax - zmin) * ppm) as usize + 1);
+    let (tw, th) = (tw.clamp(200, 2400), th.clamp(200, 2400));
+    let ppm = ((tw as f32 - 1.0) / (xmax - xmin)).min((th as f32 - 1.0) / (zmax - zmin));
+    let side_h = 320usize;
+    let legend_h = 40usize;
+    let mut cv = Canvas::new(tw.max(900), th + side_h + legend_h, [250, 250, 250]);
+    // scene
+    let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
+    let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
+    let m = tmmaps::map::MapFile::load(Path::new(&map));
+    let opts = mapgeom::local::BuildOpts { with_deco: true, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() };
+    let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &opts);
+    let ymin_leg = seg.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+    let top_y = ymax + 30.0;
+    // top-down: one downward ray per pixel; heights shade the colour (higher = lighter), walls (ny < 0.5) dark
+    let to_px = |x: f32, z: f32| -> (f32, f32) { ((x - xmin) * ppm, (zmax - z) * ppm) };
+    let mut ground_under: Vec<Option<f32>> = Vec::with_capacity(seg.len());
+    for py in 0..th {
+        for px in 0..tw {
+            let x = xmin + px as f32 / ppm;
+            let z = zmax - py as f32 / ppm;
+            let mut o = [x, top_y, z];
+            let mut col = [250u8, 250, 250];
+            for _ in 0..3 {
+                match scene.raycast(o, [0.0, -1.0, 0.0], top_y - (ymin_leg - 60.0), true) {
+                    Some(h) if matches!(h.material_name, "Water" | "Sea" | "Lake" | "WaterSurface") => { o = [h.point[0], h.point[1] - 0.05, h.point[2]]; col = [200, 220, 245]; continue; }
+                    Some(h) => {
+                        let mut c = material_colour(h.material_name);
+                        // height shading: ±25 m around the leg → ±25 % brightness
+                        let sh = ((h.point[1] - (ymin_leg + ymax) * 0.5) / 25.0).clamp(-1.0, 1.0) * 0.25;
+                        for k in 0..3 { c[k] = ((c[k] as f32) * (1.0 + sh)).clamp(0.0, 255.0) as u8; }
+                        if h.normal[1].abs() < 0.5 { c = [60, 60, 70]; }
+                        col = c;
+                        break;
+                    }
+                    None => break,
+                }
+            }
+            cv.set(px as i64, py as i64, col);
+        }
+    }
+    // gates
+    for g in &gates.gates {
+        if g.group == u32::MAX { continue; }
+        let (px, pz) = to_px(g.centre[0], g.centre[2]);
+        let fin = matches!(g.kind, tmroute::gates::WpKind::Finish);
+        cv.ring(px, pz, (g.half_width * ppm).max(4.0), if fin { [20, 120, 40] } else { [230, 30, 30] });
+        cv.text(px as i64 + 4, pz as i64 - 12, &format!("G{}", g.group), [0, 0, 0], 1);
+    }
+    // human line (whole map faint, the leg bright by speed)
+    for i in 1..line.len() { let (a, b) = (to_px(line[i - 1][0], line[i - 1][2]), to_px(line[i][0], line[i][2])); cv.line(a.0, a.1, b.0, b.1, [120, 120, 120], 1); }
+    for i in (i0 + 1)..=i1 { let (a, b) = (to_px(line[i - 1][0], line[i - 1][2]), to_px(line[i][0], line[i][2])); cv.line(a.0, a.1, b.0, b.1, speed_colour(vh[i]), 3); }
+    // --cp-states NN.json: vjeux's checkpoint-crossing states (launched-cp): position + velocity vector + speed, magenta
+    // markers with an arrow (any JSON: every object with x,y,z and vx,vy,vz or speed is a state)
+    let mut cp_states: Vec<([f32; 3], [f32; 3], f32, String)> = Vec::new();
+    if let Some(p) = flag(args, "--cp-states") {
+        let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| die(&format!("{p}: {e}")));
+        let v: serde_json::Value = serde_json::from_str(&txt).unwrap_or_else(|e| die(&format!("{p}: {e}")));
+        fn walk(v: &serde_json::Value, out: &mut Vec<([f32; 3], [f32; 3], f32, String)>, label: String) {
+            let num = |o: &serde_json::Map<String, serde_json::Value>, k: &str| o.get(k).and_then(|x| x.as_f64()).map(|x| x as f32);
+            match v {
+                serde_json::Value::Object(o) => {
+                    let pos = if let (Some(x), Some(y), Some(z)) = (num(o, "x"), num(o, "y"), num(o, "z")) { Some([x, y, z]) } else { o.get("pos").or(o.get("position")).and_then(|a| a.as_array()).filter(|a| a.len() == 3).map(|a| [a[0].as_f64().unwrap_or(0.0) as f32, a[1].as_f64().unwrap_or(0.0) as f32, a[2].as_f64().unwrap_or(0.0) as f32]) };
+                    if let Some(pp) = pos {
+                        let vel = if let (Some(x), Some(y), Some(z)) = (num(o, "vx"), num(o, "vy"), num(o, "vz")) { [x, y, z] } else { o.get("vel").or(o.get("velocity")).and_then(|a| a.as_array()).filter(|a| a.len() == 3).map(|a| [a[0].as_f64().unwrap_or(0.0) as f32, a[1].as_f64().unwrap_or(0.0) as f32, a[2].as_f64().unwrap_or(0.0) as f32]).unwrap_or([0.0; 3]) };
+                        let sp = num(o, "speed").or(num(o, "v")).unwrap_or((vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]).sqrt());
+                        let lab = o.get("cp").or(o.get("checkpoint")).or(o.get("waypoint")).or(o.get("landmark")).map(|x| x.to_string().trim_matches('"').to_string()).unwrap_or(label.clone());
+                        if o.get("approach").is_none() && o.get("samples").is_none() || o.contains_key("cp") || o.contains_key("landmark") { out.push((pp, vel, sp, lab)); }
+                    }
+                    for (k, x) in o { if k != "approach" && k != "samples" { walk(x, out, k.clone()); } }
+                }
+                serde_json::Value::Array(a) => { for (i, x) in a.iter().enumerate() { walk(x, out, format!("{label}{i}")); } }
+                _ => {}
+            }
+        }
+        walk(&v, &mut cp_states, String::new());
+        cp_states.retain(|(p, _, _, _)| near_leg(*p));
+        eprintln!("  {} vjeux CP states in the window", cp_states.len());
+    }
+    // alive cells: small dots by speed
+    for (p, v) in &cells { let (px, pz) = to_px(p[0], p[2]); cv.disc(px, pz, 1.5, speed_colour(*v)); }
+    // chains
+    for c in &chains {
+        let col = cause_colour(&c.cause);
+        for i in 1..c.rows.len() { let (a, b) = (to_px(c.rows[i - 1].p[0], c.rows[i - 1].p[2]), to_px(c.rows[i].p[0], c.rows[i].p[2])); cv.line(a.0, a.1, b.0, b.1, col, 2); }
+        if let Some(r) = c.rows.last() { let (px, pz) = to_px(r.p[0], r.p[2]); if c.rows.len() > 1 { cv.disc(px, pz, 5.0, col); cv.ring(px, pz, 7.0, [0, 0, 0]); } else { cv.disc(px, pz, 3.0, col); } }
+    }
+    // vjeux CP states: magenta disc + velocity arrow (1 s of travel) + label
+    for (p, vel, sp, lab) in &cp_states {
+        let (px, pz) = to_px(p[0], p[2]);
+        let (qx, qz) = to_px(p[0] + vel[0], p[2] + vel[2]);
+        cv.line(px, pz, qx, qz, [200, 0, 200], 3);
+        cv.disc(px, pz, 6.0, [200, 0, 200]);
+        cv.ring(px, pz, 8.0, [255, 255, 255]);
+        cv.text(px as i64 + 9, pz as i64 + 4, &format!("V{lab} {sp:.0}", ), [120, 0, 120], 1);
+    }
+    // ground under the human line (for the elevation)
+    for p in seg {
+        let mut o = [p[0], p[1] + 0.3, p[2]];
+        let mut found = None;
+        for _ in 0..3 {
+            match scene.raycast(o, [0.0, -1.0, 0.0], 40.0, true) {
+                Some(h) if matches!(h.material_name, "Water" | "Sea" | "Lake" | "WaterSurface") => { o = [h.point[0], h.point[1] - 0.05, h.point[2]]; }
+                Some(h) => { found = Some(h.point[1]); break; }
+                None => break,
+            }
+        }
+        ground_under.push(found);
+    }
+    // side elevation: x = s along the leg, y = height; chains projected onto the leg by nearest sample
+    let (sx0, sx1) = (s[i0], s[i1]);
+    let panel_y0 = th as i64 + 10;
+    let panel_h = (side_h - 20) as i64;
+    let elev_h = (panel_h as f32 * 0.62) as i64;
+    let spd_y0 = panel_y0 + elev_h + 12;
+    let spd_h = panel_h - elev_h - 12;
+    cv.rect(0, th as i64, cv.w as i64 - 1, th as i64 + side_h as i64 + legend_h as i64 - 1, [255, 255, 255]);
+    let all_y: Vec<f32> = seg.iter().map(|p| p[1]).chain(ground_under.iter().filter_map(|g| *g)).chain(chains.iter().flat_map(|c| c.rows.iter().map(|r| r.p[1]))).collect();
+    let (ymn, ymx) = (all_y.iter().cloned().fold(f32::INFINITY, f32::min) - 3.0, all_y.iter().cloned().fold(f32::NEG_INFINITY, f32::max) + 3.0);
+    let w = cv.w as f32 - 80.0;
+    let sx = |sv: f32| -> f32 { 60.0 + (sv - sx0) / (sx1 - sx0).max(1.0) * w };
+    let ey = |y: f32| -> f32 { panel_y0 as f32 + (1.0 - (y - ymn) / (ymx - ymn).max(1.0)) * elev_h as f32 };
+    let vy = |v: f32| -> f32 { spd_y0 as f32 + (1.0 - (v / 90.0).clamp(0.0, 1.0)) * spd_h as f32 };
+    // axes + labels
+    cv.line(60.0, panel_y0 as f32, 60.0, (panel_y0 + elev_h) as f32, [0, 0, 0], 1);
+    cv.line(60.0, (panel_y0 + elev_h) as f32, 60.0 + w, (panel_y0 + elev_h) as f32, [0, 0, 0], 1);
+    cv.text(2, panel_y0, &format!("{ymx:.0}M"), [0, 0, 0], 1);
+    cv.text(2, panel_y0 + elev_h - 8, &format!("{ymn:.0}M"), [0, 0, 0], 1);
+    cv.line(60.0, spd_y0 as f32, 60.0, (spd_y0 + spd_h) as f32, [0, 0, 0], 1);
+    cv.line(60.0, (spd_y0 + spd_h) as f32, 60.0 + w, (spd_y0 + spd_h) as f32, [0, 0, 0], 1);
+    cv.text(2, spd_y0, "90 M/S", [0, 0, 0], 1);
+    cv.text(2, spd_y0 + spd_h - 8, "0", [0, 0, 0], 1);
+    for k in 0..=8 { let sv = sx0 + (sx1 - sx0) * k as f32 / 8.0; cv.text(sx(sv) as i64 - 8, spd_y0 + spd_h + 3, &format!("S{sv:.0}"), [0, 0, 0], 1); cv.line(sx(sv), (panel_y0 + elev_h) as f32 - 3.0, sx(sv), (panel_y0 + elev_h) as f32 + 3.0, [0, 0, 0], 1); }
+    // surface under the line
+    for i in 1..seg.len() { if let (Some(a), Some(b)) = (ground_under[i - 1], ground_under[i]) { cv.line(sx(s[i0 + i - 1]), ey(a), sx(s[i0 + i]), ey(b), [140, 140, 140], 3); } }
+    // human height (by speed) and speed
+    for i in (i0 + 1)..=i1 { cv.line(sx(s[i - 1]), ey(line[i - 1][1]), sx(s[i]), ey(line[i][1]), speed_colour(vh[i]), 2); cv.line(sx(s[i - 1]), vy(vh[i - 1]), sx(s[i]), vy(vh[i]), [0, 0, 0], 2); }
+    // gate crossings as vertical ticks
+    for (li, grp) in &crossings { if *li >= i0 && *li <= i1 { cv.line(sx(s[*li]), panel_y0 as f32, sx(s[*li]), (spd_y0 + spd_h) as f32, [230, 30, 30], 1); cv.text(sx(s[*li]) as i64 + 3, panel_y0, &format!("G{grp}"), [230, 30, 30], 1); } }
+    // vjeux CP states on the elevation and speed panels
+    for (p, _, sp, _) in &cp_states {
+        let mut best = (f32::INFINITY, i0); for (j, q) in seg.iter().enumerate() { let d = (q[0] - p[0]).powi(2) + (q[2] - p[2]).powi(2); if d < best.0 { best = (d, i0 + j); } }
+        let sv = s[best.1];
+        cv.disc(sx(sv), ey(p[1]), 5.0, [200, 0, 200]); cv.disc(sx(sv), vy(*sp), 5.0, [200, 0, 200]);
+    }
+    // chains: project each row to the nearest leg sample (XZ) → s
+    for c in &chains {
+        let col = cause_colour(&c.cause);
+        let proj = |p: [f32; 3]| -> f32 { let mut best = (f32::INFINITY, i0); for (j, q) in seg.iter().enumerate() { let d = (q[0] - p[0]).powi(2) + (q[2] - p[2]).powi(2); if d < best.0 { best = (d, i0 + j); } } s[best.1] };
+        let mut prev: Option<(f32, f32, f32)> = None;
+        for r in &c.rows {
+            let sv = proj(r.p);
+            if let Some((ps, py, pv)) = prev { if (sv - ps).abs() < 40.0 { cv.line(sx(ps), ey(py), sx(sv), ey(r.p[1]), col, 1); cv.line(sx(ps), vy(pv), sx(sv), vy(r.v), col, 1); } }
+            prev = Some((sv, r.p[1], r.v));
+        }
+        if let Some(r) = c.rows.last() { let sv = proj(r.p); let rr = if c.rows.len() > 1 { 4.0 } else { 2.5 }; cv.disc(sx(sv), ey(r.p[1]), rr, col); cv.disc(sx(sv), vy(r.v), rr, col); }
+    }
+    // legend
+    let ly = (th + side_h) as i64 + 8;
+    let mut lx = 10i64;
+    for (name, col) in [("HUMAN BY SPEED", speed_colour(40.0)), ("FELL", cause_colour("fell")), ("OFFROUTE", cause_colour("offroute")), ("STOPPED", cause_colour("stopped")), ("ALIVE", cause_colour("alive")), ("FINISH", cause_colour("finish")), ("WALL", [60, 60, 70]), ("GATE", [230, 30, 30]), ("VJEUX CP STATE", [200, 0, 200])] {
+        cv.rect(lx, ly, lx + 14, ly + 10, col);
+        cv.text(lx + 18, ly + 2, name, [0, 0, 0], 1);
+        lx += 18 + 6 * name.len() as i64 + 16;
+    }
+    cv.text(10, 4, &format!("{} {title} S {sx0:.0}-{sx1:.0} ({} CHAINS)", gates.map_name.to_ascii_uppercase(), chains.len()), [0, 0, 0], 2);
+    let out = flag(args, "--out").unwrap_or_else(|| die("--out X.png"));
+    cv.write_png(Path::new(&out)).unwrap_or_else(|e| die(&e.to_string()));
+    // a one-line reading for the caller
+    let g_min = ground_under.iter().filter_map(|g| *g).fold(f32::INFINITY, f32::min);
+    let g_max = ground_under.iter().filter_map(|g| *g).fold(f32::NEG_INFINITY, f32::max);
+    let air = ground_under.iter().zip(seg.iter()).filter(|(g, p)| g.map(|g| p[1] - g > 1.5).unwrap_or(true)).count();
+    let vmin = vh[i0 + 1..=i1].iter().cloned().fold(f32::INFINITY, f32::min);
+    let vmax = vh[i0 + 1..=i1].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    println!("{out}: {title}, s {sx0:.0}–{sx1:.0} ({:.0} m), human {vmin:.0}–{vmax:.0} m/s, height {:.1}–{:.1} m, surface under the line {g_min:.1}–{g_max:.1} m, airborne samples {air}/{}, chains {} ({})", sx1 - sx0, seg.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min), seg.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max), seg.len(), chains.len(), { let mut m: BTreeMap<&str, usize> = BTreeMap::new(); for c in &chains { *m.entry(c.cause.as_str()).or_default() += 1; } m.iter().map(|(k, v)| format!("{v} {k}")).collect::<Vec<_>>().join(", ") });
 }

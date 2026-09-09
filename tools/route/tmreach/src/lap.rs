@@ -504,6 +504,9 @@ const FOLLOW: &[(&str, bool, u8, f64)] = &[
     ("follow the human (line + pedals), long lookahead", true, 3, 1.5),
     // bmode 5: brake TO the author's speed (brake whenever faster than the author 15 m ahead; 20's wood ramp)
     ("follow the human, brake to the author's speed", true, 5, 0.9),
+    // bmode 6/7: the human's pedals on a line 5 m RIGHT / LEFT of the human line (the outside of a bend)
+    ("follow the human, 5 m right of the line", true, 6, 0.9),
+    ("follow the human, 5 m left of the line", true, 7, 0.9),
     // bmode 4 (only with --respawn): press RESPAWN on the first tick (the engine re-places the car at its last credited
     // checkpoint ~1 s later, at that crossing's speed), hold gas through the dead second, then follow the human
     ("RESPAWN, then follow the human", true, 4, 0.9),
@@ -528,10 +531,23 @@ pub fn wrap(a: f64) -> f64 {
 
 /// Pure-pursuit steer toward the centreline point `look` metres ahead of the car's projection.
 fn follow_steer(cfg: &LapCfg, r: &Row, seg_hint: usize, look_scale: f64) -> (f32, usize, f64) {
+    follow_steer_off(cfg, r, seg_hint, look_scale, 0.0)
+}
+
+/// `follow_steer` aiming `off` metres beside the line (positive = right of the direction of travel): the OUTSIDE line
+/// through a bend that the human takes wide (22's plaza turn, GEOM's leg plot 2026-09-09 16:07Z)
+fn follow_steer_off(cfg: &LapCfg, r: &Row, seg_hint: usize, look_scale: f64, off: f64) -> (f32, usize, f64) {
     let (s, _lat, seg, _d) = cfg.track.project(pos(r), seg_hint, 60);
     let v = speed(r);
     let look = (look_scale * v).clamp(12.0, 45.0);
-    let target = cfg.track.at(s + look);
+    let mut target = cfg.track.at(s + look);
+    if off != 0.0 {
+        let ahead = cfg.track.at(s + look + 2.0);
+        let dx = ahead[0] - target[0];
+        let dz = ahead[2] - target[2];
+        let nrm = (dx * dx + dz * dz).sqrt().max(1e-6);
+        target = [target[0] + off * dz / nrm, target[1], target[2] - off * dx / nrm];
+    }
     let yaw = yaw_of(r);
     let want = (target[0] - r.x).atan2(target[2] - r.z);
     let delta = wrap(want - yaw);
@@ -577,6 +593,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
     let cps_of = |r: &Row| -> u8 { if r.cps == u32::MAX { 0 } else { r.cps as u8 } };
     let debug = std::env::var("TMREACH_LAP_DEBUG").is_ok();
     let debug_fan = std::env::var("TMREACH_LAP_DEBUG_FAN").is_ok();
+    let dump_n = std::cell::Cell::new(0usize);
     let root_cps = cps_of(&root_row);
     let track_min_y = track.pts.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
 
@@ -619,7 +636,8 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let mut done = 0usize;
             while done < h {
                 let k = 10.min(h - done);
-                let (st, sg, s_now) = follow_steer(cfg, &last, seg, *look);
+                let off = match bmode { 6 => 5.0, 7 => -5.0, _ => 0.0 };
+                let (st, sg, s_now) = follow_steer_off(cfg, &last, seg, *look, off);
                 seg = sg;
                 let v = speed(&last);
                 let hint = track.hint_at(seg);
@@ -632,6 +650,10 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                     5 => {
                         let vh = track.human_speed_at(s_now + 15.0);
                         if vh <= 3.0 || v <= vh { (true, false) } else { (false, true) }
+                    }
+                    6 | 7 => {
+                        let vh = track.human_speed_at(s_now + 15.0);
+                        if vh <= 3.0 || v <= vh * 1.05 { (true, false) } else if v > vh * 1.3 { (false, true) } else { (false, false) }
                     }
                     4 => {
                         if done < 110 { (true, false) } else {
@@ -806,6 +828,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let lat_abs = lat.abs();
             if !on_gap && (lat_abs > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol) {
                 out.deaths[1] += 1;
+                dump_rollout(w, base, &rows, "offroute", &desc, &dump_n);
                 if debug_fan {
                     eprintln!("    OFFROUTE {desc:34}: end ({:.1}, {:.1}, {:.1}) v {:.1} s {s:.1} lat {lat:.1} d3 {d3:.1} hw {hw:.1}", end.x, end.y, end.z, speed(&end));
                 }
@@ -820,6 +843,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             // (below the polyline while laterally ON the road = a dip the centreline's y does not follow: 08 at s 585)
             if (!on_gap && end.y < road_y - 5.0 && (lat_abs > hw + 1.0 || end.y < road_y_min - cfg.below_tol)) || (on_gap && (end.y < track_min_y - 5.0 || d3 > 120.0)) {
                 out.deaths[2] += 1;
+                dump_rollout(w, base, &rows, "fell", &desc, &dump_n);
                 if debug_fan {
                     eprintln!("    FELL {desc:38}: end ({:.1}, {:.1}, {:.1}) v {:.1} s {s:.1} lat {lat:.1} d3 {d3:.1} road_y {road_y:.1} min15 {road_y_min:.1} hw {hw:.1}", end.x, end.y, end.z, speed(&end));
                 }
@@ -828,12 +852,15 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             // dead: stopped and not at the start
             if speed(&end) < 1.0 && s > 5.0 && cps == root_cps {
                 out.deaths[3] += 1;
+                dump_rollout(w, base, &rows, "stopped", &desc, &dump_n);
                 continue;
             }
             if speed(&end) < 3.0 {
                 out.deaths[4] += 1;
+                dump_rollout(w, base, &rows, "crawl", &desc, &dump_n);
             } else {
                 out.deaths[5] += 1;
+                dump_rollout(w, base, &rows, "alive", &desc, &dump_n);
             }
             let mut chain = chain0.clone();
             chain.extend(recs);
@@ -1202,6 +1229,34 @@ fn dump_archive(archive: &std::collections::HashMap<Key, Entry>, out: &std::path
 }
 
 /// The chain as the player's gtape text (one line per 10 ms tick from race 0; steer ±65536).
+
+/// GEOM's leg-plot input (2026-09-09 16:00Z): with `TMREACH_LAP_DUMP_ROLLOUTS=DIR`, every rollout of a fan is appended to
+/// DIR/rollouts.tsv as `chain t x y z v cause` rows (100 ms spacing; cause on every row), at most `TMREACH_LAP_DUMP_MAX`
+/// (default 400) rollouts per process.
+pub fn dump_rollout(w: &Worker, base: Option<&Entry>, rows: &[Row], cause: &str, desc: &str, counter: &std::cell::Cell<usize>) {
+    let Ok(dir) = std::env::var("TMREACH_LAP_DUMP_ROLLOUTS") else { return };
+    let max: usize = std::env::var("TMREACH_LAP_DUMP_MAX").ok().and_then(|s| s.parse().ok()).unwrap_or(400);
+    if counter.get() >= max {
+        return;
+    }
+    counter.set(counter.get() + 1);
+    let id = format!("{}-{}-{}", std::process::id(), counter.get(), desc.replace(['\t', ' '], "_").chars().take(24).collect::<String>());
+    let mut s = String::new();
+    // the parent chain's own trajectory is not stored; the rollout's rows start at the base cell's end state
+    if let Some(b) = base {
+        s.push_str(&format!("{id}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\tseed\n", (w.race_of(&b.end) as f64) / 1000.0, b.end.x, b.end.y, b.end.z, speed(&b.end)));
+    }
+    for (i, r) in rows.iter().enumerate() {
+        if i % 10 == 0 || i + 1 == rows.len() {
+            s.push_str(&format!("{id}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\t{cause}\n", (w.race_of(r) as f64) / 1000.0, r.x, r.y, r.z, speed(r)));
+        }
+    }
+    let _ = std::fs::create_dir_all(&dir);
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(format!("{dir}/rollouts.tsv")) {
+        let _ = f.write_all(s.as_bytes());
+    }
+}
 pub fn gtape_text(chain: &[Rec]) -> String {
     let mut s = String::new();
     for (t, r) in chain.iter().enumerate() {
