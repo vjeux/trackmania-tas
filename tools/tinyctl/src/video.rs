@@ -644,12 +644,20 @@ fn one(args: &[String]) -> Result<Done, String> {
         let done_file = format!("{VID}/ship/{name}.done");
         let _ = wsx.sh(&format!("mkdir -p {VID}/ship && rm -f '{done_file}' && chmod +x {BOX_SHIP_SH} && nohup sh {BOX_SHIP_SH} '{r_mp4}' '{slug}' '{VID}/ship/{name}' > /dev/null 2>&1 < /dev/null &"))?;
         let ships = out.join("ships.tsv");
-        let mut text = std::fs::read_to_string(&ships).unwrap_or_default();
-        if text.is_empty() {
-            text.push_str("# nn\ttime\tname\tdone_file\tstatus\n");
+        // APPENDED, not read-modify-written. The watcher rewrites this file to
+        // mark statuses, and a read-modify-write from this side raced it: map
+        // 03's newest row (19.793) was written and then clobbered by the
+        // watcher's copy of the older file, so the newest lap of that map
+        // silently left the queue.
+        {
+            use std::io::Write;
+            let fresh = !ships.exists() || std::fs::metadata(&ships).map(|m| m.len() == 0).unwrap_or(true);
+            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&ships).map_err(|e| format!("{}: {e}", ships.display()))?;
+            if fresh {
+                f.write_all(b"# nn\ttime\tname\tdone_file\tstatus\n").map_err(|e| e.to_string())?;
+            }
+            f.write_all(format!("{nn}\t{time}\t{name}\t{done_file}\tpending\n").as_bytes()).map_err(|e| e.to_string())?;
         }
-        text.push_str(&format!("{nn}\t{time}\t{name}\t{done_file}\tpending\n"));
-        std::fs::write(&ships, text).map_err(|e| format!("{}: {e}", ships.display()))?;
         println!("ship: started on the box as {slug} — done file {done_file}; `tinyctl shipwatch --out {} --readme tiny/README.md` collects it", out.display());
     }
 
@@ -877,7 +885,31 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
             }
         }
         if changed {
-            std::fs::write(&ships, rows.join("\n") + "\n").map_err(|e| format!("{}: {e}", ships.display()))?;
+            // MERGE, don't overwrite: the render loop appends new rows to this
+            // file while we work, and writing our stale copy back dropped one
+            // map's newest lap out of the queue. Re-read, apply our status
+            // changes by (map, time), keep every row we have not seen.
+            let mut want: std::collections::HashMap<(String, String), String> = std::collections::HashMap::new();
+            for r in &rows {
+                let c: Vec<&str> = r.split('\t').collect();
+                if c.len() >= 5 && !r.starts_with('#') {
+                    want.insert((c[0].to_string(), c[1].to_string()), r.clone());
+                }
+            }
+            let fresh = std::fs::read_to_string(&ships).unwrap_or_default();
+            let merged: Vec<String> = fresh
+                .lines()
+                .map(|l| {
+                    let c: Vec<&str> = l.split('\t').collect();
+                    if c.len() >= 5 && !l.starts_with('#') {
+                        if let Some(updated) = want.get(&(c[0].to_string(), c[1].to_string())) {
+                            return updated.clone();
+                        }
+                    }
+                    l.to_string()
+                })
+                .collect();
+            std::fs::write(&ships, merged.join("\n") + "\n").map_err(|e| format!("{}: {e}", ships.display()))?;
         }
         if tmmaps::cli::has(args, "--once") {
             println!("{pending} pending");
