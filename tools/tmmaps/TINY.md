@@ -598,6 +598,7 @@ counts of 144 cells; full geometry as the baseline), 06:30–08:20Z:
 | `TINY_OCCUPIED_RULE=1` | every record in a cell another block's unit occupies (1 905) | d196 94→30, d106 70→65, d391 74→41 | d271 12→51 (pool rims, pillars in WaterRampZone cells — the original shows them) |
 | `TINY_OCCUPIED_RULE=2` | those whose clip has `CanBeDeletedByFullFreeClip` (1 063) | d196 →31, d106 →30 | d271 →23; d391 unchanged |
 | `TINY_GHOST_CLIPS=0` | a ghost-mode block's generated clips, flag bit 28 (1 037) | d196 →38, d136 27→13, d361 78→62 | none on 20 — but on 13 the ghost road the author drives on loses an underside piece the original shows (u097 4→27), so this is not the rule either |
+| `TINY_OCCUPIED_RULE=3` | vertical free clips (a `vertical` group) in a cell a real non-ghost unit occupies (628) | d196 →33, d106 →60, d271 →15 (no regression) | d391 unchanged 74; d421 24→47, d361 78→88, d181 34→43 |
 
 So the runtime hides SOME records in occupied cells and not others, by a
 condition none of the three knobs states; each knob is a probe, none a

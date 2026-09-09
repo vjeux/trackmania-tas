@@ -1761,7 +1761,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     //    others, and the "slabs" were that car. So the rule is NOT established:
     //    off by default, TINY_OCCUPIED_RULE=1 enables it for a probe. Decide it
     //    with car-free frames (`shootctl shootset` now hides the cursor).
-    let occupied_rule = std::env::var("TINY_OCCUPIED_RULE").map(|v| v == "1" || v == "2").unwrap_or(false);
+    let occupied_rule = std::env::var("TINY_OCCUPIED_RULE").map(|v| v == "1" || v == "2" || v == "3").unwrap_or(false);
     let mut occupied_hidden: std::collections::HashSet<usize> = std::collections::HashSet::new();
     if std::env::var("TINY_FILLER_RULE").is_ok() || std::env::var("TINY_VFC_RULE").is_ok() {
         println!("  ⚠ TINY_FILLER_RULE/TINY_VFC_RULE are gone: every generated filler the game draws is emitted (a1b91d23); the variable is ignored");
@@ -1777,12 +1777,27 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             // InsideVFC hidden in the original (del=1); Water FC/HFC rims,
             // PlatformSlope2UTopVFC, PlatformSlope2Curve3InHFCI drawn (del=0)).
             let strict = std::env::var("TINY_OCCUPIED_RULE").map(|v| v == "2").unwrap_or(false);
+            // TINY_OCCUPIED_RULE=3 (probe, 2026-09-09 08:30Z, hypothesis V): only VERTICAL free
+            // clips (a `vertical` group in the clip table: pillar walls, cliff faces,
+            // snow-road side walls) standing in a cell occupied by a real, NON-GHOST unit.
+            // Predicted by every camera so far: d196/d391/d106 hidden pieces are all
+            // vertical; d271's shown pool rims are horizontal; cp3's shown rail
+            // PlatformSlope2UTopVFC stands in a GHOST cliff's unit; 13's shown ghost-road
+            // underside is a bottom clip.
+            let vertical_only = std::env::var("TINY_OCCUPIED_RULE").map(|v| v == "3").unwrap_or(false);
             for b in source.baked.iter().filter(|b| b.name != "Sea") {
                 if !crate::fillers::classify(&faces, b).class.starts_with("covered:") {
                     continue;
                 }
                 if strict && !faces.clips.get(&b.name.to_ascii_lowercase()).map(|c| c.deletable).unwrap_or(false) {
                     continue;
+                }
+                if vertical_only {
+                    let is_vertical = faces.clips.get(&b.name.to_ascii_lowercase()).map(|c| !c.vert.is_empty()).unwrap_or(false);
+                    let real_occupant = faces.occupants.get(&b.file_cell).map(|v| v.iter().any(|o| !o.pillar && !o.tile && !o.ghost)).unwrap_or(false);
+                    if !(is_vertical && real_occupant) {
+                        continue;
+                    }
                 }
                 occupied_hidden.insert(b.index);
             }
