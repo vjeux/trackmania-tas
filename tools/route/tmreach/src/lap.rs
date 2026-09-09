@@ -478,6 +478,8 @@ pub struct LapCfg {
     pub no_brake: Option<(f64, f64)>,
     /// below this height the car is off-world (default -20; 22: the sea floor at -5.8 is reachable and pollutes the archive)
     pub offworld_y: f64,
+    /// clinic: accept ANY credited arrival (speed irrelevant) — the 21:00Z respawn-channel fallback
+    pub arrival_any: bool,
     /// vjeux launched-checkpoint csv (ghost lcp --csv): his approach samples become macros
     pub vjeux_csv: Option<String>,
 }
@@ -964,7 +966,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             if cfg.clinic && out.finished.is_none() && k_pref > seed_k.get() {
                 let vh = track.human_speed_at(s);
                 let v = speed(&end);
-                let speed_ok = vh <= 0.0 || ((v - vh).abs() <= 0.3 * vh.max(5.0));
+                let speed_ok = cfg.arrival_any || vh <= 0.0 || ((v - vh).abs() <= 0.3 * vh.max(5.0));
                 let lat_ok = lat_abs <= hw + 0.5;
                 if speed_ok && lat_ok {
                     out.log.push(format!("LEG DONE: gate {} (order position {}) credited with a good arrival at race {}: s {s:.1} lat {lat:.1} v {v:.1} (human {vh:.1}) after {} ticks ({} macros)", k_pref, k_pref - 1, crate::secs(w.race_of(&end)), e.chain.len(), e.macro_desc.len()));
