@@ -507,6 +507,33 @@ pub fn setuid(args: &[String]) {
         println!("wrote {} with uid {uid}", out.display());
 }
 
+/// `tmmaps movebaked SRC --out OUT --baked bN --to X,Y,Z [--baked bM --to …]`: generated
+/// records moved to other cells, everything else untouched (see
+/// `MapFile::move_baked_cell`).
+pub fn movebaked(args: &[String]) {
+        let src = std::path::PathBuf::from(&args[2]);
+        let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("movebaked needs --out MAP"));
+        let mut m = tmmaps::map::MapFile::load(&src);
+        let mut i = 3;
+        let mut moves = 0;
+        while i + 3 < args.len() {
+            if args[i] == "--baked" && args[i + 2] == "--to" {
+                let idx: usize = args[i + 1].trim_start_matches('b').parse().expect("--baked bN");
+                let c: Vec<i32> = args[i + 3].split(',').map(|s| s.trim().parse().expect("--to X,Y,Z")).collect();
+                assert!(c.len() == 3, "--to X,Y,Z");
+                let b = m.baked.iter().find(|b| b.index == idx).cloned().unwrap_or_else(|| panic!("no baked record b{idx}"));
+                println!("b{idx} {} dir {} flags {:08X}: {:?} -> ({}, {}, {})", b.name, b.dir, b.flags, b.coords(), c[0], c[1], c[2]);
+                m.move_baked_cell(idx, (c[0], c[1], c[2]));
+                moves += 1;
+                i += 4;
+            } else {
+                i += 1;
+            }
+        }
+        m.write_to(&out).expect("write output");
+        println!("wrote {} ({moves} records moved)", out.display());
+}
+
 /// `tmmaps delblocks`.
 pub fn delblocks(args: &[String]) {
         let src = std::path::PathBuf::from(&args[2]);
@@ -529,7 +556,7 @@ pub fn delblocks(args: &[String]) {
         println!("wrote {} ({} blocks, {} items)", out.display(), m.blocks.len(), m.items.len());
 }
 
-/// `tmmaps dropbaked SRC --out MAP [--baked b12,b40,…] [--name PAT[,PAT…]] [--flags HEX]`
+/// `tmmaps dropbaked SRC --out MAP [--baked b12,b40,…] [--name PAT[,PAT…]] [--flags HEX] [--blocks 12,34]`
 /// — the ORIGINAL map minus exact generated (baked) records: by `bN` index,
 /// by name substring, and/or by an exact flags word (the ground-truth probe of
 /// 2026-09-09: shoot the original and the original-minus-X from one camera;
@@ -541,8 +568,11 @@ pub fn dropbaked(args: &[String]) {
     let ids: std::collections::BTreeSet<usize> = tmmaps::cli::flag(args, "--baked").unwrap_or("").split(',').filter(|s| !s.is_empty()).map(|s| s.trim().trim_start_matches('b').parse::<usize>().expect("--baked bN,bN,…")).collect();
     let names: Vec<String> = tmmaps::cli::flag(args, "--name").unwrap_or("").split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
     let flags: Option<u32> = tmmaps::cli::flag(args, "--flags").map(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16).expect("--flags HEX"));
-    if ids.is_empty() && names.is_empty() {
-        panic!("dropbaked: nothing selected (--baked and/or --name)");
+    // --blocks 12,34: AUTHORED blocks removed as well (the wedge in front of a
+    // record — does the record show once nothing stands before it?)
+    let blocks: std::collections::BTreeSet<usize> = tmmaps::cli::flag(args, "--blocks").unwrap_or("").split(',').filter(|s| !s.is_empty()).map(|s| s.trim().trim_start_matches('@').parse::<usize>().expect("--blocks N,N,…")).collect();
+    if ids.is_empty() && names.is_empty() && blocks.is_empty() {
+        panic!("dropbaked: nothing selected (--baked, --name and/or --blocks)");
     }
     let mut m = tmmaps::map::MapFile::load(&src);
     let nk = m.baked.len();
@@ -552,8 +582,8 @@ pub fn dropbaked(args: &[String]) {
         by_id || by_name
     };
     let hit: Vec<String> = m.baked.iter().filter(|b| selected(b)).map(|b| format!("b{} {} {:08X} {:?}", b.index, b.name, b.flags, b.coords())).collect();
-    let r = m.remove_blocks(|_| false, selected);
-    println!("dropped {} of {nk} generated records ({} authored blocks touched):", r.baked, r.blocks);
+    let r = m.remove_blocks(|b| blocks.contains(&b.index), selected);
+    println!("dropped {} of {nk} generated records and {} authored blocks {:?}:", r.baked, r.blocks, blocks);
     for h in &hit {
         println!("  {h}");
     }

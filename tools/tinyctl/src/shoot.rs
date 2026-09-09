@@ -86,7 +86,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         // are then moved under the compare's -o names.
         let as_t = *side == "o" && ab;
         let (shoot_side, shoot_tag, shoot_dir) = if as_t { ("t", format!("{tag}A"), format!("{remote_dir}A")) } else { (*side, tag.clone(), remote_dir.clone()) };
-        let anchor_arg = if shoot_side == "t" { format!(" --anchor {anchor}") } else { String::new() };
+        // --scale S: the tiny side's camera scale (default 0.5); `--scale 1 --anchor
+        // 0,0,0:0,0,0` shoots a FULL-SIZE variant of the original (a map with
+        // records removed) from the very same cameras — the "original minus X"
+        // protocol that tells what a record contributes to the picture
+        let scale_arg = f("--scale").map(|s| format!(" --scale {s}")).unwrap_or_default();
+        let anchor_arg = if shoot_side == "t" { format!(" --anchor {anchor}{scale_arg}") } else { String::new() };
         // --shadows Q: compute the lightmap on both sides before shooting
         let shadows_arg = f("--shadows").map(|q| format!(" --shadows {q}")).unwrap_or_default();
         let cmd = format!("{shootctl} shootset --detach --map {map} --views {r_views} --side {shoot_side} --tag {shoot_tag} --outdir {shoot_dir}{anchor_arg}{shadows_arg}{settle_arg}");

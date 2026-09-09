@@ -133,6 +133,7 @@ fn main() {
         // lightmapper-crash bisect of 2026-09-07
         "delblocks" => surgery::delblocks(&args),
         "dropbaked" => surgery::dropbaked(&args),
+        "movebaked" => surgery::movebaked(&args),
         "census" => census::cmd_census(&args),
         "fillers" => tmmaps::fillers::cmd(&args),
         // archive-only variants of a tiny map for the load-failure bisect (zippad.rs)

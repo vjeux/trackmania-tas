@@ -1090,6 +1090,19 @@ impl MapFile {
         ));
     }
 
+    /// Move a GENERATED (baked) record to another cell, position-only — the
+    /// three cell bytes of its record in 0x03043048 overwritten in place, dir,
+    /// flags and model untouched. The "does the game draw THIS record" probe:
+    /// a record moved into the open air says whether the record is drawn as
+    /// placed (file records drive the picture) or not (the game re-derives
+    /// the clips itself, or hides it for a reason intrinsic to the record).
+    /// `cell` is in world-grid coordinates; the file stores x and z one higher.
+    pub fn move_baked_cell(&mut self, baked_index: usize, cell: (i32, i32, i32)) {
+        let b = self.baked.iter().find(|b| b.index == baked_index).cloned().unwrap_or_else(|| panic!("no baked record b{baked_index}"));
+        assert!((0..=254).contains(&cell.0) && (0..=255).contains(&cell.1) && (0..=254).contains(&cell.2), "cell {:?} out of the one-byte grid range", cell);
+        self.raw_patches.push((b.coord_off, vec![(cell.0 + 1) as u8, cell.1 as u8, (cell.2 + 1) as u8]));
+    }
+
     /// `prs`: move a FREE block, position-only, by overwriting the three f32
     /// of its entry in chunk `0x0304305F`. Same model, same rotation, same
     /// record length, same trigger volume -- the

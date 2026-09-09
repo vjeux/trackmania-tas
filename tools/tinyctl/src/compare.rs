@@ -232,8 +232,14 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let views = PathBuf::from(tmmaps::cli::flag(args, "--views").ok_or("compare needs --views VIEWS.tsv (or --pair O T)")?);
         let dir = PathBuf::from(tmmaps::cli::flag(args, "--dir").unwrap_or("."));
         let tag = tmmaps::cli::flag(args, "--tag").unwrap_or("");
+        // --orig-dir D --orig-tag T: the -o frames of ANOTHER shoot (the original shot
+        // once, at the same cameras, reused as the reference for every variant
+        // of the "original minus X" protocol — one load of the original, not one
+        // per variant)
+        let odir = tmmaps::cli::flag(args, "--orig-dir").map(PathBuf::from).unwrap_or_else(|| dir.clone());
+        let otag = tmmaps::cli::flag(args, "--orig-tag").unwrap_or(tag).to_string();
         for name in view_names(&views)? {
-            let o = dir.join(format!("cmp-{tag}{name}-o.png"));
+            let o = odir.join(format!("cmp-{otag}{name}-o.png"));
             let t = dir.join(format!("cmp-{tag}{name}-t.png"));
             if o.exists() && t.exists() {
                 pairs.push((name, o, t));

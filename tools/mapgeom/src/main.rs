@@ -1209,7 +1209,7 @@ fn main() {
             // off (2026-09-08)
             let clips_only = a.rest.iter().any(|x| x == "--clips");
             let mut rows = if clips_only {
-                String::from("name\tkind\tclip_type\tfull_free\texclusive\tdeletable\ttop_bottom_multidir\tasym_id\tgroup\tsym_group\tv1_a\tv1_b\thorizontal\tvertical\tground_prefabs\tair_prefabs\n")
+                String::from("name\tkind\tclip_type\tfull_free\texclusive\tdeletable\ttop_bottom_multidir\tasym_id\tgroup\tsym_group\tv1_a\tv1_b\thorizontal\tvertical\tground_prefabs\tair_prefabs\talways_visible\tfct_fcb_ignored_by_vfc\tanti_clip\n")
             } else {
                 String::from("path\tclass\tstatus\tconsumed\tbody\tkind\tvariants\tdetail\n")
             };
@@ -1226,10 +1226,14 @@ fn main() {
                         };
                         let (v1a, v1b) = c.clip_group_ids_v1.clone().unwrap_or_default();
                         rows.push_str(&format!(
-                            "{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                            "{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                             b.name, b.kind, c.clip_type.map(mapgeom::blockinfo::clip_type_name).unwrap_or("-"), f(c.is_full_free_clip), f(c.is_exclusive_free_clip), f(c.can_be_deleted_by_full_free_clip),
                             c.top_bottom_multi_dir.map(mapgeom::blockinfo::multi_dir_name).unwrap_or("-"), s(&c.asym_clip_id), s(&c.clip_group_id), s(&c.symmetrical_clip_group_id), v1a, v1b, s(&c.horizontal_clip_group_id), s(&c.vertical_clip_group_id),
-                            prefabs(&b.variant_base_ground), prefabs(&b.variant_base_air)
+                            prefabs(&b.variant_base_ground), prefabs(&b.variant_base_air),
+                            // chunk 0x03053006 v2..4, one byte each, in the engine's member order
+                            // after CanBeDeletedByFullFreeClip @624: IsAlwaysVisibleFreeClip @628,
+                            // IsFCTOrFCBIgnoredByVFC @632, IsAntiClip @636 (/members?t=CGameCtnBlockInfoClip)
+                            c.extra_bytes.first().map(|x| x.to_string()).unwrap_or("-".into()), c.extra_bytes.get(1).map(|x| x.to_string()).unwrap_or("-".into()), c.extra_bytes.get(2).map(|x| x.to_string()).unwrap_or("-".into())
                         ));
                     }
                     Ok(b) => {
