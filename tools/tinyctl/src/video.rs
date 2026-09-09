@@ -742,7 +742,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
     let wsx = Wsx::new(args);
     let ships = out.join("ships.tsv");
     let retry_after = Duration::from_secs(f("--retry-min").and_then(|s| s.parse::<u64>().ok()).unwrap_or(10) * 60);
-    let mut last_retry: std::collections::HashMap<String, std::time::Instant> = std::collections::HashMap::new();
+    let mut last_probe: Option<std::time::Instant> = None;
     loop {
         let text = std::fs::read_to_string(&ships).unwrap_or_default();
         let mut rows: Vec<String> = text.lines().map(String::from).collect();
@@ -757,6 +757,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
             .filter(|(_, r)| !r.starts_with('#'))
             .filter_map(|(i, r)| r.split('\t').next().map(|nn| (nn.to_string(), i)))
             .collect();
+        let mut dead_cookie: Vec<(String, String, String, String)> = Vec::new();
         let mut changed = false;
         let mut pending = 0;
         for (i, row) in rows.iter_mut().enumerate() {
@@ -838,12 +839,28 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 // upload is ever re-uploaded.
                 let cookie_dead = done.contains("cookie probe") || done.contains("no upload CSRF") || done.contains("attachment upload failed");
                 if cookie_dead {
-                    let key = format!("{name}");
-                    let due = last_retry.get(&key).map(|t: &std::time::Instant| t.elapsed() >= retry_after).unwrap_or(true);
-                    if due {
-                        // the staged copy (outside OneDrive) is what a ship runs from;
-                        // clips staged by an older build only have the watch copy, so
-                        // fall back to it rather than failing on a missing file
+                    dead_cookie.push((nn.clone(), time.clone(), name.clone(), done_file.clone()));
+                }
+            }
+        }
+        // ONE PROBE FOR THE WHOLE QUEUE, at most every `retry_after`. Fifteen
+        // clips waiting on a dead session used to mean fifteen probes per tick;
+        // a session that is being renewed by hand does not need that, and a
+        // rapid burst of requests is what preceded both 2026-09-09 logouts. So
+        // the queue asks ONCE, and only launches when the answer is 200 — the
+        // box's own lock and cool-down then pace the uploads.
+        if !dead_cookie.is_empty() {
+            let due = last_probe.map(|t: std::time::Instant| t.elapsed() >= retry_after).unwrap_or(true);
+            if due {
+                last_probe = Some(std::time::Instant::now());
+                let code = wsx
+                    .sh("export PATH=/home/vjeux/bin:/usr/bin:/bin; GH_COOKIE=\"$(tr -d '\\r\\n' < /home/vjeux/.gh-upload/cookie)\"; JAR=/home/vjeux/.gh-upload/jar; curl -s -o /dev/null -w '%{http_code}' -b \"$JAR\" -c \"$JAR\" -b \"$GH_COOKIE\" -H 'user-agent: Mozilla/5.0' https://github.com/vjeux/trackmania-tas/edit/main/README.md")
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if code == "200" {
+                    println!("{} the GitHub session is live (probe 200) — launching {} held ship(s), paced by the box's lock", chrono_now(), dead_cookie.len());
+                    for (nn, _time, name, done_file) in &dead_cookie {
                         let r_mp4 = format!("{VID}/mp4/{name}.mp4");
                         let r_watch = format!("{}/{name}.mp4", BOX_VIDEOS);
                         let outbase = done_file.trim_end_matches(".done").to_string();
@@ -851,11 +868,17 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                         match wsx.sh(&format!(
                             "mkdir -p {VID}/mp4 && [ -f '{r_mp4}' ] || cp -f '{r_watch}' '{r_mp4}'; rm -f '{done_file}' && nohup sh {BOX_SHIP_SH} '{r_mp4}' '{slug}' '{outbase}' > /dev/null 2>&1 < /dev/null &"
                         )) {
-                            Ok(_) => println!("  re-launched the ship of {name} (dead-cookie retry; next in {} min)", retry_after.as_secs() / 60),
-                            Err(e) => println!("  could not re-launch the ship of {name}: {e}"),
+                            Ok(_) => println!("  launched {name}"),
+                            Err(e) => println!("  could not launch {name}: {e}"),
                         }
-                        last_retry.insert(key, std::time::Instant::now());
                     }
+                } else {
+                    println!(
+                        "{} HELD: {} clip(s) cut, overlaid and staged, waiting on the GitHub session (probe HTTP {code}). Nothing is re-uploaded; a fresh ~/.gh-upload/cookie on the box releases them within {} min.",
+                        chrono_now(),
+                        dead_cookie.len(),
+                        retry_after.as_secs() / 60
+                    );
                 }
             }
         }
