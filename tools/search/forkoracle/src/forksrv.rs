@@ -512,6 +512,7 @@ impl ForkServer {
         srv.validation_sim = ready.validation_sim.unwrap_or(0);
         srv.sim_ms = ready.sim_ms;
         srv.race_start = ready.race_start;
+        shim_identity_check(&srv, shim, dir)?;
         Ok(srv)
     }
 
@@ -1183,4 +1184,53 @@ pub fn parse_result(text: &str) -> (Option<i64>, Option<u32>) {
         }
     }
     (time, cps)
+}
+
+/// SHIM IDENTITY (fleet rule after the 24 phantom-finish incident, 2026-09-09): the library the server actually MAPPED
+/// must be the one on disk at the shim path (a `mv` swaps the inode -- running servers keep the old code), and, when the
+/// branch build's md5 is known (`FK_SHIM_MD5` env var, else a `<shim>.md5` sidecar), the on-disk md5 must match it.
+/// Both facts are written to `<dir>/shim-identity.txt` and printed once per process; a mismatch refuses the server.
+fn shim_identity_check(srv: &ForkServer, shim: &Path, dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let canon = shim.canonicalize().map_err(|e| e.to_string())?;
+    let meta = std::fs::metadata(&canon).map_err(|e| e.to_string())?;
+    let (ino, dev) = (meta.ino(), meta.dev());
+    // the mapping the server holds
+    let pid = srv.child.id();
+    let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).unwrap_or_default();
+    let name = canon.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut mapped_ino: Option<u64> = None;
+    for l in maps.lines() {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        if f.len() >= 6 && f[5].ends_with(&name) {
+            mapped_ino = f[4].parse::<u64>().ok();
+            break;
+        }
+    }
+    let md5 = std::process::Command::new("md5sum").arg(&canon).output().ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.split_whitespace().next().map(|x| x.to_string()))
+        .unwrap_or_else(|| "?".into());
+    let expected = std::env::var("FK_SHIM_MD5").ok().filter(|s| !s.is_empty())
+        .or_else(|| std::fs::read_to_string(format!("{}.md5", canon.display())).ok().and_then(|s| s.split_whitespace().next().map(|x| x.to_string())));
+    let line = format!(
+        "shim {} md5 {} inode {}:{} mapped-inode {} expected-md5 {}",
+        canon.display(), md5, dev, ino,
+        mapped_ino.map(|i| i.to_string()).unwrap_or_else(|| "?".into()),
+        expected.clone().unwrap_or_else(|| "(none)".into())
+    );
+    let _ = std::fs::write(dir.join("shim-identity.txt"), format!("{line}\n"));
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| eprintln!("forksrv: {line}"));
+    if let Some(mi) = mapped_ino {
+        if mi != ino {
+            return Err(format!("SHIM MISMATCH: the server mapped inode {mi} of {name} but the file on disk is inode {ino} -- the library was swapped under a running build (mv); rebuild/restart from one tree. {line}"));
+        }
+    }
+    if let Some(e) = expected {
+        if e != md5 {
+            return Err(format!("SHIM MISMATCH: on-disk md5 {md5} != expected {e} (FK_SHIM_MD5 / .md5 sidecar). {line}"));
+        }
+    }
+    Ok(())
 }
