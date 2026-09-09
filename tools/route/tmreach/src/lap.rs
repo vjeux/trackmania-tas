@@ -829,7 +829,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let road_y = track.at(s)[1];
             let hw = track.half_width.get(seg).copied().unwrap_or(5.5);
             let road_y_min = track.min_y_near(s, 15.0);
-            let bad = speed(&end) < 3.0 || end.vy < -3.0 || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y_min - cfg.below_tol));
+            let bad = speed(&end) < 3.0 || (end.vy < -3.0 && end.y < road_y_min - 3.0) || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y_min - cfg.below_tol));
             if !bad || tries >= 12 || recs.len() <= 300 {
                 break (rows, nh, end, s, seg);
             }
