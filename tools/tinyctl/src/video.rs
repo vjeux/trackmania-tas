@@ -715,6 +715,9 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
     let commit = tmmaps::cli::has(args, "--commit");
     let wsx = Wsx::new(args);
     let ships = out.join("ships.tsv");
+    let box_videos = f("--box-videos").unwrap_or_else(|| BOX_VIDEOS.into());
+    let retry_after = Duration::from_secs(f("--retry-min").and_then(|s| s.parse::<u64>().ok()).unwrap_or(10) * 60);
+    let mut last_retry: std::collections::HashMap<String, std::time::Instant> = std::collections::HashMap::new();
     loop {
         let text = std::fs::read_to_string(&ships).unwrap_or_default();
         let mut rows: Vec<String> = text.lines().map(String::from).collect();
@@ -779,6 +782,24 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 pending -= 1;
             } else if !done.starts_with("PENDING ") {
                 println!("{} {nn} {time}: {done}", chrono_now());
+                // A dead browser cookie fails every ship at its probe; once a fresh
+                // cookie is on the box the same script goes through. Re-launch such
+                // a ship every `retry_after` (the probe is one 302 when it is still
+                // dead), never re-upload anything that got further than the probe.
+                if done.contains("cookie probe") {
+                    let key = format!("{name}");
+                    let due = last_retry.get(&key).map(|t: &std::time::Instant| t.elapsed() >= retry_after).unwrap_or(true);
+                    if due {
+                        let r_mp4 = format!("{}/{name}.mp4", box_videos);
+                        let outbase = done_file.trim_end_matches(".done").to_string();
+                        let slug = map_slug(nn);
+                        match wsx.sh(&format!("rm -f '{done_file}' && nohup sh {BOX_SHIP_SH} '{r_mp4}' '{slug}' '{outbase}' > /dev/null 2>&1 < /dev/null &")) {
+                            Ok(_) => println!("  re-launched the ship of {name} (cookie probe retry; next in {} min)", retry_after.as_secs() / 60),
+                            Err(e) => println!("  could not re-launch the ship of {name}: {e}"),
+                        }
+                        last_retry.insert(key, std::time::Instant::now());
+                    }
+                }
             }
         }
         if changed {
