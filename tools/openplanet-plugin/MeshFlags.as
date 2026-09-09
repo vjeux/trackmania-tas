@@ -26,16 +26,23 @@ string MeshLine(const string &in item, const string &in kind, CMwNod@ mesh, bool
     uint64 owner = Dev::GetOffsetUint64(mesh, 0x338);
     // the first visual's sub-visual (frame) count: CPlugVisual+0x118
     uint frames = 0;
+    uint vflags = 0;
     if (nvis > 0) {
         // +0xa8 is the visuals ARRAY pointer (not a nod): read the first entry
         uint64 arr = Dev::GetOffsetUint64(mesh, 0xa8);
         if (arr != 0) {
             uint64 v0 = Dev::ReadUInt64(arr);
-            if (v0 != 0) frames = Dev::ReadUInt32(v0 + 0x118);
+            if (v0 != 0) { frames = Dev::ReadUInt32(v0 + 0x118); vflags = Dev::ReadUInt32(v0 + 0x24); }
         }
     }
+    // the material lists OnNodLoaded consults before it marks a visual as a
+    // tween (bit 27 of CPlugVisual+0x24): file materials (+0xb8/+0xc0), user
+    // insts (+0xc8/+0xd0), the resolved runtime list (+0x1f8/+0x200)
+    uint nmat = Dev::GetOffsetUint32(mesh, 0xc0);
+    uint nuser = Dev::GetOffsetUint32(mesh, 0xd0);
+    uint nres = Dev::GetOffsetUint32(mesh, 0x200);
     string s = item + " | " + kind + " | " + Reflection::TypeOf(mesh).Name + " | vct=" + vct + " | nvis=" + nvis
-        + " | frames0=" + frames + " | flags=" + Text::Format("0x%x", flags) + " | owner=0x" + Text::Format("%08x", uint(owner >> 32)) + Text::Format("%08x", uint(owner & 0xffffffff));
+        + " | frames0=" + frames + " | vflags0=" + Text::Format("0x%x", vflags) + " | mats=" + nmat + "/" + nuser + "/" + nres + " | flags=" + Text::Format("0x%x", flags) + " | owner=0x" + Text::Format("%08x", uint(owner >> 32)) + Text::Format("%08x", uint(owner & 0xffffffff));
     if (set && frames >= 2 && (flags & 1) == 0) {
         Dev::SetOffset(mesh, 0x1f0, uint(flags | 1));
         s += " | SET bit0 -> " + Text::Format("0x%x", Dev::GetOffsetUint32(mesh, 0x1f0));
