@@ -1892,6 +1892,14 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
             return Err(format!("material {} names no diffuse image", mat.name));
         }
         let mut inst = CPlugMaterialUserInst::game_material("", 14);
+        // TINY_TREE_NATURAL=1: the material's `IsNatural` byte (chunk 0x090FD001
+        // v5) — the 2026-09-09 probe of whether it is the vegetation switch
+        // that keeps the game's own foliage from glaring under local lights
+        if std::env::var("TINY_TREE_NATURAL").map(|v| v == "1").unwrap_or(false) {
+            if let Some(t) = inst.tiling.as_mut() {
+                t.is_natural = true;
+            }
+        }
         if let Some(main) = inst.main.as_mut() {
             main.is_using_game_material = false;
             // The name is the material's IDENTITY to the game (custom materials of
@@ -1996,6 +2004,26 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                     if ensure_texcoord1(s) && !out.stripped.contains(&"+uv1") {
                         out.stripped.push("+uv1");
                     }
+                    // TINY_TREE_UV1=atlas (default) | copy | const: the LIGHTMAP layout
+                    // of the cards (see `tree_lightmap_uv1`)
+                    let uv1_mode = std::env::var("TINY_TREE_UV1").unwrap_or_else(|_| "atlas".into());
+                    let idx: Vec<u32> = v.index_buffer.as_ref().map(|ib| ib.indices.clone()).unwrap_or_default();
+                    match uv1_mode.as_str() {
+                        "atlas" => {
+                            if let Some(charts) = tree_lightmap_uv1(s, &idx) {
+                                m.notes.push(format!("lightmap uv1 atlas: {charts} charts over {} triangles ({} vertices)", idx.len() / 3, s.count));
+                                if !out.stripped.contains(&"uv1=atlas") {
+                                    out.stripped.push("uv1=atlas");
+                                }
+                            }
+                        }
+                        "const" => {
+                            if let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) {
+                                s.elems[i] = Elem::Float2(vec![[0.5, 0.5]; s.count.max(0) as usize]);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
             transform_visual(&mut v, &IDENTITY, scale)?;
@@ -2069,6 +2097,140 @@ pub fn static_item_from_veget_report(store: &mut crate::store::DataStore, path: 
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: None };
     let file = assemble(&m, &opts)?;
     Ok((super::file::write_file(&file), m, bake))
+}
+
+/// The LIGHTMAP layout (TexCoord1) of a vegetation visual: every connected
+/// group of triangles — a leaf card, a bark strip — is one chart, projected
+/// on its own plane and packed into its own cell of a square grid over the
+/// unit square (a margin of a tenth of the cell on every side), so no two
+/// charts share a lightmap texel.
+///
+/// Why (2026-09-09, the "paper lantern" bushes of tiny 24's cp8 and vjeux's
+/// "the bright spots look completely white"): `ensure_texcoord1` gave the
+/// cards uv0 as their uv1, i.e. every card of the crown mapped onto the SAME
+/// lightmap texels (the leaf atlas's 0..1). The game bakes a lightmap for
+/// every static item at load and the shader multiplies the diffuse by it —
+/// with all the cards stacked on one region the bake handed the whole crown
+/// one arbitrary value: at night a bush stood sunlit-bright next to a black
+/// lawn (lineup `bl`, no light within 40 m), under the show rigs the rigs'
+/// baked light covered every leaf. The intensity of the lights themselves
+/// was never the lever (×0.25 and ×0.01 on a stock Lamp changed the bush
+/// nothing). Returns None when the stream has no Float3 positions (the
+/// caller keeps the uv0 copy).
+pub fn tree_lightmap_uv1(s: &mut super::vstream::CPlugVertexStream, indices: &[u32]) -> Option<usize> {
+    let n = s.count.max(0) as usize;
+    let pos: Vec<[f32; 3]> = match s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == super::vstream::N_POSITION).map(|(_, e)| e)? {
+        Elem::Float3(p) => p.clone(),
+        _ => return None,
+    };
+    if n == 0 || pos.len() != n || indices.len() < 3 {
+        return None;
+    }
+    // connected components of vertices through the triangles (union-find)
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(p: &mut [usize], mut i: usize) -> usize {
+        while p[i] != i {
+            p[i] = p[p[i]];
+            i = p[i];
+        }
+        i
+    }
+    for t in indices.chunks_exact(3) {
+        let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
+        if a >= n || b >= n || c >= n {
+            continue;
+        }
+        let ra = find(&mut parent, a);
+        let rb = find(&mut parent, b);
+        if ra != rb {
+            parent[ra] = rb;
+        }
+        let rb = find(&mut parent, b);
+        let rc = find(&mut parent, c);
+        if rb != rc {
+            parent[rb] = rc;
+        }
+    }
+    // component id per vertex, in order of first appearance
+    let mut comp_of_root: std::collections::BTreeMap<usize, usize> = Default::default();
+    let mut comp: Vec<usize> = vec![0; n];
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        let next = comp_of_root.len();
+        let c = *comp_of_root.entry(r).or_insert(next);
+        comp[i] = c;
+    }
+    let ncomp = comp_of_root.len();
+    // per component: an area-weighted normal (from its triangles), then a
+    // planar frame and the projected bounds
+    let mut normal: Vec<[f64; 3]> = vec![[0.0; 3]; ncomp];
+    for t in indices.chunks_exact(3) {
+        let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
+        if a >= n || b >= n || c >= n {
+            continue;
+        }
+        let e1 = [pos[b][0] - pos[a][0], pos[b][1] - pos[a][1], pos[b][2] - pos[a][2]];
+        let e2 = [pos[c][0] - pos[a][0], pos[c][1] - pos[a][1], pos[c][2] - pos[a][2]];
+        let cr = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+        let k = comp[a];
+        // orient consistently against the running sum (a two-sided card's
+        // front and back triangles would otherwise cancel)
+        let dot = normal[k][0] * cr[0] as f64 + normal[k][1] * cr[1] as f64 + normal[k][2] * cr[2] as f64;
+        let sgn = if dot < 0.0 { -1.0 } else { 1.0 };
+        for d in 0..3 {
+            normal[k][d] += sgn * cr[d] as f64;
+        }
+    }
+    let mut frames: Vec<([f64; 3], [f64; 3])> = Vec::with_capacity(ncomp);
+    for nrm in &normal {
+        let len = (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt();
+        let nn = if len > 1e-12 { [nrm[0] / len, nrm[1] / len, nrm[2] / len] } else { [0.0, 1.0, 0.0] };
+        // ex = the world axis least aligned with the normal, made orthogonal
+        let ax = if nn[0].abs() <= nn[1].abs() && nn[0].abs() <= nn[2].abs() { [1.0, 0.0, 0.0] } else if nn[1].abs() <= nn[2].abs() { [0.0, 1.0, 0.0] } else { [0.0, 0.0, 1.0] };
+        let d = ax[0] * nn[0] + ax[1] * nn[1] + ax[2] * nn[2];
+        let mut ex = [ax[0] - d * nn[0], ax[1] - d * nn[1], ax[2] - d * nn[2]];
+        let l = (ex[0] * ex[0] + ex[1] * ex[1] + ex[2] * ex[2]).sqrt().max(1e-12);
+        ex = [ex[0] / l, ex[1] / l, ex[2] / l];
+        let ey = [nn[1] * ex[2] - nn[2] * ex[1], nn[2] * ex[0] - nn[0] * ex[2], nn[0] * ex[1] - nn[1] * ex[0]];
+        frames.push((ex, ey));
+    }
+    let mut proj: Vec<[f64; 2]> = vec![[0.0; 2]; n];
+    let mut lo: Vec<[f64; 2]> = vec![[f64::MAX; 2]; ncomp];
+    let mut hi: Vec<[f64; 2]> = vec![[f64::MIN; 2]; ncomp];
+    for i in 0..n {
+        let (ex, ey) = frames[comp[i]];
+        let p = [pos[i][0] as f64, pos[i][1] as f64, pos[i][2] as f64];
+        let u = p[0] * ex[0] + p[1] * ex[1] + p[2] * ex[2];
+        let v = p[0] * ey[0] + p[1] * ey[1] + p[2] * ey[2];
+        proj[i] = [u, v];
+        let k = comp[i];
+        lo[k] = [lo[k][0].min(u), lo[k][1].min(v)];
+        hi[k] = [hi[k][0].max(u), hi[k][1].max(v)];
+    }
+    // the grid: cell = 1/N, the chart fills the cell minus a margin, uniform
+    // scale (the larger side fits)
+    let grid = (ncomp as f64).sqrt().ceil().max(1.0);
+    let cell = 1.0 / grid;
+    let margin = cell * 0.1;
+    let inner = cell - 2.0 * margin;
+    let mut uv1: Vec<[f32; 2]> = vec![[0.5, 0.5]; n];
+    for i in 0..n {
+        let k = comp[i];
+        let w = (hi[k][0] - lo[k][0]).max(1e-9);
+        let h = (hi[k][1] - lo[k][1]).max(1e-9);
+        let sc = inner / w.max(h);
+        let cx = (k as f64 % grid) * cell + margin;
+        let cy = (k as f64 / grid).floor() * cell + margin;
+        // centred in the cell along the shorter side
+        let ox = (inner - w * sc) * 0.5;
+        let oy = (inner - h * sc) * 0.5;
+        let u = cx + ox + (proj[i][0] - lo[k][0]) * sc;
+        let v = cy + oy + (proj[i][1] - lo[k][1]) * sc;
+        uv1[i] = [u.clamp(0.0, 1.0) as f32, v.clamp(0.0, 1.0) as f32];
+    }
+    let slot = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1)?;
+    s.elems[slot] = Elem::Float2(uv1);
+    Some(ncomp)
 }
 
 /// Give a vertex stream a second texcoord set (name 11, Float2) when it has
@@ -2170,4 +2332,60 @@ pub fn double_sided(v: &mut super::visual::CPlugVisualIndexedTriangles) -> Resul
         ib.indices.extend(back);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tree_uv1_tests {
+    use super::super::vstream::{CPlugVertexStream, Decl, Elem, N_POSITION, N_TEXCOORD0, T_FLOAT2, T_FLOAT3};
+    use super::super::null_ref;
+
+    /// Three leaf cards (two triangles, four vertices each) in three planes:
+    /// every card gets its own grid cell, no two cards share lightmap space,
+    /// and every uv1 stays inside the unit square.
+    #[test]
+    fn cards_get_disjoint_lightmap_cells() {
+        let mut pos: Vec<[f32; 3]> = Vec::new();
+        let mut idx: Vec<u32> = Vec::new();
+        for (k, (ex, ey)) in [([1.0f32, 0.0, 0.0], [0.0f32, 1.0, 0.0]), ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0]), ([1.0, 0.0, 1.0], [0.0, 1.0, 0.0])].iter().enumerate() {
+            let o = [k as f32 * 3.0, 0.0, 0.0];
+            let b = pos.len() as u32;
+            for (a, c) in [(0.0f32, 0.0f32), (1.0, 0.0), (1.0, 2.0), (0.0, 2.0)] {
+                pos.push([o[0] + a * ex[0] + c * ey[0], o[1] + a * ex[1] + c * ey[1], o[2] + a * ex[2] + c * ey[2]]);
+            }
+            idx.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
+        }
+        let n = pos.len();
+        let uv0: Vec<[f32; 2]> = (0..n).map(|i| [(i % 4) as f32 * 0.5, (i / 4) as f32 * 0.1]).collect();
+        let mut s = CPlugVertexStream {
+            version: 1,
+            count: n as i32,
+            flags: 0,
+            base: null_ref(),
+            decls: vec![Decl::with_stride(N_POSITION, T_FLOAT3, 0, 0, 7), Decl::with_stride(N_TEXCOORD0, T_FLOAT2, 0, 12, 7), Decl::with_stride(N_TEXCOORD0 + 1, T_FLOAT2, 0, 20, 7)],
+            compress_local3d: Some(false),
+            elems: vec![Elem::Float3(pos), Elem::Float2(uv0.clone()), Elem::Float2(uv0)],
+        };
+        assert_eq!(super::tree_lightmap_uv1(&mut s, &idx), Some(3));
+        let Elem::Float2(uv1) = &s.elems[2] else { panic!("uv1 gone") };
+        assert_eq!(uv1.len(), n);
+        // grid of 2x2 cells (ceil(sqrt(3)) = 2): each card's four corners
+        // inside one cell, cells distinct
+        let cell_of = |uv: [f32; 2]| ((uv[0] * 2.0).floor() as i32, (uv[1] * 2.0).floor() as i32);
+        let mut cells = Vec::new();
+        for k in 0..3 {
+            let c = cell_of(uv1[k * 4]);
+            for j in 0..4 {
+                let uv = uv1[k * 4 + j];
+                assert!((0.0..=1.0).contains(&uv[0]) && (0.0..=1.0).contains(&uv[1]), "uv1 {uv:?} outside the unit square");
+                assert_eq!(cell_of(uv), c, "card {k} corner {j} left its cell");
+            }
+            assert!(!cells.contains(&c), "two cards in one cell");
+            cells.push(c);
+        }
+        // the 1 x 2 card keeps its aspect: the long side spans the cell's inner
+        // 80 %, the short one 40 %
+        let w = (uv1[0][0] - uv1[1][0]).abs().max((uv1[0][1] - uv1[1][1]).abs());
+        let h = (uv1[1][0] - uv1[2][0]).abs().max((uv1[1][1] - uv1[2][1]).abs());
+        assert!((h - 0.4).abs() < 1e-3 && (w - 0.2).abs() < 1e-3, "card 0 spans {w} x {h}");
+    }
 }

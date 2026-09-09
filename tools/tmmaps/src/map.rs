@@ -855,6 +855,71 @@ impl MapFile {
         changed
     }
 
+    /// Rewrite one header chunk's raw payload with `f` (the whole chunk body,
+    /// size field excluded), rebuilding the user-data table around the new
+    /// length. Returns whether `f` changed it.
+    pub fn edit_header_chunk(&mut self, chunk_id: u32, f: &dyn Fn(&[u8]) -> Option<Vec<u8>>) -> bool {
+        let ud = self.gbx.user_data.clone();
+        if ud.len() < 4 {
+            return false;
+        }
+        let n = u32::from_le_bytes(ud[0..4].try_into().unwrap()) as usize;
+        let mut heads: Vec<(u32, bool, Vec<u8>)> = Vec::new();
+        let mut off = 4 + n * 8;
+        for i in 0..n {
+            let o = 4 + i * 8;
+            let id = u32::from_le_bytes(ud[o..o + 4].try_into().unwrap());
+            let raw = u32::from_le_bytes(ud[o + 4..o + 8].try_into().unwrap());
+            let size = (raw & 0x7fff_ffff) as usize;
+            heads.push((id, raw & 0x8000_0000 != 0, ud[off..off + size].to_vec()));
+            off += size;
+        }
+        let mut changed = false;
+        for (id, _, data) in heads.iter_mut() {
+            if *id != chunk_id {
+                continue;
+            }
+            if let Some(d2) = f(data) {
+                if d2 != *data {
+                    *data = d2;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let mut out = Vec::new();
+            out.extend_from_slice(&(heads.len() as u32).to_le_bytes());
+            for (id, heavy, data) in &heads {
+                out.extend_from_slice(&id.to_le_bytes());
+                out.extend_from_slice(&((data.len() as u32) | if *heavy { 0x8000_0000 } else { 0 }).to_le_bytes());
+            }
+            for (_, _, data) in &heads {
+                out.extend_from_slice(data);
+            }
+            self.gbx.user_data = out;
+        }
+        changed
+    }
+
+    /// Rename the decoration (the mood: `48x48Screen155Day` → `…Night`) in
+    /// the HEADER's copy of the Common chunk 0x03043003 as well — the body's
+    /// copy is `set_decoration`. The header's lookback strings are plain
+    /// `u32 (index | 0x40000000)`, `u32 length`, bytes: the old ident is
+    /// found by its length-prefixed bytes and re-emitted at the new length.
+    pub fn set_header_decoration(&mut self, from: &str, to: &str) -> bool {
+        let mut needle = (from.len() as u32).to_le_bytes().to_vec();
+        needle.extend_from_slice(from.as_bytes());
+        let mut repl = (to.len() as u32).to_le_bytes().to_vec();
+        repl.extend_from_slice(to.as_bytes());
+        self.edit_header_chunk(0x0304_3003, &|d: &[u8]| {
+            let at = d.windows(needle.len()).position(|w| w == needle.as_slice())?;
+            let mut out = d[..at].to_vec();
+            out.extend_from_slice(&repl);
+            out.extend_from_slice(&d[at + needle.len()..]);
+            Some(out)
+        })
+    }
+
     /// Remove the author's validation ghost — chunk 0x0305B00F of the
     /// original map, replayed over the tiny map as a car driving the
     /// full-size line in the air — and mark the map unvalidated.

@@ -10,6 +10,9 @@
 //!            the camera is aimed so the row stands against it);
 //! * `dark` — the share of pixels darker than 48 on every channel (a black
 //!            sail, a garbage draw);
+//! * `sat` / `white` — the share of pixels with a channel at or over 250, and
+//!            with every channel there (a blown highlight; the lights lineup
+//!            of 2026-09-09);
 //! * `fgrgb` — the mean colour of the foreground pixels (the cloth: green /
 //!            blue / white / black tells the hue mask apart from the band);
 //! * `diff` — the mean absolute difference against the previous image's same
@@ -37,20 +40,31 @@ fn ints(s: &str, n: usize, what: &str) -> Result<Vec<i64>, String> {
 struct CellStat {
     fg: f32,
     dark: f32,
+    /// the share of pixels with a channel at or over 250 (a blown highlight)
+    sat: f32,
+    /// the share of pixels white on every channel (>= 250): the "completely white" of 2026-09-09
+    white: f32,
+    /// the mean colour of the brightest `--top` percent of the cell (by luma):
+    /// a light's footprint against an ambient that dominates the mean
+    top_rgb: [u8; 3],
     fg_rgb: [u8; 3],
     mean_rgb: [u8; 3],
 }
 
-fn cell_stat(img: &Image, x0: usize, y0: usize, w: usize, h: usize, bg: [f32; 3]) -> CellStat {
+fn cell_stat(img: &Image, x0: usize, y0: usize, w: usize, h: usize, bg: [f32; 3], top_pct: f32) -> CellStat {
+    let mut lumas: Vec<(u32, [u8; 3])> = Vec::new();
     let mut n = 0usize;
     let mut nfg = 0usize;
     let mut ndark = 0usize;
+    let mut nsat = 0usize;
+    let mut nwhite = 0usize;
     let mut acc = [0u64; 3];
     let mut accfg = [0u64; 3];
     for y in y0..(y0 + h).min(img.h) {
         for x in x0..(x0 + w).min(img.w) {
             let c = img.get(x, y);
             n += 1;
+            lumas.push((c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114, c));
             for k in 0..3 {
                 acc[k] += c[k] as u64;
             }
@@ -64,11 +78,25 @@ fn cell_stat(img: &Image, x0: usize, y0: usize, w: usize, h: usize, bg: [f32; 3]
             if c[0] < 48 && c[1] < 48 && c[2] < 48 {
                 ndark += 1;
             }
+            if c[0] >= 250 || c[1] >= 250 || c[2] >= 250 {
+                nsat += 1;
+            }
+            if c[0] >= 250 && c[1] >= 250 && c[2] >= 250 {
+                nwhite += 1;
+            }
         }
     }
     let n = n.max(1);
+    lumas.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    let k = ((lumas.len() as f32 * top_pct / 100.0).round() as usize).clamp(1, lumas.len().max(1));
+    let mut acct = [0u64; 3];
+    for (_, c) in lumas.iter().take(k) {
+        for j in 0..3 {
+            acct[j] += c[j] as u64;
+        }
+    }
     let m = |a: [u64; 3], d: usize| -> [u8; 3] { let d = d.max(1) as u64; [(a[0] / d) as u8, (a[1] / d) as u8, (a[2] / d) as u8] };
-    CellStat { fg: nfg as f32 / n as f32, dark: ndark as f32 / n as f32, fg_rgb: m(accfg, nfg), mean_rgb: m(acc, n) }
+    CellStat { fg: nfg as f32 / n as f32, dark: ndark as f32 / n as f32, sat: nsat as f32 / n as f32, white: nwhite as f32 / n as f32, top_rgb: m(acct, k), fg_rgb: m(accfg, nfg), mean_rgb: m(acc, n) }
 }
 
 fn cell_diff(a: &Image, b: &Image, x0: usize, y0: usize, w: usize, h: usize) -> f32 {
@@ -89,11 +117,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let crop = ints(flag(args, "--crop").ok_or("cropstats needs --crop x,y,w,h")?, 4, "--crop")?;
     let cells: usize = flag(args, "--cells").map(|s| s.parse().map_err(|e| format!("--cells: {e}"))).transpose()?.unwrap_or(1).max(1);
     let sheet: Option<PathBuf> = flag(args, "--sheet").map(PathBuf::from);
+    // --top P: the brightest P percent of each cell, as a mean colour (default 5)
+    let top_pct: f32 = flag(args, "--top").map(|s| s.parse().map_err(|e| format!("--top: {e}"))).transpose()?.unwrap_or(5.0);
     let mut files: Vec<PathBuf> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--crop" | "--cells" | "--sheet" => i += 2,
+            "--crop" | "--cells" | "--sheet" | "--top" => i += 2,
             a if a.starts_with("--") => return Err(format!("unknown flag {a}")),
             a => {
                 files.push(PathBuf::from(a));
@@ -106,7 +136,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     }
     let (cx, cy, cw, ch) = (crop[0].max(0) as usize, crop[1].max(0) as usize, crop[2].max(1) as usize, crop[3].max(1) as usize);
     let cell_w = (cw / cells).max(1);
-    println!("image\tcell\tfg%\tdark%\tfg_rgb\tmean_rgb\tdiff_prev");
+    println!("image\tcell\tfg%\tdark%\tsat%\twhite%\tfg_rgb\tmean_rgb\ttop_rgb\tdiff_prev");
     let mut prev: Option<Image> = None;
     let mut rows: Vec<Image> = Vec::new();
     for f in &files {
@@ -128,14 +158,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let name = f.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         for c in 0..cells {
             let x0 = cx + c * cell_w;
-            let st = cell_stat(&img, x0, cy, cell_w, ch, bg);
+            let st = cell_stat(&img, x0, cy, cell_w, ch, bg, top_pct);
             let d = prev.as_ref().map(|p| cell_diff(p, &img, x0, cy, cell_w, ch));
             println!(
-                "{name}\t{c}\t{:.1}\t{:.1}\t{:02x}{:02x}{:02x}\t{:02x}{:02x}{:02x}\t{}",
+                "{name}\t{c}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:02x}{:02x}{:02x}\t{:02x}{:02x}{:02x}\t{:02x}{:02x}{:02x}\t{}",
                 st.fg * 100.0,
                 st.dark * 100.0,
+                st.sat * 100.0,
+                st.white * 100.0,
                 st.fg_rgb[0], st.fg_rgb[1], st.fg_rgb[2],
                 st.mean_rgb[0], st.mean_rgb[1], st.mean_rgb[2],
+                st.top_rgb[0], st.top_rgb[1], st.top_rgb[2],
                 d.map(|d| format!("{d:.2}")).unwrap_or_else(|| "-".into())
             );
         }

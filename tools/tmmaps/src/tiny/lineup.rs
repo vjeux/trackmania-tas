@@ -379,6 +379,29 @@ pub fn lineup_cmd(args: &[String]) {
         m.set_item_color(i, color);
         println!("  {name} ({author}) at {:.0},{:.0},{:.0} colour {color}", pos[0], pos[1], pos[2]);
     }
+    // --decoration 48x48Screen155Night: the map's mood (the decoration ident of
+    // the body's Common chunk, plus the header XML's mood attribute) — a lights
+    // lineup wants the night, where the lights are the illumination (2026-09-09)
+    if let Some(deco) = cli::flag(args, "--decoration") {
+        m.set_decoration(deco);
+        let mood = ["Night", "Sunset", "Sunrise", "Day"].iter().find(|k| deco.contains(*k)).copied().unwrap_or("Day");
+        // the header's own copy of the Common chunk: the source's decoration
+        // (its XML's mood tells which) is swapped for the new one
+        let mut header_ok = false;
+        for old_mood in ["Day", "Night", "Sunset", "Sunrise"] {
+            let old = deco.replacen(mood, old_mood, 1);
+            if old != deco && m.set_header_decoration(&old, deco) {
+                header_ok = true;
+                break;
+            }
+        }
+        let changed = m.edit_header_xml(&|xml: &str| {
+            let start = xml.find("mood=\"")?;
+            let end = start + 6 + xml[start + 6..].find('"')?;
+            Some(format!("{}mood=\"{}\"{}", &xml[..start], mood, &xml[end..]))
+        });
+        println!("  decoration {deco} (header mood {mood}{}{})", if changed { "" } else { " — header XML unchanged" }, if header_ok { "" } else { " — header Common chunk unchanged" });
+    }
     let tmp1 = out.with_extension("lineup1.Map.Gbx");
     m.write_to(&tmp1).expect("write models");
     // variable-length splices (the password chunk) only after a write+reload

@@ -594,3 +594,16 @@ pub fn dropbaked(args: &[String]) {
     let _ = std::fs::remove_file(&tmp);
     println!("wrote {} ({} blocks, {} baked, {} items)", out.display(), m.blocks.len(), m.baked.len(), m.items.len());
 }
+
+/// `tmmaps striplightmap SRC --out MAP` — the map as it is, minus its stored
+/// lightmap (chunk 0x0304305B → HasLightmaps = 0). The game then lights the
+/// map the way it lights a tiny build (whose source lightmap it rejects at 0
+/// blocks): the 2026-09-09 A/B for the "completely white" light spots.
+pub fn striplightmap(args: &[String]) {
+        let src = std::path::PathBuf::from(&args[2]);
+        let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("striplightmap needs --out MAP"));
+        let mut m = tmmaps::map::MapFile::load(&src);
+        let n = m.strip_lightmap();
+        m.write_to(&out).expect("write output");
+        println!("wrote {} (lightmap stripped: {n} bytes)", out.display());
+}

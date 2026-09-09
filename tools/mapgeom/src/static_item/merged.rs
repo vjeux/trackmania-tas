@@ -773,7 +773,7 @@ impl Merged {
                     let mut light = light.clone();
                     light.drop_external_refs();
                     if let Some(super::Node::GxLight(g)) = light.gx_mut().and_then(|r| r.inline.as_deref_mut()) {
-                        g.scale(scale);
+                        g.scale_all(scale);
                     }
                     self.lights_out.push(MergedLight { socket, light, source: "(inline)".into(), bitmaps: Vec::new() });
                 }
@@ -1618,7 +1618,7 @@ impl Merged {
                     light.drop_external_refs();
                     match light.gx_mut().and_then(|r| r.inline.as_deref_mut()) {
                         Some(super::Node::GxLight(g)) => {
-                            g.scale(scale);
+                            g.scale_all(scale);
                             // the placement's light colour skin: the swatch
                             // multiplies the light (the stock item's projector
                             // and glow textures are replaced by it)

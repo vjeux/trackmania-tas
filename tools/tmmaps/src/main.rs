@@ -82,7 +82,7 @@ fn main() {
     const WANTS_MAP: &[&str] = &[
         "waypoints", "census", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
-        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "delblocks", "mediatracker",
+        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "delblocks", "striplightmap", "mediatracker",
     ];
     if WANTS_MAP.contains(&cmd) && args.len() < 3 {
         eprintln!("tmmaps {} needs a MAP path.\n\n{}", cmd, USAGE);
@@ -132,6 +132,11 @@ fn main() {
         // items kept — the 0-block form of `tmmaps tiny` on ANY map, for the
         // lightmapper-crash bisect of 2026-09-07
         "delblocks" => surgery::delblocks(&args),
+        // `tmmaps striplightmap MAP --out F`: the ORIGINAL map with its stored
+        // lightmap dropped (HasLightmaps = 0), blocks and items untouched — the
+        // 2026-09-09 probe of whether the tiny maps' blown-out light spots are the
+        // absent lightmap rather than the scaled lights
+        "striplightmap" => surgery::striplightmap(&args),
         "dropbaked" => surgery::dropbaked(&args),
         "movebaked" => surgery::movebaked(&args),
         "census" => census::cmd_census(&args),

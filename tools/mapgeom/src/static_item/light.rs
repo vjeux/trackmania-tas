@@ -16,6 +16,25 @@ use super::{read_ref, write_ref, Id, Rd, Ref, Wr, R, FACADE};
 
 pub const C_PLUG_LIGHT: u32 = 0x0901D000;
 
+/// The intensity law's default exponent (`TINY_LIGHT_INTENSITY_EXP`): 0 =
+/// intensities untouched (the 2026-09-07 bake), 2 = inverse-square. Set from
+/// the plate lineup of 2026-09-09 — see TINY.md "Lights".
+pub const DEFAULT_INTENSITY_EXP: f32 = 0.0;
+
+thread_local! {
+    /// `static-item --light-intensity F`: an absolute intensity factor for
+    /// this process (the lineup builds), over the env knob.
+    pub static LIGHT_INTENSITY: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+    /// `static-item --light-range F`: an extra range factor (lineup knob).
+    pub static LIGHT_RANGE: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+    /// `static-item --light-diffuse F`: the GxLight DiffuseIntensity factor (lineup knob).
+    pub static LIGHT_DIFFUSE: std::cell::Cell<Option<f32>> = const { std::cell::Cell::new(None) };
+    /// `static-item --light-gxflags-xor HEX` / `--light-ballflags-xor HEX`: flag bits
+    /// toggled on the GxLight / GxLightBall chunks (the 2026-09-09 bit probe).
+    pub static LIGHT_GXFLAGS_XOR: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    pub static LIGHT_BALLFLAGS_XOR: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 pub fn is_gx_light_class(c: u32) -> bool {
     matches!(c, 0x04001000 | 0x04002000 | 0x04003000 | 0x04005000 | 0x04006000 | 0x04007000 | 0x0400A000 | 0x0400B000)
 }
@@ -480,6 +499,92 @@ impl GxLight {
                 }
                 GxChunk::Frustum06 { aligned_box, .. } => aligned_box.iter_mut().for_each(|x| *x *= s),
                 _ => {}
+            }
+        }
+    }
+
+    /// Multiply the light's INTENSITY (the master multiplier of every GxLight
+    /// chunk form; the diffuse / specular / shadow / flare ratios untouched)
+    /// by `f`. A scaled scene keeps its look only when the irradiance at every
+    /// (scaled) surface point is unchanged: with the engine's inverse-square
+    /// falloff a light at half the distance delivers four times the
+    /// irradiance, so the half-size copy needs a quarter of the intensity —
+    /// see `light_intensity_factor` (2026-09-09, vjeux: "the bright spots
+    /// look completely white").
+    pub fn scale_intensity(&mut self, f: f32) {
+        for c in self.chunks.iter_mut() {
+            match c {
+                GxChunk::Light08 { intensity, .. } | GxChunk::Light09 { intensity, .. } | GxChunk::Light0A { intensity, .. } => *intensity *= f,
+                _ => {}
+            }
+        }
+    }
+
+    /// Multiply the light's RANGE radii only (range, specular, shadow, flare
+    /// and the 0x04002009 copy) by `f` — the emitting size, sprite and
+    /// frustum untouched. A lineup knob (`TINY_LIGHT_RANGE`), not part of the
+    /// geometric scaling.
+    pub fn scale_range(&mut self, f: f32) {
+        for c in self.chunks.iter_mut() {
+            match c {
+                GxChunk::Ball02 { radius, .. } => *radius *= f,
+                GxChunk::Ball06 { radius, radius_specular, radius_shadow, radius_flare, .. } | GxChunk::Ball08 { radius, radius_specular, radius_shadow, radius_flare, .. } => {
+                    for x in [radius, radius_specular, radius_shadow, radius_flare] {
+                        *x *= f;
+                    }
+                }
+                GxChunk::BallFloat { id: 0x04002009, value } => *value *= f,
+                _ => {}
+            }
+        }
+    }
+
+    /// The intensity factor that goes with a geometric scale `s`: `s^e` with
+    /// `e` = `TINY_LIGHT_INTENSITY_EXP` (default 2, the inverse-square law:
+    /// at half scale a quarter of the intensity), or the absolute factor
+    /// `TINY_LIGHT_INTENSITY` when set (the lineup knob; the `static-item`
+    /// CLI's `--light-intensity` writes it). `s` = 1 → 1 whatever the law.
+    pub fn intensity_factor_for_scale(s: f32) -> f32 {
+        if let Some(v) = LIGHT_INTENSITY.with(|o| o.get()) {
+            return v;
+        }
+        if let Some(v) = std::env::var("TINY_LIGHT_INTENSITY").ok().and_then(|v| v.parse::<f32>().ok()) {
+            return v;
+        }
+        let e = std::env::var("TINY_LIGHT_INTENSITY_EXP").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(DEFAULT_INTENSITY_EXP);
+        s.powf(e)
+    }
+
+    /// The extra range factor of the lineup knob `TINY_LIGHT_RANGE` (default 1).
+    pub fn range_factor() -> f32 {
+        LIGHT_RANGE.with(|o| o.get()).or_else(|| std::env::var("TINY_LIGHT_RANGE").ok().and_then(|v| v.parse::<f32>().ok())).unwrap_or(1.0)
+    }
+
+    /// Everything the geometric scale `s` implies for an embedded light: the
+    /// distances (`scale`), the intensity law (`intensity_factor_for_scale`)
+    /// and the lineup's extra range factor.
+    pub fn scale_all(&mut self, s: f32) {
+        self.scale(s);
+        self.scale_intensity(Self::intensity_factor_for_scale(s));
+        let r = Self::range_factor();
+        if r != 1.0 {
+            self.scale_range(r);
+        }
+        // the lineup probes: diffuse factor, flag bits
+        let df = LIGHT_DIFFUSE.with(|o| o.get()).unwrap_or(1.0);
+        let gx = LIGHT_GXFLAGS_XOR.with(|o| o.get());
+        let bx = LIGHT_BALLFLAGS_XOR.with(|o| o.get());
+        if df != 1.0 || gx != 0 || bx != 0 {
+            for c in self.chunks.iter_mut() {
+                match c {
+                    GxChunk::Light09 { flags, diffuse_intensity, .. } | GxChunk::Light0A { flags, diffuse_intensity, .. } => {
+                        *diffuse_intensity *= df;
+                        *flags ^= gx;
+                    }
+                    GxChunk::Light08 { flags, .. } => *flags ^= gx,
+                    GxChunk::Ball06 { flags, .. } | GxChunk::Ball08 { flags, .. } => *flags ^= bx,
+                    _ => {}
+                }
             }
         }
     }

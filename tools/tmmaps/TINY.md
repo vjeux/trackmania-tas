@@ -134,19 +134,34 @@ What the bake keeps and what it gives up:
   — 7 m one-material trunkless cards the game instances by the tens of
   thousands) stay on the stock path exactly as before: tiny 01 is 5 255 item
   placements, not the 34 090 the first bake produced.
-* **Known cosmetic limit — dynamic lights**: the item shading models answer
-  local lights (stadium ShowLights rigs, the checkpoint gates' embedded
-  lights) with a yellow-white glare the game's vegetation shader never shows;
-  bushes standing inside a gate's beams (tiny 24, cp8) look like crumpled
-  paper while the tall species escape because their crowns sit above the
-  beams. Proven both ways — lights moved out of the box: the same bush goes
-  from mean RGB (166,175,100) with 12.5 % blown pixels to (69,77,56) and 0 %;
-  at source scale the glare is identical, so it is not a half-radius
-  intensity artefact. Nothing material-side moves it (alpha clamps, constant
-  textures in every slot, normal maps, vertex colours, back-face variants,
-  every other model). Decision 2026-09-08: ship as is; the light itself is
-  what is off (the road under those gates is too white in the tiny as well)
-  and goes to a lights follow-up, not a tree workaround.
+* **Local lights — SOLVED 2026-09-09 (it was the cards' lightmap UVs, not the
+  lights)**: the item shading models answered local lights (stadium ShowLights
+  rigs, the checkpoint gates' embedded lights) with a yellow-white glare the
+  game's vegetation never shows — bushes standing inside a gate's beams (tiny
+  24, cp8) looked like crumpled paper lanterns, and vjeux read it as "the
+  lighting is way over exposed for the bright spots". The lights were never
+  the lever: a stock Nadeo `Lamp` at intensity ×0.25, ×0.01 and ×0 blew our
+  bush just the same, and with NO light within 40 m the bush stood
+  sunlit-bright on a black lawn at night (lineup `bl`). The cause was
+  `ensure_texcoord1`, which gave every card uv0 as its uv1 — every leaf of a
+  crown on the same lightmap texels, so the game's per-item bake (redone at
+  every load) handed the whole bush ONE arbitrary value: the rigs' baked
+  light under the rigs, a sunlit value elsewhere. `tree_lightmap_uv1` (default
+  `TINY_TREE_UV1=atlas`; `copy` restores the old form, `const` = one texel)
+  gives every card and bark strip its own chart in a grid over the unit
+  square; the night lineup `uv` shows the copy bush glowing white beside a
+  normally lit dark-green atlas bush, and the same-camera cp8 frames go from
+  38.7 % saturated bush pixels (mean (188,185,144)) to 2.3 % ((110,110,79))
+  against the original's 0 % ((101,104,77)), the deck unchanged.
+* **The embedded lights are right as baked** (radii ×0.5, intensity unchanged,
+  since 2026-09-07): a half-size `Lamp` lights the ground at half height
+  exactly like the stock one at full height (night lineup on a tiny-15 host,
+  top-2 % patch colour (138,137,46) vs (137,135,45); intensity ×0.5 dims it,
+  ×0.25 is unlit grass). The engine's falloff is a function of d/R, so the
+  geometric scaling needs no intensity term — `TINY_LIGHT_INTENSITY_EXP`
+  (default 0) and the `static-item --light-*` flags stay as A/B knobs. The
+  deck under Poland's cp8 rigs is +10 % vs the original with the lights as
+  they are and 20 % DARKER at ×0.25.
 
 Sizes with `--lod-pick 1 --lod-pick-min-verts 2000`: 01 8.1 MB (5.9 without
 trees), 20 13.8, 17 12.3, 24 25.4 (45 MB without the pick), 25 26.9, 21 29.2

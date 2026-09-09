@@ -35,6 +35,29 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         let p: f32 = p.parse().map_err(|e| format!("--phase01: {e}"))?;
         build::DYNA_PHASE01.with(|o| o.set(Some(p)));
     }
+    // --light-intensity F / --light-range F: the embedded lights' intensity
+    // factor (absolute, over the scale law) and an extra range factor — the
+    // 2026-09-09 plate lineup knobs (light.rs `scale_all`)
+    if let Some(v) = flag(rest, "--light-intensity") {
+        let v: f32 = v.parse().map_err(|e| format!("--light-intensity: {e}"))?;
+        super::light::LIGHT_INTENSITY.with(|o| o.set(Some(v)));
+    }
+    if let Some(v) = flag(rest, "--light-range") {
+        let v: f32 = v.parse().map_err(|e| format!("--light-range: {e}"))?;
+        super::light::LIGHT_RANGE.with(|o| o.set(Some(v)));
+    }
+    if let Some(v) = flag(rest, "--light-diffuse") {
+        let v: f32 = v.parse().map_err(|e| format!("--light-diffuse: {e}"))?;
+        super::light::LIGHT_DIFFUSE.with(|o| o.set(Some(v)));
+    }
+    if let Some(v) = flag(rest, "--light-gxflags-xor") {
+        let v = u32::from_str_radix(v.trim_start_matches("0x"), 16).map_err(|e| format!("--light-gxflags-xor: {e}"))?;
+        super::light::LIGHT_GXFLAGS_XOR.with(|o| o.set(v));
+    }
+    if let Some(v) = flag(rest, "--light-ballflags-xor") {
+        let v = u32::from_str_radix(v.trim_start_matches("0x"), 16).map_err(|e| format!("--light-ballflags-xor: {e}"))?;
+        super::light::LIGHT_BALLFLAGS_XOR.with(|o| o.set(v));
+    }
     let is_file = std::path::Path::new(&src).is_file();
     let (bytes, merged) = if is_file {
         let data = std::fs::read(&src).map_err(|e| format!("{src}: {e}"))?;
