@@ -34,6 +34,7 @@ mod unproject;
 mod upload;
 mod video;
 mod motion;
+mod mtrender;
 mod views;
 mod wsx;
 
@@ -167,6 +168,7 @@ fn main() {
         "upload" => upload::cmd(rest),
         "video" => video::cmd(rest),
         "motion" => motion::cmd(rest),
+        "mtrender" => mtrender::cmd(rest),
         "box-build" => boxbuild::box_build_cmd(rest),
         "selfbuild" => boxbuild::selfbuild_cmd(rest),
         "help" | "--help" | "-h" => {
