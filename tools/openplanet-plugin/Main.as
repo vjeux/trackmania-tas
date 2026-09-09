@@ -17,6 +17,8 @@
 //   /shoot                     -> ShootVideo()
 //   /importghosts              -> open the Import Ghosts dialog
 //   /select?t=&b=&k=           -> SelectItem(track, block, key)
+//   /mtflags /mtset /mtclip1   -> the MT editor's camera/trigger switches (MtProbe.as)
+//   /mtui?hide=1 /authghost    -> hide the MT interface; the map's validation ghost
 
 HttpServer@ server = null;
 const uint16 PORT = 29800;
@@ -131,6 +133,11 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/dialogtree") return HttpResponse(200, DumpDialogTree());
     if (r == "/mtclip") return HttpResponse(200, DumpMTClip());
     if (r == "/mtclips") return HttpResponse(200, DumpMTClips());
+    if (r == "/mtflags") return HttpResponse(200, MtFlags());
+    if (r == "/mtset") return HttpResponse(200, MtSet(QArg(qs, "what"), QArg(qs, "val")));
+    if (r == "/mtclip1") return HttpResponse(200, MtClipFlag(QArg(qs, "what"), QArg(qs, "val")));
+    if (r == "/mtui") return HttpResponse(200, MtUi(QArg(qs, "hide")));
+    if (r == "/authghost") return HttpResponse(200, AuthGhost(QArg(qs, "clear")));
     if (r == "/ourclip") return HttpResponse(200, OurClip());
     if (r == "/setclip") return HttpResponse(200, SetClipIndex(Text::ParseInt(QArg(qs,"i"))));
     if (r == "/yes")    return HttpResponse(200, AnswerDialog("yes"));
