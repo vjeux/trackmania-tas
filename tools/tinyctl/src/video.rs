@@ -1,5 +1,4 @@
-//! `tinyctl vid    // the cut (overlay or bare) needs ffmpeg HERE; find it before the box does any work
-    let ff = Some(clip::platform::from_env().map_err(|e| format!("the cut needs ffmpeg on this side: {e}"))?);o` — one map's driven lap as a video and a contact sheet, from
+//! `tinyctl video` — one map's driven lap as a video and a contact sheet, from
 //! the devserver, through the render box — **with the run's controls drawn on
 //! it, by default, checked, and stamped.**
 //!
@@ -334,12 +333,8 @@ fn one(args: &[String]) -> Result<Done, String> {
         }
     }
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-    // the overlay needs ffmpeg HERE; find it before the box does any work
-    let ff = if tmmaps::cli::has(args, "--no-overlay") && from_webm.is_none() && f("--store").is_none() {
-        None
-    } else {
-        Some(clip::platform::from_env().map_err(|e| format!("the overlay/cut needs ffmpeg on this side: {e}"))?)
-    };
+    // the cut (overlay or bare) needs ffmpeg HERE; find it before the box does any work
+    let ff = Some(clip::platform::from_env().map_err(|e| format!("the cut needs ffmpeg on this side: {e}"))?);
 
     // --- the ghost: time, checkpoints, and THE GUARD
     let g = gbx::record::decode_ghost(ghost.to_str().ok_or("ghost path is not utf-8")?)?;
