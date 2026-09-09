@@ -57,6 +57,11 @@ pub struct Inputs {
     pub steer: Vec<i8>,
     pub gas: Vec<bool>,
     pub brake: Vec<bool>,
+    /// The RESPAWN channel per tick (the tape's state-literal bit 31). Empty = no respawns (every older constructor).
+    /// Carried by every candidate so a fork evaluation respawns where the tape does (2026-09-09: without it every
+    /// candidate whose suffix held a respawn DNF'd in the fork -- Norway: 750k candidates, 0 finishers).
+
+    pub respawn: Vec<bool>,
 }
 
 impl Inputs {
@@ -76,7 +81,7 @@ impl Inputs {
         self.gas.iter().map(|&v| v as u8).collect()
     }
     pub fn brake_u8(&self) -> Vec<u8> {
-        self.brake.iter().map(|&v| v as u8).collect()
+        (0..self.brake.len()).map(|t| self.brake_byte(t)).collect()
     }
 
     /// From the three arrays a decoded tape hands over.
@@ -84,8 +89,14 @@ impl Inputs {
         Inputs {
             steer: steer.iter().map(|&v| v as i8).collect(),
             gas: gas.iter().map(|&v| v != 0).collect(),
-            brake: brake.iter().map(|&v| v != 0).collect(),
+            brake: brake.iter().map(|&v| v & 1 != 0).collect(),
+            respawn: brake.iter().map(|&v| v & 2 != 0).collect(),
         }
+    }
+
+    /// The brake byte the engine-side record builders take: bit 0 brake, bit 1 respawn (`rec_of` decodes it).
+    pub fn brake_byte(&self, t: usize) -> u8 {
+        (self.brake[t] as u8) | ((self.respawn.get(t).copied().unwrap_or(false) as u8) << 1)
     }
 
     /// How far this tape is from the tape a fork server checkpointed on.
@@ -371,7 +382,7 @@ mod tests {
     use super::*;
 
     fn flat(n: usize) -> Inputs {
-        Inputs { steer: vec![0; n], gas: vec![true; n], brake: vec![false; n] }
+        Inputs { steer: vec![0; n], gas: vec![true; n], brake: vec![false; n], respawn: Vec::new() }
     }
 
     /// Every operator must stay inside its window. A mutation below the resume

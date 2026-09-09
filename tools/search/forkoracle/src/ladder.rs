@@ -274,7 +274,7 @@ impl Ladder {
         // The whole tail from the base's write floor, so the new node holds the
         // batch's records everywhere it can still read them.
         let recs: Vec<Rec> = (from..cand.len())
-            .map(|t| rec_of(cand.steer[t] as u8, cand.gas[t] as u8, cand.brake[t] as u8))
+            .map(|t| rec_of(cand.steer[t] as u8, cand.gas[t] as u8, cand.brake_byte(t)))
             .collect();
         let sock = self.tree.sock_path();
         let req = BranchReq {
@@ -340,7 +340,7 @@ impl Ladder {
     /// The tail of `cand` from `from`, in the engine's representation.
     fn tail(cand: &Inputs, from: usize) -> Vec<Rec> {
         (from..cand.len())
-            .map(|t| rec_of(cand.steer[t] as u8, cand.gas[t] as u8, cand.brake[t] as u8))
+            .map(|t| rec_of(cand.steer[t] as u8, cand.gas[t] as u8, cand.brake_byte(t)))
             .collect()
     }
 
@@ -469,6 +469,7 @@ mod tests {
             steer: (0..n).map(|t| ((t * 7 + seed as usize) % 200) as i8).collect(),
             gas: (0..n).map(|t| t % 3 != 0).collect(),
             brake: (0..n).map(|t| t % 11 == 0).collect(),
+            respawn: Vec::new(),
         }
     }
 

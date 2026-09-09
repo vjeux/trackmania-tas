@@ -223,11 +223,13 @@ pub fn verify_tape(
             g(crate::forksrv::REC_BRAKE),
         );
         let want = crate::forksrv::rec_of(steer[t], accel[t], brake[t]);
-        if st != want.steer || ga != want.gas || br != want.brake {
+        // the record holds the REAL brake; a respawn rides the wire as brake + 2.0 and lands in word 0, so compare
+        // against the brake value the wire encoding stands for (2026-09-09)
+        if st != want.steer || ga != want.gas || br != want.brake_value() {
             if bad == 0 {
                 first = format!(
                     "tick {}: server has ({}, {}, {}), tape says ({}, {}, {})",
-                    t, st, ga, br, want.steer, want.gas, want.brake
+                    t, st, ga, br, want.steer, want.gas, want.brake_value()
                 );
             }
             bad += 1;

@@ -47,7 +47,7 @@ impl Evaluator for Spy {
 }
 
 fn flat(n: usize) -> Inputs {
-    Inputs { steer: vec![0; n], gas: vec![true; n], brake: vec![false; n] }
+    Inputs { steer: vec![0; n], gas: vec![true; n], brake: vec![false; n], respawn: Vec::new() }
 }
 
 /// THE PHANTOM FIX, tested directly.
@@ -229,7 +229,7 @@ fn lazy_cfg(n: usize) -> tmsearch::search::Config {
 #[test]
 fn an_objective_the_do_nothing_tape_wins_stops_before_the_first_candidate() {
     let n = 400;
-    let start = Inputs { steer: vec![40; n], gas: vec![true; n], brake: vec![false; n] };
+    let start = Inputs { steer: vec![40; n], gas: vec![true; n], brake: vec![false; n], respawn: Vec::new() };
     let calls = Arc::new(AtomicUsize::new(0));
     let banked: Arc<Mutex<Vec<Outcome>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&banked);
@@ -263,7 +263,7 @@ fn an_objective_the_do_nothing_tape_wins_stops_before_the_first_candidate() {
 #[test]
 fn an_objective_the_do_nothing_tape_loses_runs_normally() {
     let n = 400;
-    let start = Inputs { steer: vec![40; n], gas: vec![true; n], brake: vec![false; n] };
+    let start = Inputs { steer: vec![40; n], gas: vec![true; n], brake: vec![false; n], respawn: Vec::new() };
     let calls = Arc::new(AtomicUsize::new(0));
     let banked: Arc<Mutex<Vec<Outcome>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&banked);
@@ -294,7 +294,7 @@ fn an_objective_the_do_nothing_tape_loses_runs_normally() {
 #[test]
 fn the_do_nothing_tape_only_blanks_what_the_search_may_edit() {
     let n = 100;
-    let seed = Inputs { steer: vec![40; n], gas: vec![true; n], brake: vec![true; n] };
+    let seed = Inputs { steer: vec![40; n], gas: vec![true; n], brake: vec![true; n], respawn: Vec::new() };
     let d = tmsearch::search::Decoy::do_nothing(&seed, 30, 70);
     for t in 0..30 {
         assert_eq!(d.steer[t], 40, "tick {} was blanked below the floor", t);
