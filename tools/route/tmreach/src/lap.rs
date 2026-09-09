@@ -474,6 +474,8 @@ pub struct LapCfg {
     /// rendezvous target state [x, y, z, vx, vy, vz] (reaching it within rdv_tol / 3 m/s / 10 deg ends the run)
     pub rendezvous: Option<[f64; 6]>,
     pub rdv_tol: f64,
+    /// arc-length window where the brake is masked off (full gas) in every macro
+    pub no_brake: Option<(f64, f64)>,
 }
 
 struct Rng(u64);
@@ -609,11 +611,29 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         let mut count = 0;
         // (recs, rows, exited, description)
         let mut results: Vec<(Vec<Rec>, Vec<Row>, bool, String)> = Vec::new();
+        // NO-BRAKE WINDOW (22 Saudi, coordinator 16:34Z: full gas from G8 to the crest): inside [no_brake.0, no_brake.1] of
+        // arc length the brake is masked off in every open-loop macro and the gas forced on
+        let s_base = base.map(|e| e.s).unwrap_or(s0);
+        let brake_masked = cfg.no_brake.map(|(a, b)| s_base >= a && s_base <= b).unwrap_or(false);
         for m in &macros {
-            let recs = match build(m, &base_recs, false) {
+            let mut recs = match build(m, &base_recs, false) {
                 Built::Recs(r) => r,
                 Built::NoOp => continue,
             };
+            if brake_masked {
+                let mut any = false;
+                for r in recs.iter_mut() {
+                    if r.brake_value() > 0.5 {
+                        r.brake = if r.respawn() { 2.0 } else { 0.0 };
+                        r.gas = 1.0;
+                        any = true;
+                    }
+                }
+                if any && m.description.contains("brake") {
+                    // a pure brake macro with the brake removed duplicates the gas hold: skip it
+                    continue;
+                }
+            }
             match w.rollout(node, &recs, from, h as u64) {
                 Ok(r) => {
                     count += 1;
