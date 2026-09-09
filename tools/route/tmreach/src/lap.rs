@@ -731,9 +731,16 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
     // INJECTED state (--inject-state) followed by its approach inputs
     if cfg.prefix_ticks > 0 || cfg.seed_chain.is_some() || cfg.inject.is_some() {
         let mut seed_node = branch::ROOT;
+        let mut inject_from = root;
         let recs = match (&cfg.inject, &cfg.seed_chain) {
             (Some(st), _) => {
-                let (h0, rb) = crate::inject::inject_state(w, branch::ROOT, st)?;
+                // past race 0 first (the countdown holds the car at the spawn — ENV): the template's own inputs for
+                // INJECT_PREROLL ticks, then the write in a fork of that node
+                const INJECT_PREROLL: usize = 20;
+                let pre = w.reference_recs(root, INJECT_PREROLL);
+                let (_pre_rows, h_pre) = w.rollout_keep(branch::ROOT, &pre, root, pre.len() as u64)?;
+                let (h0, rb) = crate::inject::inject_state(w, h_pre, st)?;
+                inject_from = w.floor(h0)?;
                 out.log.push(format!("INJECTED {} state (landmark {}, {}) at ({:.1}, {:.1}, {:.1}) v {:.1}: read back ({:.1}, {:.1}, {:.1}); replaying {} approach ticks", st.source.kind, st.source.landmark, st.source.file, st.state.pos[0], st.state.pos[1], st.state.pos[2], (st.state.vel[0].powi(2) + st.state.vel[1].powi(2) + st.state.vel[2].powi(2)).sqrt(), rb.x, rb.y, rb.z, st.inputs.len()));
                 seed_node = h0;
                 crate::inject::inputs_to_recs(&st.inputs)
@@ -742,7 +749,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             (None, None) => w.reference_recs(root, cfg.prefix_ticks),
         };
         let recs_len = recs.len();
-        let (rows, nh) = if recs.is_empty() { (Vec::new(), seed_node) } else { w.rollout_keep(seed_node, &recs, root, recs.len() as u64)? };
+        let (rows, nh) = if recs.is_empty() { (Vec::new(), seed_node) } else { w.rollout_keep(seed_node, &recs, inject_from, recs.len() as u64)? };
         let end = rows.last().cloned().unwrap_or_else(|| root_row.clone());
         let (s, _lat, seg, _) = track.project(pos(&end), track.pts.len() / 2, track.pts.len());
         let cps = cps_of(&end);

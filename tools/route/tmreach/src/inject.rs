@@ -139,7 +139,9 @@ pub fn from_lcp(lcp: &serde_json::Value, entry: usize, kind: &str, map_uid: &str
             // inputs: each sample's steer/gas/brake held from its t_ms to the next sample's, on 10 ms ticks;
             // the last sample runs to the crossing (t_window end = the entry's approach span)
             let t0 = s0.get("t_ms").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let t_end = samples.last().and_then(|s| s.get("t_ms")).and_then(|v| v.as_f64()).unwrap_or(t0) + 40.0;
+            // hold the last sample's inputs 20 ticks past the recorded crossing: the injected car settles slower than the
+            // human (wheel/engine caches are not written), so the crossing comes a little later (ENV: 170 ticks vs 149)
+            let t_end = samples.last().and_then(|s| s.get("t_ms")).and_then(|v| v.as_f64()).unwrap_or(t0) + 40.0 + 200.0;
             let mut inputs = Vec::new();
             let n_ticks = (((t_end - t0) / 10.0).round() as u32).max(1);
             for tick in 0..n_ticks {
@@ -150,7 +152,7 @@ pub fn from_lcp(lcp: &serde_json::Value, entry: usize, kind: &str, map_uid: &str
                 let brake = s.get("brake").and_then(|v| v.as_f64()).unwrap_or(0.0) > 0.5;
                 inputs.push(InputTick { tick, steer, gas, brake });
             }
-            let expect = Expect { landmark, credit_within_ticks: n_ticks + 20, pos: cross_pos, vel: cross_vel, quat_wxyz: cross_quat };
+            let expect = Expect { landmark, credit_within_ticks: n_ticks, pos: cross_pos, vel: cross_vel, quat_wxyz: cross_quat };
             (State { pos, quat_wxyz: quat, vel, ang_vel, speed_fwd: s0.get("speed").and_then(|v| v.as_f64()).map(|x| x as f32), wheels: None, gear, rpm_raw, ground }, inputs, Some(expect))
         }
         other => return Err(format!("kind {other:?}: approach-start | crossing")),
@@ -174,9 +176,28 @@ pub fn load(path: &std::path::Path) -> Result<InjectState, String> {
 /// THE SEAM: write `st.state` into the fork's live body at `h`, step one tick, read back. ENV's writer fills
 /// this in (their locate map: controller+0x1a70 → sim → playground → scene → vehmgr → dyna body; copy-out
 /// block phy+0x12e0/f0/fc). Returns the handle to search from and the read-back row.
-pub fn inject_state(_w: &mut crate::rig::Worker, _h: branch::Handle, st: &InjectState) -> Result<(branch::Handle, forkoracle::layout::Row), String> {
-    Err(format!(
-        "inject_state: the fork engine's state writer is not in this build yet (ENV arm, session 6fd92e3b) — state {} landmark {} at ({:.1}, {:.1}, {:.1}) cannot be injected",
-        st.source.kind, st.source.landmark, st.state.pos[0], st.state.pos[1], st.state.pos[2]
-    ))
+/// Wired to ENV's writer (player-env 7d0a0a6c): fork a child from `h`, resolve the live car in it (the same
+/// derivation the worker uses for car-switch maps), write the dyna body AND the phy copies
+/// (`write_body_and_phy` — the body alone did not steer the next step), read back. The caller steps it.
+/// Inject after race 0: during the countdown the engine holds the car at the spawn (ENV).
+pub fn inject_state(w: &mut crate::rig::Worker, h: branch::Handle, st: &InjectState) -> Result<(branch::Handle, forkoracle::layout::Row), String> {
+    let nh = w.forest.fork(h)?;
+    let pid = w.forest.pid_of(nh)?;
+    let (sim_ms, race_start) = w.forest.clock_of(nh)?;
+    let car = forkoracle::car::resolve_with(w.car.controller, w.car.sim, w.module_base, sim_ms, race_start, |a, n| forkoracle::procmem::read_at(pid, a, n)).map_err(|e| format!("inject_state: no live body to write (inside a respawn window or before the spawn?): {e}"))?;
+    let body = forkoracle::inject::BodyState { pos: st.state.pos, quat_wxyz: st.state.quat_wxyz, vel: st.state.vel, ang_vel: st.state.ang_vel.unwrap_or([0.0; 3]) };
+    let back = forkoracle::inject::write_body_and_phy(pid, &car, &body)?;
+    let d = back.dist(&body);
+    if d > 0.05 {
+        return Err(format!("inject_state: read-back differs from the written state by {d:.3} m"));
+    }
+    // the row the search sees: the written state on the worker's current row layout
+    let mut row = w.root_row.clone();
+    row.x = st.state.pos[0] as f64;
+    row.y = st.state.pos[1] as f64;
+    row.z = st.state.pos[2] as f64;
+    row.vx = st.state.vel[0] as f64;
+    row.vy = st.state.vel[1] as f64;
+    row.vz = st.state.vel[2] as f64;
+    Ok((nh, row))
 }

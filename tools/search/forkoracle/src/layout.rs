@@ -223,11 +223,13 @@ pub fn verify_tape(
             g(crate::forksrv::REC_BRAKE),
         );
         let want = crate::forksrv::rec_of(steer[t], accel[t], brake[t]);
-        if st != want.steer || ga != want.gas || br != want.brake {
+        // the record holds the REAL brake; a respawn rides the wire as brake + 2.0 and lands in word 0, so compare
+        // against the brake value the wire encoding stands for (2026-09-09)
+        if st != want.steer || ga != want.gas || br != want.brake_value() {
             if bad == 0 {
                 first = format!(
                     "tick {}: server has ({}, {}, {}), tape says ({}, {}, {})",
-                    t, st, ga, br, want.steer, want.gas, want.brake
+                    t, st, ga, br, want.steer, want.gas, want.brake_value()
                 );
             }
             bad += 1;
@@ -300,6 +302,13 @@ pub fn check_rows(rows: &[Row]) -> Result<RowCheck, String> {
             continue;
         }
         let (dx, dy, dz) = (w[1].x - w[0].x, w[1].y - w[0].y, w[1].z - w[0].z);
+        // RESPAWN HOLD (ENV 2026-09-09): for ~1.0 s after a respawn the readout is frozen -- the position does not move
+        // while the velocity triple keeps the re-placed car's speed -- so d(pos)/dt - v == |v| on every held row, and a
+        // window forked inside the hold read a median of 16-27 m/s on a correct slot (Poland, INPUT). A held row is not
+        // evidence about the layout: skip it.
+        if dx == 0.0 && dy == 0.0 && dz == 0.0 && (w[0].vx * w[0].vx + w[0].vy * w[0].vy + w[0].vz * w[0].vz) > 1.0 {
+            continue;
+        }
         verrs.push(
             ((dx / dt - w[0].vx).powi(2) + (dy / dt - w[0].vy).powi(2) + (dz / dt - w[0].vz).powi(2))
                 .sqrt(),
