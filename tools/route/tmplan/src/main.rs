@@ -549,6 +549,18 @@ fn cmd_deck_gates(args: &[String]) {
             .map(|k| (dist_box(k), k))
             .collect();
         cands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        // ship15 renamed items per placement: the waypoint record names one copy (AC21596114), the placed item another
+        // (AC21596138) — fall back to the nearest item with the same 2-letter prefix within 8 m of the anchor
+        if cands.first().map(|c| c.0 >= 40.0).unwrap_or(true) {
+            let pre: String = g.model.chars().take(2).collect();
+            let mut alt: Vec<(f32, usize)> = (0..n)
+                .filter(|&k| scene.placements[k].kind == mapgeom::local::PlacementKind::Item && deck[k].0 > 1.0 && scene.placements[k].name.starts_with(&pre))
+                .map(|k| (dist_box(k), k))
+                .filter(|c| c.0 < 8.0)
+                .collect();
+            alt.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            if let Some(&(d, k)) = alt.first() { lines.push(format!("  wp {:>2} {}: no placement of that model — using the nearest {} item {} at {d:.1} m", g.waypoint, g.model, pre, scene.placements[k].name)); cands = vec![(d, k)]; }
+        }
         let Some(&(dd, k)) = cands.first().filter(|c| c.0 < 40.0) else { lines.push(format!("  wp {:>2} {}: no placement of that model within 40 m of the anchor — left as is", g.waypoint, g.model)); continue };
         let _ = dd;
         let d = &deck[k];
