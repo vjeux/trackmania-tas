@@ -1451,6 +1451,33 @@ fn cmd_leg_plot(args: &[String]) {
     // human line (whole map faint, the leg bright by speed)
     for i in 1..line.len() { let (a, b) = (to_px(line[i - 1][0], line[i - 1][2]), to_px(line[i][0], line[i][2])); cv.line(a.0, a.1, b.0, b.1, [120, 120, 120], 1); }
     for i in (i0 + 1)..=i1 { let (a, b) = (to_px(line[i - 1][0], line[i - 1][2]), to_px(line[i][0], line[i][2])); cv.line(a.0, a.1, b.0, b.1, speed_colour(vh[i]), 3); }
+    // --cp-states NN.json: vjeux's checkpoint-crossing states (launched-cp): position + velocity vector + speed, magenta
+    // markers with an arrow (any JSON: every object with x,y,z and vx,vy,vz or speed is a state)
+    let mut cp_states: Vec<([f32; 3], [f32; 3], f32, String)> = Vec::new();
+    if let Some(p) = flag(args, "--cp-states") {
+        let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| die(&format!("{p}: {e}")));
+        let v: serde_json::Value = serde_json::from_str(&txt).unwrap_or_else(|e| die(&format!("{p}: {e}")));
+        fn walk(v: &serde_json::Value, out: &mut Vec<([f32; 3], [f32; 3], f32, String)>, label: String) {
+            let num = |o: &serde_json::Map<String, serde_json::Value>, k: &str| o.get(k).and_then(|x| x.as_f64()).map(|x| x as f32);
+            match v {
+                serde_json::Value::Object(o) => {
+                    let pos = if let (Some(x), Some(y), Some(z)) = (num(o, "x"), num(o, "y"), num(o, "z")) { Some([x, y, z]) } else { o.get("pos").or(o.get("position")).and_then(|a| a.as_array()).filter(|a| a.len() == 3).map(|a| [a[0].as_f64().unwrap_or(0.0) as f32, a[1].as_f64().unwrap_or(0.0) as f32, a[2].as_f64().unwrap_or(0.0) as f32]) };
+                    if let Some(pp) = pos {
+                        let vel = if let (Some(x), Some(y), Some(z)) = (num(o, "vx"), num(o, "vy"), num(o, "vz")) { [x, y, z] } else { o.get("vel").or(o.get("velocity")).and_then(|a| a.as_array()).filter(|a| a.len() == 3).map(|a| [a[0].as_f64().unwrap_or(0.0) as f32, a[1].as_f64().unwrap_or(0.0) as f32, a[2].as_f64().unwrap_or(0.0) as f32]).unwrap_or([0.0; 3]) };
+                        let sp = num(o, "speed").or(num(o, "v")).unwrap_or((vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]).sqrt());
+                        let lab = o.get("cp").or(o.get("checkpoint")).or(o.get("waypoint")).or(o.get("landmark")).map(|x| x.to_string().trim_matches('"').to_string()).unwrap_or(label.clone());
+                        if o.get("approach").is_none() && o.get("samples").is_none() || o.contains_key("cp") || o.contains_key("landmark") { out.push((pp, vel, sp, lab)); }
+                    }
+                    for (k, x) in o { if k != "approach" && k != "samples" { walk(x, out, k.clone()); } }
+                }
+                serde_json::Value::Array(a) => { for (i, x) in a.iter().enumerate() { walk(x, out, format!("{label}{i}")); } }
+                _ => {}
+            }
+        }
+        walk(&v, &mut cp_states, String::new());
+        cp_states.retain(|(p, _, _, _)| near_leg(*p));
+        eprintln!("  {} vjeux CP states in the window", cp_states.len());
+    }
     // alive cells: small dots by speed
     for (p, v) in &cells { let (px, pz) = to_px(p[0], p[2]); cv.disc(px, pz, 1.5, speed_colour(*v)); }
     // chains
@@ -1458,6 +1485,15 @@ fn cmd_leg_plot(args: &[String]) {
         let col = cause_colour(&c.cause);
         for i in 1..c.rows.len() { let (a, b) = (to_px(c.rows[i - 1].p[0], c.rows[i - 1].p[2]), to_px(c.rows[i].p[0], c.rows[i].p[2])); cv.line(a.0, a.1, b.0, b.1, col, 2); }
         if let Some(r) = c.rows.last() { let (px, pz) = to_px(r.p[0], r.p[2]); if c.rows.len() > 1 { cv.disc(px, pz, 5.0, col); cv.ring(px, pz, 7.0, [0, 0, 0]); } else { cv.disc(px, pz, 3.0, col); } }
+    }
+    // vjeux CP states: magenta disc + velocity arrow (1 s of travel) + label
+    for (p, vel, sp, lab) in &cp_states {
+        let (px, pz) = to_px(p[0], p[2]);
+        let (qx, qz) = to_px(p[0] + vel[0], p[2] + vel[2]);
+        cv.line(px, pz, qx, qz, [200, 0, 200], 3);
+        cv.disc(px, pz, 6.0, [200, 0, 200]);
+        cv.ring(px, pz, 8.0, [255, 255, 255]);
+        cv.text(px as i64 + 9, pz as i64 + 4, &format!("V{lab} {sp:.0}", ), [120, 0, 120], 1);
     }
     // ground under the human line (for the elevation)
     for p in seg {
@@ -1502,6 +1538,12 @@ fn cmd_leg_plot(args: &[String]) {
     for i in (i0 + 1)..=i1 { cv.line(sx(s[i - 1]), ey(line[i - 1][1]), sx(s[i]), ey(line[i][1]), speed_colour(vh[i]), 2); cv.line(sx(s[i - 1]), vy(vh[i - 1]), sx(s[i]), vy(vh[i]), [0, 0, 0], 2); }
     // gate crossings as vertical ticks
     for (li, grp) in &crossings { if *li >= i0 && *li <= i1 { cv.line(sx(s[*li]), panel_y0 as f32, sx(s[*li]), (spd_y0 + spd_h) as f32, [230, 30, 30], 1); cv.text(sx(s[*li]) as i64 + 3, panel_y0, &format!("G{grp}"), [230, 30, 30], 1); } }
+    // vjeux CP states on the elevation and speed panels
+    for (p, _, sp, _) in &cp_states {
+        let mut best = (f32::INFINITY, i0); for (j, q) in seg.iter().enumerate() { let d = (q[0] - p[0]).powi(2) + (q[2] - p[2]).powi(2); if d < best.0 { best = (d, i0 + j); } }
+        let sv = s[best.1];
+        cv.disc(sx(sv), ey(p[1]), 5.0, [200, 0, 200]); cv.disc(sx(sv), vy(*sp), 5.0, [200, 0, 200]);
+    }
     // chains: project each row to the nearest leg sample (XZ) → s
     for c in &chains {
         let col = cause_colour(&c.cause);
@@ -1517,7 +1559,7 @@ fn cmd_leg_plot(args: &[String]) {
     // legend
     let ly = (th + side_h) as i64 + 8;
     let mut lx = 10i64;
-    for (name, col) in [("HUMAN BY SPEED", speed_colour(40.0)), ("FELL", cause_colour("fell")), ("OFFROUTE", cause_colour("offroute")), ("STOPPED", cause_colour("stopped")), ("ALIVE", cause_colour("alive")), ("FINISH", cause_colour("finish")), ("WALL", [60, 60, 70]), ("GATE", [230, 30, 30])] {
+    for (name, col) in [("HUMAN BY SPEED", speed_colour(40.0)), ("FELL", cause_colour("fell")), ("OFFROUTE", cause_colour("offroute")), ("STOPPED", cause_colour("stopped")), ("ALIVE", cause_colour("alive")), ("FINISH", cause_colour("finish")), ("WALL", [60, 60, 70]), ("GATE", [230, 30, 30]), ("VJEUX CP STATE", [200, 0, 200])] {
         cv.rect(lx, ly, lx + 14, ly + 10, col);
         cv.text(lx + 18, ly + 2, name, [0, 0, 0], 1);
         lx += 18 + 6 * name.len() as i64 + 16;
