@@ -32,6 +32,7 @@ mod shoot;
 mod ship;
 mod unproject;
 mod upload;
+mod pagestatus;
 mod video;
 mod motion;
 mod mtrender;
@@ -179,6 +180,7 @@ fn main() {
         "upload" => upload::cmd(rest),
         "video" => video::cmd(rest),
         "shipwatch" => video::shipwatch_cmd(rest),
+        "page-status" => pagestatus::cmd(rest),
         "motion" => motion::cmd(rest),
         "mtrender" => mtrender::cmd(rest),
         "box-build" => boxbuild::box_build_cmd(rest),
