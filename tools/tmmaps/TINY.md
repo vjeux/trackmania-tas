@@ -529,7 +529,7 @@ and the U-top's panels beige/grey, the wall behind pool B's far-right corner
 red) and on 10's start all agree with the rule above. What a wrong hue on a
 tiny wall means, still: the wrong MATERIAL, never a wrong byte.
 
-## Which generated fillers the game draws — the editor's list; what the runtime skips is open (2026-09-09)
+## Which generated fillers the game draws — all of the editor's list; occlusion is the occupant's mesh, not a rule (2026-09-09)
 
 Two layers, settled separately.
 
@@ -567,54 +567,68 @@ keeps AND the game draws (fullfree / face / accepted / ghost / free: Summer
 15's arch floor and pool-approach plate, 21's gate floor, 05's water-road
 floor came back with 3201a7cc).
 
-**2. What the runtime draws of that list — no hiding rule is established; the
-"slabs" were the game's ITEM CACHE (2026-09-09 night).** vjeux on ship13: "15,
-20 — road blocks in the middle of the path". 15's was physics (water surfaces
-solid, 5380c805). For 20, drive-through cameras behind a run line showed, in
-ours only, a "grey road slab over cp3", a "white Tech slab with a red LED strip
-and the TM logo across the grass bowl", a "dark deck underside at the pool". A
-probe that removed every record standing in a cell occupied by another block's
-unit (`mapgeom fillers` class `covered:*`, 1 905 of 20's 7 287) made those frames
-match the original, and an occupied-cell rule was nearly shipped. It was
-wrong. The same full geometry rebuilt with UNIQUE item names (`TINY_ALIAS_BASE`)
-renders the bowl camera at 10/144 cells from the original — the slab was never
-in our file: **the game caches an embedded item model by its file name for the
-whole session**, so ship14's 20, loaded after ship13's 20 in one editor session,
-showed ship13's pieces wherever the two libraries' `AC000xxxxx` numbering had
-drifted apart. Every A/B of this campaign that loaded two builds with colliding
-names in one game session is suspect; the probe's "clean" frames were clean
-because its numbering happened to differ. Since ba36675c+ `tinyctl build` gives
-every map and every build its own numbering (`AC{map:02}{minute%1000:03}{idx:03}`,
-same for AI/AV) — which also protects a player who plays several tiny maps in
-one session. What remains open for 20: one camera at the pool (~39 s) where the
-full geometry and the probe still differ (75 vs 43 cells, both cache-safe);
-whatever that is will be named by eye, not by a rule.
+**2. What the runtime draws of that list: nothing is hidden by any RECORD
+property we can name — a filler is invisible in the original only when the
+neighbouring block's MESH covers it.** Settled 2026-09-09 (a night of probes,
+recorded below so nobody repeats them). `tiny-library` emits every record; the
+knobs `TINY_OCCUPIED_RULE=1|2|3` and `TINY_GHOST_CLIPS=0` build probes and are
+off by default.
 
-Cache-safe probes on 20 (unique names, 29 drive-through cameras vs the original,
-counts of 144 cells; full geometry as the baseline), 06:30–08:20Z:
+The evidence, all "cache-safe" (see the two traps below), 29 cameras behind the
+author's car on Summer 20 plus ghost-road cameras on 12/13/24, counts of 144
+cells different from the original:
 
 | probe | what it removes | better | worse |
 |---|---|---|---|
-| `TINY_OCCUPIED_RULE=1` | every record in a cell another block's unit occupies (1 905) | d196 94→30, d106 70→65, d391 74→41 | d271 12→51 (pool rims, pillars in WaterRampZone cells — the original shows them) |
+| `TINY_OCCUPIED_RULE=1` | every record in a cell another block's unit occupies (1 905 of 20's 7 287) | d196 94→30, d106 70→65, d391 74→41 | d271 12→51 (pool rims, pillar walls in WaterRampZone cells — the original shows them) |
 | `TINY_OCCUPIED_RULE=2` | those whose clip has `CanBeDeletedByFullFreeClip` (1 063) | d196 →31, d106 →30 | d271 →23; d391 unchanged |
-| `TINY_GHOST_CLIPS=0` | a ghost-mode block's generated clips, flag bit 28 (1 037) | d196 →38, d136 27→13, d361 78→62 | none on 20 — but on 13 the ghost road the author drives on loses an underside piece the original shows (u097 4→27), so this is not the rule either |
-| `TINY_OCCUPIED_RULE=3` | vertical free clips (a `vertical` group) in a cell a real non-ghost unit occupies (628) | d196 →33, d106 →60, d271 →15 (no regression) | d391 unchanged 74; d421 24→47, d361 78→88, d181 34→43 |
+| `TINY_GHOST_CLIPS=0` | a ghost-mode block's generated clips, flag bit 28 (1 037) | d196 →38, d136 27→13, d361 78→62 | none on 20 — but on 13 the ghost road the author drives on loses an underside the original shows (u097 4→27) |
+| `TINY_OCCUPIED_RULE=3` | vertical free clips (a `vertical` group) in a cell a real non-ghost unit occupies (628) | d196 →33, d106 →60, d271 →15 | d391 unchanged; d421 24→47, d361 78→88, d181 34→43 |
 
-So the runtime hides SOME records in occupied cells and not others, by a
-condition none of the three knobs states; each knob is a probe, none a
-default. The pool slab at d391 is a STACK of coplanar dark panels in the cells
-(25..27, 9..11, 20..21) — DecoWallBaseVFC pillar walls (del=1), the
-DecoCliffCornerOut*VFC faces of the ghost cliffs and DecoWallSlope2StraightVFC
-faces (del=0) — removing any one group leaves the others, only "all covered"
-clears it; the original shows none of them. The occupants there are WaterBase
-(row 9), the ghost DecoCliffMidCornerOut stack (prefab-less, pure clip
-generators) and the grass bowl's units.
+Every predicate that helps one camera breaks another; the one that "hides"
+right everywhere is the occupant's solid volume, which no flag encodes. The
+pieces involved on 20: SnowRoad*InsideVFC pillar/side walls recorded in the
+SnowRoadTilt pieces' own cells (inside the snow road's bank in the original;
+`SnowRoadTilt2*` has one mobil per variant — no bank to switch on); a stack of
+coplanar panels in the pool-corner cells (25..27, 9..11, 20..21) —
+DecoWallBaseVFC pillar walls, the ghost cliffs' DecoCliffCornerOut*VFC faces,
+DecoWallSlope2StraightVFC faces — where the occupants are WaterBase, the
+prefab-less ghost `DecoCliffMidCornerOut` stack (a pure clip generator, no
+prefab in any variant) and the grass bowl's units.
 
-The editor's cursor was a second red herring on the way: with a block selected
-in the inventory its preview (a start block carries a car) stands at the camera
-target; `shootctl shootset` now switches to FreeLook after every load
-(`/freelook`, openplanet-plugin/Cursor.as). `TINY_OCCUPIED_RULE=1` still builds
-the occupied-cell probe; it is not a rule and off by default.
+**And none of it is a road block.** The frames that started the hunt were
+cameras a player never has: behind the car UNDER the pool's water surface and
+UNDER the snow deck. Shot from a chase camera and top-down in a fresh game
+(14:30Z, file_ids 1598012818395110 / 1768750454254943 / 1534628425375867 /
+3480098368838889), both places show a clear route in ours, identical to the
+original but for the boost gates' translucent blue effect volume, which is an
+editor-only visualization. vjeux's "road block" on 20 (ship13) was the same
+defect as 15's: the solid water surface the route dives into (5380c805).
+**Rule for every future A/B: cameras where a player's camera can be.**
+
+TWO TRAPS that produced false "slabs" on the way (2026-09-09 night):
+
+- **The game caches an embedded item model by FILE NAME for the whole
+  session.** Two maps — or two builds of one map — embedding different pieces
+  as `AC00000200.Item.Gbx` show the FIRST-loaded model in the second. ship14's
+  20 loaded after ship13's 20 showed a "white Tech slab with a red LED strip
+  across the grass bowl" (37–39/144 vs the original, four shoots) that was
+  ship13's piece under ship14's name; the same geometry with unique names
+  renders 10/144. Since 20960a1d `tinyctl build` numbers every map and build
+  apart (`AC{map:02}{minute%1000:03}{idx:03}`, AI/AV too; `TINY_ALIAS_BASE`),
+  which also protects a player who plays several tiny maps in one session; for
+  A/Bs `tinyctl shoot --fresh` restarts the game first.
+- **The editor's cursor preview.** With a block selected in the inventory its
+  preview stands at the camera target — a start block carries a CAR — in the
+  tiny (free cells) and not in the original (full cells). `shootctl shootset`
+  switches to FreeLook after every load (`/freelook`, openplanet-plugin/Cursor.as).
+
+Older caveats, still true: the E2 pixel probe (679 face-rule records removed
+from the ORIGINAL, 203/204 views unchanged) used 110 m-high grid cameras that
+cannot see a plate inside a cell — no evidence either way; a visible pool-rim
+record removed from the original renders identically (regenerated, layer 1);
+three records moved into an empty field show nothing (a record is not what is
+drawn; the regenerated clip is).
 
 Cache-safe confirmation at 20 cp3 (colour thread, 2026-09-09 07:00Z), the same
 three cameras vjeux's "pool right of the checkpoint is missing its border" frame
@@ -631,13 +645,6 @@ full geometry at those cameras: the 555 records it hides are inside the
 neighbours' geometry there. No hiding rule is needed for cp3; `fillers::verdict`
 stays deleted. vjeux's frame was a ship10–12 build (the `fullfree` / plate rules
 dropped the rim; ship13+ draws it) — the deployed ship14 has the border.
-
-Caveats worth keeping: the E2 pixel probe (679 face-rule records removed from
-the ORIGINAL, 203/204 views unchanged) used 110 m-high grid cameras that cannot
-see a plate inside a cell — it is not evidence about occupied cells either way.
-Two probes stand: a visible pool-rim record removed from the original renders
-identically (regenerated, layer 1); three records moved into an empty field
-show nothing (a record is not what is drawn; the regenerated clip is).
 
 ## Pool water, overflow spouts and the inflatables (2026-09-08, night)
 
