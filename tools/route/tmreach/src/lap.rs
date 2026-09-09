@@ -502,6 +502,8 @@ const FOLLOW: &[(&str, bool, u8, f64)] = &[
     // bmode 3: pedals like the human (author line): gas below the human's speed 15 m ahead, coast above, brake well above
     ("follow the human (line + pedals)", true, 3, 0.9),
     ("follow the human (line + pedals), long lookahead", true, 3, 1.5),
+    // bmode 5: brake TO the author's speed (brake whenever faster than the author 15 m ahead; 20's wood ramp)
+    ("follow the human, brake to the author's speed", true, 5, 0.9),
     // bmode 4 (only with --respawn): press RESPAWN on the first tick (the engine re-places the car at its last credited
     // checkpoint ~1 s later, at that crossing's speed), hold gas through the dead second, then follow the human
     ("RESPAWN, then follow the human", true, 4, 0.9),
@@ -626,6 +628,10 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                     3 => {
                         let vh = track.human_speed_at(s_now + 15.0);
                         if vh <= 3.0 || v <= vh * 1.05 { (true, false) } else if v > vh * 1.3 { (false, true) } else { (false, false) }
+                    }
+                    5 => {
+                        let vh = track.human_speed_at(s_now + 15.0);
+                        if vh <= 3.0 || v <= vh { (true, false) } else { (false, true) }
                     }
                     4 => {
                         if done < 110 { (true, false) } else {
@@ -855,7 +861,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 // SPEED matters on jump/ramp/wall legs (21: 31 m/s at the foot or the car drops in the gap):
                 // a cell at the human's speed ranks 30 m ahead of a stopped one at the same arc length
                 let vh = track.human_speed_at(s);
-                let speed_bonus = if vh > 3.0 { 30.0 * (speed(&end) / vh).clamp(0.0, 1.2) } else { 0.0 };
+                // symmetric since 2026-09-09 15:20Z: matching the author's speed scores 30 m, both too slow AND too fast lose it
+                // (20: cars arrive at the wood ramp 12 m/s faster than the author and get thrown)
+                let speed_bonus = if vh > 3.0 { 30.0 * (1.0 - ((speed(&end) - vh) / vh).abs()).clamp(0.0, 1.0) } else { 0.0 };
                 k_pref as f64 * 10_000.0 + s_eff - 0.02 * lat_abs.min(20.0) + speed_bonus
             };
             // on a gap leg the arc length says little: the cell is the 4 m x 4 m ground square there
