@@ -934,7 +934,7 @@ fn cmd_road_centreline(args: &[String]) {
                 let (mut lo, mut hi) = (0usize, 0usize);
                 let _ = (lo, hi);
                 for (li, p) in line.iter().enumerate() {
-                    let dmin = gates.gates.iter().filter(|x| x.group == grp_id).filter(|x| (x.centre[1] - p[1]).abs() <= 10.0).map(|x| ((x.centre[0] - p[0]).powi(2) + (x.centre[2] - p[2]).powi(2)).sqrt() - x.half_width).fold(f32::INFINITY, f32::min);
+                    let dmin = gates.gates.iter().filter(|x| x.group == grp_id).filter(|x| { let dy = p[1] - x.centre[1]; dy >= -9.0 && dy <= 3.0 }).map(|x| ((x.centre[0] - p[0]).powi(2) + (x.centre[2] - p[2]).powi(2)).sqrt() - x.half_width).fold(f32::INFINITY, f32::min);
                     let hit = dmin <= 6.0;
                     if hit {
                         if !in_run { in_run = true; run_best = None; lo = li; }
@@ -1135,7 +1135,7 @@ fn cmd_author_line(args: &[String]) {
             let is_fin = g.gates.iter().any(|x| x.group == grp && matches!(x.kind, tmroute::gates::WpKind::Finish));
             let mut t_first: Option<i32> = None;
             for r in &rows {
-                let hit = g.gates.iter().filter(|x| x.group == grp).any(|x| ((x.centre[0] - r.3[0]).powi(2) + (x.centre[2] - r.3[2]).powi(2)).sqrt() <= x.half_width + 6.0 && (x.centre[1] - r.3[1]).abs() <= 10.0);
+                let hit = g.gates.iter().filter(|x| x.group == grp).any(|x| ((x.centre[0] - r.3[0]).powi(2) + (x.centre[2] - r.3[2]).powi(2)).sqrt() <= x.half_width + 6.0 && { let dy = r.3[1] - x.centre[1]; dy >= -9.0 && dy <= 3.0 });
                 if hit { t_first = Some(r.4); if !is_fin { break; } }
             }
             if let Some(t) = t_first { firsts.push((t, grp)); } else {
