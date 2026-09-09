@@ -45,17 +45,10 @@ rm -f "$DONE"
   echo "holding the ship lock at $(date -u +%FT%TZ)"
 
   GH_COOKIE="$(tr -d '\r\n' < "$COOKIE")"; export GH_COOKIE
-  # The session lives in a jar this pipeline owns and curl keeps current from
-  # every Set-Cookie (GitHub rotates _gh_sess); the credential file is INPUT and
-  # is never written — see the warning in ghvid.sh. A single writer, because we
-  # hold the lock. An unquoted "$COOKIEARG" here once split the header on its
-  # spaces and handed curl a dozen garbage URLs (the probe printed
-  # 000000000000000), so these are two explicit calls rather than one clever one.
-  if [ -s "$STATE" ] && [ ! "$COOKIE" -nt "$STATE" ]; then
-    code=$(curl -s -o /dev/null -w '%{http_code}' -b "$STATE" -c "$STATE" -H 'user-agent: Mozilla/5.0' "$EDIT")
-  else
-    code=$(curl -s -o /dev/null -w '%{http_code}' -b "$GH_COOKIE" -H 'user-agent: Mozilla/5.0' "$EDIT")
-  fi
+  # The whole browser header, every time — no jar (see ghvid.sh: a jar dropped
+  # __Host-user_session_same_site, and an earlier one destroyed the file). The
+  # credential file is INPUT and is never written.
+  code=$(curl -s -o /dev/null -w '%{http_code}' -b "$GH_COOKIE" -H 'user-agent: Mozilla/5.0' "$EDIT")
   echo "cookie probe: HTTP $code"
   # a cookie that answers 302 -> /login is dead: STOP, do not retry
   case "$code" in 200) ;; *) echo "FAILED cookie probe HTTP $code (302 = logged out) — STOP" > "$DONE"; exit 1;; esac

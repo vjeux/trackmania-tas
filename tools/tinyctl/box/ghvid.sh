@@ -38,38 +38,19 @@ SIZE="$(wc -c < "$FILE" | tr -d ' ')"
 UA='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
 J="$(mktemp -d)"; trap 'rm -rf "$J"' EXIT
 
-# --- the session STATE file (ours), and the credential file (his) ------------
-# GitHub rotates `_gh_sess` on its responses and does not tolerate the old value
-# coming back: on 2026-09-09 four freshly-copied sessions each died after two or
-# three uploads, and a jar run caught the server DELETING user_session in a
-# Set-Cookie — the site logs the session out, it does not merely expire. A
-# client that replays one frozen header is exactly the pattern that trips it.
-#
-# So the cookies live in a jar THIS TOOL owns, seeded from the credential file
-# whenever that file is newer, and curl keeps it current from every Set-Cookie.
-#
-# ⛔ THE CREDENTIAL FILE IS INPUT: READ IT, NEVER WRITE IT. An earlier version of
-# this change wrote the jar back to ~/.gh-upload/cookie at exit; `curl -c` had
-# dropped the session cookies the server re-set, and the write-back replaced a
-# 1749-byte live header with 33 bytes of `_octo` — destroying a session a human
-# had just copied out of his browser, and costing another renewal.
-COOKIE_FILE="${GH_COOKIE_FILE:-$HOME/.gh-upload/cookie}"
-JAR="${GH_COOKIE_JAR:-$HOME/.gh-upload/session-state}"
-umask 077
-if [ ! -s "$JAR" ] || [ "$COOKIE_FILE" -nt "$JAR" ]; then
-  : > "$JAR"; chmod 600 "$JAR"
-  printf '# Netscape HTTP Cookie File\n' >> "$JAR"
-  EXP=$(( $(date +%s) + 31536000 ))
-  printf '%s\n' "$GH_COOKIE" | tr ';' '\n' | while IFS= read -r kv; do
-    kv="${kv# }"; [ -n "$kv" ] || continue
-    k="${kv%%=*}"; v="${kv#*=}"
-    case "$k" in
-      __Host-*|__Secure-*) printf 'github.com\tFALSE\t/\tTRUE\t%s\t%s\t%s\n' "$EXP" "$k" "$v" >> "$JAR" ;;
-      *) printf '.github.com\tTRUE\t/\tTRUE\t%s\t%s\t%s\n' "$EXP" "$k" "$v" >> "$JAR" ;;
-    esac
-  done
-fi
-COOKIE_ARGS=(-b "$JAR" -c "$JAR")
+# --- the cookie header, whole, on every request ------------------------------
+# NOT a curl jar. Two jar attempts on 2026-09-09 both went wrong: the first
+# wrote the jar back to ~/.gh-upload/cookie and destroyed a live session (curl
+# -c keeps only cookies with an expiry), and the second silently DROPPED
+# `__Host-user_session_same_site` — curl would not keep the __Host- entry — so
+# every upload POST went out with an incomplete session, which is the last
+# thing to send at a site that is logging us out. The browser's header is
+# complete; send exactly it, and never write the file.
+#   Measured that day: one session published 20 clips yesterday untouched, and
+#   today six sessions each died after 2-3 uploads — while a human kept signing
+#   in again to mint the next one. A sign-in is what kills the session we are
+#   using; the drain wants ONE session and nobody touching GitHub meanwhile.
+COOKIE_ARGS=(-b "$GH_COOKIE")
 
 # The headers a browser sends with these requests. The upload endpoints are the
 # ones the site's own JavaScript calls, and a request missing what that fetch
