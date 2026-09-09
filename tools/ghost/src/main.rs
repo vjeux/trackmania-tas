@@ -232,6 +232,10 @@ const DEBUG_HELP: &str = r#"ghost debug -- forensic probes
         Move the car entity to index 0. Tests whether entity ORDER matters
         (it does not -- measured, and the theory died).
 
+  ghost debug set-uid IN OUT --uid U
+        Rewrite the map uid the ghost declares (27 chars, same length): pairs with
+        `tmmaps setuid` for an A/B on a re-uided copy of a map.
+
   ghost debug keep-ents IN OUT --keep I,J,K
         Keep only the named entity indices (as `ghost manifest` lists them) and
         drop the rest: the repair for a regenerated ghost whose multi-client
@@ -289,6 +293,7 @@ fn main() {
         "swap-samples",
         "car-first",
         "keep-ents",
+        "set-uid",
         "split-car",
         "set-u01",
         "strip-events",
@@ -412,6 +417,47 @@ fn main() {
         // crash lives in the SAMPLE BYTES or in the container: 294446's samples
         // are known to load, so if 287431 wearing them still crashes, the
         // sample data is innocent.
+        "set-uid" => {
+            // The map uid a ghost declares, rewritten in place: every 27-character
+            // length-prefixed uid literal in the body becomes --uid (same length,
+            // so nothing else moves). For A/Bs against a re-uided map copy
+            // (`tmmaps setuid`): the client refuses a ghost whose uid is not the
+            // loaded map's.
+            let inp = rest.first().unwrap_or_else(|| die("ghost debug set-uid IN OUT --uid U (27 chars)"));
+            let outp = rest.get(1).unwrap_or_else(|| die("ghost debug set-uid IN OUT --uid U (27 chars)"));
+            let uid = flag(rest, "--uid").unwrap_or_else(|| die("--uid U (27 chars)"));
+            if uid.len() != 27 || !uid.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                die(format!("--uid `{}`: a map uid is 27 ASCII chars of [A-Za-z0-9_-]", uid));
+            }
+            let data = std::fs::read(inp).unwrap_or_else(|e| die(format!("{}: {}", inp, e)));
+            let g = gbx::Gbx::parse(&data);
+            let mut body = g.body.clone();
+            let mut n = 0usize;
+            let mut was = Vec::new();
+            let mut i = 0usize;
+            while i + 31 <= body.len() {
+                let len = u32::from_le_bytes(body[i..i + 4].try_into().unwrap());
+                if len == 27 {
+                    if let Ok(s) = std::str::from_utf8(&body[i + 4..i + 31]) {
+                        if s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                            was.push(s.to_string());
+                            body[i + 4..i + 31].copy_from_slice(uid.as_bytes());
+                            n += 1;
+                            i += 31;
+                            continue;
+                        }
+                    }
+                }
+                i += 1;
+            }
+            if n == 0 {
+                die("no uid literal in the body");
+            }
+            let mut file = g.header_bytes_u();
+            file.extend_from_slice(&body);
+            std::fs::write(outp, &file).unwrap_or_else(|e| die(format!("{}: {}", outp, e)));
+            println!("{} uid literal(s) {:?} -> {} in {}", n, was, uid, outp);
+        }
         "swap-samples" => {
             // IN OUT, with every other input a named flag -- the convention
             // `trim`, `splice`, `declare`, `regen`, `split-car` and the rest
