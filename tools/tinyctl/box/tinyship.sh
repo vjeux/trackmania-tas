@@ -27,12 +27,9 @@ rm -f "$DONE"
   echo "mp4 $MP4 $SZ bytes"
   if [ "$SZ" -gt 99000000 ]; then echo "FAILED mp4 too big ($SZ) — re-run with a higher crf" > "$DONE"; exit 1; fi
   GH_COOKIE="$(tr -d '\r\n' < /home/vjeux/.gh-upload/cookie)"; export GH_COOKIE
-  # The probe goes through the SAME JAR the uploader keeps (ghvid.sh: GitHub
-  # rotates _gh_sess, so a static header dies after a couple of uploads) — a
-  # probe on the stale header would report a dead session that is actually fine,
-  # and worse, a probe that does not save what the server sets ages the jar.
-  JAR=/home/vjeux/.gh-upload/jar
-  code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -c "$JAR" -b "$GH_COOKIE" -H 'user-agent: Mozilla/5.0' https://github.com/vjeux/trackmania-tas/edit/main/README.md)
+  # a cookie that answers 302 -> /login is dead: STOP, do not retry.
+  # The probe READS the header and never writes it — see the warning in ghvid.sh.
+  code=$(curl -s -o /dev/null -w '%{http_code}' -b "$GH_COOKIE" -H 'user-agent: Mozilla/5.0' https://github.com/vjeux/trackmania-tas/edit/main/README.md)
   echo "cookie probe: HTTP $code"
   case "$code" in 200) ;; *) echo "FAILED cookie probe HTTP $code (302 = logged out) — STOP" > "$DONE"; exit 1;; esac
   mkdir -p "/tmp/tinyship/$SLUG"

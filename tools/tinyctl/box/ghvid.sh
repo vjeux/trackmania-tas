@@ -11,6 +11,19 @@
 #
 # Needs GH_COOKIE in the environment (the browser's Cookie header) and
 # GH_REPO_ID. Reads a fresh CSRF token off the repo's edit page each run.
+#
+# ⛔ DO NOT MAKE THIS WRITE THE COOKIE FILE. On 2026-09-09 I replaced the static
+# Cookie header with a curl JAR (-b/-c) that was written back to
+# ~/.gh-upload/cookie at exit, on the theory that GitHub rotates `_gh_sess` and
+# a copied header goes stale. The theory may even be right; the mechanism is
+# not. `curl -c` writes only cookies with an expiry, so a jar round trip drops
+# every SESSION cookie the server sets — and the write-back then replaced a
+# 1749-byte header holding user_session, __Host-user_session_same_site,
+# logged_in, dotcom_user and _gh_sess with 33 bytes holding `_octo`. That
+# destroyed a session a human had just copied out of his browser for the third
+# time that hour, and cost another renewal. The header file is INPUT: read it,
+# never write it. If the rotation theory is ever worth testing again, do it in a
+# scratch copy of the file and prove the round trip keeps every name first.
 set -euo pipefail
 
 FILE="${1:?usage: ghvid.sh <file> [content-type]}"
@@ -25,46 +38,8 @@ SIZE="$(wc -c < "$FILE" | tr -d ' ')"
 UA='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
 J="$(mktemp -d)"; trap 'rm -rf "$J"' EXIT
 
-# --- the cookie JAR, and why this is not just `-b "$GH_COOKIE"` --------------
-# GitHub ROTATES `_gh_sess` on its responses. A static Cookie header keeps
-# replaying the value the browser had when it was copied, and after a couple of
-# uploads the server stops accepting it: every request then 302s to /login and
-# the session looks "expired" although the browser is still signed in. That is
-# what killed publishing twice on 2026-09-09 (three uploads, then dead; renewed,
-# two uploads, then dead again).
-#
-# So the session is kept the way a browser keeps it: in a JAR that curl updates
-# from every Set-Cookie, seeded from the header file once and written BACK to it
-# at the end, so the next run starts from the current values. Values are never
-# printed. The jar also means the S3 upload cannot receive github.com cookies:
-# curl matches by domain, a blanket header does not.
-COOKIE_FILE="${GH_COOKIE_FILE:-$HOME/.gh-upload/cookie}"
-JAR="${GH_COOKIE_JAR:-$HOME/.gh-upload/jar}"
-umask 077
-if [ ! -s "$JAR" ] || [ "$COOKIE_FILE" -nt "$JAR" ]; then
-  : > "$JAR"; chmod 600 "$JAR"
-  printf '# Netscape HTTP Cookie File\n' >> "$JAR"
-  EXP=$(( $(date +%s) + 31536000 ))
-  printf '%s\n' "$GH_COOKIE" | tr ';' '\n' | while IFS= read -r kv; do
-    kv="${kv# }"; [ -n "$kv" ] || continue
-    k="${kv%%=*}"; v="${kv#*=}"
-    case "$k" in
-      __Host-*|__Secure-*) printf 'github.com\tFALSE\t/\tTRUE\t%s\t%s\t%s\n' "$EXP" "$k" "$v" >> "$JAR" ;;
-      *) printf '.github.com\tTRUE\t/\tTRUE\t%s\t%s\t%s\n' "$EXP" "$k" "$v" >> "$JAR" ;;
-    esac
-  done
-fi
-COOKIE_ARGS=(-b "$JAR" -c "$JAR")
-
-# The jar, back into the header file the rest of the pipeline reads.
-save_cookie() {
-  awk -F'\t' '/^[^#]/ && NF>=7 { printf "%s%s=%s", sep, $6, $7; sep="; " } END { print "" }' "$JAR" > "$COOKIE_FILE.new" 2>/dev/null \
-    && [ -s "$COOKIE_FILE.new" ] && chmod 600 "$COOKIE_FILE.new" && mv -f "$COOKIE_FILE.new" "$COOKIE_FILE"
-}
-trap 'save_cookie; rm -rf "$J"' EXIT
-
 # --- 0. a fresh CSRF token, from the same form the browser posts -------------
-curl -sS --url "$GH_EDIT_URL" "${COOKIE_ARGS[@]}" -H "user-agent: $UA" -o "$J/edit.html"
+curl -sS --url "$GH_EDIT_URL" -b "$GH_COOKIE" -H "user-agent: $UA" -o "$J/edit.html"
 # The edit page carries its CSRF tokens in an embedded JSON blob, keyed by path:
 #   "csrf_tokens":{ ... "/upload/policies/assets":{"post":"<token>"} ... }
 TOKEN="$(perl -0ne 'print $1 if m{"/upload/policies/assets":\{"post":"([^"]+)"\}}' "$J/edit.html")"
@@ -76,7 +51,7 @@ curl -sS --url 'https://github.com/upload/policies/assets' \
   -H 'accept: application/json' -H 'origin: https://github.com' \
   -H "referer: $GH_EDIT_URL" -H "user-agent: $UA" \
   -H 'x-requested-with: XMLHttpRequest' \
-  "${COOKIE_ARGS[@]}" \
+  -b "$GH_COOKIE" \
   -F "name=$NAME" -F "size=$SIZE" -F "content_type=$CT" \
   -F "authenticity_token=$TOKEN" \
   -F "repository_id=$GH_REPO_ID" \
@@ -104,7 +79,7 @@ curl -sS -X PUT --url "https://github.com${ASSET_PUT}" \
   -H 'accept: application/json' -H 'origin: https://github.com' \
   -H "referer: $GH_EDIT_URL" -H "user-agent: $UA" \
   -H 'x-requested-with: XMLHttpRequest' \
-  "${COOKIE_ARGS[@]}" \
+  -b "$GH_COOKIE" \
   -F "authenticity_token=$ASSET_TOKEN" \
   -o "$J/done.json" -w '%{http_code}' > "$J/code3"
 case "$(cat "$J/code3")" in 200|201) ;; *) echo "ghvid: finalise returned $(cat "$J/code3")" >&2; head -c 400 "$J/done.json" >&2; exit 6;; esac

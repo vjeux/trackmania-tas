@@ -228,10 +228,20 @@ particular is a live browser session. Revoke, in order of how much they can do:
 `gh auth logout` and delete the cookie file, then
 `gh repo deploy-key list --repo vjeux/trackmania-tas` and `... delete <id>`.
 
-**The cookie expires.** When `ghvid.sh` exits 3 with *no upload CSRF token — is
+**The cookie expires — and NOTHING may write it back.** When `ghvid.sh` exits 3 with *no upload CSRF token — is
 the cookie still valid?*, that is what has happened: replace
 `~/.gh-upload/cookie` with a fresh `Cookie:` header from a logged-in browser.
 Nothing else in the pipeline needs renewing.
+
+Renewing it costs a human a trip to his browser, so **the file is INPUT to every
+tool here: read it, never write it.** On 2026-09-09 a curl cookie JAR was wired
+into `ghvid.sh` (rotation theory: GitHub rotates `_gh_sess`, so a copied header
+goes stale after a couple of uploads) and written back to this file at exit.
+`curl -c` writes only cookies that carry an expiry, so the round trip dropped
+every session cookie the server had set and left a 33-byte file holding `_octo`
+where a 1749-byte session had been — destroying a header a human had copied out
+of his browser minutes earlier. Reverted (`ghvid.sh.static-header-2026-09-09` is
+that file). Anything touching this credential keeps a timestamped copy first.
 
 ## The render can be longer than everything you staged — and I got the reason wrong once
 
