@@ -1,8 +1,10 @@
 //! `mapgeom fillers MAP` — every recorded (baked) clip filler of a map against
 //! the block UNIT FACE it stands on: who occupies its cell, what clip list that
 //! occupant hangs on the shared face, who owns the piece, and the piece's own
-//! clip flags. The table the filler DRAW rule is read off (2026-09-08, the
-//! elevated water-road floors of Summer 05 / 15 that `fullfree` dropped).
+//! clip flags. Informational since 2026-09-09: the game draws EVERY record
+//! (`crate::bake`, the engine's own algorithm; the fitted draw rules that were
+//! read off this table until a1b91d23 are gone). `faces()` / `ClipId` are the
+//! unit-face model `bake` runs on.
 //!
 //! Conventions (measured on the pack prefabs and Summer 20 cp3):
 //! * a recorded piece with `dir` d stands on side d of its cell (the
@@ -259,147 +261,9 @@ pub fn connects(a: &ClipId, a_name: &str, b: &ClipId, b_name: &str) -> &'static 
     ""
 }
 
-/// THE FILLER DRAW RULE (`TINY_FILLER_RULE=face`, 2026-09-08): the game draws
-/// a recorded free-clip piece only where the face it stands on is FREE. A face
-/// is free when nothing stands in the piece's cell, when the occupant's unit
-/// hangs NO clip on that face (an undefined face: the top of a slope base's
-/// upper unit, the open sides of a lattice pillar), or when the occupant's
-/// face carries a FULL-FREE clip (a complete wall — the pillar / deco-wall
-/// family: the neighbour dresses its side against the wall as if the cell were
-/// empty, minus the pieces the wall makes redundant, `can_be_deleted_by_full_
-/// free_clip`). A full-free piece is drawn wherever it is recorded. Everything
-/// else — a free clip against a neighbour's face that carries its own
-/// (non-full-free) clips, two blocks joined — is hidden.
-///
-/// Read off the pack data and the same-camera A/Bs: Summer 20 cp3's plastic
-/// ramp wall `DecoWallSlope2StartVFCLeft` in the DecoPlatformSlopeBase cell
-/// (the wedge's face carries `DecoPlatformSlopeBaseFCSmall`) — hidden; the
-/// checkpoint's OpenTech skirts in the DecoHill cells (hill faces carry
-/// `DecoWallSlope2StraightVFC*` / `DecoHillSlope2StraightFC*`) — hidden; the
-/// pool's `WaterFCCenter`/`WaterHFC*` rim in the wedge cell (the wedge's face
-/// carries the full-free `DecoWallBaseVFC`) — drawn; the wedge's `DecoWall
-/// SlopeBaseVFCRight` in the DecoWallBasePillar cell (full-free walls) —
-/// drawn; Summer 05's elevated water-road floor `TrackWallWaterStraightFCB
-/// InsideV2` in the cell below the road, the wedge's upper unit whose TOP
-/// carries no clip — drawn (the regression of the `fullfree` rule, which
-/// dropped it: vjeux fell through that road once already).
-///
-/// `pillars`: whether pillar blocks count as occupants (their faces decide
-/// like any block's — DecoWallBasePillar's four DecoWallBaseVFC are full-free
-/// walls, StructurePillar's sides carry nothing, TrackWallStraightPillar's
-/// N/S carry TrackWallVFC); `false` = the `fullfree` rule's reading (a pillar
-/// cell is an empty cell).
-pub fn verdict(f: &Faces, b: &BlockRec, pillars: bool) -> Option<String> {
-    verdict_with(f, b, pillars, closes_default())
-}
 
-/// What CLOSES a face (TINY_FILLER_CLOSE): `any` — any clip on the occupant's
-/// face closes it unless one of them is full-free (then only a deletable piece
-/// is hidden, deleted by the wall); `nondeletable` — a face closes only when it
-/// carries a clip that is NOT `can_be_deleted_by_full_free_clip` (every
-/// full-free clip is deletable, so a wall never closes; the deletable
-/// TrackWallStraightFCT on a TrackWall pillar's top, RoadTechFC, TechnicsScreen
-/// *FCB, StructureSupportFC do not close either — the elevated water road's
-/// floor over its own auto-pillars IS drawn, Summer 05 turbo section,
-/// same-camera 2026-09-08 22:05Z).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Closes {
-    Any,
-    NonDeletable,
-    /// only SIDE faces close: an FCB / FCT piece (the top plate of the block
-    /// below, the floor of the block above) is drawn wherever it is recorded
-    SideOnly,
-}
-
-pub fn closes_default() -> Closes {
-    closes_default_for(std::env::var("TINY_FILLER_CLOSE").ok().as_deref())
-}
-
-pub fn closes_default_for(v: Option<&str>) -> Closes {
-    match v {
-        Some("any") => Closes::Any,
-        Some("nondeletable") => Closes::NonDeletable,
-        _ => Closes::SideOnly,
-    }
-}
-
-pub fn verdict_with(f: &Faces, b: &BlockRec, pillars: bool, closes: Closes) -> Option<String> {
-    let me = b.name.to_ascii_lowercase();
-    // only CLIP records are judged (a terrain tile in the baked list is not a
-    // filler; `hidden_tiles` owns those)
-    let mine = f.clips.get(&me)?.clone();
-    let face = facing_face(mine.ty, b.dir);
-    // a full-free SIDE piece (a pillar or deco wall panel) is drawn wherever it
-    // is recorded (Summer 10's start, 20 cp3); a full-free TOP / BOTTOM plate
-    // (PlatformBaseFCT / FCB, the pillar and platform plates: full-free AND
-    // deletable) follows the plate rule below
-    if mine.full_free && face < 4 {
-        return None;
-    }
-    let Some(occ) = f.occupants.get(&b.file_cell) else { return None };
-    if closes == Closes::SideOnly && face >= 4 {
-        // A TOP / BOTTOM piece — a plate or floor hanging between stacked
-        // blocks. A NON-deletable one (the water roads' channel floors
-        // `TrackWallWaterStraightFCBInside*`, del=0) is drawn wherever it is
-        // recorded: Summer 05 over the wedge and over the road's own pillar,
-        // Summer 15 over the arch top — the frames of 22:00Z. A DELETABLE one
-        // (`TrackWallStraightFCB`, a road's underside plate; `PlatformBaseFCT`,
-        // a pillar's top plate — the pack marks them CanBeDeletedByFullFreeClip)
-        // is the optional dressing of a free face: hidden as soon as the block
-        // it faces hangs its own top / bottom clips there. Summer 15, the water
-        // channel through the reactor gate (vjeux, 2026-09-08 23:26Z): the
-        // road slope's FCB plates and the pillars' FCT plates recorded in the
-        // DecoWallWaterBase cells (Top [DecoWallWaterBaseFCT|…FCTInside], Bottom
-        // [DecoWallWaterBaseFCB|…FCBInside]) came out as grey slabs in the water;
-        // the original shows water.
-        if !mine.deletable {
-            return None;
-        }
-        for o in occ.iter().filter(|o| !o.tile && (pillars || !o.pillar)) {
-            let list = &o.faces[face];
-            if !list.is_empty() {
-                return Some(format!("deletable plate against {}'s {} face [{}]", o.name, if face == 4 { "Top" } else { "Bottom" }, list.join("|")));
-            }
-        }
-        return None;
-    }
-    for o in occ.iter().filter(|o| !o.tile && (pillars || !o.pillar)) {
-        let list = &o.faces[face];
-        if list.is_empty() {
-            continue;
-        }
-        match closes {
-            Closes::NonDeletable => {
-                let firm: Vec<&String> = list.iter().filter(|c| f.clips.get(*c).map(|x| !x.deletable).unwrap_or(true)).collect();
-                if !firm.is_empty() {
-                    return Some(format!("free clip against {}'s face [{}]", o.name, firm.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("|")));
-                }
-            }
-            Closes::Any | Closes::SideOnly => {
-                // a HORIZONTAL clip (an HFC rim along the top of a wall) whose
-                // neighbour hangs a rim of the same horizontal group on the shared
-                // face: the two rims run on (the editor never pairs HFC clips —
-                // both are baked — and the game draws both: Summer 20's two facing
-                // WaterRampZoneCurveOut, b4087/b4115, the ResonantMetal rim the
-                // author drives at t 27.1–27.5 s, gone from ship10)
-                if !mine.horiz.is_empty() && list.iter().any(|c| f.clips.get(c).map(|x| x.horiz == mine.horiz).unwrap_or(false)) {
-                    continue;
-                }
-                let wall = list.iter().any(|c| f.clips.get(c).map(|x| x.full_free).unwrap_or(false));
-                if wall {
-                    if mine.deletable {
-                        return Some(format!("deletable, against {}'s full-free wall", o.name));
-                    }
-                    continue;
-                }
-                return Some(format!("free clip against {}'s face [{}]", o.name, list.join("|")));
-            }
-        }
-    }
-    None
-}
-
-/// One record's verdict under the candidate rules, as a class label.
+/// One record, classified by what stands in its cell (informational: the game
+/// draws every record — `crate::bake`).
 pub struct Row {
     pub class: String,
     pub line: String,
@@ -441,16 +305,10 @@ pub fn classify(f: &Faces, b: &BlockRec) -> Row {
     } else {
         "covered:face-other".to_string()
     };
-    // the three rules side by side: the landed `fullfree` (a non-full-free piece in a
-    // cell a non-pillar block unit covers is out unless the occupant's OPPOSITE
-    // face names it — the face it read), and `face` with and without pillars
-    let fullfree_out = !real.is_empty() && !mine.full_free && !real.iter().any(|o| o.faces[((b.dir & 3) as usize + 2) % 4].iter().any(|c| *c == me));
-    let face_p = verdict(f, b, true);
-    let face_np = verdict(f, b, false);
     let ty = mine.ty.map(crate::blockinfo::clip_type_name).unwrap_or("-");
     let flags = format!("{}{}{}", if mine.full_free { "F" } else { "-" }, if mine.exclusive { "X" } else { "-" }, if mine.deletable { "d" } else { "-" });
     let line = format!(
-        "b{}\t{}\t{}\t{}\t{:08X}\t{},{},{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        "b{}\t{}\t{}\t{}\t{:08X}\t{},{},{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         b.index,
         b.name,
         ty,
@@ -466,9 +324,6 @@ pub fn classify(f: &Faces, b: &BlockRec) -> Row {
         if pillars.is_empty() { String::new() } else { format!("P:{}", pillars.iter().map(|o| o.name.as_str()).collect::<Vec<_>>().join("+")) },
         conn.join(","),
         mine.group,
-        if fullfree_out { "OUT" } else { "keep" },
-        face_p.as_deref().map(|_| "OUT").unwrap_or("keep"),
-        face_np.as_deref().map(|_| "OUT").unwrap_or("keep"),
     );
     Row { class, line }
 }
@@ -495,7 +350,7 @@ pub fn cmd(store: &mut DataStore, args: &[String]) {
     let mut tally: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut by_class: BTreeMap<String, usize> = BTreeMap::new();
     if !summary {
-        println!("id\tname\tclip_type\tFXd\tflags\tcell\tside\tclass\towner\tfacing(occupant unit[face list])\tpillars\tconnects\tgroup\tfullfree\tface\tface_nopillar");
+        println!("id\tname\tclip_type\tFXd\tflags\tcell\tside\tclass\towner\tfacing(occupant unit[face list])\tpillars\tconnects\tgroup");
     }
     for b in m.baked.iter().filter(|b| b.name != "Sea" && b.flags & FLAG_FREE == 0) {
         if let Some(p) = &pat {
@@ -531,111 +386,3 @@ pub fn cmd(store: &mut DataStore, args: &[String]) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn clip(ty: i32, full_free: bool, deletable: bool) -> ClipId {
-        ClipId { ty: Some(ty), full_free, deletable, ..Default::default() }
-    }
-
-    fn rec(name: &str, cell: [u8; 3], dir: u8) -> BlockRec {
-        BlockRec { index: 0, name: name.to_string(), name_field: 0, dir, file_cell: cell, coord_off: 0, flags: 0, waypoint_tag: None, free_off: None, free_pos: None, free_rot: None }
-    }
-
-    fn occupant(name: &str, pillar: bool, faces: [Vec<&str>; 6]) -> Occupant {
-        Occupant { index: 0, name: name.to_string(), pillar, tile: false, ghost: false, ground: false, ground_unit: false, unit: 0, faces: faces.map(|v| v.into_iter().map(String::from).collect()), face_dirs: Default::default() }
-    }
-
-    /// The pack's roles: a full-free wall (deletable, like every full-free
-    /// clip), a deletable skirt, a firm (non-deletable) skirt, a floor (FCB).
-    fn table() -> Faces {
-        let mut clips = HashMap::new();
-        clips.insert("wall".to_string(), clip(1, true, true));
-        clips.insert("skirt".to_string(), clip(1, false, true));
-        clips.insert("firm".to_string(), clip(1, false, false));
-        clips.insert("floor".to_string(), clip(3, false, false));
-        clips.insert("plate".to_string(), clip(2, false, true));
-        Faces { occupants: HashMap::new(), clips, aliases: HashMap::new() }
-    }
-
-    const C: [u8; 3] = [10, 10, 10];
-
-    #[test]
-    fn free_cell_and_empty_face_draw() {
-        let mut f = table();
-        assert!(verdict(&f, &rec("firm", C, 0), false).is_none(), "no occupant");
-        f.occupants.insert(C, vec![occupant("Deck", false, [vec![], vec![], vec![], vec![], vec![], vec![]])]);
-        assert!(verdict(&f, &rec("firm", C, 0), false).is_none(), "occupant's North face hangs no clip");
-        assert!(verdict(&f, &rec("floor", C, 0), false).is_none(), "occupant's Top hangs no clip: the water-road floor over a slope base");
-    }
-
-    #[test]
-    fn a_joined_side_face_hides_a_free_clip() {
-        let mut f = table();
-        f.occupants.insert(C, vec![occupant("Wedge", false, [vec!["firm"], vec![], vec![], vec![], vec![], vec![]])]);
-        assert!(verdict(&f, &rec("skirt", C, 0), false).is_some(), "the ramp wall against the wedge's skirt face");
-        assert!(verdict(&f, &rec("skirt", C, 1), false).is_none(), "another side of the same cell is free");
-        assert!(verdict(&f, &rec("wall", C, 0), false).is_none(), "a full-free piece is drawn wherever it is recorded");
-        // the piece's own deletability does not matter against a firm face
-        assert!(verdict(&f, &rec("firm", C, 0), false).is_some());
-    }
-
-    #[test]
-    fn a_full_free_wall_frees_the_face_but_deletes_deletable_pieces() {
-        let mut f = table();
-        f.occupants.insert(C, vec![occupant("Wedge", false, [vec![], vec![], vec!["wall"], vec![], vec![], vec![]])]);
-        assert!(verdict(&f, &rec("firm", C, 2), false).is_none(), "the pool rim against the wedge's DecoWallBaseVFC");
-        assert!(verdict(&f, &rec("skirt", C, 2), false).is_some(), "a deletable skirt is what the wall replaces");
-    }
-
-    #[test]
-    fn top_and_bottom_pieces_follow_their_own_deletable_flag() {
-        let mut f = table();
-        f.occupants.insert(C, vec![occupant("ArchTop", false, [vec![], vec![], vec![], vec![], vec!["plate"], vec!["firm"]])]);
-        // Summer 15's water floor (del=0) over TrackWallArch1x2SideTop (top face carries a firm FCT)
-        assert!(verdict_with(&f, &rec("floor", C, 0), false, Closes::SideOnly).is_none());
-        assert!(verdict_with(&f, &rec("floor", C, 0), false, Closes::Any).is_some(), "the `any` variant hid it — the variant the 15 frame refuted");
-        // a DELETABLE FCT plate (a pillar's top) under a block whose Bottom hangs its own clips: hidden (15's water channel)
-        assert!(verdict_with(&f, &rec("plate", C, 0), false, Closes::SideOnly).is_some(), "a deletable plate against an occupied Bottom face");
-        f.occupants.insert(C, vec![occupant("Deck", false, [vec![], vec![], vec![], vec![], vec!["plate"], vec![]])]);
-        assert!(verdict_with(&f, &rec("plate", C, 0), false, Closes::SideOnly).is_none(), "the same plate under a block with an empty Bottom face is drawn");
-        assert_eq!(closes_default_for(None), Closes::SideOnly);
-    }
-
-    #[test]
-    fn pillars_are_open_cells_unless_asked() {
-        let mut f = table();
-        f.occupants.insert(C, vec![occupant("TrackWallStraightPillar", true, [vec!["firm"], vec![], vec![], vec![], vec![], vec![]])]);
-        assert!(verdict(&f, &rec("skirt", C, 0), false).is_none(), "a pillar cell is an open cell");
-        assert!(verdict(&f, &rec("skirt", C, 0), true).is_some(), "TINY_FILLER_PILLARS=occupant: its faces decide");
-    }
-
-    #[test]
-    fn only_clip_records_are_judged() {
-        let mut f = table();
-        f.occupants.insert(C, vec![occupant("Wedge", false, [vec!["firm"], vec![], vec![], vec![], vec![], vec![]])]);
-        assert!(verdict(&f, &rec("Grass", C, 0), false).is_none(), "a terrain tile in the baked list is not a filler");
-    }
-}
-
-#[cfg(test)]
-mod tests_horizontal {
-    use super::*;
-
-    #[test]
-    fn a_rim_meeting_a_rim_of_its_horizontal_group_runs_on() {
-        let mut clips = HashMap::new();
-        clips.insert("rim".to_string(), ClipId { ty: Some(1), horiz: "WaterRampZoneHFClips".into(), ..Default::default() });
-        clips.insert("wall".to_string(), ClipId { ty: Some(1), deletable: true, vert: "DecoWallBaseVFC".into(), ..Default::default() });
-        clips.insert("skirt".to_string(), ClipId { ty: Some(1), ..Default::default() });
-        let mut occupants = HashMap::new();
-        let cell = [5u8, 5, 5];
-        let faces: [Vec<String>; 6] = [vec!["wall".into(), "rim".into()], vec!["skirt".into()], vec![], vec![], vec![], vec![]];
-        occupants.insert(cell, vec![Occupant { index: 0, name: "WaterRampZoneCurveOut".into(), pillar: false, tile: false, ghost: false, ground: false, ground_unit: false, unit: 0, faces, face_dirs: Default::default() }]);
-        let f = Faces { occupants, clips, aliases: HashMap::new() };
-        let rec = |dir: u8| BlockRec { index: 0, name: "rim".into(), name_field: 0, dir, file_cell: cell, coord_off: 0, flags: 0, waypoint_tag: None, free_off: None, free_pos: None, free_rot: None };
-        assert!(verdict(&f, &rec(0), false).is_none(), "the face carries a rim of the same horizontal group");
-        assert!(verdict(&f, &rec(1), false).is_some(), "a skirt face still closes a rim");
-    }
-}
