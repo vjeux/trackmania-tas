@@ -843,30 +843,40 @@ fn covered_cells(source: &MapFile, block_map: &BTreeMap<(String, u32, String), (
     let mut footprint_cells: std::collections::HashSet<[u8; 3]> = std::collections::HashSet::new();
     for b in source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0 && b.flags & crate::blockmap::FLAG_PILLAR == 0 && !tile_zones.contains(&b.name)) {
         let units: Vec<[i32; 3]> = block_map.get(&(b.name.clone(), b.flags, String::new())).map(|(_, _, _, u)| u.clone()).unwrap_or_default();
-        let units = if units.is_empty() { vec![[0, 0, 0]] } else { units };
-        let (mut minx, mut maxx, mut minz, mut maxz) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
-        for u in &units {
-            minx = minx.min(u[0]);
-            maxx = maxx.max(u[0]);
-            minz = minz.min(u[2]);
-            maxz = maxz.max(u[2]);
-        }
-        let (w, d) = (maxx - minx + 1, maxz - minz + 1);
-        for u in &units {
-            let (x, z) = (u[0] - minx, u[2] - minz);
-            let (rx, rz) = match b.dir & 3 {
-                0 => (x, z),
-                1 => (d - 1 - z, x),
-                2 => (w - 1 - x, d - 1 - z),
-                _ => (z, w - 1 - x),
-            };
-            let (cx, cy, cz) = (b.file_cell[0] as i32 + rx, b.file_cell[1] as i32 + u[1], b.file_cell[2] as i32 + rz);
-            if (0..=255).contains(&cx) && (0..=255).contains(&cy) && (0..=255).contains(&cz) {
-                footprint_cells.insert([cx as u8, cy as u8, cz as u8]);
-            }
-        }
+        footprint_cells.extend(unit_cells(b, &units));
     }
     footprint_cells
+}
+
+/// The cells every UNIT of an authored block stands in — its origin cell and
+/// the rest of its footprint (`units` = the picked variant's unit offsets),
+/// turned by its direction like `blockmap::footprint` (no unit list: the origin
+/// cell alone).
+fn unit_cells(b: &tmmaps::map::BlockRec, units: &[[i32; 3]]) -> Vec<[u8; 3]> {
+    let units: Vec<[i32; 3]> = if units.is_empty() { vec![[0, 0, 0]] } else { units.to_vec() };
+    let (mut minx, mut maxx, mut minz, mut maxz) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN);
+    for u in &units {
+        minx = minx.min(u[0]);
+        maxx = maxx.max(u[0]);
+        minz = minz.min(u[2]);
+        maxz = maxz.max(u[2]);
+    }
+    let (w, d) = (maxx - minx + 1, maxz - minz + 1);
+    let mut out = Vec::with_capacity(units.len());
+    for u in &units {
+        let (x, z) = (u[0] - minx, u[2] - minz);
+        let (rx, rz) = match b.dir & 3 {
+            0 => (x, z),
+            1 => (d - 1 - z, x),
+            2 => (w - 1 - x, d - 1 - z),
+            _ => (z, w - 1 - x),
+        };
+        let (cx, cy, cz) = (b.file_cell[0] as i32 + rx, b.file_cell[1] as i32 + u[1], b.file_cell[2] as i32 + rz);
+        if (0..=255).contains(&cx) && (0..=255).contains(&cy) && (0..=255).contains(&cz) {
+            out.push([cx as u8, cy as u8, cz as u8]);
+        }
+    }
+    out
 }
 
 pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Path, report: Option<&Path>, scale: f32, legacy_zip: Option<&Path>, items_dir: Option<&Path>, veget_mode: &str, collection_name: &str, only: Option<&str>) {
@@ -905,75 +915,144 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // cp3's hill sides and 15's pool walls came out plain TrackWall, tinted
     // red / blue by the map's colour where the original shows grey concrete.
     //
-    // WHICH blocks dress their clips at all: those with a `MatModifier`
-    // PLACEMENT TAG (CGameCtnBlockInfo::MatModifierPlacementTag, chunk
-    // 0x0304E023 v8: ("MatModifier", "Grass" | "Dirt" | …)). DecoHill*,
-    // WaterBase, WaterWall, DecoPlatformBase, DecoCliff*, OpenTechRoad/Zone*
-    // carry `Grass` (their modifier `TrackWallToDecoCliff`, folder
-    // PlatformGrass), OpenDirtRoad/Zone*, DecoHillDirt*, WaterWallDirt,
-    // DecoPlatformDirtBase carry `Dirt` (modifier PlatformDirt). A block with a
-    // terrain modifier but NO tag — DecoWallBaseGrass, DecoWallLoopEndGrass,
-    // PlatformGrassBase, every PlatformPlastic*, the plastic checkpoints — wears
-    // the modifier on its OWN prefab only; its clip panels stay the plain
-    // material and take the placement colour: Summer 10's DecoWallBaseGrass
-    // walls are GREEN-tinted TrackWall in the original where the folder's
-    // TrackWall (grey DecoCliff) had been baked (same-camera frames own10 /
-    // dc10, 2026-09-08). The tag is the whole difference between the two.
-    // …EXCEPT a GAMEPLAY kind: a special pad's `<Kind>.TerrainModifier` (Turbo,
-    // Turbo2, Boost, Reset, NoEngine, … — the folders that carry a `Sign`
-    // material, the LED panel picture) dresses the pad's own side clips
-    // (`PlatformSpecialFCLeft/Right`, the generic special skirts with the LED
-    // strip) whether or not the pad carries a placement tag: Summer 16's
-    // PlatformDirtSpecialTurbo2 (no tag) had its skirts baked with the prefab's
-    // Turbo dress (yellow) where the pad is Turbo2 (red) — audit of 2026-09-08.
+    // WHICH blocks dress their clips: every block with a terrain modifier
+    // ref, for the materials the modifier's folder carries (`modifier_links`).
+    // 2026-09-08 this read "only those with a `MatModifier` PLACEMENT TAG
+    // (chunk 0x0304E023 v8: ("MatModifier", "Grass" | "Dirt"))", on a frame
+    // of Summer 10's DecoWallBaseGrass walls read as green-tinted TrackWall in
+    // the original. Pixel means of 2026-09-09 (grasswallW / grasswallE /
+    // startahead, same cameras, an eyes session measuring crops) refute that:
+    // the original's DecoWallBaseGrass panels are the PlatformGrass folder's
+    // TrackWall — DecoCliffPxz concrete, beige #ded0ab in the sun, grey-green
+    // #62795d in the shade of the grass, smooth panels with seams — and ours
+    // were saturated green #276149 tinted TrackWall. The plastic family
+    // (PlatformPlastic.TerrainModifier: DecalPlatform, PlatformTech — no
+    // TrackWall) leaves its TrackWall panels plain, tinted by the placement
+    // colour: the seven walls of Summer 20 cp3 (the ramp's sides and pillar
+    // walls red, the wedges' and cliffs' grey/beige) all agree. The tag is a
+    // placement-editor thing, not the dress. A gameplay kind's
+    // `<Kind>.TerrainModifier` (Turbo, Turbo2, Boost, Reset, NoEngine, … — the
+    // folders that carry a `Sign` material, the LED panel picture) dresses the
+    // pad's own side clips the same way (Summer 16's PlatformDirtSpecialTurbo2
+    // skirts, audit of 2026-09-08).
     let gameplay_folders: std::collections::HashSet<String> = store
         .entries()
         .filter_map(|e| e.path().strip_suffix("\\Sign.Material.Gbx").map(|s| s.to_uppercase()))
         .filter(|s| s.contains("\\MEDIA\\MODIFIER\\"))
         .collect();
     let terrain_mods = |bi: &crate::blockinfo::BlockInfo| -> Vec<String> {
-        let refs = bi.material_modifier.iter().map(|r| r.replace(' ', "")).filter(|r| r.ends_with(".TerrainModifier.Gbx") || is_track_wall_to_deco_cliff(r));
-        if bi.mat_modifier.is_none() {
-            return refs.filter(|r| r.strip_suffix(".TerrainModifier.Gbx").map(|b| gameplay_folders.contains(&b.to_uppercase())).unwrap_or(false)).collect();
-        }
-        refs.collect()
+        bi.material_modifier.iter().map(|r| r.replace(' ', "")).filter(|r| r.ends_with(".TerrainModifier.Gbx") || is_track_wall_to_deco_cliff(r)).collect()
     };
     let mut cell_mod: std::collections::HashMap<(u8, u8, u8), Vec<String>> = std::collections::HashMap::new();
+    // the cells of the generated pillars (flag 0x4000), for the pillar clause
+    // of the inheritance below
+    let mut pillar_cells: std::collections::HashSet<(u8, u8, u8)> = std::collections::HashSet::new();
     // every authored block of a cell with its modifier links, for the
     // by-name owner rule of the gameplay clips below
     let mut cell_blocks: std::collections::HashMap<(u8, u8, u8), Vec<(String, Vec<String>)>> = std::collections::HashMap::new();
-    // (x, z) column -> [(y, is_pillar, mods)] for the pillar rule below
+    // (x, z) column -> [(y, is_pillar, mods)] for the pillar rule below: by
+    // origin cell (`columns`) and by every unit cell (`unit_columns`)
     let mut columns: std::collections::HashMap<(u8, u8), Vec<(u8, bool, Vec<String>)>> = std::collections::HashMap::new();
+    // unit_columns: (y, is_pillar, mods, block name (lowercase), the pillar
+    // kinds the block places (lowercase stems), unit is the origin cell)
+    let mut unit_columns: std::collections::HashMap<(u8, u8), Vec<(u8, bool, Vec<String>, String, Vec<String>, bool)>> = std::collections::HashMap::new();
     for b in source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0) {
         let Some(path) = idx.path_for(&b.name) else { continue };
-        let mods = match idx.load(store, &path) {
-            Ok(bi) => terrain_mods(bi),
-            Err(_) => Vec::new(),
+        let (mods, units, places): (Vec<String>, Vec<[i32; 3]>, Vec<String>) = match idx.load(store, &path) {
+            Ok(bi) => {
+                let ground = b.flags & crate::blockmap::FLAG_GROUND != 0;
+                let vindex = (b.flags & crate::blockmap::FLAG_VARIANT_MASK) as usize;
+                let sub = ((b.flags >> crate::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
+                let addv = ((b.flags >> crate::blockmap::FLAG_ADDITIONAL_SHIFT) & 0x7F) as usize;
+                let (units, places): (Vec<[i32; 3]>, Vec<String>) = bi
+                    .pick_placement_add(ground, vindex, sub, addv)
+                    .map(|pk| (pk.variant.block_units.iter().map(|u| u.offset).collect(), pk.variant.placed_pillars.iter().filter_map(|(n, _)| n.as_deref()).map(crate::fillers::stem).collect()))
+                    .unwrap_or_default();
+                (terrain_mods(bi), units, places)
+            }
+            Err(_) => (Vec::new(), Vec::new(), Vec::new()),
         };
         let c = (b.file_cell[0], b.file_cell[1], b.file_cell[2]);
         let pillar = b.flags & crate::blockmap::FLAG_PILLAR != 0;
+        if pillar {
+            pillar_cells.insert(c);
+        }
         columns.entry((c.0, c.2)).or_default().push((c.1, pillar, mods.clone()));
         cell_blocks.entry(c).or_default().push((b.name.clone(), mods.clone()));
         // several authored blocks in one cell (a pillar under a deck): a
-        // modifier wins over none
-        let e = cell_mod.entry(c).or_default();
-        if e.is_empty() {
-            *e = mods;
+        // modifier wins over none. EVERY unit cell of the block counts, not
+        // just its origin (2026-09-09, Summer 20 cp3: the plastic U-top's
+        // PlatformSlope2UTopVFC panel stands in the 4-tall, 8-long
+        // DecoCliff8NoHillStraightSmall's cell (36,12,16), five cells from
+        // that cliff's origin, and the original draws it in the cliff's
+        // DecoCliff concrete — beige — where ours was red TrackWall).
+        for cell in unit_cells(b, &units) {
+            let e = cell_mod.entry((cell[0], cell[1], cell[2])).or_default();
+            if e.is_empty() {
+                *e = mods.clone();
+            }
+            let is_origin = (cell[0], cell[1], cell[2]) == c;
+            unit_columns.entry((cell[0], cell[2])).or_default().push((cell[1], pillar, mods.clone(), b.name.to_ascii_lowercase(), places.clone(), is_origin));
         }
     }
     // A generated PILLAR (flag 0x4000, usually with 0x8000 "skinnable") under
     // a block is dressed like the block it supports: the DecoWallBasePillar
     // stacks under Summer 15's dirt hill draw the sand cliff texture down to
     // the grass, while their block infos carry no modifier of their own. A
-    // pillar cell without a modifier takes the modifier of the nearest
-    // non-pillar authored block above it in its column.
-    for ((x, z), col) in &columns {
-        for (y, pillar, mods) in col {
+    // pillar cell without a modifier takes the modifier of the block it
+    // SUPPORTS: the first non-pillar authored block above it in its column —
+    // any UNIT of that block, not just its origin cell (2026-09-09, Summer 20
+    // cp3: the pillars under the outer units of the wide DecoPlatform /
+    // DecoCliff blocks found no parent and stayed red where the original
+    // draws them in the parent's concrete) — and that block's dress whether
+    // it has one or not: a pillar under a plastic ramp or a grass wall stays
+    // plain TrackWall in the placement colour (the wall behind pool B's
+    // far-right corner, red in the original), it does not borrow the dress
+    // of a dressed block higher up or of the cell it stands in.
+    // Several blocks can share the cell above (Summer 20 cp3: the plastic
+    // PlatformPlasticCurve2In's origin and the 27-unit DecoCliff8NoHillCornerOut's
+    // unit 26 both stand at (39,12,19)): the parent is the one whose block info
+    // PLACES this kind of pillar (`placed pillar` — PlatformPlasticCurve2In
+    // places DecoWallCurve2InPillar, the cliff places DecoWallBasePillar), and
+    // among those the one whose origin is the cell itself. The pillar under the
+    // plastic curve is red in the original; the cliff's dress would have made
+    // it grey.
+    let _ = &columns;
+    for ((x, z), col) in &unit_columns {
+        for (y, pillar, mods, pname, _, _) in col {
             if !*pillar || !mods.is_empty() {
                 continue;
             }
-            let above = col.iter().filter(|(yy, p, m)| !*p && *yy > *y && !m.is_empty()).min_by_key(|(yy, _, _)| *yy);
-            if let Some((_, _, m)) = above {
+            // walk up through the pillar stack: a cell that holds another
+            // pillar is still the stack (whatever else shares that cell — the
+            // cliff's units stand in the pillar cells too); the first cell
+            // above the stack that holds a unit is the parent's
+            let mut top_y = *y;
+            loop {
+                top_y += 1;
+                if top_y == 0 {
+                    break; // wrapped: nothing above
+                }
+                let here: Vec<&(u8, bool, Vec<String>, String, Vec<String>, bool)> = col.iter().filter(|(yy, ..)| *yy == top_y).collect();
+                if here.is_empty() || here.iter().any(|(_, p, ..)| *p) {
+                    if here.is_empty() && top_y > y + 2 {
+                        break; // an open gap: no parent
+                    }
+                    continue;
+                }
+                break;
+            }
+            if top_y == 0 || !col.iter().any(|(yy, p, ..)| *yy == top_y && !*p) {
+                continue;
+            }
+            let above: Vec<&(u8, bool, Vec<String>, String, Vec<String>, bool)> = col.iter().filter(|(yy, p, ..)| !*p && *yy == top_y).collect();
+            let placers: Vec<&&(u8, bool, Vec<String>, String, Vec<String>, bool)> = above.iter().filter(|(_, _, _, _, places, _)| places.iter().any(|k| k == pname)).collect();
+            let pick = placers.iter().find(|(.., origin)| *origin).or(placers.first()).map(|e| **e).or_else(|| above.iter().find(|(.., origin)| *origin).copied().or(above.first().copied()));
+            let Some((_, _, m, ..)) = pick else { continue };
+            if crate::debug::on("pillars") {
+                println!("  pillar {pname} at ({x},{y},{z}): above at y{top_y}: {} -> parent {:?} dress {:?}", above.iter().map(|(_, _, m, n, pl, o)| format!("{n}[places {}|{}{}]", pl.join(","), if m.is_empty() { "plain" } else { "dressed" }, if *o { ",origin" } else { "" })).collect::<Vec<_>>().join(" ; "), pick.map(|(_, _, _, n, ..)| n.as_str()), m.iter().map(|r| r.rsplit('\\').next().unwrap_or(r)).collect::<Vec<_>>());
+            }
+            if !m.is_empty() {
                 let e = cell_mod.entry((*x, *y, *z)).or_default();
                 if e.is_empty() {
                     *e = m.clone();
@@ -1076,13 +1155,27 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // panels stand in the pillar cells and finish the DecoHillSlope2Straight
         // across, whose TrackWallToDecoCliff dresses them grey; the pillar's
         // cell gave them nothing and they came out red (2026-09-08).
+        // A block that dresses nothing (no MatModifier tag — the plastic
+        // family, DecoWallBaseGrass, a pillar) does not end the search: the
+        // plastic U-top owns its PlatformSlope2UTopVFC panels and dresses them
+        // not at all, and the original shows them in the concrete of the cliff
+        // whose cell they stand in (2026-09-09; before, the empty answer of the
+        // block across was returned and the panels came out red).
         if let Some(a) = tmmaps::fillers::across(b.file_cell, b.dir) {
-            if let Some(m) = cell_mod.get(&(a[0], a[1], a[2])) {
+            // …except a PILLAR: its walls are `TrackWallFromParent` — the
+            // dress of the block it supports, or none at all (Summer 20 cp3,
+            // 2026-09-09: the DecoWallBasePillar walls behind pool B stand in
+            // the cliff's cells and the original keeps them red; dressed by
+            // the cell they went grey)
+            if pillar_cells.contains(&(a[0], a[1], a[2])) {
+                return cell_mod.get(&(a[0], a[1], a[2])).cloned().unwrap_or_default();
+            }
+            if let Some(m) = cell_mod.get(&(a[0], a[1], a[2])).filter(|m| !m.is_empty()) {
                 return m.clone();
             }
         }
         // then the cell's own authored block (its tagged modifier, or none)
-        if let Some(m) = cell_mod.get(&c) {
+        if let Some(m) = cell_mod.get(&c).filter(|m| !m.is_empty()) {
             return m.clone();
         }
         // Nothing on either side of the panel's own row: a MERGED panel
@@ -1094,7 +1187,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // green-tinted b2412 as grey DecoCliff from a WaterGrassCornerOut one
         // cell below, which does not own it.)
         let first_up = |x: u8, z: u8| -> Option<Vec<String>> {
-            (1..32u32).map(|dy| c.1 as u32 + dy).take_while(|y| *y <= 255).find_map(|y| cell_mod.get(&(x, y as u8, z)).cloned())
+            (1..32u32).map(|dy| c.1 as u32 + dy).take_while(|y| *y <= 255).find_map(|y| cell_mod.get(&(x, y as u8, z)).filter(|m| !m.is_empty()).cloned())
         };
         if let Some(a) = tmmaps::fillers::across(b.file_cell, b.dir) {
             if let Some(m) = first_up(a[0], a[2]) {

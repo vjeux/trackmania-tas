@@ -489,32 +489,45 @@ DecoCliff, DecoCliffBase, TrackWall, DecoGrass, Deco, Penalty), and
 `TrackWallToDecoCliff.Gbx` = folder `Modifier\PlatformGrass\` + a TrackWall-only
 skin (the Tech-family deco blocks: DecoHill*, DecoPlatformBase, PlatformTechBase,
 WaterBase, WaterWall, DecoCliff*, OpenTechRoad/Zone*). The block's OWN prefab
-always wears its modifier. Its GENERATED CLIPS wear it only when the block also
-carries a `MatModifier` PLACEMENT TAG (`MatModifierPlacementTag`, chunk
-0x0304E023 v8: ("MatModifier", "Grass"|"Dirt"|…)): DecoHill*, WaterBase,
-WaterWall, DecoPlatformBase, DecoCliff*, OpenTechRoad/Zone* carry `Grass`,
-OpenDirtRoad/Zone*, DecoHillDirt*, WaterWallDirt, DecoPlatformDirtBase carry
-`Dirt`; DecoWallBaseGrass, DecoWallLoopEndGrass, PlatformGrassBase, every
-PlatformPlastic* and the plastic checkpoints carry NONE. The generated pillars
-(`DecoWallBasePillar`, `WaterWallPillar`… `TrackWallFromParent.Gbx`) take the
-block above them (the pillar rule), tag-gated the same way. A vertical clip
-belongs to the block ACROSS the side it stands on (`fillers.rs`), else to its
-own cell's block, else — a merged Middle×N panel recorded in the bottom cell
-of its span — to the first block up the across column, then its own column.
+always wears its modifier, and so do its GENERATED CLIPS, for the materials the
+modifier's folder carries: `Modifier\PlatformGrass\` and `PlatformDirt\` and
+`PlatformIce\` carry a `TrackWall` (grey DecoCliffPxz concrete), so the walls
+of DecoHill*, WaterBase, DecoPlatformBase, DecoCliff*, DecoWallBaseGrass,
+PlatformGrassBase… are concrete; `Modifier\PlatformPlastic\` carries only
+`DecalPlatform` and `PlatformTech`, so a plastic block's TrackWall panels stay
+plain TrackWall in the placement colour (Summer 20's red ramp sides). The
+generated pillars (`DecoWallBasePillar`, `DecoWallCurve2InPillar`,
+`WaterWallPillar`… `TrackWallFromParent.Gbx`) take the block they SUPPORT: the
+first non-pillar unit above the stack — any unit of a wide block, not only its
+origin cell — and, where several blocks share that cell, the one whose block
+info PLACES this pillar kind (`placed pillar`: PlatformPlasticCurve2In places
+DecoWallCurve2InPillar, the cliffs place DecoWallBasePillar), the origin
+preferred; a pillar under a plastic block stays red, whatever dressed block
+also stands in its cells. A vertical clip belongs to the block ACROSS the side
+it stands on (`fillers.rs`); a block that dresses nothing (plastic, a pillar
+whose parent dresses nothing) does not end the search — the clip then takes
+the dress of the block whose cell it stands in (the plastic U-top's
+`PlatformSlope2UTopVFC` panels stand in the 4-tall, 8-long
+DecoCliff8NoHillStraightSmall's cells and are its beige concrete in the
+original), else — a merged Middle×N panel recorded in the bottom cell of its
+span — the first block up the across column, then its own column. Every UNIT
+cell of an authored block counts as its cell (`unit_cells`).
 
-Same-camera frames of the originals (`tinyctl shoot` own10 / ownf20 / col20 /
-dc / tg, 2026-09-08): a `DecoWallBaseGrass`'s panel and a pillar's under a
-`PlatformPlasticSlope2LoopStart` are GREEN-tinted TrackWall on 10 (the folder's
-grey TrackWall had been baked there); a `PlatformPlasticTiltTransition2
-DownRight`'s panel is red on 20 and an authored `TrackWallStraightPillar` red
-in both worlds; every panel of a `DecoHill*` side, a `WaterBase` pool, a
-pillar under a `DecoPlatformBase` is the grey DecoCliff concrete — 20 cp3's
-tall wall and hill sides, 10's start pillar and pool walls, 15's pool wall,
-which the tiny had painted red / green / blue as plain TrackWall
-(`terrain_modifier_base` skipped the TrackWallToDecoCliff ref as "a game
-skin", and every filler inherited a modifier tag or no tag). `modifier_links`
-resolves the ref to its one link; `terrain_mods` gates the inheritance on the
-tag; `inherited_mod` walks across → own → up the columns.
+The 2026-09-08 version of this rule gated the clip dress on a `MatModifier`
+PLACEMENT TAG (chunk 0x0304E023 v8: ("MatModifier", "Grass"|"Dirt")) that
+DecoWallBaseGrass and the plastic family lack, on one eyes read of Summer 10's
+DecoWallBaseGrass walls as "green in the original". Pixel means of 2026-09-09
+(same cameras grasswallW / grasswallE / startahead; an eyes session measuring
+crops) refuted it: the original's DecoWallBaseGrass panels are the folder's
+concrete — beige #ded0ab in the sun, grey-green #62795d in the grass's shade,
+smooth panels with seams — where ours were saturated green #276149; the
+plastic family's panels are red on 20 in both worlds because its folder has
+no TrackWall, not because of a tag. Same-camera frames on 20 cp3 (cpwide /
+poolBsideW / poolAsideS, seven walls measured against the original: the ramp's
+sides and the pillar walls under the plastic decks red, the wedges', cliffs'
+and the U-top's panels beige/grey, the wall behind pool B's far-right corner
+red) and on 10's start all agree with the rule above. What a wrong hue on a
+tiny wall means, still: the wrong MATERIAL, never a wrong byte.
 
 ## Which generated fillers the game draws — the editor's list; what the runtime skips is open (2026-09-09)
 
