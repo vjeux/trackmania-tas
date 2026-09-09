@@ -169,18 +169,10 @@ string MeshFids(const string &in item, CMwNod@ em, int depth) {
     if (mesh is null) return item + " | " + Reflection::TypeOf(em).Name + " | (no mesh)\n";
     res += FidLine(item + " mesh", mesh);
     uint64 owner = Dev::GetOffsetUint64(mesh, 0x338);
-    if (owner != 0) res += FidLine(item + " mesh owner(+0x338)", Dev::ReadNod(owner));
-    uint nmat = Dev::GetOffsetUint32(mesh, 0xd0);
-    uint64 arr = Dev::GetOffsetUint64(mesh, 0xc8);
-    for (uint k = 0; k < nmat && k < 8 && arr != 0; k++) {
-        uint64 p = Dev::ReadUInt64(arr + 8 * k);
-        if (p == 0) {
-            res += item + " material[" + k + "]: <null>\n";
-            continue;
-        }
-        CMwNod@ mn = Dev::ReadNod(p);
-        res += FidLine(item + " material[" + k + "]", mn);
-    }
+    // the owner pointer is a nod (the fid the node was read from): GetOffsetNod
+    // dereferences the pointer AT that offset (there is no Dev::ReadNod here)
+    if (owner != 0) res += FidLine(item + " mesh owner(+0x338)", Dev::GetOffsetNod(mesh, 0x338));
+    res += item + " plain materials (+0xd0): " + Dev::GetOffsetUint32(mesh, 0xd0) + "\n";
     return res;
 }
 
@@ -207,6 +199,8 @@ string ItemFids(const string &in qs) {
     if (game !is null) res += "GameData root: " + game.FullDirName + " | " + FolderChain(game) + "\n";
     auto user = Fids::GetUserFolder("");
     if (user !is null) res += "UserData root: " + user.FullDirName + " | " + FolderChain(user) + "\n";
+    auto mats = Fids::GetGameFolder("Stadium/Media/Material");
+    if (mats !is null) res += "game Stadium/Media/Material: " + mats.FullDirName + " | " + FolderChain(mats) + "\n";
     if (res == "") res = "no item matches";
     return res;
 }
