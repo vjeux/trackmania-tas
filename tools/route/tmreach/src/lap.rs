@@ -398,6 +398,8 @@ pub struct LapCfg {
     pub prefix_ticks: usize,
     /// Seed from an explicit chain (a previous run's best.tsv) instead of the base tape's inputs.
     pub seed_chain: Option<Vec<Rec>>,
+    /// keep the seed only through its K-th credit (+0.3 s); 0 = whole
+    pub seed_to_gate: usize,
     /// lateral tolerance beyond the half width on road legs (m): 6 on roads, 25+ on open terrain
     pub lat_tol: f64,
     /// how far below the line a car may be while laterally on it (m): 25 = dips allowed (08), 4 = the
@@ -826,6 +828,28 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             Some(c) => c.clone(),
             None => w.reference_recs(root, cfg.prefix_ticks),
         };
+        // --seed-to-gate K: keep the seed only up to 0.3 s after its K-th credit (the parent's rule: seed the stuck
+        // leg from a FASTER upstream chain, gate N-2, and let the speed-matching search redo the approach)
+        if cfg.seed_to_gate > 0 {
+            let (rows0, nh0) = w.rollout_keep(branch::ROOT, &recs, root, recs.len() as u64)?;
+            w.release(nh0);
+            let root_c = if root_row.cps == u32::MAX { 0 } else { root_row.cps };
+            let mut cut_at: Option<usize> = None;
+            for (i, r) in rows0.iter().enumerate() {
+                let c = if r.cps == u32::MAX { 0 } else { r.cps };
+                if c >= root_c + cfg.seed_to_gate as u32 {
+                    cut_at = Some((i + 30).min(recs.len()));
+                    break;
+                }
+            }
+            match cut_at {
+                Some(n) => {
+                    out.log.push(format!("seed cut to {n} ticks: 0.3 s after its credit #{}", cfg.seed_to_gate));
+                    recs.truncate(n);
+                }
+                None => out.log.push(format!("seed never reaches credit #{}; kept whole", cfg.seed_to_gate)),
+            }
+        }
         // a seed whose end state the search would drop (stopped, fallen under the line, off the road) is a
         // dead end: cut the chain back 3 s at a time (up to 12 times) until it ends in a live state
         let mut tries = 0;

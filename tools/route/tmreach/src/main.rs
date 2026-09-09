@@ -1556,6 +1556,7 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
             }
             None => None,
         },
+        seed_to_gate: a.get("seed-to-gate").map(|s| s.parse().unwrap()).unwrap_or(0),
         seed_chain: match a.get("seed-chain") {
             Some(f) => {
                 let txt = std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;
@@ -1820,6 +1821,26 @@ fn cmd_sweep(a: &Args) -> Result<(), String> {
     println!("sweep: {} entries in {:.0} s; {} gained a credit -> {}", entries.len(), t0.elapsed().as_secs_f64(), hits.len(), out.join("sweep.tsv").display());
     for e in hits.iter().take(30) {
         println!("  HIT brake {} lat {} head {}: launch {:.1} m/s (mark {:.1}), +{} credit(s), end s {:.1} lat {:.1} dy {:.1} apex {:.1} at ({:.1}, {:.1}, {:.1}) v {:.1}", e.brake, e.lat, e.head, e.speed_at_pre, e.speed_at_mark, e.credits, e.s, e.lat_m, e.dy, e.apex_y, e.end.x, e.end.y, e.end.z, tmreach::rig::speed(&e.end));
+    }
+    // distinct outcomes: end states clustered on a 5 m x 3 m x 5 m grid (+ credit count), largest first
+    {
+        let mut cl: std::collections::HashMap<(i64, i64, i64, u8), (usize, f64, f64, f64, f64)> = Default::default();
+        for e in &entries {
+            let k = ((e.end.x / 5.0).round() as i64, (e.end.y / 3.0).round() as i64, (e.end.z / 5.0).round() as i64, e.credits);
+            let c = cl.entry(k).or_insert((0, 0.0, 0.0, 0.0, 0.0));
+            c.0 += 1;
+            c.1 += e.s;
+            c.2 += tmreach::rig::speed(&e.end);
+            c.3 += e.dy;
+            c.4 += e.speed_at_mark;
+        }
+        let mut v: Vec<_> = cl.into_iter().collect();
+        v.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        println!("DISTINCT OUTCOMES: {} clusters over {} entries", v.len(), entries.len());
+        for (k, c) in v.iter().take(12) {
+            let n = c.0 as f64;
+            println!("  {:3} x  +{} credit(s)  end ≈ ({:.0}, {:.0}, {:.0})  s {:.0}  v {:.1}  dy {:+.1}  mark {:.1}", c.0, k.3, k.0 as f64 * 5.0, k.1 as f64 * 3.0, k.2 as f64 * 5.0, c.1 / n, c.2 / n, c.3 / n, c.4 / n);
+        }
     }
     if cfg.mark_s > 0.0 {
         let mut v: Vec<&tmreach::sweep::Entry> = entries.iter().collect();
