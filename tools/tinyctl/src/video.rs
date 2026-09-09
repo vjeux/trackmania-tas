@@ -131,23 +131,27 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     one(args).map(|_| ())
 }
 
-/// The ghosts whose README row (`| map | file | time | credits | build | …`)
-/// names `build`; every map when the README is absent or names no build.
-fn ghosts_on_build(ghosts_dir: &Path, build: &str) -> Option<std::collections::BTreeSet<String>> {
-    let text = std::fs::read_to_string(ghosts_dir.join("README.md")).ok()?;
-    let mut set = std::collections::BTreeSet::new();
-    let mut any = false;
-    for l in text.lines() {
-        let cells: Vec<&str> = l.split('|').map(|c| c.trim()).collect();
-        // | map | file | time | credits | build | ...
-        if cells.len() >= 6 && cells[1].len() == 2 && cells[1].chars().all(|c| c.is_ascii_digit()) && cells[2].ends_with(".Ghost.Gbx") {
-            any = true;
-            if cells[5] == build {
-                set.insert(cells[1].to_string());
-            }
-        }
+/// The ghosts README's LAST row about map `nn` and lap `time` (the INPUT arm
+/// appends rows in more than one shape; a row is one that names both), or
+/// `None` while the README has no row for that lap yet.
+pub fn readme_row(text: &str, nn: &str, time: &str) -> Option<String> {
+    let key = format!("| {nn} |");
+    text.lines()
+        .filter(|l| l.starts_with(&key) || l.contains(&format!(" {key}")) || l.starts_with(&format!("|{nn}|")))
+        .filter(|l| l.contains(time))
+        .last()
+        .map(String::from)
+}
+
+/// How the page names the driver of this lap: a TAS lap is `tiny ghost`; a
+/// lap that is vjeux's own playtest run promoted as the map's best says so
+/// (coordinator, 2026-09-09 15:43Z). Read off the README row for (nn, time);
+/// no row → TAS.
+pub fn lap_label(readme: &str, nn: &str, time: &str) -> String {
+    match readme_row(readme, nn, time) {
+        Some(row) if row.to_ascii_lowercase().contains("playtest") => "driven by vjeux (playtest)".to_string(),
+        _ => "tiny ghost".to_string(),
     }
-    if any { Some(set) } else { None }
 }
 
 /// `--all`: every `NN.Ghost.Gbx` in `--ghosts-dir` whose md5 is not yet in
@@ -186,16 +190,14 @@ fn all_once(args: &[String]) -> Result<(), String> {
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     if let Some(src) = f("--ghosts-sync") {
         std::fs::create_dir_all(&ghosts_dir).map_err(|e| format!("{}: {e}", ghosts_dir.display()))?;
-        let src = if src.ends_with('/') { src } else { format!("{src}/") };
-        let st = Command::new("rsync")
-            .args(["-a", "-e", "ssh -o BatchMode=yes"])
-            .arg(&src)
-            .arg(format!("{}/", ghosts_dir.display()))
-            .status()
-            .map_err(|e| format!("rsync: {e}"))?;
-        if !st.success() {
-            return Err(format!("rsync {src} → {}: {st}", ghosts_dir.display()));
-        }
+        rsync_dir(&src, &ghosts_dir, &[])?;
+    }
+    // --webm-sync host:dir: the store's renders (webm + sheet) into --from-webm-dir
+    // before the scan, so a lap another thread rendered is cut, not rendered twice
+    if let (Some(src), Some(dir)) = (f("--webm-sync"), f("--from-webm-dir")) {
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        rsync_dir(&src, &dir, &["--include=*.webm", "--include=*-sheet.png", "--exclude=*"])?;
     }
     let state = out.join("videos.tsv");
     let seen: Vec<(String, String)> = std::fs::read_to_string(&state)
@@ -214,22 +216,33 @@ fn all_once(args: &[String]) -> Result<(), String> {
         .filter(|n| n.len() == 12 && n.ends_with(".Ghost.Gbx") && n[..2].chars().all(|c| c.is_ascii_digit()))
         .collect();
     names.sort();
-    let on_build = match f("--build") {
-        Some(b) => ghosts_on_build(&ghosts_dir, &b),
-        None => None,
-    };
+    let build = f("--build");
+    let readme = std::fs::read_to_string(ghosts_dir.join("README.md")).unwrap_or_default();
     let mut todo = Vec::new();
     for n in &names {
         let nn = n[..2].to_string();
-        if let Some(set) = &on_build {
-            if !set.contains(&nn) {
-                continue;
-            }
-        }
         let path = ghosts_dir.join(n);
-        let md5 = trajectory_id(&gbx::record::decode_ghost(path.to_str().ok_or("ghost path is not utf-8")?)?);
+        let g = gbx::record::decode_ghost(path.to_str().ok_or("ghost path is not utf-8")?)?;
+        let md5 = trajectory_id(&g);
         if seen.iter().any(|(a, b)| *a == nn && *b == md5) {
             continue;
+        }
+        // --build B: only a lap whose README row names B (the FILE says which
+        // lap: its race time; the README says which build it was regenerated on)
+        if let Some(b) = &build {
+            let race_ms = g.race_time_ms.or_else(|| g.samples.last().map(|s| s.time_ms)).unwrap_or(0);
+            let time = format!("{}.{:03}", race_ms / 1000, race_ms % 1000);
+            match readme_row(&readme, &nn, &time) {
+                Some(row) if row.contains(b.as_str()) => {}
+                Some(row) => {
+                    println!("{nn} {time}: README row is not {b} — skipped ({})", row.chars().take(120).collect::<String>());
+                    continue;
+                }
+                None => {
+                    println!("{nn} {time}: no README row for this lap yet — skipped until the INPUT arm writes it");
+                    continue;
+                }
+            }
         }
         todo.push(nn);
     }
@@ -269,7 +282,7 @@ fn all_once(args: &[String]) -> Result<(), String> {
             }
             match a.as_str() {
                 "--all" => {}
-                "--map" | "--ghost" | "--map-file" | "--watch" | "--ghosts-sync" | "--build" | "--from-webm" => skip = true,| "--ghost" | "--map-file" | "--watch" | "--ghosts-sync" | "--build" | "--from-webm" => skip = true,
+                "--map" | "--ghost" | "--map-file" | "--watch" | "--ghosts-sync" | "--webm-sync" | "--build" | "--from-webm" => skip = true,| "--ghost" | "--map-file" | "--watch" | "--ghosts-sync" | "--build" | "--from-webm" => skip = true,
                 _ => v.push(a.clone()),
             }
         }
@@ -667,7 +680,7 @@ fn script_path() -> Result<PathBuf, String> {
 /// after the blank; a *no lap yet* row gets its URL line inserted. The old row
 /// is found by the map's title or, for 21–25, its former `Tiny Summer 2026 -
 /// NN` name. The original author time is kept from the old line.
-pub fn page_swap(text: &str, nn: &str, time: &str, build_note: &str, url: &str) -> Result<String, String> {
+pub fn page_swap(text: &str, nn: &str, time: &str, label: &str, build_note: &str, url: &str) -> Result<String, String> {
     let title = map_title(nn);
     let legacy = format!("**Tiny Summer 2026 - {nn}**");
     let lines: Vec<&str> = text.lines().collect();
@@ -681,7 +694,7 @@ pub fn page_swap(text: &str, nn: &str, time: &str, build_note: &str, url: &str) 
         .and_then(|(_, r)| r.split_once('`'))
         .map(|(t, _)| t.to_string())
         .ok_or_else(|| format!("{old:?}: no `original author time` on the row"))?;
-    let new_line = format!("**{title}** — original author time `{orig}` · tiny ghost **{time}** ({build_note})");
+    let new_line = format!("**{title}** — original author time `{orig}` · {label} **{time}** ({build_note})");
     let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     out[i] = new_line;
     // the URL line: the next non-empty line if it is an asset, else insert
@@ -710,6 +723,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let out = PathBuf::from(f("--out").unwrap_or_else(|| "/tmp/tinyvid".into()));
     let readme = f("--readme").map(PathBuf::from);
+    let ghosts_dir = f("--ghosts-dir").map(PathBuf::from);
     let repo = f("--repo").map(PathBuf::from).or_else(|| readme.as_ref().and_then(|r| r.parent().and_then(|p| p.parent()).map(Path::to_path_buf)));
     let build_note = f("--build-note").unwrap_or_else(|| "build ship15, controls overlay".into());
     let commit = tmmaps::cli::has(args, "--commit");
@@ -764,12 +778,18 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 println!("{} {nn} {time}: PUBLISHED {url}", chrono_now());
                 if let Some(readme) = &readme {
                     let page = std::fs::read_to_string(readme).map_err(|e| format!("{}: {e}", readme.display()))?;
-                    let new = page_swap(&page, nn, time, &build_note, url)?;
+                    // the driver label, read NOW from the ghosts README (a row can
+                    // land after the cut): TAS = tiny ghost; vjeux's own run says so
+                    let label = match &ghosts_dir {
+                        Some(d) => lap_label(&std::fs::read_to_string(d.join("README.md")).unwrap_or_default(), nn, time),
+                        None => "tiny ghost".to_string(),
+                    };
+                    let new = page_swap(&page, nn, time, &label, &build_note, url)?;
                     std::fs::write(readme, &new).map_err(|e| format!("{}: {e}", readme.display()))?;
-                    println!("  page: row {} swapped in {}", map_title(nn), readme.display());
+                    println!("  page: row {} swapped in {} ({label})", map_title(nn), readme.display());
                     if commit {
                         let repo = repo.clone().ok_or("--commit needs --repo (or a --readme inside the repo)")?;
-                        let msg = format!("tiny page: {} = {time} (build ship15) with the controls overlay ({name}.mp4)", map_title(nn));
+                        let msg = format!("tiny page: {} = {time} ({label}, build ship15) with the controls overlay ({name}.mp4)", map_title(nn));
                         git(&repo, &["add", &readme.strip_prefix(&repo).unwrap_or(readme).display().to_string()])?;
                         git(&repo, &["commit", "-q", "-m", &msg])?;
                         git(&repo, &["pull", "-q", "--rebase"])?;
@@ -921,20 +941,20 @@ mod tests {
     /// renamed to their countries; nothing else moves.
     #[test]
     fn the_page_row_swap_keeps_the_author_time_and_renames_the_countries() {
-        let s = page_swap(PAGE, "01", "19.100", "build ship15, controls overlay", "https://github.com/user-attachments/assets/bbbb").unwrap();
+        let s = page_swap(PAGE, "01", "19.100", "tiny ghost", "build ship15, controls overlay", "https://github.com/user-attachments/assets/bbbb").unwrap();
         assert!(s.contains("**Tiny Summer 2026 - 01** — original author time `23.144` · tiny ghost **19.100** (build ship15, controls overlay)\n\nhttps://github.com/user-attachments/assets/bbbb\n"), "{s}");
         assert!(!s.contains("aaaa"));
         assert!(s.contains("cccc"), "the other rows stay");
-        let s = page_swap(&s, "23", "110.000", "build ship15, controls overlay", "https://github.com/user-attachments/assets/dddd").unwrap();
+        let s = page_swap(&s, "23", "110.000", "tiny ghost", "build ship15, controls overlay", "https://github.com/user-attachments/assets/dddd").unwrap();
         assert!(s.contains("**Tiny Norway 2026** — original author time `75.112` · tiny ghost **110.000** (build ship15, controls overlay)\n\nhttps://github.com/user-attachments/assets/dddd\n"), "{s}");
         assert!(!s.contains("Tiny Summer 2026 - 23"));
         // and again by the new name
-        let s2 = page_swap(&s, "23", "109.000", "build ship15, controls overlay", "https://github.com/user-attachments/assets/eeee").unwrap();
+        let s2 = page_swap(&s, "23", "109.000", "tiny ghost", "build ship15, controls overlay", "https://github.com/user-attachments/assets/eeee").unwrap();
         assert!(s2.contains("**110.000**") == false && s2.contains("eeee"));
-        let s = page_swap(&s, "18", "40.000", "build ship15, controls overlay", "https://github.com/user-attachments/assets/ffff").unwrap();
-        assert!(s.contains("**Tiny Summer 2026 - 18** — original author time `51.352` · tiny ghost **40.000** (build ship15, controls overlay)\n\nhttps://github.com/user-attachments/assets/ffff\n\n**Tiny Norway 2026**"), "{s}");
+        let s = page_swap(&s, "18", "40.000", "driven by vjeux (playtest)", "build ship15, controls overlay", "https://github.com/user-attachments/assets/ffff").unwrap();
+        assert!(s.contains("**Tiny Summer 2026 - 18** — original author time `51.352` · driven by vjeux (playtest) **40.000** (build ship15, controls overlay)\n\nhttps://github.com/user-attachments/assets/ffff\n\n**Tiny Norway 2026**"), "{s}");
         assert!(s.ends_with("\n\n"), "the trailing newlines are kept");
-        assert!(page_swap(PAGE, "09", "1.000", "x", "u").is_err(), "a map the page lacks is an error");
+        assert!(page_swap(PAGE, "09", "1.000", "tiny ghost", "x", "u").is_err(), "a map the page lacks is an error");
     }
 }
 
@@ -995,4 +1015,46 @@ fn write_ghost_with_uid(src: &Path, out: &Path, uid: &str) -> Result<usize, Stri
     file.extend_from_slice(&body);
     std::fs::write(out, &file).map_err(|e| format!("{}: {e}", out.display()))?;
     Ok(n)
+}
+
+/// `rsync -a src/ dst/` (ssh, batch mode) with extra filters; `src` may be
+/// `host:dir` or a local dir.
+fn rsync_dir(src: &str, dst: &Path, filters: &[&str]) -> Result<(), String> {
+    let src = if src.ends_with('/') { src.to_string() } else { format!("{src}/") };
+    let st = Command::new("rsync")
+        .args(["-a", "-e", "ssh -o BatchMode=yes"])
+        .args(filters)
+        .arg(&src)
+        .arg(format!("{}/", dst.display()))
+        .status()
+        .map_err(|e| format!("rsync: {e}"))?;
+    if !st.success() {
+        return Err(format!("rsync {src} → {}: {st}", dst.display()));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+
+    const README: &str = "| map | file | time | credits | build | build md5 | found by | validated map |\n\
+| 01 | 01.Ghost.Gbx | 19.381 | 4 | ship15 | 9ae890a9 | PPO | x |\n\
+| 03 | 03.Ghost.Gbx | 28.989 | 5 | ship15 | 4d759865 | GEN savestate search | x |\n\
+| 21 | 21.Ghost.Gbx | 116.384 | 17 | ship14 | 6858b37b | GEN savestate search | x |\n\
+| 03 | 03.Ghost.Gbx | 20.993 | regenerated on ship15 4d759865 (first lap ever on 03; vjeux playtest) | 20.993 s | x |\n";
+
+    /// The README is appended in more than one row shape; the LAST row naming
+    /// the map and the lap wins, the build is whatever that row says, and a
+    /// playtest lap is labelled as vjeux's, not as a TAS ghost.
+    #[test]
+    fn readme_rows_are_found_by_map_and_lap_whatever_their_shape() {
+        assert!(readme_row(README, "01", "19.381").unwrap().contains("ship15"));
+        assert!(readme_row(README, "21", "116.384").unwrap().contains("ship14"));
+        assert!(readme_row(README, "03", "20.993").unwrap().contains("ship15"));
+        assert_eq!(readme_row(README, "03", "20.340"), None, "a lap the README has not written yet");
+        assert_eq!(lap_label(README, "03", "28.989"), "tiny ghost");
+        assert_eq!(lap_label(README, "03", "20.993"), "driven by vjeux (playtest)");
+        assert_eq!(lap_label(README, "09", "1.000"), "tiny ghost", "no row: a TAS lap");
+    }
 }
