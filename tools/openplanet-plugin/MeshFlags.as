@@ -174,8 +174,11 @@ string MeshFids(const string &in item, CMwNod@ em, int depth) {
     uint64 arr = Dev::GetOffsetUint64(mesh, 0xc8);
     for (uint k = 0; k < nmat && k < 8 && arr != 0; k++) {
         uint64 p = Dev::ReadUInt64(arr + 8 * k);
-        CMwNod@ mn = null;
-        if (p != 0)  = Dev::ReadNod(p);
+        if (p == 0) {
+            res += item + " material[" + k + "]: <null>\n";
+            continue;
+        }
+        CMwNod@ mn = Dev::ReadNod(p);
         res += FidLine(item + " material[" + k + "]", mn);
     }
     return res;
