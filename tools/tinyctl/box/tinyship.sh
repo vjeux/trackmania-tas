@@ -32,8 +32,11 @@ rm -f "$DONE"
   echo "cookie probe: HTTP $code"
   case "$code" in 200) ;; *) echo "FAILED cookie probe HTTP $code (302 = logged out) — STOP" > "$DONE"; exit 1;; esac
   mkdir -p "/tmp/tinyship/$SLUG"
+  # SERIALISED, AND PACED. The lock is held through a cool-down after the
+  # upload: three uploads two minutes apart preceded the 2026-09-09 logout, and
+  # vjeux's renewed session is not to be spent the same way. COOLDOWN=0 turns it off.
   echo "waiting for the ship lock $LOCK …"
-  flock "$LOCK" $CLIP ship "$MP4" "/tmp/tinyship/$SLUG" --no-mirror > "$OUT.out" 2>&1
+  flock "$LOCK" sh -c "$CLIP ship \"$MP4\" \"/tmp/tinyship/$SLUG\" --no-mirror; rc=\$?; sleep ${COOLDOWN:-180}; exit \$rc" > "$OUT.out" 2>&1
   rc=$?
   cat "$OUT.out"
   URL=$(grep -o 'https://github.com/user-attachments/assets/[0-9a-f-]*' "$OUT.out" | head -1)
