@@ -195,7 +195,7 @@ fn one(args: &[String]) -> Result<Done, String> {
     let time = format!("{}.{:03}", race_ms / 1000, race_ms % 1000);
     let s0 = g.samples.first().ok_or("the ghost has no samples — nothing to render")?;
     println!("{}: {} samples, race time {time}, checkpoints at {}", ghost.display(), g.samples.len(), g.checkpoints_ms.iter().map(|c| format!("{:.3}", *c as f64 / 1000.0)).collect::<Vec<_>>().join(" "));
-    let m = tmmaps::map::MapFile::load(&map);
+    let mut m = tmmaps::map::MapFile::load(&map);
     let spawn = m.items.iter().find(|it| it.waypoint_tag.as_deref() == Some("Spawn")).ok_or_else(|| format!("{}: no placement tagged Spawn", map.display()))?;
     let (dx, dz) = start_centre(spawn.yaw);
     let want = [spawn.pos[0] + dx, spawn.pos[1], spawn.pos[2] + dz];
@@ -239,6 +239,39 @@ fn one(args: &[String]) -> Result<Done, String> {
             ));
         }
     }
+
+    // --- THE RENDER COPY: a renamed, re-uided map and a ghost whose uid literal
+    // matches. 2026-09-09: seven maps rendered a STATIC frame (the map's thumbnail
+    // camera, no car) although live playback followed the car — the in-game
+    // MediaTracker had attached a "Ref. Ghost: Author ghost" (vjeux's finished
+    // playtest run, kept by the client and looked up by MAP NAME: a re-uided
+    // copy still had it, a renamed one did not), and the shoot follows that
+    // entity instead of ours. So the file the box renders is never the map under
+    // its own name. `--no-rename` renders the map as it is.
+    let (map, ghost) = if tmmaps::cli::has(args, "--no-rename") {
+        (map.clone(), ghost.clone())
+    } else {
+        let dir = out.join("render");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let hdr = tmmaps::header::read(map.to_str().ok_or("map path is not utf-8")?)?;
+        let render_name = format!("Render {nn} {}", hdr.name);
+        let render_uid = format!("Tst1VIDEO2RENDER{nn}{:0>9}", &hdr.uid[hdr.uid.len().saturating_sub(9)..]);
+        let render_uid: String = render_uid.chars().take(27).collect();
+        let rmap = dir.join(format!("{nn}.Map.Gbx"));
+        let (h, b) = m.set_map_name(&hdr.name, &render_name);
+        if h + b == 0 {
+            return Err(format!("{}: the map does not declare the name {:?}", map.display(), hdr.name));
+        }
+        // a rename is a variable-length rewrite: write and reload before the uid patch
+        m.write_to(&rmap).map_err(|e| format!("{}: {e}", rmap.display()))?;
+        let mut m2 = tmmaps::map::MapFile::load(&rmap);
+        m2.set_map_uid(&render_uid);
+        m2.write_to(&rmap).map_err(|e| format!("{}: {e}", rmap.display()))?;
+        let rghost = dir.join(format!("{nn}.Ghost.Gbx"));
+        let n = write_ghost_with_uid(&ghost, &rghost, &render_uid)?;
+        println!("render copy: {:?} uid {render_uid} -> {} ; ghost uid literal(s) rewritten: {n} -> {}", render_name, rmap.display(), rghost.display());
+        (rmap, rghost)
+    };
 
     // --- push: the ghost always, the map only when the box does not have these bytes
     let wsx = Wsx::new(args);
@@ -411,4 +444,39 @@ pub fn trajectory_id(g: &gbx::record::Decoded) -> String {
         feed(&s.z.to_le_bytes());
     }
     format!("{h:016x}")
+}
+
+/// The ghost with every 27-character uid literal in its body replaced by `uid`
+/// (same length, nothing else moves), written with an uncompressed body. The
+/// number of literals rewritten is returned; zero is an error — a ghost always
+/// declares its map.
+fn write_ghost_with_uid(src: &Path, out: &Path, uid: &str) -> Result<usize, String> {
+    if uid.len() != 27 || !uid.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(format!("render uid {uid:?}: a map uid is 27 ASCII chars of [A-Za-z0-9_-]"));
+    }
+    let data = std::fs::read(src).map_err(|e| format!("{}: {e}", src.display()))?;
+    let g = gbx::Gbx::parse(&data);
+    let mut body = g.body.clone();
+    let mut n = 0usize;
+    let mut i = 0usize;
+    while i + 31 <= body.len() {
+        if u32::from_le_bytes(body[i..i + 4].try_into().unwrap()) == 27 {
+            if let Ok(s) = std::str::from_utf8(&body[i + 4..i + 31]) {
+                if s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                    body[i + 4..i + 31].copy_from_slice(uid.as_bytes());
+                    n += 1;
+                    i += 31;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    if n == 0 {
+        return Err(format!("{}: no map uid literal in the ghost body", src.display()));
+    }
+    let mut file = g.header_bytes_u();
+    file.extend_from_slice(&body);
+    std::fs::write(out, &file).map_err(|e| format!("{}: {e}", out.display()))?;
+    Ok(n)
 }

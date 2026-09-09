@@ -502,6 +502,18 @@ pub fn setuid(args: &[String]) {
             format!("Tst1{:08X}{:07}{:08X}", nanos % 100_000_000, std::process::id() % 10_000_000, (nanos / 7) % 100_000_000)
         });
         let mut m = tmmaps::map::MapFile::load(&src);
+        // `--rename OLD=NEW`: the map name too (header + body copies), for an A/B
+        // that must not be recognised by NAME either (2026-09-09: the MediaTracker's
+        // "Author ghost" on Summer 01 survives a re-uid).
+        if let Some(rn) = tmmaps::cli::flag(&args, "--rename") {
+            let (old, new) = rn.split_once('=').expect("--rename OLD=NEW");
+            let (h, b) = m.set_map_name(old, new);
+            println!("renamed {old:?} -> {new:?}: {h} header + {b} body occurrence(s)");
+            assert!(h + b > 0, "the map does not declare the name {old:?}");
+            // a rename is a variable-length rewrite: write and reload before the uid patch
+            m.write_to(&out).expect("write output (rename pass)");
+            m = tmmaps::map::MapFile::load(&out);
+        }
         m.set_map_uid(&uid);
         m.write_to(&out).expect("write output");
         println!("wrote {} with uid {uid}", out.display());
