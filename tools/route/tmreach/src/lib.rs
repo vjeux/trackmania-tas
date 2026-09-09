@@ -32,3 +32,4 @@ pub mod explore;
 pub mod effects;
 pub mod lap;
 pub mod policy_src;
+pub mod inject;

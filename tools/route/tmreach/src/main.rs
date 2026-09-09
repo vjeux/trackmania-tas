@@ -105,6 +105,7 @@ fn main() {
         "bank-table" => cmd_bank_table(&a),
         "load-control" => cmd_load_control(&a),
         "lap" => cmd_lap(&a),
+        "lcp-to-state" => cmd_lcp_to_state(&a),
         "chain-replay" => cmd_chain_replay(&a),
         _ => usage(),
     };
@@ -1540,6 +1541,10 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
         lat_tol: a.get("lat-tol").map(|s| s.parse().unwrap()).unwrap_or(6.0),
         below_tol: a.get("below-tol").map(|s| s.parse().unwrap()).unwrap_or(25.0),
         clinic: a.has("clinic"),
+        inject: match a.get("inject-state") {
+            Some(f) => Some(tmreach::inject::load(std::path::Path::new(&f))?),
+            None => None,
+        },
         policy: match a.get("policy") {
             Some(p) => {
                 let geom = a.get("policy-geom").ok_or("--policy needs --policy-geom geom.json (the geometry the policy observes)")?;
@@ -1685,5 +1690,25 @@ fn cmd_chain_replay(a: &Args) -> Result<(), String> {
     std::fs::write(a.req("out"), s).map_err(|e| e.to_string())?;
     let last = rows.last().ok_or("no rows")?;
     println!("replayed {} ticks: end ({:.1}, {:.1}, {:.1}) speed {:.1} cps {}", rows.len(), last.x, last.y, last.z, tmreach::rig::speed(last), last.cps as i64);
+    Ok(())
+}
+
+/// `tmreach lcp-to-state --lcp NN.json --entry K [--kind approach-start|crossing] [--map-uid UID] [--map-name NAME] --out state.json`
+/// A LaunchedCP entry (`ghost lcp --json`) → the tm-inject-state/1 file the fork writer consumes (tm-route/model/INJECT-STATE.md).
+fn cmd_lcp_to_state(a: &Args) -> Result<(), String> {
+    let lcp_path = a.req("lcp");
+    let txt = std::fs::read_to_string(&lcp_path).map_err(|e| format!("{lcp_path}: {e}"))?;
+    let lcp: serde_json::Value = serde_json::from_str(&txt).map_err(|e| format!("{lcp_path}: {e}"))?;
+    let entry: usize = a.get("entry").map(|s| s.parse().unwrap()).unwrap_or(0);
+    let kind = a.get("kind").unwrap_or_else(|| "approach-start".into());
+    let st = tmreach::inject::from_lcp(&lcp, entry, &kind, &a.get("map-uid").unwrap_or_default(), &a.get("map-name").unwrap_or_default())?;
+    let out = a.req("out");
+    std::fs::write(&out, serde_json::to_string_pretty(&st).map_err(|e| e.to_string())?).map_err(|e| format!("{out}: {e}"))?;
+    let v = (st.state.vel[0].powi(2) + st.state.vel[1].powi(2) + st.state.vel[2].powi(2)).sqrt();
+    println!(
+        "{out}: {} entry {entry} landmark {} ({}) — state at ({:.1}, {:.1}, {:.1}) v {:.1} m/s ang_vel {:?}; {} input ticks; expect: {}",
+        st.source.file, st.source.landmark, st.source.kind, st.state.pos[0], st.state.pos[1], st.state.pos[2], v, st.state.ang_vel.map(|w| format!("({:.2}, {:.2}, {:.2})", w[0], w[1], w[2])), st.inputs.len(),
+        st.expect.as_ref().map(|e| format!("landmark {} credited within {} ticks at ({:.1}, {:.1}, {:.1})", e.landmark, e.credit_within_ticks, e.pos[0], e.pos[1], e.pos[2])).unwrap_or_else(|| "-".into())
+    );
     Ok(())
 }

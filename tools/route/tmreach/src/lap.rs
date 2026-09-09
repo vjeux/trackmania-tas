@@ -344,6 +344,9 @@ pub struct LapCfg {
     pub clinic: bool,
     /// Policy proposals (MODEL arm): the per-map tmrl policy rolled forward in closed loop as extra macros.
     pub policy: Option<crate::policy_src::PolicySrc>,
+    /// Start the search from an INJECTED car state (a LaunchedCP crossing / approach start, tm-inject-state/1),
+    /// its `inputs` replayed as the seed chain. The exported tape then starts at the injection, not the spawn.
+    pub inject: Option<crate::inject::InjectState>,
 }
 
 struct Rng(u64);
@@ -724,14 +727,22 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         Ok(count)
     };
 
-    // SEED: the root, or the base tape replayed for --prefix-ticks (its state becomes the first cell)
-    if cfg.prefix_ticks > 0 || cfg.seed_chain.is_some() {
-        let recs = match &cfg.seed_chain {
-            Some(c) => c.clone(),
-            None => w.reference_recs(root, cfg.prefix_ticks),
+    // SEED: the root, or the base tape replayed for --prefix-ticks (its state becomes the first cell), or an
+    // INJECTED state (--inject-state) followed by its approach inputs
+    if cfg.prefix_ticks > 0 || cfg.seed_chain.is_some() || cfg.inject.is_some() {
+        let mut seed_node = branch::ROOT;
+        let recs = match (&cfg.inject, &cfg.seed_chain) {
+            (Some(st), _) => {
+                let (h0, rb) = crate::inject::inject_state(w, branch::ROOT, st)?;
+                out.log.push(format!("INJECTED {} state (landmark {}, {}) at ({:.1}, {:.1}, {:.1}) v {:.1}: read back ({:.1}, {:.1}, {:.1}); replaying {} approach ticks", st.source.kind, st.source.landmark, st.source.file, st.state.pos[0], st.state.pos[1], st.state.pos[2], (st.state.vel[0].powi(2) + st.state.vel[1].powi(2) + st.state.vel[2].powi(2)).sqrt(), rb.x, rb.y, rb.z, st.inputs.len()));
+                seed_node = h0;
+                crate::inject::inputs_to_recs(&st.inputs)
+            }
+            (None, Some(c)) => c.clone(),
+            (None, None) => w.reference_recs(root, cfg.prefix_ticks),
         };
         let recs_len = recs.len();
-        let (rows, nh) = w.rollout_keep(branch::ROOT, &recs, root, recs.len() as u64)?;
+        let (rows, nh) = if recs.is_empty() { (Vec::new(), seed_node) } else { w.rollout_keep(seed_node, &recs, root, recs.len() as u64)? };
         let end = rows.last().cloned().unwrap_or_else(|| root_row.clone());
         let (s, _lat, seg, _) = track.project(pos(&end), track.pts.len() / 2, track.pts.len());
         let cps = cps_of(&end);
