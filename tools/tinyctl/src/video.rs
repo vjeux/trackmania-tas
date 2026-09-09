@@ -843,42 +843,36 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 }
             }
         }
-        // ONE PROBE FOR THE WHOLE QUEUE, at most every `retry_after`. Fifteen
-        // clips waiting on a dead session used to mean fifteen probes per tick;
-        // a session that is being renewed by hand does not need that, and a
-        // rapid burst of requests is what preceded both 2026-09-09 logouts. So
-        // the queue asks ONCE, and only launches when the answer is 200 — the
-        // box's own lock and cool-down then pace the uploads.
+        // ONE SHIP AT A TIME, AND NO PROBE FROM HERE. The watcher used to probe
+        // github.com itself and then release the whole queue at once: every
+        // launched script probed again in the same second, on the same session,
+        // writing one shared cookie jar — and GitHub answers a burst of parallel
+        // replays of a rotating session by logging it out. Five copied sessions
+        // died that way on 2026-09-09. Now the box holds the only client: the
+        // ship script probes, uploads and gates inside its lock, and this side
+        // launches the NEXT one only when nothing is running there. A dead
+        // session therefore costs one 302 per tick, by one client, and the queue
+        // resumes by itself when a fresh cookie lands.
         if !dead_cookie.is_empty() {
-            let due = last_probe.map(|t: std::time::Instant| t.elapsed() >= retry_after).unwrap_or(true);
-            if due {
+            let due = last_probe.map(|t: std::time::Instant| t.elapsed() >= Duration::from_secs(60)).unwrap_or(true);
+            let busy = wsx
+                .sh("ps aux | grep -c '[t]inyship.sh'")
+                .map(|s| s.trim().parse::<u32>().unwrap_or(0))
+                .unwrap_or(0);
+            if busy > 0 {
+                println!("{} {} clip(s) waiting; a ship is running on the box", chrono_now(), dead_cookie.len());
+            } else if due {
                 last_probe = Some(std::time::Instant::now());
-                let code = wsx
-                    .sh("export PATH=/home/vjeux/bin:/usr/bin:/bin; GH_COOKIE=\"$(tr -d '\\r\\n' < /home/vjeux/.gh-upload/cookie)\"; JAR=/home/vjeux/.gh-upload/jar; curl -s -o /dev/null -w '%{http_code}' -b \"$JAR\" -c \"$JAR\" -b \"$GH_COOKIE\" -H 'user-agent: Mozilla/5.0' https://github.com/vjeux/trackmania-tas/edit/main/README.md")
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-                if code == "200" {
-                    println!("{} the GitHub session is live (probe 200) — launching {} held ship(s), paced by the box's lock", chrono_now(), dead_cookie.len());
-                    for (nn, _time, name, done_file) in &dead_cookie {
-                        let r_mp4 = format!("{VID}/mp4/{name}.mp4");
-                        let r_watch = format!("{}/{name}.mp4", BOX_VIDEOS);
-                        let outbase = done_file.trim_end_matches(".done").to_string();
-                        let slug = map_slug(nn);
-                        match wsx.sh(&format!(
-                            "mkdir -p {VID}/mp4 && [ -f '{r_mp4}' ] || cp -f '{r_watch}' '{r_mp4}'; rm -f '{done_file}' && nohup sh {BOX_SHIP_SH} '{r_mp4}' '{slug}' '{outbase}' > /dev/null 2>&1 < /dev/null &"
-                        )) {
-                            Ok(_) => println!("  launched {name}"),
-                            Err(e) => println!("  could not launch {name}: {e}"),
-                        }
-                    }
-                } else {
-                    println!(
-                        "{} HELD: {} clip(s) cut, overlaid and staged, waiting on the GitHub session (probe HTTP {code}). Nothing is re-uploaded; a fresh ~/.gh-upload/cookie on the box releases them within {} min.",
-                        chrono_now(),
-                        dead_cookie.len(),
-                        retry_after.as_secs() / 60
-                    );
+                let (nn, time, name, done_file) = &dead_cookie[0];
+                let r_mp4 = format!("{VID}/mp4/{name}.mp4");
+                let r_watch = format!("{}/{name}.mp4", BOX_VIDEOS);
+                let outbase = done_file.trim_end_matches(".done").to_string();
+                let slug = map_slug(nn);
+                match wsx.sh(&format!(
+                    "mkdir -p {VID}/mp4 && [ -f '{r_mp4}' ] || cp -f '{r_watch}' '{r_mp4}'; rm -f '{done_file}' && nohup sh {BOX_SHIP_SH} '{r_mp4}' '{slug}' '{outbase}' > /dev/null 2>&1 < /dev/null &"
+                )) {
+                    Ok(_) => println!("{} launching {nn} {time} ({} clip(s) held; one at a time — the box's lock covers the probe, the upload and the gate)", chrono_now(), dead_cookie.len()),
+                    Err(e) => println!("  could not launch {name}: {e}"),
                 }
             }
         }
