@@ -1,4 +1,5 @@
-//! `tinyctl video` — one map's driven lap as a video and a contact sheet, from
+//! `tinyctl vid    // the cut (overlay or bare) needs ffmpeg HERE; find it before the box does any work
+    let ff = Some(clip::platform::from_env().map_err(|e| format!("the cut needs ffmpeg on this side: {e}"))?);o` — one map's driven lap as a video and a contact sheet, from
 //! the devserver, through the render box — **with the run's controls drawn on
 //! it, by default, checked, and stamped.**
 //!
@@ -269,7 +270,7 @@ fn all_once(args: &[String]) -> Result<(), String> {
             }
             match a.as_str() {
                 "--all" => {}
-                "--map" | "--ghost" | "--map-file" | "--watch" | "--ghosts-sync" | "--build" | "--from-webm" => skip = true,
+                "--map" | "--ghost" | "--map-file" | "--watch" | "--ghosts-sync" | "--build" | "--from-webm" => skip = true,| "--ghost" | "--map-file" | "--watch" | "--ghosts-sync" | "--build" | "--from-webm" => skip = true,
                 _ => v.push(a.clone()),
             }
         }
@@ -318,7 +319,10 @@ fn one(args: &[String]) -> Result<Done, String> {
     let load_timeout: u64 = f("--load-timeout").map(|s| s.parse().map_err(|_| "--load-timeout wants seconds")).transpose()?.unwrap_or(120);
     let box_videos = f("--box-videos").unwrap_or_else(|| BOX_VIDEOS.into());
     let shootctl = f("--box-shootctl").unwrap_or_else(|| format!("{BOX_TOOLS}/shootctl"));
-    let from_webm = f("--from-webm").map(PathBuf::from);
+    // --from-webm F: this render; --from-webm-dir D: the render of this lap if D
+    // holds it (`<name>.webm`), else a fresh render — how a day loop re-cuts
+    // the clips that exist and renders the ones that do not
+    let mut from_webm = f("--from-webm").map(PathBuf::from);
     for p in [&map, &ghost] {
         if !p.is_file() {
             return Err(format!("{}: no such file", p.display()));
@@ -395,6 +399,16 @@ fn one(args: &[String]) -> Result<Done, String> {
         Some(s) => format!("{nn}-ghost-{time}-{s}"),
         None => format!("{nn}-ghost-{time}"),
     };
+    if from_webm.is_none() {
+        if let Some(d) = f("--from-webm-dir") {
+            let p = PathBuf::from(d).join(format!("{name}.webm"));
+            if p.is_file() {
+                from_webm = Some(p);
+            } else {
+                println!("from-webm-dir: no {} — rendering", p.display());
+            }
+        }
+    }
     let wsx = Wsx::new(args);
     let traj_id = trajectory_id(&g);
     let cps = g.checkpoints_ms.iter().filter(|c| **c < race_ms - 50).count();

@@ -110,7 +110,7 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         --startcheck every map's client start check, one at a time, into STARTCHECK.tsv
   tinyctl video --map NN | --all [--watch SECS] [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9] [--ghosts-dir /tmp/ghosts]
                 [--ghosts-sync host:dir] [--build ship15] [--cam 2] [--load-timeout 120] [--no-guard] [--store host:dir|dir]
-                [--box-videos DIR] [--suffix S] [--from-webm F] [--no-overlay] [--crf N] [--offset-ms N] [--ship]
+                [--box-videos DIR] [--suffix S] [--from-webm F | --from-webm-dir D] [--no-overlay] [--crf N] [--offset-ms N] [--ship]
 | --all [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9] [--ghosts-dir /tmp/ghosts]
                 [--cam 2] [--load-timeout 120] [--no-guard] [--store host:dir|dir] [--pull-webm] [--box-videos DIR]
         the map's driven lap as a video: REFUSES a ghost whose sample 0 is not on this
