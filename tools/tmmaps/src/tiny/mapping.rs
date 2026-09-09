@@ -56,6 +56,14 @@ pub struct Mappings {
     /// transform — a full-size stock tree standing in for a species the game
     /// cannot scale, sunk so its crown top sits where the original's would.
     pub sink_by_index: BTreeMap<usize, f32>,
+    /// `yb@INDEX` rows: metres the item of BAKED record INDEX is LOWERED by
+    /// after the transform. `mapgeom coplanar-sinks` (2026-09-09): a free
+    /// clip whose top face lies exactly in an authored deck's top face — the
+    /// caps of Norway 23's two sideways free pillars under checkpoint 8 —
+    /// is drawn UNDER the deck by the game (the deck wins every frame; the cap
+    /// shows only with the checkpoint block moved away) while two coplanar
+    /// items z-fight, so the clip goes down a centimetre.
+    pub sink_baked_by_index: BTreeMap<usize, f32>,
     /// The tree clearance verdicts (mapgeom tree_clear, 2026-09-08: a tree
     /// whose crown meets a driving deck is dropped). `xv@N<TAB>K`: the K-th
     /// `v@` tree of authored block placement N; `xvb@N<TAB>K`: of baked block
@@ -93,6 +101,13 @@ pub fn read_mapping(path: &Path) -> Mappings {
             continue;
         }
         let fields: Vec<&str> = line.split('\t').collect();
+        if let Some(index) = fields[0].strip_prefix("yb@") {
+            assert!(fields.len() == 2, "{}:{}: expected yb@INDEX<TAB>DY", path.display(), line_no + 1);
+            let idx: usize = index.parse().unwrap_or_else(|_| panic!("{}:{}: baked index expected", path.display(), line_no + 1));
+            let dy: f32 = fields[1].parse().unwrap_or_else(|_| panic!("{}:{}: number expected", path.display(), line_no + 1));
+            out.sink_baked_by_index.insert(idx, dy);
+            continue;
+        }
         if let Some(index) = fields[0].strip_prefix("y@") {
             assert!(fields.len() == 2, "{}:{}: expected y@INDEX<TAB>DY", path.display(), line_no + 1);
             let idx: usize = index.parse().unwrap_or_else(|_| panic!("{}:{}: item index expected", path.display(), line_no + 1));

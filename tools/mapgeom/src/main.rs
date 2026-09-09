@@ -2038,6 +2038,162 @@ fn main() {
                 }
             }
         }
+        "coplanar-sinks" => {
+            // Which FREE baked records (the clips of free-placed blocks) have a
+            // TOP face lying exactly in an authored placement's top face — two
+            // items z-fighting where the game draws the deck over the clip.
+            // Norway 23, checkpoint 8 (2026-09-09): the two DecoWallBaseVFC caps
+            // of the sideways free pillars 1112/1113 lie at 66.000 in the
+            // PlatformTechCheckpoint deck's 66.000 over a 13×8 m patch; the
+            // original shows a clean deck (the caps appear only with the
+            // checkpoint block moved away: frame sp23n), the tiny flickers.
+            // Emits `yb@INDEX<TAB>0.01` rows for `tmmaps tiny`, which lowers
+            // those records a centimetre so the deck wins like it does in the
+            // original.
+            //   mapgeom … coplanar-sinks TINY.Map.Gbx --source SRC.Map.Gbx --mapping placements.tsv
+            //           --anchor sx,sy,sz:tx,ty,tz [--scale 0.5] [--out sinks.tsv] [--sink 0.01] [--tol 0.005]
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let src = flag(&a.rest, "--source").unwrap_or_else(|| die("coplanar-sinks needs --source SRC.Map.Gbx".into()));
+            let mapping = flag(&a.rest, "--mapping").unwrap_or_else(|| die("coplanar-sinks needs --mapping placements.tsv".into()));
+            let anchor = flag(&a.rest, "--anchor").unwrap_or_else(|| die("coplanar-sinks needs --anchor sx,sy,sz:tx,ty,tz".into()));
+            let scale: f32 = flag(&a.rest, "--scale").and_then(|s| s.parse().ok()).unwrap_or(0.5);
+            let sink: f32 = flag(&a.rest, "--sink").and_then(|s| s.parse().ok()).unwrap_or(0.01);
+            let tol: f32 = flag(&a.rest, "--tol").and_then(|s| s.parse().ok()).unwrap_or(0.005);
+            let out = flag(&a.rest, "--out");
+            let nums = |s: &str| -> Vec<f32> { s.split(',').filter_map(|t| t.trim().parse().ok()).collect() };
+            let (sa, ta) = anchor.split_once(':').unwrap_or_else(|| die("--anchor sx,sy,sz:tx,ty,tz".into()));
+            let (sa, ta) = (nums(sa), nums(ta));
+            if sa.len() != 3 || ta.len() != 3 {
+                die::<()>("--anchor sx,sy,sz:tx,ty,tz".into());
+            }
+            let source = tmmaps::map::MapFile::load(std::path::Path::new(&src));
+            let tiny = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+            let maps = tmmaps::tiny::mapping::read_mapping(std::path::Path::new(&mapping));
+            let mut asm = mapgeom::assemble::Assembler::new(&mut store);
+            asm.with_embedded(&tiny).ok();
+            // the expected tiny position of every FREE baked record with a row
+            let mut want: Vec<(usize, String, [f32; 3])> = Vec::new();
+            // the FREE BLOCKS' own placements are not decks either: a clip's
+            // face lying in its parent's face is the parent's business
+            let mut free_blocks: Vec<(String, [f32; 3])> = Vec::new();
+            for b in source.blocks.iter().filter(|b| b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0) {
+                let (Some(pos), Some(m)) = (b.free_pos, maps.by_index.get(&b.index).or_else(|| maps.by_name.get(&b.name))) else { continue };
+                if m.model == "-" {
+                    continue;
+                }
+                free_blocks.push((m.model.clone(), [ta[0] + (pos[0] - sa[0]) * scale, ta[1] + (pos[1] - sa[1]) * scale, ta[2] + (pos[2] - sa[2]) * scale]));
+            }
+            for b in source.baked.iter().filter(|b| b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0) {
+                let (Some(pos), Some(m)) = (b.free_pos, maps.baked_by_index.get(&b.index)) else { continue };
+                if m.model == "-" {
+                    continue;
+                }
+                let t = [ta[0] + (pos[0] - sa[0]) * scale, ta[1] + (pos[1] - sa[1]) * scale, ta[2] + (pos[2] - sa[2]) * scale];
+                want.push((b.index, m.model.clone(), t));
+            }
+            // tiny item index -> the free record it stands for
+            let mut record_of: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+            let mut is_free_block: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            for it in &tiny.items {
+                for (idx, model, t) in &want {
+                    if it.model == *model && (it.pos[0] - t[0]).abs() < 0.02 && (it.pos[1] - t[1]).abs() < 0.02 && (it.pos[2] - t[2]).abs() < 0.02 {
+                        record_of.insert(it.index, *idx);
+                        break;
+                    }
+                }
+                for (model, t) in &free_blocks {
+                    if it.model == *model && (it.pos[0] - t[0]).abs() < 0.02 && (it.pos[1] - t[1]).abs() < 0.02 && (it.pos[2] - t[2]).abs() < 0.02 {
+                        is_free_block.insert(it.index);
+                        break;
+                    }
+                }
+            }
+            // top faces (normal +y, within 2.5° of vertical) of every placement:
+            // (y to the mm, xz bbox) — a face is the union bbox of the placement's
+            // triangles in that plane
+            struct Face {
+                item: usize,
+                y: f32,
+                x0: f32,
+                z0: f32,
+                x1: f32,
+                z1: f32,
+            }
+            let mut faces_free: Vec<Face> = Vec::new();
+            let mut faces_other: std::collections::HashMap<i32, Vec<Face>> = std::collections::HashMap::new();
+            for it in &tiny.items {
+                let Some(lm) = asm.item_model(&it.model) else { continue };
+                let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                let mut planes: std::collections::BTreeMap<i32, [f32; 4]> = std::collections::BTreeMap::new();
+                for (_mat, g) in &lm.scene.groups {
+                    for t in &g.tris {
+                        let a3 = mapgeom::geom::apply(&xf, g.verts[t[0] as usize]);
+                        let b3 = mapgeom::geom::apply(&xf, g.verts[t[1] as usize]);
+                        let c3 = mapgeom::geom::apply(&xf, g.verts[t[2] as usize]);
+                        let u = [b3[0] - a3[0], b3[1] - a3[1], b3[2] - a3[2]];
+                        let v = [c3[0] - a3[0], c3[1] - a3[1], c3[2] - a3[2]];
+                        let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                        if len < 1e-6 || n[1] / len < 0.999 {
+                            continue;
+                        }
+                        let y = (a3[1] + b3[1] + c3[1]) / 3.0;
+                        let key = (y * 1000.0).round() as i32;
+                        let e = planes.entry(key).or_insert([f32::MAX, f32::MAX, f32::MIN, f32::MIN]);
+                        for q in [a3, b3, c3] {
+                            e[0] = e[0].min(q[0]);
+                            e[1] = e[1].min(q[2]);
+                            e[2] = e[2].max(q[0]);
+                            e[3] = e[3].max(q[2]);
+                        }
+                    }
+                }
+                for (key, bb) in planes {
+                    if (bb[2] - bb[0]) * (bb[3] - bb[1]) < 0.25 {
+                        continue;
+                    }
+                    let f = Face { item: it.index, y: key as f32 / 1000.0, x0: bb[0], z0: bb[1], x1: bb[2], z1: bb[3] };
+                    if record_of.contains_key(&it.index) {
+                        faces_free.push(f);
+                    } else if !is_free_block.contains(&it.index) {
+                        faces_other.entry(key).or_default().push(f);
+                    }
+                }
+            }
+            let tol_mm = (tol * 1000.0).round() as i32;
+            let mut rows: std::collections::BTreeMap<usize, (usize, f32, String)> = std::collections::BTreeMap::new();
+            for f in &faces_free {
+                let key = (f.y * 1000.0).round() as i32;
+                for k in (key - tol_mm)..=(key + tol_mm) {
+                    let Some(cands) = faces_other.get(&k) else { continue };
+                    for o in cands {
+                        let ix = f.x1.min(o.x1) - f.x0.max(o.x0);
+                        let iz = f.z1.min(o.z1) - f.z0.max(o.z0);
+                        // a real patch, not an edge touch: both ways ≥ 0.5 m, ≥ 1 m²,
+                        // and the partner is a DECK (a face of ≥ 20 m²: the
+                        // evidence is a checkpoint deck over pillar caps, not the
+                        // 0.7 m-wide bar tops of a structure lattice meeting)
+                        let area_o = (o.x1 - o.x0) * (o.z1 - o.z0);
+                        if ix > 0.5 && iz > 0.5 && ix * iz > 1.0 && area_o >= 20.0 {
+                            let rec = record_of[&f.item];
+                            let other = tiny.items.iter().find(|i| i.index == o.item).map(|i| format!("i{} {} at ({:.1}, {:.2}, {:.1})", i.index, i.model, i.pos[0], i.pos[1], i.pos[2])).unwrap_or_default();
+                            rows.entry(rec).or_insert((f.item, f.y, format!("{:.1}×{:.1} m with {other}", ix, iz)));
+                        }
+                    }
+                }
+            }
+            println!("{} free baked records with a top face in an authored placement's top face (tol {tol} m):", rows.len());
+            let mut text = String::new();
+            for (rec, (item, y, with)) in &rows {
+                let name = source.baked.iter().find(|b| b.index == *rec).map(|b| b.name.clone()).unwrap_or_default();
+                println!("  b{rec} {name} (tiny item i{item}) top y {y:.3}: coplanar over {with} -> sunk {sink} m");
+                text.push_str(&format!("yb@{rec}\t{sink}\n"));
+            }
+            if let Some(out) = out {
+                std::fs::write(&out, text).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            }
+        }
         "plumb" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();

@@ -599,6 +599,7 @@ pub fn cmd(args: &[String]) {
     // authored structures (pillar feet, screen caps, wall faces) -- become
     // items too; the baked chunk itself is rewritten to all-Sea below.
     let mut baked_items = 0usize;
+    let mut sunk_baked = 0usize;
     // the filler colour rule (see the `color` block below): `owner` is what
     // the game draws; `default`, `file` and `inherit` (the behaviour until
     // 2026-09-08) stay for A/Bs
@@ -667,7 +668,13 @@ pub fn cmd(args: &[String]) {
             None => block_pos(bp),
         };
         baked_items += 1;
-        let pos = transform(origin, source_anchor, target_anchor, scale);
+        let mut pos = transform(origin, source_anchor, target_anchor, scale);
+        // `yb@INDEX` rows: a coplanar free clip goes down under the deck it
+        // lies in (mapping.rs `sink_baked_by_index`)
+        if let Some(dy) = mapping.sink_baked_by_index.get(&b.index) {
+            pos[1] -= dy;
+            sunk_baked += 1;
+        }
         // The colour byte of a GENERATED filler: the byte the file records for
         // it — the generating block's colour, written by the editor (Summer 20:
         // 4956 of 7287 baked are Red like the 1966 Red blocks; the editor holds
@@ -1143,10 +1150,11 @@ pub fn cmd(args: &[String]) {
         specs.len()
     );
     println!(
-        "  baked foundation: {} generated blocks in the source ({} re-emitted as items, {} of them pillar walls placed Default)",
+        "  baked foundation: {} generated blocks in the source ({} re-emitted as items, {} of them pillar walls placed Default, {} coplanar free clips sunk under their deck)",
         source.baked.len(),
         baked_items,
-        pillar_fillers
+        pillar_fillers,
+        sunk_baked
     );
     println!(
         "  anchor: source {:?} -> target {:?}; scale {:.3}",

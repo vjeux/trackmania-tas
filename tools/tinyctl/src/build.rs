@@ -178,7 +178,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let map_no: usize = nn.parse().unwrap_or(0);
             env.insert("TINY_ALIAS_BASE".to_string(), format!("{}", map_no * 1_000_000 + (minutes % 1000) * 1000));
         }
-        println!("{nn}: {} ({}) -> {}", src.file_name().unwrap_or_default().to_string_lossy(), collection_name(coll), out.display());
+        println!("{nn}: {} ({}) -> {} (alias base {})", src.file_name().unwrap_or_default().to_string_lossy(), collection_name(coll), out.display(), env["TINY_ALIAS_BASE"]);
         let t0 = std::time::Instant::now();
         let mut lib = Command::new(&mapgeom);
         lib.args(&paks).args(&mapgeom_flags).arg("tiny-library").arg(&src).arg("--library-out").arg(out.join("lib.zip")).arg("--mapping-out").arg(out.join("placements.tsv")).arg("--report").arg(out.join("report.tsv"));
@@ -196,19 +196,63 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
         }
         let tiny_out = out.join(format!("Summer-{nn}-Tiny.Map.Gbx"));
-        let mut tiny = Command::new(&tmmaps);
-        tiny.arg("tiny").arg(&src).arg("--mapping").arg(out.join("placements.tsv")).arg("--library").arg(out.join("lib.zip")).arg("--out").arg(&tiny_out);
-        tiny.envs(env.iter());
-        match run(&mut tiny, &out.join("tiny.log")) {
+        let run_tiny = |env: &BTreeMap<String, String>, log: &str| -> Result<String, String> {
+            let mut tiny = Command::new(&tmmaps);
+            tiny.arg("tiny").arg(&src).arg("--mapping").arg(out.join("placements.tsv")).arg("--library").arg(out.join("lib.zip")).arg("--out").arg(&tiny_out);
+            tiny.envs(env.iter());
+            run(&mut tiny, &out.join(log))
+        };
+        let mut anchor_line = String::new();
+        match run_tiny(&env, "tiny.log") {
             Ok(text) => {
                 for l in text.lines().filter(|l| l.contains("uid:") || l.contains("scaled every") || l.contains("anchor:") || l.contains("deleted")) {
                     println!("  {}", l.trim());
+                    if l.contains("anchor: source") {
+                        anchor_line = l.trim().to_string();
+                    }
                 }
             }
             Err(e) => {
                 eprintln!("  {e}");
                 failed += 1;
                 continue;
+            }
+        }
+        // The coplanar pass (mapgeom coplanar-sinks, 2026-09-09): a free clip
+        // whose top face lies in an authored deck's top face is lowered a
+        // centimetre (`yb@` rows) and the map is written again.
+        if let Some(anchor) = anchor_arg(&anchor_line) {
+            let sinks = out.join("sinks.tsv");
+            let mut cs = Command::new(&mapgeom);
+            cs.args(&paks).args(&mapgeom_flags).arg("coplanar-sinks").arg(&tiny_out).arg("--source").arg(&src).arg("--mapping").arg(out.join("placements.tsv")).arg("--anchor").arg(&anchor.0).arg("--scale").arg(&anchor.1).arg("--out").arg(&sinks);
+            cs.envs(env.iter());
+            match run(&mut cs, &out.join("coplanar.log")) {
+                Ok(text) => {
+                    let rows = std::fs::read_to_string(&sinks).unwrap_or_default();
+                    let n = rows.lines().filter(|l| !l.trim().is_empty()).count();
+                    if n > 0 {
+                        for l in text.lines().filter(|l| l.contains("coplanar over")) {
+                            println!("  {}", l.trim());
+                        }
+                        let mut mapping = std::fs::read_to_string(out.join("placements.tsv")).map_err(|e| format!("placements.tsv: {e}"))?;
+                        mapping.push_str("# coplanar free clips sunk under their deck (mapgeom coplanar-sinks)\n");
+                        mapping.push_str(&rows);
+                        std::fs::write(out.join("placements.tsv"), mapping).map_err(|e| format!("placements.tsv: {e}"))?;
+                        match run_tiny(&env, "tiny2.log") {
+                            Ok(text) => {
+                                for l in text.lines().filter(|l| l.contains("coplanar free clips sunk")) {
+                                    println!("  {}", l.trim());
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("  {e}");
+                                failed += 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+                Err(e) => eprintln!("  coplanar pass skipped: {e}"),
             }
         }
         let libx = out.join("libx");
@@ -227,4 +271,19 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         return Err(format!("{failed} of {} maps failed", maps.len()));
     }
     Ok(())
+}
+
+/// The `--anchor sx,sy,sz:tx,ty,tz` and `--scale S` arguments for the
+/// coplanar pass, from `tmmaps tiny`'s "anchor: source [x, y, z] -> target
+/// [x, y, z]; scale 0.500" line.
+fn anchor_arg(line: &str) -> Option<(String, String)> {
+    let nums = |s: &str| -> Option<String> {
+        let inner = s.split_once('[')?.1.split_once(']')?.0;
+        let v: Vec<&str> = inner.split(',').map(|t| t.trim()).collect();
+        (v.len() == 3).then(|| v.join(","))
+    };
+    let (src, rest) = line.split_once("->")?;
+    let (tgt, scale) = rest.split_once(';')?;
+    let scale = scale.trim().strip_prefix("scale")?.trim().to_string();
+    Some((format!("{}:{}", nums(src)?, nums(tgt)?), scale))
 }
