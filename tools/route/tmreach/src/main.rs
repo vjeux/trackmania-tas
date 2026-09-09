@@ -1903,6 +1903,9 @@ fn cmd_identity(a: &Args) -> Result<(), String> {
     for (i, p) in track.pts.iter().enumerate() {
         let (s, _l, sg, _d) = track.project(*p, hint, if i == 0 { track.pts.len() } else { 80 });
         hint = sg;
+        if std::env::var("TMREACH_IDENTITY_DEBUG").is_ok() && (s - track.s[i]).abs() > 5.0 {
+            eprintln!("  identity: point #{i} at s {:.1} ({:.1}, {:.1}, {:.1}) projects to s {s:.1} (seg {sg}, d3 {:.2})", track.s[i], p[0], p[1], p[2], _d);
+        }
         if max_s - s > worst_drop {
             worst_drop = max_s - s;
             worst_at = track.s[i];

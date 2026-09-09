@@ -347,8 +347,22 @@ impl Track {
     /// (s, lateral distance, segment index, 3-D distance to the polyline).
     pub fn project(&self, p: [f64; 3], hint: usize, window: usize) -> (f64, f64, usize, f64) {
         let n = self.pts.len() - 1;
-        let lo = hint.saturating_sub(window);
-        let hi = (hint + window).min(n - 1);
+        // a HINTED projection first looks in a narrow forward-biased window (about -20 m .. +120 m of arc length):
+        // a self-crossing line (24 at s 2395 passes near its own s 1876) must not snap the car back (coordinator
+        // 2026-09-09 11:57Z); the wide window is the fallback when nothing near is found
+        if window < n {
+            let r = self.project_in(p, hint.saturating_sub(4), (hint + 24).min(n - 1));
+            let hw = self.half_width.get(r.2).copied().unwrap_or(6.0);
+            if r.3 <= hw + 10.0 {
+                return r;
+            }
+        }
+        self.project_in(p, hint.saturating_sub(window), (hint + window).min(n - 1))
+    }
+
+    fn project_in(&self, p: [f64; 3], lo: usize, hi: usize) -> (f64, f64, usize, f64) {
+        let n = self.pts.len() - 1;
+        let _ = n;
         // a spur the route drives in and back out (08: the linked gate at the end of a 14 m dead end) has the
         // same points on both legs: among near-equal distances (within 1 m) the LARGER arc length wins,
         // so progress is monotone along the route
