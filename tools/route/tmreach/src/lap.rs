@@ -476,6 +476,8 @@ pub struct LapCfg {
     pub rdv_tol: f64,
     /// arc-length window where the brake is masked off (full gas) in every macro
     pub no_brake: Option<(f64, f64)>,
+    /// below this height the car is off-world (default -20; 22: the sea floor at -5.8 is reachable and pollutes the archive)
+    pub offworld_y: f64,
     /// vjeux launched-checkpoint csv (ghost lcp --csv): his approach samples become macros
     pub vjeux_csv: Option<String>,
 }
@@ -846,7 +848,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 eprintln!("    seed macro {desc:40}: end ({:.1}, {:.1}, {:.1}) v {:.1} s {:.1} lat {:.1} d3 {:.1} cps {cps} rows {}", end.x, end.y, end.z, speed(&end), s, lat, d3, rows.len());
             }
             // off the world / far off the road on a road leg: no cell
-            if end.y < -20.0 {
+            if end.y < cfg.offworld_y {
                 out.deaths[0] += 1;
                 continue;
             }
@@ -1031,7 +1033,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let road_y = track.at(s)[1];
             let hw = track.half_width.get(seg).copied().unwrap_or(5.5);
             let road_y_min = track.min_y_near(s, 15.0);
-            let bad = speed(&end) < 3.0 || (cfg.below_tol < 100.0 && ((end.vy < -3.0 && end.y < road_y_min - 3.0) || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y_min - cfg.below_tol)))) || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol;
+            let bad = speed(&end) < 3.0 || end.y < cfg.offworld_y || (cfg.below_tol < 100.0 && ((end.vy < -3.0 && end.y < road_y_min - 3.0) || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y_min - cfg.below_tol)))) || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol;
             if !bad || tries >= 40 || recs.len() <= 300 {
                 break (rows, nh, end, s, seg);
             }
