@@ -471,6 +471,9 @@ pub struct LapCfg {
     pub respawn: bool,
     /// rung 3: add the compound / lift-off / air-control / attitude macro family to every fan
     pub compound: bool,
+    /// rendezvous target state [x, y, z, vx, vy, vz] (reaching it within rdv_tol / 3 m/s / 10 deg ends the run)
+    pub rendezvous: Option<[f64; 6]>,
+    pub rdv_tol: f64,
 }
 
 struct Rng(u64);
@@ -859,6 +862,28 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             // on a road leg the cell also carries a 2 m LATERAL bucket (14's ramp: the line's x on the ramp decides the flight)
             let cs = if on_gap { ((end.x / 4.0).floor() as i32) * 100_000 + (end.z / 4.0).floor() as i32 } else { ((s / 4.0).floor() as i32) * 64 + ((lat / 2.0).floor() as i32 + 32).clamp(0, 63) };
             let e = Entry { key: Key { cs, cv: (speed(&end) / 5.0).floor() as i32, cy: (end.y / 3.0).floor() as i32, mask }, chain, cps, mask, s, seg, progress, visits: 0, end: end.clone(), macro_desc: descs };
+            // RENDEZVOUS (coordinator 2026-09-09 13:58Z): the objective is a STATE of a known-good chain (position within
+            // `rdv_tol` m, speed within 3 m/s, heading within 10 degrees); reaching it ends the run like a finish — the
+            // caller splices the known chain's remainder after it.
+            if let Some(t) = &cfg.rendezvous {
+                if out.finished.is_none() {
+                    let dp = ((end.x - t[0]).powi(2) + (end.y - t[1]).powi(2) + (end.z - t[2]).powi(2)).sqrt();
+                    let vt = (t[3] * t[3] + t[4] * t[4] + t[5] * t[5]).sqrt();
+                    let dv = (speed(&end) - vt).abs();
+                    let dot = end.vx * t[3] + end.vz * t[5];
+                    let ang = if vt > 1.0 && speed(&end) > 1.0 { (dot / ((end.vx * end.vx + end.vz * end.vz).sqrt() * (t[3] * t[3] + t[5] * t[5]).sqrt())).clamp(-1.0, 1.0).acos().to_degrees() } else { 0.0 };
+                    if dp <= cfg.rdv_tol && dv <= 3.0 && ang <= 10.0 {
+                        out.log.push(format!("RENDEZVOUS reached at race {}: ({:.1}, {:.1}, {:.1}) v {:.1} — {dp:.2} m, {dv:.2} m/s, {ang:.1} deg from the target, after {} ticks", crate::secs(w.race_of(&end)), end.x, end.y, end.z, speed(&end), e.chain.len()));
+                        if cfg.verbose {
+                            eprintln!("{}", out.log.last().unwrap());
+                        }
+                        out.finished = Some(e.clone());
+                        out.leg_done = Some(k_pref);
+                    }
+                    // progress shaping toward the target: closeness in metres counts like arc length
+                    let _ = dp;
+                }
+            }
             // CLINIC: the next gate credited with a good arrival ends this leg
             if cfg.clinic && out.finished.is_none() && k_pref > seed_k.get() {
                 let vh = track.human_speed_at(s);
