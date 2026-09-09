@@ -17,17 +17,17 @@ https://github.com/user-attachments/assets/94c5f397-cb11-4ad9-9d08-4195fc9413e2
 
 https://github.com/user-attachments/assets/767dd422-e99b-4f2c-8435-f1c5879140cd
 
-**Tiny Summer 2026 - 03** — original author time `24.213` · tiny ghost **33.169** (build ship10)
+**Tiny Summer 2026 - 03** — original author time `24.213` · tiny ghost **28.989** (build ship15)
 
-https://github.com/user-attachments/assets/9255035f-f4a3-4ed5-a0d9-4428144758ce
+https://github.com/user-attachments/assets/2837fa66-d790-46c8-a39c-9cd1490b6fab
 
 **Tiny Summer 2026 - 04** — original author time `26.622` · tiny ghost **29.474** (build ship15)
 
 https://github.com/user-attachments/assets/96691000-5645-4799-b709-e81887725517
 
-**Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **17.402** (build ship9)
+**Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **18.298** (build ship15)
 
-https://github.com/user-attachments/assets/dab84a78-99c8-477e-9700-0fd0943c0184
+https://github.com/user-attachments/assets/7b8ce1d8-621e-46a6-8f50-cc5a3ce89fd1
 
 **Tiny Summer 2026 - 06** — original author time `29.014` · tiny ghost **23.038** (build ship15)
 
@@ -45,19 +45,21 @@ https://github.com/user-attachments/assets/a6002f3a-a6e4-4b5e-87ff-592563cea9bf
 
 https://github.com/user-attachments/assets/5ac2bcd7-8ca8-47e3-9024-7bce0b84cbf1
 
-**Tiny Summer 2026 - 10** — original author time `35.578` · tiny ghost **25.293** (build ship10)
+**Tiny Summer 2026 - 10** — original author time `35.578` · tiny ghost **25.304** (build ship15)
 
-https://github.com/user-attachments/assets/91de62dc-049c-4ef7-9cf9-4cc2e2699e02
+https://github.com/user-attachments/assets/88ed6fd7-ae81-4229-88bb-1233915b2b24
 
 **Tiny Summer 2026 - 11** — original author time `38.371` · tiny ghost **34.348** (build ship15)
 
 https://github.com/user-attachments/assets/d2f844df-d4c7-466f-9d41-d364118bcbf5
 
-**Tiny Summer 2026 - 12** — original author time `28.447` · tiny ghost **20.752** (build ship10) — *no video yet: the MediaTracker places the ghost off the track on this map only; under investigation*
+**Tiny Summer 2026 - 12** — original author time `28.447` · tiny ghost **20.752** (build ship15)
 
-**Tiny Summer 2026 - 13** — original author time `31.462` · tiny ghost **26.324** (build ship10)
+https://github.com/user-attachments/assets/8498971d-708b-440c-aae2-e69579b1b3cd
 
-https://github.com/user-attachments/assets/116d3bf7-e4a1-4f77-bf02-07cbaf167bb9
+**Tiny Summer 2026 - 13** — original author time `31.462` · tiny ghost **26.324** (build ship15)
+
+https://github.com/user-attachments/assets/ebb7bc04-a2eb-47af-ad0a-2375d781c37b
 
 **Tiny Summer 2026 - 14** — original author time `34.752` · tiny ghost **30.339** (build ship15)
 
