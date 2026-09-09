@@ -43,6 +43,14 @@ pub struct Tot {
 
 /// One surface's census, printed under `label`; `mat_name` names an external
 /// material node of the surface. Returns the per-physics totals.
+/// `--column X,Z` (in the frame `census` is given — the prefab's, unscaled): every
+/// collision triangle the vertical line at (X, Z) pierces, per source surface,
+/// with its height, physics and facing — the stacked-hull question (Summer 12's
+/// dirt landing, 2026-09-09: three "Dirt" layers 29 cm apart in `who`, which
+/// reads VISUAL triangles as their material's physics too; this reads only
+/// what collides).
+thread_local! { pub static COLUMN: std::cell::Cell<Option<(f32, f32)>> = const { std::cell::Cell::new(None) }; }
+
 pub fn census(label: &str, sf: &CPlugSurface, at: &Xform, up_cos: f32, mat_name: &dyn Fn(i32) -> Option<String>) -> BTreeMap<u8, Tot> {
     let mats: Vec<String> = sf
         .materials
@@ -70,6 +78,18 @@ pub fn census(label: &str, sf: &CPlugSurface, at: &Xform, up_cos: f32, mat_name:
         let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
         let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
         let ny = if len > 0.0 { n[1] / len } else { 0.0 };
+        if let Some((cx, cz)) = COLUMN.get() {
+            // 2-D point-in-triangle at (cx, cz), then the height on the plane
+            let d = (b[0] - a[0]) * (c[2] - a[2]) - (c[0] - a[0]) * (b[2] - a[2]);
+            if d.abs() > 1e-9 {
+                let u = ((cx - a[0]) * (c[2] - a[2]) - (c[0] - a[0]) * (cz - a[2])) / d;
+                let v = ((b[0] - a[0]) * (cz - a[2]) - (cx - a[0]) * (b[2] - a[2])) / d;
+                if u >= -1e-4 && v >= -1e-4 && u + v <= 1.0 + 1e-4 {
+                    let y = a[1] + u * (b[1] - a[1]) + v * (c[1] - a[1]);
+                    println!("  column ({cx:.2}, {cz:.2}): y {y:8.3}  physics {:3} {:<14} facing {}  [{label}]", t.material_id, crate::scene::physics_name(t.material_id), if ny > up_cos { "UP" } else if ny < -up_cos { "down" } else { "side" });
+                }
+            }
+        }
         let area = (len / 2.0) as f64;
         let row = rows.entry((t.material_id, t.gameplay, t.surface_index)).or_insert_with(|| Row { ymin: f32::MAX, ymax: f32::MIN, ..Default::default() });
         row.count += 1;
@@ -220,11 +240,22 @@ fn prefab(store: &mut DataStore, path: &str, at: &Xform, depth: usize, max_depth
 pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), String> {
     let max_depth: usize = flag(rest, "--depth").unwrap_or_else(|| "8".into()).parse().map_err(|e| format!("--depth: {e}"))?;
     let up_cos: f32 = flag(rest, "--up").unwrap_or_else(|| "0.7".into()).parse().map_err(|e| format!("--up: {e}"))?;
+    if let Some(c) = flag(rest, "--column") {
+        let v: Vec<f32> = c.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        if v.len() != 2 {
+            return Err("--column X,Z".into());
+        }
+        COLUMN.set(Some((v[0], v[1])));
+    }
     let mut paths: Vec<String> = Vec::new();
     let mut skip = false;
     for a in rest.iter().skip(1) {
         if skip {
             skip = false;
+            continue;
+        }
+        if a == "--column" {
+            skip = true;
             continue;
         }
         if a == "--depth" || a == "--up" {
