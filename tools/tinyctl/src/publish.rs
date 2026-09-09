@@ -491,6 +491,16 @@ fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Result<St
     } else {
         println!("item-check: skipped (pass --items-dir DIR with the map's baked items to gate on the format rules)");
     }
+    // Nadeo's map store takes at most 25 MiB: above it the upload comes back
+    // HTTP 400 "data: This is not a valid file." (24 at 26 692 573 B and 25 at
+    // 26 755 318 B refused, 09 at 25 263 879 B stored, 2026-09-09 — pub4), and
+    // far above it HTTP 413 (35.9 MB). Refuse here, before the push and the
+    // lock slice: the fix is a build with a tighter `--lod-pick-min-verts`.
+    const NADEO_MAX_BYTES: u64 = 25 * 1024 * 1024;
+    let size = std::fs::metadata(&map).map(|m| m.len()).unwrap_or(0);
+    if size > NADEO_MAX_BYTES {
+        return Err(format!("{}: {size} bytes is over Nadeo's 25 MiB upload cap ({NADEO_MAX_BYTES}) — the store answers HTTP 400 \"not a valid file\"; rebuild with a tighter --lod-pick-min-verts", map.display()));
+    }
     let wsx = Wsx::new(args);
     let remote = format!("{STAGE}/Tiny{n:02}.Map.Gbx");
     eprintln!("pushing {} → box {remote} …", map.display());
