@@ -590,16 +590,22 @@ fn one(args: &[String]) -> Result<Done, String> {
     }
     println!("mp4: {} [{overlay_col}]", mp4.display());
 
-    // --- the mp4 to the box: beside the raw clip (where vjeux watches them), and
-    // where the ship step runs
-    let r_mp4 = format!("{box_videos}/{name}.mp4");
+    // --- the mp4 to the box: staged OUTSIDE the OneDrive tree, then copied in
+    // beside the raw clip (where vjeux watches them). A chunked push straight
+    // into `Maps\Tiny\videos` fails with "Permission denied" moving its temp
+    // chunk — OneDrive holds a lock on files in the synced tree while it
+    // uploads, and a 40 MB push is 115 renames (06 failed that way twice).
+    // The ship runs from the staged copy, which is never under OneDrive.
+    let r_stage_dir = format!("{VID}/mp4");
+    let r_mp4 = format!("{r_stage_dir}/{name}.mp4");
+    let r_watch = format!("{box_videos}/{name}.mp4");
     let mp4_md5 = md5_of(&mp4)?;
     let have = wsx.sh(&format!("md5sum '{r_mp4}' 2>/dev/null | cut -c1-32")).unwrap_or_default().trim().to_string();
     if have == mp4_md5 {
         eprintln!("mp4 already on the box ({mp4_md5}) — not pushing");
     } else {
         eprintln!("pushing the mp4 ({} MB) to the box …", std::fs::metadata(&mp4).map(|m| m.len() / 1_000_000).unwrap_or(0));
-        wsx.sh(&format!("mkdir -p '{box_videos}'"))?;
+        wsx.sh(&format!("mkdir -p '{r_stage_dir}'"))?;
         wsx.push(&mp4, &r_mp4)?;
         let now = wsx.sh(&format!("md5sum '{r_mp4}' | cut -c1-32")).unwrap_or_default().trim().to_string();
         if now != mp4_md5 {
@@ -607,6 +613,11 @@ fn one(args: &[String]) -> Result<Done, String> {
         }
     }
     println!("box: {}", to_win(&r_mp4));
+    // the watch copy is a convenience, not the pipeline: OneDrive may refuse it
+    match wsx.sh(&format!("mkdir -p '{box_videos}' && cp -f '{r_mp4}' '{r_watch}' && echo ok")) {
+        Ok(_) => println!("box (watch copy): {}", to_win(&r_watch)),
+        Err(e) => eprintln!("watch copy into the OneDrive videos folder failed (the ship uses the staged copy): {e}"),
+    }
 
     // --- the store
     if let Some(dest) = f("--store") {
@@ -730,7 +741,6 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
     let commit = tmmaps::cli::has(args, "--commit");
     let wsx = Wsx::new(args);
     let ships = out.join("ships.tsv");
-    let box_videos = f("--box-videos").unwrap_or_else(|| BOX_VIDEOS.into());
     let retry_after = Duration::from_secs(f("--retry-min").and_then(|s| s.parse::<u64>().ok()).unwrap_or(10) * 60);
     let mut last_retry: std::collections::HashMap<String, std::time::Instant> = std::collections::HashMap::new();
     loop {
@@ -828,7 +838,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                     let key = format!("{name}");
                     let due = last_retry.get(&key).map(|t: &std::time::Instant| t.elapsed() >= retry_after).unwrap_or(true);
                     if due {
-                        let r_mp4 = format!("{}/{name}.mp4", box_videos);
+                        let r_mp4 = format!("{VID}/mp4/{name}.mp4");
                         let outbase = done_file.trim_end_matches(".done").to_string();
                         let slug = map_slug(nn);
                         match wsx.sh(&format!("rm -f '{done_file}' && nohup sh {BOX_SHIP_SH} '{r_mp4}' '{slug}' '{outbase}' > /dev/null 2>&1 < /dev/null &")) {
