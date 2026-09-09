@@ -37,6 +37,16 @@ pub enum Shape {
     /// SLALOM: steer alternates +a / −a every `half` ticks (period 2·half), gas held
     /// (coordinator, 2026-09-07 06:26Z: 3–4 periods × 2 amplitudes).
     Slalom { a: i8, half: usize },
+    /// RUNG 3 (coordinator 2026-09-09 09:26Z) — through-the-piece shapes: brake tap `tap` ticks at the entry, then steer
+    /// ramps 0 -> `to` over `ramp` ticks and holds, gas; `counter` > 0: after the ramp holds `hold` ticks, steer flips to
+    /// -to/2 for `counter` ticks (counter-steer at the apex), then 0.
+    Compound { tap: usize, to: i8, ramp: usize, hold: usize, counter: usize },
+    /// throttle lift-off on the piece: steer `steer` held, gas OFF for `off` ticks starting at `at`, then gas again
+    LiftOff { steer: i8, at: usize, off: usize },
+    /// AIR CONTROL: pedals pitch the car in flight, steer rolls it — hold `gas`/`brake`/`steer` for `ticks`, then gas straight
+    Air { steer: i8, gas: bool, brake: bool, ticks: usize },
+    /// ATTITUDE at take-off: a small steer offset for the first `ticks` (roll on the ramp), then straight gas
+    Attitude { steer: i8, ticks: usize },
 }
 
 impl Shape {
@@ -51,6 +61,10 @@ impl Shape {
             Shape::Doublet { .. } => "doublet",
             Shape::AirSteer { .. } => "air-steer",
             Shape::Slalom { .. } => "slalom",
+            Shape::Compound { .. } => "compound",
+            Shape::LiftOff { .. } => "lift-off",
+            Shape::Air { .. } => "air",
+            Shape::Attitude { .. } => "attitude",
         }
     }
 }
@@ -155,10 +169,77 @@ pub fn build(m: &Macro, base: &[(u8, u8, u8)], airborne: bool) -> Built {
                 out.push(rec_of(st as u8, 1, 0));
             }
         }
+        Shape::Compound { tap, to, ramp, hold, counter } => {
+            for i in 0..h {
+                let brake = (i < *tap) as u8;
+                let st: i8 = if i < *ramp {
+                    ((*to as f64) * (i as f64 + 1.0) / (*ramp as f64)).round() as i8
+                } else if i < ramp + hold {
+                    *to
+                } else if i < ramp + hold + counter {
+                    (-(*to as i16) / 2) as i8
+                } else if *counter > 0 {
+                    0
+                } else {
+                    *to
+                };
+                out.push(rec_of(st as u8, 1, brake));
+            }
+        }
+        Shape::LiftOff { steer, at, off } => {
+            for i in 0..h {
+                let gas = !(i >= *at && i < at + off) as u8;
+                out.push(rec_of(*steer as u8, gas, 0));
+            }
+        }
+        Shape::Air { steer, gas, brake, ticks } => {
+            for i in 0..h {
+                if i < *ticks {
+                    out.push(rec_of(*steer as u8, *gas as u8, *brake as u8));
+                } else {
+                    out.push(rec_of(0, 1, 0));
+                }
+            }
+        }
+        Shape::Attitude { steer, ticks } => {
+            for i in 0..h {
+                out.push(rec_of(if i < *ticks { *steer as u8 } else { 0 }, 1, 0));
+            }
+        }
     }
     Built::Recs(out)
 }
 
+
+/// RUNG 3 macros (compound through-the-piece shapes, lift-off, air control, take-off attitude) — added to the fan with
+/// `--compound`; 40 shapes.
+pub fn library_compound(start_id: u16) -> Vec<Macro> {
+    let mut v = Vec::new();
+    let mut id = start_id;
+    let mut push = |description: String, shape: Shape| {
+        id += 1;
+        v.push(Macro { id, description, shape });
+    };
+    for &to in &[-127i8, -80, 80, 127] {
+        for &tap in &[0usize, 15] {
+            push(format!("compound: brake tap {tap} then ramp to {to:+} over 30, hold, gas"), Shape::Compound { tap, to, ramp: 30, hold: 200, counter: 0 });
+            push(format!("compound: brake tap {tap}, ramp to {to:+} over 30, hold 40, counter-steer 30, gas"), Shape::Compound { tap, to, ramp: 30, hold: 40, counter: 30 });
+        }
+    }
+    for &steer in &[-100i8, 0, 100] {
+        push(format!("lift-off: steer {steer:+}, gas off ticks 20-50 then gas"), Shape::LiftOff { steer, at: 20, off: 30 });
+        push(format!("lift-off: steer {steer:+}, gas off ticks 0-40 then gas"), Shape::LiftOff { steer, at: 0, off: 40 });
+    }
+    for &(g, b, pn) in &[(true, false, "gas (nose down)"), (false, true, "brake (nose up)"), (false, false, "coast")] {
+        for &steer in &[-64i8, 0, 64] {
+            push(format!("air: {pn}, steer {steer:+} for 80 ticks then gas straight"), Shape::Air { steer, gas: g, brake: b, ticks: 80 });
+        }
+    }
+    for &steer in &[-24i8, -12, 12, 24] {
+        push(format!("attitude: steer {steer:+} for 30 ticks at take-off then gas straight"), Shape::Attitude { steer, ticks: 30 });
+    }
+    v
+}
 pub fn macros_tsv(lib: &[Macro]) -> String {
     let mut s = String::from("macro_id\tdescription\tshape\n");
     for m in lib {
