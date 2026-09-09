@@ -10,9 +10,9 @@ Each clip is the ghost played back in the game's MediaTracker, chase camera, wit
 (steering, throttle, brake, and the strip of them over time — "controls overlay" in the caption). A map reads *video pending* until its
 clip is published the way every clip in this repo is.
 
-**Tiny Summer 2026 - 01** — original author time `23.144` · tiny ghost **19.381** (build ship15)
+**Tiny Summer 2026 - 01** — original author time `23.144` · tiny ghost **19.381** (build ship15, controls overlay)
 
-https://github.com/user-attachments/assets/94c5f397-cb11-4ad9-9d08-4195fc9413e2
+https://github.com/user-attachments/assets/16dd4b30-1ef0-490f-a88a-7d75d8cd0583
 
 **Tiny Summer 2026 - 02** — original author time `27.097` · tiny ghost **16.746** (build ship15)
 
