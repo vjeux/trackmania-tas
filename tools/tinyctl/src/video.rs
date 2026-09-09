@@ -830,11 +830,14 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 pending -= 1;
             } else if !done.starts_with("PENDING ") {
                 println!("{} {nn} {time}: {done}", chrono_now());
-                // A dead browser cookie fails every ship at its probe; once a fresh
-                // cookie is on the box the same script goes through. Re-launch such
-                // a ship every `retry_after` (the probe is one 302 when it is still
-                // dead), never re-upload anything that got further than the probe.
-                if done.contains("cookie probe") {
+                // A dead browser cookie fails a ship in two places — at the probe
+                // (302 → /login) and inside the uploader (ghvid exit 3, "no upload
+                // CSRF token", which is the same session being gone). Both are
+                // cured by a fresh cookie and by nothing else here, so both are
+                // re-launched every `retry_after`; nothing that got past the
+                // upload is ever re-uploaded.
+                let cookie_dead = done.contains("cookie probe") || done.contains("no upload CSRF") || done.contains("attachment upload failed");
+                if cookie_dead {
                     let key = format!("{name}");
                     let due = last_retry.get(&key).map(|t: &std::time::Instant| t.elapsed() >= retry_after).unwrap_or(true);
                     if due {
@@ -848,7 +851,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                         match wsx.sh(&format!(
                             "mkdir -p {VID}/mp4 && [ -f '{r_mp4}' ] || cp -f '{r_watch}' '{r_mp4}'; rm -f '{done_file}' && nohup sh {BOX_SHIP_SH} '{r_mp4}' '{slug}' '{outbase}' > /dev/null 2>&1 < /dev/null &"
                         )) {
-                            Ok(_) => println!("  re-launched the ship of {name} (cookie probe retry; next in {} min)", retry_after.as_secs() / 60),
+                            Ok(_) => println!("  re-launched the ship of {name} (dead-cookie retry; next in {} min)", retry_after.as_secs() / 60),
                             Err(e) => println!("  could not re-launch the ship of {name}: {e}"),
                         }
                         last_retry.insert(key, std::time::Instant::now());
