@@ -1125,6 +1125,25 @@ fn cmd_author_line(args: &[String]) {
             }
             i += 1;
         }
+        // second form (a human respawn re-drives a DIFFERENT line): a teleport (> 12 m in 100 ms, or > 5 m followed by a
+        // standstill) landing within 4 m of an EARLIER sample = respawn to that checkpoint — cut the loop between them
+        let mut j = 1usize;
+        while j < samples.len() {
+            let a = samples[j - 1].0; let b = samples[j].0;
+            let jump = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+            let still = (j + 3 < samples.len()) && (0..3).all(|k| { let p = samples[j + k].0; let q = samples[j + k + 1].0; ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt() < 0.3 });
+            if jump > 12.0 || (jump > 5.0 && still) {
+                let mut best: Option<(usize, f32)> = None;
+                for i in 0..j.saturating_sub(10) { let p = samples[i].0; let d = ((p[0] - b[0]).powi(2) + (p[1] - b[1]).powi(2) + (p[2] - b[2]).powi(2)).sqrt(); if d < 4.0 && best.map(|(_, bd)| d < bd).unwrap_or(true) { best = Some((i, d)); } }
+                if let Some((i, _)) = best {
+                    respawns.push((samples[i].1, samples[j].1, j - i));
+                    samples.drain(i + 1..=j);
+                    j = i + 1;
+                    continue;
+                }
+            }
+            j += 1;
+        }
     }
     for (t0, t1, n) in &respawns { eprintln!("  respawn loop removed: {n} samples, t {:.1}–{:.1} s (the ghost re-drives the same stretch)", *t0 as f32 / 1000.0, *t1 as f32 / 1000.0); }
     let mut rows: Vec<(f32, f32, f32, [f32; 3], i32)> = Vec::new(); // (s_nearest, lateral, dy, tiny pos, t)
