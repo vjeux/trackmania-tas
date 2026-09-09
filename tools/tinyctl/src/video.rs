@@ -245,9 +245,11 @@ fn one(args: &[String]) -> Result<Done, String> {
     // camera, no car) although live playback followed the car — the in-game
     // MediaTracker had attached a "Ref. Ghost: Author ghost" (vjeux's finished
     // playtest run, kept by the client and looked up by MAP NAME: a re-uided
-    // copy still had it, a renamed one did not), and the shoot follows that
-    // entity instead of ours. So the file the box renders is never the map under
-    // its own name. `--no-rename` renders the map as it is.
+    // copy still had it, a renamed one did not — the file is ProgramData\
+    // Trackmania\MediaTrackerCache\MTAuthorGhost<map name>.Ghost.gbx, a replay
+    // with the map inside; `ghost unwrap` turns it into a plain ghost), and the
+    // shoot follows that entity instead of ours. So the file the box renders is
+    // never the map under its own name. `--no-rename` renders the map as it is.
     let (map, ghost) = if tmmaps::cli::has(args, "--no-rename") {
         (map.clone(), ghost.clone())
     } else {

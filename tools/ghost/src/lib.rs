@@ -36,6 +36,7 @@ pub mod selftest;
 pub mod splice;
 pub mod synth;
 pub mod trim;
+pub mod unwrap;
 pub mod verify;
 
 pub use gbx::container::{secs, Container};

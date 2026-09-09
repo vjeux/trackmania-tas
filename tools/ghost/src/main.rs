@@ -101,6 +101,14 @@ MAP  (operation 4)
   ghost map set IN OUT --map MAP.Map.Gbx
         Replace the CARRIED map. This is the only thing that moves a recording
         onto another map: rewriting the uid does not.
+  ghost unwrap IN.Replay.Gbx OUT.Ghost.Gbx
+        The CGameCtnGhost a replay carries, as a standalone ghost: the node is
+        sliced out byte-for-byte and its telemetry node re-indexed (2 -> 1);
+        the control requires that four-byte difference and nothing else, and
+        the same tape, result and declared times back. Built for the client's
+        MediaTrackerCache/MTAuthorGhost<map name>.Ghost.gbx files, which are
+        replays (map + the run the player finished in the editor) despite
+        the extension.
 
 TRIM  (operation 5)
   ghost trim IN OUT [--from MS] [--to MS] [--declare MS]
@@ -390,6 +398,7 @@ fn main() {
         "trim" => trim::cmd(rest),
         "splice" => splice::cmd(rest),
         "synth" => synth::cmd(rest),
+        "unwrap" => ghost::unwrap::cmd(rest),
         // `ghost strip-events IN OUT --type N` -- drop every deltas2 record of
         // one type from the middle entity. Built to answer ONE question: why
         // does 287431's ghost kill the client on any map (17a29c8)? It carries
