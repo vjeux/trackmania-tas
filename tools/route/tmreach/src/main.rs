@@ -1568,6 +1568,14 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
                         c.push(forkoracle::forksrv::Rec { steer: v[1].parse::<f32>().unwrap_or(0.0) / 127.0, gas: v[2].parse::<f32>().unwrap_or(0.0), brake: v[3].parse::<f32>().unwrap_or(0.0) });
                     }
                 }
+                // without --respawn a seed is cut BEFORE its first respawn tick: the state after a respawn is not
+                // reproduced across processes (24, 07:14Z: ten finishes refused by the self-validation)
+                if !a.has("respawn") {
+                    if let Some(i) = c.iter().position(|r| r.respawn()) {
+                        println!("seed chain {f}: respawn at tick {i} — chain cut there (no --respawn)");
+                        c.truncate(i.saturating_sub(10));
+                    }
+                }
                 println!("seed chain {f}: {} ticks", c.len());
                 Some(c)
             }
