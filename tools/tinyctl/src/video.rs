@@ -736,14 +736,31 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
     loop {
         let text = std::fs::read_to_string(&ships).unwrap_or_default();
         let mut rows: Vec<String> = text.lines().map(String::from).collect();
+        // WHICH ROW IS STILL THE MAP'S LAP. The player project replaces a map's
+        // ghost several times a day, so ships.tsv holds more than one row per
+        // map — and a stale one that ships LATER would swap the page back to the
+        // slower lap. Only the LAST row of each map is shipped; earlier ones are
+        // marked superseded, and their ships are not retried.
+        let last_of: std::collections::HashMap<String, usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| !r.starts_with('#'))
+            .filter_map(|(i, r)| r.split('\t').next().map(|nn| (nn.to_string(), i)))
+            .collect();
         let mut changed = false;
         let mut pending = 0;
-        for row in rows.iter_mut() {
+        for (i, row) in rows.iter_mut().enumerate() {
             if row.starts_with('#') {
                 continue;
             }
             let cells: Vec<String> = row.split('\t').map(String::from).collect();
             if cells.len() < 5 || cells[4] != "pending" {
+                continue;
+            }
+            if last_of.get(&cells[0]) != Some(&i) {
+                println!("{} {} {}: superseded by a newer lap — not shipped", chrono_now(), cells[0], cells[1]);
+                *row = format!("{}\t{}\t{}\t{}\tsuperseded", cells[0], cells[1], cells[2], cells[3]);
+                changed = true;
                 continue;
             }
             pending += 1;
@@ -1057,5 +1074,37 @@ mod label_tests {
         assert_eq!(lap_label(README, "03", "28.989"), "tiny ghost");
         assert_eq!(lap_label(README, "03", "20.993"), "driven by vjeux (playtest)");
         assert_eq!(lap_label(README, "09", "1.000"), "tiny ghost", "no row: a TAS lap");
+    }
+}
+
+#[cfg(test)]
+mod ships_tests {
+    /// The rule shipwatch applies to ships.tsv: only a map's LAST row is still
+    /// its lap. The player project replaces a ghost several times a day, so a
+    /// pending row from two laps ago must never ship — it would swap the page
+    /// back to the slower time, and after the newer one had already landed.
+    fn last_row_per_map(rows: &[&str]) -> Vec<bool> {
+        let last: std::collections::HashMap<&str, usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| !r.starts_with('#'))
+            .filter_map(|(i, r)| r.split('\t').next().map(|nn| (nn, i)))
+            .collect();
+        rows.iter()
+            .enumerate()
+            .map(|(i, r)| !r.starts_with('#') && last.get(r.split('\t').next().unwrap_or("")) == Some(&i))
+            .collect()
+    }
+
+    #[test]
+    fn only_the_last_row_of_a_map_is_still_its_lap() {
+        let rows = vec![
+            "# nn\ttime\tname\tdone\tstatus",
+            "03\t28.989\ta\td\tpending",
+            "04\t29.474\tb\td\tpending",
+            "03\t20.993\tc\td\tpending",
+            "25\t121.235\te\td\thttps://x",
+        ];
+        assert_eq!(last_row_per_map(&rows), vec![false, false, true, true, true]);
     }
 }
