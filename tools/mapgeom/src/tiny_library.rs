@@ -1832,6 +1832,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         names.into_iter().filter(|n| idx.path_for(n).and_then(|p| idx.load(store, &p).ok().map(|bi| bi.clip.as_ref().and_then(|c| c.clip_type) == Some(1))).unwrap_or(false)).collect()
     };
     let mut dropped_baked: BTreeMap<String, usize> = BTreeMap::new();
+    let mut ghost_left_out = 0usize;
     // The tree clearance (tree_clear.rs): every deck placement's driving
     // surface and every tree, in the scaled source frame, placed the way
     // `tmmaps tiny` places them.
@@ -1845,6 +1846,18 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             mapping.push_str(&format!("b@{}\t-\n", b.index));
             *dropped_baked.entry(b.name.clone()).or_insert(0) += 1;
             rows += 1;
+            continue;
+        }
+        // TINY_GHOST_CLIPS=0 (probe, 2026-09-09 07:45Z): a GHOST-MODE block's generated
+        // clips (record flag bit 28) are left out. Cache-safe, 29 drive-through cameras
+        // of Summer 20 vs the original: d196 94→38, d136 27→13, d361 78→62, d301
+        // 61→49 of 144 cells, no camera worse — the runtime does not seem to draw
+        // them (ghost blocks take no part in the grid). Not yet a default: one more
+        // map with ghost roads the author drives on (12/13/24) to confirm.
+        if prefix == "b@" && b.flags & (1u32 << 28) != 0 && std::env::var("TINY_GHOST_CLIPS").map(|v| v == "0").unwrap_or(false) {
+            mapping.push_str(&format!("b@{}\t-\n", b.index));
+            rows += 1;
+            ghost_left_out += 1;
             continue;
         }
         // the runtime does not draw a record in a cell another block's unit occupies (fact 2 above)
@@ -2051,6 +2064,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     }
     if !dropped_items.is_empty() {
         println!("  ⚠ HACK TINY_DROP_ITEMS: {} source items left out: {}", dropped_items.values().sum::<usize>(), dropped_items.iter().map(|(k, v)| format!("{k} x{v}")).collect::<Vec<_>>().join(", "));
+    }
+    if ghost_left_out > 0 {
+        println!("  ⚠ PROBE TINY_GHOST_CLIPS=0: {ghost_left_out} generated clips of ghost-mode blocks left out");
     }
     if occupied_rule {
         println!("  ⚠ PROBE TINY_OCCUPIED_RULE=1: {} generated records standing in a cell another block's unit occupies left out — not an established rule", occupied_hidden.len());

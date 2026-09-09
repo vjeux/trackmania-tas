@@ -590,6 +590,25 @@ one session. What remains open for 20: one camera at the pool (~39 s) where the
 full geometry and the probe still differ (75 vs 43 cells, both cache-safe);
 whatever that is will be named by eye, not by a rule.
 
+Cache-safe probes on 20 (unique names, 29 drive-through cameras vs the original,
+counts of 144 cells; full geometry as the baseline), 06:30–08:20Z:
+
+| probe | what it removes | better | worse |
+|---|---|---|---|
+| `TINY_OCCUPIED_RULE=1` | every record in a cell another block's unit occupies (1 905) | d196 94→30, d106 70→65, d391 74→41 | d271 12→51 (pool rims, pillars in WaterRampZone cells — the original shows them) |
+| `TINY_OCCUPIED_RULE=2` | those whose clip has `CanBeDeletedByFullFreeClip` (1 063) | d196 →31, d106 →30 | d271 →23; d391 unchanged |
+| `TINY_GHOST_CLIPS=0` | a ghost-mode block's generated clips, flag bit 28 (1 037) | d196 →38, d136 27→13, d361 78→62 | none on 20 — but on 13 the ghost road the author drives on loses an underside piece the original shows (u097 4→27), so this is not the rule either |
+
+So the runtime hides SOME records in occupied cells and not others, by a
+condition none of the three knobs states; each knob is a probe, none a
+default. The pool slab at d391 is a STACK of coplanar dark panels in the cells
+(25..27, 9..11, 20..21) — DecoWallBaseVFC pillar walls (del=1), the
+DecoCliffCornerOut*VFC faces of the ghost cliffs and DecoWallSlope2StraightVFC
+faces (del=0) — removing any one group leaves the others, only "all covered"
+clears it; the original shows none of them. The occupants there are WaterBase
+(row 9), the ghost DecoCliffMidCornerOut stack (prefab-less, pure clip
+generators) and the grass bowl's units.
+
 The editor's cursor was a second red herring on the way: with a block selected
 in the inventory its preview (a start block carries a car) stands at the camera
 target; `shootctl shootset` now switches to FreeLook after every load
