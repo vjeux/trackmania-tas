@@ -869,7 +869,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             // 4-6 m); "below" is measured against the line's LOWEST point within 15 m of arc length
             let road_y_min = track.min_y_near(s, 15.0);
             // (below the polyline while laterally ON the road = a dip the centreline's y does not follow: 08 at s 585)
-            if (!on_gap && end.y < road_y - 5.0 && (lat_abs > hw + 1.0 || end.y < road_y_min - cfg.below_tol)) || (on_gap && (end.y < track_min_y - 5.0 || d3 > 120.0)) {
+            // the below-the-line DROP is retired when --below-tol >= 100 (parent 2026-09-09 17:21Z): only off-world + stopped kill
+            let fell_rule_on = cfg.below_tol < 100.0;
+            if fell_rule_on && ((!on_gap && end.y < road_y - 5.0 && (lat_abs > hw + 1.0 || end.y < road_y_min - cfg.below_tol)) || (on_gap && (end.y < track_min_y - 5.0 || d3 > 120.0))) {
                 out.deaths[2] += 1;
                 dump_rollout(w, base, &rows, "fell", &desc, &dump_n);
                 if debug_fan {
@@ -1029,7 +1031,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let road_y = track.at(s)[1];
             let hw = track.half_width.get(seg).copied().unwrap_or(5.5);
             let road_y_min = track.min_y_near(s, 15.0);
-            let bad = speed(&end) < 3.0 || (end.vy < -3.0 && end.y < road_y_min - 3.0) || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y_min - cfg.below_tol));
+            let bad = speed(&end) < 3.0 || (cfg.below_tol < 100.0 && ((end.vy < -3.0 && end.y < road_y_min - 3.0) || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y_min - cfg.below_tol)))) || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol;
             if !bad || tries >= 40 || recs.len() <= 300 {
                 break (rows, nh, end, s, seg);
             }
@@ -1199,7 +1201,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                     let gained = s_after - f.s;
                     let below_after = track.min_y_near(s_after, 15.0) - last.y;
                     // alive, still on the line, and not fallen under it (21: a car in the deck gap lands on the road 25 m below and "moves on")
-                    if speed(&last) < 8.0 || gained < 25.0 || below_after > cfg.below_tol || lat_after.abs() > 12.0 {
+                    if speed(&last) < 8.0 || gained < 25.0 || (cfg.below_tol < 100.0 && below_after > cfg.below_tol) || lat_after.abs() > 12.0 {
                         ok = false;
                     }
                     if !ok {
