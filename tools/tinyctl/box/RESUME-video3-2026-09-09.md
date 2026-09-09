@@ -81,3 +81,22 @@ tinyctl video --map NN --maps-dir ~/tinyvid3/maps --ghosts-dir <ghosts> \
   read-modify-write from both sides dropped a map's newest lap.
 - The page must converge on the newest lap per map: a superseded row is marked
   `superseded` and never shipped.
+
+## Addendum, 23:50Z — the page tells the truth, and the Mac can publish
+
+- **`tinyctl page-status`** (new): every map whose newest certified lap is not
+  the one its video shows now says so under its row — `*latest lap **102.541**
+  (build ship15) — video pending*` — and the line is removed again when the clip
+  catches up. Idempotent, so the loop can run it every tick. It also applied the
+  country names to 21–25 and split *no lap yet* (map 20, nobody has driven it)
+  from *no video yet* (21 and 22, which have laps and no clip). Page commit
+  27e3bf5a: 18 rows carry a pending line.
+- **`box/tiny-publish.sh` + `box/UPLOAD-FROM-MAC.md`** (new): the publish chain
+  in POSIX shell — overlay marker check, `ghvid.sh` upload, release-body
+  registration, the `env -i` anonymous gate, the page swap — so the 13 staged
+  clips can go up from vjeux's Mac while the bridge is down. Tested here end to
+  end against the real page and a real published asset.
+- **Renders owed when the bridge is allowed** (the laps that landed after these
+  clips were cut): 09 28.292 · 15 49.825 · 18 45.333 · 19 46.857 · 21 122.510 ·
+  23 102.541 · 24 147.654 · 25 119.588. Then the paced drain of whatever is
+  still staged. `~/tinyvid3/loop-up.sh` does both once the box answers.
