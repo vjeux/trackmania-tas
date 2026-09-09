@@ -46,16 +46,16 @@ string MeshLine(const string &in item, const string &in kind, CMwNod@ mesh, bool
 string WalkEntityModel(const string &in item, CMwNod@ em, int depth, bool set) {
     if (em is null) return item + " | <null entity model>\n";
     if (depth > 4) return "";
-    string out = "";
+    string res = "";
     auto vl = cast<NPlugItem_SVariantList>(em);
     if (vl !is null) {
-        for (uint i = 0; i < vl.Variants.Length; i++) out += WalkEntityModel(item + "/v" + i, vl.Variants[i].EntityModel, depth + 1, set);
-        return out;
+        for (uint i = 0; i < vl.Variants.Length; i++) res += WalkEntityModel(item + "/v" + i, vl.Variants[i].EntityModel, depth + 1, set);
+        return res;
     }
     auto pf = cast<CPlugPrefab>(em);
     if (pf !is null) {
-        for (uint i = 0; i < pf.Ents.Length; i++) out += WalkEntityModel(item + "/e" + i, pf.Ents[i].Model, depth + 1, set);
-        return out;
+        for (uint i = 0; i < pf.Ents.Length; i++) res += WalkEntityModel(item + "/e" + i, pf.Ents[i].Model, depth + 1, set);
+        return res;
     }
     auto dyna = cast<CPlugDynaObjectModel>(em);
     if (dyna !is null) return MeshLine(item, "dyna", dyna.Mesh, set);
@@ -74,7 +74,7 @@ string MeshFlags(const string &in qs) {
     string needle = QArg(qs, "name");
     bool set = QArg(qs, "set") == "1";
     dictionary seen;
-    string out = "";
+    string res = "";
     for (uint i = 0; i < ch.AnchoredObjects.Length; i++) {
         auto o = ch.AnchoredObjects[i];
         if (o is null || o.ItemModel is null) continue;
@@ -82,10 +82,10 @@ string MeshFlags(const string &in qs) {
         if (needle != "" && n.IndexOf(needle) < 0) continue;
         if (seen.Exists(n)) continue;
         seen.Set(n, 1);
-        out += WalkEntityModel(n, o.ItemModel.EntityModel, 0, set);
+        res += WalkEntityModel(n, o.ItemModel.EntityModel, 0, set);
     }
-    if (out == "") out = "no item matches";
-    return out;
+    if (res == "") res = "no item matches";
+    return res;
 }
 
 string RespawnItem(const string &in qs) {
