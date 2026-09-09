@@ -412,6 +412,8 @@ pub struct LapCfg {
     pub policy: Option<crate::policy_src::PolicySrc>,
     /// allow the RESPAWN macro (a legal fallback: back to the last credited checkpoint at its crossing speed)
     pub respawn: bool,
+    /// rung 3: add the compound / lift-off / air-control / attitude macro family to every fan
+    pub compound: bool,
 }
 
 struct Rng(u64);
@@ -493,7 +495,11 @@ pub struct LapOut {
 pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
     let n = w.n_ticks();
     let root = w.root_probe;
-    let macros: Vec<Macro> = library_v0();
+    let mut macros: Vec<Macro> = library_v0();
+    if cfg.compound {
+        let n0 = macros.len() as u16;
+        macros.extend(crate::macros::library_compound(n0));
+    }
     let h = cfg.h;
     let mut rng = Rng(cfg.seed ^ 0x9E3779B97F4A7C15);
     let mut archive: std::collections::HashMap<Key, Entry> = Default::default();
