@@ -1779,11 +1779,20 @@ pub struct VegetBake {
 /// into `m`, scaled: every detail level's visuals under custom-texture
 /// materials — the model's inline materials name no `.Material.Gbx`, so
 /// each becomes an item-editor material (`is_using_game_material` false)
-/// on the game's own shading models with the pack's diffuse image in slot 0:
-/// `TDSN` for bark AND for the leaf cards — TDSN alpha-tests a diffuse that
-/// carries an alpha channel (measured 2026-09-08: proper fronds, clean
-/// edges), while TDOSN / TDOBSN draw such cards invisible and TDOSN2Sided
-/// is not a model the item loader knows (red). Two-sidedness comes from a
+/// on the game's own shading models with the pack's images in the slots the
+/// model reads (`crate::crystal_model::USER_TEXTURE_SLOTS`, read off the exe):
+/// the bark under `TDSN` with its diffuse in slot 0 (Diffuse); the leaf cards
+/// under `TDOSN` with the atlas in slot 1 (DiffuseO — the diffuse WHOSE ALPHA
+/// IS THE OPACITY, alpha-tested). Measured 2026-09-09 on the tiny-19 lineup
+/// `y1` (TreeBigA and BushMediumD, seven oaks at 14 m and one at 6 m): under
+/// TDSN the same atlas draws as OPAQUE cards — flat quads with the leaf
+/// picture painted on the atlas' tan/grey-green background, the "origami"
+/// crowns vjeux saw on every map — because TDSN reads slot 0 and treats the
+/// alpha as nothing; under TDOSN and TDOBSN with the atlas in slot 1 every
+/// card is cut to its leaves (twigs, single leaves, a sky-lit silhouette);
+/// the earlier "TDOSN draws the cards invisible" (2026-09-08, fb2bad56) was the
+/// atlas sitting in slot 0 while slot 1 stayed at the game's default image,
+/// which is transparent. Two-sidedness comes from a
 /// reversed copy of every leaf triangle. Every visual gets a TexCoord1 set
 /// (`ensure_texcoord1`): without one a visual is not drawn at all. The images ride next to the item
 /// (`Merged::pictures`, `Items/<name>.dds` in the library archive), their
@@ -1795,15 +1804,19 @@ pub struct VegetBake {
 /// level is drawn at every distance instead) and the placement-colour hue
 /// mask (the species' default look is baked).
 ///
-/// Knobs: TINY_TREE_LEAF_MODEL / TINY_TREE_BARK_MODEL (shading model names),
+/// Knobs: TINY_TREE_LEAF_MODEL / TINY_TREE_BARK_MODEL (shading model names;
+/// defaults TDOSN / TDSN), TINY_TREE_LEAF_SLOTS / TINY_TREE_BARK_SLOTS (the
+/// slots the diffuse fills; defaults 1 / 0 — the slot the model reads),
 /// TINY_TREE_TEX_MAX (pixels), TINY_TREE_KEEP_COLOR=1 (keep the vertex
 /// colour elements), TINY_TREE_LOD_MIN=N (drop the levels finer than N: the
-/// size lever), TINY_TREE_NORMAL_MAP=1 (also name the `_N` image in slot 1).
+/// size lever), TINY_TREE_NORMAL_MAP=1 (also name the `_N` image in slot 5,
+/// Normal; TINY_TREE_NORMAL_SLOT overrides), TINY_TREE_LEAF_CONST=SLOT:RRGGBB
+/// (a constant image in one more slot: 4 is Specular, 12 RoughMetal).
 pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &str, scale: f32, m: &mut Merged) -> R<VegetBake> {
     use super::vstream::N_COLOR0;
     let t = crate::veget::parse_tree_model(store, model_path)?;
     let stats = t.stats();
-    let leaf_model = std::env::var("TINY_TREE_LEAF_MODEL").unwrap_or_else(|_| "TDSN".into());
+    let leaf_model = std::env::var("TINY_TREE_LEAF_MODEL").unwrap_or_else(|_| "TDOSN".into());
     let bark_model = std::env::var("TINY_TREE_BARK_MODEL").unwrap_or_else(|_| "TDSN".into());
     let tex_max: u32 = std::env::var("TINY_TREE_TEX_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
     // The leaf atlases may keep one more level than the bark (TINY_TREE_LEAF_TEX_MAX;
@@ -1847,16 +1860,20 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
     let mut slots: Vec<usize> = Vec::with_capacity(t.materials.len());
     for mat in &t.materials {
         let mut files: Vec<(i32, String)> = Vec::new();
-        // TINY_TREE_LEAF_SLOTS=0,4 / TINY_TREE_BARK_SLOTS=0: the user-texture
-        // slots the diffuse image fills (the slot enum is the game's: 0 is the
-        // diffuse, 5 the self-illumination; which one a model reads its opacity
-        // from is what the lineups measure)
+        // TINY_TREE_LEAF_SLOTS=1 / TINY_TREE_BARK_SLOTS=0: the user-texture
+        // slots the diffuse image fills. The default is the slot the material's
+        // model reads its colour from (`model_color_slot`: the `O` models read
+        // DiffuseO = 1 and cut on its alpha, the others Diffuse = 0), so a model
+        // knob alone never leaves the image in a slot the model ignores (the
+        // 2026-09-08 "TDOSN draws nothing" was exactly that).
+        let model_name = if mat.leaf { leaf_model.clone() } else { bark_model.clone() };
         let slots_env = if mat.leaf { "TINY_TREE_LEAF_SLOTS" } else { "TINY_TREE_BARK_SLOTS" };
-        let d_slots: Vec<i32> = std::env::var(slots_env).ok().map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect()).filter(|v: &Vec<i32>| !v.is_empty()).unwrap_or_else(|| vec![0]);
+        let default_slot = crate::crystal_model::model_color_slot(&model_name).unwrap_or(0);
+        let d_slots: Vec<i32> = std::env::var(slots_env).ok().map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect()).filter(|v: &Vec<i32>| !v.is_empty()).unwrap_or_else(|| vec![default_slot]);
         let mut wanted: Vec<(i32, &Option<String>)> = d_slots.iter().map(|s| (*s, &mat.images[0])).collect();
         if normal_map {
-            // TINY_TREE_NORMAL_SLOT (default 1): the user-texture slot the _N image fills
-            let n_slot: i32 = std::env::var("TINY_TREE_NORMAL_SLOT").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+            // TINY_TREE_NORMAL_SLOT (default 5 = Normal): the user-texture slot the _N image fills
+            let n_slot: i32 = std::env::var("TINY_TREE_NORMAL_SLOT").ok().and_then(|v| v.parse().ok()).unwrap_or(5);
             wanted.push((n_slot, &mat.images[1]));
         }
         for (slot, image) in wanted {
@@ -1938,7 +1955,6 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
             // 0x140456513 (element 3 of a 186-vertex visual read through NULL,
             // 2026-09-08). RedIsland names its materials plainly "_Leaf" / "_Bark".
             // TINY_TREE_MAT_SUFFIX tags the names further (one lineup, many variants).
-            let model_name = if mat.leaf { leaf_model.clone() } else { bark_model.clone() };
             let d_stem = files.first().map(|(_, f)| f.trim_end_matches(".dds").to_string()).unwrap_or_default();
             let suffix = std::env::var("TINY_TREE_MAT_SUFFIX").unwrap_or_default();
             main.material_name = crate::crystal_model::Id::Str(format!("{model_name}_{d_stem}{suffix}"));

@@ -1167,7 +1167,7 @@ fn main() {
             let only = flag(&a.rest, "--only");
             let legacy = flag(&a.rest, "--legacy-zip").map(std::path::PathBuf::from);
             // the tree bake is the default since 2026-09-08 (the leaf cards draw
-            // under TDSN + an alpha diffuse once the visuals carry a TexCoord1)
+            // under TDOSN with the atlas in the DiffuseO slot once the visuals carry a TexCoord1)
             let veget = flag(&a.rest, "--veget").unwrap_or_else(|| "bake".into());
             let coll = flag(&a.rest, "--collection").unwrap_or_default();
             mapgeom::tiny_library::build(

@@ -28,7 +28,7 @@ pub struct BuildOpts {
     /// placement's own skin file (a light colour) apply. Without it a screen
     /// draws the material's default yellow `RaceAd6x1.                // TINY_TREE_TEX_FORMAT=dds|rgba|leaf-rgba (default dds): the pack's
                 // block-compressed image with its mips, cut to the cap — a DXT5
-                // leaf atlas alpha-tests fine under TDSN once the visual has its
+                // leaf atlas cuts fine under TDOSN (slot 1) once the visual has its
                 // TexCoord1 (2026-09-08 probe G: DXT5 and uncompressed crowns
                 // identical). `leaf-rgba` ships the leaf images UNCOMPRESSED 32-bit
                 // at the capped level (three times the bytes), `rgba` everything.` panel.

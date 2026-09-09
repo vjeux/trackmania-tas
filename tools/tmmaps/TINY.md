@@ -111,16 +111,29 @@ What the bake keeps and what it gives up:
   did); `--lod-pick` applies like to blocks (level N alone, no ladder).
 * **Materials**: the vegetation materials are inline (name + D/N/R images, no
   pack `.Material.Gbx`), so each becomes an item-editor custom material —
-  `TDSN` for bark AND leaves, the pack's diffuse (DXT5 with alpha, mips cut to
-  256 px a side) in user-texture slot 0, riding next to the items as
-  `Items/<image>.dds`. Three facts cost a probe each: a visual without a
-  TexCoord1 set is NOT DRAWN under any valid material (the pack leaf visuals
-  carry uv0 alone → `ensure_texcoord1`); TDSN alpha-tests a diffuse that has
-  an alpha channel while TDOSN/TDOBSN/TIAdd draw such cards invisible and
+  the bark under `TDSN` with its diffuse in user-texture slot 0 (Diffuse), the
+  leaf cards under `TDOSN` with the atlas (DXT5 with alpha, mips cut to 256 px
+  a side) in slot 1 (DiffuseO — the diffuse whose alpha is the OPACITY,
+  alpha-tested), riding next to the items as `Items/<image>.dds`. The slot
+  enum was read off the exe on 2026-09-09 (`crystal_model::USER_TEXTURE_SLOTS`):
+  Diffuse 0, DiffuseO 1, BaseColor 2, BaseColorO 3, Specular 4, Normal 5,
+  Energy 6, TeamMask 7, SelfIllum 8, Damage 9, Dirt 10, Shield 11, RoughMetal
+  12; at most 8 entries (past that the reader drops them all). Which slot a
+  model READS decides everything: under `TDSN` the same atlas in slot 0 drew
+  every card as an OPAQUE quad with the leaf picture on the atlas' tan/grey
+  background — the "origami" crowns vjeux saw on all 25 maps — and under
+  `TDOSN` with the atlas in slot 0 the cards were invisible (slot 1 at the
+  game's default image, which is transparent). Lineup `y1` on tiny 19
+  (2026-09-09, TreeBigA at 14 m and 6 m, BushMediumD at 7 m): TDOSN and
+  TDOBSN with the atlas in slot 1 cut every card to its leaves. Earlier facts
+  that stand: a visual without a TexCoord1 set is NOT DRAWN under any valid
+  material (the pack leaf visuals carry uv0 alone → `ensure_texcoord1`);
   TDOSN2Sided is not a model the item loader knows (red); custom materials of
   one NAME are one material to the game (thirteen palms whose `PalmTree_Leaf`
   differed only by model crashed the client at 0x140456513), so the name
-  spells the model and the image (`TDSN_ItemPalmTreeBranch_D`).
+  spells the model and the image (`TDOSN_ItemPalmTreeBranch_D`). `item-check`
+  SH-04/SH-05 refuse a material with more than 8 textures or one whose model's
+  colour slot is empty.
 * **Two-sided**: a reversed copy of every leaf triangle on the same vertices
   (`TINY_TREE_LEAF_BACKFACES=shared`; `flip` duplicates the vertices with
   reversed normals — no visible gain, +60 % leaf bytes).

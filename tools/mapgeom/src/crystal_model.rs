@@ -390,10 +390,55 @@ pub struct UvAnim {
     pub u05: Id,
 }
 
+/// One custom texture of an item-editor material: `u01` is the SLOT — which
+/// image of the shading model the file fills — and `texture` the bare `.dds`
+/// file name the game resolves next to the item.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UserTexture {
     pub u01: i32,
     pub texture: String,
+}
+
+/// The user-texture slot enum, read off the exe (2026-09-09, Trackmania.exe
+/// md5 4a28c004…): the `CPlugMaterialUserInst` member table registers the
+/// virtual buffers `TexturesDiffuse` (member id 0x090FD00D) … `TexturesRoughMetal`
+/// (0x090FD019) and the member getter at 0x1404fc5ba searches the file's
+/// user-texture array (8 entries of 0x18 bytes at +0x68, count at +0x60) for
+/// the entry whose slot word equals the member's rank: Diffuse 0, DiffuseO 1,
+/// BaseColor 2, BaseColorO 3, Specular 4, Normal 5, Energy 6, TeamMask 7,
+/// SelfIllum 8, Damage 9, Dirt 10, Shield 11, RoughMetal 12. Chunk 0x090FD000
+/// readers below version 8 remap the old enum through a table at 0x1404fd704
+/// (0→0, 1→1, 2→4, 3→5 … 9→11: BaseColor/BaseColorO were spliced in at 2 and 3
+/// — the same enum, confirming the order). The reader at 0x1404fde40 REFUSES
+/// more than 8 entries (count reset to 0, every texture dropped).
+///
+/// What a shading model READS is a separate table (the models' texture lists
+/// in the runtime record array at 0x141fa9d48): `TDSN` reads Diffuse (0) —
+/// its diffuse alpha is NOT an opacity, the leaf cards drew as opaque quads;
+/// `TDOSN` / `TDOBSN` read DiffuseO (1), the diffuse WITH opacity in alpha,
+/// alpha-tested — an atlas in slot 0 under those models leaves slot 1 at the
+/// game's default image, which is transparent (the "invisible leaves" of the
+/// 2026-09-08 probes). Measured on the tiny-19 lineup `y1` (2026-09-09).
+pub const USER_TEXTURE_SLOTS: [&str; 13] = ["Diffuse", "DiffuseO", "BaseColor", "BaseColorO", "Specular", "Normal", "Energy", "TeamMask", "SelfIllum", "Damage", "Dirt", "Shield", "RoughMetal"];
+
+/// The most user textures a material may carry (the chunk reader's bound).
+pub const USER_TEXTURE_MAX: usize = 8;
+
+/// The name of a user-texture slot, or `?N` for a value outside the enum.
+pub fn user_texture_slot_name(slot: i32) -> String {
+    usize::try_from(slot).ok().and_then(|i| USER_TEXTURE_SLOTS.get(i)).map(|s| s.to_string()).unwrap_or_else(|| format!("?{slot}"))
+}
+
+/// Which slot a shading model takes its colour image from: the `O` models
+/// (`TDOSN`, `TDOBSN`, `TDOS`, `TDOSNEM`, `TDOSN2Sided`) read DiffuseO (1) and
+/// cut where its alpha is low; every other `TD…` model reads Diffuse (0) and
+/// draws its alpha as nothing. Models without a `D` (`TIAdd`, `TIce`, …) are
+/// not judged (`None`).
+pub fn model_color_slot(model: &str) -> Option<i32> {
+    if !model.starts_with("TD") {
+        return None;
+    }
+    Some(if model.starts_with("TDO") { 1 } else { 0 })
 }
 
 /// Chunk 0x090FD000.
@@ -1977,4 +2022,54 @@ pub fn read_layers_chunk(r: &mut Rd, material_count: usize) -> R<(u32, Vec<Layer
         layers.push(l);
     }
     Ok((version, layers))
+}
+
+#[cfg(test)]
+mod user_texture_slot_tests {
+    use super::*;
+
+    /// The slot enum read off the exe (2026-09-09) and the colour slot each
+    /// shading model reads: an atlas in the wrong slot is the "opaque cards" /
+    /// "invisible leaves" pair of the trees thread, so the mapping is pinned.
+    #[test]
+    fn slot_names_and_model_colour_slots() {
+        assert_eq!(USER_TEXTURE_SLOTS.len(), 13);
+        assert_eq!(user_texture_slot_name(0), "Diffuse");
+        assert_eq!(user_texture_slot_name(1), "DiffuseO");
+        assert_eq!(user_texture_slot_name(4), "Specular");
+        assert_eq!(user_texture_slot_name(5), "Normal");
+        assert_eq!(user_texture_slot_name(8), "SelfIllum");
+        assert_eq!(user_texture_slot_name(12), "RoughMetal");
+        assert_eq!(user_texture_slot_name(13), "?13");
+        assert_eq!(user_texture_slot_name(-1), "?-1");
+        assert_eq!(model_color_slot("TDSN"), Some(0));
+        assert_eq!(model_color_slot("TDSNI"), Some(0));
+        assert_eq!(model_color_slot("TDSNE"), Some(0));
+        assert_eq!(model_color_slot("TDOSN"), Some(1));
+        assert_eq!(model_color_slot("TDOBSN"), Some(1));
+        assert_eq!(model_color_slot("TDOSN2Sided"), Some(1));
+        assert_eq!(model_color_slot("TIAdd"), None);
+        assert_eq!(USER_TEXTURE_MAX, 8);
+    }
+
+    /// A material written with the slots round-trips the slot words verbatim
+    /// (the chunk 000 writer at version 11).
+    #[test]
+    fn user_textures_round_trip() {
+        let mut inst = CPlugMaterialUserInst::game_material("", 14);
+        let main = inst.main.as_mut().unwrap();
+        main.is_using_game_material = false;
+        main.material_name = Id::Str("TDOSN_Leaf".into());
+        main.model = Id::Str("TDOSN".into());
+        main.link = Id::Null;
+        main.user_textures = vec![UserTexture { u01: 1, texture: "Leaf_D.dds".into() }, UserTexture { u01: 5, texture: "Leaf_N.dds".into() }];
+        let mut bytes = Vec::new();
+        let mut wlb = LookbackState::default();
+        inst.write(&mut Wr { w: &mut bytes, lb: &mut wlb });
+        let mut r = Rd::new(&bytes, 0, LookbackState::default());
+        let back = CPlugMaterialUserInst::parse(&mut r).expect("parse");
+        assert_eq!(back, inst);
+        let m = back.main.unwrap();
+        assert_eq!(m.user_textures.iter().map(|t| t.u01).collect::<Vec<_>>(), vec![1, 5]);
+    }
 }

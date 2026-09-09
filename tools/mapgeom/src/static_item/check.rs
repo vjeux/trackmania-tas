@@ -484,10 +484,29 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                     if !t.texture.to_ascii_lowercase().ends_with(".dds") || t.texture.contains('\\') || t.texture.contains('/') {
                         problems.push(format!("material {mi}: texture {:?} is not a bare .dds file name (the game resolves only that, next to the item)", t.texture));
                     }
+                    if !(0..crate::crystal_model::USER_TEXTURE_SLOTS.len() as i32).contains(&t.u01) {
+                        problems.push(format!("material {mi}: texture {:?} in slot {} — the slot enum is 0..{} (Diffuse … RoughMetal)", t.texture, t.u01, crate::crystal_model::USER_TEXTURE_SLOTS.len() - 1));
+                    }
+                }
+                // SH-04: the chunk reader (Trackmania.exe 0x1404fde40) refuses more
+                // than 8 user textures — the count is reset to 0 and the material
+                // draws with the default images.
+                if textures.len() > crate::crystal_model::USER_TEXTURE_MAX {
+                    problems.push(format!("SH-04 material {mi}: {} user textures — the game's reader keeps at most {} and drops ALL of them past that", textures.len(), crate::crystal_model::USER_TEXTURE_MAX));
+                }
+                // SH-05: the model reads its colour from ONE slot (Diffuse 0 for
+                // TDSN/TDSNI/TDSNE, DiffuseO 1 for the O models); an image in any
+                // other slot leaves that one at the default image — transparent
+                // under TDOSN (the leaves that "drew invisible", 2026-09-08),
+                // a default picture under TDSN.
+                if let Some(slot) = crate::crystal_model::model_color_slot(&model_name) {
+                    if !textures.iter().any(|t| t.u01 == slot) {
+                        problems.push(format!("SH-05 material {mi}: model {model_name} reads its colour from slot {slot} ({}) and no texture fills it (slots filled: {})", crate::crystal_model::user_texture_slot_name(slot), textures.iter().map(|t| t.u01.to_string()).collect::<Vec<_>>().join(",")));
+                    }
                 }
                 if facts {
                     let anims = if textures.is_empty() { String::new() } else { inst.main.as_ref().map(|m| if m.uv_anims.is_empty() { String::new() } else { format!(" uvanims [{}]", m.uv_anims.iter().map(|a| format!("{:?}/{:?}/{}/{:#x}/{:?}", a.u01, a.u02, a.u03, a.u04, a.u05)).collect::<Vec<_>>().join(", ")) }).unwrap_or_default() };
-                    println!("{path}: material {mi} custom {model_name} textures [{}] phys {} used by {} geoms{anims}", textures.iter().map(|t| format!("{}={}", t.u01, t.texture)).collect::<Vec<_>>().join(" "), inst.physics(), used.get(mi).copied().unwrap_or(0));
+                    println!("{path}: material {mi} custom {model_name} textures [{}] phys {} used by {} geoms{anims}", textures.iter().map(|t| format!("{}:{}={}", t.u01, crate::crystal_model::user_texture_slot_name(t.u01), t.texture)).collect::<Vec<_>>().join(" "), inst.physics(), used.get(mi).copied().unwrap_or(0));
                 }
                 continue;
             }
