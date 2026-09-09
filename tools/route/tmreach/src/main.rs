@@ -1563,6 +1563,7 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
         rendezvous: a.get("rendezvous").map(|s| { let v: Vec<f64> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); [v[0], v[1], v[2], v[3], v[4], v[5]] }),
         rdv_tol: a.get("rdv-tol").map(|s| s.parse().unwrap()).unwrap_or(3.0),
         vjeux_csv: a.get("vjeux-approach").and_then(|f| std::fs::read_to_string(f).ok()),
+        offworld_y: a.get("offworld-y").map(|s| s.parse().unwrap()).unwrap_or(-20.0),
         no_brake: a.get("no-brake").map(|s| { let v: Vec<f64> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); (v[0], v[1]) }),
         seed_chain: match a.get("seed-chain") {
             Some(f) => {
@@ -1576,7 +1577,7 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
                 }
                 // without --respawn a seed is cut BEFORE its first respawn tick: the state after a respawn is not
                 // reproduced across processes (24, 07:14Z: ten finishes refused by the self-validation)
-                if !a.has("respawn") {
+                if !a.has("respawn") && !a.has("keep-seed-respawns") {
                     if let Some(i) = c.iter().position(|r| r.respawn()) {
                         println!("seed chain {f}: respawn at tick {i} — chain cut there (no --respawn)");
                         c.truncate(i.saturating_sub(10));
