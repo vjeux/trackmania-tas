@@ -43,9 +43,25 @@ pub struct Occupant {
     pub pillar: bool,
     pub tile: bool,
     pub ghost: bool,
+    /// the block's ground bit (flags bit 12): the engine pairs a ground clip only
+    /// with a ground clip, an air clip only with an air clip
+    pub ground: bool,
+    /// the unit stands ON the ground: the block's ground bit and unit offset y = 0.
+    /// Measured on Summer 20's 4977 file records: a SIDE record carries the ground
+    /// bit exactly when its owner is a ground block and the record is in the owner's
+    /// own row (778 records); the upper units of ground blocks (102) and every
+    /// top/bottom record (0 of 222) are air — that bit is what the engine's
+    /// pairing compares (`IsFreeClipDeletedBy`'s two flag pointers)
+    pub ground_unit: bool,
     pub unit: usize,
     /// world N, E, S, W, Top, Bottom → clip stems (lowercase)
     pub faces: [Vec<String>; 6],
+    /// the Top (4) and Bottom (5) clips' own directions, 2 bits per clip from
+    /// chunk 0x0303600C's trailing words (word 0 = bottom list, word 1 = top
+    /// list) — the engine's clip block for a top/bottom clip faces
+    /// (owner dir + this) mod 4. Measured on Summer 20: every one of the 216
+    /// top/bottom file records agrees (rel 0/1/2/3 = 110/21/50/35).
+    pub face_dirs: [Vec<u8>; 6],
 }
 
 /// The piece's own clip identity.
@@ -62,6 +78,12 @@ pub struct ClipId {
     pub vert: String,
     pub horiz: String,
     pub asym: String,
+    /// chunk 0x03053006 v2..4 — the engine's own draw flags (IsAlwaysVisibleFreeClip
+    /// @628, IsFCTOrFCBIgnoredByVFC @632, IsAntiClip @636) and TopBottomMultiDir @640
+    pub always_visible: bool,
+    pub ignored_by_vfc: bool,
+    pub anti: bool,
+    pub multidir: i32,
 }
 
 impl ClipId {
@@ -73,6 +95,19 @@ impl ClipId {
 pub struct Faces {
     pub occupants: HashMap<[u8; 3], Vec<Occupant>>,
     pub clips: HashMap<String, ClipId>,
+    /// a clip block info's collector NAME (lowercase) → the file stem the face
+    /// lists and `clips` use, where the two differ (the terrain packs'
+    /// `Stadium\StructurePillarToFlatACB.EDClip.Gbx` is named
+    /// StadiumStructurePillarToFlatACB, and that is what the map records say)
+    pub aliases: HashMap<String, String>,
+}
+
+impl Faces {
+    /// The stem a map record's name stands for.
+    pub fn stem_of(&self, record_name: &str) -> String {
+        let me = record_name.to_ascii_lowercase();
+        self.aliases.get(&me).cloned().unwrap_or(me)
+    }
 }
 
 /// Every authored (non-free) block's units, turned by dir, with the clip stems
@@ -119,6 +154,9 @@ pub fn faces(store: &mut DataStore, idx: &mut BlockInfoIndex, m: &MapFile) -> Fa
             }
             faces[4] = u.clips[4].iter().map(|p| stem(p)).collect();
             faces[5] = u.clips[5].iter().map(|p| stem(p)).collect();
+            let mut face_dirs: [Vec<u8>; 6] = Default::default();
+            face_dirs[4] = (0..faces[4].len()).map(|i| ((u.u00c[1] >> (2 * i)) & 3) as u8).collect();
+            face_dirs[5] = (0..faces[5].len()).map(|i| ((u.u00c[0] >> (2 * i)) & 3) as u8).collect();
             for f in faces.iter().flatten() {
                 clip_names.insert(f.clone());
             }
@@ -128,16 +166,24 @@ pub fn faces(store: &mut DataStore, idx: &mut BlockInfoIndex, m: &MapFile) -> Fa
                 pillar: b.flags & FLAG_PILLAR != 0 || bi.is_pillar == Some(true),
                 tile: tiles.contains(&b.name),
                 ghost: b.flags & (1 << 28) != 0,
+                ground,
+                ground_unit: ground && u.offset[1] == 0,
                 unit: ui,
                 faces,
+                face_dirs,
             });
         }
     }
     let mut clips: HashMap<String, ClipId> = HashMap::new();
+    let mut aliases: HashMap<String, String> = HashMap::new();
     for n in clip_names {
         let Some(p) = idx.path_for(&n) else { continue };
         let Ok(bi) = idx.load(store, &p) else { continue };
         let Some(c) = bi.clip.as_ref() else { continue };
+        let ident = bi.name.to_ascii_lowercase();
+        if ident != n {
+            aliases.insert(ident, n.clone());
+        }
         let s = |o: &Option<String>| o.clone().unwrap_or_default();
         let (g2, s2) = c.clip_group_ids_v1.clone().unwrap_or_default();
         clips.insert(
@@ -154,10 +200,14 @@ pub fn faces(store: &mut DataStore, idx: &mut BlockInfoIndex, m: &MapFile) -> Fa
                 vert: s(&c.vertical_clip_group_id),
                 horiz: s(&c.horizontal_clip_group_id),
                 asym: s(&c.asym_clip_id),
+                always_visible: c.extra_bytes.first().copied().unwrap_or(0) != 0,
+                ignored_by_vfc: c.extra_bytes.get(1).copied().unwrap_or(0) != 0,
+                anti: c.extra_bytes.get(2).copied().unwrap_or(0) != 0,
+                multidir: c.top_bottom_multi_dir.unwrap_or(0),
             },
         );
     }
-    Faces { occupants, clips }
+    Faces { occupants, clips, aliases }
 }
 
 /// The face of the OCCUPANT of the piece's cell the piece lies against:
@@ -494,7 +544,7 @@ mod tests {
     }
 
     fn occupant(name: &str, pillar: bool, faces: [Vec<&str>; 6]) -> Occupant {
-        Occupant { index: 0, name: name.to_string(), pillar, tile: false, ghost: false, unit: 0, faces: faces.map(|v| v.into_iter().map(String::from).collect()) }
+        Occupant { index: 0, name: name.to_string(), pillar, tile: false, ghost: false, ground: false, ground_unit: false, unit: 0, faces: faces.map(|v| v.into_iter().map(String::from).collect()), face_dirs: Default::default() }
     }
 
     /// The pack's roles: a full-free wall (deletable, like every full-free
@@ -506,7 +556,7 @@ mod tests {
         clips.insert("firm".to_string(), clip(1, false, false));
         clips.insert("floor".to_string(), clip(3, false, false));
         clips.insert("plate".to_string(), clip(2, false, true));
-        Faces { occupants: HashMap::new(), clips }
+        Faces { occupants: HashMap::new(), clips, aliases: HashMap::new() }
     }
 
     const C: [u8; 3] = [10, 10, 10];
@@ -582,8 +632,8 @@ mod tests_horizontal {
         let mut occupants = HashMap::new();
         let cell = [5u8, 5, 5];
         let faces: [Vec<String>; 6] = [vec!["wall".into(), "rim".into()], vec!["skirt".into()], vec![], vec![], vec![], vec![]];
-        occupants.insert(cell, vec![Occupant { index: 0, name: "WaterRampZoneCurveOut".into(), pillar: false, tile: false, ghost: false, unit: 0, faces }]);
-        let f = Faces { occupants, clips };
+        occupants.insert(cell, vec![Occupant { index: 0, name: "WaterRampZoneCurveOut".into(), pillar: false, tile: false, ghost: false, ground: false, ground_unit: false, unit: 0, faces, face_dirs: Default::default() }]);
+        let f = Faces { occupants, clips, aliases: HashMap::new() };
         let rec = |dir: u8| BlockRec { index: 0, name: "rim".into(), name_field: 0, dir, file_cell: cell, coord_off: 0, flags: 0, waypoint_tag: None, free_off: None, free_pos: None, free_rot: None };
         assert!(verdict(&f, &rec(0), false).is_none(), "the face carries a rim of the same horizontal group");
         assert!(verdict(&f, &rec(1), false).is_some(), "a skirt face still closes a rim");

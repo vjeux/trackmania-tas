@@ -1258,6 +1258,10 @@ fn main() {
             }
             println!("{} files: {} parsed to the end, {} short, {} failed", names.len(), ok, short, fail);
         }
+        "bake" => {
+            let mut store = open(&a);
+            mapgeom::bake::cmd(&mut store, &a.rest[1..]);
+        }
         "fillers" => {
             let mut store = open(&a);
             mapgeom::fillers::cmd(&mut store, &a.rest[1..]);

@@ -1124,6 +1124,12 @@ pub struct BlockUnit {
     pub place_pylons: i32,
     pub bottom_clip: Option<String>,
     pub top_clip: Option<String>,
+    /// chunk 0x0303600B: the direction words of the single bottom / top clip
+    pub bottom_clip_dir: i32,
+    pub top_clip_dir: i32,
+    /// chunk 0x0303600C's two trailing words (v>=2: u16 each) — read as the
+    /// per-clip directions of the Top and Bottom lists
+    pub u00c: [i32; 2],
 }
 
 pub const SIDE_NAMES: [&str; 6] = ["North", "East", "South", "West", "Top", "Bottom"];
@@ -1455,6 +1461,9 @@ impl BlockInfo {
                     place_pylons: u.place_pylons,
                     bottom_clip: ext(u.bottom_clip),
                     top_clip: ext(u.top_clip),
+                    bottom_clip_dir: u.bottom_clip_dir,
+                    top_clip_dir: u.top_clip_dir,
+                    u00c: u.u00c,
                     ..Default::default()
                 };
                 for side in 0..6 {
@@ -1627,8 +1636,8 @@ impl BlockInfo {
             }
             for (i, u) in v.block_units.iter().enumerate() {
                 p(&mut s, format!(
-                    "    unit[{}] offset {:?}  terrain_modifier {:?} surface {:?} frontier {} dir {} underground {} pylons place {} accept {}",
-                    i, u.offset, u.terrain_modifier_id, u.surface, u.frontier, u.dir, u.underground, u.place_pylons, u.accept_pylons
+                    "    unit[{}] offset {:?}  terrain_modifier {:?} surface {:?} frontier {} dir {} underground {} pylons place {} accept {}  clipdirs bottom {} top {} 00c {:?}",
+                    i, u.offset, u.terrain_modifier_id, u.surface, u.frontier, u.dir, u.underground, u.place_pylons, u.accept_pylons, u.bottom_clip_dir, u.top_clip_dir, u.u00c
                 ));
                 for side in 0..6 {
                     if !u.clips[side].is_empty() {
