@@ -634,10 +634,37 @@ pub fn cmd(args: &[String]) {
         // full rotation (Summer 11's inverted ramp: 57 TrackWallSlopeStraightFCB
         // bottom plates pitched by 178° under upside-down roads; yaw alone
         // stood them up as thin bars and the ramp vanished).
-        let rot = b.free_rot.unwrap_or([block_yaw(b), 0.0, 0.0]);
+        // TINY_SIDECLIP_OWNER=1 (experiment, 2026-09-09): a generated SIDE clip is
+        // hung on its OWNER's face — the cell across the record's side, turned
+        // half round — instead of standing in the record's cell facing the owner.
+        // The two coincide on the shared plane for a symmetric panel and differ
+        // by a mirror for anything else (Summer 20's PlatformSlope2Curve3InHFCI
+        // inner border lying across the grass bowl, the SnowRoadFCSlope2Down cap
+        // hanging over cp3; `mapgeom bake`'s reading of 0x140f37110).
+        // modes: 1 = owner cell + half turn, 2 = record cell + half turn, 3 = owner cell, same yaw
+        let mode: u8 = if map.side_clip && b.free_pos.is_none() { std::env::var("TINY_SIDECLIP_OWNER").ok().and_then(|v| v.parse().ok()).unwrap_or(0) } else { 0 };
+        let turned: crate::map::BlockRec;
+        let bp: &crate::map::BlockRec = if mode > 0 {
+            let mut t = b.clone();
+            if mode == 1 || mode == 3 {
+                let (vx, vz) = [(0i32, 1i32), (-1, 0), (0, -1), (1, 0)][(b.dir & 3) as usize];
+                let (fx, fz) = (b.file_cell[0] as i32 + vx, b.file_cell[2] as i32 + vz);
+                if (0..=255).contains(&fx) && (0..=255).contains(&fz) {
+                    t.file_cell = [fx as u8, b.file_cell[1], fz as u8];
+                }
+            }
+            if mode == 1 || mode == 2 {
+                t.dir = (b.dir + 2) & 3;
+            }
+            turned = t;
+            &turned
+        } else {
+            b
+        };
+        let rot = bp.free_rot.unwrap_or([block_yaw(bp), 0.0, 0.0]);
         let origin = match map.footprint {
-            Some(fp) => block_origin(b, fp),
-            None => block_pos(b),
+            Some(fp) => block_origin(bp, fp),
+            None => block_pos(bp),
         };
         baked_items += 1;
         let pos = transform(origin, source_anchor, target_anchor, scale);

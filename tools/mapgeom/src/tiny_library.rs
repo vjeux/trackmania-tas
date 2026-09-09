@@ -1631,29 +1631,46 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // the start", the "hollow platforms", the "missing undersides" vjeux
     // drove into on 2026-09-08 (see `tmmaps fillers MAP --summary`).
     let drop_baked: Vec<String> = std::env::var("TINY_DROP_BAKED").unwrap_or_default().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != "-").collect();
-    // Which of the game's recorded fillers are emitted: ALL OF THEM. Settled
-    // 2026-09-09 from the engine (Trackmania.exe InitChallengeData_Clips, see
-    // `crate::bake`): the client regenerates every free clip from the authored
-    // blocks with the very algorithm the editor baked the file's records with,
-    // so the baked list is exactly what the game draws — `mapgeom bake MAP
-    // --diff` finds 0 stale records on all 25 Summer 2026 maps. The fitted
-    // hiding rules that lived here until a1b91d23 (fullfree / face / covered /
-    // occupied / accepted / ghost / free, TINY_FILLER_RULE) each hid pieces the
-    // game draws (Summer 15's arch floor and pool-approach plate, 21's gate
-    // floor, 05's water-road floor); what an original does not SHOW at a
-    // record's position is occluded by neighbouring geometry, to be matched at
-    // the geometry level. The bake is run here as the invariant: a record the
-    // engine would not keep is reported (and, with TINY_BAKE_STRICT=1, fatal).
+    // Which of the game's recorded fillers are emitted. Two facts, two layers:
+    //
+    // 1. THE EDITOR'S LIST. The file's baked records are exactly what the
+    //    editor's free-clip algorithm keeps (Trackmania.exe InitChallengeData_
+    //    Clips, decoded in `crate::bake`): `mapgeom bake MAP --diff` finds 0
+    //    stale records on all 25 Summer 2026 maps. The bake runs here as that
+    //    invariant (a record the algorithm would not keep is reported; with
+    //    TINY_BAKE_STRICT=1 fatal). The fitted rules that lived here until
+    //    a1b91d23 (fullfree / face / accepted / ghost / free) were wrong about
+    //    THIS list — they hid records the editor keeps and the game draws
+    //    (Summer 15's arch floor and pool-approach plate, 21's gate floor).
+    //
+    // 2. WHAT THE RUNTIME DRAWS OF IT — under test (2026-09-09, TINY_OCCUPIED_RULE).
+    //    A probe that removed every record standing in a cell occupied by
+    //    another block's unit (`classify` "covered:*", 1 905 on Summer 20) made
+    //    three drive-through frames match the original — but the frames it was
+    //    judged against carried the EDITOR'S CURSOR PREVIEW (a start block's
+    //    car, see openplanet-plugin/Cursor.as), present in some shots and not
+    //    others, and the "slabs" were that car. So the rule is NOT established:
+    //    off by default, TINY_OCCUPIED_RULE=1 enables it for a probe. Decide it
+    //    with car-free frames (`shootctl shootset` now hides the cursor).
+    let occupied_rule = std::env::var("TINY_OCCUPIED_RULE").map(|v| v == "1").unwrap_or(false);
+    let mut occupied_hidden: std::collections::HashSet<usize> = std::collections::HashSet::new();
     if std::env::var("TINY_FILLER_RULE").is_ok() || std::env::var("TINY_VFC_RULE").is_ok() {
         println!("  ⚠ TINY_FILLER_RULE/TINY_VFC_RULE are gone: every generated filler the game draws is emitted (a1b91d23); the variable is ignored");
     }
     {
         let faces = crate::fillers::faces(store, &mut idx, &source);
+        if occupied_rule {
+            for b in source.baked.iter().filter(|b| b.name != "Sea") {
+                if crate::fillers::classify(&faces, b).class.starts_with("covered:") {
+                    occupied_hidden.insert(b.index);
+                }
+            }
+        }
         let dirs: std::collections::HashMap<usize, u8> = source.blocks.iter().map(|b| (b.index, b.dir)).collect();
         let grounds = crate::bake::record_grounds(&faces, &source);
         let clips = crate::bake::simulate(&faces, &dirs, &grounds);
         let d = crate::bake::diff(&clips, &faces, &source);
-        println!("  engine bake check: {} generated records confirmed drawn, {} the engine would not keep, {} clips the engine draws without a record", d.confirmed, d.stale.len(), d.missing.len());
+        println!("  engine bake check: {} generated records confirmed (the editor keeps them), {} the editor would not keep, {} clips the algorithm makes without a record", d.confirmed, d.stale.len(), d.missing.len());
         for (i, name, why) in d.stale.iter().take(12) {
             println!("    ⚠ stale b{i} {name}: {why}");
         }
@@ -1685,6 +1702,14 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         }
         true
     };
+    // the generated SIDE clips (FreeClipSide, ClipType 1): the mapping row's 8th
+    // field says `S` for them so `tmmaps tiny` can place them the way the engine
+    // does (TINY_SIDECLIP_OWNER, the 2026-09-09 experiment on Summer 20's
+    // curved inner border and slope end cap)
+    let side_clips: std::collections::HashSet<String> = {
+        let names: std::collections::BTreeSet<String> = source.baked.iter().filter(|b| b.name != "Sea").map(|b| b.name.clone()).collect();
+        names.into_iter().filter(|n| idx.path_for(n).and_then(|p| idx.load(store, &p).ok().map(|bi| bi.clip.as_ref().and_then(|c| c.clip_type) == Some(1))).unwrap_or(false)).collect()
+    };
     let mut dropped_baked: BTreeMap<String, usize> = BTreeMap::new();
     // The tree clearance (tree_clear.rs): every deck placement's driving
     // surface and every tree, in the scaled source frame, placed the way
@@ -1698,6 +1723,12 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         if prefix == "b@" && drop_baked.iter().any(|g| glob_match(g, &b.name)) {
             mapping.push_str(&format!("b@{}\t-\n", b.index));
             *dropped_baked.entry(b.name.clone()).or_insert(0) += 1;
+            rows += 1;
+            continue;
+        }
+        // the runtime does not draw a record in a cell another block's unit occupies (fact 2 above)
+        if prefix == "b@" && occupied_hidden.contains(&b.index) {
+            mapping.push_str(&format!("b@{}\t-\n", b.index));
             rows += 1;
             continue;
         }
@@ -1716,7 +1747,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     Some((list, place)) => format!("{}|{place}", list.iter().map(|(o, z)| format!("{},{},{}={z}", o[0], o[1], o[2])).collect::<Vec<_>>().join(";")),
                     None => String::new(),
                 };
-                mapping.push_str(&format!("{prefix}{}\t{}\t{}\t{}\t{}\t{}\t{}\n", b.index, model, scale, sx, sz, cells, auto));
+                let side = if prefix == "b@" && side_clips.contains(&b.name) { "S" } else { "" };
+                mapping.push_str(&format!("{prefix}{}\t{}\t{}\t{}\t{}\t{}\t{}\t{side}\n", b.index, model, scale, sx, sz, cells, auto));
                 rows += 1;
                 if alias != "-" {
                     // where `tmmaps tiny` puts this item: origin (source metres) and yaw
@@ -1898,6 +1930,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     }
     if !dropped_items.is_empty() {
         println!("  ⚠ HACK TINY_DROP_ITEMS: {} source items left out: {}", dropped_items.values().sum::<usize>(), dropped_items.iter().map(|(k, v)| format!("{k} x{v}")).collect::<Vec<_>>().join(", "));
+    }
+    if occupied_rule {
+        println!("  ⚠ PROBE TINY_OCCUPIED_RULE=1: {} generated records standing in a cell another block's unit occupies left out — not an established rule", occupied_hidden.len());
     }
     if !dropped_baked.is_empty() {
         println!("  ⚠ HACK baked fillers left out by name (TINY_DROP_BAKED): {}", dropped_baked.iter().map(|(k, v)| format!("{k} x{v}")).collect::<Vec<_>>().join(", "));

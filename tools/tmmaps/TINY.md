@@ -386,16 +386,14 @@ skin", and every filler inherited a modifier tag or no tag). `modifier_links`
 resolves the ref to its one link; `terrain_mods` gates the inheritance on the
 tag; `inherited_mod` walks across → own → up the columns.
 
-## Which generated fillers the game draws — ALL OF THEM (2026-09-09, from the exe)
+## Which generated fillers the game draws — the editor's list; what the runtime skips is open (2026-09-09)
 
-Settled by disassembling Trackmania.exe (the profiler strings name the load
-pipeline: `CGameCtnChallenge::InitChallengeData_FreeClipsBaked`, `…_Clips`,
-`…::CreateFreeClips`). At map load the client does NOT draw the file's
-BakedBlocks. `InitChallengeData_Clips` walks every authored block unit (Flat /
-Frontier terrain and clip blocks excepted), every face, every clip with
-`ClipType != 0`, allocates a brand-new clip block for it (the file's record for
-that owner face only donates attributes: variant alternate, lightmap id,
-colour) and decides against the neighbour's clips whether it is instantiated:
+Two layers, settled separately.
+
+**1. The file's baked list = the editor's free-clip algorithm.** Disassembling
+Trackmania.exe (profiler strings: `CGameCtnChallenge::InitChallengeData_FreeClipsBaked`,
+`…_Clips`, `…::CreateFreeClips`) gives the algorithm that decides, for every
+authored block unit face's clip, whether a clip block exists:
 
 ```
 for each B in the clips of the neighbour cell's opposite face:
@@ -417,24 +415,42 @@ upper units bake air clips); a top/bottom clip block's direction is (owner dir +
 the clip's own 2-bit direction from block-unit chunk 0x0303600C's trailing
 words) mod 4 (`mapgeom blockinfo` prints them as `clipdirs … 00c`).
 
-The editor bakes with the same code, so **the file's baked records are exactly
-what the game draws**. `mapgeom bake MAP [--collection C] --diff` runs the
-simulation and reports it against the file: 0 stale records on all 25 Summer
-2026 maps (46 304 records confirmed). `tiny-library` runs the same check on
-every conversion (`engine bake check: N confirmed / S stale / M sim-only`;
-`TINY_BAKE_STRICT=1` makes S > 0 fatal). Pixel proofs on Summer 20: the
-original minus a VISIBLE pool-rim record renders identically (the rim is
-regenerated); three records moved into an empty field show nothing there; the
-original minus the 679 records the old face rule hid is identical over 204
-cameras.
+`mapgeom bake MAP [--collection C] --diff` runs this simulation against the
+file: 0 stale records on all 25 Summer 2026 maps (46 304 records confirmed).
+`tiny-library` runs it on every conversion as the invariant (`engine bake
+check: N confirmed / S stale / M sim-only`; `TINY_BAKE_STRICT=1` makes S > 0
+fatal). This layer killed the old fitted rules that hid records the editor
+keeps AND the game draws (fullfree / face / accepted / ghost / free: Summer
+15's arch floor and pool-approach plate, 21's gate floor, 05's water-road
+floor came back with 3201a7cc).
 
-Consequence: every hiding rule this file used to describe (fullfree, face,
-covered, occupied, the plate clause) hid pieces the game draws, and they are
-gone (3201a7cc). Where an original does not SHOW a record's piece, neighbouring
-geometry occludes it (a hill, the engine's volume water, a grass tile); those
-are shape/terrain differences of our conversion, to be fixed at the geometry
-level — never by leaving a record out. `mapgeom fillers MAP` remains as the
-per-record listing (cell occupants, facing clip lists, owner).
+**2. What the runtime draws of that list — the occupied-cell question is OPEN
+(2026-09-09 night).** vjeux on ship13: "15, 20 — road blocks in the middle of
+the path". 15's was physics (water surfaces solid, 5380c805). For 20, drive-
+through cameras behind a run line showed, in ours only, a "grey road slab over
+cp3", a "white Tech slab with a red LED strip and the TM logo across the grass
+bowl", a "dark deck underside filling the sky at the pool". A probe that
+removed every record standing in a cell occupied by another block's unit
+(`mapgeom fillers` class `covered:*`, 1 905 of 20's 7 287) made those frames
+match the original — and the rule was nearly shipped. Then the same build shot
+again showed the slab back, and the pixel-level read of the frames settled it:
+the "slabs" were the REAR OF THE STADIUM CAR (wing, LED tail bar, mirrored TM
+letters on the roof) — the editor's cursor preview (a start block carries a car)
+standing at the cursor, which projects onto the grid near the camera target.
+Present in the tiny shots (empty cells: the cursor can stand there), absent in
+the original's (cells full of blocks) and absent whenever the previous user of
+the box had nothing selected. `shootctl shootset` now switches the editor to
+FreeLook (no cursor) after every load (`/freelook`, openplanet-plugin/Cursor.as).
+So: no record-hiding rule is established; `TINY_OCCUPIED_RULE=1` builds the
+probe for a car-free re-test, off by default. Whatever blocks vjeux on 20 is
+still to be found with car-free frames.
+
+Caveats worth keeping: the E2 pixel probe (679 face-rule records removed from
+the ORIGINAL, 203/204 views unchanged) used 110 m-high grid cameras that cannot
+see a plate inside a cell — it is not evidence about occupied cells either way.
+Two probes stand: a visible pool-rim record removed from the original renders
+identically (regenerated, layer 1); three records moved into an empty field
+show nothing (a record is not what is drawn; the regenerated clip is).
 
 ## Pool water, overflow spouts and the inflatables (2026-09-08, night)
 

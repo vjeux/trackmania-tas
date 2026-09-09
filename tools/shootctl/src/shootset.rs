@@ -385,6 +385,13 @@ fn run_set(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         }
         std::thread::sleep(Duration::from_millis(opts.settle_ms.max(3000)));
     }
+    // No cursor in the frame: the editor's block/item preview sits at the cursor,
+    // which projects to the camera target, and the start block's preview is a CAR
+    // — half a night of 2026-09-09 went to "slabs" that were its rear wing (see
+    // the plugin's Cursor.as). FreeLook mode has no cursor.
+    let fl = super::http_get("/freelook", 10).unwrap_or_default();
+    println!("{} freelook: {}", el(), fl.trim());
+    lines.push(format!("freelook\t{}", fl.trim()));
     // --get ROUTE: plugin routes once the map is open (the answer goes into the
     // log and the done file); `--get N:ROUTE` fires right before view N.
     let fire_gets = |at: Option<usize>, lines: &mut Vec<String>| {

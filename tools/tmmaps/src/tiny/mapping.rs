@@ -27,6 +27,11 @@ pub struct Mapping {
     /// 7th field (an older mapping — the name rule of `stands_in_for_tile`
     /// stands in); `Some(empty)` when the variant declares none.
     pub auto_terrain: Option<(Vec<([i32; 3], String)>, i32)>,
+    /// The row's 8th field is `S`: a generated SIDE clip (FreeClipSide). The
+    /// engine hangs such a piece on its OWNER's face (the unit across the
+    /// record's side), which is the record's cell turned half round; with
+    /// TINY_SIDECLIP_OWNER=1 `tmmaps tiny` places it there (2026-09-09).
+    pub side_clip: bool,
 }
 
 
@@ -130,8 +135,8 @@ pub fn read_mapping(path: &Path) -> Mappings {
             continue;
         }
         assert!(
-            (2..=7).contains(&fields.len()) && fields.len() != 4,
-            "{}:{}: expected BLOCK<TAB>ITEM[<TAB>MODEL_SCALE[<TAB>SX<TAB>SZ[<TAB>UNITS[<TAB>AUTO_TERRAIN]]]]",
+            (2..=8).contains(&fields.len()) && fields.len() != 4,
+            "{}:{}: expected BLOCK<TAB>ITEM[<TAB>MODEL_SCALE[<TAB>SX<TAB>SZ[<TAB>UNITS[<TAB>AUTO_TERRAIN[<TAB>S]]]]]",
             path.display(),
             line_no + 1
         );
@@ -181,6 +186,7 @@ pub fn read_mapping(path: &Path) -> Mappings {
             footprint,
             units,
             auto_terrain,
+            side_clip: fields.get(7).map(|s| *s == "S").unwrap_or(false),
         };
         let prev = if let Some(index) = fields[0].strip_prefix("i@") {
             out.items_by_index

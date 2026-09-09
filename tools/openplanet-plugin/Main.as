@@ -104,6 +104,7 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/respawn") return HttpResponse(200, RespawnItem(qs));
     if (r == "/mapblocks2") return HttpResponse(200, MapBlocks2(qs));
     if (r == "/cursor") return HttpResponse(200, EditorCursor());
+    if (r == "/freelook") return HttpResponse(200, FreeLook());
     if (r == "/rmenu") return HttpResponse(200, ReplayMenuState());
     if (r == "/rselall") return HttpResponse(200, ReplaySelectAll());
     if (r == "/rok") return HttpResponse(200, ReplayOk());
