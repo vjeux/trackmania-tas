@@ -104,7 +104,7 @@ pub fn calibrate_boundary(
             std::fs::write(&path, p.file(&c)).map_err(|e| e.to_string())?;
             let steer: Vec<u8> = c.steer.iter().map(|&v| v as u8).collect();
             let gas: Vec<u8> = c.gas.iter().map(|&v| v as u8).collect();
-            let brake: Vec<u8> = c.brake.iter().map(|&v| v as u8).collect();
+            let brake: Vec<u8> = c.brake_u8();
             let out = srv.run(t, &tail_recs(&steer, &gas, &brake, t));
             rows.push((t, path, forkoracle::forksrv::parse_result(&out).0));
         }
@@ -274,7 +274,7 @@ impl ForkEval {
 
         let steer: Vec<u8> = reference.steer.iter().map(|&v| v as u8).collect();
         let gas: Vec<u8> = reference.gas.iter().map(|&v| v as u8).collect();
-        let brake: Vec<u8> = reference.brake.iter().map(|&v| v as u8).collect();
+        let brake: Vec<u8> = reference.brake_u8();
         let lrecs = tail_recs(&steer, &gas, &brake, from);
 
         // THE IDENTITY CONTROL, and the search never ran it before: is this

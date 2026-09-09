@@ -216,12 +216,15 @@ impl Rec {
     }
 }
 
+/// `brake` bit 1 (value 2) is the RESPAWN channel (2026-09-09): a tape's respawn literal rides the brake byte as
+/// brake + 2 wherever inputs travel as (steer, accel, brake) bytes, and lands in the record as `with_respawn`.
 pub fn rec_of(steer: u8, accel: u8, brake: u8) -> Rec {
-    Rec {
+    let r = Rec {
         steer: ((steer as i8) as f32) / 127.0,
         gas: if accel != 0 { 1.0 } else { 0.0 },
-        brake: if brake != 0 { 1.0 } else { 0.0 },
-    }
+        brake: if brake & 1 != 0 { 1.0 } else { 0.0 },
+    };
+    if brake & 2 != 0 { r.with_respawn() } else { r }
 }
 
 /// The reference ghost's steer axis, which is all `write_key` needs of a tape.
