@@ -49,7 +49,9 @@ https://github.com/user-attachments/assets/ec3588c4-6558-4587-b538-26f8c1733dee
 
 https://github.com/user-attachments/assets/91de62dc-049c-4ef7-9cf9-4cc2e2699e02
 
-**Tiny Summer 2026 - 11** — original author time `38.371` · *no lap yet*
+**Tiny Summer 2026 - 11** — original author time `38.371` · tiny ghost **34.348** (build ship15)
+
+https://github.com/user-attachments/assets/d2f844df-d4c7-466f-9d41-d364118bcbf5
 
 **Tiny Summer 2026 - 12** — original author time `28.447` · tiny ghost **20.752** (build ship10) — *no video yet: the MediaTracker places the ghost off the track on this map only; under investigation*
 
