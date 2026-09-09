@@ -838,10 +838,16 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                     let key = format!("{name}");
                     let due = last_retry.get(&key).map(|t: &std::time::Instant| t.elapsed() >= retry_after).unwrap_or(true);
                     if due {
+                        // the staged copy (outside OneDrive) is what a ship runs from;
+                        // clips staged by an older build only have the watch copy, so
+                        // fall back to it rather than failing on a missing file
                         let r_mp4 = format!("{VID}/mp4/{name}.mp4");
+                        let r_watch = format!("{}/{name}.mp4", BOX_VIDEOS);
                         let outbase = done_file.trim_end_matches(".done").to_string();
                         let slug = map_slug(nn);
-                        match wsx.sh(&format!("rm -f '{done_file}' && nohup sh {BOX_SHIP_SH} '{r_mp4}' '{slug}' '{outbase}' > /dev/null 2>&1 < /dev/null &")) {
+                        match wsx.sh(&format!(
+                            "mkdir -p {VID}/mp4 && [ -f '{r_mp4}' ] || cp -f '{r_watch}' '{r_mp4}'; rm -f '{done_file}' && nohup sh {BOX_SHIP_SH} '{r_mp4}' '{slug}' '{outbase}' > /dev/null 2>&1 < /dev/null &"
+                        )) {
                             Ok(_) => println!("  re-launched the ship of {name} (cookie probe retry; next in {} min)", retry_after.as_secs() / 60),
                             Err(e) => println!("  could not re-launch the ship of {name}: {e}"),
                         }
