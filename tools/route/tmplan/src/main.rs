@@ -1093,13 +1093,43 @@ fn cmd_author_line(args: &[String]) {
     let hw = grab("half_width");
     // every vehicle entity merged (a car-switch or multi-entity ghost keeps only a stretch per entity)
     let d = gbx::record::decode_ghost_all_vehicles(&src).unwrap_or_else(|e| die(&format!("{src}: no ghost ({e})")));
-    let mut rows: Vec<(f32, f32, f32, [f32; 3], i32)> = Vec::new(); // (s_nearest, lateral, dy, tiny pos, t)
-    let mut author: Vec<[f32; 3]> = Vec::new();
+    // 100 ms samples in the tiny frame
+    let mut samples: Vec<([f32; 3], i32)> = Vec::new();
     let mut last_t = i32::MIN;
     for smp in &d.samples {
         if smp.time_ms < last_t + 100 { continue; }
         last_t = smp.time_ms;
-        let q = [ta[0] + (smp.x - sa[0]) * scale, ta[1] + (smp.y - sa[1]) * scale, ta[2] + (smp.z - sa[2]) * scale];
+        samples.push(([ta[0] + (smp.x - sa[0]) * scale, ta[1] + (smp.y - sa[1]) * scale, ta[2] + (smp.z - sa[2]) * scale], smp.time_ms));
+    }
+    // LOOP-FREE (coordinator 12:02Z, 24's WR: fell at the ramp, respawned to CP 13, redid the finish ramp — the line had the
+    // ramp twice): when a later stretch coincides with an earlier one (≤ 0.5 m for ≥ 6 consecutive samples, ≥ 20
+    // samples apart), the samples between are a respawn loop — dropped and spliced
+    let mut respawns: Vec<(i32, i32, usize)> = Vec::new();
+    {
+        let mut i = 0usize;
+        while i < samples.len() {
+            let mut cut: Option<usize> = None;
+            'search: for j in (i + 20)..samples.len() {
+                if j + 6 > samples.len() { break; }
+                let mut ok = true;
+                for k in 0..6 { if i + k >= samples.len() { ok = false; break; } let a = samples[i + k].0; let b = samples[j + k].0; if ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() > 0.5 { ok = false; break; } }
+                // a RESPAWN shows as a teleport (the sample before j is far from j) or a standstill at j — a track that legitimately
+                // re-passes the same road (a figure-8) is continuous and must stay
+                let jump = { let a = samples[j - 1].0; let b = samples[j].0; ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() };
+                let still = (j + 3 < samples.len()) && (0..3).all(|k| { let a = samples[j + k].0; let b = samples[j + k + 1].0; ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() < 0.3 });
+                if ok && (jump > 8.0 || still) { cut = Some(j); break 'search; }
+            }
+            if let Some(j) = cut {
+                respawns.push((samples[i].1, samples[j].1, j - i));
+                samples.drain(i + 1..=j);
+            }
+            i += 1;
+        }
+    }
+    for (t0, t1, n) in &respawns { eprintln!("  respawn loop removed: {n} samples, t {:.1}–{:.1} s (the ghost re-drives the same stretch)", *t0 as f32 / 1000.0, *t1 as f32 / 1000.0); }
+    let mut rows: Vec<(f32, f32, f32, [f32; 3], i32)> = Vec::new(); // (s_nearest, lateral, dy, tiny pos, t)
+    let mut author: Vec<[f32; 3]> = Vec::new();
+    for &(q, t_ms) in &samples {
         author.push(q);
         let mut best = (f32::INFINITY, 0usize);
         for (k, p) in pts.iter().enumerate() {
@@ -1107,7 +1137,7 @@ fn cmd_author_line(args: &[String]) {
             if dd < best.0 { best = (dd, k); }
         }
         let k = best.1;
-        rows.push((s.get(k).copied().unwrap_or(0.0), best.0.sqrt(), q[1] - pts[k][1], q, smp.time_ms));
+        rows.push((s.get(k).copied().unwrap_or(0.0), best.0.sqrt(), q[1] - pts[k][1], q, t_ms));
     }
     if rows.is_empty() { die("no ghost samples"); }
     let mut lat: Vec<f32> = rows.iter().map(|r| r.1).collect();
@@ -1167,7 +1197,8 @@ fn cmd_author_line(args: &[String]) {
         println!("author order (groups, first pass): {}", author_order.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(","));
     }
     if let Some(label) = flag(args, "--row") {
-        println!("| {label} | {} ({:.1} s) | {med:.1} | {p90:.1} | {:.0} % | {:.1} @ s {:.0} (author at ({:.0}, {:.0}, {:.0}), t {:.1}) | {:.1} s from t {:.1} at ({:.0}, {:.0}, {:.0}) |", rows.len(), d.end_ms as f32 / 1000.0, 100.0 * within as f32 / rows.len() as f32, worst.1, worst.0, worst.3[0], worst.3[1], worst.3[2], worst.4 as f32 / 1000.0, best_run.0 as f32 / 1000.0, best_run.1 as f32 / 1000.0, best_run.2[0], best_run.2[1], best_run.2[2]);
+        let resp = if respawns.is_empty() { String::new() } else { format!(" RESPAWN ×{}: {}", respawns.len(), respawns.iter().map(|(a, b, n)| format!("t {:.1}–{:.1} s ({n} samples dropped)", *a as f32 / 1000.0, *b as f32 / 1000.0)).collect::<Vec<_>>().join(", ")) };
+        println!("| {label} | {} ({:.1} s) | {med:.1} | {p90:.1} | {:.0} % | {:.1} @ s {:.0} (author at ({:.0}, {:.0}, {:.0}), t {:.1}) | {:.1} s from t {:.1} at ({:.0}, {:.0}, {:.0}){resp} |", rows.len(), d.end_ms as f32 / 1000.0, 100.0 * within as f32 / rows.len() as f32, worst.1, worst.0, worst.3[0], worst.3[1], worst.3[2], worst.4 as f32 / 1000.0, best_run.0 as f32 / 1000.0, best_run.1 as f32 / 1000.0, best_run.2[0], best_run.2[1], best_run.2[2]);
     }
     if let Some(out) = flag(args, "--out") {
         let js = format!("{{\n  \"source\": \"{}\",\n  \"anchor\": \"{anchor}\",\n  \"scale\": {scale},\n  \"pts\": [{}],\n  \"lateral_to_centreline\": [{}],\n  \"note\": \"the ORIGINAL author's validation ghost mapped into the tiny frame (100 ms samples, ground contact point); lateral = XZ distance to the nearest centreline point\"\n}}\n",
