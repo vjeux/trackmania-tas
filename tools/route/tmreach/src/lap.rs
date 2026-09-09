@@ -433,6 +433,9 @@ const FOLLOW: &[(&str, bool, u8, f64)] = &[
     ("follow centreline, coast", false, 2, 0.9),
     ("follow centreline (short lookahead), gas", true, 0, 0.5),
     ("follow centreline (long lookahead), gas", true, 0, 1.5),
+    // bmode 3: pedals like the human (author line): gas below the human's speed 15 m ahead, coast above, brake well above
+    ("follow the human (line + pedals)", true, 3, 0.9),
+    ("follow the human (line + pedals), long lookahead", true, 3, 1.5),
 ];
 
 pub fn yaw_of(r: &Row) -> f64 {
@@ -544,6 +547,10 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let hint = track.hint_at(seg);
                 let (g, b) = match bmode {
                     1 => if v > hint + 3.0 && s_now > 10.0 { (false, true) } else { (*gas, false) },
+                    3 => {
+                        let vh = track.human_speed_at(s_now + 15.0);
+                        if vh <= 3.0 || v <= vh * 1.05 { (true, false) } else if v > vh * 1.3 { (false, true) } else { (false, false) }
+                    }
                     2 => (false, false),
                     _ => (*gas, false),
                 };
@@ -968,9 +975,13 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                     let mut ok = true;
                     let mut done_t = 0usize;
                     while done_t < 300 {
-                        let (st, sg, _s_now) = follow_steer(cfg, &last, seg_h, 1.0);
+                        let (st, sg, s_now) = follow_steer(cfg, &last, seg_h, 1.0);
                         seg_h = sg;
-                        let recs: Vec<Rec> = (0..10).map(|_| Rec { steer: st, gas: 1.0, brake: 0.0 }).collect();
+                        // pedals like the human: gas below the human's speed a little ahead, coast above it, brake well above
+                        let vh = track.human_speed_at(s_now + 15.0);
+                        let v_now = speed(&last);
+                        let (gas, brake) = if vh <= 3.0 || v_now <= vh * 1.05 { (1.0, 0.0) } else if v_now > vh * 1.3 { (0.0, 1.0) } else { (0.0, 0.0) };
+                        let recs: Vec<Rec> = (0..10).map(|_| Rec { steer: st, gas, brake }).collect();
                         match w.forest.advance_or_end(cur, &recs, from_f + done_t, 10)? {
                             branch::Advanced::Node(rs, c) => {
                                 if cur != nf {
