@@ -1756,8 +1756,8 @@ fn main() {
             // time, nearest distance, the item's tiny and source positions.
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
-            let src = flag(&a.rest, "--src").unwrap_or_else(|| die("ghostclash needs --src SRC.Map.Gbx (the file with the author's ghost)".into()));
-            let anchor = flag(&a.rest, "--anchor").unwrap_or_else(|| die("ghostclash needs --anchor sx,sy,sz:tx,ty,tz".into()));
+            let src = flag(&a.rest, "--src").unwrap_or_else(|| if flag(&a.rest, "--line").is_some() { String::new() } else { die("ghostclash needs --src SRC.Map.Gbx (the file with the author's ghost) or --line PTS".into()) });
+            let anchor = flag(&a.rest, "--anchor").unwrap_or_else(|| if flag(&a.rest, "--line").is_some() { "0,0,0:0,0,0".to_string() } else { die("ghostclash needs --anchor sx,sy,sz:tx,ty,tz".into()) });
             let scale: f32 = flag(&a.rest, "--scale").and_then(|s| s.parse().ok()).unwrap_or(0.5);
             let radius: f32 = flag(&a.rest, "--radius").and_then(|s| s.parse().ok()).unwrap_or(0.9);
             let every: i32 = flag(&a.rest, "--every").and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -1783,14 +1783,38 @@ fn main() {
                         .collect()
                 })
                 .unwrap_or_default();
-            let d = gbx::record::decode_ghost(&src).unwrap_or_else(|e| die(format!("{src}: no validation ghost ({e})")));
             // the car's body centre in the tiny's frame: the ghost position is
             // the ground contact, the body ~0.75 m tall at full size
             let lift = 0.75 * scale;
             let floor = 0.15 * scale;
             let mut pts: Vec<([f32; 3], [f32; 3], i32)> = Vec::new();
             let mut next = i32::MIN;
-            for s in &d.samples {
+            // --line FILE: the route project's author line instead of the source's
+            // validation ghost — `x,y,z` per line ALREADY in the tiny's frame
+            // (their author-line.json `pts`, 100 ms apart), car upright. Summer 20's
+            // source carries no ghost; theirs comes from a downloaded run.
+            let line_pts: Option<Vec<[f32; 3]>> = flag(&a.rest, "--line").map(|f| {
+                std::fs::read_to_string(&f)
+                    .unwrap_or_else(|e| die(format!("{f}: {e}")))
+                    .lines()
+                    .filter_map(|l| {
+                        let v: Vec<f32> = l.trim().trim_matches(|c| c == '[' || c == ']').split(',').filter_map(|t| t.trim().parse().ok()).collect();
+                        (v.len() == 3).then(|| [v[0], v[1], v[2]])
+                    })
+                    .collect()
+            });
+            let d = if line_pts.is_some() { None } else { Some(gbx::record::decode_ghost(&src).unwrap_or_else(|e| die(format!("{src}: no validation ghost ({e})")))) };
+            if let Some(lp) = &line_pts {
+                for (i, q) in lp.iter().enumerate() {
+                    let t = i as i32 * 100;
+                    if every > 0 && t < next {
+                        continue;
+                    }
+                    next = t + every;
+                    pts.push(([q[0], q[1] + lift, q[2]], [0.0, 1.0, 0.0], t));
+                }
+            }
+            for s in d.as_ref().map(|d| d.samples.as_slice()).unwrap_or(&[]) {
                 if every > 0 && s.time_ms < next {
                     continue;
                 }
@@ -1802,7 +1826,7 @@ fn main() {
                 let ground = [ta[0] + (s.x - sa[0]) * scale, ta[1] + (s.y - sa[1]) * scale, ta[2] + (s.z - sa[2]) * scale];
                 pts.push(([ground[0] + up[0] * lift, ground[1] + up[1] * lift, ground[2] + up[2] * lift], up, s.time_ms));
             }
-            println!("{} ghost samples ({:.3} s) from {}", pts.len(), d.end_ms as f64 / 1000.0, src);
+            println!("{} ghost samples ({:.3} s) from {}", pts.len(), d.as_ref().map(|d| d.end_ms as f64 / 1000.0).unwrap_or(pts.len() as f64 * 0.1), if line_pts.is_some() { flag(&a.rest, "--line").unwrap_or_default() } else { src.clone() });
             // spatial hash of the samples, cells of 4 m
             let cell = 4.0f32;
             let mut hash: std::collections::HashMap<(i32, i32, i32), Vec<usize>> = std::collections::HashMap::new();
