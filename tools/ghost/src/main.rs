@@ -109,6 +109,12 @@ MAP  (operation 4)
         MediaTrackerCache/MTAuthorGhost<map name>.Ghost.gbx files, which are
         replays (map + the run the player finished in the editor) despite
         the extension.
+  ghost lcp FILE.LaunchedCP.gbx [--json OUT] [--csv OUT] [--samples]
+        The editor's launched-checkpoints cache (ProgramData\Trackmania\
+        LaunchedCheckpointsCache\<map name>.LaunchedCP.gbx), written at every
+        checkpoint crossing in test mode: per checkpoint reached, the car's
+        full state at the crossing and the last ~1.5 s of approach samples
+        (inputs included) -- the route skeleton of a run that never finished.
 
 TRIM  (operation 5)
   ghost trim IN OUT [--from MS] [--to MS] [--declare MS]
@@ -399,6 +405,7 @@ fn main() {
         "splice" => splice::cmd(rest),
         "synth" => synth::cmd(rest),
         "unwrap" => ghost::unwrap::cmd(rest),
+        "lcp" => ghost::lcp::cmd(rest),
         // `ghost strip-events IN OUT --type N` -- drop every deltas2 record of
         // one type from the middle entity. Built to answer ONE question: why
         // does 287431's ghost kill the client on any map (17a29c8)? It carries

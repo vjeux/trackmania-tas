@@ -26,6 +26,7 @@ pub mod engine;
 pub mod finish;
 pub mod hdr;
 pub mod ident;
+pub mod lcp;
 pub mod oracle;
 pub mod phase;
 pub mod record;
