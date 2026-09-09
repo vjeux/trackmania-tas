@@ -239,8 +239,9 @@ fn all_once(args: &[String]) -> Result<(), String> {
                     continue;
                 }
                 None => {
-                    println!("{nn} {time}: no README row for this lap yet — skipped until the INPUT arm writes it");
-                    continue;
+                    // the row lands after the file, often by an hour; the pass runs
+                    // on the installed build, so render and say the row was missing
+                    println!("{nn} {time}: no README row for this lap yet — rendering on the installed build's word ({b}); the label is read at swap time");
                 }
             }
         }
