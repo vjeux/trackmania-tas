@@ -671,7 +671,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let k = 10.min(h - done);
                 let off = match bmode { 6 => 5.0, 7 => -5.0, _ => 0.0 };
                 let (mut st, sg, s_now) = follow_steer_off(cfg, &last, seg, *look, off);
-                if bmode == 8 && done >= 30 {
+                if *bmode == 8 && done >= 30 {
                     st = 0.0;
                 }
                 seg = sg;
