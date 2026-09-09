@@ -119,3 +119,91 @@ string RespawnItem(const string &in qs) {
     }
     return "no anchored object matches " + needle;
 }
+
+// ---- where in the Fid tree things live -------------------------------------
+// /fids?name=SUBSTR -> per matching item: the item's own fid (full name) and
+// its folder chain up to the root (depth counted), then for every entity mesh
+// its owner fid (+0x338) and the fids of its plain `Materials` list (+0xc8/+0xd0,
+// the list CPlugSolid2Model::OnNodLoaded consults for the tween bit). The
+// answer to "what ancestor level and folder chain does a reference table in an
+// EMBEDDED item need to name a game material the way the pack meshes do".
+
+string FolderChain(CSystemFidsFolder@ f) {
+    string s = "";
+    int depth = 0;
+    while (f !is null && depth < 16) {
+        s += (depth == 0 ? "" : " <- ") + f.DirName;
+        @f = f.ParentFolder;
+        depth++;
+    }
+    return s + " [" + depth + " folders]";
+}
+
+string FidLine(const string &in label, CMwNod@ nod) {
+    if (nod is null) return label + ": <null nod>\n";
+    auto fid = GetFidFromNod(nod);
+    if (fid is null) return label + ": no fid (" + Reflection::TypeOf(nod).Name + ")\n";
+    return label + ": " + fid.FullFileName + " | " + FolderChain(fid.ParentFolder) + "\n";
+}
+
+string MeshFids(const string &in item, CMwNod@ em, int depth) {
+    if (em is null || depth > 4) return "";
+    string res = "";
+    auto vl = cast<NPlugItem_SVariantList>(em);
+    if (vl !is null) {
+        for (uint i = 0; i < vl.Variants.Length; i++) res += MeshFids(item + "/v" + i, vl.Variants[i].EntityModel, depth + 1);
+        return res;
+    }
+    auto pf = cast<CPlugPrefab>(em);
+    if (pf !is null) {
+        for (uint i = 0; i < pf.Ents.Length; i++) res += MeshFids(item + "/e" + i, pf.Ents[i].Model, depth + 1);
+        return res;
+    }
+    CMwNod@ mesh = null;
+    auto dyna = cast<CPlugDynaObjectModel>(em);
+    if (dyna !is null) @mesh = dyna.Mesh;
+    auto st = cast<CPlugStaticObjectModel>(em);
+    if (st !is null) @mesh = st.Mesh;
+    auto cm = cast<CGameCommonItemEntityModel>(em);
+    if (cm !is null) return MeshFids(item + "/common", cm.StaticObject, depth + 1);
+    if (mesh is null) return item + " | " + Reflection::TypeOf(em).Name + " | (no mesh)\n";
+    res += FidLine(item + " mesh", mesh);
+    uint64 owner = Dev::GetOffsetUint64(mesh, 0x338);
+    if (owner != 0) res += FidLine(item + " mesh owner(+0x338)", Dev::ReadNod(owner));
+    uint nmat = Dev::GetOffsetUint32(mesh, 0xd0);
+    uint64 arr = Dev::GetOffsetUint64(mesh, 0xc8);
+    for (uint k = 0; k < nmat && k < 8 && arr != 0; k++) {
+        uint64 p = Dev::ReadUInt64(arr + 8 * k);
+        CMwNod@ mn = null;
+        if (p != 0)  = Dev::ReadNod(p);
+        res += FidLine(item + " material[" + k + "]", mn);
+    }
+    return res;
+}
+
+string ItemFids(const string &in qs) {
+    auto ed = cast<CGameCtnEditorFree>(GetApp().Editor);
+    if (ed is null) return "not in an editor -- /editmap3 first";
+    auto ch = ed.Challenge;
+    if (ch is null) return "no Challenge on this editor";
+    string needle = QArg(qs, "name");
+    if (needle == "") return "fids needs name=SUBSTR";
+    dictionary seen;
+    string res = "";
+    for (uint i = 0; i < ch.AnchoredObjects.Length; i++) {
+        auto o = ch.AnchoredObjects[i];
+        if (o is null || o.ItemModel is null) continue;
+        string n = o.ItemModel.IdName;
+        if (n.IndexOf(needle) < 0 || seen.Exists(n)) continue;
+        seen.Set(n, 1);
+        res += FidLine(n + " item", o.ItemModel);
+        res += MeshFids(n, o.ItemModel.EntityModel, 0);
+    }
+    // the game's own folders, for the depth arithmetic
+    auto game = Fids::GetGameFolder("");
+    if (game !is null) res += "GameData root: " + game.FullDirName + " | " + FolderChain(game) + "\n";
+    auto user = Fids::GetUserFolder("");
+    if (user !is null) res += "UserData root: " + user.FullDirName + " | " + FolderChain(user) + "\n";
+    if (res == "") res = "no item matches";
+    return res;
+}

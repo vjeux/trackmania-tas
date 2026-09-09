@@ -102,6 +102,7 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     // the tween flag of every item mesh (MeshFlags.as): /meshflags[?set=1], /respawn?name=
     if (r == "/meshflags") return HttpResponse(200, MeshFlags(qs));
     if (r == "/respawn") return HttpResponse(200, RespawnItem(qs));
+    if (r == "/fids") return HttpResponse(200, ItemFids(qs));
     if (r == "/mapblocks2") return HttpResponse(200, MapBlocks2(qs));
     if (r == "/cursor") return HttpResponse(200, EditorCursor());
     if (r == "/freelook") return HttpResponse(200, FreeLook());
