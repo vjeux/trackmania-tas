@@ -1714,6 +1714,51 @@ fn cmd_chain_replay(a: &Args) -> Result<(), String> {
     std::fs::write(a.req("out"), s).map_err(|e| e.to_string())?;
     let last = rows.last().ok_or("no rows")?;
     println!("replayed {} ticks: end ({:.1}, {:.1}, {:.1}) speed {:.1} cps {}", rows.len(), last.x, last.y, last.z, tmreach::rig::speed(last), last.cps as i64);
+    // --deficit (needs --author-line --gates [--centreline]): our speed vs the human's along the line, per 50 m, and the
+    // first arc length where we are > 15 % slow for 2 s
+    if a.has("deficit") {
+        let gates = MapGates::load_geom(Path::new(&a.req("gates")))?;
+        let ord: Option<Vec<u32>> = a.get("centreline").and_then(|c| std::fs::read_to_string(c).ok()).and_then(|txt| tmreach::json::parse(&txt).ok()).and_then(|j| j.get("order_groups").and_then(|v| v.arr()).map(|arr| arr.iter().filter_map(|x| x.f64()).map(|x| x as u32).collect()));
+        let track = tmreach::lap::Track::from_author_line_ordered(Path::new(&a.req("author-line")), &gates, ord.as_deref())?;
+        let mut hint = track.pts.len() / 2;
+        let mut win = track.pts.len();
+        let mut bins: std::collections::BTreeMap<i64, (f64, f64, usize)> = Default::default();
+        let mut first_deficit: Option<(f64, f64, f64, i64)> = None;
+        let mut slow_since: Option<i64> = None;
+        for (i, r) in rows.iter().enumerate() {
+            if i % 5 != 0 {
+                continue;
+            }
+            let (s, _l, sg, _d) = track.project(tmreach::rig::pos(r), hint, win);
+            hint = sg;
+            win = 80;
+            let v = tmreach::rig::speed(r);
+            let vh = track.human_speed_at(s);
+            let b = bins.entry((s / 50.0) as i64).or_insert((0.0, 0.0, 0));
+            b.0 += v;
+            b.1 += vh;
+            b.2 += 1;
+            if vh > 5.0 && v < 0.85 * vh {
+                if slow_since.is_none() {
+                    slow_since = Some(r.time_ms);
+                }
+                if first_deficit.is_none() && r.time_ms - slow_since.unwrap() >= 2000 {
+                    first_deficit = Some((s, v, vh, r.time_ms));
+                }
+            } else {
+                slow_since = None;
+            }
+        }
+        println!("DEFICIT MAP (our speed / human speed, mean per 50 m of the human line):");
+        for (k, (v, vh, n)) in &bins {
+            let (v, vh) = (v / *n as f64, vh / *n as f64);
+            println!("  s {:4}-{:4}: ours {:5.1}  human {:5.1}  {:+5.1} ({:+.0} %)", k * 50, k * 50 + 50, v, vh, v - vh, if vh > 0.0 { 100.0 * (v - vh) / vh } else { 0.0 });
+        }
+        match first_deficit {
+            Some((s, v, vh, t)) => println!("FIRST sustained deficit (> 15 % slow for 2 s): s {s:.0} m at race {} — ours {v:.1} vs human {vh:.1}", tmreach::secs(t)),
+            None => println!("no sustained deficit > 15 %"),
+        }
+    }
     Ok(())
 }
 

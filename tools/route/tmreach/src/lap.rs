@@ -433,6 +433,9 @@ const FOLLOW: &[(&str, bool, u8, f64)] = &[
     ("follow centreline, coast", false, 2, 0.9),
     ("follow centreline (short lookahead), gas", true, 0, 0.5),
     ("follow centreline (long lookahead), gas", true, 0, 1.5),
+    // bmode 3: pedals like the human (author line): gas below the human's speed 15 m ahead, coast above, brake well above
+    ("follow the human (line + pedals)", true, 3, 0.9),
+    ("follow the human (line + pedals), long lookahead", true, 3, 1.5),
 ];
 
 pub fn yaw_of(r: &Row) -> f64 {
@@ -544,6 +547,10 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let hint = track.hint_at(seg);
                 let (g, b) = match bmode {
                     1 => if v > hint + 3.0 && s_now > 10.0 { (false, true) } else { (*gas, false) },
+                    3 => {
+                        let vh = track.human_speed_at(s_now + 15.0);
+                        if vh <= 3.0 || v <= vh * 1.05 { (true, false) } else if v > vh * 1.3 { (false, true) } else { (false, false) }
+                    }
                     2 => (false, false),
                     _ => (*gas, false),
                 };
@@ -829,7 +836,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let road_y = track.at(s)[1];
             let hw = track.half_width.get(seg).copied().unwrap_or(5.5);
             let road_y_min = track.min_y_near(s, 15.0);
-            let bad = speed(&end) < 3.0 || end.vy < -3.0 || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y_min - cfg.below_tol));
+            let bad = speed(&end) < 3.0 || (end.vy < -3.0 && end.y < road_y_min - 3.0) || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y_min - cfg.below_tol));
             if !bad || tries >= 12 || recs.len() <= 300 {
                 break (rows, nh, end, s, seg);
             }
@@ -968,9 +975,13 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                     let mut ok = true;
                     let mut done_t = 0usize;
                     while done_t < 300 {
-                        let (st, sg, _s_now) = follow_steer(cfg, &last, seg_h, 1.0);
+                        let (st, sg, s_now) = follow_steer(cfg, &last, seg_h, 1.0);
                         seg_h = sg;
-                        let recs: Vec<Rec> = (0..10).map(|_| Rec { steer: st, gas: 1.0, brake: 0.0 }).collect();
+                        // pedals like the human: gas below the human's speed a little ahead, coast above it, brake well above
+                        let vh = track.human_speed_at(s_now + 15.0);
+                        let v_now = speed(&last);
+                        let (gas, brake) = if vh <= 3.0 || v_now <= vh * 1.05 { (1.0, 0.0) } else if v_now > vh * 1.3 { (0.0, 1.0) } else { (0.0, 0.0) };
+                        let recs: Vec<Rec> = (0..10).map(|_| Rec { steer: st, gas, brake }).collect();
                         match w.forest.advance_or_end(cur, &recs, from_f + done_t, 10)? {
                             branch::Advanced::Node(rs, c) => {
                                 if cur != nf {
@@ -989,13 +1000,15 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                         w.release(cur);
                     }
                     w.release(nf);
-                    let (s_after, _, _, _) = track.project(pos(&last), seg_h, 200);
+                    let (s_after, lat_after, _, _) = track.project(pos(&last), seg_h, 200);
                     let gained = s_after - f.s;
-                    if speed(&last) < 8.0 || gained < 25.0 {
+                    let below_after = track.min_y_near(s_after, 15.0) - last.y;
+                    // alive, still on the line, and not fallen under it (21: a car in the deck gap lands on the road 25 m below and "moves on")
+                    if speed(&last) < 8.0 || gained < 25.0 || below_after > cfg.below_tol || lat_after.abs() > 12.0 {
                         ok = false;
                     }
                     if !ok {
-                        out.log.push(format!("  clinic: arrival at s {:.1} refused — 3 s later v {:.1}, s +{:.1} m (stalled/fell); searching on", f.s, speed(&last), gained));
+                        out.log.push(format!("  clinic: arrival at s {:.1} refused — 3 s later v {:.1}, s +{:.1} m, {:.1} m under the line, lat {:.1}; searching on", f.s, speed(&last), gained, below_after, lat_after));
                         if cfg.verbose {
                             eprintln!("{}", out.log.last().unwrap());
                         }
