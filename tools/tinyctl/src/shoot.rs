@@ -4,7 +4,7 @@
 //! ```text
 //! tinyctl shoot --orig SRC.Map.Gbx --tiny TINY.Map.Gbx --views VIEWS.tsv --tag sNN
 //!               --anchor sx,sy,sz:tx,ty,tz [--outdir /tmp/tiny3] [--only o|t]
-//!               [--pull-full] [--box-shootctl P] [--box-tinyctl P] [--wsx P] [-v]
+//!               [--pull-full] [--ab] [--fresh] [--box-shootctl P] [--box-tinyctl P] [--wsx P] [-v]
 //! ```
 //!
 //! What happens, and where:
@@ -89,6 +89,25 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     // in-game advertisements rotate, so a skin probe repeats one view with a
     // longer pause to see every state)
     let settle_arg = f("--settle-ms").map(|ms| format!(" --settle-ms {ms}")).unwrap_or_default();
+    // --fresh: restart the game before the first load, under the render lock.
+    // The client caches an embedded item model by FILE NAME for the whole
+    // game session (coordinator, 2026-09-09 06:16Z): two builds of one map
+    // reuse AC/AV names for different pieces, so a frame of build B shot after
+    // build A can show A's pieces under B's names. A before/after pair is
+    // evidence only when its first side is the first load of a session (or
+    // every side carries names never loaded before — TINY_ALIAS_BASE). The
+    // restart runs detached (a launch can take minutes; a bridge command is
+    // capped at 90 s) and hands the lock back before the shootsets take it.
+    if tmmaps::cli::has(args, "--fresh") {
+        eprintln!("restarting the game first (--fresh) …");
+        let done = format!("{STAGE}/{tag}-fresh-done.txt");
+        let log = format!("{STAGE}/{tag}-fresh.log");
+        let owner = format!("{tag}-fresh");
+        let job = format!("{shootctl} lock acquire --owner {owner} --wait 900 || exit 3; {shootctl} quit; {shootctl} launch 300 --force; rc=$?; {shootctl} lock release --owner {owner}; if [ $rc = 0 ]; then echo OK fresh game > {done}; else echo FAILED launch rc=$rc > {done}; fi");
+        wsx.sh(&format!("rm -f {done}; nohup setsid sh -c '{job}' > {log} 2>&1 < /dev/null &"))?;
+        let text = wsx.wait_done(&done, &log, Duration::from_secs(1200), "fresh game")?;
+        eprintln!("  {}", text.trim());
+    }
     for side in &sides {
         let map = if *side == "o" { &r_orig } else { &r_tiny };
         // shootset maps the camera through the anchor for --side t only, so

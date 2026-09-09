@@ -53,11 +53,12 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         whole map from above and its four quadrants; the anchor as a comment;
         --ghost/--at add chase views (camera behind the car) at instants of a driven lap
   tinyctl shoot --orig SRC --tiny TINY --views VIEWS.tsv --tag sNN --anchor A
-                [--outdir /tmp/tiny3] [--only o|t] [--pull-full] [--ab] [-v] [--get [N:]/route …]
+                [--outdir /tmp/tiny3] [--only o|t] [--pull-full] [--ab] [--fresh] [-v] [--get [N:]/route …]
         push, one editor load per side on the render box (shootctl shootset),
         compare there, pull the sheets: cmpdiff-sNN-crops.png / -overview.png
         (--ab: --orig is a tiny build too — an A/B of two tiny outputs — and is
-        shot through the anchor like the tiny side)
+        shot through the anchor like the tiny side; --fresh: restart the game first,
+        under the lock — the client caches item models by file name per session)
   tinyctl play --map MAP --tag T [--shots 4] [--every-ms 200] [--first-ms 300] [--timeout 600] [--outdir D]
                [--drive-ms MS [--drive-at-ms 13500]]
         the map in PLAY mode on the box (shootctl playshots): N timed frames from
