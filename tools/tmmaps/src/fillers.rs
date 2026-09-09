@@ -180,6 +180,18 @@ pub struct GameList {
     pub total: usize,
     /// (name, cell, dir & 3) -> how many the game holds
     pub counts: BTreeMap<(String, (i32, i32, i32), u8), usize>,
+    /// the same keys -> what the engine picked for each record it holds there
+    /// (`MobilIndex`, `MobilVariantIndex`, `IsGround`, ghost), in list order
+    pub recs: BTreeMap<(String, (i32, i32, i32), u8), Vec<GameRec>>,
+}
+
+/// One record of the editor's list: the engine's own mobil pick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GameRec {
+    pub mobil: i32,
+    pub mobil_var: i32,
+    pub ground: bool,
+    pub ghost: bool,
 }
 
 impl GameList {
@@ -193,6 +205,7 @@ impl GameList {
             Some(rest[..end].trim().trim_matches('"').to_string())
         };
         let mut counts: BTreeMap<(String, (i32, i32, i32), u8), usize> = BTreeMap::new();
+        let mut recs: BTreeMap<(String, (i32, i32, i32), u8), Vec<GameRec>> = BTreeMap::new();
         let mut total = 0usize;
         for obj in text.split("{\"i\":").skip(1) {
             let name = field(obj, "name").unwrap_or_default();
@@ -207,9 +220,13 @@ impl GameList {
                 }
             };
             let dir: u8 = field(obj, "dir").and_then(|s| s.parse::<i32>().ok()).map(|d| (d & 3) as u8).unwrap_or(0);
-            *counts.entry((name, cell, dir)).or_insert(0) += 1;
+            let int = |k: &str| field(obj, k).and_then(|s| s.parse::<i32>().ok()).unwrap_or(0);
+            let rec = GameRec { mobil: int("mobil"), mobil_var: int("mobilVar"), ground: field(obj, "ground").as_deref() == Some("true"), ghost: field(obj, "ghost").as_deref() == Some("true") };
+            let key = (name, cell, dir);
+            *counts.entry(key.clone()).or_insert(0) += 1;
+            recs.entry(key).or_default().push(rec);
             total += 1;
         }
-        GameList { total, counts }
+        GameList { total, counts, recs }
     }
 }

@@ -486,3 +486,38 @@ the render box with one-item lineups and item moves on a copy of the original:
   — an editor-only helper like the yellow FC caps: moving the gate away in a
   copy of the original removes it; play mode never shows it; the bake leaves
   it out on purpose.
+
+## The SHAPE of a generated filler is never in question (2026-09-08, night)
+
+vjeux, on Summer 15's reactor gate: "the ones that are displayed are NOT
+correctly shaped pieces — we display entire basic road blocks when it should be
+a wall or something." Checked from the other end with `mapgeom shape-audit
+MAP… [--collection C] [--game baked.json] [--out TSV] [--all]`: for every
+BAKED record the converter's resolution — the block-info file the name means
+(`BlockInfoIndex::paths_for`, Classic before Pillar before Clip), the variant the
+ground bit picks, the mobil LIST bits 0..5 index, the mobil bits 6..11 index,
+the additional variant of bits 21..27, the prefab that comes out — is printed
+with every fallback the pick took. On the 25 Summer 2026 sources: 0 names with
+two candidate files of different kinds, 0 records indexing past their variant's
+lists or past a list, 0 names without a block info; the one fallback is
+`WaterShore1_Rocky_FCLeft` (76 air records on 08/13/23) on a clip info that has
+only a ground variant — the same `FCLeft` prefab either way. Against the
+editor's own list of the original 20 (`/mapblocks2?list=baked`: 7287 records
+with the engine's `MobilIndex` / `MobilVariantIndex`), 7280 of 7281 clip
+records pick exactly what the file's bits say; the one exception is
+`DecoCliffToDecoPlatformStraightVFC` b5356, where the engine took mobil variant
+3 (`…_Bottom_AirD`) for the file's 2 (`…_Bottom_AirC`) — the A/B/C/D
+alternates of one piece.
+
+So the "whole road / platform blocks" are the prefabs the records name:
+`TrackWall\Straight_FCB` is a 29 × 32 m ResonantMetal plate (a road's
+underside), `Platform\Base_FCT` / `Base_FCB` are 32 × 32 m plates (a pillar's
+cap, a platform's underside), `DecoWallWater\Base_FCT` is a 32 × 32 m WATER
+plane — the water surface of a `DecoWallWaterBase`, which has none of its own
+(drop it and the channel is dry, frame s15ab-o). What vjeux saw at the gate
+was the PlatformBase plates of the channel's pillar caps seen through the
+water (the ResonantMetal grating reads as parallel stripes on the pool;
+frames s15shape/s15ab/s15pb, 2026-09-09 00:00–00:30Z): a DRAW-rule matter
+(the plate clause of 3bab4b43 hides them), not a resolution one. The
+converter cannot draw a wrong shape for a record; it can only draw a record
+the game would not.

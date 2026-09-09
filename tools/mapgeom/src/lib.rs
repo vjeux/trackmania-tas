@@ -35,6 +35,7 @@ pub mod collhash;
 pub mod coverage;
 pub mod embedded;
 pub mod fillers;
+pub mod shape_audit;
 pub mod geom;
 pub mod light_skin;
 pub mod lz4dict;

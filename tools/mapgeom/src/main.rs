@@ -49,6 +49,13 @@ COMMANDS
                                 every recorded clip filler against the block
                                 unit face it stands on: occupant, that face's
                                 clip list, owner, the piece's clip flags
+  shape-audit <file.Map.Gbx>... [--collection Stadium] [--game baked.json]
+      [--out TSV] [--all]
+                                what every BAKED record would be drawn as: the
+                                block info its name resolves to, the variant /
+                                mobil its flags index, the prefab, and every
+                                fallback; --game sets the editor's own
+                                mobil / mobilVar picks against the flag bits
   blockinfo-map <file.Map.Gbx> --out TSV [--no-baked] [--report TSV]
       [--collection BlueBay]
       [--collection BlueBay]
@@ -1250,6 +1257,10 @@ fn main() {
         "fillers" => {
             let mut store = open(&a);
             mapgeom::fillers::cmd(&mut store, &a.rest[1..]);
+        }
+        "shape-audit" => {
+            let mut store = open(&a);
+            mapgeom::shape_audit::cmd(&mut store, &a.rest[1..]);
         }
         "blockinfo-map" => {
             let mut store = open(&a);
