@@ -1000,13 +1000,15 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                         w.release(cur);
                     }
                     w.release(nf);
-                    let (s_after, _, _, _) = track.project(pos(&last), seg_h, 200);
+                    let (s_after, lat_after, _, _) = track.project(pos(&last), seg_h, 200);
                     let gained = s_after - f.s;
-                    if speed(&last) < 8.0 || gained < 25.0 {
+                    let below_after = track.min_y_near(s_after, 15.0) - last.y;
+                    // alive, still on the line, and not fallen under it (21: a car in the deck gap lands on the road 25 m below and "moves on")
+                    if speed(&last) < 8.0 || gained < 25.0 || below_after > cfg.below_tol || lat_after.abs() > 12.0 {
                         ok = false;
                     }
                     if !ok {
-                        out.log.push(format!("  clinic: arrival at s {:.1} refused — 3 s later v {:.1}, s +{:.1} m (stalled/fell); searching on", f.s, speed(&last), gained));
+                        out.log.push(format!("  clinic: arrival at s {:.1} refused — 3 s later v {:.1}, s +{:.1} m, {:.1} m under the line, lat {:.1}; searching on", f.s, speed(&last), gained, below_after, lat_after));
                         if cfg.verbose {
                             eprintln!("{}", out.log.last().unwrap());
                         }
