@@ -38,8 +38,57 @@ SIZE="$(wc -c < "$FILE" | tr -d ' ')"
 UA='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36'
 J="$(mktemp -d)"; trap 'rm -rf "$J"' EXIT
 
+# --- the session STATE file (ours), and the credential file (his) ------------
+# GitHub rotates `_gh_sess` on its responses and does not tolerate the old value
+# coming back: on 2026-09-09 four freshly-copied sessions each died after two or
+# three uploads, and a jar run caught the server DELETING user_session in a
+# Set-Cookie — the site logs the session out, it does not merely expire. A
+# client that replays one frozen header is exactly the pattern that trips it.
+#
+# So the cookies live in a jar THIS TOOL owns, seeded from the credential file
+# whenever that file is newer, and curl keeps it current from every Set-Cookie.
+#
+# ⛔ THE CREDENTIAL FILE IS INPUT: READ IT, NEVER WRITE IT. An earlier version of
+# this change wrote the jar back to ~/.gh-upload/cookie at exit; `curl -c` had
+# dropped the session cookies the server re-set, and the write-back replaced a
+# 1749-byte live header with 33 bytes of `_octo` — destroying a session a human
+# had just copied out of his browser, and costing another renewal.
+COOKIE_FILE="${GH_COOKIE_FILE:-$HOME/.gh-upload/cookie}"
+JAR="${GH_COOKIE_JAR:-$HOME/.gh-upload/session-state}"
+umask 077
+if [ ! -s "$JAR" ] || [ "$COOKIE_FILE" -nt "$JAR" ]; then
+  : > "$JAR"; chmod 600 "$JAR"
+  printf '# Netscape HTTP Cookie File\n' >> "$JAR"
+  EXP=$(( $(date +%s) + 31536000 ))
+  printf '%s\n' "$GH_COOKIE" | tr ';' '\n' | while IFS= read -r kv; do
+    kv="${kv# }"; [ -n "$kv" ] || continue
+    k="${kv%%=*}"; v="${kv#*=}"
+    case "$k" in
+      __Host-*|__Secure-*) printf 'github.com\tFALSE\t/\tTRUE\t%s\t%s\t%s\n' "$EXP" "$k" "$v" >> "$JAR" ;;
+      *) printf '.github.com\tTRUE\t/\tTRUE\t%s\t%s\t%s\n' "$EXP" "$k" "$v" >> "$JAR" ;;
+    esac
+  done
+fi
+COOKIE_ARGS=(-b "$JAR" -c "$JAR")
+
+# The headers a browser sends with these requests. The upload endpoints are the
+# ones the site's own JavaScript calls, and a request missing what that fetch
+# always carries is a request that stands out.
+BROWSER=(
+  -H 'accept-language: en-US,en;q=0.9'
+  -H 'sec-fetch-site: same-origin'
+  -H 'sec-fetch-mode: cors'
+  -H 'sec-fetch-dest: empty'
+  -H 'sec-ch-ua-mobile: ?0'
+  -H 'sec-ch-ua-platform: "macOS"'
+  -H 'github-verified-fetch: true'
+)
+
 # --- 0. a fresh CSRF token, from the same form the browser posts -------------
-curl -sS --url "$GH_EDIT_URL" -b "$GH_COOKIE" -H "user-agent: $UA" -o "$J/edit.html"
+curl -sS --url "$GH_EDIT_URL" "${COOKIE_ARGS[@]}" -H "user-agent: $UA" \
+  -H 'accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \
+  -H 'accept-language: en-US,en;q=0.9' -H 'sec-fetch-site: same-origin' \
+  -H 'sec-fetch-mode: navigate' -H 'sec-fetch-dest: document' -o "$J/edit.html"
 # The edit page carries its CSRF tokens in an embedded JSON blob, keyed by path:
 #   "csrf_tokens":{ ... "/upload/policies/assets":{"post":"<token>"} ... }
 TOKEN="$(perl -0ne 'print $1 if m{"/upload/policies/assets":\{"post":"([^"]+)"\}}' "$J/edit.html")"
@@ -51,7 +100,7 @@ curl -sS --url 'https://github.com/upload/policies/assets' \
   -H 'accept: application/json' -H 'origin: https://github.com' \
   -H "referer: $GH_EDIT_URL" -H "user-agent: $UA" \
   -H 'x-requested-with: XMLHttpRequest' \
-  -b "$GH_COOKIE" \
+  "${COOKIE_ARGS[@]}" "${BROWSER[@]}" \
   -F "name=$NAME" -F "size=$SIZE" -F "content_type=$CT" \
   -F "authenticity_token=$TOKEN" \
   -F "repository_id=$GH_REPO_ID" \
@@ -79,7 +128,7 @@ curl -sS -X PUT --url "https://github.com${ASSET_PUT}" \
   -H 'accept: application/json' -H 'origin: https://github.com' \
   -H "referer: $GH_EDIT_URL" -H "user-agent: $UA" \
   -H 'x-requested-with: XMLHttpRequest' \
-  -b "$GH_COOKIE" \
+  "${COOKIE_ARGS[@]}" "${BROWSER[@]}" \
   -F "authenticity_token=$ASSET_TOKEN" \
   -o "$J/done.json" -w '%{http_code}' > "$J/code3"
 case "$(cat "$J/code3")" in 200|201) ;; *) echo "ghvid: finalise returned $(cat "$J/code3")" >&2; head -c 400 "$J/done.json" >&2; exit 6;; esac

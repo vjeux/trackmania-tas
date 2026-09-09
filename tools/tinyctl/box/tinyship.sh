@@ -28,16 +28,23 @@ rm -f "$DONE"
   if [ "$SZ" -gt 99000000 ]; then echo "FAILED mp4 too big ($SZ) — re-run with a higher crf" > "$DONE"; exit 1; fi
   GH_COOKIE="$(tr -d '\r\n' < /home/vjeux/.gh-upload/cookie)"; export GH_COOKIE
   # a cookie that answers 302 -> /login is dead: STOP, do not retry.
-  # The probe READS the header and never writes it — see the warning in ghvid.sh.
-  code=$(curl -s -o /dev/null -w '%{http_code}' -b "$GH_COOKIE" -H 'user-agent: Mozilla/5.0' https://github.com/vjeux/trackmania-tas/edit/main/README.md)
+  # Through the SAME session state ghvid.sh keeps (GitHub rotates _gh_sess and
+  # logs out a client that replays a stale one), never through the credential
+  # file, which every tool here only ever READS — see the warning in ghvid.sh.
+  STATE=/home/vjeux/.gh-upload/session-state
+  [ -s "$STATE" ] && [ ! /home/vjeux/.gh-upload/cookie -nt "$STATE" ] \
+    && COOKIEARG="-b $STATE -c $STATE" || COOKIEARG="-b $GH_COOKIE"
+  code=$(curl -s -o /dev/null -w '%{http_code}' $COOKIEARG -H 'user-agent: Mozilla/5.0' https://github.com/vjeux/trackmania-tas/edit/main/README.md)
   echo "cookie probe: HTTP $code"
   case "$code" in 200) ;; *) echo "FAILED cookie probe HTTP $code (302 = logged out) — STOP" > "$DONE"; exit 1;; esac
   mkdir -p "/tmp/tinyship/$SLUG"
-  # SERIALISED, AND PACED. The lock is held through a cool-down after the
-  # upload: three uploads two minutes apart preceded the 2026-09-09 logout, and
-  # vjeux's renewed session is not to be spent the same way. COOLDOWN=0 turns it off.
+  # SERIALISED, back to back. The lock is what keeps two ships off one session;
+  # there is NO cool-down (COOLDOWN=0 by default, vjeux 16:58Z: "can you just
+  # upload them back to back, why a specific delay?"). The first 2026-09-09
+  # logout was a stale rotating _gh_sess and a re-login, not a rate limit; set
+  # COOLDOWN=N if that is ever disproved.
   echo "waiting for the ship lock $LOCK …"
-  flock "$LOCK" sh -c "$CLIP ship \"$MP4\" \"/tmp/tinyship/$SLUG\" --no-mirror; rc=\$?; sleep ${COOLDOWN:-180}; exit \$rc" > "$OUT.out" 2>&1
+  flock "$LOCK" sh -c "$CLIP ship \"$MP4\" \"/tmp/tinyship/$SLUG\" --no-mirror; rc=\$?; sleep ${COOLDOWN:-0}; exit \$rc" > "$OUT.out" 2>&1
   rc=$?
   cat "$OUT.out"
   URL=$(grep -o 'https://github.com/user-attachments/assets/[0-9a-f-]*' "$OUT.out" | head -1)
