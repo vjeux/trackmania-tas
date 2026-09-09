@@ -217,7 +217,11 @@ impl Track {
                         let p = t.pts[i];
                         let d = ((p[0] - g.centre[0]).powi(2) + (p[1] - g.centre[1]).powi(2) + (p[2] - g.centre[2]).powi(2)).sqrt();
                         if d < 20.0 {
-                            if best.map(|b| t.s[i] < b.0).unwrap_or(true) {
+                            // a pass within 20 m wins over a nearest-so-far fallback (d >= 20) and over a later pass
+                            // (BUG until 2026-09-09 10:20Z: the fallback entry blocked this update, so every gate was
+                            // "placed" at the first sample after the previous gate and the off-route cap fired 40 m
+                            // after every credit)
+                            if best.map(|b| b.1 >= 20.0 || t.s[i] < b.0).unwrap_or(true) {
                                 best = Some((t.s[i], d));
                             }
                             break;
