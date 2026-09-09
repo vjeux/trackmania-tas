@@ -1264,7 +1264,22 @@ pub fn effective_layer_ids(v: &CPlugVisualIndexedTriangles) -> Option<Vec<u32>> 
 /// Declarations are rebuilt in ascending name order with cumulative offsets
 /// (the order every pack visual uses).
 pub fn harmonize_layouts(visuals: &mut [MergedVisual]) {
-    use super::vstream::{Decl, T_FLOAT2};
+    harmonize_layouts_with(visuals, &[]);
+}
+
+/// `harmonize_layouts` with material slots that must carry a TANGENT FRAME
+/// whether or not any of their visuals has one. Nadeo's own
+/// `Prefab\PlatformDirt\SpecialSlope2Up_Air` and `PlatformPlastic\
+/// SpecialSlope2UpV2_Air` author the deck as (position, normal, uv0, uv1)
+/// under `Modifier\PlatformDirt|PlatformPlastic\PlatformTech` — the layout
+/// whose loader read TangentU through NULL on the re-dressed Deco parts of
+/// tiny 25 (0x140456c35, item-check SH-03). The pack's copies load, so the
+/// crash is not certain from the layout alone; a frame built round the normal
+/// (what a same-material sibling would have donated) costs 8 bytes a vertex
+/// and takes the item out of the crash family either way (2026-09-09, the
+/// Turbo slopes of 23 and 24).
+pub fn harmonize_layouts_with(visuals: &mut [MergedVisual], want_tangents: &[usize]) {
+    use super::vstream::{Decl, SPACE_LOCAL3D, T_FLOAT2};
     use std::collections::BTreeMap;
     // material -> union of (name -> donor decl, stored type)
     let mut unions: BTreeMap<usize, BTreeMap<u32, (Decl, u32)>> = BTreeMap::new();
@@ -1274,6 +1289,12 @@ pub fn harmonize_layouts(visuals: &mut [MergedVisual]) {
         let u = unions.entry(mv.material).or_default();
         for d in &s.decls {
             u.entry(d.name()).or_insert((d.clone(), d.stored_type(compress)));
+        }
+    }
+    for slot in want_tangents {
+        let u = unions.entry(*slot).or_default();
+        for name in [N_TANGENT_U, N_TANGENT_V] {
+            u.entry(name).or_insert((Decl::with_stride(name, T_DEC3N, SPACE_LOCAL3D, 0, 0), T_DEC3N));
         }
     }
     for mv in visuals.iter_mut() {

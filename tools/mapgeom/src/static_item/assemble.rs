@@ -5,7 +5,7 @@
 
 use super::lod::{cap_lod_ladder, lod0_only, remap_lod_mask, MAX_LOD_LEVELS};
 use super::materials::{custom_texture_material, light_skin_material, sign_logo_material, skinned_material};
-use super::merged::{coalesce, harmonize_layouts, Merged};
+use super::merged::{coalesce, harmonize_layouts_with, Merged};
 use super::build::fx_entities;
 use super::solid2::{CPlugSolid2Model, Material, PreLightGen, ShadedGeom};
 use super::surface::CPlugSurface;
@@ -130,7 +130,13 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
             return Err("every visual fell off the capped detail ladder".into());
         }
     }
-    harmonize_layouts(&mut pre);
+    // The platform-plastic family (`…\PlatformTech`, plain or under a
+    // modifier) is the one whose loader crashed on a visual without a
+    // tangent frame (item-check SH-03); every visual under it gets one,
+    // synthesised round the normal when the pack gave none (Nadeo's own
+    // PlatformDirt / PlatformPlastic Turbo slopes).
+    let want_tangents: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map(|l| l.ends_with("\\PlatformTech")).unwrap_or(false)).map(|(i, _)| i).collect();
+    harmonize_layouts_with(&mut pre, &want_tangents);
     let visuals = coalesce(&pre);
     // Only the materials some visual draws with, in first-use order (the
     // reference items list exactly one material per visual).
