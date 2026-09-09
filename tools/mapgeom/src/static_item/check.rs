@@ -294,6 +294,19 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                             print!("{}", fx.describe());
                         }
                     }
+                    // the pack ring's spawn point (NPlugTrigger_SSpawn, chunk 0x0917A000
+                    // v3, identity Iso4, 24 bytes) and its 8-byte 0x0917B000 companion —
+                    // written by `assemble` after a no-respawn waypoint, byte for byte
+                    // the pack's (Items\Gate\CheckpointRight32m.Prefab entities 6/7)
+                    Some(super::Node::Opaque(o)) if o.class_id == 0x0917A000 => {
+                        if o.raw.len() != 84 {
+                            problems.push(format!("entity {i}: spawn point body is {} bytes, the pack's is 84", o.raw.len()));
+                        }
+                        if facts {
+                            println!("{path}: entity {i} spawn point (NPlugTrigger_SSpawn) at {:?}", e.pos);
+                        }
+                    }
+                    Some(super::Node::Opaque(o)) if o.class_id == 0x0917B000 && o.raw.len() == 8 => {}
                     Some(other) => problems.push(format!("entity {i}: class 0x{:08X} in the prefab", other.class_id())),
                     None => problems.push(format!("entity {i}: external model node {}", e.model.index)),
                 }

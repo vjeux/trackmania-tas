@@ -444,12 +444,24 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         // the no-respawn waypoint's trigger, the pack's own layout
         // (Items\Gate\CheckpointRight32m.Prefab entity 5): an
         // NPlugTrigger_SWaypoint at the identity with the trigger shape inline
-        // and NoRespawn set; no NPlugTrigger_SSpawn follows — the game never
-        // spawns here
+        // and NoRespawn set — followed, as in the pack ring (entities 6 and 7),
+        // by an NPlugTrigger_SSpawn at the block's spawn pose and the 8-byte
+        // 0x0917B000 node. Without the spawn the CLIENT respawned at the ITEM's
+        // pivot — beside the ring, at ring height (vjeux, 2026-09-09: "drops you
+        // to the side") — while the server used its own restore; the spawn
+        // gives both engines the same point: the block info's spawn location
+        // scaled (the road under the ring, facing the route, in the item's
+        // frame — the block's yaw is the placement's), the floor centre when
+        // the block info has none. The SSpawn body is the pack's byte for byte
+        // (chunk 0x0917A000 v3: Iso4, then 24 bytes 0,0,0,0,-1.0,0; FACADE).
         if no_respawn_wp {
             let wi = next_index(&mut next);
             let wp = super::WaypointTrigger { version: 1, wtype: m.waypoint_type.unwrap_or(2), shape: trigger.clone(), no_respawn: 1 };
             ents.push(super::prefab::Entity { model: inline(wi, Node::WaypointTrigger(wp)), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
+            let si = next_index(&mut next);
+            ents.push(super::prefab::Entity { model: inline(si, Node::Opaque(spawn_trigger_node())), rot: [0.0, 0.0, 0.0, 1.0], pos: m.spawn, params_id: -1, params: Vec::new(), u01: Vec::new() });
+            let ti = next_index(&mut next);
+            ents.push(super::prefab::Entity { model: inline(ti, Node::Opaque(super::OpaqueNode { class_id: 0x0917B000, raw: vec![0u8; 8] })), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
         }
         // the effect systems (smoke, sparks), after the static part like the
         // pack's Show prefabs (Fogger16M: entity 0 the box, entity 1 the FxSys)
@@ -715,4 +727,25 @@ mod repack_tests {
         assert_ne!(cells[1], cells[3]);
         assert_ne!(cells[0], cells[3]);
     }
+}
+
+/// The pack's `NPlugTrigger_SSpawn` body (Items\Gate\CheckpointRight32m.Prefab
+/// node 27, read off the bytes 2026-09-09): chunk 0x0917A000 version 3, an
+/// identity Iso4, then 24 bytes `0, 0, 0, 0, f32 -1.0, 0`, FACADE. The
+/// spawn's POSE is the entity's, so the body stays identity and the caller
+/// positions the entity.
+pub fn spawn_trigger_node() -> super::OpaqueNode {
+    let mut raw: Vec<u8> = Vec::with_capacity(84);
+    raw.extend_from_slice(&0x0917A000u32.to_le_bytes());
+    raw.extend_from_slice(&3u32.to_le_bytes());
+    for v in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0] {
+        raw.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in [0u32, 0, 0, 0] {
+        raw.extend_from_slice(&v.to_le_bytes());
+    }
+    raw.extend_from_slice(&(-1.0f32).to_le_bytes());
+    raw.extend_from_slice(&0u32.to_le_bytes());
+    raw.extend_from_slice(&super::FACADE.to_le_bytes());
+    super::OpaqueNode { class_id: 0x0917A000, raw }
 }

@@ -786,6 +786,26 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
         }
         let sl = plan.pk.variant.spawn_loc;
         m.spawn = [sl[0] * scale, sl[1] * scale, sl[2] * scale];
+        // a checkpoint variant without a spawn location (GateCheckpoint's add0
+        // variant: [0,0,0]) respawns at the block's floor centre — the middle of
+        // its footprint, 1 m up — so a respawn never lands at the item's pivot
+        // — unless a sibling variant of the same block has one (GateCheckpoint's
+        // ground variant: [16, 1.7, 11.2], the road under the ring), which is the
+        // same block's road at the same height and is taken first.
+        if wt == 2 && sl == [0.0; 6] {
+            let sibling = bi.variant_base_ground.iter().chain(bi.variant_base_air.iter()).chain(bi.additional_ground.iter()).chain(bi.additional_air.iter()).map(|v| v.spawn_loc).find(|s| *s != [0.0; 6]);
+            match sibling {
+                Some(s) => {
+                    m.spawn = [s[0] * scale, s[1] * scale, s[2] * scale];
+                    m.notes.push(format!("checkpoint variant without a spawn location: a sibling variant's taken, {:?}", m.spawn));
+                }
+                None => {
+                    let (sx, sz) = (plan.footprint.sx.max(1) as f32, plan.footprint.sz.max(1) as f32);
+                    m.spawn = [sx * 16.0 * scale, 1.0 * scale, sz * 16.0 * scale];
+                    m.notes.push(format!("checkpoint without a spawn location: spawn at the floor centre {:?}", m.spawn));
+                }
+            }
+        }
     }
     // the block info's skin declaration (the screen blocks'
     // `Any\Advertisement16x9\`) travels into the item header
