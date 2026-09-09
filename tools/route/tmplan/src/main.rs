@@ -925,11 +925,28 @@ fn cmd_road_centreline(args: &[String]) {
             for (si, &nd) in seq.iter().enumerate().skip(1) {
                 let grp_id = nodes.groups[nd];
                 let is_fin = gates.gates.iter().any(|x| x.group == grp_id && matches!(x.kind, tmroute::gates::WpKind::Finish));
+                // the cut = the CROSSING, not the first sample within reach: within the (first, or for a finish the last) run
+                // of in-range samples take the one nearest the gate plane (min lateral distance to a gate of the group) —
+                // the first-in-range sample sat 10–12 m before every credit on 15 certified laps (INPUT tables, 05:20Z)
                 let mut found: Option<usize> = None;
+                let mut run_best: Option<(usize, f32)> = None;
+                let mut in_run = false;
+                let (mut lo, mut hi) = (0usize, 0usize);
+                let _ = (lo, hi);
                 for (li, p) in line.iter().enumerate() {
-                    let hit = gates.gates.iter().filter(|x| x.group == grp_id).any(|x| ((x.centre[0] - p[0]).powi(2) + (x.centre[2] - p[2]).powi(2)).sqrt() <= x.half_width + 6.0 && (x.centre[1] - p[1]).abs() <= 10.0);
-                    if hit { found = Some(li); if !is_fin { break; } }
+                    let dmin = gates.gates.iter().filter(|x| x.group == grp_id).filter(|x| (x.centre[1] - p[1]).abs() <= 10.0).map(|x| ((x.centre[0] - p[0]).powi(2) + (x.centre[2] - p[2]).powi(2)).sqrt() - x.half_width).fold(f32::INFINITY, f32::min);
+                    let hit = dmin <= 6.0;
+                    if hit {
+                        if !in_run { in_run = true; run_best = None; lo = li; }
+                        hi = li;
+                        if run_best.map(|(_, d)| dmin < d).unwrap_or(true) { run_best = Some((li, dmin)); }
+                    } else if in_run {
+                        in_run = false;
+                        found = run_best.map(|(i, _)| i);
+                        if !is_fin { break; }
+                    }
                 }
+                if in_run { found = run_best.map(|(i, _)| i); }
                 match found { Some(li) => cuts.push((li, si)), None => { ok = false; eprintln!("  author line never passes group {grp_id} — author line NOT used"); break; } }
             }
             let monotone = cuts.windows(2).all(|w| w[1].0 > w[0].0);

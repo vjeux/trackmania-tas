@@ -192,7 +192,28 @@ pub fn parse_probe(s: &str) -> Result<usize, String> {
 pub struct Rec {
     pub steer: f32,
     pub gas: f32,
+    /// 0.0 or 1.0 -- PLUS 2.0 when the tick carries a RESPAWN (the tape's respawn
+    /// event; the shim decodes brake >= 2.0 into the record's word 0 = 0x22 and
+    /// writes the real brake). Use [`Rec::respawn`] / [`Rec::with_respawn`].
     pub brake: f32,
+}
+
+impl Rec {
+    /// This tick also presses RESPAWN (the engine respawns the car to its last
+    /// credited checkpoint about 1.0 s later, with that checkpoint's speed).
+    pub fn with_respawn(mut self) -> Rec {
+        if self.brake < 2.0 {
+            self.brake += 2.0;
+        }
+        self
+    }
+    pub fn respawn(&self) -> bool {
+        self.brake >= 2.0
+    }
+    /// The brake as the engine sees it (respawn flag stripped).
+    pub fn brake_value(&self) -> f32 {
+        if self.brake >= 2.0 { self.brake - 2.0 } else { self.brake }
+    }
 }
 
 pub fn rec_of(steer: u8, accel: u8, brake: u8) -> Rec {
