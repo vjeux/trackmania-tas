@@ -91,7 +91,9 @@ https://github.com/user-attachments/assets/71cacd13-73f8-45af-86c6-46575b14e0f3
 
 https://github.com/user-attachments/assets/d0815199-d7aa-4006-a4e2-dfc1809f2785
 
-**Tiny Summer 2026 - 24** — original author time `72.708` · *no lap yet*
+**Tiny Summer 2026 - 24** — original author time `72.708` · tiny ghost **149.593** (build ship15)
+
+https://github.com/user-attachments/assets/3808d227-72b0-4af8-84a4-f39c2b64e318
 
 **Tiny Summer 2026 - 25** — original author time `78.928` · tiny ghost **149.619** (build ship10)
 
