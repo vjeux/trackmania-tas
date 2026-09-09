@@ -357,7 +357,10 @@ impl Track {
                 return r;
             }
         }
-        self.project_in(p, hint.saturating_sub(window), (hint + window).min(n - 1))
+        // the wide fallback is capped (about 150 m each way): a self-crossing line (20's G3-first route re-passes the
+        // start plateau 1500 m later) must not snap a hinted car to a far pass (GEOM 2026-09-09 21:46Z)
+        let w = if window < n { window.min(30) } else { window };
+        self.project_in(p, hint.saturating_sub(w), (hint + w).min(n - 1))
     }
 
     fn project_in(&self, p: [f64; 3], lo: usize, hi: usize) -> (f64, f64, usize, f64) {
