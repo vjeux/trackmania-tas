@@ -9,9 +9,9 @@ author time is Nadeo's medal time on the full-size map, for reference — the tw
 Each clip is the ghost played back in the game's MediaTracker, chase camera. A map reads *video pending* until its
 clip is published the way every clip in this repo is.
 
-**Tiny Summer 2026 - 01** — original author time `23.144` · tiny ghost **19.381** (build ship10)
+**Tiny Summer 2026 - 01** — original author time `23.144` · tiny ghost **19.381** (build ship15)
 
-https://github.com/user-attachments/assets/0e5276d7-7553-4ddf-9a64-3bfc267d7f48
+https://github.com/user-attachments/assets/94c5f397-cb11-4ad9-9d08-4195fc9413e2
 
 **Tiny Summer 2026 - 02** — original author time `27.097` · tiny ghost **16.746** (build ship10)
 
