@@ -758,6 +758,37 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
         }
         m.skin = Some(chunk);
     }
+    // WATER is not a wall. A block's water surface (the `Water` material, physics
+    // id 13: the 32×32 m DecoWallWaterFCT plane over a channel, WaterBase's own
+    // quad) is a volume boundary in the game — the author of Summer 15 drives
+    // UNDER the channel's plane at 14.5–15.5 s (y 42–46, plane at 48) and UP
+    // through the next one at 18.3 s (y 69.9 → 75.8 across the plane at 72),
+    // `mapgeom ghostpath`. The same triangles in an ITEM's collision are a solid
+    // (physics 13 on an item surface): the tiny's car lands on the water instead
+    // of going under, then meets the ghost loop-top roads the author passes
+    // beneath, and hits the second plane from below — vjeux on ship13 (03:12Z):
+    // "15, 20 — road blocks in the middle of the path"; the eyes' frame d187 =
+    // the cream plate across the sand road. So every Water-physics collision
+    // triangle becomes NotCollidable (28); the visual quad stays.
+    {
+        let mut n = 0usize;
+        for t in m.surf_triangles.iter_mut() {
+            if t.material_id == 13 {
+                t.material_id = 28;
+                t.gameplay = 0;
+                n += 1;
+            }
+        }
+        if n > 0 {
+            // the (physics | gameplay << 8) table the triangles index: keep the indices, retarget the entries
+            for id in m.surf_ids.iter_mut() {
+                if *id & 0xff == 13 {
+                    *id = 28;
+                }
+            }
+            m.notes.push(format!("{n} Water-physics collision triangles made NotCollidable (water is a volume, not a wall)"));
+        }
+    }
     let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: ident.to_string(), scale, collection, skin: m.skin.clone() };
     let f = crate::static_item::build::assemble(&m, &opts)?;
     Ok((crate::static_item::file::write_file(&f), m, deepened))
