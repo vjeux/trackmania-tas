@@ -222,12 +222,15 @@ pub struct Summary {
 pub fn run(rest: &[String]) -> Result<(), String> {
     let paths: Vec<&String> = rest.iter().skip(1).filter(|a| !a.starts_with("--")).collect();
     if paths.is_empty() {
-        return Err("collhash MAP.Map.Gbx… [--parts]".into());
+        return Err("collhash MAP.Map.Gbx… [--parts] [--by-name]".into());
     }
     let parts_wanted = rest.iter().any(|a| a == "--parts");
+    // `--by-name`: the form before 2026-09-09 (embedded items by file name),
+    // for manifests written then; the default hashes them by content.
+    let by_name = rest.iter().any(|a| a == "--by-name");
     for path in paths {
         let m = tmmaps::map::MapFile::load(std::path::Path::new(path));
-        let s = summary(&m);
+        let s = summary_with(&m, by_name);
         println!(
             "{path}\tcollision {}\tplacements {} ({} items)\tblocks {} ({})\titems {} ({} models)",
             s.total, s.placements, s.n_items, s.blocks, s.n_blocks, s.items, s.n_models
@@ -250,8 +253,40 @@ pub fn run(rest: &[String]) -> Result<(), String> {
 
 /// The fingerprint of a loaded map (what `run` prints), for callers that want
 /// the numbers (`tinyctl ship`'s MANIFEST).
+/// `summary` in the BY-CONTENT form (the default since 2026-09-09): an embedded
+/// item enters the hash as its collision fingerprint, never as its file name.
+/// Item names are unique per map AND build (20960a1d: `TINY_ALIAS_BASE`), so a
+/// by-name hash differs between two builds of identical geometry and can no
+/// longer prove a pass collision-neutral — which is the one thing this command
+/// is for (the pub4 publish set against ship15, 2026-09-09: seven maps rebuilt
+/// with `--lod-pick` hashed DIFFERENT until their alias bases were forced to
+/// ship15's). `--by-name` gives the old form, comparable with manifests
+/// written before this date (ship13–ship15).
 pub fn summary(m: &tmmaps::map::MapFile) -> Summary {
+    summary_with(m, false)
+}
+
+/// `by_name`: hash embedded items by file name (the form before 2026-09-09).
+pub fn summary_with(m: &tmmaps::map::MapFile, by_name: bool) -> Summary {
     {
+        // --- 0. the embedded items' collision, by file name (the placements
+        // below look their model up here in the by-content form)
+        let files = crate::embedded::files(&m).unwrap_or_default();
+        let mut per_item: BTreeMap<String, String> = BTreeMap::new();
+        for (name, bytes) in &files {
+            let base = name.rsplit(['/', '\\']).next().unwrap_or(name).to_string();
+            if !base.to_ascii_lowercase().ends_with(".item.gbx") {
+                continue;
+            }
+            let mut one = Fnv::default();
+            match item_collision(bytes, &mut one) {
+                Ok(()) => {}
+                Err(e) => {
+                    one.str(&format!("UNPARSED:{e}"));
+                }
+            }
+            per_item.insert(base.clone(), one.hex());
+        }
 
         // --- 1. placements. The loop is SEQUENTIAL over the map's record
         // order, and FNV is order-sensitive, so a reordering of identical
@@ -262,7 +297,12 @@ pub fn summary(m: &tmmaps::map::MapFile) -> Summary {
         let mut ph = Fnv::default();
         let mut spawn_index: Option<usize> = None;
         for (i, it) in m.items.iter().enumerate() {
-            ph.str(&it.model);
+            // an embedded item by its collision fingerprint (by-content), a stock
+            // model by its name either way
+            match (by_name, per_item.get(&it.model)) {
+                (false, Some(hex)) => ph.str(hex),
+                _ => ph.str(&it.model),
+            }
             ph.f32q(it.pos[0], POS_Q);
             ph.f32q(it.pos[1], POS_Q);
             ph.f32q(it.pos[2], POS_Q);
@@ -303,27 +343,21 @@ pub fn summary(m: &tmmaps::map::MapFile) -> Summary {
             bh.str(b.waypoint_tag.as_deref().unwrap_or(""));
         }
 
-        // --- 3. the embedded items' collision
-        let files = crate::embedded::files(&m).unwrap_or_default();
-        let mut per_item: BTreeMap<String, String> = BTreeMap::new();
+        // --- 3. the embedded items' collision: the sorted set of fingerprints
+        // (with the names in the by-name form)
         let mut ih = Fnv::default();
-        for (name, bytes) in &files {
-            let base = name.rsplit(['/', '\\']).next().unwrap_or(name).to_string();
-            if !base.to_ascii_lowercase().ends_with(".item.gbx") {
-                continue;
-            }
-            let mut one = Fnv::default();
-            match item_collision(bytes, &mut one) {
-                Ok(()) => {}
-                Err(e) => {
-                    one.str(&format!("UNPARSED:{e}"));
-                }
-            }
-            per_item.insert(base.clone(), one.hex());
-        }
+        let mut hexes: Vec<&String> = per_item.values().collect();
+        hexes.sort();
         for (name, hex) in &per_item {
-            ih.str(name);
-            ih.str(hex);
+            if by_name {
+                ih.str(name);
+                ih.str(hex);
+            }
+        }
+        if !by_name {
+            for hex in hexes {
+                ih.str(hex);
+            }
         }
 
         let mut total = Fnv::default();
