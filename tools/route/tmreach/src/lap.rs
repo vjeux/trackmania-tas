@@ -687,6 +687,11 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                         r.gas = 1.0;
                         any = true;
                     }
+                    // 14:04Z (Argentina tail: a 4 s gas-off half-way up the turbo climb cost 6 s): the window also forces the GAS ON
+                    if !r.respawn() && r.gas < 0.5 {
+                        r.gas = 1.0;
+                        any = true;
+                    }
                 }
                 if any && m.description.contains("brake") {
                     // a pure brake macro with the brake removed duplicates the gas hold: skip it
