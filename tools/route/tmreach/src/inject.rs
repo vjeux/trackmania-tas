@@ -218,3 +218,29 @@ pub fn inject_state(w: &mut crate::rig::Worker, h: branch::Handle, st: &InjectSt
     row.vz = st.state.vel[2] as f64;
     Ok((nh, row))
 }
+
+/// Read the live dyna body of the car at fork node `h` into the schema (kind "chain"): the state GEN hands the player
+/// for a chain row. `race_ms` and `landmark`/`cps` are what the caller knows about the row.
+pub fn read_state(w: &mut crate::rig::Worker, h: branch::Handle, map_uid: &str, map_name: &str, file: &str, entry: usize, cps: u32, race_ms: i64) -> Result<InjectState, String> {
+    let pid = w.forest.pid_of(h)?;
+    let (sim_ms, race_start) = w.forest.clock_of(h)?;
+    let car = forkoracle::car::resolve_with(w.car.controller, w.car.sim, w.module_base, sim_ms, race_start, |a, n| forkoracle::procmem::read_at(pid, a, n)).map_err(|e| format!("read_state: no live body (respawn window or before the spawn?): {e}"))?;
+    let b = forkoracle::inject::read_body(pid, &car)?;
+    let speed_fwd = {
+        // forward = the car's local +Z: rotate (0,0,1) by the quaternion and project the velocity on it
+        let [qw, qx, qy, qz] = b.quat_wxyz;
+        let fx = 2.0 * (qx * qz + qw * qy);
+        let fy = 2.0 * (qy * qz - qw * qx);
+        let fz = 1.0 - 2.0 * (qx * qx + qy * qy);
+        b.vel[0] * fx + b.vel[1] * fy + b.vel[2] * fz
+    };
+    Ok(InjectState {
+        schema: SCHEMA.into(),
+        map_uid: map_uid.into(),
+        map_name: map_name.into(),
+        source: Source { file: file.into(), entry, landmark: cps, kind: "chain".into(), time_ms: race_ms },
+        state: State { pos: b.pos, quat_wxyz: b.quat_wxyz, vel: b.vel, ang_vel: Some(b.ang_vel), speed_fwd: Some(speed_fwd), wheels: None, gear: None, rpm_raw: None, ground: None },
+        inputs: Vec::new(),
+        expect: None,
+    })
+}
