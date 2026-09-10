@@ -121,6 +121,10 @@ fn http_get(route: &str, timeout_s: u64) -> Result<String, String> {
 /// REFUSED rather than handed over -- a wiring error must not be able to come
 /// back as a fact about a map.
 fn game_path(p: &str) -> Result<String, String> {
+    // every load of a map into the game goes through here, and every load is
+    // followed by writes on C: (captures, the game's own caches): refuse on a
+    // nearly full disk, with the reason (shootset::check_free_space)
+    shootset::refuse_when_disk_full()?;
     // /mnt/<drive>/rest  ->  <DRIVE>:/rest
     if let Some(rest) = p.strip_prefix("/mnt/") {
         let mut it = rest.splitn(2, '/');
