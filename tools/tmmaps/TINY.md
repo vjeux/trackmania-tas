@@ -229,7 +229,25 @@ What the bake keeps and what it gives up:
   lit by the sky, flat and dark. None of translucency, wind or LOD morphing
   can be had from an item, whatever its material or entity kind (a
   kinematic dyna entity draws no leaves for a 12k-vertex mesh, and a small
-  one's leaves come out as dark as the static ones).
+  one's leaves come out as dark as the static ones). Nor soft alpha: the
+  item shader's alpha test is binary (no alpha-to-coverage, no per-leaflet
+  shading), so a shaded frond renders near-black with hard edges and an
+  edge-on frond is a flat card — measured on the BlueBay palms (pass 3c).
+* **Measuring trees, the method that held (pass 3, 2026-09-10)**: `tinyctl
+  treelineup` stands the STOCK species beside our bake on a source-map host at
+  y 300 (sky behind — at y 150 the cloud band sits behind the crown and a
+  warm-grey cloud passes a plain green test; pass 2 was calibrated on that),
+  the stock at 25–30 m vs ours at 12–15 m (the same angular size), cameras
+  aimed at the CROWN centre (the stock crown is 2× higher than ours), sun and
+  shade sides; `tinyctl pulljpg` brings the frames; `tinyctl cropstats --fg
+  leaf` on the crown box located with `--grid 48x18` (a crop smaller than the
+  crown measures the crop). The stock is lit dynamically — ±15 % luma between
+  shots is the noise floor. The editor's orbital camera stops ~10 m from its
+  target. In the editor the tiny side has no lightmap (the whole scene reads
+  brighter): the lineups decide, not the same-camera map frames; `tinyctl
+  shoot --shadows 2` computes the editor lightmap (= play's load-time bake)
+  when the question is play mode. Eyes on frames: a child session per ~30
+  frames (image budget), one line per pair, before any default changes.
 * **The look, calibrated per collection (default since 2026-09-10 15:30Z,
   trees quality pass 3; `TINY_TREE_COLOR_TABLE=0` = the pass-2 rule below,
   ship16's bytes)**: `leaf_look_for` in build.rs — (colour gain, saturation,
@@ -238,7 +256,8 @@ What the bake keeps and what it gives up:
   `cropstats --fg leaf` on the crown crop): GreenCoast 1.3/1.6/−25° with
   three bands (a card whose normalised radius about the crown centre is under
   0.45 draws the atlas ×0.45, under 0.75 ×0.7, the rest as is), BlueBay
-  1.12/1.06/0 one band 0.6→×0.5, RedIsland 1.15/1.9/−15 one band
+  1.18/1.06/0 one band 0.6→×0.5 (1.12 → 1.18 after the crown-centred palm
+  lineup, pass 3c), RedIsland 1.15/1.9/−15 one band
   0.55→×0.55, Stadium 1.2/1.1/0 one band 0.6→×0.7, WhiteShore 1.1/1.5/−10
   (the pines' setting, unmeasured). Hue is a YIQ chroma rotation, NEGATIVE =
   towards yellow — the first pass-3 bakes had the sign backwards and came out
