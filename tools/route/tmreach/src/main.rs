@@ -107,6 +107,7 @@ fn main() {
         "lap" => cmd_lap(&a),
         "lcp-to-state" => cmd_lcp_to_state(&a),
         "chain-replay" => cmd_chain_replay(&a),
+        "input-life" => cmd_input_life(&a),
         "sweep" => cmd_sweep(&a),
         "track-project" => cmd_track_project(&a),
         "identity" => cmd_identity(&a),
@@ -1966,5 +1967,52 @@ fn cmd_lcp_to_state(a: &Args) -> Result<(), String> {
         st.source.file, st.source.landmark, st.source.kind, st.state.pos[0], st.state.pos[1], st.state.pos[2], v, st.state.ang_vel.map(|w| format!("({:.2}, {:.2}, {:.2})", w[0], w[1], w[2])), st.inputs.len(),
         st.expect.as_ref().map(|e| format!("landmark {} credited within {} ticks at ({:.1}, {:.1}, {:.1})", e.landmark, e.credit_within_ticks, e.pos[0], e.pos[1], e.pos[2])).unwrap_or_else(|| "-".into())
     );
+    Ok(())
+}
+
+/// `tmreach input-life --map M --tape T --pulse-at S [--work DIR]`: does the engine still ACT on inputs at race S seconds?
+/// Two rollouts from the root, identical (the template's own inputs) until race S, then one holds full LEFT lock and the other full RIGHT for
+/// 1.5 s; if their end states coincide the template is CAPPED (the donor's declared lap length ends input processing — ENV,
+/// 2026-09-10: every template built from donor 20 ignores inputs after race 44.740 s). Exit code 3 on a capped template.
+fn cmd_input_life(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let tape = PathBuf::from(a.req("tape"));
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/inputlife-{}", std::process::id())));
+    let pulse_at: f64 = a.req("pulse-at").parse().map_err(|e| format!("--pulse-at: {e}"))?;
+    let mut w = Worker::start(&server, &map, &shim, &work, &tape, false)?;
+    let root = w.root_probe;
+    let n0 = (pulse_at * 100.0).round() as usize;
+    // the prefix = the template's OWN inputs (the base tape) so the car is in a live driving state at the pulse
+    // --chain FILE: a known-good chain as the prefix instead (a template whose own inputs end early would otherwise leave the car dead)
+    let mut left: Vec<forkoracle::forksrv::Rec> = match a.get("chain") {
+        Some(p) => {
+            let txt = std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?;
+            txt.lines().skip(1).filter_map(|l| { let v: Vec<&str> = l.split('\t').collect(); if v.len() >= 4 { Some(forkoracle::forksrv::Rec { steer: v[1].parse::<f32>().unwrap_or(0.0) / 127.0, gas: v[2].parse::<f32>().unwrap_or(0.0), brake: v[3].parse::<f32>().unwrap_or(0.0) }) } else { None } }).collect()
+        }
+        None => w.reference_recs(root, n0.min(w.n_ticks().saturating_sub(root))),
+    };
+    left.truncate(n0);
+    while left.len() < n0 { left.push(forkoracle::forksrv::Rec { steer: 0.0, gas: 1.0, brake: 0.0 }); }
+    let mut right = left.clone();
+    for _ in 0..150 {
+        left.push(forkoracle::forksrv::Rec { steer: -1.0, gas: 1.0, brake: 0.0 });
+        right.push(forkoracle::forksrv::Rec { steer: 1.0, gas: 1.0, brake: 0.0 });
+    }
+    let (rl, hl) = w.rollout_keep(branch::ROOT, &left, root, left.len() as u64)?;
+    w.release(hl);
+    let (rr, hr) = w.rollout_keep(branch::ROOT, &right, root, right.len() as u64)?;
+    w.release(hr);
+    let (el, er) = (rl.last().ok_or("no rows")?, rr.last().ok_or("no rows")?);
+    let d = ((el.x - er.x).powi(2) + (el.y - er.y).powi(2) + (el.z - er.z).powi(2)).sqrt();
+    let live = d > 0.5;
+    println!(
+        "INPUT-LIFE {}: full-left vs full-right pulse at race {:.2} s for 1.5 s -> end states {:.1} m apart (left ({:.1}, {:.1}, {:.1}) right ({:.1}, {:.1}, {:.1}))",
+        if live { "LIVE" } else { "CAPPED — the engine ignores inputs at this race time (donor lap length reached)" },
+        pulse_at, d, el.x, el.y, el.z, er.x, er.y, er.z
+    );
+    if !live {
+        std::process::exit(3);
+    }
     Ok(())
 }
