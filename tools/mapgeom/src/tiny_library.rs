@@ -467,7 +467,7 @@ impl TreeBaker {
                             bake.radius,
                             bake.height * scale,
                             bake.textures.iter().map(|(f, n)| format!("{f} {n} B")).collect::<Vec<_>>().join(", ")
-                        ) + &m.notes.iter().filter(|n| n.contains("colour gain") || n.starts_with("prelight") || n.contains("Water-physics collision triangles") || n.contains("ad screen face") || n.contains("screen logo picture")).map(|n| format!("; {}", n.trim())).collect::<String>()),
+                        ) + &m.notes.iter().filter(|n| n.contains("colour gain") || n.starts_with("prelight") || n.contains("Water-physics collision triangles") || n.contains("TINY_FLOOR_PHYSICS") || n.contains("ad screen face") || n.contains("screen logo picture")).map(|n| format!("; {}", n.trim())).collect::<String>()),
                     });
                     Some(ident)
                 }
@@ -880,6 +880,55 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             let n = m.surf_triangles.iter().filter(|t| t.material_id == 13).count();
             if n > 0 {
                 m.notes.push(format!("{n} Water-physics collision triangles kept at the pack's physics 13 (TINY_WATER=pack: nothing to the client, the ship13 form)"));
+            }
+            // TINY_FLOOR_PHYSICS=NN: the drag emulation probe (2026-09-10 21:30Z). The
+            // original's car drives ON THE FLOOR under the plane and the water volume
+            // brakes it (05: 31.7 → 22.5 m/s over 33 m); an item has no volume, so the
+            // knob re-ids every upward-facing collision triangle BELOW a water plane
+            // of the same item — the basin floor — to physics NN (Dirt 6, Grass 76,
+            // Sand 5, Snow 21, Ice 74, Plastic 77 = the pack's own Underwater id, …)
+            // so the loss of each id can be measured on the same crossing.
+            if let Some(nn) = std::env::var("TINY_FLOOR_PHYSICS").ok().and_then(|v| v.parse::<u8>().ok()) {
+                if n > 0 {
+                    let plane = m.surf_triangles.iter().filter(|t| t.material_id == 13).flat_map(|t| t.indices.iter().map(|i| m.surf_vertices[*i as usize][1])).fold(f32::MIN, f32::max);
+                    let mut k = 0usize;
+                    let verts = m.surf_vertices.clone();
+                    for t in m.surf_triangles.iter_mut() {
+                        // only the pack's floor materials: Underwater (Plastic 77 — the
+                        // RoadWater deck, AT the plane) and the basins' Concrete (0) floors
+                        if t.material_id != 77 && t.material_id != 0 {
+                            continue;
+                        }
+                        let (a, b, c) = (verts[t.indices[0] as usize], verts[t.indices[1] as usize], verts[t.indices[2] as usize]);
+                        let top = a[1].max(b[1]).max(c[1]);
+                        let ny = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]);
+                        // upward-facing (either winding), under the plane, not a wall
+                        let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                        let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                        let nrm = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                        let len = (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt().max(1e-6);
+                        let _ = ny;
+                        if std::env::var("TINY_FLOOR_DEBUG").is_ok() && t.material_id == 77 {
+                            eprintln!("floor-debug: phys {} top {top:.2} plane {plane:.2} ny {:.2} tri {:?} {:?} {:?}", t.material_id, nrm[1] / len, a, b, c);
+                        }
+                        if top <= plane + 0.02 && (nrm[1] / len).abs() > 0.7 {
+                            t.material_id = nn;
+                            t.gameplay = 0;
+                            k += 1;
+                        }
+                    }
+                    if k > 0 {
+                        // the id table: give the re-ided triangles their own slot
+                        let slot = m.surf_ids.len() as i16;
+                        m.surf_ids.push(nn as u16);
+                        for t in m.surf_triangles.iter_mut() {
+                            if t.material_id == nn && t.gameplay == 0 {
+                                t.surface_index = slot;
+                            }
+                        }
+                        m.notes.push(format!("{k} floor triangles under the water plane re-ided to physics {nn} (TINY_FLOOR_PHYSICS)"));
+                    }
+                }
             }
         } else if open {
             let before = m.surf_triangles.len();
@@ -1459,7 +1508,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                         re_emitted += 1;
                     }
                 }
-                let summary = format!("{} bytes, {} visuals, {} collision tris, {} vegetation entities ({} re-emitted as items), {} other skips{wp}{}{}", bytes.len(), nv, m.surf_triangles.len(), veget, re_emitted, other_skips, lod_summary(&m), m.notes.iter().filter(|n| n.contains("Water-physics collision triangles") || n.contains("ad screen face") || n.contains("screen logo picture")).map(|n| format!("; {}", n.trim())).collect::<String>());
+                let summary = format!("{} bytes, {} visuals, {} collision tris, {} vegetation entities ({} re-emitted as items), {} other skips{wp}{}{}", bytes.len(), nv, m.surf_triangles.len(), veget, re_emitted, other_skips, lod_summary(&m), m.notes.iter().filter(|n| n.contains("Water-physics collision triangles") || n.contains("TINY_FLOOR_PHYSICS") || n.contains("ad screen face") || n.contains("screen logo picture")).map(|n| format!("; {}", n.trim())).collect::<String>());
                 if nv == 0 {
                     outcomes.push(key.outcome(&alias, format!("{} [{label}] {recipe}", key.source()), Err(format!("no visuals ({summary}); notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | ")))));
                     continue;
