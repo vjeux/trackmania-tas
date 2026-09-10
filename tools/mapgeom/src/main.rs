@@ -460,6 +460,50 @@ fn main() {
                 }
             }
         }
+        "vstream-shift" => {
+            // vstream-shift IN.Gbx --out OUT --dy DY: every vertex POSITION of the file's
+            // vertex streams moved by DY in y, patched in place (an uncompressed Gbx —
+            // the TMX custom blocks). The positions are located by their parsed
+            // values (the first two vertices' 24 bytes), so no stream-layout
+            // guessing (2026-09-10: the water-volume probe of a custom block needs
+            // its solid deck out of the archetype's volume).
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("vstream-shift IN.Gbx --out OUT --dy DY".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));
+            let dy: f32 = flag(&a.rest, "--dy").unwrap_or_else(|| die("--dy DY".into())).parse().unwrap_or_else(|_| die("--dy: not a number".into()));
+            let mut bytes = std::fs::read(&p).unwrap_or_else(|e| die(e.to_string()));
+            if bytes.get(7) != Some(&b'U') {
+                die::<()>(format!("{p}: body is compressed; this patches bytes in place"));
+            }
+            let m = mapgeom::store::Model::parse(&bytes, &p).unwrap_or_else(die);
+            let g = m.graph().unwrap_or_else(die);
+            let mut streams = 0usize;
+            let mut moved = 0usize;
+            for s in g.slots.iter() {
+                let Slot::Node(Node::VertexStream(v)) = s else { continue };
+                if v.positions.len() < 2 {
+                    continue;
+                }
+                streams += 1;
+                let mut key = Vec::with_capacity(24);
+                for q in &v.positions[..2] {
+                    for c in q {
+                        key.extend_from_slice(&c.to_le_bytes());
+                    }
+                }
+                let Some(off) = bytes.windows(24).position(|w| w == key.as_slice()) else {
+                    eprintln!("  stream with {} positions: bytes not found in the file (compressed Dec3N positions?)", v.positions.len());
+                    continue;
+                };
+                for k in 0..v.positions.len() {
+                    let o = off + k * 12 + 4;
+                    let y = f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
+                    bytes[o..o + 4].copy_from_slice(&(y + dy).to_le_bytes());
+                    moved += 1;
+                }
+            }
+            std::fs::write(&out, &bytes).unwrap_or_else(|e| die(e.to_string()));
+            println!("{p}: {streams} vertex streams, {moved} positions moved by {dy} in y -> {out}");
+        }
         "dump" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();

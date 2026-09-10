@@ -758,11 +758,17 @@ pub fn blockprobe(args: &[String]) {
     let mut m = map::MapFile::load(&src);
     let (zip, names) = tmmaps::header::embedded_zip_bytes(&m.gbx.body).expect("map has no embedded zip");
     let entries = tmmaps::header::zip_entries(&zip);
-    let (name, bytes) = entries
+    let (name, mut bytes) = entries
         .iter()
         .find(|(n, _)| n.replace('\\', "/").eq_ignore_ascii_case(&which.replace('\\', "/")))
         .unwrap_or_else(|| panic!("--block {which}: not in the archive ({} entries: {})", names.len(), names.iter().take(5).cloned().collect::<Vec<_>>().join(", ")))
         .clone();
+    // --file LOCAL: use these bytes for the entry instead of the archive's (a copy
+    // already patched by `mapgeom vstream-shift`), then the archetype patch below
+    if let Some(local) = flag(args, "--file") {
+        bytes = std::fs::read(local).unwrap_or_else(|e| panic!("--file {local}: {e}"));
+        println!("  {name}: bytes from {local} ({} bytes)", bytes.len());
+    }
     assert!(bytes.len() > 12 && &bytes[0..3] == b"GBX" && bytes[7] == b'U', "{name}: not an uncompressed Gbx (this probe patches bytes in place)");
     // the archetype: every length-prefixed occurrence of the current one
     let mut patched = bytes.clone();
