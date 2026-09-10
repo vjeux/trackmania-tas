@@ -507,6 +507,10 @@ pub struct LapCfg {
     pub arrival_dy: f64,
     /// clinic: max angle (deg) between the credit row velocity and the line tangent at the gate (default 60; --arrival-ang)
     pub arrival_ang: f64,
+    /// hand macro: pure-pursuit points (x y z [speed]) from --pursue FILE; empty = the macro is skipped
+    pub pursue: Vec<[f64; 4]>,
+    /// hand macro: aim at the first pursue point farther than this (m); --pursue-look, default 8
+    pub pursue_look: f64,
     /// vjeux launched-checkpoint csv (ghost lcp --csv): his approach samples become macros
     pub vjeux_csv: Option<String>,
     /// Start the search from an INJECTED car state (a LaunchedCP crossing / approach start, tm-inject-state/1),
@@ -550,7 +554,7 @@ const FOLLOW: &[(&str, bool, u8, f64)] = &[
     ("ramp lip: centre on the line, then steer frozen, gas", true, 8, 0.5),
     // bmode 9: HAND MACRO for 20's bridge (coordinator 05:33Z): full left (toward -z) until heading -150 deg, hold, then
     // straighten to -90 deg (due west) once z <= 825; gas throughout
-    ("hand: bridge S (left to -150 deg, west at z 825), gas", true, 9, 0.9),
+    ("hand: pure pursuit on --pursue points (speed-capped)", true, 9, 0.9),
     // bmode 4 (only with --respawn): press RESPAWN on the first tick (the engine re-places the car at its last credited
     // checkpoint ~1 s later, at that crossing's speed), hold gas through the dead second, then follow the human
     ("RESPAWN, then follow the human", true, 4, 0.9),
@@ -695,6 +699,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             if *bmode == 4 && !cfg.respawn {
                 continue;
             }
+            if *bmode == 9 && cfg.pursue.is_empty() {
+                continue;
+            }
             let mut cur = node;
             let mut recs: Vec<Rec> = Vec::with_capacity(h);
             let mut rows: Vec<Row> = Vec::new();
@@ -705,23 +712,24 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             while done < h {
                 let k = 10.min(h - done);
                 let off = match bmode { 6 => 5.0, 7 => -5.0, _ => 0.0 };
+                let mut pursue_cap: Option<f64> = None;
                 let (mut st, sg, s_now) = follow_steer_off(cfg, &last, seg, *look, off);
                 if *bmode == 8 && done >= 30 {
                     st = 0.0;
                 }
                 if *bmode == 9 {
-                    // iteration 3: pure pursuit on the author's points through the S, then due west
+                    // HAND MACRO = pure pursuit along --pursue FILE (x y z [speed] per line): aim at the first point still ahead of the
+                    // car (more than 3 m away, in front), full lock at 10 deg of error; the point's speed (if given) caps the throttle
                     let yaw_deg = yaw_of(&last).to_degrees();
-                    let want_deg = if last.z > 843.0 { (855.0 - last.x).atan2(841.0 - last.z).to_degrees() }
-                        else if last.z > 829.0 { (843.0 - last.x).atan2(827.0 - last.z).to_degrees() }
-                        else if last.x > 836.0 { (835.0 - last.x).atan2(824.0 - last.z).to_degrees() }
-                        // iteration 5: the right turn starts ON the bridge (author: (830, 823.5) (826, 824.5) (821, 826) (817, 828) (813, 831))
-                        else if last.x > 828.0 { (826.0 - last.x).atan2(824.5 - last.z).to_degrees() }
-                        else if last.x > 822.0 { (819.0 - last.x).atan2(827.0 - last.z).to_degrees() }
-                        else if last.x > 816.0 { (813.0 - last.x).atan2(831.0 - last.z).to_degrees() }
-                        else if last.x > 810.0 { (807.0 - last.x).atan2(835.5 - last.z).to_degrees() }
-                        else if last.x > 798.0 { (797.0 - last.x).atan2(843.0 - last.z).to_degrees() }
-                        else { (785.0 - last.x).atan2(849.0 - last.z).to_degrees() };
+                    let mut target: Option<[f64; 4]> = None;
+                    for p in &cfg.pursue {
+                        let (dx, dz) = (p[0] - last.x, p[2] - last.z);
+                        let d = (dx * dx + dz * dz).sqrt();
+                        let ahead = dx * last.vx + dz * last.vz >= -0.2 * d * speed(&last);
+                        if d > cfg.pursue_look && ahead { target = Some(*p); break; }
+                    }
+                    let want_deg = match target { Some(p) => (p[0] - last.x).atan2(p[2] - last.z).to_degrees(), None => yaw_deg };
+                    pursue_cap = target.map(|p| p[3]).filter(|v| *v > 0.0);
                     let err = wrap((want_deg - yaw_deg).to_radians());
                     // iteration 6: sharper gain (full lock at 10 deg of error) — at 22 m/s the 25-deg gain turned 3 m in 16 m
                     st = ((cfg.steer_sign * err / 10f64.to_radians()).clamp(-1.0, 1.0) * 127.0).round() as f32 / 127.0;
@@ -730,6 +738,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let v = speed(&last);
                 let hint = track.hint_at(seg);
                 let (g, b) = match bmode {
+                    9 => match pursue_cap { Some(cap) if speed(&last) > cap + 1.0 => (false, true), Some(cap) if speed(&last) > cap - 1.0 => (false, false), _ => (true, false) },
                     1 => if v > hint + 3.0 && s_now > 10.0 { (false, true) } else { (*gas, false) },
                     3 => {
                         let vh = track.human_speed_at(s_now + 15.0);
