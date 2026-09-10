@@ -1576,7 +1576,7 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
         arrival_any: a.has("arrival-any"),
         pursue_gain: a.get("pursue-gain").map(|s| s.parse().unwrap()).unwrap_or(10.0),
         pursue_look: a.get("pursue-look").map(|s| s.parse().unwrap()).unwrap_or(8.0),
-        pursue: match a.get("pursue") { Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?.lines().filter_map(|l| { let v: Vec<f64> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect(); if v.len() >= 3 { Some([v[0], v[1], v[2], *v.get(3).unwrap_or(&0.0)]) } else { None } }).collect(), None => Vec::new() },
+        pursue: match a.get("pursue") { Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?.lines().filter_map(|l| { let v: Vec<f64> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect(); if v.len() >= 3 { Some([v[0], v[1], v[2], *v.get(3).unwrap_or(&0.0), *v.get(4).unwrap_or(&0.0)]) } else { None } }).collect(), None => Vec::new() },
         arrival_strict: a.has("arrival-strict"),
         arrival_ang: a.get("arrival-ang").map(|s| s.parse().unwrap()).unwrap_or(60.0),
         arrival_dy: a.get("arrival-dy").map(|s| s.parse().unwrap()).unwrap_or(5.0),
