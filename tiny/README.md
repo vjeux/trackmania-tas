@@ -60,7 +60,9 @@ https://github.com/user-attachments/assets/f7b83d4e-e5b5-4695-b0bb-d14b99c0fe45
 
 https://github.com/user-attachments/assets/8d1cf689-14c9-41cd-a054-1673e447956f
 
-**Tiny Summer 2026 - 13** — original author time `31.462` · tiny ghost **24.769** (build ship15, controls overlay)
+**Tiny Summer 2026 - 13** — original author time `31.462` · tiny ghost **24.769** (build ship15, controls overlay) · map: ship15
+
+*↻ runs on un-skinned ship15 surfaces at 2.25 s (verge) / 2.40 s (rail) — re-drive pending*
 
 https://github.com/user-attachments/assets/2a2fa7a3-a295-4b27-b71d-ed3345442840
 
@@ -76,15 +78,21 @@ https://github.com/user-attachments/assets/8359415d-53d5-419f-8fd6-aee0fe145345
 
 https://github.com/user-attachments/assets/a41cebdd-f649-4173-92fe-34d7a21d1f11
 
-**Tiny Summer 2026 - 16** — original author time `50.966` · tiny ghost **39.302** (build ship15, controls overlay)
+**Tiny Summer 2026 - 16** — original author time `50.966` · tiny ghost **39.302** (build ship15, controls overlay) · map: ship15
+
+*↻ runs on un-skinned ship15 surfaces at 4.35 s — re-drive pending*
 
 https://github.com/user-attachments/assets/bb3919e7-e5ae-4856-af3c-22c145f8641f
 
-**Tiny Summer 2026 - 17** — original author time `44.891` · tiny ghost **38.426** (build ship15, controls overlay)
+**Tiny Summer 2026 - 17** — original author time `44.891` · tiny ghost **38.426** (build ship15, controls overlay) · map: ship15
+
+*↻ runs on un-skinned ship15 surfaces at 6.10 s — re-drive pending*
 
 https://github.com/user-attachments/assets/7a87785b-5c81-4064-9272-3943d12f3dbe
 
-**Tiny Summer 2026 - 18** — original author time `51.352` · tiny ghost **43.413** (build ship15, controls overlay)
+**Tiny Summer 2026 - 18** — original author time `51.352` · tiny ghost **43.413** (build ship15, controls overlay) · map: ship15
+
+*↻ runs on un-skinned ship15 surfaces at 5.75 s — re-drive pending*
 
 https://github.com/user-attachments/assets/cb510efb-14d4-41c2-9bea-51a0d6f8c232
 
@@ -92,7 +100,9 @@ https://github.com/user-attachments/assets/cb510efb-14d4-41c2-9bea-51a0d6f8c232
 
 https://github.com/user-attachments/assets/852cae15-dd20-4036-b01e-f02971d26797
 
-**Tiny Summer 2026 - 20** — original author time `50.598` · tiny ghost **84.954** (build ship15, controls overlay)
+**Tiny Summer 2026 - 20** — original author time `50.598` · tiny ghost **84.954** (build ship15, controls overlay) · map: ship15
+
+*↻ runs on un-skinned ship15 surfaces at 28.05 s — re-drive pending*
 
 *latest lap **75.595** (build ship15) — held (staged — opening rework (coordinator 18:55Z))*
 
@@ -102,22 +112,28 @@ https://github.com/user-attachments/assets/792c18af-89eb-4817-8b5a-c37176f1efa6
 
 https://github.com/user-attachments/assets/61a5b88c-15ce-46e5-9b23-b60f3a4bbe29
 
-**Tiny Saudi Arabia 2026** — original author time `73.418` · tiny ghost **96.298** (build ship15, controls overlay)
+**Tiny Saudi Arabia 2026** — original author time `73.418` · tiny ghost **96.298** (build ship15, controls overlay) · map: ship15
+
+*↻ runs on un-skinned ship15 surfaces at 1.85 s — re-drive pending*
 
 *latest lap **82.652** (build ship15) — held (staged — opening rework (reviewer 19:10Z: sustained rollover, roof-down 8.9–10.0 s; 82.652 not approved))*
 
 https://github.com/user-attachments/assets/2bb4c108-dd6b-4c5c-a26d-f8ef253cdf2e
 
-**Tiny Norway 2026** — original author time `75.112` · tiny ghost **102.148** (build ship15, controls overlay)
+**Tiny Norway 2026** — original author time `75.112` · tiny ghost **102.148** (build ship15, controls overlay) · map: ship15
+
+*↻ runs on un-skinned ship15 surfaces at 2.05 s — re-drive pending*
 
 https://github.com/user-attachments/assets/0e222437-1334-4d8c-b5fd-92497cdf81f5
 
-**Tiny Poland 2026** — original author time `72.708` · tiny ghost **99.529** (build ship15, controls overlay)
+**Tiny Poland 2026** — original author time `72.708` · tiny ghost **99.529** (build ship15, controls overlay) · map: ship15
+
+*↻ runs on un-skinned ship15 surfaces at 73.32 s (LakeShore water) — re-drive pending*
 
 https://github.com/user-attachments/assets/9b9b5242-c6ef-4270-9eed-a6a3063126e8
 
 **Tiny Japan 2026** — original author time `78.928` · tiny ghost **102.115** (build ship15, controls overlay)
 
-*latest lap **83.772** (build ship15) — video pending*
+*latest lap **83.772** (build ship15) — held (staged — attitude: not clean: inverted 2.72 s, 2 attitude interval(s) (> 0.3 s of |roll|/|pitch| > 60°))*
 
 https://github.com/user-attachments/assets/18c3cc0f-0d53-44df-bd32-f63adeadf2a8
