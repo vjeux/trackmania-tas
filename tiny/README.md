@@ -94,6 +94,8 @@ https://github.com/user-attachments/assets/792c18af-89eb-4817-8b5a-c37176f1efa6
 
 **Tiny Argentina 2026** — original author time `78.988` · tiny ghost **117.791** (build ship15, controls overlay)
 
+*latest lap **115.478** (build ship15) — video pending*
+
 https://github.com/user-attachments/assets/def34ddb-4991-4834-905d-faf7e80b4ed2
 
 **Tiny Saudi Arabia 2026** — original author time `73.418` · tiny ghost **96.298** (build ship15, controls overlay)
