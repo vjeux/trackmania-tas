@@ -79,9 +79,15 @@ pub fn archetype_depth(block: &str) -> Option<f32> {
     archetype_of(block).map(|(_, d)| d)
 }
 
-/// Where the volume TOP sits above the block origin (metres, full size).
-pub fn archetype_top_offset(_block: &str) -> f32 {
-    7.0
+/// Where the volume TOP sits above the block origin (metres, full size) — from the
+/// block info's water volume boxes (`mapgeom blockinfo NAME`): WaterBase boxes y 4..6
+/// in 1-m units = 4..7 → top 7; DecoWallWaterBase one 32×8×32 unit = 0..8 → top 8
+/// (the FCT plate plane sits at the block top); RoadWater* y 0..0 in 2-m units → top 2.
+pub fn archetype_top_offset(block: &str) -> f32 {
+    match archetype_of(block).map(|(a, _)| a) {
+        Some("DecoWallWaterBase") => 8.0,
+        _ => 7.0,
+    }
 }
 
 pub struct Decision {
