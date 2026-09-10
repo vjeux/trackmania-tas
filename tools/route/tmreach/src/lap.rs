@@ -1015,8 +1015,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
     };
 
     // SEED: the root, or the base tape replayed for --prefix-ticks (its state becomes the first cell), or an
-    // INJECTED state (--inject-state) followed by its approach inputs
+    // INJECTED state (--inject-state, MODEL arm) followed by its approach inputs
     if cfg.prefix_ticks > 0 || cfg.seed_chain.is_some() || cfg.inject.is_some() {
+        // the node the seed chain starts from and the tick it starts at: the root, or the injected fork
         let mut seed_node = branch::ROOT;
         let mut inject_from = root;
         let mut recs = match (&cfg.inject, &cfg.seed_chain) {
@@ -1061,7 +1062,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         // dead end: cut the chain back 3 s at a time (up to 12 times) until it ends in a live state
         let mut tries = 0;
         let (rows, nh, end, s, seg) = loop {
-            let (rows, nh) = w.rollout_keep(seed_node, &recs, inject_from, recs.len() as u64)?;
+            let (rows, nh) = if recs.is_empty() { (Vec::new(), seed_node) } else { w.rollout_keep(seed_node, &recs, inject_from, recs.len() as u64)? };
             let end = rows.last().cloned().unwrap_or_else(|| root_row.clone());
             // project the seed by WALKING its rows from the root with the hinted projector (a self-crossing line must not snap
             // the seed to a later pass — 20 G3-first route, 22:05Z)
