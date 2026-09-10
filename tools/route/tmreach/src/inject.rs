@@ -266,3 +266,43 @@ pub fn read_state(w: &mut crate::rig::Worker, h: branch::Handle, map_uid: &str, 
         expect: None,
     })
 }
+
+/// Read the four phy wheel blocks (ENV: phy+0x1780 + 0xb8·k) of the live car at fork node `h`: `WHEEL_BLOCK` bytes each.
+pub const PHY_WHEEL0: u64 = 0x1780;
+pub const PHY_WHEEL_STRIDE: u64 = 0xb8;
+pub fn read_wheel_blocks(w: &mut crate::rig::Worker, h: branch::Handle) -> Result<[Vec<u8>; 4], String> {
+    let pid = w.forest.pid_of(h)?;
+    let (sim_ms, race_start) = w.forest.clock_of(h)?;
+    let car = forkoracle::car::resolve_with(w.car.controller, w.car.sim, w.module_base, sim_ms, race_start, |a, n| forkoracle::procmem::read_at(pid, a, n)).map_err(|e| format!("wheel blocks: no live car: {e}"))?;
+    let mut out: [Vec<u8>; 4] = Default::default();
+    for k in 0..4u64 {
+        out[k as usize] = forkoracle::procmem::read_at(pid, car.phy + PHY_WHEEL0 + k * PHY_WHEEL_STRIDE, PHY_WHEEL_STRIDE as usize).ok_or_else(|| format!("wheel block {k} unreadable"))?;
+    }
+    Ok(out)
+}
+pub fn f32_at(b: &[u8], o: usize) -> f32 {
+    if o + 4 > b.len() { return f32::NAN; }
+    f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+}
+/// Offsets inside a wheel block where three consecutive f32 form a unit vector on ALL four wheels (candidates for the
+/// contact normal), with the mean y component (the ground normal points up on a flat road).
+pub fn unit_vector_offsets(blocks: &[Vec<u8>; 4]) -> Vec<(usize, f32)> {
+    let mut out = Vec::new();
+    for o in (0..PHY_WHEEL_STRIDE as usize - 8).step_by(4) {
+        let mut ok = true;
+        let mut ys = 0.0f32;
+        for b in blocks {
+            let (x, y, z) = (f32_at(b, o), f32_at(b, o + 4), f32_at(b, o + 8));
+            let n = (x * x + y * y + z * z).sqrt();
+            if !n.is_finite() || (n - 1.0).abs() > 0.02 {
+                ok = false;
+                break;
+            }
+            ys += y / 4.0;
+        }
+        if ok {
+            out.push((o, ys));
+        }
+    }
+    out
+}
