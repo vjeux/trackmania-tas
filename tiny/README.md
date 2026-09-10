@@ -118,6 +118,4 @@ https://github.com/user-attachments/assets/9b9b5242-c6ef-4270-9eed-a6a3063126e8
 
 **Tiny Japan 2026** — original author time `78.928` · tiny ghost **102.115** (build ship15, controls overlay)
 
-*⚠ lap rides the ship15 water lid; in the original the car drives on the floor under the water with strong drag (~−8 m/s²); this build has no water drag*
-
 https://github.com/user-attachments/assets/18c3cc0f-0d53-44df-bd32-f63adeadf2a8
