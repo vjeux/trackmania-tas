@@ -165,12 +165,25 @@ impl Track {
         if let Some(l) = self.leg_gap.get_mut(k) {
             *l = false;
         }
+        // the human speed profile survives the replacement: each new point takes the speed of the nearest ORIGINAL point (xz)
+        // (before 10:20Z the whole profile was zeroed by any --leg-waypoints, so every follow-the-human brake macro and
+        // every arrival speed check ran blind on such routes)
+        if !self.human_speed.is_empty() {
+            let old_pts = std::mem::take(&mut self.pts);
+            let old_hs = std::mem::take(&mut self.human_speed);
+            self.human_speed = pts.iter().map(|p| {
+                let mut best = (f64::INFINITY, 0.0);
+                for (q, h) in old_pts.iter().zip(old_hs.iter()) {
+                    let d = (p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2);
+                    if d < best.0 { best = (d, *h); }
+                }
+                if best.0 <= 30.0 * 30.0 { best.1 } else { 0.0 }
+            }).collect();
+        }
         self.pts = pts;
         self.s = s;
         // a replaced leg has no human speed profile: drop it (the clinic then skips the speed band there)
-        if !self.human_speed.is_empty() {
-            self.human_speed = vec![0.0; self.pts.len()];
-        }
+
         self.half_width = half_width;
         self.speed_hint = speed_hint;
         self.gap_seg = gap_seg;
