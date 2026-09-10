@@ -220,12 +220,28 @@ fn all(args: &[String]) -> Result<(), String> {
             (Ok(()), Some(_)) => {}
         }
         if game_up && last_render.map(|t| t.elapsed() >= idle_quit).unwrap_or(false) {
+            // UNDER THE RENDER LOCK. Other threads drive the same game through
+            // `shootctl` (a shootset and a render were running at 12:02Z on
+            // 2026-09-10 when a bare taskkill went out); the lock is what says
+            // whether anyone is. `--wait 0`: if it is held, the game is in use
+            // and nothing happens; if it is free, we hold it for the second
+            // the kill takes, so nobody can start a load underneath it.
             let wsx = Wsx::new(args);
-            match wsx.sh("timeout 30 /mnt/c/Windows/System32/taskkill.exe /IM Trackmania.exe /F 2>&1 | tr -d '\\r'; true") {
-                Ok(o) => eprintln!("[idle {} min] closed the game on the box: {}", idle_quit.as_secs() / 60, o.trim()),
+            let shootctl = f("--box-shootctl").unwrap_or_else(|| format!("{BOX_TOOLS}/shootctl"));
+            let cmd = format!(
+                "sh -c 'if {shootctl} lock acquire --owner tinyctl-idle-quit --wait 0 2>/dev/null; then \
+                   timeout 30 /mnt/c/Windows/System32/taskkill.exe /IM Trackmania.exe /F 2>&1 | tr -d \"\\r\"; \
+                   {shootctl} lock release --owner tinyctl-idle-quit 2>/dev/null; echo CLOSED; \
+                 else echo BUSY; fi'"
+            );
+            match wsx.sh(&cmd) {
+                Ok(o) if o.contains("BUSY") => eprintln!("[idle {} min] the render lock is held — the game is in use by another thread; not closed", idle_quit.as_secs() / 60),
+                Ok(o) => {
+                    eprintln!("[idle {} min] closed the game on the box: {}", idle_quit.as_secs() / 60, o.replace("CLOSED", "").trim());
+                    game_up = false;
+                }
                 Err(e) => eprintln!("[idle] could not close the game: {e}"),
             }
-            game_up = false;
         }
         let secs = watch.unwrap();
         eprintln!("[watch] next scan in {secs}s ({})", chrono_now());
