@@ -982,7 +982,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let t0 = rows.first().map(|r| w.race_of(r)).unwrap_or(0) / 10; let t1 = rows.last().map(|r| w.race_of(r)).unwrap_or(0) / 10;
                 let base_n = if cfg.base_tilt.is_empty() { usize::MAX } else { let g = |i: i64| -> usize { if i < 0 { 0 } else { cfg.base_tilt.get(i as usize).copied().unwrap_or(*cfg.base_tilt.last().unwrap_or(&0)) } }; g(t1).saturating_sub(g(t0)) };
                 let win70 = if cfg.tilt70_guard { hot.windows(100.min(hot.len().max(1))).map(|s| s.iter().map(|x| *x as usize).sum::<usize>()).max().unwrap_or(0) } else { 0 };
-                if n45 > base_n + cfg.tilt_slack || win70 >= 30 {
+                // INVERSION (parent: illegal everywhere, no allowance): any row with the body up-vector below the horizon (up_y < 0) kills
+                let inverted = rows.iter().any(|r| (1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz)) < 0.0);
+                if n45 > base_n + cfg.tilt_slack || win70 >= 30 || inverted {
                     out.deaths[1] += 1;
                     if debug_fan { eprintln!("    TILT kill {desc:34}: >=45 ticks {n45} vs base {base_n} (+slack {}), >=70 in 1 s {win70}", cfg.tilt_slack); }
                     dump_rollout(w, base, &rows, "offroute", &desc, &dump_n);
