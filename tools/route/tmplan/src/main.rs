@@ -905,6 +905,7 @@ fn cmd_road_centreline(args: &[String]) {
     // (5-point), half-width = the road span where the point is on road, else 4 m; the segments are re-cut at each gate's
     // first pass (finish: last pass) in `seq` order; a leg the human never passes within reach of stays as it was.
     let mut author_note = String::new();
+    let mut author_used = false;
     // with --author-line the speed hint is the HUMAN's measured speed (100 ms sample spacing × 10, 5-sample smoothed),
     // not the curvature estimate (11's plateau: the estimate said 63 m/s, the human drives it at 96–114 — 16:47Z)
     let mut human_speed: Option<Vec<f32>> = None;
@@ -981,6 +982,7 @@ fn cmd_road_centreline(args: &[String]) {
                 }
                 author_note = format!("; POLYLINE = the human line ({ap}), {} pts, gates cut at the human's passes; speed_hint = the human's measured speed", pts.len());
                 eprintln!("  author line used as the centreline: {} pts, {} legs", pts.len(), cuts.len());
+                author_used = true;
             } else if ok {
                 eprintln!("  author line passes the gates out of the given order — author line NOT used");
             }
@@ -1044,7 +1046,11 @@ fn cmd_road_centreline(args: &[String]) {
             let verdict = verdicts.iter().find(|v| v.0 == from_lab && v.1 == grp_id.to_string()).cloned().or_else(|| verdicts.iter().find(|v| v.1 == grp_id.to_string() && (v.2 == "Jump" || v.2 == "Drop")).cloned());
             // a manual drive line or a gap keeps the verdict class (a Jump stays a Jump even with points to follow)
             let manual = seg.contains("\"via\": \"manual\"");
-            let conn = if !gap && !manual { ConnectionClass::Road } else { match verdict.as_ref().map(|v| v.2.as_str()) { Some("Jump") => ConnectionClass::Jump, Some("Drop") => ConnectionClass::Drop, Some("Road") => ConnectionClass::Road, _ => if manual { ConnectionClass::Road } else { ConnectionClass::Unknown } } };
+            // on a human-line leg (author or manual) the class comes from the line itself: ≥ 12 m with nothing under the car within
+            // 3 m = a Jump (20 wp3→wp5: the author flies 45 m from the asphalt end onto the wooden road — the route said Road)
+            let airborne_m = if author_used || manual { let mut tot = 0.0f32; for k in (i0 + 1)..=i1.min(pts.len() - 1) { let prof = surf.chord_profile(pts[k - 1], pts[k], 1.0, 3.0); for (a, b) in &prof.gaps { tot += b - a; } } tot } else { 0.0 };
+            let air_jump = airborne_m >= 15.0;
+            let conn = if air_jump && verdict.as_ref().map(|v| v.2 != "Drop").unwrap_or(true) { ConnectionClass::Jump } else if !gap && !manual { ConnectionClass::Road } else { match verdict.as_ref().map(|v| v.2.as_str()) { Some("Jump") => ConnectionClass::Jump, Some("Drop") => ConnectionClass::Drop, Some("Road") => ConnectionClass::Road, _ => if manual { ConnectionClass::Road } else { ConnectionClass::Unknown } } };
             if let Some(v) = &verdict { verdict_notes.push(format!("{}→{} {}{}", v.0, v.1, v.2, if v.3.is_empty() { String::new() } else { format!(" ({})", v.3) })); }
             legs.push(Leg { gate_idx: li as u32, map_waypoint: rep.waypoint, s_start: s[i0], s_end: s[i1], connection: conn, arrival_speed: [5.0, 80.0], arrival_heading: gate_normal, arrival_heading_tol: 0.5, arrival_height: [centre[1] - rep.half_height - 1.0, centre[1] - rep.half_height + 3.0], p_reach: if gap { 0.0 } else { 1.0 }, expected_ms: -1, evidence: LegEvidence::Predicted });
             gate_order.push(rep.waypoint);
