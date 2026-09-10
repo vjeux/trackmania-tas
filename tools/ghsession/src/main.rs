@@ -116,22 +116,21 @@ impl Client {
     fn send(&mut self, method: &str, url: &str, headers: &[(&str, &str)], body: Option<(&str, &[u8])>) -> Result<Reply, String> {
         let (host, path) = host_path(url)?;
         let cookie = self.jar.header_for(&host, &path);
-        let mut req = match method {
-            "GET" => self.agent.get(url).force_send_body(),
-            "POST" => self.agent.post(url),
-            "PUT" => self.agent.put(url),
-            _ => return Err(format!("method {method}")),
-        };
-        req = req.header("user-agent", UA);
-        if !cookie.is_empty() {
-            req = req.header("cookie", &cookie);
+        fn dress<S>(mut r: ureq::RequestBuilder<S>, cookie: &str, headers: &[(&str, &str)]) -> ureq::RequestBuilder<S> {
+            r = r.header("user-agent", UA);
+            if !cookie.is_empty() {
+                r = r.header("cookie", cookie);
+            }
+            for (k, v) in headers {
+                r = r.header(*k, *v);
+            }
+            r
         }
-        for (k, v) in headers {
-            req = req.header(*k, *v);
-        }
-        let resp = match body {
-            Some((ct, bytes)) => req.header("content-type", ct).send(bytes),
-            None => req.send_empty(),
+        let resp = match (method, body) {
+            ("GET", None) => dress(self.agent.get(url), &cookie, headers).call(),
+            ("POST", Some((ct, bytes))) => dress(self.agent.post(url), &cookie, headers).header("content-type", ct).send(bytes),
+            ("PUT", Some((ct, bytes))) => dress(self.agent.put(url), &cookie, headers).header("content-type", ct).send(bytes),
+            _ => return Err(format!("{method} with{} a body", if body.is_some() { "" } else { "out" })),
         };
         let mut resp = resp.map_err(|e| format!("{method} {url}: {e}"))?;
         // every Set-Cookie into the jar, saved BEFORE anything else can fail
@@ -312,7 +311,7 @@ fn status(keepalive: bool) -> Result<i32, String> {
             Ok(0)
         }
         (s, _) => {
-            println!("logged out: HTTP {s}{} — the session has ended; repeat the one-time seed (UPLOADER-OWN-SESSION.md)", r.location.map(|l| format!(" → {l}")).unwrap_or_default());
+            println!("logged out: HTTP {s}{} — the session has ended (200 = the page came back anonymous); repeat the one-time seed (UPLOADER-OWN-SESSION.md)", r.location.map(|l| format!(" → {l}")).unwrap_or_default());
             Ok(3)
         }
     }
