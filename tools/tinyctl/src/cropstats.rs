@@ -49,9 +49,17 @@ struct CellStat {
     top_rgb: [u8; 3],
     fg_rgb: [u8; 3],
     mean_rgb: [u8; 3],
+    /// the mean HSV saturation of the foreground pixels (0..1): how colourful the crown is
+    hsat: f32,
+    /// foreground pixels over the area of their bounding box: how densely the silhouette is filled
+    fill: f32,
+    /// the share of foreground pixels with a background 4-neighbour: how fragmented (leafy) the silhouette is
+    edge: f32,
+    /// the share of foreground pixels brighter than luma 110: the lit leaves of a crown
+    bright: f32,
 }
 
-fn cell_stat(img: &Image, x0: usize, y0: usize, w: usize, h: usize, bg: [f32; 3], top_pct: f32) -> CellStat {
+fn cell_stat(img: &Image, x0: usize, y0: usize, w: usize, h: usize, bg: [f32; 3], top_pct: f32, green_fg: bool) -> CellStat {
     let mut lumas: Vec<(u32, [u8; 3])> = Vec::new();
     let mut n = 0usize;
     let mut nfg = 0usize;
@@ -60,19 +68,50 @@ fn cell_stat(img: &Image, x0: usize, y0: usize, w: usize, h: usize, bg: [f32; 3]
     let mut nwhite = 0usize;
     let mut acc = [0u64; 3];
     let mut accfg = [0u64; 3];
-    for y in y0..(y0 + h).min(img.h) {
-        for x in x0..(x0 + w).min(img.w) {
+    let (x1, y1) = ((x0 + w).min(img.w), (y0 + h).min(img.h));
+    // --fg green: a pixel is foreground when it is GREEN-ish (green over blue by 8,
+    // and not a grey/blue/white) — the crown of a tree against sky, clouds and
+    // water, whatever their colour; the default is the distance to the top row
+    let is_fg = |c: [u8; 3]| if green_fg {
+        let (mx, mn) = (c[0].max(c[1]).max(c[2]) as f32, c[0].min(c[1]).min(c[2]) as f32);
+        let sat = if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
+        let luma = (c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114) / 1000;
+        // green at least blue (a sky-lit leaf is still greener than the sky), not a
+        // bright cloud, and not a grey: leaves against sky, clouds and water
+        let _ = sat;
+        c[1] as i32 >= c[2] as i32 + 2 && luma < 200 && (c[1] as i32 - c[2] as i32 >= 8 || c[0].max(c[1]) as i32 - mn as i32 >= 24)
+    } else { (c[0] as f32 - bg[0]).abs() + (c[1] as f32 - bg[1]).abs() + (c[2] as f32 - bg[2]).abs() > 60.0 };
+    let mut nbright = 0usize;
+    let mut hsat_acc = 0.0f64;
+    let (mut bx0, mut by0, mut bx1, mut by1) = (usize::MAX, usize::MAX, 0usize, 0usize);
+    let mut nedge = 0usize;
+    for y in y0..y1 {
+        for x in x0..x1 {
             let c = img.get(x, y);
             n += 1;
             lumas.push((c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114, c));
             for k in 0..3 {
                 acc[k] += c[k] as u64;
             }
-            let d = (c[0] as f32 - bg[0]).abs() + (c[1] as f32 - bg[1]).abs() + (c[2] as f32 - bg[2]).abs();
-            if d > 60.0 {
+            if is_fg(c) {
                 nfg += 1;
+                if c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114 > 110 * 1000 {
+                    nbright += 1;
+                }
                 for k in 0..3 {
                     accfg[k] += c[k] as u64;
+                }
+                let (mx, mn) = (c[0].max(c[1]).max(c[2]) as f64, c[0].min(c[1]).min(c[2]) as f64);
+                if mx > 0.0 {
+                    hsat_acc += (mx - mn) / mx;
+                }
+                bx0 = bx0.min(x);
+                by0 = by0.min(y);
+                bx1 = bx1.max(x);
+                by1 = by1.max(y);
+                let bg_nb = (x > x0 && !is_fg(img.get(x - 1, y))) || (x + 1 < x1 && !is_fg(img.get(x + 1, y))) || (y > y0 && !is_fg(img.get(x, y - 1))) || (y + 1 < y1 && !is_fg(img.get(x, y + 1)));
+                if bg_nb {
+                    nedge += 1;
                 }
             }
             if c[0] < 48 && c[1] < 48 && c[2] < 48 {
@@ -96,7 +135,8 @@ fn cell_stat(img: &Image, x0: usize, y0: usize, w: usize, h: usize, bg: [f32; 3]
         }
     }
     let m = |a: [u64; 3], d: usize| -> [u8; 3] { let d = d.max(1) as u64; [(a[0] / d) as u8, (a[1] / d) as u8, (a[2] / d) as u8] };
-    CellStat { fg: nfg as f32 / n as f32, dark: ndark as f32 / n as f32, sat: nsat as f32 / n as f32, white: nwhite as f32 / n as f32, top_rgb: m(acct, k), fg_rgb: m(accfg, nfg), mean_rgb: m(acc, n) }
+    let bbox_area = if nfg > 0 { ((bx1 - bx0 + 1) * (by1 - by0 + 1)) as f32 } else { 1.0 };
+    CellStat { fg: nfg as f32 / n as f32, dark: ndark as f32 / n as f32, sat: nsat as f32 / n as f32, white: nwhite as f32 / n as f32, top_rgb: m(acct, k), fg_rgb: m(accfg, nfg), mean_rgb: m(acc, n), hsat: if nfg > 0 { (hsat_acc / nfg as f64) as f32 } else { 0.0 }, fill: nfg as f32 / bbox_area, edge: if nfg > 0 { nedge as f32 / nfg as f32 } else { 0.0 }, bright: if nfg > 0 { nbright as f32 / nfg as f32 } else { 0.0 } }
 }
 
 fn cell_diff(a: &Image, b: &Image, x0: usize, y0: usize, w: usize, h: usize) -> f32 {
@@ -119,11 +159,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let sheet: Option<PathBuf> = flag(args, "--sheet").map(PathBuf::from);
     // --top P: the brightest P percent of each cell, as a mean colour (default 5)
     let top_pct: f32 = flag(args, "--top").map(|s| s.parse().map_err(|e| format!("--top: {e}"))).transpose()?.unwrap_or(5.0);
+    let green_fg = flag(args, "--fg") == Some("green");
     let mut files: Vec<PathBuf> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--crop" | "--cells" | "--sheet" | "--top" => i += 2,
+            "--crop" | "--cells" | "--sheet" | "--top" | "--fg" => i += 2,
             a if a.starts_with("--") => return Err(format!("unknown flag {a}")),
             a => {
                 files.push(PathBuf::from(a));
@@ -136,7 +177,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     }
     let (cx, cy, cw, ch) = (crop[0].max(0) as usize, crop[1].max(0) as usize, crop[2].max(1) as usize, crop[3].max(1) as usize);
     let cell_w = (cw / cells).max(1);
-    println!("image\tcell\tfg%\tdark%\tsat%\twhite%\tfg_rgb\tmean_rgb\ttop_rgb\tdiff_prev");
+    println!("image\tcell\tfg%\tdark%\tsat%\twhite%\tfg_rgb\tmean_rgb\ttop_rgb\thsat%\tfill%\tedge%\tbright%\tdiff_prev");
     let mut prev: Option<Image> = None;
     let mut rows: Vec<Image> = Vec::new();
     for f in &files {
@@ -158,10 +199,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let name = f.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         for c in 0..cells {
             let x0 = cx + c * cell_w;
-            let st = cell_stat(&img, x0, cy, cell_w, ch, bg, top_pct);
+            let st = cell_stat(&img, x0, cy, cell_w, ch, bg, top_pct, green_fg);
             let d = prev.as_ref().map(|p| cell_diff(p, &img, x0, cy, cell_w, ch));
             println!(
-                "{name}\t{c}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:02x}{:02x}{:02x}\t{:02x}{:02x}{:02x}\t{:02x}{:02x}{:02x}\t{}",
+                "{name}\t{c}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:02x}{:02x}{:02x}\t{:02x}{:02x}{:02x}\t{:02x}{:02x}{:02x}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{}",
                 st.fg * 100.0,
                 st.dark * 100.0,
                 st.sat * 100.0,
@@ -169,6 +210,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 st.fg_rgb[0], st.fg_rgb[1], st.fg_rgb[2],
                 st.mean_rgb[0], st.mean_rgb[1], st.mean_rgb[2],
                 st.top_rgb[0], st.top_rgb[1], st.top_rgb[2],
+                st.hsat * 100.0,
+                st.fill * 100.0,
+                st.edge * 100.0,
+                st.bright * 100.0,
                 d.map(|d| format!("{d:.2}")).unwrap_or_else(|| "-".into())
             );
         }

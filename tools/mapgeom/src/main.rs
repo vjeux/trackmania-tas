@@ -760,6 +760,13 @@ fn main() {
                 let target = dir.join(file);
                 std::fs::write(&target, dds).unwrap_or_else(|e| die(format!("{}: {e}", target.display())));
             }
+            // the sidecar node files of the kinematic `file` form (the dyna object and its mesh)
+            let sidecars = mapgeom::static_item::assemble::SIDECARS.with(|s| std::mem::take(&mut *s.borrow_mut()));
+            for (name, data) in &sidecars {
+                let target = dir.join(name);
+                std::fs::write(&target, data).unwrap_or_else(|e| die(format!("{}: {e}", target.display())));
+                println!("  sidecar {} ({} bytes)", target.display(), data.len());
+            }
             println!("{p}: {} bytes -> {out}; {} visuals in {} levels {:?}, switch {:?}, {} materials, hull {} tris, height {:.2} radius {:.2} (source metres); textures: {}", bytes.len(), m.visuals.len(), bake.levels.len(), bake.levels, bake.switch, m.materials.len(), bake.hull_triangles, bake.height, bake.radius, bake.textures.iter().map(|(f, n)| format!("{f} {n} B")).collect::<Vec<_>>().join(", "));
             for n in &m.notes {
                 println!("  {n}");
@@ -1344,6 +1351,10 @@ fn main() {
                         let (mut cnt, mut s) = (0usize, [0u64; 3]);
                         for px in rgba.chunks(4) { if px[3] < 32 { cnt += 1; for c in 0..3 { s[c] += px[c] as u64; } } }
                         if cnt > 0 { println!("  under alpha<32 ({cnt} px): mean RGB ({}, {}, {})", s[0] / cnt as u64, s[1] / cnt as u64, s[2] / cnt as u64); }
+                        // the colour of the OPAQUE pixels (a >= 128): what an alpha-tested card shows
+                        let (mut cnt, mut s) = (0usize, [0u64; 3]);
+                        for px in rgba.chunks(4) { if px[3] >= 128 { cnt += 1; for c in 0..3 { s[c] += px[c] as u64; } } }
+                        if cnt > 0 { let (r, g, b) = (s[0] / cnt as u64, s[1] / cnt as u64, s[2] / cnt as u64); println!("  opaque alpha>=128 ({cnt} px, {:.1} %): mean RGB ({r}, {g}, {b}) luma {:.0}", 100.0 * cnt as f64 / n as f64, 0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64); }
                     }
                     Err(e) => println!("{p}: {fourcc} {:?}: {e}", dims),
                 }

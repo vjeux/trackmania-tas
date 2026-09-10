@@ -324,6 +324,12 @@ pub fn lineup_cmd(args: &[String]) {
     let colors: Vec<u8> = cli::flag(args, "--colors")
         .map(|s| s.split(',').filter(|c| !c.is_empty()).map(|c| c.trim().parse::<u8>().expect("--colors wants bytes 0..5")).collect())
         .unwrap_or_default();
+    // --lmq 0,3,2,…: the placement's lightmap-quality byte per item of the row
+    // (Normal 0, High 1, VeryHigh 2, Highest 3, Lowest 4, VeryLow 5, Low 6; an
+    // item past the list keeps the donor's) — the trees' lightmap texel budget
+    let lmqs: Vec<u8> = cli::flag(args, "--lmq")
+        .map(|s| s.split(',').filter(|c| !c.is_empty()).map(|c| c.trim().parse::<u8>().expect("--lmq wants bytes 0..6")).collect())
+        .unwrap_or_default();
     let n_stock = names.len();
     // embedded item files: (ident, author, bytes)
     let mut embedded: Vec<(String, String, Vec<u8>)> = Vec::new();
@@ -377,7 +383,10 @@ pub fn lineup_cmd(args: &[String]) {
         m.set_item_variant(i, variants.get(k).copied().unwrap_or(0));
         let color = colors.get(k).copied().unwrap_or(if k < n_stock { 0 } else { 1 });
         m.set_item_color(i, color);
-        println!("  {name} ({author}) at {:.0},{:.0},{:.0} colour {color}", pos[0], pos[1], pos[2]);
+        if let Some(q) = lmqs.get(k) {
+            m.set_item_lightmap_quality(i, *q);
+        }
+        println!("  {name} ({author}) at {:.0},{:.0},{:.0} colour {color}{}", pos[0], pos[1], pos[2], lmqs.get(k).map(|q| format!(" lightmap quality {q}")).unwrap_or_default());
     }
     // --decoration 48x48Screen155Night: the map's mood (the decoration ident of
     // the body's Common chunk, plus the header XML's mood attribute) — a lights

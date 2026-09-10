@@ -29,6 +29,7 @@ mod publish;
 mod replaypull;
 mod startcheck;
 mod shoot;
+mod treelineup;
 mod ship;
 mod unproject;
 mod upload;
@@ -90,6 +91,10 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         where in the world a pixel of a shot is: the view row's orbital camera,
         the pixel's ray met with the plane y = ground (default the target's);
         --side t = the tiny side (camera through the anchor), answer in both maps
+  tinyctl treelineup --host TINY --out LINEUP --views V.tsv --at X,Y,Z --row SPECIES:HEIGHT:FILE,… [--row …]
+                     [--pitch 11] [--row-gap 250] [--dists 5,15,40] [--v -0.08] [--pictures DIR,…]
+        a species-by-variant tree lineup (stock first, then the variant items) and its
+        cameras at fixed distances (near per item; middle per item north+south; far per row)
   tinyctl cropstats IMG… --crop x,y,w,h [--cells N] [--sheet OUT.png]
         a lineup row shot several times from one camera, as numbers: per image and
         cell (one per item) the non-sky share, the dark share, the foreground colour
@@ -165,6 +170,7 @@ fn main() {
         "build" => build::cmd(rest),
         "views" => views::cmd(rest),
         "shoot" => shoot::cmd(rest),
+        "treelineup" => treelineup::cmd(rest),
         "ship" => ship::cmd(rest),
         "lightmap" => lightmap::cmd(rest),
         "compare" => compare::cmd(rest),

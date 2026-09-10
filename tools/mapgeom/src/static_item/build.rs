@@ -1902,7 +1902,93 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                 // clamped to N — the probe for "alpha doubles as the gloss mask"
                 let alpha_max: Option<u8> = if mat.leaf { std::env::var("TINY_TREE_LEAF_ALPHA_MAX").ok().and_then(|v| v.parse().ok()) } else { None };
                 let cap = if mat.leaf { leaf_tex_max } else { tex_max };
-                let bytes = if uncompressed || alpha_max.is_some() {
+                // TINY_TREE_LEAF_MIPS=pack (default) | coverage | plain: the leaf
+                // atlas' mip chain. `pack` ships the pack's own levels cut at the
+                // cap; `coverage` rebuilds the chain from the capped top level with
+                // every level's alpha scaled so the alpha test keeps the same share
+                // of texels as at the top (`texture::mip_chain`) — a plain chain
+                // halves that share per level, so an alpha-tested crown thins to
+                // twigs with distance; `plain` is the rebuilt chain without the
+                // scaling (the control). TINY_TREE_ALPHA_REF=N (default 128) is the
+                // test's reference, TINY_TREE_ALPHA_GAIN=F (default 1) scales the top
+                // level's alpha first. Bark keeps the pack chain.
+                let mips_mode = std::env::var("TINY_TREE_LEAF_MIPS").unwrap_or_else(|_| "pack".into());
+                // the colour adjustment (TINY_TREE_LEAF_COLOR_ADJ=GAIN[,SAT]): the
+                // atlas colour scaled (GAIN on every channel) and its saturation
+                // stretched about the pixel's luma (SAT 1 = as is) — the knob for
+                // matching the vegetation shader's rendered leaf colour, which
+                // carries a subsurface term the item models have not
+                let color_adj: Option<(f32, f32)> = std::env::var("TINY_TREE_LEAF_COLOR_ADJ").ok().map(|adj| {
+                    let mut it = adj.split(',').map(|x| x.trim().parse::<f32>());
+                    (it.next().and_then(|v| v.ok()).unwrap_or(1.0), it.next().and_then(|v| v.ok()).unwrap_or(1.0))
+                });
+                let adjust = |rgba: &mut [u8], alpha_gain: f32| {
+                    if let Some((gain, sat)) = color_adj {
+                        for px in rgba.chunks_mut(4) {
+                            let (r, g, b) = (px[0] as f32, px[1] as f32, px[2] as f32);
+                            let l = 0.299 * r + 0.587 * g + 0.114 * b;
+                            let f = |c: f32| ((l + (c - l) * sat) * gain).round().clamp(0.0, 255.0) as u8;
+                            px[0] = f(r);
+                            px[1] = f(g);
+                            px[2] = f(b);
+                        }
+                    }
+                    if (alpha_gain - 1.0).abs() > 1e-4 {
+                        for px in rgba.chunks_mut(4) {
+                            px[3] = (px[3] as f32 * alpha_gain).round().clamp(0.0, 255.0) as u8;
+                        }
+                    }
+                };
+                let bytes = if mat.leaf && mips_mode == "pack-adj" {
+                    // the pack's own chain, level by level (its alpha already grows
+                    // down the chain), colour-adjusted and alpha-scaled
+                    // (TINY_TREE_ALPHA_GAIN on EVERY level), re-encoded as DXT5
+                    let gain: f32 = std::env::var("TINY_TREE_ALPHA_GAIN").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                    let mut levels: Vec<super::texture::Level> = Vec::new();
+                    let mut side = cap;
+                    loop {
+                        let (w, h, mut rgba) = super::texture::decode_capped_rgba(&bytes, side).map_err(|e| format!("{path}: {e}"))?;
+                        if let Some(l) = levels.last() {
+                            if l.w == w && l.h == h {
+                                break;
+                            }
+                        }
+                        adjust(&mut rgba, gain);
+                        levels.push(super::texture::Level { w, h, rgba });
+                        if w <= 1 && h <= 1 || side <= 1 {
+                            break;
+                        }
+                        side /= 2;
+                    }
+                    m.notes.push(format!("leaf atlas {file}: pack chain re-encoded, {} levels from {}x{}, alpha x{gain}{}", levels.len(), levels[0].w, levels[0].h, color_adj.map(|(g, s)| format!(", colour gain {g} saturation {s}")).unwrap_or_default()));
+                    if uncompressed {
+                        super::texture::write_dds_rgba_mips(&levels)
+                    } else {
+                        super::texture::write_dds_dxt5_mips(&levels)
+                    }
+                } else if mat.leaf && mips_mode != "pack" {
+                    let alpha_ref: u8 = std::env::var("TINY_TREE_ALPHA_REF").ok().and_then(|v| v.parse().ok()).unwrap_or(128);
+                    let gain: f32 = std::env::var("TINY_TREE_ALPHA_GAIN").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                    let (w, h, mut rgba) = super::texture::decode_capped_rgba(&bytes, cap).map_err(|e| format!("{path}: {e}"))?;
+                    if let Some(cap) = alpha_max {
+                        for px in rgba.chunks_mut(4) {
+                            px[3] = px[3].min(cap);
+                        }
+                    }
+                    adjust(&mut rgba, 1.0);
+                    if let Some((g, s)) = color_adj {
+                        m.notes.push(format!("leaf atlas {file}: colour gain {g} saturation {s}"));
+                    }
+                    let levels = super::texture::mip_chain(super::texture::Level { w, h, rgba }, alpha_ref, mips_mode == "coverage", gain);
+                    let top_cov = super::texture::alpha_coverage(&levels[0].rgba, alpha_ref);
+                    let last = levels.iter().rev().find(|l| l.w >= 16 && l.h >= 16).unwrap_or(&levels[0]);
+                    m.notes.push(format!("leaf atlas {file}: {mips_mode} chain of {} levels from {w}x{h}, coverage at alpha {alpha_ref}: top {:.1} %, {}x{} {:.1} %", levels.len(), top_cov * 100.0, last.w, last.h, super::texture::alpha_coverage(&last.rgba, alpha_ref) * 100.0));
+                    if uncompressed {
+                        super::texture::write_dds_rgba_mips(&levels)
+                    } else {
+                        super::texture::write_dds_dxt5_mips(&levels)
+                    }
+                } else if uncompressed || alpha_max.is_some() {
                     let (w, h, mut rgba) = super::texture::decode_capped_rgba(&bytes, cap).map_err(|e| format!("{path}: {e}"))?;
                     if let Some(cap) = alpha_max {
                         for px in rgba.chunks_mut(4) {
@@ -2077,11 +2163,50 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                 }
             }
             transform_visual(&mut v, &IDENTITY, scale)?;
+            // TINY_TREE_NORMALS=model (default) | up | shell (probe, 2026-09-10): the
+            // leaf cards' vertex normals as the model has them, all straight up, or
+            // radial from the visual's box centre (the shell the vegetation shader
+            // lights). The lightmapper takes its irradiance direction from them.
+            let leaf = t.materials[e.material as usize].leaf;
+            if leaf {
+                let mode = std::env::var("TINY_TREE_NORMALS").unwrap_or_else(|_| "model".into());
+                if mode != "model" {
+                    if let Some(main) = v.main.as_mut() {
+                        let c = [main.bounding_box[0], main.bounding_box[1], main.bounding_box[2]];
+                        if let Some(Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) {
+                            let pos: Vec<[f32; 3]> = match s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == super::vstream::N_POSITION).map(|(_, e)| e) {
+                                Some(Elem::Float3(p)) => p.clone(),
+                                _ => Vec::new(),
+                            };
+                            if let Some(i) = s.decls.iter().position(|d| d.name() == N_NORMAL) {
+                                let n = s.count.max(0) as usize;
+                                let mut words = Vec::with_capacity(n);
+                                for k in 0..n {
+                                    let nrm = if mode == "up" {
+                                        [0.0, 1.0, 0.0]
+                                    } else {
+                                        let p = pos.get(k).copied().unwrap_or(c);
+                                        // radial from the crown centre, tilted up a little (a crown is lit from above)
+                                        let d = [p[0] - c[0], p[1] - c[1] + 0.3 * main.bounding_box[4], p[2] - c[2]];
+                                        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                                        if l > 1e-4 { [d[0] / l, d[1] / l, d[2] / l] } else { [0.0, 1.0, 0.0] }
+                                    };
+                                    words.push(super::merged::dec3n_pack(nrm));
+                                }
+                                s.elems[i] = Elem::Word(words);
+                                let tag = if mode == "up" { "normals=up" } else { "normals=shell" };
+                                if !out.stripped.contains(&tag) {
+                                    out.stripped.push(tag);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             // Leaf cards are seen from both sides. A shading model without a
             // two-sided variant gets its back faces as a second, reversed copy
             // of the index list (the normals stay the front ones — a lit back
             // face, not a dark one); TINY_TREE_LEAF_BACKFACES=0 leaves it.
-            let leaf = t.materials[e.material as usize].leaf;
             // TINY_TREE_LEAF_BACKFACES=shared (default: reversed winding on the same
             // vertices — a back face lit like its front, the translucent look of
             // real foliage, no extra vertices) | flip (duplicated vertices with
@@ -2119,6 +2244,19 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
     merge_lod_ladder(&mut m.lod_max_dist, &ladder);
     m.all_lods = pick.is_none();
     out.switch = ladder;
+    // TINY_TREE_PRELIGHT_U02=F (probe, 2026-09-10): the Solid2's PreLightGen
+    // scale word — metres per lightmap uv unit, the size the lightmapper takes
+    // the item's atlas to be and so the texel budget it gets (the default
+    // 32.14 is the reference items'; a tree's charts cover ~1 uv² for ~500 m²
+    // of cards). A bigger word = more texels per card.
+    if let Some(u02) = std::env::var("TINY_TREE_PRELIGHT_U02").ok().and_then(|v| v.parse::<f32>().ok()) {
+        m.pre_light_gen = Some(super::solid2::PreLightGen { version: 1, u01: 1, u02, u03: true, u04: [0.001, 0.001, 0.99712694, 0.999, f32::MAX, f32::MAX, f32::MIN, f32::MIN], sprite_count: [0, 0], boxes: Vec::new(), uv_groups: Vec::new() });
+        m.notes.push(format!("prelight u02 = {u02}"));
+    }
+    if std::env::var("TINY_TREE_NO_PRELIGHT").as_deref() == Ok("1") {
+        m.no_prelight = true;
+        m.notes.push("no PreLightGen (probe)".into());
+    }
     if let Some(p) = pick {
         m.notes.push(format!("vegetation bake: level {p} of {} alone (--lod-pick; nearest level {level0_verts} vertices)", t.lods.len()));
     }
@@ -2144,9 +2282,59 @@ pub fn static_item_from_veget_report(store: &mut crate::store::DataStore, path: 
     let mut m = Merged::default();
     m.keep_water = keep_water_for(collection);
     let bake = add_veget_tree_model(store, &model_path, scale, &mut m)?;
+    if std::env::var_os("TINY_TREE_KINEMATIC").is_some() {
+        veget_as_kinematic(store, &mut m, scale)?;
+    }
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: None };
     let file = assemble(&m, &opts)?;
     Ok((super::file::write_file(&file), m, bake))
+}
+
+/// TINY_TREE_KINEMATIC=1 (probe, 2026-09-10): the baked tree as a KINEMATIC
+/// dyna entity instead of a static object — the visuals and materials move
+/// into a `CPlugDynaObjectModel` (the pusher piston's model bytes as the
+/// template, the trunk hull as both its shapes), the entity kinematic and
+/// bound by the pack's ZERO-range pusher constraint, like our half-size
+/// pistons that the game animates and LIGHTS DYNAMICALLY. Why: a static
+/// item's leaves are lit by the lightmap the game bakes at load, and that
+/// bake treats every card as an opaque occluder — the crown comes out lit by
+/// the sky alone, flat and blue-grey, no sun side (lineup trA, TreeSmallA at 5
+/// and 15 m against the stock: no lit side at all). A dyna entity is lit per
+/// pixel with the sun. The item's static part keeps nothing but the
+/// collision, which stays the trunk hull.
+pub fn veget_as_kinematic(store: &mut crate::store::DataStore, m: &mut Merged, scale: f32) -> R<()> {
+    const PISTON: &str = "Stadium\\Media\\Dyna\\ObstaclePusher\\ObstaclePusher8mPiston.DynaObject.Gbx";
+    const CONSTRAINT: &str = "Stadium\\Media\\KinematicConstraints\\ObstaclePusher8m.KinematicConstraint.Gbx";
+    let mut scratch = Merged::default();
+    let src = load_dyna_source(store, PISTON, &mut scratch, false)?;
+    let kmodel = store.load_model(CONSTRAINT)?;
+    let constraint = super::dyna::KinematicConstraint::parse_body(&kmodel.body).map_err(|e| format!("{CONSTRAINT}: {e}"))?;
+    // the tree's own hull (the trunk, Wood) as the moving and the static shape
+    // (the accumulator's surface arrays are already in the item frame, scaled)
+    let hull: Option<CPlugSurface> = if m.surf_vertices.is_empty() { None } else { Some(CPlugSurface::mesh(m.surf_vertices.clone(), m.surf_triangles.clone(), m.surf_ids.clone(), [0.0, 0.0, 1.0])) };
+    let Some(hull) = hull else { return Err("kinematic tree: the species has no hull to move".into()) };
+    let mut mesh = Merged::default();
+    mesh.keep_water = m.keep_water;
+    mesh.no_split = true;
+    mesh.visuals = std::mem::take(&mut m.visuals);
+    mesh.materials = std::mem::take(&mut m.materials);
+    mesh.lod_max_dist = std::mem::take(&mut m.lod_max_dist);
+    mesh.all_lods = m.all_lods;
+    // `NPlugDynaObjectModel_SInstanceParams` v2: PeriodSc 1, TextureId 0,
+    // IsKinematic 1, PeriodScMax 1, Phase01/Max -1 (unset), CastStaticShadow 1
+    let mut params = Vec::with_capacity(32);
+    for w in [2u32, 1.0f32.to_bits(), 0, 1, 1.0f32.to_bits(), (-1.0f32).to_bits(), (-1.0f32).to_bits(), std::env::var("TINY_TREE_KINEMATIC_SHADOW").ok().and_then(|v| v.parse().ok()).unwrap_or(1u32)] {
+        params.extend_from_slice(&w.to_le_bytes());
+    }
+    let cparams = super::dyna::ConstraintParams { version: 0, ent1: -1, ent2: 0, pos1: [0.0; 3], pos2: [0.0; 3] };
+    m.notes.push(format!("kinematic tree: {} visuals, {} materials as a dyna entity over the trunk hull, zero-range constraint [{}]", mesh.visuals.len(), mesh.materials.len(), constraint.summary()));
+    // TINY_TREE_KINEMATIC=file: the dyna object and its mesh as two sidecar FILES
+    // next to the item (the flag probes' form) — the mesh file's own folder is then
+    // where its custom textures are looked up
+    let pack_ref = if std::env::var("TINY_TREE_KINEMATIC").as_deref() == Ok("file") { Some(super::merged::PackRef::File) } else { None };
+    m.dyna.push(DynaPart { path: PISTON.to_string(), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], mesh, move_shape: Some(hull.clone()), hit_shape: Some(hull), model: src.model.clone(), instance_params_id: super::dyna::P_DYNA_INSTANCE, instance_params: params, constraint: Some((constraint, cparams)), pack_ref });
+    let _ = scale;
+    Ok(())
 }
 
 /// The LIGHTMAP layout (TexCoord1) of a vegetation visual: every connected

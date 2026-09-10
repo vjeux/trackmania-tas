@@ -2155,6 +2155,18 @@ impl MapFile {
         self.raw_patches.push((off, vec![color]));
     }
 
+    /// The placement's LIGHTMAP QUALITY byte (chunk 0x03043068, one byte per
+    /// block/baked/item like the colours): the editor's enum Normal 0, High 1,
+    /// VeryHigh 2, Highest 3, Lowest 4, VeryLow 5, Low 6 — the texel budget the
+    /// game's lightmapper gives the item (the trees quality pass, 2026-09-10).
+    pub fn set_item_lightmap_quality(&mut self, item_index: usize, quality: u8) {
+        let chunks = crate::gbx::all_skip_chunks(&self.gbx.body);
+        let &(_, _, payload, size) = chunks.iter().find(|(c, ..)| *c == 0x0304_3068).expect("lightmap quality chunk 0x03043068");
+        let off = payload + 4 + self.blocks.len() + self.baked.len() + item_index;
+        assert!(off < payload + size, "item {item_index} past the lightmap quality chunk ({} bytes)", size - 4);
+        self.raw_patches.push((off, vec![quality]));
+    }
+
     pub fn set_item_scale(&mut self, item_index: usize, scale: f32) {
         assert!(
             scale.is_finite() && scale > 0.0,
