@@ -211,7 +211,14 @@ What the bake keeps and what it gives up:
   (the pines' setting, unmeasured). Hue is a YIQ chroma rotation, NEGATIVE =
   towards yellow — the first pass-3 bakes had the sign backwards and came out
   GREENER (rendered hue 104–128 vs the stock's 82–91); with the sign right the
-  rendered hue sits within 10° of the stock on both sides. The bands are the SELF-SHADOW the per-item lightmap does
+  rendered hue sits within 10° of the stock on both sides. An AUTUMN atlas
+  (red over green by 12, luma under 150: Populus) keeps its hue and at most
+  ×1.2 saturation — the shift turned its gold salmon (the eyes on the 19
+  frames). OPEN RISK: the calibration was fitted in the EDITOR, where a fresh
+  map has no lightmap (our items unshadowed, the stock lit by its dynamic
+  shader); play mode computes the lightmap at load and shadows our cards, so
+  the in-game crowns should come out somewhat darker than measured — judge
+  from the clips, and `TINY_TREE_COLOR_TABLE=0` is the one-flag fallback. The bands are the SELF-SHADOW the per-item lightmap does
   not give (every card gets one value): the inner cards ride under a darkened
   copy of the atlas (one more material and a 128-px atlas per band; +1.4 MB on
   Summer 19). Measured against the stock at 15 m (sky behind, the stock's own
