@@ -198,7 +198,31 @@ What the bake keeps and what it gives up:
   can be had from an item, whatever its material or entity kind (a
   kinematic dyna entity draws no leaves for a 12k-vertex mesh, and a small
   one's leaves come out as dark as the static ones).
-* **The look, calibrated (default since 2026-09-10, trees quality pass 2)**:
+* **The look, calibrated per collection (default since 2026-09-10 15:30Z,
+  trees quality pass 3; `TINY_TREE_COLOR_TABLE=0` = the pass-2 rule below,
+  ship16's bytes)**: `leaf_look_for` in build.rs — (colour gain, saturation,
+  hue shift, DEPTH BANDS) per collection, fitted on sky-backed lineups (stock
+  at 30 m beside ours at 15 m = the same angular size, sun and shade side,
+  `cropstats --fg leaf` on the crown crop): GreenCoast 1.05/1.5/−15° with
+  three bands (a card whose normalised radius about the crown centre is under
+  0.45 draws the atlas ×0.45, under 0.75 ×0.7, the rest as is), BlueBay
+  1.12/1.06/−5 one band 0.6→×0.5, RedIsland 1.05/1.65/−10 one band
+  0.55→×0.55, Stadium 1.2/1.1/−5 one band 0.6→×0.6, WhiteShore = the pines'
+  setting unmeasured. The bands are the SELF-SHADOW the per-item lightmap does
+  not give (every card gets one value): the inner cards ride under a darkened
+  copy of the atlas (one more material and a 128-px atlas per band; +1.4 MB on
+  Summer 19). Measured against the stock at 15 m, luma sun/shade: GreenCoast
+  TreeSmallA −5/+3 %, TreeBigA +4/−2, BushBigB +3/+15 (the pass-2 bake was
+  +40/+40, +64/+67, +19/+27); BlueBay palms −7/0 and +13/+2; RedIsland pines
+  −7/+2 and +9/+2 (pass 2: +66/+63); Stadium within ±14 %. What the lineups
+  also settled: our crown is NOT sparser than the stock's (coverage 50 % vs
+  35 % at equal size — the LOD0+LOD1 union `TINY_TREE_DENSE` moves away from
+  it), and TDOSN/TDSN do not read colour0 (`TINY_TREE_VCOL_AO`, a 0x40→0xFF
+  radial ramp, renders identical). Measuring trap: a lineup at y 150 has the
+  map's cloud band behind the crown, and warm-grey cloud passes a plain
+  green test — the pass-2 numbers were inflated by it; stand the lineup at
+  y 300 (sky) and use `--fg leaf`.
+* **The pass-2 look (2026-09-10 morning, ship16)**:
   the leaf atlas is brightened and saturated at bake and the cards get
   RADIAL normals. Measured on same-camera lineups (stock species at the
   same angular size beside ours, both sides of the sun, 4K, GreenCoast

@@ -86,7 +86,13 @@ fn cell_stat(img: &Image, x0: usize, y0: usize, w: usize, h: usize, bg: [f32; 3]
         // green at least blue (a sky-lit leaf is still greener than the sky), not a
         // bright cloud, and not a grey: leaves against sky, clouds and water
         let _ = sat;
-        if fg_mode == 2 {
+        if fg_mode == 3 {
+            let (r, g, b) = (c[0] as f32, c[1] as f32, c[2] as f32);
+            let d = mx - mn;
+            let h = if d <= 0.0 { -1.0 } else if mx == g { 60.0 * ((b - r) / d + 2.0) } else if mx == r { 60.0 * (((g - b) / d) % 6.0) } else { 60.0 * ((r - g) / d + 4.0) };
+            let h = if h < 0.0 { h + 360.0 } else { h };
+            (55.0..=165.0).contains(&h) && luma < 200 && !(luma > 140 && sat < 0.22) && (sat >= 0.12 || luma < 90)
+        } else if fg_mode == 2 {
             c[1] as i32 >= c[0] as i32 + 10 && c[1] as i32 >= c[2] as i32 + 10 && luma < 110
         } else {
             c[1] as i32 >= c[2] as i32 + 2 && luma < 200 && (c[1] as i32 - c[2] as i32 >= 8 || c[0].max(c[1]) as i32 - mn as i32 >= 24)
@@ -183,7 +189,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let sheet: Option<PathBuf> = flag(args, "--sheet").map(PathBuf::from);
     // --top P: the brightest P percent of each cell, as a mean colour (default 5)
     let top_pct: f32 = flag(args, "--top").map(|s| s.parse().map_err(|e| format!("--top: {e}"))).transpose()?.unwrap_or(5.0);
-    let green_fg = matches!(flag(args, "--fg"), Some("green") | Some("darkgreen"));
+    let green_fg = matches!(flag(args, "--fg"), Some("green") | Some("darkgreen") | Some("leaf"));
+    // --fg leaf: green-hued (60–165°) and either saturated or dark — a warm-grey
+    // cloud (luma over 140, saturation under 0.22) is not a leaf, whatever its g−b
+    let leaf_fg = flag(args, "--fg") == Some("leaf");
     // --fg darkgreen: only dark, clearly green pixels (a leaf card against sky or cloud)
     let dark_green = flag(args, "--fg") == Some("darkgreen");
     // --grid CxR: after the table, an ASCII map of every image's crop — the foreground
@@ -230,7 +239,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let name = f.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         for c in 0..cells {
             let x0 = cx + c * cell_w;
-            let st = cell_stat(&img, x0, cy, cell_w, ch, bg, top_pct, if dark_green { 2 } else if green_fg { 1 } else { 0 });
+            let st = cell_stat(&img, x0, cy, cell_w, ch, bg, top_pct, if leaf_fg { 3 } else if dark_green { 2 } else if green_fg { 1 } else { 0 });
             let d = prev.as_ref().map(|p| cell_diff(p, &img, x0, cy, cell_w, ch));
             println!(
                 "{name}\t{c}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:02x}{:02x}{:02x}\t{:02x}{:02x}{:02x}\t{:02x}{:02x}{:02x}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.0}\t{:.0}\t{:.1}\t{}",
@@ -256,7 +265,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             for r in 0..gr {
                 let mut line = String::new();
                 for c in 0..gc {
-                    let st = cell_stat(&img, cx + c * (cw / gc.max(1)), cy + r * (ch / gr.max(1)), cw / gc.max(1), ch / gr.max(1), bg, top_pct, if dark_green { 2 } else if green_fg { 1 } else { 0 });
+                    let st = cell_stat(&img, cx + c * (cw / gc.max(1)), cy + r * (ch / gr.max(1)), cw / gc.max(1), ch / gr.max(1), bg, top_pct, if leaf_fg { 3 } else if dark_green { 2 } else if green_fg { 1 } else { 0 });
                     line.push(if st.fg < 0.01 { ' ' } else if st.fg < 0.05 { '.' } else if st.fg < 0.20 { ':' } else { '#' });
                 }
                 println!("  |{line}|");

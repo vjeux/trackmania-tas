@@ -1820,7 +1820,12 @@ pub struct VegetBake {
 /// `TINY_TREE_DEPTH=T1:F1[,T2:F2…]`: the leaf-card depth bands — (normalised
 /// radius threshold, colour factor) pairs, ascending; None when unset or `0`.
 pub fn depth_bands() -> Option<Vec<(f32, f32)>> {
-    let spec = std::env::var("TINY_TREE_DEPTH").ok()?;
+    let spec = match std::env::var("TINY_TREE_DEPTH") {
+        Ok(s) => s,
+        // unset: the collection's own bands when the table is in force
+        Err(_) if color_table_on() => leaf_look_for(VEGET_COLLECTION.with(|c| c.get())).3.to_string(),
+        Err(_) => return None,
+    };
     if spec.trim().is_empty() || spec.trim() == "0" {
         return None;
     }
@@ -1980,7 +1985,7 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                             // is left alone — a gain of 1.6 bleached the cherry white
                             // TINY_TREE_COLOR_TABLE=1: the per-collection table (pass 3, being
                             // measured); unset = the pass-2 rule that ships in ship16
-                            let table = std::env::var("TINY_TREE_COLOR_TABLE").as_deref() == Ok("1");
+                            let table = color_table_on();
                             let (cg, csat, chue) = if table { leaf_color_for(VEGET_COLLECTION.with(|c| c.get())) } else { (1.65, 1.15, 0.0) };
                             let mut gain = if table { cg.min(128.0 / luma.max(1.0)).clamp(1.0, 1.65) } else { (132.0 / luma.max(1.0)).clamp(1.0, 1.65) };
                             // warm (autumn) foliage renders dull under the item shading: at least
@@ -2183,6 +2188,9 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                             let dark_file = format!("{}_in{bi}.dds", file.trim_end_matches(".dds"));
                             if !m.pictures.iter().any(|(f, _)| *f == dark_file) {
                                 let src = m.pictures.iter().find(|(f, _)| *f == file).map(|(_, b)| b.clone()).ok_or_else(|| format!("depth band: no picture {file}"))?;
+                                // the inner bands are dark and half-hidden: their copies ride one
+                                // mip level smaller (128 px) — 2.3 MB on Summer 19 otherwise
+                                let src = super::texture::dds_cap(&src, 128).map_err(|e| format!("{file}: {e}"))?;
                                 let bytes = super::texture::darken_dds(&src, *factor).map_err(|e| format!("{file}: {e}"))?;
                                 out.textures.push((dark_file.clone(), bytes.len()));
                                 m.pictures.push((dark_file.clone(), bytes));
@@ -2526,13 +2534,40 @@ thread_local! {
 /// 5–10° on the sun side. `TINY_TREE_LEAF_COLOR_ADJ=GAIN[,SAT[,HUE]]`
 /// overrides the table.
 pub fn leaf_color_for(collection: u32) -> (f32, f32, f32) {
+    let (g, s, h, _) = leaf_look_for(collection);
+    (g, s, h)
+}
+
+/// The per-collection LEAF LOOK: (colour gain, saturation, hue shift, depth
+/// bands) — the pass-3 default (2026-09-10 15:30Z), fitted on the sky-backed
+/// lineups M/N/O (source-19/06/17 hosts at y 300, `cropstats --fg leaf`, the
+/// centre crop, stock at 30 m beside ours at 15 m = the same angular size, sun
+/// AND shade side) and the Stadium lineup L. Depth bands = the self-shadow
+/// (`depth_bands`): three for the GreenCoast crowns (r < 0.45 ×0.45, r < 0.75
+/// ×0.7, the rest as is — the shade side of every species lands within 3 % of
+/// the stock where the plain bake was +20–50 %), one mild band for the pines,
+/// firs and palms. The gains are the table's own after the bands (they darken
+/// the mean too). Fit residuals, luma, sun/shade: GreenCoast −5/+3, +4/−2,
+/// +3/+15 (TreeSmallA, TreeBigA, BushBigB); BlueBay −7/0, +13/+2, +29/+14 (the
+/// jungle bush high); RedIsland −7/+2, +9/+2, −8/−9; Stadium (y-150 lineup)
+/// −3/+9, −14/+4, −4/+10. Hue: our shade side renders 10–25° bluer-green than
+/// the stock (the sky lights it), the shift is the compromise between the two
+/// sides. `TINY_TREE_LEAF_COLOR_ADJ` / `TINY_TREE_DEPTH` override a field each;
+/// `TINY_TREE_COLOR_TABLE=0` restores the pass-2 rule (ship16's bytes).
+pub fn leaf_look_for(collection: u32) -> (f32, f32, f32, &'static str) {
     match collection {
-        0xf => (1.1, 1.3, -6.0),   // GreenCoast
-        0x1c => (1.2, 1.0, 0.0),   // BlueBay
-        0x10 => (1.05, 1.5, -5.0), // RedIsland
-        0x1d => (1.1, 1.2, -3.0),  // WhiteShore (firs: the RedIsland pines' numbers, softened)
-        _ => (1.2, 1.1, -5.0),     // Stadium
+        0xf => (1.05, 1.5, -15.0, "0.45:0.45,0.75:0.7"), // GreenCoast
+        0x1c => (1.12, 1.06, -5.0, "0.6:0.5"),           // BlueBay
+        0x10 => (1.05, 1.65, -10.0, "0.55:0.55"),        // RedIsland
+        0x1d => (1.05, 1.3, -5.0, "0.55:0.55"),          // WhiteShore (firs: the pines' setting, unmeasured)
+        _ => (1.2, 1.1, -5.0, "0.6:0.6"),                // Stadium
     }
+}
+
+/// Whether the pass-3 per-collection table is in force (default yes;
+/// `TINY_TREE_COLOR_TABLE=0` = the pass-2 rule).
+pub fn color_table_on() -> bool {
+    std::env::var("TINY_TREE_COLOR_TABLE").map(|v| v != "0").unwrap_or(true)
 }
 
 pub fn static_item_from_veget_report(store: &mut crate::store::DataStore, path: &str, ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged, VegetBake)> {
