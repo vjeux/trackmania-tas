@@ -88,6 +88,38 @@ full throttle from the spawn through the Boost gate, `tinyctl play --wheels-ms`)
    box and a finish fires on its whole 32 m cube. The item editor writes the
    same 36/68 disc for Granady's `Tiny_Ring1`.
 
+
+## Gameplay MODE gates fire from an item (measured 2026-09-10 19:50Z)
+
+vjeux: "on Argentina the fragile block effect doesn't seem to be working". Fragile is not a breakable block —
+`GateExpandableSpecialFragile` / `RoadTechSpecialFragile` are gates that put the CAR in Fragile mode
+(gameplay id 13; the vehicle-event enum has BeginFragile, PartDetached, ImpactDetachedPart: body parts fly
+off on impacts after the gate). Our items carry the gate as the Boost gate that measurably fires (fact 1
+above): an `NPlugTrigger_SGateSpecial` slab 16 × 4 × 0.42 m at the gate plane with the pack's own id
+(`Modifier\Fragile\Collision` = gameplay 13). Whether a MODE id fires from an item was the open question;
+measured on 21's free NoEngine gate wall (FreeWheeling, id 4 — the same entity, another id): Spawn 26 m
+before it, full throttle, wheel log `wheels-ne21-noengine-gate-drive.tsv` — the car accelerates to 18.8 m/s,
+crosses the slab at x ≈ 1348.5 (gate origin 1344.5 + the half-scale 8 → 4 m offset), and from the very next
+frame DECELERATES on the ground with gas = 1, brake = 0 (17.6 → 14.3 m/s over 0.3 s, then coasts): the
+engine is off. So the item's SGateSpecial applies mode ids; Fragile rides the same record. What vjeux did
+not see is the visible half of Fragile — parts detaching on a crash — which needs a crash after the gate
+(not staged); the trigger data is right and the mechanism fires.
+
+## Gate icon panels and the trigger curtain (2026-09-10)
+
+vjeux (Argentina): "the booster gate's icon panels show a green/purple checkerboard on the three dark beams
+over the road at the start straight" — the engine's missing-texture pattern. Two candidates, both fixed:
+* The sign-logo pictures (2026-09-09) and the screen picture were written as UNCOMPRESSED A8R8G8B8 DDS with
+  no mips under fixed names; every custom texture proven to render (tree atlases, light swatches) is DXT with
+  mips. Since d5f41f57 `write_dds_picture` = the atlases' encoder (BC3 + mip chain), and every generated
+  picture carries a per-build suffix (`TINY_PICTURE_SUFFIX`, tinyctl derives it from the alias base):
+  the game caches embedded TEXTURES by file name for the session as it caches item models — a re-encoded
+  `ScreenLogo.dds` drew the old bytes until renamed. Same-camera editor frame of the turbo pad: the LED
+  chevron panel matches the original (`ship16-diagnostics/frames/cmp-turbo21turboN.jpg`).
+* The trigger CURTAIN (`Modifier\<Kind>\TriggerFX`, fed by `SpecialFXGate.FuncShader` from the live gate)
+  cannot be fed by an item; `TINY_TRIGGERFX=picture` draws the icon as a static TIAdd quad (default `game`
+  until a frame shows it; `off` would drop the trigger item with the visual — never ship it).
+
 ## Trees: half-size static snapshots of the vegetation (2026-09-08)
 
 A `VegetTreeModel` placement cannot be resized — the game instances the
