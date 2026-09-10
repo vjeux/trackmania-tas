@@ -963,9 +963,11 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             }
             // --upright-window t1,t2[,min_up] (seconds, repeatable via ;): the body up-vector up_y = 1 - 2(qx^2 + qz^2) must stay above
             // min_up (default 0.7) for every row whose race time is inside [t1, t2] — a roll there is not a cell (parent 19:14Z: attitude guard)
-            if cfg.upright.iter().any(|u| rows.iter().any(|r| { let t = w.race_of(r) as f64 / 1000.0; t >= u[0] && t <= u[1] && (1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz)) < u[2] })) {
+            // SURFACE-RELATIVE (coordinator 21:09Z): a car with ground contact tilts legally with a bank (the 21 base wall-rides the hairpin at
+            // up_y 0.10 with ground_contact = 1 throughout 3.5–5.0 s); the gravity up_y test applies only to AIRBORNE rows (ground_contact false).
+            if cfg.upright.iter().any(|u| rows.iter().any(|r| { let t = w.race_of(r) as f64 / 1000.0; !r.vis.ground_contact && t >= u[0] && t <= u[1] && (1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz)) < u[2] })) {
                 out.deaths[1] += 1;
-                if debug_fan { if let Some(r) = rows.iter().find(|r| { let t = w.race_of(r) as f64 / 1000.0; cfg.upright.iter().any(|u| t >= u[0] && t <= u[1] && (1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz)) < u[2]) }) { eprintln!("    UPRIGHT kill {desc:34}: race {:.2} up_y {:.3} at ({:.1}, {:.1}, {:.1}) v {:.1} q ({:.3} {:.3} {:.3} {:.3})", w.race_of(r) as f64 / 1000.0, 1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz), r.x, r.y, r.z, speed(r), r.qx, r.qy, r.qz, r.qw); } }
+                if debug_fan { if let Some(r) = rows.iter().find(|r| { let t = w.race_of(r) as f64 / 1000.0; !r.vis.ground_contact && cfg.upright.iter().any(|u| t >= u[0] && t <= u[1] && (1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz)) < u[2]) }) { eprintln!("    UPRIGHT kill {desc:34}: race {:.2} up_y {:.3} at ({:.1}, {:.1}, {:.1}) v {:.1} q ({:.3} {:.3} {:.3} {:.3})", w.race_of(r) as f64 / 1000.0, 1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz), r.x, r.y, r.z, speed(r), r.qx, r.qy, r.qz, r.qw); } }
                 dump_rollout(w, base, &rows, "offroute", &desc, &dump_n);
                 continue;
             }
@@ -1123,6 +1125,12 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 // a rollout that credits MORE than the next gate within its horizon is judged at its LAST credit (cumulative time):
                 // 21 wp7 → wp17 is slower than the lap but wp17 → wp1 much faster — the cumulative beat at wp1 counts (14:50Z)
                 let k_eff = (k_pref).max(end.cps as usize).min(track.n_groups);
+                // ORDER (21:04Z, Norway N-BC accepted "gate 3 at 26.90" with mask 0x17 = gate 4 skipped): every credited bit must be part of the
+                // ordered prefix, else the arrival is out of order — kept as a cell, never LEG DONE
+                let ordered = (mask.count_ones() as usize) <= k_pref;
+                if !ordered {
+                    out.log.push(format!("arrival with mask {mask:#x} refused: {} credits but only the first {k_pref} gates in order — a gate was skipped (cell kept)", mask.count_ones()));
+                }
                 // --min-leg-gate N (coupled sections): an arrival counts as LEG DONE only at gate >= N; earlier credits stay cells
                 let coupled_ok = k_eff >= cfg.min_leg_gate;
                 let beats = match cfg.beat_times.get(k_eff.saturating_sub(1)) {
@@ -1136,7 +1144,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 if !coupled_ok {
                     out.log.push(format!("arrival at gate {} kept as a cell (coupled section: LEG DONE only at gate >= {})", k_eff, cfg.min_leg_gate));
                 }
-                if coupled_ok && beats && (on_band || (!fell && !stopped && !cfg.arrival_strict)) {
+                if ordered && coupled_ok && beats && (on_band || (!fell && !stopped && !cfg.arrival_strict)) {
                     out.log.push(format!("LEG DONE: gate {} (order position {}) credited with a good arrival at race {}: s {s:.1} lat {lat:.1} v {v:.1} (human {vh:.1}) after {} ticks ({} macros)", k_pref, k_pref - 1, crate::secs(w.race_of(&end)), e.chain.len(), e.macro_desc.len()));
                     out.leg_done = Some(k_eff);
                     out.finished = Some(e.clone());
