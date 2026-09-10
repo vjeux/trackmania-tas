@@ -509,6 +509,9 @@ pub struct LapCfg {
     pub arrival_ang: f64,
     /// clinic: --arrival-strict restores hard refusal of off-band arrivals (default: off-band credits are taken and logged)
     pub arrival_strict: bool,
+    /// polish: reference lap race times per gate (s), credit order; an arrival must beat them by beat_margin (--beat-times FILE)
+    pub beat_times: Vec<f64>,
+    pub beat_margin: f64,
     /// hand macro: pure-pursuit points (x y z [speed]) from --pursue FILE; empty = the macro is skipped
     pub pursue: Vec<[f64; 5]>,
     /// hand macro: aim at the first pursue point farther than this (m); --pursue-look, default 8
@@ -1077,7 +1080,16 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 if !on_band && !fell && !stopped && !cfg.arrival_strict {
                     out.log.push(format!("arrival at gate {} credited-but-off-band (speed_ok {speed_ok} lat_ok {lat_ok} height_ok {height_ok} heading_ok {heading_ok}) — taken", k_pref));
                 }
-                if (on_band || (!fell && !stopped && !cfg.arrival_strict)) {
+                // POLISH: --beat-times FILE (one race time in seconds per gate, credit order) — an arrival is a LEG DONE only when its
+                // credit row beats the reference lap's time at that gate by --beat-margin (default 0.2 s); slower credits stay cells
+                let beats = match cfg.beat_times.get(k_pref.saturating_sub(1)) {
+                    Some(t_ref) => (w.race_of(&cr) as f64) / 1000.0 <= *t_ref - cfg.beat_margin,
+                    None => true,
+                };
+                if !beats {
+                    out.log.push(format!("arrival at gate {} at race {:.2} s does not beat the reference {:.2} s — kept as a cell", k_pref, (w.race_of(&cr) as f64) / 1000.0, cfg.beat_times[k_pref - 1]));
+                }
+                if beats && (on_band || (!fell && !stopped && !cfg.arrival_strict)) {
                     out.log.push(format!("LEG DONE: gate {} (order position {}) credited with a good arrival at race {}: s {s:.1} lat {lat:.1} v {v:.1} (human {vh:.1}) after {} ticks ({} macros)", k_pref, k_pref - 1, crate::secs(w.race_of(&end)), e.chain.len(), e.macro_desc.len()));
                     out.leg_done = Some(k_pref);
                     out.finished = Some(e.clone());
