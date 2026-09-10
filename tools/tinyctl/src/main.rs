@@ -30,6 +30,7 @@ mod replaypull;
 mod startcheck;
 mod shoot;
 mod treelineup;
+mod pulljpg;
 mod ship;
 mod unproject;
 mod upload;
@@ -95,6 +96,8 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
                      [--pitch 11] [--row-gap 250] [--dists 5,15,40] [--v -0.08] [--pictures DIR,…]
         a species-by-variant tree lineup (stock first, then the variant items) and its
         cameras at fixed distances (near per item; middle per item north+south; far per row)
+  tinyctl pulljpg --tag T [--outdir /tmp/lin/shotsT] [--quality 2]
+        a shoot's frames as JPEGs in ONE bridge transfer (converted on the box, one tar)
   tinyctl cropstats IMG… --crop x,y,w,h [--cells N] [--sheet OUT.png]
         a lineup row shot several times from one camera, as numbers: per image and
         cell (one per item) the non-sky share, the dark share, the foreground colour
@@ -171,6 +174,7 @@ fn main() {
         "views" => views::cmd(rest),
         "shoot" => shoot::cmd(rest),
         "treelineup" => treelineup::cmd(rest),
+        "pulljpg" => pulljpg::cmd(rest),
         "ship" => ship::cmd(rest),
         "lightmap" => lightmap::cmd(rest),
         "compare" => compare::cmd(rest),

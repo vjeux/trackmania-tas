@@ -427,6 +427,36 @@ fn dds_header(w: u32, h: u32, mips: u32, dxt5: bool) -> Vec<u8> {
     out
 }
 
+/// A DXT5 DDS with every level's colour scaled by `factor` (alpha untouched),
+/// re-encoded — the darker atlas copy of an inner depth band.
+pub fn darken_dds(dds: &[u8], factor: f32) -> R<Vec<u8>> {
+    let (w0, h0, mips) = dds_dims(dds).ok_or("not a DDS")?;
+    let mut levels: Vec<Level> = Vec::new();
+    let mut side = w0.max(h0);
+    for _ in 0..mips {
+        let (w, h, mut rgba) = decode_capped_rgba(dds, side)?;
+        if let Some(l) = levels.last() {
+            if l.w == w && l.h == h {
+                break;
+            }
+        }
+        for px in rgba.chunks_mut(4) {
+            for c in 0..3 {
+                px[c] = (px[c] as f32 * factor).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+        levels.push(Level { w, h, rgba });
+        if side <= 1 {
+            break;
+        }
+        side /= 2;
+    }
+    if levels.is_empty() {
+        return Err("no level decoded".into());
+    }
+    Ok(write_dds_dxt5_mips(&levels))
+}
+
 /// An uncompressed A8R8G8B8 DDS carrying the whole chain.
 pub fn write_dds_rgba_mips(levels: &[Level]) -> Vec<u8> {
     let top = &levels[0];

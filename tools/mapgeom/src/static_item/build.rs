@@ -1817,6 +1817,22 @@ pub struct VegetBake {
 /// size lever), TINY_TREE_NORMAL_MAP=1 (also name the `_N` image in slot 5,
 /// Normal; TINY_TREE_NORMAL_SLOT overrides), TINY_TREE_LEAF_CONST=SLOT:RRGGBB
 /// (a constant image in one more slot: 4 is Specular, 12 RoughMetal).
+/// `TINY_TREE_DEPTH=T1:F1[,T2:F2…]`: the leaf-card depth bands — (normalised
+/// radius threshold, colour factor) pairs, ascending; None when unset or `0`.
+pub fn depth_bands() -> Option<Vec<(f32, f32)>> {
+    let spec = std::env::var("TINY_TREE_DEPTH").ok()?;
+    if spec.trim().is_empty() || spec.trim() == "0" {
+        return None;
+    }
+    let mut out: Vec<(f32, f32)> = Vec::new();
+    for part in spec.split(',').filter(|s| !s.trim().is_empty()) {
+        let (t, f) = part.split_once(':')?;
+        out.push((t.trim().parse().ok()?, f.trim().parse().ok()?));
+    }
+    out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    if out.is_empty() { None } else { Some(out) }
+}
+
 pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &str, scale: f32, m: &mut Merged) -> R<VegetBake> {
     use super::vstream::N_COLOR0;
     let t = crate::veget::parse_tree_model(store, model_path)?;
@@ -1863,6 +1879,7 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
     let mut out = VegetBake { model: model_path.to_string(), height: stats.top, radius: stats.radius, ..Default::default() };
     // one item material per model material, in model order
     let mut slots: Vec<usize> = Vec::with_capacity(t.materials.len());
+    let mut band_slots_per_mat: Vec<Vec<usize>> = Vec::with_capacity(t.materials.len());
     for mat in &t.materials {
         let mut files: Vec<(i32, String)> = Vec::new();
         // TINY_TREE_LEAF_SLOTS=1 / TINY_TREE_BARK_SLOTS=0: the user-texture
@@ -1936,10 +1953,10 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                 // autumn atlas (red over green by 12 or more, luma under 150: Populus 118); saturation x1.15 throughout.
                 // TINY_TREE_LEAF_COLOR_ADJ=GAIN[,SAT] sets both by hand (`1,1` = the
                 // atlas as it is).
-                let color_adj: Option<(f32, f32)> = match std::env::var("TINY_TREE_LEAF_COLOR_ADJ") {
+                let color_adj: Option<(f32, f32, f32)> = match std::env::var("TINY_TREE_LEAF_COLOR_ADJ") {
                     Ok(adj) => {
                         let mut it = adj.split(',').map(|x| x.trim().parse::<f32>());
-                        Some((it.next().and_then(|v| v.ok()).unwrap_or(1.0), it.next().and_then(|v| v.ok()).unwrap_or(1.0)))
+                        Some((it.next().and_then(|v| v.ok()).unwrap_or(1.0), it.next().and_then(|v| v.ok()).unwrap_or(1.0), it.next().and_then(|v| v.ok()).unwrap_or(0.0)))
                     }
                     Err(_) if mat.leaf => {
                         let (w0, h0, top) = super::texture::decode_capped_rgba(&bytes, cap).map_err(|e| format!("{path}: {e}"))?;
@@ -1958,28 +1975,55 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                         } else {
                             let (r, g, b) = (s[0] as f32 / n as f32, s[1] as f32 / n as f32, s[2] as f32 / n as f32);
                             let luma = 0.299 * r + 0.587 * g + 0.114 * b;
-                            let mut gain = (132.0 / luma.max(1.0)).clamp(1.0, 1.65);
-                            // warm (autumn) foliage: red clearly over green — the yellow-green palms sit
-                            // at r ≈ g — and mid-luma: a light pink blossom atlas (cherry, luma 210)
-                            // is left alone, gain 1.6 bleached it white
+                            // the per-collection gain (`leaf_color_for`), capped by the atlas'
+                            // own luma so a light atlas (the pink cherry 210, a snowy fir 183)
+                            // is left alone — a gain of 1.6 bleached the cherry white
+                            // TINY_TREE_COLOR_TABLE=1: the per-collection table (pass 3, being
+                            // measured); unset = the pass-2 rule that ships in ship16
+                            let table = std::env::var("TINY_TREE_COLOR_TABLE").as_deref() == Ok("1");
+                            let (cg, csat, chue) = if table { leaf_color_for(VEGET_COLLECTION.with(|c| c.get())) } else { (1.65, 1.15, 0.0) };
+                            let mut gain = if table { cg.min(128.0 / luma.max(1.0)).clamp(1.0, 1.65) } else { (132.0 / luma.max(1.0)).clamp(1.0, 1.65) };
+                            // warm (autumn) foliage renders dull under the item shading: at least
+                            // 1.6 under the pass-2 rule, 1.25 under the table (Populus: measured
+                            // need 1.2–1.3 on both sides)
                             if r >= g + 12.0 && luma < 150.0 {
-                                gain = gain.max(1.6);
+                                gain = gain.max(if table { 1.25 } else { 1.6 });
                             }
-                            m.notes.push(format!("leaf atlas {file}: opaque mean ({r:.0}, {g:.0}, {b:.0}) luma {luma:.0} -> colour gain {gain:.2}{}", if r >= g + 12.0 && luma < 150.0 { " (warm foliage)" } else { "" }));
-                            Some((gain, 1.15))
+                            m.notes.push(format!("leaf atlas {file}: opaque mean ({r:.0}, {g:.0}, {b:.0}) luma {luma:.0} -> colour gain {gain:.2} saturation x{csat} hue {chue:+}{}", if r >= g + 12.0 && luma < 150.0 { " (warm foliage)" } else { "" }));
+                            Some((gain, csat, chue))
                         }
                     }
                     Err(_) => None,
                 };
                 let adjust = |rgba: &mut [u8], alpha_gain: f32| {
-                    if let Some((gain, sat)) = color_adj {
-                        for px in rgba.chunks_mut(4) {
-                            let (r, g, b) = (px[0] as f32, px[1] as f32, px[2] as f32);
-                            let l = 0.299 * r + 0.587 * g + 0.114 * b;
-                            let f = |c: f32| ((l + (c - l) * sat) * gain).round().clamp(0.0, 255.0) as u8;
-                            px[0] = f(r);
-                            px[1] = f(g);
-                            px[2] = f(b);
+                    if let Some((gain, sat, hue)) = color_adj {
+                        if hue.abs() <= 1e-3 {
+                            // the pass-2 form (ship16's bytes): saturation stretched about the luma
+                            for px in rgba.chunks_mut(4) {
+                                let (r, g, b) = (px[0] as f32, px[1] as f32, px[2] as f32);
+                                let l = 0.299 * r + 0.587 * g + 0.114 * b;
+                                let f = |c: f32| ((l + (c - l) * sat) * gain).round().clamp(0.0, 255.0) as u8;
+                                px[0] = f(r);
+                                px[1] = f(g);
+                                px[2] = f(b);
+                            }
+                        } else {
+                            // hue: a rotation of the chroma plane (YIQ) by `hue` degrees, then the
+                            // saturation and the gain
+                            let (hc, hs) = (hue.to_radians().cos(), hue.to_radians().sin());
+                            for px in rgba.chunks_mut(4) {
+                                let (r, g, b) = (px[0] as f32, px[1] as f32, px[2] as f32);
+                                let y = 0.299 * r + 0.587 * g + 0.114 * b;
+                                let i0 = 0.596 * r - 0.274 * g - 0.322 * b;
+                                let q0 = 0.211 * r - 0.523 * g + 0.312 * b;
+                                let (i, q) = ((i0 * hc - q0 * hs) * sat, (i0 * hs + q0 * hc) * sat);
+                                let rr = (y + 0.956 * i + 0.621 * q) * gain;
+                                let gg = (y - 0.272 * i - 0.647 * q) * gain;
+                                let bb = (y - 1.106 * i + 1.703 * q) * gain;
+                                px[0] = rr.round().clamp(0.0, 255.0) as u8;
+                                px[1] = gg.round().clamp(0.0, 255.0) as u8;
+                                px[2] = bb.round().clamp(0.0, 255.0) as u8;
+                            }
                         }
                     }
                     if (alpha_gain - 1.0).abs() > 1e-4 {
@@ -2009,7 +2053,7 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                         }
                         side /= 2;
                     }
-                    m.notes.push(format!("leaf atlas {file}: pack chain re-encoded, {} levels from {}x{}, alpha x{gain}{}", levels.len(), levels[0].w, levels[0].h, color_adj.map(|(g, s)| format!(", colour gain {g} saturation {s}")).unwrap_or_default()));
+                    m.notes.push(format!("leaf atlas {file}: pack chain re-encoded, {} levels from {}x{}, alpha x{gain}{}", levels.len(), levels[0].w, levels[0].h, color_adj.map(|(g, s, h)| format!(", colour gain {g} saturation {s} hue {h:+}")).unwrap_or_default()));
                     if uncompressed {
                         super::texture::write_dds_rgba_mips(&levels)
                     } else {
@@ -2025,8 +2069,8 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                         }
                     }
                     adjust(&mut rgba, 1.0);
-                    if let Some((g, s)) = color_adj {
-                        m.notes.push(format!("leaf atlas {file}: colour gain {g} saturation {s}"));
+                    if let Some((g, s, h)) = color_adj {
+                        m.notes.push(format!("leaf atlas {file}: colour gain {g} saturation {s} hue {h:+}"));
                     }
                     let levels = super::texture::mip_chain(super::texture::Level { w, h, rgba }, alpha_ref, mips_mode == "coverage", gain);
                     let top_cov = super::texture::alpha_coverage(&levels[0].rgba, alpha_ref);
@@ -2115,11 +2159,59 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
         let slot = match m.materials.iter().position(|x| same_look(x, &inst)) {
             Some(i) => i,
             None => {
-                m.materials.push(inst);
+                m.materials.push(inst.clone());
                 m.materials.len() - 1
             }
         };
         slots.push(slot);
+        // TINY_TREE_DEPTH=T1:F1[,T2:F2…] (self-shadow, 2026-09-10): the leaf cards
+        // are split into radial BANDS about the crown centre — a card whose
+        // normalised radius is under T1 draws the atlas darkened by F1, under T2
+        // by F2, …, the rest the atlas itself — so the crown has a dark interior
+        // and a lit rim like the stock canopy's self-shadowing, which the game's
+        // per-item lightmap does not give our cards (every card the same value).
+        // One more material and one more (small) atlas copy per band.
+        let mut band_slots: Vec<usize> = Vec::new();
+        if mat.leaf {
+            if let Some(bands) = depth_bands() {
+                for (bi, (_thr, factor)) in bands.iter().enumerate() {
+                    let mut binst = inst.clone();
+                    let mut bfiles: Vec<(i32, String)> = Vec::new();
+                    for (slot_id, file) in binst.main.as_ref().map(|mn| mn.user_textures.iter().map(|t| (t.u01, t.texture.clone())).collect::<Vec<_>>()).unwrap_or_default() {
+                        // only the colour slot gets a darkened copy; the others ride as they are
+                        if slot_id == default_slot {
+                            let dark_file = format!("{}_in{bi}.dds", file.trim_end_matches(".dds"));
+                            if !m.pictures.iter().any(|(f, _)| *f == dark_file) {
+                                let src = m.pictures.iter().find(|(f, _)| *f == file).map(|(_, b)| b.clone()).ok_or_else(|| format!("depth band: no picture {file}"))?;
+                                let bytes = super::texture::darken_dds(&src, *factor).map_err(|e| format!("{file}: {e}"))?;
+                                out.textures.push((dark_file.clone(), bytes.len()));
+                                m.pictures.push((dark_file.clone(), bytes));
+                            }
+                            bfiles.push((slot_id, dark_file));
+                        } else {
+                            bfiles.push((slot_id, file));
+                        }
+                    }
+                    if let Some(main) = binst.main.as_mut() {
+                        let name = match &main.material_name {
+                            crate::crystal_model::Id::Str(s) => format!("{s}_in{bi}"),
+                            _ => format!("{model_name}_in{bi}"),
+                        };
+                        main.material_name = crate::crystal_model::Id::Str(name);
+                        main.user_textures = bfiles.into_iter().map(|(u01, texture)| crate::crystal_model::UserTexture { u01, texture }).collect();
+                    }
+                    let bslot = match m.materials.iter().position(|x| same_look(x, &binst)) {
+                        Some(i) => i,
+                        None => {
+                            m.materials.push(binst);
+                            m.materials.len() - 1
+                        }
+                    };
+                    band_slots.push(bslot);
+                }
+            }
+        }
+        band_slots_per_mat.push(band_slots);
     }
     // the visuals, level by level; the ladder is the model's own switch
     // distances, unscaled (see the doc comment)
@@ -2153,17 +2245,42 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
             // black it measured (see `default_color`)
             {
                 let forced: Option<u32> = std::env::var("TINY_TREE_COLOR").ok().and_then(|hex| u32::from_str_radix(hex.trim_start_matches("0x"), 16).ok()).or(default_color);
-                if let Some(word) = forced {
+                // TINY_TREE_VCOL_AO=1 (probe, 2026-09-10): a per-vertex grey ramp by
+                // normalised radius about the visual's box centre — inner vertices
+                // 0x40, outer 0xFF (alpha 0xFF) — the test of whether the shading
+                // model multiplies its diffuse by colour0 at all (the cheapest
+                // self-shadow if it does)
+                let vcol_ao = std::env::var("TINY_TREE_VCOL_AO").as_deref() == Ok("1");
+                if forced.is_some() || vcol_ao {
+                    let word = forced.unwrap_or(0xFFFF_FFFF);
                     if let Some(main) = v.main.as_mut() {
+                        let (c, half) = ([main.bounding_box[0], main.bounding_box[1], main.bounding_box[2]], [main.bounding_box[3].max(0.01), main.bounding_box[4].max(0.01), main.bounding_box[5].max(0.01)]);
                         if let Some(Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) {
                             let n = s.count.max(0) as usize;
+                            let words: Vec<u32> = if vcol_ao {
+                                let pos: Vec<[f32; 3]> = match s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == super::vstream::N_POSITION).map(|(_, e)| e) {
+                                    Some(Elem::Float3(p)) => p.clone(),
+                                    _ => Vec::new(),
+                                };
+                                (0..n)
+                                    .map(|k| {
+                                        let p = pos.get(k).copied().unwrap_or(c);
+                                        let d = [(p[0] - c[0]) / half[0], (p[1] - c[1]) / half[1], (p[2] - c[2]) / half[2]];
+                                        let r = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().clamp(0.0, 1.0);
+                                        let g = (0x40 as f32 + (0xFF - 0x40) as f32 * r).round() as u32;
+                                        0xFF00_0000 | (g << 16) | (g << 8) | g
+                                    })
+                                    .collect()
+                            } else {
+                                vec![word; n]
+                            };
                             if let Some(i) = s.decls.iter().position(|d| d.name() == N_COLOR0) {
-                                s.elems[i] = Elem::Word(vec![word; n]);
+                                s.elems[i] = Elem::Word(words);
                             } else {
                                 use super::vstream::{Decl, T_COLOR};
                                 let compress = s.compress_local3d.unwrap_or(false);
                                 let mut items: Vec<(Decl, u32, Elem)> = s.decls.iter().zip(s.elems.iter()).map(|(d, e)| (d.clone(), d.stored_type(compress), e.clone())).collect();
-                                items.push((Decl::with_stride(N_COLOR0, T_COLOR, 0, 0, 0), T_COLOR, Elem::Word(vec![word; n])));
+                                items.push((Decl::with_stride(N_COLOR0, T_COLOR, 0, 0, 0), T_COLOR, Elem::Word(words)));
                                 items.sort_by_key(|(d, _, _)| d.name());
                                 let stride: u32 = items.iter().map(|(_, st, _)| super::vstream::type_size(*st).unwrap_or(4) as u32).sum();
                                 let mut offset = 0u32;
@@ -2285,8 +2402,65 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                     }
                 }
             }
-            m.visuals.push(MergedVisual { visual: v, material: slots[e.material as usize], lod_mask: if pick.is_some() { 0 } else { 1 << bit }, lod_ladder: ladder.clone(), part: 0 });
-            n += 1;
+            // TINY_TREE_DENSE=1 (probe, 2026-09-10): level 1's leaf cards ALSO draw at
+            // level 0 (lod mask bits 0 and 1) — the LOD0+LOD1 union, a denser near crown
+            let dense = std::env::var("TINY_TREE_DENSE").as_deref() == Ok("1") && leaf && pick.is_none() && bit == 1;
+            let lod_mask = if pick.is_some() { 0 } else { (1 << bit) | if dense { 1 } else { 0 } };
+            if dense && !out.stripped.contains(&"dense") {
+                out.stripped.push("dense");
+            }
+            let bands = if leaf { depth_bands() } else { None };
+            match bands {
+                Some(bands) if !band_slots_per_mat[e.material as usize].is_empty() => {
+                    // per triangle: the normalised radius of its centroid about the
+                    // visual's box centre (elliptical, by the box half extents)
+                    let (c, half) = v.main.as_ref().map(|mn| ([mn.bounding_box[0], mn.bounding_box[1], mn.bounding_box[2]], [mn.bounding_box[3].max(0.01), mn.bounding_box[4].max(0.01), mn.bounding_box[5].max(0.01)])).unwrap_or(([0.0; 3], [1.0; 3]));
+                    let pos: Vec<[f32; 3]> = v.stream().and_then(|s| s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == super::vstream::N_POSITION).map(|(_, el)| el.clone())).and_then(|el| if let Elem::Float3(p) = el { Some(p) } else { None }).unwrap_or_default();
+                    let idx: Vec<u32> = v.index_buffer.as_ref().map(|ib| ib.indices.clone()).unwrap_or_default();
+                    let ntri = idx.len() / 3;
+                    let radius: Vec<f32> = (0..ntri)
+                        .map(|ti| {
+                            let mut r = 0.0f32;
+                            for k in 0..3 {
+                                let p = pos.get(idx[ti * 3 + k] as usize).copied().unwrap_or(c);
+                                let d = [(p[0] - c[0]) / half[0], (p[1] - c[1]) / half[1], (p[2] - c[2]) / half[2]];
+                                r += (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() / 3.0;
+                            }
+                            r
+                        })
+                        .collect();
+                    // band b takes the triangles with thr[b-1] <= r < thr[b]; the last (outer) band the rest
+                    let mut lo = 0.0f32;
+                    let mut counts: Vec<usize> = Vec::new();
+                    for (bi, (thr, _)) in bands.iter().enumerate() {
+                        let keep: Vec<bool> = radius.iter().map(|r| *r >= lo && *r < *thr).collect();
+                        let kept = keep.iter().filter(|k| **k).count();
+                        counts.push(kept);
+                        if kept > 0 {
+                            let sv = super::merged::sub_visual(&v, &keep)?;
+                            m.visuals.push(MergedVisual { visual: sv, material: band_slots_per_mat[e.material as usize][bi], lod_mask, lod_ladder: ladder.clone(), part: 0 });
+                            n += 1;
+                        }
+                        lo = *thr;
+                    }
+                    let keep: Vec<bool> = radius.iter().map(|r| *r >= lo).collect();
+                    let kept = keep.iter().filter(|k| **k).count();
+                    counts.push(kept);
+                    if kept > 0 {
+                        let sv = super::merged::sub_visual(&v, &keep)?;
+                        m.visuals.push(MergedVisual { visual: sv, material: slots[e.material as usize], lod_mask, lod_ladder: ladder.clone(), part: 0 });
+                        n += 1;
+                    }
+                    m.notes.push(format!("depth bands level {l}: {ntri} triangles per band (inner..outer) {counts:?}"));
+                    if !out.stripped.contains(&"depth") {
+                        out.stripped.push("depth");
+                    }
+                }
+                _ => {
+                    m.visuals.push(MergedVisual { visual: v, material: slots[e.material as usize], lod_mask, lod_ladder: ladder.clone(), part: 0 });
+                    n += 1;
+                }
+            }
         }
         out.levels.push(n);
         kept_levels += 1;
@@ -2330,7 +2504,39 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
 /// `.VegetTreeModel.Gbx` (or a vegetation `.Item.Gbx`, followed to its model)
 /// baked, assembled and written. The item bytes and the accumulator (its
 /// `pictures` are the textures to ship next to the item).
+thread_local! {
+    /// The map collection the tree being baked is for (set by
+    /// `static_item_from_veget_report`): the per-collection leaf colour
+    /// calibration keys on it.
+    pub static VEGET_COLLECTION: std::cell::Cell<u32> = const { std::cell::Cell::new(26) };
+}
+
+/// The per-collection LEAF COLOUR calibration (colour gain, saturation
+/// factor, hue shift in degrees — negative = towards yellow), measured on
+/// 2026-09-10 against the stock species standing beside ours at the same
+/// angular size (lineups D–G: GreenCoast TreeSmallA/BushMediumD/TreeThinSmallA/
+/// TreeBigA/BushBigB, BlueBay PalmTreeBigB1/BigA1/SugarBigA/BushBigA,
+/// RedIsland TreePineBigA2/MediumA1/BushBigA, Stadium PalmTreeMedium/Small/
+/// SpringTreeBig; back-lit and sun sides, 4K, `cropstats --fg green`). The
+/// stock's back-lit crown is a dark green mass with bright yellow-green rim
+/// highlights; ours under the gain-1.3 shell-normal bake came out brighter
+/// than the stock on GreenCoast (+10–30 %) and RedIsland (+20 %), about right
+/// on BlueBay and Stadium (−10 %), and LESS saturated everywhere but BlueBay
+/// (RedIsland pines 15 % vs 30 %, GreenCoast oaks 20 % vs 27 %), greener by
+/// 5–10° on the sun side. `TINY_TREE_LEAF_COLOR_ADJ=GAIN[,SAT[,HUE]]`
+/// overrides the table.
+pub fn leaf_color_for(collection: u32) -> (f32, f32, f32) {
+    match collection {
+        0xf => (1.1, 1.3, -6.0),   // GreenCoast
+        0x1c => (1.2, 1.0, 0.0),   // BlueBay
+        0x10 => (1.05, 1.5, -5.0), // RedIsland
+        0x1d => (1.1, 1.2, -3.0),  // WhiteShore (firs: the RedIsland pines' numbers, softened)
+        _ => (1.2, 1.1, -5.0),     // Stadium
+    }
+}
+
 pub fn static_item_from_veget_report(store: &mut crate::store::DataStore, path: &str, ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged, VegetBake)> {
+    VEGET_COLLECTION.with(|c| c.set(collection));
     let model_path = crate::veget::tree_model_path(store, path)?;
     let mut m = Merged::default();
     m.keep_water = keep_water_for(collection);
