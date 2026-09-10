@@ -309,8 +309,9 @@ pub fn custom_texture_material(inst: &CPlugMaterialUserInst, ident: &str) -> CPl
     inst.clone()
 }
 
-pub fn skinned_material(inst: &CPlugMaterialUserInst, collection: u32) -> CPlugMaterialUserInst {
-    const SKIN: &[(&str, &str)] = &[
+/// The collection skin's slot table (`Stadium\GameSkin\StadiumOnTerrain.GameSkin.gbx`):
+/// material stem → `<Env>\Media\Modifier\StadiumOnTerrain\<slot>`.
+pub const SKIN_SLOTS: &[(&str, &str)] = &[
         ("TrackWallClips", "TrackWallClipsInWorld"),
         ("TrackWall", "TrackWallInWorld"),
         ("TrackBorders", "TrackBordersInWorld"),
@@ -324,6 +325,9 @@ pub fn skinned_material(inst: &CPlugMaterialUserInst, collection: u32) -> CPlugM
         ("DecalPaint2Sponsor4x1NoColorizeD", "DecalPaint2Sponsor4x1NoColorizeD"),
         ("DecalPaintSponsor4x1NoColorizeD", "DecalPaintSponsor4x1NoColorizeD"),
     ];
+
+pub fn skinned_material(inst: &CPlugMaterialUserInst, collection: u32) -> CPlugMaterialUserInst {
+    const SKIN: &[(&str, &str)] = SKIN_SLOTS;
     // every terrain environment carries `<Env>\Media\Modifier\StadiumOnTerrain\`
     // with the same slots (BlueBay and RedIsland checked); Stadium itself has none
     if collection == 0x1a {

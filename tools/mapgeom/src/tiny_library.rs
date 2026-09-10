@@ -665,6 +665,26 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     m.keep_water = crate::static_item::build::keep_water_for(collection);
     m.modifier = modifier_links(store, &plan.effective_mods);
     m.collision_redress = modifier_redress(store, &plan.effective_mods, &m.modifier);
+    // The collection SKIN (`<Env>\Media\Modifier\StadiumOnTerrain\<slot>`, the
+    // four terrain collections) is one material file per slot: look AND
+    // surface. The visuals took it since 2026-09-06 (`skinned_material`); the
+    // collision kept the prefab's ids (a BlueBay TrackWall clip drew concrete
+    // and felt Wood) until 2026-09-10 — 71 walls on 01/06/11/16/21 that lost
+    // their Platform modifier under 15168101 showed it (PHYSICS-CENSUS). Rows
+    // AFTER the modifier rows: the game applies the skin after the modifier,
+    // and the first matching row wins. TINY_SKIN_PHYSICS=0 keeps the old ids.
+    if collection != 0x1a && std::env::var("TINY_SKIN_PHYSICS").map(|v| v != "0").unwrap_or(true) {
+        let env = crate::static_item::materials::env_name(collection);
+        for (stem, slot) in crate::static_item::materials::SKIN_SLOTS {
+            let link = format!("{env}\\Media\\Modifier\\StadiumOnTerrain\\{slot}");
+            if let Some(ids) = crate::static_item::build::material_surface_ids(store, &format!("{link}.Material.Gbx")) {
+                let key = RedressKey::File(format!("{}.material.gbx", stem.to_ascii_lowercase()));
+                if !m.collision_redress.iter().any(|r| r.matches == key) {
+                    m.collision_redress.push(Redress { matches: key, link, ids });
+                }
+            }
+        }
+    }
     // A gameplay gate BLOCK (GateSpecialBoost / Boost2 / Reset / …) is the
     // Turbo-dressed Special prefab re-dressed by its `<Kind>.TerrainModifier`
     // folder; the ring's sign panels resolve through `gate_kind` (signlogo.rs),
