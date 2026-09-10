@@ -108,6 +108,7 @@ fn main() {
         "lcp-to-state" => cmd_lcp_to_state(&a),
         "chain-to-state" => cmd_chain_to_state(&a),
         "preflight" => cmd_preflight(&a),
+        "contact-trace" => cmd_contact_trace(&a),
         "chain-replay" => cmd_chain_replay(&a),
         "input-life" => cmd_input_life(&a),
         "sweep" => cmd_sweep(&a),
@@ -2132,4 +2133,61 @@ fn cmd_preflight(a: &Args) -> Result<(), String> {
             std::process::exit(3);
         }
     }
+}
+
+/// `tmreach contact-trace --map M --tape BASE.Ghost.Gbx [--chain best.tsv] [--from S] [--to S] --out trace.tsv [--work DIR]`
+/// Per-tick CONTACT export (coordinator 2026-09-10 16:52Z, the reviewers' "actual contact export"): replay the chain (or the
+/// tape's own inputs) in the fork and write one row per tick from race `--from` to `--to` seconds with the vis state's wheel
+/// fields — ground_contact, per wheel contact / material id / slip / damper / steer (WHEELS.md §2: material 13 = no contact,
+/// decoded 100 % against ghost samples), plus gear, rpm, applied steer. A summary of wheel-ticks per material and contact
+/// fractions per wheel follows on stdout. Contact NORMALS are not in the vis state (they live in the phy wheel blocks, ENV);
+/// not exported here.
+fn cmd_contact_trace(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let tape = PathBuf::from(a.req("tape"));
+    let out = a.req("out");
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/contact-{}", std::process::id())));
+    let mut w = Worker::start(&server, &map, &shim, &work, &tape, a.has("verbose"))?;
+    let root = w.root_probe;
+    let to_s: f64 = a.get("to").map(|s| s.parse().unwrap()).unwrap_or(f64::INFINITY);
+    let from_s: f64 = a.get("from").map(|s| s.parse().unwrap()).unwrap_or(0.0);
+    let recs: Vec<forkoracle::forksrv::Rec> = match a.get("chain") {
+        Some(p) => tmreach::preflight::chain_file(Path::new(&p))?,
+        None => w.reference_recs(root, w.n_ticks().saturating_sub(root)),
+    };
+    let n = if to_s.is_finite() { ((to_s * 100.0).ceil() as usize + 5).min(recs.len()) } else { recs.len() };
+    let (rows, nh) = w.rollout_keep(branch::ROOT, &recs[..n], root, n as u64)?;
+    w.release(nh);
+    let mut s = String::from("tick\trace_s\tx\ty\tz\tspeed\tcps\tgear\trpm\tsteer_applied\tground\tw0_contact\tw0_mat\tw0_slip\tw0_damper\tw0_steer\tw1_contact\tw1_mat\tw1_slip\tw1_damper\tw1_steer\tw2_contact\tw2_mat\tw2_slip\tw2_damper\tw2_steer\tw3_contact\tw3_mat\tw3_slip\tw3_damper\tw3_steer\n");
+    let mut mats: std::collections::BTreeMap<u8, usize> = Default::default();
+    let mut contact_ticks = [0usize; 4];
+    let mut ticks_in = 0usize;
+    let mut vis_missing = 0usize;
+    for (i, r) in rows.iter().enumerate() {
+        let race = w.race_of(r) as f64 / 1000.0;
+        if race < from_s || race > to_s {
+            continue;
+        }
+        ticks_in += 1;
+        let v = &r.vis;
+        if v.wheel_material == [u8::MAX; 4] {
+            vis_missing += 1;
+        }
+        let cps = if r.cps == u32::MAX { 0 } else { r.cps };
+        s.push_str(&format!("{i}\t{race:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\t{cps}\t{}\t{:.0}\t{:.2}\t{}", r.x, r.y, r.z, tmreach::rig::speed(r), v.gear, v.rpm, v.steer_applied, v.ground_contact as u8));
+        for k in 0..4 {
+            *mats.entry(v.wheel_material[k]).or_default() += 1;
+            if v.wheel_contact[k] {
+                contact_ticks[k] += 1;
+            }
+            s.push_str(&format!("\t{}\t{}\t{:.3}\t{:.3}\t{:.3}", v.wheel_contact[k] as u8, v.wheel_material[k], v.wheel_slip[k], v.wheel_damper[k], v.wheel_steer[k]));
+        }
+        s.push('\n');
+    }
+    std::fs::write(&out, s).map_err(|e| format!("{out}: {e}"))?;
+    println!("{out}: {ticks_in} ticks (race {from_s:.2}–{:.2} s) of {} replayed{}", if to_s.is_finite() { to_s } else { rows.last().map(|r| w.race_of(r) as f64 / 1000.0).unwrap_or(0.0) }, rows.len(), if vis_missing > 0 { format!("; {vis_missing} ticks WITHOUT a vis state (layout without the vis block)") } else { String::new() });
+    println!("wheel-ticks per material id: {}", mats.iter().map(|(m, n)| format!("{}:{n}", if *m == u8::MAX { "?".into() } else { m.to_string() })).collect::<Vec<_>>().join("  "));
+    println!("contact fraction per wheel (FL FR RL RR order per WHEELS.md): {}", contact_ticks.iter().map(|c| format!("{:.1} %", 100.0 * *c as f64 / ticks_in.max(1) as f64)).collect::<Vec<_>>().join("  "));
+    Ok(())
 }
