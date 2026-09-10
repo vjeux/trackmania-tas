@@ -533,12 +533,17 @@ pub const MARKER_PREFIX: &str = "tas-overlay v1";
 /// any copy -- and a published asset fetched back still answers it.
 ///
 /// It records what was drawn and how the timing was settled: which ghost
-/// (an FNV-1a of the file's bytes), the offset applied, the strip window, and
-/// `how` -- `sync/r0.83/w40ms` when the offset was MEASURED against the picture
+/// (an FNV-1a of the file's bytes — `ghost=` — and, since 2026-09-10, the
+/// file's full md5 as `ghost_md5=`, the digest every other tool and the input
+/// arm's README use; a stamp without it, the 44 clips before that date, still
+/// parses), the offset applied, the strip window, and `how` --
+/// `sync/r0.83/w40ms` when the offset was MEASURED against the picture
 /// ([`crate::sync`]), `given` when a caller forced it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Marker {
     pub ghost: String,
+    /// The ghost file's md5 (32 hex digits); empty on a stamp written before it existed.
+    pub ghost_md5: String,
     pub offset_ms: i64,
     pub history_ms: i64,
     pub future_ms: i64,
@@ -547,8 +552,9 @@ pub struct Marker {
 
 impl Marker {
     pub fn tag(&self) -> String {
+        let md5 = if self.ghost_md5.is_empty() { String::new() } else { format!(" ghost_md5={}", self.ghost_md5) };
         format!(
-            "{MARKER_PREFIX} ghost={} offset_ms={} window=-{}/+{} how={}",
+            "{MARKER_PREFIX} ghost={}{md5} offset_ms={} window=-{}/+{} how={}",
             self.ghost, self.offset_ms, self.history_ms, self.future_ms, self.how
         )
     }
@@ -558,6 +564,7 @@ impl Marker {
         let rest = tag.trim().strip_prefix(MARKER_PREFIX)?;
         let mut m = Marker {
             ghost: String::new(),
+            ghost_md5: String::new(),
             offset_ms: 0,
             history_ms: 0,
             future_ms: 0,
@@ -568,6 +575,7 @@ impl Marker {
             let (k, v) = kv.split_once('=')?;
             match k {
                 "ghost" => m.ghost = v.to_string(),
+                "ghost_md5" => m.ghost_md5 = v.to_string(),
                 "offset_ms" => {
                     m.offset_ms = v.parse().ok()?;
                     seen_offset = true;
@@ -587,15 +595,20 @@ impl Marker {
         Some(m)
     }
 
-    /// One phrase for a report: `offset +0 ms, sync/r0.83/w40ms`.
+    /// One phrase for a report: `offset +0 ms, sync/r0.83/w40ms, ghost md5 89d3236e…`.
     pub fn summary(&self) -> String {
-        format!("offset {:+} ms, {}", self.offset_ms, self.how)
+        if self.ghost_md5.is_empty() {
+            format!("offset {:+} ms, {}", self.offset_ms, self.how)
+        } else {
+            format!("offset {:+} ms, {}, ghost md5 {}", self.offset_ms, self.how, self.ghost_md5)
+        }
     }
 }
 
 /// FNV-1a over a file's bytes, 16 hex digits -- the ghost's identity in the
-/// marker. Not md5 (this crate has no dependencies, and gbx has no md5); it
-/// only has to say "the same file" and "a different file".
+/// marker since day one (kept for the clips stamped before the md5 joined).
+/// Not md5 (this crate had no md5 then); it only has to say "the same file"
+/// and "a different file".
 pub fn file_id(p: &Path) -> Result<String, String> {
     let data = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -633,6 +646,7 @@ pub fn run(ff: &Ff, ghost: &Path, video: &Path, out: &Path, o: &Opts, timing: &T
     let o = Opts { offset_ms, ..*o };
     let marker = Marker {
         ghost: file_id(ghost)?,
+        ghost_md5: crate::md5::md5_hex(&std::fs::read(ghost).map_err(|e| format!("{}: {e}", ghost.display()))?),
         offset_ms,
         history_ms: o.history_ms,
         future_ms: o.future_ms,
@@ -1134,6 +1148,7 @@ mod marker_tests {
     fn the_marker_round_trips_and_rejects_strangers() {
         let m = Marker {
             ghost: "0123456789abcdef".into(),
+            ghost_md5: "89d3236ea670d3d425073e188385c56c".into(),
             offset_ms: -40,
             history_ms: 3000,
             future_ms: 3000,
@@ -1141,9 +1156,18 @@ mod marker_tests {
         };
         let tag = m.tag();
         assert!(tag.starts_with(MARKER_PREFIX), "{tag}");
+        assert!(tag.contains(" ghost_md5=89d3236ea670d3d425073e188385c56c "), "{tag}");
         assert_eq!(Marker::parse(&tag).as_ref(), Some(&m));
         // the Windows ffprobe's CRLF and a stray space do not matter
         assert_eq!(Marker::parse(&format!("{tag} \r\n")).as_ref(), Some(&m));
+        // A STAMP FROM BEFORE THE MD5 (the 44 clips published up to 2026-09-10)
+        // still parses, with an empty md5, and writes back without the key.
+        let old = "tas-overlay v1 ghost=0123456789abcdef offset_ms=-40 window=-3000/+3000 how=sync/r0.83/w40ms";
+        let p = Marker::parse(old).expect("old stamp");
+        assert_eq!(p.ghost_md5, "");
+        assert_eq!(p.tag(), old);
+        assert_eq!(p.summary(), "offset -40 ms, sync/r0.83/w40ms");
+        assert_eq!(m.summary(), "offset -40 ms, sync/r0.83/w40ms, ghost md5 89d3236ea670d3d425073e188385c56c");
         // anything else is not a marker
         assert_eq!(Marker::parse(""), None);
         assert_eq!(Marker::parse("Lavf61.7.100"), None);
@@ -1158,6 +1182,7 @@ mod marker_tests {
     fn the_marker_is_written_as_the_comment_tag() {
         let m = Marker {
             ghost: "f".repeat(16),
+            ghost_md5: String::new(),
             offset_ms: 0,
             history_ms: 3000,
             future_ms: 3000,

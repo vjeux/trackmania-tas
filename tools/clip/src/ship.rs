@@ -642,7 +642,7 @@ mod tests {
     /// by name.
     #[test]
     fn a_clip_without_the_overlay_marker_is_refused_unless_asked_for_by_name() {
-        let m = Marker { ghost: "ab".repeat(8), offset_ms: 0, history_ms: 3000, future_ms: 3000, how: "sync/r0.80/w40ms".into() };
+        let m = Marker { ghost: "ab".repeat(8), ghost_md5: String::new(), offset_ms: 0, history_ms: 3000, future_ms: 3000, how: "sync/r0.80/w40ms".into() };
         let tag = m.tag();
         assert_eq!(check_overlay(Some(&tag), false).unwrap().as_ref(), Some(&m));
         // no tag at all, and a tag that is somebody else's comment
