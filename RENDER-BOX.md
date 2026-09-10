@@ -389,8 +389,10 @@ points, so a write there is a plain NTFS write; the game is handed the alias
 path and resolves it to the same file. Made by
 `tools/tinyctl/box/shoot-junction.sh` (under the render lock; moves what is in
 `_shoot`, md5-verifies, `rmdir`, `mklink /J`, then times a 35 MB write and does
-one `shootctl probe --how edit` of a map through the alias — the verdict is in
-`~/shoot/shoot-junction.log`).
+one `shootctl probe --how edit` of a map through the alias). Done on the box
+2026-09-10 12:37Z: 457 MB moved, junction made, a 35 MB write through the alias
+21 s (the drvfs baseline), and the editor opened a map staged there in 6.6 s —
+against 835 s the same morning.
 
 `shootctl`'s `stage_map` writes the bytes to the junction's target
 (`SHOOT_TARGET = /mnt/c/tm/_shoot`) when that directory exists and returns the
