@@ -261,6 +261,7 @@ impl Car {
             max_dev: 0.0,
             cps: 0,
             vis: 0,
+            wheels: 0,
             car: if self.kind != u8::MAX { self.kind } else { self.slot as u8 },
             car_slot: self.slot as u8,
         }
@@ -271,7 +272,7 @@ impl Car {
     /// vehicle's post-step vis state (`phy + 0x848`, 0x360 bytes: gear, rpm,
     /// wheels, turbo). Seven segments; the fk tools keep the five-segment base.
     pub fn layout_with_engine(&self) -> Layout {
-        Layout { cps: self.participant + CP_COUNT_IN_PARTICIPANT, vis: self.vis(), ..self.layout() }
+        Layout { cps: self.participant + CP_COUNT_IN_PARTICIPANT, vis: self.vis(), wheels: self.phy + 0x1780, ..self.layout() }
     }
 }
 

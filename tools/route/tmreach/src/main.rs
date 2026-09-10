@@ -2177,6 +2177,10 @@ fn cmd_contact_trace(a: &Args) -> Result<(), String> {
     // every tick, so the window is stepped in 1-tick chunks (slow: ~1 ms/tick of fork stepping + 4 reads). OFF = the f32 offset of
     // the normal inside the block (hex ok); absent = auto-detect the unit-vector triple with the largest upward component.
     let normals_mode = a.has("normals");
+    // FAST PATH (route-model 21:40Z): the layout gathers the four wheel blocks every tick (Layout::wheels → Vis::wheel_live /
+    // wheel_normal / wheel_damper_phy), so the normals come with every rollout at no cost; the 1-tick stepping stays as
+    // `--normals slow` (or `--normals auto` / `--normals 0xNN` to re-derive the offset from the raw blocks).
+    let slow_mode = normals_mode && a.get("normals").map_or(false, |v| v == "slow" || v == "auto" || v.starts_with("0x") || v.parse::<usize>().is_ok());
     // ENV 21:18Z (identity car, one wheel lifted): +0x00 damper (0.200 = airborne), +0x10..0x18 contact point (body frame, zero in
     // the air), +0x30 u32 live CONTACT flag, +0x40 material (last touched), +0x44..0x4c contact NORMAL (world, unit). --normals auto
     // re-detects the triple only when asked (--normals auto).
@@ -2184,9 +2188,17 @@ fn cmd_contact_trace(a: &Args) -> Result<(), String> {
     let mut live_flags: Vec<[u32; 4]> = Vec::new();
     let mut phy_dampers: Vec<[f32; 4]> = Vec::new();
     let mut normals: Vec<[[f32; 3]; 4]> = Vec::new();
-    let rows: Vec<forkoracle::layout::Row> = if !normals_mode {
+    let rows: Vec<forkoracle::layout::Row> = if !slow_mode {
         let (rows, nh) = w.rollout_keep(branch::ROOT, &recs[..n], root, n as u64)?;
         w.release(nh);
+        if normals_mode {
+            // the fast path: wheel data straight from the rows
+            for r in &rows {
+                normals.push(r.vis.wheel_normal);
+                live_flags.push([0, 1, 2, 3].map(|k| if r.vis.wheel_live[k] == u8::MAX { u32::MAX } else { r.vis.wheel_live[k] as u32 }));
+                phy_dampers.push(r.vis.wheel_damper_phy);
+            }
+        }
         rows
     } else {
         let n_from = ((from_s * 100.0).floor() as usize).min(n);
