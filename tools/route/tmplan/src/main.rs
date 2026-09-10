@@ -1052,7 +1052,7 @@ fn cmd_road_centreline(args: &[String]) {
             let air_jump = airborne_m >= 15.0;
             let conn = if air_jump && verdict.as_ref().map(|v| v.2 != "Drop").unwrap_or(true) { ConnectionClass::Jump } else if !gap && !manual { ConnectionClass::Road } else { match verdict.as_ref().map(|v| v.2.as_str()) { Some("Jump") => ConnectionClass::Jump, Some("Drop") => ConnectionClass::Drop, Some("Road") => ConnectionClass::Road, _ => if manual { ConnectionClass::Road } else { ConnectionClass::Unknown } } };
             if let Some(v) = &verdict { verdict_notes.push(format!("{}→{} {}{}", v.0, v.1, v.2, if v.3.is_empty() { String::new() } else { format!(" ({})", v.3) })); }
-            legs.push(Leg { gate_idx: li as u32, map_waypoint: rep.waypoint, s_start: s[i0], s_end: s[i1], connection: conn, arrival_speed: [5.0, 80.0], arrival_heading: gate_normal, arrival_heading_tol: 0.5, arrival_height: [centre[1] - rep.half_height - 1.0, centre[1] - rep.half_height + 3.0], p_reach: if gap { 0.0 } else { 1.0 }, expected_ms: -1, evidence: LegEvidence::Predicted });
+            legs.push(Leg { gate_idx: li as u32, map_waypoint: rep.waypoint, s_start: s[i0], s_end: s[i1], connection: conn, arrival_speed: [5.0, 80.0], arrival_heading: gate_normal, arrival_heading_tol: 0.5, arrival_height: if author_used || manual { [pts[i1.min(pts.len() - 1)][1] - 1.5, pts[i1.min(pts.len() - 1)][1] + 3.0] } else { [centre[1] - rep.half_height - 1.0, centre[1] - rep.half_height + 3.0] }, p_reach: if gap { 0.0 } else { 1.0 }, expected_ms: -1, evidence: LegEvidence::Predicted });
             gate_order.push(rep.waypoint);
         }
         let tg = TrackGeom {
