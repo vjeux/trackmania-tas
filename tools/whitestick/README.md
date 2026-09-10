@@ -52,10 +52,13 @@ Config is `~/.whitestick/config.toml` (`relay`, `token`, `instance`, optional
 work on any devserver or OD — no per-box setup like `.navi/credentials.json`.
 
 Latency is one WebSocket handshake through fwdproxy plus the relay hop
-(~0.3–0.6 s to start a command), then the network's speed. The old bridge's
-random 15 s stalls and the 900 KB command / 5 MB reply ceilings are gone; the
-one hard limit is the relay's 1 MiB per message, which caps the command
-string itself at about 1 MB — stdin/stdout are chunked and unbounded.
+(~0.65 s to start a command against the box today), then the network's speed.
+The old bridge's random 15 s stalls and its 900 KB command / 5 MB reply
+ceilings are gone; stdin and stdout are chunked and unbounded. A command
+STRING over 96 KiB is written to a temp file on the box and run as a script,
+because Linux caps one exec argument at 128 KiB (`wsx push` sends half a
+megabyte of base64 inside the command) — invisible, but it is why a huge
+command costs one extra file write.
 
 ## Setup, once
 
@@ -137,9 +140,10 @@ tooling, nothing else.
 - `tools/whitestick-relay` — the same thing as a Cloudflare Worker
   (workers-rs). Not a workspace member: it targets wasm32 and is built by
   `worker-build` via `wrangler deploy`.
-- `wsx` still works unchanged (it talks to `~/bin/whitestick` over stdin); its
-  parallel-chunk design was a workaround for navi's cost model and could now
-  be a plain `whitestick 'cat > f' < f`.
+- `wsx` still works unchanged (it talks to `~/bin/whitestick` over stdin) —
+  verified: 400 KB and 4 MB round trips, md5 equal. Its parallel-chunk design
+  was a workaround for navi's cost model, and a push is now simply
+  `whitestick 'cat > f' < f` (4 MB in ~4 s, one round trip, no base64).
 
 ## What it looks like when it works
 

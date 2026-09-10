@@ -231,7 +231,40 @@ async fn run_channel(
     let shell = req.shell.clone().unwrap_or_else(|| opts.shell.clone());
     let cwd = req.cwd.clone().or_else(|| opts.cwd.clone());
     let mut cmd = tokio::process::Command::new(&shell);
-    cmd.arg("-c").arg(&req.cmd);
+
+    // A big command goes to the shell as a FILE, not as `-c <string>`.
+    // Linux caps a single argv entry at MAX_ARG_STRLEN (128 KiB, not
+    // tunable), and `wsx push` sends half a megabyte of base64 inside the
+    // command itself -- exec fails with E2BIG ("Argument list too long")
+    // before the shell ever runs. The old navi bridge did not exec this way,
+    // so this limit has to stay invisible here too. Small commands keep the
+    // fast path: no file, no cleanup.
+    let script = if req.cmd.len() > 96 * 1024 {
+        let path = std::env::temp_dir().join(format!(
+            "whitestick-cmd-{}-{chan:08x}.sh",
+            std::process::id()
+        ));
+        match tokio::fs::write(&path, req.cmd.as_bytes()).await {
+            Ok(()) => {
+                cmd.arg(&path);
+                Some(path)
+            }
+            Err(e) => {
+                let msg = format!(
+                    "command is {} bytes, too long for one exec argument, and the script file {} could not be written: {e}",
+                    req.cmd.len(),
+                    path.display()
+                );
+                crate::log(&format!("{tag} {msg}"));
+                let _ = out.send(data(chan, A_ERROR, msg.as_bytes())).await;
+                let _ = out.send(data(chan, A_EXIT, b"{\"code\":126}")).await;
+                return;
+            }
+        }
+    } else {
+        cmd.arg("-c").arg(&req.cmd);
+        None
+    };
     if let Some(d) = &cwd {
         cmd.current_dir(d);
     }
@@ -251,8 +284,11 @@ async fn run_channel(
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
+            if let Some(p) = &script {
+                let _ = tokio::fs::remove_file(p).await;
+            }
             let msg = format!(
-                "cannot start `{shell} -c ...`{}: {e}",
+                "cannot start `{shell}`{}: {e}",
                 cwd.as_deref().map(|d| format!(" in {d}")).unwrap_or_default()
             );
             crate::log(&format!("{tag} {msg}"));
@@ -379,6 +415,12 @@ async fn run_channel(
     drop(drain);
     drop(stdin_tx);
     stdin_task.abort();
+
+    // Now that the shell has finished with it. (Unlinking right after spawn
+    // loses the race: the child has not exec'd, let alone opened the script.)
+    if let Some(p) = &script {
+        let _ = tokio::fs::remove_file(p).await;
+    }
 
     let exit = exit.unwrap_or_default();
     let body = serde_json::to_vec(&exit).unwrap_or_else(|_| b"{}".to_vec());
