@@ -33,3 +33,4 @@ pub mod effects;
 pub mod lap;
 pub mod sweep;
 pub mod policy_src;
+pub mod inject;

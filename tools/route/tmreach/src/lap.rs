@@ -485,6 +485,9 @@ pub struct LapCfg {
     pub arrival_any: bool,
     /// vjeux launched-checkpoint csv (ghost lcp --csv): his approach samples become macros
     pub vjeux_csv: Option<String>,
+    /// Start the search from an INJECTED car state (a LaunchedCP crossing / approach start, tm-inject-state/1),
+    /// its `inputs` replayed as the seed chain. The exported tape then starts at the injection, not the spawn.
+    pub inject: Option<crate::inject::InjectState>,
 }
 
 struct Rng(u64);
@@ -1009,16 +1012,31 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         Ok(count)
     };
 
-    // SEED: the root, or the base tape replayed for --prefix-ticks (its state becomes the first cell)
-    if cfg.prefix_ticks > 0 || cfg.seed_chain.is_some() {
-        let mut recs = match &cfg.seed_chain {
-            Some(c) => c.clone(),
-            None => w.reference_recs(root, cfg.prefix_ticks),
+    // SEED: the root, or the base tape replayed for --prefix-ticks (its state becomes the first cell), or an
+    // INJECTED state (--inject-state) followed by its approach inputs
+    if cfg.prefix_ticks > 0 || cfg.seed_chain.is_some() || cfg.inject.is_some() {
+        let mut seed_node = branch::ROOT;
+        let mut inject_from = root;
+        let mut recs = match (&cfg.inject, &cfg.seed_chain) {
+            (Some(st), _) => {
+                // past race 0 first (the countdown holds the car at the spawn — ENV): the template's own inputs for
+                // INJECT_PREROLL ticks, then the write in a fork of that node
+                const INJECT_PREROLL: usize = 20;
+                let pre = w.reference_recs(root, INJECT_PREROLL);
+                let (_pre_rows, h_pre) = w.rollout_keep(branch::ROOT, &pre, root, pre.len() as u64)?;
+                let (h0, rb) = crate::inject::inject_state(w, h_pre, st)?;
+                inject_from = w.floor(h0)?;
+                out.log.push(format!("INJECTED {} state (landmark {}, {}) at ({:.1}, {:.1}, {:.1}) v {:.1}: read back ({:.1}, {:.1}, {:.1}); replaying {} approach ticks", st.source.kind, st.source.landmark, st.source.file, st.state.pos[0], st.state.pos[1], st.state.pos[2], (st.state.vel[0].powi(2) + st.state.vel[1].powi(2) + st.state.vel[2].powi(2)).sqrt(), rb.x, rb.y, rb.z, st.inputs.len()));
+                seed_node = h0;
+                crate::inject::inputs_to_recs(&st.inputs)
+            }
+            (None, Some(c)) => c.clone(),
+            (None, None) => w.reference_recs(root, cfg.prefix_ticks),
         };
         // --seed-to-gate K: keep the seed only up to 0.3 s after its K-th credit (the parent's rule: seed the stuck
         // leg from a FASTER upstream chain, gate N-2, and let the speed-matching search redo the approach)
         if cfg.seed_to_gate > 0 {
-            let (rows0, nh0) = w.rollout_keep(branch::ROOT, &recs, root, recs.len() as u64)?;
+            let (rows0, nh0) = w.rollout_keep(seed_node, &recs, inject_from, recs.len() as u64)?;
             w.release(nh0);
             let root_c = if root_row.cps == u32::MAX { 0 } else { root_row.cps };
             let mut cut_at: Option<usize> = None;
@@ -1041,7 +1059,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         // dead end: cut the chain back 3 s at a time (up to 12 times) until it ends in a live state
         let mut tries = 0;
         let (rows, nh, end, s, seg) = loop {
-            let (rows, nh) = w.rollout_keep(branch::ROOT, &recs, root, recs.len() as u64)?;
+            let (rows, nh) = w.rollout_keep(seed_node, &recs, inject_from, recs.len() as u64)?;
             let end = rows.last().cloned().unwrap_or_else(|| root_row.clone());
             // project the seed by WALKING its rows from the root with the hinted projector (a self-crossing line must not snap
             // the seed to a later pass — 20 G3-first route, 22:05Z)

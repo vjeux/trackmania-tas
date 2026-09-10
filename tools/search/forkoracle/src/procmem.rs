@@ -182,3 +182,13 @@ impl Mem {
         Some(buf)
     }
 }
+
+/// Write `bytes` into the process at `addr` (via `/proc/<pid>/mem`; the process must be stopped or paused at a
+/// point where nothing else touches that memory -- a fork server at its checkpoint is). Returns the byte count.
+pub fn write_at(pid: i32, addr: u64, bytes: &[u8]) -> Result<usize, String> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().write(true).open(format!("/proc/{}/mem", pid)).map_err(|e| format!("open /proc/{pid}/mem for write: {e}"))?;
+    f.seek(SeekFrom::Start(addr)).map_err(|e| e.to_string())?;
+    f.write_all(bytes).map_err(|e| format!("write {} bytes at {addr:#x} of pid {pid}: {e}", bytes.len()))?;
+    Ok(bytes.len())
+}

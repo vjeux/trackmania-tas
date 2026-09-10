@@ -1121,6 +1121,8 @@ dependencies = [
  "forkoracle",
  "gbx",
  "ghost",
+ "serde",
+ "serde_json",
  "tmenv",
  "tmmaps",
  "tmobs",

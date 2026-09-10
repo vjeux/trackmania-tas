@@ -23,3 +23,5 @@ tmstate = { path = "../../rl/tmstate" }
 tmobs = { path = "../../rl/tmobs" }
 tmrl = { path = "../../rl/tmrl" }
 tmenv = { path = "../../rl/tmenv" }
+serde = { workspace = true }
+serde_json = { workspace = true }

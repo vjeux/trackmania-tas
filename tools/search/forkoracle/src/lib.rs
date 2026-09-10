@@ -27,6 +27,7 @@ pub mod layout;
 
 pub mod inputs;
 pub mod procmem;
+pub mod inject;
 
 /// What an armed event clause saw, as the driver reports it.
 ///
