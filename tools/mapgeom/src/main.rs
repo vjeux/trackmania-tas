@@ -1743,6 +1743,55 @@ fn main() {
             }
             eprintln!("{} files", files.len());
         }
+        // triggers MAP: every gameplay-gate trigger volume (NPlugTrigger_SGateSpecial
+        // in an embedded item's prefab) in WORLD space — per placement the effect
+        // (gameplay id), the world AABB of the trigger mesh, its centre and the
+        // rotated main direction. Answers "did the author pass this booster?".
+        "triggers" => {
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("triggers MAP".into()));
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+            let files = mapgeom::embedded::files(&m).unwrap_or_else(die);
+            // model name -> [(gameplay id, entity iso, local vertices, main dir)]
+            let mut trig: std::collections::HashMap<String, Vec<(u32, [f32; 12], Vec<[f32; 3]>, Option<[f32; 3]>)>> = Default::default();
+            for (name, bytes) in &files {
+                if !name.ends_with(".Item.Gbx") { continue; }
+                let f = match mapgeom::static_item::parse_file(bytes) { Ok(f) => f, Err(_) => continue };
+                let Some(pf) = f.item.prefab() else { continue };
+                for e in &pf.ents {
+                    if let Some(mapgeom::static_item::Node::GateSpecial(g)) = e.model.inline.as_deref() {
+                        if let Some(mapgeom::static_item::Node::Surface(sf)) = g.shape.inline.as_deref() {
+                            if let mapgeom::static_item::surface::Surf::Mesh { vertices, .. } = &sf.surf {
+                                let gp = sf.material_ids.first().map(|x| (*x as u32) >> 8).unwrap_or(0);
+                                let base = name.rsplit(['/', '\\']).next().unwrap_or(name).to_string();
+                                trig.entry(base).or_default().push((gp, mapgeom::static_item::prefab::CPlugPrefab::entity_iso(e), vertices.clone(), sf.gameplay_main_dir));
+                            }
+                        }
+                    }
+                }
+            }
+            println!("map {}: {} trigger-bearing item models", p, trig.len());
+            println!("model\tgameplay\tplacement(x,y,z)\tyaw\tworld_aabb_min\tworld_aabb_max\tcentre\tmain_dir_world");
+            for it in &m.items {
+                let base = it.model.rsplit(['/', '\\']).next().unwrap_or(&it.model);
+                let Some(list) = trig.get(base) else { continue };
+                let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                for (gp, iso, verts, dir) in list {
+                    let full = mapgeom::geom::compose(&xf, iso);
+                    let mut lo = [f32::MAX; 3]; let mut hi = [f32::MIN; 3];
+                    for v in verts { let w = mapgeom::geom::apply(&full, *v); for k in 0..3 { lo[k] = lo[k].min(w[k]); hi[k] = hi[k].max(w[k]); } }
+                    let d = dir.map(|d| { let o = mapgeom::geom::apply(&full, [0.0; 3]); let e = mapgeom::geom::apply(&full, d); [e[0]-o[0], e[1]-o[1], e[2]-o[2]] });
+                    // the ids as the pack's `Modifier\<Kind>\Collision.Material.Gbx` files carry them
+                    // (0x09079017, read 2026-09-10): NoEngine 4, NoSteering 6, Reset 8, SlowMotion 9,
+                    // Fragile 13, NoBrake 16, Cruise 17, Boost 18, Boost2 19; Turbo 1 / Turbo2 2 are the
+                    // prefab slabs' own bytes
+                    let gname = match gp { 1 => "Turbo", 2 => "Turbo2", 3 => "TurboRoulette", 4 => "NoEngine(FreeWheeling)", 5 => "NoGrip", 6 => "NoSteering", 7 => "ForceAcceleration", 8 => "Reset", 9 => "SlowMotion", 10 => "Bumper", 11 => "Bumper2", 12 => "ReactorBoost", 13 => "Fragile", 14 => "ReactorBoost2", 15 => "Bouncy", 16 => "NoBrake", 17 => "Cruise", 18 => "Boost(ReactorBoost_Oriented)", 19 => "Boost2(ReactorBoost2_Oriented)", _ => "?" };
+                    println!("{}\t{} ({})\t({:.2}, {:.2}, {:.2})\t{:.3}\t({:.2}, {:.2}, {:.2})\t({:.2}, {:.2}, {:.2})\t({:.2}, {:.2}, {:.2})\t{}",
+                        base, gp, gname, it.pos[0], it.pos[1], it.pos[2], it.yaw, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2],
+                        (lo[0]+hi[0])/2.0, (lo[1]+hi[1])/2.0, (lo[2]+hi[2])/2.0,
+                        d.map(|d| format!("({:.2}, {:.2}, {:.2})", d[0], d[1], d[2])).unwrap_or_else(|| "-".into()));
+                }
+            }
+        }
         "where" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
