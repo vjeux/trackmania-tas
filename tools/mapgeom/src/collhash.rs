@@ -220,9 +220,19 @@ pub struct Summary {
 }
 
 pub fn run(rest: &[String]) -> Result<(), String> {
-    let paths: Vec<&String> = rest.iter().skip(1).filter(|a| !a.starts_with("--")).collect();
+    // positional = every argument that is not a flag and not a flag's value (--report F)
+    let mut paths: Vec<&String> = Vec::new();
+    let mut skip = false;
+    for a in rest.iter().skip(1) {
+        if skip { skip = false; continue; }
+        if a == "--report" { skip = true; continue; }
+        if !a.starts_with("--") { paths.push(a); }
+    }
     if paths.is_empty() {
-        return Err("collhash MAP.Map.Gbx… [--parts] [--by-name]".into());
+        return Err("collhash MAP.Map.Gbx… [--parts] [--by-name] | collhash --diff A.Map.Gbx B.Map.Gbx [--report B-report.tsv]".into());
+    }
+    if rest.iter().any(|a| a == "--diff") {
+        return diff(rest, &paths);
     }
     let parts_wanted = rest.iter().any(|a| a == "--parts");
     // `--by-name`: the form before 2026-09-09 (embedded items by file name),
@@ -366,5 +376,252 @@ pub fn summary_with(m: &tmmaps::map::MapFile, by_name: bool) -> Summary {
         total.str(&ih.hex());
 
         Summary { total: total.hex(), placements: ph.hex(), blocks: bh.hex(), items: ih.hex(), n_items: m.items.len(), n_blocks: nblocks, n_models: per_item.len(), spawn_index, per_item }
+    }
+}
+
+/// `collhash --diff A B [--report B-report.tsv]`: the two maps' section hashes
+/// side by side, then the per-model collision fingerprints A has and B lacks
+/// and vice versa (a model = one fingerprint; a build re-aliases freely, so
+/// names never enter the comparison), each B-side model named by its source
+/// block when B's build report is given. Exit code 0 when the collision hash
+/// is the same, 1 when not — a shell loop is never the judge again (the
+/// 2026-09-10 tables compared two empty strings and said "identical" on 23
+/// maps whose clip walls had changed physics id).
+fn diff(rest: &[String], paths: &[&String]) -> Result<(), String> {
+    if paths.len() != 2 {
+        return Err("collhash --diff needs exactly two maps".into());
+    }
+    let report: BTreeMap<String, String> = rest
+        .iter()
+        .position(|a| a == "--report")
+        .and_then(|i| rest.get(i + 1))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|text| {
+            text.lines()
+                .filter_map(|l| {
+                    let c: Vec<&str> = l.split('\t').collect();
+                    ((c[0] == "block" || c[0] == "item" || c[0] == "tree") && c.len() > 4).then(|| (format!("{}.Item.Gbx", c[1]), c[4].to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let ma = tmmaps::map::MapFile::load(std::path::Path::new(paths[0]));
+    let mb = tmmaps::map::MapFile::load(std::path::Path::new(paths[1]));
+    let (a, b) = (summary(&ma), summary(&mb));
+    let (sa, sb) = (shapes(&ma), shapes(&mb));
+    let same = a.total == b.total;
+    println!("A {}\tcollision {}\tplacements {} ({} items)\tblocks {} ({})\titems {} ({} models)", paths[0], a.total, a.placements, a.n_items, a.blocks, a.n_blocks, a.items, a.n_models);
+    println!("B {}\tcollision {}\tplacements {} ({} items)\tblocks {} ({})\titems {} ({} models)", paths[1], b.total, b.placements, b.n_items, b.blocks, b.n_blocks, b.items, b.n_models);
+    println!("collision {}", if same { "IDENTICAL" } else { "DIFFERENT" });
+    // multisets of fingerprints
+    let count = |s: &Summary| -> BTreeMap<String, Vec<String>> {
+        let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (name, hex) in &s.per_item {
+            out.entry(hex.clone()).or_default().push(name.clone());
+        }
+        out
+    };
+    let (fa, fb) = (count(&a), count(&b));
+    let only_a: Vec<(&String, &Vec<String>)> = fa.iter().filter(|(h, _)| !fb.contains_key(*h)).collect();
+    let only_b: Vec<(&String, &Vec<String>)> = fb.iter().filter(|(h, _)| !fa.contains_key(*h)).collect();
+    println!("model fingerprints only in A: {}   only in B: {}", only_a.len(), only_b.len());
+    // pair B's new models with A's vanished ones by SHAPE: the same hull under
+    // other physics ids is a re-dress (old → new per id); a shape with no
+    // partner is new or gone geometry
+    // Pair by SHAPE across the WHOLE other map: the same hull under other
+    // physics ids is a re-dress (A's Wood wall → B's Concrete wall, whether or
+    // not B also kept a Wood copy); a shape with no partner anywhere is new or
+    // gone geometry.
+    let name_of = |names: &Vec<String>| names.first().cloned().unwrap_or_default();
+    let hist = |p: &BTreeMap<u8, usize>| p.iter().map(|(id, n)| format!("{}:{n}", crate::scene::physics_name(*id))).collect::<Vec<_>>().join(" ");
+    let by_shape = |s: &BTreeMap<String, (String, BTreeMap<u8, usize>)>| -> BTreeMap<String, Vec<String>> {
+        let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (name, (shape, _)) in s {
+            out.entry(shape.clone()).or_default().push(name.clone());
+        }
+        out
+    };
+    let (shape_a, shape_b) = (by_shape(&sa), by_shape(&sb));
+    let mut redress: BTreeMap<String, usize> = BTreeMap::new();
+    let (mut gone, mut new_shape) = (0usize, 0usize);
+    for (h, names) in &only_a {
+        let na = name_of(names);
+        let Some((shp, pa)) = sa.get(&na) else { continue };
+        match shape_b.get(shp) {
+            Some(partners) => {
+                let nb = partners[0].clone();
+                let pb = &sb[&nb].1;
+                let key = format!("{} -> {}", hist(pa), hist(pb));
+                *redress.entry(key.clone()).or_default() += 1;
+                let src = report.get(&nb).map(|s| format!("  = {s}")).unwrap_or_default();
+                println!("  A- {h}  {na} -> B {nb}{src}  RE-DRESSED {key}");
+            }
+            None => {
+                gone += 1;
+                println!("  A- {h}  {na}  GONE (no B model of this shape)  physics {}", hist(pa));
+            }
+        }
+    }
+    for (h, names) in &only_b {
+        let nb = name_of(names);
+        let src = report.get(&nb).map(|s| format!("  = {s}")).unwrap_or_default();
+        let Some((shp, pb)) = sb.get(&nb) else { continue };
+        if !shape_a.contains_key(shp) {
+            new_shape += 1;
+            println!("  B+ {h}  {nb}{src}  NEW SHAPE  physics {}", hist(pb));
+        }
+    }
+    println!("re-dressed A models (same shape in B, other physics): {}; A shapes gone: {gone}; B shapes new: {new_shape}", redress.values().sum::<usize>());
+    for (k, n) in &redress {
+        println!("  x{n}  {k}");
+    }
+    // Per PLACEMENT, by index (the two maps place the same records in the same
+    // order when their placement counts agree): a placement whose model
+    // fingerprint changed — even to a fingerprint the other map also has — is a
+    // re-dressed or re-cut piece in the world; count them, with the physics
+    // transition and a moved-position check.
+    if ma.items.len() == mb.items.len() {
+        let mut changed = 0usize;
+        let mut moved = 0usize;
+        let mut trans: BTreeMap<String, usize> = BTreeMap::new();
+        for (ia, ib) in ma.items.iter().zip(mb.items.iter()) {
+            let d = ((ia.pos[0] - ib.pos[0]).powi(2) + (ia.pos[1] - ib.pos[1]).powi(2) + (ia.pos[2] - ib.pos[2]).powi(2)).sqrt();
+            if d > 0.001 || (ia.yaw - ib.yaw).abs() > 1e-5 {
+                moved += 1;
+            }
+            let fa = a.per_item.get(&ia.model);
+            let fb = b.per_item.get(&ib.model);
+            match (fa, fb) {
+                (Some(x), Some(y)) if x == y => {}
+                (Some(_), Some(_)) => {
+                    changed += 1;
+                    let ha = sa.get(&ia.model).map(|(_, p)| hist(p)).unwrap_or_default();
+                    let hb = sb.get(&ib.model).map(|(_, p)| hist(p)).unwrap_or_default();
+                    let same_shape = sa.get(&ia.model).map(|(s, _)| s) == sb.get(&ib.model).map(|(s, _)| s);
+                    *trans.entry(format!("{}{ha} -> {hb}", if same_shape { "" } else { "SHAPE CHANGED: " })).or_default() += 1;
+                }
+                (None, None) => {
+                    if ia.model != ib.model {
+                        changed += 1;
+                        *trans.entry(format!("stock {} -> {}", ia.model, ib.model)).or_default() += 1;
+                    }
+                }
+                _ => {
+                    changed += 1;
+                    *trans.entry("embedded <-> stock".to_string()).or_default() += 1;
+                }
+            }
+        }
+        println!("placements: {} of {} changed model collision (moved: {moved})", changed, ma.items.len());
+        for (k, n) in &trans {
+            println!("  p{n}  {k}");
+        }
+    } else {
+        println!("placements: {} vs {} — counts differ, no per-index pairing", ma.items.len(), mb.items.len());
+    }
+    if !same {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// A model's SHAPE fingerprint (vertices + triangle indices of every collision
+/// surface, no physics) and its physics histogram (id → triangle count): the
+/// pair that tells a re-dressed hull ("same shape, ids 14 → 0") from a moved or
+/// re-cut one, for `--diff`.
+pub fn item_shape_and_physics(bytes: &[u8]) -> Result<(String, BTreeMap<u8, usize>), String> {
+    let f = crate::static_item::parse_file(bytes)?;
+    let mut h = Fnv::default();
+    let mut phys: BTreeMap<u8, usize> = BTreeMap::new();
+    let mut surfaces: Vec<&crate::static_item::surface::CPlugSurface> = Vec::new();
+    if let Some(so) = f.item.static_object() {
+        if let Some(s) = so.surface() {
+            surfaces.push(s);
+        }
+    } else if let Some(p) = f.item.prefab() {
+        for e in p.ents.iter() {
+            match e.model.inline.as_deref() {
+                Some(crate::static_item::Node::StaticObject(so)) => {
+                    if let Some(s) = so.surface() {
+                        surfaces.push(s);
+                    }
+                }
+                Some(crate::static_item::Node::Dyna(d)) => {
+                    for r in [&d.static_shape, &d.dyna_shape] {
+                        if let Some(crate::static_item::Node::Surface(s)) = r.inline.as_deref() {
+                            surfaces.push(s);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    for s in surfaces {
+        if let crate::static_item::surface::Surf::Mesh { vertices, triangles, .. } = &s.surf {
+            h.u32(vertices.len() as u32);
+            for v in vertices {
+                h.f32q(v[0], POS_Q);
+                h.f32q(v[1], POS_Q);
+                h.f32q(v[2], POS_Q);
+            }
+            h.u32(triangles.len() as u32);
+            for t in triangles {
+                h.u32(t.indices[0]);
+                h.u32(t.indices[1]);
+                h.u32(t.indices[2]);
+                let id = s.material_ids.get(t.surface_index.max(0) as usize).map(|x| (*x & 0xff) as u8).unwrap_or(t.material_id);
+                *phys.entry(id).or_default() += 1;
+            }
+        }
+    }
+    Ok((h.hex(), phys))
+}
+
+/// The per-model shape → physics table of a map's embedded items, for `--diff`.
+pub fn shapes(m: &tmmaps::map::MapFile) -> BTreeMap<String, (String, BTreeMap<u8, usize>)> {
+    let files = crate::embedded::files(m).unwrap_or_default();
+    let mut out = BTreeMap::new();
+    for (name, bytes) in &files {
+        let base = name.rsplit(['/', '\\']).next().unwrap_or(name).to_string();
+        if !base.to_ascii_lowercase().ends_with(".item.gbx") {
+            continue;
+        }
+        if let Ok(v) = item_shape_and_physics(bytes) {
+            out.insert(base, v);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod diff_tests {
+    /// The judge fails CLOSED: two summaries compare by their hash strings,
+    /// which the tool computes itself — an empty or unparseable side can never
+    /// read as "identical". (The 2026-09-10 shell tables compared two empty
+    /// strings and said "yes" on 23 maps whose clip walls had changed physics.)
+    #[test]
+    fn empty_hash_is_never_identical() {
+        let a = String::new();
+        let b = String::new();
+        // the tool never produces an empty total: FNV of an empty input is the
+        // offset basis, a 16-hex string; assert the invariant the diff relies on
+        let h = super::Fnv::default().hex();
+        assert_eq!(h.len(), 16);
+        assert_ne!(h, a);
+        assert!(!(a == b && !a.is_empty()));
+    }
+
+    /// An item whose collision cannot be parsed enters the fingerprint as
+    /// `UNPARSED:<error>` — a distinct, non-empty value, never the neighbour's.
+    #[test]
+    fn unparsed_item_has_a_fingerprint() {
+        let mut one = super::Fnv::default();
+        match super::item_collision(b"not a gbx file", &mut one) {
+            Ok(()) => panic!("garbage parsed as an item"),
+            Err(e) => one.str(&format!("UNPARSED:{e}")),
+        }
+        assert_eq!(one.hex().len(), 16);
+        assert_ne!(one.hex(), super::Fnv::default().hex());
     }
 }

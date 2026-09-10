@@ -838,12 +838,38 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     // nose-down one through — Poland's author on the Lake) needs a block's
     // water VOLUME, which no item can carry: the regenerated zone water
     // (Lake/Sea/Water genealogy) keeps it, an embedded pool cannot.
+    // DECISION 2026-09-10 16:35Z (coordinator, for vjeux): ship16 ships with NO
+    // collision change — the ship15 form (28, a lid to both engines) stays the
+    // default; `TINY_WATER=open` is the frozen diagnostic (probe-15-nowater:
+    // the triangles leave the mesh, server-verified — the drop passes the
+    // plane and rests on the floor). A per-body rule waits for the native-water
+    // research (TINY.md "Water").
     {
-        let before = m.surf_triangles.len();
-        m.surf_triangles.retain(|t| t.material_id != 13);
-        let n = before - m.surf_triangles.len();
-        if n > 0 {
-            m.notes.push(format!("{n} Water-physics collision triangles removed from the collision mesh (no surface for the client or the server; the visual quad stays)"));
+        let open = std::env::var("TINY_WATER").map(|v| v == "open").unwrap_or(false);
+        if open {
+            let before = m.surf_triangles.len();
+            m.surf_triangles.retain(|t| t.material_id != 13);
+            let n = before - m.surf_triangles.len();
+            if n > 0 {
+                m.notes.push(format!("{n} Water-physics collision triangles removed from the collision mesh (TINY_WATER=open: no surface for the client or the server; the visual quad stays)"));
+            }
+        } else {
+            let mut n = 0usize;
+            for t in m.surf_triangles.iter_mut() {
+                if t.material_id == 13 {
+                    t.material_id = 28;
+                    t.gameplay = 0;
+                    n += 1;
+                }
+            }
+            if n > 0 {
+                for id in m.surf_ids.iter_mut() {
+                    if *id & 0xff == 13 {
+                        *id = 28;
+                    }
+                }
+                m.notes.push(format!("{n} Water-physics collision triangles flagged NotCollidable (28) — the ship15 lid; TINY_WATER=open removes them"));
+            }
         }
     }
     // the sign panels of a pad / gate block: the kind's logo picture rides next
