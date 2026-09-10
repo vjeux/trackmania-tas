@@ -1766,6 +1766,7 @@ fn cmd_chain_replay(a: &Args) -> Result<(), String> {
         s.push_str(&format!("{i}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\t{:+.1}\t{}\t{:+.2}\t{:+.2}\t{:+.1}\t{:+.1}\t{:.5}\t{:.5}\t{:.5}\t{:.5}\n", w.race_of(r), r.x, r.y, r.z, tmreach::rig::speed(r), r.vy, if r.cps == u32::MAX { -1 } else { r.cps as i64 }, r.vx, r.vz, yaw, body_yaw, qx, qy, qz, qw));
     }
     std::fs::write(a.req("out"), s).map_err(|e| e.to_string())?;
+    let _ = std::fs::write(format!("{}.conventions.txt", a.req("out")), &note);
     let last = rows.last().ok_or("no rows")?;
     println!("replayed {} ticks: end ({:.1}, {:.1}, {:.1}) speed {:.1} cps {}", rows.len(), last.x, last.y, last.z, tmreach::rig::speed(last), last.cps as i64);
     // --deficit (needs --author-line --gates [--centreline]): our speed vs the human's along the line, per 50 m, and the
