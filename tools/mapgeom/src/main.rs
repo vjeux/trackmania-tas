@@ -1800,6 +1800,113 @@ fn main() {
                 println!("{:.3}\t{:.1}\t{:.1}\t{:.1}", s.time_ms as f64 / 1000.0, s.x, s.y, s.z);
             }
         }
+        "waterline" => {
+            // The author's validation ghost against the SOURCE's WATER surfaces
+            // (physics 13): for every sample, the highest Water triangle in its
+            // column; the car RESTS 0.90 m below the drawn water plane
+            // (`probe::WATER_DRAFT`, measured on Cobalt Cove: 41.100 under 42.000,
+            // four of four), so a sample is ON the water within ±0.35 m of
+            // plane − 0.90, UNDER when more than that below, else clear. Decides whether the engine rides Water-physics
+            // surfaces (the 15 pool question, 2026-09-10): an author driving ON
+            // water for a stretch = ridden; an author passing UNDER water in a
+            // basin = not a wall.
+            //   waterline <source.Map.Gbx> [--every MS] [--rows]
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let every: i32 = flag(&a.rest, "--every").and_then(|s| s.parse().ok()).unwrap_or(100);
+            let rows = a.rest.iter().any(|s| s == "--rows");
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+            let d = gbx::record::decode_ghost(&p).unwrap_or_else(|e| die(format!("{p}: no validation ghost ({e})")));
+            let mut asm = mapgeom::assemble::Assembler::new(&mut store);
+            asm.with_embedded(&m).ok();
+            // every Water triangle of the map, world frame
+            let mut water: Vec<([f32; 3], [f32; 3], [f32; 3], String)> = Vec::new();
+            let mut push_model = |xf: &mapgeom::geom::Xform, lm: &mapgeom::assemble::LocalModel, who: &str, water: &mut Vec<([f32; 3], [f32; 3], [f32; 3], String)>| {
+                for (mat, g) in &lm.scene.groups {
+                    if mat != "Water" {
+                        continue;
+                    }
+                    for t in &g.tris {
+                        water.push((mapgeom::geom::apply(xf, g.verts[t[0] as usize]), mapgeom::geom::apply(xf, g.verts[t[1] as usize]), mapgeom::geom::apply(xf, g.verts[t[2] as usize]), who.to_string()));
+                    }
+                }
+            };
+            for b in m.blocks.iter().chain(m.baked.iter()) {
+                let free = b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0;
+                let Some(lm) = asm.block_model(&b.name) else { continue };
+                let size = lm.size;
+                let xf = if free {
+                    match (b.free_pos, b.free_rot) {
+                        (Some(p), Some(r)) => mapgeom::place::free(p, r),
+                        (Some(p), None) => mapgeom::place::free(p, [0.0; 3]),
+                        _ => continue,
+                    }
+                } else {
+                    mapgeom::place::grid_block(b.coords(), b.dir, size, 0.0)
+                };
+                let lm = lm.clone();
+                push_model(&xf, &lm, &format!("block {} {}", b.index, b.name), &mut water);
+            }
+            for it in &m.items {
+                let Some(lm) = asm.item_model(&it.model) else { continue };
+                let lm = lm.clone();
+                let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                push_model(&xf, &lm, &format!("item i{} {}", it.index, it.model), &mut water);
+            }
+            let (mut on, mut under, mut clear, mut n) = (0usize, 0usize, 0usize, 0usize);
+            let mut on_stretch: Vec<(f64, f64, f32, String)> = Vec::new();
+            let mut under_stretch: Vec<(f64, f64, f32, String)> = Vec::new();
+            let mut cur: Option<(char, f64, f64, f32, String)> = None;
+            let mut next = i32::MIN;
+            if rows {
+                println!("t\tx\ty\tz\twater_y\tstate\towner");
+            }
+            let mut flush = |cur: &mut Option<(char, f64, f64, f32, String)>, on_stretch: &mut Vec<(f64, f64, f32, String)>, under_stretch: &mut Vec<(f64, f64, f32, String)>| {
+                if let Some((k, t0, t1, wy, who)) = cur.take() {
+                    if t1 - t0 >= 0.3 {
+                        if k == 'O' { on_stretch.push((t0, t1, wy, who)); } else { under_stretch.push((t0, t1, wy, who)); }
+                    }
+                }
+            };
+            for s in &d.samples {
+                if every > 0 && s.time_ms < next {
+                    continue;
+                }
+                next = s.time_ms + every;
+                n += 1;
+                let t = s.time_ms as f64 / 1000.0;
+                // the highest water plane within 6 m of the sample, up or down
+                let mut best: Option<(f32, &str)> = None;
+                for (a3, b3, c3, who) in &water {
+                    if let Some(y) = mapgeom::probe::height_at(*a3, *b3, *c3, s.x, s.z) {
+                        if (y - s.y).abs() <= 6.0 && best.map(|(by, _)| y > by).unwrap_or(true) {
+                            best = Some((y, who.as_str()));
+                        }
+                    }
+                }
+                let (state, wy, who) = match best {
+                    Some((wy, who)) if (s.y - (wy - mapgeom::probe::WATER_DRAFT)).abs() <= 0.35 => { on += 1; ('O', wy, who.to_string()) }
+                    Some((wy, who)) if s.y < wy - mapgeom::probe::WATER_DRAFT - 0.35 => { under += 1; ('U', wy, who.to_string()) }
+                    _ => { clear += 1; ('-', f32::NAN, String::new()) }
+                };
+                if rows {
+                    println!("{t:.1}\t{:.1}\t{:.2}\t{:.1}\t{wy:.2}\t{state}\t{who}", s.x, s.y, s.z);
+                }
+                match (&mut cur, state) {
+                    (Some((k, _, t1, _, _)), st) if *k == st => *t1 = t,
+                    (c, 'O') | (c, 'U') => { flush(c, &mut on_stretch, &mut under_stretch); *c = Some((state, t, t, wy, who)); }
+                    (c, _) => flush(c, &mut on_stretch, &mut under_stretch),
+                }
+            }
+            flush(&mut cur, &mut on_stretch, &mut under_stretch);
+            println!("{p}: {n} samples ({every} ms): ON water {on}, UNDER water {under}, clear {clear}; {} water triangles", water.len());
+            for (t0, t1, wy, who) in &on_stretch {
+                println!("  ON    {t0:.1}..{t1:.1} s  water y {wy:.2}  {who}");
+            }
+            for (t0, t1, wy, who) in &under_stretch {
+                println!("  UNDER {t0:.1}..{t1:.1} s  water y {wy:.2}  {who}");
+            }
+        }
         "ghostclash" => {
             // The ORIGINAL's validation ghost is the author driving the
             // original: every piece of the tiny that the author's car passes
