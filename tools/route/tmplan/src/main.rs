@@ -606,7 +606,7 @@ fn cmd_leg_scan(args: &[String]) {
     let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
     let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
     let m = tmmaps::map::MapFile::load(Path::new(&map));
-    let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts { with_deco: true, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), cell: 4.0 });
+    let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts { with_deco: true, with_baked: std::env::var("TMPLAN_BAKED").is_ok() || !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), cell: 4.0 });
     let specials = tmroute::gates::specials(&m, gates.yoff);
     // ghosts
     let mut runs = Vec::new();
@@ -723,7 +723,7 @@ fn cmd_road_centreline(args: &[String]) {
         let paths = tmplan::pak_paths().ok()?;
         let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).ok()?;
         let m = tmmaps::map::MapFile::load(Path::new(&map));
-        let opts = mapgeom::local::BuildOpts { with_deco: false, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), cell: 4.0 };
+        let opts = mapgeom::local::BuildOpts { with_deco: false, with_baked: std::env::var("TMPLAN_BAKED").is_ok() || !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), cell: 4.0 };
         let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &opts);
         let t0 = std::time::Instant::now();
         let w = tmplan::walk::SurfaceWalk::build(&scene, 1.0, &|mat: u8| mat != 255);
@@ -905,6 +905,7 @@ fn cmd_road_centreline(args: &[String]) {
     // (5-point), half-width = the road span where the point is on road, else 4 m; the segments are re-cut at each gate's
     // first pass (finish: last pass) in `seq` order; a leg the human never passes within reach of stays as it was.
     let mut author_note = String::new();
+    let mut author_used = false;
     // with --author-line the speed hint is the HUMAN's measured speed (100 ms sample spacing × 10, 5-sample smoothed),
     // not the curvature estimate (11's plateau: the estimate said 63 m/s, the human drives it at 96–114 — 16:47Z)
     let mut human_speed: Option<Vec<f32>> = None;
@@ -981,6 +982,7 @@ fn cmd_road_centreline(args: &[String]) {
                 }
                 author_note = format!("; POLYLINE = the human line ({ap}), {} pts, gates cut at the human's passes; speed_hint = the human's measured speed", pts.len());
                 eprintln!("  author line used as the centreline: {} pts, {} legs", pts.len(), cuts.len());
+                author_used = true;
             } else if ok {
                 eprintln!("  author line passes the gates out of the given order — author line NOT used");
             }
@@ -1044,7 +1046,11 @@ fn cmd_road_centreline(args: &[String]) {
             let verdict = verdicts.iter().find(|v| v.0 == from_lab && v.1 == grp_id.to_string()).cloned().or_else(|| verdicts.iter().find(|v| v.1 == grp_id.to_string() && (v.2 == "Jump" || v.2 == "Drop")).cloned());
             // a manual drive line or a gap keeps the verdict class (a Jump stays a Jump even with points to follow)
             let manual = seg.contains("\"via\": \"manual\"");
-            let conn = if !gap && !manual { ConnectionClass::Road } else { match verdict.as_ref().map(|v| v.2.as_str()) { Some("Jump") => ConnectionClass::Jump, Some("Drop") => ConnectionClass::Drop, Some("Road") => ConnectionClass::Road, _ => if manual { ConnectionClass::Road } else { ConnectionClass::Unknown } } };
+            // on a human-line leg (author or manual) the class comes from the line itself: ≥ 12 m with nothing under the car within
+            // 3 m = a Jump (20 wp3→wp5: the author flies 45 m from the asphalt end onto the wooden road — the route said Road)
+            let airborne_m = if author_used || manual { let mut tot = 0.0f32; for k in (i0 + 1)..=i1.min(pts.len() - 1) { let prof = surf.chord_profile(pts[k - 1], pts[k], 1.0, 3.0); for (a, b) in &prof.gaps { tot += b - a; } } tot } else { 0.0 };
+            let air_jump = airborne_m >= 15.0;
+            let conn = if air_jump && verdict.as_ref().map(|v| v.2 != "Drop").unwrap_or(true) { ConnectionClass::Jump } else if !gap && !manual { ConnectionClass::Road } else { match verdict.as_ref().map(|v| v.2.as_str()) { Some("Jump") => ConnectionClass::Jump, Some("Drop") => ConnectionClass::Drop, Some("Road") => ConnectionClass::Road, _ => if manual { ConnectionClass::Road } else { ConnectionClass::Unknown } } };
             if let Some(v) = &verdict { verdict_notes.push(format!("{}→{} {}{}", v.0, v.1, v.2, if v.3.is_empty() { String::new() } else { format!(" ({})", v.3) })); }
             legs.push(Leg { gate_idx: li as u32, map_waypoint: rep.waypoint, s_start: s[i0], s_end: s[i1], connection: conn, arrival_speed: [5.0, 80.0], arrival_heading: gate_normal, arrival_heading_tol: 0.5, arrival_height: [centre[1] - rep.half_height - 1.0, centre[1] - rep.half_height + 3.0], p_reach: if gap { 0.0 } else { 1.0 }, expected_ms: -1, evidence: LegEvidence::Predicted });
             gate_order.push(rep.waypoint);
@@ -1258,7 +1264,7 @@ fn cmd_author_ground(args: &[String]) {
     let pts: Vec<[f32; 3]> = flat.chunks(3).filter(|c| c.len() == 3).map(|c| [c[0], c[1], c[2]]).collect();
     let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
     let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
-    let opts = mapgeom::local::BuildOpts { with_deco: true, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() };
+    let opts = mapgeom::local::BuildOpts { with_deco: true, with_baked: std::env::var("TMPLAN_BAKED").is_ok() || !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() };
     let ground = |mp: &str, store: &mut mapgeom::store::DataStore| -> Vec<Option<(f32, &'static str)>> {
         let m = tmmaps::map::MapFile::load(Path::new(mp));
         let s = mapgeom::local::LocalScene::build(store, &m, gates.yoff, &opts);
@@ -1419,7 +1425,7 @@ fn cmd_leg_plot(args: &[String]) {
     let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
     let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
     let m = tmmaps::map::MapFile::load(Path::new(&map));
-    let opts = mapgeom::local::BuildOpts { with_deco: true, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() };
+    let opts = mapgeom::local::BuildOpts { with_deco: true, with_baked: std::env::var("TMPLAN_BAKED").is_ok() || !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() };
     let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &opts);
     let ymin_leg = seg.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
     // start the rays just above the leg (a terrain roof over a cavity — 20's deck pit — would otherwise hide it); --top Y overrides
