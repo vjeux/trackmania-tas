@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 
 use crate::video::{lap_label, map_title};
 
-const PENDING_MARK: &str = "— video pending*";
+use crate::video::PENDING_MARK;
 
 /// The newest certified lap per map on `build`, from the ghosts README: the
 /// LAST row naming a map wins (the INPUT arm appends, it does not rewrite).
@@ -102,13 +102,26 @@ pub fn update(page: &str, laps: &[(String, String)], ghosts_readme: &str, build:
             lines[i] = lines[i].replace("*no lap yet*", "*no video yet*");
             notes.push(format!("{nn}: has a lap now — 'no lap yet' → 'no video yet'"));
         }
-        // where the existing status line is, if any: the next non-empty line
-        // after the row that carries the marker
-        let mut j = i + 1;
-        while j < lines.len() && lines[j].trim().is_empty() {
-            j += 1;
+        // where the existing status line is, if any: ANYWHERE in the row's
+        // block (to the next row). It used to be "the next non-empty line",
+        // and a row swap that put the new URL right under the row hid the line
+        // below it — neither updated nor removed, and a second one added on
+        // top (2026-09-10). Extra pending lines and extra asset lines (the
+        // previous video, left by the same swap) are repaired here as well:
+        // one pending line at most, the FIRST asset line kept.
+        let end = crate::video::block_end(&lines, i);
+        let pendings: Vec<usize> = (i + 1..end).filter(|&j| lines[j].trim_end().ends_with(PENDING_MARK)).collect();
+        let assets: Vec<usize> = (i + 1..end).filter(|&j| lines[j].starts_with(crate::video::ASSET_PREFIX)).collect();
+        let mut remove: Vec<usize> = Vec::new();
+        if assets.len() > 1 {
+            notes.push(format!("{nn}: {} asset lines in the block — keeping the first (the newest video)", assets.len()));
+            remove.extend(assets[1..].iter().copied());
         }
-        let existing = (j < lines.len() && lines[j].ends_with(PENDING_MARK)).then_some(j);
+        if pendings.len() > 1 {
+            notes.push(format!("{nn}: {} pending lines — keeping one", pendings.len()));
+            remove.extend(pendings[1..].iter().copied());
+        }
+        let existing = pendings.first().copied();
         let want = match (&newest, &row.published) {
             // a lap the page's video does not show
             (Some(n), Some(p)) if n != p => Some(n.clone()),
@@ -128,16 +141,22 @@ pub fn update(page: &str, laps: &[(String, String)], ghosts_readme: &str, build:
                 notes.push(format!("{nn}: pending line added ({t})"));
                 lines.insert(i + 1, line);
                 lines.insert(i + 1, String::new());
+                remove.iter_mut().for_each(|r| *r += 2);
             }
             (None, Some(j)) => {
                 notes.push(format!("{nn}: pending line removed (the video is current)"));
-                lines.remove(j);
-                // and the blank line that was holding it, if that leaves two
-                if j > 0 && lines[j - 1].trim().is_empty() && j < lines.len() && lines[j].trim().is_empty() {
-                    lines.remove(j - 1);
-                }
+                remove.push(j);
             }
             (None, None) => {}
+        }
+        remove.sort_unstable();
+        remove.dedup();
+        for j in remove.into_iter().rev() {
+            lines.remove(j);
+            // and the blank line that was holding it, if that leaves two
+            if j > 0 && j < lines.len() && lines[j - 1].trim().is_empty() && lines[j].trim().is_empty() {
+                lines.remove(j);
+            }
         }
     }
     let mut s = lines.join("\n");
@@ -269,5 +288,68 @@ https://github.com/user-attachments/assets/ccc\n\n";
         let laps = newest_laps(&g, "ship15");
         let (out, _) = update(page, &laps, &g, "ship15");
         assert!(out.contains("*latest lap **18.476** (build ship15, driven by vjeux (playtest)) — video pending*"), "{out}");
+    }
+}
+
+#[cfg(test)]
+mod repair_tests {
+    use super::*;
+
+    const GHOSTS: &str = "| map | file | time | credits | build | md5 | found by | validated |\n\
+| 18 | 18.Ghost.Gbx | 44.593 | 9 | ship15 | cc138b11 | PPO | x |\n\
+| 15 | 15.Ghost.Gbx | 49.097 | 8 | ship15 | 395f89a8 | PPO | x |\n";
+
+    /// The shape the 2026-09-10 swaps left: the new URL right under the row, a
+    /// stale pending line below it, and the previous video's URL below that.
+    /// The pending line is found wherever it is in the block and removed (the
+    /// video is current), and the extra asset line goes; the new URL stays.
+    #[test]
+    fn a_stale_pending_line_and_an_old_video_below_the_new_url_are_repaired() {
+        let page = "**Tiny Summer 2026 - 18** — original author time `51.352` · tiny ghost **44.593** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/new18\n\n\
+*latest lap **44.593** (build ship15) — video pending*\n\n\
+https://github.com/user-attachments/assets/old18\n\n\
+**Tiny Summer 2026 - 15** — original author time `36.888` · tiny ghost **49.097** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/new15\n\n\
+*latest lap **49.825** (build ship15) — video pending*\n\n\
+https://github.com/user-attachments/assets/old15\n\n";
+        let laps = newest_laps(GHOSTS, "ship15");
+        let (out, notes) = update(page, &laps, GHOSTS, "ship15");
+        assert_eq!(
+            out,
+            "**Tiny Summer 2026 - 18** — original author time `51.352` · tiny ghost **44.593** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/new18\n\n\
+**Tiny Summer 2026 - 15** — original author time `36.888` · tiny ghost **49.097** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/new15\n",
+            "{notes:?}"
+        );
+        assert!(notes.iter().any(|n| n.contains("18: 2 asset lines")), "{notes:?}");
+        assert!(notes.iter().any(|n| n.contains("15: pending line removed")), "{notes:?}");
+        let (again, notes2) = update(&out, &laps, GHOSTS, "ship15");
+        assert_eq!(again, out);
+        assert!(notes2.is_empty(), "{notes2:?}");
+    }
+
+    /// And the swap itself no longer creates that shape: a row with a pending
+    /// line under it and an old video below gets ONE url, the new one, and no
+    /// pending line.
+    #[test]
+    fn a_swap_replaces_the_old_video_and_drops_the_pending_line() {
+        let page = "**Tiny Summer 2026 - 18** — original author time `51.352` · tiny ghost **46.335** (build ship15, controls overlay)\n\n\
+*latest lap **44.593** (build ship15) — video pending*\n\n\
+https://github.com/user-attachments/assets/old18\n\n\
+**Tiny Summer 2026 - 19** — original author time `43.841` · *no video yet*\n\n\
+*latest lap **46.445** (build ship15) — video pending*\n\n\
+**Tiny Summer 2026 - 20** — original author time `50.598` · *no lap yet*\n";
+        let out = crate::video::page_swap(page, "18", "44.593", "tiny ghost", "build ship15, controls overlay", "https://github.com/user-attachments/assets/new18").unwrap();
+        let out = crate::video::page_swap(&out, "19", "46.445", "tiny ghost", "build ship15, controls overlay", "https://github.com/user-attachments/assets/new19").unwrap();
+        assert_eq!(
+            out,
+            "**Tiny Summer 2026 - 18** — original author time `51.352` · tiny ghost **44.593** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/new18\n\n\
+**Tiny Summer 2026 - 19** — original author time `43.841` · tiny ghost **46.445** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/new19\n\n\
+**Tiny Summer 2026 - 20** — original author time `50.598` · *no lap yet*\n"
+        );
     }
 }

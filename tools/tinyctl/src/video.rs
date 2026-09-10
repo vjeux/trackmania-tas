@@ -737,22 +737,58 @@ pub fn page_swap(text: &str, nn: &str, time: &str, label: &str, build_note: &str
     let new_line = format!("**{title}** — original author time `{orig}` · {label} **{time}** ({build_note})");
     let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
     out[i] = new_line;
-    // the URL line: the next non-empty line if it is an asset, else insert
-    let mut j = i + 1;
-    while j < out.len() && out[j].trim().is_empty() {
-        j += 1;
+    // THE ROW'S WHOLE BLOCK, not just the next line. The block runs to the next
+    // row; it may hold a `*latest lap … — video pending*` line (page-status puts
+    // one right under the row) and the previous video's URL below that. Looking
+    // only at the next non-empty line (2026-09-10, 05:27–05:51Z) inserted the
+    // new URL above the pending line and LEFT THE OLD URL, so 15, 18 and 19
+    // showed two videos and a stale pending line each. Now: the first asset
+    // line in the block becomes the new URL, every other asset line goes, and
+    // so does every pending line — the video is current the moment it is
+    // swapped in; page-status re-adds a line if the README is ahead again.
+    let end = block_end(&out, i);
+    let mut asset_at: Option<usize> = None;
+    let mut drop: Vec<usize> = Vec::new();
+    for j in i + 1..end {
+        if out[j].starts_with(ASSET_PREFIX) {
+            if asset_at.is_none() {
+                asset_at = Some(j);
+            } else {
+                drop.push(j);
+            }
+        } else if out[j].trim_end().ends_with(PENDING_MARK) {
+            drop.push(j);
+        }
     }
-    if j < out.len() && out[j].starts_with("https://github.com/user-attachments/assets/") {
-        out[j] = url.to_string();
-    } else {
-        out.insert(i + 1, String::new());
-        out.insert(i + 2, url.to_string());
+    match asset_at {
+        Some(j) => out[j] = url.to_string(),
+        None => {
+            out.insert(i + 1, String::new());
+            out.insert(i + 2, url.to_string());
+            drop.iter_mut().for_each(|d| *d += 2);
+        }
+    }
+    for j in drop.into_iter().rev() {
+        out.remove(j);
+        // and the blank that held it, when that leaves two blanks in a row
+        if j > 0 && j < out.len() && out[j - 1].trim().is_empty() && out[j].trim().is_empty() {
+            out.remove(j);
+        }
     }
     let mut s = out.join("\n");
     if text.ends_with('\n') {
         s.push('\n');
     }
     Ok(s)
+}
+
+pub const ASSET_PREFIX: &str = "https://github.com/user-attachments/assets/";
+pub const PENDING_MARK: &str = "— video pending*";
+
+/// The index one past a row's block: the next row line (`**Tiny …`) or a
+/// heading, or the end of the page.
+pub fn block_end(lines: &[String], row: usize) -> usize {
+    (row + 1..lines.len()).find(|&j| lines[j].starts_with("**Tiny ") || lines[j].starts_with('#')).unwrap_or(lines.len())
 }
 
 /// `tinyctl shipwatch`: the ships `tinyctl video --ship` started, collected —
