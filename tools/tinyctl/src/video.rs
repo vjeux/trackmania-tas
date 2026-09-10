@@ -1118,6 +1118,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
     let retry_after = Duration::from_secs(f("--retry-min").and_then(|s| s.parse::<u64>().ok()).unwrap_or(6) * 60);
     let min_gain: f64 = f("--min-gain-s").and_then(|s| s.parse().ok()).unwrap_or(0.1);
     let mut last_probe: Option<std::time::Instant> = None;
+    let mut attitude_said: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     loop {
         let text = std::fs::read_to_string(&ships).unwrap_or_default();
         let mut rows: Vec<String> = text.lines().map(String::from).collect();
@@ -1172,11 +1173,27 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
             // a receipt the row becomes `pending` and joins the launch queue on
             // this tick; without one it sits, and page-status says so.
             if cells[4] == "staged" {
+                // THE ATTITUDE GATE comes first and a receipt cannot override
+                // it (parent project via the coordinator, 2026-09-10 19:20Z): a
+                // clip ships only when INPUT's README says its lap is CLEAN —
+                // no inverted interval and no |roll|/|pitch| > 60° sustained
+                // > 0.3 s. No table for the lap = not clean (fail closed).
+                let readme = ghosts_dir.as_ref().map(|d| std::fs::read_to_string(d.join("README.md")).unwrap_or_default()).unwrap_or_default();
+                match attitude_verdict(&readme, &cells[0], &cells[1]) {
+                    Attitude::Clean => {}
+                    verdict => {
+                        if !attitude_said.contains(&(cells[0].clone(), cells[1].clone())) {
+                            println!("{} {} {}: ATTITUDE GATE — {} — not shipped, whatever approvals.tsv says", chrono_now(), cells[0], cells[1], verdict.describe());
+                            attitude_said.insert((cells[0].clone(), cells[1].clone()));
+                        }
+                        continue;
+                    }
+                }
                 let approved = approval_for(&out, &cells[0], &cells[1]).is_some() || read_prechecked(&out).contains(cells[0].as_str());
                 if !approved {
                     continue;
                 }
-                println!("{} {} {}: opening check receipt on file — queued for upload", chrono_now(), cells[0], cells[1]);
+                println!("{} {} {}: attitude clean + opening check receipt on file — queued for upload", chrono_now(), cells[0], cells[1]);
                 *row = format!("{}\t{}\t{}\t{}\tpending", cells[0], cells[1], cells[2], cells[3]);
                 changed = true;
             }
@@ -1957,5 +1974,74 @@ mod hold_mode_tests {
         assert_eq!(holds.get("22").map(String::as_str), Some("awaiting the opening check"));
         assert_eq!(holds.get("07").map(String::as_str), Some("just held"));
         assert_eq!(holds.len(), 4);
+    }
+}
+
+/// What INPUT's README says about a lap's attitude (the STOP / ATTITUDE
+/// summary: `- NN time: below 8 m/s: X s, respawns: N, inverted: Y s, S slow +
+/// A attitude intervals`, one line per current certified lap, from README-1211
+/// on). `Clean` = no inverted time and no attitude interval (an attitude
+/// interval is > 0.3 s of |roll| or |pitch| > 60°). No line for the lap = not
+/// clean: the gate fails closed.
+#[derive(Debug, PartialEq)]
+pub enum Attitude {
+    Clean,
+    /// Inverted seconds, attitude intervals.
+    Dirty { inverted_s: f64, attitude_intervals: u32 },
+    NoTable,
+}
+
+impl Attitude {
+    pub fn describe(&self) -> String {
+        match self {
+            Attitude::Clean => "clean".into(),
+            Attitude::Dirty { inverted_s, attitude_intervals } => format!("not clean: inverted {inverted_s:.2} s, {attitude_intervals} attitude interval(s) (> 0.3 s of |roll|/|pitch| > 60°)"),
+            Attitude::NoTable => "no attitude table for this lap in the ghosts README (fail closed)".into(),
+        }
+    }
+}
+
+pub fn attitude_verdict(readme: &str, nn: &str, time: &str) -> Attitude {
+    let key = format!("- {nn} {time}:");
+    let Some(line) = readme.lines().find(|l| l.trim_start().starts_with(&key)) else {
+        return Attitude::NoTable;
+    };
+    let field = |name: &str| -> Option<f64> {
+        let i = line.find(name)? + name.len();
+        line[i..].trim_start().split(|c: char| c == ' ' || c == ',').next()?.parse().ok()
+    };
+    let inverted_s = field("inverted:").unwrap_or(f64::NAN);
+    // "… N slow + M attitude intervals"
+    let attitude_intervals: Option<u32> = line.find("attitude interval").and_then(|i| line[..i].trim_end().rsplit(' ').next()).and_then(|s| s.parse().ok());
+    match (inverted_s.is_nan(), attitude_intervals) {
+        (true, _) | (_, None) => Attitude::NoTable,
+        (false, Some(a)) if inverted_s <= 0.0 && a == 0 => Attitude::Clean,
+        (false, Some(a)) => Attitude::Dirty { inverted_s, attitude_intervals: a },
+    }
+}
+
+#[cfg(test)]
+mod attitude_tests {
+    use super::*;
+
+    const README: &str = "STOP / ATTITUDE TABLES (…): summary for the current certified laps:\n\
+- 15 48.738: below 8 m/s: 4.09 s, respawns: 0, inverted: 6.38 s, 6 slow + 4 attitude intervals\n\
+- 19 46.362: below 8 m/s: 0.07 s, respawns: 0, inverted: 0.00 s, 2 slow + 0 attitude intervals\n\
+- 20 75.595: below 8 m/s: 11.03 s, respawns: 0, inverted: 0.23 s, 10 slow + 1 attitude intervals\n\
+- 23 102.148: below 8 m/s: 6.32 s, respawns: 2, inverted: 0.00 s, 9 slow + 1 attitude intervals\n\
+- 24 99.529: below 8 m/s: 9.07 s, respawns: 0, inverted: 0.00 s, 10 slow + 1 attitude intervals\n";
+
+    /// Clean = no inverted time AND no attitude interval; slow intervals and
+    /// respawns do not count; a lap without a line fails closed.
+    #[test]
+    fn the_attitude_gate_reads_the_readme_summary() {
+        assert_eq!(attitude_verdict(README, "19", "46.362"), Attitude::Clean);
+        assert_eq!(attitude_verdict(README, "15", "48.738"), Attitude::Dirty { inverted_s: 6.38, attitude_intervals: 4 });
+        assert_eq!(attitude_verdict(README, "20", "75.595"), Attitude::Dirty { inverted_s: 0.23, attitude_intervals: 1 });
+        assert_eq!(attitude_verdict(README, "24", "99.529"), Attitude::Dirty { inverted_s: 0.0, attitude_intervals: 1 }, "an attitude interval alone is dirty");
+        assert_eq!(attitude_verdict(README, "23", "102.148"), Attitude::Dirty { inverted_s: 0.0, attitude_intervals: 1 }, "respawns do not matter; the interval does");
+        assert_eq!(attitude_verdict(README, "22", "82.652"), Attitude::NoTable);
+        assert_eq!(attitude_verdict(README, "19", "46.445"), Attitude::NoTable, "another lap of the same map");
+        assert!(Attitude::NoTable.describe().contains("fail closed"));
     }
 }

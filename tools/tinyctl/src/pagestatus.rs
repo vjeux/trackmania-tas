@@ -151,8 +151,8 @@ pub fn update_all(page: &str, laps: &[(String, String)], ghosts_readme: &str, bu
         // (coordinator, 2026-09-10 14:15Z). The threshold is the loop's
         // `--min-gain-s` default; the gate is the loop's own (`render_gate`).
         let want = match (&newest, &row.published) {
-            (Some(n), Some(p)) if n != p && !holds.contains_key(nn.as_str()) && staged.contains(&(nn.clone(), n.clone())) => Some((n.clone(), Note::Staged)),
-            (Some(n), None) if !holds.contains_key(nn.as_str()) && staged.contains(&(nn.clone(), n.clone())) => Some((n.clone(), Note::Staged)),
+            (Some(n), Some(p)) if n != p && !holds.contains_key(nn.as_str()) && staged.contains(&(nn.clone(), n.clone())) => Some((n.clone(), staged_note(ghosts_readme, nn, n))),
+            (Some(n), None) if !holds.contains_key(nn.as_str()) && staged.contains(&(nn.clone(), n.clone())) => Some((n.clone(), staged_note(ghosts_readme, nn, n))),
             (Some(n), Some(p)) if n != p && holds.contains_key(nn.as_str()) => Some((n.clone(), held_note(&holds[nn.as_str()], staged.contains(&(nn.clone(), n.clone()))))),
             (Some(n), None) if holds.contains_key(nn.as_str()) => Some((n.clone(), held_note(&holds[nn.as_str()], staged.contains(&(nn.clone(), n.clone()))))),
             (Some(n), Some(p)) if n != p => {
@@ -543,7 +543,7 @@ mod staged_tests {
     /// removes it; a hold outranks it.
     #[test]
     fn a_staged_clip_says_it_awaits_the_opening_check() {
-        let ghosts = "| 22 | 22.Ghost.Gbx | 82.652 | 14 | ship15 | f1275f23 | GEN | x |\n";
+        let ghosts = "| 22 | 22.Ghost.Gbx | 82.652 | 14 | ship15 | f1275f23 | GEN | x |\n- 22 82.652: below 8 m/s: 1.00 s, respawns: 0, inverted: 0.00 s, 1 slow + 0 attitude intervals\n";
         let page = "**Tiny Saudi Arabia 2026** — original author time `73.418` · tiny ghost **96.298** (build ship15, controls overlay)\n\n\
 https://github.com/user-attachments/assets/a\n";
         let laps = newest_laps(ghosts, "ship15");
@@ -575,4 +575,39 @@ https://github.com/user-attachments/assets/a\n";
 /// "held (reason)" when nothing was rendered.
 fn held_note(reason: &str, is_staged: bool) -> Note {
     if is_staged { Note::Held(format!("staged — {reason}")) } else { Note::Held(reason.to_string()) }
+}
+
+/// A staged clip's note: "staged, awaiting the opening check" when its lap's
+/// attitude is clean (a receipt can release it), "staged — held (attitude:
+/// …)" when it is not (no receipt can — INPUT's README says the lap rolls or
+/// inverts; the next lap of the map must be clean).
+fn staged_note(ghosts_readme: &str, nn: &str, time: &str) -> Note {
+    match crate::video::attitude_verdict(ghosts_readme, nn, time) {
+        crate::video::Attitude::Clean => Note::Staged,
+        v => Note::Held(format!("staged — attitude: {}", v.describe())),
+    }
+}
+
+#[cfg(test)]
+mod attitude_note_tests {
+    use super::*;
+
+    /// A staged clip whose lap the README calls dirty (or does not list) reads
+    /// "held (staged — attitude: …)"; a clean one "staged, awaiting the opening check".
+    #[test]
+    fn a_dirty_staged_clip_is_held_on_attitude() {
+        let ghosts = "| 22 | 22.Ghost.Gbx | 82.652 | 14 | ship15 | f1275f23 | GEN | x |\n\
+| 19 | 19.Ghost.Gbx | 46.000 | 16 | ship15 | 5522d061 | PPO | x |\n\
+- 22 82.652: below 8 m/s: 8.45 s, respawns: 0, inverted: 2.69 s, 11 slow + 2 attitude intervals\n\
+- 19 46.000: below 8 m/s: 0.07 s, respawns: 0, inverted: 0.00 s, 2 slow + 0 attitude intervals\n";
+        let page = "**Tiny Summer 2026 - 19** — original author time `43.841` · tiny ghost **46.362** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/a\n\n\
+**Tiny Saudi Arabia 2026** — original author time `73.418` · tiny ghost **96.298** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/b\n";
+        let laps = newest_laps(ghosts, "ship15");
+        let staged = staged_laps("22\t82.652\tx\t/x\tstaged\n19\t46.000\tx\t/x\tstaged\n");
+        let (out, _) = update_all(page, &laps, ghosts, "ship15", 0.1, &std::collections::HashMap::new(), &staged);
+        assert!(out.contains("*latest lap **46.000** (build ship15) — staged, awaiting the opening check*"), "{out}");
+        assert!(out.contains("*latest lap **82.652** (build ship15) — held (staged — attitude: not clean: inverted 2.69 s, 2 attitude interval(s) (> 0.3 s of |roll|/|pitch| > 60°))*"), "{out}");
+    }
 }
