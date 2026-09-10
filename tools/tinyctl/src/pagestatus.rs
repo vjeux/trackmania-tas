@@ -2,7 +2,7 @@
 //! when its video is not published yet.
 //!
 //! ```text
-//! tinyctl page-status --readme tiny/README.md --ghosts-dir DIR [--build ship15]
+//! tinyctl page-status --readme tiny/README.md --ghosts-dir DIR [--build ship15] [--out DIR (for holds.tsv)]
 //!                     [--write] [--commit --repo DIR]
 //! ```
 //!
@@ -91,6 +91,13 @@ pub fn update(page: &str, laps: &[(String, String)], ghosts_readme: &str, build:
 /// the published one by less than `min_gain` seconds gets the "within" note (the
 /// loop will not render it), anything else the "video pending" note.
 pub fn update_with_gain(page: &str, laps: &[(String, String)], ghosts_readme: &str, build: &str, min_gain: f64) -> (String, Vec<String>) {
+    update_full(page, laps, ghosts_readme, build, min_gain, &std::collections::HashMap::new())
+}
+
+/// [`update_with_gain`] plus the publish holds (`holds.tsv`): a held map's newer
+/// lap reads "held (<reason>)" whatever its gain — the loop renders and ships
+/// nothing for it until the hold is lifted.
+pub fn update_full(page: &str, laps: &[(String, String)], ghosts_readme: &str, build: &str, min_gain: f64, holds: &std::collections::HashMap<String, String>) -> (String, Vec<String>) {
     let mut lines: Vec<String> = page.lines().map(String::from).collect();
     let mut notes = Vec::new();
     // work from the bottom so earlier indices stay valid
@@ -117,7 +124,7 @@ pub fn update_with_gain(page: &str, laps: &[(String, String)], ghosts_readme: &s
         // previous video, left by the same swap) are repaired here as well:
         // one pending line at most, the FIRST asset line kept.
         let end = crate::video::block_end(&lines, i);
-        let is_note = |l: &str| l.trim_end().ends_with(PENDING_MARK) || l.trim_end().ends_with(WITHIN_MARK);
+        let is_note = |l: &str| is_status_note(l);
         let pendings: Vec<usize> = (i + 1..end).filter(|&j| is_note(&lines[j])).collect();
         let assets: Vec<usize> = (i + 1..end).filter(|&j| lines[j].starts_with(crate::video::ASSET_PREFIX)).collect();
         let mut remove: Vec<usize> = Vec::new();
@@ -138,6 +145,8 @@ pub fn update_with_gain(page: &str, laps: &[(String, String)], ghosts_readme: &s
         // (coordinator, 2026-09-10 14:15Z). The threshold is the loop's
         // `--min-gain-s` default; the gate is the loop's own (`render_gate`).
         let want = match (&newest, &row.published) {
+            (Some(n), Some(p)) if n != p && holds.contains_key(nn.as_str()) => Some((n.clone(), Note::Held(holds[nn.as_str()].clone()))),
+            (Some(n), None) if holds.contains_key(nn.as_str()) => Some((n.clone(), Note::Held(holds[nn.as_str()].clone()))),
             (Some(n), Some(p)) if n != p => {
                 let will_render = matches!(
                     crate::video::render_gate(secs(n), Some((secs(p), &format!("x-{build}"))), Some(build), min_gain),
@@ -192,6 +201,8 @@ enum Note {
     Pending,
     /// A sliver under the re-render threshold: the gain in seconds.
     Within(f64),
+    /// The map is under a publish hold (holds.tsv): the reason.
+    Held(String),
 }
 
 impl Note {
@@ -199,6 +210,7 @@ impl Note {
         match self {
             Note::Pending => "pending",
             Note::Within(_) => "within",
+            Note::Held(_) => "held",
         }
     }
 }
@@ -213,6 +225,7 @@ fn status_line(time: &str, build: &str, ghosts_readme: &str, nn: &str, note: &No
     match note {
         Note::Pending => format!("*latest lap **{time}** (build {build}{who}) — video pending*"),
         Note::Within(_) => format!("*latest lap **{time}** (build {build}{who}) — within {min_gain:.1} s of the published clip*"),
+        Note::Held(reason) => format!("*latest lap **{time}** (build {build}{who}) — held ({reason})*"),
     }
 }
 
@@ -229,7 +242,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let gr = std::fs::read_to_string(ghosts_dir.join("README.md")).map_err(|e| format!("{}/README.md: {e}", ghosts_dir.display()))?;
     let laps = newest_laps(&gr, &build);
     println!("{} certified {build} laps: {}", laps.len(), laps.iter().map(|(m, t)| format!("{m} {t}")).collect::<Vec<_>>().join(", "));
-    let (new, notes) = update_with_gain(&page, &laps, &gr, &build, min_gain);
+    let holds = f("--out").map(|o| crate::video::read_holds(Path::new(&o))).unwrap_or_default();
+    let (new, notes) = update_full(&page, &laps, &gr, &build, min_gain, &holds);
     if notes.is_empty() {
         println!("the page already states the newest lap of every map");
         return Ok(());
@@ -445,5 +459,50 @@ https://github.com/user-attachments/assets/c\n";
         // the opt-out: every newer lap is pending
         let (all, _) = update_with_gain(page, &laps, GHOSTS, "ship15", 0.0);
         assert!(all.contains("*latest lap **48.738** (build ship15) — video pending*"), "{all}");
+    }
+}
+
+/// Is this page line one of the status notes page-status maintains under a row
+/// (`— video pending*`, `— within 0.1 s of the published clip*`, `— held (…)*`)?
+pub fn is_status_note(l: &str) -> bool {
+    let l = l.trim_end();
+    l.starts_with("*latest lap **") && (l.ends_with(PENDING_MARK) || l.ends_with(WITHIN_MARK) || l.contains(") — held ("))
+}
+
+#[cfg(test)]
+mod hold_tests {
+    use super::*;
+
+    /// A held map's newer lap reads "held (reason)" whatever its gain, the note
+    /// is maintained like the others (updated, removed on swap), and a lifted
+    /// hold turns it back into pending/within on the next run.
+    #[test]
+    fn a_held_map_says_so_and_a_lifted_hold_restores_the_gate() {
+        let ghosts = "| 21 | 21.Ghost.Gbx | 112.000 | 17 | ship15 | 4feeaa5f | GEN | x |\n";
+        let page = "**Tiny Argentina 2026** — original author time `78.988` · tiny ghost **115.478** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/a\n";
+        let laps = newest_laps(ghosts, "ship15");
+        let mut holds = std::collections::HashMap::new();
+        holds.insert("21".to_string(), "opening rework".to_string());
+        let (held, notes) = update_full(page, &laps, ghosts, "ship15", 0.1, &holds);
+        assert!(held.contains("tiny ghost **115.478** (build ship15, controls overlay)\n\n*latest lap **112.000** (build ship15) — held (opening rework)*\n\nhttps://github.com/user-attachments/assets/a"), "{held}");
+        assert!(notes.iter().any(|n| n == "21: held line added (112.000)"), "{notes:?}");
+        assert!(is_status_note("*latest lap **112.000** (build ship15) — held (opening rework)*"));
+        // idempotent while held
+        let (again, n2) = update_full(&held, &laps, ghosts, "ship15", 0.1, &holds);
+        assert_eq!(again, held);
+        assert!(n2.is_empty(), "{n2:?}");
+        // lifted: the same line becomes a pending note (3.5 s gain)
+        let (lifted, n3) = update_full(&held, &laps, ghosts, "ship15", 0.1, &std::collections::HashMap::new());
+        assert!(lifted.contains("*latest lap **112.000** (build ship15) — video pending*"), "{lifted}");
+        assert!(n3.iter().any(|n| n == "21: pending line → 112.000"), "{n3:?}");
+        // a swap drops a held note too
+        let swapped = crate::video::page_swap(&held, "21", "112.000", "tiny ghost", "build ship15, controls overlay", "https://github.com/user-attachments/assets/n").unwrap();
+        assert!(!swapped.contains("held ("), "{swapped}");
+        // the holds file parses
+        let h = crate::video::parse_holds("# nn\treason\n21\topening rework (vjeux)\n\n07\n");
+        assert_eq!(h.get("21").map(String::as_str), Some("opening rework (vjeux)"));
+        assert_eq!(h.get("07").map(String::as_str), Some("held"));
+        assert_eq!(h.len(), 2);
     }
 }

@@ -303,6 +303,13 @@ fn all_once(args: &[String]) -> Result<(), String> {
     // (every new ghost renders, as before).
     let min_gain: f64 = f("--min-gain-s").map(|s| s.parse().map_err(|_| "--min-gain-s wants seconds")).transpose()?.unwrap_or(0.1);
     let published = published_laps(&std::fs::read_to_string(out.join("ships.tsv")).unwrap_or_default());
+    // PUBLISH HOLDS (coordinator, 2026-09-10 17:55Z: "the opening is bad; stop
+    // optimizing the end" — no new Argentina lap goes up until lifted). A map
+    // listed in `<out>/holds.tsv` (`nn<TAB>reason`) is not rendered and not
+    // shipped, whatever its gain; its new ghost IS archived (the bytes are the
+    // record), and page-status writes "held (<reason>)" under the row. Lift =
+    // delete the line. Read every scan, so a hold takes effect on the next tick.
+    let holds = read_holds(&out);
     let skips_path = out.join("skips.tsv");
     let mut skips = std::fs::read_to_string(&skips_path).unwrap_or_default();
     let mut todo = Vec::new();
@@ -349,6 +356,32 @@ fn all_once(args: &[String]) -> Result<(), String> {
             }
         }
         match render_gate(race_ms as f64 / 1000.0, published.get(&nn).map(|(t, name)| (*t, name.as_str())), build.as_deref(), min_gain) {
+            Gate::Render(_) | Gate::Skip { .. } if holds.contains_key(&nn) => {
+                // HELD: archive the bytes (write-once) so the lap is kept, render
+                // nothing. Said once per ghost, like a skip.
+                let key = format!("{nn}\t{md5}\t");
+                if !skips.contains(&key) {
+                    let reason = &holds[&nn];
+                    println!("{nn} {time}: HELD — {reason} (holds.tsv); archived, not rendered");
+                    if let Some(dir) = f("--ghost-archive").filter(|d| d != "none").map(PathBuf::from).or_else(|| Path::new(GHOST_ARCHIVE_DEFAULT).is_dir().then(|| PathBuf::from(GHOST_ARCHIVE_DEFAULT))) {
+                        let map = PathBuf::from(f("--maps-dir").unwrap_or_else(|| "/tmp/audit/ship9".into())).join(format!("Tiny Summer 2026 - {nn}.Map.Gbx"));
+                        let map_md5 = md5_of(&map).unwrap_or_default();
+                        let row = readme_row(&readme, &nn, &time).unwrap_or_default();
+                        if let Err(e) = archive_ghost(&dir, &path, &md5_of(&path)?, &nn, &time, race_ms, &md5, &map_md5, build.as_deref(), &row) {
+                            eprintln!("{nn} {time}: could not archive the held ghost: {e}");
+                        }
+                    }
+                    let cps = g.checkpoints_ms.iter().filter(|c| **c < race_ms - 50).count();
+                    append_report_row(&out, &format!("| {nn} | {} | {time} | {cps} cps | HELD ({reason}); archived, not rendered | — | — | — |", map_title(&nn)))?;
+                    let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                    if skips.is_empty() {
+                        skips.push_str("# nn\ttrajectory_id\ttime\tgain\tpublished\tunix\n");
+                    }
+                    skips.push_str(&format!("{key}{time}\theld\t-\t{when}\n"));
+                    std::fs::write(&skips_path, &skips).map_err(|e| format!("{}: {e}", skips_path.display()))?;
+                }
+                continue;
+            }
             Gate::Render(why) => {
                 if published.contains_key(&nn) {
                     println!("{nn} {time}: rendering — {why}");
@@ -811,6 +844,13 @@ fn one(args: &[String]) -> Result<Done, String> {
 
     // --- the ship, detached on the box; `tinyctl shipwatch` collects the URL
     if tmmaps::cli::has(args, "--ship") {
+        // A HELD MAP (holds.tsv) ships nothing: the clip is rendered and banked,
+        // the row is recorded `held` so the watcher never launches it.
+        if let Some(reason) = read_holds(&out).get(nn.as_str()) {
+            println!("HELD ({reason}): {name} is rendered and banked but NOT shipped (holds.tsv)");
+            record_ship_row(&out, &nn, &time, &name, &format!("{VID}/ship/{name}.done"), "held")?;
+            return finish_row(&out, &nn, &time, cps, &overlay_col, &name, &sheet, traj_id);
+        }
         // SUPERSEDED DURING ITS OWN RENDER? The player project replaced 21's
         // ghost twice in 40 minutes on 2026-09-10 (122.318 → 122.311 → 122.294):
         // a 15-minute render finished, its clip went up, and the watcher
@@ -1005,7 +1045,7 @@ pub fn page_swap(text: &str, nn: &str, time: &str, label: &str, build_note: &str
             } else {
                 drop.push(j);
             }
-        } else if out[j].trim_end().ends_with(PENDING_MARK) || out[j].trim_end().ends_with(crate::pagestatus::WITHIN_MARK) {
+        } else if crate::pagestatus::is_status_note(&out[j]) {
             drop.push(j);
         }
     }
@@ -1146,6 +1186,14 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
             }
             pending += 1;
             let (nn, time, name, done_file) = (&cells[0], &cells[1], &cells[2], &cells[3]);
+            // A HELD MAP'S PENDING CLIP IS NEVER LAUNCHED (holds.tsv, read every
+            // tick). A ship already running on the box for it finishes (the lock
+            // is the box's), but its URL is not swapped into the page while the
+            // hold stands: the row is left pending and picked up when lifted.
+            if let Some(reason) = read_holds(&out).get(nn.as_str()) {
+                println!("{} {nn} {time}: HELD ({reason}) — not launched, not swapped", chrono_now());
+                continue;
+            }
             let Some(done) = done_of.get(done_file.as_str()).cloned() else {
                 // NO VERDICT ON THE BOX: the ship never ran, or died before
                 // writing its done file (a box reboot, a killed shell, a session
@@ -1419,6 +1467,23 @@ pub fn archive_ghost(dir: &Path, ghost: &Path, md5: &str, nn: &str, time: &str, 
         std::fs::rename(&tmp, &side).map_err(|e| format!("{} → {}: {e}", tmp.display(), side.display()))?;
     }
     Ok(())
+}
+
+/// `<out>/holds.tsv`: `nn<TAB>reason` per held map (comments with `#`).
+/// A held map is neither rendered nor shipped; page-status notes the hold.
+pub fn read_holds(out: &Path) -> std::collections::HashMap<String, String> {
+    parse_holds(&std::fs::read_to_string(out.join("holds.tsv")).unwrap_or_default())
+}
+
+pub fn parse_holds(text: &str) -> std::collections::HashMap<String, String> {
+    text.lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let (nn, reason) = l.split_once('\t').unwrap_or((l.trim(), "held"));
+            let nn = nn.trim();
+            (nn.len() == 2 && nn.chars().all(|c| c.is_ascii_digit())).then(|| (nn.to_string(), reason.trim().to_string()))
+        })
+        .collect()
 }
 
 fn copy_to_store(p: &Path, dest: &str) -> Result<(), String> {
