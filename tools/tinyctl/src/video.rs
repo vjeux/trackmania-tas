@@ -3,7 +3,7 @@
 //! it, by default, checked, and stamped.**
 //!
 //! ```text
-//! tinyctl video --map NN | --all [--watch SECS [--idle-quit-min 30]] [--min-gain-s 0.1] [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9]
+//! tinyctl video --map NN | --all [--watch SECS [--idle-quit-min 30]] [--min-gain-s 0.1] [--ghost-archive DIR|none] [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9]
 //!               [--ghosts-dir /tmp/ghosts] [--ghosts-sync host:dir] [--build ship15] [--cam 2] [--load-timeout 120] [--no-guard]
 //!               [--box-videos "…/Maps/Tiny/videos"] [--store host:dir | dir] [--pull-webm] [--suffix S]
 //!               [--from-webm F] [--no-overlay] [--crf N] [--offset-ms N] [--ship [--readme tiny/README.md]]
@@ -544,6 +544,33 @@ fn one(args: &[String]) -> Result<Done, String> {
     let local_webm = out.join(format!("{name}.webm"));
     let mut bytes: u64;
 
+    // --- THE GHOST ARCHIVE, before anything is rendered (coordinator, 2026-09-10
+    // 16:17Z, for the parent project). `ghosts-for-video/NN.Ghost.Gbx` is a
+    // MUTABLE alias the input arm overwrites several times a day, so the bytes a
+    // clip was rendered from were gone within the hour and nothing could say
+    // which tape a published video shows. Now the input ghost is copied,
+    // write-once, to `<archive>/<md5>.Ghost.Gbx` with a sidecar `<md5>.json`
+    // (map, build, lap, README row, FNV, map md5, when), and the REPORT row
+    // names the archive file. `--ghost-archive DIR` (default: the store's
+    // tm-player/tiny/ghost-archive when that mount exists; `--ghost-archive
+    // none` turns it off). A failure to archive is a failure to render: the
+    // archive is what makes the render accountable.
+    let ghost_md5 = md5_of(&ghost)?;
+    let archive_name = match f("--ghost-archive").as_deref() {
+        Some("none") => None,
+        given => {
+            let dir = given.map(PathBuf::from).unwrap_or_else(|| PathBuf::from(GHOST_ARCHIVE_DEFAULT));
+            if dir.is_dir() || given.is_some() {
+                let readme_row = readme_row(&std::fs::read_to_string(ghosts_dir.join("README.md")).unwrap_or_default(), &nn, &time).unwrap_or_default();
+                let map_md5 = md5_of(&map)?;
+                archive_ghost(&dir, &ghost, &ghost_md5, &nn, &time, race_ms, &traj_id, &map_md5, f("--build").as_deref(), &readme_row)?;
+                Some(format!("{ghost_md5}.Ghost.Gbx"))
+            } else {
+                eprintln!("ghost archive: {} is not there (store not mounted?) — NOT archiving; pass --ghost-archive DIR", dir.display());
+                None
+            }
+        }
+    };
     if let Some(w) = &from_webm {
         // --- an existing render: the post-render path on it, nothing on the box
         println!("from-webm: {} — no render; cut + overlay + ship on the file as it is", w.display());
@@ -708,6 +735,17 @@ fn one(args: &[String]) -> Result<Done, String> {
         }
     }
     println!("mp4: {} [{overlay_col}]", mp4.display());
+    // the archive name rides the overlay column into the REPORT row and the
+    // mp4's sidecar, so a clip says which archived tape it shows
+    let overlay_col = match &archive_name {
+        Some(a) => format!("{overlay_col}; ghost archive {a}"),
+        None => overlay_col,
+    };
+    if let Some(a) = &archive_name {
+        let side = mp4.with_extension("mp4.json");
+        let json = format!("{{\n  \"mp4\": \"{}\",\n  \"map\": \"{nn}\",\n  \"lap\": \"{time}\",\n  \"ghost_md5\": \"{ghost_md5}\",\n  \"ghost_fnv\": \"{traj_id}\",\n  \"ghost_archive\": \"{a}\",\n  \"overlay\": \"{}\"\n}}\n", mp4.file_name().unwrap().to_string_lossy(), overlay_col.replace('"', "\\\""));
+        std::fs::write(&side, json).map_err(|e| format!("{}: {e}", side.display()))?;
+    }
 
     // --- the mp4 to the box: staged OUTSIDE the OneDrive tree, then copied in
     // beside the raw clip (where vjeux watches them). A chunked push straight
@@ -741,7 +779,7 @@ fn one(args: &[String]) -> Result<Done, String> {
     // --- the store
     if let Some(dest) = f("--store") {
         let mut sent = Vec::new();
-        for p in [&local_webm, &mp4, &sheet] {
+        for p in [&local_webm, &mp4, &sheet, &mp4.with_extension("mp4.json")] {
             if !p.is_file() {
                 continue;
             }
@@ -1322,6 +1360,51 @@ pub fn md5_of(p: &Path) -> Result<String, String> {
 
 /// `host:dir` → scp; a plain directory → a local copy (the devserver has the
 /// manifold mount, an OD does not).
+/// The store's content-addressed ghost folder, the default `--ghost-archive`.
+const GHOST_ARCHIVE_DEFAULT: &str = "/home/vjeux/persistent/private-30d/tm-player/tiny/ghost-archive";
+
+/// Copy `ghost` to `<dir>/<md5>.Ghost.Gbx` (write-once: an existing file with
+/// that name IS these bytes, by construction — it is verified, not overwritten)
+/// and write the sidecar `<dir>/<md5>.json`. The sidecar is rewritten only when
+/// absent, so the first render's facts stand.
+#[allow(clippy::too_many_arguments)]
+pub fn archive_ghost(dir: &Path, ghost: &Path, md5: &str, nn: &str, time: &str, race_ms: i32, fnv: &str, map_md5: &str, build: Option<&str>, readme_row: &str) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dst = dir.join(format!("{md5}.Ghost.Gbx"));
+    if dst.is_file() {
+        let have = md5_of(&dst)?;
+        if have != md5 {
+            return Err(format!("{}: holds md5 {have}, not the {md5} its name claims — the archive is corrupt, refusing to render on top of it", dst.display()));
+        }
+    } else {
+        let tmp = dir.join(format!(".{md5}.Ghost.Gbx.{}", std::process::id()));
+        std::fs::copy(ghost, &tmp).map_err(|e| format!("{} → {}: {e}", ghost.display(), tmp.display()))?;
+        std::fs::rename(&tmp, &dst).map_err(|e| format!("{} → {}: {e}", tmp.display(), dst.display()))?;
+        let back = md5_of(&dst)?;
+        if back != md5 {
+            let _ = std::fs::remove_file(&dst);
+            return Err(format!("{}: read back as md5 {back}, wrote {md5}", dst.display()));
+        }
+        println!("ghost archive: {} ← {}", dst.display(), ghost.display());
+    }
+    let side = dir.join(format!("{md5}.json"));
+    if !side.is_file() {
+        let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+        let json = format!(
+            "{{\n  \"ghost_md5\": \"{md5}\",\n  \"ghost_fnv\": \"{fnv}\",\n  \"map\": \"{nn}\",\n  \"title\": \"{}\",\n  \"lap\": \"{time}\",\n  \"lap_ms\": {race_ms},\n  \"map_md5\": \"{map_md5}\",\n  \"build\": {},\n  \"readme_row\": \"{}\",\n  \"source\": \"{}\",\n  \"archived_unix\": {when}\n}}\n",
+            esc(&map_title(nn)),
+            build.map(|b| format!("\"{}\"", esc(b))).unwrap_or_else(|| "null".into()),
+            esc(readme_row),
+            esc(&ghost.display().to_string())
+        );
+        let tmp = dir.join(format!(".{md5}.json.{}", std::process::id()));
+        std::fs::write(&tmp, json).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, &side).map_err(|e| format!("{} → {}: {e}", tmp.display(), side.display()))?;
+    }
+    Ok(())
+}
+
 fn copy_to_store(p: &Path, dest: &str) -> Result<(), String> {
     if dest.contains(':') {
         let (host, dir) = dest.split_once(':').unwrap();
@@ -1610,5 +1693,40 @@ mod gate_tests {
         assert_eq!(p.get("15").map(|(t, n)| (*t, n.as_str())), Some((49.097, "15-ghost-49.097-ship15")));
         assert_eq!(p.get("21"), None);
         assert_eq!(p.get("22").map(|(t, _)| *t), Some(96.298));
+    }
+}
+
+#[cfg(test)]
+mod archive_tests {
+    use super::*;
+
+    /// The archive is write-once and content-addressed: the first call copies
+    /// the ghost and writes the sidecar, a second call with the same bytes is a
+    /// no-op that verifies, and a file whose bytes do not match its name is a
+    /// corrupt archive the render refuses to build on.
+    #[test]
+    fn the_ghost_archive_is_write_once_and_verified() {
+        let dir = std::env::temp_dir().join(format!("tinyctl-archive-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let ghost = src.join("24.Ghost.Gbx");
+        std::fs::write(&ghost, b"GBX-not-really-but-bytes-are-bytes").unwrap();
+        let md5 = md5_of(&ghost).unwrap();
+        let arch = dir.join("ghost-archive");
+        archive_ghost(&arch, &ghost, &md5, "24", "100.116", 100_116, "c3589722871e4283", "a7ca005a", Some("ship15"), "| 24 | 24.Ghost.Gbx | 100.116 | 14 | ship15 | a7ca005a | PPO | x |").unwrap();
+        let dst = arch.join(format!("{md5}.Ghost.Gbx"));
+        assert_eq!(std::fs::read(&dst).unwrap(), std::fs::read(&ghost).unwrap());
+        let side = std::fs::read_to_string(arch.join(format!("{md5}.json"))).unwrap();
+        assert!(side.contains("\"ghost_md5\": \"") && side.contains("\"lap_ms\": 100116") && side.contains("\"ghost_fnv\": \"c3589722871e4283\"") && side.contains("\"build\": \"ship15\"") && side.contains("Tiny Poland 2026"), "{side}");
+        // second call: no change, no error
+        let before = std::fs::metadata(&dst).unwrap().modified().unwrap();
+        archive_ghost(&arch, &ghost, &md5, "24", "100.116", 100_116, "c3589722871e4283", "a7ca005a", Some("ship15"), "").unwrap();
+        assert_eq!(std::fs::metadata(&dst).unwrap().modified().unwrap(), before);
+        // a corrupt archive entry is refused
+        std::fs::write(&dst, b"tampered").unwrap();
+        let e = archive_ghost(&arch, &ghost, &md5, "24", "100.116", 100_116, "c3589722871e4283", "a7ca005a", Some("ship15"), "").unwrap_err();
+        assert!(e.contains("corrupt"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
