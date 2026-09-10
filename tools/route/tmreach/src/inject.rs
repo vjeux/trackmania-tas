@@ -204,6 +204,22 @@ pub fn inject_state(w: &mut crate::rig::Worker, h: branch::Handle, st: &InjectSt
     let car = forkoracle::car::resolve_with(w.car.controller, w.car.sim, w.module_base, sim_ms, race_start, |a, n| forkoracle::procmem::read_at(pid, a, n)).map_err(|e| format!("inject_state: no live body to write (inside a respawn window or before the spawn?): {e}"))?;
     let body = forkoracle::inject::BodyState { pos: st.state.pos, quat_wxyz: st.state.quat_wxyz, vel: st.state.vel, ang_vel: st.state.ang_vel.unwrap_or([0.0; 3]) };
     let back = forkoracle::inject::write_body_and_phy(pid, &car, &body)?;
+    // ENGAGE THE DRIVETRAIN (ENV, player-env a8b31c80): the paused template car is in gear 0 at idle rpm and an injected
+    // body inherits it — the engine never drove injected cars (the 32 → 30 m/s decay of the first control). Gear from the
+    // file when it carries one, else from the speed (~15 m/s per gear); rpm 8000; wheel speeds for rolling without slip.
+    // OPT-IN for now (TMREACH_INJECT_DRIVETRAIN=1; TMREACH_INJECT_GEAR=N forces the gear): on Tiny 20's three LCP states the
+    // write changed nothing (gates 4 and 9: airborne approaches, gear 1–5 byte-identical) or hurt (gate 7: 23.5 → 17.0 m/s
+    // with any gear ≥ 2, vjeux 24.4) — see model/inject/control/IDENTITY-CONTROL.md; ENV saw 45 → 51 on Poland.
+    if std::env::var("TMREACH_INJECT_DRIVETRAIN").is_ok() {
+        let sp = st.state.speed_fwd.unwrap_or_else(|| (st.state.vel[0].powi(2) + st.state.vel[1].powi(2) + st.state.vel[2].powi(2)).sqrt());
+        let gear = std::env::var("TMREACH_INJECT_GEAR").ok().and_then(|g| g.parse::<u32>().ok()).or_else(|| st.state.gear.map(|g| g as u32).filter(|g| (1..=5).contains(g))).unwrap_or_else(|| ((sp.abs() / 15.0).floor() as u32 + 1).clamp(1, 5));
+        forkoracle::inject::write_drivetrain_gear(pid, &car, sp, Some(8000.0), Some(gear))?;
+        if std::env::var("TMREACH_LAP_DEBUG").is_ok() {
+            let rd = |o: u64| forkoracle::procmem::read_at(pid, car.phy + o, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).unwrap_or(u32::MAX);
+            let rf = |o: u64| forkoracle::procmem::read_at(pid, car.phy + o, 4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).unwrap_or(f32::NAN);
+            eprintln!("    inject drivetrain: pid {pid} phy {:#x} gear written {gear} read back {} / {}, rpm {:.0} / {:.0}, front speed {:.1}", car.phy, rd(forkoracle::inject::PHY_GEAR[0]), rd(forkoracle::inject::PHY_GEAR[1]), rf(forkoracle::inject::PHY_RPM[0]), rf(forkoracle::inject::PHY_RPM[1]), rf(forkoracle::inject::PHY_FRONT_SPEED));
+        }
+    }
     let d = back.dist(&body);
     if d > 0.05 {
         return Err(format!("inject_state: read-back differs from the written state by {d:.3} m"));
