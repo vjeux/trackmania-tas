@@ -1377,7 +1377,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                     let gained = s_after - f.s;
                     let below_after = track.min_y_near(s_after, 15.0) - last.y;
                     // alive, still on the line, and not fallen under it (21: a car in the deck gap lands on the road 25 m below and "moves on")
-                    if speed(&last) < 8.0 || gained < 25.0 || (cfg.below_tol < 100.0 && below_after > cfg.below_tol) || lat_after.abs() > 12.0 {
+                    // 13:42Z: the lateral criterion is strict-only (the polish lanes follow the author line, which sits > 12 m off the route line
+                    // in places; a moving car that gained 25 m is a real arrival)
+                    if speed(&last) < 8.0 || gained < 25.0 || (cfg.below_tol < 100.0 && below_after > cfg.below_tol) || (cfg.arrival_strict && lat_after.abs() > 12.0) {
                         ok = false;
                     }
                     if !ok {
