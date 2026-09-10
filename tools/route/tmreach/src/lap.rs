@@ -1000,7 +1000,8 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let vh = track.human_speed_at(s);
                 let v = speed(&end);
                 // a leg with no human speed profile (waypoint-replaced legs) still needs a MOVING arrival: >= 8 m/s
-                let speed_ok = cfg.arrival_any || (if vh <= 0.0 { v >= 8.0 } else { (v - vh).abs() <= 0.3 * vh.max(5.0) });
+                let min_arr: f64 = std::env::var("TMREACH_MIN_ARRIVAL").ok().and_then(|s| s.parse().ok()).unwrap_or(8.0);
+                let speed_ok = cfg.arrival_any || (if vh <= 0.0 { v >= min_arr } else { (v - vh).abs() <= 0.3 * vh.max(5.0) });
                 let lat_ok = lat_abs <= hw + 0.5;
                 if speed_ok && lat_ok {
                     out.log.push(format!("LEG DONE: gate {} (order position {}) credited with a good arrival at race {}: s {s:.1} lat {lat:.1} v {v:.1} (human {vh:.1}) after {} ticks ({} macros)", k_pref, k_pref - 1, crate::secs(w.race_of(&end)), e.chain.len(), e.macro_desc.len()));
