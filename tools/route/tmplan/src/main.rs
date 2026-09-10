@@ -250,6 +250,7 @@ fn main() {
         "author-ground" => cmd_author_ground(&args[1..]),
         "arrival-bands" => cmd_arrival_bands(&args[1..]),
         "chain-vs-author" => cmd_chain_vs_author(&args[1..]),
+        "author-attitude" => cmd_author_attitude(&args[1..]),
         "leg-plot" => cmd_leg_plot(&args[1..]),
         other => die(&format!("unknown command {other}")),
     }
@@ -1769,4 +1770,86 @@ fn cmd_chain_vs_author(args: &[String]) {
             for (name, lo, hi) in &gates { for j in 1..au.len() { let q = au[j-1]; let p = au[j]; let mut hit = inside(p, lo, hi); if !hit { for s in 1..10 { let f = s as f32 / 10.0; let m = [q[0]+(p[0]-q[0])*f, q[1]+(p[1]-q[1])*f, q[2]+(p[2]-q[2])*f]; if inside(m, lo, hi) { hit = true; break; } } } if hit && !inside(q, lo, hi) { println!("  AUTHOR through GATE {} at t {:.1} ({:.1}, {:.1}, {:.1}) {:.0} m/s", name, j as f32 / 10.0, p[0], p[1], p[2], av[j]); } } }
         }
     }
+}
+
+/// author-attitude MAP.Map.Gbx --gates gates.json --author-line author.json [--bands bands.json] [--map-id NN] [--rows out.tsv]
+/// The AUTHOR's surface-relative attitude from his ghost samples (50 ms, rotation quaternion) mapped into the tiny frame:
+/// body up = R(q)·ŷ; the supporting surface = the closest of five short rays (down, ±x, ±z, 2.5 m) from the sample;
+/// in contact when that surface is ≤ 1.2 m away; tilt = angle(body up, surface normal). Per gate section (the author's
+/// gate times from the arrival-bands file, or the whole lap): seconds in contact at tilt ≥ 45° / ≥ 70°, max tilt,
+/// airborne-rotation events (no surface within 2.5 m and body up ≥ 70° from vertical), wall-ride seconds (surface
+/// ≥ 70° from horizontal while tilt < 30°). One TSV row per section; --rows dumps every sample.
+fn cmd_author_attitude(args: &[String]) {
+    let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
+    let gp = flag(args, "--gates").unwrap_or_else(|| die("--gates gates.json required"));
+    let gates = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+    let ap = flag(args, "--author-line").unwrap_or_else(|| die("--author-line author.json required"));
+    let mapid = flag(args, "--map-id").unwrap_or_else(|| "?".into());
+    let txt = std::fs::read_to_string(&ap).unwrap_or_else(|e| die(&format!("{ap}: {e}")));
+    let grab_s = |key: &str| -> String { let k = format!("\"{key}\": \""); let i = txt.find(&k).unwrap_or_else(|| die(&format!("{ap}: no {key}"))); let r = &txt[i + k.len()..]; r[..r.find('"').unwrap_or(0)].to_string() };
+    let src = grab_s("source");
+    let anchor = grab_s("anchor");
+    let scale: f32 = { let k = "\"scale\": "; let i = txt.find(k).unwrap_or(0); txt[i + k.len()..].split(|c: char| c == ',' || c == '\n').next().and_then(|s| s.trim().parse().ok()).unwrap_or(1.0) };
+    let (sa, ta) = { let (a, b) = anchor.split_once(':').unwrap_or_else(|| die("anchor a:b")); let p3 = |s: &str| -> [f32; 3] { let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); [v[0], v[1], v[2]] }; (p3(a), p3(b)) };
+    let d = gbx::record::decode_ghost_all_vehicles(&src).unwrap_or_else(|e| die(&format!("{src}: no ghost ({e})")));
+    // scene
+    let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
+    let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
+    let m = tmmaps::map::MapFile::load(Path::new(&map));
+    let opts = mapgeom::local::BuildOpts { with_deco: true, with_baked: std::env::var("TMPLAN_BAKED").is_ok() || !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() };
+    let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &opts);
+    // section boundaries: the author's gate times from --bands (arrival-bands v3: "author": {"t_s": ..}) in file order
+    let mut cuts: Vec<(String, f32)> = Vec::new();
+    if let Some(cs) = flag(args, "--cuts") { for part in cs.split(',') { if let Some((n, t)) = part.split_once('=') { if let Ok(tv) = t.trim().parse::<f32>() { cuts.push((n.trim().to_string(), tv)); } } } cuts.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap()); }
+    if let Some(bp) = flag(args, "--bands") {
+        let bt = std::fs::read_to_string(&bp).unwrap_or_else(|e| die(&format!("{bp}: {e}")));
+        let mut i = 0usize;
+        while let Some(j) = bt[i..].find("\"map_waypoint\": ") {
+            let s = i + j + 16; let wp: String = bt[s..].chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Some(k) = bt[s..].find("\"t_s\": ") { let ts: String = bt[s + k + 7..].chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect(); if let Ok(t) = ts.parse::<f32>() { cuts.push((format!("wp{wp}"), t)); } }
+            i = s;
+        }
+        cuts.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    }
+    let dirs: [[f32; 3]; 5] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]];
+    let mut rows_out = flag(args, "--rows").map(|p| std::fs::File::create(&p).map(std::io::BufWriter::new).unwrap_or_else(|e| die(&format!("{p}: {e}"))));
+    use std::io::Write;
+    if let Some(w) = rows_out.as_mut() { writeln!(w, "t\tx\ty\tz\tspeed\tsurf_dist\tsurf_angle_deg\tbody_up_vs_vertical_deg\ttilt_deg\tin_contact\tmaterial").ok(); }
+    // per-section accumulators
+    struct Acc { name: String, t0: f32, t1: f32, n: usize, contact: usize, ge45: usize, ge70: usize, maxtilt: f32, air_rot: usize, wall: usize, wall_win: Vec<(f32, f32)> }
+    let mut secs: Vec<Acc> = Vec::new();
+    let mut prev_t = 0.0f32;
+    let mut names: Vec<(String, f32)> = cuts.clone(); names.push(("end".into(), 1e9));
+    for (i, (nm, t)) in names.iter().enumerate() { let label = if i == 0 { format!("spawn→{nm}") } else { format!("{}→{nm}", names[i - 1].0) }; secs.push(Acc { name: label, t0: prev_t, t1: *t, n: 0, contact: 0, ge45: 0, ge70: 0, maxtilt: 0.0, air_rot: 0, wall: 0, wall_win: Vec::new() }); prev_t = *t; }
+    let mut dt_s = 0.05f32; if let Some(p) = d.sample_period_ms { dt_s = p as f32 / 1000.0; }
+    let mut last_air_rot = false;
+    for smp in &d.samples {
+        let t = smp.time_ms as f32 / 1000.0;
+        let p = [ta[0] + (smp.x - sa[0]) * scale, ta[1] + (smp.y - sa[1]) * scale, ta[2] + (smp.z - sa[2]) * scale];
+        // body up from the quaternion (x, y, z, w): R·(0,1,0)
+        let (qx, qy, qz, qw) = (smp.qx, smp.qy, smp.qz, smp.qw);
+        let up = [2.0 * (qx * qy - qw * qz), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz + qw * qx)];
+        let un = (up[0] * up[0] + up[1] * up[1] + up[2] * up[2]).sqrt().max(1e-6);
+        let up = [up[0] / un, up[1] / un, up[2] / un];
+        let body_vert = (up[1].clamp(-1.0, 1.0)).acos().to_degrees();
+        let o = [p[0], p[1] + 0.3, p[2]];
+        let hits = scene.raycast_many(o, &dirs, 2.5, true);
+        let mut best: Option<&mapgeom::local::Hit> = None;
+        for h in hits.iter().flatten() { if best.map(|b| h.dist < b.dist).unwrap_or(true) { best = Some(h); } }
+        let (sd, sang, tilt, contact, mat) = match best {
+            Some(h) => { let n = h.normal; let ny = n[1].abs(); let sang = ny.clamp(0.0, 1.0).acos().to_degrees(); let dot = (up[0] * n[0] + up[1] * n[1] + up[2] * n[2]).abs().clamp(0.0, 1.0); (h.dist, sang, dot.acos().to_degrees(), h.dist <= 1.2, h.material_name.to_string()) }
+            None => (99.0, -1.0, -1.0, false, "air".to_string()),
+        };
+        if let Some(w) = rows_out.as_mut() { writeln!(w, "{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\t{:.2}\t{:.0}\t{:.0}\t{:.0}\t{}\t{}", t, p[0], p[1], p[2], smp.speed_ms, sd, sang, body_vert, tilt, contact as u8, mat).ok(); }
+        let sec = secs.iter_mut().find(|s| t >= s.t0 && t < s.t1);
+        if let Some(s) = sec {
+            s.n += 1;
+            if contact { s.contact += 1; if tilt >= 45.0 { s.ge45 += 1; } if tilt >= 70.0 { s.ge70 += 1; } if tilt > s.maxtilt { s.maxtilt = tilt; } if sang >= 70.0 && tilt < 30.0 { s.wall += 1; match s.wall_win.last_mut() { Some(w) if t - w.1 <= 0.15 => w.1 = t, _ => s.wall_win.push((t, t)) } } }
+            let air_rot = !contact && body_vert >= 70.0;
+            if air_rot && !last_air_rot { s.air_rot += 1; }
+            last_air_rot = air_rot;
+        }
+    }
+    println!("map\tsection\tt0\tt1\tsamples\tcontact_s\ttilt_ge45_s\ttilt_ge70_s\tmax_tilt_deg\tairborne_rotation_events\twall_ride_s\twall_ride_windows");
+    for s in &secs { if s.n == 0 { continue; } let ww: Vec<String> = s.wall_win.iter().filter(|(a, b)| b - a >= 0.2).map(|(a, b)| format!("{a:.1}–{b:.1}")).collect(); println!("{}\t{}\t{:.1}\t{:.1}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.0}\t{}\t{:.2}\t{}", mapid, s.name, s.t0, if s.t1 > 1e8 { (s.t0 + s.n as f32 * dt_s) } else { s.t1 }, s.n, s.contact as f32 * dt_s, s.ge45 as f32 * dt_s, s.ge70 as f32 * dt_s, s.maxtilt, s.air_rot, s.wall as f32 * dt_s, ww.join(" ")); }
 }
