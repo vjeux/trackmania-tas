@@ -510,7 +510,7 @@ pub struct LapCfg {
     /// clinic: --arrival-strict restores hard refusal of off-band arrivals (default: off-band credits are taken and logged)
     pub arrival_strict: bool,
     /// hand macro: pure-pursuit points (x y z [speed]) from --pursue FILE; empty = the macro is skipped
-    pub pursue: Vec<[f64; 4]>,
+    pub pursue: Vec<[f64; 5]>,
     /// hand macro: aim at the first pursue point farther than this (m); --pursue-look, default 8
     pub pursue_look: f64,
     /// hand macro: heading error (deg) that gives full steering lock; --pursue-gain, default 10 (gentler = 30–40: less scrub)
@@ -728,12 +728,14 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                     let yaw_deg = yaw_of(&last).to_degrees();
                     // progress along the point list is monotone (never re-target an earlier point: 11:03Z the car came out of the
                     // trough heading NW and locked onto a bend point behind it)
-                    let mut target: Option<[f64; 4]> = None;
+                    // 5th column (optional) = the lookahead to use while this point is the target (per-segment lookahead, iteration 8)
+                    let mut target: Option<[f64; 5]> = None;
                     for (i, p) in cfg.pursue.iter().enumerate().skip(pursue_idx) {
                         let (dx, dz) = (p[0] - last.x, p[2] - last.z);
                         let d = (dx * dx + dz * dz).sqrt();
                         let ahead = dx * last.vx + dz * last.vz >= -0.2 * d * speed(&last);
-                        if d > cfg.pursue_look && ahead { target = Some(*p); pursue_idx = i; break; }
+                        let look = if p[4] > 0.0 { p[4] } else { cfg.pursue_look };
+                        if d > look && ahead { target = Some(*p); pursue_idx = i; break; }
                     }
                     let want_deg = match target { Some(p) => (p[0] - last.x).atan2(p[2] - last.z).to_degrees(), None => yaw_deg };
                     pursue_cap = target.map(|p| p[3]).filter(|v| *v > 0.0);
@@ -1170,12 +1172,25 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 // an injected seed starts far from the spawn: place it globally, then walk its approach rows
                 hint = track.project(pos(rows.first().unwrap_or(&end)), track.pts.len() / 2, track.pts.len()).2;
             }
+            let mut prev_p = pos(rows.first().unwrap_or(&end));
             for (i, r) in rows.iter().enumerate() {
-                if i % 10 == 0 {
-                    hint = track.project(pos(r), hint, 30).2;
+                // a RESPAWN teleports the car: re-project globally after any jump > 15 m between consecutive rows (12:11Z: the
+                // walked hint stayed on the pre-respawn stretch and judged a live wp11 state "28 m below the line")
+                let p = pos(r);
+                let jump = ((p[0] - prev_p[0]).powi(2) + (p[2] - prev_p[2]).powi(2)).sqrt() > 15.0;
+                prev_p = p;
+                if jump {
+                    hint = track.project(p, track.pts.len() / 2, track.pts.len()).2;
+                } else if i % 10 == 0 {
+                    hint = track.project(p, hint, 30).2;
                 }
             }
-            let (s, lat, seg, d3) = track.project(pos(&end), hint, 30);
+            let (mut s, mut lat, mut seg, mut d3) = track.project(pos(&end), hint, 30);
+            if d3 > 20.0 {
+                // the walked hint lost the line (stacked levels, a jump): re-project the end state globally (12:13Z)
+                let g = track.project(pos(&end), track.pts.len() / 2, track.pts.len());
+                if g.3 < d3 { s = g.0; lat = g.1; seg = g.2; d3 = g.3; }
+            }
             let road_y = track.at(s)[1];
             let hw = track.half_width.get(seg).copied().unwrap_or(5.5);
             let road_y_min = track.min_y_near(s, 15.0);
