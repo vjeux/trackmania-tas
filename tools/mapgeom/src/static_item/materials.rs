@@ -419,10 +419,15 @@ pub enum ScreenMode {
     Logo,
 }
 
+/// Default DARK since 2026-09-10 22:50Z (coordinator, vjeux on the 01 frames: "the
+/// banner looks super ugly now"): the original shows a served ad we cannot
+/// match; a switched-off screen beats a wrong picture. `logo` and `default`
+/// (the pack's green panel) stay as knobs.
 pub fn screen_mode() -> ScreenMode {
-    match std::env::var("TINY_SCREENS").unwrap_or_default().to_ascii_lowercase().as_str() {
+    match std::env::var("TINY_SCREENS").unwrap_or_else(|_| "dark".to_string()).to_ascii_lowercase().as_str() {
         "dark" => ScreenMode::Dark,
         "logo" => ScreenMode::Logo,
+        "default" | "green" => ScreenMode::Default,
         _ => ScreenMode::Default,
     }
 }

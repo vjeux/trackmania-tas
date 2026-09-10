@@ -3012,10 +3012,19 @@ pub fn add_screen_logo_pictures(store: &mut crate::store::DataStore, m: &mut Mer
     let path = "Stadium\\Media\\Texture\\Image\\RaceAd6x1.dds";
     match store.read(path).map_err(|e| format!("{path}: {e}")).and_then(|bytes| super::texture::decode_capped_rgba(&bytes, 1024).map_err(|e| format!("{path}: {e}"))) {
         Ok((w, h, rgba)) => {
+            // rows in the pack's own order: the face's uv frame is the one the pack's
+            // default picture (WarpRace2x3A) is drawn with upright, so the DDS goes in
+            // as the pack stores it. The 2026-09-10 build reversed the rows and drew the
+            // logo board upside-down on 01's hilltop screen (vjeux, video 4 frames).
+            // TINY_SCREEN_FLIP=v|h|hv flips for a probe.
+            let flip = std::env::var("TINY_SCREEN_FLIP").unwrap_or_default();
             let mut out = Vec::with_capacity(rgba.len());
-            for row in (0..h as usize).rev() {
+            for row0 in 0..h as usize {
+                let row = if flip.contains('v') { h as usize - 1 - row0 } else { row0 };
                 let r = &rgba[row * w as usize * 4..(row + 1) * w as usize * 4];
-                for px in r.chunks(4) {
+                let mut pxs: Vec<&[u8]> = r.chunks(4).collect();
+                if flip.contains('h') { pxs.reverse(); }
+                for px in pxs {
                     out.extend_from_slice(&[px[0], px[1], px[2], 0xFF]);
                 }
             }
