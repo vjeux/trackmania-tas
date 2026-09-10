@@ -1646,7 +1646,9 @@ fn cmd_arrival_bands(args: &[String]) {
         let author = best_run.map(|(li, _)| {
             cursor = li + 1;
             let p = line[li];
-            let (h, hdg) = heading_of([line[(li + 1).min(line.len() - 1)][0] - line[li.saturating_sub(1)][0], 0.0, line[(li + 1).min(line.len() - 1)][2] - line[li.saturating_sub(1)][2]]);
+            // heading = the velocity direction over ±0.3 s (7 samples), not two neighbours
+            let (a, b) = (li.saturating_sub(3), (li + 3).min(line.len() - 1));
+            let (h, hdg) = heading_of([line[b][0] - line[a][0], 0.0, line[b][2] - line[a][2]]);
             let sp = vh[li.saturating_sub(1)..=li.min(vh.len() - 1)].iter().sum::<f32>() / (li - li.saturating_sub(1) + 1) as f32;
             serde_json::json!({"source": "author-line", "sample": li, "t_s": li as f32 * 0.1, "pos": [p[0], p[1], p[2]], "heading_xz": h, "heading_deg": hdg, "speed_mps": sp})
         });
@@ -1664,11 +1666,18 @@ fn cmd_arrival_bands(args: &[String]) {
         let author_speed = author.as_ref().and_then(|a| a.get("speed_mps")).and_then(|s| s.as_f64()).unwrap_or(0.0) as f32;
         let (band_speed, speed_source) = if vj.is_some() && author_speed > 0.0 && speed < 0.6 * author_speed { (author_speed, "author-line (vjeux crossed at a struggle speed)") } else { (speed, if vj.is_some() { "vjeux-launched-cp" } else { "author-line" }) };
         let plane = serde_json::json!({"centre": g.centre, "normal": g.normal, "half_width": g.half_width, "half_height": g.half_height,  "credit_offset_m": g.credit_offset_m, "kind": format!("{:?}", g.kind), "model": g.model});
+        // a hairpin apex (the author's heading turns > 120° within ±3 s of the crossing) or an angled crossing (> 35° off the plane
+        // normal) gets a wide heading band; a crossing anywhere in the ring credits, the band is guidance
+        let hdg_c = human.get("heading_deg").and_then(|h| h.as_f64()).unwrap_or(0.0) as f32;
+        let turn = author.as_ref().and_then(|a| a.get("sample")).and_then(|s| s.as_u64()).map(|li| { let li = li as usize; let (a0, a1) = (li.saturating_sub(30), li.saturating_sub(15)); let (b0, b1) = ((li + 15).min(line.len() - 1), (li + 30).min(line.len() - 1)); let h0 = (line[a1][0] - line[a0][0]).atan2(line[a1][2] - line[a0][2]).to_degrees(); let h1 = (line[b1][0] - line[b0][0]).atan2(line[b1][2] - line[b0][2]).to_degrees(); let mut d = (h1 - h0).abs(); if d > 180.0 { d = 360.0 - d; } d }).unwrap_or(0.0);
+        let hx = hdg_c.to_radians().sin(); let hz = hdg_c.to_radians().cos();
+        let incidence = { let dot = (hx * g.normal[0] + hz * g.normal[2]).abs().clamp(0.0, 1.0); dot.acos().to_degrees() };
+        let hdg_tol = if turn > 120.0 || incidence > 35.0 { 60.0 } else { 20.0 };
         let band = serde_json::json!({
             "lateral_m": {"centre": lat.unwrap_or(0.0), "tol": (g.half_width - 1.0).max(2.0).max(lat.map(|l| l.abs() + 1.0).unwrap_or(0.0)), "note": "signed in-plane offset from the credit-plane centre, axis = normal × up; a crossing anywhere within ± half_width credits"},
             "height_rel_centre_m": {"centre": dy.unwrap_or(0.0), "lo": dy.unwrap_or(0.0) - 1.5, "hi": dy.unwrap_or(0.0) + 3.0, "note": "car y minus credit-plane centre y at the human's crossing; the human sits on the deck, so this is the deck offset of that ring"},
             "speed_mps": {"centre": band_speed, "lo": (band_speed * 0.75).round(), "hi": (band_speed * 1.15).round(), "source": speed_source},
-            "heading_deg": {"centre": human.get("heading_deg").and_then(|h| h.as_f64()).unwrap_or(0.0), "tol": 20.0}
+            "heading_deg": {"centre": hdg_c, "tol": hdg_tol, "turn_within_3s_deg": turn, "incidence_to_plane_normal_deg": incidence, "crossing_dir_vs_normal": if hx * g.normal[0] + hz * g.normal[2] >= 0.0 { "along" } else { "against" }, "note": "a crossing anywhere within the ring credits in either direction; the band is the human's heading — wide (60) at hairpin apexes and angled crossings"}
         });
         out_gates.push(serde_json::json!({"idx": idx, "map_waypoint": wp, "group": grp, "s_on_route": gate_rows.get(idx).and_then(|r| r.get("s")).cloned().unwrap_or(serde_json::Value::Null), "credit_plane": plane, "human": human, "author": author, "vjeux": vj, "band": band}));
     }
