@@ -136,11 +136,21 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
 /// `None` while the README has no row for that lap yet.
 pub fn readme_row(text: &str, nn: &str, time: &str) -> Option<String> {
     let key = format!("| {nn} |");
-    text.lines()
+    let rows: Vec<&str> = text
+        .lines()
         .filter(|l| l.starts_with(&key) || l.contains(&format!(" {key}")) || l.starts_with(&format!("|{nn}|")))
         .filter(|l| l.contains(time))
-        .last()
-        .map(String::from)
+        .collect();
+    // The README's second table (map | file md5 | time) names the map and the
+    // lap too, since 2026-09-10 06:50Z — and says nothing about the build, so
+    // taking it as "the row" skipped 25 119.115 as "not ship15". A row that
+    // names the ghost FILE is the one that carries the build; it wins whenever
+    // there is one.
+    rows.iter()
+        .rev()
+        .find(|l| l.contains(".Ghost.Gbx"))
+        .or_else(|| rows.last())
+        .map(|l| l.to_string())
 }
 
 /// How the page names the driver of this lap: a TAS lap is `tiny ghost`; a
@@ -862,18 +872,27 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 changed = true;
                 continue;
             }
-            // THE GHOSTS README OUTRANKS THIS FILE. A lap that landed after the
-            // clip was cut (the input arm replaces a map's ghost several times a
-            // day) makes the staged clip stale before it ever shipped; the page
-            // converges on the newest lap per map, so the row is superseded
-            // here and the newer lap's render ships instead. Only a README row
-            // on the same build counts (a map that fell back to an older build
-            // keeps its ship15 clip).
+            // THE GHOSTS README OUTRANKS THIS FILE — once its ghost has caught
+            // up. A lap that landed after the clip was cut (the input arm
+            // replaces a map's ghost several times a day) makes the staged clip
+            // stale before it ever shipped; the page converges on the newest
+            // lap per map, so the row is superseded here and the newer lap's
+            // render ships instead. Two guards: only a README row on the same
+            // build counts (a map that fell back to an older build keeps its
+            // ship15 clip), and the README's lap must be the one the ghost FILE
+            // in --ghosts-dir actually holds — when the README is ahead of its
+            // file (09 on 2026-09-10: row 28.292, file still 28.572) nothing
+            // newer can render, so the staged clip is still the best there is
+            // and ships.
             if let Some(d) = &ghosts_dir {
                 let readme = std::fs::read_to_string(d.join("README.md")).unwrap_or_default();
                 if let Some((newest, build)) = readme_current_lap(&readme, &cells[0]) {
-                    if newest != cells[1] && build_note.contains(&build) {
-                        println!("{} {} {}: the ghosts README now says {newest} ({build}) — superseded, not shipped", chrono_now(), cells[0], cells[1]);
+                    let file_time = gbx::record::decode_ghost(d.join(format!("{}.Ghost.Gbx", cells[0])).to_str().unwrap_or(""))
+                        .ok()
+                        .and_then(|g| g.race_time_ms.or_else(|| g.samples.last().map(|s| s.time_ms)))
+                        .map(|ms| format!("{}.{:03}", ms / 1000, ms % 1000));
+                    if newest != cells[1] && build_note.contains(&build) && file_time.as_deref() == Some(newest.as_str()) {
+                        println!("{} {} {}: the ghosts README now says {newest} ({build}) and its ghost file agrees — superseded, not shipped", chrono_now(), cells[0], cells[1]);
                         *row = format!("{}\t{}\t{}\t{}\tsuperseded", cells[0], cells[1], cells[2], cells[3]);
                         changed = true;
                         continue;
@@ -1323,5 +1342,25 @@ mod ships_tests {
             "25\t121.235\te\td\thttps://x",
         ];
         assert_eq!(last_row_per_map(&rows), vec![false, false, true, true, true]);
+    }
+}
+
+#[cfg(test)]
+mod readme_shape_tests {
+    use super::*;
+
+    /// Since 2026-09-10 the ghosts README has a second table, `| map | file md5 |
+    /// time |`, whose rows name the map and the lap but not the build. The row
+    /// that names the ghost FILE is the one that carries the build and must win.
+    #[test]
+    fn the_md5_table_does_not_hide_the_build() {
+        let readme = "| 25 | 25.Ghost.Gbx | 119.115 | 15 | ship15 | bd1a146f | PPO | x |\n\
+\n\
+| map | file md5 | time |\n\
+| 25 | ac27c2fd | 119.115 |\n";
+        assert!(readme_row(readme, "25", "119.115").unwrap().contains("ship15"));
+        assert_eq!(readme_current_lap(readme, "25"), Some(("119.115".into(), "ship15".into())));
+        // a lap that appears ONLY in the md5 table is still found (no build word)
+        assert!(readme_row("| 25 | ac27c2fd | 119.115 |\n", "25", "119.115").is_some());
     }
 }
