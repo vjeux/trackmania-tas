@@ -147,7 +147,24 @@ pub fn from_lcp(lcp: &serde_json::Value, entry: usize, kind: &str, map_uid: &str
             for tick in 0..n_ticks {
                 let t = t0 + tick as f64 * 10.0;
                 let s = samples.iter().rev().find(|s| s.get("t_ms").and_then(|v| v.as_f64()).map_or(false, |ts| ts <= t + 1e-6)).unwrap_or(s0);
-                let steer = (s.get("steer").and_then(|v| v.as_f64()).unwrap_or(0.0) * 127.0).round().clamp(-127.0, 127.0) as i8;
+                let steer_held = s.get("steer").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                // STEER_INTERP: linear steer between consecutive samples (the human's analog stick moved continuously; a
+                // 53 ms hold is a staircase the engine pays for in speed — ENV 00:07Z)
+                let steer_v = if std::env::var("TMREACH_LCP_HOLD").is_ok() {
+                    steer_held
+                } else {
+                    let ts = s.get("t_ms").and_then(|v| v.as_f64()).unwrap_or(t);
+                    match samples.iter().find(|n| n.get("t_ms").and_then(|v| v.as_f64()).map_or(false, |tn| tn > ts + 1e-6)) {
+                        Some(nx) => {
+                            let tn = nx.get("t_ms").and_then(|v| v.as_f64()).unwrap_or(ts + 1.0);
+                            let sn = nx.get("steer").and_then(|v| v.as_f64()).unwrap_or(steer_held);
+                            let a = ((t - ts) / (tn - ts).max(1.0)).clamp(0.0, 1.0);
+                            steer_held + (sn - steer_held) * a
+                        }
+                        None => steer_held,
+                    }
+                };
+                let steer = (steer_v * 127.0).round().clamp(-127.0, 127.0) as i8;
                 let gas = s.get("gas").and_then(|v| v.as_f64()).unwrap_or(0.0) > 0.5;
                 let brake = s.get("brake").and_then(|v| v.as_f64()).unwrap_or(0.0) > 0.5;
                 inputs.push(InputTick { tick, steer, gas, brake });
