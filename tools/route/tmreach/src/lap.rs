@@ -996,9 +996,15 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 }
             }
             // CLINIC: the next gate credited with a good arrival ends this leg
-            if cfg.clinic && out.finished.is_none() && k_pref > seed_k.get() {
+            // the credit must have happened IN THIS rollout (a descendant of a refused arrival is not a new arrival), and the
+            // speed is read at the CREDIT ROW, not at the rollout end (07:35Z: a car that fell through wp6 at 13 m/s passed a
+            // 20 m/s floor six seconds later, rolling on the floor below)
+            let base_cps = base.map(|b| b.end.cps).unwrap_or(root_row.cps);
+            let credit_row = rows.iter().find(|r| r.cps != u32::MAX && base_cps != u32::MAX && r.cps > base_cps).cloned();
+            if cfg.clinic && out.finished.is_none() && k_pref > seed_k.get() && credit_row.is_some() {
+                let cr = credit_row.unwrap();
                 let vh = track.human_speed_at(s);
-                let v = speed(&end);
+                let v = speed(&cr);
                 // a leg with no human speed profile (waypoint-replaced legs) still needs a MOVING arrival: >= 8 m/s
                 let min_arr: f64 = std::env::var("TMREACH_MIN_ARRIVAL").ok().and_then(|s| s.parse().ok()).unwrap_or(8.0);
                 let speed_ok = cfg.arrival_any || (if vh <= 0.0 { v >= min_arr } else { (v - vh).abs() <= 0.3 * vh.max(5.0) });
