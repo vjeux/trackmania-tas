@@ -2627,8 +2627,11 @@ pub fn leaf_look_for(collection: u32) -> (f32, f32, f32, &'static str) {
 pub fn leaf_alpha_for(atlas_file: &str) -> Option<(f32, Option<u32>)> {
     let stem = atlas_file.rsplit('\\').next().unwrap_or(atlas_file).trim_end_matches(".dds");
     match stem {
-        "VegetPalmTreeSugar_D" => Some((0.6, Some(512))), // BlueBay PalmTreeBigA0–A4, Sugar*, Small*
-        "VegetWhiteBarkPalmAtlas_D" => Some((0.75, None)), // BlueBay PalmTreeBigB0–B3
+        // the 1024-px top level for both: at 10 m a 256/512-px atlas magnifies each
+        // alpha texel into a round blob and the leaflet SLITS come out as polka-dot
+        // holes (the eyes on the 06 frames, 19:52Z); +1.3 MB on Summer 06
+        "VegetPalmTreeSugar_D" => Some((0.6, Some(1024))), // BlueBay PalmTreeBigA0–A4, Sugar*, Small*
+        "VegetWhiteBarkPalmAtlas_D" => Some((0.75, Some(1024))), // BlueBay PalmTreeBigB0–B3
         _ => None,
     }
 }

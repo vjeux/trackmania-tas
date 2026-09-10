@@ -286,7 +286,12 @@ What the bake keeps and what it gives up:
   thinner than the stock (BushBigB 8.8 vs 12.2 %). Measuring trap: a crop
   smaller than the crown (the 800×900 centre crop on a 12 m TreeBigA) reports
   coverage of the crop, not of the tree — locate the crown with
-  `cropstats --grid` first. The bands are the SELF-SHADOW the per-item lightmap does
+  `cropstats --grid` first. At 10 m the 256/512-px atlas magnifies each alpha
+  texel into a round blob and the leaflet slits come out as polka-dot holes
+  (the eyes, 19:52Z) → the two palm atlases keep their 1024-px level (+1.3 MB
+  on 06). What stays: shaded fronds render near-black with hard edges where
+  the stock shows a soft mid-green — the item shader's alpha test is binary
+  (no alpha-to-coverage), an item limit like the subsurface term. The bands are the SELF-SHADOW the per-item lightmap does
   not give (every card gets one value): the inner cards ride under a darkened
   copy of the atlas (one more material and a 128-px atlas per band; +1.4 MB on
   Summer 19). Measured against the stock at 15 m (sky behind, the stock's own
