@@ -522,6 +522,12 @@ pub struct LapCfg {
     pub allow_water: bool,
     /// --water-boxes x1,x2,z1,z2,plane_y[;...]: Water-plane footprints (rows inside and below plane_y + 0.5 die)
     pub water_boxes: Vec<[f64; 5]>,
+    /// --base-tilt FILE: cumulative >= 45-deg in-contact wheel-ticks of the BASE per race tick (from contact-trace --normals)
+    pub base_tilt: Vec<usize>,
+    /// --tilt-slack N: allowed extra >= 45-deg wheel-ticks over the base (default 0)
+    pub tilt_slack: usize,
+    /// --tilt70: kill a rollout with >= 70-deg in-contact tilt on >= 30 of any 100 consecutive ticks
+    pub tilt70_guard: bool,
     /// hand macro: pure-pursuit points (x y z [speed]) from --pursue FILE; empty = the macro is skipped
     pub pursue: Vec<[f64; 5]>,
     /// hand macro: aim at the first pursue point farther than this (m); --pursue-look, default 8
@@ -932,6 +938,13 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let seg_hint = if cps > base.map(|e| cps_of(&e.end)).unwrap_or(root_cps) { track.pts.len() / 2 } else { seg_hint };
             let win = if cps > base.map(|e| cps_of(&e.end)).unwrap_or(root_cps) { track.pts.len() } else { 80 };
             let (s, lat, seg, d3) = track.project(pos(&end), seg_hint, win);
+            // a tight U-bend (21's hairpin: the east and west legs are 50 m apart laterally, 130 m of line) leaves the windowed projection
+            // on the wrong leg and every rollout that takes the bend dies "offroute lat -50" (21:46Z) — re-project globally when the local
+            // result is far from the car and keep the better of the two
+            let (s, lat, seg, d3) = if d3 > 15.0 {
+                let (s2, lat2, seg2, d32) = track.project(pos(&end), seg_hint, track.pts.len());
+                if d32 < d3 { (s2, lat2, seg2, d32) } else { (s, lat, seg, d3) }
+            } else { (s, lat, seg, d3) };
             if debug && base.is_none() && std::env::var("TMREACH_LAP_TRACE").map(|m| desc.contains(&m)).unwrap_or(false) {
                 for (i, r) in rows.iter().enumerate().step_by(20) {
                     let (ss, ll, sg, dd) = track.project(pos(r), seg_hint, 80);
@@ -952,6 +965,22 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 out.deaths[1] += 1;
                 dump_rollout(w, base, &rows, "offroute", &desc, &dump_n);
                 continue;
+            }
+            // TILT GUARD (parent 21:38Z/21:48Z, MODEL fast normals): (b) the rollout may not ADD >= 45-deg in-contact wheel-ticks beyond the
+            // base's own count over the same race interval (--base-tilt FILE = contact-trace --normals of the base); (c) >= 70 deg in contact
+            // for >= 30 of any 100 consecutive ticks kills outright. NaN tilts (air, normal not yet written) are ignored.
+            if !cfg.base_tilt.is_empty() || cfg.tilt70_guard {
+                let mut n45 = 0usize; let mut hot: Vec<u8> = Vec::with_capacity(rows.len());
+                for r in &rows { let t = r.vis.wheel_tilt_deg(r.qw, r.qx, r.qy, r.qz); let mut h = 0u8; for k in 0..4 { if t[k].is_finite() { if t[k] >= 45.0 { n45 += 1; } if t[k] >= 70.0 { h = 1; } } } hot.push(h); }
+                let t0 = rows.first().map(|r| w.race_of(r)).unwrap_or(0) / 10; let t1 = rows.last().map(|r| w.race_of(r)).unwrap_or(0) / 10;
+                let base_n = if cfg.base_tilt.is_empty() { usize::MAX } else { let g = |i: i64| -> usize { if i < 0 { 0 } else { cfg.base_tilt.get(i as usize).copied().unwrap_or(*cfg.base_tilt.last().unwrap_or(&0)) } }; g(t1).saturating_sub(g(t0)) };
+                let win70 = if cfg.tilt70_guard { hot.windows(100.min(hot.len().max(1))).map(|s| s.iter().map(|x| *x as usize).sum::<usize>()).max().unwrap_or(0) } else { 0 };
+                if n45 > base_n + cfg.tilt_slack || win70 >= 30 {
+                    out.deaths[1] += 1;
+                    if debug_fan { eprintln!("    TILT kill {desc:34}: >=45 ticks {n45} vs base {base_n} (+slack {}), >=70 in 1 s {win70}", cfg.tilt_slack); }
+                    dump_rollout(w, base, &rows, "offroute", &desc, &dump_n);
+                    continue;
+                }
             }
             // WATER GUARD (vjeux 20:32Z; GEOM 20:41Z): a wheel on physics 13 (Water) kills the rollout, and so does a row inside a Water-plane
             // footprint (--water-boxes: x1,x2,z1,z2,plane_y per entry, ; separated — GEOM's WATER-PLANES-ship15.tsv class A/B) below plane_y + 0.5.
@@ -1545,4 +1574,35 @@ pub fn tsv_text(chain: &[Rec]) -> String {
         s.push_str(&format!("{t}\t{}\t{}\t{}\n", (r.steer * 127.0).round() as i32, (r.gas > 0.5) as u8, (r.brake_value() > 0.5) as u8 + if r.respawn() { 2 } else { 0 }));
     }
     s
+}
+
+/// `--base-tilt FILE`: a `tmreach contact-trace --normals` export of the BASE; returns the cumulative count of >= 45-degree
+/// in-contact wheel-ticks indexed by race tick (race_ms / 10), for the no-regress tilt guard.
+pub fn load_base_tilt(path: &str) -> Vec<usize> {
+    let txt = match std::fs::read_to_string(path) { Ok(t) => t, Err(_) => return Vec::new() };
+    let mut lines = txt.lines();
+    let hdr: Vec<&str> = match lines.next() { Some(h) => h.split('\t').collect(), None => return Vec::new() };
+    let col = |n: &str| hdr.iter().position(|h| *h == n);
+    let race = match col("race_s") { Some(c) => c, None => return Vec::new() };
+    let live: Vec<Option<usize>> = (0..4).map(|k| col(&format!("w{k}_live"))).collect();
+    let tilt: Vec<Option<usize>> = (0..4).map(|k| col(&format!("w{k}_tilt_deg"))).collect();
+    let mut per: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    for l in lines {
+        let f: Vec<&str> = l.split('\t').collect();
+        let t = match f.get(race).and_then(|x| x.parse::<f64>().ok()) { Some(t) => (t * 100.0).round() as usize, None => continue };
+        let mut n = 0;
+        for k in 0..4 {
+            if let (Some(li), Some(ti)) = (live[k], tilt[k]) {
+                let lv = f.get(li).and_then(|x| x.parse::<u8>().ok()).unwrap_or(0);
+                let tv = f.get(ti).and_then(|x| x.parse::<f64>().ok()).unwrap_or(f64::NAN);
+                if lv == 1 && tv.is_finite() && tv >= 45.0 { n += 1; }
+            }
+        }
+        *per.entry(t).or_default() += n;
+    }
+    let last = per.keys().next_back().copied().unwrap_or(0);
+    let mut cum = vec![0usize; last + 1];
+    let mut acc = 0;
+    for i in 0..=last { acc += per.get(&i).copied().unwrap_or(0); cum[i] = acc; }
+    cum
 }
