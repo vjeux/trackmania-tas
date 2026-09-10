@@ -971,7 +971,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             // for >= 30 of any 100 consecutive ticks kills outright. NaN tilts (air, normal not yet written) are ignored.
             if !cfg.base_tilt.is_empty() || cfg.tilt70_guard {
                 let mut n45 = 0usize; let mut hot: Vec<u8> = Vec::with_capacity(rows.len());
-                for r in &rows { let t = r.vis.wheel_tilt_deg(r.qw, r.qx, r.qy, r.qz); let mut h = 0u8; for k in 0..4 { if t[k].is_finite() { if t[k] >= 45.0 { n45 += 1; } if t[k] >= 70.0 { h = 1; } } } hot.push(h); }
+                // INTERIM RULE (coordinator 22:31Z, the exported wheel normals are in the car frame): a SLIDE tick = <= 2 wheels live AND |gravity roll| > 45 deg
+                // (up_y < 0.707); >= 3 wheels live is legal at any tilt. n45 counts slide ticks (no-regress vs the base's slide ticks), hot = the same flag (>= 30 of 100 kills).
+                for r in &rows { let live = r.vis.wheel_live.iter().filter(|l| **l == 1).count(); let up_y = 1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz); let slide = live <= 2 && up_y < 0.707 && r.vis.ground_contact; let h = slide as u8; if slide { n45 += 1; } hot.push(h); }
                 let t0 = rows.first().map(|r| w.race_of(r)).unwrap_or(0) / 10; let t1 = rows.last().map(|r| w.race_of(r)).unwrap_or(0) / 10;
                 let base_n = if cfg.base_tilt.is_empty() { usize::MAX } else { let g = |i: i64| -> usize { if i < 0 { 0 } else { cfg.base_tilt.get(i as usize).copied().unwrap_or(*cfg.base_tilt.last().unwrap_or(&0)) } }; g(t1).saturating_sub(g(t0)) };
                 let win70 = if cfg.tilt70_guard { hot.windows(100.min(hot.len().max(1))).map(|s| s.iter().map(|x| *x as usize).sum::<usize>()).max().unwrap_or(0) } else { 0 };
@@ -1582,6 +1584,8 @@ pub fn load_base_tilt(path: &str) -> Vec<usize> {
     let txt = match std::fs::read_to_string(path) { Ok(t) => t, Err(_) => return Vec::new() };
     let mut lines = txt.lines();
     let hdr: Vec<&str> = match lines.next() { Some(h) => h.split('\t').collect(), None => return Vec::new() };
+    // 2-column form "tick\tcum" (a precomputed cumulative slide-tick profile): used as is
+    if hdr.len() == 2 && hdr[1] == "cum" { let mut v = Vec::new(); for l in lines { let f: Vec<&str> = l.split('\t').collect(); if let (Some(t), Some(c)) = (f.get(0).and_then(|x| x.parse::<usize>().ok()), f.get(1).and_then(|x| x.parse::<usize>().ok())) { while v.len() <= t { v.push(*v.last().unwrap_or(&0)); } v[t] = c; } } return v; }
     let col = |n: &str| hdr.iter().position(|h| *h == n);
     let race = match col("race_s") { Some(c) => c, None => return Vec::new() };
     let live: Vec<Option<usize>> = (0..4).map(|k| col(&format!("w{k}_live"))).collect();
