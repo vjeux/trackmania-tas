@@ -44,14 +44,30 @@ rm -f "$DONE"
   flock 9
   echo "holding the ship lock at $(date -u +%FT%TZ)"
 
-  GH_COOKIE="$(tr -d '\r\n' < "$COOKIE")"; export GH_COOKIE
-  # The whole browser header, every time — no jar (see ghvid.sh: a jar dropped
-  # __Host-user_session_same_site, and an earlier one destroyed the file). The
-  # credential file is INPUT and is never written.
-  code=$(curl -s -o /dev/null -w '%{http_code}' -b "$GH_COOKIE" -H 'user-agent: Mozilla/5.0' "$EDIT")
-  echo "cookie probe: HTTP $code"
-  # a cookie that answers 302 -> /login is dead: STOP, do not retry
-  case "$code" in 200) ;; *) echo "FAILED cookie probe HTTP $code (302 = logged out) — STOP" > "$DONE"; exit 1;; esac
+  JAR=/home/vjeux/.gh-upload/session.json
+  GHSESSION=/home/vjeux/trackmania-tas/tools/target/release/ghsession
+  if [ -f "$JAR" ] && [ -x "$GHSESSION" ]; then
+    # THE UPLOADER'S OWN SESSION (UPLOADER-OWN-SESSION.md, 2026-09-10): the jar
+    # at $JAR is the one client of a login seeded once for this purpose; it
+    # keeps every cookie GitHub sets and does its own page view after the
+    # upload. vjeux's browser cookie is not read on this path.
+    OWN=1
+    probe=$("$GHSESSION" status 2>&1); prc=$?
+    echo "session probe: $probe"
+    [ $prc -eq 0 ] || { echo "FAILED cookie probe (own session, rc=$prc): $probe — STOP" > "$DONE"; exit 1; }
+    GHVID=/home/vjeux/trackmania-tas/tools/tinyctl/box/ghsession-upload.sh; export GHVID
+    unset GH_COOKIE
+  else
+    OWN=0
+    GH_COOKIE="$(tr -d '\r\n' < "$COOKIE")"; export GH_COOKIE
+    # The whole browser header, every time — no jar (see ghvid.sh: a jar dropped
+    # __Host-user_session_same_site, and an earlier one destroyed the file). The
+    # credential file is INPUT and is never written.
+    code=$(curl -s -o /dev/null -w '%{http_code}' -b "$GH_COOKIE" -H 'user-agent: Mozilla/5.0' "$EDIT")
+    echo "cookie probe: HTTP $code"
+    # a cookie that answers 302 -> /login is dead: STOP, do not retry
+    case "$code" in 200) ;; *) echo "FAILED cookie probe HTTP $code (302 = logged out) — STOP" > "$DONE"; exit 1;; esac
+  fi
 
   mkdir -p "/tmp/tinyship/$SLUG"
   $CLIP ship "$MP4" "/tmp/tinyship/$SLUG" --no-mirror > "$OUT.out" 2>&1
@@ -63,7 +79,8 @@ rm -f "$DONE"
   # steady, so the lock is held through COOLDOWN (default 300 s) and a plain
   # authenticated GET of the repo page follows each upload — what a person
   # doing this by hand would generate. COOLDOWN=0 turns the gap off.
-  if [ $rc -eq 0 ]; then
+  # (On the own-session path `ghsession upload` made that page view itself.)
+  if [ $rc -eq 0 ] && [ "$OWN" = 0 ]; then
     curl -s -o /dev/null -b "$GH_COOKIE" -H 'user-agent: Mozilla/5.0' \
       -H 'accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' \
       -H 'accept-language: en-US,en;q=0.9' -H 'sec-fetch-site: same-origin' \

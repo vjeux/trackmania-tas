@@ -1,0 +1,10 @@
+[package]
+name = "ghsession"
+version.workspace = true
+edition.workspace = true
+description = "the uploader's own GitHub session: a jar that keeps every cookie, used by one client, on the render box"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
