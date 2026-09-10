@@ -249,6 +249,7 @@ fn main() {
         "author-line" => cmd_author_line(&args[1..]),
         "author-ground" => cmd_author_ground(&args[1..]),
         "arrival-bands" => cmd_arrival_bands(&args[1..]),
+        "chain-vs-author" => cmd_chain_vs_author(&args[1..]),
         "leg-plot" => cmd_leg_plot(&args[1..]),
         other => die(&format!("unknown command {other}")),
     }
@@ -1699,4 +1700,73 @@ fn cmd_arrival_bands(args: &[String]) {
     std::fs::write(&out, serde_json::to_string_pretty(&doc).unwrap()).unwrap_or_else(|e| die(&e.to_string()));
     let nv = doc["gates"].as_array().unwrap().iter().filter(|g| !g["vjeux"].is_null()).count();
     println!("{out}: {} gates, {} from vjeux's LaunchedCP, {} from the author line", order_wp.len(), nv, order_wp.len() - nv);
+}
+
+/// chain-vs-author CHAIN.tsv --author-line author.json [--from S --to S] [--step S] [--triggers triggers.tsv] [--chain ID]
+/// The debug read for an opening: per chain, every `step` seconds the chain's (x, y, z, v) beside the NEAREST author
+/// sample (its time, position, speed), the lateral offset and Δv; the first divergence (offset > --diverge, default 3 m);
+/// and, with a `mapgeom triggers` table, every gate plane the chain crosses (segment through the AABB) with the time.
+fn cmd_chain_vs_author(args: &[String]) {
+    let path = args.first().cloned().unwrap_or_else(|| die("chain-vs-author CHAIN.tsv --author-line author.json"));
+    let ap = flag(args, "--author-line").unwrap_or_else(|| die("--author-line author.json required"));
+    let t0: f32 = flag(args, "--from").and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    let t1: f32 = flag(args, "--to").and_then(|s| s.parse().ok()).unwrap_or(1e9);
+    let step: f32 = flag(args, "--step").and_then(|s| s.parse().ok()).unwrap_or(0.2);
+    let dv: f32 = flag(args, "--diverge").and_then(|s| s.parse().ok()).unwrap_or(3.0);
+    let only = flag(args, "--chain");
+    // author samples (100 ms)
+    let txt = std::fs::read_to_string(&ap).unwrap_or_else(|e| die(&format!("{ap}: {e}")));
+    let k = "\"pts\": [";
+    let i = txt.find(k).unwrap_or_else(|| die(&format!("{ap}: no pts")));
+    let rest = &txt[i + k.len()..];
+    let end = rest.find("]]").map(|e| e + 1).unwrap_or(rest.len());
+    let flat: Vec<f32> = rest[..end].split(|c: char| c == ',' || c == '[' || c == ']').filter_map(|x| x.trim().parse::<f32>().ok()).collect();
+    let au: Vec<[f32; 3]> = flat.chunks(3).filter(|c| c.len() == 3).map(|c| [c[0], c[1], c[2]]).collect();
+    let av: Vec<f32> = (0..au.len()).map(|j| if j + 1 < au.len() { let (a, b) = (au[j], au[j + 1]); ((b[0]-a[0]).powi(2)+(b[1]-a[1]).powi(2)+(b[2]-a[2]).powi(2)).sqrt()*10.0 } else { 0.0 }).collect();
+    let nearest = |p: [f32; 3]| -> (usize, f32) { let mut best = (0usize, f32::INFINITY); for (j, q) in au.iter().enumerate() { let d = ((q[0]-p[0]).powi(2)+(q[1]-p[1]).powi(2)+(q[2]-p[2]).powi(2)).sqrt(); if d < best.1 { best = (j, d); } } best };
+    // trigger table (mapgeom triggers): model \t gameplay \t placement \t yaw \t (lo) \t (hi) \t centre \t dir
+    let mut gates: Vec<(String, [f32; 3], [f32; 3])> = Vec::new();
+    if let Some(tp) = flag(args, "--triggers") {
+        let t = std::fs::read_to_string(&tp).unwrap_or_else(|e| die(&format!("{tp}: {e}")));
+        let num = |s: &str| -> Vec<f32> { s.split(|c: char| c == '(' || c == ')' || c == ',').filter_map(|x| x.trim().parse::<f32>().ok()).collect() };
+        for line in t.lines() {
+            let c: Vec<&str> = line.split('\t').collect();
+            if c.len() < 6 || !c[0].ends_with(".Item.Gbx") { continue; }
+            let lo = num(c[4]); let hi = num(c[5]);
+            if lo.len() == 3 && hi.len() == 3 { gates.push((format!("{} {}", c[0], c[1]), [lo[0]-0.3, lo[1]-0.3, lo[2]-0.3], [hi[0]+0.3, hi[1]+0.3, hi[2]+0.3])); }
+        }
+    }
+    let inside = |p: [f32; 3], lo: &[f32; 3], hi: &[f32; 3]| (0..3).all(|k| p[k] >= lo[k] && p[k] <= hi[k]);
+    let chains = tmplan::plot::read_chains(&path).unwrap_or_else(|e| die(&e));
+    for ch in &chains {
+        if let Some(o) = &only { if &ch.id != o { continue; } }
+        println!("== chain {} ({} rows, cause {})", ch.id, ch.rows.len(), ch.cause);
+        println!("t\tchain (x, y, z) v\tauthor t (x, y, z) v\toffset m\tΔv m/s");
+        let mut next = t0; let mut div: Option<(f32, [f32; 3], f32)> = None;
+        for (ri, r) in ch.rows.iter().enumerate() {
+            if r.t < t0 || r.t > t1 { continue; }
+            let (j, d) = nearest(r.p);
+            if div.is_none() && d > dv { div = Some((r.t, r.p, d)); }
+            if r.t + 1e-4 >= next {
+                println!("{:.1}\t({:.1}, {:.1}, {:.1}) {:.0}\t{:.1} ({:.1}, {:.1}, {:.1}) {:.0}\t{:.1}\t{:+.0}", r.t, r.p[0], r.p[1], r.p[2], r.v, j as f32 / 10.0, au[j][0], au[j][1], au[j][2], av[j], d, r.v - av[j]);
+                next += step;
+            }
+            // gate crossings: the segment from the previous row enters a box
+            if ri > 0 {
+                let q = ch.rows[ri - 1].p;
+                for (name, lo, hi) in &gates {
+                    let a = inside(q, lo, hi); let b = inside(r.p, lo, hi);
+                    // sample the segment at 10 points for thin planes
+                    let mut hit = a || b;
+                    if !hit { for s in 1..10 { let f = s as f32 / 10.0; let m = [q[0]+(r.p[0]-q[0])*f, q[1]+(r.p[1]-q[1])*f, q[2]+(r.p[2]-q[2])*f]; if inside(m, lo, hi) { hit = true; break; } } }
+                    if hit && !a { println!("  GATE {} entered at t {:.2} ({:.1}, {:.1}, {:.1}) {:.0} m/s", name, r.t, r.p[0], r.p[1], r.p[2], r.v); }
+                }
+            }
+        }
+        match div { Some((t, p, d)) => println!("  first divergence > {dv} m: t {:.2} at ({:.1}, {:.1}, {:.1}), {:.1} m from the author's line", t, p[0], p[1], p[2], d), None => println!("  no divergence > {dv} m in the window") }
+        // the author through the same gates
+        if !gates.is_empty() && ch.id == chains[0].id {
+            for (name, lo, hi) in &gates { for j in 1..au.len() { let q = au[j-1]; let p = au[j]; let mut hit = inside(p, lo, hi); if !hit { for s in 1..10 { let f = s as f32 / 10.0; let m = [q[0]+(p[0]-q[0])*f, q[1]+(p[1]-q[1])*f, q[2]+(p[2]-q[2])*f]; if inside(m, lo, hi) { hit = true; break; } } } if hit && !inside(q, lo, hi) { println!("  AUTHOR through GATE {} at t {:.1} ({:.1}, {:.1}, {:.1}) {:.0} m/s", name, j as f32 / 10.0, p[0], p[1], p[2], av[j]); } } }
+        }
+    }
 }
