@@ -1091,6 +1091,7 @@ version = "0.1.0"
 dependencies = [
  "gbx",
  "mapgeom",
+ "miniz_oxide",
  "serde",
  "serde_json",
  "tmmaps",

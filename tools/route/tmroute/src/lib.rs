@@ -61,6 +61,7 @@ mod tests {
             spawn: [0.0, 10.0, 0.0],
             spawn_yaw: 0.0,
             source: "router-human".into(),
+            speed_hint: None,
             legs: Some(vec![
                 Leg { gate_idx: 0, map_waypoint: 3, s_start: 0.0, s_end: 2.0, connection: ConnectionClass::Road, arrival_speed: [40.0, 50.0], arrival_heading: [0.0, 0.0, 1.0], arrival_heading_tol: 0.1, arrival_height: [10.0, 10.5], p_reach: f32::NAN, expected_ms: -1, evidence: LegEvidence::Human { runs: 5, best_ms: 1234 } },
                 Leg { gate_idx: 1, map_waypoint: 1, s_start: 2.0, s_end: 6.0, connection: ConnectionClass::Jump, arrival_speed: [40.0, 50.0], arrival_heading: [0.0, 0.0, 1.0], arrival_heading_tol: 0.1, arrival_height: [10.0, 10.5], p_reach: 0.9, expected_ms: 2000, evidence: LegEvidence::Predicted },

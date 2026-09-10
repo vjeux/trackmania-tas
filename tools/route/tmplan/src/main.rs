@@ -247,6 +247,8 @@ fn main() {
         "leg-scan" => cmd_leg_scan(&args[1..]),
         "road-centreline" => cmd_road_centreline(&args[1..]),
         "author-line" => cmd_author_line(&args[1..]),
+        "author-ground" => cmd_author_ground(&args[1..]),
+        "leg-plot" => cmd_leg_plot(&args[1..]),
         other => die(&format!("unknown command {other}")),
     }
 }
@@ -902,6 +904,9 @@ fn cmd_road_centreline(args: &[String]) {
     // (5-point), half-width = the road span where the point is on road, else 4 m; the segments are re-cut at each gate's
     // first pass (finish: last pass) in `seq` order; a leg the human never passes within reach of stays as it was.
     let mut author_note = String::new();
+    // with --author-line the speed hint is the HUMAN's measured speed (100 ms sample spacing × 10, 5-sample smoothed),
+    // not the curvature estimate (11's plateau: the estimate said 63 m/s, the human drives it at 96–114 — 16:47Z)
+    let mut human_speed: Option<Vec<f32>> = None;
     if let Some(ap) = flag(args, "--author-line") {
         let txt = std::fs::read_to_string(&ap).unwrap_or_else(|e| die(&format!("{ap}: {e}")));
         let k = "\"pts\": [";
@@ -912,6 +917,12 @@ fn cmd_road_centreline(args: &[String]) {
         let raw: Vec<[f32; 3]> = flat.chunks(3).filter(|c| c.len() == 3).map(|c| [c[0], c[1], c[2]]).collect();
         if raw.len() >= 10 {
             let mut line = tmroute::human::resample(&raw, 2.0);
+            {
+                let mut vraw: Vec<f32> = (0..raw.len()).map(|i| if i + 1 < raw.len() { let (a, b) = (raw[i], raw[i + 1]); ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt() * 10.0 } else { 0.0 }).collect();
+                if vraw.len() > 1 { let n = vraw.len(); vraw[n - 1] = vraw[n - 2]; }
+                let sm: Vec<f32> = (0..vraw.len()).map(|i| { let lo = i.saturating_sub(2); let hi = (i + 2).min(vraw.len() - 1); vraw[lo..=hi].iter().sum::<f32>() / (hi - lo + 1) as f32 }).collect();
+                human_speed = Some(line.iter().map(|p| { let mut best = (f32::INFINITY, 0usize); for (k, q) in raw.iter().enumerate() { let d = (q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2) + (q[2] - p[2]).powi(2); if d < best.0 { best = (d, k); } } sm[best.1] }).collect());
+            }
             let orig = line.clone();
             for k in 2..orig.len().saturating_sub(2) {
                 let mut acc = [0.0f32; 3];
@@ -924,11 +935,31 @@ fn cmd_road_centreline(args: &[String]) {
             for (si, &nd) in seq.iter().enumerate().skip(1) {
                 let grp_id = nodes.groups[nd];
                 let is_fin = gates.gates.iter().any(|x| x.group == grp_id && matches!(x.kind, tmroute::gates::WpKind::Finish));
+                // the cut = the CROSSING, not the first sample within reach: within the (first, or for a finish the last) run
+                // of in-range samples take the one nearest the gate plane (min lateral distance to a gate of the group) —
+                // the first-in-range sample sat 10–12 m before every credit on 15 certified laps (INPUT tables, 05:20Z)
                 let mut found: Option<usize> = None;
-                for (li, p) in line.iter().enumerate() {
-                    let hit = gates.gates.iter().filter(|x| x.group == grp_id).any(|x| ((x.centre[0] - p[0]).powi(2) + (x.centre[2] - p[2]).powi(2)).sqrt() <= x.half_width + 6.0 && (x.centre[1] - p[1]).abs() <= 10.0);
-                    if hit { found = Some(li); if !is_fin { break; } }
+                let mut run_best: Option<(usize, f32)> = None;
+                let mut best_run: Option<(usize, f32)> = None;
+                let mut in_run = false;
+                let (mut lo, mut hi) = (0usize, 0usize);
+                let _ = (lo, hi);
+                // scan from the previous gate's cut: the pass AFTER the previous gate (GEN's 22:59Z rule; 23's overlapping runs)
+                let start = cuts.last().map(|c| c.0 + 1).unwrap_or(0);
+                for (li, p) in line.iter().enumerate().skip(start) {
+                    let dmin = gates.gates.iter().filter(|x| x.group == grp_id).filter(|x| { let dy = p[1] - x.centre[1]; dy >= -9.0 && dy <= 3.0 }).map(|x| ((x.centre[0] - p[0]).powi(2) + (x.centre[2] - p[2]).powi(2)).sqrt() - x.half_width).fold(f32::INFINITY, f32::min);
+                    let hit = dmin <= 6.0;
+                    if hit {
+                        if !in_run { in_run = true; run_best = None; lo = li; }
+                        hi = li;
+                        if run_best.map(|(_, d)| dmin < d).unwrap_or(true) { run_best = Some((li, dmin)); }
+                    } else if in_run {
+                        in_run = false;
+                        if is_fin || best_run.map(|(_, d)| run_best.map(|(_, rd)| rd < d).unwrap_or(false)).unwrap_or(true) { best_run = run_best; }
+                    }
                 }
+                if in_run && (is_fin || best_run.map(|(_, d)| run_best.map(|(_, rd)| rd < d).unwrap_or(false)).unwrap_or(true)) { best_run = run_best; }
+                found = best_run.map(|(i, _)| i);
                 match found { Some(li) => cuts.push((li, si)), None => { ok = false; eprintln!("  author line never passes group {grp_id} — author line NOT used"); break; } }
             }
             let monotone = cuts.windows(2).all(|w| w[1].0 > w[0].0);
@@ -947,7 +978,7 @@ fn cmd_road_centreline(args: &[String]) {
                     segs.push(format!("{{\"from_group\": {}, \"to_group\": {}, \"i0\": {i0}, \"i1\": {li}, \"gap\": false, \"via\": \"author\"}}", from, nodes.groups[seq[*si]]));
                     i0 = *li;
                 }
-                author_note = format!("; POLYLINE = the human line ({ap}), {} pts, gates cut at the human's passes", pts.len());
+                author_note = format!("; POLYLINE = the human line ({ap}), {} pts, gates cut at the human's passes; speed_hint = the human's measured speed", pts.len());
                 eprintln!("  author line used as the centreline: {} pts, {} legs", pts.len(), cuts.len());
             } else if ok {
                 eprintln!("  author line passes the gates out of the given order — author line NOT used");
@@ -959,7 +990,7 @@ fn cmd_road_centreline(args: &[String]) {
     let note = format!("{}{}{}", flag(args, "--note").unwrap_or_default(), spawn_note, author_note);
     // optional per-point advisory speed (player, 06:44Z): lateral 25 m/s², leave-ground at 2.5 g of required
     // downward acceleration, 80 m/s ceiling, braking 12 m/s², acceleration 7 m/s², ±16 m curvature window
-    let hint = tmplan::speed_hints(&pts, &s, 16.0, 25.0, 9.81 * 2.5, 80.0, 12.0, 7.0);
+    let hint = match &human_speed { Some(h) if h.len() == pts.len() => h.clone(), _ => tmplan::speed_hints(&pts, &s, 16.0, 25.0, 9.81 * 2.5, 80.0, 12.0, 7.0) };
     let js = format!(
         "{{\n  \"map_uid\": \"{}\",\n  \"map_name\": \"{}\",\n  \"order_groups\": [{}],\n  \"pts\": [{}],\n  \"s\": [{}],\n  \"half_width\": [{}],\n  \"speed_hint\": [{}],\n  \"speed_hint_note\": \"m/s, advisory: min of lateral-grip (25 m/s²) curvature limit, leave-ground limit on crests/dip exits (2.5 g of required downward acceleration), 80 m/s ceiling; braking 12 m/s² and acceleration 7 m/s² propagated along s; ±16 m curvature window; standing start\",\n  \"segments\": [{}],\n  \"gaps\": {gaps},\n  \"produced_by\": \"{}{}\"\n}}\n",
         gates.map_uid, gates.map_name,
@@ -1027,7 +1058,7 @@ fn cmd_road_centreline(args: &[String]) {
             spawn: gates.spawn.pos,
             spawn_yaw: gates.spawn.yaw,
             source: "router-road-centreline".into(),
-            speed_hint: None,
+            speed_hint: Some(hint.clone()),
             legs: Some(legs),
             route: Some(RouteMeta { route_version: ROUTE_VERSION, source: "router-road-centreline".into(), rank: 0, predicted_ms: -1, status: RouteStatus::Hypothesis, gate_order, produced_by: format!("{}{}; road-following centreline, {gaps} gap legs (s_start == s_end; class Unknown unless a converter verdict says Jump/Drop){}", tmroute::provenance("tmplan road-centreline"), if note.is_empty() { String::new() } else { format!("; {note}") }, if verdict_notes.is_empty() { String::new() } else { format!("; verdicts: {}", verdict_notes.join(", ")) }) }),
         };
@@ -1072,13 +1103,62 @@ fn cmd_author_line(args: &[String]) {
     let hw = grab("half_width");
     // every vehicle entity merged (a car-switch or multi-entity ghost keeps only a stretch per entity)
     let d = gbx::record::decode_ghost_all_vehicles(&src).unwrap_or_else(|e| die(&format!("{src}: no ghost ({e})")));
-    let mut rows: Vec<(f32, f32, f32, [f32; 3], i32)> = Vec::new(); // (s_nearest, lateral, dy, tiny pos, t)
-    let mut author: Vec<[f32; 3]> = Vec::new();
+    // 100 ms samples in the tiny frame
+    let mut samples: Vec<([f32; 3], i32)> = Vec::new();
     let mut last_t = i32::MIN;
     for smp in &d.samples {
         if smp.time_ms < last_t + 100 { continue; }
         last_t = smp.time_ms;
-        let q = [ta[0] + (smp.x - sa[0]) * scale, ta[1] + (smp.y - sa[1]) * scale, ta[2] + (smp.z - sa[2]) * scale];
+        samples.push(([ta[0] + (smp.x - sa[0]) * scale, ta[1] + (smp.y - sa[1]) * scale, ta[2] + (smp.z - sa[2]) * scale], smp.time_ms));
+    }
+    // LOOP-FREE (coordinator 12:02Z, 24's WR: fell at the ramp, respawned to CP 13, redid the finish ramp — the line had the
+    // ramp twice): when a later stretch coincides with an earlier one (≤ 0.5 m for ≥ 6 consecutive samples, ≥ 20
+    // samples apart), the samples between are a respawn loop — dropped and spliced
+    let mut respawns: Vec<(i32, i32, usize)> = Vec::new();
+    {
+        let mut i = 0usize;
+        while i < samples.len() {
+            let mut cut: Option<usize> = None;
+            'search: for j in (i + 20)..samples.len() {
+                if j + 6 > samples.len() { break; }
+                let mut ok = true;
+                for k in 0..6 { if i + k >= samples.len() { ok = false; break; } let a = samples[i + k].0; let b = samples[j + k].0; if ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() > 0.5 { ok = false; break; } }
+                // a RESPAWN shows as a teleport (the sample before j is far from j) or a standstill at j — a track that legitimately
+                // re-passes the same road (a figure-8) is continuous and must stay
+                let jump = { let a = samples[j - 1].0; let b = samples[j].0; ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() };
+                let still = (j + 3 < samples.len()) && (0..3).all(|k| { let a = samples[j + k].0; let b = samples[j + k + 1].0; ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() < 0.3 });
+                if ok && (jump > 8.0 || still) { cut = Some(j); break 'search; }
+            }
+            if let Some(j) = cut {
+                respawns.push((samples[i].1, samples[j].1, j - i));
+                samples.drain(i + 1..=j);
+            }
+            i += 1;
+        }
+        // second form (a human respawn re-drives a DIFFERENT line): a teleport (> 12 m in 100 ms, or > 5 m followed by a
+        // standstill) landing within 4 m of an EARLIER sample = respawn to that checkpoint — cut the loop between them
+        let mut j = 1usize;
+        while j < samples.len() {
+            let a = samples[j - 1].0; let b = samples[j].0;
+            let jump = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+            let still = (j + 3 < samples.len()) && (0..3).all(|k| { let p = samples[j + k].0; let q = samples[j + k + 1].0; ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt() < 0.3 });
+            if jump > 12.0 || (jump > 5.0 && still) {
+                let mut best: Option<(usize, f32)> = None;
+                for i in 0..j.saturating_sub(10) { let p = samples[i].0; let d = ((p[0] - b[0]).powi(2) + (p[1] - b[1]).powi(2) + (p[2] - b[2]).powi(2)).sqrt(); if d < 4.0 && best.map(|(_, bd)| d < bd).unwrap_or(true) { best = Some((i, d)); } }
+                if let Some((i, _)) = best {
+                    respawns.push((samples[i].1, samples[j].1, j - i));
+                    samples.drain(i + 1..=j);
+                    j = i + 1;
+                    continue;
+                }
+            }
+            j += 1;
+        }
+    }
+    for (t0, t1, n) in &respawns { eprintln!("  respawn loop removed: {n} samples, t {:.1}–{:.1} s (the ghost re-drives the same stretch)", *t0 as f32 / 1000.0, *t1 as f32 / 1000.0); }
+    let mut rows: Vec<(f32, f32, f32, [f32; 3], i32)> = Vec::new(); // (s_nearest, lateral, dy, tiny pos, t)
+    let mut author: Vec<[f32; 3]> = Vec::new();
+    for &(q, t_ms) in &samples {
         author.push(q);
         let mut best = (f32::INFINITY, 0usize);
         for (k, p) in pts.iter().enumerate() {
@@ -1086,7 +1166,7 @@ fn cmd_author_line(args: &[String]) {
             if dd < best.0 { best = (dd, k); }
         }
         let k = best.1;
-        rows.push((s.get(k).copied().unwrap_or(0.0), best.0.sqrt(), q[1] - pts[k][1], q, smp.time_ms));
+        rows.push((s.get(k).copied().unwrap_or(0.0), best.0.sqrt(), q[1] - pts[k][1], q, t_ms));
     }
     if rows.is_empty() { die("no ghost samples"); }
     let mut lat: Vec<f32> = rows.iter().map(|r| r.1).collect();
@@ -1115,11 +1195,26 @@ fn cmd_author_line(args: &[String]) {
             // FIRST pass for a checkpoint; LAST pass for a finish group (the lap ends there — a finish tower passed under
             // earlier must not be ordered early; tiny 13)
             let is_fin = g.gates.iter().any(|x| x.group == grp && matches!(x.kind, tmroute::gates::WpKind::Finish));
+            // the CROSSING time: within the first (finish: last) in-range run, the sample nearest the gate plane — the same
+            // rule as road-centreline's cuts, so the order and the cuts agree (23: two gates with overlapping runs)
             let mut t_first: Option<i32> = None;
+            let mut run_best: Option<(i32, f32)> = None;
+            let mut best_run: Option<(i32, f32)> = None;
+            let mut in_run = false;
             for r in &rows {
-                let hit = g.gates.iter().filter(|x| x.group == grp).any(|x| ((x.centre[0] - r.3[0]).powi(2) + (x.centre[2] - r.3[2]).powi(2)).sqrt() <= x.half_width + 6.0 && (x.centre[1] - r.3[1]).abs() <= 10.0);
-                if hit { t_first = Some(r.4); if !is_fin { break; } }
+                let dmin = g.gates.iter().filter(|x| x.group == grp).filter(|x| { let dy = r.3[1] - x.centre[1]; dy >= -9.0 && dy <= 3.0 }).map(|x| ((x.centre[0] - r.3[0]).powi(2) + (x.centre[2] - r.3[2]).powi(2)).sqrt() - x.half_width).fold(f32::INFINITY, f32::min);
+                if dmin <= 6.0 {
+                    if !in_run { in_run = true; run_best = None; }
+                    if run_best.map(|(_, d)| dmin < d).unwrap_or(true) { run_best = Some((r.4, dmin)); }
+                } else if in_run {
+                    in_run = false;
+                    // checkpoints: the DEEPEST run (smallest lateral distance = through the ring; 23's helix passes 4 m under
+                    // gate 11 before crossing it); finish: the last run
+                    if is_fin || best_run.map(|(_, d)| run_best.map(|(_, rd)| rd < d).unwrap_or(false)).unwrap_or(true) { best_run = run_best; }
+                }
             }
+            if in_run && (is_fin || best_run.map(|(_, d)| run_best.map(|(_, rd)| rd < d).unwrap_or(false)).unwrap_or(true)) { best_run = run_best; }
+            t_first = best_run.map(|(t, _)| t);
             if let Some(t) = t_first { firsts.push((t, grp)); } else {
                 let (mut dmin, mut at) = (f32::INFINITY, [0.0f32; 3]);
                 for r in &rows { for x in g.gates.iter().filter(|x| x.group == grp) { let dd = ((x.centre[0] - r.3[0]).powi(2) + (x.centre[1] - r.3[1]).powi(2) + (x.centre[2] - r.3[2]).powi(2)).sqrt(); if dd < dmin { dmin = dd; at = r.3; } } }
@@ -1131,11 +1226,361 @@ fn cmd_author_line(args: &[String]) {
         println!("author order (groups, first pass): {}", author_order.iter().map(|g| g.to_string()).collect::<Vec<_>>().join(","));
     }
     if let Some(label) = flag(args, "--row") {
-        println!("| {label} | {} ({:.1} s) | {med:.1} | {p90:.1} | {:.0} % | {:.1} @ s {:.0} (author at ({:.0}, {:.0}, {:.0}), t {:.1}) | {:.1} s from t {:.1} at ({:.0}, {:.0}, {:.0}) |", rows.len(), d.end_ms as f32 / 1000.0, 100.0 * within as f32 / rows.len() as f32, worst.1, worst.0, worst.3[0], worst.3[1], worst.3[2], worst.4 as f32 / 1000.0, best_run.0 as f32 / 1000.0, best_run.1 as f32 / 1000.0, best_run.2[0], best_run.2[1], best_run.2[2]);
+        let resp = if respawns.is_empty() { String::new() } else { format!(" RESPAWN ×{}: {}", respawns.len(), respawns.iter().map(|(a, b, n)| format!("t {:.1}–{:.1} s ({n} samples dropped)", *a as f32 / 1000.0, *b as f32 / 1000.0)).collect::<Vec<_>>().join(", ")) };
+        println!("| {label} | {} ({:.1} s) | {med:.1} | {p90:.1} | {:.0} % | {:.1} @ s {:.0} (author at ({:.0}, {:.0}, {:.0}), t {:.1}) | {:.1} s from t {:.1} at ({:.0}, {:.0}, {:.0}){resp} |", rows.len(), d.end_ms as f32 / 1000.0, 100.0 * within as f32 / rows.len() as f32, worst.1, worst.0, worst.3[0], worst.3[1], worst.3[2], worst.4 as f32 / 1000.0, best_run.0 as f32 / 1000.0, best_run.1 as f32 / 1000.0, best_run.2[0], best_run.2[1], best_run.2[2]);
     }
     if let Some(out) = flag(args, "--out") {
         let js = format!("{{\n  \"source\": \"{}\",\n  \"anchor\": \"{anchor}\",\n  \"scale\": {scale},\n  \"pts\": [{}],\n  \"lateral_to_centreline\": [{}],\n  \"note\": \"the ORIGINAL author's validation ghost mapped into the tiny frame (100 ms samples, ground contact point); lateral = XZ distance to the nearest centreline point\"\n}}\n",
             src, author.iter().map(|p| format!("[{:.2},{:.2},{:.2}]", p[0], p[1], p[2])).collect::<Vec<_>>().join(","), rows.iter().map(|r| format!("{:.1}", r.1)).collect::<Vec<_>>().join(","));
         io::write_atomic(Path::new(&out), js.as_bytes()).unwrap_or_else(|e| die(&e));
     }
+}
+
+/// `author-ground A.Map.Gbx B.Map.Gbx --gates deck.json --author-line author.json`: for every author-line sample, the
+/// ground under it (downward ray from y+1, 8 m) in build A and in build B; rows where A has a surface within 1.5 m
+/// below the car and B has none within 3 m = a surface the author drove that B no longer has (ship10 dropped the
+/// tiny-15 pool shelf, 22:43Z). Prints the runs of such samples with their extent.
+fn cmd_author_ground(args: &[String]) {
+    // optional third map = the SOURCE (full size) with --anchor sx,sy,sz:tx,ty,tz and --source-gates gates.json: a stretch
+    // with no surface under the raw ghost sample in the original either is a FLIGHT, not a converter loss (04's apex, 23:02Z)
+    let maps: Vec<String> = args.iter().filter(|a| a.ends_with(".Map.Gbx")).cloned().collect();
+    if maps.len() < 2 || maps.len() > 3 { die("two maps: A.Map.Gbx B.Map.Gbx [SOURCE.Map.Gbx --anchor sx,sy,sz:tx,ty,tz --source-gates gates.json]"); }
+    let gp = flag(args, "--gates").unwrap_or_else(|| die("--gates deck.json"));
+    let gates = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+    let ap = flag(args, "--author-line").unwrap_or_else(|| die("--author-line author.json"));
+    let txt = std::fs::read_to_string(&ap).unwrap_or_else(|e| die(&format!("{ap}: {e}")));
+    let k = "\"pts\": [";
+    let i = txt.find(k).unwrap_or_else(|| die("no pts"));
+    let rest = &txt[i + k.len()..];
+    let end = rest.find("]]").map(|e| e + 1).unwrap_or(rest.len());
+    let flat: Vec<f32> = rest[..end].split(|c: char| c == ',' || c == '[' || c == ']').filter_map(|x| x.trim().parse::<f32>().ok()).collect();
+    let pts: Vec<[f32; 3]> = flat.chunks(3).filter(|c| c.len() == 3).map(|c| [c[0], c[1], c[2]]).collect();
+    let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
+    let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
+    let opts = mapgeom::local::BuildOpts { with_deco: true, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() };
+    let ground = |mp: &str, store: &mut mapgeom::store::DataStore| -> Vec<Option<(f32, &'static str)>> {
+        let m = tmmaps::map::MapFile::load(Path::new(mp));
+        let s = mapgeom::local::LocalScene::build(store, &m, gates.yoff, &opts);
+        // water planes are not solid for the car (tiny 15: the car fell through the Water at 46 once the Concrete shelf
+        // under it was gone) — skip Water/Sea/Lake hits and keep casting below them
+        pts.iter().map(|p| {
+            // from 0.3 m above the ghost's contact point: a non-solid plane 0.5 m up (tiny 15's pool surface, Rubber at 46 over the shelf at 45.5) must not count
+            let mut o = [p[0], p[1] + 0.3, p[2]];
+            for _ in 0..4 {
+                match s.raycast(o, [0.0, -1.0, 0.0], 9.0 - (p[1] + 0.3 - o[1]), true) {
+                    Some(h) if matches!(h.material_name, "Water" | "Sea" | "Lake" | "WaterSurface") => { o = [h.point[0], h.point[1] - 0.05, h.point[2]]; }
+                    Some(h) => return Some((p[1] - h.point[1], h.material_name)),
+                    None => return None,
+                }
+            }
+            None
+        }).collect()
+    };
+    let ga = ground(&maps[0], &mut store);
+    let gb = ground(&maps[1], &mut store);
+    // the original: sample back to source coordinates, rays on the source scene (baked terrain on)
+    let gs: Option<Vec<Option<(f32, &'static str)>>> = if maps.len() == 3 {
+        let anchor = flag(args, "--anchor").unwrap_or_else(|| die("--anchor sx,sy,sz:tx,ty,tz with a source map"));
+        let mut it = anchor.split(':');
+        let pa = |s: &str| -> [f32; 3] { let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() != 3 { die("--anchor sx,sy,sz:tx,ty,tz") } [v[0], v[1], v[2]] };
+        let (sa, ta) = (pa(it.next().unwrap_or("")), pa(it.next().unwrap_or("")));
+        let scale: f32 = flag(args, "--scale").and_then(|s| s.parse().ok()).unwrap_or(0.5);
+        let sg = flag(args, "--source-gates").map(|p| io::read_gates(Path::new(&p)).unwrap_or_else(|e| die(&e)));
+        let yoff = sg.as_ref().map(|g| g.yoff).unwrap_or(gates.yoff);
+        let m = tmmaps::map::MapFile::load(Path::new(&maps[2]));
+        let s = mapgeom::local::LocalScene::build(&mut store, &m, yoff, &mapgeom::local::BuildOpts::default());
+        Some(pts.iter().map(|p| {
+            let q = [sa[0] + (p[0] - ta[0]) / scale, sa[1] + (p[1] - ta[1]) / scale, sa[2] + (p[2] - ta[2]) / scale];
+            let mut o = [q[0], q[1] + 0.6, q[2]];
+            for _ in 0..4 {
+                match s.raycast(o, [0.0, -1.0, 0.0], 18.0 - (q[1] + 0.6 - o[1]), true) {
+                    Some(h) if matches!(h.material_name, "Water" | "Sea" | "Lake" | "WaterSurface") => { o = [h.point[0], h.point[1] - 0.05, h.point[2]]; }
+                    Some(h) => return Some(((q[1] - h.point[1]) * scale, h.material_name)),
+                    None => return None,
+                }
+            }
+            None
+        }).collect())
+    } else { None };
+    let mut run_start: Option<usize> = None;
+    let mut n_bad = 0usize;
+    let mut flush = |a: usize, b: usize| {
+        let (p0, p1) = (pts[a], pts[b]);
+        println!("  MISSING in B: samples {a}..{b} ({} pts, t {:.1}–{:.1} s) from ({:.1}, {:.1}, {:.1}) to ({:.1}, {:.1}, {:.1}); A ground {} at {:+.1} m, B {}",
+            b - a + 1, a as f32 / 10.0, b as f32 / 10.0, p0[0], p0[1], p0[2], p1[0], p1[1], p1[2],
+            ga[a].map(|g| g.1).unwrap_or("-"), ga[a].map(|g| -g.0).unwrap_or(0.0),
+            gb[a].map(|g| format!("{} at {:+.1} m", g.1, -g.0)).unwrap_or_else(|| "nothing within 8 m".into()));
+        if let Some(g) = &gs { println!("      original under the source sample: {}", g[a].map(|g| format!("{} at {:+.1} m (tiny scale)", g.1, -g.0)).unwrap_or_else(|| "nothing within 18 m — a flight OR a generated filler the source scene does not build (converter plumb decides)".into())); }
+    };
+    for i in 0..pts.len() {
+        let a_ok = ga[i].map(|g| g.0 >= -0.3 && g.0 <= 1.5).unwrap_or(false);
+        let b_bad = gb[i].map(|g| g.0 > 3.0).unwrap_or(true);
+        // with a source map: only a stretch the ORIGINAL supports counts (no surface under the source sample = flight)
+        let src_ok = gs.as_ref().map(|g| g[i].map(|g| g.0 >= -0.6 && g.0 <= 1.5).unwrap_or(false)).unwrap_or(true);
+        // the source filter is ADVISORY: the full-size LocalScene has no generated fillers (the original's water-road floor
+        // under 05 reads as "no surface" although the converter's plumb finds it), so a "flight" verdict is printed, not applied
+        let _ = src_ok;
+        if a_ok && b_bad { n_bad += 1; if run_start.is_none() { run_start = Some(i); } }
+        else if let Some(rs) = run_start.take() { if i - rs >= 2 { flush(rs, i - 1); } }
+    }
+    if let Some(rs) = run_start { flush(rs, pts.len() - 1); }
+    let a_air = ga.iter().filter(|g| g.map(|g| g.0 > 1.5).unwrap_or(true)).count();
+    println!("{}: {} samples, A airborne/unsupported {} ({:.0} %), A-supported-but-B-missing {}", Path::new(&maps[1]).file_name().unwrap().to_string_lossy(), pts.len(), a_air, 100.0 * a_air as f32 / pts.len().max(1) as f32, n_bad);
+}
+
+/// `leg-plot MAP.Map.Gbx --gates deck.json --author-line author.json (--leg K | --s A:B) [--chains rows.tsv]... --out X.png [--ppm 2]`
+/// One picture of a leg: top-down surfaces by physics (walls dark), the human line by speed, the chains by death cause
+/// with a marker where each dies, the gates; below it the side elevation along the human's arc length (surface under the
+/// line, the human's height, the chains' heights) and the speeds. Coordinator 15:56Z.
+fn cmd_leg_plot(args: &[String]) {
+    use tmplan::plot::*;
+    let map = args.iter().find(|a| a.ends_with(".Map.Gbx")).cloned().unwrap_or_else(|| die("MAP.Map.Gbx required"));
+    let gp = flag(args, "--gates").unwrap_or_else(|| die("--gates deck.json"));
+    let gates = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+    let ap = flag(args, "--author-line").unwrap_or_else(|| die("--author-line author.json"));
+    let txt = std::fs::read_to_string(&ap).unwrap_or_else(|e| die(&format!("{ap}: {e}")));
+    let k = "\"pts\": [";
+    let i = txt.find(k).unwrap_or_else(|| die("no pts"));
+    let rest = &txt[i + k.len()..];
+    let end = rest.find("]]").map(|e| e + 1).unwrap_or(rest.len());
+    let flat: Vec<f32> = rest[..end].split(|c: char| c == ',' || c == '[' || c == ']').filter_map(|x| x.trim().parse::<f32>().ok()).collect();
+    let line: Vec<[f32; 3]> = flat.chunks(3).filter(|c| c.len() == 3).map(|c| [c[0], c[1], c[2]]).collect();
+    // arc length and speed (100 ms samples) along the human line
+    let mut s = vec![0.0f32];
+    for i in 1..line.len() { let (a, b) = (line[i - 1], line[i]); s.push(s[i - 1] + ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()); }
+    let vh: Vec<f32> = (0..line.len()).map(|i| if i == 0 { 0.0 } else { (s[i] - s[i - 1]) * 10.0 }).collect();
+    // the gate crossings along the line (same rule as the route files: deepest in-range run, finish = last run)
+    let mut groups: Vec<u32> = gates.gates.iter().filter(|g| g.group != u32::MAX).map(|g| g.group).collect();
+    groups.sort_unstable();
+    groups.dedup();
+    let mut crossings: Vec<(usize, u32)> = Vec::new();
+    for grp in &groups {
+        let is_fin = gates.gates.iter().any(|x| x.group == *grp && matches!(x.kind, tmroute::gates::WpKind::Finish));
+        let (mut best_run, mut run_best, mut in_run): (Option<(usize, f32)>, Option<(usize, f32)>, bool) = (None, None, false);
+        for (li, p) in line.iter().enumerate() {
+            let dmin = gates.gates.iter().filter(|x| x.group == *grp).filter(|x| { let dy = p[1] - x.centre[1]; dy >= -9.0 && dy <= 3.0 }).map(|x| ((x.centre[0] - p[0]).powi(2) + (x.centre[2] - p[2]).powi(2)).sqrt() - x.half_width).fold(f32::INFINITY, f32::min);
+            if dmin <= 6.0 { if !in_run { in_run = true; run_best = None; } if run_best.map(|(_, d)| dmin < d).unwrap_or(true) { run_best = Some((li, dmin)); } }
+            else if in_run { in_run = false; if is_fin || best_run.map(|(_, d)| run_best.map(|(_, rd)| rd < d).unwrap_or(false)).unwrap_or(true) { best_run = run_best; } }
+        }
+        if in_run && (is_fin || best_run.map(|(_, d)| run_best.map(|(_, rd)| rd < d).unwrap_or(false)).unwrap_or(true)) { best_run = run_best; }
+        if let Some((li, _)) = best_run { crossings.push((li, *grp)); }
+    }
+    crossings.sort();
+    // the window: --leg K (gate K-1 → K in the human order; K = 0 is spawn → first gate) or --s A:B
+    let (i0, i1, title) = if let Some(k) = flag(args, "--leg").and_then(|v| v.parse::<usize>().ok()) {
+        let a = if k == 0 { 0 } else { crossings.get(k - 1).map(|c| c.0).unwrap_or(0) };
+        let b = crossings.get(k).map(|c| c.0).unwrap_or(line.len() - 1);
+        (a, b, format!("LEG {k}: {} > GROUP {}", if k == 0 { "SPAWN".to_string() } else { format!("GROUP {}", crossings[k - 1].1) }, crossings.get(k).map(|c| c.1.to_string()).unwrap_or("END".into())))
+    } else if let Some(w) = flag(args, "--s") {
+        let mut it = w.split(':');
+        let a: f32 = it.next().and_then(|x| x.parse().ok()).unwrap_or(0.0);
+        let b: f32 = it.next().and_then(|x| x.parse().ok()).unwrap_or(f32::INFINITY);
+        let ia = s.iter().position(|&v| v >= a).unwrap_or(0);
+        let ib = s.iter().position(|&v| v >= b).unwrap_or(line.len() - 1);
+        (ia, ib, format!("S {a:.0}-{b:.0}"))
+    } else { die("--leg K or --s A:B") };
+    let seg = &line[i0..=i1];
+    let mut chains: Vec<Chain> = args.iter().enumerate().filter(|(_, a)| *a == "--chains").filter_map(|(i, _)| args.get(i + 1)).flat_map(|p| read_chains(p).unwrap_or_else(|e| die(&e))).collect();
+    // GEN's archive dumps (gen/plots/FORMAT.md): best-rows (tick race_ms x y z speed vy cps) = one chain "best";
+    // deaths (cause x y z v s macro) = one marker each; cells (x y z v cps s macro) = alive end states, small dots
+    let tsv = |p: &str| -> Vec<Vec<String>> { std::fs::read_to_string(p).unwrap_or_else(|e| die(&format!("{p}: {e}"))).lines().skip(1).map(|l| l.split('\t').map(|x| x.trim().to_string()).collect()).filter(|f: &Vec<String>| f.len() >= 4).collect() };
+    if let Some(p) = flag(args, "--gen-best") {
+        let rows: Vec<ChainRow> = tsv(&p).iter().filter_map(|f| Some(ChainRow { t: f.get(1)?.parse::<f32>().ok()? / 1000.0, p: [f.get(2)?.parse().ok()?, f.get(3)?.parse().ok()?, f.get(4)?.parse().ok()?], v: f.get(5)?.parse().ok()? })).collect();
+        let rows: Vec<ChainRow> = rows.into_iter().enumerate().filter(|(i, _)| i % 10 == 0).map(|(_, r)| r).collect();
+        chains.push(Chain { id: "best".into(), rows, cause: "alive".into() });
+    }
+    if let Some(p) = flag(args, "--gen-deaths") {
+        for f in tsv(&p) { if let (Ok(x), Ok(y), Ok(z), Ok(v)) = (f[1].parse::<f32>(), f[2].parse::<f32>(), f[3].parse::<f32>(), f.get(4).map(|s| s.parse::<f32>()).unwrap_or(Ok(0.0))) { chains.push(Chain { id: format!("death{}", chains.len()), rows: vec![ChainRow { t: 0.0, p: [x, y, z], v }], cause: f[0].to_lowercase() }); } }
+    }
+    let mut cells: Vec<([f32; 3], f32)> = Vec::new();
+    if let Some(p) = flag(args, "--gen-cells") {
+        for f in tsv(&p) { if let (Ok(x), Ok(y), Ok(z), Ok(v)) = (f[0].parse::<f32>(), f[1].parse::<f32>(), f[2].parse::<f32>(), f[3].parse::<f32>()) { cells.push(([x, y, z], v)); } }
+    }
+    // clip every chain to the leg: rows within 30 m (XZ) of a leg sample (a whole-lap replay would frame the whole map)
+    let near_leg = |p: [f32; 3]| -> bool { seg.iter().any(|q| (q[0] - p[0]).powi(2) + (q[2] - p[2]).powi(2) < 900.0) };
+    for c in chains.iter_mut() { if c.rows.len() > 1 { c.rows.retain(|r| near_leg(r.p)); } }
+    chains.retain(|c| !c.rows.is_empty() && (c.rows.len() > 1 || near_leg(c.rows[0].p)));
+    cells.retain(|(p, _)| near_leg(*p));
+    // bounding box: the leg ± 25 m, plus the chains
+    let (mut xmin, mut xmax, mut zmin, mut zmax) = (f32::INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::NEG_INFINITY);
+    let mut ymax = f32::NEG_INFINITY;
+    for p in seg.iter().chain(chains.iter().flat_map(|c| c.rows.iter().map(|r| &r.p))) { xmin = xmin.min(p[0]); xmax = xmax.max(p[0]); zmin = zmin.min(p[2]); zmax = zmax.max(p[2]); ymax = ymax.max(p[1]); }
+    let margin = 25.0;
+    xmin -= margin; xmax += margin; zmin -= margin; zmax += margin;
+    let ppm: f32 = flag(args, "--ppm").and_then(|v| v.parse().ok()).unwrap_or(2.0);
+    let (tw, th) = (((xmax - xmin) * ppm) as usize + 1, ((zmax - zmin) * ppm) as usize + 1);
+    let (tw, th) = (tw.clamp(200, 2400), th.clamp(200, 2400));
+    let ppm = ((tw as f32 - 1.0) / (xmax - xmin)).min((th as f32 - 1.0) / (zmax - zmin));
+    let side_h = 320usize;
+    let legend_h = 40usize;
+    let mut cv = Canvas::new(tw.max(900), th + side_h + legend_h, [250, 250, 250]);
+    // scene
+    let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
+    let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
+    let m = tmmaps::map::MapFile::load(Path::new(&map));
+    let opts = mapgeom::local::BuildOpts { with_deco: true, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() };
+    let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &opts);
+    let ymin_leg = seg.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+    let top_y = ymax + 30.0;
+    // top-down: one downward ray per pixel; heights shade the colour (higher = lighter), walls (ny < 0.5) dark
+    let to_px = |x: f32, z: f32| -> (f32, f32) { ((x - xmin) * ppm, (zmax - z) * ppm) };
+    let mut ground_under: Vec<Option<f32>> = Vec::with_capacity(seg.len());
+    for py in 0..th {
+        for px in 0..tw {
+            let x = xmin + px as f32 / ppm;
+            let z = zmax - py as f32 / ppm;
+            let mut o = [x, top_y, z];
+            let mut col = [250u8, 250, 250];
+            for _ in 0..3 {
+                match scene.raycast(o, [0.0, -1.0, 0.0], top_y - (ymin_leg - 60.0), true) {
+                    Some(h) if matches!(h.material_name, "Water" | "Sea" | "Lake" | "WaterSurface") => { o = [h.point[0], h.point[1] - 0.05, h.point[2]]; col = [200, 220, 245]; continue; }
+                    Some(h) => {
+                        let mut c = material_colour(h.material_name);
+                        // height shading: ±25 m around the leg → ±25 % brightness
+                        let sh = ((h.point[1] - (ymin_leg + ymax) * 0.5) / 25.0).clamp(-1.0, 1.0) * 0.25;
+                        for k in 0..3 { c[k] = ((c[k] as f32) * (1.0 + sh)).clamp(0.0, 255.0) as u8; }
+                        if h.normal[1].abs() < 0.5 { c = [60, 60, 70]; }
+                        col = c;
+                        break;
+                    }
+                    None => break,
+                }
+            }
+            cv.set(px as i64, py as i64, col);
+        }
+    }
+    // gates
+    for g in &gates.gates {
+        if g.group == u32::MAX { continue; }
+        let (px, pz) = to_px(g.centre[0], g.centre[2]);
+        let fin = matches!(g.kind, tmroute::gates::WpKind::Finish);
+        cv.ring(px, pz, (g.half_width * ppm).max(4.0), if fin { [20, 120, 40] } else { [230, 30, 30] });
+        cv.text(px as i64 + 4, pz as i64 - 12, &format!("G{}", g.group), [0, 0, 0], 1);
+    }
+    // human line (whole map faint, the leg bright by speed)
+    for i in 1..line.len() { let (a, b) = (to_px(line[i - 1][0], line[i - 1][2]), to_px(line[i][0], line[i][2])); cv.line(a.0, a.1, b.0, b.1, [120, 120, 120], 1); }
+    for i in (i0 + 1)..=i1 { let (a, b) = (to_px(line[i - 1][0], line[i - 1][2]), to_px(line[i][0], line[i][2])); cv.line(a.0, a.1, b.0, b.1, speed_colour(vh[i]), 3); }
+    // --cp-states NN.json: vjeux's checkpoint-crossing states (launched-cp): position + velocity vector + speed, magenta
+    // markers with an arrow (any JSON: every object with x,y,z and vx,vy,vz or speed is a state)
+    let mut cp_states: Vec<([f32; 3], [f32; 3], f32, String)> = Vec::new();
+    if let Some(p) = flag(args, "--cp-states") {
+        let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| die(&format!("{p}: {e}")));
+        let v: serde_json::Value = serde_json::from_str(&txt).unwrap_or_else(|e| die(&format!("{p}: {e}")));
+        fn walk(v: &serde_json::Value, out: &mut Vec<([f32; 3], [f32; 3], f32, String)>, label: String) {
+            let num = |o: &serde_json::Map<String, serde_json::Value>, k: &str| o.get(k).and_then(|x| x.as_f64()).map(|x| x as f32);
+            match v {
+                serde_json::Value::Object(o) => {
+                    let pos = if let (Some(x), Some(y), Some(z)) = (num(o, "x"), num(o, "y"), num(o, "z")) { Some([x, y, z]) } else { o.get("pos").or(o.get("position")).and_then(|a| a.as_array()).filter(|a| a.len() == 3).map(|a| [a[0].as_f64().unwrap_or(0.0) as f32, a[1].as_f64().unwrap_or(0.0) as f32, a[2].as_f64().unwrap_or(0.0) as f32]) };
+                    if let Some(pp) = pos {
+                        let vel = if let (Some(x), Some(y), Some(z)) = (num(o, "vx"), num(o, "vy"), num(o, "vz")) { [x, y, z] } else { o.get("vel").or(o.get("velocity")).and_then(|a| a.as_array()).filter(|a| a.len() == 3).map(|a| [a[0].as_f64().unwrap_or(0.0) as f32, a[1].as_f64().unwrap_or(0.0) as f32, a[2].as_f64().unwrap_or(0.0) as f32]).unwrap_or([0.0; 3]) };
+                        let sp = num(o, "speed").or(num(o, "v")).unwrap_or((vel[0] * vel[0] + vel[1] * vel[1] + vel[2] * vel[2]).sqrt());
+                        let lab = o.get("cp").or(o.get("checkpoint")).or(o.get("waypoint")).or(o.get("landmark")).map(|x| x.to_string().trim_matches('"').to_string()).unwrap_or(label.clone());
+                        if o.get("approach").is_none() && o.get("samples").is_none() || o.contains_key("cp") || o.contains_key("landmark") { out.push((pp, vel, sp, lab)); }
+                    }
+                    for (k, x) in o { if k != "approach" && k != "samples" { walk(x, out, k.clone()); } }
+                }
+                serde_json::Value::Array(a) => { for (i, x) in a.iter().enumerate() { walk(x, out, format!("{label}{i}")); } }
+                _ => {}
+            }
+        }
+        walk(&v, &mut cp_states, String::new());
+        cp_states.retain(|(p, _, _, _)| near_leg(*p));
+        eprintln!("  {} vjeux CP states in the window", cp_states.len());
+    }
+    // alive cells: small dots by speed
+    for (p, v) in &cells { let (px, pz) = to_px(p[0], p[2]); cv.disc(px, pz, 1.5, speed_colour(*v)); }
+    // chains
+    for c in &chains {
+        let col = cause_colour(&c.cause);
+        for i in 1..c.rows.len() { let (a, b) = (to_px(c.rows[i - 1].p[0], c.rows[i - 1].p[2]), to_px(c.rows[i].p[0], c.rows[i].p[2])); cv.line(a.0, a.1, b.0, b.1, col, 2); }
+        if let Some(r) = c.rows.last() { let (px, pz) = to_px(r.p[0], r.p[2]); if c.rows.len() > 1 { cv.disc(px, pz, 5.0, col); cv.ring(px, pz, 7.0, [0, 0, 0]); } else { cv.disc(px, pz, 3.0, col); } }
+    }
+    // vjeux CP states: magenta disc + velocity arrow (1 s of travel) + label
+    for (p, vel, sp, lab) in &cp_states {
+        let (px, pz) = to_px(p[0], p[2]);
+        let (qx, qz) = to_px(p[0] + vel[0], p[2] + vel[2]);
+        cv.line(px, pz, qx, qz, [200, 0, 200], 3);
+        cv.disc(px, pz, 6.0, [200, 0, 200]);
+        cv.ring(px, pz, 8.0, [255, 255, 255]);
+        cv.text(px as i64 + 9, pz as i64 + 4, &format!("V{lab} {sp:.0}", ), [120, 0, 120], 1);
+    }
+    // ground under the human line (for the elevation)
+    for p in seg {
+        let mut o = [p[0], p[1] + 0.3, p[2]];
+        let mut found = None;
+        for _ in 0..3 {
+            match scene.raycast(o, [0.0, -1.0, 0.0], 40.0, true) {
+                Some(h) if matches!(h.material_name, "Water" | "Sea" | "Lake" | "WaterSurface") => { o = [h.point[0], h.point[1] - 0.05, h.point[2]]; }
+                Some(h) => { found = Some(h.point[1]); break; }
+                None => break,
+            }
+        }
+        ground_under.push(found);
+    }
+    // side elevation: x = s along the leg, y = height; chains projected onto the leg by nearest sample
+    let (sx0, sx1) = (s[i0], s[i1]);
+    let panel_y0 = th as i64 + 10;
+    let panel_h = (side_h - 20) as i64;
+    let elev_h = (panel_h as f32 * 0.62) as i64;
+    let spd_y0 = panel_y0 + elev_h + 12;
+    let spd_h = panel_h - elev_h - 12;
+    cv.rect(0, th as i64, cv.w as i64 - 1, th as i64 + side_h as i64 + legend_h as i64 - 1, [255, 255, 255]);
+    let all_y: Vec<f32> = seg.iter().map(|p| p[1]).chain(ground_under.iter().filter_map(|g| *g)).chain(chains.iter().flat_map(|c| c.rows.iter().map(|r| r.p[1]))).collect();
+    let (ymn, ymx) = (all_y.iter().cloned().fold(f32::INFINITY, f32::min) - 3.0, all_y.iter().cloned().fold(f32::NEG_INFINITY, f32::max) + 3.0);
+    let w = cv.w as f32 - 80.0;
+    let sx = |sv: f32| -> f32 { 60.0 + (sv - sx0) / (sx1 - sx0).max(1.0) * w };
+    let ey = |y: f32| -> f32 { panel_y0 as f32 + (1.0 - (y - ymn) / (ymx - ymn).max(1.0)) * elev_h as f32 };
+    let vy = |v: f32| -> f32 { spd_y0 as f32 + (1.0 - (v / 90.0).clamp(0.0, 1.0)) * spd_h as f32 };
+    // axes + labels
+    cv.line(60.0, panel_y0 as f32, 60.0, (panel_y0 + elev_h) as f32, [0, 0, 0], 1);
+    cv.line(60.0, (panel_y0 + elev_h) as f32, 60.0 + w, (panel_y0 + elev_h) as f32, [0, 0, 0], 1);
+    cv.text(2, panel_y0, &format!("{ymx:.0}M"), [0, 0, 0], 1);
+    cv.text(2, panel_y0 + elev_h - 8, &format!("{ymn:.0}M"), [0, 0, 0], 1);
+    cv.line(60.0, spd_y0 as f32, 60.0, (spd_y0 + spd_h) as f32, [0, 0, 0], 1);
+    cv.line(60.0, (spd_y0 + spd_h) as f32, 60.0 + w, (spd_y0 + spd_h) as f32, [0, 0, 0], 1);
+    cv.text(2, spd_y0, "90 M/S", [0, 0, 0], 1);
+    cv.text(2, spd_y0 + spd_h - 8, "0", [0, 0, 0], 1);
+    for k in 0..=8 { let sv = sx0 + (sx1 - sx0) * k as f32 / 8.0; cv.text(sx(sv) as i64 - 8, spd_y0 + spd_h + 3, &format!("S{sv:.0}"), [0, 0, 0], 1); cv.line(sx(sv), (panel_y0 + elev_h) as f32 - 3.0, sx(sv), (panel_y0 + elev_h) as f32 + 3.0, [0, 0, 0], 1); }
+    // surface under the line
+    for i in 1..seg.len() { if let (Some(a), Some(b)) = (ground_under[i - 1], ground_under[i]) { cv.line(sx(s[i0 + i - 1]), ey(a), sx(s[i0 + i]), ey(b), [140, 140, 140], 3); } }
+    // human height (by speed) and speed
+    for i in (i0 + 1)..=i1 { cv.line(sx(s[i - 1]), ey(line[i - 1][1]), sx(s[i]), ey(line[i][1]), speed_colour(vh[i]), 2); cv.line(sx(s[i - 1]), vy(vh[i - 1]), sx(s[i]), vy(vh[i]), [0, 0, 0], 2); }
+    // gate crossings as vertical ticks
+    for (li, grp) in &crossings { if *li >= i0 && *li <= i1 { cv.line(sx(s[*li]), panel_y0 as f32, sx(s[*li]), (spd_y0 + spd_h) as f32, [230, 30, 30], 1); cv.text(sx(s[*li]) as i64 + 3, panel_y0, &format!("G{grp}"), [230, 30, 30], 1); } }
+    // vjeux CP states on the elevation and speed panels
+    for (p, _, sp, _) in &cp_states {
+        let mut best = (f32::INFINITY, i0); for (j, q) in seg.iter().enumerate() { let d = (q[0] - p[0]).powi(2) + (q[2] - p[2]).powi(2); if d < best.0 { best = (d, i0 + j); } }
+        let sv = s[best.1];
+        cv.disc(sx(sv), ey(p[1]), 5.0, [200, 0, 200]); cv.disc(sx(sv), vy(*sp), 5.0, [200, 0, 200]);
+    }
+    // chains: project each row to the nearest leg sample (XZ) → s
+    for c in &chains {
+        let col = cause_colour(&c.cause);
+        let proj = |p: [f32; 3]| -> f32 { let mut best = (f32::INFINITY, i0); for (j, q) in seg.iter().enumerate() { let d = (q[0] - p[0]).powi(2) + (q[2] - p[2]).powi(2); if d < best.0 { best = (d, i0 + j); } } s[best.1] };
+        let mut prev: Option<(f32, f32, f32)> = None;
+        for r in &c.rows {
+            let sv = proj(r.p);
+            if let Some((ps, py, pv)) = prev { if (sv - ps).abs() < 40.0 { cv.line(sx(ps), ey(py), sx(sv), ey(r.p[1]), col, 1); cv.line(sx(ps), vy(pv), sx(sv), vy(r.v), col, 1); } }
+            prev = Some((sv, r.p[1], r.v));
+        }
+        if let Some(r) = c.rows.last() { let sv = proj(r.p); let rr = if c.rows.len() > 1 { 4.0 } else { 2.5 }; cv.disc(sx(sv), ey(r.p[1]), rr, col); cv.disc(sx(sv), vy(r.v), rr, col); }
+    }
+    // legend
+    let ly = (th + side_h) as i64 + 8;
+    let mut lx = 10i64;
+    for (name, col) in [("HUMAN BY SPEED", speed_colour(40.0)), ("FELL", cause_colour("fell")), ("OFFROUTE", cause_colour("offroute")), ("STOPPED", cause_colour("stopped")), ("ALIVE", cause_colour("alive")), ("FINISH", cause_colour("finish")), ("WALL", [60, 60, 70]), ("GATE", [230, 30, 30]), ("VJEUX CP STATE", [200, 0, 200])] {
+        cv.rect(lx, ly, lx + 14, ly + 10, col);
+        cv.text(lx + 18, ly + 2, name, [0, 0, 0], 1);
+        lx += 18 + 6 * name.len() as i64 + 16;
+    }
+    cv.text(10, 4, &format!("{} {title} S {sx0:.0}-{sx1:.0} ({} CHAINS)", gates.map_name.to_ascii_uppercase(), chains.len()), [0, 0, 0], 2);
+    let out = flag(args, "--out").unwrap_or_else(|| die("--out X.png"));
+    cv.write_png(Path::new(&out)).unwrap_or_else(|e| die(&e.to_string()));
+    // a one-line reading for the caller
+    let g_min = ground_under.iter().filter_map(|g| *g).fold(f32::INFINITY, f32::min);
+    let g_max = ground_under.iter().filter_map(|g| *g).fold(f32::NEG_INFINITY, f32::max);
+    let air = ground_under.iter().zip(seg.iter()).filter(|(g, p)| g.map(|g| p[1] - g > 1.5).unwrap_or(true)).count();
+    let vmin = vh[i0 + 1..=i1].iter().cloned().fold(f32::INFINITY, f32::min);
+    let vmax = vh[i0 + 1..=i1].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    println!("{out}: {title}, s {sx0:.0}–{sx1:.0} ({:.0} m), human {vmin:.0}–{vmax:.0} m/s, height {:.1}–{:.1} m, surface under the line {g_min:.1}–{g_max:.1} m, airborne samples {air}/{}, chains {} ({})", sx1 - sx0, seg.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min), seg.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max), seg.len(), chains.len(), { let mut m: BTreeMap<&str, usize> = BTreeMap::new(); for c in &chains { *m.entry(c.cause.as_str()).or_default() += 1; } m.iter().map(|(k, v)| format!("{v} {k}")).collect::<Vec<_>>().join(", ") });
 }
