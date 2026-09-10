@@ -37,9 +37,9 @@ async fn connect(cfg: &Config, instance: &str, wait: Duration) -> Result<transpo
     loop {
         match transport::websocket(&ep, proxy.as_ref(), token, &path).await {
             Ok(ws) => return Ok(ws),
-            Err(WsError::Http { status: 503, .. }) if Instant::now() < deadline => {
+            Err(WsError::Http { status, .. }) if (500..600).contains(&status) && Instant::now() < deadline => {
                 if !told {
-                    eprintln!("[whitestick] {instance} is offline, waiting for it...");
+                    eprintln!("[whitestick] {instance} is offline (relay says {status}), waiting for it...");
                     told = true;
                 }
                 tokio::time::sleep(Duration::from_secs(2)).await;

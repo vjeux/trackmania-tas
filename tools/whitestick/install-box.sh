@@ -92,7 +92,10 @@ if [ -n "${WSL_DISTRO_NAME:-}" ] && [ -n "$WINPROFILE" ]; then
     # A .vbs launcher so no console window pops up at logon.
     printf 'Set sh = CreateObject("WScript.Shell")\r\nsh.Run "wsl.exe -d %s -u %s -- /bin/sh -lc ~/bin/whitestick-agent-loop.sh", 0, False\r\n' \
         "$WSL_DISTRO_NAME" "$WUSER" > "$WINDIR/start-agent.vbs"
-    TR="wscript.exe \"$WINDIR_W\\start-agent.vbs\""
+    case "$WINDIR_W" in
+        *" "*) echo "warning: the Windows profile path has spaces; check the tasks in Task Scheduler" ;;
+    esac
+    TR="wscript.exe $WINDIR_W\\start-agent.vbs"
     if ! schtasks.exe /Create /F /TN "WhiteStick Agent" /SC ONLOGON /TR "$TR" >/dev/null 2>&1; then
         echo "   (could not create the logon task without admin rights; the 5-minute watchdog covers it)"
     fi

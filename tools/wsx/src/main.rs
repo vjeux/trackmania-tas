@@ -1,5 +1,10 @@
 //! wsx -- move files across the WhiteStick bridge, and prove they arrived.
 //!
+//! 2026-09-10: the bridge underneath is now `tools/whitestick` (our relay, see
+//! its README), not navi. wsx still works unchanged, but the cost table and
+//! the ceilings below are navi's; the new bridge forwards stdin and streams
+//! stdout, so a push is really just `whitestick 'cat > f' < f` now.
+//!
 //! The render box is not on the network. Everything reaches it through
 //! `~/bin/whitestick '<command>'`, which runs the string in the box's WSL
 //! distro under `/bin/sh`. So a file has to travel inside the command string

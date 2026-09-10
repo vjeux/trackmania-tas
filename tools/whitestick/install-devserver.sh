@@ -64,7 +64,7 @@ cat > "$CFG" <<EOF
 relay = "$RELAY"
 token = "$TOKEN"
 instance = "$INSTANCE"
-# proxy: unset = use fwdproxy:8080 when that name resolves, direct otherwise
+# proxy: unset = fwdproxy when that name resolves (8082 with the host cert, else 8080), direct otherwise
 EOF
 umask 022
 echo "== wrote $CFG (relay: ${RELAY:-<none yet>})"
