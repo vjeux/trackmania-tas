@@ -2023,13 +2023,25 @@ pub fn attitude_verdict(readme: &str, nn: &str, time: &str) -> Attitude {
     // A line without the field is judged on attitude alone (today's rows are
     // not failed retroactively); INPUT adds the field to laps certified from
     // then on, and those are held to it.
-    let water = field("water contact:");
+    // Two water fields once INPUT's census writes them (WATER-CENSUS-1342,
+    // 2026-09-10 21:00Z): A = seconds over a deep pool ridden as a lid, B =
+    // seconds on a road through water. Either > 0 is not clean; BOTH are
+    // required 0.00 for new clips when the line carries them. The field names
+    // are matched loosely (`water A:`/`water lid:`/`pool:`, `water B:`/`road
+    // water:`), and the older single `water contact:` still counts.
+    let water_a = field("water A:").or_else(|| field("water lid:")).or_else(|| field("pool contact:"));
+    let water_b = field("water B:").or_else(|| field("road water:")).or_else(|| field("road contact:"));
+    let water_total = field("water contact:");
+    let contact_s = [water_a, water_b, water_total].into_iter().flatten().fold(0.0_f64, f64::max);
     match (inverted_s.is_nan(), attitude_intervals) {
         (true, _) | (_, None) => Attitude::NoTable,
-        (false, Some(a)) if inverted_s <= 0.0 && a == 0 => match water {
-            Some(w) if w > 0.0 => Attitude::Water { contact_s: w },
-            _ => Attitude::Clean,
-        },
+        (false, Some(a)) if inverted_s <= 0.0 && a == 0 => {
+            if contact_s > 0.0 {
+                Attitude::Water { contact_s }
+            } else {
+                Attitude::Clean
+            }
+        }
         (false, Some(a)) => Attitude::Dirty { inverted_s, attitude_intervals: a },
     }
 }
@@ -2063,5 +2075,12 @@ mod attitude_tests {
         assert_eq!(attitude_verdict(with_water, "19", "46.362"), Attitude::Water { contact_s: 1.2 });
         assert_eq!(attitude_verdict(with_water, "05", "18.298"), Attitude::Clean, "0.00 s of contact is clean");
         assert!(Attitude::Water { contact_s: 1.2 }.describe().contains("water contact 1.20 s"));
+        // the census's two fields: A (pool as a lid) and B (road through water) — either > 0 is not clean, both 0.00 is clean
+        let ab = "- 20 75.595: below 8 m/s: 11.03 s, respawns: 0, inverted: 0.00 s, 10 slow + 0 attitude intervals, water A: 0.00 s, water B: 0.78 s\n\
+- 19 46.362: below 8 m/s: 0.07 s, respawns: 0, inverted: 0.00 s, 2 slow + 0 attitude intervals, water A: 0.00 s, water B: 0.00 s\n\
+- 15 48.738: below 8 m/s: 4.09 s, respawns: 0, inverted: 0.00 s, 6 slow + 0 attitude intervals, water A: 12.60 s, water B: 2.60 s\n";
+        assert_eq!(attitude_verdict(ab, "20", "75.595"), Attitude::Water { contact_s: 0.78 }, "B alone fails");
+        assert_eq!(attitude_verdict(ab, "19", "46.362"), Attitude::Clean, "A = B = 0.00 is clean");
+        assert_eq!(attitude_verdict(ab, "15", "48.738"), Attitude::Water { contact_s: 12.6 }, "the larger of A and B is reported");
     }
 }
