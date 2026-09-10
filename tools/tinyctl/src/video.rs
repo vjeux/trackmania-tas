@@ -285,7 +285,7 @@ fn all_once(args: &[String]) -> Result<(), String> {
     let min_gain: f64 = f("--min-gain-s").map(|s| s.parse().map_err(|_| "--min-gain-s wants seconds")).transpose()?.unwrap_or(0.1);
     let published = published_laps(&std::fs::read_to_string(out.join("ships.tsv")).unwrap_or_default());
     let skips_path = out.join("skips.tsv");
-    let skips = std::fs::read_to_string(&skips_path).unwrap_or_default();
+    let mut skips = std::fs::read_to_string(&skips_path).unwrap_or_default();
     let mut todo = Vec::new();
     for n in &names {
         let nn = n[..2].to_string();
@@ -330,12 +330,11 @@ fn all_once(args: &[String]) -> Result<(), String> {
                     println!("{nn} {time}: skipped — gain {gain:.3} s over the published {p:.3} is under {min_gain:.3} (--min-gain-s); the page keeps the pending note and the render happens when the gain reaches the threshold");
                     append_report_row(&out, &row)?;
                     let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-                    let mut text = skips.clone();
-                    if text.is_empty() {
-                        text.push_str("# nn\ttrajectory_id\ttime\tgain\tpublished\tunix\n");
+                    if skips.is_empty() {
+                        skips.push_str("# nn\ttrajectory_id\ttime\tgain\tpublished\tunix\n");
                     }
-                    text.push_str(&format!("{key}{time}\t{gain:.3}\t{p:.3}\t{when}\n"));
-                    std::fs::write(&skips_path, text).map_err(|e| format!("{}: {e}", skips_path.display()))?;
+                    skips.push_str(&format!("{key}{time}\t{gain:.3}\t{p:.3}\t{when}\n"));
+                    std::fs::write(&skips_path, &skips).map_err(|e| format!("{}: {e}", skips_path.display()))?;
                 }
                 continue;
             }
