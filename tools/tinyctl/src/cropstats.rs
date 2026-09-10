@@ -59,7 +59,8 @@ struct CellStat {
     bright: f32,
 }
 
-fn cell_stat(img: &Image, x0: usize, y0: usize, w: usize, h: usize, bg: [f32; 3], top_pct: f32, green_fg: bool) -> CellStat {
+fn cell_stat(img: &Image, x0: usize, y0: usize, w: usize, h: usize, bg: [f32; 3], top_pct: f32, fg_mode: u8) -> CellStat {
+    let green_fg = fg_mode >= 1;
     let mut lumas: Vec<(u32, [u8; 3])> = Vec::new();
     let mut n = 0usize;
     let mut nfg = 0usize;
@@ -79,7 +80,11 @@ fn cell_stat(img: &Image, x0: usize, y0: usize, w: usize, h: usize, bg: [f32; 3]
         // green at least blue (a sky-lit leaf is still greener than the sky), not a
         // bright cloud, and not a grey: leaves against sky, clouds and water
         let _ = sat;
-        c[1] as i32 >= c[2] as i32 + 2 && luma < 200 && (c[1] as i32 - c[2] as i32 >= 8 || c[0].max(c[1]) as i32 - mn as i32 >= 24)
+        if fg_mode == 2 {
+            c[1] as i32 >= c[0] as i32 + 10 && c[1] as i32 >= c[2] as i32 + 10 && luma < 110
+        } else {
+            c[1] as i32 >= c[2] as i32 + 2 && luma < 200 && (c[1] as i32 - c[2] as i32 >= 8 || c[0].max(c[1]) as i32 - mn as i32 >= 24)
+        }
     } else { (c[0] as f32 - bg[0]).abs() + (c[1] as f32 - bg[1]).abs() + (c[2] as f32 - bg[2]).abs() > 60.0 };
     let mut nbright = 0usize;
     let mut hsat_acc = 0.0f64;
@@ -159,12 +164,19 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let sheet: Option<PathBuf> = flag(args, "--sheet").map(PathBuf::from);
     // --top P: the brightest P percent of each cell, as a mean colour (default 5)
     let top_pct: f32 = flag(args, "--top").map(|s| s.parse().map_err(|e| format!("--top: {e}"))).transpose()?.unwrap_or(5.0);
-    let green_fg = flag(args, "--fg") == Some("green");
+    let green_fg = matches!(flag(args, "--fg"), Some("green") | Some("darkgreen"));
+    // --fg darkgreen: only dark, clearly green pixels (a leaf card against sky or cloud)
+    let dark_green = flag(args, "--fg") == Some("darkgreen");
+    // --grid CxR: after the table, an ASCII map of every image's crop — the foreground
+    // share per grid cell as " " (<1 %), "." (<5 %), ":" (<20 %), "#" — so a
+    // reader without eyes can tell WHERE the foreground sits (the floating-sprite
+    // hunt of 2026-09-10)
+    let grid: Option<(usize, usize)> = flag(args, "--grid").and_then(|s| s.split_once('x')).and_then(|(c, r)| Some((c.parse().ok()?, r.parse().ok()?)));
     let mut files: Vec<PathBuf> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--crop" | "--cells" | "--sheet" | "--top" | "--fg" => i += 2,
+            "--crop" | "--cells" | "--sheet" | "--top" | "--fg" | "--grid" => i += 2,
             a if a.starts_with("--") => return Err(format!("unknown flag {a}")),
             a => {
                 files.push(PathBuf::from(a));
@@ -199,7 +211,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let name = f.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
         for c in 0..cells {
             let x0 = cx + c * cell_w;
-            let st = cell_stat(&img, x0, cy, cell_w, ch, bg, top_pct, green_fg);
+            let st = cell_stat(&img, x0, cy, cell_w, ch, bg, top_pct, if dark_green { 2 } else if green_fg { 1 } else { 0 });
             let d = prev.as_ref().map(|p| cell_diff(p, &img, x0, cy, cell_w, ch));
             println!(
                 "{name}\t{c}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:02x}{:02x}{:02x}\t{:02x}{:02x}{:02x}\t{:02x}{:02x}{:02x}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{}",
@@ -216,6 +228,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 st.bright * 100.0,
                 d.map(|d| format!("{d:.2}")).unwrap_or_else(|| "-".into())
             );
+        }
+        if let Some((gc, gr)) = grid {
+            println!("grid {name} ({gc}x{gr} cells of {}x{} px):", cw / gc.max(1), ch / gr.max(1));
+            for r in 0..gr {
+                let mut line = String::new();
+                for c in 0..gc {
+                    let st = cell_stat(&img, cx + c * (cw / gc.max(1)), cy + r * (ch / gr.max(1)), cw / gc.max(1), ch / gr.max(1), bg, top_pct, if dark_green { 2 } else if green_fg { 1 } else { 0 });
+                    line.push(if st.fg < 0.01 { ' ' } else if st.fg < 0.05 { '.' } else if st.fg < 0.20 { ':' } else { '#' });
+                }
+                println!("  |{line}|");
+            }
         }
         if sheet.is_some() {
             let mut row = img.crop_scaled(cx as i64, cy as i64, (cx + cw) as i64, (cy + ch) as i64, cw);
