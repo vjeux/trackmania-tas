@@ -817,11 +817,21 @@ draft, a nose-down car passes — independent of any route? Facts so far, from t
   unit; `WaterWallBase` and `WaterRampZone*` have none. The volume is what renders the surface, the underwater
   tint and the overflow lips; the DecoWallWaterFCT clip is the drawn plane of a volume block, a pack plate of
   physics 13.
-* **An ITEM plate of physics 28 is a lid** to the client and the server (measured today). **An ITEM plate of
-  physics 13 has NEVER been drop-tested** — ship13's "road block" on 15 was an inference from frames. If 13 on
-  an item floats and passes like the Lake quad, the whole water story is one revert (5380c805) and no volume
-  is needed. Probe ready: `Pool15-s13.Map.Gbx` (ship13's 15, plate physics 13, Spawn over the plate) — a flat
-  4 m drop; fluid → rest ≈ 28.1 (0.9 under 29.0), lid → 29.0–29.3, through → 21.5.
+* **An ITEM plate of physics 28 is a lid** to the client and the server; **an ITEM plate of physics 13 is
+  nothing** to both (the table below) — ship13's "road block" on 15 was the plate's LOOK (the plain Water
+  material on an item draws as an opaque cream cellular sheet), never its collision.
+* **The three forms, measured (2026-09-10, client + dedicated server):**
+
+  | form | collision of the plate | client | server | who shipped it |
+  |---|---|---|---|---|
+  | pack `13` (Water) | the pack's own id | falls through, no deceleration (vy −12.7 → −13.5 m/s across the plane) | falls through, rests on the floor | ship13; **ship16 default** (`TINY_WATER=pack`) |
+  | `28` (NotCollidable) | 5380c805's re-flag | LID — rests at plane +0.0…0.04 | LID — nose-down 25 m/s stops at the plane | ship14, ship15 (`TINY_WATER=lid`) |
+  | no triangles | removed | (crashed the load for another reason; untested) | falls through, rests on the floor | probe-15-nowater (`TINY_WATER=open`) |
+  | block VOLUME | the original's | floats a flat car at 0.9 m draft, lets a nose-down car through | same | the original; no item carries one |
+
+  So "NotCollidable" is the one id the car DOES collide with, and the pack's `Water` is the one it does not:
+  for an embedded item the engine's water is the material id 13, treated as no surface at all — the buoyancy
+  belongs to the block's volume. ship13's water was right and ship14's fix created the lids.
 * **Half-size volumes:** a water volume is block-info data (per block variant, cell units), pack-side. A map
   cannot scale a block; a custom embedded block (`.Block.Gbx`, a CGameItemModel with block-info chunks) is
   the only per-map vehicle, and whether the loader reads 0x0315B00B from an embedded block is untested.
