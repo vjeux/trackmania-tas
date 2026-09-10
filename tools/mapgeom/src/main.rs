@@ -460,6 +460,204 @@ fn main() {
                 }
             }
         }
+        "blockitem-archetype" => {
+            // blockitem-archetype IN.Block.Gbx --out OUT --archetype NAME [--no-collide]:
+            // an embedded custom block re-pointed at another ARCHETYPE block info, any
+            // name length: every length-prefixed occurrence of the current archetype
+            // string is spliced; the header chunk that carries it and the header size
+            // grow by the delta (the body occurrences sit in non-skippable chunks:
+            // 0x2E001009 and the CGameBlockItem lookback string). --no-collide clears
+            // the CPlugStaticObjectModel collidable byte so the block's own mesh stops
+            // nothing (the archetype's water volume is what we want). Uncompressed
+            // Gbx only (the TMX custom blocks). 2026-09-10, the ship17 water blocks.
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("blockitem-archetype IN.Block.Gbx --out OUT --archetype NAME".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out FILE".into()));
+            let arche = flag(&a.rest, "--archetype").unwrap_or_else(|| die("--archetype NAME".into()));
+            let bytes = std::fs::read(&p).unwrap_or_else(|e| die(e.to_string()));
+            if bytes.get(7) != Some(&b'U') {
+                die::<()>(format!("{p}: body is compressed; this patches bytes in place"));
+            }
+            let header_size = u32::from_le_bytes(bytes[13..17].try_into().unwrap()) as usize;
+            let nchunks = u32::from_le_bytes(bytes[17..21].try_into().unwrap()) as usize;
+            let table = 21usize;
+            let data0 = table + nchunks * 8;
+            let header_end = 17 + header_size;
+            // the current archetype = the block-name-looking string that appears at
+            // least twice as a length-prefixed field (ident chunk, 0x2E001009, the
+            // CGameBlockItem lookback string)
+            let mut cands: std::collections::BTreeMap<String, Vec<usize>> = Default::default();
+            let mut i = 0usize;
+            while i + 4 < bytes.len() {
+                let n = u32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
+                if (4..=48).contains(&n) && i + 4 + n <= bytes.len() && bytes[i + 4..i + 4 + n].iter().all(|c| c.is_ascii_alphanumeric()) {
+                    let s = String::from_utf8_lossy(&bytes[i + 4..i + 4 + n]).to_string();
+                    cands.entry(s).or_default().push(i);
+                    i += 4 + n;
+                } else {
+                    i += 1;
+                }
+            }
+            let (cur, offs) = cands
+                .iter()
+                .filter(|(_, v)| v.len() >= 2)
+                .max_by_key(|(_, v)| v.len())
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .unwrap_or_else(|| die("no repeated length-prefixed block name in the file".into()));
+            let delta = arche.len() as i64 - cur.len() as i64;
+            let mut out_bytes: Vec<u8> = Vec::with_capacity(bytes.len() + 64);
+            let mut last = 0usize;
+            let mut header_delta = 0i64;
+            let mut chunk_deltas: Vec<(usize, i64)> = Vec::new();
+            for o in &offs {
+                out_bytes.extend_from_slice(&bytes[last..*o]);
+                out_bytes.extend_from_slice(&(arche.len() as u32).to_le_bytes());
+                out_bytes.extend_from_slice(arche.as_bytes());
+                last = o + 4 + cur.len();
+                if *o < header_end {
+                    header_delta += delta;
+                    let mut start = data0;
+                    for k in 0..nchunks {
+                        let size = (u32::from_le_bytes(bytes[table + k * 8 + 4..table + k * 8 + 8].try_into().unwrap()) & 0x7FFF_FFFF) as usize;
+                        if *o >= start && *o < start + size {
+                            chunk_deltas.push((k, delta));
+                        }
+                        start += size;
+                    }
+                }
+            }
+            out_bytes.extend_from_slice(&bytes[last..]);
+            let new_header = (header_size as i64 + header_delta) as u32;
+            out_bytes[13..17].copy_from_slice(&new_header.to_le_bytes());
+            for (k, d) in chunk_deltas {
+                let so = table + k * 8 + 4;
+                let raw = u32::from_le_bytes(out_bytes[so..so + 4].try_into().unwrap());
+                let flagbit = raw & 0x8000_0000;
+                let size = ((raw & 0x7FFF_FFFF) as i64 + d) as u32;
+                out_bytes[so..so + 4].copy_from_slice(&(size | flagbit).to_le_bytes());
+            }
+            let mut note = String::new();
+            if a.rest.iter().any(|x| x == "--no-collide") {
+                // CPlugStaticObjectModel (0x09159000): in the TMX blocks the collidable
+                // byte (1) is followed by the shape ref -1; clear the first such byte
+                // after each class word
+                let mut patched = 0;
+                let mut k = 0usize;
+                while k + 4 <= out_bytes.len() {
+                    if u32::from_le_bytes(out_bytes[k..k + 4].try_into().unwrap()) == 0x0915_9000 {
+                        for j in k + 4..(k + 64).min(out_bytes.len() - 5) {
+                            if out_bytes[j] == 1 && out_bytes[j + 1..j + 5] == [0xff, 0xff, 0xff, 0xff] {
+                                out_bytes[j] = 0;
+                                patched += 1;
+                                break;
+                            }
+                        }
+                    }
+                    k += 1;
+                }
+                note = format!("; {patched} collidable byte(s) cleared");
+            }
+            std::fs::write(&out, &out_bytes).unwrap_or_else(|e| die(e.to_string()));
+            println!("{p}: archetype {cur} -> {arche} at {} places (header delta {header_delta}){note} -> {out}", offs.len());
+        }
+        "waterblocks" => {
+            // waterblocks MAP --plates P.tsv --template T.Block.Gbx --out MAP2 --table T.tsv
+            //   [--author UID] [--force-block] — see waterblocks.rs
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("waterblocks MAP --plates P --template T.Block.Gbx --out F --table T".into()));
+            let plates_path = flag(&a.rest, "--plates").unwrap_or_else(|| die("--plates WATER-PLATES/NN.tsv".into()));
+            let template = flag(&a.rest, "--template").unwrap_or_else(|| die("--template T.Block.Gbx (an uncompressed custom block)".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out MAP".into()));
+            let table_out = flag(&a.rest, "--table");
+            let author = flag(&a.rest, "--author").unwrap_or_else(|| "fHFOZ36-Qt6hMnhWK6bvxw".to_string());
+            let force = a.rest.iter().any(|x| x == "--force-block");
+            let plates = mapgeom::waterblocks::read_plates(&plates_path).unwrap_or_else(die);
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+            // every upward collision triangle of the map's items, world frame
+            let mut asm = mapgeom::assemble::Assembler::new(&mut store);
+            asm.with_embedded(&m).ok();
+            let mut tris: Vec<mapgeom::waterblocks::UpTri> = Vec::new();
+            for it in &m.items {
+                let Some(lm) = asm.item_model(&it.model) else { continue };
+                let lm = lm.clone();
+                let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                for (mat, g) in &lm.scene.groups {
+                    if mat == "Visual" { continue; }
+                    for t in &g.tris {
+                        let w = [mapgeom::geom::apply(&xf, g.verts[t[0] as usize]), mapgeom::geom::apply(&xf, g.verts[t[1] as usize]), mapgeom::geom::apply(&xf, g.verts[t[2] as usize])];
+                        let e1 = [w[1][0] - w[0][0], w[1][1] - w[0][1], w[1][2] - w[0][2]];
+                        let e2 = [w[2][0] - w[0][0], w[2][1] - w[0][1], w[2][2] - w[0][2]];
+                        let ny = e1[2] * e2[0] - e1[0] * e2[2];
+                        let nx = e1[1] * e2[2] - e1[2] * e2[1];
+                        let nz = e1[0] * e2[1] - e1[1] * e2[0];
+                        let len = (nx * nx + ny * ny + nz * nz).sqrt().max(1e-6);
+                        if (ny / len).abs() < 0.5 { continue; }
+                        let c = [(w[0][0] + w[1][0] + w[2][0]) / 3.0, (w[0][1] + w[1][1] + w[2][1]) / 3.0, (w[0][2] + w[1][2] + w[2][2]) / 3.0];
+                        tris.push(mapgeom::waterblocks::UpTri { c, top: w[0][1].max(w[1][1]).max(w[2][1]), phys: mat.clone() });
+                    }
+                }
+            }
+            let decisions = mapgeom::waterblocks::decide(&plates, &tris);
+            let mut table = String::from("body\tarchetype\tchoice\treason\tblock_origin\tspill\n");
+            let mut specs: Vec<tmmaps::map::FreeBlockSpec> = Vec::new();
+            let mut files: std::collections::BTreeMap<String, Vec<u8>> = Default::default();
+            let tpl = std::fs::read(&template).unwrap_or_else(|e| die(format!("{template}: {e}")));
+            let mut n_block = 0usize;
+            for d in &decisions {
+                let choice = if force { "block" } else { d.choice };
+                table.push_str(&format!("{}\t{}\t{}\t{}\t({:.1}, {:.2}, {:.1})\t{}\n", d.body, d.archetype, choice, d.reason, d.origin[0], d.origin[1], d.origin[2], d.spill));
+                if choice != "block" { continue; }
+                n_block += 1;
+                let ident = format!("Water\\{}.Block.Gbx", d.archetype);
+                let zip_path = format!("Blocks/Water/{}.Block.Gbx", d.archetype);
+                if !files.contains_key(&zip_path) {
+                    // the template re-pointed at this archetype (mapgeom blockitem-archetype's logic, in-process)
+                    let tmp_in = std::env::temp_dir().join(format!("wb-{}.in.Block.Gbx", d.archetype));
+                    let tmp_out = std::env::temp_dir().join(format!("wb-{}.Block.Gbx", d.archetype));
+                    std::fs::write(&tmp_in, &tpl).unwrap_or_else(|e| die(e.to_string()));
+                    let status = std::process::Command::new(std::env::current_exe().unwrap())
+                        .args(["blockitem-archetype", tmp_in.to_str().unwrap(), "--out", tmp_out.to_str().unwrap(), "--archetype", &d.archetype])
+                        .status()
+                        .unwrap_or_else(|e| die(e.to_string()));
+                    if !status.success() { die::<()>(format!("blockitem-archetype failed for {}", d.archetype)); }
+                    // the file's own ident must be the manifest's (the game pairs them by ident,
+                    // not by archive path): rename it as `rename-item` does
+                    let raw = std::fs::read(&tmp_out).unwrap_or_else(|e| die(e.to_string()));
+                    let (old_ident, _) = tmmaps::header::item_ident_author(&raw).unwrap_or_else(|| die("template block: no ident in the header".into()));
+                    let renamed = mapgeom::crystal::rename_ident(&raw, &old_ident, &ident);
+                    files.insert(zip_path.clone(), renamed);
+                }
+                specs.push(tmmaps::map::FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.clone()), flags: 0x1020_8000, pos: d.origin, rot: [0.0, 0.0, 0.0], grid: None });
+            }
+            println!("{p}: {} water bodies handled, {} as blocks, {} archetype files", decisions.len(), n_block, files.len());
+            if let Some(t) = &table_out {
+                std::fs::write(t, &table).unwrap_or_else(|e| die(e.to_string()));
+            }
+            if n_block == 0 {
+                std::fs::copy(&p, &out).unwrap_or_else(|e| die(e.to_string()));
+                println!("  no blocks: {out} is a copy");
+                return;
+            }
+            // 1. the archive: add the block files and their manifest rows
+            let mut m2 = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+            let (mut zip, existing) = tmmaps::header::embedded_zip_bytes(&m2.gbx.body).unwrap_or_default();
+            for (path, bytes) in &files {
+                zip = tmmaps::header::zip_add(&zip, path, bytes);
+            }
+            let kept: Vec<String> = existing.iter().filter(|n| n.to_ascii_lowercase().ends_with(".item.gbx")).map(|n| n.rsplit(['/', '\\']).next().unwrap_or(n).to_string()).collect();
+            let block_rows: Vec<(String, String)> = files.keys().map(|zp| (zp.trim_start_matches("Blocks/").replace('/', "\\"), author.clone())).collect();
+            let mut manifest: Vec<(&str, &str)> = kept.iter().map(|n| (n.as_str(), n.as_str())).collect();
+            manifest.extend(block_rows.iter().map(|(i, au)| (i.as_str(), au.as_str())));
+            m2.replace_embedded_objects(&manifest, &zip);
+            let tmp_map = std::path::PathBuf::from(format!("{out}.stage1.Map.Gbx"));
+            m2.write_to(&tmp_map).unwrap_or_else(|e| die(e.to_string()));
+            // 2. the free block records (a fresh load: variable-length edits are a separate pass)
+            let mut m3 = tmmaps::map::MapFile::load(&tmp_map);
+            let r = m3.remove_and_add_blocks(|_| false, |_| false, &specs);
+            m3.write_to(std::path::Path::new(&out)).unwrap_or_else(|e| die(e.to_string()));
+            let _ = std::fs::remove_file(&tmp_map);
+            let m4 = tmmaps::map::MapFile::load(std::path::Path::new(&out));
+            println!("  {out}: {} free blocks ({} added; Id table {} -> {}), manifest {} rows", m4.blocks.iter().filter(|b| b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0).count(), specs.len(), r.table_before, r.table_after, manifest.len());
+        }
         "vstream-shift" => {
             // vstream-shift IN.Gbx --out OUT --dy DY: every vertex POSITION of the file's
             // vertex streams moved by DY in y, patched in place (an uncompressed Gbx —

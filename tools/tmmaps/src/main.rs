@@ -113,6 +113,8 @@ fn main() {
         "rotate" => rotate::cmd(&args),
         "move" => ladder::move_blocks(&args),
         "blockprobe" => ladder::blockprobe(&args),
+        "addblock" => ladder::addblock(&args),
+        "recdump" => ladder::recdump(&args),
         "oracle" => ladder::oracle_stage(&args),
         "roundtrip" => controls::cmd_roundtrip(&args),
         "bodydiff" => splice::cmd_bodydiff(&args),

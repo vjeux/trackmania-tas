@@ -835,3 +835,58 @@ fn find_lookback_strings(b: &[u8]) -> Vec<(usize, String)> {
     }
     out
 }
+
+/// `tmmaps addblock MAP --out F --add NAME@x,y,z[/pitch,yaw,roll][#flags] [--add …] [--author A]`
+/// — FREE blocks appended to a map (stock names, or `<archive path>.Block.Gbx_CustomBlock`
+/// for an embedded custom block, which must already be in the archive). Flags default to
+/// the TMX custom-block form 0x10208000 (author + null skin) | FREE.
+pub fn addblock(args: &[String]) {
+    let src = PathBuf::from(args.get(2).expect("addblock MAP --out F --add NAME@x,y,z[/p,y,r][#flags]"));
+    let out = PathBuf::from(flag(args, "--out").expect("--out F"));
+    let author = flag(args, "--author").map(|s| s.to_string());
+    let mut specs = Vec::new();
+    for spec in flag_multi(args, "--add") {
+        let (name, rest) = spec.split_once('@').unwrap_or_else(|| panic!("--add {spec}: NAME@x,y,z"));
+        let (rest, flags) = match rest.split_once('#') {
+            Some((r, f)) => (r, u32::from_str_radix(f.trim_start_matches("0x"), 16).expect("#flags hex")),
+            None => (rest, 0x1020_8000),
+        };
+        let (pos, rot) = match rest.split_once('/') {
+            Some((p, r)) => (p, r),
+            None => (rest, "0,0,0"),
+        };
+        let v = |s: &str| -> [f32; 3] {
+            let f: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap_or_else(|_| panic!("--add {spec}: bad number {x:?}"))).collect();
+            assert_eq!(f.len(), 3, "--add {spec}: three numbers");
+            [f[0], f[1], f[2]]
+        };
+        let grid = if has(args, "--grid") { let p = v(pos); Some([p[0] as i32, p[1] as i32, p[2] as i32]) } else { None };
+        specs.push(map::FreeBlockSpec { name: name.to_string(), author: author.clone(), flags, pos: v(pos), rot: v(rot), grid });
+    }
+    assert!(!specs.is_empty(), "nothing to add");
+    let mut m = map::MapFile::load(&src);
+    let before = m.blocks.len();
+    let r = m.remove_and_add_blocks(|_| false, |_| false, &specs);
+    m.write_to(&out).expect("write");
+    let m2 = map::MapFile::load(&out);
+    println!("  {} blocks -> {} (added {}; table {} -> {}); free blocks now {}", before, m2.blocks.len(), specs.len(), r.table_before, r.table_after, m2.blocks.iter().filter(|b| b.flags & map::FREE_BLOCK_FLAG != 0).count());
+    for b in m2.blocks.iter().rev().take(specs.len()) {
+        println!("  {} flags {:08x} free {:?} rot {:?}", b.name, b.flags, b.free_pos, b.free_rot);
+    }
+}
+
+/// `tmmaps recdump MAP --block INDEX` — the raw bytes of one block record (name
+/// field to the next record), as hex + the decoded fields, to compare a map's
+/// own custom-block records with the ones `addblock` writes.
+pub fn recdump(args: &[String]) {
+    let src = PathBuf::from(args.get(2).expect("recdump MAP --block INDEX"));
+    let idx: usize = flag(args, "--block").expect("--block INDEX").parse().expect("index");
+    let m = map::MapFile::load(&src);
+    let spans = m.block_spans();
+    let (s, e) = spans[idx];
+    let b = &m.gbx.body[s..e];
+    let rec = &m.blocks[idx];
+    println!("block {idx}: {} dir {} cell {:?} flags {:08x} free {:?}", rec.name, rec.dir, rec.file_cell, rec.flags, rec.free_pos);
+    println!("  {} bytes: {}", b.len(), b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" "));
+    println!("  ascii: {}", b.iter().map(|x| if x.is_ascii_graphic() { *x as char } else { '.' }).collect::<String>());
+}

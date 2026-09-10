@@ -2854,6 +2854,18 @@ impl MapFile {
         F: Fn(&BlockRec) -> bool,
         G: Fn(&BlockRec) -> bool,
     {
+        self.remove_and_add_blocks(drop_block, drop_baked, &[])
+    }
+
+    /// One free block to ADD: its model name (a stock block, or an embedded
+    /// custom block as `<archive path>.Block.Gbx_CustomBlock`), world position,
+    /// rotation (pitch, yaw, roll as the free-pos chunk stores them) and the
+    /// record flags (FREE_BLOCK_FLAG is added).
+    pub fn remove_and_add_blocks<F, G>(&mut self, drop_block: F, drop_baked: G, add: &[FreeBlockSpec]) -> Removed
+    where
+        F: Fn(&BlockRec) -> bool,
+        G: Fn(&BlockRec) -> bool,
+    {
         assert!(self.renames.is_empty(), "remove_blocks cannot share a write with renames (write and reload first)");
         assert!(self.raw_splices.is_empty(), "remove_blocks wants a fresh load (other variable-length edits are pending)");
         let body = &self.gbx.body;
@@ -2963,6 +2975,44 @@ impl MapFile {
                 removed.blocks += 1;
             }
         }
+        // --- the ADDED free blocks: appended after the kept records, their names
+        // defined (or back-referenced) through the same table the baked chunk
+        // continues with, so every later index stays right.
+        let mut added_free_entries: Vec<u8> = Vec::new();
+        for spec in add {
+            let mut put_id = |out: &mut Vec<u8>, name: &str, table: &mut Vec<String>| match table.iter().position(|t| t == name) {
+                Some(i) => out.extend_from_slice(&(0x4000_0000u32 | (i as u32 + 1)).to_le_bytes()),
+                None => {
+                    table.push(name.to_string());
+                    out.extend_from_slice(&0x4000_0000u32.to_le_bytes());
+                    out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+                    out.extend_from_slice(name.as_bytes());
+                }
+            };
+            put_id(&mut new_blocks, &spec.name, &mut table);
+            new_blocks.push(0u8); // dir
+            let flags = match spec.grid {
+                Some(c) => {
+                    new_blocks.extend_from_slice(&[(c[0] + 1) as u8, c[1] as u8, (c[2] + 1) as u8]);
+                    spec.flags & !FREE_BLOCK_FLAG
+                }
+                None => {
+                    new_blocks.extend_from_slice(&[0u8, 0, 0]); // cell bytes: ignored for a free block
+                    spec.flags | FREE_BLOCK_FLAG
+                }
+            };
+            new_blocks.extend_from_slice(&flags.to_le_bytes());
+            if flags & 0x8000 != 0 {
+                put_id(&mut new_blocks, spec.author.as_deref().unwrap_or("Nadeo"), &mut table);
+                new_blocks.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // skin: none
+            }
+            kept_blocks += 1;
+            if spec.grid.is_none() {
+                for v in spec.pos.iter().chain(spec.rot.iter()) {
+                    added_free_entries.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+        }
         let mut new_baked = Vec::new();
         let mut kept_baked = 0u32;
         if let Some((rs, _)) = self.baked_records {
@@ -2999,7 +3049,17 @@ impl MapFile {
         let chunks = crate::gbx::all_skip_chunks(body);
         if let Some(&(_, _, payload, size)) = chunks.iter().find(|(c, ..)| *c == FREE_POS_CHUNK) {
             let mut entries = Vec::new();
-            for (b, keep) in self.blocks.iter().zip(&keep_block).chain(self.baked.iter().zip(&keep_baked)) {
+            for (b, keep) in self.blocks.iter().zip(&keep_block) {
+                let Some(off) = b.free_off else { continue };
+                if *keep {
+                    entries.extend_from_slice(&body[off..off + 24]);
+                } else {
+                    removed.free_entries += 1;
+                }
+            }
+            // the added free blocks come after the kept authored blocks, before the baked
+            entries.extend_from_slice(&added_free_entries);
+            for (b, keep) in self.baked.iter().zip(&keep_baked) {
                 let Some(off) = b.free_off else { continue };
                 if *keep {
                     entries.extend_from_slice(&body[off..off + 24]);
@@ -3008,6 +3068,8 @@ impl MapFile {
                 }
             }
             splices.push(((payload + 4, payload + size), entries));
+        } else if !added_free_entries.is_empty() {
+            panic!("the map has no free-position chunk 0x0304305F; adding free blocks needs one");
         }
 
         // --- per-block bytes: colours (0x62) and lightmap quality (0x68)
@@ -3017,10 +3079,20 @@ impl MapFile {
         for cid in [0x0304_3062u32, 0x0304_3068] {
             let Some(&(_, _, payload, size)) = chunks.iter().find(|(c, ..)| *c == cid) else { continue };
             assert_eq!(size, 4 + nb + nk + ni, "chunk {cid:#010x} has {size} bytes, not 4 + {nb} blocks + {nk} baked + {ni} items");
-            let mut kept = Vec::with_capacity(nb + nk);
-            for (j, keep) in keep_block.iter().chain(keep_baked.iter()).enumerate() {
+            let mut kept = Vec::with_capacity(nb + nk + add.len());
+            for (j, keep) in keep_block.iter().enumerate() {
                 if *keep {
                     kept.push(body[payload + 4 + j]);
+                }
+            }
+            // the added blocks: the byte the map's other blocks carry most (0 when none)
+            let common = if nb > 0 { body[payload + 4] } else { 0 };
+            for _ in add {
+                kept.push(common);
+            }
+            for (j, keep) in keep_baked.iter().enumerate() {
+                if *keep {
+                    kept.push(body[payload + 4 + nb + j]);
                 }
             }
             splices.push(((payload + 4, payload + 4 + nb + nk), kept));
@@ -3028,11 +3100,14 @@ impl MapFile {
 
         // --- 0x03043069: the per-block macroblock refs
         if let Some(mb) = self.macroblock_refs() {
-            let mut kept = Vec::with_capacity(nb * 4);
+            let mut kept = Vec::with_capacity((nb + add.len()) * 4);
             for (v, keep) in mb.blocks.iter().zip(&keep_block) {
                 if *keep {
                     kept.extend_from_slice(&v.to_le_bytes());
                 }
+            }
+            for _ in add {
+                kept.extend_from_slice(&(-1i32).to_le_bytes()); // no macroblock
             }
             splices.push(((mb.payload + 4, mb.payload + 4 + 4 * nb), kept));
         }
@@ -3227,3 +3302,20 @@ pub enum GhostForm {
 /// Summer 2026 - 01's validation ghost, the whole 0x0305B00F payload (13 148
 /// bytes): `tmmaps chunks 01-Summer-2026---01.Map.Gbx --only 0x0305B00F --hex 13148`.
 pub const DUMMY_GHOST: &[u8] = include_bytes!("../assets/dummy-ghost-summer01.bin");
+
+/// A FREE block to add to a map (`MapFile::remove_and_add_blocks`, 2026-09-10:
+/// the custom water blocks of ship17). `author` is the record author Id when
+/// `flags & 0x8000` (the custom-block records of TMX maps carry `Nadeo` + a null
+/// skin ref); `pos` is the world position, `rot` the (pitch, yaw, roll) triple
+/// the 0x0304305F entry stores after it.
+#[derive(Clone, Debug)]
+pub struct FreeBlockSpec {
+    pub name: String,
+    pub author: Option<String>,
+    pub flags: u32,
+    pub pos: [f32; 3],
+    pub rot: [f32; 3],
+    /// Some(cell) = a GRID block instead (the game's cell; the file stores it +(1,0,1));
+    /// no free-pos entry, FREE_BLOCK_FLAG not added.
+    pub grid: Option<[i32; 3]>,
+}
