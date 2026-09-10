@@ -224,6 +224,12 @@ pub fn inject_state(w: &mut crate::rig::Worker, h: branch::Handle, st: &InjectSt
     if d > 0.05 {
         return Err(format!("inject_state: read-back differs from the written state by {d:.3} m"));
     }
+    // SPAWN STAMP (ENV 009524ff, 13:16Z): the u32 at phy+0x1410 is a race-time stamp of the last (re)spawn release; an injected
+    // body inherits the template car's and the engine runs a "just spawned" phase (speed decay, gear hunting, steering held
+    // low). A far-away stamp ends it at once. TMREACH_INJECT_NO_STAMP=1 opts out.
+    if std::env::var("TMREACH_INJECT_NO_STAMP").is_err() {
+        forkoracle::procmem::write_at(pid, car.phy + 0x1410, &0xFFFF_EC78u32.to_le_bytes())?;
+    }
     // the row the search sees: the written state on the worker's current row layout
     let mut row = w.root_row.clone();
     row.x = st.state.pos[0] as f64;
