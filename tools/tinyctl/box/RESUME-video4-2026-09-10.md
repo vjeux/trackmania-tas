@@ -84,3 +84,25 @@ git-fetch-with-cli = true`), `cargo build --release -p tinyctl -p shootctl
 `target/release/{wsx,whitestick}` to `~/bin`, `mkdir -p ~/persistent &&
 persistent-storage mount private-30d`. `~/.navi/credentials.json` is no longer
 needed by anything.
+
+## Addendum, 17:55Z — the afternoon's defaults (all on main, loops on devvm68451 since 14:12Z)
+
+- **Re-render gate** `--min-gain-s 0.1` (d31034ce): a map is rendered again only when
+  the certified lap beats the PUBLISHED clip by 0.1 s (or first lap / build change);
+  skips are one REPORT row + `skips.tsv`; page-status writes "within 0.1 s of the
+  published clip" for a sliver, "video pending" for a lap that will render (cac9fc36).
+- **Ghost archive** (8bbbe084): before any render the input ghost goes to the store's
+  `tm-player/tiny/ghost-archive/<md5>.Ghost.Gbx` + `<md5>.json`; REPORT row and
+  `<clip>.mp4.json` name the archive file. The alias `ghosts-for-video/NN.Ghost.Gbx`
+  is mutable — cite the archive md5, never the alias.
+- **Stamp** carries `ghost_md5=` beside the FNV (004e4a7b).
+- **Transition guard** (2284cc81): a ghost file renders only when the README names its
+  lap (the input arm rewrites README first, alias second).
+- **Publish hold** (f41cf0ee): `~/tinyvid4/out/holds.tsv` (`nn<TAB>reason`); a held map
+  is archived-not-rendered, never launched/swapped, page note "held (reason)".
+  **21 Argentina is HELD** since 17:55Z (vjeux: the opening is bad) — lift by deleting
+  the line.
+- **Box**: `Maps\_shoot` is a junction → `C:\tm\_shoot` (load 835 s → 6.6 s); the
+  idle-quit closes the game after 30 idle minutes, under the render lock only.
+- `review-private/` on the store: 24 100.116, 22 96.297, 15 48.738 for the parent
+  project's private review (never published).
