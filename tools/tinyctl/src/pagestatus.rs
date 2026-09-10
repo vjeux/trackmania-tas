@@ -841,3 +841,118 @@ https://github.com/user-attachments/assets/c\n";
         assert!(fixed.contains("tiny ghost **18.298** (build ship16, controls overlay) · map: [ship16](https://example.test/ship16/05.zip)\n\n*↻ video rendered on ship15 — frames identical on ship16*\n\nhttps://github.com/user-attachments/assets/n"), "{fixed}");
     }
 }
+
+/// `tinyctl final-table --out DIR --readme PAGE --ghosts-dir DIR [--write F]`:
+/// the delivery table — one row per map: lap (the page's video), build,
+/// asset URL, approval (receipt / prechecked / published before the gate /
+/// held / staged / none), notes (lid, build note, attitude, hold reason).
+/// Markdown to stdout, and to `--write` when given.
+pub fn final_table_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k);
+    let out = PathBuf::from(f("--out").ok_or("--out DIR (ships.tsv, holds.tsv, approvals.tsv, rowbuilds.tsv, lidrows.tsv)")?);
+    let readme = std::fs::read_to_string(f("--readme").ok_or("--readme tiny/README.md")?).map_err(|e| format!("readme: {e}"))?;
+    let ghosts = f("--ghosts-dir").map(|d| std::fs::read_to_string(Path::new(&d).join("README.md")).unwrap_or_default()).unwrap_or_default();
+    let ships = std::fs::read_to_string(out.join("ships.tsv")).unwrap_or_default();
+    let holds = crate::video::read_holds(&out);
+    let approvals = std::fs::read_to_string(out.join("approvals.tsv")).unwrap_or_default();
+    let prechecked = crate::video::read_prechecked(&out);
+    let rowbuilds = parse_rowbuilds(&std::fs::read_to_string(out.join("rowbuilds.tsv")).unwrap_or_default());
+    let lidrows = crate::video::parse_holds(&std::fs::read_to_string(out.join("lidrows.tsv")).unwrap_or_default());
+    let table = final_table(&readme, &ghosts, &ships, &holds, &approvals, &prechecked, &rowbuilds, &lidrows);
+    println!("{table}");
+    if let Some(p) = f("--write") {
+        std::fs::write(&p, &table).map_err(|e| format!("{p}: {e}"))?;
+        eprintln!("wrote {p}");
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn final_table(page: &str, ghosts_readme: &str, ships: &str, holds: &std::collections::HashMap<String, String>, approvals: &str, prechecked: &std::collections::HashSet<String>, rowbuilds: &std::collections::HashMap<String, RowBuild>, lidrows: &std::collections::HashMap<String, String>) -> String {
+    let published = crate::video::published_laps(ships);
+    let staged = staged_laps(ships);
+    let lines: Vec<&str> = page.lines().collect();
+    let mut rows: Vec<String> = Vec::new();
+    for (i, row) in rows_of(page) {
+        let nn = row.nn.clone();
+        let title = map_title(&nn);
+        let lap = row.published.clone().unwrap_or_else(|| "—".into());
+        let build = rowbuilds
+            .get(nn.as_str())
+            .map(|rb| rb.build.clone())
+            .or_else(|| lines[i].find("(build ").map(|k| lines[i][k + 7..].split(|c: char| c == ',' || c == ')').next().unwrap_or("").to_string()))
+            .unwrap_or_else(|| "—".into());
+        let end = crate::video::block_end(&lines.iter().map(|s| s.to_string()).collect::<Vec<_>>(), i);
+        let url = (i + 1..end).map(|j| lines[j]).find(|l| l.starts_with(crate::video::ASSET_PREFIX)).unwrap_or("—").to_string();
+        // approval: how this row's video got (or did not get) its place
+        let approval = if row.published.is_none() {
+            "no video".to_string()
+        } else if let Some(a) = crate::video::find_approval(approvals, &nn, &lap) {
+            let c: Vec<&str> = a.split('\t').map(str::trim).collect();
+            format!("receipt ({}{})", c.get(2).copied().unwrap_or("?"), c.get(3).filter(|n| !n.is_empty()).map(|n| format!(": {n}")).unwrap_or_default())
+        } else if prechecked.contains(nn.as_str()) {
+            "prechecked".to_string()
+        } else {
+            "published before the receipt gate (2026-09-10 18:45Z)".to_string()
+        };
+        // notes: hold, staged newer lap, attitude of the published lap, lid, build note
+        let mut notes: Vec<String> = Vec::new();
+        if let Some(r) = holds.get(nn.as_str()) {
+            notes.push(format!("HELD: {r}"));
+        }
+        for (m, t) in staged.iter().filter(|(m, _)| *m == nn) {
+            let _ = m;
+            notes.push(format!("staged {t} awaiting the opening check"));
+        }
+        if let Some((t, _)) = published.get(nn.as_str()) {
+            let ts = format!("{:.3}", t);
+            match crate::video::attitude_verdict(ghosts_readme, &nn, &ts) {
+                crate::video::Attitude::Clean => notes.push("attitude clean".into()),
+                crate::video::Attitude::NoTable => {}
+                v => notes.push(format!("attitude: {}", v.describe())),
+            }
+        }
+        if let Some(l) = lidrows.get(nn.as_str()) {
+            notes.push(format!("⚠ {l}"));
+        }
+        if let Some(rb) = rowbuilds.get(nn.as_str()) {
+            if !rb.note.trim().is_empty() {
+                notes.push(format!("↻ {}", rb.note.trim()));
+            }
+        }
+        let esc = |s: &str| s.replace('|', "\\|");
+        rows.push(format!("| {nn} | {} | {lap} | {build} | {url} | {} | {} |", esc(&title), esc(&approval), esc(&notes.join("; "))));
+    }
+    let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    format!(
+        "# Tiny Summer 2026 — delivery table (generated by `tinyctl final-table`, unix {when})\n\n| map | title | lap (video) | build | asset URL | approval | notes |\n|---|---|---|---|---|---|---|\n{}\n",
+        rows.join("\n")
+    )
+}
+
+#[cfg(test)]
+mod final_table_tests {
+    use super::*;
+
+    #[test]
+    fn the_delivery_table_names_lap_build_url_approval_and_notes_per_row() {
+        let page = "**Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **18.298** (build ship16, controls overlay) · map: [ship16](https://x/05.zip)\n\n\
+https://github.com/user-attachments/assets/a\n\n\
+**Tiny Saudi Arabia 2026** — original author time `73.418` · tiny ghost **96.298** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/b\n\n\
+**Tiny Argentina 2026** — original author time `78.988` · *no video yet*\n";
+        let ghosts = "- 05 18.298: below 8 m/s: 0.00 s, respawns: 0, inverted: 0.00 s, 0 slow + 0 attitude intervals\n\
+- 22 96.298: below 8 m/s: 8.45 s, respawns: 0, inverted: 2.69 s, 11 slow + 2 attitude intervals\n";
+        let ships = "05\t18.298\t05-ghost-18.298-ship15\t/x\thttps://github.com/user-attachments/assets/a\n22\t96.298\t22-ghost-96.298-ship15\t/x\thttps://github.com/user-attachments/assets/b\n22\t82.652\t22-ghost-82.652-ship15\t/x\theld\n";
+        let mut holds = std::collections::HashMap::new();
+        holds.insert("22".to_string(), "opening rework".to_string());
+        let approvals = "05\t18.298\tcoordinator\topening ok\n";
+        let rb = parse_rowbuilds("05\tship16\thttps://x/05.zip\tvideo rendered on ship15 — frames identical on ship16\n");
+        let mut lid = std::collections::HashMap::new();
+        lid.insert("05".to_string(), "lap rides the water lid".to_string());
+        let t = final_table(page, ghosts, ships, &holds, approvals, &std::collections::HashSet::new(), &rb, &lid);
+        assert!(t.contains("| 05 | Tiny Summer 2026 - 05 | 18.298 | ship16 | https://github.com/user-attachments/assets/a | receipt (coordinator: opening ok) | attitude clean; ⚠ lap rides the water lid; ↻ video rendered on ship15 — frames identical on ship16 |"), "{t}");
+        assert!(t.contains(&"| 22 | Tiny Saudi Arabia 2026 | 96.298 | ship15 | https://github.com/user-attachments/assets/b | published before the receipt gate (2026-09-10 18:45Z) | HELD: opening rework; staged 82.652 awaiting the opening check; attitude: not clean: inverted 2.69 s, 2 attitude interval(s) (> 0.3 s of |roll|/|pitch| > 60°) |".replace("|roll|/|pitch|", "\\|roll\\|/\\|pitch\\|")), "{t}");
+        assert!(t.contains("| 21 | Tiny Argentina 2026 | — | — | — | no video |  |"), "{t}");
+    }
+}

@@ -141,6 +141,7 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         the file stamped for `clip ship`; --no-overlay makes a bare mp4 (in capitals; ship refuses it); --from-webm F
         runs cut+overlay(+ship) on an existing render; --ship starts the box-side publish (tinyship.sh) detached
   tinyctl shipwatch --out /tmp/tinyvid --readme tiny/README.md [--repo DIR] [--once] [--commit] [--build-note "…"]
+  tinyctl final-table --out /tmp/tinyvid --readme tiny/README.md --ghosts-dir DIR [--write FINAL.md]
         collects the ships --ship started (done files on the box): swaps the map's page row (time, build note,
         asset URL; 21–25 by their country names) and with --commit commits + pushes the page
   tinyctl motion --orig SRC --tiny TINY --views V.tsv --anchor A --tag T [--seconds 8] [--fps 20]
@@ -196,6 +197,7 @@ fn main() {
         "video" => video::cmd(rest),
         "shipwatch" => video::shipwatch_cmd(rest),
         "page-status" => pagestatus::cmd(rest),
+        "final-table" => pagestatus::final_table_cmd(rest),
         "motion" => motion::cmd(rest),
         "mtrender" => mtrender::cmd(rest),
         "box-build" => boxbuild::box_build_cmd(rest),
