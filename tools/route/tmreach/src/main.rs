@@ -112,6 +112,7 @@ fn main() {
         "sweep" => cmd_sweep(&a),
         "track-project" => cmd_track_project(&a),
         "identity" => cmd_identity(&a),
+        "preflight" => cmd_preflight(&a),
         _ => usage(),
     };
     if let Err(e) = r {
@@ -2075,5 +2076,70 @@ fn cmd_chain_to_state(a: &Args) -> Result<(), String> {
         (st.state.vel[0].powi(2) + st.state.vel[1].powi(2) + st.state.vel[2].powi(2)).sqrt(), st.state.speed_fwd.unwrap_or(0.0),
         st.state.ang_vel.map(|v| v[0]).unwrap_or(0.0), st.state.ang_vel.map(|v| v[1]).unwrap_or(0.0), st.state.ang_vel.map(|v| v[2]).unwrap_or(0.0)
     );
+    Ok(())
+}
+
+/// `tmreach preflight --map M --tape T --gates G [--centreline C] [--author-line A] [--chain C --pulse-at S] [--ghost BIN]`
+/// LAUNCH CONTROLS (the parent's resource audit, 2026-09-10): a lane must not start unless
+///   1. the template's input tape has packet mode 2 only (`ghost inspect`; a mode-15 tail = inputs die at the donor's finish),
+///   2. the gates place on the line within 20 m with monotone s (the lap search's own guard, run here up front),
+///   3. the human line projects monotone through the scorer (identity; needs --author-line),
+///   4. (when --chain and --pulse-at are given) the engine still acts on inputs at that race time (input-life pulse).
+/// Prints one line per control and exits 3 on the first failure.
+fn cmd_preflight(a: &Args) -> Result<(), String> {
+    let mut failed = false;
+    // 1. packet modes
+    let ghost: String = a.get("ghost").map(|s| s.to_string()).unwrap_or_else(|| std::env::var("GHOST").unwrap_or_else(|_| "/tmp/tmp/playerwt/tools/target/release/ghost".to_string()));
+    if Path::new(&ghost).exists() {
+        let out = std::process::Command::new(&ghost).arg("inspect").arg(a.req("tape")).output().map_err(|e| e.to_string())?;
+        let txt = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+        let modes = txt.lines().find(|l| l.contains("modes [")).map(|l| l.trim().to_string()).unwrap_or_default();
+        if modes.contains("modes [2]") {
+            println!("PREFLIGHT 1 template packet modes: OK ({})", modes.split(',').next().unwrap_or(""));
+        } else {
+            println!("PREFLIGHT 1 template packet modes: FAIL ({modes}) — inputs die at the donor's finish; rebuild the template from a donor cut before its last packet");
+            failed = true;
+        }
+    } else {
+        println!("PREFLIGHT 1 template packet modes: SKIPPED (no ghost binary at {ghost})");
+    }
+    // 2. gate placement + 3. identity (engine-free)
+    let gates = MapGates::load_geom(Path::new(&a.req("gates")))?;
+    if let Some(c) = a.get("centreline") {
+        let ord: Option<Vec<u32>> = std::fs::read_to_string(&c).ok().and_then(|txt| tmreach::json::parse(&txt).ok()).and_then(|j| j.get("order_groups").and_then(|v| v.arr()).map(|arr| arr.iter().filter_map(|x| x.f64()).map(|x| x as u32).collect()));
+        let loaded = match a.get("author-line") { Some(al) => tmreach::lap::Track::from_author_line_ordered(Path::new(&al), &gates, ord.as_deref()), None => tmreach::lap::Track::load(Path::new(&c)) };
+        match loaded {
+            Ok(t) => {
+                let mono = t.gate_s.windows(2).all(|w| w[1] > w[0]);
+                println!("PREFLIGHT 2 gate placement on the line: {} ({} gates at s {:?})", if mono { "OK" } else { "FAIL (s not monotone)" }, t.gate_s.len(), t.gate_s.iter().map(|s| format!("{s:.0}")).collect::<Vec<_>>());
+                if !mono { failed = true; }
+            }
+            Err(e) => { println!("PREFLIGHT 2 gate placement on the line: FAIL ({e})"); failed = true; }
+        }
+    } else {
+        println!("PREFLIGHT 2 gate placement: SKIPPED (no --centreline)");
+    }
+    if a.get("author-line").is_some() {
+        match cmd_identity(a) {
+            Ok(()) => println!("PREFLIGHT 3 human line through the scorer: OK"),
+            Err(e) => { println!("PREFLIGHT 3 human line through the scorer: FAIL ({e})"); failed = true; }
+        }
+    } else {
+        println!("PREFLIGHT 3 identity: SKIPPED (no --author-line)");
+    }
+    // 4. input life on a live chain
+    if a.get("chain").is_some() && a.get("pulse-at").is_some() {
+        match cmd_input_life(a) {
+            Ok(()) => println!("PREFLIGHT 4 input life at race {} s: OK", a.req("pulse-at")),
+            Err(e) => { println!("PREFLIGHT 4 input life: FAIL ({e})"); failed = true; }
+        }
+    } else {
+        println!("PREFLIGHT 4 input life: SKIPPED (give --chain and --pulse-at inside the chain)");
+    }
+    if failed {
+        println!("PREFLIGHT: REFUSED");
+        std::process::exit(3);
+    }
+    println!("PREFLIGHT: OK");
     Ok(())
 }
