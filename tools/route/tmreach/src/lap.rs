@@ -932,6 +932,13 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let seg_hint = if cps > base.map(|e| cps_of(&e.end)).unwrap_or(root_cps) { track.pts.len() / 2 } else { seg_hint };
             let win = if cps > base.map(|e| cps_of(&e.end)).unwrap_or(root_cps) { track.pts.len() } else { 80 };
             let (s, lat, seg, d3) = track.project(pos(&end), seg_hint, win);
+            // a tight U-bend (21's hairpin: the east and west legs are 50 m apart laterally, 130 m of line) leaves the windowed projection
+            // on the wrong leg and every rollout that takes the bend dies "offroute lat -50" (21:46Z) — re-project globally when the local
+            // result is far from the car and keep the better of the two
+            let (s, lat, seg, d3) = if d3 > 15.0 {
+                let (s2, lat2, seg2, d32) = track.project(pos(&end), seg_hint, track.pts.len());
+                if d32 < d3 { (s2, lat2, seg2, d32) } else { (s, lat, seg, d3) }
+            } else { (s, lat, seg, d3) };
             if debug && base.is_none() && std::env::var("TMREACH_LAP_TRACE").map(|m| desc.contains(&m)).unwrap_or(false) {
                 for (i, r) in rows.iter().enumerate().step_by(20) {
                     let (ss, ll, sg, dd) = track.project(pos(r), seg_hint, 80);
