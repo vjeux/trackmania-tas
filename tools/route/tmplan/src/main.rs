@@ -1665,7 +1665,7 @@ fn cmd_arrival_bands(args: &[String]) {
         let (band_speed, speed_source) = if vj.is_some() && author_speed > 0.0 && speed < 0.6 * author_speed { (author_speed, "author-line (vjeux crossed at a struggle speed)") } else { (speed, if vj.is_some() { "vjeux-launched-cp" } else { "author-line" }) };
         let plane = serde_json::json!({"centre": g.centre, "normal": g.normal, "half_width": g.half_width, "half_height": g.half_height,  "credit_offset_m": g.credit_offset_m, "kind": format!("{:?}", g.kind), "model": g.model});
         let band = serde_json::json!({
-            "lateral_m": {"centre": lat.unwrap_or(0.0), "tol": (g.half_width - 1.0).max(2.0), "note": "signed in-plane offset from the credit-plane centre, axis = normal × up; a crossing anywhere within ± half_width credits"},
+            "lateral_m": {"centre": lat.unwrap_or(0.0), "tol": (g.half_width - 1.0).max(2.0).max(lat.map(|l| l.abs() + 1.0).unwrap_or(0.0)), "note": "signed in-plane offset from the credit-plane centre, axis = normal × up; a crossing anywhere within ± half_width credits"},
             "height_rel_centre_m": {"centre": dy.unwrap_or(0.0), "lo": dy.unwrap_or(0.0) - 1.5, "hi": dy.unwrap_or(0.0) + 3.0, "note": "car y minus credit-plane centre y at the human's crossing; the human sits on the deck, so this is the deck offset of that ring"},
             "speed_mps": {"centre": band_speed, "lo": (band_speed * 0.75).round(), "hi": (band_speed * 1.15).round(), "source": speed_source},
             "heading_deg": {"centre": human.get("heading_deg").and_then(|h| h.as_f64()).unwrap_or(0.0), "tol": 20.0}
