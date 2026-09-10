@@ -1573,6 +1573,7 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
         rdv_tol: a.get("rdv-tol").map(|s| s.parse().unwrap()).unwrap_or(3.0),
         vjeux_csv: a.get("vjeux-approach").and_then(|f| std::fs::read_to_string(f).ok()),
         arrival_any: a.has("arrival-any"),
+        arrival_dy: a.get("arrival-dy").map(|s| s.parse().unwrap()).unwrap_or(5.0),
         assume_mask: a.get("assume-mask").map(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).unwrap()).unwrap_or(0),
         offworld_y: a.get("offworld-y").map(|s| s.parse().unwrap()).unwrap_or(-20.0),
         no_brake: a.get("no-brake").map(|s| { let v: Vec<f64> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); (v[0], v[1]) }),

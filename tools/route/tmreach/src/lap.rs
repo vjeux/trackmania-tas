@@ -490,6 +490,8 @@ pub struct LapCfg {
     pub arrival_any: bool,
     /// order-position bits counted as already credited at the seed/root (injected mid-route states): --assume-mask 0x7
     pub assume_mask: u32,
+    /// clinic: max height difference between the credit row and the gate plane centre (default 5 m; --arrival-dy)
+    pub arrival_dy: f64,
     /// vjeux launched-checkpoint csv (ghost lcp --csv): his approach samples become macros
     pub vjeux_csv: Option<String>,
     /// Start the search from an INJECTED car state (a LaunchedCP crossing / approach start, tm-inject-state/1),
@@ -1009,7 +1011,16 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let min_arr: f64 = std::env::var("TMREACH_MIN_ARRIVAL").ok().and_then(|s| s.parse().ok()).unwrap_or(8.0);
                 let speed_ok = cfg.arrival_any || (if vh <= 0.0 { v >= min_arr } else { (v - vh).abs() <= 0.3 * vh.max(5.0) });
                 let lat_ok = lat_abs <= hw + 0.5;
-                if speed_ok && lat_ok {
+                // HEIGHT: the credit row must be near the gate's plane height (a tall ring credits a car FALLING through it 7 m
+                // under the deck — 20 wp6, 07:57Z); the credited gate = the order position k_pref-1's group centre
+                let height_ok = match (&cfg.gates, track.order_groups.get(k_pref.saturating_sub(1))) {
+                    (Some(g), Some(grp)) => g.gates.iter().filter(|gg| gg.group == *grp).map(|gg| (cr.y - gg.centre[1]).abs()).fold(f64::INFINITY, f64::min) <= cfg.arrival_dy,
+                    _ => true,
+                };
+                if speed_ok && lat_ok && !height_ok {
+                    out.log.push(format!("arrival at gate {} refused: credit row {:.1} m from the gate plane height (limit {:.1})", k_pref, cr.y, cfg.arrival_dy));
+                }
+                if speed_ok && lat_ok && height_ok {
                     out.log.push(format!("LEG DONE: gate {} (order position {}) credited with a good arrival at race {}: s {s:.1} lat {lat:.1} v {v:.1} (human {vh:.1}) after {} ticks ({} macros)", k_pref, k_pref - 1, crate::secs(w.race_of(&end)), e.chain.len(), e.macro_desc.len()));
                     out.leg_done = Some(k_pref);
                     out.finished = Some(e.clone());
