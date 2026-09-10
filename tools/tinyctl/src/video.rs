@@ -313,9 +313,15 @@ fn all_once(args: &[String]) -> Result<(), String> {
             }
             match a.as_str() {
                 "--all" => {}
-                "--map" | "--ghost" | "--map-file" | "--watch" | "--ghosts-sync" | "--webm-sync" | "--build" | "--from-webm" => skip = true,| "--ghost" | "--map-file" | "--watch" | "--ghosts-sync" | "--build" | "--from-webm" => skip = true,
+                "--map" | "--ghost" | "--map-file" | "--watch" | "--ghosts-sync" | "--webm-sync" | "--build" | "--from-webm" => skip = true,
                 _ => v.push(a.clone()),
             }
+        }
+        // the per-map call learns where the FRESH ghosts live, so a clip whose
+        // lap was replaced during its own render is not uploaded (see `one`)
+        if let Some(src) = f("--ghosts-sync") {
+            v.push("--ghosts-src".into());
+            v.push(src);
         }
         v
     };
@@ -668,32 +674,61 @@ fn one(args: &[String]) -> Result<Done, String> {
 
     // --- the ship, detached on the box; `tinyctl shipwatch` collects the URL
     if tmmaps::cli::has(args, "--ship") {
+        // SUPERSEDED DURING ITS OWN RENDER? The player project replaced 21's
+        // ghost twice in 40 minutes on 2026-09-10 (122.318 → 122.311 → 122.294):
+        // a 15-minute render finished, its clip went up, and the watcher
+        // retired it before it reached the page — an upload slot on the one
+        // session for nothing. So, right before the ship, the FRESH ghost
+        // folder (`--ghosts-src`, the sync source) is asked what the map's lap
+        // is now; a different lap means the next scan renders that one, and
+        // this clip is recorded as superseded without touching GitHub. The
+        // render, mp4 and store copy stand (banked).
+        if let Some(src) = f("--ghosts-src") {
+            let fresh = PathBuf::from(&src).join(format!("{nn}.Ghost.Gbx"));
+            if let Ok(g2) = gbx::record::decode_ghost(fresh.to_str().unwrap_or("")) {
+                if let Some(ms2) = g2.race_time_ms.or_else(|| g2.samples.last().map(|s| s.time_ms)) {
+                    let fresh_time = format!("{}.{:03}", ms2 / 1000, ms2 % 1000);
+                    if fresh_time != time {
+                        println!("SUPERSEDED DURING THE RENDER: {} now holds {fresh_time}, this clip is {time} — not shipped (the next scan renders {fresh_time})", fresh.display());
+                        record_ship_row(&out, &nn, &time, &name, &format!("{VID}/ship/{name}.done"), "superseded")?;
+                        return finish_row(&out, &nn, &time, cps, &overlay_col, &name, &sheet, traj_id);
+                    }
+                }
+            }
+        }
         let script = script_path()?;
         wsx.push(&script, BOX_SHIP_SH)?;
         let slug = map_slug(&nn);
         let done_file = format!("{VID}/ship/{name}.done");
         let _ = wsx.sh(&format!("mkdir -p {VID}/ship && rm -f '{done_file}' && chmod +x {BOX_SHIP_SH} && nohup sh {BOX_SHIP_SH} '{r_mp4}' '{slug}' '{VID}/ship/{name}' > /dev/null 2>&1 < /dev/null &"))?;
-        let ships = out.join("ships.tsv");
-        // APPENDED, not read-modify-written. The watcher rewrites this file to
-        // mark statuses, and a read-modify-write from this side raced it: map
-        // 03's newest row (19.793) was written and then clobbered by the
-        // watcher's copy of the older file, so the newest lap of that map
-        // silently left the queue.
-        {
-            use std::io::Write;
-            let fresh = !ships.exists() || std::fs::metadata(&ships).map(|m| m.len() == 0).unwrap_or(true);
-            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&ships).map_err(|e| format!("{}: {e}", ships.display()))?;
-            if fresh {
-                f.write_all(b"# nn\ttime\tname\tdone_file\tstatus\n").map_err(|e| e.to_string())?;
-            }
-            f.write_all(format!("{nn}\t{time}\t{name}\t{done_file}\tpending\n").as_bytes()).map_err(|e| e.to_string())?;
-        }
+        record_ship_row(&out, &nn, &time, &name, &done_file, "pending")?;
         println!("ship: started on the box as {slug} — done file {done_file}; `tinyctl shipwatch --out {} --readme tiny/README.md` collects it", out.display());
     }
 
+    finish_row(&out, &nn, &time, cps, &overlay_col, &name, &sheet, traj_id)
+}
+
+/// One row APPENDED to `<out>/ships.tsv` — never read-modify-written: the
+/// watcher rewrites this file to mark statuses, and a read-modify-write from
+/// this side raced it (map 03's newest row was clobbered out of the queue).
+fn record_ship_row(out: &Path, nn: &str, time: &str, name: &str, done_file: &str, status: &str) -> Result<(), String> {
+    use std::io::Write;
+    let ships = out.join("ships.tsv");
+    let fresh = !ships.exists() || std::fs::metadata(&ships).map(|m| m.len() == 0).unwrap_or(true);
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&ships).map_err(|e| format!("{}: {e}", ships.display()))?;
+    if fresh {
+        f.write_all(b"# nn\ttime\tname\tdone_file\tstatus\n").map_err(|e| e.to_string())?;
+    }
+    f.write_all(format!("{nn}\t{time}\t{name}\t{done_file}\t{status}\n").as_bytes()).map_err(|e| e.to_string())
+}
+
+/// The REPORT.md row per lap (stdout and `<out>/REPORT.md`) and the `Done`
+/// record the state file keeps.
+#[allow(clippy::too_many_arguments)]
+fn finish_row(out: &Path, nn: &str, time: &str, cps: usize, overlay_col: &str, name: &str, sheet: &Path, traj_id: String) -> Result<Done, String> {
     println!();
     // the finish is the last "checkpoint" the decoder lists
-    let row = format!("| {nn} | {} | {time} | {cps} cps | {overlay_col} | {name}.webm | {name}.mp4 | look at {} |", map_title(&nn), sheet.display());
+    let row = format!("| {nn} | {} | {time} | {cps} cps | {overlay_col} | {name}.webm | {name}.mp4 | look at {} |", map_title(nn), sheet.display());
     println!("{row}");
     let report = out.join("REPORT.md");
     let mut text = std::fs::read_to_string(&report).unwrap_or_default();
@@ -703,7 +738,7 @@ fn one(args: &[String]) -> Result<Done, String> {
     text.push_str(&row);
     text.push('\n');
     std::fs::write(&report, text).map_err(|e| format!("{}: {e}", report.display()))?;
-    Ok(Done { nn, ghost_md5: traj_id, time, cps, clip: format!("{name}.webm"), sheet })
+    Ok(Done { nn: nn.to_string(), ghost_md5: traj_id, time: time.to_string(), cps, clip: format!("{name}.webm"), sheet: sheet.to_path_buf() })
 }
 
 /// `tools/tinyctl/box/tinyship.sh`, found from the binary's checkout (the
