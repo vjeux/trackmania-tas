@@ -154,6 +154,26 @@ pub fn lap_label(readme: &str, nn: &str, time: &str) -> String {
     }
 }
 
+/// The ghosts README's CURRENT lap for map `nn`, as (time, build): the first
+/// table row `| nn | nn.Ghost.Gbx | time | credits | build | …`. `None` when
+/// the README has no such row (or a row of another shape) — then nothing is
+/// superseded on its word.
+pub fn readme_current_lap(readme: &str, nn: &str) -> Option<(String, String)> {
+    let key = format!("| {nn} |");
+    readme.lines().filter(|l| l.starts_with(&key)).find_map(|l| {
+        let c: Vec<&str> = l.split('|').map(str::trim).collect();
+        // ["", nn, file, time, credits, build, …]
+        if c.len() < 6 || c[2] != format!("{nn}.Ghost.Gbx") {
+            return None;
+        }
+        let time = c[3];
+        if time.is_empty() || !time.chars().all(|ch| ch.is_ascii_digit() || ch == '.') {
+            return None;
+        }
+        Some((time.to_string(), c[5].to_string()))
+    })
+}
+
 /// `--all`: every `NN.Ghost.Gbx` in `--ghosts-dir` whose md5 is not yet in
 /// `<out>/videos.tsv` (nn, ghost md5, time, cps, clip, sheet, when), rendered in
 /// turn — the loop of a day when laps land every half hour. A ghost REPLACED
@@ -806,9 +826,37 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 changed = true;
                 continue;
             }
+            // THE GHOSTS README OUTRANKS THIS FILE. A lap that landed after the
+            // clip was cut (the input arm replaces a map's ghost several times a
+            // day) makes the staged clip stale before it ever shipped; the page
+            // converges on the newest lap per map, so the row is superseded
+            // here and the newer lap's render ships instead. Only a README row
+            // on the same build counts (a map that fell back to an older build
+            // keeps its ship15 clip).
+            if let Some(d) = &ghosts_dir {
+                let readme = std::fs::read_to_string(d.join("README.md")).unwrap_or_default();
+                if let Some((newest, build)) = readme_current_lap(&readme, &cells[0]) {
+                    if newest != cells[1] && build_note.contains(&build) {
+                        println!("{} {} {}: the ghosts README now says {newest} ({build}) — superseded, not shipped", chrono_now(), cells[0], cells[1]);
+                        *row = format!("{}\t{}\t{}\t{}\tsuperseded", cells[0], cells[1], cells[2], cells[3]);
+                        changed = true;
+                        continue;
+                    }
+                }
+            }
             pending += 1;
             let (nn, time, name, done_file) = (&cells[0], &cells[1], &cells[2], &cells[3]);
-            let Some(done) = done_of.get(done_file.as_str()).cloned() else { continue };
+            let Some(done) = done_of.get(done_file.as_str()).cloned() else {
+                // NO VERDICT ON THE BOX: the ship never ran, or died before
+                // writing its done file (a box reboot, a killed shell, a session
+                // that expired before this row's turn came — 2026-09-09 left
+                // rows like that pending forever, and the drain of a fresh cookie
+                // skipped them). Queue it for a launch; the launch below happens
+                // only when nothing is running on the box, so a ship that IS
+                // running (its done file removed at launch) is never doubled.
+                dead_cookie.push((nn.clone(), time.clone(), name.clone(), done_file.clone()));
+                continue;
+            };
             let done = done.trim().to_string();
             // PENDING <url>: uploaded and registered, the gate not yet 200 when the
             // box gave up (a big asset can take an hour) — probe it from here,
@@ -1147,7 +1195,12 @@ fn write_ghost_with_uid(src: &Path, out: &Path, uid: &str) -> Result<usize, Stri
 }
 
 /// `rsync -a src/ dst/` (ssh, batch mode) with extra filters; `src` may be
-/// `host:dir` or a local dir.
+/// `host:dir` or a local dir. A PARTIAL transfer (rsync 23/24: a file the far
+/// side was rewriting as we read it — the input arm replaces a ghost every
+/// twenty minutes, and manifoldfs answers "No data available" for the seconds
+/// that takes) is a warning, not a failed scan: rsync lands each file through
+/// a temporary and a rename, so the files that did not make it keep their
+/// previous copy here and come over on the next tick.
 fn rsync_dir(src: &str, dst: &Path, filters: &[&str]) -> Result<(), String> {
     let src = if src.ends_with('/') { src.to_string() } else { format!("{src}/") };
     let st = Command::new("rsync")
@@ -1157,10 +1210,14 @@ fn rsync_dir(src: &str, dst: &Path, filters: &[&str]) -> Result<(), String> {
         .arg(format!("{}/", dst.display()))
         .status()
         .map_err(|e| format!("rsync: {e}"))?;
-    if !st.success() {
-        return Err(format!("rsync {src} → {}: {st}", dst.display()));
+    match st.code() {
+        Some(0) => Ok(()),
+        Some(23) | Some(24) => {
+            eprintln!("rsync {src} → {}: partial transfer ({st}) — a file was being rewritten; its previous copy stands until the next scan", dst.display());
+            Ok(())
+        }
+        _ => Err(format!("rsync {src} → {}: {st}", dst.display())),
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1185,6 +1242,19 @@ mod label_tests {
         assert_eq!(lap_label(README, "03", "28.989"), "tiny ghost");
         assert_eq!(lap_label(README, "03", "20.993"), "driven by vjeux (playtest)");
         assert_eq!(lap_label(README, "09", "1.000"), "tiny ghost", "no row: a TAS lap");
+    }
+
+    /// The README's FIRST table row per map is the map's current lap; a row of
+    /// another shape (the appended playtest note) is not read as one, a map
+    /// without a row supersedes nothing, and the build comes back with the time
+    /// so a fallback to an older build does not retire a ship15 clip.
+    #[test]
+    fn the_readme_names_the_current_lap_and_its_build() {
+        assert_eq!(readme_current_lap(README, "01"), Some(("19.381".into(), "ship15".into())));
+        assert_eq!(readme_current_lap(README, "21"), Some(("116.384".into(), "ship14".into())));
+        assert_eq!(readme_current_lap(README, "03"), Some(("28.989".into(), "ship15".into())), "the first table row, not the appended note");
+        assert_eq!(readme_current_lap(README, "09"), None);
+        assert_eq!(readme_current_lap("| 04 | 04.Ghost.Gbx | — | 0 | none |", "04"), None, "a placeholder is not a lap");
     }
 }
 
