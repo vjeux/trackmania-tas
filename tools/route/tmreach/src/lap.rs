@@ -483,6 +483,8 @@ pub struct LapCfg {
     pub offworld_y: f64,
     /// clinic: accept ANY credited arrival (speed irrelevant) — the 21:00Z respawn-channel fallback
     pub arrival_any: bool,
+    /// order-position bits counted as already credited at the seed/root (injected mid-route states): --assume-mask 0x7
+    pub assume_mask: u32,
     /// vjeux launched-checkpoint csv (ghost lcp --csv): his approach samples become macros
     pub vjeux_csv: Option<String>,
     /// Start the search from an INJECTED car state (a LaunchedCP crossing / approach start, tm-inject-state/1),
@@ -813,7 +815,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let cps = cps_of(&end);
             // WHICH gates: every counter step in these rows is attributed to the nearest gate centre
             // (within 30 m) -> its group -> its position in the order; an unexplained step sets bit 31
-            let mut mask = base.map(|e| e.mask).unwrap_or(0);
+            let mut mask = base.map(|e| e.mask).unwrap_or(cfg.assume_mask);
             let mut prev_cps = base.map(|e| cps_of(&e.end)).unwrap_or(root_cps);
             for r in &rows {
                 let c = cps_of(r);
@@ -1013,11 +1015,10 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
     };
 
     // SEED: the root, or the base tape replayed for --prefix-ticks (its state becomes the first cell), or an
-    // INJECTED state (--inject-state, MODEL arm) followed by its approach inputs
+    // INJECTED state (--inject-state) followed by its approach inputs
     if cfg.prefix_ticks > 0 || cfg.seed_chain.is_some() || cfg.inject.is_some() {
-        // the node the seed chain starts from and the tick it starts at: the root, or the injected fork
         let mut seed_node = branch::ROOT;
-        let mut seed_from = root;
+        let mut inject_from = root;
         let mut recs = match (&cfg.inject, &cfg.seed_chain) {
             (Some(st), _) => {
                 // past race 0 first (the countdown holds the car at the spawn — ENV): the template's own inputs for
@@ -1026,7 +1027,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let pre = w.reference_recs(root, INJECT_PREROLL);
                 let (_pre_rows, h_pre) = w.rollout_keep(branch::ROOT, &pre, root, pre.len() as u64)?;
                 let (h0, rb) = crate::inject::inject_state(w, h_pre, st)?;
-                seed_from = w.floor(h0)?;
+                inject_from = w.floor(h0)?;
                 out.log.push(format!("INJECTED {} state (landmark {}, {}) at ({:.1}, {:.1}, {:.1}) v {:.1}: read back ({:.1}, {:.1}, {:.1}); replaying {} approach ticks", st.source.kind, st.source.landmark, st.source.file, st.state.pos[0], st.state.pos[1], st.state.pos[2], (st.state.vel[0].powi(2) + st.state.vel[1].powi(2) + st.state.vel[2].powi(2)).sqrt(), rb.x, rb.y, rb.z, st.inputs.len()));
                 seed_node = h0;
                 crate::inject::inputs_to_recs(&st.inputs)
@@ -1037,7 +1038,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         // --seed-to-gate K: keep the seed only up to 0.3 s after its K-th credit (the parent's rule: seed the stuck
         // leg from a FASTER upstream chain, gate N-2, and let the speed-matching search redo the approach)
         if cfg.seed_to_gate > 0 {
-            let (rows0, nh0) = w.rollout_keep(seed_node, &recs, seed_from, recs.len() as u64)?;
+            let (rows0, nh0) = w.rollout_keep(seed_node, &recs, inject_from, recs.len() as u64)?;
             w.release(nh0);
             let root_c = if root_row.cps == u32::MAX { 0 } else { root_row.cps };
             let mut cut_at: Option<usize> = None;
@@ -1060,11 +1061,15 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         // dead end: cut the chain back 3 s at a time (up to 12 times) until it ends in a live state
         let mut tries = 0;
         let (rows, nh, end, s, seg) = loop {
-            let (rows, nh) = if recs.is_empty() { (Vec::new(), seed_node) } else { w.rollout_keep(seed_node, &recs, seed_from, recs.len() as u64)? };
+            let (rows, nh) = w.rollout_keep(seed_node, &recs, inject_from, recs.len() as u64)?;
             let end = rows.last().cloned().unwrap_or_else(|| root_row.clone());
             // project the seed by WALKING its rows from the root with the hinted projector (a self-crossing line must not snap
             // the seed to a later pass — 20 G3-first route, 22:05Z)
             let mut hint = seg0;
+            if cfg.inject.is_some() {
+                // an injected seed starts far from the spawn: place it globally, then walk its approach rows
+                hint = track.project(pos(rows.first().unwrap_or(&end)), track.pts.len() / 2, track.pts.len()).2;
+            }
             for (i, r) in rows.iter().enumerate() {
                 if i % 10 == 0 {
                     hint = track.project(pos(r), hint, 30).2;
@@ -1092,7 +1097,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         let recs_len = recs.len();
         let cps = cps_of(&end);
         // credits along the prefix, attributed like a rollout's
-        let mut mask = 0u32;
+        let mut mask = cfg.assume_mask; // --assume-mask: gates counted as credited before the seed (an injected mid-route state)
         let mut prev = root_cps;
         for r in &rows {
             let c = cps_of(r);
