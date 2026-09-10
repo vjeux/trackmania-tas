@@ -112,6 +112,11 @@ impl Track {
 
     /// Replace ordered leg `k` (from gate k-1, or the spawn, to gate k) by an explicit waypoint polyline.
     pub fn replace_leg(&mut self, k: usize, wps: &[[f64; 3]]) {
+        self.replace_leg_hw(k, wps, 8.0)
+    }
+
+    /// `replace_leg` with an explicit half-width for the new polyline (a 5.5 m bridge wants 2, a plaza 8)
+    pub fn replace_leg_hw(&mut self, k: usize, wps: &[[f64; 3]], hw0: f64) {
         if wps.len() < 2 || k >= self.gate_s.len() {
             return;
         }
@@ -138,7 +143,7 @@ impl Track {
         let new_gate_k = s[p_idx + wps.len() - 1];
         let shift = new_gate_k - self.gate_s[k];
         let _ = removed_len;
-        let hw0 = 8.0;
+        let _ = 8.0;
         let mut half_width: Vec<f64> = self.half_width[..p_idx.min(self.half_width.len())].to_vec();
         half_width.extend(std::iter::repeat(hw0).take(wps.len()));
         half_width.extend_from_slice(&self.half_width[g_idx.min(self.half_width.len())..]);

@@ -1510,12 +1510,14 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
     // --leg-waypoints k:FILE (repeatable via commas k:FILE,k:FILE): replace ordered leg k by a waypoint polyline
     if let Some(spec) = a.get("leg-waypoints") {
         for item in spec.split(',') {
-            if let Some((k, f)) = item.split_once(':') {
+            if let Some((k, rest)) = item.split_once(':') {
+                // k:FILE or k:FILE:HALFWIDTH
+                let (f, hw) = match rest.rsplit_once(':') { Some((f, h)) if h.parse::<f64>().is_ok() => (f, h.parse::<f64>().unwrap()), _ => (rest, 8.0) };
                 let txt = std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;
                 let wps: Vec<[f64; 3]> = txt.lines().filter_map(|l| { let v: Vec<f64> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect(); if v.len() == 3 { Some([v[0], v[1], v[2]]) } else { None } }).collect();
                 let k: usize = k.parse().map_err(|_| "--leg-waypoints k:FILE")?;
-                track.replace_leg(k, &wps);
-                println!("leg {k} replaced by {} waypoints ({f}); gates now at s {:?}", wps.len(), track.gate_s.iter().map(|x| format!("{x:.0}")).collect::<Vec<_>>());
+                track.replace_leg_hw(k, &wps, hw);
+                println!("leg {k} replaced by {} waypoints ({f}, half-width {hw}); gates now at s {:?}", wps.len(), track.gate_s.iter().map(|x| format!("{x:.0}")).collect::<Vec<_>>());
             }
         }
     }
