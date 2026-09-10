@@ -108,6 +108,7 @@ fn main() {
         "lcp-to-state" => cmd_lcp_to_state(&a),
         "chain-to-state" => cmd_chain_to_state(&a),
         "chain-replay" => cmd_chain_replay(&a),
+        "input-life" => cmd_input_life(&a),
         "sweep" => cmd_sweep(&a),
         "track-project" => cmd_track_project(&a),
         "identity" => cmd_identity(&a),
@@ -1511,12 +1512,14 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
     // --leg-waypoints k:FILE (repeatable via commas k:FILE,k:FILE): replace ordered leg k by a waypoint polyline
     if let Some(spec) = a.get("leg-waypoints") {
         for item in spec.split(',') {
-            if let Some((k, f)) = item.split_once(':') {
+            if let Some((k, rest)) = item.split_once(':') {
+                // k:FILE or k:FILE:HALFWIDTH
+                let (f, hw) = match rest.rsplit_once(':') { Some((f, h)) if h.parse::<f64>().is_ok() => (f, h.parse::<f64>().unwrap()), _ => (rest, 8.0) };
                 let txt = std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?;
                 let wps: Vec<[f64; 3]> = txt.lines().filter_map(|l| { let v: Vec<f64> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect(); if v.len() == 3 { Some([v[0], v[1], v[2]]) } else { None } }).collect();
                 let k: usize = k.parse().map_err(|_| "--leg-waypoints k:FILE")?;
-                track.replace_leg(k, &wps);
-                println!("leg {k} replaced by {} waypoints ({f}); gates now at s {:?}", wps.len(), track.gate_s.iter().map(|x| format!("{x:.0}")).collect::<Vec<_>>());
+                track.replace_leg_hw(k, &wps, hw);
+                println!("leg {k} replaced by {} waypoints ({f}, half-width {hw}); gates now at s {:?}", wps.len(), track.gate_s.iter().map(|x| format!("{x:.0}")).collect::<Vec<_>>());
             }
         }
     }
@@ -1570,6 +1573,12 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
         rdv_tol: a.get("rdv-tol").map(|s| s.parse().unwrap()).unwrap_or(3.0),
         vjeux_csv: a.get("vjeux-approach").and_then(|f| std::fs::read_to_string(f).ok()),
         arrival_any: a.has("arrival-any"),
+        pursue_gain: a.get("pursue-gain").map(|s| s.parse().unwrap()).unwrap_or(10.0),
+        pursue_look: a.get("pursue-look").map(|s| s.parse().unwrap()).unwrap_or(8.0),
+        pursue: match a.get("pursue") { Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?.lines().filter_map(|l| { let v: Vec<f64> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect(); if v.len() >= 3 { Some([v[0], v[1], v[2], *v.get(3).unwrap_or(&0.0)]) } else { None } }).collect(), None => Vec::new() },
+        arrival_strict: a.has("arrival-strict"),
+        arrival_ang: a.get("arrival-ang").map(|s| s.parse().unwrap()).unwrap_or(60.0),
+        arrival_dy: a.get("arrival-dy").map(|s| s.parse().unwrap()).unwrap_or(5.0),
         assume_mask: a.get("assume-mask").map(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).unwrap()).unwrap_or(0),
         offworld_y: a.get("offworld-y").map(|s| s.parse().unwrap()).unwrap_or(-20.0),
         no_brake: a.get("no-brake").map(|s| { let v: Vec<f64> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); (v[0], v[1]) }),
@@ -1735,9 +1744,10 @@ fn cmd_chain_replay(a: &Args) -> Result<(), String> {
         w.release(h);
         rows
     };
-    let mut s = String::from("tick\trace_ms\tx\ty\tz\tspeed\tvy\tcps\n");
+    let mut s = String::from("tick\trace_ms\tx\ty\tz\tspeed\tvy\tcps\tvx\tvz\tyaw_deg\n");
     for (i, r) in rows.iter().enumerate() {
-        s.push_str(&format!("{i}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\t{:+.1}\t{}\n", w.race_of(r), r.x, r.y, r.z, tmreach::rig::speed(r), r.vy, if r.cps == u32::MAX { -1 } else { r.cps as i64 }));
+        let yaw = r.vx.atan2(r.vz).to_degrees();
+        s.push_str(&format!("{i}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\t{:+.1}\t{}\t{:+.2}\t{:+.2}\t{:+.1}\n", w.race_of(r), r.x, r.y, r.z, tmreach::rig::speed(r), r.vy, if r.cps == u32::MAX { -1 } else { r.cps as i64 }, r.vx, r.vz, yaw));
     }
     std::fs::write(a.req("out"), s).map_err(|e| e.to_string())?;
     let last = rows.last().ok_or("no rows")?;
@@ -1964,6 +1974,53 @@ fn cmd_lcp_to_state(a: &Args) -> Result<(), String> {
         st.source.file, st.source.landmark, st.source.kind, st.state.pos[0], st.state.pos[1], st.state.pos[2], v, st.state.ang_vel.map(|w| format!("({:.2}, {:.2}, {:.2})", w[0], w[1], w[2])), st.inputs.len(),
         st.expect.as_ref().map(|e| format!("landmark {} credited within {} ticks at ({:.1}, {:.1}, {:.1})", e.landmark, e.credit_within_ticks, e.pos[0], e.pos[1], e.pos[2])).unwrap_or_else(|| "-".into())
     );
+    Ok(())
+}
+
+/// `tmreach input-life --map M --tape T --pulse-at S [--work DIR]`: does the engine still ACT on inputs at race S seconds?
+/// Two rollouts from the root, identical (the template's own inputs) until race S, then one holds full LEFT lock and the other full RIGHT for
+/// 1.5 s; if their end states coincide the template is CAPPED (the donor's declared lap length ends input processing — ENV,
+/// 2026-09-10: every template built from donor 20 ignores inputs after race 44.740 s). Exit code 3 on a capped template.
+fn cmd_input_life(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let tape = PathBuf::from(a.req("tape"));
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/inputlife-{}", std::process::id())));
+    let pulse_at: f64 = a.req("pulse-at").parse().map_err(|e| format!("--pulse-at: {e}"))?;
+    let mut w = Worker::start(&server, &map, &shim, &work, &tape, false)?;
+    let root = w.root_probe;
+    let n0 = (pulse_at * 100.0).round() as usize;
+    // the prefix = the template's OWN inputs (the base tape) so the car is in a live driving state at the pulse
+    // --chain FILE: a known-good chain as the prefix instead (a template whose own inputs end early would otherwise leave the car dead)
+    let mut left: Vec<forkoracle::forksrv::Rec> = match a.get("chain") {
+        Some(p) => {
+            let txt = std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?;
+            txt.lines().skip(1).filter_map(|l| { let v: Vec<&str> = l.split('\t').collect(); if v.len() >= 4 { Some(forkoracle::forksrv::Rec { steer: v[1].parse::<f32>().unwrap_or(0.0) / 127.0, gas: v[2].parse::<f32>().unwrap_or(0.0), brake: v[3].parse::<f32>().unwrap_or(0.0) }) } else { None } }).collect()
+        }
+        None => w.reference_recs(root, n0.min(w.n_ticks().saturating_sub(root))),
+    };
+    left.truncate(n0);
+    while left.len() < n0 { left.push(forkoracle::forksrv::Rec { steer: 0.0, gas: 1.0, brake: 0.0 }); }
+    let mut right = left.clone();
+    for _ in 0..150 {
+        left.push(forkoracle::forksrv::Rec { steer: -1.0, gas: 1.0, brake: 0.0 });
+        right.push(forkoracle::forksrv::Rec { steer: 1.0, gas: 1.0, brake: 0.0 });
+    }
+    let (rl, hl) = w.rollout_keep(branch::ROOT, &left, root, left.len() as u64)?;
+    w.release(hl);
+    let (rr, hr) = w.rollout_keep(branch::ROOT, &right, root, right.len() as u64)?;
+    w.release(hr);
+    let (el, er) = (rl.last().ok_or("no rows")?, rr.last().ok_or("no rows")?);
+    let d = ((el.x - er.x).powi(2) + (el.y - er.y).powi(2) + (el.z - er.z).powi(2)).sqrt();
+    let live = d > 0.5;
+    println!(
+        "INPUT-LIFE {}: full-left vs full-right pulse at race {:.2} s for 1.5 s -> end states {:.1} m apart (left ({:.1}, {:.1}, {:.1}) right ({:.1}, {:.1}, {:.1}))",
+        if live { "LIVE" } else { "CAPPED — the engine ignores inputs at this race time (donor lap length reached)" },
+        pulse_at, d, el.x, el.y, el.z, er.x, er.y, er.z
+    );
+    if !live {
+        std::process::exit(3);
+    }
     Ok(())
 }
 
