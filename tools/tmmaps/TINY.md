@@ -755,6 +755,62 @@ the render box with one-item lineups and item moves on a copy of the original:
   copy of the original removes it; play mode never shows it; the bake leaves
   it out on purpose.
 
+## Water collision: a lid to both engines, so none (2026-09-10)
+
+* **Physics 28 (`NotCollidable`) is a SOLID to the car** — in the dedicated
+  server (player project: a nose-down drop at 25 m/s onto the 15 pool plate
+  stops at the plane, four wheels on material 28) AND in the client
+  (`tinyctl startcheck` on ship15's own 15 with the Spawn item moved over the
+  plate: the car falls 4 m and rests at y 29.00–29.04). 5380c805's
+  "Water → NotCollidable" (ship14/15) turned every water plate into a lid,
+  not a hole; "the client honours the flag" was an inference from frames,
+  never measured. The only place 28 is honoured is the coverage index
+  (`scene::is_collidable`).
+* **The original's water is a VOLUME** (above) that floats a flat car at
+  0.90 m draft (`probe::WATER_DRAFT`) and lets a nose-down car through —
+  Poland's author does both on the Lake (`mapgeom waterline`: ON at 38.0–38.5
+  under a 39.20 plane for 1-s stretches; down to the floor at 33.8–34.6 on
+  the same lake). No item can carry a volume, so an embedded plate is a lid
+  (13 or 28) or nothing. **Nothing** is the choice, per body, by the
+  original's observed behaviour on the route: the 19 source authors with a
+  ghost never ride ON an item plate; 15's dives UNDER both of his planes
+  (pool 29.0 at 14.7–15.4 s, channel 41.0 at 16.5–18.2 s); the Lake Poland
+  rides is the regenerated zone — the game's own water, untouched. So since
+  cdfa161b every Water-physics collision triangle LEAVES the collision mesh
+  (an item with none keeps `build_surface`'s 1 mm sentinel); the visual quad
+  stays. Server-verified on 15: the drop passes 29.0 and rests on the
+  Concrete floor 21.51–21.55. Scope 25/25 maps, 9 650 placements (the shore
+  tiles' sea/lake quads — Beach, LakeShore, WaterShore1, WaterHill,
+  Sea_Land0_Land12, SeaCliff13 — coplanar with the zone water; the Stadium
+  water blocks on 05/10/15/20/25). The certified 15 lap (48.7) drove ON both
+  lids (15.4–18.5, 25.7–31.2 s) and does not validate on ship16.
+* `mapgeom waterline TINY --ghost SRC|LAP [--anchor S:T --scale 0.5]
+  --report report.tsv`: per 100 ms sample the highest Water-material triangle
+  in the column — ON (at draft), LID (resting on it as a solid), UNDER, clear;
+  run it on the TINY, where every plate is an item (on a SOURCE the assembler
+  has no clip fillers and misses the generated plates).
+
+## OPEN: the ring-spawn entity crashes the client (2026-09-10)
+
+c4ce31c5 gave the block-derived ring checkpoints (GateCheckpoint on
+05/12/14/15/16/21) an `NPlugTrigger_SSpawn` entity so a respawn lands on the
+road under the ring. **Every map carrying it crashes the client at load**
+(startcheck bisect on 15: ship16c-c4ce31c5 and ship16-60e03cbc → "game
+process gone" at 12–116 s; the same recipe with `TINY_RING_SPAWN=0` PASSES;
+01, no ring block, passes with every other ship16 change). Now opt-in
+(`TINY_RING_SPAWN=1`); the default is ship15's trigger-only form (respawn
+beside the ring). Byte comparison against the pack's
+`Items\Gate\CheckpointCenter8mV2.Prefab` (entities 3 = 0x0917A000, 4 =
+0x0917B000): the SSpawn node (v3, identity Iso4, 24 bytes 0,0,0,0,−1.0,0,
+FACADE), the entity records (rot, pos, params −1, empty u01) and the layout
+are identical; ONE byte-level difference — the 0x0917B000 companion's 8-byte
+body is `(0, 11)` in the pack and was `(0, 0)` in ours (now copied; a 15 with
+`TINY_RING_SPAWN=1` is built at /tmp/tiny15/ring11 for the startcheck, NOT
+run yet). The other structural difference: our spawn transform is the ENTITY
+pos (8, 0.85, 5.6) while the pack's entity sits at 0 with an identity Iso4
+(its spawn IS the item origin) — if the body word was not it, try the pack's
+form (entity at 0, the Iso4 carrying the translation).
+
 ## The SHAPE of a generated filler is never in question (2026-09-08, night)
 
 vjeux, on Summer 15's reactor gate: "the ones that are displayed are NOT

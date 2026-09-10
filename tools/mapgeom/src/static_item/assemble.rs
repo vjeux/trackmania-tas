@@ -465,15 +465,20 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             // 12–116 s; the same recipe with the entity left out PASSES; 01, with
             // no ring block, passes with everything else). The pack ring prefab
             // has the same two entities (0x0917A000 at pos 0, 0x0917B000 at pos
-            // 0), so the difference is in how our prefab-form item carries them
-            // — not found yet. Off by default: the ship15 form (trigger only, the
+            // 0); byte comparison (CheckpointCenter8mV2.Prefab vs our ring item):
+            // the SSpawn node, the entity records and the layout are identical,
+            // ONE difference — the 0x0917B000 companion's 8-byte body is
+            // (0, 11) in the pack and was (0, 0) in ours (the 11 is now copied;
+            // untested in the client). Our SSpawn carries the spawn in the ENTITY
+            // pos (the pack's is at 0 with an identity Iso4 — its spawn IS the
+            // origin), the other candidate if the body word was not it. Off by default: the ship15 form (trigger only, the
             // respawn beside the ring) until the encoding is understood.
             let ring_spawn = std::env::var("TINY_RING_SPAWN").map(|v| v == "1").unwrap_or(false);
             if ring_spawn {
             let si = next_index(&mut next);
             ents.push(super::prefab::Entity { model: inline(si, Node::Opaque(spawn_trigger_node())), rot: [0.0, 0.0, 0.0, 1.0], pos: m.spawn, params_id: -1, params: Vec::new(), u01: Vec::new() });
             let ti = next_index(&mut next);
-            ents.push(super::prefab::Entity { model: inline(ti, Node::Opaque(super::OpaqueNode { class_id: 0x0917B000, raw: vec![0u8; 8] })), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
+            ents.push(super::prefab::Entity { model: inline(ti, Node::Opaque(super::OpaqueNode { class_id: 0x0917B000, raw: { let mut r = vec![0u8; 8]; r[4] = 0x0b; r } })), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
             }
         }
         // the effect systems (smoke, sparks), after the static part like the
