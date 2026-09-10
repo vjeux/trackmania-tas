@@ -507,6 +507,8 @@ pub struct LapCfg {
     pub arrival_dy: f64,
     /// clinic: max angle (deg) between the credit row velocity and the line tangent at the gate (default 60; --arrival-ang)
     pub arrival_ang: f64,
+    /// clinic: --arrival-strict restores hard refusal of off-band arrivals (default: off-band credits are taken and logged)
+    pub arrival_strict: bool,
     /// hand macro: pure-pursuit points (x y z [speed]) from --pursue FILE; empty = the macro is skipped
     pub pursue: Vec<[f64; 4]>,
     /// hand macro: aim at the first pursue point farther than this (m); --pursue-look, default 8
@@ -1062,7 +1064,18 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 if speed_ok && lat_ok && !height_ok {
                     out.log.push(format!("arrival at gate {} refused: credit row {:.1} m from the gate plane height (limit {:.1})", k_pref, cr.y, cfg.arrival_dy));
                 }
-                if speed_ok && lat_ok && height_ok && heading_ok {
+                // 11:20Z (coordinator): a REAL credit is never dropped for being off-band (three legitimate credits were refused tonight);
+                // hard refusal only for a fall (> 12 m under the plane) or a stopped car. Off-band arrivals are taken and logged.
+                let fell = match (&cfg.gates, track.order_groups.get(k_pref.saturating_sub(1))) {
+                    (Some(g), Some(grp)) => g.gates.iter().filter(|gg| gg.group == *grp).map(|gg| gg.centre[1] - cr.y).fold(f64::NEG_INFINITY, f64::max) > 12.0,
+                    _ => false,
+                };
+                let stopped = speed(&cr) < 3.0;
+                let on_band = speed_ok && lat_ok && height_ok && heading_ok;
+                if !on_band && !fell && !stopped && !cfg.arrival_strict {
+                    out.log.push(format!("arrival at gate {} credited-but-off-band (speed_ok {speed_ok} lat_ok {lat_ok} height_ok {height_ok} heading_ok {heading_ok}) — taken", k_pref));
+                }
+                if (on_band || (!fell && !stopped && !cfg.arrival_strict)) {
                     out.log.push(format!("LEG DONE: gate {} (order position {}) credited with a good arrival at race {}: s {s:.1} lat {lat:.1} v {v:.1} (human {vh:.1}) after {} ticks ({} macros)", k_pref, k_pref - 1, crate::secs(w.race_of(&end)), e.chain.len(), e.macro_desc.len()));
                     out.leg_done = Some(k_pref);
                     out.finished = Some(e.clone());
