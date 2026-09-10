@@ -1421,7 +1421,8 @@ fn cmd_leg_plot(args: &[String]) {
     let opts = mapgeom::local::BuildOpts { with_deco: true, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() };
     let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &opts);
     let ymin_leg = seg.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
-    let top_y = ymax + 30.0;
+    // start the rays just above the leg (a terrain roof over a cavity — 20's deck pit — would otherwise hide it); --top Y overrides
+    let top_y = flag(args, "--top").and_then(|v| v.parse::<f32>().ok()).unwrap_or(ymax + 6.0);
     // top-down: one downward ray per pixel; heights shade the colour (higher = lighter), walls (ny < 0.5) dark
     let to_px = |x: f32, z: f32| -> (f32, f32) { ((x - xmin) * ppm, (zmax - z) * ppm) };
     let mut ground_under: Vec<Option<f32>> = Vec::with_capacity(seg.len());
