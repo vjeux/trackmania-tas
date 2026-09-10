@@ -2173,9 +2173,76 @@ fn cmd_contact_trace(a: &Args) -> Result<(), String> {
         None => w.reference_recs(root, w.n_ticks().saturating_sub(root)),
     };
     let n = if to_s.is_finite() { ((to_s * 100.0).ceil() as usize + 5).min(recs.len()) } else { recs.len() };
-    let (rows, nh) = w.rollout_keep(branch::ROOT, &recs[..n], root, n as u64)?;
-    w.release(nh);
-    let mut s = String::from("tick\trace_s\tx\ty\tz\tspeed\tcps\tgear\trpm\tsteer_applied\tground\tw0_contact\tw0_mat\tw0_slip\tw0_damper\tw0_steer\tw1_contact\tw1_mat\tw1_slip\tw1_damper\tw1_steer\tw2_contact\tw2_mat\tw2_slip\tw2_damper\tw2_steer\tw3_contact\tw3_mat\tw3_slip\tw3_damper\tw3_steer\n");
+    // --normals [OFF]: per-wheel contact normals from the phy wheel blocks (phy+0x1780+0xb8·k, ENV) — needs the car's memory at
+    // every tick, so the window is stepped in 1-tick chunks (slow: ~1 ms/tick of fork stepping + 4 reads). OFF = the f32 offset of
+    // the normal inside the block (hex ok); absent = auto-detect the unit-vector triple with the largest upward component.
+    let normals_mode = a.has("normals");
+    // ENV 21:18Z (identity car, one wheel lifted): +0x00 damper (0.200 = airborne), +0x10..0x18 contact point (body frame, zero in
+    // the air), +0x30 u32 live CONTACT flag, +0x40 material (last touched), +0x44..0x4c contact NORMAL (world, unit). --normals auto
+    // re-detects the triple only when asked (--normals auto).
+    let mut normal_off: Option<usize> = match a.get("normals") { Some(v) if v == "auto" => None, Some(v) => usize::from_str_radix(v.trim_start_matches("0x"), if v.starts_with("0x") { 16 } else { 10 }).ok().or(Some(0x44)), None => Some(0x44) };
+    let mut live_flags: Vec<[u32; 4]> = Vec::new();
+    let mut phy_dampers: Vec<[f32; 4]> = Vec::new();
+    let mut normals: Vec<[[f32; 3]; 4]> = Vec::new();
+    let rows: Vec<forkoracle::layout::Row> = if !normals_mode {
+        let (rows, nh) = w.rollout_keep(branch::ROOT, &recs[..n], root, n as u64)?;
+        w.release(nh);
+        rows
+    } else {
+        let n_from = ((from_s * 100.0).floor() as usize).min(n);
+        let (mut rows, mut cur) = if n_from > 0 { w.rollout_keep(branch::ROOT, &recs[..n_from], root, n_from as u64)? } else { (Vec::new(), branch::ROOT) };
+        normals.resize(rows.len(), [[f32::NAN; 3]; 4]);
+        live_flags.resize(rows.len(), [u32::MAX; 4]);
+        phy_dampers.resize(rows.len(), [f32::NAN; 4]);
+        let mut candidates: std::collections::BTreeMap<usize, (usize, f32)> = Default::default();
+        for t in n_from..n {
+            let (rr, nh) = w.rollout_keep(cur, &recs[t..t + 1], root + t, 1)?;
+            if cur != branch::ROOT {
+                w.release(cur);
+            }
+            cur = nh;
+            let blocks = tmreach::inject::read_wheel_blocks(&mut w, cur)?;
+            if normal_off.is_none() {
+                for (o, y) in tmreach::inject::unit_vector_offsets(&blocks) {
+                    let e = candidates.entry(o).or_insert((0, 0.0));
+                    e.0 += 1;
+                    e.1 += y;
+                }
+                if t + 1 - n_from >= 20 {
+                    // the offset that is a unit vector on every tick so far, pointing up the most
+                    let best = candidates.iter().filter(|(_, (c, _))| *c == 20).max_by(|a, b| (a.1 .1).partial_cmp(&b.1 .1).unwrap());
+                    match best {
+                        Some((o, (c, y))) => {
+                            println!("contact normal offset auto-detected: +{o:#x} (unit vector on all 4 wheels for {c} ticks, mean y {:.2}); candidates: {}", y / *c as f32, candidates.iter().filter(|(_, (c, _))| *c == 20).map(|(o, (c, y))| format!("+{o:#x} y {:.2}", y / *c as f32)).collect::<Vec<_>>().join(", "));
+                            normal_off = Some(*o);
+                        }
+                        None => return Err("no unit-vector triple is stable across the first 20 ticks of the window — pass --normals OFF from ENV".into()),
+                    }
+                }
+            }
+            live_flags.extend(std::iter::repeat([0, 1, 2, 3].map(|k| u32::from_le_bytes([blocks[k][0x30], blocks[k][0x31], blocks[k][0x32], blocks[k][0x33]]))).take(rr.len()));
+            phy_dampers.extend(std::iter::repeat([0, 1, 2, 3].map(|k| tmreach::inject::f32_at(&blocks[k], 0))).take(rr.len()));
+            let nk: [[f32; 3]; 4] = match normal_off {
+                Some(o) => [0, 1, 2, 3].map(|k| [tmreach::inject::f32_at(&blocks[k], o), tmreach::inject::f32_at(&blocks[k], o + 4), tmreach::inject::f32_at(&blocks[k], o + 8)]),
+                None => [[f32::NAN; 3]; 4],
+            };
+            for _ in 0..rr.len() {
+                normals.push(nk);
+            }
+            rows.extend(rr);
+        }
+        if cur != branch::ROOT {
+            w.release(cur);
+        }
+        rows
+    };
+    let mut s = String::from("tick\trace_s\tx\ty\tz\tspeed\tcps\tgear\trpm\tsteer_applied\tground\tw0_contact\tw0_mat\tw0_slip\tw0_damper\tw0_steer\tw1_contact\tw1_mat\tw1_slip\tw1_damper\tw1_steer\tw2_contact\tw2_mat\tw2_slip\tw2_damper\tw2_steer\tw3_contact\tw3_mat\tw3_slip\tw3_damper\tw3_steer");
+    if normals_mode {
+        for k in 0..4 {
+            s.push_str(&format!("\tw{k}_live\tw{k}_phy_damper\tw{k}_nx\tw{k}_ny\tw{k}_nz\tw{k}_tilt_deg"));
+        }
+    }
+    s.push('\n');
     let mut mats: std::collections::BTreeMap<u8, usize> = Default::default();
     let mut contact_ticks = [0usize; 4];
     let mut ticks_in = 0usize;
@@ -2199,11 +2266,54 @@ fn cmd_contact_trace(a: &Args) -> Result<(), String> {
             }
             s.push_str(&format!("\t{}\t{}\t{:.3}\t{:.3}\t{:.3}", v.wheel_contact[k] as u8, v.wheel_material[k], v.wheel_slip[k], v.wheel_damper[k], v.wheel_steer[k]));
         }
+        if normals_mode {
+            // body up = the quaternion applied to (0, 1, 0); tilt = angle between body up and the wheel's contact normal
+            let (qx, qy, qz, qw) = (r.qx, r.qy, r.qz, r.qw);
+            let up = [2.0 * (qx * qy - qw * qz), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz + qw * qx)];
+            let nk = normals.get(i).copied().unwrap_or([[f32::NAN; 3]; 4]);
+            for k in 0..4 {
+                let nn = nk[k];
+                let dot = (up[0] * nn[0] as f64 + up[1] * nn[1] as f64 + up[2] * nn[2] as f64).clamp(-1.0, 1.0);
+                let live = live_flags.get(i).map(|f| f[k]).unwrap_or(u32::MAX);
+                let pd = phy_dampers.get(i).map(|d| d[k]).unwrap_or(f32::NAN);
+                // tilt only while the wheel touches (the normal is zero in the air)
+                // a zero normal with the flag up = the flag leads the contact by a tick: no tilt yet
+                let nlen = (nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]).sqrt();
+                let tilt = if live == 1 && nlen > 0.5 { dot.acos().to_degrees() } else { f64::NAN };
+                s.push_str(&format!("\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.1}", if live == u32::MAX { "?".into() } else { live.to_string() }, pd, nn[0], nn[1], nn[2], tilt));
+            }
+        }
         s.push('\n');
     }
     std::fs::write(&out, s).map_err(|e| format!("{out}: {e}"))?;
     println!("{out}: {ticks_in} ticks (race {from_s:.2}–{:.2} s) of {} replayed{}", if to_s.is_finite() { to_s } else { rows.last().map(|r| w.race_of(r) as f64 / 1000.0).unwrap_or(0.0) }, rows.len(), if vis_missing > 0 { format!("; {vis_missing} ticks WITHOUT a vis state (layout without the vis block)") } else { String::new() });
     println!("wheel-ticks per material id: {}", mats.iter().map(|(m, n)| format!("{}:{n}", if *m == u8::MAX { "?".into() } else { m.to_string() })).collect::<Vec<_>>().join("  "));
-    println!("contact fraction per wheel (FL FR RL RR order per WHEELS.md): {}", contact_ticks.iter().map(|c| format!("{:.1} %", 100.0 * *c as f64 / ticks_in.max(1) as f64)).collect::<Vec<_>>().join("  "));
+    if normals_mode {
+        let mut down = [0usize; 4];
+        let mut n_live = 0usize;
+        let mut max_tilt = 0.0f64;
+        let mut tilt_over45 = 0usize;
+        for (i, r) in rows.iter().enumerate() {
+            let race = w.race_of(r) as f64 / 1000.0;
+            if race < from_s || race > to_s { continue; }
+            let (qx, qy, qz, qw) = (r.qx, r.qy, r.qz, r.qw);
+            let up = [2.0 * (qx * qy - qw * qz), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz + qw * qx)];
+            let mut any = false;
+            for k in 0..4 {
+                if live_flags.get(i).map(|f| f[k]) == Some(1) {
+                    down[k] += 1;
+                    any = true;
+                    let nn = normals[i][k];
+                    if (nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]).sqrt() < 0.5 { continue; }
+                    let t = (up[0] * nn[0] as f64 + up[1] * nn[1] as f64 + up[2] * nn[2] as f64).clamp(-1.0, 1.0).acos().to_degrees();
+                    if t > max_tilt { max_tilt = t; }
+                    if t >= 45.0 { tilt_over45 += 1; }
+                }
+            }
+            if any { n_live += 1; }
+        }
+        println!("LIVE contact (phy +0x30) per wheel: {}; ticks with any wheel down {:.1} %; surface-relative tilt while in contact: max {max_tilt:.1}°, wheel-ticks ≥ 45°: {tilt_over45}", down.iter().map(|c| format!("{:.1} %", 100.0 * *c as f64 / ticks_in.max(1) as f64)).collect::<Vec<_>>().join("  "), 100.0 * n_live as f64 / ticks_in.max(1) as f64);
+    }
+    println!("vis contact bit per wheel (WHEELS.md decode — ENV 21:18Z: this tests the wrong bit, use the LIVE flags above): {}", contact_ticks.iter().map(|c| format!("{:.1} %", 100.0 * *c as f64 / ticks_in.max(1) as f64)).collect::<Vec<_>>().join("  "));
     Ok(())
 }
