@@ -1123,6 +1123,12 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 // a rollout that credits MORE than the next gate within its horizon is judged at its LAST credit (cumulative time):
                 // 21 wp7 → wp17 is slower than the lap but wp17 → wp1 much faster — the cumulative beat at wp1 counts (14:50Z)
                 let k_eff = (k_pref).max(end.cps as usize).min(track.n_groups);
+                // ORDER (21:04Z, Norway N-BC accepted "gate 3 at 26.90" with mask 0x17 = gate 4 skipped): every credited bit must be part of the
+                // ordered prefix, else the arrival is out of order — kept as a cell, never LEG DONE
+                let ordered = (mask.count_ones() as usize) <= k_pref;
+                if !ordered {
+                    out.log.push(format!("arrival with mask {mask:#x} refused: {} credits but only the first {k_pref} gates in order — a gate was skipped (cell kept)", mask.count_ones()));
+                }
                 // --min-leg-gate N (coupled sections): an arrival counts as LEG DONE only at gate >= N; earlier credits stay cells
                 let coupled_ok = k_eff >= cfg.min_leg_gate;
                 let beats = match cfg.beat_times.get(k_eff.saturating_sub(1)) {
@@ -1136,7 +1142,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 if !coupled_ok {
                     out.log.push(format!("arrival at gate {} kept as a cell (coupled section: LEG DONE only at gate >= {})", k_eff, cfg.min_leg_gate));
                 }
-                if coupled_ok && beats && (on_band || (!fell && !stopped && !cfg.arrival_strict)) {
+                if ordered && coupled_ok && beats && (on_band || (!fell && !stopped && !cfg.arrival_strict)) {
                     out.log.push(format!("LEG DONE: gate {} (order position {}) credited with a good arrival at race {}: s {s:.1} lat {lat:.1} v {v:.1} (human {vh:.1}) after {} ticks ({} macros)", k_pref, k_pref - 1, crate::secs(w.race_of(&end)), e.chain.len(), e.macro_desc.len()));
                     out.leg_done = Some(k_eff);
                     out.finished = Some(e.clone());
