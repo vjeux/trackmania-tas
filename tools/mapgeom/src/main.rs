@@ -596,7 +596,19 @@ fn main() {
                     }
                 }
             }
-            let decisions = mapgeom::waterblocks::decide(&plates, &tris);
+            // --source SRC.Map.Gbx --anchor sx,sy,sz:tx,ty,tz: what the original has under each pool
+            let src_map = flag(&a.rest, "--source").map(|s| tmmaps::map::MapFile::load(std::path::Path::new(&s)));
+            let anchor: Option<([f32; 3], [f32; 3])> = flag(&a.rest, "--anchor").map(|s| {
+                let (l, r) = s.split_once(':').unwrap_or_else(|| die("--anchor sx,sy,sz:tx,ty,tz".into()));
+                let v = |t: &str| -> [f32; 3] { let f: Vec<f32> = t.split(',').map(|x| x.trim().parse().unwrap_or_else(|_| die("--anchor: bad number".into()))).collect(); [f[0], f[1], f[2]] };
+                (v(l), v(r))
+            });
+            let source = match (&src_map, anchor) {
+                (Some(m), Some((s, t))) => Some(mapgeom::waterblocks::SourceUnder { map: m, anchor_s: s, anchor_t: t }),
+                (Some(_), None) => die("--source needs --anchor".into()),
+                _ => None,
+            };
+            let decisions = mapgeom::waterblocks::decide(&plates, &tris, source.as_ref());
             let mut table = String::from("body\tarchetype\tchoice\treason\tblock_origin\tspill\n");
             let mut specs: Vec<tmmaps::map::FreeBlockSpec> = Vec::new();
             let mut files: std::collections::BTreeMap<String, Vec<u8>> = Default::default();

@@ -64,12 +64,19 @@ pub fn read_plates(path: &str) -> Result<Vec<PlateRow>, String> {
 /// 13, at origin +0.5 reads nothing) — the same band the WaterIceCornerIn probe
 /// gave at base 88 (91–95). So the block origin goes at plane − 7 and the band
 /// reaches 4 m under the plane.
-pub fn archetype_depth(block: &str) -> Option<f32> {
+/// The archetype a plate's source block maps to (the DecoWallWater* clip plates are
+/// the drawn top of a DecoWallWaterBase stack), with the band depth under the top.
+/// DecoWallWaterBase measured 2026-09-10 23:00Z on 15's pool A (origin plane − 7):
+/// Water at 1.5 m and at 5 m under the plane — the 8-m "Shallow" box, band origin −1..+7.
+pub fn archetype_of(block: &str) -> Option<(&'static str, f32)> {
     let name = block.split_whitespace().next().unwrap_or(block);
-    match name {
-        "WaterBase" | "WaterBaseDirt" | "WaterBaseIce" | "WaterBaseGrass" => Some(4.0),
-        _ => None,
-    }
+    if name.starts_with("WaterBase") { return Some(("WaterBase", 4.0)); }
+    if name.starts_with("DecoWallWater") { return Some(("DecoWallWaterBase", 8.0)); }
+    None
+}
+
+pub fn archetype_depth(block: &str) -> Option<f32> {
+    archetype_of(block).map(|(_, d)| d)
 }
 
 /// Where the volume TOP sits above the block origin (metres, full size).
@@ -78,6 +85,7 @@ pub fn archetype_top_offset(_block: &str) -> f32 {
 }
 
 pub struct Decision {
+    pub water_cells: usize,
     pub body: String,
     pub archetype: String,
     pub choice: &'static str,
@@ -93,7 +101,7 @@ pub struct UpTri {
     pub phys: String,
 }
 
-pub fn decide(plates: &[PlateRow], tris: &[UpTri]) -> Vec<Decision> {
+pub fn decide(plates: &[PlateRow], tris: &[UpTri], source: Option<&SourceUnder>) -> Vec<Decision> {
     let mut out = Vec::new();
     // pools: plates of a handled archetype grouped by plane height (±0.05) and
     // by 16-m cell (the tiny cell of the source block)
@@ -105,9 +113,11 @@ pub fn decide(plates: &[PlateRow], tris: &[UpTri]) -> Vec<Decision> {
     let mut pools: BTreeMap<(String, i32), Vec<Cell>> = BTreeMap::new();
     for (i, p) in plates.iter().enumerate() {
         let Some(_) = archetype_depth(&p.source_block) else { continue };
-        let arche = p.source_block.split_whitespace().next().unwrap_or("").to_string();
+        let arche = archetype_of(&p.source_block).map(|(a, _)| a.to_string()).unwrap_or_default();
         let key = (arche, (p.plane_y * 20.0).round() as i32);
-        pools.entry(key).or_default().push(Cell { cx: (p.xmin / 16.0).floor() as i32, cz: (p.zmin / 16.0).floor() as i32, row: i });
+        // cell indices are RELATIVE to the pool later (the tiny grid is offset by the
+        // anchor, not aligned to world multiples of 16); keep the raw corner here
+        pools.entry(key).or_default().push(Cell { cx: p.xmin.round() as i32, cz: p.zmin.round() as i32, row: i });
     }
     // every water footprint at a plane: a surface inside one is wet floor, not a spill
     let wet: Vec<(f32, f32, f32, f32, f32)> = plates.iter().map(|p| (p.xmin, p.xmax, p.zmin, p.zmax, p.plane_y)).collect();
@@ -115,10 +125,18 @@ pub fn decide(plates: &[PlateRow], tris: &[UpTri]) -> Vec<Decision> {
     for ((arche, _), cells) in &pools {
         let depth_full = archetype_depth(arche).unwrap_or(1.0);
         let plane = plates[cells[0].row].plane_y;
-        let occupied: BTreeSet<(i32, i32)> = cells.iter().map(|c| (c.cx, c.cz)).collect();
-        let (minx, minz) = (cells.iter().map(|c| c.cx).min().unwrap(), cells.iter().map(|c| c.cz).min().unwrap());
-        // 32-m blocks anchored at the pool's min corner: block (i, j) covers the
-        // 16-m cells (minx + 2i .. +1, minz + 2j .. +1)
+        let (wx0, wz0) = (cells.iter().map(|c| c.cx).min().unwrap(), cells.iter().map(|c| c.cz).min().unwrap());
+        // 16-m cell indices relative to the pool's min corner
+        let occupied: BTreeSet<(i32, i32)> = cells.iter().map(|c| ((c.cx - wx0).div_euclid(16), (c.cz - wz0).div_euclid(16))).collect();
+        let cell_world = |c: &(i32, i32)| -> (f32, f32) { ((wx0 + c.0 * 16) as f32, (wz0 + c.1 * 16) as f32) };
+        // 32-m blocks on a lattice anchored at the pool's min corner, or shifted one
+        // 16-m cell in x and/or z: the four lattices are tried and the one whose
+        // ACCEPTED blocks cover the most water cells wins (an edge block that spills
+        // onto a road under one lattice may be a full-water block under another)
+        let mut best: Option<(usize, Vec<Decision>)> = None;
+        for (offx, offz) in [(0i32, 0i32), (1, 0), (0, 1), (1, 1)] {
+        let (minx, minz) = (-offx, -offz);
+        let mut local: Vec<Decision> = Vec::new();
         let mut blocks: BTreeSet<(i32, i32)> = BTreeSet::new();
         for (cx, cz) in &occupied {
             blocks.insert(((cx - minx).div_euclid(2), (cz - minz).div_euclid(2)));
@@ -128,10 +146,10 @@ pub fn decide(plates: &[PlateRow], tris: &[UpTri]) -> Vec<Decision> {
             let covered: Vec<(i32, i32)> = vec![(c0x, c0z), (c0x + 1, c0z), (c0x, c0z + 1), (c0x + 1, c0z + 1)];
             let water_cells: Vec<&(i32, i32)> = covered.iter().filter(|c| occupied.contains(c)).collect();
             let spill_cells: Vec<&(i32, i32)> = covered.iter().filter(|c| !occupied.contains(c)).collect();
-            let (ox, oz) = (c0x as f32 * 16.0, c0z as f32 * 16.0);
+            let (ox, oz) = cell_world(&(c0x, c0z));
             let band_lo = plane - depth_full;
             let band_hi = plane + 0.3;
-            let in_cell = |x: f32, z: f32, c: &(i32, i32)| x >= c.0 as f32 * 16.0 && x < (c.0 + 1) as f32 * 16.0 && z >= c.1 as f32 * 16.0 && z < (c.1 + 1) as f32 * 16.0;
+            let in_cell = |x: f32, z: f32, c: &(i32, i32)| { let (cx, cz) = cell_world(c); x >= cx && x < cx + 16.0 && z >= cz && z < cz + 16.0 };
             // (1) drivable surfaces inside the spilled cells within the band (not wet floor)
             let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
             for t in tris {
@@ -141,12 +159,38 @@ pub fn decide(plates: &[PlateRow], tris: &[UpTri]) -> Vec<Decision> {
                     *kinds.entry(t.phys.clone()).or_default() += 1;
                 }
             }
+            // (1b) under the pool: the band reaches depth_full under the plane; the pool's own
+            // floor is the highest non-water surface under the plane in its cells — any
+            // drivable surface between the band bottom and 0.3 m under that floor is a
+            // road under the pool that would get water
+            // a surface in the water cells within the band that has ANOTHER surface above
+            // it (same 4-m bin, at least 0.5 m higher, still under the plane) is under the
+            // pool's floor slab — a room or road the volume would flood. The pool's own
+            // floor and ramps have nothing between them and the water.
+            let in_water_cells = |x: f32, z: f32| water_cells.iter().any(|c| in_cell(x, z, c));
+            let mut bins: BTreeMap<(i32, i32), Vec<f32>> = BTreeMap::new();
+            for t in tris {
+                if t.phys == "Water" || t.phys == "NotCollidable" { continue; }
+                if t.top < plane - 0.4 && t.top >= band_lo - 0.5 && in_water_cells(t.c[0], t.c[2]) {
+                    bins.entry(((t.c[0] / 4.0).floor() as i32, (t.c[2] / 4.0).floor() as i32)).or_default().push(t.top);
+                }
+            }
+            // the SOURCE decides what is under the pool (the tiny geometry inside a pool —
+            // ramps over the floor, pillar tops — defeats a height heuristic): drivable
+            // source blocks in the cells under the water body within the band
+            let _ = &bins;
+            let floor = plane - depth_full / 2.0;
+            let under: Vec<String> = match source {
+                Some(s) => s.drivable_under(&water_cells.iter().map(|c| cell_world(c)).collect::<Vec<_>>(), plane, depth_full / 2.0),
+                None => Vec::new(),
+            };
             // (2) the sheet visible in the air over the spilled cells
             let (mut visible, mut samples) = (0usize, 0usize);
             for c in &spill_cells {
                 for k in 0..4 {
                     for l in 0..4 {
-                        let (x, z) = (c.0 as f32 * 16.0 + 2.0 + 4.0 * k as f32, c.1 as f32 * 16.0 + 2.0 + 4.0 * l as f32);
+                        let (cxw, czw) = cell_world(c);
+                        let (x, z) = (cxw + 2.0 + 4.0 * k as f32, czw + 2.0 + 4.0 * l as f32);
                         if in_wet(x, z, plane) { continue; }
                         samples += 1;
                         let mut best_below = f32::MIN;
@@ -162,16 +206,79 @@ pub fn decide(plates: &[PlateRow], tris: &[UpTri]) -> Vec<Decision> {
                 }
             }
             let origin = [ox, plane - archetype_top_offset(arche), oz];
-            let body = format!("{arche} pool plane {plane:.2} block cells ({c0x},{c0z})..({},{}) [{} water, {} spill] items {}", c0x + 1, c0z + 1, water_cells.len(), spill_cells.len(), cells.iter().filter(|c| covered.contains(&(c.cx, c.cz))).map(|c| format!("i{}", plates[c.row].item_index)).collect::<Vec<_>>().join(","));
+            let body = format!("{arche} pool plane {plane:.2} block cells ({c0x},{c0z})..({},{}) [{} water, {} spill] items {}", c0x + 1, c0z + 1, water_cells.len(), spill_cells.len(), cells.iter().filter(|c| covered.contains(&((c.cx - wx0).div_euclid(16), (c.cz - wz0).div_euclid(16)))).map(|c| format!("i{}", plates[c.row].item_index)).collect::<Vec<_>>().join(","));
             let spill = format!("x {:.0}..{:.0} z {:.0}..{:.0} band {:.2}..{:.2}", ox, ox + 32.0, oz, oz + 32.0, band_lo, plane);
-            if !kinds.is_empty() {
-                out.push(Decision { body, archetype: arche.clone(), choice: "item", reason: format!("drivable surface in the spilled cells: {}", kinds.iter().map(|(k, n)| format!("{k}×{n}")).collect::<Vec<_>>().join(" ")), origin, spill });
+            if !under.is_empty() {
+                local.push(Decision { water_cells: water_cells.len(), body, archetype: arche.clone(), choice: "item", reason: format!("drivable source block under the pool (band to ~{floor:.1}): {}", under.join("; ")), origin, spill });
+            } else if !kinds.is_empty() {
+                local.push(Decision { water_cells: water_cells.len(), body, archetype: arche.clone(), choice: "item", reason: format!("drivable surface in the spilled cells: {}", kinds.iter().map(|(k, n)| format!("{k}×{n}")).collect::<Vec<_>>().join(" ")), origin, spill });
             } else if samples > 0 && visible * 4 > samples {
-                out.push(Decision { body, archetype: arche.clone(), choice: "item", reason: format!("sheet visible in the air over {visible}/{samples} spill samples"), origin, spill });
+                local.push(Decision { water_cells: water_cells.len(), body, archetype: arche.clone(), choice: "item", reason: format!("sheet visible in the air over {visible}/{samples} spill samples"), origin, spill });
             } else {
-                out.push(Decision { body, archetype: arche.clone(), choice: "block", reason: if spill_cells.is_empty() { "exact: all four cells are water".to_string() } else { format!("spill hidden: {visible}/{samples} samples open") }, origin, spill });
+                local.push(Decision { water_cells: water_cells.len(), body, archetype: arche.clone(), choice: "block", reason: if spill_cells.is_empty() { "exact: all four cells are water".to_string() } else { format!("spill hidden: {visible}/{samples} samples open") }, origin, spill });
             }
+        }
+        let score: usize = local.iter().filter(|d| d.choice == "block").map(|d| d.water_cells).sum();
+        if best.as_ref().map(|b| score > b.0).unwrap_or(true) {
+            best = Some((score, local));
+        }
+        }
+        if let Some((_, v)) = best {
+            out.extend(v);
         }
     }
     out
+}
+
+/// What the SOURCE map has under a water body: the blocks of the source cells a
+/// tiny block covers, in the cells below the water body's own, down to where the
+/// archetype's band reaches. A drivable block there (a road, a platform deck, an
+/// open-tech piece) means the volume would flood a place the original keeps dry.
+/// Cells: source x = sx + (tiny x − tx) × 2, cell = floor(x / 32); the file cell
+/// is the game cell + (1, 0, 1).
+pub struct SourceUnder<'a> {
+    pub map: &'a tmmaps::map::MapFile,
+    pub anchor_s: [f32; 3],
+    pub anchor_t: [f32; 3],
+}
+
+impl SourceUnder<'_> {
+    fn is_water_name(n: &str) -> bool {
+        n.starts_with("Water") || n.starts_with("DecoWallWater") || n.starts_with("PlatformWater") || n.starts_with("RoadWater")
+    }
+    fn is_drivable_name(n: &str) -> bool {
+        if n.contains("FC") || n.contains("Pillar") || Self::is_water_name(n) {
+            return false;
+        }
+        n.starts_with("Road") || n.starts_with("Platform") || n.starts_with("OpenTech") || n.starts_with("DecoPlatform") || n.starts_with("Stand") || n.starts_with("Track")
+    }
+    /// The drivable source blocks under the water body in the given tiny cells
+    /// (16-m corners) whose top would be inside a band reaching `under_m` tiny
+    /// metres below the pool floor.
+    pub fn drivable_under(&self, cells: &[(f32, f32)], plane_tiny: f32, under_m: f32) -> Vec<String> {
+        let mut out = Vec::new();
+        let plane_s = self.anchor_s[1] + (plane_tiny - self.anchor_t[1]) * 2.0;
+        for (ox, oz) in cells {
+            let sx = self.anchor_s[0] + (ox - self.anchor_t[0]) * 2.0;
+            let sz = self.anchor_s[2] + (oz - self.anchor_t[2]) * 2.0;
+            let (cx, cz) = ((sx / 32.0).floor() as i32, (sz / 32.0).floor() as i32);
+            // the water body's own cell layer: the water blocks in this column whose
+            // 8-m cell contains the plane
+            // the water body's own cell layer: the water surface sits at local +7 of its
+            // block (Stadium: cell y → base = cy*8 − 64; the plumb calibration cell 19 → 88)
+            let wcy = ((plane_s - 7.0 + 64.0) / 8.0).round() as i32;
+            let cells_under = ((under_m * 2.0) / 8.0).ceil() as i32;
+            for b in self.map.blocks.iter().chain(self.map.baked.iter()) {
+                if b.flags == 0xFFFF_FFFF { continue; }
+                let (bx, by, bz) = (b.file_cell[0] as i32 - 1, b.file_cell[1] as i32, b.file_cell[2] as i32 - 1);
+                if bx != cx || bz != cz { continue; }
+                if by < wcy && by >= wcy - cells_under && Self::is_drivable_name(&b.name) {
+                    out.push(format!("{} at ({cx},{by},{cz})", b.name));
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
 }
