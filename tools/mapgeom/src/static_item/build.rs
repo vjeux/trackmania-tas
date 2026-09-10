@@ -1989,7 +1989,12 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                             // measured); unset = the pass-2 rule that ships in ship16
                             let table = color_table_on();
                             let (cg, csat, chue) = if table { leaf_color_for(VEGET_COLLECTION.with(|c| c.get())) } else { (1.65, 1.15, 0.0) };
-                            let mut gain = if table { cg.min(128.0 / luma.max(1.0)).clamp(1.0, 1.65) } else { (132.0 / luma.max(1.0)).clamp(1.0, 1.65) };
+                            // TINY_TREE_LIGHT_CAP=C (probe, 2026-09-10 pass 3b): the atlas-luma cap constant,
+                            // 128 by default — lower makes the LIGHT atlases (birch 110–113,
+                            // sous-bois 109–115) take less gain while the dark ones keep the
+                            // collection's (the pale-foliage sheen probe)
+                            let light_cap: f32 = std::env::var("TINY_TREE_LIGHT_CAP").ok().and_then(|v| v.parse().ok()).unwrap_or(128.0);
+                            let mut gain = if table { cg.min(light_cap / luma.max(1.0)).clamp(1.0, 1.65) } else { (132.0 / luma.max(1.0)).clamp(1.0, 1.65) };
                             // warm (autumn) foliage renders dull under the item shading: at least
                             // 1.6 under the pass-2 rule, 1.25 under the table (Populus: measured
                             // need 1.2–1.3 on both sides)
@@ -2001,8 +2006,31 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                             // 19 frames, 2026-09-10 17:20Z: "salmon/rust-red instead of the muted
                             // gold"); its saturation stays moderate for the same reason
                             let warm = r >= g + 12.0 && luma < 150.0;
-                            let (csat, chue) = if warm && table { (csat.min(1.2), 0.0) } else { (csat, chue) };
-                            m.notes.push(format!("leaf atlas {file}: opaque mean ({r:.0}, {g:.0}, {b:.0}) luma {luma:.0} -> colour gain {gain:.2} saturation x{csat} hue {chue:+}{}", if warm { " (warm foliage: hue kept)" } else { "" }));
+                            // …and so does any atlas that is not green to begin with (red over green
+                            // by 5 or more: the desert creosote (109, 100, 67) — the yellow-green
+                            // hazel at r = g and the quince at +4 measured better WITH the shift,
+                            // lineup Z5): the shift
+                            // counters the sky's cyan pull on GREEN crowns, on a khaki atlas it
+                            // overshoots to brown (the eyes on the 17 frames: "bushes brown-khaki,
+                            // too brown vs the original's dark olive"). TINY_TREE_KHAKI_SHIFT=1
+                            // keeps the collection's shift on them (the probe's other arm).
+                            let khaki = r >= g + 5.0 && !warm && std::env::var("TINY_TREE_KHAKI_SHIFT").as_deref() != Ok("1");
+                            let (csat, chue) = if warm && table { (csat.min(1.2), 0.0) } else if khaki && table { (csat.min(1.3), 0.0) } else { (csat, chue) };
+                            // a LOW-CHROMA atlas (HSV saturation of its opaque mean 0.30 or under:
+                            // birch 0.25, hazel 0.26, sous-bois 0.21–0.30; the laurel at 0.32 sits
+                            // 5 under the stock as it is and 6 over with the boost — left alone) renders
+                            // 5–8 points less saturated than the stock under the collection's
+                            // saturation and pulls yellower under its full hue shift (lineups Z3/Z6,
+                            // 2026-09-10: ×1.3 more saturation put birch/sous-bois/hazel on the
+                            // stock within 3 points; the shift showed through as hue 64–70 vs the
+                            // stock's 73–84) — so ×1.3 saturation and half the shift. The pale
+                            // "sheen" the eyes saw on these is that deficit, not brightness: a lower
+                            // gain moved them away from the stock (Z3).
+                            let mx = r.max(g).max(b);
+                            let atlas_sat = if mx > 0.0 { (mx - r.min(g).min(b)) / mx } else { 0.0 };
+                            let low_chroma = table && !warm && !khaki && atlas_sat <= 0.30 && std::env::var("TINY_TREE_LOWCHROMA").as_deref() != Ok("0");
+                            let (csat, chue) = if low_chroma { (csat * 1.3, chue * 0.5) } else { (csat, chue) };
+                            m.notes.push(format!("leaf atlas {file}: opaque mean ({r:.0}, {g:.0}, {b:.0}) luma {luma:.0} -> colour gain {gain:.2} saturation x{csat} hue {chue:+}{}", if warm { " (warm foliage: hue kept)" } else if khaki { " (khaki foliage: hue kept)" } else if low_chroma { " (low-chroma atlas: sat x1.3, half the shift)" } else { "" }));
                             Some((gain, csat, chue))
                         }
                     }

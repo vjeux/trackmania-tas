@@ -1048,6 +1048,10 @@ usage:
         open the map ONCE and screenshot every view row (NAME<TAB>x,y,z<TAB>
         DIST<TAB>H<TAB>V, radians) to DIR/cmp-<T><NAME>-<side>.png; side t
         maps the camera through the tiny anchor at half the distance;
+        DIST has a FLOOR of about 10 m: the editor's orbital camera will not
+        come closer to its target (a 7.5 m view renders the same frame as the
+        10 m one — measured on the tree close-ups, 2026-09-10); for a nearer
+        look, aim at a point in front of the subject instead.
         --get fires a plugin route once the map is open (N: right before
         view N) and logs its answer (a `get` line in the done file).
         --detach returns at once; DIR/done-<side>.txt appears when finished.

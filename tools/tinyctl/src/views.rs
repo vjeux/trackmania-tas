@@ -12,6 +12,8 @@
 //! in SOURCE-map coordinates (the tiny side is derived from these through the
 //! anchor at shoot time, so one file serves both sides). Angles are the editor
 //! orbital camera's, in radians: h=0 puts the camera north of the target
+//! (DIST is honoured down to about 10 m: the orbital camera stops there, so a
+//! nearer view renders the 10 m frame — 2026-09-10)
 //! looking south; v>0 looks down, 1.3 is top-down.
 //!
 //! The header comment carries the anchor line `tmmaps tiny` would print for

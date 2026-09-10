@@ -1,5 +1,6 @@
-//! `tinyctl pulljpg --tag T [--outdir D] [--quality 2] [--wsx P]` — the frames
-//! of a shoot as JPEGs, in ONE bridge transfer.
+//! `tinyctl pulljpg --tag T [--outdir D] [--quality 2] [--keep-png] [--wsx P]` — the
+//! frames of a shoot as JPEGs, in ONE bridge transfer; the box's PNGs are deleted
+//! once the tar is written (`--keep-png` keeps them).
 //!
 //! A 4K capture is ~10 MB as PNG and the bridge moves ~1.4 MB/s, so pulling a
 //! 78-view lineup as PNGs is nine minutes; as JPEGs (q 2, ~1 MB each) in one
@@ -27,7 +28,11 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let done = format!("{dir}/jpg-done.txt");
     let log = format!("{dir}/jpg.log");
     let tar = format!("{dir}/{tag}-jpg.tar");
-    let job = format!("cd {dir} && for f in cmp-{tag}*.png; do \"{BOX_FFMPEG}\" -v error -y -i \"$f\" -q:v {quality} \"${{f%.png}}.jpg\"; done; tar cf {tag}-jpg.tar cmp-{tag}*.jpg && echo OK $(ls cmp-{tag}*.jpg | wc -l) > {done} || echo FAILED > {done}");
+    // --keep-png leaves the 4K PNGs on the box; without it they go once the tar is
+    // written — a 4K frame is ~10 MB and a day of lineups filled C: (2026-09-10)
+    let keep_png = args.iter().any(|a| a == "--keep-png");
+    let rm_png = if keep_png { String::new() } else { format!(" && rm -f cmp-{tag}*.png") };
+    let job = format!("cd {dir} && for f in cmp-{tag}*.png; do \"{BOX_FFMPEG}\" -v error -y -i \"$f\" -q:v {quality} \"${{f%.png}}.jpg\"; done; tar cf {tag}-jpg.tar cmp-{tag}*.jpg && echo OK $(ls cmp-{tag}*.jpg | wc -l) > {done}{rm_png} || echo FAILED > {done}");
     wsx.sh(&format!("rm -f {done} {tar}; nohup setsid sh -c '{job}' > {log} 2>&1 < /dev/null &"))?;
     let text = wsx.wait_done(&done, &log, Duration::from_secs(1200), "jpeg conversion")?;
     if !text.starts_with("OK") {

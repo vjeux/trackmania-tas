@@ -54,6 +54,9 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         mapgeom tiny-library, tmmaps tiny, library unzipped) into <out-root>/tinyNN/<tag>/
   tinyctl views SRC.Map.Gbx [--out VIEWS.tsv] [--gate-dist 48] [--ghost G --at MS[,MS…] [--chase-dist 30] [--chase-v 0.3] [--only-chase]]
                 [--trees N --mapping placements.tsv [--tree-dist 30] [--only-trees]]
+        (the tiny side sees the trees at half of --tree-dist, and the editor camera
+        will not come nearer than ~10 m to its target: --tree-dist under 20 collapses
+        the tiny close-ups onto the 10 m frame — 2026-09-10)
         start / every checkpoint / finish looked at along the gate, the
         whole map from above and its four quadrants; the anchor as a comment;
         --ghost/--at add chase views (camera behind the car) at instants of a driven lap
@@ -96,8 +99,10 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
                      [--pitch 11] [--row-gap 250] [--dists 5,15,40] [--v -0.08] [--pictures DIR,…]
         a species-by-variant tree lineup (stock first, then the variant items) and its
         cameras at fixed distances (near per item; middle per item north+south; far per row)
-  tinyctl pulljpg --tag T [--outdir /tmp/lin/shotsT] [--quality 2]
-        a shoot's frames as JPEGs in ONE bridge transfer (converted on the box, one tar)
+  tinyctl pulljpg --tag T [--outdir /tmp/lin/shotsT] [--quality 2] [--keep-png]
+        a shoot's frames as JPEGs in ONE bridge transfer (converted on the box, one tar);
+        the box's 4K PNGs are deleted once the tar is written (~10 MB each: a day of
+        lineups filled C: on 2026-09-10) — --keep-png keeps them
   tinyctl cropstats IMG… --crop x,y,w,h [--cells N] [--sheet OUT.png]
         a lineup row shot several times from one camera, as numbers: per image and
         cell (one per item) the non-sky share, the dark share, the foreground colour

@@ -214,11 +214,29 @@ What the bake keeps and what it gives up:
   rendered hue sits within 10° of the stock on both sides. An AUTUMN atlas
   (red over green by 12, luma under 150: Populus) keeps its hue and at most
   ×1.2 saturation — the shift turned its gold salmon (the eyes on the 19
-  frames). OPEN RISK: the calibration was fitted in the EDITOR, where a fresh
-  map has no lightmap (our items unshadowed, the stock lit by its dynamic
-  shader); play mode computes the lightmap at load and shadows our cards, so
-  the in-game crowns should come out somewhat darker than measured — judge
-  from the clips, and `TINY_TREE_COLOR_TABLE=0` is the one-flag fallback. The bands are the SELF-SHADOW the per-item lightmap does
+  frames). CHECKED under the LIGHTMAP (2026-09-10 17:45Z; `tinyctl shoot
+  --shadows 2` computes the editor's Fast lightmap = what play mode bakes at
+  load): it does not darken our cards (a little bounce, the ground 128 → 139),
+  the stock gets slightly darker; the tip's residuals stay within ±20 % both
+  ways with a mean near zero (TreeSmallA +16/+18, TreeBigA +6/+21, BushBigB
+  −17/−11, pines 0…−10; ship16's bake under the same lightmap: +27/+50,
+  +64/+65, +14/+17), so the table stands for play. `TINY_TREE_COLOR_TABLE=0`
+  is the one-flag fallback. Not green to begin with = no yellow shift: an
+  atlas with red over green by 5 or more (the RedIsland creosote) keeps its
+  hue (sat ≤ 1.3; the yellow-green hazel at r = g and the quince at +4
+  measured better WITH the shift: hue 76/80 vs the stock's 78/80 shifted,
+  70/76 kept) — shifted, the creosote turned brown (leaf-mask
+  coverage 0.1 % vs the stock's 5.7 %; kept, 5.4 % with luma 43/46 vs 47/52
+  and hue 65 = 65). The PALE-FOLIAGE sheen on the lightest atlases (birch
+  110, sous-bois 115, hazel) is a SATURATION deficit, not brightness: at the
+  cap they sit at or under the stock's luma (56/52 vs 59/59, 60/58 vs 70/65)
+  but 5–8 points less saturated; a lower gain darkens them further — measured,
+  rejected. The fix that measured (lineups Z6/Z7): an atlas whose opaque mean
+  has HSV saturation ≤ 0.30 (birch 0.25, hazel 0.26, sous-bois 0.21–0.30)
+  gets ×1.3 more saturation and half the hue shift — birch 36/31 vs the
+  stock's 31/30, sous-bois 35/33 vs 32/33, hazel 37/31 vs 33/32 (from 24/21,
+  30/28, 28/23), luma within 15 %; the laurel at 0.32 would overshoot (40 vs
+  34) and stays. `TINY_TREE_LOWCHROMA=0` turns it off. The bands are the SELF-SHADOW the per-item lightmap does
   not give (every card gets one value): the inner cards ride under a darkened
   copy of the atlas (one more material and a 128-px atlas per band; +1.4 MB on
   Summer 19). Measured against the stock at 15 m (sky behind, the stock's own
