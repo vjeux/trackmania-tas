@@ -606,7 +606,7 @@ fn cmd_leg_scan(args: &[String]) {
     let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
     let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
     let m = tmmaps::map::MapFile::load(Path::new(&map));
-    let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts { with_deco: true, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), cell: 4.0 });
+    let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &mapgeom::local::BuildOpts { with_deco: true, with_baked: std::env::var("TMPLAN_BAKED").is_ok() || !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), cell: 4.0 });
     let specials = tmroute::gates::specials(&m, gates.yoff);
     // ghosts
     let mut runs = Vec::new();
@@ -723,7 +723,7 @@ fn cmd_road_centreline(args: &[String]) {
         let paths = tmplan::pak_paths().ok()?;
         let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).ok()?;
         let m = tmmaps::map::MapFile::load(Path::new(&map));
-        let opts = mapgeom::local::BuildOpts { with_deco: false, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), cell: 4.0 };
+        let opts = mapgeom::local::BuildOpts { with_deco: false, with_baked: std::env::var("TMPLAN_BAKED").is_ok() || !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), cell: 4.0 };
         let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &opts);
         let t0 = std::time::Instant::now();
         let w = tmplan::walk::SurfaceWalk::build(&scene, 1.0, &|mat: u8| mat != 255);
@@ -1258,7 +1258,7 @@ fn cmd_author_ground(args: &[String]) {
     let pts: Vec<[f32; 3]> = flat.chunks(3).filter(|c| c.len() == 3).map(|c| [c[0], c[1], c[2]]).collect();
     let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
     let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
-    let opts = mapgeom::local::BuildOpts { with_deco: true, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() };
+    let opts = mapgeom::local::BuildOpts { with_deco: true, with_baked: std::env::var("TMPLAN_BAKED").is_ok() || !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() };
     let ground = |mp: &str, store: &mut mapgeom::store::DataStore| -> Vec<Option<(f32, &'static str)>> {
         let m = tmmaps::map::MapFile::load(Path::new(mp));
         let s = mapgeom::local::LocalScene::build(store, &m, gates.yoff, &opts);
@@ -1419,7 +1419,7 @@ fn cmd_leg_plot(args: &[String]) {
     let paths = tmplan::pak_paths().unwrap_or_else(|e| die(&e));
     let mut store = mapgeom::store::DataStore::open(&paths, mapgeom::store::STADIUM_KEY).unwrap_or_else(|e| die(&e));
     let m = tmmaps::map::MapFile::load(Path::new(&map));
-    let opts = mapgeom::local::BuildOpts { with_deco: true, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() };
+    let opts = mapgeom::local::BuildOpts { with_deco: true, with_baked: std::env::var("TMPLAN_BAKED").is_ok() || !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() };
     let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &opts);
     let ymin_leg = seg.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
     // start the rays just above the leg (a terrain roof over a cavity — 20's deck pit — would otherwise hide it); --top Y overrides
