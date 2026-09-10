@@ -47,6 +47,9 @@ pub struct Layout {
     pub car: u8,
     /// The participant slot the driven vehicle came from (0..3) -- not a kind.
     pub car_slot: u8,
+    /// The driven vehicle's four phy WHEEL BLOCKS (`phy + 0x1780`, 4 × 0xb8: damper, contact point, live contact flag,
+    /// material, contact normal — ENV 2026-09-10), or 0 when not carried. Decoded into `Vis::wheel_*`.
+    pub wheels: u64,
 }
 
 /// Offsets within the gathered record, once the segments are concatenated.
@@ -70,6 +73,9 @@ pub fn segments(l: &Layout) -> Vec<(u64, u32)> {
     if l.vis != 0 {
         v.push((l.vis, VIS_LEN as u32));
     }
+    if l.wheels != 0 {
+        v.push((l.wheels, WHEELS_LEN as u32));
+    }
     v
 }
 
@@ -77,7 +83,7 @@ pub fn segments(l: &Layout) -> Vec<(u64, u32)> {
 pub const R_CPS: usize = REC_LEN;
 /// The gathered record length for this layout.
 pub fn rec_len(l: &Layout) -> usize {
-    (if l.cps != 0 { REC_LEN + 4 } else { REC_LEN }) + if l.vis != 0 { VIS_LEN } else { 0 }
+    (if l.cps != 0 { REC_LEN + 4 } else { REC_LEN }) + if l.vis != 0 { VIS_LEN } else { 0 } + if l.wheels != 0 { WHEELS_LEN } else { 0 }
 }
 /// Where the vis segment starts in the record: after the counter, when present.
 pub fn r_vis(l: &Layout) -> usize {
@@ -145,7 +151,13 @@ pub fn decode_rows(blob: &[u8], l: &Layout, label_shift: i64) -> (Vec<Row>, Vec<
             qz: getf32(b, R_QUAT + 12),
             wetness: getf32(b, R_WET),
             cps: if l.cps != 0 { u32::from_le_bytes(b[R_CPS..R_CPS + 4].try_into().unwrap()) } else { u32::MAX },
-            vis: if l.vis != 0 { Vis::decode(&b[r_vis(l)..r_vis(l) + VIS_LEN], l.car, l.car_slot) } else { Vis::UNKNOWN },
+            vis: {
+                let mut v = if l.vis != 0 { Vis::decode(&b[r_vis(l)..r_vis(l) + VIS_LEN], l.car, l.car_slot) } else { Vis::UNKNOWN };
+                if l.wheels != 0 {
+                    v.decode_wheels(&b[r_wheels(l)..r_wheels(l) + WHEELS_LEN]);
+                }
+                v
+            },
         };
         match rows.last_mut() {
             Some(last) if last.time_ms == t => *last = row,
@@ -406,6 +418,14 @@ pub struct Vis {
     pub reactor_air: [f32; 3],
     /// Simulation time coefficient (slow-motion), f32 +0x230; 1.0 normally.
     pub sim_time_coef: f32,
+    // --- the phy WHEEL BLOCKS (phy+0x1780 + 0xb8·k; ENV 2026-09-10 21:18Z, identity car with one wheel lifted), gathered as
+    // the layout's `wheels` segment; `wheel_live` u8::MAX when the layout does not carry it ---
+    /// u32 at +0x30 of each block: 1 = the wheel touches now (the vis `wheel_contact` bit is NOT this — ENV).
+    pub wheel_live: [u8; 4],
+    /// +0x44..0x4c: the contact normal, world frame, unit; zero while the wheel is in the air.
+    pub wheel_normal: [[f32; 3]; 4],
+    /// +0x00: damper length, 0.200 = fully extended (airborne).
+    pub wheel_damper_phy: [f32; 4],
 }
 
 impl Vis {
@@ -437,6 +457,9 @@ impl Vis {
         reactor_inputs_x: false,
         reactor_air: [f32::NAN; 3],
         sim_time_coef: f32::NAN,
+        wheel_live: [u8::MAX; 4],
+        wheel_normal: [[f32::NAN; 3]; 4],
+        wheel_damper_phy: [f32::NAN; 4],
     };
 
     /// Decode a gathered 0x360-byte vis state.
@@ -472,6 +495,9 @@ impl Vis {
             reactor_inputs_x: flags & (1 << 18) != 0,
             reactor_air: [f(0x180), f(0x184), f(0x188)],
             sim_time_coef: f(0x230),
+            wheel_live: [u8::MAX; 4],
+            wheel_normal: [[f32::NAN; 3]; 4],
+            wheel_damper_phy: [f32::NAN; 4],
         };
         for k in 0..4 {
             let w = 0xa8 + 44 * k;
@@ -488,3 +514,44 @@ impl Vis {
 
 /// Size of the vis state segment.
 pub const VIS_LEN: usize = 0x360;
+
+/// Size of the wheel-blocks segment: four `CGameVehiclePhy` wheel blocks of 0xb8 at `phy + 0x1780`.
+pub const WHEELS_LEN: usize = 4 * 0xb8;
+pub const WHEEL_BLOCK: usize = 0xb8;
+/// Where the wheel-blocks segment starts in the record: after the vis segment.
+pub fn r_wheels(l: &Layout) -> usize {
+    r_vis(l) + if l.vis != 0 { VIS_LEN } else { 0 }
+}
+
+impl Vis {
+    /// Fill the wheel-block fields from a gathered `WHEELS_LEN` segment.
+    pub fn decode_wheels(&mut self, s: &[u8]) {
+        let f = |o: usize| f32::from_le_bytes(s[o..o + 4].try_into().unwrap());
+        for k in 0..4 {
+            let b = k * WHEEL_BLOCK;
+            self.wheel_live[k] = (u32::from_le_bytes(s[b + 0x30..b + 0x34].try_into().unwrap()) != 0) as u8;
+            self.wheel_normal[k] = [f(b + 0x44), f(b + 0x48), f(b + 0x4c)];
+            self.wheel_damper_phy[k] = f(b);
+        }
+    }
+    /// Surface-relative tilt per wheel: the angle (degrees) between the body's up axis and the wheel's contact
+    /// normal while the wheel touches; NaN in the air, when the normal is not yet written (the flag leads it by a
+    /// tick), or when the layout carries no wheel blocks. The ratified attitude rule: ≥ 45° while in contact = illegal.
+    pub fn wheel_tilt_deg(&self, qw: f64, qx: f64, qy: f64, qz: f64) -> [f64; 4] {
+        let up = [2.0 * (qx * qy - qw * qz), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz + qw * qx)];
+        let mut out = [f64::NAN; 4];
+        for k in 0..4 {
+            if self.wheel_live[k] != 1 {
+                continue;
+            }
+            let n = self.wheel_normal[k];
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            if !(len > 0.5) {
+                continue;
+            }
+            let dot = (up[0] * n[0] as f64 + up[1] * n[1] as f64 + up[2] * n[2] as f64).clamp(-1.0, 1.0);
+            out[k] = dot.acos().to_degrees();
+        }
+        out
+    }
+}
