@@ -1,0 +1,22 @@
+[package]
+name = "whitestick-relay"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+worker = "0.8.5"
+worker-macros = "0.8.5"
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+
+# Stand-alone: this crate targets wasm32 and must not join the tools workspace.
+[workspace]
