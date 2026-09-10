@@ -201,8 +201,11 @@ fn all(args: &[String]) -> Result<(), String> {
     // (vjeux, 2026-08-24: the fans). After `--idle-quit-min` minutes (default
     // 30) without a render, one taskkill closes it; the next render relaunches.
     let idle_quit = Duration::from_secs(f("--idle-quit-min").and_then(|s| s.parse::<u64>().ok()).unwrap_or(30) * 60);
-    let mut last_render: Option<Instant> = None;
-    let mut game_up = false;
+    // armed from the start: a loop restarted while the game is up (a tool
+    // upgrade between renders, 2026-09-10) must close it too, not only a loop
+    // that rendered something itself
+    let mut last_render: Option<Instant> = Some(Instant::now());
+    let mut game_up = true;
     loop {
         let before = std::fs::metadata(PathBuf::from(f("--out").unwrap_or_else(|| "/tmp/tinyvid".into())).join("videos.tsv")).and_then(|m| m.modified()).ok();
         let r = all_once(args);
