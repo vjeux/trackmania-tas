@@ -106,11 +106,9 @@ https://github.com/user-attachments/assets/2bb4c108-dd6b-4c5c-a26d-f8ef253cdf2e
 
 https://github.com/user-attachments/assets/0e222437-1334-4d8c-b5fd-92497cdf81f5
 
-**Tiny Poland 2026** — original author time `72.708` · tiny ghost **100.187** (build ship15, controls overlay)
+**Tiny Poland 2026** — original author time `72.708` · tiny ghost **99.529** (build ship15, controls overlay)
 
-*latest lap **99.529** (build ship15) — video pending*
-
-https://github.com/user-attachments/assets/08d55458-6b8c-4f95-bcf8-dfbe4ede119c
+https://github.com/user-attachments/assets/9b9b5242-c6ef-4270-9eed-a6a3063126e8
 
 **Tiny Japan 2026** — original author time `78.928` · tiny ghost **102.115** (build ship15, controls overlay)
 
