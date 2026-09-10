@@ -28,7 +28,7 @@ https://github.com/user-attachments/assets/44b55e8a-82bb-41c7-8968-4a7555bff486
 
 **Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **18.298** (build ship15, controls overlay)
 
-*⚠ rides the ship15 water lid: 0.7 s over a deep pool ridden as a lid, 6.3 s on a road through water — the original slows the car in water; this build has no water drag; being re-searched with zero water contact*
+*⚠ lap rides the ship15 water lid; in the original the car drives on the floor under the water with strong drag (~−8 m/s²); this build has no water drag*
 
 https://github.com/user-attachments/assets/75476b21-393d-445a-84eb-5b1746bad62b
 
@@ -70,7 +70,7 @@ https://github.com/user-attachments/assets/8359415d-53d5-419f-8fd6-aee0fe145345
 
 **Tiny Summer 2026 - 15** — original author time `36.888` · tiny ghost **48.748** (build ship15, controls overlay)
 
-*⚠ rides the ship15 water lid: 12.6 s over a deep pool ridden as a lid, 2.6 s on a road through water — the original's water would stop the car in the pool and slow it on the road; being re-searched with zero water contact*
+*⚠ lap rides the ship15 water lid; in the original the car drives on the floor under the water with strong drag (~−8 m/s²); this build has no water drag*
 
 *latest lap **48.738** (build ship15) — within 0.1 s of the published clip*
 
@@ -118,6 +118,6 @@ https://github.com/user-attachments/assets/9b9b5242-c6ef-4270-9eed-a6a3063126e8
 
 **Tiny Japan 2026** — original author time `78.928` · tiny ghost **102.115** (build ship15, controls overlay)
 
-*⚠ 0.5 s over a water-grass zone at the start (road through water): the original slows the car; this build has no water drag*
+*⚠ lap rides the ship15 water lid; in the original the car drives on the floor under the water with strong drag (~−8 m/s²); this build has no water drag*
 
 https://github.com/user-attachments/assets/18c3cc0f-0d53-44df-bd32-f63adeadf2a8
