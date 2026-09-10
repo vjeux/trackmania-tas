@@ -104,8 +104,6 @@ https://github.com/user-attachments/assets/da0c5a6d-91fd-4422-8b65-dc79f7b33da7
 
 https://github.com/user-attachments/assets/b09f275d-9d36-46dd-91c7-dc629c7a2b5c
 
-**Tiny Japan 2026** — original author time `78.928` · tiny ghost **121.235** (build ship15, controls overlay)
+**Tiny Japan 2026** — original author time `78.928` · tiny ghost **119.115** (build ship15, controls overlay)
 
-*latest lap **119.115** (build ship15) — video pending*
-
-https://github.com/user-attachments/assets/b9ef4dcf-0c75-4adb-9acb-3b9b836ca031
+https://github.com/user-attachments/assets/89547580-87b8-4d5e-b0dd-1f939f11feba
