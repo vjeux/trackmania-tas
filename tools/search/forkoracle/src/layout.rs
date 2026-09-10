@@ -422,7 +422,9 @@ pub struct Vis {
     // the layout's `wheels` segment; `wheel_live` u8::MAX when the layout does not carry it ---
     /// u32 at +0x30 of each block: 1 = the wheel touches now (the vis `wheel_contact` bit is NOT this — ENV).
     pub wheel_live: [u8; 4],
-    /// +0x44..0x4c: the contact normal, world frame, unit; zero while the wheel is in the air.
+    /// +0x44..0x4c: the contact normal in the CAR'S LOCAL frame (unit; zero while the wheel is in the air). Local, not
+    /// world: on 20's ramp climb (7.2 s, y rising) it still reads (0.00, 1.00, −0.02), and GEN's four-wheel ice-wall ride
+    /// read (0, 1, 0.02) — a world normal would be near-horizontal there (coordinator 22:30Z).
     pub wheel_normal: [[f32; 3]; 4],
     /// +0x00: damper length, 0.200 = fully extended (airborne).
     pub wheel_damper_phy: [f32; 4],
@@ -534,11 +536,16 @@ impl Vis {
             self.wheel_damper_phy[k] = f(b);
         }
     }
-    /// Surface-relative tilt per wheel: the angle (degrees) between the body's up axis and the wheel's contact
-    /// normal while the wheel touches; NaN in the air, when the normal is not yet written (the flag leads it by a
-    /// tick), or when the layout carries no wheel blocks. The ratified attitude rule: ≥ 45° while in contact = illegal.
-    pub fn wheel_tilt_deg(&self, qw: f64, qx: f64, qy: f64, qz: f64) -> [f64; 4] {
-        let up = [2.0 * (qx * qy - qw * qz), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz + qw * qx)];
+    /// Surface-relative tilt per wheel: the angle (degrees) between the body's up axis and the wheel's contact normal
+    /// while the wheel touches. The normal is in the car's LOCAL frame, so this is acos(n.y) — no quaternion needed (the
+    /// arguments are kept for the callers written against the earlier signature; they are ignored). NaN in the air, when
+    /// the normal is not yet written (the flag leads it by a tick), or when the layout carries no wheel blocks. The ratified
+    /// attitude rule: ≥ 45° while in contact = illegal.
+    pub fn wheel_tilt_deg(&self, _qw: f64, _qx: f64, _qy: f64, _qz: f64) -> [f64; 4] {
+        self.wheel_tilt()
+    }
+    pub fn wheel_tilt(&self) -> [f64; 4] {
+        let up = [0.0f64, 1.0, 0.0];
         let mut out = [f64::NAN; 4];
         for k in 0..4 {
             if self.wheel_live[k] != 1 {
@@ -553,5 +560,17 @@ impl Vis {
             out[k] = dot.acos().to_degrees();
         }
         out
+    }
+}
+
+impl Vis {
+    /// The wheel's contact normal rotated into the WORLD frame by the body quaternion (w, x, y, z).
+    pub fn wheel_normal_world(&self, k: usize, qw: f64, qx: f64, qy: f64, qz: f64) -> [f64; 3] {
+        let n = self.wheel_normal[k];
+        let (vx, vy, vz) = (n[0] as f64, n[1] as f64, n[2] as f64);
+        // v' = v + 2 w (q × v) + 2 q × (q × v)
+        let (cx, cy, cz) = (qy * vz - qz * vy, qz * vx - qx * vz, qx * vy - qy * vx);
+        let (dx, dy, dz) = (qy * cz - qz * cy, qz * cx - qx * cz, qx * cy - qy * cx);
+        [vx + 2.0 * (qw * cx + dx), vy + 2.0 * (qw * cy + dy), vz + 2.0 * (qw * cz + dz)]
     }
 }

@@ -2261,9 +2261,8 @@ fn cmd_contact_trace(a: &Args) -> Result<(), String> {
             s.push_str(&format!("\t{}\t{}\t{:.3}\t{:.3}\t{:.3}", v.wheel_contact[k] as u8, v.wheel_material[k], v.wheel_slip[k], v.wheel_damper[k], v.wheel_steer[k]));
         }
         if normals_mode {
-            // body up = the quaternion applied to (0, 1, 0); tilt = angle between body up and the wheel's contact normal
-            let (qx, qy, qz, qw) = (r.qx, r.qy, r.qz, r.qw);
-            let up = [2.0 * (qx * qy - qw * qz), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz + qw * qx)];
+            // the normal is in the car's LOCAL frame (22:30Z): tilt = acos(n.y); body up in that frame is (0, 1, 0)
+            let up = [0.0f64, 1.0, 0.0];
             let nk = normals.get(i).copied().unwrap_or([[f32::NAN; 3]; 4]);
             for k in 0..4 {
                 let nn = nk[k];
@@ -2290,8 +2289,7 @@ fn cmd_contact_trace(a: &Args) -> Result<(), String> {
         for (i, r) in rows.iter().enumerate() {
             let race = w.race_of(r) as f64 / 1000.0;
             if race < from_s || race > to_s { continue; }
-            let (qx, qy, qz, qw) = (r.qx, r.qy, r.qz, r.qw);
-            let up = [2.0 * (qx * qy - qw * qz), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz + qw * qx)];
+            let up = [0.0f64, 1.0, 0.0];
             let mut any = false;
             for k in 0..4 {
                 if live_flags.get(i).map(|f| f[k]) == Some(1) {
