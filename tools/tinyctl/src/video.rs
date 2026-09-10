@@ -795,7 +795,7 @@ fn one(args: &[String]) -> Result<Done, String> {
     };
     if let Some(a) = &archive_name {
         let side = mp4.with_extension("mp4.json");
-        let json = format!("{{\n  \"mp4\": \"{}\",\n  \"map\": \"{nn}\",\n  \"lap\": \"{time}\",\n  \"ghost_md5\": \"{ghost_md5}\",\n  \"ghost_fnv\": \"{traj_id}\",\n  \"ghost_archive\": \"{a}\",\n  \"overlay\": \"{}\"\n}}\n", mp4.file_name().unwrap().to_string_lossy(), overlay_col.replace('"', "\\\""));
+        let json = format!("{{\n  \"mp4\": \"{}\",\n  \"map\": \"{nn}\",\n  \"lap\": \"{time}\",\n  \"ghost_md5\": \"{ghost_md5}\",\n  \"ghost_fnv\": \"{}\",\n  \"trajectory_id\": \"{traj_id}\",\n  \"ghost_archive\": \"{a}\",\n  \"overlay\": \"{}\"\n}}\n", mp4.file_name().unwrap().to_string_lossy(), clip::overlay::file_id(&ghost).unwrap_or_default(), overlay_col.replace('"', "\\\""));
         std::fs::write(&side, json).map_err(|e| format!("{}: {e}", side.display()))?;
     }
 
@@ -1491,7 +1491,8 @@ pub fn archive_ghost(dir: &Path, ghost: &Path, md5: &str, nn: &str, time: &str, 
         let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
         let json = format!(
-            "{{\n  \"ghost_md5\": \"{md5}\",\n  \"ghost_fnv\": \"{fnv}\",\n  \"map\": \"{nn}\",\n  \"title\": \"{}\",\n  \"lap\": \"{time}\",\n  \"lap_ms\": {race_ms},\n  \"map_md5\": \"{map_md5}\",\n  \"build\": {},\n  \"readme_row\": \"{}\",\n  \"source\": \"{}\",\n  \"archived_unix\": {when}\n}}\n",
+            "{{\n  \"ghost_md5\": \"{md5}\",\n  \"ghost_fnv\": \"{}\",\n  \"trajectory_id\": \"{fnv}\",\n  \"map\": \"{nn}\",\n  \"title\": \"{}\",\n  \"lap\": \"{time}\",\n  \"lap_ms\": {race_ms},\n  \"map_md5\": \"{map_md5}\",\n  \"build\": {},\n  \"readme_row\": \"{}\",\n  \"source\": \"{}\",\n  \"archived_unix\": {when}\n}}\n",
+            clip::overlay::file_id(ghost).unwrap_or_default(),
             esc(&map_title(nn)),
             build.map(|b| format!("\"{}\"", esc(b))).unwrap_or_else(|| "null".into()),
             esc(readme_row),
@@ -1894,7 +1895,7 @@ mod archive_tests {
         let dst = arch.join(format!("{md5}.Ghost.Gbx"));
         assert_eq!(std::fs::read(&dst).unwrap(), std::fs::read(&ghost).unwrap());
         let side = std::fs::read_to_string(arch.join(format!("{md5}.json"))).unwrap();
-        assert!(side.contains("\"ghost_md5\": \"") && side.contains("\"lap_ms\": 100116") && side.contains("\"ghost_fnv\": \"c3589722871e4283\"") && side.contains("\"build\": \"ship15\"") && side.contains("Tiny Poland 2026"), "{side}");
+        assert!(side.contains("\"ghost_md5\": \"") && side.contains("\"lap_ms\": 100116") && side.contains("\"trajectory_id\": \"c3589722871e4283\"") && side.contains("\"ghost_fnv\": \"") && side.contains("\"build\": \"ship15\"") && side.contains("Tiny Poland 2026"), "{side}");
         // second call: no change, no error
         let before = std::fs::metadata(&dst).unwrap().modified().unwrap();
         archive_ghost(&arch, &ghost, &md5, "24", "100.116", 100_116, "c3589722871e4283", "a7ca005a", Some("ship15"), "").unwrap();
