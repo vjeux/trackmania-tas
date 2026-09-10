@@ -203,18 +203,25 @@ What the bake keeps and what it gives up:
   ship16's bytes)**: `leaf_look_for` in build.rs — (colour gain, saturation,
   hue shift, DEPTH BANDS) per collection, fitted on sky-backed lineups (stock
   at 30 m beside ours at 15 m = the same angular size, sun and shade side,
-  `cropstats --fg leaf` on the crown crop): GreenCoast 1.05/1.5/−15° with
+  `cropstats --fg leaf` on the crown crop): GreenCoast 1.3/1.6/−25° with
   three bands (a card whose normalised radius about the crown centre is under
   0.45 draws the atlas ×0.45, under 0.75 ×0.7, the rest as is), BlueBay
-  1.12/1.06/−5 one band 0.6→×0.5, RedIsland 1.05/1.65/−10 one band
-  0.55→×0.55, Stadium 1.2/1.1/−5 one band 0.6→×0.6, WhiteShore = the pines'
-  setting unmeasured. The bands are the SELF-SHADOW the per-item lightmap does
+  1.12/1.06/0 one band 0.6→×0.5, RedIsland 1.15/1.9/−15 one band
+  0.55→×0.55, Stadium 1.2/1.1/0 one band 0.6→×0.7, WhiteShore 1.1/1.5/−10
+  (the pines' setting, unmeasured). Hue is a YIQ chroma rotation, NEGATIVE =
+  towards yellow — the first pass-3 bakes had the sign backwards and came out
+  GREENER (rendered hue 104–128 vs the stock's 82–91); with the sign right the
+  rendered hue sits within 10° of the stock on both sides. The bands are the SELF-SHADOW the per-item lightmap does
   not give (every card gets one value): the inner cards ride under a darkened
   copy of the atlas (one more material and a 128-px atlas per band; +1.4 MB on
-  Summer 19). Measured against the stock at 15 m, luma sun/shade: GreenCoast
-  TreeSmallA −5/+3 %, TreeBigA +4/−2, BushBigB +3/+15 (the pass-2 bake was
-  +40/+40, +64/+67, +19/+27); BlueBay palms −7/0 and +13/+2; RedIsland pines
-  −7/+2 and +9/+2 (pass 2: +66/+63); Stadium within ±14 %. What the lineups
+  Summer 19). Measured against the stock at 15 m (sky behind, the stock's own
+  luma moves ±15 % between shots as clouds pass — it is lit dynamically, our
+  items are not), luma sun/shade of the last verification round: GreenCoast
+  TreeSmallA −16/−23 % at gain 1.1 → 1.3 now (pass 2 was +22/+13), TreeBigA
+  −12/−6 (pass 2 +46/+40), BushBigB −19/−16 (pass 2 +37/+29); BlueBay palms
+  +3/0 and 0/+5 (pass 2 +40/+49, +47/+50); RedIsland pines −15/−24 and
+  −15/−10 at gain 1.0 → 1.15 now (pass 2 +36/+29, +39/+33); Stadium palms
+  +13/+1 and +4/+1, spring tree −10/−20 at band ×0.6 → ×0.7 now. What the lineups
   also settled: our crown is NOT sparser than the stock's (coverage 50 % vs
   35 % at equal size — the LOD0+LOD1 union `TINY_TREE_DENSE` moves away from
   it), and TDOSN/TDSN do not read colour0 (`TINY_TREE_VCOL_AO`, a 0x40→0xFF

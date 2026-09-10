@@ -2013,9 +2013,12 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                                 px[2] = f(b);
                             }
                         } else {
-                            // hue: a rotation of the chroma plane (YIQ) by `hue` degrees, then the
+                            // hue: a rotation of the chroma plane (YIQ) by `hue` degrees — NEGATIVE =
+                            // towards yellow (lower HSV hue): red→yellow→green→cyan runs CLOCKWISE in
+                            // the (I, Q) plane, so the HSV sense is the negated IQ angle (the first
+                            // pass-3 bakes had it backwards: −15 made the crowns GREENER) — then the
                             // saturation and the gain
-                            let (hc, hs) = (hue.to_radians().cos(), hue.to_radians().sin());
+                            let (hc, hs) = ((-hue).to_radians().cos(), (-hue).to_radians().sin());
                             for px in rgba.chunks_mut(4) {
                                 let (r, g, b) = (px[0] as f32, px[1] as f32, px[2] as f32);
                                 let y = 0.299 * r + 0.587 * g + 0.114 * b;
@@ -2556,11 +2559,11 @@ pub fn leaf_color_for(collection: u32) -> (f32, f32, f32) {
 /// `TINY_TREE_COLOR_TABLE=0` restores the pass-2 rule (ship16's bytes).
 pub fn leaf_look_for(collection: u32) -> (f32, f32, f32, &'static str) {
     match collection {
-        0xf => (1.05, 1.5, -15.0, "0.45:0.45,0.75:0.7"), // GreenCoast
-        0x1c => (1.12, 1.06, -5.0, "0.6:0.5"),           // BlueBay
-        0x10 => (1.05, 1.65, -10.0, "0.55:0.55"),        // RedIsland
-        0x1d => (1.05, 1.3, -5.0, "0.55:0.55"),          // WhiteShore (firs: the pines' setting, unmeasured)
-        _ => (1.2, 1.1, -5.0, "0.6:0.6"),                // Stadium
+        0xf => (1.3, 1.6, -25.0, "0.45:0.45,0.75:0.7"),  // GreenCoast
+        0x1c => (1.12, 1.06, 0.0, "0.6:0.5"),            // BlueBay
+        0x10 => (1.15, 1.9, -15.0, "0.55:0.55"),         // RedIsland
+        0x1d => (1.1, 1.5, -10.0, "0.55:0.55"),          // WhiteShore (firs: the pines' setting, unmeasured)
+        _ => (1.2, 1.1, 0.0, "0.6:0.7"),                 // Stadium (the palms want the band, the spring crown less of it)
     }
 }
 
