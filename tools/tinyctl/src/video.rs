@@ -316,6 +316,21 @@ fn all_once(args: &[String]) -> Result<(), String> {
         }
         let race_ms = g.race_time_ms.or_else(|| g.samples.last().map(|s| s.time_ms)).unwrap_or(0);
         let time = format!("{}.{:03}", race_ms / 1000, race_ms % 1000);
+        // THE FILE AND THE README MUST AGREE (coordinator, 2026-09-10 16:40Z).
+        // The label of every clip comes from the FILE's declared race time (so
+        // a caption can never carry another lap's time), but the README is what
+        // says which build a lap was certified on — and the alias
+        // `NN.Ghost.Gbx` is rewritten by the input arm in two steps, README
+        // first (24: row 99.529 while the alias still held the 100.116 bytes).
+        // A file whose lap the README does not name — neither in the map's
+        // current row nor, by this file's md5, in the md5 table — is in
+        // transition: skipped this scan, picked up when the two agree.
+        let file_md5 = md5_of(&path)?;
+        if !readme.is_empty() && !readme_names_lap(&readme, &nn, &time, &file_md5) {
+            let current = readme_current_lap(&readme, &nn).map(|(t, _)| t).unwrap_or_else(|| "?".into());
+            println!("{nn} {time}: the ghost FILE ({}) holds lap {time} but the README names {current} for this map and no row for {time} — in transition, skipped this scan", &file_md5[..8]);
+            continue;
+        }
         // --build B: only a lap whose README row names B (the FILE says which
         // lap: its race time; the README says which build it was regenerated on)
         if let Some(b) = &build {
@@ -326,9 +341,10 @@ fn all_once(args: &[String]) -> Result<(), String> {
                     continue;
                 }
                 None => {
-                    // the row lands after the file, often by an hour; the pass runs
-                    // on the installed build, so render and say the row was missing
-                    println!("{nn} {time}: no README row for this lap yet — rendering on the installed build's word ({b}); the label is read at swap time");
+                    // the md5 table names the lap (above) but no row carries the
+                    // build: the pass runs on the installed build, so render and
+                    // say the row was missing
+                    println!("{nn} {time}: no README row with a build for this lap yet — rendering on the installed build's word ({b}); the label is read at swap time");
                 }
             }
         }
@@ -1728,5 +1744,35 @@ mod archive_tests {
         let e = archive_ghost(&arch, &ghost, &md5, "24", "100.116", 100_116, "c3589722871e4283", "a7ca005a", Some("ship15"), "").unwrap_err();
         assert!(e.contains("corrupt"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Does the ghosts README name this (map, lap) — in a row that carries the lap
+/// time, or in the md5 table by the FILE's md5 prefix beside that time? A file
+/// the README does not name is in transition between two of the input arm's
+/// writes and must not be rendered or labelled yet.
+pub fn readme_names_lap(readme: &str, nn: &str, time: &str, file_md5: &str) -> bool {
+    readme_row(readme, nn, time).is_some() || readme.lines().any(|l| l.starts_with(&format!("| {nn} | {}", &file_md5[..8.min(file_md5.len())])) && l.contains(time))
+}
+
+#[cfg(test)]
+mod transition_tests {
+    use super::*;
+
+    /// 24 on 2026-09-10 16:40Z: the README's row moved to 99.529 while the alias
+    /// file still held 100.116 (md5 53e390f3…). The file's lap is named by the md5
+    /// table → still fine to render; a file the README names nowhere is skipped;
+    /// once the alias holds 99.529 the row names it.
+    #[test]
+    fn a_file_is_rendered_only_when_the_readme_names_its_lap() {
+        let readme = "| 24 | 24.Ghost.Gbx | 99.529 | 14 | ship15 | a7ca005a | PPO | x |\n\
+\n\
+| map | file md5 | time |\n\
+| 24 | 53e390f3 | 100.116 |\n";
+        assert!(readme_names_lap(readme, "24", "100.116", "53e390f3cc9858e1099b00950d6eebf9"), "the md5 table names the file's lap");
+        assert!(readme_names_lap(readme, "24", "99.529", "0123456789abcdef0123456789abcdef"), "the row names the new lap");
+        assert!(!readme_names_lap(readme, "24", "100.187", "ffffffffffffffffffffffffffffffff"), "a lap the README does not know");
+        assert!(readme_names_lap(readme, "24", "100.116", "ffffffffffffffffffffffffffffffff"), "a row that names the map and the lap counts whatever md5 it shows — the caption comes from the file, the README only has to KNOW the lap");
+        assert!(!readme_names_lap(readme, "23", "100.116", "53e390f3cc9858e1099b00950d6eebf9"), "another map");
     }
 }
