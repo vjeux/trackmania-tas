@@ -1103,8 +1103,14 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             }
             // the finish: the engine counter reached every group (the finish only credits with all checkpoints)
             if cps >= n_groups && out.finished.is_none() {
-                out.log.push(format!("FINISH credited: cps {cps} at race {} after {} ticks of inputs ({} macros)", crate::secs(w.race_of(&end)), e.chain.len(), e.macro_desc.len()));
-                out.finished = Some(e.clone());
+                // polish: the finish must beat the reference lap too (--beat-times entry for the last gate)
+                let slow = match cfg.beat_times.get((n_groups as usize).saturating_sub(1)) { Some(t) => (w.race_of(&end) as f64) / 1000.0 > *t - cfg.beat_margin, None => false };
+                if slow {
+                    out.log.push(format!("FINISH at race {} does not beat the reference {:.2} s — kept as a cell, searching on", crate::secs(w.race_of(&end)), cfg.beat_times[n_groups as usize - 1]));
+                } else {
+                    out.log.push(format!("FINISH credited: cps {cps} at race {} after {} ticks of inputs ({} macros)", crate::secs(w.race_of(&end)), e.chain.len(), e.macro_desc.len()));
+                    out.finished = Some(e.clone());
+                }
             }
             if out.best.as_ref().map(|b| progress > b.progress).unwrap_or(true) {
                 out.best = Some(e.clone());
@@ -1377,7 +1383,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                     let gained = s_after - f.s;
                     let below_after = track.min_y_near(s_after, 15.0) - last.y;
                     // alive, still on the line, and not fallen under it (21: a car in the deck gap lands on the road 25 m below and "moves on")
-                    if speed(&last) < 8.0 || gained < 25.0 || (cfg.below_tol < 100.0 && below_after > cfg.below_tol) || lat_after.abs() > 12.0 {
+                    // 13:42Z: the lateral criterion is strict-only (the polish lanes follow the author line, which sits > 12 m off the route line
+                    // in places; a moving car that gained 25 m is a real arrival)
+                    if speed(&last) < 8.0 || gained < 25.0 || (cfg.below_tol < 100.0 && below_after > cfg.below_tol) || (cfg.arrival_strict && lat_after.abs() > 12.0) {
                         ok = false;
                     }
                     if !ok {
