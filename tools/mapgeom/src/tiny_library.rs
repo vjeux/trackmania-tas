@@ -865,8 +865,23 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     // plane and rests on the floor). A per-body rule waits for the native-water
     // research (TINY.md "Water").
     {
-        let open = std::env::var("TINY_WATER").map(|v| v == "open").unwrap_or(false);
-        if open {
+        // TINY_WATER=pack: ship13's encoding — the pack's own physics 13 stays on the
+        // plate. MEASURED 2026-09-10 (client, ship13's 15, Spawn over the pool): the
+        // car falls through a 13 plate with NO deceleration (vy −12.7 → −13.5 m/s
+        // across the plane) — an item plate of 13 is nothing to the client; 28 is a
+        // lid to client and server (the ship14 artifact). Pending: the server on 13.
+        // DEFAULT since 2026-09-10 17:35Z (coordinator GO, server-verified by the player
+        // project: the server falls through 13 exactly like the client): `pack`.
+        // `lid` = the ship14/15 form (28), `open` = the triangles removed.
+        let mode = std::env::var("TINY_WATER").unwrap_or_else(|_| "pack".to_string());
+        let open = mode == "open";
+        let pack = mode != "open" && mode != "lid";
+        if pack {
+            let n = m.surf_triangles.iter().filter(|t| t.material_id == 13).count();
+            if n > 0 {
+                m.notes.push(format!("{n} Water-physics collision triangles kept at the pack's physics 13 (TINY_WATER=pack: nothing to the client, the ship13 form)"));
+            }
+        } else if open {
             let before = m.surf_triangles.len();
             m.surf_triangles.retain(|t| t.material_id != 13);
             let n = before - m.surf_triangles.len();
