@@ -1988,6 +1988,10 @@ pub enum Attitude {
     Clean,
     /// Inverted seconds, attitude intervals.
     Dirty { inverted_s: f64, attitude_intervals: u32 },
+    /// The lap touches water (the summary line's `water contact: X s`, once
+    /// INPUT writes it; the ship15 water lid lets a car ride where the
+    /// original's water would stop it). Seconds of contact.
+    Water { contact_s: f64 },
     NoTable,
 }
 
@@ -1996,6 +2000,7 @@ impl Attitude {
         match self {
             Attitude::Clean => "clean".into(),
             Attitude::Dirty { inverted_s, attitude_intervals } => format!("not clean: inverted {inverted_s:.2} s, {attitude_intervals} attitude interval(s) (> 0.3 s of |roll|/|pitch| > 60°)"),
+            Attitude::Water { contact_s } => format!("not clean: water contact {contact_s:.2} s (rides the water lid)"),
             Attitude::NoTable => "no attitude table for this lap in the ghosts README (fail closed)".into(),
         }
     }
@@ -2013,9 +2018,18 @@ pub fn attitude_verdict(readme: &str, nn: &str, time: &str) -> Attitude {
     let inverted_s = field("inverted:").unwrap_or(f64::NAN);
     // "… N slow + M attitude intervals"
     let attitude_intervals: Option<u32> = line.find("attitude interval").and_then(|i| line[..i].trim_end().rsplit(' ').next()).and_then(|s| s.parse().ok());
+    // WATER CONTACT (parent project via the coordinator, 2026-09-10 20:45Z): the
+    // moment INPUT's line carries `water contact: X s`, any X > 0 is not clean.
+    // A line without the field is judged on attitude alone (today's rows are
+    // not failed retroactively); INPUT adds the field to laps certified from
+    // then on, and those are held to it.
+    let water = field("water contact:");
     match (inverted_s.is_nan(), attitude_intervals) {
         (true, _) | (_, None) => Attitude::NoTable,
-        (false, Some(a)) if inverted_s <= 0.0 && a == 0 => Attitude::Clean,
+        (false, Some(a)) if inverted_s <= 0.0 && a == 0 => match water {
+            Some(w) if w > 0.0 => Attitude::Water { contact_s: w },
+            _ => Attitude::Clean,
+        },
         (false, Some(a)) => Attitude::Dirty { inverted_s, attitude_intervals: a },
     }
 }
@@ -2043,5 +2057,11 @@ mod attitude_tests {
         assert_eq!(attitude_verdict(README, "22", "82.652"), Attitude::NoTable);
         assert_eq!(attitude_verdict(README, "19", "46.445"), Attitude::NoTable, "another lap of the same map");
         assert!(Attitude::NoTable.describe().contains("fail closed"));
+        // water contact: a clean-attitude lap with contact is not clean; without the field it is judged on attitude alone
+        let with_water = "- 19 46.362: below 8 m/s: 0.07 s, respawns: 0, inverted: 0.00 s, 2 slow + 0 attitude intervals, water contact: 1.20 s\n\
+- 05 18.298: below 8 m/s: 0.00 s, respawns: 0, inverted: 0.00 s, 0 slow + 0 attitude intervals, water contact: 0.00 s\n";
+        assert_eq!(attitude_verdict(with_water, "19", "46.362"), Attitude::Water { contact_s: 1.2 });
+        assert_eq!(attitude_verdict(with_water, "05", "18.298"), Attitude::Clean, "0.00 s of contact is clean");
+        assert!(Attitude::Water { contact_s: 1.2 }.describe().contains("water contact 1.20 s"));
     }
 }

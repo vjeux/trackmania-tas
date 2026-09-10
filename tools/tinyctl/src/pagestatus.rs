@@ -104,6 +104,14 @@ pub fn update_full(page: &str, laps: &[(String, String)], ghosts_readme: &str, b
 /// [`update_full`] plus the STAGED laps (rendered, banked, waiting for the
 /// opening-check receipt): such a lap reads "staged — awaiting opening check".
 pub fn update_all(page: &str, laps: &[(String, String)], ghosts_readme: &str, build: &str, min_gain: f64, holds: &std::collections::HashMap<String, String>, staged: &std::collections::HashSet<(String, String)>) -> (String, Vec<String>) {
+    update_page(page, laps, ghosts_readme, build, min_gain, holds, staged, &std::collections::HashMap::new())
+}
+
+/// [`update_all`] plus the LID ROWS (`lidrows.tsv`: maps whose lap rides the
+/// ship15 water lid, from INPUT's census): each gets its own italic line under
+/// the row, kept beside the status note, removed when the map leaves the list.
+#[allow(clippy::too_many_arguments)]
+pub fn update_page(page: &str, laps: &[(String, String)], ghosts_readme: &str, build: &str, min_gain: f64, holds: &std::collections::HashMap<String, String>, staged: &std::collections::HashSet<(String, String)>, lidrows: &std::collections::HashMap<String, String>) -> (String, Vec<String>) {
     let mut lines: Vec<String> = page.lines().map(String::from).collect();
     let mut notes = Vec::new();
     // work from the bottom so earlier indices stay valid
@@ -195,6 +203,40 @@ pub fn update_all(page: &str, laps: &[(String, String)], ghosts_readme: &str, bu
                 lines.remove(j);
             }
         }
+        // THE LID LINE (parent project via the coordinator, 2026-09-10 20:45Z):
+        // a map in lidrows.tsv carries its note as its own line right under the
+        // row (before the status note and the video), verbatim from the file;
+        // one line at most, rewritten when the note changes, removed when the
+        // map leaves the list. The video stays up.
+        let end = crate::video::block_end(&lines, i);
+        let lid_lines: Vec<usize> = (i + 1..end).filter(|&j| is_lid_note(&lines[j])).collect();
+        match (lidrows.get(nn.as_str()), lid_lines.first().copied()) {
+            (Some(note), Some(j)) => {
+                let line = lid_line(note);
+                if lines[j] != line {
+                    notes.push(format!("{nn}: lid line → updated"));
+                    lines[j] = line;
+                }
+                for &k in lid_lines[1..].iter().rev() {
+                    lines.remove(k);
+                }
+            }
+            (Some(note), None) => {
+                notes.push(format!("{nn}: lid line added"));
+                lines.insert(i + 1, lid_line(note));
+                lines.insert(i + 1, String::new());
+            }
+            (None, Some(_)) => {
+                notes.push(format!("{nn}: lid line removed (the map left lidrows.tsv)"));
+                for &k in lid_lines.iter().rev() {
+                    lines.remove(k);
+                    if k > 0 && k < lines.len() && lines[k - 1].trim().is_empty() && lines[k].trim().is_empty() {
+                        lines.remove(k);
+                    }
+                }
+            }
+            (None, None) => {}
+        }
     }
     let mut s = lines.join("\n");
     if page.ends_with('\n') && !s.ends_with('\n') {
@@ -256,7 +298,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     println!("{} certified {build} laps: {}", laps.len(), laps.iter().map(|(m, t)| format!("{m} {t}")).collect::<Vec<_>>().join(", "));
     let holds = f("--out").map(|o| crate::video::read_holds(Path::new(&o))).unwrap_or_default();
     let staged = f("--out").map(|o| staged_laps(&std::fs::read_to_string(Path::new(&o).join("ships.tsv")).unwrap_or_default())).unwrap_or_default();
-    let (new, notes) = update_all(&page, &laps, &gr, &build, min_gain, &holds, &staged);
+    let lidrows = f("--out").map(|o| crate::video::parse_holds(&std::fs::read_to_string(Path::new(&o).join("lidrows.tsv")).unwrap_or_default())).unwrap_or_default();
+    let (new, notes) = update_page(&page, &laps, &gr, &build, min_gain, &holds, &staged, &lidrows);
     if notes.is_empty() {
         println!("the page already states the newest lap of every map");
         return Ok(());
@@ -609,5 +652,61 @@ https://github.com/user-attachments/assets/b\n";
         let (out, _) = update_all(page, &laps, ghosts, "ship15", 0.1, &std::collections::HashMap::new(), &staged);
         assert!(out.contains("*latest lap **46.000** (build ship15) — staged, awaiting the opening check*"), "{out}");
         assert!(out.contains("*latest lap **82.652** (build ship15) — held (staged — attitude: not clean: inverted 2.69 s, 2 attitude interval(s) (> 0.3 s of |roll|/|pitch| > 60°))*"), "{out}");
+    }
+}
+
+/// The lid note's line: `*⚠ <note>*` — its own line, not a status note.
+pub const LID_PREFIX: &str = "*⚠ ";
+
+fn lid_line(note: &str) -> String {
+    format!("{LID_PREFIX}{}*", note.trim().trim_end_matches('*'))
+}
+
+pub fn is_lid_note(l: &str) -> bool {
+    l.trim_end().starts_with(LID_PREFIX)
+}
+
+#[cfg(test)]
+mod lid_tests {
+    use super::*;
+
+    /// A lid row gets its note as its own line under the row, beside the status
+    /// note; idempotent; updated when the note changes; removed when the map
+    /// leaves the list; a swap keeps it.
+    #[test]
+    fn lid_rows_carry_their_note_under_the_row() {
+        let ghosts = "| 15 | 15.Ghost.Gbx | 48.738 | 8 | ship15 | 395f89a8 | PPO | x |\n\
+| 05 | 05.Ghost.Gbx | 18.298 | 4 | ship15 | e0cb1188 | PPO | x |\n";
+        let page = "**Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **18.298** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/a\n\n\
+**Tiny Summer 2026 - 15** — original author time `36.888` · tiny ghost **48.748** (build ship15, controls overlay)\n\n\
+*latest lap **48.738** (build ship15) — within 0.1 s of the published clip*\n\n\
+https://github.com/user-attachments/assets/b\n";
+        let laps = newest_laps(ghosts, "ship15");
+        let mut lid = std::collections::HashMap::new();
+        let note = "lap rides the ship15 water lid; the original's water would stop the car; being re-searched with zero water contact";
+        lid.insert("05".to_string(), note.to_string());
+        lid.insert("15".to_string(), note.to_string());
+        let empty_h = std::collections::HashMap::new();
+        let empty_s = std::collections::HashSet::new();
+        let (out, notes) = update_page(page, &laps, ghosts, "ship15", 0.1, &empty_h, &empty_s, &lid);
+        assert!(out.contains(&format!("tiny ghost **18.298** (build ship15, controls overlay)\n\n*⚠ {note}*\n\nhttps://github.com/user-attachments/assets/a")), "{out}");
+        assert!(out.contains(&format!("tiny ghost **48.748** (build ship15, controls overlay)\n\n*⚠ {note}*\n\n*latest lap **48.738** (build ship15) — within 0.1 s of the published clip*\n\nhttps://github.com/user-attachments/assets/b")), "{out}");
+        assert!(notes.iter().any(|n| n == "05: lid line added") && notes.iter().any(|n| n == "15: lid line added"), "{notes:?}");
+        // idempotent
+        let (again, n2) = update_page(&out, &laps, ghosts, "ship15", 0.1, &empty_h, &empty_s, &lid);
+        assert_eq!(again, out);
+        assert!(n2.is_empty(), "{n2:?}");
+        // the note changes → rewritten; the map leaves → removed
+        lid.insert("05".to_string(), "resolved on ship16".to_string());
+        lid.remove("15");
+        let (changed, n3) = update_page(&out, &laps, ghosts, "ship15", 0.1, &empty_h, &empty_s, &lid);
+        assert!(changed.contains("*⚠ resolved on ship16*"), "{changed}");
+        assert!(!changed.contains(&format!("48.748** (build ship15, controls overlay)\n\n*⚠ {note}*")), "{changed}");
+        assert!(n3.iter().any(|n| n == "05: lid line → updated") && n3.iter().any(|n| n == "15: lid line removed (the map left lidrows.tsv)"), "{n3:?}");
+        // a swap of 15 keeps the lid line and drops the status note
+        let swapped = crate::video::page_swap(&out, "15", "48.738", "tiny ghost", "build ship15, controls overlay", "https://github.com/user-attachments/assets/n").unwrap();
+        assert!(swapped.contains(&format!("tiny ghost **48.738** (build ship15, controls overlay)\n\n*⚠ {note}*\n\nhttps://github.com/user-attachments/assets/n")), "{swapped}");
+        assert!(!swapped.contains("within 0.1 s"), "{swapped}");
     }
 }
