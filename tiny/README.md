@@ -68,7 +68,7 @@ https://github.com/user-attachments/assets/8359415d-53d5-419f-8fd6-aee0fe145345
 
 **Tiny Summer 2026 - 15** — original author time `36.888` · tiny ghost **48.748** (build ship15, controls overlay)
 
-*latest lap **48.738** (build ship15) — video pending*
+*latest lap **48.738** (build ship15) — within 0.1 s of the published clip*
 
 https://github.com/user-attachments/assets/a41cebdd-f649-4173-92fe-34d7a21d1f11
 
@@ -100,7 +100,7 @@ https://github.com/user-attachments/assets/c3e5e9a5-cdb2-4b1a-a81e-6c46815ccfba
 
 **Tiny Saudi Arabia 2026** — original author time `73.418` · tiny ghost **96.298** (build ship15, controls overlay)
 
-*latest lap **96.297** (build ship15) — video pending*
+*latest lap **96.297** (build ship15) — within 0.1 s of the published clip*
 
 https://github.com/user-attachments/assets/2bb4c108-dd6b-4c5c-a26d-f8ef253cdf2e
 
@@ -110,7 +110,7 @@ https://github.com/user-attachments/assets/0e222437-1334-4d8c-b5fd-92497cdf81f5
 
 **Tiny Poland 2026** — original author time `72.708` · tiny ghost **100.187** (build ship15, controls overlay)
 
-*latest lap **100.116** (build ship15) — video pending*
+*latest lap **100.116** (build ship15) — within 0.1 s of the published clip*
 
 https://github.com/user-attachments/assets/08d55458-6b8c-4f95-bcf8-dfbe4ede119c
 
