@@ -18,8 +18,8 @@
 //! Turbo, white on red for Turbo2, black on lime for Boost). The LED display
 //! lights the SHAPE in the background's colour on dark cells, so the panel
 //! image is: background colour where the texture differs from its background,
-//! black where it is the background. Written as an uncompressed 32-bit DDS
-//! (no mips) — the item-editor form the custom material loader reads.
+//! black where it is the background. Written as DXT5 with mips (`write_dds_picture`):
+//! the uncompressed 32-bit form drew as the missing-texture checkerboard (2026-09-10).
 
 use super::R;
 
@@ -56,7 +56,7 @@ pub fn sign_kind(link: &str, item_kind: Option<&str>) -> Option<String> {
 
 /// The archive file name of a kind's panel picture.
 pub fn logo_file(kind: &str) -> String {
-    format!("SignLogo{kind}.dds")
+    format!("SignLogo{kind}{}.dds", super::materials::picture_suffix())
 }
 
 /// The panel picture of a kind: a 32-bit DDS, lit logo on black.
@@ -87,7 +87,7 @@ pub fn logo_dds(store: &mut crate::store::DataStore, kind: &str) -> R<Vec<u8>> {
             out.extend_from_slice(&[c[0], c[1], c[2], 0xFF]);
         }
     }
-    Ok(write_dds_rgba(w, h, &out))
+    Ok(super::texture::write_dds_picture(w, h, &out))
 }
 
 /// The top mip of a DXT1 (BC1) DDS as RGBA8.

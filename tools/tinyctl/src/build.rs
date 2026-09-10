@@ -178,6 +178,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let map_no: usize = nn.parse().unwrap_or(0);
             env.insert("TINY_ALIAS_BASE".to_string(), format!("{}", map_no * 1_000_000 + (minutes % 1000) * 1000));
         }
+        // the generated pictures (sign logos, screen picture, trigger FX) are cached
+        // by file name the same way: suffix them with the alias base's minute part
+        if !env.contains_key("TINY_PICTURE_SUFFIX") {
+            let base = env["TINY_ALIAS_BASE"].clone();
+            env.insert("TINY_PICTURE_SUFFIX".to_string(), format!("_{}", &base[base.len().saturating_sub(6)..base.len().saturating_sub(3)]));
+        }
         println!("{nn}: {} ({}) -> {} (alias base {})", src.file_name().unwrap_or_default().to_string_lossy(), collection_name(coll), out.display(), env["TINY_ALIAS_BASE"]);
         let t0 = std::time::Instant::now();
         let mut lib = Command::new(&mapgeom);

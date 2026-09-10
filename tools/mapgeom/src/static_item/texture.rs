@@ -745,3 +745,16 @@ mod chain_tests {
         assert_eq!(raw.len(), 128 + levels.iter().map(|l| l.rgba.len()).sum::<usize>());
     }
 }
+
+/// A generated PICTURE as the game loads it: DXT5 (BC3) with a full mip
+/// chain. The uncompressed A8R8G8B8 form (`write_dds_rgba`) is what the
+/// sign logos and the screen picture shipped as on 2026-09-09/10 — the game
+/// drew those panels as its green/purple missing-texture checkerboard
+/// (vjeux, Argentina's turbo gantry) and the screens black (Argentina intro
+/// frame, 2026-09-10 19:22Z); every custom texture that DID render — the
+/// tree atlases, the light swatches — was DXT with mips. So a picture is
+/// written the way the atlases are.
+pub fn write_dds_picture(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
+    let levels = mip_chain(Level { w, h, rgba: rgba.to_vec() }, 0, false, 1.0);
+    write_dds_dxt5_mips(&levels)
+}

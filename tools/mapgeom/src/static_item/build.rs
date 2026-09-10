@@ -3003,7 +3003,7 @@ pub fn add_screen_logo_pictures(store: &mut crate::store::DataStore, m: &mut Mer
     if !m.materials.iter().any(|mat| mat.link().map(is_ad_screen_link).unwrap_or(false)) {
         return;
     }
-    if m.pictures.iter().any(|(f, _)| f == SCREEN_LOGO_FILE) {
+    if m.pictures.iter().any(|(f, _)| *f == screen_logo_file()) {
         return;
     }
     let path = "Stadium\\Media\\Texture\\Image\\RaceAd6x1.dds";
@@ -3016,8 +3016,8 @@ pub fn add_screen_logo_pictures(store: &mut crate::store::DataStore, m: &mut Mer
                     out.extend_from_slice(&[px[0], px[1], px[2], 0xFF]);
                 }
             }
-            m.notes.push(format!("screen logo picture: {SCREEN_LOGO_FILE} {w}x{h} from {path}"));
-            m.pictures.push((SCREEN_LOGO_FILE.to_string(), super::texture::write_dds_rgba(w, h, &out)));
+            m.notes.push(format!("screen logo picture: {} {w}x{h} from {path}", screen_logo_file()));
+            m.pictures.push((screen_logo_file(), super::texture::write_dds_picture(w, h, &out)));
         }
         Err(e) => m.notes.push(format!("screen logo picture: {e}; game material kept")),
     }

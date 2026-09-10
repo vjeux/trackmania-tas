@@ -427,7 +427,6 @@ pub fn screen_mode() -> ScreenMode {
     }
 }
 
-pub const SCREEN_LOGO_FILE: &str = "ScreenLogo.dds";
 
 pub fn is_ad_screen_link(link: &str) -> bool {
     AD_SCREEN_LINKS.iter().any(|l| l.eq_ignore_ascii_case(link))
@@ -443,7 +442,7 @@ pub fn screen_face_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMa
         return inst.clone();
     }
     let Some(link) = inst.link().map(|s| s.to_string()) else { return inst.clone() };
-    if !is_ad_screen_link(&link) || !m.pictures.iter().any(|(f, _)| f == SCREEN_LOGO_FILE) {
+    if !is_ad_screen_link(&link) || !m.pictures.iter().any(|(f, _)| *f == screen_logo_file()) {
         return inst.clone();
     }
     let mut owned = inst.clone();
@@ -452,7 +451,7 @@ pub fn screen_face_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMa
         main.model = crate::crystal_model::Id::Str("TDSN".to_string());
         main.material_name = crate::crystal_model::Id::Str("ScreenLogo".to_string());
         main.link = crate::crystal_model::Id::Null;
-        main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: SCREEN_LOGO_FILE.to_string() }];
+        main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: screen_logo_file() }];
     }
     owned
 }
@@ -490,7 +489,7 @@ pub fn trigger_fx_mode() -> String {
 }
 
 pub fn trigger_fx_file(kind: &str) -> String {
-    format!("TriggerFX{kind}.dds")
+    format!("TriggerFX{kind}{}.dds", picture_suffix())
 }
 
 pub fn trigger_fx_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMaterialUserInst {
@@ -511,4 +510,20 @@ pub fn trigger_fx_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMat
         main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: file.clone() }, crate::crystal_model::UserTexture { u01: 5, texture: file }];
     }
     owned
+}
+
+/// The per-build suffix of every GENERATED picture file (`SignLogoTurbo<sfx>.dds`,
+/// `ScreenLogo<sfx>.dds`, `TriggerFX<Kind><sfx>.dds`): the game caches an
+/// embedded texture by its file name for the whole session exactly as it
+/// caches item models (TINY_ALIAS_BASE, 2026-09-09), so a rebuilt picture
+/// under the old name shows the OLD bytes until the game restarts — the
+/// 2026-09-10 DXT5 re-encode of the screen picture drew black in the same
+/// session that had loaded the uncompressed one. `TINY_PICTURE_SUFFIX` (tinyctl
+/// sets it from the alias base); empty = the bare names.
+pub fn picture_suffix() -> String {
+    std::env::var("TINY_PICTURE_SUFFIX").unwrap_or_default()
+}
+
+pub fn screen_logo_file() -> String {
+    format!("ScreenLogo{}.dds", picture_suffix())
 }
