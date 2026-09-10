@@ -87,12 +87,13 @@ string itself at about 1 MB — stdin/stdout are chunked and unbounded.
    WHITESTICK_RELAY=https://<ip>:8443 WHITESTICK_PIN=<pin> WHITESTICK_TOKEN=<secret> \
      sh tools/whitestick/install-box.sh
    ```
-   Builds the agent, writes its config, installs `~/bin/whitestick-agent-loop.sh`
-   and registers two Windows scheduled tasks for the current user (no admin):
-   *WhiteStick Agent* at logon and *WhiteStick Agent Watchdog* every 5
-   minutes. The loop holds a lock, so the watchdog is a no-op while the agent
-   is up and a restart within 5 minutes after a `wsl --shutdown` or a crash.
-   Log: `~/.whitestick/agent.log` (rotated at 10 MB).
+   Builds the agent, writes its config, starts it, and installs a hidden
+   `whitestick-agent.vbs` in the Windows **Startup folder** — no admin, no
+   Task Scheduler (`schtasks` refuses these tasks on this box: *Invalid
+   argument*). The .vbs loops on the Windows side, so it restarts the agent
+   after a logout, a crash, or a `wsl --shutdown` — measured at ~15 s. Inside
+   WSL a flock'd loop restarts it 5 s after any exit. Log:
+   `~/.whitestick/agent.log` (rotated at 10 MB).
 3. **Other devservers/ODs** get `~/bin/whitestick` through the home sync;
    only `~/.whitestick/config.toml` has to exist (copy it — it is two lines
    that matter).
@@ -139,6 +140,18 @@ tooling, nothing else.
 - `wsx` still works unchanged (it talks to `~/bin/whitestick` over stdin); its
   parallel-chunk design was a workaround for navi's cost model and could now
   be a plain `whitestick 'cat > f' < f`.
+
+## What it looks like when it works
+
+```
+$ whitestick 'echo "host: $(hostname)"; whoami; df -h /mnt/c | tail -1'
+host: WhiteStick
+vjeux
+C:\             937G  924G   13G  99% /mnt/c
+```
+
+~0.65 s per command from a devserver (fwdproxy → Paris → home). A 3 MB push
+takes ~2.7 s, the same pull ~2.0 s.
 
 ## History
 

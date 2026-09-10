@@ -13,11 +13,10 @@
 #   1. builds tools/whitestick (needs the rust toolchain in ~/.cargo/bin)
 #   2. installs ~/bin/whitestick and ~/bin/whitestick-agent-loop.sh
 #   3. writes ~/.whitestick/config.toml (relay, token, box name, start cwd)
-#   4. registers two Windows scheduled tasks for the current Windows user (no
-#      admin needed): "WhiteStick Agent" at logon and "WhiteStick Agent
-#      Watchdog" every 5 minutes. Both run a hidden launcher that starts the
-#      loop inside WSL; the loop takes a lock, so extra starts exit at once.
-#   5. starts it and asks the relay whether the box is online.
+#   4. starts the agent, and installs a hidden .vbs in the Windows Startup
+#      folder that keeps it running across logons and `wsl --shutdown`
+#      (no admin, no Task Scheduler -- schtasks refuses these tasks here)
+#   5. asks the relay whether the box is online.
 #
 # Re-running is safe; it is also how you upgrade (git pull, then run again).
 set -eu
@@ -58,13 +57,18 @@ relay = "$WHITESTICK_RELAY"
 token = "$WHITESTICK_TOKEN"
 instance = "$NAME"
 proxy = "none"
-${WHITESTICK_PIN:+pin = "$WHITESTICK_PIN"}
 
 [agent]
 name = "$NAME"
 cwd = "$CWD"
 shell = "/bin/sh"
 EOF
+# Separate from the heredoc on purpose: inside one, the quotes in
+# ${VAR:+pin = "$VAR"} are removed by the shell and TOML rejects a bare hex
+# value ("expected newline"). Cost an evening once.
+if [ -n "${WHITESTICK_PIN:-}" ]; then
+    printf 'pin = "%s"\n' "$WHITESTICK_PIN" >> "$HOME/.whitestick/config.toml"
+fi
 umask 022
 
 cat > "$HOME/bin/whitestick-agent-loop.sh" <<'EOF'
@@ -87,27 +91,47 @@ done
 EOF
 chmod 755 "$HOME/bin/whitestick-agent-loop.sh"
 
-if [ -n "${WSL_DISTRO_NAME:-}" ] && [ -n "$WINPROFILE" ]; then
-    echo "== registering Windows scheduled tasks"
-    WUSER=$(id -un)
-    WINDIR_W="$WINPROFILE\\whitestick"
-    WINDIR=$(wslpath "$WINDIR_W")
-    mkdir -p "$WINDIR"
-    # A .vbs launcher so no console window pops up at logon.
-    printf 'Set sh = CreateObject("WScript.Shell")\r\nsh.Run "wsl.exe -d %s -u %s -- /bin/sh -lc ~/bin/whitestick-agent-loop.sh", 0, False\r\n' \
-        "$WSL_DISTRO_NAME" "$WUSER" > "$WINDIR/start-agent.vbs"
-    case "$WINDIR_W" in
-        *" "*) echo "warning: the Windows profile path has spaces; check the tasks in Task Scheduler" ;;
-    esac
-    TR="wscript.exe $WINDIR_W\\start-agent.vbs"
-    if ! schtasks.exe /Create /F /TN "WhiteStick Agent" /SC ONLOGON /TR "$TR" >/dev/null 2>&1; then
-        echo "   (could not create the logon task without admin rights; the 5-minute watchdog covers it)"
+echo "== starting the agent"
+setsid --fork "$HOME/bin/whitestick-agent-loop.sh" >/dev/null 2>&1 </dev/null ||
+    nohup "$HOME/bin/whitestick-agent-loop.sh" >/dev/null 2>&1 </dev/null &
+
+# Autostart WITHOUT Task Scheduler. schtasks refuses these tasks on the render
+# box ("Invalid argument", and the ONLOGON one needs admin anyway), while a
+# .vbs in the Startup folder needs no privileges at all -- and because it
+# loops on the WINDOWS side it also restarts the agent after `wsl --shutdown`,
+# which is what the 5-minute watchdog task was there for.
+#
+# Nothing below may block: this script once hung here because it launched the
+# never-returning .vbs through cmd.exe and interop waited on it. So: no
+# Windows program is started, and every interop call has a timeout.
+if [ -n "${WSL_DISTRO_NAME:-}" ]; then
+    echo "== autostart at logon"
+    STARTUP=""
+    for d in "/mnt/c/Users/$(id -un)/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup" \
+             "$CWD/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup"; do
+        [ -d "$d" ] && { STARTUP=$d; break; }
+    done
+    if [ -z "$STARTUP" ] && [ -n "$WINPROFILE" ]; then
+        A=$(timeout 15 cmd.exe /c 'echo %APPDATA%' 2>/dev/null | tr -d '\r')
+        [ -n "$A" ] && STARTUP=$(timeout 10 wslpath "$A\\Microsoft\\Windows\\Start Menu\\Programs\\Startup" 2>/dev/null)
     fi
-    schtasks.exe /Create /F /TN "WhiteStick Agent Watchdog" /SC MINUTE /MO 5 /TR "$TR" >/dev/null
-    schtasks.exe /Run /TN "WhiteStick Agent Watchdog" >/dev/null 2>&1 || true
-else
-    echo "== starting the agent loop directly (no Task Scheduler)"
-    nohup "$HOME/bin/whitestick-agent-loop.sh" >/dev/null 2>&1 &
+    if [ -n "$STARTUP" ] && [ -d "$STARTUP" ]; then
+        {
+            printf 'Set sh = CreateObject("WScript.Shell")\r\n'
+            printf 'Do\r\n'
+            printf '  sh.Run "wsl.exe -d %s -u %s -- /bin/sh -lc ~/bin/whitestick-agent-loop.sh", 0, True\r\n' \
+                "$WSL_DISTRO_NAME" "$(id -un)"
+            printf '  WScript.Sleep 15000\r\n'
+            printf 'Loop\r\n'
+        } > "$STARTUP/whitestick-agent.vbs" 2>/dev/null &&
+            echo "   $STARTUP/whitestick-agent.vbs" ||
+            echo "   could not write the Startup folder; the agent runs now but not after a logout" >&2
+    else
+        echo "   Startup folder not found; the agent runs now but not after a logout" >&2
+    fi
+    # Tasks from older installs: they never worked here.
+    timeout 15 schtasks.exe /Delete /F /TN "WhiteStick Agent" >/dev/null 2>&1
+    timeout 15 schtasks.exe /Delete /F /TN "WhiteStick Agent Watchdog" >/dev/null 2>&1
 fi
 
 echo "== waiting for the agent to report in"
@@ -122,6 +146,6 @@ done
     exit 1
 }
 echo "== done. Log: ~/.whitestick/agent.log"
-if schtasks.exe /Query /FO LIST 2>/dev/null | grep -qi navi; then
-    echo "note: a navi scheduled task still exists; navibot.dev is gone, so it can be deleted."
+if crontab -l 2>/dev/null | grep -qi navi; then
+    echo "note: navi cron entries are still installed; navibot.dev is gone, so they can be removed."
 fi

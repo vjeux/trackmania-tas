@@ -157,7 +157,19 @@ pub async fn run(opts: RelayOpts) -> Result<()> {
             let tls = match tokio::time::timeout(Duration::from_secs(20), acceptor.accept(tcp)).await
             {
                 Ok(Ok(s)) => s,
-                _ => return, // a scan, a probe, a broken client: not worth a line
+                // Scanners hit any open port, so this is mostly noise — but it
+                // is also exactly what a client with the wrong pin looks like
+                // (pinning is checked client-side, so the refusal arrives here
+                // as a TLS alert), and that is the one failure nobody can see
+                // from either end. Worth the line.
+                Ok(Err(e)) => {
+                    crate::log(&format!("{peer}: tls handshake failed: {e}"));
+                    return;
+                }
+                Err(_) => {
+                    crate::log(&format!("{peer}: tls handshake timed out"));
+                    return;
+                }
             };
             if let Err(e) = serve_conn(tls, peer, relay, token).await {
                 let msg = e.to_string();
