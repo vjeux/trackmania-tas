@@ -28,6 +28,8 @@ https://github.com/user-attachments/assets/44b55e8a-82bb-41c7-8968-4a7555bff486
 
 **Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **18.298** (build ship15, controls overlay)
 
+*⚠ lap rides the ship15 water lid; the original's water would stop the car; being re-searched with zero water contact*
+
 https://github.com/user-attachments/assets/75476b21-393d-445a-84eb-5b1746bad62b
 
 **Tiny Summer 2026 - 06** — original author time `29.014` · tiny ghost **22.653** (build ship15, controls overlay)
@@ -67,6 +69,8 @@ https://github.com/user-attachments/assets/2a2fa7a3-a295-4b27-b71d-ed3345442840
 https://github.com/user-attachments/assets/8359415d-53d5-419f-8fd6-aee0fe145345
 
 **Tiny Summer 2026 - 15** — original author time `36.888` · tiny ghost **48.748** (build ship15, controls overlay)
+
+*⚠ lap rides the ship15 water lid; the original's water would stop the car; being re-searched with zero water contact*
 
 *latest lap **48.738** (build ship15) — within 0.1 s of the published clip*
 
