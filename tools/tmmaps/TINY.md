@@ -836,6 +836,10 @@ draft, a nose-down car passes — independent of any route? Facts so far, from t
   | no triangles | removed | (crashed the load for another reason; untested) | falls through, rests on the floor | probe-15-nowater (`TINY_WATER=open`) |
   | block VOLUME | the original's | floats a flat car at 0.9 m draft, lets a nose-down car through | same | the original; no item carries one |
 
+  Flat-car control on the 13-form (client, Spawn at rest 0.6 m above the plane): sinks to the floor, rests at
+  21.51 — where the original floats at 0.9 m draft. The 13-form matches the original for a diving car, not for
+  a floating one; nothing an item carries floats.
+
   So "NotCollidable" is the one id the car DOES collide with, and the pack's `Water` is the one it does not:
   for an embedded item the engine's water is the material id 13, treated as no surface at all — the buoyancy
   belongs to the block's volume. ship13's water was right and ship14's fix created the lids.
