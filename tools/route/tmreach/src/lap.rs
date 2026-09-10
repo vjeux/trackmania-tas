@@ -528,6 +528,8 @@ pub struct LapCfg {
     pub tilt_slack: usize,
     /// --tilt70: kill a rollout with >= 70-deg in-contact tilt on >= 30 of any 100 consecutive ticks
     pub tilt70_guard: bool,
+    /// --slide-interim: the live-mask interim rule (<= 2 wheels live and roll > 45 deg) instead of the corrected surface-relative tilt
+    pub slide_interim: bool,
     /// hand macro: pure-pursuit points (x y z [speed]) from --pursue FILE; empty = the macro is skipped
     pub pursue: Vec<[f64; 5]>,
     /// hand macro: aim at the first pursue point farther than this (m); --pursue-look, default 8
@@ -973,7 +975,10 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let mut n45 = 0usize; let mut hot: Vec<u8> = Vec::with_capacity(rows.len());
                 // INTERIM RULE (coordinator 22:31Z, the exported wheel normals are in the car frame): a SLIDE tick = <= 2 wheels live AND |gravity roll| > 45 deg
                 // (up_y < 0.707); >= 3 wheels live is legal at any tilt. n45 counts slide ticks (no-regress vs the base's slide ticks), hot = the same flag (>= 30 of 100 kills).
-                for r in &rows { let live = r.vis.wheel_live.iter().filter(|l| **l == 1).count(); let up_y = 1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz); let slide = live <= 2 && up_y < 0.707 && r.vis.ground_contact; let h = slide as u8; if slide { n45 += 1; } hot.push(h); }
+                for r in &rows {
+                    if cfg.slide_interim { let live = r.vis.wheel_live.iter().filter(|l| **l == 1).count(); let up_y = 1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz); let slide = live <= 2 && up_y < 0.707 && r.vis.ground_contact; if slide { n45 += 1; } hot.push(slide as u8); }
+                    else { let t = r.vis.wheel_tilt_deg(r.qw, r.qx, r.qy, r.qz); let mut h = 0u8; for k in 0..4 { if t[k].is_finite() { if t[k] >= 45.0 { n45 += 1; } if t[k] >= 70.0 { h = 1; } } } hot.push(h); }
+                }
                 let t0 = rows.first().map(|r| w.race_of(r)).unwrap_or(0) / 10; let t1 = rows.last().map(|r| w.race_of(r)).unwrap_or(0) / 10;
                 let base_n = if cfg.base_tilt.is_empty() { usize::MAX } else { let g = |i: i64| -> usize { if i < 0 { 0 } else { cfg.base_tilt.get(i as usize).copied().unwrap_or(*cfg.base_tilt.last().unwrap_or(&0)) } }; g(t1).saturating_sub(g(t0)) };
                 let win70 = if cfg.tilt70_guard { hot.windows(100.min(hot.len().max(1))).map(|s| s.iter().map(|x| *x as usize).sum::<usize>()).max().unwrap_or(0) } else { 0 };

@@ -1586,6 +1586,7 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
         base_tilt: a.get("base-tilt").map(|f| tmreach::lap::load_base_tilt(f)).unwrap_or_default(),
         tilt_slack: a.get("tilt-slack").map(|s| s.parse().unwrap()).unwrap_or(0),
         tilt70_guard: a.has("tilt70"),
+        slide_interim: a.has("slide-interim"),
         water_boxes: a.get("water-boxes").map(|s| s.split(';').filter_map(|b| { let v: Vec<f64> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 5 { Some([v[0], v[1], v[2], v[3], v[4]]) } else { None } }).collect()).unwrap_or_default(),
         min_leg_gate: a.get("min-leg-gate").map(|s| s.parse().unwrap()).unwrap_or(0),
         beat_margin: a.get("beat-margin").map(|s| s.parse().unwrap()).unwrap_or(0.2),
