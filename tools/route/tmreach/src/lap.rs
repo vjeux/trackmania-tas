@@ -965,6 +965,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             // min_up (default 0.7) for every row whose race time is inside [t1, t2] — a roll there is not a cell (parent 19:14Z: attitude guard)
             if cfg.upright.iter().any(|u| rows.iter().any(|r| { let t = w.race_of(r) as f64 / 1000.0; t >= u[0] && t <= u[1] && (1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz)) < u[2] })) {
                 out.deaths[1] += 1;
+                if debug_fan { if let Some(r) = rows.iter().find(|r| { let t = w.race_of(r) as f64 / 1000.0; cfg.upright.iter().any(|u| t >= u[0] && t <= u[1] && (1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz)) < u[2]) }) { eprintln!("    UPRIGHT kill {desc:34}: race {:.2} up_y {:.3} at ({:.1}, {:.1}, {:.1}) v {:.1} q ({:.3} {:.3} {:.3} {:.3})", w.race_of(r) as f64 / 1000.0, 1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz), r.x, r.y, r.z, speed(r), r.qx, r.qy, r.qz, r.qw); } }
                 dump_rollout(w, base, &rows, "offroute", &desc, &dump_n);
                 continue;
             }
