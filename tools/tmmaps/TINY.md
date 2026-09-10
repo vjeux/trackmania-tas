@@ -935,6 +935,20 @@ draft, a nose-down car passes — independent of any route? Facts so far, from t
   So "NotCollidable" is the one id the car DOES collide with, and the pack's `Water` is the one it does not:
   for an embedded item the engine's water is the material id 13, treated as no surface at all — the buoyancy
   belongs to the block's volume. ship13's water was right and ship14's fix created the lids.
+* **The original's block water, measured (2026-09-10 20:20Z, client, `wheels-orig15pool-original-water-float.tsv`):**
+  Summer 15 with its Spawn moved over the WaterBase body at (884, 44, 837) — the car fell 89 m onto the plane
+  (~42 m/s) and STOPPED ON IT: rests at y 43.06 with all four wheels reporting material 13 (Water) and ground
+  contact 1, bobbing (vy −1.1 … +0.1 damped). The plane is drawn at 44.0 → the rest is 0.94 m under it, the
+  Poland draft. The pool's Concrete floor is at 43.0, so a 1-m body already carries the car; it is the WATER
+  that holds it, not the floor (material 13, not 0). The same Water-material quad in an ITEM stopped nothing
+  (the 13-form drop, above). So the engine's buoyancy is a BLOCK-level behaviour — the block info's water
+  volume (0x0315B00B) and/or its unit `surface "Water"` — that no item can express; a custom `.Block.Gbx`
+  (CGameBlockItem) borrows its block info from an ARCHETYPE block, so the only volume it could carry is a
+  stock block's, full 32-m size. Half-size floating water does not exist in this engine's vocabulary; the
+  nearest native forms are: seas/lakes at the collection plane (genealogy, already used) and a full-size
+  water block where a source body is 2 × 2 cells (64 m → 32 m tiny: an exact fit — none on the 25 today).
+  Open: whether a custom block with a water ARCHETYPE (e.g. `WaterBase`) floats the car at all (the file's
+  archetype string + a 32-m mesh; `tmmaps set_block_name` can point a record at it) — tomorrow's probe.
 * **Half-size volumes:** a water volume is block-info data (per block variant, cell units), pack-side. A map
   cannot scale a block; a custom embedded block (`.Block.Gbx`, a CGameItemModel with block-info chunks) is
   the only per-map vehicle, and whether the loader reads 0x0315B00B from an embedded block is untested.
