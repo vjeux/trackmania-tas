@@ -96,3 +96,37 @@ pub fn write_body_and_phy(pid: i32, car: &Car, st: &BodyState) -> Result<BodySta
     put(car.angvel(), &st.ang_vel)?;
     Ok(back)
 }
+
+/// The vehicle's PHYSICS copies of the drivetrain state, found by `tmenv phy-scan` on Tiny 20 (Stadium car, 2026-09-09):
+/// each value the post-step vis state shows exists once more inside the phy, outside both vis copies --
+/// FrontSpeed at phy+0x142c, engine rpm at phy+0x15d8 (and a twin at +0x1608), and per wheel k (stride 0xb8 from
+/// phy+0x1780: front-left, front-right, rear-left, rear-right) damper length +0x00, RotSpeed +0x1c, Rot +0x78.
+/// Wheel radii from the same scan: RotSpeed/FrontSpeed = 3.258 (front, r = 0.307 m) and 2.869 (rear, r = 0.349 m).
+pub const PHY_FRONT_SPEED: u64 = 0x142c;
+pub const PHY_RPM: [u64; 2] = [0x15d8, 0x1608];
+/// The GEAR (u32) right after each rpm copy (phy-scan diff of an injected car (gear 0, rpm 1310 idle, no drive, steer
+/// capped at 0.2) against a driving one, Poland 2026-09-10): the injected body keeps the paused template car's gear 0 =
+/// neutral, so the engine never drives it -- THE inject residual (15-20 % slower, 0.2 steer).
+pub const PHY_GEAR: [u64; 2] = [0x15dc, 0x160c];
+pub const PHY_WHEEL0: u64 = 0x1780;
+pub const PHY_WHEEL_STRIDE: u64 = 0xb8;
+pub const PHY_WHEEL_ROTSPEED: u64 = 0x1c;
+pub const WHEEL_RAD_PER_M: [f32; 4] = [3.258, 3.258, 2.869, 2.869];
+
+/// Write the drivetrain to match a forward speed: wheel angular speeds for rolling without slip, FrontSpeed, and the
+/// engine rpm when given (else left as the paused car had it). Call after `write_body_and_phy`.
+pub fn write_drivetrain(pid: i32, car: &Car, speed_fwd: f32, rpm: Option<f32>) -> Result<(), String> { write_drivetrain_gear(pid, car, speed_fwd, rpm, None) }
+/// `write_drivetrain` plus the gear (u32 at PHY_GEAR, both copies).
+pub fn write_drivetrain_gear(pid: i32, car: &Car, speed_fwd: f32, rpm: Option<f32>, gear: Option<u32>) -> Result<(), String> {
+    procmem::write_at(pid, car.phy + PHY_FRONT_SPEED, &speed_fwd.to_le_bytes())?;
+    if let Some(r) = rpm { for o in PHY_RPM { procmem::write_at(pid, car.phy + o, &r.to_le_bytes())?; } }
+    if let Some(g) = gear { for o in PHY_GEAR { procmem::write_at(pid, car.phy + o, &g.to_le_bytes())?; } }
+    // TMENV_INJECT_WHEEL_RATIO=r overrides the rad/m ratio (all wheels); "0" skips the wheel-speed write.
+    let ratio_override: Option<f32> = std::env::var("TMENV_INJECT_WHEEL_RATIO").ok().and_then(|s| s.parse().ok());
+    if ratio_override == Some(0.0) { return Ok(()); }
+    for k in 0..4u64 {
+        let w = speed_fwd * ratio_override.unwrap_or(WHEEL_RAD_PER_M[k as usize]);
+        procmem::write_at(pid, car.phy + PHY_WHEEL0 + k * PHY_WHEEL_STRIDE + PHY_WHEEL_ROTSPEED, &w.to_le_bytes())?;
+    }
+    Ok(())
+}
