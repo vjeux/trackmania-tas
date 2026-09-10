@@ -728,6 +728,9 @@ pub fn static_item_from_prefab(store: &mut crate::store::DataStore, prefab: &str
 pub fn static_item_from_prefab_report(store: &mut crate::store::DataStore, prefab: &str, ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged)> {
     let mut m = Merged::default();
     add_prefab(store, prefab, &IDENTITY, scale, &mut m, 0)?;
+    add_sign_logo_pictures(store, &mut m);
+    add_screen_logo_pictures(store, &mut m);
+    m.darken_screen_faces();
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
     if let Some(n) = super::assemble::REPACK_NOTE.with(|c| c.get()) {
@@ -1673,6 +1676,8 @@ pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStor
     // The gate sign panels' pictures (signlogo.rs), one per kind the item's
     // materials name; `sign_logo_material` re-points the panels at them.
     add_sign_logo_pictures(store, &mut m);
+    add_screen_logo_pictures(store, &mut m);
+    m.darken_screen_faces();
     // A light colour skin: which of the item's materials are the glass (their
     // pack material has a self-illumination `_I` texture) — those get the
     // swatch as a self-lit custom material at assembly; the swatch file rides
@@ -2432,5 +2437,37 @@ mod tree_uv1_tests {
         let w = (uv1[0][0] - uv1[1][0]).abs().max((uv1[0][1] - uv1[1][1]).abs());
         let h = (uv1[1][0] - uv1[2][0]).abs().max((uv1[1][1] - uv1[2][1]).abs());
         assert!((h - 0.4).abs() < 1e-3 && (w - 0.2).abs() < 1e-3, "card 0 spans {w} x {h}");
+    }
+}
+
+/// `TINY_SCREENS=logo`: the picture every ad screen face shows — the pack's
+/// `RaceAd6x1` default (the TRACKMANIA wordmark on its LED band), as a 32-bit
+/// DDS, rows flipped like the gate sign pictures (the display samples the
+/// panel uv V-flipped against a plain texture). One picture per item that has
+/// an ad face; the same file name in every item, so the game caches it once.
+pub fn add_screen_logo_pictures(store: &mut crate::store::DataStore, m: &mut Merged) {
+    if screen_mode() != ScreenMode::Logo {
+        return;
+    }
+    if !m.materials.iter().any(|mat| mat.link().map(is_ad_screen_link).unwrap_or(false)) {
+        return;
+    }
+    if m.pictures.iter().any(|(f, _)| f == SCREEN_LOGO_FILE) {
+        return;
+    }
+    let path = "Stadium\\Media\\Texture\\Image\\RaceAd6x1.dds";
+    match store.read(path).map_err(|e| format!("{path}: {e}")).and_then(|bytes| super::texture::decode_capped_rgba(&bytes, 1024).map_err(|e| format!("{path}: {e}"))) {
+        Ok((w, h, rgba)) => {
+            let mut out = Vec::with_capacity(rgba.len());
+            for row in (0..h as usize).rev() {
+                let r = &rgba[row * w as usize * 4..(row + 1) * w as usize * 4];
+                for px in r.chunks(4) {
+                    out.extend_from_slice(&[px[0], px[1], px[2], 0xFF]);
+                }
+            }
+            m.notes.push(format!("screen logo picture: {SCREEN_LOGO_FILE} {w}x{h} from {path}"));
+            m.pictures.push((SCREEN_LOGO_FILE.to_string(), super::texture::write_dds_rgba(w, h, &out)));
+        }
+        Err(e) => m.notes.push(format!("screen logo picture: {e}; game material kept")),
     }
 }

@@ -383,3 +383,72 @@ pub fn light_skin_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMat
     owned
 }
 
+
+/// The ad SCREEN face materials of the Technics screen blocks: LED-cell
+/// panels whose picture the game replaces at run time with a served ad
+/// (`DeactivableDisplayId`); with none served — every non-official map — they
+/// show the pack's default picture on green cells (`Ad2x3Screen` → a driver
+/// with crossed arms), which from afar reads as a flat emerald cut-out of the
+/// landscape (Summer 01 at 8 s, vjeux 2026-09-10: "the mountain on the right
+/// is missing part of the model and you can see through"). Six links on the 25
+/// maps (454 screen items): the frames are TechnicsTrims/Pylon, the backs
+/// ScreenBack — untouched.
+pub const AD_SCREEN_LINKS: &[&str] = &[
+    "Stadium\\Media\\Material\\Ad155Screen",
+    "Stadium\\Media\\Material\\Ad1x1Screen",
+    "Stadium\\Media\\Material\\Ad2x1Screen",
+    "Stadium\\Media\\Material\\Ad2x3Screen",
+    "Stadium\\Media\\Material\\Ad4x1Screen",
+    "Stadium\\Media\\Material\\RaceAd6x1",
+];
+
+/// `TINY_SCREENS`: what an ad screen face shows. `default` (unset) keeps the
+/// game material; `dark` links the face to `ScreenBack` (the screens' own
+/// dark casing look — what the Screen4x1 ITEMS already show); `logo` puts the
+/// TRACKMANIA picture on it as a plain lit panel (the sign-logo path:
+/// `add_screen_logo_pictures` produces `ScreenLogo.dds` from the pack's
+/// `RaceAd6x1` default texture).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ScreenMode {
+    Default,
+    Dark,
+    Logo,
+}
+
+pub fn screen_mode() -> ScreenMode {
+    match std::env::var("TINY_SCREENS").unwrap_or_default().to_ascii_lowercase().as_str() {
+        "dark" => ScreenMode::Dark,
+        "logo" => ScreenMode::Logo,
+        _ => ScreenMode::Default,
+    }
+}
+
+pub const SCREEN_LOGO_FILE: &str = "ScreenLogo.dds";
+
+pub fn is_ad_screen_link(link: &str) -> bool {
+    AD_SCREEN_LINKS.iter().any(|l| l.eq_ignore_ascii_case(link))
+}
+
+pub fn screen_face_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMaterialUserInst {
+    // `logo` only: the face becomes a plain lit picture (TDSN, the picture in
+    // slot 0 — black cells and a sunlit logo, measured on the gate sign panels
+    // in `sign_logo_material`). `dark` is done before assembly by
+    // `Merged::darken_screen_faces` (a slot merge, so item-check sees one
+    // ScreenBack slot, not two of the same look).
+    if screen_mode() != ScreenMode::Logo {
+        return inst.clone();
+    }
+    let Some(link) = inst.link().map(|s| s.to_string()) else { return inst.clone() };
+    if !is_ad_screen_link(&link) || !m.pictures.iter().any(|(f, _)| f == SCREEN_LOGO_FILE) {
+        return inst.clone();
+    }
+    let mut owned = inst.clone();
+    if let Some(main) = owned.main.as_mut() {
+        main.is_using_game_material = false;
+        main.model = crate::crystal_model::Id::Str("TDSN".to_string());
+        main.material_name = crate::crystal_model::Id::Str("ScreenLogo".to_string());
+        main.link = crate::crystal_model::Id::Null;
+        main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: SCREEN_LOGO_FILE.to_string() }];
+    }
+    owned
+}

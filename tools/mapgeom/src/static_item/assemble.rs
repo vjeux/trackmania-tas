@@ -4,7 +4,7 @@
 //! the reference `.Item.Gbx` layout (`assemble`, `header_chunks`).
 
 use super::lod::{cap_lod_ladder, lod0_only, remap_lod_mask, MAX_LOD_LEVELS};
-use super::materials::{custom_texture_material, light_skin_material, sign_logo_material, skinned_material};
+use super::materials::{custom_texture_material, light_skin_material, screen_face_material, sign_logo_material, skinned_material};
 use super::merged::{coalesce, harmonize_layouts_with, Merged};
 use super::build::fx_entities;
 use super::solid2::{CPlugSolid2Model, Material, PreLightGen, ShadedGeom};
@@ -196,6 +196,7 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
         let inst = skinned_material(inst, opts.collection);
         let inst = custom_texture_material(&inst, &opts.ident);
         let inst = sign_logo_material(&inst, m);
+        let inst = screen_face_material(&inst, m);
         let inst = light_skin_material(&inst, m);
         if m.materials_external {
             // the pack mesh's form: the material is a FILE the reference table

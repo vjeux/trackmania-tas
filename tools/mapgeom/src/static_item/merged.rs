@@ -1742,3 +1742,32 @@ mod material_slot_tests {
     }
 }
 
+
+impl Merged {
+    /// `TINY_SCREENS=dark`: every visual under an ad screen face material
+    /// (`materials::AD_SCREEN_LINKS`) moves to the item's `ScreenBack` slot —
+    /// the casing's dark look, what the Screen4x1 ITEMS already show — created
+    /// with the face's physics when the item has none. Slots merge, so the
+    /// item keeps one ScreenBack material; the face slot goes unused and is
+    /// not written (assembly writes used slots only).
+    pub fn darken_screen_faces(&mut self) -> usize {
+        if super::materials::screen_mode() != super::materials::ScreenMode::Dark {
+            return 0;
+        }
+        let faces: Vec<usize> = self.materials.iter().enumerate().filter(|(_, m)| m.link().map(super::materials::is_ad_screen_link).unwrap_or(false)).map(|(i, _)| i).collect();
+        if faces.is_empty() {
+            return 0;
+        }
+        let phys = self.materials[faces[0]].physics();
+        let back = self.material_slot("Stadium\\Media\\Material\\ScreenBack", phys);
+        let mut moved = 0usize;
+        for v in self.visuals.iter_mut() {
+            if faces.contains(&v.material) {
+                v.material = back;
+                moved += 1;
+            }
+        }
+        self.notes.push(format!("TINY_SCREENS=dark: {moved} ad screen face visual(s) re-dressed as ScreenBack"));
+        moved
+    }
+}
