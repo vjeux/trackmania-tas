@@ -1912,16 +1912,65 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                 // scaling (the control). TINY_TREE_ALPHA_REF=N (default 128) is the
                 // test's reference, TINY_TREE_ALPHA_GAIN=F (default 1) scales the top
                 // level's alpha first. Bark keeps the pack chain.
-                let mips_mode = std::env::var("TINY_TREE_LEAF_MIPS").unwrap_or_else(|_| "pack".into());
-                // the colour adjustment (TINY_TREE_LEAF_COLOR_ADJ=GAIN[,SAT]): the
-                // atlas colour scaled (GAIN on every channel) and its saturation
-                // stretched about the pixel's luma (SAT 1 = as is) — the knob for
-                // matching the vegetation shader's rendered leaf colour, which
-                // carries a subsurface term the item models have not
-                let color_adj: Option<(f32, f32)> = std::env::var("TINY_TREE_LEAF_COLOR_ADJ").ok().map(|adj| {
-                    let mut it = adj.split(',').map(|x| x.trim().parse::<f32>());
-                    (it.next().and_then(|v| v.ok()).unwrap_or(1.0), it.next().and_then(|v| v.ok()).unwrap_or(1.0))
-                });
+                // The default chain of a LEAF atlas is the pack's own, re-encoded with
+                // the calibrated colour (`pack-adj`, below); `pack` ships the pack
+                // bytes untouched.
+                let mips_mode = std::env::var("TINY_TREE_LEAF_MIPS").unwrap_or_else(|_| if mat.leaf { "pack-adj".into() } else { "pack".into() });
+                // THE LEAF COLOUR (default since 2026-09-10, the trees quality pass):
+                // the atlas is brightened and saturated at bake, because an item's
+                // leaf cards are lit by the lightmap the game bakes at load — every
+                // card an opaque occluder to that bake, so a crown gets the sky's
+                // light and little sun — and the vegetation shader the stock trees
+                // use adds a subsurface (translucent) term on top of a per-leaf sun
+                // term. Measured on the GreenCoast lineups A–D (TreeSmallA,
+                // BushMediumD, TreeThinSmallA, TreeBigA, BushBigB against the stock
+                // species at the same angular size, both sides of the sun, 4K):
+                // untouched, our crown is a flat dark blob (mean luma ~half the
+                // stock's, hsat 18 % vs 40 %); gain 1.6 matches the small trees, 1.3
+                // the bushes and the big oak, autumn foliage wants 1.6 whatever its
+                // atlas; 2.0 overshoots everything. The rule that fits the five:
+                // gain = clamp(132 / L, 1.0, 1.65) with L the atlas' mean
+                // luma over its opaque texels (HoneyLocust 80 -> 1.65, Cercidophylle 92 -> 1.43,
+                // BigOak 96 -> 1.38, pine 87 -> 1.52, the palms 100-113 -> 1.2-1.3, a snowy fir
+                // 183 and the pink cherry 210 -> 1.0), and at least 1.6 for a warm mid-luma
+                // autumn atlas (red over green by 12 or more, luma under 150: Populus 118); saturation x1.15 throughout.
+                // TINY_TREE_LEAF_COLOR_ADJ=GAIN[,SAT] sets both by hand (`1,1` = the
+                // atlas as it is).
+                let color_adj: Option<(f32, f32)> = match std::env::var("TINY_TREE_LEAF_COLOR_ADJ") {
+                    Ok(adj) => {
+                        let mut it = adj.split(',').map(|x| x.trim().parse::<f32>());
+                        Some((it.next().and_then(|v| v.ok()).unwrap_or(1.0), it.next().and_then(|v| v.ok()).unwrap_or(1.0)))
+                    }
+                    Err(_) if mat.leaf => {
+                        let (w0, h0, top) = super::texture::decode_capped_rgba(&bytes, cap).map_err(|e| format!("{path}: {e}"))?;
+                        let _ = (w0, h0);
+                        let (mut n, mut s) = (0u64, [0u64; 3]);
+                        for px in top.chunks(4) {
+                            if px[3] >= 128 {
+                                n += 1;
+                                for c in 0..3 {
+                                    s[c] += px[c] as u64;
+                                }
+                            }
+                        }
+                        if n == 0 {
+                            None
+                        } else {
+                            let (r, g, b) = (s[0] as f32 / n as f32, s[1] as f32 / n as f32, s[2] as f32 / n as f32);
+                            let luma = 0.299 * r + 0.587 * g + 0.114 * b;
+                            let mut gain = (132.0 / luma.max(1.0)).clamp(1.0, 1.65);
+                            // warm (autumn) foliage: red clearly over green — the yellow-green palms sit
+                            // at r ≈ g — and mid-luma: a light pink blossom atlas (cherry, luma 210)
+                            // is left alone, gain 1.6 bleached it white
+                            if r >= g + 12.0 && luma < 150.0 {
+                                gain = gain.max(1.6);
+                            }
+                            m.notes.push(format!("leaf atlas {file}: opaque mean ({r:.0}, {g:.0}, {b:.0}) luma {luma:.0} -> colour gain {gain:.2}{}", if r >= g + 12.0 && luma < 150.0 { " (warm foliage)" } else { "" }));
+                            Some((gain, 1.15))
+                        }
+                    }
+                    Err(_) => None,
+                };
                 let adjust = |rgba: &mut [u8], alpha_gain: f32| {
                     if let Some((gain, sat)) = color_adj {
                         for px in rgba.chunks_mut(4) {
@@ -2169,7 +2218,11 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
             // lights). The lightmapper takes its irradiance direction from them.
             let leaf = t.materials[e.material as usize].leaf;
             if leaf {
-                let mode = std::env::var("TINY_TREE_NORMALS").unwrap_or_else(|_| "model".into());
+                // Default `shell` since 2026-09-10: with the model's own normals (a
+                // mix, 0.2–0.5 shell-ness on the GreenCoast species) the crown had
+                // no sun side at all; radial normals give it a lit side and a
+                // shaded side under the same bake (lineups C and D, every species).
+                let mode = std::env::var("TINY_TREE_NORMALS").unwrap_or_else(|_| "shell".into());
                 if mode != "model" {
                     if let Some(main) = v.main.as_mut() {
                         let c = [main.bounding_box[0], main.bounding_box[1], main.bounding_box[2]];

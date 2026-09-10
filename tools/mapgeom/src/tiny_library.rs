@@ -467,7 +467,7 @@ impl TreeBaker {
                             bake.radius,
                             bake.height * scale,
                             bake.textures.iter().map(|(f, n)| format!("{f} {n} B")).collect::<Vec<_>>().join(", ")
-                        )),
+                        ) + &m.notes.iter().filter(|n| n.contains("colour gain") || n.starts_with("prelight")).map(|n| format!("; {}", n.trim())).collect::<String>()),
                     });
                     Some(ident)
                 }

@@ -187,6 +187,49 @@ What the bake keeps and what it gives up:
   original), five other views within noise; 291 of 24's 716 items are
   multi-part and change bytes.)
 
+* **What an item CANNOT do, stated once (2026-09-10, so nobody chases it
+  again)**: the stock vegetation shader lights every leaf with the sun per
+  pixel and adds a SUBSURFACE term (light through the leaf — the back-lit
+  golden glow), waves in the wind, and morphs to an impostor past the far
+  distance; an embedded item's leaf cards are static geometry lit by the
+  lightmap the game bakes at load, every card an opaque occluder to that
+  bake, under a shading model with no translucency — so a crown comes out
+  lit by the sky, flat and dark. None of translucency, wind or LOD morphing
+  can be had from an item, whatever its material or entity kind (a
+  kinematic dyna entity draws no leaves for a 12k-vertex mesh, and a small
+  one's leaves come out as dark as the static ones).
+* **The look, calibrated (default since 2026-09-10, trees quality pass 2)**:
+  the leaf atlas is brightened and saturated at bake and the cards get
+  RADIAL normals. Measured on same-camera lineups (stock species at the
+  same angular size beside ours, both sides of the sun, 4K, GreenCoast
+  TreeSmallA / BushMediumD / TreeThinSmallA / TreeBigA / BushBigB, then the
+  palms, pines, cherry and firs of the other collections): untouched, our
+  crown was a flat dark blob (mean luma about half the stock's, hsat 18 %
+  vs 40 %); a colour gain of 1.6 matches the small trees, 1.3 the bushes and
+  the big oak, autumn foliage wants 1.6 whatever its atlas, 2.0 overshoots
+  everything. Rule: gain = clamp(132 / L, 1.0, 1.65), L the atlas' mean
+  luma over its opaque texels (HoneyLocust 80 → 1.65, Cercidophylle 92 →
+  1.43, BigOak 96 → 1.38, pine 87 → 1.52, the palms 100–113 → 1.2–1.3, a
+  snowy fir 183 and the pink cherry 210 → 1.0 — a gain of 1.6 bleached the
+  cherry white), at least 1.6 for a warm mid-luma autumn atlas (red over
+  green by 12, luma under 150: Populus 118); saturation ×1.15; the pack's
+  own mip chain re-encoded
+  (`TINY_TREE_LEAF_MIPS=pack-adj`; `pack` = untouched bytes,
+  `TINY_TREE_LEAF_COLOR_ADJ=GAIN,SAT` by hand, `1,1` = off). The card
+  normals become radial from the crown centre (`TINY_TREE_NORMALS=shell`;
+  `model` = the pack's, `up`): the lightmapper takes its irradiance
+  direction from them, and the crown gets a lit side and a shaded side
+  where the model's mixed normals gave none. Probes that changed nothing
+  visible and stay knobs: a black constant in the Specular slot 4, the
+  pack's normal map in slot 5, a 512-px atlas, the placement's
+  lightmap-quality byte (0/1/2/3), the PreLightGen scale word (8 / 128 /
+  none), an own alpha-coverage-preserving mip chain (THINNER than the
+  pack's chain, which already doubles the alpha coverage down its levels —
+  `coverage` / `plain` modes), a kinematic dyna entity
+  (`TINY_TREE_KINEMATIC`). Tooling: `tinyctl treelineup` (a species ×
+  variant lineup with its cameras), `tinyctl cropstats --fg green` and the
+  hsat/fill/edge/bright columns.
+
 Sizes with `--lod-pick 1 --lod-pick-min-verts 2000`: 01 8.1 MB (5.9 without
 trees), 20 13.8, 17 12.3, 24 25.4 (45 MB without the pick), 25 26.9, 21 29.2
 (25.5 without trees; 28.3 with `TINY_TREE_TEX_MAX=128 TINY_TREE_LOD_MIN=1`).
