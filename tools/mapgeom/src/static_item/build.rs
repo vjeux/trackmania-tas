@@ -1925,7 +1925,12 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                 // TINY_TREE_LEAF_ALPHA_MAX=N (uncompressed leaf path only): opaque alpha
                 // clamped to N — the probe for "alpha doubles as the gloss mask"
                 let alpha_max: Option<u8> = if mat.leaf { std::env::var("TINY_TREE_LEAF_ALPHA_MAX").ok().and_then(|v| v.parse().ok()) } else { None };
-                let cap = if mat.leaf { leaf_tex_max } else { tex_max };
+                // the per-atlas ALPHA calibration (`leaf_alpha_for`): the palm frond
+                // atlases render too opaque under the item shader's alpha test — the
+                // stock vegetation shader cuts harder — and one of them wants its
+                // 512-px level back for the leaflet gaps to show
+                let atlas_cal = if mat.leaf && color_table_on() { leaf_alpha_for(base) } else { None };
+                let cap = if mat.leaf { atlas_cal.and_then(|(_, tex)| tex).map(|t| t.max(leaf_tex_max)).unwrap_or(leaf_tex_max) } else { tex_max };
                 // TINY_TREE_LEAF_MIPS=pack (default) | coverage | plain: the leaf
                 // atlas' mip chain. `pack` ships the pack's own levels cut at the
                 // cap; `coverage` rebuilds the chain from the capped top level with
@@ -2081,7 +2086,7 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                     // the pack's own chain, level by level (its alpha already grows
                     // down the chain), colour-adjusted and alpha-scaled
                     // (TINY_TREE_ALPHA_GAIN on EVERY level), re-encoded as DXT5
-                    let gain: f32 = std::env::var("TINY_TREE_ALPHA_GAIN").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+                    let gain: f32 = std::env::var("TINY_TREE_ALPHA_GAIN").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| atlas_cal.map(|(a, _)| a).unwrap_or(1.0));
                     let mut levels: Vec<super::texture::Level> = Vec::new();
                     let mut side = cap;
                     loop {
@@ -2597,10 +2602,34 @@ pub fn leaf_color_for(collection: u32) -> (f32, f32, f32) {
 pub fn leaf_look_for(collection: u32) -> (f32, f32, f32, &'static str) {
     match collection {
         0xf => (1.3, 1.6, -25.0, "0.45:0.45,0.75:0.7"),  // GreenCoast
-        0x1c => (1.12, 1.06, 0.0, "0.6:0.5"),            // BlueBay
+        0x1c => (1.18, 1.06, 0.0, "0.6:0.5"),            // BlueBay (1.12 → 1.18 after the crown-centred palm lineup PK: −13 % mean luma at eye level, +5 % pitched down)
         0x10 => (1.15, 1.9, -15.0, "0.55:0.55"),         // RedIsland
         0x1d => (1.1, 1.5, -10.0, "0.55:0.55"),          // WhiteShore (firs: the pines' setting, unmeasured)
         _ => (1.2, 1.1, 0.0, "0.6:0.7"),                 // Stadium (the palms want the band, the spring crown less of it)
+    }
+}
+
+/// The per-ATLAS alpha calibration (alpha gain on every mip level, and the
+/// atlas' top level in pixels when it needs more than the default cap) —
+/// measured 2026-09-10 (pass 3c) on crown-box crops of the stock palm beside
+/// ours at the same angular size (stock at 25 m, ours at 12 m; lineups PA–PH):
+/// the stock PalmTreeBigA1 covers 23.6 % of its box with an edge density of
+/// 13.1 %, ours 29.8 %/7.4 at any mesh level (LOD0 29.8/7.4, LOD1 26.2/7.4,
+/// LOD2 13.1/13.6 — a distance ladder of the stock shows no LOD step 12→80 m),
+/// so the cards render too OPAQUE at the item shader's alpha test; alpha ×0.6
+/// with the 512-px atlas = 23.9/13.6 (n) and 26.3/14.1 vs 24.8/13.7 (s). The
+/// WhiteBark palm wants ×0.75 (26.7/13.7 → the stock's 25.6/19.0; ×0.6
+/// overshoots to 19.7/24.1). The Stadium palm matches as it is (47.9/8.0 vs
+/// 45.3/6.3) and the GreenCoast crowns do not want it (an alpha cut raises
+/// their rendered luma 10–40 % and the bushes are already thinner than the
+/// stock), so the table names atlases, not collections. `TINY_TREE_ALPHA_GAIN`
+/// / `TINY_TREE_LEAF_TEX_MAX` override it for every atlas.
+pub fn leaf_alpha_for(atlas_file: &str) -> Option<(f32, Option<u32>)> {
+    let stem = atlas_file.rsplit('\\').next().unwrap_or(atlas_file).trim_end_matches(".dds");
+    match stem {
+        "VegetPalmTreeSugar_D" => Some((0.6, Some(512))), // BlueBay PalmTreeBigA0–A4, Sugar*, Small*
+        "VegetWhiteBarkPalmAtlas_D" => Some((0.75, None)), // BlueBay PalmTreeBigB0–B3
+        _ => None,
     }
 }
 

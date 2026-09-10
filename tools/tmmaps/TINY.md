@@ -236,7 +236,25 @@ What the bake keeps and what it gives up:
   gets ×1.3 more saturation and half the hue shift — birch 36/31 vs the
   stock's 31/30, sous-bois 35/33 vs 32/33, hazel 37/31 vs 33/32 (from 24/21,
   30/28, 28/23), luma within 15 %; the laurel at 0.32 would overshoot (40 vs
-  34) and stays. `TINY_TREE_LOWCHROMA=0` turns it off. The bands are the SELF-SHADOW the per-item lightmap does
+  34) and stays. `TINY_TREE_LOWCHROMA=0` turns it off. PALM FRONDS (pass 3c,
+  2026-09-10 19:30Z): the "giant flat frond planes" at ≤15 m are the cards
+  rendering too OPAQUE at the item shader's alpha test, not the mesh or the
+  atlas — a distance ladder of the stock PalmTreeBigA1 (12→80 m) has no LOD
+  step (coverage ∝ 1/d² throughout), and at the same angular size its crown
+  box covers 23.6 % with an edge density (perforation) of 13.1 % where ours
+  covers 29.8 %/7.4 at ANY mesh level (LOD1 26.2/7.4, LOD2 13.1/13.6) and at
+  any atlas size (256/512/1024: 8.3→11.3 edge, coverage unchanged); the stock
+  vegetation shader cuts its alpha harder. Per-ATLAS alpha gain on every mip
+  level (`leaf_alpha_for`): PalmTreeSugar ×0.6 with its 512-px level back
+  (23.9/13.6 n, 26.3/14.1 s vs the stock's 23.6/13.1, 24.8/13.7; +260 KB on
+  Summer 06), WhiteBarkPalmAtlas ×0.75 (×0.6 overshoots: 19.7/24.1 vs
+  25.6/19.0). The Stadium palm already matches (47.9/8.0 vs 45.3/6.3) and the
+  GreenCoast crowns must NOT get it: an alpha cut raises their rendered luma
+  10–40 % (the leaf centres are the bright texels) and the bushes are already
+  thinner than the stock (BushBigB 8.8 vs 12.2 %). Measuring trap: a crop
+  smaller than the crown (the 800×900 centre crop on a 12 m TreeBigA) reports
+  coverage of the crop, not of the tree — locate the crown with
+  `cropstats --grid` first. The bands are the SELF-SHADOW the per-item lightmap does
   not give (every card gets one value): the inner cards ride under a darkened
   copy of the atlas (one more material and a 128-px atlas per band; +1.4 MB on
   Summer 19). Measured against the stock at 15 m (sky behind, the stock's own
