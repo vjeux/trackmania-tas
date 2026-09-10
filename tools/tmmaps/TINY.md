@@ -797,6 +797,37 @@ the render box with one-item lineups and item moves on a copy of the original:
   run it on the TINY, where every plate is an item (on a SOURCE the assembler
   has no clip fillers and misses the generated plates).
 
+
+## Water: the engine's native representations, and what a half-size map can use (research log, 2026-09-10 17:10Z)
+
+The question (coordinator): can a HALF-SIZE water volume exist in our maps — a flat car floats at ~0.9 m
+draft, a nose-down car passes — independent of any route? Facts so far, from the pack and the format:
+
+* **Zone water is a BLOCK with a Water-physics quad + a unit surface tag.** BlueBay's `Sea` block info:
+  one unit, `surface "Water"`, prefab `Zone\Sea\Base.Prefab` = an 8-triangle `Water` (13) quad at local +7
+  over a `SeaFloor` (Sand 5) floor at +4, 32 × 32 m. GreenCoast's `Lake` is the same shape (+7.2). The
+  game regenerates these from the genealogy (chunk 0x03043043) at the zone's fixed plane — 32-m cells,
+  one height per collection (`tiny::fixed_plane`). Poland's author FLOATS on exactly this quad at 0.9 m
+  draft and SINKS through it nose-down (`waterline`). So the fluid behaviour lives on a physics-13 surface
+  of a BLOCK; whether it needs the unit's `surface "Water"` tag or a water volume, or is the material id
+  alone, is the open question below.
+* **Pool water blocks carry water VOLUMES** (variant chunk 0x0315B00B, `mapgeom blockinfo` prints them):
+  `WaterBase` "Shallow" box (32 × 1 × 32 at +4 … +6), `DecoWallWaterBase` "Shallow" 32 × 8 × 32 and NO prefab
+  (the volume is the block), `PlatformWaterBase` 32 × 2 × 32, `RoadWaterStraight` a 1 × 2 × 1 box per road
+  unit; `WaterWallBase` and `WaterRampZone*` have none. The volume is what renders the surface, the underwater
+  tint and the overflow lips; the DecoWallWaterFCT clip is the drawn plane of a volume block, a pack plate of
+  physics 13.
+* **An ITEM plate of physics 28 is a lid** to the client and the server (measured today). **An ITEM plate of
+  physics 13 has NEVER been drop-tested** — ship13's "road block" on 15 was an inference from frames. If 13 on
+  an item floats and passes like the Lake quad, the whole water story is one revert (5380c805) and no volume
+  is needed. Probe ready: `Pool15-s13.Map.Gbx` (ship13's 15, plate physics 13, Spawn over the plate) — a flat
+  4 m drop; fluid → rest ≈ 28.1 (0.9 under 29.0), lid → 29.0–29.3, through → 21.5.
+* **Half-size volumes:** a water volume is block-info data (per block variant, cell units), pack-side. A map
+  cannot scale a block; a custom embedded block (`.Block.Gbx`, a CGameItemModel with block-info chunks) is
+  the only per-map vehicle, and whether the loader reads 0x0315B00B from an embedded block is untested.
+  Zone water is on the 32-m grid at one collection height: the tiny seas already use it (the anchor keeps
+  the sea plane); the pools at arbitrary half-heights cannot.
+
 ## OPEN: the ring-spawn entity crashes the client (2026-09-10)
 
 c4ce31c5 gave the block-derived ring checkpoints (GateCheckpoint on
