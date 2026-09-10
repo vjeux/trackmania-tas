@@ -531,6 +531,9 @@ const FOLLOW: &[(&str, bool, u8, f64)] = &[
     // bmode 8: RAMP LIP (20, coordinator 18:19Z): aim at the line 12 m ahead for 0.3 s (centre the car on the ramp), then
     // FREEZE the steer at 0 and hold gas to the lip and through the flight — no corrections on the ramp
     ("ramp lip: centre on the line, then steer frozen, gas", true, 8, 0.5),
+    // bmode 9: HAND MACRO for 20's bridge (coordinator 05:33Z): full left (toward -z) until heading -150 deg, hold, then
+    // straighten to -90 deg (due west) once z <= 825; gas throughout
+    ("hand: bridge S (left to -150 deg, west at z 825), gas", true, 9, 0.9),
     // bmode 4 (only with --respawn): press RESPAWN on the first tick (the engine re-places the car at its last credited
     // checkpoint ~1 s later, at that crossing's speed), hold gas through the dead second, then follow the human
     ("RESPAWN, then follow the human", true, 4, 0.9),
@@ -688,6 +691,23 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let (mut st, sg, s_now) = follow_steer_off(cfg, &last, seg, *look, off);
                 if *bmode == 8 && done >= 30 {
                     st = 0.0;
+                }
+                if *bmode == 9 {
+                    // iteration 3: pure pursuit on the author's points through the S, then due west
+                    let yaw_deg = yaw_of(&last).to_degrees();
+                    let want_deg = if last.z > 843.0 { (855.0 - last.x).atan2(841.0 - last.z).to_degrees() }
+                        else if last.z > 829.0 { (843.0 - last.x).atan2(827.0 - last.z).to_degrees() }
+                        else if last.x > 836.0 { (835.0 - last.x).atan2(824.0 - last.z).to_degrees() }
+                        // iteration 5: the right turn starts ON the bridge (author: (830, 823.5) (826, 824.5) (821, 826) (817, 828) (813, 831))
+                        else if last.x > 828.0 { (826.0 - last.x).atan2(824.5 - last.z).to_degrees() }
+                        else if last.x > 822.0 { (819.0 - last.x).atan2(827.0 - last.z).to_degrees() }
+                        else if last.x > 816.0 { (813.0 - last.x).atan2(831.0 - last.z).to_degrees() }
+                        else if last.x > 810.0 { (807.0 - last.x).atan2(835.5 - last.z).to_degrees() }
+                        else if last.x > 798.0 { (797.0 - last.x).atan2(843.0 - last.z).to_degrees() }
+                        else { (785.0 - last.x).atan2(849.0 - last.z).to_degrees() };
+                    let err = wrap((want_deg - yaw_deg).to_radians());
+                    // iteration 6: sharper gain (full lock at 10 deg of error) — at 22 m/s the 25-deg gain turned 3 m in 16 m
+                    st = ((cfg.steer_sign * err / 10f64.to_radians()).clamp(-1.0, 1.0) * 127.0).round() as f32 / 127.0;
                 }
                 seg = sg;
                 let v = speed(&last);
