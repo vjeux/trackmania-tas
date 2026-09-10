@@ -1582,6 +1582,8 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
         beat_times: match a.get("beat-times") { Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?.split_whitespace().filter_map(|x| x.parse().ok()).collect(), None => Vec::new() },
         speed_caps: a.get("speed-cap-box").map(|s| s.split(';').filter_map(|b| { let v: Vec<f64> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 5 { Some([v[0], v[1], v[2], v[3], v[4]]) } else { None } }).collect()).unwrap_or_default(),
         upright: a.get("upright-window").map(|s| s.split(';').filter_map(|b| { let v: Vec<f64> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect(); match v.len() { 2 => Some([v[0], v[1], 0.7]), 3 => Some([v[0], v[1], v[2]]), _ => None } }).collect()).unwrap_or_default(),
+        allow_water: a.has("allow-water"),
+        water_boxes: a.get("water-boxes").map(|s| s.split(';').filter_map(|b| { let v: Vec<f64> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 5 { Some([v[0], v[1], v[2], v[3], v[4]]) } else { None } }).collect()).unwrap_or_default(),
         min_leg_gate: a.get("min-leg-gate").map(|s| s.parse().unwrap()).unwrap_or(0),
         beat_margin: a.get("beat-margin").map(|s| s.parse().unwrap()).unwrap_or(0.2),
         arrival_ang: a.get("arrival-ang").map(|s| s.parse().unwrap()).unwrap_or(60.0),
