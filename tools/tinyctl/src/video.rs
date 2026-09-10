@@ -1282,6 +1282,18 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 println!("{} {nn} {time}: HELD ({reason}) — not launched, not swapped", chrono_now());
                 continue;
             }
+            // THE UPLOAD WINDOW (parent, 2026-09-10 22:35Z: no clip goes up before
+            // 12:00Z on the 11th whatever the session state). `<out>/upload-window.tsv`
+            // holds `not_before<TAB><unix seconds or ISO-8601 UTC>`; before that
+            // instant a pending row is left as it is — nothing launched, nothing
+            // swapped — and said once per tick. Absent file = no window.
+            if let Some(nb) = upload_not_before(&out) {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                if now < nb {
+                    println!("{} {nn} {time}: UPLOAD WINDOW closed until unix {nb} ({} min) — not launched", chrono_now(), (nb - now) / 60);
+                    continue;
+                }
+            }
             let Some(done) = done_of.get(done_file.as_str()).cloned() else {
                 // NO VERDICT ON THE BOX: the ship never ran, or died before
                 // writing its done file (a box reboot, a killed shell, a session
@@ -2174,5 +2186,56 @@ mod builds_tests {
         assert_eq!(b.get("05").map(|(b, p)| (b.as_str(), p.as_str())), Some(("ship16", "/store/incoming/ship16-a3d59cb4/Tiny Summer 2026 - 05.Map.Gbx")));
         assert_eq!(b.get("15").map(|(b, _)| b.as_str()), Some("ship17"));
         assert!(b.get("07").is_none(), "a row without a map path is ignored");
+    }
+}
+
+/// `<out>/upload-window.tsv`: `not_before<TAB>WHEN` — no upload (clip or map
+/// zip) is launched before WHEN, given as unix seconds or `YYYY-MM-DDTHH:MM[:SS]Z`.
+/// Absent file or line = no window.
+pub fn upload_not_before(out: &Path) -> Option<u64> {
+    parse_upload_window(&std::fs::read_to_string(out.join("upload-window.tsv")).ok()?)
+}
+
+pub fn parse_upload_window(text: &str) -> Option<u64> {
+    let v = text.lines().filter(|l| !l.starts_with('#')).find_map(|l| l.strip_prefix("not_before").map(|r| r.trim_start_matches(['\t', ' ']).trim().to_string()))?;
+    if let Ok(n) = v.parse::<u64>() {
+        return Some(n);
+    }
+    iso_utc_to_unix(&v)
+}
+
+/// `YYYY-MM-DDTHH:MM[:SS]Z` → unix seconds (proleptic Gregorian; no leap seconds).
+pub fn iso_utc_to_unix(s: &str) -> Option<u64> {
+    let s = s.trim().trim_end_matches('Z');
+    let (date, time) = s.split_once('T')?;
+    let mut d = date.split('-').map(|x| x.parse::<i64>());
+    let (y, m, day) = (d.next()?.ok()?, d.next()?.ok()?, d.next()?.ok()?);
+    let mut t = time.split(':').map(|x| x.parse::<i64>());
+    let (hh, mm) = (t.next()?.ok()?, t.next()?.ok()?);
+    let ss = t.next().map(|x| x.ok()).unwrap_or(Some(0))?;
+    // days from civil (Howard Hinnant)
+    let y2 = if m <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let secs = days * 86_400 + hh * 3_600 + mm * 60 + ss;
+    (secs >= 0).then_some(secs as u64)
+}
+
+#[cfg(test)]
+mod upload_window_tests {
+    use super::*;
+
+    #[test]
+    fn the_upload_window_reads_unix_or_iso_utc() {
+        assert_eq!(iso_utc_to_unix("2026-09-11T12:00Z"), Some(1_789_128_000));
+        assert_eq!(iso_utc_to_unix("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(iso_utc_to_unix("2000-03-01T00:00Z"), Some(951_868_800));
+        assert_eq!(parse_upload_window("# no clip before the burst\nnot_before\t2026-09-11T12:00Z\n"), Some(1_789_128_000));
+        assert_eq!(parse_upload_window("not_before 1789128000\n"), Some(1_789_128_000));
+        assert_eq!(parse_upload_window("# nothing\n"), None);
     }
 }

@@ -50,6 +50,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     if zips.is_empty() {
         return Err(format!("no tiny-summer-2026-NN-{build}.zip in {}", dir.display()));
     }
+    if let Some(nb) = crate::video::upload_not_before(&out) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        if now < nb && !dry {
+            return Err(format!("the upload window is closed until unix {nb} ({} min from now; <out>/upload-window.tsv) — nothing launched", (nb - now) / 60));
+        }
+    }
     let mut done = 0;
     for (nn, zip) in &zips {
         let rows = parse_rowbuilds(&std::fs::read_to_string(&rb_path).unwrap_or_default());
