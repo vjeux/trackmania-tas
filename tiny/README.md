@@ -100,7 +100,7 @@ https://github.com/user-attachments/assets/61a5b88c-15ce-46e5-9b23-b60f3a4bbe29
 
 **Tiny Saudi Arabia 2026** — original author time `73.418` · tiny ghost **96.298** (build ship15, controls overlay)
 
-*latest lap **82.652** (build ship15) — held (staged — awaiting the opening check (coordinator 18:45Z))*
+*latest lap **82.652** (build ship15) — held (staged — opening rework (reviewer 19:10Z: sustained rollover, roof-down 8.9–10.0 s; 82.652 not approved))*
 
 https://github.com/user-attachments/assets/2bb4c108-dd6b-4c5c-a26d-f8ef253cdf2e
 
