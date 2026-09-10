@@ -336,6 +336,7 @@ pub fn neutral_reference(n: usize) -> Inputs {
         steer: vec![0; n],
         gas: vec![false; n],
         brake: vec![false; n],
+        respawn: Vec::new(),
     }
 }
 

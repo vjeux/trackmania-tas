@@ -1787,9 +1787,30 @@ static EXPECT_N: AtomicUsize = AtomicUsize::new(0);
 #[inline]
 unsafe fn apply_patch(base: usize, tick: usize, src: *const u8) {
     // steer, gas, brake -- the three f32 the tape owns, at +4, +8, +12 of the
-    // record. The flags word at +0 and the tail from +0x10 are the engine's and
-    // are never touched.
-    std::ptr::copy_nonoverlapping(src, (base + tick * STRIDE + REC_STEER) as *mut u8, 12);
+    // record. The tail from +0x10 is the engine's and is never touched.
+    //
+    // RESPAWN (2026-09-08, GEN's respawn channel): the tape's respawn event
+    // (state-literal bit 31 in the file) expands into the record's word 0:
+    // 0x22 on the respawn tick, 0x2 on every other (tmenv rec-dump on a poked
+    // Poland 2026 tape; the engine then respawns the car to its last credited
+    // checkpoint ~1.0 s later with that checkpoint's speed). The wire keeps its
+    // 16-byte patch: a BRAKE value >= 2.0 carries the respawn (brake = real
+    // brake + 2.0), decoded here -- word 0 becomes 0x22 for a respawn tick and
+    // is put back to 0x2 otherwise, so a re-patched tick never keeps a stale
+    // respawn.
+    let mut rec = [0u8; 12];
+    std::ptr::copy_nonoverlapping(src, rec.as_mut_ptr(), 12);
+    let brake = f32::from_le_bytes([rec[8], rec[9], rec[10], rec[11]]);
+    let respawn = brake >= 2.0;
+    if respawn {
+        rec[8..12].copy_from_slice(&(brake - 2.0).to_le_bytes());
+    }
+    std::ptr::copy_nonoverlapping(rec.as_ptr(), (base + tick * STRIDE + REC_STEER) as *mut u8, 12);
+    let w0 = (base + tick * STRIDE) as *mut u32;
+    let cur = *w0;
+    if cur & !0x20 == 0x2 {
+        *w0 = if respawn { cur | 0x20 } else { cur & !0x20 };
+    }
     let p = EXPECT.load(Ordering::Relaxed) as *mut f32;
     if !p.is_null() && tick < EXPECT_N.load(Ordering::Relaxed) {
         let mut v = [0u8; 4];

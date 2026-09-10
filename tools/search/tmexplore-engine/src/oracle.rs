@@ -121,7 +121,7 @@ impl EngineOracle {
             gas[j] = t.gas;
             brake[j] = t.brake;
         }
-        forkoracle::inputs::Inputs { steer, gas, brake }
+        forkoracle::inputs::Inputs { steer, gas, brake, respawn: Vec::new() }
     }
 
     /// Where the search's tick 0 lands in the file: the fork server's own

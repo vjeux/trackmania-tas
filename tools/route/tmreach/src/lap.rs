@@ -175,6 +175,13 @@ impl Track {
     /// samples) and the map's gates: s along the author's line, gates ordered by where the line passes
     /// them (the author's order), every leg a road leg (the author drove it).
     pub fn from_author_line(path: &std::path::Path, gates: &crate::gates::MapGates) -> Result<Track, String> {
+        Self::from_author_line_ordered(path, gates, None)
+    }
+
+    /// Same, with an explicit gate ORDER (GEOM's human order from the centreline file): each gate is placed
+    /// at the line's first pass within 12 m AFTER the previous gate's arc length (a line that runs under
+    /// or beside a gate earlier must not pull it forward -- 21's deck gate 1 sits 16 m above leg 1).
+    pub fn from_author_line_ordered(path: &std::path::Path, gates: &crate::gates::MapGates, order: Option<&[u32]>) -> Result<Track, String> {
         let txt = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let j = crate::json::parse(&txt)?;
         let pts: Vec<[f64; 3]> = j.get("pts").and_then(|v| v.arr()).ok_or("pts")?.iter().filter_map(|p| p.vec3()).collect();
@@ -196,6 +203,86 @@ impl Track {
             }
         }
         let mut t = Track { pts, s, half_width: vec![6.0; n], speed_hint: vec![80.0; n], n_groups: 0, gap_seg: vec![false; n - 1], gate_s: Vec::new(), leg_gap: Vec::new(), order_groups: Vec::new(), human_speed };
+        if let Some(ord) = order {
+            let mut gate_s = Vec::new();
+            let mut s_from = 0.0f64;
+            for grp in ord {
+                // the group's gates; the first pass of the line within 12 m after s_from, else the nearest after s_from
+                let mut best: Option<(f64, f64)> = None; // (s, d)
+                for g in gates.gates.iter().filter(|g| g.group == *grp && g.kind != crate::gates::GateKind::Start) {
+                    let mut inside: Option<(f64, f64)> = None; // the closest sample of the FIRST pass within 20 m
+                    for i in 0..n {
+                        if t.s[i] < s_from {
+                            continue;
+                        }
+                        let p = t.pts[i];
+                        let d = ((p[0] - g.centre[0]).powi(2) + (p[1] - g.centre[1]).powi(2) + (p[2] - g.centre[2]).powi(2)).sqrt();
+                        if let Some(inn) = inside {
+                            if d < 20.0 {
+                                if d < inn.1 {
+                                    inside = Some((t.s[i], d));
+                                }
+                                continue;
+                            }
+                            // left the 20 m sphere: the closest sample of this pass is the crossing
+                            if best.map(|b| b.1 >= 20.0 || inn.0 < b.0).unwrap_or(true) {
+                                best = Some(inn);
+                            }
+                            break;
+                        }
+                        if d < 20.0 {
+                            inside = Some((t.s[i], d));
+                            continue;
+                        }
+                        if false {
+                            // a pass within 20 m wins over a nearest-so-far fallback (d >= 20) and over a later pass
+                            // (BUG until 2026-09-09 10:20Z: the fallback entry blocked this update, so every gate was
+                            // "placed" at the first sample after the previous gate and the off-route cap fired 40 m
+                            // after every credit)
+                            unreachable!();
+                        }
+                        if best.is_none() || (best.unwrap().1 >= 20.0 && d < best.unwrap().1) {
+                            best = Some((t.s[i], d));
+                        }
+                    }
+                    // the line ended inside the sphere (a finish gate at the very end)
+                    if let Some(inn) = inside {
+                        if best.map(|b| b.1 >= 20.0 || inn.0 < b.0).unwrap_or(true) {
+                            best = Some(inn);
+                        }
+                    }
+                }
+                let (gs, d) = best.unwrap_or((s_from, f64::INFINITY));
+                if d > 20.0 {
+                    eprintln!("author line: group {grp} is {d:.1} m from the line after s {s_from:.0}; placed at s {gs:.0}");
+                }
+                gate_s.push(gs);
+                s_from = gs;
+            }
+            // GUARD (coordinator 2026-09-09 10:26Z): every placed gate within 20 m of the line and the placed arc lengths
+            // strictly increasing in the human order — else refuse (a broken placement disables the search's progress)
+            let mut bad = Vec::new();
+            for (k, grp) in ord.iter().enumerate() {
+                let gs = gate_s[k];
+                let p = t.at(gs);
+                let d = gates.gates.iter().filter(|g| g.group == *grp && g.kind != crate::gates::GateKind::Start).map(|g| ((p[0] - g.centre[0]).powi(2) + (p[1] - g.centre[1]).powi(2) + (p[2] - g.centre[2]).powi(2)).sqrt()).fold(f64::INFINITY, f64::min);
+                if d > 20.0 {
+                    bad.push(format!("gate {grp} (#{k}) {d:.1} m from the line at s {gs:.0}"));
+                }
+                if k > 0 && gs <= gate_s[k - 1] {
+                    bad.push(format!("gate {grp} (#{k}) at s {gs:.0} not after gate {} at s {:.0}", ord[k - 1], gate_s[k - 1]));
+                }
+            }
+            eprintln!("gate placement: {}/{} within 20 m, s {}: {:?}", ord.len() - bad.iter().filter(|b| b.contains(" m from the line")).count(), ord.len(), if bad.iter().any(|b| b.contains("not after")) { "NOT monotone" } else { "monotone" }, gate_s.iter().map(|x| format!("{x:.0}")).collect::<Vec<_>>());
+            if !bad.is_empty() {
+                return Err(format!("gate placement REFUSED: {}", bad.join("; ")));
+            }
+            t.gate_s = gate_s;
+            t.order_groups = ord.to_vec();
+            t.n_groups = ord.len();
+            t.leg_gap = vec![false; t.n_groups];
+            return Ok(t);
+        }
         // each gate group: the arc length where the line passes nearest its (first) gate
         let mut groups: Vec<(f64, u32)> = Vec::new();
         for g in &gates.gates {
@@ -231,6 +318,26 @@ impl Track {
         self.human_speed[i]
     }
 
+    /// the lowest line height within `w` m of arc length around s
+    pub fn min_y_near(&self, s: f64, w: f64) -> f64 {
+        let i = match self.s.binary_search_by(|x| x.partial_cmp(&s).unwrap()) {
+            Ok(i) => i,
+            Err(i) => i.min(self.s.len() - 1),
+        };
+        let mut m = self.pts[i][1];
+        let mut j = i;
+        while j > 0 && self.s[i] - self.s[j - 1] <= w {
+            j -= 1;
+            m = m.min(self.pts[j][1]);
+        }
+        let mut j = i;
+        while j + 1 < self.s.len() && self.s[j + 1] - self.s[i] <= w {
+            j += 1;
+            m = m.min(self.pts[j][1]);
+        }
+        m
+    }
+
     pub fn len_m(&self) -> f64 {
         *self.s.last().unwrap()
     }
@@ -240,8 +347,25 @@ impl Track {
     /// (s, lateral distance, segment index, 3-D distance to the polyline).
     pub fn project(&self, p: [f64; 3], hint: usize, window: usize) -> (f64, f64, usize, f64) {
         let n = self.pts.len() - 1;
-        let lo = hint.saturating_sub(window);
-        let hi = (hint + window).min(n - 1);
+        // a HINTED projection first looks in a narrow forward-biased window (about -20 m .. +120 m of arc length):
+        // a self-crossing line (24 at s 2395 passes near its own s 1876) must not snap the car back (coordinator
+        // 2026-09-09 11:57Z); the wide window is the fallback when nothing near is found
+        if window < n {
+            let r = self.project_in(p, hint.saturating_sub(4), (hint + 24).min(n - 1));
+            let hw = self.half_width.get(r.2).copied().unwrap_or(6.0);
+            if r.3 <= hw + 10.0 {
+                return r;
+            }
+        }
+        // the wide fallback is capped (about 150 m each way): a self-crossing line (20's G3-first route re-passes the
+        // start plateau 1500 m later) must not snap a hinted car to a far pass (GEOM 2026-09-09 21:46Z)
+        let w = if window < n { window.min(30) } else { window };
+        self.project_in(p, hint.saturating_sub(w), (hint + w).min(n - 1))
+    }
+
+    fn project_in(&self, p: [f64; 3], lo: usize, hi: usize) -> (f64, f64, usize, f64) {
+        let n = self.pts.len() - 1;
+        let _ = n;
         // a spur the route drives in and back out (08: the linked gate at the end of a 14 m dead end) has the
         // same points on both legs: among near-equal distances (within 1 m) the LARGER arc length wins,
         // so progress is monotone along the route
@@ -334,6 +458,8 @@ pub struct LapCfg {
     pub prefix_ticks: usize,
     /// Seed from an explicit chain (a previous run's best.tsv) instead of the base tape's inputs.
     pub seed_chain: Option<Vec<Rec>>,
+    /// keep the seed only through its K-th credit (+0.3 s); 0 = whole
+    pub seed_to_gate: usize,
     /// lateral tolerance beyond the half width on road legs (m): 6 on roads, 25+ on open terrain
     pub lat_tol: f64,
     /// how far below the line a car may be while laterally on it (m): 25 = dips allowed (08), 4 = the
@@ -344,6 +470,21 @@ pub struct LapCfg {
     pub clinic: bool,
     /// Policy proposals (MODEL arm): the per-map tmrl policy rolled forward in closed loop as extra macros.
     pub policy: Option<crate::policy_src::PolicySrc>,
+    /// allow the RESPAWN macro (a legal fallback: back to the last credited checkpoint at its crossing speed)
+    pub respawn: bool,
+    /// rung 3: add the compound / lift-off / air-control / attitude macro family to every fan
+    pub compound: bool,
+    /// rendezvous target state [x, y, z, vx, vy, vz] (reaching it within rdv_tol / 3 m/s / 10 deg ends the run)
+    pub rendezvous: Option<[f64; 6]>,
+    pub rdv_tol: f64,
+    /// arc-length window where the brake is masked off (full gas) in every macro
+    pub no_brake: Option<(f64, f64)>,
+    /// below this height the car is off-world (default -20; 22: the sea floor at -5.8 is reachable and pollutes the archive)
+    pub offworld_y: f64,
+    /// clinic: accept ANY credited arrival (speed irrelevant) — the 21:00Z respawn-channel fallback
+    pub arrival_any: bool,
+    /// vjeux launched-checkpoint csv (ghost lcp --csv): his approach samples become macros
+    pub vjeux_csv: Option<String>,
     /// Start the search from an INJECTED car state (a LaunchedCP crossing / approach start, tm-inject-state/1),
     /// its `inputs` replayed as the seed chain. The exported tape then starts at the injection, not the spawn.
     pub inject: Option<crate::inject::InjectState>,
@@ -372,15 +513,29 @@ const FOLLOW: &[(&str, bool, u8, f64)] = &[
     ("follow centreline, coast", false, 2, 0.9),
     ("follow centreline (short lookahead), gas", true, 0, 0.5),
     ("follow centreline (long lookahead), gas", true, 0, 1.5),
+    // bmode 3: pedals like the human (author line): gas below the human's speed 15 m ahead, coast above, brake well above
+    ("follow the human (line + pedals)", true, 3, 0.9),
+    ("follow the human (line + pedals), long lookahead", true, 3, 1.5),
+    // bmode 5: brake TO the author's speed (brake whenever faster than the author 15 m ahead; 20's wood ramp)
+    ("follow the human, brake to the author's speed", true, 5, 0.9),
+    // bmode 6/7: the human's pedals on a line 5 m RIGHT / LEFT of the human line (the outside of a bend)
+    ("follow the human, 5 m right of the line", true, 6, 0.9),
+    ("follow the human, 5 m left of the line", true, 7, 0.9),
+    // bmode 8: RAMP LIP (20, coordinator 18:19Z): aim at the line 12 m ahead for 0.3 s (centre the car on the ramp), then
+    // FREEZE the steer at 0 and hold gas to the lip and through the flight — no corrections on the ramp
+    ("ramp lip: centre on the line, then steer frozen, gas", true, 8, 0.5),
+    // bmode 4 (only with --respawn): press RESPAWN on the first tick (the engine re-places the car at its last credited
+    // checkpoint ~1 s later, at that crossing's speed), hold gas through the dead second, then follow the human
+    ("RESPAWN, then follow the human", true, 4, 0.9),
 ];
 
-fn yaw_of(r: &Row) -> f64 {
+pub fn yaw_of(r: &Row) -> f64 {
     let v = speed(r);
     let (fx, fz) = if v > 2.0 { (r.vx, r.vz) } else { let f = crate::gatecal::rotate(r, [0.0, 0.0, 1.0]); (f[0], f[2]) };
     fx.atan2(fz)
 }
 
-fn wrap(a: f64) -> f64 {
+pub fn wrap(a: f64) -> f64 {
     let mut a = a;
     while a > std::f64::consts::PI {
         a -= 2.0 * std::f64::consts::PI;
@@ -393,10 +548,23 @@ fn wrap(a: f64) -> f64 {
 
 /// Pure-pursuit steer toward the centreline point `look` metres ahead of the car's projection.
 fn follow_steer(cfg: &LapCfg, r: &Row, seg_hint: usize, look_scale: f64) -> (f32, usize, f64) {
+    follow_steer_off(cfg, r, seg_hint, look_scale, 0.0)
+}
+
+/// `follow_steer` aiming `off` metres beside the line (positive = right of the direction of travel): the OUTSIDE line
+/// through a bend that the human takes wide (22's plaza turn, GEOM's leg plot 2026-09-09 16:07Z)
+fn follow_steer_off(cfg: &LapCfg, r: &Row, seg_hint: usize, look_scale: f64, off: f64) -> (f32, usize, f64) {
     let (s, _lat, seg, _d) = cfg.track.project(pos(r), seg_hint, 60);
     let v = speed(r);
     let look = (look_scale * v).clamp(12.0, 45.0);
-    let target = cfg.track.at(s + look);
+    let mut target = cfg.track.at(s + look);
+    if off != 0.0 {
+        let ahead = cfg.track.at(s + look + 2.0);
+        let dx = ahead[0] - target[0];
+        let dz = ahead[2] - target[2];
+        let nrm = (dx * dx + dz * dz).sqrt().max(1e-6);
+        target = [target[0] + off * dz / nrm, target[1], target[2] - off * dx / nrm];
+    }
     let yaw = yaw_of(r);
     let want = (target[0] - r.x).atan2(target[2] - r.z);
     let delta = wrap(want - yaw);
@@ -415,16 +583,28 @@ pub struct LapOut {
     pub cells: usize,
     pub best: Option<Entry>,
     pub log: Vec<String>,
+    /// rollout end-state census: [off-world, off-route (lateral/d3), fell below the line, stopped-no-credit, alive-but-crawling (<3 m/s), alive]
+    pub deaths: [usize; 6],
 }
 
 pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
     let n = w.n_ticks();
     let root = w.root_probe;
-    let macros: Vec<Macro> = library_v0();
+    let mut macros: Vec<Macro> = library_v0();
+    if cfg.compound {
+        let n0 = macros.len() as u16;
+        macros.extend(crate::macros::library_compound(n0));
+    }
+    if let Some(csv) = &cfg.vjeux_csv {
+        let n0 = macros.len() as u16;
+        let fam = crate::macros::library_vjeux_approach(csv, n0);
+        eprintln!("vjeux approach macros: {}", fam.len());
+        macros.extend(fam);
+    }
     let h = cfg.h;
     let mut rng = Rng(cfg.seed ^ 0x9E3779B97F4A7C15);
     let mut archive: std::collections::HashMap<Key, Entry> = Default::default();
-    let mut out = LapOut { finished: None, leg_done: None, rollouts: 0, steps: 0, cells: 0, best: None, log: Vec::new() };
+    let mut out = LapOut { finished: None, leg_done: None, rollouts: 0, steps: 0, cells: 0, best: None, log: Vec::new(), deaths: [0; 6] };
     let mut near_misses: usize = 0;
     // clinic: the leg index the seed sits on (credits in order at the seed)
     let seed_k = std::cell::Cell::new(0usize);
@@ -435,6 +615,8 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
     out.log.push(format!("root at ({:.1}, {:.1}, {:.1}): centreline s {:.1} m (segment {seg0}, {:.1} m off), track {:.0} m, {} groups at s {:?}, h {h}, steer sign {:+}", root_row.x, root_row.y, root_row.z, s0, d0, track.len_m(), n_groups, track.gate_s.iter().map(|x| format!("{x:.0}")).collect::<Vec<_>>(), cfg.steer_sign));
     let cps_of = |r: &Row| -> u8 { if r.cps == u32::MAX { 0 } else { r.cps as u8 } };
     let debug = std::env::var("TMREACH_LAP_DEBUG").is_ok();
+    let debug_fan = std::env::var("TMREACH_LAP_DEBUG_FAN").is_ok();
+    let dump_n = std::cell::Cell::new(0usize);
     let root_cps = cps_of(&root_row);
     let track_min_y = track.pts.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min);
 
@@ -450,11 +632,29 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         let mut count = 0;
         // (recs, rows, exited, description)
         let mut results: Vec<(Vec<Rec>, Vec<Row>, bool, String)> = Vec::new();
+        // NO-BRAKE WINDOW (22 Saudi, coordinator 16:34Z: full gas from G8 to the crest): inside [no_brake.0, no_brake.1] of
+        // arc length the brake is masked off in every open-loop macro and the gas forced on
+        let s_base = base.map(|e| e.s).unwrap_or(s0);
+        let brake_masked = cfg.no_brake.map(|(a, b)| s_base >= a && s_base <= b).unwrap_or(false);
         for m in &macros {
-            let recs = match build(m, &base_recs, false) {
+            let mut recs = match build(m, &base_recs, false) {
                 Built::Recs(r) => r,
                 Built::NoOp => continue,
             };
+            if brake_masked {
+                let mut any = false;
+                for r in recs.iter_mut() {
+                    if r.brake_value() > 0.5 {
+                        r.brake = if r.respawn() { 2.0 } else { 0.0 };
+                        r.gas = 1.0;
+                        any = true;
+                    }
+                }
+                if any && m.description.contains("brake") {
+                    // a pure brake macro with the brake removed duplicates the gas hold: skip it
+                    continue;
+                }
+            }
             match w.rollout(node, &recs, from, h as u64) {
                 Ok(r) => {
                     count += 1;
@@ -465,6 +665,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         }
         // closed-loop follow macros: 10-tick chunks, steer recomputed from the last row
         for (desc, gas, bmode, look) in FOLLOW {
+            if *bmode == 4 && !cfg.respawn {
+                continue;
+            }
             let mut cur = node;
             let mut recs: Vec<Rec> = Vec::with_capacity(h);
             let mut rows: Vec<Row> = Vec::new();
@@ -474,16 +677,42 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let mut done = 0usize;
             while done < h {
                 let k = 10.min(h - done);
-                let (st, sg, s_now) = follow_steer(cfg, &last, seg, *look);
+                let off = match bmode { 6 => 5.0, 7 => -5.0, _ => 0.0 };
+                let (mut st, sg, s_now) = follow_steer_off(cfg, &last, seg, *look, off);
+                if *bmode == 8 && done >= 30 {
+                    st = 0.0;
+                }
                 seg = sg;
                 let v = speed(&last);
                 let hint = track.hint_at(seg);
                 let (g, b) = match bmode {
                     1 => if v > hint + 3.0 && s_now > 10.0 { (false, true) } else { (*gas, false) },
+                    3 => {
+                        let vh = track.human_speed_at(s_now + 15.0);
+                        if vh <= 3.0 || v <= vh * 1.05 { (true, false) } else if v > vh * 1.3 { (false, true) } else { (false, false) }
+                    }
+                    5 => {
+                        let vh = track.human_speed_at(s_now + 15.0);
+                        if vh <= 3.0 || v <= vh { (true, false) } else { (false, true) }
+                    }
+                    6 | 7 => {
+                        let vh = track.human_speed_at(s_now + 15.0);
+                        if vh <= 3.0 || v <= vh * 1.05 { (true, false) } else if v > vh * 1.3 { (false, true) } else { (false, false) }
+                    }
+                    4 => {
+                        if done < 110 { (true, false) } else {
+                            let vh = track.human_speed_at(s_now + 15.0);
+                            if vh <= 3.0 || v <= vh * 1.05 { (true, false) } else if v > vh * 1.3 { (false, true) } else { (false, false) }
+                        }
+                    }
                     2 => (false, false),
                     _ => (*gas, false),
                 };
-                let chunk: Vec<Rec> = (0..k).map(|_| Rec { steer: st, gas: g as u8 as f32, brake: b as u8 as f32 }).collect();
+                let st = if *bmode == 4 && done < 110 { 0.0 } else { st };
+                let mut chunk: Vec<Rec> = (0..k).map(|_| Rec { steer: st, gas: g as u8 as f32, brake: b as u8 as f32 }).collect();
+                if *bmode == 4 && done == 0 {
+                    chunk[0] = chunk[0].with_respawn();
+                }
                 match w.rollout_keep(cur, &chunk, from + done, k as u64) {
                     Ok((rr, nh)) => {
                         if cur != node {
@@ -633,7 +862,8 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 eprintln!("    seed macro {desc:40}: end ({:.1}, {:.1}, {:.1}) v {:.1} s {:.1} lat {:.1} d3 {:.1} cps {cps} rows {}", end.x, end.y, end.z, speed(&end), s, lat, d3, rows.len());
             }
             // off the world / far off the road on a road leg: no cell
-            if end.y < -20.0 {
+            if end.y < cfg.offworld_y {
+                out.deaths[0] += 1;
                 continue;
             }
             // the LEG toward the next uncredited gate decides (a jump's flight projects onto whatever road is near)
@@ -641,18 +871,42 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let hw = track.half_width.get(seg).copied().unwrap_or(5.5);
             let lat_abs = lat.abs();
             if !on_gap && (lat_abs > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol) {
+                out.deaths[1] += 1;
+                dump_rollout(w, base, &rows, "offroute", &desc, &dump_n);
+                if debug_fan {
+                    eprintln!("    OFFROUTE {desc:34}: end ({:.1}, {:.1}, {:.1}) v {:.1} s {s:.1} lat {lat:.1} d3 {d3:.1} hw {hw:.1}", end.x, end.y, end.z, speed(&end));
+                }
                 continue;
             }
             // fell off: far below the nearest centreline point on a road leg; on a GAP leg (jump, drop,
             // bowl) anything above the track's lowest point - 5 m and within 120 m of the polyline lives
             let road_y = track.at(s)[1];
+            // on a steep climb the car is legitimately below the line point at its own s (21's 32-degree ramp:
+            // 4-6 m); "below" is measured against the line's LOWEST point within 15 m of arc length
+            let road_y_min = track.min_y_near(s, 15.0);
             // (below the polyline while laterally ON the road = a dip the centreline's y does not follow: 08 at s 585)
-            if (!on_gap && end.y < road_y - 5.0 && (lat_abs > hw + 1.0 || end.y < road_y - cfg.below_tol)) || (on_gap && (end.y < track_min_y - 5.0 || d3 > 120.0)) {
+            // the below-the-line DROP is retired when --below-tol >= 100 (parent 2026-09-09 17:21Z): only off-world + stopped kill
+            let fell_rule_on = cfg.below_tol < 100.0;
+            if fell_rule_on && ((!on_gap && end.y < road_y - 5.0 && (lat_abs > hw + 1.0 || end.y < road_y_min - cfg.below_tol)) || (on_gap && (end.y < track_min_y - 5.0 || d3 > 120.0))) {
+                out.deaths[2] += 1;
+                dump_rollout(w, base, &rows, "fell", &desc, &dump_n);
+                if debug_fan {
+                    eprintln!("    FELL {desc:38}: end ({:.1}, {:.1}, {:.1}) v {:.1} s {s:.1} lat {lat:.1} d3 {d3:.1} road_y {road_y:.1} min15 {road_y_min:.1} hw {hw:.1}", end.x, end.y, end.z, speed(&end));
+                }
                 continue;
             }
             // dead: stopped and not at the start
             if speed(&end) < 1.0 && s > 5.0 && cps == root_cps {
+                out.deaths[3] += 1;
+                dump_rollout(w, base, &rows, "stopped", &desc, &dump_n);
                 continue;
+            }
+            if speed(&end) < 3.0 {
+                out.deaths[4] += 1;
+                dump_rollout(w, base, &rows, "crawl", &desc, &dump_n);
+            } else {
+                out.deaths[5] += 1;
+                dump_rollout(w, base, &rows, "alive", &desc, &dump_n);
             }
             let mut chain = chain0.clone();
             chain.extend(recs);
@@ -676,18 +930,49 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             } else {
                 // past the next gate without its credit: worth only the leg start (20 m before the gate
                 // ranked level with a legit approach; 20's lower deck under gate 3 sat there for 2 h)
-                let s_eff = if s > s_gate + 6.0 { s_prev + 10.0 } else { s };
-                k_pref as f64 * 10_000.0 + s_eff - 0.02 * lat_abs.min(20.0)
+                let s_eff = if s > s_gate + 40.0 { s_prev + 10.0 } else { s };
+                // SPEED matters on jump/ramp/wall legs (21: 31 m/s at the foot or the car drops in the gap):
+                // a cell at the human's speed ranks 30 m ahead of a stopped one at the same arc length
+                let vh = track.human_speed_at(s);
+                // symmetric since 2026-09-09 15:20Z: matching the author's speed scores 30 m, both too slow AND too fast lose it
+                // (20: cars arrive at the wood ramp 12 m/s faster than the author and get thrown)
+                let speed_bonus = if vh > 3.0 { 30.0 * (1.0 - ((speed(&end) - vh) / vh).abs()).clamp(0.0, 1.0) } else { 0.0 };
+                // RANKING (not a drop): every metre the car sits below the line's lowest point nearby costs 3 m of progress (a car that fell
+                // 45 m off a deck must not outrank the cars on it — 23 polish lane, 19:10Z); the first 3 m are free
+                let below_pen = 3.0 * (road_y_min - end.y - 3.0).max(0.0);
+                k_pref as f64 * 10_000.0 + s_eff - 0.02 * lat_abs.min(20.0) + speed_bonus - below_pen
             };
             // on a gap leg the arc length says little: the cell is the 4 m x 4 m ground square there
             // on a road leg the cell also carries a 2 m LATERAL bucket (14's ramp: the line's x on the ramp decides the flight)
             let cs = if on_gap { ((end.x / 4.0).floor() as i32) * 100_000 + (end.z / 4.0).floor() as i32 } else { ((s / 4.0).floor() as i32) * 64 + ((lat / 2.0).floor() as i32 + 32).clamp(0, 63) };
             let e = Entry { key: Key { cs, cv: (speed(&end) / 5.0).floor() as i32, cy: (end.y / 3.0).floor() as i32, mask }, chain, cps, mask, s, seg, progress, visits: 0, end: end.clone(), macro_desc: descs };
+            // RENDEZVOUS (coordinator 2026-09-09 13:58Z): the objective is a STATE of a known-good chain (position within
+            // `rdv_tol` m, speed within 3 m/s, heading within 10 degrees); reaching it ends the run like a finish — the
+            // caller splices the known chain's remainder after it.
+            if let Some(t) = &cfg.rendezvous {
+                if out.finished.is_none() {
+                    let dp = ((end.x - t[0]).powi(2) + (end.y - t[1]).powi(2) + (end.z - t[2]).powi(2)).sqrt();
+                    let vt = (t[3] * t[3] + t[4] * t[4] + t[5] * t[5]).sqrt();
+                    let dv = (speed(&end) - vt).abs();
+                    let dot = end.vx * t[3] + end.vz * t[5];
+                    let ang = if vt > 1.0 && speed(&end) > 1.0 { (dot / ((end.vx * end.vx + end.vz * end.vz).sqrt() * (t[3] * t[3] + t[5] * t[5]).sqrt())).clamp(-1.0, 1.0).acos().to_degrees() } else { 0.0 };
+                    if dp <= cfg.rdv_tol && dv <= 3.0 && ang <= 10.0 {
+                        out.log.push(format!("RENDEZVOUS reached at race {}: ({:.1}, {:.1}, {:.1}) v {:.1} — {dp:.2} m, {dv:.2} m/s, {ang:.1} deg from the target, after {} ticks", crate::secs(w.race_of(&end)), end.x, end.y, end.z, speed(&end), e.chain.len()));
+                        if cfg.verbose {
+                            eprintln!("{}", out.log.last().unwrap());
+                        }
+                        out.finished = Some(e.clone());
+                        out.leg_done = Some(k_pref);
+                    }
+                    // progress shaping toward the target: closeness in metres counts like arc length
+                    let _ = dp;
+                }
+            }
             // CLINIC: the next gate credited with a good arrival ends this leg
             if cfg.clinic && out.finished.is_none() && k_pref > seed_k.get() {
                 let vh = track.human_speed_at(s);
                 let v = speed(&end);
-                let speed_ok = vh <= 0.0 || ((v - vh).abs() <= 0.3 * vh.max(5.0));
+                let speed_ok = cfg.arrival_any || vh <= 0.0 || ((v - vh).abs() <= 0.3 * vh.max(5.0));
                 let lat_ok = lat_abs <= hw + 0.5;
                 if speed_ok && lat_ok {
                     out.log.push(format!("LEG DONE: gate {} (order position {}) credited with a good arrival at race {}: s {s:.1} lat {lat:.1} v {v:.1} (human {vh:.1}) after {} ticks ({} macros)", k_pref, k_pref - 1, crate::secs(w.race_of(&end)), e.chain.len(), e.macro_desc.len()));
@@ -728,11 +1013,12 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
     };
 
     // SEED: the root, or the base tape replayed for --prefix-ticks (its state becomes the first cell), or an
-    // INJECTED state (--inject-state) followed by its approach inputs
+    // INJECTED state (--inject-state, MODEL arm) followed by its approach inputs
     if cfg.prefix_ticks > 0 || cfg.seed_chain.is_some() || cfg.inject.is_some() {
+        // the node the seed chain starts from and the tick it starts at: the root, or the injected fork
         let mut seed_node = branch::ROOT;
-        let mut inject_from = root;
-        let recs = match (&cfg.inject, &cfg.seed_chain) {
+        let mut seed_from = root;
+        let mut recs = match (&cfg.inject, &cfg.seed_chain) {
             (Some(st), _) => {
                 // past race 0 first (the countdown holds the car at the spawn — ENV): the template's own inputs for
                 // INJECT_PREROLL ticks, then the write in a fork of that node
@@ -740,7 +1026,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let pre = w.reference_recs(root, INJECT_PREROLL);
                 let (_pre_rows, h_pre) = w.rollout_keep(branch::ROOT, &pre, root, pre.len() as u64)?;
                 let (h0, rb) = crate::inject::inject_state(w, h_pre, st)?;
-                inject_from = w.floor(h0)?;
+                seed_from = w.floor(h0)?;
                 out.log.push(format!("INJECTED {} state (landmark {}, {}) at ({:.1}, {:.1}, {:.1}) v {:.1}: read back ({:.1}, {:.1}, {:.1}); replaying {} approach ticks", st.source.kind, st.source.landmark, st.source.file, st.state.pos[0], st.state.pos[1], st.state.pos[2], (st.state.vel[0].powi(2) + st.state.vel[1].powi(2) + st.state.vel[2].powi(2)).sqrt(), rb.x, rb.y, rb.z, st.inputs.len()));
                 seed_node = h0;
                 crate::inject::inputs_to_recs(&st.inputs)
@@ -748,10 +1034,62 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             (None, Some(c)) => c.clone(),
             (None, None) => w.reference_recs(root, cfg.prefix_ticks),
         };
+        // --seed-to-gate K: keep the seed only up to 0.3 s after its K-th credit (the parent's rule: seed the stuck
+        // leg from a FASTER upstream chain, gate N-2, and let the speed-matching search redo the approach)
+        if cfg.seed_to_gate > 0 {
+            let (rows0, nh0) = w.rollout_keep(seed_node, &recs, seed_from, recs.len() as u64)?;
+            w.release(nh0);
+            let root_c = if root_row.cps == u32::MAX { 0 } else { root_row.cps };
+            let mut cut_at: Option<usize> = None;
+            for (i, r) in rows0.iter().enumerate() {
+                let c = if r.cps == u32::MAX { 0 } else { r.cps };
+                if c >= root_c + cfg.seed_to_gate as u32 {
+                    cut_at = Some((i + 30).min(recs.len()));
+                    break;
+                }
+            }
+            match cut_at {
+                Some(n) => {
+                    out.log.push(format!("seed cut to {n} ticks: 0.3 s after its credit #{}", cfg.seed_to_gate));
+                    recs.truncate(n);
+                }
+                None => out.log.push(format!("seed never reaches credit #{}; kept whole", cfg.seed_to_gate)),
+            }
+        }
+        // a seed whose end state the search would drop (stopped, fallen under the line, off the road) is a
+        // dead end: cut the chain back 3 s at a time (up to 12 times) until it ends in a live state
+        let mut tries = 0;
+        let (rows, nh, end, s, seg) = loop {
+            let (rows, nh) = if recs.is_empty() { (Vec::new(), seed_node) } else { w.rollout_keep(seed_node, &recs, seed_from, recs.len() as u64)? };
+            let end = rows.last().cloned().unwrap_or_else(|| root_row.clone());
+            // project the seed by WALKING its rows from the root with the hinted projector (a self-crossing line must not snap
+            // the seed to a later pass — 20 G3-first route, 22:05Z)
+            let mut hint = seg0;
+            for (i, r) in rows.iter().enumerate() {
+                if i % 10 == 0 {
+                    hint = track.project(pos(r), hint, 30).2;
+                }
+            }
+            let (s, lat, seg, d3) = track.project(pos(&end), hint, 30);
+            let road_y = track.at(s)[1];
+            let hw = track.half_width.get(seg).copied().unwrap_or(5.5);
+            let road_y_min = track.min_y_near(s, 15.0);
+            let bad = speed(&end) < 3.0 || end.y < cfg.offworld_y || (cfg.below_tol < 100.0 && ((end.vy < -3.0 && end.y < road_y_min - 3.0) || (end.y < road_y - 5.0 && (lat.abs() > hw + 1.0 || end.y < road_y_min - cfg.below_tol)))) || lat.abs() > hw + cfg.lat_tol || d3 > 25.0 + cfg.lat_tol;
+            if !bad || tries >= 40 || recs.len() <= 300 {
+                break (rows, nh, end, s, seg);
+            }
+            w.release(nh);
+            tries += 1;
+            // 3 s per cut for the first 12, then 15 s (a car that stopped at 24 s of a 106 s chain)
+            let step = if tries <= 12 { 300 } else { 1500 };
+            let cut = recs.len().saturating_sub(step).max(300);
+            recs.truncate(cut);
+            out.log.push(format!("seed ends in a dead state (v {:.1}, vy {:+.1}, {:.1} m below the line, lat {:.1}); chain cut to {} ticks", speed(&end), end.vy, road_y - end.y, lat, cut));
+            if cfg.verbose {
+                eprintln!("{}", out.log.last().unwrap());
+            }
+        };
         let recs_len = recs.len();
-        let (rows, nh) = if recs.is_empty() { (Vec::new(), seed_node) } else { w.rollout_keep(seed_node, &recs, inject_from, recs.len() as u64)? };
-        let end = rows.last().cloned().unwrap_or_else(|| root_row.clone());
-        let (s, _lat, seg, _) = track.project(pos(&end), track.pts.len() / 2, track.pts.len());
         let cps = cps_of(&end);
         // credits along the prefix, attributed like a rollout's
         let mut mask = 0u32;
@@ -779,9 +1117,12 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         // the same cap as a rollout: past the next uncredited gate without its credit = off the route
         let s_gate_seed = track.gate_s.get(k_pref).copied().unwrap_or(f64::INFINITY);
         let s_prev_seed = if k_pref == 0 { 0.0 } else { track.gate_s.get(k_pref - 1).copied().unwrap_or(0.0) };
-        let s_eff_seed = if s > s_gate_seed + 6.0 { s_prev_seed + 10.0 } else { s };
+        let s_eff_seed = if s > s_gate_seed + 40.0 { s_prev_seed + 10.0 } else { s };
         let seed = Entry { key: Key { cs: (s / 4.0).floor() as i32, cv: (speed(&end) / 5.0).floor() as i32, cy: (end.y / 3.0).floor() as i32, mask }, chain: recs, cps, mask, s, seg, progress: k_pref as f64 * 10_000.0 + s_eff_seed, visits: 0, end: end.clone(), macro_desc: vec![format!("seed chain {} ticks", recs_len)] };
         out.log.push(format!("seed from a {} tick chain: ({:.1}, {:.1}, {:.1}) v {:.1} cps {cps} mask {mask:#x} s {s:.1}", recs_len, end.x, end.y, end.z, speed(&end)));
+        if cfg.verbose {
+            eprintln!("{}", out.log.last().unwrap());
+        }
         let from = w.floor(nh)?;
         out.best = Some(seed.clone());
         out.rollouts += fan(w, nh, from, Some(&seed), &mut archive, &mut out, &mut rng, h)?;
@@ -859,6 +1200,69 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         out.rollouts += fan(w, nc, from, Some(&entry), &mut archive, &mut out, &mut rng, hh)?;
         w.release(nc);
         out.steps += 1;
+        // CLINIC viability check: a "good arrival" must also CONTINUE — replay the chain and follow the
+        // line for 3 s; a car that stalls (21: 20.6 m/s on a 32-degree ramp, 2 m below the deck) is
+        // not a leg done. Refused arrivals are penalised so the search moves on.
+        if cfg.clinic && out.leg_done.is_some() {
+            if let Some(f) = out.finished.clone() {
+                if (f.cps as usize) < track.n_groups {
+                    let (rows0, nf) = w.rollout_keep(branch::ROOT, &f.chain, root, f.chain.len() as u64)?;
+                    let start = rows0.last().cloned().unwrap_or_else(|| f.end.clone());
+                    let from_f = w.floor(nf)?;
+                    let mut cur = nf;
+                    let mut last = start.clone();
+                    let mut seg_h = f.seg;
+                    let mut ok = true;
+                    let mut done_t = 0usize;
+                    while done_t < 300 {
+                        let (st, sg, s_now) = follow_steer(cfg, &last, seg_h, 1.0);
+                        seg_h = sg;
+                        // pedals like the human: gas below the human's speed a little ahead, coast above it, brake well above
+                        let vh = track.human_speed_at(s_now + 15.0);
+                        let v_now = speed(&last);
+                        let (gas, brake) = if vh <= 3.0 || v_now <= vh * 1.05 { (1.0, 0.0) } else if v_now > vh * 1.3 { (0.0, 1.0) } else { (0.0, 0.0) };
+                        let recs: Vec<Rec> = (0..10).map(|_| Rec { steer: st, gas, brake }).collect();
+                        match w.forest.advance_or_end(cur, &recs, from_f + done_t, 10)? {
+                            branch::Advanced::Node(rs, c) => {
+                                if cur != nf {
+                                    w.release(cur);
+                                }
+                                cur = c;
+                                if let Some(x) = rs.last() {
+                                    last = x.clone();
+                                }
+                            }
+                            branch::Advanced::RunEnded(_) => break,
+                        }
+                        done_t += 10;
+                    }
+                    if cur != nf {
+                        w.release(cur);
+                    }
+                    w.release(nf);
+                    let (s_after, lat_after, _, _) = track.project(pos(&last), seg_h, 200);
+                    let gained = s_after - f.s;
+                    let below_after = track.min_y_near(s_after, 15.0) - last.y;
+                    // alive, still on the line, and not fallen under it (21: a car in the deck gap lands on the road 25 m below and "moves on")
+                    if speed(&last) < 8.0 || gained < 25.0 || (cfg.below_tol < 100.0 && below_after > cfg.below_tol) || lat_after.abs() > 12.0 {
+                        ok = false;
+                    }
+                    if !ok {
+                        out.log.push(format!("  clinic: arrival at s {:.1} refused — 3 s later v {:.1}, s +{:.1} m, {:.1} m under the line, lat {:.1}; searching on", f.s, speed(&last), gained, below_after, lat_after));
+                        if cfg.verbose {
+                            eprintln!("{}", out.log.last().unwrap());
+                        }
+                        out.finished = None;
+                        out.leg_done = None;
+                        if let Some(e) = archive.get_mut(&f.key) {
+                            e.visits += 8;
+                        }
+                    } else {
+                        out.log.push(format!("  clinic: arrival viable — 3 s later v {:.1}, s +{:.1} m", speed(&last), gained));
+                    }
+                }
+            }
+        }
         if out.best.as_ref().map(|b| b.progress).unwrap_or(0.0) > best_before + 0.5 { stagnant = 0 } else { stagnant += 1 }
         if cfg.verbose && last_report.elapsed().as_secs() >= 30 {
             last_report = std::time::Instant::now();
@@ -867,7 +1271,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let _ = std::fs::write(cfg.out.join("best.tsv"), tsv_text(&b.chain));
             }
             let b = out.best.as_ref().unwrap();
-            eprintln!("  [{} rollouts, {} steps, {} cells] best: mask {:#x} cps {} s {:.1} m ({:.0} %) speed {:.1} m/s after {:.2} s, chain {:?}", out.rollouts, out.steps, archive.len(), b.mask, b.cps, b.s, 100.0 * b.s / track.len_m(), speed(&b.end), b.chain.len() as f64 / 100.0, b.macro_desc.iter().rev().take(3).collect::<Vec<_>>());
+            eprintln!("  [{} rollouts, {} steps, {} cells; ends: offworld {} offroute {} fell {} stopped {} crawl {} alive {}] best: mask {:#x} cps {} s {:.1} m ({:.0} %) speed {:.1} m/s after {:.2} s, chain {:?}", out.rollouts, out.steps, archive.len(), out.deaths[0], out.deaths[1], out.deaths[2], out.deaths[3], out.deaths[4], out.deaths[5], b.mask, b.cps, b.s, 100.0 * b.s / track.len_m(), speed(&b.end), b.chain.len() as f64 / 100.0, b.macro_desc.iter().rev().take(3).collect::<Vec<_>>());
         }
     }
     out.cells = archive.len();
@@ -898,10 +1302,40 @@ fn dump_archive(archive: &std::collections::HashMap<Key, Entry>, out: &std::path
 }
 
 /// The chain as the player's gtape text (one line per 10 ms tick from race 0; steer ±65536).
+
+/// GEOM's leg-plot input (2026-09-09 16:00Z): with `TMREACH_LAP_DUMP_ROLLOUTS=DIR`, every rollout of a fan is appended to
+/// DIR/rollouts.tsv as `chain t x y z v cause` rows (100 ms spacing; cause on every row), at most `TMREACH_LAP_DUMP_MAX`
+/// (default 400) rollouts per process.
+pub fn dump_rollout(w: &Worker, base: Option<&Entry>, rows: &[Row], cause: &str, desc: &str, counter: &std::cell::Cell<usize>) {
+    let Ok(dir) = std::env::var("TMREACH_LAP_DUMP_ROLLOUTS") else { return };
+    let max: usize = std::env::var("TMREACH_LAP_DUMP_MAX").ok().and_then(|s| s.parse().ok()).unwrap_or(400);
+    if counter.get() >= max {
+        return;
+    }
+    counter.set(counter.get() + 1);
+    let id = format!("{}-{}-{}", std::process::id(), counter.get(), desc.replace(['\t', ' '], "_").chars().take(24).collect::<String>());
+    let mut s = String::new();
+    // the parent chain's own trajectory is not stored; the rollout's rows start at the base cell's end state
+    if let Some(b) = base {
+        s.push_str(&format!("{id}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\tseed\n", (w.race_of(&b.end) as f64) / 1000.0, b.end.x, b.end.y, b.end.z, speed(&b.end)));
+    }
+    for (i, r) in rows.iter().enumerate() {
+        if i % 10 == 0 || i + 1 == rows.len() {
+            s.push_str(&format!("{id}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\t{cause}\n", (w.race_of(r) as f64) / 1000.0, r.x, r.y, r.z, speed(r)));
+        }
+    }
+    let _ = std::fs::create_dir_all(&dir);
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(format!("{dir}/rollouts.tsv")) {
+        let _ = f.write_all(s.as_bytes());
+    }
+}
 pub fn gtape_text(chain: &[Rec]) -> String {
     let mut s = String::new();
     for (t, r) in chain.iter().enumerate() {
-        s.push_str(&format!("t={t} mode=2 w=prev respawn=0 mouse=none vsame=0 steer={} accel={} brake={} flags=0x000000\n", (r.steer as f64 * 65536.0).round() as i64, (r.gas > 0.5) as u8, (r.brake > 0.5) as u8));
+        // a RESPAWN tick is a literal-word packet with the respawn bit (ENV 2026-09-09: w=lit:0x80000002 respawn=1)
+        let (w, rs) = if r.respawn() { ("lit:0x80000002", 1) } else { ("prev", 0) };
+        s.push_str(&format!("t={t} mode=2 w={w} respawn={rs} mouse=none vsame=0 steer={} accel={} brake={} flags=0x000000\n", (r.steer as f64 * 65536.0).round() as i64, (r.gas > 0.5) as u8, (r.brake_value() > 0.5) as u8));
     }
     s
 }
@@ -910,7 +1344,8 @@ pub fn gtape_text(chain: &[Rec]) -> String {
 pub fn tsv_text(chain: &[Rec]) -> String {
     let mut s = String::from("tick\tsteer\tgas\tbrake\n");
     for (t, r) in chain.iter().enumerate() {
-        s.push_str(&format!("{t}\t{}\t{}\t{}\n", (r.steer * 127.0).round() as i32, (r.gas > 0.5) as u8, (r.brake > 0.5) as u8));
+        // brake column: 0/1, +2 on a RESPAWN tick (round-trips through the chain parsers as brake >= 2.0)
+        s.push_str(&format!("{t}\t{}\t{}\t{}\n", (r.steer * 127.0).round() as i32, (r.gas > 0.5) as u8, (r.brake_value() > 0.5) as u8 + if r.respawn() { 2 } else { 0 }));
     }
     s
 }
