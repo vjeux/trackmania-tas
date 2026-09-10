@@ -851,6 +851,24 @@ fn one(args: &[String]) -> Result<Done, String> {
             record_ship_row(&out, &nn, &time, &name, &format!("{VID}/ship/{name}.done"), "held")?;
             return finish_row(&out, &nn, &time, cps, &overlay_col, &name, &sheet, traj_id);
         }
+        // UPLOADS WAIT FOR AN OPENING-CHECK RECEIPT (parent project via the
+        // coordinator, 2026-09-10 18:45Z, after Argentina's bad opening went
+        // out). The render loop no longer launches the ship: the clip is
+        // recorded `staged` and `tinyctl shipwatch` launches it only when
+        // `<out>/approvals.tsv` carries a receipt for this map AND lap, or the
+        // map is listed in `<out>/prechecked.tsv` (clips that may go out
+        // unchecked — none at first). Until then the page note reads
+        // "staged — awaiting opening check". `--ship-unchecked` is the old
+        // behaviour (launch now), by name.
+        if !tmmaps::cli::has(args, "--ship-unchecked") {
+            let approved = approval_for(&out, &nn, &time).is_some() || read_prechecked(&out).contains(nn.as_str());
+            if !approved {
+                println!("STAGED — awaiting the opening check: {name} is rendered and banked; shipwatch launches it once out/approvals.tsv has a receipt for {nn} {time} (or {nn} is in out/prechecked.tsv)");
+                record_ship_row(&out, &nn, &time, &name, &format!("{VID}/ship/{name}.done"), "staged")?;
+                return finish_row(&out, &nn, &time, cps, &overlay_col, &name, &sheet, traj_id);
+            }
+            println!("opening check: receipt on file for {nn} {time} — shipping");
+        }
         // SUPERSEDED DURING ITS OWN RENDER? The player project replaced 21's
         // ghost twice in 40 minutes on 2026-09-10 (122.318 → 122.311 → 122.294):
         // a 15-minute render finished, its clip went up, and the watcher
@@ -1143,9 +1161,23 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 continue;
             }
             let cells: Vec<String> = row.split('\t').map(String::from).collect();
-            if cells.len() < 5 || cells[4] != "pending" {
+            if cells.len() < 5 || (cells[4] != "pending" && cells[4] != "staged") {
                 continue;
             }
+            // STAGED = rendered, banked, waiting for the opening-check receipt
+            // (approvals.tsv: `nn<TAB>time`, or the map in prechecked.tsv). With
+            // a receipt the row becomes `pending` and joins the launch queue on
+            // this tick; without one it sits, and page-status says so.
+            if cells[4] == "staged" {
+                let approved = approval_for(&out, &cells[0], &cells[1]).is_some() || read_prechecked(&out).contains(cells[0].as_str());
+                if !approved {
+                    continue;
+                }
+                println!("{} {} {}: opening check receipt on file — queued for upload", chrono_now(), cells[0], cells[1]);
+                *row = format!("{}\t{}\t{}\t{}\tpending", cells[0], cells[1], cells[2], cells[3]);
+                changed = true;
+            }
+            let cells: Vec<String> = row.split('\t').map(String::from).collect();
             if last_of.get(&cells[0]) != Some(&i) {
                 println!("{} {} {}: superseded by a newer lap — not shipped", chrono_now(), cells[0], cells[1]);
                 *row = format!("{}\t{}\t{}\t{}\tsuperseded", cells[0], cells[1], cells[2], cells[3]);
@@ -1467,6 +1499,38 @@ pub fn archive_ghost(dir: &Path, ghost: &Path, md5: &str, nn: &str, time: &str, 
         std::fs::rename(&tmp, &side).map_err(|e| format!("{} → {}: {e}", tmp.display(), side.display()))?;
     }
     Ok(())
+}
+
+/// `<out>/approvals.tsv`: `nn<TAB>time<TAB>by<TAB>note` — the opening-check
+/// receipts. A row approves ONE lap of ONE map; `time` may be `*` to approve
+/// whatever lap of that map is staged (a standing approval). Returns the
+/// approving row.
+pub fn approval_for(out: &Path, nn: &str, time: &str) -> Option<String> {
+    let text = std::fs::read_to_string(out.join("approvals.tsv")).unwrap_or_default();
+    find_approval(&text, nn, time)
+}
+
+pub fn find_approval(text: &str, nn: &str, time: &str) -> Option<String> {
+    text.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()).find(|l| {
+        let c: Vec<&str> = l.split('\t').map(str::trim).collect();
+        c.len() >= 2 && c[0] == nn && (c[1] == time || c[1] == "*")
+    }).map(String::from)
+}
+
+/// `<out>/prechecked.tsv`: one map number per line — clips of these maps may
+/// go out without a receipt.
+pub fn read_prechecked(out: &Path) -> std::collections::HashSet<String> {
+    parse_prechecked(&std::fs::read_to_string(out.join("prechecked.tsv")).unwrap_or_default())
+}
+
+pub fn parse_prechecked(text: &str) -> std::collections::HashSet<String> {
+    text.lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| l.split('\t').next())
+        .map(str::trim)
+        .filter(|nn| nn.len() == 2 && nn.chars().all(|c| c.is_ascii_digit()))
+        .map(String::from)
+        .collect()
 }
 
 /// `<out>/holds.tsv`: `nn<TAB>reason` per held map (comments with `#`).

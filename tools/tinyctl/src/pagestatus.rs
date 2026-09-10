@@ -98,6 +98,12 @@ pub fn update_with_gain(page: &str, laps: &[(String, String)], ghosts_readme: &s
 /// lap reads "held (<reason>)" whatever its gain — the loop renders and ships
 /// nothing for it until the hold is lifted.
 pub fn update_full(page: &str, laps: &[(String, String)], ghosts_readme: &str, build: &str, min_gain: f64, holds: &std::collections::HashMap<String, String>) -> (String, Vec<String>) {
+    update_all(page, laps, ghosts_readme, build, min_gain, holds, &std::collections::HashSet::new())
+}
+
+/// [`update_full`] plus the STAGED laps (rendered, banked, waiting for the
+/// opening-check receipt): such a lap reads "staged — awaiting opening check".
+pub fn update_all(page: &str, laps: &[(String, String)], ghosts_readme: &str, build: &str, min_gain: f64, holds: &std::collections::HashMap<String, String>, staged: &std::collections::HashSet<(String, String)>) -> (String, Vec<String>) {
     let mut lines: Vec<String> = page.lines().map(String::from).collect();
     let mut notes = Vec::new();
     // work from the bottom so earlier indices stay valid
@@ -145,6 +151,8 @@ pub fn update_full(page: &str, laps: &[(String, String)], ghosts_readme: &str, b
         // (coordinator, 2026-09-10 14:15Z). The threshold is the loop's
         // `--min-gain-s` default; the gate is the loop's own (`render_gate`).
         let want = match (&newest, &row.published) {
+            (Some(n), Some(p)) if n != p && !holds.contains_key(nn.as_str()) && staged.contains(&(nn.clone(), n.clone())) => Some((n.clone(), Note::Staged)),
+            (Some(n), None) if !holds.contains_key(nn.as_str()) && staged.contains(&(nn.clone(), n.clone())) => Some((n.clone(), Note::Staged)),
             (Some(n), Some(p)) if n != p && holds.contains_key(nn.as_str()) => Some((n.clone(), Note::Held(holds[nn.as_str()].clone()))),
             (Some(n), None) if holds.contains_key(nn.as_str()) => Some((n.clone(), Note::Held(holds[nn.as_str()].clone()))),
             (Some(n), Some(p)) if n != p => {
@@ -203,6 +211,8 @@ enum Note {
     Within(f64),
     /// The map is under a publish hold (holds.tsv): the reason.
     Held(String),
+    /// Rendered and banked; the upload waits for the opening-check receipt.
+    Staged,
 }
 
 impl Note {
@@ -211,6 +221,7 @@ impl Note {
             Note::Pending => "pending",
             Note::Within(_) => "within",
             Note::Held(_) => "held",
+            Note::Staged => "staged",
         }
     }
 }
@@ -226,6 +237,7 @@ fn status_line(time: &str, build: &str, ghosts_readme: &str, nn: &str, note: &No
         Note::Pending => format!("*latest lap **{time}** (build {build}{who}) — video pending*"),
         Note::Within(_) => format!("*latest lap **{time}** (build {build}{who}) — within {min_gain:.1} s of the published clip*"),
         Note::Held(reason) => format!("*latest lap **{time}** (build {build}{who}) — held ({reason})*"),
+        Note::Staged => format!("*latest lap **{time}** (build {build}{who}) — staged, awaiting the opening check*"),
     }
 }
 
@@ -243,7 +255,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let laps = newest_laps(&gr, &build);
     println!("{} certified {build} laps: {}", laps.len(), laps.iter().map(|(m, t)| format!("{m} {t}")).collect::<Vec<_>>().join(", "));
     let holds = f("--out").map(|o| crate::video::read_holds(Path::new(&o))).unwrap_or_default();
-    let (new, notes) = update_full(&page, &laps, &gr, &build, min_gain, &holds);
+    let staged = f("--out").map(|o| staged_laps(&std::fs::read_to_string(Path::new(&o).join("ships.tsv")).unwrap_or_default())).unwrap_or_default();
+    let (new, notes) = update_all(&page, &laps, &gr, &build, min_gain, &holds, &staged);
     if notes.is_empty() {
         println!("the page already states the newest lap of every map");
         return Ok(());
@@ -466,7 +479,7 @@ https://github.com/user-attachments/assets/c\n";
 /// (`— video pending*`, `— within 0.1 s of the published clip*`, `— held (…)*`)?
 pub fn is_status_note(l: &str) -> bool {
     let l = l.trim_end();
-    l.starts_with("*latest lap **") && (l.ends_with(PENDING_MARK) || l.ends_with(WITHIN_MARK) || l.contains(") — held ("))
+    l.starts_with("*latest lap **") && (l.ends_with(PENDING_MARK) || l.ends_with(WITHIN_MARK) || l.contains(") — held (") || l.ends_with(STAGED_MARK))
 }
 
 #[cfg(test)]
@@ -504,5 +517,55 @@ https://github.com/user-attachments/assets/a\n";
         assert_eq!(h.get("21").map(String::as_str), Some("opening rework (vjeux)"));
         assert_eq!(h.get("07").map(String::as_str), Some("held"));
         assert_eq!(h.len(), 2);
+    }
+}
+
+pub const STAGED_MARK: &str = "— staged, awaiting the opening check*";
+
+/// The (map, lap) pairs whose ships.tsv row is `staged`.
+pub fn staged_laps(ships: &str) -> std::collections::HashSet<(String, String)> {
+    ships
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| {
+            let c: Vec<&str> = l.split('\t').map(str::trim).collect();
+            (c.len() >= 5 && c[4] == "staged").then(|| (c[0].to_string(), c[1].to_string()))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod staged_tests {
+    use super::*;
+
+    /// A rendered clip waiting for its receipt reads "staged, awaiting the
+    /// opening check"; a receipt (the row turning pending, then published)
+    /// removes it; a hold outranks it.
+    #[test]
+    fn a_staged_clip_says_it_awaits_the_opening_check() {
+        let ghosts = "| 22 | 22.Ghost.Gbx | 82.652 | 14 | ship15 | f1275f23 | GEN | x |\n";
+        let page = "**Tiny Saudi Arabia 2026** — original author time `73.418` · tiny ghost **96.298** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/a\n";
+        let laps = newest_laps(ghosts, "ship15");
+        let staged = staged_laps("# nn\ttime\tname\tdone\tstatus\n22\t82.652\t22-ghost-82.652-ship15\t/x\tstaged\n");
+        let no_holds = std::collections::HashMap::new();
+        let (out, notes) = update_all(page, &laps, ghosts, "ship15", 0.1, &no_holds, &staged);
+        assert!(out.contains("*latest lap **82.652** (build ship15) — staged, awaiting the opening check*"), "{out}");
+        assert!(notes.iter().any(|n| n == "22: staged line added (82.652)"), "{notes:?}");
+        assert!(is_status_note("*latest lap **82.652** (build ship15) — staged, awaiting the opening check*"));
+        // receipt given → the row is pending/published → the note becomes "video pending" until the swap
+        let (after, _) = update_all(&out, &laps, ghosts, "ship15", 0.1, &no_holds, &std::collections::HashSet::new());
+        assert!(after.contains("*latest lap **82.652** (build ship15) — video pending*"), "{after}");
+        // a hold outranks staged
+        let mut holds = std::collections::HashMap::new();
+        holds.insert("22".to_string(), "opening".to_string());
+        let (held, _) = update_all(page, &laps, ghosts, "ship15", 0.1, &holds, &staged);
+        assert!(held.contains("— held (opening)*"), "{held}");
+        // receipts: exact lap or a standing `*`
+        let a = "# nn\ttime\tby\tnote\n22\t82.652\tcoordinator\topening ok\n15\t*\tparent\tstanding\n";
+        assert!(crate::video::find_approval(a, "22", "82.652").is_some());
+        assert!(crate::video::find_approval(a, "22", "82.000").is_none());
+        assert!(crate::video::find_approval(a, "15", "48.738").is_some());
+        assert_eq!(crate::video::parse_prechecked("# maps\n07\n\n12\tfoo\n"), ["07", "12"].into_iter().map(String::from).collect());
     }
 }
