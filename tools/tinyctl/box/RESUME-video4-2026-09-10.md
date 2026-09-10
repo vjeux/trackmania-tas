@@ -106,3 +106,31 @@ needed by anything.
   idle-quit closes the game after 30 idle minutes, under the render lock only.
 - `review-private/` on the store: 24 100.116, 22 96.297, 15 48.738 for the parent
   project's private review (never published).
+
+## Addendum, 22:30Z — overnight state and the 09-11 burst
+
+- **Cookie #8 died 22:04Z** (HTTP 302 on the zip-02 probe; 39 clips + 1 zip in 17 h).
+  Nothing uploads until a header arrives (cookie #9 at `~/.gh-upload/cookie`, or the
+  ghsession seed) — AND the **upload window** `out/upload-window.tsv` says
+  `not_before 2026-09-11T12:00Z` (parent's rule): shipwatch launches nothing and
+  `tinyctl mapzips` refuses to start before then. Renders/archive/stage/page continue.
+- **Control files in `~/tinyvid4/out/`** (all mirrored to the store as `*-video4.tsv`):
+  holds.tsv (21 none / 22 render / 20 render), approvals.tsv (empty — receipts go here
+  as `nn<TAB>time<TAB>by<TAB>note`), prechecked.tsv (empty), lidrows.tsv (05, 15),
+  rowbuilds.tsv (re-drive notes 13 16 17 18 20 22 23 24; 01's zip link), builds.tsv
+  (empty — per-map render build + map path for 05/15 on ship16/17), upload-window.tsv.
+- **Gates** (shipwatch): hold → window → attitude (`- NN time:` line: inverted 0.00,
+  0 attitude intervals or `author-relative: pass`, water A/B 0.00; no line = fail
+  closed) → receipt. Staged now: 25 Japan 83.772 (attitude-held: inverted 2.72 s).
+- **Map zips**: `~/tinyvid4/mapzips/ship15/*.zip` (25, from ship15-53383427; 01 is up at
+  https://github.com/user-attachments/files/32078571/…). Resume with
+  `tinyctl mapzips --dir ~/tinyvid4/mapzips/ship15 --out ~/tinyvid4/out --build ship15`
+  once the window is open and the coordinator says so (clips first).
+- **Burst plan**: 08:00Z ask for the successor box, migrate (recipe in memory);
+  11:30Z `--idle-quit-min 0`; 12:00–14:30Z renders per builds.tsv, receipts → uploads;
+  14:30Z `tinyctl final-table --out ~/tinyvid4/out --readme ~/tt-page/tiny/README.md
+  --ghosts-dir ~/tinyvid4/ghosts-live --write ~/tinyvid4/out/FINAL.md`.
+- **01 ad screen** (vjeux, 21:34Z): the object on the hill at 7.5–8.5 s is in both
+  builds (green placeholder on ship15, yellow NADEO on ship16) and the hill has a hole
+  under it (lake visible) — a MAP fix (GEOM), not a build switch. Camera at 8.0 s:
+  source (1100.3, 22.0, 1039.3) looking (−0.846, −0.296, 0.443).
