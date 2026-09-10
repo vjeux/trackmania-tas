@@ -507,10 +507,14 @@ pub struct LapCfg {
     pub arrival_dy: f64,
     /// clinic: max angle (deg) between the credit row velocity and the line tangent at the gate (default 60; --arrival-ang)
     pub arrival_ang: f64,
+    /// clinic: --arrival-strict restores hard refusal of off-band arrivals (default: off-band credits are taken and logged)
+    pub arrival_strict: bool,
     /// hand macro: pure-pursuit points (x y z [speed]) from --pursue FILE; empty = the macro is skipped
     pub pursue: Vec<[f64; 4]>,
     /// hand macro: aim at the first pursue point farther than this (m); --pursue-look, default 8
     pub pursue_look: f64,
+    /// hand macro: heading error (deg) that gives full steering lock; --pursue-gain, default 10 (gentler = 30–40: less scrub)
+    pub pursue_gain: f64,
     /// vjeux launched-checkpoint csv (ghost lcp --csv): his approach samples become macros
     pub vjeux_csv: Option<String>,
     /// Start the search from an INJECTED car state (a LaunchedCP crossing / approach start, tm-inject-state/1),
@@ -709,6 +713,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let mut seg = seg_hint;
             let mut exited = false;
             let mut done = 0usize;
+            let mut pursue_idx = 0usize;
             while done < h {
                 let k = 10.min(h - done);
                 let off = match bmode { 6 => 5.0, 7 => -5.0, _ => 0.0 };
@@ -721,18 +726,20 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                     // HAND MACRO = pure pursuit along --pursue FILE (x y z [speed] per line): aim at the first point still ahead of the
                     // car (more than 3 m away, in front), full lock at 10 deg of error; the point's speed (if given) caps the throttle
                     let yaw_deg = yaw_of(&last).to_degrees();
+                    // progress along the point list is monotone (never re-target an earlier point: 11:03Z the car came out of the
+                    // trough heading NW and locked onto a bend point behind it)
                     let mut target: Option<[f64; 4]> = None;
-                    for p in &cfg.pursue {
+                    for (i, p) in cfg.pursue.iter().enumerate().skip(pursue_idx) {
                         let (dx, dz) = (p[0] - last.x, p[2] - last.z);
                         let d = (dx * dx + dz * dz).sqrt();
                         let ahead = dx * last.vx + dz * last.vz >= -0.2 * d * speed(&last);
-                        if d > cfg.pursue_look && ahead { target = Some(*p); break; }
+                        if d > cfg.pursue_look && ahead { target = Some(*p); pursue_idx = i; break; }
                     }
                     let want_deg = match target { Some(p) => (p[0] - last.x).atan2(p[2] - last.z).to_degrees(), None => yaw_deg };
                     pursue_cap = target.map(|p| p[3]).filter(|v| *v > 0.0);
                     let err = wrap((want_deg - yaw_deg).to_radians());
                     // iteration 6: sharper gain (full lock at 10 deg of error) — at 22 m/s the 25-deg gain turned 3 m in 16 m
-                    st = ((cfg.steer_sign * err / 10f64.to_radians()).clamp(-1.0, 1.0) * 127.0).round() as f32 / 127.0;
+                    st = ((cfg.steer_sign * err / cfg.pursue_gain.to_radians()).clamp(-1.0, 1.0) * 127.0).round() as f32 / 127.0;
                 }
                 seg = sg;
                 let v = speed(&last);
@@ -1057,7 +1064,18 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 if speed_ok && lat_ok && !height_ok {
                     out.log.push(format!("arrival at gate {} refused: credit row {:.1} m from the gate plane height (limit {:.1})", k_pref, cr.y, cfg.arrival_dy));
                 }
-                if speed_ok && lat_ok && height_ok && heading_ok {
+                // 11:20Z (coordinator): a REAL credit is never dropped for being off-band (three legitimate credits were refused tonight);
+                // hard refusal only for a fall (> 12 m under the plane) or a stopped car. Off-band arrivals are taken and logged.
+                let fell = match (&cfg.gates, track.order_groups.get(k_pref.saturating_sub(1))) {
+                    (Some(g), Some(grp)) => g.gates.iter().filter(|gg| gg.group == *grp).map(|gg| gg.centre[1] - cr.y).fold(f64::NEG_INFINITY, f64::max) > 12.0,
+                    _ => false,
+                };
+                let stopped = speed(&cr) < 3.0;
+                let on_band = speed_ok && lat_ok && height_ok && heading_ok;
+                if !on_band && !fell && !stopped && !cfg.arrival_strict {
+                    out.log.push(format!("arrival at gate {} credited-but-off-band (speed_ok {speed_ok} lat_ok {lat_ok} height_ok {height_ok} heading_ok {heading_ok}) — taken", k_pref));
+                }
+                if (on_band || (!fell && !stopped && !cfg.arrival_strict)) {
                     out.log.push(format!("LEG DONE: gate {} (order position {}) credited with a good arrival at race {}: s {s:.1} lat {lat:.1} v {v:.1} (human {vh:.1}) after {} ticks ({} macros)", k_pref, k_pref - 1, crate::secs(w.race_of(&end)), e.chain.len(), e.macro_desc.len()));
                     out.leg_done = Some(k_pref);
                     out.finished = Some(e.clone());
