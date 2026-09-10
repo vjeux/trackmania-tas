@@ -2069,6 +2069,21 @@ pub fn attitude_verdict(readme: &str, nn: &str, time: &str) -> Attitude {
     let water_b = field("water B:").or_else(|| field("road water:")).or_else(|| field("road contact:"));
     let water_total = field("water contact:");
     let contact_s = [water_a, water_b, water_total].into_iter().flatten().fold(0.0_f64, f64::max);
+    // AUTHOR-RELATIVE PASS (parent, 2026-09-10 22:20Z): the tilt criterion is
+    // judged against the author's own line per section (a wall the author rides
+    // at that tilt is legal, up to his duration + 0.3 s); inversions and airborne
+    // rotation stay illegal everywhere. INPUT's line carries the verdict as
+    // `author-relative: pass` / `author-relative: fail` — when present it decides
+    // the ATTITUDE part (the absolute interval count is then informational);
+    // inverted time and water are still read. Absent → today's absolute reading.
+    let author_relative: Option<bool> = line.find("author-relative:").map(|i| line[i + "author-relative:".len()..].trim_start().to_ascii_lowercase()).and_then(|v| {
+        if v.starts_with("pass") { Some(true) } else if v.starts_with("fail") { Some(false) } else { None }
+    });
+    let attitude_intervals = match author_relative {
+        Some(true) => attitude_intervals.map(|_| 0),
+        Some(false) => attitude_intervals.map(|a| a.max(1)),
+        None => attitude_intervals,
+    };
     match (inverted_s.is_nan(), attitude_intervals) {
         (true, _) | (_, None) => Attitude::NoTable,
         (false, Some(a)) if inverted_s <= 0.0 && a == 0 => {
@@ -2118,6 +2133,13 @@ mod attitude_tests {
         assert_eq!(attitude_verdict(ab, "20", "75.595"), Attitude::Water { contact_s: 0.78 }, "B alone fails");
         assert_eq!(attitude_verdict(ab, "19", "46.362"), Attitude::Clean, "A = B = 0.00 is clean");
         assert_eq!(attitude_verdict(ab, "15", "48.738"), Attitude::Water { contact_s: 12.6 }, "the larger of A and B is reported");
+        // author-relative verdict: pass makes the tilt intervals legal; fail makes them illegal even at 0; inversion stays illegal; absent = absolute reading
+        let ar = "- 21 115.478: below 8 m/s: 10.44 s, respawns: 0, inverted: 0.00 s, 14 slow + 11 attitude intervals, author-relative: pass\n\
+- 23 102.148: below 8 m/s: 6.32 s, respawns: 2, inverted: 0.00 s, 9 slow + 0 attitude intervals, author-relative: FAIL (wall at 41 s not in the author's line)\n\
+- 25 83.772: below 8 m/s: 3.22 s, respawns: 0, inverted: 2.72 s, 8 slow + 2 attitude intervals, author-relative: pass\n";
+        assert_eq!(attitude_verdict(ar, "21", "115.478"), Attitude::Clean, "11 wall intervals the author also rides");
+        assert_eq!(attitude_verdict(ar, "23", "102.148"), Attitude::Dirty { inverted_s: 0.0, attitude_intervals: 1 }, "an author-relative fail is dirty");
+        assert_eq!(attitude_verdict(ar, "25", "83.772"), Attitude::Dirty { inverted_s: 2.72, attitude_intervals: 0 }, "inversion is illegal whatever the author did");
     }
 }
 
