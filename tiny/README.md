@@ -90,7 +90,7 @@ https://github.com/user-attachments/assets/852cae15-dd20-4036-b01e-f02971d26797
 
 **Tiny Summer 2026 - 20** — original author time `50.598` · tiny ghost **84.954** (build ship15, controls overlay)
 
-*latest lap **75.595** (build ship15) — held (opening rework (coordinator 18:55Z))*
+*latest lap **75.595** (build ship15) — held (staged — opening rework (coordinator 18:55Z))*
 
 https://github.com/user-attachments/assets/792c18af-89eb-4817-8b5a-c37176f1efa6
 
