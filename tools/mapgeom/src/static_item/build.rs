@@ -1994,7 +1994,13 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                             if r >= g + 12.0 && luma < 150.0 {
                                 gain = gain.max(if table { 1.25 } else { 1.6 });
                             }
-                            m.notes.push(format!("leaf atlas {file}: opaque mean ({r:.0}, {g:.0}, {b:.0}) luma {luma:.0} -> colour gain {gain:.2} saturation x{csat} hue {chue:+}{}", if r >= g + 12.0 && luma < 150.0 { " (warm foliage)" } else { "" }));
+                            // …and keeps its hue: the collection's shift towards yellow is fitted on
+                            // GREEN crowns; on an autumn gold it lands on salmon (the eyes on the
+                            // 19 frames, 2026-09-10 17:20Z: "salmon/rust-red instead of the muted
+                            // gold"); its saturation stays moderate for the same reason
+                            let warm = r >= g + 12.0 && luma < 150.0;
+                            let (csat, chue) = if warm && table { (csat.min(1.2), 0.0) } else { (csat, chue) };
+                            m.notes.push(format!("leaf atlas {file}: opaque mean ({r:.0}, {g:.0}, {b:.0}) luma {luma:.0} -> colour gain {gain:.2} saturation x{csat} hue {chue:+}{}", if warm { " (warm foliage: hue kept)" } else { "" }));
                             Some((gain, csat, chue))
                         }
                     }
