@@ -39,6 +39,9 @@ pub struct Endpoint {
     pub host: String,
     pub port: u16,
     pub tls: bool,
+    /// SHA-256 of the relay's certificate, when it is pinned instead of
+    /// CA-verified (a self-hosted relay on a bare IP).
+    pub pin: Option<String>,
 }
 
 impl Endpoint {
@@ -54,7 +57,7 @@ impl Endpoint {
             .ok_or_else(|| anyhow!("relay url has no host: {relay}"))?
             .to_string();
         let port = url.port().unwrap_or(if tls { 443 } else { 80 });
-        Ok(Self { host, port, tls })
+        Ok(Self { host, port, tls, pin: None })
     }
 
     fn ws_url(&self, path: &str) -> String {
@@ -195,6 +198,94 @@ async fn send_connect<S: AsyncWrite + Unpin>(s: &mut S, ep: &Endpoint) -> Result
     Ok(())
 }
 
+/// Lowercase hex SHA-256, the spelling used for certificate pins.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use ring::digest;
+    digest::digest(&digest::SHA256, bytes)
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Trusts exactly one certificate, by SHA-256 of its DER. A relay on a bare IP
+/// has no name to get a public certificate for, so its clients pin instead of
+/// trusting a CA — and a pinned self-signed certificate is a stronger promise
+/// than "some CA vouched for this name", not a weaker one.
+#[derive(Debug)]
+struct PinnedCert {
+    pin: String,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for PinnedCert {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        let got = sha256_hex(end_entity.as_ref());
+        if got.eq_ignore_ascii_case(&self.pin) {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General(format!(
+                "relay certificate does not match the pin in the config (got {got}, expected {})",
+                self.pin
+            )))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+fn pinned_tls_config(pin: &str) -> Arc<rustls::ClientConfig> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let verifier = Arc::new(PinnedCert {
+        pin: pin.to_string(),
+        provider: provider.clone(),
+    });
+    let cfg = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("default protocol versions")
+        .dangerous()
+        .with_custom_certificate_verifier(verifier)
+        .with_no_client_auth();
+    Arc::new(cfg)
+}
+
 fn public_tls_config() -> Arc<rustls::ClientConfig> {
     static CONFIG: std::sync::OnceLock<Arc<rustls::ClientConfig>> = std::sync::OnceLock::new();
     CONFIG
@@ -272,7 +363,11 @@ pub async fn stream(ep: &Endpoint, proxy: Option<&Proxy>) -> Result<Stream> {
     }
     let name = rustls::pki_types::ServerName::try_from(ep.host.clone())
         .with_context(|| format!("tls server name {}", ep.host))?;
-    let tls = tokio_rustls::TlsConnector::from(public_tls_config())
+    let cfg = match &ep.pin {
+        Some(p) => pinned_tls_config(p),
+        None => public_tls_config(),
+    };
+    let tls = tokio_rustls::TlsConnector::from(cfg)
         .connect(name, inner)
         .await
         .with_context(|| format!("tls handshake with {}", ep.host))?;

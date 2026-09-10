@@ -7,7 +7,7 @@
 
 use crate::config::Config;
 use crate::proto::*;
-use crate::transport::{self, Endpoint, Ws};
+use crate::transport::{self, Ws};
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
@@ -43,7 +43,7 @@ const DEAD_AFTER: Duration = Duration::from_secs(75);
 const DRAIN_IDLE: Duration = Duration::from_secs(10);
 
 pub async fn run(cfg: Config, opts: AgentOpts) -> Result<()> {
-    let ep = Endpoint::parse(cfg.relay()?)?;
+    let ep = cfg.endpoint()?;
     let token = cfg.token()?.to_string();
     let proxy = transport::resolve_proxy(cfg.proxy.as_deref()).await;
     let path = format!("/v1/agent/{}", opts.name);

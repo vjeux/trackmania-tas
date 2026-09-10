@@ -3,8 +3,11 @@
 # whose home the commands should land in).
 #
 #   cd ~/trackmania-tas && git pull && \
-#   WHITESTICK_RELAY=https://<relay>.workers.dev WHITESTICK_TOKEN=<secret> \
+#   WHITESTICK_RELAY=https://<relay> WHITESTICK_TOKEN=<secret> [WHITESTICK_PIN=<pin>] \
 #   sh tools/whitestick/install-box.sh
+#
+# WHITESTICK_PIN is the self-hosted relay's certificate pin (printed by
+# install-relay-vps.sh); leave it unset for a Cloudflare Worker relay.
 #
 # What it does:
 #   1. builds tools/whitestick (needs the rust toolchain in ~/.cargo/bin)
@@ -55,6 +58,7 @@ relay = "$WHITESTICK_RELAY"
 token = "$WHITESTICK_TOKEN"
 instance = "$NAME"
 proxy = "none"
+${WHITESTICK_PIN:+pin = "$WHITESTICK_PIN"}
 
 [agent]
 name = "$NAME"

@@ -6,13 +6,17 @@ streams stdin/stdout/stderr and the exit status back. It replaces the
 navibot.dev bridge, which was shut down on 2026-09-09.
 
 ```
-   devserver / OD                     Cloudflare                        home
+   devserver / OD                    a box with a public IP              home
   ┌──────────────┐  wss (via fwdproxy) ┌────────────────────┐  wss   ┌───────────────────┐
-  │ whitestick   │────────────────────▶│ whitestick-relay   │◀───────│ whitestick agent  │
-  │ '<cmd>'      │   /v1/ctl/WhiteStick│ Worker + Durable   │ /v1/   │ (WSL, as vjeux)   │
-  └──────────────┘                     │ Object "box:..."   │ agent  └───────────────────┘
-                                       └────────────────────┘
+  │ whitestick   │────────────────────▶│ whitestick relay   │◀───────│ whitestick agent  │
+  │ '<cmd>'      │   /v1/ctl/WhiteStick│  (or the Worker)   │ /v1/   │ (WSL, as vjeux)   │
+  └──────────────┘                     └────────────────────┘ agent  └───────────────────┘
 ```
+
+The rendezvous point comes in two interchangeable shapes, same wire protocol:
+**`whitestick relay`** on any VPS (what runs today, on `195.154.114.196:8443`)
+or the Cloudflare Worker in `tools/whitestick-relay`. The box and the
+devservers cannot see each other — only this middle.
 
 Both ends dial **out** over HTTPS; nothing accepts an inbound connection, no
 port is forwarded at home, and nothing Meta-internal is in the path (the
@@ -55,20 +59,33 @@ string itself at about 1 MB — stdin/stdout are chunked and unbounded.
 
 ## Setup, once
 
-1. **Relay.** Free Cloudflare account, API token with the *Edit Cloudflare
-   Workers* template, and the account ID (dashboard → Workers & Pages →
-   right sidebar). Then on a devserver:
+1. **Relay, on a VPS** (the current arrangement). From a devserver, with ssh
+   key access to the VPS:
    ```
-   sh tools/whitestick/install-devserver.sh          # builds, generates the shared secret
-   CLOUDFLARE_API_TOKEN=… CLOUDFLARE_ACCOUNT_ID=… sh tools/whitestick/deploy-relay.sh
+   sh tools/whitestick/install-devserver.sh                       # builds, generates the shared secret
+   sh tools/whitestick/install-relay-vps.sh --host <ip> --user <user>
    ```
-   `deploy-relay.sh` prints the relay URL, sets the Worker's `PSK` secret to
-   the shared secret and points `~/.whitestick/config.toml` at the URL. It is
-   also the redeploy command after editing `tools/whitestick-relay`.
-2. **Box** (inside WSL, as the user the commands should run as):
+   That copies the binary, makes a self-signed certificate, runs the relay
+   under a flock'd loop with `@reboot` + a 2-minute cron watchdog — all as an
+   unprivileged user, no root, no systemd — and prints the `relay` and `pin`
+   lines. It is also the upgrade command. Re-running after a certificate
+   change prints a new pin, which every client config needs.
+
+   *Or the Cloudflare Worker instead:* API token with the *Edit Cloudflare
+   Workers* template plus the account ID, then
+   `CLOUDFLARE_API_TOKEN=… CLOUDFLARE_ACCOUNT_ID=… sh tools/whitestick/deploy-relay.sh`.
+   A Worker has a CA-signed certificate, so its clients need no `pin`.
+2. **Box** (inside WSL, as the user the commands should run as). The box
+   cannot reach anything at Meta, so the secret has to come from the relay
+   box or by hand:
+   ```
+   scp <user>@<relay-ip>:whitestick-box-setup.sh ~/ && sh ~/whitestick-box-setup.sh
+   ```
+   or directly:
    ```
    cd ~/trackmania-tas && git pull
-   WHITESTICK_RELAY=https://<relay>.workers.dev WHITESTICK_TOKEN=<secret> sh tools/whitestick/install-box.sh
+   WHITESTICK_RELAY=https://<ip>:8443 WHITESTICK_PIN=<pin> WHITESTICK_TOKEN=<secret> \
+     sh tools/whitestick/install-box.sh
    ```
    Builds the agent, writes its config, installs `~/bin/whitestick-agent-loop.sh`
    and registers two Windows scheduled tasks for the current user (no admin):
@@ -86,7 +103,9 @@ string itself at about 1 MB — stdin/stdout are chunked and unbounded.
 |---|---|
 | `WhiteStick is offline: no agent is connected` | the box is down, asleep, or WSL was shut down. The watchdog task restarts the agent within 5 min; `whitestick --wait 600 …` waits for it. On the box: `~/.whitestick/agent.log`. |
 | `the relay rejected the token (401)` | `token` in the config differs from the Worker's `PSK` secret: rerun `deploy-relay.sh` (it re-sets the secret from the config). |
-| `cannot reach the relay … via proxy fwdproxy:8080` | fwdproxy trouble on this devserver (`fixmyproxy`), or the Worker is gone — `curl -x fwdproxy:8080 https://<relay>/healthz` should say `whitestick-relay`. |
+| `cannot reach the relay … via proxy fwdproxy:8082` | fwdproxy trouble on this devserver (`fixmyproxy`), or the relay is down — `curl -k -x fwdproxy:8080 https://<relay>/healthz` should say `whitestick-relay`. On the VPS: `tail ~/.whitestick/relay.log`, and the cron watchdog restarts it within 2 minutes. |
+| `relay certificate does not match the pin in the config` | the relay's certificate was regenerated: copy the new `pin` (printed by `install-relay-vps.sh`, or `whitestick relay --print-pin --cert ~/whitestick/cert.pem` on the VPS) into every `~/.whitestick/config.toml`. |
+| `CaUsedAsEndEntity` | a certificate made with openssl's `-x509` default (CA:TRUE). Regenerate with the extensions `install-relay-vps.sh` passes. |
 | `went offline mid-command` | the agent's socket dropped while a command ran; the command was killed with its group. Rerun. |
 | command exits but `whitestick` returns 10 s later | something the command started kept stdout open (a background job without redirection). Redirect or `setsid` it. |
 
@@ -95,9 +114,12 @@ sessions). Cloudflare dashboard → the Worker → Logs shows edge errors.
 
 ## Security
 
-One shared secret authenticates both roles at the edge (constant-time compare,
-before anything reaches the Durable Object); everything else is TLS to
-Cloudflare. Whoever holds the secret can run commands on the box as `vjeux`
+One shared secret authenticates both roles, checked in constant time before a
+socket is paired with anything; everything else is TLS. A self-hosted relay's
+certificate is self-signed and pinned by SHA-256 in each client's config
+(`pin = …`), which is a tighter promise than CA trust: only that exact
+certificate is accepted, so a mis-issued public certificate for the IP buys
+nothing. Whoever holds the secret can run commands on the box as `vjeux`
 — it lives in `~/.whitestick/config.toml` on the devserver (mode 600) and on
 the box, and as the Worker secret. Rotate by editing both configs and
 rerunning `deploy-relay.sh`. The relay code is ours and sees the plaintext of
@@ -109,8 +131,11 @@ tooling, nothing else.
 - `tools/whitestick` — the one binary: client (default), `agent`, `status`.
   `proto.rs` is the wire format, `transport.rs` the proxy/TLS/WebSocket path,
   `agent.rs` and `client.rs` the two ends.
-- `tools/whitestick-relay` — the Worker (workers-rs). Not a workspace member:
-  it targets wasm32 and is built by `worker-build` via `wrangler deploy`.
+- `tools/whitestick/src/relay.rs` — `whitestick relay`, the self-hosted
+  rendezvous point (TLS, one process, no dependencies on the box it runs on).
+- `tools/whitestick-relay` — the same thing as a Cloudflare Worker
+  (workers-rs). Not a workspace member: it targets wasm32 and is built by
+  `worker-build` via `wrangler deploy`.
 - `wsx` still works unchanged (it talks to `~/bin/whitestick` over stdin); its
   parallel-chunk design was a workaround for navi's cost model and could now
   be a plain `whitestick 'cat > f' < f`.

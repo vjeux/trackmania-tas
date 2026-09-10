@@ -30,6 +30,10 @@ pub struct Config {
     pub instance: Option<String>,
     #[serde(default)]
     pub proxy: Option<String>,
+    /// SHA-256 of the self-hosted relay's certificate (`whitestick relay
+    /// --print-pin`). Unset for a CA-verified relay such as a Worker.
+    #[serde(default)]
+    pub pin: Option<String>,
     #[serde(default)]
     pub agent: AgentConfig,
 }
@@ -79,6 +83,9 @@ impl Config {
         if let Some(v) = env_nonempty("WHITESTICK_PROXY") {
             cfg.proxy = Some(v);
         }
+        if let Some(v) = env_nonempty("WHITESTICK_PIN") {
+            cfg.pin = Some(v);
+        }
         Ok(cfg)
     }
 
@@ -100,6 +107,13 @@ impl Config {
                 config_path().map(|p| p.display().to_string()).unwrap_or_default()
             ),
         }
+    }
+
+    /// The relay endpoint, with the certificate pin applied when there is one.
+    pub fn endpoint(&self) -> Result<crate::transport::Endpoint> {
+        let mut ep = crate::transport::Endpoint::parse(self.relay()?)?;
+        ep.pin = self.pin.clone().filter(|p| !p.trim().is_empty()).map(|p| p.trim().to_string());
+        Ok(ep)
     }
 
     pub fn instance(&self) -> &str {

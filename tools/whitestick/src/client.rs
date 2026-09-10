@@ -3,7 +3,7 @@
 
 use crate::config::Config;
 use crate::proto::*;
-use crate::transport::{self, Endpoint, WsError};
+use crate::transport::{self, WsError};
 use anyhow::{anyhow, bail, Result};
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
@@ -28,7 +28,7 @@ pub struct RunOpts {
 
 /// Connect a controller session, waiting up to `wait` for an offline box.
 async fn connect(cfg: &Config, instance: &str, wait: Duration) -> Result<transport::Ws> {
-    let ep = Endpoint::parse(cfg.relay()?)?;
+    let ep = cfg.endpoint()?;
     let token = cfg.token()?;
     let proxy = transport::resolve_proxy(cfg.proxy.as_deref()).await;
     let path = format!("/v1/ctl/{instance}");
@@ -236,7 +236,7 @@ async fn pump_stdin(tx: mpsc::Sender<Message>, window: Arc<Window>) {
 
 /// `whitestick status`: is the box connected to the relay?
 pub async fn status(cfg: &Config, instance: &str) -> Result<i32> {
-    let ep = Endpoint::parse(cfg.relay()?)?;
+    let ep = cfg.endpoint()?;
     let token = cfg.token()?;
     let proxy = transport::resolve_proxy(cfg.proxy.as_deref()).await;
     let (status, body) =

@@ -19,6 +19,7 @@ mod agent;
 mod client;
 mod config;
 mod proto;
+mod relay;
 mod transport;
 
 use anyhow::{bail, Context, Result};
@@ -32,10 +33,39 @@ fn usage() -> &'static str {
      echo '<command>' | whitestick [flags]        (command from stdin)\n  \
      whitestick agent [--name NAME] [--cwd DIR] [--shell SH]\n  \
      whitestick status [--instance NAME]\n  \
+     whitestick relay --listen ADDR --cert F --key F [--token T]   (self-hosted relay)\n  \
+     whitestick relay --print-pin --cert F\n  \
      whitestick --version | --help\n\n\
      With a positional command, a non-terminal stdin is forwarded to the remote\n\
      command (--no-stdin turns that off). Exit status is the remote command's;\n\
      124 = --timeout hit, 130 = interrupted twice, 1 = bridge error."
+}
+
+/// Where the subcommand sits in argv, if the first bare word is one.
+/// Flags that take a value swallow it, so `--instance status` is a box named
+/// "status", not the subcommand.
+fn subcommand_at(argv: &[String]) -> Option<usize> {
+    const TAKES_VALUE: &[&str] = &[
+        "--instance", "--cwd", "--shell", "--wait", "--timeout", "--name",
+        "--listen", "--cert", "--key", "--token",
+    ];
+    let mut i = 0;
+    while i < argv.len() {
+        let a = argv[i].as_str();
+        if a == "--" {
+            return None;
+        }
+        if TAKES_VALUE.contains(&a) {
+            i += 2;
+            continue;
+        }
+        if a.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        return matches!(a, "agent" | "status" | "relay").then_some(i);
+    }
+    None
 }
 
 /// A UTC timestamp for log lines, without pulling in a date crate.
@@ -80,13 +110,18 @@ fn main() {
 fn real_main() -> Result<i32> {
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
 
-    if argv.first().map(String::as_str) == Some("agent") {
-        argv.remove(0);
-        return run_agent(argv);
-    }
-    if argv.first().map(String::as_str) == Some("status") {
-        argv.remove(0);
-        return run_status(argv);
+    // A subcommand is the first bare word, whether or not flags came first:
+    // `whitestick --instance Box status` means the same as `whitestick status
+    // --instance Box`. Anything after `--` is a command to run, never a
+    // subcommand, so `whitestick -- status` still runs `status` on the box.
+    if let Some(i) = subcommand_at(&argv) {
+        let name = argv.remove(i);
+        return match name.as_str() {
+            "agent" => run_agent(argv),
+            "status" => run_status(argv),
+            "relay" => run_relay(argv),
+            _ => unreachable!(),
+        };
     }
 
     let cfg = config::Config::load()?;
@@ -183,6 +218,49 @@ fn run_status(argv: Vec<String>) -> Result<i32> {
     }
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     rt.block_on(client::status(&cfg, &instance))
+}
+
+/// `whitestick relay` — run the rendezvous point here (a VPS), instead of
+/// deploying the Cloudflare Worker.
+fn run_relay(argv: Vec<String>) -> Result<i32> {
+    let mut listen = "0.0.0.0:8443".to_string();
+    let mut cert = String::new();
+    let mut key = String::new();
+    let mut token: Option<String> = None;
+    let mut print_pin = false;
+    let mut it = argv.into_iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--listen" => listen = it.next().context("--listen needs ADDR:PORT")?,
+            "--cert" => cert = it.next().context("--cert needs a PEM path")?,
+            "--key" => key = it.next().context("--key needs a PEM path")?,
+            "--token" => token = Some(it.next().context("--token needs the shared secret")?),
+            "--print-pin" => print_pin = true,
+            other => bail!("relay: unknown argument {other}"),
+        }
+    }
+    if cert.is_empty() {
+        bail!("relay: --cert is required");
+    }
+    if print_pin {
+        println!("{}", relay::cert_pin(&cert)?);
+        return Ok(0);
+    }
+    if key.is_empty() {
+        bail!("relay: --key is required");
+    }
+    // The relay's own config file is the same one the client uses, so a box
+    // that is both does not hold the secret twice.
+    let token = match token {
+        Some(t) => t,
+        None => config::Config::load()?.token()?.to_string(),
+    };
+    let listen: std::net::SocketAddr = listen
+        .parse()
+        .with_context(|| format!("--listen {listen}: expected ADDR:PORT, e.g. 0.0.0.0:8443"))?;
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    rt.block_on(relay::run(relay::RelayOpts { listen, cert, key, token }))?;
+    Ok(0)
 }
 
 fn run_agent(argv: Vec<String>) -> Result<i32> {
