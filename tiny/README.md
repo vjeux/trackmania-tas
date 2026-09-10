@@ -104,13 +104,13 @@ https://github.com/user-attachments/assets/b47c36a2-a524-4568-8c8e-fbf117ab87d2
 
 **Tiny Summer 2026 - 18** — original author time `51.352` · tiny ghost **46.335** (build ship15, controls overlay)
 
-*latest lap **45.333** (build ship15) — video pending*
+*latest lap **44.593** (build ship15) — video pending*
 
 https://github.com/user-attachments/assets/cfe32cb4-a65f-4329-bd3f-fc6112e19876
 
 **Tiny Summer 2026 - 19** — original author time `43.841` · tiny ghost **48.377** (build ship15, controls overlay)
 
-*latest lap **46.857** (build ship15) — video pending*
+*latest lap **46.445** (build ship15) — video pending*
 
 https://github.com/user-attachments/assets/cdf7ae74-2fa8-4777-9b9a-72c15f607354
 
@@ -118,15 +118,15 @@ https://github.com/user-attachments/assets/cdf7ae74-2fa8-4777-9b9a-72c15f607354
 
 **Tiny Argentina 2026** — original author time `78.988` · *no video yet*
 
-*latest lap **122.510** (build ship15) — video pending*
+*latest lap **122.432** (build ship15) — video pending*
 
 **Tiny Saudi Arabia 2026** — original author time `73.418` · *no video yet*
 
-*latest lap **99.912** (build ship15) — video pending*
+*latest lap **96.300** (build ship15) — video pending*
 
 **Tiny Norway 2026** — original author time `75.112` · tiny ghost **115.244** (build ship15)
 
-*latest lap **102.541** (build ship15) — video pending*
+*latest lap **102.162** (build ship15) — video pending*
 
 https://github.com/user-attachments/assets/6ae6ddd3-011d-4cd9-b264-84be3bcbe2e8
 
@@ -138,6 +138,6 @@ https://github.com/user-attachments/assets/3808d227-72b0-4af8-84a4-f39c2b64e318
 
 **Tiny Japan 2026** — original author time `78.928` · tiny ghost **121.235** (build ship15, controls overlay)
 
-*latest lap **119.588** (build ship15) — video pending*
+*latest lap **119.353** (build ship15) — video pending*
 
 https://github.com/user-attachments/assets/b9ef4dcf-0c75-4adb-9acb-3b9b836ca031
