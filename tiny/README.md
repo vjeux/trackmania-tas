@@ -70,6 +70,8 @@ https://github.com/user-attachments/assets/8359415d-53d5-419f-8fd6-aee0fe145345
 
 **Tiny Summer 2026 - 15** — original author time `36.888` · tiny ghost **49.097** (build ship15, controls overlay)
 
+*latest lap **48.834** (build ship15) — video pending*
+
 https://github.com/user-attachments/assets/a5db8c65-9a3d-4b07-910d-7db9fc9937fa
 
 **Tiny Summer 2026 - 16** — original author time `50.966` · tiny ghost **39.302** (build ship15, controls overlay)
@@ -82,9 +84,13 @@ https://github.com/user-attachments/assets/7a87785b-5c81-4064-9272-3943d12f3dbe
 
 **Tiny Summer 2026 - 18** — original author time `51.352` · tiny ghost **44.593** (build ship15, controls overlay)
 
+*latest lap **43.413** (build ship15) — video pending*
+
 https://github.com/user-attachments/assets/2843bda8-80b6-4f00-b45d-d27341b07233
 
 **Tiny Summer 2026 - 19** — original author time `43.841` · tiny ghost **46.445** (build ship15, controls overlay)
+
+*latest lap **46.412** (build ship15) — video pending*
 
 https://github.com/user-attachments/assets/60c8d4e7-6be3-49f0-83b0-715004eae808
 
@@ -92,9 +98,13 @@ https://github.com/user-attachments/assets/60c8d4e7-6be3-49f0-83b0-715004eae808
 
 **Tiny Argentina 2026** — original author time `78.988` · tiny ghost **122.432** (build ship15, controls overlay)
 
+*latest lap **122.376** (build ship15) — video pending*
+
 https://github.com/user-attachments/assets/1c7205f2-dabe-4863-90b1-93b464cbba1b
 
 **Tiny Saudi Arabia 2026** — original author time `73.418` · tiny ghost **96.300** (build ship15, controls overlay)
+
+*latest lap **96.298** (build ship15) — video pending*
 
 https://github.com/user-attachments/assets/adc9eaae-85b1-43fe-9f6b-9b4b7ad43f83
 
@@ -108,6 +118,6 @@ https://github.com/user-attachments/assets/b09f275d-9d36-46dd-91c7-dc629c7a2b5c
 
 **Tiny Japan 2026** — original author time `78.928` · tiny ghost **121.235** (build ship15, controls overlay)
 
-*latest lap **119.353** (build ship15) — video pending*
+*latest lap **119.115** (build ship15) — video pending*
 
 https://github.com/user-attachments/assets/b9ef4dcf-0c75-4adb-9acb-3b9b836ca031
