@@ -92,11 +92,9 @@ https://github.com/user-attachments/assets/852cae15-dd20-4036-b01e-f02971d26797
 
 https://github.com/user-attachments/assets/7186c2a4-d3c9-491c-903f-97e7d77451c4
 
-**Tiny Saudi Arabia 2026** — original author time `73.418` · tiny ghost **96.300** (build ship15, controls overlay)
+**Tiny Saudi Arabia 2026** — original author time `73.418` · tiny ghost **96.298** (build ship15, controls overlay)
 
-*latest lap **96.298** (build ship15) — video pending*
-
-https://github.com/user-attachments/assets/adc9eaae-85b1-43fe-9f6b-9b4b7ad43f83
+https://github.com/user-attachments/assets/2bb4c108-dd6b-4c5c-a26d-f8ef253cdf2e
 
 **Tiny Norway 2026** — original author time `75.112` · tiny ghost **102.162** (build ship15, controls overlay)
 
