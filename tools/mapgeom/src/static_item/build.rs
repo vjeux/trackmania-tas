@@ -2007,14 +2007,15 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                             // gold"); its saturation stays moderate for the same reason
                             let warm = r >= g + 12.0 && luma < 150.0;
                             // …and so does any atlas that is not green to begin with (red over green
-                            // by 5 or more: the desert creosote (109, 100, 67) — the yellow-green
-                            // hazel at r = g and the quince at +4 measured better WITH the shift,
-                            // lineup Z5): the shift
+                            // by 4 or more: the desert creosote (109, 100, 67) and its near-grey
+                            // twig atlas (88, 83, 78); the quince at +4 measured a wash either way
+                            // and the yellow-green hazel at r = g better WITH the shift, lineup Z5):
+                            // the shift
                             // counters the sky's cyan pull on GREEN crowns, on a khaki atlas it
                             // overshoots to brown (the eyes on the 17 frames: "bushes brown-khaki,
                             // too brown vs the original's dark olive"). TINY_TREE_KHAKI_SHIFT=1
                             // keeps the collection's shift on them (the probe's other arm).
-                            let khaki = r >= g + 5.0 && !warm && std::env::var("TINY_TREE_KHAKI_SHIFT").as_deref() != Ok("1");
+                            let khaki = r >= g + 4.0 && !warm && std::env::var("TINY_TREE_KHAKI_SHIFT").as_deref() != Ok("1");
                             let (csat, chue) = if warm && table { (csat.min(1.2), 0.0) } else if khaki && table { (csat.min(1.3), 0.0) } else { (csat, chue) };
                             // a LOW-CHROMA atlas (HSV saturation of its opaque mean 0.30 or under:
                             // birch 0.25, hazel 0.26, sous-bois 0.21–0.30; the laurel at 0.32 sits
