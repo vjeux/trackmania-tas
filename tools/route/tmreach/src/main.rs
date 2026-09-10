@@ -106,6 +106,7 @@ fn main() {
         "load-control" => cmd_load_control(&a),
         "lap" => cmd_lap(&a),
         "lcp-to-state" => cmd_lcp_to_state(&a),
+        "chain-to-state" => cmd_chain_to_state(&a),
         "chain-replay" => cmd_chain_replay(&a),
         "input-life" => cmd_input_life(&a),
         "sweep" => cmd_sweep(&a),
@@ -2014,5 +2015,59 @@ fn cmd_input_life(a: &Args) -> Result<(), String> {
     if !live {
         std::process::exit(3);
     }
+    Ok(())
+}
+
+/// `tmreach chain-to-state --map M --tape BASE.Ghost.Gbx --chain best.tsv --at <row|Ts> --out s.json [--work DIR] [--map-name N] [--map-uid U]`
+/// Replay a chain (best.tsv: tick, steer −127..127, gas, brake) in the fork from the root to row `--at` (a row index, or a race
+/// time like `12.5s`), read the live dyna body back and write it as a tm-inject-state/1 file (kind "chain") for the player's
+/// injector. `--at end` = the whole chain. Coordinator 2026-09-10 05:11Z: GEN hands the player inject-able states of 20's best chain.
+fn cmd_chain_to_state(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let tape = PathBuf::from(a.req("tape"));
+    let chain_f = a.req("chain");
+    let out = a.req("out");
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/c2s-{}", std::process::id())));
+    let txt = std::fs::read_to_string(&chain_f).map_err(|e| format!("{chain_f}: {e}"))?;
+    let mut recs: Vec<forkoracle::forksrv::Rec> = Vec::new();
+    for l in txt.lines().skip(1) {
+        let v: Vec<&str> = l.split('\t').collect();
+        if v.len() >= 4 {
+            recs.push(forkoracle::forksrv::Rec { steer: v[1].parse::<f32>().unwrap_or(0.0) / 127.0, gas: v[2].parse::<f32>().unwrap_or(0.0), brake: v[3].parse::<f32>().unwrap_or(0.0) });
+        }
+    }
+    if recs.is_empty() {
+        return Err(format!("{chain_f}: no rows (expected best.tsv: tick\tsteer\tgas\tbrake)"));
+    }
+    let mut w = Worker::start(&server, &map, &shim, &work, &tape, a.has("verbose"))?;
+    let root = w.root_probe;
+    let at = a.get("at").unwrap_or_else(|| "end".into());
+    // resolve --at to a row count
+    let n_rows = if at == "end" {
+        recs.len()
+    } else if let Some(s) = at.strip_suffix('s') {
+        // race time: replay everything first to map race times to rows
+        let t_ms = (s.parse::<f64>().map_err(|_| format!("--at {at}: seconds like 12.5s"))? * 1000.0).round() as i64;
+        let (rows, nh) = w.rollout_keep(branch::ROOT, &recs, root, recs.len() as u64)?;
+        w.release(nh);
+        rows.iter().position(|r| w.race_of(r) >= t_ms).map(|i| i + 1).unwrap_or(rows.len()).min(recs.len())
+    } else {
+        at.parse::<usize>().map_err(|_| format!("--at {at}: a row index, a race time like 12.5s, or end"))?.min(recs.len())
+    };
+    let (rows, nh) = w.rollout_keep(branch::ROOT, &recs[..n_rows], root, n_rows as u64)?;
+    let last = rows.last().ok_or("no rows replayed")?.clone();
+    let cps = if last.cps == u32::MAX { 0 } else { last.cps };
+    let race_ms = w.race_of(&last);
+    let st = tmreach::inject::read_state(&mut w, nh, &a.get("map-uid").unwrap_or_default(), &a.get("map-name").unwrap_or_default(), &chain_f, n_rows, cps, race_ms)?;
+    w.release(nh);
+    std::fs::write(&out, serde_json::to_string_pretty(&st).map_err(|e| e.to_string())?).map_err(|e| format!("{out}: {e}"))?;
+    let d = ((st.state.pos[0] as f64 - last.x).powi(2) + (st.state.pos[1] as f64 - last.y).powi(2) + (st.state.pos[2] as f64 - last.z).powi(2)).sqrt();
+    println!(
+        "{out}: chain {chain_f} replayed {n_rows} of {} rows to race {} (cps {cps}); body ({:.2}, {:.2}, {:.2}) v ({:.2}, {:.2}, {:.2}) |v| {:.1} fwd {:.1} ang_vel ({:.2}, {:.2}, {:.2}); row/body position gap {d:.3} m",
+        recs.len(), tmreach::secs(race_ms), st.state.pos[0], st.state.pos[1], st.state.pos[2], st.state.vel[0], st.state.vel[1], st.state.vel[2],
+        (st.state.vel[0].powi(2) + st.state.vel[1].powi(2) + st.state.vel[2].powi(2)).sqrt(), st.state.speed_fwd.unwrap_or(0.0),
+        st.state.ang_vel.map(|v| v[0]).unwrap_or(0.0), st.state.ang_vel.map(|v| v[1]).unwrap_or(0.0), st.state.ang_vel.map(|v| v[2]).unwrap_or(0.0)
+    );
     Ok(())
 }

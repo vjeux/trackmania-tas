@@ -248,6 +248,7 @@ fn main() {
         "road-centreline" => cmd_road_centreline(&args[1..]),
         "author-line" => cmd_author_line(&args[1..]),
         "author-ground" => cmd_author_ground(&args[1..]),
+        "arrival-bands" => cmd_arrival_bands(&args[1..]),
         "leg-plot" => cmd_leg_plot(&args[1..]),
         other => die(&format!("unknown command {other}")),
     }
@@ -1421,7 +1422,8 @@ fn cmd_leg_plot(args: &[String]) {
     let opts = mapgeom::local::BuildOpts { with_deco: true, with_baked: !tmroute::gates::is_tiny_map(&gates.map_uid, &gates.map_name), ..Default::default() };
     let scene = mapgeom::local::LocalScene::build(&mut store, &m, gates.yoff, &opts);
     let ymin_leg = seg.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
-    let top_y = ymax + 30.0;
+    // start the rays just above the leg (a terrain roof over a cavity — 20's deck pit — would otherwise hide it); --top Y overrides
+    let top_y = flag(args, "--top").and_then(|v| v.parse::<f32>().ok()).unwrap_or(ymax + 6.0);
     // top-down: one downward ray per pixel; heights shade the colour (higher = lighter), walls (ny < 0.5) dark
     let to_px = |x: f32, z: f32| -> (f32, f32) { ((x - xmin) * ppm, (zmax - z) * ppm) };
     let mut ground_under: Vec<Option<f32>> = Vec::with_capacity(seg.len());
@@ -1583,4 +1585,112 @@ fn cmd_leg_plot(args: &[String]) {
     let vmin = vh[i0 + 1..=i1].iter().cloned().fold(f32::INFINITY, f32::min);
     let vmax = vh[i0 + 1..=i1].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     println!("{out}: {title}, s {sx0:.0}–{sx1:.0} ({:.0} m), human {vmin:.0}–{vmax:.0} m/s, height {:.1}–{:.1} m, surface under the line {g_min:.1}–{g_max:.1} m, airborne samples {air}/{}, chains {} ({})", sx1 - sx0, seg.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min), seg.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max), seg.len(), chains.len(), { let mut m: BTreeMap<&str, usize> = BTreeMap::new(); for c in &chains { *m.entry(c.cause.as_str()).or_default() += 1; } m.iter().map(|(k, v)| format!("{v} {k}")).collect::<Vec<_>>().join(", ") });
+}
+
+/// `arrival-bands --gates deck.json --route ROUTE.json --author-line author.json [--lcp NN.csv] [--build B] --out X.json`
+/// Per gate in the route's order: the HUMAN's crossing state (position in the credit plane, heading, speed) — from vjeux's
+/// LaunchedCP crossing where one exists (landmark = map waypoint), else from the author line's crossing sample — plus a band
+/// (lateral / height / speed / heading tolerances) and the credit-plane definition. For the player's leg-wise PPO (03:30Z).
+fn cmd_arrival_bands(args: &[String]) {
+    let gp = flag(args, "--gates").unwrap_or_else(|| die("--gates deck.json"));
+    let gates = io::read_gates(Path::new(&gp)).unwrap_or_else(|e| die(&e));
+    let rp = flag(args, "--route").unwrap_or_else(|| die("--route route.json"));
+    let rtxt = std::fs::read_to_string(&rp).unwrap_or_else(|e| die(&format!("{rp}: {e}")));
+    let rv: serde_json::Value = serde_json::from_str(&rtxt).unwrap_or_else(|e| die(&format!("{rp}: {e}")));
+    // the route file is an array: [gate…, {route meta}] (see cmd_road_centreline) or an object with "gates"
+    let (gate_rows, meta): (Vec<serde_json::Value>, serde_json::Value) = match &rv {
+        serde_json::Value::Array(a) => { let mut g = a.clone(); let m = g.iter().position(|x| x.get("gate_order").is_some()).map(|i| g.remove(i)).unwrap_or(serde_json::Value::Null); (g.into_iter().filter(|x| x.get("map_waypoint").is_some()).collect(), m) }
+        serde_json::Value::Object(o) => (o.get("gates").and_then(|g| g.as_array()).cloned().unwrap_or_default(), o.get("route").cloned().unwrap_or(serde_json::Value::Null)),
+        _ => die("route: unexpected json"),
+    };
+    let order_wp: Vec<u32> = gate_rows.iter().filter_map(|g| g.get("map_waypoint").and_then(|w| w.as_u64()).map(|w| w as u32)).collect();
+    // author line + arc length + speed
+    let ap = flag(args, "--author-line").unwrap_or_else(|| die("--author-line author.json"));
+    let txt = std::fs::read_to_string(&ap).unwrap_or_else(|e| die(&format!("{ap}: {e}")));
+    let k = "\"pts\": [";
+    let i = txt.find(k).or_else(|| txt.find("\"pts\":[").map(|i| i - 1)).unwrap_or_else(|| die("no pts"));
+    let rest = &txt[i + k.len()..];
+    let end = rest.find("]]").map(|e| e + 1).unwrap_or(rest.len());
+    let flat: Vec<f32> = rest[..end].split(|c: char| c == ',' || c == '[' || c == ']').filter_map(|x| x.trim().parse::<f32>().ok()).collect();
+    let line: Vec<[f32; 3]> = flat.chunks(3).filter(|c| c.len() == 3).map(|c| [c[0], c[1], c[2]]).collect();
+    let vh: Vec<f32> = (0..line.len()).map(|i| if i + 1 < line.len() { let (a, b) = (line[i], line[i + 1]); ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt() * 10.0 } else { 0.0 }).collect();
+    // vjeux's LaunchedCP crossings: entry,landmark,kind,time_ms,t_window_ms,x,y,z,qx,qy,qz,qw,vx,vy,vz,speed_fwd_ms,...
+    let mut lcp: std::collections::BTreeMap<u32, (f32, [f32; 3], [f32; 3], f32)> = std::collections::BTreeMap::new();
+    if let Some(lp) = flag(args, "--lcp") {
+        let t = std::fs::read_to_string(&lp).unwrap_or_else(|e| die(&format!("{lp}: {e}")));
+        for l in t.lines().skip(1) {
+            let f: Vec<&str> = l.split(',').collect();
+            if f.len() < 16 || f[2] != "crossing" { continue; }
+            let lm: u32 = match f[1].parse() { Ok(v) => v, Err(_) => continue };
+            let p = [f[5].parse().unwrap_or(0.0), f[6].parse().unwrap_or(0.0), f[7].parse().unwrap_or(0.0)];
+            let v = [f[12].parse().unwrap_or(0.0), f[13].parse().unwrap_or(0.0), f[14].parse().unwrap_or(0.0)];
+            let sp: f32 = f[15].parse().unwrap_or(0.0);
+            lcp.entry(lm).or_insert((f[3].parse::<f32>().unwrap_or(0.0) / 1000.0, p, v, sp));
+        }
+    }
+    let heading_of = |v: [f32; 3]| -> (Vec<f32>, f32) { let n = (v[0] * v[0] + v[2] * v[2]).sqrt().max(1e-6); (vec![v[0] / n, v[2] / n], (v[0] / n).atan2(v[2] / n).to_degrees()) };
+    let mut out_gates = Vec::new();
+    let mut cursor = 0usize;
+    for (idx, wp) in order_wp.iter().enumerate() {
+        let g = match gates.gates.iter().find(|x| x.waypoint == *wp) { Some(g) => g, None => continue };
+        let grp = g.group;
+        let is_fin = matches!(g.kind, tmroute::gates::WpKind::Finish);
+        // author crossing: deepest in-range run after the previous crossing (same rule as the route files)
+        let (mut best_run, mut run_best, mut in_run): (Option<(usize, f32)>, Option<(usize, f32)>, bool) = (None, None, false);
+        for (li, p) in line.iter().enumerate().skip(cursor) {
+            let dmin = gates.gates.iter().filter(|x| x.group == grp).filter(|x| { let dy = p[1] - x.centre[1]; dy >= -9.0 && dy <= 3.0 }).map(|x| ((x.centre[0] - p[0]).powi(2) + (x.centre[2] - p[2]).powi(2)).sqrt() - x.half_width).fold(f32::INFINITY, f32::min);
+            if dmin <= 6.0 { if !in_run { in_run = true; run_best = None; } if run_best.map(|(_, d)| dmin < d).unwrap_or(true) { run_best = Some((li, dmin)); } }
+            else if in_run { in_run = false; if is_fin || best_run.map(|(_, d)| run_best.map(|(_, rd)| rd < d).unwrap_or(false)).unwrap_or(true) { best_run = run_best; } if !is_fin && best_run.is_some() { /* keep scanning for a deeper run only if none yet */ } }
+        }
+        if in_run && (is_fin || best_run.map(|(_, d)| run_best.map(|(_, rd)| rd < d).unwrap_or(false)).unwrap_or(true)) { best_run = run_best; }
+        let author = best_run.map(|(li, _)| {
+            cursor = li + 1;
+            let p = line[li];
+            // heading = the velocity direction over ±0.3 s (7 samples), not two neighbours
+            let (a, b) = (li.saturating_sub(3), (li + 3).min(line.len() - 1));
+            let (h, hdg) = heading_of([line[b][0] - line[a][0], 0.0, line[b][2] - line[a][2]]);
+            let sp = vh[li.saturating_sub(1)..=li.min(vh.len() - 1)].iter().sum::<f32>() / (li - li.saturating_sub(1) + 1) as f32;
+            serde_json::json!({"source": "author-line", "sample": li, "t_s": li as f32 * 0.1, "pos": [p[0], p[1], p[2]], "heading_xz": h, "heading_deg": hdg, "speed_mps": sp})
+        });
+        let vj = lcp.get(wp).map(|(t, p, v, sp)| { let (h, hdg) = heading_of(*v); serde_json::json!({"source": "vjeux-launched-cp", "t_s": t, "pos": [p[0], p[1], p[2]], "vel": [v[0], v[1], v[2]], "heading_xz": h, "heading_deg": hdg, "speed_mps": sp.abs(), "speed_fwd_mps": sp}) });
+        let human = vj.clone().or(author.clone()).unwrap_or(serde_json::Value::Null);
+        let speed = human.get("speed_mps").and_then(|s| s.as_f64()).unwrap_or(0.0) as f32;
+        let pos = human.get("pos").and_then(|p| p.as_array()).map(|a| [a[0].as_f64().unwrap_or(0.0) as f32, a[1].as_f64().unwrap_or(0.0) as f32, a[2].as_f64().unwrap_or(0.0) as f32]);
+        // a group can hold several records (linked rings, stacked tower gates): the credit plane is the record the human crossed
+        let g = match pos { Some(p) => gates.gates.iter().filter(|x| x.group == grp).min_by(|a, b| { let da = (a.centre[0] - p[0]).powi(2) + (a.centre[1] - p[1]).powi(2) + (a.centre[2] - p[2]).powi(2); let db = (b.centre[0] - p[0]).powi(2) + (b.centre[1] - p[1]).powi(2) + (b.centre[2] - p[2]).powi(2); da.partial_cmp(&db).unwrap() }).unwrap_or(g), None => g };
+        // lateral offset of the human in the plane: signed distance along the plane's in-plane axis (normal × up)
+        let lat = pos.map(|p| { let n = g.normal; let ax = [n[2], 0.0, -n[0]]; (p[0] - g.centre[0]) * ax[0] + (p[2] - g.centre[2]) * ax[2] });
+        // the deck (where the car sits when it credits) is 4 m under the ring centre on every ring model (F25 measurements)
+        let dy = pos.map(|p| p[1] - g.centre[1]); // relative to the credit-plane CENTRE (ring heights differ per model; the human's own offset is the reference)
+        // speed band from the AUTHOR when vjeux crossed slowly (a struggle, e.g. 22 wp3 at 6 m/s): his position is exact, his speed is not a target
+        let author_speed = author.as_ref().and_then(|a| a.get("speed_mps")).and_then(|s| s.as_f64()).unwrap_or(0.0) as f32;
+        let (band_speed, speed_source) = if vj.is_some() && author_speed > 0.0 && speed < 0.6 * author_speed { (author_speed, "author-line (vjeux crossed at a struggle speed)") } else { (speed, if vj.is_some() { "vjeux-launched-cp" } else { "author-line" }) };
+        let plane = serde_json::json!({"centre": g.centre, "normal": g.normal, "half_width": g.half_width, "half_height": g.half_height,  "credit_offset_m": g.credit_offset_m, "kind": format!("{:?}", g.kind), "model": g.model});
+        // a hairpin apex (the author's heading turns > 120° within ±3 s of the crossing) or an angled crossing (> 35° off the plane
+        // normal) gets a wide heading band; a crossing anywhere in the ring credits, the band is guidance
+        let hdg_c = human.get("heading_deg").and_then(|h| h.as_f64()).unwrap_or(0.0) as f32;
+        let turn = author.as_ref().and_then(|a| a.get("sample")).and_then(|s| s.as_u64()).map(|li| { let li = li as usize; let (a0, a1) = (li.saturating_sub(30), li.saturating_sub(15)); let (b0, b1) = ((li + 15).min(line.len() - 1), (li + 30).min(line.len() - 1)); let h0 = (line[a1][0] - line[a0][0]).atan2(line[a1][2] - line[a0][2]).to_degrees(); let h1 = (line[b1][0] - line[b0][0]).atan2(line[b1][2] - line[b0][2]).to_degrees(); let mut d = (h1 - h0).abs(); if d > 180.0 { d = 360.0 - d; } d }).unwrap_or(0.0);
+        let hx = hdg_c.to_radians().sin(); let hz = hdg_c.to_radians().cos();
+        let incidence = { let dot = (hx * g.normal[0] + hz * g.normal[2]).abs().clamp(0.0, 1.0); dot.acos().to_degrees() };
+        let hdg_tol = if turn > 80.0 || incidence > 35.0 { 60.0 } else { 20.0 };
+        let band = serde_json::json!({
+            "lateral_m": {"centre": lat.unwrap_or(0.0), "tol": (g.half_width - 1.0).max(2.0).max(lat.map(|l| l.abs() + 1.0).unwrap_or(0.0)), "note": "signed in-plane offset from the credit-plane centre, axis = normal × up; a crossing anywhere within ± half_width credits"},
+            "height_rel_centre_m": {"centre": dy.unwrap_or(0.0), "lo": dy.unwrap_or(0.0) - 1.5, "hi": dy.unwrap_or(0.0) + 3.0, "note": "car y minus credit-plane centre y at the human's crossing; the human sits on the deck, so this is the deck offset of that ring"},
+            "speed_mps": {"centre": band_speed, "lo": (band_speed * 0.75).round(), "hi": (band_speed * 1.15).round(), "source": speed_source},
+            "heading_deg": {"centre": hdg_c, "tol": hdg_tol, "turn_within_3s_deg": turn, "incidence_to_plane_normal_deg": incidence, "crossing_dir_vs_normal": if hx * g.normal[0] + hz * g.normal[2] >= 0.0 { "along" } else { "against" }, "note": "a crossing anywhere within the ring credits in either direction; the band is the human's heading — wide (60) at hairpin apexes and angled crossings"}
+        });
+        out_gates.push(serde_json::json!({"idx": idx, "map_waypoint": wp, "group": grp, "s_on_route": gate_rows.get(idx).and_then(|r| r.get("s")).cloned().unwrap_or(serde_json::Value::Null), "credit_plane": plane, "human": human, "author": author, "vjeux": vj, "band": band}));
+    }
+    let out = flag(args, "--out").unwrap_or_else(|| die("--out X.json"));
+    let doc = serde_json::json!({
+        "schema": "arrival-bands/1",
+        "map_name": gates.map_name, "map_uid": gates.map_uid, "build": flag(args, "--build").unwrap_or_default(),
+        "gates_file": gp, "route_file": rp, "author_line": ap, "launched_cp": flag(args, "--lcp").unwrap_or_default(),
+        "gate_order_map_waypoint": order_wp, "route_meta": meta,
+        "frame": "tiny map frame, metres; heading_xz = unit (x, z) of travel, heading_deg = atan2(x, z) in degrees",
+        "gates": out_gates,
+    });
+    std::fs::write(&out, serde_json::to_string_pretty(&doc).unwrap()).unwrap_or_else(|e| die(&e.to_string()));
+    let nv = doc["gates"].as_array().unwrap().iter().filter(|g| !g["vjeux"].is_null()).count();
+    println!("{out}: {} gates, {} from vjeux's LaunchedCP, {} from the author line", order_wp.len(), nv, order_wp.len() - nv);
 }
