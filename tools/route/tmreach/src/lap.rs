@@ -520,6 +520,8 @@ pub struct LapCfg {
     pub upright: Vec<[f64; 3]>,
     /// --allow-water: disable the water-lid guard (materials 28/13 kill a rollout by default)
     pub allow_water: bool,
+    /// --water-boxes x1,x2,z1,z2,plane_y[;...]: Water-plane footprints (rows inside and below plane_y + 0.5 die)
+    pub water_boxes: Vec<[f64; 5]>,
     /// hand macro: pure-pursuit points (x y z [speed]) from --pursue FILE; empty = the macro is skipped
     pub pursue: Vec<[f64; 5]>,
     /// hand macro: aim at the first pursue point farther than this (m); --pursue-look, default 8
@@ -951,8 +953,10 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 dump_rollout(w, base, &rows, "offroute", &desc, &dump_n);
                 continue;
             }
-            // WATER GUARD (vjeux, 20:32Z): any wheel on physics material 28 (the ship15 water lid) or 13 (water) kills the rollout — on every lane
-            if !cfg.allow_water && rows.iter().any(|r| r.vis.wheel_material.iter().any(|m| *m == 28 || *m == 13)) {
+            // WATER GUARD (vjeux 20:32Z; GEOM 20:41Z): a wheel on physics 13 (Water) kills the rollout, and so does a row inside a Water-plane
+            // footprint (--water-boxes: x1,x2,z1,z2,plane_y per entry, ; separated — GEOM's WATER-PLANES-ship15.tsv class A/B) below plane_y + 0.5.
+            // Material 28 is NOT water: every ship15 converted block carries a coincident NotCollidable-28 plate over solid ground.
+            if !cfg.allow_water && (rows.iter().any(|r| r.vis.wheel_material.iter().any(|m| *m == 13)) || cfg.water_boxes.iter().any(|b| rows.iter().any(|r| r.x >= b[0] && r.x <= b[1] && r.z >= b[2] && r.z <= b[3] && r.y < b[4] + 0.5))) {
                 out.deaths[1] += 1;
                 dump_rollout(w, base, &rows, "offroute", &desc, &dump_n);
                 continue;
