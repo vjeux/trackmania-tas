@@ -38,6 +38,7 @@ mod pagestatus;
 mod video;
 mod motion;
 mod mtrender;
+mod mapzips;
 mod views;
 mod wsx;
 
@@ -142,6 +143,7 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         runs cut+overlay(+ship) on an existing render; --ship starts the box-side publish (tinyship.sh) detached
   tinyctl shipwatch --out /tmp/tinyvid --readme tiny/README.md [--repo DIR] [--once] [--commit] [--build-note "…"]
   tinyctl final-table --out /tmp/tinyvid --readme tiny/README.md --ghosts-dir DIR [--write FINAL.md]
+  tinyctl mapzips --dir ZIPS --out /tmp/tinyvid --build ship15 [--maps 05,15] [--dry-run]
         collects the ships --ship started (done files on the box): swaps the map's page row (time, build note,
         asset URL; 21–25 by their country names) and with --commit commits + pushes the page
   tinyctl motion --orig SRC --tiny TINY --views V.tsv --anchor A --tag T [--seconds 8] [--fps 20]
@@ -200,6 +202,7 @@ fn main() {
         "final-table" => pagestatus::final_table_cmd(rest),
         "motion" => motion::cmd(rest),
         "mtrender" => mtrender::cmd(rest),
+        "mapzips" => mapzips::cmd(rest),
         "box-build" => boxbuild::box_build_cmd(rest),
         "selfbuild" => boxbuild::selfbuild_cmd(rest),
         "help" | "--help" | "-h" => {
