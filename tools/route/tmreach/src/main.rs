@@ -107,6 +107,7 @@ fn main() {
         "lap" => cmd_lap(&a),
         "lcp-to-state" => cmd_lcp_to_state(&a),
         "chain-to-state" => cmd_chain_to_state(&a),
+        "preflight" => cmd_preflight(&a),
         "chain-replay" => cmd_chain_replay(&a),
         "input-life" => cmd_input_life(&a),
         "sweep" => cmd_sweep(&a),
@@ -2076,4 +2077,57 @@ fn cmd_chain_to_state(a: &Args) -> Result<(), String> {
         st.state.ang_vel.map(|v| v[0]).unwrap_or(0.0), st.state.ang_vel.map(|v| v[1]).unwrap_or(0.0), st.state.ang_vel.map(|v| v[2]).unwrap_or(0.0)
     );
     Ok(())
+}
+
+/// `tmreach preflight --map M --tape BASE.Ghost.Gbx --centreline C.json [--author-line A.json] --gates G.json --leg-time S
+///   [--pulse-chain best.tsv] [--human-tape H.Ghost.Gbx] [--gate-tol 20] [--work DIR]`
+/// The launch controls (preflight.rs): packet modes [2], gate placement (≤ 20 m, s monotone), input life at the leg time, the
+/// human tape's identity through the scorer. Prints the report; on a refusal prints the one-line reason and exits 3.
+fn cmd_preflight(a: &Args) -> Result<(), String> {
+    let map = PathBuf::from(a.req("map"));
+    let tape = PathBuf::from(a.req("tape"));
+    let (server, shim) = engine_paths(a);
+    let work = a.get("work").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(format!("/tmp/tmreach/preflight-{}", std::process::id())));
+    let gates = match (a.get("gates"), a.get("geom")) {
+        (Some(f), _) => Some(MapGates::load_geom(Path::new(&f))?),
+        (None, Some(g)) => Some(MapGates::load(&map, Some(Path::new(&g)))?),
+        _ => None,
+    };
+    let track = match a.get("author-line") {
+        Some(al) => {
+            let ord: Option<Vec<u32>> = a.get("centreline").and_then(|c| std::fs::read_to_string(c).ok()).and_then(|txt| tmreach::json::parse(&txt).ok()).and_then(|j| j.get("order_groups").and_then(|v| v.arr()).map(|arr| arr.iter().filter_map(|x| x.f64()).map(|x| x as u32).collect()));
+            tmreach::lap::Track::from_author_line_ordered(Path::new(&al), gates.as_ref().ok_or("--author-line needs --gates")?, ord.as_deref())?
+        }
+        None => tmreach::lap::Track::load(&PathBuf::from(a.req("centreline")))?,
+    };
+    let cfg = tmreach::preflight::PreflightCfg {
+        map,
+        tape,
+        work,
+        server,
+        shim,
+        track,
+        gates,
+        leg_time_s: a.get("leg-time").map(|s| s.parse().unwrap()).unwrap_or(30.0),
+        pulse_chain: match a.get("pulse-chain") {
+            Some(p) => Some(tmreach::preflight::chain_file(Path::new(&p))?),
+            None => None,
+        },
+        human_tape: a.get("human-tape").map(PathBuf::from),
+        gate_tol_m: a.get("gate-tol").map(|s| s.parse().unwrap()).unwrap_or(20.0),
+        verbose: a.has("verbose"),
+    };
+    match tmreach::preflight::run(&cfg) {
+        Ok(p) => {
+            for l in &p.lines {
+                println!("{l}");
+            }
+            println!("PREFLIGHT OK: launch");
+            Ok(())
+        }
+        Err(e) => {
+            println!("{e}");
+            std::process::exit(3);
+        }
+    }
 }
