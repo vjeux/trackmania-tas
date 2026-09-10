@@ -467,7 +467,7 @@ impl TreeBaker {
                             bake.radius,
                             bake.height * scale,
                             bake.textures.iter().map(|(f, n)| format!("{f} {n} B")).collect::<Vec<_>>().join(", ")
-                        ) + &m.notes.iter().filter(|n| n.contains("colour gain") || n.starts_with("prelight")).map(|n| format!("; {}", n.trim())).collect::<String>()),
+                        ) + &m.notes.iter().filter(|n| n.contains("colour gain") || n.starts_with("prelight") || n.contains("Water-physics collision triangles") || n.contains("ad screen face") || n.contains("screen logo picture")).map(|n| format!("; {}", n.trim())).collect::<String>()),
                     });
                     Some(ident)
                 }
@@ -825,25 +825,25 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     // of going under, then meets the ghost loop-top roads the author passes
     // beneath, and hits the second plane from below — vjeux on ship13 (03:12Z):
     // "15, 20 — road blocks in the middle of the path"; the eyes' frame d187 =
-    // the cream plate across the sand road. So every Water-physics collision
-    // triangle becomes NotCollidable (28); the visual quad stays.
+    // the cream plate across the sand road. ship14/15 (5380c805) re-flagged
+    // those triangles NotCollidable (28): the CLIENT honours it (the 15 dive
+    // works), the DEDICATED SERVER does not — it rides physics 28 like a floor
+    // (player project, 2026-09-10: a nose-down car at 25 m/s stops at the plane
+    // and rolls on it, so a server-validated lap floats where the client
+    // dives, and a client dive cannot validate). So the Water triangles LEAVE
+    // the collision mesh altogether — no surface for either engine, like the
+    // pack's own collision-less water visuals; an item left with no triangle
+    // gets `build_surface`'s 1 mm sentinel. The visual quad stays. What the
+    // engine does with real water (rides a flat fast car at 0.9 m draft, lets a
+    // nose-down one through — Poland's author on the Lake) needs a block's
+    // water VOLUME, which no item can carry: the regenerated zone water
+    // (Lake/Sea/Water genealogy) keeps it, an embedded pool cannot.
     {
-        let mut n = 0usize;
-        for t in m.surf_triangles.iter_mut() {
-            if t.material_id == 13 {
-                t.material_id = 28;
-                t.gameplay = 0;
-                n += 1;
-            }
-        }
+        let before = m.surf_triangles.len();
+        m.surf_triangles.retain(|t| t.material_id != 13);
+        let n = before - m.surf_triangles.len();
         if n > 0 {
-            // the (physics | gameplay << 8) table the triangles index: keep the indices, retarget the entries
-            for id in m.surf_ids.iter_mut() {
-                if *id & 0xff == 13 {
-                    *id = 28;
-                }
-            }
-            m.notes.push(format!("{n} Water-physics collision triangles made NotCollidable (water is a volume, not a wall)"));
+            m.notes.push(format!("{n} Water-physics collision triangles removed from the collision mesh (no surface for the client or the server; the visual quad stays)"));
         }
     }
     // the sign panels of a pad / gate block: the kind's logo picture rides next
@@ -1397,7 +1397,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                         re_emitted += 1;
                     }
                 }
-                let summary = format!("{} bytes, {} visuals, {} collision tris, {} vegetation entities ({} re-emitted as items), {} other skips{wp}{}", bytes.len(), nv, m.surf_triangles.len(), veget, re_emitted, other_skips, lod_summary(&m));
+                let summary = format!("{} bytes, {} visuals, {} collision tris, {} vegetation entities ({} re-emitted as items), {} other skips{wp}{}{}", bytes.len(), nv, m.surf_triangles.len(), veget, re_emitted, other_skips, lod_summary(&m), m.notes.iter().filter(|n| n.contains("Water-physics collision triangles") || n.contains("ad screen face") || n.contains("screen logo picture")).map(|n| format!("; {}", n.trim())).collect::<String>());
                 if nv == 0 {
                     outcomes.push(key.outcome(&alias, format!("{} [{label}] {recipe}", key.source()), Err(format!("no visuals ({summary}); notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join(" | ")))));
                     continue;

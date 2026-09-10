@@ -1810,13 +1810,41 @@ fn main() {
             // surfaces (the 15 pool question, 2026-09-10): an author driving ON
             // water for a stretch = ridden; an author passing UNDER water in a
             // basin = not a wall.
-            //   waterline <source.Map.Gbx> [--every MS] [--rows]
+            //   waterline <MAP.Map.Gbx> [--every MS] [--rows]
+            //     [--ghost G.Ghost.Gbx|SRC.Map.Gbx] [--anchor sx,sy,sz:tx,ty,tz --scale 0.5] [--report report.tsv]
+            // On a SOURCE the water is the block models' (the assembler has no clip
+            // fillers, so the generated water plates are missed); on a TINY every
+            // plate is an ITEM, so run it there with the source ghost mapped
+            // through the anchor (--ghost SRC --anchor) or a tiny-frame lap
+            // (--ghost LAP.Ghost.Gbx); --report names the item's source block.
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
             let every: i32 = flag(&a.rest, "--every").and_then(|s| s.parse().ok()).unwrap_or(100);
             let rows = a.rest.iter().any(|s| s == "--rows");
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
-            let d = gbx::record::decode_ghost(&p).unwrap_or_else(|e| die(format!("{p}: no validation ghost ({e})")));
+            let gpath = flag(&a.rest, "--ghost").unwrap_or_else(|| p.clone());
+            let mut d = gbx::record::decode_ghost(&gpath).unwrap_or_else(|e| die(format!("{gpath}: no ghost ({e})")));
+            if let Some(anchor) = flag(&a.rest, "--anchor") {
+                let scale: f32 = flag(&a.rest, "--scale").and_then(|s| s.parse().ok()).unwrap_or(0.5);
+                let (s, t) = anchor.split_once(':').unwrap_or_else(|| die("--anchor sx,sy,sz:tx,ty,tz".into()));
+                let v = |q: &str| -> [f32; 3] {
+                    let f: Vec<f32> = q.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    if f.len() != 3 {
+                        die::<()>("--anchor needs two x,y,z triples".into());
+                    }
+                    [f[0], f[1], f[2]]
+                };
+                let (sa, ta) = (v(s), v(t));
+                for smp in d.samples.iter_mut() {
+                    smp.x = ta[0] + (smp.x - sa[0]) * scale;
+                    smp.y = ta[1] + (smp.y - sa[1]) * scale;
+                    smp.z = ta[2] + (smp.z - sa[2]) * scale;
+                }
+            }
+            let names: std::collections::BTreeMap<String, String> = flag(&a.rest, "--report")
+                .and_then(|r| std::fs::read_to_string(r).ok())
+                .map(|text| text.lines().filter_map(|l| { let c: Vec<&str> = l.split('\t').collect(); (c.len() > 4 && c[0] == "block").then(|| (format!("{}.Item.Gbx", c[1]), c[4].split(' ').next().unwrap_or("").to_string())) }).collect())
+                .unwrap_or_default();
             let mut asm = mapgeom::assemble::Assembler::new(&mut store);
             asm.with_embedded(&m).ok();
             // every Water triangle of the map, world frame
@@ -1851,20 +1879,22 @@ fn main() {
                 let Some(lm) = asm.item_model(&it.model) else { continue };
                 let lm = lm.clone();
                 let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
-                push_model(&xf, &lm, &format!("item i{} {}", it.index, it.model), &mut water);
+                let src = names.get(&it.model).map(|s| format!(" = {s}")).unwrap_or_default();
+                push_model(&xf, &lm, &format!("item i{} {}{src}", it.index, it.model), &mut water);
             }
-            let (mut on, mut under, mut clear, mut n) = (0usize, 0usize, 0usize, 0usize);
+            let (mut on, mut under, mut clear, mut n, mut lid) = (0usize, 0usize, 0usize, 0usize, 0usize);
             let mut on_stretch: Vec<(f64, f64, f32, String)> = Vec::new();
             let mut under_stretch: Vec<(f64, f64, f32, String)> = Vec::new();
+            let mut lid_stretch: Vec<(f64, f64, f32, String)> = Vec::new();
             let mut cur: Option<(char, f64, f64, f32, String)> = None;
             let mut next = i32::MIN;
             if rows {
                 println!("t\tx\ty\tz\twater_y\tstate\towner");
             }
-            let mut flush = |cur: &mut Option<(char, f64, f64, f32, String)>, on_stretch: &mut Vec<(f64, f64, f32, String)>, under_stretch: &mut Vec<(f64, f64, f32, String)>| {
+            let mut flush = |cur: &mut Option<(char, f64, f64, f32, String)>, on_stretch: &mut Vec<(f64, f64, f32, String)>, under_stretch: &mut Vec<(f64, f64, f32, String)>, lid_stretch: &mut Vec<(f64, f64, f32, String)>| {
                 if let Some((k, t0, t1, wy, who)) = cur.take() {
                     if t1 - t0 >= 0.3 {
-                        if k == 'O' { on_stretch.push((t0, t1, wy, who)); } else { under_stretch.push((t0, t1, wy, who)); }
+                        match k { 'O' => on_stretch.push((t0, t1, wy, who)), 'L' => lid_stretch.push((t0, t1, wy, who)), _ => under_stretch.push((t0, t1, wy, who)) }
                     }
                 }
             };
@@ -1885,6 +1915,9 @@ fn main() {
                     }
                 }
                 let (state, wy, who) = match best {
+                    // L = resting ON A LID: the car sits on the plane as on a solid (origin
+                    // 0.0..0.6 above it) — what a 13/28 plate does to an embedded item
+                    Some((wy, who)) if s.y >= wy - 0.05 && s.y <= wy + 0.6 => { lid += 1; ('L', wy, who.to_string()) }
                     Some((wy, who)) if (s.y - (wy - mapgeom::probe::WATER_DRAFT)).abs() <= 0.35 => { on += 1; ('O', wy, who.to_string()) }
                     Some((wy, who)) if s.y < wy - mapgeom::probe::WATER_DRAFT - 0.35 => { under += 1; ('U', wy, who.to_string()) }
                     _ => { clear += 1; ('-', f32::NAN, String::new()) }
@@ -1894,12 +1927,15 @@ fn main() {
                 }
                 match (&mut cur, state) {
                     (Some((k, _, t1, _, _)), st) if *k == st => *t1 = t,
-                    (c, 'O') | (c, 'U') => { flush(c, &mut on_stretch, &mut under_stretch); *c = Some((state, t, t, wy, who)); }
-                    (c, _) => flush(c, &mut on_stretch, &mut under_stretch),
+                    (c, 'O') | (c, 'U') | (c, 'L') => { flush(c, &mut on_stretch, &mut under_stretch, &mut lid_stretch); *c = Some((state, t, t, wy, who)); }
+                    (c, _) => flush(c, &mut on_stretch, &mut under_stretch, &mut lid_stretch),
                 }
             }
-            flush(&mut cur, &mut on_stretch, &mut under_stretch);
-            println!("{p}: {n} samples ({every} ms): ON water {on}, UNDER water {under}, clear {clear}; {} water triangles", water.len());
+            flush(&mut cur, &mut on_stretch, &mut under_stretch, &mut lid_stretch);
+            println!("{p}: {n} samples ({every} ms): ON water {on} (at draft), ON A LID {lid}, UNDER water {under}, clear {clear}; {} water triangles", water.len());
+            for (t0, t1, wy, who) in &lid_stretch {
+                println!("  LID   {t0:.1}..{t1:.1} s  water y {wy:.2}  {who}");
+            }
             for (t0, t1, wy, who) in &on_stretch {
                 println!("  ON    {t0:.1}..{t1:.1} s  water y {wy:.2}  {who}");
             }
