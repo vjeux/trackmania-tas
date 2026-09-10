@@ -3,7 +3,7 @@
 //! it, by default, checked, and stamped.**
 //!
 //! ```text
-//! tinyctl video --map NN | --all [--watch SECS [--idle-quit-min 30]] [--min-gain-s 0.1] [--ghost-archive DIR|none] [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9]
+//! tinyctl video --map NN | --all [--watch SECS [--idle-quit-min 30 (0 = never)]] [--min-gain-s 0.1] [--ghost-archive DIR|none] [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9]
 //!               [--ghosts-dir /tmp/ghosts] [--ghosts-sync host:dir] [--build ship15] [--cam 2] [--load-timeout 120] [--no-guard]
 //!               [--box-videos "…/Maps/Tiny/videos"] [--store host:dir | dir] [--pull-webm] [--suffix S]
 //!               [--from-webm F] [--no-overlay] [--crf N] [--offset-ms N] [--ship [--readme tiny/README.md]]
@@ -219,7 +219,8 @@ fn all(args: &[String]) -> Result<(), String> {
             (Err(e), Some(_)) => eprintln!("scan: {e}"),
             (Ok(()), Some(_)) => {}
         }
-        if game_up && last_render.map(|t| t.elapsed() >= idle_quit).unwrap_or(false) {
+        // `--idle-quit-min 0` keeps the game warm (the burst: a launch costs 1–2 min per clip)
+        if !idle_quit.is_zero() && game_up && last_render.map(|t| t.elapsed() >= idle_quit).unwrap_or(false) {
             // UNDER THE RENDER LOCK. Other threads drive the same game through
             // `shootctl` (a shootset and a render were running at 12:02Z on
             // 2026-09-10 when a bare taskkill went out); the lock is what says
@@ -271,13 +272,16 @@ fn all_once(args: &[String]) -> Result<(), String> {
         rsync_dir(&src, &dir, &["--include=*.webm", "--include=*-sheet.png", "--exclude=*"])?;
     }
     let state = out.join("videos.tsv");
-    let seen: Vec<(String, String)> = std::fs::read_to_string(&state)
+    // (map, trajectory id, clip name): a ghost counts as rendered only on the
+    // build its clip was made for — the clip name ends in `-<build>.webm`, so a
+    // per-map build change (builds.tsv) renders the same ghost again
+    let seen: Vec<(String, String, String)> = std::fs::read_to_string(&state)
         .unwrap_or_default()
         .lines()
         .filter(|l| !l.starts_with('#'))
         .filter_map(|l| {
-            let mut c = l.split('\t');
-            Some((c.next()?.to_string(), c.next()?.to_string()))
+            let c: Vec<&str> = l.split('\t').collect();
+            Some((c.first()?.to_string(), c.get(1)?.to_string(), c.get(4).copied().unwrap_or("").to_string()))
         })
         .collect();
     let mut names: Vec<String> = std::fs::read_dir(&ghosts_dir)
@@ -287,7 +291,14 @@ fn all_once(args: &[String]) -> Result<(), String> {
         .filter(|n| n.len() == 12 && n.ends_with(".Ghost.Gbx") && n[..2].chars().all(|c| c.is_ascii_digit()))
         .collect();
     names.sort();
-    let build = f("--build");
+    let global_build = f("--build");
+    // PER-MAP BUILDS (the burst, coordinator 2026-09-10 22:10Z): `<out>/builds.tsv`
+    // (`nn<TAB>build<TAB>map_path`) names the build a map is rendered on and the
+    // map file of that build; every other map keeps --build / --maps-dir. The
+    // README-row filter, the gate's build comparison, the archive sidecar and
+    // the per-map call (`--build`, `--map-file`, `--suffix`) all follow it, so
+    // 05 and 15 can render on ship16/ship17 while the rest stays ship15.
+    let builds = read_builds(&out);
     let readme = std::fs::read_to_string(ghosts_dir.join("README.md")).unwrap_or_default();
     // THE RE-RENDER THRESHOLD (a tool default — vjeux's "not a rule, a
     // default"; coordinator 2026-09-10 11:34Z). The player project shaves
@@ -321,7 +332,12 @@ fn all_once(args: &[String]) -> Result<(), String> {
         let path = ghosts_dir.join(n);
         let g = gbx::record::decode_ghost(path.to_str().ok_or("ghost path is not utf-8")?)?;
         let md5 = trajectory_id(&g);
-        if seen.iter().any(|(a, b)| *a == nn && *b == md5) {
+        let build = builds.get(&nn).map(|(b, _)| b.clone()).or_else(|| global_build.clone());
+        let rendered_on_this_build = |clip: &str| match &build {
+            Some(b) => clip.ends_with(&format!("-{b}.webm")) || clip.is_empty(),
+            None => true,
+        };
+        if seen.iter().any(|(a, b, clip)| *a == nn && *b == md5 && rendered_on_this_build(clip)) {
             continue;
         }
         let race_ms = g.race_time_ms.or_else(|| g.samples.last().map(|s| s.time_ms)).unwrap_or(0);
@@ -448,7 +464,7 @@ fn all_once(args: &[String]) -> Result<(), String> {
             }
             match a.as_str() {
                 "--all" => {}
-                "--map" | "--ghost" | "--map-file" | "--watch" | "--ghosts-sync" | "--webm-sync" | "--build" | "--from-webm" => skip = true,
+                "--map" | "--ghost" | "--map-file" | "--watch" | "--ghosts-sync" | "--webm-sync" | "--build" | "--suffix" | "--from-webm" => skip = true,
                 _ => v.push(a.clone()),
             }
         }
@@ -465,6 +481,26 @@ fn all_once(args: &[String]) -> Result<(), String> {
         let mut a = base.clone();
         a.push("--map".into());
         a.push(nn.clone());
+        // the map's build: builds.tsv (build + map file) or the global --build;
+        // the clip suffix follows the build so ship15 and ship16 clips of one lap
+        // have different names
+        let (b, map_file) = match builds.get(nn) {
+            Some((b, p)) => (Some(b.clone()), Some(p.clone())),
+            None => (global_build.clone(), None),
+        };
+        if let Some(b) = &b {
+            a.push("--build".into());
+            a.push(b.clone());
+            a.push("--suffix".into());
+            a.push(f("--suffix").filter(|_| builds.get(nn).is_none()).unwrap_or_else(|| b.clone()));
+        } else if let Some(s) = f("--suffix") {
+            a.push("--suffix".into());
+            a.push(s);
+        }
+        if let Some(p) = map_file {
+            a.push("--map-file".into());
+            a.push(p);
+        }
         println!("\n=== {nn} ===");
         match one(&a) {
             Ok(d) => record_done(&state, &d)?,
@@ -2082,5 +2118,39 @@ mod attitude_tests {
         assert_eq!(attitude_verdict(ab, "20", "75.595"), Attitude::Water { contact_s: 0.78 }, "B alone fails");
         assert_eq!(attitude_verdict(ab, "19", "46.362"), Attitude::Clean, "A = B = 0.00 is clean");
         assert_eq!(attitude_verdict(ab, "15", "48.738"), Attitude::Water { contact_s: 12.6 }, "the larger of A and B is reported");
+    }
+}
+
+/// `<out>/builds.tsv`: `nn<TAB>build<TAB>map_path` — the build a map is
+/// rendered on and the map file of that build. Maps not listed use `--build` /
+/// `--maps-dir`.
+pub fn read_builds(out: &Path) -> std::collections::HashMap<String, (String, String)> {
+    parse_builds(&std::fs::read_to_string(out.join("builds.tsv")).unwrap_or_default())
+}
+
+pub fn parse_builds(text: &str) -> std::collections::HashMap<String, (String, String)> {
+    text.lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let c: Vec<&str> = l.split('\t').map(str::trim).collect();
+            let nn = c[0];
+            if nn.len() != 2 || !nn.chars().all(|ch| ch.is_ascii_digit()) || c.len() < 3 || c[1].is_empty() || c[2].is_empty() {
+                return None;
+            }
+            Some((nn.to_string(), (c[1].to_string(), c[2].to_string())))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod builds_tests {
+    use super::*;
+
+    #[test]
+    fn builds_tsv_names_a_build_and_a_map_file_per_map() {
+        let b = parse_builds("# nn\tbuild\tmap_path\n05\tship16\t/store/incoming/ship16-a3d59cb4/Tiny Summer 2026 - 05.Map.Gbx\n15\tship17\t/store/ship17/Tiny Summer 2026 - 15.Map.Gbx\n07\tship16\n");
+        assert_eq!(b.get("05").map(|(b, p)| (b.as_str(), p.as_str())), Some(("ship16", "/store/incoming/ship16-a3d59cb4/Tiny Summer 2026 - 05.Map.Gbx")));
+        assert_eq!(b.get("15").map(|(b, _)| b.as_str()), Some("ship17"));
+        assert!(b.get("07").is_none(), "a row without a map path is ignored");
     }
 }

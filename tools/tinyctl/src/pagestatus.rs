@@ -112,6 +112,13 @@ pub fn update_all(page: &str, laps: &[(String, String)], ghosts_readme: &str, bu
 /// the row, kept beside the status note, removed when the map leaves the list.
 #[allow(clippy::too_many_arguments)]
 pub fn update_page(page: &str, laps: &[(String, String)], ghosts_readme: &str, build: &str, min_gain: f64, holds: &std::collections::HashMap<String, String>, staged: &std::collections::HashSet<(String, String)>, lidrows: &std::collections::HashMap<String, String>) -> (String, Vec<String>) {
+    update_rows(page, laps, ghosts_readme, build, min_gain, holds, staged, lidrows, &std::collections::HashMap::new())
+}
+
+/// [`update_page`] plus the per-row BUILDS (`rowbuilds.tsv`): the row's build
+/// tag, the downloadable map file of that build, and a note under the row.
+#[allow(clippy::too_many_arguments)]
+pub fn update_rows(page: &str, laps: &[(String, String)], ghosts_readme: &str, build: &str, min_gain: f64, holds: &std::collections::HashMap<String, String>, staged: &std::collections::HashSet<(String, String)>, lidrows: &std::collections::HashMap<String, String>, rowbuilds: &std::collections::HashMap<String, RowBuild>) -> (String, Vec<String>) {
     let mut lines: Vec<String> = page.lines().map(String::from).collect();
     let mut notes = Vec::new();
     // work from the bottom so earlier indices stay valid
@@ -208,35 +215,21 @@ pub fn update_page(page: &str, laps: &[(String, String)], ghosts_readme: &str, b
         // row (before the status note and the video), verbatim from the file;
         // one line at most, rewritten when the note changes, removed when the
         // map leaves the list. The video stays up.
-        let end = crate::video::block_end(&lines, i);
-        let lid_lines: Vec<usize> = (i + 1..end).filter(|&j| is_lid_note(&lines[j])).collect();
-        match (lidrows.get(nn.as_str()), lid_lines.first().copied()) {
-            (Some(note), Some(j)) => {
-                let line = lid_line(note);
-                if lines[j] != line {
-                    notes.push(format!("{nn}: lid line → updated"));
-                    lines[j] = line;
-                }
-                for &k in lid_lines[1..].iter().rev() {
-                    lines.remove(k);
-                }
+        maintain_line(&mut lines, &mut notes, i, nn, "lid", is_lid_note, lidrows.get(nn.as_str()).map(|n| lid_line(n)));
+        // THE ROW'S BUILD (parent's decision for the burst, 2026-09-10 22:45Z):
+        // rowbuilds.tsv names each row's build, the downloadable map file of
+        // that build and a note. The caption's "(build X" is rewritten to the
+        // row's build, a " · map: [shipNN](link)" segment is kept at the end of
+        // the row line, and the note is its own line (`*↻ …*`) under the row.
+        if let Some(rb) = rowbuilds.get(nn.as_str()) {
+            let before = lines[i].clone();
+            lines[i] = apply_row_build(&lines[i], rb);
+            if lines[i] != before {
+                notes.push(format!("{nn}: row build → {}{}", rb.build, if rb.link.is_empty() { "" } else { " (+ map link)" }));
             }
-            (Some(note), None) => {
-                notes.push(format!("{nn}: lid line added"));
-                lines.insert(i + 1, lid_line(note));
-                lines.insert(i + 1, String::new());
-            }
-            (None, Some(_)) => {
-                notes.push(format!("{nn}: lid line removed (the map left lidrows.tsv)"));
-                for &k in lid_lines.iter().rev() {
-                    lines.remove(k);
-                    if k > 0 && k < lines.len() && lines[k - 1].trim().is_empty() && lines[k].trim().is_empty() {
-                        lines.remove(k);
-                    }
-                }
-            }
-            (None, None) => {}
         }
+        let build_note = rowbuilds.get(nn.as_str()).filter(|rb| !rb.note.trim().is_empty()).map(|rb| format!("{BUILD_NOTE_PREFIX}{}*", rb.note.trim().trim_end_matches('*')));
+        maintain_line(&mut lines, &mut notes, i, nn, "build note", is_build_note, build_note);
     }
     let mut s = lines.join("\n");
     if page.ends_with('\n') && !s.ends_with('\n') {
@@ -299,7 +292,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let holds = f("--out").map(|o| crate::video::read_holds(Path::new(&o))).unwrap_or_default();
     let staged = f("--out").map(|o| staged_laps(&std::fs::read_to_string(Path::new(&o).join("ships.tsv")).unwrap_or_default())).unwrap_or_default();
     let lidrows = f("--out").map(|o| crate::video::parse_holds(&std::fs::read_to_string(Path::new(&o).join("lidrows.tsv")).unwrap_or_default())).unwrap_or_default();
-    let (new, notes) = update_page(&page, &laps, &gr, &build, min_gain, &holds, &staged, &lidrows);
+    let rowbuilds = f("--out").map(|o| parse_rowbuilds(&std::fs::read_to_string(Path::new(&o).join("rowbuilds.tsv")).unwrap_or_default())).unwrap_or_default();
+    let (new, notes) = update_rows(&page, &laps, &gr, &build, min_gain, &holds, &staged, &lidrows, &rowbuilds);
     if notes.is_empty() {
         println!("the page already states the newest lap of every map");
         return Ok(());
@@ -703,10 +697,147 @@ https://github.com/user-attachments/assets/b\n";
         let (changed, n3) = update_page(&out, &laps, ghosts, "ship15", 0.1, &empty_h, &empty_s, &lid);
         assert!(changed.contains("*⚠ resolved on ship16*"), "{changed}");
         assert!(!changed.contains(&format!("48.748** (build ship15, controls overlay)\n\n*⚠ {note}*")), "{changed}");
-        assert!(n3.iter().any(|n| n == "05: lid line → updated") && n3.iter().any(|n| n == "15: lid line removed (the map left lidrows.tsv)"), "{n3:?}");
+        assert!(n3.iter().any(|n| n == "05: lid line → updated") && n3.iter().any(|n| n == "15: lid line removed"), "{n3:?}");
         // a swap of 15 keeps the lid line and drops the status note
         let swapped = crate::video::page_swap(&out, "15", "48.738", "tiny ghost", "build ship15, controls overlay", "https://github.com/user-attachments/assets/n").unwrap();
         assert!(swapped.contains(&format!("tiny ghost **48.738** (build ship15, controls overlay)\n\n*⚠ {note}*\n\nhttps://github.com/user-attachments/assets/n")), "{swapped}");
         assert!(!swapped.contains("within 0.1 s"), "{swapped}");
+    }
+}
+
+/// A row's build, from `rowbuilds.tsv` (`nn<TAB>build<TAB>map_link<TAB>note`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RowBuild {
+    pub build: String,
+    /// The downloadable map file of that build (a URL); empty = no link yet.
+    pub link: String,
+    /// A note under the row (`*↻ …*`); empty = none.
+    pub note: String,
+}
+
+pub fn parse_rowbuilds(text: &str) -> std::collections::HashMap<String, RowBuild> {
+    text.lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let c: Vec<&str> = l.split('\t').map(str::trim).collect();
+            let nn = c[0];
+            if nn.len() != 2 || !nn.chars().all(|ch| ch.is_ascii_digit()) || c.len() < 2 || c[1].is_empty() {
+                return None;
+            }
+            Some((nn.to_string(), RowBuild { build: c[1].to_string(), link: c.get(2).copied().unwrap_or("").to_string(), note: c.get(3).copied().unwrap_or("").to_string() }))
+        })
+        .collect()
+}
+
+/// The build-note line's prefix (a re-drive / identical-frames note under the row).
+pub const BUILD_NOTE_PREFIX: &str = "*↻ ";
+
+pub fn is_build_note(l: &str) -> bool {
+    l.trim_end().starts_with(BUILD_NOTE_PREFIX)
+}
+
+/// The map-file segment kept at the end of a row line.
+const MAP_SEG: &str = " · map: ";
+
+/// The row line with the row's build applied: the caption's `(build X` becomes
+/// `(build <rb.build>` and a trailing ` · map: [shipNN](link)` (or ` · map:
+/// shipNN` without a link) is kept current.
+pub fn apply_row_build(line: &str, rb: &RowBuild) -> String {
+    let mut s = line.trim_end().to_string();
+    // drop an existing map segment
+    if let Some(k) = s.find(MAP_SEG) {
+        s.truncate(k);
+    }
+    // the caption's build
+    if let Some(k) = s.find("(build ") {
+        let start = k + "(build ".len();
+        let rest = &s[start..];
+        let stop = rest.find(|c: char| c == ',' || c == ')').unwrap_or(rest.len());
+        s = format!("{}{}{}", &s[..start], rb.build, &rest[stop..]);
+    }
+    let seg = if rb.link.is_empty() { format!("{MAP_SEG}{}", rb.build) } else { format!("{MAP_SEG}[{}]({})", rb.build, rb.link) };
+    s.push_str(&seg);
+    s
+}
+
+/// Keep ONE maintained line of a kind under row `i`: `wanted` = the line's
+/// exact text (added right under the row, rewritten when it differs) or
+/// `None` (every such line removed). `is_kind` recognises the kind's lines.
+fn maintain_line(lines: &mut Vec<String>, notes: &mut Vec<String>, i: usize, nn: &str, kind: &str, is_kind: fn(&str) -> bool, wanted: Option<String>) {
+    let end = crate::video::block_end(lines, i);
+    let have: Vec<usize> = (i + 1..end).filter(|&j| is_kind(&lines[j])).collect();
+    match (wanted, have.first().copied()) {
+        (Some(line), Some(j)) => {
+            if lines[j] != line {
+                notes.push(format!("{nn}: {kind} line → updated"));
+                lines[j] = line;
+            }
+            for &k in have[1..].iter().rev() {
+                lines.remove(k);
+            }
+        }
+        (Some(line), None) => {
+            notes.push(format!("{nn}: {kind} line added"));
+            lines.insert(i + 1, line);
+            lines.insert(i + 1, String::new());
+        }
+        (None, Some(_)) => {
+            notes.push(format!("{nn}: {kind} line removed"));
+            for &k in have.iter().rev() {
+                lines.remove(k);
+                if k > 0 && k < lines.len() && lines[k - 1].trim().is_empty() && lines[k].trim().is_empty() {
+                    lines.remove(k);
+                }
+            }
+        }
+        (None, None) => {}
+    }
+}
+
+#[cfg(test)]
+mod rowbuild_tests {
+    use super::*;
+
+    /// rowbuilds.tsv: the caption's build follows the row, a map-file link is
+    /// kept at the end of the row line, the note is its own line; a row without
+    /// an entry is untouched; a swap keeps the segment and the note.
+    #[test]
+    fn a_row_carries_its_build_its_map_file_and_its_note() {
+        let ghosts = "| 15 | 15.Ghost.Gbx | 48.738 | 8 | ship15 | 395f89a8 | PPO | x |\n\
+| 13 | 13.Ghost.Gbx | 24.769 | 6 | ship15 | c1d1e1f1 | PPO | x |\n\
+| 05 | 05.Ghost.Gbx | 18.298 | 4 | ship15 | e0cb1188 | PPO | x |\n";
+        let page = "**Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **18.298** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/a\n\n\
+**Tiny Summer 2026 - 13** — original author time `31.7` · tiny ghost **24.769** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/b\n\n\
+**Tiny Summer 2026 - 15** — original author time `36.888` · tiny ghost **48.748** (build ship15, controls overlay)\n\n\
+*latest lap **48.738** (build ship15) — within 0.1 s of the published clip*\n\n\
+https://github.com/user-attachments/assets/c\n";
+        let laps = newest_laps(ghosts, "ship15");
+        let rb = parse_rowbuilds("# nn\tbuild\tmap_link\tnote\n\
+05\tship16\thttps://example.test/ship16/05.zip\tvideo rendered on ship15 — frames identical on ship16\n\
+13\tship15\t\truns on un-skinned ship15 surfaces at 12.4 s — re-drive pending\n");
+        let none_h = std::collections::HashMap::new();
+        let none_s = std::collections::HashSet::new();
+        let none_l = std::collections::HashMap::new();
+        let (out, notes) = update_rows(page, &laps, ghosts, "ship15", 0.1, &none_h, &none_s, &none_l, &rb);
+        assert!(out.contains("**Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **18.298** (build ship16, controls overlay) · map: [ship16](https://example.test/ship16/05.zip)\n\n*↻ video rendered on ship15 — frames identical on ship16*\n\nhttps://github.com/user-attachments/assets/a"), "{out}");
+        assert!(out.contains("tiny ghost **24.769** (build ship15, controls overlay) · map: ship15\n\n*↻ runs on un-skinned ship15 surfaces at 12.4 s — re-drive pending*\n\nhttps://github.com/user-attachments/assets/b"), "{out}");
+        assert!(out.contains("tiny ghost **48.748** (build ship15, controls overlay)\n\n*latest lap **48.738**"), "15 untouched: {out}");
+        assert!(notes.iter().any(|n| n == "05: row build → ship16 (+ map link)"), "{notes:?}");
+        // idempotent
+        let (again, n2) = update_rows(&out, &laps, ghosts, "ship15", 0.1, &none_h, &none_s, &none_l, &rb);
+        assert_eq!(again, out);
+        assert!(n2.is_empty(), "{n2:?}");
+        // the link arrives later → the segment is rewritten in place
+        let rb2 = parse_rowbuilds("13\tship15\thttps://example.test/ship15/13.zip\truns on un-skinned ship15 surfaces at 12.4 s — re-drive pending\n05\tship16\thttps://example.test/ship16/05.zip\tvideo rendered on ship15 — frames identical on ship16\n");
+        let (linked, _) = update_rows(&out, &laps, ghosts, "ship15", 0.1, &none_h, &none_s, &none_l, &rb2);
+        assert!(linked.contains("(build ship15, controls overlay) · map: [ship15](https://example.test/ship15/13.zip)\n"), "{linked}");
+        assert!(!linked.contains("· map: ship15\n"), "{linked}");
+        // a swap keeps the segment? page_swap rewrites the row line from its own template —
+        // page-status re-applies the segment on the next run (checked here)
+        let swapped = crate::video::page_swap(&linked, "05", "18.298", "tiny ghost", "build ship16, controls overlay", "https://github.com/user-attachments/assets/n").unwrap();
+        let (fixed, _) = update_rows(&swapped, &laps, ghosts, "ship15", 0.1, &none_h, &none_s, &none_l, &rb2);
+        assert!(fixed.contains("tiny ghost **18.298** (build ship16, controls overlay) · map: [ship16](https://example.test/ship16/05.zip)\n\n*↻ video rendered on ship15 — frames identical on ship16*\n\nhttps://github.com/user-attachments/assets/n"), "{fixed}");
     }
 }
