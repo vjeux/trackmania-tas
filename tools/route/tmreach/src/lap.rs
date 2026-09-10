@@ -511,6 +511,8 @@ pub struct LapCfg {
     pub pursue: Vec<[f64; 4]>,
     /// hand macro: aim at the first pursue point farther than this (m); --pursue-look, default 8
     pub pursue_look: f64,
+    /// hand macro: heading error (deg) that gives full steering lock; --pursue-gain, default 10 (gentler = 30–40: less scrub)
+    pub pursue_gain: f64,
     /// vjeux launched-checkpoint csv (ghost lcp --csv): his approach samples become macros
     pub vjeux_csv: Option<String>,
     /// Start the search from an INJECTED car state (a LaunchedCP crossing / approach start, tm-inject-state/1),
@@ -709,6 +711,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let mut seg = seg_hint;
             let mut exited = false;
             let mut done = 0usize;
+            let mut pursue_idx = 0usize;
             while done < h {
                 let k = 10.min(h - done);
                 let off = match bmode { 6 => 5.0, 7 => -5.0, _ => 0.0 };
@@ -721,18 +724,20 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                     // HAND MACRO = pure pursuit along --pursue FILE (x y z [speed] per line): aim at the first point still ahead of the
                     // car (more than 3 m away, in front), full lock at 10 deg of error; the point's speed (if given) caps the throttle
                     let yaw_deg = yaw_of(&last).to_degrees();
+                    // progress along the point list is monotone (never re-target an earlier point: 11:03Z the car came out of the
+                    // trough heading NW and locked onto a bend point behind it)
                     let mut target: Option<[f64; 4]> = None;
-                    for p in &cfg.pursue {
+                    for (i, p) in cfg.pursue.iter().enumerate().skip(pursue_idx) {
                         let (dx, dz) = (p[0] - last.x, p[2] - last.z);
                         let d = (dx * dx + dz * dz).sqrt();
                         let ahead = dx * last.vx + dz * last.vz >= -0.2 * d * speed(&last);
-                        if d > cfg.pursue_look && ahead { target = Some(*p); break; }
+                        if d > cfg.pursue_look && ahead { target = Some(*p); pursue_idx = i; break; }
                     }
                     let want_deg = match target { Some(p) => (p[0] - last.x).atan2(p[2] - last.z).to_degrees(), None => yaw_deg };
                     pursue_cap = target.map(|p| p[3]).filter(|v| *v > 0.0);
                     let err = wrap((want_deg - yaw_deg).to_radians());
                     // iteration 6: sharper gain (full lock at 10 deg of error) — at 22 m/s the 25-deg gain turned 3 m in 16 m
-                    st = ((cfg.steer_sign * err / 10f64.to_radians()).clamp(-1.0, 1.0) * 127.0).round() as f32 / 127.0;
+                    st = ((cfg.steer_sign * err / cfg.pursue_gain.to_radians()).clamp(-1.0, 1.0) * 127.0).round() as f32 / 127.0;
                 }
                 seg = sg;
                 let v = speed(&last);
