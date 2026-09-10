@@ -68,7 +68,7 @@ https://github.com/user-attachments/assets/8359415d-53d5-419f-8fd6-aee0fe145345
 
 **Tiny Summer 2026 - 15** — original author time `36.888` · tiny ghost **48.821** (build ship15, controls overlay)
 
-*latest lap **48.834** (build ship15) — video pending*
+*latest lap **48.809** (build ship15) — video pending*
 
 https://github.com/user-attachments/assets/3e26968b-911b-4c7a-9562-951ea16d373b
 
@@ -92,7 +92,7 @@ https://github.com/user-attachments/assets/852cae15-dd20-4036-b01e-f02971d26797
 
 **Tiny Argentina 2026** — original author time `78.988` · tiny ghost **122.318** (build ship15, controls overlay)
 
-*latest lap **122.376** (build ship15) — video pending*
+*latest lap **122.311** (build ship15) — video pending*
 
 https://github.com/user-attachments/assets/a7c95dbb-eff4-4e0a-8928-7b05ec62e68f
 
