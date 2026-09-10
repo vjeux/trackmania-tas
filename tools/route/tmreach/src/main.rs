@@ -2259,7 +2259,9 @@ fn cmd_contact_trace(a: &Args) -> Result<(), String> {
                 let live = live_flags.get(i).map(|f| f[k]).unwrap_or(u32::MAX);
                 let pd = phy_dampers.get(i).map(|d| d[k]).unwrap_or(f32::NAN);
                 // tilt only while the wheel touches (the normal is zero in the air)
-                let tilt = if live == 1 && nn[0].is_finite() { dot.acos().to_degrees() } else { f64::NAN };
+                // a zero normal with the flag up = the flag leads the contact by a tick: no tilt yet
+                let nlen = (nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]).sqrt();
+                let tilt = if live == 1 && nlen > 0.5 { dot.acos().to_degrees() } else { f64::NAN };
                 s.push_str(&format!("\t{}\t{:.3}\t{:.3}\t{:.3}\t{:.3}\t{:.1}", if live == u32::MAX { "?".into() } else { live.to_string() }, pd, nn[0], nn[1], nn[2], tilt));
             }
         }
@@ -2284,6 +2286,7 @@ fn cmd_contact_trace(a: &Args) -> Result<(), String> {
                     down[k] += 1;
                     any = true;
                     let nn = normals[i][k];
+                    if (nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]).sqrt() < 0.5 { continue; }
                     let t = (up[0] * nn[0] as f64 + up[1] * nn[1] as f64 + up[2] * nn[2] as f64).clamp(-1.0, 1.0).acos().to_degrees();
                     if t > max_tilt { max_tilt = t; }
                     if t >= 45.0 { tilt_over45 += 1; }
