@@ -153,8 +153,8 @@ pub fn update_all(page: &str, laps: &[(String, String)], ghosts_readme: &str, bu
         let want = match (&newest, &row.published) {
             (Some(n), Some(p)) if n != p && !holds.contains_key(nn.as_str()) && staged.contains(&(nn.clone(), n.clone())) => Some((n.clone(), Note::Staged)),
             (Some(n), None) if !holds.contains_key(nn.as_str()) && staged.contains(&(nn.clone(), n.clone())) => Some((n.clone(), Note::Staged)),
-            (Some(n), Some(p)) if n != p && holds.contains_key(nn.as_str()) => Some((n.clone(), Note::Held(holds[nn.as_str()].clone()))),
-            (Some(n), None) if holds.contains_key(nn.as_str()) => Some((n.clone(), Note::Held(holds[nn.as_str()].clone()))),
+            (Some(n), Some(p)) if n != p && holds.contains_key(nn.as_str()) => Some((n.clone(), held_note(&holds[nn.as_str()], staged.contains(&(nn.clone(), n.clone()))))),
+            (Some(n), None) if holds.contains_key(nn.as_str()) => Some((n.clone(), held_note(&holds[nn.as_str()], staged.contains(&(nn.clone(), n.clone()))))),
             (Some(n), Some(p)) if n != p => {
                 let will_render = matches!(
                     crate::video::render_gate(secs(n), Some((secs(p), &format!("x-{build}"))), Some(build), min_gain),
@@ -529,7 +529,7 @@ pub fn staged_laps(ships: &str) -> std::collections::HashSet<(String, String)> {
         .filter(|l| !l.starts_with('#'))
         .filter_map(|l| {
             let c: Vec<&str> = l.split('\t').map(str::trim).collect();
-            (c.len() >= 5 && c[4] == "staged").then(|| (c[0].to_string(), c[1].to_string()))
+            (c.len() >= 5 && (c[4] == "staged" || c[4] == "held")).then(|| (c[0].to_string(), c[1].to_string()))
         })
         .collect()
 }
@@ -560,7 +560,7 @@ https://github.com/user-attachments/assets/a\n";
         let mut holds = std::collections::HashMap::new();
         holds.insert("22".to_string(), "opening".to_string());
         let (held, _) = update_all(page, &laps, ghosts, "ship15", 0.1, &holds, &staged);
-        assert!(held.contains("— held (opening)*"), "{held}");
+        assert!(held.contains("— held (staged — opening)*"), "a render-mode hold with a staged clip: {held}");
         // receipts: exact lap or a standing `*`
         let a = "# nn\ttime\tby\tnote\n22\t82.652\tcoordinator\topening ok\n15\t*\tparent\tstanding\n";
         assert!(crate::video::find_approval(a, "22", "82.652").is_some());
@@ -568,4 +568,11 @@ https://github.com/user-attachments/assets/a\n";
         assert!(crate::video::find_approval(a, "15", "48.738").is_some());
         assert_eq!(crate::video::parse_prechecked("# maps\n07\n\n12\tfoo\n"), ["07", "12"].into_iter().map(String::from).collect());
     }
+}
+
+/// A held map's note: "staged — held (reason)" when its clip is rendered and
+/// waiting (a `render`-mode hold, the ship row `held`/`staged`), plain
+/// "held (reason)" when nothing was rendered.
+fn held_note(reason: &str, is_staged: bool) -> Note {
+    if is_staged { Note::Held(format!("staged — {reason}")) } else { Note::Held(reason.to_string()) }
 }

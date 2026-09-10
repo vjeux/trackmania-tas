@@ -310,6 +310,9 @@ fn all_once(args: &[String]) -> Result<(), String> {
     // record), and page-status writes "held (<reason>)" under the row. Lift =
     // delete the line. Read every scan, so a hold takes effect on the next tick.
     let holds = read_holds(&out);
+    // a `render`-mode hold renders and stages (the ship step records `held`) —
+    // only a `none`-mode hold stops at the archive
+    let render_holds = read_render_holds(&out);
     let skips_path = out.join("skips.tsv");
     let mut skips = std::fs::read_to_string(&skips_path).unwrap_or_default();
     let mut todo = Vec::new();
@@ -356,7 +359,7 @@ fn all_once(args: &[String]) -> Result<(), String> {
             }
         }
         match render_gate(race_ms as f64 / 1000.0, published.get(&nn).map(|(t, name)| (*t, name.as_str())), build.as_deref(), min_gain) {
-            Gate::Render(_) | Gate::Skip { .. } if holds.contains_key(&nn) => {
+            Gate::Render(_) | Gate::Skip { .. } if holds.contains_key(&nn) && !render_holds.contains(&nn) => {
                 // HELD: archive the bytes (write-once) so the lap is kept, render
                 // nothing. Said once per ghost, like a skip.
                 let key = format!("{nn}\t{md5}\t");
@@ -1533,19 +1536,47 @@ pub fn parse_prechecked(text: &str) -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// `<out>/holds.tsv`: `nn<TAB>reason` per held map (comments with `#`).
-/// A held map is neither rendered nor shipped; page-status notes the hold.
+/// `<out>/holds.tsv`: `nn<TAB>reason[<TAB>mode]` per held map (comments with
+/// `#`). `mode` = `none` (archive the ghost only — no render, no upload; the
+/// default) or `render` (render, cut and stage the clip, but never upload it —
+/// the reviewer wants to see the opening first). A held map is never shipped
+/// and never swapped into the page; page-status notes the hold.
 pub fn read_holds(out: &Path) -> std::collections::HashMap<String, String> {
     parse_holds(&std::fs::read_to_string(out.join("holds.tsv")).unwrap_or_default())
 }
 
+/// The held maps whose mode is `render`.
+pub fn read_render_holds(out: &Path) -> std::collections::HashSet<String> {
+    parse_hold_modes(&std::fs::read_to_string(out.join("holds.tsv")).unwrap_or_default())
+        .into_iter()
+        .filter(|(_, mode)| mode == "render")
+        .map(|(nn, _)| nn)
+        .collect()
+}
+
 pub fn parse_holds(text: &str) -> std::collections::HashMap<String, String> {
+    hold_rows(text).into_iter().map(|(nn, reason, _)| (nn, reason)).collect()
+}
+
+pub fn parse_hold_modes(text: &str) -> std::collections::HashMap<String, String> {
+    hold_rows(text).into_iter().map(|(nn, _, mode)| (nn, mode)).collect()
+}
+
+fn hold_rows(text: &str) -> Vec<(String, String, String)> {
     text.lines()
         .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
         .filter_map(|l| {
-            let (nn, reason) = l.split_once('\t').unwrap_or((l.trim(), "held"));
-            let nn = nn.trim();
-            (nn.len() == 2 && nn.chars().all(|c| c.is_ascii_digit())).then(|| (nn.to_string(), reason.trim().to_string()))
+            let c: Vec<&str> = l.split('\t').map(str::trim).collect();
+            let nn = c[0];
+            if nn.len() != 2 || !nn.chars().all(|ch| ch.is_ascii_digit()) {
+                return None;
+            }
+            let reason = c.get(1).filter(|r| !r.is_empty()).unwrap_or(&"held").to_string();
+            let mode = match c.get(2).map(|m| m.to_ascii_lowercase()) {
+                Some(m) if m == "render" => "render".to_string(),
+                _ => "none".to_string(),
+            };
+            Some((nn.to_string(), reason, mode))
         })
         .collect()
 }
@@ -1903,5 +1934,27 @@ mod transition_tests {
         assert!(!readme_names_lap(readme, "24", "100.187", "ffffffffffffffffffffffffffffffff"), "a lap the README does not know");
         assert!(readme_names_lap(readme, "24", "100.116", "ffffffffffffffffffffffffffffffff"), "a row that names the map and the lap counts whatever md5 it shows — the caption comes from the file, the README only has to KNOW the lap");
         assert!(!readme_names_lap(readme, "23", "100.116", "53e390f3cc9858e1099b00950d6eebf9"), "another map");
+    }
+}
+
+#[cfg(test)]
+mod hold_mode_tests {
+    use super::*;
+
+    /// holds.tsv's third column: `none` (default) = archive only, `render` =
+    /// render + stage, never upload. Both are holds for the shipwatch and the
+    /// page; only the render loop tells them apart.
+    #[test]
+    fn hold_modes_parse_with_none_as_the_default() {
+        let t = "# nn\treason\tmode\n21\topening rework\tnone\n22\tawaiting the opening check\trender\n20\topening rework\tRENDER\n07\tjust held\n";
+        let modes = parse_hold_modes(t);
+        assert_eq!(modes.get("21").map(String::as_str), Some("none"));
+        assert_eq!(modes.get("22").map(String::as_str), Some("render"));
+        assert_eq!(modes.get("20").map(String::as_str), Some("render"), "case-insensitive");
+        assert_eq!(modes.get("07").map(String::as_str), Some("none"), "absent = none");
+        let holds = parse_holds(t);
+        assert_eq!(holds.get("22").map(String::as_str), Some("awaiting the opening check"));
+        assert_eq!(holds.get("07").map(String::as_str), Some("just held"));
+        assert_eq!(holds.len(), 4);
     }
 }
