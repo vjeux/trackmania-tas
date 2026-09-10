@@ -48,11 +48,9 @@ https://github.com/user-attachments/assets/58e3defe-e55a-4252-a2df-22a0b8043f5f
 
 https://github.com/user-attachments/assets/7c04246f-1a75-4e30-89a5-a0ef5c5e0c01
 
-**Tiny Summer 2026 - 10** — original author time `35.578` · tiny ghost **25.304** (build ship15)
+**Tiny Summer 2026 - 10** — original author time `35.578` · tiny ghost **24.552** (build ship15, controls overlay)
 
-*latest lap **24.552** (build ship15) — video pending*
-
-https://github.com/user-attachments/assets/88ed6fd7-ae81-4229-88bb-1233915b2b24
+https://github.com/user-attachments/assets/d59210e8-342d-48cc-9c33-782242dac838
 
 **Tiny Summer 2026 - 11** — original author time `38.371` · tiny ghost **34.291** (build ship15, controls overlay)
 
