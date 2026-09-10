@@ -492,6 +492,8 @@ pub struct LapCfg {
     pub assume_mask: u32,
     /// clinic: max height difference between the credit row and the gate plane centre (default 5 m; --arrival-dy)
     pub arrival_dy: f64,
+    /// clinic: max angle (deg) between the credit row velocity and the line tangent at the gate (default 60; --arrival-ang)
+    pub arrival_ang: f64,
     /// vjeux launched-checkpoint csv (ghost lcp --csv): his approach samples become macros
     pub vjeux_csv: Option<String>,
     /// Start the search from an INJECTED car state (a LaunchedCP crossing / approach start, tm-inject-state/1),
@@ -1017,10 +1019,23 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                     (Some(g), Some(grp)) => g.gates.iter().filter(|gg| gg.group == *grp).map(|gg| (cr.y - gg.centre[1]).abs()).fold(f64::INFINITY, f64::min) <= cfg.arrival_dy,
                     _ => true,
                 };
+                // HEADING: the credit row must move roughly ALONG the line at the gate (ENV 09:13Z: a wp6 credit heading north at
+                // 24 m/s is useless — the kicker strip leaves the pad to the south-east; the line's tangent there is the author's)
+                let heading_ok = {
+                    let a = track.at((s - 4.0).max(0.0));
+                    let b = track.at((s + 4.0).min(track.len_m()));
+                    let (tx, tz) = (b[0] - a[0], b[2] - a[2]);
+                    let tn = (tx * tx + tz * tz).sqrt();
+                    let vn = (cr.vx * cr.vx + cr.vz * cr.vz).sqrt();
+                    if tn < 0.5 || vn < 1.0 { true } else { ((cr.vx * tx + cr.vz * tz) / (tn * vn)).clamp(-1.0, 1.0).acos().to_degrees() <= cfg.arrival_ang }
+                };
+                if speed_ok && lat_ok && height_ok && !heading_ok {
+                    out.log.push(format!("arrival at gate {} refused: credit row heading more than {:.0} deg off the line", k_pref, cfg.arrival_ang));
+                }
                 if speed_ok && lat_ok && !height_ok {
                     out.log.push(format!("arrival at gate {} refused: credit row {:.1} m from the gate plane height (limit {:.1})", k_pref, cr.y, cfg.arrival_dy));
                 }
-                if speed_ok && lat_ok && height_ok {
+                if speed_ok && lat_ok && height_ok && heading_ok {
                     out.log.push(format!("LEG DONE: gate {} (order position {}) credited with a good arrival at race {}: s {s:.1} lat {lat:.1} v {v:.1} (human {vh:.1}) after {} ticks ({} macros)", k_pref, k_pref - 1, crate::secs(w.race_of(&end)), e.chain.len(), e.macro_desc.len()));
                     out.leg_done = Some(k_pref);
                     out.finished = Some(e.clone());
