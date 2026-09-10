@@ -1736,9 +1736,10 @@ fn cmd_chain_replay(a: &Args) -> Result<(), String> {
         w.release(h);
         rows
     };
-    let mut s = String::from("tick\trace_ms\tx\ty\tz\tspeed\tvy\tcps\n");
+    let mut s = String::from("tick\trace_ms\tx\ty\tz\tspeed\tvy\tcps\tvx\tvz\tyaw_deg\n");
     for (i, r) in rows.iter().enumerate() {
-        s.push_str(&format!("{i}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\t{:+.1}\t{}\n", w.race_of(r), r.x, r.y, r.z, tmreach::rig::speed(r), r.vy, if r.cps == u32::MAX { -1 } else { r.cps as i64 }));
+        let yaw = r.vx.atan2(r.vz).to_degrees();
+        s.push_str(&format!("{i}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\t{:+.1}\t{}\t{:+.2}\t{:+.2}\t{:+.1}\n", w.race_of(r), r.x, r.y, r.z, tmreach::rig::speed(r), r.vy, if r.cps == u32::MAX { -1 } else { r.cps as i64 }, r.vx, r.vz, yaw));
     }
     std::fs::write(a.req("out"), s).map_err(|e| e.to_string())?;
     let last = rows.last().ok_or("no rows")?;
