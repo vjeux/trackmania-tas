@@ -919,6 +919,20 @@ draft, a nose-down car passes — independent of any route? Facts so far, from t
 * **An ITEM plate of physics 28 is a lid** to the client and the server; **an ITEM plate of physics 13 is
   nothing** to both (the table below) — ship13's "road block" on 15 was the plate's LOOK (the plain Water
   material on an item draws as an opaque cream cellular sheet), never its collision.
+* **CORRECTION (2026-09-10 21:00Z): the car does NOT float in Trackmania water — it sinks to the floor and
+  drives underwater with drag.** Measured on the original 05, full throttle from its own start
+  (`wheels-drag05orig-original-water-crossing.tsv`): at z 525 the car (31.7 m/s, y 90 on the tech road) drops
+  into the basin — plane at game y 87, Concrete floor at 84.0, a 3-m body — rides ON THE FLOOR at y 84.2 with
+  all four wheels reporting material 13 (the engine reports Water for a wheel inside the water volume, whatever
+  the floor is), loses 31.7 → 22.5 m/s over 33 m with the accelerator held (≈ −8 m/s²), and climbs the ramp
+  out at 22.4. Every "floats at 0.9 m draft" reading above (Cobalt Cove 41.1 under 42.0, Poland, this
+  morning's 15 pool at 43.06 over Concrete 43.0) was the car on a SHALLOW FLOOR 0.9–1.0 m under the plane
+  (WaterBase is a 1-m body); `probe::WATER_DRAFT` is a floor depth, not buoyancy. So: the water-volume
+  question is moot for position — the 13-form already puts the car where the original does (on the floor
+  under the plane; the 15 author dives under his planes because that is where the road is); what an item
+  cannot give is the DRAG (a volume effect — our floors read Concrete 0, the original's read Water 13) and
+  the underwater tint. Emulation candidate: a slower physics id on the floor under every plane — the loss to
+  match is ≈ 9 m/s per 33 m at 30 m/s in 3 m of water (measurements of the pack's slow ids follow).
 * **The three forms, measured (2026-09-10, client + dedicated server):**
 
   | form | collision of the plate | client | server | who shipped it |
