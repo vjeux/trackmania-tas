@@ -3,7 +3,7 @@
 //! it, by default, checked, and stamped.**
 //!
 //! ```text
-//! tinyctl video --map NN | --all [--watch SECS] [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9]
+//! tinyctl video --map NN | --all [--watch SECS [--idle-quit-min 30]] [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9]
 //!               [--ghosts-dir /tmp/ghosts] [--ghosts-sync host:dir] [--build ship15] [--cam 2] [--load-timeout 120] [--no-guard]
 //!               [--box-videos "…/Maps/Tiny/videos"] [--store host:dir | dir] [--pull-webm] [--suffix S]
 //!               [--from-webm F] [--no-overlay] [--crf N] [--offset-ms N] [--ship [--readme tiny/README.md]]
@@ -63,7 +63,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::wsx::{to_win, Wsx};
 
@@ -195,12 +195,34 @@ pub fn readme_current_lap(readme: &str, nn: &str) -> Option<(String, String)> {
 fn all(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let watch: Option<u64> = f("--watch").map(|s| s.parse().map_err(|_| "--watch wants seconds")).transpose()?;
+    // THE GAME IS A PROCESS ON A PHYSICAL BOX SOMEBODY SITS NEXT TO. A render
+    // leaves it up (the next lap is usually minutes away and a launch costs a
+    // minute), but a night with no new lap would leave it burning for hours
+    // (vjeux, 2026-08-24: the fans). After `--idle-quit-min` minutes (default
+    // 30) without a render, one taskkill closes it; the next render relaunches.
+    let idle_quit = Duration::from_secs(f("--idle-quit-min").and_then(|s| s.parse::<u64>().ok()).unwrap_or(30) * 60);
+    let mut last_render: Option<Instant> = None;
+    let mut game_up = false;
     loop {
+        let before = std::fs::metadata(PathBuf::from(f("--out").unwrap_or_else(|| "/tmp/tinyvid".into())).join("videos.tsv")).and_then(|m| m.modified()).ok();
         let r = all_once(args);
+        let after = std::fs::metadata(PathBuf::from(f("--out").unwrap_or_else(|| "/tmp/tinyvid".into())).join("videos.tsv")).and_then(|m| m.modified()).ok();
+        if before != after {
+            last_render = Some(Instant::now());
+            game_up = true;
+        }
         match (&r, watch) {
             (_, None) => return r,
             (Err(e), Some(_)) => eprintln!("scan: {e}"),
             (Ok(()), Some(_)) => {}
+        }
+        if game_up && last_render.map(|t| t.elapsed() >= idle_quit).unwrap_or(false) {
+            let wsx = Wsx::new(args);
+            match wsx.sh("timeout 30 /mnt/c/Windows/System32/taskkill.exe /IM Trackmania.exe /F 2>&1 | tr -d '\\r'; true") {
+                Ok(o) => eprintln!("[idle {} min] closed the game on the box: {}", idle_quit.as_secs() / 60, o.trim()),
+                Err(e) => eprintln!("[idle] could not close the game: {e}"),
+            }
+            game_up = false;
         }
         let secs = watch.unwrap();
         eprintln!("[watch] next scan in {secs}s ({})", chrono_now());
