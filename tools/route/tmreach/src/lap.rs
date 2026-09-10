@@ -687,6 +687,11 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                         r.gas = 1.0;
                         any = true;
                     }
+                    // 14:04Z (Argentina tail: a 4 s gas-off half-way up the turbo climb cost 6 s): the window also forces the GAS ON
+                    if !r.respawn() && r.gas < 0.5 {
+                        r.gas = 1.0;
+                        any = true;
+                    }
                 }
                 if any && m.description.contains("brake") {
                     // a pure brake macro with the brake removed duplicates the gas hold: skip it
@@ -1342,7 +1347,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         // CLINIC viability check: a "good arrival" must also CONTINUE — replay the chain and follow the
         // line for 3 s; a car that stalls (21: 20.6 m/s on a 32-degree ramp, 2 m below the deck) is
         // not a leg done. Refused arrivals are penalised so the search moves on.
-        if cfg.clinic && out.leg_done.is_some() {
+        // pursue (polish) lanes: the probe follows the ROUTE line, not the pursued author line, so it drives a good arrival into the
+        // wall the author line avoids (21 wp7, 14:20Z) — skipped; the beat rule + fall/stop checks stand
+        if cfg.clinic && out.leg_done.is_some() && cfg.pursue.is_empty() {
             if let Some(f) = out.finished.clone() {
                 if (f.cps as usize) < track.n_groups {
                     let (rows0, nf) = w.rollout_keep(branch::ROOT, &f.chain, root, f.chain.len() as u64)?;
