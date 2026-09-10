@@ -833,6 +833,7 @@ pub fn run_clean_anch(c: &Ctx, o: &GatherOpts) -> Result<CleanOut, String> {
             max_dev: 0.0,
             cps: 0,
             vis: 0,
+            wheels: 0,
             car: 0,
             car_slot: 0,
         },
