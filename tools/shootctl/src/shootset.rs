@@ -487,7 +487,30 @@ impl Drop for LockGuard {
 /// path, which resolves to the same file. When the target directory is not
 /// there (the junction was never made on this box), the write goes into the
 /// OneDrive path as before, so nothing breaks — only slows.
+/// Free bytes on the box's C: drive (`df` through the 9P mount), or None when it
+/// cannot be read.
+pub fn c_drive_free_bytes() -> Option<u64> {
+    let out = std::process::Command::new("df").args(["-B1", "--output=avail", "/mnt/c"]).output().ok()?;
+    String::from_utf8_lossy(&out.stdout).lines().nth(1).and_then(|l| l.trim().parse::<u64>().ok())
+}
+
+/// A staged map, a screenshot and a render each need room; the box's C: ran
+/// to 100 % on 2026-09-10 18:12Z (trees lineups) and four startcheck slices
+/// died on `Input/output error` writing the staged map — the FAIL read as the
+/// map's. Refuse to start under 5 GB free (SHOOTCTL_MIN_FREE_GB overrides).
+pub fn refuse_when_disk_full() -> Result<(), String> {
+    let min_gb: f64 = std::env::var("SHOOTCTL_MIN_FREE_GB").ok().and_then(|v| v.parse().ok()).unwrap_or(5.0);
+    if let Some(free) = c_drive_free_bytes() {
+        let gb = free as f64 / 1e9;
+        if gb < min_gb {
+            return Err(format!("C: has {gb:.1} GB free (< {min_gb} GB): not staging a map on a full disk — free space first (SHOOTCTL_MIN_FREE_GB overrides)"));
+        }
+    }
+    Ok(())
+}
+
 pub fn stage_map(map: &str) -> Result<String, String> {
+    refuse_when_disk_full()?;
     let wsl = if let Some(rest) = map.strip_prefix("C:/") { format!("/mnt/c/{rest}") } else { map.to_string() };
     let name = Path::new(&wsl).file_name().and_then(|n| n.to_str()).ok_or_else(|| format!("{map}: no file name"))?;
     if wsl.starts_with(MAPS_SHOOT) || wsl.starts_with(SHOOT_TARGET) {
