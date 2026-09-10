@@ -483,6 +483,8 @@ pub struct LapCfg {
     pub offworld_y: f64,
     /// clinic: accept ANY credited arrival (speed irrelevant) — the 21:00Z respawn-channel fallback
     pub arrival_any: bool,
+    /// order-position bits counted as already credited at the seed/root (injected mid-route states): --assume-mask 0x7
+    pub assume_mask: u32,
     /// vjeux launched-checkpoint csv (ghost lcp --csv): his approach samples become macros
     pub vjeux_csv: Option<String>,
     /// Start the search from an INJECTED car state (a LaunchedCP crossing / approach start, tm-inject-state/1),
@@ -813,7 +815,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             let cps = cps_of(&end);
             // WHICH gates: every counter step in these rows is attributed to the nearest gate centre
             // (within 30 m) -> its group -> its position in the order; an unexplained step sets bit 31
-            let mut mask = base.map(|e| e.mask).unwrap_or(0);
+            let mut mask = base.map(|e| e.mask).unwrap_or(cfg.assume_mask);
             let mut prev_cps = base.map(|e| cps_of(&e.end)).unwrap_or(root_cps);
             for r in &rows {
                 let c = cps_of(r);
@@ -1064,6 +1066,10 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             // project the seed by WALKING its rows from the root with the hinted projector (a self-crossing line must not snap
             // the seed to a later pass — 20 G3-first route, 22:05Z)
             let mut hint = seg0;
+            if cfg.inject.is_some() {
+                // an injected seed starts far from the spawn: place it globally, then walk its approach rows
+                hint = track.project(pos(rows.first().unwrap_or(&end)), track.pts.len() / 2, track.pts.len()).2;
+            }
             for (i, r) in rows.iter().enumerate() {
                 if i % 10 == 0 {
                     hint = track.project(pos(r), hint, 30).2;
@@ -1091,7 +1097,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
         let recs_len = recs.len();
         let cps = cps_of(&end);
         // credits along the prefix, attributed like a rollout's
-        let mut mask = 0u32;
+        let mut mask = cfg.assume_mask; // --assume-mask: gates counted as credited before the seed (an injected mid-route state)
         let mut prev = root_cps;
         for r in &rows {
             let c = cps_of(r);
