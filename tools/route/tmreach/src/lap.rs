@@ -516,6 +516,8 @@ pub struct LapCfg {
     pub min_leg_gate: usize,
     /// --speed-cap-box x1,x2,z1,z2,vmax[;...]: rollouts exceeding vmax inside a box are discarded
     pub speed_caps: Vec<[f64; 5]>,
+    /// --upright-window t1,t2[,min_up]: rows inside the race window must keep the body up-vector y above min_up (0.7)
+    pub upright: Vec<[f64; 3]>,
     /// hand macro: pure-pursuit points (x y z [speed]) from --pursue FILE; empty = the macro is skipped
     pub pursue: Vec<[f64; 5]>,
     /// hand macro: aim at the first pursue point farther than this (m); --pursue-look, default 8
@@ -943,6 +945,13 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             // --speed-cap-box x1,x2,z1,z2,vmax (repeatable via ;): a rollout that carries more than vmax through the box is not a
             // cell (18:20Z, Argentina hairpin: the reviewer's brake-before-the-bank hypothesis needs the entry held to 44–48)
             if cfg.speed_caps.iter().any(|b| rows.iter().any(|r| r.x >= b[0] && r.x <= b[1] && r.z >= b[2] && r.z <= b[3] && speed(r) > b[4])) {
+                out.deaths[1] += 1;
+                dump_rollout(w, base, &rows, "offroute", &desc, &dump_n);
+                continue;
+            }
+            // --upright-window t1,t2[,min_up] (seconds, repeatable via ;): the body up-vector up_y = 1 - 2(qx^2 + qz^2) must stay above
+            // min_up (default 0.7) for every row whose race time is inside [t1, t2] — a roll there is not a cell (parent 19:14Z: attitude guard)
+            if cfg.upright.iter().any(|u| rows.iter().any(|r| { let t = w.race_of(r) as f64 / 1000.0; t >= u[0] && t <= u[1] && (1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz)) < u[2] })) {
                 out.deaths[1] += 1;
                 dump_rollout(w, base, &rows, "offroute", &desc, &dump_n);
                 continue;

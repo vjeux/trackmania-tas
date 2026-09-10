@@ -1581,6 +1581,7 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
         arrival_strict: a.has("arrival-strict"),
         beat_times: match a.get("beat-times") { Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?.split_whitespace().filter_map(|x| x.parse().ok()).collect(), None => Vec::new() },
         speed_caps: a.get("speed-cap-box").map(|s| s.split(';').filter_map(|b| { let v: Vec<f64> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 5 { Some([v[0], v[1], v[2], v[3], v[4]]) } else { None } }).collect()).unwrap_or_default(),
+        upright: a.get("upright-window").map(|s| s.split(';').filter_map(|b| { let v: Vec<f64> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect(); match v.len() { 2 => Some([v[0], v[1], 0.7]), 3 => Some([v[0], v[1], v[2]]), _ => None } }).collect()).unwrap_or_default(),
         min_leg_gate: a.get("min-leg-gate").map(|s| s.parse().unwrap()).unwrap_or(0),
         beat_margin: a.get("beat-margin").map(|s| s.parse().unwrap()).unwrap_or(0.2),
         arrival_ang: a.get("arrival-ang").map(|s| s.parse().unwrap()).unwrap_or(60.0),
@@ -1750,12 +1751,23 @@ fn cmd_chain_replay(a: &Args) -> Result<(), String> {
         w.release(h);
         rows
     };
-    let mut s = String::from("tick\trace_ms\tx\ty\tz\tspeed\tvy\tcps\tvx\tvz\tyaw_deg\n");
+    // export conventions (reviewer 4b2e4b99, 19:10Z): race_ms = engine state label + 10 (the rig's label_shift: row i is the state AFTER chain rec i
+    // was applied; INPUT's frozen trace labels the same state race_ms - 10). bearing_deg = atan2(vx, vz) (the MOTION bearing, formerly mislabelled
+    // yaw_deg); body_yaw_deg = the car's heading from its quaternion (yaw about +y); qx..qw = the body quaternion.
+    // the convention note goes to a sidecar (<out>.conventions.txt) so the TSV stays header-first for every parser
+    let note = format!("race_ms = engine state label + {} (GEN rig label_shift); INPUT frozen-trace label of the same row = race_ms - {}. bearing_deg = motion bearing atan2(vx, vz) (0 = +z, 90 = +x); body_yaw_deg = the body +z axis from the quaternion, same convention; qx qy qz qw = body quaternion.\n", w.label_shift, w.label_shift);
+    let mut s = String::from("tick\trace_ms\tx\ty\tz\tspeed\tvy\tcps\tvx\tvz\tbearing_deg\tbody_yaw_deg\tqx\tqy\tqz\tqw\n");
     for (i, r) in rows.iter().enumerate() {
         let yaw = r.vx.atan2(r.vz).to_degrees();
-        s.push_str(&format!("{i}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\t{:+.1}\t{}\t{:+.2}\t{:+.2}\t{:+.1}\n", w.race_of(r), r.x, r.y, r.z, tmreach::rig::speed(r), r.vy, if r.cps == u32::MAX { -1 } else { r.cps as i64 }, r.vx, r.vz, yaw));
+        // body heading: the body +z axis rotated by q, projected on the ground plane (yaw about +y), same 0 deg = +z, 90 deg = +x as the bearing
+        let (qx, qy, qz, qw) = (r.qx, r.qy, r.qz, r.qw);
+        let fx = 2.0 * (qx * qz + qw * qy);
+        let fz = 1.0 - 2.0 * (qx * qx + qy * qy);
+        let body_yaw = fx.atan2(fz).to_degrees();
+        s.push_str(&format!("{i}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.1}\t{:+.1}\t{}\t{:+.2}\t{:+.2}\t{:+.1}\t{:+.1}\t{:.5}\t{:.5}\t{:.5}\t{:.5}\n", w.race_of(r), r.x, r.y, r.z, tmreach::rig::speed(r), r.vy, if r.cps == u32::MAX { -1 } else { r.cps as i64 }, r.vx, r.vz, yaw, body_yaw, qx, qy, qz, qw));
     }
     std::fs::write(a.req("out"), s).map_err(|e| e.to_string())?;
+    let _ = std::fs::write(format!("{}.conventions.txt", a.req("out")), &note);
     let last = rows.last().ok_or("no rows")?;
     println!("replayed {} ticks: end ({:.1}, {:.1}, {:.1}) speed {:.1} cps {}", rows.len(), last.x, last.y, last.z, tmreach::rig::speed(last), last.cps as i64);
     // --deficit (needs --author-line --gates [--centreline]): our speed vs the human's along the line, per 50 m, and the
