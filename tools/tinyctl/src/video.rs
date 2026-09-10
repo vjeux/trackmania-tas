@@ -951,7 +951,7 @@ pub fn page_swap(text: &str, nn: &str, time: &str, label: &str, build_note: &str
             } else {
                 drop.push(j);
             }
-        } else if out[j].trim_end().ends_with(PENDING_MARK) {
+        } else if out[j].trim_end().ends_with(PENDING_MARK) || out[j].trim_end().ends_with(crate::pagestatus::WITHIN_MARK) {
             drop.push(j);
         }
     }

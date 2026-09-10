@@ -84,6 +84,13 @@ fn rows_of(page: &str) -> Vec<(usize, Row)> {
 /// The page with every row's status line brought up to date. Returns the new
 /// text and one line per change, for the log.
 pub fn update(page: &str, laps: &[(String, String)], ghosts_readme: &str, build: &str) -> (String, Vec<String>) {
+    update_with_gain(page, laps, ghosts_readme, build, 0.1)
+}
+
+/// [`update`] with the re-render threshold spelled out: a newest lap that beats
+/// the published one by less than `min_gain` seconds gets the "within" note (the
+/// loop will not render it), anything else the "video pending" note.
+pub fn update_with_gain(page: &str, laps: &[(String, String)], ghosts_readme: &str, build: &str, min_gain: f64) -> (String, Vec<String>) {
     let mut lines: Vec<String> = page.lines().map(String::from).collect();
     let mut notes = Vec::new();
     // work from the bottom so earlier indices stay valid
@@ -110,7 +117,8 @@ pub fn update(page: &str, laps: &[(String, String)], ghosts_readme: &str, build:
         // previous video, left by the same swap) are repaired here as well:
         // one pending line at most, the FIRST asset line kept.
         let end = crate::video::block_end(&lines, i);
-        let pendings: Vec<usize> = (i + 1..end).filter(|&j| lines[j].trim_end().ends_with(PENDING_MARK)).collect();
+        let is_note = |l: &str| l.trim_end().ends_with(PENDING_MARK) || l.trim_end().ends_with(WITHIN_MARK);
+        let pendings: Vec<usize> = (i + 1..end).filter(|&j| is_note(&lines[j])).collect();
         let assets: Vec<usize> = (i + 1..end).filter(|&j| lines[j].starts_with(crate::video::ASSET_PREFIX)).collect();
         let mut remove: Vec<usize> = Vec::new();
         if assets.len() > 1 {
@@ -122,23 +130,35 @@ pub fn update(page: &str, laps: &[(String, String)], ghosts_readme: &str, build:
             remove.extend(pendings[1..].iter().copied());
         }
         let existing = pendings.first().copied();
+        // WHICH NOTE. A newest lap the video does not show is either one the
+        // render loop WILL render ("video pending": the map's first lap, or a
+        // gain of at least the re-render threshold over the published lap) or a
+        // sliver under the threshold ("within 0.1 s of the published clip") —
+        // the parent project read a skipped sliver's "video pending" as a stall
+        // (coordinator, 2026-09-10 14:15Z). The threshold is the loop's
+        // `--min-gain-s` default; the gate is the loop's own (`render_gate`).
         let want = match (&newest, &row.published) {
-            // a lap the page's video does not show
-            (Some(n), Some(p)) if n != p => Some(n.clone()),
-            (Some(n), None) => Some(n.clone()),
+            (Some(n), Some(p)) if n != p => {
+                let will_render = matches!(
+                    crate::video::render_gate(secs(n), Some((secs(p), &format!("x-{build}"))), Some(build), min_gain),
+                    crate::video::Gate::Render(_)
+                );
+                Some((n.clone(), if will_render { Note::Pending } else { Note::Within(secs(p) - secs(n)) }))
+            }
+            (Some(n), None) => Some((n.clone(), Note::Pending)),
             _ => None,
         };
         match (want, existing) {
-            (Some(t), Some(j)) => {
-                let line = status_line(&t, build, ghosts_readme, nn);
+            (Some((t, note)), Some(j)) => {
+                let line = status_line(&t, build, ghosts_readme, nn, &note, min_gain);
                 if lines[j] != line {
-                    notes.push(format!("{nn}: pending line → {t}"));
+                    notes.push(format!("{nn}: {} line → {t}", note.word()));
                     lines[j] = line;
                 }
             }
-            (Some(t), None) => {
-                let line = status_line(&t, build, ghosts_readme, nn);
-                notes.push(format!("{nn}: pending line added ({t})"));
+            (Some((t, note)), None) => {
+                let line = status_line(&t, build, ghosts_readme, nn, &note, min_gain);
+                notes.push(format!("{nn}: {} line added ({t})", note.word()));
                 lines.insert(i + 1, line);
                 lines.insert(i + 1, String::new());
                 remove.iter_mut().for_each(|r| *r += 2);
@@ -166,22 +186,50 @@ pub fn update(page: &str, laps: &[(String, String)], ghosts_readme: &str, build:
     (s, notes)
 }
 
-fn status_line(time: &str, build: &str, ghosts_readme: &str, nn: &str) -> String {
+/// Which note a row gets under it.
+enum Note {
+    /// The loop will render this lap.
+    Pending,
+    /// A sliver under the re-render threshold: the gain in seconds.
+    Within(f64),
+}
+
+impl Note {
+    fn word(&self) -> &'static str {
+        match self {
+            Note::Pending => "pending",
+            Note::Within(_) => "within",
+        }
+    }
+}
+
+fn secs(s: &str) -> f64 {
+    s.trim().parse::<f64>().unwrap_or(f64::NAN)
+}
+
+fn status_line(time: &str, build: &str, ghosts_readme: &str, nn: &str, note: &Note, min_gain: f64) -> String {
     let label = lap_label(ghosts_readme, nn, time);
     let who = if label == "tiny ghost" { String::new() } else { format!(", {label}") };
-    format!("*latest lap **{time}** (build {build}{who}) — video pending*")
+    match note {
+        Note::Pending => format!("*latest lap **{time}** (build {build}{who}) — video pending*"),
+        Note::Within(_) => format!("*latest lap **{time}** (build {build}{who}) — within {min_gain:.1} s of the published clip*"),
+    }
 }
+
+/// The tail of a "within" note, whatever the threshold printed in it.
+pub const WITHIN_MARK: &str = "s of the published clip*";
 
 pub fn cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let readme = PathBuf::from(f("--readme").ok_or("page-status needs --readme tiny/README.md")?);
     let ghosts_dir = PathBuf::from(f("--ghosts-dir").ok_or("page-status needs --ghosts-dir DIR")?);
     let build = f("--build").unwrap_or_else(|| "ship15".into());
+    let min_gain: f64 = f("--min-gain-s").and_then(|s| s.parse().ok()).unwrap_or(0.1);
     let page = std::fs::read_to_string(&readme).map_err(|e| format!("{}: {e}", readme.display()))?;
     let gr = std::fs::read_to_string(ghosts_dir.join("README.md")).map_err(|e| format!("{}/README.md: {e}", ghosts_dir.display()))?;
     let laps = newest_laps(&gr, &build);
     println!("{} certified {build} laps: {}", laps.len(), laps.iter().map(|(m, t)| format!("{m} {t}")).collect::<Vec<_>>().join(", "));
-    let (new, notes) = update(&page, &laps, &gr, &build);
+    let (new, notes) = update_with_gain(&page, &laps, &gr, &build, min_gain);
     if notes.is_empty() {
         println!("the page already states the newest lap of every map");
         return Ok(());
@@ -351,5 +399,51 @@ https://github.com/user-attachments/assets/new18\n\n\
 https://github.com/user-attachments/assets/new19\n\n\
 **Tiny Summer 2026 - 20** — original author time `50.598` · *no lap yet*\n"
         );
+    }
+}
+
+#[cfg(test)]
+mod within_tests {
+    use super::*;
+
+    const GHOSTS: &str = "| map | file | time | credits | build | md5 | found by | validated |\n\
+| 15 | 15.Ghost.Gbx | 48.738 | 8 | ship15 | 395f89a8 | PPO | x |\n\
+| 25 | 25.Ghost.Gbx | 102.115 | 15 | ship15 | bd1a146f | PPO | x |\n\
+| 22 | 22.Ghost.Gbx | 96.297 | 14 | ship15 | f1275f23 | PPO | x |\n";
+
+    /// A sliver under the re-render threshold says "within 0.1 s of the
+    /// published clip" (the loop will not render it); a real gain says "video
+    /// pending"; the note flips when the gain crosses the line; a swap drops
+    /// either note.
+    #[test]
+    fn a_sliver_is_within_and_a_real_gain_is_pending() {
+        let page = "**Tiny Summer 2026 - 15** — original author time `36.888` · tiny ghost **48.748** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/a\n\n\
+**Tiny Japan 2026** — original author time `78.928` · tiny ghost **102.424** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/b\n\n\
+**Tiny Saudi Arabia 2026** — original author time `73.418` · tiny ghost **96.298** (build ship15, controls overlay)\n\n\
+*latest lap **96.297** (build ship15) — video pending*\n\n\
+https://github.com/user-attachments/assets/c\n";
+        let laps = newest_laps(GHOSTS, "ship15");
+        let (out, notes) = update(page, &laps, GHOSTS, "ship15");
+        assert!(out.contains("tiny ghost **48.748** (build ship15, controls overlay)\n\n*latest lap **48.738** (build ship15) — within 0.1 s of the published clip*\n\nhttps://github.com/user-attachments/assets/a"), "{out}");
+        assert!(out.contains("tiny ghost **102.424** (build ship15, controls overlay)\n\n*latest lap **102.115** (build ship15) — video pending*\n\nhttps://github.com/user-attachments/assets/b"), "{out}");
+        // an old-style pending note on a sliver is rewritten as a within note
+        assert!(out.contains("tiny ghost **96.298** (build ship15, controls overlay)\n\n*latest lap **96.297** (build ship15) — within 0.1 s of the published clip*\n\nhttps://github.com/user-attachments/assets/c"), "{out}");
+        assert!(notes.iter().any(|n| n == "15: within line added (48.738)"), "{notes:?}");
+        assert!(notes.iter().any(|n| n == "25: pending line added (102.115)"), "{notes:?}");
+        assert!(notes.iter().any(|n| n == "22: within line → 96.297"), "{notes:?}");
+        // idempotent
+        let (again, notes2) = update(&out, &laps, GHOSTS, "ship15");
+        assert_eq!(again, out);
+        assert!(notes2.is_empty(), "{notes2:?}");
+        // the swap drops a within note like a pending one
+        let swapped = crate::video::page_swap(&out, "15", "48.738", "tiny ghost", "build ship15, controls overlay", "https://github.com/user-attachments/assets/n").unwrap();
+        assert!(!swapped.contains("*latest lap **48.738**"), "15's note must go: {swapped}");
+        assert!(swapped.contains("96.297** (build ship15) — within 0.1 s"), "22's note stays: {swapped}");
+        assert!(swapped.contains("tiny ghost **48.738** (build ship15, controls overlay)\n\nhttps://github.com/user-attachments/assets/n\n\n**Tiny Japan"), "{swapped}");
+        // the opt-out: every newer lap is pending
+        let (all, _) = update_with_gain(page, &laps, GHOSTS, "ship15", 0.0);
+        assert!(all.contains("*latest lap **48.738** (build ship15) — video pending*"), "{all}");
     }
 }
