@@ -3,12 +3,12 @@
 //! it, by default, checked, and stamped.**
 //!
 //! ```text
-//! tinyctl video --map NN | --all [--watch SECS [--idle-quit-min 30]] [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9]
+//! tinyctl video --map NN | --all [--watch SECS [--idle-quit-min 30]] [--min-gain-s 0.1] [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9]
 //!               [--ghosts-dir /tmp/ghosts] [--ghosts-sync host:dir] [--build ship15] [--cam 2] [--load-timeout 120] [--no-guard]
 //!               [--box-videos "…/Maps/Tiny/videos"] [--store host:dir | dir] [--pull-webm] [--suffix S]
 //!               [--from-webm F] [--no-overlay] [--crf N] [--offset-ms N] [--ship [--readme tiny/README.md]]
 //!               [--box-shootctl P] [--wsx P] [-v]
-//! tinyctl shipwatch --out /tmp/tinyvid --readme tiny/README.md [--repo DIR] [--once] [--commit] [--wsx P]
+//! tinyctl shipwatch --out /tmp/tinyvid --readme tiny/README.md [--repo DIR] [--once] [--commit] [--min-gain-s 0.1] [--wsx P]
 //! ```
 //!
 //! What happens, and where:
@@ -270,6 +270,22 @@ fn all_once(args: &[String]) -> Result<(), String> {
     names.sort();
     let build = f("--build");
     let readme = std::fs::read_to_string(ghosts_dir.join("README.md")).unwrap_or_default();
+    // THE RE-RENDER THRESHOLD (a tool default — vjeux's "not a rule, a
+    // default"; coordinator 2026-09-10 11:34Z). The player project shaves
+    // 1-ms slivers off a lap every ten minutes once it converges (15: 48.753 →
+    // 48.748 → 48.747 → 48.738 in an hour), and each sliver cost a 5–15 min
+    // render and an upload slot on the one GitHub session. A map is rendered
+    // again only when its newest certified lap improves on the PUBLISHED clip's
+    // lap by `--min-gain-s` (default 0.1), or it is the map's first lap, or the
+    // build changed. A skipped sliver is not lost: `tinyctl page-status` keeps
+    // the "latest lap X — video pending" note under the row, and the gain is
+    // measured against the published clip, so it accumulates and the render
+    // happens when it crosses the threshold. `--min-gain-s 0` is the opt-out
+    // (every new ghost renders, as before).
+    let min_gain: f64 = f("--min-gain-s").map(|s| s.parse().map_err(|_| "--min-gain-s wants seconds")).transpose()?.unwrap_or(0.1);
+    let published = published_laps(&std::fs::read_to_string(out.join("ships.tsv")).unwrap_or_default());
+    let skips_path = out.join("skips.tsv");
+    let skips = std::fs::read_to_string(&skips_path).unwrap_or_default();
     let mut todo = Vec::new();
     for n in &names {
         let nn = n[..2].to_string();
@@ -279,11 +295,11 @@ fn all_once(args: &[String]) -> Result<(), String> {
         if seen.iter().any(|(a, b)| *a == nn && *b == md5) {
             continue;
         }
+        let race_ms = g.race_time_ms.or_else(|| g.samples.last().map(|s| s.time_ms)).unwrap_or(0);
+        let time = format!("{}.{:03}", race_ms / 1000, race_ms % 1000);
         // --build B: only a lap whose README row names B (the FILE says which
         // lap: its race time; the README says which build it was regenerated on)
         if let Some(b) = &build {
-            let race_ms = g.race_time_ms.or_else(|| g.samples.last().map(|s| s.time_ms)).unwrap_or(0);
-            let time = format!("{}.{:03}", race_ms / 1000, race_ms % 1000);
             match readme_row(&readme, &nn, &time) {
                 Some(row) if row.contains(b.as_str()) => {}
                 Some(row) => {
@@ -295,6 +311,33 @@ fn all_once(args: &[String]) -> Result<(), String> {
                     // on the installed build, so render and say the row was missing
                     println!("{nn} {time}: no README row for this lap yet — rendering on the installed build's word ({b}); the label is read at swap time");
                 }
+            }
+        }
+        match render_gate(race_ms as f64 / 1000.0, published.get(&nn).map(|(t, name)| (*t, name.as_str())), build.as_deref(), min_gain) {
+            Gate::Render(why) => {
+                if published.contains_key(&nn) {
+                    println!("{nn} {time}: rendering — {why}");
+                }
+            }
+            Gate::Skip { gain, published: p } => {
+                // recorded ONCE per ghost (the scan runs every two minutes): a
+                // REPORT row and a skips.tsv line; re-evaluated every scan, so the
+                // opt-out or a changed reference renders it after all
+                let key = format!("{nn}\t{md5}\t");
+                if !skips.contains(&key) {
+                    let cps = g.checkpoints_ms.iter().filter(|c| **c < race_ms - 50).count();
+                    let row = format!("| {nn} | {} | {time} | {cps} cps | skipped (gain {gain:.3} < {min_gain:.3} over the published {p:.3}; page-status keeps the pending note) | — | — | — |", map_title(&nn));
+                    println!("{nn} {time}: skipped — gain {gain:.3} s over the published {p:.3} is under {min_gain:.3} (--min-gain-s); the page keeps the pending note and the render happens when the gain reaches the threshold");
+                    append_report_row(&out, &row)?;
+                    let when = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                    let mut text = skips.clone();
+                    if text.is_empty() {
+                        text.push_str("# nn\ttrajectory_id\ttime\tgain\tpublished\tunix\n");
+                    }
+                    text.push_str(&format!("{key}{time}\t{gain:.3}\t{p:.3}\t{when}\n"));
+                    std::fs::write(&skips_path, text).map_err(|e| format!("{}: {e}", skips_path.display()))?;
+                }
+                continue;
             }
         }
         todo.push(nn);
@@ -702,15 +745,19 @@ fn one(args: &[String]) -> Result<Done, String> {
         // retired it before it reached the page — an upload slot on the one
         // session for nothing. So, right before the ship, the FRESH ghost
         // folder (`--ghosts-src`, the sync source) is asked what the map's lap
-        // is now; a different lap means the next scan renders that one, and
-        // this clip is recorded as superseded without touching GitHub. The
-        // render, mp4 and store copy stand (banked).
+        // is now; a lap that will pass the re-render gate against THIS clip
+        // (better by `--min-gain-s`, default 0.1) means the next scan renders
+        // that one, and this clip is recorded as superseded without touching
+        // GitHub. A sliver under the threshold would be skipped by the gate
+        // anyway, so this clip ships. The render, mp4 and store copy stand.
         if let Some(src) = f("--ghosts-src") {
+            let min_gain: f64 = f("--min-gain-s").and_then(|s| s.parse().ok()).unwrap_or(0.1);
             let fresh = PathBuf::from(&src).join(format!("{nn}.Ghost.Gbx"));
             if let Ok(g2) = gbx::record::decode_ghost(fresh.to_str().unwrap_or("")) {
                 if let Some(ms2) = g2.race_time_ms.or_else(|| g2.samples.last().map(|s| s.time_ms)) {
                     let fresh_time = format!("{}.{:03}", ms2 / 1000, ms2 % 1000);
-                    if fresh_time != time {
+                    let will_render = matches!(render_gate(ms2 as f64 / 1000.0, Some((race_ms as f64 / 1000.0, &name)), f("--build").as_deref(), min_gain), Gate::Render(_));
+                    if fresh_time != time && will_render {
                         println!("SUPERSEDED DURING THE RENDER: {} now holds {fresh_time}, this clip is {time} — not shipped (the next scan renders {fresh_time})", fresh.display());
                         record_ship_row(&out, &nn, &time, &name, &format!("{VID}/ship/{name}.done"), "superseded")?;
                         return finish_row(&out, &nn, &time, cps, &overlay_col, &name, &sheet, traj_id);
@@ -752,15 +799,78 @@ fn finish_row(out: &Path, nn: &str, time: &str, cps: usize, overlay_col: &str, n
     // the finish is the last "checkpoint" the decoder lists
     let row = format!("| {nn} | {} | {time} | {cps} cps | {overlay_col} | {name}.webm | {name}.mp4 | look at {} |", map_title(nn), sheet.display());
     println!("{row}");
+    append_report_row(out, &row)?;
+    Ok(Done { nn: nn.to_string(), ghost_md5: traj_id, time: time.to_string(), cps, clip: format!("{name}.webm"), sheet: sheet.to_path_buf() })
+}
+
+fn append_report_row(out: &Path, row: &str) -> Result<(), String> {
     let report = out.join("REPORT.md");
     let mut text = std::fs::read_to_string(&report).unwrap_or_default();
     if text.is_empty() {
         text.push_str("| map | title | time | cps | overlay | clip | mp4 | sheet |\n|---|---|---|---|---|---|---|---|\n");
     }
-    text.push_str(&row);
+    text.push_str(row);
     text.push('\n');
-    std::fs::write(&report, text).map_err(|e| format!("{}: {e}", report.display()))?;
-    Ok(Done { nn: nn.to_string(), ghost_md5: traj_id, time: time.to_string(), cps, clip: format!("{name}.webm"), sheet: sheet.to_path_buf() })
+    std::fs::write(&report, text).map_err(|e| format!("{}: {e}", report.display()))
+}
+
+/// Whether a map's newest certified lap is worth a render and an upload.
+#[derive(Debug, PartialEq)]
+pub enum Gate {
+    /// Render, and why (the first lap, a build change, or a gain over the threshold).
+    Render(String),
+    /// Under the threshold: the gain in seconds over the published lap, and that lap.
+    Skip { gain: f64, published: f64 },
+}
+
+/// THE RE-RENDER GATE. `newest` is the certified lap (seconds); `published` the
+/// lap the map's published clip shows, with the clip's name (its suffix names
+/// the build it was rendered on); `build` the build the loop renders on.
+/// Renders on the first lap, on a build change, or when the gain reaches
+/// `min_gain`; `min_gain <= 0` is the opt-out (every new ghost renders).
+pub fn render_gate(newest: f64, published: Option<(f64, &str)>, build: Option<&str>, min_gain: f64) -> Gate {
+    let Some((p_time, p_name)) = published else {
+        return Gate::Render("the map's first lap".into());
+    };
+    if min_gain <= 0.0 {
+        return Gate::Render("threshold off (--min-gain-s 0)".into());
+    }
+    if let Some(b) = build {
+        if !p_name.ends_with(&format!("-{b}")) {
+            return Gate::Render(format!("the published clip is not a {b} render ({p_name})"));
+        }
+    }
+    let gain = p_time - newest;
+    if gain + 1e-9 >= min_gain {
+        Gate::Render(format!("{gain:.3} s better than the published {p_time:.3}"))
+    } else {
+        Gate::Skip { gain, published: p_time }
+    }
+}
+
+/// The lap each map's PUBLISHED clip shows, from `ships.tsv`: the last row per
+/// map whose status is a URL (published) or `pending` (uploading, about to be)
+/// — never a `superseded` or `FAILED` one. Returns map → (seconds, clip name).
+pub fn published_laps(ships: &str) -> std::collections::HashMap<String, (f64, String)> {
+    let mut out = std::collections::HashMap::new();
+    for l in ships.lines().filter(|l| !l.starts_with('#')) {
+        let c: Vec<&str> = l.split('\t').collect();
+        if c.len() < 5 {
+            continue;
+        }
+        let status = c[4].trim();
+        if !(status.starts_with("https://") || status == "pending") {
+            continue;
+        }
+        if let Ok(t) = c[1].trim().parse::<f64>() {
+            out.insert(c[0].trim().to_string(), (t, c[2].trim().to_string()));
+        }
+    }
+    out
+}
+
+fn secs(s: &str) -> f64 {
+    s.trim().parse::<f64>().unwrap_or(f64::NAN)
 }
 
 /// `tools/tinyctl/box/tinyship.sh`, found from the binary's checkout (the
@@ -873,6 +983,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
     let wsx = Wsx::new(args);
     let ships = out.join("ships.tsv");
     let retry_after = Duration::from_secs(f("--retry-min").and_then(|s| s.parse::<u64>().ok()).unwrap_or(6) * 60);
+    let min_gain: f64 = f("--min-gain-s").and_then(|s| s.parse().ok()).unwrap_or(0.1);
     let mut last_probe: Option<std::time::Instant> = None;
     loop {
         let text = std::fs::read_to_string(&ships).unwrap_or_default();
@@ -948,7 +1059,12 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                         .ok()
                         .and_then(|g| g.race_time_ms.or_else(|| g.samples.last().map(|s| s.time_ms)))
                         .map(|ms| format!("{}.{:03}", ms / 1000, ms % 1000));
-                    if newest != cells[1] && build_note.contains(&build) && file_time.as_deref() == Some(newest.as_str()) {
+                    // and the newer lap must be one the render loop WILL render:
+                    // better than this staged clip by the re-render threshold
+                    // (--min-gain-s, default 0.1); a sliver under it is skipped
+                    // by the loop, so the staged clip is the best that will exist
+                    let will_render = matches!(render_gate(secs(&newest), Some((secs(&cells[1]), &cells[2])), Some(build.as_str()), min_gain), Gate::Render(_));
+                    if newest != cells[1] && build_note.contains(&build) && file_time.as_deref() == Some(newest.as_str()) && will_render {
                         println!("{} {} {}: the ghosts README now says {newest} ({build}) and its ghost file agrees — superseded, not shipped", chrono_now(), cells[0], cells[1]);
                         *row = format!("{}\t{}\t{}\t{}\tsuperseded", cells[0], cells[1], cells[2], cells[3]);
                         changed = true;
@@ -1437,5 +1553,44 @@ mod readme_shape_tests {
         assert_eq!(readme_current_lap(readme, "25"), Some(("119.115".into(), "ship15".into())));
         // a lap that appears ONLY in the md5 table is still found (no build word)
         assert!(readme_row("| 25 | ac27c2fd | 119.115 |\n", "25", "119.115").is_some());
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    /// The re-render gate: a first lap, a build change and a gain at or over the
+    /// threshold render; a sliver under it is skipped with its gain; the gain is
+    /// measured against the PUBLISHED lap, so slivers accumulate and the render
+    /// happens when they cross the line; `--min-gain-s 0` renders everything.
+    #[test]
+    fn the_gate_renders_first_laps_build_changes_and_real_gains_only() {
+        assert_eq!(render_gate(84.954, None, Some("ship15"), 0.1), Gate::Render("the map's first lap".into()));
+        assert!(matches!(render_gate(48.747, Some((48.753, "15-ghost-48.753-ship15")), Some("ship15"), 0.1), Gate::Skip { gain, published } if (gain - 0.006).abs() < 1e-9 && published == 48.753));
+        assert!(matches!(render_gate(48.653, Some((48.753, "15-ghost-48.753-ship15")), Some("ship15"), 0.1), Gate::Render(_)), "exactly the threshold renders");
+        assert!(matches!(render_gate(48.654, Some((48.753, "15-ghost-48.753-ship15")), Some("ship15"), 0.1), Gate::Skip { .. }));
+        assert!(matches!(render_gate(121.235, Some((121.235, "25-ghost-121.235-ship14")), Some("ship15"), 0.1), Gate::Render(w) if w.contains("not a ship15 render")));
+        assert!(matches!(render_gate(48.753, Some((48.753, "15-ghost-48.753-ship15")), Some("ship15"), 0.0), Gate::Render(w) if w.contains("threshold off")));
+        assert!(matches!(render_gate(48.760, Some((48.753, "15-ghost-48.753-ship15")), Some("ship15"), 0.1), Gate::Skip { gain, .. } if gain < 0.0), "a slower lap is not a gain");
+        // accumulation: two slivers of 0.087 and then 0.027 more
+        assert!(matches!(render_gate(48.747, Some((48.834, "15-ghost-48.834-ship15")), Some("ship15"), 0.1), Gate::Skip { .. }));
+        assert!(matches!(render_gate(48.720, Some((48.834, "15-ghost-48.834-ship15")), Some("ship15"), 0.1), Gate::Render(_)));
+    }
+
+    /// The published reference comes from ships.tsv: URL rows and pending rows
+    /// count, superseded and FAILED ones do not, the last one per map wins.
+    #[test]
+    fn the_published_lap_is_read_off_the_ship_rows() {
+        let ships = "# nn\ttime\tname\tdone_file\tstatus\n\
+15\t50.336\t15-ghost-50.336-ship15\t/x\thttps://github.com/user-attachments/assets/a\n\
+15\t49.097\t15-ghost-49.097-ship15\t/x\thttps://github.com/user-attachments/assets/b\n\
+15\t48.747\t15-ghost-48.747-ship15\t/x\tsuperseded\n\
+21\t122.311\t21-ghost-122.311-ship15\t/x\tFAILED cookie probe HTTP 302\n\
+22\t96.298\t22-ghost-96.298-ship15\t/x\tpending\n";
+        let p = published_laps(ships);
+        assert_eq!(p.get("15").map(|(t, n)| (*t, n.as_str())), Some((49.097, "15-ghost-49.097-ship15")));
+        assert_eq!(p.get("21"), None);
+        assert_eq!(p.get("22").map(|(t, _)| *t), Some(96.298));
     }
 }
