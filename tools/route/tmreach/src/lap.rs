@@ -531,6 +531,9 @@ const FOLLOW: &[(&str, bool, u8, f64)] = &[
     // bmode 8: RAMP LIP (20, coordinator 18:19Z): aim at the line 12 m ahead for 0.3 s (centre the car on the ramp), then
     // FREEZE the steer at 0 and hold gas to the lip and through the flight — no corrections on the ramp
     ("ramp lip: centre on the line, then steer frozen, gas", true, 8, 0.5),
+    // bmode 9: HAND MACRO for 20's bridge (coordinator 05:33Z): full left (toward -z) until heading -150 deg, hold, then
+    // straighten to -90 deg (due west) once z <= 825; gas throughout
+    ("hand: bridge S (left to -150 deg, west at z 825), gas", true, 9, 0.9),
     // bmode 4 (only with --respawn): press RESPAWN on the first tick (the engine re-places the car at its last credited
     // checkpoint ~1 s later, at that crossing's speed), hold gas through the dead second, then follow the human
     ("RESPAWN, then follow the human", true, 4, 0.9),
@@ -688,6 +691,12 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let (mut st, sg, s_now) = follow_steer_off(cfg, &last, seg, *look, off);
                 if *bmode == 8 && done >= 30 {
                     st = 0.0;
+                }
+                if *bmode == 9 {
+                    let yaw_deg = yaw_of(&last).to_degrees();
+                    let want_deg = if last.z > 825.0 { -150.0 } else { -90.0 };
+                    let err = wrap((want_deg - yaw_deg).to_radians());
+                    st = ((cfg.steer_sign * err / 25f64.to_radians()).clamp(-1.0, 1.0) * 127.0).round() as f32 / 127.0;
                 }
                 seg = sg;
                 let v = speed(&last);
