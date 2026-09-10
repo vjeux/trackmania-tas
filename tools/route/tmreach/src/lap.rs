@@ -514,6 +514,8 @@ pub struct LapCfg {
     pub beat_margin: f64,
     /// coupled sections: LEG DONE only at gate index >= this (--min-leg-gate, default 0)
     pub min_leg_gate: usize,
+    /// --speed-cap-box x1,x2,z1,z2,vmax[;...]: rollouts exceeding vmax inside a box are discarded
+    pub speed_caps: Vec<[f64; 5]>,
     /// hand macro: pure-pursuit points (x y z [speed]) from --pursue FILE; empty = the macro is skipped
     pub pursue: Vec<[f64; 5]>,
     /// hand macro: aim at the first pursue point farther than this (m); --pursue-look, default 8
@@ -936,6 +938,13 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             // off the world / far off the road on a road leg: no cell
             if end.y < cfg.offworld_y {
                 out.deaths[0] += 1;
+                continue;
+            }
+            // --speed-cap-box x1,x2,z1,z2,vmax (repeatable via ;): a rollout that carries more than vmax through the box is not a
+            // cell (18:20Z, Argentina hairpin: the reviewer's brake-before-the-bank hypothesis needs the entry held to 44–48)
+            if cfg.speed_caps.iter().any(|b| rows.iter().any(|r| r.x >= b[0] && r.x <= b[1] && r.z >= b[2] && r.z <= b[3] && speed(r) > b[4])) {
+                out.deaths[1] += 1;
+                dump_rollout(w, base, &rows, "offroute", &desc, &dump_n);
                 continue;
             }
             // the LEG toward the next uncredited gate decides (a jump's flight projects onto whatever road is near)
