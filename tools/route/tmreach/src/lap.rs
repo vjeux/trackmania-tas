@@ -528,6 +528,10 @@ pub struct LapCfg {
     pub tilt_slack: usize,
     /// --tilt70: kill a rollout with >= 70-deg in-contact tilt on >= 30 of any 100 consecutive ticks
     pub tilt70_guard: bool,
+    /// --slide-interim: the live-mask interim rule (<= 2 wheels live and roll > 45 deg) instead of the corrected surface-relative tilt
+    pub slide_interim: bool,
+    /// --live-window t1,t2,min[;...]: rows inside the race window need >= min wheels live
+    pub live_windows: Vec<[f64; 3]>,
     /// hand macro: pure-pursuit points (x y z [speed]) from --pursue FILE; empty = the macro is skipped
     pub pursue: Vec<[f64; 5]>,
     /// hand macro: aim at the first pursue point farther than this (m); --pursue-look, default 8
@@ -971,11 +975,20 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             // for >= 30 of any 100 consecutive ticks kills outright. NaN tilts (air, normal not yet written) are ignored.
             if !cfg.base_tilt.is_empty() || cfg.tilt70_guard {
                 let mut n45 = 0usize; let mut hot: Vec<u8> = Vec::with_capacity(rows.len());
-                for r in &rows { let t = r.vis.wheel_tilt_deg(r.qw, r.qx, r.qy, r.qz); let mut h = 0u8; for k in 0..4 { if t[k].is_finite() { if t[k] >= 45.0 { n45 += 1; } if t[k] >= 70.0 { h = 1; } } } hot.push(h); }
+                // INTERIM RULE (coordinator 22:31Z, the exported wheel normals are in the car frame): a SLIDE tick = <= 2 wheels live AND |gravity roll| > 45 deg
+                // (up_y < 0.707); >= 3 wheels live is legal at any tilt. n45 counts slide ticks (no-regress vs the base's slide ticks), hot = the same flag (>= 30 of 100 kills).
+                for r in &rows {
+                    if cfg.slide_interim { let live = r.vis.wheel_live.iter().filter(|l| **l == 1).count(); let up_y = 1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz); let slide = live <= 2 && up_y < 0.707 && r.vis.ground_contact; if slide { n45 += 1; } hot.push(slide as u8); }
+                    else { let t = r.vis.wheel_tilt_deg(r.qw, r.qx, r.qy, r.qz); let mut h = 0u8; for k in 0..4 { if t[k].is_finite() { if t[k] >= 45.0 { n45 += 1; } if t[k] >= 70.0 { h = 1; } } } hot.push(h); }
+                }
                 let t0 = rows.first().map(|r| w.race_of(r)).unwrap_or(0) / 10; let t1 = rows.last().map(|r| w.race_of(r)).unwrap_or(0) / 10;
                 let base_n = if cfg.base_tilt.is_empty() { usize::MAX } else { let g = |i: i64| -> usize { if i < 0 { 0 } else { cfg.base_tilt.get(i as usize).copied().unwrap_or(*cfg.base_tilt.last().unwrap_or(&0)) } }; g(t1).saturating_sub(g(t0)) };
                 let win70 = if cfg.tilt70_guard { hot.windows(100.min(hot.len().max(1))).map(|s| s.iter().map(|x| *x as usize).sum::<usize>()).max().unwrap_or(0) } else { 0 };
-                if n45 > base_n + cfg.tilt_slack || win70 >= 30 {
+                // INVERSION (parent: illegal everywhere, no allowance): any row with the body up-vector below the horizon (up_y < 0) kills
+                let inverted = rows.iter().any(|r| (1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz)) < 0.0);
+                // --live-window t1,t2,min (repeatable via ;): every row inside the race window must have >= min wheels live (the author's four-wheel hairpin)
+                let live_fail = cfg.live_windows.iter().any(|u| rows.iter().any(|r| { let t = w.race_of(r) as f64 / 1000.0; t >= u[0] && t <= u[1] && (r.vis.wheel_live.iter().filter(|l| **l == 1).count() as f64) < u[2] }));
+                if n45 > base_n + cfg.tilt_slack || win70 >= 30 || inverted || live_fail {
                     out.deaths[1] += 1;
                     if debug_fan { eprintln!("    TILT kill {desc:34}: >=45 ticks {n45} vs base {base_n} (+slack {}), >=70 in 1 s {win70}", cfg.tilt_slack); }
                     dump_rollout(w, base, &rows, "offroute", &desc, &dump_n);
@@ -1582,6 +1595,8 @@ pub fn load_base_tilt(path: &str) -> Vec<usize> {
     let txt = match std::fs::read_to_string(path) { Ok(t) => t, Err(_) => return Vec::new() };
     let mut lines = txt.lines();
     let hdr: Vec<&str> = match lines.next() { Some(h) => h.split('\t').collect(), None => return Vec::new() };
+    // 2-column form "tick\tcum" (a precomputed cumulative slide-tick profile): used as is
+    if hdr.len() == 2 && hdr[1] == "cum" { let mut v = Vec::new(); for l in lines { let f: Vec<&str> = l.split('\t').collect(); if let (Some(t), Some(c)) = (f.get(0).and_then(|x| x.parse::<usize>().ok()), f.get(1).and_then(|x| x.parse::<usize>().ok())) { while v.len() <= t { v.push(*v.last().unwrap_or(&0)); } v[t] = c; } } return v; }
     let col = |n: &str| hdr.iter().position(|h| *h == n);
     let race = match col("race_s") { Some(c) => c, None => return Vec::new() };
     let live: Vec<Option<usize>> = (0..4).map(|k| col(&format!("w{k}_live"))).collect();
