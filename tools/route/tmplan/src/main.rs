@@ -1654,6 +1654,8 @@ fn cmd_arrival_bands(args: &[String]) {
         let human = vj.clone().or(author.clone()).unwrap_or(serde_json::Value::Null);
         let speed = human.get("speed_mps").and_then(|s| s.as_f64()).unwrap_or(0.0) as f32;
         let pos = human.get("pos").and_then(|p| p.as_array()).map(|a| [a[0].as_f64().unwrap_or(0.0) as f32, a[1].as_f64().unwrap_or(0.0) as f32, a[2].as_f64().unwrap_or(0.0) as f32]);
+        // a group can hold several records (linked rings, stacked tower gates): the credit plane is the record the human crossed
+        let g = match pos { Some(p) => gates.gates.iter().filter(|x| x.group == grp).min_by(|a, b| { let da = (a.centre[0] - p[0]).powi(2) + (a.centre[1] - p[1]).powi(2) + (a.centre[2] - p[2]).powi(2); let db = (b.centre[0] - p[0]).powi(2) + (b.centre[1] - p[1]).powi(2) + (b.centre[2] - p[2]).powi(2); da.partial_cmp(&db).unwrap() }).unwrap_or(g), None => g };
         // lateral offset of the human in the plane: signed distance along the plane's in-plane axis (normal × up)
         let lat = pos.map(|p| { let n = g.normal; let ax = [n[2], 0.0, -n[0]]; (p[0] - g.centre[0]) * ax[0] + (p[2] - g.centre[2]) * ax[2] });
         // the deck (where the car sits when it credits) is 4 m under the ring centre on every ring model (F25 measurements)
