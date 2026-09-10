@@ -121,8 +121,11 @@ pub fn write_drivetrain_gear(pid: i32, car: &Car, speed_fwd: f32, rpm: Option<f3
     procmem::write_at(pid, car.phy + PHY_FRONT_SPEED, &speed_fwd.to_le_bytes())?;
     if let Some(r) = rpm { for o in PHY_RPM { procmem::write_at(pid, car.phy + o, &r.to_le_bytes())?; } }
     if let Some(g) = gear { for o in PHY_GEAR { procmem::write_at(pid, car.phy + o, &g.to_le_bytes())?; } }
+    // TMENV_INJECT_WHEEL_RATIO=r overrides the rad/m ratio (all wheels); "0" skips the wheel-speed write.
+    let ratio_override: Option<f32> = std::env::var("TMENV_INJECT_WHEEL_RATIO").ok().and_then(|s| s.parse().ok());
+    if ratio_override == Some(0.0) { return Ok(()); }
     for k in 0..4u64 {
-        let w = speed_fwd * WHEEL_RAD_PER_M[k as usize];
+        let w = speed_fwd * ratio_override.unwrap_or(WHEEL_RAD_PER_M[k as usize]);
         procmem::write_at(pid, car.phy + PHY_WHEEL0 + k * PHY_WHEEL_STRIDE + PHY_WHEEL_ROTSPEED, &w.to_le_bytes())?;
     }
     Ok(())

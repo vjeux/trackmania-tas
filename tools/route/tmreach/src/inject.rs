@@ -207,12 +207,12 @@ pub fn inject_state(w: &mut crate::rig::Worker, h: branch::Handle, st: &InjectSt
     // ENGAGE THE DRIVETRAIN (ENV, player-env a8b31c80): the paused template car is in gear 0 at idle rpm and an injected
     // body inherits it — the engine never drove injected cars (the 32 → 30 m/s decay of the first control). Gear from the
     // file when it carries one, else from the speed (~15 m/s per gear); rpm 8000; wheel speeds for rolling without slip.
-    // OPT-IN for now (TMREACH_INJECT_DRIVETRAIN=1; TMREACH_INJECT_GEAR=N forces the gear): on Tiny 20's three LCP states the
-    // write changed nothing (gates 4 and 9: airborne approaches, gear 1–5 byte-identical) or hurt (gate 7: 23.5 → 17.0 m/s
-    // with any gear ≥ 2, vjeux 24.4) — see model/inject/control/IDENTITY-CONTROL.md; ENV saw 45 → 51 on Poland.
-    if std::env::var("TMREACH_INJECT_DRIVETRAIN").is_ok() {
+    // DEFAULT ON since the gear word is known to be 0-BASED (ENV 10:42Z: 0 = first, 1 = second from ~23 m/s, 2 from ~27–44,
+    // 3 from ~45): word = floor((speed + 3) / 15) capped 4. Gate 7 (26 m/s): word 1 → 23.5 m/s (vjeux 24.4), word 0 → 12.5
+    // and the gate missed, word 2 → 18.3. TMREACH_INJECT_NO_DRIVETRAIN=1 opts out; TMREACH_INJECT_GEAR=N forces the word.
+    if std::env::var("TMREACH_INJECT_NO_DRIVETRAIN").is_err() {
         let sp = st.state.speed_fwd.unwrap_or_else(|| (st.state.vel[0].powi(2) + st.state.vel[1].powi(2) + st.state.vel[2].powi(2)).sqrt());
-        let gear = std::env::var("TMREACH_INJECT_GEAR").ok().and_then(|g| g.parse::<u32>().ok()).or_else(|| st.state.gear.map(|g| g as u32).filter(|g| (1..=5).contains(g))).unwrap_or_else(|| ((sp.abs() / 15.0).floor() as u32 + 1).clamp(1, 5));
+        let gear = std::env::var("TMREACH_INJECT_GEAR").ok().and_then(|g| g.parse::<u32>().ok()).or_else(|| None::<u32>).unwrap_or_else(|| (((sp.abs() + 3.0) / 15.0).floor() as u32).min(4));
         forkoracle::inject::write_drivetrain_gear(pid, &car, sp, Some(8000.0), Some(gear))?;
         if std::env::var("TMREACH_LAP_DEBUG").is_ok() {
             let rd = |o: u64| forkoracle::procmem::read_at(pid, car.phy + o, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])).unwrap_or(u32::MAX);
