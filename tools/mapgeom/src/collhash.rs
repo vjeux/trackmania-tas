@@ -625,3 +625,182 @@ mod diff_tests {
         assert_ne!(one.hex(), super::Fnv::default().hex());
     }
 }
+
+/// `collhash --triage A.Map.Gbx B.Map.Gbx --ghost LAP.Ghost.Gbx --report B-report.tsv [--reach 1.5] [--until S]`
+/// — the sweep triage (2026-09-10): the placements whose collision fingerprint
+/// differs between A (ship15) and B (ship16), paired by index, and for every
+/// lap sample (50 ms) the changed placements whose collision triangles come
+/// within `reach` metres of the car — the surfaces a wall-ride, a rail or a
+/// cap contact can feel. Prints per contact stretch: t0..t1, the placement
+/// (index, B model, source block), A physics → B physics, and the closest
+/// distance. `--until S` stops at the sweep's fail time.
+pub fn triage(store: &mut crate::store::DataStore, rest: &[String]) -> Result<(), String> {
+    let flag = |k: &str| rest.iter().position(|a| a == k).and_then(|i| rest.get(i + 1)).cloned();
+    let paths: Vec<&String> = {
+        let mut out = Vec::new();
+        let mut skip = false;
+        for a in rest.iter().skip(1) {
+            if skip { skip = false; continue; }
+            if a == "--ghost" || a == "--report" || a == "--reach" || a == "--until" { skip = true; continue; }
+            if !a.starts_with("--") { out.push(a); }
+        }
+        out
+    };
+    if paths.len() != 2 {
+        return Err("collhash --triage A B --ghost G --report R".into());
+    }
+    let reach: f32 = flag("--reach").and_then(|s| s.parse().ok()).unwrap_or(1.5);
+    let until: f64 = flag("--until").and_then(|s| s.parse().ok()).unwrap_or(1e9);
+    let gpath = flag("--ghost").ok_or("--ghost LAP.Ghost.Gbx")?;
+    let report: BTreeMap<String, String> = flag("--report")
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|text| {
+            text.lines()
+                .filter_map(|l| {
+                    let c: Vec<&str> = l.split('\t').collect();
+                    ((c[0] == "block" || c[0] == "item" || c[0] == "tree") && c.len() > 4).then(|| (format!("{}.Item.Gbx", c[1]), c[4].to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let ma = tmmaps::map::MapFile::load(std::path::Path::new(paths[0]));
+    let mb = tmmaps::map::MapFile::load(std::path::Path::new(paths[1]));
+    if ma.items.len() != mb.items.len() {
+        return Err(format!("placement counts differ ({} vs {}): no per-index pairing", ma.items.len(), mb.items.len()));
+    }
+    let (a, b) = (summary(&ma), summary(&mb));
+    let (sa, sb) = (shapes(&ma), shapes(&mb));
+    let hist = |p: &BTreeMap<u8, usize>| p.iter().map(|(id, n)| format!("{}:{n}", crate::scene::physics_name(*id))).collect::<Vec<_>>().join(" ");
+    // the changed placements
+    let mut changed: Vec<(usize, String, String)> = Vec::new(); // index, A phys, B phys
+    // per changed placement, the physics NAMES that are new in B (the re-ided triangles)
+    let mut new_ids: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    for (i, (ia, ib)) in ma.items.iter().zip(mb.items.iter()).enumerate() {
+        match (a.per_item.get(&ia.model), b.per_item.get(&ib.model)) {
+            (Some(x), Some(y)) if x != y => {
+                let pa = sa.get(&ia.model).map(|(_, p)| p.clone()).unwrap_or_default();
+                let pb = sb.get(&ib.model).map(|(_, p)| p.clone()).unwrap_or_default();
+                let ha = hist(&pa);
+                let hb = hist(&pb);
+                let mut nn: Vec<String> = pb.keys().filter(|k| pa.get(*k) != pb.get(*k)).map(|k| crate::scene::physics_name(*k).to_string()).collect();
+                if nn.is_empty() { nn = pb.keys().map(|k| crate::scene::physics_name(*k).to_string()).collect(); }
+                new_ids.insert(i, nn);
+                changed.push((i, ha, hb));
+            }
+            _ => {}
+        }
+    }
+    println!("{} placements changed collision between A and B", changed.len());
+    // their world triangles (B's geometry == A's)
+    let mut asm = crate::assemble::Assembler::new(store);
+    asm.with_embedded(&mb).ok();
+    struct Piece { idx: usize, tris: Vec<[[f32; 3]; 3]>, lo: [f32; 3], hi: [f32; 3] }
+    let mut pieces: Vec<Piece> = Vec::new();
+    for (i, _, _) in &changed {
+        let it = &mb.items[*i];
+        let Some(lm) = asm.item_model(&it.model) else { continue };
+        let lm = lm.clone();
+        let xf = crate::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+        let mut tris = Vec::new();
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        let wanted = new_ids.get(i).cloned().unwrap_or_default();
+        for (mat, g) in &lm.scene.groups {
+            if mat == "Visual" { continue; }
+            // only the triangles whose physics CHANGED (the groups carry B's physics names)
+            if !wanted.iter().any(|w| w == mat) { continue; }
+            for t in &g.tris {
+                let w = [crate::geom::apply(&xf, g.verts[t[0] as usize]), crate::geom::apply(&xf, g.verts[t[1] as usize]), crate::geom::apply(&xf, g.verts[t[2] as usize])];
+                for p in &w { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+                tris.push(w);
+            }
+        }
+        if !tris.is_empty() {
+            pieces.push(Piece { idx: *i, tris, lo, hi });
+        }
+    }
+    let d = gbx::record::decode_ghost(&gpath).map_err(|e| format!("{gpath}: {e}"))?;
+    // point-triangle distance
+    fn dist_pt_tri(p: [f32; 3], t: &[[f32; 3]; 3]) -> f32 {
+        let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let (ab, ac, ap) = (sub(t[1], t[0]), sub(t[2], t[0]), sub(p, t[0]));
+        let (d1, d2) = (dot(ab, ap), dot(ac, ap));
+        let closest = if d1 <= 0.0 && d2 <= 0.0 { t[0] } else {
+            let bp = sub(p, t[1]);
+            let (d3, d4) = (dot(ab, bp), dot(ac, bp));
+            if d3 >= 0.0 && d4 <= d3 { t[1] } else {
+                let vc = d1 * d4 - d3 * d2;
+                if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 { let v = d1 / (d1 - d3); [t[0][0] + ab[0] * v, t[0][1] + ab[1] * v, t[0][2] + ab[2] * v] } else {
+                    let cp = sub(p, t[2]);
+                    let (d5, d6) = (dot(ab, cp), dot(ac, cp));
+                    if d6 >= 0.0 && d5 <= d6 { t[2] } else {
+                        let vb = d5 * d2 - d1 * d6;
+                        if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 { let w = d2 / (d2 - d6); [t[0][0] + ac[0] * w, t[0][1] + ac[1] * w, t[0][2] + ac[2] * w] } else {
+                            let va = d3 * d6 - d5 * d4;
+                            if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 { let w = (d4 - d3) / ((d4 - d3) + (d5 - d6)); [t[1][0] + (t[2][0] - t[1][0]) * w, t[1][1] + (t[2][1] - t[1][1]) * w, t[1][2] + (t[2][2] - t[1][2]) * w] } else {
+                                let denom = 1.0 / (va + vb + vc);
+                                let (v, w) = (vb * denom, vc * denom);
+                                [t[0][0] + ab[0] * v + ac[0] * w, t[0][1] + ab[1] * v + ac[1] * w, t[0][2] + ab[2] * v + ac[2] * w]
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        let q = sub(p, closest);
+        dot(q, q).sqrt()
+    }
+    println!("t0\tt1\tplacement\tB_model\tsource_block\tA_physics\tB_physics\tmin_dist_m\tcar_y");
+    // per placement: contact stretches
+    let mut open: BTreeMap<usize, (f64, f64, f32, f32)> = BTreeMap::new(); // idx -> (t0, t1, mind, y)
+    let mut rows: Vec<(f64, f64, usize, f32, f32)> = Vec::new();
+    for s in &d.samples {
+        let t = s.time_ms as f64 / 1000.0;
+        if t > until { break; }
+        let p = [s.x, s.y, s.z];
+        let mut here: Vec<(usize, f32)> = Vec::new();
+        for pc in &pieces {
+            if p[0] < pc.lo[0] - reach || p[0] > pc.hi[0] + reach || p[1] < pc.lo[1] - reach - 1.0 || p[1] > pc.hi[1] + reach + 1.0 || p[2] < pc.lo[2] - reach || p[2] > pc.hi[2] + reach { continue; }
+            // the car: the sample is its centre (~0.35 m above the wheel contacts); probe
+            // the four wheel contact points (±0.9 m lateral, ±1.3 m longitudinal, −0.35 m)
+            // and the centre itself — a rail beside the car touches a wheel, not the centre
+            let (sy, cy) = (s.yaw.sin(), s.yaw.cos());
+            let fwd = [sy, 0.0, cy];
+            let right = [cy, 0.0, -sy];
+            let mut probes: Vec<[f32; 3]> = vec![p, [p[0], p[1] - 0.5, p[2]]];
+            for (lon, lat) in [(1.3f32, 0.9f32), (1.3, -0.9), (-1.3, 0.9), (-1.3, -0.9)] {
+                probes.push([p[0] + fwd[0] * lon + right[0] * lat, p[1] - 0.35, p[2] + fwd[2] * lon + right[2] * lat]);
+            }
+            let mut best = f32::MAX;
+            for tri in &pc.tris {
+                for q in &probes {
+                    let d1 = dist_pt_tri(*q, tri);
+                    if d1 < best { best = d1; }
+                }
+            }
+            if best <= reach { here.push((pc.idx, best)); }
+        }
+        let now: std::collections::BTreeSet<usize> = here.iter().map(|(i, _)| *i).collect();
+        for (i, dmin) in &here {
+            let e = open.entry(*i).or_insert((t, t, *dmin, s.y));
+            e.1 = t;
+            if *dmin < e.2 { e.2 = *dmin; e.3 = s.y; }
+        }
+        let closed: Vec<usize> = open.keys().filter(|k| !now.contains(k)).cloned().collect();
+        for k in closed {
+            let (t0, t1, dmin, y) = open.remove(&k).unwrap();
+            rows.push((t0, t1, k, dmin, y));
+        }
+    }
+    for (k, (t0, t1, dmin, y)) in open {
+        rows.push((t0, t1, k, dmin, y));
+    }
+    rows.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap());
+    for (t0, t1, k, dmin, y) in rows {
+        let (_, ha, hb) = changed.iter().find(|(i, _, _)| *i == k).unwrap();
+        let it = &mb.items[k];
+        let src = report.get(&it.model).cloned().unwrap_or_default();
+        println!("{t0:.2}\t{t1:.2}\ti{k}\t{}\t{}\t{ha}\t{hb}\t{dmin:.2}\t{y:.2}", it.model, src);
+    }
+    Ok(())
+}

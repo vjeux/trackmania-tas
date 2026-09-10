@@ -1180,7 +1180,14 @@ fn main() {
             report(&c.stats, &c.scene);
             write_scene(&c.scene, &out);
         }
-        "collhash" => mapgeom::collhash::run(&a.rest).unwrap_or_else(die),
+        "collhash" => {
+            if a.rest.iter().any(|x| x == "--triage") {
+                let mut store = open(&a);
+                mapgeom::collhash::triage(&mut store, &a.rest).unwrap_or_else(die);
+            } else {
+                mapgeom::collhash::run(&a.rest).unwrap_or_else(die);
+            }
+        }
         // the embedded archive + manifest of a map, verified field by field (zipcheck.rs)
         "zipcheck" => mapgeom::zipcheck::run(&a.rest).unwrap_or_else(die),
         "items" => {
