@@ -90,9 +90,9 @@ https://github.com/user-attachments/assets/852cae15-dd20-4036-b01e-f02971d26797
 
 **Tiny Summer 2026 - 20** — original author time `50.598` · *no lap yet*
 
-**Tiny Argentina 2026** — original author time `78.988` · tiny ghost **122.376** (build ship15, controls overlay)
+**Tiny Argentina 2026** — original author time `78.988` · tiny ghost **122.318** (build ship15, controls overlay)
 
-https://github.com/user-attachments/assets/7186c2a4-d3c9-491c-903f-97e7d77451c4
+https://github.com/user-attachments/assets/a7c95dbb-eff4-4e0a-8928-7b05ec62e68f
 
 **Tiny Saudi Arabia 2026** — original author time `73.418` · tiny ghost **96.298** (build ship15, controls overlay)
 
