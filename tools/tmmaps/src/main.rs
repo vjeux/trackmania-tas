@@ -112,6 +112,7 @@ fn main() {
         // ---- w612: write ONE map with several grid blocks moved.
         "rotate" => rotate::cmd(&args),
         "move" => ladder::move_blocks(&args),
+        "blockprobe" => ladder::blockprobe(&args),
         "oracle" => ladder::oracle_stage(&args),
         "roundtrip" => controls::cmd_roundtrip(&args),
         "bodydiff" => splice::cmd_bodydiff(&args),

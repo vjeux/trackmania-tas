@@ -738,3 +738,94 @@ pub fn rungspec(args: &[String]) {
             println!("{}   # t={:.0}", line, t);
         }
 }
+
+/// `tmmaps blockprobe MAP --out F --block ARCHIVE/PATH.Block.Gbx --archetype NAME [--shift-y DY]`
+/// — the water-volume probe of an embedded CUSTOM BLOCK (2026-09-10): re-point
+/// one embedded `.Block.Gbx` at another ARCHETYPE block info (the pack block
+/// whose units, clips and water volumes the custom block borrows; the string
+/// must have the SAME LENGTH as the file's, the file is patched in place —
+/// the TMX custom blocks are uncompressed Gbx) and, optionally, move its mesh
+/// (every vertex position's y, so a solid deck gets out of the volume's way).
+/// The map's zip is rebuilt with the patched file; manifest and placements
+/// are untouched, so every placement of that block now instantiates the new
+/// archetype.
+pub fn blockprobe(args: &[String]) {
+    let src = PathBuf::from(args.get(2).expect("blockprobe MAP --out F --block P --archetype NAME [--shift-y DY]"));
+    let out = PathBuf::from(flag(args, "--out").expect("--out F"));
+    let which = flag(args, "--block").expect("--block ARCHIVE/PATH.Block.Gbx").to_string();
+    let arche = flag(args, "--archetype").expect("--archetype NAME").to_string();
+    let shift_y: f32 = flag(args, "--shift-y").map(|s| s.parse().expect("--shift-y")).unwrap_or(0.0);
+    let mut m = map::MapFile::load(&src);
+    let (zip, names) = tmmaps::header::embedded_zip_bytes(&m.gbx.body).expect("map has no embedded zip");
+    let entries = tmmaps::header::zip_entries(&zip);
+    let (name, bytes) = entries
+        .iter()
+        .find(|(n, _)| n.replace('\\', "/").eq_ignore_ascii_case(&which.replace('\\', "/")))
+        .unwrap_or_else(|| panic!("--block {which}: not in the archive ({} entries: {})", names.len(), names.iter().take(5).cloned().collect::<Vec<_>>().join(", ")))
+        .clone();
+    assert!(bytes.len() > 12 && &bytes[0..3] == b"GBX" && bytes[7] == b'U', "{name}: not an uncompressed Gbx (this probe patches bytes in place)");
+    // the archetype: every length-prefixed occurrence of the current one
+    let mut patched = bytes.clone();
+    let old = find_lookback_strings(&patched);
+    let cur = old.iter().find(|(_, s)| s.starts_with("Platform") || s.starts_with("Road") || s.starts_with("Deco")).map(|(_, s)| s.clone()).expect("no archetype-looking string in the block file");
+    assert_eq!(cur.len(), arche.len(), "archetype {arche:?} must have the length of the file's {cur:?}");
+    let mut n = 0;
+    let mut i = 0;
+    while i + 4 + cur.len() <= patched.len() {
+        if u32::from_le_bytes(patched[i..i + 4].try_into().unwrap()) as usize == cur.len() && &patched[i + 4..i + 4 + cur.len()] == cur.as_bytes() {
+            patched[i + 4..i + 4 + cur.len()].copy_from_slice(arche.as_bytes());
+            n += 1;
+            i += 4 + cur.len();
+        } else {
+            i += 1;
+        }
+    }
+    println!("  {name}: archetype {cur} -> {arche} ({n} occurrences)");
+    if shift_y != 0.0 {
+        // CPlugVertexStream positions: after the chunk 0x09056000 header the
+        // stream's f32 triplets; the simplest faithful move is every f32 that
+        // sits in a position slot — found by the stream's own layout: locate
+        // the vertex count and the position array (see mapgeom vstream.rs);
+        // here: shift every triplet whose y lies within the block's own
+        // height range (0..=8 m for a platform), which spares normals (unit
+        // length, |y| <= 1 — also inside the range, so the range starts above 1).
+        let mut k = 0usize;
+        let mut moved = 0;
+        while k + 12 <= patched.len() {
+            let y = f32::from_le_bytes(patched[k + 4..k + 8].try_into().unwrap());
+            let x = f32::from_le_bytes(patched[k..k + 4].try_into().unwrap());
+            let z = f32::from_le_bytes(patched[k + 8..k + 12].try_into().unwrap());
+            if y > 1.5 && y <= 8.5 && x.abs() <= 33.0 && z.abs() <= 33.0 && (x.fract() == 0.0 || (x * 8.0).fract() == 0.0) && (z * 8.0).fract() == 0.0 {
+                patched[k + 4..k + 8].copy_from_slice(&(y + shift_y).to_le_bytes());
+                moved += 1;
+                k += 12;
+            } else {
+                k += 4;
+            }
+        }
+        println!("  {name}: {moved} vertex positions shifted by {shift_y} in y");
+    }
+    let mut files: std::collections::BTreeMap<String, Vec<u8>> = entries.into_iter().collect();
+    files.insert(name.clone(), patched);
+    let zip2 = tmmaps::header::deflated_zip(&files);
+    m.replace_embedded_zip_keep_manifest(&zip2);
+    m.write_to(&out).expect("write");
+    println!("  wrote {} ({} archive entries)", out.display(), files.len());
+}
+
+/// Every GBX length-prefixed string (u32 len 1..=64 then that many printable
+/// bytes) with its offset — good enough to find a block file's archetype id.
+fn find_lookback_strings(b: &[u8]) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 4 < b.len() {
+        let n = u32::from_le_bytes(b[i..i + 4].try_into().unwrap()) as usize;
+        if (3..=64).contains(&n) && i + 4 + n <= b.len() && b[i + 4..i + 4 + n].iter().all(|c| c.is_ascii_graphic() || *c == b' ') {
+            out.push((i, String::from_utf8_lossy(&b[i + 4..i + 4 + n]).to_string()));
+            i += 4 + n;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}

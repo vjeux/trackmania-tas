@@ -1851,7 +1851,13 @@ fn main() {
             let mut water: Vec<([f32; 3], [f32; 3], [f32; 3], String)> = Vec::new();
             let mut push_model = |xf: &mapgeom::geom::Xform, lm: &mapgeom::assemble::LocalModel, who: &str, water: &mut Vec<([f32; 3], [f32; 3], [f32; 3], String)>| {
                 for (mat, g) in &lm.scene.groups {
-                    if mat != "Water" {
+                    // a ship14/15 tiny re-flags its water plates 28 — they sit in the
+                    // "NotCollidable" group; count them as water when the model is a
+                    // water block's (05's RoadWater / WaterGrassRampRoad decks have no
+                    // Water-material visual, so the name is the only tell — 2026-09-10,
+                    // the 18.298 lap read 3 lid samples where the car rode 24)
+                    let water_named = who.to_ascii_lowercase().contains("water");
+                    if !(mat == "Water" || (mat == "NotCollidable" && water_named)) {
                         continue;
                     }
                     for t in &g.tris {
@@ -1875,12 +1881,46 @@ fn main() {
                 let lm = lm.clone();
                 push_model(&xf, &lm, &format!("block {} {}", b.index, b.name), &mut water);
             }
+            // --plates OUT.tsv: every water-plate PLACEMENT as a row (item index, model,
+            // source block, position, yaw, plane y, x/z footprint) — the machine-readable
+            // water table for the player project's trace census (2026-09-10)
+            let plates_out = flag(&a.rest, "--plates");
+            let mut plate_rows: Vec<String> = Vec::new();
+            for it in &m.items {
+                let Some(lm) = asm.item_model(&it.model) else { continue };
+                let lm = lm.clone();
+                let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                let src = names.get(&it.model).map(|s| format!(" = {s}")).unwrap_or_default();
+                let before = water.len();
+                push_model(&xf, &lm, &format!("item i{} {}{src}", it.index, it.model), &mut water);
+                if plates_out.is_some() && water.len() > before {
+                    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                    for (p0, p1, p2, _) in &water[before..] {
+                        for p in [p0, p1, p2] {
+                            for k in 0..3 {
+                                lo[k] = lo[k].min(p[k]);
+                                hi[k] = hi[k].max(p[k]);
+                            }
+                        }
+                    }
+                    plate_rows.push(format!("{}\t{}\t{}\t{:.2}\t{:.2}\t{:.2}\t{:.4}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}", it.index, it.model, names.get(&it.model).cloned().unwrap_or_default(), it.pos[0], it.pos[1], it.pos[2], it.yaw, hi[1], lo[0], hi[0], lo[2], hi[2], water.len() - before));
+                }
+            }
+            if let Some(out) = plates_out {
+                let mut text = String::from("item_index\tmodel\tsource_block\tx\ty\tz\tyaw\tplane_y\txmin\txmax\tzmin\tzmax\twater_tris\n");
+                for r in &plate_rows { text.push_str(r); text.push('\n'); }
+                std::fs::write(&out, text).unwrap_or_else(|e| die(format!("{out}: {e}")));
+                eprintln!("{}: {} water-plate placements -> {out}", p, plate_rows.len());
+            }
+            // (the per-item loop above replaced the plain one)
+            if false {
             for it in &m.items {
                 let Some(lm) = asm.item_model(&it.model) else { continue };
                 let lm = lm.clone();
                 let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
                 let src = names.get(&it.model).map(|s| format!(" = {s}")).unwrap_or_default();
                 push_model(&xf, &lm, &format!("item i{} {}{src}", it.index, it.model), &mut water);
+            }
             }
             let (mut on, mut under, mut clear, mut n, mut lid) = (0usize, 0usize, 0usize, 0usize, 0usize);
             let mut on_stretch: Vec<(f64, f64, f32, String)> = Vec::new();

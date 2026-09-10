@@ -2306,6 +2306,24 @@ impl MapFile {
         }
     }
 
+    /// Replace only the ZIP of 0x03043054 and keep the manifest bytes as they
+    /// are — for a map whose manifest is not the tiny library's ident = author
+    /// form (a TMX map with custom BLOCKS). The zip is preceded by its u32 length
+    /// and followed by the chunk's 4-byte tail, both kept.
+    pub fn replace_embedded_zip_keep_manifest(&mut self, zip: &[u8]) {
+        let (_, _, payload, size) = crate::gbx::all_skip_chunks(&self.gbx.body)
+            .into_iter()
+            .find(|(cid, ..)| *cid == 0x0304_3054)
+            .expect("map has no embedded-objects chunk 0x03043054");
+        let seg = &self.gbx.body[payload..payload + size];
+        let z = seg.windows(4).position(|w| w == b"PK\x03\x04").expect("no zip in the embedded-objects chunk");
+        let old_len = u32::from_le_bytes(seg[z - 4..z].try_into().unwrap()) as usize;
+        let mut b = Vec::with_capacity(zip.len() + 4);
+        b.extend_from_slice(&(zip.len() as u32).to_le_bytes());
+        b.extend_from_slice(zip);
+        self.raw_splices.push(((payload + z - 4, payload + z + old_len), b));
+    }
+
     /// Replace the embedded-object manifest and ZIP in 0x03043054.
     /// The manifest lists item Idents only; support files (prefabs, materials)
     /// are ordinary ZIP entries and need no manifest row.
