@@ -37,6 +37,9 @@ use std::time::{Duration, Instant};
 
 const STORE: &str = "/mnt/c/Users/vjeux/OpenplanetNext";
 const MAPS_SHOOT: &str = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot";
+/// The junction's target: where a staged map's bytes are written (a plain NTFS
+/// write, no OneDrive); `MAPS_SHOOT` is the alias the game loads it through.
+pub const SHOOT_TARGET: &str = "/mnt/c/tm/_shoot";
 pub const POWERSHELL: &str = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
 const SHOTDPI: &str = "C:\\Users\\vjeux\\shotdpi.ps1";
 
@@ -474,16 +477,28 @@ impl Drop for LockGuard {
 /// Copy the map under `Maps/_shoot/` unless it is already there. The copy goes
 /// through a plain write so a OneDrive lock on a chunk file cannot leave a
 /// half-written map behind under a good name.
+///
+/// WHERE THE BYTES GO (2026-09-10). `Maps\_shoot` is a directory JUNCTION to
+/// `C:\tm\_shoot` (`tools/tinyctl/box/shoot-junction.sh`): the game loads a map
+/// only from under its user tree, and OneDrive syncs every write into that
+/// tree — a 6 MB stage took ~10 min and a 35 MB one ~14 min on a full C:.
+/// OneDrive does not follow reparse points, so the bytes are written to the
+/// junction's TARGET (a plain NTFS write) and the game is handed the alias
+/// path, which resolves to the same file. When the target directory is not
+/// there (the junction was never made on this box), the write goes into the
+/// OneDrive path as before, so nothing breaks — only slows.
 pub fn stage_map(map: &str) -> Result<String, String> {
     let wsl = if let Some(rest) = map.strip_prefix("C:/") { format!("/mnt/c/{rest}") } else { map.to_string() };
-    if wsl.starts_with(MAPS_SHOOT) {
-        return Ok(wsl);
-    }
     let name = Path::new(&wsl).file_name().and_then(|n| n.to_str()).ok_or_else(|| format!("{map}: no file name"))?;
-    let dst = format!("{MAPS_SHOOT}/{name}");
+    if wsl.starts_with(MAPS_SHOOT) || wsl.starts_with(SHOOT_TARGET) {
+        // already staged: hand the game the alias it can load from
+        return Ok(format!("{MAPS_SHOOT}/{name}"));
+    }
+    let write_dir = if Path::new(SHOOT_TARGET).is_dir() { SHOOT_TARGET } else { MAPS_SHOOT };
+    let dst = format!("{write_dir}/{name}");
     let data = std::fs::read(&wsl).map_err(|e| format!("{wsl}: {e}"))?;
-    std::fs::create_dir_all(MAPS_SHOOT).map_err(|e| format!("{MAPS_SHOOT}: {e}"))?;
-    let tmp = format!("{MAPS_SHOOT}/.{name}.tmp");
+    std::fs::create_dir_all(write_dir).map_err(|e| format!("{write_dir}: {e}"))?;
+    let tmp = format!("{write_dir}/.{name}.tmp");
     std::fs::write(&tmp, &data).map_err(|e| format!("{tmp}: {e}"))?;
     // OneDrive takes a fresh file for a moment (scan/upload) and the rename
     // through the 9P mount answers EACCES while it holds it (Summer 07: the
@@ -507,7 +522,9 @@ pub fn stage_map(map: &str) -> Result<String, String> {
     if back != data {
         return Err(format!("{dst}: the staged copy does not match the source ({} vs {} bytes)", back.len(), data.len()));
     }
-    Ok(dst)
+    // the game is handed the alias under its user tree, whichever directory
+    // the bytes went to (the two are the same directory through the junction)
+    Ok(format!("{MAPS_SHOOT}/{name}"))
 }
 
 /// Ask the probe plugin for the editor's item/block census and wait for its

@@ -375,6 +375,34 @@ A fresh boot reads 0; a rejected `EditMap` flips it to 2 within a second. Three
 sessions reported `"latestResult":2` verbatim without decoding it and went
 looking at Nadeo, the GPU and the title pack instead. **Decode it first.**
 
+## 2026-09-10: `Maps\_shoot` is a junction — staging never goes through OneDrive
+
+The rule above stands (the game loads only from under `…\Documents\Trackmania\`),
+and that tree is a OneDrive folder: every staged map was synced as it was
+written. On a 100 %-full C: with 486 staged copies (7.1 GB) in `_shoot`, a
+6 MB stage took ~10 min and a 35 MB one ~14 min (lock at 0 s → `map …` at
+835 s; the editor load itself 6 s). Every render, shootset and lineup paid it.
+
+So `Maps\_shoot` is now a **directory junction** (`mklink /J`) whose target is
+**`C:\tm\_shoot`**, outside the OneDrive tree. OneDrive does not follow reparse
+points, so a write there is a plain NTFS write; the game is handed the alias
+path and resolves it to the same file. Made by
+`tools/tinyctl/box/shoot-junction.sh` (under the render lock; moves what is in
+`_shoot`, md5-verifies, `rmdir`, `mklink /J`, then times a 35 MB write and does
+one `shootctl probe --how edit` of a map through the alias — the verdict is in
+`~/shoot/shoot-junction.log`).
+
+`shootctl`'s `stage_map` writes the bytes to the junction's target
+(`SHOOT_TARGET = /mnt/c/tm/_shoot`) when that directory exists and returns the
+alias (`…/Maps/_shoot/<name>`) for the game; without the target directory it
+writes into the OneDrive path as before (slow, not broken). `tinyctl`'s render
+loop stages through `shootctl render`, so it inherits this.
+
+Keep `_shoot` small anyway: it held 486 files of other threads' one-off shoots.
+`find … -mmin +1440 -delete` on it is always safe — every copy is re-stageable
+from `~/shoot/_stage` or its owner's box, and a render stages its own copy and
+removes it afterwards.
+
 ## 2026-08-26: the bridge daemon can fill the disk by itself
 
 `navi-node` — the WhiteStick bridge — crash-loops with SIGABRT, and it holds

@@ -174,8 +174,11 @@ fn render(opts: &Opts, t0: Instant) -> Result<(String, u64, f64), String> {
             }
         }
         // The Maps/_shoot copy `stage_map` made is a copy of the staged file;
-        // the next render stages it again from `_stage` in a second.
-        if staged != opts.map && !opts.map.starts_with(MAPS_SHOOT) {
+        // the next render stages it again from `_stage` in a second. A map
+        // given under the alias OR under the junction's target is the caller's
+        // own file (the two paths are one directory) and is left alone.
+        let own = |p: &str| p.starts_with(MAPS_SHOOT) || p.starts_with(super::shootset::SHOOT_TARGET) || p.starts_with("C:/tm/_shoot") || p.starts_with("C:/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot");
+        if staged != opts.map && !own(&opts.map) {
             match std::fs::remove_file(&staged) {
                 Ok(()) => println!("{} removed the staged copy {}", el(), staged),
                 Err(e) => println!("{} could not remove {staged}: {e}", el()),
