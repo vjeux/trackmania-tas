@@ -693,10 +693,21 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                     st = 0.0;
                 }
                 if *bmode == 9 {
+                    // iteration 3: pure pursuit on the author's points through the S, then due west
                     let yaw_deg = yaw_of(&last).to_degrees();
-                    let want_deg = if last.z > 825.0 { -150.0 } else { -90.0 };
+                    let want_deg = if last.z > 843.0 { (855.0 - last.x).atan2(841.0 - last.z).to_degrees() }
+                        else if last.z > 829.0 { (843.0 - last.x).atan2(827.0 - last.z).to_degrees() }
+                        else if last.x > 836.0 { (835.0 - last.x).atan2(824.0 - last.z).to_degrees() }
+                        // iteration 5: the right turn starts ON the bridge (author: (830, 823.5) (826, 824.5) (821, 826) (817, 828) (813, 831))
+                        else if last.x > 828.0 { (826.0 - last.x).atan2(824.5 - last.z).to_degrees() }
+                        else if last.x > 822.0 { (819.0 - last.x).atan2(827.0 - last.z).to_degrees() }
+                        else if last.x > 816.0 { (813.0 - last.x).atan2(831.0 - last.z).to_degrees() }
+                        else if last.x > 810.0 { (807.0 - last.x).atan2(835.5 - last.z).to_degrees() }
+                        else if last.x > 798.0 { (797.0 - last.x).atan2(843.0 - last.z).to_degrees() }
+                        else { (785.0 - last.x).atan2(849.0 - last.z).to_degrees() };
                     let err = wrap((want_deg - yaw_deg).to_radians());
-                    st = ((cfg.steer_sign * err / 25f64.to_radians()).clamp(-1.0, 1.0) * 127.0).round() as f32 / 127.0;
+                    // iteration 6: sharper gain (full lock at 10 deg of error) — at 22 m/s the 25-deg gain turned 3 m in 16 m
+                    st = ((cfg.steer_sign * err / 10f64.to_radians()).clamp(-1.0, 1.0) * 127.0).round() as f32 / 127.0;
                 }
                 seg = sg;
                 let v = speed(&last);
