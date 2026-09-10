@@ -512,6 +512,8 @@ pub struct LapCfg {
     /// polish: reference lap race times per gate (s), credit order; an arrival must beat them by beat_margin (--beat-times FILE)
     pub beat_times: Vec<f64>,
     pub beat_margin: f64,
+    /// coupled sections: LEG DONE only at gate index >= this (--min-leg-gate, default 0)
+    pub min_leg_gate: usize,
     /// hand macro: pure-pursuit points (x y z [speed]) from --pursue FILE; empty = the macro is skipped
     pub pursue: Vec<[f64; 5]>,
     /// hand macro: aim at the first pursue point farther than this (m); --pursue-look, default 8
@@ -1090,6 +1092,8 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 // a rollout that credits MORE than the next gate within its horizon is judged at its LAST credit (cumulative time):
                 // 21 wp7 → wp17 is slower than the lap but wp17 → wp1 much faster — the cumulative beat at wp1 counts (14:50Z)
                 let k_eff = (k_pref).max(end.cps as usize).min(track.n_groups);
+                // --min-leg-gate N (coupled sections): an arrival counts as LEG DONE only at gate >= N; earlier credits stay cells
+                let coupled_ok = k_eff >= cfg.min_leg_gate;
                 let beats = match cfg.beat_times.get(k_eff.saturating_sub(1)) {
                     // judged at the rollout END (clinic rollouts stop at the credit): the credit row of a seed-child rollout can carry a stale race
                     Some(t_ref) => (w.race_of(&end).max(w.race_of(&cr)) as f64) / 1000.0 <= *t_ref - cfg.beat_margin,
@@ -1098,7 +1102,10 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 if !beats {
                     out.log.push(format!("arrival at gate {} at race {:.2} s does not beat the reference {:.2} s — kept as a cell", k_eff, (w.race_of(&end).max(w.race_of(&cr)) as f64) / 1000.0, cfg.beat_times[k_eff - 1]));
                 }
-                if beats && (on_band || (!fell && !stopped && !cfg.arrival_strict)) {
+                if !coupled_ok {
+                    out.log.push(format!("arrival at gate {} kept as a cell (coupled section: LEG DONE only at gate >= {})", k_eff, cfg.min_leg_gate));
+                }
+                if coupled_ok && beats && (on_band || (!fell && !stopped && !cfg.arrival_strict)) {
                     out.log.push(format!("LEG DONE: gate {} (order position {}) credited with a good arrival at race {}: s {s:.1} lat {lat:.1} v {v:.1} (human {vh:.1}) after {} ticks ({} macros)", k_pref, k_pref - 1, crate::secs(w.race_of(&end)), e.chain.len(), e.macro_desc.len()));
                     out.leg_done = Some(k_eff);
                     out.finished = Some(e.clone());
