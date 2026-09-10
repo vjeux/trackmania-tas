@@ -90,6 +90,8 @@ https://github.com/user-attachments/assets/852cae15-dd20-4036-b01e-f02971d26797
 
 **Tiny Summer 2026 - 20** — original author time `50.598` · tiny ghost **84.954** (build ship15, controls overlay)
 
+*latest lap **75.595** (build ship15) — held (opening rework (coordinator 18:55Z))*
+
 https://github.com/user-attachments/assets/792c18af-89eb-4817-8b5a-c37176f1efa6
 
 **Tiny Argentina 2026** — original author time `78.988` · tiny ghost **115.478** (build ship15, controls overlay)
@@ -98,7 +100,7 @@ https://github.com/user-attachments/assets/61a5b88c-15ce-46e5-9b23-b60f3a4bbe29
 
 **Tiny Saudi Arabia 2026** — original author time `73.418` · tiny ghost **96.298** (build ship15, controls overlay)
 
-*latest lap **82.652** (build ship15) — held (awaiting the opening check (coordinator 18:45Z) — render only, no upload)*
+*latest lap **82.652** (build ship15) — held (staged — awaiting the opening check (coordinator 18:45Z))*
 
 https://github.com/user-attachments/assets/2bb4c108-dd6b-4c5c-a26d-f8ef253cdf2e
 
