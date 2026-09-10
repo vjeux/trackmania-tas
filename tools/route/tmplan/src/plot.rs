@@ -191,12 +191,20 @@ pub fn read_chains(path: &str) -> Result<Vec<Chain>, String> {
     let txt = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
     let mut map: BTreeMap<String, Chain> = BTreeMap::new();
     let mut order: Vec<String> = Vec::new();
+    // header-aware: columns named chain, t, x, y, z, v|speed, cause|end|status (any order, extra columns ignored); no header = positional
+    let mut col: Vec<usize> = vec![0, 1, 2, 3, 4, 5, 6];
     for line in txt.lines() {
         let f: Vec<&str> = line.split(|c| c == '\t' || c == ' ' || c == ',').filter(|s| !s.is_empty()).collect();
-        if f.len() < 6 || f[1].parse::<f32>().is_err() { continue; }
-        let id = f[0].to_string();
-        let row = ChainRow { t: f[1].parse().unwrap_or(0.0), p: [f[2].parse().unwrap_or(0.0), f[3].parse().unwrap_or(0.0), f[4].parse().unwrap_or(0.0)], v: f[5].parse().unwrap_or(0.0) };
-        let cause = f.get(6).map(|s| s.trim().to_lowercase()).unwrap_or_default();
+        if f.len() >= 6 && f[1].parse::<f32>().is_err() {
+            let find = |names: &[&str]| names.iter().find_map(|n| f.iter().position(|h| h.eq_ignore_ascii_case(n)));
+            if let (Some(c), Some(t), Some(x), Some(y), Some(z), Some(v)) = (find(&["chain", "id"]), find(&["t", "time", "t_s"]), find(&["x"]), find(&["y"]), find(&["z"]), find(&["v", "speed", "v_mps"])) { col = vec![c, t, x, y, z, v, find(&["cause", "end", "status", "end_cause"]).unwrap_or(usize::MAX)]; }
+            continue;
+        }
+        if f.len() < 6 || f.get(col[1]).and_then(|s| s.parse::<f32>().ok()).is_none() { continue; }
+        let g = |i: usize| f.get(col[i]).copied().unwrap_or("");
+        let id = g(0).to_string();
+        let row = ChainRow { t: g(1).parse().unwrap_or(0.0), p: [g(2).parse().unwrap_or(0.0), g(3).parse().unwrap_or(0.0), g(4).parse().unwrap_or(0.0)], v: g(5).parse().unwrap_or(0.0) };
+        let cause = if col[6] == usize::MAX { String::new() } else { g(6).trim().to_lowercase() };
         let e = map.entry(id.clone()).or_insert_with(|| { order.push(id.clone()); Chain { id: id.clone(), rows: Vec::new(), cause: String::new() } });
         e.rows.push(row);
         if !cause.is_empty() { e.cause = cause; }
