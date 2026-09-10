@@ -897,6 +897,61 @@ the render box with one-item lineups and item moves on a copy of the original:
   has no clip fillers and misses the generated plates).
 
 
+## Water, solved for the tiny: free custom BLOCKS carry the engine's water volume (ship17, 2026-09-10 23:00Z)
+
+The engine's water is a BLOCK property: the volume the archetype block info declares gives the drag,
+the Water material under the wheels and the tint. An item plate is nothing to the car (measured
+above). An EMBEDDED CUSTOM BLOCK (`CGameBlockItem`, the TMX custom-block form) instantiates its
+ARCHETYPE's volume at the block's own position — measured with the TMX 210218 wood platform block
+re-pointed at `WaterIceCornerIn` (a car falling through its cell read Water 13 and decelerated against
+gravity), then on tiny maps with `WaterBase` and `DecoWallWaterBase`.
+
+What it takes (all on main; `mapgeom waterblocks` does it per map, `tinyctl` should call it):
+1. A block file: the wood platform (`tinyctl/assets/water-template.Block.Gbx`, its deck moved 200 m
+   down with `mapgeom vstream-shift` so it is never seen or reached), re-pointed with
+   `mapgeom blockitem-archetype IN --out OUT --archetype NAME` (every length-prefixed occurrence of the
+   archetype string; the header chunk sizes and header size grow with the delta — the body strings sit
+   in non-skippable chunks), and RENAMED to the manifest ident (`rename_ident`, header + body): the game
+   pairs an embedded block with its manifest row by the FILE'S OWN IDENT, not the archive path —
+   unrenamed, the records are silently dropped (the frame shows nothing where the deck should be).
+2. Archive entry `Blocks/Water/<Archetype>.Block.Gbx` + manifest row (`Water\<Archetype>.Block.Gbx`,
+   collection, the file's author uid); block record `Water\<Archetype>.Block.Gbx_CustomBlock`, flags
+   `0x10208000 | FREE (0x20000000)`, author = the manifest author, null skin ref, one 0x0304305F entry
+   (position + zero rotation). `tmmaps addblock` / `MapFile::remove_and_add_blocks` append such records,
+   re-encoding the body-level Id table together with the baked chunk and growing 0x62/0x68/0x69.
+   FREE placement works for custom blocks (grid too).
+3. The volume band relative to the block origin (the free position's y), measured: WaterBase +3..+7
+   (a car at origin +3.5 reads Water, at +0.5 nothing), DecoWallWaterBase −1..+7 (Water at 1.5 m and
+   5 m under the plane). So the block origin goes at plane − 7 and the band reaches 4 m (WaterBase) /
+   8 m (DecoWallWaterBase) under the plane — full-size depths under a half-size pool.
+4. Tiling: a pool = the plates of one archetype family at one plane; its 16-m cells indexed RELATIVE
+   to the pool's min corner (the tiny grid is anchor-offset, not aligned to world multiples of 16);
+   32-m blocks on a lattice, four lattice offsets tried, the one whose ACCEPTED blocks cover the most
+   water cells wins. A block is accepted only if (a) its spilled cells (covered but not water) hold no
+   non-water upward surface within the band outside every water footprint, (b) at most a quarter of the
+   spill samples would show the water sheet in the air (nothing within 0.6 m under the plane and
+   nothing above it), (c) the SOURCE census has no drivable block (Road*/Platform*/OpenTech*/
+   DecoPlatform*/Stand*/Track*, not FC clips, pillars or water) in the cells under the water body's own
+   cell layer `round((plane_source − 7 + 64) / 8)` within the band. Otherwise the pool keeps the 13-item
+   and the disclosure "no water drag here". A height heuristic for "the pool floor" from the tiny
+   geometry does not work (ramps inside pools, pillar tops) — the source census does.
+
+Measured on tiny 05 (block pool at (704–736, plane 12.5, 560–592)): at rest 0.5 m under the plane the
+wheels read Water 13 (Asphalt/nothing without the block); driving off a deck into the pool the car goes
+15.3 → 14.6 m/s inside the volume and 9.3 m/s on the floor, against 20.1 / 18.8 without the block.
+The original 05 basin: 29.7 → 22.6 m/s over 37 m.
+
+ship17-d9549f05: 05 46 blocks (12 pools stay items), 10 24/13, 15 45/30 (pool A: two of its three
+32-m columns; the third spills onto the road), 20 5/21; the other 21 maps have no WaterBase/
+DecoWallWaterBase pool. RoadWater / WaterGrass roads through water (asymmetric blocks) and the lakes and
+seas (zones) stay 13-items everywhere. Items and placements are byte-identical to ship16 on all 25
+(collhash: only the blocks section differs on the four).
+
+Open: the block's mesh collidable byte is not cleared (it follows the whole mesh body; a shape ref
+would have to be inserted) — the deck at −200 m is the workaround; overlapping volumes (double drag?)
+are avoided by the lattice; RoadWater channels would need the asymmetric archetypes placed with the
+source direction (the free rotation convention is unmeasured).
+
 ## Water: the engine's native representations, and what a half-size map can use (research log, 2026-09-10 17:10Z)
 
 The question (coordinator): can a HALF-SIZE water volume exist in our maps — a flat car floats at ~0.9 m
