@@ -1022,10 +1022,28 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 let r_watch = format!("{}/{name}.mp4", BOX_VIDEOS);
                 let outbase = done_file.trim_end_matches(".done").to_string();
                 let slug = map_slug(nn);
+                // CHECK AND LAUNCH IN ONE BOX-SIDE COMMAND. The batched done-file
+                // read above and the busy check are two calls seconds apart; a
+                // ship that wrote its verdict and exited BETWEEN them (23 at
+                // 09:00:31Z on 2026-09-10) looked like "no verdict, nothing
+                // running" and was relaunched — and the relaunch's `rm -f DONE`
+                // destroyed the fresh URL and re-uploaded the clip. So the box
+                // itself decides at the last instant: a verdict carrying a URL
+                // (URL or PENDING) blocks the launch, and so does a ship still
+                // running; only then is the stale verdict removed and the ship
+                // started.
                 match wsx.sh(&format!(
-                    "mkdir -p {VID}/mp4 && [ -f '{r_mp4}' ] || cp -f '{r_watch}' '{r_mp4}'; rm -f '{done_file}' && nohup sh {BOX_SHIP_SH} '{r_mp4}' '{slug}' '{outbase}' > /dev/null 2>&1 < /dev/null &"
+                    "mkdir -p {VID}/mp4 && [ -f '{r_mp4}' ] || cp -f '{r_watch}' '{r_mp4}'; \
+                     if grep -qs '^URL \\|^PENDING ' '{done_file}'; then echo VERDICT-EXISTS; \
+                     elif pgrep -f '[t]inyship.sh' > /dev/null; then echo BUSY; \
+                     else rm -f '{done_file}' && nohup sh {BOX_SHIP_SH} '{r_mp4}' '{slug}' '{outbase}' > /dev/null 2>&1 < /dev/null & echo LAUNCHED; fi"
                 )) {
-                    Ok(_) => println!("{} launching {nn} {time} ({} clip(s) held; one at a time — the box's lock covers the probe, the upload and the gate)", chrono_now(), dead_cookie.len()),
+                    Ok(out) if out.contains("LAUNCHED") => println!("{} launching {nn} {time} ({} clip(s) held; one at a time — the box's lock covers the probe, the upload and the gate)", chrono_now(), dead_cookie.len()),
+                    Ok(out) if out.contains("VERDICT-EXISTS") => {
+                        println!("{} {nn} {time}: a verdict with a URL appeared since the read — not relaunched (collected next tick)", chrono_now());
+                        last_probe = None;
+                    }
+                    Ok(_) => println!("{} {nn} {time}: a ship started on the box meanwhile — not relaunched", chrono_now()),
                     Err(e) => println!("  could not launch {name}: {e}"),
                 }
             }
