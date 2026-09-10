@@ -1672,7 +1672,7 @@ fn cmd_arrival_bands(args: &[String]) {
         let turn = author.as_ref().and_then(|a| a.get("sample")).and_then(|s| s.as_u64()).map(|li| { let li = li as usize; let (a0, a1) = (li.saturating_sub(30), li.saturating_sub(15)); let (b0, b1) = ((li + 15).min(line.len() - 1), (li + 30).min(line.len() - 1)); let h0 = (line[a1][0] - line[a0][0]).atan2(line[a1][2] - line[a0][2]).to_degrees(); let h1 = (line[b1][0] - line[b0][0]).atan2(line[b1][2] - line[b0][2]).to_degrees(); let mut d = (h1 - h0).abs(); if d > 180.0 { d = 360.0 - d; } d }).unwrap_or(0.0);
         let hx = hdg_c.to_radians().sin(); let hz = hdg_c.to_radians().cos();
         let incidence = { let dot = (hx * g.normal[0] + hz * g.normal[2]).abs().clamp(0.0, 1.0); dot.acos().to_degrees() };
-        let hdg_tol = if turn > 120.0 || incidence > 35.0 { 60.0 } else { 20.0 };
+        let hdg_tol = if turn > 80.0 || incidence > 35.0 { 60.0 } else { 20.0 };
         let band = serde_json::json!({
             "lateral_m": {"centre": lat.unwrap_or(0.0), "tol": (g.half_width - 1.0).max(2.0).max(lat.map(|l| l.abs() + 1.0).unwrap_or(0.0)), "note": "signed in-plane offset from the credit-plane centre, axis = normal × up; a crossing anywhere within ± half_width credits"},
             "height_rel_centre_m": {"centre": dy.unwrap_or(0.0), "lo": dy.unwrap_or(0.0) - 1.5, "hi": dy.unwrap_or(0.0) + 3.0, "note": "car y minus credit-plane centre y at the human's crossing; the human sits on the deck, so this is the deck offset of that ring"},
