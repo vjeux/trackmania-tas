@@ -1104,9 +1104,9 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             // the finish: the engine counter reached every group (the finish only credits with all checkpoints)
             if cps >= n_groups && out.finished.is_none() {
                 // polish: the finish must beat the reference lap too (--beat-times entry for the last gate)
-                let slow = match cfg.beat_times.get(n_groups.saturating_sub(1)) { Some(t) => (w.race_of(&end) as f64) / 1000.0 > *t - cfg.beat_margin, None => false };
+                let slow = match cfg.beat_times.get((n_groups as usize).saturating_sub(1)) { Some(t) => (w.race_of(&end) as f64) / 1000.0 > *t - cfg.beat_margin, None => false };
                 if slow {
-                    out.log.push(format!("FINISH at race {} does not beat the reference {:.2} s — kept as a cell, searching on", crate::secs(w.race_of(&end)), cfg.beat_times[n_groups - 1]));
+                    out.log.push(format!("FINISH at race {} does not beat the reference {:.2} s — kept as a cell, searching on", crate::secs(w.race_of(&end)), cfg.beat_times[n_groups as usize - 1]));
                 } else {
                     out.log.push(format!("FINISH credited: cps {cps} at race {} after {} ticks of inputs ({} macros)", crate::secs(w.race_of(&end)), e.chain.len(), e.macro_desc.len()));
                     out.finished = Some(e.clone());
