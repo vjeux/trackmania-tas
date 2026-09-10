@@ -3,10 +3,12 @@
 //! plus the one pattern every long job needs: start it detached over there,
 //! poll for its done file here.
 //!
-//! The bridge cuts a command at ~90 s and forwards no stdin, which is why the
-//! long-running side (`shootctl shootset`, `tinyctl publish-here`) is a
+//! The long-running side (`shootctl shootset`, `tinyctl publish-here`) is a
 //! program that detaches itself and writes a done file, and this side only
-//! ever sends short commands.
+//! ever sends short commands — and FEW of them: the bridge's calls are the
+//! cost (the navi bridge metered them against a daily quota; ours does not,
+//! but the fleet's ceiling of two calls a minute per loop stands), so a poll
+//! is one call per 30 s and a file is one streamed call.
 
 use std::path::Path;
 use std::process::Command;
@@ -100,11 +102,29 @@ impl Wsx {
 
     /// Poll for a done file written by a detached job. Prints the log's tail
     /// on failure.
+    ///
+    /// ONE bridge call every 30 s, carrying the done file (if it exists) AND
+    /// the log's last line together — two calls a minute, the ceiling the fleet
+    /// agreed on after a watcher polling every 12 s (plus a separate log read
+    /// each minute) burned the bridge's daily quota for every session on
+    /// 2026-09-09. A render is 4–9 minutes; 30 s of latency on its end is
+    /// nothing next to that.
     pub fn wait_done(&self, done: &str, log: &str, timeout: Duration, what: &str) -> Result<String, String> {
         let t0 = Instant::now();
         let mut last_note = Instant::now();
         loop {
-            if let Some(text) = self.cat(done) {
+            let probe = format!("if [ -f '{done}' ]; then printf 'DONE:'; tr '\\n' ' ' < '{done}'; fi; printf '\\nLOG:'; tail -n 1 '{log}' 2>/dev/null");
+            let out = self.run(&["sh", &probe], Duration::from_secs(60)).unwrap_or_default();
+            let mut done_text: Option<String> = None;
+            let mut log_line = String::new();
+            for l in out.lines() {
+                if let Some(d) = l.strip_prefix("DONE:") {
+                    done_text = Some(d.trim().to_string());
+                } else if let Some(g) = l.strip_prefix("LOG:") {
+                    log_line = g.to_string();
+                }
+            }
+            if let Some(text) = done_text {
                 if text.starts_with("OK") {
                     return Ok(text);
                 }
@@ -117,14 +137,11 @@ impl Wsx {
                 let tail: String = tail.lines().rev().take(25).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
                 return Err(format!("{what}: no done file after {}s\n--- log tail ---\n{tail}", timeout.as_secs()));
             }
-            if last_note.elapsed() > Duration::from_secs(60) {
+            if last_note.elapsed() > Duration::from_secs(60) && !log_line.is_empty() {
                 last_note = Instant::now();
-                let tail = self.cat(log).unwrap_or_default();
-                if let Some(l) = tail.lines().last() {
-                    eprintln!("  [{:>4.0}s] {what}: {l}", t0.elapsed().as_secs_f64());
-                }
+                eprintln!("  [{:>4.0}s] {what}: {log_line}", t0.elapsed().as_secs_f64());
             }
-            std::thread::sleep(Duration::from_secs(12));
+            std::thread::sleep(Duration::from_secs(30));
         }
     }
 }

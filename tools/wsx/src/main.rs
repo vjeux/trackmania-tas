@@ -1,9 +1,14 @@
 //! wsx -- move files across the WhiteStick bridge, and prove they arrived.
 //!
 //! 2026-09-10: the bridge underneath is now `tools/whitestick` (our relay, see
-//! its README), not navi. wsx still works unchanged, but the cost table and
-//! the ceilings below are navi's; the new bridge forwards stdin and streams
-//! stdout, so a push is really just `whitestick 'cat > f' < f` now.
+//! its README), not navi — and **a push or a pull is ONE streamed call** now:
+//! the bytes go down the bridge's stdin (`cat > tmp && mv && md5sum`) or come
+//! back on its stdout (`cat`), md5-checked here. The navi bridge metered every
+//! call against a shared daily quota (~6000; a chunked 75 MB mp4 was 150 of
+//! them, and a watcher polling per clip exhausted it for every session on
+//! 2026-09-09), so the number of calls is the cost that matters, not bytes.
+//! The chunked base64 design below is kept as `--chunked` for a bridge that
+//! cannot forward stdin; its cost table and ceilings are navi's.
 //!
 //! The render box is not on the network. Everything reaches it through
 //! `~/bin/whitestick '<command>'`, which runs the string in the box's WSL
@@ -169,6 +174,111 @@ fn dispatch(cmd: &str) -> Result<String, String> {
         ));
     }
     Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// One dispatch with RAW BYTES both ways: the command goes as the bridge's
+/// positional argument (a path and a few words), `input` is fed to the remote
+/// command's stdin, and its stdout comes back untouched. This is the new
+/// bridge's contract (`tools/whitestick`: stdin forwarded, stdout streamed, no
+/// size ceiling) and what makes a push or a pull ONE call instead of a hundred
+/// and fifty base64 chunks — the navi bridge metered every call against a daily
+/// quota, and a chunked 75 MB mp4 was 150 of them.
+///
+/// `timeout` scales with the payload at the caller; a transfer that goes quiet
+/// is killed and retried by [`remote_raw_try`] (the remote write is atomic).
+fn dispatch_raw(cmd: &str, input: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
+    let mut command = Command::new(bridge_path());
+    if input.is_empty() {
+        command.arg("--no-stdin");
+    }
+    let mut child = command
+        .arg("--")
+        .arg(cmd)
+        .stdin(if input.is_empty() { Stdio::null() } else { Stdio::piped() })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("cannot run the bridge: {e}"))?;
+    let mut stdout = child.stdout.take().expect("stdout is piped");
+    let mut stderr = child.stderr.take().expect("stderr is piped");
+    let out_reader = std::thread::spawn(move || {
+        let mut o = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stdout, &mut o);
+        o
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut e = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stderr, &mut e);
+        e
+    });
+    // The payload is written from its own thread: the bridge's window is 4 MiB,
+    // so a 75 MB write blocks in step with the box, and the main thread keeps
+    // the deadline while the readers keep the pipes drained.
+    let writer = child.stdin.take().map(|mut stdin| {
+        let data = input.to_vec();
+        std::thread::spawn(move || -> Result<(), String> {
+            stdin.write_all(&data).map_err(|e| format!("cannot feed the bridge: {e}"))?;
+            drop(stdin);
+            Ok(())
+        })
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break s,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = out_reader.join();
+                    let _ = err_reader.join();
+                    return Err(format!("no answer in {} s", timeout.as_secs()));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(format!("bridge did not finish: {e}")),
+        }
+    };
+    if let Some(w) = writer {
+        w.join().map_err(|_| "writer thread died".to_string())??;
+    }
+    let out = out_reader.join().map_err(|_| "reader thread died".to_string())?;
+    let err = err_reader.join().map_err(|_| "reader thread died".to_string())?;
+    if !status.success() {
+        return Err(format!(
+            "remote command failed ({}): {}\n  stderr: {}",
+            status,
+            cmd.chars().take(120).collect::<String>(),
+            String::from_utf8_lossy(&err).trim()
+        ));
+    }
+    Ok(out)
+}
+
+/// [`dispatch_raw`] with the same retry rule as [`remote_try`]: the writes it
+/// carries land through a `$$`-suffixed temporary, so a transfer whose answer
+/// went missing is simply sent again.
+fn remote_raw_try(cmd: &str, input: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
+    let mut last = String::new();
+    for attempt in 1..=MAX_ATTEMPTS {
+        match dispatch_raw(cmd, input, timeout) {
+            Ok(out) => return Ok(out),
+            Err(e) => {
+                if attempt < MAX_ATTEMPTS {
+                    eprintln!("\nwsx: retrying ({e})");
+                }
+                last = e;
+            }
+        }
+    }
+    Err(last)
+}
+
+/// How long a streamed transfer of `bytes` may take before it is resent: two
+/// minutes of slack plus the bytes at 100 KB/s (the relay path measured
+/// ~1 MB/s; a tenth of that is "the bridge has gone quiet").
+fn transfer_timeout(bytes: usize) -> Duration {
+    Duration::from_secs(120 + (bytes / 100_000) as u64)
 }
 
 /// Run one command on the render box, retrying a dispatch that fails or goes
@@ -376,7 +486,84 @@ fn each_chunk(parts: usize, jobs: usize, work: impl Fn(usize) + Sync) {
     eprintln!();
 }
 
-fn push(local: &str, remote_path: &str, chunk: usize, jobs: usize) {
+/// Push, streamed: the bytes go down the bridge's stdin into a `$$`-suffixed
+/// temporary that is renamed over the target, and the box answers with the
+/// md5 — one call (two when the file is big enough to be worth asking first
+/// whether the box already has it). The chunked base64 path is `--chunked`.
+fn push(local: &str, remote_path: &str) {
+    let remote_path = expand_home(shell_safe(remote_path));
+    let remote_path = remote_path.as_str();
+    let data = std::fs::read(local).unwrap_or_else(|e| die(format!("{local}: {e}")));
+    let want = local_md5(local);
+    let dir = Path::new(remote_path)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| ".".into());
+    let scratch = format!("'{remote_path}.wsxpart.'* '{remote_path}.wsxtmp.'* '{remote_path}.wsxnew.'*");
+    if data.len() >= PROBE_WORTH {
+        let have = remote(&format!(
+            "mkdir -p '{dir}' && rm -f {scratch}; md5sum '{remote_path}' 2>/dev/null | cut -d' ' -f1"
+        ));
+        if have.split_whitespace().next() == Some(want.as_str()) {
+            println!("{remote_path}  {} B  md5 {want}  OK (already there, nothing sent)", data.len());
+            return;
+        }
+    }
+    let got = remote_raw_try(
+        &format!(
+            "mkdir -p '{dir}' && cat > '{remote_path}.wsxnew.'$$ \
+             && mv '{remote_path}.wsxnew.'$$ '{remote_path}' && md5sum '{remote_path}'"
+        ),
+        &data,
+        transfer_timeout(data.len()),
+    )
+    .unwrap_or_else(|e| die(e));
+    let got = String::from_utf8_lossy(&got).into_owned();
+    let got = got.split_whitespace().next().unwrap_or("");
+    if got != want {
+        die(format!("md5 mismatch after push: local {want}, remote {got}"));
+    }
+    println!("{remote_path}  {} B  md5 {want}  OK  [streamed, one call]", data.len());
+}
+
+/// Pull, streamed: one call for the md5 and size (nothing fetched when the
+/// local copy already matches), one for the bytes, written here through a
+/// temporary and checked against that md5. `--chunked` is the base64 path.
+fn pull(remote_path: &str, local: &str) {
+    let remote_path = expand_home(shell_safe(remote_path));
+    let remote_path = remote_path.as_str();
+    let answer = remote(&format!("md5sum '{remote_path}' | cut -d' ' -f1; stat -c%s '{remote_path}'"));
+    let mut fields = answer.split_whitespace();
+    let want = fields
+        .next()
+        .unwrap_or_else(|| die("no md5 from the box -- does the file exist?"))
+        .to_string();
+    let size: usize = fields
+        .next()
+        .unwrap_or_else(|| die("no size from the box"))
+        .parse()
+        .unwrap_or_else(|e| die(format!("cannot read the remote size: {e}")));
+    if Path::new(local).exists() && local_md5(local) == want {
+        println!("{local}  {size} B  md5 {want}  OK (already here, nothing fetched)");
+        return;
+    }
+    let data = remote_raw_try(&format!("cat '{remote_path}'"), &[], transfer_timeout(size)).unwrap_or_else(|e| die(e));
+    if data.len() != size {
+        die(format!("pulled {} bytes, the box says {remote_path} is {size}", data.len()));
+    }
+    let tmp = format!("{local}.wsxnew.{}", std::process::id());
+    std::fs::write(&tmp, &data).unwrap_or_else(|e| die(format!("{tmp}: {e}")));
+    let got = local_md5(&tmp);
+    if got != want {
+        let _ = std::fs::remove_file(&tmp);
+        die(format!("md5 mismatch after pull: remote {want}, local {got}"));
+    }
+    std::fs::rename(&tmp, local).unwrap_or_else(|e| die(format!("{tmp} -> {local}: {e}")));
+    println!("{local}  {} B  md5 {want}  OK  [streamed, one call]", data.len());
+}
+
+fn push_chunked(local: &str, remote_path: &str, chunk: usize, jobs: usize) {
     let remote_path = expand_home(shell_safe(remote_path));
     let remote_path = remote_path.as_str();
     let data = std::fs::read(local).unwrap_or_else(|e| die(format!("{local}: {e}")));
@@ -452,7 +639,7 @@ fn push(local: &str, remote_path: &str, chunk: usize, jobs: usize) {
     );
 }
 
-fn pull(remote_path: &str, local: &str, jobs: usize) {
+fn pull_chunked(remote_path: &str, local: &str, jobs: usize) {
     let remote_path = expand_home(shell_safe(remote_path));
     let remote_path = remote_path.as_str();
     let have_local = Path::new(local).exists();
@@ -538,13 +725,13 @@ fn main() {
         print!("{}", r#"
 wsx -- files across the WhiteStick bridge, md5-checked at both ends
 
-wsx push LOCAL REMOTE   copy a local file to the render box
-wsx pull REMOTE LOCAL   copy a file back off it
+wsx push LOCAL REMOTE   copy a local file to the render box (one streamed call)
+wsx pull REMOTE LOCAL   copy a file back off it (one streamed call)
 wsx sh 'CMD'            run one command there (no stdin, /bin/sh)
 
+--chunked   the old base64-in-the-command path (many calls), with
 --chunk N   base64 characters per bridge call (default 524288,
-            must be a multiple of 4; the box drops a command over
-            ~800000 bytes)
+            must be a multiple of 4) and
 --jobs N    chunks in flight at once (default 8)
 
 A leading ~ in a REMOTE path is expanded against the box's $HOME; every
@@ -558,11 +745,14 @@ md5 already matches here fetches nothing.
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut chunk = DEFAULT_CHUNK;
     let mut jobs = DEFAULT_JOBS;
+    let mut chunked = false;
     let mut pos: Vec<String> = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
+            "--chunked" => chunked = true,
             "--chunk" => {
+                chunked = true;
                 chunk = it
                     .next()
                     .unwrap_or_else(|| die("--chunk needs a value"))
@@ -573,6 +763,7 @@ md5 already matches here fetches nothing.
                 }
             }
             "--jobs" => {
+                chunked = true;
                 jobs = it
                     .next()
                     .unwrap_or_else(|| die("--jobs needs a value"))
@@ -586,20 +777,22 @@ md5 already matches here fetches nothing.
         }
     }
     match pos.first().map(String::as_str) {
-        Some("push") if pos.len() == 3 => push(&pos[1], &pos[2], chunk, jobs),
-        Some("pull") if pos.len() == 3 => pull(&pos[1], &pos[2], jobs),
+        Some("push") if pos.len() == 3 && chunked => push_chunked(&pos[1], &pos[2], chunk, jobs),
+        Some("pull") if pos.len() == 3 && chunked => pull_chunked(&pos[1], &pos[2], jobs),
+        Some("push") if pos.len() == 3 => push(&pos[1], &pos[2]),
+        Some("pull") if pos.len() == 3 => pull(&pos[1], &pos[2]),
         Some("sh") if pos.len() == 2 => print!("{}", remote(&pos[1])),
         _ => {
             eprintln!(
                 "wsx -- files across the WhiteStick bridge, md5-checked at both ends\n\
                  \n\
-                 wsx push LOCAL REMOTE   copy a local file to the render box\n\
-                 wsx pull REMOTE LOCAL   copy a file back off it\n\
+                 wsx push LOCAL REMOTE   copy a local file to the render box (one streamed call)\n\
+                 wsx pull REMOTE LOCAL   copy a file back off it (one streamed call)\n\
                  wsx sh 'CMD'            run one command there (no stdin, /bin/sh)\n\
                  \n\
+                 --chunked   the old base64-in-the-command path (many calls), with\n\
                  --chunk N   base64 characters per bridge call (default {DEFAULT_CHUNK},\n\
-                 \x20           must be a multiple of 4; the box drops a command over\n\
-                 \x20           ~800000 bytes)\n\
+                 \x20           must be a multiple of 4) and\n\
                  --jobs N    chunks in flight at once (default {DEFAULT_JOBS})\n\
                  \n\
                  A leading ~ in a REMOTE path is expanded against the box's $HOME; every\n\
