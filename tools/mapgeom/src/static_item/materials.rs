@@ -456,3 +456,59 @@ pub fn screen_face_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMa
     }
     owned
 }
+
+/// The gameplay gates' trigger CURTAIN: the `ExpandableSpecial_Air` /
+/// `Special*_Air` prefabs draw the trigger volume with
+/// `Stadium\Media\Modifier\<Kind>\TriggerFX` — a `TAddModCV` additive material
+/// whose colour comes through `Func\FuncShader\SpecialFXGate.FuncShader.Gbx`
+/// from the LIVE gate (the icon `Texture\TriggerFX<Kind>_I`). An embedded item
+/// has no live gate driving the FuncShader, and the engine draws the unfed
+/// sampler as its green/purple checkerboard (vjeux, 2026-09-10 17:45Z, Argentina's
+/// gate stacks: "the icon panels show a green/purple checkerboard").
+/// `TINY_TRIGGERFX`: `game` (default) keeps the checkerboard; `off` drops the
+/// curtain visual — but a visual-less trigger item is NOT emitted by the
+/// library today, so `off` loses the gameplay trigger too (do not ship it); `picture` draws the icon as a static
+/// self-lit additive quad (`TIAdd`, the pak's `TriggerFX<Kind>_I.dds` as
+/// `Items/TriggerFX<Kind>.dds`) — unverified in a frame yet; `game` keeps the
+/// checkerboard.
+pub fn trigger_fx_kind(link: &str) -> Option<String> {
+    if let Some(rest) = link.strip_prefix("Stadium\\Media\\Modifier\\") {
+        let (kind, name) = rest.split_once('\\')?;
+        return (name == "TriggerFX").then(|| kind.to_string());
+    }
+    // the prefab's own form before the modifier re-dress: `Material\TriggerFXTurbo`
+    let rest = link.strip_prefix("Stadium\\Media\\Material\\TriggerFX")?;
+    (!rest.is_empty() && !rest.contains('\\')).then(|| rest.to_string())
+}
+
+pub fn trigger_fx_mode() -> String {
+    // default `game` until the picture form is verified in a frame: `off` would
+    // leave the gate trigger item with no visual, and the library emits no item
+    // for a visual-less variant — the GAMEPLAY TRIGGER would vanish with the
+    // curtain (21 build, 2026-09-10 17:53Z: "no geometry in this variant").
+    std::env::var("TINY_TRIGGERFX").unwrap_or_else(|_| "game".to_string())
+}
+
+pub fn trigger_fx_file(kind: &str) -> String {
+    format!("TriggerFX{kind}.dds")
+}
+
+pub fn trigger_fx_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMaterialUserInst {
+    if trigger_fx_mode() != "picture" {
+        return inst.clone();
+    }
+    let Some(kind) = inst.link().and_then(trigger_fx_kind) else { return inst.clone() };
+    let file = trigger_fx_file(&kind);
+    if !m.pictures.iter().any(|(f, _)| *f == file) {
+        return inst.clone();
+    }
+    let mut owned = inst.clone();
+    if let Some(main) = owned.main.as_mut() {
+        main.is_using_game_material = false;
+        main.model = crate::crystal_model::Id::Str("TIAdd".to_string());
+        main.material_name = crate::crystal_model::Id::Str(format!("TriggerFX{kind}"));
+        main.link = crate::crystal_model::Id::Null;
+        main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: file.clone() }, crate::crystal_model::UserTexture { u01: 5, texture: file }];
+    }
+    owned
+}

@@ -913,6 +913,7 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     crate::static_item::build::add_sign_logo_pictures(store, &mut m);
     crate::static_item::build::add_screen_logo_pictures(store, &mut m);
     m.darken_screen_faces();
+    crate::static_item::build::trigger_fx_pass(store, &mut m);
     let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: ident.to_string(), scale, collection, skin: m.skin.clone() };
     let f = crate::static_item::build::assemble(&m, &opts)?;
     Ok((crate::static_item::file::write_file(&f), m, deepened))

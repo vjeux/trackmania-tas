@@ -731,6 +731,7 @@ pub fn static_item_from_prefab_report(store: &mut crate::store::DataStore, prefa
     add_sign_logo_pictures(store, &mut m);
     add_screen_logo_pictures(store, &mut m);
     m.darken_screen_faces();
+    trigger_fx_pass(store, &mut m);
     let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
     let f = assemble(&m, &opts)?;
     if let Some(n) = super::assemble::REPACK_NOTE.with(|c| c.get()) {
@@ -1678,6 +1679,7 @@ pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStor
     add_sign_logo_pictures(store, &mut m);
     add_screen_logo_pictures(store, &mut m);
     m.darken_screen_faces();
+    trigger_fx_pass(store, &mut m);
     // A light colour skin: which of the item's materials are the glass (their
     // pack material has a self-illumination `_I` texture) — those get the
     // swatch as a self-lit custom material at assembly; the swatch file rides
@@ -2960,5 +2962,44 @@ pub fn add_screen_logo_pictures(store: &mut crate::store::DataStore, m: &mut Mer
             m.pictures.push((SCREEN_LOGO_FILE.to_string(), super::texture::write_dds_rgba(w, h, &out)));
         }
         Err(e) => m.notes.push(format!("screen logo picture: {e}; game material kept")),
+    }
+}
+
+/// `TINY_TRIGGERFX`: `off` drops every visual under a `Modifier\<Kind>\TriggerFX`
+/// material (the gate curtain that draws as a checkerboard in an item);
+/// `picture` extracts the pak's `TriggerFX<Kind>_I.dds` (capped at 512) as the
+/// icon picture the custom material draws. See `materials::trigger_fx_material`.
+pub fn trigger_fx_pass(store: &mut crate::store::DataStore, m: &mut Merged) {
+    let mode = trigger_fx_mode();
+    if mode == "game" {
+        return;
+    }
+    let fx_slots: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().and_then(trigger_fx_kind).is_some()).map(|(i, _)| i).collect();
+    if fx_slots.is_empty() {
+        return;
+    }
+    if mode == "picture" {
+        for slot in &fx_slots {
+            let Some(kind) = m.materials[*slot].link().and_then(trigger_fx_kind) else { continue };
+            let file = trigger_fx_file(&kind);
+            if m.pictures.iter().any(|(f, _)| *f == file) {
+                continue;
+            }
+            let path = format!("Stadium\\Media\\Texture\\Image\\TriggerFX{kind}_I.dds");
+            match store.read(&path).map_err(|e| format!("{path}: {e}")).and_then(|b| super::texture::dds_cap(&b, 512).map_err(|e| format!("{path}: {e}"))) {
+                Ok(dds) => {
+                    m.notes.push(format!("trigger FX picture {file} ({} bytes) from {path}", dds.len()));
+                    m.pictures.push((file, dds));
+                }
+                Err(e) => m.notes.push(format!("trigger FX picture: {e}; game material kept")),
+            }
+        }
+        return;
+    }
+    let before = m.visuals.len();
+    m.visuals.retain(|v| !fx_slots.contains(&v.material));
+    let n = before - m.visuals.len();
+    if n > 0 {
+        m.notes.push(format!("{n} trigger FX curtain visual(s) dropped (TINY_TRIGGERFX=off: the FuncShader-driven icon draws as a checkerboard in an item)"));
     }
 }
