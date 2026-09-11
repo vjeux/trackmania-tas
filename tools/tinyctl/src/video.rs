@@ -1487,7 +1487,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 match wsx.sh(&format!(
                     "mkdir -p {VID}/mp4 && [ -f '{r_mp4}' ] || cp -f '{r_watch}' '{r_mp4}'; \
                      if grep -qs '^URL \\|^PENDING ' '{done_file}'; then echo VERDICT-EXISTS; \
-                     elif pgrep -f '[t]inyship.sh' > /dev/null; then echo BUSY; \
+                     elif ps -eo args | grep -E '^(/bin/)?sh .*tinyship.sh ' | grep -v grep > /dev/null; then echo BUSY; \
                      else rm -f '{done_file}' && nohup sh {BOX_SHIP_SH} '{r_mp4}' '{slug}' '{outbase}' > /dev/null 2>&1 < /dev/null & echo LAUNCHED; fi"
                 )) {
                     Ok(out) if out.contains("LAUNCHED") => println!("{} launching {nn} {time} ({} clip(s) held; one at a time — the box's lock covers the probe, the upload and the gate)", chrono_now(), dead_cookie.len()),
