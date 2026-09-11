@@ -33,6 +33,65 @@ struct Cell {
     asphalt: bool,
 }
 
+/// Signed distance from the tarmac edge, on a 2 m grid over the venue:
+/// negative under the road, positive outside, +inf far away (beyond
+/// `reach`). Built by walking the stations, so it costs nothing per lookup.
+pub struct Ribbon {
+    e0: f64,
+    n1: f64,
+    step: f64,
+    w: usize,
+    h: usize,
+    d: Vec<f32>,
+}
+
+impl Ribbon {
+    pub fn build(tr: &Track, ed: &Edges, bbox: (f64, f64, f64, f64), reach: f64) -> Ribbon {
+        let step = 2.0;
+        let (e0, n0, e1, n1) = bbox;
+        let w = ((e1 - e0) / step).ceil() as usize + 1;
+        let h = ((n1 - n0) / step).ceil() as usize + 1;
+        let mut d = vec![f32::INFINITY; w * h];
+        for i in 0..tr.len() {
+            let st = &tr.stations[i];
+            let half = ed.left[i].max(ed.right[i]);
+            let rr = ((half + reach) / step).ceil() as i64;
+            let cx = ((st.e - e0) / step).round() as i64;
+            let cz = ((n1 - st.n) / step).round() as i64;
+            for dz in -rr..=rr {
+                for dx in -rr..=rr {
+                    let (x, z) = (cx + dx, cz + dz);
+                    if x < 0 || z < 0 || x >= w as i64 || z >= h as i64 {
+                        continue;
+                    }
+                    let ce = e0 + x as f64 * step;
+                    let cn = n1 - z as f64 * step;
+                    // the edge on this side of the centreline
+                    let (sh, chd) = st.heading.sin_cos();
+                    let side = -(ce - st.e) * sh + (cn - st.n) * chd; // + = left
+                    let half_here = if side >= 0.0 { ed.left[i] } else { ed.right[i] };
+                    let dist = ((ce - st.e).powi(2) + (cn - st.n).powi(2)).sqrt() - half_here;
+                    let k = z as usize * w + x as usize;
+                    if (dist as f32) < d[k] {
+                        d[k] = dist as f32;
+                    }
+                }
+            }
+        }
+        Ribbon { e0, n1, step, w, h, d }
+    }
+
+    /// Distance outside the tarmac edge at (e, n): < 0 under the road.
+    pub fn outside(&self, e: f64, n: f64) -> f32 {
+        let x = ((e - self.e0) / self.step).round() as i64;
+        let z = ((self.n1 - n) / self.step).round() as i64;
+        if x < 0 || z < 0 || x >= self.w as i64 || z >= self.h as i64 {
+            return f32::INFINITY;
+        }
+        self.d[z as usize * self.w + x as usize]
+    }
+}
+
 /// Which 2 m-cell centres lie within `band` of the lap (edge-to-edge).
 fn band_mask(tr: &Track, ed: &Edges, bbox: (f64, f64, f64, f64), step: f64, band: f64) -> (Vec<bool>, usize, usize) {
     let (e0, n0, e1, n1) = bbox;
@@ -83,17 +142,28 @@ fn classify(inten: &Raster, e: f64, n: f64, step: f64) -> bool {
 /// One layer of terrain tiles. `only` restricts cells (fine band); `lift`
 /// raises the layer so it sits on the coarse one without z-fighting.
 #[allow(clippy::too_many_arguments)]
-fn layer(tr: &Track, dtm: &Mosaic, inten: &Raster, fr: &Frame, spec: &TerrainSpec, step: f64, only: Option<&(Vec<bool>, usize, usize)>, lift: f32, prefix: &str) -> Vec<Placement> {
+fn layer(tr: &Track, dtm: &Mosaic, inten: &Raster, fr: &Frame, spec: &TerrainSpec, step: f64, only: Option<&(Vec<bool>, usize, usize)>, lift: f32, prefix: &str, ribbon: &Ribbon) -> Vec<Placement> {
     let (e0, n0, e1, n1) = if only.is_some() { spec.bbox } else { spec.coarse_bbox };
     let w = ((e1 - e0) / step).ceil() as usize;
     let h = ((n1 - n0) / step).ceil() as usize;
-    // heights at cell corners (w+1 x h+1), sampled once
+    // Heights at cell corners (w+1 x h+1), sampled once. Corners under the
+    // tarmac are pushed down so no terrain cell can poke through the road
+    // (the road is a smoothed fit, the terrain the raw DTM, and a big cell's
+    // chord across a dip sits above the true ground): 0.35 m for the fine
+    // layer (the road's 0.4 m skirts hide it), 1 m for the coarse one (it
+    // lies under the fine band there anyway).
+    let sink = if only.is_some() { 0.35 } else { 1.0 };
+    let margin = if only.is_some() { -0.5 } else { 2.0 };
     let mut hz = vec![f64::NAN; (w + 1) * (h + 1)];
     for j in 0..=h {
         for i in 0..=w {
             let e = e0 + i as f64 * step;
             let n = n1 - j as f64 * step;
-            hz[j * (w + 1) + i] = dtm.sample(e, n).unwrap_or(f64::NAN);
+            let mut z = dtm.sample(e, n).unwrap_or(f64::NAN);
+            if (ribbon.outside(e, n) as f64) < margin {
+                z -= sink;
+            }
+            hz[j * (w + 1) + i] = z;
         }
     }
     let per_tile = (spec.tile / step).round() as usize;
@@ -169,9 +239,10 @@ fn layer(tr: &Track, dtm: &Mosaic, inten: &Raster, fr: &Frame, spec: &TerrainSpe
 }
 
 pub fn terrain_items(tr: &Track, ed: &Edges, dtm: &Mosaic, inten: &Raster, fr: &Frame, spec: &TerrainSpec) -> Vec<Placement> {
-    let mut out = layer(tr, dtm, inten, fr, spec, spec.coarse, None, -0.10, "Ground");
+    let ribbon = Ribbon::build(tr, ed, spec.bbox, 30.0);
+    let mut out = layer(tr, dtm, inten, fr, spec, spec.coarse, None, -0.10, "Ground", &ribbon);
     let mask = band_mask(tr, ed, spec.bbox, spec.fine, spec.band);
-    let fine = layer(tr, dtm, inten, fr, spec, spec.fine, Some(&mask), -0.04, "Verge");
+    let fine = layer(tr, dtm, inten, fr, spec, spec.fine, Some(&mask), -0.04, "Verge", &ribbon);
     let n_fine = fine.len();
     out.extend(fine);
     println!("terrain: {} coarse tiles + {} fine tiles", out.len() - n_fine, n_fine);

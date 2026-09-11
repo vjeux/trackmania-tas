@@ -126,6 +126,11 @@ fn main() {
             let n = flag(&a, "--bytes").unwrap_or(512.0) as usize;
             header_hex(Path::new(f), n);
         }
+        Some("near") => {
+            // circuit near surroundings.json E0 N0 X Z [R]
+            let f = |i: usize| a.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or_else(|| usage());
+            near(Path::new(a.get(2).unwrap_or_else(|| usage())), f(3), f(4), f(5), f(6), a.get(7).and_then(|v| v.parse().ok()).unwrap_or(15.0));
+        }
         _ => usage(),
     }
 }
@@ -385,7 +390,7 @@ fn build(osm_path: &Path, dtm_dir: &Path, tif: &Path, host: &Path, out: &Path, s
     if let Some(w) = around.as_ref() {
         if !a_has("--no-buildings") {
             let dsm = tiff::Mosaic::load(&tiles(dtm_dir, "dsm_"));
-            let structs = buildings::structures(w, &dtm, &dsm, venue);
+            let structs = buildings::structures(w, &dtm, &dsm, venue, &tr, &ed);
             let n_stand = structs.iter().filter(|s| s.kind == "grandstand").count();
             println!("{} structures ({n_stand} grandstands); tallest {:.0} m", structs.len(), structs.iter().map(|s| s.height).fold(0.0, f64::max));
             extras.extend(buildings::building_items(&structs, &fr));
@@ -557,4 +562,27 @@ fn header_hex(path: &Path, n: usize) {
         println!("{:06x}  {:<48} {}", i * 16, hex.join(" "), asc);
     }
     println!("(user data {} bytes)", g.user_data.len());
+}
+
+/// OSM ways of the surroundings dump within `r` metres of a TM world point
+/// (x, z) of the last build's frame — what is standing where the car stopped.
+fn near(osm: &Path, e0: f64, n0: f64, x: f64, z: f64, r: f64) {
+    let w = osm::load(osm);
+    let (e, n) = (x + e0, n0 - z);
+    println!("world ({x:.1}, {z:.1}) = E{e:.1} N{n:.1}");
+    for way in &w.ways {
+        let pts: Vec<_> = way.nodes.iter().filter_map(|id| w.nodes.get(id)).collect();
+        let mut best = f64::MAX;
+        for k in 1..pts.len() {
+            let (a, b) = (pts[k - 1], pts[k]);
+            let (dx, dy) = (b.e - a.e, b.n - a.n);
+            let l2 = dx * dx + dy * dy;
+            let t = if l2 > 0.0 { (((e - a.e) * dx + (n - a.n) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            let (px, py) = (a.e + t * dx, a.n + t * dy);
+            best = best.min(((e - px).powi(2) + (n - py).powi(2)).sqrt());
+        }
+        if best <= r {
+            println!("  {:6.1} m  way {} {:?} {} nodes  tags {:?}", best, way.id, way.name, pts.len(), way.tags);
+        }
+    }
 }

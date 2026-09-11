@@ -88,12 +88,48 @@ pub struct Structure {
     pub footprint: Vec<Bng>,
     pub base: f64,
     pub height: f64,
+    /// Where the walls start: the ground, or 5 m up for a structure that
+    /// spans the tarmac (OSM `level`/`layer`/`min_level` >= 1, `bridge`, or a
+    /// footprint the lap runs through — the Woodcote footbridge is
+    /// `building=yes level=1`, and extruded from the ground it was a wall
+    /// across the track that stopped the first drive at station 2724).
+    pub bottom: f64,
 }
 
-/// Every OSM building inside `bbox`, with its LIDAR height.
-pub fn structures(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, bbox: (f64, f64, f64, f64)) -> Vec<Structure> {
+/// Every OSM building inside `bbox`, with its LIDAR height. `tr`/`ed` tell
+/// which footprints the lap runs through (those are lifted off the ground).
+pub fn structures(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, bbox: (f64, f64, f64, f64), tr: &crate::track::Track, ed: &crate::edges::Edges) -> Vec<Structure> {
     let (e0, n0, e1, n1) = bbox;
     let mut out = Vec::new();
+    let nearest = |e: f64, n: f64| -> (usize, f64) {
+        let mut best = (0usize, f64::MAX);
+        for (i, s) in tr.stations.iter().enumerate().step_by(2) {
+            let d = (s.e - e).powi(2) + (s.n - n).powi(2);
+            if d < best.1 {
+                best = (i, d);
+            }
+        }
+        (best.0, best.1.sqrt())
+    };
+    let spans_tarmac = |pts: &[Bng]| -> bool {
+        let m = pts.len();
+        for i in 0..m {
+            let (a, b) = (pts[i], pts[(i + 1) % m]);
+            let len = ((b.e - a.e).powi(2) + (b.n - a.n).powi(2)).sqrt();
+            let steps = (len.ceil() as usize).max(1);
+            for k in 0..=steps {
+                let t = k as f64 / steps as f64;
+                let (e, n) = (a.e + t * (b.e - a.e), a.n + t * (b.n - a.n));
+                let (i, d) = nearest(e, n);
+                if d < ed.left[i].max(ed.right[i]) + 1.0 {
+                    return true;
+                }
+            }
+        }
+        // or the lap passes wholly inside the footprint
+        tr.stations.iter().step_by(4).any(|s| inside(pts, s.e, s.n))
+    };
+    let mut lifted = 0usize;
     for way in &w.ways {
         let Some(b) = way.tags.get("building") else { continue };
         if way.nodes.len() < 4 || way.nodes.first() != way.nodes.last() {
@@ -150,7 +186,19 @@ pub fn structures(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, bbox: (f64, f64, f64, f6
             _ => "building",
         };
         let kind = if way.name.contains("Stand") || way.name.starts_with("Stowe") || way.name == "Vale" || way.name.starts_with("Club") || way.name.starts_with("Village") || way.name == "The View" { "grandstand" } else { kind };
-        out.push(Structure { name: way.name.clone(), kind, footprint: pts, base, height });
+        let lvl = |k: &str| way.tags.get(k).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        let elevated = lvl("level") >= 1.0 || lvl("layer") >= 1.0 || lvl("min_level") >= 1.0 || lvl("min_height") > 0.0 || way.tags.contains_key("bridge") || spans_tarmac(&pts);
+        let (bottom, height) = if elevated {
+            lifted += 1;
+            let bottom = base + lvl("min_height").max(5.0);
+            (bottom, (base + height - bottom).max(3.0) + (bottom - base))
+        } else {
+            (base - 0.5, height)
+        };
+        out.push(Structure { name: way.name.clone(), kind, footprint: pts, base, height, bottom });
+    }
+    if lifted > 0 {
+        println!("buildings: {lifted} span the tarmac or sit on an upper level; their walls start 5 m up");
     }
     out
 }
@@ -182,7 +230,7 @@ pub fn building_items(structs: &[Structure], fr: &Frame) -> Vec<Placement> {
             let mat = mb.material(&material_for(s.kind));
             let roof_mat = mb.material(&mesh::CONCRETE);
             let n = s.footprint.len();
-            let z0 = s.base - 0.5;
+            let z0 = s.bottom;
             let z1 = s.base + s.height;
             let p = |q: Bng, z: f64| {
                 let t = fr.to_tm(q.e, q.n, z);
@@ -197,10 +245,11 @@ pub fn building_items(structs: &[Structure], fr: &Frame) -> Vec<Placement> {
                 let (a0, a1, b0, b1) = (p(a, z0), p(a, z1), p(b, z0), p(b, z1));
                 mb.quad_away(mat, [a0, a1, b1, b0], inside, true);
             }
-            // roof
-            for t in triangulate(&s.footprint) {
+            // roof (and the underside of a lifted structure), facing out
+            let tris = triangulate(&s.footprint);
+            let lifted = s.bottom > s.base;
+            for t in &tris {
                 let (a, b, c) = (p(s.footprint[t[0]], z1), p(s.footprint[t[1]], z1), p(s.footprint[t[2]], z1));
-                // face up
                 let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
                 let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
                 let ny = ab[2] * ac[0] - ab[0] * ac[2];
@@ -208,6 +257,14 @@ pub fn building_items(structs: &[Structure], fr: &Frame) -> Vec<Placement> {
                     mb.tri(roof_mat, [a, b, c], true);
                 } else {
                     mb.tri(roof_mat, [a, c, b], true);
+                }
+                if lifted {
+                    let (a, b, c) = (p(s.footprint[t[0]], z0), p(s.footprint[t[1]], z0), p(s.footprint[t[2]], z0));
+                    if ny >= 0.0 {
+                        mb.tri(roof_mat, [a, c, b], true);
+                    } else {
+                        mb.tri(roof_mat, [a, b, c], true);
+                    }
                 }
             }
         }
