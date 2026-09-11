@@ -1135,8 +1135,10 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let v = speed(&cr);
                 // a leg with no human speed profile (waypoint-replaced legs) still needs a MOVING arrival: >= 8 m/s
                 let min_arr: f64 = std::env::var("TMREACH_MIN_ARRIVAL").ok().and_then(|s| s.parse().ok()).unwrap_or(8.0);
-                let speed_ok = cfg.arrival_any || (if vh <= 0.0 { v >= min_arr } else { (v - vh).abs() <= 0.3 * vh.max(5.0) });
-                let lat_ok = lat_abs <= hw + 0.5;
+                let arr_dv: Option<f64> = std::env::var("TMREACH_ARRIVAL_DV").ok().and_then(|s| s.parse().ok()); // absolute |v - human| bound (state matching)
+                let arr_lat: Option<f64> = std::env::var("TMREACH_ARRIVAL_LAT").ok().and_then(|s| s.parse().ok()); // absolute lateral bound at the gate
+                let speed_ok = cfg.arrival_any || (if vh <= 0.0 { v >= min_arr } else if let Some(dv) = arr_dv { (v - vh).abs() <= dv } else { (v - vh).abs() <= 0.3 * vh.max(5.0) });
+                let lat_ok = lat_abs <= arr_lat.unwrap_or(hw + 0.5);
                 // HEIGHT: the credit row must be near the gate's plane height (a tall ring credits a car FALLING through it 7 m
                 // under the deck — 20 wp6, 07:57Z); the credited gate = the order position k_pref-1's group centre
                 let height_ok = match (&cfg.gates, track.order_groups.get(k_pref.saturating_sub(1))) {
