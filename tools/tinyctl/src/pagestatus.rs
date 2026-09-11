@@ -223,7 +223,15 @@ pub fn update_rows_with_clips(page: &str, laps: &[(String, String)], ghosts_read
         // row (before the status note and the video), verbatim from the file;
         // one line at most, rewritten when the note changes, removed when the
         // map leaves the list. The video stays up.
-        maintain_line(&mut lines, &mut notes, i, nn, "lid", is_lid_note, lidrows.get(nn.as_str()).map(|n| lid_line(n)));
+        // A LID NOTE IS TIED TO THE ship15 VIDEO (coordinator, 2026-09-11 03:10Z): it
+        // leaves the row when the row's video becomes a clip of a drag-carrying
+        // build (ship16 or later — ships.tsv names the clip), whatever lidrows.tsv
+        // still lists. The file entry can stay; it simply no longer applies.
+        let lid_applies = match ships_names.get(nn.as_str()) {
+            Some(clip) => clip.rsplit_once("-ship").map(|(_, b)| !build_at_least_16(b)).unwrap_or(true),
+            None => true,
+        };
+        maintain_line(&mut lines, &mut notes, i, nn, "lid", is_lid_note, lidrows.get(nn.as_str()).filter(|_| lid_applies).map(|n| lid_line(n)));
         // THE ROW'S BUILD (parent's decision for the burst, 2026-09-10 22:45Z):
         // rowbuilds.tsv names each row's build, the downloadable map file of
         // that build and a note. The caption's "(build X" is rewritten to the
@@ -1012,5 +1020,43 @@ mod row_ready_tests {
         assert!(row_build_applies(&rb_ok, row15, Some("18.298"), &std::collections::HashMap::new()), "video=ok applies at once");
         let row17 = "**Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **16.395** (build ship17c, controls overlay)";
         assert!(row_build_applies(&rb, row17, Some("16.395"), &std::collections::HashMap::new()), "already labelled");
+    }
+}
+
+/// Is this clip build suffix (`15`, `16`, `17c`, …) ship16 or later — a build
+/// that carries the water drag, where a lid note no longer applies?
+fn build_at_least_16(suffix: &str) -> bool {
+    let n: String = suffix.chars().take_while(|c| c.is_ascii_digit()).collect();
+    n.parse::<u32>().map(|v| v >= 16).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod lid_leaves_tests {
+    use super::*;
+
+    /// The ⚠ lid line goes when the row's video becomes a ship16+ clip, even
+    /// while lidrows.tsv still lists the map.
+    #[test]
+    fn the_lid_note_leaves_with_the_ship15_video() {
+        let ghosts = "| 05 | 05.Ghost.Gbx | 16.395 | 5 | ship17c | 4303b199 | GEN | x |\n";
+        let page = "**Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **16.395** (build ship17c, controls overlay)\n\n\
+*⚠ lap rides the ship15 water lid; this build has no water drag*\n\n\
+https://github.com/user-attachments/assets/n\n";
+        let laps = newest_laps(ghosts, "ship17c");
+        let mut lid = std::collections::HashMap::new();
+        lid.insert("05".to_string(), "lap rides the ship15 water lid; this build has no water drag".to_string());
+        let mut clips = std::collections::HashMap::new();
+        clips.insert("05".to_string(), "05-ghost-16.395-ship17c".to_string());
+        let none_h = std::collections::HashMap::new();
+        let none_s = std::collections::HashSet::new();
+        let none_rb = std::collections::HashMap::new();
+        let (out, notes) = update_rows_with_clips(page, &laps, ghosts, "ship17c", 0.1, &none_h, &none_s, &lid, &none_rb, &clips);
+        assert!(!out.contains("⚠"), "{out}");
+        assert!(notes.iter().any(|n| n == "05: lid line removed"), "{notes:?}");
+        // while the video is still the ship15 clip, the line stays
+        clips.insert("05".to_string(), "05-ghost-18.298-ship15".to_string());
+        let (kept, _) = update_rows_with_clips(page, &laps, ghosts, "ship17c", 0.1, &none_h, &none_s, &lid, &none_rb, &clips);
+        assert!(kept.contains("⚠"), "{kept}");
+        assert!(build_at_least_16("16") && build_at_least_16("17c") && !build_at_least_16("15") && !build_at_least_16(""));
     }
 }
