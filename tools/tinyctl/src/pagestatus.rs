@@ -281,6 +281,9 @@ enum Note {
     Held(String),
     /// Rendered and banked; the upload waits for the opening-check receipt.
     Staged,
+    /// Receipt on file, every gate passed; the upload waits for a GitHub session
+    /// on the box (ships.tsv `pending`, no URL yet).
+    AwaitingSession,
 }
 
 impl Note {
@@ -290,6 +293,7 @@ impl Note {
             Note::Within(_) => "within",
             Note::Held(_) => "held",
             Note::Staged => "staged",
+            Note::AwaitingSession => "awaiting-session",
         }
     }
 }
@@ -312,6 +316,7 @@ fn status_line(time: &str, build: &str, ghosts_readme: &str, nn: &str, note: &No
         Note::Held(reason) if reason.starts_with("records:") && time.is_empty() => format!("*{} — held (opening rework)*", reason.trim_end_matches('*')),
         Note::Held(reason) => format!("*latest lap **{time}** (build {build}{who}) — held ({reason})*"),
         Note::Staged => format!("*latest lap **{time}** (build {build}{who}) — staged, awaiting the opening check*"),
+        Note::AwaitingSession => format!("*latest lap **{time}** (build {build}{who}) — staged, awaiting the upload session*"),
     }
 }
 
@@ -334,7 +339,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     for (nn, (b, _)) in &per_map {
         if *b != build {
             laps.retain(|(m, _)| m != nn);
-            if let Some((_, t)) = newest_laps(&gr, b).into_iter().find(|(m, _)| m == nn) {
+            // the exact tag first (ship17c), then its family (ship17: 05's row says
+            // ship17-d9549f05 while it renders on ship17c — the same map bytes,
+            // which the render loop verified by md5)
+            let family = build_family(b);
+            let found = newest_laps(&gr, b).into_iter().find(|(m, _)| m == nn).or_else(|| newest_laps(&gr, &family).into_iter().find(|(m, _)| m == nn));
+            if let Some((_, t)) = found {
                 laps.push((nn.clone(), t));
             }
         }
@@ -342,7 +352,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     laps.sort();
     println!("{} certified {build} laps: {}", laps.len(), laps.iter().map(|(m, t)| format!("{m} {t}")).collect::<Vec<_>>().join(", "));
     let holds = f("--out").map(|o| crate::video::read_holds(Path::new(&o))).unwrap_or_default();
-    let staged = f("--out").map(|o| staged_laps(&std::fs::read_to_string(Path::new(&o).join("ships.tsv")).unwrap_or_default())).unwrap_or_default();
+    let ships_text = f("--out").map(|o| std::fs::read_to_string(Path::new(&o).join("ships.tsv")).unwrap_or_default()).unwrap_or_default();
+    set_pending_rows(&ships_text);
+    let staged = staged_laps(&ships_text);
     let lidrows = f("--out").map(|o| crate::video::parse_holds(&std::fs::read_to_string(Path::new(&o).join("lidrows.tsv")).unwrap_or_default())).unwrap_or_default();
     let rowbuilds = f("--out").map(|o| parse_rowbuilds(&std::fs::read_to_string(Path::new(&o).join("rowbuilds.tsv")).unwrap_or_default())).unwrap_or_default();
     // the clip each row's video IS: the last URL row per map — never a pending one
@@ -577,7 +589,7 @@ https://github.com/user-attachments/assets/c\n";
 /// (`— video pending*`, `— within 0.1 s of the published clip*`, `— held (…)*`)?
 pub fn is_status_note(l: &str) -> bool {
     let l = l.trim_end();
-    (l.starts_with("*latest lap **") && (l.ends_with(PENDING_MARK) || l.ends_with(WITHIN_MARK) || l.contains(") — held (") || l.ends_with(STAGED_MARK)))
+    (l.starts_with("*latest lap **") && (l.ends_with(PENDING_MARK) || l.ends_with(WITHIN_MARK) || l.contains(") — held (") || l.ends_with(STAGED_MARK) || l.ends_with(SESSION_MARK)))
         || (l.starts_with("*records:") && l.ends_with("— held (opening rework)*"))
 }
 
@@ -620,6 +632,7 @@ https://github.com/user-attachments/assets/a\n";
 }
 
 pub const STAGED_MARK: &str = "— staged, awaiting the opening check*";
+pub const SESSION_MARK: &str = "— staged, awaiting the upload session*";
 
 /// The (map, lap) pairs whose ships.tsv row is `staged`.
 pub fn staged_laps(ships: &str) -> std::collections::HashSet<(String, String)> {
@@ -628,7 +641,7 @@ pub fn staged_laps(ships: &str) -> std::collections::HashSet<(String, String)> {
         .filter(|l| !l.starts_with('#'))
         .filter_map(|l| {
             let c: Vec<&str> = l.split('\t').map(str::trim).collect();
-            (c.len() >= 5 && (c[4] == "staged" || c[4] == "held")).then(|| (c[0].to_string(), c[1].to_string()))
+            (c.len() >= 5 && (c[4] == "staged" || c[4] == "held" || c[4] == "pending")).then(|| (c[0].to_string(), c[1].to_string()))
         })
         .collect()
 }
@@ -681,10 +694,33 @@ fn held_note(reason: &str, is_staged: bool) -> Note {
 /// …)" when it is not (no receipt can — INPUT's README says the lap rolls or
 /// inverts; the next lap of the map must be clean).
 fn staged_note(ghosts_readme: &str, nn: &str, time: &str) -> Note {
+    // a row that shipwatch already accepted (receipt + gates) waits only for a
+    // GitHub session on the box: ships.tsv says `pending` for it
+    if PENDING_ROWS.with(|p| p.borrow().contains(&(nn.to_string(), time.to_string()))) {
+        return Note::AwaitingSession;
+    }
     match crate::video::attitude_verdict(ghosts_readme, nn, time) {
         crate::video::Attitude::Clean => Note::Staged,
         v => Note::Held(format!("staged — attitude: {}", v.describe())),
     }
+}
+
+thread_local! {
+    /// (map, time) rows whose ships.tsv status is `pending` — set by `cmd` from
+    /// --out before the page pass (the row set is otherwise "staged or held").
+    static PENDING_ROWS: std::cell::RefCell<std::collections::HashSet<(String, String)>> = std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+pub fn set_pending_rows(ships: &str) {
+    let set: std::collections::HashSet<(String, String)> = ships
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| {
+            let c: Vec<&str> = l.split('\t').map(str::trim).collect();
+            (c.len() >= 5 && c[4] == "pending").then(|| (c[0].to_string(), c[1].to_string()))
+        })
+        .collect();
+    PENDING_ROWS.with(|p| *p.borrow_mut() = set);
 }
 
 #[cfg(test)]
@@ -1243,5 +1279,38 @@ https://github.com/user-attachments/assets/c\n";
         let ghosts2 = "| 22 | 22.Ghost.Gbx | 84.379 | 14 | ship15 | f1275f23 | GEN | x |\n";
         let (newer, _) = update_all(&out, &newest_laps(ghosts2, "ship15"), ghosts2, "ship15", 0.1, &holds, &std::collections::HashSet::new());
         assert!(newer.contains("*latest lap **84.379** (build ship15) — held (records: 78.051 (certified; to be re-driven forwards))*"), "{newer}");
+    }
+}
+
+/// `ship17c` → `ship17`, `ship17-d9549f05` → `ship17`: the build's numeric family.
+pub fn build_family(b: &str) -> String {
+    let rest = b.strip_prefix("ship").unwrap_or(b);
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() { b.to_string() } else { format!("ship{digits}") }
+}
+
+#[cfg(test)]
+mod awaiting_session_tests {
+    use super::*;
+
+    #[test]
+    fn build_family_drops_the_letter_and_the_hash() {
+        assert_eq!(build_family("ship17c"), "ship17");
+        assert_eq!(build_family("ship17-d9549f05"), "ship17");
+        assert_eq!(build_family("ship15"), "ship15");
+    }
+
+    /// A row shipwatch accepted (receipt + gates) that waits for a GitHub
+    /// session reads "staged, awaiting the upload session".
+    #[test]
+    fn a_pending_row_reads_awaiting_the_upload_session() {
+        let ghosts = "| 19 | 19.Ghost.Gbx | 38.276 | 16 | ship15 | 5522d061 | PPO | x |\n- 19 38.276: stop: below 8 m/s: 0.02 s, respawns: 0 · attitude: PASS (0) · water: on-lid s A 0.00 · B 0.00 · S 0.00 — clean\n";
+        let page = "**Tiny Summer 2026 - 19** — original author time `44.6` · tiny ghost **46.362** (build ship15, controls overlay)\n\nhttps://github.com/user-attachments/assets/a\n";
+        set_pending_rows("19\t38.276\t19-ghost-38.276-ship15\t/x\tpending\n");
+        let laps = newest_laps(ghosts, "ship15");
+        let staged = staged_laps("19\t38.276\t19-ghost-38.276-ship15\t/x\tpending\n");
+        let (out, _) = update_all(page, &laps, ghosts, "ship15", 0.1, &std::collections::HashMap::new(), &staged);
+        assert!(out.contains("*latest lap **38.276** (build ship15) — staged, awaiting the upload session*"), "{out}");
+        set_pending_rows("");
     }
 }
