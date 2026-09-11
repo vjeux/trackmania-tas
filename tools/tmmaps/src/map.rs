@@ -263,6 +263,8 @@ pub struct MapFile {
     /// completeness; vertical placement is selected by `decoration_id`, not by
     /// these dimensions (both control maps are 64³ and have different origins).
     pub size: [i32; 3],
+    /// Absolute body offset of the three size words in chunk 0x0304301F.
+    pub size_off: usize,
     /// Decoration id from the map's Ident. It selects the map-wide vertical
     /// origin; unlike x/z, y cannot be derived from the block cell alone.
     pub decoration_id: String,
@@ -659,7 +661,7 @@ impl MapFile {
     pub fn from_gbx(gbx: Gbx) -> MapFile {
         let body = gbx.body.clone();
         let mut seen_nodes: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let (blocks_region, mut body_ids, blocks, table, size, decoration_id) =
+        let (blocks_region, mut body_ids, blocks, table, size, decoration_id, size_off) =
             parse_blocks(&body, &mut seen_nodes);
         let mut body_regions = vec![blocks_region];
         let mut baked_chunk_off = None;
@@ -680,6 +682,7 @@ impl MapFile {
         MapFile {
             gbx,
             size,
+            size_off,
             decoration_id,
             body_regions,
             body_ids,
@@ -754,6 +757,77 @@ impl MapFile {
     pub fn set_block_name(&mut self, block_index: usize, name: &str) {
         let f = self.blocks[block_index].name_field;
         self.renames.push((false, f, name.to_string()));
+    }
+
+    /// The map grid size in blocks (x, y, z). Trackmania reads the size from
+    /// the file and builds the decoration ("big decor") to match, so a map
+    /// can be wider than the 48x48 the editor offers; every cell coordinate
+    /// stays a byte, so 255 is the ceiling.
+    pub fn set_size(&mut self, size: [i32; 3]) {
+        assert!(size.iter().all(|&v| (1..=255).contains(&v)), "map size {size:?} out of 1..=255");
+        let mut bytes = Vec::with_capacity(12);
+        for v in size {
+            bytes.extend_from_slice(&(v as u32).to_le_bytes());
+        }
+        self.raw_patches.push((self.size_off, bytes));
+        self.size = size;
+    }
+
+    /// Rename the map everywhere its name is spelled (header XML, header
+    /// ident chunk, the body's blocks chunk) -- same-length names only, so
+    /// no chunk size and no offset moves. The old name must occur at least
+    /// once in the header and once in the body.
+    pub fn set_map_name_same_len(&mut self, old: &str, new: &str) {
+        assert_eq!(old.len(), new.len(), "same-length rename only ({old:?} -> {new:?})");
+        assert!(!old.is_empty());
+        let mut hits = 0;
+        for i in 0..=self.gbx.user_data.len().saturating_sub(old.len()) {
+            if &self.gbx.user_data[i..i + old.len()] == old.as_bytes() {
+                self.gbx.user_data[i..i + new.len()].copy_from_slice(new.as_bytes());
+                hits += 1;
+            }
+        }
+        assert!(hits > 0, "map name {old:?} absent from the header chunks");
+        // The body: the length-prefixed string in the blocks chunk (and any
+        // other spelling of it), patched in place.
+        let body_hits = find_all(&self.gbx.body, old.as_bytes());
+        assert!(!body_hits.is_empty(), "map name {old:?} absent from the body");
+        for h in body_hits {
+            self.raw_patches.push((h, new.as_bytes().to_vec()));
+        }
+    }
+
+    /// The map's name as the blocks chunk spells it.
+    pub fn map_name(&self) -> String {
+        // after the three map-info Ids comes the length-prefixed name
+        let f = &self.body_ids[2];
+        let o = f.off + f.len;
+        let n = u32::from_le_bytes(self.gbx.body[o..o + 4].try_into().unwrap()) as usize;
+        String::from_utf8_lossy(&self.gbx.body[o + 4..o + 4 + n]).to_string()
+    }
+
+    /// The map's author account id (the third map-info Id).
+    pub fn map_author(&self) -> Option<String> {
+        self.body_ids.get(2).and_then(|f| f.name.clone())
+    }
+
+    /// Re-author the map: the account id, same length only, everywhere it is
+    /// spelled (header chunks, header XML, blocks chunk). The login/nick in
+    /// the author-info chunk are left alone.
+    pub fn set_map_author_same_len(&mut self, new: &str) {
+        let old = self.map_author().expect("map author Id");
+        assert_eq!(old.len(), new.len(), "same-length author only ({old:?} -> {new:?})");
+        let mut hits = 0;
+        for i in 0..=self.gbx.user_data.len().saturating_sub(old.len()) {
+            if &self.gbx.user_data[i..i + old.len()] == old.as_bytes() {
+                self.gbx.user_data[i..i + new.len()].copy_from_slice(new.as_bytes());
+                hits += 1;
+            }
+        }
+        assert!(hits > 0, "author {old:?} absent from the header chunks");
+        for h in find_all(&self.gbx.body, old.as_bytes()) {
+            self.raw_patches.push((h, new.as_bytes().to_vec()));
+        }
     }
 
     pub fn set_map_uid(&mut self, uid: &str) {
@@ -1148,6 +1222,7 @@ fn parse_blocks(
     Vec<String>,
     [i32; 3],
     String,
+    usize,
 ) {
     let hits = find_all(body, &BLOCKS_CHUNK.to_le_bytes());
     let start = *hits
@@ -1177,6 +1252,7 @@ fn parse_blocks(
     let decoration_id = ids[decoration_field].name.clone().unwrap_or_default();
     push(&mut r, &mut table, &mut ids); // decoration collection
     push(&mut r, &mut table, &mut ids); // decoration author
+    let size_off = r.o;
     let size = [r.u32() as i32, r.u32() as i32, r.u32() as i32];
     let _need_unlock = r.u32();
     let _version = r.u32();
@@ -1238,7 +1314,7 @@ fn parse_blocks(
         });
         count += 1;
     }
-    ((start, r.o), ids, blocks, table, size, decoration_id)
+    ((start, r.o), ids, blocks, table, size, decoration_id, size_off)
 }
 
 /// Chunk 0x03043048 -- the BAKED blocks (the terrain the editor bakes into the
@@ -2168,6 +2244,89 @@ impl MapFile {
     /// lookback strings; the copies reference them. Refuses unless the first
     /// record's zone is the map's most common one. Returns (zone, count).
     pub fn fill_genealogy_file(path: &std::path::Path) -> Result<(String, usize), String> {
+        Self::fill_genealogy_file_n(path, None)
+    }
+
+    /// Give every cell of an `sx` x `sz` grid a baked ground block: one
+    /// record per uncovered (x, z) at the ground cell `cy`, copying the Id
+    /// reference, direction and flags of an existing record named `zone`
+    /// (the game's own big-decor maps carry exactly one Grass per cell). The
+    /// per-object byte arrays (0x03043062/68) grow by the same count.
+    /// Returns the number of records added.
+    pub fn extend_baked_file(path: &std::path::Path, zone: &str, sx: i32, sz: i32) -> Result<usize, String> {
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let g = Gbx::parse(&bytes);
+        let m = MapFile::from_gbx(Gbx::parse(&bytes));
+        let body = g.body.clone();
+        let (_, off, payload, size) = *crate::gbx::all_skip_chunks(&body)
+            .iter()
+            .find(|(cid, ..)| *cid == 0x03043048)
+            .ok_or("no baked-blocks chunk")?;
+        // a template: a record of `zone` whose Id is a REFERENCE (not the definition)
+        let tpl = m
+            .baked
+            .iter()
+            .find(|b| b.name == zone && !m.body_ids[b.name_field].is_def && b.flags & 0x8000 == 0 && b.flags & 0x100000 == 0)
+            .ok_or_else(|| format!("no referencing baked record named {zone}"))?;
+        let idf = &m.body_ids[tpl.name_field];
+        let id_bytes = body[idf.off..idf.off + idf.len].to_vec();
+        if id_bytes.len() != 4 {
+            return Err(format!("template Id field is {} bytes, want 4", id_bytes.len()));
+        }
+        let cy = tpl.raw_coords[1];
+        let covered: std::collections::HashSet<(u8, u8)> = m.baked.iter().filter(|b| b.name == zone).map(|b| (b.raw_coords[0], b.raw_coords[2])).collect();
+        let mut add: Vec<u8> = Vec::new();
+        let mut n = 0usize;
+        for x in 0..sx {
+            for z in 0..sz {
+                if covered.contains(&(x as u8, z as u8)) {
+                    continue;
+                }
+                add.extend_from_slice(&id_bytes);
+                add.push(tpl.dir);
+                add.extend_from_slice(&[x as u8, cy, z as u8]);
+                add.extend_from_slice(&tpl.flags.to_le_bytes());
+                n += 1;
+            }
+        }
+        if n == 0 {
+            return Ok(0);
+        }
+        // the chunk: count word at payload+8, records follow; append at the
+        // end of the last record (= end of the chunk payload)
+        let count = u32::from_le_bytes(body[payload + 8..payload + 12].try_into().unwrap());
+        let mut out = Vec::with_capacity(body.len() + add.len() + n);
+        out.extend_from_slice(&body[..off + 8]);
+        out.extend_from_slice(&((size + add.len()) as u32).to_le_bytes());
+        out.extend_from_slice(&body[payload..payload + 8]);
+        out.extend_from_slice(&(count + n as u32).to_le_bytes());
+        out.extend_from_slice(&body[payload + 12..payload + size]);
+        out.extend_from_slice(&add);
+        // everything after the chunk, with the per-object arrays grown:
+        // 0x03043062 and 0x03043068 hold one byte per block + baked + item
+        // (glitch-town: 4 + 1 + 2306 + 28 = 2339); 0x03043063/65 are per
+        // ITEM only (4 + 28 = 32) and 0x03043069 per block + item.
+        let mut rest = body[payload + size..].to_vec();
+        for cid in [0x0304_3062u32, 0x0304_3068] {
+            if let Some(&(_, coff, cpayload, csize)) = crate::gbx::all_skip_chunks(&rest).iter().find(|(c, ..)| *c == cid) {
+                let mut grown = Vec::with_capacity(rest.len() + n);
+                grown.extend_from_slice(&rest[..coff + 8]);
+                grown.extend_from_slice(&((csize + n) as u32).to_le_bytes());
+                grown.extend_from_slice(&rest[cpayload..cpayload + csize]);
+                grown.extend(std::iter::repeat(0u8).take(n));
+                grown.extend_from_slice(&rest[cpayload + csize..]);
+                rest = grown;
+            }
+        }
+        out.extend_from_slice(&rest);
+        std::fs::write(path, g.write_body_recompressed(&out)).map_err(|e| e.to_string())?;
+        Ok(n)
+    }
+
+    /// `fill_genealogy_file` with the record COUNT chosen: `cells` = the new
+    /// map's x*z (a resized map needs exactly one genealogy record per cell,
+    /// the game refuses to open it otherwise), None = keep the source count.
+    pub fn fill_genealogy_file_n(path: &std::path::Path, cells: Option<usize>) -> Result<(String, usize), String> {
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         let g = Gbx::parse(&bytes);
         let body = g.body.clone();
@@ -2177,7 +2336,7 @@ impl MapFile {
             .ok_or("no genealogy chunk")?;
         let chunk = &body[payload..payload + size];
         let recs = genealogy_records(chunk)?;
-        let n = recs.len();
+        let n = cells.unwrap_or(recs.len());
         let (r0s, r0e, zone) = recs.first().cloned().ok_or("no genealogy records")?;
         let mut hist: std::collections::BTreeMap<&str, usize> = Default::default();
         for (_, _, z) in &recs {
