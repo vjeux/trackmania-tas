@@ -3142,8 +3142,16 @@ pub fn inline_filler_foliage(store: &mut crate::store::DataStore, m: &mut Merged
         let slots = slot_maps.entry(key.clone()).or_insert_with(|| {
             let mut v = Vec::with_capacity(sm.materials.len());
             for mat in &sm.materials {
-                m.materials.push(mat.clone());
-                v.push(m.materials.len() - 1);
+                // one slot per LOOK (the three JungleForest species share one card atlas;
+                // item-check refuses a duplicate custom-texture slot)
+                let slot = match m.materials.iter().position(|x| same_look(x, mat)) {
+                    Some(i) => i,
+                    None => {
+                        m.materials.push(mat.clone());
+                        m.materials.len() - 1
+                    }
+                };
+                v.push(slot);
             }
             for (file, dds) in &sm.pictures {
                 if !m.pictures.iter().any(|(f, _)| f == file) {
