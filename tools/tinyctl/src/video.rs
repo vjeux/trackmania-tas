@@ -1229,6 +1229,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
         }
         let text = std::fs::read_to_string(&ships).unwrap_or_default();
         let mut rows: Vec<String> = text.lines().map(String::from).collect();
+        let rows_snapshot: Vec<String> = rows.clone();
         // WHICH ROW IS STILL THE MAP'S LAP. The player project replaces a map's
         // ghost several times a day, so ships.tsv holds more than one row per
         // map — and a stale one that ships LATER would swap the page back to the
@@ -1351,7 +1352,13 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
             // 15:52Z while its row had been outranked by the ship18f re-render —
             // the page must show the lap that IS public, then the re-render swaps in).
             let has_url_verdict = done_of.get(cells[3].as_str()).map(|d| d.starts_with("URL ") || d.starts_with("PENDING ")).unwrap_or(false);
-            if last_of.get(&cells[0]) != Some(&i) && !has_url_verdict {
+            // the LAST row of a map outranks the others — unless the later rows are
+            // all held (a held newer lap never reaches the page) and this row is
+            // the same-ghost rebuild of the lap the page shows (20: 84.954 vs the
+            // held 75.595 row after it)
+            let later_rows_all_held = rows_snapshot.iter().enumerate().filter(|(j, r)| *j > i && r.split('\t').next() == Some(cells[0].as_str())).all(|(_, r)| r.split('\t').nth(4).map(|s| s == "held" || s == "superseded").unwrap_or(false));
+            let page_lap_rebuild = PAGE_LAPS.with(|p| p.borrow().get(cells[0].as_str()).map(|t| *t == cells[1]).unwrap_or(false));
+            if last_of.get(&cells[0]) != Some(&i) && !has_url_verdict && !(later_rows_all_held && page_lap_rebuild) {
                 println!("{} {} {}: superseded by a newer lap — not shipped", chrono_now(), cells[0], cells[1]);
                 *row = format!("{}\t{}\t{}\t{}\tsuperseded", cells[0], cells[1], cells[2], cells[3]);
                 changed = true;
