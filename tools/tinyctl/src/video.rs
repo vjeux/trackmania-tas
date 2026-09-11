@@ -1235,6 +1235,19 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 let readme = ghosts_dir.as_ref().map(|d| std::fs::read_to_string(d.join("README.md")).unwrap_or_default()).unwrap_or_default();
                 match attitude_verdict(&readme, &cells[0], &cells[1]) {
                     Attitude::Clean => {}
+                    // CLASS-B WATER WITH A DISCLOSED RECEIPT (coordinator's policy,
+                    // 2026-09-11 03:00Z, from the parent's "publish on the build
+                    // that carries the drag, or with the disclosure"): B > 0 (road
+                    // through water) passes when the row's receipt carries
+                    // `water_ok=B`, the clip's build is ship17c or later, and the
+                    // row's rowbuilds note carries a disclosure. A > 0 (a pool
+                    // ridden as a lid) is a hard refusal always.
+                    Attitude::Water { a_s, b_s, .. } if a_s <= 0.0 && b_s > 0.0 && water_b_accepted(&out, &cells[0], &cells[1], &cells[2]) => {
+                        if !attitude_said.contains(&(cells[0].clone(), cells[1].clone())) {
+                            println!("{} {} {}: water class B {b_s:.2} s ACCEPTED — receipt says water_ok=B, build {} carries the drag, the row's note discloses it", chrono_now(), cells[0], cells[1], cells[2].rsplit_once("-ship").map(|(_, b)| format!("ship{b}")).unwrap_or_default());
+                            attitude_said.insert((cells[0].clone(), cells[1].clone()));
+                        }
+                    }
                     verdict => {
                         if !attitude_said.contains(&(cells[0].clone(), cells[1].clone())) {
                             println!("{} {} {}: ATTITUDE GATE — {} — not shipped, whatever approvals.tsv says", chrono_now(), cells[0], cells[1], verdict.describe());
@@ -2069,8 +2082,11 @@ pub enum Attitude {
     Dirty { inverted_s: f64, attitude_intervals: u32 },
     /// The lap touches water (the summary line's `water contact: X s`, once
     /// INPUT writes it; the ship15 water lid lets a car ride where the
-    /// original's water would stop it). Seconds of contact.
-    Water { contact_s: f64 },
+    /// original's water would stop it). `contact_s` = the larger class; `a_s` =
+    /// class A (a deep pool ridden as a lid — always a hard refusal), `b_s` =
+    /// class B (road through water — acceptable with a `water_ok=B` receipt and
+    /// the disclosure on a drag-carrying build).
+    Water { contact_s: f64, a_s: f64, b_s: f64 },
     NoTable,
 }
 
@@ -2079,7 +2095,7 @@ impl Attitude {
         match self {
             Attitude::Clean => "clean".into(),
             Attitude::Dirty { inverted_s, attitude_intervals } => format!("not clean: inverted {inverted_s:.2} s, {attitude_intervals} attitude interval(s) (> 0.3 s of |roll|/|pitch| > 60°)"),
-            Attitude::Water { contact_s } => format!("not clean: water contact {contact_s:.2} s (rides the water lid)"),
+            Attitude::Water { contact_s, a_s, b_s } => format!("not clean: water contact {contact_s:.2} s (A pool-lid {a_s:.2} s, B road-water {b_s:.2} s)"),
             Attitude::NoTable => "no attitude table for this lap in the ghosts README (fail closed)".into(),
         }
     }
@@ -2104,18 +2120,18 @@ pub fn attitude_verdict(readme: &str, nn: &str, time: &str) -> Attitude {
     // / `attitude: n/a (no rich-trace table yet)`, `water: … A x · B y · S z — clean`.
     if let Some(i) = lower.find("attitude:") {
         let v = lower[i + "attitude:".len()..].trim_start();
-        let water_dirty = lower.find("water:").map(|w| {
-            let ws = &lower[w..];
-            let seg: &str = ws.split(" · builds").next().unwrap_or(ws);
-            // "A 0.00 · B 0.00 · S 0.00" — any nonzero seconds, or the word
-            // "lid"/"riding" without "no lid"/"on-lid … clean", is contact
-            let nums: Vec<f64> = seg.split(|c: char| !c.is_ascii_digit() && c != '.').filter_map(|s| s.parse().ok()).collect();
-            let any_nonzero = seg.contains(" a ") && nums.iter().any(|x| *x > 0.0);
-            any_nonzero && !seg.contains("no lid exists")
-        }).unwrap_or(false);
+        // the rich water triple "A x · B y · S z" (seconds; S = surface-only
+        // contact, informational): read A and B by name
+        let (wa, wb) = lower.find("water:").map(|w| {
+            let seg: &str = lower[w..].split(" · builds").next().unwrap_or(&lower[w..]);
+            let grab = |tag: &str| -> f64 {
+                seg.find(tag).and_then(|i| seg[i + tag.len()..].trim_start().split(|c: char| c == ' ' || c == '·').next()).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0)
+            };
+            if seg.contains("no lid exists") { (0.0, 0.0) } else { (grab(" a "), grab(" b ")) }
+        }).unwrap_or((0.0, 0.0));
         return if v.starts_with("pass") {
-            if water_dirty {
-                Attitude::Water { contact_s: 1.0 }
+            if wa > 0.0 || wb > 0.0 {
+                Attitude::Water { contact_s: wa.max(wb), a_s: wa, b_s: wb }
             } else {
                 Attitude::Clean
             }
@@ -2167,7 +2183,7 @@ pub fn attitude_verdict(readme: &str, nn: &str, time: &str) -> Attitude {
         (true, _) | (_, None) => Attitude::NoTable,
         (false, Some(a)) if inverted_s <= 0.0 && a == 0 => {
             if contact_s > 0.0 {
-                Attitude::Water { contact_s }
+                Attitude::Water { contact_s, a_s: water_a.unwrap_or(0.0).max(if water_a.is_none() && water_b.is_none() { water_total.unwrap_or(0.0) } else { 0.0 }), b_s: water_b.unwrap_or(0.0) }
             } else {
                 Attitude::Clean
             }
@@ -2202,16 +2218,16 @@ mod attitude_tests {
         // water contact: a clean-attitude lap with contact is not clean; without the field it is judged on attitude alone
         let with_water = "- 19 46.362: below 8 m/s: 0.07 s, respawns: 0, inverted: 0.00 s, 2 slow + 0 attitude intervals, water contact: 1.20 s\n\
 - 05 18.298: below 8 m/s: 0.00 s, respawns: 0, inverted: 0.00 s, 0 slow + 0 attitude intervals, water contact: 0.00 s\n";
-        assert_eq!(attitude_verdict(with_water, "19", "46.362"), Attitude::Water { contact_s: 1.2 });
+        assert_eq!(attitude_verdict(with_water, "19", "46.362"), Attitude::Water { contact_s: 1.2, a_s: 1.2, b_s: 0.0 });
         assert_eq!(attitude_verdict(with_water, "05", "18.298"), Attitude::Clean, "0.00 s of contact is clean");
-        assert!(Attitude::Water { contact_s: 1.2 }.describe().contains("water contact 1.20 s"));
+        assert!(Attitude::Water { contact_s: 1.2, a_s: 1.2, b_s: 0.0 }.describe().contains("water contact 1.20 s"));
         // the census's two fields: A (pool as a lid) and B (road through water) — either > 0 is not clean, both 0.00 is clean
         let ab = "- 20 75.595: below 8 m/s: 11.03 s, respawns: 0, inverted: 0.00 s, 10 slow + 0 attitude intervals, water A: 0.00 s, water B: 0.78 s\n\
 - 19 46.362: below 8 m/s: 0.07 s, respawns: 0, inverted: 0.00 s, 2 slow + 0 attitude intervals, water A: 0.00 s, water B: 0.00 s\n\
 - 15 48.738: below 8 m/s: 4.09 s, respawns: 0, inverted: 0.00 s, 6 slow + 0 attitude intervals, water A: 12.60 s, water B: 2.60 s\n";
-        assert_eq!(attitude_verdict(ab, "20", "75.595"), Attitude::Water { contact_s: 0.78 }, "B alone fails");
+        assert_eq!(attitude_verdict(ab, "20", "75.595"), Attitude::Water { contact_s: 0.78, a_s: 0.0, b_s: 0.78 }, "B alone fails");
         assert_eq!(attitude_verdict(ab, "19", "46.362"), Attitude::Clean, "A = B = 0.00 is clean");
-        assert_eq!(attitude_verdict(ab, "15", "48.738"), Attitude::Water { contact_s: 12.6 }, "the larger of A and B is reported");
+        assert_eq!(attitude_verdict(ab, "15", "48.738"), Attitude::Water { contact_s: 12.6, a_s: 12.6, b_s: 2.6 }, "the larger of A and B is reported");
         // author-relative verdict: pass makes the tilt intervals legal; fail makes them illegal even at 0; inversion stays illegal; absent = absolute reading
         let ar = "- 21 115.478: below 8 m/s: 10.44 s, respawns: 0, inverted: 0.00 s, 14 slow + 11 attitude intervals, author-relative: pass\n\
 - 23 102.148: below 8 m/s: 6.32 s, respawns: 2, inverted: 0.00 s, 9 slow + 0 attitude intervals, author-relative: FAIL (wall at 41 s not in the author's line)\n\
@@ -2357,5 +2373,52 @@ mod caption_build_tests {
         let from_clip = clip.rsplit_once("-ship").map(|(_, b)| format!("ship{b}")).unwrap();
         assert_eq!(note.replacen(&extract_build(note).unwrap(), &from_clip, 1), "build ship17b, controls overlay");
         assert_eq!(note.replacen(&extract_build(note).unwrap(), "ship17c", 1), "build ship17c, controls overlay");
+    }
+}
+
+/// Is class-B water contact accepted for this staged clip? The receipt for the
+/// lap carries `water_ok=B` (in its note, or as a fifth column), the clip's
+/// build (its name's `-shipNN` suffix) is ship17c or later, and the row's
+/// rowbuilds.tsv note is non-empty (the disclosure the page will carry).
+pub fn water_b_accepted(out: &Path, nn: &str, time: &str, clip: &str) -> bool {
+    let Some(receipt) = approval_for(out, nn, time) else { return false };
+    let rowbuilds = crate::pagestatus::parse_rowbuilds(&std::fs::read_to_string(out.join("rowbuilds.tsv")).unwrap_or_default());
+    water_b_rule(&receipt, clip, rowbuilds.get(nn).map(|r| r.note.as_str()).unwrap_or(""))
+}
+
+pub fn water_b_rule(receipt: &str, clip: &str, row_note: &str) -> bool {
+    let ok = receipt.to_ascii_lowercase().contains("water_ok=b");
+    let build = clip.rsplit_once("-ship").map(|(_, b)| b.to_string()).unwrap_or_default();
+    let build_ok = build_at_least(&build, "17c");
+    ok && build_ok && !row_note.trim().trim_start_matches("video=ok").trim().is_empty()
+}
+
+/// `"17c" >= "17c"`, `"18" >= "17c"`, `"17b" < "17c"`, `"15" < "17c"`: the number,
+/// then the letter suffix (none < a < b < …).
+fn build_at_least(b: &str, min: &str) -> bool {
+    let split = |s: &str| -> (u32, String) {
+        let n: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+        (n.parse().unwrap_or(0), s[n.len()..].to_ascii_lowercase())
+    };
+    let (bn, bs) = split(b);
+    let (mn, ms) = split(min);
+    bn > mn || (bn == mn && bs >= ms)
+}
+
+#[cfg(test)]
+mod water_b_tests {
+    use super::*;
+
+    #[test]
+    fn class_b_water_passes_only_with_receipt_build_and_disclosure() {
+        let receipt = "05\t16.395\tparent\tPUBLISHABLE (ship17c) water_ok=B";
+        let note = "road-through-water section without drag — the original slows the car there";
+        assert!(water_b_rule(receipt, "05-ghost-16.395-ship17c", note));
+        assert!(water_b_rule(receipt, "05-ghost-16.395-ship18", note), "later builds too");
+        assert!(!water_b_rule(receipt, "05-ghost-16.395-ship17b", note), "17b is before 17c");
+        assert!(!water_b_rule(receipt, "05-ghost-16.395-ship15", note), "ship15 carries no drag");
+        assert!(!water_b_rule(receipt, "05-ghost-16.395-ship17c", ""), "no disclosure on the row");
+        assert!(!water_b_rule("05\t16.395\tparent\tPUBLISHABLE", "05-ghost-16.395-ship17c", note), "no water_ok=B in the receipt");
+        assert!(build_at_least("17c", "17c") && build_at_least("18", "17c") && !build_at_least("17", "17c") && !build_at_least("16c", "17c"));
     }
 }
