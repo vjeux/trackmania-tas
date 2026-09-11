@@ -1573,6 +1573,15 @@ pub fn item_modifier_links(store: &mut crate::store::DataStore, item_path: &str)
 /// PlatformGrassSpecialTurbo2 kerb sign was vjeux's "the super turbo decal is
 /// wrong" (frame sp21b pgB).
 pub fn add_sign_logo_pictures(store: &mut crate::store::DataStore, m: &mut Merged) {
+    // OFF BY DEFAULT since 2026-09-11 01:35Z: the generated picture material is what
+    // drew the green/purple CHECKERBOARD on the gate icon squares (vjeux, Argentina)
+    // — both the RGBA32 and the DXT5 forms; with no picture the pack's own
+    // SpecialSign<Kind> material draws the kind's chevrons in the item exactly as
+    // the original (same-camera editor frames, 21's triple Turbo bar). TINY_SIGNLOGO=on
+    // restores the pass for the 16-m beam-panel question (Summer 19, ⊗ sign).
+    if std::env::var("TINY_SIGNLOGO").map(|v| v != "on").unwrap_or(true) {
+        return;
+    }
     let kinds: Vec<String> = m.materials.iter().filter_map(|mat| mat.link().and_then(super::signlogo::kind_of_pseudo).map(|s| s.to_string())).collect();
     for kind in kinds {
         let file = super::signlogo::logo_file(&kind);
@@ -3055,7 +3064,7 @@ pub fn trigger_fx_pass(store: &mut crate::store::DataStore, m: &mut Merged) {
             if m.pictures.iter().any(|(f, _)| *f == file) {
                 continue;
             }
-            let path = format!("Stadium\\Media\\Texture\\Image\\TriggerFX{kind}_I.dds");
+            let path = format!("Stadium\\Media\\Texture\\Image\\{kind}_I.dds");
             match store.read(&path).map_err(|e| format!("{path}: {e}")).and_then(|b| super::texture::dds_cap(&b, 512).map_err(|e| format!("{path}: {e}"))) {
                 Ok(dds) => {
                     m.notes.push(format!("trigger FX picture {file} ({} bytes) from {path}", dds.len()));

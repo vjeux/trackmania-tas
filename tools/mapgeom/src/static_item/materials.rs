@@ -475,14 +475,31 @@ pub fn screen_face_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMa
 /// self-lit additive quad (`TIAdd`, the pak's `TriggerFX<Kind>_I.dds` as
 /// `Items/TriggerFX<Kind>.dds`) — unverified in a frame yet; `game` keeps the
 /// checkerboard.
+/// The gameplay-gate FX materials an item cannot feed: `TriggerFX<Kind>` (the
+/// curtain, `SpecialFXGate.FuncShader`) and `SpecialFX<Kind>` (the ICON plates of
+/// the GateSpecial items, `SpecialFX.FuncShader` + `SpecialFX<Kind>_I`) — both are
+/// FuncShader-driven by the LIVE gate; in an item the sampler is unfed and the
+/// game draws its green/purple checkerboard (PROVEN 2026-09-11 01:10Z on 21's
+/// triple Turbo bar: ship15, ship17b and the TriggerFX-only picture build all
+/// show the checkerboard on the icon squares). Returns "<Family><Kind>", e.g.
+/// "SpecialFXTurbo", the stem of the pak's `_I` texture.
 pub fn trigger_fx_kind(link: &str) -> Option<String> {
     if let Some(rest) = link.strip_prefix("Stadium\\Media\\Modifier\\") {
         let (kind, name) = rest.split_once('\\')?;
-        return (name == "TriggerFX").then(|| kind.to_string());
+        return (name == "TriggerFX" || name == "SpecialFX").then(|| format!("{name}{kind}"));
     }
-    // the prefab's own form before the modifier re-dress: `Material\TriggerFXTurbo`
-    let rest = link.strip_prefix("Stadium\\Media\\Material\\TriggerFX")?;
-    (!rest.is_empty() && !rest.contains('\\')).then(|| rest.to_string())
+    let rest = link.strip_prefix("Stadium\\Media\\Material\\")?;
+    if rest.contains('\\') {
+        return None;
+    }
+    for fam in ["TriggerFX", "SpecialFX"] {
+        if let Some(kind) = rest.strip_prefix(fam) {
+            if !kind.is_empty() {
+                return Some(format!("{fam}{kind}"));
+            }
+        }
+    }
+    None
 }
 
 pub fn trigger_fx_mode() -> String {
@@ -490,11 +507,14 @@ pub fn trigger_fx_mode() -> String {
     // leave the gate trigger item with no visual, and the library emits no item
     // for a visual-less variant — the GAMEPLAY TRIGGER would vanish with the
     // curtain (21 build, 2026-09-10 17:53Z: "no geometry in this variant").
+    // default `game`: the checkerboard was the SignLogo picture, not these (2026-09-11
+    // 01:35Z — three replacement models moved nothing); `picture` stays a knob
     std::env::var("TINY_TRIGGERFX").unwrap_or_else(|_| "game".to_string())
 }
 
 pub fn trigger_fx_file(kind: &str) -> String {
-    format!("TriggerFX{kind}{}.dds", picture_suffix())
+    // `kind` is the family+kind stem (TriggerFXTurbo, SpecialFXTurbo)
+    format!("{kind}{}.dds", picture_suffix())
 }
 
 pub fn trigger_fx_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMaterialUserInst {
@@ -509,10 +529,15 @@ pub fn trigger_fx_material(inst: &CPlugMaterialUserInst, m: &Merged) -> CPlugMat
     let mut owned = inst.clone();
     if let Some(main) = owned.main.as_mut() {
         main.is_using_game_material = false;
-        main.model = crate::crystal_model::Id::Str("TIAdd".to_string());
-        main.material_name = crate::crystal_model::Id::Str(format!("TriggerFX{kind}"));
+        // TINY_FX_MODEL=MODEL[:slot,slot] (default TIAdd:0,8 — slot 5 is Normal in the
+        // exe's slot enum, 8 is SelfIllum; the first form put the picture in 0 and 5 and
+        // drew the checkerboard, 2026-09-11 01:35Z)
+        let spec = std::env::var("TINY_FX_MODEL").unwrap_or_else(|_| "TIAdd:0,8".to_string());
+        let (model, slots) = spec.split_once(':').unwrap_or((&spec, "0,8"));
+        main.model = crate::crystal_model::Id::Str(model.to_string());
+        main.material_name = crate::crystal_model::Id::Str(kind.clone());
         main.link = crate::crystal_model::Id::Null;
-        main.user_textures = vec![crate::crystal_model::UserTexture { u01: 0, texture: file.clone() }, crate::crystal_model::UserTexture { u01: 5, texture: file }];
+        main.user_textures = slots.split(',').filter_map(|s| s.trim().parse::<i32>().ok()).map(|s| crate::crystal_model::UserTexture { u01: s, texture: file.clone() }).collect();
     }
     owned
 }
