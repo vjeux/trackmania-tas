@@ -3099,10 +3099,11 @@ pub fn trigger_fx_pass(store: &mut crate::store::DataStore, m: &mut Merged) {
 /// the caller passes only the entities it did not re-emit.
 /// `TINY_VEGET_INLINE=0` turns the pass off.
 pub fn inline_filler_foliage(store: &mut crate::store::DataStore, m: &mut Merged, entities: &[(String, Xform)], scale: f32, cache: &mut std::collections::BTreeMap<String, Option<Merged>>) -> usize {
-    // OPT-IN (TINY_VEGET_INLINE=1) until the cards' placement is verified against the
-    // original in same-camera frames (2026-09-11 05:10Z: first 01 frames show more
-    // bushes on the hill, not yet the original's wall of green beside the road)
-    if std::env::var("TINY_VEGET_INLINE").map(|v| v != "1").unwrap_or(true) || entities.is_empty() {
+    // DEFAULT ON since 2026-09-11 05:20Z: same-camera editor frames of 01's hills from the
+    // video's line of sight show the original's jungle cover back on the tiny hills and
+    // the lake hidden behind the shoulder as in the original (proof-hillcover.jpg).
+    // TINY_VEGET_INLINE=0 turns it off.
+    if std::env::var("TINY_VEGET_INLINE").map(|v| v == "0").unwrap_or(false) || entities.is_empty() {
         return 0;
     }
     let mut placed = 0usize;
