@@ -97,6 +97,9 @@ pub struct Decision {
     pub choice: &'static str,
     pub reason: String,
     pub origin: [f32; 3],
+    /// The free block's yaw (the first word of the 0x0304305F rotation triple; 0 for
+    /// the symmetric pool blocks).
+    pub yaw: f32,
     pub spill: String,
 }
 
@@ -215,11 +218,11 @@ pub fn decide(plates: &[PlateRow], tris: &[UpTri], source: Option<&SourceUnder>)
             let body = format!("{arche} pool plane {plane:.2} block cells ({c0x},{c0z})..({},{}) [{} water, {} spill] items {}", c0x + 1, c0z + 1, water_cells.len(), spill_cells.len(), cells.iter().filter(|c| covered.contains(&((c.cx - wx0).div_euclid(16), (c.cz - wz0).div_euclid(16)))).map(|c| format!("i{}", plates[c.row].item_index)).collect::<Vec<_>>().join(","));
             let spill = format!("x {:.0}..{:.0} z {:.0}..{:.0} band {:.2}..{:.2}", ox, ox + 32.0, oz, oz + 32.0, band_lo, plane);
             if !under.is_empty() {
-                local.push(Decision { water_cells: water_cells.len(), body, archetype: arche.clone(), choice: "item", reason: format!("drivable source block under the pool (band to ~{floor:.1}): {}", under.join("; ")), origin, spill });
+                local.push(Decision { water_cells: water_cells.len(), body, archetype: arche.clone(), choice: "item", reason: format!("drivable source block under the pool (band to ~{floor:.1}): {}", under.join("; ")), origin, yaw: 0.0, spill });
             } else if !kinds.is_empty() {
-                local.push(Decision { water_cells: water_cells.len(), body, archetype: arche.clone(), choice: "item", reason: format!("drivable surface in the spilled cells: {}", kinds.iter().map(|(k, n)| format!("{k}×{n}")).collect::<Vec<_>>().join(" ")), origin, spill });
+                local.push(Decision { water_cells: water_cells.len(), body, archetype: arche.clone(), choice: "item", reason: format!("drivable surface in the spilled cells: {}", kinds.iter().map(|(k, n)| format!("{k}×{n}")).collect::<Vec<_>>().join(" ")), origin, yaw: 0.0, spill });
             } else if samples > 0 && visible * 4 > samples {
-                local.push(Decision { water_cells: water_cells.len(), body, archetype: arche.clone(), choice: "item", reason: format!("sheet visible in the air over {visible}/{samples} spill samples"), origin, spill });
+                local.push(Decision { water_cells: water_cells.len(), body, archetype: arche.clone(), choice: "item", reason: format!("sheet visible in the air over {visible}/{samples} spill samples"), origin, yaw: 0.0, spill });
             } else {
                 // EMITTED archetype is always WaterBase (volume 4..7 of the block, no collision of
                 // its own). A DecoWallWaterBase custom block puts a COLLIDABLE clip cap (ResonantMetal)
@@ -231,7 +234,7 @@ pub fn decide(plates: &[PlateRow], tris: &[UpTri], source: Option<&SourceUnder>)
                 let layers: &[f32] = if arche == "DecoWallWaterBase" { &[7.0, 10.0] } else { &[7.0] };
                 for (li, off) in layers.iter().enumerate() {
                     let body_l = if layers.len() > 1 { format!("{body} layer {}/{}", li + 1, layers.len()) } else { body.clone() };
-                    local.push(Decision { water_cells: if li == 0 { water_cells.len() } else { 0 }, body: body_l, archetype: "WaterBase".to_string(), choice: "block", reason: reason.clone(), origin: [ox, plane - off, oz], spill: spill.clone() });
+                    local.push(Decision { water_cells: if li == 0 { water_cells.len() } else { 0 }, body: body_l, archetype: "WaterBase".to_string(), choice: "block", reason: reason.clone(), origin: [ox, plane - off, oz], yaw: 0.0, spill: spill.clone() });
                 }
             }
         }
@@ -298,4 +301,105 @@ impl SourceUnder<'_> {
         out.dedup();
         out
     }
+}
+
+/// The WATER ROADS (RoadWaterStraight / RoadWaterCheckpoint / RoadWaterSpecialTurbo:
+/// a road deck AT the water plane inside a 26 × 32 m volume 2 m deep, local
+/// x 3..29, z 0..32, the road along local z). At half scale a tiny road cell is
+/// 16 m; the archetype volume is 32 m, so one block covers TWO consecutive
+/// cells of a straight run, centred on the pair (a lone cell gets a block
+/// centred on itself: 8 m of spill at both ends). Sideways the volume reaches
+/// 13 m from the road axis (the tiny road is 6.5 m each side): the spill lies
+/// over the road's own side walls. The free block's yaw (measured
+/// 2026-09-11: the volume rotates about the origin corner, local (x, z) →
+/// world (x₀ + z, z₀ − x) at +90°) puts the road axis along world z (dir 0/2,
+/// yaw 0) or world x (dir 1/3, yaw π/2). Accepted only where the spilled band
+/// [plane − 2, plane + 0.3] outside every water footprint holds no drivable
+/// surface (the same rule as the pools). `TINY_WATER_ROADS=0` turns it off.
+pub fn decide_roads(plates: &[PlateRow], tris: &[UpTri]) -> Vec<Decision> {
+    let mut out = Vec::new();
+    if std::env::var("TINY_WATER_ROADS").map(|v| v == "0").unwrap_or(false) {
+        return out;
+    }
+    let is_road = |b: &str| {
+        let n = b.split_whitespace().next().unwrap_or(b);
+        matches!(n, "RoadWaterStraight" | "RoadWaterCheckpoint" | "RoadWaterSpecialTurbo")
+    };
+    let wet: Vec<(f32, f32, f32, f32, f32)> = plates.iter().map(|p| (p.xmin, p.xmax, p.zmin, p.zmax, p.plane_y)).collect();
+    let in_wet = |x: f32, z: f32, plane: f32| wet.iter().any(|(x0, x1, z0, z1, py)| (py - plane).abs() < 0.6 && x >= x0 - 0.01 && x <= x1 + 0.01 && z >= z0 - 0.01 && z <= z1 + 0.01);
+    // road cells: (along-z run?) keyed by the road axis and the cross coordinate
+    struct Cell { cx: f32, cz: f32, plane: f32, along_z: bool, row: usize }
+    let mut cells: Vec<Cell> = Vec::new();
+    for (i, p) in plates.iter().enumerate() {
+        if !is_road(&p.source_block) { continue; }
+        // the source direction: yaw 0 / π = road along z, ±π/2 = along x
+        let along_z = ((p.yaw / std::f32::consts::FRAC_PI_2).round() as i32).rem_euclid(2) == 0;
+        cells.push(Cell { cx: p.xmin.round(), cz: p.zmin.round(), plane: p.plane_y, along_z, row: i });
+    }
+    // group by (axis, cross coordinate, plane), sort along the axis, pair up
+    let mut groups: BTreeMap<(bool, i32, i32), Vec<usize>> = BTreeMap::new();
+    for (k, c) in cells.iter().enumerate() {
+        let cross = if c.along_z { c.cx } else { c.cz };
+        groups.entry((c.along_z, cross as i32, (c.plane * 20.0).round() as i32)).or_default().push(k);
+    }
+    for ((along_z, _cross, _pl), mut ks) in groups {
+        ks.sort_by(|a, b| {
+            let (ca, cb) = (&cells[*a], &cells[*b]);
+            let (va, vb) = if along_z { (ca.cz, cb.cz) } else { (ca.cx, cb.cx) };
+            va.partial_cmp(&vb).unwrap()
+        });
+        let mut i = 0;
+        while i < ks.len() {
+            let c0 = &cells[ks[i]];
+            let along0 = if along_z { c0.cz } else { c0.cx };
+            // a consecutive partner 16 m further along
+            let pair = ks.get(i + 1).filter(|k| {
+                let c1 = &cells[**k];
+                let along1 = if along_z { c1.cz } else { c1.cx };
+                (along1 - along0 - 16.0).abs() < 0.5
+            });
+            let n = if pair.is_some() { 2 } else { 1 };
+            // the volume centre: the pair's centre along the axis, the road axis across
+            let (centre_along, centre_cross) = if along_z {
+                (c0.cz + 8.0 * n as f32, c0.cx + 8.0)
+            } else {
+                (c0.cx + 8.0 * n as f32, c0.cz + 8.0)
+            };
+            let plane = c0.plane;
+            // world footprint of the volume: 32 along the axis, 26 across (x 3..29 of 32)
+            let (fx0, fx1, fz0, fz1) = if along_z {
+                (centre_cross - 13.0, centre_cross + 13.0, centre_along - 16.0, centre_along + 16.0)
+            } else {
+                (centre_along - 16.0, centre_along + 16.0, centre_cross - 13.0, centre_cross + 13.0)
+            };
+            // the free block origin (the block's 32 × 32 frame, then the yaw convention)
+            let (origin, yaw) = if along_z {
+                ([centre_cross - 16.0, plane - 2.0, centre_along - 16.0], 0.0f32)
+            } else {
+                // yaw +π/2: local (x, z) → world (x₀ + z, z₀ − x): world x = x₀..x₀+32 (the axis),
+                // world z = z₀−32..z₀ (across) → x₀ = centre_along − 16, z₀ = centre_cross + 16
+                ([centre_along - 16.0, plane - 2.0, centre_cross + 16.0], std::f32::consts::FRAC_PI_2)
+            };
+            let band_lo = plane - 2.0;
+            let band_hi = plane + 0.3;
+            let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+            for t in tris {
+                if t.phys == "Water" || t.phys == "NotCollidable" { continue; }
+                if t.top < band_lo || t.top > band_hi { continue; }
+                if t.c[0] >= fx0 && t.c[0] <= fx1 && t.c[2] >= fz0 && t.c[2] <= fz1 && !in_wet(t.c[0], t.c[2], plane) {
+                    *kinds.entry(t.phys.clone()).or_default() += 1;
+                }
+            }
+            let rows: Vec<String> = (0..n).map(|j| format!("i{}", plates[cells[ks[i + j]].row].item_index)).collect();
+            let body = format!("RoadWater run plane {plane:.2} {} cell(s) {} along {} at ({:.0}, {:.0})", n, rows.join(","), if along_z { "z" } else { "x" }, centre_cross, centre_along);
+            let spill = format!("x {fx0:.0}..{fx1:.0} z {fz0:.0}..{fz1:.0} band {band_lo:.2}..{plane:.2}");
+            if kinds.is_empty() {
+                out.push(Decision { water_cells: n, body, archetype: "RoadWaterStraight".to_string(), choice: "block", reason: if n == 2 { "two road cells, one volume".to_string() } else { "lone road cell: 8 m of spill at both ends over water/walls".to_string() }, origin, yaw, spill });
+            } else {
+                out.push(Decision { water_cells: n, body, archetype: "RoadWaterStraight".to_string(), choice: "item", reason: format!("drivable surface in the spilled band: {}", kinds.iter().map(|(k, v)| format!("{k}×{v}")).collect::<Vec<_>>().join(" ")), origin, yaw, spill });
+            }
+            i += n;
+        }
+    }
+    out
 }

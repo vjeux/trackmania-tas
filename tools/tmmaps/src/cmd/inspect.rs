@@ -302,3 +302,28 @@ pub fn phases(args: &[String]) {
         println!("phase {p}\t{n}");
     }
 }
+
+/// `tmmaps genealogy-cells MAP --cells x0:x1,z0:z1` — the genealogy record of
+/// each cell in the range (record order = x*64 + z, the block grid), as chain,
+/// index, dir, current zone. What the game regenerates there.
+pub fn genealogy_cells(args: &[String]) {
+    let g = gbx::Gbx::load(Path::new(&args[2])).unwrap();
+    let &(_, _, payload, size) = map::skip_chunks(&g.body).iter().find(|(c, ..)| *c == 0x0304_3043).expect("no genealogy chunk");
+    let b = &g.body[payload..payload + size];
+    let recs = map::genealogy_full(b).expect("genealogy records");
+    let side = (recs.len() as f64).sqrt() as usize;
+    let spec = tmmaps::cli::flag(&args, "--cells").expect("--cells x0:x1,z0:z1");
+    let (xs, zs) = spec.split_once(',').expect("--cells x0:x1,z0:z1");
+    let rng = |s: &str| -> (usize, usize) { let (a, b) = s.split_once(':').unwrap_or((s, s)); (a.parse().unwrap(), b.parse().unwrap()) };
+    let ((x0, x1), (z0, z1)) = (rng(xs), rng(zs));
+    let order = tmmaps::cli::flag(&args, "--order").unwrap_or_else(|| "xz".into());
+    println!("cell\tchain\tindex\tdir\tcurrent");
+    for x in x0..=x1 {
+        for z in z0..=z1 {
+            let i = if order == "xz" { x * side + z } else { z * side + x };
+            if let Some(r) = recs.get(i) {
+                println!("({x},{z})\t{}\t{}\t{}\t{}", r.ids.join(">"), r.current_index, r.dir, r.current);
+            }
+        }
+    }
+}

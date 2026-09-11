@@ -154,6 +154,7 @@ fn main() {
         "chunks" => inspect::chunks(&args),
         "blockrefs" => inspect::blockrefs(&args),
         "genealogy" => inspect::genealogy(&args),
+        "genealogy-cells" => inspect::genealogy_cells(&args),
         "colors" => inspect::colors(&args),
         "phases" => inspect::phases(&args),
         "help" | "--help" | "-h" => println!("{}", USAGE),

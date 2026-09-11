@@ -608,7 +608,8 @@ fn main() {
                 (Some(_), None) => die("--source needs --anchor".into()),
                 _ => None,
             };
-            let decisions = mapgeom::waterblocks::decide(&plates, &tris, source.as_ref());
+            let mut decisions = mapgeom::waterblocks::decide(&plates, &tris, source.as_ref());
+            decisions.extend(mapgeom::waterblocks::decide_roads(&plates, &tris));
             let mut table = String::from("body\tarchetype\tchoice\treason\tblock_origin\tspill\n");
             let mut specs: Vec<tmmaps::map::FreeBlockSpec> = Vec::new();
             let mut files: std::collections::BTreeMap<String, Vec<u8>> = Default::default();
@@ -638,7 +639,7 @@ fn main() {
                     let renamed = mapgeom::crystal::rename_ident(&raw, &old_ident, &ident);
                     files.insert(zip_path.clone(), renamed);
                 }
-                specs.push(tmmaps::map::FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.clone()), flags: 0x1020_8000, pos: d.origin, rot: [0.0, 0.0, 0.0], grid: None });
+                specs.push(tmmaps::map::FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.clone()), flags: 0x1020_8000, pos: d.origin, rot: [d.yaw, 0.0, 0.0], grid: None });
             }
             println!("{p}: {} water bodies handled, {} as blocks, {} archetype files", decisions.len(), n_block, files.len());
             if let Some(t) = &table_out {
@@ -669,6 +670,140 @@ fn main() {
             let _ = std::fs::remove_file(&tmp_map);
             let m4 = tmmaps::map::MapFile::load(std::path::Path::new(&out));
             println!("  {out}: {} free blocks ({} added; Id table {} -> {}), manifest {} rows", m4.blocks.iter().filter(|b| b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0).count(), specs.len(), r.table_before, r.table_after, manifest.len());
+        }
+        "raycast" => {
+            // raycast MAP --from x,y,z --dir dx,dy,dz [--fan H0:H1:N] [--pitch P0:P1:M] [--max D]
+            //   [--report R.tsv] [--source SRC.Map.Gbx --anchor sx,sy,sz:tx,ty,tz]
+            // The first hit of camera rays over the map's ITEM triangles (collision and
+            // visual groups), for naming what a frame's pixel region shows: per ray the
+            // distance, the hit point, the item, its model and source block (--report).
+            // --fan/--pitch sweep the direction: yaw offsets H0..H1 (radians, + = right)
+            // in N steps and pitch offsets P0..P1 (+ = up) in M steps. With --source, the
+            // SOURCE cells the same ray crosses at full scale are listed with the
+            // source blocks in them (what the original has along the line of sight).
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("raycast MAP --from x,y,z --dir dx,dy,dz".into()));
+            let v3 = |s: &str| -> [f32; 3] {
+                let f: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap_or_else(|_| die(format!("bad number in {s}")))).collect();
+                if f.len() != 3 { die::<()>(format!("{s}: three numbers")); }
+                [f[0], f[1], f[2]]
+            };
+            let from = v3(&flag(&a.rest, "--from").unwrap_or_else(|| die("--from x,y,z".into())));
+            let dir0 = v3(&flag(&a.rest, "--dir").unwrap_or_else(|| die("--dir dx,dy,dz".into())));
+            let maxd: f32 = flag(&a.rest, "--max").and_then(|s| s.parse().ok()).unwrap_or(600.0);
+            let sweep = |s: Option<String>| -> Vec<f32> {
+                match s {
+                    None => vec![0.0],
+                    Some(t) => {
+                        let f: Vec<f32> = t.split(':').map(|x| x.parse().unwrap_or(0.0)).collect();
+                        let n = f.get(2).copied().unwrap_or(1.0).max(1.0) as usize;
+                        (0..n).map(|i| if n == 1 { f[0] } else { f[0] + (f[1] - f[0]) * i as f32 / (n - 1) as f32 }).collect()
+                    }
+                }
+            };
+            let yaws = sweep(flag(&a.rest, "--fan"));
+            let pitches = sweep(flag(&a.rest, "--pitch"));
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+            let report: BTreeMap<String, String> = flag(&a.rest, "--report")
+                .and_then(|r| std::fs::read_to_string(r).ok())
+                .map(|text| text.lines().filter_map(|l| { let c: Vec<&str> = l.split('\t').collect(); ((c[0] == "block" || c[0] == "item" || c[0] == "tree") && c.len() > 4).then(|| (format!("{}.Item.Gbx", c[1]), c[4].to_string())) }).collect())
+                .unwrap_or_default();
+            // every triangle of every item, world frame, with its item index and kind
+            let mut asm = mapgeom::assemble::Assembler::new(&mut store);
+            asm.with_embedded(&m).ok();
+            struct Tri { v: [[f32; 3]; 3], item: usize, visual: bool }
+            let mut tris: Vec<Tri> = Vec::new();
+            for (ii, it) in m.items.iter().enumerate() {
+                let Some(lm) = asm.item_model(&it.model) else { continue };
+                let lm = lm.clone();
+                let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                for (mat, g) in &lm.scene.groups {
+                    let visual = mat == "Visual";
+                    for t in &g.tris {
+                        tris.push(Tri { v: [mapgeom::geom::apply(&xf, g.verts[t[0] as usize]), mapgeom::geom::apply(&xf, g.verts[t[1] as usize]), mapgeom::geom::apply(&xf, g.verts[t[2] as usize])], item: ii, visual });
+                    }
+                }
+            }
+            eprintln!("{} triangles over {} items", tris.len(), m.items.len());
+            let src_map = flag(&a.rest, "--source").map(|s| tmmaps::map::MapFile::load(std::path::Path::new(&s)));
+            let anchor: Option<([f32; 3], [f32; 3])> = flag(&a.rest, "--anchor").map(|s| { let (l, r) = s.split_once(':').unwrap_or_else(|| die("--anchor sx,sy,sz:tx,ty,tz".into())); (v3(l), v3(r)) });
+            // --cell-y0 Y: world y of cell row 0 (Stadium −64; BlueBay −40 — the Land deck at
+            // world 10 is cell 6, local +2)
+            let cell_y0: f32 = flag(&a.rest, "--cell-y0").and_then(|s| s.parse().ok()).unwrap_or(-64.0);
+            // base heading and pitch of --dir
+            let base_h = dir0[0].atan2(dir0[2]);
+            let horiz = (dir0[0] * dir0[0] + dir0[2] * dir0[2]).sqrt();
+            let base_p = dir0[1].atan2(horiz);
+            println!("yaw_off\tpitch_off\thit\tdist\tx\ty\tz\tkind\titem\tmodel\tsource_block\tsource_cells_crossed");
+            for dy in &yaws {
+                for dp in &pitches {
+                    // + yaw offset = to the RIGHT of the view (right = (−cos h, sin h) for view (−sin h, −cos h); here the
+                    // view is (sin h, cos h) so right = (cos h, −sin h) → h decreases to the right)
+                    let h = base_h - dy;
+                    let pch = base_p + dp;
+                    let d = [pch.cos() * h.sin(), pch.sin(), pch.cos() * h.cos()];
+                    // first hit (Möller–Trumbore), both kinds
+                    let mut best: Option<(f32, usize, bool)> = None;
+                    for t in &tris {
+                        let e1 = [t.v[1][0] - t.v[0][0], t.v[1][1] - t.v[0][1], t.v[1][2] - t.v[0][2]];
+                        let e2 = [t.v[2][0] - t.v[0][0], t.v[2][1] - t.v[0][1], t.v[2][2] - t.v[0][2]];
+                        let pv = [d[1] * e2[2] - d[2] * e2[1], d[2] * e2[0] - d[0] * e2[2], d[0] * e2[1] - d[1] * e2[0]];
+                        let det = e1[0] * pv[0] + e1[1] * pv[1] + e1[2] * pv[2];
+                        if det.abs() < 1e-8 { continue; }
+                        let inv = 1.0 / det;
+                        let tv = [from[0] - t.v[0][0], from[1] - t.v[0][1], from[2] - t.v[0][2]];
+                        let u = (tv[0] * pv[0] + tv[1] * pv[1] + tv[2] * pv[2]) * inv;
+                        if !(0.0..=1.0).contains(&u) { continue; }
+                        let qv = [tv[1] * e1[2] - tv[2] * e1[1], tv[2] * e1[0] - tv[0] * e1[2], tv[0] * e1[1] - tv[1] * e1[0]];
+                        let w = (d[0] * qv[0] + d[1] * qv[1] + d[2] * qv[2]) * inv;
+                        if w < 0.0 || u + w > 1.0 { continue; }
+                        let dist = (e2[0] * qv[0] + e2[1] * qv[1] + e2[2] * qv[2]) * inv;
+                        if dist > 0.5 && dist < maxd && best.map(|b| dist < b.0).unwrap_or(true) {
+                            best = Some((dist, t.item, t.visual));
+                        }
+                    }
+                    // the source cells crossed (full scale) up to the hit or maxd
+                    let mut crossed = String::new();
+                    if let (Some(sm), Some((s, t))) = (&src_map, anchor) {
+                        let mut seen: Vec<(i32, i32)> = Vec::new();
+                        let end = best.map(|b| b.0).unwrap_or(maxd);
+                        let mut k = 0.0f32;
+                        while k <= end {
+                            let px = from[0] + d[0] * k;
+                            let py = from[1] + d[1] * k;
+                            let pz = from[2] + d[2] * k;
+                            // tiny → source
+                            let sx = s[0] + (px - t[0]) * 2.0;
+                            let sy = s[1] + (py - t[1]) * 2.0;
+                            let sz = s[2] + (pz - t[2]) * 2.0;
+                            let (cx, cz) = ((sx / 32.0).floor() as i32, (sz / 32.0).floor() as i32);
+                            if !seen.contains(&(cx, cz)) {
+                                seen.push((cx, cz));
+                                let cy_ray = ((sy - cell_y0) / 8.0).floor() as i32;
+                                // the source blocks in this column at or above the ray's cell y (what could block the view)
+                                let mut names: Vec<String> = Vec::new();
+                                for b in sm.blocks.iter().chain(sm.baked.iter()) {
+                                    if b.flags == 0xFFFF_FFFF { continue; }
+                                    let (bx, by, bz) = (b.file_cell[0] as i32 - 1, b.file_cell[1] as i32, b.file_cell[2] as i32 - 1);
+                                    if bx == cx && bz == cz && by >= cy_ray - 1 && !names.iter().any(|n| n.starts_with(&b.name)) {
+                                        names.push(format!("{}@y{}", b.name, by));
+                                    }
+                                }
+                                crossed.push_str(&format!("({cx},{cz}) ray_y{cy_ray}: {}; ", if names.is_empty() { "-".to_string() } else { names.join(" ") }));
+                            }
+                            k += 8.0;
+                        }
+                    }
+                    match best {
+                        Some((dist, ii, visual)) => {
+                            let it = &m.items[ii];
+                            let hp = [from[0] + d[0] * dist, from[1] + d[1] * dist, from[2] + d[2] * dist];
+                            println!("{dy:.3}\t{dp:.3}\thit\t{dist:.1}\t{:.1}\t{:.1}\t{:.1}\t{}\ti{ii}\t{}\t{}\t{crossed}", hp[0], hp[1], hp[2], if visual { "visual" } else { "collision" }, it.model, report.get(&it.model).cloned().unwrap_or_default());
+                        }
+                        None => println!("{dy:.3}\t{dp:.3}\tMISS\t{maxd:.0}\t\t\t\t\t\t\t\t{crossed}"),
+                    }
+                }
+            }
         }
         "vstream-shift" => {
             // vstream-shift IN.Gbx --out OUT --dy DY: every vertex POSITION of the file's
