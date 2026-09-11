@@ -576,7 +576,14 @@ fn one(args: &[String]) -> Result<Done, String> {
     let map = f("--map-file").map(PathBuf::from).unwrap_or_else(|| maps_dir.join(format!("Tiny Summer 2026 - {nn}.Map.Gbx")));
     let ghost = f("--ghost").map(PathBuf::from).unwrap_or_else(|| ghosts_dir.join(format!("{nn}.Ghost.Gbx")));
     let out = PathBuf::from(f("--out").unwrap_or_else(|| "/tmp/tinyvid".into()));
-    let cam = f("--cam").unwrap_or_else(|| "2".into());
+    // THE CAMERA PER MAP: --cam, else `<out>/cams.tsv` (`nn<TAB>cam<TAB>why`), else 2
+    // (the stock chase). Ext2 (6) is car-relative and framed closer: it kept
+    // the car in frame on 16's quarter-pipe lips and bowls where the chase
+    // camera lost it four times (2026-09-11; the reviewer's 2.07 s of nothing).
+    let cam = f("--cam").or_else(|| read_cams(&out).get(&nn).cloned()).unwrap_or_else(|| "2".into());
+    if cam != "2" {
+        println!("{nn}: camera {cam} ({})", if cam == "6" { "Ext2 — car-relative; keeps the car in frame on lips and bowls" } else { "per cams.tsv / --cam" });
+    }
     let load_timeout: u64 = f("--load-timeout").map(|s| s.parse().map_err(|_| "--load-timeout wants seconds")).transpose()?.unwrap_or(120);
     let box_videos = f("--box-videos").unwrap_or_else(|| BOX_VIDEOS.into());
     let shootctl = f("--box-shootctl").unwrap_or_else(|| format!("{BOX_TOOLS}/shootctl"));
@@ -872,7 +879,7 @@ fn one(args: &[String]) -> Result<Done, String> {
     };
     if let Some(a) = &archive_name {
         let side = mp4.with_extension("mp4.json");
-        let json = format!("{{\n  \"mp4\": \"{}\",\n  \"map\": \"{nn}\",\n  \"lap\": \"{time}\",\n  \"ghost_md5\": \"{ghost_md5}\",\n  \"ghost_fnv\": \"{}\",\n  \"trajectory_id\": \"{traj_id}\",\n  \"tape_id\": \"{}\",\n  \"ghost_archive\": \"{a}\",\n  \"overlay\": \"{}\"\n}}\n", mp4.file_name().unwrap().to_string_lossy(), clip::overlay::file_id(&ghost).unwrap_or_default(), tape_id(&ghost).unwrap_or_default(), overlay_col.replace('"', "\\\""));
+        let json = format!("{{\n  \"mp4\": \"{}\",\n  \"map\": \"{nn}\",\n  \"lap\": \"{time}\",\n  \"ghost_md5\": \"{ghost_md5}\",\n  \"ghost_fnv\": \"{}\",\n  \"trajectory_id\": \"{traj_id}\",\n  \"tape_id\": \"{}\",\n  \"camera\": \"{cam}\",\n  \"ghost_archive\": \"{a}\",\n  \"overlay\": \"{}\"\n}}\n", mp4.file_name().unwrap().to_string_lossy(), clip::overlay::file_id(&ghost).unwrap_or_default(), tape_id(&ghost).unwrap_or_default(), overlay_col.replace('"', "\\\""));
         std::fs::write(&side, json).map_err(|e| format!("{}: {e}", side.display()))?;
     }
 
@@ -3231,5 +3238,37 @@ pub fn note_append(out: &Path, nn: &str, build: &str, clip: &str, text: &str) {
     let tmp = path.with_extension("tsv.tmp");
     if std::fs::write(&tmp, s).is_ok() {
         let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+/// `<out>/cams.tsv`: `nn<TAB>cam[<TAB>why]` — the MediaTracker camera id per map
+/// (2 External chase = default, 6 Ext2 car-relative, 1 Internal, 3 Helico).
+/// A map goes here when the chase camera loses the car (a reviewer's "nothing
+/// visible" window, or the sheet's empty tiles); the render loop and the review
+/// renders both read it, so the same map never ships a blind clip twice.
+pub fn read_cams(out: &Path) -> std::collections::HashMap<String, String> {
+    parse_cams(&std::fs::read_to_string(out.join("cams.tsv")).unwrap_or_default())
+}
+
+pub fn parse_cams(text: &str) -> std::collections::HashMap<String, String> {
+    text.lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .filter_map(|l| {
+            let c: Vec<&str> = l.split('\t').map(str::trim).collect();
+            let nn = c.first()?;
+            let cam = c.get(1)?;
+            (nn.len() == 2 && nn.chars().all(|ch| ch.is_ascii_digit()) && cam.chars().all(|ch| ch.is_ascii_digit()) && !cam.is_empty()).then(|| (nn.to_string(), cam.to_string()))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod cams_tests {
+    use super::*;
+    #[test]
+    fn cams_tsv_reads_the_camera_per_map() {
+        let c = parse_cams("# nn\tcam\twhy\n16\t6\tchase camera loses the car on the quarter-pipe lips (reviewer 2026-09-11)\nxx\t6\n07\t\n");
+        assert_eq!(c.get("16").map(String::as_str), Some("6"));
+        assert_eq!(c.len(), 1);
     }
 }
