@@ -963,6 +963,28 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     crate::static_item::build::add_screen_logo_pictures(store, &mut m);
     m.darken_screen_faces();
     crate::static_item::build::trigger_fx_pass(store, &mut m);
+    // the prefab's FILLER FOLIAGE (hull-less species: the jungle cards, ferns) is
+    // baked into the terrain item at the entities' positions; the species with a
+    // hull (real trees) stay in m.veget for the item path (2026-09-11, the 01 hill)
+    {
+        let mut filler: Vec<(String, crate::geom::Xform)> = Vec::new();
+        let mut trees: Vec<(String, crate::geom::Xform)> = Vec::new();
+        let mut hull_cache: BTreeMap<String, bool> = BTreeMap::new();
+        for (p, iso) in m.veget.drain(..) {
+            let key = p.to_ascii_lowercase();
+            let has_hull = *hull_cache.entry(key).or_insert_with(|| {
+                crate::veget::tree_model_path(store, &p).and_then(|mp| crate::veget::parse_tree_model(store, &mp)).map(|t| !t.hull_triangles.is_empty()).unwrap_or(true)
+            });
+            if has_hull { trees.push((p, iso)); } else { filler.push((p, iso)); }
+        }
+        m.veget = trees;
+        if !filler.is_empty() {
+            let mut cache = FILLER_CACHE.with(|c| c.borrow_mut().take()).unwrap_or_default();
+            let n = crate::static_item::build::inline_filler_foliage(store, &mut m, &filler, scale, &mut cache);
+            FILLER_CACHE.with(|c| *c.borrow_mut() = Some(cache));
+            m.notes.push(format!("{n} of {} filler foliage entities inlined into the item", filler.len()));
+        }
+    }
     let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: ident.to_string(), scale, collection, skin: m.skin.clone() };
     let f = crate::static_item::build::assemble(&m, &opts)?;
     Ok((crate::static_item::file::write_file(&f), m, deepened))
@@ -2470,4 +2492,10 @@ mod special_family_tests {
 /// pieces under ship14's names; vjeux plays several tiny maps in one session).
 pub fn alias_base() -> usize {
     std::env::var("TINY_ALIAS_BASE").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0)
+}
+
+thread_local! {
+    /// The filler-foliage species bakes, shared by every block of one library
+    /// build (`inline_filler_foliage`): a species is baked once per process.
+    static FILLER_CACHE: std::cell::RefCell<Option<BTreeMap<String, Option<crate::static_item::build::Merged>>>> = const { std::cell::RefCell::new(None) };
 }

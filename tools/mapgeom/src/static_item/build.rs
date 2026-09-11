@@ -3082,3 +3082,89 @@ pub fn trigger_fx_pass(store: &mut crate::store::DataStore, m: &mut Merged) {
         m.notes.push(format!("{n} trigger FX curtain visual(s) dropped (TINY_TRIGGERFX=off: the FuncShader-driven icon draws as a checkerboard in an item)"));
     }
 }
+
+/// The FILLER FOLIAGE of a terrain prefab — its vegetation entities whose
+/// species has no collision hull (BlueBay's JungleForestA/B/C cards, 7–8 m
+/// tall, one material, no trunk; the ferns and grass tufts) — baked INTO the
+/// terrain item as visuals at the entities' positions, instead of being
+/// dropped. Those cards are the original's "wall of green" on every hill:
+/// without them the tiny hills are bare grass and the lake shows through where
+/// the original hides it (vjeux, 2026-09-10, Summer 01: "the hole in the
+/// mountain"). As items they would be tens of thousands of placements (tiny 01:
+/// 29 000) — inside the terrain item they cost a few hundred triangles per
+/// model. Each species is baked once at `scale` (the trees pass, LOD0 cards
+/// only, drawn at every distance); each entity gets a transformed copy:
+/// positions `R·q + scale·t` (the bake is already scaled about the origin).
+/// Species WITH a hull (real trees) keep the item path (`m.veget` rows), so
+/// the caller passes only the entities it did not re-emit.
+/// `TINY_VEGET_INLINE=0` turns the pass off.
+pub fn inline_filler_foliage(store: &mut crate::store::DataStore, m: &mut Merged, entities: &[(String, Xform)], scale: f32, cache: &mut std::collections::BTreeMap<String, Option<Merged>>) -> usize {
+    // OPT-IN (TINY_VEGET_INLINE=1) until the cards' placement is verified against the
+    // original in same-camera frames (2026-09-11 05:10Z: first 01 frames show more
+    // bushes on the hill, not yet the original's wall of green beside the road)
+    if std::env::var("TINY_VEGET_INLINE").map(|v| v != "1").unwrap_or(true) || entities.is_empty() {
+        return 0;
+    }
+    let mut placed = 0usize;
+    // species material slot -> terrain material slot, per species
+    let mut slot_maps: std::collections::BTreeMap<String, Vec<usize>> = Default::default();
+    for (species, iso) in entities {
+        let key = species.to_ascii_lowercase();
+        if !cache.contains_key(&key) {
+            let baked = (|| -> R<Merged> {
+                let model_path = crate::veget::tree_model_path(store, species)?;
+                let mut sm = Merged::default();
+                let bake = add_veget_tree_model(store, &model_path, scale, &mut sm)?;
+                if bake.hull_triangles > 0 {
+                    return Err(format!("{species}: has a collision hull ({} tris) — a tree, not filler", bake.hull_triangles).into());
+                }
+                // LOD0 only (mask bit 0, or a visual without levels), drawn at every distance
+                sm.visuals.retain(|v| v.lod_mask == 0 || v.lod_mask & 1 != 0);
+                for v in sm.visuals.iter_mut() {
+                    v.lod_mask = 0;
+                    v.lod_ladder.clear();
+                }
+                Ok(sm)
+            })();
+            match baked {
+                Ok(sm) => {
+                    m.notes.push(format!("filler foliage {species}: {} LOD0 visual(s), {} material(s) inlined", sm.visuals.len(), sm.materials.len()));
+                    cache.insert(key.clone(), Some(sm));
+                }
+                Err(e) => {
+                    m.notes.push(format!("filler foliage {species}: not inlined ({e})"));
+                    cache.insert(key.clone(), None);
+                }
+            }
+        }
+        let Some(Some(sm)) = cache.get(&key) else { continue };
+        let slots = slot_maps.entry(key.clone()).or_insert_with(|| {
+            let mut v = Vec::with_capacity(sm.materials.len());
+            for mat in &sm.materials {
+                m.materials.push(mat.clone());
+                v.push(m.materials.len() - 1);
+            }
+            for (file, dds) in &sm.pictures {
+                if !m.pictures.iter().any(|(f, _)| f == file) {
+                    m.pictures.push((file.clone(), dds.clone()));
+                }
+            }
+            v
+        });
+        // the entity iso with its translation scaled (the bake is already scaled)
+        let mut iso2 = *iso;
+        iso2[9] *= scale;
+        iso2[10] *= scale;
+        iso2[11] *= scale;
+        for sv in &sm.visuals {
+            let mut v = sv.visual.clone();
+            if let Err(e) = super::merged::transform_visual(&mut v, &iso2, 1.0) {
+                m.notes.push(format!("filler foliage {species}: visual not transformed ({e})"));
+                continue;
+            }
+            m.visuals.push(MergedVisual { visual: v, material: slots[sv.material], lod_mask: 0, lod_ladder: Vec::new(), part: 0 });
+        }
+        placed += 1;
+    }
+    placed
+}
