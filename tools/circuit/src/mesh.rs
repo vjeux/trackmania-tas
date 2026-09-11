@@ -84,15 +84,19 @@ impl MeshBuilder {
         self.materials.len() - 1
     }
 
-    /// Box-mapped UV for a point, given the face normal's dominant axis.
+    /// Box-mapped UV for a point, given the face normal's dominant axis. v is
+    /// squeezed into the atlases' lit band (0.06..0.94): Nadeo's Stadium
+    /// materials are atlases whose rows outside that band are black, which is
+    /// how the buildings first came out black in play mode.
     fn box_uv(p: [f32; 3], n: [f32; 3], scale: f32) -> [f32; 2] {
         let (ax, ay, az) = (n[0].abs(), n[1].abs(), n[2].abs());
+        let squeeze = |v: f32| 0.06 + 0.88 * v.rem_euclid(1.0);
         if ay >= ax && ay >= az {
-            [p[0] / scale, p[2] / scale]
+            [p[0] / scale, squeeze(p[2] / scale)]
         } else if ax >= az {
-            [p[2] / scale, p[1] / scale]
+            [p[2] / scale, squeeze(p[1] / scale)]
         } else {
-            [p[0] / scale, p[1] / scale]
+            [p[0] / scale, squeeze(p[1] / scale)]
         }
     }
 
