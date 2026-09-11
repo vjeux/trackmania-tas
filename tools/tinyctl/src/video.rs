@@ -2648,11 +2648,31 @@ pub fn inherited_approval(out: &Path, store: Option<&Path>, nn: &str, time: &str
         let clip = c[2];
         let side_name = format!("{clip}.mp4.json");
         let candidates = [Some(out.join(&side_name)), store.map(|s| s.join(&side_name))];
+        let mut had_sidecar = false;
         for p in candidates.into_iter().flatten() {
             if let Ok(json) = std::fs::read_to_string(&p) {
+                had_sidecar = true;
                 if let Some(m) = sidecar_field(&json, "ghost_md5") {
                     if m == ghost_md5 {
                         return Some(clip.to_string());
+                    }
+                }
+            }
+        }
+        // PRE-SIDECAR CLIPS (the 44 shipped before the ghost_md5 stamp, 2026-09-10
+        // 15:36Z): their stamp carries the ghost FNV (`ghost=<fnv>`); the archived
+        // bytes of the new clip's ghost (`ghost-archive/<md5>.Ghost.Gbx`) give the
+        // same FNV when they are the same tape.
+        if !had_sidecar {
+            if let Some(store) = store {
+                let mp4 = store.join(format!("{clip}.mp4"));
+                if let Ok(ff) = clip::platform::from_env() {
+                    if let Ok(Some(tag)) = ff.probe_tag(&mp4, "comment") {
+                        let stamp_fnv = tag.split_whitespace().find_map(|w| w.strip_prefix("ghost=")).unwrap_or("").to_string();
+                        let archive = Path::new(GHOST_ARCHIVE_DEFAULT).join(format!("{ghost_md5}.Ghost.Gbx"));
+                        if !stamp_fnv.is_empty() && clip::overlay::file_id(&archive).map(|f| f == stamp_fnv).unwrap_or(false) {
+                            return Some(clip.to_string());
+                        }
                     }
                 }
             }
