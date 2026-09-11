@@ -208,12 +208,15 @@ pub fn check(
         [a.x as f32, a.y as f32, a.z as f32],
         [b.x as f32, b.y as f32, b.z as f32],
     );
-    let sample_dspeed = (a.speed_ms - b.speed_ms).abs();
+    let sample_dspeed = (a.speed_ms - b.speed_ms).abs() as f64;
     let sample_vturn = angle_between(
         [a.vx as f32, a.vy as f32, a.vz as f32],
         [b.vx as f32, b.vy as f32, b.vz as f32],
     );
-    let sample_turn = quat_angle_deg([a.qw, a.qx, a.qy, a.qz], [b.qw, b.qx, b.qy, b.qz]);
+    let sample_turn = quat_angle_deg(
+        [a.qw as f64, a.qx as f64, a.qy as f64, a.qz as f64],
+        [b.qw as f64, b.qx as f64, b.qy as f64, b.qz as f64],
+    );
 
     // ---------------------------------------------------------------------
     // THE FOUR BARS AND THEIR CALIBRATION SETS.
@@ -340,12 +343,20 @@ fn interpolate(
         0.0
     };
     let lerp = |x: f64, y: f64| x + u * (y - x);
-    let pos = [lerp(a.x, b.x) as f32, lerp(a.y, b.y) as f32, lerp(a.z, b.z) as f32];
-    let vel = [lerp(a.vx, b.vx) as f32, lerp(a.vy, b.vy) as f32, lerp(a.vz, b.vz) as f32];
+    let pos = [
+        lerp(a.x as f64, b.x as f64) as f32,
+        lerp(a.y as f64, b.y as f64) as f32,
+        lerp(a.z as f64, b.z as f64) as f32,
+    ];
+    let vel = [
+        lerp(a.vx as f64, b.vx as f64) as f32,
+        lerp(a.vy as f64, b.vy as f64) as f32,
+        lerp(a.vz as f64, b.vz as f64) as f32,
+    ];
     // nlerp, with the near quaternion flipped onto the same hemisphere: q and
     // -q are the same rotation and a raw lerp between them collapses to zero.
-    let qa = [a.qw, a.qx, a.qy, a.qz];
-    let mut qb = [b.qw, b.qx, b.qy, b.qz];
+    let qa = [a.qw as f64, a.qx as f64, a.qy as f64, a.qz as f64];
+    let mut qb = [b.qw as f64, b.qx as f64, b.qy as f64, b.qz as f64];
     if dot4(qa, qb) < 0.0 {
         qb = [-qb[0], -qb[1], -qb[2], -qb[3]];
     }

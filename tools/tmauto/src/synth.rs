@@ -401,6 +401,11 @@ pub fn validation_start_index_for_map(map: &std::path::Path) -> Result<u32, Stri
         .iter()
         .filter(|w| w.tag == "Spawn" && w.name == "RoadTechStart")
         .collect();
+    if starts.is_empty() {
+        if let Some(i) = item_start_index(&waypoints) {
+            return Ok(i);
+        }
+    }
     if starts.len() != 1 {
         return Err(format!(
             "{}: expected exactly one semantic RoadTechStart, found {}",
@@ -495,6 +500,9 @@ pub const ROADTECH_START_LOCAL_Y: f32 = 2.002;
 /// RoadTechStart model contributes its fixed 2.002 m local spawn height.
 pub fn initial_state_for_map(map: &std::path::Path) -> Result<InitialState, String> {
     let m = tmmaps::map::MapFile::load(map);
+    if let Some(s) = item_start_state(&m) {
+        return Ok(s);
+    }
     let w = m
         .waypoints()
         .into_iter()
@@ -1169,4 +1177,55 @@ mod tests {
         assert_eq!(a.samples[0].y, b.samples[0].y);
         assert_eq!(a.samples[0].z, b.samples[0].z);
     }
+}
+
+/// An ITEM start (a map with no `RoadTechStart` block, e.g. the 1:1 circuit
+/// maps, whose start/checkpoints/finish are all custom items): the validator
+/// starts from the checkpoint whose index is the Spawn item's position among
+/// the map's item waypoints. Measured on Silverstone (item #0 = Start, index 0:
+/// the car spawns on the start item and drives the lap); the tiny campaign
+/// found the same rule ("item-start validator index = position among item
+/// waypoints"). The two parked `RoadTechStraight` blocks such a map may still
+/// carry with Spawn/Goal tags do not enter the count.
+fn item_start_index(waypoints: &[tmmaps::map::Waypoint]) -> Option<u32> {
+    let items: Vec<&tmmaps::map::Waypoint> = waypoints
+        .iter()
+        .filter(|w| w.kind == tmmaps::map::Kind::Item)
+        .collect();
+    let starts: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, w)| w.tag == "Spawn")
+        .map(|(i, _)| i)
+        .collect();
+    if starts.len() == 1 {
+        Some(starts[0] as u32)
+    } else {
+        None
+    }
+}
+
+/// The initial transform for an ITEM start: the item's own free position and
+/// yaw. The car is placed at the item's origin, which for the circuit items is
+/// on the centreline at road height; the exact spawn offset inside the item is
+/// the item's business, and every sample of a from-scratch record is rewritten
+/// from the engine by `fk regen` before it is filmed, so this is a placeholder
+/// that has to be in the right place to a metre, not to a millimetre.
+fn item_start_state(m: &tmmaps::map::MapFile) -> Option<InitialState> {
+    let wps = m.waypoints();
+    if wps.iter().any(|w| w.tag == "Spawn" && w.name == "RoadTechStart") {
+        return None;
+    }
+    let w = wps
+        .iter()
+        .find(|w| w.kind == tmmaps::map::Kind::Item && w.tag == "Spawn")?;
+    let pos = w.pos?;
+    let yaw = w.yaw.unwrap_or(0.0) as f64;
+    let h = yaw * 0.5;
+    Some(InitialState {
+        pos: [pos[0], pos[1] + 0.5, pos[2]],
+        quat: [0.0, h.sin(), 0.0, h.cos()],
+        vel: [0.0; 3],
+        roadtech_dir: None,
+    })
 }

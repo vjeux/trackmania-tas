@@ -126,7 +126,19 @@ pub fn cmd(a: &[String]) {
             // `--time`. The read-back control below requires the last one to
             // BE the declared time, which is the one relation that holds on
             // every reference ghost in the corpus.
-            r.entries = sp.iter().map(|t| (*t as i32, 1)).collect();
+            // `--splits` gives the INTERMEDIATE times; the finish entry is the
+            // declared time, appended here -- which is what the read-back
+            // control below has always checked for, and what the `--cps` arm
+            // writes. Before this the whole list was replaced by the flag's
+            // values, so a caller following the usage line (14 intermediates on
+            // a 14-checkpoint map) wrote a file whose LAST entry was checkpoint
+            // 14, and a caller who appended the finish to satisfy the file
+            // failed the control instead. Measured on Silverstone (2026-09-11).
+            r.entries = sp
+                .iter()
+                .map(|t| (*t as i32, 1))
+                .chain(std::iter::once((ms as i32, 1)))
+                .collect();
         } else if let Some(n) = want_cps {
             // Every intermediate entry becomes 0.000. This is the borrowed-
             // container case by construction -- the count only changes when the
@@ -288,22 +300,24 @@ pub fn cmd(a: &[String]) {
         }
     }
     if let Some(sp) = &want_splits {
-        if after.iter().map(|v| *v as i64).collect::<Vec<i64>>() != *sp {
-            die(format!(
-                "read-back control FAILED: asked for splits {:?}, the file declares {:?}",
-                sp, after
-            ));
+        // `--splits` is the INTERMEDIATE list; the file's last entry must be the
+        // declared time (the one relation that holds on every reference ghost
+        // in the corpus). The previous three controls here disagreed with each
+        // other about whether the flag included the finish, so no input could
+        // pass all of them; this and the monotonic check below are the two
+        // that remain, and they ask the same question.
+        if sp.is_empty() {
+            die("--splits was empty");
         }
-        match sp.last() {
+        match after.last() {
             Some(last) if *last as i64 == ms => {}
             Some(last) => die(format!(
-                "the last split is {} and the declared time is {}. On every reference ghost in \
-                 this corpus the final entry IS the race time, so a file written this way would \
-                 contradict itself.",
+                "read-back control FAILED: the file's last split is {} and the declared time is {}. \
+                 On every reference ghost in this corpus the final entry IS the race time.",
                 secs(*last as i64),
                 secs(ms)
             )),
-            None => die("--splits was empty"),
+            None => die("read-back control FAILED: the file declares no splits at all"),
         }
     }
     if let Some(n) = want_cps {
