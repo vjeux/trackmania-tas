@@ -1325,7 +1325,16 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 // build (coordinator, 2026-09-11 14:30Z; "published clips are not
                 // re-judged", 2026-09-10 19:20Z). The receipt is inherited too (below).
                 let inherited_early = sidecar_ghost_md5(&out, &cells[2]).and_then(|m| inherited_approval(&out, store_dir.as_deref(), &cells[0], &cells[1], &m));
-                match if inherited_early.is_some() { Attitude::Clean } else { attitude_verdict(&readme, &cells[0], &cells[1]) } {
+                // INHERITED FLAGS ACCEPTED BY RECEIPT (coordinator, 2026-09-11 23:02Z): a lap
+                // whose ONLY attitude flags INPUT marks as inherited from the already-
+                // published prefix passes on the parent's literal receipt (the author-
+                // relative field says `inherited`, not `pass`); a lap with NEW flags
+                // still needs INPUT's pass field.
+                let inherited_flags_ok = approval_for(&out, &cells[0], &cells[1]).is_some() && only_inherited_flags(&readme, &cells[0], &cells[1]);
+                if inherited_flags_ok && attitude_said.insert((format!("inherited-flags-{}", cells[0]), cells[1].clone())) {
+                    println!("{} {} {}: inherited flags accepted by receipt (INPUT marks every attitude flag as inherited from the published prefix)", chrono_now(), cells[0], cells[1]);
+                }
+                match if inherited_early.is_some() || inherited_flags_ok { Attitude::Clean } else { attitude_verdict(&readme, &cells[0], &cells[1]) } {
                     Attitude::Clean => {}
                     // CLASS-B WATER WITH A DISCLOSED RECEIPT (coordinator's policy,
                     // 2026-09-11 03:00Z, from the parent's "publish on the build
@@ -3282,5 +3291,42 @@ mod cams_tests {
         let c = parse_cams("# nn\tcam\twhy\n16\t6\tchase camera loses the car on the quarter-pipe lips (reviewer 2026-09-11)\nxx\t6\n07\t\n");
         assert_eq!(c.get("16").map(String::as_str), Some("6"));
         assert_eq!(c.len(), 1);
+    }
+}
+
+/// Does INPUT's summary line for the lap mark its attitude flags as ALL
+/// inherited from the already-published prefix, with nothing new? True when the
+/// `attitude:` field says FAIL/inherited and the `author-relative:` field starts
+/// with `inherited` and the line says the new part is clean; false for a PASS
+/// line (nothing to accept) or any line naming a new inversion / nose-stand /
+/// side landing.
+pub fn only_inherited_flags(readme: &str, nn: &str, time: &str) -> bool {
+    let prefix = format!("- {nn} {time}");
+    let Some(line) = readme.lines().filter(|l| l.trim_start().starts_with(&prefix)).last() else { return false };
+    let lower = line.to_ascii_lowercase();
+    let Some(a) = lower.find("attitude:") else { return false };
+    let att = lower[a + "attitude:".len()..].trim_start();
+    if att.starts_with("pass") {
+        return false;
+    }
+    let ar = lower.find("author-relative:").map(|i| lower[i + "author-relative:".len()..].trim_start().to_string()).unwrap_or_default();
+    let inherited = att.contains("inherited") && ar.starts_with("inherited");
+    // a flaw the line calls NEW, or an inversion the line does not negate
+    let new_flaw = lower.contains("new inversion") || lower.contains("new nose-stand") || lower.contains("new side landing") || (lower.contains("inversion") && !lower.contains("no inversion"));
+    inherited && !new_flaw
+}
+
+#[cfg(test)]
+mod inherited_flags_tests {
+    use super::*;
+    #[test]
+    fn inherited_only_lines_qualify_pass_and_new_flaws_do_not() {
+        let l23 = "- 23 103.971: stop: below 8 m/s: 8.48 s, respawns: 2 · attitude: FAIL by the letter — every flag INHERITED from the public 102.148 prefix (identical to 19.99 s and state-matched after): reversing 3.8–5.8 … no inversion / nose-stand / side landing; DEBUG-2's new last 4 s clean. Parent's call as for 24 (inherited).(8 flagged interval(s)); author-relative: inherited: every reversing/near-stop flag is in the public 102.148 prefix (same set); the DEBUG-2 tail (last 4 s) is clean · water: on-lid s A 0.00 · B 0.00 · S 0.00 — clean\n";
+        assert!(only_inherited_flags(l23, "23", "103.971"));
+        let pass = "- 13 24.674: stop · attitude: PASS (0) · author-relative: pass · water: A 0.00 · B 0.00 — clean\n";
+        assert!(!only_inherited_flags(pass, "13", "24.674"), "a PASS line has nothing to accept");
+        let newflaw = "- 22 84.379: stop · attitude: FAIL inherited reversing 3.8–5.8; NEW inversion 39.6 · author-relative: inherited: prefix flags; new inversion at 39.6\n";
+        assert!(!only_inherited_flags(newflaw, "22", "84.379"));
+        assert!(!only_inherited_flags(l23, "23", "102.148"), "another lap");
     }
 }
