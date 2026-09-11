@@ -392,7 +392,19 @@ fn all_once(args: &[String]) -> Result<(), String> {
                 }
             }
         }
-        match render_gate(race_ms as f64 / 1000.0, published.get(&nn).map(|(t, name)| (*t, name.as_str())), build.as_deref(), min_gain) {
+        // A LAP CERTIFIED ON THE RENDER BUILD outranks a published clip whose lap
+        // was certified on an older build, whatever the gain (13: 24.674 certified
+        // on ship18f vs the published 24.769, a ship15 lap re-rendered on 18f —
+        // the 0.1-s sliver rule is for two laps of the same certification build).
+        // The README row names the certification build; the published lap's row
+        // (if the README still has it) or its clip suffix names the old one.
+        let certified_here = build.as_deref().map(|b| readme_row(&readme, &nn, &time).map(|r| r.contains(b)).unwrap_or(false)).unwrap_or(false);
+        let published_certified_here = build.as_deref().and_then(|b| published.get(&nn).map(|(t, _)| readme_row(&readme, &nn, &format!("{t:.3}")).map(|r| r.contains(b)).unwrap_or(false))).unwrap_or(true);
+        let min_gain_here = if certified_here && !published_certified_here { 0.0 } else { min_gain };
+        if min_gain_here == 0.0 && min_gain > 0.0 {
+            println!("{nn} {time}: certified on {} while the published lap was certified on an older build — the gain threshold does not apply", build.as_deref().unwrap_or("?"));
+        }
+        match render_gate(race_ms as f64 / 1000.0, published.get(&nn).map(|(t, name)| (*t, name.as_str())), build.as_deref(), min_gain_here) {
             // a `none` hold blocks NEW laps; the same-ghost rebuild of the lap the
             // page already shows (same time as the published clip) is allowed
             // (coordinator, 2026-09-11 14:55Z: 21's 115.478 on ship18f)
