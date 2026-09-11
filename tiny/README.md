@@ -64,7 +64,7 @@ https://github.com/user-attachments/assets/8d1cf689-14c9-41cd-a054-1673e447956f
 
 **Tiny Summer 2026 - 13** — original author time `31.462` · tiny ghost **24.769** (build ship15, controls overlay) · map: ship15
 
-*latest lap **24.674** (build ship18f) — held (staged — attitude: no attitude table for this lap in the ghosts README (fail closed))*
+*latest lap **24.674** (build ship18f) — held (staged — new-lap certified on 18f — HOLD (coordinator 20:56Z: 18f finish trigger may fire early; the converter compares triggers); the public lap's same-ghost 18f rebuild may still upload)*
 
 https://github.com/user-attachments/assets/2a2fa7a3-a295-4b27-b71d-ed3345442840
 
@@ -82,7 +82,7 @@ https://github.com/user-attachments/assets/a41cebdd-f649-4173-92fe-34d7a21d1f11
 
 **Tiny Summer 2026 - 16** — original author time `50.966` · tiny ghost **39.302** (build ship15, controls overlay) · map: ship15
 
-*latest lap **43.688** (build ship15) — within 0.1 s of the published clip*
+*latest lap **** (build ship15) — held (new-lap certified on 18f — HOLD (coordinator 20:56Z: 18f finish trigger may fire early; the converter compares triggers); the public lap's same-ghost 18f rebuild may still upload)*
 
 *↻ runs on un-skinned ship15 surfaces at 4.35 s — re-drive pending*
 
@@ -90,13 +90,13 @@ https://github.com/user-attachments/assets/bb3919e7-e5ae-4856-af3c-22c145f8641f
 
 **Tiny Summer 2026 - 17** — original author time `44.891` · tiny ghost **38.426** (build ship15, controls overlay) · map: ship15
 
-*latest lap **36.982** (build ship18f) — held (staged — attitude: no attitude table for this lap in the ghosts README (fail closed))*
+*latest lap **36.982** (build ship18f) — held (staged — new-lap certified on 18f — HOLD (coordinator 20:56Z: 18f finish trigger may fire early; the converter compares triggers); the public lap's same-ghost 18f rebuild may still upload)*
 
 https://github.com/user-attachments/assets/7a87785b-5c81-4064-9272-3943d12f3dbe
 
 **Tiny Summer 2026 - 18** — original author time `51.352` · tiny ghost **43.413** (build ship15, controls overlay) · map: ship15
 
-*latest lap **43.462** (build ship18f) — held (staged — attitude: no attitude table for this lap in the ghosts README (fail closed))*
+*latest lap **** (build ship18f) — held (new-lap certified on 18f — HOLD (coordinator 20:56Z: 18f finish trigger may fire early; the converter compares triggers); the public lap's same-ghost 18f rebuild may still upload)*
 
 https://github.com/user-attachments/assets/cb510efb-14d4-41c2-9bea-51a0d6f8c232
 
@@ -130,7 +130,7 @@ https://github.com/user-attachments/assets/0e222437-1334-4d8c-b5fd-92497cdf81f5
 
 **Tiny Poland 2026** — original author time `72.708` · tiny ghost **99.529** (build ship15, controls overlay) · map: ship15
 
-*latest lap **93.717** (build ship15) — video pending*
+*latest lap **93.717** (build ship15) — held (new-lap certified on 18f — HOLD (coordinator 20:56Z: 18f finish trigger may fire early; the converter compares triggers); the public lap's same-ghost 18f rebuild may still upload)*
 
 *↻ runs on un-skinned ship15 surfaces at 73.32 s (LakeShore water) — re-drive pending*
 
