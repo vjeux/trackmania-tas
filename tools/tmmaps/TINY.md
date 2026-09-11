@@ -1090,26 +1090,37 @@ draft, a nose-down car passes — independent of any route? Facts so far, from t
   Zone water is on the 32-m grid at one collection height: the tiny seas already use it (the anchor keeps
   the sea plane); the pools at arbitrary half-heights cannot.
 
-## OPEN: the ring-spawn entity crashes the client (2026-09-10)
+## The ring-spawn crash is the 0x0917B000 companion node (bisected 2026-09-11 10:10Z)
 
-c4ce31c5 gave the block-derived ring checkpoints (GateCheckpoint on
-05/12/14/15/16/21) an `NPlugTrigger_SSpawn` entity so a respawn lands on the
-road under the ring. **Every map carrying it crashes the client at load**
-(startcheck bisect on 15: ship16c-c4ce31c5 and ship16-60e03cbc → "game
-process gone" at 12–116 s; the same recipe with `TINY_RING_SPAWN=0` PASSES;
-01, no ring block, passes with every other ship16 change). Now opt-in
-(`TINY_RING_SPAWN=1`); the default is ship15's trigger-only form (respawn
-beside the ring). Byte comparison against the pack's
-`Items\Gate\CheckpointCenter8mV2.Prefab` (entities 3 = 0x0917A000, 4 =
-0x0917B000): the SSpawn node (v3, identity Iso4, 24 bytes 0,0,0,0,−1.0,0,
-FACADE), the entity records (rot, pos, params −1, empty u01) and the layout
-are identical; ONE byte-level difference — the 0x0917B000 companion's 8-byte
-body is `(0, 11)` in the pack and was `(0, 0)` in ours (now copied; a 15 with
-`TINY_RING_SPAWN=1` is built at /tmp/tiny15/ring11 for the startcheck, NOT
-run yet). The other structural difference: our spawn transform is the ENTITY
-pos (8, 0.85, 5.6) while the pack's entity sits at 0 with an identity Iso4
-(its spawn IS the item origin) — if the body word was not it, try the pack's
-form (entity at 0, the Iso4 carrying the translation).
+c4ce31c5 gave the block-derived ring checkpoints (GateCheckpoint on 05/12/14/15/16/21) an `NPlugTrigger_SSpawn`
+entity so a respawn lands on the road under the ring, and every map carrying it crashed the client at load. Four
+builds of Summer 15 on the box (`TINY_RING_SPAWN=1|iso|1nobody|isonobody`): SSpawn in the entity pos + the 8-byte
+`0x0917B000` companion (body `(0, 11)` like the pack's) → game process gone at 22 s; the pack's form (entity at 0,
+the spawn in the Iso4) + companion → gone at 52 s; either spawn form WITHOUT the companion → startcheck PASS. The
+crash is the companion node, whatever its body; the SSpawn itself loads. Not verified: whether the respawn lands
+under the ring without the companion (the harness has no respawn input) — the two passing builds sit in
+`ship16-diagnostics/ring-bisect/` for the lap project's respawn check. Every shipped set (ship15 … 18e) carries the
+trigger-only form (respawn beside the ring) until that check is done.
+
+## Fragile gates: the mode fires, its effect is not measurable here (2026-09-11)
+
+TM2020's Fragile does not detach parts (Turbo did); it makes the car shake after an impact. A rig on 21 (a house item
+stood across the lane 35 m after the gate; gate car 38.7 → 30.4 m/s into it, control 25.8 → 13.6) shows both cars
+intact, and the wheel logs show no contact toggles or vertical jitter beyond the control's in the 2 s after the hit —
+an accelerator-only harness cannot exhibit a handling shake. The gate's trigger is the pack's own AABB and the mode
+id fires (NoEngine: engine cut measured); the Fragile feel is vjeux's to judge. Two runs with a house FLOATING 2.5 m
+over the lane (base 44.5 over a 42-m deck) ended with the game process gone ~10 s after the gate, no crash dump; the
+house at deck height, no house, or no gate crossing: alive. Unexplained.
+
+## Water roads: no spill-safe volume placement on 05 or 15 (2026-09-11)
+
+`waterblocks::decide_roads` (RoadWaterStraight/Checkpoint/SpecialTurbo runs, one 32 × 26 m volume centred on each
+pair of consecutive cells, the free-block yaw convention, the run's own cells excluded from the spill check): on 05
+and 15 every straight water-road cell is a LONE 16-m cell — its neighbours are curves, VFC variants, checkpoint
+variants or another plane (15: Straight 46.5 → Checkpoint 49.58 → Curve2 46.5) — so any placement floods 8 m of the
+next road cell and 5 m of each side (Metal/Concrete/Dirt surfaces in the band). RoadWater stays 13-item: the car
+drives on the pack prefab's own Water-physics deck at the plane (the "solid plane" the lap checker sees at 24 s on
+15), faithful geometry, the volume's splash/drag missing (disclosed). `TINY_WATER_ROADS=0` skips the pass.
 
 ## The SHAPE of a generated filler is never in question (2026-09-08, night)
 
