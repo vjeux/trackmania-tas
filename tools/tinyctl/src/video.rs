@@ -1274,7 +1274,13 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 // no inverted interval and no |roll|/|pitch| > 60° sustained
                 // > 0.3 s. No table for the lap = not clean (fail closed).
                 let readme = ghosts_dir.as_ref().map(|d| std::fs::read_to_string(d.join("README.md")).unwrap_or_default()).unwrap_or_default();
-                match attitude_verdict(&readme, &cells[0], &cells[1]) {
+                // SAME GHOST, NEW BUILD: a clip whose lap is already PUBLISHED with the
+                // same ghost bytes is not re-judged — the published clip passed (or
+                // predates) the gates, and the picture is the same tape on a newer
+                // build (coordinator, 2026-09-11 14:30Z; "published clips are not
+                // re-judged", 2026-09-10 19:20Z). The receipt is inherited too (below).
+                let inherited_early = sidecar_ghost_md5(&out, &cells[2]).and_then(|m| inherited_approval(&out, store_dir.as_deref(), &cells[0], &cells[1], &m));
+                match if inherited_early.is_some() { Attitude::Clean } else { attitude_verdict(&readme, &cells[0], &cells[1]) } {
                     Attitude::Clean => {}
                     // CLASS-B WATER WITH A DISCLOSED RECEIPT (coordinator's policy,
                     // 2026-09-11 03:00Z, from the parent's "publish on the build
@@ -1299,7 +1305,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 }
                 // a receipt on file, a prechecked map, or — same ghost, new build —
                 // the receipt the PUBLISHED clip of this lap already earned
-                let inherited = sidecar_ghost_md5(&out, &cells[2]).and_then(|m| inherited_approval(&out, store_dir.as_deref(), &cells[0], &cells[1], &m));
+                let inherited = inherited_early;
                 let approved = approval_for(&out, &cells[0], &cells[1]).is_some() || read_prechecked(&out).contains(cells[0].as_str()) || inherited.is_some();
                 if let Some(from) = &inherited {
                     if !attitude_said.contains(&(format!("inherit-{}", cells[0]), cells[1].clone())) {
