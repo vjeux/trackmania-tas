@@ -321,7 +321,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     // (a queued clip is not on the page yet; 2026-09-11 01:34Z relabelled 05 twice on that)
     let clips: std::collections::HashMap<String, String> = f("--out").map(|o| published_clip_names(&std::fs::read_to_string(Path::new(&o).join("ships.tsv")).unwrap_or_default())).unwrap_or_default();
     let (new, notes) = update_rows_with_clips(&page, &laps, &gr, &build, min_gain, &holds, &staged, &lidrows, &rowbuilds, &clips);
-    if notes.is_empty() {
+    // informational notes ("row build X waits …") change nothing: say them, but
+    // never write/commit on their account (an empty commit failed every tick)
+    for n in notes.iter().filter(|n| n.contains(" waits ")) {
+        println!("  {n}");
+    }
+    let notes: Vec<String> = notes.into_iter().filter(|n| !n.contains(" waits ")).collect();
+    if notes.is_empty() || new == page {
         println!("the page already states the newest lap of every map");
         return Ok(());
     }
