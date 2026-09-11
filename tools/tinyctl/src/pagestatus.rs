@@ -119,6 +119,14 @@ pub fn update_page(page: &str, laps: &[(String, String)], ghosts_readme: &str, b
 /// tag, the downloadable map file of that build, and a note under the row.
 #[allow(clippy::too_many_arguments)]
 pub fn update_rows(page: &str, laps: &[(String, String)], ghosts_readme: &str, build: &str, min_gain: f64, holds: &std::collections::HashMap<String, String>, staged: &std::collections::HashSet<(String, String)>, lidrows: &std::collections::HashMap<String, String>, rowbuilds: &std::collections::HashMap<String, RowBuild>) -> (String, Vec<String>) {
+    update_rows_with_clips(page, laps, ghosts_readme, build, min_gain, holds, staged, lidrows, rowbuilds, &std::collections::HashMap::new())
+}
+
+/// [`update_rows`] knowing which CLIP each row's published video is (map → clip
+/// name, from ships.tsv), so a row build applies only when the video is a clip
+/// of that build.
+#[allow(clippy::too_many_arguments)]
+pub fn update_rows_with_clips(page: &str, laps: &[(String, String)], ghosts_readme: &str, build: &str, min_gain: f64, holds: &std::collections::HashMap<String, String>, staged: &std::collections::HashSet<(String, String)>, lidrows: &std::collections::HashMap<String, String>, rowbuilds: &std::collections::HashMap<String, RowBuild>, ships_names: &std::collections::HashMap<String, String>) -> (String, Vec<String>) {
     let mut lines: Vec<String> = page.lines().map(String::from).collect();
     let mut notes = Vec::new();
     // work from the bottom so earlier indices stay valid
@@ -221,14 +229,22 @@ pub fn update_rows(page: &str, laps: &[(String, String)], ghosts_readme: &str, b
         // that build and a note. The caption's "(build X" is rewritten to the
         // row's build, a " · map: [shipNN](link)" segment is kept at the end of
         // the row line, and the note is its own line (`*↻ …*`) under the row.
-        if let Some(rb) = rowbuilds.get(nn.as_str()) {
+        // A row build applies only once the row's VIDEO is a clip of that build (or
+        // the entry has a `video=` marker saying the existing clip counts — the 15
+        // laps whose frames are identical on ship16): a ship17c row over a ship15
+        // video would caption the wrong thing (2026-09-11 01:21Z, 05). Until then
+        // the entry waits, said once.
+        let row_ready = rowbuilds.get(nn.as_str()).map(|rb| row_build_applies(rb, &lines[i], row.published.as_deref(), ships_names)).unwrap_or(false);
+        if let Some(rb) = rowbuilds.get(nn.as_str()).filter(|_| row_ready) {
             let before = lines[i].clone();
             lines[i] = apply_row_build(&lines[i], rb);
             if lines[i] != before {
                 notes.push(format!("{nn}: row build → {}{}", rb.build, if rb.link.is_empty() { "" } else { " (+ map link)" }));
             }
+        } else if let Some(rb) = rowbuilds.get(nn.as_str()) {
+            notes.push(format!("{nn}: row build {} waits — the row's video is not a {} clip yet", rb.build, rb.build));
         }
-        let build_note = rowbuilds.get(nn.as_str()).filter(|rb| !rb.note.trim().is_empty()).map(|rb| format!("{BUILD_NOTE_PREFIX}{}*", rb.note.trim().trim_end_matches('*')));
+        let build_note = rowbuilds.get(nn.as_str()).filter(|_| row_ready).filter(|rb| !rb.note.trim().is_empty()).map(|rb| format!("{BUILD_NOTE_PREFIX}{}*", rb.note.trim().trim_start_matches("video=ok").trim().trim_end_matches('*')));
         maintain_line(&mut lines, &mut notes, i, nn, "build note", is_build_note, build_note);
     }
     let mut s = lines.join("\n");
@@ -293,7 +309,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let staged = f("--out").map(|o| staged_laps(&std::fs::read_to_string(Path::new(&o).join("ships.tsv")).unwrap_or_default())).unwrap_or_default();
     let lidrows = f("--out").map(|o| crate::video::parse_holds(&std::fs::read_to_string(Path::new(&o).join("lidrows.tsv")).unwrap_or_default())).unwrap_or_default();
     let rowbuilds = f("--out").map(|o| parse_rowbuilds(&std::fs::read_to_string(Path::new(&o).join("rowbuilds.tsv")).unwrap_or_default())).unwrap_or_default();
-    let (new, notes) = update_rows(&page, &laps, &gr, &build, min_gain, &holds, &staged, &lidrows, &rowbuilds);
+    let clips: std::collections::HashMap<String, String> = f("--out").map(|o| crate::video::published_laps(&std::fs::read_to_string(Path::new(&o).join("ships.tsv")).unwrap_or_default())).unwrap_or_default().into_iter().map(|(nn, (_, name))| (nn, name)).collect();
+    let (new, notes) = update_rows_with_clips(&page, &laps, &gr, &build, min_gain, &holds, &staged, &lidrows, &rowbuilds, &clips);
     if notes.is_empty() {
         println!("the page already states the newest lap of every map");
         return Ok(());
@@ -815,7 +832,7 @@ https://github.com/user-attachments/assets/b\n\n\
 https://github.com/user-attachments/assets/c\n";
         let laps = newest_laps(ghosts, "ship15");
         let rb = parse_rowbuilds("# nn\tbuild\tmap_link\tnote\n\
-05\tship16\thttps://example.test/ship16/05.zip\tvideo rendered on ship15 — frames identical on ship16\n\
+05\tship16\thttps://example.test/ship16/05.zip\tvideo=ok video rendered on ship15 — frames identical on ship16\n\
 13\tship15\t\truns on un-skinned ship15 surfaces at 12.4 s — re-drive pending\n");
         let none_h = std::collections::HashMap::new();
         let none_s = std::collections::HashSet::new();
@@ -830,7 +847,7 @@ https://github.com/user-attachments/assets/c\n";
         assert_eq!(again, out);
         assert!(n2.is_empty(), "{n2:?}");
         // the link arrives later → the segment is rewritten in place
-        let rb2 = parse_rowbuilds("13\tship15\thttps://example.test/ship15/13.zip\truns on un-skinned ship15 surfaces at 12.4 s — re-drive pending\n05\tship16\thttps://example.test/ship16/05.zip\tvideo rendered on ship15 — frames identical on ship16\n");
+        let rb2 = parse_rowbuilds("13\tship15\thttps://example.test/ship15/13.zip\truns on un-skinned ship15 surfaces at 12.4 s — re-drive pending\n05\tship16\thttps://example.test/ship16/05.zip\tvideo=ok video rendered on ship15 — frames identical on ship16\n");
         let (linked, _) = update_rows(&out, &laps, ghosts, "ship15", 0.1, &none_h, &none_s, &none_l, &rb2);
         assert!(linked.contains("(build ship15, controls overlay) · map: [ship15](https://example.test/ship15/13.zip)\n"), "{linked}");
         assert!(!linked.contains("· map: ship15\n"), "{linked}");
@@ -917,7 +934,7 @@ pub fn final_table(page: &str, ghosts_readme: &str, ships: &str, holds: &std::co
         }
         if let Some(rb) = rowbuilds.get(nn.as_str()) {
             if !rb.note.trim().is_empty() {
-                notes.push(format!("↻ {}", rb.note.trim()));
+                notes.push(format!("↻ {}", rb.note.trim().trim_start_matches("video=ok").trim()));
             }
         }
         let esc = |s: &str| s.replace('|', "\\|");
@@ -954,5 +971,46 @@ https://github.com/user-attachments/assets/b\n\n\
         assert!(t.contains("| 05 | Tiny Summer 2026 - 05 | 18.298 | ship16 | https://github.com/user-attachments/assets/a | receipt (coordinator: opening ok) | attitude clean; ⚠ lap rides the water lid; ↻ video rendered on ship15 — frames identical on ship16 |"), "{t}");
         assert!(t.contains(&"| 22 | Tiny Saudi Arabia 2026 | 96.298 | ship15 | https://github.com/user-attachments/assets/b | published before the receipt gate (2026-09-10 18:45Z) | HELD: opening rework; staged 82.652 awaiting the opening check; attitude: not clean: inverted 2.69 s, 2 attitude interval(s) (> 0.3 s of |roll|/|pitch| > 60°) |".replace("|roll|/|pitch|", "\\|roll\\|/\\|pitch\\|")), "{t}");
         assert!(t.contains("| 21 | Tiny Argentina 2026 | — | — | — | no video |  |"), "{t}");
+    }
+}
+
+/// Does this rowbuilds entry apply to the row as it stands? Yes when the row's
+/// published video is a clip of that build (its ships.tsv name ends in
+/// `-<build>`), when the row's caption already says that build, or when the
+/// entry's note starts with `video=ok` (the existing clip counts — the laps whose
+/// frames are identical on the new build). Otherwise the entry waits.
+pub fn row_build_applies(rb: &RowBuild, row_line: &str, published: Option<&str>, ships_names: &std::collections::HashMap<String, String>) -> bool {
+    let _ = published;
+    if rb.note.trim_start().starts_with("video=ok") {
+        return true;
+    }
+    if row_line.contains(&format!("(build {}", rb.build)) {
+        return true;
+    }
+    let title = row_line.trim_start_matches("**").split("**").next().unwrap_or("");
+    let nn = (1..=25).map(|n| format!("{n:02}")).find(|n| map_title(n) == title || format!("Tiny Summer 2026 - {n}") == title);
+    match nn.and_then(|n| ships_names.get(&n)) {
+        Some(clip) => clip.ends_with(&format!("-{}", rb.build)),
+        None => false,
+    }
+}
+
+#[cfg(test)]
+mod row_ready_tests {
+    use super::*;
+
+    #[test]
+    fn a_row_build_waits_until_the_video_is_a_clip_of_that_build() {
+        let rb = RowBuild { build: "ship17c".into(), link: String::new(), note: "road-through-water section without drag".into() };
+        let row15 = "**Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **18.298** (build ship15, controls overlay)";
+        let mut ships = std::collections::HashMap::new();
+        ships.insert("05".to_string(), "05-ghost-18.298-ship15".to_string());
+        assert!(!row_build_applies(&rb, row15, Some("18.298"), &ships), "the video is a ship15 clip");
+        ships.insert("05".to_string(), "05-ghost-16.395-ship17c".to_string());
+        assert!(row_build_applies(&rb, row15, Some("16.395"), &ships), "now the video is a ship17c clip");
+        let rb_ok = RowBuild { build: "ship16".into(), link: String::new(), note: "video=ok frames identical on ship16".into() };
+        assert!(row_build_applies(&rb_ok, row15, Some("18.298"), &std::collections::HashMap::new()), "video=ok applies at once");
+        let row17 = "**Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **16.395** (build ship17c, controls overlay)";
+        assert!(row_build_applies(&rb, row17, Some("16.395"), &std::collections::HashMap::new()), "already labelled");
     }
 }
