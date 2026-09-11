@@ -99,19 +99,26 @@ fn road_slice(mb: &mut MeshBuilder, tr: &Track, ed: &Edges, fr: &Frame, anchor: 
     };
     let (l0, l1) = (ed.left[k], ed.left[k1]);
     let (r0, r1) = (ed.right[k], ed.right[k1]);
+    // Texture: Nadeo's road atlases run ALONG the road in u (one tile per
+    // 32 m) and ACROSS it in v, whose lit band is 0.06..0.94 (the deck with
+    // its edge lines; outside it the atlas is black). Kerbs: TrackBorders,
+    // one tile per 8 m along, the same band across.
+    let (s0, s1) = (tr.stations[k].s as f32, if k1 == 0 { (tr.stations[k].s + tr.ds) as f32 } else { tr.stations[k1].s as f32 });
+    let (u0, u1) = (s0 / 32.0, s1 / 32.0);
     // tarmac: left edge to right edge (left is +offset)
     let (a, b, c, d) = (p(k, l0), p(k1, l1), p(k1, -r1), p(k, -r0));
-    mb.quad_up(asphalt, [a, b, c, d], true);
+    mb.quad_uv_up(asphalt, [a, b, c, d], [[u0, 0.06], [u1, 0.06], [u1, 0.94], [u0, 0.94]], true);
     // kerbs: bright band outside each edge
+    let (ku0, ku1) = (s0 / 8.0, s1 / 8.0);
     let (kl0, kl1) = (ed.kerb_left[k].min(4.0), ed.kerb_left[k1].min(4.0));
     if kl0 > 0.4 || kl1 > 0.4 {
         let (e, f) = (p(k, l0 + kl0.max(0.5)), p(k1, l1 + kl1.max(0.5)));
-        mb.quad_up(kerb, [e, f, b, a], true);
+        mb.quad_uv_up(kerb, [e, f, b, a], [[ku0, 0.06], [ku1, 0.06], [ku1, 0.94], [ku0, 0.94]], true);
     }
     let (kr0, kr1) = (ed.kerb_right[k].min(4.0), ed.kerb_right[k1].min(4.0));
     if kr0 > 0.4 || kr1 > 0.4 {
         let (e, f) = (p(k, -(r0 + kr0.max(0.5))), p(k1, -(r1 + kr1.max(0.5))));
-        mb.quad_up(kerb, [d, c, f, e], true);
+        mb.quad_uv_up(kerb, [d, c, f, e], [[ku0, 0.06], [ku1, 0.06], [ku1, 0.94], [ku0, 0.94]], true);
     }
     // skirts: 0.4 m down at the outer limits, so the seam to the terrain
     // never shows daylight
@@ -168,19 +175,34 @@ fn waypoint_item(tr: &Track, ed: &Edges, fr: &Frame, at: usize, half: f64, kind:
     let mut mb = MeshBuilder::new();
     let asphalt = mb.material(&mesh::ASPHALT);
     let kerb = mb.material(&mesh::KERB);
+    let paint = mb.material(&mesh::CONCRETE);
     let hs = (half / tr.ds) as usize;
     // build in WORLD frame relative to pos, then rotate into local
     let mut world = MeshBuilder::new();
     let wa = world.material(&mesh::ASPHALT);
     let wk = world.material(&mesh::KERB);
+    let wp_paint = world.material(&mesh::CONCRETE);
     for d in 0..2 * hs {
         let k = (at + n - hs + d) % n;
         let k1 = (k + 1) % n;
         road_slice(&mut world, tr, ed, fr, pos, k, k1, wa, wk, 0.0);
     }
+    // a painted line across the track at the waypoint (2 m for the start
+    // and finish, 1 m for a checkpoint), a hair above the tarmac
+    {
+        let len = if kind == WaypointKind::Checkpoint { 1.0 } else { 2.0 };
+        let (k0, k1) = ((at + n - (len / 2.0 / tr.ds) as usize) % n, (at + (len / 2.0 / tr.ds).ceil() as usize) % n);
+        let p = |i: usize, off: f64| -> [f32; 3] {
+            let w = tr.offset(i, off);
+            let t = fr.to_tm(w[0], w[1], w[2]);
+            [t[0] - pos[0], t[1] - pos[1] + 0.02, t[2] - pos[2]]
+        };
+        let (a, b, c, d) = (p(k0, ed.left[k0]), p(k1, ed.left[k1]), p(k1, -ed.right[k1]), p(k0, -ed.right[k0]));
+        world.quad_uv_up(wp_paint, [a, b, c, d], [[0.1, 0.1], [0.1, 0.2], [0.9, 0.2], [0.9, 0.1]], false);
+    }
     // re-emit rotated into the item frame
     let rot = |q: [f32; 3]| to_local([q[0] + pos[0], q[1] + pos[1], q[2] + pos[2]], pos, yaw);
-    world.replay_into(&mut mb, &[(wa, asphalt), (wk, kerb)], &rot);
+    world.replay_into(&mut mb, &[(wa, asphalt), (wk, kerb), (wp_paint, paint)], &rot);
     let width = (ed.left[at] + ed.right[at]) as f32;
     let wp = Waypoint {
         kind,

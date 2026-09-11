@@ -272,10 +272,17 @@ fn raster_png(tif: &Path, out: &Path, bbox: (f64, f64, f64, f64), scale: f64, la
     let lo = vals[vals.len() * 2 / 100];
     let hi = vals[vals.len() * 98 / 100];
     let mut img = png::Image::new(w, h, [40, 0, 40]);
+    let classify = a_has("--classify");
     for y in 0..h {
         for x in 0..w {
             let v = grid[y * w + x];
             if v.is_nan() {
+                continue;
+            }
+            if classify {
+                // asphalt < 190 dark grey; 190..300 "gravel?" orange; grass green; >600 bright white (roofs/paint)
+                let c = if (v as f64) < terrain::ASPHALT_MAX { [70, 70, 75] } else if v < 300.0 { [220, 140, 40] } else if v < 600.0 { [60, 150, 50] } else { [240, 240, 240] };
+                img.put(x as i64, y as i64, c);
                 continue;
             }
             let t = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);

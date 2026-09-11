@@ -132,8 +132,21 @@ fn layer(tr: &Track, dtm: &Mosaic, inten: &Raster, fr: &Frame, spec: &TerrainSpe
                         let t = fr.to_tm(e0 + (i + di) as f64 * step, n1 - (j + dj) as f64 * step, z);
                         [t[0] - anchor[0], t[1] - anchor[1] + lift, t[2] - anchor[2]]
                     };
-                    // corners: (i,j) NW, (i+1,j) NE, (i+1,j+1) SE, (i,j+1) SW
-                    mb.quad_up(mat, [p(0, 0, c[0]), p(1, 0, c[1]), p(1, 1, c[2]), p(0, 1, c[3])], true);
+                    // corners: (i,j) NW, (i+1,j) NE, (i+1,j+1) SE, (i,j+1) SW.
+                    // Asphalt takes the plain middle of the RoadTech atlas
+                    // (v 0.35..0.65, no edge lines), tiled every 32 m; grass
+                    // is box-mapped.
+                    let q = [p(0, 0, c[0]), p(1, 0, c[1]), p(1, 1, c[2]), p(0, 1, c[3])];
+                    if mat == asphalt {
+                        let uv = |k: usize| -> [f32; 2] {
+                            let x = q[k][0] + anchor[0];
+                            let z = q[k][2] + anchor[2];
+                            [x / 32.0, 0.35 + 0.30 * (z / 32.0).rem_euclid(1.0)]
+                        };
+                        mb.quad_uv_up(mat, q, [uv(0), uv(1), uv(2), uv(3)], true);
+                    } else {
+                        mb.quad_up(mat, q, true);
+                    }
                     cells += 1;
                 }
             }

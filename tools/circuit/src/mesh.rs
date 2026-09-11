@@ -118,6 +118,38 @@ impl MeshBuilder {
         }
     }
 
+    /// One triangle with explicit texture coordinates (box mapping skipped).
+    pub fn tri_uv(&mut self, mat: usize, p: [[f32; 3]; 3], uv: [[f32; 2]; 3], collide: bool) {
+        let n = norm(cross(sub(p[1], p[0]), sub(p[2], p[0])));
+        if cross(sub(p[1], p[0]), sub(p[2], p[0])) == [0.0, 0.0, 0.0] {
+            return;
+        }
+        self.face_counter += 1;
+        let mk = |q: [f32; 3], t: [f32; 2]| Corner { pos: q, normal: n, uv: t, uv1: t, tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face: self.face_counter, group: 0 };
+        let mut t = [mk(p[0], uv[0]), mk(p[1], uv[1]), mk(p[2], uv[2])];
+        let (tu, tv) = bake::tangent(&t);
+        for c in &mut t {
+            c.tan_u = tu;
+            c.tan_v = tv;
+        }
+        self.tris[mat].push(t);
+        if collide {
+            self.coll.push((p, self.materials[mat].physics));
+        }
+    }
+
+    /// A quad with explicit UVs whose face must point up (+y).
+    pub fn quad_uv_up(&mut self, mat: usize, p: [[f32; 3]; 4], uv: [[f32; 2]; 4], collide: bool) {
+        let n = cross(sub(p[1], p[0]), sub(p[2], p[0]));
+        if n[1] >= 0.0 {
+            self.tri_uv(mat, [p[0], p[1], p[2]], [uv[0], uv[1], uv[2]], collide);
+            self.tri_uv(mat, [p[0], p[2], p[3]], [uv[0], uv[2], uv[3]], collide);
+        } else {
+            self.tri_uv(mat, [p[0], p[3], p[2]], [uv[0], uv[3], uv[2]], collide);
+            self.tri_uv(mat, [p[0], p[2], p[1]], [uv[0], uv[2], uv[1]], collide);
+        }
+    }
+
     /// A quad p0 p1 p2 p3 (counter-clockwise), as two triangles.
     pub fn quad(&mut self, mat: usize, p: [[f32; 3]; 4], collide: bool) {
         self.tri(mat, [p[0], p[1], p[2]], collide);
@@ -144,7 +176,7 @@ impl MeshBuilder {
             for t in tris {
                 let p = [t[0].pos, t[1].pos, t[2].pos];
                 let collide = coll.contains(&key(&p));
-                dst.tri(di, [f(p[0]), f(p[1]), f(p[2])], collide);
+                dst.tri_uv(di, [f(p[0]), f(p[1]), f(p[2])], [t[0].uv, t[1].uv, t[2].uv], collide);
             }
         }
     }
