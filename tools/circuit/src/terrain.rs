@@ -153,7 +153,7 @@ fn layer(tr: &Track, dtm: &Mosaic, inten: &Raster, fr: &Frame, spec: &TerrainSpe
     // layer (the road's 0.4 m skirts hide it), 1 m for the coarse one (it
     // lies under the fine band there anyway).
     let sink = if only.is_some() { 0.35 } else { 1.0 };
-    let margin = if only.is_some() { -0.5 } else { 2.0 };
+    let margin = if only.is_some() { 2.0 } else { 4.0 }; // past the kerb strips too
     let mut hz = vec![f64::NAN; (w + 1) * (h + 1)];
     for j in 0..=h {
         for i in 0..=w {
