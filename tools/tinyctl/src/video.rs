@@ -1453,7 +1453,10 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                         // was rendered on (its name ends in `-<build>`), else --build-note.
                         let row_build_note = {
                             let rb = crate::pagestatus::parse_rowbuilds(&std::fs::read_to_string(out.join("rowbuilds.tsv")).unwrap_or_default());
-                            let from_row = rb.get(nn.as_str()).map(|r| r.build.clone());
+                            // the rowbuilds label applies to THIS clip only when it names it
+                            // (clip=) or names no clip; a label pinned to another clip (05's
+                            // ship17c label for the 17b bytes) yields to the clip's own build
+                            let from_row = rb.get(nn.as_str()).filter(|r| crate::pagestatus::note_clip(&r.note).map(|c| c == *name).unwrap_or(true)).map(|r| r.build.clone());
                             let from_clip = name.rsplit_once("-ship").map(|(_, b)| format!("ship{b}"));
                             match from_row.or(from_clip) {
                                 Some(b) => build_note.replacen(&extract_build(&build_note).unwrap_or_default(), &b, 1),
