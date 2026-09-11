@@ -160,8 +160,9 @@ fn layer(tr: &Track, dtm: &Mosaic, inten: &Raster, fr: &Frame, spec: &TerrainSpe
                 continue;
             }
             let ident = format!("Silverstone\\{prefix}{tx:02}_{tz:02}.Item.Gbx");
+            let physics = mb.physics_hash(None);
             let bytes = mb.build(&ident, AUTHOR, None);
-            out.push(Placement { ident, bytes, pos: anchor, yaw: 0.0, tag: None });
+            out.push(Placement { ident, bytes, pos: anchor, yaw: 0.0, tag: None, physics });
         }
     }
     out

@@ -425,9 +425,8 @@ fn build(osm_path: &Path, dtm_dir: &Path, tif: &Path, host: &Path, out: &Path, s
     for (k, (n, b)) in &per {
         println!("  {k:<12} {n:>4} items {:>6.2} MB", *b as f64 / 1e6);
     }
-    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
-    let uid = format!("Silverstone1to1{:012}", ms % 1_000_000_000_000);
-    assert_eq!(uid.len(), 27);
+    let uid = mapbuild::map_uid(&items);
+    println!("uid {uid} (hash of every placement's collision + waypoint physics)");
     // --author-ms N: the validated lap time -> medals + validated flag
     let author_ms = flag(&a_all(), "--author-ms").map(|v| v as u32);
     mapbuild::assemble(host, out, &items, size, &uid, author_ms);

@@ -245,6 +245,42 @@ impl MeshBuilder {
     }
 
     /// The item file bytes.
+    /// FNV-1a over the collision triangles (mm-rounded) and their physics,
+    /// plus the waypoint kind/spawn/trigger: everything the car can feel.
+    pub fn physics_hash(&self, waypoint: Option<&Waypoint>) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut feed = |v: i64| {
+            for b in v.to_le_bytes() {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x0100_0000_01b3);
+            }
+        };
+        for (p, phys) in &self.coll {
+            for q in p {
+                for c in q {
+                    feed((c * 1000.0).round() as i64);
+                }
+            }
+            feed(*phys as i64);
+        }
+        if let Some(w) = waypoint {
+            feed(match w.kind {
+                WaypointKind::Start => 1,
+                WaypointKind::Finish => 2,
+                WaypointKind::Checkpoint => 3,
+            });
+            for c in w.spawn {
+                feed((c * 1000.0).round() as i64);
+            }
+            if let Some((lo, hi)) = w.trigger {
+                for c in lo.iter().chain(hi.iter()) {
+                    feed((c * 1000.0).round() as i64);
+                }
+            }
+        }
+        h
+    }
+
     pub fn build(mut self, ident: &str, author: &str, waypoint: Option<&Waypoint>) -> Vec<u8> {
         assert!(!self.is_empty(), "{ident}: empty mesh");
         let mut m = Merged::default();

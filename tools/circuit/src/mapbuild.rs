@@ -33,6 +33,34 @@ pub struct Placement {
     /// Yaw in radians about +y.
     pub yaw: f32,
     pub tag: Option<&'static str>,
+    /// Hash of what the car can feel in this item (collision + waypoint).
+    pub physics: u64,
+}
+
+/// The map uid: `Silverstone1to1` + 12 hex digits of a hash over every
+/// placement's ident, position, yaw and physics hash — so a rebuild that only
+/// changes looks keeps the uid (and every ghost validated on it), and one that
+/// moves anything the car can touch gets a new one.
+pub fn map_uid(placements: &[Placement]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    for p in placements {
+        feed(p.ident.as_bytes());
+        for c in p.pos {
+            feed(&((c * 1000.0).round() as i64).to_le_bytes());
+        }
+        feed(&((p.yaw * 100_000.0).round() as i64).to_le_bytes());
+        feed(&p.physics.to_le_bytes());
+        feed(p.tag.unwrap_or("").as_bytes());
+    }
+    let uid = format!("Silverstone1to1{:012x}", h & 0xffff_ffff_ffff);
+    assert_eq!(uid.len(), 27);
+    uid
 }
 
 /// Item yaw for a heading vector (dx, dz) in TM world space: the item's
@@ -79,8 +107,9 @@ pub fn road_items(tr: &Track, ed: &Edges, fr: &Frame, seg_len: f64, skip: &[bool
         }
         if any {
             let ident = format!("Silverstone\\Road{seg:03}.Item.Gbx");
+            let physics = mb.physics_hash(None);
             let bytes = mb.build(&ident, AUTHOR, None);
-            out.push(Placement { ident, bytes, pos: a0, yaw: 0.0, tag: None });
+            out.push(Placement { ident, bytes, pos: a0, yaw: 0.0, tag: None, physics });
         }
         seg += 1;
         i = end;
@@ -209,13 +238,14 @@ fn waypoint_item(tr: &Track, ed: &Edges, fr: &Frame, at: usize, half: f64, kind:
         spawn: [0.0, 0.5, 2.0],
         trigger: if kind == WaypointKind::Start { None } else { Some(([-(width / 2.0 + 6.0), -1.0, -2.0], [width / 2.0 + 6.0, 9.0, 2.0])) },
     };
+    let physics = mb.physics_hash(Some(&wp));
     let bytes = mb.build(ident, AUTHOR, Some(&wp));
     let tag = Some(match kind {
         WaypointKind::Start => "Spawn",
         WaypointKind::Finish => "Goal",
         WaypointKind::Checkpoint => "Checkpoint",
     });
-    Placement { ident: ident.to_string(), bytes, pos, yaw, tag }
+    Placement { ident: ident.to_string(), bytes, pos, yaw, tag, physics }
 }
 
 pub fn waypoint_items(tr: &Track, ed: &Edges, fr: &Frame, plan: &WaypointPlan, half: f64) -> (Vec<Placement>, Vec<bool>) {

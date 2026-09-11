@@ -215,8 +215,9 @@ pub fn building_items(structs: &[Structure], fr: &Frame) -> Vec<Placement> {
             continue;
         }
         let ident = format!("Silverstone\\Bldg{}_{}.Item.Gbx", te.rem_euclid(1000), tn.rem_euclid(1000));
-        let bytes = mb.build(&ident, AUTHOR, None);
-        out.push(Placement { ident, bytes, pos: anchor, yaw: 0.0, tag: None });
+        let physics = mb.physics_hash(None);
+            let bytes = mb.build(&ident, AUTHOR, None);
+        out.push(Placement { ident, bytes, pos: anchor, yaw: 0.0, tag: None, physics });
     }
     out
 }
@@ -351,8 +352,9 @@ pub fn linear_items(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, ed: &crate::edges::Edg
             continue;
         }
         let ident = format!("Silverstone\\Line{}_{}.Item.Gbx", te.rem_euclid(1000), tn.rem_euclid(1000));
-        let bytes = mb.build(&ident, AUTHOR, None);
-        out.push(Placement { ident, bytes, pos: anchor, yaw: 0.0, tag: None });
+        let physics = mb.physics_hash(None);
+            let bytes = mb.build(&ident, AUTHOR, None);
+        out.push(Placement { ident, bytes, pos: anchor, yaw: 0.0, tag: None, physics });
     }
     out
 }
