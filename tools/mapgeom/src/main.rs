@@ -2133,7 +2133,16 @@ fn main() {
             let rows = a.rest.iter().any(|s| s == "--rows");
             let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
             let gpath = flag(&a.rest, "--ghost").unwrap_or_else(|| p.clone());
-            let mut d = gbx::record::decode_ghost(&gpath).unwrap_or_else(|e| die(format!("{gpath}: no ghost ({e})")));
+            // --plates without --ghost (the build pipeline wants the plate table only): an
+            // empty ghost — the per-sample legs come out empty, the plates are complete
+            let mut d = match gbx::record::decode_ghost(&gpath) {
+                Ok(d) => d,
+                Err(e) if flag(&a.rest, "--ghost").is_none() && flag(&a.rest, "--plates").is_some() => {
+                    eprintln!("{gpath}: no ghost ({e}); plates only");
+                    gbx::record::Decoded { path: gpath.clone(), name: String::new(), version: 0, start_ms: 0, end_ms: 0, sample_period_ms: None, ..Default::default() }
+                }
+                Err(e) => die(format!("{gpath}: no ghost ({e})")),
+            };
             if let Some(anchor) = flag(&a.rest, "--anchor") {
                 let scale: f32 = flag(&a.rest, "--scale").and_then(|s| s.parse().ok()).unwrap_or(0.5);
                 let (s, t) = anchor.split_once(':').unwrap_or_else(|| die("--anchor sx,sy,sz:tx,ty,tz".into()));

@@ -261,6 +261,43 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 Err(e) => eprintln!("  coplanar pass skipped: {e}"),
             }
         }
+        // The WATER BLOCKS pass (2026-09-11, ship17c's recipe as a build default): the
+        // map's water plates (`mapgeom waterline --plates`, no ghost) are tiled with
+        // free custom WaterBase blocks where the spill rule allows (`mapgeom
+        // waterblocks`), and the map is written again with the block records and the
+        // block file in its archive. TINY_WATER_BLOCKS=0 leaves the 13-item form.
+        if std::env::var("TINY_WATER_BLOCKS").map(|v| v != "0").unwrap_or(true) {
+            match anchor_arg(&anchor_line) {
+                Some((anchor, _scale)) => {
+                    let plates = out.join("water-plates.tsv");
+                    let mut wl = Command::new(&mapgeom);
+                    wl.args(&paks).args(&mapgeom_flags).arg("waterline").arg(&tiny_out).arg("--report").arg(out.join("report.tsv")).arg("--plates").arg(&plates);
+                    wl.envs(env.iter());
+                    match run(&mut wl, &out.join("waterline.log")) {
+                        Ok(_) => {
+                            let template = out.join("water-template.Block.Gbx");
+                            std::fs::write(&template, WATER_TEMPLATE).map_err(|e| format!("{}: {e}", template.display()))?;
+                            let staged = out.join(format!("Summer-{nn}-Tiny.water.Map.Gbx"));
+                            let table = out.join("water-bodies.tsv");
+                            let mut wb = Command::new(&mapgeom);
+                            wb.args(&paks).args(&mapgeom_flags).arg("waterblocks").arg(&tiny_out).arg("--plates").arg(&plates).arg("--template").arg(&template).arg("--out").arg(&staged).arg("--table").arg(&table).arg("--source").arg(&src).arg("--anchor").arg(&anchor);
+                            wb.envs(env.iter());
+                            match run(&mut wb, &out.join("waterblocks.log")) {
+                                Ok(text) => {
+                                    for l in text.lines().filter(|l| l.contains("water bodies handled") || l.contains("free blocks")) {
+                                        println!("  {}", l.trim());
+                                    }
+                                    std::fs::rename(&staged, &tiny_out).map_err(|e| format!("water blocks: {e}"))?;
+                                }
+                                Err(e) => eprintln!("  water blocks pass skipped: {e}"),
+                            }
+                        }
+                        Err(e) => eprintln!("  water plates skipped: {e}"),
+                    }
+                }
+                None => eprintln!("  water blocks pass skipped: no anchor line"),
+            }
+        }
         let libx = out.join("libx");
         let _ = std::fs::remove_dir_all(&libx);
         let unzip = Command::new("unzip").arg("-q").arg(out.join("lib.zip")).arg("-d").arg(&libx).output().map_err(|e| format!("unzip: {e}"))?;
@@ -293,3 +330,9 @@ fn anchor_arg(line: &str) -> Option<(String, String)> {
     let scale = scale.trim().strip_prefix("scale")?.trim().to_string();
     Some((format!("{}:{}", nums(src)?, nums(tgt)?), scale))
 }
+
+/// The custom-block file every water block is made from: the TMX 210218 wood
+/// platform block (`!WoodPlatform\PlatRegular\PlatformWoodBase.Block.Gbx`) with
+/// its deck moved 200 m down (`mapgeom vstream-shift`); `mapgeom waterblocks`
+/// re-points its archetype and renames its ident per pool family.
+pub const WATER_TEMPLATE: &[u8] = include_bytes!("../assets/water-template.Block.Gbx");

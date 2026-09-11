@@ -737,7 +737,7 @@ pub struct EntInfo {
     pub t_last: Option<i32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Decoded {
     pub path: String,
     pub name: String,
