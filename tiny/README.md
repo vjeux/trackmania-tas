@@ -98,7 +98,7 @@ https://github.com/user-attachments/assets/cb510efb-14d4-41c2-9bea-51a0d6f8c232
 
 **Tiny Summer 2026 - 19** — original author time `43.841` · tiny ghost **46.362** (build ship15, controls overlay)
 
-*latest lap **38.276** (build ship15) — held (staged — attitude: no attitude table for this lap in the ghosts README (fail closed))*
+*latest lap **38.276** (build ship15) — video pending*
 
 https://github.com/user-attachments/assets/852cae15-dd20-4036-b01e-f02971d26797
 
