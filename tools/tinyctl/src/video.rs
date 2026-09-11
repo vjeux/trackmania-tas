@@ -1187,6 +1187,10 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
     let retry_after = Duration::from_secs(f("--retry-min").and_then(|s| s.parse::<u64>().ok()).unwrap_or(6) * 60);
     let min_gain: f64 = f("--min-gain-s").and_then(|s| s.parse().ok()).unwrap_or(0.1);
     let mut last_probe: Option<std::time::Instant> = None;
+    // the session-file mtime at the last FAILED probe (0 = none failed yet); a
+    // relaunch waits for a newer mtime (a fresh cookie or jar)
+    let mut failed_session_stamp: u64 = 0;
+    let mut said_waiting_session = false;
     let mut attitude_said: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     loop {
         let text = std::fs::read_to_string(&ships).unwrap_or_default();
@@ -1460,14 +1464,31 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
         // session therefore costs one 302 per tick, by one client, and the queue
         // resumes by itself when a fresh cookie lands.
         if !dead_cookie.is_empty() {
-            let due = last_probe.map(|t: std::time::Instant| t.elapsed() >= retry_after).unwrap_or(true);
-            let busy = wsx
-                .sh("ps aux | grep -c '[t]inyship.sh'")
-                .map(|s| s.trim().parse::<u32>().unwrap_or(0))
-                .unwrap_or(0);
+            // ONE 302, THEN STOP UNTIL THE SESSION CHANGES (coordinator, 2026-09-11
+            // 12:03Z: "expected one 302 then stop"). A dead session is re-probed
+            // only when the box's cookie file or the ghsession jar has a new
+            // mtime since the failed probe — one `stat` per tick, no launch.
+            let busy_and_stamp = wsx
+                .sh("ps -eo args | grep -E '^(/bin/)?sh .*tinyship\\.sh ' | grep -v grep | wc -l; stat -c %Y /home/vjeux/.gh-upload/cookie /home/vjeux/.gh-upload/session.json 2>/dev/null | sort -n | tail -1")
+                .unwrap_or_default();
+            let mut it = busy_and_stamp.lines();
+            let busy: u32 = it.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+            let session_stamp: u64 = it.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+            let session_changed = session_stamp > failed_session_stamp;
+            let due = last_probe.map(|t: std::time::Instant| t.elapsed() >= retry_after).unwrap_or(true) && (failed_session_stamp == 0 || session_changed);
             if busy > 0 {
                 println!("{} {} clip(s) waiting; a ship is running on the box", chrono_now(), dead_cookie.len());
+            } else if !due && failed_session_stamp > 0 && !session_changed {
+                if !said_waiting_session {
+                    println!("{} {} clip(s) waiting for a GitHub session on the box (the last probe got a 302; no new cookie/jar since) — not launching", chrono_now(), dead_cookie.len());
+                    said_waiting_session = true;
+                }
             } else if due {
+                said_waiting_session = false;
+                if session_changed {
+                    println!("{} the box's session file changed (mtime {session_stamp}) — probing again", chrono_now());
+                }
+                failed_session_stamp = session_stamp.max(1);
                 last_probe = Some(std::time::Instant::now());
                 let (nn, time, name, done_file) = &dead_cookie[0];
                 let r_mp4 = format!("{VID}/mp4/{name}.mp4");
