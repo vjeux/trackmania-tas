@@ -518,6 +518,8 @@ pub struct LapCfg {
     pub speed_caps: Vec<[f64; 5]>,
     /// --accel-box x1,x2,z1,z2[;...]: inside the box the speed may not DROP between consecutive rows (dv/dt >= 0; the author accelerates through the hairpin transition)
     pub accel_boxes: Vec<[f64; 4]>,
+    /// --stall-kill vmin,ticks,t_from: a rollout with speed < vmin for >= ticks consecutive rows at race >= t_from (s) dies (no near-stops in the re-driven leg)
+    pub stall_kill: Option<[f64; 3]>,
     /// --upright-window t1,t2[,min_up]: rows inside the race window must keep the body up-vector y above min_up (0.7)
     pub upright: Vec<[f64; 3]>,
     /// --allow-water: disable the water-lid guard (materials 28/13 kill a rollout by default)
@@ -967,6 +969,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             }
             // --speed-cap-box x1,x2,z1,z2,vmax (repeatable via ;): a rollout that carries more than vmax through the box is not a
             // cell (18:20Z, Argentina hairpin: the reviewer's brake-before-the-bank hypothesis needs the entry held to 44–48)
+            if let Some(sk) = cfg.stall_kill { let mut run = 0usize; let mut hit = false; for r in rows.iter() { if (w.race_of(r) as f64 / 1000.0) >= sk[2] && speed(r) < sk[0] { run += 1; if run as f64 >= sk[1] { hit = true; break; } } else { run = 0; } } if hit { out.deaths[4] += 1; if debug_fan { eprintln!("    STALL kill {desc:34}: speed < {} for {} ticks", sk[0], sk[1]); } dump_rollout(w, base, &rows, "crawl", &desc, &dump_n); continue; } }
             if cfg.accel_boxes.iter().any(|b| rows.windows(2).any(|p| { let r = &p[1]; r.x >= b[0] && r.x <= b[1] && r.z >= b[2] && r.z <= b[3] && speed(r) < speed(&p[0]) - 0.06 })) {
                 out.deaths[1] += 1;
                 if debug_fan { eprintln!("    ACCEL kill {desc:34}: speed dropped inside an --accel-box"); }
@@ -1135,8 +1138,10 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 let v = speed(&cr);
                 // a leg with no human speed profile (waypoint-replaced legs) still needs a MOVING arrival: >= 8 m/s
                 let min_arr: f64 = std::env::var("TMREACH_MIN_ARRIVAL").ok().and_then(|s| s.parse().ok()).unwrap_or(8.0);
-                let speed_ok = cfg.arrival_any || (if vh <= 0.0 { v >= min_arr } else { (v - vh).abs() <= 0.3 * vh.max(5.0) });
-                let lat_ok = lat_abs <= hw + 0.5;
+                let arr_dv: Option<f64> = std::env::var("TMREACH_ARRIVAL_DV").ok().and_then(|s| s.parse().ok()); // absolute |v - human| bound (state matching)
+                let arr_lat: Option<f64> = std::env::var("TMREACH_ARRIVAL_LAT").ok().and_then(|s| s.parse().ok()); // absolute lateral bound at the gate
+                let speed_ok = cfg.arrival_any || (if vh <= 0.0 { v >= min_arr } else if let Some(dv) = arr_dv { (v - vh).abs() <= dv } else { (v - vh).abs() <= 0.3 * vh.max(5.0) });
+                let lat_ok = lat_abs <= arr_lat.unwrap_or(hw + 0.5);
                 // HEIGHT: the credit row must be near the gate's plane height (a tall ring credits a car FALLING through it 7 m
                 // under the deck — 20 wp6, 07:57Z); the credited gate = the order position k_pref-1's group centre
                 let height_ok = match (&cfg.gates, track.order_groups.get(k_pref.saturating_sub(1))) {
