@@ -553,10 +553,10 @@ pub fn cmd(args: &[String]) {
         .blocks
         .iter()
         .chain(source.baked.iter())
-        .filter(|t| zones.contains(&t.name) && hidden.undeclared(t))
+        .filter(|t| zones.contains(&t.name) && hidden.kept_undeclared(t))
         .map(|t| format!("{} at {:?} under {}", t.name, t.coords(), hidden.occupant(t).and_then(|i| source.blocks.get(i)).map(|b| b.name.as_str()).unwrap_or("?")))
         .collect();
-    println!("  terrain tiles under blocks: {} blocks with geometry occupy tile cells, {} declare their auto terrain; {} tiles hidden under a block that did not declare their zone{}", hidden.blocks, hidden.declaring, undeclared.len(), if undeclared.is_empty() { String::new() } else { format!(" ({})", undeclared.iter().take(12).cloned().collect::<Vec<_>>().join("; ")) });
+    println!("  terrain tiles under blocks: {} blocks with geometry occupy tile cells, {} declare their auto terrain; {} tiles KEPT under a block that did not declare their zone (drawn, as the game does){}", hidden.blocks, hidden.declaring, undeclared.len(), if undeclared.is_empty() { String::new() } else { format!(" ({})", undeclared.iter().take(12).cloned().collect::<Vec<_>>().join("; ")) });
     let mut replaced_terrain = 0usize;
     let mut replaced_baked_terrain = 0usize;
     // Authored blocks occupy appended clones.

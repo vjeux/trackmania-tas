@@ -141,12 +141,20 @@ pub struct HiddenTiles {
 }
 
 impl HiddenTiles {
+    /// The game's rule, CORRECTED 2026-09-11 (Summer 01, vjeux's "hole in the mountain"):
+    /// a tile is hidden only where the occupying block DECLARES its auto terrain for
+    /// that cell. A unit cell a block occupies without declaring (the empty corner of
+    /// a RoadTechCurve4's 4×4, the Land under a DecoTreeBeach) keeps its tile — the
+    /// original draws the LandHill3 at (30, 6, 32) under the curve's corner (palms
+    /// on it); hiding it left a cell-sized cutout with the sea showing through.
     pub fn hides(&self, tile: &BlockRec) -> bool {
-        self.occupied.contains_key(&tile.file_cell)
+        let stem = zone_stem(&tile.name).to_string();
+        self.occupied.contains_key(&tile.file_cell) && (self.declared.contains(&(tile.file_cell, stem)) || self.declared.iter().any(|(c, _)| *c == tile.file_cell))
     }
-    /// The tile is hidden by a block that did not declare its zone as auto terrain.
-    pub fn undeclared(&self, tile: &BlockRec) -> bool {
-        self.hides(tile) && !self.declared.contains(&(tile.file_cell, zone_stem(&tile.name).to_string()))
+    /// A tile whose cell a block occupies WITHOUT declaring auto terrain there: kept
+    /// (drawn) since 2026-09-11; listed for the log.
+    pub fn kept_undeclared(&self, tile: &BlockRec) -> bool {
+        self.occupied.contains_key(&tile.file_cell) && !self.hides(tile)
     }
     /// Index of the block occupying the tile's cell.
     pub fn occupant(&self, tile: &BlockRec) -> Option<usize> {
@@ -238,7 +246,7 @@ pub fn shared_cells_cmd(args: &[String]) {
         // but no block declared this zone as its auto terrain (look there first
         // if a hole ever shows)
         let status = if tiles.iter().all(|t| hidden.hides(t)) {
-            if tiles.iter().any(|t| hidden.undeclared(t)) { "hidden?" } else { "hidden" }
+            if tiles.iter().any(|t| hidden.kept_undeclared(t)) { "kept (undeclared occupant)" } else { "hidden" }
         } else {
             "kept"
         };
