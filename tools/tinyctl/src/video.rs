@@ -1222,6 +1222,11 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
     let mut seen_fail_for_probe: std::collections::HashSet<u64> = std::collections::HashSet::new();
     let mut attitude_said: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     loop {
+        // the laps the PAGE shows, for the receipt-inheritance fallback (a store
+        // clip counts as "published" only when the page shows that lap)
+        if let Some(r) = &readme {
+            set_page_laps(&std::fs::read_to_string(r).unwrap_or_default());
+        }
         let text = std::fs::read_to_string(&ships).unwrap_or_default();
         let mut rows: Vec<String> = text.lines().map(String::from).collect();
         // WHICH ROW IS STILL THE MAP'S LAP. The player project replaces a map's
@@ -2729,9 +2734,15 @@ pub fn inherited_approval(out: &Path, store: Option<&Path>, nn: &str, time: &str
         }
     }
     // NO SHIPS.TSV ROW (02: published by an earlier session, before this ships.tsv):
-    // the store holds `<nn>-ghost-<time>-<build>.mp4` clips of the lap — any one
-    // whose stamp FNV matches the archived ghost bytes counts as the published
-    // same-ghost clip (the page shows this lap: same map, same time).
+    // the store holds `<nn>-ghost-<time>-<build>.mp4` clips of the lap — one whose
+    // stamp FNV matches the archived ghost bytes counts as the published
+    // same-ghost clip — BUT ONLY IF THE PAGE SHOWS THIS LAP for the map (the
+    // row's caption time): a held render on the store is not "published"
+    // (20's 75.595 and 15's own 18f clip slipped through here, 2026-09-11 17:54Z).
+    let page_shows_lap = PAGE_LAPS.with(|p| p.borrow().get(nn).map(|t| t == time).unwrap_or(false));
+    if !page_shows_lap {
+        return None;
+    }
     if let Some(store) = store {
         if let Ok(rd) = std::fs::read_dir(store) {
             let archive = Path::new(GHOST_ARCHIVE_DEFAULT).join(format!("{ghost_md5}.Ghost.Gbx"));
@@ -2916,5 +2927,54 @@ mod latest_alias_tests {
         assert_eq!(tag, "ship18f", "ship19 fails one map; ship18f is newer than ship18e");
         assert!(dir.ends_with("ship18f-bbbb"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+thread_local! {
+    /// map → the lap the PAGE shows (the row's caption time), set by shipwatch
+    /// from tiny/README.md on every tick before the queue is read.
+    pub static PAGE_LAPS: std::cell::RefCell<std::collections::HashMap<String, String>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Read `**Title** — … · <label> **<time>** (…)` rows into PAGE_LAPS.
+pub fn set_page_laps(page: &str) {
+    let mut m = std::collections::HashMap::new();
+    for l in page.lines() {
+        if !l.starts_with("**") {
+            continue;
+        }
+        let title = l.trim_start_matches("**").split("**").next().unwrap_or("");
+        let nn = (1..=25).map(|n| format!("{n:02}")).find(|n| map_title(n) == title || format!("Tiny Summer 2026 - {n}") == title);
+        let time = l.split("ghost **").nth(1).and_then(|r| r.split("**").next()).map(str::to_string);
+        if let (Some(nn), Some(t)) = (nn, time) {
+            m.insert(nn, t);
+        }
+    }
+    PAGE_LAPS.with(|p| *p.borrow_mut() = m);
+}
+
+#[cfg(test)]
+mod inherit_page_gate_tests {
+    use super::*;
+
+    /// The store-scan fallback counts a clip as published only when the PAGE
+    /// shows that lap for the map; a held render on the store never lends a receipt.
+    #[test]
+    fn a_store_clip_of_an_unpublished_lap_lends_nothing() {
+        let dir = std::env::temp_dir().join(format!("inherit-page-{}", std::process::id()));
+        let store = dir.join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(dir.join("ships.tsv"), "20\t75.595\t20-ghost-75.595-ship18f\t/x\tstaged\n").unwrap();
+        // a store clip of the same lap with a matching sidecar md5 …
+        std::fs::write(store.join("20-ghost-75.595-ship15.mp4"), b"x").unwrap();
+        std::fs::write(store.join("20-ghost-75.595-ship15.mp4.json"), "{\n  \"ghost_md5\": \"f243d59188f27b4cfaac42b36a97a86f\"\n}\n").unwrap();
+        // … but the page shows 84.954 for map 20
+        set_page_laps("**Tiny Summer 2026 - 20** — original author time `50.598` · tiny ghost **84.954** (build ship15, controls overlay)\n");
+        assert_eq!(inherited_approval(&dir, Some(&store), "20", "75.595", "f243d59188f27b4cfaac42b36a97a86f"), None);
+        // when the page shows the lap, the same store clip counts
+        set_page_laps("**Tiny Summer 2026 - 20** — original author time `50.598` · tiny ghost **75.595** (build ship15, controls overlay)\n");
+        assert_eq!(inherited_approval(&dir, Some(&store), "20", "75.595", "f243d59188f27b4cfaac42b36a97a86f").as_deref(), Some("20-ghost-75.595-ship15"));
+        set_page_laps("");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
