@@ -1396,6 +1396,17 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 if !approved {
                     continue;
                 }
+                // A HELD MAP'S NEW LAP STAYS `staged` even with every gate passed: it
+                // cannot launch (the hold), and as `pending` it would outrank the
+                // public lap's same-ghost rebuild — which the hold lets ship (20:
+                // 75.374 suspended, 84.954's 18f rebuild ships meanwhile, 2026-09-11 23:30Z).
+                let new_lap_of_held_map = read_holds(&out).contains_key(cells[0].as_str()) && !PAGE_LAPS.with(|p| p.borrow().get(cells[0].as_str()).map(|t| *t == cells[1]).unwrap_or(false));
+                if new_lap_of_held_map {
+                    if attitude_said.insert((format!("held-staged-{}", cells[0]), cells[1].clone())) {
+                        println!("{} {} {}: gates passed, but the map is held — stays staged (the public lap's rebuild may ship meanwhile)", chrono_now(), cells[0], cells[1]);
+                    }
+                    continue;
+                }
                 println!("{} {} {}: attitude clean + opening check receipt on file — queued for upload", chrono_now(), cells[0], cells[1]);
                 *row = format!("{}\t{}\t{}\t{}\tpending", cells[0], cells[1], cells[2], cells[3]);
                 changed = true;
@@ -1410,7 +1421,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
             // all held (a held newer lap never reaches the page) and this row is
             // the same-ghost rebuild of the lap the page shows (20: 84.954 vs the
             // held 75.595 row after it)
-            let later_rows_all_held = rows_snapshot.iter().enumerate().filter(|(j, r)| *j > i && r.split('\t').next() == Some(cells[0].as_str())).all(|(_, r)| r.split('\t').nth(4).map(|s| s == "held" || s == "superseded").unwrap_or(false));
+            let later_rows_all_held = rows_snapshot.iter().enumerate().filter(|(j, r)| *j > i && r.split('\t').next() == Some(cells[0].as_str())).all(|(_, r)| r.split('\t').nth(4).map(|s| s == "held" || s == "superseded" || s == "staged").unwrap_or(false));
             let page_lap_rebuild = PAGE_LAPS.with(|p| p.borrow().get(cells[0].as_str()).map(|t| *t == cells[1]).unwrap_or(false));
             // … or the map is under a hold (its newer laps cannot reach the page)
             let map_is_held = read_holds(&out).contains_key(cells[0].as_str());
