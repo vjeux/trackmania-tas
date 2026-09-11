@@ -3,7 +3,7 @@
 //! it, by default, checked, and stamped.**
 //!
 //! ```text
-//! tinyctl video --map NN | --all [--watch SECS [--idle-quit-min 30 (0 = never)]] [--min-gain-s 0.1] [--ghost-archive DIR|none] [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9]
+//! tinyctl video --map NN | --all [--watch SECS [--idle-quit-min 30 (0 = never)]] [--min-gain-s 0.1] [--ghost-archive DIR|none] [--box-keep 2] [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9]
 //!               [--ghosts-dir /tmp/ghosts] [--ghosts-sync host:dir] [--build ship15] [--cam 2] [--load-timeout 120] [--no-guard]
 //!               [--box-videos "…/Maps/Tiny/videos"] [--store host:dir | dir] [--pull-webm] [--suffix S]
 //!               [--from-webm F] [--no-overlay] [--crf N] [--offset-ms N] [--ship [--readme tiny/README.md]]
@@ -889,6 +889,21 @@ fn one(args: &[String]) -> Result<Done, String> {
             sent.push(p.file_name().unwrap().to_string_lossy().into_owned());
         }
         println!("store: {dest}/ ← {}", sent.join(" "));
+        // PRUNE THE BOX'S STAGING TO WHAT THE STORE HOLDS (coordinator, 2026-09-11
+        // 08:10Z: C: at 4.7 GB stopped the converter's startchecks). After a
+        // successful bank, the box keeps only the last `--box-keep` (default 2)
+        // clips per map in `tinyvid/mp4` and the watch copies in Maps\Tiny\videos,
+        // plus every clip that is pending/staged/held (its ship still needs the
+        // file); the raw render webm of this clip goes too (the store has it).
+        // One bridge call, listing what it removed. `--box-keep 0` disables.
+        let keep_n: usize = f("--box-keep").and_then(|s| s.parse().ok()).unwrap_or(2);
+        if keep_n > 0 && !dest.contains(':') {
+            match prune_box_staging(&wsx, &out, &nn, &name, keep_n, Path::new(&dest), &box_videos) {
+                Ok(msg) if !msg.trim().is_empty() => println!("box prune: {}", msg.trim()),
+                Ok(_) => {}
+                Err(e) => eprintln!("box prune skipped: {e}"),
+            }
+        }
     }
 
     // --- the ship, detached on the box; `tinyctl shipwatch` collects the URL
@@ -2429,4 +2444,60 @@ mod water_b_tests {
         assert!(!water_b_rule("05\t16.395\tparent\tPUBLISHABLE", "05-ghost-16.395-ship17c", note), "no water_ok=B in the receipt");
         assert!(build_at_least("17c", "17c") && build_at_least("18", "17c") && !build_at_least("17", "17c") && !build_at_least("16c", "17c"));
     }
+}
+
+/// Remove from the box's `tinyvid/mp4`, `tinyvid/review` and the watch folder
+/// every clip of map `nn` that is (a) banked on the store (same name, same
+/// size), (b) not among the newest `keep_n` clips of the map in ships.tsv order
+/// and not the one just rendered, and (c) not pending/staged/held. Also drops
+/// the raw render webm of the clip just banked. Returns the box's report.
+pub fn prune_box_staging(wsx: &Wsx, out: &Path, nn: &str, just_rendered: &str, keep_n: usize, store: &Path, box_videos: &str) -> Result<String, String> {
+    let ships = std::fs::read_to_string(out.join("ships.tsv")).unwrap_or_default();
+    let mut names_in_order: Vec<String> = Vec::new();
+    let mut protected: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for l in ships.lines().filter(|l| !l.starts_with('#')) {
+        let c: Vec<&str> = l.split('\t').map(str::trim).collect();
+        if c.len() < 5 || c[0] != nn {
+            continue;
+        }
+        if !names_in_order.iter().any(|n| n == c[2]) {
+            names_in_order.push(c[2].to_string());
+        }
+        if matches!(c[4], "pending" | "staged" | "held") {
+            protected.insert(c[2].to_string());
+        }
+    }
+    // the videos.tsv order (renders) covers clips that never reached ships.tsv
+    let videos = std::fs::read_to_string(out.join("videos.tsv")).unwrap_or_default();
+    for l in videos.lines().filter(|l| !l.starts_with('#')) {
+        let c: Vec<&str> = l.split('\t').collect();
+        if c.len() >= 5 && c[0] == nn {
+            let stem = c[4].trim_end_matches(".webm").to_string();
+            if !names_in_order.iter().any(|n| *n == stem) {
+                names_in_order.push(stem);
+            }
+        }
+    }
+    let keep: std::collections::HashSet<String> = names_in_order.iter().rev().take(keep_n).cloned().chain(protected.iter().cloned()).chain(std::iter::once(just_rendered.to_string())).collect();
+    let mut rm: Vec<String> = Vec::new();
+    for name in &names_in_order {
+        if keep.contains(name) {
+            continue;
+        }
+        for ext in ["mp4", "webm"] {
+            let f = format!("{name}.{ext}");
+            let banked = store.join(&f).metadata().map(|m| m.len() > 0).unwrap_or(false);
+            if banked {
+                rm.push(f);
+            }
+        }
+    }
+    let mut cmd = String::new();
+    for f in &rm {
+        cmd.push_str(&format!("rm -f '{VID}/mp4/{f}' '{VID}/review/{f}' '{box_videos}/{f}' 2>/dev/null; "));
+    }
+    // the raw render of the clip just banked (its webm is on the store)
+    cmd.push_str(&format!("rm -f '{VID}/vid{nn}/Video60.webm' '{VID}/vid{nn}/vid{nn}.webm' '{VID}/vid{nn}/vid{nn}01.webm' 2>/dev/null; "));
+    cmd.push_str(&format!("echo removed {} banked clip file(s) of {nn}: {}; df -m /mnt/c | awk 'NR==2{{print \"C: free\", $4, \"MB\"}}'", rm.len(), rm.join(" ")));
+    wsx.sh(&cmd)
 }
