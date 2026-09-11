@@ -975,7 +975,13 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             let has_hull = *hull_cache.entry(key).or_insert_with(|| {
                 crate::veget::tree_model_path(store, &p).and_then(|mp| crate::veget::parse_tree_model(store, &mp)).map(|t| !t.hull_triangles.is_empty()).unwrap_or(true)
             });
-            if has_hull { trees.push((p, iso)); } else { filler.push((p, iso)); }
+            // a hull-less species WITH a stock item substitute (RedIsland's flowers and grass,
+            // BlueBay's bushes) keeps the item path — a real game vegetation item beats a
+            // baked card (ship18c/18d baked them: 02 lost 3 475 placements, 12 7 250);
+            // only species with NO stock item (BlueBay JungleForest cards) are inlined
+            let mut pair_cache: BTreeMap<String, Option<String>> = BTreeMap::new();
+            let has_stock = !has_hull && veget_item_pair(store, collection, &p, &mut pair_cache).is_some();
+            if has_hull || has_stock { trees.push((p, iso)); } else { filler.push((p, iso)); }
         }
         m.veget = trees;
         if !filler.is_empty() {
