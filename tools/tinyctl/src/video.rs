@@ -1266,7 +1266,20 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
             if row.starts_with('#') {
                 continue;
             }
-            let cells: Vec<String> = row.split('\t').map(String::from).collect();
+            let mut cells: Vec<String> = row.split('\t').map(String::from).collect();
+            // A HELD ROW THAT IS THE SAME-GHOST REBUILD OF THE PUBLISHED LAP joins the
+            // queue as `staged` (coordinator, 2026-09-11 19:00Z: every map's video on
+            // 18f; the hold blocks NEW laps only). The published clip's sidecar /
+            // stamp must name the same ghost md5 (the inheritance check below).
+            if cells.len() >= 5 && cells[4] == "held" {
+                let same_ghost_rebuild = sidecar_ghost_md5(&out, &cells[2]).and_then(|m| inherited_approval(&out, store_dir.as_deref(), &cells[0], &cells[1], &m)).is_some();
+                if same_ghost_rebuild {
+                    cells[4] = "staged".to_string();
+                    *row = cells.join("\t");
+                    changed = true;
+                    println!("{} {} {}: held map, but this is the same-ghost rebuild of its PUBLISHED lap — treated as staged", chrono_now(), cells[0], cells[1]);
+                }
+            }
             if cells.len() < 5 || (cells[4] != "pending" && cells[4] != "staged") {
                 continue;
             }
@@ -1378,8 +1391,12 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
             // is the box's), but its URL is not swapped into the page while the
             // hold stands: the row is left pending and picked up when lifted.
             if let Some(reason) = read_holds(&out).get(nn.as_str()) {
-                println!("{} {nn} {time}: HELD ({reason}) — not launched, not swapped", chrono_now());
-                continue;
+                // the same-ghost rebuild of the published lap passes the hold (see above)
+                let rebuild_of_published = sidecar_ghost_md5(&out, name).and_then(|m| inherited_approval(&out, store_dir.as_deref(), nn, time, &m)).is_some();
+                if !rebuild_of_published {
+                    println!("{} {nn} {time}: HELD ({reason}) — not launched, not swapped", chrono_now());
+                    continue;
+                }
             }
             // THE UPLOAD WINDOW (parent, 2026-09-10 22:35Z: no clip goes up before
             // 12:00Z on the 11th whatever the session state). `<out>/upload-window.tsv`
