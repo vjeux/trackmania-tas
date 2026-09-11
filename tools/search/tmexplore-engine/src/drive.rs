@@ -543,13 +543,27 @@ pub fn drive(a: &Args) {
     let (st0, lat0, txt0) = describe(&r.line, &init, r.line.start);
     println!("initial: {}", txt0);
     println!("  located station {} (d={:.0}) lateral {:.2}", st0, r.line.dist_of(st0), lat0);
-    let d_finish = r.line.dist_of(r.line.finish);
     let cp_d: Vec<f64> = r.line.checkpoints.iter().map(|&c| r.line.dist_of(c)).collect();
+    // A finish line AFTER the start along the lap (the kart map spawns on the
+    // grid 30 m before the timing line) is reached on the second pass: its
+    // distance is one lap further, and `d` below is unwrapped past the start.
+    let d_finish = {
+        let d = r.line.dist_of(r.line.finish);
+        if cp_d.iter().any(|&c| c > d) { d + n as f64 } else { d }
+    };
+    if d_finish >= n as f64 {
+        println!("  the finish (station {}) is {:.0} m past the spawn, after every checkpoint: the lap is {:.0} m", r.line.finish, d_finish - n as f64, d_finish);
+    }
 
     let max_ticks: usize = a.num("max-ticks", 24000usize).min(r.branch.writable_ticks());
     let max_rewinds: usize = a.num("max-rewinds", 60usize);
     let rewind_s: f64 = a.num("rewind-s", 3.0);
     let shrink: f64 = a.num("shrink", 0.85);
+    // the stretch the allowance shrinks over (m before / after the failure) and
+    // how low it may go; the F1 map used 150 / 30 / 0 implicitly
+    let shrink_back: f64 = a.num("shrink-back", 150.0);
+    let shrink_fwd: f64 = a.num("shrink-fwd", 30.0);
+    let allow_floor: f64 = a.num("allow-floor", 0.0);
     let off_margin: f64 = a.num("off-margin", -0.5);
     let log_path = out_dir.join("drive.log.tsv");
     let mut log = String::from(LOG_HEADER);
@@ -672,10 +686,18 @@ pub fn drive(a: &Args) {
         let pos = [state.pos[0] as f64, state.pos[1] as f64, state.pos[2] as f64];
         let (st_now, lat_now) = r.line.locate(pos, hint, 40, 120);
         hint = st_now;
-        let d_now = r.line.dist_of(st_now);
+        // unwrapped: once the car has been more than half a lap out, a small
+        // `dist_of` means it has passed the start again
+        let d_now = {
+            let d = r.line.dist_of(st_now);
+            if best_d > n as f64 / 2.0 && d < best_d - n as f64 / 2.0 { d + n as f64 } else { d }
+        };
         let row = &r.line.rows[st_now];
         let off_track = lat_now > row.right_m + off_margin || lat_now < -(row.left_m + off_margin);
-        let stalled = tape.len() > 600 && (state.speed() as f64) < 1.5;
+        // (a car crawling because the plan ASKED for a crawl is not stalled --
+        // shrinking the allowance again for that is how run 2 on the kart map
+        // talked itself down to 1.3 m/s at the loop and 121 rewinds)
+        let stalled = tape.len() > 600 && (state.speed() as f64) < 1.5 && v_target > 3.0;
         let too_far = pos[1] < row.y - 3.0 || pos[1] > row.y + 6.0;
         if let Some(v) = adv.ended {
             println!("fork says the run ENDED at tick {}: {:?} (d = {:.0} m)", tape.len(), v, d_now);
@@ -743,11 +765,13 @@ pub fn drive(a: &Args) {
             }
             // Shrink the allowance over the stretch that led here.
             let d_fail = d_now;
-            let lo = (d_fail - 150.0).max(0.0) as usize;
-            let hi = (d_fail + 30.0).min(n as f64 - 1.0) as usize;
+            let lo = (d_fail - shrink_back).max(0.0) as usize;
+            let hi = (d_fail + shrink_fwd).min(2.0 * n as f64 - 1.0) as usize;
+            // (indexed by DISTANCE from the spawn, as `plan_speed` reads it -- indexing
+            // by station here shrank a stretch `start` metres away; unnoticed on the
+            // F1 map, whose spawn is station 5885 of 5887)
             for d in lo..=hi {
-                let st = r.line.station_at(d as f64);
-                allow.scale[st] *= shrink;
+                allow.scale[d % n] = (allow.scale[d % n] * shrink).max(allow_floor);
             }
             // Cut the tape back rewind_s seconds (at least one macro), and further back if still off-track.
             let cut_ticks = ((rewind_s * 100.0) as usize).max(law.k);
@@ -764,7 +788,7 @@ pub fn drive(a: &Args) {
             while next_cp > 0 && cp_d[next_cp - 1] > d_after {
                 next_cp -= 1;
             }
-            println!("  resumed at tick {} (d = {:.0} m), allowance {:.2} at the failure", tape.len(), d_after, allow.scale[r.line.station_at(d_fail)]);
+            println!("  resumed at tick {} (d = {:.0} m), allowance {:.2} at the failure", tape.len(), d_after, allow.scale[(d_fail.max(0.0) as usize) % n]);
             continue;
         }
         if tape.len() % 500 == 0 {

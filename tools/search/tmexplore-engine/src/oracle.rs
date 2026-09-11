@@ -121,6 +121,16 @@ impl EngineOracle {
             gas[j] = t.gas;
             brake[j] = t.brake;
         }
+        // Past the tape the car BRAKES TO A STOP instead of inheriting the
+        // template's full-gas tail: 200 s of full throttle from wherever the
+        // tape ended took the car off the map, and the server then answered a
+        // bare "wrong simu" (zero checkpoints) for a tape that had passed two.
+        // A finished tape is unaffected (the race ended before the tail).
+        for j in (off + tape.len()).min(n)..n {
+            steer[j] = 0;
+            gas[j] = false;
+            brake[j] = true;
+        }
         forkoracle::inputs::Inputs { steer, gas, brake }
     }
 

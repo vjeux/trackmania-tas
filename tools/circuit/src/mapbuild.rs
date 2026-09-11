@@ -44,6 +44,12 @@ pub struct Placement {
 /// changes looks keeps the uid (and every ghost validated on it), and one that
 /// moves anything the car can touch gets a new one.
 pub fn map_uid(placements: &[Placement]) -> String {
+    map_uid_prefixed("Silverstone1to1", placements)
+}
+
+/// `map_uid` with another 15-character prefix (a second map of the venue).
+pub fn map_uid_prefixed(prefix: &str, placements: &[Placement]) -> String {
+    assert_eq!(prefix.len(), 15, "uid prefix must be 15 characters");
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut feed = |bytes: &[u8]| {
         for b in bytes {
@@ -60,7 +66,7 @@ pub fn map_uid(placements: &[Placement]) -> String {
         feed(&p.physics.to_le_bytes());
         feed(p.tag.unwrap_or("").as_bytes());
     }
-    let uid = format!("Silverstone1to1{:012x}", h & 0xffff_ffff_ffff);
+    let uid = format!("{prefix}{:012x}", h & 0xffff_ffff_ffff);
     assert_eq!(uid.len(), 27);
     uid
 }
@@ -342,11 +348,15 @@ pub fn waypoint_items(tr: &Track, ed: &Edges, fr: &Frame, plan: &WaypointPlan, h
 /// by `placements`, the item files embedded.
 /// A map name of exactly `len` bytes that says what this is.
 pub fn name_of_len(len: usize) -> String {
-    let candidates = ["Silverstone", "Silverstone 1:1", "Silverstone Circuit 1:1", "Silverstone Circuit 1to1", "Silverstone GP Circuit 1:1", "Silverstone Circuit (1:1 scale)"];
+    name_of_len_for(len, &["Silverstone", "Silverstone 1:1", "Silverstone Circuit 1:1", "Silverstone Circuit 1to1", "Silverstone GP Circuit 1:1", "Silverstone Circuit (1:1 scale)"], "Silverstone Circuit 1:1 scale, real LIDAR ground")
+}
+
+/// A map name of exactly `len` bytes: the candidate of that length, else
+/// `base` cut or padded to it.
+pub fn name_of_len_for(len: usize, candidates: &[&str], base: &str) -> String {
     if let Some(c) = candidates.iter().find(|c| c.len() == len) {
         return c.to_string();
     }
-    let base = "Silverstone Circuit 1:1 scale, real LIDAR ground";
     if len <= base.len() {
         base[..len].to_string()
     } else {
@@ -368,6 +378,13 @@ pub fn medals(author_ms: Option<u32>) -> (u32, u32, u32, u32, bool) {
 }
 
 pub fn assemble(host: &Path, out: &Path, placements: &[Placement], size: Option<[i32; 3]>, uid: &str, author_ms: Option<u32>) {
+    assemble_named(host, out, placements, size, uid, author_ms, &|len| name_of_len(len), None)
+}
+
+/// `assemble` with the map name chosen by `name` (given the host name's
+/// byte length) and the car the map is driven in (`Some("CarSnow")`).
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_named(host: &Path, out: &Path, placements: &[Placement], size: Option<[i32; 3]>, uid: &str, author_ms: Option<u32>, name: &dyn Fn(usize) -> String, car: Option<&str>) {
     let stage1 = out.with_extension("stage1.Map.Gbx");
     let stage2 = out.with_extension("stage2.Map.Gbx");
     // Stage 1: fixed-size patches + lookback renames: uid, name, author,
@@ -376,8 +393,13 @@ pub fn assemble(host: &Path, out: &Path, placements: &[Placement], size: Option<
     let mut m = MapFile::load(host);
     m.set_map_uid(uid);
     let old_name = m.map_name();
-    let new_name = name_of_len(old_name.len());
+    let new_name = name(old_name.len());
     m.set_map_name_same_len(&old_name, &new_name);
+    if let Some(car) = car {
+        // ("CarSnow", 10003, "Nadeo") is how TMX 141984 spells the SnowCar
+        m.set_player_model(car, 10003, "Nadeo");
+        println!("player model {car}");
+    }
     if m.map_author().as_deref() != Some(AUTHOR) {
         m.set_map_author_same_len(AUTHOR);
     }

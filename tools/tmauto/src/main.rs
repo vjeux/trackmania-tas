@@ -626,6 +626,7 @@ fn cmd_synth_write(args: &[String]) -> Result<(), String> {
     if let Some(s) = arg(args, "--validation-u03") { meta.validation_start_index = parse_u32(&s, "--validation-u03")?; }
     if let Some(s) = arg(args, "--validation-u04") { meta.validation_u04 = parse_u32(&s, "--validation-u04")?; }
     if let Some(s) = arg(args, "--race-settings") { meta.race_settings = s; }
+    if let Some(s) = arg(args, "--car") { meta.player_model = s; }
     let set = ChunkSet {
         login: !flag(args, "--no-login"),
         validate_uid: !flag(args, "--no-uid"),

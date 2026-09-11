@@ -34,6 +34,11 @@ pub enum Role {
     /// published ghosts: 16 published files on 5 maps carry a stranger's
     /// badge, and it survived every anonymiser because nobody had listed it.
     Prestige,
+    /// The car the ghost says it drove: the `CarSport` / `CarSnow` / `CarRally` /
+    /// `CarDesert` Id opening chunk 0x03092000. A carrier borrowed from a
+    /// stadium-car run films as a stadium car on a SnowCar map unless this is
+    /// set to the map's car.
+    Model,
     Other,
 }
 
@@ -50,6 +55,7 @@ impl Role {
             Role::AccountId => "account id",
             Role::MapUid => "map uid",
             Role::Prestige => "ranked badge",
+            Role::Model => "car model",
             Role::Other => "",
         }
     }
@@ -108,7 +114,9 @@ pub fn scan(c: &Container) -> Vec<Field> {
         // --- before the record: model, skins, display name
         let head = body_strings_in(body, mpoff, split);
         for (i, b) in head.iter().enumerate() {
-            let role = if b.s.contains("Skins\\Models\\") || b.s.contains("Skins/Models/") {
+            let role = if matches!(b.s.as_str(), "CarSport" | "CarSnow" | "CarRally" | "CarDesert") {
+                Role::Model
+            } else if b.s.contains("Skins\\Models\\") || b.s.contains("Skins/Models/") {
                 Role::Skin
             } else if b.s.starts_with("http://") || b.s.starts_with("https://") {
                 Role::Locator
@@ -306,6 +314,12 @@ pub fn cmd(a: &[String]) {
             let name = flag(rest, "--name");
             let trigram = flag(rest, "--trigram");
             let skin = flag(rest, "--skin");
+            let model = flag(rest, "--model");
+            if let Some(m) = model {
+                if !matches!(m, "CarSport" | "CarSnow" | "CarRally" | "CarDesert") {
+                    die(format!("--model wants CarSport|CarSnow|CarRally|CarDesert, not {m:?}"));
+                }
+            }
             let login = flag(rest, "--login");
             let zone = flag(rest, "--zone");
             let clubtag = flag(rest, "--clubtag");
@@ -349,6 +363,7 @@ pub fn cmd(a: &[String]) {
                     Role::Skin => skin
                         .map(|s| if s == "default" { DEFAULT_SKIN.to_string() } else { s.to_string() })
                         .or(if anon { Some(DEFAULT_SKIN.to_string()) } else { None }),
+                    Role::Model => model.map(|s| s.to_string()),
                     Role::Nickname => name.map(|s| s.to_string()).or(if anon { Some("TAS".into()) } else { None }),
                     Role::Trigram => trigram.map(|s| s.to_string()).or(if anon { Some("TAS".into()) } else { None }),
                     Role::Login => login.map(|s| s.to_string()).or(if anon { Some("TAS".into()) } else { None }),

@@ -22,6 +22,9 @@ use crate::track::Track;
 
 pub struct Road {
     pub name: String,
+    /// Where this road's edges and shoulder surface were read: the LIDAR
+    /// intensity (the venue) or aerial imagery (a track laid after the LIDAR).
+    pub from_imagery: bool,
     pub track: Track,
     pub edges: Edges,
     /// Slices to leave out (the road runs on an earlier one there).
@@ -67,9 +70,20 @@ fn blend(d: f64) -> f64 {
 }
 
 pub fn extra_roads(ways: &Ways, lap: &Ribbon, union: &mut Ribbon, dtm: &Mosaic, inten: &Raster) -> Vec<Road> {
-    let mut candidates: Vec<(f64, &crate::osm::Way, Vec<Bng>)> = Vec::new();
+    extra_roads_with(ways, lap, union, dtm, inten, &|_| true, Vec::new(), None)
+}
+
+/// A road candidate: name, centreline, and whether its edges come from the
+/// imagery (true) or the LIDAR intensity (false).
+pub type Candidate = (String, Vec<Bng>, bool);
+
+/// `extra_roads` with a way filter (`keep`), extra candidates (polylines of
+/// a layout OSM only knows as topology) and the imagery to read them with.
+#[allow(clippy::too_many_arguments)]
+pub fn extra_roads_with(ways: &Ways, lap: &Ribbon, union: &mut Ribbon, dtm: &Mosaic, inten: &Raster, keep: &dyn Fn(&crate::osm::Way) -> bool, extra: Vec<Candidate>, img: Option<&crate::imagery::Imagery>) -> Vec<Road> {
+    let mut candidates: Vec<(f64, Candidate)> = Vec::new();
     for way in &ways.ways {
-        if way.tags.get("highway").map(|s| s.as_str()) != Some("raceway") {
+        if way.tags.get("highway").map(|s| s.as_str()) != Some("raceway") || !keep(way) {
             continue;
         }
         if matches!(way.tags.get("surface").map(|s| s.as_str()), Some("unpaved") | Some("dirt") | Some("gravel") | Some("grass")) {
@@ -86,16 +100,26 @@ pub fn extra_roads(ways: &Ways, lap: &Ribbon, union: &mut Ribbon, dtm: &Mosaic, 
         if len < 15.0 {
             continue; // a stub at a junction
         }
-        candidates.push((len, way, pts));
+        let name = if way.name.is_empty() { format!("way {}", way.id) } else { way.name.clone() };
+        candidates.push((len, (name, pts, false)));
+    }
+    for (name, pts, from_img) in extra {
+        let len: f64 = pts.windows(2).map(|w| ((w[1].e - w[0].e).powi(2) + (w[1].n - w[0].n).powi(2)).sqrt()).sum();
+        if len < 12.0 || pts.len() < 2 {
+            continue;
+        }
+        candidates.push((len, (name, pts, from_img)));
     }
     // longest first: the pit lanes and the Stowe circuit define the merges
     candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
     let mut out = Vec::new();
-    for (len, way, pts) in candidates {
-        let name = if way.name.is_empty() { format!("way {}", way.id) } else { way.name.clone() };
+    for (len, (name, pts, from_img)) in candidates {
         // pit lanes are narrow: fit the ground over +-4 m, not +-6
-        let track = Track::build_open(&pts, &name, dtm, 1.0, 3.0, 8.0, 4.0);
-        let mut edges = Edges::from_intensity(&track, inten);
+        let track = if from_img { Track::build_open(&pts, &name, dtm, 1.0, 2.0, 15.0, 3.5) } else { Track::build_open(&pts, &name, dtm, 1.0, 3.0, 8.0, 4.0) };
+        let mut edges = match (from_img, img) {
+            (true, Some(im)) => Edges::from_imagery(&track, im, crate::kart::MIN_HALF, crate::kart::MAX_HALF, (4.0, 30.0), 2.0).0,
+            _ => Edges::from_intensity(&track, inten),
+        };
         let n = track.len();
         let mut skip = vec![false; n];
         let mut shoulders = vec![(true, true); n];
@@ -104,9 +128,12 @@ pub fn extra_roads(ways: &Ways, lap: &Ribbon, union: &mut Ribbon, dtm: &Mosaic, 
         for i in 0..n {
             let st = &track.stations[i];
             // the road's own centre on an earlier road: leave the slice out
+            // (its edges are still capped below, to 0.5 m each side: the slice
+            // leading INTO this station is drawn, and its far end must not
+            // carry the full width and the road's own height across the
+            // earlier road -- a 1.4 m ramp onto the kart lap came from that)
             if union.beyond_kerb(st.e, st.n) < 0.0 {
                 skip[i] = true;
-                continue;
             }
             for left in [true, false] {
                 let (edge, kerb) = if left { (&mut edges.left[i], &mut edges.kerb_left[i]) } else { (&mut edges.right[i], &mut edges.kerb_right[i]) };
@@ -136,7 +163,9 @@ pub fn extra_roads(ways: &Ways, lap: &Ribbon, union: &mut Ribbon, dtm: &Mosaic, 
                     // same level there; a road running alongside on a bank
                     // (the pit exit, 1.5 m below Abbey) keeps its own
                     // heights and its own shoulder
-                    let flush = (own_z - other_z).abs() < 0.35;
+                    // (a track laid after the LIDAR sits on re-graded ground: its
+                    // links always meet the lap flush, whatever the old DTM says)
+                    let flush = from_img || (own_z - other_z).abs() < 0.35;
                     if left {
                         shoulders[i].0 = false;
                         caps[i].0 = flush;
@@ -195,7 +224,7 @@ pub fn extra_roads(ways: &Ways, lap: &Ribbon, union: &mut Ribbon, dtm: &Mosaic, 
             }
         }
         println!("road {name:<28} {len:>5.0} m, {drawn} slices ({clipped} edge caps against earlier roads), width {:.1}..{:.1}", edges.left.iter().zip(&edges.right).map(|(l, r)| l + r).fold(f64::MAX, f64::min), edges.left.iter().zip(&edges.right).map(|(l, r)| l + r).fold(f64::MIN, f64::max));
-        let road = Road { name, track, edges, skip, shoulders, caps, drawn: std::cell::RefCell::new(Vec::new()) };
+        let road = Road { name, from_imagery: from_img, track, edges, skip, shoulders, caps, drawn: std::cell::RefCell::new(Vec::new()) };
         union.add(&road.track, &road.edges, 40.0);
         out.push(road);
     }
@@ -204,14 +233,17 @@ pub fn extra_roads(ways: &Ways, lap: &Ribbon, union: &mut Ribbon, dtm: &Mosaic, 
 
 /// The items for one extra road; `union` is the ribbon of everything built
 /// before it (its heights blend onto that near a merge).
-pub fn road_items_for(road: &Road, idx: usize, fr: &Frame, before: &Ribbon, inten: &Raster, dtm: &Mosaic) -> Vec<Placement> {
+pub fn road_items_for(road: &Road, idx: usize, fr: &Frame, before: &Ribbon, inten: &Raster, dtm: &Mosaic, img: Option<&crate::imagery::Imagery>) -> Vec<Placement> {
     let tr = &road.track;
     let ed = &road.edges;
     let shoulder_asphalt = |k: usize, left: bool| -> bool {
         let (edge, kerb) = if left { (ed.left[k], ed.kerb_left[k]) } else { (ed.right[k], ed.kerb_right[k]) };
         let off = edge + kerb_width(kerb, kerb) + 0.75;
         let w = tr.offset(k, if left { off } else { -off });
-        inten.at(w[0], w[1]).map(|v| (v as f64) < crate::terrain::ASPHALT_MAX).unwrap_or(false)
+        match (road.from_imagery, img) {
+            (true, Some(im)) => im.asphalt_majority(w[0], w[1], 1.0).unwrap_or(false),
+            _ => inten.at(w[0], w[1]).map(|v| (v as f64) < crate::terrain::ASPHALT_MAX).unwrap_or(false),
+        }
     };
     let shoulder_sides = |k: usize| road.shoulders[k];
     let worst = std::cell::Cell::new((0.0f64, 0usize, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64));
@@ -231,6 +263,10 @@ pub fn road_items_for(road: &Road, idx: usize, fr: &Frame, before: &Ribbon, inte
         match before.plane(w[0], w[1]) {
             Some(p) if d < CONFORM => {
                 let b = blend(d);
+                // the ribbon's plane is a 2 m lattice of the earlier road's
+                // camber, a few cm off the exact surface: a link read off the
+                // imagery meets it 4 cm LOW (a step down, never a lip)
+                let p = if road.from_imagery { p - 0.04 } else { p };
                 let z = b * p + (1.0 - b) * own;
                 if (z - own).abs() > worst.get().0 {
                     worst.set(((z - own).abs(), k, off, own, p, w[0], w[1]));

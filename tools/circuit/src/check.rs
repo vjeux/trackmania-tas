@@ -175,7 +175,7 @@ pub fn run(pl: &[Placement], tr: &Track, ed: &Edges, fr: &Frame, v_max: f64) -> 
                     let tol = if pl[pi].ident.contains("Tarmac") { 0.02 } else { 0.01 };
                     if d > tol && d < 3.5 && (on_tarmac || on_kerb) {
                         let kind = if on_tarmac { "above tarmac" } else { "above kerb" };
-                        if std::env::var_os("CIRCUIT_DEBUG_CHECK").is_some() && d > 0.3 {
+                        if std::env::var_os("CIRCUIT_DEBUG_CHECK").is_some() && d > 0.03 {
                             println!("  debug: station {i} off {off:+.1} (l {l:.1} kl {kl:.1} r {r:.1} kr {kr:.1}) road y {:.2}; {} tri y {y:.2} at {:?}", p[1], pl[pi].ident, t);
                         }
                         let e = hits.entry((pi, kind)).or_insert(Offender { ident: pl[pi].ident.clone(), kind, first_station: i, last_station: i, worst: 0.0, count: 0 });

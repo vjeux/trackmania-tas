@@ -180,3 +180,57 @@ painted apron); a building any road runs through starts 5 m up.
 `shootctl lock status` before ANY `quit`/`launch`; take the lock with
 `lock acquire --owner …` and do the whole test in one command; other sessions
 break locks they consider stale. Kill the game and release when done.
+
+## 9. A second layout on the same venue, read off imagery (`kart.rs`, `imagery.rs`)
+
+Kart Silverstone's Grand Prix layout (1377 m, 18 corners, opened 2025 on the
+old Bridge–Priory infield) post-dates every open survey, so its geometry
+cannot come from the LIDAR. What is used instead:
+
+- **Topology from OSM**: eleven `sport=karting` ways, twelve junctions. The
+  lap is an explicit junction-node sequence (`kart::GP_NODES`, via
+  `osm::loop_from_nodes`), settled by reading three agreeing pictures: the
+  venue's own outline, Kart Directory's track map (GP in blue, the other
+  layouts' cut-throughs in grey, the start/finish tick on the main straight)
+  and motorsport-timing.co.uk's sector map (Sector 1 leaves the start towards
+  the loop = north-east on the main straight — the direction). Length alone
+  could not pick it: several simple cycles measure 1358–1422 m.
+- **Geometry from Google's zoom-20 tiles** (`aerial-box --src google`; ESRI
+  still showed the track under construction). `imagery.rs` resamples the
+  tiles onto a 0.1 m BNG grid and classifies pixels: asphalt is a warm grey
+  (r ≥ g ≥ b, g−b ≤ 16), grass olive (g ≥ r−3, g−b ≥ 15), kerbs white
+  (max > 185, low saturation), dirt warm and desaturated, barriers and
+  shadows dark. `read_edge` walks out from the centre and stops at the first
+  ≥ 0.5 m run of non-asphalt — a dark run only when grass, white or dirt
+  follows within 1.5 m (a shadow across the road is not an edge); the white
+  run at the edge is the kerb. `kart::refine` reads both edges, moves every
+  station whose width is plausible for one lane (5.2–12.5 m) to their
+  midpoint, smooths the shift over 3 m and rebuilds, three times: 1390 m of
+  OSM polyline became 1382 m of lap (official 1377), shift rms 1.1 m on the
+  first round, 0.2 m on the third. `circuit kart-trace` draws the result on
+  the imagery — look at it (centre white, edges green/red, kerbs yellow,
+  stations that did not vote magenta).
+- **Ground from the DTM**, smoothed over 15 m: the site was graded.
+- **The venue as scenery**: `roads::extra_roads_with` builds the F1 lap as
+  the first extra road (closed, its own intensity edges), then every other
+  raceway way, then the unused karting runs and the pit lane with imagery
+  edges (`kart::unused_karting_runs`). Two rules that the kart junctions
+  needed: a station whose centre lies on an earlier road still has its edges
+  capped (the slice INTO it otherwise carries the full width and the road's
+  own height across the lap — a 1.4 m ramp), and an imagery road always
+  blends onto the earlier road's plane, 4 cm low (the DTM predates the
+  regrading; the ribbon plane is a 2 m lattice a few cm off the surface).
+  The terrain classifier defers to the imagery within 50 m of the kart track.
+- **The car**: `tmmaps::MapFile::set_player_model("CarSnow", 10003, "Nadeo")`
+  writes body chunk `0x0304300D` and the header's `<playermodel id=…/>`,
+  spelled as TMX 141984 (a game-made SnowCar map) spells it. The chunk's two
+  strings open the body's lookback table, so the blocks and baked chunks are
+  re-encoded with it; the dedicated server loads the result and simulates
+  that car (147 vs 185 km/h after the same full-gas start).
+- Start/finish: the timing gantry read off the imagery (`kart::GANTRY`,
+  BNG 467395/242268); the finish trigger on that line, the spawn 32 stations
+  back on the grid. Checkpoints every ~150 m (8).
+
+`circuit build-kart raceway.json DATA intensity.tif HOST OUT.Map.Gbx
+--surroundings s.json --cp 150 --author-ms 72577`; result in
+`silverstone-1to1/kart-gp/`.

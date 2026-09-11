@@ -1,0 +1,41 @@
+fork server up: boundary tick 172 (search tick 0 = file tick 172), container 24000 ticks, start_offset 0 ms
+line: 1382 m, start station 767, finish station 799 (d = 32 m), 8 checkpoints at d = 102,267,501,560,765,875,1016,1286
+law: Law { look_t: 0.6, look_min: 5.0, look_max: 30.0, k_alpha: 1.0, k_lat: 0.0, a_lat: 11.5, a_brake: 10.0, v_max: 40.0, horizon: 400.0, k: 5, band_hi: 1.2, band_lo: 0.3, k0: 12.5, v_roll: 1.6, bias: 0.0 }
+initial: 0	1820.092	21.300	1538.642	27.97	100.7	2.3998	2.3980	-0.0536	796	29	0.46	0.0088	Grid
+  located station 796 (d=29) lateral 0.46
+  the finish (station 799) is 32 m past the spawn, after every checkpoint: the lap is 1414 m
+[   3.3s sim   0.4s] tick 245 d=108 m: passed CP1 geometrically; plain oracle says Dnf { cps: 0 } (wrong simu) (2.9 s)
+  WARNING: the oracle credits 0 checkpoints, geometry says 1
+[   4.1s sim   1.2s] tick 500 d=155 m Loop speed 15.0 m/s (54 km/h) lateral +0.57 target 14.4 steer -44 gas 0 brake 0
+[   6.4s sim   3.5s] tick 1000 d=243 m Priory speed 21.6 m/s (78 km/h) lateral -0.67 target 20.5 steer -20 gas 0 brake 0
+[  10.2s sim   4.4s] tick 1145 d=273 m: passed CP2 geometrically; plain oracle says Dnf { cps: 0 } (wrong simu) (3.0 s)
+  WARNING: the oracle credits 0 checkpoints, geometry says 2
+[  12.7s sim   6.8s] tick 1500 d=328 m Return leg speed 23.0 m/s (83 km/h) lateral +1.79 target 24.0 steer -2 gas 1 brake 0
+[  17.1s sim  11.3s] tick 2000 d=439 m Kink straight speed 14.2 m/s (51 km/h) lateral -0.76 target 14.3 steer -53 gas 1 brake 0
+[  24.1s sim  15.5s] tick 2390 d=507 m: passed CP3 geometrically; plain oracle says Dnf { cps: 0 } (wrong simu) (2.8 s)
+  WARNING: the oracle credits 0 checkpoints, geometry says 3
+[  25.4s sim  16.8s] tick 2500 d=543 m Kink straight speed 29.2 m/s (105 km/h) lateral -0.08 target 29.1 steer -4 gas 0 brake 0
+[  29.4s sim  17.9s] tick 2595 d=566 m: passed CP4 geometrically; plain oracle says Dnf { cps: 4 } (wrong simu, but reached some checkpoints (4 out of 9)) (2.9 s)
+  banked /tmp/kart-drive6/cp04.tape.tsv
+[  34.9s sim  23.4s] tick 3000 d=618 m Bridge hairpin speed 20.6 m/s (74 km/h) lateral +2.42 target 30.4 steer -21 gas 1 brake 0
+[  42.6s sim  31.1s] tick 3500 d=746 m Arm curve speed 22.8 m/s (82 km/h) lateral +0.24 target 27.6 steer 9 gas 1 brake 0
+[  46.9s sim  32.6s] tick 3595 d=772 m: passed CP5 geometrically; plain oracle says Dnf { cps: 5 } (wrong simu, but reached some checkpoints (5 out of 9)) (2.7 s)
+  banked /tmp/kart-drive6/cp05.tape.tsv
+[  54.1s sim  39.9s] tick 4000 d=836 m Hairpin speed 14.3 m/s (51 km/h) lateral -3.82 target 14.8 steer 78 gas 1 brake 0
+[  60.5s sim  43.5s] tick 4195 d=882 m: passed CP6 geometrically; plain oracle says Dnf { cps: 6 } (wrong simu, but reached some checkpoints (6 out of 9)) (2.7 s)
+  banked /tmp/kart-drive6/cp06.tape.tsv
+[  66.6s sim  49.7s] tick 4500 d=930 m Link speed 17.5 m/s (63 km/h) lateral -2.21 target 19.1 steer 52 gas 1 brake 0
+[  80.0s sim  60.3s] tick 4985 d=1022 m: passed CP7 geometrically; plain oracle says Dnf { cps: 7 } (wrong simu, but reached some checkpoints (7 out of 9)) (2.8 s)
+  banked /tmp/kart-drive6/cp07.tape.tsv
+[  80.3s sim  60.6s] tick 5000 d=1026 m Double hairpin speed 29.6 m/s (107 km/h) lateral +0.06 target 30.6 steer 8 gas 1 brake 0
+[  92.2s sim  72.5s] tick 5500 d=1101 m Double hairpin speed 22.3 m/s (80 km/h) lateral -1.69 target 28.1 steer -35 gas 1 brake 0
+[ 105.3s sim  85.5s] tick 6000 d=1170 m Double hairpin speed 23.1 m/s (83 km/h) lateral +1.15 target 28.3 steer 31 gas 1 brake 0
+[ 119.3s sim  99.5s] tick 6500 d=1261 m Double hairpin speed 12.1 m/s (44 km/h) lateral +2.81 target 11.7 steer -110 gas 1 brake 0
+[ 126.6s sim 104.0s] tick 6655 d=1292 m: passed CP8 geometrically; plain oracle says Dnf { cps: 8 } (wrong simu, but reached some checkpoints (8 out of 9)) (2.8 s)
+  banked /tmp/kart-drive6/cp08.tape.tsv
+[ 137.0s sim 114.4s] tick 7000 d=1380 m Straight entry speed 34.7 m/s (125 km/h) lateral +0.05 target 39.1 steer -5 gas 1 brake 0
+fork says the run ENDED at tick 7110: Finish { ms: 72577 } (d = 1418 m)
+container /tmp/kart-drive6/final.Ghost.Gbx
+done: 7110 ticks (71.100 s of tape), best d 1416 m of 1414, 0 rewinds, 140 s wall (118 s in the engine); tape /tmp/kart-drive6/final.tape.tsv
+PLAIN ORACLE: Finish { ms: 72577 } desc "validated time is actually better! (240000 > 72577)" map SilverstoneKartae6c4212bbad
+VALIDATED FINISH 72.577 s

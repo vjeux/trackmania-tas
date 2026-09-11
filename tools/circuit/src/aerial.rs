@@ -103,6 +103,117 @@ pub fn fetch(bbox: (f64, f64, f64, f64), px: f64) -> Result<(usize, usize, Vec<[
     Ok((w, h, pix, mb))
 }
 
+/// Where the imagery comes from. ESRI's export is what the F1 edges were
+/// checked against; Google's and Bing's tile pyramids are usually more
+/// recent (Kart Silverstone opened in 2025 and ESRI still showed it under
+/// construction), so a layout that post-dates the LIDAR is read off those.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Source {
+    Esri,
+    Google,
+    Bing,
+}
+
+impl Source {
+    pub fn parse(s: &str) -> Option<Source> {
+        match s.to_ascii_lowercase().as_str() {
+            "esri" => Some(Source::Esri),
+            "google" => Some(Source::Google),
+            "bing" => Some(Source::Bing),
+            _ => None,
+        }
+    }
+    fn tile_url(self, x: u32, y: u32, z: u32) -> String {
+        match self {
+            Source::Google => format!("https://mt{}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", (x + y) % 4),
+            Source::Bing => {
+                let mut q = String::new();
+                for i in (1..=z).rev() {
+                    let d = ((x >> (i - 1)) & 1) | (((y >> (i - 1)) & 1) << 1);
+                    q.push(char::from(b'0' + d as u8));
+                }
+                format!("https://ecn.t{}.tiles.virtualearth.net/tiles/a{q}.jpeg?g=1", (x + y) % 4)
+            }
+            Source::Esri => format!("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"),
+        }
+    }
+}
+
+/// One JPEG tile through the forward proxy, decoded to RGB.
+fn fetch_tile(src: Source, x: u32, y: u32, z: u32) -> Result<Vec<[u8; 3]>, String> {
+    let url = src.tile_url(x, y, z);
+    let out = std::process::Command::new("curl")
+        .args(["-s", "-m", "60", "-x", "http://fwdproxy:8080", "-A", "Mozilla/5.0", &url])
+        .output()
+        .map_err(|e| format!("curl: {e}"))?;
+    let mut dec = jpeg_decoder::Decoder::new(std::io::Cursor::new(&out.stdout));
+    let data = dec.decode().map_err(|e| format!("{url}: {e} ({} bytes)", out.stdout.len()))?;
+    let info = dec.info().ok_or("no jpeg info")?;
+    if info.width != 256 || info.height != 256 {
+        return Err(format!("{url}: {}x{} tile", info.width, info.height));
+    }
+    let px = match info.pixel_format {
+        jpeg_decoder::PixelFormat::RGB24 => data.chunks(3).map(|c| [c[0], c[1], c[2]]).collect(),
+        jpeg_decoder::PixelFormat::L8 => data.iter().map(|&g| [g, g, g]).collect(),
+        other => return Err(format!("{url}: pixel format {other:?}")),
+    };
+    Ok(px)
+}
+
+/// The Web Mercator tile pyramid over a BNG box at `zoom`, stitched: the
+/// image and its Mercator box (whole tiles, so a little larger than asked).
+/// Zoom 19 is ~0.18 m/px on the ground at Silverstone, 20 is ~0.09.
+pub fn fetch_tiles(bbox: (f64, f64, f64, f64), zoom: u32, src: Source) -> Result<(usize, usize, Vec<[u8; 3]>, (f64, f64, f64, f64)), String> {
+    let (e0, n0, e1, n1) = bbox;
+    let mut mb = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for (e, n) in [(e0, n0), (e1, n0), (e0, n1), (e1, n1)] {
+        let (lat, lon) = bng_to_wgs84(e, n);
+        let (x, y) = mercator(lat, lon);
+        mb.0 = mb.0.min(x);
+        mb.1 = mb.1.min(y);
+        mb.2 = mb.2.max(x);
+        mb.3 = mb.3.max(y);
+    }
+    let world = 2.0 * std::f64::consts::PI * R_MERC;
+    let n = (1u64 << zoom) as f64;
+    let tile = |m: f64| ((m + world / 2.0) / world * n).floor();
+    let tile_y = |m: f64| ((world / 2.0 - m) / world * n).floor();
+    let (tx0, tx1) = (tile(mb.0) as u32, tile(mb.2) as u32);
+    let (ty0, ty1) = (tile_y(mb.3) as u32, tile_y(mb.1) as u32);
+    let (nx, ny) = ((tx1 - tx0 + 1) as usize, (ty1 - ty0 + 1) as usize);
+    let (w, h) = (nx * 256, ny * 256);
+    let coords: Vec<(u32, u32)> = (ty0..=ty1).flat_map(|ty| (tx0..=tx1).map(move |tx| (tx, ty))).collect();
+    // eight tiles at a time
+    let results: Vec<Result<Vec<[u8; 3]>, String>> = std::thread::scope(|s| {
+        let handles: Vec<_> = coords.chunks((coords.len() + 7) / 8).map(|chunk| s.spawn(move || chunk.iter().map(|&(x, y)| fetch_tile(src, x, y, zoom)).collect::<Vec<_>>())).collect();
+        handles.into_iter().flat_map(|h| h.join().expect("tile thread")).collect()
+    });
+    let mut pix = vec![[0u8; 3]; w * h];
+    let mut failed = 0;
+    for (k, r) in results.into_iter().enumerate() {
+        let (tx, ty) = coords[k];
+        let (ox, oy) = ((tx - tx0) as usize * 256, (ty - ty0) as usize * 256);
+        match r {
+            Ok(t) => {
+                for y in 0..256 {
+                    pix[(oy + y) * w + ox..(oy + y) * w + ox + 256].copy_from_slice(&t[y * 256..y * 256 + 256]);
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("tile {tx},{ty}: {e}");
+            }
+        }
+    }
+    if failed == coords.len() {
+        return Err(format!("all {} tiles failed", coords.len()));
+    }
+    let tile_m = world / n;
+    let full = (tx0 as f64 * tile_m - world / 2.0, world / 2.0 - (ty1 + 1) as f64 * tile_m, (tx1 + 1) as f64 * tile_m - world / 2.0, world / 2.0 - ty0 as f64 * tile_m);
+    eprintln!("{src:?} zoom {zoom}: {nx}x{ny} tiles, {failed} failed");
+    Ok((w, h, pix, full))
+}
+
 /// The aerial around station `at` (± `span` m) with the lap's centreline
 /// (white dots), left edge (green), right edge (red) and kerb outer edges
 /// (yellow) drawn on it; a 10 m scale bar bottom left.
@@ -166,19 +277,47 @@ pub fn overlay(tr: &Track, ed: &Edges, at: usize, span: f64, px: f64, out: &Path
 /// The aerial of a BNG box with the OSM ways carrying `tag` (key=value)
 /// drawn on it (one colour per way, node dots), for reading a layout off
 /// the imagery.
-pub fn box_overlay(bbox: (f64, f64, f64, f64), px: f64, osm: Option<&crate::osm::Ways>, tag: Option<&str>, out: &Path) -> Result<(), String> {
-    let (w, h, pix, mb) = fetch(bbox, px)?;
-    let mut img = Image::new(w, h, [0, 0, 0]);
-    for y in 0..h {
-        for x in 0..w {
-            img.put(x as i64, y as i64, pix[y * w + x]);
-        }
-    }
-    let to_px = |e: f64, n: f64| -> (f64, f64) {
+pub fn box_overlay(bbox: (f64, f64, f64, f64), px: f64, osm: Option<&crate::osm::Ways>, tag: Option<&str>, out: &Path, src: Source, zoom: u32, extra: &[(Vec<crate::geo::Bng>, [u8; 3])]) -> Result<(), String> {
+    let (w, h, pix, mb) = if src == Source::Esri { fetch(bbox, px)? } else { fetch_tiles(bbox, zoom, src)? };
+    // crop the stitched tiles to the asked box (plus a 2 m margin)
+    let to_px_full = |e: f64, n: f64| -> (f64, f64) {
         let (lat, lon) = bng_to_wgs84(e, n);
         let (x, y) = mercator(lat, lon);
         ((x - mb.0) / (mb.2 - mb.0) * w as f64, (mb.3 - y) / (mb.3 - mb.1) * h as f64)
     };
+    let (mut cx0, mut cy0, mut cx1, mut cy1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for (e, n) in [(bbox.0, bbox.1), (bbox.2, bbox.1), (bbox.0, bbox.3), (bbox.2, bbox.3)] {
+        let (x, y) = to_px_full(e, n);
+        cx0 = cx0.min(x);
+        cy0 = cy0.min(y);
+        cx1 = cx1.max(x);
+        cy1 = cy1.max(y);
+    }
+    let (cx0, cy0) = ((cx0.floor() as i64).clamp(0, w as i64 - 1) as usize, (cy0.floor() as i64).clamp(0, h as i64 - 1) as usize);
+    let (cx1, cy1) = ((cx1.ceil() as i64).clamp(cx0 as i64 + 1, w as i64) as usize, (cy1.ceil() as i64).clamp(cy0 as i64 + 1, h as i64) as usize);
+    let (cw, ch) = (cx1 - cx0, cy1 - cy0);
+    let mut img = Image::new(cw, ch, [0, 0, 0]);
+    for y in 0..ch {
+        for x in 0..cw {
+            img.put(x as i64, y as i64, pix[(y + cy0) * w + x + cx0]);
+        }
+    }
+    let to_px = |e: f64, n: f64| -> (f64, f64) {
+        let (x, y) = to_px_full(e, n);
+        (x - cx0 as f64, y - cy0 as f64)
+    };
+    let (w, h) = (cw, ch);
+    // extra polylines (a candidate lap, a driven line), thick
+    for (pts, c) in extra {
+        for q in pts.windows(2) {
+            let (x0, y0) = to_px(q[0].e, q[0].n);
+            let (x1, y1) = to_px(q[1].e, q[1].n);
+            for d in [-1.0, 0.0, 1.0] {
+                img.line(x0 + d, y0, x1 + d, y1, *c);
+                img.line(x0, y0 + d, x1, y1 + d, *c);
+            }
+        }
+    }
     if let (Some(ways), Some(tag)) = (osm, tag) {
         let (k, v) = tag.split_once('=').ok_or("--tag wants key=value")?;
         let palette = [[255, 60, 60], [60, 255, 60], [60, 120, 255], [255, 230, 0], [255, 0, 255], [0, 255, 255], [255, 150, 0], [180, 255, 120], [255, 120, 180], [120, 200, 255], [200, 200, 200]];

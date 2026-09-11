@@ -38,6 +38,10 @@
 use crate::gbx::{Gbx, Reader};
 
 pub const BLOCKS_CHUNK: u32 = 0x0304301F;
+/// The first body chunk: the player model Ident (id, collection, author).
+/// Stock Stadium maps write three nulls; a map driven in another car
+/// writes e.g. ("CarSnow", 10003, "Nadeo") -- measured on TMX 141984.
+pub const PLAYER_MODEL_CHUNK: u32 = 0x0304300D;
 pub const ITEMS_CHUNK: u32 = 0x03043040;
 pub const WAYPOINT_CLASS: u32 = 0x2E009000;
 pub const ANCHORED_OBJECT_CLASS: u32 = 0x03101000;
@@ -305,6 +309,14 @@ pub struct MapFile {
     /// Variable-length body replacements. Kept separate from fixed patches so
     /// offsets stay in the source body's coordinate system.
     pub raw_splices: Vec<((usize, usize), Vec<u8>)>,
+    /// Chunk 0x0304300D (player model), when the body opens with it: its
+    /// byte region and its three Id fields. Its strings OPEN the body's
+    /// lookback table, so they are parsed into the same table the blocks
+    /// chunk continues, and re-encoded together with it (`set_player_model`).
+    pub pm_region: Option<(usize, usize)>,
+    pub pm_ids: Vec<IdField>,
+    /// `set_player_model` was called: re-encode even with no other rename.
+    pub pm_dirty: bool,
 }
 
 fn find_all(hay: &[u8], needle: &[u8]) -> Vec<usize> {
@@ -661,8 +673,11 @@ impl MapFile {
     pub fn from_gbx(gbx: Gbx) -> MapFile {
         let body = gbx.body.clone();
         let mut seen_nodes: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        // Chunk 0x0304300D opens the body: the player model Ident. Its strings
+        // (if any) are the first entries of the body's lookback table.
+        let (pm_region, pm_ids, seed) = parse_player_model(&body);
         let (blocks_region, mut body_ids, blocks, table, size, decoration_id, size_off) =
-            parse_blocks(&body, &mut seen_nodes);
+            parse_blocks(&body, &mut seen_nodes, seed);
         let mut body_regions = vec![blocks_region];
         let mut baked_chunk_off = None;
         let mut baked: Vec<BlockRec> = Vec::new();
@@ -697,7 +712,70 @@ impl MapFile {
             renames: Vec::new(),
             raw_patches: Vec::new(),
             raw_splices: Vec::new(),
+            pm_region,
+            pm_ids,
+            pm_dirty: false,
         }
+    }
+
+    /// The car the map is driven in: `("CarSnow", 10003, "Nadeo")` for the
+    /// SnowCar (`CarRally`, `CarDesert` likewise; `CarSport` is the default
+    /// and stock maps write three nulls). Writes chunk 0x0304300D and the
+    /// header XML's `<playermodel id=…/>`. The two new strings open the
+    /// body's lookback table, so every later index shifts by two: the blocks
+    /// and baked chunks are re-encoded together with this one on write.
+    pub fn set_player_model(&mut self, id: &str, collection: u32, author: &str) {
+        let region = self.pm_region.expect("the body does not open with chunk 0x0304300D (player model)");
+        assert_eq!(self.pm_ids.len(), 3, "player model chunk has 3 Id fields");
+        let _ = region;
+        // how many table slots the old chunk defined, and how many the new one will
+        let old_defs = self.pm_ids.iter().filter(|f| f.is_def).count();
+        let new_defs = 2usize;
+        let shift = new_defs as i64 - old_defs as i64;
+        if shift != 0 {
+            for f in self.body_ids.iter_mut() {
+                if let Some(s) = f.slot.as_mut() {
+                    *s = (*s as i64 + shift) as usize;
+                }
+            }
+        }
+        let mk = |off: usize, len: usize, name: &str, slot: usize| IdField { off, len, name: Some(name.to_string()), is_def: true, raw: 0x4000_0000, slot: Some(slot) };
+        let (o0, l0) = (self.pm_ids[0].off, self.pm_ids[0].len);
+        let (o1, l1) = (self.pm_ids[1].off, self.pm_ids[1].len);
+        let (o2, l2) = (self.pm_ids[2].off, self.pm_ids[2].len);
+        self.pm_ids[0] = mk(o0, l0, id, 0);
+        self.pm_ids[1] = IdField { off: o1, len: l1, name: None, is_def: false, raw: collection, slot: None };
+        self.pm_ids[2] = mk(o2, l2, author, 1);
+        self.pm_dirty = true;
+        // the header XML
+        if let Some(chunks) = crate::header::user_chunks(&self.gbx.user_data) {
+            let mut chunks = chunks;
+            if let Some(xml) = crate::header::header_xml(&chunks) {
+                if let Some(xml) = crate::header::xml_set_attr(&xml, "playermodel", "id", id) {
+                    for c in chunks.iter_mut() {
+                        if c.id == 0x0304_3005 {
+                            let mut d = Vec::with_capacity(4 + xml.len());
+                            d.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+                            d.extend_from_slice(xml.as_bytes());
+                            c.data = d;
+                        }
+                    }
+                    self.gbx.user_data = crate::header::user_data_from_chunks(&chunks);
+                } else {
+                    eprintln!("warning: header XML has no <playermodel id=…/>; body chunk set anyway");
+                }
+            }
+        }
+    }
+
+    /// The player model as the body has it: `(id, collection, author)`,
+    /// `None` for the stock car (three nulls).
+    pub fn player_model(&self) -> Option<(String, u32, String)> {
+        let f = &self.pm_ids;
+        if f.len() != 3 {
+            return None;
+        }
+        Some((f[0].name.clone()?, f[1].raw, f[2].name.clone()?))
     }
 
     pub fn waypoints(&self) -> Vec<Waypoint> {
@@ -1112,7 +1190,7 @@ impl MapFile {
             }
             return body;
         }
-        if self.renames.is_empty() {
+        if self.renames.is_empty() && !self.pm_dirty {
             return body;
         }
         let mut bf = self.body_ids.clone();
@@ -1128,13 +1206,28 @@ impl MapFile {
         // Collect every region's replacement, then splice from the back so
         // earlier regions' offsets stay valid.
         let mut splices: Vec<((usize, usize), Vec<u8>)> = Vec::new();
-        let body_new = reemit_regions(&body, &self.body_regions, &bf);
+        // The player-model chunk shares the lookback stream with the blocks
+        // and baked chunks and precedes them: one re-encode over all of them.
+        let (regions_all, fields_all): (Vec<(usize, usize)>, Vec<IdField>) = match self.pm_region {
+            Some(pm) if self.pm_dirty || self.pm_ids.iter().any(|f| f.is_def) => {
+                let mut r = vec![pm];
+                r.extend(self.body_regions.iter().copied());
+                let mut f = self.pm_ids.clone();
+                f.extend(bf.iter().cloned());
+                (r, f)
+            }
+            _ => (self.body_regions.clone(), bf.clone()),
+        };
+        let with_pm = regions_all.len() > self.body_regions.len();
+        let body_new = reemit_regions(&body, &regions_all, &fields_all);
         let mut baked_fix: Option<(usize, usize)> = None;
-        for (i, (r, b)) in self.body_regions.iter().zip(body_new).enumerate() {
+        for (i, (r, b)) in regions_all.iter().zip(body_new).enumerate() {
             // region 0 is the blocks chunk (not skippable, no size field);
             // region 1, when present, is the baked-blocks chunk, which is
-            // skippable and therefore carries one.
-            if i == 1 {
+            // skippable and therefore carries one. (Both one later when the
+            // player-model chunk leads.)
+            let body_index = if with_pm { i as i64 - 1 } else { i as i64 };
+            if body_index == 1 {
                 if let Some(off) = self.baked_chunk_off {
                     baked_fix = Some((off, b.len()));
                 }
@@ -1182,7 +1275,7 @@ impl MapFile {
         // lookback table) comes back 1010 bytes longer with no edit at all.
         // Refuse rather than ship it.
         assert!(
-            !self.renames.is_empty() || out.len() == self.gbx.body.len(),
+            !self.renames.is_empty() || self.pm_dirty || out.len() == self.gbx.body.len(),
             "this map's body came back {} bytes {} with NO rename asked for — the Id-table \
              re-encoder has not reproduced it, so every edit written here would silently \
              re-serialise the blocks chunk. Refusing to write.",
@@ -1218,9 +1311,26 @@ impl MapFile {
 
 // ------------------------------------------------------------------ parsing
 
+/// Chunk 0x0304300D when it opens the body: `(region, its three Id fields,
+/// the lookback strings it defined)`. A body that opens otherwise gives an
+/// empty seed and no region.
+fn parse_player_model(body: &[u8]) -> (Option<(usize, usize)>, Vec<IdField>, Vec<String>) {
+    if body.len() < 16 || u32::from_le_bytes(body[0..4].try_into().unwrap()) != PLAYER_MODEL_CHUNK {
+        return (None, Vec::new(), Vec::new());
+    }
+    let mut r = Reader::at(body, 4);
+    if r.peek_u32() == 3 {
+        r.u32();
+    }
+    let mut table: Vec<String> = Vec::new();
+    let ids: Vec<IdField> = (0..3).map(|_| read_id(&mut r, &mut table)).collect();
+    (Some((0, r.o)), ids, table)
+}
+
 fn parse_blocks(
     body: &[u8],
     seen_nodes: &mut std::collections::HashSet<u32>,
+    seed: Vec<String>,
 ) -> (
     (usize, usize),
     Vec<IdField>,
@@ -1242,7 +1352,9 @@ fn parse_blocks(
     if r.peek_u32() == 3 {
         r.u32();
     }
-    let mut table: Vec<String> = Vec::new();
+    // `seed`: the strings chunk 0x0304300D already put in the table (a map
+    // driven in another car names it there; stock maps write nulls).
+    let mut table: Vec<String> = seed;
     let mut ids: Vec<IdField> = Vec::new();
     let push = |r: &mut Reader, table: &mut Vec<String>, ids: &mut Vec<IdField>| -> usize {
         let f = read_id(r, table);

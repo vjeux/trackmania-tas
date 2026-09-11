@@ -217,7 +217,9 @@ fn classify(inten: &Raster, e: f64, n: f64, step: f64) -> bool {
     seen > 0 && dark * 2 > seen
 }
 
-pub fn terrain_items(ribbon: &Ribbon, dtm: &Mosaic, inten: &Raster, fr: &Frame, spec: &TerrainSpec) -> Vec<Placement> {
+/// `asphalt_override`: consulted before the intensity classifier (aerial
+/// imagery of ground laid after the LIDAR); None = no opinion here.
+pub fn terrain_items(ribbon: &Ribbon, dtm: &Mosaic, inten: &Raster, fr: &Frame, spec: &TerrainSpec, asphalt_override: Option<&dyn Fn(f64, f64, f64) -> Option<bool>>) -> Vec<Placement> {
     let (e0, n0, e1, n1) = spec.coarse_bbox;
     let (ve0, vn0, ve1, vn1) = spec.bbox;
     let sub = (spec.coarse / spec.fine).round() as usize;
@@ -300,7 +302,11 @@ pub fn terrain_items(ribbon: &Ribbon, dtm: &Mosaic, inten: &Raster, fr: &Frame, 
                         let mn = n1 - (j0 + j1) as f64 * 0.5 * spec.fine;
                         let in_venue = me >= ve0 && me <= ve1 && mn >= vn0 && mn <= vn1;
                         let step = (i1 - i0) as f64 * spec.fine;
-                        let mat = if classify_here && in_venue && classify(inten, me, mn, step) { asphalt } else { grass };
+                        let is_asphalt = classify_here && in_venue && match asphalt_override.and_then(|f| f(me, mn, step)) {
+                            Some(v) => v,
+                            None => classify(inten, me, mn, step),
+                        };
+                        let mat = if is_asphalt { asphalt } else { grass };
                         let q = [corner(i0, j0), corner(i1, j0), corner(i1, j1), corner(i0, j1)];
                         if mat == asphalt {
                             // the plain middle of the RoadTech atlas, tiled every 32 m

@@ -10,6 +10,8 @@ mod buildings;
 mod check;
 mod edges;
 mod geo;
+mod imagery;
+mod kart;
 mod item_probe;
 mod mapbuild;
 mod mesh;
@@ -20,6 +22,7 @@ mod terrain;
 mod tiff;
 mod track;
 
+use std::collections::HashMap;
 use std::path::Path;
 
 fn usage() -> ! {
@@ -133,14 +136,171 @@ fn main() {
                 }
             }
         }
+        Some("osm-ways") => {
+            // circuit osm-ways OVERPASS.json --tag sport=karting
+            // every way carrying the tag: id, name, length, its nodes in BNG,
+            // and which of its nodes are junctions (shared with another such way)
+            let ways = osm::load(Path::new(a.get(2).unwrap_or_else(|| usage())));
+            let tag = a.iter().position(|x| x == "--tag").and_then(|i| a.get(i + 1)).cloned().unwrap_or("highway=raceway".into());
+            let (k, v) = tag.split_once('=').expect("--tag key=value");
+            let sel: Vec<&osm::Way> = ways.ways.iter().filter(|w| w.tags.get(k).map(|x| x == v) == Some(true)).collect();
+            let mut uses: HashMap<i64, usize> = HashMap::new();
+            for w in &sel {
+                for &n in &w.nodes {
+                    *uses.entry(n).or_default() += 1;
+                }
+            }
+            let mut total = 0.0;
+            for w in &sel {
+                let pts: Vec<_> = w.nodes.iter().filter_map(|id| ways.nodes.get(id)).collect();
+                let len: f64 = pts.windows(2).map(|q| ((q[0].e - q[1].e).powi(2) + (q[0].n - q[1].n).powi(2)).sqrt()).sum();
+                total += len;
+                println!("way {} {:?} {:.1} m {} nodes tags {:?}", w.id, w.name, len, pts.len(), w.tags);
+                for (i, id) in w.nodes.iter().enumerate() {
+                    let p = ways.nodes[id];
+                    let j = if uses[id] > 1 || i == 0 || i + 1 == w.nodes.len() { format!(" junction x{}", uses[id]) } else { String::new() };
+                    println!("   {i:>3} node {id} E{:.1} N{:.1}{j}", p.e, p.n);
+                }
+            }
+            println!("# {} ways, {:.1} m of centreline", sel.len(), total);
+        }
+        Some("build-kart") => {
+            // circuit build-kart OVERPASS.json DTM_DIR INTENSITY.tif HOST.Map.Gbx OUT.Map.Gbx
+            //     [--surroundings s.json] [--seg 100] [--cp 150] [--start-en E,N] [--zoom 20] [--rounds 3]
+            //     [--car CarSnow|none] [--author-ms N] [--no-terrain] [--no-buildings] [--no-extra-roads] [--allow-defects]
+            let g = |i: usize| a.get(i).map(|s| Path::new(s).to_path_buf()).unwrap_or_else(|| usage());
+            let start_en = a.iter().position(|x| x == "--start-en").and_then(|i| a.get(i + 1)).map(|s| {
+                let v: Vec<f64> = s.split(',').map(|x| x.parse().expect("E,N")).collect();
+                (v[0], v[1])
+            }).unwrap_or(kart::GANTRY);
+            let car = a.iter().position(|x| x == "--car").and_then(|i| a.get(i + 1)).cloned().unwrap_or("CarSnow".into());
+            let params = kart::Params {
+                osm: g(2), dtm_dir: g(3), tif: g(4), host: g(5), out: g(6),
+                surroundings: a.iter().position(|x| x == "--surroundings").and_then(|i| a.get(i + 1)).map(|p| Path::new(p).to_path_buf()),
+                seg: flag(&a, "--seg").unwrap_or(100.0),
+                cp: flag(&a, "--cp").unwrap_or(150.0),
+                start_en,
+                author_ms: flag(&a, "--author-ms").map(|v| v as u32),
+                zoom: flag(&a, "--zoom").unwrap_or(20.0) as u32,
+                rounds: flag(&a, "--rounds").unwrap_or(3.0) as usize,
+                car: if car == "none" { None } else { Some(car) },
+            };
+            kart::build(&params);
+        }
+        Some("kart-trace") => {
+            // circuit kart-trace OVERPASS.json DTM_DIR OUT.png [--rounds 3] [--zoom 20] [--crop E0,N0,E1,N1]
+            //   the GP lap: OSM topology, centreline re-centred between the imagery edges;
+            //   drawn on the imagery (centre white, edges green/red, kerbs yellow, untrusted stations magenta)
+            let (osm_path, dtm_dir, out) = (a.get(2).unwrap_or_else(|| usage()), a.get(3).unwrap_or_else(|| usage()), a.get(4).unwrap_or_else(|| usage()));
+            let rounds = flag(&a, "--rounds").unwrap_or(3.0) as usize;
+            let zoom = flag(&a, "--zoom").unwrap_or(20.0) as u32;
+            let px = flag(&a, "--px").unwrap_or(0.1);
+            let ways = osm::load(Path::new(osm_path));
+            let lp = kart::gp_loop(&ways);
+            println!("kart GP lap from OSM: {} nodes, {:.1} m", lp.points.len(), lp.length());
+            let dtm = tiff::Mosaic::load(&tiles(Path::new(dtm_dir), "dtm_"));
+            let bb = kart::kart_bbox(&ways);
+            let img = imagery::Imagery::fetch(bb, 40.0, px, zoom, aerial::Source::Google).unwrap_or_else(|e| panic!("{e}"));
+            println!("imagery {}x{} px at {} m over E{:.0}..{:.0} N{:.0}..{:.0}", img.w, img.h, img.px, img.e0, img.e0 + img.w as f64 * img.px, img.n0, img.n0 + img.h as f64 * img.px);
+            let (tr, ed, both) = kart::refine(&lp, &dtm, &img, rounds, 2.0, 15.0);
+            let n = tr.len();
+            let mut lines: Vec<(Vec<geo::Bng>, [u8; 3])> = Vec::new();
+            let poly = |f: &dyn Fn(usize) -> [f64; 3]| -> Vec<geo::Bng> {
+                let mut v: Vec<geo::Bng> = (0..n).map(|i| {
+                    let p = f(i);
+                    geo::Bng { e: p[0], n: p[1] }
+                }).collect();
+                v.push(v[0]);
+                v
+            };
+            lines.push((poly(&|i| tr.offset(i, ed.left[i])), [0, 255, 0]));
+            lines.push((poly(&|i| tr.offset(i, -ed.right[i])), [255, 40, 40]));
+            lines.push((poly(&|i| tr.offset(i, ed.left[i] + ed.kerb_left[i])), [255, 230, 0]));
+            lines.push((poly(&|i| tr.offset(i, -(ed.right[i] + ed.kerb_right[i]))), [255, 230, 0]));
+            lines.push((poly(&|i| tr.offset(i, 0.0)), [255, 255, 255]));
+            for i in 0..n {
+                if !both[i] {
+                    let p = tr.offset(i, 0.0);
+                    let q = tr.offset(i, 0.6);
+                    lines.push((vec![geo::Bng { e: p[0], n: p[1] }, geo::Bng { e: q[0], n: q[1] }], [255, 0, 255]));
+                }
+            }
+            // OSM's own polyline in blue for comparison
+            let mut osm_pts = lp.points.clone();
+            osm_pts.push(lp.points[0]);
+            lines.push((osm_pts, [60, 120, 255]));
+            if let Some(c) = a.iter().position(|x| x == "--crop").and_then(|i| a.get(i + 1)) {
+                let v: Vec<f64> = c.split(',').map(|x| x.parse().expect("crop")).collect();
+                let sub = img.crop((v[0], v[1], v[2], v[3]));
+                sub.save_png(Path::new(out), &lines);
+            } else {
+                img.save_png(Path::new(out), &lines);
+            }
+            // the lap as TSV next to the picture
+            let mut w = String::from("station\ts_m\te\tn\tz\theading\tcurvature\tleft\tright\tkerb_l\tkerb_r\ttrusted\tlabel\n");
+            for (i, st) in tr.stations.iter().enumerate() {
+                w.push_str(&format!("{i}\t{:.1}\t{:.2}\t{:.2}\t{:.2}\t{:.4}\t{:.5}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}\t{}\n", st.s, st.e, st.n, st.z, st.heading, st.curvature, ed.left[i], ed.right[i], ed.kerb_left[i], ed.kerb_right[i], both[i] as u8, st.label));
+            }
+            std::fs::write(Path::new(out).with_extension("tsv"), w).expect("tsv");
+            println!("{out}: {} stations, {:.1} m; z {:.2}..{:.2}", n, n as f64 * tr.ds, tr.stations.iter().map(|s| s.z).fold(f64::MAX, f64::min), tr.stations.iter().map(|s| s.z).fold(f64::MIN, f64::max));
+        }
+        Some("img-profile") => {
+            // circuit img-profile OVERPASS.json DTM_DIR s1,s2,... : the imagery classes across the lap at stations
+            let (osm_path, dtm_dir, ss) = (a.get(2).unwrap_or_else(|| usage()), a.get(3).unwrap_or_else(|| usage()), a.get(4).unwrap_or_else(|| usage()));
+            let ways = osm::load(Path::new(osm_path));
+            let lp = kart::gp_loop(&ways);
+            let dtm = tiff::Mosaic::load(&tiles(Path::new(dtm_dir), "dtm_"));
+            let img = imagery::Imagery::fetch(kart::kart_bbox(&ways), 40.0, 0.1, 20, aerial::Source::Google).unwrap_or_else(|e| panic!("{e}"));
+            let tr = track::Track::build_points_pub(&lp.points, &lp.labels, true, &dtm, 1.0, 2.0, 15.0, 3.5);
+            for s in ss.split(',') {
+                let i: usize = s.trim().parse().expect("station");
+                let st = &tr.stations[i];
+                println!("# station {i} {} E{:.1} N{:.1}", st.label, st.e, st.n);
+                let mut row = String::new();
+                let mut k = -90i32;
+                while k <= 90 {
+                    let off = k as f64 * 0.1;
+                    let p = tr.offset(i, off);
+                    let c = img.rgb(p[0], p[1]);
+                    let ch = match c.map(imagery::classify) {
+                        Some(imagery::Class::Asphalt) => '#',
+                        Some(imagery::Class::Grass) => '.',
+                        Some(imagery::Class::White) => 'W',
+                        Some(imagery::Class::Dark) => 'd',
+                        Some(imagery::Class::Dirt) => 'o',
+                        Some(imagery::Class::Other) => '?',
+                        None => ' ',
+                    };
+                    row.push(ch);
+                    if k % 10 == 0 {
+                        if let Some(c) = c {
+                            row.push_str(&format!("({},{},{})", c[0], c[1], c[2]));
+                        }
+                    }
+                    k += 1;
+                }
+                println!("{row}");
+            }
+        }
         Some("aerial-box") => {
-            // circuit aerial-box OUT.png E0,N0,E1,N1 [--px 0.3] [--osm dump.json --tag sport=karting]
+            // circuit aerial-box OUT.png E0,N0,E1,N1 [--px 0.3] [--src esri|google|bing] [--zoom 19]
+            //         [--osm dump.json --tag sport=karting] [--ways ID,ID,...  the chosen ways drawn thick white]
             let out = a.get(2).unwrap_or_else(|| usage());
             let bb: Vec<f64> = a.get(3).unwrap_or_else(|| usage()).split(',').map(|v| v.parse().expect("bbox")).collect();
             let px = flag(&a, "--px").unwrap_or(0.3);
+            let src = a.iter().position(|x| x == "--src").and_then(|i| a.get(i + 1)).map(|s| aerial::Source::parse(s).unwrap_or_else(|| panic!("--src esri|google|bing, not {s:?}"))).unwrap_or(aerial::Source::Esri);
+            let zoom = flag(&a, "--zoom").unwrap_or(19.0) as u32;
             let osm = a.iter().position(|x| x == "--osm").and_then(|i| a.get(i + 1)).map(|p| osm::load(Path::new(p)));
             let tag = a.iter().position(|x| x == "--tag").and_then(|i| a.get(i + 1)).cloned();
-            aerial::box_overlay((bb[0], bb[1], bb[2], bb[3]), px, osm.as_ref(), tag.as_deref(), Path::new(out)).unwrap_or_else(|e| panic!("{e}"));
+            let mut extra: Vec<(Vec<geo::Bng>, [u8; 3])> = Vec::new();
+            if let (Some(ways), Some(list)) = (osm.as_ref(), a.iter().position(|x| x == "--ways").and_then(|i| a.get(i + 1))) {
+                for id in list.split(',') {
+                    let id: i64 = id.trim().parse().expect("way id");
+                    let way = ways.ways.iter().find(|w| w.id == id).unwrap_or_else(|| panic!("no way {id} in the dump"));
+                    extra.push((way.nodes.iter().filter_map(|n| ways.nodes.get(n).copied()).collect(), [255, 255, 255]));
+                }
+            }
+            aerial::box_overlay((bb[0], bb[1], bb[2], bb[3]), px, osm.as_ref(), tag.as_deref(), Path::new(out), src, zoom, &extra).unwrap_or_else(|e| panic!("{e}"));
         }
         Some("map-head") => {
             for f in &a[2..] {
@@ -157,6 +317,38 @@ fn main() {
             let f = a.get(2).unwrap_or_else(|| usage());
             let n = flag(&a, "--bytes").unwrap_or(512.0) as usize;
             header_hex(Path::new(f), n);
+        }
+        Some("set-car") => {
+            // circuit set-car IN.Map.Gbx OUT.Map.Gbx CarSnow|CarRally|CarDesert|CarSport
+            let (inp, out, car) = (a.get(2).unwrap_or_else(|| usage()), a.get(3).unwrap_or_else(|| usage()), a.get(4).unwrap_or_else(|| usage()));
+            let mut m = tmmaps::map::MapFile::load(Path::new(inp));
+            println!("{inp}: player model {:?}", m.player_model());
+            if a_has("--park-blocks") {
+                for i in 0..m.blocks.len() {
+                    m.move_block_cell(i, (0, 0, 0));
+                    m.set_block_name(i, "RoadTechStraight");
+                }
+            }
+            if car != "keep" {
+                m.set_player_model(car, 10003, "Nadeo");
+            }
+            m.write_to(Path::new(out)).expect("write");
+            let back = tmmaps::map::MapFile::load(Path::new(out));
+            println!("{out}: player model {:?}, {} blocks, {} items, decoration {}", back.player_model(), back.blocks.len(), back.items.len(), back.decoration_id);
+        }
+        Some("body-hex") => {
+            // circuit body-hex MAP [--bytes 256] [--at OFFSET]: the decompressed body's first bytes
+            let f = a.get(2).unwrap_or_else(|| usage());
+            let n = flag(&a, "--bytes").unwrap_or(256.0) as usize;
+            let at = flag(&a, "--at").unwrap_or(0.0) as usize;
+            let g = tmmaps::gbx::Gbx::parse(&std::fs::read(f).unwrap());
+            let bytes = &g.body[at.min(g.body.len())..(at + n).min(g.body.len())];
+            for (i, row) in bytes.chunks(16).enumerate() {
+                let hex: Vec<String> = row.iter().map(|b| format!("{b:02x}")).collect();
+                let asc: String = row.iter().map(|&b| if (32..127).contains(&b) { b as char } else { '.' }).collect();
+                println!("{:06x}  {:<48} {}", at + i * 16, hex.join(" "), asc);
+            }
+            println!("(body {} bytes)", g.body.len());
         }
         Some("near") => {
             // circuit near surroundings.json E0 N0 X Z [R]
@@ -466,7 +658,7 @@ fn build(osm_path: &Path, dtm_dir: &Path, tif: &Path, host: &Path, out: &Path, s
     {
         let mut before = terrain::Ribbon::build(&tr, &ed, map_box, 40.0);
         for (idx, road) in extra_roads.iter().enumerate() {
-            roads.extend(roads::road_items_for(road, idx, &fr, &before, &inten, &dtm));
+            roads.extend(roads::road_items_for(road, idx, &fr, &before, &inten, &dtm, None));
             before.add(&road.track, &road.edges, 40.0);
         }
     }
@@ -475,7 +667,7 @@ fn build(osm_path: &Path, dtm_dir: &Path, tif: &Path, host: &Path, out: &Path, s
     let mut extras: Vec<mapbuild::Placement> = Vec::new();
     if !a_has("--no-terrain") {
         let spec = terrain::TerrainSpec { bbox: venue, coarse_bbox: map_box, coarse: flag(&a_all(), "--coarse").unwrap_or(32.0), fine: flag(&a_all(), "--fine").unwrap_or(4.0), near: flag(&a_all(), "--near").unwrap_or(30.0), tile: 256.0 };
-        extras.extend(terrain::terrain_items(&union, &dtm, &inten, &fr, &spec));
+        extras.extend(terrain::terrain_items(&union, &dtm, &inten, &fr, &spec, None));
     }
     if let Some(w) = around.as_ref() {
         if !a_has("--no-buildings") {

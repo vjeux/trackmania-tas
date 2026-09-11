@@ -332,3 +332,50 @@ fn fill_and_smooth(v: &[f64], sigma: f64, closed: bool) -> Vec<f64> {
         .collect();
     crate::track::smooth(&med, sigma, closed)
 }
+
+impl Edges {
+    /// Edges read off aerial imagery (`imagery::read_edge`) instead of the
+    /// LIDAR intensity: for a track laid after the LIDAR flew. `min_half` /
+    /// `max_half` bound the half-width searched; a station whose reading is
+    /// missing or whose width falls outside `width_ok` is interpolated.
+    /// Returns the edges and, per station, whether BOTH sides were read
+    /// (what the re-centring may trust).
+    pub fn from_imagery(tr: &Track, img: &crate::imagery::Imagery, min_half: f64, max_half: f64, width_ok: (f64, f64), sigma: f64) -> (Edges, Vec<bool>) {
+        let n = tr.len();
+        let mut left = vec![f64::NAN; n];
+        let mut right = vec![f64::NAN; n];
+        let mut kl = vec![0.0; n];
+        let mut kr = vec![0.0; n];
+        let mut both = vec![false; n];
+        for i in 0..n {
+            let l = crate::imagery::read_edge(img, tr, i, 1.0, min_half, max_half, 0.5);
+            let r = crate::imagery::read_edge(img, tr, i, -1.0, min_half, max_half, 0.5);
+            if let (Some(l), Some(r)) = (l, r) {
+                let w = l.edge + r.edge;
+                if w >= width_ok.0 && w <= width_ok.1 {
+                    left[i] = l.edge;
+                    right[i] = r.edge;
+                    kl[i] = l.kerb;
+                    kr[i] = r.kerb;
+                    both[i] = true;
+                }
+            }
+        }
+        let guessed = left.iter().filter(|v| v.is_nan()).count();
+        let left = fill_and_smooth(&left, sigma / tr.ds, tr.closed);
+        let right = fill_and_smooth(&right, sigma / tr.ds, tr.closed);
+        // kerbs: a band is real when it persists; median of 5 then smooth
+        let med = |v: &[f64]| -> Vec<f64> {
+            (0..n)
+                .map(|i| {
+                    let mut w: Vec<f64> = (-2i64..=2).map(|k| v[((i as i64 + k) % n as i64 + n as i64) as usize % n]).collect();
+                    w.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                    w[2]
+                })
+                .collect()
+        };
+        let kl = crate::track::smooth(&med(&kl), 2.0 / tr.ds, tr.closed);
+        let kr = crate::track::smooth(&med(&kr), 2.0 / tr.ds, tr.closed);
+        (Edges { left, right, kerb_left: kl, kerb_right: kr, guessed }, both)
+    }
+}

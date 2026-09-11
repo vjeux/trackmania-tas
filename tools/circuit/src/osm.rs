@@ -107,6 +107,8 @@ pub struct Loop {
     /// The corner name the point was reached under.
     pub labels: Vec<String>,
     pub way_names: Vec<String>,
+    /// The OSM node ids behind `points` (same order), when known.
+    pub node_ids: Vec<i64>,
 }
 
 impl Loop {
@@ -114,6 +116,61 @@ impl Loop {
         let n = self.points.len();
         (0..n).map(|i| dist(self.points[i], self.points[(i + 1) % n])).sum()
     }
+
+    /// Every consecutive node pair of the lap, both orders.
+    pub fn edge_set(&self) -> std::collections::HashSet<(i64, i64)> {
+        let mut s = std::collections::HashSet::new();
+        let n = self.node_ids.len();
+        for i in 0..n {
+            let (a, b) = (self.node_ids[i], self.node_ids[(i + 1) % n]);
+            s.insert((a, b));
+            s.insert((b, a));
+        }
+        s
+    }
+}
+
+/// A closed lap named by its junction nodes in travel order: consecutive
+/// junctions are joined along the one way (among those `usable` accepts)
+/// that carries both, taking that way's nodes between them in travel order.
+/// `labels[i]` names the leg from `seq[i]` to `seq[i+1]` (empty: the way's
+/// name). Panics on a pair no single way carries, prints when several do.
+pub fn loop_from_nodes(w: &Ways, seq: &[i64], labels: &[&str], usable: &dyn Fn(&Way) -> bool) -> Loop {
+    let mut points = Vec::new();
+    let mut out_labels = Vec::new();
+    let mut way_names = Vec::new();
+    let mut node_ids = Vec::new();
+    for i in 0..seq.len() {
+        let (a, b) = (seq[i], seq[(i + 1) % seq.len()]);
+        let mut carriers: Vec<(&Way, Vec<i64>)> = Vec::new();
+        for way in w.ways.iter().filter(|x| usable(x)) {
+            let (Some(ia), Some(ib)) = (way.nodes.iter().position(|&n| n == a), way.nodes.iter().position(|&n| n == b)) else { continue };
+            if ia == ib {
+                continue;
+            }
+            let run: Vec<i64> = if ia < ib { way.nodes[ia..=ib].to_vec() } else { way.nodes[ib..=ia].iter().rev().copied().collect() };
+            carriers.push((way, run));
+        }
+        assert!(!carriers.is_empty(), "no way carries both node {a} and node {b} (leg {i})");
+        if carriers.len() > 1 {
+            // the shortest carrier wins (a long way that happens to touch both
+            // junctions at its far ends is not the link between them)
+            carriers.sort_by(|x, y| {
+                let len = |run: &Vec<i64>| run.windows(2).map(|q| dist(w.nodes[&q[0]], w.nodes[&q[1]])).sum::<f64>();
+                len(&x.1).partial_cmp(&len(&y.1)).unwrap()
+            });
+            println!("leg {i} ({a} -> {b}): {} ways carry it, taking way {}", carriers.len(), carriers[0].0.id);
+        }
+        let (way, run) = &carriers[0];
+        let label = labels.get(i).filter(|l| !l.is_empty()).map(|l| l.to_string()).unwrap_or_else(|| if way.name.is_empty() { format!("way {}", way.id) } else { way.name.clone() });
+        for &nid in &run[..run.len() - 1] {
+            points.push(w.nodes[&nid]);
+            out_labels.push(label.clone());
+            node_ids.push(nid);
+        }
+        way_names.push(label);
+    }
+    Loop { points, labels: out_labels, way_names, node_ids }
 }
 
 fn dist(a: Bng, b: Bng) -> f64 {
@@ -220,6 +277,7 @@ pub fn gp_loop(w: &Ways) -> Loop {
     let mut points: Vec<Bng> = Vec::new();
     let mut labels: Vec<String> = Vec::new();
     let mut way_names: Vec<String> = Vec::new();
+    let mut node_ids: Vec<i64> = Vec::new();
     for i in 0..order.len() {
         let (name, a) = &order[i];
         let (_, b) = &order[(i + 1) % order.len()];
@@ -227,8 +285,9 @@ pub fn gp_loop(w: &Ways) -> Loop {
         for &nid in &path[..path.len() - 1] {
             points.push(w.nodes[&nid]);
             labels.push(name.clone());
+            node_ids.push(nid);
         }
         way_names.push(name.clone());
     }
-    Loop { points, labels, way_names }
+    Loop { points, labels, way_names, node_ids }
 }

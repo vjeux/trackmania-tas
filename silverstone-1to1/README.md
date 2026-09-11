@@ -26,6 +26,10 @@ only the editor's default, not a limit of the game.
 | Video | [silverstone-1to1-lap-127702.mp4](https://github.com/vjeux/trackmania-tas/releases/download/videos-v1/silverstone-1to1-lap-127702.mp4) (1080p30, 2:10, controls overlay) |
 | Nadeo | club campaign **Silverstone 1:1** (club 43788, campaign 155871), map id `b20f6ba7-bb58-470d-96a0-0062f0406dfd` — [campaign](https://trackmania.io/#/campaigns/43788/155871) · [leaderboard](https://trackmania.io/#/leaderboard/Silverstone1to14ae52765fea5) |
 
+**Also here:** [`kart-gp/`](kart-gp/README.md) — the Kart Silverstone Grand Prix
+layout (1377 m) as its own map on the same venue, driven in the SnowCar
+(72.577 s validated lap, video, same club campaign).
+
 ## The lap ghost
 
 **127.702 s, 14/14 checkpoints, 0 respawns**, validated by the Nadeo dedicated

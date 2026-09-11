@@ -148,6 +148,11 @@ impl Track {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub fn build_points_pub(points: &[Bng], labels: &[String], closed: bool, dtm: &Mosaic, ds: f64, sigma_xy: f64, sigma_z: f64, half_width: f64) -> Track {
+        Self::build_points(points, labels, closed, dtm, ds, sigma_xy, sigma_z, half_width)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn build_points(points: &[Bng], labels: &[String], closed: bool, dtm: &Mosaic, ds: f64, sigma_xy: f64, sigma_z: f64, half_width: f64) -> Track {
         let (pts, labels) = resample(points, labels, ds, closed);
         let es: Vec<f64> = pts.iter().map(|p| p.e).collect();

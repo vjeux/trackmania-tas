@@ -96,6 +96,9 @@ pub struct GhostMeta {
     pub declared_ms: u32,
     /// The checkpoint times the file claims, finish last.
     pub declared_cps: Vec<i32>,
+    /// The car the ghost says it drove: `CarSport` unless the map is driven in
+    /// another one (`CarSnow`, `CarRally`, `CarDesert`).
+    pub player_model: String,
     /// The login the file reports. Ours is always `TAS`: short enough that it
     /// carries no account id (the id is base64 of a 16-byte login).
     pub login: String,
@@ -159,6 +162,7 @@ impl GhostMeta {
             map_uid: map_uid.to_string(),
             declared_ms: 0,
             declared_cps: Vec::new(),
+            player_model: "CarSport".to_string(),
             login: "TAS".to_string(),
             validation_seed: 0,
             start_offset_ms: 0,
@@ -665,7 +669,7 @@ fn from_scratch_record(
 /// Version 9 of `CGameCtnGhost` chunk 0x03092000, encoded from the public
 /// schema. The parent-only ablation writes a null RecordData reference; later
 /// rungs replace that one field with an inline node.
-fn record_parent_payload(record: Option<&RecordData>) -> Vec<u8> {
+fn record_parent_payload(record: Option<&RecordData>, player_model: &str) -> Vec<u8> {
     let mut v = Vec::new();
     let put_u32 = |v: &mut Vec<u8>, x: u32| v.extend_from_slice(&x.to_le_bytes());
     let put_string = |v: &mut Vec<u8>, s: &str| {
@@ -674,11 +678,13 @@ fn record_parent_payload(record: Option<&RecordData>) -> Vec<u8> {
     };
     put_u32(&mut v, 9);
     put_u32(&mut v, 0); // appearance version: no extra appearance string
-                        // Ident("CarSport", collection 10003, "Nadeo"). The first Id opens the
-                        // lookback stream with version 3; both strings are fresh definitions.
+                        // Ident(player model, collection 10003, "Nadeo"): "CarSport" for the
+                        // stadium car, "CarSnow" / "CarRally" / "CarDesert" for a map driven in
+                        // another car. The first Id opens the lookback stream with version 3;
+                        // both strings are fresh definitions.
     put_u32(&mut v, 3);
     put_u32(&mut v, 0x4000_0000);
-    put_string(&mut v, "CarSport");
+    put_string(&mut v, player_model);
     put_u32(&mut v, 10003);
     put_u32(&mut v, 0x4000_0000);
     put_string(&mut v, "Nadeo");
@@ -741,7 +747,7 @@ pub fn synthesize_complete(
     with_nodes.uid_enc = UidEnc::IdNoVersion;
     let base = synthesize(inputs, meta, &with_nodes);
     let g = gbx::Gbx::parse(&base);
-    let mut body = skippable(CLASS_CGAMECTNGHOST, &record_parent_payload(record.as_ref()));
+    let mut body = skippable(CLASS_CGAMECTNGHOST, &record_parent_payload(record.as_ref(), &meta.player_model));
     body.extend_from_slice(&g.body);
     let mut out = g.header_bytes_u();
     out.extend_from_slice(&body);
