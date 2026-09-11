@@ -1628,6 +1628,18 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
         // launches the NEXT one only when nothing is running there. A dead
         // session therefore costs one 302 per tick, by one client, and the queue
         // resumes by itself when a fresh cookie lands.
+        // THE LAUNCH ORDER: `<out>/priority.tsv` (one `nn<TAB>time` per line, or `nn`
+        // alone for every lap of a map) puts clips at the front, in that order;
+        // the rest keep the file order (coordinator, 2026-09-11 21:05Z: the four
+        // 18f-certified laps before the published-lap re-renders).
+        let prio = std::fs::read_to_string(out.join("priority.tsv")).unwrap_or_default();
+        let rank = |nn: &str, time: &str| -> usize {
+            prio.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()).position(|l| {
+                let c: Vec<&str> = l.split('\t').map(str::trim).collect();
+                c[0] == nn && c.get(1).map(|t| *t == time || t.is_empty()).unwrap_or(true)
+            }).unwrap_or(usize::MAX)
+        };
+        dead_cookie.sort_by_key(|(nn, time, _, _)| rank(nn, time));
         if !dead_cookie.is_empty() {
             // ONE 302, THEN STOP UNTIL THE SESSION CHANGES (coordinator, 2026-09-11
             // 12:03Z: "expected one 302 then stop"). A dead session is re-probed
