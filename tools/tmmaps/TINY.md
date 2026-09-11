@@ -965,6 +965,18 @@ source direction (the free rotation convention is unmeasured).
 - The sets: ship17-d9549f05 (DecoWall blocks at plane − 7: the cap 1 m above the plane), ship17b-8a3c000d
   (plane − 8: the cap AT the plane), ship17c-a6a82a45 (WaterBase layers, correct) — install 17c.
 
+### Free block rotation, measured (2026-09-11 03:40Z)
+
+The free-position entry (chunk 0x0304305F) is `x, y, z, YAW, pitch, roll`. A RoadWaterStraight custom
+block (volume local x 3..29, z 0..32, y 0..2) placed at (1100, 40, 300): yaw 0 → the volume sits in the
+block frame from the origin corner (a parked car reads Water at (1116, 316), nothing at (1101.5, 316) — the
+3-m margin — nor at (1116, 298)); yaw +π/2 → rotation about the ORIGIN CORNER with local (x, z) →
+world (x₀ + z, z₀ − x) (Water at (1116, 284); nothing at (1116, 316), (1084, 316), (1101.5, 316)).
+A 90° value in the second slot is a pitch and puts the volume nowhere useful. So a source block of
+direction d in cell (cx, cz) becomes a free block at the corner d0 (x₀, z₀), d1 (x₀, z₀+32),
+d2 (x₀+32, z₀+32), d3 (x₀+32, z₀) with yaw d·π/2 — the emitter for the asymmetric water families
+(RoadWater*, the only one in the campaign being 05's route section) is not written yet.
+
 ## Gate icons: the checkerboard was our own sign-logo picture (2026-09-11 01:35Z)
 
 vjeux's green/purple checkerboard on the boost-gate icon squares (Argentina) is the game's missing-texture
