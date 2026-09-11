@@ -31,6 +31,15 @@ pub const DEFAULT_CLUB: &str = "43788";
 pub const DEFAULT_CAMPAIGN: &str = "155555";
 pub const DEFAULT_CAMPAIGN_NAME: &str = "Tiny Campaign";
 
+/// The first `"key":123` number in a JSON text, as a string.
+fn json_num(json: &str, key: &str) -> Option<String> {
+    let pat = format!("\"{key}\":");
+    let i = json.find(&pat)? + pat.len();
+    let rest = &json[i..];
+    let n: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if n.is_empty() { None } else { Some(n) }
+}
+
 /// First `"key":"value"` in a JSON text — the records here are flat enough.
 pub fn json_str(body: &str, key: &str) -> Option<String> {
     let k = format!("\"{key}\":\"");
@@ -201,8 +210,22 @@ fn publish_here(o: &PublishOpts) -> Result<Vec<String>, String> {
     let map_id = json_str(&up, "mapId").or(existing.clone()).unwrap_or_default();
     lines.push(format!("upload\t{}\tmapId {map_id}\tas {me}\tHTTP {code}", if existing.is_some() { "update" } else { "create" }));
 
-    // campaign playlist
-    let (camp, code) = curl(&["-H", &auth_live, &format!("{LIVE}/api/token/club/{}/campaign/{}", o.club, o.campaign)])?;
+    // campaign playlist (`--campaign new` creates one named --campaign-name
+    // first, the way nadeo-publish.sh did)
+    let campaign_id = if o.campaign == "new" {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let body = format!("{{\"name\":\"{}\",\"description\":\"\",\"color\":\"\",\"useCase\":2,\"publicationTimestamp\":{now},\"mediaUrl\":\"\",\"video\":false}}", o.campaign_name.replace('"', "\\\""));
+        let (cr, code) = curl(&["-X", "POST", "-H", &auth_live, "-H", "Content-Type: application/json", "-d", &body, &format!("{LIVE}/api/token/club/{}/campaign/create", o.club)])?;
+        if !code.starts_with('2') {
+            return Err(format!("campaign create: HTTP {code} {}", &cr[..cr.len().min(400)]));
+        }
+        let id = json_num(&cr, "campaignId").ok_or_else(|| format!("campaign create answered without campaignId: {}", &cr[..cr.len().min(300)]))?;
+        lines.push(format!("campaign\tcreated {id} \"{}\" in club {}", o.campaign_name, o.club));
+        id
+    } else {
+        o.campaign.clone()
+    };
+    let (camp, code) = curl(&["-H", &auth_live, &format!("{LIVE}/api/token/club/{}/campaign/{}", o.club, campaign_id)])?;
     if code != "200" {
         return Err(format!("GET campaign: HTTP {code} {}", &camp[..camp.len().min(300)]));
     }
@@ -211,12 +234,12 @@ fn publish_here(o: &PublishOpts) -> Result<Vec<String>, String> {
     uids.insert(pos, uid.clone());
     let playlist: Vec<String> = uids.iter().enumerate().map(|(i, u)| format!("{{\"mapUid\":\"{u}\",\"position\":{i}}}")).collect();
     let body = format!("{{\"name\":\"{}\",\"playlist\":[{}]}}", o.campaign_name.replace('"', "\\\""), playlist.join(","));
-    let (ed, code) = curl(&["-X", "POST", "-H", &auth_live, "-H", "Content-Type: application/json", "-d", &body, &format!("{LIVE}/api/token/club/{}/campaign/{}/edit", o.club, o.campaign)])?;
+    let (ed, code) = curl(&["-X", "POST", "-H", &auth_live, "-H", "Content-Type: application/json", "-d", &body, &format!("{LIVE}/api/token/club/{}/campaign/{}/edit", o.club, campaign_id)])?;
     if !code.starts_with('2') {
         return Err(format!("campaign edit: HTTP {code} {}", &ed[..ed.len().min(400)]));
     }
     let in_list = json_strs(&ed, "mapUid").iter().position(|u| *u == uid);
-    lines.push(format!("campaign\t{}\t{} maps\tours at position {:?}", o.campaign, json_strs(&ed, "mapUid").len(), in_list));
+    lines.push(format!("campaign\t{campaign_id}\t{} maps\tours at position {:?}", json_strs(&ed, "mapUid").len(), in_list));
 
     // read back: the stored bytes must be ours
     let (rec2, _) = curl(&["-H", &auth_core, &format!("{CORE}/maps/?mapUidList={uid}")])?;
