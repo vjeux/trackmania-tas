@@ -990,33 +990,33 @@ replacement models each, the checkerboard never moved): the `TriggerFX<Kind>` cu
 `TINY_TRIGGERFX=game`. Open: Summer 19's 16-m gate beam panel showed the grey ⊗ "off" sign on 2026-09-09 —
 the reason the pass existed; re-check it with the pass off before calling the panels done.
 
-## Terrain tiles under blocks: hidden only where the block DECLARES its auto terrain (2026-09-11 06:50Z — the "hole in the mountain")
+## Terrain tiles under blocks: hidden in every cell a block UNIT covers — and only there (final, 2026-09-11 13:50Z)
 
-vjeux on Summer 01 (video 4, race 8.5 s, the chase camera): a straight-edged, cell-sized cutout in the hillside right
-of the far checkpoint, the sea showing through it with palms standing on the water. Found by name, not by picture:
-`mapgeom raycast MAP --from CAM --dir VIEW --fan H0:H1:N --pitch P0:P1:M --report R --source SRC --anchor A
---cell-y0 -40` casts a fan of camera rays over the map's item triangles and lists the SOURCE cells each ray crosses
-with the source blocks in them (BlueBay cell y → world base = cy × 8 − 40; Stadium −64). The rays through the
-region flew 318 m to the far shore between heights 8 and 13 m where the source has `LandHill3` at cell (30, 6, 32);
-`tiny.log` had already listed it: "LandHill3 at (30, 6, 32) under RoadTechCurve4 — hidden under a block that did not
-declare their zone".
+Two corrections in one day. vjeux's Summer 01 "hole in the mountain" (video 4, race 8.5 s: a straight-edged cell-sized
+cutout with the sea showing through) was found by name with `mapgeom raycast` (a fan of camera rays over the map's
+item triangles, listing the SOURCE cells each ray crosses): the rays flew 318 m to the far shore through cell (30, 6, 32)
+where the source has a `LandHill3` tile that our converter hid. First correction (18d/18e): "hidden only where the
+occupying block DECLARES auto terrain for the cell". WRONG — it restored 120 tiles campaign-wide, two of them under
+real block units on driven roads: Summer 12's Sand tile at the TOP cell of a `RoadDirtSlope2BaseCurve2` (unit (0,2,1),
+a lid 0.8 m over the slope road; the 20.514 lap stopped at 4.74 s) and Summer 21's Land tile in a unit cell of the
+RoadIce start block (a lid at 44.5 over the banked ice; the 115.478 lap dropped at 3.04 s).
 
-The rule the converter used (2026-09-08, from Summer 04's z-fighting Grass tiles under decks): a terrain tile is
-never drawn in a cell one of a block's UNITS occupies. Too broad. The game draws the tile wherever the occupying block's
-variant does NOT declare an auto terrain for that cell: a RoadTechCurve4's 4×4 unit square includes two corner cells
-the road never covers, and the original shows the hill there. Now (`HiddenTiles::hides`): a tile is hidden iff its
-cell is in the occupant's DECLARED auto-terrain set; occupied-but-undeclared tiles are kept and listed
-("tiles KEPT under a block that did not declare their zone"). Summer 01: 10 tiles come back (the two curve corners,
-Land under DecoTreeBeach/Mangrove decorations); 06: 12, 11: 10, 12: 5, 13: 4, 14: 4, 15: 3, 16: 2. Verified by name:
-the same camera fan on the fixed 01 hits the LandHill3 at 55–65 m on every ray. ship18d-992fc7b3 carries it.
+The 2026-09-08 rule ("a tile is never drawn in a cell one of the block's UNITS occupies") was right all along. It had
+one bug: `hidden_tiles` also marked the block's raw FILE CELL as occupied. For a rotated multi-cell block the file cell
+is the footprint's min corner, and a RoadTechCurve4's units are (0,0) (1,0) (2,0) (2,1) (3,1) (3,2) (3,3) (2,2) (1,1)
+(0,1) (2,3) — the corners (0,3) and (3,0) are empty, and a 90° turn puts one of them at the min corner. That empty
+corner is (30, 6, 32): the game draws the hill tile there because no unit covers it. Final rule (`HiddenTiles::hides`,
+main a4f869ff): hidden iff a turned UNIT covers the cell; the file cell is not inserted; `kept_at_file_cell` lists the
+tiles kept at uncovered file cells. Versus ship17c: placements identical on 21 maps (12: 10325, 21: 9312), +3 on 01
+(the hole tile), +2 on 04, +1 on 14, +3 on 19 — 9 tiles in the campaign. ship18f-a4f869ff carries it.
 
-Two things that were real but were not this hole: the missing jungle-foliage cover of the hills (hull-less
-`JungleForest*` vegetation entities inside the terrain prefabs, dropped as "filler foliage" — now baked into the
-terrain items, `inline_filler_foliage`, ship18c), and a suspected genealogy void under elevated hills (there is none:
-the hills' skirts are in the prefab variants).
+Check to run before shipping any tile-rule change: `tmmaps shared-cells SRC.Map.Gbx --mapping placements.tsv --all`
+(kept/hidden per tile with its occupant) and the per-map placement-count diff against the last shipped set; a rule
+that moves more than a handful of tiles needs a lap replay before it streams.
 
-Method to keep: get HIS frame (the review clip at the race time), ray-cast through the see-through region, read the
-source cells the rays cross, compare with the tiny census — then fix by name and prove with the same frame.
+Still true from the first write-up: the jungle-foliage cover (hull-less `JungleForest*` entities inside the BlueBay
+terrain prefabs, baked into the terrain items since ship18c) was real but not this hole; there is no genealogy void
+under the hills.
 
 ## Water: the engine's native representations, and what a half-size map can use (research log, 2026-09-10 17:10Z)
 
