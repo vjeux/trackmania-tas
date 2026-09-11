@@ -968,6 +968,7 @@ pub fn final_table_cmd(args: &[String]) -> Result<(), String> {
     let prechecked = crate::video::read_prechecked(&out);
     let rowbuilds = parse_rowbuilds(&std::fs::read_to_string(out.join("rowbuilds.tsv")).unwrap_or_default());
     let lidrows = crate::video::parse_holds(&std::fs::read_to_string(out.join("lidrows.tsv")).unwrap_or_default());
+    set_pending_rows(&ships);
     let table = final_table(&readme, &ghosts, &ships, &holds, &approvals, &prechecked, &rowbuilds, &lidrows);
     println!("{table}");
     if let Some(p) = f("--write") {
@@ -987,10 +988,12 @@ pub fn final_table(page: &str, ghosts_readme: &str, ships: &str, holds: &std::co
         let nn = row.nn.clone();
         let title = map_title(&nn);
         let lap = row.published.clone().unwrap_or_else(|| "—".into());
-        let build = rowbuilds
-            .get(nn.as_str())
-            .map(|rb| rb.build.clone())
-            .or_else(|| lines[i].find("(build ").map(|k| lines[i][k + 7..].split(|c: char| c == ',' || c == ')').next().unwrap_or("").to_string()))
+        // the build of the VIDEO the row shows: the caption's "(build X" (what the
+        // page states); a rowbuilds label counts only once it applies to the row
+        let build = lines[i]
+            .find("(build ")
+            .map(|k| lines[i][k + 7..].split(|c: char| c == ',' || c == ')').next().unwrap_or("").to_string())
+            .filter(|b| !b.is_empty())
             .unwrap_or_else(|| "—".into());
         let end = crate::video::block_end(&lines.iter().map(|s| s.to_string()).collect::<Vec<_>>(), i);
         let url = (i + 1..end).map(|j| lines[j]).find(|l| l.starts_with(crate::video::ASSET_PREFIX)).unwrap_or("—").to_string();
@@ -1012,7 +1015,16 @@ pub fn final_table(page: &str, ghosts_readme: &str, ships: &str, holds: &std::co
         }
         for (m, t) in staged.iter().filter(|(m, _)| *m == nn) {
             let _ = m;
-            notes.push(format!("staged {t} awaiting the opening check"));
+            // receipted + gates passed (ships.tsv `pending`) → waits for the session;
+            // else awaiting the opening check
+            let pending = PENDING_ROWS.with(|p| p.borrow().contains(&(m.clone(), t.clone())));
+            let receipt = crate::video::find_approval(approvals, &nn, t).map(|a| a.split('\t').nth(2).unwrap_or("?").trim().to_string());
+            match (pending, receipt) {
+                (true, Some(by)) => notes.push(format!("staged {t}: receipt on file ({by}), gates passed — awaiting the upload session")),
+                (true, None) => notes.push(format!("staged {t}: gates passed — awaiting the upload session")),
+                (false, Some(by)) => notes.push(format!("staged {t}: receipt on file ({by}); held by a gate or a hold")),
+                (false, None) => notes.push(format!("staged {t} awaiting the opening check")),
+            }
         }
         if let Some((t, _)) = published.get(nn.as_str()) {
             let ts = format!("{:.3}", t);
