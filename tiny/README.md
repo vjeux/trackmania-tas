@@ -72,7 +72,7 @@ https://github.com/user-attachments/assets/8359415d-53d5-419f-8fd6-aee0fe145345
 
 **Tiny Summer 2026 - 15** — original author time `36.888` · tiny ghost **48.748** (build ship15, controls overlay)
 
-*latest lap **48.738** (build ship17c) — held (records: 42.454 on ship17c (certified; checker QUALIFIED with two items for the parent; final burst set excludes it — 2026-09-11 12:55Z))*
+*records: 42.454 on ship17c (certified; checker QUALIFIED with two items for the parent; final burst set excludes it — 2026-09-11 12:55Z) — held (opening rework)*
 
 *⚠ lap rides the ship15 water lid; in the original the car drives on the floor under the water with strong drag (~−8 m/s²); this build has no water drag*
 
@@ -98,15 +98,11 @@ https://github.com/user-attachments/assets/cb510efb-14d4-41c2-9bea-51a0d6f8c232
 
 **Tiny Summer 2026 - 19** — original author time `43.841` · tiny ghost **46.362** (build ship15, controls overlay)
 
-*latest lap **38.276** (build ship15) — staged, awaiting the upload session*
-
 https://github.com/user-attachments/assets/852cae15-dd20-4036-b01e-f02971d26797
 
 **Tiny Summer 2026 - 20** — original author time `50.598` · tiny ghost **84.954** (build ship15, controls overlay) · map: ship15
 
 *↻ runs on un-skinned ship15 surfaces at 28.05 s — re-drive pending*
-
-*latest lap **75.595** (build ship15) — held (staged — opening rework (coordinator 18:55Z))*
 
 https://github.com/user-attachments/assets/792c18af-89eb-4817-8b5a-c37176f1efa6
 
