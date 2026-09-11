@@ -295,7 +295,7 @@ pub fn linear_items(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, ed: &crate::edges::Edg
                 segs.push(Seg { a, b, h: 1.0, thick: 4.0, deck: Some(clearance), mat: mesh::CONCRETE });
             } else {
                 let (h, thick, mat) = match barrier.as_deref() {
-                    Some("hedge") => (1.6, 1.0, mesh::GRASS),
+                    Some("hedge") => (1.6, 1.0, mesh::GRAVEL), // Grass on a vertical face renders as a translucent sheet
                     Some("wall") | Some("retaining_wall") => (1.2, 0.4, mesh::WALL),
                     Some("fence") | Some("wood_fence") => (1.2, 0.15, mesh::WALL),
                     _ => continue,
