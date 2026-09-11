@@ -108,7 +108,7 @@ https://github.com/user-attachments/assets/6b46ba3c-8423-4578-932b-778ecef8319a
 
 **Tiny Summer 2026 - 20** — original author time `50.598` · tiny ghost **84.954** (build ship15, controls overlay) · map: ship15
 
-*latest lap **75.374** (build ship18f) — held (staged — HOLD pending the pool ruling: the reviewer (22:16Z) finds the 56.1–57.4 s pool crossed ON a rigid plane (lid signature, two-wheel ride 56.67–57.00 s, roll ≈55°) — INPUT says WaterRampZoneStraightHFC B 2.1 s; the converter must say what ship18f puts in that pool; my frames agree with the reviewer)*
+*latest lap **75.374** (build ship18f) — staged, awaiting the upload session*
 
 https://github.com/user-attachments/assets/792c18af-89eb-4817-8b5a-c37176f1efa6
 
