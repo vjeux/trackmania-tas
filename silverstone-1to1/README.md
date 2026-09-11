@@ -21,13 +21,26 @@ only the editor's default, not a limit of the game.
 | Lap | 5887 m, 14 checkpoints, start on the Hamilton straight in front of the Wing |
 | Data | OSM (ODbL); EA LIDAR Composite DTM 2022, first-return DSM, National LIDAR Programme intensity 2019 (OGL v3) |
 | Tool | [`tools/circuit`](../tools/circuit/CIRCUIT.md) — Rust, one binary, data in, `.Map.Gbx` out |
-| Lap ghost | see below |
+| Lap ghost | `ghost/Silverstone.lap.Ghost.Gbx` — **130.433 s**, 14/14 checkpoints, validated by the dedicated server (author time) |
+| Filmable ghost | `ghost/Silverstone.lap.filmable.Ghost.Gbx` — same inputs with the car telemetry regenerated from the engine; this is what the video shows |
 | Video | see below |
-| Nadeo | see below |
+| Nadeo | club campaign **Silverstone 1:1** (club 43788, campaign 155871), map id `fad522e7-a4a9-446c-8093-a892f3f30102` — [campaign](https://trackmania.io/#/campaigns/43788/155871) · [leaderboard](https://trackmania.io/#/leaderboard/Silverstone1to12b6f959f2fe7) |
 
 ## The lap ghost
 
-_(filled in when the driver lands: file, validated time, how it drove)_
+**130.433 s, 14/14 checkpoints, 0 respawns**, validated by the Nadeo dedicated
+server on this exact map file. It is an unoptimized lap on purpose: a
+closed-loop controller driving the surveyed centreline — pure pursuit with a
+1 s lookahead, a `sqrt(20 m/s² / curvature)` speed plan capped at 55 m/s — on
+the fork engine (`tools/search`, `tmexplore-real drive`), reading the car's
+real state out of the paused dedicated server every 100 ms. 199–202 km/h on
+the straights, Village 120 km/h, Vale 105 km/h (the slowest corner), never off
+the tarmac. The driver's own note, the 10 ms input tape, the validation
+transcript and the two ghost files are in [`ghost/`](ghost/) (`NOTE.md`).
+Roughly 25–35 s is on the table by raising the speed cap and the cornering
+allowance.
+
+Medals: author 2:10.433 · gold 2:20.870 · silver 2:36.520 · bronze 3:15.650.
 
 ## The video
 
@@ -35,7 +48,10 @@ _(link)_
 
 ## Nadeo
 
-_(club campaign link)_
+Uploaded to Nadeo's map service (stored bytes byte-identical to
+`Silverstone.Map.Gbx` here) and placed in the club campaign **Silverstone
+1:1** of club 43788 (campaign 155871). In game: Live → Clubs → the club →
+Campaigns → Silverstone 1:1.
 
 ## How it was made, in one paragraph
 
