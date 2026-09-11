@@ -305,7 +305,9 @@ fn secs(s: &str) -> f64 {
 fn status_line(time: &str, build: &str, ghosts_readme: &str, nn: &str, note: &Note, min_gain: f64) -> String {
     // the lap's OWN build, from its README row (`| nn | file | time | … | shipNN… |`),
     // falls back to the page default (15's ship17c lap under a ship15 page)
-    let build = lap_build(ghosts_readme, nn, time).unwrap_or_else(|| build.to_string());
+    // the page label the coordinator set (rowbuilds.tsv) outranks the README's tag
+    // (05: certified on ship17-d9549f05, published as ship17c — the same bytes)
+    let build = ROW_LABELS.with(|r| r.borrow().get(nn).cloned()).or_else(|| lap_build(ghosts_readme, nn, time)).unwrap_or_else(|| build.to_string());
     let build = build.as_str();
     let label = lap_label(ghosts_readme, nn, time);
     let who = if label == "tiny ghost" { String::new() } else { format!(", {label}") };
@@ -357,6 +359,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let staged = staged_laps(&ships_text);
     let lidrows = f("--out").map(|o| crate::video::parse_holds(&std::fs::read_to_string(Path::new(&o).join("lidrows.tsv")).unwrap_or_default())).unwrap_or_default();
     let rowbuilds = f("--out").map(|o| parse_rowbuilds(&std::fs::read_to_string(Path::new(&o).join("rowbuilds.tsv")).unwrap_or_default())).unwrap_or_default();
+    set_row_labels(&rowbuilds);
     // the clip each row's video IS: the last URL row per map — never a pending one
     // (a queued clip is not on the page yet; 2026-09-11 01:34Z relabelled 05 twice on that)
     let clips: std::collections::HashMap<String, String> = f("--out").map(|o| published_clip_names(&std::fs::read_to_string(Path::new(&o).join("ships.tsv")).unwrap_or_default())).unwrap_or_default();
@@ -709,6 +712,15 @@ thread_local! {
     /// (map, time) rows whose ships.tsv status is `pending` — set by `cmd` from
     /// --out before the page pass (the row set is otherwise "staged or held").
     static PENDING_ROWS: std::cell::RefCell<std::collections::HashSet<(String, String)>> = std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+thread_local! {
+    /// map → page build label from rowbuilds.tsv, set by `cmd` before the pass.
+    static ROW_LABELS: std::cell::RefCell<std::collections::HashMap<String, String>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+pub fn set_row_labels(rowbuilds: &std::collections::HashMap<String, RowBuild>) {
+    ROW_LABELS.with(|r| *r.borrow_mut() = rowbuilds.iter().map(|(k, v)| (k.clone(), v.build.clone())).collect());
 }
 
 pub fn set_pending_rows(ships: &str) {
