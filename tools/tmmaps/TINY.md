@@ -990,6 +990,34 @@ replacement models each, the checkerboard never moved): the `TriggerFX<Kind>` cu
 `TINY_TRIGGERFX=game`. Open: Summer 19's 16-m gate beam panel showed the grey ⊗ "off" sign on 2026-09-09 —
 the reason the pass existed; re-check it with the pass off before calling the panels done.
 
+## Terrain tiles under blocks: hidden only where the block DECLARES its auto terrain (2026-09-11 06:50Z — the "hole in the mountain")
+
+vjeux on Summer 01 (video 4, race 8.5 s, the chase camera): a straight-edged, cell-sized cutout in the hillside right
+of the far checkpoint, the sea showing through it with palms standing on the water. Found by name, not by picture:
+`mapgeom raycast MAP --from CAM --dir VIEW --fan H0:H1:N --pitch P0:P1:M --report R --source SRC --anchor A
+--cell-y0 -40` casts a fan of camera rays over the map's item triangles and lists the SOURCE cells each ray crosses
+with the source blocks in them (BlueBay cell y → world base = cy × 8 − 40; Stadium −64). The rays through the
+region flew 318 m to the far shore between heights 8 and 13 m where the source has `LandHill3` at cell (30, 6, 32);
+`tiny.log` had already listed it: "LandHill3 at (30, 6, 32) under RoadTechCurve4 — hidden under a block that did not
+declare their zone".
+
+The rule the converter used (2026-09-08, from Summer 04's z-fighting Grass tiles under decks): a terrain tile is
+never drawn in a cell one of a block's UNITS occupies. Too broad. The game draws the tile wherever the occupying block's
+variant does NOT declare an auto terrain for that cell: a RoadTechCurve4's 4×4 unit square includes two corner cells
+the road never covers, and the original shows the hill there. Now (`HiddenTiles::hides`): a tile is hidden iff its
+cell is in the occupant's DECLARED auto-terrain set; occupied-but-undeclared tiles are kept and listed
+("tiles KEPT under a block that did not declare their zone"). Summer 01: 10 tiles come back (the two curve corners,
+Land under DecoTreeBeach/Mangrove decorations); 06: 12, 11: 10, 12: 5, 13: 4, 14: 4, 15: 3, 16: 2. Verified by name:
+the same camera fan on the fixed 01 hits the LandHill3 at 55–65 m on every ray. ship18d-992fc7b3 carries it.
+
+Two things that were real but were not this hole: the missing jungle-foliage cover of the hills (hull-less
+`JungleForest*` vegetation entities inside the terrain prefabs, dropped as "filler foliage" — now baked into the
+terrain items, `inline_filler_foliage`, ship18c), and a suspected genealogy void under elevated hills (there is none:
+the hills' skirts are in the prefab variants).
+
+Method to keep: get HIS frame (the review clip at the race time), ray-cast through the see-through region, read the
+source cells the rays cross, compare with the tiny census — then fix by name and prove with the same frame.
+
 ## Water: the engine's native representations, and what a half-size map can use (research log, 2026-09-10 17:10Z)
 
 The question (coordinator): can a HALF-SIZE water volume exist in our maps — a flat car floats at ~0.9 m
