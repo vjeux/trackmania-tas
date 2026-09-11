@@ -474,12 +474,20 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             // pos (the pack's is at 0 with an identity Iso4 — its spawn IS the
             // origin), the other candidate if the body word was not it. Off by default: the ship15 form (trigger only, the
             // respawn beside the ring) until the encoding is understood.
-            let ring_spawn = std::env::var("TINY_RING_SPAWN").map(|v| v == "1").unwrap_or(false);
+            // TINY_RING_SPAWN=1: spawn in the ENTITY pos (our first form); =iso: the pack's
+            // form, entity at 0 and the Iso4 carrying the spawn; =1nobody / =isonobody: the
+            // same without the 0x0917B000 companion (the bisect of 2026-09-11)
+            let ring_mode = std::env::var("TINY_RING_SPAWN").unwrap_or_default();
+            let ring_spawn = matches!(ring_mode.as_str(), "1" | "iso" | "1nobody" | "isonobody");
             if ring_spawn {
+            let iso_form = ring_mode.starts_with("iso");
             let si = next_index(&mut next);
-            ents.push(super::prefab::Entity { model: inline(si, Node::Opaque(spawn_trigger_node())), rot: [0.0, 0.0, 0.0, 1.0], pos: m.spawn, params_id: -1, params: Vec::new(), u01: Vec::new() });
+            let (node, epos) = if iso_form { (spawn_trigger_node_at(m.spawn), [0.0f32; 3]) } else { (spawn_trigger_node(), m.spawn) };
+            ents.push(super::prefab::Entity { model: inline(si, Node::Opaque(node)), rot: [0.0, 0.0, 0.0, 1.0], pos: epos, params_id: -1, params: Vec::new(), u01: Vec::new() });
+            if !ring_mode.ends_with("nobody") {
             let ti = next_index(&mut next);
             ents.push(super::prefab::Entity { model: inline(ti, Node::Opaque(super::OpaqueNode { class_id: 0x0917B000, raw: { let mut r = vec![0u8; 8]; r[4] = 0x0b; r } })), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
+            }
             }
         }
         // the effect systems (smoke, sparks), after the static part like the
@@ -754,10 +762,16 @@ mod repack_tests {
 /// spawn's POSE is the entity's, so the body stays identity and the caller
 /// positions the entity.
 pub fn spawn_trigger_node() -> super::OpaqueNode {
+    spawn_trigger_node_at([0.0; 3])
+}
+
+/// The SSpawn node with its Iso4 carrying a translation (the pack's form: the
+/// entity at 0, the spawn IN the node — `TINY_RING_SPAWN=iso`).
+pub fn spawn_trigger_node_at(t: [f32; 3]) -> super::OpaqueNode {
     let mut raw: Vec<u8> = Vec::with_capacity(84);
     raw.extend_from_slice(&0x0917A000u32.to_le_bytes());
     raw.extend_from_slice(&3u32.to_le_bytes());
-    for v in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0] {
+    for v in [1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, t[0], t[1], t[2]] {
         raw.extend_from_slice(&v.to_le_bytes());
     }
     for v in [0u32, 0, 0, 0] {

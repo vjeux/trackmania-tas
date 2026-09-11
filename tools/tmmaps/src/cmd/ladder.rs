@@ -390,6 +390,14 @@ pub fn move_blocks(args: &[String]) {
                     if let Some(y) = y {
                         m.set_item_yaw(ii, y);
                     }
+                    // --tilt PITCH,ROLL (radians): the same pose for every moved item — a slab
+                    // stood on its side is a wall (the fragile crash rig, 2026-09-11)
+                    if let Some(t) = flag(args, "--tilt") {
+                        let v: Vec<f32> = t.split(',').map(|x| x.trim().parse().expect("--tilt pitch,roll")).collect();
+                        let it = &m.items[ii];
+                        let (yaw, pivot) = (y.unwrap_or(it.yaw), it.pivot);
+                        m.set_item_frame(ii, [yaw, v[0], v.get(1).copied().unwrap_or(0.0)], pivot);
+                    }
                     println!("  item#{} {} ITEM {:?} -> {:?} yaw {:?}", ii, model, home, p, y);
                 }
                 Move::Pos(bi, p, _y) => {

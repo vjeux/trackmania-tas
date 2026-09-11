@@ -382,11 +382,15 @@ pub fn decide_roads(plates: &[PlateRow], tris: &[UpTri]) -> Vec<Decision> {
             };
             let band_lo = plane - 2.0;
             let band_hi = plane + 0.3;
+            // the run's OWN cells are wet by design (the water road's deck sits in its
+            // volume in the original too); only the SPILL beyond them counts
+            let own: Vec<(f32, f32)> = (0..n).map(|j| { let c = &cells[ks[i + j]]; (c.cx, c.cz) }).collect();
+            let in_own = |x: f32, z: f32| own.iter().any(|(cx, cz)| x >= cx - 0.01 && x <= cx + 16.01 && z >= cz - 0.01 && z <= cz + 16.01);
             let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
             for t in tris {
                 if t.phys == "Water" || t.phys == "NotCollidable" { continue; }
                 if t.top < band_lo || t.top > band_hi { continue; }
-                if t.c[0] >= fx0 && t.c[0] <= fx1 && t.c[2] >= fz0 && t.c[2] <= fz1 && !in_wet(t.c[0], t.c[2], plane) {
+                if t.c[0] >= fx0 && t.c[0] <= fx1 && t.c[2] >= fz0 && t.c[2] <= fz1 && !in_wet(t.c[0], t.c[2], plane) && !in_own(t.c[0], t.c[2]) {
                     *kinds.entry(t.phys.clone()).or_default() += 1;
                 }
             }
