@@ -1893,7 +1893,13 @@ fn copy_to_store(p: &Path, dest: &str) -> Result<(), String> {
     } else {
         std::fs::create_dir_all(dest).map_err(|e| format!("{dest}: {e}"))?;
         let to = Path::new(dest).join(p.file_name().ok_or("no file name")?);
-        std::fs::copy(p, &to).map_err(|e| format!("{} → {}: {e}", p.display(), to.display()))?;
+        // ATOMIC ON THE STORE: copy to a temp name, then rename. An in-place
+        // overwrite of a clip that a reviewer's mount was reading (17's film-grade
+        // re-render, 2026-09-11 19:55Z) left that client a mixed file — old size,
+        // half-new bytes, "moov atom not found". A rename swaps the whole file.
+        let tmp = to.with_extension(format!("{}.tmp-bank", to.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default()));
+        std::fs::copy(p, &tmp).map_err(|e| format!("{} → {}: {e}", p.display(), tmp.display()))?;
+        std::fs::rename(&tmp, &to).map_err(|e| format!("{} → {}: {e}", tmp.display(), to.display()))?;
     }
     Ok(())
 }
