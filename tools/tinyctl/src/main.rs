@@ -200,6 +200,7 @@ fn main() {
         "shipwatch" => video::shipwatch_cmd(rest),
         "page-status" => pagestatus::cmd(rest),
         "final-table" => pagestatus::final_table_cmd(rest),
+        "tape-id" => video::tape_id_cmd(rest),
         "motion" => motion::cmd(rest),
         "mtrender" => mtrender::cmd(rest),
         "mapzips" => mapzips::cmd(rest),

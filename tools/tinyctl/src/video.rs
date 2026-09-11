@@ -872,7 +872,7 @@ fn one(args: &[String]) -> Result<Done, String> {
     };
     if let Some(a) = &archive_name {
         let side = mp4.with_extension("mp4.json");
-        let json = format!("{{\n  \"mp4\": \"{}\",\n  \"map\": \"{nn}\",\n  \"lap\": \"{time}\",\n  \"ghost_md5\": \"{ghost_md5}\",\n  \"ghost_fnv\": \"{}\",\n  \"trajectory_id\": \"{traj_id}\",\n  \"ghost_archive\": \"{a}\",\n  \"overlay\": \"{}\"\n}}\n", mp4.file_name().unwrap().to_string_lossy(), clip::overlay::file_id(&ghost).unwrap_or_default(), overlay_col.replace('"', "\\\""));
+        let json = format!("{{\n  \"mp4\": \"{}\",\n  \"map\": \"{nn}\",\n  \"lap\": \"{time}\",\n  \"ghost_md5\": \"{ghost_md5}\",\n  \"ghost_fnv\": \"{}\",\n  \"trajectory_id\": \"{traj_id}\",\n  \"tape_id\": \"{}\",\n  \"ghost_archive\": \"{a}\",\n  \"overlay\": \"{}\"\n}}\n", mp4.file_name().unwrap().to_string_lossy(), clip::overlay::file_id(&ghost).unwrap_or_default(), tape_id(&ghost).unwrap_or_default(), overlay_col.replace('"', "\\\""));
         std::fs::write(&side, json).map_err(|e| format!("{}: {e}", side.display()))?;
     }
 
@@ -1344,7 +1344,33 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 // a receipt on file, a prechecked map, or — same ghost, new build —
                 // the receipt the PUBLISHED clip of this lap already earned
                 let inherited = inherited_early;
-                let approved = approval_for(&out, &cells[0], &cells[1]).is_some() || read_prechecked(&out).contains(cells[0].as_str()) || inherited.is_some();
+                // A RECEIPT FOLLOWS THE TAPE: a receipt whose text names a ghost md5 covers
+                // this clip when the clip's ghost is that file or carries the same input
+                // tape (INPUT's film-grade re-exports); a different tape is a new lap.
+                let receipt = approval_for(&out, &cells[0], &cells[1]);
+                let receipt_ok = match (&receipt, sidecar_ghost_md5(&out, &cells[2])) {
+                    (Some(r), Some(clip_md5)) => match receipt_ghost_md5(r) {
+                        Some(rm) => match receipt_covers(&rm, &clip_md5) {
+                            Ok(Some(note)) => {
+                                if attitude_said.insert((format!("carried-{}", cells[0]), cells[1].clone())) {
+                                    println!("{} {} {}: {note}", chrono_now(), cells[0], cells[1]);
+                                }
+                                true
+                            }
+                            Ok(None) => true,
+                            Err(e) => {
+                                if attitude_said.insert((format!("tape-{}", cells[0]), cells[1].clone())) {
+                                    println!("{} {} {}: RECEIPT does not cover this clip — {e}", chrono_now(), cells[0], cells[1]);
+                                }
+                                false
+                            }
+                        },
+                        None => true,
+                    },
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                };
+                let approved = receipt_ok || read_prechecked(&out).contains(cells[0].as_str()) || inherited.is_some();
                 if let Some(from) = &inherited {
                     if !attitude_said.contains(&(format!("inherit-{}", cells[0]), cells[1].clone())) {
                         println!("{} {} {}: receipt INHERITED from the published {from} (same ghost, new build)", chrono_now(), cells[0], cells[1]);
@@ -3003,4 +3029,86 @@ mod inherit_page_gate_tests {
         set_page_laps("");
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// THE INPUT TAPE'S IDENTITY: FNV-1a over every input packet (race ms, steer,
+/// accel, brake, respawn) of the ghost file — the same for two files that carry
+/// the same driven inputs with different telemetry (INPUT's film-grade re-exports
+/// of 2026-09-11: real telemetry, tighter span, same tape). The receipt of a lap
+/// follows its TAPE, not its file bytes (coordinator, 2026-09-11 20:45Z).
+pub fn tape_id(path: &Path) -> Result<String, String> {
+    let t = gbx::tape::Tape::from_file(path.to_str().ok_or("path")?)?;
+    let (st, ac, br, rs) = (t.steer_i8s(), t.accels(), t.brakes(), t.respawns());
+    if st.is_empty() {
+        return Err(format!("{}: no input packets", path.display()));
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for i in 0..st.len() {
+        feed(&t.race_ms(i).to_le_bytes());
+        feed(&[st[i] as u8, *ac.get(i).unwrap_or(&0), *br.get(i).unwrap_or(&0), u8::from(*rs.get(i).unwrap_or(&false))]);
+    }
+    Ok(format!("{h:016x}"))
+}
+
+/// `ghost md5 <hex32>` inside a receipt's text, if it names one.
+pub fn receipt_ghost_md5(receipt: &str) -> Option<String> {
+    let low = receipt.to_ascii_lowercase();
+    let i = low.find("ghost md5 ")? + "ghost md5 ".len();
+    let hex: String = low[i..].chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+    (hex.len() == 32).then_some(hex)
+}
+
+/// Does a receipt written against ghost `receipt_md5` cover a clip of ghost
+/// `clip_md5`? Same file → yes. Different files → only when both are in the
+/// ghost archive and carry the same input tape ("receipt carried: same tape").
+/// Returns Ok(Some(note)) when it carries, Ok(None) when the same file, Err when
+/// the tapes differ or a file is missing.
+pub fn receipt_covers(receipt_md5: &str, clip_md5: &str) -> Result<Option<String>, String> {
+    if receipt_md5 == clip_md5 {
+        return Ok(None);
+    }
+    let arch = Path::new(GHOST_ARCHIVE_DEFAULT);
+    let a = tape_id(&arch.join(format!("{receipt_md5}.Ghost.Gbx")))?;
+    let b = tape_id(&arch.join(format!("{clip_md5}.Ghost.Gbx")))?;
+    if a == b {
+        Ok(Some(format!("receipt carried: same tape {a} (receipt ghost {}, clip ghost {} — film-grade telemetry)", &receipt_md5[..8], &clip_md5[..8])))
+    } else {
+        Err(format!("the receipt names ghost {} (tape {a}) but the clip is ghost {} (tape {b}) — a different lap; a new receipt is needed", &receipt_md5[..8], &clip_md5[..8]))
+    }
+}
+
+#[cfg(test)]
+mod tape_id_tests {
+    use super::*;
+
+    #[test]
+    fn receipt_ghost_md5_reads_the_hex() {
+        assert_eq!(receipt_ghost_md5("approved 19:09Z (ship18f); ghost md5 ed1ad4e135e927779bf4b6b7a0f8a3af, build ship18f").as_deref(), Some("ed1ad4e135e927779bf4b6b7a0f8a3af"));
+        assert_eq!(receipt_ghost_md5("opening check PUBLISHABLE (ghost md5 22bace5c56a288e51d5f85f82ac7ced8)").as_deref(), Some("22bace5c56a288e51d5f85f82ac7ced8"));
+        assert_eq!(receipt_ghost_md5("no md5 here"), None);
+        assert_eq!(receipt_ghost_md5("ghost md5 abc"), None);
+    }
+}
+
+/// `tinyctl tape-id FILE...` — the input-tape identity of each ghost file (and
+/// its file md5), one line each; two files with the same tape id carry the same
+/// driven inputs.
+pub fn tape_id_cmd(args: &[String]) -> Result<(), String> {
+    if args.is_empty() {
+        return Err("tinyctl tape-id FILE... — the input-tape identity of each ghost file".into());
+    }
+    for a in args {
+        let p = Path::new(a);
+        match tape_id(p) {
+            Ok(t) => println!("{t}\t{}\t{}", md5_of(p).map(|m| m[..8].to_string()).unwrap_or_default(), p.display()),
+            Err(e) => println!("ERROR\t\t{}: {e}", p.display()),
+        }
+    }
+    Ok(())
 }
