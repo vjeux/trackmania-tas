@@ -2065,10 +2065,46 @@ impl Attitude {
 }
 
 pub fn attitude_verdict(readme: &str, nn: &str, time: &str) -> Attitude {
-    let key = format!("- {nn} {time}:");
-    let Some(line) = readme.lines().find(|l| l.trim_start().starts_with(&key)) else {
+    // INPUT's line for the lap: `- NN time:` (the summary) or `- NN time HELD —`
+    // (a publication hold with the reason). The LAST matching line wins — the
+    // README is appended to, and the newest verdict is the one that stands.
+    let key_colon = format!("- {nn} {time}:");
+    let key_bare = format!("- {nn} {time} ");
+    let Some(line) = readme.lines().filter(|l| { let t = l.trim_start(); t.starts_with(&key_colon) || t.starts_with(&key_bare) }).last() else {
         return Attitude::NoTable;
     };
+    let lower = line.to_ascii_lowercase();
+    // A HELD line from INPUT ("publication held: inherited inversions …") is
+    // not clean whatever else it says.
+    if lower.contains(" held —") || lower.contains(" held -") || lower.contains("publication held") {
+        return Attitude::Dirty { inverted_s: if lower.contains("inversion") { 1.0 } else { 0.0 }, attitude_intervals: 1 };
+    }
+    // THE RICH SHAPE (README-1644 on): `attitude: PASS (…)` / `attitude: FAIL (…)`
+    // / `attitude: n/a (no rich-trace table yet)`, `water: … A x · B y · S z — clean`.
+    if let Some(i) = lower.find("attitude:") {
+        let v = lower[i + "attitude:".len()..].trim_start();
+        let water_dirty = lower.find("water:").map(|w| {
+            let ws = &lower[w..];
+            let seg: &str = ws.split(" · builds").next().unwrap_or(ws);
+            // "A 0.00 · B 0.00 · S 0.00" — any nonzero seconds, or the word
+            // "lid"/"riding" without "no lid"/"on-lid … clean", is contact
+            let nums: Vec<f64> = seg.split(|c: char| !c.is_ascii_digit() && c != '.').filter_map(|s| s.parse().ok()).collect();
+            let any_nonzero = seg.contains(" a ") && nums.iter().any(|x| *x > 0.0);
+            any_nonzero && !seg.contains("no lid exists")
+        }).unwrap_or(false);
+        return if v.starts_with("pass") {
+            if water_dirty {
+                Attitude::Water { contact_s: 1.0 }
+            } else {
+                Attitude::Clean
+            }
+        } else if v.starts_with("fail") {
+            Attitude::Dirty { inverted_s: if v.contains("invert") { 1.0 } else { 0.0 }, attitude_intervals: 1 }
+        } else {
+            // n/a: no rich-trace table yet → fail closed
+            Attitude::NoTable
+        };
+    }
     let field = |name: &str| -> Option<f64> {
         let i = line.find(name)? + name.len();
         line[i..].trim_start().split(|c: char| c == ' ' || c == ',').next()?.parse().ok()
@@ -2247,5 +2283,33 @@ mod upload_window_tests {
         assert_eq!(parse_upload_window("# no clip before the burst\nnot_before\t2026-09-11T12:00Z\n"), Some(1_789_128_000));
         assert_eq!(parse_upload_window("not_before 1789128000\n"), Some(1_789_128_000));
         assert_eq!(parse_upload_window("# nothing\n"), None);
+    }
+}
+
+#[cfg(test)]
+mod rich_attitude_tests {
+    use super::*;
+
+    /// INPUT's rich line shape (README-1644 on), verbatim from 2026-09-11 01:00Z.
+    const R: &str = "- 25 83.772 HELD — publication held: inherited inversions at 14.7–16.1 and 18.9–20.8 (legs 3–4); the attitude-clean chain v2 replaces it. ship16-a3d59cb4: validates (83.772/15).\n\
+- 05 16.395: stop: below 8 m/s: 0.00 s, respawns: 0 · attitude: PASS (0 flagged interval(s); tilt-in-contact pending recompute); author-relative: no allowance needed (attitude PASS: 0 inverted, 0 slide, no airborne rotation) · water: # WATER census map 05 lap 16.395 (ship17-d9549f05 = ship16 collision + water volumes): NO LID exists on this build — samples at plane height are the car DRIVING THROUGH\n\
+- 19 38.276: stop: below 8 m/s: 0.02 s, respawns: 0 · attitude: PASS (0 flagged interval(s); tilt-in-contact pending recompute); author-relative: no author-relative allowance needed (0 s ≥45°/≥70° in contact; author table: 19 none) · water: on-lid s A 0.00 · B 0.00 · S 0.00 — clean  · builds: ship15 9e9f805d ✓ 38.276/16 (two boxes) · ship16-a3d59cb4 ✓ 38.276/16 · ship17-d9549f05 ✓ 38.276/16 \n\
+- 25 83.772: stop: below 8 m/s: 2.79 s, respawns: 0 · attitude: n/a (no rich-trace table yet) · water: n/a · builds: ship15 bd1a146f ✓ 83.772/15 (two boxes) · ship16-a3d59cb4 ✓ 83.772/15 \n\
+- 15 48.738: stop: below 8 m/s: 4.09 s, respawns: 0 · attitude: PASS (0 flagged) · water: on-lid s A 12.60 · B 2.60 · S 0.00 — RIDES THE LID\n\
+- 22 82.652: stop: below 8 m/s: 8.45 s, respawns: 0 · attitude: FAIL (sustained rollover, roof-down 8.9–10.0 s; inverted 2.69 s) · water: n/a\n";
+
+    #[test]
+    fn the_rich_line_shape_is_read_pass_fail_na_held_and_water() {
+        assert_eq!(attitude_verdict(R, "19", "38.276"), Attitude::Clean, "PASS + water A/B/S 0.00");
+        assert_eq!(attitude_verdict(R, "05", "16.395"), Attitude::Clean, "PASS + 'NO LID exists' water prose");
+        assert_eq!(attitude_verdict(R, "25", "83.772"), Attitude::NoTable, "the LAST 25 line is 'attitude: n/a' → fail closed");
+        assert!(matches!(attitude_verdict(R, "15", "48.738"), Attitude::Water { .. }), "PASS but A 12.60 on the lid");
+        assert!(matches!(attitude_verdict(R, "22", "82.652"), Attitude::Dirty { inverted_s, .. } if inverted_s > 0.0), "FAIL with inversion");
+        // a HELD line alone
+        let held_only = "- 25 83.772 HELD — publication held: inherited inversions at 14.7–16.1\n";
+        assert!(matches!(attitude_verdict(held_only, "25", "83.772"), Attitude::Dirty { .. }));
+        // the old flat shape still parses
+        let old = "- 19 46.362: below 8 m/s: 0.07 s, respawns: 0, inverted: 0.00 s, 2 slow + 0 attitude intervals\n";
+        assert_eq!(attitude_verdict(old, "19", "46.362"), Attitude::Clean);
     }
 }
