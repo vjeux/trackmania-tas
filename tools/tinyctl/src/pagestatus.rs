@@ -317,7 +317,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let staged = f("--out").map(|o| staged_laps(&std::fs::read_to_string(Path::new(&o).join("ships.tsv")).unwrap_or_default())).unwrap_or_default();
     let lidrows = f("--out").map(|o| crate::video::parse_holds(&std::fs::read_to_string(Path::new(&o).join("lidrows.tsv")).unwrap_or_default())).unwrap_or_default();
     let rowbuilds = f("--out").map(|o| parse_rowbuilds(&std::fs::read_to_string(Path::new(&o).join("rowbuilds.tsv")).unwrap_or_default())).unwrap_or_default();
-    let clips: std::collections::HashMap<String, String> = f("--out").map(|o| crate::video::published_laps(&std::fs::read_to_string(Path::new(&o).join("ships.tsv")).unwrap_or_default())).unwrap_or_default().into_iter().map(|(nn, (_, name))| (nn, name)).collect();
+    // the clip each row's video IS: the last URL row per map — never a pending one
+    // (a queued clip is not on the page yet; 2026-09-11 01:34Z relabelled 05 twice on that)
+    let clips: std::collections::HashMap<String, String> = f("--out").map(|o| published_clip_names(&std::fs::read_to_string(Path::new(&o).join("ships.tsv")).unwrap_or_default())).unwrap_or_default();
     let (new, notes) = update_rows_with_clips(&page, &laps, &gr, &build, min_gain, &holds, &staged, &lidrows, &rowbuilds, &clips);
     if notes.is_empty() {
         println!("the page already states the newest lap of every map");
@@ -1058,5 +1060,31 @@ https://github.com/user-attachments/assets/n\n";
         let (kept, _) = update_rows_with_clips(page, &laps, ghosts, "ship17c", 0.1, &none_h, &none_s, &lid, &none_rb, &clips);
         assert!(kept.contains("⚠"), "{kept}");
         assert!(build_at_least_16("16") && build_at_least_16("17c") && !build_at_least_16("15") && !build_at_least_16(""));
+    }
+}
+
+/// map → clip name of the row's PUBLISHED video (the last ships.tsv row per map
+/// whose status is a URL). Pending/staged/held rows are not on the page.
+pub fn published_clip_names(ships: &str) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for l in ships.lines().filter(|l| !l.starts_with('#')) {
+        let c: Vec<&str> = l.split('\t').map(str::trim).collect();
+        if c.len() >= 5 && c[4].starts_with("https://") {
+            out.insert(c[0].to_string(), c[2].to_string());
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod published_clip_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_url_row_names_the_rows_video() {
+        let s = "05\t18.298\t05-ghost-18.298-ship15\t/x\thttps://github.com/user-attachments/assets/a\n05\t16.395\t05-ghost-16.395-ship17c\t/x\tpending\n19\t38.276\t19-ghost-38.276-ship15\t/x\tstaged\n";
+        let m = published_clip_names(s);
+        assert_eq!(m.get("05").map(String::as_str), Some("05-ghost-18.298-ship15"));
+        assert_eq!(m.get("19"), None);
     }
 }
