@@ -1529,8 +1529,15 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                             // the rowbuilds label applies to THIS clip only when it names it
                             // (clip=) or names no clip; a label pinned to another clip (05's
                             // ship17c label for the 17b bytes) yields to the clip's own build
-                            let from_row = rb.get(nn.as_str()).filter(|r| crate::pagestatus::note_clip(&r.note).map(|c| c == *name).unwrap_or(true)).map(|r| r.build.clone());
                             let from_clip = name.rsplit_once("-ship").map(|(_, b)| format!("ship{b}"));
+                            // … and a label OLDER than the clip's own build yields too (01's
+                            // `ship15` label + zip link vs its ship18f re-render): the row's
+                            // build is the video's build
+                            let from_row = rb
+                                .get(nn.as_str())
+                                .filter(|r| crate::pagestatus::note_clip(&r.note).map(|c| c == *name).unwrap_or(true))
+                                .filter(|r| from_clip.as_deref().map(|c| !build_newer(c, &r.build)).unwrap_or(true))
+                                .map(|r| r.build.clone());
                             match from_row.or(from_clip) {
                                 Some(b) => build_note.replacen(&extract_build(&build_note).unwrap_or_default(), &b, 1),
                                 None => build_note.clone(),
@@ -2873,6 +2880,11 @@ pub fn note_rerender(out: &Path, nn: &str, build: &str, clip: &str) {
     let e = rows.entry(nn.to_string()).or_default();
     let old_note = crate::pagestatus::note_text(&e.note);
     let stamp = format!("video re-rendered on {build}");
+    // the map link belonged to the OLD build's zip; it returns when that
+    // build's zip is uploaded (mapzips writes links per build)
+    if e.build != build {
+        e.link.clear();
+    }
     e.build = build.to_string();
     e.note = if old_note.is_empty() || old_note.contains(&stamp) {
         format!("clip={clip} {stamp}")
@@ -2914,7 +2926,7 @@ mod rerender_note_tests {
         note_rerender(&dir, "01", "ship18f", "01-ghost-17.417-ship18f");
         let rows = crate::pagestatus::parse_rowbuilds(&std::fs::read_to_string(dir.join("rowbuilds.tsv")).unwrap());
         assert_eq!(rows["13"].build, "ship18f");
-        assert_eq!(rows["13"].link, "https://x/13.zip");
+        assert_eq!(rows["13"].link, "", "the ship15 zip link leaves with the build change");
         assert_eq!(rows["13"].note, "clip=13-ghost-24.769-ship18f video re-rendered on ship18f; runs on un-skinned ship15 surfaces at 2.25 s — re-drive pending");
         assert_eq!(rows["01"].note, "clip=01-ghost-17.417-ship18f video re-rendered on ship18f");
         assert_eq!(crate::pagestatus::note_text(&rows["01"].note), "video re-rendered on ship18f");
@@ -3119,4 +3131,28 @@ pub fn tape_id_cmd(args: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Is build tag `a` newer than `b`? (`ship18f` > `ship17c` > `ship15`; number, then letter.)
+pub fn build_newer(a: &str, b: &str) -> bool {
+    fn key(t: &str) -> (u32, String) {
+        let rest = t.strip_prefix("ship").unwrap_or(t);
+        let num: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let letter: String = rest[num.len()..].chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+        (num.parse().unwrap_or(0), letter)
+    }
+    key(a) > key(b)
+}
+
+#[cfg(test)]
+mod build_newer_tests {
+    use super::*;
+    #[test]
+    fn ordering() {
+        assert!(build_newer("ship18f", "ship15"));
+        assert!(build_newer("ship18f", "ship17c"));
+        assert!(build_newer("ship18f", "ship18e"));
+        assert!(!build_newer("ship15", "ship18f"));
+        assert!(!build_newer("ship18f", "ship18f"));
+    }
 }
