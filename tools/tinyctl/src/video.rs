@@ -1634,12 +1634,15 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
             // MERGE, don't overwrite: the render loop appends new rows to this
             // file while we work, and writing our stale copy back dropped one
             // map's newest lap out of the queue. Re-read, apply our status
-            // changes by (map, time), keep every row we have not seen.
-            let mut want: std::collections::HashMap<(String, String), String> = std::collections::HashMap::new();
+            // changes by (map, time, CLIP NAME), keep every row we have not seen.
+            // (Keyed by (map, time) alone, the ship18f rebuild's rows — the same
+            // lap on a new build — overwrote the published ship15 rows' names and
+            // URLs, 2026-09-11 14:30–18:20Z.)
+            let mut want: std::collections::HashMap<(String, String, String), String> = std::collections::HashMap::new();
             for r in &rows {
                 let c: Vec<&str> = r.split('\t').collect();
                 if c.len() >= 5 && !r.starts_with('#') {
-                    want.insert((c[0].to_string(), c[1].to_string()), r.clone());
+                    want.insert((c[0].to_string(), c[1].to_string(), c[2].to_string()), r.clone());
                 }
             }
             let fresh = std::fs::read_to_string(&ships).unwrap_or_default();
@@ -1648,7 +1651,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 .map(|l| {
                     let c: Vec<&str> = l.split('\t').collect();
                     if c.len() >= 5 && !l.starts_with('#') {
-                        if let Some(updated) = want.get(&(c[0].to_string(), c[1].to_string())) {
+                        if let Some(updated) = want.get(&(c[0].to_string(), c[1].to_string(), c[2].to_string())) {
                             return updated.clone();
                         }
                     }
