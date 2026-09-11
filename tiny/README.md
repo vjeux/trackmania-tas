@@ -86,9 +86,7 @@ https://github.com/user-attachments/assets/a41cebdd-f649-4173-92fe-34d7a21d1f11
 
 **Tiny Summer 2026 - 16** — original author time `50.966` · tiny ghost **39.302** (build ship15, controls overlay) · map: ship15
 
-*latest lap **43.306** (build ship15) — staged, awaiting the opening check*
-
-*↻ runs on un-skinned ship15 surfaces at 4.35 s — re-drive pending*
+*latest lap **43.306** (build ship18f) — staged, awaiting the upload session*
 
 https://github.com/user-attachments/assets/bb3919e7-e5ae-4856-af3c-22c145f8641f
 
@@ -128,7 +126,7 @@ https://github.com/user-attachments/assets/2bb4c108-dd6b-4c5c-a26d-f8ef253cdf2e
 
 **Tiny Norway 2026** — original author time `75.112` · tiny ghost **102.148** (build ship15, controls overlay) · map: ship15
 
-*latest lap **103.971** (build ship15) — within 0.1 s of the published clip*
+*latest lap **103.971** (build ship15) — held (staged — attitude: not clean (INPUT: attitude FAIL))*
 
 *↻ runs on un-skinned ship15 surfaces at 2.05 s — re-drive pending*
 
