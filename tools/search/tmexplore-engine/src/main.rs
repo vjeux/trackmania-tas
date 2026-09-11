@@ -24,6 +24,8 @@ use tmexplore::parallel::{self, Counters, Shared};
 use tmexplore_engine::fork::{ForkBranch, ForkOpts};
 use tmexplore_engine::{BRoute, EngineOracle, MapPack};
 
+mod drive;
+
 struct Args(Vec<(String, String)>, Vec<String>);
 impl Args {
     fn parse() -> Args {
@@ -88,6 +90,18 @@ fn main() {
     }
     if a.1.first().map(|s| s.as_str()) == Some("template") {
         make_template(&a);
+        return;
+    }
+    if a.1.first().map(|s| s.as_str()) == Some("trace") {
+        drive::trace(&a);
+        return;
+    }
+    if a.1.first().map(|s| s.as_str()) == Some("drive") {
+        drive::drive(&a);
+        return;
+    }
+    if a.1.first().map(|s| s.as_str()) == Some("write") {
+        drive::write(&a);
         return;
     }
     if a.1.first().map(|s| s.as_str()) != Some("run") {
@@ -835,6 +849,13 @@ fn make_template(a: &Args) {
     };
 
     let mut meta = tmauto::synth::meta_for_map(&map).unwrap_or_else(die);
+    // `--u03 N` overrides the validator's start-checkpoint index (the
+    // `validation_start_index`). A map whose start is an ITEM has no
+    // RoadTechStart block for `complete_meta_for_map` to count from, so the
+    // index is a measured quantity there, not a derived one.
+    if let Some(u) = a.get("u03") {
+        meta.validation_start_index = u.parse().unwrap_or_else(|_| die("--u03 wants an integer"));
+    }
     let cps: Vec<i32> = (1..=ncp)
         .map(|i| (declare_ms as i32 / (ncp as i32 + 1)) * i as i32)
         .chain(std::iter::once(declare_ms as i32))

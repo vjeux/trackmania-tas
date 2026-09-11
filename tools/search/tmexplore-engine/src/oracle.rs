@@ -143,6 +143,18 @@ impl EngineOracle {
     /// job — two tapes that both crash at the first corner both return
     /// `Dnf cps 0`, which is a true statement about the driving and no
     /// statement at all about the plumbing.
+    /// Write the container that `confirm_echo` would validate, and keep it.
+    ///
+    /// The result of a drive is a FILE, not a tape: the tape is only meaningful
+    /// with its frame and its template, and this is the one place all three
+    /// meet. The bytes are exactly what the oracle was given.
+    pub fn write_container(&self, tape: &[Input], out: &Path) -> Result<Vec<u8>, String> {
+        let mut buf = self.patcher.base.clone();
+        self.patcher.apply(&mut buf, &self.to_inputs(tape));
+        std::fs::write(out, &buf).map_err(|e| format!("{}: {}", out.display(), e))?;
+        Ok(buf)
+    }
+
     pub fn confirm_echo(&self, tape: &[Input]) -> Result<(Verdict, String, String, String), String> {
         let batch = self.seq.fetch_add(1, Ordering::Relaxed);
         let mut buf = self.patcher.base.clone();

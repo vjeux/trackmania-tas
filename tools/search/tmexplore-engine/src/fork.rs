@@ -226,7 +226,14 @@ impl ForkBranch {
         // Bit 31 of `max` makes the child exit as soon as the sample budget is
         // spent rather than simulating on in silence.
         let samples = (n as u32).saturating_add(4);
-        let budget = ((n as u64 + 4) * LROUNDF_PER_TICK).min(u32::MAX as u64) as u32;
+        // The child exits on the SAMPLE count (bit 31 below); the `lroundf`
+        // budget is only a safety net for a clock that stops advancing. It must
+        // be generous: the engine calls `lroundf` more than 255 times a tick
+        // while a car is in contact with a wall, and a budget cut at exactly
+        // 255/tick returned 1444 states for a 1500-tick tape on the Silverstone
+        // map -- 56 ticks of state silently missing from the END of the macro,
+        // which a controller would read as the car being where it was 0.5 s ago.
+        let budget = ((n as u64 + 4) * LROUNDF_PER_TICK * 2).min(u32::MAX as u64) as u32;
         let (json, blob) = self.srv.run_sampled_segs_ex(
             self.from,
             &recs,
@@ -312,10 +319,31 @@ impl Branch for ForkBranch {
             )));
         }
         let (all, ended) = self.simulate(&tape, total).map_err(BranchErr::Other)?;
-        // Keep only the states this macro produced. The rest were the prefix
-        // being replayed, and they are already in the archive.
-        let keep = inputs.len().min(all.len());
-        let trace: Vec<CarState> = all[all.len() - keep..]
+        // `all[0]` is the boundary state (the end of tick `from - 1`, before any
+        // search tick), and `all[i]` is the state after `i` search ticks. So the
+        // states this macro produced are `all[prefix_len + 1 ..= total]`.
+        //
+        // NOT "the last `k` states": the child samples `n + 4` records, so with
+        // the budget honoured the stream runs FOUR TICKS PAST the tape's end on
+        // the container's own inputs, and the last state is then a car that
+        // drove 40 ms of somebody else's tape; with the budget short it is a
+        // car 0.5 s stale. Either way a controller steering on it steers a
+        // different car. A stream that ends before the macro does is an error
+        // unless the run itself ended (finish or stop) inside the macro.
+        let prefix_len = total - inputs.len();
+        let want_end = total + 1;
+        if all.len() < want_end && ended.is_none() {
+            return Err(BranchErr::Other(format!(
+                "the child returned {} states for a {}-tick tape ({} needed): the simulated-time \
+                 budget ran out before the macro did",
+                all.len(),
+                total,
+                want_end
+            )));
+        }
+        let end = want_end.min(all.len());
+        let start = (prefix_len + 1).min(end);
+        let trace: Vec<CarState> = all[start..end]
             .iter()
             .enumerate()
             .map(|(i, s)| CarState {
