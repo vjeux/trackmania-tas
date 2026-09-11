@@ -530,8 +530,8 @@ pub struct LapCfg {
     pub tilt70_guard: bool,
     /// --slide-interim: the live-mask interim rule (<= 2 wheels live and roll > 45 deg) instead of the corrected surface-relative tilt
     pub slide_interim: bool,
-    /// --live-window t1,t2,min[;...]: rows inside the race window need >= min wheels live
-    pub live_windows: Vec<[f64; 3]>,
+    /// --live-window t1,t2,min[,run][;...]: inside the race window, >= run consecutive rows (default 1) with < min wheels live kill the rollout
+    pub live_windows: Vec<Vec<f64>>,
     /// hand macro: pure-pursuit points (x y z [speed]) from --pursue FILE; empty = the macro is skipped
     pub pursue: Vec<[f64; 5]>,
     /// hand macro: aim at the first pursue point farther than this (m); --pursue-look, default 8
@@ -987,7 +987,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
                 // INVERSION (parent: illegal everywhere, no allowance): any row with the body up-vector below the horizon (up_y < 0) kills
                 let inverted = rows.iter().any(|r| (1.0 - 2.0 * (r.qx * r.qx + r.qz * r.qz)) < 0.0);
                 // --live-window t1,t2,min (repeatable via ;): every row inside the race window must have >= min wheels live (the author's four-wheel hairpin)
-                let live_fail = cfg.live_windows.iter().any(|u| rows.iter().any(|r| { let t = w.race_of(r) as f64 / 1000.0; t >= u[0] && t <= u[1] && (r.vis.wheel_live.iter().filter(|l| **l == 1).count() as f64) < u[2] }));
+                let live_fail = cfg.live_windows.iter().any(|u| { let run_max = if u.len() > 3 { u[3] as usize } else { 1 }; let mut run = 0usize; let mut fail = false; for r in rows.iter() { let t = w.race_of(r) as f64 / 1000.0; if t >= u[0] && t <= u[1] && (r.vis.wheel_live.iter().filter(|l| **l == 1).count() as f64) < u[2] { run += 1; if run >= run_max { fail = true; break; } } else { run = 0; } } fail });
                 if n45 > base_n + cfg.tilt_slack || win70 >= 30 || inverted || live_fail {
                     out.deaths[1] += 1;
                     if debug_fan { eprintln!("    TILT kill {desc:34}: >=45 ticks {n45} vs base {base_n} (+slack {}), >=70 in 1 s {win70}", cfg.tilt_slack); }
