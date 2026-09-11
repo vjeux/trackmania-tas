@@ -393,7 +393,10 @@ fn all_once(args: &[String]) -> Result<(), String> {
             }
         }
         match render_gate(race_ms as f64 / 1000.0, published.get(&nn).map(|(t, name)| (*t, name.as_str())), build.as_deref(), min_gain) {
-            Gate::Render(_) | Gate::Skip { .. } if holds.contains_key(&nn) && !render_holds.contains(&nn) => {
+            // a `none` hold blocks NEW laps; the same-ghost rebuild of the lap the
+            // page already shows (same time as the published clip) is allowed
+            // (coordinator, 2026-09-11 14:55Z: 21's 115.478 on ship18f)
+            Gate::Render(_) | Gate::Skip { .. } if holds.contains_key(&nn) && !render_holds.contains(&nn) && !(rebuild_all && published.get(&nn).map(|(t, _)| (*t - race_ms as f64 / 1000.0).abs() < 0.0015).unwrap_or(false)) => {
                 // HELD: archive the bytes (write-once) so the lap is kept, render
                 // nothing. Said once per ghost, like a skip.
                 let key = format!("{nn}\t{md5}\t");
@@ -2322,7 +2325,68 @@ mod attitude_tests {
 /// rendered on and the map file of that build. Maps not listed use `--build` /
 /// `--maps-dir`.
 pub fn read_builds(out: &Path) -> std::collections::HashMap<String, (String, String)> {
-    parse_builds(&std::fs::read_to_string(out.join("builds.tsv")).unwrap_or_default())
+    let mut b = parse_builds(&std::fs::read_to_string(out.join("builds.tsv")).unwrap_or_default());
+    // THE `latest` ALIAS (coordinator, 2026-09-11 14:55Z): a row `nn<TAB>latest<TAB>latest`
+    // (or `*<TAB>latest<TAB>latest` for every map) resolves, at every read, to the
+    // newest incoming/ship* set whose STARTCHECK.tsv passes all 25 maps — so the
+    // render build follows the installed folder without a file edit.
+    let wants_latest = b.values().any(|(t, _)| t == "latest") || b.get("*").map(|(t, _)| t == "latest").unwrap_or(false);
+    if wants_latest {
+        if let Some((tag, dir)) = latest_installed_set(Path::new(INCOMING_DEFAULT)) {
+            let star = b.remove("*");
+            let maps: Vec<String> = if star.is_some() { (1..=25).map(|n| format!("{n:02}")).collect() } else { b.iter().filter(|(_, (t, _))| t == "latest").map(|(k, _)| k.clone()).collect() };
+            for nn in maps {
+                let explicit = b.get(&nn).filter(|(t, _)| t != "latest").cloned();
+                if explicit.is_none() {
+                    b.insert(nn.clone(), (tag.clone(), format!("{}/Tiny Summer 2026 - {nn}.Map.Gbx", dir.display())));
+                }
+            }
+        } else {
+            eprintln!("builds.tsv asks for `latest` but no incoming/ship* set passes STARTCHECK 25/25 — keeping the explicit rows only");
+            b.retain(|_, (t, _)| t != "latest");
+            b.remove("*");
+        }
+    }
+    b
+}
+
+/// Where the installed map sets land.
+pub const INCOMING_DEFAULT: &str = "/home/vjeux/persistent/private-30d/tm-player/tiny/incoming";
+
+/// The newest `incoming/ship<N><letter>-<hash>` set (by name: number, then letter;
+/// ties by mtime) with 25 map files and a STARTCHECK.tsv whose 25 rows all say
+/// PASS. Returns (tag without the hash, dir).
+pub fn latest_installed_set(incoming: &Path) -> Option<(String, PathBuf)> {
+    let mut best: Option<(u32, String, u64, String, PathBuf)> = None;
+    for e in std::fs::read_dir(incoming).ok()?.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix("ship") else { continue };
+        let num: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let Ok(n) = num.parse::<u32>() else { continue };
+        let after = &rest[num.len()..];
+        let letter: String = after.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+        let tag = format!("ship{num}{letter}");
+        let dir = e.path();
+        let maps = (1..=25).all(|i| dir.join(format!("Tiny Summer 2026 - {i:02}.Map.Gbx")).is_file());
+        if !maps {
+            continue;
+        }
+        let sc = std::fs::read_to_string(dir.join("STARTCHECK.tsv")).unwrap_or_default();
+        let rows: Vec<&str> = sc.lines().filter(|l| l.len() >= 2 && l[..2].chars().all(|c| c.is_ascii_digit()) && l.as_bytes().get(2) == Some(&b'\t')).collect();
+        if rows.len() < 25 || !rows.iter().all(|l| l.contains(": PASS")) {
+            continue;
+        }
+        let mtime = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+        let key = (n, letter.clone(), mtime);
+        let better = match &best {
+            None => true,
+            Some((bn, bl, bm, _, _)) => key > (*bn, bl.clone(), *bm),
+        };
+        if better {
+            best = Some((n, letter, mtime, tag, dir));
+        }
+    }
+    best.map(|(_, _, _, tag, dir)| (tag, dir))
 }
 
 pub fn parse_builds(text: &str) -> std::collections::HashMap<String, (String, String)> {
