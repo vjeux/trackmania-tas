@@ -23,7 +23,7 @@ only the editor's default, not a limit of the game.
 | Tool | [`tools/circuit`](../tools/circuit/CIRCUIT.md) — Rust, one binary, data in, `.Map.Gbx` out |
 | Lap ghost | `ghost/Silverstone.lap.Ghost.Gbx` — **130.433 s**, 14/14 checkpoints, validated by the dedicated server (author time) |
 | Filmable ghost | `ghost/Silverstone.lap.filmable.Ghost.Gbx` — same inputs with the car telemetry regenerated from the engine; this is what the video shows |
-| Video | see below |
+| Video | [silverstone-1to1-lap-130433.mp4](https://github.com/vjeux/trackmania-tas/releases/download/videos-v1/silverstone-1to1-lap-130433.mp4) (1080p30, 2:10, controls overlay) |
 | Nadeo | club campaign **Silverstone 1:1** (club 43788, campaign 155871), map id `fad522e7-a4a9-446c-8093-a892f3f30102` — [campaign](https://trackmania.io/#/campaigns/43788/155871) · [leaderboard](https://trackmania.io/#/leaderboard/Silverstone1to12b6f959f2fe7) |
 
 ## The lap ghost
@@ -44,7 +44,13 @@ Medals: author 2:10.433 · gold 2:20.870 · silver 2:36.520 · bronze 3:15.650.
 
 ## The video
 
-_(link)_
+The whole lap from the stock chase camera, rendered by the game from the
+filmable ghost, with the controls overlay (gas / brake / steer) at the bottom
+left:
+
+https://github.com/vjeux/trackmania-tas/releases/download/videos-v1/silverstone-1to1-lap-130433.mp4
+
+(release asset on the `videos-v1` release, 67 MB, fetched anonymously → 200)
 
 ## Nadeo
 
