@@ -114,7 +114,68 @@ the map unloadable.
 The dedicated server loads the finished map (`tmauto synth probe` gives
 DNF(cps=0) on a null tape, as it should), so the TAS toolchain can drive it.
 
-## 5. Render-box etiquette
+## 5. The self-check (`check.rs`) — why the first video had a flying car
+
+The first lap video showed the car leaving the ground 14 times (1.09 m at
+Chapel Curve). The cause was not the road: 24 m terrain cells straddling the
+13 m road had all four corners past the sink margin, and their flat plane
+cut up to 2.3 m through the tarmac. A check on the source heights would not
+have seen it; a check on the PLACED collision triangles did, at once.
+
+Every build now walks the lap at 0.5 m across the tarmac and kerbs (~250 k
+points) and refuses to write the map when any collidable triangle stands
+more than 1 cm above the road (2 cm for another road meeting it flush),
+when a tarmac point has no road under it, or when the vertical profile has
+a crest sharp enough to launch a car at 60 m/s (`k > g/v²`). Extra roads get
+the same surface test against their own drawn heights. `--allow-defects`
+writes anyway, for looking at a broken map in the editor.
+
+The terrain that passes it (`terrain.rs`): a 32 m grid over the whole map,
+every cell within 30 m of a road replaced by its 4 m sub-cells — nested,
+never overlapping — and every heightfield node within 7.5 m beyond a kerb
+held at or below that road's plane minus 6 cm (`min(DTM, lid)`, pinned
+outright under the road and its 1.5 m shoulder). 7.5 m because a 4 m cell
+touching the shoulder reaches 5.7 m further: with every corner of every
+such cell conformed, the interpolated ground under the kerbs IS the plane.
+Where two roads at different heights run side by side (the pit exit is
+1.5 m below Abbey on a bank), the lid is the LOWER road's, so the higher
+one can never lift the ground over the lower one's kerb.
+
+## 6. Edges where the LIDAR cannot see the line (`edges.rs`)
+
+A flush asphalt run-off is as dark as the track. Three rules, in order:
+the first painted line (a rise of 25 over the core that falls back by 15
+within 3 m: Abbey's 55→98 bump at +5.5 m, with 4 m of 73..80 run-off
+beyond it); failing that, past 9.5 m on one side, the largest step between
+two asphalts (2 m means, at least 8 apart, both flat); and a side that
+leaves its own ±60 m running median by 1.5 m while the width exceeds 16 m
+is a run-off bulge, filled from its neighbours (Chapel exit: 60 m where the
+rejoin asphalt is the track's own shade). Stations whose core reads above
+150 are not tarmac (the Wellington footbridge deck) and are interpolated.
+Result: 10.8..15.8 m over the lap, mean 13.3 — checked corner by corner
+against aerial imagery (`circuit aerial`, ESRI World Imagery export in Web
+Mercator, our edges drawn on it; the service refuses anything finer than
+0.3 m/px and small boxes in EPSG:27700).
+
+## 7. Everything else that is tarmac (`roads.rs`)
+
+Every OSM `highway=raceway` way the lap does not use (both pit lanes, the
+Stowe circuit and its pits, the old Bridge and Priory loops, the Porsche
+centre's handling roads, ~40 link roads), except unpaved ones, is an open
+road: its own intensity edges, built longest first and clipped against
+everything built before it (its centre on an earlier road: slice left out;
+its edge reaching one: capped 0.3 m short). Where the cap meets the other
+road at the same level (< 0.35 m) the tarmac is contiguous: heights blend
+onto the other road's plane over the last 7.5 m and neither side gets a
+shoulder — the pit exit meets Abbey flush. Where the levels differ it keeps
+its own heights and a skirt. Start and finish come from OSM's
+`raceway=start` / `raceway=finish` nodes (0.4 m and 0.2 m from the
+centreline; Silverstone's finish line is 150 m upstream of its start line).
+Barriers within 3 m of the lap or 0.3 m of any road are dropped (OSM draws
+fences across spectator crossings and the pit wall along the pit lane's
+painted apron); a building any road runs through starts 5 m up.
+
+## 8. Render-box etiquette
 
 `shootctl lock status` before ANY `quit`/`launch`; take the lock with
 `lock acquire --owner …` and do the whole test in one command; other sessions
