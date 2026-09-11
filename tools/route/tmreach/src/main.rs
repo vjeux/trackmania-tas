@@ -1581,6 +1581,7 @@ fn cmd_lap(a: &Args) -> Result<(), String> {
         arrival_strict: a.has("arrival-strict"),
         beat_times: match a.get("beat-times") { Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?.split_whitespace().filter_map(|x| x.parse().ok()).collect(), None => Vec::new() },
         speed_caps: a.get("speed-cap-box").map(|s| s.split(';').filter_map(|b| { let v: Vec<f64> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 5 { Some([v[0], v[1], v[2], v[3], v[4]]) } else { None } }).collect()).unwrap_or_default(),
+        accel_boxes: a.get("accel-box").map(|s| s.split(';').filter_map(|b| { let v: Vec<f64> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 4 { Some([v[0], v[1], v[2], v[3]]) } else { None } }).collect()).unwrap_or_default(),
         upright: a.get("upright-window").map(|s| s.split(';').filter_map(|b| { let v: Vec<f64> = b.split(',').filter_map(|x| x.trim().parse().ok()).collect(); match v.len() { 2 => Some([v[0], v[1], 0.7]), 3 => Some([v[0], v[1], v[2]]), _ => None } }).collect()).unwrap_or_default(),
         allow_water: a.has("allow-water"),
         base_tilt: a.get("base-tilt").map(|f| tmreach::lap::load_base_tilt(f)).unwrap_or_default(),
