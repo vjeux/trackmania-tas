@@ -358,10 +358,20 @@ fn all_once(args: &[String]) -> Result<(), String> {
             continue;
         }
         // --build B: only a lap whose README row names B (the FILE says which
-        // lap: its race time; the README says which build it was regenerated on)
+        // lap: its race time; the README says which build it was regenerated on).
+        // A row certified on ANOTHER build tag still counts when that build's
+        // map file is byte-identical to the file we render on — the row's
+        // validated-map name carries the map md5 (…-<build>-<md5>-validated-…),
+        // and builds.tsv names our file: 05 on 2026-09-11 was certified on
+        // ship17-d9549f05 while the installed set is ship17b-8a3c000d, and the
+        // two 05 files are the same bytes (md5 4303b199) — the lap is valid.
         if let Some(b) = &build {
+            let our_map_md5 = builds.get(&nn).map(|(_, p)| md5_of(Path::new(p)).unwrap_or_default()).unwrap_or_default();
             match readme_row(&readme, &nn, &time) {
                 Some(row) if row.contains(b.as_str()) => {}
+                Some(row) if !our_map_md5.is_empty() && row.contains(&format!("-{}-", &our_map_md5[..8])) => {
+                    println!("{nn} {time}: README row is certified on another build tag but on the SAME map bytes (md5 {}) as our {b} file — rendering", &our_map_md5[..8]);
+                }
                 Some(row) => {
                     println!("{nn} {time}: README row is not {b} — skipped ({})", row.chars().take(120).collect::<String>());
                     continue;
