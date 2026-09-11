@@ -375,7 +375,11 @@ fn build(osm_path: &Path, dtm_dir: &Path, tif: &Path, host: &Path, out: &Path, s
     let venue = (e0 - 220.0, n0 - 220.0, e1 + 220.0, n1 + 220.0);
     let mut extras: Vec<mapbuild::Placement> = Vec::new();
     if !a_has("--no-terrain") {
-        let spec = terrain::TerrainSpec { bbox: venue, coarse: flag(&a_all(), "--coarse").unwrap_or(12.0), fine: flag(&a_all(), "--fine").unwrap_or(4.0), band: 40.0, tile: 256.0 };
+        // the coarse layer covers the whole grid so the LIDAR ground runs to
+        // the map's edge (clipped to where the DTM tiles have data)
+        let (de0, dn0, de1, dn1) = dtm.bounds();
+        let map_box = ((fr.e0).max(de0), (fr.n0 - sz as f64 * 32.0).max(dn0), (fr.e0 + sx as f64 * 32.0).min(de1), (fr.n0).min(dn1));
+        let spec = terrain::TerrainSpec { bbox: venue, coarse_bbox: map_box, coarse: flag(&a_all(), "--coarse").unwrap_or(24.0), fine: flag(&a_all(), "--fine").unwrap_or(4.0), band: 40.0, tile: 256.0 };
         extras.extend(terrain::terrain_items(&tr, &ed, &dtm, &inten, &fr, &spec));
     }
     if let Some(w) = around.as_ref() {
@@ -424,7 +428,9 @@ fn build(osm_path: &Path, dtm_dir: &Path, tif: &Path, host: &Path, out: &Path, s
     let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
     let uid = format!("Silverstone1to1{:012}", ms % 1_000_000_000_000);
     assert_eq!(uid.len(), 27);
-    mapbuild::assemble(host, out, &items, size, &uid);
+    // --author-ms N: the validated lap time -> medals + validated flag
+    let author_ms = flag(&a_all(), "--author-ms").map(|v| v as u32);
+    mapbuild::assemble(host, out, &items, size, &uid, author_ms);
     // The lap as the map has it, for whoever drives it: one row per metre
     // in TM world coordinates, plus the waypoint plan.
     let line_path = out.with_extension("line.tsv");

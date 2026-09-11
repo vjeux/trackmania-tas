@@ -255,7 +255,20 @@ pub fn name_of_len(len: usize) -> String {
     }
 }
 
-pub fn assemble(host: &Path, out: &Path, placements: &[Placement], size: Option<[i32; 3]>, uid: &str) {
+/// Medal times from a lap time (ms): author = the lap, gold +8 %, silver
+/// +20 %, bronze +50 %, rounded to 10 ms. None = "not validated" placeholders
+/// (a bronze of 10 minutes, so the header still parses).
+pub fn medals(author_ms: Option<u32>) -> (u32, u32, u32, u32, bool) {
+    match author_ms {
+        Some(at) => {
+            let r = |x: f64| ((x / 10.0).round() as u32) * 10;
+            (r(at as f64 * 1.5), r(at as f64 * 1.2), r(at as f64 * 1.08), at, true)
+        }
+        None => (600_000, 600_000, 600_000, 600_000, false),
+    }
+}
+
+pub fn assemble(host: &Path, out: &Path, placements: &[Placement], size: Option<[i32; 3]>, uid: &str, author_ms: Option<u32>) {
     let stage1 = out.with_extension("stage1.Map.Gbx");
     let stage2 = out.with_extension("stage2.Map.Gbx");
     // Stage 1: fixed-size patches + lookback renames: uid, name, author,
@@ -274,6 +287,8 @@ pub fn assemble(host: &Path, out: &Path, placements: &[Placement], size: Option<
     if resized {
         m.set_size(size);
     }
+    let (b, sv, g, at, validated) = medals(author_ms);
+    m.set_times(b, sv, g, at, validated);
     println!("host {}: {old_name:?} -> {new_name:?}, size {:?}", host.display(), size);
     for i in 0..m.blocks.len() {
         m.move_block_cell(i, (0, 0, 0));

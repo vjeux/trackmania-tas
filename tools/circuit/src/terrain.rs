@@ -15,8 +15,10 @@ use crate::track::Track;
 pub const ASPHALT_MAX: f64 = 190.0;
 
 pub struct TerrainSpec {
-    /// Venue box in BNG (e0, n0, e1, n1).
+    /// Venue box in BNG (e0, n0, e1, n1): the fine band lives inside it.
     pub bbox: (f64, f64, f64, f64),
+    /// The coarse layer's box (normally the whole map grid).
+    pub coarse_bbox: (f64, f64, f64, f64),
     pub coarse: f64,
     pub fine: f64,
     /// Half-width of the fine band around the lap's edges (m).
@@ -82,7 +84,7 @@ fn classify(inten: &Raster, e: f64, n: f64, step: f64) -> bool {
 /// raises the layer so it sits on the coarse one without z-fighting.
 #[allow(clippy::too_many_arguments)]
 fn layer(tr: &Track, dtm: &Mosaic, inten: &Raster, fr: &Frame, spec: &TerrainSpec, step: f64, only: Option<&(Vec<bool>, usize, usize)>, lift: f32, prefix: &str) -> Vec<Placement> {
-    let (e0, n0, e1, n1) = spec.bbox;
+    let (e0, n0, e1, n1) = if only.is_some() { spec.bbox } else { spec.coarse_bbox };
     let w = ((e1 - e0) / step).ceil() as usize;
     let h = ((n1 - n0) / step).ceil() as usize;
     // heights at cell corners (w+1 x h+1), sampled once

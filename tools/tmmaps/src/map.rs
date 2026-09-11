@@ -830,6 +830,12 @@ impl MapFile {
         }
     }
 
+    /// Medal times in ms and the validated flag, in the header (the body has
+    /// no copy of them).
+    pub fn set_times(&mut self, bronze: u32, silver: u32, gold: u32, author: u32, validated: bool) {
+        self.gbx.user_data = crate::header::set_times(&self.gbx.user_data, bronze, silver, gold, author, validated).expect("header times");
+    }
+
     pub fn set_map_uid(&mut self, uid: &str) {
         let old = self
             .body_ids

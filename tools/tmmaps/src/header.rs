@@ -65,6 +65,71 @@ pub fn user_chunks(ud: &[u8]) -> Option<Vec<HChunk>> {
     Some(out)
 }
 
+/// Rebuild `user_data` from a chunk list (the inverse of `user_chunks`).
+pub fn user_data_from_chunks(chunks: &[HChunk]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
+    for c in chunks {
+        out.extend_from_slice(&c.id.to_le_bytes());
+        let sz = c.data.len() as u32 | if c.heavy { HEAVY } else { 0 };
+        out.extend_from_slice(&sz.to_le_bytes());
+    }
+    for c in chunks {
+        out.extend_from_slice(&c.data);
+    }
+    out
+}
+
+/// Replace the value of `attr` inside the first `<tag ...>` element of the
+/// header XML (any value length). Returns None when the element or the
+/// attribute is absent.
+pub fn xml_set_attr(xml: &str, tag: &str, attr: &str, value: &str) -> Option<String> {
+    let open = format!("<{tag} ");
+    let start = xml.find(&open)?;
+    let end = start + xml[start..].find('>')?;
+    let elem = &xml[start..end];
+    let key = format!("{attr}=\"");
+    let k = elem.find(&key)?;
+    let vstart = start + k + key.len();
+    let vend = vstart + xml[vstart..].find('"')?;
+    Some(format!("{}{}{}", &xml[..vstart], value, &xml[vend..]))
+}
+
+/// Medal times (ms) and the validated flag, written everywhere the header
+/// spells them: chunk 0x03043002 (version 13: u32 version, u8 flag, then
+/// bronze / silver / gold / author as u32) and the XML `<times .../>` and
+/// `validated` attribute. `author_score` follows the author time.
+pub fn set_times(user_data: &[u8], bronze: u32, silver: u32, gold: u32, author: u32, validated: bool) -> Option<Vec<u8>> {
+    let mut chunks = user_chunks(user_data)?;
+    for c in chunks.iter_mut() {
+        if c.id == 0x0304_3002 {
+            let version = u32::from_le_bytes(c.data[0..4].try_into().ok()?);
+            if version < 5 || c.data.len() < 21 {
+                return None;
+            }
+            for (i, v) in [bronze, silver, gold, author].iter().enumerate() {
+                c.data[5 + 4 * i..9 + 4 * i].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+    }
+    let xml = header_xml(&chunks)?;
+    let mut xml = xml_set_attr(&xml, "times", "bronze", &bronze.to_string())?;
+    xml = xml_set_attr(&xml, "times", "silver", &silver.to_string())?;
+    xml = xml_set_attr(&xml, "times", "gold", &gold.to_string())?;
+    xml = xml_set_attr(&xml, "times", "authortime", &author.to_string())?;
+    xml = xml_set_attr(&xml, "times", "authorscore", &author.to_string()).unwrap_or(xml);
+    xml = xml_set_attr(&xml, "desc", "validated", if validated { "1" } else { "0" })?;
+    for c in chunks.iter_mut() {
+        if c.id == 0x0304_3005 {
+            let mut d = Vec::with_capacity(4 + xml.len());
+            d.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+            d.extend_from_slice(xml.as_bytes());
+            c.data = d;
+        }
+    }
+    Some(user_data_from_chunks(&chunks))
+}
+
 /// The community XML chunk (`0x03043005`), which is a single GBX string.
 pub fn header_xml(chunks: &[HChunk]) -> Option<String> {
     let c = chunks.iter().find(|c| c.id == 0x0304_3005)?;
