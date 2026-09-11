@@ -1554,6 +1554,13 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                                 note_rerender(&out, nn, &nb, name);
                                 println!("  page: same lap {time}, build {old_build} → {nb} — rowbuilds note 'video re-rendered on {nb}'");
                             }
+                            // class-T water (terrain sea water, drag-free): disclosed on the row
+                            let readme_text = ghosts_dir.as_ref().map(|d| std::fs::read_to_string(d.join("README.md")).unwrap_or_default()).unwrap_or_default();
+                            let t = water_t(&readme_text, nn, time);
+                            if t > 0.0 {
+                                note_append(&out, nn, &nb, name, &format!("{WATER_T_NOTE} (T {t:.2} s)"));
+                                println!("  page: water T {t:.2} s — rowbuilds note '{WATER_T_NOTE}'");
+                            }
                         }
                         let new = page_swap(&page, nn, time, &label, &row_build_note, url)?;
                         let unchanged = new == page;
@@ -3154,5 +3161,75 @@ mod build_newer_tests {
         assert!(build_newer("ship18f", "ship18e"));
         assert!(!build_newer("ship15", "ship18f"));
         assert!(!build_newer("ship18f", "ship18f"));
+    }
+}
+
+/// Class-T water seconds on INPUT's rich summary line for a lap (`water: … A x ·
+/// B y · T z`): terrain sea water — the car on the pack's floor under a shore/sea
+/// plate, drag-free. CLEAN for the gate (coordinator, 2026-09-11 21:25Z: 17
+/// 36.982 A 0.00 · B 0.00 · T 0.31 = clean per the parent); disclosed on the row
+/// as "water landing without drag". 0.0 when the line has no T.
+pub fn water_t(readme: &str, nn: &str, time: &str) -> f64 {
+    let prefix = format!("- {nn} {time}");
+    let Some(line) = readme.lines().filter(|l| l.trim_start().starts_with(&prefix)).last() else { return 0.0 };
+    let lower = line.to_ascii_lowercase();
+    let Some(w) = lower.find("water:") else { return 0.0 };
+    let seg: &str = lower[w..].split(" · builds").next().unwrap_or(&lower[w..]);
+    seg.find(" t ").and_then(|i| seg[i + 3..].trim_start().split(|c: char| c == ' ' || c == '·').next()).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0)
+}
+
+pub const WATER_T_NOTE: &str = "water landing without drag";
+
+#[cfg(test)]
+mod water_t_tests {
+    use super::*;
+
+    #[test]
+    fn t_is_clean_for_the_gate_and_read_for_the_note() {
+        let line = "| 17 | 17.Ghost.Gbx | 36.982 | 8 | ship18f-a4f869ff | a4f869ff | PPO | x |\n- 17 36.982: stop: below 8 m/s: 0.00 s, respawns: 0 · attitude: PASS (0 flagged interval(s)); author-relative: pass · water: on-lid s A 0.00 · B 0.00 · T 0.31 — clean · builds: ship18f-a4f869ff aaaa ✓ 36.982/8\n";
+        assert_eq!(attitude_verdict(line, "17", "36.982"), Attitude::Clean, "T alone is clean");
+        assert!((water_t(line, "17", "36.982") - 0.31).abs() < 1e-9);
+        assert_eq!(water_t(line, "17", "36.000"), 0.0);
+        let ab = "- 20 75.595: stop · attitude: PASS · water: A 0.00 · B 0.78 · T 0.10 — x\n";
+        assert_eq!(attitude_verdict(ab, "20", "75.595"), Attitude::Water { contact_s: 0.78, a_s: 0.0, b_s: 0.78 }, "B still refuses with T present");
+    }
+}
+
+/// Append a disclosure to the map's rowbuilds note (build `build`, clip pinned
+/// to `clip`), once — a note already carrying its text is left alone.
+pub fn note_append(out: &Path, nn: &str, build: &str, clip: &str, text: &str) {
+    let path = out.join("rowbuilds.tsv");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut rows = crate::pagestatus::parse_rowbuilds(&existing);
+    let e = rows.entry(nn.to_string()).or_default();
+    let old = crate::pagestatus::note_text(&e.note);
+    let head: String = text.split(" (").next().unwrap_or(text).to_string();
+    if old.contains(&head) {
+        return;
+    }
+    if e.build != build {
+        e.link.clear();
+    }
+    e.build = build.to_string();
+    e.note = if old.is_empty() { format!("clip={clip} {text}") } else { format!("clip={clip} {old}; {text}") };
+    let header: Vec<&str> = existing.lines().filter(|l| l.starts_with('#')).collect();
+    let mut keys: Vec<&String> = rows.keys().collect();
+    keys.sort();
+    let mut s = String::new();
+    if header.is_empty() {
+        s.push_str("# nn\tbuild\tmap_link\tnote\n");
+    } else {
+        for h in header {
+            s.push_str(h);
+            s.push('\n');
+        }
+    }
+    for k in keys {
+        let r = &rows[k];
+        s.push_str(&format!("{k}\t{}\t{}\t{}\n", r.build, r.link, r.note));
+    }
+    let tmp = path.with_extension("tsv.tmp");
+    if std::fs::write(&tmp, s).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
     }
 }
