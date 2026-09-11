@@ -1396,7 +1396,9 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
             // held 75.595 row after it)
             let later_rows_all_held = rows_snapshot.iter().enumerate().filter(|(j, r)| *j > i && r.split('\t').next() == Some(cells[0].as_str())).all(|(_, r)| r.split('\t').nth(4).map(|s| s == "held" || s == "superseded").unwrap_or(false));
             let page_lap_rebuild = PAGE_LAPS.with(|p| p.borrow().get(cells[0].as_str()).map(|t| *t == cells[1]).unwrap_or(false));
-            if last_of.get(&cells[0]) != Some(&i) && !has_url_verdict && !(later_rows_all_held && page_lap_rebuild) {
+            // … or the map is under a hold (its newer laps cannot reach the page)
+            let map_is_held = read_holds(&out).contains_key(cells[0].as_str());
+            if last_of.get(&cells[0]) != Some(&i) && !has_url_verdict && !((later_rows_all_held || map_is_held) && page_lap_rebuild) {
                 println!("{} {} {}: superseded by a newer lap — not shipped", chrono_now(), cells[0], cells[1]);
                 *row = format!("{}\t{}\t{}\t{}\tsuperseded", cells[0], cells[1], cells[2], cells[3]);
                 changed = true;
