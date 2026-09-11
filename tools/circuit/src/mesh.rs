@@ -154,6 +154,40 @@ impl MeshBuilder {
         }
     }
 
+    /// A quad whose face must point AWAY from `inside` (a point behind it):
+    /// the winding is flipped when the normal points towards that point. In
+    /// play mode a face lit from behind renders black, so every wall of a
+    /// building faces outwards and every side of a slab faces out.
+    pub fn quad_away(&mut self, mat: usize, p: [[f32; 3]; 4], inside: [f32; 3], collide: bool) {
+        let n = cross(sub(p[1], p[0]), sub(p[2], p[0]));
+        let c = [(p[0][0] + p[2][0]) / 2.0, (p[0][1] + p[2][1]) / 2.0, (p[0][2] + p[2][2]) / 2.0];
+        let d = sub(c, inside);
+        if n[0] * d[0] + n[1] * d[1] + n[2] * d[2] >= 0.0 {
+            self.quad(mat, p, collide);
+        } else {
+            self.quad(mat, [p[0], p[3], p[2], p[1]], collide);
+        }
+    }
+
+    /// A hexahedron from its bottom ring `b` and top ring `t` (same order),
+    /// every face facing out; `underside` draws the bottom too.
+    pub fn slab(&mut self, mat: usize, b: [[f32; 3]; 4], t: [[f32; 3]; 4], underside: bool, collide: bool) {
+        let mut c = [0.0f32; 3];
+        for q in b.iter().chain(t.iter()) {
+            for k in 0..3 {
+                c[k] += q[k] / 8.0;
+            }
+        }
+        self.quad_away(mat, t, c, collide);
+        if underside {
+            self.quad_away(mat, b, c, collide);
+        }
+        for i in 0..4 {
+            let j = (i + 1) % 4;
+            self.quad_away(mat, [b[i], b[j], t[j], t[i]], c, collide);
+        }
+    }
+
     /// A quad p0 p1 p2 p3 (counter-clockwise), as two triangles.
     pub fn quad(&mut self, mat: usize, p: [[f32; 3]; 4], collide: bool) {
         self.tri(mat, [p[0], p[1], p[2]], collide);

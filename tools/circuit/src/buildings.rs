@@ -155,10 +155,11 @@ pub fn structures(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, bbox: (f64, f64, f64, f6
     out
 }
 
+/// Technics (metal) is near-black in play mode; the light materials are the
+/// stadium wall panels and the platform concrete.
 fn material_for(kind: &str) -> Material {
     match kind {
-        "grandstand" => mesh::METAL,
-        "house" | "shed" => mesh::WALL,
+        "grandstand" => mesh::WALL,
         _ => mesh::CONCRETE,
     }
 }
@@ -187,16 +188,14 @@ pub fn building_items(structs: &[Structure], fr: &Frame) -> Vec<Placement> {
                 let t = fr.to_tm(q.e, q.n, z);
                 [t[0] - anchor[0], t[1] - anchor[1], t[2] - anchor[2]]
             };
-            // walls: outward-facing, whichever winding the footprint has
-            let ccw = area(&s.footprint) > 0.0;
+            // walls facing away from the footprint's centroid
+            let ce = s.footprint.iter().map(|q| q.e).sum::<f64>() / n as f64;
+            let cn = s.footprint.iter().map(|q| q.n).sum::<f64>() / n as f64;
+            let inside = p(Bng { e: ce, n: cn }, (z0 + z1) / 2.0);
             for i in 0..n {
                 let (a, b) = (s.footprint[i], s.footprint[(i + 1) % n]);
                 let (a0, a1, b0, b1) = (p(a, z0), p(a, z1), p(b, z0), p(b, z1));
-                if ccw {
-                    mb.quad(mat, [a0, a1, b1, b0], true);
-                } else {
-                    mb.quad(mat, [a0, b0, b1, a1], true);
-                }
+                mb.quad_away(mat, [a0, a1, b1, b0], inside, true);
             }
             // roof
             for t in triangulate(&s.footprint) {
@@ -264,7 +263,7 @@ pub fn linear_items(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, fr: &Frame, bbox: (f64
                 let (h, thick, mat) = match barrier.as_deref() {
                     Some("hedge") => (1.6, 1.0, mesh::GRASS),
                     Some("wall") | Some("retaining_wall") => (1.2, 0.4, mesh::WALL),
-                    Some("fence") | Some("wood_fence") => (1.2, 0.15, mesh::METAL),
+                    Some("fence") | Some("wood_fence") => (1.2, 0.15, mesh::WALL),
                     _ => continue,
                 };
                 segs.push(Seg { a, b, h, thick, deck: None, mat });
@@ -308,14 +307,7 @@ pub fn linear_items(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, fr: &Frame, bbox: (f64
                 p(s.a.e + ue, s.a.n + un, za0), p(s.b.e + ue, s.b.n + un, zb0), p(s.b.e - ue, s.b.n - un, zb0), p(s.a.e - ue, s.a.n - un, za0),
                 p(s.a.e + ue, s.a.n + un, za1), p(s.b.e + ue, s.b.n + un, zb1), p(s.b.e - ue, s.b.n - un, zb1), p(s.a.e - ue, s.a.n - un, za1),
             ];
-            mb.quad_up(mat, [c[4], c[5], c[6], c[7]], true); // top
-            mb.quad(mat, [c[0], c[1], c[5], c[4]], true);
-            mb.quad(mat, [c[1], c[2], c[6], c[5]], true);
-            mb.quad(mat, [c[2], c[3], c[7], c[6]], true);
-            mb.quad(mat, [c[3], c[0], c[4], c[7]], true);
-            if s.deck.is_some() {
-                mb.quad(mat, [c[0], c[3], c[2], c[1]], true); // underside
-            }
+            mb.slab(mat, [c[0], c[1], c[2], c[3]], [c[4], c[5], c[6], c[7]], s.deck.is_some(), true);
         }
         if mb.is_empty() {
             continue;
