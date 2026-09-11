@@ -236,11 +236,23 @@ pub fn replace_lp(mut b: Vec<u8>, old: &str, new: &str) -> Vec<u8> {
 }
 
 pub fn rewrite_ident(bytes: &[u8], old_name: &str, alias: &str, old_author: &str) -> Vec<u8> {
-    let mut g = Gbx::parse(bytes);
-    g.user_data = replace_lp(g.user_data, old_name, alias);
-    g.body = replace_lp(g.body, old_name, alias);
-    g.user_data = replace_lp(g.user_data, old_author, AUTHOR);
-    g.body = replace_lp(g.body, old_author, AUTHOR);
+    rename_item_ident(bytes, old_name, old_author, alias, AUTHOR)
+}
+
+/// A game item file under a new Ident and author: the header chunk
+/// 0x2E001003 rebuilt (`set_header_ident`), every length-prefixed
+/// occurrence of the old name and author in the body replaced (the body
+/// ident's two lookback strings, the Name and Description chunks). The
+/// reference table is untouched.
+pub fn rename_item_ident(bytes: &[u8], old_name: &str, old_author: &str, name: &str, author: &str) -> Vec<u8> {
+    let headed = set_header_ident(bytes, name, author);
+    let mut g = Gbx::parse(&headed);
+    if !old_name.is_empty() && old_name != name {
+        g.body = replace_lp(g.body, old_name, name);
+    }
+    if !old_author.is_empty() && old_author != author && old_author != old_name {
+        g.body = replace_lp(g.body, old_author, author);
+    }
     let body = g.body.clone();
     g.write_body_recompressed(&body)
 }

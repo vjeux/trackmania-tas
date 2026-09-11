@@ -31,16 +31,78 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
             }
         };
         let mut problems: Vec<String> = Vec::new();
-        let Some(so) = f.item.static_object() else {
-            println!("{path}: FAIL no static object");
+        // The solids to check: a static item's one, or every entity of a
+        // moving item's prefab (each dyna part's mesh, the static part's).
+        let mut parts: Vec<(String, &super::solid2::CPlugSolid2Model, Option<&super::surface::CPlugSurface>)> = Vec::new();
+        if let Some(so) = f.item.static_object() {
+            match so.solid2() {
+                Some(s2) => parts.push((String::new(), s2, so.surface())),
+                None => {
+                    println!("{path}: FAIL no solid2");
+                    bad += 1;
+                    continue;
+                }
+            }
+        } else if let Some(p) = f.item.prefab() {
+            let mut constraints = 0usize;
+            for (i, e) in p.ents.iter().enumerate() {
+                match e.model.inline.as_deref() {
+                    Some(super::Node::Dyna(d)) => match d.mesh.inline.as_deref() {
+                        Some(super::Node::Solid2(s2)) => {
+                            fn hull(r: &super::Ref) -> Option<&super::surface::CPlugSurface> {
+                                match r.inline.as_deref() {
+                                    Some(super::Node::Surface(s)) => Some(s),
+                                    _ => None,
+                                }
+                            }
+                            parts.push((format!("entity {i} (moving): "), s2, hull(&d.static_shape).or_else(|| hull(&d.dyna_shape))));
+                        }
+                        _ => problems.push(format!("entity {i}: moving part without an inline mesh")),
+                    },
+                    Some(super::Node::StaticObject(so)) => match so.solid2() {
+                        Some(s2) => parts.push((format!("entity {i}: "), s2, so.surface())),
+                        None => problems.push(format!("entity {i}: static object without an inline solid")),
+                    },
+                    Some(super::Node::Kinematic(k)) => {
+                        constraints += 1;
+                        match super::dyna::ConstraintParams::parse(&e.params) {
+                            Some(c) => {
+                                let target = if c.ent2 >= 0 { c.ent2 } else { c.ent1 };
+                                if !matches!(p.ents.get(target as usize).and_then(|t| t.model.inline.as_deref()), Some(super::Node::Dyna(_))) {
+                                    problems.push(format!("entity {i}: constraint binds entity {target}, which is not a moving part"));
+                                }
+                                if facts {
+                                    println!("{path}: entity {i} constraint on entity {target}: {}", k.summary());
+                                }
+                            }
+                            None => problems.push(format!("entity {i}: constraint with {}-byte params", e.params.len())),
+                        }
+                    }
+                    Some(other) => problems.push(format!("entity {i}: class 0x{:08X} in the prefab", other.class_id())),
+                    None => problems.push(format!("entity {i}: external model node {}", e.model.index)),
+                }
+            }
+            let moving = p.ents.iter().filter(|e| matches!(e.model.inline.as_deref(), Some(super::Node::Dyna(_)))).count();
+            if constraints != moving {
+                problems.push(format!("{moving} moving parts but {constraints} constraints"));
+            }
+            if parts.is_empty() {
+                println!("{path}: FAIL prefab with no solid");
+                bad += 1;
+                continue;
+            }
+        } else {
+            println!("{path}: FAIL no static object (nor a prefab entity model)");
             bad += 1;
             continue;
-        };
-        let Some(s2) = so.solid2() else {
-            println!("{path}: FAIL no solid2");
-            bad += 1;
-            continue;
-        };
+        }
+        let nparts = parts.len();
+        let mut total_visuals = 0usize;
+        let mut total_mats = 0usize;
+        for (label, s2, surface) in parts {
+        let p0 = problems.len();
+        total_visuals += s2.visuals.len();
+        total_mats += s2.custom_materials.len();
         let nmat = s2.custom_materials.len();
         let mut used = vec![0usize; nmat];
         let mut prev_mat = -1i32;
@@ -255,7 +317,7 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                 println!("{path}: visual {vi} mat {mat} verts {count} tris {ntri} decls{decl_desc} cflags {:x} sflags {:x} u03 {} tangents {:?} bbox {:?}", m.chunk_flags, v.stream().map(|s| s.flags).unwrap_or(0), m.u03, v.tangents.as_ref().map(|(a, b)| (a.len(), b.len())), m.bounding_box);
             }
         }
-        if let Some(sf) = so.surface() {
+        if let Some(sf) = surface {
             if let super::surface::Surf::Mesh { vertices, triangles, .. } = &sf.surf {
                 for (ti, t) in triangles.iter().enumerate() {
                     if t.indices.iter().any(|i| *i as usize >= vertices.len()) {
@@ -268,14 +330,21 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                     }
                 }
                 if facts {
-                    println!("{path}: collision {} vertices {} triangles physics {:?}", vertices.len(), triangles.len(), sf.material_ids);
+                    println!("{path}: {label}collision {} vertices {} triangles physics {:?}", vertices.len(), triangles.len(), sf.material_ids);
                 }
+            } else if facts {
+                let (v, t) = sf.surf.counts();
+                println!("{path}: {label}collision surf type {} {v} vertices {t} faces physics {:?}", sf.surf.type_id(), sf.material_ids);
             }
         } else {
             problems.push("no collision surface".into());
         }
+        for p in problems[p0..].iter_mut() {
+            p.insert_str(0, &label);
+        }
+        }
         if problems.is_empty() {
-            println!("{path}: ok ({} visuals, {} materials)", s2.visuals.len(), nmat);
+            println!("{path}: ok ({total_visuals} visuals, {total_mats} materials{})", if nparts > 1 { format!(", {nparts} solids") } else { String::new() });
         } else {
             bad += 1;
             for p in &problems {

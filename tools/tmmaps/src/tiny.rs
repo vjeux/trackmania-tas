@@ -1112,13 +1112,36 @@ pub fn catalog_cmd(args: &[String]) {
 /// species survey in one frame (which SpringTree is green, which is pink),
 /// on the real map so the editor renders it (a parked-block catalog map came
 /// out blank in GreenCoast).
+///
+/// `--items DIR`: names ending in `.Item.Gbx` are EMBEDDED items — the file
+/// of that name in DIR goes into the map's archive under `Items/`, the
+/// placement's author is the ident itself (the convention every tiny map
+/// uses) — so a test item can stand next to the stock one it imitates, the
+/// stock one being the oracle. `--yaw R` turns the whole row (radians).
 pub fn lineup_cmd(args: &[String]) {
     let src = PathBuf::from(&args[2]);
     let out = PathBuf::from(cli::flag(args, "--out").expect("lineup needs --out MAP"));
     let list = cli::flag(args, "--stock").expect("lineup needs --stock A,B,C");
     let at = vec3(&cli::flag(args, "--at").expect("lineup needs --at X,Y,Z"), "--at");
     let pitch: f32 = cli::flag(args, "--pitch").unwrap_or("16").parse().expect("--pitch metres");
+    let yaw: f32 = cli::flag(args, "--yaw").unwrap_or("0").parse().expect("--yaw radians");
+    let items_dir = cli::flag(args, "--items").map(PathBuf::from);
     let names: Vec<String> = list.split(',').filter(|s| !s.is_empty()).map(String::from).collect();
+    let embedded: Vec<String> = {
+        let mut e: Vec<String> = names.iter().filter(|n| n.ends_with(".Item.Gbx")).cloned().collect();
+        e.sort();
+        e.dedup();
+        e
+    };
+    let mut files: std::collections::BTreeMap<String, Vec<u8>> = Default::default();
+    if !embedded.is_empty() {
+        let dir = items_dir.as_ref().expect("embedded *.Item.Gbx names need --items DIR");
+        for name in &embedded {
+            let p = dir.join(name);
+            let bytes = std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+            files.insert(format!("Items/{name}"), bytes);
+        }
+    }
     let source = MapFile::load(&src);
     set_ground(source.items.first().map(|it| it.collection_raw).unwrap_or(26));
     let n = source.items.len();
@@ -1133,20 +1156,26 @@ pub fn lineup_cmd(args: &[String]) {
         let i = n + k;
         let pos = [at[0] + pitch * k as f32, at[1], at[2]];
         m.set_item_model(i, name);
-        m.set_item_author(i, "Nadeo");
-        m.move_item(i, pos, 0.0, cell_for(pos));
+        m.set_item_author(i, if name.ends_with(".Item.Gbx") { name } else { "Nadeo" });
+        m.move_item(i, pos, yaw, cell_for(pos));
         m.set_item_scale(i, 1.0);
         m.clear_item_variant(i);
         m.set_item_color(i, 0);
-        println!("  {name} at {:.0},{:.0},{:.0}", pos[0], pos[1], pos[2]);
+        println!("  {name} at {:.0},{:.0},{:.0}{}", pos[0], pos[1], pos[2], if name.ends_with(".Item.Gbx") { " (embedded)" } else { "" });
     }
     let tmp1 = out.with_extension("lineup1.Map.Gbx");
     m.write_to(&tmp1).expect("write models");
-    // variable-length splices (the password chunk) only after a write+reload
+    // variable-length splices (the password chunk, the archive) only after a write+reload
     let mut m = MapFile::load(&tmp1);
     m.remove_password();
+    if !embedded.is_empty() {
+        let zip = crate::header::deflated_zip(&files);
+        let manifest: Vec<(&str, &str)> = embedded.iter().map(|s| (s.as_str(), s.as_str())).collect();
+        m.replace_embedded_objects(&manifest, &zip);
+        println!("  {} embedded item(s), archive {} bytes", embedded.len(), zip.len());
+    }
     m.write_to(&out).expect("write output");
     let _ = std::fs::remove_file(&tmp0);
     let _ = std::fs::remove_file(&tmp1);
-    println!("wrote {} ({} stock items in a row)", out.display(), names.len());
+    println!("wrote {} ({} items in a row)", out.display(), names.len());
 }

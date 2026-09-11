@@ -1225,8 +1225,9 @@ TINY MAPS (half-scale campaign: every authored block/item -> an embedded static 
   tmmaps tiny-batch DIR --out DIR [--mapgeom BIN --paks "--pak F:HASH …"] [same flags]
                                                     every .Map.Gbx of a directory; with --mapgeom each map gets
                                                     its own item library (OUT/NAME.lib.zip, .placements.tsv, .report.tsv)
-  tmmaps lineup MAP --out F --stock A,B,C --at X,Y,Z [--pitch 16]
-        the map plus a row of stock (pack) items by name — a vegetation species survey
+  tmmaps lineup MAP --out F --stock A,B,C --at X,Y,Z [--pitch 16] [--yaw R] [--items DIR]
+        the map plus a row of stock (pack) items by name — a vegetation species survey;
+        names ending in .Item.Gbx are embedded from DIR (a test item next to its stock oracle)
   tmmaps shared-cells MAP [--all]
         cells where a terrain tile shares its cell with another block, and whether the
         tile is hidden by that block in the tiny map (kept = a coplanar pair to watch)

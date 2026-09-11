@@ -727,3 +727,218 @@ pub fn set_ident_collection(bytes: &[u8], collection: u32) -> Vec<u8> {
     g.body = body.clone();
     g.write_body_recompressed(&body)
 }
+
+// ---------------------------------------------------------------- game skins
+
+/// The class id of `CPlugGameSkin`, and the id of the HEADER chunk a skinnable
+/// model carries (items AND block infos: `RaceScreen6x1.Item.Gbx` declares
+/// `Any\Advertisement6x1\`, the `TechnicsScreen155Straight` blockinfo
+/// `Any\Advertisement16x9\`). This header chunk is the ONLY place the
+/// declaration lives — the body's `SkinDirectory` fields (0x2E001010,
+/// 0x2E00201E) stay empty in every Nadeo screen item — and it is what makes
+/// the game feed the model's `Image` texture with the current in-game
+/// advertisement (the campaign artwork) or with a placement's own skin file.
+/// A model without it draws the material's default texture: the yellow
+/// `RaceAd6x1.dds` "NADEO / TRACKMANIA" panel every tiny screen showed.
+pub const GAME_SKIN_CHUNK: u32 = 0x090F_4000;
+
+/// One texture slot of a game skin: `*Image` → `Stadium\Media\Texture\Image\
+/// RaceAd6x1.dds` on the 6x1 screen (`*` = every material's `Image` sampler,
+/// the file = the default texture the skin replaces).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkinFid {
+    pub class: u32,
+    pub name: String,
+    pub file: String,
+    pub flag: u32,
+}
+
+/// Header chunk 0x090F4000, read as: `u8 version` (8), `string dir` (the skin
+/// folder under `Skins\`), `string parent`, `string u03`, `u8 count`, `count`
+/// × `SkinFid`, then 16 trailing bytes (four words; items `0,0,0,1`, the
+/// screen blockinfo `0,1,0,1`). Measured on every skinned Stadium item and
+/// blockinfo (`mapgeom skins`), which all decode to the exact byte count.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GameSkin {
+    pub version: u8,
+    pub dir: String,
+    pub parent: String,
+    pub u03: String,
+    pub fids: Vec<SkinFid>,
+    pub tail: Vec<u8>,
+}
+
+impl GameSkin {
+    pub fn decode(payload: &[u8]) -> Option<GameSkin> {
+        if payload.len() < 1 + 4 + 4 + 4 + 1 {
+            return None;
+        }
+        let mut r = crate::gbx::Reader::new(payload);
+        let version = r.u8();
+        let mut string = |r: &mut crate::gbx::Reader| -> Option<String> {
+            if r.o + 4 > payload.len() {
+                return None;
+            }
+            let n = r.u32() as usize;
+            if r.o + n > payload.len() {
+                return None;
+            }
+            Some(String::from_utf8_lossy(r.bytes(n)).into_owned())
+        };
+        let dir = string(&mut r)?;
+        let parent = string(&mut r)?;
+        let u03 = string(&mut r)?;
+        if r.o >= payload.len() {
+            return None;
+        }
+        let count = r.u8() as usize;
+        let mut fids = Vec::with_capacity(count);
+        for _ in 0..count {
+            if r.o + 4 > payload.len() {
+                return None;
+            }
+            let class = r.u32();
+            let name = string(&mut r)?;
+            let file = string(&mut r)?;
+            if r.o + 4 > payload.len() {
+                return None;
+            }
+            let flag = r.u32();
+            fids.push(SkinFid { class, name, file, flag });
+        }
+        let tail = payload[r.o..].to_vec();
+        Some(GameSkin { version, dir, parent, u03, fids, tail })
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut b = vec![self.version];
+        let put = |b: &mut Vec<u8>, s: &str| {
+            b.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            b.extend_from_slice(s.as_bytes());
+        };
+        put(&mut b, &self.dir);
+        put(&mut b, &self.parent);
+        put(&mut b, &self.u03);
+        b.push(self.fids.len() as u8);
+        for f in &self.fids {
+            b.extend_from_slice(&f.class.to_le_bytes());
+            put(&mut b, &f.name);
+            put(&mut b, &f.file);
+            b.extend_from_slice(&f.flag.to_le_bytes());
+        }
+        b.extend_from_slice(&self.tail);
+        b
+    }
+
+    /// One line: `dir | fids | tail`.
+    pub fn summary(&self) -> String {
+        let fids: Vec<String> = self.fids.iter().map(|f| format!("{:08X}:{}={}", f.class, f.name, f.file)).collect();
+        let tail: Vec<String> = self.tail.chunks(4).map(|c| c.iter().map(|b| format!("{b:02x}")).collect::<String>()).collect();
+        format!("v{} dir={} parent={:?} u03={:?} fids=[{}] tail={}", self.version, self.dir, self.parent, self.u03, fids.join(", "), tail.join(" "))
+    }
+}
+
+/// The raw 0x090F4000 header chunk of any GBX file (item, blockinfo), if it
+/// has one.
+pub fn game_skin_chunk(bytes: &[u8]) -> Option<Vec<u8>> {
+    let g = Gbx::parse(bytes);
+    let chunks = user_chunks(&g.user_data)?;
+    chunks.into_iter().find(|c| c.id == GAME_SKIN_CHUNK).map(|c| c.data)
+}
+
+/// The decoded skin declaration of a GBX file, if it has one.
+pub fn game_skin(bytes: &[u8]) -> Option<GameSkin> {
+    GameSkin::decode(&game_skin_chunk(bytes)?)
+}
+
+/// The file with its 0x090F4000 header chunk replaced (or inserted right
+/// after the collector-description chunk 0x2E001003 and the icon 0x2E001004,
+/// where Nadeo's items carry it). The body is untouched; the header table is
+/// rebuilt. Uncompressed and compressed bodies both come back as they were.
+pub fn set_game_skin_chunk(bytes: &[u8], payload: &[u8]) -> Vec<u8> {
+    let mut g = Gbx::parse(bytes);
+    let mut chunks = user_chunks(&g.user_data).expect("header chunk table");
+    if let Some(c) = chunks.iter_mut().find(|c| c.id == GAME_SKIN_CHUNK) {
+        c.data = payload.to_vec();
+    } else {
+        let at = chunks
+            .iter()
+            .rposition(|c| c.id == 0x2E00_1003 || c.id == 0x2E00_1004)
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        chunks.insert(at, HChunk { id: GAME_SKIN_CHUNK, heavy: false, data: payload.to_vec() });
+    }
+    let mut ud = Vec::new();
+    ud.extend_from_slice(&(chunks.len() as u32).to_le_bytes());
+    for c in &chunks {
+        ud.extend_from_slice(&c.id.to_le_bytes());
+        ud.extend_from_slice(&((c.data.len() as u32) | if c.heavy { HEAVY } else { 0 }).to_le_bytes());
+    }
+    for c in &chunks {
+        ud.extend_from_slice(&c.data);
+    }
+    g.user_data = ud;
+    let body = g.body.clone();
+    if g.comp.is_some() {
+        g.write_body_recompressed(&body)
+    } else {
+        g.write_body_uncompressed(&body)
+    }
+}
+
+// ---------------------------------------------------------------- file refs
+
+/// A `FileRef` (a placement's skin `packDesc`, flags bit 2 of the v8 anchored
+/// object tail): `u8 version`, then (v ≥ 3) a 32-byte checksum, `string path`
+/// (`Skins\Stadium\LightColors\WhiteCold.dds` on Summer 15's 462 skinned
+/// lights), `string url` (empty unless the skin was downloaded).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileRef {
+    pub version: u8,
+    pub checksum: [u8; 32],
+    pub path: String,
+    pub url: String,
+}
+
+impl FileRef {
+    /// Decode at the start of `b`; returns the value and the bytes consumed.
+    pub fn decode(b: &[u8]) -> Option<(FileRef, usize)> {
+        let mut r = crate::gbx::Reader::new(b);
+        if b.is_empty() {
+            return None;
+        }
+        let version = r.u8();
+        let mut checksum = [0u8; 32];
+        if version >= 3 {
+            if r.o + 32 > b.len() {
+                return None;
+            }
+            checksum.copy_from_slice(r.bytes(32));
+        }
+        let mut string = |r: &mut crate::gbx::Reader| -> Option<String> {
+            if r.o + 4 > b.len() {
+                return None;
+            }
+            let n = r.u32() as usize;
+            if r.o + n > b.len() {
+                return None;
+            }
+            Some(String::from_utf8_lossy(r.bytes(n)).into_owned())
+        };
+        let path = string(&mut r)?;
+        let url = if version >= 3 || !path.is_empty() { string(&mut r)? } else { String::new() };
+        Some((FileRef { version, checksum, path, url }, r.o))
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut b = vec![self.version];
+        if self.version >= 3 {
+            b.extend_from_slice(&self.checksum);
+        }
+        b.extend_from_slice(&(self.path.len() as u32).to_le_bytes());
+        b.extend_from_slice(self.path.as_bytes());
+        b.extend_from_slice(&(self.url.len() as u32).to_le_bytes());
+        b.extend_from_slice(self.url.as_bytes());
+        b
+    }
+}

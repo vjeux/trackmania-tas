@@ -68,6 +68,31 @@ pub fn from_quat(q: [f32; 4], p: [f32; 3]) -> Xform {
     ]
 }
 
+/// The rotation of a transform as a GBX quaternion (x, y, z, w): the inverse
+/// of `from_quat` (Shepperd's method, the largest component first).
+pub fn to_quat(m: &Xform) -> [f32; 4] {
+    // r_ij = row i, column j; the columns are m[0..3], m[3..6], m[6..9]
+    let (r00, r10, r20) = (m[0], m[1], m[2]);
+    let (r01, r11, r21) = (m[3], m[4], m[5]);
+    let (r02, r12, r22) = (m[6], m[7], m[8]);
+    let tr = r00 + r11 + r22;
+    let q = if tr > 0.0 {
+        let s = (tr + 1.0).sqrt() * 2.0;
+        [(r21 - r12) / s, (r02 - r20) / s, (r10 - r01) / s, 0.25 * s]
+    } else if r00 > r11 && r00 > r22 {
+        let s = (1.0 + r00 - r11 - r22).sqrt() * 2.0;
+        [0.25 * s, (r01 + r10) / s, (r02 + r20) / s, (r21 - r12) / s]
+    } else if r11 > r22 {
+        let s = (1.0 + r11 - r00 - r22).sqrt() * 2.0;
+        [(r01 + r10) / s, 0.25 * s, (r12 + r21) / s, (r02 - r20) / s]
+    } else {
+        let s = (1.0 + r22 - r00 - r11).sqrt() * 2.0;
+        [(r02 + r20) / s, (r12 + r21) / s, 0.25 * s, (r10 - r01) / s]
+    };
+    // the pack writes the identity as (0, 0, 0, 1): keep w positive
+    if q[3] < 0.0 { [-q[0], -q[1], -q[2], -q[3]] } else { q }
+}
+
 /// A rotation of `steps * 90` degrees clockwise about +Y (looking down), then
 /// a translation. This is the map grid's `dir` byte.
 pub fn yaw_quarter(steps: u8, t: [f32; 3]) -> Xform {

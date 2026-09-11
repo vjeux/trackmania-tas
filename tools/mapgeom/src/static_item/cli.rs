@@ -42,6 +42,40 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
     if super::write_file(&f) != bytes {
         return Err("output does not round-trip through the parser".into());
     }
+    if let Some(p) = f.item.prefab() {
+        println!("wrote {out}: {} bytes, {} nodes, prefab entity model with {} entities:", bytes.len(), f.num_nodes, p.ents.len());
+        for (i, e) in p.ents.iter().enumerate() {
+            let what = match e.model.inline.as_deref() {
+                Some(super::Node::Dyna(d)) => {
+                    let s2 = match d.mesh.inline.as_deref() {
+                        Some(super::Node::Solid2(s)) => format!("{} visuals, {} materials", s.visuals.len(), s.custom_materials.len()),
+                        _ => "no inline mesh".into(),
+                    };
+                    let hull = |r: &super::Ref| match r.inline.as_deref() {
+                        Some(super::Node::Surface(s)) => {
+                            let (v, t) = s.surf.counts();
+                            format!("type {} {v}v/{t}f ids {:?}", s.surf.type_id(), s.material_ids)
+                        }
+                        _ => "none".into(),
+                    };
+                    format!("CPlugDynaObjectModel: {s2}, move shape {}, hit shape {}", hull(&d.dyna_shape), hull(&d.static_shape))
+                }
+                Some(super::Node::StaticObject(so)) => format!(
+                    "CPlugStaticObjectModel: {} visuals, collision {:?}",
+                    so.solid2().map(|s| s.visuals.len()).unwrap_or(0),
+                    so.surface().map(|s| match &s.surf {
+                        super::surface::Surf::Mesh { triangles, vertices, .. } => (vertices.len(), triangles.len()),
+                        _ => (0, 0),
+                    })
+                ),
+                Some(super::Node::Kinematic(k)) => format!("NPlugDyna_SKinematicConstraint: {} (params {:?})", k.summary(), super::dyna::ConstraintParams::parse(&e.params).map(|c| (c.ent1, c.ent2))),
+                Some(other) => format!("class 0x{:08X}", other.class_id()),
+                None => format!("external node {}", e.model.index),
+            };
+            println!("  entity {i} at {:?} rot {:?}: {what}", e.pos, e.rot);
+        }
+        return Ok(());
+    }
     let so = f.item.static_object().ok_or("output has no static object")?;
     let s2 = so.solid2().ok_or("output has no solid")?;
     let ntri = so.surface().map(|s| match &s.surf {

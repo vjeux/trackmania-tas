@@ -33,6 +33,7 @@ pub mod surface;
 pub mod item;
 pub mod file;
 pub mod prefab;
+pub mod dyna;
 pub mod build;
 pub mod bake;
 pub mod check;
@@ -54,6 +55,7 @@ pub const C_ITEM_PLACEMENT_PARAM: u32 = 0x2E020000;
 pub const C_MATERIAL_USER_INST: u32 = crate::crystal_model::C_MATERIAL_USER_INST;
 pub const C_MATERIAL: u32 = 0x09079000;
 pub const C_MATERIAL_CUSTOM: u32 = 0x0903A000;
+pub const C_PREFAB: u32 = 0x09145000;
 
 const SKIP: &[u8; 4] = b"PIKS";
 
@@ -72,6 +74,11 @@ pub enum Node {
     OldCustom(oldmat::OldCustom),
     Surface(surface::CPlugSurface),
     Placement(item::CGameItemPlacementParam),
+    /// A prefab of entities (the entity model of a moving item: static parts,
+    /// `CPlugDynaObjectModel`s and their kinematic constraints).
+    Prefab(prefab::CPlugPrefab),
+    Dyna(dyna::CPlugDynaObjectModel),
+    Kinematic(dyna::KinematicConstraint),
     /// A class with no reader here, made only of skippable chunks.
     Opaque(OpaqueNode),
 }
@@ -89,6 +96,9 @@ impl Node {
             Node::OldCustom(_) => C_MATERIAL_CUSTOM,
             Node::Surface(_) => C_SURFACE,
             Node::Placement(_) => C_ITEM_PLACEMENT_PARAM,
+            Node::Prefab(_) => C_PREFAB,
+            Node::Dyna(_) => dyna::C_DYNA_OBJECT_MODEL,
+            Node::Kinematic(_) => dyna::C_KINEMATIC_CONSTRAINT,
             Node::Opaque(o) => o.class_id,
         }
     }
@@ -107,6 +117,9 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
         C_MATERIAL_CUSTOM => Node::OldCustom(oldmat::OldCustom::parse(r)?),
         C_SURFACE => Node::Surface(surface::CPlugSurface::parse(r)?),
         C_ITEM_PLACEMENT_PARAM => Node::Placement(item::CGameItemPlacementParam::parse(r)?),
+        C_PREFAB => Node::Prefab(prefab::CPlugPrefab::parse_in(r)?),
+        dyna::C_DYNA_OBJECT_MODEL => Node::Dyna(dyna::CPlugDynaObjectModel::parse(r)?),
+        dyna::C_KINEMATIC_CONSTRAINT => Node::Kinematic(dyna::KinematicConstraint::parse(r)?),
         // Trigger-side and path classes of the gate / special prefabs: no
         // geometry, unskippable bodies. Read as the generic walker
         // (`classes.rs`) does and kept raw so the entity list stays walkable.
@@ -128,6 +141,9 @@ pub fn write_node(w: &mut Wr, n: &Node) {
         Node::OldCustom(x) => x.write(w),
         Node::Surface(x) => x.write(w),
         Node::Placement(x) => x.write(w),
+        Node::Prefab(x) => x.write_in(w),
+        Node::Dyna(x) => x.write(w),
+        Node::Kinematic(x) => x.write(w),
         Node::Opaque(o) => w.bytes(&o.raw),
     }
 }
