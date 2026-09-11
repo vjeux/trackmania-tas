@@ -26,16 +26,31 @@ pub struct Station {
 pub struct Track {
     pub stations: Vec<Station>,
     pub ds: f64,
+    /// A lap (the last station joins the first) or an open road (a pit lane).
+    pub closed: bool,
 }
 
-/// Centripetal Catmull-Rom through a closed polyline, resampled to `ds`.
-fn resample_closed(pts: &[Bng], labels: &[String], ds: f64) -> (Vec<Bng>, Vec<String>) {
+/// Centripetal Catmull-Rom through a polyline, resampled to `ds`. Closed:
+/// the last point joins the first. Open: the ends are clamped (the curve
+/// starts at the first point and ends at the last).
+fn resample(pts: &[Bng], labels: &[String], ds: f64, closed: bool) -> (Vec<Bng>, Vec<String>) {
     let n = pts.len();
-    let get = |i: i64| pts[((i % n as i64) + n as i64) as usize % n];
+    let get = |i: i64| -> Bng {
+        if closed {
+            pts[((i % n as i64) + n as i64) as usize % n]
+        } else {
+            pts[i.clamp(0, n as i64 - 1) as usize]
+        }
+    };
     let mut out = Vec::new();
     let mut out_labels = Vec::new();
     let mut carry = 0.0; // distance already covered into the current segment
-    for i in 0..n as i64 {
+    if !closed {
+        out.push(pts[0]);
+        out_labels.push(labels[0].clone());
+    }
+    let segments = if closed { n as i64 } else { n as i64 - 1 };
+    for i in 0..segments {
         let (p0, p1, p2, p3) = (get(i - 1), get(i), get(i + 1), get(i + 2));
         let d = |a: Bng, b: Bng| ((a.e - b.e).powi(2) + (a.n - b.n).powi(2)).sqrt().max(1e-6);
         // centripetal parameterisation
@@ -74,6 +89,30 @@ fn lerp(a: Bng, b: Bng, t: f64) -> Bng {
     Bng { e: a.e + (b.e - a.e) * t, n: a.n + (b.n - a.n) * t }
 }
 
+/// Gaussian smoothing of a series: around a loop, or with the ends held
+/// (an open road).
+pub fn smooth(v: &[f64], sigma: f64, closed: bool) -> Vec<f64> {
+    if closed {
+        return smooth_periodic(v, sigma);
+    }
+    if sigma <= 0.0 {
+        return v.to_vec();
+    }
+    let n = v.len() as i64;
+    let r = (3.0 * sigma).ceil() as i64;
+    let w: Vec<f64> = (-r..=r).map(|k| (-0.5 * (k as f64 / sigma).powi(2)).exp()).collect();
+    let ws: f64 = w.iter().sum();
+    (0..n)
+        .map(|i| {
+            let mut acc = 0.0;
+            for (j, k) in (-r..=r).enumerate() {
+                acc += w[j] * v[(i + k).clamp(0, n - 1) as usize];
+            }
+            acc / ws
+        })
+        .collect()
+}
+
 /// Gaussian smoothing of a periodic series.
 pub fn smooth_periodic(v: &[f64], sigma: f64) -> Vec<f64> {
     if sigma <= 0.0 {
@@ -99,25 +138,43 @@ impl Track {
     /// `sigma_z`: height smoothing along the lap (m); `half_width`: the
     /// offset at which the cross-slope is measured.
     pub fn build(lp: &Loop, dtm: &Mosaic, ds: f64, sigma_xy: f64, sigma_z: f64, half_width: f64) -> Track {
-        let (pts, labels) = resample_closed(&lp.points, &lp.labels, ds);
+        Self::build_points(&lp.points, &lp.labels, true, dtm, ds, sigma_xy, sigma_z, half_width)
+    }
+
+    /// An open road (a pit lane): the polyline's ends are its ends.
+    pub fn build_open(points: &[Bng], label: &str, dtm: &Mosaic, ds: f64, sigma_xy: f64, sigma_z: f64, half_width: f64) -> Track {
+        let labels = vec![label.to_string(); points.len()];
+        Self::build_points(points, &labels, false, dtm, ds, sigma_xy, sigma_z, half_width)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_points(points: &[Bng], labels: &[String], closed: bool, dtm: &Mosaic, ds: f64, sigma_xy: f64, sigma_z: f64, half_width: f64) -> Track {
+        let (pts, labels) = resample(points, labels, ds, closed);
         let es: Vec<f64> = pts.iter().map(|p| p.e).collect();
         let ns: Vec<f64> = pts.iter().map(|p| p.n).collect();
-        let es = smooth_periodic(&es, sigma_xy / ds);
-        let ns = smooth_periodic(&ns, sigma_xy / ds);
+        let es = smooth(&es, sigma_xy / ds, closed);
+        let ns = smooth(&ns, sigma_xy / ds, closed);
         // re-resample to restore uniform spacing after smoothing
         let sm: Vec<Bng> = es.iter().zip(&ns).map(|(&e, &n)| Bng { e, n }).collect();
-        let (pts, labels) = resample_closed(&sm, &labels, ds);
+        let (pts, labels) = resample(&sm, &labels, ds, closed);
         let n = pts.len();
+        let nb = |i: usize, d: i64| -> usize {
+            if closed {
+                ((i as i64 + d).rem_euclid(n as i64)) as usize
+            } else {
+                (i as i64 + d).clamp(0, n as i64 - 1) as usize
+            }
+        };
         let heading: Vec<f64> = (0..n)
             .map(|i| {
-                let a = pts[(i + n - 1) % n];
-                let b = pts[(i + 1) % n];
+                let a = pts[nb(i, -1)];
+                let b = pts[nb(i, 1)];
                 (b.n - a.n).atan2(b.e - a.e)
             })
             .collect();
         let mut curvature: Vec<f64> = (0..n)
             .map(|i| {
-                let mut dh = heading[(i + 1) % n] - heading[(i + n - 1) % n];
+                let mut dh = heading[nb(i, 1)] - heading[nb(i, -1)];
                 while dh > std::f64::consts::PI {
                     dh -= 2.0 * std::f64::consts::PI;
                 }
@@ -127,7 +184,7 @@ impl Track {
                 dh / (2.0 * ds)
             })
             .collect();
-        curvature = smooth_periodic(&curvature, 4.0 / ds);
+        curvature = smooth(&curvature, 4.0 / ds, closed);
         // ground: centre height and cross-slope from a transverse fit
         let mut z = Vec::with_capacity(n);
         let mut slope = Vec::with_capacity(n);
@@ -165,12 +222,21 @@ impl Track {
             slope.push(b);
         }
         assert!(missing == 0, "{missing} stations have no LIDAR ground under them");
-        let z = smooth_periodic(&z, sigma_z / ds);
-        let slope = smooth_periodic(&slope, (sigma_z * 1.5) / ds);
+        let z = smooth(&z, sigma_z / ds, closed);
+        let slope = smooth(&slope, (sigma_z * 1.5) / ds, closed);
         let stations = (0..n)
             .map(|i| Station { s: i as f64 * ds, e: pts[i].e, n: pts[i].n, z: z[i], heading: heading[i], curvature: curvature[i], cross_slope: slope[i], label: labels[i].clone() })
             .collect();
-        Track { stations, ds }
+        Track { stations, ds, closed }
+    }
+
+    /// The station after `i` (wrapping on a lap; `i` itself at an open end).
+    pub fn next(&self, i: usize) -> usize {
+        if self.closed {
+            (i + 1) % self.stations.len()
+        } else {
+            (i + 1).min(self.stations.len() - 1)
+        }
     }
 
     pub fn len(&self) -> usize {

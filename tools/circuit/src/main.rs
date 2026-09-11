@@ -5,7 +5,9 @@
 //! surroundings). Data out: custom items (road, terrain, buildings) and a
 //! `.Map.Gbx` that places them, with waypoints along the lap.
 
+mod aerial;
 mod buildings;
+mod check;
 mod edges;
 mod geo;
 mod item_probe;
@@ -13,6 +15,7 @@ mod mapbuild;
 mod mesh;
 mod osm;
 mod png;
+mod roads;
 mod terrain;
 mod tiff;
 mod track;
@@ -96,7 +99,7 @@ fn main() {
             let tr = track::Track::build(&lp, &dtm, 1.0, 3.0, 8.0, 7.5);
             let inten = tiff::Raster::load(Path::new(tif));
             let at: Vec<f64> = ss.split(',').map(|x| x.parse().expect("station")).collect();
-            profiles(&tr, &inten, &at);
+            profiles(&tr, &inten, &dtm, &at);
         }
         Some("build") => {
             // circuit build OVERPASS.json DTM_DIR INTENSITY.tif HOST.Map.Gbx OUT.Map.Gbx [--seg 100] [--cp 450] [--half 16]
@@ -109,6 +112,26 @@ fn main() {
             let variant = a.iter().position(|x| x == "--variant").and_then(|i| a.get(i + 1)).cloned().unwrap_or("all".into());
             let limit = flag(&a, "--limit").map(|v| v as usize);
             build(Path::new(osm_path), Path::new(dtm_dir), Path::new(tif), Path::new(host), Path::new(out), seg, cp, half, surroundings.as_deref(), &variant, limit);
+        }
+        Some("aerial") => {
+            // circuit aerial OSM DTM_DIR INTENSITY.tif OUT_DIR s1,s2,... [--span 80] [--px 0.2]
+            let (osm_path, dtm_dir, tif, outdir, ss) = (a.get(2).unwrap_or_else(|| usage()), a.get(3).unwrap_or_else(|| usage()), a.get(4).unwrap_or_else(|| usage()), a.get(5).unwrap_or_else(|| usage()), a.get(6).unwrap_or_else(|| usage()));
+            let ways = osm::load(Path::new(osm_path));
+            let lp = osm::gp_loop(&ways);
+            let dtm = tiff::Mosaic::load(&tiles(Path::new(dtm_dir), "dtm_"));
+            let tr = track::Track::build(&lp, &dtm, 1.0, 3.0, 8.0, 6.0);
+            let inten = tiff::Raster::load(Path::new(tif));
+            let ed = edges::Edges::from_intensity(&tr, &inten);
+            let span = flag(&a, "--span").unwrap_or(80.0);
+            let px = flag(&a, "--px").unwrap_or(0.3); // the service refuses anything finer than its 0.3 m tiles
+            std::fs::create_dir_all(outdir).ok();
+            for s in ss.split(',') {
+                let at: usize = s.trim().parse().expect("station");
+                let out = Path::new(outdir).join(format!("aerial_{at:04}.png"));
+                if let Err(e) = aerial::overlay(&tr, &ed, at, span, px, &out) {
+                    eprintln!("station {at}: {e}");
+                }
+            }
         }
         Some("map-head") => {
             for f in &a[2..] {
@@ -326,18 +349,20 @@ fn raster_png(tif: &Path, out: &Path, bbox: (f64, f64, f64, f64), scale: f64, la
 
 /// Transverse intensity profiles at chosen stations, for calibrating the
 /// edge finder: one row per 0.5 m lateral offset (left positive).
-fn profiles(tr: &track::Track, inten: &tiff::Raster, at: &[f64]) {
+fn profiles(tr: &track::Track, inten: &tiff::Raster, dtm: &tiff::Mosaic, at: &[f64]) {
     for &s in at {
         let i = ((s / tr.ds).round() as usize).min(tr.len() - 1);
         let st = &tr.stations[i];
-        println!("# station {i} s={:.0} {} heading {:.1} deg", st.s, st.label, st.heading.to_degrees());
+        println!("# station {i} s={:.0} {} heading {:.1} deg  (offset:intensity/ground cm relative to the centreline)", st.s, st.label, st.heading.to_degrees());
+        let z0 = dtm.sample(st.e, st.n).unwrap_or(0.0);
         let mut row = String::new();
         let mut k = -60;
         while k <= 60 {
             let off = k as f64 * 0.5;
             let p = tr.offset(i, off);
             let v = inten.sample(p[0], p[1]).map(|v| format!("{v:.0}")).unwrap_or("-".into());
-            row.push_str(&format!("{off:+.1}:{v} "));
+            let h = dtm.sample(p[0], p[1]).map(|z| format!("{:+.0}", (z - z0) * 100.0)).unwrap_or("-".into());
+            row.push_str(&format!("{off:+.1}:{v}/{h} "));
             k += 1;
         }
         println!("{row}");
@@ -370,31 +395,87 @@ fn build(osm_path: &Path, dtm_dir: &Path, tif: &Path, host: &Path, out: &Path, s
     let fr = mapbuild::Frame { e0: ce - (sx as f64) * 16.0, n0: cn + (sz as f64) * 16.0, z_ref: zmin - 12.0 };
     println!("map size {sx} x {} x {sz} blocks ({} x {} m); origin E{:.0} N{:.0}; track y {:.1}..{:.1}", host_size[1], sx * 32, sz * 32, fr.e0, fr.n0, 12.0, tr.stations.iter().map(|s| s.z).fold(f64::MIN, f64::max) - fr.z_ref);
     // Start line: in front of the Wing (OSM building), else station 0.
-    let start = around.as_ref().and_then(|w| start_station(&tr, w)).unwrap_or(0);
-    let plan = mapbuild::plan_waypoints(&tr, start, cp_spacing);
+    // The start and finish lines: OSM's `raceway=start` / `raceway=finish`
+    // nodes when the dump has them (Silverstone's are ~150 m apart, the
+    // finish line downstream of the start line), else the Wing's centroid.
+    let nearest = |b: geo::Bng| tr.stations.iter().enumerate().map(|(i, s)| (i, (s.e - b.e).powi(2) + (s.n - b.n).powi(2))).min_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).map(|(i, d)| (i, d.sqrt())).unwrap();
+    let osm_start = ways.tagged_node("raceway", "start").map(nearest);
+    let osm_finish = ways.tagged_node("raceway", "finish").map(nearest);
+    if let Some((i, d)) = osm_start {
+        println!("OSM start line -> station {i} ({}), {d:.1} m off the centreline", tr.stations[i].label);
+    }
+    if let Some((i, d)) = osm_finish {
+        println!("OSM finish line -> station {i} ({}), {d:.1} m off the centreline", tr.stations[i].label);
+    }
+    let start = osm_start.map(|(i, _)| i).or_else(|| around.as_ref().and_then(|w| start_station(&tr, w))).unwrap_or(0);
+    let mut plan = mapbuild::plan_waypoints(&tr, start, cp_spacing);
+    if let Some((f, _)) = osm_finish {
+        plan.finish = f;
+    }
     println!("start at s={} ({}), finish at s={}, {} checkpoints at {:?}", start, tr.stations[start].label, plan.finish, plan.checkpoints.len(), plan.checkpoints.iter().map(|&c| format!("{}:{}", tr.stations[c].s as i64, tr.stations[c].label.split(' ').next().unwrap_or(""))).collect::<Vec<_>>());
-    let (mut items, skip) = mapbuild::waypoint_items(&tr, &ed, &fr, &plan, half);
-    let roads = mapbuild::road_items(&tr, &ed, &fr, seg, &skip);
+    // which shoulders are run-off asphalt: the intensity 0.75 m beyond the kerb
+    let shoulder_asphalt = |k: usize, left: bool| -> bool {
+        let k1 = (k + 1) % tr.len();
+        let (edge, kerb) = if left { (ed.left[k], terrain::kerb_width(ed.kerb_left[k], ed.kerb_left[k1])) } else { (ed.right[k], terrain::kerb_width(ed.kerb_right[k], ed.kerb_right[k1])) };
+        let off = edge + kerb + 0.75;
+        let w = tr.offset(k, if left { off } else { -off });
+        inten.at(w[0], w[1]).map(|v| (v as f64) < terrain::ASPHALT_MAX).unwrap_or(false)
+    };
+    // The roads' footprint: the lap first, then every other piece of tarmac
+    // at the venue clipped against what came before (roads.rs). The map
+    // box is where terrain lives; the ribbon spans it.
+    let (de0, dn0, de1, dn1) = dtm.bounds();
+    let map_box = ((fr.e0).max(de0), (fr.n0 - sz as f64 * 32.0).max(dn0), (fr.e0 + sx as f64 * 32.0).min(de1), (fr.n0).min(dn1));
+    let lap_ribbon = terrain::Ribbon::build(&tr, &ed, map_box, 40.0);
+    let mut union = terrain::Ribbon::build(&tr, &ed, map_box, 40.0);
+    let extra_roads = if a_has("--no-extra-roads") { Vec::new() } else { roads::extra_roads(&ways, &lap_ribbon, &mut union, &dtm, &inten) };
+    println!("{} extra roads (pit lanes, other layouts, link roads)", extra_roads.len());
+    // the lap's shoulders: none where another road meets the lap flush
+    let others = {
+        let mut r = terrain::Ribbon::new(map_box);
+        for road in &extra_roads {
+            r.add(&road.track, &road.edges, 10.0);
+        }
+        r
+    };
+    let shoulder_sides = |k: usize| -> (bool, bool) {
+        let k1 = (k + 1) % tr.len();
+        let side = |left: bool| -> bool {
+            let (edge, kerb) = if left { (ed.left[k], terrain::kerb_width(ed.kerb_left[k], ed.kerb_left[k1])) } else { (ed.right[k], terrain::kerb_width(ed.kerb_right[k], ed.kerb_right[k1])) };
+            let off = edge + kerb + 0.75;
+            let w = tr.offset(k, if left { off } else { -off });
+            others.beyond_kerb(w[0], w[1]) >= 0.0
+        };
+        (side(true), side(false))
+    };
+    let own_height = |_k: usize, _off: f64, own: f64| own;
+    let style = mapbuild::RoadStyle { shoulder_asphalt: &shoulder_asphalt, shoulder_sides: &shoulder_sides, height: &own_height };
+    let (mut items, skip) = mapbuild::waypoint_items(&tr, &ed, &fr, &plan, half, &style);
+    let mut roads = mapbuild::road_items(&tr, &ed, &fr, seg, &skip, &style, "Road");
     println!("{} waypoint items, {} road items", items.len(), roads.len());
+    // the extra roads, each blended onto everything built before it
+    {
+        let mut before = terrain::Ribbon::build(&tr, &ed, map_box, 40.0);
+        for (idx, road) in extra_roads.iter().enumerate() {
+            roads.extend(roads::road_items_for(road, idx, &fr, &before, &inten, &dtm));
+            before.add(&road.track, &road.edges, 40.0);
+        }
+    }
     // the venue: the lap's box plus 220 m, where terrain and surroundings live
     let venue = (e0 - 220.0, n0 - 220.0, e1 + 220.0, n1 + 220.0);
     let mut extras: Vec<mapbuild::Placement> = Vec::new();
     if !a_has("--no-terrain") {
-        // the coarse layer covers the whole grid so the LIDAR ground runs to
-        // the map's edge (clipped to where the DTM tiles have data)
-        let (de0, dn0, de1, dn1) = dtm.bounds();
-        let map_box = ((fr.e0).max(de0), (fr.n0 - sz as f64 * 32.0).max(dn0), (fr.e0 + sx as f64 * 32.0).min(de1), (fr.n0).min(dn1));
-        let spec = terrain::TerrainSpec { bbox: venue, coarse_bbox: map_box, coarse: flag(&a_all(), "--coarse").unwrap_or(24.0), fine: flag(&a_all(), "--fine").unwrap_or(4.0), band: 40.0, tile: 256.0 };
-        extras.extend(terrain::terrain_items(&tr, &ed, &dtm, &inten, &fr, &spec));
+        let spec = terrain::TerrainSpec { bbox: venue, coarse_bbox: map_box, coarse: flag(&a_all(), "--coarse").unwrap_or(32.0), fine: flag(&a_all(), "--fine").unwrap_or(4.0), near: flag(&a_all(), "--near").unwrap_or(30.0), tile: 256.0 };
+        extras.extend(terrain::terrain_items(&union, &dtm, &inten, &fr, &spec));
     }
     if let Some(w) = around.as_ref() {
         if !a_has("--no-buildings") {
             let dsm = tiff::Mosaic::load(&tiles(dtm_dir, "dsm_"));
-            let structs = buildings::structures(w, &dtm, &dsm, venue, &tr, &ed);
+            let structs = buildings::structures(w, &dtm, &dsm, venue, &tr, &ed, &union);
             let n_stand = structs.iter().filter(|s| s.kind == "grandstand").count();
             println!("{} structures ({n_stand} grandstands); tallest {:.0} m", structs.len(), structs.iter().map(|s| s.height).fold(0.0, f64::max));
             extras.extend(buildings::building_items(&structs, &fr));
-            extras.extend(buildings::linear_items(w, &dtm, &dsm, &ed, &fr, venue, &tr, 60.0));
+            extras.extend(buildings::linear_items(w, &dtm, &dsm, &ed, &fr, venue, &tr, 60.0, &union));
         }
     }
     println!("{} terrain/surroundings items", extras.len());
@@ -429,6 +510,20 @@ fn build(osm_path: &Path, dtm_dir: &Path, tif: &Path, host: &Path, out: &Path, s
     }
     for (k, (n, b)) in &per {
         println!("  {k:<12} {n:>4} items {:>6.2} MB", *b as f64 / 1e6);
+    }
+    // The self-check: nothing above the road, no holes, no launching crests.
+    let report = check::run(&items, &tr, &ed, &fr, 60.0);
+    check::print(&report);
+    for road in &extra_roads {
+        let r = check::run_road(&items, road, &fr);
+        if !r.offenders.is_empty() {
+            println!("check: on {}:", road.name);
+            check::print(&r);
+        }
+    }
+    if report.fatal() && !a_has("--allow-defects") {
+        eprintln!("circuit: the map has surface defects on the lap; not written (pass --allow-defects to write it anyway)");
+        std::process::exit(2);
     }
     let uid = mapbuild::map_uid(&items);
     println!("uid {uid} (hash of every placement's collision + waypoint physics)");

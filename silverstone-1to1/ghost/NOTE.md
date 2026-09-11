@@ -1,5 +1,27 @@
 # Silverstone 1:1 — the ghost lap
 
+**127.702 s, 14/14 checkpoints, 0 rewinds**, validated by the Nadeo dedicated
+server on the final map (uid `Silverstone1to14ae52765fea5`, md5
+`c05993a8cae060380d61e15002fb3d0e`). Driven with `tmexplore-real drive`
+(pure pursuit + a 20 m/s² speed plan capped at 55 m/s) on the fork engine;
+the two ghosts come out of `make-filmable.sh` in this folder.
+
+Ride height over the whole lap, from the engine's own trace: median 0.019 m,
+max 0.103 m. (The first lap, on the first map, left the ground at 14 places,
+1.09 m at Chapel Curve: 32 m terrain cells cut through the road. `circuit`
+now refuses to write a map whose surface has anything above the tarmac.)
+
+Start: the real start line (OSM `raceway=start`, 0.4 m from our centreline).
+Finish: the real finish/timing line, 150 m upstream of it — so this lap is
+5737 m, the way a British GP's first lap is.
+
+---
+
+Below: the note the driver wrote for the first lap (130.433 s on the first
+map). Method and quirks still apply; times and hashes are the old ones.
+
+# Silverstone 1:1 — the ghost lap
+
 **130.433 s, 14/14 checkpoints, validated by the Nadeo dedicated server on the
 frozen map** `Silverstone.final.Map.Gbx` (uid `Silverstone1to12b6f959f2fe7`,
 md5 `5e081c677fd26911d65f6ba90cb04c97`; same physics as uid

@@ -21,14 +21,14 @@ only the editor's default, not a limit of the game.
 | Lap | 5887 m, 14 checkpoints, start on the Hamilton straight in front of the Wing |
 | Data | OSM (ODbL); EA LIDAR Composite DTM 2022, first-return DSM, National LIDAR Programme intensity 2019 (OGL v3) |
 | Tool | [`tools/circuit`](../tools/circuit/CIRCUIT.md) — Rust, one binary, data in, `.Map.Gbx` out |
-| Lap ghost | `ghost/Silverstone.lap.Ghost.Gbx` — **130.433 s**, 14/14 checkpoints, validated by the dedicated server (author time) |
+| Lap ghost | `ghost/Silverstone.lap.Ghost.Gbx` — **127.702 s**, 14/14 checkpoints, validated by the dedicated server (author time) |
 | Filmable ghost | `ghost/Silverstone.lap.filmable.Ghost.Gbx` — same inputs with the car telemetry regenerated from the engine; this is what the video shows |
 | Video | [silverstone-1to1-lap-130433.mp4](https://github.com/vjeux/trackmania-tas/releases/download/videos-v1/silverstone-1to1-lap-130433.mp4) (1080p30, 2:10, controls overlay) |
-| Nadeo | club campaign **Silverstone 1:1** (club 43788, campaign 155871), map id `fad522e7-a4a9-446c-8093-a892f3f30102` — [campaign](https://trackmania.io/#/campaigns/43788/155871) · [leaderboard](https://trackmania.io/#/leaderboard/Silverstone1to12b6f959f2fe7) |
+| Nadeo | club campaign **Silverstone 1:1** (club 43788, campaign 155871), map id `b20f6ba7-bb58-470d-96a0-0062f0406dfd` — [campaign](https://trackmania.io/#/campaigns/43788/155871) · [leaderboard](https://trackmania.io/#/leaderboard/Silverstone1to14ae52765fea5) |
 
 ## The lap ghost
 
-**130.433 s, 14/14 checkpoints, 0 respawns**, validated by the Nadeo dedicated
+**127.702 s, 14/14 checkpoints, 0 respawns**, validated by the Nadeo dedicated
 server on this exact map file. It is an unoptimized lap on purpose: a
 closed-loop controller driving the surveyed centreline — pure pursuit with a
 1 s lookahead, a `sqrt(20 m/s² / curvature)` speed plan capped at 55 m/s — on
@@ -40,7 +40,24 @@ transcript and the two ghost files are in [`ghost/`](ghost/) (`NOTE.md`).
 Roughly 25–35 s is on the table by raising the speed cap and the cornering
 allowance.
 
-Medals: author 2:10.433 · gold 2:20.870 · silver 2:36.520 · bronze 3:15.650.
+Medals: author 2:07.702 · gold 2:17.920 · silver 2:33.240 · bronze 3:11.550.
+
+## How accurate is it
+
+- The lap was checked against aerial imagery corner by corner (the ESRI
+  World Imagery view of each corner with our detected edges drawn on it):
+  the edges sit on the real white lines and kerbs everywhere the imagery is
+  cloud-free; the OSM start line lands 0.4 m from our centreline. Widths
+  10.8–15.8 m over the lap (mean 13.3 m). Where a flush asphalt run-off
+  joins the track (Abbey, Chapel exit, Maggotts) the LIDAR could not see the
+  white line; the edge there is taken from the painted-line ridge, the
+  asphalt-to-asphalt step, or the neighbours — see `tools/circuit/CIRCUIT.md`.
+- Every build runs a surface check over 250,000 points of the lap: nothing
+  may stand above the tarmac or the kerbs, no holes, no crest sharp enough
+  to launch a car at 60 m/s. The map is not written otherwise.
+- Not modelled: barriers/debris fences (OSM has few), kerb colours (Stadium
+  has one kerb material), painted markings other than the start/finish and
+  checkpoint lines.
 
 ## The video
 

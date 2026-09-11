@@ -281,6 +281,15 @@ impl MeshBuilder {
         h
     }
 
+    /// The collision triangles as the game will see them: placed at `pos`,
+    /// turned by `yaw` (local +z onto (sin yaw, cos yaw), the inverse of
+    /// `mapbuild::to_local`).
+    pub fn coll_world(&self, pos: [f32; 3], yaw: f32) -> Vec<[[f32; 3]; 3]> {
+        let (s, c) = yaw.sin_cos();
+        let f = |l: [f32; 3]| -> [f32; 3] { [pos[0] + l[0] * c + l[2] * s, pos[1] + l[1], pos[2] - l[0] * s + l[2] * c] };
+        self.coll.iter().map(|(p, _)| [f(p[0]), f(p[1]), f(p[2])]).collect()
+    }
+
     pub fn build(mut self, ident: &str, author: &str, waypoint: Option<&Waypoint>) -> Vec<u8> {
         assert!(!self.is_empty(), "{ident}: empty mesh");
         let mut m = Merged::default();

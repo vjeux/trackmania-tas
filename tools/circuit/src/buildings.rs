@@ -98,7 +98,7 @@ pub struct Structure {
 
 /// Every OSM building inside `bbox`, with its LIDAR height. `tr`/`ed` tell
 /// which footprints the lap runs through (those are lifted off the ground).
-pub fn structures(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, bbox: (f64, f64, f64, f64), tr: &crate::track::Track, ed: &crate::edges::Edges) -> Vec<Structure> {
+pub fn structures(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, bbox: (f64, f64, f64, f64), tr: &crate::track::Track, ed: &crate::edges::Edges, roads: &crate::terrain::Ribbon) -> Vec<Structure> {
     let (e0, n0, e1, n1) = bbox;
     let mut out = Vec::new();
     let nearest = |e: f64, n: f64| -> (usize, f64) {
@@ -122,6 +122,10 @@ pub fn structures(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, bbox: (f64, f64, f64, f6
                 let (e, n) = (a.e + t * (b.e - a.e), a.n + t * (b.n - a.n));
                 let (i, d) = nearest(e, n);
                 if d < ed.left[i].max(ed.right[i]) + 1.0 {
+                    return true;
+                }
+                // or any other road (a garage an access road drives into)
+                if roads.beyond_kerb(e, n) < 0.5 {
                     return true;
                 }
             }
@@ -273,15 +277,16 @@ pub fn building_items(structs: &[Structure], fr: &Frame) -> Vec<Placement> {
         }
         let ident = format!("Silverstone\\Bldg{}_{}.Item.Gbx", te.rem_euclid(1000), tn.rem_euclid(1000));
         let physics = mb.physics_hash(None);
-            let bytes = mb.build(&ident, AUTHOR, None);
-        out.push(Placement { ident, bytes, pos: anchor, yaw: 0.0, tag: None, physics });
+        let coll = mb.coll_world(anchor, 0.0);
+        let bytes = mb.build(&ident, AUTHOR, None);
+        out.push(Placement { ident, bytes, pos: anchor, yaw: 0.0, tag: None, physics, coll });
     }
     out
 }
 
 /// OSM barriers (fences, hedges, walls) as low walls, and bridges as decks:
 /// one item per 256 m tile.
-pub fn linear_items(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, ed: &crate::edges::Edges, fr: &Frame, bbox: (f64, f64, f64, f64), tr: &crate::track::Track, near: f64) -> Vec<Placement> {
+pub fn linear_items(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, ed: &crate::edges::Edges, fr: &Frame, bbox: (f64, f64, f64, f64), tr: &crate::track::Track, near: f64, roads: &crate::terrain::Ribbon) -> Vec<Placement> {
     let (e0, n0, e1, n1) = bbox;
     // barriers only matter close to the lap (the pit wall, track-side fences);
     // bridges anywhere in the venue
@@ -308,6 +313,12 @@ pub fn linear_items(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, ed: &crate::edges::Edg
             let (e, n) = (a.e + t * (b.e - a.e), a.n + t * (b.n - a.n));
             let (i, d) = nearest(e, n);
             if d < ed.left[i].max(ed.right[i]) + 3.0 {
+                return Some(i);
+            }
+            // on any other road (the pit wall stands 0.3 m or more outside
+            // the pit lane's painted apron and must stay: it is the one
+            // reference the driver sees for 600 m)
+            if roads.beyond_kerb(e, n) < 0.3 {
                 return Some(i);
             }
         }
@@ -410,8 +421,9 @@ pub fn linear_items(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, ed: &crate::edges::Edg
         }
         let ident = format!("Silverstone\\Line{}_{}.Item.Gbx", te.rem_euclid(1000), tn.rem_euclid(1000));
         let physics = mb.physics_hash(None);
-            let bytes = mb.build(&ident, AUTHOR, None);
-        out.push(Placement { ident, bytes, pos: anchor, yaw: 0.0, tag: None, physics });
+        let coll = mb.coll_world(anchor, 0.0);
+        let bytes = mb.build(&ident, AUTHOR, None);
+        out.push(Placement { ident, bytes, pos: anchor, yaw: 0.0, tag: None, physics, coll });
     }
     out
 }

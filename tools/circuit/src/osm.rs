@@ -41,6 +41,15 @@ pub struct Way {
 pub struct Ways {
     pub nodes: HashMap<i64, Bng>,
     pub ways: Vec<Way>,
+    /// Tagged nodes (`raceway=start`, `raceway=finish`, ...): the tags by id.
+    pub node_tags: HashMap<i64, BTreeMap<String, String>>,
+}
+
+impl Ways {
+    /// The node carrying `key=value`, if any.
+    pub fn tagged_node(&self, key: &str, value: &str) -> Option<Bng> {
+        self.node_tags.iter().find(|(_, t)| t.get(key).map(|v| v == value).unwrap_or(false)).and_then(|(id, _)| self.nodes.get(id).copied())
+    }
 }
 
 pub fn load(path: &Path) -> Ways {
@@ -48,10 +57,14 @@ pub fn load(path: &Path) -> Ways {
     let d: Dump = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let mut nodes = HashMap::new();
     let mut ways = Vec::new();
+    let mut node_tags = HashMap::new();
     for el in d.elements {
         match el.kind.as_str() {
             "node" => {
                 nodes.insert(el.id, wgs84_to_bng(el.lat, el.lon));
+                if !el.tags.is_empty() {
+                    node_tags.insert(el.id, el.tags);
+                }
             }
             "way" => {
                 let name = el.tags.get("name").cloned().unwrap_or_default();
@@ -60,7 +73,7 @@ pub fn load(path: &Path) -> Ways {
             _ => {}
         }
     }
-    Ways { nodes, ways }
+    Ways { nodes, ways, node_tags }
 }
 
 /// The Grand Prix corners in lap order, starting on the pit straight.

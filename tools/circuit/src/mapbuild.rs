@@ -35,6 +35,8 @@ pub struct Placement {
     pub tag: Option<&'static str>,
     /// Hash of what the car can feel in this item (collision + waypoint).
     pub physics: u64,
+    /// The collision triangles in world space, for `check`.
+    pub coll: Vec<[[f32; 3]; 3]>,
 }
 
 /// The map uid: `Silverstone1to1` + 12 hex digits of a hash over every
@@ -83,19 +85,20 @@ pub fn to_local(p: [f32; 3], pos: [f32; 3], yaw: f32) -> [f32; 3] {
 /// the edges, kerb strips where the intensity saw a bright band, thin side
 /// skirts down to hide the terrain seam. `skip` marks stations covered by
 /// waypoint items instead (their road is inside those items).
-pub fn road_items(tr: &Track, ed: &Edges, fr: &Frame, seg_len: f64, skip: &[bool]) -> Vec<Placement> {
+pub fn road_items(tr: &Track, ed: &Edges, fr: &Frame, seg_len: f64, skip: &[bool], style: &RoadStyle, prefix: &str) -> Vec<Placement> {
     let n = tr.len();
     let per = (seg_len / tr.ds).round() as usize;
     let mut out = Vec::new();
     let mut seg = 0usize;
     let mut i = 0usize;
-    while i < n {
-        let end = (i + per).min(n);
+    // an open road has n-1 slices; a lap has n
+    let last = if tr.closed { n } else { n - 1 };
+    while i < last {
+        let end = (i + per).min(last);
         // anchor: the segment's first centreline point, at road height
         let a0 = fr.to_tm(tr.stations[i].e, tr.stations[i].n, tr.stations[i].z);
         let mut mb = MeshBuilder::new();
-        let asphalt = mb.material(&mesh::ASPHALT);
-        let kerb = mb.material(&mesh::KERB);
+        let m = RoadMats::new(&mut mb);
         let mut any = false;
         for k in i..end {
             let k1 = (k + 1) % n;
@@ -103,13 +106,14 @@ pub fn road_items(tr: &Track, ed: &Edges, fr: &Frame, seg_len: f64, skip: &[bool
                 continue;
             }
             any = true;
-            road_slice(&mut mb, tr, ed, fr, a0, k, k1, asphalt, kerb, 0.0);
+            road_slice(&mut mb, tr, ed, fr, a0, k, k1, m, 0.0, style);
         }
         if any {
-            let ident = format!("Silverstone\\Road{seg:03}.Item.Gbx");
+            let ident = format!("Silverstone\\{prefix}{seg:03}.Item.Gbx");
             let physics = mb.physics_hash(None);
+            let coll = mb.coll_world(a0, 0.0);
             let bytes = mb.build(&ident, AUTHOR, None);
-            out.push(Placement { ident, bytes, pos: a0, yaw: 0.0, tag: None, physics });
+            out.push(Placement { ident, bytes, pos: a0, yaw: 0.0, tag: None, physics, coll });
         }
         seg += 1;
         i = end;
@@ -117,15 +121,49 @@ pub fn road_items(tr: &Track, ed: &Edges, fr: &Frame, seg_len: f64, skip: &[bool
     out
 }
 
+/// The materials a road slice draws with.
+#[derive(Clone, Copy)]
+pub struct RoadMats {
+    pub asphalt: usize,
+    pub kerb: usize,
+    pub grass: usize,
+}
+
+impl RoadMats {
+    pub fn new(mb: &mut MeshBuilder) -> RoadMats {
+        RoadMats { asphalt: mb.material(&mesh::ASPHALT), kerb: mb.material(&mesh::KERB), grass: mb.material(&mesh::GRASS) }
+    }
+}
+
 /// One station-to-station slice of road into `mb`, in the frame of `anchor`
-/// (world coordinates minus the anchor), lifted by `lift`.
+/// (world coordinates minus the anchor), lifted by `lift`: tarmac between
+/// the edges, the kerb strips, and a `SHOULDER` m shoulder beyond each kerb
+/// that drops `CONFORM_DROP` to meet the ground the terrain conforms to the
+/// road plane (see `terrain.rs`) — so the seam to the ground is a slope,
+/// never a lip. `shoulder_asphalt(k, left)` says which shoulders are run-off
+/// asphalt rather than grass.
+pub const SHOULDER: f64 = 1.5;
+
+/// How a road is finished: which shoulders are asphalt, which sides get a
+/// shoulder at all (none where another road meets this one flush), and a
+/// height hook (station, lateral offset, own height) -> height, for
+/// blending a pit lane onto the lap's plane at the merge.
+pub struct RoadStyle<'a> {
+    pub shoulder_asphalt: &'a dyn Fn(usize, bool) -> bool,
+    pub shoulder_sides: &'a dyn Fn(usize) -> (bool, bool),
+    pub height: &'a dyn Fn(usize, f64, f64) -> f64,
+}
+
 #[allow(clippy::too_many_arguments)]
-fn road_slice(mb: &mut MeshBuilder, tr: &Track, ed: &Edges, fr: &Frame, anchor: [f32; 3], k: usize, k1: usize, asphalt: usize, kerb: usize, lift: f32) {
+fn road_slice(mb: &mut MeshBuilder, tr: &Track, ed: &Edges, fr: &Frame, anchor: [f32; 3], k: usize, k1: usize, m: RoadMats, lift: f32, style: &RoadStyle) {
+    let shoulder_asphalt = style.shoulder_asphalt;
     let p = |i: usize, off: f64| -> [f32; 3] {
         let w = tr.offset(i, off);
-        let t = fr.to_tm(w[0], w[1], w[2]);
+        let z = (style.height)(i, off, w[2]);
+        let t = fr.to_tm(w[0], w[1], z);
         [t[0] - anchor[0], t[1] - anchor[1] + lift, t[2] - anchor[2]]
     };
+    let (sl, sr) = (style.shoulder_sides)(k);
     let (l0, l1) = (ed.left[k], ed.left[k1]);
     let (r0, r1) = (ed.right[k], ed.right[k1]);
     // Texture: Nadeo's road atlases run ALONG the road in u (one tile per
@@ -136,30 +174,62 @@ fn road_slice(mb: &mut MeshBuilder, tr: &Track, ed: &Edges, fr: &Frame, anchor: 
     let (u0, u1) = (s0 / 32.0, s1 / 32.0);
     // tarmac: left edge to right edge (left is +offset)
     let (a, b, c, d) = (p(k, l0), p(k1, l1), p(k1, -r1), p(k, -r0));
-    mb.quad_uv_up(asphalt, [a, b, c, d], [[u0, 0.06], [u1, 0.06], [u1, 0.94], [u0, 0.94]], true);
-    // kerbs: bright band outside each edge
+    mb.quad_uv_up(m.asphalt, [a, b, c, d], [[u0, 0.06], [u1, 0.06], [u1, 0.94], [u0, 0.94]], true);
+    // kerbs: bright band outside each edge (the same widths terrain.rs uses)
     let (ku0, ku1) = (s0 / 8.0, s1 / 8.0);
-    let (kl0, kl1) = (ed.kerb_left[k].min(4.0), ed.kerb_left[k1].min(4.0));
-    if kl0 > 0.4 || kl1 > 0.4 {
-        let (e, f) = (p(k, l0 + kl0.max(0.5)), p(k1, l1 + kl1.max(0.5)));
-        mb.quad_uv_up(kerb, [e, f, b, a], [[ku0, 0.06], [ku1, 0.06], [ku1, 0.94], [ku0, 0.94]], true);
+    let kl = crate::terrain::kerb_width(ed.kerb_left[k], ed.kerb_left[k1]);
+    let kl1w = if kl > 0.0 { ed.kerb_left[k1].min(4.0).max(0.5) } else { 0.0 };
+    if kl > 0.0 {
+        let (e, f) = (p(k, l0 + kl), p(k1, l1 + kl1w));
+        mb.quad_uv_up(m.kerb, [e, f, b, a], [[ku0, 0.06], [ku1, 0.06], [ku1, 0.94], [ku0, 0.94]], true);
     }
-    let (kr0, kr1) = (ed.kerb_right[k].min(4.0), ed.kerb_right[k1].min(4.0));
-    if kr0 > 0.4 || kr1 > 0.4 {
-        let (e, f) = (p(k, -(r0 + kr0.max(0.5))), p(k1, -(r1 + kr1.max(0.5))));
-        mb.quad_uv_up(kerb, [d, c, f, e], [[ku0, 0.06], [ku1, 0.06], [ku1, 0.94], [ku0, 0.94]], true);
+    let kr = crate::terrain::kerb_width(ed.kerb_right[k], ed.kerb_right[k1]);
+    let kr1w = if kr > 0.0 { ed.kerb_right[k1].min(4.0).max(0.5) } else { 0.0 };
+    if kr > 0.0 {
+        let (e, f) = (p(k, -(r0 + kr)), p(k1, -(r1 + kr1w)));
+        mb.quad_uv_up(m.kerb, [d, c, f, e], [[ku0, 0.06], [ku1, 0.06], [ku1, 0.94], [ku0, 0.94]], true);
     }
-    // skirts: 0.4 m down at the outer limits, so the seam to the terrain
-    // never shows daylight
-    let ol0 = l0 + if kl0 > 0.4 { kl0.max(0.5) } else { 0.0 };
-    let ol1 = l1 + if kl1 > 0.4 { kl1.max(0.5) } else { 0.0 };
-    let or0 = r0 + if kr0 > 0.4 { kr0.max(0.5) } else { 0.0 };
-    let or1 = r1 + if kr1 > 0.4 { kr1.max(0.5) } else { 0.0 };
-    let down = |q: [f32; 3]| [q[0], q[1] - 0.4, q[2]];
-    let (e, f) = (p(k, ol0), p(k1, ol1));
-    mb.quad(asphalt, [e, down(e), down(f), f], false);
-    let (g, h) = (p(k, -or0), p(k1, -or1));
-    mb.quad(asphalt, [h, down(h), down(g), g], false);
+    // shoulders: from the kerb's outer edge out by SHOULDER, dropping to the
+    // conformed ground
+    let drop = crate::terrain::CONFORM_DROP as f32;
+    let (ol0, ol1, or0, or1) = (l0 + kl, l1 + kl1w, r0 + kr, r1 + kr1w);
+    let lower = |q: [f32; 3]| [q[0], q[1] - drop, q[2]];
+    // and a 1.5 m skirt down from the shoulder's outer edge, so ground that
+    // falls away below the plane shows no daylight under the shoulder. The
+    // shoulder is LEVEL (the kerb edge's height, the camber stops at the
+    // kerb), which is also what the terrain's lid assumes.
+    let down = |q: [f32; 3]| [q[0], q[1] - 1.5, q[2]];
+    let level = |q: [f32; 3], at: [f32; 3]| [q[0], at[1], q[2]];
+    if sl {
+        let mat = if shoulder_asphalt(k, true) { m.asphalt } else { m.grass };
+        let (e, f) = (p(k, ol0), p(k1, ol1));
+        let (g, h) = (lower(level(p(k, ol0 + SHOULDER), e)), lower(level(p(k1, ol1 + SHOULDER), f)));
+        if mat == m.asphalt {
+            mb.quad_uv_up(mat, [g, h, f, e], [[u0, 0.35], [u1, 0.35], [u1, 0.5], [u0, 0.5]], true);
+        } else {
+            mb.quad_up(mat, [g, h, f, e], true);
+        }
+        mb.quad(mat, [g, down(g), down(h), h], false);
+    }
+    if !sl {
+        let (e, f) = (p(k, ol0), p(k1, ol1));
+        mb.quad(m.asphalt, [e, down(e), down(f), f], false);
+    }
+    if sr {
+        let mat = if shoulder_asphalt(k, false) { m.asphalt } else { m.grass };
+        let (e, f) = (p(k, -or0), p(k1, -or1));
+        let (g, h) = (lower(level(p(k, -(or0 + SHOULDER)), e)), lower(level(p(k1, -(or1 + SHOULDER)), f)));
+        if mat == m.asphalt {
+            mb.quad_uv_up(mat, [e, f, h, g], [[u0, 0.5], [u1, 0.5], [u1, 0.65], [u0, 0.65]], true);
+        } else {
+            mb.quad_up(mat, [e, f, h, g], true);
+        }
+        mb.quad(mat, [h, down(h), down(g), g], false);
+    }
+    if !sr {
+        let (g, h) = (p(k, -or0), p(k1, -or1));
+        mb.quad(m.asphalt, [h, down(h), down(g), g], false);
+    }
 }
 
 pub struct WaypointPlan {
@@ -194,7 +264,7 @@ pub fn plan_waypoints(tr: &Track, start: usize, spacing: f64) -> WaypointPlan {
 /// A waypoint item: `half` metres of road either side of station `at`,
 /// built in the item's own frame (local +z = direction of travel, origin at
 /// the station's centreline point), with the trigger/spawn at the origin.
-fn waypoint_item(tr: &Track, ed: &Edges, fr: &Frame, at: usize, half: f64, kind: WaypointKind, ident: &str) -> Placement {
+fn waypoint_item(tr: &Track, ed: &Edges, fr: &Frame, at: usize, half: f64, kind: WaypointKind, ident: &str, style: &RoadStyle) -> Placement {
     let n = tr.len();
     let st = &tr.stations[at];
     let pos = fr.to_tm(st.e, st.n, st.z);
@@ -202,19 +272,17 @@ fn waypoint_item(tr: &Track, ed: &Edges, fr: &Frame, at: usize, half: f64, kind:
     let (sh, ch) = st.heading.sin_cos();
     let yaw = yaw_for(ch as f32, -sh as f32);
     let mut mb = MeshBuilder::new();
-    let asphalt = mb.material(&mesh::ASPHALT);
-    let kerb = mb.material(&mesh::KERB);
+    let m = RoadMats::new(&mut mb);
     let paint = mb.material(&mesh::CONCRETE);
     let hs = (half / tr.ds) as usize;
     // build in WORLD frame relative to pos, then rotate into local
     let mut world = MeshBuilder::new();
-    let wa = world.material(&mesh::ASPHALT);
-    let wk = world.material(&mesh::KERB);
+    let wm = RoadMats::new(&mut world);
     let wp_paint = world.material(&mesh::CONCRETE);
     for d in 0..2 * hs {
         let k = (at + n - hs + d) % n;
         let k1 = (k + 1) % n;
-        road_slice(&mut world, tr, ed, fr, pos, k, k1, wa, wk, 0.0);
+        road_slice(&mut world, tr, ed, fr, pos, k, k1, wm, 0.0, style);
     }
     // a painted line across the track at the waypoint (2 m for the start
     // and finish, 1 m for a checkpoint), a hair above the tarmac
@@ -231,7 +299,7 @@ fn waypoint_item(tr: &Track, ed: &Edges, fr: &Frame, at: usize, half: f64, kind:
     }
     // re-emit rotated into the item frame
     let rot = |q: [f32; 3]| to_local([q[0] + pos[0], q[1] + pos[1], q[2] + pos[2]], pos, yaw);
-    world.replay_into(&mut mb, &[(wa, asphalt), (wk, kerb), (wp_paint, paint)], &rot);
+    world.replay_into(&mut mb, &[(wm.asphalt, m.asphalt), (wm.kerb, m.kerb), (wm.grass, m.grass), (wp_paint, paint)], &rot);
     let width = (ed.left[at] + ed.right[at]) as f32;
     let wp = Waypoint {
         kind,
@@ -239,16 +307,17 @@ fn waypoint_item(tr: &Track, ed: &Edges, fr: &Frame, at: usize, half: f64, kind:
         trigger: if kind == WaypointKind::Start { None } else { Some(([-(width / 2.0 + 6.0), -1.0, -2.0], [width / 2.0 + 6.0, 9.0, 2.0])) },
     };
     let physics = mb.physics_hash(Some(&wp));
+    let coll = mb.coll_world(pos, yaw);
     let bytes = mb.build(ident, AUTHOR, Some(&wp));
     let tag = Some(match kind {
         WaypointKind::Start => "Spawn",
         WaypointKind::Finish => "Goal",
         WaypointKind::Checkpoint => "Checkpoint",
     });
-    Placement { ident: ident.to_string(), bytes, pos, yaw, tag, physics }
+    Placement { ident: ident.to_string(), bytes, pos, yaw, tag, physics, coll }
 }
 
-pub fn waypoint_items(tr: &Track, ed: &Edges, fr: &Frame, plan: &WaypointPlan, half: f64) -> (Vec<Placement>, Vec<bool>) {
+pub fn waypoint_items(tr: &Track, ed: &Edges, fr: &Frame, plan: &WaypointPlan, half: f64, style: &RoadStyle) -> (Vec<Placement>, Vec<bool>) {
     let n = tr.len();
     let mut skip = vec![false; n];
     let mut mark = |at: usize| {
@@ -259,12 +328,12 @@ pub fn waypoint_items(tr: &Track, ed: &Edges, fr: &Frame, plan: &WaypointPlan, h
     };
     let mut out = Vec::new();
     mark(plan.start);
-    out.push(waypoint_item(tr, ed, fr, plan.start, half, WaypointKind::Start, "Silverstone\\Start.Item.Gbx"));
+    out.push(waypoint_item(tr, ed, fr, plan.start, half, WaypointKind::Start, "Silverstone\\Start.Item.Gbx", style));
     mark(plan.finish);
-    out.push(waypoint_item(tr, ed, fr, plan.finish, half, WaypointKind::Finish, "Silverstone\\Finish.Item.Gbx"));
+    out.push(waypoint_item(tr, ed, fr, plan.finish, half, WaypointKind::Finish, "Silverstone\\Finish.Item.Gbx", style));
     for (i, &c) in plan.checkpoints.iter().enumerate() {
         mark(c);
-        out.push(waypoint_item(tr, ed, fr, c, half, WaypointKind::Checkpoint, &format!("Silverstone\\Checkpoint{:02}.Item.Gbx", i + 1)));
+        out.push(waypoint_item(tr, ed, fr, c, half, WaypointKind::Checkpoint, &format!("Silverstone\\Checkpoint{:02}.Item.Gbx", i + 1), style));
     }
     (out, skip)
 }
