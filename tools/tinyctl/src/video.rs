@@ -2395,7 +2395,8 @@ pub fn parse_builds(text: &str) -> std::collections::HashMap<String, (String, St
         .filter_map(|l| {
             let c: Vec<&str> = l.split('\t').map(str::trim).collect();
             let nn = c[0];
-            if nn.len() != 2 || !nn.chars().all(|ch| ch.is_ascii_digit()) || c.len() < 3 || c[1].is_empty() || c[2].is_empty() {
+            let is_map = nn.len() == 2 && nn.chars().all(|ch| ch.is_ascii_digit());
+            if (!is_map && nn != "*") || c.len() < 3 || c[1].is_empty() || c[2].is_empty() {
                 return None;
             }
             Some((nn.to_string(), (c[1].to_string(), c[2].to_string())))
@@ -2789,5 +2790,31 @@ mod rebuild_order_tests {
         }
         let order = rebuild_order(readme, &["19".into(), "02".into(), "01".into()], &builds, Some("ship15"));
         assert_eq!(order, vec!["01".to_string(), "19".to_string(), "02".to_string()], "01 and 19 confirmed on ship18f (01 shorter), then 02");
+    }
+}
+
+#[cfg(test)]
+mod latest_alias_tests {
+    use super::*;
+
+    #[test]
+    fn the_star_latest_row_parses_and_the_newest_passing_set_wins() {
+        let b = parse_builds("# h\n*\tlatest\tlatest\n05\tship17c\t/x/05.Map.Gbx\n");
+        assert_eq!(b.get("*").map(|(t, _)| t.as_str()), Some("latest"));
+        assert_eq!(b.get("05").map(|(t, _)| t.as_str()), Some("ship17c"));
+        let root = std::env::temp_dir().join(format!("latest-test-{}", std::process::id()));
+        for (set, pass) in [("ship18e-aaaa", true), ("ship18f-bbbb", true), ("ship19-cccc", false)] {
+            let d = root.join(set);
+            std::fs::create_dir_all(&d).unwrap();
+            for i in 1..=25 {
+                std::fs::write(d.join(format!("Tiny Summer 2026 - {i:02}.Map.Gbx")), b"x").unwrap();
+            }
+            let rows: String = (1..=25).map(|i| format!("{i:02}\tTiny Summer 2026 - {i:02}.Map.Gbx: {}\n", if pass || i != 7 { "PASS (x)" } else { "FAIL (y)" })).collect();
+            std::fs::write(d.join("STARTCHECK.tsv"), rows).unwrap();
+        }
+        let (tag, dir) = latest_installed_set(&root).unwrap();
+        assert_eq!(tag, "ship18f", "ship19 fails one map; ship18f is newer than ship18e");
+        assert!(dir.ends_with("ship18f-bbbb"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
