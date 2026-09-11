@@ -1556,7 +1556,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 }
             } else if due {
                 said_waiting_session = false;
-                if session_changed {
+                if session_changed && failed_session_stamp > 0 && probed_session_stamp < session_stamp {
                     println!("{} the box's session file changed (mtime {session_stamp}) — probing again", chrono_now());
                 }
                 // remember which session file this launch probes; the stamp becomes
