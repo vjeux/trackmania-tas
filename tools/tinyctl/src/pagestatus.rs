@@ -176,7 +176,13 @@ pub fn update_rows_with_clips(page: &str, laps: &[(String, String)], ghosts_read
         let want = match (&newest, &row.published) {
             (Some(n), Some(p)) if n != p && !holds.contains_key(nn.as_str()) && staged.contains(&(nn.clone(), n.clone())) => Some((n.clone(), staged_note(ghosts_readme, nn, n))),
             (Some(n), None) if !holds.contains_key(nn.as_str()) && staged.contains(&(nn.clone(), n.clone())) => Some((n.clone(), staged_note(ghosts_readme, nn, n))),
+            // a held map whose newest certified lap is NOT faster than the published
+            // one (INPUT reverted the alias to the public lap; 96.297 vs 96.298 is a
+            // rounding twin) carries the hold's reason as a plain records line —
+            // never "latest lap 96.297 — held", which reads as a stall
+            (Some(n), Some(p)) if n != p && holds.contains_key(nn.as_str()) && secs(n) >= secs(p) - 0.0015 => Some((String::new(), Note::Held(holds[nn.as_str()].clone()))),
             (Some(n), Some(p)) if n != p && holds.contains_key(nn.as_str()) => Some((n.clone(), held_note(&holds[nn.as_str()], staged.contains(&(nn.clone(), n.clone()))))),
+            (Some(n), Some(p)) if n == p && holds.contains_key(nn.as_str()) && holds[nn.as_str()].starts_with("records:") => Some((String::new(), Note::Held(holds[nn.as_str()].clone()))),
             (Some(n), None) if holds.contains_key(nn.as_str()) => Some((n.clone(), held_note(&holds[nn.as_str()], staged.contains(&(nn.clone(), n.clone()))))),
             (Some(n), Some(p)) if n != p => {
                 let will_render = matches!(
@@ -299,6 +305,8 @@ fn status_line(time: &str, build: &str, ghosts_readme: &str, nn: &str, note: &No
     match note {
         Note::Pending => format!("*latest lap **{time}** (build {build}{who}) — video pending*"),
         Note::Within(_) => format!("*latest lap **{time}** (build {build}{who}) — within {min_gain:.1} s of the published clip*"),
+        // a records-form hold reads as the map's record line, without "latest lap"
+        Note::Held(reason) if reason.starts_with("records:") && time.is_empty() => format!("*{} — held (opening rework)*", reason.trim_end_matches('*')),
         Note::Held(reason) => format!("*latest lap **{time}** (build {build}{who}) — held ({reason})*"),
         Note::Staged => format!("*latest lap **{time}** (build {build}{who}) — staged, awaiting the opening check*"),
     }
@@ -566,7 +574,8 @@ https://github.com/user-attachments/assets/c\n";
 /// (`— video pending*`, `— within 0.1 s of the published clip*`, `— held (…)*`)?
 pub fn is_status_note(l: &str) -> bool {
     let l = l.trim_end();
-    l.starts_with("*latest lap **") && (l.ends_with(PENDING_MARK) || l.ends_with(WITHIN_MARK) || l.contains(") — held (") || l.ends_with(STAGED_MARK))
+    (l.starts_with("*latest lap **") && (l.ends_with(PENDING_MARK) || l.ends_with(WITHIN_MARK) || l.contains(") — held (") || l.ends_with(STAGED_MARK)))
+        || (l.starts_with("*records:") && l.ends_with("— held (opening rework)*"))
 }
 
 #[cfg(test)]
@@ -1194,5 +1203,42 @@ mod lap_build_tests {
         assert_eq!(lap_build(r, "19", "46.362"), None);
         let line = status_line("42.454", "ship15", r, "15", &Note::Held("records".into()), 0.1);
         assert_eq!(line, "*latest lap **42.454** (build ship17c) — held (records)*");
+    }
+}
+
+#[cfg(test)]
+mod records_hold_tests {
+    use super::*;
+
+    /// A held map whose README newest lap is the public lap (or its 1-ms
+    /// rounding twin) carries the hold's records line, not "latest lap … held".
+    #[test]
+    fn a_records_hold_reads_as_a_records_line_when_no_newer_lap_stands() {
+        let ghosts = "| 22 | 22.Ghost.Gbx | 96.297 | 14 | ship15 | f1275f23 | GEN | x |\n| 25 | 25.Ghost.Gbx | 102.115 | 15 | ship15 | bd1a146f | GEN | y |\n";
+        let page = "**Tiny Saudi Arabia 2026** — original author time `73.418` · tiny ghost **96.298** (build ship15, controls overlay)\n\n\
+*latest lap **96.297** (build ship15) — held (records: 78.051 (certified; to be re-driven forwards))*\n\n\
+https://github.com/user-attachments/assets/b\n\n\
+**Tiny Japan 2026** — original author time `78.928` · tiny ghost **102.115** (build ship15, controls overlay)\n\n\
+https://github.com/user-attachments/assets/c\n";
+        let laps = newest_laps(ghosts, "ship15");
+        assert_eq!(laps.iter().find(|(m, _)| m == "25").map(|(_, t)| t.as_str()), Some("102.115"), "{laps:?}");
+        let mut holds = std::collections::HashMap::new();
+        holds.insert("22".to_string(), "records: 78.051 (certified; to be re-driven forwards)".to_string());
+        holds.insert("25".to_string(), "records: 83.772, 90.202, 86.518 (certified; to be re-driven forwards)".to_string());
+        let rows = rows_of(page);
+        assert_eq!(rows.iter().map(|(_, r)| (r.nn.as_str(), r.published.as_deref())).collect::<Vec<_>>(), vec![("22", Some("96.298")), ("25", Some("102.115"))]);
+        let (out, notes) = update_all(page, &laps, ghosts, "ship15", 0.1, &holds, &std::collections::HashSet::new());
+        assert!(out.contains("tiny ghost **96.298** (build ship15, controls overlay)\n\n*records: 78.051 (certified; to be re-driven forwards) — held (opening rework)*\n\nhttps://github.com/user-attachments/assets/b"), "{out}");
+        assert!(out.contains("tiny ghost **102.115** (build ship15, controls overlay)\n\n*records: 83.772, 90.202, 86.518 (certified; to be re-driven forwards) — held (opening rework)*\n\nhttps://github.com/user-attachments/assets/c"), "{out}");
+        assert!(!out.contains("latest lap **96.297**"), "{out}");
+        let _ = notes;
+        // idempotent
+        let (again, n2) = update_all(&out, &laps, ghosts, "ship15", 0.1, &holds, &std::collections::HashSet::new());
+        assert_eq!(again, out);
+        assert!(n2.is_empty(), "{n2:?}");
+        // a genuinely newer held lap still gets the latest-lap form
+        let ghosts2 = "| 22 | 22.Ghost.Gbx | 84.379 | 14 | ship15 | f1275f23 | GEN | x |\n";
+        let (newer, _) = update_all(&out, &newest_laps(ghosts2, "ship15"), ghosts2, "ship15", 0.1, &holds, &std::collections::HashSet::new());
+        assert!(newer.contains("*latest lap **84.379** (build ship15) — held (records: 78.051 (certified; to be re-driven forwards))*"), "{newer}");
     }
 }
