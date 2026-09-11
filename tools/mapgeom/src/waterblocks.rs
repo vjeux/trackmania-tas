@@ -221,7 +221,18 @@ pub fn decide(plates: &[PlateRow], tris: &[UpTri], source: Option<&SourceUnder>)
             } else if samples > 0 && visible * 4 > samples {
                 local.push(Decision { water_cells: water_cells.len(), body, archetype: arche.clone(), choice: "item", reason: format!("sheet visible in the air over {visible}/{samples} spill samples"), origin, spill });
             } else {
-                local.push(Decision { water_cells: water_cells.len(), body, archetype: arche.clone(), choice: "block", reason: if spill_cells.is_empty() { "exact: all four cells are water".to_string() } else { format!("spill hidden: {visible}/{samples} samples open") }, origin, spill });
+                // EMITTED archetype is always WaterBase (volume 4..7 of the block, no collision of
+                // its own). A DecoWallWaterBase custom block puts a COLLIDABLE clip cap (ResonantMetal)
+                // on its top face at origin + 8 — a metal lid at the pool plane (measured 2026-09-11
+                // 01:55Z: a car dropped on a free DecoWallWaterBase block in open air lands on 22 at
+                // origin + 8). Deep (DecoWallWater) pools get TWO WaterBase layers: bands
+                // plane−3..plane and plane−6..plane−3.
+                let reason = if spill_cells.is_empty() { "exact: all four cells are water".to_string() } else { format!("spill hidden: {visible}/{samples} samples open") };
+                let layers: &[f32] = if arche == "DecoWallWaterBase" { &[7.0, 10.0] } else { &[7.0] };
+                for (li, off) in layers.iter().enumerate() {
+                    let body_l = if layers.len() > 1 { format!("{body} layer {}/{}", li + 1, layers.len()) } else { body.clone() };
+                    local.push(Decision { water_cells: if li == 0 { water_cells.len() } else { 0 }, body: body_l, archetype: "WaterBase".to_string(), choice: "block", reason: reason.clone(), origin: [ox, plane - off, oz], spill: spill.clone() });
+                }
             }
         }
         let score: usize = local.iter().filter(|d| d.choice == "block").map(|d| d.water_cells).sum();
