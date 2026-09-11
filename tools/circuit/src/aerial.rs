@@ -162,3 +162,56 @@ pub fn overlay(tr: &Track, ed: &Edges, at: usize, span: f64, px: f64, out: &Path
     println!("{}: station {at} {} E{:.0} N{:.0}, {w}x{h} px at {px} m/px; left {:.1} m, right {:.1} m (width {:.1})", out.display(), st.label, st.e, st.n, ed.left[at], ed.right[at], ed.left[at] + ed.right[at]);
     Ok(())
 }
+
+/// The aerial of a BNG box with the OSM ways carrying `tag` (key=value)
+/// drawn on it (one colour per way, node dots), for reading a layout off
+/// the imagery.
+pub fn box_overlay(bbox: (f64, f64, f64, f64), px: f64, osm: Option<&crate::osm::Ways>, tag: Option<&str>, out: &Path) -> Result<(), String> {
+    let (w, h, pix, mb) = fetch(bbox, px)?;
+    let mut img = Image::new(w, h, [0, 0, 0]);
+    for y in 0..h {
+        for x in 0..w {
+            img.put(x as i64, y as i64, pix[y * w + x]);
+        }
+    }
+    let to_px = |e: f64, n: f64| -> (f64, f64) {
+        let (lat, lon) = bng_to_wgs84(e, n);
+        let (x, y) = mercator(lat, lon);
+        ((x - mb.0) / (mb.2 - mb.0) * w as f64, (mb.3 - y) / (mb.3 - mb.1) * h as f64)
+    };
+    if let (Some(ways), Some(tag)) = (osm, tag) {
+        let (k, v) = tag.split_once('=').ok_or("--tag wants key=value")?;
+        let palette = [[255, 60, 60], [60, 255, 60], [60, 120, 255], [255, 230, 0], [255, 0, 255], [0, 255, 255], [255, 150, 0], [180, 255, 120], [255, 120, 180], [120, 200, 255], [200, 200, 200]];
+        let mut i = 0;
+        for way in &ways.ways {
+            if way.tags.get(k).map(|x| x == v) != Some(true) {
+                continue;
+            }
+            let c = palette[i % palette.len()];
+            i += 1;
+            let pts: Vec<_> = way.nodes.iter().filter_map(|id| ways.nodes.get(id)).collect();
+            for q in pts.windows(2) {
+                let (x0, y0) = to_px(q[0].e, q[0].n);
+                let (x1, y1) = to_px(q[1].e, q[1].n);
+                img.line(x0, y0, x1, y1, c);
+                img.line(x0 + 1.0, y0, x1 + 1.0, y1, c);
+            }
+            for p in &pts {
+                let (x, y) = to_px(p.e, p.n);
+                img.disc(x, y, 2.0, [255, 255, 255]);
+            }
+            if let Some(p) = pts.first() {
+                let (x, y) = to_px(p.e, p.n);
+                img.disc(x, y, 4.0, c);
+            }
+            println!("way {} {:?} {} nodes colour {:?}", way.id, way.name, pts.len(), c);
+        }
+    }
+    let (ax, ay) = to_px(bbox.0 + 3.0, bbox.1 + 3.0);
+    let (bx, _) = to_px(bbox.0 + 53.0, bbox.1 + 3.0);
+    img.line(ax, ay, bx, ay, [255, 255, 255]);
+    img.line(ax, ay + 1.0, bx, ay + 1.0, [255, 255, 255]);
+    img.save(out);
+    println!("{}: {w}x{h} px, scale bar 50 m", out.display());
+    Ok(())
+}

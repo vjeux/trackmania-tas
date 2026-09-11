@@ -133,6 +133,15 @@ fn main() {
                 }
             }
         }
+        Some("aerial-box") => {
+            // circuit aerial-box OUT.png E0,N0,E1,N1 [--px 0.3] [--osm dump.json --tag sport=karting]
+            let out = a.get(2).unwrap_or_else(|| usage());
+            let bb: Vec<f64> = a.get(3).unwrap_or_else(|| usage()).split(',').map(|v| v.parse().expect("bbox")).collect();
+            let px = flag(&a, "--px").unwrap_or(0.3);
+            let osm = a.iter().position(|x| x == "--osm").and_then(|i| a.get(i + 1)).map(|p| osm::load(Path::new(p)));
+            let tag = a.iter().position(|x| x == "--tag").and_then(|i| a.get(i + 1)).cloned();
+            aerial::box_overlay((bb[0], bb[1], bb[2], bb[3]), px, osm.as_ref(), tag.as_deref(), Path::new(out)).unwrap_or_else(|e| panic!("{e}"));
+        }
         Some("map-head") => {
             for f in &a[2..] {
                 map_head(Path::new(f));
