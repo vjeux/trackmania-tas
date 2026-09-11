@@ -952,6 +952,32 @@ would have to be inserted) — the deck at −200 m is the workaround; overlappi
 are avoided by the lattice; RoadWater channels would need the asymmetric archetypes placed with the
 source direction (the free rotation convention is unmeasured).
 
+### Corrections after the first sets (2026-09-11 02:00Z)
+
+- A free custom block whose archetype is **DecoWallWaterBase carries the archetype's collidable clip
+  cap** on its top face (ResonantMetal, at origin + 8 — a car dropped on one placed in open air lands on
+  material 22 at +8): a metal lid at the pool plane. **WaterBase** custom blocks have no collision of their
+  own (the car sinks through the plane to the pool floor, wheels reading Water). So the tiler emits
+  WaterBase only; a deep (DecoWallWater) pool gets two WaterBase layers (origins plane−7 and plane−10,
+  bands plane−3..plane and plane−6..plane−3). Verified on 15's pool A (ship17c): the car crosses the plane,
+  reads Water from 0.1 m under it, its fall brakes from −13.3 to −7.4 m/s at the surface, sinks with drag
+  and rests on the floor; on ship15 it sat on the lid.
+- The sets: ship17-d9549f05 (DecoWall blocks at plane − 7: the cap 1 m above the plane), ship17b-8a3c000d
+  (plane − 8: the cap AT the plane), ship17c-a6a82a45 (WaterBase layers, correct) — install 17c.
+
+## Gate icons: the checkerboard was our own sign-logo picture (2026-09-11 01:35Z)
+
+vjeux's green/purple checkerboard on the boost-gate icon squares (Argentina) is the game's missing-texture
+pattern drawn for the **SignLogo picture material** the 2026-09-09 pass put on the gates' LED sign panels
+(TDSN + a generated DDS) — in the uncompressed RGBA32 form (ship15) and in the DXT5-with-mips form
+(ship17) alike. Same-camera editor frames 10 m behind 21's triple Turbo bar: original = yellow chevrons;
+ship15 = checkerboards; ship17b = checkerboards; the pass off = yellow chevrons identical to the original —
+the pack's own `SpecialSign<Kind>` material draws the icon by itself in an item. Eliminated on the way (three
+replacement models each, the checkerboard never moved): the `TriggerFX<Kind>` curtain and the
+`SpecialFX<Kind>` icon-plate FuncShader materials. Default now: `TINY_SIGNLOGO` off (`on` restores the pass),
+`TINY_TRIGGERFX=game`. Open: Summer 19's 16-m gate beam panel showed the grey ⊗ "off" sign on 2026-09-09 —
+the reason the pass existed; re-check it with the pass off before calling the panels done.
+
 ## Water: the engine's native representations, and what a half-size map can use (research log, 2026-09-10 17:10Z)
 
 The question (coordinator): can a HALF-SIZE water volume exist in our maps — a flat car floats at ~0.9 m
