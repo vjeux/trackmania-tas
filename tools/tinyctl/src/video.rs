@@ -1216,6 +1216,10 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
     let stamp_file = out.join("session-failed.stamp");
     let mut failed_session_stamp: u64 = std::fs::read_to_string(&stamp_file).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
     let mut said_waiting_session = false;
+    let mut probed_session_stamp: u64 = 0;
+    // the clip whose ship the last launch started (its verdict is the probe's)
+    let mut launched_name: Option<String> = None;
+    let mut seen_fail_for_probe: std::collections::HashSet<u64> = std::collections::HashSet::new();
     let mut attitude_said: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     loop {
         let text = std::fs::read_to_string(&ships).unwrap_or_default();
@@ -1502,6 +1506,13 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 let cookie_dead = done.contains("cookie probe") || done.contains("no upload CSRF") || done.contains("attachment upload failed");
                 if cookie_dead {
                     dead_cookie.push((nn.clone(), time.clone(), name.clone(), done_file.clone()));
+                    // a verdict that says the session is dead marks the session file we
+                    // probed as failed — the next launch waits for a newer one
+                    let this_is_the_launched_clip = launched_name.as_deref() == Some(name.as_str());
+                    if this_is_the_launched_clip && probed_session_stamp > failed_session_stamp && seen_fail_for_probe.insert(probed_session_stamp) {
+                        failed_session_stamp = probed_session_stamp;
+                        let _ = std::fs::write(&stamp_file, failed_session_stamp.to_string());
+                    }
                 }
             }
         }
@@ -1540,8 +1551,9 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 if session_changed {
                     println!("{} the box's session file changed (mtime {session_stamp}) — probing again", chrono_now());
                 }
-                failed_session_stamp = session_stamp.max(1);
-                let _ = std::fs::write(&stamp_file, failed_session_stamp.to_string());
+                // remember which session file this launch probes; the stamp becomes
+                // "failed" only when the verdict comes back as a cookie failure
+                probed_session_stamp = session_stamp.max(1);
                 last_probe = Some(std::time::Instant::now());
                 let (nn, time, name, done_file) = &dead_cookie[0];
                 let r_mp4 = format!("{VID}/mp4/{name}.mp4");
@@ -1564,7 +1576,10 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                      elif ps -eo args | grep -E '^(/bin/)?sh .*tinyship.sh ' | grep -v grep > /dev/null; then echo BUSY; \
                      else rm -f '{done_file}' && nohup sh {BOX_SHIP_SH} '{r_mp4}' '{slug}' '{outbase}' > /dev/null 2>&1 < /dev/null & echo LAUNCHED; fi"
                 )) {
-                    Ok(out) if out.contains("LAUNCHED") => println!("{} launching {nn} {time} ({} clip(s) held; one at a time — the box's lock covers the probe, the upload and the gate)", chrono_now(), dead_cookie.len()),
+                    Ok(out) if out.contains("LAUNCHED") => {
+                        launched_name = Some(name.clone());
+                        println!("{} launching {nn} {time} ({} clip(s) held; one at a time — the box's lock covers the probe, the upload and the gate)", chrono_now(), dead_cookie.len());
+                    }
                     Ok(out) if out.contains("VERDICT-EXISTS") => {
                         println!("{} {nn} {time}: a verdict with a URL appeared since the read — not relaunched (collected next tick)", chrono_now());
                         last_probe = None;
