@@ -314,7 +314,8 @@ fn all_once(args: &[String]) -> Result<(), String> {
     // happens when it crosses the threshold. `--min-gain-s 0` is the opt-out
     // (every new ghost renders, as before).
     let min_gain: f64 = f("--min-gain-s").map(|s| s.parse().map_err(|_| "--min-gain-s wants seconds")).transpose()?.unwrap_or(0.1);
-    let published = published_laps(&std::fs::read_to_string(out.join("ships.tsv")).unwrap_or_default());
+    let ships_text = std::fs::read_to_string(out.join("ships.tsv")).unwrap_or_default();
+    let published = published_laps(&ships_text);
     // PUBLISH HOLDS (coordinator, 2026-09-10 17:55Z: "the opening is bad; stop
     // optimizing the end" — no new Argentina lap goes up until lifted). A map
     // listed in `<out>/holds.tsv` (`nn<TAB>reason`) is not rendered and not
@@ -400,7 +401,11 @@ fn all_once(args: &[String]) -> Result<(), String> {
         // (if the README still has it) or its clip suffix names the old one.
         let certified_here = build.as_deref().map(|b| readme_row(&readme, &nn, &time).map(|r| r.contains(b)).unwrap_or(false)).unwrap_or(false);
         let published_certified_here = build.as_deref().and_then(|b| published.get(&nn).map(|(t, _)| readme_row(&readme, &nn, &format!("{t:.3}")).map(|r| r.contains(b)).unwrap_or(false))).unwrap_or(true);
-        let min_gain_here = if certified_here && !published_certified_here { 0.0 } else { min_gain };
+        // … and the sliver rule holds only against a lap that is PUBLIC (a URL row):
+        // between two unpublished candidates the newest certified lap is the one to
+        // render (coordinator, 2026-09-11 23:45Z: 16 43.299 vs the pending 43.306).
+        let public_lap_is_url = published.get(&nn).map(|(_, name)| ships_text.lines().any(|l| { let c: Vec<&str> = l.split('\t').collect(); c.len() >= 5 && c[2].trim() == name && c[4].trim().starts_with("https://") })).unwrap_or(false);
+        let min_gain_here = if (certified_here && !published_certified_here) || !public_lap_is_url { 0.0 } else { min_gain };
         if min_gain_here == 0.0 && min_gain > 0.0 {
             println!("{nn} {time}: certified on {} while the published lap was certified on an older build — the gain threshold does not apply", build.as_deref().unwrap_or("?"));
         }
