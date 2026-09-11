@@ -1358,7 +1358,20 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                             Some(d) => lap_label(&std::fs::read_to_string(d.join("README.md")).unwrap_or_default(), nn, time),
                             None => "tiny ghost".to_string(),
                         };
-                        let new = page_swap(&page, nn, time, &label, &build_note, url)?;
+                        // THE ROW'S BUILD in the caption: rowbuilds.tsv first (the page
+                        // label the coordinator set — 05's clip is a ship17b render but
+                        // its row says ship17c, the same bytes), else the build the clip
+                        // was rendered on (its name ends in `-<build>`), else --build-note.
+                        let row_build_note = {
+                            let rb = crate::pagestatus::parse_rowbuilds(&std::fs::read_to_string(out.join("rowbuilds.tsv")).unwrap_or_default());
+                            let from_row = rb.get(nn.as_str()).map(|r| r.build.clone());
+                            let from_clip = name.rsplit_once("-ship").map(|(_, b)| format!("ship{b}"));
+                            match from_row.or(from_clip) {
+                                Some(b) => build_note.replacen(&extract_build(&build_note).unwrap_or_default(), &b, 1),
+                                None => build_note.clone(),
+                            }
+                        };
+                        let new = page_swap(&page, nn, time, &label, &row_build_note, url)?;
                         let unchanged = new == page;
                         std::fs::write(readme, &new).map_err(|e| format!("{}: {e}", readme.display()))?;
                         println!("  page: row {} swapped in {} ({label})", map_title(nn), readme.display());
@@ -2311,5 +2324,30 @@ mod rich_attitude_tests {
         // the old flat shape still parses
         let old = "- 19 46.362: below 8 m/s: 0.07 s, respawns: 0, inverted: 0.00 s, 2 slow + 0 attitude intervals\n";
         assert_eq!(attitude_verdict(old, "19", "46.362"), Attitude::Clean);
+    }
+}
+
+/// The build tag inside a caption note (`build ship15, controls overlay` → `ship15`).
+pub fn extract_build(note: &str) -> Option<String> {
+    let i = note.find("build ")? + "build ".len();
+    let rest = &note[i..];
+    let end = rest.find(|c: char| c == ',' || c == ')' || c == ' ').unwrap_or(rest.len());
+    let b = &rest[..end];
+    (!b.is_empty()).then(|| b.to_string())
+}
+
+#[cfg(test)]
+mod caption_build_tests {
+    use super::*;
+
+    #[test]
+    fn the_caption_build_follows_the_row_or_the_clip() {
+        assert_eq!(extract_build("build ship15, controls overlay").as_deref(), Some("ship15"));
+        assert_eq!(extract_build("build ship17b, controls overlay, driven by vjeux").as_deref(), Some("ship17b"));
+        let note = "build ship15, controls overlay";
+        let clip = "05-ghost-16.395-ship17b";
+        let from_clip = clip.rsplit_once("-ship").map(|(_, b)| format!("ship{b}")).unwrap();
+        assert_eq!(note.replacen(&extract_build(note).unwrap(), &from_clip, 1), "build ship17b, controls overlay");
+        assert_eq!(note.replacen(&extract_build(note).unwrap(), "ship17c", 1), "build ship17c, controls overlay");
     }
 }
