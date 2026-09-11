@@ -2684,6 +2684,36 @@ pub fn inherited_approval(out: &Path, store: Option<&Path>, nn: &str, time: &str
             }
         }
     }
+    // NO SHIPS.TSV ROW (02: published by an earlier session, before this ships.tsv):
+    // the store holds `<nn>-ghost-<time>-<build>.mp4` clips of the lap — any one
+    // whose stamp FNV matches the archived ghost bytes counts as the published
+    // same-ghost clip (the page shows this lap: same map, same time).
+    if let Some(store) = store {
+        if let Ok(rd) = std::fs::read_dir(store) {
+            let archive = Path::new(GHOST_ARCHIVE_DEFAULT).join(format!("{ghost_md5}.Ghost.Gbx"));
+            let want = clip::overlay::file_id(&archive).ok();
+            let prefix = format!("{nn}-ghost-{time}-");
+            let mut names: Vec<String> = rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with(&prefix) && n.ends_with(".mp4")).collect();
+            names.sort();
+            for n in names {
+                let stem = n.trim_end_matches(".mp4").to_string();
+                if let Ok(json) = std::fs::read_to_string(store.join(format!("{stem}.mp4.json"))) {
+                    if sidecar_field(&json, "ghost_md5").as_deref() == Some(ghost_md5) {
+                        return Some(stem);
+                    }
+                    continue;
+                }
+                if let (Some(want), Ok(ff)) = (&want, clip::platform::from_env()) {
+                    if let Ok(Some(tag)) = ff.probe_tag(&store.join(&n), "comment") {
+                        let stamp_fnv = tag.split_whitespace().find_map(|w| w.strip_prefix("ghost=")).unwrap_or("");
+                        if !stamp_fnv.is_empty() && stamp_fnv == want {
+                            return Some(stem);
+                        }
+                    }
+                }
+            }
+        }
+    }
     None
 }
 
