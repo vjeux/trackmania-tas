@@ -1211,7 +1211,10 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
     let mut last_probe: Option<std::time::Instant> = None;
     // the session-file mtime at the last FAILED probe (0 = none failed yet); a
     // relaunch waits for a newer mtime (a fresh cookie or jar)
-    let mut failed_session_stamp: u64 = 0;
+    // persisted in `<out>/session-failed.stamp` so a watcher restart does not
+    // re-probe a session already known dead (2026-09-11 14:46Z did)
+    let stamp_file = out.join("session-failed.stamp");
+    let mut failed_session_stamp: u64 = std::fs::read_to_string(&stamp_file).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
     let mut said_waiting_session = false;
     let mut attitude_said: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     loop {
@@ -1538,6 +1541,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                     println!("{} the box's session file changed (mtime {session_stamp}) — probing again", chrono_now());
                 }
                 failed_session_stamp = session_stamp.max(1);
+                let _ = std::fs::write(&stamp_file, failed_session_stamp.to_string());
                 last_probe = Some(std::time::Instant::now());
                 let (nn, time, name, done_file) = &dead_cookie[0];
                 let r_mp4 = format!("{VID}/mp4/{name}.mp4");
