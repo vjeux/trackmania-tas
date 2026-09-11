@@ -290,6 +290,10 @@ fn secs(s: &str) -> f64 {
 }
 
 fn status_line(time: &str, build: &str, ghosts_readme: &str, nn: &str, note: &Note, min_gain: f64) -> String {
+    // the lap's OWN build, from its README row (`| nn | file | time | … | shipNN… |`),
+    // falls back to the page default (15's ship17c lap under a ship15 page)
+    let build = lap_build(ghosts_readme, nn, time).unwrap_or_else(|| build.to_string());
+    let build = build.as_str();
     let label = lap_label(ghosts_readme, nn, time);
     let who = if label == "tiny ghost" { String::new() } else { format!(", {label}") };
     match note {
@@ -1157,5 +1161,38 @@ mod clip_marker_tests {
         let receipt = "05\t16.395\tparent\tPUBLISHABLE (ship17c) water_ok=B";
         assert!(crate::video::water_b_rule(receipt, "05-ghost-16.395-ship17b", &rb.note), "17b-named clip, row build 17c via clip=");
         assert!(!crate::video::water_b_rule(receipt, "05-ghost-16.395-ship17b", "road water"), "without clip= the 17b suffix decides");
+    }
+}
+
+/// The build tag a lap's README row names (`ship15`, `ship17c-a6a82a45` → `ship17c`).
+pub fn lap_build(readme: &str, nn: &str, time: &str) -> Option<String> {
+    for l in readme.lines() {
+        let c: Vec<&str> = l.split('|').map(str::trim).collect();
+        if c.len() >= 5 && c[1] == nn && c[2].ends_with(".Ghost.Gbx") && c[3] == time {
+            for cell in &c[4..] {
+                if let Some(rest) = cell.strip_prefix("ship") {
+                    let tag: String = rest.chars().take_while(|ch| ch.is_ascii_alphanumeric()).collect();
+                    if tag.chars().next().map(|ch| ch.is_ascii_digit()).unwrap_or(false) {
+                        return Some(format!("ship{tag}"));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod lap_build_tests {
+    use super::*;
+
+    #[test]
+    fn the_status_line_names_the_laps_own_build() {
+        let r = "| 15 | 15.Ghost.Gbx | 42.454 | 8 | ship17c-a6a82a45 | a6a82a45 | GEN | x |\n| 19 | 19.Ghost.Gbx | 38.276 | 16 | ship15 | 5522d061 | PPO | y |\n";
+        assert_eq!(lap_build(r, "15", "42.454").as_deref(), Some("ship17c"));
+        assert_eq!(lap_build(r, "19", "38.276").as_deref(), Some("ship15"));
+        assert_eq!(lap_build(r, "19", "46.362"), None);
+        let line = status_line("42.454", "ship15", r, "15", &Note::Held("records".into()), 0.1);
+        assert_eq!(line, "*latest lap **42.454** (build ship17c) — held (records)*");
     }
 }
