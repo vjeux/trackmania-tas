@@ -94,13 +94,13 @@ https://github.com/user-attachments/assets/bb3919e7-e5ae-4856-af3c-22c145f8641f
 
 **Tiny Summer 2026 - 17** — original author time `44.891` · tiny ghost **38.426** (build ship15, controls overlay) · map: ship15
 
-*latest lap **36.982** (build ship18f) — staged, awaiting the opening check*
+*latest lap **36.982** (build ship18f) — staged, awaiting the upload session*
 
 https://github.com/user-attachments/assets/7a87785b-5c81-4064-9272-3943d12f3dbe
 
 **Tiny Summer 2026 - 18** — original author time `51.352` · tiny ghost **43.413** (build ship15, controls overlay) · map: ship15
 
-*latest lap **43.462** (build ship18f) — staged, awaiting the opening check*
+*latest lap **43.462** (build ship18f) — staged, awaiting the upload session*
 
 https://github.com/user-attachments/assets/cb510efb-14d4-41c2-9bea-51a0d6f8c232
 
@@ -134,9 +134,7 @@ https://github.com/user-attachments/assets/0e222437-1334-4d8c-b5fd-92497cdf81f5
 
 **Tiny Poland 2026** — original author time `72.708` · tiny ghost **99.529** (build ship15, controls overlay) · map: ship15
 
-*latest lap **93.717** (build ship15) — staged, awaiting the opening check*
-
-*↻ runs on un-skinned ship15 surfaces at 73.32 s (LakeShore water) — re-drive pending*
+*latest lap **93.717** (build ship18f) — staged, awaiting the upload session*
 
 https://github.com/user-attachments/assets/9b9b5242-c6ef-4270-9eed-a6a3063126e8
 
