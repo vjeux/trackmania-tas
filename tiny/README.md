@@ -116,7 +116,7 @@ https://github.com/user-attachments/assets/61a5b88c-15ce-46e5-9b23-b60f3a4bbe29
 
 *↻ runs on un-skinned ship15 surfaces at 1.85 s — re-drive pending*
 
-*latest lap **84.379** (build ship15) — held (opening rework (reviewer 19:10Z: sustained rollover, roof-down 8.9–10.0 s; 82.652 not approved))*
+*latest lap **84.379** (build ship15) — held (staged — opening rework (reviewer 19:10Z: sustained rollover, roof-down 8.9–10.0 s; 82.652 not approved))*
 
 https://github.com/user-attachments/assets/2bb4c108-dd6b-4c5c-a26d-f8ef253cdf2e
 
