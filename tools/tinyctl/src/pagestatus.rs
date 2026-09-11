@@ -1041,6 +1041,12 @@ pub fn final_table(page: &str, ghosts_readme: &str, ships: &str, holds: &std::co
                 v => notes.push(format!("attitude: {}", v.describe())),
             }
         }
+        if let Some((t, _)) = published.get(nn.as_str()) {
+            let tw = crate::video::water_t(ghosts_readme, &nn, &format!("{:.3}", t));
+            if tw > 0.0 {
+                notes.push(format!("water T {tw:.2} s (terrain sea water, drag-free — disclosed)"));
+            }
+        }
         if let Some(l) = lidrows.get(nn.as_str()) {
             notes.push(format!("⚠ {l}"));
         }
