@@ -805,6 +805,31 @@ fn main() {
                 }
             }
         }
+        "trigger-box" => {
+            // trigger-box ITEM.Item.Gbx [...]: the waypoint trigger shape of a CGameCommonItemEntityModel
+            // item (the finish / checkpoint items the tiny bakes): kind, local AABB, triangle count,
+            // and the spawn iso translation. For comparing one item across sets against the source.
+            for p in a.rest.iter().skip(1).filter(|s| !s.starts_with("--")) {
+                let bytes = std::fs::read(p).unwrap_or_else(|e| die(format!("{p}: {e}")));
+                let f = mapgeom::static_item::parse_file(&bytes).unwrap_or_else(|e| die(format!("{p}: {e}")));
+                let Some(em) = f.item.model().and_then(|mc| mc.entity_model()) else { println!("{p}\tno CGameCommonItemEntityModel"); continue };
+                let spawn = [em.iso[9], em.iso[10], em.iso[11]];
+                match em.trigger_shape.inline.as_deref() {
+                    Some(mapgeom::static_item::Node::Surface(s)) => match &s.surf {
+                        mapgeom::static_item::surface::Surf::Mesh { vertices, triangles, .. } => {
+                            let mut lo = [f32::MAX; 3];
+                            let mut hi = [f32::MIN; 3];
+                            for v in vertices { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } }
+                            println!("{p}\tmesh\t{} verts {} tris\tlocal aabb [{:.2}, {:.2}, {:.2}]..[{:.2}, {:.2}, {:.2}]\tspawn [{:.2}, {:.2}, {:.2}]\tmain_dir {:?}", vertices.len(), triangles.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], spawn[0], spawn[1], spawn[2], s.gameplay_main_dir);
+                        }
+                        mapgeom::static_item::surface::Surf::Box { transform, .. } => println!("{p}\tbox\t{:?}\tspawn {:?}", transform, spawn),
+                        other => println!("{p}\t{:?}\tspawn {:?}", std::mem::discriminant(other), spawn),
+                    },
+                    Some(_) => println!("{p}\ttrigger node is not a surface"),
+                    None => println!("{p}\tno trigger shape (null ref {})\tspawn {:?}", em.trigger_shape.index, spawn),
+                }
+            }
+        }
         "vstream-shift" => {
             // vstream-shift IN.Gbx --out OUT --dy DY: every vertex POSITION of the file's
             // vertex streams moved by DY in y, patched in place (an uncompressed Gbx —
