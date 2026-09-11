@@ -910,13 +910,21 @@ fn one(args: &[String]) -> Result<Done, String> {
         // "staged — awaiting opening check". `--ship-unchecked` is the old
         // behaviour (launch now), by name.
         if !tmmaps::cli::has(args, "--ship-unchecked") {
+            // THE RENDER LOOP NEVER LAUNCHES A SHIP ITSELF ANY MORE. It used to
+            // launch when a receipt was already on file — and on 2026-09-11
+            // 01:23Z a ship17c re-render of 05 found 05 16.395's receipt and
+            // launched inside the closed upload window (the dead cookie's probe
+            // stopped it, nothing leaked). Every launch now goes through
+            // `tinyctl shipwatch`, which applies hold → window → attitude →
+            // receipt in one place; the clip is recorded `staged` here whatever
+            // the receipt says, and shipwatch turns it `pending` on its tick.
             let approved = approval_for(&out, &nn, &time).is_some() || read_prechecked(&out).contains(nn.as_str());
-            if !approved {
-                println!("STAGED — awaiting the opening check: {name} is rendered and banked; shipwatch launches it once out/approvals.tsv has a receipt for {nn} {time} (or {nn} is in out/prechecked.tsv)");
-                record_ship_row(&out, &nn, &time, &name, &format!("{VID}/ship/{name}.done"), "staged")?;
-                return finish_row(&out, &nn, &time, cps, &overlay_col, &name, &sheet, traj_id);
-            }
-            println!("opening check: receipt on file for {nn} {time} — shipping");
+            println!(
+                "STAGED — {}: {name} is rendered and banked; `tinyctl shipwatch` launches it (hold → upload window → attitude → receipt)",
+                if approved { "receipt on file" } else { "awaiting the opening check" }
+            );
+            record_ship_row(&out, &nn, &time, &name, &format!("{VID}/ship/{name}.done"), "staged")?;
+            return finish_row(&out, &nn, &time, cps, &overlay_col, &name, &sheet, traj_id);
         }
         // SUPERSEDED DURING ITS OWN RENDER? The player project replaced 21's
         // ghost twice in 40 minutes on 2026-09-10 (122.318 → 122.311 → 122.294):
