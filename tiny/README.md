@@ -72,8 +72,6 @@ https://github.com/user-attachments/assets/8359415d-53d5-419f-8fd6-aee0fe145345
 
 **Tiny Summer 2026 - 15** — original author time `36.888` · tiny ghost **48.748** (build ship15, controls overlay)
 
-*latest lap **42.454** (build ship17c) — held (staged — records: 42.454 on ship17c (certified; checker QUALIFIED with two items for the parent; final burst set excludes it — 2026-09-11 12:55Z))*
-
 *⚠ lap rides the ship15 water lid; in the original the car drives on the floor under the water with strong drag (~−8 m/s²); this build has no water drag*
 
 https://github.com/user-attachments/assets/a41cebdd-f649-4173-92fe-34d7a21d1f11
@@ -118,7 +116,7 @@ https://github.com/user-attachments/assets/61a5b88c-15ce-46e5-9b23-b60f3a4bbe29
 
 *↻ runs on un-skinned ship15 surfaces at 1.85 s — re-drive pending*
 
-*latest lap **84.379** (build ship15) — held (staged — records: 78.051, 82.652, 84.379 (certified; to be re-driven forwards — reversing/near-stops; checker verdicts 04:27Z, 19:10Z, 09:43Z))*
+*latest lap **96.297** (build ship15) — held (records: 78.051, 82.652, 84.379 (certified; to be re-driven forwards — reversing/near-stops; checker verdicts 04:27Z, 19:10Z, 09:43Z))*
 
 https://github.com/user-attachments/assets/2bb4c108-dd6b-4c5c-a26d-f8ef253cdf2e
 
@@ -135,7 +133,5 @@ https://github.com/user-attachments/assets/0e222437-1334-4d8c-b5fd-92497cdf81f5
 https://github.com/user-attachments/assets/9b9b5242-c6ef-4270-9eed-a6a3063126e8
 
 **Tiny Japan 2026** — original author time `78.928` · tiny ghost **102.115** (build ship15, controls overlay)
-
-*latest lap **86.518** (build ship15) — held (staged — records: 83.772, 90.202, 86.518 (certified; to be re-driven forwards — reversing/near-stops; checker verdicts 02:20Z, 04:25Z, 09:19Z); public 102.115 stays)*
 
 https://github.com/user-attachments/assets/18c3cc0f-0d53-44df-bd32-f63adeadf2a8
