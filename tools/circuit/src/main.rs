@@ -418,6 +418,20 @@ fn build(osm_path: &Path, dtm_dir: &Path, tif: &Path, host: &Path, out: &Path, s
     let uid = format!("Silverstone1to1{:012}", ms % 1_000_000_000_000);
     assert_eq!(uid.len(), 27);
     mapbuild::assemble(host, out, &items, size, &uid);
+    // The lap as the map has it, for whoever drives it: one row per metre
+    // in TM world coordinates, plus the waypoint plan.
+    let line_path = out.with_extension("line.tsv");
+    let mut w = String::from("# Silverstone lap in Trackmania world coordinates (x east, y up, z south); heading = atan2(dx, dz) of travel; curvature >0 turns left\n");
+    w.push_str(&format!("# start_station\t{}\tfinish_station\t{}\tcheckpoints\t{}\n", plan.start, plan.finish, plan.checkpoints.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(",")));
+    w.push_str("station\ts_m\tx\ty\tz\theading_rad\tcurvature\tleft_m\tright_m\tcorner\n");
+    for (i, st) in tr.stations.iter().enumerate() {
+        let p = fr.to_tm(st.e, st.n, st.z);
+        let (sh, ch) = st.heading.sin_cos();
+        let heading_tm = mapbuild::yaw_for(ch as f32, -sh as f32);
+        w.push_str(&format!("{i}\t{:.1}\t{:.3}\t{:.3}\t{:.3}\t{:.5}\t{:.5}\t{:.2}\t{:.2}\t{}\n", st.s, p[0], p[1], p[2], heading_tm, st.curvature, ed.left[i], ed.right[i], st.label));
+    }
+    std::fs::write(&line_path, w).expect("line tsv");
+    println!("lap written to {}", line_path.display());
 }
 
 /// The station nearest the centroid of the OSM building named "Silverstone
