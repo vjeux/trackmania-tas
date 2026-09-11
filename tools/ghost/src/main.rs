@@ -404,6 +404,51 @@ fn main() {
         // crash lives in the SAMPLE BYTES or in the container: 294446's samples
         // are known to load, so if 287431 wearing them still crashes, the
         // sample data is innocent.
+        "swap-chunks" => {
+            // ghost debug swap-chunks IN OUT --from DONOR --ids 0309201D,03092000
+            // Keep IN's container (every chunk the client wants to see, in
+            // IN's order) and take the named skippable chunks' PAYLOADS from
+            // DONOR. Built for a run written into a from-scratch container
+            // (6 chunks) that the dedicated server validates and the client
+            // crashes on at import: a human container has 24, so the run's own
+            // chunks (inputs, record, race time, result, validation) move into
+            // one. Inline chunks are untouched; num_nodes takes the larger of
+            // the two so the record node index stays in range.
+            let inp = rest.first().unwrap_or_else(|| die("ghost debug swap-chunks IN OUT --from DONOR --ids HEX,HEX"));
+            let outp = rest.get(1).unwrap_or_else(|| die("ghost debug swap-chunks IN OUT --from DONOR --ids HEX,HEX"));
+            let donor = flag(rest, "--from").unwrap_or_else(|| die("--from DONOR.Ghost.Gbx"));
+            let ids: Vec<u32> = flag(rest, "--ids")
+                .unwrap_or_else(|| die("--ids 0309201D,03092000"))
+                .split(',')
+                .map(|h| u32::from_str_radix(h.trim().trim_start_matches("0x"), 16).unwrap_or_else(|_| die(format!("bad chunk id {h}"))))
+                .collect();
+            let c = Container::load(inp).unwrap_or_else(|e| die(e));
+            let d = Container::load(donor).unwrap_or_else(|e| die(e));
+            let dbody = d.body().to_vec();
+            let dchunks = container::all_skip_chunks(&dbody);
+            let mut body = c.body().to_vec();
+            for id in &ids {
+                let (_, _, dp, ds) = *dchunks.iter().find(|(cid, ..)| cid == id).unwrap_or_else(|| die(format!("donor has no skippable chunk {id:08X}")));
+                let payload = dbody[dp..dp + ds].to_vec();
+                let chunks = container::all_skip_chunks(&body);
+                let (_, off, p, sz) = *chunks.iter().find(|(cid, ..)| cid == id).unwrap_or_else(|| die(format!("IN has no skippable chunk {id:08X}")));
+                let mut nb = Vec::with_capacity(body.len() + payload.len());
+                nb.extend_from_slice(&body[..off + 8]); // id + PIKS
+                nb.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                nb.extend_from_slice(&payload);
+                nb.extend_from_slice(&body[p + sz..]);
+                println!("  {id:08X}: {sz} B -> {} B", payload.len());
+                body = nb;
+            }
+            let mut g = c.gbx.clone();
+            if d.gbx.num_nodes > g.num_nodes {
+                println!("  num_nodes {} -> {}", g.num_nodes, d.gbx.num_nodes);
+                g.num_nodes = d.gbx.num_nodes;
+            }
+            container::write_gbx(&g, body, outp).unwrap_or_else(|e| die(e));
+            let c2 = Container::load(outp).unwrap_or_else(|e| die(e));
+            println!("wrote {} ({} skippable chunks; read back OK)", outp, container::all_skip_chunks(c2.body()).len());
+        }
         "swap-samples" => {
             // IN OUT, with every other input a named flag -- the convention
             // `trim`, `splice`, `declare`, `regen`, `split-car` and the rest
