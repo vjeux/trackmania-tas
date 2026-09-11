@@ -311,7 +311,20 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let min_gain: f64 = f("--min-gain-s").and_then(|s| s.parse().ok()).unwrap_or(0.1);
     let page = std::fs::read_to_string(&readme).map_err(|e| format!("{}: {e}", readme.display()))?;
     let gr = std::fs::read_to_string(ghosts_dir.join("README.md")).map_err(|e| format!("{}/README.md: {e}", ghosts_dir.display()))?;
-    let laps = newest_laps(&gr, &build);
+    // per-map render builds (builds.tsv): a map whose build differs from --build
+    // takes its newest lap from rows naming ITS build (15 on ship17c while the
+    // page default is ship15 — otherwise its held/pending line never appears)
+    let per_map = f("--out").map(|o| crate::video::read_builds(Path::new(&o))).unwrap_or_default();
+    let mut laps = newest_laps(&gr, &build);
+    for (nn, (b, _)) in &per_map {
+        if *b != build {
+            laps.retain(|(m, _)| m != nn);
+            if let Some((_, t)) = newest_laps(&gr, b).into_iter().find(|(m, _)| m == nn) {
+                laps.push((nn.clone(), t));
+            }
+        }
+    }
+    laps.sort();
     println!("{} certified {build} laps: {}", laps.len(), laps.iter().map(|(m, t)| format!("{m} {t}")).collect::<Vec<_>>().join(", "));
     let holds = f("--out").map(|o| crate::video::read_holds(Path::new(&o))).unwrap_or_default();
     let staged = f("--out").map(|o| staged_laps(&std::fs::read_to_string(Path::new(&o).join("ships.tsv")).unwrap_or_default())).unwrap_or_default();
