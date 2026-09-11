@@ -518,6 +518,8 @@ pub struct LapCfg {
     pub speed_caps: Vec<[f64; 5]>,
     /// --accel-box x1,x2,z1,z2[;...]: inside the box the speed may not DROP between consecutive rows (dv/dt >= 0; the author accelerates through the hairpin transition)
     pub accel_boxes: Vec<[f64; 4]>,
+    /// --stall-kill vmin,ticks,t_from: a rollout with speed < vmin for >= ticks consecutive rows at race >= t_from (s) dies (no near-stops in the re-driven leg)
+    pub stall_kill: Option<[f64; 3]>,
     /// --upright-window t1,t2[,min_up]: rows inside the race window must keep the body up-vector y above min_up (0.7)
     pub upright: Vec<[f64; 3]>,
     /// --allow-water: disable the water-lid guard (materials 28/13 kill a rollout by default)
@@ -967,6 +969,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             }
             // --speed-cap-box x1,x2,z1,z2,vmax (repeatable via ;): a rollout that carries more than vmax through the box is not a
             // cell (18:20Z, Argentina hairpin: the reviewer's brake-before-the-bank hypothesis needs the entry held to 44–48)
+            if let Some(sk) = cfg.stall_kill { let mut run = 0usize; let mut hit = false; for r in rows.iter() { if (w.race_of(r) as f64 / 1000.0) >= sk[2] && speed(r) < sk[0] { run += 1; if run as f64 >= sk[1] { hit = true; break; } } else { run = 0; } } if hit { out.deaths[4] += 1; if debug_fan { eprintln!("    STALL kill {desc:34}: speed < {} for {} ticks", sk[0], sk[1]); } dump_rollout(w, base, &rows, "crawl", &desc, &dump_n); continue; } }
             if cfg.accel_boxes.iter().any(|b| rows.windows(2).any(|p| { let r = &p[1]; r.x >= b[0] && r.x <= b[1] && r.z >= b[2] && r.z <= b[3] && speed(r) < speed(&p[0]) - 0.06 })) {
                 out.deaths[1] += 1;
                 if debug_fan { eprintln!("    ACCEL kill {desc:34}: speed dropped inside an --accel-box"); }
