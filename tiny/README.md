@@ -14,7 +14,9 @@ clip is published the way every clip in this repo is.
 
 https://github.com/user-attachments/assets/36aefd65-5f62-4b09-a4d9-2aa489f4e09f
 
-**Tiny Summer 2026 - 02** — original author time `27.097` · tiny ghost **16.746** (build ship18f, controls overlay)
+**Tiny Summer 2026 - 02** — original author time `27.097` · tiny ghost **16.746** (build ship18f, controls overlay) · map: ship18f
+
+*↻ video re-rendered on ship18f*
 
 https://github.com/user-attachments/assets/551665a0-4490-4d0e-a27b-a2aff6050056
 
