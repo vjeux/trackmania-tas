@@ -389,7 +389,7 @@ fn build(osm_path: &Path, dtm_dir: &Path, tif: &Path, host: &Path, out: &Path, s
             let n_stand = structs.iter().filter(|s| s.kind == "grandstand").count();
             println!("{} structures ({n_stand} grandstands); tallest {:.0} m", structs.len(), structs.iter().map(|s| s.height).fold(0.0, f64::max));
             extras.extend(buildings::building_items(&structs, &fr));
-            extras.extend(buildings::linear_items(w, &dtm, &dsm, &fr, venue, &tr, 60.0));
+            extras.extend(buildings::linear_items(w, &dtm, &dsm, &ed, &fr, venue, &tr, 60.0));
         }
     }
     println!("{} terrain/surroundings items", extras.len());

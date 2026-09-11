@@ -223,11 +223,39 @@ pub fn building_items(structs: &[Structure], fr: &Frame) -> Vec<Placement> {
 
 /// OSM barriers (fences, hedges, walls) as low walls, and bridges as decks:
 /// one item per 256 m tile.
-pub fn linear_items(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, fr: &Frame, bbox: (f64, f64, f64, f64), tr: &crate::track::Track, near: f64) -> Vec<Placement> {
+pub fn linear_items(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, ed: &crate::edges::Edges, fr: &Frame, bbox: (f64, f64, f64, f64), tr: &crate::track::Track, near: f64) -> Vec<Placement> {
     let (e0, n0, e1, n1) = bbox;
     // barriers only matter close to the lap (the pit wall, track-side fences);
     // bridges anywhere in the venue
     let near_lap = |e: f64, n: f64| tr.stations.iter().step_by(5).any(|s| (s.e - e).powi(2) + (s.n - n).powi(2) < near * near);
+    // A barrier that OSM draws across the tarmac (a fence line through a
+    // spectator crossing, a gate) would be an invisible wall across the lap
+    // — the first drive stopped dead at station 1473 on the Wellington
+    // Straight. Anything within 3 m of the tarmac edge is dropped.
+    let nearest = |e: f64, n: f64| -> (usize, f64) {
+        let mut best = (0usize, f64::MAX);
+        for (i, s) in tr.stations.iter().enumerate().step_by(2) {
+            let d = (s.e - e).powi(2) + (s.n - n).powi(2);
+            if d < best.1 {
+                best = (i, d);
+            }
+        }
+        (best.0, best.1.sqrt())
+    };
+    let on_tarmac = |a: Bng, b: Bng| -> Option<usize> {
+        let len = ((b.e - a.e).powi(2) + (b.n - a.n).powi(2)).sqrt();
+        let steps = (len.ceil() as usize).max(1);
+        for k in 0..=steps {
+            let t = k as f64 / steps as f64;
+            let (e, n) = (a.e + t * (b.e - a.e), a.n + t * (b.n - a.n));
+            let (i, d) = nearest(e, n);
+            if d < ed.left[i].max(ed.right[i]) + 3.0 {
+                return Some(i);
+            }
+        }
+        None
+    };
+    let mut dropped: Vec<usize> = Vec::new();
     struct Seg {
         a: Bng,
         b: Bng,
@@ -253,6 +281,12 @@ pub fn linear_items(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, fr: &Frame, bbox: (f64
             if !is_bridge && !near_lap(me, mn) {
                 continue;
             }
+            if !is_bridge {
+                if let Some(i) = on_tarmac(a, b) {
+                    dropped.push(i);
+                    continue;
+                }
+            }
             if is_bridge {
                 // deck height from the first-return surface over the span
                 let g = dtm.sample(me, mn).unwrap_or(0.0);
@@ -269,6 +303,10 @@ pub fn linear_items(w: &Ways, dtm: &Mosaic, dsm: &Mosaic, fr: &Frame, bbox: (f64
                 segs.push(Seg { a, b, h, thick, deck: None, mat });
             }
         }
+    }
+    if !dropped.is_empty() {
+        dropped.sort_unstable();
+        println!("barriers: {} segments crossed the tarmac and were dropped (stations {:?})", dropped.len(), dropped);
     }
     let mut tiles: std::collections::BTreeMap<(i64, i64), Vec<&Seg>> = Default::default();
     for s in &segs {
