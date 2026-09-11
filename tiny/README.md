@@ -26,9 +26,7 @@ https://github.com/user-attachments/assets/6d68e84c-77d3-4f2e-87a3-3bc2d2609736
 
 https://github.com/user-attachments/assets/44b55e8a-82bb-41c7-8968-4a7555bff486
 
-**Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **18.298** (build ship17c, controls overlay) · map: ship17c
-
-*↻ road-through-water section without drag — the original slows the car there*
+**Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **18.298** (build ship15, controls overlay)
 
 https://github.com/user-attachments/assets/75476b21-393d-445a-84eb-5b1746bad62b
 
