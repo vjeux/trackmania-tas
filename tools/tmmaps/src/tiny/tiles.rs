@@ -135,6 +135,9 @@ pub struct HiddenTiles {
     occupied: BTreeMap<[u8; 3], usize>,
     /// (cell, zone stem) some block declares as its own auto terrain
     declared: BTreeSet<([u8; 3], String)>,
+    /// the file cells of blocks with geometry (a rotated footprint's min corner may
+    /// not be a unit — see `kept_at_file_cell`)
+    file_cells: BTreeSet<[u8; 3]>,
     /// blocks whose footprint hides tiles / blocks that declare auto terrain
     pub blocks: usize,
     pub declaring: usize,
@@ -148,13 +151,17 @@ impl HiddenTiles {
     /// original draws the LandHill3 at (30, 6, 32) under the curve's corner (palms
     /// on it); hiding it left a cell-sized cutout with the sea showing through.
     pub fn hides(&self, tile: &BlockRec) -> bool {
-        let stem = zone_stem(&tile.name).to_string();
-        self.occupied.contains_key(&tile.file_cell) && (self.declared.contains(&(tile.file_cell, stem)) || self.declared.iter().any(|(c, _)| *c == tile.file_cell))
+        // RULE (corrected twice on 2026-09-11): hidden iff a block UNIT covers the cell.
+        // Not "declared auto terrain only" — Summer 12's Dirt tile at the TOP cell of a
+        // RoadDirtSlope2BaseCurve2 (unit (0,2,1), undeclared) must stay hidden: drawn, its
+        // 8.75 top buried the slope's road at 7.98 and stopped the 18e lap at 4.74 s.
+        self.occupied.contains_key(&tile.file_cell)
     }
-    /// A tile whose cell a block occupies WITHOUT declaring auto terrain there: kept
-    /// (drawn) since 2026-09-11; listed for the log.
-    pub fn kept_undeclared(&self, tile: &BlockRec) -> bool {
-        self.occupied.contains_key(&tile.file_cell) && !self.hides(tile)
+    /// A tile kept in a cell that is some block's FILE cell without being one of its
+    /// units (the min corner of a rotated footprint the block does not cover): the
+    /// class the 2026-09-08 rule hid wrongly (Summer 01's hole). Listed for the log.
+    pub fn kept_at_file_cell(&self, tile: &BlockRec) -> bool {
+        !self.hides(tile) && self.file_cells.contains(&tile.file_cell)
     }
     /// Index of the block occupying the tile's cell.
     pub fn occupant(&self, tile: &BlockRec) -> Option<usize> {
@@ -166,7 +173,7 @@ impl HiddenTiles {
 /// variant's unit cells and, when the mapping carries the column, its auto
 /// terrain (offsets, zone) + place type.
 pub fn hidden_tiles(source: &MapFile, zones: &BTreeSet<String>, info_of: &dyn Fn(&BlockRec) -> Option<(String, Vec<[i32; 3]>, Option<(Vec<([i32; 3], String)>, i32)>)>) -> HiddenTiles {
-    let mut out = HiddenTiles { occupied: BTreeMap::new(), declared: BTreeSet::new(), blocks: 0, declaring: 0 };
+    let mut out = HiddenTiles { occupied: BTreeMap::new(), declared: BTreeSet::new(), file_cells: BTreeSet::new(), blocks: 0, declaring: 0 };
     for b in source.blocks.iter().filter(|b| !zones.contains(&b.name) && b.free_pos.is_none()) {
         let Some((model, units, auto)) = info_of(b) else { continue };
         if let Some((list, _place)) = &auto {
@@ -182,7 +189,12 @@ pub fn hidden_tiles(source: &MapFile, zones: &BTreeSet<String>, info_of: &dyn Fn
             continue;
         }
         out.blocks += 1;
-        out.occupied.entry(b.file_cell).or_insert(b.index);
+        out.file_cells.insert(b.file_cell);
+        // The block's UNITS occupy cells — NOT the raw file cell: for a rotated multi-cell
+        // block the file cell is the footprint's min corner, which for a RoadTechCurve4
+        // turned 90° is one of the curve's EMPTY corners (local (0,3)/(3,0), not a unit):
+        // inserting it hid the LandHill3 tile of Summer 01 at (30, 6, 32) — vjeux's "hole
+        // in the mountain" (2026-09-11). The game draws the tile in a cell no unit covers.
         let fp = footprint_of(&units);
         for u in &units {
             if let Some(c) = turned_cell(b, fp, *u) {
@@ -246,7 +258,7 @@ pub fn shared_cells_cmd(args: &[String]) {
         // but no block declared this zone as its auto terrain (look there first
         // if a hole ever shows)
         let status = if tiles.iter().all(|t| hidden.hides(t)) {
-            if tiles.iter().any(|t| hidden.kept_undeclared(t)) { "kept (undeclared occupant)" } else { "hidden" }
+            if tiles.iter().any(|t| hidden.kept_at_file_cell(t)) { "kept (file cell, no unit)" } else { "hidden" }
         } else {
             "kept"
         };
