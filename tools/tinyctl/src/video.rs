@@ -1381,7 +1381,11 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                     // (--min-gain-s, default 0.1); a sliver under it is skipped
                     // by the loop, so the staged clip is the best that will exist
                     let will_render = matches!(render_gate(secs(&newest), Some((secs(&cells[1]), &cells[2])), Some(build.as_str()), min_gain), Gate::Render(_));
-                    if newest != cells[1] && build_note.contains(&build) && file_time.as_deref() == Some(newest.as_str()) && will_render {
+                    // a newer README lap that the map's HOLD keeps off the page does not
+                    // outrank the same-ghost rebuild of the PUBLIC lap (20: README 75.595
+                    // held, public 84.954 re-rendered on 18f — 2026-09-11 18:13Z)
+                    let newer_is_held = read_holds(&out).contains_key(cells[0].as_str());
+                    if newest != cells[1] && build_note.contains(&build) && file_time.as_deref() == Some(newest.as_str()) && will_render && !newer_is_held {
                         println!("{} {} {}: the ghosts README now says {newest} ({build}) and its ghost file agrees — superseded, not shipped", chrono_now(), cells[0], cells[1]);
                         *row = format!("{}\t{}\t{}\t{}\tsuperseded", cells[0], cells[1], cells[2], cells[3]);
                         changed = true;
