@@ -184,6 +184,9 @@ pub fn update_rows_with_clips(page: &str, laps: &[(String, String)], ghosts_read
             (Some(n), Some(p)) if n != p && holds.contains_key(nn.as_str()) => Some((n.clone(), held_note(&holds[nn.as_str()], staged.contains(&(nn.clone(), n.clone()))))),
             (Some(n), Some(p)) if n == p && holds.contains_key(nn.as_str()) && holds[nn.as_str()].starts_with("records:") => Some((String::new(), Note::Held(holds[nn.as_str()].clone()))),
             (Some(n), None) if holds.contains_key(nn.as_str()) => Some((n.clone(), held_note(&holds[nn.as_str()], staged.contains(&(nn.clone(), n.clone()))))),
+            // a held map with a records-form reason and NO newest lap for its build
+            // (15: its ship17c row left the README; the record still stands)
+            (None, Some(_)) if holds.contains_key(nn.as_str()) && holds[nn.as_str()].starts_with("records:") => Some((String::new(), Note::Held(holds[nn.as_str()].clone()))),
             (Some(n), Some(p)) if n != p => {
                 let will_render = matches!(
                     crate::video::render_gate(secs(n), Some((secs(p), &format!("x-{build}"))), Some(build), min_gain),
