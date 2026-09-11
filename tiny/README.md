@@ -116,7 +116,7 @@ https://github.com/user-attachments/assets/61a5b88c-15ce-46e5-9b23-b60f3a4bbe29
 
 *↻ runs on un-skinned ship15 surfaces at 1.85 s — re-drive pending*
 
-*latest lap **84.379** (build ship15) — held (staged — opening rework (reviewer 19:10Z: sustained rollover, roof-down 8.9–10.0 s; 82.652 not approved))*
+*latest lap **84.379** (build ship15) — held (staged — records: 78.051, 82.652, 84.379 (certified; to be re-driven forwards — reversing/near-stops; checker verdicts 04:27Z, 19:10Z, 09:43Z))*
 
 https://github.com/user-attachments/assets/2bb4c108-dd6b-4c5c-a26d-f8ef253cdf2e
 
@@ -134,6 +134,6 @@ https://github.com/user-attachments/assets/9b9b5242-c6ef-4270-9eed-a6a3063126e8
 
 **Tiny Japan 2026** — original author time `78.928` · tiny ghost **102.115** (build ship15, controls overlay)
 
-*latest lap **86.518** (build ship15) — held (staged — attitude: nose-stand / side landing (checker 04:20Z; 90.202 not approved, 83.772 inverted))*
+*latest lap **86.518** (build ship15) — held (staged — records: 83.772, 90.202, 86.518 (certified; to be re-driven forwards — reversing/near-stops; checker verdicts 02:20Z, 04:25Z, 09:19Z); public 102.115 stays)*
 
 https://github.com/user-attachments/assets/18c3cc0f-0d53-44df-bd32-f63adeadf2a8
