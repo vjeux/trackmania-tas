@@ -2498,6 +2498,6 @@ pub fn prune_box_staging(wsx: &Wsx, out: &Path, nn: &str, just_rendered: &str, k
     }
     // the raw render of the clip just banked (its webm is on the store)
     cmd.push_str(&format!("rm -f '{VID}/vid{nn}/Video60.webm' '{VID}/vid{nn}/vid{nn}.webm' '{VID}/vid{nn}/vid{nn}01.webm' 2>/dev/null; "));
-    cmd.push_str(&format!("echo removed {} banked clip file(s) of {nn}: {}; df -m /mnt/c | awk 'NR==2{{print \"C: free\", $4, \"MB\"}}'", rm.len(), rm.join(" ")));
+    cmd.push_str(&format!("echo 'removed {} banked clip file(s) of {nn}: {}'; df -m /mnt/c | awk 'NR==2{{print \"C: free\", $4, \"MB\"}}'", rm.len(), rm.join(" ")));
     wsx.sh(&cmd)
 }
