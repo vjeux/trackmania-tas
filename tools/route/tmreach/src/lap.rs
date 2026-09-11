@@ -967,7 +967,7 @@ pub fn run(w: &mut Worker, cfg: &LapCfg) -> Result<LapOut, String> {
             }
             // --speed-cap-box x1,x2,z1,z2,vmax (repeatable via ;): a rollout that carries more than vmax through the box is not a
             // cell (18:20Z, Argentina hairpin: the reviewer's brake-before-the-bank hypothesis needs the entry held to 44–48)
-            if cfg.accel_boxes.iter().any(|b| rows.windows(2).any(|p| { let r = &p[1]; r.x >= b[0] && r.x <= b[1] && r.z >= b[2] && r.z <= b[3] && speed(r) < speed(&p[0]) - 0.02 })) {
+            if cfg.accel_boxes.iter().any(|b| rows.windows(2).any(|p| { let r = &p[1]; r.x >= b[0] && r.x <= b[1] && r.z >= b[2] && r.z <= b[3] && speed(r) < speed(&p[0]) - 0.06 })) {
                 out.deaths[1] += 1;
                 if debug_fan { eprintln!("    ACCEL kill {desc:34}: speed dropped inside an --accel-box"); }
                 dump_rollout(w, base, &rows, "offroute", &desc, &dump_n);
