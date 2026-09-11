@@ -72,6 +72,8 @@ https://github.com/user-attachments/assets/8359415d-53d5-419f-8fd6-aee0fe145345
 
 **Tiny Summer 2026 - 15** — original author time `36.888` · tiny ghost **48.748** (build ship15, controls overlay)
 
+*records: 42.454 on ship17c (certified; checker QUALIFIED with two items for the parent; final burst set excludes it — 2026-09-11 12:55Z) — held (opening rework)*
+
 *⚠ lap rides the ship15 water lid; in the original the car drives on the floor under the water with strong drag (~−8 m/s²); this build has no water drag*
 
 https://github.com/user-attachments/assets/a41cebdd-f649-4173-92fe-34d7a21d1f11
