@@ -134,6 +134,6 @@ https://github.com/user-attachments/assets/9b9b5242-c6ef-4270-9eed-a6a3063126e8
 
 **Tiny Japan 2026** — original author time `78.928` · tiny ghost **102.115** (build ship15, controls overlay)
 
-*latest lap **90.202** (build ship15) — held (staged — attitude: nose-stand / side landing (checker 04:20Z; 90.202 not approved, 83.772 inverted))*
+*latest lap **86.518** (build ship15) — held (attitude: nose-stand / side landing (checker 04:20Z; 90.202 not approved, 83.772 inverted))*
 
 https://github.com/user-attachments/assets/18c3cc0f-0d53-44df-bd32-f63adeadf2a8
