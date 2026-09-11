@@ -1028,9 +1028,16 @@ pub fn final_table(page: &str, ghosts_readme: &str, ships: &str, holds: &std::co
         }
         if let Some((t, _)) = published.get(nn.as_str()) {
             let ts = format!("{:.3}", t);
+            // the verdict of the lap the row's VIDEO shows (informational for
+            // pre-gate clips); a class-B water contact accepted by a water_ok=B
+            // receipt is said as such
+            // the clip that carries this lap (ships.tsv), whatever its status
+            let clip = ships.lines().filter(|l| !l.starts_with('#')).map(|l| l.split('\t').map(str::trim).collect::<Vec<_>>()).filter(|c| c.len() >= 3 && c[0] == nn && c[1] == ts).map(|c| c[2].to_string()).last().unwrap_or_default();
+            let receipt = crate::video::find_approval(approvals, &nn, &ts);
             match crate::video::attitude_verdict(ghosts_readme, &nn, &ts) {
                 crate::video::Attitude::Clean => notes.push("attitude clean".into()),
                 crate::video::Attitude::NoTable => {}
+                crate::video::Attitude::Water { a_s, b_s, .. } if a_s <= 0.0 && b_s > 0.0 && receipt.as_deref().map(|r| r.to_ascii_lowercase().contains("water_ok=b")).unwrap_or(false) => notes.push(format!("water class B {b_s:.2} s accepted by receipt (water_ok=B) on {}", clip.rsplit_once("-ship").map(|(_, b)| format!("ship{b}")).unwrap_or_default())),
                 v => notes.push(format!("attitude: {}", v.describe())),
             }
         }

@@ -2130,6 +2130,10 @@ impl Attitude {
     pub fn describe(&self) -> String {
         match self {
             Attitude::Clean => "clean".into(),
+            // the rich shape (`attitude: FAIL …`) has no seconds of its own — the
+            // parser marks it inverted 1.0 / 1 interval as a flag; say "INPUT: FAIL"
+            // rather than invent numbers
+            Attitude::Dirty { inverted_s, attitude_intervals } if (*inverted_s == 1.0 || *inverted_s == 0.0) && *attitude_intervals == 1 => format!("not clean (INPUT: attitude FAIL{})", if *inverted_s > 0.0 { ", inverted" } else { "" }),
             Attitude::Dirty { inverted_s, attitude_intervals } => format!("not clean: inverted {inverted_s:.2} s, {attitude_intervals} attitude interval(s) (> 0.3 s of |roll|/|pitch| > 60°)"),
             Attitude::Water { contact_s, a_s, b_s } => format!("not clean: water contact {contact_s:.2} s (A pool-lid {a_s:.2} s, B road-water {b_s:.2} s)"),
             Attitude::NoTable => "no attitude table for this lap in the ghosts README (fail closed)".into(),
