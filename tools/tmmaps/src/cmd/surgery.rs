@@ -647,3 +647,152 @@ pub fn itembytes(args: &[String]) {
         println!("{i}\t{}\t{}\t{scale}\t{:.1},{:.1},{:.1}", it.model, cols.join("\t"), it.pos[0], it.pos[1], it.pos[2]);
     }
 }
+
+/// `tmmaps validate MAP --ghost G.Ghost.Gbx --out F [--gold MS --silver MS --bronze MS]`:
+/// embed a REAL run as the map's validation (author) ghost and write the
+/// author medal everywhere the file carries it. The ghost file (a plain
+/// `.Ghost.Gbx` with an uncompressed body, as the game saves them) must name
+/// the map's uid; its race time (chunk 0x03092005) becomes the author time;
+/// gold/silver/bronze default to the game's rule (×1.06 / ×1.20 / ×1.50,
+/// rounded down to 10 ms) unless given. Written: chunk 0x0305B00F (replaced,
+/// or inserted after 0x0305B00E — the blob is `[u32 0][u32 len][class id][the
+/// ghost body verbatim]`, self-contained, as Summer 01's own ghost proved on
+/// 2026-09-08), the ChallengeParameters times (0x0305B004, 0x0305B008 author
+/// score, 0x0305B00A), the header chunk 0x03043002 times + author score, and
+/// the header XML (`<times …/>`, `validated="1"`). Refuses on a uid mismatch,
+/// a compressed ghost body, or a header whose current times do not read back
+/// consistently (the offsets are checked against the XML before any patch).
+pub fn validate(args: &[String]) {
+    let path = std::path::Path::new(&args[2]);
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let ghost_path = f("--ghost").expect("validate needs --ghost G.Ghost.Gbx");
+    let out = f("--out").expect("validate needs --out F");
+    let g = std::fs::read(&ghost_path).expect("read ghost");
+    assert!(g.len() > 30 && &g[0..3] == b"GBX", "{ghost_path}: not a GBX file");
+    assert!(g[7] == b'U', "{ghost_path}: compressed body ({}), decompress first", g[7] as char);
+    let class = u32::from_le_bytes(g[9..13].try_into().unwrap());
+    assert!(class == 0x0309_2000, "{ghost_path}: class {class:#010x} is not CGameCtnGhost");
+    let user = u32::from_le_bytes(g[13..17].try_into().unwrap()) as usize;
+    let body_off = 17 + user + 4 + 4; // node count, external refs count (0 external nodes)
+    assert!(u32::from_le_bytes(g[body_off - 4..body_off].try_into().unwrap()) == 0, "{ghost_path}: external references — not a plain ghost");
+    let body = &g[body_off..];
+    assert!(body.ends_with(&0xFACA_DE01u32.to_le_bytes()), "{ghost_path}: body does not end with FACADE");
+    // the run's race time: chunk 0x03092005 (skippable, u32 ms) — located by its id + PIKS
+    // + size-4 signature (a saved ghost mixes skippable and non-skippable chunks, so a
+    // walk would need every layout; the 12-byte signature is unambiguous)
+    let sig: Vec<u8> = [0x0309_2005u32.to_le_bytes().as_slice(), b"PIKS", 4u32.to_le_bytes().as_slice()].concat();
+    let hits: Vec<usize> = body.windows(sig.len()).enumerate().filter(|(_, w)| *w == sig.as_slice()).map(|(i, _)| i).collect();
+    assert!(hits.len() == 1, "{ghost_path}: {} race-time chunks (0x03092005), want 1", hits.len());
+    let race_ms = u32::from_le_bytes(body[hits[0] + 12..hits[0] + 16].try_into().unwrap());
+    let mut m = map::MapFile::load(path);
+    let hdr = tmmaps::header::read(path.to_str().unwrap()).expect("header");
+    let uid = hdr.uid.clone();
+    assert!(!uid.is_empty() && uid != "-", "map has no uid");
+    assert!(body.windows(uid.len()).any(|w| w == uid.as_bytes()), "{ghost_path}: does not name the map's uid {uid} — a ghost of another map");
+    let floor10 = |ms: f64| ((ms / 10.0).floor() * 10.0) as u32;
+    let author = race_ms;
+    let gold: u32 = f("--gold").map(|s| s.parse().unwrap()).unwrap_or_else(|| floor10(author as f64 * 1.06));
+    let silver: u32 = f("--silver").map(|s| s.parse().unwrap()).unwrap_or_else(|| floor10(author as f64 * 1.20));
+    let bronze: u32 = f("--bronze").map(|s| s.parse().unwrap()).unwrap_or_else(|| floor10(author as f64 * 1.50));
+    // ---- the ghost chunk
+    let mut blob = Vec::with_capacity(8 + 4 + body.len());
+    blob.extend_from_slice(&0u32.to_le_bytes());
+    blob.extend_from_slice(&((4 + body.len()) as u32).to_le_bytes());
+    blob.extend_from_slice(&0x0309_2000u32.to_le_bytes());
+    blob.extend_from_slice(body);
+    let mut chunk = Vec::with_capacity(12 + blob.len());
+    chunk.extend_from_slice(&0x0305_B00Fu32.to_le_bytes());
+    chunk.extend_from_slice(b"PIKS");
+    chunk.extend_from_slice(&(blob.len() as u32).to_le_bytes());
+    chunk.extend_from_slice(&blob);
+    let skips = tmmaps::gbx::all_skip_chunks(&m.gbx.body);
+    let placed = if let Some(&(_, off, payload, size)) = skips.iter().find(|(c, ..)| *c == 0x0305_B00F) {
+        m.raw_splices.push(((off, payload + size), chunk.clone()));
+        "replaced"
+    } else {
+        let &(_, _o, p, s) = skips.iter().find(|(c, ..)| *c == 0x0305_B00E).expect("no ChallengeParameters chunk 0x0305B00E");
+        m.raw_splices.push(((p + s, p + s), chunk.clone()));
+        "inserted after 0x0305B00E"
+    };
+    // ---- ChallengeParameters times: 0x0305B00A (skippable: tip string, bronze, silver, gold, author, timelimit, authorscore)
+    let old_b: u32 = hdr.bronze.parse().ok().expect("header times");
+    let old_s: u32 = hdr.silver.parse().ok().expect("header times");
+    let old_g: u32 = hdr.gold.parse().ok().expect("header times");
+    let old_a: u32 = hdr.authortime.parse().ok().expect("header times");
+    let expect = |buf: &[u8], at: usize, want: u32, what: &str| {
+        let got = u32::from_le_bytes(buf[at..at + 4].try_into().unwrap());
+        assert!(got == want, "{what}: read {got} where the header says {want} — layout mismatch, nothing written");
+    };
+    let &(_, _, pa, sa) = skips.iter().find(|(c, ..)| *c == 0x0305_B00A).expect("no 0x0305B00A");
+    let b00a = &m.gbx.body[pa..pa + sa];
+    let tip_len = u32::from_le_bytes(b00a[0..4].try_into().unwrap()) as usize;
+    let t0 = 4 + tip_len;
+    expect(b00a, t0, old_b, "0x0305B00A bronze");
+    expect(b00a, t0 + 4, old_s, "0x0305B00A silver");
+    expect(b00a, t0 + 8, old_g, "0x0305B00A gold");
+    expect(b00a, t0 + 12, old_a, "0x0305B00A author");
+    for (k, v) in [(0usize, bronze), (4, silver), (8, gold), (12, author), (20, author)] {
+        m.raw_patches.push((pa + t0 + k, v.to_le_bytes().to_vec()));
+    }
+    // 0x0305B004 (bronze, silver, gold, author, u32) and 0x0305B008 (timelimit, authorscore): non-skippable,
+    // inside the inline ChallengeParameters node before 0x0305B00A — found by their id bytes in that prefix
+    let prefix = &m.gbx.body[..pa];
+    let find_id = |id: u32| -> usize {
+        let pat = id.to_le_bytes();
+        let hits: Vec<usize> = prefix.windows(4).enumerate().filter(|(_, w)| *w == pat).map(|(i, _)| i).collect();
+        assert!(hits.len() == 1, "chunk {id:#010x}: {} occurrences before 0x0305B00A, want 1", hits.len());
+        hits[0] + 4
+    };
+    let p4 = find_id(0x0305_B004);
+    expect(&m.gbx.body, p4, old_b, "0x0305B004 bronze");
+    expect(&m.gbx.body, p4 + 4, old_s, "0x0305B004 silver");
+    expect(&m.gbx.body, p4 + 8, old_g, "0x0305B004 gold");
+    expect(&m.gbx.body, p4 + 12, old_a, "0x0305B004 author");
+    for (k, v) in [(0usize, bronze), (4, silver), (8, gold), (12, author)] {
+        m.raw_patches.push((p4 + k, v.to_le_bytes().to_vec()));
+    }
+    let p8 = find_id(0x0305_B008);
+    m.raw_patches.push((p8 + 4, author.to_le_bytes().to_vec())); // authorscore
+    // ---- header chunk 0x03043002 (v13): version u8, needUnlock u32, bronze, silver, gold, author, cost, isLapRace,
+    // playMode, u32, authorScore, editorMode, u32, nbCheckpoints, nbLaps
+    {
+        let ud = &mut m.gbx.user_data;
+        let n = u32::from_le_bytes(ud[0..4].try_into().unwrap()) as usize;
+        let mut data_off = 4 + n * 8;
+        let mut done = false;
+        for i in 0..n {
+            let o = 4 + i * 8;
+            let id = u32::from_le_bytes(ud[o..o + 4].try_into().unwrap());
+            let size = (u32::from_le_bytes(ud[o + 4..o + 8].try_into().unwrap()) & 0x7fff_ffff) as usize;
+            if id == 0x0304_3002 {
+                assert!(ud[data_off] >= 13, "header chunk 0x03043002 version {} — layout unknown", ud[data_off]);
+                let t = data_off + 5;
+                expect(ud, t, old_b, "header bronze");
+                expect(ud, t + 4, old_s, "header silver");
+                expect(ud, t + 8, old_g, "header gold");
+                expect(ud, t + 12, old_a, "header author");
+                ud[t..t + 4].copy_from_slice(&bronze.to_le_bytes());
+                ud[t + 4..t + 8].copy_from_slice(&silver.to_le_bytes());
+                ud[t + 8..t + 12].copy_from_slice(&gold.to_le_bytes());
+                ud[t + 12..t + 16].copy_from_slice(&author.to_le_bytes());
+                ud[t + 32..t + 36].copy_from_slice(&author.to_le_bytes()); // authorScore
+                done = true;
+            }
+            data_off += size;
+        }
+        assert!(done, "map has no header chunk 0x03043002");
+    }
+    // ---- header XML
+    let times = format!("<times bronze=\"{bronze}\" silver=\"{silver}\" gold=\"{gold}\" authortime=\"{author}\" authorscore=\"{author}\" hasclones=\"0\"/>");
+    m.edit_header_xml(&|xml| {
+        let start = xml.find("<times ")?;
+        let end = xml[start..].find("/>")? + start + 2;
+        let mut s = String::with_capacity(xml.len() + 16);
+        s.push_str(&xml[..start]);
+        s.push_str(&times);
+        s.push_str(&xml[end..]);
+        Some(s.replace("validated=\"0\"", "validated=\"1\""))
+    });
+    m.write_to(std::path::Path::new(&out)).expect("write");
+    println!("{}: validation ghost {} ({} B, race {}), times author {} gold {} silver {} bronze {} (ms), validated=\"1\" -> {out}", path.display(), placed, chunk.len(), tmmaps::secs::secs_str(&race_ms.to_string()), author, gold, silver, bronze);
+}

@@ -129,6 +129,7 @@ fn main() {
         // plays with the OLD build's baked light (Summer 09's start deck read
         // dark in play mode until this, 2026-09-07).
         "stripghost" => surgery::stripghost(&args),
+        "validate" => surgery::validate(&args),
         "setuid" => surgery::setuid(&args),
         // `tmmaps delblocks MAP --out F [--keep-baked Sea,…] [--strip-lightmap]`: every
         // authored block deleted (the generated ones too, but for --keep-baked),
