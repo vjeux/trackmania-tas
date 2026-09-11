@@ -1328,7 +1328,12 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 changed = true;
             }
             let cells: Vec<String> = row.split('\t').map(String::from).collect();
-            if last_of.get(&cells[0]) != Some(&i) {
+            // A PUBLISHED UPLOAD IS A FACT: a row whose box verdict already carries a
+            // URL is collected whatever came after it (19's ship15 clip published at
+            // 15:52Z while its row had been outranked by the ship18f re-render —
+            // the page must show the lap that IS public, then the re-render swaps in).
+            let has_url_verdict = done_of.get(cells[3].as_str()).map(|d| d.starts_with("URL ") || d.starts_with("PENDING ")).unwrap_or(false);
+            if last_of.get(&cells[0]) != Some(&i) && !has_url_verdict {
                 println!("{} {} {}: superseded by a newer lap — not shipped", chrono_now(), cells[0], cells[1]);
                 *row = format!("{}\t{}\t{}\t{}\tsuperseded", cells[0], cells[1], cells[2], cells[3]);
                 changed = true;
