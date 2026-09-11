@@ -74,8 +74,6 @@ https://github.com/user-attachments/assets/8359415d-53d5-419f-8fd6-aee0fe145345
 
 *⚠ lap rides the ship15 water lid; in the original the car drives on the floor under the water with strong drag (~−8 m/s²); this build has no water drag*
 
-*latest lap **48.738** (build ship15) — within 0.1 s of the published clip*
-
 https://github.com/user-attachments/assets/a41cebdd-f649-4173-92fe-34d7a21d1f11
 
 **Tiny Summer 2026 - 16** — original author time `50.966` · tiny ghost **39.302** (build ship15, controls overlay) · map: ship15
