@@ -57,7 +57,9 @@ pub fn json_strs(body: &str, key: &str) -> Vec<String> {
 }
 
 fn curl(args: &[&str]) -> Result<(String, String), String> {
-    let out = Command::new("curl").arg("-s").arg("-w").arg("\n%{http_code}").args(args).output().map_err(|e| format!("curl: {e}"))?;
+    // --max-time 600: a stalled PUT (Summer 12's 24-MB update hung 11 min on 2026-09-11) is
+    // cut and reported instead of holding the publish queue; --retry 1 for transient errors
+    let out = Command::new("curl").arg("-s").arg("--max-time").arg("600").arg("--retry").arg("1").arg("-w").arg("\n%{http_code}").args(args).output().map_err(|e| format!("curl: {e}"))?;
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     let (body, code) = match text.rfind('\n') {
         Some(i) => (text[..i].to_string(), text[i + 1..].trim().to_string()),
