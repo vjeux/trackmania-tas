@@ -129,7 +129,11 @@ fn layer(tr: &Track, dtm: &Mosaic, inten: &Raster, fr: &Frame, spec: &TerrainSpe
                     }
                     let ce = e0 + (i as f64 + 0.5) * step;
                     let cn = n1 - (j as f64 + 0.5) * step;
-                    let mat = if classify(inten, ce, cn, step) { asphalt } else { grass };
+                    // outside the venue the coarse cells are too big to
+                    // classify (a 24 m asphalt square for a farm lane): grass
+                    let (ve0, vn0, ve1, vn1) = spec.bbox;
+                    let in_venue = ce >= ve0 && ce <= ve1 && cn >= vn0 && cn <= vn1;
+                    let mat = if in_venue && classify(inten, ce, cn, step) { asphalt } else { grass };
                     let p = |di: usize, dj: usize, z: f64| {
                         let t = fr.to_tm(e0 + (i + di) as f64 * step, n1 - (j + dj) as f64 * step, z);
                         [t[0] - anchor[0], t[1] - anchor[1] + lift, t[2] - anchor[2]]
