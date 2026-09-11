@@ -136,6 +136,6 @@ https://github.com/user-attachments/assets/9b9b5242-c6ef-4270-9eed-a6a3063126e8
 
 **Tiny Japan 2026** — original author time `78.928` · tiny ghost **102.115** (build ship15, controls overlay)
 
-*latest lap **83.772** (build ship15) — held (staged — attitude: no attitude table for this lap in the ghosts README (fail closed))*
+*latest lap **90.202** (build ship15) — video pending*
 
 https://github.com/user-attachments/assets/18c3cc0f-0d53-44df-bd32-f63adeadf2a8
