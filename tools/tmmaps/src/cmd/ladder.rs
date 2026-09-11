@@ -864,10 +864,32 @@ pub fn addblock(args: &[String]) {
         specs.push(map::FreeBlockSpec { name: name.to_string(), author: author.clone(), flags, pos: v(pos), rot: v(rot), grid });
     }
     assert!(!specs.is_empty(), "nothing to add");
-    let mut m = map::MapFile::load(&src);
+    // --embed ZIPPATH=LOCAL: add a block file to the archive with its manifest row (ident
+    // from the file's header, author from --author or the file); a separate write pass
+    let embeds: Vec<(String, String)> = flag_multi(args, "--embed").iter().filter_map(|e| e.split_once('=').map(|(a, b)| (a.to_string(), b.to_string()))).collect();
+    let mut src_path = src.clone();
+    if !embeds.is_empty() {
+        let mut m0 = map::MapFile::load(&src);
+        let (mut zip, existing) = crate::header::embedded_zip_bytes(&m0.gbx.body).unwrap_or_default();
+        let kept: Vec<String> = existing.iter().filter(|n| n.to_ascii_lowercase().ends_with(".item.gbx")).map(|n| n.rsplit(['/', '\\']).next().unwrap_or(n).to_string()).collect();
+        let mut rows: Vec<(String, String)> = kept.iter().map(|n| (n.clone(), n.clone())).collect();
+        for (zp, local) in &embeds {
+            let bytes = std::fs::read(local).unwrap_or_else(|e| panic!("--embed {local}: {e}"));
+            let (ident, au) = crate::header::item_ident_author(&bytes).unwrap_or_else(|| panic!("--embed {local}: no ident in the header"));
+            zip = crate::header::zip_add(&zip, zp, &bytes);
+            rows.push((ident, author.clone().unwrap_or(au)));
+            println!("  embedded {zp} ({} bytes) as {}", bytes.len(), rows.last().unwrap().0);
+        }
+        let refs: Vec<(&str, &str)> = rows.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        m0.replace_embedded_objects(&refs, &zip);
+        src_path = PathBuf::from(format!("{}.embed.Map.Gbx", out.display()));
+        m0.write_to(&src_path).expect("write (embed pass)");
+    }
+    let mut m = map::MapFile::load(&src_path);
     let before = m.blocks.len();
     let r = m.remove_and_add_blocks(|_| false, |_| false, &specs);
     m.write_to(&out).expect("write");
+    if src_path != src { let _ = std::fs::remove_file(&src_path); }
     let m2 = map::MapFile::load(&out);
     println!("  {} blocks -> {} (added {}; table {} -> {}); free blocks now {}", before, m2.blocks.len(), specs.len(), r.table_before, r.table_after, m2.blocks.iter().filter(|b| b.flags & map::FREE_BLOCK_FLAG != 0).count());
     for b in m2.blocks.iter().rev().take(specs.len()) {
