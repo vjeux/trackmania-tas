@@ -134,3 +134,18 @@ needed by anything.
   builds (green placeholder on ship15, yellow NADEO on ship16) and the hill has a hole
   under it (lake visible) — a MAP fix (GEOM), not a build switch. Camera at 8.0 s:
   source (1100.3, 22.0, 1039.3) looking (−0.846, −0.296, 0.443).
+
+## Addendum, 2026-09-11 08:17Z — loops migrated to devvm63145.vll0.facebook.com
+
+- devvm68451 (lease to 10:01Z) is quiet; **devvm63145** (lease to 09-12 04:06Z) runs the
+  four loops (`~/tinyvid4/{loop-up,shipwatch-up,pagestatus-loop,bank}.sh`), has the store
+  mounted, the rust toolchain (`~/.cargo/bin/cargo`, incremental build ~25 s) and the
+  clones `~/tt-video4` (main) + `~/tt-page`. Migration recipe worked as written in memory.
+- State: 19 38.276 + 05 16.395 (ship17b file 067d8abe, labelled ship17c) pending behind
+  the upload window (12:00Z); 15 42.454 (ship17c) staged, checker QUALIFIED, INPUT's line
+  still `attitude: n/a` → fail-closed; 22 (78.051, 82.652), 20 75.595, 25 (83.772, 90.202)
+  held. No GitHub session (cookie #8 dead 22:04Z; ghsession unseeded).
+- Review renders delivered overnight: 01 on ship16/18c/18d/18e (hole fixed from 18d),
+  05 water proof, Argentina opening 4W-C (review-private/…).
+- Burst plan unchanged: 11:30Z `--idle-quit-min 0`; 12:00–14:30Z uploads via receipts;
+  14:30Z `tinyctl final-table … --write ~/tinyvid4/out/FINAL.md`; map zips after clips.
