@@ -3,7 +3,7 @@
 //! it, by default, checked, and stamped.**
 //!
 //! ```text
-//! tinyctl video --map NN | --all [--watch SECS [--idle-quit-min 30 (0 = never)]] [--min-gain-s 0.1] [--ghost-archive DIR|none] [--box-keep 2] [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9]
+//! tinyctl video --map NN | --all [--watch SECS [--idle-quit-min 30 (0 = never)]] [--min-gain-s 0.1] [--ghost-archive DIR|none] [--box-keep 2] [--rebuild-all] [--ghost F] [--out /tmp/tinyvid] [--maps-dir /tmp/audit/ship9]
 //!               [--ghosts-dir /tmp/ghosts] [--ghosts-sync host:dir] [--build ship15] [--cam 2] [--load-timeout 120] [--no-guard]
 //!               [--box-videos "…/Maps/Tiny/videos"] [--store host:dir | dir] [--pull-webm] [--suffix S]
 //!               [--from-webm F] [--no-overlay] [--crf N] [--offset-ms N] [--ship [--readme tiny/README.md]]
@@ -299,6 +299,7 @@ fn all_once(args: &[String]) -> Result<(), String> {
     // the per-map call (`--build`, `--map-file`, `--suffix`) all follow it, so
     // 05 and 15 can render on ship16/ship17 while the rest stays ship15.
     let builds = read_builds(&out);
+    let rebuild_all = tmmaps::cli::has(args, "--rebuild-all");
     let readme = std::fs::read_to_string(ghosts_dir.join("README.md")).unwrap_or_default();
     // THE RE-RENDER THRESHOLD (a tool default — vjeux's "not a rule, a
     // default"; coordinator 2026-09-10 11:34Z). The player project shaves
@@ -372,6 +373,13 @@ fn all_once(args: &[String]) -> Result<(), String> {
                 Some(row) if !our_map_md5.is_empty() && row.contains(&format!("-{}-", &our_map_md5[..8])) => {
                     println!("{nn} {time}: README row is certified on another build tag but on the SAME map bytes (md5 {}) as our {b} file — rendering", &our_map_md5[..8]);
                 }
+                // --rebuild-all (the ship18f set, coordinator 2026-09-11 14:30Z): the
+                // whole set re-renders on the new build; a certified lap renders on
+                // it whatever build its row names — INPUT's per-build confirmation
+                // drives the ORDER (see `rebuild_order`), never the permission.
+                Some(row) if rebuild_all => {
+                    println!("{nn} {time}: --rebuild-all — rendering on {b} although the README row names another build ({})", row.split('|').nth(5).unwrap_or("?").trim());
+                }
                 Some(row) => {
                     println!("{nn} {time}: README row is not {b} — skipped ({})", row.chars().take(120).collect::<String>());
                     continue;
@@ -437,6 +445,14 @@ fn all_once(args: &[String]) -> Result<(), String> {
             }
         }
         todo.push(nn);
+    }
+    // RENDER ORDER for a set rebuild: laps INPUT has confirmed on the target build
+    // (their README line's `builds:` field carries `<build> … ✓`) first, then the
+    // rest; within a group the shorter laps first (more clips per hour).
+    if rebuild_all && todo.len() > 1 {
+        let order = rebuild_order(&readme, &todo, &builds, global_build.as_deref());
+        println!("render order (confirmed on the target build first, then by lap length): {}", order.join(" "));
+        todo = order;
     }
     if todo.is_empty() {
         println!("nothing new in {} ({} ghosts, all rendered)", ghosts_dir.display(), names.len());
@@ -1178,6 +1194,9 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let out = PathBuf::from(f("--out").unwrap_or_else(|| "/tmp/tinyvid".into()));
     let readme = f("--readme").map(PathBuf::from);
+    // --store DIR: where banked clips + sidecars live (receipt inheritance reads
+    // the published clip's sidecar there when the local copy is gone)
+    let store_dir: Option<PathBuf> = f("--store").map(PathBuf::from);
     let ghosts_dir = f("--ghosts-dir").map(PathBuf::from);
     let repo = f("--repo").map(PathBuf::from).or_else(|| readme.as_ref().and_then(|r| r.parent().and_then(|p| p.parent()).map(Path::to_path_buf)));
     let build_note = f("--build-note").unwrap_or_else(|| "build ship15, controls overlay".into());
@@ -1275,7 +1294,16 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                         continue;
                     }
                 }
-                let approved = approval_for(&out, &cells[0], &cells[1]).is_some() || read_prechecked(&out).contains(cells[0].as_str());
+                // a receipt on file, a prechecked map, or — same ghost, new build —
+                // the receipt the PUBLISHED clip of this lap already earned
+                let inherited = sidecar_ghost_md5(&out, &cells[2]).and_then(|m| inherited_approval(&out, store_dir.as_deref(), &cells[0], &cells[1], &m));
+                let approved = approval_for(&out, &cells[0], &cells[1]).is_some() || read_prechecked(&out).contains(cells[0].as_str()) || inherited.is_some();
+                if let Some(from) = &inherited {
+                    if !attitude_said.contains(&(format!("inherit-{}", cells[0]), cells[1].clone())) {
+                        println!("{} {} {}: receipt INHERITED from the published {from} (same ghost, new build)", chrono_now(), cells[0], cells[1]);
+                        attitude_said.insert((format!("inherit-{}", cells[0]), cells[1].clone()));
+                    }
+                }
                 if !approved {
                     continue;
                 }
@@ -1411,6 +1439,18 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                                 None => build_note.clone(),
                             }
                         };
+                        // SAME LAP, NEW BUILD (the ship18f re-render): the row keeps its lap
+                        // and gets the new build + a "video re-rendered on <build>" note
+                        // via rowbuilds.tsv (page-status draws it), unless a note exists.
+                        if let Some(nb) = extract_build(&row_build_note) {
+                            let old_row = page.lines().find(|l| l.starts_with(&format!("**{}**", map_title(nn)))).unwrap_or("");
+                            let same_lap = old_row.contains(&format!("**{time}**"));
+                            let old_build = old_row.find("(build ").map(|k| old_row[k + 7..].split(|c: char| c == ',' || c == ')').next().unwrap_or("").to_string()).unwrap_or_default();
+                            if same_lap && !old_build.is_empty() && old_build != nb {
+                                note_rerender(&out, nn, &nb, name);
+                                println!("  page: same lap {time}, build {old_build} → {nb} — rowbuilds note 'video re-rendered on {nb}'");
+                            }
+                        }
                         let new = page_swap(&page, nn, time, &label, &row_build_note, url)?;
                         let unchanged = new == page;
                         std::fs::write(readme, &new).map_err(|e| format!("{}: {e}", readme.display()))?;
@@ -2525,4 +2565,165 @@ pub fn prune_box_staging(wsx: &Wsx, out: &Path, nn: &str, just_rendered: &str, k
     cmd.push_str(&format!("rm -f '{VID}/vid{nn}/Video60.webm' '{VID}/vid{nn}/vid{nn}.webm' '{VID}/vid{nn}/vid{nn}01.webm' 2>/dev/null; "));
     cmd.push_str(&format!("echo 'removed {} banked clip file(s) of {nn}: {}'; df -m /mnt/c | awk 'NR==2{{print \"C: free\", $4, \"MB\"}}'", rm.len(), rm.join(" ")));
     wsx.sh(&cmd)
+}
+
+/// SAME GHOST, NEW BUILD → INHERIT THE RECEIPT (coordinator, 2026-09-11 14:30Z:
+/// the whole set re-renders on ship18f; a lap already PUBLISHED with an
+/// approved opening needs no new receipt when the tape is the same ghost).
+/// A clip `name` of map `nn` at `time` inherits when ships.tsv has a URL row
+/// for the same map + time whose clip's sidecar (`<out>/<clip>.mp4.json`, or
+/// the store copy) names the same `ghost_md5`. Returns the inherited-from clip.
+pub fn inherited_approval(out: &Path, store: Option<&Path>, nn: &str, time: &str, ghost_md5: &str) -> Option<String> {
+    let ships = std::fs::read_to_string(out.join("ships.tsv")).unwrap_or_default();
+    for l in ships.lines().filter(|l| !l.starts_with('#')) {
+        let c: Vec<&str> = l.split('\t').map(str::trim).collect();
+        if c.len() < 5 || c[0] != nn || c[1] != time || !c[4].starts_with("https://") {
+            continue;
+        }
+        let clip = c[2];
+        let side_name = format!("{clip}.mp4.json");
+        let candidates = [Some(out.join(&side_name)), store.map(|s| s.join(&side_name))];
+        for p in candidates.into_iter().flatten() {
+            if let Ok(json) = std::fs::read_to_string(&p) {
+                if let Some(m) = sidecar_field(&json, "ghost_md5") {
+                    if m == ghost_md5 {
+                        return Some(clip.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// `"key": "value"` out of the small hand-written sidecar json.
+pub fn sidecar_field(json: &str, key: &str) -> Option<String> {
+    let k = format!("\"{key}\":");
+    let i = json.find(&k)? + k.len();
+    let rest = json[i..].trim_start();
+    let rest = rest.strip_prefix('"')?;
+    Some(rest.split('"').next()?.to_string())
+}
+
+#[cfg(test)]
+mod inherit_tests {
+    use super::*;
+
+    #[test]
+    fn a_published_same_ghost_clip_lends_its_receipt_to_the_re_render() {
+        let dir = std::env::temp_dir().join(format!("inherit-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ships.tsv"), "01\t17.417\t01-ghost-17.417-ship15\t/x\thttps://github.com/user-attachments/assets/a\n01\t17.417\t01-ghost-17.417-ship18f\t/x\tstaged\n").unwrap();
+        std::fs::write(dir.join("01-ghost-17.417-ship15.mp4.json"), "{\n  \"mp4\": \"x\",\n  \"map\": \"01\",\n  \"lap\": \"17.417\",\n  \"ghost_md5\": \"89d3236ea670d3d425073e188385c56c\",\n  \"ghost_fnv\": \"20be4c5bd93ac9e2\"\n}\n").unwrap();
+        assert_eq!(inherited_approval(&dir, None, "01", "17.417", "89d3236ea670d3d425073e188385c56c").as_deref(), Some("01-ghost-17.417-ship15"));
+        assert_eq!(inherited_approval(&dir, None, "01", "17.417", "0000000000000000000000000000dead"), None, "another ghost inherits nothing");
+        assert_eq!(inherited_approval(&dir, None, "01", "17.400", "89d3236ea670d3d425073e188385c56c"), None, "another lap inherits nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The `ghost_md5` of a clip from its sidecar next to `<out>` (`<clip>.mp4.json`).
+pub fn sidecar_ghost_md5(out: &Path, clip: &str) -> Option<String> {
+    let json = std::fs::read_to_string(out.join(format!("{clip}.mp4.json"))).ok()?;
+    sidecar_field(&json, "ghost_md5")
+}
+
+/// Set rowbuilds.tsv for `nn` to `build` + `clip=<name> video re-rendered on <build>`,
+/// keeping an existing note's text after it (and its link).
+pub fn note_rerender(out: &Path, nn: &str, build: &str, clip: &str) {
+    let path = out.join("rowbuilds.tsv");
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut rows = crate::pagestatus::parse_rowbuilds(&text);
+    let e = rows.entry(nn.to_string()).or_default();
+    let old_note = crate::pagestatus::note_text(&e.note);
+    let stamp = format!("video re-rendered on {build}");
+    e.build = build.to_string();
+    e.note = if old_note.is_empty() || old_note.contains(&stamp) {
+        format!("clip={clip} {stamp}")
+    } else {
+        format!("clip={clip} {stamp}; {old_note}")
+    };
+    let header: Vec<&str> = text.lines().filter(|l| l.starts_with('#')).collect();
+    let mut keys: Vec<&String> = rows.keys().collect();
+    keys.sort();
+    let mut s = String::new();
+    if header.is_empty() {
+        s.push_str("# nn\tbuild\tmap_link\tnote\n");
+    } else {
+        for h in header {
+            s.push_str(h);
+            s.push('\n');
+        }
+    }
+    for k in keys {
+        let r = &rows[k];
+        s.push_str(&format!("{k}\t{}\t{}\t{}\n", r.build, r.link, r.note));
+    }
+    let tmp = path.with_extension("tsv.tmp");
+    if std::fs::write(&tmp, s).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+#[cfg(test)]
+mod rerender_note_tests {
+    use super::*;
+
+    #[test]
+    fn a_same_lap_new_build_swap_writes_the_rerender_note() {
+        let dir = std::env::temp_dir().join(format!("rerender-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("rowbuilds.tsv"), "# nn\tbuild\tmap_link\tnote\n13\tship15\thttps://x/13.zip\truns on un-skinned ship15 surfaces at 2.25 s — re-drive pending\n").unwrap();
+        note_rerender(&dir, "13", "ship18f", "13-ghost-24.769-ship18f");
+        note_rerender(&dir, "01", "ship18f", "01-ghost-17.417-ship18f");
+        let rows = crate::pagestatus::parse_rowbuilds(&std::fs::read_to_string(dir.join("rowbuilds.tsv")).unwrap());
+        assert_eq!(rows["13"].build, "ship18f");
+        assert_eq!(rows["13"].link, "https://x/13.zip");
+        assert_eq!(rows["13"].note, "clip=13-ghost-24.769-ship18f video re-rendered on ship18f; runs on un-skinned ship15 surfaces at 2.25 s — re-drive pending");
+        assert_eq!(rows["01"].note, "clip=01-ghost-17.417-ship18f video re-rendered on ship18f");
+        assert_eq!(crate::pagestatus::note_text(&rows["01"].note), "video re-rendered on ship18f");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The order a set rebuild renders its maps in: confirmed-on-target first
+/// (the README line's `builds:` field names the build with a ✓), then the rest;
+/// shorter laps first within each group.
+pub fn rebuild_order(readme: &str, todo: &[String], builds: &std::collections::HashMap<String, (String, String)>, global_build: Option<&str>) -> Vec<String> {
+    let mut scored: Vec<(u8, f64, String)> = todo
+        .iter()
+        .map(|nn| {
+            let build = builds.get(nn).map(|(b, _)| b.as_str()).or(global_build).unwrap_or("");
+            let (time, confirmed) = readme_current_lap(readme, nn)
+                .map(|(t, _)| {
+                    let line = readme.lines().filter(|l| l.trim_start().starts_with(&format!("- {nn} {t}:"))).last().unwrap_or("");
+                    let builds_field = line.split("builds:").nth(1).unwrap_or("");
+                    let ok = !build.is_empty() && builds_field.split('·').any(|seg| seg.contains(build) && seg.contains('✓'));
+                    (t.parse::<f64>().unwrap_or(9999.0), ok)
+                })
+                .unwrap_or((9999.0, false));
+            (if confirmed { 0 } else { 1 }, time, nn.clone())
+        })
+        .collect();
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)));
+    scored.into_iter().map(|(_, _, nn)| nn).collect()
+}
+
+#[cfg(test)]
+mod rebuild_order_tests {
+    use super::*;
+
+    #[test]
+    fn confirmed_on_target_first_then_short_laps_first() {
+        let readme = "| 01 | 01.Ghost.Gbx | 17.417 | 4 | ship15 | x | PPO | y |\n| 02 | 02.Ghost.Gbx | 16.746 | 4 | ship15 | x | PPO | y |\n| 19 | 19.Ghost.Gbx | 38.276 | 16 | ship15 | x | PPO | y |\n\
+- 01 17.417: stop · attitude: PASS · builds: ship15 aaaa ✓ 17.417/4 · ship18f-a4f869ff bbbb ✓ 17.417/4\n\
+- 02 16.746: stop · attitude: PASS · builds: ship15 aaaa ✓ 16.746/4\n\
+- 19 38.276: stop · attitude: PASS · builds: ship15 aaaa ✓ · ship18f-a4f869ff cccc ✓ 38.276/16\n";
+        let mut builds = std::collections::HashMap::new();
+        for nn in ["01", "02", "19"] {
+            builds.insert(nn.to_string(), ("ship18f".to_string(), "/x".to_string()));
+        }
+        let order = rebuild_order(readme, &["19".into(), "02".into(), "01".into()], &builds, Some("ship15"));
+        assert_eq!(order, vec!["01".to_string(), "19".to_string(), "02".to_string()], "01 and 19 confirmed on ship18f (01 shorter), then 02");
+    }
 }
