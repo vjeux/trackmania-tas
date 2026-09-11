@@ -252,7 +252,7 @@ pub fn update_rows_with_clips(page: &str, laps: &[(String, String)], ghosts_read
         } else if let Some(rb) = rowbuilds.get(nn.as_str()) {
             notes.push(format!("{nn}: row build {} waits — the row's video is not a {} clip yet", rb.build, rb.build));
         }
-        let build_note = rowbuilds.get(nn.as_str()).filter(|_| row_ready).filter(|rb| !rb.note.trim().is_empty()).map(|rb| format!("{BUILD_NOTE_PREFIX}{}*", rb.note.trim().trim_start_matches("video=ok").trim().trim_end_matches('*')));
+        let build_note = rowbuilds.get(nn.as_str()).filter(|_| row_ready).filter(|rb| !rb.note.trim().is_empty()).map(|rb| format!("{BUILD_NOTE_PREFIX}{}*", note_text(&rb.note).trim_end_matches('*')));
         maintain_line(&mut lines, &mut notes, i, nn, "build note", is_build_note, build_note);
     }
     let mut s = lines.join("\n");
@@ -944,7 +944,7 @@ pub fn final_table(page: &str, ghosts_readme: &str, ships: &str, holds: &std::co
         }
         if let Some(rb) = rowbuilds.get(nn.as_str()) {
             if !rb.note.trim().is_empty() {
-                notes.push(format!("↻ {}", rb.note.trim().trim_start_matches("video=ok").trim()));
+                notes.push(format!("↻ {}", note_text(&rb.note)));
             }
         }
         let esc = |s: &str| s.replace('|', "\\|");
@@ -1000,7 +1000,10 @@ pub fn row_build_applies(rb: &RowBuild, row_line: &str, published: Option<&str>,
     let title = row_line.trim_start_matches("**").split("**").next().unwrap_or("");
     let nn = (1..=25).map(|n| format!("{n:02}")).find(|n| map_title(n) == title || format!("Tiny Summer 2026 - {n}") == title);
     match nn.and_then(|n| ships_names.get(&n)) {
-        Some(clip) => clip.ends_with(&format!("-{}", rb.build)),
+        // the row's video is a clip of that build — or the clip the entry NAMES
+        // (`clip=<name>` at the start of the note: 05's ship17b render labelled
+        // ship17c on the page, the same map bytes)
+        Some(clip) => clip.ends_with(&format!("-{}", rb.build)) || note_clip(&rb.note).map(|c| c == *clip).unwrap_or(false),
         None => false,
     }
 }
@@ -1086,5 +1089,54 @@ mod published_clip_tests {
         let m = published_clip_names(s);
         assert_eq!(m.get("05").map(String::as_str), Some("05-ghost-18.298-ship15"));
         assert_eq!(m.get("19"), None);
+    }
+}
+
+/// `clip=<name>` at the start of a rowbuilds note: the exact clip that counts
+/// as this row's video of that build (when its own suffix says another build).
+pub fn note_clip(note: &str) -> Option<String> {
+    let t = note.trim_start();
+    let rest = t.strip_prefix("clip=")?;
+    Some(rest.split_whitespace().next()?.to_string())
+}
+
+/// The note without its leading `clip=…` / `video=ok` markers.
+pub fn note_text(note: &str) -> String {
+    let mut t = note.trim();
+    loop {
+        if let Some(r) = t.strip_prefix("video=ok") {
+            t = r.trim_start();
+        } else if t.starts_with("clip=") {
+            t = t.split_once(char::is_whitespace).map(|(_, r)| r).unwrap_or("").trim_start();
+        } else {
+            break;
+        }
+    }
+    t.to_string()
+}
+
+#[cfg(test)]
+mod clip_marker_tests {
+    use super::*;
+
+    /// `clip=<name>` in a rowbuilds note: that clip counts as the row's video of
+    /// the row's build even when its own suffix says another build (05's ship17b
+    /// render published as ship17c), and the marker is not printed.
+    #[test]
+    fn a_named_clip_counts_as_the_rows_build() {
+        let rb = RowBuild { build: "ship17c".into(), link: String::new(), note: "clip=05-ghost-16.395-ship17b road-through-water section without drag — the original slows the car there".into() };
+        let row = "**Tiny Summer 2026 - 05** — original author time `27.795` · tiny ghost **16.395** (build ship15, controls overlay)";
+        let mut ships = std::collections::HashMap::new();
+        ships.insert("05".to_string(), "05-ghost-16.395-ship17b".to_string());
+        assert!(row_build_applies(&rb, row, Some("16.395"), &ships));
+        ships.insert("05".to_string(), "05-ghost-18.298-ship15".to_string());
+        assert!(!row_build_applies(&rb, row, Some("18.298"), &ships), "another clip does not count");
+        assert_eq!(note_clip(&rb.note).as_deref(), Some("05-ghost-16.395-ship17b"));
+        assert_eq!(note_text(&rb.note), "road-through-water section without drag — the original slows the car there");
+        assert_eq!(note_text("video=ok clip=x-ship17b  frames identical"), "frames identical");
+        // the water rule follows the named clip's ROW build (from the receipt)
+        let receipt = "05\t16.395\tparent\tPUBLISHABLE (ship17c) water_ok=B";
+        assert!(crate::video::water_b_rule(receipt, "05-ghost-16.395-ship17b", &rb.note), "17b-named clip, row build 17c via clip=");
+        assert!(!crate::video::water_b_rule(receipt, "05-ghost-16.395-ship17b", "road water"), "without clip= the 17b suffix decides");
     }
 }

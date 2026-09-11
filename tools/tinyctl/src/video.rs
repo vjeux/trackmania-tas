@@ -2388,9 +2388,17 @@ pub fn water_b_accepted(out: &Path, nn: &str, time: &str, clip: &str) -> bool {
 
 pub fn water_b_rule(receipt: &str, clip: &str, row_note: &str) -> bool {
     let ok = receipt.to_ascii_lowercase().contains("water_ok=b");
-    let build = clip.rsplit_once("-ship").map(|(_, b)| b.to_string()).unwrap_or_default();
+    // the clip's build: its suffix — or, when the row's note names THIS clip
+    // (`clip=<name>`), the row's build (05's ship17b render published as
+    // ship17c, the same map bytes) which the receipt must name too
+    let named = crate::pagestatus::note_clip(row_note).map(|c| c == clip).unwrap_or(false);
+    let build = if named {
+        receipt.to_ascii_lowercase().split(|c: char| !c.is_ascii_alphanumeric()).find_map(|w| w.strip_prefix("ship").map(String::from)).unwrap_or_default()
+    } else {
+        clip.rsplit_once("-ship").map(|(_, b)| b.to_string()).unwrap_or_default()
+    };
     let build_ok = build_at_least(&build, "17c");
-    ok && build_ok && !row_note.trim().trim_start_matches("video=ok").trim().is_empty()
+    ok && build_ok && !crate::pagestatus::note_text(row_note).is_empty()
 }
 
 /// `"17c" >= "17c"`, `"18" >= "17c"`, `"17b" < "17c"`, `"15" < "17c"`: the number,
