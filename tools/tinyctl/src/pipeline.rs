@@ -276,3 +276,55 @@ fn append(tracker: &std::path::Path, row: &[String]) -> Result<(), String> {
     let mut fh = std::fs::OpenOptions::new().append(true).create(true).open(tracker).map_err(|e| format!("{}: {e}", tracker.display()))?;
     writeln!(fh, "{}", row.iter().map(|c| c.replace('\t', " ").replace('\n', " ")).collect::<Vec<_>>().join("\t")).map_err(|e| e.to_string())
 }
+
+/// `tinyctl tracker-md --publish tracker.tsv [--frames frames.tsv] [--uploads uploads.txt] [--out REPORT.md]`
+/// — the tracker rows as one Markdown table (one row per map: the publish run's
+/// row joined with the frame run's `frames`/`flagged_views` columns by map
+/// number; `--uploads` NAME<TAB>ID rows turn `cmp-uNN<view>` frames into links).
+pub fn tracker_md_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let publish = f("--publish").ok_or("tracker-md needs --publish tracker.tsv")?;
+    let read_rows = |p: &str| -> Result<Vec<Vec<String>>, String> {
+        let text = std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?;
+        Ok(text.lines().skip(1).filter(|l| !l.trim().is_empty()).map(|l| l.split('\t').map(|c| c.to_string()).collect()).collect())
+    };
+    // the LAST row per map number wins (a re-run supersedes)
+    let mut by_nn: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for r in read_rows(&publish)? {
+        by_nn.insert(r[0].clone(), r);
+    }
+    let rows: Vec<Vec<String>> = by_nn.into_values().collect();
+    let frames: Vec<Vec<String>> = f("--frames").map(|p| read_rows(&p)).transpose()?.unwrap_or_default();
+    let uploads: Vec<(String, String)> = f("--uploads").and_then(|p| std::fs::read_to_string(p).ok()).map(|t| t.lines().filter_map(|l| l.split_once(char::is_whitespace).map(|(a, b)| (a.trim().to_string(), b.trim().to_string()))).collect()).unwrap_or_default();
+    let col = |r: &[String], i: usize| r.get(i).cloned().unwrap_or_else(|| "-".into());
+    let mut out = String::new();
+    out.push_str("| # | source | source uid | AT / gold / silver / bronze (s) | tiny uid | tiny size | items (gate) | frames (flagged cells) | Nadeo |\n|---|---|---|---|---|---|---|---|---|\n");
+    for r in &rows {
+        let nn = col(r, 0);
+        let fr = frames.iter().filter(|x| x[0] == nn).last();
+        let (frames_s, flagged) = match fr {
+            Some(x) => (col(x, 13), col(x, 14)),
+            None => (col(r, 13), col(r, 14)),
+        };
+        let secs = |ms: &str| ms.parse::<f64>().map(|v| format!("{:.3}", v / 1000.0)).unwrap_or_else(|_| ms.to_string());
+        let times = format!("{} / {} / {} / {}", secs(&col(r, 4)), secs(&col(r, 5)), secs(&col(r, 6)), secs(&col(r, 7)));
+        let size = col(r, 10).parse::<f64>().map(|b| format!("{:.1} MB", b / 1e6)).unwrap_or_else(|_| col(r, 10));
+        let mut links: Vec<String> = Vec::new();
+        for view in ["start", "finish", "top"] {
+            let key = format!("cmp-u{nn}{view}");
+            if let Some((_, id)) = uploads.iter().rev().find(|(n, _)| *n == key) {
+                links.push(format!("[{view}](/api/attachments/view?file_id={id})"));
+            }
+        }
+        let frames_cell = if links.is_empty() { format!("{frames_s} ({flagged})") } else { format!("{} ({flagged})", links.join(" ")) };
+        let nadeo = col(r, 15).replace("OK created mapId ", "created `").replace(" stored IDENTICAL", "` · stored md5 identical");
+        out.push_str(&format!("| {nn} | {} | `{}` | {times} | `{}` | {size} | {} ok | {frames_cell} | {nadeo} |\n", col(r, 2), col(r, 3), col(r, 9), col(r, 11)));
+    }
+    match f("--out") {
+        Some(p) => std::fs::write(&p, &out).map_err(|e| format!("{p}: {e}")),
+        None => {
+            print!("{out}");
+            Ok(())
+        }
+    }
+}

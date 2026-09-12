@@ -200,6 +200,7 @@ fn main() {
         "publish-here" => publish::publish_here_cmd(rest),
         "nadeo-here" => nadeo::cmd(rest),
         "pipeline" => pipeline::cmd(rest),
+        "tracker-md" => pipeline::tracker_md_cmd(rest),
         "unproject" => unproject::cmd(rest),
         "upload" => upload::cmd(rest),
         "video" => video::cmd(rest),
