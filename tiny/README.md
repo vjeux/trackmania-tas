@@ -66,7 +66,9 @@ https://github.com/user-attachments/assets/f7b83d4e-e5b5-4695-b0bb-d14b99c0fe45
 
 https://github.com/user-attachments/assets/8d1cf689-14c9-41cd-a054-1673e447956f
 
-**Tiny Summer 2026 - 13** — original author time `31.462` · tiny ghost **24.674** (build ship18f, controls overlay)
+**Tiny Summer 2026 - 13** — original author time `31.462` · tiny ghost **24.674** (build ship18f, controls overlay) · map: ship18f
+
+*↻ lap certified on ship18f; runs on un-skinned ship15 surfaces at 2.25 s (verge) / 2.40 s (rail) — re-drive pending*
 
 https://github.com/user-attachments/assets/ca9b7d1c-519c-4dab-9ddc-81b9a738a188
 
