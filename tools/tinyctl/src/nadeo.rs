@@ -77,9 +77,25 @@ pub fn fresh_tokens() -> Option<(String, String)> {
 }
 
 pub fn tokens(shootctl: &str, owner: &str) -> Result<(String, String), String> {
+    tokens_opt(shootctl, owner, true)
+}
+
+/// `lock = false`: mint WITHOUT the render lock (vjeux holding the lock while he
+/// plays and asking for an API fix, 2026-09-12 22:22Z — the mint is a 2-second
+/// plugin call that loads nothing).
+pub fn tokens_opt(shootctl: &str, owner: &str, lock: bool) -> Result<(String, String), String> {
     if let Some(pair) = fresh_tokens() {
         eprintln!("tokens: reusing the plugin's files (younger than {} min)", TOKEN_REUSE_SECS / 60);
         return Ok(pair);
+    }
+    if !lock {
+        for aud in ["NadeoServices", "NadeoLiveServices"] {
+            let _ = std::fs::remove_file(format!("{STORE}/token-{aud}.txt"));
+        }
+        return token(shootctl, "NadeoServices").and_then(|core| {
+            std::thread::sleep(Duration::from_millis(500));
+            token(shootctl, "NadeoLiveServices").map(|live| (core, live))
+        });
     }
     render_lock(shootctl, owner, "acquire", &["--wait", "1500"]).map_err(|e| format!("render lock: {e}"))?;
     for aud in ["NadeoServices", "NadeoLiveServices"] {
@@ -143,7 +159,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
     let shootctl = f("--shootctl").unwrap_or_else(|| format!("{BOX_TOOLS}/shootctl"));
     let owner = format!("nadeo-{}", std::process::id());
-    let (core, live) = tokens(&shootctl, &owner)?;
+    let (core, live) = tokens_opt(&shootctl, &owner, !tmmaps::cli::has(args, "--no-lock"))?;
     let auth_core = format!("Authorization: {core}");
     let auth_live = format!("Authorization: {live}");
     let save = |name: &str, v: &Value| -> Result<(), String> {
@@ -171,7 +187,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let club = f("--club").ok_or("activities needs --club ID")?;
             let length = f("--length").unwrap_or_else(|| "100".into());
             let offset = f("--offset").unwrap_or_else(|| "0".into());
-            let url = format!("{LIVE}/api/token/club/{club}/activity?length={length}&offset={offset}&active=true");
+            // --inactive lists the inactive (hidden) ones instead
+            let active = if tmmaps::cli::has(args, "--inactive") { "false" } else { "true" };
+            let url = format!("{LIVE}/api/token/club/{club}/activity?length={length}&offset={offset}&active={active}");
             let v = get_json(&auth_live, &url)?;
             save(&format!("club-{club}-activities-{offset}.json"), &v)?;
             println!("total {}\tmaxPage {}", s(&v, "itemCount"), s(&v, "maxPage"));
@@ -268,6 +286,30 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let v = post_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/campaign/create"), &body)?;
             save(&format!("club-{club}-campaign-create-{now}.json"), &v)?;
             println!("campaignId\t{}\tname\t{}\tactivityId\t{}", s(&v, "campaignId"), s(&v, "name"), s(&v, "activityId"));
+            // A created campaign is an INACTIVE (hidden) club activity: the club
+            // page did not list "Tiny u10s everios96" until vjeux found it in the
+            // club's management view marked inactive (2026-09-12 22:22Z). Activate
+            // and publish it right away (`--hidden` leaves it as created).
+            if !tmmaps::cli::has(args, "--hidden") {
+                let act = s(&v, "activityId");
+                if act != "-" {
+                    match activity_edit(&auth_live, &club, &act, true, true) {
+                        Ok(a) => println!("activity\t{act}\tactive {}\tpublic {}", s(&a, "active"), s(&a, "public")),
+                        Err(e) => eprintln!("activity {act}: could not activate/publish ({e}) — do it in the club's management view"),
+                    }
+                }
+            }
+            Ok(())
+        }
+        "activity-edit" => {
+            // tinyctl nadeo-here activity-edit --club ID --activity ID [--active 0|1] [--public 0|1]
+            let club = f("--club").ok_or("activity-edit needs --club ID")?;
+            let act = f("--activity").ok_or("activity-edit needs --activity ID")?;
+            let active = f("--active").map(|x| x != "0").unwrap_or(true);
+            let public = f("--public").map(|x| x != "0").unwrap_or(true);
+            let a = activity_edit(&auth_live, &club, &act, active, public)?;
+            save(&format!("club-{club}-activity-{act}-edit.json"), &a)?;
+            println!("activity\t{act}\tactive {}\tpublic {}\tname {}", s(&a, "active"), s(&a, "public"), s(&a, "name"));
             Ok(())
         }
         other => Err(format!("nadeo-here: unknown subcommand `{other}` (club | campaigns | campaign | campaign-create | maps)")),
@@ -301,4 +343,11 @@ fn urlenc(s: &str) -> String {
 #[allow(dead_code)]
 pub fn outdir_default() -> &'static Path {
     Path::new("/home/vjeux/shoot/u10s")
+}
+
+/// `POST /club/{club}/activity/{id}/edit {"active":…,"public":…}` — the club
+/// page lists an activity only when it is active AND public.
+fn activity_edit(auth_live: &str, club: &str, activity: &str, active: bool, public: bool) -> Result<Value, String> {
+    let body = format!("{{\"active\":{active},\"public\":{public}}}");
+    post_json(auth_live, &format!("{LIVE}/api/token/club/{club}/activity/{activity}/edit"), &body)
 }
