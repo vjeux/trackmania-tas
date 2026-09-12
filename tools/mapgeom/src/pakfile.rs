@@ -88,6 +88,45 @@ pub fn read_file(
         return Err("offset past EOF".into());
     }
     // raw (possibly still compressed) bytes
+    // MAPGEOM_PAK_FORCE=raw|plain|dummy overrides the flag-derived cipher choice
+    // (the stock skins' *.json entries, flags 0x100000042, decode to garbage on
+    // the flag path — a probe knob, 2026-09-12)
+    if let Ok(force) = std::env::var("MAPGEOM_PAK_FORCE") {
+        let n = e.compressed_size.max(0) as usize;
+        match force.as_str() {
+            "raw" => return Ok(data.get(base..base + n).ok_or("size past EOF")?.to_vec()),
+            "plain" => {
+                // MAPGEOM_PAK_KEY=<32 hex> tries another key (the undecoded json entries)
+                let mut k2 = *key;
+                if let Ok(h) = std::env::var("MAPGEOM_PAK_KEY") {
+                    if h.len() == 32 {
+                        for i in 0..16 {
+                            k2[i] = u8::from_str_radix(&h[2 * i..2 * i + 2], 16).unwrap_or(0);
+                        }
+                    }
+                }
+                let ver: i32 = std::env::var("MAPGEOM_PAK_VERSION").ok().and_then(|v| v.parse().ok()).unwrap_or(version);
+                let skip: usize = std::env::var("MAPGEOM_PAK_SKIP").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+                let mut r = crate::pak::CipherReader::new_at(data, base, base + skip, &k2, ver);
+                return Ok(r.take(n));
+            }
+            "dummy" => return decrypt_with_dummy_writes(data, base, e, key, version),
+            "classdummy" => return Ok(decrypt_scheduled(data, base, key, version, n, &[(0, e.class_id)])),
+            "iv0" => {
+                let mut c = crate::blowfish::PakCipher::new(key, 0, version);
+                let mut out = vec![0u8; n];
+                let mut pos = base;
+                c.read(&mut out, |b| {
+                    let t = b.len().min(data.len() - pos);
+                    b[..t].copy_from_slice(&data[pos..pos + t]);
+                    pos += t;
+                    t
+                });
+                return Ok(out);
+            }
+            _ => {}
+        }
+    }
     let raw: Vec<u8> = if e.is_encrypted() {
         if !e.is_compressed() && !e.dont_use_dummy_write() {
             return decrypt_with_dummy_writes(data, base, e, key, version);

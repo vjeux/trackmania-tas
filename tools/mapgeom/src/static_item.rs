@@ -47,6 +47,9 @@ pub mod cli;
 pub mod surfhist;
 pub mod particle;
 pub mod texture;
+pub mod skin;
+pub mod skel;
+pub mod fbx;
 
 pub use crate::crystal_model::{Id, LookbackState, NodeRef, OpaqueNode, Rd, Wr, R, FACADE};
 pub use file::{parse_file, write_file, StaticItemFile};
@@ -109,6 +112,8 @@ pub enum Node {
     /// A node of the particle-model chain an FxSystem drives (emitter
     /// model, sub-model, render node, GPU spawn, GPU model).
     Particle(particle::ParticleNode),
+    /// `CPlugSkel` (0x090BA000): a skeleton — inline in a ZIP car skin (skel.rs).
+    Skel(skel::CPlugSkel),
     /// A class with no reader here, made only of skippable chunks.
     Opaque(OpaqueNode),
     /// `NPlugItem_SVariantList` (0x2F0BC000): the wrapper the pack's Flag16m /
@@ -186,6 +191,7 @@ impl Node {
             Node::GateSpecial(_) => C_GATE_SPECIAL_TRIGGER,
             Node::WaypointTrigger(_) => C_WAYPOINT_TRIGGER,
             Node::FxSystem(_) => particle::C_FX_SYSTEM,
+            Node::Skel(_) => skel::CLASS,
             Node::Particle(p) => p.class_id,
             Node::Opaque(o) => o.class_id,
             Node::VariantList(_) => C_VARIANT_LIST,
@@ -247,6 +253,7 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
             }
             Node::VariantList(VariantList { version, variants })
         }| 0x0917A000 | 0x0917B000 | 0x09119000 | 0x09118000 => Node::Opaque(read_fixed_opaque(r, class_id)?),
+        skel::CLASS => Node::Skel(skel::CPlugSkel::parse(r)?),
         particle::C_FX_SYSTEM => Node::FxSystem(particle::CPlugFxSystem::parse(r)?),
         c if particle::is_particle_class(c) => Node::Particle(particle::ParticleNode::parse(r, c)?),
         other => Node::Opaque(read_opaque(r, other)?),
@@ -284,6 +291,7 @@ pub fn write_node(w: &mut Wr, n: &Node) {
             w.u32(x.no_respawn);
         }
         Node::FxSystem(x) => x.write(w),
+        Node::Skel(x) => x.write(w),
         Node::Particle(x) => x.write(w),
         Node::Opaque(o) => w.bytes(&o.raw),
         Node::VariantList(v) => {

@@ -1349,6 +1349,60 @@ usage:
             }
             shoot(to, &name)
         }
+        // fpsprobe --map M --ghosts N --template G.Ghost.Gbx [--seconds 5] [--cam 2]:
+        // the skin-scenery cost question (2026-09-12) — N copies of one parked
+        // ghost imported into the map's MediaTracker (setup, as a render does),
+        // the clip played, and the plugin's frame counter read over --seconds:
+        // frames / seconds = the FPS the scene sustains with N ghost cars.
+        "fpsprobe" => {
+            let val = |k: &str| -> Option<String> { args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned() };
+            let map = val("--map").unwrap_or_default();
+            let n: usize = val("--ghosts").and_then(|s| s.parse().ok()).unwrap_or(1);
+            let template = val("--template").unwrap_or_default();
+            let secs: u64 = val("--seconds").and_then(|s| s.parse().ok()).unwrap_or(5);
+            let cam: u8 = val("--cam").and_then(|s| s.parse().ok()).unwrap_or(2);
+            if map.is_empty() || template.is_empty() {
+                eprintln!("usage: shootctl fpsprobe --map M --ghosts N --template G.Ghost.Gbx [--seconds 5] [--cam 2]");
+                std::process::exit(2);
+            }
+            // N copies of the template in _stage (the import dialog picks by file name)
+            let stage = "/home/vjeux/shoot/_stage";
+            let mut ghosts: Vec<String> = Vec::new();
+            for i in 0..n {
+                let p = format!("{stage}/fps-{i:02}.Ghost.Gbx");
+                if let Err(e) = std::fs::copy(&template, &p) {
+                    eprintln!("copy {template} -> {p}: {e}");
+                    std::process::exit(2);
+                }
+                ghosts.push(p);
+            }
+            let _ = http_get("/dismiss", 10);
+            let t0 = Instant::now();
+            let rc = setup(&map, &ghosts, cam);
+            let setup_s = t0.elapsed().as_secs_f64();
+            if rc != 0 {
+                eprintln!("setup rc {rc} after {setup_s:.1}s");
+                std::process::exit(rc);
+            }
+            let _ = http_get("/rewind", 10);
+            let _ = http_get("/play", 10);
+            std::thread::sleep(Duration::from_millis(1500));
+            let body = http_get(&format!("/await?c=ctx:7&ms={}", secs * 1000), secs + 15).unwrap_or_default();
+            let frames: f64 = body.find("\"frames\":").and_then(|i| {
+                let r = &body[i + 9..];
+                let e = r.find(|c: char| !c.is_ascii_digit()).unwrap_or(r.len());
+                r[..e].parse().ok()
+            }).unwrap_or(0.0);
+            let ms: f64 = body.find("\"ms\":").and_then(|i| {
+                let r = &body[i + 5..];
+                let e = r.find(|c: char| !c.is_ascii_digit()).unwrap_or(r.len());
+                r[..e].parse().ok()
+            }).unwrap_or(secs as f64 * 1000.0);
+            let _ = http_get("/stop", 10);
+            println!("fpsprobe: {n} ghost(s) of {template}, setup {setup_s:.1}s, {frames:.0} frames in {:.2}s while the clip played = {:.1} fps", ms / 1000.0, frames * 1000.0 / ms.max(1.0));
+            println!("  raw {}", body.trim());
+            0
+        }
         "setup" => {
             let mut map = String::new();
             let mut gs: Vec<String> = Vec::new();
