@@ -788,7 +788,11 @@ pub fn cmd(args: &[String]) {
         .first()
         .and_then(|f| f.name.clone())
         .expect("map uid");
-    let new_uid = format!("Tin2{}", &old_uid[..23]);
+    // Same byte length as the source's (the header is patched in place):
+    // Nadeo uids are 27 characters — or 26 (U10S_21 `6UeZdl25tShCAUHzEqz4Pxxljs`,
+    // 2026-09-12), so the prefix eats the first 4 whatever the length.
+    assert!(old_uid.len() > 4, "source uid `{old_uid}` is too short to re-uid");
+    let new_uid = format!("Tin2{}", &old_uid[..old_uid.len() - 4]);
     {
         // The foundation records stay: `Sea` (BlueBay's water).
         let keep_baked: BTreeSet<String> = ["Sea".to_string()].into_iter().collect();
