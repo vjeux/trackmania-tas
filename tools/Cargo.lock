@@ -813,6 +813,7 @@ dependencies = [
  "gbx",
  "mapgeom",
  "miniz_oxide",
+ "serde_json",
  "tmmaps",
 ]
 

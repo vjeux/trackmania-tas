@@ -91,12 +91,12 @@ pub fn file_safe_name(name: &str) -> String {
     while i < cs.len() {
         if cs[i] == '$' {
             // $hhh colour, $x style letter, $$ literal, $[ / $] links
-            if i + 3 < cs.len() + 0 && cs[i + 1..].iter().take(3).all(|c| c.is_ascii_hexdigit()) && cs.len() >= i + 4 {
+            if i + 3 < cs.len() && cs[i + 1..i + 4].iter().all(|c| c.is_ascii_hexdigit()) {
                 i += 4;
                 continue;
             }
             if i + 1 < cs.len() && cs[i + 1] == '$' {
-                out.push('$');
+                // a literal `$`: not a file-name character here
                 i += 2;
                 continue;
             }
