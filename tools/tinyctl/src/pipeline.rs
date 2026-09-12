@@ -151,6 +151,14 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         if !no_shoot {
             match crate::views::cmd(&[src.display().to_string(), "--out".into(), views.display().to_string()]) {
                 Ok(()) => {
+                    // --views-only start,finish,top: keep those cameras only (each
+                    // view costs ~45 s of the shared render box per side)
+                    if let Some(keep) = f("--views-only") {
+                        let keep: Vec<&str> = keep.split(',').map(|s| s.trim()).collect();
+                        let text = std::fs::read_to_string(&views).map_err(|e| format!("{}: {e}", views.display()))?;
+                        let kept: Vec<&str> = text.lines().filter(|l| l.starts_with('#') || l.trim().is_empty() || keep.contains(&l.split('\t').next().unwrap_or("").trim())).collect();
+                        std::fs::write(&views, kept.join("\n") + "\n").map_err(|e| format!("{}: {e}", views.display()))?;
+                    }
                     let anchor = std::fs::read_to_string(&views).ok().and_then(|t| t.lines().find(|l| l.starts_with("# anchor ")).map(|l| l.trim_start_matches("# anchor ").trim().to_string()));
                     match anchor {
                         Some(anchor) => {
