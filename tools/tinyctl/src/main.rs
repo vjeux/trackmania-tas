@@ -147,7 +147,7 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         collects the ships --ship started (done files on the box): swaps the map's page row (time, build note,
         asset URL; 21–25 by their country names) and with --commit commits + pushes the page
   tinyctl motion --orig SRC --tiny TINY --views V.tsv --anchor A --tag T [--seconds 8] [--fps 20]
-                 [--outdir /tmp/tinyvid/motion] [--settle-ms 5000] [--shift-ms N] [--only o|t]
+                 [--outdir /tmp/tinyvid/motion] [--settle-ms 5000] [--shift-ms N] [--only o|t] [--scale 0.5]
         side-by-side VIDEO of the moving blocks (pushers, rotors, turnstiles): each view
         captured for S seconds in the editor on both sides (same relative camera: the tiny
         through the anchor at half the distance), stitched original LEFT | tiny RIGHT into

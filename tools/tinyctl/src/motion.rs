@@ -79,7 +79,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let mut opened_to_capture: Vec<(String, String)> = Vec::new();
     for side in &sides {
         let map = if *side == "o" { &r_orig } else { &r_tiny };
-        let anchor_arg = if *side == "t" { format!(" --anchor {anchor}") } else { String::new() };
+        // --scale S: the tiny side's camera scale (default 0.5); a capture of ONE
+        // tiny map on its own (`--only t --anchor 0,0,0:0,0,0 --scale 1`) keeps the
+        // views in that map's own metres (2026-09-12: without it the first strip-flag
+        // capture landed at half the coordinates, on a lake)
+        let scale_arg = f("--scale").map(|s| format!(" --scale {s}")).unwrap_or_default();
+        let anchor_arg = if *side == "t" { format!(" --anchor {anchor}{scale_arg}") } else { String::new() };
         let cmd = format!("{shootctl} shootset --detach --map {map} --views {r_views} --side {side} --tag {tag} --outdir {remote_dir}{anchor_arg}{settle_arg} --video {seconds:.1} --video-fps {fps}");
         eprintln!("capturing side {side}: {} view(s) x {seconds:.0} s at {fps} fps …", names.len());
         let started = wsx.sh(&cmd)?;

@@ -634,6 +634,31 @@ What it will never be: cloth. It is a segmented banner whose silhouette
 travels; whether that beats a still cloth or a double-size stock flag is
 vjeux's call, hence unbuilt.
 
+**(c) BUILT — `TINY_FLAG8M=strips[:N]` (2026-09-12, vjeux: "we have moving
+blocks working in their tiny version, can the flag use that").** The form is
+the one above, as code: `mapgeom static-item` with `TINY_FLAG_STRIPS=k/N`
+bakes strip k of the Flag8m cloth — the frame-0 cloth under `ItemFlagNoAnim`
+(the placement skin maps as on the still copy), its nearest-level 12 × 12 grid
+cut by triangle centroid along the width axis into N bands, each band stretched
+×1.12 about its centre so neighbours overlap (`TINY_FLAG_STRIP_OVERLAP`) and
+staggered 3 mm along the normal per strip (no z-fight where they overlap) —
+one `CPlugDynaObjectModel` entity, `IsKinematic`, the pusher piston's hulls at
+5 % (a stub at the pole top), bound by a pusher-form
+`NPlugDyna_SKinematicConstraint`: translation along the cloth NORMAL, ±A_k with
+A_k = `TINY_FLAG_STRIP_AMP` (0.06 of the cloth width, 5.9 cm on the 0.98 m tiny
+cloth) × ((k+1)/N)^`TINY_FLAG_STRIP_RAMP`, `[EaseInOutQuad T/2, EaseInOutQuad
+reverse T/2]`, T = `TINY_FLAG_STRIP_MS` (2000), shader-tc none. Strip 0 also
+carries the pole (the static entity); strips k > 0 are the strip alone. The
+phase is the placement's AnimPhaseOffset byte, so `tiny-library` bakes N items
+per Flag8m key (strip 0 = the placement's re-pointed model, strips 1..N as
+`sf@INDEX ITEM PHASE8` mapping rows) and `tmmaps tiny` places the `sf@` items at
+the placement's exact pose (frame, scale, colour) with byte k·8/N and the
+placement's skin. Summer 13: 90 flags → 720 items, every strip carries
+`Winter.zip`, item-check ok (`mapgeom constraint PATH` prints a pack
+constraint's anim sub-functions — the reference: `AnimPusher8mLevel1` = Linear
+2000 out, Linear reverse 2000 back; the OFF pusher holds with Constant pieces;
+the rotor is one Linear reverse 4000 from 180 to −180°).
+
 ## Placement colours and the clip walls' materials (2026-09-08)
 
 Chunk 0x03043062 carries one colour byte per block, baked block and item (0
