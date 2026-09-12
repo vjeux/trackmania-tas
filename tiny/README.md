@@ -120,7 +120,7 @@ https://github.com/user-attachments/assets/61a5b88c-15ce-46e5-9b23-b60f3a4bbe29
 
 *↻ runs on un-skinned ship15 surfaces at 1.85 s — re-drive pending*
 
-*records: 78.051, 82.652, 84.379 (certified; to be re-driven forwards — reversing/near-stops; checker verdicts 04:27Z, 19:10Z, 09:43Z) — held (opening rework)*
+*latest lap **67.539** (build ship15) — held (records: 78.051, 82.652, 84.379 (certified; to be re-driven forwards — reversing/near-stops; checker verdicts 04:27Z, 19:10Z, 09:43Z))*
 
 https://github.com/user-attachments/assets/2bb4c108-dd6b-4c5c-a26d-f8ef253cdf2e
 
