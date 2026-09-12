@@ -806,6 +806,40 @@ fn main() {
                 }
             }
         }
+        "uvcheck" => {
+            // uvcheck ITEM.Item.Gbx…: per visual of a static item's Solid2, the vertex
+            // declarations and the lightmap set (TexCoord1) against the texture set
+            // (TexCoord0): bounds, distinct values, identical-to-uv0. The 2026-09-12
+            // shadow-seam work: a lightmap chart that is a copy of a TILING uv0 wraps
+            // onto itself and a tile bakes to one tone.
+            use mapgeom::static_item::vstream::{Elem, N_TEXCOORD0};
+            for p in a.rest.iter().skip(1).filter(|s| !s.starts_with("--")) {
+                let bytes = std::fs::read(p).unwrap_or_else(|e| die(format!("{p}: {e}")));
+                let f = mapgeom::static_item::parse_file(&bytes).unwrap_or_else(|e| die(format!("{p}: {e}")));
+                let Some(s2) = f.item.static_object().and_then(|so| so.solid2()) else { println!("{p}\tno static Solid2"); continue };
+                let pl = s2.pre_light_gen.as_ref().map(|g| format!("u02={:.3} u04={:?} boxes={} uv_groups={}", g.u02, &g.u04[..4], g.boxes.len(), g.uv_groups.len())).unwrap_or_else(|| "none".into());
+                println!("{p}\tprelight {pl}\tgeoms {} lod_max_dist {:?}", s2.shaded_geoms.len(), s2.lod_max_dist);
+                for (vi, vr) in s2.visuals.iter().enumerate() {
+                    let Some(mapgeom::static_item::Node::Visual(v)) = vr.inline.as_deref() else { continue };
+                    let Some(main) = v.main.as_ref() else { continue };
+                    for sr in &main.vertex_streams {
+                        let Some(mapgeom::static_item::Node::VertexStream(s)) = sr.inline.as_deref() else { continue };
+                        let names: Vec<u32> = s.decls.iter().map(|d| d.name()).collect();
+                        let get = |name: u32| s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == name).and_then(|(_, e)| if let Elem::Float2(v) = e { Some(v.clone()) } else { None });
+                        let (uv0, uv1) = (get(N_TEXCOORD0), get(N_TEXCOORD0 + 1));
+                        let stats = |v: &Vec<[f32; 2]>| {
+                            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                            for p in v { for k in 0..2 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+                            let mut q: Vec<(i32, i32)> = v.iter().map(|p| ((p[0] * 4096.0) as i32, (p[1] * 4096.0) as i32)).collect();
+                            q.sort(); q.dedup();
+                            format!("[{:.3},{:.3}]..[{:.3},{:.3}] {} distinct", lo[0], lo[1], hi[0], hi[1], q.len())
+                        };
+                        let same = matches!((&uv0, &uv1), (Some(a), Some(b)) if a == b);
+                        println!("  visual {vi}: {} verts, decl names {:?}, uv0 {}, uv1 {}{}", s.count, names, uv0.as_ref().map(&stats).unwrap_or_else(|| "-".into()), uv1.as_ref().map(&stats).unwrap_or_else(|| "-".into()), if same { " (uv1 == uv0)" } else { "" });
+                    }
+                }
+            }
+        }
         "trigger-box" => {
             // trigger-box ITEM.Item.Gbx [...]: the waypoint trigger shape of a CGameCommonItemEntityModel
             // item (the finish / checkpoint items the tiny bakes): kind, local AABB, triangle count,

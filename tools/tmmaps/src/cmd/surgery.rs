@@ -826,3 +826,37 @@ pub fn lmquality(args: &[String]) {
     m.write_to(&out).expect("write output");
     println!("wrote {}: lightmap quality {q} on {n} of {} item placements", out.display(), m.items.len());
 }
+
+/// `tmmaps ghostchunk MAP --from DONOR.Map.Gbx --out F` — the donor map's validation-ghost
+/// chunk (0x0305B00F, the whole skippable chunk, bytes verbatim) spliced into MAP: replaced
+/// if MAP has one, else inserted right after 0x0305B00E (the ChallengeParameters node's
+/// chunk order; `chunkswap --insert-missing` puts it at the numeric position, which is the
+/// wrong node). For a rebuilt map that keeps the donor's uid and node table (ship18g's pond
+/// fix over INPUT's validated m5 of the same map, 2026-09-12): the game accepted INPUT's
+/// embed, `tmmaps validate` of the same ghost file produced a map the game refuses to load,
+/// so the working chunk travels as bytes. Times are NOT touched — run `settimes` after.
+pub fn ghostchunk(args: &[String]) {
+    let path = std::path::Path::new(&args[2]);
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let donor = f("--from").expect("ghostchunk needs --from DONOR.Map.Gbx");
+    let out = f("--out").expect("ghostchunk needs --out F");
+    let d = map::MapFile::load(std::path::Path::new(&donor));
+    let dskips = tmmaps::gbx::all_skip_chunks(&d.gbx.body);
+    let &(_, doff, dpayload, dsize) = dskips.iter().find(|(c, ..)| *c == 0x0305_B00F).expect("donor has no 0x0305B00F chunk");
+    let chunk = d.gbx.body[doff..dpayload + dsize].to_vec();
+    let duid = tmmaps::header::read(&donor).expect("donor header").uid;
+    let hdr = tmmaps::header::read(path.to_str().unwrap()).expect("header");
+    assert!(hdr.uid == duid, "uid differs: map {} vs donor {} — the ghost names the donor's map", hdr.uid, duid);
+    let mut m = map::MapFile::load(path);
+    let skips = tmmaps::gbx::all_skip_chunks(&m.gbx.body);
+    let placed = if let Some(&(_, off, payload, size)) = skips.iter().find(|(c, ..)| *c == 0x0305_B00F) {
+        m.raw_splices.push(((off, payload + size), chunk.clone()));
+        "replaced"
+    } else {
+        let &(_, _o, p, s) = skips.iter().find(|(c, ..)| *c == 0x0305_B00E).expect("no ChallengeParameters chunk 0x0305B00E");
+        m.raw_splices.push(((p + s, p + s), chunk.clone()));
+        "inserted after 0x0305B00E"
+    };
+    m.write_to(std::path::Path::new(&out)).expect("write output");
+    println!("{}: validation ghost chunk from {donor} ({} B) {placed} -> {out}", path.display(), chunk.len());
+}

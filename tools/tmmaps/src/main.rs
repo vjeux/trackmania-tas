@@ -82,7 +82,7 @@ fn main() {
     const WANTS_MAP: &[&str] = &[
         "waypoints", "census", "skins", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
-        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "lmquality", "delblocks", "striplightmap", "itembytes", "mediatracker",
+        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "lmquality", "ghostchunk", "delblocks", "striplightmap", "itembytes", "mediatracker",
     ];
     if WANTS_MAP.contains(&cmd) && args.len() < 3 {
         eprintln!("tmmaps {} needs a MAP path.\n\n{}", cmd, USAGE);
@@ -132,6 +132,7 @@ fn main() {
         "validate" => surgery::validate(&args),
         "setuid" => surgery::setuid(&args),
         "lmquality" => surgery::lmquality(&args),
+        "ghostchunk" => surgery::ghostchunk(&args),
         // `tmmaps delblocks MAP --out F [--keep-baked Sea,…] [--strip-lightmap]`: every
         // authored block deleted (the generated ones too, but for --keep-baked),
         // items kept — the 0-block form of `tmmaps tiny` on ANY map, for the

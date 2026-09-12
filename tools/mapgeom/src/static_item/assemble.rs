@@ -146,6 +146,18 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
             REPACK_NOTE.with(|c| c.set(Some(n)));
         }
     }
+    // TINY_LIGHTMAP_FILL=1 (probe, 2026-09-12, the shadow-seam "one tone per
+    // tile"): the item's lightmap charts stretched to fill the unit square. A
+    // pack block mesh lays its charts over a small corner of the atlas (the
+    // platform pieces: 0.12 × 0.045 of it, PreLightGen u02 = 46 m per uv unit)
+    // — fine for the game's own BLOCK budget, but as an ITEM that corner is all
+    // the texels the piece gets and a 16 m deck bakes to a handful of them. The
+    // scale word follows (metres per uv unit ÷ the stretch) so the density the
+    // lightmapper derives from it stays honest; u04 = the new bounds.
+    let mut fill_scale: Option<(f64, [f64; 2], [f32; 4])> = None;
+    if std::env::var("TINY_LIGHTMAP_FILL").map(|v| v == "1").unwrap_or(false) {
+        fill_scale = fill_lightmap_atlas(&mut pre);
+    }
     harmonize_layouts_with(&mut pre, &want_tangents);
     let visuals = coalesce(&pre);
     // Only the materials some visual draws with, in first-use order (the
@@ -246,7 +258,35 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
         *next += 2;
         s2.lights.push(socket);
     }
-    s2.pre_light_gen = if m.no_prelight { None } else { Some(m.pre_light_gen.clone().unwrap_or_else(default_prelight)) };
+    // TINY_PRELIGHT_U02=F (probe, 2026-09-12): the scale word of every item that has no
+    // computed PreLightGen (the block-converted ones) — the lightmapper's texel budget for
+    // the item's atlas. The shadow-seam work: platform tiles come out one flat tone EACH
+    // (tile-to-tile steps) under the default 32.14.
+    s2.pre_light_gen = if m.no_prelight {
+        None
+    } else {
+        let mut pl = m.pre_light_gen.clone().unwrap_or_else(default_prelight);
+        if m.pre_light_gen.is_none() {
+            if let Some(u02) = std::env::var("TINY_PRELIGHT_U02").ok().and_then(|v| v.parse::<f32>().ok()) {
+                pl.u02 = u02;
+            }
+        }
+        if let Some((s, _lo, bounds)) = fill_scale {
+            pl.u02 = (pl.u02 as f64 / s) as f32;
+            pl.u04[0] = bounds[0];
+            pl.u04[1] = bounds[1];
+            pl.u04[2] = bounds[2];
+            pl.u04[3] = bounds[3];
+        }
+        // TINY_LIGHTMAP_U02=measured (probe, 2026-09-12): the scale word from the
+        // geometry itself, the same metres-per-uv rule for every item.
+        if std::env::var("TINY_LIGHTMAP_U02").map(|v| v == "measured").unwrap_or(false) {
+            if let Some(u) = measured_u02(&pre) {
+                pl.u02 = u;
+            }
+        }
+        Some(pl)
+    };
     s2.file_write_time = m.file_write_time;
     Ok(s2)
 }
@@ -781,4 +821,76 @@ pub fn spawn_trigger_node_at(t: [f32; 3]) -> super::OpaqueNode {
     raw.extend_from_slice(&0u32.to_le_bytes());
     raw.extend_from_slice(&super::FACADE.to_le_bytes());
     super::OpaqueNode { class_id: 0x0917A000, raw }
+}
+
+/// The union of every visual's lightmap chart (TexCoord1) stretched to fill the
+/// unit square (margin 0.001, aspect kept, anchored at the margin). Returns the
+/// stretch factor, the old lower bound and the new bounds `[x0, y0, x1, y1]`;
+/// `None` when no visual carries a TexCoord1 or the charts are degenerate.
+pub fn fill_lightmap_atlas(visuals: &mut [super::merged::MergedVisual]) -> Option<(f64, [f64; 2], [f32; 4])> {
+    use super::vstream::{Elem, N_TEXCOORD0};
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for mv in visuals.iter() {
+        let Some(s) = mv.visual.stream() else { continue };
+        let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
+        if let Elem::Float2(uv) = &s.elems[i] {
+            for p in uv {
+                for k in 0..2 {
+                    lo[k] = lo[k].min(p[k] as f64);
+                    hi[k] = hi[k].max(p[k] as f64);
+                }
+            }
+        }
+    }
+    let (w, h) = (hi[0] - lo[0], hi[1] - lo[1]);
+    if !(w.is_finite() && h.is_finite()) || w.max(h) < 1e-6 {
+        return None;
+    }
+    let margin = 0.001;
+    let s = (1.0 - 2.0 * margin) / w.max(h);
+    if s <= 1.05 {
+        return None; // already (nearly) filling the atlas
+    }
+    for mv in visuals.iter_mut() {
+        let Some(st) = mv.visual.stream_mut() else { continue };
+        let Some(i) = st.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
+        if let Elem::Float2(uv) = &mut st.elems[i] {
+            for p in uv.iter_mut() {
+                p[0] = (margin + (p[0] as f64 - lo[0]) * s) as f32;
+                p[1] = (margin + (p[1] as f64 - lo[1]) * s) as f32;
+            }
+        }
+    }
+    Some((s, lo, [margin as f32, margin as f32, (margin + w * s) as f32, (margin + h * s) as f32]))
+}
+
+/// The lightmap texel scale word measured off the geometry: sqrt(Σ world
+/// triangle area / Σ TexCoord1 triangle area) over every visual that carries a
+/// TexCoord1 set and an index buffer — the crystal path's formula
+/// (`bake.rs`), so every item declares the SAME metres-per-uv the lightmapper
+/// needs for a uniform texel density across neighbouring items (the deck
+/// tiles' visible borders, 2026-09-12). `None` when nothing measurable.
+pub fn measured_u02(visuals: &[super::merged::MergedVisual]) -> Option<f32> {
+    use super::vstream::{Elem, N_POSITION, N_TEXCOORD0};
+    let (mut aworld, mut auv1) = (0.0f64, 0.0f64);
+    for mv in visuals {
+        let Some(ib) = mv.visual.index_buffer.as_ref() else { continue };
+        let Some(s) = mv.visual.stream() else { continue };
+        let get = |name: u32| s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == name).map(|(_, e)| e);
+        let (Some(Elem::Float3(pos)), Some(Elem::Float2(uv1))) = (get(N_POSITION), get(N_TEXCOORD0 + 1)) else { continue };
+        for t in ib.indices.chunks_exact(3) {
+            let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
+            if a >= pos.len() || b >= pos.len() || c >= pos.len() || a >= uv1.len() || b >= uv1.len() || c >= uv1.len() {
+                continue;
+            }
+            let au = ((uv1[b][0] - uv1[a][0]) as f64 * (uv1[c][1] - uv1[a][1]) as f64 - (uv1[c][0] - uv1[a][0]) as f64 * (uv1[b][1] - uv1[a][1]) as f64).abs() / 2.0;
+            let e1 = [pos[b][0] - pos[a][0], pos[b][1] - pos[a][1], pos[b][2] - pos[a][2]];
+            let e2 = [pos[c][0] - pos[a][0], pos[c][1] - pos[a][1], pos[c][2] - pos[a][2]];
+            let cr = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+            let aw = ((cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]) as f64).sqrt() / 2.0;
+            auv1 += au;
+            aworld += aw;
+        }
+    }
+    if auv1 > 1e-9 && aworld > 1e-9 { Some((aworld / auv1).sqrt() as f32) } else { None }
 }
