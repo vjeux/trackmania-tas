@@ -123,16 +123,22 @@ pub struct Options {
     /// (a name in `material_ids` makes the vehicle resolve THAT texture set too —
     /// the 2026-09-12 hillB-min crash: 7 names, textures for one set).
     pub prune_materials: bool,
+    /// `SET=_FullMaterialName` overrides for `material_name` (e.g. the cards under
+    /// `_GlassDmgCrack_Glass`, the one glass name both community skins carry).
+    pub material_override: Vec<(String, String)>,
 }
 
 impl Default for Options {
     fn default() -> Options {
-        Options { binding: Binding::NoSkel, family: "Details".into(), vis_flags: 0x39, skin_data: true, lod_max_dist: Vec::new(), max_verts: 32_000, skel: None, prune_materials: false }
+        Options { binding: Binding::NoSkel, family: "Details".into(), vis_flags: 0x39, skin_data: true, lod_max_dist: Vec::new(), max_verts: 32_000, skel: None, prune_materials: false, material_override: Vec::new() }
     }
 }
 
 /// The material name the vehicle vis model resolves.
 pub fn material_name(o: &Options, texset: &str) -> String {
+    if let Some((_, n)) = o.material_override.iter().find(|(s, _)| s == texset) {
+        return n.clone();
+    }
     match (o.binding, o.family.as_str()) {
         (Binding::NoSkel, f) => format!("_{f}NoSkelDmg_{texset}"),
         (Binding::Body | Binding::Template, "Details") => format!("_DetailsDmgNormal_{texset}"),
@@ -542,12 +548,23 @@ pub fn texture_set(set: &str, w: u32, h: u32, base_rgba: &[u8], roughness: u8) -
     let levels = super::texture::mip_chain(super::texture::Level { w, h, rgba: base_rgba.to_vec() }, 128, false, 1.0);
     let b = super::texture::write_dds_dxt5_mips(&levels);
     let flat = |rgba: [u8; 4]| super::texture::write_dds_rgba(4, 4, &flat_rgba(4, rgba));
-    vec![
+    let mut out = Vec::new();
+    if set == "Glass" {
+        // the community Glass sets are `_D` (MC20) or `_I` (TM2) + `_T`: write the
+        // base under both names and the alpha channel as `_T` (a guess at
+        // "transparency": white = opaque) — the foliage-cards probe of 2026-09-12
+        let alpha: Vec<u8> = base_rgba.chunks(4).flat_map(|p| [p[3], p[3], p[3], 255u8]).collect();
+        let t_levels = super::texture::mip_chain(super::texture::Level { w, h, rgba: alpha }, 128, false, 1.0);
+        out.push((format!("{set}_D.dds"), b.clone()));
+        out.push((format!("{set}_T.dds"), super::texture::write_dds_dxt5_mips(&t_levels)));
+    }
+    out.extend(vec![
         (format!("{set}_B.dds"), b),
         (format!("{set}_N.dds"), flat([128, 128, 255, 255])),
         (format!("{set}_R.dds"), flat([roughness, roughness, roughness, 255])),
         (format!("{set}_I.dds"), flat([0, 0, 0, 255])),
         (format!("{set}_AO.dds"), flat([255, 255, 255, 255])),
         (format!("{set}_DirtMask.dds"), flat([0, 0, 0, 255])),
-    ]
+    ]);
+    out
 }

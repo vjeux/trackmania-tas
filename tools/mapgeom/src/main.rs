@@ -1681,6 +1681,7 @@ fn main() {
             if let Some(v) = flag(&a.rest, "--vis-flags") { o.vis_flags = u32::from_str_radix(v.trim_start_matches("0x"), 16).unwrap_or_else(|_| die("--vis-flags HEX".into())); }
             if a.rest.iter().any(|x| x == "--no-skin-data") { o.skin_data = false; }
             if a.rest.iter().any(|x| x == "--prune-materials") { o.prune_materials = true; }
+            if let Some(m) = flag(&a.rest, "--matname") { o.material_override = m.split(',').filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))).collect(); }
             if let Some(l) = flag(&a.rest, "--lod-max") { o.lod_max_dist = l.split(',').filter_map(|s| s.trim().parse().ok()).collect(); }
             if let Some(m) = flag(&a.rest, "--max-verts") { o.max_verts = m.parse().unwrap_or_else(|_| die("--max-verts N".into())); }
             if let Some(s) = flag(&a.rest, "--skel") {
@@ -1806,6 +1807,20 @@ fn main() {
                     files.insert(name, bytes);
                 }
                 report.push(format!("texture set {s}: {w}x{h} base colour"));
+            }
+            // THE ZIP RULE (measured 2026-09-12, hillB-min / X2 vs X1 / X3): the vehicle
+            // loads the Skin, Wheels and Glass sets whether or not the mesh names them,
+            // and a set with no files behind it crashes the import. Fill every missing
+            // standard set with 4x4 flats by default (--no-fill-sets to opt out).
+            if !a.rest.iter().any(|x| x == "--no-fill-sets") {
+                for req in ["Details", "Skin", "Wheels", "Glass"] {
+                    if sets.iter().any(|s| s == req) { continue; }
+                    for (name, bytes) in skin::texture_set(req, 4, 4, &skin::flat_rgba(4, [128, 128, 128, 255]), 200) {
+                        std::fs::write(out_dir.join(&name), &bytes).unwrap_or_else(|e| die(e.to_string()));
+                        files.insert(name, bytes);
+                    }
+                    report.push(format!("texture set {req}: 4x4 grey flats (required by the vehicle even when unused)"));
+                }
             }
             if let Some(z) = flag(&a.rest, "--zip") {
                 let zip = tmmaps::header::stored_zip(&files);
