@@ -29,6 +29,11 @@ pub struct Params {
     pub span_ms: i64,
     pub skin: Option<String>,
     pub locator: Option<String>,
+    /// The PackDesc checksum = SHA-256 of the skin zip (measured 2026-09-12 on a
+    /// leaderboard ghost: its 32 bytes are exactly sha256 of the zip Nadeo serves).
+    /// A zero checksum with a local zip makes the game try to "update" the file
+    /// from its (empty) locator at the menu: the "Updating data… $<$> (???)" modal.
+    pub checksum: Option<[u8; 32]>,
 }
 
 /// Yaw about +Y (radians, 0 = facing +Z, right-handed) as an (x, y, z, w)
@@ -83,9 +88,15 @@ pub fn build(inp: &str, out: &str, p: &Params) -> Result<String, String> {
         if s.as_bytes() != skin_field.s.as_bytes() {
             edits.push((skin_field.at, skin_field.len, s.as_bytes().to_vec()));
         }
-        // the checksum of a skin the game has not seen: zero, as `identity set` writes it
-        for b in pre[skin_field.at - 32..skin_field.at].iter_mut() {
-            *b = 0;
+        // the checksum: SHA-256 of the zip when given (--skin-file / --checksum), else
+        // zero as `identity set` writes it (the game then wants to update the file)
+        match p.checksum {
+            Some(h) => pre[skin_field.at - 32..skin_field.at].copy_from_slice(&h),
+            None => {
+                for b in pre[skin_field.at - 32..skin_field.at].iter_mut() {
+                    *b = 0;
+                }
+            }
         }
     }
     if let Some(url) = &p.locator {
@@ -159,7 +170,7 @@ pub fn build(inp: &str, out: &str, p: &Params) -> Result<String, String> {
 }
 
 pub fn cmd(a: &[String]) {
-    let usage = "ghost static IN OUT --pos X,Y,Z [--yaw DEG] [--span MS] [--skin PATH] [--locator URL]";
+    let usage = "ghost static IN OUT --pos X,Y,Z [--yaw DEG] [--span MS] [--skin PATH] [--locator URL] [--skin-file ZIP | --checksum HEX64]";
     let inp = a.first().unwrap_or_else(|| die(usage));
     let out = a.get(1).unwrap_or_else(|| die(usage));
     let pos_s = flag(a, "--pos").unwrap_or_else(|| die(usage));
@@ -175,6 +186,17 @@ pub fn cmd(a: &[String]) {
         span_ms,
         skin: flag(a, "--skin").map(|s| s.to_string()),
         locator: flag(a, "--locator").map(|s| s.to_string()),
+        checksum: match (flag(a, "--skin-file"), flag(a, "--checksum")) {
+            (Some(f), _) => Some(gbx::sha::sha256_file(std::path::Path::new(f)).unwrap_or_else(|e| die(&format!("--skin-file {f}: {e}")))),
+            (None, Some(h)) => {
+                let h = h.trim();
+                if h.len() != 64 { die("--checksum wants 64 hex chars (sha256 of the zip)"); }
+                let mut out = [0u8; 32];
+                for i in 0..32 { out[i] = u8::from_str_radix(&h[i * 2..i * 2 + 2], 16).unwrap_or_else(|_| die("--checksum: not hex")); }
+                Some(out)
+            }
+            _ => None,
+        },
     };
     if has(a, "--help") {
         die(usage);
