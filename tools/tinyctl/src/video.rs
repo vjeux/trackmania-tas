@@ -3389,7 +3389,11 @@ pub fn collect_mapzip_verdicts(wsx: &Wsx, out: &Path, seen: &mut std::collection
         let Some(rest) = name.strip_prefix("mapzip-") else { continue };
         let Some((nn, build)) = rest.split_once('-') else { continue };
         let Some(url) = verdict.trim().strip_prefix("URL ") else {
-            if verdict.contains("FAILED") && seen.insert(name.to_string()) {
+            // a FAILED verdict is said once but never marks the name done: the
+            // uploader may retry (the 10 lite zips replaced 422-failed uploads) and
+            // the later URL must still be collected
+            let key = format!("failed:{name}");
+            if verdict.contains("FAILED") && seen.insert(key) {
                 println!("{} zip {nn} ({build}): {}", chrono_now(), verdict.trim());
             }
             continue;
