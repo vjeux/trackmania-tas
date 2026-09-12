@@ -1054,6 +1054,41 @@ Still true from the first write-up: the jungle-foliage cover (hull-less `JungleF
 terrain prefabs, baked into the terrain items since ship18c) was real but not this hole; there is no genealogy void
 under the hills.
 
+## Sea ponds get a floor; a ghost occupant hides no pond (Summer 11's "hole in the ground", 2026-09-12)
+
+vjeux's frame of tiny 11 (file_id 1712432016491746): a flat sky-coloured polygon in the sand under a group of platform
+pillars, one cell wide, pointed spikes left and right, a pillar standing in its middle. Found by name after the pillar
+census (`tmmaps census`, `mapgeom who` at all 148 pillar feet, 148 same-camera frames): it is the one-cell sea POND at
+game cell (38, 5, 26) — a baked `Sea` record enclosed by Beach tiles, with the GHOST `StructureBase` foot (Pillar_Air,
+record flag bit 28) of a pillar column standing in it. The game draws every Sea cell from `Zone\Sea\Base.Prefab`: a Water
+quad at +7 over a Sand `SeaFloor` at +4 — 3 m of water over sand, in the open sea and in a pond alike. The tiny kept the
+open sea as the collection's regenerated decoration (BlueBay's genealogy is cleared, sea under the whole island) and never
+placed a floor: fine on the open water, bottomless in a pond — the water there shows the sky/fog, and the neighbouring
+Beach tiles' underwater aprons (which we do emit) cut the spikes into its outline. The editor+lightmap frames do NOT show
+it (the water renders reflective there); the player's flat polygon is the play-mode look of water with nothing under it.
+
+* **An enclosed Sea cell is a pond and gets the half-size Sea item** (`tmmaps ponds`, `pond_cells` in tiles.rs; the
+  library and `tmmaps tiny` treat pond records like every other baked terrain tile): a Sea record not connected, cell
+  edge to cell edge through Sea cells of its row, to the outer ring of the sea's own extent. The item is the Sea prefab
+  with its Water visual dropped like every shore tile's (the decoration draws the water), the floor at source depth
+  (`restore_depth`: 3 m under the plane, as the Beach aprons). A pond cell a real block UNIT covers keeps the unit rule
+  (the OnSea pillars and DecoTreeBeach prefabs carry their own floor).
+* **A GHOST-mode occupant hides no Sea record** (`HiddenTiles::hides`): the original draws the pond under the ghost
+  foot — that is the one evidenced case, and the exemption is that narrow. Whether the game also draws an AUTHORED tile
+  under a ghost block is unverified and `TINY_GHOST_TILES=keep` is the knob to try it: it restores ~100 tiles on 14
+  maps, and two of them meet the deck a certified lap drives on — 21's Land at (15,6,19) under the ghost
+  PlatformIceSlope2Curve2In (the car at 9.9 on the slope's foot) and 18's Land row at (31..33,17,16..18) under ghost
+  StructureBase ground blocks — and the dedicated-server oracle (`ghost verify --map`) turned both laps into DNFs.
+  With the knob off all 25 certified laps re-simulate to their exact times on the new set. Frame the original at those
+  cells before making it the rule.
+
+Census (`tmmaps ponds`): ponds only where there are Sea cells — 01: 8, 11: 55 (43 emitted, 12 under OnSea pillars /
+DecoTreeBeach), 16: 113 (85 emitted), 21: 30 (24 emitted); 06 (3640 Sea cells) none; every other map has no Sea cell and
+is byte-for-byte the ship18f file. The certified laps (ghosts-for-video/ship18f, `tmmaps ponds --trace`) cross pond
+cells on 11/16/21 only on decks and platforms 8.5 m and higher — no lap ever touched a pond's water. Checks to run for a
+rule that adds terrain: the 25-lap oracle table (`ghost verify GHOST --map MAP`, V7 = the declared time re-simulated),
+`tmmaps ponds SRC --trace LAP.csv --anchor …` / `shared-cells --trace` per lap, and the placement diff vs the last set.
+
 ## Water: the engine's native representations, and what a half-size map can use (research log, 2026-09-10 17:10Z)
 
 The question (coordinator): can a HALF-SIZE water volume exist in our maps — a flat car floats at ~0.9 m

@@ -80,7 +80,7 @@ fn main() {
     // missing that is `index out of bounds: the len is 2 but the index is 2` —
     // a panic where a usage line belongs. Say what is missing instead.
     const WANTS_MAP: &[&str] = &[
-        "waypoints", "census", "skins", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
+        "waypoints", "census", "skins", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "ponds", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
         "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "lmquality", "ghostchunk", "delblocks", "striplightmap", "itembytes", "mediatracker",
     ];
@@ -94,6 +94,7 @@ fn main() {
         "tiny-catalog" => tmmaps::tiny::catalog_cmd(&args),
         "lineup" => tmmaps::tiny::lineup_cmd(&args),
         "shared-cells" => tmmaps::tiny::shared_cells_cmd(&args),
+        "ponds" => tmmaps::tiny::ponds_cmd(&args),
         "tiny" => tmmaps::tiny::cmd(&args),
         "tiny-batch" => tmmaps::tiny::cmd_batch(&args),
         "clear" => census::cmd_clear(&args),
@@ -238,9 +239,13 @@ TINY MAPS (half-scale campaign: every authored block/item -> an embedded static 
         the map plus a row of stock (pack) items by name — a vegetation species survey;
         --items continues the row with embedded item files (a test item next to its stock oracle);
         --colors gives each item of the row its placement colour byte (a stock flag at Green next to ours)
-  tmmaps shared-cells MAP [--all] [--mapping placements.tsv]
+  tmmaps shared-cells MAP [--all] [--mapping placements.tsv] [--trace LAP.csv --anchor …]
         cells where a terrain tile shares its cell with another block, and whether the
         tile is hidden by that block in the tiny map (kept = a coplanar pair to watch)
+  tmmaps ponds MAP [--trace LAP.csv --anchor sx,sy,sz:tx,ty,tz [--scale 0.5]]
+        the enclosed sea cells (Sea records not connected to the open sea) that get a
+        half-size sea floor in the tiny map, with the blocks standing in them; --trace (a
+        tmtraj export --csv of a tiny lap) lists the pond cells the car crosses
   tmmaps tiny-catalog MAP --mapping T --library Z --out F [--only NAME] [--lineup A,B]
         one block per model beside its items (or the listed item files), for a look
 

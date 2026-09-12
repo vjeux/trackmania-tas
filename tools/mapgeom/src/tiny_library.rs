@@ -1361,7 +1361,16 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
 
     // distinct (name, flags, inherited modifier) among authored grid blocks AND
     // the generated (baked) non-Sea blocks -- the FC clip fillers that finish
-    // the authored structures; the Sea itself stays the full-size foundation
+    // the authored structures; the Sea itself stays the full-size foundation,
+    // except in a POND: a Sea cell not connected to the open sea (Summer 11's
+    // (38, 5, 26), one cell of water in the beach under a pillar foot) gets its
+    // half-size floor like any terrain tile — the regenerated sea has no floor
+    // there and the pond showed the sky (`tmmaps ponds`, 2026-09-12).
+    let ponds = tmmaps::tiny::pond_cells(&source);
+    let emitted_baked = |b: &tmmaps::map::BlockRec| b.name != "Sea" || ponds.contains(&b.file_cell);
+    if !ponds.is_empty() {
+        println!("  {} pond cell(s): enclosed Sea records get a sea-floor item ({})", ponds.len(), ponds.iter().map(|c| format!("{},{},{}", c[0], c[1], c[2])).collect::<Vec<_>>().join(" "));
+    }
     let mut keys: BTreeMap<(String, u32, String), usize> = BTreeMap::new();
     // Free-placed blocks (flag 0x20000000) are keyed like the rest: their
     // variant bits are the same, `tmmaps tiny` places them from free_pos /
@@ -1370,7 +1379,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         *keys.entry((b.name.clone(), b.flags, String::new())).or_insert(0) += 1;
     }
     let mut baked_key: BTreeMap<usize, String> = BTreeMap::new();
-    for b in source.baked.iter().filter(|b| b.name != "Sea") {
+    for b in source.baked.iter().filter(|b| emitted_baked(b)) {
         let mk = mods_key(&inherited_mod(b));
         baked_key.insert(b.index, mk.clone());
         *keys.entry((b.name.clone(), b.flags, mk)).or_insert(0) += 1;
@@ -1983,7 +1992,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             // PlatformSlope2UTopVFC stands in a GHOST cliff's unit; 13's shown ghost-road
             // underside is a bottom clip.
             let vertical_only = std::env::var("TINY_OCCUPIED_RULE").map(|v| v == "3").unwrap_or(false);
-            for b in source.baked.iter().filter(|b| b.name != "Sea") {
+            for b in source.baked.iter().filter(|b| emitted_baked(b)) {
                 if !crate::fillers::classify(&faces, b).class.starts_with("covered:") {
                     continue;
                 }
@@ -2041,7 +2050,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // does (TINY_SIDECLIP_OWNER, the 2026-09-09 experiment on Summer 20's
     // curved inner border and slope end cap)
     let side_clips: std::collections::HashSet<String> = {
-        let names: std::collections::BTreeSet<String> = source.baked.iter().filter(|b| b.name != "Sea").map(|b| b.name.clone()).collect();
+        let names: std::collections::BTreeSet<String> = source.baked.iter().filter(|b| emitted_baked(b)).map(|b| b.name.clone()).collect();
         names.into_iter().filter(|n| idx.path_for(n).and_then(|p| idx.load(store, &p).ok().map(|bi| bi.clip.as_ref().and_then(|c| c.clip_type) == Some(1))).unwrap_or(false)).collect()
     };
     let mut dropped_baked: BTreeMap<String, usize> = BTreeMap::new();
@@ -2054,7 +2063,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut trees: Vec<crate::tree_clear::Tree> = Vec::new();
     let mut dims_cache: BTreeMap<String, Option<(f32, f32)>> = BTreeMap::new();
     let mut deck_placements = 0usize;
-    for (prefix, b) in source.blocks.iter().map(|b| ("@", b)).chain(source.baked.iter().filter(|b| b.name != "Sea").map(|b| ("b@", b))) {
+    for (prefix, b) in source.blocks.iter().map(|b| ("@", b)).chain(source.baked.iter().filter(|b| emitted_baked(b)).map(|b| ("b@", b))) {
         if prefix == "b@" && drop_baked.iter().any(|g| glob_match(g, &b.name)) {
             mapping.push_str(&format!("b@{}\t-\n", b.index));
             *dropped_baked.entry(b.name.clone()).or_insert(0) += 1;
