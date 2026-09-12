@@ -116,7 +116,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
 /// Set the row's link (and build) in rowbuilds.tsv, keeping its note; a row
 /// that does not exist yet is added with an empty note. The link text carries
 /// the zip's md5 as a fragment so the page states which bytes it points at.
-fn write_link(path: &Path, nn: &str, build: &str, url: &str, zip_md5: &str) -> Result<(), String> {
+pub fn write_link(path: &Path, nn: &str, build: &str, url: &str, zip_md5: &str) -> Result<(), String> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let mut rows = parse_rowbuilds(&text);
     let e = rows.entry(nn.to_string()).or_insert_with(RowBuild::default);

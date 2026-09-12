@@ -1241,6 +1241,7 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
     let mut failed_session_stamp: u64 = std::fs::read_to_string(&stamp_file).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
     let mut said_waiting_session = false;
     let collect_only = tmmaps::cli::has(args, "--collect-only");
+    let mut zip_links_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut said_collect_only = false;
     let mut probed_session_stamp: u64 = 0;
     // the clip whose ship the last launch started (its verdict is the probe's)
@@ -1748,6 +1749,12 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 }
             }
         }
+        // MAP-ZIP VERDICTS WRITTEN BY ANOTHER CLIENT (the parent session uploads the
+        // zips with tinyfile.sh, outbase `mapzip-NN-<build>`): one box-side read per
+        // tick of `/mnt/c/Users/vjeux/tinyvid/ship/mapzip-*.done`; a `URL …` verdict
+        // not yet in rowbuilds.tsv becomes the row's map link (md5 fragment from
+        // `<out>/mapzips/<build>/MD5.tsv`), and page-status puts it on the row.
+        collect_mapzip_verdicts(&wsx, &out, &mut zip_links_seen);
         if changed {
             // MERGE, don't overwrite: the render loop appends new rows to this
             // file while we work, and writing our stale copy back dropped one
@@ -3364,5 +3371,46 @@ mod inherited_flags_tests {
         let newflaw = "- 22 84.379: stop · attitude: FAIL inherited reversing 3.8–5.8; NEW inversion 39.6 · author-relative: inherited: prefix flags; new inversion at 39.6\n";
         assert!(!only_inherited_flags(newflaw, "22", "84.379"));
         assert!(!only_inherited_flags(l23, "23", "102.148"), "another lap");
+    }
+}
+
+/// Map-zip verdicts on the box (`/mnt/c/Users/vjeux/tinyvid/ship/mapzip-NN-<build>.done`)
+/// → the row's map link in rowbuilds.tsv. One `cat` of all of them per tick.
+pub fn collect_mapzip_verdicts(wsx: &Wsx, out: &Path, seen: &mut std::collections::HashSet<String>) {
+    let Ok(text) = wsx.sh("for f in /mnt/c/Users/vjeux/tinyvid/ship/mapzip-*.done; do [ -f \"$f\" ] && printf '%s\\t%s\\n' \"$(basename \"$f\" .done)\" \"$(head -c 300 \"$f\" | tr '\\n' ' ')\"; done; true") else { return };
+    let rb_path = out.join("rowbuilds.tsv");
+    for l in text.lines() {
+        let Some((name, verdict)) = l.split_once('\t') else { continue };
+        let name = name.trim();
+        if seen.contains(name) {
+            continue;
+        }
+        // mapzip-NN-<build>
+        let Some(rest) = name.strip_prefix("mapzip-") else { continue };
+        let Some((nn, build)) = rest.split_once('-') else { continue };
+        let Some(url) = verdict.trim().strip_prefix("URL ") else {
+            if verdict.contains("FAILED") && seen.insert(name.to_string()) {
+                println!("{} zip {nn} ({build}): {}", chrono_now(), verdict.trim());
+            }
+            continue;
+        };
+        let url = url.split_whitespace().next().unwrap_or("").to_string();
+        let already = crate::pagestatus::parse_rowbuilds(&std::fs::read_to_string(&rb_path).unwrap_or_default())
+            .get(nn)
+            .map(|r| r.link.starts_with(&url))
+            .unwrap_or(false);
+        if !already {
+            // the zip's md5 from the local MD5.tsv (nn<TAB>name<TAB>md5<TAB>bytes)
+            let md5 = std::fs::read_to_string(out.parent().unwrap_or(out).join("mapzips").join(build).join("MD5.tsv"))
+                .unwrap_or_default()
+                .lines()
+                .find_map(|r| { let c: Vec<&str> = r.split('\t').collect(); (c.len() >= 3 && c[0] == nn).then(|| c[2].to_string()) })
+                .unwrap_or_default();
+            match crate::mapzips::write_link(&rb_path, nn, build, &url, &md5) {
+                Ok(()) => println!("{} zip {nn} ({build}): PUBLISHED {url} → rowbuilds.tsv (the row's map link)", chrono_now()),
+                Err(e) => println!("{} zip {nn}: could not write the link: {e}", chrono_now()),
+            }
+        }
+        seen.insert(name.to_string());
     }
 }
