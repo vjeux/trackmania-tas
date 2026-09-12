@@ -120,11 +120,9 @@ https://github.com/user-attachments/assets/61a5b88c-15ce-46e5-9b23-b60f3a4bbe29
 
 https://github.com/user-attachments/assets/2bb4c108-dd6b-4c5c-a26d-f8ef253cdf2e
 
-**Tiny Norway 2026** — original author time `75.112` · tiny ghost **102.148** (build ship15, controls overlay) · map: ship15
+**Tiny Norway 2026** — original author time `75.112` · tiny ghost **103.971** (build ship18f, controls overlay)
 
-*latest lap **103.971** (build ship18f) — staged, awaiting the upload session*
-
-https://github.com/user-attachments/assets/0e222437-1334-4d8c-b5fd-92497cdf81f5
+https://github.com/user-attachments/assets/e6857eb8-d9f0-4d6c-82ee-9298b802c53a
 
 **Tiny Poland 2026** — original author time `72.708` · tiny ghost **93.717** (build ship18f, controls overlay)
 
