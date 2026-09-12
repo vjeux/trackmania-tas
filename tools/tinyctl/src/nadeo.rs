@@ -64,16 +64,22 @@ fn post_json(auth: &str, url: &str, body: &str) -> Result<Value, String> {
 /// the shared render lock one slice, not one per command.
 const TOKEN_REUSE_SECS: u64 = 40 * 60;
 
-pub fn tokens(shootctl: &str, owner: &str) -> Result<(String, String), String> {
+/// The plugin's (core, live) token files when both are younger than
+/// `TOKEN_REUSE_SECS` and look like tokens; `None` means mint under the lock.
+pub fn fresh_tokens() -> Option<(String, String)> {
     let fresh = |aud: &str| -> Option<String> {
         let p = format!("{STORE}/token-{aud}.txt");
         let age = std::fs::metadata(&p).ok()?.modified().ok()?.elapsed().ok()?;
         let t = std::fs::read_to_string(&p).ok()?.trim().to_string();
         (age.as_secs() < TOKEN_REUSE_SECS && t.len() > 20).then_some(t)
     };
-    if let (Some(core), Some(live)) = (fresh("NadeoServices"), fresh("NadeoLiveServices")) {
+    Some((fresh("NadeoServices")?, fresh("NadeoLiveServices")?))
+}
+
+pub fn tokens(shootctl: &str, owner: &str) -> Result<(String, String), String> {
+    if let Some(pair) = fresh_tokens() {
         eprintln!("tokens: reusing the plugin's files (younger than {} min)", TOKEN_REUSE_SECS / 60);
-        return Ok((core, live));
+        return Ok(pair);
     }
     render_lock(shootctl, owner, "acquire", &["--wait", "1500"]).map_err(|e| format!("render lock: {e}"))?;
     for aud in ["NadeoServices", "NadeoLiveServices"] {
