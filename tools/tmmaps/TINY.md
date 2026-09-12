@@ -659,6 +659,17 @@ constraint's anim sub-functions — the reference: `AnimPusher8mLevel1` = Linear
 2000 out, Linear reverse 2000 back; the OFF pusher holds with Constant pieces;
 the rotor is one Linear reverse 4000 from 180 to −180°).
 
+**(c) VERDICT — DROPPED (vjeux, 2026-09-12 21:10Z: "I can see the flag moving
+and it looks really bad. Let's drop this whole idea").** It does move by
+itself — the first in-game load (tiny 13, the flag 15 m from the start, 8
+strips, A = 0.06 of the width, 2 s) showed the cloth rippling with the skin on
+and every strip loaded — but a banner of sliding slats is not cloth: no
+bending, no curl, the seams and the plate-like motion read as what they are
+from a play camera. The code stays as the opt-in knob it is
+(`TINY_FLAG8M=strips`, off by default; the default Flag8m is the still half
+cloth, `TINY_FLAG8M=stock` the double-size stock flag) so nobody rebuilds it,
+and the flag question is closed: still cloth, or the stock item.
+
 ## Placement colours and the clip walls' materials (2026-09-08)
 
 Chunk 0x03043062 carries one colour byte per block, baked block and item (0

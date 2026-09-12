@@ -109,7 +109,9 @@ carry a self-animating vertex-tween cloth**; the shipped tiny flags are the
 still frame-0 cloth (`ItemFlagNoAnim`), or the STOCK `Flag8m` whose
 `FlagSmall.Mesh` is the 16 m cloth at exactly ×0.5 (the pole is not). A
 mechanical banner of kinematic strips (one item per strip, phase per
-placement) is designed and not built.
+placement) was built and rendered on 2026-09-12 (`TINY_FLAG8M=strips`,
+opt-in): it moves by itself, and vjeux dropped it — sliding slats do not read
+as cloth. The flag is the still frame-0 cloth or the stock item.
 
 ## 3. Effects: `CPlugFxSystem` (`0x0915C000`) and the particle chain
 
