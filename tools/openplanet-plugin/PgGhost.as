@@ -15,11 +15,20 @@ string PgGhostAdd() {
     auto dfm = DataFileMgr(how);
     if (dfm is null) return "{\"error\":\"no DataFileMgr (" + how + ")\"}";
     auto app = GetApp();
-    if (app.Network is null || app.Network.ClientManiaAppPlayground is null) {
-        return "{\"error\":\"no ClientManiaAppPlayground (not in a playground)\"}";
+    // the GhostMgr comes up a few seconds after the playground (the mode script's
+    // start): wait for it
+    uint tg = Time::Now;
+    CGameGhostMgrScript@ gm = null;
+    uint nullApp = 0;
+    while (gm is null && Time::Now - tg < 40000) {
+        if (app.Network !is null && app.Network.ClientManiaAppPlayground !is null) {
+            @gm = app.Network.ClientManiaAppPlayground.GhostMgr;
+        } else {
+            nullApp++;
+        }
+        if (gm is null) yield();
     }
-    auto gm = app.Network.ClientManiaAppPlayground.GhostMgr;
-    if (gm is null) return "{\"error\":\"no GhostMgr\"}";
+    if (gm is null) return "{\"error\":\"no GhostMgr after " + (Time::Now - tg) + " ms (playground app null on " + nullApp + " frames)\",\"ctx\":" + CurrentCtx() + "}";
     string path = PathArg();
     if (path == "") return "{\"error\":\"arg.txt is empty\"}";
     auto task = dfm.Replay_Load(path);
