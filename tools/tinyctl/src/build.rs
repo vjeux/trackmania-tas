@@ -205,6 +205,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let run_tiny = |env: &BTreeMap<String, String>, log: &str| -> Result<String, String> {
             let mut tiny = Command::new(&tmmaps);
             tiny.arg("tiny").arg(&src).arg("--mapping").arg(out.join("placements.tsv")).arg("--library").arg(out.join("lib.zip")).arg("--out").arg(&tiny_out);
+            // --keep-zone-block: one authored zone block survives (the editor's
+            // lightmapper crashes on a build with no block at all — GreenCoast 04/09,
+            // 2026-09-12; BlueBay builds keep their baked Sea records and bake fine)
+            if tmmaps::cli::has(args, "--keep-zone-block") {
+                tiny.arg("--keep-zone-block");
+            }
             tiny.envs(env.iter());
             run(&mut tiny, &out.join(log))
         };

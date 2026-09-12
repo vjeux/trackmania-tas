@@ -796,3 +796,33 @@ pub fn validate(args: &[String]) {
     m.write_to(std::path::Path::new(&out)).expect("write");
     println!("{}: validation ghost {} ({} B, race {}), times author {} gold {} silver {} bronze {} (ms), validated=\"1\" -> {out}", path.display(), placed, chunk.len(), tmmaps::secs::secs_str(&race_ms.to_string()), author, gold, silver, bronze);
 }
+
+/// `tmmaps lmquality MAP --out F --quality Q [--only-models NAME,NAME…]` — every item
+/// placement's LIGHTMAP QUALITY byte (chunk 0x03043068; Normal 0, High 1, VeryHigh 2,
+/// Highest 3, Lowest 4, VeryLow 5, Low 6) set to Q — the texel budget the editor's
+/// lightmapper gives the item. The 2026-09-12 shadow-seam work: a converted map's
+/// items all carry Normal, and a baked lightmap still shows texel-sized tone steps
+/// on the big flat platform items; raising the byte before the bake is the lever
+/// the editor itself offers per item. `--only-models` limits the change to
+/// placements of the named embedded models (as `tmmaps header` lists them).
+pub fn lmquality(args: &[String]) {
+    let src = std::path::PathBuf::from(&args[2]);
+    let out = std::path::PathBuf::from(tmmaps::cli::flag(args, "--out").expect("lmquality needs --out MAP"));
+    let q: u8 = tmmaps::cli::flag(args, "--quality").and_then(|s| s.parse().ok()).expect("lmquality needs --quality 0..6");
+    assert!(q <= 6, "--quality is the editor's enum 0..6");
+    let only: Option<Vec<String>> = tmmaps::cli::flag(args, "--only-models").map(|s| s.split(',').map(|m| m.trim().to_string()).collect());
+    let mut m = tmmaps::map::MapFile::load(&src);
+    let mut n = 0usize;
+    let idx: Vec<(usize, String)> = m.items.iter().enumerate().map(|(i, it)| (i, it.model.clone())).collect();
+    for (i, model) in idx {
+        if let Some(only) = &only {
+            if !only.iter().any(|o| model.contains(o.as_str())) {
+                continue;
+            }
+        }
+        m.set_item_lightmap_quality(i, q);
+        n += 1;
+    }
+    m.write_to(&out).expect("write output");
+    println!("wrote {}: lightmap quality {q} on {n} of {} item placements", out.display(), m.items.len());
+}
