@@ -1192,3 +1192,67 @@ frames s15shape/s15ab/s15pb, 2026-09-09 00:00–00:30Z): a DRAW-rule matter
 (the plate clause of 3bab4b43 hides them), not a resolution one. The
 converter cannot draw a wrong shape for a record; it can only draw a record
 the game would not.
+
+## Lightmaps: the shadow seam, the recipe that matches the original, and why it is parked (2026-09-12)
+
+**The report.** A player saw the first-corner ramp of tiny 11 with lighter/darker
+rectangles (the "shadow seam"); the replay looked fine (chase camera). Root
+cause: the shipped tiny maps carry the SOURCE's stale lightmap chunk
+`0x0304305B`, which the game rejects at 0 authored blocks, so PLAY bakes a
+coarse per-item lightmap at every load on every client — straight-edged tone
+steps on big flat items, black undersides. Editor frames never show it (the
+editor computes a lightmap), the replay's camera hides it.
+
+**The fix that reproduces the original's look** (frames in the coordinator's
+artifacts, 2026-09-12): `tinyctl lightmap COPY --out X --into SHIPPED=OUT
+--quality 4` — the editor's `ComputeShadows` on the render box (through the
+plugin's `/shadows?q=`), then a TRANSPLANT of chunk `0x0304305B` alone into
+the shipped file (the editor's own SaveMap drops every embedded `.dds`, the
+validation ghost and re-mints the uid). The bake COPY must be:
+
+1. **card-less** for BlueBay maps (`TINY_VEGET_INLINE=0`): the jungle-cover
+   cards are static geometry with a vegetation material class that the
+   lightmapper treats as a GREEN EMITTER — every underside, pillar and rock
+   face went yellow-green, and dimming the card textures to 25 % changed
+   nothing; the original's jungle is dynamic vegetation that never enters a
+   bake. Same items, same order, so the chunk transplants cleanly onto the
+   card-carrying file; the bake is also 3× faster (140 s vs 442 s on 11).
+2. **one authored block kept** for the other collections
+   (`tinyctl build --keep-zone-block`): a 0-block build crashes the
+   lightmapper (GreenCoast/WhiteShore 6–9 s into the compute).
+3. **charts filling the atlas** (`TINY_LIGHTMAP_FILL=1`, mapgeom
+   `fill_lightmap_atlas`): a pack block mesh keeps its lightmap charts in a
+   small corner of the UV square (the platform pieces: 0.12 × 0.045 of it,
+   PreLightGen u02 46 m/uv); as an ITEM that corner is all the texels the
+   piece gets, so a 16 m deck baked to a handful of texels = one tone per
+   tile ("you can see the blocks"). Stretching the charts removes the steps;
+   `TINY_LIGHTMAP_U02=measured` (u02 = sqrt(world area / uv1 area), a uniform
+   texel density like the game's blocks) is built and untested.
+
+Quality: q=3 Default 94 s / q=4 High 442 s (142 s card-less) on 11; q=5 Ultra
+crashed the client once (exe+0x99060F, disk at 99 % at the time). The
+per-item lightmap-quality byte (`0x03043068`, `tmmaps lmquality`) changes
+nothing. The editor SKIPS the compute when the game's lightmap cache
+(`C:\ProgramData\Trackmania\Cache\*_<Collection>_<mood>.Bump.LightMap.zip`,
+keyed by CONTENT, not uid) holds one → `tinyctl lightmap` deletes those
+entries and bakes a fresh-uid copy; a copy with NO lightmap chunk computes but
+the editor leaves to the menu without saving; the client crashes the
+lightmapper once a session has loaded ~10 maps (relaunch per bake).
+
+**Composition for a rebuilt map** (the pond-fix set ship18g): `tmmaps
+ghostchunk NEW.Map --from <INPUT's validated m5 of the same map>` (its
+`0x0305B00F` bytes verbatim, inserted after `0x0305B00E`; `tmmaps validate`
+of the same ghost FILE produced a map the game refuses to load) → `tmmaps
+settimes --author <ms>` → the lightmap. Verified in the editor on 11
+(`/times`, `/authghost`).
+
+**Parked (vjeux, 2026-09-12 23:15Z): "the maps look good enough without it,
+let's not do it."** The cost is a per-release game pass: ~2–5 min of the
+render box per shipped file, 36 files ≈ 2 h serialized, redone whenever a
+map's item list changes (the lightmap is applied by item index). Untested
+cheap alternative: with `TINY_LIGHTMAP_FILL=1` alone the clients' load-time
+bake also gets ~100× the texels — a play frame of a fill build WITHOUT any
+transplanted lightmap may already be acceptable (converter-only, nothing to
+run). Interim outputs (old recipe, 13 files) and the composed 18g targets:
+store `tm-player/tiny/incoming/lightmap-wip-20260912/`; batch driver
+`batch3.sh` + rebuild list `builds8.sh` in the same folder.
