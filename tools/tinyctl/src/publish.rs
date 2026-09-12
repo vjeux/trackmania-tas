@@ -135,19 +135,30 @@ pub fn publish_here_cmd(args: &[String]) -> Result<(), String> {
     // 2026-09-09: 6–8 min a map at ~60 KB/s), during which the game is idle
     // and every other driver waited on this lock for nothing.
     let owner = format!("publish-{}", o_stem(&opts.map));
-    let res = match render_lock(&opts.shootctl, &owner, "acquire", &["--wait", "900"]) {
-        Ok(()) => {
-            let toks = token(&opts.shootctl, "NadeoServices").and_then(|core| token(&opts.shootctl, "NadeoLiveServices").map(|live| (core, live)));
-            if !opts.playcheck {
-                let _ = render_lock(&opts.shootctl, &owner, "release", &[]);
-            }
-            let r = toks.and_then(|(core, live)| publish_here(&opts, &core, &live));
-            if opts.playcheck {
-                let _ = render_lock(&opts.shootctl, &owner, "release", &[]);
-            }
-            r
+    // Tokens the plugin wrote in the last 40 minutes are reused without the
+    // lock (nadeo.rs; 2026-09-12: the lock had no queue and the u10s publishes
+    // starved behind a lightmap batch) — unless a playcheck follows, which
+    // needs the game itself.
+    let reuse = if opts.playcheck { None } else { crate::nadeo::fresh_tokens() };
+    let res = match reuse {
+        Some((core, live)) => {
+            println!("tokens: reusing the plugin's files (no render lock taken)");
+            publish_here(&opts, &core, &live)
         }
-        Err(e) => Err(format!("render lock: {e}")),
+        None => match render_lock(&opts.shootctl, &owner, "acquire", &["--wait", "900"]) {
+            Ok(()) => {
+                let toks = token(&opts.shootctl, "NadeoServices").and_then(|core| token(&opts.shootctl, "NadeoLiveServices").map(|live| (core, live)));
+                if !opts.playcheck {
+                    let _ = render_lock(&opts.shootctl, &owner, "release", &[]);
+                }
+                let r = toks.and_then(|(core, live)| publish_here(&opts, &core, &live));
+                if opts.playcheck {
+                    let _ = render_lock(&opts.shootctl, &owner, "release", &[]);
+                }
+                r
+            }
+            Err(e) => Err(format!("render lock: {e}")),
+        },
     };
     let summary = match &res {
         Ok(lines) => format!("OK in {:.0}s\n{}\n", t0.elapsed().as_secs_f64(), lines.join("\n")),
