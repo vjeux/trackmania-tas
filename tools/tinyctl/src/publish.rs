@@ -21,9 +21,9 @@ use std::time::{Duration, Instant};
 
 use crate::wsx::Wsx;
 
-const CORE: &str = "https://prod.trackmania.core.nadeo.online";
-const LIVE: &str = "https://live-services.trackmania.nadeo.live";
-const STORE: &str = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter";
+pub const CORE: &str = "https://prod.trackmania.core.nadeo.online";
+pub const LIVE: &str = "https://live-services.trackmania.nadeo.live";
+pub const STORE: &str = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter";
 const BOX_TOOLS: &str = "/home/vjeux/trackmania-tas/tools/target/release";
 const STAGE: &str = "/home/vjeux/shoot/_stage";
 const POWERSHELL: &str = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
@@ -71,7 +71,7 @@ fn curl(args: &[&str]) -> Result<(String, String), String> {
     Ok((body, code))
 }
 
-fn token(shootctl: &str, aud: &str) -> Result<String, String> {
+pub fn token(shootctl: &str, aud: &str) -> Result<String, String> {
     let st = Command::new(shootctl).arg("get").arg(format!("/nadeotoken?aud={aud}")).output().map_err(|e| format!("{shootctl}: {e}"))?;
     if !st.status.success() {
         return Err(format!("/nadeotoken?aud={aud}: {}", String::from_utf8_lossy(&st.stderr).trim()));
@@ -163,7 +163,7 @@ pub fn publish_here_cmd(args: &[String]) -> Result<(), String> {
 /// one-driver lock (a directory beside the game; shootset and playshots take
 /// the same one). Through the CLI rather than a crate link: the box builds
 /// shootctl and tinyctl side by side, and the lock's home is shootctl's.
-fn render_lock(shootctl: &str, owner: &str, verb: &str, extra: &[&str]) -> Result<(), String> {
+pub fn render_lock(shootctl: &str, owner: &str, verb: &str, extra: &[&str]) -> Result<(), String> {
     let out = Command::new(shootctl).arg("lock").arg(verb).arg("--owner").arg(owner).args(extra).output().map_err(|e| format!("{shootctl}: {e}"))?;
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     if let Some(l) = text.lines().find(|l| l.contains("render lock")) {
@@ -422,7 +422,7 @@ fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Result<St
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let map = match (f("--map"), build_dir) {
         (Some(m), _) => PathBuf::from(m),
-        (None, Some(d)) => d.join(format!("Summer-{n:02}-Tiny.Map.Gbx")),
+        (None, Some(d)) => d.join(format!("{}-{n:02}-Tiny.Map.Gbx", crate::build::out_prefix(args))),
         (None, None) => return Err("publish-map needs --map TINY.Map.Gbx (or --tag T)".into()),
     };
     if !map.exists() {

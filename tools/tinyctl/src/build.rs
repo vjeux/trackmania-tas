@@ -101,6 +101,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let src_dir = PathBuf::from(f("--src-dir").unwrap_or_else(|| "/tmp/summer2026".into()));
     let out_root = PathBuf::from(f("--out-root").unwrap_or_else(|| "/tmp".into()));
     let tag = f("--tag").unwrap_or_else(|| "auto".into());
+    // --out-prefix P: the output is `<P>-NN-Tiny.Map.Gbx` (default `Summer`, the
+    // campaign this was written for; `U10S` for Everios96's club maps, 2026-09-12)
+    let out_prefix = out_prefix(args);
     let recipe = PathBuf::from(f("--recipe").unwrap_or_else(|| "/tmp/tiny3/recipe.env".into()));
     // mapgeom's global flags, passed through
     let mut mapgeom_flags: Vec<String> = Vec::new();
@@ -201,7 +204,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 continue;
             }
         }
-        let tiny_out = out.join(format!("Summer-{nn}-Tiny.Map.Gbx"));
+        let tiny_out = out.join(format!("{out_prefix}-{nn}-Tiny.Map.Gbx"));
         let run_tiny = |env: &BTreeMap<String, String>, log: &str| -> Result<String, String> {
             let mut tiny = Command::new(&tmmaps);
             tiny.arg("tiny").arg(&src).arg("--mapping").arg(out.join("placements.tsv")).arg("--library").arg(out.join("lib.zip")).arg("--out").arg(&tiny_out);
@@ -283,7 +286,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                         Ok(_) => {
                             let template = out.join("water-template.Block.Gbx");
                             std::fs::write(&template, WATER_TEMPLATE).map_err(|e| format!("{}: {e}", template.display()))?;
-                            let staged = out.join(format!("Summer-{nn}-Tiny.water.Map.Gbx"));
+                            let staged = out.join(format!("{out_prefix}-{nn}-Tiny.water.Map.Gbx"));
                             let table = out.join("water-bodies.tsv");
                             let mut wb = Command::new(&mapgeom);
                             wb.args(&paks).args(&mapgeom_flags).arg("waterblocks").arg(&tiny_out).arg("--plates").arg(&plates).arg("--template").arg(&template).arg("--out").arg(&staged).arg("--table").arg(&table).arg("--source").arg(&src).arg("--anchor").arg(&anchor);
@@ -320,6 +323,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         return Err(format!("{failed} of {} maps failed", maps.len()));
     }
     Ok(())
+}
+
+/// `--out-prefix P` (default `Summer`): the stem of a build's map file,
+/// `<P>-NN-Tiny.Map.Gbx`. Shared by `build` and `publish-map --tag`.
+pub fn out_prefix(args: &[String]) -> String {
+    tmmaps::cli::flag(args, "--out-prefix").unwrap_or("Summer").to_string()
 }
 
 /// The `--anchor sx,sy,sz:tx,ty,tz` and `--scale S` arguments for the
