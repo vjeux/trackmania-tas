@@ -62,9 +62,9 @@ https://github.com/user-attachments/assets/d59210e8-342d-48cc-9c33-782242dac838
 
 https://github.com/user-attachments/assets/f7b83d4e-e5b5-4695-b0bb-d14b99c0fe45
 
-**Tiny Summer 2026 - 12** — original author time `28.447` · tiny ghost **20.514** (build ship15, controls overlay)
+**Tiny Summer 2026 - 12** — original author time `28.447` · tiny ghost **20.514** (build ship18f, controls overlay)
 
-https://github.com/user-attachments/assets/8d1cf689-14c9-41cd-a054-1673e447956f
+https://github.com/user-attachments/assets/ead3137b-7b03-4904-b920-0f45ce0b7dd0
 
 **Tiny Summer 2026 - 13** — original author time `31.462` · tiny ghost **24.674** (build ship18f, controls overlay) · map: ship18f
 
