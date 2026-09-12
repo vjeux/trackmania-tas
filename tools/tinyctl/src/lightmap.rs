@@ -1,4 +1,4 @@
-//! `tinyctl lightmap MAP… (--out OUT.Map.Gbx | --out-dir DIR) [--quality Q] [--name NAME] [--resaved [--keep-uid|--uid U]] [--allow-unbusy]`
+//! `tinyctl lightmap MAP… (--out OUT.Map.Gbx | --out-dir DIR) [--quality Q] [--name NAME] [--into SRC=DST]… [--resaved [--keep-uid|--uid U]] [--allow-unbusy]`
 //! — the editor's lightmap for a tiny build, computed on the render box and
 //! TRANSPLANTED into the input file (the devserver half of `shootctl lightmap`).
 //!
@@ -38,7 +38,7 @@ const LIGHTMAP_CHUNK: u32 = 0x0304_305B;
 pub fn cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(|s| s.to_string());
     // every positional that is not a flag value is a map
-    let flag_with_value = ["--out", "--out-dir", "--quality", "--name", "--uid", "--box-shootctl", "--wsx"];
+    let flag_with_value = ["--out", "--out-dir", "--quality", "--name", "--uid", "--box-shootctl", "--wsx", "--into"];
     let mut maps: Vec<PathBuf> = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -177,27 +177,51 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    // the transplant: the input file with only the lightmap chunk replaced
-    let orig = tmmaps::map::MapFile::load(map);
+    // the transplant: the input file (and every --into SRC=DST target — a shipped file
+    // with the SAME item list, e.g. the validated m5 of the same build) with only the
+    // lightmap chunk replaced
     let re = tmmaps::map::MapFile::load(&resaved_path);
-    // the lightmap is applied by object index: the two files must list the same items
+    transplant(map, &re, &resaved_path, out)?;
+    report(out, "the transplant")?;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--into" {
+            let spec = args.get(i + 1).ok_or("--into needs SRC=DST")?;
+            let (src, dst) = spec.split_once('=').ok_or("--into wants SRC=DST")?;
+            let (src, dst) = (Path::new(src), Path::new(dst));
+            if let Some(p) = dst.parent() {
+                let _ = std::fs::create_dir_all(p);
+            }
+            transplant(src, &re, &resaved_path, dst)?;
+            report(dst, "the transplant (--into)")?;
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    let _ = std::fs::remove_file(&resaved_path);
+    let _ = std::fs::remove_file(&bake_copy);
+    Ok(())
+}
+
+/// `target` with its lightmap chunk replaced by the editor re-save's, written to `out`
+/// LZO-compressed (the shipped form; an uncompressed body is ~1 MB bigger — the Nadeo cap).
+/// The lightmap is applied by object index, so the two files must list the same items.
+fn transplant(target: &Path, re: &tmmaps::map::MapFile, resaved_path: &Path, out: &Path) -> Result<(), String> {
+    let orig = tmmaps::map::MapFile::load(target);
     let (n_orig, n_re) = (orig.items.len(), re.items.len());
     if n_orig != n_re {
-        return Err(format!("item count changed across the editor's save ({n_orig} -> {n_re}); the lightmap would be misaligned — not transplanted (the re-save is at {})", resaved_path.display()));
+        return Err(format!("{}: item count differs from the editor's save ({n_orig} vs {n_re}); the lightmap would be misaligned — not transplanted (the re-save is at {})", target.display(), resaved_path.display()));
     }
     let find = |body: &[u8]| tmmaps::gbx::all_skip_chunks(body).into_iter().find(|c| c.0 == LIGHTMAP_CHUNK);
-    let ca = find(&orig.gbx.body).ok_or_else(|| format!("{}: no lightmap chunk 0x{LIGHTMAP_CHUNK:08X} to replace", map.display()))?;
+    let ca = find(&orig.gbx.body).ok_or_else(|| format!("{}: no lightmap chunk 0x{LIGHTMAP_CHUNK:08X} to replace", target.display()))?;
     let cb = find(&re.gbx.body).ok_or_else(|| format!("{}: the editor's save has no lightmap chunk", resaved_path.display()))?;
     let mut body = Vec::with_capacity(orig.gbx.body.len() + cb.3);
     body.extend_from_slice(&orig.gbx.body[..ca.1]);
     body.extend_from_slice(&re.gbx.body[cb.1..cb.2 + cb.3]);
     body.extend_from_slice(&orig.gbx.body[ca.2 + ca.3..]);
-    // the body goes back LZO-compressed, the shipped form (an uncompressed body is ~1 MB bigger — the Nadeo cap)
     std::fs::write(out, orig.gbx.write_body_recompressed(&body)).map_err(|e| format!("{}: {e}", out.display()))?;
-    eprintln!("lightmap chunk {} -> {} bytes, transplanted into a copy of the input (textures, ghost, header, uid untouched)", ca.3, cb.3);
-    let _ = std::fs::remove_file(&resaved_path);
-    let _ = std::fs::remove_file(&bake_copy);
-    report(out, "the transplant")?;
+    eprintln!("{}: lightmap chunk {} -> {} bytes, transplanted (textures, ghost, header, uid untouched) -> {}", target.display(), ca.3, cb.3, out.display());
     Ok(())
 }
 
