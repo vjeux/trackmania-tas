@@ -87,7 +87,9 @@ rm -f "$DONE"
       -H 'sec-fetch-mode: navigate' -H 'sec-fetch-dest: document' \
       https://github.com/vjeux/trackmania-tas
   fi
-  sleep "${COOLDOWN:-300}"
+  # vjeux, 2026-09-12 02:22Z: "remove the 5 min and do it back to back" — no gap
+  # by default; COOLDOWN=N restores one.
+  sleep "${COOLDOWN:-0}"
   cat "$OUT.out"
   URL=$(grep -o 'https://github.com/user-attachments/assets/[0-9a-f-]*' "$OUT.out" | head -1)
   if [ $rc -eq 0 ] && [ -n "$URL" ]; then echo "URL $URL" > "$DONE"
