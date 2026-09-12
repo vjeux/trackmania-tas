@@ -1336,10 +1336,20 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
                 // relative field says `inherited`, not `pass`); a lap with NEW flags
                 // still needs INPUT's pass field.
                 let inherited_flags_ok = approval_for(&out, &cells[0], &cells[1]).is_some() && only_inherited_flags(&readme, &cells[0], &cells[1]);
+                // EXPLICIT PARENT OVERRIDE (coordinator, 2026-09-12 02:40Z): a receipt row
+                // carrying `attitude_ok=parent` AND quoting the parent's literal approval
+                // (the word "approved" in its text) passes the attitude gate for that
+                // (map, time) — for a lap the parent ruled on when INPUT's line still
+                // reads as a letter FAIL (15 42.454: QUALIFIED, the section exception).
+                // Logged loudly every time it decides.
+                let parent_override = approval_for(&out, &cells[0], &cells[1]).map(|r| { let l = r.to_ascii_lowercase(); l.contains("attitude_ok=parent") && l.contains("approved") }).unwrap_or(false);
+                if parent_override && attitude_said.insert((format!("override-{}", cells[0]), cells[1].clone())) {
+                    println!("{} {} {}: ATTITUDE GATE OVERRIDDEN by the parent's explicit receipt (attitude_ok=parent) — INPUT's line reads {}", chrono_now(), cells[0], cells[1], attitude_verdict(&readme, &cells[0], &cells[1]).describe());
+                }
                 if inherited_flags_ok && attitude_said.insert((format!("inherited-flags-{}", cells[0]), cells[1].clone())) {
                     println!("{} {} {}: inherited flags accepted by receipt (INPUT marks every attitude flag as inherited from the published prefix)", chrono_now(), cells[0], cells[1]);
                 }
-                match if inherited_early.is_some() || inherited_flags_ok { Attitude::Clean } else { attitude_verdict(&readme, &cells[0], &cells[1]) } {
+                match if inherited_early.is_some() || inherited_flags_ok || parent_override { Attitude::Clean } else { attitude_verdict(&readme, &cells[0], &cells[1]) } {
                     Attitude::Clean => {}
                     // CLASS-B WATER WITH A DISCLOSED RECEIPT (coordinator's policy,
                     // 2026-09-11 03:00Z, from the parent's "publish on the build
