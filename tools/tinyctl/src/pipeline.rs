@@ -115,7 +115,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let build_dir = PathBuf::from(&out_root).join(format!("tiny{nn}")).join(&tag);
         let tiny = build_dir.join(format!("{prefix}-{nn}-Tiny.Map.Gbx"));
         let build_t = Instant::now();
-        if let Err(e) = crate::build::cmd(&bargs) {
+        // --reuse-build: a map already built into the build dir (e.g. the one that
+        // was published) is shot/published as it is, not rebuilt
+        let reuse = tmmaps::cli::has(args, "--reuse-build") && tiny.exists();
+        if reuse {
+            println!("{nn}: reusing {}", tiny.display());
+        } else if let Err(e) = crate::build::cmd(&bargs) {
             eprintln!("{nn}: build FAILED: {e}");
             row.extend(["-".into(), "-".into(), "-".into(), "-".into(), format!("{:.0}", build_t.elapsed().as_secs_f64()), "-".into(), "-".into(), "-".into(), format!("FAILED build: {}", first_line(&e))]);
             append(&tracker, &row)?;
@@ -185,6 +190,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                                     note.push_str(&format!("shoot: {}; ", first_line(&e)));
                                 }
                             }
+                            // the box's frames (4K PNGs, ~1 MB each here) and staged
+                            // maps of this shoot go once the sheets are pulled: C: on
+                            // the render PC is at 99 % (2026-09-12)
+                            if !tmmaps::cli::has(args, "--keep-box-files") {
+                                let wsx = crate::wsx::Wsx::new(args);
+                                let _ = wsx.sh(&format!("rm -rf /mnt/c/Users/vjeux/tinyshots/{stag} /home/vjeux/shoot/_stage/{stag}Orig.Map.Gbx /home/vjeux/shoot/_stage/{stag}Tiny.Map.Gbx /home/vjeux/shoot/_stage/{stag}-views.tsv '/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot/{stag}Orig.Map.Gbx' '/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot/{stag}Tiny.Map.Gbx'"));
+                            }
                         }
                         None => note.push_str("views: no anchor line; shoot skipped; "),
                     }
@@ -212,13 +224,24 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     if tmmaps::cli::has(args, "--playcheck") {
                         pargs.push("--playcheck".into());
                     }
-                    // publish-map prints its verdict line; we re-read the box's done file for the row
-                    match crate::publish::publish_map_cmd(&pargs) {
-                        Ok(()) => nadeo = "OK stored IDENTICAL".into(),
+                    // publish_one returns the verdict line (name, uid, mapId, stored verdict)
+                    match crate::publish::publish_one(n, &pargs, None) {
+                        Ok(line) => {
+                            let toks: Vec<&str> = line.split_whitespace().collect();
+                            let map_id = toks.iter().position(|t| *t == "mapId").and_then(|i| toks.get(i + 1)).map(|s| s.to_string()).unwrap_or_else(|| "?".into());
+                            let how = if line.contains("\tCREATE\t") { "created" } else if line.contains("\tUPDATE\t") { "updated" } else { "uploaded" };
+                            nadeo = format!("OK {how} mapId {map_id} {}", if line.contains("stored IDENTICAL") { "stored IDENTICAL" } else { "stored ?" });
+                        }
                         Err(e) => {
                             nadeo = format!("FAILED: {}", first_line(&e));
                             failed += 1;
                         }
+                    }
+                    // the box's staging of this map (C: is at 99 %, 2026-09-12): the
+                    // readback copy and the pushed map go; the done file stays
+                    if !tmmaps::cli::has(args, "--keep-box-files") {
+                        let wsx = crate::wsx::Wsx::new(args);
+                        let _ = wsx.sh(&format!("rm -f /mnt/c/Users/vjeux/tinyshots/publish-{nn}/readback-*.Map.Gbx /home/vjeux/shoot/_stage/Tiny{nn}.Map.Gbx"));
                     }
                 }
                 Err(e) => {

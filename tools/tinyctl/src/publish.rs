@@ -429,7 +429,7 @@ pub fn publish_map_cmd(args: &[String]) -> Result<(), String> {
 /// One map. `build_dir` (the --tag form) derives --map, --items-dir, --paks and
 /// --name; the flags still win when given. Returns the one-line verdict
 /// (name, uid, mapId, stored md5 verdict, playcheck).
-fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Result<String, String> {
+pub fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Result<String, String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let map = match (f("--map"), build_dir) {
         (Some(m), _) => PathBuf::from(m),
@@ -538,13 +538,15 @@ fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Result<St
         }
     }
     // the verdict line: name, uid, mapId, stored-bytes verdict, playcheck
-    let pick = |prefix: &str, k: &str| -> String {
-        done.lines().find(|l| l.starts_with(prefix)).and_then(|l| l.split('\t').find(|c| c.trim_start().starts_with(k))).map(|s| s.trim().to_string()).unwrap_or_else(|| format!("{k} ?"))
-    };
-    let stored = if done.lines().any(|l| l.starts_with("stored") && l.contains("IDENTICAL")) { "stored IDENTICAL" } else { "stored ?" };
-    let play = done.lines().find(|l| l.starts_with("playcheck")).map(|l| l.replace('\t', " ")).unwrap_or_else(|| "playcheck: not run".into());
+    // The done text arrives FLATTENED (wait_done reads it with `tr '\n' ' '`), so the
+    // verdict is read from its whitespace tokens, not its lines (2026-09-12).
+    let toks: Vec<&str> = done.split_whitespace().collect();
+    let after = |k: &str| -> String { toks.iter().position(|t| *t == k).and_then(|i| toks.get(i + 1)).map(|s| format!("{k} {s}")).unwrap_or_else(|| format!("{k} ?")) };
+    let pick = |_prefix: &str, k: &str| -> String { after(k) };
+    let stored = if done.contains("IDENTICAL") { "stored IDENTICAL" } else { "stored ?" };
+    let play = done.find("playcheck").map(|i| done[i..].replace('\t', " ")).unwrap_or_else(|| "playcheck: not run".into());
     let play_short: String = play.chars().take(110).collect();
-    let how = done.lines().find(|l| l.starts_with("upload")).and_then(|l| l.split('\t').nth(1)).unwrap_or("?").to_uppercase();
+    let how = toks.iter().position(|t| *t == "upload").and_then(|i| toks.get(i + 1)).unwrap_or(&"?").to_uppercase();
     Ok(format!("{name}\tuid {}\t{}\t{how}\t{}\t{play_short}", hdr.uid, pick("upload", "mapId"), stored))
 }
 
