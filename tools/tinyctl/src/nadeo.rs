@@ -58,8 +58,23 @@ fn post_json(auth: &str, url: &str, body: &str) -> Result<Value, String> {
 
 /// Fresh core + live tokens (Authorization header values) from the running
 /// game, under the render lock. The plugin's previous token files are removed
-/// first so a stale one is never read back as fresh.
+/// first so a stale one is never read back as fresh — unless both are younger
+/// than `TOKEN_REUSE_SECS` (a Nadeo access token lives about an hour): then
+/// they are reused and the lock is not taken at all, so a run of reads costs
+/// the shared render lock one slice, not one per command.
+const TOKEN_REUSE_SECS: u64 = 40 * 60;
+
 pub fn tokens(shootctl: &str, owner: &str) -> Result<(String, String), String> {
+    let fresh = |aud: &str| -> Option<String> {
+        let p = format!("{STORE}/token-{aud}.txt");
+        let age = std::fs::metadata(&p).ok()?.modified().ok()?.elapsed().ok()?;
+        let t = std::fs::read_to_string(&p).ok()?.trim().to_string();
+        (age.as_secs() < TOKEN_REUSE_SECS && t.len() > 20).then_some(t)
+    };
+    if let (Some(core), Some(live)) = (fresh("NadeoServices"), fresh("NadeoLiveServices")) {
+        eprintln!("tokens: reusing the plugin's files (younger than {} min)", TOKEN_REUSE_SECS / 60);
+        return Ok((core, live));
+    }
     render_lock(shootctl, owner, "acquire", &["--wait", "1500"]).map_err(|e| format!("render lock: {e}"))?;
     for aud in ["NadeoServices", "NadeoLiveServices"] {
         let _ = std::fs::remove_file(format!("{STORE}/token-{aud}.txt"));
