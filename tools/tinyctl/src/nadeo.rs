@@ -159,18 +159,41 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
-        "campaigns" => {
-            let club = f("--club").ok_or("campaigns needs --club ID")?;
+        "activities" => {
+            // the club page's activity list (campaigns, rooms, …), readable for
+            // any public club — what the game shows when you open a club
+            let club = f("--club").ok_or("activities needs --club ID")?;
             let length = f("--length").unwrap_or_else(|| "100".into());
             let offset = f("--offset").unwrap_or_else(|| "0".into());
-            let url = format!("{LIVE}/api/token/club/{club}/campaign?length={length}&offset={offset}");
+            let url = format!("{LIVE}/api/token/club/{club}/activity?length={length}&offset={offset}&active=true");
             let v = get_json(&auth_live, &url)?;
-            save(&format!("club-{club}-campaigns.json"), &v)?;
+            save(&format!("club-{club}-activities-{offset}.json"), &v)?;
+            println!("total {}\tmaxPage {}", s(&v, "itemCount"), s(&v, "maxPage"));
+            println!("activityId\ttype\tname\tcampaignId\tpublic\tactive\tposition");
+            for a in v.get("activityList").and_then(|l| l.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
+                println!("{}\t{}\t{}\t{}\t{}\t{}\t{}", s(a, "id"), s(a, "activityType"), s(a, "name"), s(a, "campaignId"), s(a, "public"), s(a, "active"), s(a, "position"));
+            }
+            Ok(())
+        }
+        "campaigns" => {
+            let length = f("--length").unwrap_or_else(|| "100".into());
+            let offset = f("--offset").unwrap_or_else(|| "0".into());
+            // --club ID: the club's own list (works for clubs one administers;
+            // another club's answers 403 globalAdmin:error-notAllowed —
+            // Everios96 18974, 2026-09-12); --name TEXT: the game's club-campaign
+            // browser, every club, filtered by campaign name
+            let (url, file) = match (f("--club"), f("--name")) {
+                (Some(club), _) => (format!("{LIVE}/api/token/club/{club}/campaign?length={length}&offset={offset}"), format!("club-{club}-campaigns.json")),
+                (None, Some(name)) => (format!("{LIVE}/api/token/club/campaign?length={length}&offset={offset}&name={}", urlenc(&name)), format!("campaigns-{}.json", file_safe_name(&name))),
+                (None, None) => return Err("campaigns needs --club ID or --name TEXT".into()),
+            };
+            let v = get_json(&auth_live, &url)?;
+            save(&file, &v)?;
             println!("total {}\tclub {}", s(&v, "itemCount"), s(&v, "clubName"));
-            println!("campaignId\tname\tmaps\tpublicationTimestamp\tactivityId");
+            println!("clubId\tclubName\tcampaignId\tname\tmaps\tpublicationTimestamp\tactivityId");
             for c in v.get("clubCampaignList").and_then(|l| l.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
                 let camp = c.get("campaign").cloned().unwrap_or(Value::Null);
-                println!("{}\t{}\t{}\t{}\t{}", s(c, "campaignId"), s(c, "name"), s(&camp, "mapsCount"), s(c, "publicationTimestamp"), s(c, "activityId"));
+                println!("{}\t{}\t{}\t{}\t{}\t{}\t{}", s(c, "clubId"), s(c, "clubName"), s(c, "campaignId"), s(c, "name"), s(&camp, "mapsCount"), s(c, "publicationTimestamp"), s(c, "activityId"));
             }
             Ok(())
         }
