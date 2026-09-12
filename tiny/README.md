@@ -78,7 +78,7 @@ https://github.com/user-attachments/assets/8359415d-53d5-419f-8fd6-aee0fe145345
 
 **Tiny Summer 2026 - 15** — original author time `36.888` · tiny ghost **48.748** (build ship15, controls overlay)
 
-*latest lap **42.454** (build ship18f) — held (staged — attitude: not clean (INPUT: attitude FAIL, inverted))*
+*latest lap **42.454** (build ship18f) — staged, awaiting the upload session*
 
 https://github.com/user-attachments/assets/a41cebdd-f649-4173-92fe-34d7a21d1f11
 
