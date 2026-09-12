@@ -37,6 +37,7 @@ mod upload;
 mod pagestatus;
 mod video;
 mod motion;
+mod nadeo;
 mod mtrender;
 mod mapzips;
 mod views;
@@ -51,8 +52,10 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         genealogy zones + policy, zone-block census, waypoints, models;
         with --paks a dry library build listing the models the packs lack
   tinyctl build NN… [--src-dir /tmp/summer2026] [--out-root /tmp] [--tag auto] [--recipe /tmp/tiny3/recipe.env] [--env K=V …]
+                [--out-prefix Summer]
         the tiny build of campaign maps end to end (packs by collection, recipe env,
         mapgeom tiny-library, tmmaps tiny, library unzipped) into <out-root>/tinyNN/<tag>/
+        as <out-prefix>-NN-Tiny.Map.Gbx (the source is <src-dir>/NN-*.Map.Gbx, any campaign)
   tinyctl views SRC.Map.Gbx [--out VIEWS.tsv] [--gate-dist 48] [--ghost G --at MS[,MS…] [--chase-dist 30] [--chase-v 0.3] [--only-chase]]
                 [--trees N --mapping placements.tsv [--tree-dist 30] [--only-trees]]
         (the tiny side sees the trees at half of --tree-dist, and the editor camera
@@ -194,6 +197,7 @@ fn main() {
         "camcheck" => camcheck::cmd(rest),
         "publish-map" => publish::publish_map_cmd(rest),
         "publish-here" => publish::publish_here_cmd(rest),
+        "nadeo-here" => nadeo::cmd(rest),
         "unproject" => unproject::cmd(rest),
         "upload" => upload::cmd(rest),
         "video" => video::cmd(rest),

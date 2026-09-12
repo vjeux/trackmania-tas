@@ -17,3 +17,4 @@ mapgeom = { path = "../mapgeom" }
 gbx = { path = "../gbx" }
 clip = { path = "../clip" }
 miniz_oxide = "0.9.1"
+serde_json = "1"
