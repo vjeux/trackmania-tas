@@ -3406,11 +3406,13 @@ pub fn collect_mapzip_verdicts(wsx: &Wsx, out: &Path, seen: &mut std::collection
         }
         if !already {
             // the zip's md5 from the local MD5.tsv (nn<TAB>name<TAB>md5<TAB>bytes)
-            let md5 = std::fs::read_to_string(out.parent().unwrap_or(out).join("mapzips").join(build).join("MD5.tsv"))
-                .unwrap_or_default()
-                .lines()
-                .find_map(|r| { let c: Vec<&str> = r.split('\t').collect(); (c.len() >= 3 && c[0] == nn).then(|| c[2].to_string()) })
-                .unwrap_or_default();
+            // the zip's md5: the URL names the file (…/tiny-…-ship18f[-lite].zip); look it
+            // up in MD5.tsv or MD5-lite.tsv of the build's zip dir by file name
+            let zdir = out.parent().unwrap_or(out).join("mapzips").join(build);
+            let fname = url.rsplit('/').next().unwrap_or("").to_string();
+            let md5 = ["MD5.tsv", "MD5-lite.tsv"].iter().find_map(|t| {
+                std::fs::read_to_string(zdir.join(t)).ok()?.lines().find_map(|r| { let c: Vec<&str> = r.split('\t').collect(); (c.len() >= 3 && c[0] == nn && (fname.is_empty() || c[1] == fname)).then(|| c[2].to_string()) })
+            }).unwrap_or_default();
             match crate::mapzips::write_link(&rb_path, nn, build, &url, &md5) {
                 Ok(()) => println!("{} zip {nn} ({build}): PUBLISHED {url} → rowbuilds.tsv (the row's map link)", chrono_now()),
                 Err(e) => println!("{} zip {nn}: could not write the link: {e}", chrono_now()),
