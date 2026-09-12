@@ -2,6 +2,11 @@
 
 The 25 Summer 2026 campaign maps rebuilt at **half scale**: every block and item is 0.5× its original size on a half-size grid; the car is not scaled. Each entry: the original map's author time, and the time of the TAS ghost on the tiny map (clip = the ghost in the game's chase camera, controls drawn on it).
 
+## How to play
+
+- **In the game:** Play → Clubs → search for the club **Vjeux** → join it → Campaigns → **Tiny Campaign**. All 25 maps are there; the tiny time is the author medal.
+- **Download the maps:** [tiny/MAPS.md](MAPS.md) — one zip per map with the map (`.Map.Gbx`, the TAS ghost embedded as its author ghost) and the ghost (`.Ghost.Gbx`). Put the map in `Documents\Trackmania\Maps\Downloaded\` and the ghost in `Documents\Trackmania\Replays\`, then Play → Local → Solo.
+
 **Tiny Summer 2026 - 01** — original author time `23.144` · tiny **17.417**
 
 https://github.com/user-attachments/assets/c21cb128-465d-4f9e-b95d-637519986745
@@ -103,5 +108,3 @@ https://github.com/user-attachments/assets/93737167-f9b4-440b-b9fd-999ca3d23d84
 https://github.com/user-attachments/assets/2459bed5-06d3-4f82-8fe0-4128ded08e7d
 
 ---
-
-Map files (map with the ghost embedded + the ghost, zipped): [MAPS.md](MAPS.md).
