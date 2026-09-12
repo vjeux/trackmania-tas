@@ -1240,6 +1240,8 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
     let stamp_file = out.join("session-failed.stamp");
     let mut failed_session_stamp: u64 = std::fs::read_to_string(&stamp_file).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
     let mut said_waiting_session = false;
+    let collect_only = tmmaps::cli::has(args, "--collect-only");
+    let mut said_collect_only = false;
     let mut probed_session_stamp: u64 = 0;
     // the clip whose ship the last launch started (its verdict is the probe's)
     let mut launched_name: Option<String> = None;
@@ -1675,7 +1677,15 @@ pub fn shipwatch_cmd(args: &[String]) -> Result<(), String> {
             }).unwrap_or(usize::MAX)
         };
         dead_cookie.sort_by_key(|(nn, time, _, _)| rank(nn, time));
-        if !dead_cookie.is_empty() {
+        // --collect-only (vjeux via the parent, 2026-09-12 02:29Z: the uploads run from
+        // the parent session; this watcher only collects .done verdicts and swaps
+        // page rows — it NEVER launches a ship)
+        if collect_only && !dead_cookie.is_empty() {
+            if !said_collect_only {
+                println!("{} --collect-only: {} clip(s) pending; launches are the parent session's — collecting verdicts and swapping rows only", chrono_now(), dead_cookie.len());
+                said_collect_only = true;
+            }
+        } else if !dead_cookie.is_empty() {
             // ONE 302, THEN STOP UNTIL THE SESSION CHANGES (coordinator, 2026-09-11
             // 12:03Z: "expected one 302 then stop"). A dead session is re-probed
             // only when the box's cookie file or the ghsession jar has a new
