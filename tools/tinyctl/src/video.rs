@@ -3395,10 +3395,15 @@ pub fn collect_mapzip_verdicts(wsx: &Wsx, out: &Path, seen: &mut std::collection
             continue;
         };
         let url = url.split_whitespace().next().unwrap_or("").to_string();
-        let already = crate::pagestatus::parse_rowbuilds(&std::fs::read_to_string(&rb_path).unwrap_or_default())
-            .get(nn)
-            .map(|r| r.link.starts_with(&url))
-            .unwrap_or(false);
+        let current = crate::pagestatus::parse_rowbuilds(&std::fs::read_to_string(&rb_path).unwrap_or_default()).get(nn).cloned();
+        let already = current.as_ref().map(|r| r.link.starts_with(&url)).unwrap_or(false);
+        // a zip of an OLDER build than the row's (yesterday's ship15 zip .done still
+        // on the box while the row is ship18f) never replaces the row's link
+        let older = current.as_ref().map(|r| !r.build.is_empty() && build_newer(&r.build, build)).unwrap_or(false);
+        if older {
+            seen.insert(name.to_string());
+            continue;
+        }
         if !already {
             // the zip's md5 from the local MD5.tsv (nn<TAB>name<TAB>md5<TAB>bytes)
             let md5 = std::fs::read_to_string(out.parent().unwrap_or(out).join("mapzips").join(build).join("MD5.tsv"))
