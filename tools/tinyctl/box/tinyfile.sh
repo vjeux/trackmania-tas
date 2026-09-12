@@ -46,7 +46,7 @@ rm -f "$DONE"
       https://github.com/vjeux/trackmania-tas
   fi
   echo "upload rc=$rc url=$URL"; cat "$OUT.err"
-  sleep "${COOLDOWN:-300}"
+  sleep "${COOLDOWN:-0}"
   case "$URL" in
     https://github.com/user-attachments/*) [ $rc -eq 0 ] && echo "URL $URL" > "$DONE" || echo "FAILED rc=$rc $URL" > "$DONE" ;;
     *) echo "FAILED rc=$rc $(head -c 200 "$OUT.err" | tr '\n' ' ')" > "$DONE" ;;
