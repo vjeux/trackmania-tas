@@ -216,6 +216,11 @@ fn transplant(target: &Path, re: &tmmaps::map::MapFile, resaved_path: &Path, out
     let find = |body: &[u8]| tmmaps::gbx::all_skip_chunks(body).into_iter().find(|c| c.0 == LIGHTMAP_CHUNK);
     let ca = find(&orig.gbx.body).ok_or_else(|| format!("{}: no lightmap chunk 0x{LIGHTMAP_CHUNK:08X} to replace", target.display()))?;
     let cb = find(&re.gbx.body).ok_or_else(|| format!("{}: the editor's save has no lightmap chunk", resaved_path.display()))?;
+    // an empty lightmap (24 bytes: version, HasLightmaps=0 …) means the compute produced nothing
+    // (seen 2026-09-12 right after a game relaunch: "shadows done in 11s, quality 1") — never ship that
+    if cb.3 < 100_000 {
+        return Err(format!("the editor's save carries only a {}-byte lightmap chunk — the bake produced nothing; not transplanted (re-save kept at {})", cb.3, resaved_path.display()));
+    }
     let mut body = Vec::with_capacity(orig.gbx.body.len() + cb.3);
     body.extend_from_slice(&orig.gbx.body[..ca.1]);
     body.extend_from_slice(&re.gbx.body[cb.1..cb.2 + cb.3]);
