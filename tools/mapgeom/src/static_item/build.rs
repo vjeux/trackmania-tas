@@ -154,6 +154,11 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
         let iso = compose(at, &super::prefab::CPlugPrefab::entity_iso(e));
         match e.model.inline.as_deref() {
             Some(Node::StaticObject(so)) => {
+                // a strip item other than the first carries no pole (TINY_FLAG_STRIPS=k/N, k > 0)
+                if strip_cfg().map(|c| c.k > 0).unwrap_or(false) {
+                    m.notes.push(format!("{path} entity {i}: static part skipped (strip item k > 0 carries the strip alone)"));
+                    continue;
+                }
                 // Physics: the game's library table first, the .Material.Gbx's
                 // own surface id (usually 0) next, else the object's most
                 // common collision physics.
@@ -315,6 +320,16 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                         Some((_, cpath, cparams)) => {
                             if let Err(err) = add_dyna_part(store, &p, &iso, scale, m, &cpath, cparams, e) {
                                 m.notes.push(format!("{path} entity {i}: moving part {p} failed ({err}); baked at rest"));
+                                if let Err(e2) = add_dyna_object_file(store, &p, &iso, scale, m) {
+                                    m.notes.push(format!("{path} entity {i}: external {p} failed: {e2}"));
+                                }
+                            }
+                        }
+                        // the cloth as one KINEMATIC strip of a mechanical banner (TINY_FLAG_STRIPS=k/N)
+                        None if strip_cfg().is_some() && dyna_has_tween_material(store, &p) => {
+                            let cfg = strip_cfg().unwrap();
+                            if let Err(err) = add_dyna_strip_part(store, &p, &iso, scale, m, e, &cfg) {
+                                m.notes.push(format!("{path} entity {i}: strip part {p} failed ({err}); baked at rest"));
                                 if let Err(e2) = add_dyna_object_file(store, &p, &iso, scale, m) {
                                     m.notes.push(format!("{path} entity {i}: external {p} failed: {e2}"));
                                 }
@@ -1349,6 +1364,241 @@ pub fn dyna_has_tween_material(store: &mut crate::store::DataStore, path: &str) 
     let Some(mp) = name_in(&model.externals, dyna.mesh.index) else { return false };
     let Ok(mm_) = store.load_model(&mp) else { return false };
     mm_.externals.iter().any(|(_, p)| p.to_ascii_lowercase().ends_with(".material.gbx") && is_tween_material(store, p))
+}
+
+
+/// `TINY_FLAG_STRIPS=k/N`: the flag cloth as strip `k` of `N` KINEMATIC
+/// strips — vjeux, 2026-09-12: "we have moving blocks working in their tiny
+/// version, can the flag use that". The vertex-tween cloth cannot animate in
+/// an embedded item (TINY.md "Animated items"), the kinematic dyna kind can
+/// (pushers, rotors); so the cloth becomes a mechanical banner: N vertical
+/// strips, each a `CPlugDynaObjectModel` entity of its own item bound by a
+/// pusher-form constraint that translates it along the cloth's normal,
+/// ±A_k, one ease-in/out half period out and one back. A strip's PHASE is
+/// the map's per-placement AnimPhaseOffset byte (eighths of the period), so
+/// every strip is a separate ITEM placed at the flag's pose with byte
+/// k·8/N: the wave travels from the pole to the free edge. Item k = 0 also
+/// carries the pole (the static entity); items k > 0 are the strip alone.
+///
+/// Knobs (all optional): `TINY_FLAG_STRIP_AMP` = free-edge amplitude as a
+/// fraction of the cloth width (default 0.06), `TINY_FLAG_STRIP_MS` = period
+/// (default 2000), `TINY_FLAG_STRIP_OVERLAP` = width stretch of every strip
+/// about its centre (default 1.12: the strips overlap, no daylight between
+/// them at any instant; a 3 mm depth stagger per strip keeps the overlaps
+/// from z-fighting), `TINY_FLAG_STRIP_RAMP` = amplitude ramp exponent from
+/// the pole (0) to the free edge (1), default 1.
+pub struct StripCfg {
+    pub k: usize,
+    pub n: usize,
+    pub amp_frac: f32,
+    pub period_ms: u32,
+    pub overlap: f32,
+    pub ramp: f32,
+}
+
+thread_local! {
+    /// A per-bake override of `TINY_FLAG_STRIPS` (tiny-library bakes the N
+    /// strip items of a flag in one process): `Some((k, n))` while strip k is
+    /// built, `None` otherwise.
+    pub static STRIP_OVERRIDE: std::cell::Cell<Option<(usize, usize)>> = const { std::cell::Cell::new(None) };
+}
+
+pub fn strip_cfg() -> Option<StripCfg> {
+    let (k, n) = match STRIP_OVERRIDE.with(|o| o.get()) {
+        Some(kn) => kn,
+        None => {
+            let spec = std::env::var("TINY_FLAG_STRIPS").ok()?;
+            let (k, n) = spec.split_once('/')?;
+            (k.trim().parse().ok()?, n.trim().parse().ok()?)
+        }
+    };
+    if n == 0 || k >= n {
+        return None;
+    }
+    let f = |key: &str, d: f32| std::env::var(key).ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(d);
+    Some(StripCfg {
+        k,
+        n,
+        amp_frac: f("TINY_FLAG_STRIP_AMP", 0.06),
+        period_ms: std::env::var("TINY_FLAG_STRIP_MS").ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(2000),
+        overlap: f("TINY_FLAG_STRIP_OVERLAP", 1.12),
+        ramp: f("TINY_FLAG_STRIP_RAMP", 1.0),
+    })
+}
+
+/// The `k`-th of `n` kinematic strips of a tween cloth (see `StripCfg`).
+pub fn add_dyna_strip_part(store: &mut crate::store::DataStore, path: &str, at: &Xform, scale: f32, m: &mut Merged, ent: &super::prefab::Entity, cfg: &StripCfg) -> R<()> {
+    // frame 0 of the cloth under the still material (ItemFlagNoAnim: the flag
+    // texture, hue mask, the placement skin), the pack's own uv0
+    let src = load_dyna_source(store, path, m, false)?;
+    let mut mesh = Merged::default();
+    mesh.keep_water = m.keep_water;
+    mesh.modifier = m.modifier.clone();
+    mesh.collision_redress = m.collision_redress.clone();
+    mesh.modifier_suffix = m.modifier_suffix.clone();
+    mesh.no_split = true;
+    let mesh_ext = src.mesh_ext.clone();
+    let mut tween_notes: Vec<String> = Vec::new();
+    let so = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(src.s2.clone())), is_mesh_collidable: false, shape: super::null_ref() };
+    let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
+        let p = name_in(&mesh_ext, idx)?;
+        if is_tween_material(store, &p) {
+            let (link, note) = still_cloth_material(&p);
+            tween_notes.push(note);
+            return Some((p, link, 28));
+        }
+        let link = material_link(&p);
+        let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).unwrap_or(28);
+        Some((p, link, phys))
+    };
+    mesh.add_static_object(&so, &IDENTITY, scale, &mut resolve).map_err(|err| format!("{path}: {err}"))?;
+    m.notes.extend(tween_notes);
+    // the NEAREST detail level only (the cloth's 12 x 12 grid at LOD 0; the
+    // coarser levels have 6/3/2/1 columns and cannot be cut into N strips),
+    // drawn at every distance: a strip is ~30 triangles
+    let nearest: Vec<super::merged::MergedVisual> = mesh.visuals.iter().filter(|v| v.lod_mask == 0 || v.lod_mask & 1 != 0).cloned().collect();
+    if nearest.is_empty() {
+        return Err(format!("{path}: the cloth has no nearest-level visual"));
+    }
+    let mut lo = [f32::MAX; 3];
+    let mut hi = [f32::MIN; 3];
+    for v in &nearest {
+        let (pos, _) = super::merged::visual_triangles(&v.visual);
+        for p in &pos {
+            for a in 0..3 {
+                lo[a] = lo[a].min(p[a]);
+                hi[a] = hi[a].max(p[a]);
+            }
+        }
+    }
+    // axes in the cloth's local frame: Y hangs (the entity's rotation keeps it
+    // vertical); of X and Z the wider extent is the cloth's WIDTH axis, the
+    // other its NORMAL. The pole is the end nearer the local origin (the
+    // cloth is authored hanging off it).
+    let ext = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+    let (w_axis, n_axis) = if ext[0] >= ext[2] { (0usize, 2usize) } else { (2, 0) };
+    let (w_pole, w_free) = if lo[w_axis].abs() <= hi[w_axis].abs() { (lo[w_axis], hi[w_axis]) } else { (hi[w_axis], lo[w_axis]) };
+    let width = (w_free - w_pole).abs();
+    if width < 1e-3 {
+        return Err(format!("{path}: the cloth has no width along axis {w_axis}"));
+    }
+    let t_of = |w: f32| (w - w_pole) / (w_free - w_pole);
+    let (t0, t1) = (cfg.k as f32 / cfg.n as f32, (cfg.k + 1) as f32 / cfg.n as f32);
+    let centre_w = w_pole + (w_free - w_pole) * (t0 + t1) * 0.5;
+    // 3 mm per strip along the normal, away from the pole side's neighbour: the
+    // overlapping margins never share a plane
+    let stagger = 0.003 * cfg.k as f32;
+    let mut out: Vec<super::merged::MergedVisual> = Vec::new();
+    let mut tris = 0usize;
+    for v in &nearest {
+        let (pos, idx) = super::merged::visual_triangles(&v.visual);
+        let keep: Vec<bool> = idx
+            .chunks(3)
+            .map(|t| {
+                if t.len() != 3 {
+                    return false;
+                }
+                let c = (pos[t[0] as usize][w_axis] + pos[t[1] as usize][w_axis] + pos[t[2] as usize][w_axis]) / 3.0;
+                let tt = t_of(c);
+                // the last strip takes the free edge itself
+                tt >= t0 && (tt < t1 || (cfg.k + 1 == cfg.n && tt <= 1.0 + 1e-4))
+            })
+            .collect();
+        let kept = keep.iter().filter(|k| **k).count();
+        if kept == 0 {
+            continue;
+        }
+        tris += kept;
+        let mut sv = super::merged::sub_visual(&v.visual, &keep)?;
+        if let Some(s) = sv.stream_mut() {
+            let mut positions = Vec::new();
+            for (d, e) in s.decls.iter().zip(s.elems.iter_mut()) {
+                if d.name() == super::vstream::N_POSITION {
+                    if let Elem::Float3(p) = e {
+                        for q in p.iter_mut() {
+                            q[w_axis] = centre_w + (q[w_axis] - centre_w) * cfg.overlap;
+                            q[n_axis] += stagger;
+                        }
+                        positions = p.clone();
+                    }
+                }
+            }
+            if let Some(mn) = sv.main.as_mut() {
+                mn.bounding_box = super::merged::bbox(&positions);
+            }
+        }
+        out.push(super::merged::MergedVisual { visual: sv, material: v.material, lod_mask: 0, lod_ladder: Vec::new(), part: v.part });
+    }
+    if out.is_empty() {
+        return Err(format!("{path}: strip {}/{} has no triangles", cfg.k, cfg.n));
+    }
+    mesh.visuals = out;
+    // the constraint: the OFF pusher's file as the template (its rotation
+    // function stays: zero range), translation along the cloth normal, ±A_k,
+    // EaseInOutQuad out for half the period and back for the other half
+    let cpath = "Stadium\\Media\\KinematicConstraints\\ObstaclePusher8m.KinematicConstraint.Gbx";
+    let kmodel = store.load_model(cpath)?;
+    let mut kc = super::dyna::KinematicConstraint::parse_body(&kmodel.body).map_err(|e| format!("{cpath}: {e}"))?;
+    let ramp = ((cfg.k as f32 + 1.0) / cfg.n as f32).powf(cfg.ramp.max(0.0));
+    let amp = cfg.amp_frac * width * ramp;
+    let half = (cfg.period_ms / 2).max(1);
+    kc.trans_axis = n_axis as u8;
+    kc.trans_min = -amp;
+    kc.trans_max = amp;
+    kc.trans.subs = vec![super::dyna::AnimSubFunc { ease: 4, reverse: 0, duration_ms: half }, super::dyna::AnimSubFunc { ease: 4, reverse: 1, duration_ms: cfg.period_ms - half }];
+    // the pusher template animates its screen texture through the shader
+    // sub-texture keyframes; the cloth has no atlas — none (the rotor form)
+    kc.shader_tc_type = 0;
+    kc.shader_tc_anim.clear();
+    kc.shader_tc_trans_sub = None;
+    // a kinematic dyna without hulls crashes the loader (NULL DynaShape at
+    // Trackmania.exe+0xb7088c): the pusher piston's own hulls at 5 %, a stub
+    // at the strip's origin (the pole top), nothing a car reaches
+    let (mut move_shape, mut hit_shape) = (None, None);
+    for (hp, slot) in [("Stadium\\Media\\Dyna\\ObstaclePusher\\ObstaclePusher8mPiston.MoveShape.Gbx", &mut move_shape), ("Stadium\\Media\\Dyna\\ObstaclePusher\\ObstaclePusher8mPiston.HitShape.Gbx", &mut hit_shape)] {
+        let sm = store.load_model(hp)?;
+        let mut lb = super::LookbackState::default();
+        lb.defined_nodes.extend(sm.external_indices().iter().copied());
+        let mut r = super::Rd::new(&sm.body, 0, lb);
+        let sf = super::surface::CPlugSurface::parse(&mut r).map_err(|e| format!("{hp}: {e}"))?;
+        *slot = canonical_surface(&sf, 0.05);
+    }
+    let mut instance_params = ent.params.clone();
+    if instance_params.len() >= 16 {
+        instance_params[12..16].copy_from_slice(&1u32.to_le_bytes()); // IsKinematic
+    }
+    let iso = *at;
+    let rot = crate::geom::to_quat(&iso);
+    let pos = [iso[9] * scale, iso[10] * scale, iso[11] * scale];
+    m.notes.push(format!(
+        "{}: STRIP {}/{} of the cloth (width axis {}, normal axis {}, cloth {:.3} m wide, t {:.3}..{:.3}, {tris} triangles, overlap x{:.2}, stagger {:.3} m): kinematic, {}",
+        path.rsplit('\\').next().unwrap_or(path),
+        cfg.k,
+        cfg.n,
+        w_axis,
+        n_axis,
+        width,
+        t0,
+        t1,
+        cfg.overlap,
+        stagger,
+        kc.summary()
+    ));
+    m.notes.extend(mesh.notes.drain(..).map(|n| format!("  (strip) {n}")));
+    m.dyna.push(DynaPart {
+        path: path.to_string(),
+        rot,
+        pos,
+        mesh,
+        move_shape,
+        hit_shape,
+        model: src.model.clone(),
+        instance_params_id: ent.params_id,
+        instance_params,
+        constraint: Some((kc, super::dyna::ConstraintParams { version: 0, ent1: -1, ent2: 0, pos1: [0.0; 3], pos2: [0.0; 3] })),
+        pack_ref: None,
+    });
+    Ok(())
 }
 
 /// A `.DynaObject.Gbx` entity whose mesh ANIMATES BY ITSELF — the flag cloth:

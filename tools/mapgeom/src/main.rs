@@ -23,6 +23,7 @@ COMMANDS
   dump <path> [--body F]        walk a file's node graph and summarise it;
                                 --body writes the decompressed body out
   model <path> --out F          a single file's geometry, as .glb or .obj
+  constraint <path>             a .KinematicConstraint.Gbx, every anim sub-function (ease, reverse, ms)
   static-item <prefab-or-item> --out F --ident NAME.Item.Gbx --author X
       [--scale 0.5] [--collection 26]
                                 a static-object item from every static object
@@ -1539,6 +1540,22 @@ fn main() {
             let item = mapgeom::crystal::build_item_with(&template, &ident, &ident, &materials, &mesh, keep);
             std::fs::write(&out, &item).unwrap();
             println!("wrote {out} ({} bytes) keep={keep}", item.len());
+        }
+        // every sub-function of a pack kinematic constraint (ease, direction, ms):
+        // the authoring reference for a constraint of ours (the strip flag, 2026-09-12)
+        "constraint" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let model = store.load_model(&p).unwrap_or_else(die);
+            let kc = mapgeom::static_item::dyna::KinematicConstraint::parse_body(&model.body).unwrap_or_else(die);
+            println!("{p}: {}", kc.summary());
+            for (name, f) in [("trans", &kc.trans), ("rot", &kc.rot)] {
+                println!("  {name} anim func u01={} ({} subs, {} ms):", f.u01, f.subs.len(), f.period_ms());
+                for s in &f.subs {
+                    println!("    ease {} reverse {} {} ms", s.ease, s.reverse, s.duration_ms);
+                }
+            }
+            println!("  shader tc type {} version {} keyframes {:?} trans_sub {:?}", kc.shader_tc_type, kc.shader_tc_version, kc.shader_tc_anim, kc.shader_tc_trans_sub);
         }
         "model" => {
             let mut store = open(&a);

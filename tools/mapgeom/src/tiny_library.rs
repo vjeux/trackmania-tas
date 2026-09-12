@@ -1629,6 +1629,16 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut item_alias_n = alias_base();
     // a model without a variant list is built once; later variants reuse it
     let mut single_variant: BTreeMap<String, String> = BTreeMap::new();
+    // TINY_FLAG8M=strips[:N] (2026-09-12): a Flag8m placement becomes a KINEMATIC
+    // STRIP FLAG — N items at the placement's pose: strip 0 (with the pole) is
+    // the placement's own re-pointed model, strips 1..N ride as `sf@` rows with
+    // phase bytes k·8/N (the wave). `add_dyna_strip_part` has the form.
+    let strip_n: Option<usize> = match std::env::var("TINY_FLAG8M").ok().as_deref() {
+        Some(v) if v.starts_with("strips") => Some(v.split_once(':').and_then(|(_, n)| n.parse().ok()).unwrap_or(8)),
+        _ => None,
+    };
+    // per (model, variant, skin) key: the other strips (ident, phase byte)
+    let mut strip_rows: BTreeMap<(String, u8, Option<String>), Vec<(String, u8)>> = BTreeMap::new();
     // stock half-size variants used as targets: their mapping rows carry
     // model_scale = scale like an embedded half-size copy
     let mut half_stock: std::collections::BTreeSet<String> = Default::default();
@@ -1726,7 +1736,34 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                             if still_flag {
                                 crate::static_item::build::TWEEN_OVERRIDE.with(|o| o.set(Some(false)));
                             }
+                            // TINY_FLAG8M=strips[:N]: strips 1..N first (their own
+                            // aliases), strip 0 — with the pole — is the placement's model
+                            let strips = if model == "Flag8m" { strip_n } else { None };
+                            if let Some(nstrips) = strips {
+                                let mut extra: Vec<(String, u8)> = Vec::new();
+                                for k in 1..nstrips {
+                                    let ident_k = format!("AI{:08}.Item.Gbx", item_alias_n + k);
+                                    crate::static_item::build::STRIP_OVERRIDE.with(|o| o.set(Some((k, nstrips))));
+                                    let rk = crate::static_item::build::static_item_from_pack_item_report_skin(store, &logical, &ident_k, &ident_k, scale, collection, *variant as usize, light_skin.clone());
+                                    crate::static_item::build::STRIP_OVERRIDE.with(|o| o.set(None));
+                                    let source_k = format!("{model} strip {k}/{nstrips}");
+                                    match rk {
+                                        Ok((out_k, mk)) if !mk.dyna.is_empty() => {
+                                            let phase8 = ((k * 8 / nstrips) % 8) as u8;
+                                            files.insert(format!("Items/{ident_k}"), out_k);
+                                            outcomes.push(Outcome { alias: ident_k.clone(), kind: "item", source: source_k, placements: *n, result: Ok(format!("kinematic strip {k} of {nstrips}, phase byte {phase8}, {} bytes", mk.dyna.len())) });
+                                            extra.push((ident_k, phase8));
+                                        }
+                                        Ok(_) => outcomes.push(Outcome { alias: ident_k, kind: "item", source: source_k, placements: 0, result: Err("no moving part came out of the strip bake".into()) }),
+                                        Err(e) => outcomes.push(Outcome { alias: ident_k, kind: "item", source: source_k, placements: 0, result: Err(e) }),
+                                    }
+                                }
+                                item_alias_n += nstrips - 1;
+                                strip_rows.insert((model.clone(), *variant, lskin.clone()), extra);
+                                crate::static_item::build::STRIP_OVERRIDE.with(|o| o.set(Some((0, nstrips))));
+                            }
                             let r = crate::static_item::build::static_item_from_pack_item_report_skin(store, &logical, &ident, &ident, scale, collection, *variant as usize, light_skin.clone());
+                            crate::static_item::build::STRIP_OVERRIDE.with(|o| o.set(None));
                             crate::static_item::build::TWEEN_OVERRIDE.with(|o| o.set(None));
                             r
                         }
@@ -2105,6 +2142,13 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 let ms = if target.ends_with(".Item.Gbx") || half_stock.contains(target) { scale } else { 1.0 };
                 mapping.push_str(&format!("i@{}\t{}\t{}\n", it.index, target, ms));
                 rows += 1;
+                // the other strips of a kinematic strip flag, at the same pose
+                if let Some(extra) = strip_rows.get(&(it.model.clone(), it.variant(), key_skin_of(it))) {
+                    for (ident_k, phase8) in extra {
+                        mapping.push_str(&format!("sf@{}\t{}\t{}\n", it.index, ident_k, phase8));
+                        rows += 1;
+                    }
+                }
                 // a converted flag (our tween cloth): does its hidden stock driver fit?
                 if is_flag(it) && target.ends_with(".Item.Gbx") && crate::static_item::build::tween_parts_enabled() {
                     if driver_hidden(it) {

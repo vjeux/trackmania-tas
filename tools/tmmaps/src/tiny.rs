@@ -376,6 +376,12 @@ pub fn cmd(args: &[String]) {
     // Trees of dropped vegetation-cluster items, appended AFTER the original
     // item slots (spec i is item slot i up to original_items).
     let mut cluster_trees: Vec<Spec> = Vec::new();
+    // the other strips of a kinematic strip flag (`sf@` rows): specs appended
+    // after the originals, each with its phase byte and the placement's skin
+    // (set in stage 3, where the variable-length fields are written)
+    let mut strip_specs: Vec<Spec> = Vec::new();
+    let mut strip_extras: Vec<(usize, u8, Option<crate::header::FileRef>)> = Vec::new();
+    let mut strip_items = 0usize;
     let mut repointed_items = 0usize;
     let mut dropped_items = 0usize;
     let mut sunk_items = 0usize;
@@ -450,6 +456,16 @@ pub fn cmd(args: &[String]) {
                     tag: it.waypoint_tag.clone(), order: it.waypoint_order,
                     color: colors.item(it.index),
                 });
+                // strips 1..N of a kinematic strip flag: the same pose, no
+                // waypoint, the phase byte and the placement's skin remembered
+                if let Some(rows) = mapping.strips_by_index.get(&it.index) {
+                    let skin = it.skin(&source.gbx.body);
+                    for (ident, phase8) in rows {
+                        strip_specs.push(Spec { model: ident.clone(), pos, yaw: it.yaw, frame, scale: it.scale * scale / map.model_scale, tag: None, order: 0, color: colors.item(it.index) });
+                        strip_extras.push((strip_specs.len() - 1, *phase8, skin.clone()));
+                        strip_items += 1;
+                    }
+                }
             }
             None => specs.push(Spec {
                 model: it.model.clone(),
@@ -464,6 +480,10 @@ pub fn cmd(args: &[String]) {
     }
     let original_items = specs.len();
     specs.extend(cluster_trees);
+    // the strip items follow the cluster trees; their extras address final spec slots
+    let strip_base = specs.len();
+    specs.extend(strip_specs);
+    let strip_extras: Vec<(usize, u8, Option<crate::header::FileRef>)> = strip_extras.into_iter().map(|(k, p, s)| (strip_base + k, p, s)).collect();
     // The flag cloth (Flag16m / Flag8m re-pointed at our vertex-tween copies)
     // draws only while a STOCK flag item is DRAWN in the same view: our tween
     // draw borrows the per-material frame state the stock's draw fills each
@@ -882,6 +902,17 @@ pub fn cmd(args: &[String]) {
     let mut m = MapFile::load(&tmp2);
     for (i, s) in specs.iter().enumerate() {
         m.set_item_waypoint(i, s.tag.as_deref(), s.order);
+    }
+    // the strips of a kinematic strip flag: their phase byte (eighths of the
+    // period — the wave) and the placement's skin (the custom image)
+    for (i, phase8, skin) in &strip_extras {
+        m.set_item_phase8(*i, *phase8);
+        if let Some(f) = skin {
+            m.set_item_skin(*i, Some(f));
+        }
+    }
+    if strip_items > 0 {
+        println!("  {strip_items} strip items of kinematic strip flags placed (phase bytes + skins carried)");
     }
     m.write_to(&tmp2).expect("write waypoint stage");
 

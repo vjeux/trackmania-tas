@@ -56,6 +56,12 @@ pub struct Mappings {
     /// transform — a full-size stock tree standing in for a species the game
     /// cannot scale, sunk so its crown top sits where the original's would.
     pub sink_by_index: BTreeMap<usize, f32>,
+    /// `sf@INDEX<TAB>ITEM<TAB>PHASE8` rows: the OTHER strips of a kinematic strip
+    /// flag (2026-09-12) — extra embedded items placed at item INDEX's exact
+    /// pose (frame, scale, colour, skin) with the given animation phase byte;
+    /// the placement itself is re-pointed (`i@`) at strip 0, which carries the
+    /// pole.
+    pub strips_by_index: BTreeMap<usize, Vec<(String, u8)>>,
     /// `yb@INDEX` rows: metres the item of BAKED record INDEX is LOWERED by
     /// after the transform. `mapgeom coplanar-sinks` (2026-09-09): a free
     /// clip whose top face lies exactly in an authored deck's top face — the
@@ -128,6 +134,13 @@ pub fn read_mapping(path: &Path) -> Mappings {
             let idx: usize = index.parse().unwrap_or_else(|_| panic!("{}:{}: item index expected", path.display(), line_no + 1));
             let v: u8 = fields[1].parse().unwrap_or_else(|_| panic!("{}:{}: variant byte expected", path.display(), line_no + 1));
             out.variant_by_index.insert(idx, v);
+            continue;
+        }
+        if let Some(index) = fields[0].strip_prefix("sf@") {
+            assert!(fields.len() == 3, "{}:{}: expected sf@INDEX<TAB>ITEM<TAB>PHASE8", path.display(), line_no + 1);
+            let idx: usize = index.parse().unwrap_or_else(|_| panic!("{}:{}: item index expected", path.display(), line_no + 1));
+            let p: u8 = fields[2].parse().unwrap_or_else(|_| panic!("{}:{}: phase byte 0..7 expected", path.display(), line_no + 1));
+            out.strips_by_index.entry(idx).or_default().push((fields[1].to_string(), p));
             continue;
         }
         if let Some(index) = fields[0].strip_prefix("xi@") {
