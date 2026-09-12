@@ -322,7 +322,11 @@ pub fn build(template: &CPlugSolid2Model, parts: &[Part], o: &Options) -> R<Buil
             }
             // ---- the vertex stream
             let bone = o.binding != Binding::NoSkel;
-            let stride_words: u32 = if bone { 8 } else { 7 };
+            // the community Skin and Glass geoms carry no tangent (stride 7: Position,
+            // joint word, Normal, uv0); Details/Wheels do (stride 8) — match them
+            let mat_name = material_name(o, &piece.texset);
+            let tangent = !(mat_name.starts_with("_Skin") || mat_name.starts_with("_Glass"));
+            let stride_words: u32 = 3 + (bone as u32) + 1 + 2 + (tangent as u32);
             let mut decls = Vec::new();
             let mut elems = Vec::new();
             let mut off = 0u32;
@@ -340,9 +344,11 @@ pub fn build(template: &CPlugSolid2Model, parts: &[Part], o: &Options) -> R<Buil
             decls.push(Decl::with_stride(super::vstream::N_TEXCOORD0, super::vstream::T_FLOAT2, super::vstream::SPACE_GLOBAL2D, off, stride_words));
             elems.push(Elem::Float2(piece.uv.clone()));
             off += 8;
-            decls.push(Decl::with_stride(super::vstream::N_TANGENT_U, super::vstream::T_DEC3N, super::vstream::SPACE_LOCAL3D, off, stride_words));
-            elems.push(Elem::Word(piece.nrm.iter().map(|nn| super::merged::dec3n_pack(tangent_for(normalize(*nn)))).collect()));
-            off += 4;
+            if tangent {
+                decls.push(Decl::with_stride(super::vstream::N_TANGENT_U, super::vstream::T_DEC3N, super::vstream::SPACE_LOCAL3D, off, stride_words));
+                elems.push(Elem::Word(piece.nrm.iter().map(|nn| super::merged::dec3n_pack(tangent_for(normalize(*nn)))).collect()));
+                off += 4;
+            }
             debug_assert_eq!(off, stride_words * 4);
             let stream = CPlugVertexStream { version: 1, count: n as i32, flags: 0x13, base: super::null_ref(), decls, compress_local3d: Some(true), elems };
             // ---- the visual, cloned from the template
