@@ -82,15 +82,21 @@ https://github.com/user-attachments/assets/8359415d-53d5-419f-8fd6-aee0fe145345
 
 https://github.com/user-attachments/assets/a41cebdd-f649-4173-92fe-34d7a21d1f11
 
-**Tiny Summer 2026 - 16** — original author time `50.966` · tiny ghost **43.299** (build ship18f, controls overlay)
+**Tiny Summer 2026 - 16** — original author time `50.966` · tiny ghost **43.299** (build ship18f, controls overlay) · map: ship18f
+
+*↻ lap certified on ship18f; loops ridden inverted as the author does; camera Ext2*
 
 https://github.com/user-attachments/assets/b5fb3205-3bee-455c-b494-8fd3c5fe67bf
 
-**Tiny Summer 2026 - 17** — original author time `44.891` · tiny ghost **36.982** (build ship18f, controls overlay)
+**Tiny Summer 2026 - 17** — original author time `44.891` · tiny ghost **36.982** (build ship18f, controls overlay) · map: ship18f
+
+*↻ lap certified on ship18f*
 
 https://github.com/user-attachments/assets/4c0c20b2-dff1-4947-8b45-b7d9c38d0620
 
-**Tiny Summer 2026 - 18** — original author time `51.352` · tiny ghost **43.462** (build ship18f, controls overlay)
+**Tiny Summer 2026 - 18** — original author time `51.352` · tiny ghost **43.462** (build ship18f, controls overlay) · map: ship18f
+
+*↻ lap certified on ship18f*
 
 https://github.com/user-attachments/assets/7a7f9ba3-6b8b-449d-a7e7-7d732620e5b1
 
