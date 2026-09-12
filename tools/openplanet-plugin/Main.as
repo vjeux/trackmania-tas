@@ -63,6 +63,10 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/loaded") return HttpResponse(200, LoadedMap());
     if (r == "/awaitfile") return HttpResponse(200, AwaitFileFree(PathArg(), Text::ParseInt(QArg(qs,"ms"))));
     if (r == "/greplayers") return HttpResponse(200, GrepLayers(PathArg()));
+    if (r == "/pgghost") return HttpResponse(200, PgGhostAdd());
+    if (r == "/pgghostrm") return HttpResponse(200, PgGhostRm());
+    if (r == "/mtintro") return HttpResponse(200, OpenMTIntro());
+    if (r == "/edtest") return HttpResponse(200, EditorTest());
     if (r == "/whoapp") return HttpResponse(200, WhoIsManiaApp());
     if (r == "/layers") return HttpResponse(200, DumpLayers());
     if (r == "/findnod") return HttpResponse(200, FindNod(PathArg()));
@@ -538,6 +542,29 @@ string OpenMTInGame() {
     auto menus = mp.MenuManager;
     if (menus is null) return "no MenuManager";
     menus.DialogEditCutScenes_OnInGameEdit();
+    return "ok";
+}
+
+// The INTRO clip's MediaTracker: the "Edit cut scenes" dialog's own Intro button
+// handler, like OpenMTInGame above. Measured 2026-09-12: inert unless that dialog
+// is open (the editor stays in ctx 1) — kept as the record of the attempt.
+string OpenMTIntro() {
+    auto mp = MP();
+    if (mp is null) return "no CGameManiaPlanet";
+    auto menus = mp.MenuManager;
+    if (menus is null) return "no MenuManager";
+    menus.DialogEditCutScenes_OnIntroEdit();
+    return "ok";
+}
+
+// The map editor's TEST button: a playground inside the editor with the in-game
+// MediaTracker clips live on their triggers. The play-mode skin-locator probe of
+// 2026-09-12 (PlayMap refuses maps with an imported ghost block; the one TEST run
+// on such a map took the client down 9 s after the click).
+string EditorTest() {
+    auto ed = cast<CGameCtnEditorFree>(GetApp().Editor);
+    if (ed is null) return "not in the map editor";
+    ed.ButtonTestOnClick();
     return "ok";
 }
 
