@@ -107,6 +107,17 @@ pub fn candidate(name: &str, s: &str) -> Option<String> {
         }
         return None;
     }
+    // `Water<S>Zone…`, `Water<S>RampRoad…`, `Water<S>StraightToWaterWall`: the
+    // pool-edge family spells the surface right after `Water` (WaterGrassZoneStraight
+    // → WaterIceZoneStraight, the same `WaterGrass\ZoneStraight_Air` prefab under the
+    // PlatformIce modifier); `WaterBase` / `WaterWall…` / `WaterRampZone…` take a SUFFIX
+    if let Some(rest) = name.strip_prefix("Water") {
+        if let Some((_w, tail)) = strip_surface_word(rest) {
+            if !tail.is_empty() {
+                return Some(format!("Water{s}{tail}"));
+            }
+        }
+    }
     if name.starts_with("DecoWall") || name.starts_with("Water") {
         // suffix form; an existing suffix of another surface is replaced
         for w in SURFACE_WORDS {
@@ -315,9 +326,17 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
         Ok(b) => b.clone(),
         Err(e) => return mk(Action::Keep, "", format!("source model unreadable: {e}")),
     };
+    // A block with a WATER VOLUME (pool floors `PlatformWater*`, `RoadWater*`, the
+    // pool edges) is never baked: an item carries no volume, so the copy would
+    // drain the pool (the tiny converter's lesson, TINY.md "Water"). Renamed when
+    // a same-mesh twin exists (`WaterBaseIce`, `WaterIceZoneStraight`), else kept.
+    let has_water = src.variant_base_ground.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false) || src.variant_base_air.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false);
     let Some(twin_path) = idx.path_for(&cand) else {
         let fam = if name.starts_with("TrackWall") { "TrackWall family has no surface variants" } else { "no such block in the pack" };
         let detail = format!("{fam}; cells {}", cells_of(&src.variant_base_ground).len().max(cells_of(&src.variant_base_air).len()));
+        if has_water {
+            return mk(Action::Keep, "", format!("water volume, no {s} twin: kept as water ({fam})"));
+        }
         // a block with geometry of its own is baked as a re-dressed copy; a
         // prefab-less one (its faces are generated fillers) has nothing to bake
         return if base_prefab(&src).is_some() { mk(Action::Bake, &cand, detail) } else { mk(Action::None_, &cand, detail) };
@@ -346,6 +365,9 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
         // the same shape in another dress; a road's `RoadTech\Straight_Air` vs
         // `RoadIce\Straight_Air` has its deck 2.5 m higher (the trough) and is not
         let same_shape = stem(&sp) == stem(&tp) && matches!((ls, lt), (Some(a), Some(b)) if (a - b).abs() < 0.3) || (stem(&sp) == stem(&tp) && ls.is_none() && lt.is_none());
+        if !same_shape && has_water {
+            return mk(Action::Keep, "", format!("water volume, twin {cand} is another shape: kept as water"));
+        }
         if !same_shape {
             return mk(Action::Bake, &cand, format!("different mesh: {} vs {} (deck {:?} vs {:?}) — re-dressed copy", sp.as_deref().and_then(|p| p.strip_prefix("Stadium\\Media\\Prefab\\")).unwrap_or("none"), tp.as_deref().and_then(|p| p.strip_prefix("Stadium\\Media\\Prefab\\")).unwrap_or("none"), ls, lt));
         }
@@ -369,6 +391,8 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
             r.dy = dy;
             r
         }
+        // a water block whose twin differs: kept as water (an item has no volume)
+        Err(why) if has_water => mk(Action::Keep, "", format!("water volume, twin {cand} differs ({why}): kept as water")),
         // a shape of its own that the twin does not match: baked as a re-dressed copy
         Err(why) if base_prefab(&src).is_some() => mk(Action::Bake, &cand, format!("{why} — re-dressed copy")),
         Err(why) => mk(Action::Mismatch, &cand, why),
@@ -429,6 +453,10 @@ mod tests {
         assert_eq!(c("DecoWallLoopOutStartCurve1"), "DecoWallLoopOutStartCurve1Ice");
         assert_eq!(c("DecoWallBasePillar"), "-");
         assert_eq!(c("WaterBase"), "WaterBaseIce");
+        assert_eq!(c("WaterGrassZoneStraight"), "WaterIceZoneStraight");
+        assert_eq!(c("WaterGrassRampRoadStraight"), "WaterIceRampRoadStraight");
+        assert_eq!(c("WaterRampZoneStraight"), "WaterRampZoneStraightIce");
+        assert_eq!(c("WaterWallStraight"), "WaterWallStraightIce");
         assert_eq!(c("DecoWallWaterBase"), "DecoWallWaterBaseIce");
         assert_eq!(c("TrackWallStraight"), "TrackWallStraightIce");
         assert_eq!(c("StructureBase"), "-");
