@@ -391,8 +391,12 @@ pub fn tracker_md_cmd(args: &[String]) -> Result<(), String> {
     let frames: Vec<Vec<String>> = f("--frames").map(|p| read_rows(&p)).transpose()?.unwrap_or_default();
     let uploads: Vec<(String, String)> = f("--uploads").and_then(|p| std::fs::read_to_string(p).ok()).map(|t| t.lines().filter_map(|l| l.split_once(char::is_whitespace).map(|(a, b)| (a.trim().to_string(), b.trim().to_string()))).collect()).unwrap_or_default();
     let col = |r: &[String], i: usize| r.get(i).cloned().unwrap_or_else(|| "-".into());
+    // --frame-tag T (default `u`): the shoot tag prefix of the frames (`cmp-<T>NN<view>`; `gi` for a giant run)
+    let frame_tag = f("--frame-tag").unwrap_or_else(|| "u".into());
     let mut out = String::new();
-    out.push_str("| # | source | source uid | AT / gold / silver / bronze (s) | tiny uid | tiny size | items (gate) | frames (flagged cells) | Nadeo |\n|---|---|---|---|---|---|---|---|---|\n");
+    // --label L (default `tiny`): the word for the converted side's columns
+    let label = f("--label").unwrap_or_else(|| "tiny".into());
+    out.push_str(&format!("| # | source | source uid | AT / gold / silver / bronze (s) | {label} uid | {label} size | items (gate) | frames (flagged cells) | Nadeo |\n|---|---|---|---|---|---|---|---|---|\n"));
     for r in &rows {
         let nn = col(r, 0);
         let fr = frames.iter().filter(|x| x[0] == nn).last();
@@ -405,7 +409,7 @@ pub fn tracker_md_cmd(args: &[String]) -> Result<(), String> {
         let size = col(r, 10).parse::<f64>().map(|b| format!("{:.1} MB", b / 1e6)).unwrap_or_else(|_| col(r, 10));
         let mut links: Vec<String> = Vec::new();
         for view in ["start", "finish", "top"] {
-            let key = format!("cmp-u{nn}{view}");
+            let key = format!("cmp-{frame_tag}{nn}{view}");
             if let Some((_, id)) = uploads.iter().rev().find(|(n, _)| *n == key) {
                 links.push(format!("[{view}](/api/attachments/view?file_id={id})"));
             }
