@@ -487,3 +487,91 @@ pub fn publish_set_cmd(args: &[String]) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// `tinyctl tracker-club --publish-dir D --out-root O --club C --club-name N [--source-club S]
+/// [--out MD] [--maps-out TSV]` — the whole-club tracker: one Markdown row per part
+/// (campaign id, uploaded / built / source counts, the maps left out and why) and
+/// one TSV row per map (part, nn, source name, source uid, times, tiny uid, mapId,
+/// bytes, verdict).
+pub fn tracker_club_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let pub_dir = PathBuf::from(f("--publish-dir").ok_or("tracker-club needs --publish-dir D")?);
+    let out_root = PathBuf::from(f("--out-root").ok_or("tracker-club needs --out-root O")?);
+    let club = f("--club").unwrap_or_default();
+    let club_name = f("--club-name").unwrap_or_else(|| "Tiny U10S".into());
+    let camps: std::collections::BTreeMap<String, (String, String)> = std::fs::read_to_string(pub_dir.join("campaigns.tsv"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            (c.len() >= 3).then(|| (c[0].to_string(), (c[1].to_string(), c[2].to_string())))
+        })
+        .collect();
+    let mut md = format!("# {club_name} — club {club}: every Everios96 u10s part as a half-scale campaign\n\n| part | campaign | on Nadeo | built | source | left out |\n|---|---|---|---|---|---|\n");
+    let mut tsv = String::from("part\tnn\tsource_file\tsource_name\tsource_uid\tauthortime_ms\tgold\tsilver\tbronze\ttiny_name\ttiny_uid\ttiny_bytes\titems\tmapId\tnadeo\n");
+    let (mut tot_src, mut tot_built, mut tot_up) = (0usize, 0usize, 0usize);
+    let mut left_out_all: Vec<String> = Vec::new();
+    for part in 1..=99usize {
+        let p = format!("{part:02}");
+        let part_out = out_root.join(format!("p{p}"));
+        let tracker = part_out.join("tracker.tsv");
+        if !tracker.exists() {
+            continue;
+        }
+        // built maps: the pipeline tracker (17 columns)
+        let rows: Vec<Vec<String>> = std::fs::read_to_string(&tracker).unwrap_or_default().lines().skip(1).map(|l| l.split('\t').map(String::from).collect()).filter(|c: &Vec<String>| c.len() >= 17).collect();
+        // uploaded: results-pNN.tsv (path name uid mapId how bytes md5 verdict)
+        let results: std::collections::HashMap<String, (String, String)> = std::fs::read_to_string(pub_dir.join(format!("results-p{p}.tsv")))
+            .unwrap_or_default()
+            .lines()
+            .skip(1)
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| {
+                let c: Vec<&str> = l.split('\t').collect();
+                (c.len() >= 8).then(|| (c[2].to_string(), (c[3].to_string(), c[7].to_string())))
+            })
+            .collect();
+        let (camp_id, _) = camps.get(&p).cloned().unwrap_or_else(|| ("-".into(), "-".into()));
+        let mut built = 0usize;
+        let mut up = 0usize;
+        let mut left: Vec<String> = Vec::new();
+        for c in &rows {
+            let (nn, src_file, src_name, src_uid, at, gold, silver, bronze, tiny_name, tiny_uid, bytes, items, note) = (&c[0], &c[1], &c[2], &c[3], &c[4], &c[5], &c[6], &c[7], &c[8], &c[9], &c[10], &c[11], &c[16]);
+            let ok = tiny_uid != "-" && !note.contains("FAILED");
+            if ok {
+                built += 1;
+            }
+            let (map_id, verdict) = results.get(tiny_uid).cloned().unwrap_or_else(|| ("-".into(), if ok { "not uploaded".into() } else { "not built".into() }));
+            if verdict == "IDENTICAL" {
+                up += 1;
+            } else {
+                let why = if !ok { note.replace("FAILED build: 1 of 1 maps failed", "conversion failed").to_string() } else { verdict.clone() };
+                left.push(format!("{src_name} ({why})"));
+            }
+            tsv.push_str(&format!("{p}\t{nn}\t{src_file}\t{src_name}\t{src_uid}\t{at}\t{gold}\t{silver}\t{bronze}\t{tiny_name}\t{tiny_uid}\t{bytes}\t{items}\t{map_id}\t{verdict}\n"));
+        }
+        let src_n = std::fs::read_dir(out_root.parent().unwrap_or(&out_root).join("src").join(format!("p{p}"))).map(|rd| rd.filter(|e| e.as_ref().map(|e| e.file_name().to_string_lossy().ends_with(".Map.Gbx")).unwrap_or(false)).count()).unwrap_or(rows.len());
+        tot_src += src_n;
+        tot_built += built;
+        tot_up += up;
+        let camp_cell = if camp_id == "-" { "-".to_string() } else { format!("Tiny U10S PART {part} (`{camp_id}`)") };
+        md.push_str(&format!("| {part} | {camp_cell} | {up} | {built} | {src_n} | {} |\n", if left.is_empty() { "—".to_string() } else { left.join("; ") }));
+        for l in &left {
+            left_out_all.push(format!("part {part}: {l}"));
+        }
+    }
+    md.push_str(&format!("| **all** | | **{tot_up}** | **{tot_built}** | **{tot_src}** | {} |\n", left_out_all.len()));
+    if let Some(out) = f("--out") {
+        std::fs::write(&out, &md).map_err(|e| format!("{out}: {e}"))?;
+    } else {
+        print!("{md}");
+    }
+    if let Some(out) = f("--maps-out") {
+        std::fs::write(&out, &tsv).map_err(|e| format!("{out}: {e}"))?;
+    }
+    println!("{tot_up} uploaded, {tot_built} built, {tot_src} sources; left out: {}", left_out_all.len());
+    for l in &left_out_all {
+        println!("  {l}");
+    }
+    Ok(())
+}
