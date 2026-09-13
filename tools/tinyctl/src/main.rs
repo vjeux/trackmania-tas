@@ -38,6 +38,7 @@ mod pagestatus;
 mod video;
 mod motion;
 mod nadeo;
+mod batch;
 mod pipeline;
 mod mtrender;
 mod mapzips;
@@ -199,7 +200,10 @@ fn main() {
         "publish-map" => publish::publish_map_cmd(rest),
         "publish-here" => publish::publish_here_cmd(rest),
         "nadeo-here" => nadeo::cmd(rest),
+        "publish-batch" => batch::publish_batch_cmd(rest),
+        "publish-set" => batch::publish_set_cmd(rest),
         "pipeline" => pipeline::cmd(rest),
+        "convert-all" => pipeline::convert_all_cmd(rest),
         "tracker-md" => pipeline::tracker_md_cmd(rest),
         "unproject" => unproject::cmd(rest),
         "upload" => upload::cmd(rest),

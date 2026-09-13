@@ -169,6 +169,41 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         Ok(())
     };
     match sub.as_str() {
+        "club-mine" => {
+            let v = get_json(&auth_live, &format!("{LIVE}/api/token/club/mine?length=50&offset=0"))?;
+            save("club-mine.json", &v)?;
+            println!("clubId\tname\tstate\ttag\tmembers\tauthorAccountId");
+            for c in v.get("clubList").and_then(|l| l.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
+                println!("{}\t{}\t{}\t{}\t{}\t{}", s(c, "id"), s(c, "name"), s(c, "state"), s(c, "tag"), s(c, "membersCount"), s(c, "authorAccountId"));
+            }
+            Ok(())
+        }
+        "club-create" => {
+            // tinyctl nadeo-here club-create --name NAME [--description TEXT] [--state private|public]
+            // (the states are `public`, `private-open` (join requests) and `private-closed`;
+            // a private club is reachable by its members only — vjeux's "Tiny U10S", 2026-09-13)
+            let name = f("--name").ok_or("club-create needs --name NAME")?;
+            let desc = f("--description").unwrap_or_default();
+            let state = f("--state").unwrap_or_else(|| "private-closed".into());
+            let body = format!("{{\"name\":\"{}\",\"description\":\"{}\",\"state\":\"{state}\"}}", name.replace('"', "\\\""), desc.replace('"', "\\\""));
+            let v = post_json(&auth_live, &format!("{LIVE}/api/token/club/create"), &body)?;
+            save(&format!("club-create-{}.json", file_safe_name(&name)), &v)?;
+            println!("clubId\t{}\tname\t{}\tstate\t{}", s(&v, "id"), s(&v, "name"), s(&v, "state"));
+            Ok(())
+        }
+        "campaign-set" => {
+            // tinyctl nadeo-here campaign-set --club C --campaign K --name NAME --uids A,B,… : the
+            // WHOLE playlist in that order (one write per campaign instead of one per map)
+            let club = f("--club").ok_or("campaign-set needs --club ID")?;
+            let camp = f("--campaign").ok_or("campaign-set needs --campaign ID")?;
+            let name = f("--name").ok_or("campaign-set needs --name NAME")?;
+            let uids: Vec<String> = f("--uids").ok_or("campaign-set needs --uids A,B,…")?.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+            let v = campaign_set(&auth_live, &club, &camp, &name, &uids)?;
+            save(&format!("club-{club}-campaign-{camp}-set.json"), &v)?;
+            let n = v.get("playlist").and_then(|p| p.as_array()).map(|a| a.len()).unwrap_or(0);
+            println!("campaign\t{camp}\t{}\t{n} maps in the playlist", s(&v, "name"));
+            Ok(())
+        }
         "club" => {
             let name = f("--name").ok_or("club needs --name TEXT")?;
             let length = f("--length").unwrap_or_else(|| "20".into());
@@ -223,6 +258,28 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
         "campaign" => {
             let club = f("--club").ok_or("campaign needs --club ID")?;
+            // --campaigns K1,K2,… --fetch-root DIR: several campaigns, each into DIR/pNN
+            // (NN = 1-based index in the list) — the whole Everios96 club, 2026-09-13
+            if let Some(list) = f("--campaigns") {
+                let root = PathBuf::from(f("--fetch-root").ok_or("--campaigns needs --fetch-root DIR")?);
+                let ids: Vec<String> = list.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+                let first = f("--first");
+                let start: usize = f("--start-index").and_then(|x| x.parse().ok()).unwrap_or(1);
+                for (i, camp) in ids.iter().enumerate() {
+                    let nn = start + i;
+                    let dir = root.join(format!("p{nn:02}"));
+                    let mut sub: Vec<String> = vec!["campaign".into(), "--club".into(), club.clone(), "--campaign".into(), camp.clone(), "--fetch".into(), dir.display().to_string(), "--no-lock".into(), "--outdir".into(), outdir.display().to_string()];
+                    if let Some(n) = &first {
+                        sub.push("--first".into());
+                        sub.push(n.clone());
+                    }
+                    println!("===== part {nn:02}: campaign {camp} -> {}", dir.display());
+                    if let Err(e) = cmd(&sub) {
+                        eprintln!("part {nn:02}: {e}");
+                    }
+                }
+                return Ok(());
+            }
             let camp = f("--campaign").ok_or("campaign needs --campaign ID")?;
             let url = format!("{LIVE}/api/token/club/{club}/campaign/{camp}");
             let v = get_json(&auth_live, &url)?;
@@ -350,4 +407,37 @@ pub fn outdir_default() -> &'static Path {
 fn activity_edit(auth_live: &str, club: &str, activity: &str, active: bool, public: bool) -> Result<Value, String> {
     let body = format!("{{\"active\":{active},\"public\":{public}}}");
     post_json(auth_live, &format!("{LIVE}/api/token/club/{club}/activity/{activity}/edit"), &body)
+}
+
+/// `POST /club/{club}/campaign/{id}/edit {"name":…,"playlist":[{mapUid,position}…]}` —
+/// the campaign's whole playlist in the given order (an entry per uid).
+pub fn campaign_set(auth_live: &str, club: &str, campaign: &str, name: &str, uids: &[String]) -> Result<Value, String> {
+    let playlist: Vec<String> = uids.iter().enumerate().map(|(i, u)| format!("{{\"mapUid\":\"{u}\",\"position\":{i}}}")).collect();
+    let body = format!("{{\"name\":\"{}\",\"playlist\":[{}]}}", name.replace('"', "\\\""), playlist.join(","));
+    post_json(auth_live, &format!("{LIVE}/api/token/club/{club}/campaign/{campaign}/edit"), &body)
+}
+
+/// `POST /club/{club}/campaign/create` → (campaignId, activityId); the activity is
+/// activated + published like `campaign-create` does.
+pub fn campaign_create(auth_live: &str, club: &str, name: &str) -> Result<(String, String), String> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let body = format!("{{\"name\":\"{}\",\"description\":\"\",\"color\":\"\",\"useCase\":2,\"publicationTimestamp\":{now},\"mediaUrl\":\"\",\"video\":false}}", name.replace('"', "\\\""));
+    let v = post_json(auth_live, &format!("{LIVE}/api/token/club/{club}/campaign/create"), &body)?;
+    let camp = s(&v, "campaignId");
+    let act = s(&v, "activityId");
+    if camp == "-" {
+        return Err(format!("campaign create answered without a campaignId: {}", serde_json::to_string(&v).unwrap_or_default().chars().take(300).collect::<String>()));
+    }
+    if act != "-" {
+        if let Err(e) = activity_edit(auth_live, club, &act, true, true) {
+            eprintln!("activity {act}: could not activate/publish ({e})");
+        }
+    }
+    Ok((camp, act))
+}
+
+/// The fresh (core, live) tokens for a batch: the plugin's files when young, else a
+/// mint through the game (no render lock: the batch runs alone on the box).
+pub fn batch_tokens(shootctl: &str) -> Result<(String, String), String> {
+    tokens_opt(shootctl, &format!("batch-{}", std::process::id()), false)
 }

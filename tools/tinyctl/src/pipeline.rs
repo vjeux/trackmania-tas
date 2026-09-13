@@ -112,6 +112,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 bargs.push(v);
             }
         }
+        // --alias-part P: item file names unique per (part, map) — the game caches an
+        // embedded model by FILE NAME for the whole session, and a player of the
+        // whole-club campaign plays many maps in one session (2026-09-13). Base
+        // (P*100+NN)*1000 leaves 1000 names per map; pictures get a `_pPPNN` suffix.
+        if let Some(part) = f("--alias-part").and_then(|p| p.parse::<usize>().ok()) {
+            let map_no: usize = nn.parse().unwrap_or(0);
+            bargs.push("--env".into());
+            bargs.push(format!("TINY_ALIAS_BASE={}", (part * 100 + map_no) * 1000));
+            bargs.push("--env".into());
+            bargs.push(format!("TINY_PICTURE_SUFFIX=_p{part:02}{map_no:02}"));
+        }
         let build_dir = PathBuf::from(&out_root).join(format!("tiny{nn}")).join(&tag);
         let tiny = build_dir.join(format!("{prefix}-{nn}-Tiny.Map.Gbx"));
         let build_t = Instant::now();
@@ -327,4 +338,92 @@ pub fn tracker_md_cmd(args: &[String]) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+/// `tinyctl convert-all --src-root S --out-root O --parts 01,02,…|01-39 [--jobs 8] [--tag u10s]
+/// [--out-prefix U10S] [--recipe F] [--env K=V …]` — every part directory `S/pNN/`
+/// (maps `NN-<name>.Map.Gbx`) converted into `O/pNN/tinyNN/<tag>/` by `pipeline`
+/// (build only: no shoot, no publish), N parts at a time, one tracker per part
+/// (`O/pNN/tracker.tsv`) and a summary `O/CONVERT.tsv`. Water blocks are off
+/// (`TINY_WATER_BLOCKS=0`: the archetype's clip rims, 2026-09-13).
+pub fn convert_all_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let src_root = PathBuf::from(f("--src-root").ok_or("convert-all needs --src-root S")?);
+    let out_root = PathBuf::from(f("--out-root").ok_or("convert-all needs --out-root O")?);
+    let parts_arg = f("--parts").ok_or("convert-all needs --parts 01,02,… or 01-39")?;
+    let parts: Vec<String> = if let Some((a, b)) = parts_arg.split_once('-') {
+        let (a, b): (usize, usize) = (a.trim().parse().map_err(|_| "--parts A-B")?, b.trim().parse().map_err(|_| "--parts A-B")?);
+        (a..=b).map(|n| format!("{n:02}")).collect()
+    } else {
+        parts_arg.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    };
+    let jobs: usize = f("--jobs").and_then(|j| j.parse().ok()).unwrap_or(8).max(1);
+    let tag = f("--tag").unwrap_or_else(|| "u10s".into());
+    let prefix = f("--out-prefix").unwrap_or_else(|| "U10S".into());
+    let recipe = f("--recipe").unwrap_or_else(|| "/tmp/u10s/recipe.env".into());
+    if !std::path::Path::new(&recipe).exists() {
+        std::fs::write(&recipe, "").map_err(|e| format!("{recipe}: {e}"))?;
+    }
+    std::env::set_var("TINY_WATER_BLOCKS", "0");
+    let mut envs: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--env" {
+            if let Some(v) = args.get(i + 1) {
+                envs.push("--env".into());
+                envs.push(v.clone());
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    std::fs::create_dir_all(&out_root).map_err(|e| format!("{}: {e}", out_root.display()))?;
+    let queue = std::sync::Mutex::new(std::collections::VecDeque::from(parts.clone()));
+    let results = std::sync::Mutex::new(Vec::<String>::new());
+    let t0 = Instant::now();
+    std::thread::scope(|s| {
+        for _ in 0..jobs.min(parts.len()) {
+            s.spawn(|| loop {
+                let part = match queue.lock().unwrap().pop_front() {
+                    Some(p) => p,
+                    None => break,
+                };
+                let src_dir = src_root.join(format!("p{part}"));
+                let part_out = out_root.join(format!("p{part}"));
+                let _ = std::fs::create_dir_all(&part_out);
+                let mut nums: Vec<String> = std::fs::read_dir(&src_dir)
+                    .map(|rd| rd.filter_map(|e| e.ok()).filter_map(|e| e.file_name().to_string_lossy().split('-').next().filter(|s| s.len() == 2 && s.chars().all(|c| c.is_ascii_digit())).map(|s| s.to_string())).collect())
+                    .unwrap_or_default();
+                nums.sort();
+                nums.dedup();
+                let t1 = Instant::now();
+                let line = if nums.is_empty() {
+                    format!("{part}\tFAILED\tno NN-*.Map.Gbx in {}", src_dir.display())
+                } else {
+                    let mut pargs: Vec<String> = nums.clone();
+                    pargs.extend(["--src-dir".to_string(), src_dir.display().to_string(), "--out-root".into(), part_out.display().to_string(), "--tag".into(), tag.clone(), "--out-prefix".into(), prefix.clone(), "--recipe".into(), recipe.clone(), "--tracker".into(), part_out.join("tracker.tsv").display().to_string(), "--alias-part".into(), part.trim_start_matches('0').to_string(), "--no-shoot".into(), "--no-publish".into()]);
+                    pargs.extend(envs.iter().cloned());
+                    let r = cmd(&pargs);
+                    let built = (1..=99usize).filter(|n| part_out.join(format!("tiny{n:02}")).join(&tag).join(format!("{prefix}-{n:02}-Tiny.Map.Gbx")).exists()).count();
+                    match r {
+                        Ok(()) => format!("{part}\tOK\t{built}/{} built\t{:.0}s", nums.len(), t1.elapsed().as_secs_f64()),
+                        Err(e) => format!("{part}\tPARTIAL\t{built}/{} built\t{:.0}s\t{}", nums.len(), t1.elapsed().as_secs_f64(), e.lines().next().unwrap_or("")),
+                    }
+                };
+                eprintln!("[{:>5.0}s] {line}", t0.elapsed().as_secs_f64());
+                results.lock().unwrap().push(line);
+            });
+        }
+    });
+    let mut lines = results.into_inner().unwrap();
+    lines.sort();
+    let summary = out_root.join("CONVERT.tsv");
+    std::fs::write(&summary, lines.join("\n") + "\n").map_err(|e| format!("{}: {e}", summary.display()))?;
+    println!("{}", lines.join("\n"));
+    let bad = lines.iter().filter(|l| !l.contains("\tOK\t")).count();
+    if bad > 0 {
+        return Err(format!("{bad} of {} parts not fully built — see {}", parts.len(), summary.display()));
+    }
+    Ok(())
 }
