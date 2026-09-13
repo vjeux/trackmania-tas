@@ -1156,3 +1156,58 @@ frames s15shape/s15ab/s15pb, 2026-09-09 00:00–00:30Z): a DRAW-rule matter
 (the plate clause of 3bab4b43 hides them), not a resolution one. The
 converter cannot draw a wrong shape for a record; it can only draw a record
 the game would not.
+
+## Water blocks draw the ARCHETYPE's clip rim — the u10s pool walls (2026-09-13 01:20Z)
+
+The ship17 custom WaterBase blocks are invisible themselves, but the game
+re-derives free clips at load from the ARCHETYPE's block info (a `.Block.Gbx`
+carries no clip data): `/mapblocks2?list=baked` on tiny U10S_10 listed, for its
+18 blocks, 36 `DecoWallWaterBaseVFC` plank walls (8 m), 36 × 3 `WaterFCCenter`/
+`WaterHFCLeft`/`WaterHFCRight` rim pieces (3 m under to 1 m above the surface,
+1.16 m thick, OUTSIDE the block face) and 18 `PlatformBaseFCB` floor caps — the
+beige "pool border" vjeux could not cross (A/B drive: 65.7 → 0.4 m/s at the
+block's west face; the same build with `TINY_WATER_BLOCKS=0` passes at 71 m/s).
+Every water-volume archetype in the Stadium pack has side clips with geometry
+(WaterBase, DecoWallWater*, PlatformWater*, RoadWater*, TrackWallWater*,
+WaterWall*), and a free clip is cancelled only by a matching clip on the
+neighbouring cell's opposite face — another water block, which moves the rim
+32 m out and floods the deck. The Summer pools were only ever tested by dropping
+the car in from above. **Default since 2026-09-13: no water blocks** (the pools
+are visual plates, physics 13 = nothing to the car); the u10s maps 04/10/12/16/23
+were rebuilt and updated in place. What is lost: drag and buoyancy (U10S_10's
+original floats over the up-ramp's 0.5 m base; the tiny car hits it).
+
+## Embedded custom BLOCKS bake as items; renamed pack blocks resolve (2026-09-13 02:40Z)
+
+Everios96's u10s maps embed community blocks (`<path>.Block.Gbx_CustomBlock`
+records: TM2 dirt ports, magnet platforms, colourable bars — 5 of the first 75
+maps). A `.Block.Gbx` is a `CGameItemModel` whose entity-model-EDITION slot
+holds a `CGameBlockItem` (0x2E025000): version, archetype block info id +
+collection id, the variants (key + model ref), and from v1 a second table
+(present byte; per variant flags byte, mesh ref (&1, a
+`CPlugStaticObjectModel`), collision ref (&2), box (&4), offset (&8)). The v0
+form (mesh-modeler) puts a `CPlugCrystal` inline in variant 0; the v1 form
+(TMX / item-editor exports) puts a static object in the table.
+`tiny-library` bakes either with `static_item_from_custom_block` (the typed
+parser's `Node::BlockItem`, or `crystal_model::locate`'s block-item branch),
+in the block's own frame (cell corner = origin, like a pack prefab), footprint
+from the baked collision (cells of 32 × 8 × 32), placed by `tmmaps tiny` like a
+pack block. A gameplay archetype (`…Special…`) is baked once and lends its
+`special` trigger (arch gates); PLATFORM specials need none — their effect is
+the deck surface's gameplay id, which the custom block's own materials carry
+(the magnet TurboRoulette block came out as TechSuperMagnetic + gameplay 3).
+An empty block file (`Trou.Block.Gbx`, 644 bytes, a hole marker) is
+intentionally nothing.
+
+Old maps also carry block names the current pack spells differently
+(`block_rename`): `PlatformGrasssSlope2UTop` → `PlatformGrassSlope2UTop`,
+`RoadIceDiagLeftWithWallStraight` → `RoadIceWithWallDiagLeftStraight`, and
+the flat `OpenIceRoadToZoneRight`, which the pack no longer ships (Tech and
+Dirt keep theirs) → the symmetric `OpenIceRoadToZoneCenter` stands in.
+
+`tmmaps` item-clone donor: a map whose every non-waypoint item is a first use
+(U10S_113-style: one item per model) has no reference-only record to clone;
+the donor's definition fields are rewritten in the clone as references to the
+slot the donor defined. A map with ZERO items (U10S_113 itself) still cannot
+be converted — synthesising an anchored-object record needs lookback-table
+surgery across the baked-blocks chunk.
