@@ -705,20 +705,40 @@ pub fn validate(args: &[String]) {
     chunk.extend_from_slice(b"PIKS");
     chunk.extend_from_slice(&(blob.len() as u32).to_le_bytes());
     chunk.extend_from_slice(&blob);
+    // The embedded ghost is a NODE: a file that did not carry one before gains one, and
+    // the container's node count has to say so, or the game answers "Couldn't load map!"
+    // (measured 2026-09-13 on a map saved after a MediaTracker session, whose 0x0305B00F
+    // was the 12-byte empty form). `--nodes-delta N` overrides the inferred bump.
+    // `--no-ghost`: write the TIMES and validated="1" only, leaving chunk 0x0305B00F
+    // alone — no node is added, so the container's node table stays exactly as the
+    // game wrote it (2026-09-13: what a map needs to be playable after a MediaTracker
+    // session is an author time; the embedded ghost is a separate thing).
+    let no_ghost = tmmaps::cli::has(args, "--no-ghost");
     let skips = tmmaps::gbx::all_skip_chunks(&m.gbx.body);
-    let placed = if let Some(&(_, off, payload, size)) = skips.iter().find(|(c, ..)| *c == 0x0305_B00F) {
+    let placed = if no_ghost { "ghost chunk left alone (--no-ghost)" } else if let Some(&(_, off, payload, size)) = skips.iter().find(|(c, ..)| *c == 0x0305_B00F) {
         m.raw_splices.push(((off, payload + size), chunk.clone()));
-        "replaced"
+        // a 12-byte 0x0305B00F is the EMPTY form (null node ref): replacing it adds a node
+        if size <= 16 { "replaced_empty" } else { "replaced" }
     } else {
         let &(_, _o, p, s) = skips.iter().find(|(c, ..)| *c == 0x0305_B00E).expect("no ChallengeParameters chunk 0x0305B00E");
         m.raw_splices.push(((p + s, p + s), chunk.clone()));
         "inserted after 0x0305B00E"
     };
+    let inferred_delta: u32 = if no_ghost { 0 } else if placed == "replaced_empty" { 1 } else if placed == "inserted after 0x0305B00E" { 1 } else { 0 };
+    let delta: u32 = tmmaps::cli::flag(args, "--nodes-delta").map(|s| s.parse().expect("--nodes-delta N")).unwrap_or(inferred_delta);
+    m.gbx.num_nodes += delta;
+    println!("  nodes {} -> {} ({placed})", m.gbx.num_nodes - delta, m.gbx.num_nodes);
+
     // ---- ChallengeParameters times: 0x0305B00A (skippable: tip string, bronze, silver, gold, author, timelimit, authorscore)
-    let old_b: u32 = hdr.bronze.parse().ok().expect("header times");
-    let old_s: u32 = hdr.silver.parse().ok().expect("header times");
-    let old_g: u32 = hdr.gold.parse().ok().expect("header times");
-    let old_a: u32 = hdr.authortime.parse().ok().expect("header times");
+    // An UNVALIDATED map carries -1 in every time field (the editor writes that when
+    // an edit invalidates the map: measured 2026-09-13 on maps saved after a
+    // MediaTracker session, which the game then refuses to start a race on). Read
+    // them as i64 and keep the bit pattern, so the layout check below still works.
+    let as_time = |s: &str| -> u32 { s.trim().parse::<i64>().map(|v| v as u32).unwrap_or_else(|_| panic!("header time {s:?} is not a number")) };
+    let old_b: u32 = as_time(&hdr.bronze);
+    let old_s: u32 = as_time(&hdr.silver);
+    let old_g: u32 = as_time(&hdr.gold);
+    let old_a: u32 = as_time(&hdr.authortime);
     let expect = |buf: &[u8], at: usize, want: u32, what: &str| {
         let got = u32::from_le_bytes(buf[at..at + 4].try_into().unwrap());
         assert!(got == want, "{what}: read {got} where the header says {want} — layout mismatch, nothing written");

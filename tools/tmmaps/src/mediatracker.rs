@@ -1464,6 +1464,10 @@ pub fn cmd(args: &[String]) {
                     mt.drop_in_game_clip(name).unwrap_or_else(|e| crate::cli::die(&e));
                     println!("in-game clip {name:?} dropped");
                 }
+                // dropping a clip removes NODES (the clip, its tracks, its blocks): the
+                // container's node count has to follow or the game says "Couldn't load
+                // map!" (2026-09-13). Signed, because adding one is the same job.
+                let nodes_delta: i64 = crate::cli::flag(args, "--nodes-delta").map(|s| s.parse().unwrap_or_else(|_| crate::cli::die("--nodes-delta N (may be negative)"))).unwrap_or(0);
                 if let Some(spec) = crate::cli::flag(args, "--set-ingame-trigger") {
                     let (name, cells) = spec.split_once('=').unwrap_or_else(|| crate::cli::die("--set-ingame-trigger NAME=cx,cy,cz;…"));
                     let cells: Vec<[i32; 3]> = cells.split(';').filter(|s| !s.trim().is_empty()).map(|c| {
@@ -1496,6 +1500,11 @@ pub fn cmd(args: &[String]) {
                 }
                 let mut w = crate::map::MapFile::load(path);
                 w.set_mediatracker(&mt);
+                if nodes_delta != 0 {
+                    let before = w.gbx.num_nodes;
+                    w.gbx.num_nodes = (before as i64 + nodes_delta) as u32;
+                    println!("nodes {before} -> {}", w.gbx.num_nodes);
+                }
                 w.write_to(std::path::Path::new(out)).unwrap_or_else(|e| crate::cli::die(&format!("{out}: {e}")));
                 let check = crate::map::MapFile::load(std::path::Path::new(out));
                 match check.mediatracker() {
