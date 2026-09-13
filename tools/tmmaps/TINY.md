@@ -1282,3 +1282,65 @@ not a conversion defect (`mapgeom raycast` names the item; the tiny build
 has it too). Sizes at ×2 are the tiny sizes within a few percent (the mesh
 bytes do not depend on the scale); the `--max-bytes 7000000` ladder applies
 as it does to the tiny maps.
+
+## Giant maps: the engine's own water (2026-09-13 17:00Z)
+
+vjeux, playing: "Giant 10 is missing water blocks, can't finish the map";
+"Same for 12 the water doesn't work anymore"; "For 23, we should be able to
+insert pool blocks on top to get the water wheel effect". The ×2 builds had
+carried every pool as items (the club run's `TINY_WATER_BLOCKS=0`), and an item
+is no water: the car dropped 16 m into a dry pit (10) or drove a dry canal.
+
+A giant build is cell-aligned, which the tiny never was — so the fix is the
+one the tiny could not have: **the source's own water BLOCKS, native, in the
+transformed cells** (`mapgeom giantwater`, run by `tinyctl build --scale N`):
+
+* `tmmaps tiny --anchor fit` now snaps a whole-scale anchor onto the lattice
+  (x/z: t ≡ s·anchor mod 32 — the anchor is a cell CENTRE, so doubling about it
+  alone puts corners on half-cells; y: rows, ty ≡ s·sy − (s−1)·ground mod 8 —
+  on Stadium ×2 the source grass floor lands back on the stadium grass). Every
+  source cell is then exactly N×N×N target cells.
+* `DecoWallWaterBase` (volume 0..8, no mesh: walls, floor caps and the water
+  top are all clip fillers) fills every tile row a source block covers; the
+  bottom tile row keeps the source flags (ground / InDecoWallPillar), the rows
+  above are the plain air variant — the stack the source is. The engine does
+  NOT match stacked water tiles top to bottom (/mapblocks2 baked on giant 10:
+  508 `DecoWallWaterFCT` + 508 `FCBInside` for 504 air tiles — and the source
+  itself carries one FCT + one FCBInside per air block), so a stack is a pile
+  of 8 m pools with a surface and a floor cap per row; the top surface is the
+  one you see, at the row top where the ×2 rims end. The car swims the lowest
+  reachable layer under the caps — measured on 10: Water at the wheels from
+  the ramp's end, 110 → 8 m/s in the pool, floats up, sinks, climbs the
+  up-ramp at x 648 and drives out (was: stuck at the bottom of the pit).
+* `WaterBase` (volume 4..7, a 3 m concrete basin with the quad at 7) goes into
+  the TOP tile row only: the surface 1 m under the ×2 rim like the source's,
+  the basin floor 3 m under it (the ×2 basin floor stays hidden below; lower
+  rows would add dry bands and a second floor).
+* The water ROADS (`RoadWater*`: a 26 m channel, volume 0..2 with the deck AT
+  the volume's top plane — the wheels sit on the plane and the game counts
+  them in) cannot be tiled natively (a 1× canal mesh inside the 2× one), so
+  they get the tiny's FREE CUSTOM blocks (the wood template re-pointed at the
+  archetype, deck 200 m down): N×N invisible volumes per source block, 2 across
+  at 26 m apart (not on the lattice), butted along the channel so the
+  `RoadWaterVFC` end clips match tile to tile — no `TrackWallWater` end wall
+  (8 m of planks, `VFCTopBottom_Air`, measured 29 × 8 m) inside the section;
+  the dead-end tiles keep their clip-less archetype (`RoadWaterStart` south,
+  `RoadWaterFinish` north), every other tile is a `RoadWaterStraight`. The
+  tile's y is the ×N deck minus 2. Measured on 23: Water at all four wheels
+  from the start line to the end of the canal (165 m, 1 → 33 m/s under the
+  water drag), then the jump lands floating in the pool (Water, y 37.5 in the
+  36..39 band).
+* The bake drops the items' `Water` visuals (`TINY_WATER_VISUAL=0`): the
+  native blocks and the volumes' sheets draw the pools; an item quad 1 m under
+  them would show through.
+* The clip fillers the engine generates on the tiles' OUTER faces (plank
+  walls, rims, floor caps) are the pieces the source generated around its pool,
+  inside the ×2 wall items and flush with their tops: no border in the frames
+  (giant 10 pool top/side, giant 23 start/top/side, 2026-09-13 17:10Z).
+
+Knobs: `TINY_WATER_NATIVE=0` (no pass, items only — the 2026-09-13 morning
+form), `TINY_GIANT_ROAD_TILES=0` (pools only). Curves, branches and slopes of
+the water road (none in U10S 01–25) have no volume emitter and stay items.
+What the ×2 does to the route regardless of water: the car's speed is not
+doubled, so a jump falls √2× farther in time and lands SHORT of where the
+source's does (23's jump off the canal lands in the pool at x 742).
