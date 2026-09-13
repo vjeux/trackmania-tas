@@ -526,6 +526,15 @@ impl Merged {
     /// every other baked item uses and `item-check` can resolve.
     pub fn material_inst_slot(&mut self, inst: &CPlugMaterialUserInst, folder: &str) -> usize {
         let mut owned = inst.clone();
+        // the editor-resolved link table (ERROR_MAT and the Special signs) applies here too
+        if let Some(main) = owned.main.as_mut() {
+            if let Some(l) = main.link.as_str().map(|s| s.to_string()) {
+                let r = resolve_crystal_link(&l);
+                if r != l {
+                    main.link = crate::crystal_model::Id::Str(r.to_string());
+                }
+            }
+        }
         if let Some(main) = owned.main.as_mut() {
             if !main.is_using_game_material && main.version >= 11 {
                 if let Some(bare) = main.link.as_str().filter(|l| !l.is_empty() && !l.contains('\\')).map(|s| s.to_string()) {
