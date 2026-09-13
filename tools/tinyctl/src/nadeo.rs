@@ -59,10 +59,13 @@ fn post_json(auth: &str, url: &str, body: &str) -> Result<Value, String> {
 /// Fresh core + live tokens (Authorization header values) from the running
 /// game, under the render lock. The plugin's previous token files are removed
 /// first so a stale one is never read back as fresh — unless both are younger
-/// than `TOKEN_REUSE_SECS` (a Nadeo access token lives about an hour): then
-/// they are reused and the lock is not taken at all, so a run of reads costs
-/// the shared render lock one slice, not one per command.
-const TOKEN_REUSE_SECS: u64 = 40 * 60;
+/// than `TOKEN_REUSE_SECS`: then they are reused and the lock is not taken at
+/// all, so a run of reads costs the shared render lock one slice, not one per
+/// command. 40 min was too long: the Ice U10S publishes of 21–24 (2026-09-13,
+/// tokens 26–40 min old) all answered `club/mine: HTTP 401` — the plugin's
+/// token is not a fresh one at mint time, so its remaining life is shorter
+/// than an hour; 20 min has never failed.
+const TOKEN_REUSE_SECS: u64 = 20 * 60;
 
 /// The plugin's (core, live) token files when both are younger than
 /// `TOKEN_REUSE_SECS` and look like tokens; `None` means mint under the lock.

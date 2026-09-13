@@ -43,7 +43,10 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         "tech" => "Tech",
         other => return Err(format!("surface `{other}`: ice, dirt, grass, plastic or tech")),
     };
-    let mut env = vec![("TINY_KEEP_WATER".to_string(), "0".to_string())];
+    // the Water sheets STAY (the ice pool `WaterBaseIce` keeps its water, so a
+    // RoadWater piece baked in it keeps its sheet too: without it the deck reads
+    // as a black rectangle through the pool water — U10S_23, 2026-09-13)
+    let mut env: Vec<(String, String)> = Vec::new();
     if s != "Tech" {
         // the platform family's modifier folder (Modifier\Platform<S>\{PlatformTech, TrackWall, DecoHill, …})
         env.push(("TINY_FORCE_MODIFIER".to_string(), format!("Stadium\\Media\\Modifier\\Platform{s}.TerrainModifier.Gbx")));
@@ -461,7 +464,9 @@ pub fn report_cmd(args: &[String]) -> Result<(), String> {
         let times = format!("{} / {} / {} / {}", secs(&col(r, "authortime_ms")), secs(&col(r, "gold")), secs(&col(r, "silver")), secs(&col(r, "bronze")));
         let size = col(r, "out_bytes").parse::<f64>().map(|b| format!("{:.2} MB", b / 1e6)).unwrap_or_else(|_| col(r, "out_bytes"));
         let nadeo = col(r, "nadeo").replace("OK created mapId ", "created `").replace("OK updated mapId ", "updated `").replace(" stored IDENTICAL", "` · md5 identical");
-        let frames = col(r, "frames");
+        // frames: what is on disk (a publish-only re-run's row says "-")
+        let n_frames = views.iter().filter(|v| frames_dir.join(format!("cmp-{surface}{nn}{v}.jpg")).exists()).count();
+        let frames = if n_frames > 0 { format!("{n_frames} pairs") } else { col(r, "frames") };
         md.push_str(&format!("| {nn} | {} `{}` | {times} | {} `{}` | {size} | {} | {} | {} | {} | {} | {frames} | {nadeo} |\n", col(r, "source_name"), col(r, "source_uid"), col(r, "out_name"), col(r, "out_uid"), col(r, "renamed"), col(r, "baked"), col(r, "same"), col(r, "kept"), col(r, "none")));
     }
     md.push_str("\nEvery map keeps the source's medal times, items, MediaTracker and thumbnail; the uid is `Ice2` + the source uid's tail; the validation ghost (an author run on another surface) is removed.\n\n");

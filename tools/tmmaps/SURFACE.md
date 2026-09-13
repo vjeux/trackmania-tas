@@ -35,7 +35,7 @@ Per map, four tools in order (each one usable on its own):
    OpenTechBorders / Penalty / DecalPlatform / DecoCliff), `TINY_REDRESS=
    RoadTech=Stadium\Media\Material\RoadIce;RoadDirt=…;RoadBump=…` (the road
    decks, which no modifier folder shadows: look AND collision physics from
-   the replacement material, RoadIce = 74), `TINY_KEEP_WATER=0` (a RoadWater
+   the replacement material, RoadIce = 74). (`TINY_KEEP_WATER=0` would drop the Water sheets; the driver keeps them: a RoadWater
    piece baked as ice carries no water sheet). Full-size static-item copies
    of the block's own prefab — the tiny converter's bake at scale 1.
 3. **`tmmaps surface MAP --plan records.tsv --out F --name "Ice <name>" --uid-prefix
