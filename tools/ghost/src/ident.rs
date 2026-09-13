@@ -295,6 +295,14 @@ pub fn cmd(a: &[String]) {
                     continue;
                 }
                 println!("{:<14} {:>8}  {:?}", x.role.label(), x.at, x.s);
+                // a skin path is preceded by its PackDesc checksum (sha256 of the zip,
+                // measured 2026-09-12): print it, it is half of what makes a skin
+                // fetchable and a zero one makes the game try to "update" the file
+                if x.role == Role::Skin && x.at >= 32 {
+                    let h: String = c.body()[x.at - 32..x.at].iter().map(|b| format!("{b:02x}")).collect();
+                    let zero = h.chars().all(|ch| ch == '0');
+                    println!("{:<14} {:>8}  {}{}", "  checksum", x.at - 32, h, if zero { "  (ZERO -- the game will try to update this file from its locator)" } else { "" });
+                }
             }
         }
         "set" => {

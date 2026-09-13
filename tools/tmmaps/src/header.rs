@@ -314,7 +314,42 @@ pub fn read(path: &str) -> Result<MapHeader, String> {
     })
 }
 
+/// `tmmaps header MAP --set-flag NAME=V --out F`: flip a ONE-CHARACTER attribute in
+/// the header XML in place (same length, so nothing moves). Written for the
+/// 2026-09-13 bisect of "a map the editor saved after importing a MediaTracker
+/// ghost will not enter a playground": `hasghostblocks="1"` is the flag the save
+/// sets, and the question is whether the GAME reads it.
+pub fn set_flag(args: &[String]) {
+    let path = std::path::Path::new(&args[2]);
+    let spec = crate::cli::flag(args, "--set-flag").unwrap_or_else(|| crate::cli::die("tmmaps header MAP --set-flag NAME=V --out F"));
+    let out = crate::cli::flag(args, "--out").unwrap_or_else(|| crate::cli::die("--out F"));
+    let (name, val) = spec.split_once('=').unwrap_or_else(|| crate::cli::die("--set-flag NAME=V"));
+    if val.len() != 1 {
+        crate::cli::die("--set-flag takes a ONE-character value (the edit must not resize the header)");
+    }
+    let mut m = crate::map::MapFile::load(path);
+    let pat = format!("{name}=\"");
+    let hay = m.gbx.user_data.clone();
+    let at = hay.windows(pat.len()).position(|w| w == pat.as_bytes()).unwrap_or_else(|| crate::cli::die(&format!("{}: no {name}=\"…\" in the header XML", path.display())));
+    let vat = at + pat.len();
+    let old = hay[vat] as char;
+    if hay[vat + 1] != b'"' {
+        crate::cli::die(&format!("{name} is not a one-character attribute in this header"));
+    }
+    m.gbx.user_data[vat] = val.as_bytes()[0];
+    m.write_to(std::path::Path::new(out)).unwrap_or_else(|e| crate::cli::die(&format!("{out}: {e}")));
+    let back = crate::map::MapFile::load(std::path::Path::new(out));
+    let now = back.gbx.user_data[vat] as char;
+    if now != val.chars().next().unwrap() {
+        crate::cli::die(&format!("{out}: the flag reads back as {now:?}, not {val:?}"));
+    }
+    println!("wrote {out}: header {name} {old:?} -> {now:?}");
+}
+
 pub fn cmd(args: &[String]) {
+    if crate::cli::flag(args, "--set-flag").is_some() {
+        return set_flag(args);
+    }
     let mut paths: Vec<String> = Vec::new();
     let mut tsv = false;
     let mut want_xml = false;
@@ -324,6 +359,8 @@ pub fn cmd(args: &[String]) {
             "--tsv" => tsv = true,
             "--xml" => want_xml = true,
             "--names" => names = true,
+            "--set-flag" | "--out" => {}
+            s if s.starts_with("--set-flag=") || s.starts_with("--out=") => {}
             s if s.starts_with("--") => {
                 eprintln!("tmmaps header: unknown option `{s}`");
                 std::process::exit(2);
