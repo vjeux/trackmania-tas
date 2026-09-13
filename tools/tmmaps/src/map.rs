@@ -2040,13 +2040,22 @@ impl MapFile {
             .or_else(|| self.items.iter().find(|it| it.waypoint_tag.is_none()))
             .expect("map needs one non-waypoint item to clone");
         let mut bytes = self.gbx.body[donor.record_region.0..donor.record_region.1].to_vec();
+        // The FIRST record of the chunk carries the private lookback table's version
+        // word (3) right after the chunk version; a clone of it must not (the word is
+        // written once per chunk) — a seeded 0-item map's donor is that first record.
+        // Layout: class id (4), chunk id (4), version (4), [3].
+        if bytes.len() > 16 && u32::from_le_bytes(bytes[12..16].try_into().unwrap()) == 3 && self.items.first().map(|f| f.record_region.0) == Some(donor.record_region.0) {
+            bytes.drain(12..16);
+            // the definition fields' offsets inside the record move up by 4 from here on
+        }
+        let dropped_version_word = self.gbx.body[donor.record_region.0..donor.record_region.1].len() != bytes.len();
         {
             // definitions -> references, back to front so earlier offsets hold
             let mut defs: Vec<&IdField> = [donor.model_field, donor.author_field].iter().map(|f| &self.item_ids[*f]).filter(|f| f.is_def).collect();
             defs.sort_by_key(|f| std::cmp::Reverse(f.off));
             for f in defs {
                 let slot = f.slot.expect("a defining field has a slot");
-                let rel = f.off - donor.record_region.0;
+                let rel = f.off - donor.record_region.0 - if dropped_version_word { 4 } else { 0 };
                 let word = (0x4000_0000u32 | (slot as u32 + 1)).to_le_bytes();
                 bytes.splice(rel..rel + f.len, word.iter().copied());
             }
@@ -3335,4 +3344,166 @@ pub struct FreeBlockSpec {
     /// game for a GRID block; a free block turns by `rot` instead (2026-09-13,
     /// the giant maps' native water tiles copy the source block's).
     pub dir: u8,
+}
+
+/// A map with NO items cannot be converted by the tiny writer, which clones an
+/// existing anchored-object record for every placement it adds (U10S_113,
+/// Everios96, 2026-09-13: 3 689 blocks, zero items). This seeds ONE template
+/// record into the empty `0x03043040` chunk of a raw body and returns the new
+/// body: a stock `RoadSign` (any Nadeo item; the placement is re-pointed by the
+/// writer anyway) at the map origin, no waypoint, flags 0, scale 1, defining
+/// its strings in the chunk's own lookback table (the chunk opens one: the
+/// version word 3 is written when the table is empty). The five snapped-on
+/// arrays grow by one `-1`; the side tables (`0x03043062` colour, `0x03043068`
+/// lightmap quality, `0x03043063` phase, `0x03043065`) get one byte, and
+/// `0x03043069` one `-1` item ref before its trailing instance array. Both
+/// sizes of chunk 40 are rewritten. A map that already has items is returned
+/// unchanged.
+pub fn seed_item_record(body: &[u8], collection: u32) -> Result<Vec<u8>, String> {
+    let chunks = crate::gbx::all_skip_chunks(body);
+    let &(_, coff, payload, size) = chunks.iter().find(|(c, ..)| *c == ITEMS_CHUNK).ok_or("no items chunk 0x03043040")?;
+    let mut r = Reader::at(body, payload);
+    let version = r.u32();
+    if version != 7 && version != 8 {
+        return Err(format!("items chunk version {version} (7 or 8 expected)"));
+    }
+    let _u01 = r.u32();
+    let _size_of_node = r.u32();
+    let _archive_version = r.u32();
+    let count_off = r.o;
+    let nb = r.u32();
+    if nb != 0 {
+        return Ok(body.to_vec());
+    }
+    let records_off = r.o; // where the records would start = where the tail starts now
+    // the record
+    let mut rec: Vec<u8> = Vec::new();
+    let w32 = |v: &mut Vec<u8>, x: u32| v.extend_from_slice(&x.to_le_bytes());
+    let wf = |v: &mut Vec<u8>, x: f32| v.extend_from_slice(&x.to_le_bytes());
+    let wid = |v: &mut Vec<u8>, s: &str| {
+        w32(v, 0x4000_0000); // a new table entry: the string follows
+        w32(v, s.len() as u32);
+        v.extend_from_slice(s.as_bytes());
+    };
+    w32(&mut rec, ANCHORED_OBJECT_CLASS);
+    w32(&mut rec, 0x0310_1002);
+    w32(&mut rec, 8); // chunk version
+    w32(&mut rec, 3); // the private lookback table's version word
+    wid(&mut rec, "RoadSign"); // itemModel.id (a stock item; re-pointed by the writer)
+    w32(&mut rec, collection); // itemModel.collection: a plain number (26 Stadium)
+    wid(&mut rec, "Nadeo"); // itemModel.author
+    wf(&mut rec, 0.0); // yaw
+    wf(&mut rec, 0.0); // pitch
+    wf(&mut rec, 0.0); // roll
+    rec.extend_from_slice(&[0xFFu8, 0xFF, 0xFF]); // blockUnitCoord: an off-grid placement (what the editor writes for a free item)
+    w32(&mut rec, 0xFFFF_FFFF); // anchorTreeId: null
+    wf(&mut rec, 0.0); // absolutePositionInMap
+    wf(&mut rec, 0.0);
+    wf(&mut rec, 0.0);
+    w32(&mut rec, 0xFFFF_FFFF); // waypointSpecialProperty: null
+    rec.extend_from_slice(&0u16.to_le_bytes()); // flags
+    wf(&mut rec, 0.0); // pivotPosition
+    wf(&mut rec, 0.0);
+    wf(&mut rec, 0.0);
+    wf(&mut rec, 1.0); // scale
+    for _ in 0..3 {
+        wf(&mut rec, 0.0); // trailing Vec3 #1 (0,0,0 on every read placement)
+    }
+    for _ in 0..3 {
+        wf(&mut rec, -1.0); // trailing Vec3 #2 (-1,-1,-1)
+    }
+    // 0x03101004 skippable: 8 bytes {0, -1}; 0x03101005 skippable: 9 bytes {version 1, 4, 0}
+    w32(&mut rec, 0x0310_1004);
+    rec.extend_from_slice(b"PIKS");
+    w32(&mut rec, 8);
+    w32(&mut rec, 0);
+    w32(&mut rec, 0xFFFF_FFFF);
+    w32(&mut rec, 0x0310_1005);
+    rec.extend_from_slice(b"PIKS");
+    w32(&mut rec, 9);
+    w32(&mut rec, 1);
+    w32(&mut rec, 4);
+    rec.push(0);
+    w32(&mut rec, FACADE);
+    // the tail: v7 Int2[] then five arrays; the fifth gets one -1
+    let mut tail = body[records_off..payload + size].to_vec();
+    {
+        let mut t = Reader::at(&tail, 0);
+        if version == 7 {
+            let n = t.u32() as usize;
+            t.skip(n * 8);
+        }
+        for k in 0..5 {
+            let off = t.o;
+            let n = t.u32() as usize;
+            if k == 4 {
+                if n != 0 {
+                    return Err(format!("snapped-index array has {n} entries on a 0-item map"));
+                }
+                tail[off..off + 4].copy_from_slice(&1u32.to_le_bytes());
+                tail.splice(off + 4..off + 4, [0xFFu8; 4]);
+                break;
+            }
+            t.skip(n * 4);
+        }
+    }
+    let mut out = body[..payload].to_vec();
+    let new_payload_len = 20 + rec.len() + tail.len();
+    out.extend_from_slice(&version.to_le_bytes());
+    out.extend_from_slice(&body[payload + 4..payload + 8]); // u01
+    out.extend_from_slice(&((new_payload_len - 12) as u32).to_le_bytes()); // sizeOfNode
+    out.extend_from_slice(&body[payload + 12..payload + 16]); // archiveVersion
+    out.extend_from_slice(&1u32.to_le_bytes()); // nbItems
+    out.extend_from_slice(&rec);
+    out.extend_from_slice(&tail);
+    out.extend_from_slice(&body[payload + size..]);
+    // the skippable size at coff+8
+    out[coff + 8..coff + 12].copy_from_slice(&(new_payload_len as u32).to_le_bytes());
+    let _ = count_off;
+    // side tables: one byte per item at their end; 0x03043069: one -1 item ref
+    let mut out2 = out;
+    let grow = |body: &mut Vec<u8>, cid: u32, add: &[u8], at_end: bool, blocks: usize| -> Result<(), String> {
+        let chunks = crate::gbx::all_skip_chunks(body);
+        let &(_, coff, payload, size) = chunks.iter().find(|(c, ..)| *c == cid).ok_or_else(|| format!("no chunk 0x{cid:08X}"))?;
+        let at = if at_end { payload + size } else { payload + 4 + blocks * 4 };
+        body.splice(at..at, add.iter().copied());
+        let ns = (size + add.len()) as u32;
+        body[coff + 8..coff + 12].copy_from_slice(&ns.to_le_bytes());
+        Ok(())
+    };
+    for cid in [0x0304_3062u32, 0x0304_3063, 0x0304_3065, 0x0304_3068] {
+        if crate::gbx::all_skip_chunks(&out2).iter().any(|(c, ..)| *c == cid) {
+            grow(&mut out2, cid, &[0u8], true, 0)?;
+        }
+    }
+    // 0x03043069: version, one i32 per AUTHORED block, then per item, then Int2[]
+    let n_blocks = {
+        let m = crate::gbx::all_skip_chunks(&out2);
+        let _ = m;
+        // the unbaked block count from the blocks chunk header is not at hand here:
+        // count the 0x03043069 words between the version and the trailing array
+        let &(_, _, p69, s69) = crate::gbx::all_skip_chunks(&out2).iter().find(|(c, ..)| *c == 0x0304_3069).ok_or("no chunk 0x03043069")?;
+        // layout: u32 version, i32[blocks + items], u32 n, Int2[n]
+        // with items = 0: words = (s69 - 4 - 4 - 8n) / 4 where n = trailing count
+        let mut rr = Reader::at(&out2, p69 + s69 - 4);
+        let mut n = rr.u32() as usize;
+        // find n such that 4 + 4*blocks + 4 + 8*n == s69: scan back
+        let mut blocks = None;
+        for cand in 0..=(s69 / 4) {
+            let rem = s69 as i64 - 4 - 4 * cand as i64 - 4;
+            if rem >= 0 && rem % 8 == 0 {
+                let nn = (rem / 8) as usize;
+                let cnt = u32::from_le_bytes(out2[p69 + 4 + cand * 4..p69 + 8 + cand * 4].try_into().unwrap()) as usize;
+                if cnt == nn {
+                    blocks = Some(cand);
+                    n = nn;
+                    break;
+                }
+            }
+        }
+        let _ = n;
+        blocks.ok_or("chunk 0x03043069: could not find the block/instance split")?
+    };
+    grow(&mut out2, 0x0304_3069, &0xFFFF_FFFFu32.to_le_bytes(), false, n_blocks)?;
+    Ok(out2)
 }

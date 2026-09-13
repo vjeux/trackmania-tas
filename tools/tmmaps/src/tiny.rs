@@ -897,7 +897,17 @@ pub fn cmd(args: &[String]) {
     let tmp2 = out.with_extension(format!("tiny-{}.waypoints.Map.Gbx", std::process::id()));
 
     // Stage 0: grow the item array before any saved offsets are used.
-    let base = host.clone().unwrap_or_else(|| src.clone());
+    let mut base = host.clone().unwrap_or_else(|| src.clone());
+    // A source with NO items (U10S_113) gets one template record first — the
+    // clone donor every later placement is copied from (`seed_item_record`).
+    if MapFile::load(&base).items.is_empty() {
+        let seeded = out.with_extension(format!("tiny-{}.seeded.Map.Gbx", std::process::id()));
+        let g = crate::gbx::Gbx::parse(&std::fs::read(&base).expect("read source"));
+        let body = crate::map::seed_item_record(&g.body, 26).expect("seed an item record into a 0-item map");
+        std::fs::write(&seeded, g.write_body_recompressed(&body)).expect("write seeded stage");
+        println!("  0 items in the source: one template item record seeded (the clone donor)");
+        base = seeded;
+    }
     let mut m = MapFile::load(&base);
     m.append_item_clones(specs.len());
     m.write_to(&tmp0).expect("write item-slot stage");
@@ -1210,8 +1220,12 @@ pub fn cmd(args: &[String]) {
         }
     }
     m.write_to(&out).expect("write output");
-    for p in [&tmp0, &tmp1, &tmp2] {
-        let _ = std::fs::remove_file(p);
+    let seeded_tmp = out.with_extension(format!("tiny-{}.seeded.Map.Gbx", std::process::id()));
+    // TMMAPS_KEEP_STAGES=1 keeps the intermediate maps (bisecting a load failure)
+    if std::env::var("TMMAPS_KEEP_STAGES").is_err() {
+        for p in [&tmp0, &tmp1, &tmp2, &seeded_tmp] {
+            let _ = std::fs::remove_file(p);
+        }
     }
     // Genealogies (chunk 0x03043043) are the per-cell terrain zones the game
     // regenerates Land/Beach/Hill/Cliff blocks from at load: with the authored
