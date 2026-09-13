@@ -42,6 +42,8 @@ mod batch;
 mod pipeline;
 mod mtrender;
 mod mapzips;
+mod dist;
+mod release;
 mod views;
 mod wsx;
 
@@ -219,6 +221,8 @@ fn main() {
         "motion" => motion::cmd(rest),
         "mtrender" => mtrender::cmd(rest),
         "mapzips" => mapzips::cmd(rest),
+        "dist" => dist::cmd(rest),
+        "release-upload" => release::cmd(rest),
         "box-build" => boxbuild::box_build_cmd(rest),
         "selfbuild" => boxbuild::selfbuild_cmd(rest),
         "help" | "--help" | "-h" => {

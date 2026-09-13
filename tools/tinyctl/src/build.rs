@@ -219,12 +219,19 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
         }
         let tiny_out = out.join(format!("{out_prefix}-{nn}-{label}.Map.Gbx"));
+        // --name-format F: the map's in-file name outright, `{source}` = the source
+        // name (`"{source} By Everios96 [Giant]"` — the club's alteration convention,
+        // 2026-09-13); without it the name is "<Label> <source>"
+        let name_flag: Option<String> = f("--name-format").map(|fmt| fmt.replace("{source}", &tmmaps::header::read(&src.display().to_string()).map(|h| h.name).unwrap_or_default()));
         let run_tiny = |env: &BTreeMap<String, String>, log: &str| -> Result<String, String> {
             let mut tiny = Command::new(&tmmaps);
             tiny.arg("tiny").arg(&src).arg("--mapping").arg(out.join("placements.tsv")).arg("--library").arg(out.join("lib.zip")).arg("--out").arg(&tiny_out).arg("--scale").arg(format!("{scale}"));
             // a giant build: centred in the grid, its own uid head and name
             if scale > 1.0 {
                 tiny.arg("--anchor").arg("fit").arg("--uid-prefix").arg(uid_prefix(scale)).arg("--name-prefix").arg(format!("{label} "));
+            }
+            if let Some(n) = &name_flag {
+                tiny.arg("--name").arg(n);
             }
             // --keep-zone-block: one authored zone block survives (the editor's
             // lightmapper crashes on a build with no block at all — GreenCoast 04/09,

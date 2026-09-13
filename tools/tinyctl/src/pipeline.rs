@@ -106,7 +106,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         // 1. build
         let mut bargs: Vec<String> = vec![nn.clone(), "--src-dir".into(), src_dir.display().to_string(), "--out-root".into(), out_root.clone(), "--tag".into(), tag.clone(), "--recipe".into(), recipe.clone(), "--out-prefix".into(), prefix.clone()];
         bargs.extend(envs.iter().cloned());
-        for k in ["--lod-pick", "--lod-pick-min-verts", "--scale"] {
+        for k in ["--lod-pick", "--lod-pick-min-verts", "--scale", "--name-format"] {
             if let Some(v) = f(k) {
                 bargs.push(k.into());
                 bargs.push(v);
@@ -212,6 +212,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 }
             }
             note.push_str(&fit_note);
+        }
+        // the giant water pass's verdict for the row (tiles placed / clipped)
+        if let Ok(gw) = std::fs::read_to_string(build_dir.join("giantwater.log")) {
+            if let Some(l) = gw.lines().find(|l| l.contains("CLIPPED")) {
+                note.push_str(&format!("water: {}; ", l.trim().trim_start_matches("giantwater: ")));
+            }
         }
         let thdr = match tmmaps::header::read(&tiny.display().to_string()) {
             Ok(h) => h,
@@ -466,6 +472,10 @@ pub fn convert_all_cmd(args: &[String]) -> Result<(), String> {
         parts_arg.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
     };
     let jobs: usize = f("--jobs").and_then(|j| j.parse().ok()).unwrap_or(8).max(1);
+    // --alias-part-offset K: the alias part of part P is P+K — a second variant of the
+    // same club (giant, 2026-09-13: K=50) must not share item FILE NAMES with the
+    // tiny one, the game caching embedded models by name for the session
+    let alias_offset: usize = f("--alias-part-offset").and_then(|k| k.parse().ok()).unwrap_or(0);
     let tag = f("--tag").unwrap_or_else(|| "u10s".into());
     let prefix = f("--out-prefix").unwrap_or_else(|| "U10S".into());
     let recipe = f("--recipe").unwrap_or_else(|| "/tmp/u10s/recipe.env".into());
@@ -510,9 +520,9 @@ pub fn convert_all_cmd(args: &[String]) -> Result<(), String> {
                     format!("{part}\tFAILED\tno NN-*.Map.Gbx in {}", src_dir.display())
                 } else {
                     let mut pargs: Vec<String> = nums.clone();
-                    pargs.extend(["--src-dir".to_string(), src_dir.display().to_string(), "--out-root".into(), part_out.display().to_string(), "--tag".into(), tag.clone(), "--out-prefix".into(), prefix.clone(), "--recipe".into(), recipe.clone(), "--tracker".into(), part_out.join("tracker.tsv").display().to_string(), "--alias-part".into(), part.trim_start_matches('0').to_string(), "--no-shoot".into(), "--no-publish".into()]);
+                    pargs.extend(["--src-dir".to_string(), src_dir.display().to_string(), "--out-root".into(), part_out.display().to_string(), "--tag".into(), tag.clone(), "--out-prefix".into(), prefix.clone(), "--recipe".into(), recipe.clone(), "--tracker".into(), part_out.join("tracker.tsv").display().to_string(), "--alias-part".into(), (part.trim_start_matches('0').parse::<usize>().unwrap_or(0) + alias_offset).to_string(), "--no-shoot".into(), "--no-publish".into()]);
                     pargs.extend(envs.iter().cloned());
-                    for k in ["--max-bytes", "--scale"] {
+                    for k in ["--max-bytes", "--scale", "--name-format"] {
                         if let Some(v) = tmmaps::cli::flag(args, k) {
                             pargs.push(k.into());
                             pargs.push(v.to_string());

@@ -65,6 +65,11 @@ pub struct Plan {
     pub archetypes: BTreeMap<String, String>,
     pub notes: Vec<String>,
     pub skipped: Vec<String>,
+    /// Pool tiles whose cell falls outside the map grid (a wide map doubled
+    /// past the 48-cell arena): left out — the engine keeps ITEMS outside
+    /// the grid but a grid block needs a cell inside it (2026-09-13: 18 of
+    /// the 975 club maps, x −20…53).
+    pub clipped: usize,
 }
 
 fn transform(p: [f32; 3], s: [f32; 3], t: [f32; 3], scale: f32) -> [f32; 3] {
@@ -110,11 +115,12 @@ fn local_to_world(origin: [f32; 2], yaw: f32, lx: f32, lz: f32) -> [f32; 2] {
 
 /// The plan for `source` scaled by `scale` (whole, ≥ 2) about the anchor.
 pub fn plan(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale: f32, roads: bool, author: &str) -> Result<Plan, String> {
+    let size = source.size;
     let n = scale.round() as i32;
     if n < 2 || (scale - n as f32).abs() > 1e-6 {
         return Err(format!("giantwater wants a whole scale of 2 or more, got {scale}"));
     }
-    let mut p = Plan { grid: Vec::new(), roads: Vec::new(), archetypes: BTreeMap::new(), notes: Vec::new(), skipped: Vec::new() };
+    let mut p = Plan { grid: Vec::new(), roads: Vec::new(), archetypes: BTreeMap::new(), notes: Vec::new(), skipped: Vec::new(), clipped: 0 };
     let mut by_name: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for b in &source.blocks {
         if b.free_pos.is_some() {
@@ -138,8 +144,9 @@ pub fn plan(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale: f32,
                 for i in 0..n {
                     for k in 0..n {
                         let cell = [c[0] + i, c[1] + j, c[2] + k];
-                        if cell[0] < 0 || cell[2] < 0 || cell[1] < 0 || cell[0] > 254 || cell[2] > 254 || cell[1] > 254 {
-                            return Err(format!("{} #{}: tile cell {:?} outside the map", b.name, b.index, cell));
+                        if cell[0] < 0 || cell[1] < 0 || cell[2] < 0 || cell[0] >= size[0] || cell[1] >= size[1] || cell[2] >= size[2] {
+                            p.clipped += 1;
+                            continue;
                         }
                         p.grid.push(FreeBlockSpec { name: b.name.clone(), author: None, flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(cell), dir: b.dir });
                         e.1 += 1;
@@ -190,6 +197,9 @@ pub fn plan(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale: f32,
     }
     for (name, (blocks, tiles)) in &by_name {
         p.notes.push(format!("{name}: {blocks} source blocks -> {tiles} tiles"));
+    }
+    if p.clipped > 0 {
+        p.notes.push(format!("{} pool tiles outside the {}x{}x{} grid CLIPPED (no water volume there; the items stay)", p.clipped, size[0], size[1], size[2]));
     }
     Ok(p)
 }

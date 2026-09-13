@@ -14,6 +14,8 @@ use crate::store::DataStore;
 
 pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), String> {
     let facts = rest.iter().any(|a| a == "--facts");
+    // --quiet: the passing items print nothing (a 975-map gate, 2026-09-13)
+    let quiet = rest.iter().any(|a| a == "--quiet");
     let files: Vec<&String> = rest.iter().skip(1).filter(|a| !a.starts_with("--")).collect();
     if files.is_empty() {
         return Err("item-check [--facts] FILE.Item.Gbx…".into());
@@ -815,7 +817,9 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         }
         }
         if problems.is_empty() {
-            println!("{path}: ok ({total_visuals} visuals, {total_mats} materials{})", if nparts > 1 { format!(", {nparts} solids") } else { String::new() });
+            if !quiet {
+                println!("{path}: ok ({total_visuals} visuals, {total_mats} materials{})", if nparts > 1 { format!(", {nparts} solids") } else { String::new() });
+            }
         } else {
             bad += 1;
             for p in &problems {
