@@ -250,7 +250,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 sw.arg("--strip-lightmap");
             }
             let text = run(&mut sw, &dir.join("surface.log"))?;
-            for l in text.lines().filter(|l| l.starts_with("surface:") || l.contains("stage 3b") || l.contains("stay blocks") || l.starts_with("wrote")) {
+            for l in text.lines().filter(|l| l.starts_with("surface:") || l.contains("stage 3b") || l.contains("stay blocks") || l.starts_with("wrote") || l.trim_start().starts_with("trees:")) {
                 println!("  {}", l.trim());
             }
             Ok(())
@@ -482,6 +482,11 @@ pub fn report_cmd(args: &[String]) -> Result<(), String> {
                 Some(id) => md.push_str(&format!("**{v}** (left: original · right: {surface})\n\n![{key}](/api/attachments/view?file_id={id})\n\n")),
                 None => md.push_str(&format!("**{v}**: no frame\n\n")),
             }
+        }
+        // the trees (tmmaps surface's `trees:` line in surface.log)
+        if let Some(l) = std::fs::read_to_string(out_root.join(format!("{surface}{nn}")).join("surface.log")).ok().and_then(|t| t.lines().find(|l| l.trim_start().starts_with("trees:")).map(|l| l.trim().to_string())) {
+            let body = l.trim_start_matches("trees:").trim();
+            md.push_str(&format!("**Trees:** {}\n\n", body.replace(" -> ", " → ")));
         }
         // the block accounting from models.tsv
         let models = out_root.join(format!("{surface}{nn}")).join("models.tsv");
