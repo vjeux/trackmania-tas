@@ -154,14 +154,29 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
     let t0 = Instant::now();
     let shootctl = f("--shootctl").unwrap_or_else(|| format!("{BOX_TOOLS}/shootctl"));
     let text = std::fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
-    let rows: Vec<(PathBuf, String)> = text.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).filter_map(|l| l.split_once('\t').map(|(p, n)| (PathBuf::from(p.trim()), n.split('\t').next().unwrap_or("").trim().to_string()))).collect();
+    // rows: path<TAB>name[<TAB>uid<TAB>skip] — a `skip` row is already on Nadeo: no upload,
+    // its uid still takes its place in the playlist
+    let rows: Vec<(PathBuf, String, Option<String>)> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            (c.len() >= 2).then(|| (PathBuf::from(c[0].trim()), c[1].trim().to_string(), (c.len() >= 4 && c[3].trim() == "skip").then(|| c[2].trim().to_string())))
+        })
+        .collect();
     let summary = (|| -> Result<String, String> {
         let mut t = Tokens::mint(&shootctl)?;
         let mut out = String::from("path\tname\tuid\tmapId\thow\tbytes\tmd5\tverdict\n");
         let mut uids: Vec<String> = Vec::new();
         let mut failed = 0usize;
-        for (i, (p, name)) in rows.iter().enumerate() {
+        for (i, (p, name, skip)) in rows.iter().enumerate() {
             let t1 = Instant::now();
+            if let Some(uid) = skip {
+                println!("[{:>4.0}s] {}/{} {name}\t{uid}\talready on Nadeo — playlist only", t0.elapsed().as_secs_f64(), i + 1, rows.len());
+                uids.push(uid.clone());
+                out.push_str(&format!("{}\t{name}\t{uid}\t-\tskip\t0\t-\tIDENTICAL\n", p.display()));
+                continue;
+            }
             match upload_one(&mut t, p, name, &outdir) {
                 Ok((uid, map_id, how, bytes, md5, verdict)) => {
                     println!("[{:>4.0}s] {}/{} {name}\t{uid}\t{how}\t{bytes} B\t{verdict}\t({:.0}s)", t0.elapsed().as_secs_f64(), i + 1, rows.len(), t1.elapsed().as_secs_f64());
@@ -256,129 +271,205 @@ fn gate(map: &Path, items_dir: &Path, paks: &str) -> Result<(String, String), St
     Ok((hdr.name.clone(), hdr.uid.clone()))
 }
 
-pub fn publish_set_cmd(args: &[String]) -> Result<(), String> {
-    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
-    let parts: Vec<String> = f("--parts").ok_or("publish-set needs --parts 01,02,… (the part directories under --out-root)")?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-    let out_root = PathBuf::from(f("--out-root").ok_or("publish-set needs --out-root R (R/pNN/tinyNN/<tag>/<prefix>-NN-Tiny.Map.Gbx)")?);
-    let tag = f("--tag").unwrap_or_else(|| "u10s".into());
-    let prefix = f("--out-prefix").unwrap_or_else(|| "U10S".into());
-    let club = f("--club").ok_or("publish-set needs --club ID")?;
-    let camp_prefix = f("--campaign-prefix").unwrap_or_else(|| "Tiny U10S PART ".into());
-    let results_dir = PathBuf::from(f("--results").unwrap_or_else(|| out_root.join("publish").display().to_string()));
-    std::fs::create_dir_all(&results_dir).map_err(|e| format!("{}: {e}", results_dir.display()))?;
-    let campaigns_tsv = results_dir.join("campaigns.tsv");
-    let mut known: std::collections::BTreeMap<String, (String, String)> = std::fs::read_to_string(&campaigns_tsv)
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|l| {
-            let c: Vec<&str> = l.split('\t').collect();
-            (c.len() >= 3).then(|| (c[0].to_string(), (c[1].to_string(), c[2].to_string())))
-        })
-        .collect();
-    let wsx = Wsx::new(args);
-    let box_tinyctl = f("--box-tinyctl").unwrap_or_else(|| "/home/vjeux/shoot/u10s/tinyctl".into());
-    let paks = f("--paks").unwrap_or_else(|| "--pak /tmp/current-Stadium.pak:B773D73047A4104857722366D78D28A6".into());
-    let mut verdicts: Vec<String> = Vec::new();
-    for part in &parts {
-        let t0 = Instant::now();
-        let part_dir = out_root.join(format!("p{part}"));
-        let camp_name = format!("{camp_prefix}{}", part.trim_start_matches('0'));
-        println!("\n===== part {part}: {} ({}) =====", camp_name, part_dir.display());
-        // the built maps of the part, in map order
-        let mut maps: Vec<(String, PathBuf, PathBuf)> = Vec::new();
-        for nn in 1..=99usize {
-            let d = part_dir.join(format!("tiny{nn:02}")).join(&tag);
-            let m = d.join(format!("{prefix}-{nn:02}-Tiny.Map.Gbx"));
-            if m.exists() {
-                maps.push((format!("{nn:02}"), m, d.join("libx").join("Items")));
+/// The campaign ids already created, part -> (campaignId, activityId), in
+/// `campaigns.tsv` next to the results.
+struct Campaigns {
+    path: PathBuf,
+    known: std::sync::Mutex<std::collections::BTreeMap<String, (String, String)>>,
+}
+
+impl Campaigns {
+    fn load(path: PathBuf) -> Campaigns {
+        let known = std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| {
+                let c: Vec<&str> = l.split('\t').collect();
+                (c.len() >= 3).then(|| (c[0].to_string(), (c[1].to_string(), c[2].to_string())))
+            })
+            .collect();
+        Campaigns { path, known: std::sync::Mutex::new(known) }
+    }
+    fn get(&self, part: &str) -> Option<(String, String)> {
+        self.known.lock().unwrap().get(part).cloned()
+    }
+    fn put(&self, part: &str, id: String, act: String) {
+        let mut k = self.known.lock().unwrap();
+        k.insert(part.to_string(), (id, act));
+        let mut rows = String::new();
+        for (p, (i, a)) in k.iter() {
+            rows.push_str(&format!("{p}\t{i}\t{a}\n"));
+        }
+        let _ = std::fs::write(&self.path, rows);
+    }
+}
+
+struct SetCfg {
+    out_root: PathBuf,
+    tag: String,
+    prefix: String,
+    club: String,
+    camp_prefix: String,
+    results_dir: PathBuf,
+    box_tinyctl: String,
+    paks: String,
+    force: bool,
+    args: Vec<String>,
+}
+
+/// One part: gate, manifest (previous IDENTICAL rows become skip rows), push,
+/// campaign, batch, pull, cleanup. Returns the verdict line.
+fn publish_part(cfg: &SetCfg, camps: &Campaigns, part: &str) -> String {
+    let t0 = Instant::now();
+    let wsx = Wsx::new(&cfg.args);
+    let part_dir = cfg.out_root.join(format!("p{part}"));
+    let camp_name = format!("{}{}", cfg.camp_prefix, part.trim_start_matches('0'));
+    println!("\n===== part {part}: {camp_name} ({}) =====", part_dir.display());
+    let mut maps: Vec<(String, PathBuf, PathBuf)> = Vec::new();
+    for nn in 1..=99usize {
+        let d = part_dir.join(format!("tiny{nn:02}")).join(&cfg.tag);
+        let m = d.join(format!("{}-{nn:02}-Tiny.Map.Gbx", cfg.prefix));
+        if m.exists() {
+            maps.push((format!("{nn:02}"), m, d.join("libx").join("Items")));
+        }
+    }
+    if maps.is_empty() {
+        return format!("{part}\tFAILED\tno built maps under {}", part_dir.display());
+    }
+    // what an earlier run already put on Nadeo for this part (path -> uid)
+    let prev_results = cfg.results_dir.join(format!("results-p{part}.tsv"));
+    let done_before: std::collections::HashMap<String, String> = if cfg.force {
+        Default::default()
+    } else {
+        std::fs::read_to_string(&prev_results)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| {
+                let c: Vec<&str> = l.split('\t').collect();
+                (c.len() >= 8 && c[7] == "IDENTICAL" && c[2] != "-").then(|| (c[0].rsplit('/').next().unwrap_or(c[0]).to_string(), c[2].to_string()))
+            })
+            .collect()
+    };
+    let mut manifest = String::new();
+    let mut to_push: Vec<(String, PathBuf)> = Vec::new();
+    let mut refused: Vec<String> = Vec::new();
+    let mut skipped = 0usize;
+    for (nn, m, items) in &maps {
+        let remote = format!("{BOX_BATCH_DIR}/p{part}/{}-{nn}-Tiny.Map.Gbx", cfg.prefix);
+        let file = format!("{}-{nn}-Tiny.Map.Gbx", cfg.prefix);
+        // an already-uploaded map whose bytes did not change: playlist only
+        if let Some(uid) = done_before.get(&file) {
+            if let Ok(h) = tmmaps::header::read(m.to_str().unwrap_or("")) {
+                if h.uid == *uid {
+                    manifest.push_str(&format!("{remote}\t{}\t{uid}\tskip\n", h.name));
+                    skipped += 1;
+                    continue;
+                }
             }
         }
-        if maps.is_empty() {
-            verdicts.push(format!("{part}\tFAILED\tno built maps under {}", part_dir.display()));
-            continue;
-        }
-        // gate + manifest
-        let mut manifest = String::new();
-        let mut gated: Vec<(String, PathBuf, String)> = Vec::new();
-        let mut refused: Vec<String> = Vec::new();
-        for (nn, m, items) in &maps {
-            match gate(m, items, &paks) {
-                Ok((name, uid)) => {
-                    let remote = format!("{BOX_BATCH_DIR}/p{part}/{prefix}-{nn}-Tiny.Map.Gbx");
-                    manifest.push_str(&format!("{remote}\t{name}\n"));
-                    gated.push((nn.clone(), m.clone(), uid));
-                }
-                Err(e) => {
-                    eprintln!("  {nn}: refused: {}", e.lines().next().unwrap_or(""));
-                    refused.push(format!("{nn}: {}", e.lines().next().unwrap_or("")));
-                }
+        match gate(m, items, &cfg.paks) {
+            Ok((name, _uid)) => {
+                manifest.push_str(&format!("{remote}\t{name}\n"));
+                to_push.push((nn.clone(), m.clone()));
+            }
+            Err(e) => {
+                eprintln!("  p{part} {nn}: refused: {}", e.lines().next().unwrap_or(""));
+                refused.push(format!("{nn}: {}", e.lines().next().unwrap_or("")));
             }
         }
-        println!("  {} maps gated ok, {} refused", gated.len(), refused.len());
-        if gated.is_empty() {
-            verdicts.push(format!("{part}\tFAILED\tevery map refused by the gate"));
-            continue;
-        }
-        let local_manifest = results_dir.join(format!("manifest-p{part}.tsv"));
-        std::fs::write(&local_manifest, &manifest).map_err(|e| format!("{}: {e}", local_manifest.display()))?;
-        // push
+    }
+    println!("  p{part}: {} to upload, {skipped} already on Nadeo, {} refused", to_push.len(), refused.len());
+    if !refused.is_empty() {
+        let p = cfg.results_dir.join(format!("refused-p{part}.txt"));
+        let _ = std::fs::write(&p, refused.join("\n") + "\n");
+    }
+    if to_push.is_empty() && skipped == 0 {
+        return format!("{part}\tFAILED\tevery map refused by the gate");
+    }
+    let local_manifest = cfg.results_dir.join(format!("manifest-p{part}.tsv"));
+    if let Err(e) = std::fs::write(&local_manifest, &manifest) {
+        return format!("{part}\tFAILED\t{}: {e}", local_manifest.display());
+    }
+    let step = (|| -> Result<String, String> {
         wsx.sh(&format!("mkdir -p {BOX_BATCH_DIR}/p{part}"))?;
-        for (nn, m, _) in &gated {
-            wsx.push(m, &format!("{BOX_BATCH_DIR}/p{part}/{prefix}-{nn}-Tiny.Map.Gbx"))?;
+        for (nn, m) in &to_push {
+            wsx.push(m, &format!("{BOX_BATCH_DIR}/p{part}/{}-{nn}-Tiny.Map.Gbx", cfg.prefix))?;
         }
         let remote_manifest = format!("{BOX_BATCH_DIR}/p{part}/manifest.tsv");
         wsx.push(&local_manifest, &remote_manifest)?;
-        // the campaign: known id, or create one (the box has the tokens)
-        let (camp_id, act_id) = match known.get(part) {
-            Some(x) => x.clone(),
+        let (camp_id, act_id) = match camps.get(part) {
+            Some(x) => x,
             None => {
-                let out = wsx.sh(&format!("cd /home/vjeux/shoot/u10s && {box_tinyctl} nadeo-here campaign-create --club {club} --name '{}' --no-lock --outdir {BOX_BATCH_DIR}", camp_name.replace('\'', "")))?;
+                let out = wsx.sh(&format!("cd /home/vjeux/shoot/u10s && {} nadeo-here campaign-create --club {} --name '{}' --no-lock --outdir {BOX_BATCH_DIR}", cfg.box_tinyctl, cfg.club, camp_name.replace('\'', "")))?;
                 let toks: Vec<&str> = out.split_whitespace().collect();
-                let id = toks.iter().position(|t| *t == "campaignId").and_then(|i| toks.get(i + 1)).map(|s| s.to_string());
+                let id = toks.iter().position(|t| *t == "campaignId").and_then(|i| toks.get(i + 1)).map(|s| s.to_string()).ok_or_else(|| format!("campaign create: {}", out.lines().last().unwrap_or("").chars().take(200).collect::<String>()))?;
                 let act = toks.iter().position(|t| *t == "activityId").and_then(|i| toks.get(i + 1)).map(|s| s.to_string()).unwrap_or_else(|| "-".into());
-                match id {
-                    Some(id) => {
-                        known.insert(part.clone(), (id.clone(), act.clone()));
-                        let mut rows = String::new();
-                        for (p, (i, a)) in &known {
-                            rows.push_str(&format!("{p}\t{i}\t{a}\n"));
-                        }
-                        std::fs::write(&campaigns_tsv, rows).map_err(|e| format!("{}: {e}", campaigns_tsv.display()))?;
-                        (id, act)
-                    }
-                    None => {
-                        verdicts.push(format!("{part}\tFAILED\tcampaign create: {}", out.lines().last().unwrap_or("").chars().take(200).collect::<String>()));
-                        continue;
-                    }
-                }
+                camps.put(part, id.clone(), act.clone());
+                (id, act)
             }
         };
-        println!("  campaign {camp_id} (activity {act_id}) `{camp_name}`");
-        // the batch on the box
+        println!("  p{part}: campaign {camp_id} (activity {act_id}) `{camp_name}`");
         let remote_results = format!("{BOX_BATCH_DIR}/p{part}/results.tsv");
-        let cmd = format!("{box_tinyctl} publish-batch --detach --manifest {remote_manifest} --results {remote_results} --club {club} --campaign {camp_id} --campaign-name '{}' --outdir {BOX_BATCH_DIR}/p{part}", camp_name.replace('\'', ""));
-        let started = wsx.sh(&cmd)?;
-        if wsx.verbose {
-            eprintln!("{}", started.trim());
-        }
-        let done = wsx.wait_done(&format!("{BOX_BATCH_DIR}/p{part}/results.done"), &format!("{BOX_BATCH_DIR}/p{part}/results.log"), Duration::from_secs(3600), &format!("publish-batch p{part}"));
-        let local_results = results_dir.join(format!("results-p{part}.tsv"));
+        let cmd = format!("{} publish-batch --detach --manifest {remote_manifest} --results {remote_results} --club {} --campaign {camp_id} --campaign-name '{}' --outdir {BOX_BATCH_DIR}/p{part}", cfg.box_tinyctl, cfg.club, camp_name.replace('\'', ""));
+        wsx.sh(&cmd)?;
+        let done = wsx.wait_done(&format!("{BOX_BATCH_DIR}/p{part}/results.done"), &format!("{BOX_BATCH_DIR}/p{part}/results.log"), Duration::from_secs(5400), &format!("publish-batch p{part}"));
+        let local_results = cfg.results_dir.join(format!("results-p{part}.tsv"));
         let pulled = wsx.pull(&remote_results, &local_results);
-        // the box copies go (C: at 99 %)
         let _ = wsx.sh(&format!("rm -rf {BOX_BATCH_DIR}/p{part}"));
-        match (done, pulled) {
-            (Ok(text), Ok(_)) => {
-                let identical = std::fs::read_to_string(&local_results).map(|t| t.lines().filter(|l| l.ends_with("\tIDENTICAL")).count()).unwrap_or(0);
-                verdicts.push(format!("{part}\tOK\t{:.0}s\tcampaign {camp_id}\t{identical}/{} identical\t{} refused\t{}", t0.elapsed().as_secs_f64(), gated.len(), refused.len(), text.trim().replace('\n', " | ")));
-            }
-            (Err(e), _) | (_, Err(e)) => verdicts.push(format!("{part}\tFAILED\t{:.0}s\tcampaign {camp_id}\t{}", t0.elapsed().as_secs_f64(), e.lines().next().unwrap_or(""))),
-        }
-        if !refused.is_empty() {
-            let p = results_dir.join(format!("refused-p{part}.txt"));
-            let _ = std::fs::write(&p, refused.join("\n") + "\n");
-        }
-        println!("{}", verdicts.last().unwrap());
+        let text = done?;
+        pulled?;
+        let identical = std::fs::read_to_string(&local_results).map(|t| t.lines().filter(|l| l.ends_with("\tIDENTICAL")).count()).unwrap_or(0);
+        Ok(format!("{part}\tOK\t{:.0}s\tcampaign {camp_id}\t{identical}/{} identical\t{} refused\t{}", t0.elapsed().as_secs_f64(), to_push.len() + skipped, refused.len(), text.trim().replace('\n', " | ")))
+    })();
+    match step {
+        Ok(v) => v,
+        Err(e) => format!("{part}\tFAILED\t{:.0}s\t{}", t0.elapsed().as_secs_f64(), e.lines().next().unwrap_or("")),
     }
+}
+
+pub fn publish_set_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let parts_arg = f("--parts").ok_or("publish-set needs --parts 01,02,… or 01-39 (the part directories under --out-root)")?;
+    let parts: Vec<String> = if let Some((a, b)) = parts_arg.split_once('-') {
+        let (a, b): (usize, usize) = (a.trim().parse().map_err(|_| "--parts A-B")?, b.trim().parse().map_err(|_| "--parts A-B")?);
+        (a..=b).map(|n| format!("{n:02}")).collect()
+    } else {
+        parts_arg.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    };
+    let out_root = PathBuf::from(f("--out-root").ok_or("publish-set needs --out-root R (R/pNN/tinyNN/<tag>/<prefix>-NN-Tiny.Map.Gbx)")?);
+    let results_dir = PathBuf::from(f("--results").unwrap_or_else(|| out_root.join("publish").display().to_string()));
+    std::fs::create_dir_all(&results_dir).map_err(|e| format!("{}: {e}", results_dir.display()))?;
+    let cfg = SetCfg {
+        tag: f("--tag").unwrap_or_else(|| "u10s".into()),
+        prefix: f("--out-prefix").unwrap_or_else(|| "U10S".into()),
+        club: f("--club").ok_or("publish-set needs --club ID")?,
+        camp_prefix: f("--campaign-prefix").unwrap_or_else(|| "Tiny U10S PART ".into()),
+        box_tinyctl: f("--box-tinyctl").unwrap_or_else(|| "/home/vjeux/shoot/u10s/tinyctl".into()),
+        paks: f("--paks").unwrap_or_else(|| "--pak /tmp/current-Stadium.pak:B773D73047A4104857722366D78D28A6".into()),
+        force: tmmaps::cli::has(args, "--force"),
+        results_dir: results_dir.clone(),
+        out_root,
+        args: args.to_vec(),
+    };
+    let jobs: usize = f("--jobs").and_then(|j| j.parse().ok()).unwrap_or(1).max(1);
+    let camps = Campaigns::load(results_dir.join("campaigns.tsv"));
+    let queue = std::sync::Mutex::new(std::collections::VecDeque::from(parts.clone()));
+    let verdicts = std::sync::Mutex::new(Vec::<String>::new());
+    std::thread::scope(|s| {
+        for _ in 0..jobs.min(parts.len()) {
+            s.spawn(|| loop {
+                let part = match queue.lock().unwrap().pop_front() {
+                    Some(p) => p,
+                    None => break,
+                };
+                let v = publish_part(&cfg, &camps, &part);
+                println!("{v}");
+                verdicts.lock().unwrap().push(v);
+            });
+        }
+    });
+    let mut verdicts = verdicts.into_inner().unwrap();
+    verdicts.sort();
     println!("\n===== publish-set: {} parts =====", parts.len());
     for v in &verdicts {
         println!("{v}");
