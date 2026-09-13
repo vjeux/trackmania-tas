@@ -1424,6 +1424,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // model at the second's placements (2026-09-09: the occupied-cell probe of
     // Summer 20 "lost" its caps that way). A probe build takes a base of its own.
     let mut next_alias = alias_base();
+    // embedded custom blocks already baked: relative path -> (alias, sx, sz, units)
+    let mut custom_blocks: BTreeMap<String, (String, u32, u32, Vec<[i32; 3]>)> = BTreeMap::new();
+    // the map's own embedded files (custom items under Items\…, custom blocks anywhere)
+    let embedded: BTreeMap<String, Vec<u8>> = crate::embedded::files(&source).unwrap_or_default();
     // `v@ALIAS` rows (the prefabs' vegetation as stock items) and the
     // VegetTreeModel stem -> stock item cache behind them.
     let mut veget_rows = String::new();
@@ -1448,6 +1452,93 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             continue;
         }
         let key = BlockKey { name, flags: *flags, inherited_mods, placements: *n };
+        // A CUSTOM BLOCK the map embeds (`<path>.Block.Gbx_CustomBlock`: a mesh-modeler
+        // crystal in a CGameBlockItem, no pack block info) bakes like a custom item, in
+        // the block's frame; its footprint is read off the baked collision (cells of
+        // 32 × 8 × 32 m); a gameplay archetype (…Special…) lends its trigger.
+        // Everios96's u10s maps: TM2 dirt ports, magnet platforms, colourable bars
+        // (5 of the first 75 maps, 2026-09-13).
+        if let Some(rel) = name.strip_suffix("_CustomBlock").filter(|r| r.to_ascii_lowercase().ends_with(".block.gbx")) {
+            if let Some((alias, sx, sz, units)) = custom_blocks.get(rel) {
+                block_map.insert(key.map_key(), (alias.clone(), *sx, *sz, units.clone()));
+                continue;
+            }
+            let want = format!("\\{}", rel.replace('/', "\\").to_ascii_lowercase());
+            let found = embedded.iter().find(|(k, _)| {
+                let k = format!("\\{}", k.replace('/', "\\").to_ascii_lowercase());
+                k.ends_with(&want)
+            });
+            let Some((_, bytes)) = found else {
+                outcomes.push(key.outcome("", key.source(), Err(format!("custom block: the map embeds no file ending in `{rel}`"))));
+                continue;
+            };
+            // the archetype's gameplay trigger, baked the way its pack block bakes
+            let arche = crate::static_item::parse_file(bytes)
+                .ok()
+                .and_then(|f| f.item.block_archetype())
+                .or_else(|| crate::crystal_model::locate(&tmmaps::gbx::Gbx::parse(bytes).body).ok().and_then(|l| l.archetype.map(|(a, _)| a)).filter(|a| !a.is_empty()));
+            let mut special: Option<(CPlugSurface, Option<String>)> = None;
+            let mut special_note = String::new();
+            if let Some(a) = arche.as_deref().filter(|a| a.contains("Special")) {
+                match load_block_info(&mut idx, store, a) {
+                    Ok((apath, abi)) => {
+                        let akey = BlockKey { name: a, flags: *flags & !crate::blockmap::FLAG_GHOST, inherited_mods: "", placements: 0 };
+                        match plan_block(&abi, &akey, collection, &ambient, &tile_zones, &BTreeMap::new()) {
+                            BlockPlan::Bake(aplan) => match bake_block(store, &aplan, a, &apath, &abi, "Archetype.Item.Gbx", scale, collection, &legacy, None, false) {
+                                Ok((_, am, _)) => {
+                                    special = am.special.clone().map(|s| (s, am.gate_kind.clone()));
+                                    if special.is_none() {
+                                        let why: Vec<String> = am.notes.iter().filter(|n| n.contains("special") || n.contains("Special")).take(2).cloned().collect();
+                                        special_note = format!("; archetype {a} baked without a special trigger ({})", why.join(" | "));
+                                    }
+                                }
+                                Err(e) => special_note = format!("; archetype {a} bake failed: {}", e.lines().next().unwrap_or("")),
+                            },
+                            BlockPlan::Nothing { why, .. } => special_note = format!("; archetype {a}: nothing to bake ({why})"),
+                            BlockPlan::Refused { error, .. } => special_note = format!("; archetype {a} refused: {error}"),
+                            BlockPlan::Reuse { .. } => special_note = format!("; archetype {a}: reuse plan (no trigger taken)"),
+                        }
+                    }
+                    Err(e) => special_note = format!("; archetype {a}: {e}"),
+                }
+            }
+            let alias = format!("AC{next_alias:08}");
+            next_alias += 1;
+            let ident = format!("{alias}.Item.Gbx");
+            match crate::static_item::build::static_item_from_custom_block(bytes, &ident, &ident, scale, collection, special) {
+                Ok((out, m, arche)) if !m.visuals.is_empty() => {
+                    // footprint in cells from the scaled collision (fallback: the visuals)
+                    let mut max = [0.0f32; 3];
+                    let pts: Vec<[f32; 3]> = if m.surf_vertices.is_empty() { m.visuals.iter().filter_map(|v| v.visual.main.as_ref().map(|mm| { let b = mm.bounding_box; [b[3], b[4], b[5]] })).collect() } else { m.surf_vertices.clone() };
+                    for p in &pts {
+                        for i in 0..3 {
+                            max[i] = max[i].max(p[i] / scale);
+                        }
+                    }
+                    let cells = |extent: f32, size: f32| ((extent - 0.05) / size).ceil().max(1.0) as u32;
+                    let (sx, sy, sz) = (cells(max[0], 32.0), cells(max[1], 8.0), cells(max[2], 32.0));
+                    let mut units: Vec<[i32; 3]> = Vec::new();
+                    for x in 0..sx as i32 {
+                        for y in 0..sy as i32 {
+                            for z in 0..sz as i32 {
+                                units.push([x, y, z]);
+                            }
+                        }
+                    }
+                    for (file, dds) in &m.pictures {
+                        pictures.entry(format!("Items/{file}")).or_insert_with(|| dds.clone());
+                    }
+                    let summary = format!("custom block{}: {} bytes, {} visuals, {} collision tris, footprint {sx}x{sz} ({sy} high){}", arche.as_ref().map(|a| format!(" (archetype {a})")).unwrap_or_default(), out.len(), m.visuals.len(), m.surf_triangles.len(), if m.special.is_some() { ", special trigger".to_string() } else { special_note.clone() });
+                    files.insert(format!("Items/{ident}"), out);
+                    outcomes.push(key.outcome(&alias, key.source(), Ok(summary)));
+                    block_map.insert(key.map_key(), (alias.clone(), sx, sz, units.clone()));
+                    custom_blocks.insert(rel.to_string(), (alias, sx, sz, units));
+                }
+                Ok((_, m, _)) => outcomes.push(key.outcome(&alias, key.source(), Err(format!("custom block: no visuals; notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join("; "))))),
+                Err(e) => outcomes.push(key.outcome(&alias, key.source(), Err(format!("custom block: {e}")))),
+            }
+            continue;
+        }
         let (path, bi) = match load_block_info(&mut idx, store, name) {
             Ok(x) => x,
             Err(e) => {
@@ -1624,8 +1715,6 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     }
     // (model, variant, light skin) -> new model name: an embedded alias (AI...Item.Gbx) or a stock species
     let mut item_map: BTreeMap<(String, u8, Option<String>), String> = BTreeMap::new();
-    // the map's own embedded files (custom items live under Items\…)
-    let embedded: BTreeMap<String, Vec<u8>> = crate::embedded::files(&source).unwrap_or_default();
     let mut item_alias_n = alias_base();
     // a model without a variant list is built once; later variants reuse it
     let mut single_variant: BTreeMap<String, String> = BTreeMap::new();
