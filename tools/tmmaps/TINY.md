@@ -1226,3 +1226,59 @@ one level coarser, V bisected in [0, 40000] for the LARGEST threshold that fits
 u10s maps ≥ 7 000 000 B, 45 fit at (a), 30 at (b) — 17 of those touching only
 parts over ~26 000 vertices; U10S_100 (16.5 MB, 288 items) alone needed every
 part at level 1 (6.66 MB). The note in the tracker row records the setting.
+
+## Giant maps: the same converter at ×2 (2026-09-13 13:30Z)
+
+vjeux: "instead of tiny you make giant maps. Every item is 2x instead of 1/2."
+The converter was already scale-parametrised end to end (`mapgeom tiny-library
+--scale`, `tmmaps tiny --scale`, the placement scale = scale / model_scale, the
+LOD switch distances scaled with the geometry, lights' radii too); what a
+growing build needed was the plumbing and four half-specific rules turned over:
+
+* `tinyctl build|pipeline --scale 2` (default 0.5): the file is
+  `<prefix>-NN-Giant.Map.Gbx`, the map name "Giant <source name>", the uid
+  `Gia2` + the source uid minus its first four bytes (`tmmaps tiny
+  --uid-prefix`, `--name-prefix`; `build::variant_label` is the one word),
+  the box staging `Giant NN.Map.Gbx` / `tinyshots/publish-giant-NN` beside the
+  tiny run's files, `publish-map` accepts a `Gia` uid.
+* **Where the doubled map goes: `--anchor fit`.** The tiny anchor keeps the
+  spawn's x,z and halves everything about it; doubled about the spawn a map
+  leaves the 48-cell arena on one side (U10S_25 spans 576 m: ×2 about a spawn
+  at its west end ends at x ≈ 1 900). `fit` takes the source extent of
+  everything that becomes an item (grid blocks by their footprint cells, free
+  blocks and items by position), transforms it, and shifts the target anchor
+  by whole cells so the result is centred in the grid; y keeps the plane rule
+  (the ground stays the ground) and an overflow above the top row is reported.
+  All 25 U10S maps fit in x/z (the widest, 11, spans 1 344 of 1 536 m); six
+  (06 13 17 21 22 24) rise above the grid's 256 m top — accepted, see below.
+* **Outside the grid is fine.** Test map B (U10S_01 ×2 pushed so 387 of its
+  608 items lay past x = 1 536 and 121 above y = 256): the engine kept all
+  608 at their file positions (`/mapitems`, cell −1,−1,−1 on every free item),
+  drew them (the giant platforms and trees stand over the stadium's outer
+  plaza, through the stands and the big screen) — the "put back at the map's
+  centre" of 2026-09-08 was the editor's cursor, not a relocation. A build
+  that overflows in x/z is still centred rather than clipped; nothing is
+  clipped anywhere. (What overflows collides with the stadium decoration,
+  which is the price; none of the 25 pays it.)
+* The stock stand-in table reads BACKWARDS at ×2 (`stock_scaled_variant`):
+  `Flag8m` → `Flag16m` (the 16 m cloth is the 8 m cloth at exactly ×2, waving
+  under the game's own tween), `ShowFogger8m` → `ShowFogger16m`,
+  `Sparkler8m` → `Sparkler16m`, `ShowTorchSmall` → `ShowTorch`, `Screen*Small`
+  → `Screen*`, `Screen2x3` → `Screen2x3Big`; a model with no twin bakes as a
+  static ×2 copy like everything else (a `Flag16m` at ×2 is a still cloth).
+* No smaller-species ladder for hull-less vegetation (grass, ferns, the
+  BlueBay jungle cards): the species itself stays, full size — half the giant
+  world's scale, as the tiny world's stand-ins were double.
+* The MediaTracker trigger grid is doubled only when SHRINKING (a ×2 volume
+  covers whole source cells).
+
+Verified on U10S_01 (2026-09-13 13:45Z): the seven editor views of the
+pipeline pair with the original's (start gate, finish, top; the frame diff
+flags the editor's block-gate marking and the trees' lightmap as ever), and
+the play-mode drive spawns on the giant start deck, accelerates to 41 m/s and
+stops at x 457.8 against `PlatformSpecialFCRight` — the ORIGINAL driven the
+same way stops at x 442.7 (source), the same filler: the map's own wall,
+not a conversion defect (`mapgeom raycast` names the item; the tiny build
+has it too). Sizes at ×2 are the tiny sizes within a few percent (the mesh
+bytes do not depend on the scale); the `--max-bytes 7000000` ladder applies
+as it does to the tiny maps.
