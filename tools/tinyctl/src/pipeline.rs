@@ -129,14 +129,87 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         // --reuse-build: a map already built into the build dir (e.g. the one that
         // was published) is shot/published as it is, not rebuilt
         let reuse = tmmaps::cli::has(args, "--reuse-build") && tiny.exists();
-        if reuse {
+        let max_bytes: Option<u64> = f("--max-bytes").and_then(|v| v.parse().ok());
+        let build_res = if reuse {
             println!("{nn}: reusing {}", tiny.display());
-        } else if let Err(e) = crate::build::cmd(&bargs) {
+            Ok(())
+        } else {
+            crate::build::cmd(&bargs)
+        };
+        if let Err(e) = build_res {
             eprintln!("{nn}: build FAILED: {e}");
             row.extend(["-".into(), "-".into(), "-".into(), "-".into(), format!("{:.0}", build_t.elapsed().as_secs_f64()), "-".into(), "-".into(), "-".into(), format!("FAILED build: {}", first_line(&e))]);
             append(&tracker, &row)?;
             failed += 1;
             continue;
+        }
+        // --max-bytes N: a server refuses a map over N bytes (7 MB, vjeux 2026-09-13).
+        // A map over the cap is rebuilt down the detail ladder until it fits:
+        // (a) the far LOD levels dropped (`--lod-pick 0`: every part at its nearest
+        // level, no visual change up close); (b) the HEAVY parts one level coarser,
+        // the vertex threshold above which a part goes coarser found by bisection
+        // (the largest threshold that fits keeps the most parts sharp); (c) the
+        // same one level further. The note records the setting that fit.
+        if let Some(cap) = max_bytes.filter(|_| !reuse) {
+            let size = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(u64::MAX);
+            let mut fit_note = String::new();
+            if size(&tiny) >= cap {
+                let rebuild = |extra: &[String]| -> Result<u64, String> {
+                    let mut a = bargs.clone();
+                    a.extend(extra.iter().cloned());
+                    crate::build::cmd(&a)?;
+                    Ok(size(&tiny))
+                };
+                let start = size(&tiny);
+                let mut chosen: Option<(String, u64)> = None;
+                // (a) far levels off
+                let s0 = rebuild(&["--lod-pick".into(), "0".into()])?;
+                println!("{nn}: {start} B over the {cap} B cap; nearest level only: {s0} B");
+                if s0 < cap {
+                    chosen = Some(("lod-pick 0 (far levels dropped)".into(), s0));
+                }
+                // (b), (c): level 1, then 2, then 3 — heavy parts first (bisection on the threshold)
+                let mut level = 1u32;
+                while chosen.is_none() && level <= 3 {
+                    let all = rebuild(&["--lod-pick".into(), level.to_string()])?;
+                    println!("{nn}: every part at level {level}: {all} B");
+                    if all >= cap {
+                        level += 1;
+                        continue;
+                    }
+                    // the largest threshold V (parts under V vertices stay at their nearest level) that fits
+                    let (mut lo, mut hi) = (0u32, 40000u32); // lo fits (= all); hi: checked first (only the monster parts coarser)
+                    let s_hi = rebuild(&["--lod-pick".into(), level.to_string(), "--lod-pick-min-verts".into(), hi.to_string()])?;
+                    println!("{nn}: level {level}, parts under {hi} vertices sharp: {s_hi} B");
+                    if s_hi < cap {
+                        chosen = Some((format!("lod-pick {level}, parts under {hi} vertices sharp"), s_hi));
+                        break;
+                    }
+                    let mut best = (0u32, all);
+                    while hi - lo > 500 {
+                        let mid = (lo + hi) / 2;
+                        let s = rebuild(&["--lod-pick".into(), level.to_string(), "--lod-pick-min-verts".into(), mid.to_string()])?;
+                        println!("{nn}: level {level}, parts under {mid} vertices sharp: {s} B");
+                        if s < cap {
+                            lo = mid;
+                            best = (mid, s);
+                        } else {
+                            hi = mid;
+                        }
+                    }
+                    if best.0 != lo || size(&tiny) >= cap {
+                        // leave the build in the fitting state
+                        let s = rebuild(&["--lod-pick".into(), level.to_string(), "--lod-pick-min-verts".into(), best.0.to_string()])?;
+                        best.1 = s;
+                    }
+                    chosen = Some((format!("lod-pick {level}, parts under {} vertices sharp", best.0), best.1));
+                }
+                match chosen {
+                    Some((how, s)) => fit_note = format!("fit under {cap} B: {start} -> {s} B ({how}); "),
+                    None => fit_note = format!("DOES NOT FIT under {cap} B even at level 3; "),
+                }
+            }
+            note.push_str(&fit_note);
         }
         let thdr = match tmmaps::header::read(&tiny.display().to_string()) {
             Ok(h) => h,
@@ -404,6 +477,21 @@ pub fn convert_all_cmd(args: &[String]) -> Result<(), String> {
                     let mut pargs: Vec<String> = nums.clone();
                     pargs.extend(["--src-dir".to_string(), src_dir.display().to_string(), "--out-root".into(), part_out.display().to_string(), "--tag".into(), tag.clone(), "--out-prefix".into(), prefix.clone(), "--recipe".into(), recipe.clone(), "--tracker".into(), part_out.join("tracker.tsv").display().to_string(), "--alias-part".into(), part.trim_start_matches('0').to_string(), "--no-shoot".into(), "--no-publish".into()]);
                     pargs.extend(envs.iter().cloned());
+                    if let Some(cap) = tmmaps::cli::flag(args, "--max-bytes") {
+                        pargs.push("--max-bytes".into());
+                        pargs.push(cap.to_string());
+                    }
+                    if let Some(only) = tmmaps::cli::flag(args, "--only") {
+                        // --only pNN:a,b;pMM:c — restrict each part to the listed map numbers
+                        for grp in only.split(';') {
+                            if let Some((p, list)) = grp.split_once(':') {
+                                if p.trim_start_matches('p').trim().parse::<usize>().ok() == part.parse::<usize>().ok() {
+                                    let keep: Vec<String> = list.split(',').map(|s| format!("{:02}", s.trim().parse::<usize>().unwrap_or(0))).collect();
+                                    pargs.retain(|a| !(a.len() == 2 && a.chars().all(|c| c.is_ascii_digit())) || keep.contains(a));
+                                }
+                            }
+                        }
+                    }
                     let r = cmd(&pargs);
                     let built = (1..=99usize).filter(|n| part_out.join(format!("tiny{n:02}")).join(&tag).join(format!("{prefix}-{n:02}-Tiny.Map.Gbx")).exists()).count();
                     match r {

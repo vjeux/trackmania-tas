@@ -161,7 +161,7 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
         .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
         .filter_map(|l| {
             let c: Vec<&str> = l.split('\t').collect();
-            (c.len() >= 2).then(|| (PathBuf::from(c[0].trim()), c[1].trim().to_string(), (c.len() >= 4 && c[3].trim() == "skip").then(|| c[2].trim().to_string())))
+            (c.len() >= 2).then(|| (PathBuf::from(c[0].trim()), c[1].trim().to_string(), (c.len() >= 4 && c[3].trim() == "skip").then(|| format!("{}\t{}", c[2].trim(), c.get(4).map(|s| s.trim()).unwrap_or("-")))))
         })
         .collect();
     let summary = (|| -> Result<String, String> {
@@ -171,10 +171,11 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
         let mut failed = 0usize;
         for (i, (p, name, skip)) in rows.iter().enumerate() {
             let t1 = Instant::now();
-            if let Some(uid) = skip {
+            if let Some(skip) = skip {
+                let (uid, md5) = skip.split_once('\t').unwrap_or((skip.as_str(), "-"));
                 println!("[{:>4.0}s] {}/{} {name}\t{uid}\talready on Nadeo — playlist only", t0.elapsed().as_secs_f64(), i + 1, rows.len());
-                uids.push(uid.clone());
-                out.push_str(&format!("{}\t{name}\t{uid}\t-\tskip\t0\t-\tIDENTICAL\n", p.display()));
+                uids.push(uid.to_string());
+                out.push_str(&format!("{}\t{name}\t{uid}\t-\tskip\t0\t{md5}\tIDENTICAL\n", p.display()));
                 continue;
             }
             match upload_one(&mut t, p, name, &outdir) {
@@ -346,7 +347,7 @@ fn publish_part(cfg: &SetCfg, camps: &Campaigns, part: &str) -> String {
             .lines()
             .filter_map(|l| {
                 let c: Vec<&str> = l.split('\t').collect();
-                (c.len() >= 8 && c[7] == "IDENTICAL" && c[2] != "-").then(|| (c[0].rsplit('/').next().unwrap_or(c[0]).to_string(), c[2].to_string()))
+                (c.len() >= 8 && c[7] == "IDENTICAL" && c[2] != "-").then(|| (c[0].rsplit('/').next().unwrap_or(c[0]).to_string(), format!("{}\t{}", c[2], c[6])))
             })
             .collect()
     };
@@ -358,10 +359,13 @@ fn publish_part(cfg: &SetCfg, camps: &Campaigns, part: &str) -> String {
         let remote = format!("{BOX_BATCH_DIR}/p{part}/{}-{nn}-Tiny.Map.Gbx", cfg.prefix);
         let file = format!("{}-{nn}-Tiny.Map.Gbx", cfg.prefix);
         // an already-uploaded map whose bytes did not change: playlist only
-        if let Some(uid) = done_before.get(&file) {
+        if let Some(prev) = done_before.get(&file) {
+            let (uid, prev_md5) = prev.split_once('\t').unwrap_or((prev.as_str(), ""));
+            // same uid AND same bytes: playlist only (a rebuilt map re-uploads)
+            let cur_md5 = std::fs::read(m).map(|b| md5_hex(&b)).unwrap_or_default();
             if let Ok(h) = tmmaps::header::read(m.to_str().unwrap_or("")) {
-                if h.uid == *uid {
-                    manifest.push_str(&format!("{remote}\t{}\t{uid}\tskip\n", h.name));
+                if h.uid == uid && cur_md5 == prev_md5 {
+                    manifest.push_str(&format!("{remote}\t{}\t{uid}\tskip\t{cur_md5}\n", h.name));
                     skipped += 1;
                     continue;
                 }
