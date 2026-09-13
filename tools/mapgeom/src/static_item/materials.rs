@@ -137,6 +137,11 @@ pub const MATERIAL_LINK_RESOLVE: &[(&str, &str)] = &[
     ("Stadium\\Media\\Material\\SpecialSignTurbo", "Stadium\\Media\\Modifier\\Turbo\\Sign"),
     ("Stadium\\Media\\Material\\SpecialSignOff", "Stadium\\Media\\Modifier\\Turbo\\SignOff"),
     ("Stadium\\Media\\Material\\DecalSpecialTurbo", "Stadium\\Media\\Modifier\\Turbo\\Decal"),
+    // a community item whose material could not be resolved by its author's mesh
+    // modeler (StadiumRoadMainNoGrip in U10S_606, 2026-09-13): the game shows its
+    // error material; the bake gives it a plain road surface so item-check passes
+    ("ERROR_MAT", "Stadium\\Media\\Material\\PlatformTech"),
+    ("Stadium\\Media\\Material\\ERROR_MAT", "Stadium\\Media\\Material\\PlatformTech"),
 ];
 
 /// The editor-resolved link for a crystal material link.
