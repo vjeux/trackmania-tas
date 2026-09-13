@@ -1147,6 +1147,19 @@ impl MediaTracker {
         Ok(())
     }
 
+    /// `--drop-ingame-clip NAME`: delete in-game clip NAME (and its trigger). The
+    /// 2026-09-13 bisect: does a map the editor saved with an imported MediaTracker
+    /// ghost block refuse to enter a playground BECAUSE of that block?
+    pub fn drop_in_game_clip(&mut self, name: &str) -> Result<(), String> {
+        let Slot::Group(g) = &mut self.in_game else { return Err("no in-game group".into()) };
+        let i = g.clips.iter().position(|c| c.name == name).ok_or_else(|| format!("no in-game clip named {name:?} (have {:?})", g.clips.iter().map(|c| c.name.clone()).collect::<Vec<_>>()))?;
+        g.clips.remove(i);
+        if i < g.triggers.len() {
+            g.triggers.remove(i);
+        }
+        Ok(())
+    }
+
     /// `--set-ingame-trigger NAME=cx,cy,cz;cx,cy,cz…`: give the in-game clip NAME these
     /// trigger cells (trigger-grid units, see `trigger_world_box`) — a clip with a
     /// trigger on the spawn plays right after the intro (the end-race promotion
@@ -1446,6 +1459,10 @@ pub fn cmd(args: &[String]) {
                 if let Some(name) = crate::cli::flag(args, "--promote-ingame-intro") {
                     mt.promote_in_game_to_intro(name).unwrap_or_else(|e| crate::cli::die(&e));
                     println!("in-game clip {name:?} is now the intro clip");
+                }
+                if let Some(name) = crate::cli::flag(args, "--drop-ingame-clip") {
+                    mt.drop_in_game_clip(name).unwrap_or_else(|e| crate::cli::die(&e));
+                    println!("in-game clip {name:?} dropped");
                 }
                 if let Some(spec) = crate::cli::flag(args, "--set-ingame-trigger") {
                     let (name, cells) = spec.split_once('=').unwrap_or_else(|| crate::cli::die("--set-ingame-trigger NAME=cx,cy,cz;…"));
