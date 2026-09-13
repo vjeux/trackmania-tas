@@ -106,6 +106,27 @@ fn main() {
         "swapmodel" => surgery::swapmodel(&args),
         "wpdump" => surgery::wpdump(&args),
         "waypoints" => surgery::waypoints(&args),
+        // seed-item MAP --out OUT: one template item record into a 0-item map (the
+        // tiny writer's clone donor; U10S_113, 2026-09-13)
+        // rename-map MAP --out OUT --name NEW: the map's own name (header + body), nothing else
+        "rename-map" => {
+            let src = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps rename-map MAP --out OUT --name NEW"); std::process::exit(2) });
+            let out = tmmaps::cli::flag(&args, "--out").map(String::from).unwrap_or_else(|| { eprintln!("--out OUT"); std::process::exit(2) });
+            let new = tmmaps::cli::flag(&args, "--name").map(String::from).unwrap_or_else(|| { eprintln!("--name NEW"); std::process::exit(2) });
+            let old = tmmaps::header::read(&src).map(|h| h.name).unwrap_or_default();
+            let mut m = tmmaps::map::MapFile::load(std::path::Path::new(&src));
+            let (h, b) = m.set_map_name(&old, &new);
+            m.write_to(std::path::Path::new(&out)).expect("write");
+            println!("{out}: {old:?} -> {new:?} ({h} in the header, {b} in the body)");
+        }
+        "seed-item" => {
+            let src = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps seed-item MAP --out OUT"); std::process::exit(2) });
+            let out = tmmaps::cli::flag(&args, "--out").map(String::from).unwrap_or_else(|| { eprintln!("--out OUT"); std::process::exit(2) });
+            let g = tmmaps::gbx::Gbx::parse(&std::fs::read(&src).expect("read map"));
+            let body = tmmaps::map::seed_item_record(&g.body, 26).unwrap_or_else(|e| { eprintln!("tmmaps seed-item: {e}"); std::process::exit(1) });
+            std::fs::write(&out, g.write_body_recompressed(&body)).expect("write");
+            println!("{out}: body {} -> {} bytes", g.body.len(), body.len());
+        }
         "segat" => segments::cmd_segat(&args),
         "segments" => inspect::segment_table(&args),
         "ladder" => ladder::ladder(&args),

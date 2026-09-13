@@ -371,6 +371,14 @@ fn publish_part(cfg: &SetCfg, camps: &Campaigns, part: &str) -> String {
                 }
             }
         }
+        // the item gate needs the unpacked library; a build whose libx was cleaned up
+        // re-extracts it from lib.zip
+        if std::fs::read_dir(items).map(|rd| rd.count()).unwrap_or(0) == 0 {
+            if let Some(zip) = items.parent().and_then(|l| l.parent()).map(|d| d.join("lib.zip")).filter(|z| z.exists()) {
+                let _ = std::fs::create_dir_all(items.parent().unwrap());
+                let _ = std::process::Command::new("unzip").arg("-q").arg("-o").arg(&zip).arg("-d").arg(items.parent().unwrap()).output();
+            }
+        }
         match gate(m, items, &cfg.paks) {
             Ok((name, _uid)) => {
                 manifest.push_str(&format!("{remote}\t{name}\n"));
