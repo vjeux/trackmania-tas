@@ -306,7 +306,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     let table = out.join("giant-water.tsv");
                     let mut gw = Command::new(&mapgeom);
                     gw.args(&paks).args(&mapgeom_flags).arg("giantwater").arg(&tiny_out).arg("--source").arg(&src).arg("--anchor").arg(&anchor).arg("--scale").arg(&scale_s).arg("--template").arg(&template).arg("--table").arg(&table).arg("--out").arg(&staged);
-                    if env.get("TINY_GIANT_ROAD_TILES").map(|v| v == "0").unwrap_or(false) {
+                    // The water ROADS stay items unless asked (TINY_GIANT_ROAD_TILES=1):
+                    // the volume tiles grow the archetype's 1× fillers in the open —
+                    // rounded dead-end caps, the green start tubes — on the ×2 canal
+                    // (vjeux, 2026-09-13 17:44Z: "not what I wanted … this changes the
+                    // layout"); on a pool the same fillers hide inside the ×2 walls.
+                    if env.get("TINY_GIANT_ROAD_TILES").map(|v| v != "1").unwrap_or(true) {
                         gw.arg("--no-roads");
                     }
                     gw.envs(env.iter());
