@@ -200,7 +200,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let uids: Vec<String> = f("--uids").ok_or("campaign-set needs --uids A,B,…")?.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
             let v = campaign_set(&auth_live, &club, &camp, &name, &uids)?;
             save(&format!("club-{club}-campaign-{camp}-set.json"), &v)?;
-            let n = v.get("playlist").and_then(|p| p.as_array()).map(|a| a.len()).unwrap_or(0);
+            let n = serde_json::to_string(&v).unwrap_or_default().matches("\"mapUid\"").count();
             println!("campaign\t{camp}\t{}\t{n} maps in the playlist", s(&v, "name"));
             Ok(())
         }

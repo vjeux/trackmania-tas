@@ -200,7 +200,7 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
             let auth_live = format!("Authorization: {}", t.live);
             match crate::nadeo::campaign_set(&auth_live, &club, &camp, &cname, &uids) {
                 Ok(v) => {
-                    let n = v.get("playlist").and_then(|p| p.as_array()).map(|a| a.len()).unwrap_or(0);
+                    let n = serde_json::to_string(&v).unwrap_or_default().matches("\"mapUid\"").count();
                     camp_line = format!("campaign\t{camp}\t{cname}\t{n} maps in the playlist");
                 }
                 Err(e) => {
