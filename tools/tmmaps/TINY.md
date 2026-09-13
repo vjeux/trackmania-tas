@@ -1338,8 +1338,18 @@ transformed cells** (`mapgeom giantwater`, run by `tinyctl build --scale N`):
   inside the ×2 wall items and flush with their tops: no border in the frames
   (giant 10 pool top/side, giant 23 start/top/side, 2026-09-13 17:10Z).
 
-Knobs: `TINY_WATER_NATIVE=0` (no pass, items only — the 2026-09-13 morning
-form), `TINY_GIANT_ROAD_TILES=0` (pools only). Curves, branches and slopes of
+REJECTED the same hour (vjeux, a screenshot of giant 23's start: "This is not
+what I wanted, we should overlay the water block without the road border. This
+changes the layout"): the road tiles grew their archetype's 1× fillers IN THE
+OPEN — `TrackWallDeadendRoundFCB` rounded caps under the shallow water and the
+green `Start-FC` tubes across the ×2 canal. Every block info that carries a
+water volume carries clips, and every clip-less one (the filler pieces
+themselves: FCT, FCB, VFC…) carries no volume — checked over the Stadium
+pack — so a road cannot have a volume without borders; a pool can, because
+its fillers hide inside the ×2 walls. Road tiles are OFF unless
+`TINY_GIANT_ROAD_TILES=1`; giant 23 was re-uploaded with the plain ×2 canal
+and its native pools at 17:46Z. `TINY_WATER_NATIVE=0` = no pass at all (the
+morning form). Curves, branches and slopes of
 the water road (none in U10S 01–25) have no volume emitter and stay items.
 What the ×2 does to the route regardless of water: the car's speed is not
 doubled, so a jump falls √2× farther in time and lands SHORT of where the
