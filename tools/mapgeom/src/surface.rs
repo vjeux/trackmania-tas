@@ -334,12 +334,24 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
     // and no cell shift makes it drop in; such a block is baked as a
     // re-dressed copy of its own geometry instead (`Bake`).
     let (sp, tp) = (base_prefab(&src), base_prefab(&twin));
-    if sp != tp {
-        return mk(Action::Bake, &cand, format!("different mesh: {} vs {} — re-dressed copy", sp.as_deref().map(|p| p.rsplit('\\').next().unwrap_or(p)).unwrap_or("none"), tp.as_deref().map(|p| p.rsplit('\\').next().unwrap_or(p)).unwrap_or("none")));
-    }
-    // the deck offset between the two models, from their base prefabs' deck levels
+    // the deck levels of the two models' base prefabs (the flat collision area per height)
     let level = |store: &mut DataStore, bi: &BlockInfo| -> Option<f32> { base_prefab(bi).and_then(|pf| deck_level(store, &pf)) };
-    let dy = match (level(store, &src), level(store, &twin)) {
+    let (ls, lt) = (level(store, &src), level(store, &twin));
+    let stem = |p: &Option<String>| p.as_deref().map(|p| p.rsplit('\\').next().unwrap_or(p).to_string());
+    let mut dress_note = String::new();
+    if sp != tp {
+        // Nadeo keeps a per-surface prefab FOLDER for some families (the platform
+        // specials: `PlatformGrass\Special_Air` / `PlatformIce\Special_Air`): the
+        // same file name under another folder with the deck at the same height is
+        // the same shape in another dress; a road's `RoadTech\Straight_Air` vs
+        // `RoadIce\Straight_Air` has its deck 2.5 m higher (the trough) and is not
+        let same_shape = stem(&sp) == stem(&tp) && matches!((ls, lt), (Some(a), Some(b)) if (a - b).abs() < 0.3) || (stem(&sp) == stem(&tp) && ls.is_none() && lt.is_none());
+        if !same_shape {
+            return mk(Action::Bake, &cand, format!("different mesh: {} vs {} (deck {:?} vs {:?}) — re-dressed copy", sp.as_deref().and_then(|p| p.strip_prefix("Stadium\\Media\\Prefab\\")).unwrap_or("none"), tp.as_deref().and_then(|p| p.strip_prefix("Stadium\\Media\\Prefab\\")).unwrap_or("none"), ls, lt));
+        }
+        dress_note = format!("; same shape in another prefab folder ({} deck {:?})", stem(&sp).unwrap_or_default(), ls);
+    }
+    let dy = match (ls, lt) {
         (Some(a), Some(b)) => ((b - a) / 8.0).round() as i32,
         _ => 0,
     };
@@ -353,7 +365,7 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
             if src.mat_modifier != twin.mat_modifier {
                 detail.push_str(&format!("; modifier {:?} -> {:?}", src.mat_modifier.as_ref().map(|m| m.1.as_str()).unwrap_or("-"), twin.mat_modifier.as_ref().map(|m| m.1.as_str()).unwrap_or("-")));
             }
-            let mut r = mk(Action::Rename, &cand, detail);
+            let mut r = mk(Action::Rename, &cand, format!("{detail}{dress_note}"));
             r.dy = dy;
             r
         }

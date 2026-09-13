@@ -396,3 +396,112 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// `tinyctl surface-report --tracker T.tsv --out-root DIR --frames-dir DIR [--uploads uploads.txt]
+/// [--out REPORT.md] [--surface ice] [--campaign-url URL]` — the tracker as a
+/// Markdown report: one summary table (the LAST row per map wins), then a
+/// section per map with its three before/after frames embedded (uploaded
+/// through `tinyctl upload` unless `--uploads` already lists `cmp-<surface>NN<view>`)
+/// and the block accounting from the map's plan: which models were renamed to
+/// which twin, which were baked as re-dressed copies, which stayed and why.
+pub fn report_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let surface = f("--surface").unwrap_or_else(|| "ice".into());
+    let word = { let mut c = surface.chars(); c.next().map(|x| x.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default() };
+    let out_root = PathBuf::from(f("--out-root").unwrap_or_else(|| format!("/tmp/surface-{surface}")));
+    let tracker = PathBuf::from(f("--tracker").unwrap_or_else(|| out_root.join("tracker.tsv").to_string_lossy().into_owned()));
+    let frames_dir = PathBuf::from(f("--frames-dir").unwrap_or_else(|| out_root.join("frames").to_string_lossy().into_owned()));
+    let uploads_path = PathBuf::from(f("--uploads").unwrap_or_else(|| out_root.join("uploads.txt").to_string_lossy().into_owned()));
+    let out = PathBuf::from(f("--out").unwrap_or_else(|| out_root.join("REPORT.md").to_string_lossy().into_owned()));
+    let text = std::fs::read_to_string(&tracker).map_err(|e| format!("{}: {e}", tracker.display()))?;
+    let mut lines = text.lines();
+    let head: Vec<String> = lines.next().unwrap_or("").split('\t').map(|s| s.to_string()).collect();
+    let col_of = |n: &str| head.iter().position(|h| h == n).unwrap_or_else(|| panic!("tracker: no column `{n}`"));
+    let mut by_nn: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for l in lines.filter(|l| !l.trim().is_empty()) {
+        let r: Vec<String> = l.split('\t').map(|s| s.to_string()).collect();
+        by_nn.insert(r[0].clone(), r);
+    }
+    let col = |r: &[String], n: &str| r.get(col_of(n)).cloned().unwrap_or_else(|| "-".into());
+    // uploads: NAME ID rows; missing frames are uploaded now
+    let mut uploads: BTreeMap<String, String> = std::fs::read_to_string(&uploads_path).ok().map(|t| t.lines().filter_map(|l| l.split_once(char::is_whitespace).map(|(a, b)| (a.trim().to_string(), b.trim().to_string()))).collect()).unwrap_or_default();
+    let views = ["start", "finish", "top"];
+    let no_upload = tmmaps::cli::has(args, "--no-upload");
+    for nn in by_nn.keys() {
+        for v in views {
+            let key = format!("cmp-{surface}{nn}{v}");
+            if uploads.contains_key(&key) || no_upload {
+                continue;
+            }
+            let p = frames_dir.join(format!("{key}.jpg"));
+            if !p.exists() {
+                continue;
+            }
+            match crate::upload::cmd(&[p.display().to_string(), "--record".into(), uploads_path.display().to_string()]) {
+                Ok(()) => {
+                    // the recorder appended `NAME ID`; read it back
+                    if let Some(id) = std::fs::read_to_string(&uploads_path).ok().and_then(|t| t.lines().filter_map(|l| l.split_once(char::is_whitespace).map(|(a, b)| (a.trim().to_string(), b.trim().to_string()))).filter(|(a, _)| *a == key).last().map(|(_, b)| b)) {
+                        uploads.insert(key, id);
+                    }
+                }
+                Err(e) => eprintln!("upload {key}: {e}"),
+            }
+        }
+    }
+    let secs = |ms: &str| ms.parse::<f64>().map(|v| format!("{:.3}", v / 1000.0)).unwrap_or_else(|_| ms.to_string());
+    let mut md = String::new();
+    md.push_str(&format!("# {word} U10S — the first 25 U10S maps re-surfaced as {surface}\n\n"));
+    if let Some(u) = f("--campaign-url") {
+        md.push_str(&format!("Campaign: {u}\n\n"));
+    }
+    let tot = |n: &str| by_nn.values().map(|r| col(r, n).parse::<usize>().unwrap_or(0)).sum::<usize>();
+    md.push_str(&format!("{} maps · {} block records renamed to their {surface} twin · {} baked as re-dressed item copies · {} already {surface} · {} left as they are (pillars, structures, gates, decoration) · {} with no {surface} form at all.\n\n", by_nn.len(), tot("renamed"), tot("baked"), tot("same"), tot("kept"), tot("none")));
+    md.push_str("| # | source | AT / gold / silver / bronze (s) | ice map | size | renamed | baked | same | kept | none | frames | Nadeo |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    for (nn, r) in &by_nn {
+        let times = format!("{} / {} / {} / {}", secs(&col(r, "authortime_ms")), secs(&col(r, "gold")), secs(&col(r, "silver")), secs(&col(r, "bronze")));
+        let size = col(r, "out_bytes").parse::<f64>().map(|b| format!("{:.2} MB", b / 1e6)).unwrap_or_else(|_| col(r, "out_bytes"));
+        let nadeo = col(r, "nadeo").replace("OK created mapId ", "created `").replace("OK updated mapId ", "updated `").replace(" stored IDENTICAL", "` · md5 identical");
+        let frames = col(r, "frames");
+        md.push_str(&format!("| {nn} | {} `{}` | {times} | {} `{}` | {size} | {} | {} | {} | {} | {} | {frames} | {nadeo} |\n", col(r, "source_name"), col(r, "source_uid"), col(r, "out_name"), col(r, "out_uid"), col(r, "renamed"), col(r, "baked"), col(r, "same"), col(r, "kept"), col(r, "none")));
+    }
+    md.push_str("\nEvery map keeps the source's medal times, items, MediaTracker and thumbnail; the uid is `Ice2` + the source uid's tail; the validation ghost (an author run on another surface) is removed.\n\n");
+    for (nn, r) in &by_nn {
+        md.push_str(&format!("## {nn} — {} → {}\n\n", col(r, "source_name"), col(r, "out_name")));
+        let note = col(r, "note");
+        if !note.is_empty() && note != "-" {
+            md.push_str(&format!("Note: {note}\n\n"));
+        }
+        for v in views {
+            let key = format!("cmp-{surface}{nn}{v}");
+            match uploads.get(&key) {
+                Some(id) => md.push_str(&format!("**{v}** (left: original · right: {surface})\n\n![{key}](/api/attachments/view?file_id={id})\n\n")),
+                None => md.push_str(&format!("**{v}**: no frame\n\n")),
+            }
+        }
+        // the block accounting from models.tsv
+        let models = out_root.join(format!("{surface}{nn}")).join("models.tsv");
+        if let Ok(t) = std::fs::read_to_string(&models) {
+            let mut groups: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+            for l in t.lines().skip(1).filter(|l| !l.trim().is_empty()) {
+                let c: Vec<&str> = l.split('\t').collect();
+                let (name, count, action, target, detail) = (c[0], c[1], c[2], c.get(3).copied().unwrap_or(""), c.get(5).copied().unwrap_or(""));
+                let entry = match action {
+                    "rename" => format!("{name} → {target} ×{count}"),
+                    "bake" => format!("{name} ×{count} ({})", detail.split(" — ").next().unwrap_or(detail).replace("different mesh: ", "")),
+                    "same" => format!("{name} ×{count}"),
+                    "none" => format!("{name} ×{count} ({detail})"),
+                    _ => format!("{name} ×{count}"),
+                };
+                groups.entry(action).or_default().push(entry);
+            }
+            for (action, label) in [("rename", "Renamed to the ice twin"), ("bake", "Baked as re-dressed item copies (no same-shape ice block)"), ("same", "Already ice"), ("none", "No ice form — left as is"), ("keep", "Not a surface (left as is)")] {
+                if let Some(v) = groups.get(action) {
+                    md.push_str(&format!("**{label}:** {}\n\n", v.join(" · ")));
+                }
+            }
+        }
+    }
+    std::fs::write(&out, &md).map_err(|e| format!("{}: {e}", out.display()))?;
+    println!("wrote {} ({} maps, {} frames linked)", out.display(), by_nn.len(), uploads.len());
+    Ok(())
+}
