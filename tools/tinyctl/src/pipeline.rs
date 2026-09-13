@@ -418,6 +418,27 @@ pub fn tracker_md_cmd(args: &[String]) -> Result<(), String> {
         let nadeo = col(r, 15).replace("OK created mapId ", "created `").replace(" stored IDENTICAL", "` · stored md5 identical");
         out.push_str(&format!("| {nn} | {} | `{}` | {times} | `{}` | {size} | {} ok | {frames_cell} | {nadeo} |\n", col(r, 2), col(r, 3), col(r, 9), col(r, 11)));
     }
+    // --embed: the frames INLINE under the table, one section per map (the
+    // original on the left of each pair, the converted build on the right),
+    // for a reader who wants to look rather than click (vjeux, 2026-09-13:
+    // "an artifact with screenshots embedded, not links")
+    if tmmaps::cli::has(args, "--embed") {
+        out.push_str(&format!("\n## Frames — original (left) vs {label} (right), same cameras\n"));
+        for r in &rows {
+            let nn = col(r, 0);
+            let mut any = false;
+            for view in ["start", "finish", "top", "topnw", "topne", "topsw", "topse"] {
+                let key = format!("cmp-{frame_tag}{nn}{view}");
+                if let Some((_, id)) = uploads.iter().rev().find(|(n, _)| *n == key) {
+                    if !any {
+                        out.push_str(&format!("\n### {nn} — {} → {}\n\n", col(r, 2), col(r, 8)));
+                        any = true;
+                    }
+                    out.push_str(&format!("**{view}**\n\n![{} {view}: original left, {label} right](/api/attachments/view?file_id={id})\n\n", col(r, 2)));
+                }
+            }
+        }
+    }
     match f("--out") {
         Some(p) => std::fs::write(&p, &out).map_err(|e| format!("{p}: {e}")),
         None => {
