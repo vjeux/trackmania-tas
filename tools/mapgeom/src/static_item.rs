@@ -117,7 +117,46 @@ pub enum Node {
     /// model. Plain body: version, then per variant the tags, the model ref
     /// and one u32 (HiddenInManualCycle).
     VariantList(VariantList),
+    /// `CGameBlockItem` (0x2E025000): a custom BLOCK a map embeds (the mesh-modeler
+    /// `.Block.Gbx`). Chunk 0x2E025000: version, archetype block info id +
+    /// collection id, the variants (key + model ref — a crystal inline in the v0
+    /// form, null in v1), and from v1 a second table (present byte; per variant a
+    /// flags byte, then mesh ref (&1, a CPlugStaticObjectModel), collision ref
+    /// (&2), box (&4), offset (&8)). Read-only source (the tiny bake rewrites
+    /// it as a static item); the trailing chunks are kept raw.
+    BlockItem(BlockItem),
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlockItem {
+    pub version: u32,
+    pub archetype: Id,
+    pub archetype_collection: Id,
+    pub variants: Vec<(u32, Ref)>,
+    /// v1: per variant (flags, mesh, collision)
+    pub table: Vec<(u8, Ref, Ref)>,
+    pub raw_tail: Vec<u8>,
+}
+
+impl BlockItem {
+    /// The static object of the first variant that has one (v1 table mesh, or a
+    /// v0 variant node that is one).
+    pub fn static_object(&self) -> Option<&item::CPlugStaticObjectModel> {
+        for (_, mesh, _) in &self.table {
+            if let Some(Node::StaticObject(so)) = mesh.inline.as_deref() {
+                return Some(so);
+            }
+        }
+        for (_, v) in &self.variants {
+            if let Some(Node::StaticObject(so)) = v.inline.as_deref() {
+                return Some(so);
+            }
+        }
+        None
+    }
+}
+
+pub const C_BLOCK_ITEM: u32 = 0x2E025000;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct VariantList {
@@ -189,6 +228,7 @@ impl Node {
             Node::Particle(p) => p.class_id,
             Node::Opaque(o) => o.class_id,
             Node::VariantList(_) => C_VARIANT_LIST,
+            Node::BlockItem(_) => C_BLOCK_ITEM,
         }
     }
 }
@@ -227,6 +267,42 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
             let shape = read_ref(r)?;
             let no_respawn = r.u32()?;
             Node::WaypointTrigger(WaypointTrigger { version, wtype, shape, no_respawn })
+        }
+        C_BLOCK_ITEM => {
+            let cid = r.u32()?;
+            if cid != C_BLOCK_ITEM {
+                return Err(format!("CGameBlockItem starts with chunk 0x{cid:08X}"));
+            }
+            let version = r.u32()?;
+            let archetype = r.id()?;
+            let archetype_collection = r.id()?;
+            let n = r.count()?;
+            let mut variants = Vec::with_capacity(n);
+            for _ in 0..n {
+                let key = r.u32()?;
+                let model = read_ref(r)?;
+                variants.push((key, model));
+            }
+            let mut table = Vec::new();
+            if version >= 1 && r.u8()? != 0 {
+                for _ in 0..n {
+                    let flags = r.u8()?;
+                    let mesh = if flags & 1 != 0 { read_ref(r)? } else { null_ref() };
+                    let surf = if flags & 2 != 0 { read_ref(r)? } else { null_ref() };
+                    if flags & 4 != 0 {
+                        r.take(24)?;
+                    }
+                    if flags & 8 != 0 {
+                        r.take(12)?;
+                    }
+                    table.push((flags, mesh, surf));
+                }
+            }
+            // the remaining chunks (0x2E025002/003 …) up to the FACADE, raw
+            let start = r.o;
+            let tail = read_opaque(r, class_id)?;
+            let _ = start;
+            Node::BlockItem(BlockItem { version, archetype, archetype_collection, variants, table, raw_tail: tail.raw })
         }
         0x0917A000 | 0x0917B000 | 0x09119000 | 0x09118000 => Node::Opaque(read_fixed_opaque(r, class_id)?),
         C_VARIANT_LIST => {
@@ -286,6 +362,7 @@ pub fn write_node(w: &mut Wr, n: &Node) {
         Node::FxSystem(x) => x.write(w),
         Node::Particle(x) => x.write(w),
         Node::Opaque(o) => w.bytes(&o.raw),
+        Node::BlockItem(_) => panic!("CGameBlockItem is a read-only source node (the tiny bake rewrites it as a static item)"),
         Node::VariantList(v) => {
             w.u32(v.version);
             w.u32(v.variants.len() as u32);

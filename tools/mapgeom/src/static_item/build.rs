@@ -3177,3 +3177,55 @@ pub fn inline_filler_foliage(store: &mut crate::store::DataStore, m: &mut Merged
     }
     placed
 }
+
+/// A custom BLOCK a map embeds (`CGameBlockItem`, the mesh-modeler `.Block.Gbx`;
+/// Everios96's u10s maps carry TM2 dirt ports, magnet platforms and colourable
+/// bars this way, 2026-09-13): the first variant's crystal baked at `scale`
+/// like a custom item, in the block's own frame (the cell corner is the
+/// origin, like a pack block's prefab). `special` is the gameplay trigger of
+/// the block's ARCHETYPE (a GateSpecial*/PlatformTechSpecial* block info the
+/// custom block borrows its effect from), already scaled, with its kind.
+/// Returns the item bytes, the merged model, and the archetype name.
+pub fn static_item_from_custom_block(bytes: &[u8], ident: &str, author: &str, scale: f32, collection: u32, special: Option<(super::surface::CPlugSurface, Option<String>)>) -> R<(Vec<u8>, Merged, Option<String>)> {
+    let mut m = Merged::default();
+    let arche: Option<String>;
+    // the v1 form first (a CPlugStaticObjectModel in the block item's second table:
+    // the magnet-expansion and TM2 dirt-port blocks), then the v0 crystal
+    let typed = super::parse_file(bytes).ok().and_then(|f| {
+        let so = f.item.static_object()?.clone();
+        Some((so, f.item.block_archetype()))
+    });
+    match typed {
+        Some((so, a)) => {
+            arche = a;
+            let mut externals: Vec<String> = Vec::new();
+            let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
+                externals.push(format!("external material node {idx} in a custom block"));
+                None
+            };
+            m.add_static_object(&so, &IDENTITY, scale, &mut resolve)?;
+            m.notes.extend(externals);
+        }
+        None => {
+            let g = tmmaps::gbx::Gbx::parse(bytes);
+            let loc = crate::crystal_model::locate(&g.body).map_err(|e| format!("neither a static-object block item nor a crystal block item ({e})"))?;
+            arche = loc.archetype.as_ref().map(|(a, _)| a.clone()).filter(|a| !a.is_empty());
+            let (crystal, _, _) = crate::crystal_model::CPlugCrystal::parse_with(&g.body, loc.at, loc.lookback.clone())?;
+            super::bake::add_crystal(&crystal, scale, &mut m)?;
+        }
+    }
+    if let Some((sf, kind)) = special {
+        m.notes.push(format!("special trigger from the archetype {} ({} triangles)", arche.as_deref().unwrap_or("?"), sf.surf.counts().1));
+        m.special = Some(sf);
+        if m.gate_kind.is_none() {
+            m.gate_kind = kind;
+        }
+    }
+    m.skin = tmmaps::header::game_skin_chunk(bytes);
+    let opts = BuildOpts { ident: ident.to_string(), author: author.to_string(), scale, collection, skin: m.skin.clone() };
+    let f = assemble(&m, &opts)?;
+    if let Some(n) = super::assemble::REPACK_NOTE.with(|c| c.get()) {
+        m.notes.push(format!("lightmap atlas: {n} parts repacked into disjoint cells"));
+    }
+    Ok((super::write_file(&f), m, arche))
+}
