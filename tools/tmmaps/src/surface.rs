@@ -294,9 +294,16 @@ pub fn cmd(args: &[String]) {
             m = MapFile::load(&tmp3);
         }
     }
-    if cli::has(args, "--strip-lightmap") {
+    // The source's STORED lightmap indexes objects by their position in the block
+    // list: once records are deleted (the baked blocks) every later entry lands
+    // on the wrong block — Ice U10S_03 / 04 (vjeux, 2026-09-13: "the shadows and
+    // colors are looking really weird"). With deletions the chunk goes (the game
+    // computes a lightmap at load); a rename-only map keeps its bake (same mesh,
+    // same uv). `--strip-lightmap` forces, `--keep-lightmap` keeps it regardless.
+    let strip = cli::has(args, "--strip-lightmap") || (!deletions.is_empty() && !cli::has(args, "--keep-lightmap"));
+    if strip {
         let n = m.strip_lightmap();
-        println!("  lightmap: {n} bytes stripped (the game computes one at load)");
+        println!("  lightmap: {n} bytes stripped ({}; the game computes one at load)", if deletions.is_empty() { "--strip-lightmap" } else { "block records were deleted: the stored entries would shift" });
     }
     m.write_to(&out).expect("write output");
     for p in [&tmp1, &tmp2, &tmp3] {
