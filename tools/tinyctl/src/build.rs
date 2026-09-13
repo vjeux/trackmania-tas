@@ -188,6 +188,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let map_no: usize = nn.parse().unwrap_or(0);
             env.insert("TINY_ALIAS_BASE".to_string(), format!("{}", map_no * 1_000_000 + (minutes % 1000) * 1000));
         }
+        // A GIANT build's water is the engine's own (`mapgeom giantwater`: native
+        // pool tiles + custom road volumes, TINY_WATER_NATIVE=0 turns it off), so
+        // the items drop their water quads — the blocks draw the surface.
+        let native_water = scale > 1.0 && env.get("TINY_WATER_NATIVE").map(|v| v != "0").unwrap_or(true);
+        if native_water && !env.contains_key("TINY_WATER_VISUAL") {
+            env.insert("TINY_WATER_VISUAL".to_string(), "0".to_string());
+        }
         // the generated pictures (sign logos, screen picture, trigger FX) are cached
         // by file name the same way: suffix them with the alias base's minute part
         if !env.contains_key("TINY_PICTURE_SUFFIX") {
@@ -286,7 +293,44 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         // free custom WaterBase blocks where the spill rule allows (`mapgeom
         // waterblocks`), and the map is written again with the block records and the
         // block file in its archive. TINY_WATER_BLOCKS=0 leaves the 13-item form.
-        if std::env::var("TINY_WATER_BLOCKS").map(|v| v != "0").unwrap_or(true) {
+        // A GIANT build takes the native pass below instead.
+        if native_water {
+            // The GIANT water pass (2026-09-13): the source's pool blocks as native
+            // grid tiles in the transformed cells, the water roads as free custom
+            // volumes — `mapgeom giantwater` (TINY.md "Giant maps: water").
+            match anchor_arg(&anchor_line) {
+                Some((anchor, scale_s)) => {
+                    let template = out.join("water-template.Block.Gbx");
+                    std::fs::write(&template, WATER_TEMPLATE).map_err(|e| format!("{}: {e}", template.display()))?;
+                    let staged = out.join(format!("{out_prefix}-{nn}-{label}.water.Map.Gbx"));
+                    let table = out.join("giant-water.tsv");
+                    let mut gw = Command::new(&mapgeom);
+                    gw.args(&paks).args(&mapgeom_flags).arg("giantwater").arg(&tiny_out).arg("--source").arg(&src).arg("--anchor").arg(&anchor).arg("--scale").arg(&scale_s).arg("--template").arg(&template).arg("--table").arg(&table).arg("--out").arg(&staged);
+                    if env.get("TINY_GIANT_ROAD_TILES").map(|v| v == "0").unwrap_or(false) {
+                        gw.arg("--no-roads");
+                    }
+                    gw.envs(env.iter());
+                    match run(&mut gw, &out.join("giantwater.log")) {
+                        Ok(text) => {
+                            for l in text.lines().filter(|l| l.contains("giantwater") || l.contains("giant water")) {
+                                println!("  {}", l.trim());
+                            }
+                            std::fs::rename(&staged, &tiny_out).map_err(|e| format!("giant water: {e}"))?;
+                        }
+                        Err(e) => {
+                            eprintln!("  giant water pass FAILED: {e}");
+                            failed += 1;
+                            continue;
+                        }
+                    }
+                }
+                None => {
+                    eprintln!("  giant water pass FAILED: no anchor line from tmmaps tiny");
+                    failed += 1;
+                    continue;
+                }
+            }
+        } else if std::env::var("TINY_WATER_BLOCKS").map(|v| v != "0").unwrap_or(true) && scale < 1.0 {
             match anchor_arg(&anchor_line) {
                 Some((anchor, _scale)) => {
                     let plates = out.join("water-plates.tsv");

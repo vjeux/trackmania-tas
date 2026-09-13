@@ -3003,7 +3003,7 @@ impl MapFile {
                 }
             };
             put_id(&mut new_blocks, &spec.name, &mut table);
-            new_blocks.push(0u8); // dir
+            new_blocks.push(spec.dir & 3); // dir
             let flags = match spec.grid {
                 Some(c) => {
                     new_blocks.extend_from_slice(&[(c[0] + 1) as u8, c[1] as u8, (c[2] + 1) as u8]);
@@ -3331,4 +3331,8 @@ pub struct FreeBlockSpec {
     /// Some(cell) = a GRID block instead (the game's cell; the file stores it +(1,0,1));
     /// no free-pos entry, FREE_BLOCK_FLAG not added.
     pub grid: Option<[i32; 3]>,
+    /// The record's direction byte (0..3, a quarter turn each) — read by the
+    /// game for a GRID block; a free block turns by `rot` instead (2026-09-13,
+    /// the giant maps' native water tiles copy the source block's).
+    pub dir: u8,
 }

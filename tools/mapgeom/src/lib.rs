@@ -33,6 +33,7 @@ pub mod container;
 pub mod corpus;
 pub mod collhash;
 pub mod waterblocks;
+pub mod giantwater;
 pub mod coverage;
 pub mod embedded;
 pub mod fillers;

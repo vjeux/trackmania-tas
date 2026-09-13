@@ -247,8 +247,14 @@ pub fn most_common_physics(so: &super::item::CPlugStaticObjectModel) -> Option<u
 /// Whether a collection's `Water` visuals stay in the bake: Stadium's pools
 /// are drawn by the `WaterBase` blocks themselves (no water zone to fall back
 /// on); BlueBay / RedIsland / WhiteShore / GreenCoast regenerate their sea or
-/// lake from the genealogy at that very height.
+/// lake from the genealogy at that very height. `TINY_WATER_VISUAL=0` drops
+/// them everywhere: a GIANT build puts the engine's own water back as native
+/// blocks and custom volumes (`mapgeom giantwater`), whose surfaces draw the
+/// pools — an item quad 1 m under them would show through (2026-09-13).
 pub fn keep_water_for(collection: u32) -> bool {
+    if std::env::var("TINY_WATER_VISUAL").as_deref() == Ok("0") {
+        return false;
+    }
     collection == 0x1a
 }
 

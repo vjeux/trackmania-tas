@@ -559,6 +559,42 @@ fn main() {
             std::fs::write(&out, &out_bytes).unwrap_or_else(|e| die(e.to_string()));
             println!("{p}: archetype {cur} -> {arche} at {} places (header delta {header_delta}){note} -> {out}", offs.len());
         }
+        "giantwater" => {
+            // giantwater GIANT.Map.Gbx --source SRC.Map.Gbx --anchor sx,sy,sz:tx,ty,tz --scale N --out MAP2
+            //   [--template T.Block.Gbx] [--table T.tsv] [--author UID] [--no-roads] — see giantwater.rs
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("giantwater GIANT --source SRC --anchor S:T --scale N --out F".into()));
+            let src = flag(&a.rest, "--source").unwrap_or_else(|| die("--source SRC.Map.Gbx".into()));
+            let anchor = flag(&a.rest, "--anchor").unwrap_or_else(|| die("--anchor sx,sy,sz:tx,ty,tz".into()));
+            let scale: f32 = flag(&a.rest, "--scale").unwrap_or_else(|| "2".into()).parse().unwrap_or_else(|_| die("--scale number".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out MAP".into()));
+            let template = flag(&a.rest, "--template");
+            let table_out = flag(&a.rest, "--table");
+            let author = flag(&a.rest, "--author").unwrap_or_else(|| "fHFOZ36-Qt6hMnhWK6bvxw".to_string());
+            let roads = !a.rest.iter().any(|x| x == "--no-roads");
+            let (s, t) = mapgeom::giantwater::parse_anchor(&anchor).unwrap_or_else(die);
+            let source = tmmaps::map::MapFile::load(std::path::Path::new(&src));
+            let collection = source.items.first().map(|it| it.collection_raw).unwrap_or(26);
+            let ground = tmmaps::map::ground_y(collection);
+            let plan = mapgeom::giantwater::plan(&source, ground, s, t, scale, roads, &author).unwrap_or_else(die);
+            for n in &plan.notes {
+                println!("  giantwater: {n}");
+            }
+            for sk in &plan.skipped {
+                println!("  giantwater: skipped {sk}");
+            }
+            if let Some(tp) = &table_out {
+                let mut tsv = String::from("kind\tname\tflags\tdir\tcell_or_pos\tyaw\n");
+                for g in &plan.grid {
+                    tsv.push_str(&format!("grid\t{}\t{:08x}\t{}\t{:?}\t-\n", g.name, g.flags, g.dir, g.grid.unwrap_or([0; 3])));
+                }
+                for r in &plan.roads {
+                    tsv.push_str(&format!("free\t{}\t{:08x}\t-\t({:.1}, {:.1}, {:.1})\t{:.4}\n", r.name, r.flags, r.pos[0], r.pos[1], r.pos[2], r.rot[0]));
+                }
+                std::fs::write(tp, tsv).unwrap_or_else(|e| die(e.to_string()));
+            }
+            let (g, r) = mapgeom::giantwater::apply(std::path::Path::new(&p), std::path::Path::new(&out), &plan, template.as_deref().map(std::path::Path::new), &author).unwrap_or_else(die);
+            println!("{p}: giant water: {g} native pool tiles, {r} road volume tiles -> {out}");
+        }
         "waterblocks" => {
             // waterblocks MAP --plates P.tsv --template T.Block.Gbx --out MAP2 --table T.tsv
             //   [--author UID] [--force-block] — see waterblocks.rs
@@ -639,7 +675,7 @@ fn main() {
                     let renamed = mapgeom::crystal::rename_ident(&raw, &old_ident, &ident);
                     files.insert(zip_path.clone(), renamed);
                 }
-                specs.push(tmmaps::map::FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.clone()), flags: 0x1020_8000, pos: d.origin, rot: [d.yaw, 0.0, 0.0], grid: None });
+                specs.push(tmmaps::map::FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.clone()), flags: 0x1020_8000, pos: d.origin, rot: [d.yaw, 0.0, 0.0], grid: None, dir: 0 });
             }
             println!("{p}: {} water bodies handled, {} as blocks, {} archetype files", decisions.len(), n_block, files.len());
             if let Some(t) = &table_out {

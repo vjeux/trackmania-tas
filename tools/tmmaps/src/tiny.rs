@@ -446,6 +446,23 @@ pub fn cmd(args: &[String]) {
             shift[k] = want.round() * crate::map::CELL_XZ;
             target_anchor[k] += shift[k];
         }
+        // A WHOLE scale keeps the cell lattice — every source cell corner lands
+        // on a corner of the target grid (t ≡ s·source_anchor mod the cell, per
+        // axis; the anchor is a cell CENTRE, so doubling about it alone puts the
+        // corners on half-cells), so the engine's own grid blocks can stand in
+        // the transformed cells (the giant maps' native water, `mapgeom
+        // giantwater`, 2026-09-13). Nearest such value to the centring shift;
+        // for y the rows (ty ≡ s·sy − (s−1)·ground mod 8) — on Stadium at ×2
+        // the one that puts the source's grass floor (y 8) back on the grass.
+        if (scale - scale.round()).abs() < 1e-6 && scale >= 1.0 {
+            for (k, cell) in [(0usize, crate::map::CELL_XZ), (1, crate::map::CELL_Y), (2, crate::map::CELL_XZ)] {
+                let want = if k == 1 { scale * source_anchor[1] - (scale - 1.0) * ground() } else { scale * source_anchor[k] };
+                let ty = target_anchor[k];
+                let snapped = want + ((ty - want) / cell).round() * cell;
+                shift[k] += snapped - ty;
+                target_anchor[k] = snapped;
+            }
+        }
         let t = |p: [f32; 3]| transform(p, source_anchor, target_anchor, scale);
         let (flo, fhi) = (t(lo), t(hi));
         let mut notes: Vec<String> = Vec::new();
@@ -462,8 +479,8 @@ pub fn cmd(args: &[String]) {
             notes.push(format!("y bottom {:.0} m is under the grid's row 0 ({:.0} m)", flo[1], ground()));
         }
         println!(
-            "  fit: source extent [{:.0}, {:.0}, {:.0}]..[{:.0}, {:.0}, {:.0}] -> [{:.0}, {:.0}, {:.0}]..[{:.0}, {:.0}, {:.0}] in the {}x{}x{}-cell grid ({:.0}x{:.0}x{:.0} m), shifted by {:.0},{:.0} m to centre it{}",
-            lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], flo[0], flo[1], flo[2], fhi[0], fhi[1], fhi[2], source.size[0], source.size[1], source.size[2], grid[0], grid[1], grid[2], shift[0], shift[2],
+            "  fit: source extent [{:.0}, {:.0}, {:.0}]..[{:.0}, {:.0}, {:.0}] -> [{:.0}, {:.0}, {:.0}]..[{:.0}, {:.0}, {:.0}] in the {}x{}x{}-cell grid ({:.0}x{:.0}x{:.0} m), shifted by {:.0},{:.0} m to centre it, y by {:+.0} m onto the row lattice{}",
+            lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], flo[0], flo[1], flo[2], fhi[0], fhi[1], fhi[2], source.size[0], source.size[1], source.size[2], grid[0], grid[1], grid[2], shift[0], shift[2], shift[1],
             if notes.is_empty() { "; fits".to_string() } else { format!("; {}", notes.join("; ")) }
         );
     }
