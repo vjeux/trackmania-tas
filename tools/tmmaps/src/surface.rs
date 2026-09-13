@@ -138,7 +138,7 @@ pub fn cmd(args: &[String]) {
         k += 1;
     }
 
-    // 2. renames
+    // 2. renames (blocks, and the vegetation items' icy stand-ins)
     let mut m = MapFile::load(&tmp1);
     assert_eq!(m.blocks.len(), k, "stage 1 left {} blocks, expected {k}", m.blocks.len());
     let mut by_target: BTreeMap<String, usize> = BTreeMap::new();
@@ -148,9 +148,37 @@ pub fn cmd(args: &[String]) {
         m.set_block_name(ni, &r.target);
         *by_target.entry(format!("{} -> {}", r.name, r.target)).or_default() += 1;
     }
+    // --keep-trees leaves the vegetation; by default every tree item becomes
+    // its winter stand-in (`icy_tree`: same size, frozen or snow-fir), the
+    // variant byte re-pointed into the stand-in's own species list
+    let mut trees: BTreeMap<String, usize> = BTreeMap::new();
+    let mut trees_kept: BTreeMap<String, usize> = BTreeMap::new();
+    if !cli::has(args, "--keep-trees") {
+        let items: Vec<(usize, String, u8)> = m.items.iter().map(|it| (it.index, it.model.clone(), it.variant())).collect();
+        for (i, model, variant) in items {
+            match icy_tree(&model, variant) {
+                Some((to, v)) => {
+                    m.set_item_model(i, to);
+                    if v != variant {
+                        m.set_item_variant(i, v);
+                    }
+                    *trees.entry(format!("{model}:{variant} -> {to}:{v}")).or_default() += 1;
+                }
+                None if model.starts_with("Summer") || model.starts_with("Spring") || model.starts_with("Fall") || model.starts_with("Winter") || model.contains("Tree") || model.starts_with("Fir") || model.starts_with("Cypress") || model.starts_with("Palm") => {
+                    *trees_kept.entry(format!("{model}:{variant}")).or_default() += 1;
+                }
+                None => {}
+            }
+        }
+    }
     m.write_to(&tmp2).expect("write stage 2");
     for (k, n) in &by_target {
         println!("  {n:5}  {k}");
+    }
+    if !trees.is_empty() || !trees_kept.is_empty() {
+        let n: usize = trees.values().sum();
+        let kept: usize = trees_kept.values().sum();
+        println!("  trees: {n} placements -> icy ({}); {kept} kept as they are ({})", trees.iter().map(|(k, v)| format!("{k} ×{v}")).collect::<Vec<_>>().join(", "), trees_kept.iter().map(|(k, v)| format!("{k} ×{v}")).collect::<Vec<_>>().join(", "));
     }
 
     // 3. cell / position moves + uid
@@ -322,4 +350,78 @@ fn item_specs(source: &MapFile, plan: &[PlanRec], mapping: &crate::tiny::Mapping
         specs.push((r.index, ItemSpec { model: map.model.clone(), pos, rot, scale: 1.0 / map.model_scale, tag: b.waypoint_tag.clone(), color: colors.block(b.index) }));
     }
     (specs, unbaked)
+}
+
+// ------------------------------------------------------------------ trees
+
+/// The icy form of a vegetation ITEM placement: `(model, variant)` of the
+/// source placement → `(model, variant)` of the winter stand-in (vjeux,
+/// 2026-09-13: "the trees should be changed to their icy version as well").
+///
+/// Nadeo's Stadium vegetation comes as cluster items whose VARIANT picks a
+/// species (the variant list is the item's external model list, in order):
+/// `Spring` 0 Medium 1 Big 2 VerySmall 3 Tall 4 Small 5 CypressTall;
+/// `Fall` 0 Medium 1 Big 2 VerySmall 3 Small 4 Tall; `Summer` 0–4 the cacti
+/// A–E (static objects) 5 FirMedium 6 FirTall 7 CypressDirtTall;
+/// `SummerPalmTree` 0 CactusE 1 PalmTreeDirtMedium 2 PalmTreeDirtSmall;
+/// `SpringPalmTree` 0 PalmTreeMedium 1 PalmTreeSmall; `SpringCherryTree`
+/// 0 CherryTreeMedium 1 SpringTreeSmall 2 SpringTreeVerySmall — and the two
+/// winter sets: `Winter` 0 FirSnowMedium 1 FirSnowTall, `WinterFrozenTree`
+/// 0 Medium 1 Big 2 VerySmall 3 Tall 4 Small (frozen bare trees). Plus the
+/// single-species items (`FallTreeTall`, `FrozenTreeTall`, `FirSnowTall`, …).
+///
+/// Rule: a deciduous tree becomes the frozen tree of the same size, a conifer
+/// (fir, cypress) the snow fir of the same size, a palm the frozen tree of its
+/// size (no icy palm exists). Cacti are not trees and have no winter form:
+/// they stay (`None`). Already-winter models stay too.
+pub fn icy_tree(model: &str, variant: u8) -> Option<(&'static str, u8)> {
+    const WFT: &str = "WinterFrozenTree";
+    const WIN: &str = "Winter";
+    Some(match (model, variant) {
+        // cluster items, per species
+        ("Spring", 0) => (WFT, 0),
+        ("Spring", 1) => (WFT, 1),
+        ("Spring", 2) => (WFT, 2),
+        ("Spring", 3) => (WFT, 3),
+        ("Spring", 4) => (WFT, 4),
+        ("Spring", 5) => (WIN, 1),
+        ("Fall", 0) => (WFT, 0),
+        ("Fall", 1) => (WFT, 1),
+        ("Fall", 2) => (WFT, 2),
+        ("Fall", 3) => (WFT, 4),
+        ("Fall", 4) => (WFT, 3),
+        ("Summer", 5) => (WIN, 0),
+        ("Summer", 6) => (WIN, 1),
+        ("Summer", 7) => (WIN, 1),
+        ("SummerPalmTree", 1) => (WFT, 0),
+        ("SummerPalmTree", 2) => (WFT, 4),
+        ("SpringPalmTree", 0) => (WFT, 0),
+        ("SpringPalmTree", 1) => (WFT, 4),
+        ("SpringCherryTree", 0) => (WFT, 0),
+        ("SpringCherryTree", 1) => (WFT, 4),
+        ("SpringCherryTree", 2) => (WFT, 2),
+        // single-species items
+        ("FallTreeTall", v) | ("SpringTreeTall", v) => ("FrozenTreeTall", v),
+        ("FallTreeBig", v) | ("SpringTreeBig", v) => ("FrozenTreeBig", v),
+        ("FallTreeMedium", v) | ("SpringTreeMedium", v) | ("CherryTreeMedium", v) | ("PalmTreeMedium", v) | ("PalmTreeDirtMedium", v) => ("FrozenTreeMedium", v),
+        ("FallTreeSmall", v) | ("SpringTreeSmall", v) | ("PalmTreeSmall", v) | ("PalmTreeDirtSmall", v) => ("FrozenTreeSmall", v),
+        ("FallTreeVerySmall", v) | ("SpringTreeVerySmall", v) => ("FrozenTreeVerySmall", v),
+        ("FirMedium", v) => ("FirSnowMedium", v),
+        ("FirTall", v) | ("CypressTall", v) | ("CypressDirtTall", v) => ("FirSnowTall", v),
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::icy_tree;
+    #[test]
+    fn sizes_line_up() {
+        assert_eq!(icy_tree("Fall", 3), Some(("WinterFrozenTree", 4))); // Small
+        assert_eq!(icy_tree("Fall", 4), Some(("WinterFrozenTree", 3))); // Tall
+        assert_eq!(icy_tree("Summer", 6), Some(("Winter", 1)));
+        assert_eq!(icy_tree("Summer", 2), None); // a cactus
+        assert_eq!(icy_tree("Winter", 1), None);
+        assert_eq!(icy_tree("FallTreeTall", 0), Some(("FrozenTreeTall", 0)));
+    }
 }
