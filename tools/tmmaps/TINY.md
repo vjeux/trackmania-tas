@@ -1354,3 +1354,33 @@ the water road (none in U10S 01–25) have no volume emitter and stay items.
 What the ×2 does to the route regardless of water: the car's speed is not
 doubled, so a jump falls √2× farther in time and lands SHORT of where the
 source's does (23's jump off the canal lands in the pool at x 742).
+
+## Giant maps: the whole club on GitHub (2026-09-13 19:30Z)
+
+vjeux: "Can you have the 1k giant and icy uploaded to github like you did for
+tiny?" — the ×2 converter over all 975 U10S maps, released as
+https://github.com/vjeux/trackmania-tas/releases/tag/giant-u10s-maps (39
+zips, 4.59 GB, one per part, `GiantU10S-partNN.zip`), the tiny set's layout:
+
+* `tinyctl convert-all --parts 01-39 --jobs 12 --scale 2 --alias-part-offset
+  50 --max-bytes 7000000 --name-format '{source} By Everios96 [Giant]'` —
+  975 maps in 7.5 min; the in-file name is the club's alteration convention
+  (Everios96 to vjeux: "U10S_26 By Everios96 [Tiny] — always like this and
+  then the alteration name in the last bracket") and the file name is the
+  same string. The alias offset keeps the giant item FILE NAMES apart from the
+  tiny club's (`AC0[5-8]…` vs `AC0[0-3]…`): the game caches an embedded model
+  by file name for the session, and a player will have both sets.
+* 975/975 built (U10S_113's 0-item source takes `tmmaps seed-item`'s template
+  record, patch 0021 of the tiny thread); all under 7 MB — 75 through the
+  ladder, none failed to fit (the ×2 mesh bytes are the tiny ones).
+* `tinyctl dist`: the item-check gate on every map's library (975 × ~60
+  items, `item-check --quiet`, 3 min on 12 threads), the club-named maps and
+  a `MAPS.tsv` per zip, STORED (the maps are deflated archives already).
+* `tinyctl release-upload`: push → `gh release upload --clobber` → delete on
+  the box, 3 streams (~3 min per 120 MB zip, the bridge's ~1.1 MB/s push is
+  the floor), then `gh release view --json assets` against the local sizes.
+* **Water tiles outside the grid are clipped**: 18 wide maps double past the
+  48-cell arena (x −20…53); a grid block needs a cell inside the map, so the
+  tiles there are left out (the ×2 items stay: walls and floor, no volume)
+  and the row says how many (328 on U10S_33, 2 736 on U10S_842). The engine
+  keeps ITEMS outside the grid, so nothing else is clipped.
