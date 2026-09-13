@@ -188,7 +188,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         };
         let dir = out_root.join(format!("{surface}{nn}"));
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let out_map = dir.join(format!("U10S-{nn}-{word}.Map.Gbx"));
+        // --name-style everios: the club's convention (Everios96 to vjeux, 2026-09-13:
+        // "U10S_26 By Everios96 [Tiny] — always like this and then the alteration name
+        // in the last bracket"; the FILE name too): `U10S_N By Everios96 [Ice]`
+        let everios = f("--name-style").as_deref() == Some("everios");
+        let out_name = if everios { format!("{} By Everios96 [{word}]", hdr.name) } else { format!("{word} {}", hdr.name) };
+        let out_map = if everios { dir.join(format!("{out_name}.Map.Gbx")) } else { dir.join(format!("U10S-{nn}-{word}.Map.Gbx")) };
         let records = dir.join("records.tsv");
         let models = dir.join("models.tsv");
         let build_t = Instant::now();
@@ -224,8 +229,19 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 libcmd.arg("tiny-library").arg(&src).arg("--scale").arg("1").arg("--only").arg(names.join(",")).arg("--library-out").arg(&lib).arg("--mapping-out").arg(&mapping).arg("--report").arg(dir.join("report.tsv"));
                 let map_no: usize = nn.parse().unwrap_or(0);
                 libcmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-                libcmd.env("TINY_ALIAS_BASE", format!("{}", map_no * 1_000_000 + 700_000));
-                libcmd.env("TINY_PICTURE_SUFFIX", format!("_{surface}{nn}"));
+                // item names unique per (part, map) across the whole club: the game caches
+                // an embedded model by FILE NAME for the session (`--alias-part P`, as the
+                // tiny pipeline: base (P*100+NN)*1000 + 500 leaves 500 names per map)
+                match f("--alias-part").and_then(|p| p.parse::<usize>().ok()) {
+                    Some(part) => {
+                        libcmd.env("TINY_ALIAS_BASE", format!("{}", (part * 100 + map_no) * 1000 + 500));
+                        libcmd.env("TINY_PICTURE_SUFFIX", format!("_{surface}p{part:02}{nn}"));
+                    }
+                    None => {
+                        libcmd.env("TINY_ALIAS_BASE", format!("{}", map_no * 1_000_000 + 700_000));
+                        libcmd.env("TINY_PICTURE_SUFFIX", format!("_{surface}{nn}"));
+                    }
+                }
                 let text = run(&mut libcmd, &dir.join("library.log"))?;
                 for l in text.lines().filter(|l| l.contains("library:") || l.contains("FAILED")) {
                     println!("  {}", l.trim());
@@ -242,7 +258,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
             // 3. the map
             let mut sw = Command::new(&tmmaps);
-            sw.arg("surface").arg(&src).arg("--plan").arg(&records).arg("--out").arg(&out_map).arg("--name").arg(format!("{word} {}", hdr.name)).arg("--uid-prefix").arg(&uid_prefix);
+            sw.arg("surface").arg(&src).arg("--plan").arg(&records).arg("--out").arg(&out_map).arg("--name").arg(&out_name).arg("--uid-prefix").arg(&uid_prefix);
             if with_items {
                 sw.arg("--library").arg(&lib).arg("--mapping").arg(&mapping);
             }
@@ -514,4 +530,133 @@ pub fn report_cmd(args: &[String]) -> Result<(), String> {
     std::fs::write(&out, &md).map_err(|e| format!("{}: {e}", out.display()))?;
     println!("wrote {} ({} maps, {} frames linked)", out.display(), by_nn.len(), uploads.len());
     Ok(())
+}
+
+/// `tinyctl surface-all --src-root S --out-root O --parts 01-39 [--jobs 12] [--surface ice]
+/// [--dist DIR]` — every part directory `S/pNN/` (maps `NN-<name>.Map.Gbx`)
+/// converted by `surface` (build only: no shoot, no publish; the club's naming
+/// `U10S_N By Everios96 [Ice]`; item names unique per part), N parts at a time,
+/// one tracker per part (`O/pNN/tracker.tsv`), then one zip per part in `--dist`
+/// (`<Word>U10S-partNN.zip`: the 25 maps in campaign order + `MAPS.tsv`) and a
+/// summary `O/CONVERT.tsv` — the GitHub-release layout of the tiny set
+/// (2026-09-13, vjeux: "the 1k giant and icy uploaded to github like you did for tiny").
+pub fn all_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let src_root = PathBuf::from(f("--src-root").ok_or("surface-all needs --src-root S")?);
+    let out_root = PathBuf::from(f("--out-root").ok_or("surface-all needs --out-root O")?);
+    let surface = f("--surface").unwrap_or_else(|| "ice".into());
+    let word = { let mut c = surface.chars(); c.next().map(|x| x.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default() };
+    let dist = PathBuf::from(f("--dist").unwrap_or_else(|| out_root.join("dist").to_string_lossy().into_owned()));
+    let parts_arg = f("--parts").ok_or("surface-all needs --parts 01,02,… or 01-39")?;
+    let parts: Vec<String> = if let Some((a, b)) = parts_arg.split_once('-') {
+        let (a, b): (usize, usize) = (a.trim().parse().map_err(|_| "--parts A-B")?, b.trim().parse().map_err(|_| "--parts A-B")?);
+        (a..=b).map(|n| format!("{n:02}")).collect()
+    } else {
+        parts_arg.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    };
+    let jobs: usize = f("--jobs").and_then(|j| j.parse().ok()).unwrap_or(8).max(1);
+    std::fs::create_dir_all(&out_root).map_err(|e| format!("{}: {e}", out_root.display()))?;
+    std::fs::create_dir_all(&dist).map_err(|e| format!("{}: {e}", dist.display()))?;
+    let queue = std::sync::Mutex::new(std::collections::VecDeque::from(parts.clone()));
+    let results = std::sync::Mutex::new(Vec::<String>::new());
+    let t0 = Instant::now();
+    std::thread::scope(|s| {
+        for _ in 0..jobs.min(parts.len()) {
+            s.spawn(|| loop {
+                let part = match queue.lock().unwrap().pop_front() {
+                    Some(p) => p,
+                    None => break,
+                };
+                let src_dir = src_root.join(format!("p{part}"));
+                let part_out = out_root.join(format!("p{part}"));
+                let _ = std::fs::create_dir_all(&part_out);
+                let mut nums: Vec<String> = std::fs::read_dir(&src_dir)
+                    .map(|rd| rd.filter_map(|e| e.ok()).filter_map(|e| e.file_name().to_string_lossy().split('-').next().filter(|s| s.len() == 2 && s.chars().all(|c| c.is_ascii_digit())).map(|s| s.to_string())).collect())
+                    .unwrap_or_default();
+                nums.sort();
+                nums.dedup();
+                let t1 = Instant::now();
+                let line = if nums.is_empty() {
+                    format!("{part}\tFAILED\tno NN-*.Map.Gbx in {}", src_dir.display())
+                } else {
+                    let mut pargs: Vec<String> = nums.clone();
+                    pargs.extend(["--src-dir".to_string(), src_dir.display().to_string(), "--out-root".into(), part_out.display().to_string(), "--surface".into(), surface.clone(), "--tracker".into(), part_out.join("tracker.tsv").display().to_string(), "--alias-part".into(), part.trim_start_matches('0').to_string(), "--name-style".into(), "everios".into(), "--no-shoot".into(), "--no-publish".into()]);
+                    if tmmaps::cli::has(args, "--reuse-build") {
+                        pargs.push("--reuse-build".into());
+                    }
+                    for k in ["--lod-pick", "--bin-dir"] {
+                        if let Some(v) = f(k) {
+                            pargs.push(k.into());
+                            pargs.push(v);
+                        }
+                    }
+                    let r = cmd(&pargs);
+                    // the part's zip: the maps in campaign order + MAPS.tsv
+                    let z = part_zip(&part_out, &part, &word, &dist);
+                    match (r, z) {
+                        (Ok(()), Ok((n, bytes, over))) => format!("{part}\tOK\t{n}/{} maps\t{bytes} B zip\t{over} over 7 MB\t{:.0}s", nums.len(), t1.elapsed().as_secs_f64()),
+                        (Err(e), Ok((n, bytes, over))) => format!("{part}\tPARTIAL\t{n}/{} maps\t{bytes} B zip\t{over} over 7 MB\t{:.0}s\t{}", nums.len(), t1.elapsed().as_secs_f64(), e.lines().next().unwrap_or("")),
+                        (_, Err(e)) => format!("{part}\tFAILED\tzip: {e}"),
+                    }
+                };
+                eprintln!("[{:>5.0}s] {line}", t0.elapsed().as_secs_f64());
+                results.lock().unwrap().push(line);
+            });
+        }
+    });
+    let mut lines = results.into_inner().unwrap();
+    lines.sort();
+    let summary = out_root.join("CONVERT.tsv");
+    std::fs::write(&summary, lines.join("\n") + "\n").map_err(|e| format!("{}: {e}", summary.display()))?;
+    println!("{}", lines.join("\n"));
+    let bad = lines.iter().filter(|l| !l.contains("\tOK\t")).count();
+    if bad > 0 {
+        return Err(format!("{bad} of {} parts not fully built — see {}", parts.len(), summary.display()));
+    }
+    Ok(())
+}
+
+/// One part's release zip from its tracker: `<Word>U10S-partNN.zip` with the
+/// maps (the tracker's LAST row per map, in map order) and `MAPS.tsv`.
+/// Returns (maps in the zip, zip bytes, maps over 7 000 000 B).
+fn part_zip(part_out: &Path, part: &str, word: &str, dist: &Path) -> Result<(usize, u64, usize), String> {
+    let tracker = part_out.join("tracker.tsv");
+    let text = std::fs::read_to_string(&tracker).map_err(|e| format!("{}: {e}", tracker.display()))?;
+    let mut lines = text.lines();
+    let head: Vec<&str> = lines.next().unwrap_or("").split('\t').collect();
+    let col = |r: &[String], n: &str| head.iter().position(|h| *h == n).and_then(|i| r.get(i).cloned()).unwrap_or_else(|| "-".into());
+    let mut by_nn: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for l in lines.filter(|l| !l.trim().is_empty()) {
+        let r: Vec<String> = l.split('\t').map(|s| s.to_string()).collect();
+        by_nn.insert(r[0].clone(), r);
+    }
+    let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut tsv = String::from("nn\tfile\tsource_name\tsource_uid\tauthortime_ms\tgold\tsilver\tbronze\tuid\tbytes\trenamed\tbaked\tsame\tkept\tnone\tnote\n");
+    let (mut n, mut over) = (0usize, 0usize);
+    let surface = word.to_ascii_lowercase();
+    for (nn, r) in &by_nn {
+        let name = col(r, "out_name");
+        if name == "-" {
+            tsv.push_str(&format!("{nn}\t-\t{}\t{}\t{}\t{}\t{}\t{}\t-\t-\t-\t-\t-\t-\t-\t{}\n", col(r, "source_name"), col(r, "source_uid"), col(r, "authortime_ms"), col(r, "gold"), col(r, "silver"), col(r, "bronze"), col(r, "note")));
+            continue;
+        }
+        let file = format!("{name}.Map.Gbx");
+        let path = part_out.join(format!("{surface}{nn}")).join(&file);
+        let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if bytes.len() >= 7_000_000 {
+            over += 1;
+        }
+        n += 1;
+        // the zip entry: `NN-<name>.Map.Gbx` keeps campaign order in a file listing
+        files.insert(format!("{nn}-{file}"), bytes.clone());
+        tsv.push_str(&format!("{nn}\t{nn}-{file}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", col(r, "source_name"), col(r, "source_uid"), col(r, "authortime_ms"), col(r, "gold"), col(r, "silver"), col(r, "bronze"), col(r, "out_uid"), bytes.len(), col(r, "renamed"), col(r, "baked"), col(r, "same"), col(r, "kept"), col(r, "none"), col(r, "note")));
+    }
+    files.insert("MAPS.tsv".into(), tsv.into_bytes());
+    // the maps are LZO-compressed GBX already: store them (deflate gains ~1 %
+    // and costs a minute per part) — the tmmaps writer deflates; keep it simple
+    let zip = tmmaps::header::deflated_zip(&files);
+    let out = dist.join(format!("{word}U10S-part{part}.zip"));
+    std::fs::write(&out, &zip).map_err(|e| format!("{}: {e}", out.display()))?;
+    std::fs::write(part_out.join("MAPS.tsv"), files.get("MAPS.tsv").cloned().unwrap_or_default()).map_err(|e| format!("{}: {e}", part_out.display()))?;
+    Ok((n, zip.len() as u64, over))
 }

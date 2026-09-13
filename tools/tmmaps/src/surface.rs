@@ -210,6 +210,18 @@ pub fn cmd(args: &[String]) {
     // next, the archive + manifest in the last — the `tmmaps tiny` stages)
     if !item_specs.is_empty() {
         let library = library.as_ref().expect("--mapping without --library");
+        // a source with NO items (U10S_113) gets one template record first — the
+        // clone donor (`seed_item_record`, the tiny writer's way); it is parked far
+        // below the map like a dropped tiny item
+        if MapFile::load(&tmp3).items.is_empty() {
+            let g = crate::gbx::Gbx::parse(&std::fs::read(&tmp3).expect("read stage 3"));
+            let body = crate::map::seed_item_record(&g.body, collection).expect("seed an item record into a 0-item map");
+            std::fs::write(&tmp3, g.write_body_recompressed(&body)).expect("write seeded stage");
+            let mut m = MapFile::load(&tmp3);
+            m.move_item(0, [8.0, -900.0, 8.0], 0.0, crate::tiny::cell_for([8.0, -900.0, 8.0]));
+            m.write_to(&tmp3).expect("write seeded stage");
+            println!("  0 items in the source: one template item record seeded (the clone donor), parked at (8,-900,8)");
+        }
         let mut m = MapFile::load(&tmp3);
         let first = m.items.len();
         m.append_item_clones(first + item_specs.len());

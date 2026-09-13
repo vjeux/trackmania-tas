@@ -207,6 +207,7 @@ fn main() {
         "pipeline" => pipeline::cmd(rest),
         "surface" => surface::cmd(rest),
         "surface-report" => surface::report_cmd(rest),
+        "surface-all" => surface::all_cmd(rest),
         "convert-all" => pipeline::convert_all_cmd(rest),
         "tracker-md" => pipeline::tracker_md_cmd(rest),
         "unproject" => unproject::cmd(rest),
