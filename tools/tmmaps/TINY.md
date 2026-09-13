@@ -1211,3 +1211,18 @@ the donor's definition fields are rewritten in the clone as references to the
 slot the donor defined. A map with ZERO items (U10S_113 itself) still cannot
 be converted — synthesising an anchored-object record needs lookback-table
 surgery across the baked-blocks chunk.
+
+## The 7 MB server cap: `--max-bytes` walks the detail ladder (2026-09-13 06:30Z)
+
+A dedicated server refuses maps over 7 MB (Everios96). A tiny map is 93 % its
+embedded item zip, already at maximum deflate (`zip -9` gains 0.3 %); the
+lightmap must stay (editor crash without one); so the lever is mesh detail.
+`tinyctl pipeline --max-bytes N` (and `convert-all --max-bytes N`) rebuilds a
+map over the cap down the ladder: (a) `--lod-pick 0` — the far levels dropped,
+every part at its nearest, sharpest level (no near visual change; 17 % of
+U10S_100's bytes); (b) `--lod-pick 1 --lod-pick-min-verts V` — the heavy parts
+one level coarser, V bisected in [0, 40000] for the LARGEST threshold that fits
+(40000 checked first: only monster parts); (c) level 2, 3 likewise. Of the 75
+u10s maps ≥ 7 000 000 B, 45 fit at (a), 30 at (b) — 17 of those touching only
+parts over ~26 000 vertices; U10S_100 (16.5 MB, 288 items) alone needed every
+part at level 1 (6.66 MB). The note in the tracker row records the setting.
