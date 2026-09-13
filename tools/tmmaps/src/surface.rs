@@ -400,6 +400,14 @@ pub fn icy_tree(model: &str, variant: u8) -> Option<(&'static str, u8)> {
         ("SpringCherryTree", 0) => (WFT, 0),
         ("SpringCherryTree", 1) => (WFT, 4),
         ("SpringCherryTree", 2) => (WFT, 2),
+        // the CLUSTER variants (a prefab grouping several trees: `<Item>.Prefab`, `B`, `C`
+        // = the last three variants of every set) → the winter set's three clusters
+        ("Spring", 6) | ("Fall", 5) | ("SpringPalmTree", 2) | ("SummerPalmTree", 3) | ("SpringCherryTree", 3) => (WFT, 5),
+        ("Spring", 7) | ("Fall", 6) | ("SpringPalmTree", 3) | ("SummerPalmTree", 4) | ("SpringCherryTree", 4) => (WFT, 6),
+        ("Spring", 8) | ("Fall", 7) | ("SpringPalmTree", 4) | ("SummerPalmTree", 5) | ("SpringCherryTree", 5) => (WFT, 7),
+        ("Summer", 8) => (WIN, 2),
+        ("Summer", 9) => (WIN, 3),
+        ("Summer", 10) => (WIN, 4),
         // single-species items
         ("FallTreeTall", v) | ("SpringTreeTall", v) => ("FrozenTreeTall", v),
         ("FallTreeBig", v) | ("SpringTreeBig", v) => ("FrozenTreeBig", v),
@@ -423,5 +431,6 @@ mod tree_tests {
         assert_eq!(icy_tree("Summer", 2), None); // a cactus
         assert_eq!(icy_tree("Winter", 1), None);
         assert_eq!(icy_tree("FallTreeTall", 0), Some(("FrozenTreeTall", 0)));
+        assert_eq!(icy_tree("SummerPalmTree", 3), Some(("WinterFrozenTree", 5))); // a palm cluster -> a frozen cluster
     }
 }
