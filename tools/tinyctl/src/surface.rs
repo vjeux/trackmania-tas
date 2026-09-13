@@ -660,3 +660,87 @@ fn part_zip(part_out: &Path, part: &str, word: &str, dist: &Path) -> Result<(usi
     std::fs::write(part_out.join("MAPS.tsv"), files.get("MAPS.tsv").cloned().unwrap_or_default()).map_err(|e| format!("{}: {e}", part_out.display()))?;
     Ok((n, zip.len() as u64, over))
 }
+
+/// `tinyctl release-zips --dist DIR --tag TAG --title T --notes README.md [--repo vjeux/trackmania-tas]
+/// [--box-dir /home/vjeux/shoot/ice] [--wsx P]` — the GitHub release of a `surface-all` dist directory,
+/// driven from the devserver but run ON THE RENDER BOX (the only host with `gh` logged in and a route
+/// to GitHub): the release is created when missing (`gh release create` with the notes), then every
+/// `*.zip` of `--dist` is pushed to the box, uploaded (`gh release upload --clobber`), and deleted
+/// there (C: is tight), one at a time; at the end `gh release view --json assets` is compared with the
+/// local sizes and every mismatch is reported. Assets already present with the right size are skipped.
+pub fn release_zips_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let dist = PathBuf::from(f("--dist").ok_or("release-zips needs --dist DIR")?);
+    let tag = f("--tag").ok_or("release-zips needs --tag TAG")?;
+    let title = f("--title").ok_or("release-zips needs --title T")?;
+    let notes = PathBuf::from(f("--notes").ok_or("release-zips needs --notes README.md")?);
+    let repo = f("--repo").unwrap_or_else(|| "vjeux/trackmania-tas".into());
+    let box_dir = f("--box-dir").unwrap_or_else(|| "/home/vjeux/shoot/release-stage".into());
+    let wsx = crate::wsx::Wsx::new(args);
+    let gh = "cd /home/vjeux && ./bin/gh";
+    let mut zips: Vec<PathBuf> = std::fs::read_dir(&dist).map_err(|e| format!("{}: {e}", dist.display()))?.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().map(|x| x == "zip").unwrap_or(false)).collect();
+    zips.sort();
+    if zips.is_empty() {
+        return Err(format!("{}: no zips", dist.display()));
+    }
+    // the release
+    let notes_remote = format!("{box_dir}/{}", notes.file_name().unwrap_or_default().to_string_lossy());
+    wsx.sh(&format!("mkdir -p {box_dir}"))?;
+    wsx.push(&notes, &notes_remote)?;
+    let exists = wsx.sh(&format!("{gh} release view {tag} -R {repo} --json tagName 2>/dev/null | grep -c tagName; true"))?;
+    if exists.trim() == "0" || exists.trim().is_empty() {
+        let out = wsx.sh(&format!("{gh} release create {tag} -R {repo} --title '{}' --notes-file {notes_remote} 2>&1; true", title.replace('\'', "")))?;
+        println!("release create: {}", out.trim());
+    } else {
+        let out = wsx.sh(&format!("{gh} release edit {tag} -R {repo} --title '{}' --notes-file {notes_remote} 2>&1; true", title.replace('\'', "")))?;
+        println!("release exists; notes/title refreshed: {}", out.trim());
+    }
+    // what is up already
+    let present = wsx.sh(&format!("{gh} release view {tag} -R {repo} --json assets --jq '.assets[] | \"\\(.name)\\t\\(.size)\"' 2>/dev/null; true"))?;
+    let have: BTreeMap<String, u64> = present.lines().filter_map(|l| l.split_once('\t').and_then(|(n, s)| s.trim().parse().ok().map(|s| (n.trim().to_string(), s)))).collect();
+    let t0 = Instant::now();
+    let mut done = 0usize;
+    for z in &zips {
+        let name = z.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let size = std::fs::metadata(z).map(|m| m.len()).unwrap_or(0);
+        if have.get(&name) == Some(&size) {
+            println!("  {name}: already up ({size} B)");
+            done += 1;
+            continue;
+        }
+        let remote = format!("{box_dir}/{name}");
+        let t1 = Instant::now();
+        wsx.push(z, &remote)?;
+        let out = wsx.sh(&format!("{gh} release upload {tag} {remote} -R {repo} --clobber 2>&1; rc=$?; rm -f {remote}; echo rc=$rc"))?;
+        if !out.contains("rc=0") {
+            return Err(format!("{name}: upload failed: {}", out.trim()));
+        }
+        done += 1;
+        println!("  [{:>5.0}s] {name}: {size} B uploaded in {:.0} s ({done}/{})", t0.elapsed().as_secs_f64(), t1.elapsed().as_secs_f64(), zips.len());
+    }
+    // verify
+    let present = wsx.sh(&format!("{gh} release view {tag} -R {repo} --json assets --jq '.assets[] | \"\\(.name)\\t\\(.size)\"' 2>/dev/null; true"))?;
+    let have: BTreeMap<String, u64> = present.lines().filter_map(|l| l.split_once('\t').and_then(|(n, s)| s.trim().parse().ok().map(|s| (n.trim().to_string(), s)))).collect();
+    let mut bad = 0usize;
+    for z in &zips {
+        let name = z.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let size = std::fs::metadata(z).map(|m| m.len()).unwrap_or(0);
+        match have.get(&name) {
+            Some(s) if *s == size => {}
+            Some(s) => {
+                bad += 1;
+                eprintln!("  VERIFY {name}: {s} B on GitHub, {size} B here");
+            }
+            None => {
+                bad += 1;
+                eprintln!("  VERIFY {name}: missing on GitHub");
+            }
+        }
+    }
+    let total: u64 = zips.iter().map(|z| std::fs::metadata(z).map(|m| m.len()).unwrap_or(0)).sum();
+    println!("release https://github.com/{repo}/releases/tag/{tag}: {} assets present of {} ({:.2} GB), {bad} mismatches", have.len(), zips.len(), total as f64 / 1e9);
+    if bad > 0 {
+        return Err(format!("{bad} assets missing or wrong size"));
+    }
+    Ok(())
+}
