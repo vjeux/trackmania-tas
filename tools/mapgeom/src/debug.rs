@@ -23,6 +23,7 @@ pub const NAMES: &[(&str, &str)] = &[
     ("trees", "every tree the clearance drops, with the deck it hit"),
     ("fillers", "every recorded filler TINY_FILLER_RULE=accepted judges: the occupants of its cell, their clip lists on the shared face, the verdict"),
     ("pillars", "every generated pillar's parent: the block units in the first non-pillar cell above it, which one places this pillar kind, the dress taken"),
+    ("deck", "the deck-level histogram of a prefab (surface-plan: the flat collision area per 0.25 m of height)"),
 ];
 
 static ENABLED: OnceLock<BTreeSet<String>> = OnceLock::new();

@@ -76,7 +76,7 @@ pub fn set_ground(collection: u32) {
     GROUND_Y.with(|g| g.set(crate::map::ground_y(collection)));
     println!("  ground: cell row 0 at y {} (collection {collection:#x})", crate::map::ground_y(collection));
 }
-fn ground() -> f32 {
+pub fn ground() -> f32 {
     GROUND_Y.with(|g| g.get())
 }
 
@@ -208,7 +208,7 @@ fn trigger_cells(c: [i32; 3], ts: [i32; 3], point: &dyn Fn([f32; 3]) -> [f32; 3]
     out
 }
 
-fn cell_for(p: [f32; 3]) -> (i32, i32, i32) {
+pub fn cell_for(p: [f32; 3]) -> (i32, i32, i32) {
     let c = |v: f32, divisor: f32| (v / divisor).floor().clamp(0.0, 255.0) as i32;
     (
         c(p[0], 32.0).min(254),

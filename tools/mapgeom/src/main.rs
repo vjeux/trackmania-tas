@@ -63,6 +63,10 @@ COMMANDS
                                 cells, prefabs and what each side faces
   blockinfo-all [<substring>] [--out TSV] [--clips]
                                 parse every block info in the packs and report
+  surface-plan <file.Map.Gbx>... --surface ice --out TSV [--collection Stadium]
+                                every authored block MODEL of the maps with its
+                                same-footprint twin of that surface, verified in
+                                the pack (rename / same / keep / none / mismatch)
   map <file.Map.Gbx> --out F [--yoff N] [--no-items] [--no-deco]
       [--ghost G]... [--png P] [--clip-y Y]
                                 a whole map, with any ghosts as polylines
@@ -1640,6 +1644,84 @@ fn main() {
             }
             if bad > 0 {
                 std::process::exit(1);
+            }
+        }
+        "surface-plan" => {
+            let mut store = open(&a);
+            let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "Stadium".to_string());
+            let surface = flag(&a.rest, "--surface").unwrap_or_else(|| die("surface-plan needs --surface WORD (ice, dirt, tech, grass, plastic, bump, water)".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("surface-plan needs --out TSV".into()));
+            let records_out = flag(&a.rest, "--records");
+            let mut skip = false;
+            let maps: Vec<std::path::PathBuf> = a
+                .rest
+                .iter()
+                .skip(1)
+                .filter(|x| {
+                    if skip {
+                        skip = false;
+                        return false;
+                    }
+                    if x.starts_with("--") {
+                        skip = true;
+                        return false;
+                    }
+                    true
+                })
+                .map(std::path::PathBuf::from)
+                .collect();
+            if maps.is_empty() {
+                die::<()>("surface-plan needs at least one .Map.Gbx".into());
+            }
+            let mut idx = mapgeom::blockmap::BlockInfoIndex::build(&store, &coll);
+            // --records TSV: the per-RECORD plan of ONE map (deck offset, cell
+            // shift, conflicts, pillars swallowed by a bank) for `tmmaps surface`
+            let rows = if let Some(rec_out) = records_out {
+                if maps.len() != 1 {
+                    die::<()>("--records plans ONE map".into());
+                }
+                let (models, records) = mapgeom::surface::plan_records(&mut store, &mut idx, &maps[0], &surface, &coll).unwrap_or_else(|e| die(e));
+                mapgeom::surface::write_records(std::path::Path::new(&rec_out), &records).unwrap_or_else(|e| die(format!("{rec_out}: {e}")));
+                let mut tally: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+                for r in &records {
+                    *tally.entry(if r.delete { "delete".to_string() } else { r.action.as_str().to_string() }).or_default() += 1;
+                }
+                println!("records: {}", tally.iter().map(|(k, v)| format!("{k} {v}")).collect::<Vec<_>>().join(", "));
+                for r in records.iter().filter(|r| r.action == mapgeom::surface::Action::Mismatch && r.detail.starts_with("dy")) {
+                    println!("  conflict #{} {}: {}", r.index, r.name, r.detail);
+                }
+                models
+            } else {
+                mapgeom::surface::plan(&mut store, &mut idx, &maps, &surface).unwrap_or_else(|e| die(e))
+            };
+            mapgeom::surface::write_plan(std::path::Path::new(&out), &rows).unwrap_or_else(|e| die(format!("{out}: {e}")));
+            let mut tally: std::collections::BTreeMap<&str, (usize, usize)> = std::collections::BTreeMap::new();
+            for r in &rows {
+                let e = tally.entry(r.action.as_str()).or_default();
+                e.0 += 1;
+                e.1 += r.count;
+            }
+            for (k, (models, records)) in &tally {
+                println!("{k:9} {models:4} models {records:6} records");
+            }
+            for r in rows.iter().filter(|r| matches!(r.action, mapgeom::surface::Action::None_ | mapgeom::surface::Action::Mismatch | mapgeom::surface::Action::Bake)) {
+                println!("  {} {:5} {} -> {}: {}", r.action.as_str(), r.count, r.name, r.target, r.detail);
+            }
+            println!("plan: {out} ({} models)", rows.len());
+        }
+        "mat-ids" => {
+            let mut store = open(&a);
+            for p in a.rest.iter().skip(1) {
+                let ids = mapgeom::static_item::materials::material_surface_ids(&mut store, p);
+                let phys = mapgeom::static_item::materials::material_physics(&mut store, p);
+                println!("{p}: surface ids {:?} ({}), CPlugMaterial physics {:?}", ids, ids.map(|(a, _)| mapgeom::scene::material_name(a)).unwrap_or_default(), phys);
+            }
+        }
+        "deck" => {
+            let mut store = open(&a);
+            let mut idx = mapgeom::blockmap::BlockInfoIndex::build(&store, "Stadium");
+            for n in a.rest.iter().skip(1) {
+                println!("{}", mapgeom::surface::debug_deck(&mut store, &mut idx, n));
             }
         }
         "blockinfo-all" => {

@@ -170,6 +170,14 @@ pub struct Merged {
     /// the prefab's Asphalt (16) until the shadow rows (vjeux, tiny 18,
     /// 2026-09-08 — "the texture is ice but the driving is also not ice").
     pub collision_redress: Vec<Redress>,
+    /// A SURFACE SWAP's explicit re-dress of the prefab's VISUAL materials
+    /// (`TINY_REDRESS=RoadTech=Stadium\\Media\\Material\\RoadIce;…`, the ice
+    /// conversion of 2026-09-13): rows of (material stem, replacement link,
+    /// physics). Applied before the modifier folder lookup in `material_slot`,
+    /// for the materials no modifier folder shadows (a road deck is never
+    /// re-dressed by the game; an ice ROAD is a different block with a
+    /// different shape, so the road keeps its shape and takes the ice dress).
+    pub link_rewrite: Vec<(String, String, u8)>,
     /// An ITEM modifier names its materials with a suffix: the obstacle items
     /// (Summer 15's pushers and rotors) reference
     /// `Stadium\Media\Modifier\ItemObstacleLevel1.Gbx`, whose materials live
@@ -449,6 +457,15 @@ impl Merged {
             Some(kind) => {
                 pseudo = super::signlogo::pseudo_link(&kind);
                 (pseudo.as_str(), 32u8)
+            }
+            None => (link, physics),
+        };
+        // the surface swap's explicit rows first (`link_rewrite`): stem or full link
+        let rewritten;
+        let (link, physics) = match self.link_rewrite.iter().find(|(from, _, _)| link == from || link.rsplit('\\').next() == Some(from.as_str())) {
+            Some((_, to, phys)) => {
+                rewritten = to.clone();
+                (rewritten.as_str(), *phys)
             }
             None => (link, physics),
         };

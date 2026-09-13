@@ -68,5 +68,6 @@ pub mod tree_clear;
 pub mod veget;
 pub mod zipcheck;
 pub mod static_item;
+pub mod surface;
 
 pub use store::{DataStore, Model};

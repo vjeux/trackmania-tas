@@ -40,5 +40,6 @@ pub mod secs;
 pub mod segments;
 pub mod selftest;
 pub mod splice;
+pub mod surface;
 pub mod tiny;
 pub mod zippad;

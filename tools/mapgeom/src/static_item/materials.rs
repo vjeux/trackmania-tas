@@ -249,6 +249,11 @@ pub fn most_common_physics(so: &super::item::CPlugStaticObjectModel) -> Option<u
 /// on); BlueBay / RedIsland / WhiteShore / GreenCoast regenerate their sea or
 /// lake from the genealogy at that very height.
 pub fn keep_water_for(collection: u32) -> bool {
+    // TINY_KEEP_WATER=0 drops the Water sheets everywhere (the surface swap:
+    // a RoadWater piece baked as an ICE road carries no water any more)
+    if std::env::var("TINY_KEEP_WATER").as_deref() == Ok("0") {
+        return false;
+    }
     collection == 0x1a
 }
 

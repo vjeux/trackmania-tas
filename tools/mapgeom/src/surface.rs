@@ -1,0 +1,644 @@
+//! Surface swap plan: which block MODEL of a map has a same-footprint twin of
+//! another surface (`RoadTechStraight` -> `RoadIceStraight`), verified in the
+//! pack (2026-09-13, vjeux: "input 'ice' and it'll swap all the road, dirt...
+//! blocks into their icy version. If one doesn't exist it'll create a custom
+//! item version").
+//!
+//! Stadium spells a block's surface as ONE WORD inside its name, in a place
+//! that depends on the family:
+//!
+//! | family | Tech form | Ice form | rule |
+//! |---|---|---|---|
+//! | `Road…` | `RoadTechStraight` | `RoadIceStraight` | the word after `Road` (Tech, Dirt, Bump, Water, Ice) |
+//! | `Platform…` | `PlatformTechBase` | `PlatformIceBase` | the word after `Platform` (Tech, Dirt, Grass, Plastic, Ice) |
+//! | `DecoPlatform…` | `DecoPlatformBase` | `DecoPlatformIceBase` | Tech has NO word: insert / replace after `DecoPlatform` |
+//! | `DecoHill…` | `DecoHillSlope2Straight` | `DecoHillIceSlope2Straight` | same, after `DecoHill` |
+//! | `Open…Road`/`Hills`/`Zone` | `OpenTechRoadCurve1` | `OpenIceRoadCurve1` | the word after `Open` |
+//! | `DecoWall…` | `DecoWallBase` | `DecoWallBaseIce` | SUFFIX (pillars excepted) |
+//! | `Water…` | `WaterBase` | `WaterBaseIce` | SUFFIX — the pool keeps its water, the rim is dressed with the `PlatformIce` modifier |
+//! | `Road<A>ToRoad<B>` | `RoadTechToRoadDirt` | `RoadIceStraight` | a one-cell join of two surfaces is a straight of the one surface |
+//!
+//! A candidate is only a twin when the pack HAS it and it agrees with the
+//! source model on kind, waypoint type and the footprint (unit cells) of the
+//! base ground and air variants; the map's records are checked against the
+//! twin's variant tables too (ground/air, additional-variant index, mobil list
+//! and mobil index) so a rename never asks for a shape the twin lacks.
+//!
+//! What has NO twin in the 2026 Stadium pack (measured on the first 25 u10s
+//! maps): every `TrackWall*` (the wooden wall-ride family), `RoadIce` has no
+//! `Tilt*`, `Wave*`, `RampLow` pieces, and `DecoWallWaterBase` has no ice
+//! form. Those rows come back as `none`; the map side decides between keeping
+//! the block and baking a re-dressed item (`tmmaps surface`).
+
+use crate::blockinfo::BlockInfo;
+use crate::blockmap::BlockInfoIndex;
+use crate::store::DataStore;
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
+
+/// The surface words Stadium block names carry, longest first so `Plastic`
+/// wins over a hypothetical `Plas`.
+pub const SURFACE_WORDS: &[&str] = &["Plastic", "Grass", "Water", "Tech", "Dirt", "Bump", "Ice"];
+
+/// Canonical spelling of a surface argument (`ice` -> `Ice`).
+pub fn surface_word(s: &str) -> Option<&'static str> {
+    let l = s.trim().to_ascii_lowercase();
+    SURFACE_WORDS.iter().find(|w| w.to_ascii_lowercase() == l).copied()
+}
+
+fn strip_surface_word(rest: &str) -> Option<(&'static str, &str)> {
+    for w in SURFACE_WORDS {
+        if let Some(tail) = rest.strip_prefix(w) {
+            return Some((w, tail));
+        }
+    }
+    None
+}
+
+/// Whether `name` is a block of a SURFACE family at all (roads, platforms,
+/// deco platforms, deco hills, open roads, deco walls, water) — the families
+/// the swap touches. Pillars, structures, stands, gates, canopies are not.
+pub fn is_surface_family(name: &str) -> bool {
+    if name.ends_with("Pillar") {
+        return false;
+    }
+    ["Road", "Platform", "DecoPlatform", "DecoHill", "Open", "DecoWall", "Water", "TrackWall"].iter().any(|p| name.starts_with(p))
+}
+
+/// The name a block WOULD have with surface `s`, by the family rules above —
+/// unverified. `None` for a block outside the surface families (pillars,
+/// structures, gates …). The result may equal `name` (already that surface).
+pub fn candidate(name: &str, s: &str) -> Option<String> {
+    if name.ends_with("Pillar") {
+        return None;
+    }
+    // Road<A>ToRoad<B>[Down|SlopeUp|…]: the join of two road surfaces. In a
+    // one-surface world the flat join is a straight; a stepped/sloped join
+    // (`RoadTechToRoadIceDown`) has no one-surface counterpart — verified
+    // later against the pack (it will not exist) and reported as `none`.
+    if let Some(rest) = name.strip_prefix("Road") {
+        if let Some((_a, tail)) = strip_surface_word(rest) {
+            if let Some(after_to) = tail.strip_prefix("ToRoad") {
+                if let Some((b, tail2)) = strip_surface_word(after_to) {
+                    if _a == s && b == s {
+                        return Some(name.to_string()); // both halves already that surface
+                    }
+                    return Some(if tail2.is_empty() { format!("Road{s}Straight") } else { format!("Road{s}Straight{tail2}") });
+                }
+            }
+            return Some(format!("Road{s}{tail}"));
+        }
+        return None; // `Road` + something that is not a surface word
+    }
+    for fam in ["DecoPlatform", "DecoHill", "Platform"] {
+        if let Some(rest) = name.strip_prefix(fam) {
+            // Tech is spelled with NO word in the Deco families
+            let word = if fam != "Platform" && s == "Tech" { "" } else { s };
+            return Some(match strip_surface_word(rest) {
+                Some((_w, tail)) => format!("{fam}{word}{tail}"),
+                None if fam != "Platform" => format!("{fam}{word}{rest}"),
+                None => return None,
+            });
+        }
+    }
+    if let Some(rest) = name.strip_prefix("Open") {
+        if let Some((_w, tail)) = strip_surface_word(rest) {
+            return Some(format!("Open{s}{tail}"));
+        }
+        return None;
+    }
+    if name.starts_with("DecoWall") || name.starts_with("Water") {
+        // suffix form; an existing suffix of another surface is replaced
+        for w in SURFACE_WORDS {
+            if let Some(base) = name.strip_suffix(w) {
+                if !base.is_empty() && base != "DecoWall" && base != "Water" {
+                    return Some(format!("{base}{s}"));
+                }
+            }
+        }
+        return Some(format!("{name}{s}"));
+    }
+    if name.starts_with("TrackWall") {
+        // the wooden wall-ride family has no surface twins at all; the
+        // candidate is spelled so the verification says so in the row
+        return Some(format!("{name}{s}"));
+    }
+    None
+}
+
+/// What the plan says about one block model.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Action {
+    /// rename to the verified twin
+    Rename,
+    /// already of the asked-for surface
+    Same,
+    /// outside the surface families (pillars, structures, gates …)
+    Keep,
+    /// a surface block whose twin the pack does not have
+    None_,
+    /// a twin exists but disagrees (footprint, waypoint, variant tables)
+    Mismatch,
+    /// a surface block with no same-shape twin: baked as a re-dressed ITEM copy
+    /// (`tmmaps surface --library --mapping`)
+    Bake,
+}
+
+impl Action {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Action::Rename => "rename",
+            Action::Same => "same",
+            Action::Keep => "keep",
+            Action::None_ => "none",
+            Action::Mismatch => "mismatch",
+            Action::Bake => "bake",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Action> {
+        Some(match s {
+            "rename" => Action::Rename,
+            "same" => Action::Same,
+            "keep" => Action::Keep,
+            "none" => Action::None_,
+            "mismatch" => Action::Mismatch,
+            "bake" => Action::Bake,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PlanRow {
+    pub name: String,
+    pub count: usize,
+    pub action: Action,
+    pub target: String,
+    /// deck offset in cells: the twin is placed `dy` cells LOWER than the source
+    /// record so its deck lands where the source deck was (RoadIce: 1)
+    pub dy: i32,
+    pub detail: String,
+}
+
+fn cells_of(v: &Option<crate::blockinfo::Variant>) -> Vec<[i32; 3]> {
+    let mut c = v.as_ref().map(|v| v.cells()).unwrap_or_default();
+    c.sort();
+    c
+}
+
+/// Compare a source model with its candidate twin: kind, waypoint, footprint
+/// of the base ground and air variants, spawn of a start block. The deck
+/// offset `dy` (cells; the twin's deck sits `8·dy` m higher in its own frame,
+/// RoadIce = 1) relaxes the footprint rule to "same x/z columns": the ice
+/// road's extra unit is its bank, and the record is placed `dy` cells lower.
+/// `Ok(detail)` when they agree, `Err(why)` otherwise.
+fn compare(src: &BlockInfo, twin: &BlockInfo, dy: i32) -> Result<String, String> {
+    if src.kind != twin.kind {
+        return Err(format!("kind {:?} vs {:?}", src.kind, twin.kind));
+    }
+    if src.waypoint_type != twin.waypoint_type {
+        return Err(format!("waypoint {:?} vs {:?}", src.waypoint_type, twin.waypoint_type));
+    }
+    let columns = |c: &[[i32; 3]]| -> Vec<[i32; 2]> {
+        let mut v: Vec<[i32; 2]> = c.iter().map(|c| [c[0], c[2]]).collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    let (sg, tg) = (cells_of(&src.variant_base_ground), cells_of(&twin.variant_base_ground));
+    let (sa, ta) = (cells_of(&src.variant_base_air), cells_of(&twin.variant_base_air));
+    let mut detail;
+    if sg == tg && sa == ta {
+        detail = format!("cells {}", if !sg.is_empty() { sg.len() } else { sa.len() });
+        if dy != 0 {
+            detail.push_str(&format!("; deck offset dy {dy} with an equal footprint"));
+        }
+    } else if dy != 0 && columns(&sg) == columns(&tg) && columns(&sa) == columns(&ta) {
+        detail = format!("deck +{} m (dy {dy}): {} -> {} cells over the same columns", 8 * dy, sg.len().max(sa.len()), tg.len().max(ta.len()));
+    } else if sg != tg {
+        return Err(format!("ground footprint {:?} vs {:?}", sg, tg));
+    } else {
+        return Err(format!("air footprint {:?} vs {:?}", sa, ta));
+    }
+    if src.waypoint_type == Some(0) || src.waypoint_type == Some(4) {
+        let s = src.variant_base_ground.as_ref().or(src.variant_base_air.as_ref()).map(|v| v.spawn_loc).unwrap_or_default();
+        let t = twin.variant_base_ground.as_ref().or(twin.variant_base_air.as_ref()).map(|v| v.spawn_loc).unwrap_or_default();
+        let shifted = [t[0], t[1] - 8.0 * dy as f32, t[2]];
+        if [s[0], s[1], s[2]] != shifted {
+            detail.push_str(&format!("; spawn {:?} -> {:?} (in the source's frame)", &s[..3], shifted));
+        } else {
+            detail.push_str(&format!("; spawn {:?}", &s[..3]));
+        }
+    }
+    if src.additional_ground.len() != twin.additional_ground.len() || src.additional_air.len() != twin.additional_air.len() {
+        detail.push_str(&format!(
+            "; additional variants {}g/{}a vs {}g/{}a",
+            src.additional_ground.len(),
+            src.additional_air.len(),
+            twin.additional_ground.len(),
+            twin.additional_air.len()
+        ));
+    }
+    Ok(detail)
+}
+
+/// Whether the twin resolves a record's flags the way the source does:
+/// ground/air family, the additional index (bits 21..27), the mobil list
+/// (bits 0..5) and the mobil (bits 6..11) — the same variant label, the same
+/// footprint, and no fallback note the source's own pick did not have.
+fn record_fits(src: &BlockInfo, twin: &BlockInfo, flags: u32) -> Result<(), String> {
+    let ground = flags & 0x1000 != 0;
+    let add = ((flags >> 21) & 0x7f) as usize;
+    let list = (flags & 63) as usize;
+    let mobil = ((flags >> 6) & 63) as usize;
+    let Some(t) = twin.pick_placement_add(ground, list, mobil, add) else {
+        return Err(format!("flags {flags:08x}: twin has no variant (ground {ground}, add {add}, list {list}, mobil {mobil})"));
+    };
+    let Some(s) = src.pick_placement_add(ground, list, mobil, add) else {
+        return Ok(()); // the source itself resolves nothing here; nothing to hold the twin to
+    };
+    if s.label != t.label {
+        return Err(format!("flags {flags:08x}: variant {} vs {}", s.label, t.label));
+    }
+    let (mut sc, mut tc) = (s.variant.cells(), t.variant.cells());
+    sc.sort();
+    tc.sort();
+    if sc != tc {
+        return Err(format!("flags {flags:08x}: variant footprint {:?} vs {:?}", sc, tc));
+    }
+    if s.mobils.len() != t.mobils.len() {
+        return Err(format!("flags {flags:08x}: {} vs {} mobils picked", s.mobils.len(), t.mobils.len()));
+    }
+    Ok(())
+}
+
+/// Build the plan over the authored blocks of `maps` (aggregated by name).
+pub fn plan(store: &mut DataStore, idx: &mut BlockInfoIndex, maps: &[std::path::PathBuf], surface: &str) -> Result<Vec<PlanRow>, String> {
+    let s = surface_word(surface).ok_or_else(|| format!("unknown surface `{surface}` (one of {})", SURFACE_WORDS.join(", ")))?;
+    // name -> (count, flags seen)
+    let mut seen: BTreeMap<String, (usize, Vec<u32>)> = BTreeMap::new();
+    for p in maps {
+        let m = tmmaps::map::MapFile::try_load(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        for b in &m.blocks {
+            let e = seen.entry(b.name.clone()).or_default();
+            e.0 += 1;
+            if !e.1.contains(&b.flags) {
+                e.1.push(b.flags);
+            }
+        }
+    }
+    let mut rows = Vec::new();
+    for (name, (count, flags)) in seen {
+        let row = plan_one(store, idx, &name, count, &flags, s);
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: usize, flags: &[u32], s: &str) -> PlanRow {
+    let mk = |action: Action, target: &str, detail: String| PlanRow { name: name.to_string(), count, action, target: target.to_string(), dy: 0, detail };
+    // an embedded custom block record (`X.Block.Gbx_CustomBlock`) is its author's
+    // own mesh: no pack twin
+    if name.contains('\\') || name.ends_with("_CustomBlock") {
+        return mk(Action::Keep, "", "embedded custom block".into());
+    }
+    let Some(cand) = candidate(name, s) else {
+        return mk(Action::Keep, "", "not a surface family".into());
+    };
+    if cand == name {
+        return mk(Action::Same, name, format!("already {s}"));
+    }
+    let Some(src_path) = idx.path_for(name) else {
+        return mk(Action::Keep, "", "source model not in the pack".into());
+    };
+    let src = match idx.load(store, &src_path) {
+        Ok(b) => b.clone(),
+        Err(e) => return mk(Action::Keep, "", format!("source model unreadable: {e}")),
+    };
+    let Some(twin_path) = idx.path_for(&cand) else {
+        let fam = if name.starts_with("TrackWall") { "TrackWall family has no surface variants" } else { "no such block in the pack" };
+        let detail = format!("{fam}; cells {}", cells_of(&src.variant_base_ground).len().max(cells_of(&src.variant_base_air).len()));
+        // a block with geometry of its own is baked as a re-dressed copy; a
+        // prefab-less one (its faces are generated fillers) has nothing to bake
+        return if base_prefab(&src).is_some() { mk(Action::Bake, &cand, detail) } else { mk(Action::None_, &cand, detail) };
+    };
+    let twin = match idx.load(store, &twin_path) {
+        Ok(b) => b.clone(),
+        Err(e) => return mk(Action::Mismatch, &cand, format!("twin unreadable: {e}")),
+    };
+    // A twin is the SAME MESH in another dress (the modifier folder): the
+    // Platform / DecoPlatform / DecoHill / Open / Water families share their
+    // prefabs across surfaces, the DecoWall family has none. A different
+    // prefab is a different SHAPE — RoadIce is a bobsleigh trough with its
+    // floor 2.5 m above the tech deck and 6 m rims, RoadIceStart a pad 8 m up —
+    // and no cell shift makes it drop in; such a block is baked as a
+    // re-dressed copy of its own geometry instead (`Bake`).
+    let (sp, tp) = (base_prefab(&src), base_prefab(&twin));
+    if sp != tp {
+        return mk(Action::Bake, &cand, format!("different mesh: {} vs {} — re-dressed copy", sp.as_deref().map(|p| p.rsplit('\\').next().unwrap_or(p)).unwrap_or("none"), tp.as_deref().map(|p| p.rsplit('\\').next().unwrap_or(p)).unwrap_or("none")));
+    }
+    // the deck offset between the two models, from their base prefabs' deck levels
+    let level = |store: &mut DataStore, bi: &BlockInfo| -> Option<f32> { base_prefab(bi).and_then(|pf| deck_level(store, &pf)) };
+    let dy = match (level(store, &src), level(store, &twin)) {
+        (Some(a), Some(b)) => ((b - a) / 8.0).round() as i32,
+        _ => 0,
+    };
+    match compare(&src, &twin, dy) {
+        Ok(mut detail) => {
+            for f in flags {
+                if let Err(e) = record_fits(&src, &twin, *f) {
+                    return mk(Action::Mismatch, &cand, e);
+                }
+            }
+            if src.mat_modifier != twin.mat_modifier {
+                detail.push_str(&format!("; modifier {:?} -> {:?}", src.mat_modifier.as_ref().map(|m| m.1.as_str()).unwrap_or("-"), twin.mat_modifier.as_ref().map(|m| m.1.as_str()).unwrap_or("-")));
+            }
+            let mut r = mk(Action::Rename, &cand, detail);
+            r.dy = dy;
+            r
+        }
+        // a shape of its own that the twin does not match: baked as a re-dressed copy
+        Err(why) if base_prefab(&src).is_some() => mk(Action::Bake, &cand, format!("{why} — re-dressed copy")),
+        Err(why) => mk(Action::Mismatch, &cand, why),
+    }
+}
+
+pub fn write_plan(path: &Path, rows: &[PlanRow]) -> std::io::Result<()> {
+    let mut s = String::from("name\tcount\taction\ttarget\tdy\tdetail\n");
+    for r in rows {
+        s.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{}\n", r.name, r.count, r.action.as_str(), r.target, r.dy, r.detail));
+    }
+    std::fs::write(path, s)
+}
+
+/// Read a plan TSV back (the map side).
+pub fn read_plan(path: &Path) -> Result<Vec<PlanRow>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut out = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if i == 0 || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 4 {
+            return Err(format!("{}:{}: short row", path.display(), i + 1));
+        }
+        let action = Action::parse(f[2]).ok_or_else(|| format!("{}:{}: action `{}`", path.display(), i + 1, f[2]))?;
+        out.push(PlanRow { name: f[0].to_string(), count: f[1].parse().unwrap_or(0), action, target: f[3].to_string(), dy: f.get(4).and_then(|v| v.parse().ok()).unwrap_or(0), detail: f.get(5).unwrap_or(&"").to_string() });
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names() {
+        let c = |n: &str| candidate(n, "Ice").unwrap_or_else(|| "-".into());
+        assert_eq!(c("RoadTechStraight"), "RoadIceStraight");
+        assert_eq!(c("RoadDirtFinish"), "RoadIceFinish");
+        assert_eq!(c("RoadBumpTiltCurve3"), "RoadIceTiltCurve3");
+        assert_eq!(c("RoadWaterStart"), "RoadIceStart");
+        assert_eq!(c("RoadIceStraight"), "RoadIceStraight");
+        assert_eq!(c("RoadTechToRoadDirt"), "RoadIceStraight");
+        assert_eq!(c("RoadTechToRoadBumpX2"), "RoadIceStraightX2");
+        assert_eq!(c("RoadIceToRoadIceWithWallLeft"), "RoadIceToRoadIceWithWallLeft");
+        assert_eq!(c("PlatformTechBase"), "PlatformIceBase");
+        assert_eq!(c("PlatformPlasticWallStraight4"), "PlatformIceWallStraight4");
+        assert_eq!(c("PlatformGrassSpecialTurbo"), "PlatformIceSpecialTurbo");
+        assert_eq!(c("DecoPlatformBase"), "DecoPlatformIceBase");
+        assert_eq!(c("DecoPlatformDirtSlope2UTop"), "DecoPlatformIceSlope2UTop");
+        assert_eq!(c("DecoHillSlope2Straight"), "DecoHillIceSlope2Straight");
+        assert_eq!(c("DecoHillDirtSlope2Curve1Out"), "DecoHillIceSlope2Curve1Out");
+        assert_eq!(c("OpenTechRoadCurve1"), "OpenIceRoadCurve1");
+        assert_eq!(c("OpenGrassRoadEnd"), "OpenIceRoadEnd");
+        assert_eq!(c("DecoWallBase"), "DecoWallBaseIce");
+        assert_eq!(c("DecoWallLoopOutStartCurve1"), "DecoWallLoopOutStartCurve1Ice");
+        assert_eq!(c("DecoWallBasePillar"), "-");
+        assert_eq!(c("WaterBase"), "WaterBaseIce");
+        assert_eq!(c("DecoWallWaterBase"), "DecoWallWaterBaseIce");
+        assert_eq!(c("TrackWallStraight"), "TrackWallStraightIce");
+        assert_eq!(c("StructureBase"), "-");
+        assert_eq!(c("GateFinish"), "-");
+        assert_eq!(c("StageSupportCrossPillar"), "-");
+        assert_eq!(candidate("PlatformDirtBase", "Tech").unwrap(), "PlatformTechBase");
+        assert_eq!(candidate("DecoPlatformIceBase", "Tech").unwrap(), "DecoPlatformBase");
+    }
+}
+
+// ------------------------------------------------------------------ records
+
+/// One authored block record's fate.
+#[derive(Clone, Debug)]
+pub struct RecordRow {
+    pub index: usize,
+    pub name: String,
+    pub action: Action,
+    pub target: String,
+    pub dir: u8,
+    pub flags: u32,
+    pub free: bool,
+    /// the record's cell (grid) — for a free block its position rounded to a cell
+    pub cell: [i32; 3],
+    /// where the twin goes: the same cell, or one cell down for a family whose
+    /// deck sits a unit higher in its own frame (RoadIce: bank + deck at +8)
+    pub new_cell: [i32; 3],
+    /// a free block's new position (the same y shift, in metres)
+    pub new_pos: Option<[f32; 3]>,
+    /// `delete`: a pillar record swallowed by the twin's extra cells
+    pub delete: bool,
+    pub detail: String,
+}
+
+/// The height of a prefab's DECK: the y level (0.25 m bins) carrying the most
+/// upward-facing collision area. RoadTech's straight: 0; RoadIce's: 8 (its
+/// deck rides on an 8 m bank). `None` for a prefab with no collision.
+pub fn deck_level(store: &mut DataStore, prefab: &str) -> Option<f32> {
+    let model = store.load_model(prefab).ok()?;
+    let mut c = crate::geom::Collector::new(store);
+    c.model(&model, &crate::geom::IDENTITY, 0);
+    let mut bins: BTreeMap<i32, f64> = BTreeMap::new();
+    for (name, g) in &c.scene.groups {
+        if name == "Visual" || name.starts_with("NotCollidable") || name.contains("(moving)") {
+            continue;
+        }
+        for t in &g.tris {
+            let (a, b, cc) = (g.verts[t[0] as usize], g.verts[t[1] as usize], g.verts[t[2] as usize]);
+            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let v = [cc[0] - a[0], cc[1] - a[1], cc[2] - a[2]];
+            let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            if len < 1e-6 || n[1] / len < 0.95 {
+                continue;
+            }
+            let y = (a[1] + b[1] + cc[1]) / 3.0;
+            *bins.entry((y * 4.0).round() as i32).or_default() += (len / 2.0) as f64;
+        }
+    }
+    if crate::debug::on("deck") {
+        let mut v: Vec<(&i32, &f64)> = bins.iter().collect();
+        v.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap());
+        eprintln!("deck {prefab}: {}", v.iter().take(8).map(|(k, a)| format!("y {} = {:.0} m2", **k as f32 / 4.0, a)).collect::<Vec<_>>().join(", "));
+    }
+    bins.iter().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(k, _)| *k as f32 / 4.0)
+}
+
+fn base_prefab(bi: &BlockInfo) -> Option<String> {
+    bi.variant_base_ground.as_ref().or(bi.variant_base_air.as_ref()).and_then(|v| v.prefabs().into_iter().next())
+}
+
+/// Plan every authored record of one map. Returns the model rows (for the
+/// report) and the record rows (for `tmmaps surface`).
+pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path, surface: &str, collection: &str) -> Result<(Vec<PlanRow>, Vec<RecordRow>), String> {
+    let s = surface_word(surface).ok_or_else(|| format!("unknown surface `{surface}`"))?;
+    let m = tmmaps::map::MapFile::try_load(map).map_err(|e| format!("{}: {e}", map.display()))?;
+    // model rows
+    let mut seen: BTreeMap<String, (usize, Vec<u32>)> = BTreeMap::new();
+    for b in &m.blocks {
+        let e = seen.entry(b.name.clone()).or_default();
+        e.0 += 1;
+        if !e.1.contains(&b.flags) {
+            e.1.push(b.flags);
+        }
+    }
+    let mut models: BTreeMap<String, PlanRow> = BTreeMap::new();
+    for (name, (count, flags)) in &seen {
+        models.insert(name.clone(), plan_one(store, idx, name, *count, flags, s));
+    }
+    let dy_of: BTreeMap<String, i32> = models.iter().map(|(n, r)| (n.clone(), r.dy)).collect();
+    // occupancy of the map as it is
+    let (placements, _idx2) = crate::blockmap::walk(store, &m, false, collection);
+    let mut occ: HashMap<[i32; 3], Vec<usize>> = HashMap::new(); // world cell -> block indices
+    for p in &placements {
+        if p.free || p.baked {
+            continue;
+        }
+        for (_, rel) in &p.cells {
+            occ.entry([p.cell[0] + rel[0], p.cell[1] + rel[1], p.cell[2] + rel[2]]).or_default().push(p.index);
+        }
+    }
+    let by_index: HashMap<usize, &crate::blockmap::Placement> = placements.iter().map(|p| (p.index, p)).collect();
+    let is_pillar = |b: &tmmaps::map::BlockRec| b.flags & 0x4000 != 0 || b.name.ends_with("Pillar");
+    let mut rows: Vec<RecordRow> = Vec::new();
+    let mut deletions: BTreeMap<usize, String> = BTreeMap::new();
+    for b in &m.blocks {
+        let row = &models[&b.name];
+        let c = b.coords();
+        let cell = [c.0, c.1, c.2];
+        let free = b.flags & 0x2000_0000 != 0;
+        let mut r = RecordRow {
+            index: b.index,
+            name: b.name.clone(),
+            action: row.action.clone(),
+            target: row.target.clone(),
+            dir: b.dir,
+            flags: b.flags,
+            free,
+            cell,
+            new_cell: cell,
+            new_pos: None,
+            delete: false,
+            detail: row.detail.clone(),
+        };
+        if row.action == Action::Rename {
+            let dy = dy_of.get(&b.name).copied().unwrap_or(0);
+            if free {
+                if let Some(p) = b.free_pos {
+                    r.new_pos = Some([p[0], p[1] - 8.0 * dy as f32, p[2]]);
+                }
+                r.detail = format!("free; dy {dy}; {}", row.detail);
+            } else {
+                r.new_cell = [cell[0], cell[1] - dy, cell[2]];
+                if r.new_cell[1] < 0 {
+                    r.action = Action::Mismatch;
+                    r.detail = format!("shifted below the grid (dy {dy})");
+                } else if dy != 0 {
+                    // the twin's footprint at its new cell, against everything else
+                    let twin_path = idx.path_for(&row.target);
+                    let footprint: Vec<[i32; 3]> = twin_path
+                        .and_then(|tp| idx.load(store, &tp).ok().cloned())
+                        .and_then(|tb| {
+                            let ground = b.flags & 0x1000 != 0;
+                            tb.pick_placement_add(ground, (b.flags & 63) as usize, ((b.flags >> 6) & 63) as usize, ((b.flags >> 21) & 0x7f) as usize).map(|pk| crate::blockmap::footprint(pk.variant, b.dir).into_iter().map(|(_, rel)| [r.new_cell[0] + rel[0], r.new_cell[1] + rel[1], r.new_cell[2] + rel[2]]).collect())
+                        })
+                        .unwrap_or_default();
+                    let own: Vec<[i32; 3]> = by_index.get(&b.index).map(|p| p.cells.iter().map(|(_, rel)| [cell[0] + rel[0], cell[1] + rel[1], cell[2] + rel[2]]).collect()).unwrap_or_default();
+                    let mut conflicts: Vec<String> = Vec::new();
+                    let mut swallowed: Vec<usize> = Vec::new();
+                    for w in &footprint {
+                        if own.contains(w) {
+                            continue;
+                        }
+                        for o in occ.get(w).into_iter().flatten() {
+                            if *o == b.index {
+                                continue;
+                            }
+                            let ob = &m.blocks[*o];
+                            if is_pillar(ob) {
+                                swallowed.push(*o);
+                            } else {
+                                conflicts.push(format!("#{} {} at {:?}", ob.index, ob.name, w));
+                            }
+                        }
+                    }
+                    if !conflicts.is_empty() {
+                        r.action = Action::Mismatch;
+                        r.detail = format!("dy {dy}: the twin's cells are taken by {}", conflicts.join(", "));
+                    } else {
+                        r.detail = format!("dy {dy}; {}", row.detail);
+                        for o in swallowed {
+                            deletions.insert(o, format!("inside the {} bank of #{}", row.target, b.index));
+                        }
+                    }
+                }
+            }
+        }
+        rows.push(r);
+    }
+    for r in rows.iter_mut() {
+        if let Some(why) = deletions.get(&r.index) {
+            r.delete = true;
+            r.action = Action::Keep;
+            r.detail = format!("delete: {why}");
+        }
+    }
+    Ok((models.into_values().collect(), rows))
+}
+
+pub fn write_records(path: &Path, rows: &[RecordRow]) -> std::io::Result<()> {
+    let mut s = String::from("index\tname\taction\ttarget\tdir\tflags\tfree\tcell_x\tcell_y\tcell_z\tnew_x\tnew_y\tnew_z\tnew_pos\tdelete\tdetail\n");
+    for r in rows {
+        s.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{:08x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            r.index,
+            r.name,
+            r.action.as_str(),
+            r.target,
+            r.dir,
+            r.flags,
+            if r.free { 1 } else { 0 },
+            r.cell[0],
+            r.cell[1],
+            r.cell[2],
+            r.new_cell[0],
+            r.new_cell[1],
+            r.new_cell[2],
+            r.new_pos.map(|p| format!("{},{},{}", p[0], p[1], p[2])).unwrap_or_else(|| "-".into()),
+            if r.delete { 1 } else { 0 },
+            r.detail
+        ));
+    }
+    std::fs::write(path, s)
+}
+
+/// Debug: the deck level of a block model's base prefab.
+pub fn debug_deck(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str) -> String {
+    let Some(p) = idx.path_for(name) else { return format!("{name}: no block info") };
+    let bi = match idx.load(store, &p) {
+        Ok(b) => b.clone(),
+        Err(e) => return format!("{name}: {e}"),
+    };
+    let Some(pf) = base_prefab(&bi) else { return format!("{name}: no base prefab") };
+    format!("{name}: prefab {pf} deck {:?}", deck_level(store, &pf))
+}

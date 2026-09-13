@@ -663,7 +663,12 @@ fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collectio
     // PlatformGrassSlope2Straight item built first).
     // the block's own modifier plus the one a filler inherits from the
     // authored block it finishes (`inherited_mods`, see `inherited_mod`)
-    let effective_mods: Vec<String> = bi.material_modifier.iter().cloned().chain(key.inherited_mods.split('|').filter(|s| !s.is_empty()).map(String::from)).collect();
+    // TINY_FORCE_MODIFIER=PATH (the surface swap, 2026-09-13): every baked block
+    // wears this modifier too — `Stadium\Media\Modifier\PlatformIce.TerrainModifier.Gbx`
+    // dresses a TrackWall, a PlatformTech deck, a DecoHill as the game dresses
+    // them on an ice platform (the folder-shadow rows: look AND physics)
+    let forced_mod: Option<String> = std::env::var("TINY_FORCE_MODIFIER").ok().filter(|s| !s.is_empty());
+    let effective_mods: Vec<String> = bi.material_modifier.iter().cloned().chain(key.inherited_mods.split('|').filter(|s| !s.is_empty()).map(String::from)).chain(forced_mod.into_iter()).collect();
     let recipe = if let Some(l) = legacy_item { format!("legacy:{l}") } else { format!("{}|wp{:?}|units{:?}|mod{:?}", prefabs.iter().map(|p| format!("{}@{:?}/{:?}", p.0, p.1, p.2)).collect::<Vec<_>>().join(","), bi.waypoint_type, units, effective_mods) };
     if prefabs.is_empty() && legacy_item.is_none() {
         if solids.is_empty() {
@@ -696,6 +701,14 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     m.keep_water = crate::static_item::build::keep_water_for(collection);
     m.modifier = modifier_links(store, &plan.effective_mods);
     m.collision_redress = modifier_redress(store, &plan.effective_mods, &m.modifier);
+    // TINY_REDRESS=Stem=Link[;Stem=Link…] (the surface swap): explicit rows for the
+    // materials no modifier folder shadows — `RoadTech=Stadium\Media\Material\RoadIce`
+    // puts the ice deck material (look + RoadIce physics 74) on a tech road's
+    // deck. Rows go FIRST: the first matching collision row wins.
+    for (stem, link, ids) in surface_redress_rows(store) {
+        m.collision_redress.insert(0, Redress { matches: RedressKey::File(format!("{}.material.gbx", stem.to_ascii_lowercase())), link: link.clone(), ids });
+        m.link_rewrite.push((stem, link, ids.0));
+    }
     // The collection SKIN (`<Env>\Media\Modifier\StadiumOnTerrain\<slot>`, the
     // four terrain collections) is one material file per slot: look AND
     // surface. The visuals took it since 2026-09-06 (`skinned_material`); the
@@ -2699,4 +2712,20 @@ thread_local! {
     /// The filler-foliage species bakes, shared by every block of one library
     /// build (`inline_filler_foliage`): a species is baked once per process.
     static FILLER_CACHE: std::cell::RefCell<Option<BTreeMap<String, Option<crate::static_item::build::Merged>>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `TINY_REDRESS=Stem=Link[;Stem=Link…]` parsed and resolved: each row's
+/// replacement material read from the pack for its (physics, gameplay) ids
+/// (`Stadium\Media\Material\RoadIce` = RoadIce 74). A row whose link the
+/// pack lacks is refused loudly: a silent miss would bake a road that LOOKS
+/// like ice and drives like asphalt.
+pub fn surface_redress_rows(store: &mut DataStore) -> Vec<(String, String, (u8, u8))> {
+    let Ok(spec) = std::env::var("TINY_REDRESS") else { return Vec::new() };
+    let mut out = Vec::new();
+    for row in spec.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+        let Some((stem, link)) = row.split_once('=') else { panic!("TINY_REDRESS row `{row}`: want Stem=Link") };
+        let ids = crate::static_item::build::material_surface_ids(store, &format!("{link}.Material.Gbx")).unwrap_or_else(|| panic!("TINY_REDRESS: `{link}.Material.Gbx` has no surface ids in the pack"));
+        out.push((stem.trim().to_string(), link.trim().to_string(), ids));
+    }
+    out
 }

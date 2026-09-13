@@ -95,6 +95,7 @@ fn main() {
         "lineup" => tmmaps::tiny::lineup_cmd(&args),
         "shared-cells" => tmmaps::tiny::shared_cells_cmd(&args),
         "tiny" => tmmaps::tiny::cmd(&args),
+        "surface" => tmmaps::surface::cmd(&args),
         "tiny-batch" => tmmaps::tiny::cmd_batch(&args),
         "clear" => census::cmd_clear(&args),
         "shift" => census::cmd_shift(&args),

@@ -40,6 +40,7 @@ mod motion;
 mod nadeo;
 mod batch;
 mod pipeline;
+mod surface;
 mod mtrender;
 mod mapzips;
 mod views;
@@ -204,6 +205,7 @@ fn main() {
         "publish-set" => batch::publish_set_cmd(rest),
         "tracker-club" => batch::tracker_club_cmd(rest),
         "pipeline" => pipeline::cmd(rest),
+        "surface" => surface::cmd(rest),
         "convert-all" => pipeline::convert_all_cmd(rest),
         "tracker-md" => pipeline::tracker_md_cmd(rest),
         "unproject" => unproject::cmd(rest),
