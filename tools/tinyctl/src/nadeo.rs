@@ -154,7 +154,10 @@ pub fn file_safe_name(name: &str) -> String {
 
 pub fn cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
-    let sub = args.first().ok_or("nadeo-here needs a subcommand: club | campaigns | campaign | campaign-create | maps")?.clone();
+    let sub = args.first().ok_or("nadeo-here needs a subcommand: club | campaigns | campaign | campaign-create | maps | club-mirror")?.clone();
+    if sub == "club-mirror" {
+        return club_mirror(args);
+    }
     let outdir = PathBuf::from(f("--outdir").unwrap_or_else(|| "/home/vjeux/shoot/u10s".into()));
     std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
     let shootctl = f("--shootctl").unwrap_or_else(|| format!("{BOX_TOOLS}/shootctl"));
@@ -440,4 +443,97 @@ pub fn campaign_create(auth_live: &str, club: &str, name: &str) -> Result<(Strin
 /// mint through the game (no render lock: the batch runs alone on the box).
 pub fn batch_tokens(shootctl: &str) -> Result<(String, String), String> {
     tokens_opt(shootctl, &format!("batch-{}", std::process::id()), false)
+}
+
+/// `tinyctl nadeo-here club-mirror --club C --campaign-prefix "Tiny U10S PART " --parts-dir D
+/// [--only 01,02] [--outdir O]` — MIRROR an already-published set into another club:
+/// for each `D/results-pNN.tsv` (the publish-batch results: path, name, uid, mapId,
+/// how, bytes, md5, verdict) create the campaign `<prefix><N>` in club C (or reuse
+/// the id recorded in `O/club-<C>-campaigns.tsv`) and write its playlist = the
+/// part's IDENTICAL uids in file order. No map bytes move: the records already
+/// exist on Nadeo (vjeux, 2026-09-13: "altered u10s at hunt" gets the whole tiny
+/// set, organised like the Tiny club). Runs ON THE BOX (tokens).
+pub fn club_mirror(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let club = f("--club").ok_or("club-mirror needs --club ID")?;
+    let prefix = f("--campaign-prefix").unwrap_or_else(|| "Tiny U10S PART ".into());
+    let parts_dir = std::path::PathBuf::from(f("--parts-dir").ok_or("club-mirror needs --parts-dir D (results-pNN.tsv files)")?);
+    let outdir = std::path::PathBuf::from(f("--outdir").unwrap_or_else(|| "/home/vjeux/shoot/u10s".into()));
+    std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
+    let only: Option<Vec<String>> = f("--only").map(|s| s.split(',').map(|x| format!("{:02}", x.trim().parse::<usize>().unwrap_or(0))).collect());
+    let shootctl = f("--shootctl").unwrap_or_else(|| "/home/vjeux/trackmania-tas/tools/target/release/shootctl".into());
+    let (_core, live) = tokens_opt(&shootctl, "club-mirror", false)?;
+    let auth_live = format!("Authorization: {live}");
+    let known_path = outdir.join(format!("club-{club}-campaigns.tsv"));
+    let mut known: std::collections::BTreeMap<String, (String, String)> = std::fs::read_to_string(&known_path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            (c.len() >= 3).then(|| (c[0].to_string(), (c[1].to_string(), c[2].to_string())))
+        })
+        .collect();
+    let mut parts: Vec<(String, std::path::PathBuf)> = std::fs::read_dir(&parts_dir)
+        .map_err(|e| format!("{}: {e}", parts_dir.display()))?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.strip_prefix("results-p").and_then(|r| r.strip_suffix(".tsv")).map(|p| (p.to_string(), e.path()))
+        })
+        .filter(|(p, _)| only.as_ref().map(|o| o.contains(p)).unwrap_or(true))
+        .collect();
+    parts.sort();
+    println!("part\tcampaign\tactivity\tmaps\tverdict");
+    let mut failed = 0usize;
+    for (part, path) in &parts {
+        let uids: Vec<String> = std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .skip(1)
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| {
+                let c: Vec<&str> = l.split('\t').collect();
+                (c.len() >= 8 && c[7] == "IDENTICAL" && c[2] != "-").then(|| c[2].to_string())
+            })
+            .collect();
+        if uids.is_empty() {
+            println!("{part}\t-\t-\t0\tno IDENTICAL rows");
+            failed += 1;
+            continue;
+        }
+        let name = format!("{prefix}{}", part.trim_start_matches('0'));
+        let (camp, act) = match known.get(part) {
+            Some(x) => x.clone(),
+            None => match campaign_create(&auth_live, &club, &name) {
+                Ok(x) => {
+                    known.insert(part.clone(), x.clone());
+                    let rows: String = known.iter().map(|(p, (c, a))| format!("{p}\t{c}\t{a}\n")).collect();
+                    let _ = std::fs::write(&known_path, rows);
+                    x
+                }
+                Err(e) => {
+                    println!("{part}\t-\t-\t{}\tcampaign create FAILED: {}", uids.len(), e.lines().next().unwrap_or(""));
+                    failed += 1;
+                    continue;
+                }
+            },
+        };
+        match campaign_set(&auth_live, &club, &camp, &name, &uids) {
+            Ok(v) => {
+                let n = serde_json::to_string(&v).unwrap_or_default().matches("\"mapUid\"").count();
+                println!("{part}\t{camp}\t{act}\t{n}\t{}", if n == uids.len() { "OK" } else { "COUNT MISMATCH" });
+                if n != uids.len() {
+                    failed += 1;
+                }
+            }
+            Err(e) => {
+                println!("{part}\t{camp}\t{act}\t{}\tplaylist FAILED: {}", uids.len(), e.lines().next().unwrap_or(""));
+                failed += 1;
+            }
+        }
+    }
+    if failed > 0 {
+        return Err(format!("{failed} of {} parts failed", parts.len()));
+    }
+    Ok(())
 }
