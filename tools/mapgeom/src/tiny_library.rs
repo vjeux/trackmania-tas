@@ -572,12 +572,43 @@ struct BlockBake<'b> {
 
 /// The block info of a key, through the index (`--debug lookup` says why a
 /// name has none).
-fn load_block_info(idx: &mut crate::blockmap::BlockInfoIndex, store: &mut DataStore, name: &str) -> Result<(String, crate::blockinfo::BlockInfo), String> {
-    let Some(path) = idx.path_for(name) else {
-        if crate::debug::on("lookup") {
-            eprintln!("  lookup {name:?}: no path; index knows {} stems; store has {} entries", idx.stem_count(), store.entries().count());
+/// Block names old maps carry that the current pack spells differently (the game
+/// resolves them at load; Everios96's u10s maps, 2026-09-13): the typo'd
+/// `PlatformGrasssSlope2UTop`, the ice diagonal with wall whose word order moved
+/// (`RoadIceDiagLeftWithWallStraight` -> `RoadIceWithWallDiagLeftStraight`), and
+/// the flat `OpenIceRoadToZoneRight` the pack no longer ships (Tech and Dirt keep
+/// theirs) -> the symmetric `…ToZoneCenter` transition stands in.
+pub fn block_rename(name: &str) -> Option<String> {
+    if name.contains("Grasss") {
+        return Some(name.replace("Grasss", "Grass"));
+    }
+    for side in ["Left", "Right"] {
+        let from = format!("RoadIceDiag{side}WithWall");
+        if let Some(rest) = name.strip_prefix(from.as_str()) {
+            return Some(format!("RoadIceWithWallDiag{side}{rest}"));
         }
-        return Err("no block info file with this name".into());
+    }
+    if name == "OpenIceRoadToZoneRight" || name == "OpenIceRoadToZoneLeft" {
+        return Some("OpenIceRoadToZoneCenter".into());
+    }
+    None
+}
+
+fn load_block_info(idx: &mut crate::blockmap::BlockInfoIndex, store: &mut DataStore, name: &str) -> Result<(String, crate::blockinfo::BlockInfo), String> {
+    let path = match idx.path_for(name) {
+        Some(p) => p,
+        None => match block_rename(name).and_then(|n| idx.path_for(&n).map(|p| (n, p))) {
+            Some((n, p)) => {
+                eprintln!("  block {name}: not in the pack; the current name {n} stands in");
+                p
+            }
+            None => {
+                if crate::debug::on("lookup") {
+                    eprintln!("  lookup {name:?}: no path; index knows {} stems; store has {} entries", idx.stem_count(), store.entries().count());
+                }
+                return Err("no block info file with this name".into());
+            }
+        },
     };
     let bi = idx.load(store, &path).map_err(|e| format!("block info: {e}"))?.clone();
     Ok((path, bi))
@@ -1534,7 +1565,20 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     block_map.insert(key.map_key(), (alias.clone(), sx, sz, units.clone()));
                     custom_blocks.insert(rel.to_string(), (alias, sx, sz, units));
                 }
-                Ok((_, m, _)) => outcomes.push(key.outcome(&alias, key.source(), Err(format!("custom block: no visuals; notes: {}", m.notes.iter().take(3).cloned().collect::<Vec<_>>().join("; "))))),
+                // a block file with no geometry at all (`Trou.Block.Gbx`, 644 bytes: a hole
+                // marker) or one whose bake has no visuals: intentionally no item
+                Ok((_, m, _)) => {
+                    next_alias -= 1;
+                    block_map.insert(key.map_key(), ("-".into(), 1, 1, vec![[0, 0, 0]]));
+                    custom_blocks.insert(rel.to_string(), ("-".into(), 1, 1, vec![[0, 0, 0]]));
+                    outcomes.push(key.outcome("-", key.source(), Ok(format!("custom block without visuals: intentionally no item ({})", m.notes.iter().take(2).cloned().collect::<Vec<_>>().join("; ")))));
+                }
+                Err(e) if e.contains("has no inline mesh") && bytes.len() < 4096 => {
+                    next_alias -= 1;
+                    block_map.insert(key.map_key(), ("-".into(), 1, 1, vec![[0, 0, 0]]));
+                    custom_blocks.insert(rel.to_string(), ("-".into(), 1, 1, vec![[0, 0, 0]]));
+                    outcomes.push(key.outcome("-", key.source(), Ok(format!("empty custom block ({} bytes, no mesh): intentionally no item", bytes.len()))));
+                }
                 Err(e) => outcomes.push(key.outcome(&alias, key.source(), Err(format!("custom block: {e}")))),
             }
             continue;

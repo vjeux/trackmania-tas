@@ -2026,18 +2026,31 @@ impl MapFile {
         if add == 0 {
             return;
         }
+        // The donor: a non-waypoint item whose model and author are lookback
+        // REFERENCES — a clone of a record that DEFINES a string would define it
+        // again and shift every later table slot (the baked-blocks chunk continues
+        // the table). When every non-waypoint item is a first use (U10S_113: one
+        // item of each model, 2026-09-13), the donor's definition fields are
+        // rewritten in the CLONE as references to the slot the donor defined
+        // (`0x40000000 | slot+1`), which follows the definition in the file.
         let donor = self
             .items
             .iter()
-            .find(|it| {
-                it.waypoint_tag.is_none()
-                    && !self.item_ids[it.model_field].is_def
-                    && !self.item_ids[it.author_field].is_def
-            })
-            .expect(
-                "map needs one non-waypoint item whose model and author are lookback references",
-            );
-        let bytes = self.gbx.body[donor.record_region.0..donor.record_region.1].to_vec();
+            .find(|it| it.waypoint_tag.is_none() && !self.item_ids[it.model_field].is_def && !self.item_ids[it.author_field].is_def)
+            .or_else(|| self.items.iter().find(|it| it.waypoint_tag.is_none()))
+            .expect("map needs one non-waypoint item to clone");
+        let mut bytes = self.gbx.body[donor.record_region.0..donor.record_region.1].to_vec();
+        {
+            // definitions -> references, back to front so earlier offsets hold
+            let mut defs: Vec<&IdField> = [donor.model_field, donor.author_field].iter().map(|f| &self.item_ids[*f]).filter(|f| f.is_def).collect();
+            defs.sort_by_key(|f| std::cmp::Reverse(f.off));
+            for f in defs {
+                let slot = f.slot.expect("a defining field has a slot");
+                let rel = f.off - donor.record_region.0;
+                let word = (0x4000_0000u32 | (slot as u32 + 1)).to_le_bytes();
+                bytes.splice(rel..rel + f.len, word.iter().copied());
+            }
+        }
         let mut inserted = Vec::with_capacity(bytes.len() * add);
         for _ in 0..add {
             inserted.extend_from_slice(&bytes);
