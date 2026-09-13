@@ -202,6 +202,7 @@ fn main() {
         "nadeo-here" => nadeo::cmd(rest),
         "publish-batch" => batch::publish_batch_cmd(rest),
         "publish-set" => batch::publish_set_cmd(rest),
+        "tracker-club" => batch::tracker_club_cmd(rest),
         "pipeline" => pipeline::cmd(rest),
         "convert-all" => pipeline::convert_all_cmd(rest),
         "tracker-md" => pipeline::tracker_md_cmd(rest),
