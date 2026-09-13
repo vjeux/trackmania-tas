@@ -433,7 +433,7 @@ pub fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Resul
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let map = match (f("--map"), build_dir) {
         (Some(m), _) => PathBuf::from(m),
-        (None, Some(d)) => d.join(format!("{}-{n:02}-Tiny.Map.Gbx", crate::build::out_prefix(args))),
+        (None, Some(d)) => d.join(crate::build::built_map_name(args, &format!("{n:02}"))),
         (None, None) => return Err("publish-map needs --map TINY.Map.Gbx (or --tag T)".into()),
     };
     if !map.exists() {
@@ -463,9 +463,13 @@ pub fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Resul
     if hdr.uid == "-" || hdr.authortime == "-" || hdr.envir == "-" {
         return Err("the header lacks uid / authortime / envir — not publishable".into());
     }
-    if !hdr.uid.starts_with("Tin") && !tmmaps::cli::has(args, "--any-uid") {
-        return Err(format!("uid {} does not start with `Tin` — is this the tiny map? (--any-uid to publish anyway)", hdr.uid));
+    // the uid head says which build this is: `Tin…` a tiny one, `Gia…` a giant
+    // one (tmmaps tiny --uid-prefix), `Sam…` a scale-1 rebuild
+    let label = label_of_uid(&hdr.uid);
+    if label.is_none() && !tmmaps::cli::has(args, "--any-uid") {
+        return Err(format!("uid {} does not start with `Tin`, `Gia` or `Sam` — is this a converted map? (--any-uid to publish anyway)", hdr.uid));
     }
+    let label = label.unwrap_or("Tiny");
     // gate: item-check over the library items when given (in-process: the
     // same code `mapgeom item-check` runs; prints one line per item)
     if let Some(dir) = items_dir.clone() {
@@ -515,11 +519,11 @@ pub fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Resul
         return Err(format!("{}: {size} bytes is over Nadeo's 25 MiB upload cap ({NADEO_MAX_BYTES}) — the store answers HTTP 400 \"not a valid file\"; rebuild with a tighter --lod-pick-min-verts", map.display()));
     }
     let wsx = Wsx::new(args);
-    let remote = format!("{STAGE}/Tiny{n:02}.Map.Gbx");
+    let remote = format!("{STAGE}/{}", box_stage_name(label, n));
     eprintln!("pushing {} → box {remote} …", map.display());
     wsx.push(&map, &remote)?;
     let tinyctl = f("--box-tinyctl").unwrap_or_else(|| format!("{BOX_TOOLS}/tinyctl"));
-    let remote_out = format!("/mnt/c/Users/vjeux/tinyshots/publish-{n:02}");
+    let remote_out = format!("/mnt/c/Users/vjeux/tinyshots/{}", box_publish_dir(label, n));
     let mut cmd = format!("{tinyctl} publish-here --detach --map {remote} --name '{}' --club {} --campaign {} --campaign-name '{}' --outdir {remote_out} --position {}", name.replace('\'', ""), f("--club").unwrap_or_else(|| DEFAULT_CLUB.into()), f("--campaign").unwrap_or_else(|| DEFAULT_CAMPAIGN.into()), f("--campaign-name").unwrap_or_else(|| DEFAULT_CAMPAIGN_NAME.into()).replace('\'', ""), f("--position").unwrap_or_else(|| (n - 1).to_string()));
     if tmmaps::cli::has(args, "--playcheck") {
         cmd.push_str(" --playcheck");
@@ -554,4 +558,34 @@ pub fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Resul
 /// checked against a shell's by eye.
 fn md5_hex(data: &[u8]) -> String {
     mapgeom::md5::md5(data).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The build a converted map's uid head names: `Tin` → Tiny, `Gia` → Giant,
+/// `Sam` → Same (see `build::uid_prefix`); None for any other uid.
+pub fn label_of_uid(uid: &str) -> Option<&'static str> {
+    if uid.starts_with("Tin") {
+        Some("Tiny")
+    } else if uid.starts_with("Gia") {
+        Some("Giant")
+    } else if uid.starts_with("Sam") {
+        Some("Same")
+    } else {
+        None
+    }
+}
+
+/// The box's staging file for map `n` of a build: `Tiny05.Map.Gbx` (the name
+/// every tiny run has used), `Giant05.Map.Gbx` for a giant build — the two runs
+/// share the box's `_stage` and must not overwrite each other (2026-09-13).
+pub fn box_stage_name(label: &str, n: usize) -> String {
+    format!("{label}{n:02}.Map.Gbx")
+}
+
+/// The box's publish output directory (under `tinyshots/`) for map `n` of a
+/// build: `publish-05` for a tiny build, `publish-giant-05` for a giant one.
+pub fn box_publish_dir(label: &str, n: usize) -> String {
+    match label {
+        "Tiny" => format!("publish-{n:02}"),
+        other => format!("publish-{}-{n:02}", other.to_ascii_lowercase()),
+    }
 }

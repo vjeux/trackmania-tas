@@ -106,7 +106,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         // 1. build
         let mut bargs: Vec<String> = vec![nn.clone(), "--src-dir".into(), src_dir.display().to_string(), "--out-root".into(), out_root.clone(), "--tag".into(), tag.clone(), "--recipe".into(), recipe.clone(), "--out-prefix".into(), prefix.clone()];
         bargs.extend(envs.iter().cloned());
-        for k in ["--lod-pick", "--lod-pick-min-verts"] {
+        for k in ["--lod-pick", "--lod-pick-min-verts", "--scale"] {
             if let Some(v) = f(k) {
                 bargs.push(k.into());
                 bargs.push(v);
@@ -124,7 +124,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             bargs.push(format!("TINY_PICTURE_SUFFIX=_p{part:02}{map_no:02}"));
         }
         let build_dir = PathBuf::from(&out_root).join(format!("tiny{nn}")).join(&tag);
-        let tiny = build_dir.join(format!("{prefix}-{nn}-Tiny.Map.Gbx"));
+        let scale = crate::build::scale_of(args);
+        let label = crate::build::variant_label(scale);
+        let tiny = build_dir.join(crate::build::built_map_name(args, nn));
         let build_t = Instant::now();
         // --reuse-build: a map already built into the build dir (e.g. the one that
         // was published) is shot/published as it is, not rebuilt
@@ -248,11 +250,19 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                         let kept: Vec<&str> = text.lines().filter(|l| l.starts_with('#') || l.trim().is_empty() || keep.contains(&l.split('\t').next().unwrap_or("").trim())).collect();
                         std::fs::write(&views, kept.join("\n") + "\n").map_err(|e| format!("{}: {e}", views.display()))?;
                     }
-                    let anchor = std::fs::read_to_string(&views).ok().and_then(|t| t.lines().find(|l| l.starts_with("# anchor ")).map(|l| l.trim_start_matches("# anchor ").trim().to_string()));
+                    // the anchor the SHOOT maps the tiny side's camera through: the
+                    // build's own (tmmaps tiny's "anchor:" line in tiny.log — the fit
+                    // anchor of a giant build is not the views file's default),
+                    // the views file's `# anchor` line as the fallback
+                    let built_anchor = std::fs::read_to_string(build_dir.join("tiny2.log")).ok().or_else(|| std::fs::read_to_string(build_dir.join("tiny.log")).ok()).and_then(|t| t.lines().find(|l| l.trim_start().starts_with("anchor: source")).and_then(|l| crate::build::anchor_arg(l.trim())).map(|(a, _)| a));
+                    let anchor = built_anchor.or_else(|| std::fs::read_to_string(&views).ok().and_then(|t| t.lines().find(|l| l.starts_with("# anchor ")).map(|l| l.trim_start_matches("# anchor ").trim().to_string())));
                     match anchor {
                         Some(anchor) => {
-                            let stag = format!("u{nn}");
-                            let mut sargs: Vec<String> = vec!["--orig".into(), src.display().to_string(), "--tiny".into(), tiny.display().to_string(), "--views".into(), views.display().to_string(), "--tag".into(), stag.clone(), "--anchor".into(), anchor, "--outdir".into(), frames_dir.display().to_string()];
+                            // the box-side tag: `uNN` for the tiny builds (the u10s
+                            // runs), `giNN` for the giant ones — the two runs stage
+                            // files side by side on the shared box
+                            let stag = if scale > 1.0 { format!("gi{nn}") } else { format!("u{nn}") };
+                            let mut sargs: Vec<String> = vec!["--orig".into(), src.display().to_string(), "--tiny".into(), tiny.display().to_string(), "--views".into(), views.display().to_string(), "--tag".into(), stag.clone(), "--anchor".into(), anchor, "--scale".into(), format!("{scale}"), "--outdir".into(), frames_dir.display().to_string()];
                             if tmmaps::cli::has(args, "--fresh") {
                                 sargs.push("--fresh".into());
                             }
@@ -325,7 +335,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     // readback copy and the pushed map go; the done file stays
                     if !tmmaps::cli::has(args, "--keep-box-files") {
                         let wsx = crate::wsx::Wsx::new(args);
-                        let _ = wsx.sh(&format!("rm -f /mnt/c/Users/vjeux/tinyshots/publish-{nn}/readback-*.Map.Gbx /home/vjeux/shoot/_stage/Tiny{nn}.Map.Gbx"));
+                        let _ = wsx.sh(&format!("rm -f /mnt/c/Users/vjeux/tinyshots/{}/readback-*.Map.Gbx /home/vjeux/shoot/_stage/{}", crate::publish::box_publish_dir(label, n), crate::publish::box_stage_name(label, n)));
                     }
                 }
                 Err(e) => {
@@ -477,9 +487,11 @@ pub fn convert_all_cmd(args: &[String]) -> Result<(), String> {
                     let mut pargs: Vec<String> = nums.clone();
                     pargs.extend(["--src-dir".to_string(), src_dir.display().to_string(), "--out-root".into(), part_out.display().to_string(), "--tag".into(), tag.clone(), "--out-prefix".into(), prefix.clone(), "--recipe".into(), recipe.clone(), "--tracker".into(), part_out.join("tracker.tsv").display().to_string(), "--alias-part".into(), part.trim_start_matches('0').to_string(), "--no-shoot".into(), "--no-publish".into()]);
                     pargs.extend(envs.iter().cloned());
-                    if let Some(cap) = tmmaps::cli::flag(args, "--max-bytes") {
-                        pargs.push("--max-bytes".into());
-                        pargs.push(cap.to_string());
+                    for k in ["--max-bytes", "--scale"] {
+                        if let Some(v) = tmmaps::cli::flag(args, k) {
+                            pargs.push(k.into());
+                            pargs.push(v.to_string());
+                        }
                     }
                     if let Some(only) = tmmaps::cli::flag(args, "--only") {
                         // --only pNN:a,b;pMM:c — restrict each part to the listed map numbers
@@ -493,7 +505,7 @@ pub fn convert_all_cmd(args: &[String]) -> Result<(), String> {
                         }
                     }
                     let r = cmd(&pargs);
-                    let built = (1..=99usize).filter(|n| part_out.join(format!("tiny{n:02}")).join(&tag).join(format!("{prefix}-{n:02}-Tiny.Map.Gbx")).exists()).count();
+                    let built = (1..=99usize).filter(|n| part_out.join(format!("tiny{n:02}")).join(&tag).join(crate::build::built_map_name(args, &format!("{n:02}"))).exists()).count();
                     match r {
                         Ok(()) => format!("{part}\tOK\t{built}/{} built\t{:.0}s", nums.len(), t1.elapsed().as_secs_f64()),
                         Err(e) => format!("{part}\tPARTIAL\t{built}/{} built\t{:.0}s\t{}", nums.len(), t1.elapsed().as_secs_f64(), e.lines().next().unwrap_or("")),

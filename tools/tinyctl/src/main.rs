@@ -54,10 +54,13 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         genealogy zones + policy, zone-block census, waypoints, models;
         with --paks a dry library build listing the models the packs lack
   tinyctl build NN… [--src-dir /tmp/summer2026] [--out-root /tmp] [--tag auto] [--recipe /tmp/tiny3/recipe.env] [--env K=V …]
-                [--out-prefix Summer]
+                [--out-prefix Summer] [--scale 0.5]
         the tiny build of campaign maps end to end (packs by collection, recipe env,
         mapgeom tiny-library, tmmaps tiny, library unzipped) into <out-root>/tinyNN/<tag>/
-        as <out-prefix>-NN-Tiny.Map.Gbx (the source is <src-dir>/NN-*.Map.Gbx, any campaign)
+        as <out-prefix>-NN-Tiny.Map.Gbx (the source is <src-dir>/NN-*.Map.Gbx, any campaign);
+        --scale 2 is the GIANT build: every item at ×2, <out-prefix>-NN-Giant.Map.Gbx, map name
+        "Giant <source>", uid Gia2…, the geometry centred in the grid (tmmaps tiny --anchor fit);
+        pipeline takes the same flag (TINY.md "Giant maps")
   tinyctl views SRC.Map.Gbx [--out VIEWS.tsv] [--gate-dist 48] [--ghost G --at MS[,MS…] [--chase-dist 30] [--chase-v 0.3] [--only-chase]]
                 [--trees N --mapping placements.tsv [--tree-dist 30] [--only-trees]]
         (the tiny side sees the trees at half of --tree-dist, and the editor camera

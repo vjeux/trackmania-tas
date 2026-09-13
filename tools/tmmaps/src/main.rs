@@ -225,7 +225,11 @@ READING A MAP
 
 TINY MAPS (half-scale campaign: every authored block/item -> an embedded static item)
   tmmaps tiny MAP --mapping placements.tsv --library ITEMS.zip --out F [--scale 0.5]
-      [--anchor x,y,z] [--host HOST.Map.Gbx] [--keep-ghost] [--name NAME | --keep-name] [--keep-zone-block]
+      [--anchor x,y,z | --anchor fit] [--host HOST.Map.Gbx] [--keep-ghost] [--name NAME | --keep-name] [--keep-zone-block]
+      [--uid-prefix Tin2] [--name-prefix "Tiny "]
+        --scale 2 with --anchor fit, --uid-prefix Gia2 and --name-prefix "Giant " is the GIANT
+        (double-size) build: the transformed extent is centred in the map grid by whole cells,
+        an overflow above the grid's top row is reported (TINY.md "Giant maps")
         replace every authored block by its library item (mapping rows
         `@index<TAB>ITEM|-<TAB>model_scale<TAB>sx<TAB>sz`; `-` = intentionally
         nothing) and re-point/drop items (`i@index<TAB>ITEM|stock model|-`);

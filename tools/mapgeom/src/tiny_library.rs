@@ -160,6 +160,56 @@ pub fn find_item_file(store: &DataStore, model: &str) -> Option<String> {
 pub const STILL_FLAG_KEY: &str = "still";
 
 pub fn stock_half_variant(model: &str, variant: u8) -> Option<&'static str> {
+    stock_scaled_variant(model, variant, 0.5)
+}
+
+/// The stock twin of `model` at `scale`: the half-size one for 0.5 (the table
+/// below), and for 2 the same table read BACKWARDS — a `Flag8m` placement of a
+/// giant build becomes the stock `Flag16m` (its cloth is exactly the 8 m cloth
+/// at ×2, waving under the game's own tween), `ShowFogger8m` the 16 m fogger
+/// (the same box, a plume that carries twice as far), `Screen2x3` the
+/// `Screen2x3Big`, and so on. A model with no twin at the scale bakes as a
+/// scaled static copy like everything else; any other scale bakes everything.
+pub fn stock_scaled_variant(model: &str, variant: u8, scale: f32) -> Option<&'static str> {
+    if (scale - 0.5).abs() < 1e-6 {
+        return stock_half_variant_impl(model, variant);
+    }
+    if (scale - 2.0).abs() < 1e-6 {
+        // the inverse table: every (big, small) pair of the half table, the
+        // Show-rig variant (a single variant, no whole-model twin) left out
+        const BIG_OF: &[(&str, &str)] = &[
+            ("RaceScreen6x1Small", "RaceScreen6x1"),
+            ("Screen16x9Small", "Screen16x9"),
+            ("Screen2x3", "Screen2x3Big"),
+            ("Screen2x3Small", "Screen2x3"),
+            ("Screen4x1Small", "Screen4x1"),
+            ("Screen2x1Small", "Screen2x1"),
+            ("Screen1x1Small", "Screen1x1"),
+            ("Screen155Small", "Screen155"),
+        ];
+        if let Some((_, big)) = BIG_OF.iter().find(|(small, _)| *small == model) {
+            return Some(big);
+        }
+        if model == "Flag8m" && std::env::var("TINY_FLAG_STOCK").as_deref() != Ok("0") {
+            return Some("Flag16m");
+        }
+        if std::env::var("TINY_FX_STOCK").as_deref() != Ok("0") {
+            const FX_BIG: &[(&str, &str)] = &[
+                ("ShowFogger8m", "ShowFogger16m"),
+                ("ShowFoggerWithLight8m", "ShowFoggerWithLight16m"),
+                ("Sparkler8m", "Sparkler16m"),
+                ("ShowTorchSmall", "ShowTorch"),
+            ];
+            if let Some((_, big)) = FX_BIG.iter().find(|(small, _)| *small == model) {
+                return Some(big);
+            }
+        }
+        return None;
+    }
+    None
+}
+
+fn stock_half_variant_impl(model: &str, variant: u8) -> Option<&'static str> {
     const SCREENS: &[(&str, &str)] = &[
         ("RaceScreen6x1", "RaceScreen6x1Small"),
         ("Screen16x9", "Screen16x9Small"),
@@ -248,8 +298,10 @@ pub fn stock_half_variant(model: &str, variant: u8) -> Option<&'static str> {
 /// item carries its A1/A2/A3 variants; `PalmTreeBigB3` -> `PalmTreeBigB`) —
 /// with the collection's smaller species for it: (original item, substitute
 /// item), the substitute being the original when no smaller species exists in
-/// the packs. None when no item matches.
-fn veget_item_pair(store: &DataStore, collection: u32, model_path: &str, cache: &mut BTreeMap<String, Option<String>>) -> Option<(String, String)> {
+/// the packs. None when no item matches. A build that GROWS the map (scale ≥ 1,
+/// the giant maps) keeps every species itself: the smaller-species ladder is
+/// the shrinking build's compromise for a model the game will not scale.
+fn veget_item_pair(store: &DataStore, collection: u32, model_path: &str, scale: f32, cache: &mut BTreeMap<String, Option<String>>) -> Option<(String, String)> {
     let file = model_path.rsplit('\\').next().unwrap_or(model_path);
     let low = file.to_ascii_lowercase();
     let stem = if low.ends_with(".vegettreemodel.gbx") { &file[..file.len() - ".vegettreemodel.gbx".len()] } else { file };
@@ -273,7 +325,7 @@ fn veget_item_pair(store: &DataStore, collection: u32, model_path: &str, cache: 
     // PlantSmallA"). No smaller species in the packs: the species itself stays.
     let out = found.map(|item| {
         let sub = match veget_substitute(collection, &item) {
-            Some(sub) if find_item_file(store, sub).is_some() => sub.to_string(),
+            Some(sub) if scale < 1.0 && find_item_file(store, sub).is_some() => sub.to_string(),
             _ => item.clone(),
         };
         (item, sub)
@@ -1011,7 +1063,7 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             // baked card (ship18c/18d baked them: 02 lost 3 475 placements, 12 7 250);
             // only species with NO stock item (BlueBay JungleForest cards) are inlined
             let mut pair_cache: BTreeMap<String, Option<String>> = BTreeMap::new();
-            let has_stock = !has_hull && veget_item_pair(store, collection, &p, &mut pair_cache).is_some();
+            let has_stock = !has_hull && veget_item_pair(store, collection, &p, scale, &mut pair_cache).is_some();
             if has_hull || has_stock { trees.push((p, iso)); } else { filler.push((p, iso)); }
         }
         m.veget = trees;
@@ -1661,7 +1713,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                             baked_tree_rows += 1;
                             continue;
                         }
-                        let Some((orig, item)) = veget_item_pair(store, collection, p, &mut veget_cache) else { continue };
+                        let Some((orig, item)) = veget_item_pair(store, collection, p, scale, &mut veget_cache) else { continue };
                         let sink = veget_sink(store, &orig, &item, scale, &mut height_cache);
                         if sink > 0.0 {
                             sunk_rows += 1;
@@ -1803,7 +1855,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // file). The mapping row carries model_scale = scale so the placement
         // is treated like a half-size copy (scale 1, pivot halved).
         // (The gates have no such twin, see `stock_half_variant`.)
-        if let Some(small) = stock_half_variant(model, *variant) {
+        if let Some(small) = stock_scaled_variant(model, *variant, scale) {
             if let Some(logical) = find_item_file(store, small) {
                 // The placement must carry the item's OWN ident, case-exact: the
                 // pack stores `Stadium\Items\ShowFogger8M.Item.Gbx` whose header
@@ -1823,22 +1875,26 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 // a stand-in for the model as a whole is remembered for its
                 // later variants; one for a single variant (`Show` 28, the
                 // fogger rig) leaves the others to the bake
-                if stock_half_variant(model, 0) == Some(small) {
+                if stock_scaled_variant(model, 0, scale) == Some(small) {
                     single_variant.insert(model.clone(), small.to_string());
                 }
                 item_map.insert(key, small.to_string());
                 half_stock.insert(small.to_string());
                 let why = match small {
-                    "Flag8m" => "its cloth waves under the game's own vertex tween",
+                    "Flag8m" | "Flag16m" => "its cloth waves under the game's own vertex tween",
                     "ShowFogger8m" | "ShowFoggerWithLight8m" => "its smoke is the game's own particle system, at half reach",
+                    "ShowFogger16m" | "ShowFoggerWithLight16m" => "its smoke is the game's own particle system, at twice the reach",
                     "Sparkler8m" if model == "Sparkler8m" => "kept as the stock item, its sparks are the game's own particle system at their full 8 m reach (no 4 m sibling exists)",
                     "Sparkler8m" => "its sparks are the game's own particle system, at half reach",
+                    "Sparkler16m" => "its sparks are the game's own particle system, at twice the reach",
                     "ShowTorchSmall" => "its flame is the game's own particle system, on the small torch",
+                    "ShowTorch" => "its flame is the game's own particle system, on the big torch",
                     _ => "its screen keeps the live advertisement",
                 };
+                let kind_word = if scale > 1.0 { "double-size" } else { "half-size" };
                 // the report names the variant when only that one stands in
-                let source = if stock_half_variant(model, 0) == Some(small) { model.clone() } else { format!("{model} v{variant}") };
-                outcomes.push(Outcome { alias: small.to_string(), kind: "item", source, placements: *n, result: Ok(format!("stock half-size variant {small}: the game's own item, {why}")) });
+                let source = if stock_scaled_variant(model, 0, scale) == Some(small) { model.clone() } else { format!("{model} v{variant}") };
+                outcomes.push(Outcome { alias: small.to_string(), kind: "item", source, placements: *n, result: Ok(format!("stock {kind_word} variant {small}: the game's own item, {why}")) });
                 continue;
             }
         }
@@ -1916,7 +1972,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                         baked_tree_rows += 1;
                         continue;
                     }
-                    let Some((orig, item)) = veget_item_pair(store, collection, p, &mut veget_cache) else { continue };
+                    let Some((orig, item)) = veget_item_pair(store, collection, p, scale, &mut veget_cache) else { continue };
                     let sink = veget_sink(store, &orig, &item, scale, &mut height_cache);
                     if sink > 0.0 {
                         sunk_rows += 1;
@@ -1946,7 +2002,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                         outcomes.push(Outcome { alias: tree, kind: "item", source: source_name, placements: *n, result: Ok("vegetation: baked half-size (see the tree row)".into()) });
                         continue;
                     }
-                    let by_species = species.as_deref().and_then(|p| veget_item_pair(store, collection, p, &mut veget_cache));
+                    let by_species = species.as_deref().and_then(|p| veget_item_pair(store, collection, p, scale, &mut veget_cache));
                     let by_name = || veget_substitute(collection, model).filter(|s| find_item_file(store, s).is_some()).map(|s| (model.clone(), s.to_string()));
                     match by_species.or_else(by_name) {
                         Some((orig, sub)) => {
