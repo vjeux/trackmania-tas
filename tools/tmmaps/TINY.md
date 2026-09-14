@@ -1470,3 +1470,38 @@ stadium anymore. Are you capable of removing the stadium for these maps?"
   skips what is there), `hunt-update` publishes them in place (uids kept: the
   hunt-club rooms/campaigns stay valid), `release-rebuild` rezips each
   release asset on the box and re-uploads it (md5 = the local zip).
+
+## Giant set: stacked water tiles connect vertically (2026-09-14 22:20Z)
+
+Everios96: "don't forget map 10 on giant, the water blocks are not connected
+to each other vertically, creating a roof above the player". The ×2 pool of
+10 was four rows of native `DecoWallWaterBase` tiles, the bottom row with the
+source's flags and the rows above plain air (flags 0). Measured with
+`/mapblocks2?list=baked` on the loaded map: a PLAIN tile — ground or air —
+emits its `DecoWallWaterFCT` water sheet on top whether or not a water tile
+sits above it (508 sheets for 168 columns: a sheet every 8 m, seen from below
+as a black ceiling), and the engine floats the car at ITS tile's volume top
+(the car bobbed at y 24 in a pool whose surface is at 40).
+
+The editor's own convention for a deep pool, read off the club's sources
+(U10S_91: 4 rows, _131: 12 rows, _221: 5 rows): every row below the top
+carries **additional variant 1 ("InDecoWallPillar") + bit 16 = `0x210000`**
+(`0x211000` with the ground bit on the terrain row), the top row plain `0`.
+That variant's top clip is matched away by ANY water tile above it (nothing
+emitted); under a plain GROUND tile it emits `DecoWallWaterBaseFCT` =
+`Platform\Base_FCT.Prefab`, a 32×32 ResonantMetal plate — the "collidable
+clip cap" the tiny research met on free custom blocks (TINY.md 2026-09-11) —
+so `[stacked, ground, ground, air]` would put metal lids inside the pool.
+Rule now (`giantwater`, `STACKED_BELOW`): a tile with a water tile above →
+`(flags & !ground) | 0x210000` (ground bit kept on the bottom tile of a
+ground block), the column top → `flags & !(ground | 0x210000)`. Giant 10:
+172 sheets for 172 columns, no caps; giant 131 (24 rows): 720 for 720.
+Buoyancy is still per tile (the car floats at its row's top: 24.7 m on 10,
+then the up-ramp) — the same physics the source has at 1×, scaled.
+
+`mapgeom giantwater --rewater --anchor from-tiles`: a water-only rebuild of a
+finished giant map — the existing pool tiles dropped, the transform derived
+from them, everything else byte-identical. 89 club maps have
+`DecoWallWaterBase`; 80 re-watered and updated in place (the other 9 keep
+their pools at source row 0, 64 m underground, clipped at ×2 — nothing to
+show). `--legacy-stack` / `--below-flags HEX` keep the experiments repeatable.
