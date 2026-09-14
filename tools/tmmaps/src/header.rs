@@ -710,25 +710,36 @@ pub fn deflated_zip(files: &std::collections::BTreeMap<String, Vec<u8>>) -> Vec<
 }
 
 pub fn stored_zip(files: &std::collections::BTreeMap<String, Vec<u8>>) -> Vec<u8> {
+    // DEFLATE entries with a valid DOS timestamp. Despite the name this writer no longer
+    // stores: the client crashes importing a ghost whose skin zip has Store (method 0)
+    // entries, and renders the same files Deflated (2026-09-14: QJ store+date -> crash,
+    // QK deflate -> hill on screen). Every skin zip that ever rendered was Deflate.
+    const DOS_TIME: [u8; 2] = 0x1000u16.to_le_bytes(); // 02:00:00
+    const DOS_DATE: [u8; 2] = 0x5D2Eu16.to_le_bytes(); // 2026-09-14
     let mut out = Vec::new();
     let mut central = Vec::new();
     for (name, data) in files {
         let off = out.len() as u32;
         let crc = crc32(data);
         let n = name.as_bytes();
+        let packed = miniz_oxide::deflate::compress_to_vec(data, 6);
         out.extend_from_slice(b"PK\x03\x04");
-        out.extend_from_slice(&[20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        out.extend_from_slice(&[20, 0, 0, 0, 8, 0]);
+        out.extend_from_slice(&DOS_TIME);
+        out.extend_from_slice(&DOS_DATE);
         out.extend_from_slice(&crc.to_le_bytes());
-        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(packed.len() as u32).to_le_bytes());
         out.extend_from_slice(&(data.len() as u32).to_le_bytes());
         out.extend_from_slice(&(n.len() as u16).to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes());
         out.extend_from_slice(n);
-        out.extend_from_slice(data);
+        out.extend_from_slice(&packed);
         central.extend_from_slice(b"PK\x01\x02");
-        central.extend_from_slice(&[20, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        central.extend_from_slice(&[20, 0, 20, 0, 0, 0, 8, 0]);
+        central.extend_from_slice(&DOS_TIME);
+        central.extend_from_slice(&DOS_DATE);
         central.extend_from_slice(&crc.to_le_bytes());
-        central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        central.extend_from_slice(&(packed.len() as u32).to_le_bytes());
         central.extend_from_slice(&(data.len() as u32).to_le_bytes());
         central.extend_from_slice(&(n.len() as u16).to_le_bytes());
         central.extend_from_slice(&[0u8; 8]);

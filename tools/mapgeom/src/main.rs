@@ -2006,13 +2006,16 @@ fn main() {
                 }
                 let n_src = by_src.len();
                 let crown_set = texset_default.clone();
-                let trunk_set = flag(&a.rest, "--cones-trunk-set").unwrap_or_else(|| "Skin".to_string());
+                let trunk_set = flag(&a.rest, "--cones-trunk-set").unwrap_or_else(|| texset_default.clone());
                 let segs: usize = flag(&a.rest, "--cones-segments").and_then(|s| s.parse().ok()).unwrap_or(7);
                 let fresh = |set: &str| skin::Part { texset: set.to_string(), pos: Vec::new(), nrm: Vec::new(), uv: Vec::new(), idx: Vec::new(), source: format!("{n_src} cone trees ({set})") };
                 let mut crown = fresh(&crown_set);
                 let mut trunk = fresh(&trunk_set);
                 // a closed cone: base ring at y0 (radius r), apex at y1, plus a base fan
-                let mut cone = |part: &mut skin::Part, cx: f32, cz: f32, y0: f32, y1: f32, r: f32| {
+                // every cone gets a CONSTANT uv: trunks read the left half of the set's _B texture,
+                // crowns the right half (`--flat Details=BROWN|GREEN` writes such a two-half texture),
+                // so one texture set carries both colours — the one-set shape the shoot renders.
+                let mut cone = |part: &mut skin::Part, cx: f32, cz: f32, y0: f32, y1: f32, r: f32, u: f32| {
                     let b = part.pos.len() as u32;
                     let h = (y1 - y0).max(0.1);
                     for i in 0..segs {
@@ -2022,14 +2025,17 @@ fn main() {
                         // outward normal of the slanted side
                         let l = (h * h + r * r).sqrt();
                         part.nrm.push([c * h / l, r / l, s * h / l]);
-                        part.uv.push([i as f32 / segs as f32, 1.0]);
+                        // a varying uv inside the cone's half of the texture: identical uvs on every
+                        // vertex give a degenerate tangent basis (NaN after Dec3N packing) and the
+                        // client dies on import (QC/QD/QE/QF, 2026-09-14)
+                        part.uv.push([u - 0.2 + 0.4 * (i as f32 / segs as f32), 1.0]);
                     }
                     part.pos.push([cx, y1, cz]);
                     part.nrm.push([0.0, 1.0, 0.0]);
-                    part.uv.push([0.5, 0.0]);
+                    part.uv.push([u, 0.0]);
                     part.pos.push([cx, y0, cz]);
                     part.nrm.push([0.0, -1.0, 0.0]);
-                    part.uv.push([0.5, 1.0]);
+                    part.uv.push([u, 0.9]);
                     let apex = b + segs as u32;
                     let base = apex + 1;
                     for i in 0..segs as u32 {
@@ -2043,8 +2049,8 @@ fn main() {
                     let cz = (lo[2] + hi[2]) * 0.5;
                     let h = (hi[1] - lo[1]).max(1.0);
                     let w = ((hi[0] - lo[0]).max(hi[2] - lo[2]) * 0.5).max(0.4);
-                    cone(&mut trunk, cx, cz, lo[1] - 0.5, lo[1] + 0.45 * h, (w * 0.12).max(0.15));
-                    cone(&mut crown, cx, cz, lo[1] + 0.3 * h, hi[1], w);
+                    cone(&mut trunk, cx, cz, lo[1] - 0.5, lo[1] + 0.45 * h, (w * 0.12).max(0.15), 0.25);
+                    cone(&mut crown, cx, cz, lo[1] + 0.3 * h, hi[1], w, 0.75);
                 }
                 println!("cones: {n_src} placements -> {} vertices", crown.pos.len() + trunk.pos.len());
                 parts.clear();
@@ -2152,9 +2158,26 @@ fn main() {
                         _ => None,
                     })) {
                         Some(hex) => {
-                            let h = hex.trim_start_matches('#');
-                            let v = u32::from_str_radix(h, 16).unwrap_or_else(|_| die(format!("--flat {hex}: RRGGBB")));
-                            (64, 64, skin::flat_rgba(64, [(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]))
+                            // RRGGBB, or LEFT|RIGHT: a 64x64 texture whose left half is one
+                            // colour and right half another (cone trees: trunk | crown, one set)
+                            let parse = |s: &str| -> [u8; 4] {
+                                let h = s.trim().trim_start_matches('#');
+                                let v = u32::from_str_radix(h, 16).unwrap_or_else(|_| die(format!("--flat {hex}: RRGGBB")));
+                                [(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]
+                            };
+                            match hex.split_once('|') {
+                                Some((l, r)) => {
+                                    let (a, b) = (parse(l), parse(r));
+                                    let mut rgba = Vec::with_capacity(64 * 64 * 4);
+                                    for _y in 0..64 {
+                                        for x in 0..64 {
+                                            rgba.extend_from_slice(if x < 32 { &a } else { &b });
+                                        }
+                                    }
+                                    (64, 64, rgba)
+                                }
+                                None => (64, 64, skin::flat_rgba(64, parse(&hex))),
+                            }
                         }
                         None => (512, 512, skin::checker_rgba(512, checker_cells)),
                     },
@@ -2196,10 +2219,44 @@ fn main() {
                     report.push(format!("texture set {req}: 4x4 grey flats (required by the vehicle even when unused)"));
                 }
             }
+            // --tex-verbatim DIR: ship the texture files of a KNOWN-GOOD skin unchanged (every
+            // *.dds in DIR replaces or adds to what was generated, and generated files DIR
+            // does not have are dropped) — keeping only our mesh and, if --keep-tex names it,
+            // our own Details_B. 2026-09-14: attempt 2's proven zip carries 64x64 _B maps for
+            // all four sets and no Glass_D/Glass_T; ours carried 4x4 fillers plus those two, and
+            // the client crashed on import or drew nothing.
+            if let Some(dir) = flag(&a.rest, "--tex-verbatim") {
+                let keep: Vec<String> = flag(&a.rest, "--keep-tex").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
+                let mut verbatim: std::collections::BTreeMap<String, Vec<u8>> = std::collections::BTreeMap::new();
+                for e in std::fs::read_dir(&dir).unwrap_or_else(|e| die(format!("{dir}: {e}"))).flatten() {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if name.to_lowercase().ends_with(".dds") {
+                        verbatim.insert(name.clone(), std::fs::read(e.path()).unwrap_or_else(|e| die(e.to_string())));
+                    }
+                }
+                let ours: Vec<String> = files.keys().filter(|k| k.to_lowercase().ends_with(".dds")).cloned().collect();
+                for k in ours {
+                    if !keep.contains(&k) {
+                        files.remove(&k);
+                    }
+                }
+                for (k, v) in verbatim {
+                    if !keep.contains(&k) {
+                        files.insert(k, v);
+                    }
+                }
+                report.push(format!("textures taken verbatim from {dir} (kept ours: {keep:?}); zip now {} files", files.len()));
+            }
+            // --mesh-verbatim FILE: ship THAT mesh instead of the one just built (a known-good
+            // mesh through our zip writer isolates the writer from the builder)
+            if let Some(m) = flag(&a.rest, "--mesh-verbatim") {
+                files.insert("MainBody.Mesh.gbx".into(), std::fs::read(&m).unwrap_or_else(|e| die(format!("{m}: {e}"))));
+                report.push(format!("mesh taken verbatim from {m}"));
+            }
             if let Some(z) = flag(&a.rest, "--zip") {
                 let zip = tmmaps::header::stored_zip(&files);
                 std::fs::write(&z, &zip).unwrap_or_else(|e| die(e.to_string()));
-                report.push(format!("zip {z}: {} bytes, {} files (stored)", zip.len(), files.len()));
+                report.push(format!("zip {z}: {} bytes, {} files (deflate)", zip.len(), files.len()));
                 // --clusters wrote one mesh per region; each becomes its own zip, with the
                 // same texture set as the whole-scenery zip beside it.
                 if flag(&a.rest, "--clusters").is_some() {
