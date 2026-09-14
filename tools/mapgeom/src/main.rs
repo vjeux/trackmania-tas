@@ -596,8 +596,8 @@ fn main() {
             println!("{p}: giant water: {g} native pool tiles, {r} road volume tiles -> {out}");
         }
         "overflow" => {
-            // overflow MAP.Map.Gbx… [--report R.tsv]: does the map spill out of the
-            // stadium's buildable volume? Per map the world box of every EMBEDDED item's
+            // overflow MAP.Map.Gbx… [--report R.tsv]: does the map HIT the stadium? The
+            // world box of every EMBEDDED item's geometry (the assembler's placed model;
             // geometry (the assembler's placed model; blocks are inside the grid by
             // construction) against x/z 0..size·32 m and y up to the grid top
             // (ground + size_y·8): one row per map — in/out, the box, how far out
@@ -609,17 +609,20 @@ fn main() {
                 die::<()>("overflow MAP.Map.Gbx… [--report R.tsv]".into());
             }
             let report = flag(&a.rest, "--report");
-            let mut rows = String::from("map\tname\tverdict\tlo_x\tlo_y\tlo_z\thi_x\thi_y\thi_z\tgrid_x\tgrid_y_top\tgrid_z\tout_x\tout_y\tout_z\titems_out\tdecoration\n");
+            let mut rows = String::from("map\tname\tverdict\tlo_x\tlo_y\tlo_z\thi_x\thi_y\thi_z\tgrid_x\tgrid_y_top\tgrid_z\tout_x\tout_y\tout_z\titems_out\tdecoration\tworst_item\n");
             let mut n_out = 0usize;
             for p in &maps {
                 let m = tmmaps::map::MapFile::load(std::path::Path::new(p));
                 let hdr = tmmaps::header::read(p).ok();
-                let ground = tmmaps::map::ground_y(m.items.first().map(|it| it.collection_raw).unwrap_or(26));
+                let collection = m.items.first().map(|it| it.collection_raw).unwrap_or(26);
+                let ground = tmmaps::map::ground_y(collection); // cell row 0 (Stadium: -64)
+                let grass = tmmaps::tiny::fixed_plane(collection); // the ground plane the cars drive on (Stadium: 8)
                 let grid = [m.size[0] as f32 * tmmaps::map::CELL_XZ, ground + m.size[1] as f32 * tmmaps::map::CELL_Y, m.size[2] as f32 * tmmaps::map::CELL_XZ];
                 let mut asm = mapgeom::assemble::Assembler::new(&mut store);
                 asm.with_embedded(&m).ok();
                 let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
                 let mut items_out = 0usize;
+                let mut worst: (f32, String) = (0.0, String::new());
                 for it in &m.items {
                     let Some(lm) = asm.item_model(&it.model) else { continue };
                     let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
@@ -636,10 +639,28 @@ fn main() {
                     if ilo[0] > ihi[0] {
                         continue;
                     }
-                    // an item counts as OUT when its box leaves the volume by more than
-                    // a wall's thickness (0.5 m): the ×2 clips sit flush on the grid edge
-                    if ilo[0] < -0.5 || ilo[2] < -0.5 || ihi[0] > grid[0] + 0.5 || ihi[2] > grid[2] + 0.5 || ihi[1] > grid[1] + 0.5 {
+                    // What the STADIUM physically occupies, measured on the decoration's
+                    // own mesh (Stadium256\Media\Solid\Warp\Stade1536v2.Prefab, 2026-09-14):
+                    // the stands' inner face rises exactly at the grid edge from 16 m
+                    // above the ground (the first 16 m are the open apron; the upper tier
+                    // recedes to 26 m outside), and the roof / corner towers begin 7 m
+                    // OUTSIDE the grid at the 256 m line — the open sky over the pitch
+                    // reaches all the way up. So an item HITS the stadium when it crosses
+                    // the grid edge sideways above the apron (or by more than 32 m at
+                    // ground level: past the apron), or rises above 256 m within 8 m of
+                    // the edge. Half a metre of tolerance: the ×2 clips sit flush on the
+                    // edge. Pure height inside the grid is reported (out_y), not counted.
+                    let side = (-ilo[0]).max(ihi[0] - grid[0]).max(-ilo[2]).max(ihi[2] - grid[2]);
+                    let above = ihi[1] - grid[1];
+                    let near_edge = ilo[0] < 8.0 || ilo[2] < 8.0 || ihi[0] > grid[0] - 8.0 || ihi[2] > grid[2] - 8.0;
+                    let hits_stands = side > 0.5 && (ihi[1] > grass + 16.0 || side > 32.0);
+                    let hits_roof = above > 0.5 && near_edge;
+                    if hits_stands || hits_roof {
                         items_out += 1;
+                        let d = side.max(above);
+                        if d > worst.0 {
+                            worst = (d, format!("i{} {} at ({:.0}, {:.0}, {:.0}) box [{:.0}, {:.0}, {:.0}]..[{:.0}, {:.0}, {:.0}]{}", it.index, it.model, it.pos[0], it.pos[1], it.pos[2], ilo[0], ilo[1], ilo[2], ihi[0], ihi[1], ihi[2], if hits_roof && !hits_stands { " (roof)" } else { "" }));
+                        }
                     }
                     for k in 0..3 {
                         lo[k] = lo[k].min(ilo[k]);
@@ -655,7 +676,7 @@ fn main() {
                 }
                 let name = hdr.as_ref().map(|h| h.name.clone()).unwrap_or_default();
                 let deco = m.decoration_id.clone();
-                let line = format!("{p}\t{name}\t{verdict}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{out_x:.0}\t{out_y:.0}\t{out_z:.0}\t{items_out}\t{deco}", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], grid[0], grid[1], grid[2]);
+                let line = format!("{p}\t{name}\t{verdict}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{out_x:.0}\t{out_y:.0}\t{out_z:.0}\t{items_out}\t{deco}\t{}", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], grid[0], grid[1], grid[2], worst.1);
                 println!("{line}");
                 rows.push_str(&line);
                 rows.push('\n');
