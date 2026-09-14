@@ -56,7 +56,9 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         // the platform family's modifier folder (Modifier\Platform<S>\{PlatformTech, TrackWall, DecoHill, …})
         env.push(("TINY_FORCE_MODIFIER".to_string(), format!("Stadium\\Media\\Modifier\\Platform{s}.TerrainModifier.Gbx")));
     }
-    let road_stems = ["RoadTech", "RoadDirt", "RoadBump", "RoadIce"];
+    // OpenTechBorders: the open roads' wide deck margins (drivable asphalt, 2/3
+    // of that deck) — a stem like the road decks since 2026-09-14 (plastic 05)
+    let road_stems = ["RoadTech", "RoadDirt", "RoadBump", "RoadIce", "OpenTechBorders"];
     let rows: Vec<String> = match s {
         "Ice" => road_stems.iter().filter(|st| **st != "RoadIce").map(|st| format!("{st}=Stadium\\Media\\Material\\RoadIce")).collect(),
         "Dirt" => road_stems.iter().filter(|st| **st != "RoadDirt").chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\RoadDirt")).collect(),
@@ -76,6 +78,19 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     }
     if s == "Magnet" {
         env.push(("TINY_ALL_DRIVABLE_PHYSICS".to_string(), "55".to_string()));
+    }
+    // the swap's deck physics for the deck-like triangles no stem names (Deco strips…)
+    let deck_physics = match s {
+        "Ice" => Some("74"),
+        "Dirt" => Some("6"),
+        "Grass" => Some("76"),
+        "Plastic" => Some("77"),
+        "Wood" => Some("14"),
+        "Tech" => Some("16"),
+        _ => None,
+    };
+    if let Some(p) = deck_physics {
+        env.push(("TINY_DECK_PHYSICS".to_string(), p.to_string()));
     }
     Ok(env)
 }

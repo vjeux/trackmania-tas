@@ -186,6 +186,14 @@ pub struct Merged {
     /// gravel, road ice, synthetic, green, plastic; never the non-collidable,
     /// trigger, sign or gameplay-special ids.
     pub all_drivable_physics: Option<u8>,
+    /// A surface swap: every DECK-like hull triangle takes the surface's
+    /// physics (gameplay kept) — concrete, ice, dirt, dirt road, wood, asphalt,
+    /// snow, road ice, green, plastic. Natural grass sides (2), rubber curbs (9)
+    /// and metal (4) stay what they are: the open roads' "slow grass on the
+    /// sides" is the block's point. Everios96 2026-09-14 10:21: plastic 05's
+    /// bordered roads drove as asphalt — their `OpenTechBorders` and `Deco`
+    /// margins are 2/3 of the deck and were no redress stem.
+    pub deck_physics: Option<u8>,
     /// A SURFACE SWAP's explicit re-dress of the prefab's VISUAL materials
     /// (`TINY_REDRESS=RoadTech=Stadium\\Media\\Material\\RoadIce;…`, the ice
     /// conversion of 2026-09-13): rows of (material stem, replacement link,
@@ -642,7 +650,7 @@ impl Merged {
     /// matching row wins (slot-table rows come before folder shadows). None
     /// when no triangle matched.
     fn redress_collision(&mut self, sf: &CPlugSurface, triangles: &[Triangle], resolve: &mut MaterialResolver) -> Option<Vec<Triangle>> {
-        if self.collision_redress.is_empty() && self.pad_physics.is_none() && self.all_drivable_physics.is_none() {
+        if self.collision_redress.is_empty() && self.pad_physics.is_none() && self.all_drivable_physics.is_none() && self.deck_physics.is_none() {
             return None;
         }
         let mut by_index: Vec<Option<(String, String, (u8, u8))>> = Vec::new();
@@ -661,7 +669,7 @@ impl Merged {
             by_index.push(hit);
             pad_slot.push(pad);
         }
-        if by_index.iter().all(|h| h.is_none()) && !pad_slot.iter().any(|p| *p) && self.all_drivable_physics.is_none() {
+        if by_index.iter().all(|h| h.is_none()) && !pad_slot.iter().any(|p| *p) && self.all_drivable_physics.is_none() && self.deck_physics.is_none() {
             return None;
         }
         let mut out = triangles.to_vec();
@@ -702,8 +710,21 @@ impl Merged {
                 self.notes.push(format!("hull: {forced_all} drivable triangles forced to physics {p} (the whole block drives as one surface)"));
             }
         }
+        let mut decked = 0usize;
+        if let Some(p) = self.deck_physics {
+            for t in out.iter_mut() {
+                let deck = matches!(t.material_id, 0 | 3 | 6 | 8 | 14 | 16 | 21 | 74 | 76 | 77);
+                if deck && t.material_id != p {
+                    t.material_id = p;
+                    decked += 1;
+                }
+            }
+            if decked > 0 {
+                self.notes.push(format!("hull: {decked} deck-like triangles take the surface swap's physics {p}"));
+            }
+        }
         if counts.is_empty() {
-            return if padded > 0 || forced_all > 0 { Some(out) } else { None };
+            return if padded > 0 || forced_all > 0 || decked > 0 { Some(out) } else { None };
         }
         for (si, n) in counts {
             if let Some(Some((path, link, ids))) = by_index.get(si) {

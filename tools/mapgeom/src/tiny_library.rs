@@ -730,6 +730,11 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     if let Some(p) = std::env::var("TINY_ALL_DRIVABLE_PHYSICS").ok().and_then(|v| v.parse::<u8>().ok()) {
         m.all_drivable_physics = Some(p);
     }
+    // TINY_DECK_PHYSICS=P (every surface swap): deck-like hull triangles the
+    // redress stems did not name (OpenTechBorders, Deco strips) drive as P
+    if let Some(p) = std::env::var("TINY_DECK_PHYSICS").ok().and_then(|v| v.parse::<u8>().ok()) {
+        m.deck_physics = Some(p);
+    }
     if !surface_rows.is_empty() && name.contains("Special") {
         let want = if name.starts_with("Platform") { "PlatformTech" } else { "RoadTech" };
         let from_rows = surface_rows.iter().find(|(st, _, _)| st == want).or_else(|| surface_rows.iter().find(|(st, _, _)| st == "PlatformTech" || st == "RoadTech")).map(|(_, _, ids)| ids.0);
