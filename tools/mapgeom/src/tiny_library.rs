@@ -706,7 +706,8 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     // puts the ice deck material (look + RoadIce physics 74) on a tech road's
     // deck. Rows go FIRST: the first matching collision row wins.
     for (stem, link, ids) in surface_redress_rows(store) {
-        m.collision_redress.insert(0, Redress { matches: RedressKey::File(format!("{}.material.gbx", stem.to_ascii_lowercase())), link: link.clone(), ids });
+        let note_link = if link.is_empty() { format!("Stadium\\Media\\Material\\{stem} (own look, physics {})", ids.0) } else { link.clone() };
+        m.collision_redress.insert(0, Redress { matches: RedressKey::File(format!("{}.material.gbx", stem.to_ascii_lowercase())), link: note_link, ids });
         m.link_rewrite.push((stem, link, ids.0));
     }
     // The collection SKIN (`<Env>\Media\Modifier\StadiumOnTerrain\<slot>`, the
@@ -2714,18 +2715,30 @@ thread_local! {
     static FILLER_CACHE: std::cell::RefCell<Option<BTreeMap<String, Option<crate::static_item::build::Merged>>>> = const { std::cell::RefCell::new(None) };
 }
 
-/// `TINY_REDRESS=Stem=Link[;Stem=Link…]` parsed and resolved: each row's
+/// `TINY_REDRESS=Stem=Link[@P][;Stem=Link…]` parsed and resolved: each row's
 /// replacement material read from the pack for its (physics, gameplay) ids
 /// (`Stadium\Media\Material\RoadIce` = RoadIce 74). A row whose link the
 /// pack lacks is refused loudly: a silent miss would bake a road that LOOKS
-/// like ice and drives like asphalt.
+/// like ice and drives like asphalt. `@P` forces the physics id (the magnet
+/// swap: `RoadTech=@55` keeps every deck's own look — the block's modifier
+/// dress included — and drives it as TechMagnetic 55; `Stem=Link@P` re-dresses
+/// AND forces). An empty link means "keep the material the block would have".
 pub fn surface_redress_rows(store: &mut DataStore) -> Vec<(String, String, (u8, u8))> {
     let Ok(spec) = std::env::var("TINY_REDRESS") else { return Vec::new() };
     let mut out = Vec::new();
     for row in spec.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-        let Some((stem, link)) = row.split_once('=') else { panic!("TINY_REDRESS row `{row}`: want Stem=Link") };
-        let ids = crate::static_item::build::material_surface_ids(store, &format!("{link}.Material.Gbx")).unwrap_or_else(|| panic!("TINY_REDRESS: `{link}.Material.Gbx` has no surface ids in the pack"));
-        out.push((stem.trim().to_string(), link.trim().to_string(), ids));
+        let Some((stem, link)) = row.split_once('=') else { panic!("TINY_REDRESS row `{row}`: want Stem=Link[@P] or Stem=@P") };
+        let (link, forced): (&str, Option<u8>) = match link.rsplit_once('@') {
+            Some((l, p)) => (l.trim(), Some(p.trim().parse::<u8>().unwrap_or_else(|_| panic!("TINY_REDRESS row `{row}`: `@{p}` is not a physics id")))),
+            None => (link.trim(), None),
+        };
+        let ids = if link.is_empty() {
+            (forced.unwrap_or_else(|| panic!("TINY_REDRESS row `{row}`: an empty link needs @P")), 0)
+        } else {
+            let ids = crate::static_item::build::material_surface_ids(store, &format!("{link}.Material.Gbx")).unwrap_or_else(|| panic!("TINY_REDRESS: `{link}.Material.Gbx` has no surface ids in the pack"));
+            (forced.unwrap_or(ids.0), ids.1)
+        };
+        out.push((stem.trim().to_string(), link.to_string(), ids));
     }
     out
 }

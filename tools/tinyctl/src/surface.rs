@@ -34,35 +34,54 @@ use std::process::Command;
 use std::time::Instant;
 
 /// The surface's dress for the baked copies: (env, value) pairs.
+///
+/// | surface | deck material of every baked road / platform / open road / wall ride | modifier folder |
+/// |---|---|---|
+/// | ice | `Material\RoadIce` (RoadIce 74) on the road decks | `PlatformIce` (platforms, walls, hills) |
+/// | dirt | `Material\RoadDirt` (Dirt 6) on roads and wall rides | `PlatformDirt` |
+/// | grass | `Modifier\PlatformGrass\PlatformTech` (Green 76) on roads and wall rides | `PlatformGrass` |
+/// | plastic | `Modifier\PlatformPlastic\PlatformTech` (Plastic 77) on roads and wall rides | `PlatformPlastic` |
+/// | wood | `Material\ThemeSnowRoad` (Wood 14 — the snow theme's plank road, the material the Altered Nadeo wood sets use) on roads AND platform decks; wall rides are wood already | — (the block's own) |
+/// | magnet | every deck keeps its own look, physics forced to TechMagnetic 55 (`Stem=@55`) | — |
+///
+/// A `wet` form (`woodwet`, `wet-grass`…) changes nothing here: the wetness is
+/// the START block's Water twin (`mapgeom surface-plan`).
 pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
-    let s = match surface.to_ascii_lowercase().as_str() {
-        "ice" => "Ice",
-        "dirt" => "Dirt",
-        "grass" => "Grass",
-        "plastic" => "Plastic",
-        "tech" => "Tech",
-        other => return Err(format!("surface `{other}`: ice, dirt, grass, plastic or tech")),
-    };
+    let (s, _wet) = mapgeom::surface::parse_surface(surface).ok_or_else(|| format!("surface `{surface}`: ice, dirt, grass, plastic, wood, magnet or tech (optionally with `wet`)"))?;
     // the Water sheets STAY (the ice pool `WaterBaseIce` keeps its water, so a
     // RoadWater piece baked in it keeps its sheet too: without it the deck reads
     // as a black rectangle through the pool water — U10S_23, 2026-09-13)
     let mut env: Vec<(String, String)> = Vec::new();
-    if s != "Tech" {
+    if matches!(s, "Ice" | "Dirt" | "Grass" | "Plastic") {
         // the platform family's modifier folder (Modifier\Platform<S>\{PlatformTech, TrackWall, DecoHill, …})
         env.push(("TINY_FORCE_MODIFIER".to_string(), format!("Stadium\\Media\\Modifier\\Platform{s}.TerrainModifier.Gbx")));
     }
-    // the road decks: every road surface's deck material becomes the S road's
-    let road = match s {
-        "Ice" => Some("Stadium\\Media\\Material\\RoadIce"),
-        "Dirt" => Some("Stadium\\Media\\Material\\RoadDirt"),
-        "Tech" | "Grass" | "Plastic" => Some("Stadium\\Media\\Material\\RoadTech"),
-        _ => None,
+    let road_stems = ["RoadTech", "RoadDirt", "RoadBump", "RoadIce"];
+    let rows: Vec<String> = match s {
+        "Ice" => road_stems.iter().filter(|st| **st != "RoadIce").map(|st| format!("{st}=Stadium\\Media\\Material\\RoadIce")).collect(),
+        "Dirt" => road_stems.iter().filter(|st| **st != "RoadDirt").chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\RoadDirt")).collect(),
+        "Grass" => road_stems.iter().chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Modifier\\PlatformGrass\\PlatformTech")).collect(),
+        "Plastic" => road_stems.iter().chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Modifier\\PlatformPlastic\\PlatformTech")).collect(),
+        "Wood" => road_stems.iter().chain(["PlatformTech"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\ThemeSnowRoad")).collect(),
+        "Magnet" => road_stems.iter().chain(["PlatformTech", "TrackWall"].iter()).map(|st| format!("{st}=@55")).collect(),
+        "Tech" => road_stems.iter().filter(|st| **st != "RoadTech").map(|st| format!("{st}=Stadium\\Media\\Material\\RoadTech")).collect(),
+        other => return Err(format!("surface `{other}`: no dress table")),
     };
-    if let Some(link) = road {
-        let rows: Vec<String> = ["RoadTech", "RoadDirt", "RoadBump", "RoadIce"].iter().filter(|stem| !link.ends_with(*stem)).map(|stem| format!("{stem}={link}")).collect();
+    if !rows.is_empty() {
         env.push(("TINY_REDRESS".to_string(), rows.join(";")));
     }
     Ok(env)
+}
+
+/// How a surface argument is spelled in names: the bracket of
+/// `U10S_N By Everios96 [Wet Wood]`, the campaign "Wet Wood U10S", and the
+/// 4-character uid prefix (`Wet2`, `Woo2`, `Mag2`, `Ice2`).
+pub fn surface_label(surface: &str) -> Result<(String, String), String> {
+    let (s, wet) = mapgeom::surface::parse_surface(surface).ok_or_else(|| format!("surface `{surface}`"))?;
+    let label = if wet { format!("Wet {s}") } else { s.to_string() };
+    let prefix_word = if wet { "Wet" } else { s };
+    let uid_prefix = format!("{}2", &prefix_word[..prefix_word.len().min(3)]);
+    Ok((label, uid_prefix))
 }
 
 fn run(cmd: &mut Command, log: &Path) -> Result<String, String> {
@@ -115,7 +134,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         return Err("surface needs two-digit map numbers first (tinyctl surface 01 02 … --src-dir DIR …)".into());
     }
     let surface = f("--surface").unwrap_or_else(|| "ice".into());
-    let word = { let mut c = surface.chars(); c.next().map(|x| x.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default() };
+    // the bracket word (`[Wet Wood]`) and the uid prefix (`Wet2`) from the surface; --label overrides the word
+    let (word, default_prefix) = surface_label(&surface)?;
+    let word = f("--label").unwrap_or(word);
     let src_dir = PathBuf::from(f("--src-dir").ok_or("surface needs --src-dir DIR (NN-<name>.Map.Gbx sources)")?);
     let out_root = PathBuf::from(f("--out-root").unwrap_or_else(|| format!("/tmp/surface-{surface}")));
     let frames_dir = PathBuf::from(f("--frames-dir").unwrap_or_else(|| out_root.join("frames").to_string_lossy().into_owned()));
@@ -123,7 +144,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let club = f("--club").unwrap_or_else(|| crate::publish::DEFAULT_CLUB.into());
     let no_shoot = tmmaps::cli::has(args, "--no-shoot");
     let no_publish = tmmaps::cli::has(args, "--no-publish");
-    let uid_prefix = f("--uid-prefix").unwrap_or_else(|| format!("{}2", &word[..word.len().min(3)]));
+    let uid_prefix = f("--uid-prefix").unwrap_or(default_prefix);
     let (campaign, campaign_name) = if no_publish {
         (f("--campaign").unwrap_or_default(), f("--campaign-name").unwrap_or_default())
     } else {
@@ -259,6 +280,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             // 3. the map
             let mut sw = Command::new(&tmmaps);
             sw.arg("surface").arg(&src).arg("--plan").arg(&records).arg("--out").arg(&out_map).arg("--name").arg(&out_name).arg("--uid-prefix").arg(&uid_prefix);
+            // the winter trees are the ICE dress only; every other surface keeps the vegetation
+            if !surface.to_ascii_lowercase().contains("ice") || tmmaps::cli::has(args, "--keep-trees") {
+                sw.arg("--keep-trees");
+            }
             if with_items {
                 sw.arg("--library").arg(&lib).arg("--mapping").arg(&mapping);
             }

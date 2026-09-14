@@ -1090,8 +1090,9 @@ impl<'a> Graph<'a> {
                 self.r.lookback()?; // model
                 self.r.string()?; // baseTexture
                 acc.physics_id = self.r.u8()?;
-                if v >= 10 {
-                    self.r.u8()?; // surfaceGameplayId
+                let gameplay = if v >= 10 { self.r.u8()? } else { 0 };
+                if crate::debug::on("matgp") {
+                    eprintln!("matgp: material {name:?} physics {} ({}) gameplay {gameplay}", acc.physics_id, crate::scene::physics_name(acc.physics_id));
                 }
                 acc.material_name = name;
                 if v < 1 {

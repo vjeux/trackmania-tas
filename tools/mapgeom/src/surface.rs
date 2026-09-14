@@ -38,12 +38,52 @@ use std::path::Path;
 
 /// The surface words Stadium block names carry, longest first so `Plastic`
 /// wins over a hypothetical `Plas`.
-pub const SURFACE_WORDS: &[&str] = &["Plastic", "Grass", "Water", "Tech", "Dirt", "Bump", "Ice"];
+pub const SURFACE_WORDS: &[&str] = &["Plastic", "Magnet", "Grass", "Water", "Tech", "Dirt", "Bump", "Wood", "Ice"];
+
+/// The target surfaces that have NO block family of their own in the 2026
+/// Stadium pack (`PlatformWood…`, `RoadMagnet…` do not exist): every deck
+/// block of theirs is a baked re-dressed copy, and the terrain-like families
+/// (deco platforms, hills, deco walls, pools) are left as they are — the
+/// Altered Nadeo convention (their "Wood" sets re-dress roads and platforms;
+/// `OpenIceZone…-Wood` keeps its snow hill). Plastic has platform twins only.
+pub fn deck_only(s: &str) -> bool {
+    matches!(s, "Wood" | "Magnet" | "Plastic")
+}
+
+/// The families a `deck_only` surface leaves alone.
+fn is_terrain_family(name: &str) -> bool {
+    ["DecoPlatform", "DecoHill", "DecoWall", "Water"].iter().any(|p| name.starts_with(p))
+}
 
 /// Canonical spelling of a surface argument (`ice` -> `Ice`).
 pub fn surface_word(s: &str) -> Option<&'static str> {
-    let l = s.trim().to_ascii_lowercase();
-    SURFACE_WORDS.iter().find(|w| w.to_ascii_lowercase() == l).copied()
+    parse_surface(s).map(|(w, _)| w)
+}
+
+/// `(surface word, wet)`: a `wet` prefix or suffix (`wetwood`, `woodwet`,
+/// `wood+wet`, `wet-wood`) asks for the WET form of a surface. The wet form
+/// keeps the surface's plan and turns the START block into its Water twin
+/// (`RoadWaterStart`, `PlatformWaterStart`: the same deck at 2.0 m under a
+/// shallow water volume), so the car spawns in water and carries wet tyres
+/// for the whole run — the mechanism of the Altered Nadeo "Wet …" maps
+/// (Fall 2024-25 "Pure Wet Icy Wood": a `PlatformWaterRampBase` under the
+/// spawn; its WR's telemetry reads wetness 0 → 1.0 over the first 1.5 s and
+/// 1.0 for the remaining 94 s over dry wood, ice and road — TM2020 tyres do
+/// not dry).
+pub fn parse_surface(s: &str) -> Option<(&'static str, bool)> {
+    let mut l = s.trim().to_ascii_lowercase();
+    for sep in ["+", "-", "_", " "] {
+        l = l.replace(sep, "");
+    }
+    let mut wet = false;
+    if let Some(rest) = l.strip_prefix("wet") {
+        l = rest.to_string();
+        wet = true;
+    } else if let Some(rest) = l.strip_suffix("wet") {
+        l = rest.to_string();
+        wet = true;
+    }
+    SURFACE_WORDS.iter().find(|w| w.to_ascii_lowercase() == l).copied().map(|w| (w, wet))
 }
 
 fn strip_surface_word(rest: &str) -> Option<(&'static str, &str)> {
@@ -92,8 +132,10 @@ pub fn candidate(name: &str, s: &str) -> Option<String> {
     }
     for fam in ["DecoPlatform", "DecoHill", "Platform"] {
         if let Some(rest) = name.strip_prefix(fam) {
-            // Tech is spelled with NO word in the Deco families
-            let word = if fam != "Platform" && s == "Tech" { "" } else { s };
+            // Tech is spelled with NO word in the Deco families — and the Tech
+            // deco platform / deco hill IS the grass-topped one (`Deco` /
+            // `DecoHill` materials, Grass 2), so Grass spells them the same way
+            let word = if fam != "Platform" && (s == "Tech" || s == "Grass") { "" } else { s };
             return Some(match strip_surface_word(rest) {
                 Some((_w, tail)) => format!("{fam}{word}{tail}"),
                 None if fam != "Platform" => format!("{fam}{word}{rest}"),
@@ -285,7 +327,7 @@ fn record_fits(src: &BlockInfo, twin: &BlockInfo, flags: u32) -> Result<(), Stri
 
 /// Build the plan over the authored blocks of `maps` (aggregated by name).
 pub fn plan(store: &mut DataStore, idx: &mut BlockInfoIndex, maps: &[std::path::PathBuf], surface: &str) -> Result<Vec<PlanRow>, String> {
-    let s = surface_word(surface).ok_or_else(|| format!("unknown surface `{surface}` (one of {})", SURFACE_WORDS.join(", ")))?;
+    let (s, wet) = parse_surface(surface).ok_or_else(|| format!("unknown surface `{surface}` (one of {}, optionally with `wet`)", SURFACE_WORDS.join(", ")))?;
     // name -> (count, flags seen)
     let mut seen: BTreeMap<String, (usize, Vec<u32>)> = BTreeMap::new();
     for p in maps {
@@ -300,23 +342,34 @@ pub fn plan(store: &mut DataStore, idx: &mut BlockInfoIndex, maps: &[std::path::
     }
     let mut rows = Vec::new();
     for (name, (count, flags)) in seen {
-        let row = plan_one(store, idx, &name, count, &flags, s);
+        let row = plan_one(store, idx, &name, count, &flags, s, wet);
         rows.push(row);
     }
     Ok(rows)
 }
 
-fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: usize, flags: &[u32], s: &str) -> PlanRow {
+fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: usize, flags: &[u32], s: &str, wet: bool) -> PlanRow {
     let mk = |action: Action, target: &str, detail: String| PlanRow { name: name.to_string(), count, action, target: target.to_string(), dy: 0, detail };
     // an embedded custom block record (`X.Block.Gbx_CustomBlock`) is its author's
     // own mesh: no pack twin
     if name.contains('\\') || name.ends_with("_CustomBlock") {
         return mk(Action::Keep, "", "embedded custom block".into());
     }
+    // pillars, structures, gates … are outside the surface families
     let Some(cand) = candidate(name, s) else {
         return mk(Action::Keep, "", "not a surface family".into());
     };
-    if cand == name {
+    // a deck-only surface (no block family of its own) leaves the terrain-like
+    // families alone — a wet plan still looks at a START block below
+    let terrain_kept = deck_only(s) && is_terrain_family(name);
+    if terrain_kept && !(wet && name.contains("Start")) {
+        return mk(Action::Keep, "", format!("terrain family: no {s} form, left as is"));
+    }
+    // the wall-ride family IS wood (TrackWall = Wood 14)
+    if s == "Wood" && name.starts_with("TrackWall") {
+        return mk(Action::Same, name, "wall ride: wood already".into());
+    }
+    if cand == name && !wet {
         return mk(Action::Same, name, format!("already {s}"));
     }
     let Some(src_path) = idx.path_for(name) else {
@@ -326,6 +379,42 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
         Ok(b) => b.clone(),
         Err(e) => return mk(Action::Keep, "", format!("source model unreadable: {e}")),
     };
+    // WET: the start block becomes its Water twin when that twin is the same
+    // shape (deck 2.0: every Platform<S>Start, RoadTechStart); a start whose
+    // water twin differs (RoadDirtStart 0.5, RoadBumpStart 2.75, RoadIceStart's
+    // pad at 10) falls through to the surface's own plan and is reported
+    if wet && src.waypoint_type == Some(0) {
+        if let Some(cw) = candidate(name, "Water") {
+            if cw == name {
+                return mk(Action::Same, name, "wet: already a water start".into());
+            }
+            match idx.path_for(&cw) {
+                Some(tp) => {
+                    if let Ok(twin) = idx.load(store, &tp).cloned() {
+                        let (sp, tp2) = (base_prefab(&src), base_prefab(&twin));
+                        let stem = |p: &Option<String>| p.as_deref().map(|p| p.rsplit('\\').next().unwrap_or(p).to_string());
+                        let (ls, lt) = (sp.as_deref().and_then(|p| deck_level(store, p)), tp2.as_deref().and_then(|p| deck_level(store, p)));
+                        let same_shape = sp == tp2 || (stem(&sp) == stem(&tp2) && matches!((ls, lt), (Some(a), Some(b)) if (a - b).abs() < 0.3));
+                        if same_shape {
+                            if let Ok(detail) = compare(&src, &twin, 0) {
+                                if flags.iter().all(|f| record_fits(&src, &twin, *f).is_ok()) {
+                                    return mk(Action::Rename, &cw, format!("wet start: the water twin (shallow water over the same deck); {detail}"));
+                                }
+                            }
+                        }
+                        eprintln!("wet: start block {name}: water twin {cw} is another shape (deck {ls:?} vs {lt:?}) — the start stays dry");
+                    }
+                }
+                None => eprintln!("wet: start block {name}: no water twin {cw} in the pack — the start stays dry"),
+            }
+        }
+    }
+    if terrain_kept {
+        return mk(Action::Keep, "", format!("terrain family: no {s} form, left as is"));
+    }
+    if cand == name {
+        return mk(Action::Same, name, format!("already {s}"));
+    }
     // A block with a WATER VOLUME (pool floors `PlatformWater*`, `RoadWater*`, the
     // pool edges) is never baked: an item carries no volume, so the copy would
     // drain the pool (the tiny converter's lesson, TINY.md "Water"). Renamed when
@@ -531,7 +620,7 @@ fn base_prefab(bi: &BlockInfo) -> Option<String> {
 /// Plan every authored record of one map. Returns the model rows (for the
 /// report) and the record rows (for `tmmaps surface`).
 pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path, surface: &str, collection: &str) -> Result<(Vec<PlanRow>, Vec<RecordRow>), String> {
-    let s = surface_word(surface).ok_or_else(|| format!("unknown surface `{surface}`"))?;
+    let (s, wet) = parse_surface(surface).ok_or_else(|| format!("unknown surface `{surface}`"))?;
     let m = tmmaps::map::MapFile::try_load(map).map_err(|e| format!("{}: {e}", map.display()))?;
     // model rows
     let mut seen: BTreeMap<String, (usize, Vec<u32>)> = BTreeMap::new();
@@ -544,7 +633,7 @@ pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path,
     }
     let mut models: BTreeMap<String, PlanRow> = BTreeMap::new();
     for (name, (count, flags)) in &seen {
-        models.insert(name.clone(), plan_one(store, idx, name, *count, flags, s));
+        models.insert(name.clone(), plan_one(store, idx, name, *count, flags, s, wet));
     }
     let dy_of: BTreeMap<String, i32> = models.iter().map(|(n, r)| (n.clone(), r.dy)).collect();
     // occupancy of the map as it is

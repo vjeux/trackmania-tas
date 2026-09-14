@@ -460,9 +460,16 @@ impl Merged {
             }
             None => (link, physics),
         };
-        // the surface swap's explicit rows first (`link_rewrite`): stem or full link
+        // the surface swap's explicit rows first (`link_rewrite`): stem or full link;
+        // an empty replacement keeps the link (and whatever dress the modifier
+        // gives it below) and only FORCES the physics id (the magnet swap)
         let rewritten;
+        let mut forced_physics: Option<u8> = None;
         let (link, physics) = match self.link_rewrite.iter().find(|(from, _, _)| link == from || link.rsplit('\\').next() == Some(from.as_str())) {
+            Some((_, to, phys)) if to.is_empty() => {
+                forced_physics = Some(*phys);
+                (link, *phys)
+            }
             Some((_, to, phys)) => {
                 rewritten = to.clone();
                 (rewritten.as_str(), *phys)
@@ -491,6 +498,7 @@ impl Merged {
         };
         // the modifier's own physics when the table knows it (PlatformDirt\PlatformTech = Dirt 6)
         let physics = if link.contains("\\Modifier\\") { physics_for_link(link).unwrap_or(physics) } else { physics };
+        let physics = forced_physics.unwrap_or(physics);
         if let Some(i) = self.materials.iter().position(|m| m.link() == Some(link) && m.physics() == physics) {
             return i;
         }
