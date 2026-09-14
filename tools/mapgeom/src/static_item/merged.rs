@@ -170,6 +170,13 @@ pub struct Merged {
     /// the prefab's Asphalt (16) until the shadow rows (vjeux, tiny 18,
     /// 2026-09-08 — "the texture is ice but the driving is also not ice").
     pub collision_redress: Vec<Redress>,
+    /// The surface swap's physics for a GAMEPLAY PAD's hull: every triangle
+    /// whose surface material is a `Collision*` file (the pad deck, authored
+    /// with its gameplay id) takes this physics and keeps its gameplay id.
+    /// Without it a wood/plastic/grass/dirt pad kept its own family's physics
+    /// under the new look (wood 51: "the boosters are ice boosters", boasy
+    /// 2026-09-14) and a baked road pad in the ice set stayed asphalt + turbo.
+    pub pad_physics: Option<u8>,
     /// A SURFACE SWAP's explicit re-dress of the prefab's VISUAL materials
     /// (`TINY_REDRESS=RoadTech=Stadium\\Media\\Material\\RoadIce;…`, the ice
     /// conversion of 2026-09-13): rows of (material stem, replacement link,
@@ -626,22 +633,31 @@ impl Merged {
     /// matching row wins (slot-table rows come before folder shadows). None
     /// when no triangle matched.
     fn redress_collision(&mut self, sf: &CPlugSurface, triangles: &[Triangle], resolve: &mut MaterialResolver) -> Option<Vec<Triangle>> {
-        if self.collision_redress.is_empty() {
+        if self.collision_redress.is_empty() && self.pad_physics.is_none() {
             return None;
         }
         let mut by_index: Vec<Option<(String, String, (u8, u8))>> = Vec::new();
+        let mut pad_slot: Vec<bool> = Vec::new();
         for sm in &sf.materials {
-            let hit = match sm {
-                super::surface::SurfMaterial::Node(nr) if nr.inline.is_none() && nr.index >= 0 => resolve(nr.index).and_then(|(path, _, _)| self.collision_redress.iter().find(|r| r.matches_path(&path)).map(|r| (path.clone(), r.link.clone(), r.ids))),
-                _ => None,
+            let (hit, pad) = match sm {
+                super::surface::SurfMaterial::Node(nr) if nr.inline.is_none() && nr.index >= 0 => match resolve(nr.index) {
+                    Some((path, _, _)) => {
+                        let pad = self.pad_physics.is_some() && path.rsplit('\\').next().map(|f| f.to_ascii_lowercase().starts_with("collision")).unwrap_or(false);
+                        (self.collision_redress.iter().find(|r| r.matches_path(&path)).map(|r| (path.clone(), r.link.clone(), r.ids)), pad)
+                    }
+                    None => (None, false),
+                },
+                _ => (None, false),
             };
             by_index.push(hit);
+            pad_slot.push(pad);
         }
-        if by_index.iter().all(|h| h.is_none()) {
+        if by_index.iter().all(|h| h.is_none()) && !pad_slot.iter().any(|p| *p) {
             return None;
         }
         let mut out = triangles.to_vec();
         let mut counts: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+        let mut padded = 0usize;
         for t in out.iter_mut() {
             let si = t.surface_index.max(0) as usize;
             if let Some(Some((_, _, ids))) = by_index.get(si) {
@@ -649,9 +665,18 @@ impl Merged {
                 t.gameplay = ids.1;
                 *counts.entry(si).or_default() += 1;
             }
+            if let (Some(p), Some(true)) = (self.pad_physics, pad_slot.get(si)) {
+                if t.material_id != p {
+                    t.material_id = p;
+                    padded += 1;
+                }
+            }
+        }
+        if padded > 0 {
+            self.notes.push(format!("hull: {padded} pad triangles take the surface swap's physics {} (gameplay kept)", self.pad_physics.unwrap_or(0)));
         }
         if counts.is_empty() {
-            return None;
+            return if padded > 0 { Some(out) } else { None };
         }
         for (si, n) in counts {
             if let Some(Some((path, link, ids))) = by_index.get(si) {

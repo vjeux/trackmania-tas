@@ -711,10 +711,29 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     // materials no modifier folder shadows — `RoadTech=Stadium\Media\Material\RoadIce`
     // puts the ice deck material (look + RoadIce physics 74) on a tech road's
     // deck. Rows go FIRST: the first matching collision row wins.
-    for (stem, link, ids) in surface_redress_rows(store) {
+    let surface_rows = surface_redress_rows(store);
+    for (stem, link, ids) in &surface_rows {
         let note_link = if link.is_empty() { format!("Stadium\\Media\\Material\\{stem} (own look, physics {})", ids.0) } else { link.clone() };
-        m.collision_redress.insert(0, Redress { matches: RedressKey::File(format!("{}.material.gbx", stem.to_ascii_lowercase())), link: note_link, ids });
-        m.link_rewrite.push((stem, link, ids.0));
+        m.collision_redress.insert(0, Redress { matches: RedressKey::File(format!("{}.material.gbx", stem.to_ascii_lowercase())), link: note_link, ids: *ids });
+        m.link_rewrite.push((stem.clone(), link.clone(), ids.0));
+    }
+    // A GAMEPLAY PAD (`…Special…`) under a surface swap: its deck hull is
+    // authored with `Collision*` materials (physics + gameplay id) that the
+    // deck rows never match, and the pad's OWN family modifier supplied the
+    // physics — wood 51's ice pad drove as ice under a wood look (boasy,
+    // 2026-09-14), a baked road pad in the ice set as asphalt + turbo. The
+    // hull takes the swap's deck physics (the family's row: PlatformTech for a
+    // platform pad, RoadTech for a road one; else the forced modifier
+    // folder's PlatformTech material) and keeps its gameplay id.
+    if !surface_rows.is_empty() && name.contains("Special") {
+        let want = if name.starts_with("Platform") { "PlatformTech" } else { "RoadTech" };
+        let from_rows = surface_rows.iter().find(|(st, _, _)| st == want).or_else(|| surface_rows.iter().find(|(st, _, _)| st == "PlatformTech" || st == "RoadTech")).map(|(_, _, ids)| ids.0);
+        let from_forced = std::env::var("TINY_FORCE_MODIFIER").ok().and_then(|f| f.strip_suffix(".TerrainModifier.Gbx").map(String::from)).and_then(|base| crate::static_item::build::material_surface_ids(store, &format!("{base}\\PlatformTech.Material.Gbx"))).map(|ids| ids.0);
+        // a plain "keep the look, force the physics" row (magnet @55) has no link but a physics
+        m.pad_physics = from_rows.or(from_forced);
+        if let Some(p) = m.pad_physics {
+            m.notes.push(format!("gameplay pad under a surface swap: hull physics {p}, gameplay kept"));
+        }
     }
     // The collection SKIN (`<Env>\Media\Modifier\StadiumOnTerrain\<slot>`, the
     // four terrain collections) is one material file per slot: look AND
