@@ -6,7 +6,7 @@ Side project: the Summer 2026 campaign rebuilt at half scale, with TAS laps on e
 
 Side project: **the map's scenery carried by ghost car skins** — Summer 2025 - 02 with its trees and hills stripped from the map file and drawn by parked ghosts wearing 3D skins, swapping summer → ice → fall → summer at every checkpoint of LordQuacked's 19.791 world record. Nothing in the map changes; the scenery rides on the ghosts.
 
-https://github.com/user-attachments/assets/399a5186-8810-4e02-b14d-76e0802e698f
+https://github.com/user-attachments/assets/433c3b6c-ca8b-4447-adeb-081440777cd7
 
 # 1 · Author time unbeaten by any human — and this TAS takes it
 
