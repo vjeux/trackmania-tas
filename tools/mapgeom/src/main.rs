@@ -595,6 +595,76 @@ fn main() {
             let (g, r) = mapgeom::giantwater::apply(std::path::Path::new(&p), std::path::Path::new(&out), &plan, template.as_deref().map(std::path::Path::new), &author).unwrap_or_else(die);
             println!("{p}: giant water: {g} native pool tiles, {r} road volume tiles -> {out}");
         }
+        "overflow" => {
+            // overflow MAP.Map.Gbx… [--report R.tsv]: does the map spill out of the
+            // stadium's buildable volume? Per map the world box of every EMBEDDED item's
+            // geometry (the assembler's placed model; blocks are inside the grid by
+            // construction) against x/z 0..size·32 m and y up to the grid top
+            // (ground + size_y·8): one row per map — in/out, the box, how far out
+            // (2026-09-14, Everios96 on the giant set: "some maps are too large and
+            // don't fit inside the stadium anymore"; those get the NoStadium mood).
+            let mut store = open(&a);
+            let maps: Vec<String> = a.rest.iter().skip(1).filter(|x| !x.starts_with("--") && x.ends_with(".Gbx")).cloned().collect();
+            if maps.is_empty() {
+                die::<()>("overflow MAP.Map.Gbx… [--report R.tsv]".into());
+            }
+            let report = flag(&a.rest, "--report");
+            let mut rows = String::from("map\tname\tverdict\tlo_x\tlo_y\tlo_z\thi_x\thi_y\thi_z\tgrid_x\tgrid_y_top\tgrid_z\tout_x\tout_y\tout_z\titems_out\tdecoration\n");
+            let mut n_out = 0usize;
+            for p in &maps {
+                let m = tmmaps::map::MapFile::load(std::path::Path::new(p));
+                let hdr = tmmaps::header::read(p).ok();
+                let ground = tmmaps::map::ground_y(m.items.first().map(|it| it.collection_raw).unwrap_or(26));
+                let grid = [m.size[0] as f32 * tmmaps::map::CELL_XZ, ground + m.size[1] as f32 * tmmaps::map::CELL_Y, m.size[2] as f32 * tmmaps::map::CELL_XZ];
+                let mut asm = mapgeom::assemble::Assembler::new(&mut store);
+                asm.with_embedded(&m).ok();
+                let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                let mut items_out = 0usize;
+                for it in &m.items {
+                    let Some(lm) = asm.item_model(&it.model) else { continue };
+                    let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                    let (mut ilo, mut ihi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                    for g in lm.scene.groups.values() {
+                        for v in &g.verts {
+                            let w = mapgeom::geom::apply(&xf, *v);
+                            for k in 0..3 {
+                                ilo[k] = ilo[k].min(w[k]);
+                                ihi[k] = ihi[k].max(w[k]);
+                            }
+                        }
+                    }
+                    if ilo[0] > ihi[0] {
+                        continue;
+                    }
+                    // an item counts as OUT when its box leaves the volume by more than
+                    // a wall's thickness (0.5 m): the ×2 clips sit flush on the grid edge
+                    if ilo[0] < -0.5 || ilo[2] < -0.5 || ihi[0] > grid[0] + 0.5 || ihi[2] > grid[2] + 0.5 || ihi[1] > grid[1] + 0.5 {
+                        items_out += 1;
+                    }
+                    for k in 0..3 {
+                        lo[k] = lo[k].min(ilo[k]);
+                        hi[k] = hi[k].max(ihi[k]);
+                    }
+                }
+                let out_x = (-lo[0]).max(hi[0] - grid[0]).max(0.0);
+                let out_z = (-lo[2]).max(hi[2] - grid[2]).max(0.0);
+                let out_y = (hi[1] - grid[1]).max(0.0);
+                let verdict = if items_out > 0 { "OUT" } else { "in" };
+                if items_out > 0 {
+                    n_out += 1;
+                }
+                let name = hdr.as_ref().map(|h| h.name.clone()).unwrap_or_default();
+                let deco = m.decoration_id.clone();
+                let line = format!("{p}\t{name}\t{verdict}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{out_x:.0}\t{out_y:.0}\t{out_z:.0}\t{items_out}\t{deco}", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], grid[0], grid[1], grid[2]);
+                println!("{line}");
+                rows.push_str(&line);
+                rows.push('\n');
+            }
+            if let Some(r) = report {
+                std::fs::write(&r, rows).unwrap_or_else(|e| die(e.to_string()));
+            }
+            eprintln!("{} of {} maps spill out of the stadium volume", n_out, maps.len());
+        }
         "waterblocks" => {
             // waterblocks MAP --plates P.tsv --template T.Block.Gbx --out MAP2 --table T.tsv
             //   [--author UID] [--force-block] — see waterblocks.rs

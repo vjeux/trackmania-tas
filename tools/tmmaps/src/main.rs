@@ -109,6 +109,32 @@ fn main() {
         // seed-item MAP --out OUT: one template item record into a 0-item map (the
         // tiny writer's clone donor; U10S_113, 2026-09-13)
         // rename-map MAP --out OUT --name NEW: the map's own name (header + body), nothing else
+        // set-decoration MAP --out OUT --name NoStadium48x48Day: the map's decoration
+        // ident (the mood + the arena) in the body's Common chunk (the Id table's
+        // slot 3, `set_decoration`) and the header's copy of it
+        // (`set_header_decoration`); nothing else — the header XML's mood attribute
+        // is the same mood. The Stadium arena → its NoStadium twin (2026-09-14,
+        // Everios96: giant maps "don't fit inside the stadium anymore").
+        "set-decoration" => {
+            let src = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps set-decoration MAP --out OUT --name NEW"); std::process::exit(2) });
+            let out = tmmaps::cli::flag(&args, "--out").map(String::from).unwrap_or_else(|| { eprintln!("--out OUT"); std::process::exit(2) });
+            let new = tmmaps::cli::flag(&args, "--name").map(String::from).unwrap_or_else(|| { eprintln!("--name NEW"); std::process::exit(2) });
+            let mut m = tmmaps::map::MapFile::load(std::path::Path::new(&src));
+            let old = m.decoration_id.clone();
+            if old == new {
+                println!("{out}: decoration already {new:?}");
+                std::fs::copy(&src, &out).expect("copy");
+            } else {
+                m.set_decoration(&new);
+                let h = m.set_header_decoration(&old, &new);
+                m.write_to(std::path::Path::new(&out)).expect("write");
+                let back = tmmaps::map::MapFile::load(std::path::Path::new(&out));
+                println!("{out}: decoration {old:?} -> {new:?} (header {}; readback {:?})", if h { "rewritten" } else { "NOT FOUND" }, back.decoration_id);
+                if back.decoration_id != new || !h {
+                    std::process::exit(1);
+                }
+            }
+        }
         "rename-map" => {
             let src = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps rename-map MAP --out OUT --name NEW"); std::process::exit(2) });
             let out = tmmaps::cli::flag(&args, "--out").map(String::from).unwrap_or_else(|| { eprintln!("--out OUT"); std::process::exit(2) });

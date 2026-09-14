@@ -258,6 +258,32 @@ pub fn rezip_cmd(args: &[String]) -> Result<(), String> {
             extra += 1;
         }
     }
+    // --note TEXT: the zip's MAPS.tsv rows of the replaced maps get the new byte
+    // count and the note appended to fit_note (the NoStadium pass, 2026-09-14);
+    // the box-side rezip receives that MAPS.tsv as a pushed file and needs no note
+    if let Some(note) = f("--note") {
+        let replaced_names: std::collections::BTreeSet<String> = std::fs::read_dir(&dir).map_err(|e| e.to_string())?.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        if let Some(tsv) = files.get("MAPS.tsv").cloned() {
+            let text = String::from_utf8_lossy(&tsv).into_owned();
+            let mut out_rows: Vec<String> = Vec::new();
+            let mut touched = 0usize;
+            for (i, l) in text.lines().enumerate() {
+                let mut c: Vec<String> = l.split('\t').map(|s| s.to_string()).collect();
+                if i > 0 && c.len() >= 11 && replaced_names.contains(&c[1]) {
+                    if let Some(b) = files.get(&c[1]) {
+                        c[9] = b.len().to_string();
+                    }
+                    if !c[10].contains(&note) {
+                        c[10] = if c[10].is_empty() || c[10] == "-" { note.clone() } else { format!("{} · {note}", c[10]) };
+                    }
+                    touched += 1;
+                }
+                out_rows.push(c.join("\t"));
+            }
+            files.insert("MAPS.tsv".to_string(), (out_rows.join("\n") + "\n").into_bytes());
+            println!("  MAPS.tsv: {touched} rows noted {note:?}");
+        }
+    }
     let zip = tmmaps::header::stored_zip(&files);
     std::fs::write(&out, &zip).map_err(|e| format!("{}: {e}", out.display()))?;
     println!("{}: {} entries, {replaced} replaced, {extra} added -> {} ({} B)", old.display(), files.len(), out.display(), zip.len());
