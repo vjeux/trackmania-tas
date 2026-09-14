@@ -31,7 +31,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// The surface's dress for the baked copies: (env, value) pairs.
 ///
@@ -478,7 +478,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
 pub fn report_cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let surface = f("--surface").unwrap_or_else(|| "ice".into());
-    let word = { let mut c = surface.chars(); c.next().map(|x| x.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default() };
+    let (word, uid_prefix) = surface_label(&surface).unwrap_or_else(|_| ({ let mut c = surface.chars(); c.next().map(|x| x.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default() }, format!("{}2", &surface[..surface.len().min(3)])));
+    let lower = word.to_ascii_lowercase();
+    // --intro FILE: a Markdown block placed after the title (the variant's recipe and play proof)
+    let intro = f("--intro").and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
     let out_root = PathBuf::from(f("--out-root").unwrap_or_else(|| format!("/tmp/surface-{surface}")));
     let tracker = PathBuf::from(f("--tracker").unwrap_or_else(|| out_root.join("tracker.tsv").to_string_lossy().into_owned()));
     let frames_dir = PathBuf::from(f("--frames-dir").unwrap_or_else(|| out_root.join("frames").to_string_lossy().into_owned()));
@@ -521,13 +524,17 @@ pub fn report_cmd(args: &[String]) -> Result<(), String> {
     }
     let secs = |ms: &str| ms.parse::<f64>().map(|v| format!("{:.3}", v / 1000.0)).unwrap_or_else(|_| ms.to_string());
     let mut md = String::new();
-    md.push_str(&format!("# {word} U10S — the first 25 U10S maps re-surfaced as {surface}\n\n"));
+    md.push_str(&format!("# {word} U10S — the first 25 U10S maps re-surfaced as {lower}\n\n"));
+    if !intro.is_empty() {
+        md.push_str(intro.trim_end());
+        md.push_str("\n\n");
+    }
     if let Some(u) = f("--campaign-url") {
         md.push_str(&format!("Campaign: {u}\n\n"));
     }
     let tot = |n: &str| by_nn.values().map(|r| col(r, n).parse::<usize>().unwrap_or(0)).sum::<usize>();
-    md.push_str(&format!("{} maps · {} block records renamed to their {surface} twin · {} baked as re-dressed item copies · {} already {surface} · {} left as they are (pillars, structures, gates, decoration) · {} with no {surface} form at all.\n\n", by_nn.len(), tot("renamed"), tot("baked"), tot("same"), tot("kept"), tot("none")));
-    md.push_str("| # | source | AT / gold / silver / bronze (s) | ice map | size | renamed | baked | same | kept | none | frames | Nadeo |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    md.push_str(&format!("{} maps · {} block records renamed to their {lower} twin · {} baked as re-dressed item copies · {} already {lower} · {} left as they are (pillars, structures, gates, decoration) · {} with no {lower} form at all.\n\n", by_nn.len(), tot("renamed"), tot("baked"), tot("same"), tot("kept"), tot("none")));
+    md.push_str(&format!("| # | source | AT / gold / silver / bronze (s) | {lower} map | size | renamed | baked | same | kept | none | frames | Nadeo |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n"));
     for (nn, r) in &by_nn {
         let times = format!("{} / {} / {} / {}", secs(&col(r, "authortime_ms")), secs(&col(r, "gold")), secs(&col(r, "silver")), secs(&col(r, "bronze")));
         let size = col(r, "out_bytes").parse::<f64>().map(|b| format!("{:.2} MB", b / 1e6)).unwrap_or_else(|_| col(r, "out_bytes"));
@@ -537,7 +544,7 @@ pub fn report_cmd(args: &[String]) -> Result<(), String> {
         let frames = if n_frames > 0 { format!("{n_frames} pairs") } else { col(r, "frames") };
         md.push_str(&format!("| {nn} | {} `{}` | {times} | {} `{}` | {size} | {} | {} | {} | {} | {} | {frames} | {nadeo} |\n", col(r, "source_name"), col(r, "source_uid"), col(r, "out_name"), col(r, "out_uid"), col(r, "renamed"), col(r, "baked"), col(r, "same"), col(r, "kept"), col(r, "none")));
     }
-    md.push_str("\nEvery map keeps the source's medal times, items, MediaTracker and thumbnail; the uid is `Ice2` + the source uid's tail; the validation ghost (an author run on another surface) is removed.\n\n");
+    md.push_str(&format!("\nEvery map keeps the source's medal times, items, MediaTracker and thumbnail; the uid is `{uid_prefix}` + the source uid's tail; the validation ghost (an author run on another surface) is removed.\n\n"));
     for (nn, r) in &by_nn {
         md.push_str(&format!("## {nn} — {} → {}\n\n", col(r, "source_name"), col(r, "out_name")));
         let note = col(r, "note");
@@ -548,7 +555,7 @@ pub fn report_cmd(args: &[String]) -> Result<(), String> {
             let key = format!("cmp-{surface}{nn}{v}");
             match uploads.get(&key) {
                 Some(id) => md.push_str(&format!("**{v}** (left: original · right: {surface})\n\n![{key}](/api/attachments/view?file_id={id})\n\n")),
-                None => md.push_str(&format!("**{v}**: no frame\n\n")),
+                None => {}
             }
         }
         // the trees (tmmaps surface's `trees:` line in surface.log)
@@ -572,7 +579,7 @@ pub fn report_cmd(args: &[String]) -> Result<(), String> {
                 };
                 groups.entry(action).or_default().push(entry);
             }
-            for (action, label) in [("rename", "Renamed to the ice twin"), ("bake", "Baked as re-dressed item copies (no same-shape ice block)"), ("same", "Already ice"), ("none", "No ice form — left as is"), ("keep", "Not a surface (left as is)")] {
+            for (action, label) in [("rename", format!("Renamed to the {lower} twin")), ("bake", format!("Baked as re-dressed item copies (no same-shape {lower} block)")), ("same", format!("Already {lower}")), ("none", format!("No {lower} form — left as is")), ("keep", "Not a surface (left as is)".to_string())] {
                 if let Some(v) = groups.get(action) {
                     md.push_str(&format!("**{label}:** {}\n\n", v.join(" · ")));
                 }
@@ -794,5 +801,253 @@ pub fn release_zips_cmd(args: &[String]) -> Result<(), String> {
     if bad > 0 {
         return Err(format!("{bad} assets missing or wrong size"));
     }
+    Ok(())
+}
+
+/// `tinyctl surface-batch NN… --src-dir DIR --out-root DIR --surface S [--campaign K
+/// --campaign-name N | --no-publish] [--no-shoot] --orig-frames-box DIR [--box-tinyctl P]
+/// [--club C] [--wsx P]` — the shoot + publish half of `surface` for a set of
+/// ALREADY BUILT maps, with the bridge round trips taken out of the loop
+/// (2026-09-13: the per-map `surface` spent ~130 s per map on wsx dispatches
+/// around a 40 s shoot and a 30 s publish — the bridge holds a minority of
+/// dispatches ~15 s each):
+///
+/// 1. gate: every map's header and its baked items (`item-check` with the
+///    collection's packs);
+/// 2. views: `tinyctl views` on the source, the `start` view only (the anchor
+///    line kept), written beside the map;
+/// 3. ONE tar of the maps + views pushed to the box staging dir;
+/// 4. ONE detached box job: per map the variant side's `shootset`, the
+///    original's frame copied in from the cache (`--orig-frames-box`; shot
+///    now and cached when missing), then `compare` — all under the lock only
+///    while the game loads (shootset takes and releases it per run);
+/// 5. ONE tar of the side-by-side JPGs pulled back;
+/// 6. `publish-batch` on the box (one token mint, every map, the playlist
+///    written once in map order), results pulled; the tracker gets one row per
+///    map with the frames and the Nadeo verdict (the report reads the last row).
+pub fn batch_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let maps: Vec<String> = args.iter().take_while(|a| !a.starts_with("--")).cloned().collect();
+    if maps.is_empty() || !maps.iter().all(|m| m.len() == 2 && m.chars().all(|c| c.is_ascii_digit())) {
+        return Err("surface-batch needs two-digit map numbers first".into());
+    }
+    let surface = f("--surface").ok_or("surface-batch needs --surface S")?;
+    let src_dir = PathBuf::from(f("--src-dir").ok_or("surface-batch needs --src-dir DIR")?);
+    let out_root = PathBuf::from(f("--out-root").ok_or("surface-batch needs --out-root DIR")?);
+    let frames_dir = out_root.join("frames");
+    let tracker = out_root.join("tracker.tsv");
+    let club = f("--club").unwrap_or_else(|| crate::publish::DEFAULT_CLUB.into());
+    let no_shoot = tmmaps::cli::has(args, "--no-shoot");
+    let no_publish = tmmaps::cli::has(args, "--no-publish");
+    let cache = f("--orig-frames-box").unwrap_or_else(|| "/home/vjeux/shoot/variants/origframes".into());
+    let box_tinyctl = f("--box-tinyctl").unwrap_or_else(|| "/home/vjeux/shoot/variants/tinyctl".into());
+    let box_shootctl = f("--box-shootctl").unwrap_or_else(|| "/home/vjeux/trackmania-tas/tools/target/release/shootctl".into());
+    let (campaign, campaign_name) = if no_publish { (String::new(), String::new()) } else { (f("--campaign").ok_or("--campaign K or --no-publish")?, f("--campaign-name").ok_or("--campaign-name N")?) };
+    let wsx = crate::wsx::Wsx::new(args);
+    std::fs::create_dir_all(&frames_dir).map_err(|e| format!("{}: {e}", frames_dir.display()))?;
+    let tag_of = |nn: &str| format!("{surface}{nn}");
+    const STAGE: &str = "/home/vjeux/shoot/_stage";
+    const SHOTS: &str = "/mnt/c/Users/vjeux/tinyshots";
+    const BOX_FFMPEG: &str = "/mnt/c/Users/vjeux/ffmpeg_extracted/ffmpeg-9.0.1-essentials_build/bin/ffmpeg.exe";
+    let batch_dir = format!("/home/vjeux/shoot/variants/batch-{surface}");
+    let t0 = Instant::now();
+
+    // the tracker's build rows (the last row per map): copied forward with the new frames/nadeo columns
+    let text = std::fs::read_to_string(&tracker).map_err(|e| format!("{}: {e}", tracker.display()))?;
+    let head: Vec<String> = text.lines().next().unwrap_or("").split('\t').map(String::from).collect();
+    let col_of = |n: &str| head.iter().position(|h| h == n).ok_or_else(|| format!("tracker: no column `{n}`"));
+    let (c_frames, c_flag, c_nadeo, c_note) = (col_of("frames")?, col_of("flagged_views")?, col_of("nadeo")?, col_of("note")?);
+    let mut rows: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for l in text.lines().skip(1).filter(|l| !l.trim().is_empty()) {
+        let r: Vec<String> = l.split('\t').map(String::from).collect();
+        rows.insert(r[0].clone(), r);
+    }
+
+    // 1+2. gate and views, per map
+    struct One { nn: String, src: PathBuf, map: PathBuf, name: String, views: PathBuf, anchor: String, items: Option<PathBuf>, paks: Vec<String> }
+    let mut ones: Vec<One> = Vec::new();
+    for nn in &maps {
+        let dir = out_root.join(format!("{surface}{nn}"));
+        let src = std::fs::read_dir(&src_dir).map_err(|e| format!("{}: {e}", src_dir.display()))?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.file_name().map(|n| n.to_string_lossy().starts_with(&format!("{nn}-")) && n.to_string_lossy().ends_with(".Map.Gbx")).unwrap_or(false)).ok_or_else(|| format!("{nn}: no source in {}", src_dir.display()))?;
+        let map = std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.extension().map(|x| x == "Gbx").unwrap_or(false) && p.file_name().map(|n| n.to_string_lossy().ends_with(".Map.Gbx") && !n.to_string_lossy().contains(".s1.") && !n.to_string_lossy().contains(".s2.") && !n.to_string_lossy().contains(".s3.")).unwrap_or(false)).ok_or_else(|| format!("{nn}: no built map in {}", dir.display()))?;
+        let hdr = tmmaps::header::read(&map.display().to_string())?;
+        if hdr.uid == "-" || hdr.authortime == "-" {
+            return Err(format!("{nn}: the header lacks uid / authortime"));
+        }
+        let bytes = std::fs::metadata(&map).map(|m| m.len()).unwrap_or(0);
+        if bytes >= 7_000_000 {
+            return Err(format!("{nn}: {bytes} bytes is over the 7 MB server cap"));
+        }
+        let m = tmmaps::map::MapFile::load(&src);
+        let coll = crate::views::collection_of(&m);
+        let paks = crate::build::paks_for(coll)?;
+        let items_dir = dir.join("libx").join("Items");
+        let items = if items_dir.exists() {
+            let mut its: Vec<String> = std::fs::read_dir(&items_dir).map_err(|e| e.to_string())?.filter_map(|e| e.ok()).map(|e| e.path().to_string_lossy().into_owned()).filter(|p| p.ends_with(".Item.Gbx")).collect();
+            its.sort();
+            if !its.is_empty() {
+                let mut rest: Vec<String> = vec!["item-check".into()];
+                rest.extend(its.iter().cloned());
+                let paks2 = paks.clone();
+                let mut open = || {
+                    let mut store = mapgeom::store::DataStore::empty();
+                    let mut i = 0;
+                    while i < paks2.len() {
+                        if paks2[i] == "--pak" {
+                            if let Some((p, k)) = paks2.get(i + 1).and_then(|s| s.rsplit_once(':')) {
+                                if let Err(e) = store.add_pak(p, k) {
+                                    eprintln!("--pak {p}: {e}");
+                                }
+                            }
+                            i += 2;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    store
+                };
+                mapgeom::static_item::check::run(&rest, &mut open).map_err(|e| format!("{nn}: item-check refused the library ({e})"))?;
+                println!("{nn}: item-check ok ({} items)", its.len());
+            }
+            Some(items_dir)
+        } else {
+            None
+        };
+        // views (start only) + anchor
+        let views_all = dir.join("views-all.tsv");
+        let views = dir.join("views.tsv");
+        crate::views::cmd(&[src.display().to_string(), "--out".into(), views_all.display().to_string()])?;
+        let vt = std::fs::read_to_string(&views_all).map_err(|e| e.to_string())?;
+        let kept: Vec<&str> = vt.lines().filter(|l| l.starts_with('#') || l.trim().is_empty() || l.split('\t').next().unwrap_or("").trim() == "start").collect();
+        std::fs::write(&views, kept.join("\n") + "\n").map_err(|e| e.to_string())?;
+        let anchor = vt.lines().find(|l| l.starts_with("# anchor ")).map(|l| l.trim_start_matches("# anchor ").trim().to_string()).and_then(|a| a.split(':').next().map(|s| s.to_string())).ok_or_else(|| format!("{nn}: views: no anchor line"))?;
+        ones.push(One { nn: nn.clone(), src, map, name: hdr.name.clone(), views, anchor, items, paks });
+    }
+    println!("[{:>4.0}s] {} maps gated; pushing one tar to the box …", t0.elapsed().as_secs_f64(), ones.len());
+
+    // 3. one tar: maps + views (+ sources for the maps whose original frame is not cached)
+    let cached_list = wsx.sh(&format!("ls {cache} 2>/dev/null; true"))?;
+    let need_orig: Vec<&One> = ones.iter().filter(|o| !cached_list.lines().any(|l| l.trim() == format!("cmp-orig{}start-o.png", o.nn))).collect();
+    let tar_local = out_root.join("batch-stage.tar");
+    {
+        let mut cmd = Command::new("tar");
+        cmd.arg("cf").arg(&tar_local).arg("--transform").arg("s,.*/,,");
+        // the file names the box job expects
+        let tmpd = out_root.join("batch-stage");
+        let _ = std::fs::remove_dir_all(&tmpd);
+        std::fs::create_dir_all(&tmpd).map_err(|e| e.to_string())?;
+        for o in &ones {
+            let stag = tag_of(&o.nn);
+            std::fs::copy(&o.map, tmpd.join(format!("{stag}Tiny.Map.Gbx"))).map_err(|e| e.to_string())?;
+            std::fs::copy(&o.views, tmpd.join(format!("{stag}-views.tsv"))).map_err(|e| e.to_string())?;
+            if need_orig.iter().any(|n| n.nn == o.nn) {
+                std::fs::copy(&o.src, tmpd.join(format!("{stag}Orig.Map.Gbx"))).map_err(|e| e.to_string())?;
+            }
+        }
+        let mut cmd = Command::new("tar");
+        cmd.arg("cf").arg(&tar_local).arg("-C").arg(&tmpd).arg(".");
+        let st = cmd.status().map_err(|e| format!("tar: {e}"))?;
+        if !st.success() {
+            return Err("tar failed".into());
+        }
+    }
+    wsx.sh(&format!("mkdir -p {STAGE} {batch_dir} {cache}; rm -rf {batch_dir}/*"))?;
+    wsx.push(&tar_local, &format!("{batch_dir}/stage.tar"))?;
+    wsx.sh(&format!("cd {STAGE} && tar xf {batch_dir}/stage.tar && rm -f {batch_dir}/stage.tar"))?;
+    println!("[{:>4.0}s] staged on the box ({} originals to shoot, the rest from the cache)", t0.elapsed().as_secs_f64(), need_orig.len());
+
+    // 4. the shoot job
+    if !no_shoot {
+        let mut script = String::from("#!/bin/sh\n");
+        for o in &ones {
+            let stag = tag_of(&o.nn);
+            let dir = format!("{SHOTS}/{stag}");
+            script.push_str(&format!("rm -rf '{dir}'; mkdir -p '{dir}'\n"));
+            if need_orig.iter().any(|n| n.nn == o.nn) {
+                script.push_str(&format!("{box_shootctl} shootset --map {STAGE}/{stag}Orig.Map.Gbx --views {STAGE}/{stag}-views.tsv --side o --tag {stag} --outdir {dir} > {dir}/shootset-o.log 2>&1; cp -f {dir}/cmp-{stag}start-o.png {cache}/cmp-orig{}start-o.png\n", o.nn));
+            } else {
+                script.push_str(&format!("cp -f {cache}/cmp-orig{}start-o.png {dir}/cmp-{stag}start-o.png\n", o.nn));
+            }
+            script.push_str(&format!("{box_shootctl} shootset --map {STAGE}/{stag}Tiny.Map.Gbx --views {STAGE}/{stag}-views.tsv --side t --tag {stag} --outdir {dir} --anchor {a}:{a} --scale 1 > {dir}/shootset-t.log 2>&1\n", a = o.anchor));
+            script.push_str(&format!("{box_tinyctl} compare --views {STAGE}/{stag}-views.tsv --dir {dir} --tag {stag} --hstack-ffmpeg {BOX_FFMPEG} > {dir}/compare.log 2>&1\n"));
+            script.push_str(&format!("echo '{stag}' >> {batch_dir}/shot.progress\n"));
+        }
+        script.push_str(&format!("echo OK {} maps > {batch_dir}/shoot.done\n", ones.len()));
+        let script_local = out_root.join("batch-shoot.sh");
+        std::fs::write(&script_local, &script).map_err(|e| e.to_string())?;
+        wsx.push(&script_local, &format!("{batch_dir}/shoot.sh"))?;
+        wsx.sh(&format!("rm -f {batch_dir}/shoot.done {batch_dir}/shot.progress; nohup setsid sh {batch_dir}/shoot.sh > {batch_dir}/shoot.log 2>&1 < /dev/null &"))?;
+        println!("[{:>4.0}s] shoot job started on the box ({} maps) …", t0.elapsed().as_secs_f64(), ones.len());
+        let text = wsx.wait_done(&format!("{batch_dir}/shoot.done"), &format!("{batch_dir}/shot.progress"), Duration::from_secs(7200), "surface-batch shoot")?;
+        println!("[{:>4.0}s] shoot: {}", t0.elapsed().as_secs_f64(), text.trim());
+        // 5. the JPGs, one tar
+        let names: Vec<String> = ones.iter().map(|o| format!("{}/cmp-{}start.jpg", tag_of(&o.nn), tag_of(&o.nn))).collect();
+        wsx.sh(&format!("cd {SHOTS} && tar cf {batch_dir}/frames.tar {} 2>/dev/null; true", names.join(" ")))?;
+        let tar_frames = out_root.join("batch-frames.tar");
+        wsx.pull(&format!("{batch_dir}/frames.tar"), &tar_frames)?;
+        let st = Command::new("tar").arg("xf").arg(&tar_frames).arg("-C").arg(&frames_dir).arg("--strip-components=1").status().map_err(|e| e.to_string())?;
+        if !st.success() {
+            return Err("frames tar failed".into());
+        }
+        let n = ones.iter().filter(|o| frames_dir.join(format!("cmp-{}start.jpg", tag_of(&o.nn))).exists()).count();
+        println!("[{:>4.0}s] {n}/{} frame pairs pulled into {}", t0.elapsed().as_secs_f64(), ones.len(), frames_dir.display());
+        // the compare's flagged-cell counts, from the box logs (best effort)
+        for o in &ones {
+            let stag = tag_of(&o.nn);
+            let s = wsx.sh(&format!("grep -o '[0-9]*/144 cells flagged' {SHOTS}/{stag}/compare.log 2>/dev/null | head -1; true")).unwrap_or_default();
+            let flagged = s.trim().split('/').next().unwrap_or("?").to_string();
+            if let Some(r) = rows.get_mut(&o.nn) {
+                r[c_frames] = "1 pairs".into();
+                r[c_flag] = if flagged.is_empty() { "?".into() } else { flagged };
+            }
+        }
+        wsx.sh(&format!("cd {SHOTS} && rm -rf {}; true", ones.iter().map(|o| tag_of(&o.nn)).collect::<Vec<_>>().join(" ")))?;
+    }
+
+    // 6. publish-batch
+    if !no_publish {
+        let manifest: String = ones.iter().map(|o| format!("{STAGE}/{}Tiny.Map.Gbx\t{}\n", tag_of(&o.nn), o.name)).collect();
+        let manifest_local = out_root.join("batch-manifest.tsv");
+        std::fs::write(&manifest_local, &manifest).map_err(|e| e.to_string())?;
+        let remote_manifest = format!("{batch_dir}/manifest.tsv");
+        let remote_results = format!("{batch_dir}/results.tsv");
+        wsx.push(&manifest_local, &remote_manifest)?;
+        let cmd = format!("cd /home/vjeux/shoot/u10s && {box_tinyctl} publish-batch --detach --manifest {remote_manifest} --results {remote_results} --club {club} --campaign {campaign} --campaign-name '{}' --outdir {batch_dir}", campaign_name.replace('\'', ""));
+        wsx.sh(&cmd)?;
+        println!("[{:>4.0}s] publish-batch started on the box ({} maps → campaign {campaign}) …", t0.elapsed().as_secs_f64(), ones.len());
+        let done = wsx.wait_done(&format!("{batch_dir}/results.done"), &format!("{batch_dir}/results.log"), Duration::from_secs(5400), "publish-batch");
+        let results_local = out_root.join("batch-results.tsv");
+        let pulled = wsx.pull(&remote_results, &results_local);
+        let text = done?;
+        pulled?;
+        println!("[{:>4.0}s] publish: {}", t0.elapsed().as_secs_f64(), text.trim().replace('\n', " | "));
+        let rt = std::fs::read_to_string(&results_local).map_err(|e| e.to_string())?;
+        for l in rt.lines().filter(|l| !l.trim().is_empty()) {
+            let c: Vec<&str> = l.split('\t').collect();
+            // path name uid mapId how bytes md5 verdict
+            let stem = c[0].rsplit('/').next().unwrap_or("");
+            let Some(o) = ones.iter().find(|o| stem == format!("{}Tiny.Map.Gbx", tag_of(&o.nn))) else { continue };
+            let (map_id, how, verdict) = (c.get(3).copied().unwrap_or("?"), c.get(4).copied().unwrap_or("?"), c.get(7).copied().unwrap_or("?"));
+            if let Some(r) = rows.get_mut(&o.nn) {
+                r[c_nadeo] = if verdict.starts_with("IDENTICAL") { format!("OK {} mapId {map_id} stored IDENTICAL", if how == "create" { "created" } else { "updated" }) } else { format!("FAILED: {verdict}") };
+            }
+        }
+        let bad = rt.lines().filter(|l| !l.trim().is_empty() && !l.ends_with("\tIDENTICAL")).count();
+        if bad > 0 {
+            eprintln!("{bad} map(s) did not publish identical — see {}", results_local.display());
+        }
+    }
+    // the tracker rows
+    for o in &ones {
+        if let Some(r) = rows.get(&o.nn) {
+            let mut r = r.clone();
+            if r[c_note] == "-" {
+                r[c_note] = String::new();
+            }
+            append(&tracker, &r)?;
+        }
+    }
+    wsx.sh(&format!("cd {STAGE} && rm -f {}; true", ones.iter().map(|o| format!("{t}Tiny.Map.Gbx {t}Orig.Map.Gbx {t}-views.tsv", t = tag_of(&o.nn))).collect::<Vec<_>>().join(" ")))?;
+    println!("[{:>4.0}s] done; tracker {}", t0.elapsed().as_secs_f64(), tracker.display());
     Ok(())
 }
