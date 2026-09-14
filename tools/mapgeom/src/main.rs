@@ -1755,10 +1755,22 @@ fn main() {
                                 b.clone()
                             } else {
                                 let from_flag = models.iter().find(|(n, _)| stem.starts_with(n.as_str())).map(|(_, p)| p.clone());
+                                // a stock item record names the model WITHOUT its pack folder
+                                // ("PalmTreeMedium"): find the pack entry whose file name is
+                                // that name with .Item.Gbx, case-insensitively.
+                                let want1 = format!("/{}", stem.trim_end_matches(".item.gbx"));
+                                let want2 = format!("{want1}.item.gbx");
+                                let in_pack: Option<String> = store.entries().map(|e| e.path().to_string()).find(|p| {
+                                    let lp = p.replace('\\', "/").to_lowercase();
+                                    lp.ends_with(&want2) || lp.ends_with(&want1)
+                                });
                                 let loaded = match from_flag {
                                     Some(p) if std::path::Path::new(&p).is_file() => std::fs::read(&p).ok(),
                                     Some(p) => store.read(&p).ok(),
-                                    None => store.read(&it.model).ok(),
+                                    None => match store.read(&it.model).ok() {
+                                        Some(b) => Some(b),
+                                        None => in_pack.and_then(|p| store.read(&p).ok()),
+                                    },
                                 };
                                 match loaded {
                                     Some(b) => { stock_cache.insert(stem.clone(), b.clone()); b }
@@ -1795,7 +1807,10 @@ fn main() {
                 for (l, n) in &links_seen { report.push(format!("material {l}: {n} vertices")); }
                 for (mdl, n) in &missing { report.push(format!("{mdl}: {n} placement(s) — model not embedded and not in the packs")); }
             }
-            if parts.is_empty() { die::<()>("nothing to build: --cube SIZE or --map … --items …".into()); }
+            if parts.is_empty() {
+                for line in &report { eprintln!("  {line}"); }
+                die::<()>("nothing to build: --cube SIZE or --map … --items …".into());
+            }
             let built = skin::build(&template, &parts, &o).unwrap_or_else(die);
             std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(e.to_string()));
             std::fs::write(out_dir.join("MainBody.Mesh.gbx"), &built.file).unwrap_or_else(|e| die(e.to_string()));
