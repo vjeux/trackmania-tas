@@ -288,6 +288,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             if !surface.to_ascii_lowercase().contains("ice") || tmmaps::cli::has(args, "--keep-trees") {
                 sw.arg("--keep-trees");
             }
+            // a wet surface: the pad goes under a start ITEM too (no block row to mark)
+            if mapgeom::surface::parse_surface(&surface).map(|(_, wet)| wet).unwrap_or(false) {
+                sw.arg("--wet");
+            }
             if with_items {
                 sw.arg("--library").arg(&lib).arg("--mapping").arg(&mapping);
             }
