@@ -276,7 +276,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 // line), only the driven ones
                 let embedded_idents: Vec<String> = src_map.embedded_objects().map(|(rows, _)| rows.into_iter().map(|(i, _)| i.to_ascii_lowercase()).collect()).unwrap_or_default();
                 let custom_all = std::env::var("TINY_CUSTOM_ITEM_REDRESS").map(|v| v != "0").unwrap_or(false);
-                let custom_list: Option<Vec<String>> = std::env::var("TINY_CUSTOM_ITEM_LIST").ok().and_then(|f| std::fs::read_to_string(f).ok()).map(|t| t.lines().map(|l| l.trim().to_ascii_lowercase()).filter(|l| !l.is_empty()).collect());
+                let custom_list: Option<Vec<String>> = std::env::var("TINY_CUSTOM_ITEM_LIST").ok().and_then(|f| std::fs::read_to_string(f).ok()).map(|t| t.lines().chain(std::env::var("TINY_CUSTOM_ITEM_PHYSICS_LIST").ok().and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default().lines().map(|l| l).collect::<Vec<_>>().into_iter()).map(|l| l.trim().to_ascii_lowercase()).filter(|l| !l.is_empty()).collect());
                 let mut item_models: Vec<String> = src_map.items.iter().map(|it| it.model.clone()).filter(|m| {
                     let ml = m.to_ascii_lowercase();
                     let is_custom = embedded_idents.iter().any(|i| *i == ml || i.ends_with(&format!("\\{ml}")) || ml.ends_with(&format!("\\{i}")));

@@ -760,10 +760,23 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
 pub fn static_item_from_item_report_redress(store: Option<&mut crate::store::DataStore>, item_bytes: &[u8], ident: &str, author: &str, scale: f32, collection: u32, source_model: &str) -> R<(Vec<u8>, Merged)> {
     let mut m = Merged::default();
     let redress = !source_model.is_empty() && store.is_some() && (crate::tiny_library::item_redress_wanted(source_model) || std::env::var("TINY_CUSTOM_ITEM_REDRESS").map(|v| v != "0").unwrap_or(false));
+    // TINY_CUSTOM_ITEM_PHYSICS_LIST=<file>: items (one model per line, lowercased,
+    // matched by file stem) that take the surface PHYSICS but keep their look
+    // (Everios96 2026-09-14 15:08: the snow-tube finish, the snow-globe glass)
+    let physics_only = std::env::var("TINY_CUSTOM_ITEM_PHYSICS_LIST").ok().and_then(|f| std::fs::read_to_string(f).ok()).map(|t| {
+        let stem = source_model.to_ascii_lowercase();
+        t.lines().any(|l| { let l = l.trim().to_ascii_lowercase(); !l.is_empty() && (l == stem || l.rsplit(['\\', '/']).next().map(|b| b.trim_end_matches(".item.gbx") == stem).unwrap_or(false)) })
+    }).unwrap_or(false);
     let mut pre = Merged::default();
+    let mut store = store;
     if redress {
-        let store = store.unwrap();
-        crate::tiny_library::apply_surface_swap(store, &mut pre, source_model);
+        let st = store.as_deref_mut().unwrap();
+        crate::tiny_library::apply_surface_swap(st, &mut pre, source_model);
+        if physics_only {
+            pre.link_rewrite.clear();
+            pre.collision_redress.clear();
+            pre.notes.push("physics only: the look stays".into());
+        }
         // the pipes (TINY_ITEM_REDRESS globs) are all-metal tubes: their WHOLE hull
         // takes the surface; a custom road item follows the deck rule instead
         // (deck-like ids convert, metal trims and rubber curbs keep theirs)
@@ -775,6 +788,23 @@ pub fn static_item_from_item_report_redress(store: Option<&mut crate::store::Dat
     // the source item's skin declaration (header chunk 0x090F4000) travels
     let skin = tmmaps::header::game_skin_chunk(item_bytes);
     match super::parse_file(item_bytes) {
+        Ok(f) if f.item.static_object().is_none() && f.item.prefab().is_some() => {
+            // an animated item: its model is an inline prefab (entities with static
+            // and dyna objects + kinematic constraints)
+            let prefab = f.item.prefab().unwrap();
+            let mut m2 = Merged::default();
+            if redress {
+                m2.link_rewrite = pre.link_rewrite.clone();
+                m2.collision_redress = pre.collision_redress.clone();
+                m2.all_drivable_physics = pre.all_drivable_physics;
+                m2.deck_physics = pre.deck_physics;
+                m2.pad_physics = pre.pad_physics;
+                m2.notes.extend(pre.notes.iter().cloned());
+            }
+            add_prefab_inline(store.as_deref_mut(), prefab, &IDENTITY, scale, &mut m2)?;
+            m2.notes.push(format!("inline prefab item: {} entities, {} moving parts kept", prefab.ents.len(), m2.dyna.len()));
+            m = m2;
+        }
         Ok(f) => {
             let so = f.item.static_object().ok_or("item has no CPlugStaticObjectModel (and is not a crystal item)")?;
             let mut resolve = |idx: i32| -> Option<(String, String, u8)> {
@@ -1182,6 +1212,106 @@ fn load_dyna_shape(store: &mut crate::store::DataStore, src: &DynaSource, sref: 
 /// A `.DynaObject.Gbx` pack file (`CPlugDynaObjectModel`, class 0x09144000:
 /// the cloth of `Items\Flag\Flag16m`, a rotor, a light ray): its mesh at REST,
 /// merged as a static object, with one of its hulls as collision.
+/// A prefab held INLINE by a community item (the animated items: table football,
+/// carousel, roulette — Everios96's U10S maps, 2026-09-14): every node is inline,
+/// there is no reference table. Static entities merge as they are; a dyna
+/// entity a kinematic constraint moves becomes a `DynaPart` (it keeps moving
+/// in the copy); a dyna entity nobody moves bakes at its rest pose.
+pub fn add_prefab_inline(store: Option<&mut crate::store::DataStore>, prefab: &super::prefab::CPlugPrefab, at: &Xform, scale: f32, m: &mut Merged) -> R<()> {
+    let mut store = store;
+    // dyna entities by rank (Ent2 = rank among the prefab's dyna entities)
+    let dyna_entities: Vec<usize> = prefab.ents.iter().enumerate().filter(|(_, e)| matches!(e.model.inline.as_deref(), Some(Node::Dyna(_)))).map(|(i, _)| i).collect();
+    let mut constraints: Vec<(usize, super::dyna::KinematicConstraint, super::dyna::ConstraintParams)> = Vec::new();
+    for e in &prefab.ents {
+        let Some(Node::Kinematic(k)) = e.model.inline.as_deref() else { continue };
+        let Some(params) = super::dyna::ConstraintParams::parse(&e.params) else {
+            m.notes.push(format!("inline prefab: a constraint with {}-byte params skipped", e.params.len()));
+            continue;
+        };
+        let rank = if params.ent2 >= 0 { params.ent2 } else { params.ent1 };
+        let Some(target) = dyna_entities.get(rank.max(0) as usize).copied().filter(|_| rank >= 0) else {
+            m.notes.push(format!("inline prefab: a constraint binds dyna object {rank}, which the prefab does not have ({} dyna entities)", dyna_entities.len()));
+            continue;
+        };
+        let mut k = k.clone();
+        k.scale(scale);
+        constraints.push((target, k, params));
+    }
+    let mut pending_notes: Vec<String> = Vec::new();
+    let mut no_ext = |idx: i32| -> Option<(String, String, u8)> {
+        let _ = idx;
+        None
+    };
+    for (i, e) in prefab.ents.iter().enumerate() {
+        let iso = compose(at, &super::prefab::CPlugPrefab::entity_iso(e));
+        match e.model.inline.as_deref() {
+            Some(Node::StaticObject(so)) => {
+                m.add_static_object(so, &iso, scale, &mut no_ext).map_err(|err| format!("inline prefab entity {i}: {err}"))?;
+                if let Some(st) = store.as_deref_mut() {
+                    m.resolve_pending_lights(st);
+                }
+            }
+            Some(Node::Dyna(d)) => {
+                let Some(Node::Solid2(s2)) = d.mesh.inline.as_deref() else {
+                    m.notes.push(format!("inline prefab entity {i}: dyna object without an inline mesh skipped"));
+                    continue;
+                };
+                let shape_of = |r: &Ref| -> Option<CPlugSurface> { match r.inline.as_deref() { Some(Node::Surface(sf)) => canonical_surface(sf, scale), _ => None } };
+                let constraint = constraints.iter().find(|(t, _, _)| *t == i).map(|(_, k, p)| (k.clone(), p.clone()));
+                let so = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(s2.clone())), is_mesh_collidable: false, shape: super::null_ref() };
+                match constraint {
+                    Some((k, cparams)) => {
+                        let mut mesh = Merged::default();
+                        mesh.keep_water = m.keep_water;
+                        mesh.modifier = m.modifier.clone();
+                        mesh.collision_redress = m.collision_redress.clone();
+                        mesh.link_rewrite = m.link_rewrite.clone();
+                        mesh.all_drivable_physics = m.all_drivable_physics;
+                        mesh.deck_physics = m.deck_physics;
+                        mesh.no_split = true;
+                        mesh.add_static_object(&so, &IDENTITY, scale, &mut no_ext).map_err(|err| format!("inline prefab entity {i} (moving part): {err}"))?;
+                        let move_shape = shape_of(&d.dyna_shape);
+                        let hit_shape = shape_of(&d.static_shape);
+                        if mesh.visuals.is_empty() || move_shape.is_none() || hit_shape.is_none() {
+                            // no usable shapes: bake it still, with its hit shape when there is one
+                            let so2 = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(s2.clone())), is_mesh_collidable: false, shape: match d.static_shape.inline.as_deref().or(d.dyna_shape.inline.as_deref()) { Some(Node::Surface(sf)) => inline(2, Node::Surface(sf.clone())), _ => super::null_ref() } };
+                            m.add_static_object(&so2, &iso, scale, &mut no_ext).map_err(|err| format!("inline prefab entity {i}: {err}"))?;
+                            m.notes.push(format!("inline prefab entity {i}: moving part baked STILL (visuals {}, move shape {}, hit shape {})", mesh.visuals.len(), move_shape.is_some(), hit_shape.is_some()));
+                            continue;
+                        }
+                        let rot = crate::geom::to_quat(&iso);
+                        let pos = [iso[9] * scale, iso[10] * scale, iso[11] * scale];
+                        m.notes.extend(mesh.notes.drain(..).map(|n| format!("  (moving part) {n}")));
+                        m.notes.push(format!("inline prefab entity {i}: moving part kept ({})", k.summary()));
+                        m.dyna.push(DynaPart {
+                            path: format!("inline-dyna-{i}"),
+                            rot,
+                            pos,
+                            mesh,
+                            move_shape,
+                            hit_shape,
+                            model: d.clone(),
+                            instance_params_id: e.params_id,
+                            instance_params: e.params.clone(),
+                            constraint: Some((k, cparams)),
+                            pack_ref: None,
+                        });
+                    }
+                    None => {
+                        let so2 = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(s2.clone())), is_mesh_collidable: false, shape: match d.static_shape.inline.as_deref().or(d.dyna_shape.inline.as_deref()) { Some(Node::Surface(sf)) => inline(2, Node::Surface(sf.clone())), _ => super::null_ref() } };
+                        m.add_static_object(&so2, &iso, scale, &mut no_ext).map_err(|err| format!("inline prefab entity {i}: {err}"))?;
+                    }
+                }
+            }
+            Some(Node::Kinematic(_)) => {}
+            Some(other) => m.notes.push(format!("inline prefab entity {i}: node class 0x{:08X} skipped", other.class_id())),
+            None => m.notes.push(format!("inline prefab entity {i}: external model node {} (none expected) skipped", e.model.index)),
+        }
+    }
+    pending_notes.clear();
+    Ok(())
+}
+
 pub fn add_dyna_object_file(store: &mut crate::store::DataStore, path: &str, at: &Xform, scale: f32, m: &mut Merged) -> R<()> {
     let src = load_dyna_source(store, path, m, false)?;
     let mut tween_notes: Vec<String> = Vec::new();

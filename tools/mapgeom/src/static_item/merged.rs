@@ -1671,7 +1671,7 @@ fn surface_votes(
         };
         let (pos, idx) = visual_triangles(vis);
         for t in idx.chunks(3) {
-            if t.len() < 3 {
+            if t.len() < 3 || t.iter().any(|&i| i as usize >= pos.len()) {
                 continue;
             }
             let mut k = [mm(&pos[t[0] as usize]), mm(&pos[t[1] as usize]), mm(&pos[t[2] as usize])];
