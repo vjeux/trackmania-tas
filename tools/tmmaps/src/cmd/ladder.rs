@@ -869,7 +869,7 @@ pub fn addblock(args: &[String]) {
             [f[0], f[1], f[2]]
         };
         let grid = if has(args, "--grid") { let p = v(pos); Some([p[0] as i32, p[1] as i32, p[2] as i32]) } else { None };
-        specs.push(map::FreeBlockSpec { name: name.to_string(), author: author.clone(), flags, pos: v(pos), rot: v(rot), grid });
+        specs.push(map::FreeBlockSpec { name: name.to_string(), author: author.clone(), flags, pos: v(pos), rot: v(rot), grid, dir: 0 });
     }
     assert!(!specs.is_empty(), "nothing to add");
     // --embed ZIPPATH=LOCAL: add a block file to the archive with its manifest row (ident

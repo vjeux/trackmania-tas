@@ -641,7 +641,7 @@ fn main() {
                     let renamed = mapgeom::crystal::rename_ident(&raw, &old_ident, &ident);
                     files.insert(zip_path.clone(), renamed);
                 }
-                specs.push(tmmaps::map::FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.clone()), flags: 0x1020_8000, pos: d.origin, rot: [d.yaw, 0.0, 0.0], grid: None });
+                specs.push(tmmaps::map::FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.clone()), flags: 0x1020_8000, pos: d.origin, rot: [d.yaw, 0.0, 0.0], grid: None, dir: 0 });
             }
             println!("{p}: {} water bodies handled, {} as blocks, {} archetype files", decisions.len(), n_block, files.len());
             if let Some(t) = &table_out {
@@ -1764,6 +1764,10 @@ fn main() {
                     if !name_filter.is_empty() && !name_filter.iter().any(|f| key.contains(f.as_str())) { continue; }
                     // --near X,Z,R: only the placements within R metres of (X, Z). One
                     // checkpoint interval's scenery, so the skin stays close to its ghost.
+                    // items parked far below the map (a sunk item, `tmmaps sinkitems` / `tiny`)
+                    // carry nothing worth a skin: skip them (--skip-below Y, default -500)
+                    let skip_below: f32 = flag(&a.rest, "--skip-below").and_then(|s| s.parse().ok()).unwrap_or(-500.0);
+                    if it.pos[1] < skip_below { continue; }
                     if let Some(spec) = flag(&a.rest, "--near") {
                         let v: Vec<f32> = spec.split(',').filter_map(|s| s.trim().parse().ok()).collect();
                         if v.len() != 3 { die::<()>("--near X,Z,RADIUS".into()); }
@@ -1856,9 +1860,17 @@ fn main() {
                 let mut links: Vec<String> = Vec::new();
                 for p in &parts { if !links.contains(&p.texset) { links.push(p.texset.clone()); } }
                 links.sort();
-                const CELL: u32 = 512;
-                let cols = (links.len() as f32).sqrt().ceil().max(1.0) as u32;
-                let rows = ((links.len() as u32) + cols - 1) / cols;
+                // a SQUARE, power-of-two atlas: the 8x7 grid of 512 px cells (4096x3584) of the
+                // straight showcase rendered every tree grey (2026-09-14) — the engine wants
+                // power-of-two sides. Grid side = the smallest power of two whose square holds
+                // every material; the cell shrinks so the atlas never exceeds 4096.
+                let mut side: u32 = 1;
+                while side * side < links.len() as u32 { side *= 2; }
+                let cell: u32 = (4096 / side).min(512).max(64);
+                #[allow(non_snake_case)]
+                let CELL: u32 = cell;
+                let cols = side;
+                let rows = side;
                 let (aw, ah) = (cols * CELL, rows * CELL);
                 let mut canvas = vec![0u8; (aw * ah * 4) as usize];
                 let leafy = |l: &str| { let ll = l.to_lowercase(); ll.contains("branch") || ll.contains("leaf") || ll.contains("foliage") };
@@ -1914,7 +1926,11 @@ fn main() {
                                 ("fall", _, true) => { let l = 0.3 * r + 0.59 * g + 0.11 * b; r = (l * 0.4 + 176.0 * 0.6).min(255.0); g = l * 0.4 + 142.0 * 0.6; b = l * 0.4 + 58.0 * 0.6; }
                                 _ => {}
                             }
-                            let di = (((row * CELL + y) * aw + col * CELL + x) * 4) as usize;
+                            // the game samples v = 0 at the BOTTOM of the texture: write the grid
+                            // bottom-up, or every cell lands one mirrored row off (measured
+                            // 2026-09-14: the road came out grass-green, the hills road-grey)
+                            let dy = ah - 1 - (row * CELL + y);
+                            let di = ((dy * aw + col * CELL + x) * 4) as usize;
                             canvas[di] = r as u8; canvas[di + 1] = g as u8; canvas[di + 2] = b as u8; canvas[di + 3] = 255;
                         }
                     }
@@ -2221,6 +2237,20 @@ fn main() {
                     }
                 }
                 println!("merged {before} geoms into {} visual(s) of at most {cap} vertices", parts.len());
+            }
+            // --dump-obj F: the parts as Wavefront OBJ (skin frame), to look at what a skin
+            // holds without a render — which edge of a slope block is the high one, etc.
+            if let Some(obj) = flag(&a.rest, "--dump-obj") {
+                let mut text = String::new();
+                let mut base = 0usize;
+                for p in &parts {
+                    text.push_str(&format!("o {}\n", p.source.replace(' ', "_")));
+                    for v in &p.pos { text.push_str(&format!("v {} {} {}\n", v[0], v[1], v[2])); }
+                    for t in p.idx.chunks(3) { if t.len() == 3 { text.push_str(&format!("f {} {} {}\n", base + t[0] as usize + 1, base + t[1] as usize + 1, base + t[2] as usize + 1)); } }
+                    base += p.pos.len();
+                }
+                std::fs::write(&obj, text).unwrap_or_else(|e| die(format!("{obj}: {e}")));
+                println!("obj {obj}: {} part(s)", parts.len());
             }
             let built = skin::build(&template, &parts, &o).unwrap_or_else(die);
             std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(e.to_string()));

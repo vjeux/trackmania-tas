@@ -1147,6 +1147,16 @@ impl MapFile {
     /// only the facing changes. Needed because this map's Goal gate triggers
     /// on a PLANE perpendicular to its facing: an unrotated gate is silent for
     /// a car travelling along the plane's own axis.
+    /// The record's flags word (fixed-size). Only bits that do not change the record's
+    /// LAYOUT may be touched: 0x8000 (author + skin follow) and 0x100000 (waypoint node
+    /// follows) must keep their value.
+    pub fn set_block_flags(&mut self, block_index: usize, flags: u32) {
+        let b = self.blocks[block_index].clone();
+        assert_eq!(flags & 0x8000, b.flags & 0x8000, "set_block_flags: bit 0x8000 changes the record layout");
+        assert_eq!(flags & 0x0010_0000, b.flags & 0x0010_0000, "set_block_flags: bit 0x100000 changes the record layout");
+        self.raw_patches.push((b.coord_off + 3, flags.to_le_bytes().to_vec()));
+    }
+
     pub fn set_block_dir(&mut self, block_index: usize, dir: u8) {
         let b = self.blocks[block_index].clone();
         assert!(dir < 4, "dir is 0..3, got {}", dir);
@@ -2990,7 +3000,7 @@ impl MapFile {
                 }
             };
             put_id(&mut new_blocks, &spec.name, &mut table);
-            new_blocks.push(0u8); // dir
+            new_blocks.push(spec.dir & 3); // dir
             let flags = match spec.grid {
                 Some(c) => {
                     new_blocks.extend_from_slice(&[(c[0] + 1) as u8, c[1] as u8, (c[2] + 1) as u8]);
@@ -3318,4 +3328,6 @@ pub struct FreeBlockSpec {
     /// Some(cell) = a GRID block instead (the game's cell; the file stores it +(1,0,1));
     /// no free-pos entry, FREE_BLOCK_FLAG not added.
     pub grid: Option<[i32; 3]>,
+    /// The direction byte (0..3 quarter turns) — meaningful for a grid block.
+    pub dir: u8,
 }

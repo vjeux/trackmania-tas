@@ -132,6 +132,8 @@ fn main() {
         "validate" => surgery::validate(&args),
         "setuid" => surgery::setuid(&args),
         "sinkitems" => surgery::sinkitems(&args),
+        "straight" => cmd::straight::straight(&args),
+        "wpprobe" => cmd::straight::wpprobe(&args),
         "lmquality" => surgery::lmquality(&args),
         "ghostchunk" => surgery::ghostchunk(&args),
         // `tmmaps delblocks MAP --out F [--keep-baked Sea,…] [--strip-lightmap]`: every

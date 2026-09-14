@@ -350,6 +350,9 @@ pub fn cmd(args: &[String]) {
     if crate::cli::flag(args, "--set-flag").is_some() {
         return set_flag(args);
     }
+    if crate::cli::has(args, "--strip-deps") {
+        return strip_deps(args);
+    }
     let mut paths: Vec<String> = Vec::new();
     let mut tsv = false;
     let mut want_xml = false;
@@ -1037,3 +1040,35 @@ pub fn embedded_zip_bytes(body: &[u8]) -> Option<(Vec<u8>, Vec<String>)> {
 /// an exhaustive search, ~2 % smaller at several times the compression time —
 /// not what moves a map off the upload cap; the detail-level pick is).
 pub const DEFLATE_LEVEL: u8 = 6;
+
+/// `tmmaps header MAP --strip-deps --out F`: blank the header XML's `<deps>…</deps>`
+/// entries (same length, spaces — the header must not resize). A map whose sunk or
+/// deleted items still advertise skin dependencies makes the client sit in an
+/// "Updating data…" modal on load instead of opening the editor (2026-09-14, the
+/// straight showcase map built from Summer 2025 - 02's Screen items).
+pub fn strip_deps_in(m: &mut crate::map::MapFile) -> usize {
+    let hay = m.gbx.user_data.clone();
+    let find = |pat: &[u8], from: usize| hay[from..].windows(pat.len()).position(|w| w == pat).map(|p| p + from);
+    let (Some(a), ) = (find(b"<deps>", 0),) else { return 0 };
+    let Some(b) = find(b"</deps>", a) else { return 0 };
+    let inner = a + "<deps>".len()..b;
+    let n = inner.len();
+    for i in inner {
+        m.gbx.user_data[i] = b' ';
+    }
+    n
+}
+
+pub fn strip_deps(args: &[String]) {
+    let path = std::path::Path::new(&args[2]);
+    let out = crate::cli::flag(args, "--out").unwrap_or_else(|| crate::cli::die("--out F"));
+    let mut m = crate::map::MapFile::load(path);
+    let n = strip_deps_in(&mut m);
+    m.write_to(std::path::Path::new(out)).unwrap_or_else(|e| crate::cli::die(&format!("{out}: {e}")));
+    let back = crate::map::MapFile::load(std::path::Path::new(out));
+    let xml = String::from_utf8_lossy(&back.gbx.user_data).to_string();
+    if xml.contains("<dep ") {
+        crate::cli::die(&format!("{out}: a <dep> survived"));
+    }
+    println!("wrote {out}: {n} bytes of <deps> blanked");
+}
