@@ -666,7 +666,12 @@ impl Merged {
                 *counts.entry(si).or_default() += 1;
             }
             if let (Some(p), Some(true)) = (self.pad_physics, pad_slot.get(si)) {
-                if t.material_id != p {
+                // the pad DECK only: a triangle carrying a gameplay id, or a deck
+                // physics (Concrete, Grass, Dirt, Wood, Asphalt, RoadIce, Green,
+                // Plastic) — the rubber border strips of a road pad are also
+                // `Collision*` materials and stay rubber
+                let deck = t.gameplay != 0 || matches!(t.material_id, 0 | 2 | 6 | 14 | 16 | 74 | 76 | 77);
+                if deck && t.material_id != p {
                     t.material_id = p;
                     padded += 1;
                 }

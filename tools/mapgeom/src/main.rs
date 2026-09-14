@@ -3302,12 +3302,24 @@ fn describe(n: &Node) -> String {
             "CPlugStaticObjectModel mesh={} collidable={} shape={}",
             s.mesh, s.mesh_collidable, s.shape
         ),
-        Node::Surface(s) => format!(
-            "CPlugSurface, {} meshes, {} triangles, {} primitives",
-            s.meshes.len(),
-            s.meshes.iter().map(|m| m.tris.len()).sum::<usize>(),
-            s.primitives.len()
-        ),
+        Node::Surface(s) => {
+            // the hull's (physics/gameplay) histogram: `14/1 ×33` = 33 Wood
+            // triangles carrying Turbo — the one-line check of what a pad drives as
+            let mut ids: std::collections::BTreeMap<(u8, u8), usize> = std::collections::BTreeMap::new();
+            for m in &s.meshes {
+                for t in &m.tris {
+                    *ids.entry((t.1, t.2)).or_default() += 1;
+                }
+            }
+            let hist: Vec<String> = ids.iter().map(|((p, g), n)| format!("{p}/{g} ×{n}")).collect();
+            format!(
+                "CPlugSurface, {} meshes, {} triangles, {} primitives; ids {}",
+                s.meshes.len(),
+                s.meshes.iter().map(|m| m.tris.len()).sum::<usize>(),
+                s.primitives.len(),
+                hist.join(" ")
+            )
+        }
         Node::Solid2(s) => {
             let mut d = format!(
                 "CPlugSolid2Model, {} geoms, {} visuals, materials [{}]",
