@@ -177,9 +177,32 @@ pub fn cmd(args: &[String]) {
             }
         }
     }
+    // the ITEMS the swap dressed (the pipes: `i@INDEX<TAB>ALIAS` mapping rows
+    // from tiny-library): the record points at the embedded re-dressed copy,
+    // built for one variant
+    let mut repointed: BTreeMap<String, usize> = BTreeMap::new();
+    let mut repointed_aliases: BTreeSet<String> = BTreeSet::new();
+    if let Some(mp) = &mapping {
+        let items: Vec<(usize, String, u8)> = m.items.iter().map(|it| (it.index, it.model.clone(), it.variant())).collect();
+        for (i, model, variant) in items {
+            if let Some(row) = mp.items_by_index.get(&i) {
+                if row.model != "-" && row.model != model {
+                    m.set_item_model(i, &row.model);
+                    if variant != 0 {
+                        m.set_item_variant(i, 0);
+                    }
+                    *repointed.entry(format!("{model} -> {}", row.model)).or_default() += 1;
+                    repointed_aliases.insert(row.model.clone());
+                }
+            }
+        }
+    }
     m.write_to(&tmp2).expect("write stage 2");
     for (k, n) in &by_target {
         println!("  {n:5}  {k}");
+    }
+    if !repointed.is_empty() {
+        println!("  items re-dressed: {} placements ({})", repointed.values().sum::<usize>(), repointed.iter().map(|(k, v)| format!("{k} ×{v}")).collect::<Vec<_>>().join(", "));
     }
     if !trees.is_empty() || !trees_kept.is_empty() {
         let n: usize = trees.values().sum();
@@ -223,7 +246,7 @@ pub fn cmd(args: &[String]) {
     // existing record, then model / author / collection / position / frame /
     // scale / colour in one write, the variable-length waypoint nodes in the
     // next, the archive + manifest in the last — the `tmmaps tiny` stages)
-    if !item_specs.is_empty() {
+    if !item_specs.is_empty() || !repointed_aliases.is_empty() {
         let library = library.as_ref().expect("--mapping without --library");
         // a source with NO items (U10S_113) gets one template record first — the
         // clone donor (`seed_item_record`, the tiny writer's way); it is parked far
@@ -266,7 +289,7 @@ pub fn cmd(args: &[String]) {
         // non-item support files), one manifest row per model
         let zip = std::fs::read(library).unwrap_or_else(|e| panic!("{}: {e}", library.display()));
         assert!(zip.starts_with(b"PK\x03\x04"), "{} is not a ZIP archive", library.display());
-        let mut names: Vec<String> = item_specs.iter().map(|(_, s)| s.model.clone()).collect();
+        let mut names: Vec<String> = item_specs.iter().map(|(_, s)| s.model.clone()).chain(repointed_aliases.iter().cloned()).collect();
         names.sort();
         names.dedup();
         let listed: BTreeSet<&str> = names.iter().map(|s| s.as_str()).collect();

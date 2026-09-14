@@ -707,72 +707,7 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     m.keep_water = crate::static_item::build::keep_water_for(collection);
     m.modifier = modifier_links(store, &plan.effective_mods);
     m.collision_redress = modifier_redress(store, &plan.effective_mods, &m.modifier);
-    // TINY_REDRESS=Stem=Link[;Stem=Link…] (the surface swap): explicit rows for the
-    // materials no modifier folder shadows — `RoadTech=Stadium\Media\Material\RoadIce`
-    // puts the ice deck material (look + RoadIce physics 74) on a tech road's
-    // deck. Rows go FIRST: the first matching collision row wins.
-    let surface_rows = surface_redress_rows(store);
-    for (stem, link, ids) in &surface_rows {
-        let note_link = if link.is_empty() { format!("Stadium\\Media\\Material\\{stem} (own look, physics {})", ids.0) } else { link.clone() };
-        m.collision_redress.insert(0, Redress { matches: RedressKey::File(format!("{}.material.gbx", stem.to_ascii_lowercase())), link: note_link, ids: *ids });
-        m.link_rewrite.push((stem.clone(), link.clone(), ids.0));
-    }
-    // A GAMEPLAY PAD (`…Special…`) under a surface swap: its deck hull is
-    // authored with `Collision*` materials (physics + gameplay id) that the
-    // deck rows never match, and the pad's OWN family modifier supplied the
-    // physics — wood 51's ice pad drove as ice under a wood look (boasy,
-    // 2026-09-14), a baked road pad in the ice set as asphalt + turbo. The
-    // hull takes the swap's deck physics (the family's row: PlatformTech for a
-    // platform pad, RoadTech for a road one; else the forced modifier
-    // folder's PlatformTech material) and keeps its gameplay id.
-    // A deck re-dressed AWAY from ice keeps no ice-styled decal: the RoadIce
-    // family's `…OnRoadIce` markings (DecalMarksStartOnRoadIce, the sponsor
-    // decals) take their plain variant when the pack has one (Everios96
-    // 2026-09-14 10:27: the plastic 11 bobsleigh start "is still ice mostly")
-    if !surface_rows.is_empty() && !surface_rows.iter().any(|(_, to, _)| to.contains("RoadIce")) {
-        // the pack stores these under hashed names, so they are named here; each
-        // plain twin is looked up by name (the store hashes it) before a row is made
-        let pairs: [(&str, &[&str]); 6] = [
-            ("DecalMarksStartOnRoadIce", &["DecalMarksStart"]),
-            ("DecalSponsor1x1BigAOnRoadIce", &["DecalSponsor1x1BigA"]),
-            ("DecalSponsor4x1AOnRoadIce", &["DecalSponsor4x1A", "DecalPaint2Sponsor4x1A", "DecalPaintSponsor4x1A"]),
-            ("DecalSponsor4x1BOnRoadIce", &["DecalSponsor4x1B", "DecalPaint2Sponsor4x1B", "DecalPaintSponsor4x1B"]),
-            ("DecalSponsor4x1COnRoadIce", &["DecalSponsor4x1C", "DecalPaint2Sponsor4x1C", "DecalPaintSponsor4x1C"]),
-            ("DecalSponsor4x1DOnRoadIce", &["DecalSponsor4x1D", "DecalPaint2Sponsor4x1D", "DecalPaintSponsor4x1D"]),
-        ];
-        for (stem, plains) in pairs {
-            if m.link_rewrite.iter().any(|(from, _, _)| from == stem) {
-                continue;
-            }
-            for plain in plains {
-                let plain_link = format!("Stadium\\Media\\Material\\{plain}");
-                if store.read(&format!("{plain_link}.Material.Gbx")).is_ok() {
-                    m.link_rewrite.push((stem.to_string(), plain_link, 28));
-                    break;
-                }
-            }
-        }
-    }
-    // TINY_ALL_DRIVABLE_PHYSICS=P (the magnet swap): every drivable hull triangle
-    // of every baked block drives as P — sides, borders, loops, pads included
-    if let Some(p) = std::env::var("TINY_ALL_DRIVABLE_PHYSICS").ok().and_then(|v| v.parse::<u8>().ok()) {
-        m.all_drivable_physics = Some(p);
-    }
-    // TINY_DECK_PHYSICS=P (every surface swap): deck-like hull triangles the
-    // redress stems did not name (OpenTechBorders, Deco strips) drive as P
-    if let Some(p) = std::env::var("TINY_DECK_PHYSICS").ok().and_then(|v| v.parse::<u8>().ok()) {
-        m.deck_physics = Some(p);
-    }
-    if !surface_rows.is_empty() && name.contains("Special") {
-        let want = if name.starts_with("Platform") { "PlatformTech" } else { "RoadTech" };
-        let from_rows = surface_rows.iter().find(|(st, _, _)| st == want).or_else(|| surface_rows.iter().find(|(st, _, _)| st == "PlatformTech" || st == "RoadTech")).map(|(_, _, ids)| ids.0);
-        let from_forced = std::env::var("TINY_FORCE_MODIFIER").ok().and_then(|f| f.strip_suffix(".TerrainModifier.Gbx").map(String::from)).and_then(|base| crate::static_item::build::material_surface_ids(store, &format!("{base}\\PlatformTech.Material.Gbx"))).map(|ids| ids.0);
-        // a plain "keep the look, force the physics" row (magnet @55) has no link but a physics
-        m.pad_physics = from_rows.or(from_forced);
-        if let Some(p) = m.pad_physics {
-            m.notes.push(format!("gameplay pad under a surface swap: hull physics {p}, gameplay kept"));
-        }
-    }
+    apply_surface_swap(store, &mut m, name);
     // The collection SKIN (`<Env>\Media\Modifier\StadiumOnTerrain\<slot>`, the
     // four terrain collections) is one material file per slot: look AND
     // surface. The visuals took it since 2026-09-06 (`skinned_material`); the
@@ -2703,6 +2638,95 @@ pub fn same_special_family(clip: &str, owner: &str) -> bool {
     match (clip.find("Special"), o.find("Special")) {
         (Some(a), Some(b)) => clip[..a + 7] == o[..b + 7],
         _ => false,
+    }
+}
+
+/// The SURFACE SWAP's dress on one baked model (block or item): the explicit
+/// `TINY_REDRESS` rows (look + physics, first in the collision table), the
+/// gameplay-pad hull physics, the away-from-ice decal twins, and the
+/// `TINY_ALL_DRIVABLE_PHYSICS` / `TINY_DECK_PHYSICS` hull rules. Blocks get it
+/// in the block bake; an ITEM gets it when its ident matches `TINY_ITEM_REDRESS`
+/// (`InflatableTube*`: Everios96 2026-09-14 10:36, the pipes).
+/// `TINY_ITEM_REDRESS=glob[,glob]`: whether an item model gets the surface swap.
+pub fn item_redress_wanted(model: &str) -> bool {
+    // `Prefix*`, `*Suffix`, `*Infix*`, or the exact name
+    let glob = |pat: &str, name: &str| -> bool {
+        match (pat.strip_prefix('*'), pat.strip_suffix('*')) {
+            (Some(rest), Some(_)) => name.contains(rest.trim_end_matches('*')),
+            (Some(suffix), None) => name.ends_with(suffix),
+            (None, Some(prefix)) => name.starts_with(prefix),
+            (None, None) => name == pat,
+        }
+    };
+    std::env::var("TINY_ITEM_REDRESS").ok().map(|v| v.split(',').map(str::trim).filter(|g| !g.is_empty()).any(|g| glob(g, model))).unwrap_or(false)
+}
+
+pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::build::Merged, name: &str) {
+    // TINY_REDRESS=Stem=Link[;Stem=Link…] (the surface swap): explicit rows for the
+    // materials no modifier folder shadows — `RoadTech=Stadium\Media\Material\RoadIce`
+    // puts the ice deck material (look + RoadIce physics 74) on a tech road's
+    // deck. Rows go FIRST: the first matching collision row wins.
+    let surface_rows = surface_redress_rows(store);
+    for (stem, link, ids) in &surface_rows {
+        let note_link = if link.is_empty() { format!("Stadium\\Media\\Material\\{stem} (own look, physics {})", ids.0) } else { link.clone() };
+        m.collision_redress.insert(0, Redress { matches: RedressKey::File(format!("{}.material.gbx", stem.to_ascii_lowercase())), link: note_link, ids: *ids });
+        m.link_rewrite.push((stem.clone(), link.clone(), ids.0));
+    }
+    // A GAMEPLAY PAD (`…Special…`) under a surface swap: its deck hull is
+    // authored with `Collision*` materials (physics + gameplay id) that the
+    // deck rows never match, and the pad's OWN family modifier supplied the
+    // physics — wood 51's ice pad drove as ice under a wood look (boasy,
+    // 2026-09-14), a baked road pad in the ice set as asphalt + turbo. The
+    // hull takes the swap's deck physics (the family's row: PlatformTech for a
+    // platform pad, RoadTech for a road one; else the forced modifier
+    // folder's PlatformTech material) and keeps its gameplay id.
+    // A deck re-dressed AWAY from ice keeps no ice-styled decal: the RoadIce
+    // family's `…OnRoadIce` markings (DecalMarksStartOnRoadIce, the sponsor
+    // decals) take their plain variant when the pack has one (Everios96
+    // 2026-09-14 10:27: the plastic 11 bobsleigh start "is still ice mostly")
+    if !surface_rows.is_empty() && !surface_rows.iter().any(|(_, to, _)| to.contains("RoadIce")) {
+        // the pack stores these under hashed names, so they are named here; each
+        // plain twin is looked up by name (the store hashes it) before a row is made
+        let pairs: [(&str, &[&str]); 6] = [
+            ("DecalMarksStartOnRoadIce", &["DecalMarksStart"]),
+            ("DecalSponsor1x1BigAOnRoadIce", &["DecalSponsor1x1BigA"]),
+            ("DecalSponsor4x1AOnRoadIce", &["DecalSponsor4x1A", "DecalPaint2Sponsor4x1A", "DecalPaintSponsor4x1A"]),
+            ("DecalSponsor4x1BOnRoadIce", &["DecalSponsor4x1B", "DecalPaint2Sponsor4x1B", "DecalPaintSponsor4x1B"]),
+            ("DecalSponsor4x1COnRoadIce", &["DecalSponsor4x1C", "DecalPaint2Sponsor4x1C", "DecalPaintSponsor4x1C"]),
+            ("DecalSponsor4x1DOnRoadIce", &["DecalSponsor4x1D", "DecalPaint2Sponsor4x1D", "DecalPaintSponsor4x1D"]),
+        ];
+        for (stem, plains) in pairs {
+            if m.link_rewrite.iter().any(|(from, _, _)| from == stem) {
+                continue;
+            }
+            for plain in plains {
+                let plain_link = format!("Stadium\\Media\\Material\\{plain}");
+                if store.read(&format!("{plain_link}.Material.Gbx")).is_ok() {
+                    m.link_rewrite.push((stem.to_string(), plain_link, 28));
+                    break;
+                }
+            }
+        }
+    }
+    // TINY_ALL_DRIVABLE_PHYSICS=P (the magnet swap): every drivable hull triangle
+    // of every baked block drives as P — sides, borders, loops, pads included
+    if let Some(p) = std::env::var("TINY_ALL_DRIVABLE_PHYSICS").ok().and_then(|v| v.parse::<u8>().ok()) {
+        m.all_drivable_physics = Some(p);
+    }
+    // TINY_DECK_PHYSICS=P (every surface swap): deck-like hull triangles the
+    // redress stems did not name (OpenTechBorders, Deco strips) drive as P
+    if let Some(p) = std::env::var("TINY_DECK_PHYSICS").ok().and_then(|v| v.parse::<u8>().ok()) {
+        m.deck_physics = Some(p);
+    }
+    if !surface_rows.is_empty() && name.contains("Special") {
+        let want = if name.starts_with("Platform") { "PlatformTech" } else { "RoadTech" };
+        let from_rows = surface_rows.iter().find(|(st, _, _)| st == want).or_else(|| surface_rows.iter().find(|(st, _, _)| st == "PlatformTech" || st == "RoadTech")).map(|(_, _, ids)| ids.0);
+        let from_forced = std::env::var("TINY_FORCE_MODIFIER").ok().and_then(|f| f.strip_suffix(".TerrainModifier.Gbx").map(String::from)).and_then(|base| crate::static_item::build::material_surface_ids(store, &format!("{base}\\PlatformTech.Material.Gbx"))).map(|ids| ids.0);
+        // a plain "keep the look, force the physics" row (magnet @55) has no link but a physics
+        m.pad_physics = from_rows.or(from_forced);
+        if let Some(p) = m.pad_physics {
+            m.notes.push(format!("gameplay pad under a surface swap: hull physics {p}, gameplay kept"));
+        }
     }
 }
 

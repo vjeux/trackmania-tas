@@ -1635,6 +1635,20 @@ pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStor
         m.modifier = links;
         m.modifier_suffix = suffix;
     }
+    // TINY_ITEM_REDRESS=glob[,glob]: an ITEM the surface swap dresses like a
+    // block — `InflatableTube*`, the pipes (Everios96 2026-09-14 10:36: "you
+    // could change the surfaces of them as well, physics and texture, for all
+    // alterations"). The swap rows re-dress its materials; its whole hull
+    // (Metal for a tube) drives as the surface.
+    let source_model = item_path.rsplit('\\').next().unwrap_or(item_path).trim_end_matches(".Item.Gbx").trim_end_matches(".item.gbx");
+    if crate::tiny_library::item_redress_wanted(source_model) {
+        crate::tiny_library::apply_surface_swap(store, &mut m, source_model);
+        let phys = std::env::var("TINY_ALL_DRIVABLE_PHYSICS").ok().or_else(|| std::env::var("TINY_DECK_PHYSICS").ok()).and_then(|v| v.parse::<u8>().ok());
+        if m.all_drivable_physics.is_none() {
+            m.all_drivable_physics = phys;
+        }
+        m.notes.push(format!("surface swap applied to the item (hull physics {:?})", m.all_drivable_physics));
+    }
     // The item's skin declaration (header chunk 0x090F4000: the in-game
     // advertisement slot of screens and gates, the colour slot of lights) is
     // carried verbatim — the game applies skins only to a model that declares

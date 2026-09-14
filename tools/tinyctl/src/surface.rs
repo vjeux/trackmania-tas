@@ -58,7 +58,8 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     }
     // OpenTechBorders: the open roads' wide deck margins (drivable asphalt, 2/3
     // of that deck) — a stem like the road decks since 2026-09-14 (plastic 05)
-    let road_stems = ["RoadTech", "RoadDirt", "RoadBump", "RoadIce", "OpenTechBorders"];
+    // ItemInflatableTube: the pipes' one material (Everios96 2026-09-14: pipes too)
+    let road_stems = ["RoadTech", "RoadDirt", "RoadBump", "RoadIce", "OpenTechBorders", "ItemInflatableTube"];
     let rows: Vec<String> = match s {
         "Ice" => road_stems.iter().filter(|st| **st != "RoadIce").map(|st| format!("{st}=Stadium\\Media\\Material\\RoadIce")).collect(),
         "Dirt" => road_stems.iter().filter(|st| **st != "RoadDirt").chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\RoadDirt")).collect(),
@@ -79,6 +80,8 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     if s == "Magnet" {
         env.push(("TINY_ALL_DRIVABLE_PHYSICS".to_string(), "55".to_string()));
     }
+    // the pipes: baked as re-dressed item copies, physics and texture
+    env.push(("TINY_ITEM_REDRESS".to_string(), "InflatableTube*".to_string()));
     // the swap's deck physics for the deck-like triangles no stem names (Deco strips…)
     let deck_physics = match s {
         "Ice" => Some("74"),
@@ -254,7 +257,20 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             for l in text.lines().filter(|l| l.starts_with("records:") || l.starts_with("  conflict")) {
                 println!("  {}", l.trim());
             }
-            let (_tally, names) = plan_tally(&records)?;
+            let (_tally, mut names) = plan_tally(&records)?;
+            // the ITEMS the swap dresses (TINY_ITEM_REDRESS globs, the pipes): their
+            // models join the library bake; the writer re-points their records
+            if let Some(globs) = env.iter().find(|(k, _)| k == "TINY_ITEM_REDRESS").map(|(_, v)| v.clone()) {
+                let src_map = tmmaps::map::MapFile::load(&src);
+                let mut item_models: Vec<String> = src_map.items.iter().map(|it| it.model.clone()).filter(|m| globs.split(',').map(str::trim).filter(|g| !g.is_empty()).any(|g| glob_simple(g, m))).collect();
+                item_models.sort();
+                item_models.dedup();
+                for m in item_models {
+                    if !names.contains(&m) {
+                        names.push(m);
+                    }
+                }
+            }
             bake_models = names.clone();
             // 2. the baked copies
             let lib = dir.join("lib.zip");
@@ -744,6 +760,16 @@ pub fn all_cmd(args: &[String]) -> Result<(), String> {
 /// One part's release zip from its tracker: `<Word>U10S-partNN.zip` with the
 /// maps (the tracker's LAST row per map, in map order) and `MAPS.tsv`.
 /// Returns (maps in the zip, zip bytes, maps over 7 000 000 B).
+/// `Prefix*`, `*Suffix`, `*Infix*` or the exact name.
+fn glob_simple(pat: &str, name: &str) -> bool {
+    match (pat.strip_prefix('*'), pat.strip_suffix('*')) {
+        (Some(rest), Some(_)) => name.contains(rest.trim_end_matches('*')),
+        (Some(suffix), None) => name.ends_with(suffix),
+        (None, Some(prefix)) => name.starts_with(prefix),
+        (None, None) => name == pat,
+    }
+}
+
 fn part_zip(part_out: &Path, part: &str, word: &str, surface_flag: &str, dist: &Path) -> Result<(usize, u64, usize), String> {
     let tracker = part_out.join("tracker.tsv");
     let text = std::fs::read_to_string(&tracker).map_err(|e| format!("{}: {e}", tracker.display()))?;
