@@ -1434,3 +1434,39 @@ Floor check (the tiny thread's `fixed_plane` 10 → 8 m finding): at ×2 the
 lattice snap puts the target anchor at 2·spawn_y − 8 for every Stadium map, so
 a source item at the grass (y 8) lands at 2·spawn_y − 8 + 2·(8 − spawn_y) = 8
 exactly — giant 01's 58 grass-level items read 8.000; no change needed.
+
+## Giant set: maps that hit the stadium go NoStadium (2026-09-14 17:00Z)
+
+Everios96: "on the giant maps some maps are too large and don't fit inside the
+stadium anymore. Are you capable of removing the stadium for these maps?"
+
+* The stadium is a MAP (`Stadium\GameCtnDecoration\Map\Deco48x48_Screen155.Map.Gbx`,
+  two `Stade1536_Screen155` blocks of the Stadium256 collection, one rotated
+  180°, plus two `Stade4096` scenery blocks). Its mesh (`Stadium256\Media\
+  Solid\Warp\Stade1536v2.Prefab`, 1 M vertices) measured against the play grid:
+  the stands' inner face rises exactly at the grid edge from 16 m above the
+  grass (the first 16 m are the open apron), the upper tier recedes to 26 m
+  outside, the roof and the corner towers begin 7 m OUTSIDE the grid at the
+  256 m line — the sky over the pitch is open all the way up. So only
+  SIDEWAYS overflow above the apron (or past 32 m at ground level), and height
+  within 8 m of the edge, can touch the stadium; a track towering over the
+  centre touches nothing.
+* `mapgeom overflow MAP… [--report R.tsv]`: every embedded item's placed
+  geometry (the assembler's model) against that rule; one row per map with
+  the box, the depth sideways/above, the items hitting and the worst one.
+  Over the 975 giant maps (2 min, 12 jobs): 238 hit, 168 only rise above the
+  roof line inside the grid (kept), 23 only lay a flat grass plate on the
+  apron (kept: the source's edge-cell terrain fills, ≤ 32 m, at y 8), 546 in.
+* `tmmaps set-decoration MAP --out OUT --name NoStadium48x48Day`: the
+  decoration ident in the body's Common chunk (Id slot 3, `set_decoration`)
+  and the header's copy (`set_header_decoration`), the mood kept
+  (`NoStadium48x48{Day,Night,Sunrise,Sunset}` exist; `Screen155` has no
+  NoStadium twin). The rewrite shrinks a giant map by ~2 kB (the Id table
+  re-encode), deterministic. Probed in the editor on U10S_06 ×2: flat grass
+  plate, sky, every block and item in place.
+* Delivery, the bridge-thrifty way: `tinyctl rezip --note NoStadium` makes the
+  38 new zips locally (the MAPS.tsv rows of the swapped maps get the new byte
+  count and the mark), `hunt-push` moves the 238 maps (1.15 GB, one stream,
+  skips what is there), `hunt-update` publishes them in place (uids kept: the
+  hunt-club rooms/campaigns stay valid), `release-rebuild` rezips each
+  release asset on the box and re-uploads it (md5 = the local zip).
