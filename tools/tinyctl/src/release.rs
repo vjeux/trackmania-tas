@@ -11,7 +11,16 @@
 //!                        [--extract-list L.tsv --extract-to /home/vjeux/shoot/giant/hunt]
 //! tinyctl hunt-update --extract-list L.tsv --extract-to DIR --results LOCAL.tsv
 //!                     [--box-tinyctl /home/vjeux/shoot/giant/tinyctl] [--wsx P] [-v]
+//! tinyctl hunt-push --extract-list L.tsv --dist DIST --to DIR          (maps only, restartable)
+//! tinyctl rezip --zip OLD.zip --replace-dir DIR --out NEW.zip          (on the box)
+//! tinyctl release-rebuild --dir DIST --tag TAG --extract-list L.tsv --maps DIR
 //! ```
+//!
+//! The bridge-thrifty form (2026-09-14): `hunt-push` the rebuilt maps alone,
+//! then `release-rebuild` has the box download each v1 asset, `rezip` it with
+//! those maps (byte-identical to the devserver's zip, md5-checked) and re-upload
+//! it; `hunt-update` publishes the same maps to Nadeo. 0.9 GB over the bridge
+//! instead of 4.2 GB.
 //!
 //! `--extract-list` (rows `zip<TAB>entry`): while a zip is on the box its listed
 //! maps are unzipped into `--extract-to/<part>/` — the Nadeo copies of a set
@@ -109,13 +118,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 let r: Result<(), String> = (|| {
                     wsx.push(&path, &remote_path)?;
                     if let (Some(entries), Some(dir)) = (extract.get(&name), extract_to.as_deref()) {
-                        // unzip everything into a scratch dir (no wildcard escaping of
+                        // unzip everything into a scratch dir (the box has busybox unzip only; no wildcard escaping of
                         // `[Giant]` for unzip's patterns), keep the listed maps
                         let part = part_of(&name);
                         let tmp = format!("{dir}/.tmp-{part}");
                         let dest = format!("{dir}/{part}");
                         let moves: Vec<String> = entries.iter().map(|e| format!("'{tmp}/{}'", e.replace('\'', ""))).collect();
-                        let out = wsx.sh(&format!("rm -rf '{tmp}' && mkdir -p '{tmp}' '{dest}' && unzip -o -q '{remote_path}' -d '{tmp}' && mv -f {} '{dest}/' && rm -rf '{tmp}' && ls '{dest}' | wc -l", moves.join(" ")))?;
+                        let out = wsx.sh(&format!("rm -rf '{tmp}' && mkdir -p '{tmp}' '{dest}' && U=$(command -v unzip || echo 'busybox unzip') && $U -o -q '{remote_path}' -d '{tmp}' && mv -f {} '{dest}/' && rm -rf '{tmp}' && ls '{dest}' | wc -l", moves.join(" ")))?;
                         eprintln!("  {name}: {} maps extracted to {dest} ({} there now)", entries.len(), out.trim());
                     }
                     if !upload {
@@ -216,4 +225,169 @@ pub fn hunt_update_cmd(args: &[String]) -> Result<(), String> {
         return Err(format!("{} map(s) not IDENTICAL", n - identical));
     }
     Ok(())
+}
+
+/// `tinyctl rezip --zip OLD.zip --replace-dir DIR --out NEW.zip` (runs on the box):
+/// OLD's entries with every file of DIR that shares an entry name swapped in,
+/// written STORED with the same writer as `tinyctl dist` — byte-identical to the
+/// devserver's zip of the same content, so the release asset can be rebuilt on
+/// the box from the v1 asset (`gh release download`) plus the rebuilt maps alone
+/// (2026-09-14: the bridge at 220 KB/s made a 4.2 GB re-push a 5-hour job; the
+/// 184 rebuilt maps are 0.9 GB). Verified on 33 zips: every md5 matched.
+pub fn rezip_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let old = PathBuf::from(f("--zip").ok_or("rezip needs --zip OLD.zip")?);
+    let dir = PathBuf::from(f("--replace-dir").ok_or("rezip needs --replace-dir DIR")?);
+    let out = PathBuf::from(f("--out").ok_or("rezip needs --out NEW.zip")?);
+    let bytes = std::fs::read(&old).map_err(|e| format!("{}: {e}", old.display()))?;
+    let mut files: BTreeMap<String, Vec<u8>> = tmmaps::header::zip_entries(&bytes).into_iter().collect();
+    if files.is_empty() {
+        return Err(format!("{}: no zip entries", old.display()));
+    }
+    let mut replaced = 0usize;
+    let mut extra = 0usize;
+    for e in std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?.filter_map(|e| e.ok()) {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !e.path().is_file() {
+            continue;
+        }
+        let data = std::fs::read(e.path()).map_err(|er| format!("{}: {er}", e.path().display()))?;
+        if files.insert(name, data).is_some() {
+            replaced += 1;
+        } else {
+            extra += 1;
+        }
+    }
+    let zip = tmmaps::header::stored_zip(&files);
+    std::fs::write(&out, &zip).map_err(|e| format!("{}: {e}", out.display()))?;
+    println!("{}: {} entries, {replaced} replaced, {extra} added -> {} ({} B)", old.display(), files.len(), out.display(), zip.len());
+    Ok(())
+}
+
+/// `tinyctl hunt-push --extract-list L.tsv --dist DIST --to DIR`: the listed maps
+/// (and each part's MAPS.tsv) out of the local zips onto the box, one file at a
+/// time, skipping files already there at the right size — restartable (the
+/// bridge dropped the stream twice on 2026-09-14; three runs finished the 219 files).
+pub fn hunt_push_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let extract = read_extract_list(&PathBuf::from(f("--extract-list").ok_or("hunt-push needs --extract-list L.tsv")?))?;
+    let dist = PathBuf::from(f("--dist").ok_or("hunt-push needs --dist DIST (the local zips)")?);
+    let to = f("--to").ok_or("hunt-push needs --to DIR (on the box)")?;
+    let wsx = Wsx::new(args);
+    let tmp = std::env::temp_dir().join(format!("hunt-push-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
+    let t0 = Instant::now();
+    let (mut pushed, mut skipped, mut total) = (0usize, 0usize, 0u64);
+    for (zip, entries) in &extract {
+        let part = part_of(zip);
+        let bytes = std::fs::read(dist.join(zip)).map_err(|e| format!("{zip}: {e}"))?;
+        let files: BTreeMap<String, Vec<u8>> = tmmaps::header::zip_entries(&bytes).into_iter().collect();
+        let dest = format!("{to}/{part}");
+        // what is there already: name<TAB>size
+        let have: BTreeMap<String, u64> = wsx
+            .sh(&format!("mkdir -p '{dest}' && cd '{dest}' && for f in *; do [ -f \"$f\" ] && printf '%s\\t%s\\n' \"$f\" \"$(stat -c %s \"$f\")\"; done; true"))?
+            .lines()
+            .filter_map(|l| l.split_once('\t').and_then(|(n, s)| s.trim().parse::<u64>().ok().map(|s| (n.to_string(), s))))
+            .collect();
+        let mut wanted: Vec<&str> = entries.iter().map(|s| s.as_str()).collect();
+        wanted.push("MAPS.tsv");
+        for name in wanted {
+            let data = files.get(name).ok_or_else(|| format!("{zip}: no entry {name}"))?;
+            if have.get(name) == Some(&(data.len() as u64)) {
+                skipped += 1;
+                continue;
+            }
+            let local = tmp.join(name.replace('/', "_"));
+            std::fs::write(&local, data).map_err(|e| e.to_string())?;
+            wsx.push(&local, &format!("{dest}/{name}"))?;
+            let _ = std::fs::remove_file(&local);
+            pushed += 1;
+            total += data.len() as u64;
+            eprintln!("[{:>5.0}s] {part}/{name} {} B", t0.elapsed().as_secs_f64(), data.len());
+        }
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+    println!("hunt-push: {pushed} files pushed ({:.1} MB), {skipped} already there, {:.0} s", total as f64 / 1e6, t0.elapsed().as_secs_f64());
+    Ok(())
+}
+
+/// `tinyctl release-rebuild --dir DIST --tag TAG --extract-list L.tsv --maps DIR
+/// [--box-tinyctl P] [--box-dir D] [--repo R]`: for every zip of the list, on the
+/// box and detached: `gh release download` of the current asset, `rezip` with
+/// the maps under `--maps/<part>/` (pushed by `hunt-push`), md5 against the
+/// local zip, `gh release upload --clobber`; polled from here. Zips already on
+/// the release at the local size are skipped. Bridge traffic: commands only.
+pub fn release_rebuild_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let dir = PathBuf::from(f("--dir").ok_or("release-rebuild needs --dir DIST (the local zips)")?);
+    let tag = f("--tag").ok_or("release-rebuild needs --tag TAG")?;
+    let repo = f("--repo").unwrap_or_else(|| "vjeux/trackmania-tas".into());
+    let extract = read_extract_list(&PathBuf::from(f("--extract-list").ok_or("release-rebuild needs --extract-list L.tsv")?))?;
+    let maps = f("--maps").ok_or("release-rebuild needs --maps DIR (the pushed maps, on the box)")?;
+    let box_tinyctl = f("--box-tinyctl").unwrap_or_else(|| "/home/vjeux/shoot/giant/tinyctl".into());
+    let box_dir = f("--box-dir").unwrap_or_else(|| "/home/vjeux/shoot/giant/dist".into());
+    let wsx = Wsx::new(args);
+    let remote = remote_assets(&wsx, &tag, &repo)?;
+    let t0 = Instant::now();
+    let mut lines: Vec<String> = Vec::new();
+    for zip in extract.keys() {
+        let local = dir.join(zip);
+        let size = std::fs::metadata(&local).map(|m| m.len()).map_err(|e| format!("{}: {e}", local.display()))?;
+        if remote.get(zip) == Some(&size) {
+            lines.push(format!("{zip}\tSKIP\t{size}\talready on the release at the local size"));
+            continue;
+        }
+        let md5 = crate::publish::md5_hex(&std::fs::read(&local).map_err(|e| format!("{}: {e}", local.display()))?);
+        let part = part_of(zip);
+        let t1 = Instant::now();
+        let v1 = format!("{box_dir}/v1-{zip}");
+        let v2 = format!("{box_dir}/{zip}");
+        let done = format!("{box_dir}/{zip}.done");
+        let log = format!("{box_dir}/{zip}.log");
+        let script = format!(
+            "cd /home/vjeux && rm -f '{v1}' '{v2}' && ./bin/gh release download '{tag}' -R {repo} -p '{zip}' -O '{v1}' && {box_tinyctl} rezip --zip '{v1}' --replace-dir '{maps}/{part}' --out '{v2}' && rm -f '{v1}' && m=$(md5sum '{v2}' | cut -c1-32) && if [ \"$m\" != '{md5}' ]; then echo FAILED md5 $m > '{done}'; rm -f '{v2}'; exit 1; fi && ./bin/gh release upload '{tag}' '{v2}' -R {repo} --clobber && echo OK $m > '{done}' || echo FAILED rc=$? > '{done}'; rm -f '{v2}' '{v1}'"
+        );
+        // the script travels base64-encoded: inside a double-quoted `sh -c` the
+        // outer shell expanded `$(md5sum …)` before the file existed (2026-09-14)
+        let b64 = base64_std(script.as_bytes());
+        let script_path = format!("{box_dir}/{zip}.sh");
+        wsx.sh(&format!("rm -f '{done}'; mkdir -p '{box_dir}'; echo {b64} | base64 -d > '{script_path}'; nohup setsid sh '{script_path}' > '{log}' 2>&1 < /dev/null & echo started"))?;
+        let line = match wsx.wait_done(&done, &log, Duration::from_secs(3600), &format!("release-rebuild {zip}")) {
+            Ok(text) => format!("{zip}\tOK\t{size}\t{:.0}s\t{}", t1.elapsed().as_secs_f64(), text.trim()),
+            Err(e) => format!("{zip}\tFAILED\t{size}\t{:.0}s\t{}", t1.elapsed().as_secs_f64(), e.lines().next().unwrap_or("")),
+        };
+        let _ = wsx.sh(&format!("rm -f '{done}' '{log}' '{script_path}'"));
+        eprintln!("[{:>5.0}s] {line}", t0.elapsed().as_secs_f64());
+        lines.push(line);
+    }
+    let remote = remote_assets(&wsx, &tag, &repo)?;
+    let mut bad = 0usize;
+    for zip in extract.keys() {
+        let size = std::fs::metadata(dir.join(zip)).map(|m| m.len()).unwrap_or(0);
+        if remote.get(zip) != Some(&size) {
+            bad += 1;
+            lines.push(format!("{zip}\tMISMATCH\t{size}\tremote {:?}", remote.get(zip)));
+        }
+    }
+    println!("{}", lines.join("\n"));
+    println!("release-rebuild: {} zips, {bad} not at the local size on the release, {:.0} s", extract.len(), t0.elapsed().as_secs_f64());
+    if bad > 0 {
+        return Err(format!("{bad} asset(s) wrong"));
+    }
+    Ok(())
+}
+
+/// Standard base64 (no external crate: the CLI keeps its dependency list short).
+fn base64_std(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
 }

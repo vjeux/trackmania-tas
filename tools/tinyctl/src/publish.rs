@@ -556,7 +556,7 @@ pub fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Resul
 
 /// Lowercase hex md5 — what `md5sum` prints, so the numbers here can be
 /// checked against a shell's by eye.
-fn md5_hex(data: &[u8]) -> String {
+pub fn md5_hex(data: &[u8]) -> String {
     mapgeom::md5::md5(data).iter().map(|b| format!("{b:02x}")).collect()
 }
 

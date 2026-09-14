@@ -224,6 +224,9 @@ fn main() {
         "dist" => dist::cmd(rest),
         "release-upload" => release::cmd(rest),
         "hunt-update" => release::hunt_update_cmd(rest),
+        "hunt-push" => release::hunt_push_cmd(rest),
+        "rezip" => release::rezip_cmd(rest),
+        "release-rebuild" => release::release_rebuild_cmd(rest),
         "box-build" => boxbuild::box_build_cmd(rest),
         "selfbuild" => boxbuild::selfbuild_cmd(rest),
         "help" | "--help" | "-h" => {
