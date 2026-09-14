@@ -162,9 +162,18 @@ pub fn decode(bytes: &[u8]) -> Result<Bitmap, String> {
 pub fn material_diffuse(store: &mut crate::store::DataStore, material_link: &str) -> Option<Bitmap> {
     let mat_path = if material_link.to_ascii_lowercase().ends_with(".material.gbx") { material_link.to_string() } else { format!("{material_link}.Material.Gbx") };
     let model = store.load_model(&mat_path).ok()?;
-    // the texture files the material references; prefer the `_D` one
-    let tex = model.externals.iter().map(|(_, p)| p.clone()).find(|p| p.to_ascii_lowercase().ends_with("_d.texture.gbx"))
-        .or_else(|| model.externals.iter().map(|(_, p)| p.clone()).find(|p| p.to_ascii_lowercase().contains(".texture.gbx")))?;
+    // the texture files the material references. The diffuse is the `_D` one —
+    // but a TRIPLANAR material (TrackWall, the castle walls) keeps its look in
+    // `<X>Pxz_D` (the side projection) and `<X>Py*` (the top); its plain `<X>_D`
+    // is a near-black mask. So: Pxz_D first, then any `_D` that is not a HueMask,
+    // then the first texture at all.
+    let texs: Vec<String> = model.externals.iter().map(|(_, p)| p.clone()).filter(|p| p.to_ascii_lowercase().contains(".texture.gbx")).collect();
+    let lc = |p: &String| p.to_ascii_lowercase();
+    let tex = texs.iter().find(|p| lc(p).ends_with("pxz_d.texture.gbx"))
+        .or_else(|| texs.iter().find(|p| lc(p).ends_with("_d.texture.gbx") && !lc(p).contains("huemask") && !lc(p).contains("techno3")))
+        .or_else(|| texs.iter().find(|p| !lc(p).contains("techno3")))
+        .or_else(|| texs.first())?
+        .clone();
     let tmodel = store.load_model(&tex).ok()?;
     let dds = tmodel.externals.iter().map(|(_, p)| p.clone()).find(|p| p.to_ascii_lowercase().ends_with(".dds") || p.to_ascii_lowercase().ends_with(".tga"))?;
     let bytes = store.read(&dds).ok()?;

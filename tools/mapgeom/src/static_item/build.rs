@@ -1272,7 +1272,9 @@ pub fn add_prefab_inline(store: Option<&mut crate::store::DataStore>, prefab: &s
                         mesh.add_static_object(&so, &IDENTITY, scale, &mut no_ext).map_err(|err| format!("inline prefab entity {i} (moving part): {err}"))?;
                         let move_shape = shape_of(&d.dyna_shape);
                         let hit_shape = shape_of(&d.static_shape);
-                        if mesh.visuals.is_empty() || move_shape.is_none() || hit_shape.is_none() {
+                        // the move shape is what the game needs (a NULL DynaShape crashes the
+                        // client); the community items often have no hit shape and run fine
+                        if mesh.visuals.is_empty() || move_shape.is_none() {
                             // no usable shapes: bake it still, with its hit shape when there is one
                             let so2 = super::item::CPlugStaticObjectModel { version: 3, mesh: inline(1, Node::Solid2(s2.clone())), is_mesh_collidable: false, shape: match d.static_shape.inline.as_deref().or(d.dyna_shape.inline.as_deref()) { Some(Node::Surface(sf)) => inline(2, Node::Surface(sf.clone())), _ => super::null_ref() } };
                             m.add_static_object(&so2, &iso, scale, &mut no_ext).map_err(|err| format!("inline prefab entity {i}: {err}"))?;

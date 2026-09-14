@@ -1605,6 +1605,39 @@ fn main() {
             std::fs::write(&out, &bytes).unwrap_or_else(|e| die(e.to_string()));
             println!("{logical}: {} bytes -> {out} (stored as {})", bytes.len(), store.resolve(&logical).unwrap_or_default());
         }
+        // mapgeom item-bake FILE.Item.gbx — bake one item file the way the library does
+        // and print what came out (visuals, hull, moving parts, notes)
+        "item-bake" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let bytes = std::fs::read(&p).unwrap_or_else(|e| die(format!("{p}: {e}")));
+            let stem = std::path::Path::new(&p).file_name().and_then(|n| n.to_str()).unwrap_or("").trim_end_matches(".Item.Gbx").trim_end_matches(".Item.gbx").trim_end_matches(".item.gbx").to_string();
+            match mapgeom::static_item::build::static_item_from_item_report_redress(Some(&mut store), &bytes, "X.Item.Gbx", "X.Item.Gbx", 1.0, 26, &stem) {
+                Ok((out, m)) => {
+                    println!("{p}: {} bytes out; {} visuals, {} hull triangles, {} moving parts, {} materials", out.len(), m.visuals.len(), m.surf_triangles.len(), m.dyna.len(), m.materials.len());
+                    for n in &m.notes {
+                        println!("  note: {n}");
+                    }
+                    for mat in &m.materials {
+                        println!("  material {} ({})", mat.link().unwrap_or("-"), mat.physics());
+                    }
+                }
+                Err(e) => println!("{p}: FAILED: {e}"),
+            }
+        }
+        // mapgeom dds-png LOGICAL-or-FILE --out X.png [--max 1024] — decode a DDS (a pack
+        // texture by logical path, or a file) to PNG, to check the decoder by eye
+        "dds-png" => {
+            let src = a.rest.get(1).cloned().unwrap_or_default();
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("dds-png needs --out X.png".to_string()));
+            let max: usize = flag(&a.rest, "--max").and_then(|v| v.parse().ok()).unwrap_or(1024);
+            let bytes = if std::path::Path::new(&src).is_file() { std::fs::read(&src).unwrap_or_else(|e| die(e.to_string())) } else { let mut store = open(&a); store.read(&src).unwrap_or_else(die) };
+            let bm = mapgeom::dds::decode(&bytes).unwrap_or_else(die);
+            let small = bm.shrink_to(max);
+            let img = mapgeom::render::Image { w: small.w, h: small.h, rgb: small.rgb.clone() };
+            std::fs::write(&out, mapgeom::render::png(&img)).unwrap_or_else(|e| die(e.to_string()));
+            println!("{src}: {}x{} -> {out} ({}x{}), header fourcc {:?}", bm.w, bm.h, small.w, small.h, String::from_utf8_lossy(&bytes[84..88]));
+        }
         "custom-census" => {
             let out = flag(&a.rest, "--out").map(std::path::PathBuf::from).unwrap_or_else(|| die("custom-census needs --out TSV".to_string()));
             let maps: Vec<String> = a.rest[1..].iter().filter(|x| !x.starts_with("--") && x.ends_with(".Map.Gbx")).cloned().collect();
