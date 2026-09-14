@@ -1408,3 +1408,29 @@ zips, 4.59 GB, one per part, `GiantU10S-partNN.zip`), the tiny set's layout:
   command that runs past the bridge's 90 s answer cap is RE-RUN by the retry —
   two concurrent creators made one duplicate room; run long API jobs detached
   (`setsid nohup`) and poll a log.
+
+## Giant set, the car-change gates (2026-09-14 06:00Z)
+
+Everios96 (Discord DM to vjeux, 22:05 PT): "on giant i noticed a few car gates
+not working as well" — the tiny thread's finding of the same evening
+(`GateGameplay*` BLOCKS baked without their trigger, the section above)
+applies to the ×2 build unchanged; the pack's gate ITEMS (`GateGameplayRally16m`
+…, part 9's whole set) were right all along (their prefab carries the
+`NPlugTrigger_SGateSpecial` entity, verified on `AI05902000`: entity 1 = class
+0x09179000, and a rebuild of part 9 is byte-identical). With patch 0025 the
+178 block-gate maps were rebuilt (`convert-all --only`, 1.5 min), plus the 18
+water-clipped refits of the first run, whose `--only` had dropped the
+`--alias-part` value (the same trap: at ×2 the value is 52..89, two digits) —
+p03/11 and p34/11, p03/22 and p08/22, p11/20, p15/20 and p30/20 shared item
+file names; now `AC053…` / `AC084…`. Play-verified on U10S_153 ×2 (part 7 #3,
+a `GateGameplaySnow` block two cells after the start): the HUD says "SNOW CAR"
+and the car is the pickup at 4.3 s, the Stadium car at 2.3 s. The first 25 (the
+Nadeo campaign) carry no car gate; the release got 36 part zips replaced
+(`release-upload --only-missing` compares SIZES — a rename-only rebuild would
+be skipped, so a part whose only change is an alias rename must be forced;
+none was: every such part also had a gate map).
+
+Floor check (the tiny thread's `fixed_plane` 10 → 8 m finding): at ×2 the
+lattice snap puts the target anchor at 2·spawn_y − 8 for every Stadium map, so
+a source item at the grass (y 8) lands at 2·spawn_y − 8 + 2·(8 − spawn_y) = 8
+exactly — giant 01's 58 grass-level items read 8.000; no change needed.
