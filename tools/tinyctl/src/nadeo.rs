@@ -233,13 +233,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let offset = f("--offset").unwrap_or_else(|| "0".into());
             // --inactive lists the inactive (hidden) ones instead
             let active = if tmmaps::cli::has(args, "--inactive") { "false" } else { "true" };
-            let url = format!("{LIVE}/api/token/club/{club}/activity?length={length}&offset={offset}&active={active}");
+            // --parent ID: the activities inside a folder (Everios' hunt-club layout: one
+            // folder per alteration, its rooms inside); the room rows add their map count
+            let parent = f("--parent").map(|p| format!("&parentActivityId={p}")).unwrap_or_default();
+            let url = format!("{LIVE}/api/token/club/{club}/activity?length={length}&offset={offset}&active={active}{parent}");
             let v = get_json(&auth_live, &url)?;
             save(&format!("club-{club}-activities-{offset}.json"), &v)?;
             println!("total {}\tmaxPage {}", s(&v, "itemCount"), s(&v, "maxPage"));
-            println!("activityId\ttype\tname\tcampaignId\tpublic\tactive\tposition");
+            println!("activityId\ttype\tname\tcampaignId\tpublic\tactive\tposition\tmaps");
             for a in v.get("activityList").and_then(|l| l.as_array()).map(|a| a.as_slice()).unwrap_or(&[]) {
-                println!("{}\t{}\t{}\t{}\t{}\t{}\t{}", s(a, "id"), s(a, "activityType"), s(a, "name"), s(a, "campaignId"), s(a, "public"), s(a, "active"), s(a, "position"));
+                let maps = a.get("room").and_then(|r| r.get("maps")).and_then(|m| m.as_array()).map(|m| m.len().to_string()).unwrap_or_else(|| "-".into());
+                println!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", s(a, "id"), s(a, "activityType"), s(a, "name"), s(a, "campaignId"), s(a, "public"), s(a, "active"), s(a, "position"), maps);
             }
             Ok(())
         }
