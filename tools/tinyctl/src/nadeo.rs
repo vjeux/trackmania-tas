@@ -161,6 +161,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     if sub == "club-mirror" {
         return club_mirror(args);
     }
+    if sub == "club-layout" {
+        return club_layout(args);
+    }
     if sub == "club-rooms" {
         return club_rooms(args);
     }
@@ -544,6 +547,182 @@ pub fn club_mirror(args: &[String]) -> Result<(), String> {
     }
     if failed > 0 {
         return Err(format!("{failed} of {} parts failed", parts.len()));
+    }
+    Ok(())
+}
+
+/// `tinyctl nadeo-here club-layout --club C --folder "Tiny U10S" --word Tiny --parts-dir D
+/// [--room-size 100] [--outdir O] [--keep-part-rooms]` — Everios96's second club
+/// layout (2026-09-14 08:35): inside the alteration's folder, ROOMS of 100 maps
+/// ("Tiny V1 01-100" … "Tiny V10 901-975"; Nadeo caps a room name at 20 chars)
+/// AND one CAMPAIGN per part ("Tiny Part 01" … "Tiny Part 39", 25 maps each). The
+/// uids come from `D/results-pNN.tsv` (IDENTICAL rows) in part order; no map
+/// bytes move. The old per-part rooms of the folder ("<X> - Part NN" /
+/// "<X> U10S - Part NN") are deleted unless --keep-part-rooms. Idempotent through
+/// `O/club-<C>-layout-<Folder>.tsv` (campaign + room ids). Runs ON THE BOX.
+pub fn club_layout(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let club = f("--club").ok_or("club-layout needs --club ID")?;
+    let folder_name = f("--folder").ok_or("club-layout needs --folder NAME")?;
+    let word = f("--word").ok_or("club-layout needs --word X (the alteration word: Tiny, Wet Wood…)")?;
+    let parts_dir = std::path::PathBuf::from(f("--parts-dir").ok_or("club-layout needs --parts-dir D")?);
+    let outdir = std::path::PathBuf::from(f("--outdir").unwrap_or_else(|| "/home/vjeux/shoot/u10s".into()));
+    std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
+    let room_size: usize = f("--room-size").and_then(|s| s.parse().ok()).unwrap_or(100);
+    let region = f("--region").unwrap_or_else(|| "eu-west".into());
+    let max_players: u32 = f("--max-players").and_then(|s| s.parse().ok()).unwrap_or(100);
+    let keep_part_rooms = tmmaps::cli::has(args, "--keep-part-rooms");
+    let shootctl = f("--shootctl").unwrap_or_else(|| "/home/vjeux/trackmania-tas/tools/target/release/shootctl".into());
+    let (_core, live) = tokens_opt(&shootctl, "club-layout", false)?;
+    let auth = format!("Authorization: {live}");
+    // the folder
+    let acts = get_json(&auth, &format!("{LIVE}/api/token/club/{club}/activity?length=100&offset=0&active=true"))?;
+    let fid = acts["activityList"]
+        .as_array()
+        .and_then(|l| l.iter().find(|a| a["activityType"] == "folder" && a["name"] == folder_name.as_str()))
+        .and_then(|a| a["id"].as_u64())
+        .ok_or_else(|| format!("folder {folder_name:?} not found in club {club}"))?;
+    println!("folder {folder_name:?}: activity {fid}");
+    // state
+    let state_path = outdir.join(format!("club-{club}-layout-{}.tsv", folder_name.replace(' ', "_")));
+    let mut state: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new(); // "camp:NN" -> "campId\tactId", "room:K" -> id
+    for l in std::fs::read_to_string(&state_path).unwrap_or_default().lines() {
+        if let Some((k, v)) = l.split_once('\t') {
+            state.insert(k.to_string(), v.to_string());
+        }
+    }
+    let save = |state: &std::collections::BTreeMap<String, String>| {
+        let s: String = state.iter().map(|(k, v)| format!("{k}\t{v}\n")).collect();
+        let _ = std::fs::write(&state_path, s);
+    };
+    // the uids, part by part, in order
+    let mut parts: Vec<(String, Vec<String>)> = Vec::new();
+    let mut names: Vec<String> = std::fs::read_dir(&parts_dir).map_err(|e| format!("{}: {e}", parts_dir.display()))?.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.starts_with("results-p") && n.ends_with(".tsv")).collect();
+    names.sort();
+    for n in &names {
+        let part = n.trim_start_matches("results-p").trim_end_matches(".tsv").to_string();
+        let uids: Vec<String> = std::fs::read_to_string(parts_dir.join(n))
+            .unwrap_or_default()
+            .lines()
+            .skip(1)
+            .filter_map(|l| {
+                let c: Vec<&str> = l.split('\t').collect();
+                (c.len() >= 8 && c[7] == "IDENTICAL" && c[2] != "-").then(|| c[2].to_string())
+            })
+            .collect();
+        if !uids.is_empty() {
+            parts.push((part, uids));
+        }
+    }
+    let all: Vec<String> = parts.iter().flat_map(|(_, u)| u.iter().cloned()).collect();
+    println!("{} parts, {} maps", parts.len(), all.len());
+    let mut failed = 0usize;
+    // 1. campaigns: one per part, inside the folder
+    println!("campaign	id	activity	maps	verdict");
+    for (part, uids) in &parts {
+        let name = format!("{word} Part {part}");
+        let key = format!("camp:{part}");
+        let (camp, act) = match state.get(&key).and_then(|v| v.split_once('\t').map(|(a, b)| (a.to_string(), b.to_string()))) {
+            Some(x) => x,
+            None => match campaign_create(&auth, &club, &name) {
+                Ok((c, a)) => {
+                    state.insert(key.clone(), format!("{c}\t{a}"));
+                    save(&state);
+                    (c, a)
+                }
+                Err(e) => {
+                    println!("{name}\t-\t-\t{}\tcreate FAILED: {}", uids.len(), e.lines().next().unwrap_or("").chars().take(160).collect::<String>());
+                    failed += 1;
+                    continue;
+                }
+            },
+        };
+        let n = match campaign_set(&auth, &club, &camp, &name, uids) {
+            Ok(v) => serde_json::to_string(&v).unwrap_or_default().matches("\"mapUid\"").count(),
+            Err(e) => {
+                println!("{name}\t{camp}\t{act}\t{}\tplaylist FAILED: {}", uids.len(), e.lines().next().unwrap_or("").chars().take(160).collect::<String>());
+                failed += 1;
+                continue;
+            }
+        };
+        // into the folder (position: part order)
+        if act != "-" {
+            let body = serde_json::json!({"folderId": fid}).to_string();
+            if let Err(e) = post_json(&auth, &format!("{LIVE}/api/token/club/{club}/activity/{act}/edit"), &body) {
+                println!("{name}\t{camp}\t{act}\t{n}\tinto folder FAILED: {}", e.lines().next().unwrap_or("").chars().take(160).collect::<String>());
+                failed += 1;
+                continue;
+            }
+        }
+        println!("{name}\t{camp}\t{act}\t{n}\t{}", if n == uids.len() { "OK" } else { "COUNT MISMATCH" });
+        if n != uids.len() {
+            failed += 1;
+        }
+    }
+    // 2. rooms of `room_size` maps
+    let settings = serde_json::json!([
+        {"key": "S_TimeLimit", "value": "", "type": "integer"},
+        {"key": "S_DecoImageUrl_WhoAmIUrl", "value": format!("/api/club/{club}"), "type": "text"},
+        {"key": "S_ForceLapsNb", "value": "-1", "type": "integer"}
+    ]);
+    println!("room\tid\tmaps\tverdict");
+    for (k, chunk) in all.chunks(room_size).enumerate() {
+        let a = k * room_size + 1;
+        let b = k * room_size + chunk.len();
+        let name = format!("{word} V{} {a:02}-{b}", k + 1);
+        let key = format!("room:{}", k + 1);
+        let mut body = serde_json::json!({
+            "name": name, "region": region, "maxPlayersPerServer": max_players,
+            "script": "TrackMania/TM_TimeAttack_Online.Script.txt", "settings": settings,
+            "maps": chunk, "scalable": 0, "password": 0, "shufflePlaylist": 0, "folderId": fid
+        });
+        let r = match state.get(&key).and_then(|v| v.parse::<u64>().ok()) {
+            Some(id) => {
+                body.as_object_mut().unwrap().remove("folderId");
+                post_json(&auth, &format!("{LIVE}/api/token/club/{club}/room/{id}/edit"), &body.to_string()).map(|v| (id, v))
+            }
+            None => post_json(&auth, &format!("{LIVE}/api/token/club/{club}/room/create"), &body.to_string()).map(|v| (v["activityId"].as_u64().or_else(|| v["id"].as_u64()).unwrap_or(0), v)),
+        };
+        match r {
+            Ok((id, v)) => {
+                let n = v["room"]["maps"].as_array().map(|a| a.len()).unwrap_or(0);
+                state.insert(key, id.to_string());
+                save(&state);
+                // a new room is private, like Everios wants them
+                let _ = post_json(&auth, &format!("{LIVE}/api/token/club/{club}/activity/{id}/edit"), &serde_json::json!({"public": false}).to_string());
+                println!("{name}\t{id}\t{n}\t{}", if n == chunk.len() { "OK" } else { "COUNT MISMATCH" });
+                if n != chunk.len() {
+                    failed += 1;
+                }
+            }
+            Err(e) => {
+                println!("{name}\t-\t{}\tFAILED: {}", chunk.len(), e.lines().next().unwrap_or("").chars().take(200).collect::<String>());
+                failed += 1;
+            }
+        }
+    }
+    // 3. the old per-part rooms of the folder
+    if !keep_part_rooms && failed == 0 {
+        let acts = get_json(&auth, &format!("{LIVE}/api/token/club/{club}/activity?length=100&offset=0&active=true&parentActivityId={fid}"))?;
+        let mut deleted = 0usize;
+        for a in acts["activityList"].as_array().cloned().unwrap_or_default() {
+            if a["activityType"] != "room" {
+                continue;
+            }
+            let n = a["name"].as_str().unwrap_or("");
+            if n.contains(" - Part ") {
+                if let Some(id) = a["id"].as_u64() {
+                    match post_json(&auth, &format!("{LIVE}/api/token/club/{club}/activity/{id}/delete"), "{}") {
+                        Ok(_) => deleted += 1,
+                        Err(e) => println!("delete {id} {n:?}: {}", e.lines().next().unwrap_or("").chars().take(120).collect::<String>()),
+                    }
+                }
+            }
+        }
+        println!("old per-part rooms deleted: {deleted}");
+    }
+    if failed > 0 {
+        return Err(format!("{failed} step(s) failed"));
     }
     Ok(())
 }
