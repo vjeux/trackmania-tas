@@ -2823,14 +2823,19 @@ pub fn surface_redress_rows(store: &mut DataStore) -> Vec<(String, String, (u8, 
     let mut out = Vec::new();
     for row in spec.split(';').map(str::trim).filter(|s| !s.is_empty()) {
         let Some((stem, link)) = row.split_once('=') else { panic!("TINY_REDRESS row `{row}`: want Stem=Link[@P] or Stem=@P") };
-        let (link, forced): (&str, Option<u8>) = match link.rsplit_once('@') {
-            Some((l, p)) => (l.trim(), Some(p.trim().parse::<u8>().unwrap_or_else(|_| panic!("TINY_REDRESS row `{row}`: `@{p}` is not a physics id")))),
-            None => (link.trim(), None),
+        // `Link@P#rrggbb`: the colour rides on the link (Merged::material_slot reads it)
+        let (link_and_tint, forced): (String, Option<u8>) = match link.rsplit_once('@') {
+            Some((l, p)) => {
+                let (pid, tint) = p.split_once('#').map(|(a, b)| (a, Some(b))).unwrap_or((p, None));
+                (format!("{}{}", l.trim(), tint.map(|t| format!("#{t}")).unwrap_or_default()), Some(pid.trim().parse::<u8>().unwrap_or_else(|_| panic!("TINY_REDRESS row `{row}`: `@{pid}` is not a physics id"))))
+            }
+            None => (link.trim().to_string(), None),
         };
+        let link: &str = &link_and_tint;
         let ids = if link.is_empty() {
             (forced.unwrap_or_else(|| panic!("TINY_REDRESS row `{row}`: an empty link needs @P")), 0)
         } else {
-            match crate::static_item::build::material_surface_ids(store, &format!("{link}.Material.Gbx")) {
+            match crate::static_item::build::material_surface_ids(store, &format!("{}.Material.Gbx", link.split('#').next().unwrap_or(link))) {
                 Some(ids) => (forced.unwrap_or(ids.0), ids.1),
                 // a material the packs do not carry — the mesh editor's library
                 // (`Editors\MeshEditorMedia\Materials\TechMagnetic`, the look the

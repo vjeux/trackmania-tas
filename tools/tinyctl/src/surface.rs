@@ -75,7 +75,10 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         // pads — Everios96, 2026-09-14: "the sides of them are not magnetic")
         // STRONG magnet since 2026-09-14 18:19Z (Everios96: "the magnet is not that
         // strong … strong magnet would be nice"; vjeux: do): TechSuperMagnetic 62
-        "Magnet" => road_stems.iter().chain(["PlatformTech", "TrackWall"].iter()).map(|st| format!("{st}=Editors\\MeshEditorMedia\\Materials\\TechSuperMagnetic@62")).collect(),
+        // look: a BLACK deck (vjeux 2026-09-14 19:30Z: "strong magnet, with a black
+        // texture" — the mesh-editor magnet checker was too busy), the modeler
+        // concrete tinted #101010, physics TechSuperMagnetic 62 forced
+        "Magnet" => road_stems.iter().chain(["PlatformTech", "TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material_BlockCustom\\CustomConcrete@62#101010")).collect(),
         "Tech" => road_stems.iter().filter(|st| **st != "RoadTech").map(|st| format!("{st}=Stadium\\Media\\Material\\RoadTech")).collect(),
         other => return Err(format!("surface `{other}`: no dress table")),
     };

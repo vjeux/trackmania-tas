@@ -523,6 +523,28 @@ impl Merged {
         // the modifier's own physics when the table knows it (PlatformDirt\PlatformTech = Dirt 6)
         let physics = if link.contains("\\Modifier\\") { physics_for_link(link).unwrap_or(physics) } else { physics };
         let physics = forced_physics.unwrap_or(physics);
+        // a `Link#rrggbb` row: a mesh-modeler material (`Material_BlockCustom\CustomConcrete`)
+        // tinted by a `TargetColor` constant — the black magnet deck (vjeux 2026-09-14
+        // 19:30Z: "strong magnet, with a black texture")
+        let (link, tint): (&str, Option<[f32; 3]>) = match link.split_once('#') {
+            Some((l, hex)) if hex.len() == 6 => {
+                let c = u32::from_str_radix(hex, 16).unwrap_or(0);
+                (l, Some([((c >> 16) & 255) as f32 / 255.0, ((c >> 8) & 255) as f32 / 255.0, (c & 255) as f32 / 255.0]))
+            }
+            _ => (link, None),
+        };
+        if let Some(rgb) = tint {
+            let mut inst = CPlugMaterialUserInst::game_material(link, physics);
+            if let Some(main) = inst.main.as_mut() {
+                main.csts = vec![crate::crystal_model::Cst { u01: crate::crystal_model::Id::Str("TargetColor".into()), u02: crate::crystal_model::Id::Str("Real".into()), u03: 3 }];
+                main.color = rgb.iter().map(|c| c.to_bits() as i32).collect();
+            }
+            if let Some(i) = self.materials.iter().position(|m| same_look(m, &inst)) {
+                return i;
+            }
+            self.materials.push(inst);
+            return self.materials.len() - 1;
+        }
         if let Some(i) = self.materials.iter().position(|m| m.link() == Some(link) && m.physics() == physics) {
             return i;
         }
