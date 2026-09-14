@@ -367,8 +367,14 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
         if let Some(p) = idx.path_for(name) {
             if let Ok(bi) = idx.load(store, &p).cloned() {
                 if bi.waypoint_type == Some(0) {
-                    let deck = base_prefab(&bi).and_then(|pf| deck_level(store, &pf)).unwrap_or(2.0);
-                    row.detail.push_str(&format!("; wetpad deck={deck}"));
+                    // a start that is itself a water block (RoadWaterStart, U10S_23) wets the car already
+                    let has_water = bi.variant_base_ground.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false) || bi.variant_base_air.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false);
+                    if has_water {
+                        row.detail.push_str("; wet already (a water start)");
+                    } else {
+                        let deck = base_prefab(&bi).and_then(|pf| deck_level(store, &pf)).unwrap_or(2.0);
+                        row.detail.push_str(&format!("; wetpad deck={deck}"));
+                    }
                 }
             }
         }
