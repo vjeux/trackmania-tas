@@ -725,6 +725,34 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     // hull takes the swap's deck physics (the family's row: PlatformTech for a
     // platform pad, RoadTech for a road one; else the forced modifier
     // folder's PlatformTech material) and keeps its gameplay id.
+    // A deck re-dressed AWAY from ice keeps no ice-styled decal: the RoadIce
+    // family's `…OnRoadIce` markings (DecalMarksStartOnRoadIce, the sponsor
+    // decals) take their plain variant when the pack has one (Everios96
+    // 2026-09-14 10:27: the plastic 11 bobsleigh start "is still ice mostly")
+    if !surface_rows.is_empty() && !surface_rows.iter().any(|(_, to, _)| to.contains("RoadIce")) {
+        // the pack stores these under hashed names, so they are named here; each
+        // plain twin is looked up by name (the store hashes it) before a row is made
+        let pairs: [(&str, &[&str]); 6] = [
+            ("DecalMarksStartOnRoadIce", &["DecalMarksStart"]),
+            ("DecalSponsor1x1BigAOnRoadIce", &["DecalSponsor1x1BigA"]),
+            ("DecalSponsor4x1AOnRoadIce", &["DecalSponsor4x1A", "DecalPaint2Sponsor4x1A", "DecalPaintSponsor4x1A"]),
+            ("DecalSponsor4x1BOnRoadIce", &["DecalSponsor4x1B", "DecalPaint2Sponsor4x1B", "DecalPaintSponsor4x1B"]),
+            ("DecalSponsor4x1COnRoadIce", &["DecalSponsor4x1C", "DecalPaint2Sponsor4x1C", "DecalPaintSponsor4x1C"]),
+            ("DecalSponsor4x1DOnRoadIce", &["DecalSponsor4x1D", "DecalPaint2Sponsor4x1D", "DecalPaintSponsor4x1D"]),
+        ];
+        for (stem, plains) in pairs {
+            if m.link_rewrite.iter().any(|(from, _, _)| from == stem) {
+                continue;
+            }
+            for plain in plains {
+                let plain_link = format!("Stadium\\Media\\Material\\{plain}");
+                if store.read(&format!("{plain_link}.Material.Gbx")).is_ok() {
+                    m.link_rewrite.push((stem.to_string(), plain_link, 28));
+                    break;
+                }
+            }
+        }
+    }
     // TINY_ALL_DRIVABLE_PHYSICS=P (the magnet swap): every drivable hull triangle
     // of every baked block drives as P — sides, borders, loops, pads included
     if let Some(p) = std::env::var("TINY_ALL_DRIVABLE_PHYSICS").ok().and_then(|v| v.parse::<u8>().ok()) {
