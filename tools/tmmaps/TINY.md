@@ -1226,3 +1226,27 @@ one level coarser, V bisected in [0, 40000] for the LARGEST threshold that fits
 u10s maps ≥ 7 000 000 B, 45 fit at (a), 30 at (b) — 17 of those touching only
 parts over ~26 000 vertices; U10S_100 (16.5 MB, 288 items) alone needed every
 part at level 1 (6.66 MB). The note in the tracker row records the setting.
+
+## Car-change gates and the `--only` alias trap (2026-09-13 evening, Everios96's reports)
+
+- **`GateGameplay{Snow,Rally,Desert,Stadium}` BLOCKS had no trigger**: the family
+  shares one prefab (`Gate\Gameplay_{Ground,Air}.Prefab`) and one trigger shape
+  (`Gate\Gameplay_Trigger.Shape.Gbx`, the variant's `trigger_shapes`); the CAR is
+  the modifier folder's `Collision` material — gameplay 0x15 Snow, 0x16 Rally,
+  0x17 Desert — and the Stadium gate has no folder: the shape's own
+  `CollisionGateGameplay` says 0x14. The baker knew only `GateSpecial*`, so tiny
+  966's Snow gate was a plain ring (Everios: "on the original its snow car").
+  Fixed in `tiny_library.rs` (the special-trigger branch for `GateGameplay*`);
+  178 of the 975 u10s maps carry such a block; play-verified on 966 (the pickup).
+- **`convert-all --only` dropped every two-digit argv word**, including the value
+  of `--alias-part` for parts 10–39: the 54 refit maps of the 7 MB pass came out
+  with ANOTHER map's alias range (p12/01 carried p13/23's `AC01323…` names — the
+  game caches embedded models by file name per session, so two such maps in one
+  session show each other's models). The filter now applies to the map numbers
+  only. 216 maps (178 ∪ 54) rebuilt and updated in place.
+- Everios' hunt club (145872) layout = one FOLDER per alteration holding one
+  Nadeo-hosted TimeAttack ROOM per part (25 maps): `tinyctl nadeo-here club-rooms`
+  builds it from the publish results (idempotent through a state file). A wsx
+  command that runs past the bridge's 90 s answer cap is RE-RUN by the retry —
+  two concurrent creators made one duplicate room; run long API jobs detached
+  (`setsid nohup`) and poll a log.
