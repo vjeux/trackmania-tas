@@ -34,6 +34,7 @@ pub mod corpus;
 pub mod collhash;
 pub mod waterblocks;
 pub mod coverage;
+pub mod dds;
 pub mod embedded;
 pub mod fillers;
 pub mod bake;

@@ -1595,6 +1595,16 @@ fn main() {
         //   record places), with what decides "convert or scenery": maps, placements,
         //   footprint, drivable deck area of its collision, road materials, verdict.
         //   Everios96 / vjeux 2026-09-14 14:31–14:39: "classify the item types".
+        // mapgeom raw LOGICAL --out FILE — any pack entry's bytes (a .dds bitmap, a .tga),
+        // resolved through the hashed-name candidates like every other path
+        "raw" => {
+            let mut store = open(&a);
+            let logical = a.rest.get(1).cloned().unwrap_or_default();
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("raw needs --out FILE".to_string()));
+            let bytes = store.read(&logical).unwrap_or_else(die);
+            std::fs::write(&out, &bytes).unwrap_or_else(|e| die(e.to_string()));
+            println!("{logical}: {} bytes -> {out} (stored as {})", bytes.len(), store.resolve(&logical).unwrap_or_default());
+        }
         "custom-census" => {
             let out = flag(&a.rest, "--out").map(std::path::PathBuf::from).unwrap_or_else(|| die("custom-census needs --out TSV".to_string()));
             let maps: Vec<String> = a.rest[1..].iter().filter(|x| !x.starts_with("--") && x.ends_with(".Map.Gbx")).cloned().collect();

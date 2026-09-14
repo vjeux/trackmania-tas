@@ -39,6 +39,7 @@ mod video;
 mod motion;
 mod nadeo;
 mod batch;
+mod customsheet;
 mod pipeline;
 mod surface;
 mod hunt;
@@ -204,6 +205,7 @@ fn main() {
         "nadeo-here" => nadeo::cmd(rest),
         "publish-batch" => batch::publish_batch_cmd(rest),
         "skip-manifest" => batch::skip_manifest_cmd(rest),
+        "custom-sheet" => customsheet::cmd(rest),
         "publish-set" => batch::publish_set_cmd(rest),
         "tracker-club" => batch::tracker_club_cmd(rest),
         "pipeline" => pipeline::cmd(rest),
