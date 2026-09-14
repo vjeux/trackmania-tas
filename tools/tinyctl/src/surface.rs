@@ -255,7 +255,11 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 // tiny pipeline: base (P*100+NN)*1000 + 500 leaves 500 names per map)
                 match f("--alias-part").and_then(|p| p.parse::<usize>().ok()) {
                     Some(part) => {
-                        libcmd.env("TINY_ALIAS_BASE", format!("{}", (part * 100 + map_no) * 1000 + 500));
+                        // every SURFACE gets its own name range (the game caches embedded models by
+                        // FILE NAME for the session — a wood map's pieces would show in a grass map
+                        // of the same number): tiny 0.1–4 M, ice the same +500, giant 5.1–9 M,
+                        // wood 10 M, wet wood 14 M, grass 18 M, plastic 22 M, dirt 26 M, magnet 30 M
+                        libcmd.env("TINY_ALIAS_BASE", format!("{}", surface_alias_offset(&surface) + (part * 100 + map_no) * 1000 + 500));
                         libcmd.env("TINY_PICTURE_SUFFIX", format!("_{surface}p{part:02}{nn}"));
                     }
                     None => {
@@ -1062,4 +1066,21 @@ pub fn batch_cmd(args: &[String]) -> Result<(), String> {
     wsx.sh(&format!("cd {STAGE} && rm -f {}; true", ones.iter().map(|o| format!("{t}Tiny.Map.Gbx {t}Orig.Map.Gbx {t}-views.tsv", t = tag_of(&o.nn))).collect::<Vec<_>>().join(" ")))?;
     println!("[{:>4.0}s] done; tracker {}", t0.elapsed().as_secs_f64(), tracker.display());
     Ok(())
+}
+
+/// The item-name range of a surface variant (added to the per-part alias base):
+/// a player who opens the wood and the grass form of one map in one game session
+/// must not get the first one's cached models under the second one's names.
+/// Tiny holds 0.1–4 M, ice the same range +500, giant 5.1–9 M (alias parts 51–89),
+/// the 25-map review builds 4.1–4.9 M (alias parts 41–48).
+pub fn surface_alias_offset(surface: &str) -> usize {
+    match mapgeom::surface::parse_surface(surface) {
+        Some(("Wood", false)) => 10_000_000,
+        Some(("Wood", true)) => 14_000_000,
+        Some(("Grass", _)) => 18_000_000,
+        Some(("Plastic", _)) => 22_000_000,
+        Some(("Dirt", _)) => 26_000_000,
+        Some(("Magnet", _)) => 30_000_000,
+        _ => 0,
+    }
 }
