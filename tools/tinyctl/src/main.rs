@@ -203,6 +203,7 @@ fn main() {
         "publish-here" => publish::publish_here_cmd(rest),
         "nadeo-here" => nadeo::cmd(rest),
         "publish-batch" => batch::publish_batch_cmd(rest),
+        "skip-manifest" => batch::skip_manifest_cmd(rest),
         "publish-set" => batch::publish_set_cmd(rest),
         "tracker-club" => batch::tracker_club_cmd(rest),
         "pipeline" => pipeline::cmd(rest),

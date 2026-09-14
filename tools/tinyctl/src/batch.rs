@@ -148,6 +148,54 @@ fn upload_one(t: &mut Tokens, map: &Path, name: &str, outdir: &Path) -> Result<(
     Ok((uid, map_id, how, bytes.len() as u64, md5_local, verdict))
 }
 
+/// `tinyctl skip-manifest --maps DIR --prev RESULTS_DIR[,DIR…] --out M.tsv` — a
+/// publish-batch manifest for every `*.Map.Gbx` in DIR (name = the file stem),
+/// where a map whose bytes Nadeo already holds becomes a `skip` row: the newest
+/// previous results row of that NAME (results-*.tsv under the --prev dirs, later
+/// dirs override earlier ones; columns path name uid mapId how bytes md5
+/// verdict) carries the same md5. The fix passes of 2026-09-14 rebuild a whole
+/// set on the box and upload only what changed.
+pub fn skip_manifest_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let maps = PathBuf::from(f("--maps").ok_or("skip-manifest needs --maps DIR")?);
+    let out = PathBuf::from(f("--out").ok_or("skip-manifest needs --out M.tsv")?);
+    let mut prev: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new(); // name -> (uid, md5)
+    for dir in f("--prev").unwrap_or_default().split(',').map(str::trim).filter(|d| !d.is_empty()) {
+        let mut files: Vec<PathBuf> = std::fs::read_dir(dir).map_err(|e| format!("{dir}: {e}"))?.flatten().map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with("results-") && n.ends_with(".tsv")).unwrap_or(false)).collect();
+        files.sort();
+        for p in files {
+            for line in std::fs::read_to_string(&p).unwrap_or_default().lines().skip(1) {
+                let c: Vec<&str> = line.split('\t').collect();
+                if c.len() >= 8 && c[7] == "IDENTICAL" && c[6] != "-" {
+                    prev.insert(c[1].to_string(), (c[2].to_string(), c[6].to_string()));
+                }
+            }
+        }
+    }
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(&maps).map_err(|e| format!("{}: {e}", maps.display()))?.flatten().map(|e| e.path()).filter(|p| p.to_str().map(|s| s.ends_with(".Map.Gbx")).unwrap_or(false)).collect();
+    entries.sort();
+    let (mut skipped, mut upload) = (0usize, 0usize);
+    let mut m = String::new();
+    for p in &entries {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").trim_end_matches(".Map.Gbx").to_string();
+        let bytes = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        let md5 = md5_hex(&bytes);
+        match prev.get(&name) {
+            Some((uid, pm)) if *pm == md5 => {
+                m.push_str(&format!("{}\t{name}\t{uid}\tskip\t{md5}\n", p.display()));
+                skipped += 1;
+            }
+            _ => {
+                m.push_str(&format!("{}\t{name}\n", p.display()));
+                upload += 1;
+            }
+        }
+    }
+    std::fs::write(&out, m).map_err(|e| format!("{}: {e}", out.display()))?;
+    println!("skip-manifest: {} maps, {upload} to upload, {skipped} already on Nadeo -> {}", entries.len(), out.display());
+    Ok(())
+}
+
 pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let manifest = PathBuf::from(f("--manifest").ok_or("publish-batch needs --manifest M.tsv")?);
