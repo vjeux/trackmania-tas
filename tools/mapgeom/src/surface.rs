@@ -348,7 +348,35 @@ pub fn plan(store: &mut DataStore, idx: &mut BlockInfoIndex, maps: &[std::path::
     Ok(rows)
 }
 
+/// The plan for one block model; under a WET surface the START block's row
+/// carries `wetpad deck=<h>` — the height of its driving deck in the block's
+/// frame — for `tmmaps surface`, which puts a free `PlatformWaterRampBase`
+/// under the start so its shallow water (a 32×2×32 volume, the sheet at +2.0)
+/// stands 0.4 m over the deck: the car spawns with its wheels in water and
+/// carries wet tyres for the whole run (TM2020 tyres do not dry: the Fall
+/// 2024-25 "Pure Wet Icy Wood" WR reads wetness 1.0 for 94 s over dry wood
+/// and ice after exactly this kind of start — a PlatformWaterRampBase under
+/// the spawn; measured here: wetness 0 → 1.0 in 1.5 s of water contact, and
+/// a car that left the water at 0.81 held 0.81 for the 7 s it kept falling).
+/// The Water START twins were tried and refused: `RoadWaterStart` drives on
+/// a floor 1 m under the tech deck (the car exits under the next block),
+/// `PlatformWaterStart` renamed in place has no floor at all (the car sinks).
 fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: usize, flags: &[u32], s: &str, wet: bool) -> PlanRow {
+    let mut row = plan_one_dry(store, idx, name, count, flags, s);
+    if wet && !name.contains('\\') && !name.ends_with("_CustomBlock") {
+        if let Some(p) = idx.path_for(name) {
+            if let Ok(bi) = idx.load(store, &p).cloned() {
+                if bi.waypoint_type == Some(0) {
+                    let deck = base_prefab(&bi).and_then(|pf| deck_level(store, &pf)).unwrap_or(2.0);
+                    row.detail.push_str(&format!("; wetpad deck={deck}"));
+                }
+            }
+        }
+    }
+    row
+}
+
+fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: usize, flags: &[u32], s: &str) -> PlanRow {
     let mk = |action: Action, target: &str, detail: String| PlanRow { name: name.to_string(), count, action, target: target.to_string(), dy: 0, detail };
     // an embedded custom block record (`X.Block.Gbx_CustomBlock`) is its author's
     // own mesh: no pack twin
@@ -360,16 +388,15 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
         return mk(Action::Keep, "", "not a surface family".into());
     };
     // a deck-only surface (no block family of its own) leaves the terrain-like
-    // families alone — a wet plan still looks at a START block below
-    let terrain_kept = deck_only(s) && is_terrain_family(name);
-    if terrain_kept && !(wet && name.contains("Start")) {
+    // families alone
+    if deck_only(s) && is_terrain_family(name) {
         return mk(Action::Keep, "", format!("terrain family: no {s} form, left as is"));
     }
     // the wall-ride family IS wood (TrackWall = Wood 14)
     if s == "Wood" && name.starts_with("TrackWall") {
         return mk(Action::Same, name, "wall ride: wood already".into());
     }
-    if cand == name && !wet {
+    if cand == name {
         return mk(Action::Same, name, format!("already {s}"));
     }
     let Some(src_path) = idx.path_for(name) else {
@@ -379,42 +406,6 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
         Ok(b) => b.clone(),
         Err(e) => return mk(Action::Keep, "", format!("source model unreadable: {e}")),
     };
-    // WET: the start block becomes its Water twin when that twin is the same
-    // shape (deck 2.0: every Platform<S>Start, RoadTechStart); a start whose
-    // water twin differs (RoadDirtStart 0.5, RoadBumpStart 2.75, RoadIceStart's
-    // pad at 10) falls through to the surface's own plan and is reported
-    if wet && src.waypoint_type == Some(0) {
-        if let Some(cw) = candidate(name, "Water") {
-            if cw == name {
-                return mk(Action::Same, name, "wet: already a water start".into());
-            }
-            match idx.path_for(&cw) {
-                Some(tp) => {
-                    if let Ok(twin) = idx.load(store, &tp).cloned() {
-                        let (sp, tp2) = (base_prefab(&src), base_prefab(&twin));
-                        let stem = |p: &Option<String>| p.as_deref().map(|p| p.rsplit('\\').next().unwrap_or(p).to_string());
-                        let (ls, lt) = (sp.as_deref().and_then(|p| deck_level(store, p)), tp2.as_deref().and_then(|p| deck_level(store, p)));
-                        let same_shape = sp == tp2 || (stem(&sp) == stem(&tp2) && matches!((ls, lt), (Some(a), Some(b)) if (a - b).abs() < 0.3));
-                        if same_shape {
-                            if let Ok(detail) = compare(&src, &twin, 0) {
-                                if flags.iter().all(|f| record_fits(&src, &twin, *f).is_ok()) {
-                                    return mk(Action::Rename, &cw, format!("wet start: the water twin (shallow water over the same deck); {detail}"));
-                                }
-                            }
-                        }
-                        eprintln!("wet: start block {name}: water twin {cw} is another shape (deck {ls:?} vs {lt:?}) — the start stays dry");
-                    }
-                }
-                None => eprintln!("wet: start block {name}: no water twin {cw} in the pack — the start stays dry"),
-            }
-        }
-    }
-    if terrain_kept {
-        return mk(Action::Keep, "", format!("terrain family: no {s} form, left as is"));
-    }
-    if cand == name {
-        return mk(Action::Same, name, format!("already {s}"));
-    }
     // A block with a WATER VOLUME (pool floors `PlatformWater*`, `RoadWater*`, the
     // pool edges) is never baked: an item carries no volume, so the copy would
     // drain the pool (the tiny converter's lesson, TINY.md "Water"). Renamed when

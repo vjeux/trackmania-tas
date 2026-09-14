@@ -39,6 +39,8 @@ pub struct PlanRec {
     pub new_pos: Option<[f32; 3]>,
     pub delete: bool,
     pub free: bool,
+    /// the planner's free-text note (`wetpad deck=<h>` on a wet plan's start block)
+    pub detail: String,
 }
 
 pub fn read_plan(path: &std::path::Path) -> Vec<PlanRec> {
@@ -76,6 +78,7 @@ pub fn read_plan(path: &std::path::Path) -> Vec<PlanRec> {
             new_pos,
             delete: col("delete") == "1",
             free: col("free") == "1",
+            detail: head.iter().position(|h| h == "detail").and_then(|k| f.get(k)).unwrap_or(&"").to_string(),
         });
     }
     out
@@ -272,6 +275,30 @@ pub fn cmd(args: &[String]) {
         println!("  stage 3b: {} blocks became items ({} models, archive {} of {} entries, {} bytes): {}", item_specs.len(), names.len(), kept.len(), before, zip.len(), tally.iter().map(|(k, v)| format!("{k}×{v}")).collect::<Vec<_>>().join(" "));
     }
 
+    // 3c. the WET pad: a free `PlatformWaterRampBase` under every START block the
+    // plan marked `wetpad deck=<h>` — the block's own cell and quarter turn, its
+    // origin 1.6 m under the start's driving deck, so the shallow water (a 32×2×32
+    // volume, sheet at +2.0) stands 0.4 m over the deck the car spawns on: wet
+    // tyres within 1.5 s, for the whole run (TM2020 tyres do not dry). Flags
+    // 0x200000 (air, additional variant 0: the `NoOut` edge clips) are the
+    // record the Altered Nadeo "Pure Wet Icy Wood" maps carry under their spawn.
+    let mut wet_pads: Vec<crate::map::FreeBlockSpec> = Vec::new();
+    for r in plan.iter().filter(|r| r.detail.contains("wetpad deck=")) {
+        let b = &source.blocks[r.index];
+        let deck: f32 = r.detail.split("wetpad deck=").nth(1).and_then(|t| t.split(|c: char| c == ';' || c.is_whitespace()).next()).and_then(|v| v.parse().ok()).unwrap_or(2.0);
+        let origin = crate::tiny::block_origin(b, (1, 1));
+        let yaw = crate::tiny::block_yaw(b);
+        let pos = [origin[0], origin[1] + deck - 1.6, origin[2]];
+        println!("  stage 3c: wet pad under #{} {} — PlatformWaterRampBase (free) at ({:.1}, {:.2}, {:.1}) yaw {:.3}, deck {deck} (water 0.4 m over it)", r.index, r.name, pos[0], pos[1], pos[2], yaw);
+        wet_pads.push(crate::map::FreeBlockSpec { name: "PlatformWaterRampBase".into(), author: None, flags: 0x0020_0000, pos, rot: [yaw, 0.0, 0.0], grid: None });
+    }
+    if !wet_pads.is_empty() {
+        let mut m = MapFile::load(&tmp3);
+        let r = m.remove_and_add_blocks(|_| false, |_| false, &wet_pads);
+        m.write_to(&tmp3).expect("write wet pad stage");
+        println!("  stage 3c: {} free water block(s) added (Id table {} -> {})", wet_pads.len(), r.table_before, r.table_after);
+    }
+
     // 4. password, name, ghost, lightmap
     let mut m = MapFile::load(&tmp3);
     m.remove_password();
@@ -300,10 +327,10 @@ pub fn cmd(args: &[String]) {
     // colors are looking really weird"). With deletions the chunk goes (the game
     // computes a lightmap at load); a rename-only map keeps its bake (same mesh,
     // same uv). `--strip-lightmap` forces, `--keep-lightmap` keeps it regardless.
-    let strip = cli::has(args, "--strip-lightmap") || (!deletions.is_empty() && !cli::has(args, "--keep-lightmap"));
+    let strip = cli::has(args, "--strip-lightmap") || ((!deletions.is_empty() || !wet_pads.is_empty()) && !cli::has(args, "--keep-lightmap"));
     if strip {
         let n = m.strip_lightmap();
-        println!("  lightmap: {n} bytes stripped ({}; the game computes one at load)", if deletions.is_empty() { "--strip-lightmap" } else { "block records were deleted: the stored entries would shift" });
+        println!("  lightmap: {n} bytes stripped ({}; the game computes one at load)", if deletions.is_empty() && wet_pads.is_empty() { "--strip-lightmap" } else { "block records were deleted or added: the stored entries would shift" });
     }
     m.write_to(&out).expect("write output");
     for p in [&tmp1, &tmp2, &tmp3] {

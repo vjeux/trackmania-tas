@@ -115,11 +115,15 @@ string WheelRow(CSceneVehicleVisState@ vs, CSmScriptPlayer@ s) {
         + "\t" + int(vs.RLGroundContactMaterial) + "\t" + int(vs.RRGroundContactMaterial)
         + "\t" + vs.FLSlipCoef + "\t" + vs.FRSlipCoef + "\t" + vs.RLSlipCoef + "\t" + vs.RRSlipCoef
         + "\t" + vs.FLDamperLen + "\t" + vs.FRDamperLen + "\t" + vs.RLDamperLen + "\t" + vs.RRDamperLen
-        + "\t" + vs.CurGear + "\t" + vs.GroundDist;
+        + "\t" + vs.CurGear + "\t" + vs.GroundDist
+        // the car-state columns of the surface variants (2026-09-13): tyre wetness
+        // (water at the start makes a wet run — the "Wet …" alterations), water
+        // immersion, front-left icing and tyre wear
+        + "\t" + vs.WetnessValue01 + "\t" + vs.WaterImmersionCoef + "\t" + vs.FLIcing01 + "\t" + vs.FLTireWear01;
 }
 
 string WheelHeader() {
-    return "wall_ms\tt_ms\tx\ty\tz\tvx\tvy\tvz\tfrontspeed\tgas\tbrake\tsteer\tground\tfl\tfr\trl\trr\tflslip\tfrslip\trlslip\trrslip\tfldamp\tfrdamp\trldamp\trrdamp\tgear\tgrounddist\n";
+    return "wall_ms\tt_ms\tx\ty\tz\tvx\tvy\tvz\tfrontspeed\tgas\tbrake\tsteer\tground\tfl\tfr\trl\trr\tflslip\tfrslip\trlslip\trrslip\tfldamp\tfrdamp\trldamp\trrdamp\tgear\tgrounddist\twetness\timmersion\tflicing\tfltirewear\n";
 }
 
 string WheelState() {

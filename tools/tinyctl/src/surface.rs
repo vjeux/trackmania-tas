@@ -368,8 +368,35 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                                     sargs.push(v);
                                 }
                             }
+                            // --orig-frames-box DIR: a directory ON THE BOX holding the ORIGINAL side's
+                            // frames (`cmp-origNN<view>-o.png`). The source map and its cameras are the
+                            // same for every surface variant, so the original is shot ONCE: when the
+                            // frames for this map and these views are there, only the variant side is
+                            // shot (`--only t`) and the cached frames stand in for the comparison;
+                            // otherwise both sides are shot and the original's frames are cached.
+                            let wsx = crate::wsx::Wsx::new(args);
+                            let remote_dir = format!("/mnt/c/Users/vjeux/tinyshots/{stag}");
+                            let cache = f("--orig-frames-box");
+                            let mut cached = false;
+                            if let Some(cache) = &cache {
+                                let checks: Vec<String> = keep.iter().map(|v| format!("test -f {cache}/cmp-orig{nn}{v}-o.png")).collect();
+                                if wsx.sh(&format!("{} && echo CACHED", checks.join(" && "))).map(|s| s.contains("CACHED")).unwrap_or(false) {
+                                    let cps: Vec<String> = keep.iter().map(|v| format!("cp -f {cache}/cmp-orig{nn}{v}-o.png {remote_dir}/cmp-{stag}{v}-o.png")).collect();
+                                    wsx.sh(&format!("mkdir -p {remote_dir} && {}", cps.join(" && ")))?;
+                                    sargs.push("--only".into());
+                                    sargs.push("t".into());
+                                    cached = true;
+                                    println!("  original frames from the box cache {cache} (variant side only)");
+                                }
+                            }
                             match crate::shoot::cmd(&sargs) {
                                 Ok(()) => {
+                                    if let (Some(cache), false) = (&cache, cached) {
+                                        let cps: Vec<String> = keep.iter().map(|v| format!("cp -f {remote_dir}/cmp-{stag}{v}-o.png {cache}/cmp-orig{nn}{v}-o.png")).collect();
+                                        if let Err(e) = wsx.sh(&format!("mkdir -p {cache} && {}", cps.join(" && "))) {
+                                            eprintln!("  original frames not cached: {e}");
+                                        }
+                                    }
                                     let n_jpg = std::fs::read_dir(&frames_dir).map(|rd| rd.filter(|e| e.as_ref().map(|e| e.file_name().to_string_lossy().starts_with(&format!("cmp-{stag}")) && e.file_name().to_string_lossy().ends_with(".jpg")).unwrap_or(false)).count()).unwrap_or(0);
                                     frames = format!("{n_jpg} pairs");
                                     let tsv = frames_dir.join(format!("cmpdiff-{stag}.tsv"));
