@@ -41,6 +41,8 @@ pub struct PlanRec {
     pub free: bool,
     /// the planner's free-text note (`wetpad deck=<h>` on a wet plan's start block)
     pub detail: String,
+    /// the flags word the renamed record takes (`new_flags` column; `-` = unchanged)
+    pub new_flags: Option<u32>,
 }
 
 pub fn read_plan(path: &std::path::Path) -> Vec<PlanRec> {
@@ -79,6 +81,7 @@ pub fn read_plan(path: &std::path::Path) -> Vec<PlanRec> {
             delete: col("delete") == "1",
             free: col("free") == "1",
             detail: head.iter().position(|h| h == "detail").and_then(|k| f.get(k)).unwrap_or(&"").to_string(),
+            new_flags: head.iter().position(|h| h == "new_flags").and_then(|k| f.get(k)).filter(|v| **v != "-" && !v.is_empty()).map(|v| u32::from_str_radix(v.trim(), 16).unwrap_or_else(|_| panic!("{}:{}: new_flags {v:?}", path.display(), i + 1))),
         });
     }
     out
@@ -203,9 +206,18 @@ pub fn cmd(args: &[String]) {
             moved += 1;
         }
     }
+    // an additional variant the twin lacks -> the twin's base variant (the special pads)
+    let mut reflagged = 0usize;
+    for r in &renames {
+        if let Some(nf) = r.new_flags {
+            let ni = new_index[&r.index];
+            m.set_block_flags(ni, nf);
+            reflagged += 1;
+        }
+    }
     m.set_map_uid(&new_uid);
     m.write_to(&tmp3).expect("write stage 3");
-    println!("  stage 3: {moved} records moved; uid {old_uid} -> {new_uid}");
+    println!("  stage 3: {moved} records moved, {reflagged} re-flagged to the twin's base variant; uid {old_uid} -> {new_uid}");
 
     // 3b. items: the baked blocks' item placements appended (clones of an
     // existing record, then model / author / collection / position / frame /

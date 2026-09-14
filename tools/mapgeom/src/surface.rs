@@ -231,6 +231,12 @@ pub struct PlanRow {
     /// record so its deck lands where the source deck was (RoadIce: 1)
     pub dy: i32,
     pub detail: String,
+    /// record flags the twin cannot resolve as they are, and the flags it takes
+    /// instead: the Tech special pads have an `add0` (no-pillar) variant the
+    /// Ice/Grass/Plastic/Dirt twins do not — the same 1-unit pad under
+    /// `air/base`. Until 2026-09-14 the model was a Mismatch and 337 boosters
+    /// per set stayed Tech (boasy: "ice is ice, but the boosters are not ice").
+    pub flag_rewrites: Vec<(u32, u32)>,
 }
 
 fn cells_of(v: &Option<crate::blockinfo::Variant>) -> Vec<[i32; 3]> {
@@ -383,7 +389,7 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
 }
 
 fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: usize, flags: &[u32], s: &str) -> PlanRow {
-    let mk = |action: Action, target: &str, detail: String| PlanRow { name: name.to_string(), count, action, target: target.to_string(), dy: 0, detail };
+    let mk = |action: Action, target: &str, detail: String| PlanRow { name: name.to_string(), count, action, target: target.to_string(), dy: 0, detail, flag_rewrites: Vec::new() };
     // an embedded custom block record (`X.Block.Gbx_CustomBlock`) is its author's
     // own mesh: no pack twin
     if name.contains('\\') || name.ends_with("_CustomBlock") {
@@ -465,10 +471,22 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     };
     match compare(&src, &twin, dy) {
         Ok(mut detail) => {
+            let mut flag_rewrites: Vec<(u32, u32)> = Vec::new();
             for f in flags {
                 if let Err(e) = record_fits(&src, &twin, *f) {
+                    // the twin lacks this ADDITIONAL variant (bits 21..27): try its base
+                    // variant of the same ground/air family — the special pads' add0 is
+                    // the pillar-less form of the very same 1-unit pad
+                    let base = *f & !(0x7f << 21);
+                    if base != *f && record_fits(&src, &twin, base).is_ok() {
+                        flag_rewrites.push((*f, base));
+                        continue;
+                    }
                     return mk(Action::Mismatch, &cand, e);
                 }
+            }
+            if !flag_rewrites.is_empty() {
+                detail.push_str(&format!("; {} flag form(s) taken to the twin's base variant ({})", flag_rewrites.len(), flag_rewrites.iter().map(|(a, b)| format!("{a:08x}->{b:08x}")).collect::<Vec<_>>().join(",")));
             }
             if src.mat_modifier != twin.mat_modifier {
                 detail.push_str(&format!("; modifier {:?} -> {:?}", src.mat_modifier.as_ref().map(|m| m.1.as_str()).unwrap_or("-"), twin.mat_modifier.as_ref().map(|m| m.1.as_str()).unwrap_or("-")));
@@ -483,6 +501,7 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
             }
             let mut r = mk(Action::Rename, &target, format!("{detail}{dress_note}"));
             r.dy = dy;
+            r.flag_rewrites = flag_rewrites;
             r
         }
         // a water block whose twin differs: kept as water (an item has no volume)
@@ -514,7 +533,7 @@ pub fn read_plan(path: &Path) -> Result<Vec<PlanRow>, String> {
             return Err(format!("{}:{}: short row", path.display(), i + 1));
         }
         let action = Action::parse(f[2]).ok_or_else(|| format!("{}:{}: action `{}`", path.display(), i + 1, f[2]))?;
-        out.push(PlanRow { name: f[0].to_string(), count: f[1].parse().unwrap_or(0), action, target: f[3].to_string(), dy: f.get(4).and_then(|v| v.parse().ok()).unwrap_or(0), detail: f.get(5).unwrap_or(&"").to_string() });
+        out.push(PlanRow { name: f[0].to_string(), count: f[1].parse().unwrap_or(0), action, target: f[3].to_string(), dy: f.get(4).and_then(|v| v.parse().ok()).unwrap_or(0), flag_rewrites: Vec::new(), detail: f.get(5).unwrap_or(&"").to_string() });
     }
     Ok(out)
 }
@@ -583,6 +602,9 @@ pub struct RecordRow {
     /// `delete`: a pillar record swallowed by the twin's extra cells
     pub delete: bool,
     pub detail: String,
+    /// the flags word the renamed record takes (an additional variant the twin
+    /// lacks, folded onto its base variant); `None` = unchanged
+    pub new_flags: Option<u32>,
 }
 
 /// The height of a prefab's DECK: the y level (0.25 m bins) carrying the most
@@ -674,6 +696,7 @@ pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path,
             new_pos: None,
             delete: false,
             detail: row.detail.clone(),
+            new_flags: row.flag_rewrites.iter().find(|(from, _)| *from == b.flags).map(|(_, to)| *to),
         };
         if row.action == Action::Rename {
             let dy = dy_of.get(&b.name).copied().unwrap_or(0);
@@ -741,10 +764,10 @@ pub fn plan_records(store: &mut DataStore, idx: &mut BlockInfoIndex, map: &Path,
 }
 
 pub fn write_records(path: &Path, rows: &[RecordRow]) -> std::io::Result<()> {
-    let mut s = String::from("index\tname\taction\ttarget\tdir\tflags\tfree\tcell_x\tcell_y\tcell_z\tnew_x\tnew_y\tnew_z\tnew_pos\tdelete\tdetail\n");
+    let mut s = String::from("index\tname\taction\ttarget\tdir\tflags\tfree\tcell_x\tcell_y\tcell_z\tnew_x\tnew_y\tnew_z\tnew_pos\tdelete\tnew_flags\tdetail\n");
     for r in rows {
         s.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{:08x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t{:08x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             r.index,
             r.name,
             r.action.as_str(),
@@ -760,6 +783,7 @@ pub fn write_records(path: &Path, rows: &[RecordRow]) -> std::io::Result<()> {
             r.new_cell[2],
             r.new_pos.map(|p| format!("{},{},{}", p[0], p[1], p[2])).unwrap_or_else(|| "-".into()),
             if r.delete { 1 } else { 0 },
+            r.new_flags.map(|f| format!("{f:08x}")).unwrap_or_else(|| "-".into()),
             r.detail
         ));
     }

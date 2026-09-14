@@ -679,6 +679,10 @@ pub fn all_cmd(args: &[String]) -> Result<(), String> {
                     format!("{part}\tFAILED\tno NN-*.Map.Gbx in {}", src_dir.display())
                 } else {
                     let mut pargs: Vec<String> = nums.clone();
+                    if let Some(l) = f("--label") {
+                        pargs.push("--label".into());
+                        pargs.push(l);
+                    }
                     pargs.extend(["--src-dir".to_string(), src_dir.display().to_string(), "--out-root".into(), part_out.display().to_string(), "--surface".into(), surface.clone(), "--tracker".into(), part_out.join("tracker.tsv").display().to_string(), "--alias-part".into(), part.trim_start_matches('0').to_string(), "--name-style".into(), "everios".into(), "--no-shoot".into(), "--no-publish".into()]);
                     if tmmaps::cli::has(args, "--reuse-build") {
                         pargs.push("--reuse-build".into());

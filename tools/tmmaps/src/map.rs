@@ -1173,6 +1173,20 @@ impl MapFile {
         ));
     }
 
+    /// Rewrite an AUTHORED record's flags word in place — the u32 right after
+    /// its three cell bytes in 0x0304301F (`coord_off + 3`); same length, no
+    /// re-encode. The surface swap uses it to fold an additional variant the
+    /// twin block lacks (the Tech special pads' `add0`) onto the twin's base
+    /// variant (2026-09-14). The caller owns the meaning of the bits; the
+    /// form-changing bits (free 0x20000000, custom 0x40000000, waypoint/skin
+    /// presence) must not change, or the record's tail no longer parses.
+    pub fn set_block_flags(&mut self, block_index: usize, flags: u32) {
+        let b = self.blocks[block_index].clone();
+        let keep = 0x2000_0000 | 0x4000_0000 | 0x0010_0000 | 0x0000_8000;
+        assert_eq!(b.flags & keep, flags & keep, "set_block_flags #{block_index}: a form-changing bit differs ({:08x} -> {flags:08x})", b.flags);
+        self.raw_patches.push((b.coord_off + 3, flags.to_le_bytes().to_vec()));
+    }
+
     /// Move a GENERATED (baked) record to another cell, position-only — the
     /// three cell bytes of its record in 0x03043048 overwritten in place, dir,
     /// flags and model untouched. The "does the game draw THIS record" probe:

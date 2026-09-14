@@ -668,7 +668,13 @@ fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collectio
     // dresses a TrackWall, a PlatformTech deck, a DecoHill as the game dresses
     // them on an ice platform (the folder-shadow rows: look AND physics)
     let forced_mod: Option<String> = std::env::var("TINY_FORCE_MODIFIER").ok().filter(|s| !s.is_empty());
-    let effective_mods: Vec<String> = bi.material_modifier.iter().cloned().chain(key.inherited_mods.split('|').filter(|s| !s.is_empty()).map(String::from)).chain(forced_mod.into_iter()).collect();
+    // The forced folder goes FIRST: a material stem is resolved by the first
+    // folder that has it, so appended last it lost to the block's OWN platform
+    // modifier — an OpenGrassRoad (OpenTechRoad prefab + PlatformGrass) baked
+    // for the plastic set kept its grass deck and grass borders (Everios96,
+    // 2026-09-14 05:10: "Map 01 of Plastic has parts that are still grass").
+    // Stems the forced folder lacks still fall through to the block's own.
+    let effective_mods: Vec<String> = forced_mod.into_iter().chain(bi.material_modifier.iter().cloned()).chain(key.inherited_mods.split('|').filter(|s| !s.is_empty()).map(String::from)).collect();
     let recipe = if let Some(l) = legacy_item { format!("legacy:{l}") } else { format!("{}|wp{:?}|units{:?}|mod{:?}", prefabs.iter().map(|p| format!("{}@{:?}/{:?}", p.0, p.1, p.2)).collect::<Vec<_>>().join(","), bi.waypoint_type, units, effective_mods) };
     if prefabs.is_empty() && legacy_item.is_none() {
         if solids.is_empty() {
