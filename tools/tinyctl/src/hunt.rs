@@ -67,25 +67,38 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             return Err(format!("{}: no such zip", z.display()));
         }
     }
-    wsx.sh(&format!("mkdir -p {box_dir}/zips {box_dir}/results {box_dir}/lanes"))?;
+    shr(&wsx, &format!("mkdir -p {box_dir}/zips {box_dir}/results {box_dir}/lanes"))?;
+    // a previous run's lane runners (an aborted hunt-publish leaves them waiting on
+    // the queue files) would race the new ones: stopped first
+    shr(&wsx, &format!("pkill -f '[s]h {box_dir}/lanes/runner.sh' ; true"))?;
+    // the parts an earlier run published (its results still on the box): pulled so
+    // `done_part` sees them — one tar
+    let had = shr(&wsx, &format!("cd {box_dir}/results 2>/dev/null && ls results-p*.tsv 2>/dev/null | wc -l; true"))?;
+    if had.trim().parse::<usize>().unwrap_or(0) > 0 {
+        shr(&wsx, &format!("cd {box_dir}/results && tar cf {box_dir}/results-prev.tar results-p*.tsv"))?;
+        let local_tar = out_dir.join("results-prev.tar");
+        wsx.pull(&format!("{box_dir}/results-prev.tar"), &local_tar)?;
+        let _ = std::process::Command::new("tar").arg("xf").arg(&local_tar).arg("-C").arg(&out_dir).status();
+        println!("[{:>5.0}s] {} earlier result files pulled from the box", t0.elapsed().as_secs_f64(), had.trim());
+    }
 
     // --- GitHub release (created once with the notes)
     let mut have: std::collections::BTreeMap<String, u64> = Default::default();
     if !no_github {
-        let exists = wsx.sh(&format!("{gh} release view {tag} -R {repo} --json tagName 2>/dev/null | grep -c tagName; true"))?;
+        let exists = shr(&wsx, &format!("{gh} release view {tag} -R {repo} --json tagName 2>/dev/null | grep -c tagName; true"))?;
         if exists.trim() == "0" || exists.trim().is_empty() {
             let notes = notes.as_ref().ok_or("hunt-publish needs --notes README.md to create the release")?;
             let remote_notes = format!("{box_dir}/{}", notes.file_name().unwrap_or_default().to_string_lossy());
-            wsx.push(notes, &remote_notes)?;
-            let out = wsx.sh(&format!("{gh} release create {tag} -R {repo} --title '{}' --notes-file {remote_notes} 2>&1; true", title.replace('\'', "")))?;
+            pushr(&wsx, notes, &remote_notes)?;
+            let out = shr(&wsx, &format!("{gh} release create {tag} -R {repo} --title '{}' --notes-file {remote_notes} 2>&1; true", title.replace('\'', "")))?;
             println!("[{:>5.0}s] release create: {}", t0.elapsed().as_secs_f64(), out.trim());
         } else if let Some(notes) = notes.as_ref() {
             let remote_notes = format!("{box_dir}/{}", notes.file_name().unwrap_or_default().to_string_lossy());
-            wsx.push(notes, &remote_notes)?;
-            let out = wsx.sh(&format!("{gh} release edit {tag} -R {repo} --title '{}' --notes-file {remote_notes} 2>&1; true", title.replace('\'', "")))?;
+            pushr(&wsx, notes, &remote_notes)?;
+            let out = shr(&wsx, &format!("{gh} release edit {tag} -R {repo} --title '{}' --notes-file {remote_notes} 2>&1; true", title.replace('\'', "")))?;
             println!("[{:>5.0}s] release exists; notes refreshed: {}", t0.elapsed().as_secs_f64(), out.trim());
         }
-        let present = wsx.sh(&format!("{gh} release view {tag} -R {repo} --json assets --jq '.assets[] | \"\\(.name)\\t\\(.size)\"' 2>/dev/null; true"))?;
+        let present = shr(&wsx, &format!("{gh} release view {tag} -R {repo} --json assets --jq '.assets[] | \"\\(.name)\\t\\(.size)\"' 2>/dev/null; true"))?;
         have = present.lines().filter_map(|l| l.split_once('\t').and_then(|(n, s)| s.trim().parse().ok().map(|s| (n.trim().to_string(), s)))).collect();
     }
 
@@ -100,8 +113,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let runner = RUNNER_SH.replace("@BOX@", &box_dir).replace("@TINYCTL@", &box_tinyctl);
     let runner_local = out_dir.join("lane-runner.sh");
     std::fs::write(&runner_local, &runner).map_err(|e| e.to_string())?;
-    wsx.push(&runner_local, &format!("{box_dir}/lanes/runner.sh"))?;
-    wsx.sh(&format!("cd {box_dir}/lanes && rm -f lane-*.queue lane-*.done; for k in $(seq 0 {}); do : > lane-$k.queue; nohup setsid sh runner.sh $k > lane-$k.log 2>&1 < /dev/null & done; sleep 1; echo started", lanes - 1))?;
+    pushr(&wsx, &runner_local, &format!("{box_dir}/lanes/runner.sh"))?;
+    shr(&wsx, &format!("cd {box_dir}/lanes && rm -f lane-*.queue lane-*.done; for k in $(seq 0 {}); do : > lane-$k.queue; nohup setsid sh runner.sh $k > lane-$k.log 2>&1 < /dev/null & done; sleep 1; echo started", lanes - 1))?;
     println!("[{:>5.0}s] {lanes} publish lanes running on the box", t0.elapsed().as_secs_f64());
 
     // --- per part: push, gh upload, unzip + manifest, queue
@@ -118,10 +131,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             continue;
         }
         let t1 = Instant::now();
-        wsx.push(&z, &remote_zip)?;
+        pushr(&wsx, &z, &remote_zip)?;
         let mut steps = Vec::new();
         if need_gh {
-            let out = wsx.sh(&format!("{gh} release upload {tag} {remote_zip} -R {repo} --clobber 2>&1; echo rc=$?"))?;
+            let out = shr(&wsx, &format!("{gh} release upload {tag} {remote_zip} -R {repo} --clobber 2>&1; echo rc=$?"))?;
             if !out.contains("rc=0") {
                 return Err(format!("part {part}: gh upload failed: {}", out.trim()));
             }
@@ -130,24 +143,24 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         if need_pub {
             // unzip, the manifest: `NN-<name>.Map.Gbx` -> name without the order prefix
             let script = format!("set -e; rm -rf {box_dir}/p{part}; mkdir -p {box_dir}/p{part}; cd {box_dir}/p{part} && busybox unzip -q -o {remote_zip} && rm -f MAPS.tsv.manifest; : > manifest.tsv; for f in *.Map.Gbx; do n=${{f#??-}}; n=${{n%.Map.Gbx}}; printf '%s\\t%s\\n' \"{box_dir}/p{part}/$f\" \"$n\" >> manifest.tsv; done; wc -l < manifest.tsv");
-            let out = wsx.sh(&script)?;
+            let out = shr(&wsx, &script)?;
             let lane = queued.len() % lanes;
-            wsx.sh(&format!("echo {part} >> {box_dir}/lanes/lane-{lane}.queue"))?;
+            shr(&wsx, &format!("echo {part} >> {box_dir}/lanes/lane-{lane}.queue"))?;
             queued.push(part.clone());
             steps.push("queued");
             println!("[{:>5.0}s] part {part} ({}/{}): {} maps staged → lane {lane}; {} in {:.0} s", t0.elapsed().as_secs_f64(), i + 1, parts.len(), out.trim(), steps.join(" + "), t1.elapsed().as_secs_f64());
         } else {
             println!("[{:>5.0}s] part {part} ({}/{}): {} in {:.0} s", t0.elapsed().as_secs_f64(), i + 1, parts.len(), steps.join(" + "), t1.elapsed().as_secs_f64());
         }
-        wsx.sh(&format!("rm -f {remote_zip}"))?;
+        shr(&wsx, &format!("rm -f {remote_zip}"))?;
     }
     for k in 0..lanes {
-        wsx.sh(&format!("echo STOP >> {box_dir}/lanes/lane-{k}.queue"))?;
+        shr(&wsx, &format!("echo STOP >> {box_dir}/lanes/lane-{k}.queue"))?;
     }
     // --- wait for the lanes
     let t_wait = Instant::now();
     loop {
-        let out = wsx.sh(&format!("cat {box_dir}/lanes/lane-*.done 2>/dev/null; true"))?;
+        let out = shr(&wsx, &format!("cat {box_dir}/lanes/lane-*.done 2>/dev/null; true"))?;
         let finished = out.lines().filter(|l| l.trim() == "FINISHED").count();
         let done_parts = out.lines().filter(|l| l.trim() != "FINISHED" && !l.trim().is_empty()).count();
         if finished >= lanes {
@@ -182,7 +195,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let log = format!("{box_dir}/rooms.log");
         let done = format!("{box_dir}/rooms.done");
         let job = format!("cd /home/vjeux/shoot/u10s && {box_tinyctl} nadeo-here club-rooms --club {club} --folder '{folder}' --room-prefix '{room_prefix}' --parts-dir {box_dir}/results --outdir /home/vjeux/shoot/hunt --no-lock; rc=$?; if [ $rc = 0 ]; then echo OK rooms > {done}; else echo FAILED rc=$rc > {done}; fi");
-        wsx.sh(&format!("rm -f {done}; nohup setsid sh -c '{}' > {log} 2>&1 < /dev/null &", job.replace('\'', "'\\''")))?;
+        shr(&wsx, &format!("rm -f {done}; nohup setsid sh -c '{}' > {log} 2>&1 < /dev/null &", job.replace('\'', "'\\''")))?;
         let text = wsx.wait_done(&done, &log, Duration::from_secs(3600), "club-rooms")?;
         println!("[{:>5.0}s] rooms: {}", t0.elapsed().as_secs_f64(), text.trim());
         let rooms_tsv = format!("/home/vjeux/shoot/hunt/club-{club}-rooms-{}.tsv", folder.replace(' ', "_"));
@@ -190,7 +203,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let _ = wsx.pull(&log, &out_dir.join("rooms.log"));
     }
     if !no_github {
-        let present = wsx.sh(&format!("{gh} release view {tag} -R {repo} --json assets --jq '.assets[] | \"\\(.name)\\t\\(.size)\"' 2>/dev/null; true"))?;
+        let present = shr(&wsx, &format!("{gh} release view {tag} -R {repo} --json assets --jq '.assets[] | \"\\(.name)\\t\\(.size)\"' 2>/dev/null; true"))?;
         let have: std::collections::BTreeMap<String, u64> = present.lines().filter_map(|l| l.split_once('\t').and_then(|(n, s)| s.trim().parse().ok().map(|s| (n.trim().to_string(), s)))).collect();
         let mut bad = 0usize;
         for p in &parts {
@@ -242,3 +255,35 @@ while :; do
 done
 echo FINISHED >> @BOX@/lanes/lane-$lane.done
 "#;
+
+/// `wsx sh` with patience: the bridge is shared (another session's multi-GB
+/// push makes a 150 s command time out); four attempts a minute apart.
+fn shr(wsx: &Wsx, cmd: &str) -> Result<String, String> {
+    let mut last = String::new();
+    for attempt in 1..=4 {
+        match wsx.sh(cmd) {
+            Ok(o) => return Ok(o),
+            Err(e) => {
+                last = e;
+                eprintln!("  wsx sh attempt {attempt} failed: {} — retrying in 60 s", last.lines().next().unwrap_or(""));
+                std::thread::sleep(Duration::from_secs(60));
+            }
+        }
+    }
+    Err(last)
+}
+
+fn pushr(wsx: &Wsx, local: &Path, remote: &str) -> Result<(), String> {
+    let mut last = String::new();
+    for attempt in 1..=4 {
+        match wsx.push(local, remote) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last = e;
+                eprintln!("  wsx push attempt {attempt} failed: {} — retrying in 60 s", last.lines().next().unwrap_or(""));
+                std::thread::sleep(Duration::from_secs(60));
+            }
+        }
+    }
+    Err(last)
+}
