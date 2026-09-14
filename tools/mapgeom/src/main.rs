@@ -1590,6 +1590,99 @@ fn main() {
                 println!("extracted {} files to {}", files.len(), dir);
             }
         }
+        // mapgeom custom-census MAP... --out census.tsv
+        //   every distinct custom ITEM the maps embed (the author's .Item.gbx files a
+        //   record places), with what decides "convert or scenery": maps, placements,
+        //   footprint, drivable deck area of its collision, road materials, verdict.
+        //   Everios96 / vjeux 2026-09-14 14:31–14:39: "classify the item types".
+        "custom-census" => {
+            let out = flag(&a.rest, "--out").map(std::path::PathBuf::from).unwrap_or_else(|| die("custom-census needs --out TSV".to_string()));
+            let maps: Vec<String> = a.rest[1..].iter().filter(|x| !x.starts_with("--") && x.ends_with(".Map.Gbx")).cloned().collect();
+            // key: the model ident as the records name it (lowercased)
+            struct Row { ident: String, maps: std::collections::BTreeSet<String>, placements: usize, bytes: usize, dims: [f32; 3], deck_area: f32, drivable_area: f32, total_area: f32, materials: std::collections::BTreeMap<String, usize>, note: String }
+            let mut rows: std::collections::BTreeMap<String, Row> = std::collections::BTreeMap::new();
+            for mp in &maps {
+                let m = tmmaps::map::MapFile::load(std::path::Path::new(mp));
+                let files = mapgeom::embedded::files(&m).unwrap_or_default();
+                if files.is_empty() {
+                    continue;
+                }
+                let map_name = std::path::Path::new(mp).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                // records per model
+                let mut per_model: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+                for it in &m.items {
+                    *per_model.entry(it.model.to_ascii_lowercase()).or_default() += 1;
+                }
+                for (model_l, n) in per_model {
+                    if !model_l.ends_with(".item.gbx") {
+                        continue;
+                    }
+                    let want = format!("items\\{model_l}");
+                    let Some((_, bytes)) = files.iter().find(|(k, _)| {
+                        let k = k.replace('/', "\\").to_ascii_lowercase();
+                        k == want || k == model_l || k.ends_with(&format!("\\{want}"))
+                    }) else { continue };
+                    let e = rows.entry(model_l.clone()).or_insert_with(|| Row { ident: model_l.clone(), maps: Default::default(), placements: 0, bytes: bytes.len(), dims: [0.0; 3], deck_area: 0.0, drivable_area: 0.0, total_area: 0.0, materials: Default::default(), note: String::new() });
+                    e.maps.insert(map_name.clone());
+                    e.placements += n;
+                    if e.note.is_empty() && e.total_area == 0.0 {
+                        match mapgeom::static_item::build::static_item_from_item_report(bytes, "X.Item.Gbx", "X.Item.Gbx", 1.0, 26) {
+                            Ok((_, merged)) => {
+                                let mut lo = [f32::MAX; 3];
+                                let mut hi = [f32::MIN; 3];
+                                for v in &merged.surf_vertices {
+                                    for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); }
+                                }
+                                if merged.surf_vertices.is_empty() {
+                                    for vis in &merged.visuals {
+                                        if let Some(mn) = vis.visual.main.as_ref() {
+                                            let b = mn.bounding_box;
+                                            for k in 0..3 { lo[k] = lo[k].min(b[k]); hi[k] = hi[k].max(b[k + 3]); }
+                                        }
+                                    }
+                                }
+                                if lo[0] <= hi[0] {
+                                    e.dims = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+                                }
+                                for t in &merged.surf_triangles {
+                                    let p = |i: u32| merged.surf_vertices[i as usize];
+                                    let (a1, b1, c1) = (p(t.indices[0]), p(t.indices[1]), p(t.indices[2]));
+                                    let u = [b1[0] - a1[0], b1[1] - a1[1], b1[2] - a1[2]];
+                                    let w = [c1[0] - a1[0], c1[1] - a1[1], c1[2] - a1[2]];
+                                    let cx = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+                                    let area = 0.5 * (cx[0] * cx[0] + cx[1] * cx[1] + cx[2] * cx[2]).sqrt();
+                                    // up-facing only (a deck you drive on), normal.y > 0.5
+                                    let up = if area > 0.0 { cx[1] / (2.0 * area) } else { 0.0 };
+                                    e.total_area += area;
+                                    if up > 0.5 {
+                                        if mapgeom::static_item::merged::DECK_LIKE_PHYSICS.contains(&t.material_id) { e.deck_area += area; }
+                                        if mapgeom::static_item::merged::ALL_DRIVABLE_PHYSICS.contains(&t.material_id) { e.drivable_area += area; }
+                                    }
+                                }
+                                for mat in &merged.materials {
+                                    if let Some(l) = mat.link() {
+                                        *e.materials.entry(l.rsplit('\\').next().unwrap_or(l).to_string()).or_default() += 1;
+                                    }
+                                }
+                                if merged.surf_triangles.is_empty() {
+                                    e.note = "no collision".into();
+                                }
+                            }
+                            Err(err) => e.note = format!("unreadable: {err}"),
+                        }
+                    }
+                }
+            }
+            let mut o = String::from("ident\tmaps\tplacements\tbytes\tdx\tdy\tdz\tdeck_area_m2\tdrivable_area_m2\ttotal_area_m2\tverdict\tmaterials\tnote\n");
+            for r in rows.values() {
+                let road_mat = r.materials.keys().any(|k| k.starts_with("Road") || k.starts_with("Platform") || k.starts_with("TrackWall") || k.starts_with("OpenTech") || k == "TrackBorders");
+                let verdict = if r.deck_area >= 6.0 && r.dims[0].max(r.dims[2]) >= 3.0 { "CONVERT" } else if r.drivable_area >= 6.0 && road_mat { "CONVERT" } else if r.drivable_area >= 6.0 { "review" } else { "scenery" };
+                let mats: Vec<String> = r.materials.iter().map(|(k, v)| format!("{k}×{v}")).collect();
+                o.push_str(&format!("{}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{}\t{}\t{}\n", r.ident, r.maps.len(), r.placements, r.bytes, r.dims[0], r.dims[1], r.dims[2], r.deck_area, r.drivable_area, r.total_area, verdict, mats.join(" "), r.note));
+            }
+            std::fs::write(&out, o).unwrap_or_else(|e| die(e.to_string()));
+            println!("{} distinct custom items over {} maps -> {}", rows.len(), maps.len(), out.display());
+        }
         "tiny-library" => {
             let mut store = open(&a);
             let map = std::path::Path::new(a.rest.get(1).expect("tiny-library needs MAP"));
