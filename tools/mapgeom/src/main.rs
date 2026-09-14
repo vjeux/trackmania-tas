@@ -1730,6 +1730,7 @@ fn main() {
                     (k.to_string(), v.to_string())
                 }).collect();
                 let strict = a.rest.iter().any(|x| x == "--texmap-strict");
+                let atlas = a.rest.iter().any(|x| x == "--atlas");
                 let planar: Option<f32> = flag(&a.rest, "--planar-uv").map(|s| s.parse().unwrap_or_else(|_| die("--planar-uv METRES".into())));
                 let m = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
                 let files = mapgeom::embedded::files(&m).unwrap_or_else(die);
@@ -1809,6 +1810,9 @@ fn main() {
                     let bytes = &owned[..];
                     let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
                     let material_of = |link: &str| -> Option<String> {
+                        // --atlas: keep the material LINK as the part's set; the atlas step
+                        // below packs every link's texture into one Details_B and remaps uvs
+                        if atlas { return Some(link.to_string()); }
                         for (k, v) in &texmap {
                             if link == k || link.ends_with(&format!("\\{k}")) || link.contains(k.as_str()) { return if v == "-" { None } else { Some(v.clone()) }; }
                         }
@@ -1837,6 +1841,98 @@ fn main() {
             if parts.is_empty() {
                 for line in &report { eprintln!("  {line}"); }
                 die::<()>("nothing to build: --cube SIZE or --map … --items …".into());
+            }
+            // --atlas: every material of the placed items packed into ONE texture on the default
+            // set (the shape proven to render: one material id, Details geometry, Deflate zip).
+            // Each distinct material link gets a 512x512 cell of a grid; uvs are wrapped into
+            // the cell. --season ice|fall recolours the leaf cells (links containing "Branch",
+            // "Leaf" or "Foliage") and lightly frosts the rest for ice. Textures come from
+            // --items-dir (`<Name>.dds`, `<Name>_D.dds`, a TDOSN_/TDSN_ prefix stripped);
+            // a link without a file gets a flat colour. 2026-09-14: the real palms.
+            let mut atlas_tex: Option<(u32, u32, Vec<u8>)> = None;
+            if a.rest.iter().any(|x| x == "--atlas") {
+                let items_dir = flag(&a.rest, "--items-dir").unwrap_or_else(|| ".".to_string());
+                let season = flag(&a.rest, "--season").unwrap_or_else(|| "summer".to_string());
+                let mut links: Vec<String> = Vec::new();
+                for p in &parts { if !links.contains(&p.texset) { links.push(p.texset.clone()); } }
+                links.sort();
+                const CELL: u32 = 512;
+                let cols = (links.len() as f32).sqrt().ceil().max(1.0) as u32;
+                let rows = ((links.len() as u32) + cols - 1) / cols;
+                let (aw, ah) = (cols * CELL, rows * CELL);
+                let mut canvas = vec![0u8; (aw * ah * 4) as usize];
+                let leafy = |l: &str| { let ll = l.to_lowercase(); ll.contains("branch") || ll.contains("leaf") || ll.contains("foliage") };
+                let grassy = |l: &str| { let ll = l.to_lowercase(); ll.contains("grass") || ll.contains("hill") || ll.contains("platform") };
+                // --atlas-flat MATCH=RRGGBB,…: the colour of a link WITHOUT a texture file
+                // (the hill blocks' pack materials); first substring match wins
+                let flats: Vec<(String, [u8; 4])> = flag(&a.rest, "--atlas-flat").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|kv| {
+                    let (k, v) = kv.split_once('=').unwrap_or_else(|| die(format!("--atlas-flat {kv}: MATCH=RRGGBB")));
+                    let n = u32::from_str_radix(v.trim_start_matches('#'), 16).unwrap_or_else(|_| die(format!("--atlas-flat {kv}: RRGGBB")));
+                    (k.to_lowercase(), [(n >> 16) as u8, (n >> 8) as u8, n as u8, 255])
+                }).collect();
+                let mut cell_of: std::collections::BTreeMap<String, (u32, u32)> = Default::default();
+                for (i, link) in links.iter().enumerate() {
+                    let (col, row) = (i as u32 % cols, i as u32 / cols);
+                    cell_of.insert(link.clone(), (col, row));
+                    // the texture: <stem>.dds / <stem>_D.dds in --items-dir, prefix stripped
+                    let last = link.rsplit(|c| c == '\\' || c == '/').next().unwrap_or(link).to_string();
+                    let stripped = match last.split_once('_') { Some((pre, rest)) if pre.chars().all(|c| c.is_ascii_uppercase()) => rest.to_string(), _ => last.clone() };
+                    let mut found: Option<(u32, u32, Vec<u8>)> = None;
+                    for cand in [format!("{last}.dds"), format!("{last}_D.dds"), format!("{stripped}.dds"), format!("{stripped}_D.dds")] {
+                        let path = std::path::Path::new(&items_dir).join(&cand);
+                        if path.is_file() {
+                            if let Ok(bytes) = std::fs::read(&path) {
+                                if let Ok(t) = mapgeom::static_item::texture::decode_capped_rgba(&bytes, CELL) { found = Some(t); report.push(format!("atlas cell {col},{row}: {link} <- {cand}")); break; }
+                            }
+                        }
+                    }
+                    let (tw, th, trgba) = found.unwrap_or_else(|| {
+                        let ll = link.to_lowercase();
+                        let c: [u8; 4] = match flats.iter().find(|(k, _)| ll.contains(k.as_str())) {
+                            Some((_, c)) => *c,
+                            None if leafy(link) => [62, 150, 40, 255],
+                            None if grassy(link) => [78, 140, 52, 255],
+                            None if ll.contains("dirt") => [139, 107, 62, 255],
+                            None => [110, 110, 105, 255],
+                        };
+                        report.push(format!("atlas cell {col},{row}: {link} <- flat (no texture file)"));
+                        (4, 4, c.iter().cycle().take(64).cloned().collect())
+                    });
+                    let is_leaf = leafy(link);
+                    let is_grass = !is_leaf && grassy(link);
+                    for y in 0..CELL {
+                        for x in 0..CELL {
+                            let sx = (x * tw / CELL).min(tw - 1) as usize;
+                            let sy = (y * th / CELL).min(th - 1) as usize;
+                            let si = (sy * tw as usize + sx) * 4;
+                            let (mut r, mut g, mut b) = (trgba[si] as f32, trgba[si + 1] as f32, trgba[si + 2] as f32);
+                            match (season.as_str(), is_leaf, is_grass) {
+                                ("ice", true, _) => { let l = 0.3 * r + 0.59 * g + 0.11 * b; r = l * 0.5 + 232.0 * 0.5; g = l * 0.5 + 242.0 * 0.5; b = l * 0.5 + 255.0 * 0.5; }
+                                ("ice", _, true) => { let l = 0.3 * r + 0.59 * g + 0.11 * b; r = l * 0.25 + 236.0 * 0.75; g = l * 0.25 + 242.0 * 0.75; b = l * 0.25 + 252.0 * 0.75; }
+                                ("ice", _, _) => { r = r * 0.7 + 215.0 * 0.3; g = g * 0.7 + 222.0 * 0.3; b = b * 0.7 + 235.0 * 0.3; }
+                                ("fall", true, _) => { let m = r.max(g); r = (m * 1.18).min(255.0); g *= 0.55; b *= 0.25; }
+                                ("fall", _, true) => { let l = 0.3 * r + 0.59 * g + 0.11 * b; r = (l * 0.4 + 176.0 * 0.6).min(255.0); g = l * 0.4 + 142.0 * 0.6; b = l * 0.4 + 58.0 * 0.6; }
+                                _ => {}
+                            }
+                            let di = (((row * CELL + y) * aw + col * CELL + x) * 4) as usize;
+                            canvas[di] = r as u8; canvas[di + 1] = g as u8; canvas[di + 2] = b as u8; canvas[di + 3] = 255;
+                        }
+                    }
+                }
+                // remap every part's uvs into its cell (wrapped, with a small inset), one set
+                let inset = 2.0 / CELL as f32;
+                for p in parts.iter_mut() {
+                    let (col, row) = cell_of[&p.texset];
+                    for uv in p.uv.iter_mut() {
+                        let fu = (uv[0] - uv[0].floor()).clamp(inset, 1.0 - inset);
+                        let fv = (uv[1] - uv[1].floor()).clamp(inset, 1.0 - inset);
+                        uv[0] = (col as f32 + fu) / cols as f32;
+                        uv[1] = (row as f32 + fv) / rows as f32;
+                    }
+                    p.texset = texset_default.clone();
+                }
+                println!("atlas: {} material(s) in a {cols}x{rows} grid of {CELL} px cells ({aw}x{ah}), season {season}", links.len());
+                atlas_tex = Some((aw, ah, canvas));
             }
             // --clusters R: a vehicle skin whose geometry reaches far from the car crashes
             // the client (measured 2026-09-13: 20 cards spread over 680 m die, the same 20
@@ -2144,7 +2240,10 @@ fn main() {
                         _ => None,
                     })
                 });
-                let (w, h, rgba) = match tex_for {
+                let atlas_here = if s == &texset_default { atlas_tex.clone() } else { None };
+                let (w, h, rgba) = match (atlas_here, tex_for) {
+                    (Some(t), _) => t,
+                    (None, tex_for) => match tex_for {
                     Some(path) => {
                         let bytes = if std::path::Path::new(&path).is_file() { std::fs::read(&path).unwrap_or_else(|e| die(e.to_string())) } else { store.read(&path).unwrap_or_else(die) };
                         let cap: u32 = flag(&a.rest, "--tex-cap").and_then(|s| s.parse().ok()).unwrap_or(1024);
@@ -2180,6 +2279,7 @@ fn main() {
                             }
                         }
                         None => (512, 512, skin::checker_rgba(512, checker_cells)),
+                    },
                     },
                 };
                 // --tint SET=RRGGBB,…  (or one RRGGBB for every set): multiply the decoded

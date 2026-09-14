@@ -553,9 +553,34 @@ pub fn delblocks(args: &[String]) {
         let keep: std::collections::BTreeSet<String> = tmmaps::cli::flag(&args, "--keep-baked").unwrap_or("").split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
         // --keep-first N: the first N authored blocks stay (the "does ONE block suffice" probe)
         let keep_first: usize = tmmaps::cli::flag(&args, "--keep-first").and_then(|v| v.parse().ok()).unwrap_or(0);
+        // --name PAT[,PAT…]: drop only the AUTHORED blocks whose name contains a pattern
+        // (case-insensitive); the generated blocks stay. The scenery-swap use: take a
+        // campaign map's Deco hill/platform/cliff blocks out so parked ghosts can carry
+        // them (2026-09-14). Without --name the old behaviour: everything goes.
+        let pats: Vec<String> = tmmaps::cli::flag(&args, "--name").unwrap_or("").split(',').filter(|s| !s.is_empty()).map(|s| s.to_lowercase()).collect();
         let mut m = tmmaps::map::MapFile::load(&src);
         let (nb, nk) = (m.blocks.len(), m.baked.len());
-        let r = m.remove_blocks(|b| b.index >= keep_first, |b| !keep.contains(&b.name));
+        let r = if pats.is_empty() {
+            m.remove_blocks(|b| b.index >= keep_first, |b| !keep.contains(&b.name))
+        } else {
+            let mut by_name: std::collections::BTreeMap<String, usize> = Default::default();
+            for b in &m.blocks {
+                let ln = b.name.to_lowercase();
+                if pats.iter().any(|p| ln.contains(p.as_str())) { *by_name.entry(b.name.clone()).or_insert(0) += 1; }
+            }
+            for (n, c) in &by_name { println!("  {c} x {n}"); }
+            // the generated (baked) blocks carry most of a hill's geometry (a DecoHill
+            // authored block spawns DecoHillSlope…FC/VFC generated ones): drop those too
+            let mut by_baked: std::collections::BTreeMap<String, usize> = Default::default();
+            for b in &m.baked {
+                let ln = b.name.to_lowercase();
+                if pats.iter().any(|p| ln.contains(p.as_str())) { *by_baked.entry(b.name.clone()).or_insert(0) += 1; }
+            }
+            for (n, c) in &by_baked { println!("  {c} x {n} (generated)"); }
+            let pats2 = pats.clone();
+            let pats3 = pats.clone();
+            m.remove_blocks(move |b| { let ln = b.name.to_lowercase(); pats2.iter().any(|p| ln.contains(p.as_str())) }, move |b| { let ln = b.name.to_lowercase(); pats3.iter().any(|p| ln.contains(p.as_str())) })
+        };
         println!("deleted {} of {nb} authored and {} of {nk} generated blocks; {} free entries, {} snap groups ({} items un-snapped)", r.blocks, r.baked, r.free_entries, r.snap_groups, r.snapped_items_cleared);
         let tmp = out.with_extension("del0.Map.Gbx");
         m.write_to(&tmp).expect("write");
