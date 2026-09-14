@@ -643,7 +643,8 @@ pub fn all_cmd(args: &[String]) -> Result<(), String> {
     let src_root = PathBuf::from(f("--src-root").ok_or("surface-all needs --src-root S")?);
     let out_root = PathBuf::from(f("--out-root").ok_or("surface-all needs --out-root O")?);
     let surface = f("--surface").unwrap_or_else(|| "ice".into());
-    let word = { let mut c = surface.chars(); c.next().map(|x| x.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default() };
+    // the zip / release word is the variant's LABEL without spaces (`WetWood`, `Ice`), not the flag spelling
+    let word = surface_label(&surface).map(|(l, _)| l.replace(' ', "")).unwrap_or_else(|_| { let mut c = surface.chars(); c.next().map(|x| x.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default() });
     let dist = PathBuf::from(f("--dist").unwrap_or_else(|| out_root.join("dist").to_string_lossy().into_owned()));
     let parts_arg = f("--parts").ok_or("surface-all needs --parts 01,02,… or 01-39")?;
     let parts: Vec<String> = if let Some((a, b)) = parts_arg.split_once('-') {
