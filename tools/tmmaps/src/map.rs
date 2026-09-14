@@ -2360,6 +2360,55 @@ impl MapFile {
         self.raw_splices.push(((payload + z - 4, payload + z + old_len), b));
     }
 
+    /// The map's OWN embedded objects: the manifest rows (ident, author) and the
+    /// ZIP bytes of chunk 0x03043054 — the author's custom blocks and items
+    /// (`Blocks/WoodRally/…/RallyRoadWoodHighCurve1.Block.Gbx`). A writer that
+    /// replaces the archive must carry them over: the surface writer dropped
+    /// them until 2026-09-14 (plastic 630/640/641 "could not be loaded" — every
+    /// alteration of a map with custom objects). `None` when the chunk is
+    /// absent or carries no ZIP.
+    pub fn embedded_objects(&self) -> Option<(Vec<(String, String)>, Vec<u8>)> {
+        let (_, _, payload, size) = crate::gbx::all_skip_chunks(&self.gbx.body).into_iter().find(|(cid, ..)| *cid == 0x0304_3054)?;
+        let seg = &self.gbx.body[payload..(payload + size).min(self.gbx.body.len())];
+        let z = seg.windows(4).position(|w| w == b"PK\x03\x04")?;
+        let zip_len = u32::from_le_bytes(seg[z - 4..z].try_into().ok()?) as usize;
+        let zip = seg[z..(z + zip_len).min(seg.len())].to_vec();
+        // manifest: u32 version(1), u32 0, u32 rest-size, u32 count, [u32 lookback version], entries
+        let mut r = crate::gbx::Reader::new(&seg[..z - 4]);
+        let _v = r.u32();
+        let _z = r.u32();
+        let _rest = r.u32();
+        let count = r.u32() as usize;
+        let mut rows = Vec::new();
+        if count > 0 {
+            let _lb = r.u32();
+            let mut table: Vec<String> = Vec::new();
+            let mut read_id = |r: &mut crate::gbx::Reader| -> String {
+                let w = r.u32();
+                if w & 0x4000_0000 != 0 {
+                    let idx = w & 0x3fff_ffff;
+                    if idx == 0 {
+                        let n = r.u32() as usize;
+                        let s = String::from_utf8_lossy(r.bytes(n)).into_owned();
+                        table.push(s.clone());
+                        s
+                    } else {
+                        table.get(idx as usize - 1).cloned().unwrap_or_default()
+                    }
+                } else {
+                    String::new()
+                }
+            };
+            for _ in 0..count {
+                let ident = read_id(&mut r);
+                let _collection = r.u32();
+                let author = read_id(&mut r);
+                rows.push((ident, author));
+            }
+        }
+        Some((rows, zip))
+    }
+
     /// Replace the embedded-object manifest and ZIP in 0x03043054.
     /// The manifest lists item Idents only; support files (prefabs, materials)
     /// are ordinary ZIP entries and need no manifest row.

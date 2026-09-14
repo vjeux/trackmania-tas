@@ -295,12 +295,34 @@ pub fn cmd(args: &[String]) {
         let listed: BTreeSet<&str> = names.iter().map(|s| s.as_str()).collect();
         let entries = crate::header::zip_entries(&zip);
         let before = entries.len();
-        let kept: BTreeMap<String, Vec<u8>> = entries.into_iter().filter(|(name, _)| !name.ends_with(".Item.Gbx") || listed.contains(name.trim_start_matches("Items/"))).collect();
+        let mut kept: BTreeMap<String, Vec<u8>> = entries.into_iter().filter(|(name, _)| !name.ends_with(".Item.Gbx") || listed.contains(name.trim_start_matches("Items/"))).collect();
         for n in &names {
             assert!(kept.contains_key(&format!("Items/{n}")), "{}: the library has no Items/{n}", library.display());
         }
+        // The SOURCE's own embedded objects ride along: the author's custom blocks
+        // and items (`Blocks/WoodRally/…/RallyRoadWoodHighCurve1.Block.Gbx`) that
+        // the kept records still name. Dropped until 2026-09-14 — every alteration
+        // of a map with custom objects failed to load (plastic 630/640/641).
+        let mut manifest_rows: Vec<(String, String)> = names.iter().map(|n| (n.clone(), n.clone())).collect();
+        let mut carried = 0usize;
+        if let Some((rows, src_zip)) = source.embedded_objects() {
+            for (name, bytes) in crate::header::zip_entries(&src_zip) {
+                if !kept.contains_key(&name) {
+                    kept.insert(name, bytes);
+                    carried += 1;
+                }
+            }
+            for (ident, author) in rows {
+                if !manifest_rows.iter().any(|(i, _)| *i == ident) {
+                    manifest_rows.push((ident, author));
+                }
+            }
+        }
+        if carried > 0 {
+            println!("  archive: {carried} of the source's own embedded files carried over (custom blocks/items)");
+        }
         let zip = crate::header::deflated_zip(&kept);
-        let manifest: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), n.as_str())).collect();
+        let manifest: Vec<(&str, &str)> = manifest_rows.iter().map(|(n, a)| (n.as_str(), a.as_str())).collect();
         m.replace_embedded_objects(&manifest, &zip);
         m.write_to(&tmp3).expect("write archive stage");
         let mut tally: BTreeMap<String, usize> = BTreeMap::new();
