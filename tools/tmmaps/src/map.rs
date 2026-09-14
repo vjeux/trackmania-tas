@@ -1067,6 +1067,69 @@ impl MapFile {
         (header_hits, body_hits)
     }
 
+    /// Re-stamp the header XML's `exebuild` (and `exever`) — the game build the
+    /// map was last saved with. TM2020 keys LEGACY physics on it: a map saved
+    /// before the wood-physics change keeps the old wood behaviour forever
+    /// (Everios96 2026-09-14 13:09: the 2023/2024 U10S sources; part 39's 2026
+    /// builds drive as wood). Stamping the converted copy with the current build
+    /// gives it the current rules. Header only (the XML lives nowhere else).
+    /// Returns whether the attribute was found and rewritten.
+    pub fn set_exebuild(&mut self, build: &str, exever: Option<&str>) -> bool {
+        let ud = self.gbx.user_data.clone();
+        let n = u32::from_le_bytes(ud[0..4].try_into().unwrap()) as usize;
+        let mut heads: Vec<(u32, bool, Vec<u8>)> = Vec::new();
+        let mut off = 4 + n * 8;
+        for i in 0..n {
+            let o = 4 + i * 8;
+            let id = u32::from_le_bytes(ud[o..o + 4].try_into().unwrap());
+            let raw = u32::from_le_bytes(ud[o + 4..o + 8].try_into().unwrap());
+            let size = (raw & 0x7fff_ffff) as usize;
+            heads.push((id, raw & 0x8000_0000 != 0, ud[off..off + size].to_vec()));
+            off += size;
+        }
+        let mut hit = false;
+        for (id, _, data) in heads.iter_mut() {
+            if *id != 0x0304_3005 || data.len() < 4 {
+                continue;
+            }
+            let len = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+            if data.len() < 4 + len {
+                continue;
+            }
+            let xml = String::from_utf8_lossy(&data[4..4 + len]).to_string();
+            let Some(a) = xml.find("exebuild=\"") else { continue };
+            let vs = a + "exebuild=\"".len();
+            let Some(ve) = xml[vs..].find('"') else { continue };
+            let mut xml2 = format!("{}{}{}", &xml[..vs], build, &xml[vs + ve..]);
+            if let Some(v) = exever {
+                if let Some(b) = xml2.find("exever=\"") {
+                    let s2 = b + "exever=\"".len();
+                    if let Some(e2) = xml2[s2..].find('"') {
+                        xml2 = format!("{}{}{}", &xml2[..s2], v, &xml2[s2 + e2..]);
+                    }
+                }
+            }
+            let mut d = (xml2.len() as u32).to_le_bytes().to_vec();
+            d.extend_from_slice(xml2.as_bytes());
+            d.extend_from_slice(&data[4 + len..]);
+            *data = d;
+            hit = true;
+        }
+        if hit {
+            let mut out = Vec::new();
+            out.extend_from_slice(&(heads.len() as u32).to_le_bytes());
+            for (id, heavy, data) in &heads {
+                out.extend_from_slice(&id.to_le_bytes());
+                out.extend_from_slice(&((data.len() as u32) | if *heavy { 0x8000_0000 } else { 0 }).to_le_bytes());
+            }
+            for (_, _, data) in &heads {
+                out.extend_from_slice(data);
+            }
+            self.gbx.user_data = out;
+        }
+        hit
+    }
+
     pub fn set_map_uid(&mut self, uid: &str) {
         let old = self
             .body_ids

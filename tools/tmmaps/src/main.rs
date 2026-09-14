@@ -110,6 +110,20 @@ fn main() {
         // seed-item MAP --out OUT: one template item record into a 0-item map (the
         // tiny writer's clone donor; U10S_113, 2026-09-13)
         // rename-map MAP --out OUT --name NEW: the map's own name (header + body), nothing else
+        // tmmaps set-exebuild MAP --out OUT --build 2026-02-02_17_51 [--exever 3.3.0]
+        "set-exebuild" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("set-exebuild needs --out OUT"));
+            let build = tmmaps::cli::flag(&args, "--build").expect("set-exebuild needs --build YYYY-MM-DD_HH_MM");
+            let exever = tmmaps::cli::flag(&args, "--exever");
+            let mut m = tmmaps::map::MapFile::load(&src);
+            let hit = m.set_exebuild(build, exever);
+            m.write_to(&out).expect("write");
+            println!("{}: exebuild {} -> {build}{}", out.display(), if hit { "rewritten" } else { "NOT FOUND" }, exever.map(|v| format!(", exever {v}")).unwrap_or_default());
+            if !hit {
+                std::process::exit(1);
+            }
+        }
         "rename-map" => {
             let src = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps rename-map MAP --out OUT --name NEW"); std::process::exit(2) });
             let out = tmmaps::cli::flag(&args, "--out").map(String::from).unwrap_or_else(|| { eprintln!("--out OUT"); std::process::exit(2) });
