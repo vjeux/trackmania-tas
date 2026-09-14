@@ -750,9 +750,11 @@ fn part_zip(part_out: &Path, part: &str, word: &str, dist: &Path) -> Result<(usi
             over += 1;
         }
         n += 1;
-        // the zip entry: `NN-<name>.Map.Gbx` keeps campaign order in a file listing
-        files.insert(format!("{nn}-{file}"), bytes.clone());
-        tsv.push_str(&format!("{nn}\t{nn}-{file}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", col(r, "source_name"), col(r, "source_uid"), col(r, "authortime_ms"), col(r, "gold"), col(r, "silver"), col(r, "bronze"), col(r, "out_uid"), bytes.len(), col(r, "renamed"), col(r, "baked"), col(r, "same"), col(r, "kept"), col(r, "none"), col(r, "note")));
+        // the zip entry is the map's own file name — `U10S_N By Everios96 [Wood].Map.Gbx`,
+        // file name == map name (Everios96's convention; the `NN-` order prefix
+        // he asked to drop, 2026-09-14). MAPS.tsv's `nn` column keeps the order.
+        files.insert(file.clone(), bytes.clone());
+        tsv.push_str(&format!("{nn}\t{file}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", col(r, "source_name"), col(r, "source_uid"), col(r, "authortime_ms"), col(r, "gold"), col(r, "silver"), col(r, "bronze"), col(r, "out_uid"), bytes.len(), col(r, "renamed"), col(r, "baked"), col(r, "same"), col(r, "kept"), col(r, "none"), col(r, "note")));
     }
     files.insert("MAPS.tsv".into(), tsv.into_bytes());
     // the maps are LZO-compressed GBX already: store them (deflate gains ~1 %
