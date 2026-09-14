@@ -59,13 +59,16 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // OpenTechBorders: the open roads' wide deck margins (drivable asphalt, 2/3
     // of that deck) — a stem like the road decks since 2026-09-14 (plastic 05)
     // ItemInflatableTube: the pipes' one material (Everios96 2026-09-14: pipes too)
-    let road_stems = ["RoadTech", "RoadDirt", "RoadBump", "RoadIce", "OpenTechBorders", "ItemInflatableTube"];
+    // RoadDirtFullColorize: the castle paths' tinted dirt deck (Everios96 2026-09-14
+    // 11:00: "castle parts with dirt on top"); ThemeSnowRoad/Border: the vanilla
+    // wood (snow-theme plank) roads ("vanilla wood blocks are also not changed")
+    let road_stems = ["RoadTech", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "ItemInflatableTube", "ThemeSnowRoad", "ThemeSnowRoadBorder"];
     let rows: Vec<String> = match s {
         "Ice" => road_stems.iter().filter(|st| **st != "RoadIce").map(|st| format!("{st}=Stadium\\Media\\Material\\RoadIce")).collect(),
-        "Dirt" => road_stems.iter().filter(|st| **st != "RoadDirt").chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\RoadDirt")).collect(),
+        "Dirt" => road_stems.iter().filter(|st| !st.starts_with("RoadDirt")).chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\RoadDirt")).collect(),
         "Grass" => road_stems.iter().chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Modifier\\PlatformGrass\\PlatformTech")).collect(),
         "Plastic" => road_stems.iter().chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Modifier\\PlatformPlastic\\PlatformTech")).collect(),
-        "Wood" => road_stems.iter().chain(["PlatformTech"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\ThemeSnowRoad")).collect(),
+        "Wood" => road_stems.iter().filter(|st| !st.starts_with("ThemeSnowRoad")).chain(["PlatformTech"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\ThemeSnowRoad")).collect(),
         // the mesh editor's magnet material (the blackish look every community
         // magnet block wears; physics forced, the packs do not carry it) on the deck
         // stems, and EVERY drivable hull triangle magnetic (sides, borders, loops,
