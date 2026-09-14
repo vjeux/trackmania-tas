@@ -473,7 +473,15 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
             if src.mat_modifier != twin.mat_modifier {
                 detail.push_str(&format!("; modifier {:?} -> {:?}", src.mat_modifier.as_ref().map(|m| m.1.as_str()).unwrap_or("-"), twin.mat_modifier.as_ref().map(|m| m.1.as_str()).unwrap_or("-")));
             }
-            let mut r = mk(Action::Rename, &cand, format!("{detail}{dress_note}"));
+            // the record is renamed to the block info's OWN name, not the file stem:
+            // Nadeo's `PlatformGrassSlope2UTop.EDClassic.Gbx` declares itself
+            // `PlatformGrasssSlope2UTop` (three s), and the game resolves a record
+            // by that name — the stem spelling is "Missing Resources" (Grass 15/16)
+            let target = if !twin.name.is_empty() && twin.name != cand { twin.name.clone() } else { cand.clone() };
+            if target != cand {
+                detail.push_str(&format!("; the block info spells itself {target}"));
+            }
+            let mut r = mk(Action::Rename, &target, format!("{detail}{dress_note}"));
             r.dy = dy;
             r
         }

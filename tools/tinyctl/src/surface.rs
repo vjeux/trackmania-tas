@@ -970,6 +970,7 @@ pub fn batch_cmd(args: &[String]) -> Result<(), String> {
             }
             script.push_str(&format!("{box_shootctl} shootset --map {STAGE}/{stag}Tiny.Map.Gbx --views {STAGE}/{stag}-views.tsv --side t --tag {stag} --outdir {dir} --anchor {a}:{a} --scale 1 > {dir}/shootset-t.log 2>&1\n", a = o.anchor));
             script.push_str(&format!("{box_tinyctl} compare --views {STAGE}/{stag}-views.tsv --dir {dir} --tag {stag} --hstack-ffmpeg {BOX_FFMPEG} > {dir}/compare.log 2>&1\n"));
+            script.push_str(&format!("mkdir -p {batch_dir}/logs; for f in {dir}/*.log; do cp -f \"$f\" {batch_dir}/logs/{stag}-$(basename \"$f\"); done\n"));
             script.push_str(&format!("echo '{stag}' >> {batch_dir}/shot.progress\n"));
         }
         script.push_str(&format!("echo OK {} maps > {batch_dir}/shoot.done\n", ones.len()));
@@ -1035,6 +1036,17 @@ pub fn batch_cmd(args: &[String]) -> Result<(), String> {
         let bad = rt.lines().filter(|l| !l.trim().is_empty() && !l.ends_with("\tIDENTICAL")).count();
         if bad > 0 {
             eprintln!("{bad} map(s) did not publish identical — see {}", results_local.display());
+        }
+        // publish-batch REPLACES the playlist with the maps it uploaded: a partial run
+        // (a re-shot map, a retry) would leave the campaign with those maps only, so
+        // the playlist is always rewritten from the tracker's last uid per map (every
+        // map of the set, in map order)
+        let mut uids: Vec<(String, String)> = rows.iter().filter_map(|(nn, r)| head.iter().position(|h| h == "out_uid").and_then(|k| r.get(k)).filter(|u| u.len() > 4 && *u != "-").map(|u| (nn.clone(), u.clone()))).collect();
+        uids.sort();
+        if uids.len() > ones.len() {
+            let list: Vec<String> = uids.iter().map(|(_, u)| u.clone()).collect();
+            let out = wsx.sh(&format!("cd /home/vjeux/shoot/u10s && {box_tinyctl} nadeo-here campaign-set --club {club} --campaign {campaign} --name '{}' --uids {} --no-lock 2>&1 | tail -1", campaign_name.replace('\'', ""), list.join(",")))?;
+            println!("[{:>4.0}s] playlist rewritten with every map of the set: {}", t0.elapsed().as_secs_f64(), out.trim());
         }
     }
     // the tracker rows
