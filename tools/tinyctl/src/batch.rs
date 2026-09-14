@@ -53,10 +53,26 @@ struct Tokens {
 
 impl Tokens {
     fn mint(shootctl: &str) -> Result<Tokens, String> {
-        let (core, live) = crate::nadeo::batch_tokens(shootctl)?;
-        let (mine, c) = curl(&["-H", &format!("Authorization: {live}"), &format!("{LIVE}/api/token/club/mine?length=1&offset=0")])?;
-        let me = json_str(&mine, "authorAccountId").ok_or_else(|| format!("club/mine: HTTP {c} without authorAccountId: {}", &mine[..mine.len().min(200)]))?;
-        Ok(Tokens { core, live, me, shootctl: shootctl.to_string() })
+        // The plugin's token files are reused when young, but the game rotates its
+        // live token on its own schedule (a 401 on club/mine with 20-minute-old
+        // files, 2026-09-13): a reused token is VALIDATED here, and a 401 drops the
+        // files and mints fresh once before giving up.
+        for attempt in 0..2 {
+            let (core, live) = crate::nadeo::batch_tokens(shootctl)?;
+            let (mine, c) = curl(&["-H", &format!("Authorization: {live}"), &format!("{LIVE}/api/token/club/mine?length=1&offset=0")])?;
+            if let Some(me) = json_str(&mine, "authorAccountId") {
+                return Ok(Tokens { core, live, me, shootctl: shootctl.to_string() });
+            }
+            if attempt == 0 {
+                println!("tokens: club/mine HTTP {c} with the reused files — minting fresh");
+                for aud in ["NadeoServices", "NadeoLiveServices"] {
+                    let _ = std::fs::remove_file(format!("{}/token-{aud}.txt", crate::publish::STORE));
+                }
+                continue;
+            }
+            return Err(format!("club/mine: HTTP {c} without authorAccountId: {}", &mine[..mine.len().min(200)]));
+        }
+        unreachable!()
     }
     /// A 401 means the game rotated its token: drop the files and mint again.
     fn refresh(&mut self) -> Result<(), String> {
