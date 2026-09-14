@@ -880,3 +880,53 @@ pub fn ghostchunk(args: &[String]) {
     m.write_to(std::path::Path::new(&out)).expect("write output");
     println!("{}: validation ghost chunk from {donor} ({} B) {placed} -> {out}", path.display(), chunk.len());
 }
+
+/// `tmmaps sinkitems MAP --items 1,2,… | --name-filter SUBSTR --out F [--y -900]`:
+/// park the listed items far below the map, the way `tmmaps tiny` parks an item its
+/// mapping drops. Written 2026-09-13 to take a campaign map's own trees out of
+/// the picture while parked ghosts carry the same trees as skins — the scenery
+/// swap is only visible if the map is not still drawing the summer originals.
+pub fn sinkitems(args: &[String]) {
+    let path = std::path::Path::new(&args[2]);
+    let out = tmmaps::cli::flag(args, "--out").expect("sinkitems needs --out F");
+    let y: f32 = tmmaps::cli::flag(args, "--y").map(|s| s.parse().expect("--y METRES")).unwrap_or(-900.0);
+    let want: Vec<usize> = tmmaps::cli::flag(args, "--items").unwrap_or("")
+        .split(',').filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().trim_start_matches('i').parse().expect("--items 1,2,…"))
+        .collect();
+    let filters: Vec<String> = tmmaps::cli::flag(args, "--name-filter").unwrap_or("")
+        .split(',').filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_lowercase()).collect();
+    let mut m = map::MapFile::load(path);
+    let picked: Vec<(usize, String, [f32; 3])> = m.items.iter()
+        .filter(|it| {
+            let by_index = want.contains(&it.index);
+            let by_name = !filters.is_empty() && filters.iter().any(|f| it.model.to_lowercase().contains(f.as_str()));
+            by_index || by_name
+        })
+        .map(|it| (it.index, it.model.clone(), it.pos))
+        .collect();
+    if picked.is_empty() {
+        tmmaps::cli::die("sinkitems: no item matched --items/--name-filter");
+    }
+    // park them the way `tmmaps tiny` parks a dropped item: one cell, far below.
+    // The declared CELL has to follow the position (a y of −900 under the item's own
+    // cell crashes the client on load — measured 2026-09-13).
+    for (idx, _, _pos) in &picked {
+        m.move_item(*idx, [8.0, y, 8.0], 0.0, (0, 0, 0));
+    }
+    m.write_to(std::path::Path::new(out)).unwrap_or_else(|e| panic!("{out}: {e}"));
+    // control: read the file back and check every picked item really moved
+    let back = map::MapFile::load(std::path::Path::new(out));
+    let bad: Vec<usize> = picked.iter().filter(|(i, _, _)| back.items.iter().find(|it| it.index == *i).map(|it| (it.pos[1] - y).abs() > 0.01).unwrap_or(true)).map(|(i, _, _)| *i).collect();
+    if !bad.is_empty() {
+        tmmaps::cli::die(&format!("{out}: {} item(s) did not move (first {:?})", bad.len(), &bad[..bad.len().min(5)]));
+    }
+    let mut by_model: std::collections::BTreeMap<String, usize> = Default::default();
+    for (_, model, _) in &picked {
+        *by_model.entry(model.clone()).or_insert(0) += 1;
+    }
+    println!("wrote {out}: {} item(s) parked at y {y}", picked.len());
+    for (model, n) in by_model {
+        println!("  {n} x {model}");
+    }
+}

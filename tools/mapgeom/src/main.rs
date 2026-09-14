@@ -1694,6 +1694,11 @@ fn main() {
             let texset_default = flag(&a.rest, "--texset").unwrap_or_else(|| "Details".to_string());
             let mut parts: Vec<skin::Part> = Vec::new();
             let mut report: Vec<String> = Vec::new();
+            // the parked ghost's world position: every vertex is written relative to it
+            let anchor_world: [f32; 3] = match flag(&a.rest, "--anchor") {
+                Some(s) => { let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 3 { [v[0], v[1], v[2]] } else { [0.0; 3] } }
+                None => [0.0; 3],
+            };
             if let Some(sz) = flag(&a.rest, "--cube") {
                 let size: f32 = sz.parse().unwrap_or_else(|_| die("--cube SIZE".into()));
                 parts.push(skin::cube(size, &texset_default));
@@ -1739,6 +1744,16 @@ fn main() {
                     let (k, v) = kv.split_once('=').unwrap_or_else(|| die(format!("--models {kv}: NAME=PATH")));
                     (k.to_lowercase(), v.to_string())
                 }).collect();
+                // --mapping TSV --items-dir DIR: the tiny-library contract (i@<index> -> item
+                // file), so a campaign map's VEGETATION — baked from its prefabs into static
+                // items — can be rebuilt as skin geometry (2026-09-13, the scenery swap).
+                let mapping: std::collections::BTreeMap<usize, String> = match flag(&a.rest, "--mapping") {
+                    None => Default::default(),
+                    Some(p) => std::fs::read_to_string(&p).unwrap_or_else(|e| die(format!("{p}: {e}"))).lines()
+                        .filter_map(|l| { let mut it = l.split('\t'); let k = it.next()?; let v = it.next()?; let idx: usize = k.strip_prefix("i@")?.parse().ok()?; if v == "-" { None } else { Some((idx, v.to_string())) } })
+                        .collect(),
+                };
+                let items_dir = flag(&a.rest, "--items-dir").unwrap_or_else(|| ".".to_string());
                 let name_filter: Vec<String> = flag(&a.rest, "--name-filter").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| s.to_lowercase()).collect();
                 let mut stock_cache: std::collections::BTreeMap<String, Vec<u8>> = std::collections::BTreeMap::new();
                 let mut missing: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -1746,7 +1761,19 @@ fn main() {
                     if !want.is_empty() && !want.contains(&it.index) { continue; }
                     let key = it.model.replace('\\', "/").to_lowercase();
                     if !name_filter.is_empty() && !name_filter.iter().any(|f| key.contains(f.as_str())) { continue; }
-                    let embedded = by_key.get(&key).or_else(|| by_key.iter().find(|(k, _)| k.ends_with(&format!("/{key}"))).map(|(_, v)| v)).cloned();
+                    // --near X,Z,R: only the placements within R metres of (X, Z). One
+                    // checkpoint interval's scenery, so the skin stays close to its ghost.
+                    if let Some(spec) = flag(&a.rest, "--near") {
+                        let v: Vec<f32> = spec.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                        if v.len() != 3 { die::<()>("--near X,Z,RADIUS".into()); }
+                        let d = ((it.pos[0] - v[0]).powi(2) + (it.pos[2] - v[1]).powi(2)).sqrt();
+                        if d > v[2] { continue; }
+                    }
+                    let mapped: Option<Vec<u8>> = mapping.get(&it.index).and_then(|f| {
+                        let p = format!("{items_dir}/{f}");
+                        match std::fs::read(&p) { Ok(b) => Some(b), Err(_) => { *missing.entry(p).or_insert(0) += 1; None } }
+                    });
+                    let embedded = mapped.or_else(|| by_key.get(&key).or_else(|| by_key.iter().find(|(k, _)| k.ends_with(&format!("/{key}"))).map(|(_, v)| v)).cloned());
                     let owned: Vec<u8> = match embedded {
                         Some(b) => b,
                         None => {
@@ -1811,6 +1838,288 @@ fn main() {
                 for line in &report { eprintln!("  {line}"); }
                 die::<()>("nothing to build: --cube SIZE or --map … --items …".into());
             }
+            // --clusters R: a vehicle skin whose geometry reaches far from the car crashes
+            // the client (measured 2026-09-13: 20 cards spread over 680 m die, the same 20
+            // cards inside ~450 m render), so the scenery ships as one skin per REGION.
+            // Each cluster gets its own zip and its own parked ghost at the cluster's
+            // centre; `<out>/clusters.tsv` lists name, anchor and vertex count.
+            if let Some(r) = flag(&a.rest, "--clusters") {
+                let radius: f32 = r.parse().unwrap_or_else(|_| die("--clusters METRES".to_string()));
+                let mut centres: Vec<[f32; 3]> = Vec::new();
+                let mut assign: Vec<usize> = Vec::new();
+                let key_of = |p: &skin::Part| -> [f32; 3] {
+                    let (lo, hi) = p.bounds();
+                    [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5]
+                };
+                for p in &parts {
+                    let c = key_of(p);
+                    let near = centres.iter().position(|q| {
+                        let d = ((q[0] - c[0]).powi(2) + (q[2] - c[2]).powi(2)).sqrt();
+                        d <= radius
+                    });
+                    match near {
+                        Some(i) => assign.push(i),
+                        None => { centres.push(c); assign.push(centres.len() - 1); }
+                    }
+                }
+                let zip_base = flag(&a.rest, "--zip").unwrap_or_else(|| die("--clusters needs --zip BASE.zip".to_string()));
+                let base = zip_base.trim_end_matches(".zip").to_string();
+                let mut tsv = String::from("# name\tanchor_x\tanchor_y\tanchor_z\tparts\tvertices\n");
+                for (k, centre) in centres.iter().enumerate() {
+                    // the cluster's own anchor, in world coordinates
+                    let world = [anchor_world[0] + centre[0], anchor_world[1] + centre[1], anchor_world[2] + centre[2]];
+                    let mut mine: Vec<skin::Part> = parts.iter().zip(&assign).filter(|(_, a)| **a == k).map(|(p, _)| {
+                        let mut q = p.clone();
+                        for v in q.pos.iter_mut() {
+                            v[0] -= centre[0];
+                            v[1] -= centre[1];
+                            v[2] -= centre[2];
+                        }
+                        q
+                    }).collect();
+                    let mut parts = std::mem::take(&mut mine);
+                    // --cards: replace each placed item by two crossed quads spanning its own
+                    // bounding box — 8 vertices a tree instead of ~1250. A car skin asserts
+                    // somewhere between 25k and 54k vertices (measured 2026-09-13: 25,014 renders,
+                    // 53,688 dies with the destroyed-object int3), and a campaign map's 260 trees
+                    // are 325k, so the whole scenery only fits as cards.
+                    if a.rest.iter().any(|x| x == "--cards") {
+                        let mut by_src: std::collections::BTreeMap<String, (([f32; 3], [f32; 3]), String)> = std::collections::BTreeMap::new();
+                        for p in &parts {
+                            let key = p.source.split_whitespace().next().unwrap_or("").to_string();
+                            let (lo, hi) = p.bounds();
+                            let e = by_src.entry(key).or_insert(((lo, hi), p.texset.clone()));
+                            for k in 0..3 {
+                                (e.0).0[k] = (e.0).0[k].min(lo[k]);
+                                (e.0).1[k] = (e.0).1[k].max(hi[k]);
+                            }
+                        }
+                        let n_src = by_src.len();
+                        let set = flag(&a.rest, "--cards-set").unwrap_or_else(|| texset_default.clone());
+                        let shrink: f32 = flag(&a.rest, "--cards-width").and_then(|s| s.parse().ok()).unwrap_or(0.8);
+                        parts.clear();
+                        let mut card = skin::Part { texset: set.clone(), pos: Vec::new(), nrm: Vec::new(), uv: Vec::new(), idx: Vec::new(), source: format!("{n_src} cards") };
+                        for (_, ((lo, hi), _)) in by_src {
+                            let cx = (lo[0] + hi[0]) * 0.5;
+                            let cz = (lo[2] + hi[2]) * 0.5;
+                            let w = ((hi[0] - lo[0]).max(hi[2] - lo[2]) * shrink * 0.5).max(0.25);
+                            for (dx, dz, nx, nz) in [(w, 0.0f32, 0.0f32, 1.0f32), (0.0, w, 1.0, 0.0)] {
+                                let b = card.pos.len() as u32;
+                                card.pos.push([cx - dx, lo[1], cz - dz]);
+                                card.pos.push([cx + dx, lo[1], cz + dz]);
+                                card.pos.push([cx + dx, hi[1], cz + dz]);
+                                card.pos.push([cx - dx, hi[1], cz - dz]);
+                                for _ in 0..4 { card.nrm.push([nx, 0.0, nz]); }
+                                card.uv.push([0.0, 1.0]);
+                                card.uv.push([1.0, 1.0]);
+                                card.uv.push([1.0, 0.0]);
+                                card.uv.push([0.0, 0.0]);
+                                // both faces, so a card is visible from either side
+                                card.idx.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3, b, b + 2, b + 1, b, b + 3, b + 2]);
+                            }
+                        }
+                        println!("cards: {n_src} placements -> {} vertices", card.pos.len());
+                        parts.push(card);
+                    }
+                    // --merge: one visual per texture set per --max-verts run, instead of one per
+                    // source geom. A campaign map's 260 trees arrive as 1008 little geoms, and a car
+                    // skin with 1008 visuals takes the client down on import (measured 2026-09-13:
+                    // the connection drops mid-import, no crash dump); merged, the same 325k
+                    // vertices are ~12 visuals.
+                    if a.rest.iter().any(|x| x == "--merge") {
+                        let cap = o.max_verts.max(3);
+                        let mut by_set: std::collections::BTreeMap<String, Vec<skin::Part>> = std::collections::BTreeMap::new();
+                        for p in parts.drain(..) {
+                            by_set.entry(p.texset.clone()).or_default().push(p);
+                        }
+                        let before: usize = by_set.values().map(|v| v.len()).sum();
+                        for (set, group) in by_set {
+                            let fresh = || skin::Part { texset: set.clone(), pos: Vec::new(), nrm: Vec::new(), uv: Vec::new(), idx: Vec::new(), source: format!("{set} merged") };
+                            let mut cur = fresh();
+                            for p in group {
+                                if !cur.pos.is_empty() && cur.pos.len() + p.pos.len() > cap {
+                                    parts.push(std::mem::replace(&mut cur, fresh()));
+                                }
+                                let base = cur.pos.len() as u32;
+                                cur.pos.extend_from_slice(&p.pos);
+                                cur.nrm.extend_from_slice(&p.nrm);
+                                cur.uv.extend_from_slice(&p.uv);
+                                cur.idx.extend(p.idx.iter().map(|i| i + base));
+                            }
+                            if !cur.pos.is_empty() {
+                                parts.push(cur);
+                            }
+                        }
+                        println!("merged {before} geoms into {} visual(s) of at most {cap} vertices", parts.len());
+                    }
+                    let mut mine = parts;
+                    let nverts: usize = mine.iter().map(|p| p.pos.len()).sum();
+                    if false {
+                        let cap = o.max_verts.max(3);
+                        let mut by_set: std::collections::BTreeMap<String, Vec<skin::Part>> = std::collections::BTreeMap::new();
+                        for p in mine.drain(..) { by_set.entry(p.texset.clone()).or_default().push(p); }
+                        for (set, group) in by_set {
+                            let fresh = || skin::Part { texset: set.clone(), pos: Vec::new(), nrm: Vec::new(), uv: Vec::new(), idx: Vec::new(), source: format!("{set} merged") };
+                            let mut cur = fresh();
+                            for p in group {
+                                if !cur.pos.is_empty() && cur.pos.len() + p.pos.len() > cap { mine.push(std::mem::replace(&mut cur, fresh())); }
+                                let b = cur.pos.len() as u32;
+                                cur.pos.extend_from_slice(&p.pos);
+                                cur.nrm.extend_from_slice(&p.nrm);
+                                cur.uv.extend_from_slice(&p.uv);
+                                cur.idx.extend(p.idx.iter().map(|i| i + b));
+                            }
+                            if !cur.pos.is_empty() { mine.push(cur); }
+                        }
+                    }
+                    let built = skin::build(&template, &mine, &o).unwrap_or_else(die);
+                    let dir = out_dir.join(format!("c{k}"));
+                    std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
+                    std::fs::write(dir.join("MainBody.Mesh.gbx"), &built.file).unwrap_or_else(|e| die(e.to_string()));
+                    println!("cluster {k}: anchor {:.1},{:.1},{:.1}  {} visual(s)  {nverts} vertices", world[0], world[1], world[2], mine.len());
+                    tsv.push_str(&format!("{base}-{k}.zip\t{:.3}\t{:.3}\t{:.3}\t{}\t{nverts}\n", world[0], world[1], world[2], mine.len()));
+                    // the textures are written once below; this pass only needs the meshes
+                }
+                std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(e.to_string()));
+                std::fs::write(out_dir.join("clusters.tsv"), &tsv).unwrap_or_else(|e| die(e.to_string()));
+                println!("{} cluster(s) within {radius} m -> {}", centres.len(), out_dir.join("clusters.tsv").display());
+            }
+            // --cards: replace each placed item by two crossed quads spanning its own
+            // bounding box — 8 vertices a tree instead of ~1250. A car skin asserts
+            // somewhere between 25k and 54k vertices (measured 2026-09-13: 25,014 renders,
+            // 53,688 dies with the destroyed-object int3), and a campaign map's 260 trees
+            // are 325k, so the whole scenery only fits as cards.
+            // --cones: each placed item becomes a two-cone tree — a brown trunk (texture set
+            // --cones-trunk-set, default Skin) and a season-coloured crown (the default set),
+            // both CLOSED solids like attempt 2's hills. Cards were the 8-vertex answer;
+            // cones read as trees from the chase camera (2026-09-14).
+            if a.rest.iter().any(|x| x == "--cones") {
+                let mut by_src: std::collections::BTreeMap<String, ([f32; 3], [f32; 3])> = std::collections::BTreeMap::new();
+                for p in &parts {
+                    let key = p.source.split_whitespace().next().unwrap_or("").to_string();
+                    let (lo, hi) = p.bounds();
+                    let e = by_src.entry(key).or_insert((lo, hi));
+                    for k in 0..3 {
+                        e.0[k] = e.0[k].min(lo[k]);
+                        e.1[k] = e.1[k].max(hi[k]);
+                    }
+                }
+                let n_src = by_src.len();
+                let crown_set = texset_default.clone();
+                let trunk_set = flag(&a.rest, "--cones-trunk-set").unwrap_or_else(|| "Skin".to_string());
+                let segs: usize = flag(&a.rest, "--cones-segments").and_then(|s| s.parse().ok()).unwrap_or(7);
+                let fresh = |set: &str| skin::Part { texset: set.to_string(), pos: Vec::new(), nrm: Vec::new(), uv: Vec::new(), idx: Vec::new(), source: format!("{n_src} cone trees ({set})") };
+                let mut crown = fresh(&crown_set);
+                let mut trunk = fresh(&trunk_set);
+                // a closed cone: base ring at y0 (radius r), apex at y1, plus a base fan
+                let mut cone = |part: &mut skin::Part, cx: f32, cz: f32, y0: f32, y1: f32, r: f32| {
+                    let b = part.pos.len() as u32;
+                    let h = (y1 - y0).max(0.1);
+                    for i in 0..segs {
+                        let a = i as f32 / segs as f32 * std::f32::consts::TAU;
+                        let (s, c) = a.sin_cos();
+                        part.pos.push([cx + r * c, y0, cz + r * s]);
+                        // outward normal of the slanted side
+                        let l = (h * h + r * r).sqrt();
+                        part.nrm.push([c * h / l, r / l, s * h / l]);
+                        part.uv.push([i as f32 / segs as f32, 1.0]);
+                    }
+                    part.pos.push([cx, y1, cz]);
+                    part.nrm.push([0.0, 1.0, 0.0]);
+                    part.uv.push([0.5, 0.0]);
+                    part.pos.push([cx, y0, cz]);
+                    part.nrm.push([0.0, -1.0, 0.0]);
+                    part.uv.push([0.5, 1.0]);
+                    let apex = b + segs as u32;
+                    let base = apex + 1;
+                    for i in 0..segs as u32 {
+                        let j = (i + 1) % segs as u32;
+                        part.idx.extend_from_slice(&[b + i, apex, b + j]);
+                        part.idx.extend_from_slice(&[b + j, base, b + i]);
+                    }
+                };
+                for (_, (lo, hi)) in by_src {
+                    let cx = (lo[0] + hi[0]) * 0.5;
+                    let cz = (lo[2] + hi[2]) * 0.5;
+                    let h = (hi[1] - lo[1]).max(1.0);
+                    let w = ((hi[0] - lo[0]).max(hi[2] - lo[2]) * 0.5).max(0.4);
+                    cone(&mut trunk, cx, cz, lo[1] - 0.5, lo[1] + 0.45 * h, (w * 0.12).max(0.15));
+                    cone(&mut crown, cx, cz, lo[1] + 0.3 * h, hi[1], w);
+                }
+                println!("cones: {n_src} placements -> {} vertices", crown.pos.len() + trunk.pos.len());
+                parts.clear();
+                parts.push(trunk);
+                parts.push(crown);
+            }
+            if a.rest.iter().any(|x| x == "--cards") {
+                let mut by_src: std::collections::BTreeMap<String, (([f32; 3], [f32; 3]), String)> = std::collections::BTreeMap::new();
+                for p in &parts {
+                    let key = p.source.split_whitespace().next().unwrap_or("").to_string();
+                    let (lo, hi) = p.bounds();
+                    let e = by_src.entry(key).or_insert(((lo, hi), p.texset.clone()));
+                    for k in 0..3 {
+                        (e.0).0[k] = (e.0).0[k].min(lo[k]);
+                        (e.0).1[k] = (e.0).1[k].max(hi[k]);
+                    }
+                }
+                let n_src = by_src.len();
+                let set = flag(&a.rest, "--cards-set").unwrap_or_else(|| texset_default.clone());
+                let shrink: f32 = flag(&a.rest, "--cards-width").and_then(|s| s.parse().ok()).unwrap_or(0.8);
+                parts.clear();
+                let mut card = skin::Part { texset: set.clone(), pos: Vec::new(), nrm: Vec::new(), uv: Vec::new(), idx: Vec::new(), source: format!("{n_src} cards") };
+                for (_, ((lo, hi), _)) in by_src {
+                    let cx = (lo[0] + hi[0]) * 0.5;
+                    let cz = (lo[2] + hi[2]) * 0.5;
+                    let w = ((hi[0] - lo[0]).max(hi[2] - lo[2]) * shrink * 0.5).max(0.25);
+                    for (dx, dz, nx, nz) in [(w, 0.0f32, 0.0f32, 1.0f32), (0.0, w, 1.0, 0.0)] {
+                        let b = card.pos.len() as u32;
+                        card.pos.push([cx - dx, lo[1], cz - dz]);
+                        card.pos.push([cx + dx, lo[1], cz + dz]);
+                        card.pos.push([cx + dx, hi[1], cz + dz]);
+                        card.pos.push([cx - dx, hi[1], cz - dz]);
+                        for _ in 0..4 { card.nrm.push([nx, 0.0, nz]); }
+                        card.uv.push([0.0, 1.0]);
+                        card.uv.push([1.0, 1.0]);
+                        card.uv.push([1.0, 0.0]);
+                        card.uv.push([0.0, 0.0]);
+                        // both faces, so a card is visible from either side
+                        card.idx.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3, b, b + 2, b + 1, b, b + 3, b + 2]);
+                    }
+                }
+                println!("cards: {n_src} placements -> {} vertices", card.pos.len());
+                parts.push(card);
+            }
+            // --merge: one visual per texture set per --max-verts run, instead of one per
+            // source geom. A campaign map's 260 trees arrive as 1008 little geoms, and a car
+            // skin with 1008 visuals takes the client down on import (measured 2026-09-13:
+            // the connection drops mid-import, no crash dump); merged, the same 325k
+            // vertices are ~12 visuals.
+            if a.rest.iter().any(|x| x == "--merge") {
+                let cap = o.max_verts.max(3);
+                let mut by_set: std::collections::BTreeMap<String, Vec<skin::Part>> = std::collections::BTreeMap::new();
+                for p in parts.drain(..) {
+                    by_set.entry(p.texset.clone()).or_default().push(p);
+                }
+                let before: usize = by_set.values().map(|v| v.len()).sum();
+                for (set, group) in by_set {
+                    let fresh = || skin::Part { texset: set.clone(), pos: Vec::new(), nrm: Vec::new(), uv: Vec::new(), idx: Vec::new(), source: format!("{set} merged") };
+                    let mut cur = fresh();
+                    for p in group {
+                        if !cur.pos.is_empty() && cur.pos.len() + p.pos.len() > cap {
+                            parts.push(std::mem::replace(&mut cur, fresh()));
+                        }
+                        let base = cur.pos.len() as u32;
+                        cur.pos.extend_from_slice(&p.pos);
+                        cur.nrm.extend_from_slice(&p.nrm);
+                        cur.uv.extend_from_slice(&p.uv);
+                        cur.idx.extend(p.idx.iter().map(|i| i + base));
+                    }
+                    if !cur.pos.is_empty() {
+                        parts.push(cur);
+                    }
+                }
+                println!("merged {before} geoms into {} visual(s) of at most {cap} vertices", parts.len());
+            }
             let built = skin::build(&template, &parts, &o).unwrap_or_else(die);
             std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(e.to_string()));
             std::fs::write(out_dir.join("MainBody.Mesh.gbx"), &built.file).unwrap_or_else(|e| die(e.to_string()));
@@ -1850,6 +2159,22 @@ fn main() {
                         None => (512, 512, skin::checker_rgba(512, checker_cells)),
                     },
                 };
+                // --tint SET=RRGGBB,…  (or one RRGGBB for every set): multiply the decoded
+                // texture by a colour. One atlas, three seasons: green x white-blue = icy,
+                // green x orange = autumn (2026-09-13, the checkpoint scenery swap).
+                let mut rgba = rgba;
+                if let Some(hex) = flag(&a.rest, "--tint").and_then(|spec| spec.split(',').find_map(|kv| match kv.split_once('=') {
+                    Some((k, v)) if k == s => Some(v.to_string()),
+                    None => Some(kv.to_string()),
+                    _ => None,
+                })) {
+                    let h = hex.trim_start_matches('#');
+                    let v = u32::from_str_radix(h, 16).unwrap_or_else(|_| die(format!("--tint {hex}: RRGGBB")));
+                    let t = [(v >> 16) as u32 & 0xff, (v >> 8) as u32 & 0xff, v as u32 & 0xff];
+                    for px in rgba.chunks_mut(4) {
+                        for c in 0..3 { px[c] = ((px[c] as u32 * t[c]) / 255) as u8; }
+                    }
+                }
                 let rough: u8 = flag(&a.rest, "--roughness").and_then(|s| s.parse().ok()).unwrap_or(200);
                 for (name, bytes) in skin::texture_set(s, w, h, &rgba, rough) {
                     std::fs::write(out_dir.join(&name), &bytes).unwrap_or_else(|e| die(e.to_string()));
@@ -1875,6 +2200,22 @@ fn main() {
                 let zip = tmmaps::header::stored_zip(&files);
                 std::fs::write(&z, &zip).unwrap_or_else(|e| die(e.to_string()));
                 report.push(format!("zip {z}: {} bytes, {} files (stored)", zip.len(), files.len()));
+                // --clusters wrote one mesh per region; each becomes its own zip, with the
+                // same texture set as the whole-scenery zip beside it.
+                if flag(&a.rest, "--clusters").is_some() {
+                    let base = z.trim_end_matches(".zip").to_string();
+                    let mut k = 0usize;
+                    while let Ok(mesh) = std::fs::read(out_dir.join(format!("c{k}")).join("MainBody.Mesh.gbx")) {
+                        let mut f = files.clone();
+                        f.insert("MainBody.Mesh.gbx".into(), mesh);
+                        let zip = tmmaps::header::stored_zip(&f);
+                        let path = format!("{base}-{k}.zip");
+                        std::fs::write(&path, &zip).unwrap_or_else(|e| die(e.to_string()));
+                        let sha: String = gbx::sha::sha256(&zip).iter().map(|b| format!("{b:02x}")).collect();
+                        println!("  cluster zip {path}: {} bytes  sha256 {sha}", zip.len());
+                        k += 1;
+                    }
+                }
             }
             println!(
                 "wrote {}/MainBody.Mesh.gbx: {} bytes, {} visuals, {} vertices, {} triangles, materials {:?}, bounds x {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2} (skin frame: metres from the ghost, +z = car front)",
