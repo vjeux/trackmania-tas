@@ -1730,11 +1730,44 @@ fn main() {
                 let files = mapgeom::embedded::files(&m).unwrap_or_else(die);
                 let by_key: std::collections::BTreeMap<String, Vec<u8>> = files.into_iter().map(|(k, v)| (k.replace('\\', "/").to_lowercase(), v)).collect();
                 let mut links_seen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+                // A campaign map places STOCK items (`PalmTreeMedium.Item.Gbx`) it does not
+                // embed: their bytes come from the packs (or from --models NAME=PATH), so a
+                // Nadeo map's own scenery can be rebuilt as skin geometry. --name-filter
+                // SUBSTR,… keeps only the models whose name matches (2026-09-13: the trees of
+                // Summer 2025 - 01, carried by parked ghosts that swap at every checkpoint).
+                let models: Vec<(String, String)> = flag(&a.rest, "--models").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|kv| {
+                    let (k, v) = kv.split_once('=').unwrap_or_else(|| die(format!("--models {kv}: NAME=PATH")));
+                    (k.to_lowercase(), v.to_string())
+                }).collect();
+                let name_filter: Vec<String> = flag(&a.rest, "--name-filter").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| s.to_lowercase()).collect();
+                let mut stock_cache: std::collections::BTreeMap<String, Vec<u8>> = std::collections::BTreeMap::new();
+                let mut missing: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
                 for it in &m.items {
                     if !want.is_empty() && !want.contains(&it.index) { continue; }
                     let key = it.model.replace('\\', "/").to_lowercase();
-                    let bytes = by_key.get(&key).or_else(|| by_key.iter().find(|(k, _)| k.ends_with(&format!("/{key}"))).map(|(_, v)| v));
-                    let Some(bytes) = bytes else { report.push(format!("i{}: {} is not an embedded model (stock item) — skipped", it.index, it.model)); continue };
+                    if !name_filter.is_empty() && !name_filter.iter().any(|f| key.contains(f.as_str())) { continue; }
+                    let embedded = by_key.get(&key).or_else(|| by_key.iter().find(|(k, _)| k.ends_with(&format!("/{key}"))).map(|(_, v)| v)).cloned();
+                    let owned: Vec<u8> = match embedded {
+                        Some(b) => b,
+                        None => {
+                            let stem = key.rsplit('/').next().unwrap_or(&key).to_string();
+                            if let Some(b) = stock_cache.get(&stem) {
+                                b.clone()
+                            } else {
+                                let from_flag = models.iter().find(|(n, _)| stem.starts_with(n.as_str())).map(|(_, p)| p.clone());
+                                let loaded = match from_flag {
+                                    Some(p) if std::path::Path::new(&p).is_file() => std::fs::read(&p).ok(),
+                                    Some(p) => store.read(&p).ok(),
+                                    None => store.read(&it.model).ok(),
+                                };
+                                match loaded {
+                                    Some(b) => { stock_cache.insert(stem.clone(), b.clone()); b }
+                                    None => { *missing.entry(it.model.clone()).or_insert(0) += 1; continue; }
+                                }
+                            }
+                        }
+                    };
+                    let bytes = &owned[..];
                     let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
                     let material_of = |link: &str| -> Option<String> {
                         for (k, v) in &texmap {
@@ -1760,6 +1793,7 @@ fn main() {
                     }
                 }
                 for (l, n) in &links_seen { report.push(format!("material {l}: {n} vertices")); }
+                for (mdl, n) in &missing { report.push(format!("{mdl}: {n} placement(s) — model not embedded and not in the packs")); }
             }
             if parts.is_empty() { die::<()>("nothing to build: --cube SIZE or --map … --items …".into()); }
             let built = skin::build(&template, &parts, &o).unwrap_or_else(die);
