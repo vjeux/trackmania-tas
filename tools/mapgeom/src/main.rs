@@ -571,11 +571,41 @@ fn main() {
             let table_out = flag(&a.rest, "--table");
             let author = flag(&a.rest, "--author").unwrap_or_else(|| "fHFOZ36-Qt6hMnhWK6bvxw".to_string());
             let roads = !a.rest.iter().any(|x| x == "--no-roads");
-            let (s, t) = mapgeom::giantwater::parse_anchor(&anchor).unwrap_or_else(die);
+            // --rewater: drop the giant map's existing pool tiles first (a water-only
+            // rebuild); --anchor from-tiles derives the source→giant transform from those
+            // tiles (the min-corner pool block and its min-corner tile); --legacy-stack =
+            // the 2026-09-13 variant scheme (a sheet per row)
+            let rewater = a.rest.iter().any(|x| x == "--rewater");
+            let legacy = a.rest.iter().any(|x| x == "--legacy-stack");
             let source = tmmaps::map::MapFile::load(std::path::Path::new(&src));
             let collection = source.items.first().map(|it| it.collection_raw).unwrap_or(26);
             let ground = tmmaps::map::ground_y(collection);
-            let plan = mapgeom::giantwater::plan(&source, ground, s, t, scale, roads, &author).unwrap_or_else(die);
+            let (s, t) = if anchor == "from-tiles" {
+                let giant = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+                let n = scale.round() as i32;
+                let mut found: Option<([f32; 3], [f32; 3])> = None;
+                for name in ["DecoWallWaterBase", "WaterBase"] {
+                    let sb: Vec<(i32, i32, i32)> = source.blocks.iter().filter(|b| b.free_pos.is_none() && b.name == name).map(|b| b.coords()).collect();
+                    let gb: Vec<(i32, i32, i32)> = giant.blocks.iter().filter(|b| b.free_pos.is_none() && b.name == name).map(|b| b.coords()).collect();
+                    if sb.is_empty() || gb.is_empty() {
+                        continue;
+                    }
+                    let smin = (sb.iter().map(|c| c.0).min().unwrap(), sb.iter().map(|c| c.1).min().unwrap(), sb.iter().map(|c| c.2).min().unwrap());
+                    let gmin = (gb.iter().map(|c| c.0).min().unwrap(), gb.iter().map(|c| c.1).min().unwrap(), gb.iter().map(|c| c.2).min().unwrap());
+                    // WaterBase tiles sit in the TOP row of the doubled cell only
+                    let gy = if name == "WaterBase" { gmin.1 - (n - 1) } else { gmin.1 };
+                    let s = [smin.0 as f32 * tmmaps::map::CELL_XZ, smin.1 as f32 * tmmaps::map::CELL_Y + ground, smin.2 as f32 * tmmaps::map::CELL_XZ];
+                    let t = [gmin.0 as f32 * tmmaps::map::CELL_XZ, gy as f32 * tmmaps::map::CELL_Y + ground, gmin.2 as f32 * tmmaps::map::CELL_XZ];
+                    found = Some((s, t));
+                    println!("  giantwater: anchor from the {name} tiles: source cell {:?} -> giant cell ({}, {}, {}); anchor {:?} -> {:?}", smin, gmin.0, gy, gmin.2, s, t);
+                    break;
+                }
+                found.unwrap_or_else(|| die("--anchor from-tiles: the giant map has no pool tiles to derive the transform from".into()))
+            } else {
+                mapgeom::giantwater::parse_anchor(&anchor).unwrap_or_else(die)
+            };
+            let below: u32 = flag(&a.rest, "--below-flags").map(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16).unwrap_or_else(|_| die("--below-flags HEX".into()))).unwrap_or(mapgeom::giantwater::STACKED_BELOW);
+            let plan = mapgeom::giantwater::plan_stack(&source, ground, s, t, scale, roads, &author, legacy, below).unwrap_or_else(die);
             for n in &plan.notes {
                 println!("  giantwater: {n}");
             }
@@ -592,7 +622,7 @@ fn main() {
                 }
                 std::fs::write(tp, tsv).unwrap_or_else(|e| die(e.to_string()));
             }
-            let (g, r) = mapgeom::giantwater::apply(std::path::Path::new(&p), std::path::Path::new(&out), &plan, template.as_deref().map(std::path::Path::new), &author).unwrap_or_else(die);
+            let (g, r) = mapgeom::giantwater::apply_opt(std::path::Path::new(&p), std::path::Path::new(&out), &plan, template.as_deref().map(std::path::Path::new), &author, rewater).unwrap_or_else(die);
             println!("{p}: giant water: {g} native pool tiles, {r} road volume tiles -> {out}");
         }
         "overflow" => {

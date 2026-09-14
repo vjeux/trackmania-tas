@@ -115,7 +115,51 @@ fn local_to_world(origin: [f32; 2], yaw: f32, lx: f32, lz: f32) -> [f32; 2] {
 
 /// The plan for `source` scaled by `scale` (whole, ≥ 2) about the anchor.
 pub fn plan(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale: f32, roads: bool, author: &str) -> Result<Plan, String> {
+    plan_opt(source, ground, s, t, scale, roads, author, false)
+}
+
+/// `legacy_stack`: every DecoWallWaterBase row above the bottom as the AIR variant (the
+/// 2026-09-13 form; each air tile carries its own `DecoWallWaterFCT` water sheet, so a
+/// stack showed a sheet at every row — Everios96: "the water blocks are not connected to
+/// each other vertically, creating a roof above the player"). The default since
+/// 2026-09-14: a tile with a water tile ABOVE it takes the GROUND variant (no top
+/// sheet; the source itself is a ground row under an air row), only the top of each
+/// column is the air variant with the surface.
+pub fn plan_opt(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale: f32, roads: bool, author: &str, legacy_stack: bool) -> Result<Plan, String> {
+    plan_stack(source, ground, s, t, scale, roads, author, legacy_stack, STACKED_BELOW)
+}
+
+/// The editor's own word for a DecoWallWaterBase with another water block ABOVE it:
+/// additional variant 1 ("InDecoWallPillar") + bit 16. Measured 2026-09-14 on giant 10
+/// (`/mapblocks2?list=baked`): a plain tile (ground or air) under a water tile still
+/// emits its `DecoWallWaterFCT` water sheet (a "roof" inside the pool — Everios96);
+/// this variant under a water tile emits nothing; under a plain GROUND tile it emits
+/// `DecoWallWaterBaseFCT` — a ResonantMetal platform plate, a lid. Every deep source
+/// pool of the club carries exactly this: 0x210000 / 0x211000 on the rows below the
+/// top, 0 on the top row (U10S_91, _131, _221).
+pub const STACKED_BELOW: u32 = 0x0021_0000;
+
+/// `below_flags`: the flag word of a DecoWallWaterBase tile that has another water tile
+/// above it (the variant the engine matches against the tile above; measured 2026-09-14).
+#[allow(clippy::too_many_arguments)]
+pub fn plan_stack(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale: f32, roads: bool, author: &str, legacy_stack: bool, below_flags: u32) -> Result<Plan, String> {
     let size = source.size;
+    // every DecoWallWaterBase tile cell first: the variant of a tile depends on
+    // whether another water tile sits directly above it
+    let mut water_cells: std::collections::HashSet<[i32; 3]> = std::collections::HashSet::new();
+    if !legacy_stack {
+        let n = scale.round() as i32;
+        for b in source.blocks.iter().filter(|b| b.free_pos.is_none() && b.name == "DecoWallWaterBase") {
+            let c = giant_cell(b.coords(), ground, s, t, scale)?;
+            for j in 0..n {
+                for i in 0..n {
+                    for k in 0..n {
+                        water_cells.insert([c[0] + i, c[1] + j, c[2] + k]);
+                    }
+                }
+            }
+        }
+    }
     let n = scale.round() as i32;
     if n < 2 || (scale - n as f32).abs() > 1e-6 {
         return Err(format!("giantwater wants a whole scale of 2 or more, got {scale}"));
@@ -135,8 +179,24 @@ pub fn plan(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale: f32,
             e.0 += 1;
             let rows: Vec<i32> = if b.name == "DecoWallWaterBase" { (0..n).collect() } else { vec![n - 1] };
             for j in rows {
+                let flags_of = |cell: [i32; 3]| -> u32 {
+                    if legacy_stack {
+                        return if j == 0 { b.flags } else { 0 };
+                    }
+                    let above = water_cells.contains(&[cell[0], cell[1] + 1, cell[2]]);
+                    if above {
+                        // a tile under another water tile: the editor's stacked variant; the
+                        // ground bit only on the terrain tile (the bottom of a ground block)
+                        let w = (b.flags & !FLAG_GROUND) | below_flags;
+                        if j == 0 { w | (b.flags & FLAG_GROUND) } else { w }
+                    } else {
+                        // the column top: the plain air variant carries the surface (the
+                        // source's other bits — ghost mode — kept)
+                        b.flags & !(FLAG_GROUND | STACKED_BELOW)
+                    }
+                };
                 let flags = if b.name == "DecoWallWaterBase" {
-                    if j == 0 { b.flags } else { 0 }
+                    0 // per cell below
                 } else {
                     // the top row is never the terrain row: an air tile, the rest of the word kept
                     b.flags & !(FLAG_GROUND | FLAG_REPLACEMENT)
@@ -148,6 +208,7 @@ pub fn plan(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale: f32,
                             p.clipped += 1;
                             continue;
                         }
+                        let flags = if b.name == "DecoWallWaterBase" { flags_of(cell) } else { flags };
                         p.grid.push(FreeBlockSpec { name: b.name.clone(), author: None, flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(cell), dir: b.dir });
                         e.1 += 1;
                     }
@@ -221,7 +282,14 @@ pub fn parse_anchor(a: &str) -> Result<([f32; 3], [f32; 3]), String> {
 /// road archetypes (from `template`, re-pointed and renamed like `waterblocks`),
 /// then the block records. Returns (grid tiles, road tiles).
 pub fn apply(giant: &Path, out: &Path, plan: &Plan, template: Option<&Path>, author: &str) -> Result<(usize, usize), String> {
-    if plan.grid.is_empty() && plan.roads.is_empty() {
+    apply_opt(giant, out, plan, template, author, false)
+}
+
+/// `rewater`: the map's existing pool tiles (grid records of `POOL_BLOCKS`) are
+/// dropped before the plan's are added — a water-only rebuild of a finished giant
+/// map, everything else byte-identical (2026-09-14).
+pub fn apply_opt(giant: &Path, out: &Path, plan: &Plan, template: Option<&Path>, author: &str, rewater: bool) -> Result<(usize, usize), String> {
+    if plan.grid.is_empty() && plan.roads.is_empty() && !rewater {
         std::fs::copy(giant, out).map_err(|e| format!("{}: {e}", out.display()))?;
         return Ok((0, 0));
     }
@@ -265,7 +333,10 @@ pub fn apply(giant: &Path, out: &Path, plan: &Plan, template: Option<&Path>, aut
     let mut m3 = MapFile::load(&stage);
     let mut specs: Vec<FreeBlockSpec> = plan.grid.clone();
     specs.extend(plan.roads.iter().cloned());
-    let r = m3.remove_and_add_blocks(|_| false, |_| false, &specs);
+    let r = m3.remove_and_add_blocks(|b| rewater && b.free_pos.is_none() && POOL_BLOCKS.contains(&b.name.as_str()), |_| false, &specs);
+    if rewater {
+        println!("  giantwater: {} existing pool tiles dropped", r.blocks);
+    }
     m3.write_to(out).map_err(|e| e.to_string())?;
     if stage == tmp_map {
         let _ = std::fs::remove_file(&tmp_map);
