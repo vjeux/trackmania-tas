@@ -42,7 +42,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let repo = f("--repo").unwrap_or_else(|| "vjeux/trackmania-tas".into());
     let club = f("--club").unwrap_or_else(|| "145872".into());
     let folder = f("--folder").unwrap_or_else(|| format!("{word} U10S"));
-    let room_prefix = f("--room-prefix").unwrap_or_else(|| format!("{word} U10S - Part "));
+    // a Nadeo room name is 20 characters at most ("name:error-tooLong", Wet Wood 2026-09-14):
+    // "<Word> U10S - Part NN" when it fits, else "<Word> - Part NN" (the folder carries "U10S")
+    let room_prefix = f("--room-prefix").unwrap_or_else(|| if format!("{word} U10S - Part 39").chars().count() <= 20 { format!("{word} U10S - Part ") } else { format!("{word} - Part ") });
     let lanes: usize = f("--lanes").and_then(|s| s.parse().ok()).unwrap_or(3).max(1);
     let box_dir = f("--box-dir").unwrap_or_else(|| format!("/home/vjeux/shoot/hunt/{}", surface.to_ascii_lowercase()));
     let box_tinyctl = f("--box-tinyctl").unwrap_or_else(|| "/home/vjeux/shoot/variants/tinyctl".into());
