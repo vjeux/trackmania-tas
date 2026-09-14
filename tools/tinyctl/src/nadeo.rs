@@ -158,6 +158,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     if sub == "club-mirror" {
         return club_mirror(args);
     }
+    if sub == "club-rooms" {
+        return club_rooms(args);
+    }
     let outdir = PathBuf::from(f("--outdir").unwrap_or_else(|| "/home/vjeux/shoot/u10s".into()));
     std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
     let shootctl = f("--shootctl").unwrap_or_else(|| format!("{BOX_TOOLS}/shootctl"));
@@ -528,6 +531,148 @@ pub fn club_mirror(args: &[String]) -> Result<(), String> {
             }
             Err(e) => {
                 println!("{part}\t{camp}\t{act}\t{}\tplaylist FAILED: {}", uids.len(), e.lines().next().unwrap_or(""));
+                failed += 1;
+            }
+        }
+    }
+    if failed > 0 {
+        return Err(format!("{failed} of {} parts failed", parts.len()));
+    }
+    Ok(())
+}
+
+/// `tinyctl nadeo-here club-rooms --club C --folder "Giant U10S" --room-prefix "Giant U10S - Part "
+/// --parts-dir D [--only 01,02] [--region eu-west] [--max-players 100] [--outdir O]` —
+/// Everios' hunt-club layout: ONE folder per alteration holding one Nadeo-hosted
+/// TimeAttack ROOM per part ("Giant U10S - Part 05", 25 maps in campaign order).
+/// Reads the part uids from `D/results-pNN.tsv` (publish-batch results, IDENTICAL
+/// rows), creates the folder once (id remembered in `O/club-<C>-rooms.tsv`),
+/// then creates or edits the room per part. No map bytes move.
+pub fn club_rooms(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let club = f("--club").ok_or("club-rooms needs --club ID")?;
+    let folder_name = f("--folder").ok_or("club-rooms needs --folder NAME")?;
+    let prefix = f("--room-prefix").ok_or("club-rooms needs --room-prefix \"X U10S - Part \"")?;
+    let parts_dir = std::path::PathBuf::from(f("--parts-dir").ok_or("club-rooms needs --parts-dir D")?);
+    let outdir = std::path::PathBuf::from(f("--outdir").unwrap_or_else(|| "/home/vjeux/shoot/u10s".into()));
+    std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
+    let region = f("--region").unwrap_or_else(|| "eu-west".into());
+    let max_players: u32 = f("--max-players").and_then(|s| s.parse().ok()).unwrap_or(100);
+    let only: Option<Vec<String>> = f("--only").map(|s| s.split(',').map(|x| format!("{:02}", x.trim().parse::<usize>().unwrap_or(0))).collect());
+    let shootctl = f("--shootctl").unwrap_or_else(|| "/home/vjeux/trackmania-tas/tools/target/release/shootctl".into());
+    let (_core, live) = tokens_opt(&shootctl, "club-rooms", false)?;
+    let auth = format!("Authorization: {live}");
+    // state: folder id + part -> room activity id
+    let state_path = outdir.join(format!("club-{club}-rooms-{}.tsv", folder_name.replace(' ', "_")));
+    let mut folder_id: Option<u64> = None;
+    let mut rooms: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    for l in std::fs::read_to_string(&state_path).unwrap_or_default().lines() {
+        let c: Vec<&str> = l.split('\t').collect();
+        if c.len() >= 2 {
+            if c[0] == "folder" {
+                folder_id = c[1].parse().ok();
+            } else if let Ok(id) = c[1].parse() {
+                rooms.insert(c[0].to_string(), id);
+            }
+        }
+    }
+    let save = |folder_id: Option<u64>, rooms: &std::collections::BTreeMap<String, u64>| {
+        let mut s = String::new();
+        if let Some(fid) = folder_id {
+            s.push_str(&format!("folder\t{fid}\n"));
+        }
+        for (p, id) in rooms {
+            s.push_str(&format!("{p}\t{id}\n"));
+        }
+        let _ = std::fs::write(&state_path, s);
+    };
+    // the folder: reuse an existing one of that name (Everios may have made it), else create
+    if folder_id.is_none() {
+        let acts = get_json(&auth, &format!("{LIVE}/api/token/club/{club}/activity?length=100&offset=0&active=true"))?;
+        if let Some(a) = acts["activityList"].as_array().and_then(|l| l.iter().find(|a| a["activityType"] == "folder" && a["name"] == folder_name.as_str())) {
+            folder_id = a["id"].as_u64();
+            println!("folder {folder_name:?}: existing activity {}", folder_id.unwrap_or(0));
+        }
+    }
+    if folder_id.is_none() {
+        let body = serde_json::json!({"name": folder_name, "folderId": 0}).to_string();
+        let v = post_json(&auth, &format!("{LIVE}/api/token/club/{club}/folder/create"), &body)?;
+        folder_id = v["id"].as_u64().or_else(|| v["targetActivityId"].as_u64());
+        println!("folder {folder_name:?}: created activity {}", folder_id.unwrap_or(0));
+    }
+    let fid = folder_id.ok_or("no folder id")?;
+    save(folder_id, &rooms);
+    // existing rooms in the folder by name (idempotent re-runs, or Everios' own)
+    {
+        let acts = get_json(&auth, &format!("{LIVE}/api/token/club/{club}/activity?length=100&offset=0&active=true&parentActivityId={fid}"))?;
+        for a in acts["activityList"].as_array().cloned().unwrap_or_default() {
+            if a["activityType"] == "room" {
+                if let (Some(n), Some(id)) = (a["name"].as_str(), a["id"].as_u64()) {
+                    if let Some(p) = n.strip_prefix(prefix.as_str()) {
+                        rooms.entry(format!("{:02}", p.trim().parse::<usize>().unwrap_or(0))).or_insert(id);
+                    }
+                }
+            }
+        }
+    }
+    let mut parts: Vec<(String, std::path::PathBuf)> = std::fs::read_dir(&parts_dir)
+        .map_err(|e| format!("{}: {e}", parts_dir.display()))?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.strip_prefix("results-p").and_then(|r| r.strip_suffix(".tsv")).map(|p| (p.to_string(), e.path()))
+        })
+        .filter(|(p, _)| only.as_ref().map(|o| o.contains(p)).unwrap_or(true))
+        .collect();
+    parts.sort();
+    let settings = serde_json::json!([
+        {"key": "S_TimeLimit", "value": "", "type": "integer"},
+        {"key": "S_DecoImageUrl_WhoAmIUrl", "value": format!("/api/club/{club}"), "type": "text"},
+        {"key": "S_ForceLapsNb", "value": "-1", "type": "integer"}
+    ]);
+    println!("part\troom\tmaps\tverdict");
+    let mut failed = 0usize;
+    for (part, path) in &parts {
+        let uids: Vec<String> = std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .skip(1)
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| {
+                let c: Vec<&str> = l.split('\t').collect();
+                (c.len() >= 8 && c[7] == "IDENTICAL" && c[2] != "-").then(|| c[2].to_string())
+            })
+            .collect();
+        if uids.is_empty() {
+            println!("{part}\t-\t0\tno IDENTICAL rows");
+            failed += 1;
+            continue;
+        }
+        let name = format!("{prefix}{part}");
+        let mut body = serde_json::json!({
+            "name": name, "region": region, "maxPlayersPerServer": max_players,
+            "script": "TrackMania/TM_TimeAttack_Online.Script.txt", "settings": settings,
+            "maps": uids, "scalable": 0, "password": 0, "shufflePlaylist": 0, "folderId": fid
+        });
+        let r = match rooms.get(part) {
+            Some(id) => {
+                body.as_object_mut().unwrap().remove("folderId");
+                post_json(&auth, &format!("{LIVE}/api/token/club/{club}/room/{id}/edit"), &body.to_string()).map(|v| (*id, v))
+            }
+            None => post_json(&auth, &format!("{LIVE}/api/token/club/{club}/room/create"), &body.to_string()).map(|v| (v["activityId"].as_u64().or_else(|| v["id"].as_u64()).unwrap_or(0), v)),
+        };
+        match r {
+            Ok((id, v)) => {
+                let n = v["room"]["maps"].as_array().map(|a| a.len()).unwrap_or(0);
+                rooms.insert(part.clone(), id);
+                save(folder_id, &rooms);
+                println!("{part}\t{id}\t{n}\t{}", if n == uids.len() { "OK" } else { "COUNT MISMATCH" });
+                if n != uids.len() {
+                    failed += 1;
+                }
+            }
+            Err(e) => {
+                println!("{part}\t-\t{}\tFAILED: {}", uids.len(), e.lines().next().unwrap_or("").chars().take(200).collect::<String>());
                 failed += 1;
             }
         }
