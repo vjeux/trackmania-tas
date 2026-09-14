@@ -695,7 +695,7 @@ pub fn all_cmd(args: &[String]) -> Result<(), String> {
                     }
                     let r = cmd(&pargs);
                     // the part's zip: the maps in campaign order + MAPS.tsv
-                    let z = part_zip(&part_out, &part, &word, &dist);
+                    let z = part_zip(&part_out, &part, &word, &surface, &dist);
                     match (r, z) {
                         (Ok(()), Ok((n, bytes, over))) => format!("{part}\tOK\t{n}/{} maps\t{bytes} B zip\t{over} over 7 MB\t{:.0}s", nums.len(), t1.elapsed().as_secs_f64()),
                         (Err(e), Ok((n, bytes, over))) => format!("{part}\tPARTIAL\t{n}/{} maps\t{bytes} B zip\t{over} over 7 MB\t{:.0}s\t{}", nums.len(), t1.elapsed().as_secs_f64(), e.lines().next().unwrap_or("")),
@@ -722,7 +722,7 @@ pub fn all_cmd(args: &[String]) -> Result<(), String> {
 /// One part's release zip from its tracker: `<Word>U10S-partNN.zip` with the
 /// maps (the tracker's LAST row per map, in map order) and `MAPS.tsv`.
 /// Returns (maps in the zip, zip bytes, maps over 7 000 000 B).
-fn part_zip(part_out: &Path, part: &str, word: &str, dist: &Path) -> Result<(usize, u64, usize), String> {
+fn part_zip(part_out: &Path, part: &str, word: &str, surface_flag: &str, dist: &Path) -> Result<(usize, u64, usize), String> {
     let tracker = part_out.join("tracker.tsv");
     let text = std::fs::read_to_string(&tracker).map_err(|e| format!("{}: {e}", tracker.display()))?;
     let mut lines = text.lines();
@@ -736,7 +736,11 @@ fn part_zip(part_out: &Path, part: &str, word: &str, dist: &Path) -> Result<(usi
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut tsv = String::from("nn\tfile\tsource_name\tsource_uid\tauthortime_ms\tgold\tsilver\tbronze\tuid\tbytes\trenamed\tbaked\tsame\tkept\tnone\tnote\n");
     let (mut n, mut over) = (0usize, 0usize);
-    let surface = word.to_ascii_lowercase();
+    // the per-map dir is `<--surface flag><nn>` (`woodwet01`), not the label
+    // (`wetwood01`): the wet-wood zips failed on every part until this used the
+    // flag (2026-09-14); the label spelling is tried second for older trees
+    let surface = surface_flag.to_ascii_lowercase();
+    let word_lc = word.to_ascii_lowercase();
     for (nn, r) in &by_nn {
         let name = col(r, "out_name");
         if name == "-" {
@@ -744,7 +748,10 @@ fn part_zip(part_out: &Path, part: &str, word: &str, dist: &Path) -> Result<(usi
             continue;
         }
         let file = format!("{name}.Map.Gbx");
-        let path = part_out.join(format!("{surface}{nn}")).join(&file);
+        let mut path = part_out.join(format!("{surface}{nn}")).join(&file);
+        if !path.exists() {
+            path = part_out.join(format!("{word_lc}{nn}")).join(&file);
+        }
         let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         if bytes.len() >= 7_000_000 {
             over += 1;
