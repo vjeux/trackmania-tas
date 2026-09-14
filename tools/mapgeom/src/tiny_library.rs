@@ -725,6 +725,11 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     // hull takes the swap's deck physics (the family's row: PlatformTech for a
     // platform pad, RoadTech for a road one; else the forced modifier
     // folder's PlatformTech material) and keeps its gameplay id.
+    // TINY_ALL_DRIVABLE_PHYSICS=P (the magnet swap): every drivable hull triangle
+    // of every baked block drives as P — sides, borders, loops, pads included
+    if let Some(p) = std::env::var("TINY_ALL_DRIVABLE_PHYSICS").ok().and_then(|v| v.parse::<u8>().ok()) {
+        m.all_drivable_physics = Some(p);
+    }
     if !surface_rows.is_empty() && name.contains("Special") {
         let want = if name.starts_with("Platform") { "PlatformTech" } else { "RoadTech" };
         let from_rows = surface_rows.iter().find(|(st, _, _)| st == want).or_else(|| surface_rows.iter().find(|(st, _, _)| st == "PlatformTech" || st == "RoadTech")).map(|(_, _, ids)| ids.0);
@@ -2768,8 +2773,14 @@ pub fn surface_redress_rows(store: &mut DataStore) -> Vec<(String, String, (u8, 
         let ids = if link.is_empty() {
             (forced.unwrap_or_else(|| panic!("TINY_REDRESS row `{row}`: an empty link needs @P")), 0)
         } else {
-            let ids = crate::static_item::build::material_surface_ids(store, &format!("{link}.Material.Gbx")).unwrap_or_else(|| panic!("TINY_REDRESS: `{link}.Material.Gbx` has no surface ids in the pack"));
-            (forced.unwrap_or(ids.0), ids.1)
+            match crate::static_item::build::material_surface_ids(store, &format!("{link}.Material.Gbx")) {
+                Some(ids) => (forced.unwrap_or(ids.0), ids.1),
+                // a material the packs do not carry — the mesh editor's library
+                // (`Editors\MeshEditorMedia\Materials\TechMagnetic`, the look the
+                // community magnet blocks wear, 2026-09-14): the game resolves the
+                // link at load; the physics MUST be forced (`@P`), nothing is guessed
+                None => (forced.unwrap_or_else(|| panic!("TINY_REDRESS: `{link}.Material.Gbx` is in no pack; a mesh-editor material needs its physics forced (`{link}@P`)")), 0),
+            }
         };
         out.push((stem.trim().to_string(), link.to_string(), ids));
     }

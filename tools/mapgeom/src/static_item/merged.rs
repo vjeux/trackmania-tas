@@ -177,6 +177,15 @@ pub struct Merged {
     /// under the new look (wood 51: "the boosters are ice boosters", boasy
     /// 2026-09-14) and a baked road pad in the ice set stayed asphalt + turbo.
     pub pad_physics: Option<u8>,
+    /// The magnet swap: EVERY drivable hull triangle takes this physics (gameplay
+    /// kept) — road sides, borders, loops, wall rides, pads — not only the deck
+    /// stems the redress rows name (Everios96, 2026-09-14: "the sides of road
+    /// blocks are not magnetic and other parts of drivable blocks too"). A
+    /// drivable physics: concrete, pavement, grass, ice, metal, sand, dirt,
+    /// dirt road, rubber, rock, wood, asphalt, the wet ones, snow, stone,
+    /// gravel, road ice, synthetic, green, plastic; never the non-collidable,
+    /// trigger, sign or gameplay-special ids.
+    pub all_drivable_physics: Option<u8>,
     /// A SURFACE SWAP's explicit re-dress of the prefab's VISUAL materials
     /// (`TINY_REDRESS=RoadTech=Stadium\\Media\\Material\\RoadIce;…`, the ice
     /// conversion of 2026-09-13): rows of (material stem, replacement link,
@@ -633,7 +642,7 @@ impl Merged {
     /// matching row wins (slot-table rows come before folder shadows). None
     /// when no triangle matched.
     fn redress_collision(&mut self, sf: &CPlugSurface, triangles: &[Triangle], resolve: &mut MaterialResolver) -> Option<Vec<Triangle>> {
-        if self.collision_redress.is_empty() && self.pad_physics.is_none() {
+        if self.collision_redress.is_empty() && self.pad_physics.is_none() && self.all_drivable_physics.is_none() {
             return None;
         }
         let mut by_index: Vec<Option<(String, String, (u8, u8))>> = Vec::new();
@@ -652,7 +661,7 @@ impl Merged {
             by_index.push(hit);
             pad_slot.push(pad);
         }
-        if by_index.iter().all(|h| h.is_none()) && !pad_slot.iter().any(|p| *p) {
+        if by_index.iter().all(|h| h.is_none()) && !pad_slot.iter().any(|p| *p) && self.all_drivable_physics.is_none() {
             return None;
         }
         let mut out = triangles.to_vec();
@@ -680,8 +689,21 @@ impl Merged {
         if padded > 0 {
             self.notes.push(format!("hull: {padded} pad triangles take the surface swap's physics {} (gameplay kept)", self.pad_physics.unwrap_or(0)));
         }
+        let mut forced_all = 0usize;
+        if let Some(p) = self.all_drivable_physics {
+            for t in out.iter_mut() {
+                let drivable = matches!(t.material_id, 0 | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 9 | 12 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 33 | 69 | 74 | 75 | 76 | 77);
+                if drivable && t.material_id != p {
+                    t.material_id = p;
+                    forced_all += 1;
+                }
+            }
+            if forced_all > 0 {
+                self.notes.push(format!("hull: {forced_all} drivable triangles forced to physics {p} (the whole block drives as one surface)"));
+            }
+        }
         if counts.is_empty() {
-            return if padded > 0 { Some(out) } else { None };
+            return if padded > 0 || forced_all > 0 { Some(out) } else { None };
         }
         for (si, n) in counts {
             if let Some(Some((path, link, ids))) = by_index.get(si) {

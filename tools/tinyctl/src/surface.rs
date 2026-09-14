@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 /// | grass | `Modifier\PlatformGrass\PlatformTech` (Green 76) on roads and wall rides | `PlatformGrass` |
 /// | plastic | `Modifier\PlatformPlastic\PlatformTech` (Plastic 77) on roads and wall rides | `PlatformPlastic` |
 /// | wood | `Material\ThemeSnowRoad` (Wood 14 — the snow theme's plank road, the material the Altered Nadeo wood sets use) on roads AND platform decks; wall rides are wood already | — (the block's own) |
-/// | magnet | every deck keeps its own look, physics forced to TechMagnetic 55 (`Stem=@55`) | — |
+/// | magnet | `Editors\MeshEditorMedia\Materials\TechMagnetic` (the mesh-editor magnet look, physics 55 forced) on the deck stems; EVERY drivable hull triangle forced to 55 (`TINY_ALL_DRIVABLE_PHYSICS`) | — |
 ///
 /// A `wet` form (`woodwet`, `wet-grass`…) changes nothing here: the wetness is
 /// the START block's Water twin (`mapgeom surface-plan`).
@@ -63,12 +63,19 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         "Grass" => road_stems.iter().chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Modifier\\PlatformGrass\\PlatformTech")).collect(),
         "Plastic" => road_stems.iter().chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Modifier\\PlatformPlastic\\PlatformTech")).collect(),
         "Wood" => road_stems.iter().chain(["PlatformTech"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\ThemeSnowRoad")).collect(),
-        "Magnet" => road_stems.iter().chain(["PlatformTech", "TrackWall"].iter()).map(|st| format!("{st}=@55")).collect(),
+        // the mesh editor's magnet material (the blackish look every community
+        // magnet block wears; physics forced, the packs do not carry it) on the deck
+        // stems, and EVERY drivable hull triangle magnetic (sides, borders, loops,
+        // pads — Everios96, 2026-09-14: "the sides of them are not magnetic")
+        "Magnet" => road_stems.iter().chain(["PlatformTech", "TrackWall"].iter()).map(|st| format!("{st}=Editors\\MeshEditorMedia\\Materials\\TechMagnetic@55")).collect(),
         "Tech" => road_stems.iter().filter(|st| **st != "RoadTech").map(|st| format!("{st}=Stadium\\Media\\Material\\RoadTech")).collect(),
         other => return Err(format!("surface `{other}`: no dress table")),
     };
     if !rows.is_empty() {
         env.push(("TINY_REDRESS".to_string(), rows.join(";")));
+    }
+    if s == "Magnet" {
+        env.push(("TINY_ALL_DRIVABLE_PHYSICS".to_string(), "55".to_string()));
     }
     Ok(env)
 }
