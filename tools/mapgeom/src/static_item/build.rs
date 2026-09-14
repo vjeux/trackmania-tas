@@ -749,7 +749,29 @@ pub fn static_item_from_item(item_bytes: &[u8], ident: &str, author: &str, scale
 }
 
 pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str, scale: f32, collection: u32) -> R<(Vec<u8>, Merged)> {
+    static_item_from_item_report_redress(None, item_bytes, ident, author, scale, collection, "")
+}
+
+/// `static_item_from_item_report` with the SURFACE SWAP applied to the item when
+/// `source_model` matches `TINY_ITEM_REDRESS` (or `TINY_CUSTOM_ITEM_REDRESS=1`
+/// asks for every embedded custom item): the swap rows re-dress its materials and
+/// every drivable hull triangle takes the surface physics — Everios96
+/// 2026-09-14 14:31: "change the custom items". Needs the store for the rows.
+pub fn static_item_from_item_report_redress(store: Option<&mut crate::store::DataStore>, item_bytes: &[u8], ident: &str, author: &str, scale: f32, collection: u32, source_model: &str) -> R<(Vec<u8>, Merged)> {
     let mut m = Merged::default();
+    let redress = !source_model.is_empty() && store.is_some() && (crate::tiny_library::item_redress_wanted(source_model) || std::env::var("TINY_CUSTOM_ITEM_REDRESS").map(|v| v != "0").unwrap_or(false));
+    let mut pre = Merged::default();
+    if redress {
+        let store = store.unwrap();
+        crate::tiny_library::apply_surface_swap(store, &mut pre, source_model);
+        // the pipes (TINY_ITEM_REDRESS globs) are all-metal tubes: their WHOLE hull
+        // takes the surface; a custom road item follows the deck rule instead
+        // (deck-like ids convert, metal trims and rubber curbs keep theirs)
+        if crate::tiny_library::item_redress_wanted(source_model) && pre.all_drivable_physics.is_none() {
+            pre.all_drivable_physics = std::env::var("TINY_DECK_PHYSICS").ok().and_then(|v| v.parse::<u8>().ok());
+        }
+        pre.notes.push(format!("surface swap applied to the embedded item {source_model} (hull physics {:?})", pre.all_drivable_physics));
+    }
     // the source item's skin declaration (header chunk 0x090F4000) travels
     let skin = tmmaps::header::game_skin_chunk(item_bytes);
     match super::parse_file(item_bytes) {
@@ -760,6 +782,14 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
                 None
             };
             let mut m2 = Merged::default();
+            if redress {
+                m2.link_rewrite = pre.link_rewrite.clone();
+                m2.collision_redress = pre.collision_redress.clone();
+                m2.all_drivable_physics = pre.all_drivable_physics;
+                m2.deck_physics = pre.deck_physics;
+                m2.pad_physics = pre.pad_physics;
+                m2.notes.extend(pre.notes.iter().cloned());
+            }
             m2.add_static_object(so, &IDENTITY, scale, &mut resolve)?;
             // waypoint type from the item chunk (3 = none), trigger + spawn iso
             // from the entity model, all scaled
@@ -790,6 +820,14 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
             let g = tmmaps::gbx::Gbx::parse(item_bytes);
             let loc = crate::crystal_model::locate(&g.body).map_err(|e2| format!("not a static item ({e}); not a crystal item ({e2})"))?;
             let (crystal, _, _) = crate::crystal_model::CPlugCrystal::parse_with(&g.body, loc.at, loc.lookback.clone())?;
+            if redress {
+                m.link_rewrite = pre.link_rewrite.clone();
+                m.collision_redress = pre.collision_redress.clone();
+                m.all_drivable_physics = pre.all_drivable_physics;
+                m.deck_physics = pre.deck_physics;
+                m.pad_physics = pre.pad_physics;
+                m.notes.extend(pre.notes.iter().cloned());
+            }
             super::bake::add_crystal(&crystal, scale, &mut m)?;
         }
     }

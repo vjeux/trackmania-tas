@@ -111,6 +111,22 @@ fn main() {
         // tiny writer's clone donor; U10S_113, 2026-09-13)
         // rename-map MAP --out OUT --name NEW: the map's own name (header + body), nothing else
         // tmmaps set-exebuild MAP --out OUT --build 2026-02-02_17_51 [--exever 3.3.0]
+        // tmmaps embedded MAP — the embedded-objects manifest rows and zip entries
+        "embedded" => {
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
+            match m.embedded_objects() {
+                Some((rows, zip)) => {
+                    println!("{} manifest rows, zip {} bytes", rows.len(), zip.len());
+                    for (ident, author) in &rows {
+                        println!("  row  {ident}\t{author}");
+                    }
+                    for (name, bytes) in tmmaps::header::zip_entries(&zip) {
+                        println!("  zip  {name}\t{} B", bytes.len());
+                    }
+                }
+                None => println!("no embedded objects"),
+            }
+        }
         "set-exebuild" => {
             let src = std::path::PathBuf::from(&args[2]);
             let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("set-exebuild needs --out OUT"));

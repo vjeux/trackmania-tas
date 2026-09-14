@@ -469,6 +469,17 @@ pub fn restore_depth(m: &mut Merged, water: f32, scale: f32) {
     });
 }
 
+/// The hull physics ids a car drives on (every road/platform/deck surface the
+/// swap may replace): concrete, pavement, grass, ice, metal, sand, dirt, dirt road,
+/// rubber, test, wood, asphalt, the wet/snow twins, sliding wood, stone, pavement
+/// stair, road ice, road synthetic, green, plastic. Not: water, danger, turbo,
+/// bumper, freewheel, magnet (already the target), decals (not collidable).
+/// The DECK ids: what a road or platform deck is made of (the ids the deck rule
+/// converts); grass sides (2), rubber curbs (9), metal trims (4) are not decks.
+pub const DECK_LIKE_PHYSICS: [u8; 10] = [0, 3, 6, 8, 14, 16, 21, 74, 76, 77];
+
+pub const ALL_DRIVABLE_PHYSICS: [u8; 23] = [0, 1, 2, 3, 4, 5, 6, 8, 9, 12, 14, 16, 17, 18, 19, 20, 21, 33, 69, 74, 75, 76, 77];
+
 impl Merged {
     /// Slot of a game material, adding it when new.
     pub fn material_slot(&mut self, link: &str, physics: u8) -> usize {
@@ -616,6 +627,36 @@ impl Merged {
                 }
             }
         }
+        // the SURFACE SWAP on a copied material instance (an embedded custom item's
+        // inline materials, 2026-09-14 — Everios96: "change the custom items"): a
+        // `link_rewrite` row matching the link or its stem re-dresses it like a pack
+        // material; otherwise, when every drivable hull triangle is being forced
+        // (`all_drivable_physics`), a drivable material keeps its look and takes the
+        // surface physics (mesh-collidable items drive on their materials' ids)
+        if let Some(l) = owned.link().map(|s| s.to_string()) {
+            let stem = l.rsplit('\\').next().unwrap_or(&l).to_string();
+            if self.link_rewrite.iter().any(|(from, _, _)| *from == l || *from == stem) {
+                let phys = owned.physics();
+                return self.material_slot(&l, phys);
+            }
+        }
+        if let Some(p) = self.all_drivable_physics {
+            let cur = owned.physics();
+            if ALL_DRIVABLE_PHYSICS.contains(&cur) && cur != p {
+                if let Some(main) = owned.main.as_mut() {
+                    main.surface_physic_id = p;
+                }
+            }
+        } else if let Some(p) = self.deck_physics {
+            // the deck rule on an inline material (a mesh-collidable custom item's
+            // custom-textured deck keeps its look, drives as the surface)
+            let cur = owned.physics();
+            if DECK_LIKE_PHYSICS.contains(&cur) && cur != p {
+                if let Some(main) = owned.main.as_mut() {
+                    main.surface_physic_id = p;
+                }
+            }
+        }
         if let Some(i) = self.materials.iter().position(|m| same_look(m, &owned)) {
             return i;
         }
@@ -722,7 +763,7 @@ impl Merged {
         let mut forced_all = 0usize;
         if let Some(p) = self.all_drivable_physics {
             for t in out.iter_mut() {
-                let drivable = matches!(t.material_id, 0 | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 9 | 12 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 33 | 69 | 74 | 75 | 76 | 77);
+                let drivable = ALL_DRIVABLE_PHYSICS.contains(&t.material_id);
                 if drivable && t.material_id != p {
                     t.material_id = p;
                     forced_all += 1;
@@ -735,7 +776,7 @@ impl Merged {
         let mut decked = 0usize;
         if let Some(p) = self.deck_physics {
             for t in out.iter_mut() {
-                let deck = matches!(t.material_id, 0 | 3 | 6 | 8 | 14 | 16 | 21 | 74 | 76 | 77);
+                let deck = DECK_LIKE_PHYSICS.contains(&t.material_id);
                 if deck && t.material_id != p {
                     t.material_id = p;
                     decked += 1;

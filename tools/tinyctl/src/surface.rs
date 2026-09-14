@@ -270,7 +270,19 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             // models join the library bake; the writer re-points their records
             if let Some(globs) = env.iter().find(|(k, _)| k == "TINY_ITEM_REDRESS").map(|(_, v)| v.clone()) {
                 let src_map = tmmaps::map::MapFile::load(&src);
-                let mut item_models: Vec<String> = src_map.items.iter().map(|it| it.model.clone()).filter(|m| globs.split(',').map(str::trim).filter(|g| !g.is_empty()).any(|g| glob_simple(g, m))).collect();
+                // the map's own embedded custom items (Everios96 2026-09-14 14:31: "change
+                // the custom items"): every model whose file the map carries — or, with
+                // TINY_CUSTOM_ITEM_LIST=<file> (the WR-ghost classifier, one model per
+                // line), only the driven ones
+                let embedded_idents: Vec<String> = src_map.embedded_objects().map(|(rows, _)| rows.into_iter().map(|(i, _)| i.to_ascii_lowercase()).collect()).unwrap_or_default();
+                let custom_all = std::env::var("TINY_CUSTOM_ITEM_REDRESS").map(|v| v != "0").unwrap_or(false);
+                let custom_list: Option<Vec<String>> = std::env::var("TINY_CUSTOM_ITEM_LIST").ok().and_then(|f| std::fs::read_to_string(f).ok()).map(|t| t.lines().map(|l| l.trim().to_ascii_lowercase()).filter(|l| !l.is_empty()).collect());
+                let mut item_models: Vec<String> = src_map.items.iter().map(|it| it.model.clone()).filter(|m| {
+                    let ml = m.to_ascii_lowercase();
+                    let is_custom = embedded_idents.iter().any(|i| *i == ml || i.ends_with(&format!("\\{ml}")) || ml.ends_with(&format!("\\{i}")));
+                    globs.split(',').map(str::trim).filter(|g| !g.is_empty()).any(|g| glob_simple(g, m))
+                        || (is_custom && (custom_all || custom_list.as_ref().map(|l| l.iter().any(|x| *x == ml)).unwrap_or(false)))
+                }).collect();
                 item_models.sort();
                 item_models.dedup();
                 for m in item_models {

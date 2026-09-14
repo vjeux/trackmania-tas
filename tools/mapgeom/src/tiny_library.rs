@@ -1923,9 +1923,17 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         let mut variants: Vec<String> = Vec::new();
         let res = match &local {
             Some(p) => crate::static_item::build::static_item_from_item_report(&std::fs::read(p).unwrap(), &ident, &ident, scale, collection),
-            None => match embedded.iter().find(|(k, _)| k.replace('/', "\\").eq_ignore_ascii_case(&format!("Items\\{model}"))).map(|(_, v)| v) {
-                // a custom item the MAP embeds (the TME_* nation items)
-                Some(bytes) => crate::static_item::build::static_item_from_item_report(bytes, &ident, &ident, scale, collection),
+            None => match embedded.iter().find(|(k, _)| {
+                // the archive entry for a record's model: `Items\<model>`, the bare model, or
+                // an absolute author path ending in `\Items\<model>` (the krxelux items of
+                // U10S_176: `C:/Users/David/Documents/Trackmania/Items/TM_Items_Sorted_v8.0/…`)
+                let k = k.replace('/', "\\").to_ascii_lowercase();
+                let want = format!("items\\{}", model.replace('/', "\\").to_ascii_lowercase());
+                k == want || k == model.replace('/', "\\").to_ascii_lowercase() || k.ends_with(&format!("\\{want}"))
+            }).map(|(_, v)| v) {
+                // a custom item the MAP embeds (the TME_* nation items); the surface swap
+                // dresses it when asked (TINY_CUSTOM_ITEM_REDRESS / TINY_ITEM_REDRESS)
+                Some(bytes) => crate::static_item::build::static_item_from_item_report_redress(Some(store), bytes, &ident, &ident, scale, collection, model.rsplit(['\\', '/']).next().unwrap_or(model).trim_end_matches(".Item.Gbx").trim_end_matches(".Item.gbx").trim_end_matches(".item.gbx")),
                 None => match find_item_file(store, model) {
                     Some(logical) => {
                         variants = crate::static_item::build::pack_item_variants(store, &logical).unwrap_or_default();
