@@ -2662,17 +2662,25 @@ pub fn modifier_links(store: &DataStore, refs: &[String]) -> Vec<String> {
         }
         let Some(base) = r.strip_suffix(".TerrainModifier.Gbx") else { continue };
         let prefix = format!("{base}\\").to_uppercase();
+        // one folder's links sorted for a stable recipe; FOLDER ORDER KEPT: a
+        // stem is resolved by the first folder that has it, and a global sort
+        // put `PlatformGrass\…` before `PlatformPlastic\…` whatever the caller
+        // asked — the forced surface folder lost to a block's own grass one
+        // (plastic 01's open grass road, Everios96 2026-09-14 05:10)
+        let mut folder: Vec<String> = Vec::new();
         for e in store.entries() {
             let p = e.path();
             if p.to_uppercase().starts_with(&prefix) {
                 if let Some(link) = p.strip_suffix(".Material.Gbx") {
-                    out.push(link.to_string());
+                    folder.push(link.to_string());
                 }
             }
         }
+        folder.sort();
+        out.extend(folder);
     }
-    out.sort();
-    out.dedup();
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|l| seen.insert(l.clone()));
     out
 }
 
