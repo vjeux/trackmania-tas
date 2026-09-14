@@ -54,11 +54,15 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 let remote_path = format!("{box_dir}/{name}");
                 let r: Result<(), String> = (|| {
                     wsx.push(&path, &remote_path)?;
-                    // gh prints the asset URL on success; --clobber replaces an earlier copy
-                    let out = wsx.sh(&format!("cd /home/vjeux && ./bin/gh release upload '{tag}' '{remote_path}' -R {repo} --clobber 2>&1; rc=$?; rm -f '{remote_path}'; exit $rc"))?;
-                    if out.contains("error") || out.contains("failed") {
-                        return Err(format!("gh: {}", out.trim()));
-                    }
+                    // gh runs DETACHED on the box: a 120 MB upload to GitHub can take
+                    // longer than the bridge's 90 s answer window, and a command that
+                    // does not answer is retried by wsx — two uploads of one asset at
+                    // once (2026-09-13, parts 05/06). The done file carries gh's rc.
+                    let done = format!("{remote_path}.done");
+                    let log = format!("{remote_path}.log");
+                    wsx.sh(&format!("rm -f '{done}'; cd /home/vjeux && nohup setsid sh -c './bin/gh release upload \"{tag}\" \"{remote_path}\" -R {repo} --clobber; rc=$?; if [ $rc = 0 ]; then echo OK uploaded > \"{done}\"; else echo FAILED rc=$rc > \"{done}\"; fi; rm -f \"{remote_path}\"' > '{log}' 2>&1 < /dev/null & echo started"))?;
+                    wsx.wait_done(&done, &log, std::time::Duration::from_secs(1800), &format!("gh upload {name}"))?;
+                    let _ = wsx.sh(&format!("rm -f '{done}' '{log}'"));
                     Ok(())
                 })();
                 let line = match r {

@@ -1384,3 +1384,27 @@ zips, 4.59 GB, one per part, `GiantU10S-partNN.zip`), the tiny set's layout:
   tiles there are left out (the ×2 items stay: walls and floor, no volume)
   and the row says how many (328 on U10S_33, 2 736 on U10S_842). The engine
   keeps ITEMS outside the grid, so nothing else is clipped.
+
+## Car-change gates and the `--only` alias trap (2026-09-13 evening, Everios96's reports)
+
+- **`GateGameplay{Snow,Rally,Desert,Stadium}` BLOCKS had no trigger**: the family
+  shares one prefab (`Gate\Gameplay_{Ground,Air}.Prefab`) and one trigger shape
+  (`Gate\Gameplay_Trigger.Shape.Gbx`, the variant's `trigger_shapes`); the CAR is
+  the modifier folder's `Collision` material — gameplay 0x15 Snow, 0x16 Rally,
+  0x17 Desert — and the Stadium gate has no folder: the shape's own
+  `CollisionGateGameplay` says 0x14. The baker knew only `GateSpecial*`, so tiny
+  966's Snow gate was a plain ring (Everios: "on the original its snow car").
+  Fixed in `tiny_library.rs` (the special-trigger branch for `GateGameplay*`);
+  178 of the 975 u10s maps carry such a block; play-verified on 966 (the pickup).
+- **`convert-all --only` dropped every two-digit argv word**, including the value
+  of `--alias-part` for parts 10–39: the 54 refit maps of the 7 MB pass came out
+  with ANOTHER map's alias range (p12/01 carried p13/23's `AC01323…` names — the
+  game caches embedded models by file name per session, so two such maps in one
+  session show each other's models). The filter now applies to the map numbers
+  only. 216 maps (178 ∪ 54) rebuilt and updated in place.
+- Everios' hunt club (145872) layout = one FOLDER per alteration holding one
+  Nadeo-hosted TimeAttack ROOM per part (25 maps): `tinyctl nadeo-here club-rooms`
+  builds it from the publish results (idempotent through a state file). A wsx
+  command that runs past the bridge's 90 s answer cap is RE-RUN by the retry —
+  two concurrent creators made one duplicate room; run long API jobs detached
+  (`setsid nohup`) and poll a log.
