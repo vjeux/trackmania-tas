@@ -223,6 +223,7 @@ fn main() {
         "mapzips" => mapzips::cmd(rest),
         "dist" => dist::cmd(rest),
         "release-upload" => release::cmd(rest),
+        "hunt-update" => release::hunt_update_cmd(rest),
         "box-build" => boxbuild::box_build_cmd(rest),
         "selfbuild" => boxbuild::selfbuild_cmd(rest),
         "help" | "--help" | "-h" => {
