@@ -70,7 +70,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     shr(&wsx, &format!("mkdir -p {box_dir}/zips {box_dir}/results {box_dir}/lanes"))?;
     // a previous run's lane runners (an aborted hunt-publish leaves them waiting on
     // the queue files) would race the new ones: stopped first
-    shr(&wsx, &format!("pkill -f '[s]h {box_dir}/lanes/runner.sh' ; true"))?;
+    shr(&wsx, &format!("for pid in $(pgrep -f '[r]unner.sh'); do case \"$(ls -l /proc/$pid/fd 2>/dev/null | grep -o '/home/vjeux/shoot/hunt/[a-z]*/lanes/runner.sh' | head -1)\" in {box_dir}/lanes/runner.sh) kill $pid;; esac; done; pkill -f '[p]ublish-batch --manifest {box_dir}/' ; true"))?;
     // the parts an earlier run published (its results still on the box): pulled so
     // `done_part` sees them — one tar
     let had = shr(&wsx, &format!("cd {box_dir}/results 2>/dev/null && ls results-p*.tsv 2>/dev/null | wc -l; true"))?;
@@ -114,7 +114,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let runner_local = out_dir.join("lane-runner.sh");
     std::fs::write(&runner_local, &runner).map_err(|e| e.to_string())?;
     pushr(&wsx, &runner_local, &format!("{box_dir}/lanes/runner.sh"))?;
-    shr(&wsx, &format!("cd {box_dir}/lanes && rm -f lane-*.queue lane-*.done; for k in $(seq 0 {}); do : > lane-$k.queue; nohup setsid sh runner.sh $k > lane-$k.log 2>&1 < /dev/null & done; sleep 1; echo started", lanes - 1))?;
+    shr(&wsx, &format!("cd {box_dir}/lanes && rm -f lane-*.queue lane-*.done; for k in $(seq 0 {}); do : > lane-$k.queue; nohup setsid sh {box_dir}/lanes/runner.sh $k > lane-$k.log 2>&1 < /dev/null & done; sleep 1; echo started", lanes - 1))?;
     println!("[{:>5.0}s] {lanes} publish lanes running on the box", t0.elapsed().as_secs_f64());
 
     // --- per part: push, gh upload, unzip + manifest, queue
@@ -131,7 +131,11 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             continue;
         }
         let t1 = Instant::now();
-        pushr(&wsx, &z, &remote_zip)?;
+        // maps already staged by an earlier run (its manifest complete): no push, no unzip
+        let staged_before = !need_gh && shr(&wsx, &format!("wc -l < {box_dir}/p{part}/manifest.tsv 2>/dev/null; true"))?.trim().parse::<usize>().map(|n| n >= 25).unwrap_or(false);
+        if !staged_before {
+            pushr(&wsx, &z, &remote_zip)?;
+        }
         let mut steps = Vec::new();
         if need_gh {
             let out = shr(&wsx, &format!("{gh} release upload {tag} {remote_zip} -R {repo} --clobber 2>&1; echo rc=$?"))?;
@@ -142,8 +146,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
         if need_pub {
             // unzip, the manifest: `NN-<name>.Map.Gbx` -> name without the order prefix
-            let script = format!("set -e; rm -rf {box_dir}/p{part}; mkdir -p {box_dir}/p{part}; cd {box_dir}/p{part} && busybox unzip -q -o {remote_zip} && rm -f MAPS.tsv.manifest; : > manifest.tsv; for f in *.Map.Gbx; do n=${{f#??-}}; n=${{n%.Map.Gbx}}; printf '%s\\t%s\\n' \"{box_dir}/p{part}/$f\" \"$n\" >> manifest.tsv; done; wc -l < manifest.tsv");
-            let out = shr(&wsx, &script)?;
+            let out = if staged_before {
+                steps.push("staged earlier");
+                "25".to_string()
+            } else {
+                let script = format!("set -e; rm -rf {box_dir}/p{part}; mkdir -p {box_dir}/p{part}; cd {box_dir}/p{part} && busybox unzip -q -o {remote_zip} && rm -f MAPS.tsv.manifest; : > manifest.tsv; for f in *.Map.Gbx; do n=${{f#??-}}; n=${{n%.Map.Gbx}}; printf '%s\\t%s\\n' \"{box_dir}/p{part}/$f\" \"$n\" >> manifest.tsv; done; wc -l < manifest.tsv");
+                shr(&wsx, &script)?
+            };
             let lane = queued.len() % lanes;
             shr(&wsx, &format!("echo {part} >> {box_dir}/lanes/lane-{lane}.queue"))?;
             queued.push(part.clone());
@@ -157,21 +166,33 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     for k in 0..lanes {
         shr(&wsx, &format!("echo STOP >> {box_dir}/lanes/lane-{k}.queue"))?;
     }
-    // --- wait for the lanes
+    // --- wait for the lanes: done when EVERY queued part's results carry 25 IDENTICAL
+    // rows (or every lane said FINISHED — the lanes give a part up after 5 attempts);
+    // counted from the results, not the done lines (a stale runner set from an
+    // aborted run doubles those)
     let t_wait = Instant::now();
     loop {
-        let out = shr(&wsx, &format!("cat {box_dir}/lanes/lane-*.done 2>/dev/null; true"))?;
-        let finished = out.lines().filter(|l| l.trim() == "FINISHED").count();
-        let done_parts = out.lines().filter(|l| l.trim() != "FINISHED" && !l.trim().is_empty()).count();
-        if finished >= lanes {
-            println!("[{:>5.0}s] publish lanes finished ({done_parts} part runs)", t0.elapsed().as_secs_f64());
+        let out = shr(&wsx, &format!("cd {box_dir}/results && for f in results-p*.tsv; do printf '%s %s\\n' \"$f\" \"$(grep -c 'IDENTICAL$' $f)\"; done 2>/dev/null; cat {box_dir}/lanes/lane-*.done 2>/dev/null | grep -c FINISHED; true"))?;
+        let mut complete = 0usize;
+        for l in out.lines() {
+            if let Some((f, n)) = l.trim().split_once(' ') {
+                if let Some(p) = f.strip_prefix("results-p").and_then(|r| r.strip_suffix(".tsv")) {
+                    if queued.iter().any(|q| q == p) && n.trim().parse::<usize>().unwrap_or(0) >= 25 {
+                        complete += 1;
+                    }
+                }
+            }
+        }
+        let finished: usize = out.lines().last().and_then(|l| l.trim().parse().ok()).unwrap_or(0);
+        if complete >= queued.len() || finished >= lanes {
+            println!("[{:>5.0}s] publish lanes done: {complete}/{} parts complete, {finished} lane FINISHED lines", t0.elapsed().as_secs_f64(), queued.len());
             break;
         }
         if t_wait.elapsed() > Duration::from_secs(4 * 3600) {
-            return Err("publish lanes: no FINISHED after 4 h".into());
+            return Err("publish lanes: not complete after 4 h".into());
         }
         if t_wait.elapsed().as_secs() % 120 < 30 {
-            eprintln!("[{:>5.0}s] publishing: {done_parts}/{} part runs done, {finished}/{lanes} lanes finished", t0.elapsed().as_secs_f64(), queued.len());
+            eprintln!("[{:>5.0}s] publishing: {complete}/{} parts complete", t0.elapsed().as_secs_f64(), queued.len());
         }
         std::thread::sleep(Duration::from_secs(30));
     }
