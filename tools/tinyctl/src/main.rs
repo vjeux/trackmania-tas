@@ -41,6 +41,7 @@ mod nadeo;
 mod batch;
 mod pipeline;
 mod surface;
+mod hunt;
 mod mtrender;
 mod mapzips;
 mod views;
@@ -208,6 +209,7 @@ fn main() {
         "surface" => surface::cmd(rest),
         "surface-report" => surface::report_cmd(rest),
         "surface-batch" => surface::batch_cmd(rest),
+        "hunt-publish" => hunt::cmd(rest),
         "surface-all" => surface::all_cmd(rest),
         "release-zips" => surface::release_zips_cmd(rest),
         "convert-all" => pipeline::convert_all_cmd(rest),

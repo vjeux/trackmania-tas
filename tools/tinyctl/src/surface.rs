@@ -220,7 +220,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let build_t = Instant::now();
         let reuse = tmmaps::cli::has(args, "--reuse-build") && out_map.exists() && records.exists();
         let mut bake_models: Vec<String> = Vec::new();
-        let build: Result<(), String> = (|| {
+        let mut build_with = |lod_override: Option<&str>| -> Result<(), String> {
             if reuse {
                 println!("{nn}: reusing {}", out_map.display());
                 return Ok(());
@@ -243,7 +243,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 libcmd.args(&paks);
                 // the far detail levels off: the copies are few and beside the
                 // track, and every byte counts against the 7 MB server cap
-                let lod = f("--lod-pick").unwrap_or_else(|| "0".into());
+                let lod = lod_override.map(String::from).unwrap_or_else(|| f("--lod-pick").unwrap_or_else(|| "0".into()));
                 if lod != "-" {
                     libcmd.arg("--lod-pick").arg(&lod);
                 }
@@ -299,7 +299,38 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 println!("  {}", l.trim());
             }
             Ok(())
-        })();
+        };
+        // --max-bytes N (the 7 MB server cap): a map over it is rebuilt one detail
+        // level coarser at a time (lod-pick 1, 2, 3) until it fits; the note says which
+        let max_bytes: Option<u64> = f("--max-bytes").and_then(|v| v.parse().ok());
+        let mut build = build_with(None);
+        let mut fit_note = String::new();
+        if build.is_ok() && !reuse {
+            if let Some(cap) = max_bytes {
+                let size = || std::fs::metadata(&out_map).map(|m| m.len()).unwrap_or(u64::MAX);
+                let start = size();
+                if start >= cap {
+                    let mut fitted = false;
+                    for level in ["1", "2", "3"] {
+                        build = build_with(Some(level));
+                        if build.is_err() {
+                            break;
+                        }
+                        let s = size();
+                        println!("{nn}: {start} B over the {cap} B cap; every baked part at detail level {level}: {s} B");
+                        if s < cap {
+                            fit_note = format!("fit under {cap} B: {start} -> {s} B (lod-pick {level}); ");
+                            fitted = true;
+                            break;
+                        }
+                    }
+                    if !fitted && build.is_ok() {
+                        fit_note = format!("DOES NOT FIT under {cap} B even at level 3 ({} B); ", size());
+                    }
+                }
+            }
+        }
+        note.push_str(&fit_note);
         if let Err(e) = build {
             eprintln!("{nn}: build FAILED: {e}");
             row.extend(vec!["-".into(); 9]);
@@ -647,7 +678,7 @@ pub fn all_cmd(args: &[String]) -> Result<(), String> {
                     if tmmaps::cli::has(args, "--reuse-build") {
                         pargs.push("--reuse-build".into());
                     }
-                    for k in ["--lod-pick", "--bin-dir"] {
+                    for k in ["--lod-pick", "--bin-dir", "--max-bytes"] {
                         if let Some(v) = f(k) {
                             pargs.push(k.into());
                             pargs.push(v);
