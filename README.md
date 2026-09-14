@@ -4,6 +4,10 @@ Tool-assisted runs on Trackmania 2020 maps whose **author time no human has beat
 
 Side project: the Summer 2026 campaign rebuilt at half scale, with TAS laps on every converted map — **[Tiny Summer 2026](tiny/README.md)**.
 
+Side project: **the map's scenery carried by ghost car skins** — Summer 2025 - 02 with its trees and hills stripped from the map file and drawn by parked ghosts wearing 3D skins, swapping summer → ice → fall → summer at every checkpoint of LordQuacked's 19.791 world record. Nothing in the map changes; the scenery rides on the ghosts.
+
+https://github.com/user-attachments/assets/399a5186-8810-4e02-b14d-76e0802e698f
+
 # 1 · Author time unbeaten by any human — and this TAS takes it
 
 **[untitled 01](276874-untitled-01)** — author time `23.839` · ours **12.759** (−11.080) · best human *none — the board is empty, and the empty board is real: 36 other boards came back populated in the same pass* · 0 records
