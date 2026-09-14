@@ -97,9 +97,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     // --- the lane runner on the box: lane k publishes the parts of its queue file,
     // one publish-batch (blocking) per part, in order of appearance; a part is
     // appended to a lane's queue once its maps are staged
-    let runner = format!(
-        "#!/bin/sh\n# lane runner: $1 = lane index; reads {box_dir}/lanes/lane-$1.queue (one part per line, appended as parts are staged; STOP ends it)\nlane=$1\nseen=0\nwhile :; do\n  n=$(wc -l < {box_dir}/lanes/lane-$lane.queue 2>/dev/null || echo 0)\n  if [ \"$n\" -gt \"$seen\" ]; then\n    seen=$((seen+1))\n    part=$(sed -n \"${{seen}}p\" {box_dir}/lanes/lane-$lane.queue)\n    if [ \"$part\" = STOP ]; then break; fi\n    cd /home/vjeux/shoot/u10s && {box_tinyctl} publish-batch --manifest {box_dir}/p$part/manifest.tsv --results {box_dir}/results/results-p$part.tsv --outdir {box_dir}/p$part > {box_dir}/results/publish-p$part.log 2>&1\n    echo \"$part $(tail -n 1 {box_dir}/results/publish-p$part.log | cut -c1-120)\" >> {box_dir}/lanes/lane-$lane.done\n  else\n    sleep 5\n  fi\ndone\necho FINISHED >> {box_dir}/lanes/lane-$lane.done\n"
-    );
+    let runner = RUNNER_SH.replace("@BOX@", &box_dir).replace("@TINYCTL@", &box_tinyctl);
     let runner_local = out_dir.join("lane-runner.sh");
     std::fs::write(&runner_local, &runner).map_err(|e| e.to_string())?;
     wsx.push(&runner_local, &format!("{box_dir}/lanes/runner.sh"))?;
@@ -131,7 +129,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
         if need_pub {
             // unzip, the manifest: `NN-<name>.Map.Gbx` -> name without the order prefix
-            let script = format!("set -e; rm -rf {box_dir}/p{part}; mkdir -p {box_dir}/p{part}; cd {box_dir}/p{part} && unzip -q -o {remote_zip} && rm -f MAPS.tsv.manifest; : > manifest.tsv; for f in *.Map.Gbx; do n=${{f#??-}}; n=${{n%.Map.Gbx}}; printf '%s\\t%s\\n' \"{box_dir}/p{part}/$f\" \"$n\" >> manifest.tsv; done; wc -l < manifest.tsv");
+            let script = format!("set -e; rm -rf {box_dir}/p{part}; mkdir -p {box_dir}/p{part}; cd {box_dir}/p{part} && busybox unzip -q -o {remote_zip} && rm -f MAPS.tsv.manifest; : > manifest.tsv; for f in *.Map.Gbx; do n=${{f#??-}}; n=${{n%.Map.Gbx}}; printf '%s\\t%s\\n' \"{box_dir}/p{part}/$f\" \"$n\" >> manifest.tsv; done; wc -l < manifest.tsv");
             let out = wsx.sh(&script)?;
             let lane = queued.len() % lanes;
             wsx.sh(&format!("echo {part} >> {box_dir}/lanes/lane-{lane}.queue"))?;
@@ -212,3 +210,35 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
 
 #[allow(dead_code)]
 fn _unused(_: &Path) {}
+
+/// The lane runner (dash): `$1` = lane index; reads `@BOX@/lanes/lane-$1.queue`
+/// (one part per line, appended as parts are staged; `STOP` ends it) and runs
+/// one blocking `publish-batch` per part — up to 5 attempts 90 s apart until the
+/// results carry as many IDENTICAL rows as the manifest has maps (the plugin's
+/// token route is down while another job relaunches the game).
+const RUNNER_SH: &str = r#"#!/bin/sh
+lane=$1
+seen=0
+while :; do
+  n=$(wc -l < @BOX@/lanes/lane-$lane.queue 2>/dev/null || echo 0)
+  if [ "$n" -gt "$seen" ]; then
+    seen=$((seen+1))
+    part=$(sed -n "${seen}p" @BOX@/lanes/lane-$lane.queue)
+    if [ "$part" = STOP ]; then break; fi
+    want=$(wc -l < @BOX@/p$part/manifest.tsv)
+    attempt=0
+    while [ $attempt -lt 5 ]; do
+      attempt=$((attempt+1))
+      cd /home/vjeux/shoot/u10s && @TINYCTL@ publish-batch --manifest @BOX@/p$part/manifest.tsv --results @BOX@/results/results-p$part.tsv --outdir @BOX@/p$part > @BOX@/results/publish-p$part.log 2>&1
+      got=$(grep -c 'IDENTICAL$' @BOX@/results/results-p$part.tsv 2>/dev/null || echo 0)
+      if [ "$got" -ge "$want" ]; then break; fi
+      echo "$part attempt $attempt: $got/$want identical - $(tail -n 1 @BOX@/results/publish-p$part.log | cut -c1-100)" >> @BOX@/lanes/lane-$lane.log
+      sleep 90
+    done
+    echo "$part $(tail -n 1 @BOX@/results/publish-p$part.log | cut -c1-120)" >> @BOX@/lanes/lane-$lane.done
+  else
+    sleep 5
+  fi
+done
+echo FINISHED >> @BOX@/lanes/lane-$lane.done
+"#;
