@@ -560,6 +560,26 @@ pub fn club_mirror(args: &[String]) -> Result<(), String> {
 /// bytes move. The old per-part rooms of the folder ("<X> - Part NN" /
 /// "<X> U10S - Part NN") are deleted unless --keep-part-rooms. Idempotent through
 /// `O/club-<C>-layout-<Folder>.tsv` (campaign + room ids). Runs ON THE BOX.
+/// Every active activity of the club (optionally inside one folder), across the
+/// 100-per-page listing — the hunt club holds 360+ activities and the folders
+/// sit past the first page (club-layout, 2026-09-14).
+fn all_activities(auth: &str, club: &str, parent: Option<u64>) -> Result<Vec<Value>, String> {
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    loop {
+        let parent_q = parent.map(|p| format!("&parentActivityId={p}")).unwrap_or_default();
+        let v = get_json(auth, &format!("{LIVE}/api/token/club/{club}/activity?length=100&offset={offset}&active=true{parent_q}"))?;
+        let page = v["activityList"].as_array().cloned().unwrap_or_default();
+        let n = page.len();
+        out.extend(page);
+        if n < 100 {
+            break;
+        }
+        offset += 100;
+    }
+    Ok(out)
+}
+
 pub fn club_layout(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let club = f("--club").ok_or("club-layout needs --club ID")?;
@@ -576,12 +596,12 @@ pub fn club_layout(args: &[String]) -> Result<(), String> {
     let (_core, live) = tokens_opt(&shootctl, "club-layout", false)?;
     let auth = format!("Authorization: {live}");
     // the folder
-    let acts = get_json(&auth, &format!("{LIVE}/api/token/club/{club}/activity?length=100&offset=0&active=true"))?;
-    let fid = acts["activityList"]
-        .as_array()
-        .and_then(|l| l.iter().find(|a| a["activityType"] == "folder" && a["name"] == folder_name.as_str()))
+    let acts = all_activities(&auth, &club, None)?;
+    let fid = acts
+        .iter()
+        .find(|a| a["activityType"] == "folder" && a["name"] == folder_name.as_str())
         .and_then(|a| a["id"].as_u64())
-        .ok_or_else(|| format!("folder {folder_name:?} not found in club {club}"))?;
+        .ok_or_else(|| format!("folder {folder_name:?} not found in club {club} ({} activities)", acts.len()))?;
     println!("folder {folder_name:?}: activity {fid}");
     // state
     let state_path = outdir.join(format!("club-{club}-layout-{}.tsv", folder_name.replace(' ', "_")));
@@ -703,17 +723,23 @@ pub fn club_layout(args: &[String]) -> Result<(), String> {
     }
     // 3. the old per-part rooms of the folder
     if !keep_part_rooms && failed == 0 {
-        let acts = get_json(&auth, &format!("{LIVE}/api/token/club/{club}/activity?length=100&offset=0&active=true&parentActivityId={fid}"))?;
+        // THIS folder's rooms only: the listing's parentActivityId filter is not
+        // honoured past the first page (2026-09-14 16:24Z: the Tiny run deleted
+        // 39 Magnet + 17 Dirt rooms) — the activity's own folderId decides, and
+        // the room's name must start with the alteration word
+        let acts = all_activities(&auth, &club, None)?;
         let mut deleted = 0usize;
-        for a in acts["activityList"].as_array().cloned().unwrap_or_default() {
-            if a["activityType"] != "room" {
+        for a in acts {
+            if a["activityType"] != "room" || a["folderId"].as_u64() != Some(fid) {
                 continue;
             }
             let n = a["name"].as_str().unwrap_or("");
-            if n.contains(" - Part ") {
+            if n.contains(" - Part ") && n.starts_with(word.as_str()) {
                 if let Some(id) = a["id"].as_u64() {
-                    match post_json(&auth, &format!("{LIVE}/api/token/club/{club}/activity/{id}/delete"), "{}") {
-                        Ok(_) => deleted += 1,
+                    // the delete answers an empty body: judge by the HTTP code only
+                    match curl(&["-X", "POST", "-H", &auth, "-H", "Content-Type: application/json", "-d", "{}", &format!("{LIVE}/api/token/club/{club}/activity/{id}/delete")]) {
+                        Ok((_, code)) if code.starts_with('2') => deleted += 1,
+                        Ok((body, code)) => println!("delete {id} {n:?}: HTTP {code} {}", body.chars().take(120).collect::<String>()),
                         Err(e) => println!("delete {id} {n:?}: {}", e.lines().next().unwrap_or("").chars().take(120).collect::<String>()),
                     }
                 }
