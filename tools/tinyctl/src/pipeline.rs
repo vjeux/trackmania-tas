@@ -519,24 +519,29 @@ pub fn convert_all_cmd(args: &[String]) -> Result<(), String> {
                 let line = if nums.is_empty() {
                     format!("{part}\tFAILED\tno NN-*.Map.Gbx in {}", src_dir.display())
                 } else {
-                    let mut pargs: Vec<String> = nums.clone();
+                    // --only pNN:a,b;pMM:c — restrict this part to the listed map numbers.
+                    // Filter the MAP NUMBERS before the flags are appended: a retain over the
+                    // whole argv also dropped the two-digit VALUE of `--alias-part` for parts
+                    // 10–39 (2026-09-13: 54 refit maps came out with another map's alias
+                    // range — p12/01 carried p13/23's `AC01323…` names).
+                    let mut nums_here: Vec<String> = nums.clone();
+                    if let Some(only) = tmmaps::cli::flag(args, "--only") {
+                        for grp in only.split(';') {
+                            if let Some((p, list)) = grp.split_once(':') {
+                                if p.trim_start_matches('p').trim().parse::<usize>().ok() == part.parse::<usize>().ok() {
+                                    let keep: Vec<String> = list.split(',').map(|s| format!("{:02}", s.trim().parse::<usize>().unwrap_or(0))).collect();
+                                    nums_here.retain(|a| keep.contains(a));
+                                }
+                            }
+                        }
+                    }
+                    let mut pargs: Vec<String> = nums_here;
                     pargs.extend(["--src-dir".to_string(), src_dir.display().to_string(), "--out-root".into(), part_out.display().to_string(), "--tag".into(), tag.clone(), "--out-prefix".into(), prefix.clone(), "--recipe".into(), recipe.clone(), "--tracker".into(), part_out.join("tracker.tsv").display().to_string(), "--alias-part".into(), (part.trim_start_matches('0').parse::<usize>().unwrap_or(0) + alias_offset).to_string(), "--no-shoot".into(), "--no-publish".into()]);
                     pargs.extend(envs.iter().cloned());
                     for k in ["--max-bytes", "--scale", "--name-format"] {
                         if let Some(v) = tmmaps::cli::flag(args, k) {
                             pargs.push(k.into());
                             pargs.push(v.to_string());
-                        }
-                    }
-                    if let Some(only) = tmmaps::cli::flag(args, "--only") {
-                        // --only pNN:a,b;pMM:c — restrict each part to the listed map numbers
-                        for grp in only.split(';') {
-                            if let Some((p, list)) = grp.split_once(':') {
-                                if p.trim_start_matches('p').trim().parse::<usize>().ok() == part.parse::<usize>().ok() {
-                                    let keep: Vec<String> = list.split(',').map(|s| format!("{:02}", s.trim().parse::<usize>().unwrap_or(0))).collect();
-                                    pargs.retain(|a| !(a.len() == 2 && a.chars().all(|c| c.is_ascii_digit())) || keep.contains(a));
-                                }
-                            }
                         }
                     }
                     let r = cmd(&pargs);

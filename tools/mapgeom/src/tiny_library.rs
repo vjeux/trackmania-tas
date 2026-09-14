@@ -851,6 +851,68 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             None => m.notes.push("GateSpecial block without a Collision-material trigger disc in its block info".to_string()),
         }
     }
+    // A CAR-CHANGE gate BLOCK (GateGameplaySnow / Rally / Desert / Stadium): the
+    // family shares one prefab and one trigger shape (`Gate\Gameplay_Trigger.Shape.Gbx`,
+    // the variant's trigger_shapes) and the CAR is the modifier folder's
+    // `Collision` material — gameplay 0x15 Snow, 0x16 Rally, 0x17 Desert; the
+    // Stadium gate has no modifier folder and the shape's own
+    // `CollisionGateGameplay` material says 0x14. Until 2026-09-13 the baker
+    // knew only `GateSpecial*`, so every car gate came out as a plain ring
+    // (Everios96: "on map 966 there is a stadium gate placed, but on the
+    // original its snow car" — no trigger at all, in fact).
+    if m.special.is_none() && name.starts_with("GateGameplay") {
+        let mut done = false;
+        for sp in &plan.pk.variant.trigger_shapes {
+            let sm = match store.load_model(sp) {
+                Ok(x) => x,
+                Err(e) => { m.notes.push(format!("gameplay trigger shape {sp}: {e}")); continue; }
+            };
+            let mut lb = crate::static_item::LookbackState::default();
+            lb.defined_nodes.extend(sm.external_indices().iter().copied());
+            let mut r = crate::static_item::Rd::new(&sm.body, 0, lb);
+            let sf = match CPlugSurface::parse(&mut r) {
+                Ok(x) => x,
+                Err(e) => { m.notes.push(format!("gameplay trigger shape {sp}: {e}")); continue; }
+            };
+            // the effect: the modifier folder's Collision material, else the shape's own
+            let (ids, from) = match crate::static_item::build::special_collision_ids(store, &m) {
+                Some((link, ids)) => (ids, link),
+                None => {
+                    let own = match &sf.surf {
+                        crate::static_item::surface::Surf::Mesh { triangles, .. } => triangles.iter().map(|t| (t.material_id, t.gameplay)).find(|(_, gp)| *gp != 0),
+                        _ => None,
+                    };
+                    match own {
+                        Some(ids) => (ids, "the trigger shape's own material".to_string()),
+                        None => {
+                            // the shape's external material file (CollisionGateGameplay: 0x14 Stadium)
+                            let mat = sm.externals.iter().map(|(_, p)| p.clone()).find(|p| p.to_ascii_lowercase().contains("collision"));
+                            match mat.and_then(|p| crate::static_item::materials::material_surface_ids(store, &p).map(|i| (i, p))) {
+                                Some((i, p)) => (i, p),
+                                None => ((0, 0), "nothing".to_string()),
+                            }
+                        }
+                    }
+                }
+            };
+            if ids.1 == 0 {
+                m.notes.push(format!("gameplay gate: no gameplay id found ({from}); trigger not emitted"));
+                continue;
+            }
+            match crate::static_item::build::trigger_mesh(&sf, &crate::geom::IDENTITY, scale, ids) {
+                Some(t) => {
+                    m.notes.push(format!("gameplay gate trigger from {}: physics {} gameplay {} from {from} — prefab form", sp.rsplit('\\').next().unwrap_or(sp), ids.0, ids.1));
+                    m.special = Some(t);
+                    done = true;
+                    break;
+                }
+                None => m.notes.push(format!("gameplay trigger shape {sp}: no triangles")),
+            }
+        }
+        if !done && plan.pk.variant.trigger_shapes.is_empty() {
+            m.notes.push("gameplay gate block without a trigger shape in its variant".to_string());
+        }
+    }
     // waypoint: type from the block info; the trigger is the
     // variant's own `*_Trigger.Shape.Gbx` scaled (for the road
     // checkpoints a 0.1 m plane across the middle of the block,
