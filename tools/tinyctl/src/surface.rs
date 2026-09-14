@@ -70,7 +70,9 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         // magnet block wears; physics forced, the packs do not carry it) on the deck
         // stems, and EVERY drivable hull triangle magnetic (sides, borders, loops,
         // pads — Everios96, 2026-09-14: "the sides of them are not magnetic")
-        "Magnet" => road_stems.iter().chain(["PlatformTech", "TrackWall"].iter()).map(|st| format!("{st}=Editors\\MeshEditorMedia\\Materials\\TechMagnetic@55")).collect(),
+        // STRONG magnet since 2026-09-14 18:19Z (Everios96: "the magnet is not that
+        // strong … strong magnet would be nice"; vjeux: do): TechSuperMagnetic 62
+        "Magnet" => road_stems.iter().chain(["PlatformTech", "TrackWall"].iter()).map(|st| format!("{st}=Editors\\MeshEditorMedia\\Materials\\TechSuperMagnetic@62")).collect(),
         "Tech" => road_stems.iter().filter(|st| **st != "RoadTech").map(|st| format!("{st}=Stadium\\Media\\Material\\RoadTech")).collect(),
         other => return Err(format!("surface `{other}`: no dress table")),
     };
@@ -78,7 +80,7 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         env.push(("TINY_REDRESS".to_string(), rows.join(";")));
     }
     if s == "Magnet" {
-        env.push(("TINY_ALL_DRIVABLE_PHYSICS".to_string(), "55".to_string()));
+        env.push(("TINY_ALL_DRIVABLE_PHYSICS".to_string(), "62".to_string()));
     }
     // the pipes: baked as re-dressed item copies, physics and texture
     env.push(("TINY_ITEM_REDRESS".to_string(), "InflatableTube*".to_string()));
