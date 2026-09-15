@@ -240,7 +240,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let staged = format!("{SHOOT_DIR}/thumb-{k}.Map.Gbx");
             std::fs::copy(&src, &staged).map_err(|e| format!("stage {}: {e}", src.display()))?;
             std::fs::write(format!("{STORE}/editmap.txt"), format!("{SHOOT_WIN}\\thumb-{k}.Map.Gbx")).map_err(|e| e.to_string())?;
-            let a = http_get(&format!("/thumbshot?map=1&frames={frames}&ms={ready_ms}"))?;
+            // THUMBS_EXTRA_QUERY: camera knobs for the plugin (fovmul, pitchsign, aspect) — the
+            // single-map iteration against a map's original thumbnail (2026-09-15)
+            let extra = std::env::var("THUMBS_EXTRA_QUERY").unwrap_or_default();
+            let a = http_get(&format!("/thumbshot?map=1&frames={frames}&ms={ready_ms}{}{extra}", if extra.is_empty() || extra.starts_with('&') { "" } else { "&" }))?;
             if !a.starts_with("LOADING") {
                 return Err(format!("load refused: {a}"));
             }
