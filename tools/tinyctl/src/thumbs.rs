@@ -198,12 +198,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             // frame reads ~45, the clear one ~110 on the same map.
             let mut cap = cap_client.capture(&jpg_win)?;
             let lum = |c: &str| c.split("lum=").nth(1).and_then(|r| r.split(' ').next()).and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
-            let mut prev = lum(&cap);
             let mut retries = 0;
-            // a veiled frame reads dark and rising; a settled one is stable between two
-            // captures 200 ms apart. Night maps are legitimately dark (stable).
-            for _ in 0..4 {
-                std::thread::sleep(std::time::Duration::from_millis(200));
+            // ONE confirmation only when the frame could still be under the fade
+            // (the plugin's READY already waited `ready_ms` after the pose): a second
+            // capture 150 ms later that is brighter by > 3 means the veil was still
+            // lifting — take a third; a stable pair is final.
+            let mut prev = lum(&cap);
+            for _ in 0..3 {
+                if prev >= 140 && retries == 0 {
+                    break; // a bright frame is never a veiled one (the veil caps ~120)
+                }
+                std::thread::sleep(std::time::Duration::from_millis(150));
                 let c2 = cap_client.capture(&jpg_win)?;
                 let l2 = lum(&c2);
                 cap = c2;
