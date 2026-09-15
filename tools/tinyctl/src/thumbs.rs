@@ -194,6 +194,10 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     done.insert(p);
                 }
             }
+            // the log may spell paths differently from the list (relative vs absolute):
+            // match by file name too
+            let names: Vec<String> = done.iter().filter_map(|p| Path::new(p).file_name().map(|n| n.to_string_lossy().to_string())).collect();
+            done.extend(names);
         }
     }
     let mut log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
@@ -223,7 +227,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         if n_ok + n_fail >= limit {
             break;
         }
-        if done.contains(m) {
+        if done.contains(m) || Path::new(m).file_name().map(|n| done.contains(&n.to_string_lossy().to_string())).unwrap_or(false) {
             continue;
         }
         let t0 = Instant::now();
@@ -240,7 +244,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             if !a.starts_with("LOADING") {
                 return Err(format!("load refused: {a}"));
             }
-            let ready = poll_until(&["READY"], 60_000)?;
+            let ready = poll_until(&["READY"], 25_000)?;
             let jpg_win = format!("{CAP_WIN}\\thumb-{k}.jpg");
             let jpg_wsl = format!("{CAP_DIR}/thumb-{k}.jpg");
             // the map-load FADE: the first posed frames are under a dark veil that
