@@ -165,7 +165,24 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let ready = poll_until(&["READY"], 60_000)?;
             let jpg_win = format!("{CAP_WIN}\\thumb-{k}.jpg");
             let jpg_wsl = format!("{CAP_DIR}/thumb-{k}.jpg");
-            let cap = capture(&jpg_win)?;
+            // the map-load FADE: the first posed frames are under a dark veil that
+            // lifts over ~1 s. The capture reports the frame's mean luminance; shoot
+            // again while it is still rising (two captures 250 ms apart agreeing
+            // within 2 = stable), at most 8 times. Measured 2026-09-14: the veiled
+            // frame reads ~45, the clear one ~110 on the same map.
+            let mut cap = capture(&jpg_win)?;
+            let lum = |c: &str| c.split("lum=").nth(1).and_then(|r| r.split(' ').next()).and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
+            let mut prev = lum(&cap);
+            for _ in 0..8 {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                let c2 = capture(&jpg_win)?;
+                let l2 = lum(&c2);
+                cap = c2;
+                if (l2 - prev).abs() <= 2 {
+                    break;
+                }
+                prev = l2;
+            }
             let _ = http_get("/thumbshot?done=1");
             let jpeg = std::fs::read(&jpg_wsl).map_err(|e| format!("{jpg_wsl}: {e}"))?;
             if jpeg.len() < 20_000 || !jpeg.starts_with(&[0xFF, 0xD8]) {
