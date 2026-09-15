@@ -137,6 +137,22 @@ fn main() {
             m.write_to(&out).expect("write");
             println!("{}: thumbnail {} -> {} bytes", out.display(), old, jpeg.len());
         }
+        // tmmaps chunk MAP 0x0304xxxx — the raw payload of one body chunk (hex + text)
+        "chunk" => {
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
+            let want = u32::from_str_radix(args.get(3).map(|s| s.trim_start_matches("0x")).expect("chunk id"), 16).expect("hex chunk id");
+            for (cid, _, payload, size) in tmmaps::gbx::all_skip_chunks(&m.gbx.body) {
+                if cid == want {
+                    let d = &m.gbx.body[payload..payload + size];
+                    println!("chunk 0x{cid:08X} payload {payload} size {size}");
+                    for (i, row) in d.chunks(16).enumerate() {
+                        let hex: Vec<String> = row.iter().map(|b| format!("{b:02x}")).collect();
+                        let txt: String = row.iter().map(|b| if (0x20..0x7f).contains(b) { *b as char } else { '.' }).collect();
+                        println!("  {:04x}  {:<48}  {txt}", i * 16, hex.join(" "));
+                    }
+                }
+            }
+        }
         "set-exebuild" => {
             let src = std::path::PathBuf::from(&args[2]);
             let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("set-exebuild needs --out OUT"));
@@ -144,8 +160,13 @@ fn main() {
             let exever = tmmaps::cli::flag(&args, "--exever");
             let mut m = tmmaps::map::MapFile::load(&src);
             let hit = m.set_exebuild(build, exever);
+            // --record "date=… git=… GameVersion=…": the BODY build record too (the physics key)
+            let rec = match tmmaps::cli::flag(&args, "--record") {
+                Some(r) => Some(m.set_build_record(r).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1) })),
+                None => None,
+            };
             m.write_to(&out).expect("write");
-            println!("{}: exebuild {} -> {build}{}", out.display(), if hit { "rewritten" } else { "NOT FOUND" }, exever.map(|v| format!(", exever {v}")).unwrap_or_default());
+            println!("{}: exebuild {} -> {build}{}{}", out.display(), if hit { "rewritten" } else { "NOT FOUND" }, exever.map(|v| format!(", exever {v}")).unwrap_or_default(), rec.map(|(at, old)| format!("; body record at {at}: `{old}` -> `{}`", tmmaps::cli::flag(&args, "--record").unwrap_or(""))).unwrap_or_default());
             if !hit {
                 std::process::exit(1);
             }

@@ -1131,6 +1131,28 @@ impl MapFile {
     /// builds drive as wood). Stamping the converted copy with the current build
     /// gives it the current rules. Header only (the XML lives nowhere else).
     /// Returns whether the attribute was found and rewritten.
+    /// The BODY's build record — chunk 0x03043051: `u32 0, u32 titleId(lookback),
+    /// string "date=YYYY-MM-DD_HH_MM git=NNNNNN-hhhhhhhhhhh GameVersion=X.Y.Z"`.
+    /// THIS is what TM2020 keys legacy physics on (Everios96 2026-09-15 04:26: the
+    /// header-only stamp changed nothing; the 2023 wood maps still drove as old
+    /// wood). The replacement string must be the same length so the chunk keeps
+    /// its size (`git` hashes are 11 hex chars, dates fixed width): the caller
+    /// passes the full `date=… git=… GameVersion=…` text of a current map.
+    pub fn set_build_record(&mut self, record: &str) -> Result<(usize, String), String> {
+        let (_, _, payload, size) = crate::gbx::all_skip_chunks(&self.gbx.body).into_iter().find(|(cid, ..)| *cid == 0x0304_3051).ok_or("no chunk 0x03043051")?;
+        let d = &self.gbx.body[payload..payload + size];
+        let pos = d.windows(5).position(|w| w == b"date=").ok_or("chunk 0x03043051 carries no `date=` string")?;
+        // the string is length-prefixed (u32) right before `date=`
+        let len = u32::from_le_bytes(d[pos - 4..pos].try_into().unwrap()) as usize;
+        let old = String::from_utf8_lossy(&d[pos..pos + len]).to_string();
+        if record.len() != len {
+            return Err(format!("build record `{record}` is {} bytes, the map's is {len} (`{old}`) — same length needed", record.len()));
+        }
+        let at = payload + pos;
+        self.raw_splices.push(((at, at + len), record.as_bytes().to_vec()));
+        Ok((at, old))
+    }
+
     pub fn set_exebuild(&mut self, build: &str, exever: Option<&str>) -> bool {
         let ud = self.gbx.user_data.clone();
         let n = u32::from_le_bytes(ud[0..4].try_into().unwrap()) as usize;
