@@ -101,7 +101,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     eprintln!("{n_rows} records over {} maps, {} accounts", maps_seen.len(), by_account.len());
 
     // 2. names
-    let names_text = std::fs::read_to_string(names_p).map_err(|e| format!("{names_p}: {e}"))?;
+    let names_text = std::fs::read_to_string(names_p).unwrap_or_default();
     let mut named = 0usize;
     for l in names_text.lines().skip(1) {
         let mut it = l.split('\t');
@@ -121,6 +121,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             by_lower.entry(p.name.to_lowercase()).or_insert_with(|| a.clone());
         }
     }
+    // --discord-accounts found.tsv (tinyctl tmio find): userId → accountId, matched by id first
+    let found: HashMap<String, String> = flag(args, "--discord-accounts").and_then(|f| std::fs::read_to_string(f).ok()).map(|t| t.lines().skip(1).filter_map(|l| { let c: Vec<&str> = l.split('\t').collect(); (c.len() >= 5 && c[4].len() > 30).then(|| (c[0].to_string(), c[4].to_string())) }).collect()).unwrap_or_default();
+    eprintln!("{} discord users resolved to accounts by trackmania.io", found.len());
     let disc_text = std::fs::read_to_string(discord_p).map_err(|e| format!("{discord_p}: {e}"))?;
     let mut unmatched: Vec<(String, String, u64)> = Vec::new();
     let mut extra: Vec<Person> = Vec::new();
@@ -130,8 +133,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             continue;
         }
         let (user, disp, msgs) = (c[1], c[2], c[3].parse::<u64>().unwrap_or(0));
+        let by_id = found.get(c[0]).filter(|a| by_account.contains_key(*a)).cloned();
         let key = [disp, user].iter().map(|s| s.to_lowercase()).find(|k| !k.is_empty() && by_lower.contains_key(k));
-        match key.and_then(|k| by_lower.get(&k)).cloned() {
+        match by_id.or_else(|| key.and_then(|k| by_lower.get(&k)).cloned()) {
             Some(a) => {
                 let p = by_account.get_mut(&a).unwrap();
                 p.messages += msgs;
@@ -174,6 +178,14 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         p.score = w_wr * m_wr.get(&i).copied().unwrap_or(0.0) + w_top10 * m_top.get(&i).copied().unwrap_or(0.0) + w_maps * m_maps.get(&i).copied().unwrap_or(0.0) + w_discord * m_disc.get(&i).copied().unwrap_or(0.0);
     }
     people.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap().then(b.maps.cmp(&a.maps)).then(a.name.cmp(&b.name)));
+
+    if let Some(n) = flag(args, "--emit-ids").and_then(|v| v.parse::<usize>().ok()) {
+        let ids: Vec<String> = people.iter().filter(|p| !p.account.is_empty()).take(n).map(|p| p.account.clone()).collect();
+        let p = out_dir.join("ids-to-name.txt");
+        std::fs::write(&p, ids.join("\n") + "\n").map_err(|e| e.to_string())?;
+        println!("{} account ids to name -> {}", ids.len(), p.display());
+        return Ok(());
+    }
 
     // 5. shots from the top: shots[0] → shot N (highest), …
     let n_shots = shots.len() as u8;
