@@ -37,6 +37,12 @@ fn plugin_addr() -> &'static str {
         if let Ok(rc) = std::fs::read_to_string("/etc/resolv.conf") {
             for line in rc.lines() { if let Some(ip) = line.strip_prefix("nameserver ") { cands.push(format!("{}:29800", ip.trim())); } }
         }
+        // the default gateway (WSL2 NAT: the Windows host)
+        if let Ok(out) = std::process::Command::new("ip").args(["route"]).output() {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                if let Some(rest) = line.strip_prefix("default via ") { if let Some(ip) = rest.split_whitespace().next() { cands.push(format!("{ip}:29800")); } }
+            }
+        }
         for c in &cands {
             if let Ok(sa) = c.parse::<std::net::SocketAddr>() {
                 if std::net::TcpStream::connect_timeout(&sa, std::time::Duration::from_millis(500)).is_ok() { return c.clone(); }
