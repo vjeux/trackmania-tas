@@ -263,6 +263,43 @@ fn main() {
             m.write_to(&out).expect("write");
             println!("{}: uid {old} -> {new}", out.display());
         }
+        // tmmaps carry-embedded MAP --source SRC --out OUT — the SOURCE map's own embedded
+        // objects (custom items/blocks) merged into MAP's archive + manifest when missing.
+        // The archive bug the giant pipeline still has (Giant 953: 109 models placed, 104
+        // archive rows — Everios96 2026-09-15 11:10).
+        "carry-embedded" => {
+            let src_p = std::path::PathBuf::from(&args[2]);
+            let source = tmmaps::map::MapFile::load(std::path::Path::new(tmmaps::cli::flag(&args, "--source").expect("--source SRC")));
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("--out OUT"));
+            let mut m = tmmaps::map::MapFile::load(&src_p);
+            let (rows, zip) = m.embedded_objects().unwrap_or_default();
+            let mut files: std::collections::BTreeMap<String, Vec<u8>> = tmmaps::header::zip_entries(&zip).into_iter().collect();
+            let mut manifest: Vec<(String, String)> = rows.clone();
+            let (mut carried, mut added_rows) = (0usize, 0usize);
+            if let Some((srows, szip)) = source.embedded_objects() {
+                for (name, bytes) in tmmaps::header::zip_entries(&szip) {
+                    if !files.contains_key(&name) {
+                        files.insert(name, bytes);
+                        carried += 1;
+                    }
+                }
+                for (ident, author) in srows {
+                    if !manifest.iter().any(|(i, _)| *i == ident) {
+                        manifest.push((ident, author));
+                        added_rows += 1;
+                    }
+                }
+            }
+            if carried == 0 && added_rows == 0 {
+                println!("{}: nothing to carry (archive already complete)", src_p.display());
+                std::process::exit(3);
+            }
+            let new_zip = tmmaps::header::deflated_zip(&files);
+            let mref: Vec<(&str, &str)> = manifest.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            m.replace_embedded_objects(&mref, &new_zip);
+            m.write_to(&out).expect("write");
+            println!("{}: {carried} files + {added_rows} manifest rows carried from the source; archive {} -> {} bytes", out.display(), zip.len(), new_zip.len());
+        }
         "set-exebuild" => {
             let src = std::path::PathBuf::from(&args[2]);
             let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("set-exebuild needs --out OUT"));
