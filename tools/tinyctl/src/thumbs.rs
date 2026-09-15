@@ -147,17 +147,19 @@ fn editor_shot(k: usize, src: &Path, out_map: &Path, tmmaps_bin: &str) -> Result
         if te.elapsed().as_secs() > 60 {
             return Err("editor did not come up in 60 s".into());
         }
+        // ready = the editor is up AND the plugin-map API answers (the editor keeps a
+        // hidden progress bar alive, so the dialog flag never clears here)
         let ctx = http_get("/ctx").unwrap_or_default();
         if ctx.contains("\"editor\":\"trackeditor\"") {
-            let d = http_get("/dlgtext").unwrap_or_default();
-            if d.contains("\"showbar\":false") || d.contains("\"showbar\":null") {
+            let st = http_get("/thumbedit").unwrap_or_default();
+            if st.starts_with("idle") || st.starts_with("POSING") {
                 break;
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(150));
     }
     let t_editor = t0.elapsed().as_millis();
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    std::thread::sleep(std::time::Duration::from_millis(1200));
     let sv = http_get("/thumbedit?save=1")?;
     if !sv.starts_with("saved") {
         return Err(format!("save refused: {sv}"));
@@ -327,7 +329,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let src = match &root { Some(r) => r.join(m), None => PathBuf::from(m) };
         let rel = match &root { Some(r) => src.strip_prefix(r).unwrap_or(&src).to_path_buf(), None => PathBuf::from(Path::new(m).file_name().unwrap_or_default()) };
         let out_map = outdir.join(&rel);
-        let res = if editor_mode { editor_shot(k, &src, &out_map, &tmmaps_bin) } else { (|| -> Result<(String, usize), String> {
+        let res = if editor_mode {
+            let r = editor_shot(k, &src, &out_map, &tmmaps_bin);
+            if r.is_err() {
+                let _ = http_get("/thumbedit?quit=1");
+                let tq = Instant::now();
+                while tq.elapsed().as_secs() < 20 && !http_get("/ctx").unwrap_or_default().contains("\"editor\":\"none\"") {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            }
+            r
+        } else { (|| -> Result<(String, usize), String> {
             let name = src.file_name().and_then(|n| n.to_str()).ok_or("no file name")?.to_string();
             // stage under a SHORT ascii name: the game path goes through editmap.txt verbatim
             let staged = format!("{SHOOT_DIR}/thumb-{k}.Map.Gbx");
