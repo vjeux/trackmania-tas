@@ -24,8 +24,31 @@ const SHOOT_WIN: &str = "C:\\Users\\vjeux\\OneDrive\\Documents\\Trackmania\\Maps
 const CAP_DIR: &str = "/mnt/c/Users/vjeux/tinyshots/thumbs";
 const CAP_WIN: &str = "C:\\Users\\vjeux\\tinyshots\\thumbs";
 
+/// The plugin's address from WSL: SHOOT_HOST, then 127.0.0.1, then the Windows
+/// host as WSL sees it (resolv.conf's nameserver) — the same ladder shootctl
+/// climbs; the first that accepts a connection is kept for the run.
+fn plugin_addr() -> &'static str {
+    use std::sync::OnceLock;
+    static ADDR: OnceLock<String> = OnceLock::new();
+    ADDR.get_or_init(|| {
+        let mut cands: Vec<String> = Vec::new();
+        if let Ok(h) = std::env::var("SHOOT_HOST") { if !h.trim().is_empty() { cands.push(format!("{}:29800", h.trim())); } }
+        cands.push(PLUGIN.to_string());
+        if let Ok(rc) = std::fs::read_to_string("/etc/resolv.conf") {
+            for line in rc.lines() { if let Some(ip) = line.strip_prefix("nameserver ") { cands.push(format!("{}:29800", ip.trim())); } }
+        }
+        for c in &cands {
+            if let Ok(sa) = c.parse::<std::net::SocketAddr>() {
+                if std::net::TcpStream::connect_timeout(&sa, std::time::Duration::from_millis(500)).is_ok() { return c.clone(); }
+            }
+        }
+        PLUGIN.to_string()
+    })
+}
+
 fn http_get(path: &str) -> Result<String, String> {
-    let mut s = std::net::TcpStream::connect(PLUGIN).map_err(|e| format!("connect {PLUGIN}: {e}"))?;
+    let addr = plugin_addr();
+    let mut s = std::net::TcpStream::connect(addr).map_err(|e| format!("connect {addr}: {e}"))?;
     s.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok();
     s.set_write_timeout(Some(std::time::Duration::from_secs(10))).ok();
     s.write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").as_bytes()).map_err(|e| format!("write: {e}"))?;
