@@ -381,6 +381,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 }
                 let mut offset = 0usize;
                 let mut rows: Vec<String> = Vec::new();
+                let mut transient = 0u32;
                 loop {
                     let url = format!("{LIVE}/api/token/leaderboard/group/Personal_Best/map/{uid}/top?length=100&onlyWorld=true&offset={offset}");
                     let v = match get_json(&live_auth, &url) {
@@ -397,8 +398,18 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                             std::thread::sleep(Duration::from_secs(30));
                             continue;
                         }
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            // a 5xx HTML page, a dropped connection: transient — up to 5 retries
+                            transient += 1;
+                            if transient > 5 {
+                                return Err(e);
+                            }
+                            eprintln!("transient error ({transient}/5): {} — 15 s pause", e.chars().take(120).collect::<String>());
+                            std::thread::sleep(Duration::from_secs(15));
+                            continue;
+                        }
                     };
+                    transient = 0;
                     let top = v.get("tops").and_then(|t| t.as_array()).and_then(|a| a.first()).and_then(|z| z.get("top")).and_then(|t| t.as_array()).cloned().unwrap_or_default();
                     for r in &top {
                         rows.push(format!("{uid}\t{name}\t{}\t{}\t{}", s(r, "accountId"), s(r, "position"), s(r, "score")));
