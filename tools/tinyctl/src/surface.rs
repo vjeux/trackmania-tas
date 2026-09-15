@@ -70,7 +70,9 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         "Dirt" => road_stems.iter().filter(|st| !st.starts_with("RoadDirt")).chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\RoadDirt")).collect(),
         "Grass" => road_stems.iter().chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Modifier\\PlatformGrass\\PlatformTech")).collect(),
         "Plastic" => road_stems.iter().chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Modifier\\PlatformPlastic\\PlatformTech")).collect(),
-        "Wood" => road_stems.iter().filter(|st| !st.starts_with("ThemeSnowRoad")).chain(["PlatformTech"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\ThemeSnowRoad")).collect(),
+        // + `DecoHill`: the DecoPlatform hills' top (`Modifier\PlatformDirt\DecoHill` on
+        // the castle towers of 267 stayed dirt under wood — Everios96 2026-09-15)
+        "Wood" => road_stems.iter().filter(|st| !st.starts_with("ThemeSnowRoad")).chain(["PlatformTech", "DecoHill"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\ThemeSnowRoad")).collect(),
         // the mesh editor's magnet material (the blackish look every community
         // magnet block wears; physics forced, the packs do not carry it) on the deck
         // stems, and EVERY drivable hull triangle magnetic (sides, borders, loops,

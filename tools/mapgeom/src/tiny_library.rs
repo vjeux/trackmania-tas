@@ -2703,6 +2703,25 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
             ("DecalSponsor4x1COnRoadIce", &["DecalSponsor4x1C", "DecalPaint2Sponsor4x1C", "DecalPaintSponsor4x1C"]),
             ("DecalSponsor4x1DOnRoadIce", &["DecalSponsor4x1D", "DecalPaint2Sponsor4x1D", "DecalPaintSponsor4x1D"]),
         ];
+        // The ice START's `DecalMarksStartOnRoadIce` is not a decal over a deck: it IS
+        // the deck of the start pad's centre (a full RoadIce material with the marks
+        // painted in). Swapped to the see-through `DecalMarksStart`, those faces
+        // vanished — Dirt 11's "invisible start", a black T where the pad's centre
+        // was (Everios96 2026-09-15; every RoadIceStart in every non-ice set). Those
+        // faces take the swap's deck link instead (the `RoadIce` row's target, the
+        // same material the rest of the pad gets); the painted marks are lost.
+        let ice_deck_row = surface_rows.iter().find(|(from, _, _)| from == "RoadIce").cloned();
+        if name.starts_with("RoadIceStart") {
+            if let Some((_, link, ids)) = &ice_deck_row {
+                if !m.link_rewrite.iter().any(|(from, _, _)| from == "DecalMarksStartOnRoadIce") {
+                    // TINY_ICE_MARKS_LINK overrides the material those faces take (experiments)
+                    let l = std::env::var("TINY_ICE_MARKS_LINK").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| link.clone());
+                    m.link_rewrite.push(("DecalMarksStartOnRoadIce".to_string(), l, ids.0));
+                    // those faces mostly wind downward: two-sided, or the deck material culls them
+                    m.two_sided_links.push("DecalMarksStartOnRoadIce".to_string());
+                }
+            }
+        }
         for (stem, plains) in pairs {
             if m.link_rewrite.iter().any(|(from, _, _)| from == stem) {
                 continue;

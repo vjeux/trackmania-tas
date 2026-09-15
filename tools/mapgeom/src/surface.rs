@@ -399,9 +399,22 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     let Some(cand) = candidate(name, s) else {
         return mk(Action::Keep, "", "not a surface family".into());
     };
+    // The ICE START (`RoadIceStart`, the bobsleigh family's raised pad) has no
+    // same-shape twin anywhere and its re-dressed copy loses the pad's centre
+    // (the start marks are the deck there, two-sided in the original; every
+    // one-sided deck material culls them to a hole — Dirt 11's "invisible
+    // start", Everios96 2026-09-15). It is a regular start block players race
+    // from in every ice map: kept as the game's own block, look and physics as
+    // the author placed it (6 maps: 11, 98, 124, 178, 219, 267's neighbour).
+    if name == "RoadIceStart" && s != "Ice" {
+        return mk(Action::Keep, "", "ice start: the author's own start block, kept (its copy loses the pad centre)".into());
+    }
     // a deck-only surface (no block family of its own) leaves the terrain-like
-    // families alone
-    if deck_only(s) && is_terrain_family(name) {
+    // families alone — except the DecoPlatform hills under WOOD: their dirt tops
+    // stayed dirt on the castle towers of 267 ("castle blocks with dirt on top
+    // were not properly updated", Everios96 2026-09-15); they take the wood deck
+    // like the Platform family does
+    if deck_only(s) && is_terrain_family(name) && !(s == "Wood" && name.starts_with("DecoPlatform")) {
         return mk(Action::Keep, "", format!("terrain family: no {s} form, left as is"));
     }
     // the wall-ride family IS wood (TrackWall = Wood 14)
@@ -428,6 +441,17 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
         let detail = format!("{fam}; cells {}", cells_of(&src.variant_base_ground).len().max(cells_of(&src.variant_base_air).len()));
         if has_water {
             return mk(Action::Keep, "", format!("water volume, no {s} twin: kept as water ({fam})"));
+        }
+        // A GAMEPLAY PAD (`Platform<Fam>Special<Effect>`: Turbo, Turbo2, Boost,
+        // SlowMotion, Cruise, NoSteering, …) is never baked: its base prefab is
+        // only the deck + the effect decal — the booster's rails and lights are
+        // further entities of the block the copy does not carry, and the decal
+        // sits on the deck's own colour. Baked, the pad came out as a bare dim
+        // pad with no hardware (Everios96, wood 273/155, 2026-09-15). Kept as the
+        // game's own block: effect intact, the one-cell deck keeps its family's
+        // surface.
+        if name.contains("Special") && name.starts_with("Platform") {
+            return mk(Action::Keep, "", format!("gameplay pad: kept as the game's block ({fam})"));
         }
         // a block with geometry of its own is baked as a re-dressed copy; a
         // prefab-less one (its faces are generated fillers) has nothing to bake

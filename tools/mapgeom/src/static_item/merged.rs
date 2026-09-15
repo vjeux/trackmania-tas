@@ -202,6 +202,12 @@ pub struct Merged {
     /// re-dressed by the game; an ice ROAD is a different block with a
     /// different shape, so the road keeps its shape and takes the ice dress).
     pub link_rewrite: Vec<(String, String, u8)>,
+    /// Source material links (or stems) whose visuals are emitted TWO-SIDED (a
+    /// reversed-winding copy of the index list): the ice start's
+    /// `DecalMarksStartOnRoadIce` faces mostly wind downward and rendered only
+    /// under the original's two-sided decal material — under a one-sided deck
+    /// material they culled to a hole into the pad (Dirt 11, 2026-09-15).
+    pub two_sided_links: Vec<String>,
     /// An ITEM modifier names its materials with a suffix: the obstacle items
     /// (Summer 15's pushers and rotors) reference
     /// `Stadium\Media\Modifier\ItemObstacleLevel1.Gbx`, whose materials live
@@ -980,15 +986,19 @@ impl Merged {
         // resolution. UserInst links are never overridden (validated 1:1).
         let (votes, smap) = surface_votes(so, s2, resolve);
         let mut slots: Vec<Option<usize>> = Vec::new();
+        // per source material index: the resolved source link (for `two_sided_links`)
+        let mut src_links: Vec<Option<String>> = Vec::new();
         if !s2.custom_materials.is_empty() {
             for (mi, m) in s2.custom_materials.iter().enumerate() {
                 let is_old = matches!(m.node.as_ref().and_then(|r| r.inline.as_deref()), Some(super::Node::OldMaterial(_))) && m.inst().is_none() && m.name.is_empty();
                 if is_old {
                     if let Some((link, phys)) = votes.get(mi).and_then(|v| v.clone()) {
                         slots.push(Some(self.link_slot(&link, phys)));
+                        src_links.push(None);
                         continue;
                     }
                 }
+                src_links.push(if m.name.is_empty() { None } else { Some(m.name.clone()) });
                 slots.push(match m.inst() {
                     Some(inst) => Some(self.material_inst_slot(inst, &s2.materials_folder)),
                     None if !m.name.is_empty() => Some(self.link_slot(&m.name, 0)),
@@ -1008,6 +1018,7 @@ impl Merged {
                 if is_old {
                     if let Some((link, phys)) = votes.get(mi).and_then(|v| v.clone()) {
                         slots.push(Some(self.link_slot(&link, phys)));
+                        src_links.push(None);
                         continue;
                     }
                 }
@@ -1023,8 +1034,10 @@ impl Merged {
                 };
                 if inline_old.is_some() {
                     slots.push(inline_old);
+                    src_links.push(None);
                     continue;
                 }
+                src_links.push(resolve(r.index).map(|(_, l, _)| l.clone()));
                 slots.push(match resolve(r.index).map(|(_, l, p)| (l, p)) {
                     Some((link, phys)) => Some(self.link_slot(&link, phys)),
                     None => {
@@ -1213,6 +1226,21 @@ impl Merged {
             // (`--debug decls` on Special24m.Prefab.Gbx: u01 -1, same lod
             // mask, u02 0; no u10/u12/u19 tables, flags 0) — no on/off flag.)
             let mut v = vis.clone();
+            if !self.two_sided_links.is_empty() {
+                let src_link: Option<String> = src_links.get(mi).cloned().flatten();
+                let hit = src_link.as_deref().map(|l| self.two_sided_links.iter().any(|t| l == t || l.rsplit('\\').next() == Some(t.as_str()) || l.ends_with(&format!("{t}.Material.Gbx")))).unwrap_or(false);
+                if hit {
+                    if let Some(ib) = v.index_buffer.as_mut() {
+                        let n = ib.indices.len() / 3 * 3;
+                        let mut back = Vec::with_capacity(n);
+                        for tri in ib.indices[..n].chunks(3) {
+                            back.extend_from_slice(&[tri[0], tri[2], tri[1]]);
+                        }
+                        ib.indices.extend(back);
+                        self.notes.push(format!("visual {}: two-sided ({} back faces added, material {})", g.visual_index, n / 3, src_link.as_deref().unwrap_or("?").rsplit('\\').next().unwrap_or("?")));
+                    }
+                }
+            }
             // A visual read in the pack's inline-vertex form is written back
             // that way only while it keeps its frame table (the flag cloth with
             // its 86 tween frames); a frame-less copy takes the stream form

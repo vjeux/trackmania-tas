@@ -798,6 +798,7 @@ pub fn static_item_from_item_report_redress(store: Option<&mut crate::store::Dat
             let mut m2 = Merged::default();
             if redress {
                 m2.link_rewrite = pre.link_rewrite.clone();
+                m2.two_sided_links = pre.two_sided_links.clone();
                 m2.collision_redress = pre.collision_redress.clone();
                 m2.all_drivable_physics = pre.all_drivable_physics;
                 m2.deck_physics = pre.deck_physics;
@@ -817,6 +818,7 @@ pub fn static_item_from_item_report_redress(store: Option<&mut crate::store::Dat
             let mut m2 = Merged::default();
             if redress {
                 m2.link_rewrite = pre.link_rewrite.clone();
+                m2.two_sided_links = pre.two_sided_links.clone();
                 m2.collision_redress = pre.collision_redress.clone();
                 m2.all_drivable_physics = pre.all_drivable_physics;
                 m2.deck_physics = pre.deck_physics;
