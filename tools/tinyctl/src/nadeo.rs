@@ -462,6 +462,100 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        // tinyctl nadeo-here reuid-swap --club C --pairs pairs.tsv [--dry-run] [--no-lock]
+        // pairs.tsv: `oldUid\tnewUid` per line. Every campaign playlist and every room map
+        // list of the club that contains an old uid is rewritten with the new one (one
+        // write per touched campaign / room). The records reset, option (b): the new uid
+        // starts an empty leaderboard; the old maps simply drop out of the club.
+        "reuid-swap" => {
+            let club = f("--club").ok_or("reuid-swap needs --club ID")?;
+            let pairs_p = f("--pairs").ok_or("reuid-swap needs --pairs pairs.tsv")?;
+            let dry = tmmaps::cli::has(args, "--dry-run");
+            let pairs: std::collections::HashMap<String, String> = std::fs::read_to_string(&pairs_p).map_err(|e| format!("{pairs_p}: {e}"))?.lines().filter_map(|l| { let mut it = l.split('\t'); Some((it.next()?.trim().to_string(), it.next()?.trim().to_string())) }).filter(|(a, b)| a.len() > 20 && b.len() > 20).collect();
+            eprintln!("{} uid pairs", pairs.len());
+            // campaigns
+            let mut touched_c = 0;
+            let mut offset = 0;
+            loop {
+                let v = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/campaign?length=100&offset={offset}"))?;
+                let list = v.get("clubCampaignList").and_then(|l| l.as_array()).cloned().unwrap_or_default();
+                if list.is_empty() {
+                    break;
+                }
+                for c in &list {
+                    let camp = c.get("campaignId").and_then(|x| x.as_u64()).or_else(|| c.get("id").and_then(|x| x.as_u64())).unwrap_or(0).to_string();
+                    let d = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/campaign/{camp}"))?;
+                    let inner = d.get("campaign").cloned().unwrap_or(Value::Null);
+                    let name = s(&d, "name");
+                    let mut uids: Vec<(u64, String)> = inner.get("playlist").and_then(|l| l.as_array()).map(|a| a.iter().map(|e| (e.get("position").and_then(|p| p.as_u64()).unwrap_or(0), s(e, "mapUid"))).collect()).unwrap_or_default();
+                    uids.sort();
+                    let mut hits = 0;
+                    let new_uids: Vec<String> = uids.iter().map(|(_, u)| match pairs.get(u) { Some(n) => { hits += 1; n.clone() } None => u.clone() }).collect();
+                    if hits > 0 {
+                        touched_c += 1;
+                        if dry {
+                            println!("campaign\t{camp}\t{name}\t{hits} uids to swap (dry run)");
+                        } else {
+                            let r = campaign_set(&auth_live, &club, &camp, &name, &new_uids)?;
+                            let n = serde_json::to_string(&r).unwrap_or_default().matches("\"mapUid\"").count();
+                            println!("campaign\t{camp}\t{name}\t{hits} swapped\t{n} maps in the playlist{}", if n == new_uids.len() { "" } else { "\tCOUNT MISMATCH" });
+                        }
+                        std::thread::sleep(Duration::from_millis(400));
+                    }
+                }
+                if list.len() < 100 {
+                    break;
+                }
+                offset += 100;
+            }
+            // rooms (activities of type room)
+            let mut touched_r = 0;
+            let mut offset = 0;
+            loop {
+                let v = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/activity?length=100&offset={offset}&active=true"))?;
+                let list = v.get("activityList").and_then(|l| l.as_array()).cloned().unwrap_or_default();
+                if list.is_empty() {
+                    break;
+                }
+                for a in &list {
+                    if s(a, "activityType") != "room" {
+                        continue;
+                    }
+                    let id = a.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
+                    let d = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/room/{id}"))?;
+                    let room = d.get("room").cloned().unwrap_or(Value::Null);
+                    let maps: Vec<String> = room.get("maps").and_then(|m| m.as_array()).map(|a| a.iter().map(|m| m.as_str().unwrap_or("").to_string()).collect()).unwrap_or_default();
+                    let mut hits = 0;
+                    let new_maps: Vec<String> = maps.iter().map(|u| match pairs.get(u) { Some(n) => { hits += 1; n.clone() } None => u.clone() }).collect();
+                    if hits == 0 {
+                        continue;
+                    }
+                    touched_r += 1;
+                    let name = s(&d, "name");
+                    if dry {
+                        println!("room\t{id}\t{name}\t{hits} uids to swap (dry run)");
+                        continue;
+                    }
+                    // the GET gives scriptSettings as an object keyed by setting; the edit wants the array form
+                    let settings: Vec<Value> = room.get("scriptSettings").and_then(|o| o.as_object()).map(|o| o.values().map(|v| serde_json::json!({"key": s(v, "key"), "value": s(v, "value"), "type": s(v, "type")})).collect()).unwrap_or_default();
+                    let body = serde_json::json!({
+                        "name": name, "region": s(&room, "region"), "maxPlayersPerServer": room.get("maxPlayers").and_then(|x| x.as_u64()).unwrap_or(100),
+                        "script": s(&room, "script"), "settings": settings,
+                        "maps": new_maps, "scalable": 0, "password": 0, "shufflePlaylist": 0
+                    });
+                    let r = post_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/room/{id}/edit"), &body.to_string())?;
+                    let n = r["room"]["maps"].as_array().map(|a| a.len()).unwrap_or(0);
+                    println!("room\t{id}\t{name}\t{hits} swapped\t{n} maps{}", if n == new_maps.len() { "" } else { "\tCOUNT MISMATCH" });
+                    std::thread::sleep(Duration::from_millis(400));
+                }
+                if list.len() < 100 {
+                    break;
+                }
+                offset += 100;
+            }
+            println!("{touched_c} campaigns, {touched_r} rooms {}", if dry { "would be rewritten" } else { "rewritten" });
+            Ok(())
+        }
         "campaign-create" => {
             let club = f("--club").ok_or("campaign-create needs --club ID")?;
             let name = f("--name").ok_or("campaign-create needs --name NAME")?;

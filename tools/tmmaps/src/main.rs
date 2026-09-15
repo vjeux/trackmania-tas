@@ -248,6 +248,21 @@ fn main() {
             m.write_to(&out).expect("write");
             println!("{}: {patched_nodes} material nodes in {patched_files} file(s) -> physics {phys}; archive {} -> {} bytes", out.display(), zip.len(), new_zip.len());
         }
+        // tmmaps reuid MAP --out OUT --prefix Pla3 — a NEW map uid (= a fresh leaderboard):
+        // the first 4 characters of the uid are replaced (Pla2… → Pla3…), header and body.
+        // Everios96's records reset, option (b), 2026-09-15.
+        "reuid" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("--out OUT"));
+            let prefix = tmmaps::cli::flag(&args, "--prefix").expect("--prefix XXXX");
+            assert!(prefix.len() == 4, "--prefix is 4 characters");
+            let mut m = tmmaps::map::MapFile::load(&src);
+            let old = m.body_ids.first().and_then(|f| f.name.clone()).expect("map uid Id");
+            let new = format!("{prefix}{}", &old[4..]);
+            m.set_map_uid(&new);
+            m.write_to(&out).expect("write");
+            println!("{}: uid {old} -> {new}", out.display());
+        }
         "set-exebuild" => {
             let src = std::path::PathBuf::from(&args[2]);
             let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("set-exebuild needs --out OUT"));
