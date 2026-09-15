@@ -107,6 +107,25 @@ impl Drop for CapClient {
     }
 }
 
+/// Is the plugin answering? (The game crashed on U10S_606 [Plastic] mid-load,
+/// 2026-09-15 05:08Z — the run must survive that.)
+fn plugin_alive() -> bool {
+    http_get("/ctx").map(|c| c.contains("\"ctx\"")).unwrap_or(false)
+}
+
+/// Bring the game back: `shootctl launch` (Steam/Ubisoft launcher, waits for the
+/// plugin and the title), then the capture server is re-checked by the caller.
+fn relaunch_game() -> Result<(), String> {
+    let out = std::process::Command::new("/home/vjeux/trackmania-tas/tools/target/release/shootctl").args(["launch", "240", "--force"]).output().map_err(|e| format!("shootctl launch: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    if !text.contains("title ready") && !plugin_alive() {
+        return Err(format!("relaunch failed: {}", text.lines().last().unwrap_or("")));
+    }
+    // the plugin's state machine starts IDLE after a launch
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    Ok(())
+}
+
 fn poll_until(prefixes: &[&str], timeout_ms: u64) -> Result<String, String> {
     let t0 = Instant::now();
     let mut last = String::new();
@@ -167,7 +186,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let t_run = Instant::now();
     let mut n_ok = 0usize;
     let mut n_fail = 0usize;
-    for (k, m) in maps.iter().enumerate() {
+    let mut attempts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut retry_queue: Vec<usize> = Vec::new();
+    let order: Vec<usize> = (0..maps.len()).collect();
+    let mut oi = 0usize;
+    loop {
+        let k = if let Some(r) = retry_queue.pop() { r } else if oi < order.len() { let k = order[oi]; oi += 1; k } else { break };
+        let m = &maps[k];
         if n_ok + n_fail >= limit {
             break;
         }
@@ -247,12 +272,31 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 println!("[{:>4}/{}] ok {ms:5} ms  {}", k + 1, maps.len(), rel.display());
             }
             Err(e) => {
-                n_fail += 1;
-                writeln!(log, "{m}\t\t0\t{ms}\tFAIL\t{}", e.replace('\t', " ")).map_err(|e| e.to_string())?;
-                eprintln!("[{:>4}/{}] FAIL {ms:5} ms  {}: {e}", k + 1, maps.len(), rel.display());
-                // recover the game state before the next map
-                let _ = http_get("/thumbshot?done=1");
-                let _ = poll_until(&["MENU", "IDLE"], 30_000);
+                let dead = !plugin_alive();
+                *attempts.entry(m.clone()).or_default() += 1;
+                let tries = attempts[m];
+                eprintln!("[{:>4}/{}] FAIL {ms:5} ms  {} (attempt {tries}{}): {e}", k + 1, maps.len(), rel.display(), if dead { ", game DOWN" } else { "" });
+                if dead {
+                    // the game crashed: bring it back (the capture server survives, it
+                    // is a separate process) and retry this map once
+                    match relaunch_game() {
+                        Ok(()) => eprintln!("      game relaunched"),
+                        Err(re) => {
+                            writeln!(log, "{m}\t\t0\t{ms}\tFAIL\t{}", format!("{e}; {re}").replace('\t', " ")).map_err(|e| e.to_string())?;
+                            return Err(format!("game relaunch failed: {re}"));
+                        }
+                    }
+                } else {
+                    let _ = http_get("/thumbshot?done=1");
+                    let _ = poll_until(&["MENU", "IDLE"], 30_000);
+                }
+                if tries < 2 {
+                    // retry the same map once (a crash on load is not always the map's fault)
+                    retry_queue.push(k);
+                } else {
+                    n_fail += 1;
+                    writeln!(log, "{m}\t\t0\t{ms}\tFAIL\t{}", e.replace('\t', " ")).map_err(|e| e.to_string())?;
+                }
             }
         }
         let _ = log.flush();
