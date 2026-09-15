@@ -42,7 +42,7 @@ fn flag<'a>(args: &'a [String], k: &str) -> Option<&'a str> {
     args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).map(|s| s.as_str())
 }
 
-fn expand(pattern: &str) -> Vec<std::path::PathBuf> {
+pub fn expand(pattern: &str) -> Vec<std::path::PathBuf> {
     // a shell-style '*' in the file name only
     let p = Path::new(pattern);
     let dir = p.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));

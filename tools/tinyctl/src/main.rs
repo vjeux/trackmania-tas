@@ -17,7 +17,9 @@
 
 mod boxbuild;
 mod credits;
+pub use credits::expand as credits_expand;
 mod tmio;
+mod wrwipe;
 mod lightmap;
 mod loadloop;
 mod camcheck;
@@ -212,6 +214,7 @@ fn main() {
         "thumbs" => thumbs::cmd(rest),
         "credits" => credits::cmd(rest),
         "tmio" => tmio::cmd(rest),
+        "wrwipe" => wrwipe::cmd(rest),
         "publish-set" => batch::publish_set_cmd(rest),
         "tracker-club" => batch::tracker_club_cmd(rest),
         "pipeline" => pipeline::cmd(rest),
