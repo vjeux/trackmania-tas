@@ -153,6 +153,17 @@ fn main() {
                 }
             }
         }
+        // tmmaps thumbnail MAP --out X.jpg — the header thumbnail's JPEG bytes as stored
+        // (the game stores them vertically FLIPPED; flip for viewing, e.g. ffmpeg -vf vflip)
+        "thumbnail" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("--out X.jpg"));
+            let bytes = std::fs::read(&src).expect("read map");
+            let start = bytes.windows(15).position(|w| w == b"<Thumbnail.jpg>").expect("no <Thumbnail.jpg> in header") + 15;
+            let end = start + bytes[start..].windows(16).position(|w| w == b"</Thumbnail.jpg>").expect("no </Thumbnail.jpg>");
+            std::fs::write(&out, &bytes[start..end]).expect("write jpeg");
+            println!("{}: {} bytes", out.display(), end - start);
+        }
         "set-exebuild" => {
             let src = std::path::PathBuf::from(&args[2]);
             let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("set-exebuild needs --out OUT"));

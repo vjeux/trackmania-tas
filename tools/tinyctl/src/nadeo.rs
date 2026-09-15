@@ -372,6 +372,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let mut n_maps = 0usize;
             let mut n_rows = 0usize;
             let mut live_auth = auth_live.clone();
+            // --cap N: stop a board after N records (U10S_01 has 45k+; the regulars are
+            // found across the hundreds of small boards, not at the bottom of the big ones)
+            let cap: usize = f("--cap").and_then(|c| c.parse().ok()).unwrap_or(usize::MAX);
             for (i, (uid, name)) in uids.iter().enumerate() {
                 if done.contains(uid) {
                     continue;
@@ -401,7 +404,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                         rows.push(format!("{uid}\t{name}\t{}\t{}\t{}", s(r, "accountId"), s(r, "position"), s(r, "score")));
                         accounts.insert(s(r, "accountId"));
                     }
-                    if top.len() < 100 {
+                    if top.len() < 100 || offset + 100 >= cap {
                         break;
                     }
                     offset += 100;
