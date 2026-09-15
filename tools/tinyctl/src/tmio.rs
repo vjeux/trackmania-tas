@@ -52,8 +52,8 @@ fn get_json(url: &str) -> Result<serde_json::Value, String> {
             return Err(format!("HTTP {code} for {url}: {}", body.chars().take(200).collect::<String>()));
         }
         if let Some(r) = remaining {
-            // pace to the window: never burn the last few slots
-            if r < 5 {
+            // pace to the window: use it fully, wait only when it is spent
+            if r <= 1 {
                 std::thread::sleep(Duration::from_secs(reset.unwrap_or(10) as u64 + 1));
             }
         }
@@ -98,7 +98,7 @@ fn names(args: &[String]) -> Result<(), String> {
         if k % 50 == 0 {
             eprintln!("[{:>5}/{}] {name}", k + 1, todo.len());
         }
-        std::thread::sleep(Duration::from_millis(1550));
+        std::thread::sleep(Duration::from_millis(150));
     }
     println!("{} names in {out}", done.len() + todo.len());
     Ok(())
