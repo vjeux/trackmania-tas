@@ -126,6 +126,93 @@ fn relaunch_game() -> Result<(), String> {
     Ok(())
 }
 
+/// One map through the editor: stage → /editmap → editor ready → /thumbedit?save=1 →
+/// saved file present and stable → its header JPEG spliced into the live bytes →
+/// /thumbedit?quit=1 → menu. Returns (detail, jpeg bytes).
+fn editor_shot(k: usize, src: &Path, out_map: &Path, tmmaps_bin: &str) -> Result<(String, usize), String> {
+    let t0 = Instant::now();
+    let staged = format!("{SHOOT_DIR}/thumb-{k}.Map.Gbx");
+    let saved = format!("{SHOOT_DIR}/thumb-{k}-saved.Map.Gbx");
+    let _ = std::fs::remove_file(&saved);
+    std::fs::copy(src, &staged).map_err(|e| format!("stage {}: {e}", src.display()))?;
+    std::fs::write(format!("{STORE}/editmap.txt"), format!("{SHOOT_WIN}\\thumb-{k}.Map.Gbx")).map_err(|e| e.to_string())?;
+    std::fs::write(format!("{STORE}/savemap.txt"), format!("_shoot\\thumb-{k}-saved.Map.Gbx")).map_err(|e| e.to_string())?;
+    let a = http_get("/editmap")?;
+    if !a.starts_with("ok") {
+        return Err(format!("editmap refused: {a}"));
+    }
+    // editor up and its loading dialog gone
+    let te = Instant::now();
+    loop {
+        if te.elapsed().as_secs() > 60 {
+            return Err("editor did not come up in 60 s".into());
+        }
+        let ctx = http_get("/ctx").unwrap_or_default();
+        if ctx.contains("\"editor\":\"trackeditor\"") {
+            let d = http_get("/dlgtext").unwrap_or_default();
+            if d.contains("\"showbar\":false") || d.contains("\"showbar\":null") {
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    let t_editor = t0.elapsed().as_millis();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let sv = http_get("/thumbedit?save=1")?;
+    if !sv.starts_with("saved") {
+        return Err(format!("save refused: {sv}"));
+    }
+    // the saved file: present, non-empty, size stable for 300 ms, header thumbnail inside
+    let ts = Instant::now();
+    let mut last = 0u64;
+    let jpeg = loop {
+        if ts.elapsed().as_secs() > 30 {
+            return Err("saved file did not appear in 30 s".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let n = std::fs::metadata(&saved).map(|m| m.len()).unwrap_or(0);
+        if n > 0 && n == last {
+            let bytes = std::fs::read(&saved).map_err(|e| e.to_string())?;
+            if let Some(s0) = bytes.windows(15).position(|w| w == b"<Thumbnail.jpg>") {
+                let s0 = s0 + 15;
+                if let Some(e0) = bytes[s0..].windows(16).position(|w| w == b"</Thumbnail.jpg>") {
+                    break bytes[s0..s0 + e0].to_vec();
+                }
+            }
+        }
+        last = n;
+    };
+    let t_saved = t0.elapsed().as_millis();
+    if jpeg.len() < 20_000 || !jpeg.starts_with(&[0xFF, 0xD8]) {
+        return Err(format!("saved thumbnail too small or not a JPEG ({} bytes)", jpeg.len()));
+    }
+    let jpg_wsl = format!("{CAP_DIR}/thumb-{k}.jpg");
+    std::fs::write(&jpg_wsl, &jpeg).map_err(|e| e.to_string())?;
+    if let Some(parent) = out_map.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let sp = std::process::Command::new(tmmaps_bin).arg("set-thumbnail").arg(src).arg("--jpeg").arg(&jpg_wsl).arg("--out").arg(out_map).output().map_err(|e| e.to_string())?;
+    if !sp.status.success() {
+        return Err(format!("set-thumbnail: {}", String::from_utf8_lossy(&sp.stderr).trim()));
+    }
+    let _ = http_get("/thumbedit?quit=1");
+    let tq = Instant::now();
+    loop {
+        if tq.elapsed().as_secs() > 30 {
+            return Err("editor did not quit in 30 s".into());
+        }
+        let ctx = http_get("/ctx").unwrap_or_default();
+        if ctx.contains("\"editor\":\"none\"") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    let _ = std::fs::remove_file(&staged);
+    let _ = std::fs::remove_file(&saved);
+    let _ = std::fs::remove_file(&jpg_wsl);
+    Ok((format!("editor {t_editor}ms saved {t_saved}ms quit {}ms", t0.elapsed().as_millis()), jpeg.len()))
+}
+
 fn poll_until(prefixes: &[&str], timeout_ms: u64) -> Result<String, String> {
     let t0 = Instant::now();
     let mut last = String::new();
@@ -217,6 +304,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let t_run = Instant::now();
     let mut n_ok = 0usize;
     let mut n_fail = 0usize;
+    // --editor: the EDITOR-SAVE route (2026-09-15). The play-mode camera override never
+    // took effect (the playground rewrites the camera every frame: every shot of the
+    // 14/15 September run was the spawn camera). TM2020 renders the thumbnail from the
+    // map's stored thumbnail camera on every editor save — square, stored fov, no UI:
+    // open the map in the editor, save a scratch copy, lift its JPEG, splice it in.
+    let editor_mode = tmmaps::cli::has(args, "--editor") || std::env::var("THUMBS_EDITOR").map(|v| v == "1").unwrap_or(false);
     let mut attempts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     let mut retry_queue: Vec<usize> = Vec::new();
     let order: Vec<usize> = (0..maps.len()).collect();
@@ -234,7 +327,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let src = match &root { Some(r) => r.join(m), None => PathBuf::from(m) };
         let rel = match &root { Some(r) => src.strip_prefix(r).unwrap_or(&src).to_path_buf(), None => PathBuf::from(Path::new(m).file_name().unwrap_or_default()) };
         let out_map = outdir.join(&rel);
-        let res = (|| -> Result<(String, usize), String> {
+        let res = if editor_mode { editor_shot(k, &src, &out_map, &tmmaps_bin) } else { (|| -> Result<(String, usize), String> {
             let name = src.file_name().and_then(|n| n.to_str()).ok_or("no file name")?.to_string();
             // stage under a SHORT ascii name: the game path goes through editmap.txt verbatim
             let staged = format!("{SHOOT_DIR}/thumb-{k}.Map.Gbx");
@@ -296,7 +389,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let _ = std::fs::remove_file(&jpg_wsl);
             let _ = name;
             Ok((format!("{ready} | {cap}"), jpeg.len()))
-        })();
+        })() };
         let ms = t0.elapsed().as_millis();
         match res {
             Ok((detail, bytes)) => {
