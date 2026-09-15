@@ -87,9 +87,10 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     if !rows.is_empty() {
         env.push(("TINY_REDRESS".to_string(), rows.join(";")));
     }
-    if s == "Magnet" {
-        env.push(("TINY_ALL_DRIVABLE_PHYSICS".to_string(), "62".to_string()));
-    }
+    // Magnet: the DECK rule like every other alteration (Everios96 2026-09-15 04:30:
+    // "penalty surface should stay penalty") — until then every drivable triangle
+    // was forced magnetic (the 2026-09-14 "everything magnetic" v2), shoulders included
+
     // the pipes: baked as re-dressed item copies, physics and texture
     env.push(("TINY_ITEM_REDRESS".to_string(), "InflatableTube*".to_string()));
     // the swap's deck physics for the deck-like triangles no stem names (Deco strips…)
@@ -100,6 +101,10 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         "Plastic" => Some("77"),
         "Wood" => Some("14"),
         "Tech" => Some("16"),
+        // Magnet: the deck rule like every other alteration (Everios96 2026-09-15
+        // 04:30 "penalty surface should stay penalty"; v2 had forced every drivable
+        // triangle magnetic, shoulders included) — TechSuperMagnetic 62
+        "Magnet" => Some("62"),
         _ => None,
     };
     if let Some(p) = deck_physics {
