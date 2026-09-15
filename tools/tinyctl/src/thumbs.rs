@@ -17,7 +17,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const PLUGIN: &str = "127.0.0.1:17420";
+const PLUGIN: &str = "127.0.0.1:29800";
 const STORE: &str = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter";
 const SHOOT_DIR: &str = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot";
 const SHOOT_WIN: &str = "C:\\Users\\vjeux\\OneDrive\\Documents\\Trackmania\\Maps\\_shoot";
