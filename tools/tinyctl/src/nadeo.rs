@@ -351,6 +351,103 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        // tinyctl nadeo-here leaderboards --uids-file F --out records.tsv [--names names.tsv] [--no-lock]
+        // every map's world Personal_Best board, paged 100 at a time (accountId, position, score),
+        // then the display names of every account seen (core `accounts/displayNames`, 50 per call).
+        // For the U10S map-1000 credits (vjeux on Discord 2026-09-15 05:36 PT: "the list of all the
+        // people that played all the maps … keep that list around on whitestick").
+        "leaderboards" => {
+            let uids_file = f("--uids-file").ok_or("leaderboards needs --uids-file (one uid per line, optional \tname)")?;
+            let out = PathBuf::from(f("--out").ok_or("leaderboards needs --out records.tsv")?);
+            let text = std::fs::read_to_string(&uids_file).map_err(|e| format!("{uids_file}: {e}"))?;
+            let uids: Vec<(String, String)> = text.lines().filter(|l| !l.trim().is_empty()).map(|l| { let mut it = l.split('\t'); (it.next().unwrap_or("").trim().to_string(), it.next().unwrap_or("").trim().to_string()) }).collect();
+            // resume: uids already in the output are skipped
+            let done: std::collections::HashSet<String> = std::fs::read_to_string(&out).unwrap_or_default().lines().skip(1).filter_map(|l| l.split('\t').next().map(String::from)).collect();
+            let mut w = std::fs::OpenOptions::new().create(true).append(true).open(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+            use std::io::Write;
+            if done.is_empty() {
+                writeln!(w, "mapUid\tmapName\taccountId\tposition\tscore").map_err(|e| e.to_string())?;
+            }
+            let mut accounts: std::collections::HashSet<String> = std::fs::read_to_string(&out).unwrap_or_default().lines().skip(1).filter_map(|l| l.split('\t').nth(2).map(String::from)).collect();
+            let mut n_maps = 0usize;
+            let mut n_rows = 0usize;
+            let mut live_auth = auth_live.clone();
+            for (i, (uid, name)) in uids.iter().enumerate() {
+                if done.contains(uid) {
+                    continue;
+                }
+                let mut offset = 0usize;
+                let mut rows: Vec<String> = Vec::new();
+                loop {
+                    let url = format!("{LIVE}/api/token/leaderboard/group/Personal_Best/map/{uid}/top?length=100&onlyWorld=true&offset={offset}");
+                    let v = match get_json(&live_auth, &url) {
+                        Ok(v) => v,
+                        Err(e) if e.contains("HTTP 401") => {
+                            // the live token lasts about an hour: mint again (no render lock)
+                            eprintln!("token expired — minting again");
+                            let (_, live2) = tokens_opt(&shootctl, &owner, false)?;
+                            live_auth = format!("Authorization: {live2}");
+                            continue;
+                        }
+                        Err(e) if e.contains("HTTP 429") => {
+                            eprintln!("rate limited — 30 s pause");
+                            std::thread::sleep(Duration::from_secs(30));
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    };
+                    let top = v.get("tops").and_then(|t| t.as_array()).and_then(|a| a.first()).and_then(|z| z.get("top")).and_then(|t| t.as_array()).cloned().unwrap_or_default();
+                    for r in &top {
+                        rows.push(format!("{uid}\t{name}\t{}\t{}\t{}", s(r, "accountId"), s(r, "position"), s(r, "score")));
+                        accounts.insert(s(r, "accountId"));
+                    }
+                    if top.len() < 100 {
+                        break;
+                    }
+                    offset += 100;
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                for r in &rows {
+                    writeln!(w, "{r}").map_err(|e| e.to_string())?;
+                }
+                w.flush().map_err(|e| e.to_string())?;
+                n_maps += 1;
+                n_rows += rows.len();
+                eprintln!("[{:>4}/{}] {name} {uid}: {} records", i + 1, uids.len(), rows.len());
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            eprintln!("{n_maps} maps, {n_rows} records, {} distinct accounts", accounts.len());
+            if let Some(names_out) = f("--names") {
+                let mut known: std::collections::HashMap<String, String> = std::fs::read_to_string(&names_out).unwrap_or_default().lines().skip(1).filter_map(|l| { let mut it = l.split('\t'); Some((it.next()?.to_string(), it.next()?.to_string())) }).collect();
+                let todo: Vec<String> = accounts.iter().filter(|a| !known.contains_key(*a) && a.len() > 30).cloned().collect();
+                eprintln!("resolving {} display names ({} known)", todo.len(), known.len());
+                for chunk in todo.chunks(50) {
+                    let url = format!("{CORE}/accounts/displayNames?accountIdList={}", chunk.join(","));
+                    match get_json(&auth_core, &url) {
+                        Ok(Value::Array(arr)) => {
+                            for e in arr {
+                                known.insert(s(&e, "accountId"), s(&e, "displayName"));
+                            }
+                        }
+                        Ok(other) => eprintln!("displayNames: unexpected {}", other.to_string().chars().take(200).collect::<String>()),
+                        Err(e) => {
+                            eprintln!("displayNames: {e}");
+                            break;
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+                let mut t = String::from("accountId\tdisplayName\n");
+                let mut ks: Vec<_> = known.iter().collect();
+                ks.sort();
+                for (a, n) in ks {
+                    t.push_str(&format!("{a}\t{n}\n"));
+                }
+                std::fs::write(&names_out, t).map_err(|e| format!("{names_out}: {e}"))?;
+                eprintln!("wrote {names_out}: {} names", known.len());
+            }
+            Ok(())
+        }
         "campaign-create" => {
             let club = f("--club").ok_or("campaign-create needs --club ID")?;
             let name = f("--name").ok_or("campaign-create needs --name NAME")?;
