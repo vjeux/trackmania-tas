@@ -1067,6 +1067,63 @@ impl MapFile {
         (header_hits, body_hits)
     }
 
+    /// Replace the header THUMBNAIL (chunk 0x03043007: u32 version=1, u32 jpeg
+    /// length, `<Thumbnail.jpg>` JPEG `</Thumbnail.jpg>`, `<Comments>` comments
+    /// `</Comments>`). The JPEG is stored as-is (the game reads it upside down —
+    /// its own thumbnails are written flipped, so `flip` should be true for a
+    /// screenshot taken the right way up; the caller flips the pixels before
+    /// encoding). The comments are kept. Returns the old JPEG length.
+    pub fn set_thumbnail(&mut self, jpeg: &[u8]) -> Result<usize, String> {
+        let ud = self.gbx.user_data.clone();
+        let n = u32::from_le_bytes(ud[0..4].try_into().unwrap()) as usize;
+        let mut heads: Vec<(u32, bool, Vec<u8>)> = Vec::new();
+        let mut off = 4 + n * 8;
+        for i in 0..n {
+            let o = 4 + i * 8;
+            let id = u32::from_le_bytes(ud[o..o + 4].try_into().unwrap());
+            let raw = u32::from_le_bytes(ud[o + 4..o + 8].try_into().unwrap());
+            let size = (raw & 0x7fff_ffff) as usize;
+            heads.push((id, raw & 0x8000_0000 != 0, ud[off..off + size].to_vec()));
+            off += size;
+        }
+        let mut old_len = None;
+        for (id, _, data) in heads.iter_mut() {
+            if *id != 0x0304_3007 || data.len() < 8 {
+                continue;
+            }
+            let version = u32::from_le_bytes(data[0..4].try_into().unwrap());
+            let len = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
+            let open = b"<Thumbnail.jpg>";
+            let close = b"</Thumbnail.jpg>";
+            let s0 = 8;
+            if data.len() < s0 + open.len() + len + close.len() || &data[s0..s0 + open.len()] != open {
+                return Err(format!("thumbnail chunk: unexpected layout (version {version}, len {len})"));
+            }
+            let tail = data[s0 + open.len() + len + close.len()..].to_vec(); // <Comments>…</Comments>
+            let mut d = Vec::with_capacity(8 + open.len() + jpeg.len() + close.len() + tail.len());
+            d.extend_from_slice(&version.to_le_bytes());
+            d.extend_from_slice(&(jpeg.len() as u32).to_le_bytes());
+            d.extend_from_slice(open);
+            d.extend_from_slice(jpeg);
+            d.extend_from_slice(close);
+            d.extend_from_slice(&tail);
+            *data = d;
+            old_len = Some(len);
+        }
+        let Some(old) = old_len else { return Err("map has no thumbnail chunk 0x03043007".into()) };
+        let mut out = Vec::new();
+        out.extend_from_slice(&(heads.len() as u32).to_le_bytes());
+        for (id, heavy, data) in &heads {
+            out.extend_from_slice(&id.to_le_bytes());
+            out.extend_from_slice(&((data.len() as u32) | if *heavy { 0x8000_0000 } else { 0 }).to_le_bytes());
+        }
+        for (_, _, data) in &heads {
+            out.extend_from_slice(data);
+        }
+        self.gbx.user_data = out;
+        Ok(old)
+    }
+
     /// Re-stamp the header XML's `exebuild` (and `exever`) — the game build the
     /// map was last saved with. TM2020 keys LEGACY physics on it: a map saved
     /// before the wood-physics change keeps the old wood behaviour forever

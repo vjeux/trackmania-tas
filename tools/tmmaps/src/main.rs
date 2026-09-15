@@ -127,6 +127,16 @@ fn main() {
                 None => println!("no embedded objects"),
             }
         }
+        // tmmaps set-thumbnail MAP --jpeg X.jpg --out OUT — the header thumbnail replaced
+        "set-thumbnail" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let jpeg = std::fs::read(tmmaps::cli::flag(&args, "--jpeg").expect("set-thumbnail needs --jpeg X.jpg")).expect("read jpeg");
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("set-thumbnail needs --out OUT"));
+            let mut m = tmmaps::map::MapFile::load(&src);
+            let old = m.set_thumbnail(&jpeg).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(1) });
+            m.write_to(&out).expect("write");
+            println!("{}: thumbnail {} -> {} bytes", out.display(), old, jpeg.len());
+        }
         "set-exebuild" => {
             let src = std::path::PathBuf::from(&args[2]);
             let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("set-exebuild needs --out OUT"));

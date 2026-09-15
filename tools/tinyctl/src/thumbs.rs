@@ -1,0 +1,180 @@
+//! `tinyctl thumbs --list MAPS.tsv --outdir DIR [--frames 70] [--resume]` — ON THE BOX:
+//! re-shoot the thumbnail of every map in the list from its own stored thumbnail
+//! camera, in the game, as fast as the game loads maps.
+//!
+//! One map = `/thumbshot?map=1` (the plugin's state machine: PlayMap, wait for the
+//! playground, arm the camera override + hide the HUD, count posed frames) →
+//! poll `/thumbshot` until READY → one line to the resident capture server
+//! (`\\.\pipe\tmcap`: game window client rect, square, 1024², flipped, JPEG) →
+//! `/thumbshot?done=1` → poll until MENU. ~3.2 s per map measured 2026-09-14
+//! (load 1.9–2.4 s, capture 0.1 s + 0.3 s pipe, back 0.4 s); nothing sleeps.
+//!
+//! Then `tmmaps set-thumbnail` splices the JPEG into the map's header; the
+//! output map goes to `DIR/<same relative path>`; `DIR/thumbs.tsv` records each
+//! map (path, uid, jpeg bytes, ms) and `--resume` skips the ones already done.
+//! The list: `path` per line (a `.Map.Gbx` under the run's map root), `#` comments.
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+const PLUGIN: &str = "127.0.0.1:17420";
+const STORE: &str = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter";
+const SHOOT_DIR: &str = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot";
+const SHOOT_WIN: &str = "C:\\Users\\vjeux\\OneDrive\\Documents\\Trackmania\\Maps\\_shoot";
+const CAP_DIR: &str = "/mnt/c/Users/vjeux/tinyshots/thumbs";
+const CAP_WIN: &str = "C:\\Users\\vjeux\\tinyshots\\thumbs";
+
+fn http_get(path: &str) -> Result<String, String> {
+    let mut s = std::net::TcpStream::connect(PLUGIN).map_err(|e| format!("connect {PLUGIN}: {e}"))?;
+    s.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok();
+    s.set_write_timeout(Some(std::time::Duration::from_secs(10))).ok();
+    s.write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").as_bytes()).map_err(|e| format!("write: {e}"))?;
+    let mut buf = Vec::new();
+    s.read_to_end(&mut buf).map_err(|e| format!("read: {e}"))?;
+    let text = String::from_utf8_lossy(&buf).to_string();
+    Ok(match text.find("\r\n\r\n") { Some(i) => text[i + 4..].trim().to_string(), None => text.trim().to_string() })
+}
+
+/// One request to the capture server: write the output path, read the answer.
+fn capture(win_path: &str) -> Result<String, String> {
+    // the named pipe is a file path on Windows; from WSL it is reachable as
+    // //./pipe/tmcap only through Windows programs — so the client stays a tiny
+    // PowerShell one-liner kept WARM: a single process per run would need a
+    // persistent stdin protocol; measured 2026-09-14 the one-shot client costs
+    // ~250 ms, the server 100 ms. TODO(vjeux): a Rust pipe client via a Windows
+    // build of this tool would cut the 250 ms.
+    let out = std::process::Command::new("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\vjeux\\capclient.ps1", win_path])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("capclient: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !text.starts_with("ok") {
+        return Err(format!("capture: {text} {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(text)
+}
+
+fn poll_until(prefixes: &[&str], timeout_ms: u64) -> Result<String, String> {
+    let t0 = Instant::now();
+    let mut last = String::new();
+    while t0.elapsed().as_millis() < timeout_ms as u128 {
+        last = http_get("/thumbshot").unwrap_or_default();
+        if prefixes.iter().any(|p| last.starts_with(p)) {
+            return Ok(last);
+        }
+        if last.starts_with("ERR") {
+            return Err(last);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    Err(format!("timeout after {timeout_ms} ms; last {last}"))
+}
+
+pub fn cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let list = PathBuf::from(f("--list").ok_or("thumbs needs --list MAPS.tsv (one map path per line)")?);
+    let outdir = PathBuf::from(f("--outdir").ok_or("thumbs needs --outdir DIR")?);
+    let root = f("--root").map(PathBuf::from);
+    let frames: u32 = f("--frames").and_then(|s| s.parse().ok()).unwrap_or(70);
+    let resume = tmmaps::cli::has(args, "--resume");
+    let limit: usize = f("--limit").and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
+    let tmmaps_bin = f("--tmmaps").unwrap_or_else(|| "/home/vjeux/shoot/fix4/target/release/tmmaps".into());
+    std::fs::create_dir_all(&outdir).map_err(|e| format!("{}: {e}", outdir.display()))?;
+    std::fs::create_dir_all(CAP_DIR).map_err(|e| format!("{CAP_DIR}: {e}"))?;
+    std::fs::create_dir_all(SHOOT_DIR).map_err(|e| format!("{SHOOT_DIR}: {e}"))?;
+    let log_path = outdir.join("thumbs.tsv");
+    let mut done: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if resume {
+        if let Ok(t) = std::fs::read_to_string(&log_path) {
+            for l in t.lines().skip(1) {
+                if let Some(p) = l.split('\t').next() {
+                    if l.split('\t').nth(4).map(|s| s == "ok").unwrap_or(false) {
+                        done.insert(p.to_string());
+                    }
+                }
+            }
+        }
+    }
+    let mut log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?;
+    if log.metadata().map(|m| m.len() == 0).unwrap_or(true) {
+        writeln!(log, "path\tuid\tjpeg_bytes\tms\tstatus\tdetail").map_err(|e| e.to_string())?;
+    }
+    let maps: Vec<String> = std::fs::read_to_string(&list).map_err(|e| format!("{}: {e}", list.display()))?.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+    println!("{} maps listed, {} already done", maps.len(), done.len());
+    // sanity: the plugin answers and the capture server is up
+    let st = http_get("/thumbshot")?;
+    if !(st.starts_with("IDLE") || st.starts_with("MENU")) {
+        let _ = http_get("/thumbshot?done=1");
+        poll_until(&["MENU", "IDLE"], 20_000)?;
+    }
+    capture(&format!("{CAP_WIN}\\_probe.jpg"))?;
+    let t_run = Instant::now();
+    let mut n_ok = 0usize;
+    let mut n_fail = 0usize;
+    for (k, m) in maps.iter().enumerate() {
+        if n_ok + n_fail >= limit {
+            break;
+        }
+        if done.contains(m) {
+            continue;
+        }
+        let t0 = Instant::now();
+        let src = match &root { Some(r) => r.join(m), None => PathBuf::from(m) };
+        let rel = match &root { Some(r) => src.strip_prefix(r).unwrap_or(&src).to_path_buf(), None => PathBuf::from(Path::new(m).file_name().unwrap_or_default()) };
+        let out_map = outdir.join(&rel);
+        let res = (|| -> Result<(String, usize), String> {
+            let name = src.file_name().and_then(|n| n.to_str()).ok_or("no file name")?.to_string();
+            // stage under a SHORT ascii name: the game path goes through editmap.txt verbatim
+            let staged = format!("{SHOOT_DIR}/thumb-{k}.Map.Gbx");
+            std::fs::copy(&src, &staged).map_err(|e| format!("stage {}: {e}", src.display()))?;
+            std::fs::write(format!("{STORE}/editmap.txt"), format!("{SHOOT_WIN}\\thumb-{k}.Map.Gbx")).map_err(|e| e.to_string())?;
+            let a = http_get(&format!("/thumbshot?map=1&frames={frames}"))?;
+            if !a.starts_with("LOADING") {
+                return Err(format!("load refused: {a}"));
+            }
+            let ready = poll_until(&["READY"], 60_000)?;
+            let jpg_win = format!("{CAP_WIN}\\thumb-{k}.jpg");
+            let jpg_wsl = format!("{CAP_DIR}/thumb-{k}.jpg");
+            let cap = capture(&jpg_win)?;
+            let _ = http_get("/thumbshot?done=1");
+            let jpeg = std::fs::read(&jpg_wsl).map_err(|e| format!("{jpg_wsl}: {e}"))?;
+            if jpeg.len() < 20_000 || !jpeg.starts_with(&[0xFF, 0xD8]) {
+                return Err(format!("capture too small or not a JPEG ({} bytes)", jpeg.len()));
+            }
+            // splice while the game goes back to the menu
+            if let Some(parent) = out_map.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let sp = std::process::Command::new(&tmmaps_bin).arg("set-thumbnail").arg(&src).arg("--jpeg").arg(&jpg_wsl).arg("--out").arg(&out_map).output().map_err(|e| format!("tmmaps: {e}"))?;
+            if !sp.status.success() {
+                return Err(format!("set-thumbnail: {}", String::from_utf8_lossy(&sp.stderr).trim()));
+            }
+            poll_until(&["MENU", "IDLE"], 30_000)?;
+            let _ = std::fs::remove_file(&staged);
+            let _ = std::fs::remove_file(&jpg_wsl);
+            let _ = name;
+            Ok((format!("{ready} | {cap}"), jpeg.len()))
+        })();
+        let ms = t0.elapsed().as_millis();
+        match res {
+            Ok((detail, bytes)) => {
+                n_ok += 1;
+                let uid = tmmaps::header::read(out_map.to_str().unwrap_or_default()).map(|h| h.uid).unwrap_or_default();
+                writeln!(log, "{m}\t{uid}\t{bytes}\t{ms}\tok\t{}", detail.replace('\t', " ")).map_err(|e| e.to_string())?;
+                println!("[{:>4}/{}] ok {ms:5} ms  {}", k + 1, maps.len(), rel.display());
+            }
+            Err(e) => {
+                n_fail += 1;
+                writeln!(log, "{m}\t\t0\t{ms}\tFAIL\t{}", e.replace('\t', " ")).map_err(|e| e.to_string())?;
+                eprintln!("[{:>4}/{}] FAIL {ms:5} ms  {}: {e}", k + 1, maps.len(), rel.display());
+                // recover the game state before the next map
+                let _ = http_get("/thumbshot?done=1");
+                let _ = poll_until(&["MENU", "IDLE"], 30_000);
+            }
+        }
+        let _ = log.flush();
+    }
+    println!("{n_ok} ok, {n_fail} failed in {:.0} s ({:.2} s/map)", t_run.elapsed().as_secs_f64(), t_run.elapsed().as_secs_f64() / (n_ok + n_fail).max(1) as f64);
+    Ok(())
+}
