@@ -118,7 +118,7 @@ fn find(args: &[String]) -> Result<(), String> {
     for (k, c) in rows.iter().enumerate() {
         let (uid, user, disp) = (c[0], c[1], c[2]);
         let mut matched = (String::new(), String::new());
-        let mut cands = 0usize;
+        let mut cands: Vec<String> = Vec::new(); // the first names trackmania.io offered (for hand-mapping the misses)
         // exact (case-insensitive) hit on the display name first, then the username
         'outer: for q in [disp, user] {
             let q: &str = q.trim();
@@ -134,7 +134,13 @@ fn find(args: &[String]) -> Result<(), String> {
                 }
             };
             let arr = v.as_array().cloned().unwrap_or_default();
-            cands += arr.len();
+            for r in arr.iter().take(4) {
+                if let Some(n) = r["player"]["name"].as_str() {
+                    if cands.len() < 6 && !cands.iter().any(|c| c == n) {
+                        cands.push(n.to_string());
+                    }
+                }
+            }
             for r in &arr {
                 let n = r["player"]["name"].as_str().unwrap_or("");
                 if n.eq_ignore_ascii_case(q) || n.to_lowercase() == q.to_lowercase() {
@@ -144,7 +150,7 @@ fn find(args: &[String]) -> Result<(), String> {
             }
             std::thread::sleep(Duration::from_millis(1550));
         }
-        writeln!(w, "{uid}\t{user}\t{disp}\t{}\t{}\t{cands}", matched.0, matched.1).map_err(|e| e.to_string())?;
+        writeln!(w, "{uid}\t{user}\t{disp}\t{}\t{}\t{}", matched.0, matched.1, cands.join("|")).map_err(|e| e.to_string())?;
         w.flush().map_err(|e| e.to_string())?;
         if k % 25 == 0 {
             eprintln!("[{:>4}/{}] {user} -> {}", k + 1, rows.len(), if matched.1.is_empty() { "-" } else { matched.0.as_str() });
