@@ -64,24 +64,47 @@ fn http_get(path: &str) -> Result<String, String> {
     Ok(match text.find("\r\n\r\n") { Some(i) => text[i + 4..].trim().to_string(), None => text.trim().to_string() })
 }
 
-/// One request to the capture server: write the output path, read the answer.
-fn capture(win_path: &str) -> Result<String, String> {
-    // the named pipe is a file path on Windows; from WSL it is reachable as
-    // //./pipe/tmcap only through Windows programs — so the client stays a tiny
-    // PowerShell one-liner kept WARM: a single process per run would need a
-    // persistent stdin protocol; measured 2026-09-14 the one-shot client costs
-    // ~250 ms, the server 100 ms. TODO(vjeux): a Rust pipe client via a Windows
-    // build of this tool would cut the 250 ms.
-    let out = std::process::Command::new("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\vjeux\\capclient.ps1", win_path])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("capclient: {e}"))?;
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if !text.starts_with("ok") {
-        return Err(format!("capture: {text} {}", String::from_utf8_lossy(&out.stderr).trim()));
+/// The capture client, RESIDENT: one PowerShell (`capclient2.ps1`) kept alive for the
+/// run, a path in on stdin, the server's answer out on stdout — the one-shot client
+/// cost ~600 ms of process start per capture (2026-09-14); this costs the pipe hop.
+struct CapClient {
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    stdout: std::io::BufReader<std::process::ChildStdout>,
+}
+
+impl CapClient {
+    fn start() -> Result<CapClient, String> {
+        let mut child = std::process::Command::new("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:\\Users\\vjeux\\capclient2.ps1"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("capclient2: {e}"))?;
+        let stdin = child.stdin.take().ok_or("capclient2: no stdin")?;
+        let stdout = std::io::BufReader::new(child.stdout.take().ok_or("capclient2: no stdout")?);
+        Ok(CapClient { child, stdin, stdout })
     }
-    Ok(text)
+    fn capture(&mut self, win_path: &str) -> Result<String, String> {
+        use std::io::BufRead;
+        writeln!(self.stdin, "{win_path}").map_err(|e| format!("capclient2 write: {e}"))?;
+        self.stdin.flush().ok();
+        let mut line = String::new();
+        self.stdout.read_line(&mut line).map_err(|e| format!("capclient2 read: {e}"))?;
+        let text = line.trim().to_string();
+        if !text.starts_with("ok") {
+            return Err(format!("capture: {text}"));
+        }
+        Ok(text)
+    }
+}
+
+impl Drop for CapClient {
+    fn drop(&mut self) {
+        let _ = writeln!(self.stdin, "quit");
+        let _ = self.child.wait();
+    }
 }
 
 fn poll_until(prefixes: &[&str], timeout_ms: u64) -> Result<String, String> {
@@ -105,7 +128,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let list = PathBuf::from(f("--list").ok_or("thumbs needs --list MAPS.tsv (one map path per line)")?);
     let outdir = PathBuf::from(f("--outdir").ok_or("thumbs needs --outdir DIR")?);
     let root = f("--root").map(PathBuf::from);
-    let frames: u32 = f("--frames").and_then(|s| s.parse().ok()).unwrap_or(70);
+    let frames: u32 = f("--frames").and_then(|s| s.parse().ok()).unwrap_or(30);
+    // wall time the pose must hold before the shot (the map-load fade): 2.4 s measured
+    let ready_ms: u32 = f("--ready-ms").and_then(|s| s.parse().ok()).unwrap_or(2400);
     let resume = tmmaps::cli::has(args, "--resume");
     let limit: usize = f("--limit").and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
     let tmmaps_bin = f("--tmmaps").unwrap_or_else(|| "/home/vjeux/shoot/fix4/target/release/tmmaps".into());
@@ -137,7 +162,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let _ = http_get("/thumbshot?done=1");
         poll_until(&["MENU", "IDLE"], 20_000)?;
     }
-    capture(&format!("{CAP_WIN}\\_probe.jpg"))?;
+    let mut cap_client = CapClient::start()?;
+    cap_client.capture(&format!("{CAP_WIN}\\_probe.jpg"))?;
     let t_run = Instant::now();
     let mut n_ok = 0usize;
     let mut n_fail = 0usize;
@@ -158,7 +184,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let staged = format!("{SHOOT_DIR}/thumb-{k}.Map.Gbx");
             std::fs::copy(&src, &staged).map_err(|e| format!("stage {}: {e}", src.display()))?;
             std::fs::write(format!("{STORE}/editmap.txt"), format!("{SHOOT_WIN}\\thumb-{k}.Map.Gbx")).map_err(|e| e.to_string())?;
-            let a = http_get(&format!("/thumbshot?map=1&frames={frames}"))?;
+            let a = http_get(&format!("/thumbshot?map=1&frames={frames}&ms={ready_ms}"))?;
             if !a.starts_with("LOADING") {
                 return Err(format!("load refused: {a}"));
             }
@@ -170,19 +196,24 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             // again while it is still rising (two captures 250 ms apart agreeing
             // within 2 = stable), at most 8 times. Measured 2026-09-14: the veiled
             // frame reads ~45, the clear one ~110 on the same map.
-            let mut cap = capture(&jpg_win)?;
+            let mut cap = cap_client.capture(&jpg_win)?;
             let lum = |c: &str| c.split("lum=").nth(1).and_then(|r| r.split(' ').next()).and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
             let mut prev = lum(&cap);
-            for _ in 0..8 {
-                std::thread::sleep(std::time::Duration::from_millis(250));
-                let c2 = capture(&jpg_win)?;
+            let mut retries = 0;
+            // a veiled frame reads dark and rising; a settled one is stable between two
+            // captures 200 ms apart. Night maps are legitimately dark (stable).
+            for _ in 0..4 {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let c2 = cap_client.capture(&jpg_win)?;
                 let l2 = lum(&c2);
                 cap = c2;
-                if (l2 - prev).abs() <= 2 {
+                retries += 1;
+                if (l2 - prev).abs() <= 3 {
                     break;
                 }
                 prev = l2;
             }
+            let cap = format!("{cap} retries={retries}");
             let _ = http_get("/thumbshot?done=1");
             let jpeg = std::fs::read(&jpg_wsl).map_err(|e| format!("{jpg_wsl}: {e}"))?;
             if jpeg.len() < 20_000 || !jpeg.starts_with(&[0xFF, 0xD8]) {
