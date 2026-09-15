@@ -129,8 +129,25 @@ fn relaunch_game() -> Result<(), String> {
 fn poll_until(prefixes: &[&str], timeout_ms: u64) -> Result<String, String> {
     let t0 = Instant::now();
     let mut last = String::new();
+    let mut misses = 0;
     while t0.elapsed().as_millis() < timeout_ms as u128 {
-        last = http_get("/thumbshot").unwrap_or_default();
+        match http_get("/thumbshot") {
+            Ok(l) => {
+                misses = 0;
+                last = l;
+            }
+            Err(e) => {
+                // the plugin not answering 6 times in a row (~2 s) = the game is gone;
+                // do not sit out the whole timeout (a crash cost 140 s before this)
+                misses += 1;
+                last = e;
+                if misses >= 6 {
+                    return Err(format!("game down: {last}"));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                continue;
+            }
+        }
         if prefixes.iter().any(|p| last.starts_with(p)) {
             return Ok(last);
         }
