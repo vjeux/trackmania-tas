@@ -16,6 +16,7 @@
 //! `selfbuild`; the shooting half is `shootctl shootset`.
 
 mod boxbuild;
+mod credits;
 mod lightmap;
 mod loadloop;
 mod camcheck;
@@ -208,6 +209,7 @@ fn main() {
         "skip-manifest" => batch::skip_manifest_cmd(rest),
         "custom-sheet" => customsheet::cmd(rest),
         "thumbs" => thumbs::cmd(rest),
+        "credits" => credits::cmd(rest),
         "publish-set" => batch::publish_set_cmd(rest),
         "tracker-club" => batch::tracker_club_cmd(rest),
         "pipeline" => pipeline::cmd(rest),
