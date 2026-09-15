@@ -135,7 +135,9 @@ fn editor_shot(k: usize, src: &Path, out_map: &Path, tmmaps_bin: &str) -> Result
     let saved = format!("{SHOOT_DIR}/thumb-{k}-saved.Map.Gbx");
     let _ = std::fs::remove_file(&saved);
     std::fs::copy(src, &staged).map_err(|e| format!("stage {}: {e}", src.display()))?;
-    std::fs::write(format!("{STORE}/editmap.txt"), format!("{SHOOT_WIN}\\thumb-{k}.Map.Gbx")).map_err(|e| e.to_string())?;
+    // Maps-RELATIVE paths for the editor (an absolute path opened fine but left the editor
+    // in a state /back could not leave — measured by hand 2026-09-15: relative = 6.3 s cycle)
+    std::fs::write(format!("{STORE}/editmap.txt"), format!("_shoot\\thumb-{k}.Map.Gbx")).map_err(|e| e.to_string())?;
     std::fs::write(format!("{STORE}/savemap.txt"), format!("_shoot\\thumb-{k}-saved.Map.Gbx")).map_err(|e| e.to_string())?;
     let a = http_get("/editmap")?;
     if !a.starts_with("ok") {
@@ -145,7 +147,7 @@ fn editor_shot(k: usize, src: &Path, out_map: &Path, tmmaps_bin: &str) -> Result
     let te = Instant::now();
     loop {
         if te.elapsed().as_secs() > 60 {
-            return Err("editor did not come up in 60 s".into());
+            return Err(format!("editor did not come up in 60 s (last ctx {})", http_get("/ctx").unwrap_or_default().chars().take(80).collect::<String>()));
         }
         // ready = the editor is up AND the plugin-map API answers (the editor keeps a
         // hidden progress bar alive, so the dialog flag never clears here)
@@ -201,7 +203,7 @@ fn editor_shot(k: usize, src: &Path, out_map: &Path, tmmaps_bin: &str) -> Result
     let tq = Instant::now();
     loop {
         if tq.elapsed().as_secs() > 30 {
-            return Err("editor did not quit in 30 s".into());
+            return Err(format!("editor did not quit in 30 s (editor {t_editor}ms, saved {t_saved}ms)"));
         }
         let ctx = http_get("/ctx").unwrap_or_default();
         if ctx.contains("\"editor\":\"none\"") {
