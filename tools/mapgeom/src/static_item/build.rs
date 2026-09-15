@@ -778,9 +778,12 @@ pub fn static_item_from_item_report_redress(store: Option<&mut crate::store::Dat
             pre.notes.push("physics only: the look stays".into());
         }
         // the pipes (TINY_ITEM_REDRESS globs) are all-metal tubes: their WHOLE hull
-        // takes the surface; a custom road item follows the deck rule instead
-        // (deck-like ids convert, metal trims and rubber curbs keep theirs)
-        if crate::tiny_library::item_redress_wanted(source_model) && pre.all_drivable_physics.is_none() {
+        // takes the surface. A CUSTOM road item (the census said it is a road piece)
+        // converts every drivable triangle too — its deck is often a stone/castle
+        // material with physics 0 that the deck rule cannot tell from a wall
+        // (U10S_953's InvertedVistaBob castle roads stayed Concrete, Everios96
+        // 2026-09-15 03:00); the census verdict is the classification, not the id.
+        if pre.all_drivable_physics.is_none() {
             pre.all_drivable_physics = std::env::var("TINY_DECK_PHYSICS").ok().and_then(|v| v.parse::<u8>().ok());
         }
         pre.notes.push(format!("surface swap applied to the embedded item {source_model} (hull physics {:?})", pre.all_drivable_physics));

@@ -62,7 +62,9 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // RoadDirtFullColorize: the castle paths' tinted dirt deck (Everios96 2026-09-14
     // 11:00: "castle parts with dirt on top"); ThemeSnowRoad/Border: the vanilla
     // wood (snow-theme plank) roads ("vanilla wood blocks are also not changed")
-    let road_stems = ["RoadTech", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "ItemInflatableTube", "ThemeSnowRoad", "ThemeSnowRoadBorder"];
+    // ThemeRallyCastleWallUV / ThemeRallyCastleWall: the castle road pieces' deck
+    // (custom castle roads of U10S_953 stayed in their look, Everios96 2026-09-15)
+    let road_stems = ["RoadTech", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "ItemInflatableTube", "ThemeSnowRoad", "ThemeSnowRoadBorder", "ThemeRallyCastleWallUV", "ThemeRallyCastleWall"];
     let rows: Vec<String> = match s {
         "Ice" => road_stems.iter().filter(|st| **st != "RoadIce").map(|st| format!("{st}=Stadium\\Media\\Material\\RoadIce")).collect(),
         "Dirt" => road_stems.iter().filter(|st| !st.starts_with("RoadDirt")).chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\RoadDirt")).collect(),
@@ -308,6 +310,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 libcmd.arg("tiny-library").arg(&src).arg("--scale").arg("1").arg("--only").arg(names.join(",")).arg("--library-out").arg(&lib).arg("--mapping-out").arg(&mapping).arg("--report").arg(dir.join("report.tsv"));
                 let map_no: usize = nn.parse().unwrap_or(0);
                 libcmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+                // a custom item in the bake list was PUT there by the convert list (or the
+                // all-custom switch): the bake must dress it — otherwise it comes out as a
+                // plain copy (U10S_953's castle roads, Everios96 2026-09-15 03:00)
+                if std::env::var("TINY_CUSTOM_ITEM_LIST").is_ok() || std::env::var("TINY_CUSTOM_ITEM_REDRESS").is_ok() {
+                    libcmd.env("TINY_CUSTOM_ITEM_REDRESS", "1");
+                }
                 // item names unique per (part, map) across the whole club: the game caches
                 // an embedded model by FILE NAME for the session (`--alias-part P`, as the
                 // tiny pipeline: base (P*100+NN)*1000 + 500 leaves 500 names per map)
