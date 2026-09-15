@@ -177,11 +177,21 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let mut done: std::collections::HashSet<String> = std::collections::HashSet::new();
     if resume {
         if let Ok(t) = std::fs::read_to_string(&log_path) {
+            let mut fails: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
             for l in t.lines().skip(1) {
                 if let Some(p) = l.split('\t').next() {
-                    if l.split('\t').nth(4).map(|s| s == "ok").unwrap_or(false) {
-                        done.insert(p.to_string());
+                    match l.split('\t').nth(4) {
+                        Some("ok") => { done.insert(p.to_string()); }
+                        // a map that failed twice already (a game-crashing map) is not tried again
+                        Some("FAIL") => { *fails.entry(p.to_string()).or_default() += 1; }
+                        _ => {}
                     }
+                }
+            }
+            for (p, n) in fails {
+                if n >= 2 && !done.contains(&p) {
+                    eprintln!("skipping {p}: {n} earlier failures");
+                    done.insert(p);
                 }
             }
         }
