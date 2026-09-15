@@ -164,6 +164,90 @@ fn main() {
             std::fs::write(&out, &bytes[start..end]).expect("write jpeg");
             println!("{}: {} bytes", out.display(), end - start);
         }
+        // tmmaps body FILE.gbx --out F — any Gbx file's DECOMPRESSED body (items, maps, …)
+        "body" => {
+            let data = std::fs::read(&args[2]).expect("read");
+            let g = tmmaps::gbx::Gbx::parse(&data);
+            let out = tmmaps::cli::flag(&args, "--out").expect("--out F");
+            std::fs::write(out, &g.body).expect("write");
+            println!("{out}: {} bytes (class 0x{:08X}, {} nodes)", g.body.len(), g.class_id, g.num_nodes);
+        }
+        // tmmaps item-physics MAP --model SUBSTR --physics N --out OUT
+        // The surface-physics byte of EVERY CPlugMaterialUserInst inside one embedded item,
+        // patched in place (one byte per material node: no copy, no size change) and the
+        // archive rebuilt around the patched item. U10S_975's roulette wheel: one material
+        // node, physics 0x4D Plastic by its author (`TM_ItemSpectator_plastic_physics`);
+        // the copy-based conversion made the map 9.8 MB (Everios96, 2026-09-15).
+        "item-physics" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let model = tmmaps::cli::flag(&args, "--model").expect("--model SUBSTR").to_lowercase();
+            let phys: u8 = tmmaps::cli::flag(&args, "--physics").and_then(|v| v.parse().ok()).expect("--physics N");
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("--out OUT"));
+            let mut m = tmmaps::map::MapFile::load(&src);
+            let (rows, zip) = m.embedded_objects().expect("no embedded objects");
+            let mut files: std::collections::BTreeMap<String, Vec<u8>> = tmmaps::header::zip_entries(&zip).into_iter().collect();
+            let mut patched_files = 0;
+            let mut patched_nodes = 0;
+            let names: Vec<String> = files.keys().filter(|k| k.to_lowercase().contains(&model)).cloned().collect();
+            for name in &names {
+                let bytes = files[name].clone();
+                let g = tmmaps::gbx::Gbx::parse(&bytes);
+                let mut body = g.body.clone();
+                // every 0x090FD000 chunk: u32 version, u8 isUsingGameMaterial (v>=11), Id materialName,
+                // Id model, string baseTexture, u8 surfacePhysicId, u8 surfaceGameplayId (v>=10), string link …
+                let marker = 0x090F_D000u32.to_le_bytes();
+                let mut at = 0usize;
+                let mut hits = Vec::new();
+                while let Some(p) = body[at..].windows(4).position(|w| w == marker) {
+                    let s = at + p;
+                    at = s + 4;
+                    // the chunk id is preceded by the node's class id (same value) when it opens the node
+                    let mut r = tmmaps::gbx::Reader::new(&body[s + 4..]);
+                    let ver = r.u32();
+                    if !(9..=12).contains(&ver) {
+                        continue;
+                    }
+                    if ver >= 11 {
+                        r.u8();
+                    }
+                    // an Id word: 0xffffffff = none; flags 0x40000000/0x80000000 with index 0 =
+                    // a new string follows (u32 length + bytes); with an index = a back-reference
+                    let mut read_id = |r: &mut tmmaps::gbx::Reader| {
+                        let w = r.u32();
+                        if w != 0xffff_ffff && w & 0xC000_0000 != 0 && w & 0x3fff_ffff == 0 {
+                            let n = r.u32() as usize;
+                            r.bytes(n);
+                        }
+                    };
+                    read_id(&mut r); // materialName
+                    read_id(&mut r); // model
+                    let n = r.u32() as usize; // baseTexture
+                    r.bytes(n);
+                    let phys_at = s + 4 + r.o;
+                    let old = body[phys_at];
+                    hits.push((phys_at, old));
+                }
+                for (pa, old) in &hits {
+                    body[*pa] = phys;
+                    println!("{name}: material node physics {old} -> {phys} at body+{pa}");
+                    patched_nodes += 1;
+                }
+                if !hits.is_empty() {
+                    let rewritten = g.write_body_recompressed(&body);
+                    files.insert(name.clone(), rewritten);
+                    patched_files += 1;
+                }
+            }
+            if patched_files == 0 {
+                eprintln!("no embedded file matching `{model}` with a material node (files: {})", files.keys().cloned().collect::<Vec<_>>().join(", "));
+                std::process::exit(1);
+            }
+            let new_zip = tmmaps::header::deflated_zip(&files);
+            let manifest: Vec<(&str, &str)> = rows.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            m.replace_embedded_objects(&manifest, &new_zip);
+            m.write_to(&out).expect("write");
+            println!("{}: {patched_nodes} material nodes in {patched_files} file(s) -> physics {phys}; archive {} -> {} bytes", out.display(), zip.len(), new_zip.len());
+        }
         "set-exebuild" => {
             let src = std::path::PathBuf::from(&args[2]);
             let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("set-exebuild needs --out OUT"));
