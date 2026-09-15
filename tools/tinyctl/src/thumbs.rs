@@ -197,7 +197,7 @@ fn editor_shot(k: usize, src: &Path, out_map: &Path, tmmaps_bin: &str) -> Result
     if !sp.status.success() {
         return Err(format!("set-thumbnail: {}", String::from_utf8_lossy(&sp.stderr).trim()));
     }
-    let _ = http_get("/thumbedit?quit=1");
+    let _ = http_get("/back");
     let tq = Instant::now();
     loop {
         if tq.elapsed().as_secs() > 30 {
@@ -332,7 +332,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let res = if editor_mode {
             let r = editor_shot(k, &src, &out_map, &tmmaps_bin);
             if r.is_err() {
-                let _ = http_get("/thumbedit?quit=1");
+                let _ = http_get("/back");
                 let tq = Instant::now();
                 while tq.elapsed().as_secs() < 20 && !http_get("/ctx").unwrap_or_default().contains("\"editor\":\"none\"") {
                     std::thread::sleep(std::time::Duration::from_millis(200));
