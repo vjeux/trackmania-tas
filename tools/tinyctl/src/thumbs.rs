@@ -333,7 +333,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let out_map = outdir.join(&rel);
         let res = if editor_mode {
             let r = editor_shot(k, &src, &out_map, &tmmaps_bin);
-            if r.is_err() {
+            if r.is_err() && !plugin_alive() {
+                // the game died under this map (icy 130, 2026-09-15 19:05 PT: the editor
+                // path had no relaunch and hung the whole set): bring it back, then retry
+                eprintln!("game DOWN after {} — relaunching", src.display());
+                relaunch_game();
+            } else if r.is_err() {
                 let _ = http_get("/back");
                 let tq = Instant::now();
                 while tq.elapsed().as_secs() < 20 && !http_get("/ctx").unwrap_or_default().contains("\"editor\":\"none\"") {
