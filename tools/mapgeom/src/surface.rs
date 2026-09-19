@@ -103,7 +103,7 @@ pub fn is_surface_family(name: &str) -> bool {
     // (`TrackWall\Straight_Air`), the piece the game fills in under an elevated wall
     // ride — 21,000 placements in 421 maps stayed wood beside converted wall rides
     // (Everios96's Sept 17 list, 2026-09-18)
-    if name.ends_with("Pillar") && !name.starts_with("TrackWall") {
+    if name.ends_with("Pillar") && !name.starts_with("TrackWall") && !name.starts_with("RallyCastleRoad") {
         return false;
     }
     // the snow theme's plank roads (`SnowRoad…`, the vanilla WOOD blocks — Dyl_Chill's
@@ -133,7 +133,7 @@ pub fn is_stage_deck(name: &str) -> bool {
 /// unverified. `None` for a block outside the surface families (pillars,
 /// structures, gates …). The result may equal `name` (already that surface).
 pub fn candidate(name: &str, s: &str) -> Option<String> {
-    if name.ends_with("Pillar") && !name.starts_with("TrackWall") {
+    if name.ends_with("Pillar") && !name.starts_with("TrackWall") && !name.starts_with("RallyCastleRoad") {
         return None;
     }
     if name.starts_with("SnowRoadPillar") {

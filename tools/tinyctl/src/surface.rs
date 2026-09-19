@@ -66,7 +66,9 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // (custom castle roads of U10S_953 stayed in their look, Everios96 2026-09-15)
     let road_stems = ["RoadTech", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "ItemInflatableTube", "ThemeSnowRoad", "ThemeSnowRoadBorder", "ThemeRallyCastleWallUV", "ThemeRallyCastleWall"];
     let rows: Vec<String> = match s {
-        "Ice" => road_stems.iter().filter(|st| **st != "RoadIce").map(|st| format!("{st}=Stadium\\Media\\Material\\RoadIce")).collect(),
+        // the snow PLANK roads take the ice platform look, not the bobsleigh one
+        // (Everios96 2026-09-19 08:24 on icy 152: "use the ice platform texture")
+        "Ice" => road_stems.iter().filter(|st| **st != "RoadIce").map(|st| if st.starts_with("ThemeSnowRoad") { format!("{st}=Stadium\\Media\\Modifier\\PlatformIce\\PlatformTech") } else { format!("{st}=Stadium\\Media\\Material\\RoadIce") }).collect(),
         "Dirt" => road_stems.iter().filter(|st| !st.starts_with("RoadDirt")).chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\RoadDirt")).collect(),
         "Grass" => road_stems.iter().chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Modifier\\PlatformGrass\\PlatformTech")).collect(),
         "Plastic" => road_stems.iter().chain(["TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Modifier\\PlatformPlastic\\PlatformTech")).collect(),
