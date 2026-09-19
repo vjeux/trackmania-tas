@@ -2674,7 +2674,15 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
     // materials no modifier folder shadows — `RoadTech=Stadium\Media\Material\RoadIce`
     // puts the ice deck material (look + RoadIce physics 74) on a tech road's
     // deck. Rows go FIRST: the first matching collision row wins.
-    let surface_rows = surface_redress_rows(store);
+    let mut surface_rows = surface_redress_rows(store);
+    // a STAGE deck is `TechnicsTrims` metal all over (the trim material every other block
+    // uses for its metal edges): on the stage blocks alone that stem is the deck and takes
+    // the surface (the first row's link + physics — the `RoadTech` deck row)
+    if crate::surface::is_stage_deck(name) {
+        if let Some((_, link, ids)) = surface_rows.iter().find(|(from, to, _)| from == "RoadTech" && !to.is_empty()).cloned() {
+            surface_rows.push(("TechnicsTrims".to_string(), link, ids));
+        }
+    }
     for (stem, link, ids) in &surface_rows {
         let note_link = if link.is_empty() { format!("Stadium\\Media\\Material\\{stem} (own look, physics {})", ids.0) } else { link.clone() };
         m.collision_redress.insert(0, Redress { matches: RedressKey::File(format!("{}.material.gbx", stem.to_ascii_lowercase())), link: note_link, ids: *ids });

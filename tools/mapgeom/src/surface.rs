@@ -112,7 +112,19 @@ pub fn is_surface_family(name: &str) -> bool {
     if name.starts_with("SnowRoadPillar") {
         return false;
     }
+    // the concert STAGE decks (metal `TechnicsTrims` floors players drive on — Everios96's
+    // own wood 39 gave them a wood deck; GeraldDuke's wet wood 39): the deck pieces, not
+    // the light rigs or the supports
+    if is_stage_deck(name) {
+        return true;
+    }
     ["Road", "Platform", "DecoPlatform", "DecoHill", "Open", "DecoWall", "Water", "TrackWall", "SnowRoad", "RallyRoadDirt", "RallyCastleRoad"].iter().any(|p| name.starts_with(p))
+}
+
+/// A stage block whose top is a driving deck: `Stage<Shape>` and `StageStructure<Shape>`
+/// (the stage on its truss); `StageSupport*` (pillars) and `StageTechnicsLight*` (rigs) are not.
+pub fn is_stage_deck(name: &str) -> bool {
+    name.starts_with("Stage") && !name.starts_with("StageSupport") && !name.starts_with("StageTechnicsLight")
 }
 
 /// The name a block WOULD have with surface `s`, by the family rules above —
@@ -128,7 +140,7 @@ pub fn candidate(name: &str, s: &str) -> Option<String> {
     // no family of these exists in another surface: the candidate is spelled so the
     // verification says so in the row, and the block is baked as a re-dressed copy
     // (its deck stems — ThemeSnowRoad, RoadDirt, RoadDirtFullColorize — are swap rows)
-    if name.starts_with("SnowRoad") || name.starts_with("RallyRoadDirt") || name.starts_with("RallyCastleRoad") {
+    if name.starts_with("SnowRoad") || name.starts_with("RallyRoadDirt") || name.starts_with("RallyCastleRoad") || is_stage_deck(name) {
         return Some(format!("{name}{s}"));
     }
     // Road<A>ToRoad<B>[Down|SlopeUp|…]: the join of two road surfaces. In a
@@ -500,7 +512,7 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
         // pad with no hardware (Everios96, wood 273/155, 2026-09-15). Kept as the
         // game's own block: effect intact, the one-cell deck keeps its family's
         // surface.
-        if name.contains("Special") && name.starts_with("Platform") && std::env::var("TINY_BAKE_PADS").map(|v| v != "1").unwrap_or(true) {
+        if name.contains("Special") && name.starts_with("Platform") && std::env::var("TINY_BAKE_PADS").map(|v| v == "0").unwrap_or(false) {
             return mk(Action::Keep, "", format!("gameplay pad: kept as the game's block ({fam})"));
         }
         // a block with geometry of its own is baked as a re-dressed copy; a
