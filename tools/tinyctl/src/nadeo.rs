@@ -605,7 +605,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     eprintln!("{uid}: no records");
                     continue;
                 }
-                let recs = get_json(&auth_core, &format!("{CORE}/v2/mapRecords/?accountIdList={}&mapIdList={map_id}", accounts.join(",")))?;
+                let recs = get_json(&auth_core, &format!("{CORE}/v2/mapRecords/?accountIdList={}&mapId={map_id}", accounts.join(",")))?;
                 for (rank, acc) in accounts.iter().enumerate() {
                     let url = recs.as_array().map(|a| a.iter().find(|r| s(r, "accountId") == *acc).map(|r| s(r, "url")).unwrap_or_default()).unwrap_or_default();
                     if url.is_empty() {
