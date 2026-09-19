@@ -95,6 +95,11 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
 
     // the pipes: baked as re-dressed item copies, physics and texture
     env.push(("TINY_ITEM_REDRESS".to_string(), "InflatableTube*".to_string()));
+    // the map's own custom BLOCKS take the alteration too (A5); TINY_CUSTOM_BLOCK_REDRESS=0 keeps them
+    if std::env::var("TINY_CUSTOM_BLOCK_REDRESS").map(|v| v != "0").unwrap_or(true) {
+        env.push(("TINY_CUSTOM_BLOCK_REDRESS".to_string(), "1".to_string()));
+        std::env::set_var("TINY_CUSTOM_BLOCK_REDRESS", "1");
+    }
     // the swap's deck physics for the deck-like triangles no stem names (Deco strips…)
     let deck_physics = match s {
         "Ice" => Some("74"),

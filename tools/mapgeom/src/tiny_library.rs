@@ -1610,7 +1610,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             let alias = format!("AC{next_alias:08}");
             next_alias += 1;
             let ident = format!("{alias}.Item.Gbx");
-            match crate::static_item::build::static_item_from_custom_block(bytes, &ident, &ident, scale, collection, special) {
+            match crate::static_item::build::static_item_from_custom_block(Some(store), bytes, &ident, &ident, scale, collection, special) {
                 Ok((out, m, arche)) if !m.visuals.is_empty() => {
                     // footprint in cells from the scaled collision (fallback: the visuals)
                     let mut max = [0.0f32; 3];

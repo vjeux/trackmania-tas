@@ -753,6 +753,65 @@ pub fn static_item_from_item_report(item_bytes: &[u8], ident: &str, author: &str
 }
 
 /// `static_item_from_item_report` with the SURFACE SWAP applied to the item when
+/// The Merged a custom item's or custom block's bake starts from under a surface
+/// swap: the swap rows (look + physics), the border/trim/clip physics kept, the
+/// item-only look rows for platform and hill decks. `physics_only` keeps the look.
+pub fn custom_redress_pre(st: &mut crate::store::DataStore, source_model: &str, physics_only: bool) -> Merged {
+    let mut pre = Merged::default();
+    crate::tiny_library::apply_surface_swap(st, &mut pre, source_model);
+    if physics_only {
+        pre.link_rewrite.clear();
+        pre.collision_redress.clear();
+        pre.notes.push("physics only: the look stays".into());
+    }
+    // the pipes (TINY_ITEM_REDRESS globs) are all-metal tubes: their WHOLE hull
+    // takes the surface. A CUSTOM road item (the census said it is a road piece)
+    // converts every drivable triangle too — its deck is often a stone/castle
+    // material with physics 0 that the deck rule cannot tell from a wall
+    // (U10S_953's InvertedVistaBob castle roads stayed Concrete, Everios96
+    // 2026-09-15 03:00); the census verdict is the classification, not the id.
+    if pre.all_drivable_physics.is_none() {
+        pre.all_drivable_physics = std::env::var("TINY_DECK_PHYSICS").ok().and_then(|v| v.parse::<u8>().ok());
+    }
+    // rubber borders, metal trims and wall-ride clips keep their own physics, like
+    // the surface's vanilla blocks do (Everios96 Sept 17 "wrong physics"; the
+    // plastic census 2026-09-18: 99 items' TrackBorders and 52 items' TechnicsTrims
+    // had been forced to Plastic). TINY_ALL_DRIVABLE_KEEP=a,b,… overrides.
+    pre.all_drivable_keep = std::env::var("TINY_ALL_DRIVABLE_KEEP").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse::<u8>().ok()).collect()).unwrap_or_else(|| vec![4, 9, 22]);
+    // The LOOK of a custom item's platform and hill decks: only ROAD stems were swap
+    // rows, so an item built on `Modifier\Platform<Fam>\PlatformTech` or `DecoHill`
+    // kept its grass/dirt/ice look under the new physics (plastic 183 "dirt-looking",
+    // 230 "looks like ice"; 71 + 23 items in the plastic census). Item-only rows —
+    // the block bakes keep their own stems. TINY_ITEM_LOOK_ROWS=Stem=Link[@P];… overrides.
+    let item_rows: Vec<(String, String, u8)> = match std::env::var("TINY_ITEM_LOOK_ROWS") {
+        Ok(v) => v.split(';').filter_map(|r| { let (stem, rest) = r.split_once('=')?; let (link, p) = rest.rsplit_once('@').map(|(l, p)| (l.to_string(), p.parse::<u8>().unwrap_or(0))).unwrap_or((rest.to_string(), pre.all_drivable_physics.unwrap_or(0))); Some((stem.trim().to_string(), link, p)) }).collect(),
+        Err(_) => {
+            // the deck row of the swap (the first `RoadTech=…` row) names the surface's link and physics
+            let deck = pre.link_rewrite.iter().find(|(from, to, _)| from == "RoadTech" && !to.is_empty()).cloned();
+            match deck {
+                Some((_, link, phys)) => {
+                    // a platform link of the same family when the pack has one
+                    let plat = if link.contains("\\Modifier\\Platform") { link.clone() } else if link.ends_with("\\RoadIce") { "Stadium\\Media\\Modifier\\PlatformIce\\PlatformTech".to_string() } else if link.ends_with("\\RoadDirt") { "Stadium\\Media\\Modifier\\PlatformDirt\\PlatformTech".to_string() } else { link.clone() };
+                    let hill = if link.ends_with("\\RoadIce") { "Stadium\\Media\\Modifier\\PlatformIce\\DecoHill".to_string() } else if link.ends_with("\\RoadDirt") { "Stadium\\Media\\Modifier\\PlatformDirt\\DecoHill".to_string() } else { plat.clone() };
+                    let mut rows = vec![("PlatformTech".to_string(), plat, phys), ("DecoHill".to_string(), hill.clone(), phys), ("DecoHill2".to_string(), hill, phys)];
+                    // grass: the hills ARE grass — no hill rows
+                    if link.contains("PlatformGrass") { rows.truncate(1); }
+                    rows
+                }
+                None => Vec::new(),
+            }
+        }
+    };
+    for (stem, link, phys) in item_rows {
+        if !pre.link_rewrite.iter().any(|(from, _, _)| *from == stem) {
+            pre.notes.push(format!("item look row: {stem} -> {link} (physics {phys})"));
+            pre.link_rewrite.push((stem, link, phys));
+        }
+    }
+    pre.notes.push(format!("surface swap applied to the embedded item {source_model} (hull physics {:?})", pre.all_drivable_physics));
+    pre
+}
+
 /// `source_model` matches `TINY_ITEM_REDRESS` (or `TINY_CUSTOM_ITEM_REDRESS=1`
 /// asks for every embedded custom item): the swap rows re-dress its materials and
 /// every drivable hull triangle takes the surface physics — Everios96
@@ -771,57 +830,7 @@ pub fn static_item_from_item_report_redress(store: Option<&mut crate::store::Dat
     let mut store = store;
     if redress {
         let st = store.as_deref_mut().unwrap();
-        crate::tiny_library::apply_surface_swap(st, &mut pre, source_model);
-        if physics_only {
-            pre.link_rewrite.clear();
-            pre.collision_redress.clear();
-            pre.notes.push("physics only: the look stays".into());
-        }
-        // the pipes (TINY_ITEM_REDRESS globs) are all-metal tubes: their WHOLE hull
-        // takes the surface. A CUSTOM road item (the census said it is a road piece)
-        // converts every drivable triangle too — its deck is often a stone/castle
-        // material with physics 0 that the deck rule cannot tell from a wall
-        // (U10S_953's InvertedVistaBob castle roads stayed Concrete, Everios96
-        // 2026-09-15 03:00); the census verdict is the classification, not the id.
-        if pre.all_drivable_physics.is_none() {
-            pre.all_drivable_physics = std::env::var("TINY_DECK_PHYSICS").ok().and_then(|v| v.parse::<u8>().ok());
-        }
-        // rubber borders, metal trims and wall-ride clips keep their own physics, like
-        // the surface's vanilla blocks do (Everios96 Sept 17 "wrong physics"; the
-        // plastic census 2026-09-18: 99 items' TrackBorders and 52 items' TechnicsTrims
-        // had been forced to Plastic). TINY_ALL_DRIVABLE_KEEP=a,b,… overrides.
-        pre.all_drivable_keep = std::env::var("TINY_ALL_DRIVABLE_KEEP").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse::<u8>().ok()).collect()).unwrap_or_else(|| vec![4, 9, 22]);
-        // The LOOK of a custom item's platform and hill decks: only ROAD stems were swap
-        // rows, so an item built on `Modifier\Platform<Fam>\PlatformTech` or `DecoHill`
-        // kept its grass/dirt/ice look under the new physics (plastic 183 "dirt-looking",
-        // 230 "looks like ice"; 71 + 23 items in the plastic census). Item-only rows —
-        // the block bakes keep their own stems. TINY_ITEM_LOOK_ROWS=Stem=Link[@P];… overrides.
-        let item_rows: Vec<(String, String, u8)> = match std::env::var("TINY_ITEM_LOOK_ROWS") {
-            Ok(v) => v.split(';').filter_map(|r| { let (stem, rest) = r.split_once('=')?; let (link, p) = rest.rsplit_once('@').map(|(l, p)| (l.to_string(), p.parse::<u8>().unwrap_or(0))).unwrap_or((rest.to_string(), pre.all_drivable_physics.unwrap_or(0))); Some((stem.trim().to_string(), link, p)) }).collect(),
-            Err(_) => {
-                // the deck row of the swap (the first `RoadTech=…` row) names the surface's link and physics
-                let deck = pre.link_rewrite.iter().find(|(from, to, _)| from == "RoadTech" && !to.is_empty()).cloned();
-                match deck {
-                    Some((_, link, phys)) => {
-                        // a platform link of the same family when the pack has one
-                        let plat = if link.contains("\\Modifier\\Platform") { link.clone() } else if link.ends_with("\\RoadIce") { "Stadium\\Media\\Modifier\\PlatformIce\\PlatformTech".to_string() } else if link.ends_with("\\RoadDirt") { "Stadium\\Media\\Modifier\\PlatformDirt\\PlatformTech".to_string() } else { link.clone() };
-                        let hill = if link.ends_with("\\RoadIce") { "Stadium\\Media\\Modifier\\PlatformIce\\DecoHill".to_string() } else if link.ends_with("\\RoadDirt") { "Stadium\\Media\\Modifier\\PlatformDirt\\DecoHill".to_string() } else { plat.clone() };
-                        let mut rows = vec![("PlatformTech".to_string(), plat, phys), ("DecoHill".to_string(), hill.clone(), phys), ("DecoHill2".to_string(), hill, phys)];
-                        // grass: the hills ARE grass — no hill rows
-                        if link.contains("PlatformGrass") { rows.truncate(1); }
-                        rows
-                    }
-                    None => Vec::new(),
-                }
-            }
-        };
-        for (stem, link, phys) in item_rows {
-            if !pre.link_rewrite.iter().any(|(from, _, _)| *from == stem) {
-                pre.notes.push(format!("item look row: {stem} -> {link} (physics {phys})"));
-                pre.link_rewrite.push((stem, link, phys));
-            }
-        }
-        pre.notes.push(format!("surface swap applied to the embedded item {source_model} (hull physics {:?})", pre.all_drivable_physics));
+        pre = custom_redress_pre(st, source_model, physics_only);
     }
     // the source item's skin declaration (header chunk 0x090F4000) travels
     let skin = tmmaps::header::game_skin_chunk(item_bytes);
@@ -3412,8 +3421,18 @@ pub fn inline_filler_foliage(store: &mut crate::store::DataStore, m: &mut Merged
 /// the block's ARCHETYPE (a GateSpecial*/PlatformTechSpecial* block info the
 /// custom block borrows its effect from), already scaled, with its kind.
 /// Returns the item bytes, the merged model, and the archetype name.
-pub fn static_item_from_custom_block(bytes: &[u8], ident: &str, author: &str, scale: f32, collection: u32, special: Option<(super::surface::CPlugSurface, Option<String>)>) -> R<(Vec<u8>, Merged, Option<String>)> {
-    let mut m = Merged::default();
+pub fn static_item_from_custom_block(store: Option<&mut crate::store::DataStore>, bytes: &[u8], ident: &str, author: &str, scale: f32, collection: u32, special: Option<(super::surface::CPlugSurface, Option<String>)>) -> R<(Vec<u8>, Merged, Option<String>)> {
+    // TINY_CUSTOM_BLOCK_REDRESS=1 (the surface pipeline): the embedded block's materials
+    // take the alteration like a custom item's — Everios96's A5 (2026-09-19 06:41: the
+    // community wood blocks, kept wood in every alteration until now)
+    let mut m = match store {
+        Some(st) if std::env::var("TINY_CUSTOM_BLOCK_REDRESS").map(|v| v == "1").unwrap_or(false) => {
+            let mut pre = custom_redress_pre(st, ident, false);
+            pre.notes.push("custom block re-dressed by the surface swap".into());
+            pre
+        }
+        _ => Merged::default(),
+    };
     let arche: Option<String>;
     // the v1 form first (a CPlugStaticObjectModel in the block item's second table:
     // the magnet-expansion and TM2 dirt-port blocks), then the v0 crystal

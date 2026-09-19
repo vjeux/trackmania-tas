@@ -120,8 +120,15 @@ fn main() {
                     for (ident, author) in &rows {
                         println!("  row  {ident}\t{author}");
                     }
+                    // --extract DIR: the zip entries written out (A5, the community wood blocks)
+                    let extract = tmmaps::cli::flag(&args, "--extract").map(std::path::PathBuf::from);
                     for (name, bytes) in tmmaps::header::zip_entries(&zip) {
                         println!("  zip  {name}\t{} B", bytes.len());
+                        if let Some(d) = &extract {
+                            let flat = name.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(&name).to_string();
+                            std::fs::create_dir_all(d).expect("mkdir");
+                            std::fs::write(d.join(flat), &bytes).expect("write");
+                        }
                     }
                 }
                 None => println!("no embedded objects"),

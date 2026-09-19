@@ -431,7 +431,19 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     // an embedded custom block record (`X.Block.Gbx_CustomBlock`) is its author's
     // own mesh: no pack twin
     if name.contains('\\') || name.ends_with("_CustomBlock") {
-        return mk(Action::Keep, "", "embedded custom block".into());
+        // TINY_CUSTOM_BLOCK_REDRESS=1 (Everios96's A5, 2026-09-19): the author's own block
+        // bakes as a re-dressed copy like a custom item — except a block that already IS
+        // the surface (a community wood block in the wood sets: its name says so)
+        let redress = std::env::var("TINY_CUSTOM_BLOCK_REDRESS").map(|v| v == "1").unwrap_or(false);
+        let already = (s == "Wood" && name.to_ascii_lowercase().contains("wood"))
+            || (s == "Plastic" && name.to_ascii_lowercase().contains("plastic"))
+            || (s == "Dirt" && name.to_ascii_lowercase().contains("dirt"))
+            || (s == "Grass" && name.to_ascii_lowercase().contains("grass"))
+            || (s == "Ice" && name.to_ascii_lowercase().contains("ice"));
+        if redress && !already {
+            return mk(Action::Bake, "", "embedded custom block: re-dressed copy".into());
+        }
+        return mk(Action::Keep, "", if already { "embedded custom block: already the surface".into() } else { "embedded custom block".into() });
     }
     // pillars, structures, gates … are outside the surface families
     // Nadeo's own typo `PlatformGrasssSlope2UTop` spells its twins with the plain word
