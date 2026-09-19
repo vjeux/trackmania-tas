@@ -2168,6 +2168,7 @@ impl<'a> Graph<'a> {
             return Ok(());
         }
         let compress_local3d = self.r.bool32()?;
+        out.decl_names = decls.iter().map(|d| d.name()).collect();
         for d in &decls {
             let stored = d.stored_type(compress_local3d);
             match (d.name(), stored) {

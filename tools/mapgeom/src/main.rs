@@ -3496,9 +3496,10 @@ fn describe(n: &Node) -> String {
         ),
         Node::VertexStream(v) => {
             format!(
-                "CPlugVertexStream, {} positions, {} normals",
+                "CPlugVertexStream, {} positions, {} normals, decls {:?}",
                 v.positions.len(),
-                v.normals.len()
+                v.normals.len(),
+                v.decl_names
             )
         }
         Node::Crystal(c) => format!(

@@ -138,7 +138,14 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
     // tangent frame (item-check SH-03); every visual under it gets one,
     // synthesised round the normal when the pack gave none (Nadeo's own
     // PlatformDirt / PlatformPlastic Turbo slopes).
-    let want_tangents: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map(|l| l.ends_with("\\PlatformTech")).unwrap_or(false)).map(|(i, _)| i).collect();
+    // … and since 2026-09-19 EVERY material: a re-dressed deck authored without a
+    // tangent frame (the effect pads' `SpecialV2_Air` deck: position, normal, uv0,
+    // uv1) under a normal-mapped material (ThemeSnowRoad, TechSuperMagnetic) drew
+    // BLACK in the race renderer while the editor lit it fine (Everios96's wet wood
+    // 60 booster, "transparent"). 8 bytes a vertex; TINY_TANGENTS_ALL=0 restores the
+    // PlatformTech-only rule.
+    let all = std::env::var("TINY_TANGENTS_ALL").map(|v| v != "0").unwrap_or(true);
+    let want_tangents: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| all || mat.link().map(|l| l.ends_with("\\PlatformTech")).unwrap_or(false)).map(|(i, _)| i).collect();
     // Every merged PART's lightmap atlas into its own cell (see
     // `repack_lightmap_parts`); TINY_LIGHTMAP_REPACK=0 keeps the overlap.
     if std::env::var("TINY_LIGHTMAP_REPACK").map(|v| v != "0").unwrap_or(true) {

@@ -124,6 +124,8 @@ pub struct VertexStream {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub uv0: Vec<[f32; 2]>,
+    /// the declaration names, in order (10 = TexCoord0, 11 = TexCoord1 = the lightmap uv)
+    pub decl_names: Vec<u32>,
 }
 
 #[derive(Clone, Debug, Default)]
