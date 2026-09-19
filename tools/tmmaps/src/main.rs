@@ -263,6 +263,42 @@ fn main() {
         // round-6 rebuild (2026-09-15) shipped 1,852 maps as "Wet Wood U10S_31" instead
         // of "U10S_31 By Everios96 [Wet Wood]" (the build ran without --name-style
         // everios); Everios96 noticed 2026-09-18.
+        // tmmaps repoint-items MAP --from IDENT --to NAME --out OUT — every placement of the
+        // embedded model IDENT re-pointed at the stock model NAME (author Nadeo), the embedded
+        // file dropped from the archive. Giant 2026-09-19 (uelen: "all of those cypress-like
+        // trees crash the game"): the ×2-baked CypressTall copies → the game's own CypressTall.
+        "repoint-items" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("--out OUT"));
+            let from = tmmaps::cli::flag(&args, "--from").expect("--from IDENT");
+            let to = tmmaps::cli::flag(&args, "--to").expect("--to NAME");
+            let mut m = tmmaps::map::MapFile::load(&src);
+            let mut n = 0usize;
+            for i in 0..m.items.len() {
+                let model = m.items[i].model.clone();
+                if model == from {
+                    m.set_item_model(i, &to);
+                    m.set_item_author(i, "Nadeo");
+                    n += 1;
+                }
+            }
+            let mut dropped = false;
+            if let Some((rows, zip)) = m.embedded_objects() {
+                let keep: Vec<(String, String)> = rows.iter().filter(|(ident, _)| *ident != from).cloned().collect();
+                if keep.len() != rows.len() {
+                    let entries: std::collections::BTreeMap<String, Vec<u8>> = tmmaps::header::zip_entries(&zip).into_iter().filter(|(name, _)| {
+                        let flat = name.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(name).to_string();
+                        flat != from
+                    }).collect();
+                    let newzip = tmmaps::header::stored_zip(&entries);
+                    let keep_refs: Vec<(&str, &str)> = keep.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+                    m.replace_embedded_objects(&keep_refs, &newzip);
+                    dropped = true;
+                }
+            }
+            m.write_to(&out).expect("write");
+            println!("{}: {n} placements of {from} -> {to}{}", out.display(), if dropped { ", embedded file dropped" } else { "" });
+        }
         "set-name" => {
             let src = std::path::PathBuf::from(&args[2]);
             let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("--out OUT"));
