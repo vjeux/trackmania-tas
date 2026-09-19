@@ -282,6 +282,10 @@ fn main() {
                     n += 1;
                 }
             }
+            // renames first (a re-encoded write), then the archive splice on the reloaded map
+            let tmp = out.with_extension("repoint.tmp");
+            m.write_to(&tmp).expect("write");
+            let mut m = tmmaps::map::MapFile::load(&tmp);
             let mut dropped = false;
             if let Some((rows, zip)) = m.embedded_objects() {
                 let keep: Vec<(String, String)> = rows.iter().filter(|(ident, _)| *ident != from).cloned().collect();
@@ -297,6 +301,7 @@ fn main() {
                 }
             }
             m.write_to(&out).expect("write");
+            let _ = std::fs::remove_file(&tmp);
             println!("{}: {n} placements of {from} -> {to}{}", out.display(), if dropped { ", embedded file dropped" } else { "" });
         }
         "set-name" => {
