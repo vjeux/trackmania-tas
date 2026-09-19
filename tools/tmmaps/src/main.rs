@@ -251,6 +251,28 @@ fn main() {
         // tmmaps reuid MAP --out OUT --prefix Pla3 — a NEW map uid (= a fresh leaderboard):
         // the first 4 characters of the uid are replaced (Pla2… → Pla3…), header and body.
         // Everios96's records reset, option (b), 2026-09-15.
+        // tmmaps set-name MAP --out OUT --name NEW [--from OLD] — the map's display name
+        // (header + body) rewritten; OLD defaults to the header's current name. The
+        // round-6 rebuild (2026-09-15) shipped 1,852 maps as "Wet Wood U10S_31" instead
+        // of "U10S_31 By Everios96 [Wet Wood]" (the build ran without --name-style
+        // everios); Everios96 noticed 2026-09-18.
+        "set-name" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("--out OUT"));
+            let new = tmmaps::cli::flag(&args, "--name").expect("--name NEW");
+            let mut m = tmmaps::map::MapFile::load(&src);
+            let hdr = tmmaps::header::read(&src.display().to_string()).expect("header");
+            let old = tmmaps::cli::flag(&args, "--from").map(|s| s.to_string()).unwrap_or(hdr.name.clone());
+            if old == new {
+                println!("{}: name already `{new}`", src.display());
+                std::fs::copy(&src, &out).expect("copy");
+            } else {
+                let (h, b) = m.set_map_name(&old, &new);
+                assert!(h + b > 0, "the map does not declare the name `{old}`");
+                m.write_to(&out).expect("write");
+                println!("{}: name `{old}` -> `{new}` ({h} header, {b} body)", out.display());
+            }
+        }
         "reuid" => {
             let src = std::path::PathBuf::from(&args[2]);
             let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("--out OUT"));
