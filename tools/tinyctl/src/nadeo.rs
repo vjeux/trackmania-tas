@@ -579,6 +579,52 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        "ghosts" => {
+            // tinyctl nadeo-here ghosts --uids-file F --out-dir D [--top N] [--no-lock]
+            // — the top-N records' ghost files of each map (Live top → Core mapRecords url →
+            // download), as D/<uid>-<rank>.Ghost.Gbx. Everios96 2026-09-19 06:00: "check the
+            // records on the original maps" to see which stage decks are driven.
+            let uids_file = f("--uids-file").ok_or("ghosts needs --uids-file (one uid per line, optional \tname)")?;
+            let out_dir = PathBuf::from(f("--out-dir").ok_or("ghosts needs --out-dir D")?);
+            std::fs::create_dir_all(&out_dir).map_err(|e| format!("{}: {e}", out_dir.display()))?;
+            let top: usize = f("--top").and_then(|v| v.parse().ok()).unwrap_or(3);
+            let text = std::fs::read_to_string(&uids_file).map_err(|e| format!("{uids_file}: {e}"))?;
+            let uids: Vec<String> = text.lines().filter(|l| !l.trim().is_empty()).map(|l| l.split('\t').next().unwrap_or("").trim().to_string()).collect();
+            let mut got = 0usize;
+            for uid in &uids {
+                // the map's id (Core) and its top accounts (Live)
+                let mi = get_json(&auth_core, &format!("{CORE}/maps/?mapUidList={uid}"))?;
+                let map_id = mi.as_array().and_then(|a| a.first()).map(|m| s(m, "mapId")).unwrap_or_default();
+                if map_id.is_empty() {
+                    eprintln!("{uid}: no mapId");
+                    continue;
+                }
+                let lb = get_json(&auth_live, &format!("{LIVE}/api/token/leaderboard/group/Personal_Best/map/{uid}/top?length={top}&onlyWorld=true&offset=0"))?;
+                let accounts: Vec<String> = lb.get("tops").and_then(|t| t.as_array()).and_then(|t| t.first()).and_then(|z| z.get("top")).and_then(|t| t.as_array()).map(|a| a.iter().map(|r| s(r, "accountId")).collect()).unwrap_or_default();
+                if accounts.is_empty() {
+                    eprintln!("{uid}: no records");
+                    continue;
+                }
+                let recs = get_json(&auth_core, &format!("{CORE}/v2/mapRecords/?accountIdList={}&mapIdList={map_id}", accounts.join(",")))?;
+                for (rank, acc) in accounts.iter().enumerate() {
+                    let url = recs.as_array().map(|a| a.iter().find(|r| s(r, "accountId") == *acc).map(|r| s(r, "url")).unwrap_or_default()).unwrap_or_default();
+                    if url.is_empty() {
+                        continue;
+                    }
+                    let dest = out_dir.join(format!("{uid}-{}.Ghost.Gbx", rank + 1));
+                    let st = std::process::Command::new("curl").args(["-s", "--max-time", "120", "-L", "-o"]).arg(&dest).arg(&url).status().map_err(|e| e.to_string())?;
+                    if st.success() && std::fs::metadata(&dest).map(|m| m.len() > 1000).unwrap_or(false) {
+                        got += 1;
+                        println!("{uid}\t{}\t{acc}\t{}", rank + 1, dest.display());
+                    } else {
+                        eprintln!("{uid} #{}: download failed", rank + 1);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                }
+            }
+            println!("{got} ghosts for {} maps → {}", uids.len(), out_dir.display());
+            Ok(())
+        }
         "activities-visibility" => {
             // tinyctl nadeo-here activities-visibility --club ID --public 0|1 [--type campaign|room] [--dry-run]
             // — every ACTIVE activity of the club (all pages) set to the asked visibility;
