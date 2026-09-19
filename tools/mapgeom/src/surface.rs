@@ -397,7 +397,12 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
                     if has_water {
                         row.detail.push_str("; wet already (a water start)");
                     } else {
-                        let deck = base_prefab(&bi).and_then(|pf| deck_level(store, &pf)).unwrap_or(2.0);
+                        // the height the CAR spawns at, from the variant's own spawn point —
+                        // the largest flat area is not it on a sausage start (RoadBumpStart:
+                        // pad plateau 2.75, spawn 4.5 → the sheet stood 1.35 m under the wheels;
+                        // GeraldDuke's wet wood 35/45 "no wet tires", 2026-09-16)
+                        let spawn_y = bi.variant_base_ground.as_ref().or(bi.variant_base_air.as_ref()).map(|v| v.spawn_loc[1]).filter(|y| *y > 0.0);
+                        let deck = spawn_y.or_else(|| base_prefab(&bi).and_then(|pf| deck_level(store, &pf))).unwrap_or(2.0);
                         row.detail.push_str(&format!("; wetpad deck={deck}"));
                     }
                 }
@@ -416,7 +421,7 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     }
     // pillars, structures, gates … are outside the surface families
     // Nadeo's own typo `PlatformGrasssSlope2UTop` spells its twins with the plain word
-    let cand_name = name.replace("Grasss", "Grass");
+    let cand_name = name.replace("Grasss", "Grass").replace("DiagLeftWithWall", "WithWallDiagLeft").replace("DiagRightWithWall", "WithWallDiagRight");
     let Some(cand) = candidate(&cand_name, s) else {
         return mk(Action::Keep, "", "not a surface family".into());
     };
@@ -462,7 +467,7 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     let mirrored_source = {
         let stem = src_path.rsplit('\\').next().unwrap_or(&src_path).to_ascii_uppercase();
         let stem = stem.split('.').next().unwrap_or("").to_string();
-        stem != name.to_ascii_uppercase() && stem != cand_name.to_ascii_uppercase() && name.to_ascii_uppercase().ends_with("RIGHT")
+        stem != name.to_ascii_uppercase() && stem != cand_name.to_ascii_uppercase() && name.to_ascii_uppercase().ends_with("RIGHT") && stem.ends_with("LEFT")
     };
     let src = match idx.load(store, &src_path) {
         Ok(b) => b.clone(),
@@ -495,7 +500,7 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
         // pad with no hardware (Everios96, wood 273/155, 2026-09-15). Kept as the
         // game's own block: effect intact, the one-cell deck keeps its family's
         // surface.
-        if name.contains("Special") && name.starts_with("Platform") {
+        if name.contains("Special") && name.starts_with("Platform") && std::env::var("TINY_BAKE_PADS").map(|v| v != "1").unwrap_or(true) {
             return mk(Action::Keep, "", format!("gameplay pad: kept as the game's block ({fam})"));
         }
         // a block with geometry of its own is baked as a re-dressed copy; a

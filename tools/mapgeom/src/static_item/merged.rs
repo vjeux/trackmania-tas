@@ -493,6 +493,19 @@ pub const ALL_DRIVABLE_PHYSICS: [u8; 23] = [0, 1, 2, 3, 4, 5, 6, 8, 9, 12, 14, 1
 impl Merged {
     /// Slot of a game material, adding it when new.
     pub fn material_slot(&mut self, link: &str, physics: u8) -> usize {
+        // TINY_LINK_OVERRIDE=From=To[;From=To…] (experiments, 2026-09-18: the pad decal
+        // look): a link or its stem replaced before anything else looks at it
+        let overridden;
+        let link = match std::env::var("TINY_LINK_OVERRIDE") {
+            Ok(v) if !v.is_empty() => {
+                let stem = link.rsplit('\\').next().unwrap_or(link);
+                match v.split(';').filter_map(|r| r.split_once('=')).find(|(from, _)| *from == link || *from == stem) {
+                    Some((_, to)) => { overridden = to.to_string(); self.notes.push(format!("link override {link} -> {to}")); overridden.as_str() }
+                    None => link,
+                }
+            }
+            _ => link,
+        };
         // A gameplay gate's sign panels (signlogo.rs): every panel of the item,
         // whatever its game material, shares ONE slot per kind — the picture
         // material — so the row and the beam square are one draw, not two

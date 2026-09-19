@@ -138,7 +138,9 @@ impl BlockInfoIndex {
                     // `OpenIceRoadToZoneRight` (228) has no file while its Left twin and
                     // its own Slope/Tilt variants do — the Left one is the mirror, the same
                     // footprint, which is what the plan and the twin check need of it.
-                    None => match up.replace("GRASSS", "GRASS").as_str() {
+                    // `RoadIceDiagLeftWithWallStraight` (Everios96's 124) is the pack's
+                    // `RoadIceWithWallDiagLeftStraight`: the same block under the other word order
+                    None => match up.replace("GRASSS", "GRASS").replace("DIAGLEFTWITHWALL", "WITHWALLDIAGLEFT").replace("DIAGRIGHTWITHWALL", "WITHWALLDIAGRIGHT").as_str() {
                         fixed if fixed != up && self.by_stem.contains_key(fixed) => self.by_stem[fixed].clone(),
                         _ => match up.strip_suffix("RIGHT").map(|b| format!("{b}LEFT")).and_then(|l| self.by_stem.get(&l)) {
                             Some(c) => c.clone(),
