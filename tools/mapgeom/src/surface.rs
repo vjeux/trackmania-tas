@@ -124,7 +124,9 @@ pub fn is_surface_family(name: &str) -> bool {
 /// A stage block whose top is a driving deck: `Stage<Shape>` and `StageStructure<Shape>`
 /// (the stage on its truss); `StageSupport*` (pillars) and `StageTechnicsLight*` (rigs) are not.
 pub fn is_stage_deck(name: &str) -> bool {
-    name.starts_with("Stage") && !name.starts_with("StageSupport") && !name.starts_with("StageTechnicsLight")
+    // opt-in per build (TINY_STAGE_DECKS=1): the stage is scenery far more often than
+    // a road — Everios96 picks the maps where it is driven (2026-09-18 22:32 PT)
+    std::env::var("TINY_STAGE_DECKS").map(|v| v == "1").unwrap_or(false) && name.starts_with("Stage") && !name.starts_with("StageSupport") && !name.starts_with("StageTechnicsLight")
 }
 
 /// The name a block WOULD have with surface `s`, by the family rules above —
