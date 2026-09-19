@@ -579,6 +579,60 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
             Ok(())
         }
+        "activities-visibility" => {
+            // tinyctl nadeo-here activities-visibility --club ID --public 0|1 [--type campaign|room] [--dry-run]
+            // — every ACTIVE activity of the club (all pages) set to the asked visibility;
+            // rows already there are skipped. Everios96 2026-09-18: "the campaigns are not
+            // set to private, so people can play them … 351 campaigns to set to private".
+            let club = f("--club").ok_or("activities-visibility needs --club ID")?;
+            let public = f("--public").map(|x| x != "0").ok_or("activities-visibility needs --public 0|1")?;
+            let want_type = f("--type");
+            let dry = tmmaps::cli::has(args, "--dry-run");
+            let mut offset = 0usize;
+            let (mut seen, mut changed, mut skipped, mut failed) = (0usize, 0usize, 0usize, 0usize);
+            loop {
+                let v = get_json(&auth_live, &format!("{LIVE}/api/token/club/{club}/activity?length=100&offset={offset}&active=true"))?;
+                let list = v.get("activityList").and_then(|l| l.as_array()).cloned().unwrap_or_default();
+                if list.is_empty() {
+                    break;
+                }
+                for a in &list {
+                    seen += 1;
+                    let ty = s(a, "activityType");
+                    if want_type.as_deref().map(|t| t != ty).unwrap_or(false) {
+                        continue;
+                    }
+                    let id = s(a, "id");
+                    let is_public = a.get("public").and_then(|b| b.as_bool()).unwrap_or(false);
+                    if is_public == public {
+                        skipped += 1;
+                        continue;
+                    }
+                    if dry {
+                        println!("would set	{id}	{ty}	{}	public {is_public} -> {public}", s(a, "name"));
+                        changed += 1;
+                        continue;
+                    }
+                    match activity_edit(&auth_live, &club, &id, true, public) {
+                        Ok(r) => {
+                            changed += 1;
+                            println!("set	{id}	{ty}	{}	public {}", s(a, "name"), s(&r, "public"));
+                        }
+                        Err(e) => {
+                            failed += 1;
+                            eprintln!("FAILED	{id}	{ty}	{}	{e}", s(a, "name"));
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                }
+                offset += list.len();
+                if list.len() < 100 {
+                    break;
+                }
+            }
+            println!("{seen} activities seen, {changed} {}, {skipped} already public={public}, {failed} failed", if dry { "would change" } else { "changed" });
+            Ok(())
+        }
         "activity-edit" => {
             // tinyctl nadeo-here activity-edit --club ID --activity ID [--active 0|1] [--public 0|1]
             let club = f("--club").ok_or("activity-edit needs --club ID")?;
