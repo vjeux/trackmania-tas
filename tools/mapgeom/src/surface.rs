@@ -415,7 +415,9 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
         return mk(Action::Keep, "", "embedded custom block".into());
     }
     // pillars, structures, gates … are outside the surface families
-    let Some(cand) = candidate(name, s) else {
+    // Nadeo's own typo `PlatformGrasssSlope2UTop` spells its twins with the plain word
+    let cand_name = name.replace("Grasss", "Grass");
+    let Some(cand) = candidate(&cand_name, s) else {
         return mk(Action::Keep, "", "not a surface family".into());
     };
     // The ICE START (`RoadIceStart`, the bobsleigh family's raised pad) has no
@@ -454,10 +456,26 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     let Some(src_path) = idx.path_for(name) else {
         return mk(Action::Keep, "", "source model not in the pack".into());
     };
+    // the index answers `…Right` with its `…Left` file when the pack lacks the Right
+    // one (OpenIceRoadToZoneRight): a MIRROR — good enough to verify a same-family
+    // twin against, never a geometry to copy
+    let mirrored_source = {
+        let stem = src_path.rsplit('\\').next().unwrap_or(&src_path).to_ascii_uppercase();
+        let stem = stem.split('.').next().unwrap_or("").to_string();
+        stem != name.to_ascii_uppercase() && stem != cand_name.to_ascii_uppercase() && name.to_ascii_uppercase().ends_with("RIGHT")
+    };
     let src = match idx.load(store, &src_path) {
         Ok(b) => b.clone(),
         Err(e) => return mk(Action::Keep, "", format!("source model unreadable: {e}")),
     };
+    if mirrored_source {
+        // the twin of the same family is the same shape by construction (the mirror
+        // pair exists in every Open family); the mesh compare would see Left vs Right
+        return match idx.path_for(&cand) {
+            Some(_) => mk(Action::Rename, &cand, "no file for this block in the pack (only its mirror twin): renamed to the same-family twin unverified".into()),
+            None => mk(Action::Keep, "", format!("no file for this block in the pack (only its mirror twin), no {s} twin: kept")),
+        };
+    }
     // A block with a WATER VOLUME (pool floors `PlatformWater*`, `RoadWater*`, the
     // pool edges) is never baked: an item carries no volume, so the copy would
     // drain the pool (the tiny converter's lesson, TINY.md "Water"). Renamed when

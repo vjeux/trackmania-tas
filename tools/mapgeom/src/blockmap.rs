@@ -132,7 +132,19 @@ impl BlockInfoIndex {
                 // bar the orientation arrow.
                 None => match up.strip_suffix("ORIENTED").and_then(|base| self.by_stem.get(base)) {
                     Some(c) => c.clone(),
-                    None => return Vec::new(),
+                    // Names the game accepts that this pack has under another spelling
+                    // (Everios96 U10S, 2026-09-18): `PlatformGrasssSlope2UTop` (Nadeo's
+                    // triple-s typo, 15 placements) is the pack's `PlatformGrassSlope2UTop`;
+                    // `OpenIceRoadToZoneRight` (228) has no file while its Left twin and
+                    // its own Slope/Tilt variants do — the Left one is the mirror, the same
+                    // footprint, which is what the plan and the twin check need of it.
+                    None => match up.replace("GRASSS", "GRASS").as_str() {
+                        fixed if fixed != up && self.by_stem.contains_key(fixed) => self.by_stem[fixed].clone(),
+                        _ => match up.strip_suffix("RIGHT").map(|b| format!("{b}LEFT")).and_then(|l| self.by_stem.get(&l)) {
+                            Some(c) => c.clone(),
+                            None => return Vec::new(),
+                        },
+                    },
                 },
             },
         };
