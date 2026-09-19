@@ -186,6 +186,10 @@ pub struct Merged {
     /// gravel, road ice, synthetic, green, plastic; never the non-collidable,
     /// trigger, sign or gameplay-special ids.
     pub all_drivable_physics: Option<u8>,
+    /// Physics ids `all_drivable_physics` leaves alone: a converted custom item's
+    /// rubber borders (9), metal trims (4) and wall-ride clips (22) keep their own
+    /// physics like the vanilla blocks of the surface do (TINY_ALL_DRIVABLE_KEEP).
+    pub all_drivable_keep: Vec<u8>,
     /// A surface swap: every DECK-like hull triangle takes the surface's
     /// physics (gameplay kept) — concrete, ice, dirt, dirt road, wood, asphalt,
     /// snow, road ice, green, plastic. Natural grass sides (2), rubber curbs (9)
@@ -648,7 +652,7 @@ impl Merged {
         }
         if let Some(p) = self.all_drivable_physics {
             let cur = owned.physics();
-            if ALL_DRIVABLE_PHYSICS.contains(&cur) && cur != p {
+            if ALL_DRIVABLE_PHYSICS.contains(&cur) && cur != p && !self.all_drivable_keep.contains(&cur) {
                 if let Some(main) = owned.main.as_mut() {
                     main.surface_physic_id = p;
                 }
@@ -769,7 +773,7 @@ impl Merged {
         let mut forced_all = 0usize;
         if let Some(p) = self.all_drivable_physics {
             for t in out.iter_mut() {
-                let drivable = ALL_DRIVABLE_PHYSICS.contains(&t.material_id);
+                let drivable = ALL_DRIVABLE_PHYSICS.contains(&t.material_id) && !self.all_drivable_keep.contains(&t.material_id);
                 if drivable && t.material_id != p {
                     t.material_id = p;
                     forced_all += 1;

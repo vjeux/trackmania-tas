@@ -786,6 +786,41 @@ pub fn static_item_from_item_report_redress(store: Option<&mut crate::store::Dat
         if pre.all_drivable_physics.is_none() {
             pre.all_drivable_physics = std::env::var("TINY_DECK_PHYSICS").ok().and_then(|v| v.parse::<u8>().ok());
         }
+        // rubber borders, metal trims and wall-ride clips keep their own physics, like
+        // the surface's vanilla blocks do (Everios96 Sept 17 "wrong physics"; the
+        // plastic census 2026-09-18: 99 items' TrackBorders and 52 items' TechnicsTrims
+        // had been forced to Plastic). TINY_ALL_DRIVABLE_KEEP=a,b,… overrides.
+        pre.all_drivable_keep = std::env::var("TINY_ALL_DRIVABLE_KEEP").ok().map(|v| v.split(',').filter_map(|x| x.trim().parse::<u8>().ok()).collect()).unwrap_or_else(|| vec![4, 9, 22]);
+        // The LOOK of a custom item's platform and hill decks: only ROAD stems were swap
+        // rows, so an item built on `Modifier\Platform<Fam>\PlatformTech` or `DecoHill`
+        // kept its grass/dirt/ice look under the new physics (plastic 183 "dirt-looking",
+        // 230 "looks like ice"; 71 + 23 items in the plastic census). Item-only rows —
+        // the block bakes keep their own stems. TINY_ITEM_LOOK_ROWS=Stem=Link[@P];… overrides.
+        let item_rows: Vec<(String, String, u8)> = match std::env::var("TINY_ITEM_LOOK_ROWS") {
+            Ok(v) => v.split(';').filter_map(|r| { let (stem, rest) = r.split_once('=')?; let (link, p) = rest.rsplit_once('@').map(|(l, p)| (l.to_string(), p.parse::<u8>().unwrap_or(0))).unwrap_or((rest.to_string(), pre.all_drivable_physics.unwrap_or(0))); Some((stem.trim().to_string(), link, p)) }).collect(),
+            Err(_) => {
+                // the deck row of the swap (the first `RoadTech=…` row) names the surface's link and physics
+                let deck = pre.link_rewrite.iter().find(|(from, to, _)| from == "RoadTech" && !to.is_empty()).cloned();
+                match deck {
+                    Some((_, link, phys)) => {
+                        // a platform link of the same family when the pack has one
+                        let plat = if link.contains("\\Modifier\\Platform") { link.clone() } else if link.ends_with("\\RoadIce") { "Stadium\\Media\\Modifier\\PlatformIce\\PlatformTech".to_string() } else if link.ends_with("\\RoadDirt") { "Stadium\\Media\\Modifier\\PlatformDirt\\PlatformTech".to_string() } else { link.clone() };
+                        let hill = if link.ends_with("\\RoadIce") { "Stadium\\Media\\Modifier\\PlatformIce\\DecoHill".to_string() } else if link.ends_with("\\RoadDirt") { "Stadium\\Media\\Modifier\\PlatformDirt\\DecoHill".to_string() } else { plat.clone() };
+                        let mut rows = vec![("PlatformTech".to_string(), plat, phys), ("DecoHill".to_string(), hill.clone(), phys), ("DecoHill2".to_string(), hill, phys)];
+                        // grass: the hills ARE grass — no hill rows
+                        if link.contains("PlatformGrass") { rows.truncate(1); }
+                        rows
+                    }
+                    None => Vec::new(),
+                }
+            }
+        };
+        for (stem, link, phys) in item_rows {
+            if !pre.link_rewrite.iter().any(|(from, _, _)| *from == stem) {
+                pre.notes.push(format!("item look row: {stem} -> {link} (physics {phys})"));
+                pre.link_rewrite.push((stem, link, phys));
+            }
+        }
         pre.notes.push(format!("surface swap applied to the embedded item {source_model} (hull physics {:?})", pre.all_drivable_physics));
     }
     // the source item's skin declaration (header chunk 0x090F4000) travels
@@ -801,6 +836,7 @@ pub fn static_item_from_item_report_redress(store: Option<&mut crate::store::Dat
                 m2.two_sided_links = pre.two_sided_links.clone();
                 m2.collision_redress = pre.collision_redress.clone();
                 m2.all_drivable_physics = pre.all_drivable_physics;
+                m2.all_drivable_keep = pre.all_drivable_keep.clone();
                 m2.deck_physics = pre.deck_physics;
                 m2.pad_physics = pre.pad_physics;
                 m2.notes.extend(pre.notes.iter().cloned());
@@ -821,6 +857,7 @@ pub fn static_item_from_item_report_redress(store: Option<&mut crate::store::Dat
                 m2.two_sided_links = pre.two_sided_links.clone();
                 m2.collision_redress = pre.collision_redress.clone();
                 m2.all_drivable_physics = pre.all_drivable_physics;
+                m2.all_drivable_keep = pre.all_drivable_keep.clone();
                 m2.deck_physics = pre.deck_physics;
                 m2.pad_physics = pre.pad_physics;
                 m2.notes.extend(pre.notes.iter().cloned());

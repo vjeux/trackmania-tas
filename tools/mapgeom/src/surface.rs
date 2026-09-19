@@ -99,18 +99,37 @@ fn strip_surface_word(rest: &str) -> Option<(&'static str, &str)> {
 /// deco platforms, deco hills, open roads, deco walls, water) — the families
 /// the swap touches. Pillars, structures, stands, gates, canopies are not.
 pub fn is_surface_family(name: &str) -> bool {
-    if name.ends_with("Pillar") {
+    // `TrackWall…Pillar` is NOT a support column: its prefab is the wall ride itself
+    // (`TrackWall\Straight_Air`), the piece the game fills in under an elevated wall
+    // ride — 21,000 placements in 421 maps stayed wood beside converted wall rides
+    // (Everios96's Sept 17 list, 2026-09-18)
+    if name.ends_with("Pillar") && !name.starts_with("TrackWall") {
         return false;
     }
-    ["Road", "Platform", "DecoPlatform", "DecoHill", "Open", "DecoWall", "Water", "TrackWall"].iter().any(|p| name.starts_with(p))
+    // the snow theme's plank roads (`SnowRoad…`, the vanilla WOOD blocks — Dyl_Chill's
+    // 152/159), the rally theme's dirt roads and castle roads (dirt decks): surface
+    // families too; their support pillars (`SnowRoadPillar…`) are structure, left alone
+    if name.starts_with("SnowRoadPillar") {
+        return false;
+    }
+    ["Road", "Platform", "DecoPlatform", "DecoHill", "Open", "DecoWall", "Water", "TrackWall", "SnowRoad", "RallyRoadDirt", "RallyCastleRoad"].iter().any(|p| name.starts_with(p))
 }
 
 /// The name a block WOULD have with surface `s`, by the family rules above —
 /// unverified. `None` for a block outside the surface families (pillars,
 /// structures, gates …). The result may equal `name` (already that surface).
 pub fn candidate(name: &str, s: &str) -> Option<String> {
-    if name.ends_with("Pillar") {
+    if name.ends_with("Pillar") && !name.starts_with("TrackWall") {
         return None;
+    }
+    if name.starts_with("SnowRoadPillar") {
+        return None;
+    }
+    // no family of these exists in another surface: the candidate is spelled so the
+    // verification says so in the row, and the block is baked as a re-dressed copy
+    // (its deck stems — ThemeSnowRoad, RoadDirt, RoadDirtFullColorize — are swap rows)
+    if name.starts_with("SnowRoad") || name.starts_with("RallyRoadDirt") || name.starts_with("RallyCastleRoad") {
+        return Some(format!("{name}{s}"));
     }
     // Road<A>ToRoad<B>[Down|SlopeUp|…]: the join of two road surfaces. In a
     // one-surface world the flat join is a straight; a stepped/sloped join
@@ -417,9 +436,17 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     if deck_only(s) && is_terrain_family(name) && !(s == "Wood" && name.starts_with("DecoPlatform")) {
         return mk(Action::Keep, "", format!("terrain family: no {s} form, left as is"));
     }
-    // the wall-ride family IS wood (TrackWall = Wood 14)
+    // the wall-ride family IS wood (TrackWall = Wood 14), and so is the snow theme's
+    // plank road (ThemeSnowRoad = Wood 14)
     if s == "Wood" && name.starts_with("TrackWall") {
         return mk(Action::Same, name, "wall ride: wood already".into());
+    }
+    if s == "Wood" && name.starts_with("SnowRoad") {
+        return mk(Action::Same, name, "snow plank road: wood already".into());
+    }
+    // the rally theme's roads have DIRT decks (RoadDirt / RoadDirtFullColorize)
+    if s == "Dirt" && (name.starts_with("RallyRoadDirt") || name.starts_with("RallyCastleRoad")) {
+        return mk(Action::Same, name, "rally road: dirt deck already".into());
     }
     if cand == name {
         return mk(Action::Same, name, format!("already {s}"));
