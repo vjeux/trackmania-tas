@@ -761,12 +761,16 @@ impl Merged {
         let mut out = triangles.to_vec();
         let mut counts: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
         let mut padded = 0usize;
-        for t in out.iter_mut() {
+        // a triangle a row re-dressed keeps the row's physics: the deck rule below
+        // must not turn the snow top (Deco → PlatformIce\Deco @21) into wood (2026-09-20)
+        let mut rowed: Vec<bool> = vec![false; out.len()];
+        for (k, t) in out.iter_mut().enumerate() {
             let si = t.surface_index.max(0) as usize;
             if let Some(Some((_, _, ids))) = by_index.get(si) {
                 t.material_id = ids.0;
                 t.gameplay = ids.1;
                 *counts.entry(si).or_default() += 1;
+                rowed[k] = true;
             }
             if let (Some(p), Some(true)) = (self.pad_physics, pad_slot.get(si)) {
                 // the pad DECK only: a triangle carrying a gameplay id, or a deck
@@ -798,8 +802,8 @@ impl Merged {
         }
         let mut decked = 0usize;
         if let Some(p) = self.deck_physics {
-            for t in out.iter_mut() {
-                let deck = DECK_LIKE_PHYSICS.contains(&t.material_id);
+            for (k, t) in out.iter_mut().enumerate() {
+                let deck = DECK_LIKE_PHYSICS.contains(&t.material_id) && !rowed[k];
                 if deck && t.material_id != p {
                     t.material_id = p;
                     decked += 1;

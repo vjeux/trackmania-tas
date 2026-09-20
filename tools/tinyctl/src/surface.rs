@@ -47,7 +47,7 @@ use std::time::{Duration, Instant};
 /// A `wet` form (`woodwet`, `wet-grass`…) changes nothing here: the wetness is
 /// the START block's Water twin (`mapgeom surface-plan`).
 pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
-    let (s, _wet) = mapgeom::surface::parse_surface(surface).ok_or_else(|| format!("surface `{surface}`: ice, dirt, grass, plastic, wood, magnet or tech (optionally with `wet`)"))?;
+    let (s, wet) = mapgeom::surface::parse_surface(surface).ok_or_else(|| format!("surface `{surface}`: ice, dirt, grass, plastic, wood, magnet or tech (optionally with `wet`)"))?;
     // the Water sheets STAY (the ice pool `WaterBaseIce` keeps its water, so a
     // RoadWater piece baked in it keeps its sheet too: without it the deck reads
     // as a black rectangle through the pool water — U10S_23, 2026-09-13)
@@ -65,7 +65,7 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // ThemeRallyCastleWallUV / ThemeRallyCastleWall: the castle road pieces' deck
     // (custom castle roads of U10S_953 stayed in their look, Everios96 2026-09-15)
     let road_stems = ["RoadTech", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "ItemInflatableTube", "ItemInflatableMat", "ItemInflatableFloor", "ThemeSnowRoad", "ThemeSnowRoadBorder", "ThemeRallyCastleWallUV", "ThemeRallyCastleWall"];
-    let rows: Vec<String> = match s {
+    let mut rows: Vec<String> = match s {
         // the snow PLANK roads take the ice platform look, not the bobsleigh one
         // (Everios96 2026-09-19 08:24 on icy 152: "use the ice platform texture")
         "Ice" => road_stems.iter().filter(|st| **st != "RoadIce").map(|st| if st.starts_with("ThemeSnowRoad") { format!("{st}=Stadium\\Media\\Modifier\\PlatformIce\\PlatformTech") } else { format!("{st}=Stadium\\Media\\Material\\RoadIce") }).collect(),
@@ -91,6 +91,11 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         "Tech" => road_stems.iter().filter(|st| **st != "RoadTech").map(|st| format!("{st}=Stadium\\Media\\Material\\RoadTech")).collect(),
         other => return Err(format!("surface `{other}`: no dress table")),
     };
+    // the DecoPlatform tops of the ICE set and of WET wood: baked with the vanilla snow-top
+    // look at physics Snow 21 (the ice twin block is a null surface in the game, 2026-09-20)
+    if s == "Ice" || (s == "Wood" && wet && std::env::var("TINY_WET_SNOW_PENALTY").map(|v| v != "0").unwrap_or(true)) {
+        rows.push("Deco=Stadium\\Media\\Modifier\\PlatformIce\\Deco@21".to_string());
+    }
     if !rows.is_empty() {
         env.push(("TINY_REDRESS".to_string(), rows.join(";")));
     }

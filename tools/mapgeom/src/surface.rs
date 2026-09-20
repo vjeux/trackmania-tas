@@ -439,8 +439,27 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
     // the faces (a two-sided material's winding under a one-sided one: every
     // platform top invisible, Everios96 2026-09-20 06:27) — the ice twin is a real
     // block, the icy set's own penalty look
-    let snow_penalty = wet && s == "Wood" && (name.starts_with("DecoHill") || name.starts_with("DecoWall") || name.starts_with("DecoPlatform")) && !name.ends_with("Pillar")
-        && std::env::var("TINY_WET_SNOW_PENALTY").map(|v| v != "0").unwrap_or(true);
+    let snow_env = std::env::var("TINY_WET_SNOW_PENALTY").map(|v| v != "0").unwrap_or(true);
+    let snow_penalty = wet && s == "Wood" && (name.starts_with("DecoHill") || name.starts_with("DecoWall")) && !name.ends_with("Pillar") && snow_env;
+    // The DecoPlatform TOPS cannot take the ice twin: the game's own DecoPlatformIce*
+    // blocks resolve to a NULL surface under the wheels (EPlugSurfaceMaterialId 80,
+    // no penalty, no marks — measured 2026-09-20 with the VehicleState readout on the
+    // original U10S_112; the ice HILLS read Snow 21 as they should). They are baked
+    // instead, the top re-dressed with `Modifier\PlatformIce\Deco` at physics 21 —
+    // the same look as the vanilla snow top, with the snow the vanilla block lacks.
+    let snow_top = (s == "Ice" || (wet && s == "Wood" && snow_env)) && name.starts_with("DecoPlatform") && !name.ends_with("Pillar")
+        && std::env::var("TINY_SNOW_TOP_BAKE").map(|v| v != "0").unwrap_or(true);
+    if snow_top {
+        let mut r = plan_one_dry(store, idx, name, count, flags, s);
+        // only what the swap itself turns to snow: an author's own DecoPlatformIce* stays the
+        // game's block (null surface in the original too — Everios96's call whether to change it)
+        if matches!(r.action, Action::Rename) {
+            r.action = Action::Bake;
+            r.target = name.replacen("DecoPlatform", "DecoPlatformSnow", 1);
+            r.detail.push_str("; snow top: baked with Modifier\\PlatformIce\\Deco @Snow (the ice twin's top is a null surface in the game)");
+        }
+        return r;
+    }
     let mut row = if snow_penalty {
         let mut r = plan_one_dry(store, idx, name, count, flags, "Ice");
         r.detail.push_str("; wet wood: snow penalty (the icy twin)");
