@@ -10,6 +10,12 @@ https://github.com/user-attachments/assets/efe25973-df91-4fe0-b6e1-1fa7fcb42fa3
 
 *Single car: the 7.627, with its own inputs drawn on.*
 
+https://github.com/user-attachments/assets/4e89600f-4767-4d7e-80ef-2d0f52587494
+
+*Two cars: the same 7.627 against Matik_K's 7.668 world record, the camera on
+the TAS. The gap is 0.041 — one car length at the finish arch; for most of the
+run the two cars share the same metre of road.*
+
 The tape matches the author time exactly, **which is beating it**: the game
 awards the author medal at or under the time ([`CLAIMS.md`](../CLAIMS.md)).
 The human world record is beaten by **0.041**.
@@ -45,6 +51,7 @@ own steer / gas / brake bytes on every sample. Tape/record agreement kappa
 **7.627**; identity `TAS` (skin `TAS.zip`, no account id). The container is
 Matik_K's 7.668 record, which is the layout the client accepts on this map.
 
-The clip is the game's own MediaTracker render of this file at 1080p30,
-trimmed to the run and with the tape's inputs drawn on it — nothing in the
-picture is composited. The camera is the stock external chase.
+Both clips are the game's own MediaTracker renders at 1080p30 — of this file,
+and in the two-car clip of Matik_K's downloaded record beside it — trimmed to
+the run and with the tape's inputs drawn on; nothing in the picture is
+composited. The camera is the stock external chase on the TAS car.
