@@ -39,7 +39,7 @@
 //! made by one worker into another.
 
 use crate::guard::{Bank, Provenance};
-use forkoracle::inputs::{mutate, Inputs, Op, OpSet, Rng};
+use forkoracle::inputs::{mutate, Constraint, Inputs, Op, OpSet, Rng};
 use forkoracle::pred::GateRecord;
 use crate::report::{delta, elapsed};
 use crate::score::Outcome;
@@ -174,6 +174,10 @@ pub struct Config {
     /// re-anchor: restart with `--start-from` the banked file, which gives the
     /// fork servers a reference the search is actually near.
     pub max_drift: usize,
+    /// THE HUMAN-SHAPED CONSTRAINT (`--alphabet`, `--minhold`): applied to every
+    /// candidate after mutation, inside the window being edited, so nothing the
+    /// search scores or banks is outside it. `None` = the unconstrained search.
+    pub constraint: Option<Constraint>,
     /// THE SEED IDENTITY CONTROL, in gate mode. Given the state the fork
     /// measured for the seed at the gate, say whether it is the state the
     /// seed's own recording shows there. `Err` stops the run before the first
@@ -269,6 +273,7 @@ where
         let tx = tx.clone();
         let dtx = dtx.clone();
         let (batch, opc, opset) = (cfg.batch, cfg.ops_per_candidate, cfg.opset);
+        let constraint = cfg.constraint.clone();
         let (window, stride, every) = (cfg.window, cfg.stride, cfg.full_window_every);
         let (seed, temp_s, migrate) = (cfg.seed, cfg.temp_s, cfg.migrate);
         let (cfg_lo, cfg_hi) = (cfg.lo, cfg.hi);
@@ -379,6 +384,9 @@ where
                     let mut op = None;
                     for _ in 0..opc.draw(&mut rng) {
                         op = Some(mutate(&mut s, &mut rng, lo, hi, opset));
+                    }
+                    if let Some(c) = &constraint {
+                        c.apply(&mut s, lo, hi);
                     }
                     cands.push(s);
                     ops.push(op);
