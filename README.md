@@ -90,7 +90,7 @@ https://github.com/user-attachments/assets/8c03c836-d321-4cc7-91b9-1cee4c275aed
 
 https://github.com/user-attachments/assets/f43d45fc-c855-4897-a324-7b41e957be21
 
-**[colon three](353522-colon-three)** — author time `7.627` · ours **7.590** (−0.037) · best human 7.668 (Matik_K, set the same day this was filmed) · 38 records · a 7.6-second map two weeks old; the world record is beaten by 0.078, all of it in the start pivot and the drift exit
+**[colon three](353522-colon-three)** — author time `7.627` · ours **7.590** (−0.037) · best human 7.668 (Matik_K, set the same day this was filmed) · 38 records · a 7.6-second map two weeks old; the world record is beaten by 0.078, all of it in the start pivot and the drift exit · on a keyboard (full lock or nothing, every press held ≥ 70 ms) **7.610**, and a 22-press tape still beats the author time at 7.617
 
 https://github.com/user-attachments/assets/d972d194-ba7d-4b2e-af62-d60c928364ad
 
