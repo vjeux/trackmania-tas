@@ -834,6 +834,77 @@ fn main() {
                 }
             }
         }
+        "vstream-stats" => {
+            // per vertex stream: bounds and where the normals point (up / down /
+            // sideways) — which faces of a prefab rely on a two-sided material
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("vstream-stats FILE.Gbx".into()));
+            let m = load_any(&mut store, &p);
+            let g = m.graph().unwrap_or_else(die);
+            for (i, s) in g.slots.iter().enumerate() {
+                let Slot::Node(Node::VertexStream(v)) = s else { continue };
+                if v.positions.is_empty() {
+                    continue;
+                }
+                let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                for q in &v.positions {
+                    for c in 0..3 {
+                        lo[c] = lo[c].min(q[c]);
+                        hi[c] = hi[c].max(q[c]);
+                    }
+                }
+                let (mut up, mut down, mut side) = (0usize, 0usize, 0usize);
+                for n in &v.normals {
+                    if n[1] > 0.5 {
+                        up += 1;
+                    } else if n[1] < -0.5 {
+                        down += 1;
+                    } else {
+                        side += 1;
+                    }
+                }
+                let mut colors: Vec<u32> = v.color0.clone();
+                colors.sort();
+                colors.dedup();
+                let colors = if colors.is_empty() { String::new() } else { format!("  color0 {}", colors.iter().take(4).map(|c| format!("{c:08x}")).collect::<Vec<_>>().join(",")) };
+                println!(
+                    "  [{i:4}] {} verts  x {:.2}..{:.2}  y {:.2}..{:.2}  z {:.2}..{:.2}  normals up {up} down {down} side {side}  decls {:?}{colors}",
+                    v.positions.len(), lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], v.decl_names
+                );
+            }
+            // --probe X,Z: which visuals have a triangle covering that (x, z) from above,
+            // and at what height — is there a deck under a decal patch?
+            if let Some(pr) = flag(&a.rest, "--probe") {
+                let xz: Vec<f32> = pr.split(',').filter_map(|t| t.trim().parse().ok()).collect();
+                if xz.len() == 2 {
+                    for (i, s) in g.slots.iter().enumerate() {
+                        let Slot::Node(Node::Visual(v)) = s else { continue };
+                        let Some(&vs) = v.vertex_streams.first() else { continue };
+                        let Some(Slot::Node(Node::VertexStream(st))) = g.slots.get(vs as usize) else { continue };
+                        let pos = &st.positions;
+                        let mut hits: Vec<f32> = Vec::new();
+                        for t in v.indices.chunks(3) {
+                            if t.len() < 3 {
+                                break;
+                            }
+                            let (Some(a), Some(b), Some(c)) = (pos.get(t[0] as usize), pos.get(t[1] as usize), pos.get(t[2] as usize)) else { continue };
+                            let (px, pz) = (xz[0], xz[1]);
+                            let sgn = |p: &[f32; 3], q: &[f32; 3]| (px - q[0]) * (p[2] - q[2]) - (p[0] - q[0]) * (pz - q[2]);
+                            let (d1, d2, d3) = (sgn(a, b), sgn(b, c), sgn(c, a));
+                            let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+                            let posi = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+                            if !(neg && posi) {
+                                hits.push((a[1] + b[1] + c[1]) / 3.0);
+                            }
+                        }
+                        if !hits.is_empty() {
+                            hits.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                            println!("  visual [{i:4}] (stream {vs}): {} triangle(s) over ({}, {}) at y {:?}", hits.len(), xz[0], xz[1], hits.iter().map(|y| format!("{y:.2}")).collect::<Vec<_>>());
+                        }
+                    }
+                }
+            }
+        }
         "vstream-shift" => {
             // vstream-shift IN.Gbx --out OUT --dy DY: every vertex POSITION of the file's
             // vertex streams moved by DY in y, patched in place (an uncompressed Gbx —

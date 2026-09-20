@@ -5,7 +5,7 @@
 
 use super::lod::{cap_lod_ladder, lod0_only, remap_lod_mask, MAX_LOD_LEVELS};
 use super::materials::{custom_texture_material, light_skin_material, screen_face_material, sign_logo_material, skinned_material, trigger_fx_material};
-use super::merged::{coalesce, harmonize_layouts_with, Merged};
+use super::merged::{coalesce, harmonize_layouts_full, Merged};
 use super::build::fx_entities;
 use super::solid2::{CPlugSolid2Model, Material, PreLightGen, ShadedGeom};
 use super::surface::CPlugSurface;
@@ -153,7 +153,10 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
             REPACK_NOTE.with(|c| c.set(Some(n)));
         }
     }
-    harmonize_layouts_with(&mut pre, &want_tangents);
+    // a plain decal material on geometry without a vertex colour: the colour says
+    // "decal on" (see `harmonize_layouts_full`)
+    let want_color0: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map(|l| l.rsplit('\\').next().map(|st| st.starts_with("DecalMarks")).unwrap_or(false)).unwrap_or(false)).map(|(i, _)| i).collect();
+    harmonize_layouts_full(&mut pre, &want_tangents, &want_color0);
     let visuals = coalesce(&pre);
     // Only the materials some visual draws with, in first-use order (the
     // reference items list exactly one material per visual).

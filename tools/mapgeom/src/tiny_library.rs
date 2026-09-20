@@ -2725,7 +2725,12 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
         // faces take the swap's deck link instead (the `RoadIce` row's target, the
         // same material the rest of the pad gets); the painted marks are lost.
         let ice_deck_row = surface_rows.iter().find(|(from, _, _)| from == "RoadIce").cloned();
-        if name.starts_with("RoadIceStart") {
+        // 2026-09-20: the black T was the plain decal's MISSING VERTEX COLOUR, not a
+        // hole (the deck runs under the marks: `vstream-stats --probe 16,13`); the
+        // assembler now gives DecalMarks* visuals a white colour, so the marks take
+        // the plain `DecalMarksStart` like every other start. TINY_ICE_MARKS_DECK=1
+        // restores the deck-link form.
+        if name.starts_with("RoadIceStart") && std::env::var("TINY_ICE_MARKS_DECK").map(|v| v == "1").unwrap_or(false) {
             if let Some((_, link, ids)) = &ice_deck_row {
                 if !m.link_rewrite.iter().any(|(from, _, _)| from == "DecalMarksStartOnRoadIce") {
                     // TINY_ICE_MARKS_LINK overrides the material those faces take (experiments)

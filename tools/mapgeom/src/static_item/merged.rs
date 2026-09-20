@@ -1511,7 +1511,17 @@ pub fn harmonize_layouts(visuals: &mut [MergedVisual]) {
 /// and takes the item out of the crash family either way (2026-09-09, the
 /// Turbo slopes of 23 and 24).
 pub fn harmonize_layouts_with(visuals: &mut [MergedVisual], want_tangents: &[usize]) {
-    use super::vstream::{Decl, SPACE_LOCAL3D, T_FLOAT2};
+    harmonize_layouts_full(visuals, want_tangents, &[]);
+}
+
+/// `want_color0_on`: material slots whose visuals get a COLOR0 of WHITE (decal
+/// fully on) when they lack one — a plain decal material (`DecalMarksStart`)
+/// put on geometry authored for a decal-less material (the ice start's marks,
+/// `DecalMarksStartOnRoadIce`: position, normal, uv0, uv1, uv2, tangents — no
+/// colour) drew a BLACK T (Dirt 11, 2026-09-15): the shader read the missing
+/// colour as off. The prefabs' own decal quads carry 0xffffffff.
+pub fn harmonize_layouts_full(visuals: &mut [MergedVisual], want_tangents: &[usize], want_color0_on: &[usize]) {
+    use super::vstream::{Decl, SPACE_LOCAL3D, T_COLOR, T_FLOAT2};
     use std::collections::BTreeMap;
     // material -> union of (name -> donor decl, stored type)
     let mut unions: BTreeMap<usize, BTreeMap<u32, (Decl, u32)>> = BTreeMap::new();
@@ -1529,7 +1539,12 @@ pub fn harmonize_layouts_with(visuals: &mut [MergedVisual], want_tangents: &[usi
             u.entry(name).or_insert((Decl::with_stride(name, T_DEC3N, SPACE_LOCAL3D, 0, 0), T_DEC3N));
         }
     }
+    for slot in want_color0_on {
+        let u = unions.entry(*slot).or_default();
+        u.entry(N_COLOR0).or_insert((Decl::with_stride(N_COLOR0, T_COLOR, 0, 0, 0), T_COLOR));
+    }
     for mv in visuals.iter_mut() {
+        let color_on = want_color0_on.contains(&mv.material);
         let Some(union) = unions.get(&mv.material) else { continue };
         let Some(m) = mv.visual.main.as_mut() else { continue };
         let Some(Node::VertexStream(s)) = m.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { continue };
@@ -1555,8 +1570,9 @@ pub fn harmonize_layouts_with(visuals: &mut [MergedVisual], want_tangents: &[usi
             let elem = match by_name.get(name) {
                 Some((_, e)) => e.clone(),
                 None => match (*name, *stored) {
-                    // the value the prefab gives its uniform Transition* visuals: decal off
-                    (N_COLOR0, _) => Elem::Word(vec![0xFFFF_00FF; n]),
+                    // the value the prefab gives its uniform Transition* visuals: decal off —
+                    // or ON (white) for a decal material put on colour-less geometry
+                    (N_COLOR0, _) => Elem::Word(vec![if color_on { 0xFFFF_FFFF } else { 0xFFFF_00FF }; n]),
                     (11, T_FLOAT2) => match &uv0 {
                         Some(Elem::Float2(v)) => Elem::Float2(v.clone()),
                         _ => Elem::Float2(vec![[0.0, 0.0]; n]),

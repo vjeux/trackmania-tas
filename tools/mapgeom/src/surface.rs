@@ -504,7 +504,7 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     // start", Everios96 2026-09-15). It is a regular start block players race
     // from in every ice map: kept as the game's own block, look and physics as
     // the author placed it (6 maps: 11, 98, 124, 178, 219, 267's neighbour).
-    if name == "RoadIceStart" && s != "Ice" {
+    if name == "RoadIceStart" && s != "Ice" && !std::env::var("TINY_ICE_START_BAKE").map(|v| v == "1").unwrap_or(false) {
         return mk(Action::Keep, "", "ice start: the author's own start block, kept (its copy loses the pad centre)".into());
     }
     // a deck-only surface (no block family of its own) leaves the terrain-like

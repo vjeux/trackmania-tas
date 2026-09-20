@@ -2139,7 +2139,7 @@ impl<'a> Graph<'a> {
         // set, a u16 pair carrying the element's byte offset in the vertex.
         // Every declared element has a fixed stored size, so the whole
         // stream is walked without a recovery scan.
-        use crate::static_item::vstream::{type_size, Decl, N_NORMAL, N_POSITION, N_TEXCOORD0, SPACE_LOCAL3D, T_DEC3N, T_FLOAT2, T_FLOAT3};
+        use crate::static_item::vstream::{type_size, Decl, N_COLOR0, N_NORMAL, N_POSITION, N_TEXCOORD0, SPACE_LOCAL3D, T_COLOR, T_DEC3N, T_FLOAT2, T_FLOAT3};
         let version = self.r.u32()?;
         let num = self.r.i32()?;
         let _flags = self.r.u32()?;
@@ -2199,6 +2199,11 @@ impl<'a> Graph<'a> {
                 (N_TEXCOORD0, T_FLOAT2) => {
                     for _ in 0..num {
                         out.uv0.push(self.r.vec2()?);
+                    }
+                }
+                (N_COLOR0, T_COLOR) => {
+                    for _ in 0..num {
+                        out.color0.push(self.r.u32()?);
                     }
                 }
                 (_, t) => {

@@ -126,6 +126,8 @@ pub struct VertexStream {
     pub uv0: Vec<[f32; 2]>,
     /// the declaration names, in order (10 = TexCoord0, 11 = TexCoord1 = the lightmap uv)
     pub decl_names: Vec<u32>,
+    /// COLOR0 (decl 8) words when the stream has one — the decal on/off vertex colour
+    pub color0: Vec<u32>,
 }
 
 #[derive(Clone, Debug, Default)]
