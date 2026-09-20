@@ -77,7 +77,7 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         // + `Deco`: the plain DecoPlatform tops (`Material\Deco`, physics Grass — the
         // grass-topped platforms of U10S_01 stayed grass under wood, and grass dries the
         // wet tyres: Everios96 2026-09-20 03:52 "map 1 no snow at all")
-        "Wood" => road_stems.iter().filter(|st| !st.starts_with("ThemeSnowRoad")).chain(["PlatformTech", "DecoHill", "Deco"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\ThemeSnowRoad")).collect(),
+        "Wood" => road_stems.iter().filter(|st| !st.starts_with("ThemeSnowRoad")).chain(["PlatformTech", "DecoHill"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material\\ThemeSnowRoad")).collect(),
         // the mesh editor's magnet material (the blackish look every community
         // magnet block wears; physics forced, the packs do not carry it) on the deck
         // stems, and EVERY drivable hull triangle magnetic (sides, borders, loops,

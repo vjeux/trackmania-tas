@@ -435,7 +435,11 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
     // WET wood: the penalty terrain (hills, the walls' grass tops) takes the SNOW form
     // like the icy set — grass and dirt dry the tyres, snow does not (GeraldDuke via
     // Everios96, 2026-09-19 19:44); the decks stay wood, the DecoPlatform tops too
-    let snow_penalty = wet && s == "Wood" && (name.starts_with("DecoHill") || name.starts_with("DecoWall")) && !name.ends_with("Pillar")
+    // + the DecoPlatform tops (`Material\Deco`, grass/sand): re-dressing them culled
+    // the faces (a two-sided material's winding under a one-sided one: every
+    // platform top invisible, Everios96 2026-09-20 06:27) — the ice twin is a real
+    // block, the icy set's own penalty look
+    let snow_penalty = wet && s == "Wood" && (name.starts_with("DecoHill") || name.starts_with("DecoWall") || name.starts_with("DecoPlatform")) && !name.ends_with("Pillar")
         && std::env::var("TINY_WET_SNOW_PENALTY").map(|v| v != "0").unwrap_or(true);
     let mut row = if snow_penalty {
         let mut r = plan_one_dry(store, idx, name, count, flags, "Ice");
