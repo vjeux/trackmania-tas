@@ -12,6 +12,7 @@
 pub mod audit;
 pub mod audit_json;
 pub mod cut;
+pub mod film;
 pub mod fmt;
 pub mod frames;
 pub mod inventory;

@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clip::{cut, frames, inventory, overlay, platform, ship, split, sync};
+use clip::{cut, film, frames, inventory, overlay, platform, ship, split, sync};
 
 const USAGE: &str = "\
 clip ship  <file.mp4> <map-dir> [release-asset-name] [--no-mirror] [--no-overlay]
@@ -13,6 +13,19 @@ clip ship  <file.mp4> <map-dir> [release-asset-name] [--no-mirror] [--no-overlay
     release, upload it to user-attachments, register the URL in the release
     body (this is what makes it public), then fetch it back with no credential
     and require 200 and playable bytes. Refuses at every step.
+
+clip film  --map MAP --name NAME --outdir /mnt/c/DIR --mapdir MAPDIR GHOST [OPPONENT...]
+           [--cam N] [--to S] [--crf Q] [--footage S] [--load-timeout S] [--shootctl P]
+           [--no-ship] [--quit] [--detach]
+    ONE RUN TO A PUBLISHED CLIP, ONE COMMAND, on the render box: `shootctl render`
+    (map, ghosts -- the FIRST is the run and the camera follows it -- the
+    MediaTracker shoot, the contact sheets DIR/NAME-sheet.png and -dense.png),
+    then `cut` with the run's controls drawn on, then `ship --no-mirror`.
+    DIR/done-film.txt = `OK <url|-> <mp4> <webm> <seconds>` | `FAILED ...`, for
+    a caller polling over the bridge; --detach backgrounds it (log DIR/film.log).
+    Pre-flight refuses in a second what would otherwise fail after the render:
+    missing files, an outdir off /mnt/, no cookie (GH_COOKIE or ~/.gh-upload/cookie),
+    no gh. --no-ship stops after the cut, for a look at the frames first.
 
 clip cut   <in.webm> <out.mp4> --ghost <run.Ghost.Gbx> [--to SECONDS] [--crf Q]
                                 [--offset-ms N | --nominal-ms N --tolerance-ms N]
@@ -148,6 +161,7 @@ fn go(args: &[String]) -> Result<(), String> {
                 Path::new(mapdir),
                 pos.get(2).map(|s| s.as_str()),
             )
+            .map(|_| ())
         }
         "cut" => {
             // positionals: in, out -- the flags carry values, so skip those too
@@ -306,6 +320,7 @@ fn go(args: &[String]) -> Result<(), String> {
                 Path::new(&args[5]),
             )
         }
+        "film" => film::run(&args[1..]),
         "inventory" => inventory::main(&args[1..]),
         "-h" | "--help" | "help" => {
             println!("{USAGE}");

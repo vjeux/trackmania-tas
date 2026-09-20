@@ -339,7 +339,7 @@ pub fn run(
     file: &Path,
     mapdir: &Path,
     asset_name: Option<&str>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let asset_name = match asset_name {
         Some(n) => n.to_string(),
         None => file
@@ -496,7 +496,7 @@ pub fn run(
         "  env -i {} -s -o /dev/null -w '%{{http_code}}\\n' -L {url}",
         cfg.curl.display()
     );
-    Ok(())
+    Ok(url)
 }
 
 /// Drop a scratch directory whichever way the step went.
