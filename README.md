@@ -90,9 +90,9 @@ https://github.com/user-attachments/assets/8c03c836-d321-4cc7-91b9-1cee4c275aed
 
 https://github.com/user-attachments/assets/f43d45fc-c855-4897-a324-7b41e957be21
 
-**[colon three](353522-colon-three)** — author time `7.627` · ours **7.626** (−0.001) · best human 7.668 (Matik_K, set the same day this was filmed) · 38 records · a 7.6-second map two weeks old; the world record is beaten by 0.042
+**[colon three](353522-colon-three)** — author time `7.627` · ours **7.590** (−0.037) · best human 7.668 (Matik_K, set the same day this was filmed) · 38 records · a 7.6-second map two weeks old; the world record is beaten by 0.078, all of it in the start pivot and the drift exit
 
-https://github.com/user-attachments/assets/d52b0f0c-4036-4ba8-9af8-fedb4ce5a251
+https://github.com/user-attachments/assets/d972d194-ba7d-4b2e-af62-d60c928364ad
 
 **[Fall 2025 - 18 CP1 End](270053-fall-2025-18-cp1-end)** — author time `4.492` · ours **4.492** (±0 — an exact tie takes the medal, so this is beaten) · best human 4.495 (AffiTM, six players tied) · 1101 records · the true crossing is 4.49286, and 4.491 needs 7.8 cm more travel — a win with nothing behind it
 
