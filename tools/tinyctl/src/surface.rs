@@ -64,7 +64,7 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // wood (snow-theme plank) roads ("vanilla wood blocks are also not changed")
     // ThemeRallyCastleWallUV / ThemeRallyCastleWall: the castle road pieces' deck
     // (custom castle roads of U10S_953 stayed in their look, Everios96 2026-09-15)
-    let road_stems = ["RoadTech", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "ItemInflatableTube", "ThemeSnowRoad", "ThemeSnowRoadBorder", "ThemeRallyCastleWallUV", "ThemeRallyCastleWall"];
+    let road_stems = ["RoadTech", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "ItemInflatableTube", "ItemInflatableMat", "ThemeSnowRoad", "ThemeSnowRoadBorder", "ThemeRallyCastleWallUV", "ThemeRallyCastleWall"];
     let rows: Vec<String> = match s {
         // the snow PLANK roads take the ice platform look, not the bobsleigh one
         // (Everios96 2026-09-19 08:24 on icy 152: "use the ice platform texture")
@@ -96,7 +96,10 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // was forced magnetic (the 2026-09-14 "everything magnetic" v2), shoulders included
 
     // the pipes: baked as re-dressed item copies, physics and texture
-    env.push(("TINY_ITEM_REDRESS".to_string(), "InflatableTube*".to_string()));
+    // + the inflatable MATS (`InflatableMat4mToTube6mFlat` is a pipe segment with a mat
+    // end: GeraldDuke, wet wood 29, 2026-09-19 "pipe pieces made of metal") — the
+    // moving ObstacleTube* rotors are dyna objects (no static mesh to re-dress)
+    env.push(("TINY_ITEM_REDRESS".to_string(), "InflatableTube*,InflatableMat*".to_string()));
     // the map's own custom BLOCKS take the alteration too (A5); TINY_CUSTOM_BLOCK_REDRESS=0 keeps them
     if std::env::var("TINY_CUSTOM_BLOCK_REDRESS").map(|v| v != "0").unwrap_or(true) {
         env.push(("TINY_CUSTOM_BLOCK_REDRESS".to_string(), "1".to_string()));
