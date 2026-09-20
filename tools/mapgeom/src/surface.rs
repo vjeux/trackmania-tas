@@ -375,6 +375,26 @@ fn record_fits(src: &BlockInfo, twin: &BlockInfo, flags: u32) -> Result<(), Stri
     Ok(())
 }
 
+/// The flags word with the subvariant the EDITOR would pick for `twin`: when the
+/// picked mobil list has exactly one mobil of frequency > 0 and the record's
+/// subvariant points at a frequency-0 mobil, bits 6..11 move to the live one.
+fn editor_subvariant(twin: &BlockInfo, flags: u32) -> Option<u32> {
+    let ground = flags & 0x1000 != 0;
+    let add = ((flags >> 21) & 0x7f) as usize;
+    let list = (flags & 63) as usize;
+    let mobil = ((flags >> 6) & 63) as usize;
+    let t = twin.pick_placement_add(ground, list, mobil, add)?;
+    let mobils = t.variant.mobils.get(list)?;
+    if mobils.len() < 2 || mobils.get(mobil).map(|m| m.solid_frequency != 0).unwrap_or(true) {
+        return None;
+    }
+    let live: Vec<usize> = mobils.iter().enumerate().filter(|(_, m)| m.solid_frequency > 0).map(|(i, _)| i).collect();
+    if live.len() != 1 {
+        return None;
+    }
+    Some((flags & !(63 << 6)) | ((live[0] as u32) << 6))
+}
+
 /// Build the plan over the authored blocks of `maps` (aggregated by name).
 pub fn plan(store: &mut DataStore, idx: &mut BlockInfoIndex, maps: &[std::path::PathBuf], surface: &str) -> Result<Vec<PlanRow>, String> {
     let (s, wet) = parse_surface(surface).ok_or_else(|| format!("unknown surface `{surface}` (one of {}, optionally with `wet`)", SURFACE_WORDS.join(", ")))?;
@@ -595,6 +615,18 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
         Ok(mut detail) => {
             let mut flag_rewrites: Vec<(u32, u32)> = Vec::new();
             for f in flags {
+                // the twin's mobil of frequency 0 is one the editor never places: Nadeo's
+                // plastic and grass pads keep their old `Special_Air` (hull physics 34 =
+                // Player!) at mobil 0, frequency 0, and place `SpecialV2_Air` (mobil 1,
+                // frequency 1). A renamed record inherits the source's subvariant 0 —
+                // "the booster is not plastic" (shcr, Everios96 2026-09-20). Take the
+                // subvariant the editor would give: the one mobil with frequency > 0.
+                if let Some(nf) = editor_subvariant(&twin, *f) {
+                    if record_fits(&src, &twin, *f).is_ok() {
+                        flag_rewrites.push((*f, nf));
+                        continue;
+                    }
+                }
                 if let Err(e) = record_fits(&src, &twin, *f) {
                     // the twin lacks this ADDITIONAL variant (bits 21..27): try its base
                     // variant of the same ground/air family — the special pads' add0 is
