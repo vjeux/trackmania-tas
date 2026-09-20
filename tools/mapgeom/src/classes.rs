@@ -1535,8 +1535,18 @@ impl<'a> Graph<'a> {
                 Ok(())
             }
             0x09079017 => {
+                // version, then the SURFACE PHYSICS ID as a u32 (the byte the car
+                // feels: Modifier\PlatformIce\DecoHill 0x15 Snow, PlatformTech 0x4a
+                // RoadIce, Material\Deco 0x02 Grass, RoadTech 0x10 Asphalt, TrackWall
+                // 0x0e Wood — read off the pak 2026-09-20; 0x0907900E's SurfaceId is
+                // not present on these materials, so this is where it lives)
+                // the word is `0x800f00PP`: the physics id in the low byte, flags above
                 let v = self.r.u32()?;
-                self.r.u32()?;
+                let word = self.r.u32()?;
+                if acc.physics_id == 0 {
+                    acc.physics_id = (word & 0xff) as u8;
+                    acc.touched = true;
+                }
                 if v >= 1 {
                     self.r.take(8)?;
                     self.r.string()?;
