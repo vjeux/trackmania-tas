@@ -16,7 +16,7 @@ clip ship  <file.mp4> <map-dir> [release-asset-name] [--no-mirror] [--no-overlay
 
 clip film  --map MAP --name NAME --outdir /mnt/c/DIR --mapdir MAPDIR GHOST [OPPONENT...]
            [--cam N] [--to S] [--crf Q] [--footage S] [--load-timeout S] [--shootctl P]
-           [--no-ship] [--quit] [--detach]
+           [--offset-ms N] [--from-webm F] [--no-ship] [--quit] [--detach]
     ONE RUN TO A PUBLISHED CLIP, ONE COMMAND, on the render box: `shootctl render`
     (map, ghosts -- the FIRST is the run and the camera follows it -- the
     MediaTracker shoot, the contact sheets DIR/NAME-sheet.png and -dense.png),
@@ -26,6 +26,9 @@ clip film  --map MAP --name NAME --outdir /mnt/c/DIR --mapdir MAPDIR GHOST [OPPO
     Pre-flight refuses in a second what would otherwise fail after the render:
     missing files, an outdir off /mnt/, no cookie (GH_COOKIE or ~/.gh-upload/cookie),
     no gh. --no-ship stops after the cut, for a look at the frames first.
+    When the timing guard refuses a render whose picture is RIGHT (a violent
+    start pivot drags the chase camera past the guard), look, then resume it:
+    --from-webm <the render> --offset-ms 0 (no game; sheets, cut, ship).
 
 clip cut   <in.webm> <out.mp4> --ghost <run.Ghost.Gbx> [--to SECONDS] [--crf Q]
                                 [--offset-ms N | --nominal-ms N --tolerance-ms N]

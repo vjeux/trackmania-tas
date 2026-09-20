@@ -38,6 +38,14 @@
 //! nothing here can know that sooner. The pre-flight is what turns "rendered,
 //! cut, then died shipping for want of a cookie" into a refusal in a second.
 //!
+//! **When the timing guard refuses a clip whose picture is right** (`clip cut`
+//! measures the video<->tape offset from the yaw and refuses past the chase
+//! camera's spring; colon three's full-lock keyboard start pivot drags the camera
+//! 470 ms behind the tape, past the 450 ms bar, while the finish-arch clock in the
+//! frame reads 07:200 at video 7.20 -- offset 0 to the frame), LOOK, then
+//! `--from-webm <the render> --offset-ms 0`: no game, the sheets from the
+//! existing webm, the cut at the offset the picture proved, the ship.
+//!
 //! The md5 of every ghost handed to the game is printed first: FILMING.md's
 //! first gate is "which file, exactly", and a clip is only as honest as the
 //! answer.
@@ -68,6 +76,16 @@ pub struct Opts {
     pub footage_s: f64,
     pub load_timeout_s: u64,
     pub shootctl: PathBuf,
+    /// `--offset-ms N`: force the video<->tape offset instead of measuring it
+    /// against the picture -- for a clip whose picture HAS been looked at
+    /// (the finish-arch clock on colon three reads 07:200 at video 7.20, so
+    /// the offset is 0 to the frame) and whose yaw fit still sits outside the
+    /// guard (a violent full-lock start pivot drags the chase camera 470 ms
+    /// behind the tape, past the 450 ms bar).
+    pub offset_ms: Option<i64>,
+    /// `--from-webm F`: skip the game -- cut, sheets and ship an existing
+    /// render (the one a refused timing check left behind, looked at since).
+    pub from_webm: Option<String>,
     pub ship: bool,
     pub quit: bool,
     pub detach: bool,
@@ -75,7 +93,7 @@ pub struct Opts {
 }
 
 pub const USAGE: &str = "film --map MAP --name NAME --outdir /mnt/c/DIR --mapdir MAPDIR GHOST [OPPONENT...] \
-[--cam N] [--to S] [--crf Q] [--footage S] [--load-timeout S] [--shootctl P] [--no-ship] [--quit] [--detach]";
+[--cam N] [--to S] [--crf Q] [--footage S] [--load-timeout S] [--shootctl P] [--offset-ms N] [--from-webm F] [--no-ship] [--quit] [--detach]";
 
 pub fn parse(args: &[String]) -> Result<Opts, String> {
     let mut o = Opts {
@@ -89,6 +107,8 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
         footage_s: 0.0,
         load_timeout_s: 120,
         shootctl: PathBuf::from(DEFAULT_SHOOTCTL),
+        offset_ms: None,
+        from_webm: None,
         ship: true,
         quit: false,
         detach: false,
@@ -112,6 +132,8 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
             "--footage" => { o.footage_s = val(i)?.parse().map_err(|_| "--footage wants seconds of clip")?; i += 2; }
             "--load-timeout" => { o.load_timeout_s = val(i)?.parse().map_err(|_| "--load-timeout wants seconds")?; i += 2; }
             "--shootctl" => { o.shootctl = PathBuf::from(val(i)?); i += 2; }
+            "--offset-ms" => { o.offset_ms = Some(val(i)?.parse().map_err(|_| "--offset-ms wants milliseconds (an integer)")?); i += 2; }
+            "--from-webm" => { o.from_webm = Some(val(i)?); i += 2; }
             "--no-ship" => { o.ship = false; i += 1; }
             "--quit" => { o.quit = true; i += 1; }
             "--detach" => { o.detach = true; i += 1; }
@@ -119,8 +141,8 @@ pub fn parse(args: &[String]) -> Result<Opts, String> {
             _ => { o.ghosts.push(args[i].clone()); i += 1; }
         }
     }
-    if o.map.is_empty() || o.name.is_empty() || o.outdir.as_os_str().is_empty() || o.ghosts.is_empty() {
-        return Err(format!("film: --map, --name, --outdir and at least one GHOST are required\n{USAGE}"));
+    if (o.map.is_empty() && o.from_webm.is_none()) || o.name.is_empty() || o.outdir.as_os_str().is_empty() || o.ghosts.is_empty() {
+        return Err(format!("film: --map (or --from-webm), --name, --outdir and at least one GHOST are required\n{USAGE}"));
     }
     if o.ship && o.mapdir.as_os_str().is_empty() {
         return Err(format!("film: --mapdir (the map's directory in the repo; its name labels the registration) is required unless --no-ship\n{USAGE}"));
@@ -138,9 +160,15 @@ fn preflight(o: &Opts) -> Result<(), String> {
             return Err(format!("{g}: no such ghost file"));
         }
     }
-    let map_wsl = o.map.strip_prefix("C:/").map(|r| format!("/mnt/c/{r}")).unwrap_or_else(|| o.map.clone());
-    if !Path::new(&map_wsl).is_file() {
-        return Err(format!("{}: no such map file", o.map));
+    if let Some(w) = &o.from_webm {
+        if !Path::new(w).is_file() {
+            return Err(format!("{w}: no such webm (--from-webm)"));
+        }
+    } else {
+        let map_wsl = o.map.strip_prefix("C:/").map(|r| format!("/mnt/c/{r}")).unwrap_or_else(|| o.map.clone());
+        if !Path::new(&map_wsl).is_file() {
+            return Err(format!("{}: no such map file", o.map));
+        }
     }
     if !o.shootctl.is_file() {
         return Err(format!("{}: no shootctl there (--shootctl P names another)", o.shootctl.display()));
@@ -240,32 +268,51 @@ fn film(o: &Opts, t0: Instant) -> Result<Outcome, String> {
     }
     let ff = platform::from_env()?;
 
-    // 1. the game.
-    let mut c = Command::new(&o.shootctl);
-    c.arg("render")
-        .args(["--map", &o.map, "--name", &o.name])
-        .arg("--outdir")
-        .arg(&o.outdir)
-        .args(["--cam", &o.cam.to_string(), "--load-timeout", &o.load_timeout_s.to_string()]);
-    if o.footage_s > 0.0 {
-        c.args(["--footage", &format!("{}", o.footage_s)]);
-    }
-    if o.quit {
-        c.arg("--quit");
-    }
-    c.args(&o.ghosts);
-    println!("{} shootctl render --name {} ({} ghost(s), cam {})", el(), o.name, o.ghosts.len(), o.cam);
-    let st = c
-        .stdin(Stdio::null())
-        .status()
-        .map_err(|e| format!("cannot run {}: {e}", o.shootctl.display()))?;
-    let done_render = o.outdir.join("done-render.txt");
-    let text = std::fs::read_to_string(&done_render).unwrap_or_default();
-    if !st.success() {
-        return Err(format!("shootctl render failed ({st}): {}", text.trim()));
-    }
-    let (webm, bytes, webm_secs) = parse_done_render(&text)?;
-    println!("{} rendered {webm} ({bytes} bytes, {} s)", el(), secs(webm_secs));
+    // 1. the game -- or, with --from-webm, the render that already exists.
+    let (webm, bytes, webm_secs) = if let Some(w) = &o.from_webm {
+        let bytes = std::fs::metadata(w).map(|m| m.len()).map_err(|e| format!("{w}: {e}"))?;
+        let s = ff.probe_duration(Path::new(w))?;
+        println!("{} --from-webm {w} ({bytes} bytes, {} s): no game", el(), secs(s));
+        let st = Command::new(&o.shootctl)
+            .args(["render", "--sheets-only", w, "--outdir"])
+            .arg(&o.outdir)
+            .args(["--name", &o.name])
+            .stdin(Stdio::null())
+            .status()
+            .map_err(|e| format!("cannot run {}: {e}", o.shootctl.display()))?;
+        if !st.success() {
+            return Err(format!("shootctl render --sheets-only failed ({st})"));
+        }
+        (w.clone(), bytes, s)
+    } else {
+        let mut c = Command::new(&o.shootctl);
+        c.arg("render")
+            .args(["--map", &o.map, "--name", &o.name])
+            .arg("--outdir")
+            .arg(&o.outdir)
+            .args(["--cam", &o.cam.to_string(), "--load-timeout", &o.load_timeout_s.to_string()]);
+        if o.footage_s > 0.0 {
+            c.args(["--footage", &format!("{}", o.footage_s)]);
+        }
+        if o.quit {
+            c.arg("--quit");
+        }
+        c.args(&o.ghosts);
+        println!("{} shootctl render --name {} ({} ghost(s), cam {})", el(), o.name, o.ghosts.len(), o.cam);
+        let st = c
+            .stdin(Stdio::null())
+            .status()
+            .map_err(|e| format!("cannot run {}: {e}", o.shootctl.display()))?;
+        let done_render = o.outdir.join("done-render.txt");
+        let text = std::fs::read_to_string(&done_render).unwrap_or_default();
+        if !st.success() {
+            return Err(format!("shootctl render failed ({st}): {}", text.trim()));
+        }
+        let (webm, bytes, webm_secs) = parse_done_render(&text)?;
+        println!("{} rendered {webm} ({bytes} bytes, {} s)", el(), secs(webm_secs));
+        (webm, bytes, webm_secs)
+    };
+    let _ = (bytes, webm_secs);
 
     // 2. the cut, with the run's own controls on it.
     let mp4 = o.outdir.join(format!("{}.mp4", o.name));
@@ -273,7 +320,7 @@ fn film(o: &Opts, t0: Instant) -> Result<Outcome, String> {
         to: o.to,
         crf: o.crf,
         ghost: Some(PathBuf::from(&o.ghosts[0])),
-        offset_ms: None,
+        offset_ms: o.offset_ms,
         nominal_ms: 0,
         bare: false,
     };
@@ -338,6 +385,15 @@ mod tests {
     fn shipping_needs_a_mapdir_and_no_ship_does_not() {
         assert!(parse(&a("--map m --name x --outdir /mnt/c/d g")).is_err());
         assert!(parse(&a("--map m --name x --outdir /mnt/c/d --no-ship g")).is_ok());
+    }
+
+    #[test]
+    fn a_looked_at_render_is_resumed_without_the_game() {
+        let o = parse(&a("--from-webm /mnt/c/x/r.webm --name x --outdir /mnt/c/d --mapdir /r/1-m --offset-ms 0 g.Ghost.Gbx")).unwrap();
+        assert_eq!(o.from_webm.as_deref(), Some("/mnt/c/x/r.webm"));
+        assert_eq!(o.offset_ms, Some(0));
+        assert!(o.map.is_empty(), "--map is not needed when the render exists");
+        assert!(parse(&a("--name x --outdir /mnt/c/d --no-ship g")).is_err(), "no map and no webm is nothing to film");
     }
 
     #[test]
