@@ -118,11 +118,22 @@ pub fn is_surface_family(name: &str) -> bool {
     if is_stage_deck(name) {
         return true;
     }
+    // the black structure road (`StructureBase`, `Structure.Material`, physics 22):
+    // scenery in most maps, a precision-driving surface in some — opt-in per build
+    // (TINY_STRUCTURE_BASE=1) for the maps whose record ghosts drive on it
+    // (Everios96 2026-09-19 19:14 "do the same for all the black road blocks")
+    if is_structure_base(name) {
+        return true;
+    }
     ["Road", "Platform", "DecoPlatform", "DecoHill", "Open", "DecoWall", "Water", "TrackWall", "SnowRoad", "RallyRoadDirt", "RallyCastleRoad"].iter().any(|p| name.starts_with(p))
 }
 
 /// A stage block whose top is a driving deck: `Stage<Shape>` and `StageStructure<Shape>`
 /// (the stage on its truss); `StageSupport*` (pillars) and `StageTechnicsLight*` (rigs) are not.
+pub fn is_structure_base(name: &str) -> bool {
+    name == "StructureBase" && std::env::var("TINY_STRUCTURE_BASE").map(|v| v == "1").unwrap_or(false)
+}
+
 pub fn is_stage_deck(name: &str) -> bool {
     // opt-in per build (TINY_STAGE_DECKS=1): the stage is scenery far more often than
     // a road — Everios96 picks the maps where it is driven (2026-09-18 22:32 PT)
@@ -142,7 +153,7 @@ pub fn candidate(name: &str, s: &str) -> Option<String> {
     // no family of these exists in another surface: the candidate is spelled so the
     // verification says so in the row, and the block is baked as a re-dressed copy
     // (its deck stems — ThemeSnowRoad, RoadDirt, RoadDirtFullColorize — are swap rows)
-    if name.starts_with("SnowRoad") || name.starts_with("RallyRoadDirt") || name.starts_with("RallyCastleRoad") || is_stage_deck(name) {
+    if name.starts_with("SnowRoad") || name.starts_with("RallyRoadDirt") || name.starts_with("RallyCastleRoad") || is_stage_deck(name) || is_structure_base(name) {
         return Some(format!("{name}{s}"));
     }
     // Road<A>ToRoad<B>[Down|SlopeUp|…]: the join of two road surfaces. In a

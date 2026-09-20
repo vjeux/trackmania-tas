@@ -64,7 +64,7 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // wood (snow-theme plank) roads ("vanilla wood blocks are also not changed")
     // ThemeRallyCastleWallUV / ThemeRallyCastleWall: the castle road pieces' deck
     // (custom castle roads of U10S_953 stayed in their look, Everios96 2026-09-15)
-    let road_stems = ["RoadTech", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "ItemInflatableTube", "ItemInflatableMat", "ThemeSnowRoad", "ThemeSnowRoadBorder", "ThemeRallyCastleWallUV", "ThemeRallyCastleWall"];
+    let road_stems = ["RoadTech", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "ItemInflatableTube", "ItemInflatableMat", "ItemInflatableFloor", "ThemeSnowRoad", "ThemeSnowRoadBorder", "ThemeRallyCastleWallUV", "ThemeRallyCastleWall"];
     let rows: Vec<String> = match s {
         // the snow PLANK roads take the ice platform look, not the bobsleigh one
         // (Everios96 2026-09-19 08:24 on icy 152: "use the ice platform texture")
@@ -99,7 +99,10 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // + the inflatable MATS (`InflatableMat4mToTube6mFlat` is a pipe segment with a mat
     // end: GeraldDuke, wet wood 29, 2026-09-19 "pipe pieces made of metal") — the
     // moving ObstacleTube* rotors are dyna objects (no static mesh to re-dress)
-    env.push(("TINY_ITEM_REDRESS".to_string(), "InflatableTube*,*ToTube*".to_string()));
+    // TINY_ITEM_REDRESS_EXTRA=glob,glob: per-build additions (the inflatable mats of the
+    // maps whose record ghosts drive on them, 2026-09-19)
+    let extra = std::env::var("TINY_ITEM_REDRESS_EXTRA").ok().filter(|v| !v.trim().is_empty()).map(|v| format!(",{v}")).unwrap_or_default();
+    env.push(("TINY_ITEM_REDRESS".to_string(), format!("InflatableTube*,*ToTube*{extra}")));
     // the map's own custom BLOCKS take the alteration too (A5); TINY_CUSTOM_BLOCK_REDRESS=0 keeps them
     if std::env::var("TINY_CUSTOM_BLOCK_REDRESS").map(|v| v != "0").unwrap_or(true) {
         env.push(("TINY_CUSTOM_BLOCK_REDRESS".to_string(), "1".to_string()));
