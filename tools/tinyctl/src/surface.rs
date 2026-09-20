@@ -371,7 +371,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let mut sw = Command::new(&tmmaps);
             sw.arg("surface").arg(&src).arg("--plan").arg(&records).arg("--out").arg(&out_map).arg("--name").arg(&out_name).arg("--uid-prefix").arg(&uid_prefix);
             // the winter trees are the ICE dress only; every other surface keeps the vegetation
-            if !surface.to_ascii_lowercase().contains("ice") || tmmaps::cli::has(args, "--keep-trees") {
+            // … and the WET wood set since 2026-09-19 (GeraldDuke: snow trees like icy)
+            let wet_snow = mapgeom::surface::parse_surface(&surface).map(|(sf, w)| w && sf == "Wood").unwrap_or(false) && std::env::var("TINY_WET_SNOW_PENALTY").map(|v| v != "0").unwrap_or(true);
+            if (!surface.to_ascii_lowercase().contains("ice") && !wet_snow) || tmmaps::cli::has(args, "--keep-trees") {
                 sw.arg("--keep-trees");
             }
             // a wet surface: the pad goes under a start ITEM too (no block row to mark)

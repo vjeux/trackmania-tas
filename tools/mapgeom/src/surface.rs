@@ -412,7 +412,18 @@ pub fn plan(store: &mut DataStore, idx: &mut BlockInfoIndex, maps: &[std::path::
 /// a floor 1 m under the tech deck (the car exits under the next block),
 /// `PlatformWaterStart` renamed in place has no floor at all (the car sinks).
 fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: usize, flags: &[u32], s: &str, wet: bool) -> PlanRow {
-    let mut row = plan_one_dry(store, idx, name, count, flags, s);
+    // WET wood: the penalty terrain (hills, the walls' grass tops) takes the SNOW form
+    // like the icy set — grass and dirt dry the tyres, snow does not (GeraldDuke via
+    // Everios96, 2026-09-19 19:44); the decks stay wood, the DecoPlatform tops too
+    let snow_penalty = wet && s == "Wood" && (name.starts_with("DecoHill") || name.starts_with("DecoWall")) && !name.ends_with("Pillar")
+        && std::env::var("TINY_WET_SNOW_PENALTY").map(|v| v != "0").unwrap_or(true);
+    let mut row = if snow_penalty {
+        let mut r = plan_one_dry(store, idx, name, count, flags, "Ice");
+        r.detail.push_str("; wet wood: snow penalty (the icy twin)");
+        r
+    } else {
+        plan_one_dry(store, idx, name, count, flags, s)
+    };
     if wet && !name.contains('\\') && !name.ends_with("_CustomBlock") {
         if let Some(p) = idx.path_for(name) {
             if let Ok(bi) = idx.load(store, &p).cloned() {
