@@ -93,9 +93,8 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     };
     // the DecoPlatform tops of the ICE set and of WET wood: baked with the vanilla snow-top
     // look at physics Snow 21 (the ice twin block is a null surface in the game, 2026-09-20)
-    if s == "Ice" || (s == "Wood" && wet && std::env::var("TINY_WET_SNOW_PENALTY").map(|v| v != "0").unwrap_or(true)) {
-        rows.push("Deco=Stadium\\Media\\Modifier\\PlatformIce\\Deco@21".to_string());
-    }
+    // every set: the row is what the author-placed ice tops bake with too (2026-09-20 14:37)
+    rows.push("Deco=Stadium\\Media\\Modifier\\PlatformIce\\Deco@21".to_string());
     if !rows.is_empty() {
         env.push(("TINY_REDRESS".to_string(), rows.join(";")));
     }

@@ -447,17 +447,24 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
     // original U10S_112; the ice HILLS read Snow 21 as they should). They are baked
     // instead, the top re-dressed with `Modifier\PlatformIce\Deco` at physics 21 —
     // the same look as the vanilla snow top, with the snow the vanilla block lacks.
-    let snow_top = (s == "Ice" || (wet && s == "Wood" && snow_env)) && name.starts_with("DecoPlatform") && !name.ends_with("Pillar")
-        && std::env::var("TINY_SNOW_TOP_BAKE").map(|v| v != "0").unwrap_or(true);
+    let snow_top_env = std::env::var("TINY_SNOW_TOP_BAKE").map(|v| v != "0").unwrap_or(true);
+    let snow_top = (s == "Ice" || (wet && s == "Wood" && snow_env)) && name.starts_with("DecoPlatform") && !name.ends_with("Pillar") && snow_top_env;
     if snow_top {
         let mut r = plan_one_dry(store, idx, name, count, flags, s);
-        // only what the swap itself turns to snow: an author's own DecoPlatformIce* stays the
-        // game's block (null surface in the original too — Everios96's call whether to change it)
-        if matches!(r.action, Action::Rename) {
+        if matches!(r.action, Action::Rename | Action::Same) {
             r.action = Action::Bake;
             r.target = name.replacen("DecoPlatform", "DecoPlatformSnow", 1);
             r.detail.push_str("; snow top: baked with Modifier\\PlatformIce\\Deco @Snow (the ice twin's top is a null surface in the game)");
         }
+        return r;
+    }
+    // … and an AUTHOR-PLACED ice top in any other set (vjeux 2026-09-20 14:37 "make all these
+    // real snow"): the same bake, so it drives as snow instead of the game's null surface
+    if snow_top_env && name.starts_with("DecoPlatformIce") && !name.ends_with("Pillar") && s != "Ice" {
+        let mut r = plan_one_dry(store, idx, name, count, flags, s);
+        r.action = Action::Bake;
+        r.target = name.replacen("DecoPlatformIce", "DecoPlatformSnow", 1);
+        r.detail = "author's ice top: baked with Modifier\\PlatformIce\\Deco @Snow (a null surface as the game's block)".to_string();
         return r;
     }
     let mut row = if snow_penalty {
