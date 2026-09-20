@@ -94,6 +94,10 @@ https://github.com/user-attachments/assets/f43d45fc-c855-4897-a324-7b41e957be21
 
 https://github.com/user-attachments/assets/f9c40210-8aab-4971-b143-2155098b7575
 
+**[colon three](353522-colon-three)** — author time `7.627` · ours **7.627** (±0 — an exact tie takes the medal, so this is beaten) · best human 7.668 (Matik_K, set the same day this was filmed) · 38 records · a 7.6-second map two weeks old; the world record is beaten by 0.041
+
+https://github.com/user-attachments/assets/efe25973-df91-4fe0-b6e1-1fa7fcb42fa3
+
 ---
 
 # 2 · Author time unbeaten by any human — and this TAS does not take it either
