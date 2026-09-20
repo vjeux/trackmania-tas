@@ -136,8 +136,10 @@ pub struct Watch {
     pub finish_s: f32,
     /// 1 = the cheap clock-gated sampling path in the child.
     pub fast: u32,
-    /// World-x of the sub-tick timing plane; 0 disables it.
+    /// World coordinate of the sub-tick timing plane; 0 disables it.
     pub plane_x: f32,
+    /// The axis that plane cuts: 0 = x, 1 = y, 2 = z. Trailing on the wire.
+    pub plane_axis: u32,
     /// The state objective. Disarmed by default, and then the child does not
     /// evaluate a single instruction of it.
     pub gate: Gate,
@@ -653,6 +655,7 @@ impl Watch {
             finish_s: 0.0,
             fast: 1,
             plane_x: 0.0,
+            plane_axis: 0,
             gate: Gate::NONE,
             fire: Fire::NONE,
         }
@@ -791,6 +794,9 @@ impl Watch {
                 v.extend_from_slice(&kb);
             }
         }
+        // THE PLANE AXIS, trailing behind the event. A shim without it reads
+        // x, which is what every plane before this field meant.
+        v.extend_from_slice(&self.plane_axis.to_le_bytes());
         v
     }
 

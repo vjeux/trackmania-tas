@@ -104,7 +104,7 @@ pub fn from_ghost(
 
     let d = gbx::record::decode_ghost(path).map_err(|e| format!("{}: {}", path, e))?;
     let rows: Vec<(i64, f64, f64, f64)> =
-        d.samples.iter().map(|s| (s.time_ms as i64, s.x, s.y, s.z)).collect();
+        d.samples.iter().map(|s| (s.time_ms as i64, s.x as f64, s.y as f64, s.z as f64)).collect();
     let line = RefLineData::from_samples(&rows, start_offset_ms, nticks)
         .map_err(|e| format!("{}: {}", path, e))?;
     Ok(FromGhost { line, engine_error_m: mean, kappa, samples: rows.len() })

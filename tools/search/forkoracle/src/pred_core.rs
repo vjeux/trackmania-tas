@@ -827,6 +827,11 @@ pub struct Eval {
     /// pure instrumentation, and it is what turns the validator's 1 ms integer
     /// into a continuous objective.
     pub plane_x: f32,
+    /// Which world axis the timing plane cuts: 0 = x, 1 = y, 2 = z. The finish
+    /// on a z-oriented road is a z-plane; a plane fixed to x measured nothing
+    /// there. Either crossing direction counts -- the road decides which way
+    /// the car goes through its own finish.
+    pub plane_axis: usize,
     /// THE STATE OBJECTIVE: a box that records the car's whole state instead
     /// of aborting the run. See `Gate`.
     pub gate: Gate,
@@ -863,6 +868,7 @@ impl Eval {
         rl: RefLine::NONE,
         finish_s: 0.0,
         plane_x: 0.0,
+        plane_axis: 0,
         gate: Gate::NONE,
         fire: Fire::NONE,
         ring_sp: [0.0; RINGW],
@@ -927,8 +933,10 @@ impl Eval {
             // and it must be a real transition, so a car sitting on the plane
             // cannot register.
             if self.plane_x != 0.0 && self.sum.cross_tick < 0 {
-                let (a, b) = (self.prev[0], pos[0]);
-                if a > self.plane_x && b <= self.plane_x {
+                let ax = self.plane_axis.min(2);
+                let (a, b) = (self.prev[ax], pos[ax]);
+                let p = self.plane_x;
+                if (a > p && b <= p) || (a < p && b >= p) {
                     let f = (a - self.plane_x) / (a - b);
                     self.sum.cross_tick = tick - 1;
                     self.sum.cross_frac = if f.is_finite() { f } else { 0.0 };

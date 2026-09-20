@@ -82,7 +82,7 @@ FORK MODE (a gradient, never a result)
   --refghost G        the reference line from G's OWN telemetry, accepted only
                       if that telemetry can be shown to belong to G's tape
   --refcsv F          the reference line as a measured trajectory (fk btraj)
-  --plane X           SUB-TICK FINISH TIMING. Score finishers by the child's
+  --plane X           SUB-TICK FINISH TIMING (X or axis=VALUE, e.g. z=607.2). Score finishers by the child's
                       own interpolated crossing of the world-x plane X, in
                       microseconds, instead of by the validator's integer
                       millisecond. On a fast map 1 ms is 24 cm of road and
@@ -197,6 +197,7 @@ struct Args {
     forktick: i64,
     refcsv: String,
     plane_x: f32,
+    plane_axis: u32,
     refghost: String,
     shim: String,
     preds: Vec<String>,
@@ -256,6 +257,7 @@ fn parse() -> Args {
         forktick: 60,
         refcsv: String::new(),
         plane_x: 0.0,
+        plane_axis: 0,
         refghost: String::new(),
         shim: String::new(),
         preds: Vec::new(),
@@ -311,7 +313,25 @@ fn parse() -> Args {
             "--fork" => a.fork = true,
             "--forktick" => a.forktick = num(&next(&mut i), k) as i64,
             "--refcsv" => a.refcsv = next(&mut i),
-            "--plane" => a.plane_x = num(&next(&mut i), k) as f32,
+            "--plane" => {
+                // `--plane 607.2` is an x-plane (what every run before the axis
+                // existed meant); `--plane z=607.2` names the axis.
+                let v = next(&mut i);
+                let (axis, val) = match v.split_once('=') {
+                    Some((ax, val)) => (
+                        match ax.trim() {
+                            "x" => 0,
+                            "y" => 1,
+                            "z" => 2,
+                            other => die(&format!("--plane: unknown axis {:?} (x|y|z)", other)),
+                        },
+                        val.to_string(),
+                    ),
+                    None => (0, v.clone()),
+                };
+                a.plane_axis = axis;
+                a.plane_x = num(&val, k) as f32;
+            }
             "--refghost" => a.refghost = next(&mut i),
             "--shim" => a.shim = next(&mut i),
             "--pred" => a.preds.push(next(&mut i)),
@@ -748,6 +768,7 @@ fn run_fork(
     let mut watch = forkoracle::pred::Watch::new();
     watch.corridor = a.corridor;
     watch.plane_x = a.plane_x;
+    watch.plane_axis = a.plane_axis;
     watch.refline = refline;
     watch.finish_s = match plain_outcome.finish_ms() {
         Some(t) => {
