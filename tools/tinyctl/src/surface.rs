@@ -99,7 +99,7 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // + the inflatable MATS (`InflatableMat4mToTube6mFlat` is a pipe segment with a mat
     // end: GeraldDuke, wet wood 29, 2026-09-19 "pipe pieces made of metal") — the
     // moving ObstacleTube* rotors are dyna objects (no static mesh to re-dress)
-    env.push(("TINY_ITEM_REDRESS".to_string(), "InflatableTube*,InflatableMat*".to_string()));
+    env.push(("TINY_ITEM_REDRESS".to_string(), "InflatableTube*,*ToTube*".to_string()));
     // the map's own custom BLOCKS take the alteration too (A5); TINY_CUSTOM_BLOCK_REDRESS=0 keeps them
     if std::env::var("TINY_CUSTOM_BLOCK_REDRESS").map(|v| v != "0").unwrap_or(true) {
         env.push(("TINY_CUSTOM_BLOCK_REDRESS".to_string(), "1".to_string()));
