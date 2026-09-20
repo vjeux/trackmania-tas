@@ -504,7 +504,11 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     // start", Everios96 2026-09-15). It is a regular start block players race
     // from in every ice map: kept as the game's own block, look and physics as
     // the author placed it (6 maps: 11, 98, 124, 178, 219, 267's neighbour).
-    if name == "RoadIceStart" && s != "Ice" && !std::env::var("TINY_ICE_START_BAKE").map(|v| v == "1").unwrap_or(false) {
+    // 2026-09-20: the hole was the plain start-marks decal's missing vertex colour
+    // (see `harmonize_layouts_full`), fixed — the start is converted like every other
+    // block (verified in the editor on plastic 11: deck + marks + arch). TINY_ICE_START_BAKE=0
+    // restores the kept ice block.
+    if name == "RoadIceStart" && s != "Ice" && std::env::var("TINY_ICE_START_BAKE").map(|v| v == "0").unwrap_or(false) {
         return mk(Action::Keep, "", "ice start: the author's own start block, kept (its copy loses the pad centre)".into());
     }
     // a deck-only surface (no block family of its own) leaves the terrain-like
