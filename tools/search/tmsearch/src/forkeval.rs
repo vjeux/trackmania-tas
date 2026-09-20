@@ -226,6 +226,18 @@ pub fn ladder_report() -> String {
 /// confident 7 990.7 that validated at 8 004).
 const PLANE_TOL_MS: f64 = 2.0;
 
+/// How far UPSTREAM of the finish trigger the plane may sit, in milliseconds of
+/// the incumbent.s own travel. Under exit-at-finish the child leaves one tick
+/// after the detecting tick, so a plane AT the trigger is never seen crossed:
+/// the last sample fed to the watch is the tick before the car reaches it. The
+/// plane therefore has to stand a little before the line (one to three ticks of
+/// travel), and the time from plane to trigger is then a FRACTION of a tick that
+/// whole-tick snapping cannot express -- 12.2 ms on colon three, refused with a
+/// 2.2 ms "residual" that was nothing but the fraction. So the offset is taken
+/// exactly as measured, and this bound is what says the plane is still the
+/// finish and not some other place on the route.
+const PLANE_MAX_OFF_MS: f64 = 40.0;
+
 pub struct ForkSetup {
     pub server: PathBuf,
     pub map: PathBuf,
@@ -371,14 +383,18 @@ impl ForkEval {
                 )
             })?;
             let raw = raw_ticks * 10.0 + s.start_offset_ms as f64;
-            let off = 10.0 * ((want - raw) / 10.0).round();
-            let residual = raw + off - want;
-            if residual.abs() > PLANE_TOL_MS {
+            // The exact plane-to-trigger interval of the incumbent, carried onto
+            // every candidate. It is constant to first order (straight, near-
+            // uniform motion over a fraction of a metre), and the plain oracle
+            // still decides every banked number.
+            let off = want - raw;
+            if off < -PLANE_TOL_MS || off > PLANE_MAX_OFF_MS {
                 return Err(format!(
                     "the timing plane does not agree with the validator on this worker: the \
-                     incumbent crosses x = {} at {:.3} ms (offset {:+.0}) and the plain oracle \
-                     says {}. Residual {:.3} ms, tolerance {:.1}.",
-                    watch.plane_x, raw, off, want, residual, PLANE_TOL_MS
+                     incumbent crosses plane {} at {:.3} ms and the plain oracle says {} \
+                     (offset {:+.3} ms; the plane must sit within [{:.1}, {:.1}] ms upstream \
+                     of the finish).",
+                    watch.plane_x, raw, want, off, -PLANE_TOL_MS, PLANE_MAX_OFF_MS
                 ));
             }
             Some(off)

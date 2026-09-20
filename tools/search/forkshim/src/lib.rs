@@ -576,6 +576,7 @@ struct WatchCfg {
     finish_s: f32,
     fast: u32,
     plane_x: f32,
+    plane_axis: usize,
     off_clock: usize,
     off_quat: usize,
     off_pos: usize,
@@ -600,6 +601,7 @@ static mut WCFG: WatchCfg = WatchCfg {
     finish_s: 0.0,
     fast: 1,
     plane_x: 0.0,
+    plane_axis: 0,
     off_clock: 0,
     off_quat: 4,
     off_pos: 20,
@@ -2203,6 +2205,7 @@ unsafe fn apply_candidate(payload: &[u8], base: usize) {
             ev.rl = cfg.rl;
             ev.finish_s = cfg.finish_s;
             ev.plane_x = cfg.plane_x;
+            ev.plane_axis = cfg.plane_axis;
             ev.gate = cfg.gate;
             ev.fire = cfg.fire;
             WPREV_VALID.store(0, Ordering::SeqCst);
@@ -2570,12 +2573,16 @@ unsafe fn parse_arm(payload: &[u8]) -> (usize, usize, usize) {
                 nk += n;
             }
             cfg.fire = fire;
+            // THE PLANE AXIS, trailing behind the event; absent means x.
+            cfg.plane_axis = if payload.len() >= o + 4 { (g4(o) as usize).min(2) } else { 0 };
         } else {
             cfg.fire = Fire::NONE;
+            cfg.plane_axis = 0;
         }
     } else {
         cfg.gate = Gate::NONE;
         cfg.fire = Fire::NONE;
+        cfg.plane_axis = 0;
     }
     (np, nref, nk)
 }
@@ -3152,6 +3159,7 @@ unsafe fn forkserver() {
                     ev.rl = cfg.rl;
                     ev.finish_s = cfg.finish_s;
                     ev.plane_x = cfg.plane_x;
+                    ev.plane_axis = cfg.plane_axis;
                     ev.gate = cfg.gate;
                     ev.fire = cfg.fire;
                     WPREV_VALID.store(0, Ordering::SeqCst);
