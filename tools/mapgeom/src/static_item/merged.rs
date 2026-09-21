@@ -726,6 +726,31 @@ impl Merged {
         (self.surf_ids.len() - 1) as i16
     }
 
+    /// A GENERATED flat slab top: an axis-aligned quad at height `y` over
+    /// `x0..x1 × z0..z1` (item space, metres), drawn two-sided under `link`
+    /// (position-projected materials: the snow decks) and colliding as
+    /// `physics`. The penalty road frames' snow floor (2026-09-21): the game
+    /// draws that floor from the terrain modifier, which no item copy carries.
+    pub fn add_flat_quad(&mut self, x0: f32, z0: f32, x1: f32, z1: f32, y: f32, link: &str, physics: u8) {
+        use super::bake::{make_visuals, visual_layout, Corner};
+        let slot = self.material_slot(link, physics);
+        let c = |x: f32, z: f32| Corner { pos: [x, y, z], normal: [0.0, 1.0, 0.0], uv: [x / 32.0, z / 32.0], uv1: [x / 32.0, z / 32.0], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face: 0, group: 0 };
+        let (a, b, cc, d) = (c(x0, z0), c(x1, z0), c(x1, z1), c(x0, z1));
+        // both windings: whichever the renderer keeps, the top shows
+        let tris = [[a, b, cc], [a, cc, d], [a, cc, b], [a, d, cc]];
+        let layout = visual_layout(link);
+        for v in make_visuals(&tris, layout, "off") {
+            self.visuals.push(MergedVisual::every_level(v, slot));
+        }
+        let verts = [[x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1]];
+        let hull = [
+            Triangle { indices: [0, 1, 2], material_id: physics, gameplay: 0, surface_index: 0 },
+            Triangle { indices: [0, 2, 3], material_id: physics, gameplay: 0, surface_index: 0 },
+        ];
+        self.add_surface_mesh(&verts, &hull, &IDENTITY, 1.0);
+        self.notes.push(format!("generated flat quad {x0}..{x1} × {z0}..{z1} at y {y}: {link} (physics {physics})"));
+    }
+
     /// Append collision triangles (already in source space).
     pub fn add_surface_mesh(&mut self, vertices: &[[f32; 3]], triangles: &[Triangle], iso: &Xform, scale: f32) {
         let base = self.surf_vertices.len() as u32;

@@ -1096,6 +1096,38 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             m.notes.push(format!("{n} of {} filler foliage entities inlined into the item", filler.len()));
         }
     }
+    // a FLAT penalty road frame under a snow/sand floor swap (TINY_PENALTY_FLOOR=Ice|Dirt):
+    // the game's floor is the terrain modifier's zone tile, absent from the prefab — a
+    // generated slab between the two "Road" chunk lines (x 3.2..28.8, the road deck
+    // height 2.0) stands in: the ice modifier's Penalty material (snow, 21) or the dirt
+    // modifier's (sand, 5). Slopes/bumps/diagonals keep the rename (surface.rs).
+    // The game's frame draws a ROAD deck strip on each side of the floor (measured on the
+    // vanilla RoadTechPenaltyIce, wet wood 37: kerb, ~5 m of deck, ~16 m of floor): the
+    // strips take the swap's deck (the `RoadTech` row: ThemeSnowRoad@14 for wood), the
+    // floor the modifier's Penalty material — Everios96 2026-09-21 "road part → wood,
+    // penalty part → snow".
+    if let Some((_, shape, _)) = crate::surface::split_penalty(name) {
+        if shape.is_empty() {
+            let floor = match std::env::var("TINY_PENALTY_FLOOR").ok().as_deref() {
+                Some("Ice") => Some(("Stadium\\Media\\Modifier\\PlatformIce\\Penalty", 21u8)),
+                Some("Dirt") => Some(("Stadium\\Media\\Modifier\\PlatformDirt\\Penalty", 5u8)),
+                _ => None,
+            };
+            if let Some((flink, fphys)) = floor {
+                let y = 2.0 * scale;
+                let (sx0, sx1) = (3.2 * scale, 8.0 * scale);
+                let (ex0, ex1) = (24.0 * scale, 28.8 * scale);
+                let (w0, w1) = (0.0, 32.0 * scale);
+                if let Some((_, deck, dphys)) = m.link_rewrite.iter().find(|(from, to, _)| from == "RoadTech" && !to.is_empty()).cloned() {
+                    m.add_flat_quad(sx0, w0, sx1, w1, y, &deck, dphys);
+                    m.add_flat_quad(ex0, w0, ex1, w1, y, &deck, dphys);
+                    m.add_flat_quad(sx1, w0, ex0, w1, y, flink, fphys);
+                } else {
+                    m.add_flat_quad(sx0, w0, ex1, w1, y, flink, fphys);
+                }
+            }
+        }
+    }
     let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: ident.to_string(), scale, collection, skin: m.skin.clone() };
     let f = crate::static_item::build::assemble(&m, &opts)?;
     Ok((crate::static_item::file::write_file(&f), m, deepened))

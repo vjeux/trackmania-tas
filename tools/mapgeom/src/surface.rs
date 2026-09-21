@@ -504,7 +504,7 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
 
 
 /// `Road<Surface>[Shape]Penalty[Ice|Dirt]` → (surface word, shape, floor word).
-fn split_penalty(name: &str) -> Option<(&str, &str, &str)> {
+pub fn split_penalty(name: &str) -> Option<(&str, &str, &str)> {
     let rest = name.strip_prefix("Road")?;
     let (word, tail) = strip_surface_word(rest)?;
     let (shape, floor) = tail.split_once("Penalty")?;
@@ -528,6 +528,13 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     // (TINY_PENALTY_FLOOR=Ice|Dirt|"" overrides; the wet wood build sets Ice).
     if let Some((road, shape, _floor)) = split_penalty(name) {
         let floor = std::env::var("TINY_PENALTY_FLOOR").ok().unwrap_or_else(|| if s == "Ice" { "Ice".to_string() } else if s == "Dirt" { "Dirt".to_string() } else if s == "Grass" { String::new() } else { _floor.to_string() });
+        // a deck surface with no frame of its own (wood, plastic, magnet…) and a FLAT
+        // frame: the re-dressed item copy (rails in the surface) plus a GENERATED snow
+        // floor quad (`Merged::add_flat_quad` in the library bake) — Everios96
+        // 2026-09-21 "you forgot to turn the road part of the block into wood"
+        if shape.is_empty() && !floor.is_empty() && !matches!(s, "Ice" | "Dirt" | "Tech" | "Grass") {
+            // fall through to the bake path below; the library adds the floor
+        } else {
         let road_word = match s { "Ice" | "Dirt" | "Tech" => s.to_string(), _ => road.to_string() };
         let target = format!("Road{road_word}{shape}Penalty{floor}");
         if target == name {
@@ -537,6 +544,7 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
             return mk(Action::Rename, &target, format!("penalty frame: rails {road_word}, floor {} (the game's terrain modifier)", if floor.is_empty() { "grass" } else { floor.as_str() }));
         }
         return mk(Action::Keep, "", format!("penalty frame: no `{target}` in the pack"));
+        }
     }    // an embedded custom block record (`X.Block.Gbx_CustomBlock`) is its author's
     // own mesh: no pack twin
     if name.contains('\\') || name.ends_with("_CustomBlock") {
