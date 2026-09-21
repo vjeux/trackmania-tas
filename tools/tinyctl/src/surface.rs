@@ -95,6 +95,12 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // look at physics Snow 21 (the ice twin block is a null surface in the game, 2026-09-20)
     // every set: the row is what the author-placed ice tops bake with too (2026-09-20 14:37)
     rows.push("Deco=Stadium\\Media\\Modifier\\PlatformIce\\Deco@21".to_string());
+    // the open roads' GRASS SHOULDERS (`DecoHill2`, physics Grass) under a snow penalty:
+    // the snow modifier's own DecoHill2 (Snow 21) — Everios96 2026-09-20 17:25 "half grass
+    // half road" on wet wood 01. Icy and wet wood only (the other sets keep grass shoulders)
+    if s == "Ice" || (s == "Wood" && wet && std::env::var("TINY_WET_SNOW_PENALTY").map(|v| v != "0").unwrap_or(true)) {
+        rows.push("DecoHill2=Stadium\\Media\\Modifier\\PlatformIce\\DecoHill2@21".to_string());
+    }
     if !rows.is_empty() {
         env.push(("TINY_REDRESS".to_string(), rows.join(";")));
     }
