@@ -502,9 +502,42 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
     row
 }
 
+
+/// `Road<Surface>[Shape]Penalty[Ice|Dirt]` → (surface word, shape, floor word).
+fn split_penalty(name: &str) -> Option<(&str, &str, &str)> {
+    let rest = name.strip_prefix("Road")?;
+    let (word, tail) = strip_surface_word(rest)?;
+    let (shape, floor) = tail.split_once("Penalty")?;
+    if !matches!(floor, "" | "Ice" | "Dirt") {
+        return None;
+    }
+    Some((word, shape, floor))
+}
+
 fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: usize, flags: &[u32], s: &str) -> PlanRow {
     let mk = |action: Action, target: &str, detail: String| PlanRow { name: name.to_string(), count, action, target: target.to_string(), dy: 0, detail, flag_rewrites: Vec::new() };
-    // an embedded custom block record (`X.Block.Gbx_CustomBlock`) is its author's
+
+    // The PENALTY road frames (`Road<Surface>[Shape]Penalty[Ice|Dirt]`): the prefab is
+    // only the rails + border spots, the FLOOR inside is the map's terrain zone tile,
+    // re-dressed by the block's terrain modifier (PenaltyIce → snow, PenaltyDirt → sand,
+    // none → the zone's grass). An item copy can never carry that floor (wet wood 37,
+    // GeraldDuke 2026-09-20: "road block with grass penalty"), so the frame stays a
+    // BLOCK RECORD and is renamed: Ice → `Road<Ice>…PenaltyIce`; every other alteration
+    // keeps its own road word (the rails are what the re-dress would change — the game
+    // has no wood/plastic/… frame) and takes the snow floor under a snow penalty
+    // (TINY_PENALTY_FLOOR=Ice|Dirt|"" overrides; the wet wood build sets Ice).
+    if let Some((road, shape, _floor)) = split_penalty(name) {
+        let floor = std::env::var("TINY_PENALTY_FLOOR").ok().unwrap_or_else(|| if s == "Ice" { "Ice".to_string() } else if s == "Dirt" { "Dirt".to_string() } else if s == "Grass" { String::new() } else { _floor.to_string() });
+        let road_word = match s { "Ice" | "Dirt" | "Tech" => s.to_string(), _ => road.to_string() };
+        let target = format!("Road{road_word}{shape}Penalty{floor}");
+        if target == name {
+            return mk(Action::Same, &target, "penalty frame: already that road + floor".into());
+        }
+        if idx.path_for(&target).is_some() {
+            return mk(Action::Rename, &target, format!("penalty frame: rails {road_word}, floor {} (the game's terrain modifier)", if floor.is_empty() { "grass" } else { floor.as_str() }));
+        }
+        return mk(Action::Keep, "", format!("penalty frame: no `{target}` in the pack"));
+    }    // an embedded custom block record (`X.Block.Gbx_CustomBlock`) is its author's
     // own mesh: no pack twin
     if name.contains('\\') || name.ends_with("_CustomBlock") {
         // TINY_CUSTOM_BLOCK_REDRESS=1 (Everios96's A5, 2026-09-19): the author's own block

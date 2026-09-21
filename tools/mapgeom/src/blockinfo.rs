@@ -1492,6 +1492,9 @@ impl BlockInfo {
                     for rc in m.road_chunks.iter().chain(m.u16.iter()) {
                         if let Some(Node::RoadChunk(r)) = g.node(*rc) {
                             mob.road_chunks.push((r.u04.len(), r.u05.len()));
+                            if std::env::var("MAPGEOM_ROADCHUNKS").is_ok() {
+                                eprintln!("    road chunk: u01 {} u02 {} u03 {:?} u04 {:?} u05 {:?} u07 {:?} u14 {:?} u17 {:?}", r.u01, r.u02, r.u03, r.u04, r.u05, r.u07, r.u14, r.u17);
+                            }
                         }
                     }
                     ms.push(mob);

@@ -95,6 +95,10 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // look at physics Snow 21 (the ice twin block is a null surface in the game, 2026-09-20)
     // every set: the row is what the author-placed ice tops bake with too (2026-09-20 14:37)
     rows.push("Deco=Stadium\\Media\\Modifier\\PlatformIce\\Deco@21".to_string());
+    // the penalty road frames' FLOOR under a snow penalty: the Ice terrain modifier (wet wood)
+    if s == "Wood" && wet && std::env::var("TINY_WET_SNOW_PENALTY").map(|v| v != "0").unwrap_or(true) {
+        env.push(("TINY_PENALTY_FLOOR".to_string(), "Ice".to_string()));
+    }
     // the open roads' GRASS SHOULDERS (`DecoHill2`, physics Grass) under a snow penalty:
     // the snow modifier's own DecoHill2 (Snow 21) — Everios96 2026-09-20 17:25 "half grass
     // half road" on wet wood 01. Icy and wet wood only (the other sets keep grass shoulders)
@@ -296,6 +300,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             // 1. the plan
             let mut plan = Command::new(&mapgeom);
             plan.args(&paks).arg("surface-plan").arg(&src).arg("--surface").arg(&surface).arg("--out").arg(&models).arg("--records").arg(&records);
+            plan.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
             let text = run(&mut plan, &dir.join("plan.log"))?;
             for l in text.lines().filter(|l| l.starts_with("records:") || l.starts_with("  conflict")) {
                 println!("  {}", l.trim());
