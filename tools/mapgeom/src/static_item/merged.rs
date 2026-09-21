@@ -486,9 +486,11 @@ pub fn restore_depth(m: &mut Merged, water: f32, scale: f32) {
 /// bumper, freewheel, magnet (already the target), decals (not collidable).
 /// The DECK ids: what a road or platform deck is made of (the ids the deck rule
 /// converts); grass sides (2), rubber curbs (9), metal trims (4) are not decks.
-pub const DECK_LIKE_PHYSICS: [u8; 10] = [0, 3, 6, 8, 14, 16, 21, 74, 76, 77];
+pub const DECK_LIKE_PHYSICS: [u8; 12] = [0, 3, 6, 8, 14, 16, 21, 55, 62, 74, 76, 77];
 
-pub const ALL_DRIVABLE_PHYSICS: [u8; 23] = [0, 1, 2, 3, 4, 5, 6, 8, 9, 12, 14, 16, 17, 18, 19, 20, 21, 33, 69, 74, 75, 76, 77];
+// 2026-09-21: + TechSuperMagnetic (62) and TechMagnetic (55) — a magnet-set custom block
+// (wet wood 47's Magnet2 platform) kept its magnetic hull under every other alteration
+pub const ALL_DRIVABLE_PHYSICS: [u8; 25] = [0, 1, 2, 3, 4, 5, 6, 8, 9, 12, 14, 16, 17, 18, 19, 20, 21, 33, 55, 62, 69, 74, 75, 76, 77];
 
 impl Merged {
     /// Slot of a game material, adding it when new.

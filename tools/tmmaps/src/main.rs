@@ -134,6 +134,45 @@ fn main() {
                 None => println!("no embedded objects"),
             }
         }
+        // tmmaps physfp MAP [--mapgeom BIN --paks "--pak F:HASH"] — a PHYSICS FINGERPRINT of the map:
+        // every authored block record as `name|flags|cell|rot` plus every embedded item's hull
+        // physics histogram (via mapgeom dump) keyed by the item's placements — two maps with
+        // the same fingerprint drive the same. Lines are sorted; diff two outputs to see what
+        // changed (Everios96 2026-09-20 Q5: "did the physics change on the never-wiped maps?").
+        "physfp" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let m = tmmaps::map::MapFile::load(&src);
+            let mut lines: Vec<String> = Vec::new();
+            for b in &m.blocks {
+                let c = b.coords();
+                lines.push(format!("B\t{}\t{:08x}\t{},{},{}\t{}", b.name, b.flags, c.0, c.1, c.2, b.dir));
+            }
+            // embedded items: hull histogram per model, then the placements of that model
+            let mapgeom = tmmaps::cli::flag(&args, "--mapgeom").map(|s| s.to_string());
+            let paks: Vec<String> = tmmaps::cli::flag(&args, "--paks").map(|s| s.split_whitespace().map(|x| x.to_string()).collect()).unwrap_or_default();
+            let mut hulls: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+            if let (Some(mg), Some((_, zip))) = (&mapgeom, m.embedded_objects()) {
+                let dir = std::env::temp_dir().join(format!("physfp-{}", std::process::id()));
+                std::fs::create_dir_all(&dir).expect("tmp");
+                for (name, bytes) in tmmaps::header::zip_entries(&zip) {
+                    let flat = name.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(&name).to_string();
+                    if !flat.to_ascii_lowercase().ends_with(".item.gbx") && !flat.to_ascii_lowercase().ends_with(".block.gbx") { continue; }
+                    let f = dir.join(&flat);
+                    std::fs::write(&f, &bytes).expect("write");
+                    let out = std::process::Command::new(mg).args(&paks).arg("dump").arg(&f).output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+                    let ids: Vec<String> = out.lines().filter(|l| l.contains("CPlugSurface")).map(|l| l.split("ids ").nth(1).unwrap_or("").trim().to_string()).collect();
+                    hulls.insert(flat.to_ascii_lowercase(), if ids.is_empty() { "nohull".into() } else { ids.join(" | ") });
+                }
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+            for it in &m.items {
+                let key = it.model.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(&it.model).to_ascii_lowercase();
+                let hull = hulls.get(&key).cloned().unwrap_or_else(|| "stock".into());
+                lines.push(format!("I\t{}\t{:.3},{:.3},{:.3}\t{:.3}\t{}", if hull == "stock" { it.model.clone() } else { "embedded".into() }, it.pos[0], it.pos[1], it.pos[2], it.yaw, hull));
+            }
+            lines.sort();
+            for l in lines { println!("{l}"); }
+        }
         // tmmaps replace-embedded MAP --file A.Item.Gbx[,B.Item.Gbx…] --out OUT — the embedded
         // entries of the same base name swapped for these files (manifest kept): the giant
         // cypress items re-baked with a valid hull physics (2026-09-20), in place

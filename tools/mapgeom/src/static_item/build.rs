@@ -793,9 +793,16 @@ pub fn custom_redress_pre(st: &mut crate::store::DataStore, source_model: &str, 
                     // a platform link of the same family when the pack has one
                     let plat = if link.contains("\\Modifier\\Platform") { link.clone() } else if link.ends_with("\\RoadIce") { "Stadium\\Media\\Modifier\\PlatformIce\\PlatformTech".to_string() } else if link.ends_with("\\RoadDirt") { "Stadium\\Media\\Modifier\\PlatformDirt\\PlatformTech".to_string() } else { link.clone() };
                     let hill = if link.ends_with("\\RoadIce") { "Stadium\\Media\\Modifier\\PlatformIce\\DecoHill".to_string() } else if link.ends_with("\\RoadDirt") { "Stadium\\Media\\Modifier\\PlatformDirt\\DecoHill".to_string() } else { plat.clone() };
-                    let mut rows = vec![("PlatformTech".to_string(), plat, phys), ("DecoHill".to_string(), hill.clone(), phys), ("DecoHill2".to_string(), hill, phys)];
+                    let mut rows = vec![("PlatformTech".to_string(), plat.clone(), phys), ("DecoHill".to_string(), hill.clone(), phys), ("DecoHill2".to_string(), hill, phys)];
                     // grass: the hills ARE grass — no hill rows
                     if link.contains("PlatformGrass") { rows.truncate(1); }
+                    // the mesh-modeler decks of a custom block/item (the magnet expansion's
+                    // `Material_BlockCustom\CustomConcrete`, the editor's `TechSuperMagnetic` /
+                    // `TechMagnetic`): they ARE that block's deck and take the surface's deck
+                    // look (wet wood 47's Magnet2 platform stayed black, 2026-09-21)
+                    for stem in ["CustomConcrete", "TechSuperMagnetic", "TechMagnetic"] {
+                        rows.push((stem.to_string(), plat.clone(), phys));
+                    }
                     rows
                 }
                 None => Vec::new(),
