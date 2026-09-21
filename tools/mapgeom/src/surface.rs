@@ -440,7 +440,11 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
     // platform top invisible, Everios96 2026-09-20 06:27) — the ice twin is a real
     // block, the icy set's own penalty look
     let snow_env = std::env::var("TINY_WET_SNOW_PENALTY").map(|v| v != "0").unwrap_or(true);
-    let snow_penalty = wet && s == "Wood" && (name.starts_with("DecoHill") || name.starts_with("DecoWall")) && !name.ends_with("Pillar") && snow_env;
+    // … and (2026-09-20, Everios96 Q2 "every block with any sand or grass anywhere → snow"):
+    // the POOL blocks (`Water*`: grass/sand rims, the ramp roads out of the pool) and the
+    // CLIFFS (`DecoCliff*`: DecoHill grass on top) take their Ice twins too — the game's own
+    // ice variants redress DecoHill/DecoHill2 → Snow, PoolBorders stay plastic as in vanilla
+    let snow_penalty = wet && s == "Wood" && (name.starts_with("DecoHill") || name.starts_with("DecoWall") || name.starts_with("Water") || name.starts_with("DecoCliff")) && !name.ends_with("Pillar") && snow_env;
     // The DecoPlatform TOPS cannot take the ice twin: the game's own DecoPlatformIce*
     // blocks resolve to a NULL surface under the wheels (EPlugSurfaceMaterialId 80,
     // no penalty, no marks — measured 2026-09-20 with the VehicleState readout on the
