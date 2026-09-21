@@ -1274,6 +1274,11 @@ fn main() {
                         let s = m.stats();
                         let lods: Vec<String> = m.lods.iter().map(|l| format!("{}", l.iter().map(|e| format!("{}v", e.visual.main.as_ref().map(|mm| mm.count).unwrap_or(0))).collect::<Vec<_>>().join("+"))).collect();
                         println!("{p}: {} levels [{}] switch {:?} far {} ; {} materials ({}); hull {} verts {} tris; bottom {:.2} top {:.2} (height {:.2}) radius {:.2} m", m.lods.len(), lods.join(" | "), m.switch, m.far, m.materials.len(), m.materials.iter().map(|mt| format!("{}{}", mt.name, if mt.leaf { "*" } else { "" })).collect::<Vec<_>>().join(", "), m.hull_vertices.len(), m.hull_triangles.len(), s.bottom, s.top, s.top - s.bottom, s.radius);
+                        {
+                            let mut mats: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
+                            for (_, mat) in &m.hull_triangles { *mats.entry(*mat).or_default() += 1; }
+                            println!("  hull materials (raw model value -> triangles): {:?}", mats);
+                        }
                         if brief {
                             continue;
                         }

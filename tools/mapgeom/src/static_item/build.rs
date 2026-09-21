@@ -2784,9 +2784,22 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
     if let Some(p) = pick {
         m.notes.push(format!("vegetation bake: level {p} of {} alone (--lod-pick; nearest level {level0_verts} vertices)", t.lods.len()));
     }
-    // the trunk hull as the collision (Wood, 14 — what the model says)
+    // the trunk hull as the collision (Wood, 14 — what most models say). THE GIANT
+    // CYPRESS CRASH (uelen 2026-09-19, "all cypress-like trees crash the game on
+    // contact, no other tree does"): CypressTall's hull carries the raw value 65536
+    // on 132 of its 160 triangles (FirTall/SpringTreeTall/FirSnowTall: 14, CypressDirtTall:
+    // 0) — `min(255)` wrote physics id 255 into the CPlugSurface, past the game's
+    // EPlugSurfaceMaterialId table, and the contact response crashed. A value that is
+    // no physics id takes the trunk's Wood.
     if !t.hull_triangles.is_empty() {
-        let tris: Vec<Triangle> = t.hull_triangles.iter().map(|(idx, mat)| Triangle { indices: *idx, material_id: (*mat).min(255) as u8, gameplay: 0, surface_index: 0 }).collect();
+        let mut odd = 0usize;
+        let tris: Vec<Triangle> = t.hull_triangles.iter().map(|(idx, mat)| {
+            let phys = if *mat <= 0x7F { *mat as u8 } else { odd += 1; 14 };
+            Triangle { indices: *idx, material_id: phys, gameplay: 0, surface_index: 0 }
+        }).collect();
+        if odd > 0 {
+            m.notes.push(format!("hull: {odd} triangles carried a non-physics material value in the model (CypressTall: 65536) — Wood 14 (the 255 clamp crashed the game on contact)"));
+        }
         m.add_surface_mesh(&t.hull_vertices, &tris, &IDENTITY, scale);
         out.hull_triangles = tris.len();
     }
