@@ -1278,6 +1278,15 @@ fn main() {
                             let mut mats: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
                             for (_, mat) in &m.hull_triangles { *mats.entry(*mat).or_default() += 1; }
                             println!("  hull materials (raw model value -> triangles): {:?}", mats);
+                            for mat in mats.keys() {
+                                let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+                                let (mut rlo, mut rhi) = (f32::MAX, f32::MIN);
+                                for (idx, mt) in &m.hull_triangles {
+                                    if mt != mat { continue; }
+                                    for i in idx { let v = m.hull_vertices[*i as usize]; lo = lo.min(v[1]); hi = hi.max(v[1]); let r = (v[0] * v[0] + v[2] * v[2]).sqrt(); rlo = rlo.min(r); rhi = rhi.max(r); }
+                                }
+                                println!("    material {mat}: y {lo:.2}..{hi:.2}  radius {rlo:.2}..{rhi:.2} (source metres)");
+                            }
                         }
                         if brief {
                             continue;

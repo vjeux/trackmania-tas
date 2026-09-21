@@ -1634,6 +1634,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                         pictures.entry(format!("Items/{file}")).or_insert_with(|| dds.clone());
                     }
                     let summary = format!("custom block{}: {} bytes, {} visuals, {} collision tris, footprint {sx}x{sz} ({sy} high){}", arche.as_ref().map(|a| format!(" (archetype {a})")).unwrap_or_default(), out.len(), m.visuals.len(), m.surf_triangles.len(), if m.special.is_some() { ", special trigger".to_string() } else { special_note.clone() });
+                    // the re-dress notes in the library log (2026-09-20: a v1 block came out un-forced)
+                    for n in m.notes.iter().filter(|n| n.contains("re-dressed") || n.contains("forced") || n.contains("hull:") || n.contains("surface swap")) {
+                        eprintln!("  {alias} note: {n}");
+                    }
                     files.insert(format!("Items/{ident}"), out);
                     outcomes.push(key.outcome(&alias, key.source(), Ok(summary)));
                     block_map.insert(key.map_key(), (alias.clone(), sx, sz, units.clone()));

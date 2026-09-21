@@ -134,6 +134,34 @@ fn main() {
                 None => println!("no embedded objects"),
             }
         }
+        // tmmaps replace-embedded MAP --file A.Item.Gbx[,B.Item.Gbx…] --out OUT — the embedded
+        // entries of the same base name swapped for these files (manifest kept): the giant
+        // cypress items re-baked with a valid hull physics (2026-09-20), in place
+        "replace-embedded" => {
+            let src = std::path::PathBuf::from(&args[2]);
+            let files: Vec<std::path::PathBuf> = tmmaps::cli::flag(&args, "--file").expect("replace-embedded needs --file A.Item.Gbx[,…]").split(',').map(std::path::PathBuf::from).collect();
+            let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("replace-embedded needs --out OUT"));
+            let mut m = tmmaps::map::MapFile::load(&src);
+            let (_, zip) = m.embedded_objects().expect("map has no embedded objects");
+            let mut kept: std::collections::BTreeMap<String, Vec<u8>> = std::collections::BTreeMap::new();
+            for (name, bytes) in tmmaps::header::zip_entries(&zip) {
+                kept.insert(name, bytes);
+            }
+            let mut swapped = 0usize;
+            for f in &files {
+                let base = f.file_name().unwrap().to_string_lossy().to_string();
+                let bytes = std::fs::read(f).unwrap_or_else(|e| { eprintln!("{}: {e}", f.display()); std::process::exit(1) });
+                let key = kept.keys().find(|k| k.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(k) == base).cloned();
+                match key {
+                    Some(k) => { let old = kept.insert(k.clone(), bytes.clone()).map(|v| v.len()).unwrap_or(0); println!("  {k}: {old} -> {} bytes", bytes.len()); swapped += 1; }
+                    None => { eprintln!("{base}: not among the embedded entries"); std::process::exit(1); }
+                }
+            }
+            let zip = tmmaps::header::deflated_zip(&kept);
+            m.replace_embedded_zip_keep_manifest(&zip);
+            m.write_to(&out).expect("write");
+            println!("{}: {swapped} embedded file(s) replaced, zip {} bytes", out.display(), zip.len());
+        }
         // tmmaps set-thumbnail MAP --jpeg X.jpg --out OUT — the header thumbnail replaced
         "set-thumbnail" => {
             let src = std::path::PathBuf::from(&args[2]);

@@ -691,6 +691,20 @@ impl Merged {
     /// ([`resolve_crystal_link`]; deduplicated by resolved link + physics).
     pub fn resolved_inst_slot(&mut self, inst: &CPlugMaterialUserInst) -> usize {
         let link = resolve_crystal_link(inst.link().unwrap_or("")).to_string();
+        // A SURFACE SWAP in force (an embedded custom BLOCK — Everios96's A5): the
+        // crystal's material instance goes through the same re-dress as a copied
+        // custom item's (`material_inst_slot`: the `link_rewrite` rows, else the
+        // drivable/deck physics forcing). Until 2026-09-20 this slot bypassed the
+        // swap: wet wood 26's TM2 dirt-port block kept dirt/asphalt/plastic, 47's
+        // Magnet2 block stayed magnetic (GeraldDuke).
+        if !self.link_rewrite.is_empty() || self.all_drivable_physics.is_some() || self.deck_physics.is_some() {
+            let mut owned = inst.clone();
+            if let Some(main) = owned.main.as_mut() {
+                main.link = crate::crystal_model::Id::Str(link.clone());
+                main.is_using_game_material = true;
+            }
+            return self.material_inst_slot(&owned, "");
+        }
         if let Some(i) = self.materials.iter().position(|m| m.link() == Some(link.as_str()) && m.physics() == inst.physics()) {
             return i;
         }
