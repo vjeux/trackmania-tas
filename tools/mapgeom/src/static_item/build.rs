@@ -1783,8 +1783,21 @@ pub fn item_modifier_links(store: &mut crate::store::DataStore, item_path: &str)
     }
     links.sort();
     links.dedup();
+    // A modifier with no material of its own suffix still names the constraint
+    // variant: `ItemObstacleRightLevel2` has only `AnimTurnstileRightLevel2.
+    // KinematicConstraint.Gbx` under ItemObstacle\ (the materials are the plain
+    // `…Level2` ones) — returning None here left the turnstiles of Tiny 198 on the
+    // base constraint (rot 0..0°), motionless (leod7306 2026-09-20). The
+    // constraint lookup (`modified_constraint_path`) needs the folder + suffix only.
     if links.is_empty() {
-        return None;
+        let has_constraint = store.entries().any(|e| {
+            let up = e.path().to_uppercase();
+            up.starts_with(&folder_prefix) && up.ends_with(&format!("{}.KINEMATICCONSTRAINT.GBX", suffix.to_uppercase()))
+        });
+        if !has_constraint {
+            return None;
+        }
+        return Some((vec![format!("{folder_prefix}{}", "")], suffix));
     }
     Some((links, suffix))
 }
