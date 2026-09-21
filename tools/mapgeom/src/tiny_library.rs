@@ -1964,8 +1964,14 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 // an absolute author path ending in `\Items\<model>` (the krxelux items of
                 // U10S_176: `C:/Users/David/Documents/Trackmania/Items/TM_Items_Sorted_v8.0/…`)
                 let k = k.replace('/', "\\").to_ascii_lowercase();
-                let want = format!("items\\{}", model.replace('/', "\\").to_ascii_lowercase());
-                k == want || k == model.replace('/', "\\").to_ascii_lowercase() || k.ends_with(&format!("\\{want}"))
+                let ml = model.replace('/', "\\").to_ascii_lowercase();
+                let want = format!("items\\{ml}");
+                // a CLUB item set (`club:56909\RoadPlastic_base.zip\…\X.Item.Gbx`): the map
+                // embeds it under `<fake>\MemoryTemp\FavoriteClubItems\56909\RoadPlastic_base.zip\…`
+                // (Tiny 561's plastic roads, 2026-09-21: "no .Item.Gbx" → the records kept the
+                // club path and the game reported them missing)
+                let club = ml.strip_prefix("club:").and_then(|r| r.split_once('\\')).map(|(id, rest)| format!("\\favoriteclubitems\\{id}\\{rest}"));
+                k == want || k == ml || k.ends_with(&format!("\\{want}")) || club.as_ref().map(|c| k.ends_with(c.as_str())).unwrap_or(false)
             }).map(|(_, v)| v) {
                 // a custom item the MAP embeds (the TME_* nation items); the surface swap
                 // dresses it when asked (TINY_CUSTOM_ITEM_REDRESS / TINY_ITEM_REDRESS)
