@@ -200,6 +200,13 @@ pub fn gate_special_stem(stem: &str) -> Option<&'static str> {
         "SpecialFXTurbo" => "SpecialFX",
         "TriggerFXTurbo" => "TriggerFX",
         "DecalSpecialTurbo" => "Decal",
+        // the CAR-CHANGE gates (GateGameplaySnow/Rally/Desert): the prefab is authored in
+        // the Stadium dress; the kind folder `Modifier\GateGameplay<Kind>\{Screen,Decal,
+        // Collision,Sign}` names the pieces bare (the `GateGameplay.GameSkin` slot table) —
+        // Tiny 153's snow gate looked like a stadium gate (danyy 2026-09-19)
+        "GateGameplayScreen" => "Screen",
+        "DecalGateGameplay" => "Decal",
+        "CollisionGateGameplay" => "Collision",
         _ => return None,
     })
 }
