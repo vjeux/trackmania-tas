@@ -631,15 +631,43 @@ fn crc32(data: &[u8]) -> u32 {
 }
 
 /// A zip with every entry deflated (method 8), as the game writes its own
-/// embedded-item archives.
+/// embedded-item archives. The entries are compressed on every core (they
+/// are independent; the archive is assembled in name order afterwards, so
+/// the bytes are the same whatever the thread count): a 30 MB library took
+/// 1.8 s of one core here, the longest phase of a `tiny-library` build once
+/// the bakes ran in parallel (2026-09-22).
 pub fn deflated_zip(files: &std::collections::BTreeMap<String, Vec<u8>>) -> Vec<u8> {
+    let entries: Vec<(&String, &Vec<u8>)> = files.iter().collect();
+    // (crc, deflate stream) per entry, in entry order
+    let compressed: Vec<(u32, Vec<u8>)> = {
+        let n = entries.len();
+        let workers = std::thread::available_parallelism().map(|w| w.get()).unwrap_or(1).min(32).min(n.max(1));
+        if workers <= 1 {
+            entries.iter().map(|(_, data)| (crc32(data), miniz_oxide::deflate::compress_to_vec(data, DEFLATE_LEVEL))).collect()
+        } else {
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let slots: Vec<std::sync::Mutex<Option<(u32, Vec<u8>)>>> = (0..n).map(|_| std::sync::Mutex::new(None)).collect();
+            std::thread::scope(|s| {
+                for _ in 0..workers {
+                    s.spawn(|| loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if i >= n {
+                            break;
+                        }
+                        let data = entries[i].1;
+                        let r = (crc32(data), miniz_oxide::deflate::compress_to_vec(data, DEFLATE_LEVEL));
+                        *slots[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+                    });
+                }
+            });
+            slots.into_iter().map(|m| m.into_inner().unwrap_or_else(|e| e.into_inner()).expect("every entry compressed")).collect()
+        }
+    };
     let mut out = Vec::new();
     let mut central = Vec::new();
-    for (name, data) in files {
+    for ((name, data), (crc, comp)) in entries.iter().zip(&compressed) {
         let off = out.len() as u32;
-        let crc = crc32(data);
         let n = name.as_bytes();
-        let comp = miniz_oxide::deflate::compress_to_vec(data, DEFLATE_LEVEL);
         out.extend_from_slice(b"PK\x03\x04");
         out.extend_from_slice(&[20, 0, 0, 0, 8, 0, 0, 0, 0, 0]);
         out.extend_from_slice(&crc.to_le_bytes());
@@ -648,7 +676,7 @@ pub fn deflated_zip(files: &std::collections::BTreeMap<String, Vec<u8>>) -> Vec<
         out.extend_from_slice(&(n.len() as u16).to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes());
         out.extend_from_slice(n);
-        out.extend_from_slice(&comp);
+        out.extend_from_slice(comp);
         central.extend_from_slice(b"PK\x01\x02");
         central.extend_from_slice(&[20, 0, 20, 0, 0, 0, 8, 0, 0, 0, 0, 0]);
         central.extend_from_slice(&crc.to_le_bytes());
