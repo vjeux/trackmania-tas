@@ -3899,12 +3899,37 @@ impl MapFile {
         // version + per block + per baked + per item; 0x63: version + per item; 0x65: a
         // head, then per item) — the append path adds at the end for the same reason
         let ni = self.items.len();
-        for cid in [0x0304_3062u32, 0x0304_3063, 0x0304_3065, 0x0304_3068] {
+        for cid in [0x0304_3062u32, 0x0304_3063, 0x0304_3068] {
             let &(_, _, payload, size) = chunks.iter().find(|(c, ..)| *c == cid).expect("parallel item chunk");
             assert!(size >= ni, "chunk {cid:#x} has {size} bytes for {ni} items");
             let start = payload + size - ni;
             let filtered: Vec<u8> = (0..ni).filter(|i| keep[*i]).map(|i| body[start + i]).collect();
             self.raw_splices.push(((start, start + ni), filtered));
+        }
+        // 0x03043065: version, then per item a flag byte and, when set, a FileRef (the
+        // foreground skin — a screen's ad video); Spring 2026 - 12 [Stadium] failed to load
+        // until this was parsed instead of trimmed from the end (2026-09-22)
+        {
+            let &(_, _, payload, size) = chunks.iter().find(|(c, ..)| *c == 0x0304_3065).expect("foreground skin chunk 0x03043065");
+            let d = &body[payload..payload + size];
+            let mut out: Vec<u8> = d[..4].to_vec();
+            let mut p = 4usize;
+            for i in 0..ni {
+                assert!(p < d.len(), "chunk 0x03043065 ends before item {i}");
+                let flag = d[p];
+                let mut entry = vec![flag];
+                p += 1;
+                if flag != 0 {
+                    let (_, n) = crate::header::FileRef::decode(&d[p..]).unwrap_or_else(|| panic!("chunk 0x03043065: item {i}: bad FileRef at {p}"));
+                    entry.extend_from_slice(&d[p..p + n]);
+                    p += n;
+                }
+                if keep[i] {
+                    out.extend_from_slice(&entry);
+                }
+            }
+            out.extend_from_slice(&d[p..]); // anything after the last item (none expected)
+            self.raw_splices.push(((payload, payload + size), out));
         }
         let &(_, _, p69, _) = chunks.iter().find(|(c, ..)| *c == 0x0304_3069).expect("macroblock refs chunk");
         let item_refs = p69 + 4 + self.blocks.len() * 4;
