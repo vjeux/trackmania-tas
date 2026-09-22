@@ -175,11 +175,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
         for (map, mut versions) in by_map {
             versions.sort_by(|a, b| b.date.cmp(&a.date).then(b.round.cmp(&a.round)));
-            md.push_str(&format!("### U10S_{map}\n"));
+            md.push_str(&format!("### U10S_{map:02}\n"));
             for v in versions {
                 let label = rounds.get(&v.round).map(|l| format!(" · {l}")).unwrap_or_default();
                 if v.wipe {
-                    md.push_str(&format!("- **{}**{} · **records reset — new leaderboard from here**\n", v.date, label));
+                    let with = if v.n > 0 { format!(" · came with {} change{}: {}", v.n, if v.n == 1 { "" } else { "s" }, describe(&v.kinds)) } else { String::new() };
+                    md.push_str(&format!("- **{}**{} · **records reset — new leaderboard from here**{with}\n", v.date, label));
                     continue;
                 }
                 let flag = if v.after_wipe { "after last wipe" } else { "before the last wipe (records already reset since)" };
