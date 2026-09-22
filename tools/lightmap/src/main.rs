@@ -755,9 +755,13 @@ fn main() {
             let m = lightmap::mapio::load(&map_path).expect("map");
             let ground_e: [f32; 3] = { let l = prm.sun_dir[1].max(0.0); [prm.ambient[0] + prm.up[0] + prm.sky[0] + prm.sun[0] * l, prm.ambient[1] + prm.up[1] + prm.sky[1] + prm.sun[1] * l, prm.ambient[2] + prm.up[2] + prm.sky[2] + prm.sun[2] * l] };
             let mut out_charts = Vec::new();
-            if base > 8192 {
-                // Stadium tiny maps: the 4 decoration objects (0..3, several charts each — copied from the template's
-                // atlas as flat grey charts of the same size) and the ground slots 16384..base
+            // the Stadium decorations reserve objects 0..16383 (0..3 = the decoration's own charts); everything
+            // between that constant and the item base is a block or a ground column → a flat ground chart
+            let stadium = hdr.as_ref().map(|h| h.envir.eq_ignore_ascii_case("stadium")).unwrap_or(base > 8192 && f("--base").is_none());
+            let deco_const: u32 = if stadium { 16384 } else { 0 };
+            if stadium {
+                // the 4 decoration objects (0..3, several charts each — copied from the template's atlas as flat grey
+                // charts of the same size) and the ground slots 16384..base
                 let td = tpl.chunk.data.as_ref().unwrap();
                 let tmm = td.cache.mapping().unwrap();
                 let tia = lightmap::img::decode_webp(&td.frames[0].images[0]).expect("template atlas");
@@ -773,10 +777,8 @@ fn main() {
                     deco += 1;
                 }
                 eprintln!("  {deco} decoration charts copied from the template");
-                for obj in 16384..base { out_charts.push(lightmap::synth::Chart::from_hdr(obj, 2, 2, &[ground_e; 4], k, 128)); }
-            } else {
-                for obj in 0..base { out_charts.push(lightmap::synth::Chart::from_hdr(obj, 2, 2, &[ground_e; 4], k, 128)); }
             }
+            for obj in deco_const..base { out_charts.push(lightmap::synth::Chart::from_hdr(obj, 2, 2, &[ground_e; 4], k, 128)); }
             let mut have = vec![false; scene.item_count];
             for c in &charts { have[c.item] = true; out_charts.push(lightmap::synth::Chart::from_hdr2(base + c.item as u32, c.w, c.h, &c.rgb, &c.rgb1, k, 128)); }
             for (i, h) in have.iter().enumerate() { if !h { out_charts.push(lightmap::synth::Chart::from_hdr(base + i as u32, 2, 2, &[prm.sky; 4], k, 128)); } }
@@ -1706,6 +1708,32 @@ fn main() {
                 let r = lightmap::moods::base_rule(&h.envir, &mf.decoration_id, mf.size, cells);
                 println!("{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", p.rsplit('/').next().unwrap_or(p), mf.size, mf.decoration_id, mf.blocks.len(), mf.baked.len(), r.custom_blocks, r.ground_cols - r.empty_cols, r.empty_cols, mf.items.len(), measured, r.base(), if measured == r.base() as i64 { "OK" } else if measured < r.base() as i64 && r.base() as i64 - measured <= 16 { "OK (last items chart-less)" } else { "DIFF" });
             }
+        }
+        "volcmp" => {
+            // lmtool volcmp REF.Map.Gbx OURS.Map.Gbx: the two probe volumes slot by slot — grid, origin, and per
+            // occupied slot the world cell ranges (x/y/z) of the reference block against ours
+            let load = |p: &str| -> lightmap::volume::Volume { let m = lightmap::mapio::load(p).expect("load"); lightmap::volume::Volume::parse(&m.chunk.data.as_ref().unwrap().cache.trailer).expect("trailer") };
+            let (va, vb) = (load(&a[1]), load(&a[2]));
+            println!("slot grid: ref {:?} ours {:?}; origin: ref {:?} ours {:?}; blocks: ref {} ours {}; label grid: ref {:?} ours {:?}", va.slot_grid, vb.slot_grid, va.world_origin(), vb.world_origin(), va.blocks.len(), vb.blocks.len(), va.grid, vb.grid);
+            let by_slot = |v: &lightmap::volume::Volume| -> std::collections::BTreeMap<(i32, i32, i32), ([f32; 3], [f32; 3], usize, usize)> {
+                v.blocks.iter().map(|b| { let (lo, hi) = v.block_world_range(b); (v.block_slot(b), (lo, hi, b.slices.iter().filter(|s| s.is_some()).count(), b.slices.len())) }).collect()
+            };
+            let (ma, mb) = (by_slot(&va), by_slot(&vb));
+            let keys: std::collections::BTreeSet<_> = ma.keys().chain(mb.keys()).copied().collect();
+            let (mut same, mut diff) = (0, 0);
+            for k in keys {
+                match (ma.get(&k), mb.get(&k)) {
+                    (Some(a1), Some(b1)) => {
+                        let eq = a1.0 == b1.0 && a1.1 == b1.1;
+                        if eq { same += 1 } else { diff += 1 }
+                        println!("slot {k:?}: ref x[{:.0},{:.0}) y[{:.0},{:.0}) z[{:.0},{:.0}) {}/{} | ours x[{:.0},{:.0}) y[{:.0},{:.0}) z[{:.0},{:.0}) {}/{} {}", a1.0[0], a1.1[0], a1.0[1], a1.1[1], a1.0[2], a1.1[2], a1.2, a1.3, b1.0[0], b1.1[0], b1.0[1], b1.1[1], b1.0[2], b1.1[2], b1.2, b1.3, if eq { "=" } else { "≠" });
+                    }
+                    (Some(a1), None) => { diff += 1; println!("slot {k:?}: ref x[{:.0},{:.0}) y[{:.0},{:.0}) z[{:.0},{:.0}) | ours —", a1.0[0], a1.1[0], a1.0[1], a1.1[1], a1.0[2], a1.1[2]); }
+                    (None, Some(b1)) => { diff += 1; println!("slot {k:?}: ref — | ours x[{:.0},{:.0}) y[{:.0},{:.0}) z[{:.0},{:.0})", b1.0[0], b1.1[0], b1.0[1], b1.1[1], b1.0[2], b1.1[2]); }
+                    _ => {}
+                }
+            }
+            println!("{same} slots with identical ranges, {diff} differ");
         }
         _ => {
             eprintln!("unknown command");
