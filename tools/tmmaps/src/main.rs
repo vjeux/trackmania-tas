@@ -190,6 +190,12 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        "altered-unzip" => {
+            if let Err(e) = tmmaps::altered::unzip_cmd(&args[1..]) {
+                eprintln!("tmmaps altered-unzip: {e}");
+                std::process::exit(1);
+            }
+        }
         "altered-itemdump" => {
             if let Err(e) = tmmaps::altered::itemdump_cmd(&args[1..]) {
                 eprintln!("tmmaps altered-itemdump: {e}");

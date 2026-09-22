@@ -739,6 +739,7 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             m.gate_kind = Some(kind.to_string());
         }
     }
+    m.oriented = name.contains("Oriented");
     // (The DecoPlatform blocks — Slope2Start, SlopeBase, … — keep their
     // `Deco` material: it IS what the game draws, the grass-topped
     // decorative platform, phys 2. 70d461c re-dressed them as grey

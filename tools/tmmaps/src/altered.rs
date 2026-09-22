@@ -1324,3 +1324,23 @@ pub fn route_cmd(args: &[String]) -> Result<(), String> {
     }
     Ok(())
 }
+
+
+/// `tmmaps altered-unzip MAP --out DIR`: the map's embedded archive extracted.
+pub fn unzip_cmd(args: &[String]) -> Result<(), String> {
+    let input = args.iter().skip(1).find(|a| a.ends_with(".Map.Gbx")).ok_or("MAP")?;
+    let out = PathBuf::from(crate::cli::flag(args, "--out").ok_or("--out DIR")?);
+    let m = MapFile::load(Path::new(input));
+    let (rows, zip) = m.embedded_objects().ok_or("no embedded archive")?;
+    let mut n = 0usize;
+    for (name, bytes) in crate::header::zip_entries(&zip) {
+        let p = out.join(name.replace('\\', "/"));
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&p, bytes).map_err(|e| e.to_string())?;
+        n += 1;
+    }
+    println!("{input}: {n} files, {} manifest rows → {}", rows.len(), out.display());
+    Ok(())
+}

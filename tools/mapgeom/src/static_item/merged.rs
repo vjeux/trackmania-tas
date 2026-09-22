@@ -140,6 +140,11 @@ pub struct Merged {
     /// A gameplay gate's kind (`Turbo2`, `Boost`, …) from its own
     /// `<Kind>.TerrainModifier.Gbx`; the sign panels' logo (signlogo.rs).
     pub gate_kind: Option<String>,
+    /// An ORIENTED gate (`GateSpecialBoostOriented`, `…Boost2Oriented`): the shared
+    /// Special prefab's `SpecialSignOff` face is the EXIT side and keeps the kind's
+    /// `SignOff` dress instead of the chevrons — Giant U10S_91 showed arrows on both
+    /// sides (uelen._ 2026-09-22 18:46Z). A plain gate wears chevrons on both faces.
+    pub oriented: bool,
     /// Picture files the item's custom-texture materials name, to ride in
     /// the library archive next to the item: (file name, DDS bytes).
     pub pictures: Vec<(String, Vec<u8>)>,
@@ -513,7 +518,9 @@ impl Merged {
         // material — so the row and the beam square are one draw, not two
         // equal materials (which the format rules refuse).
         let pseudo;
+        let is_off_face = link.to_ascii_lowercase().ends_with("\\specialsignoff") || link.to_ascii_lowercase().ends_with("\\signoff");
         let (link, physics) = match super::signlogo::sign_kind(link, self.gate_kind.as_deref()) {
+            Some(_) if self.oriented && is_off_face => (link, 32u8),
             Some(kind) => {
                 pseudo = super::signlogo::pseudo_link(&kind);
                 (pseudo.as_str(), 32u8)
