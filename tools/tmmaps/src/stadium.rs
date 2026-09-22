@@ -724,7 +724,20 @@ pub fn verify_cmd(args: &[String]) -> Result<(), String> {
 /// baked: an item carries no water volume.
 pub fn terrain_cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| crate::cli::flag(args, k).map(String::from);
-    let port_path = PathBuf::from(args.iter().skip(1).find(|a| !a.starts_with("--") && a.ends_with(".Map.Gbx")).ok_or("PORT.Map.Gbx")?);
+    // the first positional argument (a flag's value is not one)
+    let mut positional: Option<String> = None;
+    let mut it = args.iter().skip(1);
+    while let Some(a) = it.next() {
+        if a.starts_with("--") {
+            if !matches!(a.as_str(), "--keep-work") {
+                it.next();
+            }
+            continue;
+        }
+        positional = Some(a.clone());
+        break;
+    }
+    let port_path = PathBuf::from(positional.ok_or("PORT.Map.Gbx")?);
     let src_path = PathBuf::from(f("--source").ok_or("--source SRC.Map.Gbx")?);
     let out = PathBuf::from(f("--out").ok_or("--out OUT.Map.Gbx")?);
     let mode = f("--mode").unwrap_or_else(|| "route".into());
