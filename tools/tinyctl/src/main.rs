@@ -20,6 +20,7 @@ mod lightmap;
 mod loadloop;
 mod camcheck;
 mod build;
+mod bakecopy;
 mod compare;
 mod cropstats;
 mod play;
@@ -198,7 +199,7 @@ fn main() {
         "compare" => compare::cmd(rest),
         "cropstats" => cropstats::cmd(rest),
         "play" => play::cmd(rest),
-        "startcheck" => startcheck::run(rest),
+        "startcheck" => if rest.iter().any(|a| a == "--maps") { startcheck::run_batch(rest) } else { startcheck::run(rest) },
         "loadloop" => loadloop::cmd(rest),
         "replay-pull" => replaypull::cmd(rest),
         "camcheck" => camcheck::cmd(rest),
@@ -209,6 +210,7 @@ fn main() {
         "publish-set" => batch::publish_set_cmd(rest),
         "tracker-club" => batch::tracker_club_cmd(rest),
         "pipeline" => pipeline::cmd(rest),
+        "bake-copies" => bakecopy::cmd(rest),
         "convert-all" => pipeline::convert_all_cmd(rest),
         "tracker-md" => pipeline::tracker_md_cmd(rest),
         "unproject" => unproject::cmd(rest),

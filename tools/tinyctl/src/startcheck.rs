@@ -82,3 +82,57 @@ pub fn run(args: &[String]) -> Result<(), String> {
         Err(format!("{}: FAIL — the client starts {d:.1} m from the Spawn placement (tolerance {tol} m). The car is on some other waypoint; do not publish this build.", map.display()))
     }
 }
+
+/// `tinyctl startcheck --maps A.Map.Gbx,B.Map.Gbx,… [--tag-prefix sc] [--tolerance T] [--outdir D] [--report R.tsv]`
+/// — the check above over a list, one play load each under the render lock,
+/// a TSV row per map (map, name, verdict, car, spawn, distance, seconds); a map
+/// already in the report is skipped (a batch restarts where it stopped). The
+/// giant campaigns (2026-09-22): 75 maps, the block start's own spawn offset is
+/// (8k, 1, 8k) at scale k, so the tolerance is the caller's (26 / 37 / 48 m).
+pub fn run_batch(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| -> Option<String> { args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned() };
+    let maps: Vec<PathBuf> = f("--maps").ok_or("startcheck --maps A,B,…")?.split(',').filter(|s| !s.trim().is_empty()).map(|s| PathBuf::from(s.trim())).collect();
+    let prefix = f("--tag-prefix").unwrap_or_else(|| "sc".into());
+    let outdir = f("--outdir").unwrap_or_else(|| "/tmp/tiny3".into());
+    let report = PathBuf::from(f("--report").unwrap_or_else(|| format!("{outdir}/startcheck.tsv")));
+    let tol = f("--tolerance").unwrap_or_else(|| "12".into());
+    std::fs::create_dir_all(&outdir).map_err(|e| format!("{outdir}: {e}"))?;
+    let done: std::collections::HashSet<String> = std::fs::read_to_string(&report).map(|t| t.lines().skip(1).filter_map(|l| l.split('\t').next().map(String::from)).collect()).unwrap_or_default();
+    if !report.exists() {
+        std::fs::write(&report, "map\tname\tverdict\tcar\tspawn\tdistance_m\tseconds\n").map_err(|e| format!("{}: {e}", report.display()))?;
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut failed = 0usize;
+    for (i, map) in maps.iter().enumerate() {
+        let key = map.display().to_string();
+        if done.contains(&key) {
+            println!("{key}: already in the report, skipped");
+            continue;
+        }
+        let name = tmmaps::header::read(&key).map(|h| h.name).unwrap_or_default();
+        let tag = format!("{prefix}{i:02}");
+        let t0 = std::time::Instant::now();
+        let out = Command::new(&exe).args(["startcheck", "--map", &key, "--tag", &tag, "--tolerance", &tol, "--outdir", &outdir]).output().map_err(|e| format!("tinyctl startcheck: {e}"))?;
+        let log = String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
+        let secs = t0.elapsed().as_secs();
+        let car_line = log.lines().find(|l| l.contains("client car at")).unwrap_or("");
+        let car = car_line.split("client car at ").nth(1).and_then(|s| s.split(']').next()).map(|s| format!("{s}]")).unwrap_or_else(|| "-".into());
+        let dist = car_line.split("] — ").nth(1).and_then(|s| s.split(' ').next()).unwrap_or("-").to_string();
+        let spawn = log.lines().find(|l| l.contains("Spawn placement")).and_then(|l| l.split(" at ").nth(1)).unwrap_or("-").to_string();
+        let verdict = if out.status.success() && log.contains(": PASS") {
+            "PASS".to_string()
+        } else {
+            failed += 1;
+            let why = log.lines().rev().find(|l| l.contains("FAIL") || l.contains("failed") || l.contains("NO VEHICLE") || l.contains("Error") || l.contains("error")).unwrap_or("FAIL (see the play log)");
+            format!("FAIL: {}", why.replace('\t', " ").chars().take(160).collect::<String>())
+        };
+        println!("{key}: {verdict} ({secs} s)");
+        let row = format!("{key}\t{name}\t{verdict}\t{car}\t{spawn}\t{dist}\t{secs}\n");
+        let mut fh = std::fs::OpenOptions::new().append(true).open(&report).map_err(|e| format!("{}: {e}", report.display()))?;
+        std::io::Write::write_all(&mut fh, row.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    if failed > 0 {
+        return Err(format!("{failed} of {} maps failed the start check", maps.len()));
+    }
+    Ok(())
+}

@@ -140,6 +140,13 @@ pub fn key(recipe: &str, scale: f32, collection: u32, at_water_row: bool, water:
     h.update(recipe.as_bytes());
     h.update(b"\0");
     h.update(format!("scale={scale} coll={collection} wrow={at_water_row} water={water:?}").as_bytes());
+    // the detail pick is a global FLAG, not a TINY_ knob: a build down the size
+    // ladder (--lod-pick N [--lod-pick-min-verts V]) bakes other bytes — the
+    // first pipeline run of the giant campaigns got its cached full-detail
+    // items back at every rung (2026-09-22)
+    if let Some(p) = crate::static_item::lod::lod_pick() {
+        h.update(format!(" lodpick={} minverts={}", p.level, p.min_verts).as_bytes());
+    }
     let mut knobs: Vec<(String, String)> = std::env::vars().filter(|(k, _)| k.starts_with("TINY_") && !NON_BAKE_KNOBS.contains(&k.as_str())).collect();
     knobs.sort();
     for (k, v) in knobs {

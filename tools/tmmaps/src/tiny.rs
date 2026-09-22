@@ -568,7 +568,13 @@ pub fn cmd(args: &[String]) {
                     s.min(254)
                 }
             };
-            assert!(need <= s, "--anchor fit-grid: the build spans {need} cells (margin included), more than the {s}-cell grid the cell bytes allow");
+            // a build wider than the cell bytes allow (a 64-grid collection at x4:
+            // BlueBay 16 spans 260 cells) takes the 254 grid and overhangs it
+            // symmetrically — the overhang is items only (they need no cell), the
+            // regenerated terrain stops at the grid edge
+            if need > s {
+                println!("  fit-grid: the build spans {need} cells (margin included), more than the 254-cell grid the cell bytes allow: it OVERHANGS the grid by {} cells a side", (need - s + 1) / 2);
+            }
             let rows_need = ((thi[1] - ground()) / crate::map::CELL_Y).ceil() as i32 + 2;
             let sy = s.max(rows_need.min(254));
             grid = [s as f32 * crate::map::CELL_XZ, sy as f32 * crate::map::CELL_Y, s as f32 * crate::map::CELL_XZ];
