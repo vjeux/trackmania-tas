@@ -133,6 +133,11 @@ fn family(name: &str) -> &str {
     let stem = stem.trim_start_matches("M2_");
     for fam in FAMILIES {
         if stem.starts_with(fam) {
+            // every Platform surface is one family for the wood twins (PlatformWoodBase
+            // goes on PlatformTechBase, PlatformGrassBase, PlatformDirtBase …)
+            if fam.starts_with("Platform") {
+                return "Platform";
+            }
             return fam;
         }
     }
@@ -300,7 +305,7 @@ fn learn_pair(l: &mut Learn, nn: &str, orig: &MapFile, alt: &MapFile, stems: &BT
             if !fam.is_empty() {
                 if let Some(bs) = by_cell.get(&(cx, cy, cz)) {
                     for b in bs {
-                        if family(&b.name) == fam && b.name.starts_with(fam) {
+                        if family(&b.name) == fam && (shape(&b.name) == shape(&it.model) || fam != "Platform") {
                             let c = cell_center(b, ground);
                             let d = ((it.pos[0] - c[0]).powi(2) + (it.pos[1] - c[1]).powi(2) + (it.pos[2] - c[2]).powi(2)).sqrt();
                             if best.map(|(_, bd)| d < bd).unwrap_or(true) {
@@ -755,7 +760,30 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
     // without a ghost everything eligible is converted
     let driven = if crate::cli::has(args, "--all") { None } else { driven_cells(&input) };
     let mut skipped_undriven: BTreeMap<String, usize> = BTreeMap::new();
+    // a ghost that starts late (Spring 2026 - 10: first sample at 6.75 s) misses the
+    // head of the route: the straight line from the spawn to its first sample counts
+    let driven = driven.map(|mut cells| {
+        if let Some(spawn) = source.blocks.iter().find(|b| b.waypoint_tag.as_deref() == Some("Spawn")).map(|b| cell_center(b, ground)).or_else(|| source.items.iter().find(|it| it.waypoint_tag.as_deref() == Some("Spawn")).map(|it| it.pos)) {
+            if let Some(first) = gbx::record::decode_ghost(input.to_str().unwrap_or_default()).ok().and_then(|d| d.samples.first().map(|s| (s.time_ms, s.x, s.y, s.z))) {
+                if first.0 > 500 {
+                    let n = ((((first.1 - spawn[0]).powi(2) + (first.3 - spawn[2]).powi(2)).sqrt()) / 4.0).ceil().max(1.0) as usize;
+                    for k in 0..=n {
+                        let t = k as f32 / n as f32;
+                        let x = spawn[0] + (first.1 - spawn[0]) * t;
+                        let y = spawn[1] + 2.0 + (first.2 - spawn[1] - 2.0) * t;
+                        let z = spawn[2] + (first.3 - spawn[2]) * t;
+                        cells.entry(((x / 32.0).floor() as i32, (z / 32.0).floor() as i32)).or_default().push(y);
+                    }
+                    println!("  route: the ghost starts at {:.2} s — the spawn → first-sample line added ({n} steps)", first.0 as f32 / 1000.0);
+                }
+            }
+        }
+        cells
+    });
     let wants = |b: &BlockRec, skipped: &mut BTreeMap<String, usize>| -> bool {
+        if b.waypoint_tag.is_some() {
+            return true; // a start, checkpoint or finish is on the route by definition
+        }
         match &driven {
             Some(cells) if !wholesale(&b.name) && !is_driven(cells, b, ground) => {
                 *skipped.entry(b.name.clone()).or_default() += 1;
@@ -777,8 +805,15 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
             if b.flags & crate::map::FREE_BLOCK_FLAG != 0 && b.name.contains("_CustomBlock") {
                 continue;
             }
+            let dbg = std::env::var("ALTERED_DEBUG").is_ok() && (b.waypoint_tag.is_some() || b.name.contains("Start"));
             if !wants(b, &mut skipped_undriven) {
+                if dbg {
+                    eprintln!("    [swap] {} #{} at {:?}: off the route", b.name, b.index, b.coords());
+                }
                 continue;
+            }
+            if dbg {
+                eprintln!("    [swap] {} #{} at {:?} flags {:08X}: rules {:?}", b.name, b.index, b.coords(), b.flags, rules.swaps.get(&b.name).map(|c| c.iter().map(|x| format!("{}×{}", file_stem(&x.1), x.3)).collect::<Vec<_>>()));
             }
             let Some(cands) = rules.swaps.get(&b.name) else {
                 if b.name.starts_with("Road") || b.name.starts_with("Platform") || b.name.starts_with("Open") || b.name.starts_with("Canopy") || b.name.starts_with("Stage") || b.name.starts_with("RallyCastle") || b.name.starts_with("RallyRoad") {
@@ -853,8 +888,15 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
     }
     // 3. water under the start and every checkpoint (wet)
     let mut water: Vec<crate::map::FreeBlockSpec> = Vec::new();
+    // a Stadium-collection CUSTOM block is dropped by a terrain-environment map (Winter
+    // 2026 - 03 Wet Wood on RedIsland: wetness stayed 0) — there the pad is the stock
+    // `PlatformWaterRampBase` (the U10S wet-wood pad; a Stadium block, but stock
+    // Stadium blocks are what those maps' roads are made of), same 4 cm sheet
+    let stock_pad = !is_stadium;
     if wet {
-        let (author, _, _) = lib.get(&water_block).ok_or_else(|| format!("the library has no {water_block}"))?;
+        let author: Option<String> = if stock_pad { None } else { Some(lib.get(&water_block).ok_or_else(|| format!("the library has no {water_block}"))?.0) };
+        let water_block = if stock_pad { "PlatformWaterRampBase".to_string() } else { water_block.clone() };
+        let flags: u32 = if stock_pad { 0x0020_0000 } else { 0x8040 };
         for b in &source.blocks {
             let tag = b.waypoint_tag.as_deref().unwrap_or("");
             if !(tag == "Spawn" || tag == "Checkpoint" || tag == "Multilap" || tag == "StartFinish") {
@@ -865,16 +907,18 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
                 Some(p) => [p[0] - 16.0, p[1] + 0.04, p[2] - 16.0],
                 None => [cx as f32 * 32.0, cy as f32 * 8.0 + ground + 0.04, cz as f32 * 32.0],
             };
-            water.push(crate::map::FreeBlockSpec { name: water_block.clone(), author: Some(author.clone()), flags: 0x8040, pos, rot: [0.0, 0.0, 0.0], grid: None, dir: 0 });
+            water.push(crate::map::FreeBlockSpec { name: water_block.clone(), author: author.clone(), flags, pos, rot: [0.0, 0.0, 0.0], grid: None, dir: 0 });
         }
         for it in &source.items {
             let tag = it.waypoint_tag.as_deref().unwrap_or("");
             if !(tag == "Spawn" || tag == "Checkpoint" || tag == "Multilap" || tag == "StartFinish") {
                 continue;
             }
-            water.push(crate::map::FreeBlockSpec { name: water_block.clone(), author: Some(author.clone()), flags: 0x8040, pos: [it.pos[0] - 16.0, it.pos[1] - 1.96, it.pos[2] - 16.0], rot: [0.0, 0.0, 0.0], grid: None, dir: 0 });
+            water.push(crate::map::FreeBlockSpec { name: water_block.clone(), author: author.clone(), flags, pos: [it.pos[0] - 16.0, it.pos[1] - 1.96, it.pos[2] - 16.0], rot: [0.0, 0.0, 0.0], grid: None, dir: 0 });
         }
-        needed.insert(water_block.clone());
+        if !stock_pad {
+            needed.insert(water_block.clone());
+        }
     }
     println!("  swaps: {} blocks ({} names); items: {} placements ({} block names); water pads: {}", swap_plan.len(), swapped.len(), item_plan.len(), itemed.len(), water.len());
     if !skipped_undriven.is_empty() {
