@@ -860,3 +860,19 @@ pub fn ghostchunk(args: &[String]) {
     m.write_to(std::path::Path::new(&out)).expect("write output");
     println!("{}: validation ghost chunk from {donor} ({} B) {placed} -> {out}", path.display(), chunk.len());
 }
+
+/// `tmmaps genealogy-fill MAP --out F` — chunk 0x03043043 rewritten so EVERY cell
+/// carries the map's ambient zone (`MapFile::fill_genealogy_file`), items and
+/// everything else untouched. The BlueBay lagoon fix (Summer 01, 2026-09-22): the
+/// tiny keeps the source's Sea records full size in place and scales the island about
+/// the spawn, so tiny water hangs over cleared genealogy wherever the full-size cell
+/// beneath was land — a bottomless flat polygon. With the zone table filled with
+/// `Sea` the game regenerates water + sand floor under the whole island, the form the
+/// other four collections already ship with (`TINY_GENEALOGY=fill`).
+pub fn genealogy_fill(args: &[String]) {
+    let src = std::path::PathBuf::from(&args[2]);
+    let out = std::path::PathBuf::from(tmmaps::cli::flag(args, "--out").expect("genealogy-fill needs --out MAP"));
+    std::fs::copy(&src, &out).expect("copy");
+    let (zone, n) = tmmaps::map::MapFile::fill_genealogy_file(&out).expect("fill genealogies");
+    println!("{}: genealogy chunk filled: {n} cells of {zone} -> {}", src.display(), out.display());
+}
