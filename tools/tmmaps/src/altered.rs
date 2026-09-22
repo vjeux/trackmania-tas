@@ -798,6 +798,7 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
     // 1. block swaps (rename in place + flags) — Stadium maps (AR's own practice)
     let mut swapped: BTreeMap<String, usize> = BTreeMap::new();
     let mut swap_plan: Vec<(usize, String, u32)> = Vec::new();
+    let mut free_swaps: Vec<(usize, String, u32)> = Vec::new();
     let mut unswapped: BTreeMap<String, usize> = BTreeMap::new();
     let mut needed: BTreeSet<String> = BTreeSet::new();
     if is_stadium || !stadium_only_swaps {
@@ -838,6 +839,19 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
             // keep the record's form bits (free / waypoint / author) as they are — a rename in place
             let keep = 0x2000_0000 | 0x4000_0000 | 0x0010_0000 | 0x0000_8000;
             let flags = (tflags & !keep) | (b.flags & keep);
+            if b.flags & crate::map::FREE_BLOCK_FLAG != 0 {
+                // a FREE vanilla block: renamed in place it has no author field — the game
+                // refused Spring 2026 - 12 [Stadium] Wet Wood (2026-09-22); it is removed and
+                // re-added as a free custom block with AR's author (flags | 0x8000)
+                if crate::cli::has(args, "--no-free-swaps") {
+                    *unswapped.entry(format!("{} (free block)", b.name)).or_default() += 1;
+                    continue;
+                }
+                free_swaps.push((b.index, target.clone(), (tflags & !keep) | (b.flags & (keep & !0x8000)) | 0x8000));
+                *swapped.entry(b.name.clone()).or_default() += 1;
+                needed.insert(target.clone());
+                continue;
+            }
             swap_plan.push((b.index, target.clone(), flags));
             *swapped.entry(b.name.clone()).or_default() += 1;
             needed.insert(target.clone());
@@ -975,6 +989,20 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
         m.set_block_flags(*i, *flags);
     }
     m.write_to(&tmp).map_err(|e| e.to_string())?;
+    if !free_swaps.is_empty() {
+        // the free swaps: the vanilla records removed, custom records with AR's author added
+        let mut m = MapFile::load(&tmp);
+        let mut adds: Vec<crate::map::FreeBlockSpec> = Vec::new();
+        for (i, target, flags) in &free_swaps {
+            let b = &m.blocks[*i];
+            let author = lib.get(target).map(|(a, _, _)| a).unwrap_or_default();
+            adds.push(crate::map::FreeBlockSpec { name: target.clone(), author: Some(author), flags: *flags, pos: b.free_pos.unwrap_or([0.0; 3]), rot: b.free_rot.unwrap_or([0.0; 3]), grid: None, dir: 0 });
+        }
+        let drop: BTreeSet<usize> = free_swaps.iter().map(|(i, _, _)| *i).collect();
+        let r = m.remove_and_add_blocks(|b| drop.contains(&b.index), |_| false, &adds);
+        m.write_to(&tmp).map_err(|e| e.to_string())?;
+        println!("  free swaps: {} vanilla free blocks re-added as custom blocks with the author field ({:?})", free_swaps.len(), r);
+    }
     if !item_plan.is_empty() {
         let mut m = MapFile::load(&tmp);
         if m.items.is_empty() {
