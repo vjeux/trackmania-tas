@@ -789,6 +789,14 @@ pub fn terrain_cmd(args: &[String]) -> Result<(), String> {
     };
     // the route's columns (±1 cell) from the validation ghost
     let mut route_cols: HashSet<(i32, i32)> = HashSet::new();
+    // `near`: the columns within two cells of any KEPT block — the route's surroundings
+    // without a ghost (France 2026 / Poland 2026 carry none)
+    let mode = if mode == "route" && gbx::record::decode_ghost(src_path.to_str().unwrap_or_default()).is_err() {
+        println!("  no validation ghost: --mode route → near");
+        "near".to_string()
+    } else {
+        mode
+    };
     if mode == "route" {
         let d = gbx::record::decode_ghost(src_path.to_str().unwrap_or_default()).map_err(|e| format!("no validation ghost for --mode route: {e}"))?;
         for smp in &d.samples {
@@ -796,6 +804,19 @@ pub fn terrain_cmd(args: &[String]) -> Result<(), String> {
             for dx in -1..=1 {
                 for dz in -1..=1 {
                     route_cols.insert((cx + dx, cz + dz));
+                }
+            }
+        }
+    } else if mode == "near" || mode == "near1" {
+        let r: i32 = if mode == "near1" { 1 } else { 2 };
+        for (i, b) in s.blocks.iter().enumerate() {
+            if matches!(p.fates[i], Fate::Drop(_)) {
+                continue;
+            }
+            let c = block_cell(b, gsrc);
+            for dx in -r..=r {
+                for dz in -r..=r {
+                    route_cols.insert((c[0] + dx, c[2] + dz));
                 }
             }
         }
@@ -812,7 +833,11 @@ pub fn terrain_cmd(args: &[String]) -> Result<(), String> {
         if c[0] < lo[0] || c[0] > hi[0] || c[2] < lo[2] || c[2] > hi[2] || c[1] < lo[1] || c[1] > hi[1] {
             continue;
         }
-        if mode == "route" && !route_cols.contains(&(c[0], c[2])) {
+        if (mode == "route" || mode == "near" || mode == "near1") && !route_cols.contains(&(c[0], c[2])) {
+            continue;
+        }
+        // the tightest mode keeps the ground pieces only (no decoration/vegetation blocks)
+        if mode == "near1" && (b.name.starts_with("Deco") || b.name.contains("Tree")) {
             continue;
         }
         selected.push(i);
@@ -968,20 +993,24 @@ pub fn terrain_cmd(args: &[String]) -> Result<(), String> {
     // --max-bytes N: a window build over the server cap falls back to the route terrain
     if let Some(cap) = f("--max-bytes").and_then(|v| v.parse::<u64>().ok()) {
         let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
-        if size > cap && mode == "window" {
-            println!("  {size} B over the {cap} B cap: rebuilding with --mode route");
-            let mut a2: Vec<String> = args.iter().cloned().filter(|x| x != "--max-bytes").collect();
-            if let Some(i) = a2.iter().position(|x| x == "--mode") {
-                a2[i + 1] = "route".into();
-            } else {
-                a2.push("--mode".into());
-                a2.push("route".into());
+        let next = match mode.as_str() {
+            "window" => Some("route"),
+            "route" | "near" => Some("near1"),
+            _ => None,
+        };
+        if size > cap {
+            if let Some(next) = next {
+                println!("  {size} B over the {cap} B cap: rebuilding with --mode {next}");
+                let mut a2: Vec<String> = args.to_vec();
+                if let Some(i) = a2.iter().position(|x| x == "--mode") {
+                    a2[i + 1] = next.into();
+                } else {
+                    a2.push("--mode".into());
+                    a2.push(next.into());
+                }
+                return terrain_cmd(&a2);
             }
-            // drop the cap's value too
-            if let Some(i) = a2.iter().position(|x| x.parse::<u64>().ok() == Some(cap)) {
-                a2.remove(i);
-            }
-            return terrain_cmd(&a2);
+            println!("  {size} B over the {cap} B cap even in --mode {mode}: kept as is");
         }
     }
     println!("  -> {}", out.display());
