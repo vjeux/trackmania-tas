@@ -561,8 +561,17 @@ fn main() {
             let old = tmmaps::header::read(&src).map(|h| h.name).unwrap_or_default();
             let mut m = tmmaps::map::MapFile::load(std::path::Path::new(&src));
             let (h, b) = m.set_map_name(&old, &new);
-            m.write_to(std::path::Path::new(&out)).expect("write");
-            println!("{out}: {old:?} -> {new:?} ({h} in the header, {b} in the body)");
+            // --uid UID: the map uid too (same length as the current one, or it is refused)
+            if let Some(uid) = tmmaps::cli::flag(&args, "--uid") {
+                m.write_to(std::path::Path::new(&out)).expect("write");
+                let mut m2 = tmmaps::map::MapFile::load(std::path::Path::new(&out));
+                m2.set_map_uid(uid);
+                m2.write_to(std::path::Path::new(&out)).expect("write");
+                println!("{out}: {old:?} -> {new:?} ({h} in the header, {b} in the body); uid {uid}");
+            } else {
+                m.write_to(std::path::Path::new(&out)).expect("write");
+                println!("{out}: {old:?} -> {new:?} ({h} in the header, {b} in the body)");
+            }
         }
         "seed-item" => {
             let src = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps seed-item MAP --out OUT"); std::process::exit(2) });
