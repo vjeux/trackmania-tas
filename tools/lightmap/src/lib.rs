@@ -4,7 +4,10 @@
 //! Work in progress: the walker first, then the typed structure.
 
 pub mod format;
+pub mod img;
+pub mod mapio;
 pub mod probe;
+pub mod synth;
 pub mod walk;
 
 pub const LIGHTMAP_CHUNK: u32 = 0x0304_305B;
