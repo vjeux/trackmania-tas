@@ -18,8 +18,12 @@ pub fn load(path: &str) -> Result<MapLightmap, String> {
     Ok(MapLightmap { gbx, at, chunk })
 }
 
-/// The map with its lightmap chunk replaced by `payload` (the body is written
-/// uncompressed, like every other write path in this repo).
+/// The map with its lightmap chunk replaced by `payload`. The body is written
+/// LZO-COMPRESSED (the shipped form — `tmmaps::gbx::Gbx::write_body_recompressed`,
+/// the path `tinyctl lightmap` transplants through): a giant map's uncompressed
+/// body runs over Nadeo's 25 MiB cap (Summer 01 ×2: 24.7 MB uncompressed, 15 MB
+/// compressed). `LMTOOL_UNCOMPRESSED=1` keeps the old uncompressed write (byte
+/// comparisons in tests).
 pub fn save_with_chunk(m: &MapLightmap, payload: &[u8], out: &str) -> Result<(), String> {
     let (off, p, size) = m.at;
     let body = &m.gbx.body;
@@ -28,7 +32,18 @@ pub fn save_with_chunk(m: &MapLightmap, payload: &[u8], out: &str) -> Result<(),
     nb.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     nb.extend_from_slice(payload);
     nb.extend_from_slice(&body[p + size..]);
-    gbx::container::write_gbx(&m.gbx, nb, out)
+    if std::env::var("LMTOOL_UNCOMPRESSED").map(|v| v == "1").unwrap_or(false) {
+        return gbx::container::write_gbx(&m.gbx, nb, out);
+    }
+    // the tmmaps container knows the LZO writer; rebuild its view of the same file
+    let uncompressed = {
+        let mut f = m.gbx.header_bytes_u();
+        f.extend_from_slice(body);
+        f
+    };
+    let t = tmmaps::gbx::Gbx::parse(&uncompressed);
+    let file = t.write_body_recompressed(&nb);
+    std::fs::write(out, file).map_err(|e| format!("{out}: {e}"))
 }
 
 /// A template: a `.Map.Gbx` (its lightmap chunk) or a raw `.lmchunk` file
