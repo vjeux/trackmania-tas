@@ -722,12 +722,12 @@ impl Lib {
     }
 }
 
-fn new_uid(prefix: &str) -> String {
+fn new_uid(prefix: &str, len: usize) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let mut x = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1) ^ 0x9E37_79B9_7F4A_7C15;
     let alphabet: Vec<char> = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-".chars().collect();
     let mut s = prefix.to_string();
-    while s.len() < 27 {
+    while s.len() < len.max(prefix.len() + 8) {
         x ^= x << 13;
         x ^= x >> 7;
         x ^= x << 17;
@@ -973,9 +973,11 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
     }
     {
         let mut m = MapFile::load(&tmp);
-        let old_name = crate::header::read(tmp.to_str().unwrap_or_default()).map(|h| h.name).unwrap_or_default();
+        let hdr = crate::header::read(tmp.to_str().unwrap_or_default()).ok();
+        let old_name = hdr.as_ref().map(|h| h.name.clone()).unwrap_or_default();
+        let old_uid_len = hdr.as_ref().map(|h| h.uid.len()).unwrap_or(27);
         let new_name = f("--name").unwrap_or_else(|| format!("{old_name} {}", if wet { "Wet Wood" } else { "Wood" }));
-        m.set_map_uid(&new_uid(&f("--uid-prefix").unwrap_or_else(|| if wet { "WetW".into() } else { "Wood".into() })));
+        m.set_map_uid(&new_uid(&f("--uid-prefix").unwrap_or_else(|| if wet { "WetW".into() } else { "Wood".into() }), old_uid_len));
         m.write_to(&tmp).map_err(|e| e.to_string())?;
         let mut m = MapFile::load(&tmp);
         if !old_name.is_empty() && new_name != old_name {
