@@ -380,7 +380,6 @@ fn main() {
             d.frames[0].images[0] = lightmap::img::encode_webp_lossless(&ia).expect("enc A");
             if bval.is_some() { d.frames[0].images[1] = lightmap::img::encode_webp_lossless(&ib).expect("enc B"); }
             let sizes = (d.frames[0].images[0].len(), d.frames[0].images[1].len());
-            let sizes = (d.frames[0].images[0].len(), d.frames[0].images[1].len());
             let recompress = mode == "fbramp";
             let payload = m.chunk.write(recompress);
             lightmap::mapio::save_with_chunk(&m, &payload, &a[2]).expect("save");

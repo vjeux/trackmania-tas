@@ -202,7 +202,39 @@ chunk). `lmtool paint` recolours the charts of a real bake in place (the
 red/green/blue-by-index proof). `lmtool bake` computes sky + sun (+ bounce)
 irradiance per texel from the map's own item geometry (§5).
 
-## 5. The baker (`lmtool bake`) — see REPORT.md for the calibration state.
+## 5. The baker (`lmtool bake`) **[GAME]**
+
+```text
+lmtool bake TINY.Map.Gbx --template EDITOR-BAKE-OF-SAME-MOOD.Map.Gbx --out OUT.Map.Gbx \
+  --uv-bounds --sky-model 1 --tpm 1.0 --sky-samples 64 --sun-samples 4 --k 1.0 \
+  --sun-az 75 --sun-el 45 --ambient 0.232,0.206,0.209 --up 0.097,0.107,0.140 \
+  --sky 0.107,0.121,0.164 --sun 0.125,0.082,0.067          # Sunrise64 (Tiny 16) fit
+```
+
+Geometry: every embedded item's Solid2 visuals at LOD 0 with TexCoord1,
+placed like the game places them (`mapgeom::place::anchored`); a binned-SAH
+BVH over all triangles (24.7 M on Tiny 16). Per texel of every chart
+(chart = the item's TexCoord1 bounds → a rect sized by `PreLightGen.u02 ×
+0.5625 × uv extent`, v = 0 at the top row): cosine-weighted sky visibility,
+sun visibility over a small disc, then
+
+```text
+E = ambient + up·(0.5 + 0.5·n.y) + sky·skyVis + sun·max(0, n·L)·sunVis
+```
+
+the chart is flood-filled (dilated) to its edges, normalised to its max,
+fb0 = 255·max/K. The four colour terms are fitted per mood by least squares
+against an editor bake of one map (`lmtool poolfit MAP --sun-az --sun-el
+--regressor 1`; the sun direction by `lmtool sunfit2`, per-texel
+correlation over the 400 largest charts). Tiny 16 (Sunrise64): az 75°, el
+45°; the fit above; per-texel r² 0.22. In play the result is within a
+hair of the editor's bake (compare-orig-bake3-bake2.jpg under
+tm-player/tiny/lightmap-re/). 8619 items: ~15 s of baking on 166 cores
+plus a 35 s single-threaded BVH build; the chunk is 1.1–1.4 MB (lossless).
+
+Not baked yet: frame 1 (the items' `CPlugLight`s: checkpoint/lamp glow),
+the foliage atlas and the trailer (copied from the template), the
+decoration meshes (cliffs/sea cast no shadow on items).
 
 ## 6. What the game does with it (earlier observations, still valid) **[GAME]**
 

@@ -174,10 +174,6 @@ fn chart_size(m: &crate::geometry::ModelGeom, scale: f32, prm: &BakeParams) -> (
 
 /// Rasterise one instance's uv1 triangles into a w×h chart; returns the
 /// samples (one per covered pixel centre) plus the coverage mask.
-fn rasterise(scene: &Scene, ii: usize, w: u32, h: u32, flip_v: bool) -> (Vec<Sample>, Vec<bool>) {
-    rasterise_mode(scene, ii, w, h, flip_v, false)
-}
-
 fn rasterise_mode(scene: &Scene, ii: usize, w: u32, h: u32, flip_v: bool, use_bounds: bool) -> (Vec<Sample>, Vec<bool>) {
     rasterise_inset(scene, ii, w, h, flip_v, use_bounds, 0.0)
 }
