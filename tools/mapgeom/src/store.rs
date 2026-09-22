@@ -27,7 +27,7 @@ use std::sync::{Arc, RwLock};
 pub const STADIUM_KEY: &str = "870FBE770EE4909C714B18B04D914C17";
 
 pub struct OpenPak {
-    data: Vec<u8>,
+    data: PakBytes,
     pak: Pak,
     header_max_size: usize,
     key: [u8; 16],
@@ -177,7 +177,7 @@ impl DataStore {
         let key = parse_key(key_hex)?;
         let store = self;
         {
-            let data = std::fs::read(p).map_err(|e| format!("{}: {}", p, e))?;
+            let data = PakBytes::open(p).map_err(|e| format!("{}: {}", p, e))?;
             if data.len() < 0x95 || &data[0..8] != b"NadeoPak" {
                 return Err(format!("{}: not a NadeoPak", p));
             }
@@ -354,4 +354,82 @@ fn shard_of(key: &str) -> usize {
         h = h.wrapping_mul(0x0100_0000_01b3);
     }
     (h as usize) & (SHARDS - 1)
+}
+
+/// The bytes of a pack file. Memory-mapped read-only where the platform has
+/// `mmap` (the page cache IS the copy: opening the 1.75 GB Stadium pack costs
+/// nothing until an entry is read — `std::fs::read` copied it whole, ~1 s of
+/// every `mapgeom` invocation, five of them per `tinyctl build`), else read
+/// whole. The packs are never written while a tool runs. `MAPGEOM_NO_MMAP=1`
+/// reads them whole regardless.
+pub enum PakBytes {
+    #[cfg(unix)]
+    Mapped {
+        ptr: *const u8,
+        len: usize,
+    },
+    Owned(Vec<u8>),
+}
+
+// a read-only private mapping of a file nobody writes: shareable
+#[cfg(unix)]
+unsafe impl Send for PakBytes {}
+#[cfg(unix)]
+unsafe impl Sync for PakBytes {}
+
+#[cfg(unix)]
+mod sys {
+    use std::os::raw::{c_int, c_void};
+    extern "C" {
+        pub fn mmap(addr: *mut c_void, len: usize, prot: c_int, flags: c_int, fd: c_int, off: i64) -> *mut c_void;
+        pub fn munmap(addr: *mut c_void, len: usize) -> c_int;
+    }
+    pub const PROT_READ: c_int = 1;
+    pub const MAP_PRIVATE: c_int = 2;
+}
+
+impl PakBytes {
+    pub fn open(path: &str) -> std::io::Result<PakBytes> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let f = std::fs::File::open(path)?;
+            let len = f.metadata()?.len() as usize;
+            if len > 0 && std::env::var_os("MAPGEOM_NO_MMAP").is_none() {
+                // SAFETY: a read-only private mapping of an open file, unmapped in
+                // Drop; the mapping outlives the descriptor by design (mmap keeps
+                // the file open)
+                let ptr = unsafe { sys::mmap(std::ptr::null_mut(), len, sys::PROT_READ, sys::MAP_PRIVATE, f.as_raw_fd(), 0) };
+                if ptr as isize != -1 && !ptr.is_null() {
+                    return Ok(PakBytes::Mapped { ptr: ptr as *const u8, len });
+                }
+            }
+            // (a file system without mmap — some FUSE mounts — or an empty file)
+            std::fs::read(path).map(PakBytes::Owned)
+        }
+        #[cfg(not(unix))]
+        std::fs::read(path).map(PakBytes::Owned)
+    }
+}
+
+impl std::ops::Deref for PakBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            #[cfg(unix)]
+            // SAFETY: the mapping is live for the life of the value and read-only
+            PakBytes::Mapped { ptr, len } => unsafe { std::slice::from_raw_parts(*ptr, *len) },
+            PakBytes::Owned(v) => v,
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for PakBytes {
+    fn drop(&mut self) {
+        if let PakBytes::Mapped { ptr, len } = self {
+            // SAFETY: exactly the mapping `open` made
+            unsafe { sys::munmap(*ptr as *mut std::os::raw::c_void, *len) };
+        }
+    }
 }
