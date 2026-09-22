@@ -90,6 +90,13 @@ pub fn archetype_top_offset(block: &str) -> f32 {
     }
 }
 
+/// The free-clip rim of a WaterBase block, FULL-size metres: 1.16 m thick outside
+/// an open face, from ~3 m under the surface to 1 m above it (`/mapblocks2` on
+/// tiny U10S_10, 2026-09-13; the 2026-09-21 Summer 15 curb in the road).
+pub const RIM_THICK: f32 = 1.3;
+pub const RIM_TOP: f32 = 1.0;
+pub const RIM_BOTTOM: f32 = 3.0;
+
 pub struct Decision {
     pub water_cells: usize,
     pub body: String,
@@ -150,13 +157,16 @@ pub fn decide(plates: &[PlateRow], tris: &[UpTri], source: Option<&SourceUnder>)
         for (cx, cz) in &occupied {
             blocks.insert(((cx - minx).div_euclid(2), (cz - minz).div_euclid(2)));
         }
-        for (bi, bj) in blocks {
+        let blocks_n = blocks.len();
+        for &(bi, bj) in &blocks {
             let (c0x, c0z) = (minx + 2 * bi, minz + 2 * bj);
             let covered: Vec<(i32, i32)> = vec![(c0x, c0z), (c0x + 1, c0z), (c0x, c0z + 1), (c0x + 1, c0z + 1)];
             let water_cells: Vec<&(i32, i32)> = covered.iter().filter(|c| occupied.contains(c)).collect();
             let spill_cells: Vec<&(i32, i32)> = covered.iter().filter(|c| !occupied.contains(c)).collect();
             let (ox, oz) = cell_world(&(c0x, c0z));
             let band_lo = plane - depth_full;
+            // the VOLUME ends at the plane (a deck 1 m above the water is dry and hides the
+            // sheet); the block's free-clip RIM on its open faces is check (3) below
             let band_hi = plane + 0.3;
             let in_cell = |x: f32, z: f32, c: &(i32, i32)| { let (cx, cz) = cell_world(c); x >= cx && x < cx + 16.0 && z >= cz && z < cz + 16.0 };
             // (1) drivable surfaces inside the spilled cells within the band (not wet floor)
@@ -217,7 +227,54 @@ pub fn decide(plates: &[PlateRow], tris: &[UpTri], source: Option<&SourceUnder>)
             let origin = [ox, plane - archetype_top_offset(arche), oz];
             let body = format!("{arche} pool plane {plane:.2} block cells ({c0x},{c0z})..({},{}) [{} water, {} spill] items {}", c0x + 1, c0z + 1, water_cells.len(), spill_cells.len(), cells.iter().filter(|c| covered.contains(&((c.cx - wx0).div_euclid(16), (c.cz - wz0).div_euclid(16)))).map(|c| format!("i{}", plates[c.row].item_index)).collect::<Vec<_>>().join(","));
             let spill = format!("x {:.0}..{:.0} z {:.0}..{:.0} band {:.2}..{:.2}", ox, ox + 32.0, oz, oz + 32.0, band_lo, plane);
-            if !under.is_empty() {
+            // (3) the RIM: the game bakes free-clip fillers on every block face with no
+            // matching neighbour (WaterFCCenter/WaterHFCLeft/Right: 1.16 m thick OUTSIDE the
+            // face, ~3 m under to 1 m above the surface). A face towards another block of
+            // this pool is cancelled; every other face gets the rim — a curb across any
+            // drivable surface standing in that strip (Summer 15: the pool border in the
+            // middle of the road, 2026-09-21).
+            let mut rim: Vec<String> = Vec::new();
+            for (dx, dz, name) in [(1i32, 0i32, "east"), (-1, 0, "west"), (0, 1, "south"), (0, -1, "north")] {
+                if blocks.contains(&(bi + dx, bj + dz)) {
+                    continue;
+                }
+                let (x0, x1, z0, z1) = match (dx, dz) {
+                    (1, 0) => (ox + 32.0, ox + 32.0 + RIM_THICK, oz, oz + 32.0),
+                    (-1, 0) => (ox - RIM_THICK, ox, oz, oz + 32.0),
+                    (0, 1) => (ox, ox + 32.0, oz + 32.0, oz + 32.0 + RIM_THICK),
+                    _ => (ox, ox + 32.0, oz - RIM_THICK, oz),
+                };
+                // the strip the rim occupies, and the band just beyond it: a surface in the
+                // strip that also continues into the band is a road or a deck the rim would
+                // cut across; one confined to the strip is the pool's own curb (the tiny
+                // border pieces of a DecoWallWater pool stand exactly there, half size) — the
+                // rim on a curb is the original's own look and stays allowed
+                let reach = RIM_THICK + 3.0;
+                let (bx0, bx1, bz0, bz1) = match (dx, dz) {
+                    (1, 0) => (x1, ox + 32.0 + reach, z0, z1),
+                    (-1, 0) => (ox - reach, x0, z0, z1),
+                    (0, 1) => (x0, x1, z1, oz + 32.0 + reach),
+                    _ => (x0, x1, oz - reach, z0),
+                };
+                let mut hit: BTreeMap<String, usize> = BTreeMap::new();
+                let mut beyond = 0usize;
+                for t in tris {
+                    if t.phys == "Water" || t.phys == "NotCollidable" { continue; }
+                    if t.top < plane - RIM_BOTTOM || t.top > plane + RIM_TOP + 0.3 { continue; }
+                    if in_wet(t.c[0], t.c[2], plane) { continue; }
+                    if t.c[0] >= x0 && t.c[0] <= x1 && t.c[2] >= z0 && t.c[2] <= z1 {
+                        *hit.entry(t.phys.clone()).or_default() += 1;
+                    } else if t.c[0] >= bx0 && t.c[0] <= bx1 && t.c[2] >= bz0 && t.c[2] <= bz1 {
+                        beyond += 1;
+                    }
+                }
+                if !hit.is_empty() && beyond > 0 {
+                    rim.push(format!("{name} face: {} in the rim strip, {beyond} more surfaces continuing beyond it", hit.iter().map(|(k, n)| format!("{k}×{n}")).collect::<Vec<_>>().join(" ")));
+                }
+            }
+            if !rim.is_empty() {
+                local.push(Decision { water_cells: water_cells.len(), body, archetype: arche.clone(), choice: "item", reason: format!("the rim would stand on a drivable surface — {}", rim.join("; ")), origin, yaw: 0.0, spill });
+            } else if !under.is_empty() {
                 local.push(Decision { water_cells: water_cells.len(), body, archetype: arche.clone(), choice: "item", reason: format!("drivable source block under the pool (band to ~{floor:.1}): {}", under.join("; ")), origin, yaw: 0.0, spill });
             } else if !kinds.is_empty() {
                 local.push(Decision { water_cells: water_cells.len(), body, archetype: arche.clone(), choice: "item", reason: format!("drivable surface in the spilled cells: {}", kinds.iter().map(|(k, n)| format!("{k}×{n}")).collect::<Vec<_>>().join(" ")), origin, yaw: 0.0, spill });
@@ -235,6 +292,19 @@ pub fn decide(plates: &[PlateRow], tris: &[UpTri], source: Option<&SourceUnder>)
                 for (li, off) in layers.iter().enumerate() {
                     let body_l = if layers.len() > 1 { format!("{body} layer {}/{}", li + 1, layers.len()) } else { body.clone() };
                     local.push(Decision { water_cells: if li == 0 { water_cells.len() } else { 0 }, body: body_l, archetype: "WaterBase".to_string(), choice: "block", reason: reason.clone(), origin: [ox, plane - off, oz], yaw: 0.0, spill: spill.clone() });
+                }
+            }
+        }
+        // A pool is tiled ALL OR NOTHING: a block left out leaves its neighbours' faces
+        // open, and the rim then stands INSIDE the pool — a 1 m wall in the water.
+        if local.iter().any(|d| d.choice == "item") {
+            let why: Vec<String> = local.iter().filter(|d| d.choice == "item").map(|d| d.reason.clone()).collect();
+            let why = format!("pool not tiled ({} of {blocks_n} blocks refused: {})", why.len(), why.join(" / "));
+            local.retain(|d| d.choice == "item" || !d.body.contains(" layer 2/"));
+            for d in local.iter_mut() {
+                if d.choice == "block" {
+                    d.choice = "item";
+                    d.reason = why.clone();
                 }
             }
         }
