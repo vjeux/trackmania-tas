@@ -108,13 +108,16 @@ fn parse(path: &Path) -> Result<Vec<Row>, String> {
     Ok(rows)
 }
 
-fn read_rounds(path: Option<&str>) -> BTreeMap<String, String> {
+/// round-dir → (publish rank, human label); the rank is the line order of the
+/// rounds file, which lists the rounds in publish order (a string sort would put
+/// `thumbs7` after `thumbs23`)
+fn read_rounds(path: Option<&str>) -> BTreeMap<String, (usize, String)> {
     let mut m = BTreeMap::new();
     if let Some(p) = path {
         if let Ok(t) = std::fs::read_to_string(p) {
-            for l in t.lines() {
+            for (i, l) in t.lines().enumerate() {
                 if let Some((k, v)) = l.split_once('\t') {
-                    m.insert(k.trim().to_string(), v.trim().to_string());
+                    m.insert(k.trim().to_string(), (i, v.trim().to_string()));
                 }
             }
         }
@@ -174,10 +177,11 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             by_map.entry(r.map).or_default().push(r);
         }
         for (map, mut versions) in by_map {
-            versions.sort_by(|a, b| b.date.cmp(&a.date).then(b.round.cmp(&a.round)));
+            let rank = |r: &Row| rounds.get(&r.round).map(|(i, _)| *i).unwrap_or(usize::MAX);
+            versions.sort_by(|a, b| b.date.cmp(&a.date).then(rank(b).cmp(&rank(a))));
             md.push_str(&format!("### U10S_{map:02}\n"));
             for v in versions {
-                let label = rounds.get(&v.round).map(|l| format!(" · {l}")).unwrap_or_default();
+                let label = rounds.get(&v.round).map(|(_, l)| format!(" · {l}")).unwrap_or_default();
                 if v.wipe {
                     let with = if v.n > 0 { format!(" · came with {} change{}: {}", v.n, if v.n == 1 { "" } else { "s" }, describe(&v.kinds)) } else { String::new() };
                     md.push_str(&format!("- **{}**{} · **records reset — new leaderboard from here**{with}\n", v.date, label));
