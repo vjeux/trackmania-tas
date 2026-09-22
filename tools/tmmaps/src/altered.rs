@@ -869,7 +869,15 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
         let placement = match exact {
             Some((model, off, yaw, _)) => Some((model.clone(), [corner[0] + off[0], corner[1] + off[1], corner[2] + off[2]], *yaw)),
             None => {
-                // another quarter turn known: rotate its offset about the cell centre
+                // another quarter turn known: rotate its offset about the cell centre — only
+                // for a piece whose known placements all sit at the cell centre (a 1×1 piece;
+                // a longer piece pivots on its footprint and a rotated guess lands a cell off —
+                // Summer 2026 - 04's tilt transition became a wall across the road)
+                let centred = rules.items.iter().filter(|((k, _, _), _)| *k == key).flat_map(|(_, v)| v.iter()).all(|c| (c.1[0] - 16.0).abs() < 0.1 && (c.1[2] - 16.0).abs() < 0.1);
+                if !centred {
+                    *skipped_undriven.entry(format!("{} (dir {dir} never seen)", b.name)).or_default() += 1;
+                    continue;
+                }
                 (0u8..4).filter_map(|d| rules.items.iter().filter(|((k, dd, _), _)| *k == key && *dd == d).flat_map(|(_, v)| v.iter()).max_by_key(|c| c.3).map(|c| (d, c))).next().map(|(d, (model, off, yaw, _))| {
                     let delta = dir_yaw(dir) - dir_yaw(d);
                     let c = [corner[0] + 16.0, corner[1], corner[2] + 16.0];
@@ -892,11 +900,34 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
     // 2026 - 03 Wet Wood on RedIsland: wetness stayed 0) — there the pad is the stock
     // `PlatformWaterRampBase` (the U10S wet-wood pad; a Stadium block, but stock
     // Stadium blocks are what those maps' roads are made of), same 4 cm sheet
-    let stock_pad = !is_stadium;
+    // WET in a terrain environment is not possible (2026-09-22, Winter 2026 - 03 on
+    // RedIsland): the stock PlatformWaterRampBase fails the load there, AR's no-mesh
+    // Stadium water block is dropped silently, re-collected to the map's collection it
+    // crashes the client, and the environment's own water ZONE tile (`Water`/`Lake`/`Sea`)
+    // as a free block loads but wets nothing — the sea is one fixed plane, not a tile's
+    // volume. `--wet` on such a map refuses (`--zone-pad` keeps the experiment).
+    let zone_pad: Option<(&str, f32)> = if crate::cli::has(args, "--zone-pad") {
+        match collection {
+            0x10 => Some(("Water", 7.5)),
+            0x1d => Some(("Water", 7.0)),
+            0xf => Some(("Lake", 7.2)),
+            0x1c => Some(("Sea", 7.0)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let stock_pad = !is_stadium && zone_pad.is_none() && crate::cli::has(args, "--stock-pad");
+    if wet && !is_stadium && zone_pad.is_none() && !stock_pad {
+        return Err(format!("{}: a terrain-environment map (collection {collection:#x}) cannot be made WET — no water block loads there (see altered.rs)", input.display()));
+    }
     if wet {
-        let author: Option<String> = if stock_pad { None } else { Some(lib.get(&water_block).ok_or_else(|| format!("the library has no {water_block}"))?.0) };
-        let water_block = if stock_pad { "PlatformWaterRampBase".to_string() } else { water_block.clone() };
-        let flags: u32 = if stock_pad { 0x0020_0000 } else { 0x8040 };
+        let author: Option<String> = if stock_pad || zone_pad.is_some() { None } else { Some(lib.get(&water_block).ok_or_else(|| format!("the library has no {water_block}"))?.0) };
+        let water_block = if let Some((z, _)) = zone_pad { z.to_string() } else if stock_pad { "PlatformWaterRampBase".to_string() } else { water_block.clone() };
+        let flags: u32 = if stock_pad || zone_pad.is_some() { std::env::var("ALTERED_PAD_FLAGS").ok().and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()).unwrap_or(0) } else { 0x8040 };
+        // the sheet's height in the pad's own frame: 2.0 for the Stadium water blocks
+        let sheet = zone_pad.map(|(_, h)| h).unwrap_or(2.0);
+        let dy = 2.04 - sheet; // block base relative to the waypoint's cell floor (deck = floor + 2)
         for b in &source.blocks {
             let tag = b.waypoint_tag.as_deref().unwrap_or("");
             if !(tag == "Spawn" || tag == "Checkpoint" || tag == "Multilap" || tag == "StartFinish") {
@@ -904,8 +935,8 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
             }
             let (cx, cy, cz) = b.coords();
             let pos = match b.free_pos {
-                Some(p) => [p[0] - 16.0, p[1] + 0.04, p[2] - 16.0],
-                None => [cx as f32 * 32.0, cy as f32 * 8.0 + ground + 0.04, cz as f32 * 32.0],
+                Some(p) => [p[0] - 16.0, p[1] - 2.0 + dy, p[2] - 16.0],
+                None => [cx as f32 * 32.0, cy as f32 * 8.0 + ground + dy, cz as f32 * 32.0],
             };
             water.push(crate::map::FreeBlockSpec { name: water_block.clone(), author: author.clone(), flags, pos, rot: [0.0, 0.0, 0.0], grid: None, dir: 0 });
         }
@@ -914,9 +945,9 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
             if !(tag == "Spawn" || tag == "Checkpoint" || tag == "Multilap" || tag == "StartFinish") {
                 continue;
             }
-            water.push(crate::map::FreeBlockSpec { name: water_block.clone(), author: author.clone(), flags, pos: [it.pos[0] - 16.0, it.pos[1] - 1.96, it.pos[2] - 16.0], rot: [0.0, 0.0, 0.0], grid: None, dir: 0 });
+            water.push(crate::map::FreeBlockSpec { name: water_block.clone(), author: author.clone(), flags, pos: [it.pos[0] - 16.0, it.pos[1] - 2.0 + dy, it.pos[2] - 16.0], rot: [0.0, 0.0, 0.0], grid: None, dir: 0 });
         }
-        if !stock_pad {
+        if !stock_pad && zone_pad.is_none() {
             needed.insert(water_block.clone());
         }
     }
@@ -1001,8 +1032,20 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
             }
             rows = src_rows;
         }
+        let mut recollected = 0usize;
         for ident in &needed {
-            let (author, entry, bytes) = lib.get(ident).ok_or_else(|| format!("library: {ident}"))?;
+            let (author, entry, mut bytes) = lib.get(ident).ok_or_else(|| format!("library: {ident}"))?;
+            // a custom BLOCK in a terrain-environment map: the file's Ident takes the map's
+            // collection (a Stadium-collection block is dropped silently there)
+            if !is_stadium && ident.ends_with("_CustomBlock") {
+                match recollect_file(&bytes, collection) {
+                    Ok(b) => {
+                        bytes = b;
+                        recollected += 1;
+                    }
+                    Err(e) => println!("  {}: not re-collected ({e})", file_stem(ident)),
+                }
+            }
             files.entry(entry).or_insert(bytes);
             let key = ident.trim_end_matches("_CustomBlock").to_string();
             if !rows.iter().any(|(i, _)| *i == key) {
@@ -1013,7 +1056,7 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
         let manifest: Vec<(&str, &str)> = rows.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
         m.replace_embedded_objects(&manifest, &zip);
         m.write_to(&tmp).map_err(|e| e.to_string())?;
-        println!("  archive: {} files, {} manifest rows, {} bytes", files.len(), rows.len(), zip.len());
+        println!("  archive: {} files, {} manifest rows, {} bytes{}", files.len(), rows.len(), zip.len(), if recollected > 0 { format!(", {recollected} custom blocks re-collected to {collection:#x}") } else { String::new() });
     }
     {
         let mut m = MapFile::load(&tmp);
@@ -1048,5 +1091,107 @@ pub fn itemdump_cmd(args: &[String]) -> Result<(), String> {
         let hex: String = body[a..b].iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" ");
         println!("  {hex}");
     }
+    Ok(())
+}
+
+/// Re-collect a custom block / item FILE: its Ident's collection word (header chunk
+/// 0x2E001003 and body chunk 0x2E00100B — the u32 right after the path Id) set to
+/// `collection`. A Stadium-collection (26) custom block is dropped silently by a
+/// terrain-environment map (Winter 2026 - 03 Wet Wood: the no-mesh water pad never
+/// appeared); the map's own collection word makes it load there.
+pub fn recollect_file(bytes: &[u8], collection: u32) -> Result<Vec<u8>, String> {
+    fn patch_ident(data: &mut [u8], start: usize, from: u32) -> Option<usize> {
+        // start = offset of the first Id word (after the version / lookback words)
+        let mut p = start;
+        let w = u32::from_le_bytes(data.get(p..p + 4)?.try_into().ok()?);
+        p += 4;
+        if w & 0x3FFF_FFFF == 0 && w >> 30 == 1 {
+            let len = u32::from_le_bytes(data.get(p..p + 4)?.try_into().ok()?) as usize;
+            p += 4 + len;
+        }
+        let c = u32::from_le_bytes(data.get(p..p + 4)?.try_into().ok()?);
+        if c == from {
+            Some(p)
+        } else {
+            None
+        }
+    }
+    let g = crate::gbx::Gbx::parse(bytes);
+    let mut out = bytes.to_vec();
+    let mut patched = 0usize;
+    // header chunks: id/size table after the 21-byte header
+    let n = u32::from_le_bytes(bytes[17..21].try_into().unwrap()) as usize;
+    let mut off = 21;
+    let mut chunks = Vec::new();
+    for _ in 0..n {
+        let id = u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap());
+        let sz = u32::from_le_bytes(bytes[off + 4..off + 8].try_into().unwrap()) & 0x7FFF_FFFF;
+        off += 8;
+        chunks.push((id, sz as usize));
+    }
+    let mut hdr = off;
+    for (id, sz) in chunks {
+        if id == 0x2E00_1003 {
+            // version u32, then the Ident (path, collection, author)
+            for from in [26u32, 28, 29, 16, 15] {
+                if let Some(p) = patch_ident(&mut out[hdr..hdr + sz], 4, from) {
+                    out[hdr + p..hdr + p + 4].copy_from_slice(&collection.to_le_bytes());
+                    patched += 1;
+                    if std::env::var("ALTERED_DEBUG").is_ok() {
+                        eprintln!("    recollect: header word {from} → {collection} at file offset {}", hdr + p);
+                    }
+                    break;
+                }
+            }
+        }
+        hdr += sz;
+    }
+    // body chunk 0x2E00100B
+    let mut body = g.body.clone();
+    let key = 0x2E00_100Bu32.to_le_bytes();
+    if let Some(i) = body.windows(4).position(|w| w == key) {
+        let mut start = i + 4;
+        // the body's first Id carries the lookback version word (3) first
+        if body.get(start..start + 4).map(|w| u32::from_le_bytes(w.try_into().unwrap())) == Some(3) {
+            let next = body.get(start + 4..start + 8).map(|w| u32::from_le_bytes(w.try_into().unwrap())).unwrap_or(0);
+            if next >> 30 == 1 {
+                start += 4;
+            }
+        }
+        for from in [26u32, 28, 29, 16, 15] {
+            if let Some(p) = patch_ident(&mut body[..], start, from) {
+                body[p..p + 4].copy_from_slice(&collection.to_le_bytes());
+                patched += 1;
+                if std::env::var("ALTERED_DEBUG").is_ok() {
+                    eprintln!("    recollect: body word {from} → {collection} at body offset {p} (chunk at {i})");
+                }
+                break;
+            }
+        }
+        if std::env::var("ALTERED_DEBUG").is_ok() {
+            let hex: String = body[i..(i + 140).min(body.len())].iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" ");
+            eprintln!("    body chunk 0x2E00100B bytes: {hex}");
+            // every other u32 == 26 in the body (other collection words?)
+            let hits: Vec<usize> = (0..body.len() - 3).step_by(1).filter(|&k| u32::from_le_bytes(body[k..k + 4].try_into().unwrap()) == 26).collect();
+            eprintln!("    body u32==26 at offsets: {:?} (body {} bytes)", hits, body.len());
+        }
+    } else if std::env::var("ALTERED_DEBUG").is_ok() {
+        eprintln!("    recollect: no 0x2E00100B chunk in the body");
+    }
+    if patched == 0 {
+        return Err("no collection word found to patch".into());
+    }
+    let g2 = crate::gbx::Gbx::parse(&out);
+    Ok(g2.write_body_recompressed(&body))
+}
+
+pub fn recollect_cmd(args: &[String]) -> Result<(), String> {
+    let input = args.iter().skip(1).find(|a| !a.starts_with("--") && (a.ends_with(".Gbx") || a.ends_with(".gbx"))).ok_or("FILE.Block.Gbx --collection N --out OUT")?;
+    let coll: u32 = crate::cli::flag(args, "--collection").and_then(|v| v.parse().ok()).ok_or("--collection N")?;
+    let out = crate::cli::flag(args, "--out").ok_or("--out")?;
+    let bytes = std::fs::read(input).map_err(|e| e.to_string())?;
+    let patched = recollect_file(&bytes, coll)?;
+    std::fs::write(out, &patched).map_err(|e| e.to_string())?;
+    println!("{input} -> {out}: collection {coll}, {} bytes", patched.len());
     Ok(())
 }
