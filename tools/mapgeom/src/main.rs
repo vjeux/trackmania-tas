@@ -255,6 +255,7 @@ fn score_at(scene: &mapgeom::scene::Scene, runs: &[Run], reach: f32) -> (usize, 
 }
 
 fn main() {
+    mapgeom::par::process_started();
     // --version / -V. Compile-time only: CARGO_PKG_* come from the crate's
     // Cargo.toml (which inherits the one workspace version), and TAS_BUILD is
     // the git hash the release build sets. option_env! means an ordinary

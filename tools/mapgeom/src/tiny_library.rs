@@ -2760,8 +2760,22 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         std::fs::write(r, &rep).unwrap();
     }
     println!("  library: {} embedded items; {} models ok, {} failed -> {}", files.len(), ok, bad, out_zip.display());
-    if cache_hits > 0 || crate::bake_cache::dir().is_some() {
-        println!("  bake cache: {cache_hits} block bakes reused from {}", crate::bake_cache::dir().map(|d| d.display().to_string()).unwrap_or_else(|| "(disabled)".into()));
+    // the one line a build says about its bakes (`tinyctl build` passes it through)
+    {
+        let bakes = t_blocks + t_trees1 + t_items + t_trees2;
+        println!(
+            "  bake cache: {} reused, {} baked, {:.1} s (bakes {:.2} s on {} workers: blocks {:.2}, items {:.2}, trees {:.2}; converter {}; {})",
+            cache_hits + baker.hits,
+            fresh_bakes + baker.fresh,
+            crate::par::process_secs(),
+            bakes.as_secs_f64(),
+            crate::par::workers(),
+            t_blocks.as_secs_f64(),
+            t_items.as_secs_f64(),
+            (t_trees1 + t_trees2).as_secs_f64(),
+            crate::bake_cache::BUILD_ID,
+            crate::bake_cache::dir().map(|d| d.display().to_string()).unwrap_or_else(|| "cache disabled".into())
+        );
     }
     if !deepened.is_empty() {
         println!("  sea floor at source depth under {} shore tile models at the water row: {}", deepened.len(), deepened.join(", "));

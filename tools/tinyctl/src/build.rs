@@ -191,7 +191,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         lib.envs(env.iter());
         match run(&mut lib, &out.join("build.log")) {
             Ok(text) => {
-                for l in text.lines().filter(|l| l.contains("library:") || l.contains("FAILED") || l.contains("pictures:")) {
+                for l in text.lines().filter(|l| l.contains("library:") || l.contains("bake cache:") || l.contains("FAILED") || l.contains("pictures:")) {
                     println!("  {}", l.trim());
                 }
             }

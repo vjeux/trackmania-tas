@@ -56,3 +56,17 @@ pub fn map<J: Sync, R: Send>(store: &mut DataStore, jobs: &[J], f: impl Fn(&mut 
     });
     results.into_inner().unwrap_or_else(|e| e.into_inner()).into_iter().map(|r| r.expect("every job ran")).collect()
 }
+
+static PROCESS_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Called first thing in `main`: the instant the process started, for the
+/// wall-time reports (a build's time includes opening the packs, before any
+/// command runs).
+pub fn process_started() {
+    let _ = PROCESS_START.set(std::time::Instant::now());
+}
+
+/// Seconds since `process_started` (or since the first call, without it).
+pub fn process_secs() -> f64 {
+    PROCESS_START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()
+}
