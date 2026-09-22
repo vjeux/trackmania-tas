@@ -10,7 +10,7 @@
 //! `tmmaps stadium-scan MAP…` — the feasibility table (what fits, what is dropped).
 
 use crate::map::MapFile;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Every block info of the Stadium pack (mapgeom ls "" --pak Stadium.pak, the
@@ -604,5 +604,320 @@ pub fn strip_cmd(args: &[String]) -> Result<(), String> {
     m.set_map_uid(&crate::altered::new_uid("Strp", uid_len));
     m.write_to(&out).map_err(|e| e.to_string())?;
     println!("{} -> {}: ghost {g}, lightmap {l}, genealogy {gen}", input.display(), out.display());
+    Ok(())
+}
+
+/// `tmmaps stadium-verify SRC.Map.Gbx PORT.Map.Gbx`: the source's validation ghost mapped
+/// through the port's shift, then for every sample whether a kept block sits under it
+/// (its cell column, the sample within −1..+12 m of a row the block occupies). A 1:1
+/// port supports the whole route; a wrongly raised twin or a missing piece shows as
+/// unsupported samples — printed with the nearest block name.
+pub fn verify_cmd(args: &[String]) -> Result<(), String> {
+    let maps: Vec<&String> = args.iter().skip(1).filter(|a| a.ends_with(".Map.Gbx")).collect();
+    let (src, port) = (Path::new(maps.first().ok_or("SRC PORT")?), Path::new(maps.get(1).ok_or("SRC PORT")?));
+    let s = MapFile::load(src);
+    let p = plan(&s, src)?;
+    // --self: the source checked against itself (shift 0, its own frame) — the control
+    // that says what this crude model reports for a map that IS right
+    let selfcheck = crate::cli::has(args, "--self");
+    let m = if selfcheck { MapFile::load(src) } else { MapFile::load(port) };
+    let d = gbx::record::decode_ghost(src.to_str().unwrap_or_default()).map_err(|e| format!("no ghost: {e}"))?;
+    let gsrc = p.ground;
+    let gst = if selfcheck { gsrc } else { crate::map::ground_y(STADIUM) };
+    let mut p = p;
+    if selfcheck {
+        p.shift = [0, 0, 0];
+    }
+    // the port's blocks by (cx, cz): rows occupied (origin row .. origin row + height − 1; height
+    // from the plain block's units is unknown here → 2 rows for every block)
+    let mut cols: HashMap<(i32, i32), Vec<(i32, String)>> = HashMap::new();
+    for b in &m.blocks {
+        let c = block_cell(b, gst);
+        cols.entry((c[0], c[2])).or_default().push((c[1], b.name.clone()));
+        // a multi-cell piece covers its neighbours too (footprint unknown: 1 cell each way)
+        for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            cols.entry((c[0] + dx, c[2] + dz)).or_default().push((c[1], format!("~{}", b.name)));
+        }
+    }
+    // the SOURCE's blocks by column (dropped ones included): what the route really rode on
+    let mut scols: HashMap<(i32, i32), Vec<(i32, String)>> = HashMap::new();
+    for b in &s.blocks {
+        let c = block_cell(b, gsrc);
+        scols.entry((c[0], c[2])).or_default().push((c[1], b.name.clone()));
+    }
+    let mut on_dropped: BTreeMap<String, usize> = BTreeMap::new();
+    let mut total = 0usize;
+    let mut supported = 0usize;
+    let mut misses: Vec<(f32, [f32; 3], String)> = Vec::new();
+    for smp in d.samples.iter().step_by(5) {
+        // world → cell (source frame) → shifted cell → stadium world
+        let cx = (smp.x / 32.0).floor() as i32 + p.shift[0];
+        let cz = (smp.z / 32.0).floor() as i32 + p.shift[2];
+        let y = smp.y - gsrc + gst + p.shift[1] as f32 * 8.0; // stadium world y
+        total += 1;
+        let mut ok = false;
+        let mut nearest: Option<(f32, String)> = None;
+        if let Some(v) = cols.get(&(cx, cz)) {
+            for (row, name) in v {
+                let floor = *row as f32 * 8.0 + gst;
+                let dy = y - floor;
+                if dy >= -1.0 && dy <= 12.0 {
+                    ok = true;
+                    break;
+                }
+                if nearest.as_ref().map(|(d, _)| dy.abs() < *d).unwrap_or(true) {
+                    nearest = Some((dy.abs(), format!("{name} {dy:+.0} m")));
+                }
+            }
+        }
+        if ok {
+            supported += 1;
+        } else {
+            // what the source had in this column within reach of the sample
+            let sc = ((smp.x / 32.0).floor() as i32, (smp.z / 32.0).floor() as i32);
+            if let Some(v) = scols.get(&sc) {
+                for (row, name) in v {
+                    let dy = smp.y - (*row as f32 * 8.0 + gsrc);
+                    if dy >= -1.0 && dy <= 12.0 {
+                        *on_dropped.entry(name.clone()).or_default() += 1;
+                    }
+                }
+            }
+            misses.push((smp.time_ms as f32 / 1000.0, [smp.x, smp.y, smp.z], nearest.map(|(_, n)| n).unwrap_or_else(|| "nothing in the column".into())));
+        }
+    }
+    println!("{}: {} samples, {} supported ({:.0}%), shift {:?}", port.file_name().unwrap().to_string_lossy(), total, supported, supported as f32 * 100.0 / total.max(1) as f32, p.shift);
+    // the misses grouped by nearest name (airborne stretches show as "nothing in the column")
+    let mut by: BTreeMap<String, (usize, f32)> = BTreeMap::new();
+    for (t, _, n) in &misses {
+        let key = n.split(' ').next().unwrap_or(n).to_string();
+        let e = by.entry(key).or_insert((0, *t));
+        e.0 += 1;
+    }
+    let mut v: Vec<_> = by.into_iter().collect();
+    v.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    for (name, (n, t)) in v.iter().take(8) {
+        println!("  unsupported ×{n} near {name} (first at {t:.1} s)");
+    }
+    if let Some((t, pos, _)) = misses.first() {
+        let y = pos[1] - gsrc + gst + p.shift[1] as f32 * 8.0;
+        println!("  first unsupported sample at {t:.1} s: target frame ({:.0}, {y:.0}, {:.0})", pos[0] + p.shift[0] as f32 * 32.0, pos[2] + p.shift[2] as f32 * 32.0);
+    }
+    let mut od: Vec<_> = on_dropped.into_iter().collect();
+    od.sort_by(|a, b| b.1.cmp(&a.1));
+    if !od.is_empty() {
+        println!("  the source had under those samples: {}", od.iter().take(10).map(|(n, k)| format!("{n}×{k}")).collect::<Vec<_>>().join(" "));
+    }
+    Ok(())
+}
+
+/// `tmmaps stadium-terrain PORT.Map.Gbx --source SRC.Map.Gbx --out OUT.Map.Gbx [--mode route|window]
+/// [--mapgeom BIN] --pak FILE:KEY [--pak FILE:KEY] [--keep-work]`: the vista landscape the port
+/// dropped, baked into ×1 static items (mapgeom tiny-library on a copy of the source pruned to
+/// the chosen terrain blocks, block infos from the vista pack, items written for Stadium) and
+/// placed in the port at the same cells — the route rides on landscape for whole stretches
+/// (Summer 2026 - 01: 20% of the lap on flat Land; json9841 2026-09-22 "many maps are broken",
+/// vjeux "we are reproducing all the block geometry anyway"). `route` bakes the terrain within
+/// one cell of the validation ghost's path (the drivable fix); `window` every landscape piece
+/// inside the 48-cell window (the look). Water zone tiles (Water/Sea/Lake/WaterHill*) are never
+/// baked: an item carries no water volume.
+pub fn terrain_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| crate::cli::flag(args, k).map(String::from);
+    let port_path = PathBuf::from(args.iter().skip(1).find(|a| !a.starts_with("--") && a.ends_with(".Map.Gbx")).ok_or("PORT.Map.Gbx")?);
+    let src_path = PathBuf::from(f("--source").ok_or("--source SRC.Map.Gbx")?);
+    let out = PathBuf::from(f("--out").ok_or("--out OUT.Map.Gbx")?);
+    let mode = f("--mode").unwrap_or_else(|| "route".into());
+    let paks: Vec<String> = args.windows(2).filter(|w| w[0] == "--pak").map(|w| w[1].clone()).collect();
+    if paks.is_empty() {
+        return Err("--pak FILE:KEY (the vista pack and Stadium.pak)".into());
+    }
+    let mapgeom = f("--mapgeom").map(PathBuf::from).unwrap_or_else(|| std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("mapgeom"))).unwrap_or_else(|| PathBuf::from("mapgeom")));
+    let s = MapFile::load(&src_path);
+    let p = plan(&s, &src_path)?;
+    let gsrc = p.ground;
+    let gst = crate::map::ground_y(STADIUM);
+    let is_water_zone = |n: &str| {
+        let l = n.to_ascii_lowercase();
+        l == "water" || l == "sea" || l == "lake" || l.starts_with("waterhill") || l.starts_with("lakehill") || l.starts_with("seahill")
+    };
+    // the route's columns (±1 cell) from the validation ghost
+    let mut route_cols: HashSet<(i32, i32)> = HashSet::new();
+    if mode == "route" {
+        let d = gbx::record::decode_ghost(src_path.to_str().unwrap_or_default()).map_err(|e| format!("no validation ghost for --mode route: {e}"))?;
+        for smp in &d.samples {
+            let (cx, cz) = ((smp.x / 32.0).floor() as i32, (smp.z / 32.0).floor() as i32);
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    route_cols.insert((cx + dx, cz + dz));
+                }
+            }
+        }
+    }
+    let lo = [-p.shift[0], -p.shift[1], -p.shift[2]];
+    let hi = [lo[0] + 47, lo[1] + 39, lo[2] + 47];
+    let mut selected: Vec<usize> = Vec::new();
+    let mut by_name: BTreeMap<String, usize> = BTreeMap::new();
+    for (i, b) in s.blocks.iter().enumerate() {
+        if !matches!(p.fates[i], Fate::Drop(_)) || is_water_zone(&b.name) || b.free_pos.is_some() {
+            continue;
+        }
+        let c = block_cell(b, gsrc);
+        if c[0] < lo[0] || c[0] > hi[0] || c[2] < lo[2] || c[2] > hi[2] || c[1] < lo[1] || c[1] > hi[1] {
+            continue;
+        }
+        if mode == "route" && !route_cols.contains(&(c[0], c[2])) {
+            continue;
+        }
+        selected.push(i);
+        *by_name.entry(b.name.clone()).or_default() += 1;
+    }
+    println!("{}: {} landscape blocks selected ({mode}): {}", src_path.file_name().unwrap().to_string_lossy(), selected.len(), by_name.iter().map(|(n, k)| format!("{n}×{k}")).collect::<Vec<_>>().join(" "));
+    if selected.is_empty() {
+        std::fs::copy(&port_path, &out).map_err(|e| e.to_string())?;
+        println!("  nothing to bake; port copied to {}", out.display());
+        return Ok(());
+    }
+    // the pruned source: only the selected blocks (their original indices, in order), no items
+    let work = out.with_extension(format!("terrain-{}", std::process::id()));
+    std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    let pruned = work.join("pruned.Map.Gbx");
+    {
+        let keep: HashSet<usize> = selected.iter().cloned().collect();
+        let mut m = MapFile::load(&src_path);
+        let r = m.remove_and_add_blocks(|b| !keep.contains(&b.index), |_| true, &[]);
+        m.write_to(&pruned).map_err(|e| e.to_string())?;
+        let mut m = MapFile::load(&pruned);
+        let n = m.items.len();
+        if n > 1 {
+            let mut keep_items = vec![false; n];
+            keep_items[0] = true; // one record stays: tiny-library reads the collection off it
+            m.remove_items(&keep_items);
+            m.write_to(&pruned).map_err(|e| e.to_string())?;
+        }
+        println!("  pruned source: {} blocks kept ({:?})", keep.len(), r);
+    }
+    // the bake
+    let lib = work.join("lib.zip");
+    let mapping = work.join("placements.tsv");
+    let report = work.join("report.tsv");
+    let env = match p.collection {
+        0x1c => "BlueBay",
+        0x10 => "RedIsland",
+        0x1d => "WhiteShore",
+        0xf => "GreenCoast",
+        _ => "Stadium",
+    };
+    let mut cmd = std::process::Command::new(&mapgeom);
+    for pk in &paks {
+        cmd.arg("--pak").arg(pk);
+    }
+    cmd.arg("tiny-library").arg(&pruned).arg("--scale").arg("1").arg("--library-out").arg(&lib).arg("--mapping-out").arg(&mapping).arg("--report").arg(&report).arg("--collection").arg(env);
+    cmd.env("MAPGEOM_ITEM_COLLECTION", "26").env("TINY_WATER_BLOCKS", "0");
+    let o = cmd.output().map_err(|e| format!("{}: {e}", mapgeom.display()))?;
+    let log = work.join("tiny-library.log");
+    std::fs::write(&log, [o.stdout.as_slice(), o.stderr.as_slice()].concat()).ok();
+    if !o.status.success() {
+        return Err(format!("mapgeom tiny-library failed ({}); log {}", o.status, log.display()));
+    }
+    // the mapping: @pruned_index → item file + footprint
+    let text = std::fs::read_to_string(&mapping).map_err(|e| e.to_string())?;
+    let mut placements: Vec<(String, [f32; 3], f32)> = Vec::new();
+    let mut skipped: BTreeMap<String, usize> = BTreeMap::new();
+    crate::tiny::set_ground(p.collection);
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split('\t').collect();
+        let Some(idx) = fields[0].strip_prefix('@').and_then(|v| v.parse::<usize>().ok()) else { continue };
+        let model = fields.get(1).copied().unwrap_or("-");
+        let src_i = *selected.get(idx).ok_or_else(|| format!("mapping index {idx} beyond the {} pruned blocks", selected.len()))?;
+        let b = &s.blocks[src_i];
+        if !model.ends_with(".Item.Gbx") {
+            *skipped.entry(format!("{} ({model})", b.name)).or_default() += 1;
+            continue;
+        }
+        let sx: u32 = fields.get(3).and_then(|v| v.parse().ok()).unwrap_or(1);
+        let sz: u32 = fields.get(4).and_then(|v| v.parse().ok()).unwrap_or(1);
+        let o = crate::tiny::block_origin(b, (sx, sz));
+        let pos = [o[0] + p.shift[0] as f32 * 32.0, o[1] - gsrc + gst + p.shift[1] as f32 * 8.0, o[2] + p.shift[2] as f32 * 32.0];
+        placements.push((model.to_string(), pos, crate::tiny::block_yaw(b)));
+    }
+    println!("  bake: {} items placed{}", placements.len(), if skipped.is_empty() { String::new() } else { format!("; not baked: {}", skipped.iter().map(|(n, k)| format!("{n}×{k}")).collect::<Vec<_>>().join(" ")) });
+    // into the port
+    let tmp = out.with_extension(format!("tmp-{}.Map.Gbx", std::process::id()));
+    std::fs::copy(&port_path, &tmp).map_err(|e| e.to_string())?;
+    {
+        let mut m = MapFile::load(&tmp);
+        if m.items.is_empty() {
+            let g = crate::gbx::Gbx::parse(&std::fs::read(&tmp).map_err(|e| e.to_string())?);
+            let body = crate::map::seed_item_record(&g.body, STADIUM)?;
+            std::fs::write(&tmp, g.write_body_recompressed(&body)).map_err(|e| e.to_string())?;
+            let mut m = MapFile::load(&tmp);
+            m.move_item(0, [8.0, -900.0, 8.0], 0.0, crate::tiny::cell_for([8.0, -900.0, 8.0]));
+            m.write_to(&tmp).map_err(|e| e.to_string())?;
+            m = MapFile::load(&tmp);
+        }
+        crate::tiny::set_ground(STADIUM);
+        let first = m.items.len();
+        m.append_item_clones(first + placements.len());
+        m.write_to(&tmp).map_err(|e| e.to_string())?;
+        let mut m = MapFile::load(&tmp);
+        for (k, (model, pos, yaw)) in placements.iter().enumerate() {
+            let i = first + k;
+            m.set_item_model(i, model);
+            m.set_item_author(i, model); // an embedded item is its own author (mapgeom's nameless body ident)
+            m.set_item_collection(i, STADIUM);
+            m.move_item(i, *pos, *yaw, crate::tiny::cell_for(*pos));
+            m.set_item_frame(i, [*yaw, 0.0, 0.0], [0.0; 3]);
+            m.set_item_scale(i, 1.0);
+            m.clear_item_variant(i);
+            m.set_item_flags(i, 1);
+        }
+        m.write_to(&tmp).map_err(|e| e.to_string())?;
+        let mut m = MapFile::load(&tmp);
+        for k in 0..placements.len() {
+            m.set_item_waypoint(first + k, None, 0);
+        }
+        m.write_to(&tmp).map_err(|e| e.to_string())?;
+    }
+    // the archive: the port's files + the library's
+    {
+        let mut m = MapFile::load(&tmp);
+        let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut rows: Vec<(String, String)> = Vec::new();
+        if let Some((src_rows, src_zip)) = m.embedded_objects() {
+            for (n, b) in crate::header::zip_entries(&src_zip) {
+                files.insert(n, b);
+            }
+            rows = src_rows;
+        }
+        let zip_bytes = std::fs::read(&lib).map_err(|e| e.to_string())?;
+        let used: HashSet<&str> = placements.iter().map(|(m, _, _)| m.as_str()).collect();
+        let mut added = 0usize;
+        for (n, b) in crate::header::zip_entries(&zip_bytes) {
+            let entry = n.replace('\\', "/");
+            let file = entry.rsplit('/').next().unwrap_or(&entry).to_string();
+            if let Some(stem) = file.strip_suffix(".Item.Gbx") {
+                // only the items placed ride along (the library also holds the terrain's
+                // vegetation species, not placed here)
+                if !used.contains(file.as_str()) {
+                    continue;
+                }
+                if !rows.iter().any(|(i, _)| i == stem) {
+                    rows.push((stem.to_string(), stem.to_string()));
+                }
+            }
+            files.entry(entry).or_insert(b);
+            added += 1;
+        }
+        let zip = crate::header::deflated_zip(&files);
+        let manifest: Vec<(&str, &str)> = rows.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+        m.replace_embedded_objects(&manifest, &zip);
+        m.write_to(&out).map_err(|e| e.to_string())?;
+        println!("  archive: {} files ({added} from the terrain library), {} manifest rows, {} bytes", files.len(), rows.len(), zip.len());
+    }
+    let _ = std::fs::remove_file(&tmp);
+    if !crate::cli::has(args, "--keep-work") {
+        let _ = std::fs::remove_dir_all(&work);
+    }
+    println!("  -> {}", out.display());
     Ok(())
 }

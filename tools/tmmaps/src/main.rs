@@ -160,6 +160,18 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        "stadium-terrain" => {
+            if let Err(e) = tmmaps::stadium::terrain_cmd(&args[1..]) {
+                eprintln!("tmmaps stadium-terrain: {e}");
+                std::process::exit(1);
+            }
+        }
+        "stadium-verify" => {
+            if let Err(e) = tmmaps::stadium::verify_cmd(&args[1..]) {
+                eprintln!("tmmaps stadium-verify: {e}");
+                std::process::exit(1);
+            }
+        }
         "stadium-info" => {
             if let Err(e) = tmmaps::stadium::info_cmd(&args[1..]) {
                 eprintln!("tmmaps stadium-info: {e}");
@@ -187,6 +199,12 @@ fn main() {
         "altered-recollect" => {
             if let Err(e) = tmmaps::altered::recollect_cmd(&args[1..]) {
                 eprintln!("tmmaps altered-recollect: {e}");
+                std::process::exit(1);
+            }
+        }
+        "altered-addblock" => {
+            if let Err(e) = tmmaps::altered::addblock_cmd(&args[1..]) {
+                eprintln!("tmmaps altered-addblock: {e}");
                 std::process::exit(1);
             }
         }

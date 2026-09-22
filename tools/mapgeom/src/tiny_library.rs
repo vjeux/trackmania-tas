@@ -1186,6 +1186,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // (BlueBay\GameCtnBlockInfo\…\Stadium\X carries the terrain modifiers a
     // Stadium block gets on BlueBay; a Stadium map wants the plain files)
     let collection_name = if collection_name.is_empty() { crate::static_item::build::env_name(collection) } else { collection_name };
+    // MAPGEOM_ITEM_COLLECTION=26: the items are written for ANOTHER collection than the
+    // source's — a vista map's terrain baked for a Stadium host (the Stadium port,
+    // 2026-09-22); the block infos still come from the source's environment
+    let collection = std::env::var("MAPGEOM_ITEM_COLLECTION").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(collection);
     let wanted = |name: &str| only.map(|o| o.split(',').any(|n| n == name)).unwrap_or(true);
     let legacy: BTreeMap<String, Vec<u8>> = match legacy_zip {
         Some(p) => crate::embedded::unzip(&std::fs::read(p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))).expect("legacy zip"),

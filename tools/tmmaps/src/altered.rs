@@ -922,7 +922,14 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
     // crashes the client, and the environment's own water ZONE tile (`Water`/`Lake`/`Sea`)
     // as a free block loads but wets nothing — the sea is one fixed plane, not a tile's
     // volume. `--wet` on such a map refuses (`--zone-pad` keeps the experiment).
-    let zone_pad: Option<(&str, f32)> = if crate::cli::has(args, "--zone-pad") {
+    // --lake-pad: the environment's OWN lake block (RedIsland `DecoLakeCurve2In`, a 2×2×2
+    // piece carrying a real water volume, sheet at local +7.7 per its block info) as a
+    // free block under the start — the vista twin of the Stadium water pad (vjeux
+    // 2026-09-22: "very sus that you can't have water blocks in the new environments")
+    let zone_pad: Option<(&str, f32)> = if let Some(spec) = crate::cli::flag(args, "--lake-pad") {
+        let (name, h) = spec.split_once(':').unwrap_or((spec, "7.7"));
+        Some((Box::leak(name.to_string().into_boxed_str()), h.parse().unwrap_or(7.7)))
+    } else if crate::cli::has(args, "--zone-pad") {
         match collection {
             0x10 => Some(("Water", 7.5)),
             0x1d => Some(("Water", 7.0)),
@@ -1342,5 +1349,38 @@ pub fn unzip_cmd(args: &[String]) -> Result<(), String> {
         n += 1;
     }
     println!("{input}: {n} files, {} manifest rows → {}", rows.len(), out.display());
+    Ok(())
+}
+
+
+/// `tmmaps altered-addblock MAP --out OUT --name BLOCK (--pos x,y,z [--yaw R] | --grid cx,cy,cz [--dir D]) [--flags HEX]
+/// [--author A]`: one stock (or embedded custom) block added — the "what happens if you put a normal
+/// water block in a vista map" probe (vjeux 2026-09-22).
+pub fn addblock_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| crate::cli::flag(args, k).map(String::from);
+    let input = PathBuf::from(args.iter().skip(1).find(|a| !a.starts_with("--") && a.ends_with(".Map.Gbx")).ok_or("MAP")?);
+    let out = PathBuf::from(f("--out").ok_or("--out")?);
+    let name = f("--name").ok_or("--name")?;
+    let flags = f("--flags").map(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).unwrap_or(0)).unwrap_or(0);
+    let v3 = |s: &str| -> [f32; 3] {
+        let p: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap_or(0.0)).collect();
+        [p[0], p[1], p[2]]
+    };
+    let spec = if let Some(g) = f("--grid") {
+        let c = v3(&g);
+        crate::map::FreeBlockSpec { name: name.clone(), author: f("--author"), flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some([c[0] as i32, c[1] as i32, c[2] as i32]), dir: f("--dir").and_then(|d| d.parse().ok()).unwrap_or(0) }
+    } else {
+        let pos = v3(&f("--pos").ok_or("--pos x,y,z or --grid cx,cy,cz")?);
+        crate::map::FreeBlockSpec { name: name.clone(), author: f("--author"), flags, pos, rot: [f("--yaw").and_then(|y| y.parse().ok()).unwrap_or(0.0), 0.0, 0.0], grid: None, dir: 0 }
+    };
+    let mut m = MapFile::load(&input);
+    let r = m.remove_and_add_blocks(|_| false, |_| false, &[spec]);
+    m.write_to(&out).map_err(|e| e.to_string())?;
+    let mut m = MapFile::load(&out);
+    let hdr = crate::header::read(out.to_str().unwrap_or_default()).ok();
+    let uid_len = hdr.as_ref().map(|h| h.uid.len()).unwrap_or(27);
+    m.set_map_uid(&new_uid("Blk", uid_len));
+    m.write_to(&out).map_err(|e| e.to_string())?;
+    println!("{} + {name} → {} ({:?})", input.display(), out.display(), r);
     Ok(())
 }
