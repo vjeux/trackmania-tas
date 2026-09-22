@@ -285,7 +285,12 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         // "U10S_26 By Everios96 [Tiny] — always like this and then the alteration name
         // in the last bracket"; the FILE name too): `U10S_N By Everios96 [Ice]`
         let everios = f("--name-style").as_deref() == Some("everios");
-        let out_name = if everios { format!("{} By Everios96 [{word}]", hdr.name) } else { format!("{word} {}", hdr.name) };
+        // --author-tag "By X" (default "By Everios96"): the middle of the club-style name;
+        // "-" = no author tag ("<name> [Icy]") — HarrisonTT's UBU10 set, 2026-09-21
+        let author_tag = f("--author-tag").unwrap_or_else(|| "By Everios96".to_string());
+        let out_name = if everios {
+            if author_tag == "-" { format!("{} [{word}]", hdr.name) } else { format!("{} {author_tag} [{word}]", hdr.name) }
+        } else { format!("{word} {}", hdr.name) };
         let out_map = if everios { dir.join(format!("{out_name}.Map.Gbx")) } else { dir.join(format!("U10S-{nn}-{word}.Map.Gbx")) };
         let records = dir.join("records.tsv");
         let models = dir.join("models.tsv");
