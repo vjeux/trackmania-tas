@@ -148,6 +148,12 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        "altered-route" => {
+            if let Err(e) = tmmaps::altered::route_cmd(&args[1..]) {
+                eprintln!("tmmaps altered-route: {e}");
+                std::process::exit(1);
+            }
+        }
         "altered-recollect" => {
             if let Err(e) = tmmaps::altered::recollect_cmd(&args[1..]) {
                 eprintln!("tmmaps altered-recollect: {e}");

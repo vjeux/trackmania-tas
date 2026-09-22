@@ -1195,3 +1195,101 @@ pub fn recollect_cmd(args: &[String]) -> Result<(), String> {
     println!("{input} -> {out}: collection {coll}, {} bytes", patched.len());
     Ok(())
 }
+
+/// `tmmaps altered-route MAP…`: how much of the author's route runs on BUILT blocks
+/// (Stadium road / platform / structure pieces — what a "migrate to Stadium" keeps)
+/// versus on the environment's terrain (Land, hills, beach, cliffs — what Stadium has
+/// no counterpart for). One row per map: size, collection, ghost samples, built share,
+/// the terrain block names driven, the terrain-conformed `On…` road variants used.
+pub fn route_cmd(args: &[String]) -> Result<(), String> {
+    println!("map\tenvir\tsize\tsamples\tbuilt%\tterrain_driven\ton_variants");
+    for input in args.iter().skip(1).filter(|a| a.ends_with(".Map.Gbx")) {
+        let m = MapFile::load(Path::new(input));
+        let collection = m.items.first().map(|it| it.collection_raw).unwrap_or(26);
+        let ground = crate::map::ground_y(collection);
+        let Ok(d) = gbx::record::decode_ghost(input) else {
+            println!("{input}\t{collection:#x}\t{:?}\t0\t-\tno ghost\t", m.size);
+            continue;
+        };
+        let built = |name: &str| -> bool {
+            let n = name.trim_start_matches("M2_");
+            FAMILIES.iter().any(|f| n.starts_with(f)) || n.starts_with("Structure") || n.starts_with("Gate") || n.starts_with("Technics") || n.contains("_CustomBlock")
+        };
+        let mut by_cell: HashMap<(i32, i32), Vec<(f32, &str)>> = HashMap::new();
+        for b in &m.blocks {
+            let (cx, cy, cz) = b.coords();
+            let floor = match b.free_pos {
+                Some(p) => p[1],
+                None => cy as f32 * 8.0 + ground,
+            };
+            by_cell.entry((cx, cz)).or_default().push((floor, b.name.as_str()));
+        }
+        let mut pts: Vec<[f32; 3]> = Vec::new();
+        let mut prev: Option<[f32; 3]> = None;
+        for s in &d.samples {
+            let p = [s.x, s.y, s.z];
+            if let Some(q) = prev {
+                let dist = ((p[0] - q[0]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+                let n = (dist / 4.0).ceil().max(1.0) as usize;
+                for k in 1..=n {
+                    let t = k as f32 / n as f32;
+                    pts.push([q[0] + (p[0] - q[0]) * t, q[1] + (p[1] - q[1]) * t, q[2] + (p[2] - q[2]) * t]);
+                }
+            } else {
+                pts.push(p);
+            }
+            prev = Some(p);
+        }
+        let mut n_built = 0usize;
+        let mut terrain: BTreeMap<String, usize> = BTreeMap::new();
+        let mut airborne = 0usize;
+        for p in &pts {
+            let (cx, cz) = ((p[0] / 32.0).floor() as i32, (p[2] / 32.0).floor() as i32);
+            let mut any_built = false;
+            let mut nearest_terrain: Option<(f32, &str)> = None;
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    if let Some(v) = by_cell.get(&(cx + dx, cz + dz)) {
+                        for (floor, name) in v {
+                            let d = p[1] - floor;
+                            if d >= -3.0 && d <= 12.0 {
+                                if built(name) {
+                                    any_built = true;
+                                } else if dx == 0 && dz == 0 && nearest_terrain.map(|(bd, _)| d.abs() < bd.abs()).unwrap_or(true) {
+                                    nearest_terrain = Some((d, name));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if any_built {
+                n_built += 1;
+            } else if let Some((_, name)) = nearest_terrain {
+                *terrain.entry(name.trim_end_matches(|c: char| c.is_ascii_digit()).to_string()).or_default() += 1;
+            } else {
+                airborne += 1;
+            }
+        }
+        let on_variants: BTreeSet<String> = m.blocks.iter().filter(|b| built(&b.name) && (b.name.contains("OnLand") || b.name.contains("OnDirt") || b.name.contains("OnGrass") || b.name.contains("OnSea") || b.name.contains("OnSnow") || b.name.contains("OnWater"))).map(|b| b.name.clone()).collect();
+        let total = pts.len().max(1);
+        let mut t: Vec<(&String, &usize)> = terrain.iter().collect();
+        t.sort_by(|a, b| b.1.cmp(a.1));
+        let terrain_share = (total - n_built - airborne) as f32 * 100.0 / total as f32;
+        println!(
+            "{}\t{collection:#x}\t{}x{}x{}\t{}\t{:.0}\tterrain {:.0}% ({}) air {:.0}%\t{} On-variants ({})",
+            Path::new(input).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+            m.size[0],
+            m.size[1],
+            m.size[2],
+            total,
+            n_built as f32 * 100.0 / total as f32,
+            terrain_share,
+            t.iter().take(4).map(|(k, n)| format!("{k}×{n}")).collect::<Vec<_>>().join(" "),
+            airborne as f32 * 100.0 / total as f32,
+            on_variants.len(),
+            on_variants.iter().take(3).map(|s| s.as_str()).collect::<Vec<_>>().join(",")
+        );
+    }
+    Ok(())
+}
