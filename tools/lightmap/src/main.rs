@@ -622,6 +622,7 @@ fn main() {
             if let Some(s) = f("--sky") { prm.sky = parse_rgb(&s); }
             if let Some(s) = f("--sun") { prm.sun = parse_rgb(&s); }
             if let Some(s) = f("--ambient") { prm.ambient = parse_rgb(&s); }
+            if let Some(s) = f("--up") { prm.up = parse_rgb(&s); }
             if let Some(s) = f("--tpm") { prm.texels_per_m = s.parse().unwrap(); }
             if let Some(s) = f("--bounce") { prm.bounce = s.parse().unwrap(); }
             if let Some(s) = f("--albedo") { prm.albedo = s.parse().unwrap(); }
@@ -712,7 +713,7 @@ fn main() {
             let Some(tpl_path) = f("--template") else { return };
             let tpl = lightmap::mapio::load(&tpl_path).expect("template");
             let m = lightmap::mapio::load(&map_path).expect("map");
-            let ground_e: [f32; 3] = { let l = prm.sun_dir[1].max(0.0); [prm.ambient[0] + prm.sky[0] + prm.sun[0] * l, prm.ambient[1] + prm.sky[1] + prm.sun[1] * l, prm.ambient[2] + prm.sky[2] + prm.sun[2] * l] };
+            let ground_e: [f32; 3] = { let l = prm.sun_dir[1].max(0.0); [prm.ambient[0] + prm.up[0] + prm.sky[0] + prm.sun[0] * l, prm.ambient[1] + prm.up[1] + prm.sky[1] + prm.sun[1] * l, prm.ambient[2] + prm.up[2] + prm.sky[2] + prm.sun[2] * l] };
             let mut out_charts = Vec::new();
             for obj in 0..base { out_charts.push(lightmap::synth::Chart::from_hdr(obj, 2, 2, &[ground_e; 4], k, 128)); }
             let mut have = vec![false; scene.item_count];
@@ -1009,6 +1010,7 @@ fn main() {
             prm.uv_bounds = true; prm.flip_v = false; prm.sky_samples = 32; prm.sun_samples = 1;
             if let Some(s) = f("--bounce") { prm.bounce = s.parse().unwrap(); }
             if let Some(s) = f("--sky-model") { prm.sky_model = s.parse().unwrap(); }
+            if let Some(s) = f("--regressor") { prm.fit_regressor = s.parse().unwrap(); }
             if let Some(s) = f("--sun") { let v: Vec<f32> = s.split(',').map(|x| x.parse().unwrap()).collect(); prm.sun = [v[0], v[1], v[2]]; }
             if let Some(s) = f("--sky") { let v: Vec<f32> = s.split(',').map(|x| x.parse().unwrap()).collect(); prm.sky = [v[0], v[1], v[2]]; }
             let az: f32 = f("--sun-az").map(|s| s.parse().unwrap()).unwrap_or(75.0);

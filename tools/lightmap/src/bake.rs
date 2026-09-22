@@ -11,6 +11,8 @@ pub struct BakeParams {
     pub sky: [f32; 3],
     /// A constant ambient floor added everywhere (the fitted fill of Nadeo's bakes).
     pub ambient: [f32; 3],
+    /// An "upness" term × (0.5 + 0.5·n.y): the fitted zenith-weighted part of the sky.
+    pub up: [f32; 3],
     /// Sun irradiance at normal incidence.
     pub sun: [f32; 3],
     /// Unit vector towards the sun.
@@ -36,6 +38,8 @@ pub struct BakeParams {
     /// Sky model: 0 = uniform hemisphere, 1 = horizon-darkened (cos-weighted zenith brightening).
     pub sky_model: u32,
     pub threads: usize,
+    /// Which third regressor the component fit uses: 0 bounce estimate, 1 upness (0.5+0.5·n.y), 2 skyVis².
+    pub fit_regressor: u32,
     /// Pixels of chart border the uv square is inset by on each side (0 = the uv square fills the chart).
     pub inset_px: f32,
     /// Compute the bounce estimate even when `bounce` is 0 (for the component fit).
@@ -49,6 +53,7 @@ impl Default for BakeParams {
         BakeParams {
             sky: [0.407, 0.458, 0.546],
             ambient: [0.0; 3],
+            up: [0.0; 3],
             sun: [1.9, 1.387, 0.399],
             sun_dir: norm([0.5, 0.6, 0.6]),
             sun_radius: 0.01,
@@ -66,6 +71,7 @@ impl Default for BakeParams {
             threads: 0,
             want_bounce: false,
             inset_px: 0.0,
+            fit_regressor: 0,
             pattern: false,
         }
     }
@@ -356,7 +362,7 @@ fn shade_full(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
     let mut e = [0f32; 3];
     let bounce_n = [bounce[0] / count as f32, bounce[1] / count as f32, bounce[2] / count as f32];
     for k in 0..3 {
-        e[k] = prm.ambient[k] + prm.sky[k] * sky_vis + prm.sun[k] * ndl.max(0.0) * sun_vis + prm.bounce * prm.albedo * bounce_n[k];
+        e[k] = prm.ambient[k] + prm.up[k] * (0.5 + 0.5 * s.n[1]) + prm.sky[k] * sky_vis + prm.sun[k] * ndl.max(0.0) * sun_vis + prm.bounce * prm.albedo * bounce_n[k];
     }
     Shaded { e, sky_vis, sun_vis, bounce: bounce_n }
 }
@@ -658,7 +664,7 @@ pub fn component_fit_rgb(scene: &Scene, bvh: &Bvh, sel: &[(usize, u32, u32, u32,
                     let ndl = dot(s.n, prm.sun_dir).max(0.0);
                     let n = atlas.get((px + s.px).min(atlas.w - 1), (py + s.py).min(atlas.h - 1));
                     let sc = fb0 as f64 / 255.0 / 255.0;
-                    let bl = (0.2126 * sh.bounce[0] + 0.7152 * sh.bounce[1] + 0.0722 * sh.bounce[2]) as f64;
+                    let bl = if prm.fit_regressor == 1 { (0.5 + 0.5 * s.n[1]) as f64 } else if prm.fit_regressor == 2 { (sh.sky_vis * sh.sky_vis) as f64 } else { (0.2126 * sh.bounce[0] + 0.7152 * sh.bounce[1] + 0.0722 * sh.bounce[2]) as f64 };
                     local.push([sh.sky_vis as f64, (ndl * sh.sun_vis) as f64, bl, n[0] as f64 * sc, n[1] as f64 * sc, n[2] as f64 * sc]);
                 }
                 acc.lock().unwrap().extend(local);
