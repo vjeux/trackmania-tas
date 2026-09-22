@@ -25,6 +25,7 @@
 //! reason `tmmaps` calls into `ghost` for a reference ghost's splits.
 
 pub mod census;
+pub mod changelog;
 pub mod cli;
 pub mod controls;
 pub mod dropscan;

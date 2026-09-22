@@ -139,6 +139,14 @@ fn main() {
         // physics histogram (via mapgeom dump) keyed by the item's placements — two maps with
         // the same fingerprint drive the same. Lines are sorted; diff two outputs to see what
         // changed (Everios96 2026-09-20 Q5: "did the physics change on the never-wiped maps?").
+        // the hunters' change log of the altered sets (GeraldDuke 2026-09-22): rows from the
+        // box's changelog.sh → README.md + one markdown file per alteration
+        "changelog" => {
+            if let Err(e) = tmmaps::changelog::cmd(&args[1..]) {
+                eprintln!("tmmaps changelog: {e}");
+                std::process::exit(1);
+            }
+        }
         "physfp" => {
             let src = std::path::PathBuf::from(&args[2]);
             let m = tmmaps::map::MapFile::load(&src);
