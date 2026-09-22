@@ -350,8 +350,9 @@ pub fn port_cmd(args: &[String]) -> Result<(), String> {
         let mut m = MapFile::load(&input);
         let hdr = crate::header::read(input.to_str().unwrap_or_default()).ok();
         let old_name = hdr.as_ref().map(|h| h.name.clone()).unwrap_or_default();
-        let uid_len = hdr.as_ref().map(|h| h.uid.len()).unwrap_or(27);
-        m.set_map_uid(&crate::altered::new_uid("Stad", uid_len));
+        // deterministic: `Stad` + the source uid's tail, so a rebuild updates the same record
+        let src_uid = hdr.as_ref().map(|h| h.uid.clone()).unwrap_or_default();
+        m.set_map_uid(&stable_uid("Stad", &src_uid));
         m.write_to(&out).map_err(|e| e.to_string())?;
         if let Some(n) = f("--name") {
             let mut m = MapFile::load(&out);
@@ -528,9 +529,9 @@ pub fn port_cmd(args: &[String]) -> Result<(), String> {
         let mut m = MapFile::load(&tmp);
         let hdr = crate::header::read(tmp.to_str().unwrap_or_default()).ok();
         let old_name = hdr.as_ref().map(|h| h.name.clone()).unwrap_or_default();
-        let uid_len = hdr.as_ref().map(|h| h.uid.len()).unwrap_or(27);
+        let src_uid = hdr.as_ref().map(|h| h.uid.clone()).unwrap_or_default();
         let new_name = f("--name").unwrap_or_else(|| format!("{old_name} [Stadium]"));
-        m.set_map_uid(&crate::altered::new_uid("Stad", uid_len));
+        m.set_map_uid(&stable_uid("Stad", &src_uid));
         m.write_to(&tmp).map_err(|e| e.to_string())?;
         let mut m = MapFile::load(&tmp);
         if !old_name.is_empty() && new_name != old_name {
@@ -918,6 +919,36 @@ pub fn terrain_cmd(args: &[String]) -> Result<(), String> {
     if !crate::cli::has(args, "--keep-work") {
         let _ = std::fs::remove_dir_all(&work);
     }
+    // --max-bytes N: a window build over the server cap falls back to the route terrain
+    if let Some(cap) = f("--max-bytes").and_then(|v| v.parse::<u64>().ok()) {
+        let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+        if size > cap && mode == "window" {
+            println!("  {size} B over the {cap} B cap: rebuilding with --mode route");
+            let mut a2: Vec<String> = args.iter().cloned().filter(|x| x != "--max-bytes").collect();
+            if let Some(i) = a2.iter().position(|x| x == "--mode") {
+                a2[i + 1] = "route".into();
+            } else {
+                a2.push("--mode".into());
+                a2.push("route".into());
+            }
+            // drop the cap's value too
+            if let Some(i) = a2.iter().position(|x| x.parse::<u64>().ok() == Some(cap)) {
+                a2.remove(i);
+            }
+            return terrain_cmd(&a2);
+        }
+    }
     println!("  -> {}", out.display());
     Ok(())
+}
+
+
+/// `<prefix>` + the source uid's tail: the same length as the source's, and the same
+/// value on every rebuild, so a re-publish updates the record instead of adding one.
+pub fn stable_uid(prefix: &str, src_uid: &str) -> String {
+    if src_uid.len() > prefix.len() {
+        format!("{prefix}{}", &src_uid[prefix.len()..])
+    } else {
+        crate::altered::new_uid(prefix, 27)
+    }
 }

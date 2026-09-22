@@ -1099,9 +1099,13 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
         let mut m = MapFile::load(&tmp);
         let hdr = crate::header::read(tmp.to_str().unwrap_or_default()).ok();
         let old_name = hdr.as_ref().map(|h| h.name.clone()).unwrap_or_default();
-        let old_uid_len = hdr.as_ref().map(|h| h.uid.len()).unwrap_or(27);
+        let old_uid = hdr.as_ref().map(|h| h.uid.clone()).unwrap_or_default();
         let new_name = f("--name").unwrap_or_else(|| format!("{old_name} {}", if wet { "Wet Wood" } else { "Wood" }));
-        m.set_map_uid(&new_uid(&f("--uid-prefix").unwrap_or_else(|| if wet { "WetW".into() } else { "Wood".into() }), old_uid_len));
+        // deterministic since 2026-09-22: prefix + the source uid's tail (a rebuild updates
+        // the same record); --random-uid for the old behaviour
+        let prefix = f("--uid-prefix").unwrap_or_else(|| if wet { "WetW".into() } else { "Wood".into() });
+        let uid = if crate::cli::has(args, "--random-uid") { new_uid(&prefix, old_uid.len().max(5)) } else { crate::stadium::stable_uid(&prefix, &old_uid) };
+        m.set_map_uid(&uid);
         m.write_to(&tmp).map_err(|e| e.to_string())?;
         let mut m = MapFile::load(&tmp);
         if !old_name.is_empty() && new_name != old_name {
