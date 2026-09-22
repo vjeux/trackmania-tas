@@ -175,21 +175,85 @@ coarse lightmap is recomputed at load (the old §2 observation); a synthesized
 chunk with N = 4096 + items, our own layout, copied small chunks and trailer
 is accepted **[GAME]** — no hash over the images or tables is checked.
 
-### 3.8 Trailer (after `FACADE01`, 6.5–30 KB) **[FILE, undecoded]**
+### 3.8 Trailer (after `FACADE01`, 6.5–30 KB): the probe volume **[FILE]** / **[GAME]**
+
+Decoded 2026-09-22 (`lightmap/src/volume.rs` reads and writes it byte for
+byte on every source and editor bake). It is a **volume of light probes**:
+16 m cells in 480 m world slots, each occupied slot a "block" whose occupied
+cell range is stored level by level as tiles of the small third atlas
+(frame 0 image 2 — the atlas earlier called "foliage/sprite"). The probes
+light the dynamic objects (the car), the water and the ambient/specular term
+of the surfaces (painting probe image 0 green tints the road and the sea
+**[GAME]**).
 
 ```text
-u32 91
-u32 1024 ×4                 the two big atlases' sizes
-u32 30, u32 5, u32 0, u32 0, u32 6
-3 × { f32, u32 }            per frame: (0.9–2.0, 8470–91876)
-u32 a, u32 b, u32 32, u32 n (64/128, 48–112, 32, 6–28)
-u32 0, 0, 0
-n × 60-byte records         { u32×6, f32 16,16,16, f32[3] position, u32[3] }
-then u16 pair tables …      ends with `u32 5`
+u32 91                       version / magic
+u32 1024 ×4                  (constant)
+u32 30, 5, 0, 0, 6           (constant)
+3 × { f32 scale, u32 end }   per probe image 0..2: its value scale and the END byte
+                             offset of its WEBP inside the third-atlas blob (§3.9)
+u32 g0, g1, g2               label grid: 32·cols, 16·rows, 32 with cols = ceil(√(n/2))
+u32 nblocks
+nblocks × 60 B               { u32 origin[3] (label cell of the block: 32·col, 16·row, 0);
+                               u32 min[3], max[3] (occupied cell range in label space,
+                               2 cells of margin each side, clipped to the block);
+                               f32 cell[3] = 16,16,16; f32 pos[3] (world offset) }
+u32 npairs                   = Σ (max[1] − min[1])
+npairs × { u32 x, u32 y }    per block, per height level: the level's tile position in
+                             the third atlas, or (−1, −1) = not stored (the two margin
+                             levels under the geometry). Tile = (max0−min0) × (max2−min2)
+                             pixels, one probe per pixel, rows = z, plan view
+u32 ncell4; ncell4 × u16     per 4×4 atlas cell a 16-bit mask, bit (y%4)·4 + x%4: 0 = the
+                             probe is INSIDE geometry (dark; not interpolated), 1 otherwise
+u32 5, 3, 5                  slot grid (i, j, k): 480 m × 224 m × 480 m from the origin
+u32 30, 14, 30               usable cells per slot (block minus the 2-cell overlap)
+u32 32, 16, 32               block size in cells
+f32 1/480, 1/224, 1/480      1 / slot pitch;  f32 −0, 0.1696, −0
+u32 75; 75 × i32             slot table: block index per slot i + 5j + 15k, −1 = empty
+u32 a, b, 0, 0, 0            two counts (unknown; copied from a template, harmless)
+u32 6, f32 1.0, u8[128] 0    ×2 (constant; the second copy sometimes absent);  u32 5
 ```
 
-Light-probe-like (positions in a 256-step grid); copied verbatim from a
-template of the same mood when authoring, harmless so far **[GAME]**.
+Probe positions **[GAME, verified with two probe bakes: blobs at known
+places → their own blocks]**: x, z = pos + 16·(label + ½), y = pos.y +
+16·(label − ½). For the ground slot row pos = (480·i − 8 − 16·origin0, −46,
+480·k − 8), so the probes sit at x = 480·i + 16·cx, y = −54 + 16·L, z =
+480·k + 16·cz with cx, cz ∈ [0, 32) — cells 30, 31 duplicate the next slot's
+0, 1 (the overlap). Stadium maps anchor the x slots at −304 instead of 0
+**[FILE, unexplained]**. The occupied range is the bounding box of the 16 m
+cells that contain geometry, +2 cells each side; levels below the first
+occupied one are `(−1, −1)`, two levels above it are stored.
+
+### 3.9 The third atlas: four WEBPs **[FILE]** / **[GAME]**
+
+Frame 0 image 2 is not one image: it is a **concatenation of four WEBP
+files** of the same size, `frame_info[k].end` marking where image k ends
+(the fourth runs to the blob's end). Any re-encoding of the blob as ONE
+image crashes the client (it reads the next image at the stored offset).
+
+| # | content | scale |
+|---|---|---|
+| 0 | probe colour: sky + sun irradiance at the probe (sky-tinted, black inside geometry) | `frame_info[0].scale` = max |
+| 1 | occlusion: 255 in the open, soft 0 near/inside geometry (greyscale) | `frame_info[1].scale` (0.4–0.9 in the files) |
+| 2 | a pale bluish colour image, grey (not black) inside geometry — role unknown | `frame_info[2].scale` ≈ 0.18–0.77 |
+| 3 | the point lights' irradiance at the probe (white/cyan glints at lamps and checkpoints) | none stored |
+
+The game accepts lossy VP8 (Nadeo's form) for all four; VP8L also decodes
+(the crash attributed to VP8L earlier was the concatenation).
+
+### 3.10 Frame 1 = the items' point lights **[GAME]**
+
+Frame 1 image 0 holds, per chart, the irradiance of the items'
+`CPlugLight`s (`CPlugSolid2Model.lights`: socket transform, GxLightSpot
+colour/intensity/radius, cone angles) — pools of light on the road under
+the border spots, cyan under the checkpoint rings. Fitting the tiny-16
+editor bake against our light list: **the cone angles are half-angles** (a
+spot "120/170" lights a near-hemisphere; treating them as full angles
+kills the correlation), the falloff is a smooth window in d/R ((1−x²)²
+fits as well as any), value ≈ 0.27 · I · colour · n·l · att · spot (K = 1
+units, per-texel r² 0.17 — VP8 blur and texel misalignment cap it). Frame
+2 image 0 is a greyscale copy of the light pools (mostly black); left black
+with fb2 = 0 (accepted by the game).
 
 ## 4. Authoring **[GAME]**
 
@@ -205,36 +269,76 @@ irradiance per texel from the map's own item geometry (§5).
 ## 5. The baker (`lmtool bake`) **[GAME]**
 
 ```text
-lmtool bake TINY.Map.Gbx --template EDITOR-BAKE-OF-SAME-MOOD.Map.Gbx --out OUT.Map.Gbx \
-  --uv-bounds --sky-model 1 --tpm 1.0 --sky-samples 64 --sun-samples 4 --k 1.0 \
-  --sun-az 75 --sun-el 45 --ambient 0.232,0.206,0.209 --up 0.097,0.107,0.140 \
-  --sky 0.107,0.121,0.164 --sun 0.125,0.082,0.067          # Sunrise64 (Tiny 16) fit
+lmtool bake TINY.Map.Gbx --out OUT.Map.Gbx [--mood auto] [--vp8 8] [--templates DIR]
 ```
+
+`--mood auto` (the default) reads the header's collection and mood, takes
+the lighting row from `lightmap/src/moods.rs` and the template chunk
+`<Collection>-<Mood>.lmchunk` from the template bank (tm-player/tiny/
+lightmap-re/templates/; the bank holds one chunk per collection × mood the
+campaign uses, extracted from an editor bake or from the Nadeo source). The
+explicit form (`--template T --sun-az … --sky …`) still works.
 
 Geometry: every embedded item's Solid2 visuals at LOD 0 with TexCoord1,
 placed like the game places them (`mapgeom::place::anchored`); a binned-SAH
-BVH over all triangles (24.7 M on Tiny 16). Per texel of every chart
-(chart = the item's TexCoord1 bounds → a rect sized by `PreLightGen.u02 ×
-0.5625 × uv extent`, v = 0 at the top row): cosine-weighted sky visibility,
-sun visibility over a small disc, then
+BVH over all triangles (24.7 M on Tiny 16), built in parallel
+(deterministic). Per texel of every chart (chart = the item's TexCoord1
+bounds → a rect sized by `PreLightGen.u02 × 0.5625 × uv extent`, v = 0 at
+the top row): cosine-weighted sky visibility, sun visibility over a small
+disc, then
 
 ```text
-E = ambient + up·(0.5 + 0.5·n.y) + sky·skyVis + sun·max(0, n·L)·sunVis
+E  = ambient + up·(0.5 + 0.5·n.y) + sky·skyVis + sun·max(0, n·L)·sunVis      (frame 0)
+E1 = Σ lights  0.27 · I · colour · max(0, n·l) · (1 − (d/R)²)² · spot · vis     (frame 1)
 ```
 
-the chart is flood-filled (dilated) to its edges, normalised to its max,
-fb0 = 255·max/K. The four colour terms are fitted per mood by least squares
-against an editor bake of one map (`lmtool poolfit MAP --sun-az --sun-el
---regressor 1`; the sun direction by `lmtool sunfit2`, per-texel
-correlation over the 400 largest charts). Tiny 16 (Sunrise64): az 75°, el
-45°; the fit above; per-texel r² 0.22. In play the result is within a
-hair of the editor's bake (compare-orig-bake3-bake2.jpg under
-tm-player/tiny/lightmap-re/). 8619 items: ~15 s of baking on 166 cores
-plus a 35 s single-threaded BVH build; the chunk is 1.1–1.4 MB (lossless).
+the chart is flood-filled to its edges, normalised to its max, fb = 255·max
+(K = 1). The probe volume (§3.8) is built from the same BVH: slots and
+occupied cells from the geometry, one probe per 16 m cell (spherical sky
+visibility, sun visibility, the point lights, an inside test by back-face
+rays), four VP8 images, the mask, the slot table. Big atlases as VP8
+(`--vp8 Q`, Nadeo's form, ~0.5 MB) or VP8L without the flag.
 
-Not baked yet: frame 1 (the items' `CPlugLight`s: checkpoint/lamp glow),
-the foliage atlas and the trailer (copied from the template), the
-decoration meshes (cliffs/sea cast no shadow on items).
+The per-mood rows (`lmtool moodfit MAP [--shadow]` fits the sun direction
+by per-texel correlation or shadow agreement over the largest charts, then
+the four colour terms per channel by least squares against the map's own
+editor bake):
+
+```text
+collection  mood     conf     az     el   ambient              up                   sky                  sun
+BlueBay     Sunrise  fitted   77.5  45.0  0.232,0.206,0.211  0.086,0.097,0.128  0.114,0.126,0.169  0.131,0.087,0.073
+BlueBay     Day      fitted  230.0  35.0  0.306,0.361,0.368  0.090,0.116,0.195  0.048,0.058,0.112  0.030,0.034,0.048
+RedIsland   Day      fitted   95.0  52.5  0.275,0.197,0.198  0.087,0.119,0.171  0.010,0.010,0.012  0.092,0.069,0.060
+Stadium     Day      fitted  197.5  35.0  0.247,0.271,0.278  0.189,0.151,0.174  0.031,0.043,0.036  0.045,0.043,0.042
+WhiteShore  Day      derived 230.0  35.0  (BlueBay Day; identical pack XML, SkyFactor 0.5)
+GreenCoast  Day      derived 230.0  35.0  (BlueBay Day; identical pack XML)
+RedIsland   Sunrise  derived  77.5  45.0  (BlueBay Sunrise × the XML LDirSun ratio)
+WhiteShore  Sunset   derived 282.5  20.0  (BlueBay Sunrise × the XML LAmbient/LDirSun ratios, sun mirrored west and low)
+```
+
+"fitted" = against an editor q=4 bake of a tiny map of that collection and
+mood; "derived" = no editor bake exists (the lightmapper crashes or saves
+nothing on the WhiteShore/GreenCoast tiny copies, 2026-09-12 and -22), the
+row is the nearest fitted one scaled by the pack's `Mood.MoodSetting.xml`
+colour ratios. The Day bakes are nearly shadowless (sun term ≈ 0.03–0.09),
+so their fitted directions are weak (the objective is flat); the Sunrise
+direction is stable across three estimators. The pack XML's `Latitude` +
+`DayTime01` reproduce the Stadium Day elevation with el = asin(cos φ ·
+cos(360°·(t − ½))) (34.9° vs 35° fitted) but not BlueBay Sunrise (69° vs
+45°) — the 64×64 decorations' moods carry their own time.
+
+Acceptance (tm-player/tiny/lightmap-re/acceptance-20260922/, play-mode
+intro frames, editor bake | ours, luminance RMSE per frame with the HUD
+strip skipped — the numbers include the camera's sub-frame timing offset):
+Tiny 11 BlueBay Day RMSE 13–43 (mean lum 123.6 | 113.0; 143.4 | 140.6),
+Tiny 16 BlueBay Sunrise 16–27 (70.1 | 68.8), Tiny 02 RedIsland Day 21–27
+(73.8 | 79.2), Tiny 05 Stadium Day 3.5–31 (91.4 | 91.5). Every map of the
+five collections × the campaign's moods renders (03, 04, 13, 17 through the
+derived rows). Tiny 16: 39 s end to end on the devserver (8615 items).
+
+Not done: the decoration meshes (cliffs/sea) cast no shadow on items; probe
+image 2's meaning; the Stadium slot anchor; editor references for the
+derived moods.
 
 ## 6. What the game does with it (earlier observations, still valid) **[GAME]**
 
