@@ -475,7 +475,7 @@ pub fn add_fx_system(store: &mut crate::store::DataStore, path: &str, at: &Xform
                 let name = ip.rsplit('\\').next().unwrap_or(&ip).to_string();
                 if tex_mode.starts_with("path:") {
                     // the image alone rides in the archive (bare name), for a `{dds}` spelling
-                    textures.push((tp.clone(), bitmap.clone(), name.clone(), bytes.clone()));
+                    textures.push((tp.clone(), bitmap.clone(), name.clone(), bytes.to_vec()));
                     continue;
                 }
                 if tex_mode == "file" {
@@ -485,10 +485,10 @@ pub fn add_fx_system(store: &mut crate::store::DataStore, path: &str, at: &Xform
                     let tname = tp.rsplit('\\').next().unwrap_or(&tp).to_string();
                     let tbytes = super::particle::texture_file(&bitmap, &name);
                     textures.push((tp.clone(), bitmap.clone(), tname, tbytes));
-                    textures.push((format!("{tp}#image"), bitmap, format!("Image/{name}"), bytes));
+                    textures.push((format!("{tp}#image"), bitmap, format!("Image/{name}"), bytes.to_vec()));
                     continue;
                 }
-                textures.push((tp, bitmap, name, bytes));
+                textures.push((tp, bitmap, name, bytes.to_vec()));
             }
         }
     }

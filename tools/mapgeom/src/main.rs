@@ -256,6 +256,7 @@ fn score_at(scene: &mapgeom::scene::Scene, runs: &[Run], reach: f32) -> (usize, 
 
 fn main() {
     mapgeom::par::process_started();
+    mapgeom::par::tune_malloc();
     // --version / -V. Compile-time only: CARGO_PKG_* come from the crate's
     // Cargo.toml (which inherits the one workspace version), and TAS_BUILD is
     // the git hash the release build sets. option_env! means an ordinary
@@ -1804,7 +1805,7 @@ fn main() {
             let max: u32 = flag(&a.rest, "--max").and_then(|s| s.parse().ok()).unwrap_or(4096);
             for p in a.rest.iter().skip(1).filter(|x| !x.starts_with("--")) {
                 // a path that exists on disk is read as a file (a shipped Items/*.dds)
-                let bytes = match std::fs::read(p) { Ok(b) => b, Err(_) => match store.read(p) { Ok(b) => b, Err(e) => { println!("{p}: {e}"); continue; } } };
+                let bytes = match std::fs::read(p) { Ok(b) => b, Err(_) => match store.read(p) { Ok(b) => b.to_vec(), Err(e) => { println!("{p}: {e}"); continue; } } };
                 let dims = mapgeom::static_item::texture::dds_dims(&bytes);
                 let fourcc = if bytes.len() >= 88 { String::from_utf8_lossy(&bytes[84..88]).to_string() } else { String::new() };
                 match mapgeom::static_item::texture::decode_capped_rgba(&bytes, max) {
@@ -1842,7 +1843,7 @@ fn main() {
                 .cloned()
                 .unwrap_or_else(|| "out.bin".to_string());
             let bytes = store.read(&p).unwrap_or_else(die);
-            std::fs::write(&out, &bytes).unwrap_or_else(|e| die(e.to_string()));
+            std::fs::write(&out, &bytes[..]).unwrap_or_else(|e| die(e.to_string()));
             println!("{} -> {} ({} bytes)", p, out, bytes.len());
         }
         "map" => {

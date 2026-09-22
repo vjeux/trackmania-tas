@@ -47,6 +47,10 @@ pub struct DataStore {
     /// copies a rescale produced, so a walk that follows their renamed
     /// references finds them. Nothing here is ever a pack file.
     overlay: HashMap<String, Vec<u8>>,
+    /// This store's own view of the shared cache: what it read already, looked
+    /// up without a lock (a worker re-reads the same materials and textures
+    /// block after block).
+    local: HashMap<String, Option<Arc<Vec<u8>>>>,
 }
 
 fn parse_key(hex: &str) -> Result<[u8; 16], String> {
@@ -158,6 +162,7 @@ impl DataStore {
             index: Arc::new(HashMap::new()),
             cache: Arc::new((0..SHARDS).map(|_| RwLock::new(HashMap::new())).collect()),
             overlay: HashMap::new(),
+            local: HashMap::new(),
         }
     }
 
@@ -170,6 +175,7 @@ impl DataStore {
             index: Arc::clone(&self.index),
             cache: Arc::clone(&self.cache),
             overlay: self.overlay.clone(),
+            local: HashMap::new(),
         }
     }
 
@@ -232,17 +238,19 @@ impl DataStore {
         let p = &self.paks[pi];
         read::fold_hunt(&p.data, p.header_max_size, &p.pak.entries[ei], &p.key, p.pak.version, max_len)
     }
-    pub fn read(&mut self, logical: &str) -> Result<Vec<u8>, String> {
+    pub fn read(&mut self, logical: &str) -> Result<Arc<Vec<u8>>, String> {
         let key = logical.to_uppercase();
         if let Some(b) = self.overlay.get(&key) {
-            return Ok(b.clone());
+            return Ok(Arc::new(b.clone()));
+        }
+        if let Some(hit) = self.local.get(&key) {
+            return hit.clone().ok_or_else(|| format!("{}: not in any pack", logical));
         }
         let shard = &self.cache[shard_of(&key)];
         let hit = shard.read().unwrap_or_else(|e| e.into_inner()).get(&key).cloned();
         if let Some(hit) = hit {
-            return hit
-                .map(|b| b.to_vec())
-                .ok_or_else(|| format!("{}: not in any pack", logical));
+            self.local.insert(key, hit.clone());
+            return hit.ok_or_else(|| format!("{}: not in any pack", logical));
         }
         let resolved = self.resolve(logical);
         let out = match resolved {
@@ -259,8 +267,9 @@ impl DataStore {
                 )?))
             }
         };
-        shard.write().unwrap_or_else(|e| e.into_inner()).insert(key, out.clone());
-        out.map(|b| b.to_vec()).ok_or_else(|| {
+        shard.write().unwrap_or_else(|e| e.into_inner()).insert(key.clone(), out.clone());
+        self.local.insert(key, out.clone());
+        out.ok_or_else(|| {
             format!(
                 "{}: not in any pack (tried {})",
                 logical,
