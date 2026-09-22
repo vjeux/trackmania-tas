@@ -286,6 +286,23 @@ pub fn port_cmd(args: &[String]) -> Result<(), String> {
     let input = PathBuf::from(args.iter().skip(1).find(|a| !a.starts_with("--") && a.ends_with(".Map.Gbx")).ok_or("tmmaps stadium-port MAP --out OUT [--name N] [--force]")?);
     let out = PathBuf::from(f("--out").ok_or("--out")?);
     let source = MapFile::load(&input);
+    // a Stadium input under --copy: the same map with a fresh uid (and --name) — the
+    // campaign's native Stadium maps ride along with the ports
+    if crate::cli::has(args, "--copy") && source.items.first().map(|it| it.collection_raw).unwrap_or(26) == STADIUM {
+        let mut m = MapFile::load(&input);
+        let hdr = crate::header::read(input.to_str().unwrap_or_default()).ok();
+        let old_name = hdr.as_ref().map(|h| h.name.clone()).unwrap_or_default();
+        let uid_len = hdr.as_ref().map(|h| h.uid.len()).unwrap_or(27);
+        m.set_map_uid(&crate::altered::new_uid("Stad", uid_len));
+        m.write_to(&out).map_err(|e| e.to_string())?;
+        if let Some(n) = f("--name") {
+            let mut m = MapFile::load(&out);
+            m.set_map_name(&old_name, &n);
+            m.write_to(&out).map_err(|e| e.to_string())?;
+        }
+        println!("{}: a Stadium map already — copied with a fresh uid → {}", input.display(), out.display());
+        return Ok(());
+    }
     let p = plan(&source, &input)?;
     let kept = p.fates.iter().filter(|f| matches!(f, Fate::Keep)).count();
     let twins = p.fates.iter().filter(|f| matches!(f, Fate::Twin(..))).count();
