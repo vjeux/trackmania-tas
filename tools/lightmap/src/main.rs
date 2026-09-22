@@ -121,6 +121,62 @@ fn main() {
                 println!("{i}\t{}\t{}\t{:#x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", b.obj_group_idx / 4, b.obj_idx & 0xffffff, b.obj_idx >> 24, m.pos[i].0, m.pos[i].1, m.size[i].0, m.size[i].1, m.chart_f32[i], m.frame_bytes[0][i], m.frame_bytes[1][i], m.frame_bytes[2][i]);
             }
         }
+        "itembase" => {
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            // lmtool itembase LIT.Map.Gbx [--min-items 3]: the object-index base of the ITEMS in a
+            // game-baked lightmap, measured — for every candidate base b (the items are M
+            // consecutive objects somewhere in the object space) the items of one MODEL must
+            // get the same chart signature (the editor sizes a chart from the model's uv1
+            // bounds; only a ±2 px padding varies), so the base is the b with the fewest
+            // distinct signatures per model. Prints the best five. 2026-09-22, the giant
+            // Summer 05 x2 editor bake: base 28312 = 16384 + 604 authored tiles + 96² zone
+            // slots + 2108 generated pieces, the items the LAST 2906 objects.
+            let data = std::fs::read(&a[1]).expect("read");
+            let g = gbx::Gbx::parse(&data);
+            let (_, payload, size) = find_chunk(&g.body).expect("chunk");
+            let lm = lightmap::format::LightmapChunk::parse(&g.body[payload..payload + size]).expect("parse");
+            let d = lm.data.as_ref().expect("has lightmaps");
+            let mm = d.cache.mapping().expect("mapping");
+            let maxo = mm.binds.iter().map(|b| b.obj_group_idx / 4).max().unwrap_or(0) as usize;
+            // per object: the sorted list of its chart sizes, as one string
+            let mut sigs: Vec<Vec<(u16, u16)>> = vec![Vec::new(); maxo + 1];
+            for i in 0..mm.count as usize {
+                sigs[(mm.binds[i].obj_group_idx / 4) as usize].push((mm.size[i].0 as u16, mm.size[i].1 as u16));
+            }
+            let sig: Vec<String> = sigs.iter_mut().map(|s| { s.sort(); s.iter().map(|(w, h)| format!("{w}x{h}")).collect::<Vec<_>>().join(",") }).collect();
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let min_items: usize = f("--min-items").map(|s| s.parse().unwrap()).unwrap_or(3);
+            // models with enough placements
+            let mut by_model: std::collections::HashMap<&str, Vec<usize>> = Default::default();
+            for (i, it) in m.items.iter().enumerate() { by_model.entry(it.model.as_str()).or_default().push(i); }
+            let groups: Vec<&Vec<usize>> = by_model.values().filter(|v| v.len() >= min_items).collect();
+            let n_items = m.items.len();
+            if n_items == 0 || maxo + 1 < n_items { println!("{} items, object space {} — nothing to measure", n_items, maxo + 1); return; }
+            let mut scored: Vec<(f64, usize, usize)> = Vec::new(); // (signatures per model, perfect models, base)
+            for b in 0..=(maxo + 1 - n_items) {
+                let mut total = 0usize;
+                let mut perfect = 0usize;
+                // every item object must carry a chart: an empty stretch of the object space is no base
+                if (b..b + n_items).any(|o| sig[o].is_empty()) { continue; }
+                for grp in &groups {
+                    let mut seen: Vec<&str> = Vec::new();
+                    for &i in grp.iter() {
+                        let s = sig[b + i].as_str();
+                        if !seen.contains(&s) { seen.push(s); }
+                    }
+                    total += seen.len();
+                    if seen.len() == 1 { perfect += 1; }
+                }
+                scored.push((total as f64 / groups.len().max(1) as f64, perfect, b));
+            }
+            scored.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap().then(y.1.cmp(&x.1)));
+            println!("{} items, {} models with >= {min_items} placements, object space {} (max object {maxo}); authored blocks {}, baked records {}, size words {:?}", n_items, groups.len(), maxo + 1, m.blocks.len(), m.baked.len(), m.size);
+            for (score, perfect, b) in scored.iter().take(5) {
+                println!("  base {b}: {score:.2} chart signatures per model, {perfect} models with one signature{}", if *b + n_items == maxo + 1 { "  (the items are the LAST objects)" } else { "" });
+            }
+            let best = scored[0].2;
+            println!("itembase {best}  (object space {} = base + {n_items} items{})", maxo + 1, if best + n_items == maxo + 1 { "" } else { ", objects after the items too" });
+        }
         "objstats" => {
             let data = std::fs::read(&a[1]).expect("read");
             let g = gbx::Gbx::parse(&data);
