@@ -1,0 +1,17 @@
+[package]
+name = "lightmap"
+version.workspace = true
+edition = "2021"
+
+[lib]
+name = "lightmap"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lmtool"
+path = "src/main.rs"
+
+[dependencies]
+gbx = { path = "../gbx" }
+image-webp = "0.2.4"
+miniz_oxide = "0.9.1"
