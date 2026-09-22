@@ -21,6 +21,7 @@ mod loadloop;
 mod camcheck;
 mod build;
 mod bakecopy;
+mod gianttracker;
 mod compare;
 mod cropstats;
 mod play;
@@ -212,6 +213,7 @@ fn main() {
         "tracker-club" => batch::tracker_club_cmd(rest),
         "pipeline" => pipeline::cmd(rest),
         "bake-copies" => bakecopy::cmd(rest),
+        "giant-tracker" => gianttracker::cmd(rest),
         "lightmap-batch" => lightmap::batch(rest),
         "convert-all" => pipeline::convert_all_cmd(rest),
         "tracker-md" => pipeline::tracker_md_cmd(rest),
