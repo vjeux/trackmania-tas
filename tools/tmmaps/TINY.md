@@ -1291,3 +1291,60 @@ transplanted lightmap may already be acceptable (converter-only, nothing to
 run). Interim outputs (old recipe, 13 files) and the composed 18g targets:
 store `tm-player/tiny/incoming/lightmap-wip-20260912/`; batch driver
 `batch3.sh` + rebuild list `builds8.sh` in the same folder.
+
+## Build time: where the ten minutes went, and the parallel bakes (2026-09-22)
+
+vjeux (05:31Z): "Why does it take 10 min? Do we not parallelize it?" Measured on a
+166-core devserver with `tinyctl build 15` at ad878014, cache off: **664 s**, of which
+the bakes were 3.7 s of CPU. The ten minutes were the PACKS: `/tmp/*.pak` were
+symlinks into the persistent-storage FUSE mount (manifoldfs), and each of the five
+`mapgeom` invocations of a build (tiny-library, coplanar-sinks, waterline,
+waterblocks, …) read the whole 1.75 GB Stadium pack over it — `mapgeom … resolve X`
+alone took 2m08 wall with 0.03 s of user time. With the packs on local disk the same
+build took 120 s, 107 of them in `waterblocks::decide` (below); Summer 11 took 41 s.
+Keep the packs on a local disk (`cp` them; the FUSE mount is a network share).
+
+What changed, in order of what it bought (numbers: `tinyctl build`, local packs,
+end to end; the library step's own line is `bake cache: N reused, M baked, T s`):
+
+* **Packs memory-mapped** (`store::PakBytes`): `std::fs::read` copied 2.3 GB out of
+  the page cache per invocation (~1.1 s, and 2.3 GB of RSS); an mmap costs nothing
+  until an entry is read. Peak RSS of a Summer 11 build: 3.4 GB → 1.2 GB.
+* **Bakes on every core** (`par.rs`, `DataStore::fork`): blocks, then items, then
+  the tree species each go through a worker pool — one job per distinct recipe /
+  item key / species — and the bookkeeping loop of `tiny_library::build` runs
+  exactly as before, in key order, reading the pre-baked results (a result it lacks
+  is baked in place, so a speculation that missed costs time, never bytes). Blocks
+  are baked under their predicted alias (an empty prefab ahead of them gives its
+  alias back → `rename_ident`, same length); items and trees under a neutral ident
+  and renamed. `TINY_BAKE_JOBS=N` sets the workers (default: the cores, at most 32 —
+  past that this VM spends more in page-fault and futex spinlocks than baking;
+  `1` is the old one-thread build). Summer 11's library: 22.4 s → 2.7 s.
+* **The bake cache covers items and trees** too (sidecar TBK2), and its key carries
+  `MAPGEOM_BUILD_ID` = `<git HEAD>-<hash of the converter's sources>` (`build.rs`), so
+  a converter edit — committed or not — misses by itself. Warm library step: 1.1 s (15),
+  1.4 s (11). Not cached: bakes that end in an error (the vegetation items' "procedural
+  vegetation" verdicts, 51 on Summer 11 — 0.26 s).
+* **`waterblocks::decide` on a 16-m triangle grid**: it scanned all 1.9 M upward
+  triangles ~25 times per candidate block; 107 s → 3 s on Summer 15, same decisions.
+* **The library zip deflates its entries in parallel** (1.8 s → 0.14 s on 11).
+* Two order dependencies found on the way and fixed: `VEGET_COLLECTION` (the leaf
+  colour table's collection) was set by tree bakes and READ by block bakes inlining
+  filler foliage — a BlueBay block baked before the build's first tree took Stadium's
+  table; and a bake that failed half-way could leave item externals for the next
+  bake on the thread. Every bake now resets that state first.
+
+| build (tinyctl, end to end)         | Summer 15 (Stadium, 5755 items) | Summer 11 (BlueBay, 8022 items) |
+|-------------------------------------|---------------------------------|---------------------------------|
+| ad878014, packs on the FUSE mount   | 664 s, 2.27 GB                  | 555 s, 3.40 GB                  |
+| ad878014, local packs, cache off    | 120 s (library 5.0 s)           | 41 s (library 25 s)             |
+| ad878014, local packs, warm cache   | 116 s                           | 22 s                            |
+| this, `TINY_BAKE_JOBS=1`, cache off | 10 s (library 3.2 s)            | 31 s (library 22.4 s)           |
+| this, 32 workers, cache off         | 7 s (library 1.5 s), 0.60 GB    | 12 s (library 2.7 s), 1.23 GB   |
+| this, 32 workers, warm cache        | 7 s (library 1.1 s)             | 11 s (library 1.4 s)            |
+
+Every row's lib.zip, placements.tsv and final `Summer-NN-Tiny.Map.Gbx` are
+byte-identical to ad878014's (Summer 05 too); report.tsv differs only where a cache
+hit now also reports the detail-level ladder and the filler-foliage note is per block.
+Next hot spot on 11: the two `tmmaps tiny` passes (2.1 s each, three LZO writes of a
+31 MB map).
