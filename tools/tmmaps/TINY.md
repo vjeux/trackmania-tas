@@ -1697,3 +1697,87 @@ from them, everything else byte-identical. 89 club maps have
 `DecoWallWaterBase`; 80 re-watered and updated in place (the other 9 keep
 their pools at source row 0, 64 m underground, clipped at ×2 — nothing to
 show). `--legacy-stack` / `--below-flags HEX` keep the experiments repeatable.
+
+## Giant maps: the grid GROWS with the build — native water everywhere (2026-09-22)
+
+vjeux: "three giant versions (x2, x3 and x4) of the latest campaign … Please get
+water to work properly since we can use existing blocks in this case." A Summer
+map uses most of the 48-cell arena, so at ×2 it spans ~96 cells, at ×4 ~190: with
+the arena's grid most of its pools fall outside. Measured on Summer 15 ×2 (152
+WaterBase + 56 DecoWallWaterBase source blocks → 1056 tiles) and 11 ×2 (BlueBay):
+
+* **A grid block past the size words is dropped at load.** Anchored at the
+  origin (`--anchor fit-origin`, all cells 0..69, nothing clipped) the editor
+  kept exactly the 694 in-grid tiles; the game's own block list
+  (`/mapblocks2?list=blocks`) had none at x or z ≥ 48.
+* **Raising the size words alone crashes the client** (`tmmaps set-size` to
+  72×40×72: the process is gone 8 s after `/editmap`). The zone table
+  (genealogy chunk `0x03043043`) is indexed by the grid — 48×48 = 2304 records
+  on Stadium, 64×64 = 4096 on the terrain collections — and a table smaller than
+  the grid is read out of bounds at the regeneration.
+* **A FREE custom tile is drawn anywhere but has a water volume only inside the
+  grid** (`mapgeom giantwater --free all`: the tiny water-block template
+  re-pointed at WaterBase/DecoWallWaterBase, 32 m per giant cell, the stacked
+  variant bits in the same flag word — 76 `DecoWallWaterFCT` sheets for 76
+  column tops, no roofs). The car dropped into an in-grid free tile reads Water
+  13 from origin+7 to +3, immersion 1, the fall braked; into an out-of-grid one
+  at the same relative height it falls straight through the band (wheels 80,
+  wetness 0) onto the tile's floor cap. `--free outside` (a whole connected
+  body free when any tile of it leaves the grid) and `--anchor fit-water` (the
+  centred fit shifted by whole cells to put the most pool tiles in the grid,
+  within the decoration scene) exist as knobs for the 48-grid form.
+* **The grid can be as big as the cell bytes allow.** TMX 117600 (Zai, "128³
+  Day Void Base Console") is a 128×128×128 Stadium map under the ordinary
+  `NoStadium48x48Day` decoration with a 128×128 genealogy (16384 Grass records,
+  524 KB): the engine accepts any size when the zone table has size_x·size_z
+  records. Summer 15 ×2 with the size words 128³, the genealogy refilled to 16384
+  Grass records and the NoStadium decoration: the editor loads it (17440 blocks
+  = 16384 regenerated Grass + 1056 pool tiles, ALL kept, max cell x 52 z 58), the
+  baked clip structure is the u10s one, and in PLAY the car dropped into the
+  WaterBase tile at cell (51,22,25) reads Water 13 on all four wheels from the
+  surface, wetness rises, immersion 1, and it floats at +4 on the basin like the
+  source's 1× pool. Summer 05 ×4 at 160³ (2416 tiles, 25600 Grass records) opens
+  in the editor in 112 s and in play in ~40 s; the car rolled off a deck into
+  the pool at cell (129,11,100): Water 13, immersion 1, the fall braked −13 →
+  −1.8 m/s, drag 14 → 5 m/s. BlueBay 11 ×2 at 128³ with `Day64` kept and 16384
+  Sea records loads with the sea and sand floor regenerated to the far edge;
+  BlueBay 01 ×4 at 254³ opens in play in ~40 s.
+* **The terrain collections' zone water has no volume** (BlueBay `Sea`,
+  RedIsland/WhiteShore `Water`, GreenCoast `Lake`: no `water volumes` in their
+  block infos; the car parked 7 m under the BlueBay sea surface reads no
+  immersion in-grid either). Their water feel is the floor's Water material,
+  which the fill regenerates under the whole giant island — nothing bottomless.
+
+**The shipping form** (`tinyctl build|pipeline --scale k`, the defaults):
+`tmmaps tiny --anchor fit-grid[:S]` — S is the smallest of 64, 96, 128, … 254
+cells that holds the transformed extent with a two-cell margin (the given S
+otherwise), the size words become S×S×S, the genealogy is refilled with the
+ambient zone at S² records whatever the collection's policy (`TINY_FIT=grid`),
+the extent is centred in the grid; a build wider than 254 cells (BlueBay 16/21/22,
+GreenCoast 24 at ×4: 256–260 cells) takes 254 and overhangs it by 1–3 cells a
+side — items only, the regenerated terrain stops at the edge. A Stadium build
+takes `NoStadium48x48<mood>` (`--decoration`, `TINY_DECORATION=keep` to keep the
+stadium, whose mesh would stand inside the map); the terrain collections keep
+their `Day64`. Every pool is a native tile (`TINY_GIANT_FREE_POOLS=none`; the
+stacked 0x210000 convention of 2026-09-14), clipped against the GIANT map's own
+size words. Water roads stay items: a volume tile sunk under the ×k deck never
+touches the wheels (the source deck IS the band's top plane; the giant 23 test
+only read Water with the tile at deck−2 = its fillers in the open), and a
+DecoWallWaterBase tile reaching the deck puts its metal clip cap 1 m above it.
+
+Times: `tmmaps settimes MAP --out F --scale k` (`tinyctl build --times-scale
+k`) — the author time and the three medals become k × the source's (whole-second
+medals stay whole seconds); the ChallengeParameters chunks, the header chunk and
+the XML, the ghost chunk untouched (`write_times`, shared with `validate`).
+Names `Giant xk <source>` (`--name-format`), uids `Gia<k>` + the source uid[4..]
+(a create with a repeated uid keeps the old record: one uid per scale). Sizes:
+the 25 MiB Nadeo cap through the `--max-bytes 26214400` ladder — the bake cache
+key now carries `--lod-pick`/`--lod-pick-min-verts` (the first run got its
+cached full-detail items back at every rung). Spawn offsets scale with the map:
+a block start spawns the car at (16, 2, 16)·k from its item, so `tinyctl
+startcheck --maps …` takes `--tolerance 52 / 76 / 100` for ×2 / ×3 / ×4.
+Lightmaps: `tinyctl bake-copies` builds the bake copy of every shipped file from
+the pipeline's tracker (the ladder's rung + `TINY_LIGHTMAP_FILL=1`, card-less on
+BlueBay, `--keep-zone-block` on a 0-block file; item counts checked),
+`tinyctl lightmap-batch --manifest` bakes them one after the other with a fresh
+game every few maps and transplants the chunk into the shipped files.
