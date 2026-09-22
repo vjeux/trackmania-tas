@@ -412,7 +412,6 @@ pub fn encode(rgb: &[u8], w: u32, h: u32, q: u8) -> Vec<u8> {
     }
     // quantizers (one segment, no deltas)
     let qi = q.min(127) as usize;
-    let ydc = DC_QUANT[qi];
     let yac = AC_QUANT[qi];
     let y2dc = DC_QUANT[qi] * 2;
     let y2ac = (AC_QUANT[qi] * 155 / 100).max(8);

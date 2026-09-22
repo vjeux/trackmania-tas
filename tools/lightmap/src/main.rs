@@ -705,7 +705,10 @@ fn main() {
             let az: f32 = f("--sun-az").map(|s| s.parse().unwrap()).unwrap_or(0.0);
             let el: f32 = f("--sun-el").map(|s| s.parse().unwrap()).unwrap_or(45.0);
             prm.sun_dir = sun_dir(az, el);
-            let charts = lightmap::bake::bake(&scene, &bvh, &prm);
+            let lights = if a.iter().any(|x| x == "--no-lights") { Vec::new() } else { scene.world_lights() };
+            if let Some(s) = f("--light-k") { prm.light_k = s.parse().unwrap(); }
+            eprintln!("{} point lights", lights.len());
+            let charts = lightmap::bake::bake(&scene, &bvh, &prm, &lights);
             eprintln!("baked {} charts ({:.1}s)", charts.len(), t0.elapsed().as_secs_f32());
             compare(&charts, "bake vs own");
             let k: f32 = match f("--k") { Some(s) => s.parse().unwrap(), None => { let k = f32::from_bits(IMPLIED_K.load(std::sync::atomic::Ordering::Relaxed)); if k > 0.0 { eprintln!("K matched to the map's own bake: {k:.3}"); k } else { 3.0 } } };
@@ -716,10 +719,20 @@ fn main() {
             let mut out_charts = Vec::new();
             for obj in 0..base { out_charts.push(lightmap::synth::Chart::from_hdr(obj, 2, 2, &[ground_e; 4], k, 128)); }
             let mut have = vec![false; scene.item_count];
-            for c in &charts { have[c.item] = true; out_charts.push(lightmap::synth::Chart::from_hdr(base + c.item as u32, c.w, c.h, &c.rgb, k, 128)); }
+            for c in &charts { have[c.item] = true; out_charts.push(lightmap::synth::Chart::from_hdr2(base + c.item as u32, c.w, c.h, &c.rgb, &c.rgb1, k, 128)); }
             for (i, h) in have.iter().enumerate() { if !h { out_charts.push(lightmap::synth::Chart::from_hdr(base + i as u32, 2, 2, &[prm.sky; 4], k, 128)); } }
             let tm = tpl.chunk.data.as_ref().unwrap().cache.mapping().unwrap();
-            let s = lightmap::synth::build(out_charts, (tm.bbox_min, tm.bbox_max), &tpl.chunk).expect("build");
+            // the probe volume: ours unless --template-probes
+            let vp8_q: Option<u8> = f("--vp8").map(|s| s.parse().unwrap());
+            let probes = if has("--template-probes") { None } else {
+                let tv = lightmap::volume::Volume::parse(&tpl.chunk.data.as_ref().unwrap().cache.trailer).expect("template trailer");
+                let mut pp = prm.clone();
+                pp.sky_samples = f("--probe-samples").map(|s| s.parse().unwrap()).unwrap_or(48);
+                let po = lightmap::probes::build(&scene, &bvh, &pp, &lights, prm.light_k, &tv, vp8_q.unwrap_or(8)).expect("probes");
+                eprintln!("probe volume: {} blocks, {} slices, atlas {}x{}, blob {} B ({:.1}s)", po.blocks, po.slices, po.atlas_w, po.atlas_h, po.blob.len(), t0.elapsed().as_secs_f32());
+                Some(lightmap::synth::ProbeBlob { blob: po.blob, trailer: po.volume.write() })
+            };
+            let s = lightmap::synth::build_full(out_charts, (tm.bbox_min, tm.bbox_max), &tpl.chunk, probes, vp8_q).expect("build");
             let payload = s.chunk.write(false);
             let out = f("--out").expect("--out");
             lightmap::mapio::save_with_chunk(&m, &payload, &out).expect("save");
@@ -1245,6 +1258,171 @@ fn main() {
             let out = f("--out").expect("--out");
             lightmap::mapio::save_with_chunk(&m, &payload, &out).expect("save");
             println!("wrote {out}");
+        }
+        "lights" => {
+            // lmtool lights MAP: every embedded model's CPlugLights (socket transform, colour, intensity, radius, spot angles)
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let files = mapgeom::embedded::files(&m).expect("embedded");
+            let mut per_model: std::collections::BTreeMap<String, usize> = Default::default();
+            for it in &m.items { *per_model.entry(it.model.clone()).or_insert(0) += 1; }
+            let mut total = 0usize;
+            for (k, bytes) in &files {
+                let base = k.rsplit(['/', '\\']).next().unwrap_or(k).to_string();
+                let Ok(f) = mapgeom::static_item::file::parse_file(bytes) else { continue };
+                let Some(s2) = f.item.static_object().and_then(|so| so.solid2()) else { continue };
+                if s2.lights.is_empty() && s2.light_insts.is_empty() { continue; }
+                let n = per_model.get(&base).copied().unwrap_or(0);
+                println!("{base} ({n} placements): {} lights, {} user models, {} insts", s2.lights.len(), s2.light_user_models.len(), s2.light_insts.len());
+                for l in &s2.lights {
+                    let t = &l.u05;
+                    let mut desc = String::new();
+                    if let Some(mapgeom::static_item::Node::Light(pl)) = l.node.inline.as_deref() {
+                        if let Some(g) = pl.gx_light() {
+                            let (c, i, r) = g.summary();
+                            desc = format!("class {:#x} colour ({:.2},{:.2},{:.2}) intensity {i:.2} radius {r:.1}", g.class_id, c[0], c[1], c[2]);
+                            for ch in &g.chunks {
+                                if let mapgeom::static_item::light::GxChunk::Spot { angle_inner, angle_outer, falloff_exponent, .. } = ch { desc.push_str(&format!(" spot inner {angle_inner:.2} outer {angle_outer:.2} falloff {falloff_exponent:.2}")); }
+                                if let mapgeom::static_item::light::GxChunk::Spot01 { angle_inner, angle_outer, falloff_exponent, .. } = ch { desc.push_str(&format!(" spot01 inner {angle_inner:.2} outer {angle_outer:.2} falloff {falloff_exponent:.2}")); }
+                                if let mapgeom::static_item::light::GxChunk::Ball08 { radius, emitting_radius, .. } = ch { desc.push_str(&format!(" ball08 r {radius:.1} emit {emitting_radius:.1}")); }
+                                if let mapgeom::static_item::light::GxChunk::Ball06 { radius, emitting_radius, attenuation, .. } = ch { desc.push_str(&format!(" ball06 r {radius:.1} emit {emitting_radius:.1} att {attenuation:?}")); }
+                                if let mapgeom::static_item::light::GxChunk::Light0A { diffuse_intensity, .. } = ch { desc.push_str(&format!(" diffuse {diffuse_intensity:.2}")); }
+                                if let mapgeom::static_item::light::GxChunk::Light09 { diffuse_intensity, .. } = ch { desc.push_str(&format!(" diffuse {diffuse_intensity:.2}")); }
+                            }
+                            if pl.is_animated() { desc.push_str(" ANIMATED"); }
+                        }
+                    } else { desc = format!("external/string {:?} node idx {}", l.u04, l.node.index); }
+                    println!("   {}: pos ({:.2},{:.2},{:.2}) fwd ({:.2},{:.2},{:.2}) up ({:.2},{:.2},{:.2}) ints {:?} {desc}", l.u01.as_str().unwrap_or("?"), t[9], t[10], t[11], t[6], t[7], t[8], t[3], t[4], t[5], l.ints);
+                    total += 1;
+                }
+            }
+            println!("{total} light sockets in models with lights");
+        }
+        "lightfit" => {
+            // lmtool lightfit MAP [--items N] [--step S]: the editor's frame-1 (point light) atlas against our light
+            // list — per texel (through our uv rasterisation of the lit charts) the sum over lights of
+            // I·c·n·l·vis·spot·att(d/R) for several falloff laws, least-squares scale k and r² per law,
+            // plus a binned profile of ref / (I·c·ndl·spot) against d/R for single-light texels.
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let bvh = lightmap::bvh::Bvh::build(lightmap::bake::world_tris(&scene));
+            let lights = scene.world_lights();
+            eprintln!("{} lights in the scene", lights.len());
+            let own = lightmap::mapio::load(&a[1]).expect("own");
+            let d = own.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            let i1 = lightmap::img::decode_webp(&d.frames[1].images[0]).unwrap();
+            let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
+            let laws: Vec<(&str, Box<dyn Fn(f64) -> f64 + Sync>)> = vec![
+                ("(1-x²)²", Box::new(|x: f64| (1.0 - x * x).max(0.0).powi(2))),
+                ("(1-x)²", Box::new(|x: f64| (1.0 - x).max(0.0).powi(2))),
+                ("1-x", Box::new(|x: f64| (1.0 - x).max(0.0))),
+                ("(1-x²)", Box::new(|x: f64| (1.0 - x * x).max(0.0))),
+                ("(1-x²)²/(1+16x²)", Box::new(|x: f64| (1.0 - x * x).max(0.0).powi(2) / (1.0 + 16.0 * x * x))),
+                ("(1-x²)²/x²", Box::new(|x: f64| (1.0 - x * x).max(0.0).powi(2) / (x * x).max(0.0025))),
+                ("(1-x⁴)/(1+4x²)", Box::new(|x: f64| (1.0 - x.powi(4)).max(0.0) / (1.0 + 4.0 * x * x))),
+                ("(1-x)⁴", Box::new(|x: f64| (1.0 - x).max(0.0).powi(4))),
+            ];
+            let cone_mul: f32 = if a.iter().any(|x| x == "--cone-half") { 1.0 } else { 0.5 };
+            let spot = |l: &lightmap::geometry::LightDef, to_tex: [f32; 3]| -> f64 {
+                let ang = lightmap::geometry::dot(l.dir, to_tex).clamp(-1.0, 1.0).acos().to_degrees();
+                let (hi, ho) = (l.cone.0 * cone_mul, l.cone.1 * cone_mul);
+                if ang <= hi { 1.0 } else if ang >= ho { 0.0 } else { let t = ((ho - ang) / (ho - hi).max(1e-3)) as f64; t * t * (3.0 - 2.0 * t) }
+            };
+            let nitems: usize = f("--items").map(|s| s.parse().unwrap()).unwrap_or(1500);
+            let step: usize = f("--step").map(|s| s.parse().unwrap()).unwrap_or(3);
+            let sel: Vec<(usize, usize)> = scene.instances.iter().enumerate().filter_map(|(ii, inst)| { let &ci = chart_of.get(&(inst.item as u32))?; if mp.frame_bytes[1][ci] == 0 { return None; } let (w, h) = mp.size[ci]; if w < 6 || h < 6 { return None; } Some((ii, ci)) }).collect();
+            let stride = (sel.len() / nitems).max(1);
+            let sel: Vec<(usize, usize)> = sel.into_iter().step_by(stride).collect();
+            eprintln!("{} lit charts sampled", sel.len());
+            // rows: (ref, single-light (d/R, ndl·spot) or None, per-law sums)
+            let rows = std::sync::Mutex::new(Vec::<(f64, Option<(f64, f64)>, Vec<f64>)>::new());
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let threads = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(8).min(160);
+            std::thread::scope(|sc| { for _ in 0..threads { sc.spawn(|| loop {
+                let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if k >= sel.len() { break; }
+                let (ii, ci) = sel[k];
+                let fb1 = mp.frame_bytes[1][ci];
+                let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
+                let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, w as u32 / 2, h as u32 / 2);
+                let (samples, _) = lightmap::bake::rasterise_pub(&scene, ii, pw, ph, false, true);
+                let mut local = Vec::new();
+                for s in samples.iter().step_by(step) {
+                    let o = lightmap::geometry::add(s.p, lightmap::geometry::mul(s.n, 0.03));
+                    let mut sums = vec![0f64; laws.len()];
+                    let mut single: Vec<(f64, f64)> = Vec::new();
+                    for (li, l) in &lights {
+                        let to = lightmap::geometry::sub(l.pos, o);
+                        let dist = lightmap::geometry::dot(to, to).sqrt();
+                        if dist >= l.radius || dist < 0.05 { continue; }
+                        let ldir = lightmap::geometry::mul(to, 1.0 / dist);
+                        let ndl = lightmap::geometry::dot(s.n, ldir);
+                        if ndl <= 0.0 { continue; }
+                        let sp = spot(l, lightmap::geometry::mul(ldir, -1.0));
+                        if sp <= 0.0 { continue; }
+                        // shadow ray from the light towards the texel, ignoring the lamp's own item near the light
+                        let back = lightmap::geometry::mul(ldir, -1.0);
+                        if !a.iter().any(|x| x == "--no-shadow") && bvh.occluded(l.pos, back, dist - 0.08, *li as u32, 1.5) { continue; }
+                        let clum = 0.2126 * l.color[0] + 0.7152 * l.color[1] + 0.0722 * l.color[2];
+                        let base_term = (l.intensity * clum * ndl) as f64 * sp;
+                        let xr = (dist / l.radius) as f64;
+                        for (j, (_, law)) in laws.iter().enumerate() { sums[j] += base_term * law(xr); }
+                        single.push((xr, base_term));
+                    }
+                    let c = i1.get((px + s.px).min(i1.w - 1), (py + s.py).min(i1.h - 1));
+                    let lum = (0.2126 * c[0] as f64 + 0.7152 * c[1] as f64 + 0.0722 * c[2] as f64) / 255.0 * fb1 as f64 / 255.0;
+                    let sg = if single.len() == 1 { Some(single[0]) } else { None };
+                    local.push((lum, sg, sums));
+                }
+                rows.lock().unwrap().extend(local);
+            }); } });
+            let rows = rows.into_inner().unwrap();
+            println!("{} texels ({} with exactly one light in range)", rows.len(), rows.iter().filter(|r| r.1.is_some()).count());
+            let mut bins = vec![(0f64, 0usize); 20];
+            for (v, sg, _) in &rows { if let Some((xr, bt)) = sg { if *bt > 1e-4 { let b = ((xr * 20.0) as usize).min(19); bins[b].0 += v / bt; bins[b].1 += 1; } } }
+            for (b, (s, n)) in bins.iter().enumerate() { if *n > 0 { println!("d/R {:.2}-{:.2}: n={n:>6} mean ref/(I·c·ndl·spot) = {:.4}", b as f32 / 20.0, (b + 1) as f32 / 20.0, s / *n as f64); } }
+            let my = rows.iter().map(|r| r.0).sum::<f64>() / rows.len().max(1) as f64;
+            for (j, (name, _)) in laws.iter().enumerate() {
+                let (mut sxy, mut sxx, mut ssr, mut sst) = (0.0, 0.0, 0.0, 0.0);
+                for (v, _, sums) in &rows { sxy += sums[j] * v; sxx += sums[j] * sums[j]; }
+                let k = sxy / sxx.max(1e-12);
+                for (v, _, sums) in &rows { let p = k * sums[j]; ssr += (v - p) * (v - p); sst += (v - my) * (v - my); }
+                println!("law {name:>20}: k = {k:.5}  r² = {:.3}", 1.0 - ssr / sst.max(1e-12));
+            }
+        }
+        "lightpools" => {
+            // lmtool lightpools MAP CHART: the bright frame-1 texels of one chart (world positions) beside the lights within 40 m
+            let base: u32 = 4096;
+            let ci: usize = a[2].parse().unwrap();
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let own = lightmap::mapio::load(&a[1]).expect("own");
+            let d = own.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            let i1 = lightmap::img::decode_webp(&d.frames[1].images[0]).unwrap();
+            let item = (mp.binds[ci].obj_group_idx / 4 - base) as usize;
+            let ii = scene.instances.iter().position(|i| i.item == item).expect("instance");
+            let inst = &scene.instances[ii];
+            println!("chart {ci} = item {item} model {} at {:?}", inst.model_name, [inst.xf[9], inst.xf[10], inst.xf[11]]);
+            let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
+            let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, w as u32 / 2, h as u32 / 2);
+            let (samples, _) = lightmap::bake::rasterise_pub(&scene, ii, pw, ph, false, true);
+            let mut bright: Vec<(u8, [f32; 3], [f32; 3], u32, u32)> = Vec::new();
+            for s in &samples {
+                let c = i1.get((px + s.px).min(i1.w - 1), (py + s.py).min(i1.h - 1));
+                bright.push((c[1], s.p, s.n, s.px, s.py));
+            }
+            bright.sort_by_key(|b| std::cmp::Reverse(b.0));
+            println!("brightest frame-1 texels (value, world pos, normal, px, py):");
+            for b in bright.iter().take(12) { println!("  {:>3} ({:.1},{:.1},{:.1}) n ({:.2},{:.2},{:.2}) px ({},{})", b.0, b.1[0], b.1[1], b.1[2], b.2[0], b.2[1], b.2[2], b.3, b.4); }
+            let cen = { let mut s = [0f32; 3]; for b in &bright { for k in 0..3 { s[k] += b.1[k]; } } [s[0] / bright.len() as f32, s[1] / bright.len() as f32, s[2] / bright.len() as f32] };
+            println!("chart centroid ({:.1},{:.1},{:.1}); lights within 40 m:", cen[0], cen[1], cen[2]);
+            for (li, l) in scene.world_lights() {
+                let dd = lightmap::geometry::sub(l.pos, cen);
+                let dist = lightmap::geometry::dot(dd, dd).sqrt();
+                if dist < 40.0 { println!("  inst {li} ({}) pos ({:.1},{:.1},{:.1}) dir ({:.2},{:.2},{:.2}) R {:.1} I {:.2} cone {:?} dist {dist:.1}", scene.instances[li].model_name, l.pos[0], l.pos[1], l.pos[2], l.dir[0], l.dir[1], l.dir[2], l.radius, l.intensity, l.cone); }
+            }
         }
         _ => {
             eprintln!("unknown command");

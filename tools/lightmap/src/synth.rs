@@ -35,13 +35,30 @@ pub struct Chart {
     pub w: u32,
     pub h: u32,
     pub a: Vec<[u8; 3]>,
+    /// Frame 1 (point lights), normalised like `a`; empty = black.
+    pub a1: Vec<[u8; 3]>,
     pub b: u8,
     pub fb: [u8; 3],
 }
 
 impl Chart {
     pub fn flat(obj: u32, px: u32, spec: ChartSpec) -> Chart {
-        Chart { obj, w: px, h: px, a: vec![spec.a; (px * px) as usize], b: spec.b, fb: spec.fb }
+        Chart { obj, w: px, h: px, a: vec![spec.a; (px * px) as usize], a1: Vec::new(), b: spec.b, fb: spec.fb }
+    }
+
+    /// `from_hdr` plus a frame-1 (point light) HDR chart normalised the same way (fb1 = 255·max/k).
+    pub fn from_hdr2(obj: u32, w: u32, h: u32, rgb: &[[f32; 3]], rgb1: &[[f32; 3]], k: f32, b: u8) -> Chart {
+        let mut c = Chart::from_hdr(obj, w, h, rgb, k, b);
+        if !rgb1.is_empty() {
+            let max1 = rgb1.iter().flat_map(|c| c.iter().copied()).fold(0.0f32, f32::max);
+            if max1 > 1e-4 {
+                let fb1 = (255.0 * max1 / k).round().clamp(1.0, 255.0) as u8;
+                let enc_max = fb1 as f32 / 255.0 * k;
+                c.a1 = rgb1.iter().map(|v| { let f = |x: f32| (x / enc_max * 255.0).round().clamp(0.0, 255.0) as u8; [f(v[0]), f(v[1]), f(v[2])] }).collect();
+                c.fb[1] = fb1;
+            }
+        }
+        c
     }
 
     /// From HDR irradiance: normalise to the chart max, `k` = the scale the
@@ -58,7 +75,7 @@ impl Chart {
                 [f(c[0]), f(c[1]), f(c[2])]
             })
             .collect();
-        Chart { obj, w, h, a, b, fb: [fb0, 0, 0] }
+        Chart { obj, w, h, a, a1: Vec::new(), b, fb: [fb0, 0, 0] }
     }
 }
 
@@ -127,9 +144,21 @@ pub fn synth(plan: &Plan, template: &LightmapChunk) -> Result<Synth, String> {
     build(charts, plan.bbox, template)
 }
 
+/// What replaces the template's probe volume: the small-atlas blob and the trailer.
+pub struct ProbeBlob {
+    pub blob: Vec<u8>,
+    pub trailer: Vec<u8>,
+}
+
 /// Pack `charts` (any order; one per object) into a 1024² atlas, encode, and
-/// wrap them in a chunk templated on `template`.
-pub fn build(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: &LightmapChunk) -> Result<Synth, String> {
+/// wrap them in a chunk templated on `template`. `probes`: our own probe
+/// volume (else the template's is copied). `vp8_q`: Some(q) encodes the big
+/// atlases as lossy VP8 (Nadeo's form), None as lossless VP8L.
+pub fn build(charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: &LightmapChunk) -> Result<Synth, String> {
+    build_full(charts, bbox, template, None, None)
+}
+
+pub fn build_full(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: &LightmapChunk, probes: Option<ProbeBlob>, vp8_q: Option<u8>) -> Result<Synth, String> {
     let td = template.data.as_ref().ok_or("template has no lightmap")?;
     let tm = td.cache.mapping().ok_or("template has no mapping chunk")?;
     // fit: shrink every chart uniformly until the shelf packer accepts the set
@@ -152,16 +181,22 @@ pub fn build(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: &Ligh
                 continue;
             }
             let mut a = Vec::with_capacity((nw * nh) as usize);
+            let mut a1 = Vec::with_capacity(if c.a1.is_empty() { 0 } else { (nw * nh) as usize });
             for y in 0..nh {
                 for x in 0..nw {
                     let sx = ((x as f32 + 0.5) * c.w as f32 / nw as f32) as u32;
                     let sy = ((y as f32 + 0.5) * c.h as f32 / nh as f32) as u32;
-                    a.push(c.a[(sy.min(c.h - 1) * c.w + sx.min(c.w - 1)) as usize]);
+                    let i = (sy.min(c.h - 1) * c.w + sx.min(c.w - 1)) as usize;
+                    a.push(c.a[i]);
+                    if !c.a1.is_empty() {
+                        a1.push(c.a1[i]);
+                    }
                 }
             }
             c.w = nw;
             c.h = nh;
             c.a = a;
+            c.a1 = a1;
         }
     }
     if factor < 1.0 {
@@ -171,6 +206,8 @@ pub fn build(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: &Ligh
     let area: u64 = charts.iter().map(|c| (c.w * c.h) as u64).sum();
     let mut ia = Rgb::new(1024, 1024);
     let mut ib = Rgb::new(1024, 1024);
+    let mut i1 = Rgb::new(1024, 1024);
+    let mut any_lights = false;
     for p in ib.px.iter_mut() {
         *p = 128;
     }
@@ -202,6 +239,10 @@ pub fn build(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: &Ligh
                 if ax < 1024 && ay < 1024 {
                     ia.set(ax, ay, col);
                     ib.set(ax, ay, [c.b, c.b, c.b]);
+                    if !c.a1.is_empty() {
+                        i1.set(ax, ay, c.a1[(sy * c.w + sx) as usize]);
+                        any_lights = true;
+                    }
                 }
             }
         }
@@ -241,17 +282,31 @@ pub fn build(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: &Ligh
             ChunkBody::Raw(b) => CacheChunk { id: c.id, body: ChunkBody::Raw(b.clone()) },
         })
         .collect();
-    let cache = CacheBlob { chunks, trailer: td.cache.trailer.clone() };
-    let black = encode_webp_lossless(&Rgb::new(1024, 1024))?;
+    let trailer = match &probes {
+        Some(p) => p.trailer.clone(),
+        None => td.cache.trailer.clone(),
+    };
+    let cache = CacheBlob { chunks, trailer };
+    let enc = |im: &Rgb| -> Result<Vec<u8>, String> {
+        match vp8_q {
+            Some(q) => Ok(crate::vp8enc::encode(&im.px, im.w, im.h, q)),
+            None => encode_webp_lossless(im),
+        }
+    };
+    let black = enc(&Rgb::new(1024, 1024))?;
     let mut frames = Vec::new();
     for fi in 0..td.frames.len() {
         let mut images = Vec::new();
         for ii in 0..td.frames[fi].images.len() {
             let src = &td.frames[fi].images[ii];
             let im = match (fi, ii) {
-                (0, 0) => encode_webp_lossless(&ia)?,
-                (0, 1) => encode_webp_lossless(&ib)?,
-                (0, 2) => src.clone(),
+                (0, 0) => enc(&ia)?,
+                (0, 1) => enc(&ib)?,
+                (0, 2) => match &probes {
+                    Some(p) => p.blob.clone(),
+                    None => src.clone(),
+                },
+                (1, 0) if any_lights => enc(&i1)?,
                 (_, 0) if !src.is_empty() => black.clone(),
                 _ => Vec::new(),
             };

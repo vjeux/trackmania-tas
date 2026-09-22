@@ -10,6 +10,7 @@ pub mod geometry;
 pub mod img;
 pub mod mapio;
 pub mod probe;
+pub mod probes;
 pub mod synth;
 pub mod volume;
 pub mod vp8_tables;

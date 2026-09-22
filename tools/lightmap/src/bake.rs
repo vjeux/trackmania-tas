@@ -46,6 +46,8 @@ pub struct BakeParams {
     pub want_bounce: bool,
     /// Debug: paint texels by world position (a 4 m checkerboard) instead of lighting.
     pub pattern: bool,
+    /// Point-light scale for frame 1 (K = 1 units per unit light intensity); 0 = frame 1 not baked.
+    pub light_k: f32,
 }
 
 impl Default for BakeParams {
@@ -73,6 +75,7 @@ impl Default for BakeParams {
             inset_px: 0.0,
             fit_regressor: 0,
             pattern: false,
+            light_k: 0.27,
         }
     }
 }
@@ -85,6 +88,8 @@ pub struct ChartBake {
     pub w: u32,
     pub h: u32,
     pub rgb: Vec<[f32; 3]>,
+    /// Frame 1: the point lights' irradiance per texel (empty when not baked).
+    pub rgb1: Vec<[f32; 3]>,
     pub covered: Vec<bool>,
     /// Sun-visibility mean over the chart (diagnostics / fitting).
     pub sun_vis: f32,
@@ -364,7 +369,8 @@ fn shade_full(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
 }
 
 /// Bake every instance. Returns one chart per instance (index = instance).
-pub fn bake(scene: &Scene, bvh: &Bvh, prm: &BakeParams) -> Vec<ChartBake> {
+/// `lights`: the scene's point lights (frame 1), used when `prm.light_k > 0`.
+pub fn bake(scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, crate::geometry::LightDef)]) -> Vec<ChartBake> {
     let n = scene.instances.len();
     let threads = if prm.threads == 0 { std::thread::available_parallelism().map(|x| x.get()).unwrap_or(8).min(160) } else { prm.threads };
     let next = std::sync::atomic::AtomicUsize::new(0);
@@ -385,81 +391,89 @@ pub fn bake(scene: &Scene, bvh: &Bvh, prm: &BakeParams) -> Vec<ChartBake> {
                 let (w, h) = chart_size(m, scale, prm);
                 let (samples, covered) = rasterise_inset(scene, ii, w, h, prm.flip_v, prm.uv_bounds, prm.inset_px);
                 let mut rgb = vec![[0f32; 3]; (w * h) as usize];
+                let want_lights = prm.light_k > 0.0 && !lights.is_empty();
+                let mut rgb1 = if want_lights { vec![[0f32; 3]; (w * h) as usize] } else { Vec::new() };
                 let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ ((ii as u64 + 1) * 0x2545_F491_4F6C_DD1D));
                 let (mut sv, mut kv) = (0f32, 0f32);
                 for s in &samples {
                     let (e, sky_vis, sun_vis) = shade(bvh, prm, s, ii as u32, &mut rng);
                     rgb[(s.py * w + s.px) as usize] = e;
+                    if want_lights {
+                        let o = add(s.p, mul(s.n, 0.03));
+                        rgb1[(s.py * w + s.px) as usize] = crate::probes::light_sum(bvh, lights, o, Some(s.n), prm.light_k, ii as u32);
+                    }
                     sv += sun_vis;
                     kv += sky_vis;
                 }
                 let ns = samples.len().max(1) as f32;
-                // dilate uncovered pixels from covered neighbours until the chart is full
-                let mut cov = covered.clone();
-                for _ in 0..256 {
-                    if cov.iter().all(|&c| c) {
-                        break;
-                    }
-                    let src = rgb.clone();
-                    let scov = cov.clone();
-                    for y in 0..h {
-                        for x in 0..w {
-                            let i = (y * w + x) as usize;
-                            if scov[i] {
-                                continue;
-                            }
-                            let mut acc = [0f32; 3];
-                            let mut cnt = 0;
-                            for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)] {
-                                let (nx, ny) = (x as i32 + dx, y as i32 + dy);
-                                if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
-                                    continue;
-                                }
-                                let j = (ny as u32 * w + nx as u32) as usize;
-                                if scov[j] {
-                                    for k in 0..3 {
-                                        acc[k] += src[j][k];
-                                    }
-                                    cnt += 1;
-                                }
-                            }
-                            if cnt > 0 {
-                                for k in 0..3 {
-                                    rgb[i][k] = acc[k] / cnt as f32;
-                                }
-                                cov[i] = true;
-                            }
-                        }
-                    }
+                dilate(&mut rgb, &covered, w, h, prm.sky);
+                if want_lights {
+                    dilate(&mut rgb1, &covered, w, h, [0.0; 3]);
                 }
-                // anything still uncovered: the chart mean
-                let mean = {
-                    let mut s = [0f32; 3];
-                    let mut c = 0f32;
-                    for (i, v) in rgb.iter().enumerate() {
-                        if cov[i] {
-                            for k in 0..3 {
-                                s[k] += v[k];
-                            }
-                            c += 1.0;
-                        }
-                    }
-                    if c > 0.0 {
-                        [s[0] / c, s[1] / c, s[2] / c]
-                    } else {
-                        prm.sky
-                    }
-                };
-                for (i, v) in rgb.iter_mut().enumerate() {
-                    if !cov[i] {
-                        *v = mean;
-                    }
-                }
-                *results[ii].lock().unwrap() = Some(ChartBake { item: inst.item, w, h, rgb, covered, sun_vis: sv / ns, sky_vis: kv / ns });
+                *results[ii].lock().unwrap() = Some(ChartBake { item: inst.item, w, h, rgb, rgb1, covered, sun_vis: sv / ns, sky_vis: kv / ns });
             });
         }
     });
     results.into_iter().map(|m| m.into_inner().unwrap().unwrap()).collect()
+}
+
+/// Flood-fill the uncovered texels of a chart from their covered neighbours
+/// (repeated until full); anything still uncovered takes the covered mean
+/// (or `fallback` on an empty chart).
+fn dilate(rgb: &mut [[f32; 3]], covered: &[bool], w: u32, h: u32, fallback: [f32; 3]) {
+    let mut cov = covered.to_vec();
+    for _ in 0..256 {
+        if cov.iter().all(|&c| c) {
+            break;
+        }
+        let src = rgb.to_vec();
+        let scov = cov.clone();
+        for y in 0..h {
+            for x in 0..w {
+                let i = (y * w + x) as usize;
+                if scov[i] {
+                    continue;
+                }
+                let mut acc = [0f32; 3];
+                let mut cnt = 0;
+                for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1)] {
+                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                    if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                        continue;
+                    }
+                    let j = (ny as u32 * w + nx as u32) as usize;
+                    if scov[j] {
+                        for k in 0..3 {
+                            acc[k] += src[j][k];
+                        }
+                        cnt += 1;
+                    }
+                }
+                if cnt > 0 {
+                    for k in 0..3 {
+                        rgb[i][k] = acc[k] / cnt as f32;
+                    }
+                    cov[i] = true;
+                }
+            }
+        }
+    }
+    let mut s = [0f32; 3];
+    let mut c = 0f32;
+    for (i, v) in rgb.iter().enumerate() {
+        if cov[i] {
+            for k in 0..3 {
+                s[k] += v[k];
+            }
+            c += 1.0;
+        }
+    }
+    let mean = if c > 0.0 { [s[0] / c, s[1] / c, s[2] / c] } else { fallback };
+    for (i, v) in rgb.iter_mut().enumerate() {
+        if !cov[i] {
+            *v = mean;
+        }
+    }
 }
 
 /// Bake a SUBSET scene whose instances are a selection of a full scene's;
@@ -496,7 +510,7 @@ pub fn bake_subset(sub: &Scene, full_ids: &[u32], bvh: &Bvh, prm: &BakeParams) -
                     kv += sky_vis;
                 }
                 let ns = samples.len().max(1) as f32;
-                *results[ii].lock().unwrap() = Some(ChartBake { item: inst.item, w: px, h: px, rgb, covered, sun_vis: sv / ns, sky_vis: kv / ns });
+                *results[ii].lock().unwrap() = Some(ChartBake { item: inst.item, w: px, h: px, rgb, rgb1: Vec::new(), covered, sun_vis: sv / ns, sky_vis: kv / ns });
             });
         }
     });
@@ -530,7 +544,7 @@ pub fn bake_subset_px(sub: &Scene, full_ids: &[u32], bvh: &Bvh, prm: &BakeParams
             kv += sky_vis;
         }
         let ns = samples.len().max(1) as f32;
-        out.push(ChartBake { item: inst.item, w, h, rgb, covered, sun_vis: sv / ns, sky_vis: kv / ns });
+        out.push(ChartBake { item: inst.item, w, h, rgb, rgb1: Vec::new(), covered, sun_vis: sv / ns, sky_vis: kv / ns });
     }
     out
 }

@@ -18,9 +18,26 @@ pub struct Tri {
     pub uv: [[f32; 2]; 3],
 }
 
+/// A light socket of a model (`CPlugSolid2Model.lights`): position and axis in
+/// model space, the `GxLight` parameters. Spot angles in degrees (a pack spot
+/// is 120–170°, nearly a hemisphere), `radius` = the ball radius (falloff range).
+#[derive(Clone, Copy, Debug)]
+pub struct LightDef {
+    pub pos: V3,
+    /// The socket's forward axis (the spot direction).
+    pub dir: V3,
+    pub color: [f32; 3],
+    pub intensity: f32,
+    pub radius: f32,
+    /// (inner, outer) cone angles in degrees; (180, 180) for a ball light.
+    pub cone: (f32, f32),
+    pub animated: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct ModelGeom {
     pub tris: Vec<Tri>,
+    pub lights: Vec<LightDef>,
     /// PreLightGen: u02 (the metres-per-uv the game sizes the chart with) and the uv1 bounds u04[0..4].
     pub plg_u02: f32,
     pub plg_bounds: Option<[f32; 4]>,
@@ -80,6 +97,21 @@ pub fn load_model(bytes: &[u8]) -> Result<ModelGeom, String> {
         if plg.u04[2] > plg.u04[0] && plg.u04[3] > plg.u04[1] && plg.u04[2].is_finite() {
             g.plg_bounds = Some([plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]]);
         }
+    }
+    for l in &s2.lights {
+        let Some(Node::Light(pl)) = l.node.inline.as_deref() else { continue };
+        let Some(gx) = pl.gx_light() else { continue };
+        let (color, intensity, radius) = gx.summary();
+        let mut cone = (180.0f32, 180.0f32);
+        for ch in &gx.chunks {
+            match ch {
+                mapgeom::static_item::light::GxChunk::Spot { angle_inner, angle_outer, .. } => cone = (*angle_inner, *angle_outer),
+                mapgeom::static_item::light::GxChunk::Spot01 { angle_inner, angle_outer, .. } => cone = (*angle_inner, *angle_outer),
+                _ => {}
+            }
+        }
+        let t = &l.u05;
+        g.lights.push(LightDef { pos: [t[9], t[10], t[11]], dir: norm([t[6], t[7], t[8]]), color, intensity, radius, cone, animated: pl.is_animated() });
     }
     let (mut aw, mut au) = (0f64, 0f64);
     let (mut umin, mut umax) = ([f32::MAX; 2], [f32::MIN; 2]);
@@ -199,6 +231,27 @@ impl Scene {
 
     pub fn tri_count(&self) -> usize {
         self.instances.iter().map(|i| self.models[i.model].tris.len()).sum()
+    }
+
+    /// Every light of every instance in world space (position, direction, and
+    /// the radius scaled like the instance).
+    pub fn world_lights(&self) -> Vec<(usize, LightDef)> {
+        let mut out = Vec::new();
+        for (ii, inst) in self.instances.iter().enumerate() {
+            let m = &self.models[inst.model];
+            let scale = {
+                let c0 = [inst.xf[0], inst.xf[1], inst.xf[2]];
+                dot(c0, c0).sqrt()
+            };
+            for l in &m.lights {
+                let mut w = *l;
+                w.pos = xf_point(&inst.xf, l.pos);
+                w.dir = xf_normal(&inst.xf, l.dir);
+                w.radius = l.radius * scale;
+                out.push((ii, w));
+            }
+        }
+        out
     }
 }
 
