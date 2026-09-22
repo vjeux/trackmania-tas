@@ -1366,7 +1366,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // (38, 5, 26), one cell of water in the beach under a pillar foot) gets its
     // half-size floor like any terrain tile — the regenerated sea has no floor
     // there and the pond showed the sky (`tmmaps ponds`, 2026-09-12).
-    let ponds = tmmaps::tiny::pond_cells(&source);
+    // TINY_PONDS=0 leaves the ponds bottomless (a lightmap bake copy of a file built
+    // before the pond rule must mirror its item list exactly, 2026-09-21)
+    let ponds = if std::env::var("TINY_PONDS").map(|v| v == "0").unwrap_or(false) { Default::default() } else { tmmaps::tiny::pond_cells(&source) };
     let emitted_baked = |b: &tmmaps::map::BlockRec| b.name != "Sea" || ponds.contains(&b.file_cell);
     if !ponds.is_empty() {
         println!("  {} pond cell(s): enclosed Sea records get a sea-floor item ({})", ponds.len(), ponds.iter().map(|c| format!("{},{},{}", c[0], c[1], c[2])).collect::<Vec<_>>().join(" "));
@@ -1451,6 +1453,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let mut baker = TreeBaker::new(veget_mode);
     let substitute = veget_mode == "substitute" || veget_mode == "bake";
     let mut baked_tree_rows = 0usize;
+    let mut cache_hits = 0usize;
     let ambient = source.ambient_zone().unwrap_or_default();
     for ((name, flags, inherited_mods), n) in &keys {
         if !wanted(name) {
@@ -1501,7 +1504,52 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         next_alias += 1;
         let ident = format!("{alias}.Item.Gbx");
         let at_water_row = water.map(|(wrow, _)| rows_by_key.get(&(name.clone(), *flags)).map(|r| r.len() == 1 && r.contains(&wrow)).unwrap_or(false)).unwrap_or(false);
-        let res = bake_block(store, &plan, name, &path, &bi, &ident, scale, collection, &legacy, water, at_water_row);
+        // THE BAKE CACHE (`bake_cache.rs`): the same recipe under the same converter and
+        // knobs is the same bake — reuse it under this build's alias instead of the
+        // ~1.5 s of CPU per model (vjeux, 2026-09-21).
+        let cache_key = crate::bake_cache::key(&plan.recipe, scale, collection, at_water_row, water);
+        let mut cached_visuals: Option<usize> = None;
+        let res: Result<(Vec<u8>, crate::static_item::build::Merged, bool), String> = match crate::bake_cache::get(&cache_key, &ident) {
+            Some(c) => {
+                cache_hits += 1;
+                let mut m = crate::static_item::build::Merged::default();
+                m.pictures = c.pictures.into_iter().collect();
+                m.notes = c.notes;
+                m.surf_vertices = c.surf_vertices;
+                m.surf_triangles = c.surf_triangles;
+                m.veget = c.veget;
+                m.waypoint_type = c.waypoint_type;
+                m.spawn = c.spawn;
+                m.trigger = c.trigger;
+                cached_visuals = Some(c.n_visuals);
+                Ok((c.bytes, m, c.deepened))
+            }
+            None => {
+                let r = bake_block(store, &plan, name, &path, &bi, &ident, scale, collection, &legacy, water, at_water_row);
+                if let Ok((bytes, m, deepened)) = &r {
+                    if !m.visuals.is_empty() {
+                        crate::bake_cache::put(
+                            &cache_key,
+                            &ident,
+                            &crate::bake_cache::Baked {
+                                bytes: bytes.clone(),
+                                pictures: m.pictures.iter().cloned().collect(),
+                                n_visuals: m.visuals.len(),
+                                notes: m.notes.clone(),
+                                surf_vertices: m.surf_vertices.clone(),
+                                surf_triangles: m.surf_triangles.clone(),
+                                veget: m.veget.clone(),
+                                waypoint_type: m.waypoint_type,
+                                spawn: m.spawn,
+                                trigger: m.trigger.clone(),
+                                deepened: *deepened,
+                            },
+                        );
+                    }
+                }
+                r
+            }
+        };
         let (sx, sz, units) = (plan.footprint.sx, plan.footprint.sz, &plan.footprint.units);
         let label = &plan.pk.label;
         let recipe = &plan.recipe;
@@ -1515,7 +1563,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 for (file, dds) in &m.pictures {
                     pictures.entry(format!("Items/{file}")).or_insert_with(|| dds.clone());
                 }
-                let nv = m.visuals.len();
+                let nv = cached_visuals.unwrap_or(m.visuals.len());
                 let veget = m.notes.iter().filter(|n| n.to_ascii_lowercase().contains(".vegettreemodel.gbx")).count();
                 let other_skips = m.notes.iter().filter(|n| (n.contains("skipped") || n.contains("failed") || n.contains("unnamed")) && !n.to_ascii_lowercase().contains(".vegettreemodel.gbx")).count();
                 let wp = match m.waypoint_type { Some(t) => format!(", waypoint {t} spawn {:?} trigger {}", m.spawn, m.trigger.is_some()), None => String::new() };
@@ -2288,6 +2336,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         std::fs::write(r, &rep).unwrap();
     }
     println!("  library: {} embedded items; {} models ok, {} failed -> {}", files.len(), ok, bad, out_zip.display());
+    if cache_hits > 0 || crate::bake_cache::dir().is_some() {
+        println!("  bake cache: {cache_hits} block bakes reused from {}", crate::bake_cache::dir().map(|d| d.display().to_string()).unwrap_or_else(|| "(disabled)".into()));
+    }
     if !deepened.is_empty() {
         println!("  sea floor at source depth under {} shore tile models at the water row: {}", deepened.len(), deepened.join(", "));
     }

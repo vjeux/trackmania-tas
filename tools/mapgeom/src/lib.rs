@@ -37,6 +37,7 @@ pub mod coverage;
 pub mod embedded;
 pub mod fillers;
 pub mod bake;
+pub mod bake_cache;
 pub mod shape_audit;
 pub mod geom;
 pub mod light_skin;
