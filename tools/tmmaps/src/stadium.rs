@@ -35,21 +35,27 @@ pub enum Fate {
     Keep,
     /// the plain twin of a terrain-conformed variant, and how many rows UP its deck
     /// sits from the variant's origin (a flat road on a 2-high hill: +2; a slope: 0)
-    Twin(String, i32),
+    Twin(String, i32, u8),
     Drop(&'static str),
 }
 
 /// The measured twins: variant \t plain twin \t rows up (`mapgeom blockinfo` unit
 /// heights over the four vista packs and Stadium.pak, 2026-09-22; the two variants
 /// no pack lists took their digit).
-fn twin_table() -> &'static BTreeMap<String, (String, i32)> {
-    static T: std::sync::OnceLock<BTreeMap<String, (String, i32)>> = std::sync::OnceLock::new();
+/// … and a 4th column since 2026-09-22: the quarter TURNS the plain twin needs. Every
+/// On-terrain prefab is a wrapper around the plain Stadium prefab placed with a position
+/// and a quaternion (`mapgeom prefab-ents`): the slopes carry it turned 180° about Y
+/// (pos (32, 0, 32), rot (0, 1, 0, 0)) — renamed in place they ran the other way
+/// (json9841: "first downhill is backwards"); the flat pieces sit raised (pos (0, 16, 0)
+/// = +2 rows), unturned.
+fn twin_table() -> &'static BTreeMap<String, (String, i32, u8)> {
+    static T: std::sync::OnceLock<BTreeMap<String, (String, i32, u8)>> = std::sync::OnceLock::new();
     T.get_or_init(|| {
         include_str!("stadium-on-twins.tsv")
             .lines()
             .filter_map(|l| {
                 let f: Vec<&str> = l.split('\t').collect();
-                (f.len() >= 3).then(|| (f[0].to_string(), (f[1].to_string(), f[2].trim().parse().unwrap_or(0))))
+                (f.len() >= 3).then(|| (f[0].to_string(), (f[1].to_string(), f[2].trim().parse().unwrap_or(0), f.get(3).and_then(|t| t.trim().parse().ok()).unwrap_or(0u8))))
             })
             .collect()
     })
@@ -92,16 +98,16 @@ pub fn fate(name: &str) -> Fate {
     if known.contains(&name.to_ascii_lowercase()) {
         return Fate::Keep;
     }
-    if let Some((t, dy)) = twin_table().get(name) {
+    if let Some((t, dy, turn)) = twin_table().get(name) {
         if known.contains(&t.to_ascii_lowercase()) {
-            return Fate::Twin(t.clone(), *dy);
+            return Fate::Twin(t.clone(), *dy, *turn);
         }
     }
     if let Some(t) = strip_on(name) {
         if known.contains(&t.to_ascii_lowercase()) {
             // an unmeasured variant: a flat piece rises by its digit, a slope stays
             let digit: i32 = name.rsplit(|c: char| !c.is_ascii_digit()).next().and_then(|d| d.parse().ok()).unwrap_or(if name.contains("Slope") { 0 } else { 1 });
-            return Fate::Twin(t, if name.contains("Slope") { 0 } else { digit });
+            return Fate::Twin(t, if name.contains("Slope") { 0 } else { digit }, 0);
         }
         return Fate::Drop("terrain variant without a twin");
     }
@@ -293,7 +299,7 @@ fn plan(m: &MapFile, input: &Path) -> Result<Plan, String> {
     for (b, f) in m.blocks.iter().zip(&fates) {
         match f {
             Fate::Drop(_) => *dropped.entry(b.name.clone()).or_default() += 1,
-            Fate::Twin(t, dy) => *twins.entry(format!("{} → {t}{}", b.name, if *dy != 0 { format!(" (+{dy} rows)") } else { String::new() })).or_default() += 1,
+            Fate::Twin(t, dy, turn) => *twins.entry(format!("{} → {t}{}{}", b.name, if *dy != 0 { format!(" (+{dy} rows)") } else { String::new() }, if *turn != 0 { format!(" ({}°)", *turn as u32 * 90) } else { String::new() })).or_default() += 1,
             Fate::Keep => {}
         }
     }
@@ -400,8 +406,12 @@ pub fn port_cmd(args: &[String]) -> Result<(), String> {
         let mut m = MapFile::load(&tmp);
         assert_eq!(m.blocks.len(), kept_fates.len(), "kept block count");
         for (i, fte) in kept_fates.iter().enumerate() {
-            if let Fate::Twin(t, _) = fte {
+            if let Fate::Twin(t, _, turn) = fte {
                 m.set_block_name(i, t);
+                if *turn != 0 {
+                    let d = m.blocks[i].dir;
+                    m.set_block_dir(i, (d + *turn) & 3);
+                }
             }
         }
         m.set_decoration(&p.deco);
@@ -430,7 +440,7 @@ pub fn port_cmd(args: &[String]) -> Result<(), String> {
         for i in 0..m.blocks.len() {
             let b = m.blocks[i].clone();
             let up = match &kept_fates[i] {
-                Fate::Twin(_, rows) => *rows,
+                Fate::Twin(_, rows, _) => *rows,
                 _ => 0,
             };
             if up != 0 {
@@ -458,7 +468,7 @@ pub fn port_cmd(args: &[String]) -> Result<(), String> {
         }
         m.write_to(&tmp).map_err(|e| e.to_string())?;
         // every block and item inside the stadium (a block outside makes the load fail)
-        let m = MapFile::load(&tmp);
+        let mut m = MapFile::load(&tmp);
         let mut outside = 0usize;
         for b in &m.blocks {
             let c = block_cell(b, crate::map::ground_y(STADIUM));
@@ -493,6 +503,29 @@ pub fn port_cmd(args: &[String]) -> Result<(), String> {
             m.write_to(&tmp).map_err(|e| e.to_string())?;
             println!("  stage 3b: the ground bit cleared on {cleared} blocks off row {GROUND_CELL}");
         }
+    }
+    // 3a. the MediaTracker (its own load/write: a variable-length splice)
+    {
+        let mut m = MapFile::load(&tmp);
+        let [dx, dy, dz] = p.shift;
+        let world = [dx as f32 * 32.0, dy as f32 * 8.0, dz as f32 * 32.0];
+        let ground_delta = crate::map::ground_y(STADIUM) - p.ground;
+        // camera keys are world positions, the in-game clip TRIGGERS
+        // are cells of the trigger grid (ts per block) — both follow the shift, or the
+        // camera changes fire nowhere (json9841 2026-09-22: "Cam switches are removed")
+        match m.mediatracker() {
+            None => {}
+            Some(Err(e)) => println!("  stage 3a: MediaTracker left untouched ({e})"),
+            Some(Ok(mut mt)) => {
+                let ts = mt.trigger_size.unwrap_or([3, 1, 3]);
+                let point = move |q: [f32; 3]| [q[0] + world[0], q[1] + ground_delta + world[1], q[2] + world[2]];
+                let cell = move |c: [i32; 3]| vec![[(c[0] + dx * ts[0]).max(0), (c[1] + dy * ts[1]).max(0), (c[2] + dz * ts[2]).max(0)]];
+                let (keys, verts, (c0, c1), left) = mt.transform(&point, 1.0, &cell);
+                m.set_mediatracker(&mt);
+                println!("  stage 3a: MediaTracker {} clips: {keys} camera keys, {verts} vertices moved, trigger cells {c0} → {c1}, {left} blocks left alone", mt.clips().len());
+            }
+        }
+        m.write_to(&tmp).map_err(|e| e.to_string())?;
     }
     // 4. header (collection, decoration, envir), ghost, lightmap, genealogy, uid, name
     {
@@ -964,4 +997,75 @@ pub fn stable_uid(prefix: &str, src_uid: &str) -> String {
     } else {
         crate::altered::new_uid(prefix, 27)
     }
+}
+
+/// `tmmaps stadium-slopedir MAP… [--block SUBSTR]`: per block NAME, the validation ghost's
+/// height gradient over the block's footprint, in the block's LOCAL frame (dir 0: local
+/// +x = world +x, local +z = world +z; dir 1..3 rotate clockwise seen from above). One
+/// number per placement — the ghost's rise per metre along local z and along local x —
+/// aggregated as the mean sign. The plain Stadium slopes (U10S maps) and the vista
+/// On-terrain variants (the Nadeo 2026 maps) compared tell which twins are authored
+/// the other way round (json9841 2026-09-22: "first downhill is backwards").
+pub fn slopedir_cmd(args: &[String]) -> Result<(), String> {
+    let want = crate::cli::flag(args, "--block").map(String::from);
+    let mut acc: BTreeMap<String, Vec<(f32, f32)>> = BTreeMap::new();
+    for path in args.iter().skip(1).filter(|a| a.ends_with(".Map.Gbx")) {
+        let m = MapFile::load(Path::new(path));
+        let coll = m.items.first().map(|it| it.collection_raw).unwrap_or(26);
+        let ground = crate::map::ground_y(coll);
+        let Ok(d) = gbx::record::decode_ghost(path) else { continue };
+        for b in &m.blocks {
+            if b.free_pos.is_some() {
+                continue;
+            }
+            if let Some(w) = &want {
+                if !b.name.contains(w.as_str()) {
+                    continue;
+                }
+            }
+            if !b.name.contains("Slope") {
+                continue;
+            }
+            let c = block_cell(b, ground);
+            let x0 = c[0] as f32 * 32.0;
+            let z0 = c[2] as f32 * 32.0;
+            let floor = c[1] as f32 * 8.0 + ground;
+            // samples over this cell column, within the block's height band
+            let mut pts: Vec<(f32, f32, f32)> = Vec::new();
+            for s in &d.samples {
+                if s.x >= x0 && s.x < x0 + 32.0 && s.z >= z0 && s.z < z0 + 32.0 && s.y >= floor - 2.0 && s.y <= floor + 40.0 {
+                    // local frame: undo the block's dir (clockwise quarter turns)
+                    let (u, v) = (s.x - x0 - 16.0, s.z - z0 - 16.0);
+                    let (lx, lz) = match b.dir & 3 {
+                        0 => (u, v),
+                        1 => (-v, u),
+                        2 => (-u, -v),
+                        _ => (v, -u),
+                    };
+                    pts.push((lx, lz, s.y));
+                }
+            }
+            if pts.len() < 4 {
+                continue;
+            }
+            // the path through the cell: first → last sample; the rise along it, attributed
+            // to the local axis the path mostly follows (+1: y rises toward +axis)
+            let (f, l) = (pts[0], pts[pts.len() - 1]);
+            let (dx, dz, dy) = (l.0 - f.0, l.1 - f.1, l.2 - f.2);
+            if dy.abs() < 0.5 || (dx.abs() < 4.0 && dz.abs() < 4.0) {
+                continue;
+            }
+            let (ax, az) = if dz.abs() >= dx.abs() { (0.0, (dy / dz).signum()) } else { ((dy / dx).signum(), 0.0) };
+            acc.entry(b.name.clone()).or_default().push((ax, az));
+        }
+    }
+    println!("block\tplacements\trises toward +z\ttoward -z\ttoward +x\ttoward -x");
+    for (name, v) in &acc {
+        let pz = v.iter().filter(|p| p.1 > 0.0).count();
+        let nz = v.iter().filter(|p| p.1 < 0.0).count();
+        let px = v.iter().filter(|p| p.0 > 0.0).count();
+        let nx = v.iter().filter(|p| p.0 < 0.0).count();
+        println!("{name}\t{}\t{pz}\t{nz}\t{px}\t{nx}", v.len());
+    }
+    Ok(())
 }

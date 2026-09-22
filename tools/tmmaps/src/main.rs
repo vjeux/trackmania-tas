@@ -166,6 +166,12 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        "stadium-slopedir" => {
+            if let Err(e) = tmmaps::stadium::slopedir_cmd(&args[1..]) {
+                eprintln!("tmmaps stadium-slopedir: {e}");
+                std::process::exit(1);
+            }
+        }
         "stadium-verify" => {
             if let Err(e) = tmmaps::stadium::verify_cmd(&args[1..]) {
                 eprintln!("tmmaps stadium-verify: {e}");

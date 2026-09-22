@@ -575,6 +575,8 @@ struct Rules {
     items: BTreeMap<(String, u8, u32), Vec<(String, [f32; 3], f32, usize)>>,
     /// item model → (author, flags, scale, collection, pivot)
     itemrec: BTreeMap<String, (String, u16, f32, u32, [f32; 3])>,
+    /// `water` rows: (waypoint block ident in AR's map, the pad's local y in the cell)
+    water_raw: Vec<(String, f32)>,
     stems: BTreeSet<String>,
 }
 
@@ -661,6 +663,11 @@ fn read_rules(paths: &[String]) -> Result<Rules, String> {
                         let off = [f[3].parse().unwrap_or(0.0), f[4].parse().unwrap_or(0.0), f[5].parse().unwrap_or(0.0)];
                         r.items.entry((f[1].to_string(), dir, var)).or_default().push((f[2].to_string(), off, f[6].parse().unwrap_or(0.0), n));
                         r.stems.insert(f[1].to_string());
+                    }
+                }
+                "water" if f.len() >= 5 => {
+                    if let Ok(y) = f[4].trim().parse::<f32>() {
+                        r.water_raw.push((f[1].to_string(), y));
                     }
                 }
                 "itemrec" => {
@@ -951,11 +958,35 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
         // the sheet's height in the pad's own frame: 2.0 for the Stadium water blocks
         let sheet = zone_pad.map(|(_, h)| h).unwrap_or(2.0);
         let dy = 2.04 - sheet; // block base relative to the waypoint's cell floor (deck = floor + 2)
+        // AR's own pad heights per waypoint block (the rules' `water` rows: the pad's local
+        // y in the block's cell): a dirt deck sits ~0.8 m lower than a tech deck, so the
+        // 4 cm rule over the tech deck puts 80 cm of water on a RoadDirtCheckpoint
+        // (json9841 2026-09-22: "CP1 block is not passable due to pool height")
+        let pad_dy_for = |name: &str| -> f32 {
+            if zone_pad.is_some() || stock_pad {
+                return dy;
+            }
+            let key = norm_block(name, &rules.stems);
+            // the rule's ident is AR's custom block: `…\RoadDirtCheckpoint-HeavyWood.Block.Gbx_CustomBlock`
+            let stem_of = |ident: &str| -> String {
+                let base = ident.rsplit(['\\', '/']).next().unwrap_or(ident);
+                let base = base.trim_end_matches("_CustomBlock").trim_end_matches(".Block.Gbx").trim_end_matches(".Item.Gbx");
+                let base = base.trim_start_matches("M2_");
+                base.split("-HeavyWood").next().unwrap_or(base).split("-Wood").next().unwrap_or(base).to_string()
+            };
+            let ys: Vec<f32> = rules.water_raw.iter().filter(|(ident, _)| norm_block(&stem_of(ident), &rules.stems) == key).map(|(_, y)| *y).collect();
+            if ys.is_empty() {
+                dy
+            } else {
+                ys.iter().sum::<f32>() / ys.len() as f32
+            }
+        };
         for b in &source.blocks {
             let tag = b.waypoint_tag.as_deref().unwrap_or("");
             if !(tag == "Spawn" || tag == "Checkpoint" || tag == "Multilap" || tag == "StartFinish") {
                 continue;
             }
+            let dy = pad_dy_for(&b.name);
             let (cx, cy, cz) = b.coords();
             let pos = match b.free_pos {
                 Some(p) => [p[0] - 16.0, p[1] - 2.0 + dy, p[2] - 16.0],
