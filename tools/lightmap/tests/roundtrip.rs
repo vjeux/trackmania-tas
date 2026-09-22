@@ -56,6 +56,27 @@ fn store_round_trips_byte_identically() {
             let m = d.cache.mapping().expect("mapping chunk");
             assert_eq!(m.binds.len(), m.count as usize);
             assert!(m.frame_bytes.iter().all(|f| f.len() == m.count as usize));
+            // the probe volume: parsed and written back byte for byte, its four WEBPs split at the
+            // trailer's offsets, every stored tile inside the atlas
+            let v = lightmap::volume::Volume::parse(&d.cache.trailer).unwrap_or_else(|e| panic!("{}: trailer {e}", p.display()));
+            assert_eq!(v.write(), d.cache.trailer, "{}: trailer round trip", p.display());
+            let parts = lightmap::volume::split_probe_blob(&d.frames[0].images[2], &v.frame_info);
+            assert_eq!(parts.len(), 4, "{}: probe blob images", p.display());
+            let mut dims = None;
+            for part in &parts {
+                assert_eq!(&part[..4], b"RIFF", "{}: probe image is a WEBP", p.display());
+                let im = lightmap::img::decode_webp(part).unwrap_or_else(|e| panic!("{}: probe image {e}", p.display()));
+                assert!(dims.map_or(true, |d| d == (im.w, im.h)), "{}: probe images share a size", p.display());
+                dims = Some((im.w, im.h));
+            }
+            let (aw, ah) = dims.unwrap();
+            assert_eq!(v.cell4.len() as u32, ((aw + 3) / 4) * ((ah + 3) / 4), "{}: mask table size", p.display());
+            for b in &v.blocks {
+                let (tw, th) = (b.max[0] - b.min[0], b.max[2] - b.min[2]);
+                for s in b.slices.iter().flatten() {
+                    assert!(s.0 + tw <= aw && s.1 + th <= ah, "{}: tile inside the atlas", p.display());
+                }
+            }
         }
         tested += 1;
     }
