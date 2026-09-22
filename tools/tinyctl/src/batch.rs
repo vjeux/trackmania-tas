@@ -250,8 +250,8 @@ fn gate(map: &Path, items_dir: &Path, paks: &str) -> Result<(String, String), St
     if hdr.uid == "-" || hdr.authortime == "-" || hdr.envir == "-" {
         return Err("the header lacks uid / authortime / envir".into());
     }
-    if !hdr.uid.starts_with("Tin") {
-        return Err(format!("uid {} does not start with `Tin`", hdr.uid));
+    if !(hdr.uid.starts_with("Tin") || hdr.uid.starts_with("Gia") || hdr.uid.starts_with("Sam")) {
+        return Err(format!("uid {} does not start with `Tin`/`Gia`/`Sam`", hdr.uid));
     }
     const NADEO_MAX_BYTES: u64 = 25 * 1024 * 1024;
     let size = std::fs::metadata(map).map(|m| m.len()).unwrap_or(0);
@@ -600,6 +600,137 @@ pub fn tracker_club_cmd(args: &[String]) -> Result<(), String> {
     println!("{tot_up} uploaded, {tot_built} built, {tot_src} sources; left out: {}", left_out_all.len());
     for l in &left_out_all {
         println!("  {l}");
+    }
+    Ok(())
+}
+
+/// `tinyctl publish-dir --maps A.Map.Gbx,B.Map.Gbx,… --items-dirs D1,D2,… --club C --campaign-name NAME
+///                     [--campaign ID] [--results DIR] [--tag giant-x2] [--box-tinyctl P] [--force]`
+/// — one campaign from an explicit list of built maps (the giant Summer
+/// campaigns, 2026-09-22: 25 files per scale, five collections, so the packs
+/// of the item-check gate come from each map's own collection). The same
+/// halves as `publish-set`: the gate here (item-check, the 25 MiB cap, a
+/// `Gia`/`Tin` uid), the maps and a manifest pushed to the box, the campaign
+/// created (or `--campaign ID` reused; the id is remembered in
+/// `<results>/campaigns.tsv` under the campaign name), `publish-batch --detach`
+/// there (one token mint, create-or-update per map, stored-bytes md5 readback,
+/// ONE playlist write in manifest order), the results pulled back. Maps whose
+/// previous result was IDENTICAL at the same md5 are playlist-only skip rows
+/// unless `--force`.
+pub fn publish_dir_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let t0 = Instant::now();
+    let maps: Vec<PathBuf> = f("--maps").ok_or("publish-dir needs --maps A,B,…")?.split(',').filter(|s| !s.trim().is_empty()).map(|s| PathBuf::from(s.trim())).collect();
+    let items_dirs: Vec<PathBuf> = f("--items-dirs").map(|s| s.split(',').filter(|s| !s.trim().is_empty()).map(|s| PathBuf::from(s.trim())).collect()).unwrap_or_else(|| maps.iter().map(|m| m.parent().unwrap_or(Path::new(".")).join("libx").join("Items")).collect());
+    if items_dirs.len() != maps.len() {
+        return Err(format!("--items-dirs has {} entries for {} maps", items_dirs.len(), maps.len()));
+    }
+    let club = f("--club").ok_or("publish-dir needs --club ID")?;
+    let camp_name = f("--campaign-name").ok_or("publish-dir needs --campaign-name NAME")?;
+    let tag = f("--tag").unwrap_or_else(|| camp_name.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase());
+    let results_dir = PathBuf::from(f("--results").unwrap_or_else(|| "/tmp/giant/publish".into()));
+    std::fs::create_dir_all(&results_dir).map_err(|e| format!("{}: {e}", results_dir.display()))?;
+    let box_tinyctl = f("--box-tinyctl").unwrap_or_else(|| "/home/vjeux/shoot/u10s/tinyctl".into());
+    let force = tmmaps::cli::has(args, "--force");
+    let wsx = Wsx::new(args);
+    let remote_dir = format!("{BOX_BATCH_DIR}/{tag}");
+    println!("\n===== {camp_name}: {} maps -> club {club} =====", maps.len());
+    // previous IDENTICAL results: playlist-only skip rows
+    let prev_results = results_dir.join(format!("results-{tag}.tsv"));
+    let done_before: std::collections::HashMap<String, String> = if force {
+        Default::default()
+    } else {
+        std::fs::read_to_string(&prev_results)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| {
+                let c: Vec<&str> = l.split('\t').collect();
+                (c.len() >= 8 && c[7] == "IDENTICAL" && c[2] != "-").then(|| (c[0].rsplit('/').next().unwrap_or(c[0]).to_string(), format!("{}\t{}", c[2], c[6])))
+            })
+            .collect()
+    };
+    let mut manifest = String::new();
+    let mut to_push: Vec<(PathBuf, String)> = Vec::new();
+    let mut refused: Vec<String> = Vec::new();
+    let mut skipped = 0usize;
+    for (m, items) in maps.iter().zip(items_dirs.iter()) {
+        let file = m.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or("map path")?;
+        let remote = format!("{remote_dir}/{file}");
+        if let Some(prev) = done_before.get(&file) {
+            let (uid, prev_md5) = prev.split_once('\t').unwrap_or((prev.as_str(), ""));
+            let cur_md5 = std::fs::read(m).map(|b| md5_hex(&b)).unwrap_or_default();
+            if let Ok(h) = tmmaps::header::read(m.to_str().unwrap_or("")) {
+                if h.uid == uid && cur_md5 == prev_md5 {
+                    manifest.push_str(&format!("{remote}\t{}\t{uid}\tskip\t{cur_md5}\n", h.name));
+                    skipped += 1;
+                    continue;
+                }
+            }
+        }
+        // the packs of the map's own collection
+        let paks = match crate::build::paks_for(crate::views::collection_of(&tmmaps::map::MapFile::load(m))) {
+            Ok(p) => p.join(" "),
+            Err(e) => {
+                refused.push(format!("{file}: {e}"));
+                continue;
+            }
+        };
+        match gate(m, items, &paks) {
+            Ok((name, _uid)) => {
+                manifest.push_str(&format!("{remote}\t{name}\n"));
+                to_push.push((m.clone(), file));
+            }
+            Err(e) => {
+                eprintln!("  {file}: refused: {}", e.lines().next().unwrap_or(""));
+                refused.push(format!("{file}: {}", e.lines().next().unwrap_or("")));
+            }
+        }
+    }
+    println!("  {}: {} to upload, {skipped} already on Nadeo, {} refused", camp_name, to_push.len(), refused.len());
+    if !refused.is_empty() {
+        let p = results_dir.join(format!("refused-{tag}.txt"));
+        let _ = std::fs::write(&p, refused.join("\n") + "\n");
+        return Err(format!("{} maps refused by the gate — see {}", refused.len(), p.display()));
+    }
+    let local_manifest = results_dir.join(format!("manifest-{tag}.tsv"));
+    std::fs::write(&local_manifest, &manifest).map_err(|e| format!("{}: {e}", local_manifest.display()))?;
+    wsx.sh(&format!("mkdir -p {remote_dir}"))?;
+    for (m, file) in &to_push {
+        eprintln!("pushing {file} …");
+        wsx.push(m, &format!("{remote_dir}/{file}"))?;
+    }
+    let remote_manifest = format!("{remote_dir}/manifest.tsv");
+    wsx.push(&local_manifest, &remote_manifest)?;
+    let camps = Campaigns::load(results_dir.join("campaigns.tsv"));
+    let (camp_id, act_id) = match f("--campaign").map(|id| (id, "-".to_string())).or_else(|| camps.get(&camp_name)) {
+        Some(x) => x,
+        None => {
+            let out = wsx.sh(&format!("cd /home/vjeux/shoot/u10s && {} nadeo-here campaign-create --club {} --name '{}' --no-lock --outdir {remote_dir}", box_tinyctl, club, camp_name.replace('\'', "")))?;
+            let toks: Vec<&str> = out.split_whitespace().collect();
+            let id = toks.iter().position(|t| *t == "campaignId").and_then(|i| toks.get(i + 1)).map(|s| s.to_string()).ok_or_else(|| format!("campaign create: {}", out.lines().last().unwrap_or("").chars().take(200).collect::<String>()))?;
+            let act = toks.iter().position(|t| *t == "activityId").and_then(|i| toks.get(i + 1)).map(|s| s.to_string()).unwrap_or_else(|| "-".into());
+            camps.put(&camp_name, id.clone(), act.clone());
+            (id, act)
+        }
+    };
+    println!("  campaign {camp_id} (activity {act_id}) `{camp_name}`");
+    let remote_results = format!("{remote_dir}/results.tsv");
+    let cmd = format!("{} publish-batch --detach --manifest {remote_manifest} --results {remote_results} --club {} --campaign {camp_id} --campaign-name '{}' --outdir {remote_dir}", box_tinyctl, club, camp_name.replace('\'', ""));
+    wsx.sh(&cmd)?;
+    let done = wsx.wait_done(&format!("{remote_dir}/results.done"), &format!("{remote_dir}/results.log"), Duration::from_secs(5400), &format!("publish-batch {tag}"));
+    let pulled = wsx.pull(&remote_results, &prev_results);
+    let _ = wsx.sh(&format!("rm -rf {remote_dir}"));
+    let text = done?;
+    pulled?;
+    let rows = std::fs::read_to_string(&prev_results).unwrap_or_default();
+    let identical = rows.lines().filter(|l| l.ends_with("\tIDENTICAL")).count();
+    let total = to_push.len() + skipped;
+    println!("{camp_name}: campaign {camp_id}, {identical}/{total} identical, {:.0} s — {}", t0.elapsed().as_secs_f64(), text.trim().replace('\n', " | "));
+    for l in rows.lines() {
+        println!("  {}", l);
+    }
+    if identical + skipped < total {
+        return Err(format!("{} of {total} maps did not read back IDENTICAL — see {}", total - identical - skipped, prev_results.display()));
     }
     Ok(())
 }

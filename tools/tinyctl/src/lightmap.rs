@@ -128,6 +128,23 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
         // the skip-if-cached problem is handled by the fresh uid plus the game-cache drop.
         eprintln!("bake copy {} with a fresh uid {fresh} (the game caches lightmaps by uid)", bake_copy.display());
     }
+    // --fresh: a NEW game process for this bake (the client's lightmapper crashes
+    // once a session has loaded ~10 maps; a 75-map batch restarts the game every
+    // few bakes and after every failure). Detached on the box under the render
+    // lock, like `tinyctl shoot --fresh`.
+    if tmmaps::cli::has(args, "--fresh") {
+        eprintln!("restarting the game first (--fresh) …");
+        let done = format!("{STAGE}/{tag}-fresh-done.txt");
+        let flog = format!("{STAGE}/{tag}-fresh.log");
+        let owner = format!("{tag}-fresh");
+        let job = format!("{shootctl} lock acquire --owner {owner} --wait 1800 || exit 3; {shootctl} quit; {shootctl} launch 300 --force; rc=$?; {shootctl} lock release --owner {owner}; if [ $rc = 0 ]; then echo OK fresh game > {done}; else echo FAILED launch rc=$rc > {done}; fi");
+        wsx.sh(&format!("rm -f {done}; nohup setsid sh -c '{job}' > {flog} 2>&1 < /dev/null &"))?;
+        let text = wsx.wait_done(&done, &flog, Duration::from_secs(2400), "fresh game")?;
+        eprintln!("  {}", text.trim());
+        if !text.trim().starts_with("OK") {
+            return Err(format!("fresh game: {}", text.trim()));
+        }
+    }
     eprintln!("pushing {} to the box …", bake_copy.display());
     wsx.push(&bake_copy, &r_map)?;
     // The game also caches computed lightmaps by CONTENT in
@@ -244,5 +261,94 @@ fn report(out: &Path, what: &str) -> Result<(), String> {
         m.blocks.len(),
         tmmaps::header::embedded_zip(&m.gbx.body).map(|(_, names)| names.len()).unwrap_or(0)
     );
+    Ok(())
+}
+
+/// `tinyctl lightmap-batch --manifest M.tsv [--quality 4] [--fresh-every 4] [--report R.tsv] [--retries 1]`
+/// — the editor bake of many maps, one after the other on the render box: the
+/// manifest has one row per map, `copy<TAB>shipped<TAB>out<TAB>name` (the bake
+/// copy — same items as the shipped file —, the shipped file the chunk is
+/// transplanted into, the lit output, the map name the editor saves under). A
+/// fresh game every `--fresh-every` bakes and after any failure (the client's
+/// lightmapper dies after ~10 loads); a failed map is retried `--retries`
+/// times with a fresh game; a map whose `out` exists is skipped (restartable).
+/// One row per map goes to the report: map, verdict, bake seconds, wall
+/// seconds, the lit file's bytes. The giant campaigns (2026-09-22): 75 rows,
+/// run detached overnight.
+pub fn batch(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(|s| s.to_string());
+    let manifest = PathBuf::from(f("--manifest").ok_or("lightmap-batch needs --manifest M.tsv")?);
+    let quality = f("--quality").unwrap_or_else(|| "4".into());
+    let fresh_every: usize = f("--fresh-every").and_then(|v| v.parse().ok()).unwrap_or(4);
+    let retries: usize = f("--retries").and_then(|v| v.parse().ok()).unwrap_or(1);
+    let report = PathBuf::from(f("--report").unwrap_or_else(|| manifest.with_extension("report.tsv").display().to_string()));
+    let text = std::fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
+    let rows: Vec<Vec<String>> = text.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#') && !l.starts_with("copy\t")).map(|l| l.split('\t').map(String::from).collect()).collect();
+    if !report.exists() {
+        std::fs::write(&report, "copy\tout\tverdict\tbake_s\twall_s\tout_bytes\tattempts\n").map_err(|e| format!("{}: {e}", report.display()))?;
+    }
+    let mut since_fresh = 0usize;
+    let mut failed = 0usize;
+    for (i, r) in rows.iter().enumerate() {
+        if r.len() < 4 {
+            return Err(format!("manifest row {}: wants copy<TAB>shipped<TAB>out<TAB>name", i + 1));
+        }
+        let (copy, shipped, out, name) = (&r[0], &r[1], &r[2], &r[3]);
+        if Path::new(out).exists() {
+            println!("{copy}: {out} exists, skipped");
+            continue;
+        }
+        if let Some(p) = Path::new(out).parent() {
+            std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        }
+        let lit_copy = Path::new(out).with_extension("copy-lit.Map.Gbx");
+        let t0 = std::time::Instant::now();
+        let mut verdict = String::new();
+        let mut bake_s = String::from("-");
+        let mut attempts = 0usize;
+        while attempts <= retries {
+            attempts += 1;
+            let fresh = since_fresh >= fresh_every || attempts > 1 || i == 0;
+            let mut a: Vec<String> = vec![copy.clone(), "--out".into(), lit_copy.display().to_string(), "--quality".into(), quality.clone(), "--name".into(), name.clone(), "--into".into(), format!("{shipped}={out}")];
+            if fresh {
+                a.push("--fresh".into());
+                since_fresh = 0;
+            }
+            for k in ["--wsx", "--box-shootctl"] {
+                if let Some(v) = f(k) {
+                    a.push(k.into());
+                    a.push(v);
+                }
+            }
+            println!("\n===== [{}/{}] {} ({}){} =====", i + 1, rows.len(), name, copy, if fresh { ", fresh game" } else { "" });
+            match cmd(&a) {
+                Ok(()) => {
+                    since_fresh += 1;
+                    // the bake's own seconds from the box log line "shadows done … in N s" if printed
+                    verdict = "ok".into();
+                    break;
+                }
+                Err(e) => {
+                    verdict = format!("FAILED: {}", e.lines().next().unwrap_or("").chars().take(160).collect::<String>());
+                    eprintln!("{copy}: attempt {attempts}: {verdict}");
+                    let _ = std::fs::remove_file(out);
+                    let _ = std::fs::remove_file(&lit_copy);
+                }
+            }
+        }
+        if verdict != "ok" {
+            failed += 1;
+        } else if let Ok(t) = std::fs::read_to_string(lit_copy.with_extension("log")) {
+            bake_s = t.lines().find(|l| l.contains("shadows done")).map(|l| l.trim().to_string()).unwrap_or_else(|| "-".into());
+        }
+        let out_bytes = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
+        let line = format!("{copy}\t{out}\t{verdict}\t{bake_s}\t{}\t{out_bytes}\t{attempts}\n", t0.elapsed().as_secs());
+        let mut fh = std::fs::OpenOptions::new().append(true).open(&report).map_err(|e| format!("{}: {e}", report.display()))?;
+        std::io::Write::write_all(&mut fh, line.as_bytes()).map_err(|e| e.to_string())?;
+        println!("{copy}: {verdict} ({} s)", t0.elapsed().as_secs());
+    }
+    if failed > 0 {
+        return Err(format!("{failed} of {} bakes failed", rows.len()));
+    }
     Ok(())
 }
