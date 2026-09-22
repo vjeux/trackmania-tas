@@ -85,20 +85,25 @@ pub fn light_sum(bvh: &Bvh, lights: &[(usize, LightDef)], p: V3, n: Option<V3>, 
 /// Shade one probe: spherical sky visibility (cosine-free, uniform directions),
 /// sun visibility, point lights; `inside` = most axis rays hit a back face.
 pub fn shade_probe(bvh: &Bvh, prm: &BakeParams, lights: &[(usize, LightDef)], light_k: f32, p: V3, rng: &mut Rng) -> ProbeSample {
-    // inside test: 6 axis rays, back-face hits
+    // inside test: the up ray meets a back face (under a terrain shell — the hills are open-bottomed
+    // shells, so the six-ray count alone misses them), or most of six axis rays meet back faces
     let mut back = 0;
     let mut hits = 0;
-    for d in [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]] {
+    let mut up_back = false;
+    for (k, d) in [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]].into_iter().enumerate() {
         if let Some(h) = bvh.closest(p, d, 64.0) {
             hits += 1;
             let t = &bvh.tris[h.tri as usize];
             let fn_ = norm(crate::geometry::cross(t.e1, t.e2));
             if dot(fn_, d) > 0.0 {
                 back += 1;
+                if k == 2 {
+                    up_back = true;
+                }
             }
         }
     }
-    let inside = hits >= 5 && back >= 4;
+    let inside = up_back || (hits >= 5 && back >= 4);
     let n = prm.sky_samples.max(8);
     let mut vis = 0f32;
     let mut wsum = 0f32;
@@ -373,7 +378,7 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
                 let (ax, ay) = (tx + xx, ty + zz);
                 let q = |v: f32, m: f32| (v / m * 255.0).round().clamp(0.0, 255.0) as u8;
                 imgs[0].set(ax, ay, [q(p.e[0], e_max), q(p.e[1], e_max), q(p.e[2], e_max)]);
-                let b = q(p.sky_vis, 1.0);
+                let b = q((p.sky_vis * 1.5).min(1.0), 1.0);
                 imgs[1].set(ax, ay, [b, b, b]);
                 let cv = if p.inside { 0.15 } else { 0.55 + 0.45 * p.sky_vis };
                 imgs[2].set(ax, ay, [q(cv * c_tint[0], 1.0), q(cv * c_tint[1], 1.0), q(cv * c_tint[2], 1.0)]);

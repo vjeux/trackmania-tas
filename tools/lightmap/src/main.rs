@@ -1568,7 +1568,10 @@ fn main() {
             let out_w = w * 3 + cw * sc * 2 + 8;
             let out_h = fh * nframes;
             let mut out = lightmap::img::Rgb::new(out_w as u32, out_h as u32);
-            println!("frame\tRMSE(lum)\tmeanAbs\tmaxDiff\tat(x,y)\tmeanLumRef\tmeanLumOurs");
+            // --register: the intro camera drifts a few pixels between two loads; search the integer shift
+            // (±8 px) of OURS that minimises the RMSE and report the registered numbers beside the raw ones
+            let register = a.iter().any(|x| x == "--register");
+            println!("frame\tRMSE(lum)\tmeanAbs\tmaxDiff\tat(x,y)\tmeanLumRef\tmeanLumOurs\tshift\tRMSE(registered)");
             for fr in 0..nframes {
                 let y0 = fr * fh + fh / 8; // skip the HUD strip
                 let (mut se, mut sa, mut n, mut mr, mut mo) = (0f64, 0f64, 0usize, 0f64, 0f64);
@@ -1581,7 +1584,20 @@ fn main() {
                     if d.abs() > best.0 { best = (d.abs(), x, y); }
                 }}
                 let rmse = (se / n as f64).sqrt();
-                println!("{fr}\t{rmse:.2}\t{:.2}\t{:.0}\t({},{})\t{:.1}\t{:.1}", sa / n as f64, best.0, best.1, best.2, mr / n as f64, mo / n as f64);
+                let mut reg = (rmse, 0i32, 0i32);
+                if register {
+                    for dy in -8i32..=8 { for dx in -8i32..=8 {
+                        let (mut se2, mut n2) = (0f64, 0usize);
+                        let mut yy = y0 + 8; while yy < (fr + 1) * fh - 8 { let mut xx = 8usize; while xx < w - 8 {
+                            let i = (yy * w + xx) * 3;
+                            let j = (((yy as i32 + dy) as usize) * w + (xx as i32 + dx) as usize) * 3;
+                            let d = lum(&pb, j) - lum(&pa, i);
+                            se2 += d * d; n2 += 1; xx += 2; } yy += 2; }
+                        let r = (se2 / n2 as f64).sqrt();
+                        if r < reg.0 { reg = (r, dx, dy); }
+                    }}
+                }
+                println!("{fr}\t{rmse:.2}\t{:.2}\t{:.0}\t({},{})\t{:.1}\t{:.1}\t({},{})\t{:.2}", sa / n as f64, best.0, best.1, best.2, mr / n as f64, mo / n as f64, reg.1, reg.2, reg.0);
                 for y in fr * fh..(fr + 1) * fh { for x in 0..w {
                     let i = (y * w + x) * 3;
                     out.set(x as u32, y as u32, [pa[i], pa[i + 1], pa[i + 2]]);
