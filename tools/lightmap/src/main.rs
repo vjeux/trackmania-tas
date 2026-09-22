@@ -558,6 +558,470 @@ fn main() {
             lightmap::mapio::save_with_chunk(&m, &payload, &out).expect("save");
             println!("{} charts ({} ground + {} items); chunk {} B; wrote {out}", s.charts, base, mf.len(), payload.len());
         }
+        "shotratio" => {
+            // lmtool shotratio CLASSES.ppm WHITE.ppm : per hue class, the luminance ratio classes/white on
+            // pixels that changed (items), albedo cancels; the tints' own luminance is divided out
+            let load = |p: &str| -> (usize, usize, Vec<u8>) {
+                let data = std::fs::read(p).expect("read ppm");
+                let mut idx = 0; let mut fields = Vec::new();
+                while fields.len() < 4 { let s = idx; while data[idx] != b' ' && data[idx] != b'\n' { idx += 1; } fields.push(std::str::from_utf8(&data[s..idx]).unwrap().to_string()); idx += 1; }
+                (fields[1].parse().unwrap(), fields[2].parse().unwrap(), data[idx..].to_vec())
+            };
+            let (w, h, pc) = load(&a[1]);
+            let (w2, h2, pw) = load(&a[2]);
+            assert!(w == w2 && h == h2);
+            let tints: [[f32; 3]; 4] = [[230.0, 170.0, 170.0], [170.0, 230.0, 170.0], [170.0, 170.0, 230.0], [230.0, 230.0, 170.0]];
+            let lum = |r: f32, g: f32, b: f32| 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            let mut ratios: [Vec<f32>; 4] = [vec![], vec![], vec![], vec![]];
+            let mut chan_ratios: [Vec<[f32; 3]>; 4] = [vec![], vec![], vec![], vec![]];
+            for y in h / 8..h { for x in 0..w {
+                let i = (y * w + x) * 3;
+                let (r, g, b) = (pc[i] as f32, pc[i + 1] as f32, pc[i + 2] as f32);
+                let (r0, g0, b0) = (pw[i] as f32, pw[i + 1] as f32, pw[i + 2] as f32);
+                // in the white run the item pixels are neutral-lit; require a real change and no saturation
+                let lw = lum(r0, g0, b0);
+                if lw < 40.0 || lw > 235.0 || r0.max(g0).max(b0) > 245.0 { continue; }
+                let mx = r.max(g).max(b); let mn = r.min(g).min(b);
+                if mx - mn < 0.10 * mx { continue; }
+                // the tint changes channel RATIOS relative to the white run: classify by which channels dropped least
+                let (qr, qg, qb) = (r / r0.max(1.0), g / g0.max(1.0), b / b0.max(1.0));
+                let qmax = qr.max(qg).max(qb);
+                let hi = |q: f32| q > 0.85 * qmax;
+                let c = match (hi(qr), hi(qg), hi(qb)) { (true, false, false) => 0, (false, true, false) => 1, (false, false, true) => 2, (true, true, false) => 3, _ => continue };
+                // remove the tint: expected channel factors tint/255
+                let t = tints[c];
+                let lt = lum(t[0], t[1], t[2]) / 255.0;
+                ratios[c].push(lum(r, g, b) / lw / lt);
+                chan_ratios[c].push([qr / (t[0] / 255.0), qg / (t[1] / 255.0), qb / (t[2] / 255.0)]);
+            }}
+            let names = ["red    B=0   fb0=64 ", "green  B=255 fb0=64 ", "blue   B=0   fb0=224", "yellow B=255 fb0=224"];
+            for c in 0..4 {
+                let v = &mut ratios[c]; v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                if v.len() < 100 { println!("{}: only {} pixels", names[c], v.len()); continue; }
+                let q = |f: f64| v[((v.len() - 1) as f64 * f) as usize];
+                let cr = &chan_ratios[c];
+                let med = |k: usize| { let mut t: Vec<f32> = cr.iter().map(|x| x[k]).collect(); t.sort_by(|a, b| a.partial_cmp(b).unwrap()); t[t.len() / 2] };
+                println!("{}: n={:>8} lum ratio vs white(fb0=148,B=128): p25 {:.3} median {:.3} p75 {:.3}   per-channel median r {:.3} g {:.3} b {:.3}", names[c], v.len(), q(0.25), q(0.5), q(0.75), med(0), med(1), med(2));
+            }
+        }
+        "bake" | "sunfit" => {
+            // lmtool bake MAP --template T --out OUT [--sun-az D --sun-el D] [--sky r,g,b] [--sun r,g,b] [--k K]
+            //   [--tpm T] [--flip-v] [--bounce F] [--albedo A] [--sky-samples N] [--sun-samples N] [--ground-y Y] [--base 4096]
+            // lmtool sunfit MAP [--items N] [--sky-samples N]: grid over sun directions vs the map's own bake
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let has = |k: &str| a.iter().any(|x| x == k);
+            let map_path = a[1].clone();
+            let t0 = std::time::Instant::now();
+            let scene = lightmap::geometry::Scene::from_map(&map_path).expect("scene");
+            eprintln!("scene: {} models, {} instances, {} triangles ({:.1}s)", scene.models.len(), scene.instances.len(), scene.tri_count(), t0.elapsed().as_secs_f32());
+            let tris = lightmap::bake::world_tris(&scene);
+            let bvh = lightmap::bvh::Bvh::build(tris);
+            eprintln!("bvh: {} nodes ({:.1}s)", bvh.node_count(), t0.elapsed().as_secs_f32());
+            let parse_rgb = |s: &str| -> [f32; 3] { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); [v[0], v[1], v[2]] };
+            let mut prm = lightmap::bake::BakeParams::default();
+            if let Some(s) = f("--sky") { prm.sky = parse_rgb(&s); }
+            if let Some(s) = f("--sun") { prm.sun = parse_rgb(&s); }
+            if let Some(s) = f("--ambient") { prm.ambient = parse_rgb(&s); }
+            if let Some(s) = f("--tpm") { prm.texels_per_m = s.parse().unwrap(); }
+            if let Some(s) = f("--bounce") { prm.bounce = s.parse().unwrap(); }
+            if let Some(s) = f("--albedo") { prm.albedo = s.parse().unwrap(); }
+            if let Some(s) = f("--sky-samples") { prm.sky_samples = s.parse().unwrap(); }
+            if let Some(s) = f("--sun-samples") { prm.sun_samples = s.parse().unwrap(); }
+            if let Some(s) = f("--ground-y") { prm.ground_y = s.parse().unwrap(); }
+            if let Some(s) = f("--max-px") { prm.max_px = s.parse().unwrap(); }
+            if let Some(s) = f("--sky-model") { prm.sky_model = s.parse().unwrap(); }
+            prm.flip_v = has("--flip-v");
+            prm.uv_bounds = has("--uv-bounds");
+            prm.pattern = has("--pattern");
+            let sun_dir = |az: f32, el: f32| -> [f32; 3] { let (a, e) = (az.to_radians(), el.to_radians()); [e.cos() * a.sin(), e.sin(), e.cos() * a.cos()] };
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            // the map's own (Nadeo/editor) bake, for fitting and comparison
+            let own = lightmap::mapio::load(&map_path).ok();
+            let own_charts: Option<std::collections::HashMap<u32, (u8, [f32; 3])>> = own.as_ref().and_then(|m| {
+                let d = m.chunk.data.as_ref()?;
+                let mp = d.cache.mapping()?;
+                let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).ok()?;
+                let mut h = std::collections::HashMap::new();
+                for i in 0..mp.count as usize {
+                    let obj = mp.binds[i].obj_group_idx / 4;
+                    if obj < base { continue; }
+                    let (x, y) = mp.pos[i]; let (w, hh) = mp.size[i];
+                    let mean = ia.mean((x as u32 + 1) / 2, (y as u32 + 1) / 2, w as u32 / 2, hh as u32 / 2);
+                    h.insert(obj - base, (mp.frame_bytes[0][i], mean));
+                }
+                Some(h)
+            });
+            let compare = |charts: &[lightmap::bake::ChartBake], label: &str| -> f64 {
+                if a[0] == "bake" { if let Some(k) = implied_k(charts, &own_charts) { IMPLIED_K.store(k.to_bits(), std::sync::atomic::Ordering::Relaxed); } }
+                let Some(own) = &own_charts else { return 0.0 };
+                // correlation of log(max) and of the colour ratio r/b with the bake
+                let (mut xs, mut ys, mut rs, mut qs) = (vec![], vec![], vec![], vec![]);
+                for c in charts {
+                    let Some(&(fb0, mean)) = own.get(&(c.item as u32)) else { continue };
+                    let mx = c.max_channel();
+                    if mx <= 1e-4 || fb0 == 0 { continue; }
+                    xs.push((mx as f64).ln()); ys.push((fb0 as f64).ln());
+                    let mine = c.mean();
+                    if mine[2] > 1e-4 && mean[2] > 1.0 { rs.push((mine[0] / mine[2]) as f64); qs.push((mean[0] / mean[2]) as f64); }
+                }
+                let corr = |x: &[f64], y: &[f64]| -> f64 {
+                    let n = x.len() as f64; if n < 3.0 { return 0.0; }
+                    let (mx, my) = (x.iter().sum::<f64>() / n, y.iter().sum::<f64>() / n);
+                    let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
+                    for (a, b) in x.iter().zip(y) { sxy += (a - mx) * (b - my); sxx += (a - mx) * (a - mx); syy += (b - my) * (b - my); }
+                    sxy / (sxx * syy).sqrt().max(1e-12)
+                };
+                let c1 = corr(&xs, &ys); let c2 = corr(&rs, &qs);
+                // implied K: median of 255*max/fb0
+                let mut ks: Vec<f64> = xs.iter().zip(&ys).map(|(x, y)| 255.0 * x.exp() / y.exp()).collect();
+                ks.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let kmed = ks.get(ks.len() / 2).copied().unwrap_or(0.0);
+                println!("{label}: n={} corr(log max, log fb0)={c1:.3} corr(r/b)={c2:.3} implied K median={kmed:.3}", xs.len());
+                c1 + c2
+            };
+            if a[0] == "sunfit" {
+                // a subset of instances, coarse sampling
+                let nitems: usize = f("--items").map(|s| s.parse().unwrap()).unwrap_or(1200);
+                prm.sky_samples = f("--sky-samples").map(|s| s.parse().unwrap()).unwrap_or(16);
+                prm.sun_samples = 1;
+                let step = (scene.instances.len() / nitems).max(1);
+                let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: scene.instances.iter().step_by(step).cloned().collect(), item_count: scene.item_count };
+                // the subset's instances must keep their own inst id for self-hit filtering: rebuild the bvh over all, but
+                // the shade() skip uses the instance index in `sub` — so we bake the subset against a bvh of the FULL scene
+                // whose inst ids are full-scene indices; map them
+                let full_ids: Vec<u32> = (0..scene.instances.len()).step_by(step).map(|x| x as u32).collect();
+                let mut best = (f64::MIN, 0.0f32, 0.0f32);
+                let azs: Vec<f32> = (0..24).map(|i| i as f32 * 15.0).collect();
+                let els: Vec<f32> = f("--els").map(|s| s.split(',').map(|x| x.parse().unwrap()).collect()).unwrap_or_else(|| vec![10.0, 20.0, 30.0, 45.0, 60.0, 75.0]);
+                for &el in &els { for &az in &azs {
+                    prm.sun_dir = sun_dir(az, el);
+                    let charts = lightmap::bake::bake_subset(&sub, &full_ids, &bvh, &prm);
+                    let score = compare(&charts, &format!("az {az:>5.1} el {el:>4.1}"));
+                    if score > best.0 { best = (score, az, el); }
+                }}
+                println!("best: az {} el {} (score {:.3})", best.1, best.2, best.0);
+                return;
+            }
+            let az: f32 = f("--sun-az").map(|s| s.parse().unwrap()).unwrap_or(0.0);
+            let el: f32 = f("--sun-el").map(|s| s.parse().unwrap()).unwrap_or(45.0);
+            prm.sun_dir = sun_dir(az, el);
+            let charts = lightmap::bake::bake(&scene, &bvh, &prm);
+            eprintln!("baked {} charts ({:.1}s)", charts.len(), t0.elapsed().as_secs_f32());
+            compare(&charts, "bake vs own");
+            let k: f32 = match f("--k") { Some(s) => s.parse().unwrap(), None => { let k = f32::from_bits(IMPLIED_K.load(std::sync::atomic::Ordering::Relaxed)); if k > 0.0 { eprintln!("K matched to the map's own bake: {k:.3}"); k } else { 3.0 } } };
+            let Some(tpl_path) = f("--template") else { return };
+            let tpl = lightmap::mapio::load(&tpl_path).expect("template");
+            let m = lightmap::mapio::load(&map_path).expect("map");
+            let ground_e: [f32; 3] = { let l = prm.sun_dir[1].max(0.0); [prm.ambient[0] + prm.sky[0] + prm.sun[0] * l, prm.ambient[1] + prm.sky[1] + prm.sun[1] * l, prm.ambient[2] + prm.sky[2] + prm.sun[2] * l] };
+            let mut out_charts = Vec::new();
+            for obj in 0..base { out_charts.push(lightmap::synth::Chart::from_hdr(obj, 2, 2, &[ground_e; 4], k, 128)); }
+            let mut have = vec![false; scene.item_count];
+            for c in &charts { have[c.item] = true; out_charts.push(lightmap::synth::Chart::from_hdr(base + c.item as u32, c.w, c.h, &c.rgb, k, 128)); }
+            for (i, h) in have.iter().enumerate() { if !h { out_charts.push(lightmap::synth::Chart::from_hdr(base + i as u32, 2, 2, &[prm.sky; 4], k, 128)); } }
+            let tm = tpl.chunk.data.as_ref().unwrap().cache.mapping().unwrap();
+            let s = lightmap::synth::build(out_charts, (tm.bbox_min, tm.bbox_max), &tpl.chunk).expect("build");
+            let payload = s.chunk.write(false);
+            let out = f("--out").expect("--out");
+            lightmap::mapio::save_with_chunk(&m, &payload, &out).expect("save");
+            println!("{} charts, atlas fill {:.1}%, chunk {} B; wrote {out} ({:.1}s)", s.charts, s.fill * 100.0, payload.len(), t0.elapsed().as_secs_f32());
+        }
+        "geomstats" => {
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let mut hist: std::collections::BTreeMap<u32, usize> = Default::default();
+            let mut big: Vec<(usize, &str, f32, [f32; 2], [f32; 2])> = Vec::new();
+            for (mi, m) in scene.models.iter().enumerate() {
+                *hist.entry(m.metres_per_uv.round() as u32).or_insert(0) += 1;
+                big.push((m.tris.len(), &scene.model_names[mi], m.metres_per_uv, m.uv_min, m.uv_max));
+            }
+            big.sort_by_key(|b| std::cmp::Reverse(b.0));
+            println!("metres_per_uv histogram (rounded): {:?}", hist);
+            for b in big.iter().take(12) { println!("  {:>8} tris  {}  m/uv {:.2}  uv [{:.2},{:.2}]..[{:.2},{:.2}]", b.0, b.1, b.2, b.3[0], b.3[1], b.4[0], b.4[1]); }
+            let no_uv = scene.models.iter().filter(|m| m.tris.is_empty()).count();
+            println!("{} models without lightmap triangles", no_uv);
+        }
+        "rbhist" => {
+            // per-chart mean colour ratio r/b and its relation to fb0, in the map's own bake (items only)
+            let m = lightmap::mapio::load(&a[1]).expect("load");
+            let d = m.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).unwrap();
+            let base: u32 = a.get(2).and_then(|s| s.parse().ok()).unwrap_or(4096);
+            let mut rows: Vec<(f32, f32, u8)> = Vec::new();
+            for i in 0..mp.count as usize {
+                let obj = mp.binds[i].obj_group_idx / 4;
+                if obj < base { continue; }
+                let (x, y) = mp.pos[i]; let (w, h) = mp.size[i];
+                let mean = ia.mean((x as u32 + 1) / 2, (y as u32 + 1) / 2, w as u32 / 2, h as u32 / 2);
+                if mean[2] < 1.0 { continue; }
+                rows.push((mean[0] / mean[2], mean[1] / mean[2], mp.frame_bytes[0][i]));
+            }
+            let mut hist: std::collections::BTreeMap<i32, (usize, f32)> = Default::default();
+            for (rb, _, fb) in &rows { let e = hist.entry((rb * 10.0).floor() as i32).or_insert((0, 0.0)); e.0 += 1; e.1 += *fb as f32; }
+            println!("r/b bucket: count, mean fb0");
+            for (k, (n, s)) in &hist { println!("  {:.1}-{:.1}: {n:>6}  fb0 {:.0}", *k as f32 / 10.0, (*k + 1) as f32 / 10.0, s / *n as f32); }
+            let mut gb: Vec<f32> = rows.iter().map(|r| r.1).collect(); gb.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            println!("g/b median {:.3}", gb[gb.len() / 2]);
+        }
+        "flatten" => {
+            // lmtool flatten TEMPLATE OUT --what a|b : flatten only image A (to white per chart) or only image B (to 128)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let mut m = lightmap::mapio::load(&a[1]).expect("load");
+            let what = f("--what").unwrap_or_else(|| "b".into());
+            let d = m.chunk.data.as_mut().expect("has lightmaps");
+            if what == "b" {
+                let mut ib = lightmap::img::decode_webp(&d.frames[0].images[1]).expect("B");
+                for p in ib.px.iter_mut() { *p = 128; }
+                d.frames[0].images[1] = lightmap::img::encode_webp_lossless(&ib).expect("enc");
+            } else {
+                let mut ia = lightmap::img::decode_webp(&d.frames[0].images[0]).expect("A");
+                for p in ia.px.iter_mut() { *p = 255; }
+                d.frames[0].images[0] = lightmap::img::encode_webp_lossless(&ia).expect("enc");
+            }
+            let payload = m.chunk.write(false);
+            lightmap::mapio::save_with_chunk(&m, &payload, &a[2]).expect("save");
+            println!("wrote {}", a[2]);
+        }
+        "facefit" => {
+            // lmtool facefit MAP [--base 4096]: per-face-direction mean HDR (A*fb0/255) of the map's own bake,
+            // sampled through OUR uv rasterisation of each item, for both V orientations
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let own = lightmap::mapio::load(&a[1]).expect("own bake");
+            let d = own.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).unwrap();
+            let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
+            let dirs = ["+x", "-x", "+y", "-y", "+z", "-z"];
+            for (flip, ub) in [(false, false), (true, false), (false, true), (true, true)] {
+                let mut sum = [[0f64; 3]; 6]; let mut cnt = [0f64; 6]; let mut var = 0f64; let mut nvar = 0f64;
+                for (ii, inst) in scene.instances.iter().enumerate() {
+                    let Some(&ci) = chart_of.get(&(inst.item as u32)) else { continue };
+                    let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
+                    let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32) / 2, (h as u32) / 2);
+                    if pw == 0 || ph == 0 { continue; }
+                    let fb0 = mp.frame_bytes[0][ci] as f64 / 255.0;
+                    let (samples, _cov) = lightmap::bake::rasterise_pub(&scene, ii, pw, ph, flip, ub);
+                    let mut per_face: Vec<Vec<f64>> = vec![vec![]; 6];
+                    for s in &samples {
+                        let n = s.n;
+                        let bucket = if n[0] > 0.9 { 0 } else if n[0] < -0.9 { 1 } else if n[1] > 0.9 { 2 } else if n[1] < -0.9 { 3 } else if n[2] > 0.9 { 4 } else if n[2] < -0.9 { 5 } else { continue };
+                        let c = ia.get((px + s.px).min(1023), (py + s.py).min(1023));
+                        let lum = (0.2126 * c[0] as f64 + 0.7152 * c[1] as f64 + 0.0722 * c[2] as f64) * fb0;
+                        per_face[bucket].push(lum);
+                        for k in 0..3 { sum[bucket][k] += c[k] as f64 * fb0; }
+                        cnt[bucket] += 1.0;
+                    }
+                    for v in &per_face { if v.len() >= 4 { let m = v.iter().sum::<f64>() / v.len() as f64; var += v.iter().map(|x| (x - m) * (x - m)).sum::<f64>(); nvar += v.len() as f64; } }
+                }
+                println!("flip_v={flip} uv_bounds={ub}: within-face luminance stddev {:.2}", (var / nvar.max(1.0)).sqrt());
+                for b in 0..6 { if cnt[b] > 0.0 { println!("  {}: n={:>8} mean HDR (K=1 units) r {:.3} g {:.3} b {:.3}", dirs[b], cnt[b], sum[b][0] / cnt[b], sum[b][1] / cnt[b], sum[b][2] / cnt[b]); } }
+            }
+        }
+        "chartcmp" => {
+            // lmtool chartcmp MAP ITEM OUTBASE [--sun-az D --sun-el D] [--flip-v] [--k K]: Nadeo's chart vs ours for one item, x8 PPMs
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let has = |k: &str| a.iter().any(|x| x == k);
+            let item: usize = a[2].parse().unwrap();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let bvh = lightmap::bvh::Bvh::build(lightmap::bake::world_tris(&scene));
+            let own = lightmap::mapio::load(&a[1]).expect("own");
+            let d = own.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).unwrap();
+            let ci = (0..mp.count as usize).find(|&i| mp.binds[i].obj_group_idx / 4 == base + item as u32).expect("chart");
+            let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
+            let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32) / 2, (h as u32) / 2);
+            let fb0 = mp.frame_bytes[0][ci];
+            let ii = scene.instances.iter().position(|i| i.item == item).expect("instance");
+            println!("item {item}: model {} chart {pw}x{ph} px fb0 {fb0} m/uv {:.1}", scene.instances[ii].model_name, scene.models[scene.instances[ii].model].metres_per_uv);
+            let mut prm = lightmap::bake::BakeParams::default();
+            let az: f32 = f("--sun-az").map(|s| s.parse().unwrap()).unwrap_or(90.0);
+            let el: f32 = f("--sun-el").map(|s| s.parse().unwrap()).unwrap_or(15.0);
+            let (ar, er) = (az.to_radians(), el.to_radians());
+            prm.sun_dir = [er.cos() * ar.sin(), er.sin(), er.cos() * ar.cos()];
+            prm.flip_v = has("--flip-v");
+            prm.uv_bounds = has("--uv-bounds");
+            if let Some(s) = f("--bounce") { prm.bounce = s.parse().unwrap(); }
+            prm.sky_samples = 64;
+            let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![scene.instances[ii].clone()], item_count: scene.item_count };
+            // bake at Nadeo's resolution
+            prm.min_px = pw.max(ph); prm.max_px = pw.max(ph);
+            let mine = lightmap::bake::bake_subset_px(&sub, &[ii as u32], &bvh, &prm, pw, ph);
+            let c = &mine[0];
+            let mymax = c.max_channel();
+            let sc = 8u32;
+            let mut out_n = lightmap::img::Rgb::new(pw * sc, ph * sc);
+            let mut out_m = lightmap::img::Rgb::new(pw * sc, ph * sc);
+            for oy in 0..ph * sc { for ox in 0..pw * sc {
+                let (sx, sy) = (ox / sc, oy / sc);
+                out_n.set(ox, oy, ia.get(px + sx, py + sy));
+                let v = c.rgb[(sy * pw + sx) as usize];
+                let g = |t: f32| (t / mymax * 255.0).clamp(0.0, 255.0) as u8;
+                out_m.set(ox, oy, [g(v[0]), g(v[1]), g(v[2])]);
+            }}
+            lightmap::img::write_ppm(&out_n, &format!("{}_nadeo.ppm", a[3])).unwrap();
+            lightmap::img::write_ppm(&out_m, &format!("{}_mine.ppm", a[3])).unwrap();
+            println!("my chart max {mymax:.3} (K=1 units: Nadeo fb0/255 = {:.3}); wrote {}_nadeo.ppm / _mine.ppm", fb0 as f32 / 255.0, a[3]);
+        }
+        "uvinfo" => {
+            // lmtool uvinfo ITEM.Item.Gbx : per-visual uv1 bounds, triangle counts, world area
+            let bytes = std::fs::read(&a[1]).expect("read");
+            let f = mapgeom::static_item::file::parse_file(&bytes).expect("parse");
+            let s2 = f.item.static_object().and_then(|so| so.solid2()).expect("solid2");
+            println!("{} shaded geoms, {} visuals, lod_max_dist {:?}", s2.shaded_geoms.len(), s2.visuals.len(), s2.lod_max_dist);
+            if let Some(plg) = &s2.pre_light_gen { println!("PreLightGen v{} u01 {} u02 {} u03 {} u04 {:?} sprites {:?} boxes {} uv_groups {}", plg.version, plg.u01, plg.u02, plg.u03, plg.u04, plg.sprite_count, plg.boxes.len(), plg.uv_groups.len()); }
+            use mapgeom::static_item::vstream::{Elem, N_POSITION, N_TEXCOORD0};
+            for (gi, sg) in s2.shaded_geoms.iter().enumerate() {
+                let Some(vr) = s2.visuals.get(sg.visual_index as usize) else { continue };
+                let Some(mapgeom::static_item::Node::Visual(v)) = vr.inline.as_deref() else { println!("geom {gi}: visual {} not inline", sg.visual_index); continue };
+                let Some(st) = v.stream() else { continue };
+                let get = |name: u32| st.decls.iter().zip(st.elems.iter()).find(|(d, _)| d.name() == name).map(|(_, e)| e);
+                let ntri = v.index_buffer.as_ref().map(|ib| ib.indices.len() / 3).unwrap_or(0);
+                let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                if let Some(Elem::Float2(uv)) = get(N_TEXCOORD0 + 1) { for p in uv { lo[0] = lo[0].min(p[0]); lo[1] = lo[1].min(p[1]); hi[0] = hi[0].max(p[0]); hi[1] = hi[1].max(p[1]); } }
+                let (mut plo, mut phi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                if let Some(Elem::Float3(p)) = get(N_POSITION) { for q in p { for k in 0..3 { plo[k] = plo[k].min(q[k]); phi[k] = phi[k].max(q[k]); } } }
+                let main = v.main.as_ref();
+                println!("geom {gi}: visual {} mat {} lod {} tris {ntri} uv1 [{:.3},{:.3}]..[{:.3},{:.3}] pos [{:.1},{:.1},{:.1}]..[{:.1},{:.1},{:.1}] texsets {} uv_groups {:?} bitmap_elems {:?}", sg.visual_index, sg.material_index, sg.lod_mask, lo[0], lo[1], hi[0], hi[1], plo[0], plo[1], plo[2], phi[0], phi[1], phi[2], main.map(|m| m.tex_coord_sets.len()).unwrap_or(0), main.map(|m| m.uv_groups.clone()).unwrap_or_default(), main.map(|m| m.bitmap_elems.clone()).unwrap_or_default());
+            }
+        }
+        "texcorr" => {
+            // lmtool texcorr MAP [--sun-az --sun-el] [--items N]: per-texel correlation of our bake with the map's own
+            // atlas, for the 4 uv-mapping conventions (flip × bounds)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let bvh = lightmap::bvh::Bvh::build(lightmap::bake::world_tris(&scene));
+            let own = lightmap::mapio::load(&a[1]).expect("own");
+            let d = own.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).unwrap();
+            let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
+            let nitems: usize = f("--items").map(|s| s.parse().unwrap()).unwrap_or(600);
+            let az: f32 = f("--sun-az").map(|s| s.parse().unwrap()).unwrap_or(90.0);
+            let el: f32 = f("--sun-el").map(|s| s.parse().unwrap()).unwrap_or(15.0);
+            let (ar, er) = (az.to_radians(), el.to_radians());
+            // the biggest charts carry the signal: take the N largest
+            let mut cand: Vec<(usize, u32)> = scene.instances.iter().enumerate().filter_map(|(ii, inst)| chart_of.get(&(inst.item as u32)).map(|&ci| (ii, mp.size[ci].0 as u32 * mp.size[ci].1 as u32))).collect();
+            cand.sort_by_key(|c| std::cmp::Reverse(c.1));
+            let sel: Vec<usize> = cand.iter().take(nitems).map(|c| c.0).collect();
+            for (flip, ub) in [(false, false), (true, false), (false, true), (true, true)] {
+                let mut prm = lightmap::bake::BakeParams::default();
+                prm.sun_dir = [er.cos() * ar.sin(), er.sin(), er.cos() * ar.cos()];
+                prm.flip_v = flip; prm.uv_bounds = ub; prm.sky_samples = 16; prm.sun_samples = 1;
+                let (mut csum, mut cn) = (0f64, 0usize);
+                for &ii in &sel {
+                    let inst = &scene.instances[ii];
+                    let ci = chart_of[&(inst.item as u32)];
+                    let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
+                    let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32) / 2, (h as u32) / 2);
+                    if pw < 4 || ph < 4 { continue; }
+                    let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![inst.clone()], item_count: scene.item_count };
+                    let mine = lightmap::bake::bake_subset_px(&sub, &[ii as u32], &bvh, &prm, pw, ph);
+                    let c = &mine[0];
+                    let (mut xs, mut ys) = (vec![], vec![]);
+                    for yy in 0..ph { for xx in 0..pw {
+                        let i = (yy * pw + xx) as usize;
+                        if !c.covered[i] { continue; }
+                        let v = c.rgb[i]; let lum_m = 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+                        let n = ia.get((px + xx).min(1023), (py + yy).min(1023)); let lum_n = 0.2126 * n[0] as f32 + 0.7152 * n[1] as f32 + 0.0722 * n[2] as f32;
+                        xs.push(lum_m as f64); ys.push(lum_n as f64);
+                    }}
+                    if xs.len() < 12 { continue; }
+                    let n = xs.len() as f64;
+                    let (mx, my) = (xs.iter().sum::<f64>() / n, ys.iter().sum::<f64>() / n);
+                    let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
+                    for (p, q) in xs.iter().zip(&ys) { sxy += (p - mx) * (q - my); sxx += (p - mx) * (p - mx); syy += (q - my) * (q - my); }
+                    if sxx > 1e-9 && syy > 1e-9 { csum += sxy / (sxx * syy).sqrt(); cn += 1; }
+                }
+                println!("flip_v={flip} uv_bounds={ub}: mean per-chart texel correlation {:.3} over {cn} charts", csum / cn.max(1) as f64);
+            }
+        }
+        "sunfit2" => {
+            // lmtool sunfit2 MAP [--items N] [--sky-samples N] [--bounce F] [--azs a,b,..] [--els a,b,..]
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let bvh = lightmap::bvh::Bvh::build(lightmap::bake::world_tris(&scene));
+            let own = lightmap::mapio::load(&a[1]).expect("own");
+            let d = own.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).unwrap();
+            let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
+            let nitems: usize = f("--items").map(|s| s.parse().unwrap()).unwrap_or(300);
+            let mut cand: Vec<(usize, u32)> = scene.instances.iter().enumerate().filter_map(|(ii, inst)| chart_of.get(&(inst.item as u32)).map(|&ci| (ii, mp.size[ci].0 as u32 * mp.size[ci].1 as u32))).collect();
+            cand.sort_by_key(|c| std::cmp::Reverse(c.1));
+            let sel: Vec<(usize, u32, u32, u32, u32)> = cand.iter().take(nitems).filter_map(|&(ii, _)| {
+                let ci = chart_of[&(scene.instances[ii].item as u32)];
+                let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
+                let (pw, ph) = (w as u32 / 2, h as u32 / 2);
+                if pw < 4 || ph < 4 { return None; }
+                Some((ii, (x as u32 + 1) / 2, (y as u32 + 1) / 2, pw, ph))
+            }).collect();
+            let mut prm = lightmap::bake::BakeParams::default();
+            prm.uv_bounds = true; prm.flip_v = false;
+            prm.sky_samples = f("--sky-samples").map(|s| s.parse().unwrap()).unwrap_or(16); prm.sun_samples = 1;
+            if let Some(s) = f("--bounce") { prm.bounce = s.parse().unwrap(); }
+            if let Some(s) = f("--sky-model") { prm.sky_model = s.parse().unwrap(); }
+            if let Some(s) = f("--inset") { prm.inset_px = s.parse().unwrap(); }
+            if let Some(s) = f("--sun") { let v: Vec<f32> = s.split(',').map(|x| x.parse().unwrap()).collect(); prm.sun = [v[0], v[1], v[2]]; }
+            if let Some(s) = f("--sky") { let v: Vec<f32> = s.split(',').map(|x| x.parse().unwrap()).collect(); prm.sky = [v[0], v[1], v[2]]; }
+            let azs: Vec<f32> = f("--azs").map(|s| s.split(',').map(|x| x.parse().unwrap()).collect()).unwrap_or_else(|| (0..12).map(|i| i as f32 * 30.0).collect());
+            let els: Vec<f32> = f("--els").map(|s| s.split(',').map(|x| x.parse().unwrap()).collect()).unwrap_or_else(|| vec![10.0, 25.0, 45.0]);
+            let mut best = (f64::MIN, 0.0f32, 0.0f32);
+            for &el in &els { for &az in &azs {
+                let (ar, er) = (az.to_radians(), el.to_radians());
+                prm.sun_dir = [er.cos() * ar.sin(), er.sin(), er.cos() * ar.cos()];
+                let t = std::time::Instant::now();
+                let (c, n) = lightmap::bake::texel_correlation(&scene, &bvh, &sel, &ia, &prm);
+                println!("az {az:>5.1} el {el:>4.1}: texel corr {c:.4} ({n} charts, {:.1}s)", t.elapsed().as_secs_f32());
+                if c > best.0 { best = (c, az, el); }
+            }}
+            println!("best: az {} el {} corr {:.4}", best.1, best.2, best.0);
+        }
+        "poolfit" => {
+            // lmtool poolfit MAP --sun-az A --sun-el E [--items N] [--sun r,g,b] [--sky r,g,b] [--bounce F] [--sky-model M]
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let bvh = lightmap::bvh::Bvh::build(lightmap::bake::world_tris(&scene));
+            let own = lightmap::mapio::load(&a[1]).expect("own");
+            let d = own.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).unwrap();
+            let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
+            let nitems: usize = f("--items").map(|s| s.parse().unwrap()).unwrap_or(1500);
+            let step = (scene.instances.len() / nitems).max(1);
+            let sel: Vec<(usize, u32, u32, u32, u32, u8)> = scene.instances.iter().enumerate().step_by(step).filter_map(|(ii, inst)| {
+                let &ci = chart_of.get(&(inst.item as u32))?;
+                let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
+                let (pw, ph) = (w as u32 / 2, h as u32 / 2);
+                if pw < 2 || ph < 2 { return None; }
+                Some((ii, (x as u32 + 1) / 2, (y as u32 + 1) / 2, pw, ph, mp.frame_bytes[0][ci]))
+            }).collect();
+            let mut prm = lightmap::bake::BakeParams::default();
+            prm.uv_bounds = true; prm.flip_v = false; prm.sky_samples = 32; prm.sun_samples = 1;
+            if let Some(s) = f("--bounce") { prm.bounce = s.parse().unwrap(); }
+            if let Some(s) = f("--sky-model") { prm.sky_model = s.parse().unwrap(); }
+            if let Some(s) = f("--sun") { let v: Vec<f32> = s.split(',').map(|x| x.parse().unwrap()).collect(); prm.sun = [v[0], v[1], v[2]]; }
+            if let Some(s) = f("--sky") { let v: Vec<f32> = s.split(',').map(|x| x.parse().unwrap()).collect(); prm.sky = [v[0], v[1], v[2]]; }
+            let az: f32 = f("--sun-az").map(|s| s.parse().unwrap()).unwrap_or(75.0);
+            let el: f32 = f("--sun-el").map(|s| s.parse().unwrap()).unwrap_or(45.0);
+            let (ar, er) = (az.to_radians(), el.to_radians());
+            prm.sun_dir = [er.cos() * ar.sin(), er.sin(), er.cos() * ar.cos()];
+            let (c, slope, n) = lightmap::bake::pooled_fit(&scene, &bvh, &sel, &ia, &prm);
+            println!("pooled: pearson {c:.4} slope(nadeo/mine) {slope:.4} over {n} texels  [sun {:?} sky {:?} bounce {} skymodel {}]", prm.sun, prm.sky, prm.bounce, prm.sky_model);
+            let (ca, cb, cc, r2) = lightmap::bake::component_fit(&scene, &bvh, &sel, &ia, &prm);
+            let (rgb, _) = lightmap::bake::component_fit_rgb(&scene, &bvh, &sel, &ia, &prm);
+            println!("per channel (K=1 units): sky r,g,b = {:.4},{:.4},{:.4}  sun = {:.4},{:.4},{:.4}  bounce(lum-weight) = {:.4},{:.4},{:.4}  const = {:.4},{:.4},{:.4}", rgb[0][0], rgb[1][0], rgb[2][0], rgb[0][1], rgb[1][1], rgb[2][1], rgb[0][2], rgb[1][2], rgb[2][2], rgb[0][3], rgb[1][3], rgb[2][3]);
+            println!("component fit: ref_lum(K=1 units) = {ca:.4}·skyVis + {cb:.4}·(N·L·sunVis) + {cc:.4}   r² {r2:.3}   sun/sky ratio {:.3}", cb / ca.max(1e-9));
+        }
         _ => {
             eprintln!("unknown command");
             std::process::exit(2);
@@ -575,4 +1039,20 @@ fn tmmaps_items(map: &str) -> Vec<[f32; 3]> {
         let c: Vec<&str> = l.split('\t').collect();
         [c[8].parse().unwrap(), c[9].parse().unwrap(), c[10].parse().unwrap()]
     }).collect()
+}
+
+static IMPLIED_K: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// K such that our charts' `255·max/K` matches the reference bake's fb0 in the median.
+fn implied_k(charts: &[lightmap::bake::ChartBake], own: &Option<std::collections::HashMap<u32, (u8, [f32; 3])>>) -> Option<f32> {
+    let own = own.as_ref()?;
+    let mut ks: Vec<f32> = charts.iter().filter_map(|c| {
+        let &(fb0, _) = own.get(&(c.item as u32))?;
+        let mx = c.max_channel();
+        if mx <= 1e-4 || fb0 == 0 { return None; }
+        Some(255.0 * mx / fb0 as f32)
+    }).collect();
+    if ks.len() < 10 { return None; }
+    ks.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    Some(ks[ks.len() / 2])
 }

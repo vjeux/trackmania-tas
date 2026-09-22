@@ -3,7 +3,10 @@
 //!
 //! Work in progress: the walker first, then the typed structure.
 
+pub mod bake;
+pub mod bvh;
 pub mod format;
+pub mod geometry;
 pub mod img;
 pub mod mapio;
 pub mod probe;

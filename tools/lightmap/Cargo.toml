@@ -15,3 +15,5 @@ path = "src/main.rs"
 gbx = { path = "../gbx" }
 image-webp = "0.2.4"
 miniz_oxide = "0.9.1"
+tmmaps = { path = "../tmmaps" }
+mapgeom = { path = "../mapgeom" }
