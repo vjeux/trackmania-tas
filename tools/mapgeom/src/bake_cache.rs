@@ -389,7 +389,9 @@ pub fn get(key: &str, ident: &str) -> Option<Baked> {
             }
         }
     }
-    b.bytes = if ident == NEUTRAL_IDENT { item } else { crate::crystal::rename_ident(&item, NEUTRAL_IDENT, ident) };
+    // an entry with no item bytes (a vegetation CLUSTER item: no mesh, its trees
+    // re-emitted as stock items) has nothing to rename
+    b.bytes = if ident == NEUTRAL_IDENT || item.is_empty() { item } else { crate::crystal::rename_ident(&item, NEUTRAL_IDENT, ident) };
     Some(b)
 }
 
@@ -407,7 +409,9 @@ pub fn put(key: &str, ident: &str, b: &Baked) {
     if std::fs::create_dir_all(tmp.join("pictures")).is_err() {
         return;
     }
-    let neutral = if ident == NEUTRAL_IDENT { b.bytes.clone() } else { crate::crystal::rename_ident(&b.bytes, ident, NEUTRAL_IDENT) };
+    // no bytes (a cluster item whose trees ride as `v@` rows): nothing to rename —
+    // Summer 20's Spring/SpringCherryTree clusters panicked here (2026-09-22)
+    let neutral = if ident == NEUTRAL_IDENT || b.bytes.is_empty() { b.bytes.clone() } else { crate::crystal::rename_ident(&b.bytes, ident, NEUTRAL_IDENT) };
     let ok = std::fs::write(tmp.join("item.bin"), &neutral).is_ok()
         && std::fs::write(tmp.join("meta.bin"), encode_meta(b)).is_ok()
         && b.pictures.iter().all(|(name, bytes)| Path::new(name).file_name().map(|f| std::fs::write(tmp.join("pictures").join(f), bytes).is_ok()).unwrap_or(false));

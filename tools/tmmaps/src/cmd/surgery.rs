@@ -714,7 +714,20 @@ pub fn validate(args: &[String]) {
         m.raw_splices.push(((p + s, p + s), chunk.clone()));
         "inserted after 0x0305B00E"
     };
-    // ---- ChallengeParameters times: 0x0305B00A (skippable: tip string, bronze, silver, gold, author, timelimit, authorscore)
+    write_times(&mut m, &hdr, bronze, silver, gold, author, true);
+    m.write_to(std::path::Path::new(&out)).expect("write");
+    println!("{}: validation ghost {} ({} B, race {}), times author {} gold {} silver {} bronze {} (ms), validated=\"1\" -> {out}", path.display(), placed, chunk.len(), tmmaps::secs::secs_str(&race_ms.to_string()), author, gold, silver, bronze);
+}
+
+/// The map's times, everywhere they live — the ChallengeParameters chunks
+/// 0x0305B00A (skippable: tip string, bronze, silver, gold, author, timelimit,
+/// authorscore), 0x0305B004 (bronze, silver, gold, author) and 0x0305B008
+/// (timelimit, authorscore), the header chunk 0x03043002 (v13) and the header
+/// XML `<times …/>`. Every current value is read back against the header before
+/// a byte is written (a layout mismatch refuses). The validation ghost chunk
+/// 0x0305B00F is not touched. `set_validated` flips the XML's `validated="0"`.
+fn write_times(m: &mut map::MapFile, hdr: &tmmaps::header::MapHeader, bronze: u32, silver: u32, gold: u32, author: u32, set_validated: bool) {
+    let skips = tmmaps::gbx::all_skip_chunks(&m.gbx.body);
     let old_b: u32 = hdr.bronze.parse().ok().expect("header times");
     let old_s: u32 = hdr.silver.parse().ok().expect("header times");
     let old_g: u32 = hdr.gold.parse().ok().expect("header times");
@@ -791,10 +804,42 @@ pub fn validate(args: &[String]) {
         s.push_str(&xml[..start]);
         s.push_str(&times);
         s.push_str(&xml[end..]);
-        Some(s.replace("validated=\"0\"", "validated=\"1\""))
+        Some(if set_validated { s.replace("validated=\"0\"", "validated=\"1\"") } else { s })
     });
+}
+
+/// `tmmaps settimes MAP --out F (--author MS [--gold MS] [--silver MS] [--bronze MS] | --scale K)`
+/// — the times alone (`write_times`), the validation ghost chunk 0x0305B00F left
+/// byte-identical, `validated` as it is. `--author` without medals takes Nadeo's
+/// ladder in whole seconds (gold ⌈1.06·a⌉, silver ⌈1.2·a⌉, bronze ⌈1.5·a⌉, the
+/// campaign convention). `--scale K` multiplies the SOURCE's four times by K —
+/// the giant campaigns' "ATs x2, x3, x4 the existing times" (vjeux 2026-09-22):
+/// whole-second medals stay whole seconds.
+pub fn settimes(args: &[String]) {
+    let path = std::path::Path::new(&args[2]);
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let out = f("--out").expect("settimes needs --out F");
+    let mut m = map::MapFile::load(path);
+    let hdr = tmmaps::header::read(path.to_str().unwrap()).expect("header");
+    let old = |s: &str| -> u32 { s.parse().unwrap_or_else(|_| panic!("header time `{s}` is not a number")) };
+    let (old_b, old_s, old_g, old_a) = (old(&hdr.bronze), old(&hdr.silver), old(&hdr.gold), old(&hdr.authortime));
+    let ceil_s = |ms: f64| ((ms / 1000.0).ceil() * 1000.0) as u32;
+    let (bronze, silver, gold, author) = if let Some(k) = f("--scale") {
+        let k: u32 = k.parse().expect("--scale wants a whole number");
+        assert!(k >= 1, "--scale wants 1 or more");
+        (old_b * k, old_s * k, old_g * k, old_a * k)
+    } else {
+        let author: u32 = f("--author").expect("settimes needs --author MS or --scale K").parse().expect("--author wants milliseconds");
+        let gold: u32 = f("--gold").map(|s| s.parse().unwrap()).unwrap_or_else(|| ceil_s(author as f64 * 1.06));
+        let silver: u32 = f("--silver").map(|s| s.parse().unwrap()).unwrap_or_else(|| ceil_s(author as f64 * 1.20));
+        let bronze: u32 = f("--bronze").map(|s| s.parse().unwrap()).unwrap_or_else(|| ceil_s(author as f64 * 1.50));
+        (bronze, silver, gold, author)
+    };
+    write_times(&mut m, &hdr, bronze, silver, gold, author, false);
     m.write_to(std::path::Path::new(&out)).expect("write");
-    println!("{}: validation ghost {} ({} B, race {}), times author {} gold {} silver {} bronze {} (ms), validated=\"1\" -> {out}", path.display(), placed, chunk.len(), tmmaps::secs::secs_str(&race_ms.to_string()), author, gold, silver, bronze);
+    let back = tmmaps::header::read(&out).expect("header of the output");
+    assert!(back.authortime == author.to_string() && back.gold == gold.to_string() && back.silver == silver.to_string() && back.bronze == bronze.to_string(), "readback: {} {} {} {}", back.authortime, back.gold, back.silver, back.bronze);
+    println!("{}: times author {} -> {} ({}), gold {} -> {}, silver {} -> {}, bronze {} -> {} (ms) -> {out}", path.display(), old_a, author, tmmaps::secs::secs_str(&author.to_string()), old_g, gold, old_s, silver, old_b, bronze);
 }
 
 /// `tmmaps lmquality MAP --out F --quality Q [--only-models NAME,NAME…]` — every item

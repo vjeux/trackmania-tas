@@ -683,6 +683,9 @@ pub fn scale_item(item: &[u8], s: f32) -> Vec<u8> {
 /// no offset in either part moves.
 pub fn rename_ident_same_len(item: &[u8], from: &str, to: &str) -> Vec<u8> {
     assert_eq!(from.len(), to.len(), "same-length rename only");
+    if item.is_empty() {
+        return Vec::new();
+    }
     let mut g = Gbx::parse(item);
     let replace = |buf: &mut Vec<u8>| {
         let f = from.as_bytes();
@@ -714,6 +717,11 @@ pub fn rename_ident_same_len(item: &[u8], from: &str, to: &str) -> Vec<u8> {
 /// 2026-09-08 flag probes: a byte copy of the pack's `Flag16m` item embedded
 /// under a name of its own (`Items/FlagCopy.Item.Gbx`) next to our own bake.
 pub fn rename_ident(item: &[u8], from: &str, to: &str) -> Vec<u8> {
+    // no bytes, nothing to rename: a vegetation CLUSTER item bakes to no mesh (its
+    // trees ride as stock items) and Summer 20 has such items (2026-09-22)
+    if item.is_empty() {
+        return Vec::new();
+    }
     let mut g = Gbx::parse(item);
     // every `u32 len` + `from` occurrence, replaced; the offsets (in the OLD
     // buffer) of the replaced strings come back for the size fix-ups

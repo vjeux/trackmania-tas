@@ -89,7 +89,7 @@ fn tracker_rows(path: &Path) -> BTreeMap<String, Vec<String>> {
 }
 
 /// The item-check gate of `publish_one`, for one built map's library.
-fn gate(items_dir: &Path, paks: &str) -> Result<usize, String> {
+pub fn gate(items_dir: &Path, paks: &str) -> Result<usize, String> {
     let mut items: Vec<String> = std::fs::read_dir(items_dir).map_err(|e| format!("{}: {e}", items_dir.display()))?.filter_map(|e| e.ok()).map(|e| e.path().to_string_lossy().into_owned()).filter(|p| p.ends_with(".Item.Gbx")).collect();
     items.sort();
     if items.is_empty() {

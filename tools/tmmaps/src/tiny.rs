@@ -385,9 +385,17 @@ pub fn cmd(args: &[String]) {
     // (spawn keeps x,z) shifted so the transformed geometry sits CENTRED in the
     // map's grid — the giant (×2) builds, whose spread about the spawn would
     // otherwise leave the arena on one side (2026-09-13)
+    // --anchor fit-origin[:N]: the same fit, but the transformed extent's min x/z
+    // corner lands on cell N (default 1; the lattice snap may move it a cell) instead of the grid centre — every
+    // grid cell of the build is then non-negative (the cell bytes hold 0..254),
+    // the form the out-of-grid water probe wants (2026-09-22, giant Summer)
     let anchor_raw = cli::flag(args, "--anchor");
-    let anchor_fit = anchor_raw == Some("fit");
-    let anchor_flag = anchor_raw.filter(|a| *a != "fit").map(|a| vec3(a, "--anchor"));
+    let fit_origin: Option<i32> = anchor_raw.filter(|a| a.starts_with("fit-origin")).map(|a| a.strip_prefix("fit-origin").and_then(|r| r.strip_prefix(':')).map(|n| n.parse().expect("--anchor fit-origin:N wants a cell number")).unwrap_or(1));
+    // --anchor fit-water: the centred fit shifted by whole cells so that the most
+    // pool tiles land inside the map grid (the engine's water is grid-bound)
+    let fit_water = anchor_raw == Some("fit-water");
+    let anchor_fit = anchor_raw == Some("fit") || fit_water || fit_origin.is_some();
+    let anchor_flag = anchor_raw.filter(|a| *a != "fit" && *a != "fit-water" && !a.starts_with("fit-origin")).map(|a| vec3(a, "--anchor"));
     // --uid-prefix PPPP (default `Tin2`): the 4 bytes that replace the source
     // uid's head (`Gia2` for the giant builds); --name-prefix S (default
     // "Tiny "): what goes before the source name when --name is not given
@@ -442,7 +450,11 @@ pub fn cmd(args: &[String]) {
         let mut shift = [0.0f32; 3];
         for k in [0usize, 2] {
             let span = thi[k] - tlo[k];
-            let want = ((grid[k] - span) / 2.0 - tlo[k]) / crate::map::CELL_XZ;
+            let want = match fit_origin {
+                // the min corner onto cell N
+                Some(n) => (n as f32 * crate::map::CELL_XZ - tlo[k]) / crate::map::CELL_XZ,
+                None => ((grid[k] - span) / 2.0 - tlo[k]) / crate::map::CELL_XZ,
+            };
             shift[k] = want.round() * crate::map::CELL_XZ;
             target_anchor[k] += shift[k];
         }
@@ -463,6 +475,68 @@ pub fn cmd(args: &[String]) {
                 target_anchor[k] = snapped;
             }
         }
+        // --anchor fit-water: of the whole-cell x/z shifts about the centred
+        // placement, the one that puts the MOST pool tiles (WaterBase /
+        // DecoWallWaterBase, the blocks whose engine water needs a grid cell)
+        // inside the map grid — a grid block outside it is dropped at load and
+        // a free one there carries no water volume (measured 2026-09-22 on
+        // giant Summer 15). Ties go to the placement nearest the centre.
+        if fit_water && (scale - scale.round()).abs() < 1e-6 && scale >= 1.0 {
+            let k = scale.round() as i32;
+            let pools: Vec<(i32, i32, i32)> = source.blocks.iter().filter(|b| b.free_pos.is_none() && (b.name == "WaterBase" || b.name == "DecoWallWaterBase")).map(|b| b.coords()).collect();
+            if !pools.is_empty() {
+                let count = |anchor: [f32; 3]| -> usize {
+                    let mut n = 0usize;
+                    for &(cx, cy, cz) in &pools {
+                        let corner = [cx as f32 * crate::map::CELL_XZ, cy as f32 * crate::map::CELL_Y + ground(), cz as f32 * crate::map::CELL_XZ];
+                        let g = transform(corner, source_anchor, anchor, scale);
+                        let (gx, gy, gz) = ((g[0] / crate::map::CELL_XZ).round() as i32, ((g[1] - ground()) / crate::map::CELL_Y).round() as i32, (g[2] / crate::map::CELL_XZ).round() as i32);
+                        for i in 0..k {
+                            for j in 0..k {
+                                for l in 0..k {
+                                    let (x, y, z) = (gx + i, gy + j, gz + l);
+                                    if x >= 0 && z >= 0 && y >= 0 && x < source.size[0] && y < source.size[1] && z < source.size[2] {
+                                        n += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    n
+                };
+                let total = pools.len() * (k * k * k) as usize;
+                let base = target_anchor;
+                let centred = count(base);
+                let mut best = (centred, 0i32, 0i32);
+                // The shifts tried keep the map inside the decoration SCENE when any
+                // do (the stadium decoration is 16 x 12 cells of 256 m about the grid:
+                // x -1280..2816, z -768..2304 — an item past that hangs over the void);
+                // a map wider than the scene is searched over the whole range.
+                let t0 = |p: [f32; 3]| transform(p, source_anchor, base, scale);
+                let (clo, chi) = (t0(lo), t0(hi));
+                let range = |k: usize, scene_lo: f32, scene_hi: f32| -> (i32, i32) {
+                    let smin = ((scene_lo - clo[k]) / crate::map::CELL_XZ).ceil() as i32;
+                    let smax = ((scene_hi - chi[k]) / crate::map::CELL_XZ).floor() as i32;
+                    if smin <= smax { (smin.max(-64), smax.min(64)) } else { (-64, 64) }
+                };
+                let (xr, zr) = (range(0, -1280.0, 2816.0), range(2, -768.0, 2304.0));
+                for dx in xr.0..=xr.1 {
+                    for dz in zr.0..=zr.1 {
+                        let a = [base[0] + dx as f32 * crate::map::CELL_XZ, base[1], base[2] + dz as f32 * crate::map::CELL_XZ];
+                        let n = count(a);
+                        let better = n > best.0 || (n == best.0 && dx * dx + dz * dz < best.1 * best.1 + best.2 * best.2);
+                        if better {
+                            best = (n, dx, dz);
+                        }
+                    }
+                }
+                target_anchor[0] += best.1 as f32 * crate::map::CELL_XZ;
+                target_anchor[2] += best.2 as f32 * crate::map::CELL_XZ;
+                shift[0] += best.1 as f32 * crate::map::CELL_XZ;
+                shift[2] += best.2 as f32 * crate::map::CELL_XZ;
+                println!("  fit-water: {} of {total} pool tiles in the grid when centred; {} with the map shifted by {},{} cells ({} pool blocks; shifts searched x {}..{}, z {}..{})", centred, best.0, best.1, best.2, pools.len(), xr.0, xr.1, zr.0, zr.1);
+            }
+        }
         let t = |p: [f32; 3]| transform(p, source_anchor, target_anchor, scale);
         let (flo, fhi) = (t(lo), t(hi));
         let mut notes: Vec<String> = Vec::new();
@@ -479,8 +553,8 @@ pub fn cmd(args: &[String]) {
             notes.push(format!("y bottom {:.0} m is under the grid's row 0 ({:.0} m)", flo[1], ground()));
         }
         println!(
-            "  fit: source extent [{:.0}, {:.0}, {:.0}]..[{:.0}, {:.0}, {:.0}] -> [{:.0}, {:.0}, {:.0}]..[{:.0}, {:.0}, {:.0}] in the {}x{}x{}-cell grid ({:.0}x{:.0}x{:.0} m), shifted by {:.0},{:.0} m to centre it, y by {:+.0} m onto the row lattice{}",
-            lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], flo[0], flo[1], flo[2], fhi[0], fhi[1], fhi[2], source.size[0], source.size[1], source.size[2], grid[0], grid[1], grid[2], shift[0], shift[2], shift[1],
+            "  fit: source extent [{:.0}, {:.0}, {:.0}]..[{:.0}, {:.0}, {:.0}] -> [{:.0}, {:.0}, {:.0}]..[{:.0}, {:.0}, {:.0}] in the {}x{}x{}-cell grid ({:.0}x{:.0}x{:.0} m), shifted by {:.0},{:.0} m {}, y by {:+.0} m onto the row lattice{}",
+            lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], flo[0], flo[1], flo[2], fhi[0], fhi[1], fhi[2], source.size[0], source.size[1], source.size[2], grid[0], grid[1], grid[2], shift[0], shift[2], match fit_origin { Some(n) => format!("to put its min corner on cell {n}"), None => "to centre it".to_string() }, shift[1],
             if notes.is_empty() { "; fits".to_string() } else { format!("; {}", notes.join("; ")) }
         );
     }

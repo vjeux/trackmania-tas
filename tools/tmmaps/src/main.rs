@@ -82,7 +82,7 @@ fn main() {
     const WANTS_MAP: &[&str] = &[
         "waypoints", "census", "gridinfo", "skins", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "ponds", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
-        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "lmquality", "ghostchunk", "genealogy-fill", "delblocks", "striplightmap", "itembytes", "mediatracker",
+        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "settimes", "lmquality", "ghostchunk", "genealogy-fill", "delblocks", "striplightmap", "itembytes", "mediatracker",
     ];
     if WANTS_MAP.contains(&cmd) && args.len() < 3 {
         eprintln!("tmmaps {} needs a MAP path.\n\n{}", cmd, USAGE);
@@ -136,6 +136,38 @@ fn main() {
                 }
             }
         }
+        "set-size" => {
+            // set-size MAP --out OUT --size X,Y,Z: the map grid's three size words in
+            // chunk 0x0304301F (the 12 bytes before needUnlock/version/nbBlocks). The
+            // giant grid question (2026-09-22): does the engine keep grid blocks whose
+            // cells lie past the 48-cell arena when the words say the grid is bigger?
+            let src = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps set-size MAP --out OUT --size X,Y,Z"); std::process::exit(2) });
+            let out = tmmaps::cli::flag(&args, "--out").map(String::from).unwrap_or_else(|| { eprintln!("--out OUT"); std::process::exit(2) });
+            let size = tmmaps::cli::flag(&args, "--size").map(String::from).unwrap_or_else(|| { eprintln!("--size X,Y,Z"); std::process::exit(2) });
+            let v: Vec<u32> = size.split(',').map(|t| t.trim().parse::<u32>().unwrap_or_else(|_| { eprintln!("--size: bad number `{t}`"); std::process::exit(2) })).collect();
+            if v.len() != 3 {
+                eprintln!("--size wants three numbers");
+                std::process::exit(2);
+            }
+            let mut m = tmmaps::map::MapFile::load(std::path::Path::new(&src));
+            let off = m.blocks_count_off - 20;
+            let words: Vec<u32> = (0..3).map(|k| u32::from_le_bytes(m.gbx.body[off + 4 * k..off + 4 * k + 4].try_into().unwrap())).collect();
+            if words != m.size.iter().map(|x| *x as u32).collect::<Vec<u32>>() {
+                eprintln!("{src}: the words at body {off:#x} read {words:?}, the parser has {:?} — layout not as assumed, nothing written", m.size);
+                std::process::exit(1);
+            }
+            let mut bytes = Vec::new();
+            for w in &v {
+                bytes.extend_from_slice(&w.to_le_bytes());
+            }
+            m.raw_patches.push((off, bytes));
+            m.write_to(std::path::Path::new(&out)).expect("write");
+            let back = tmmaps::map::MapFile::load(std::path::Path::new(&out));
+            println!("{out}: size {:?} -> {:?} (readback {:?}; {} blocks)", m.size, v, back.size, back.blocks.len());
+            if back.size.iter().map(|x| *x as u32).collect::<Vec<u32>>() != v {
+                std::process::exit(1);
+            }
+        }
         "rename-map" => {
             let src = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps rename-map MAP --out OUT --name NEW"); std::process::exit(2) });
             let out = tmmaps::cli::flag(&args, "--out").map(String::from).unwrap_or_else(|| { eprintln!("--out OUT"); std::process::exit(2) });
@@ -179,6 +211,7 @@ fn main() {
         "stripghost" => surgery::stripghost(&args),
         "validate" => surgery::validate(&args),
         "setuid" => surgery::setuid(&args),
+        "settimes" => surgery::settimes(&args),
         "lmquality" => surgery::lmquality(&args),
         "ghostchunk" => surgery::ghostchunk(&args),
         "genealogy-fill" => surgery::genealogy_fill(&args),

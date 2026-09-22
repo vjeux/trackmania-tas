@@ -126,7 +126,7 @@ pub fn plan(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale: f32,
 /// sheet; the source itself is a ground row under an air row), only the top of each
 /// column is the air variant with the surface.
 pub fn plan_opt(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale: f32, roads: bool, author: &str, legacy_stack: bool) -> Result<Plan, String> {
-    plan_stack(source, ground, s, t, scale, roads, author, legacy_stack, STACKED_BELOW)
+    plan_stack(source, ground, s, t, scale, roads, author, legacy_stack, STACKED_BELOW, None)
 }
 
 /// The editor's own word for a DecoWallWaterBase with another water block ABOVE it:
@@ -142,8 +142,28 @@ pub const STACKED_BELOW: u32 = 0x0021_0000;
 /// `below_flags`: the flag word of a DecoWallWaterBase tile that has another water tile
 /// above it (the variant the engine matches against the tile above; measured 2026-09-14).
 #[allow(clippy::too_many_arguments)]
-pub fn plan_stack(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale: f32, roads: bool, author: &str, legacy_stack: bool, below_flags: u32) -> Result<Plan, String> {
-    let size = source.size;
+pub fn plan_stack(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale: f32, roads: bool, author: &str, legacy_stack: bool, below_flags: u32, bounds: Option<[i32; 3]>) -> Result<Plan, String> {
+    plan_free(source, ground, s, t, scale, roads, author, legacy_stack, below_flags, bounds, FreePools::None)
+}
+
+/// Which pool tiles become FREE custom blocks (the tiny water-block template
+/// re-pointed at the pool archetype, positioned by metres, no cell) instead of
+/// native grid tiles: none (the u10s form), every tile, or the tiles of the
+/// pools that reach past the map grid (a grid tile there is dropped by the
+/// engine at load — measured 2026-09-22 on giant Summer 15: 362 of 1056 tiles
+/// gone, the map with its size words raised to 72 crashed the client).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FreePools {
+    None,
+    All,
+    Outside,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn plan_free(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale: f32, roads: bool, author: &str, legacy_stack: bool, below_flags: u32, bounds: Option<[i32; 3]>, free: FreePools) -> Result<Plan, String> {
+    // the cells kept: the map grid (the default) or, for the out-of-grid probe,
+    // everything a cell byte can hold (`--no-clip`: x/z 0..254, y 0..255)
+    let size = bounds.unwrap_or(source.size);
     // every DecoWallWaterBase tile cell first: the variant of a tile depends on
     // whether another water tile sits directly above it
     let mut water_cells: std::collections::HashSet<[i32; 3]> = std::collections::HashSet::new();
@@ -166,6 +186,55 @@ pub fn plan_stack(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale
     }
     let mut p = Plan { grid: Vec::new(), roads: Vec::new(), archetypes: BTreeMap::new(), notes: Vec::new(), skipped: Vec::new(), clipped: 0 };
     let mut by_name: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    // The pools that become FREE tiles: per connected water body (pool blocks
+    // 6-adjacent in the source grid), all or nothing — a native tile next to a
+    // free one would not match clips with it (a rim wall through the pool).
+    let free_blocks: std::collections::HashSet<usize> = match free {
+        FreePools::None => Default::default(),
+        FreePools::All => source.blocks.iter().filter(|b| b.free_pos.is_none() && POOL_BLOCKS.contains(&b.name.as_str())).map(|b| b.index).collect(),
+        FreePools::Outside => {
+            let pool: Vec<&BlockRec> = source.blocks.iter().filter(|b| b.free_pos.is_none() && POOL_BLOCKS.contains(&b.name.as_str())).collect();
+            let cell_of: std::collections::HashMap<(i32, i32, i32), usize> = pool.iter().enumerate().map(|(i, b)| (b.coords(), i)).collect();
+            // union-find over the pool blocks
+            let mut parent: Vec<usize> = (0..pool.len()).collect();
+            fn find(p: &mut [usize], i: usize) -> usize {
+                let mut r = i;
+                while p[r] != r {
+                    r = p[r];
+                }
+                let mut j = i;
+                while p[j] != r {
+                    let n = p[j];
+                    p[j] = r;
+                    j = n;
+                }
+                r
+            }
+            for (i, b) in pool.iter().enumerate() {
+                let (x, y, z) = b.coords();
+                for d in [(1, 0, 0), (0, 1, 0), (0, 0, 1)] {
+                    if let Some(&j) = cell_of.get(&(x + d.0, y + d.1, z + d.2)) {
+                        let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                        if ri != rj {
+                            parent[ri] = rj;
+                        }
+                    }
+                }
+            }
+            // a body reaches outside when any tile of any of its blocks lies past the grid
+            let grid = source.size;
+            let mut out_roots: std::collections::HashSet<usize> = Default::default();
+            for (i, b) in pool.iter().enumerate() {
+                let c = giant_cell(b.coords(), ground, s, t, scale)?;
+                if c[0] < 0 || c[2] < 0 || c[0] + n > grid[0] || c[2] + n > grid[2] {
+                    let r = find(&mut parent, i);
+                    out_roots.insert(r);
+                }
+            }
+            (0..pool.len()).filter(|&i| out_roots.contains(&find(&mut parent, i))).map(|i| pool[i].index).collect()
+        }
+    };
+    let mut free_bodies_note = 0usize;
     for b in &source.blocks {
         if b.free_pos.is_some() {
             if POOL_BLOCKS.contains(&b.name.as_str()) || road_family(&b.name) {
@@ -178,6 +247,7 @@ pub fn plan_stack(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale
             let e = by_name.entry(b.name.clone()).or_insert((0, 0));
             e.0 += 1;
             let rows: Vec<i32> = if b.name == "DecoWallWaterBase" { (0..n).collect() } else { vec![n - 1] };
+            let rows_first = rows[0];
             for j in rows {
                 let flags_of = |cell: [i32; 3]| -> u32 {
                     if legacy_stack {
@@ -201,14 +271,31 @@ pub fn plan_stack(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale
                     // the top row is never the terrain row: an air tile, the rest of the word kept
                     b.flags & !(FLAG_GROUND | FLAG_REPLACEMENT)
                 };
+                let as_free = free_blocks.contains(&b.index);
+                if as_free && j == rows_first {
+                    free_bodies_note += 1;
+                }
                 for i in 0..n {
                     for k in 0..n {
                         let cell = [c[0] + i, c[1] + j, c[2] + k];
+                        let flags = if b.name == "DecoWallWaterBase" { flags_of(cell) } else { flags };
+                        if as_free {
+                            // a FREE custom tile: the template re-pointed at the pool block,
+                            // 32 m square at the cell's corner, turned like the source block;
+                            // the variant bits ride in the same flag word (0x1000_8000 is the
+                            // water-block convention of the tiny builds and the road tiles)
+                            let ident = format!("Water\\{}.Block.Gbx", b.name);
+                            p.archetypes.entry(b.name.clone()).or_insert(ident.clone());
+                            let (origin, yaw) = frame(b.dir, cell[0] as f32 * CELL_XZ, cell[2] as f32 * CELL_XZ, CELL_XZ);
+                            let y = cell[1] as f32 * CELL_Y + ground;
+                            p.roads.push(FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.to_string()), flags: flags | 0x1000_8000, pos: [origin[0], y, origin[1]], rot: [yaw, 0.0, 0.0], grid: None, dir: 0 });
+                            e.1 += 1;
+                            continue;
+                        }
                         if cell[0] < 0 || cell[1] < 0 || cell[2] < 0 || cell[0] >= size[0] || cell[1] >= size[1] || cell[2] >= size[2] {
                             p.clipped += 1;
                             continue;
                         }
-                        let flags = if b.name == "DecoWallWaterBase" { flags_of(cell) } else { flags };
                         p.grid.push(FreeBlockSpec { name: b.name.clone(), author: None, flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(cell), dir: b.dir });
                         e.1 += 1;
                     }
@@ -255,6 +342,9 @@ pub fn plan_stack(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale
                 }
             }
         }
+    }
+    if free != FreePools::None {
+        p.notes.push(format!("{free_bodies_note} pool blocks as FREE custom tiles ({free:?}), {} free tiles in all", p.roads.len()));
     }
     for (name, (blocks, tiles)) in &by_name {
         p.notes.push(format!("{name}: {blocks} source blocks -> {tiles} tiles"));

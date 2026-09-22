@@ -195,6 +195,21 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         if native_water && !env.contains_key("TINY_WATER_VISUAL") {
             env.insert("TINY_WATER_VISUAL".to_string(), "0".to_string());
         }
+        // A GIANT build's defaults, measured 2026-09-22 (TINY.md "Giant maps: the
+        // grid"): the engine keeps grid blocks and water volumes inside the
+        // decoration's grid only, so the map is placed to put the most pool tiles
+        // in it (TINY_FIT=water), the pools reaching past it become free custom
+        // tiles (water drawn everywhere, physics inside; TINY_GIANT_FREE_POOLS=
+        // outside), and a BlueBay island stands in the regenerated Sea
+        // (TINY_GENEALOGY=fill, the lagoon fix of the tiny campaign).
+        if scale > 1.0 {
+            for (k, v) in [("TINY_FIT", "water"), ("TINY_GIANT_FREE_POOLS", "outside")] {
+                env.entry(k.to_string()).or_insert_with(|| v.to_string());
+            }
+            if coll == 0x1c {
+                env.entry("TINY_GENEALOGY".to_string()).or_insert_with(|| "fill".to_string());
+            }
+        }
         // the generated pictures (sign logos, screen picture, trigger FX) are cached
         // by file name the same way: suffix them with the alias base's minute part
         if !env.contains_key("TINY_PICTURE_SUFFIX") {
@@ -228,7 +243,15 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             tiny.arg("tiny").arg(&src).arg("--mapping").arg(out.join("placements.tsv")).arg("--library").arg(out.join("lib.zip")).arg("--out").arg(&tiny_out).arg("--scale").arg(format!("{scale}"));
             // a giant build: centred in the grid, its own uid head and name
             if scale > 1.0 {
-                tiny.arg("--anchor").arg("fit").arg("--uid-prefix").arg(uid_prefix(scale)).arg("--name-prefix").arg(format!("{label} "));
+                // TINY_FIT=origin[:N] (probe knob, 2026-09-22): the build's min x/z corner
+                // on cell N instead of centred — every grid cell non-negative
+                let fit = match env.get("TINY_FIT").map(String::as_str) {
+                    Some("centre") | Some("center") | None => "fit".to_string(),
+                    Some(o) if o.starts_with("origin") => format!("fit-{o}"),
+                    Some("water") => "fit-water".to_string(),
+                    Some(other) => return Err(format!("TINY_FIT={other}: centre, water or origin[:N]")),
+                };
+                tiny.arg("--anchor").arg(fit).arg("--uid-prefix").arg(uid_prefix(scale)).arg("--name-prefix").arg(format!("{label} "));
             }
             if let Some(n) = &name_flag {
                 tiny.arg("--name").arg(n);
@@ -318,6 +341,14 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     // rounded dead-end caps, the green start tubes — on the ×2 canal
                     // (vjeux, 2026-09-13 17:44Z: "not what I wanted … this changes the
                     // layout"); on a pool the same fillers hide inside the ×2 walls.
+                    // TINY_GIANT_FREE_POOLS=all|outside: pool tiles as free custom blocks
+                    if let Some(f) = env.get("TINY_GIANT_FREE_POOLS").filter(|v| v.as_str() != "none" && !v.is_empty()) {
+                        gw.arg("--free").arg(f);
+                    }
+                    // TINY_GIANT_CLIP=0 (probe knob): keep the pool tiles past the map grid
+                    if env.get("TINY_GIANT_CLIP").map(|v| v == "0").unwrap_or(false) {
+                        gw.arg("--no-clip");
+                    }
                     if env.get("TINY_GIANT_ROAD_TILES").map(|v| v != "1").unwrap_or(true) {
                         gw.arg("--no-roads");
                     }
@@ -374,6 +405,28 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 None => eprintln!("  water blocks pass skipped: no anchor line"),
             }
         }
+        // --times-scale K: the author time and the three medals become K x the
+        // SOURCE's (the giant campaigns: "ATs x2, x3 and x4 the existing times",
+        // vjeux 2026-09-22) — `tmmaps settimes --scale K`, the times chunks and
+        // the header alone, whole-second medals staying whole seconds.
+        if let Some(k) = f("--times-scale") {
+            let staged = out.join(format!("{out_prefix}-{nn}-{label}.times.Map.Gbx"));
+            let mut st = Command::new(&tmmaps);
+            st.arg("settimes").arg(&tiny_out).arg("--out").arg(&staged).arg("--scale").arg(&k);
+            match run(&mut st, &out.join("settimes.log")) {
+                Ok(text) => {
+                    for l in text.lines().filter(|l| l.contains("times author")) {
+                        println!("  {}", l.trim());
+                    }
+                    std::fs::rename(&staged, &tiny_out).map_err(|e| format!("settimes: {e}"))?;
+                }
+                Err(e) => {
+                    eprintln!("  settimes FAILED: {e}");
+                    failed += 1;
+                    continue;
+                }
+            }
+        }
         let libx = out.join("libx");
         let _ = std::fs::remove_dir_all(&libx);
         let unzip = Command::new("unzip").arg("-q").arg(out.join("lib.zip")).arg("-d").arg(&libx).output().map_err(|e| format!("unzip: {e}"))?;
@@ -417,13 +470,18 @@ pub fn variant_label(scale: f32) -> &'static str {
 }
 
 /// The 4-byte uid head of a build at `scale` (`tmmaps tiny --uid-prefix`):
-/// `Tin2` for the tiny builds (the second tiny uid scheme), `Gia2` for the giant
-/// ones, `Sam2` at scale 1.
-pub fn uid_prefix(scale: f32) -> &'static str {
+/// `Tin2` for the tiny builds (the second tiny uid scheme), `Gia<k>` for a giant
+/// one at the whole scale k (Gia2, Gia3, Gia4 — the three campaigns of
+/// 2026-09-22 need distinct uids per scale: a repeated create with one uid keeps
+/// the old record), `Sam2` at scale 1.
+pub fn uid_prefix(scale: f32) -> String {
     match variant_label(scale) {
-        "Giant" => "Gia2",
-        "Same" => "Sam2",
-        _ => "Tin2",
+        "Giant" => {
+            let k = scale.round();
+            if (scale - k).abs() < 1e-6 && (2.0..=9.0).contains(&k) { format!("Gia{}", k as u32) } else { "Gia2".to_string() }
+        }
+        "Same" => "Sam2".to_string(),
+        _ => "Tin2".to_string(),
     }
 }
 

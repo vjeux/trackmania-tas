@@ -608,7 +608,19 @@ fn main() {
                 mapgeom::giantwater::parse_anchor(&anchor).unwrap_or_else(die)
             };
             let below: u32 = flag(&a.rest, "--below-flags").map(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16).unwrap_or_else(|_| die("--below-flags HEX".into()))).unwrap_or(mapgeom::giantwater::STACKED_BELOW);
-            let plan = mapgeom::giantwater::plan_stack(&source, ground, s, t, scale, roads, &author, legacy, below).unwrap_or_else(die);
+            // --no-clip: keep every pool tile whose cell a cell byte can hold (x/z 0..254,
+            // y 0..255) instead of only the map grid — the giant Summer probe of what the
+            // engine does with grid blocks past the 48-cell arena (2026-09-22)
+            let bounds = a.rest.iter().any(|x| x == "--no-clip").then_some([255, 256, 255]);
+            // --free all|outside: pool tiles as FREE custom blocks (all pools, or the water
+            // bodies that reach past the map grid) — needs --template
+            let free = match flag(&a.rest, "--free").as_deref() {
+                None | Some("none") => mapgeom::giantwater::FreePools::None,
+                Some("all") => mapgeom::giantwater::FreePools::All,
+                Some("outside") => mapgeom::giantwater::FreePools::Outside,
+                Some(o) => die(format!("--free {o}: all, outside or none")),
+            };
+            let plan = mapgeom::giantwater::plan_free(&source, ground, s, t, scale, roads, &author, legacy, below, bounds, free).unwrap_or_else(die);
             for n in &plan.notes {
                 println!("  giantwater: {n}");
             }

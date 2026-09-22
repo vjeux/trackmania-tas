@@ -106,7 +106,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         // 1. build
         let mut bargs: Vec<String> = vec![nn.clone(), "--src-dir".into(), src_dir.display().to_string(), "--out-root".into(), out_root.clone(), "--tag".into(), tag.clone(), "--recipe".into(), recipe.clone(), "--out-prefix".into(), prefix.clone()];
         bargs.extend(envs.iter().cloned());
-        for k in ["--lod-pick", "--lod-pick-min-verts", "--scale", "--name-format"] {
+        for k in ["--lod-pick", "--lod-pick-min-verts", "--scale", "--name-format", "--times-scale"] {
             if let Some(v) = f(k) {
                 bargs.push(k.into());
                 bargs.push(v);
@@ -213,9 +213,15 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             }
             note.push_str(&fit_note);
         }
-        // the giant water pass's verdict for the row (tiles placed / clipped)
+        // the giant placement: the fit-water line of tmmaps tiny (pool tiles in the grid)
+        if let Ok(tl) = std::fs::read_to_string(build_dir.join("tiny.log")) {
+            if let Some(l) = tl.lines().find(|l| l.trim_start().starts_with("fit-water:")) {
+                note.push_str(&format!("{}; ", l.trim()));
+            }
+        }
+        // the giant water pass's verdict for the row (tiles placed / clipped / free)
         if let Ok(gw) = std::fs::read_to_string(build_dir.join("giantwater.log")) {
-            if let Some(l) = gw.lines().find(|l| l.contains("CLIPPED")) {
+            for l in gw.lines().filter(|l| l.contains("CLIPPED") || l.contains("FREE custom tiles") || l.contains("source blocks ->")) {
                 note.push_str(&format!("water: {}; ", l.trim().trim_start_matches("giantwater: ")));
             }
         }
@@ -236,9 +242,22 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         row.push(bytes.to_string());
         row.push(n_items.to_string());
         row.push(format!("{:.0}", build_t.elapsed().as_secs_f64()));
-        // the source's times must survive the conversion untouched
-        if thdr.authortime != hdr.authortime || thdr.gold != hdr.gold || thdr.silver != hdr.silver || thdr.bronze != hdr.bronze {
+        // the source's times must survive the conversion untouched — or come out
+        // exactly K x the source's under --times-scale K (the giant campaigns)
+        let tk: u32 = f("--times-scale").and_then(|k| k.parse().ok()).unwrap_or(1);
+        let want = |s: &str| s.parse::<u32>().map(|v| (v * tk).to_string()).unwrap_or_else(|_| s.to_string());
+        if thdr.authortime != want(&hdr.authortime) || thdr.gold != want(&hdr.gold) || thdr.silver != want(&hdr.silver) || thdr.bronze != want(&hdr.bronze) {
             note.push_str(&format!("TIMES CHANGED ({} {} {} {} -> {} {} {} {}); ", hdr.authortime, hdr.gold, hdr.silver, hdr.bronze, thdr.authortime, thdr.gold, thdr.silver, thdr.bronze));
+        }
+        // the item-check gate (the format rules over the library, both packs) runs
+        // here for every map — a build that is not published today still has to
+        // pass it (the giant campaigns: built and banked first, published later)
+        match crate::build::paks_for(crate::views::collection_of(&tmmaps::map::MapFile::load(&src))) {
+            Ok(paks) => match crate::dist::gate(&build_dir.join("libx").join("Items"), &paks.join(" ")) {
+                Ok(n) => note.push_str(&format!("item-check {n} ok; ")),
+                Err(e) => note.push_str(&format!("ITEM-CHECK FAILED: {}; ", first_line(&e))),
+            },
+            Err(e) => note.push_str(&format!("item-check skipped: {}; ", first_line(&e))),
         }
 
         // 2. views + shoot
@@ -267,7 +286,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                             // the box-side tag: `uNN` for the tiny builds (the u10s
                             // runs), `giNN` for the giant ones — the two runs stage
                             // files side by side on the shared box
-                            let stag = if scale > 1.0 { format!("gi{nn}") } else { format!("u{nn}") };
+                            let stag = if scale > 1.0 { format!("g{}{nn}", scale.round() as u32) } else { format!("u{nn}") };
                             let mut sargs: Vec<String> = vec!["--orig".into(), src.display().to_string(), "--tiny".into(), tiny.display().to_string(), "--views".into(), views.display().to_string(), "--tag".into(), stag.clone(), "--anchor".into(), anchor, "--scale".into(), format!("{scale}"), "--outdir".into(), frames_dir.display().to_string()];
                             if tmmaps::cli::has(args, "--fresh") {
                                 sargs.push("--fresh".into());
