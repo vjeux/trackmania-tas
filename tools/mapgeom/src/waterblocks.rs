@@ -117,8 +117,42 @@ pub struct UpTri {
     pub phys: String,
 }
 
+/// The map's upward triangles in 16-m cells (world x/z), so a rule that asks
+/// about a block's four cells, a rim strip or a 4-m sample window reads the
+/// triangles there instead of every triangle of the map: `decide` scanned the
+/// whole list ~25 times per candidate block — 107 s of one core on Summer 15
+/// (3 278 water triangles, 77 bodies, but 1.9 M triangles to scan each time)
+/// for a verdict of "0 as blocks" (2026-09-22). The queries are a SUPERSET
+/// filter; every predicate stays exactly as it was, so the decisions are the
+/// same bytes.
+pub struct TriGrid<'a> {
+    tris: &'a [UpTri],
+    cells: std::collections::HashMap<(i32, i32), Vec<u32>>,
+}
+
+impl<'a> TriGrid<'a> {
+    pub const CELL: f32 = 16.0;
+
+    pub fn new(tris: &'a [UpTri]) -> TriGrid<'a> {
+        let mut cells: std::collections::HashMap<(i32, i32), Vec<u32>> = std::collections::HashMap::new();
+        for (i, t) in tris.iter().enumerate() {
+            cells.entry(((t.c[0] / Self::CELL).floor() as i32, (t.c[2] / Self::CELL).floor() as i32)).or_default().push(i as u32);
+        }
+        TriGrid { tris, cells }
+    }
+
+    /// Every triangle whose centre lies in a cell touching the rectangle
+    /// (a superset of the rectangle; callers test the exact bounds).
+    pub fn near(&self, x0: f32, x1: f32, z0: f32, z1: f32) -> impl Iterator<Item = &'a UpTri> + '_ {
+        let (cx0, cx1) = ((x0 / Self::CELL).floor() as i32, (x1 / Self::CELL).floor() as i32);
+        let (cz0, cz1) = ((z0 / Self::CELL).floor() as i32, (z1 / Self::CELL).floor() as i32);
+        (cx0..=cx1).flat_map(move |cx| (cz0..=cz1).map(move |cz| (cx, cz))).flat_map(move |c| self.cells.get(&c).into_iter().flatten().map(move |i| &self.tris[*i as usize]))
+    }
+}
+
 pub fn decide(plates: &[PlateRow], tris: &[UpTri], source: Option<&SourceUnder>) -> Vec<Decision> {
     let mut out = Vec::new();
+    let grid = TriGrid::new(tris);
     // pools: plates of a handled archetype grouped by plane height (±0.05) and
     // by 16-m cell (the tiny cell of the source block)
     struct Cell {
@@ -171,33 +205,20 @@ pub fn decide(plates: &[PlateRow], tris: &[UpTri], source: Option<&SourceUnder>)
             let in_cell = |x: f32, z: f32, c: &(i32, i32)| { let (cx, cz) = cell_world(c); x >= cx && x < cx + 16.0 && z >= cz && z < cz + 16.0 };
             // (1) drivable surfaces inside the spilled cells within the band (not wet floor)
             let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
-            for t in tris {
-                if t.phys == "Water" || t.phys == "NotCollidable" { continue; }
-                if t.top < band_lo || t.top > band_hi { continue; }
-                if spill_cells.iter().any(|c| in_cell(t.c[0], t.c[2], c)) && !in_wet(t.c[0], t.c[2], plane) {
-                    *kinds.entry(t.phys.clone()).or_default() += 1;
+            for c in &spill_cells {
+                let (cxw, czw) = cell_world(c);
+                for t in grid.near(cxw, cxw + 16.0, czw, czw + 16.0) {
+                    if t.phys == "Water" || t.phys == "NotCollidable" { continue; }
+                    if t.top < band_lo || t.top > band_hi { continue; }
+                    if in_cell(t.c[0], t.c[2], c) && !in_wet(t.c[0], t.c[2], plane) {
+                        *kinds.entry(t.phys.clone()).or_default() += 1;
+                    }
                 }
             }
-            // (1b) under the pool: the band reaches depth_full under the plane; the pool's own
-            // floor is the highest non-water surface under the plane in its cells — any
-            // drivable surface between the band bottom and 0.3 m under that floor is a
-            // road under the pool that would get water
-            // a surface in the water cells within the band that has ANOTHER surface above
-            // it (same 4-m bin, at least 0.5 m higher, still under the plane) is under the
-            // pool's floor slab — a room or road the volume would flood. The pool's own
-            // floor and ramps have nothing between them and the water.
-            let in_water_cells = |x: f32, z: f32| water_cells.iter().any(|c| in_cell(x, z, c));
-            let mut bins: BTreeMap<(i32, i32), Vec<f32>> = BTreeMap::new();
-            for t in tris {
-                if t.phys == "Water" || t.phys == "NotCollidable" { continue; }
-                if t.top < plane - 0.4 && t.top >= band_lo - 0.5 && in_water_cells(t.c[0], t.c[2]) {
-                    bins.entry(((t.c[0] / 4.0).floor() as i32, (t.c[2] / 4.0).floor() as i32)).or_default().push(t.top);
-                }
-            }
-            // the SOURCE decides what is under the pool (the tiny geometry inside a pool —
-            // ramps over the floor, pillar tops — defeats a height heuristic): drivable
-            // source blocks in the cells under the water body within the band
-            let _ = &bins;
+            // (1b) under the pool: the SOURCE decides what is under the pool (the tiny
+            // geometry inside a pool — ramps over the floor, pillar tops — defeats a
+            // height heuristic): drivable source blocks in the cells under the water
+            // body within the band
             let floor = plane - depth_full / 2.0;
             let under: Vec<String> = match source {
                 Some(s) => s.drivable_under(&water_cells.iter().map(|c| cell_world(c)).collect::<Vec<_>>(), plane, depth_full / 2.0),
@@ -214,7 +235,7 @@ pub fn decide(plates: &[PlateRow], tris: &[UpTri], source: Option<&SourceUnder>)
                         samples += 1;
                         let mut best_below = f32::MIN;
                         let mut above = false;
-                        for t in tris {
+                        for t in grid.near(x - 2.0, x + 2.0, z - 2.0, z + 2.0) {
                             if (t.c[0] - x).abs() <= 2.0 && (t.c[2] - z).abs() <= 2.0 {
                                 if t.top <= band_hi && t.top > best_below { best_below = t.top; }
                                 if t.top > band_hi && t.top < plane + 8.0 { above = true; }
@@ -258,7 +279,7 @@ pub fn decide(plates: &[PlateRow], tris: &[UpTri], source: Option<&SourceUnder>)
                 };
                 let mut hit: BTreeMap<String, usize> = BTreeMap::new();
                 let mut beyond = 0usize;
-                for t in tris {
+                for t in grid.near(x0.min(bx0), x1.max(bx1), z0.min(bz0), z1.max(bz1)) {
                     if t.phys == "Water" || t.phys == "NotCollidable" { continue; }
                     if t.top < plane - RIM_BOTTOM || t.top > plane + RIM_TOP + 0.3 { continue; }
                     if in_wet(t.c[0], t.c[2], plane) { continue; }
@@ -388,6 +409,7 @@ impl SourceUnder<'_> {
 /// surface (the same rule as the pools). `TINY_WATER_ROADS=0` turns it off.
 pub fn decide_roads(plates: &[PlateRow], tris: &[UpTri]) -> Vec<Decision> {
     let mut out = Vec::new();
+    let grid = TriGrid::new(tris);
     if std::env::var("TINY_WATER_ROADS").map(|v| v == "0").unwrap_or(false) {
         return out;
     }
@@ -457,7 +479,7 @@ pub fn decide_roads(plates: &[PlateRow], tris: &[UpTri]) -> Vec<Decision> {
             let own: Vec<(f32, f32)> = (0..n).map(|j| { let c = &cells[ks[i + j]]; (c.cx, c.cz) }).collect();
             let in_own = |x: f32, z: f32| own.iter().any(|(cx, cz)| x >= cx - 0.01 && x <= cx + 16.01 && z >= cz - 0.01 && z <= cz + 16.01);
             let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
-            for t in tris {
+            for t in grid.near(fx0, fx1, fz0, fz1) {
                 if t.phys == "Water" || t.phys == "NotCollidable" { continue; }
                 if t.top < band_lo || t.top > band_hi { continue; }
                 if t.c[0] >= fx0 && t.c[0] <= fx1 && t.c[2] >= fz0 && t.c[2] <= fz1 && !in_wet(t.c[0], t.c[2], plane) && !in_own(t.c[0], t.c[2]) {
