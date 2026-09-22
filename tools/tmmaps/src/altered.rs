@@ -727,7 +727,7 @@ impl Lib {
     }
 }
 
-fn new_uid(prefix: &str, len: usize) -> String {
+pub fn new_uid(prefix: &str, len: usize) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let mut x = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1) ^ 0x9E37_79B9_7F4A_7C15;
     let alphabet: Vec<char> = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-".chars().collect();

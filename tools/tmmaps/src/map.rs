@@ -3712,3 +3712,225 @@ pub fn seed_item_record(body: &[u8], collection: u32) -> Result<Vec<u8>, String>
     grow(&mut out2, 0x0304_3069, &0xFFFF_FFFFu32.to_le_bytes(), false, n_blocks)?;
     Ok(out2)
 }
+
+// ---------------------------------------------------------------- the Stadium port (2026-09-22)
+
+impl MapFile {
+    /// The map's collection words in the body (map Ident + decoration Ident of
+    /// chunk 0x0304301F): both set to `collection`. A vista map (BlueBay 0x1c,
+    /// RedIsland 0x10, WhiteShore 0x1d, GreenCoast 0xf) becomes a Stadium (26) map.
+    pub fn set_map_collection(&mut self, collection: u32) -> usize {
+        let mut n = 0;
+        for i in [1usize, 4] {
+            if let Some(f) = self.body_ids.get(i) {
+                if f.name.is_none() && f.raw != 0xFFFF_FFFF && f.len == 4 {
+                    self.raw_patches.push((f.off, collection.to_le_bytes().to_vec()));
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    /// The map size (three u32 right after the decoration Ident).
+    pub fn set_map_size(&mut self, size: [u32; 3]) {
+        let f = &self.body_ids[5];
+        let off = f.off + f.len;
+        let mut b = Vec::new();
+        for v in size {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        self.raw_patches.push((off, b));
+    }
+
+    /// Header chunk 0x03043003 (Common): the two collection words and the
+    /// decoration name rewritten. Layout: version u8, lookback version u32,
+    /// Ident(uid, collection, author), string name, u8 kind, u32 locked, string
+    /// password, Ident(decoration, collection, author), rest.
+    pub fn set_header_common(&mut self, collection: u32, decoration: &str) -> bool {
+        let deco = decoration.to_string();
+        self.edit_header_chunk(0x0304_3003, &|d: &[u8]| {
+            let u = |p: usize| -> Option<u32> { d.get(p..p + 4).map(|w| u32::from_le_bytes(w.try_into().unwrap())) };
+            let mut out = Vec::with_capacity(d.len() + 32);
+            let mut p = 0usize;
+            out.push(*d.first()?); // version
+            p += 1;
+            out.extend_from_slice(&d[p..p + 4]); // lookback version
+            p += 4;
+            // an Id: (word, then len+str when it defines)
+            let copy_id = |p: &mut usize, out: &mut Vec<u8>, replace_coll: bool| -> Option<()> {
+                let w = u(*p)?;
+                if w != 0xFFFF_FFFF && w >> 30 == 0 {
+                    out.extend_from_slice(&(if replace_coll { collection } else { w }).to_le_bytes());
+                    *p += 4;
+                    return Some(());
+                }
+                out.extend_from_slice(&w.to_le_bytes());
+                *p += 4;
+                if w != 0xFFFF_FFFF && w & 0x3FFF_FFFF == 0 {
+                    let n = u(*p)? as usize;
+                    out.extend_from_slice(&d[*p..*p + 4 + n]);
+                    *p += 4 + n;
+                }
+                Some(())
+            };
+            let copy_str = |p: &mut usize, out: &mut Vec<u8>| -> Option<()> {
+                let n = u(*p)? as usize;
+                out.extend_from_slice(&d[*p..*p + 4 + n]);
+                *p += 4 + n;
+                Some(())
+            };
+            copy_id(&mut p, &mut out, false)?; // uid
+            copy_id(&mut p, &mut out, true)?; // collection
+            copy_id(&mut p, &mut out, false)?; // author
+            copy_str(&mut p, &mut out)?; // name
+            out.push(*d.get(p)?); // kind
+            p += 1;
+            out.extend_from_slice(&d[p..p + 4]); // locked
+            p += 4;
+            copy_str(&mut p, &mut out)?; // password
+            // decoration: written as a fresh definition (its old form was one too)
+            let w = u(p)?;
+            p += 4;
+            if w != 0xFFFF_FFFF && w & 0x3FFF_FFFF == 0 {
+                let n = u(p)? as usize;
+                p += 4 + n;
+            }
+            out.extend_from_slice(&0x4000_0000u32.to_le_bytes());
+            out.extend_from_slice(&(deco.len() as u32).to_le_bytes());
+            out.extend_from_slice(deco.as_bytes());
+            copy_id(&mut p, &mut out, true)?; // decoration collection
+            copy_id(&mut p, &mut out, false)?; // decoration author
+            out.extend_from_slice(&d[p..]);
+            Some(out)
+        })
+    }
+
+    /// Drop the items `keep[i] == false`: the records re-encoded with a fresh
+    /// lookback table (a kept record's reference to a string a dropped record
+    /// defined becomes a definition), the count, the snapped-index array, the
+    /// per-item parallel chunks (0x03043062/63/65/68) and the macroblock refs
+    /// (0x03043069) trimmed alike. Wants a fresh load (a variable-length edit).
+    pub fn remove_items(&mut self, keep: &[bool]) -> usize {
+        assert!(self.renames.is_empty() && self.raw_splices.is_empty(), "remove_items wants a fresh load");
+        assert_eq!(keep.len(), self.items.len());
+        let body = &self.gbx.body;
+        let removed = keep.iter().filter(|k| !**k).count();
+        if removed == 0 || self.items.is_empty() {
+            return 0;
+        }
+        let first_start = self.items[0].record_region.0;
+        let last_end = self.items.last().unwrap().record_region.1;
+        let first_has_ver = body.len() > first_start + 16 && u32::from_le_bytes(body[first_start + 12..first_start + 16].try_into().unwrap()) == 3;
+        let mut table: Vec<String> = Vec::new();
+        let mut out: Vec<u8> = Vec::with_capacity(last_end - first_start);
+        let mut first_kept = true;
+        for (i, it) in self.items.iter().enumerate() {
+            if !keep[i] {
+                continue;
+            }
+            let (a, b) = it.record_region;
+            let mut rec = body[a..b].to_vec();
+            let has_ver = i == 0 && first_has_ver;
+            let mut shift: isize = 0;
+            if has_ver && !first_kept {
+                rec.drain(12..16);
+                shift = -4;
+            } else if !has_ver && first_kept && first_has_ver {
+                rec.splice(12..12, 3u32.to_le_bytes());
+                shift = 4;
+            }
+            // the Id fields: slots are assigned in FILE order (model, then author), the
+            // bytes spliced back to front so the earlier offset stays valid
+            let mut fields: Vec<&IdField> = vec![&self.item_ids[it.model_field], &self.item_ids[it.author_field]];
+            fields.sort_by_key(|f| f.off);
+            let mut encs: Vec<(usize, usize, Vec<u8>)> = Vec::new();
+            for f in fields {
+                let Some(name) = &f.name else { continue };
+                let rel = (f.off as isize - a as isize + shift) as usize;
+                let enc: Vec<u8> = match table.iter().position(|t| t == name) {
+                    Some(k) => (0x4000_0000u32 | (k as u32 + 1)).to_le_bytes().to_vec(),
+                    None => {
+                        table.push(name.clone());
+                        let mut e = 0x4000_0000u32.to_le_bytes().to_vec();
+                        e.extend_from_slice(&(name.len() as u32).to_le_bytes());
+                        e.extend_from_slice(name.as_bytes());
+                        e
+                    }
+                };
+                encs.push((rel, f.len, enc));
+            }
+            for (rel, len, enc) in encs.into_iter().rev() {
+                rec.splice(rel..rel + len, enc);
+            }
+            out.extend_from_slice(&rec);
+            first_kept = false;
+        }
+        let kept = self.items.len() - removed;
+        self.raw_patches.push((self.items_count_off.expect("item count"), (kept as u32).to_le_bytes().to_vec()));
+        // the tail arrays after the last record
+        let mut r = Reader::at(body, last_end);
+        let version = u32::from_le_bytes(body[self.items_chunk_off.unwrap() + 12..self.items_chunk_off.unwrap() + 16].try_into().unwrap());
+        assert!(version == 7 || version == 8, "items chunk version {version}");
+        if version == 7 {
+            let n = r.u32() as usize;
+            assert_eq!(n, 0, "v7 itemsOnItem pairs reference item indices — not handled");
+        }
+        let mut tail: Vec<u8> = body[last_end..r.o].to_vec();
+        for array_index in 0..5 {
+            let n = r.u32() as usize;
+            if array_index == 4 {
+                assert_eq!(n, self.items.len(), "snapped-index count");
+                tail.extend_from_slice(&(kept as u32).to_le_bytes());
+                for i in 0..n {
+                    if keep[i] {
+                        tail.extend_from_slice(&body[r.o + i * 4..r.o + i * 4 + 4]);
+                    }
+                }
+            } else {
+                tail.extend_from_slice(&body[r.o - 4..r.o + n * 4]);
+            }
+            r.skip(n * 4);
+        }
+        out.extend_from_slice(&tail);
+        self.raw_splices.push(((first_start, r.o), out));
+        let chunks = crate::gbx::all_skip_chunks(body);
+        // the per-item bytes are the LAST ni bytes of each parallel chunk (0x62/0x68:
+        // version + per block + per baked + per item; 0x63: version + per item; 0x65: a
+        // head, then per item) — the append path adds at the end for the same reason
+        let ni = self.items.len();
+        for cid in [0x0304_3062u32, 0x0304_3063, 0x0304_3065, 0x0304_3068] {
+            let &(_, _, payload, size) = chunks.iter().find(|(c, ..)| *c == cid).expect("parallel item chunk");
+            assert!(size >= ni, "chunk {cid:#x} has {size} bytes for {ni} items");
+            let start = payload + size - ni;
+            let filtered: Vec<u8> = (0..ni).filter(|i| keep[*i]).map(|i| body[start + i]).collect();
+            self.raw_splices.push(((start, start + ni), filtered));
+        }
+        let &(_, _, p69, _) = chunks.iter().find(|(c, ..)| *c == 0x0304_3069).expect("macroblock refs chunk");
+        let item_refs = p69 + 4 + self.blocks.len() * 4;
+        let filtered: Vec<u8> = (0..self.items.len()).filter(|i| keep[*i]).flat_map(|i| body[item_refs + i * 4..item_refs + i * 4 + 4].to_vec()).collect();
+        self.raw_splices.push(((item_refs, item_refs + self.items.len() * 4), filtered));
+        removed
+    }
+}
+
+impl MapFile {
+    /// Replace one body chunk's payload wholesale (file level, like
+    /// `clear_genealogy_file`): the chunk's size word rewritten, the body
+    /// recompressed. Returns the old payload size.
+    pub fn set_chunk_payload_file(path: &std::path::Path, cid: u32, payload_bytes: &[u8]) -> Result<usize, String> {
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let g = Gbx::parse(&bytes);
+        let body = g.body.clone();
+        let (_, off, payload, size) = *crate::gbx::all_skip_chunks(&body).iter().find(|(c, ..)| *c == cid).ok_or_else(|| format!("no chunk {cid:#010x}"))?;
+        let mut out = Vec::with_capacity(body.len());
+        out.extend_from_slice(&body[..off]);
+        out.extend_from_slice(&cid.to_le_bytes());
+        out.extend_from_slice(&body[off + 4..off + 8]); // PIKS
+        out.extend_from_slice(&(payload_bytes.len() as u32).to_le_bytes());
+        out.extend_from_slice(payload_bytes);
+        out.extend_from_slice(&body[payload + size..]);
+        std::fs::write(path, g.write_body_recompressed(&out)).map_err(|e| e.to_string())?;
+        Ok(size)
+    }
+}

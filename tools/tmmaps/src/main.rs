@@ -148,6 +148,36 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        "stadium-chunkdump" => {
+            if let Err(e) = tmmaps::stadium::chunkdump_cmd(&args[1..]) {
+                eprintln!("tmmaps stadium-chunkdump: {e}");
+                std::process::exit(1);
+            }
+        }
+        "stadium-strip" => {
+            if let Err(e) = tmmaps::stadium::strip_cmd(&args[1..]) {
+                eprintln!("tmmaps stadium-strip: {e}");
+                std::process::exit(1);
+            }
+        }
+        "stadium-info" => {
+            if let Err(e) = tmmaps::stadium::info_cmd(&args[1..]) {
+                eprintln!("tmmaps stadium-info: {e}");
+                std::process::exit(1);
+            }
+        }
+        "stadium-scan" => {
+            if let Err(e) = tmmaps::stadium::scan_cmd(&args[1..]) {
+                eprintln!("tmmaps stadium-scan: {e}");
+                std::process::exit(1);
+            }
+        }
+        "stadium-port" => {
+            if let Err(e) = tmmaps::stadium::port_cmd(&args[1..]) {
+                eprintln!("tmmaps stadium-port: {e}");
+                std::process::exit(1);
+            }
+        }
         "altered-route" => {
             if let Err(e) = tmmaps::altered::route_cmd(&args[1..]) {
                 eprintln!("tmmaps altered-route: {e}");
