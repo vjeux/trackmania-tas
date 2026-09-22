@@ -222,7 +222,7 @@ pub fn plan_free(source: &MapFile, ground: f32, s: [f32; 3], t: [f32; 3], scale:
                 }
             }
             // a body reaches outside when any tile of any of its blocks lies past the grid
-            let grid = source.size;
+            let grid = size;
             let mut out_roots: std::collections::HashSet<usize> = Default::default();
             for (i, b) in pool.iter().enumerate() {
                 let c = giant_cell(b.coords(), ground, s, t, scale)?;

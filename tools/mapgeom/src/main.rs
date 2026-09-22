@@ -611,7 +611,14 @@ fn main() {
             // --no-clip: keep every pool tile whose cell a cell byte can hold (x/z 0..254,
             // y 0..255) instead of only the map grid — the giant Summer probe of what the
             // engine does with grid blocks past the 48-cell arena (2026-09-22)
-            let bounds = a.rest.iter().any(|x| x == "--no-clip").then_some([255, 256, 255]);
+            // the cells kept: the GIANT map's own grid (its size words — a build with
+            // --anchor fit-grid has grown them), or everything a cell byte holds
+            let bounds = if a.rest.iter().any(|x| x == "--no-clip") {
+                Some([255, 256, 255])
+            } else {
+                let giant = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+                Some(giant.size)
+            };
             // --free all|outside: pool tiles as FREE custom blocks (all pools, or the water
             // bodies that reach past the map grid) — needs --template
             let free = match flag(&a.rest, "--free").as_deref() {

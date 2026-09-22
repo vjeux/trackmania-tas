@@ -2599,6 +2599,15 @@ impl MapFile {
     /// lookback strings; the copies reference them. Refuses unless the first
     /// record's zone is the map's most common one. Returns (zone, count).
     pub fn fill_genealogy_file(path: &std::path::Path) -> Result<(String, usize), String> {
+        Self::fill_genealogy_file_n(path, None)
+    }
+
+    /// `fill_genealogy_file` with the record COUNT chosen: `count` = the map grid's
+    /// size_x x size_z when the size words were raised (`tmmaps set-size`) — the
+    /// game indexes the zone table by the grid and a table smaller than the grid
+    /// crashes the client at load (measured 2026-09-22; TMX 117600 is a 128^3 map
+    /// with 16384 records under the 48x48 NoStadium decoration).
+    pub fn fill_genealogy_file_n(path: &std::path::Path, count: Option<usize>) -> Result<(String, usize), String> {
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         let g = Gbx::parse(&bytes);
         let body = g.body.clone();
@@ -2608,7 +2617,7 @@ impl MapFile {
             .ok_or("no genealogy chunk")?;
         let chunk = &body[payload..payload + size];
         let recs = genealogy_records(chunk)?;
-        let n = recs.len();
+        let n = count.unwrap_or(recs.len());
         let (r0s, r0e, zone) = recs.first().cloned().ok_or("no genealogy records")?;
         let mut hist: std::collections::BTreeMap<&str, usize> = Default::default();
         for (_, _, z) in &recs {

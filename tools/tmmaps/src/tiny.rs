@@ -394,8 +394,22 @@ pub fn cmd(args: &[String]) {
     // --anchor fit-water: the centred fit shifted by whole cells so that the most
     // pool tiles land inside the map grid (the engine's water is grid-bound)
     let fit_water = anchor_raw == Some("fit-water");
-    let anchor_fit = anchor_raw == Some("fit") || fit_water || fit_origin.is_some();
-    let anchor_flag = anchor_raw.filter(|a| *a != "fit" && *a != "fit-water" && !a.starts_with("fit-origin")).map(|a| vec3(a, "--anchor"));
+    // --anchor fit-grid[:S]: the map GRID grows to hold the whole build — the
+    // size words become S x S x S (S = the smallest of 64, 96, 128, … 254 that
+    // holds the transformed extent with a 2-cell margin, or the given S), the
+    // genealogy is refilled with the ambient zone at S x S records, and the
+    // extent is centred in that grid. Measured 2026-09-22 (TMX 117600, a 128³
+    // Stadium map, then giant Summer 15 x2 at 128³): the engine keeps grid
+    // blocks and water volumes anywhere inside the size words as long as the
+    // zone table matches them (a 48x48 table under a 72-cell size crashes the
+    // client at load). --decoration NAME swaps the decoration (a giant Stadium
+    // build takes NoStadium48x48<mood>: the stadium mesh would stand inside it).
+    let fit_grid: Option<Option<i32>> = anchor_raw.filter(|a| a.starts_with("fit-grid")).map(|a| a.strip_prefix("fit-grid").and_then(|r| r.strip_prefix(':')).map(|n| n.parse().expect("--anchor fit-grid:S wants a cell count")));
+    let decoration_flag: Option<String> = cli::flag(args, "--decoration").map(String::from);
+    let anchor_fit = anchor_raw == Some("fit") || fit_water || fit_origin.is_some() || fit_grid.is_some();
+    let anchor_flag = anchor_raw.filter(|a| *a != "fit" && *a != "fit-water" && !a.starts_with("fit-origin") && !a.starts_with("fit-grid")).map(|a| vec3(a, "--anchor"));
+    let mut grid_size: Option<i32> = None;
+    let mut grid_size_y: i32 = 0;
     // --uid-prefix PPPP (default `Tin2`): the 4 bytes that replace the source
     // uid's head (`Gia2` for the giant builds); --name-prefix S (default
     // "Tiny "): what goes before the source name when --name is not given
@@ -536,6 +550,38 @@ pub fn cmd(args: &[String]) {
                 shift[2] += best.2 as f32 * crate::map::CELL_XZ;
                 println!("  fit-water: {} of {total} pool tiles in the grid when centred; {} with the map shifted by {},{} cells ({} pool blocks; shifts searched x {}..{}, z {}..{})", centred, best.0, best.1, best.2, pools.len(), xr.0, xr.1, zr.0, zr.1);
             }
+        }
+        let t = |p: [f32; 3]| transform(p, source_anchor, target_anchor, scale);
+        // fit-grid: the grid that holds the transformed extent, the extent centred in it
+        let mut grid = grid;
+        if let Some(given) = fit_grid {
+            let (tlo, thi) = (t(lo), t(hi));
+            let span_cells = |k: usize| ((thi[k] - tlo[k]) / crate::map::CELL_XZ).ceil() as i32;
+            let need = span_cells(0).max(span_cells(2)) + 4; // two cells of margin a side
+            let s = match given {
+                Some(s) => s,
+                None => {
+                    let mut s = 64;
+                    while s < need && s < 254 {
+                        s += 32;
+                    }
+                    s.min(254)
+                }
+            };
+            assert!(need <= s, "--anchor fit-grid: the build spans {need} cells (margin included), more than the {s}-cell grid the cell bytes allow");
+            let rows_need = ((thi[1] - ground()) / crate::map::CELL_Y).ceil() as i32 + 2;
+            let sy = s.max(rows_need.min(254));
+            grid = [s as f32 * crate::map::CELL_XZ, sy as f32 * crate::map::CELL_Y, s as f32 * crate::map::CELL_XZ];
+            // centre by whole cells; the lattice snap above is kept (whole cells only)
+            for k in [0usize, 2] {
+                let span = thi[k] - tlo[k];
+                let want = (((grid[k] - span) / 2.0 - tlo[k]) / crate::map::CELL_XZ).round() * crate::map::CELL_XZ;
+                shift[k] += want;
+                target_anchor[k] += want;
+            }
+            grid_size = Some(s);
+            grid_size_y = sy;
+            println!("  fit-grid: the build spans {} x {} cells (rows to {}), the grid becomes {s} x {sy} x {s} cells; the extent centred in it", span_cells(0), span_cells(2), rows_need - 2);
         }
         let t = |p: [f32; 3]| transform(p, source_anchor, target_anchor, scale);
         let (flo, fhi) = (t(lo), t(hi));
@@ -1350,6 +1396,34 @@ pub fn cmd(args: &[String]) {
         0x10 | 0x1d | 0xf => "fill",
         _ => "keep",
     });
+    // A grown grid (fit-grid) wants its size words and a zone table of ITS size
+    // first: the game indexes the genealogy by the grid (a smaller table crashes
+    // the client at load), so the policy is a fill at S x S whatever the
+    // collection's own would be.
+    let policy = if let Some(s) = grid_size {
+        {
+            let mut m = MapFile::load(&out);
+            let off = m.blocks_count_off - 20;
+            let words: Vec<u32> = (0..3).map(|k| u32::from_le_bytes(m.gbx.body[off + 4 * k..off + 4 * k + 4].try_into().unwrap())).collect();
+            assert!(words == m.size.iter().map(|x| *x as u32).collect::<Vec<u32>>(), "size words at {off:#x} read {words:?}, the parser has {:?}", m.size);
+            let mut bytes = Vec::new();
+            for w in [s as u32, grid_size_y as u32, s as u32] {
+                bytes.extend_from_slice(&w.to_le_bytes());
+            }
+            m.raw_patches.push((off, bytes));
+            m.write_to(&out).expect("write the size words");
+            let back = MapFile::load(&out);
+            assert!(back.size == [s, grid_size_y, s], "size words readback {:?}", back.size);
+            println!("  grid: size words {:?} -> {:?}", words, back.size);
+        }
+        if policy != "fill" {
+            println!("  genealogy policy {policy} -> fill (a grown grid wants a zone table of its own size)");
+        }
+        "fill"
+    } else {
+        policy
+    };
+    let fill_count: Option<usize> = grid_size.map(|s| (s as usize) * (s as usize));
     match policy {
         // BlueBay: the sea around the island is decoration, so no zone
         // at all leaves plain sea under the tiny map.
@@ -1365,11 +1439,25 @@ pub fn cmd(args: &[String]) {
         // cells of Summer 03), the sea the island sits in, surface -1.
         // GreenCoast: Lake (2418 of 4096 cells of Summer 04), the same way.
         "fill" => {
-            let (zone, n) = MapFile::fill_genealogy_file(&out).expect("fill genealogies");
+            let (zone, n) = MapFile::fill_genealogy_file_n(&out, fill_count).expect("fill genealogies");
             println!("  genealogy chunk filled: {n} cells of {zone}");
         }
         "keep" => println!("  genealogy chunk kept as the source's"),
         other => panic!("TINY_GENEALOGY={other}: clear, fill or keep"),
+    }
+    // --decoration NAME: the decoration ident (body + header), the mood kept by
+    // the caller's choice of name (48x48Screen155Day -> NoStadium48x48Day)
+    if let Some(new) = &decoration_flag {
+        let mut m = MapFile::load(&out);
+        let old = m.decoration_id.clone();
+        if &old != new {
+            m.set_decoration(new);
+            let h = m.set_header_decoration(&old, new);
+            m.write_to(&out).expect("write the decoration");
+            let back = MapFile::load(&out);
+            assert!(back.decoration_id == *new && h, "decoration {old:?} -> {new:?}: readback {:?}, header {}", back.decoration_id, if h { "rewritten" } else { "NOT FOUND" });
+            println!("  decoration: {old:?} -> {new:?}");
+        }
     }
 
     let check = MapFile::load(&out);

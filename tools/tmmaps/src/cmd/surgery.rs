@@ -917,7 +917,17 @@ pub fn ghostchunk(args: &[String]) {
 pub fn genealogy_fill(args: &[String]) {
     let src = std::path::PathBuf::from(&args[2]);
     let out = std::path::PathBuf::from(tmmaps::cli::flag(args, "--out").expect("genealogy-fill needs --out MAP"));
+    // --count N | --grid: the record count — N, or the map's size_x x size_z
+    // (a grid raised by `tmmaps set-size` wants a table of its own size)
+    let count: Option<usize> = match tmmaps::cli::flag(args, "--count") {
+        Some(n) => Some(n.parse().expect("--count wants a number")),
+        None if args.iter().any(|a| a == "--grid") => {
+            let m = tmmaps::map::MapFile::load(&src);
+            Some((m.size[0] as usize) * (m.size[2] as usize))
+        }
+        None => None,
+    };
     std::fs::copy(&src, &out).expect("copy");
-    let (zone, n) = tmmaps::map::MapFile::fill_genealogy_file(&out).expect("fill genealogies");
+    let (zone, n) = tmmaps::map::MapFile::fill_genealogy_file_n(&out, count).expect("fill genealogies");
     println!("{}: genealogy chunk filled: {n} cells of {zone} -> {}", src.display(), out.display());
 }

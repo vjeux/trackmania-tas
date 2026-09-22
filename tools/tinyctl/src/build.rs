@@ -196,18 +196,27 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             env.insert("TINY_WATER_VISUAL".to_string(), "0".to_string());
         }
         // A GIANT build's defaults, measured 2026-09-22 (TINY.md "Giant maps: the
-        // grid"): the engine keeps grid blocks and water volumes inside the
-        // decoration's grid only, so the map is placed to put the most pool tiles
-        // in it (TINY_FIT=water), the pools reaching past it become free custom
-        // tiles (water drawn everywhere, physics inside; TINY_GIANT_FREE_POOLS=
-        // outside), and a BlueBay island stands in the regenerated Sea
-        // (TINY_GENEALOGY=fill, the lagoon fix of the tiny campaign).
+        // grid"): the engine keeps grid blocks and water volumes anywhere inside
+        // the map's SIZE WORDS as long as the zone table matches them, so the grid
+        // GROWS to hold the whole build (TINY_FIT=grid: size words S x S x S, the
+        // genealogy refilled at S x S, the extent centred) and every pool stays a
+        // native tile with its physics (TINY_GIANT_FREE_POOLS=none). A Stadium
+        // build takes the NoStadium decoration of its mood (the stadium mesh would
+        // stand inside the map; TINY_DECORATION=keep leaves the source's). The
+        // 48-grid forms stay as knobs: TINY_FIT=water|centre|origin[:N] with
+        // TINY_GIANT_FREE_POOLS=outside|all.
         if scale > 1.0 {
-            for (k, v) in [("TINY_FIT", "water"), ("TINY_GIANT_FREE_POOLS", "outside")] {
+            for (k, v) in [("TINY_FIT", "grid"), ("TINY_GIANT_FREE_POOLS", "none")] {
                 env.entry(k.to_string()).or_insert_with(|| v.to_string());
             }
             if coll == 0x1c {
                 env.entry("TINY_GENEALOGY".to_string()).or_insert_with(|| "fill".to_string());
+            }
+            if coll == 0x1a && !env.contains_key("TINY_DECORATION") {
+                // 48x48Screen155Day -> NoStadium48x48Day: the mood word after the size
+                let deco = m.decoration_id.clone();
+                let mood = deco.split_once("48x48").map(|(_, rest)| rest.trim_start_matches("Screen155").to_string()).unwrap_or_else(|| "Day".to_string());
+                env.insert("TINY_DECORATION".to_string(), format!("NoStadium48x48{mood}"));
             }
         }
         // the generated pictures (sign logos, screen picture, trigger FX) are cached
@@ -249,9 +258,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     Some("centre") | Some("center") | None => "fit".to_string(),
                     Some(o) if o.starts_with("origin") => format!("fit-{o}"),
                     Some("water") => "fit-water".to_string(),
-                    Some(other) => return Err(format!("TINY_FIT={other}: centre, water or origin[:N]")),
+                    Some(o) if o.starts_with("grid") => format!("fit-{o}"),
+                    Some(other) => return Err(format!("TINY_FIT={other}: grid[:S], centre, water or origin[:N]")),
                 };
                 tiny.arg("--anchor").arg(fit).arg("--uid-prefix").arg(uid_prefix(scale)).arg("--name-prefix").arg(format!("{label} "));
+                if let Some(d) = env.get("TINY_DECORATION").filter(|d| d.as_str() != "keep" && !d.is_empty()) {
+                    tiny.arg("--decoration").arg(d);
+                }
             }
             if let Some(n) = &name_flag {
                 tiny.arg("--name").arg(n);
