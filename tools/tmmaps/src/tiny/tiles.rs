@@ -295,6 +295,13 @@ pub fn ponds_cmd(args: &[String]) {
         println!("{},{},{}\t{}", c[0], c[1], c[2], if others.is_empty() { "-".to_string() } else { others.join(", ") });
     }
     eprintln!("{} pond cells of {} Sea cells", ponds.len(), sea_total);
+    let unc = uncovered_sea_cells(&source, crate::cli::flag(args, "--scale").and_then(|s| s.parse().ok()).unwrap_or(0.5));
+    eprintln!("{} uncovered cells of {} Sea cells (tiny water over a full-size cell that is not Sea — bottomless without a floor item)", unc.len(), sea_total);
+    if args.iter().any(|a| a == "--list-uncovered") {
+        for c in &unc {
+            println!("uncovered\t{},{},{}", c[0], c[1], c[2]);
+        }
+    }
     print_trace(args, &ponds, "pond");
 }
 
@@ -441,3 +448,56 @@ pub fn shared_cells_cmd(args: &[String]) {
     print_trace(args, &kept_cells, "kept tile");
 }
 
+
+/// The tiny-map anchor `tmmaps tiny` scales about: the Spawn block's cell
+/// centre (or the start item's position), x/z kept — the same rule as
+/// `tiny::source_anchor` (kept in step by hand; the pond census needs it
+/// without running a conversion).
+pub fn spawn_anchor(source: &MapFile) -> Option<[f32; 3]> {
+    let spawns = source.waypoints();
+    if let Some(w) = spawns.iter().find(|w| w.kind == crate::map::Kind::Block && w.tag == "Spawn") {
+        return Some(super::block_pos(&source.blocks[w.index]));
+    }
+    spawns.iter().find(|w| w.kind == crate::map::Kind::Item && w.tag == "Spawn").map(|w| source.items[w.index].pos)
+}
+
+/// The Sea cells whose TINY footprint has nothing under it: the tiny map keeps
+/// the source's `Sea` records full size, in place (the open sea as decoration),
+/// and scales the island about the spawn — so a tiny sea cell shows water over a
+/// floor only where the FULL-SIZE cell beneath it is one of those kept Sea
+/// records. Where the cell beneath was land (an authored block, deleted), the tiny
+/// water hangs over the cleared genealogy: a bottomless plane that renders as the
+/// flat sky-coloured polygons of Summer 01's lagoon ("holes where there should be
+/// water", 2026-09-21). These cells get the half-size Sea floor item like the
+/// ponds. `scale` is the tiny scale (0.5).
+pub fn uncovered_sea_cells(source: &MapFile, scale: f32) -> BTreeSet<[u8; 3]> {
+    let sea: BTreeSet<[u8; 3]> = source.blocks.iter().chain(source.baked.iter()).filter(|b| b.name == "Sea" && b.free_pos.is_none()).map(|b| b.file_cell).collect();
+    let Some(anchor) = spawn_anchor(source) else { return BTreeSet::new() };
+    let cell = crate::map::CELL_XZ;
+    let mut out = BTreeSet::new();
+    for c in &sea {
+        // the source cell's centre (game cell = file cell - 1), scaled about the anchor
+        let cx = (c[0] as f32 - 1.0) * cell + cell / 2.0;
+        let cz = (c[2] as f32 - 1.0) * cell + cell / 2.0;
+        let tx = anchor[0] + (cx - anchor[0]) * scale;
+        let tz = anchor[2] + (cz - anchor[2]) * scale;
+        // the full-size cell under that point, as a file cell
+        let ux = (tx / cell).floor() as i32 + 1;
+        let uz = (tz / cell).floor() as i32 + 1;
+        if !(0..=255).contains(&ux) || !(0..=255).contains(&uz) {
+            continue;
+        }
+        if !sea.contains(&[ux as u8, c[1], uz as u8]) {
+            out.insert(*c);
+        }
+    }
+    out
+}
+
+/// Every Sea cell that needs its own half-size floor in the tiny map: the ponds
+/// plus the uncovered cells. What `tiny_library` emits and `tmmaps tiny` places.
+pub fn floored_sea_cells(source: &MapFile, scale: f32) -> BTreeSet<[u8; 3]> {
+    let mut s = pond_cells(source);
+    s.extend(uncovered_sea_cells(source, scale));
+    s
+}

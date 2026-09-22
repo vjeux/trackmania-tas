@@ -18,7 +18,7 @@ pub mod tiles;
 
 pub use lineup::{catalog_cmd, lineup_cmd};
 pub use mapping::{read_mapping, Mapping, Mappings};
-pub use tiles::{hidden_tiles, pond_cells, ponds_cmd, replaced_cells, shared_cells_cmd, stands_in_for_tile, HiddenTiles};
+pub use tiles::{floored_sea_cells, hidden_tiles, pond_cells, ponds_cmd, replaced_cells, shared_cells_cmd, spawn_anchor, stands_in_for_tile, uncovered_sea_cells, HiddenTiles};
 
 #[derive(Clone, Debug)]
 struct Spec {
