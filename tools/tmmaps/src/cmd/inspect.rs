@@ -327,3 +327,18 @@ pub fn genealogy_cells(args: &[String]) {
         }
     }
 }
+
+/// `tmmaps gridinfo MAP` — the blocks chunk's size words, the decoration id, the
+/// genealogy count and the block cell extent: what a "big base" map (TMX 117600,
+/// the 128³ void base) does that a plain 48×48 one does not (2026-09-22).
+pub fn gridinfo(args: &[String]) {
+    let m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
+    let (mut mx, mut mz, mut my) = (0i32, 0i32, 0i32);
+    for b in m.blocks.iter().chain(m.baked.iter()) {
+        let (x, y, z) = b.coords();
+        mx = mx.max(x);
+        my = my.max(y);
+        mz = mz.max(z);
+    }
+    println!("size words {:?}  decoration {:?}  blocks {} + baked {}  max cell x {mx} y {my} z {mz}", m.size, m.decoration_id, m.blocks.len(), m.baked.len());
+}

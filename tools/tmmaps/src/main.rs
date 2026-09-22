@@ -80,7 +80,7 @@ fn main() {
     // missing that is `index out of bounds: the len is 2 but the index is 2` —
     // a panic where a usage line belongs. Say what is missing instead.
     const WANTS_MAP: &[&str] = &[
-        "waypoints", "census", "skins", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "ponds", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
+        "waypoints", "census", "gridinfo", "skins", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "ponds", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
         "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "lmquality", "ghostchunk", "genealogy-fill", "delblocks", "striplightmap", "itembytes", "mediatracker",
     ];
@@ -206,6 +206,7 @@ fn main() {
         "chunks" => inspect::chunks(&args),
         "blockrefs" => inspect::blockrefs(&args),
         "genealogy" => inspect::genealogy(&args),
+        "gridinfo" => inspect::gridinfo(&args),
         "genealogy-cells" => inspect::genealogy_cells(&args),
         "colors" => inspect::colors(&args),
         "phases" => inspect::phases(&args),
