@@ -839,10 +839,12 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
             // keep the record's form bits (free / waypoint / author) as they are — a rename in place
             let keep = 0x2000_0000 | 0x4000_0000 | 0x0010_0000 | 0x0000_8000;
             let flags = (tflags & !keep) | (b.flags & keep);
-            if b.flags & crate::map::FREE_BLOCK_FLAG != 0 {
-                // a FREE vanilla block: renamed in place it has no author field — the game
-                // refused Spring 2026 - 12 [Stadium] Wet Wood (2026-09-22); it is removed and
-                // re-added as a free custom block with AR's author (flags | 0x8000)
+            if b.flags & crate::map::FREE_BLOCK_FLAG != 0 && crate::cli::has(args, "--author-free-swaps") {
+                // opt-in: a FREE vanilla block removed and re-added as a custom block with AR's
+                // author field (flags | 0x8000). Not the default: a renamed-in-place custom block
+                // loads fine (the Spring 2026 - 12 refusal was chunk 0x03043065, not this), and
+                // the re-add path writes no waypoint node for a free START/CP block (Winter 2026
+                // - 14 [Stadium] Wet Wood came out unreadable, 2026-09-22)
                 if crate::cli::has(args, "--no-free-swaps") {
                     *unswapped.entry(format!("{} (free block)", b.name)).or_default() += 1;
                     continue;
