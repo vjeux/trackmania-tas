@@ -101,6 +101,16 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let src_dir = PathBuf::from(f("--src-dir").unwrap_or_else(|| "/tmp/summer2026".into()));
     let out_root = PathBuf::from(f("--out-root").unwrap_or_else(|| "/tmp".into()));
     let tag = f("--tag").unwrap_or_else(|| "auto".into());
+    // --out-prefix P: the output is `<P>-NN-Tiny.Map.Gbx` (default `Summer`, the
+    // campaign this was written for; `U10S` for Everios96's club maps, 2026-09-12)
+    let out_prefix = out_prefix(args);
+    // --scale S (default 0.5, the tiny build): the item scale handed to
+    // `mapgeom tiny-library` and `tmmaps tiny`. Above 1 the build is a GIANT one
+    // (`<P>-NN-Giant.Map.Gbx`, name "Giant <source>", uid `Gia2…`, the geometry
+    // centred in the grid by `--anchor fit`) — 2026-09-13, vjeux: "instead of
+    // tiny you make giant maps. Every item is 2x instead of 1/2".
+    let scale = scale_of(args);
+    let label = variant_label(scale);
     let recipe = PathBuf::from(f("--recipe").unwrap_or_else(|| "/tmp/tiny3/recipe.env".into()));
     // mapgeom's global flags, passed through
     let mut mapgeom_flags: Vec<String> = Vec::new();
@@ -178,6 +188,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             let map_no: usize = nn.parse().unwrap_or(0);
             env.insert("TINY_ALIAS_BASE".to_string(), format!("{}", map_no * 1_000_000 + (minutes % 1000) * 1000));
         }
+        // A GIANT build's water is the engine's own (`mapgeom giantwater`: native
+        // pool tiles + custom road volumes, TINY_WATER_NATIVE=0 turns it off), so
+        // the items drop their water quads — the blocks draw the surface.
+        let native_water = scale > 1.0 && env.get("TINY_WATER_NATIVE").map(|v| v != "0").unwrap_or(true);
+        if native_water && !env.contains_key("TINY_WATER_VISUAL") {
+            env.insert("TINY_WATER_VISUAL".to_string(), "0".to_string());
+        }
         // the generated pictures (sign logos, screen picture, trigger FX) are cached
         // by file name the same way: suffix them with the alias base's minute part
         if !env.contains_key("TINY_PICTURE_SUFFIX") {
@@ -187,7 +204,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         println!("{nn}: {} ({}) -> {} (alias base {})", src.file_name().unwrap_or_default().to_string_lossy(), collection_name(coll), out.display(), env["TINY_ALIAS_BASE"]);
         let t0 = std::time::Instant::now();
         let mut lib = Command::new(&mapgeom);
-        lib.args(&paks).args(&mapgeom_flags).arg("tiny-library").arg(&src).arg("--library-out").arg(out.join("lib.zip")).arg("--mapping-out").arg(out.join("placements.tsv")).arg("--report").arg(out.join("report.tsv"));
+        lib.args(&paks).args(&mapgeom_flags).arg("tiny-library").arg(&src).arg("--library-out").arg(out.join("lib.zip")).arg("--mapping-out").arg(out.join("placements.tsv")).arg("--report").arg(out.join("report.tsv")).arg("--scale").arg(format!("{scale}"));
         lib.envs(env.iter());
         match run(&mut lib, &out.join("build.log")) {
             Ok(text) => {
@@ -201,10 +218,21 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 continue;
             }
         }
-        let tiny_out = out.join(format!("Summer-{nn}-Tiny.Map.Gbx"));
+        let tiny_out = out.join(format!("{out_prefix}-{nn}-{label}.Map.Gbx"));
+        // --name-format F: the map's in-file name outright, `{source}` = the source
+        // name (`"{source} By Everios96 [Giant]"` — the club's alteration convention,
+        // 2026-09-13); without it the name is "<Label> <source>"
+        let name_flag: Option<String> = f("--name-format").map(|fmt| fmt.replace("{source}", &tmmaps::header::read(&src.display().to_string()).map(|h| h.name).unwrap_or_default()));
         let run_tiny = |env: &BTreeMap<String, String>, log: &str| -> Result<String, String> {
             let mut tiny = Command::new(&tmmaps);
-            tiny.arg("tiny").arg(&src).arg("--mapping").arg(out.join("placements.tsv")).arg("--library").arg(out.join("lib.zip")).arg("--out").arg(&tiny_out);
+            tiny.arg("tiny").arg(&src).arg("--mapping").arg(out.join("placements.tsv")).arg("--library").arg(out.join("lib.zip")).arg("--out").arg(&tiny_out).arg("--scale").arg(format!("{scale}"));
+            // a giant build: centred in the grid, its own uid head and name
+            if scale > 1.0 {
+                tiny.arg("--anchor").arg("fit").arg("--uid-prefix").arg(uid_prefix(scale)).arg("--name-prefix").arg(format!("{label} "));
+            }
+            if let Some(n) = &name_flag {
+                tiny.arg("--name").arg(n);
+            }
             // --keep-zone-block: one authored zone block survives (the editor's
             // lightmapper crashes on a build with no block at all — GreenCoast 04/09,
             // 2026-09-12; BlueBay builds keep their baked Sea records and bake fine)
@@ -272,7 +300,49 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         // free custom WaterBase blocks where the spill rule allows (`mapgeom
         // waterblocks`), and the map is written again with the block records and the
         // block file in its archive. TINY_WATER_BLOCKS=0 leaves the 13-item form.
-        if std::env::var("TINY_WATER_BLOCKS").map(|v| v != "0").unwrap_or(true) {
+        // A GIANT build takes the native pass below instead.
+        if native_water {
+            // The GIANT water pass (2026-09-13): the source's pool blocks as native
+            // grid tiles in the transformed cells, the water roads as free custom
+            // volumes — `mapgeom giantwater` (TINY.md "Giant maps: water").
+            match anchor_arg(&anchor_line) {
+                Some((anchor, scale_s)) => {
+                    let template = out.join("water-template.Block.Gbx");
+                    std::fs::write(&template, WATER_TEMPLATE).map_err(|e| format!("{}: {e}", template.display()))?;
+                    let staged = out.join(format!("{out_prefix}-{nn}-{label}.water.Map.Gbx"));
+                    let table = out.join("giant-water.tsv");
+                    let mut gw = Command::new(&mapgeom);
+                    gw.args(&paks).args(&mapgeom_flags).arg("giantwater").arg(&tiny_out).arg("--source").arg(&src).arg("--anchor").arg(&anchor).arg("--scale").arg(&scale_s).arg("--template").arg(&template).arg("--table").arg(&table).arg("--out").arg(&staged);
+                    // The water ROADS stay items unless asked (TINY_GIANT_ROAD_TILES=1):
+                    // the volume tiles grow the archetype's 1× fillers in the open —
+                    // rounded dead-end caps, the green start tubes — on the ×2 canal
+                    // (vjeux, 2026-09-13 17:44Z: "not what I wanted … this changes the
+                    // layout"); on a pool the same fillers hide inside the ×2 walls.
+                    if env.get("TINY_GIANT_ROAD_TILES").map(|v| v != "1").unwrap_or(true) {
+                        gw.arg("--no-roads");
+                    }
+                    gw.envs(env.iter());
+                    match run(&mut gw, &out.join("giantwater.log")) {
+                        Ok(text) => {
+                            for l in text.lines().filter(|l| l.contains("giantwater") || l.contains("giant water")) {
+                                println!("  {}", l.trim());
+                            }
+                            std::fs::rename(&staged, &tiny_out).map_err(|e| format!("giant water: {e}"))?;
+                        }
+                        Err(e) => {
+                            eprintln!("  giant water pass FAILED: {e}");
+                            failed += 1;
+                            continue;
+                        }
+                    }
+                }
+                None => {
+                    eprintln!("  giant water pass FAILED: no anchor line from tmmaps tiny");
+                    failed += 1;
+                    continue;
+                }
+            }
+        } else if std::env::var("TINY_WATER_BLOCKS").map(|v| v != "0").unwrap_or(true) && scale < 1.0 {
             match anchor_arg(&anchor_line) {
                 Some((anchor, _scale)) => {
                     let plates = out.join("water-plates.tsv");
@@ -283,7 +353,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                         Ok(_) => {
                             let template = out.join("water-template.Block.Gbx");
                             std::fs::write(&template, WATER_TEMPLATE).map_err(|e| format!("{}: {e}", template.display()))?;
-                            let staged = out.join(format!("Summer-{nn}-Tiny.water.Map.Gbx"));
+                            let staged = out.join(format!("{out_prefix}-{nn}-{label}.water.Map.Gbx"));
                             let table = out.join("water-bodies.tsv");
                             let mut wb = Command::new(&mapgeom);
                             wb.args(&paks).args(&mapgeom_flags).arg("waterblocks").arg(&tiny_out).arg("--plates").arg(&plates).arg("--template").arg(&template).arg("--out").arg(&staged).arg("--table").arg(&table).arg("--source").arg(&src).arg("--anchor").arg(&anchor);
@@ -322,10 +392,50 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `--out-prefix P` (default `Summer`): the stem of a build's map file,
+/// `<P>-NN-Tiny.Map.Gbx`. Shared by `build` and `publish-map --tag`.
+pub fn out_prefix(args: &[String]) -> String {
+    tmmaps::cli::flag(args, "--out-prefix").unwrap_or("Summer").to_string()
+}
+
+/// `--scale S` (default 0.5): the build's item scale.
+pub fn scale_of(args: &[String]) -> f32 {
+    let s: f32 = tmmaps::cli::flag(args, "--scale").unwrap_or("0.5").parse().unwrap_or(0.5);
+    if s.is_finite() && s > 0.0 { s } else { 0.5 }
+}
+
+/// The word in a build's file name and map name for its scale: `Tiny` under 1,
+/// `Giant` above, `Same` at exactly 1 (a scale-1 rebuild, a diagnostic).
+pub fn variant_label(scale: f32) -> &'static str {
+    if scale < 1.0 {
+        "Tiny"
+    } else if scale > 1.0 {
+        "Giant"
+    } else {
+        "Same"
+    }
+}
+
+/// The 4-byte uid head of a build at `scale` (`tmmaps tiny --uid-prefix`):
+/// `Tin2` for the tiny builds (the second tiny uid scheme), `Gia2` for the giant
+/// ones, `Sam2` at scale 1.
+pub fn uid_prefix(scale: f32) -> &'static str {
+    match variant_label(scale) {
+        "Giant" => "Gia2",
+        "Same" => "Sam2",
+        _ => "Tin2",
+    }
+}
+
+/// The map file a build of map `nn` writes: `<out-root>/tinyNN/<tag>/<P>-NN-<Label>.Map.Gbx`.
+pub fn built_map_name(args: &[String], nn: &str) -> String {
+    format!("{}-{nn}-{}.Map.Gbx", out_prefix(args), variant_label(scale_of(args)))
+}
+
 /// The `--anchor sx,sy,sz:tx,ty,tz` and `--scale S` arguments for the
 /// coplanar pass, from `tmmaps tiny`'s "anchor: source [x, y, z] -> target
 /// [x, y, z]; scale 0.500" line.
-fn anchor_arg(line: &str) -> Option<(String, String)> {
+pub fn anchor_arg(line: &str) -> Option<(String, String)> {
     let nums = |s: &str| -> Option<String> {
         let inner = s.split_once('[')?.1.split_once(']')?.0;
         let v: Vec<&str> = inner.split(',').map(|t| t.trim()).collect();

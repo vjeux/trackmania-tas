@@ -562,6 +562,163 @@ fn main() {
             std::fs::write(&out, &out_bytes).unwrap_or_else(|e| die(e.to_string()));
             println!("{p}: archetype {cur} -> {arche} at {} places (header delta {header_delta}){note} -> {out}", offs.len());
         }
+        "giantwater" => {
+            // giantwater GIANT.Map.Gbx --source SRC.Map.Gbx --anchor sx,sy,sz:tx,ty,tz --scale N --out MAP2
+            //   [--template T.Block.Gbx] [--table T.tsv] [--author UID] [--no-roads] — see giantwater.rs
+            let p = a.rest.get(1).cloned().unwrap_or_else(|| die("giantwater GIANT --source SRC --anchor S:T --scale N --out F".into()));
+            let src = flag(&a.rest, "--source").unwrap_or_else(|| die("--source SRC.Map.Gbx".into()));
+            let anchor = flag(&a.rest, "--anchor").unwrap_or_else(|| die("--anchor sx,sy,sz:tx,ty,tz".into()));
+            let scale: f32 = flag(&a.rest, "--scale").unwrap_or_else(|| "2".into()).parse().unwrap_or_else(|_| die("--scale number".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out MAP".into()));
+            let template = flag(&a.rest, "--template");
+            let table_out = flag(&a.rest, "--table");
+            let author = flag(&a.rest, "--author").unwrap_or_else(|| "fHFOZ36-Qt6hMnhWK6bvxw".to_string());
+            let roads = !a.rest.iter().any(|x| x == "--no-roads");
+            // --rewater: drop the giant map's existing pool tiles first (a water-only
+            // rebuild); --anchor from-tiles derives the source→giant transform from those
+            // tiles (the min-corner pool block and its min-corner tile); --legacy-stack =
+            // the 2026-09-13 variant scheme (a sheet per row)
+            let rewater = a.rest.iter().any(|x| x == "--rewater");
+            let legacy = a.rest.iter().any(|x| x == "--legacy-stack");
+            let source = tmmaps::map::MapFile::load(std::path::Path::new(&src));
+            let collection = source.items.first().map(|it| it.collection_raw).unwrap_or(26);
+            let ground = tmmaps::map::ground_y(collection);
+            let (s, t) = if anchor == "from-tiles" {
+                let giant = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+                let n = scale.round() as i32;
+                let mut found: Option<([f32; 3], [f32; 3])> = None;
+                for name in ["DecoWallWaterBase", "WaterBase"] {
+                    let sb: Vec<(i32, i32, i32)> = source.blocks.iter().filter(|b| b.free_pos.is_none() && b.name == name).map(|b| b.coords()).collect();
+                    let gb: Vec<(i32, i32, i32)> = giant.blocks.iter().filter(|b| b.free_pos.is_none() && b.name == name).map(|b| b.coords()).collect();
+                    if sb.is_empty() || gb.is_empty() {
+                        continue;
+                    }
+                    let smin = (sb.iter().map(|c| c.0).min().unwrap(), sb.iter().map(|c| c.1).min().unwrap(), sb.iter().map(|c| c.2).min().unwrap());
+                    let gmin = (gb.iter().map(|c| c.0).min().unwrap(), gb.iter().map(|c| c.1).min().unwrap(), gb.iter().map(|c| c.2).min().unwrap());
+                    // WaterBase tiles sit in the TOP row of the doubled cell only
+                    let gy = if name == "WaterBase" { gmin.1 - (n - 1) } else { gmin.1 };
+                    let s = [smin.0 as f32 * tmmaps::map::CELL_XZ, smin.1 as f32 * tmmaps::map::CELL_Y + ground, smin.2 as f32 * tmmaps::map::CELL_XZ];
+                    let t = [gmin.0 as f32 * tmmaps::map::CELL_XZ, gy as f32 * tmmaps::map::CELL_Y + ground, gmin.2 as f32 * tmmaps::map::CELL_XZ];
+                    found = Some((s, t));
+                    println!("  giantwater: anchor from the {name} tiles: source cell {:?} -> giant cell ({}, {}, {}); anchor {:?} -> {:?}", smin, gmin.0, gy, gmin.2, s, t);
+                    break;
+                }
+                found.unwrap_or_else(|| die("--anchor from-tiles: the giant map has no pool tiles to derive the transform from".into()))
+            } else {
+                mapgeom::giantwater::parse_anchor(&anchor).unwrap_or_else(die)
+            };
+            let below: u32 = flag(&a.rest, "--below-flags").map(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16).unwrap_or_else(|_| die("--below-flags HEX".into()))).unwrap_or(mapgeom::giantwater::STACKED_BELOW);
+            let plan = mapgeom::giantwater::plan_stack(&source, ground, s, t, scale, roads, &author, legacy, below).unwrap_or_else(die);
+            for n in &plan.notes {
+                println!("  giantwater: {n}");
+            }
+            for sk in &plan.skipped {
+                println!("  giantwater: skipped {sk}");
+            }
+            if let Some(tp) = &table_out {
+                let mut tsv = String::from("kind\tname\tflags\tdir\tcell_or_pos\tyaw\n");
+                for g in &plan.grid {
+                    tsv.push_str(&format!("grid\t{}\t{:08x}\t{}\t{:?}\t-\n", g.name, g.flags, g.dir, g.grid.unwrap_or([0; 3])));
+                }
+                for r in &plan.roads {
+                    tsv.push_str(&format!("free\t{}\t{:08x}\t-\t({:.1}, {:.1}, {:.1})\t{:.4}\n", r.name, r.flags, r.pos[0], r.pos[1], r.pos[2], r.rot[0]));
+                }
+                std::fs::write(tp, tsv).unwrap_or_else(|e| die(e.to_string()));
+            }
+            let (g, r) = mapgeom::giantwater::apply_opt(std::path::Path::new(&p), std::path::Path::new(&out), &plan, template.as_deref().map(std::path::Path::new), &author, rewater).unwrap_or_else(die);
+            println!("{p}: giant water: {g} native pool tiles, {r} road volume tiles -> {out}");
+        }
+        "overflow" => {
+            // overflow MAP.Map.Gbx… [--report R.tsv]: does the map HIT the stadium? The
+            // world box of every EMBEDDED item's geometry (the assembler's placed model;
+            // geometry (the assembler's placed model; blocks are inside the grid by
+            // construction) against x/z 0..size·32 m and y up to the grid top
+            // (ground + size_y·8): one row per map — in/out, the box, how far out
+            // (2026-09-14, Everios96 on the giant set: "some maps are too large and
+            // don't fit inside the stadium anymore"; those get the NoStadium mood).
+            let mut store = open(&a);
+            let maps: Vec<String> = a.rest.iter().skip(1).filter(|x| !x.starts_with("--") && x.ends_with(".Gbx")).cloned().collect();
+            if maps.is_empty() {
+                die::<()>("overflow MAP.Map.Gbx… [--report R.tsv]".into());
+            }
+            let report = flag(&a.rest, "--report");
+            let mut rows = String::from("map\tname\tverdict\tlo_x\tlo_y\tlo_z\thi_x\thi_y\thi_z\tgrid_x\tgrid_y_top\tgrid_z\tout_x\tout_y\tout_z\titems_out\tdecoration\tworst_item\n");
+            let mut n_out = 0usize;
+            for p in &maps {
+                let m = tmmaps::map::MapFile::load(std::path::Path::new(p));
+                let hdr = tmmaps::header::read(p).ok();
+                let collection = m.items.first().map(|it| it.collection_raw).unwrap_or(26);
+                let ground = tmmaps::map::ground_y(collection); // cell row 0 (Stadium: -64)
+                let grass = tmmaps::tiny::fixed_plane(collection); // the ground plane the cars drive on (Stadium: 8)
+                let grid = [m.size[0] as f32 * tmmaps::map::CELL_XZ, ground + m.size[1] as f32 * tmmaps::map::CELL_Y, m.size[2] as f32 * tmmaps::map::CELL_XZ];
+                let mut asm = mapgeom::assemble::Assembler::new(&mut store);
+                asm.with_embedded(&m).ok();
+                let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                let mut items_out = 0usize;
+                let mut worst: (f32, String) = (0.0, String::new());
+                for it in &m.items {
+                    let Some(lm) = asm.item_model(&it.model) else { continue };
+                    let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                    let (mut ilo, mut ihi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                    for g in lm.scene.groups.values() {
+                        for v in &g.verts {
+                            let w = mapgeom::geom::apply(&xf, *v);
+                            for k in 0..3 {
+                                ilo[k] = ilo[k].min(w[k]);
+                                ihi[k] = ihi[k].max(w[k]);
+                            }
+                        }
+                    }
+                    if ilo[0] > ihi[0] {
+                        continue;
+                    }
+                    // What the STADIUM physically occupies, measured on the decoration's
+                    // own mesh (Stadium256\Media\Solid\Warp\Stade1536v2.Prefab, 2026-09-14):
+                    // the stands' inner face rises exactly at the grid edge from 16 m
+                    // above the ground (the first 16 m are the open apron; the upper tier
+                    // recedes to 26 m outside), and the roof / corner towers begin 7 m
+                    // OUTSIDE the grid at the 256 m line — the open sky over the pitch
+                    // reaches all the way up. So an item HITS the stadium when it crosses
+                    // the grid edge sideways above the apron (or by more than 32 m at
+                    // ground level: past the apron), or rises above 256 m within 8 m of
+                    // the edge. Half a metre of tolerance: the ×2 clips sit flush on the
+                    // edge. Pure height inside the grid is reported (out_y), not counted.
+                    let side = (-ilo[0]).max(ihi[0] - grid[0]).max(-ilo[2]).max(ihi[2] - grid[2]);
+                    let above = ihi[1] - grid[1];
+                    let near_edge = ilo[0] < 8.0 || ilo[2] < 8.0 || ihi[0] > grid[0] - 8.0 || ihi[2] > grid[2] - 8.0;
+                    let hits_stands = side > 0.5 && (ihi[1] > grass + 16.0 || side > 32.0);
+                    let hits_roof = above > 0.5 && near_edge;
+                    if hits_stands || hits_roof {
+                        items_out += 1;
+                        let d = side.max(above);
+                        if d > worst.0 {
+                            worst = (d, format!("i{} {} at ({:.0}, {:.0}, {:.0}) box [{:.0}, {:.0}, {:.0}]..[{:.0}, {:.0}, {:.0}]{}", it.index, it.model, it.pos[0], it.pos[1], it.pos[2], ilo[0], ilo[1], ilo[2], ihi[0], ihi[1], ihi[2], if hits_roof && !hits_stands { " (roof)" } else { "" }));
+                        }
+                    }
+                    for k in 0..3 {
+                        lo[k] = lo[k].min(ilo[k]);
+                        hi[k] = hi[k].max(ihi[k]);
+                    }
+                }
+                let out_x = (-lo[0]).max(hi[0] - grid[0]).max(0.0);
+                let out_z = (-lo[2]).max(hi[2] - grid[2]).max(0.0);
+                let out_y = (hi[1] - grid[1]).max(0.0);
+                let verdict = if items_out > 0 { "OUT" } else { "in" };
+                if items_out > 0 {
+                    n_out += 1;
+                }
+                let name = hdr.as_ref().map(|h| h.name.clone()).unwrap_or_default();
+                let deco = m.decoration_id.clone();
+                let line = format!("{p}\t{name}\t{verdict}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{:.0}\t{out_x:.0}\t{out_y:.0}\t{out_z:.0}\t{items_out}\t{deco}\t{}", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], grid[0], grid[1], grid[2], worst.1);
+                println!("{line}");
+                rows.push_str(&line);
+                rows.push('\n');
+            }
+            if let Some(r) = report {
+                std::fs::write(&r, rows).unwrap_or_else(|e| die(e.to_string()));
+            }
+            eprintln!("{} of {} maps spill out of the stadium volume", n_out, maps.len());
+        }
         "waterblocks" => {
             // waterblocks MAP --plates P.tsv --template T.Block.Gbx --out MAP2 --table T.tsv
             //   [--author UID] [--force-block] — see waterblocks.rs
@@ -642,7 +799,7 @@ fn main() {
                     let renamed = mapgeom::crystal::rename_ident(&raw, &old_ident, &ident);
                     files.insert(zip_path.clone(), renamed);
                 }
-                specs.push(tmmaps::map::FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.clone()), flags: 0x1020_8000, pos: d.origin, rot: [d.yaw, 0.0, 0.0], grid: None });
+                specs.push(tmmaps::map::FreeBlockSpec { name: format!("{ident}_CustomBlock"), author: Some(author.clone()), flags: 0x1020_8000, pos: d.origin, rot: [d.yaw, 0.0, 0.0], grid: None, dir: 0 });
             }
             println!("{p}: {} water bodies handled, {} as blocks, {} archetype files", decisions.len(), n_block, files.len());
             if let Some(t) = &table_out {

@@ -1869,9 +1869,12 @@ pub struct Located {
     pub at: usize,
     /// The crystal's own node index.
     pub node_index: u32,
-    /// Node index of the CGameCommonItemEntityModelEdition holding it.
+    /// Node index of the CGameCommonItemEntityModelEdition (or the CGameBlockItem) holding it.
     pub edition_index: u32,
     pub lookback: LookbackState,
+    /// A custom BLOCK (`CGameBlockItem`, the `.Block.Gbx` form): the archetype block
+    /// info it borrows (name, collection id) — `None` for an item.
+    pub archetype: Option<(String, String)>,
 }
 
 /// Walk a `CGameItemModel` body from its start to the `CPlugCrystal` node
@@ -1974,6 +1977,49 @@ pub fn locate(body: &[u8]) -> R<Located> {
                 }
                 r.lb.defined_nodes.insert(edition_index as u32);
                 let class_id = r.u32()?;
+                // A custom BLOCK (`CGameBlockItem` 0x2E025000, the mesh-modeler `.Block.Gbx` a
+                // map embeds): version, archetype block info id + collection id (lookback
+                // ids), then the variants — the first one's node is the crystal inline
+                // (the v0 form; Everios96's u10s maps, 2026-09-13).
+                if class_id == 0x2E025000 {
+                    loop {
+                        let cid = r.u32()?;
+                        if cid == FACADE {
+                            return Err("CGameBlockItem has no chunk 0x2E025000".into());
+                        }
+                        if r.b.get(r.o..r.o + 4) == Some(SKIP) {
+                            r.u32()?;
+                            let n = r.count()?;
+                            r.take(n)?;
+                            continue;
+                        }
+                        if cid != 0x2E025000 {
+                            return Err(format!("CGameBlockItem chunk 0x{:08X} before 0x2E025000 has no reader", cid));
+                        }
+                        let _version = r.u32()?;
+                        let arche = r.id()?.as_str().unwrap_or("").to_string();
+                        let coll = match r.id()? {
+                            Id::Raw(v) | Id::Prior(v) => format!("{v}"),
+                            Id::Str(s) => s,
+                            Id::Null => String::new(),
+                        };
+                        let n = r.count()?;
+                        if n == 0 {
+                            return Err("CGameBlockItem has no variant".into());
+                        }
+                        r.u32()?; // variant key
+                        let node_index = r.i32()?;
+                        if node_index <= 0 || r.lb.defined_nodes.contains(&(node_index as u32)) {
+                            return Err("CGameBlockItem variant 0 has no inline mesh (the v1 second-table form; not a crystal)".into());
+                        }
+                        r.lb.defined_nodes.insert(node_index as u32);
+                        let class_id = r.u32()?;
+                        if class_id != C_CRYSTAL {
+                            return Err(format!("CGameBlockItem variant 0 class 0x{:08X} is not CPlugCrystal", class_id));
+                        }
+                        return Ok(Located { at: r.o, node_index: node_index as u32, edition_index: edition_index as u32, lookback: r.lb, archetype: Some((arche, coll)) });
+                    }
+                }
                 if class_id != 0x2E026000 {
                     return Err(format!("entity model class 0x{:08X} is not CGameCommonItemEntityModelEdition", class_id));
                 }
@@ -2002,7 +2048,7 @@ pub fn locate(body: &[u8]) -> R<Located> {
                     if class_id != C_CRYSTAL {
                         return Err(format!("MeshCrystal class 0x{:08X} is not CPlugCrystal", class_id));
                     }
-                    return Ok(Located { at: r.o, node_index: node_index as u32, edition_index: edition_index as u32, lookback: r.lb });
+                    return Ok(Located { at: r.o, node_index: node_index as u32, edition_index: edition_index as u32, lookback: r.lb, archetype: None });
                 }
             }
             other => return Err(format!("item chunk 0x{:08X} at 0x{:x} before the entity model has no reader", other, at)),

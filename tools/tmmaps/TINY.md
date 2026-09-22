@@ -1348,3 +1348,352 @@ byte-identical to ad878014's (Summer 05 too); report.tsv differs only where a ca
 hit now also reports the detail-level ladder and the filler-foliage note is per block.
 Next hot spot on 11: the two `tmmaps tiny` passes (2.1 s each, three LZO writes of a
 31 MB map).
+
+## Water blocks draw the ARCHETYPE's clip rim — the u10s pool walls (2026-09-13 01:20Z)
+
+The ship17 custom WaterBase blocks are invisible themselves, but the game
+re-derives free clips at load from the ARCHETYPE's block info (a `.Block.Gbx`
+carries no clip data): `/mapblocks2?list=baked` on tiny U10S_10 listed, for its
+18 blocks, 36 `DecoWallWaterBaseVFC` plank walls (8 m), 36 × 3 `WaterFCCenter`/
+`WaterHFCLeft`/`WaterHFCRight` rim pieces (3 m under to 1 m above the surface,
+1.16 m thick, OUTSIDE the block face) and 18 `PlatformBaseFCB` floor caps — the
+beige "pool border" vjeux could not cross (A/B drive: 65.7 → 0.4 m/s at the
+block's west face; the same build with `TINY_WATER_BLOCKS=0` passes at 71 m/s).
+Every water-volume archetype in the Stadium pack has side clips with geometry
+(WaterBase, DecoWallWater*, PlatformWater*, RoadWater*, TrackWallWater*,
+WaterWall*), and a free clip is cancelled only by a matching clip on the
+neighbouring cell's opposite face — another water block, which moves the rim
+32 m out and floods the deck. The Summer pools were only ever tested by dropping
+the car in from above. **Default since 2026-09-13: no water blocks** (the pools
+are visual plates, physics 13 = nothing to the car); the u10s maps 04/10/12/16/23
+were rebuilt and updated in place. What is lost: drag and buoyancy (U10S_10's
+original floats over the up-ramp's 0.5 m base; the tiny car hits it).
+
+## Embedded custom BLOCKS bake as items; renamed pack blocks resolve (2026-09-13 02:40Z)
+
+Everios96's u10s maps embed community blocks (`<path>.Block.Gbx_CustomBlock`
+records: TM2 dirt ports, magnet platforms, colourable bars — 5 of the first 75
+maps). A `.Block.Gbx` is a `CGameItemModel` whose entity-model-EDITION slot
+holds a `CGameBlockItem` (0x2E025000): version, archetype block info id +
+collection id, the variants (key + model ref), and from v1 a second table
+(present byte; per variant flags byte, mesh ref (&1, a
+`CPlugStaticObjectModel`), collision ref (&2), box (&4), offset (&8)). The v0
+form (mesh-modeler) puts a `CPlugCrystal` inline in variant 0; the v1 form
+(TMX / item-editor exports) puts a static object in the table.
+`tiny-library` bakes either with `static_item_from_custom_block` (the typed
+parser's `Node::BlockItem`, or `crystal_model::locate`'s block-item branch),
+in the block's own frame (cell corner = origin, like a pack prefab), footprint
+from the baked collision (cells of 32 × 8 × 32), placed by `tmmaps tiny` like a
+pack block. A gameplay archetype (`…Special…`) is baked once and lends its
+`special` trigger (arch gates); PLATFORM specials need none — their effect is
+the deck surface's gameplay id, which the custom block's own materials carry
+(the magnet TurboRoulette block came out as TechSuperMagnetic + gameplay 3).
+An empty block file (`Trou.Block.Gbx`, 644 bytes, a hole marker) is
+intentionally nothing.
+
+Old maps also carry block names the current pack spells differently
+(`block_rename`): `PlatformGrasssSlope2UTop` → `PlatformGrassSlope2UTop`,
+`RoadIceDiagLeftWithWallStraight` → `RoadIceWithWallDiagLeftStraight`, and
+the flat `OpenIceRoadToZoneRight`, which the pack no longer ships (Tech and
+Dirt keep theirs) → the symmetric `OpenIceRoadToZoneCenter` stands in.
+
+`tmmaps` item-clone donor: a map whose every non-waypoint item is a first use
+(U10S_113-style: one item per model) has no reference-only record to clone;
+the donor's definition fields are rewritten in the clone as references to the
+slot the donor defined. A map with ZERO items (U10S_113 itself) still cannot
+be converted — synthesising an anchored-object record needs lookback-table
+surgery across the baked-blocks chunk.
+
+## The 7 MB server cap: `--max-bytes` walks the detail ladder (2026-09-13 06:30Z)
+
+A dedicated server refuses maps over 7 MB (Everios96). A tiny map is 93 % its
+embedded item zip, already at maximum deflate (`zip -9` gains 0.3 %); the
+lightmap must stay (editor crash without one); so the lever is mesh detail.
+`tinyctl pipeline --max-bytes N` (and `convert-all --max-bytes N`) rebuilds a
+map over the cap down the ladder: (a) `--lod-pick 0` — the far levels dropped,
+every part at its nearest, sharpest level (no near visual change; 17 % of
+U10S_100's bytes); (b) `--lod-pick 1 --lod-pick-min-verts V` — the heavy parts
+one level coarser, V bisected in [0, 40000] for the LARGEST threshold that fits
+(40000 checked first: only monster parts); (c) level 2, 3 likewise. Of the 75
+u10s maps ≥ 7 000 000 B, 45 fit at (a), 30 at (b) — 17 of those touching only
+parts over ~26 000 vertices; U10S_100 (16.5 MB, 288 items) alone needed every
+part at level 1 (6.66 MB). The note in the tracker row records the setting.
+
+## Giant maps: the same converter at ×2 (2026-09-13 13:30Z)
+
+vjeux: "instead of tiny you make giant maps. Every item is 2x instead of 1/2."
+The converter was already scale-parametrised end to end (`mapgeom tiny-library
+--scale`, `tmmaps tiny --scale`, the placement scale = scale / model_scale, the
+LOD switch distances scaled with the geometry, lights' radii too); what a
+growing build needed was the plumbing and four half-specific rules turned over:
+
+* `tinyctl build|pipeline --scale 2` (default 0.5): the file is
+  `<prefix>-NN-Giant.Map.Gbx`, the map name "Giant <source name>", the uid
+  `Gia2` + the source uid minus its first four bytes (`tmmaps tiny
+  --uid-prefix`, `--name-prefix`; `build::variant_label` is the one word),
+  the box staging `Giant NN.Map.Gbx` / `tinyshots/publish-giant-NN` beside the
+  tiny run's files, `publish-map` accepts a `Gia` uid.
+* **Where the doubled map goes: `--anchor fit`.** The tiny anchor keeps the
+  spawn's x,z and halves everything about it; doubled about the spawn a map
+  leaves the 48-cell arena on one side (U10S_25 spans 576 m: ×2 about a spawn
+  at its west end ends at x ≈ 1 900). `fit` takes the source extent of
+  everything that becomes an item (grid blocks by their footprint cells, free
+  blocks and items by position), transforms it, and shifts the target anchor
+  by whole cells so the result is centred in the grid; y keeps the plane rule
+  (the ground stays the ground) and an overflow above the top row is reported.
+  All 25 U10S maps fit in x/z (the widest, 11, spans 1 344 of 1 536 m); six
+  (06 13 17 21 22 24) rise above the grid's 256 m top — accepted, see below.
+* **Outside the grid is fine.** Test map B (U10S_01 ×2 pushed so 387 of its
+  608 items lay past x = 1 536 and 121 above y = 256): the engine kept all
+  608 at their file positions (`/mapitems`, cell −1,−1,−1 on every free item),
+  drew them (the giant platforms and trees stand over the stadium's outer
+  plaza, through the stands and the big screen) — the "put back at the map's
+  centre" of 2026-09-08 was the editor's cursor, not a relocation. A build
+  that overflows in x/z is still centred rather than clipped; nothing is
+  clipped anywhere. (What overflows collides with the stadium decoration,
+  which is the price; none of the 25 pays it.)
+* The stock stand-in table reads BACKWARDS at ×2 (`stock_scaled_variant`):
+  `Flag8m` → `Flag16m` (the 16 m cloth is the 8 m cloth at exactly ×2, waving
+  under the game's own tween), `ShowFogger8m` → `ShowFogger16m`,
+  `Sparkler8m` → `Sparkler16m`, `ShowTorchSmall` → `ShowTorch`, `Screen*Small`
+  → `Screen*`, `Screen2x3` → `Screen2x3Big`; a model with no twin bakes as a
+  static ×2 copy like everything else (a `Flag16m` at ×2 is a still cloth).
+* No smaller-species ladder for hull-less vegetation (grass, ferns, the
+  BlueBay jungle cards): the species itself stays, full size — half the giant
+  world's scale, as the tiny world's stand-ins were double.
+* The MediaTracker trigger grid is doubled only when SHRINKING (a ×2 volume
+  covers whole source cells).
+
+Verified on U10S_01 (2026-09-13 13:45Z): the seven editor views of the
+pipeline pair with the original's (start gate, finish, top; the frame diff
+flags the editor's block-gate marking and the trees' lightmap as ever), and
+the play-mode drive spawns on the giant start deck, accelerates to 41 m/s and
+stops at x 457.8 against `PlatformSpecialFCRight` — the ORIGINAL driven the
+same way stops at x 442.7 (source), the same filler: the map's own wall,
+not a conversion defect (`mapgeom raycast` names the item; the tiny build
+has it too). Sizes at ×2 are the tiny sizes within a few percent (the mesh
+bytes do not depend on the scale); the `--max-bytes 7000000` ladder applies
+as it does to the tiny maps.
+
+## Giant maps: the engine's own water (2026-09-13 17:00Z)
+
+vjeux, playing: "Giant 10 is missing water blocks, can't finish the map";
+"Same for 12 the water doesn't work anymore"; "For 23, we should be able to
+insert pool blocks on top to get the water wheel effect". The ×2 builds had
+carried every pool as items (the club run's `TINY_WATER_BLOCKS=0`), and an item
+is no water: the car dropped 16 m into a dry pit (10) or drove a dry canal.
+
+A giant build is cell-aligned, which the tiny never was — so the fix is the
+one the tiny could not have: **the source's own water BLOCKS, native, in the
+transformed cells** (`mapgeom giantwater`, run by `tinyctl build --scale N`):
+
+* `tmmaps tiny --anchor fit` now snaps a whole-scale anchor onto the lattice
+  (x/z: t ≡ s·anchor mod 32 — the anchor is a cell CENTRE, so doubling about it
+  alone puts corners on half-cells; y: rows, ty ≡ s·sy − (s−1)·ground mod 8 —
+  on Stadium ×2 the source grass floor lands back on the stadium grass). Every
+  source cell is then exactly N×N×N target cells.
+* `DecoWallWaterBase` (volume 0..8, no mesh: walls, floor caps and the water
+  top are all clip fillers) fills every tile row a source block covers; the
+  bottom tile row keeps the source flags (ground / InDecoWallPillar), the rows
+  above are the plain air variant — the stack the source is. The engine does
+  NOT match stacked water tiles top to bottom (/mapblocks2 baked on giant 10:
+  508 `DecoWallWaterFCT` + 508 `FCBInside` for 504 air tiles — and the source
+  itself carries one FCT + one FCBInside per air block), so a stack is a pile
+  of 8 m pools with a surface and a floor cap per row; the top surface is the
+  one you see, at the row top where the ×2 rims end. The car swims the lowest
+  reachable layer under the caps — measured on 10: Water at the wheels from
+  the ramp's end, 110 → 8 m/s in the pool, floats up, sinks, climbs the
+  up-ramp at x 648 and drives out (was: stuck at the bottom of the pit).
+* `WaterBase` (volume 4..7, a 3 m concrete basin with the quad at 7) goes into
+  the TOP tile row only: the surface 1 m under the ×2 rim like the source's,
+  the basin floor 3 m under it (the ×2 basin floor stays hidden below; lower
+  rows would add dry bands and a second floor).
+* The water ROADS (`RoadWater*`: a 26 m channel, volume 0..2 with the deck AT
+  the volume's top plane — the wheels sit on the plane and the game counts
+  them in) cannot be tiled natively (a 1× canal mesh inside the 2× one), so
+  they get the tiny's FREE CUSTOM blocks (the wood template re-pointed at the
+  archetype, deck 200 m down): N×N invisible volumes per source block, 2 across
+  at 26 m apart (not on the lattice), butted along the channel so the
+  `RoadWaterVFC` end clips match tile to tile — no `TrackWallWater` end wall
+  (8 m of planks, `VFCTopBottom_Air`, measured 29 × 8 m) inside the section;
+  the dead-end tiles keep their clip-less archetype (`RoadWaterStart` south,
+  `RoadWaterFinish` north), every other tile is a `RoadWaterStraight`. The
+  tile's y is the ×N deck minus 2. Measured on 23: Water at all four wheels
+  from the start line to the end of the canal (165 m, 1 → 33 m/s under the
+  water drag), then the jump lands floating in the pool (Water, y 37.5 in the
+  36..39 band).
+* The bake drops the items' `Water` visuals (`TINY_WATER_VISUAL=0`): the
+  native blocks and the volumes' sheets draw the pools; an item quad 1 m under
+  them would show through.
+* The clip fillers the engine generates on the tiles' OUTER faces (plank
+  walls, rims, floor caps) are the pieces the source generated around its pool,
+  inside the ×2 wall items and flush with their tops: no border in the frames
+  (giant 10 pool top/side, giant 23 start/top/side, 2026-09-13 17:10Z).
+
+REJECTED the same hour (vjeux, a screenshot of giant 23's start: "This is not
+what I wanted, we should overlay the water block without the road border. This
+changes the layout"): the road tiles grew their archetype's 1× fillers IN THE
+OPEN — `TrackWallDeadendRoundFCB` rounded caps under the shallow water and the
+green `Start-FC` tubes across the ×2 canal. Every block info that carries a
+water volume carries clips, and every clip-less one (the filler pieces
+themselves: FCT, FCB, VFC…) carries no volume — checked over the Stadium
+pack — so a road cannot have a volume without borders; a pool can, because
+its fillers hide inside the ×2 walls. Road tiles are OFF unless
+`TINY_GIANT_ROAD_TILES=1`; giant 23 was re-uploaded with the plain ×2 canal
+and its native pools at 17:46Z. `TINY_WATER_NATIVE=0` = no pass at all (the
+morning form). Curves, branches and slopes of
+the water road (none in U10S 01–25) have no volume emitter and stay items.
+What the ×2 does to the route regardless of water: the car's speed is not
+doubled, so a jump falls √2× farther in time and lands SHORT of where the
+source's does (23's jump off the canal lands in the pool at x 742).
+
+## Giant maps: the whole club on GitHub (2026-09-13 19:30Z)
+
+vjeux: "Can you have the 1k giant and icy uploaded to github like you did for
+tiny?" — the ×2 converter over all 975 U10S maps, released as
+https://github.com/vjeux/trackmania-tas/releases/tag/giant-u10s-maps (39
+zips, 4.59 GB, one per part, `GiantU10S-partNN.zip`), the tiny set's layout:
+
+* `tinyctl convert-all --parts 01-39 --jobs 12 --scale 2 --alias-part-offset
+  50 --max-bytes 7000000 --name-format '{source} By Everios96 [Giant]'` —
+  975 maps in 7.5 min; the in-file name is the club's alteration convention
+  (Everios96 to vjeux: "U10S_26 By Everios96 [Tiny] — always like this and
+  then the alteration name in the last bracket") and the file name is the
+  same string. The alias offset keeps the giant item FILE NAMES apart from the
+  tiny club's (`AC0[5-8]…` vs `AC0[0-3]…`): the game caches an embedded model
+  by file name for the session, and a player will have both sets.
+* 975/975 built (U10S_113's 0-item source takes `tmmaps seed-item`'s template
+  record, patch 0021 of the tiny thread); all under 7 MB — 75 through the
+  ladder, none failed to fit (the ×2 mesh bytes are the tiny ones).
+* `tinyctl dist`: the item-check gate on every map's library (975 × ~60
+  items, `item-check --quiet`, 3 min on 12 threads), the club-named maps and
+  a `MAPS.tsv` per zip, STORED (the maps are deflated archives already).
+* `tinyctl release-upload`: push → `gh release upload --clobber` → delete on
+  the box, 3 streams (~3 min per 120 MB zip, the bridge's ~1.1 MB/s push is
+  the floor), then `gh release view --json assets` against the local sizes.
+* **Water tiles outside the grid are clipped**: 18 wide maps double past the
+  48-cell arena (x −20…53); a grid block needs a cell inside the map, so the
+  tiles there are left out (the ×2 items stay: walls and floor, no volume)
+  and the row says how many (328 on U10S_33, 2 736 on U10S_842). The engine
+  keeps ITEMS outside the grid, so nothing else is clipped.
+
+## Car-change gates and the `--only` alias trap (2026-09-13 evening, Everios96's reports)
+
+- **`GateGameplay{Snow,Rally,Desert,Stadium}` BLOCKS had no trigger**: the family
+  shares one prefab (`Gate\Gameplay_{Ground,Air}.Prefab`) and one trigger shape
+  (`Gate\Gameplay_Trigger.Shape.Gbx`, the variant's `trigger_shapes`); the CAR is
+  the modifier folder's `Collision` material — gameplay 0x15 Snow, 0x16 Rally,
+  0x17 Desert — and the Stadium gate has no folder: the shape's own
+  `CollisionGateGameplay` says 0x14. The baker knew only `GateSpecial*`, so tiny
+  966's Snow gate was a plain ring (Everios: "on the original its snow car").
+  Fixed in `tiny_library.rs` (the special-trigger branch for `GateGameplay*`);
+  178 of the 975 u10s maps carry such a block; play-verified on 966 (the pickup).
+- **`convert-all --only` dropped every two-digit argv word**, including the value
+  of `--alias-part` for parts 10–39: the 54 refit maps of the 7 MB pass came out
+  with ANOTHER map's alias range (p12/01 carried p13/23's `AC01323…` names — the
+  game caches embedded models by file name per session, so two such maps in one
+  session show each other's models). The filter now applies to the map numbers
+  only. 216 maps (178 ∪ 54) rebuilt and updated in place.
+- Everios' hunt club (145872) layout = one FOLDER per alteration holding one
+  Nadeo-hosted TimeAttack ROOM per part (25 maps): `tinyctl nadeo-here club-rooms`
+  builds it from the publish results (idempotent through a state file). A wsx
+  command that runs past the bridge's 90 s answer cap is RE-RUN by the retry —
+  two concurrent creators made one duplicate room; run long API jobs detached
+  (`setsid nohup`) and poll a log.
+
+## Giant set, the car-change gates (2026-09-14 06:00Z)
+
+Everios96 (Discord DM to vjeux, 22:05 PT): "on giant i noticed a few car gates
+not working as well" — the tiny thread's finding of the same evening
+(`GateGameplay*` BLOCKS baked without their trigger, the section above)
+applies to the ×2 build unchanged; the pack's gate ITEMS (`GateGameplayRally16m`
+…, part 9's whole set) were right all along (their prefab carries the
+`NPlugTrigger_SGateSpecial` entity, verified on `AI05902000`: entity 1 = class
+0x09179000, and a rebuild of part 9 is byte-identical). With patch 0025 the
+178 block-gate maps were rebuilt (`convert-all --only`, 1.5 min), plus the 18
+water-clipped refits of the first run, whose `--only` had dropped the
+`--alias-part` value (the same trap: at ×2 the value is 52..89, two digits) —
+p03/11 and p34/11, p03/22 and p08/22, p11/20, p15/20 and p30/20 shared item
+file names; now `AC053…` / `AC084…`. Play-verified on U10S_153 ×2 (part 7 #3,
+a `GateGameplaySnow` block two cells after the start): the HUD says "SNOW CAR"
+and the car is the pickup at 4.3 s, the Stadium car at 2.3 s. The first 25 (the
+Nadeo campaign) carry no car gate; the release got 36 part zips replaced
+(`release-upload --only-missing` compares SIZES — a rename-only rebuild would
+be skipped, so a part whose only change is an alias rename must be forced;
+none was: every such part also had a gate map).
+
+Floor check (the tiny thread's `fixed_plane` 10 → 8 m finding): at ×2 the
+lattice snap puts the target anchor at 2·spawn_y − 8 for every Stadium map, so
+a source item at the grass (y 8) lands at 2·spawn_y − 8 + 2·(8 − spawn_y) = 8
+exactly — giant 01's 58 grass-level items read 8.000; no change needed.
+
+## Giant set: maps that hit the stadium go NoStadium (2026-09-14 17:00Z)
+
+Everios96: "on the giant maps some maps are too large and don't fit inside the
+stadium anymore. Are you capable of removing the stadium for these maps?"
+
+* The stadium is a MAP (`Stadium\GameCtnDecoration\Map\Deco48x48_Screen155.Map.Gbx`,
+  two `Stade1536_Screen155` blocks of the Stadium256 collection, one rotated
+  180°, plus two `Stade4096` scenery blocks). Its mesh (`Stadium256\Media\
+  Solid\Warp\Stade1536v2.Prefab`, 1 M vertices) measured against the play grid:
+  the stands' inner face rises exactly at the grid edge from 16 m above the
+  grass (the first 16 m are the open apron), the upper tier recedes to 26 m
+  outside, the roof and the corner towers begin 7 m OUTSIDE the grid at the
+  256 m line — the sky over the pitch is open all the way up. So only
+  SIDEWAYS overflow above the apron (or past 32 m at ground level), and height
+  within 8 m of the edge, can touch the stadium; a track towering over the
+  centre touches nothing.
+* `mapgeom overflow MAP… [--report R.tsv]`: every embedded item's placed
+  geometry (the assembler's model) against that rule; one row per map with
+  the box, the depth sideways/above, the items hitting and the worst one.
+  Over the 975 giant maps (2 min, 12 jobs): 238 hit, 168 only rise above the
+  roof line inside the grid (kept), 23 only lay a flat grass plate on the
+  apron (kept: the source's edge-cell terrain fills, ≤ 32 m, at y 8), 546 in.
+* `tmmaps set-decoration MAP --out OUT --name NoStadium48x48Day`: the
+  decoration ident in the body's Common chunk (Id slot 3, `set_decoration`)
+  and the header's copy (`set_header_decoration`), the mood kept
+  (`NoStadium48x48{Day,Night,Sunrise,Sunset}` exist; `Screen155` has no
+  NoStadium twin). The rewrite shrinks a giant map by ~2 kB (the Id table
+  re-encode), deterministic. Probed in the editor on U10S_06 ×2: flat grass
+  plate, sky, every block and item in place.
+* Delivery, the bridge-thrifty way: `tinyctl rezip --note NoStadium` makes the
+  38 new zips locally (the MAPS.tsv rows of the swapped maps get the new byte
+  count and the mark), `hunt-push` moves the 238 maps (1.15 GB, one stream,
+  skips what is there), `hunt-update` publishes them in place (uids kept: the
+  hunt-club rooms/campaigns stay valid), `release-rebuild` rezips each
+  release asset on the box and re-uploads it (md5 = the local zip).
+
+## Giant set: stacked water tiles connect vertically (2026-09-14 22:20Z)
+
+Everios96: "don't forget map 10 on giant, the water blocks are not connected
+to each other vertically, creating a roof above the player". The ×2 pool of
+10 was four rows of native `DecoWallWaterBase` tiles, the bottom row with the
+source's flags and the rows above plain air (flags 0). Measured with
+`/mapblocks2?list=baked` on the loaded map: a PLAIN tile — ground or air —
+emits its `DecoWallWaterFCT` water sheet on top whether or not a water tile
+sits above it (508 sheets for 168 columns: a sheet every 8 m, seen from below
+as a black ceiling), and the engine floats the car at ITS tile's volume top
+(the car bobbed at y 24 in a pool whose surface is at 40).
+
+The editor's own convention for a deep pool, read off the club's sources
+(U10S_91: 4 rows, _131: 12 rows, _221: 5 rows): every row below the top
+carries **additional variant 1 ("InDecoWallPillar") + bit 16 = `0x210000`**
+(`0x211000` with the ground bit on the terrain row), the top row plain `0`.
+That variant's top clip is matched away by ANY water tile above it (nothing
+emitted); under a plain GROUND tile it emits `DecoWallWaterBaseFCT` =
+`Platform\Base_FCT.Prefab`, a 32×32 ResonantMetal plate — the "collidable
+clip cap" the tiny research met on free custom blocks (TINY.md 2026-09-11) —
+so `[stacked, ground, ground, air]` would put metal lids inside the pool.
+Rule now (`giantwater`, `STACKED_BELOW`): a tile with a water tile above →
+`(flags & !ground) | 0x210000` (ground bit kept on the bottom tile of a
+ground block), the column top → `flags & !(ground | 0x210000)`. Giant 10:
+172 sheets for 172 columns, no caps; giant 131 (24 rows): 720 for 720.
+Buoyancy is still per tile (the car floats at its row's top: 24.7 m on 10,
+then the up-ramp) — the same physics the source has at 1×, scaled.
+
+`mapgeom giantwater --rewater --anchor from-tiles`: a water-only rebuild of a
+finished giant map — the existing pool tiles dropped, the transform derived
+from them, everything else byte-identical. 89 club maps have
+`DecoWallWaterBase`; 80 re-watered and updated in place (the other 9 keep
+their pools at source row 0, 64 m underground, clipped at ×2 — nothing to
+show). `--legacy-stack` / `--below-flags HEX` keep the experiments repeatable.

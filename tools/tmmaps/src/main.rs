@@ -107,6 +107,53 @@ fn main() {
         "swapmodel" => surgery::swapmodel(&args),
         "wpdump" => surgery::wpdump(&args),
         "waypoints" => surgery::waypoints(&args),
+        // seed-item MAP --out OUT: one template item record into a 0-item map (the
+        // tiny writer's clone donor; U10S_113, 2026-09-13)
+        // rename-map MAP --out OUT --name NEW: the map's own name (header + body), nothing else
+        // set-decoration MAP --out OUT --name NoStadium48x48Day: the map's decoration
+        // ident (the mood + the arena) in the body's Common chunk (the Id table's
+        // slot 3, `set_decoration`) and the header's copy of it
+        // (`set_header_decoration`); nothing else — the header XML's mood attribute
+        // is the same mood. The Stadium arena → its NoStadium twin (2026-09-14,
+        // Everios96: giant maps "don't fit inside the stadium anymore").
+        "set-decoration" => {
+            let src = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps set-decoration MAP --out OUT --name NEW"); std::process::exit(2) });
+            let out = tmmaps::cli::flag(&args, "--out").map(String::from).unwrap_or_else(|| { eprintln!("--out OUT"); std::process::exit(2) });
+            let new = tmmaps::cli::flag(&args, "--name").map(String::from).unwrap_or_else(|| { eprintln!("--name NEW"); std::process::exit(2) });
+            let mut m = tmmaps::map::MapFile::load(std::path::Path::new(&src));
+            let old = m.decoration_id.clone();
+            if old == new {
+                println!("{out}: decoration already {new:?}");
+                std::fs::copy(&src, &out).expect("copy");
+            } else {
+                m.set_decoration(&new);
+                let h = m.set_header_decoration(&old, &new);
+                m.write_to(std::path::Path::new(&out)).expect("write");
+                let back = tmmaps::map::MapFile::load(std::path::Path::new(&out));
+                println!("{out}: decoration {old:?} -> {new:?} (header {}; readback {:?})", if h { "rewritten" } else { "NOT FOUND" }, back.decoration_id);
+                if back.decoration_id != new || !h {
+                    std::process::exit(1);
+                }
+            }
+        }
+        "rename-map" => {
+            let src = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps rename-map MAP --out OUT --name NEW"); std::process::exit(2) });
+            let out = tmmaps::cli::flag(&args, "--out").map(String::from).unwrap_or_else(|| { eprintln!("--out OUT"); std::process::exit(2) });
+            let new = tmmaps::cli::flag(&args, "--name").map(String::from).unwrap_or_else(|| { eprintln!("--name NEW"); std::process::exit(2) });
+            let old = tmmaps::header::read(&src).map(|h| h.name).unwrap_or_default();
+            let mut m = tmmaps::map::MapFile::load(std::path::Path::new(&src));
+            let (h, b) = m.set_map_name(&old, &new);
+            m.write_to(std::path::Path::new(&out)).expect("write");
+            println!("{out}: {old:?} -> {new:?} ({h} in the header, {b} in the body)");
+        }
+        "seed-item" => {
+            let src = args.get(2).cloned().unwrap_or_else(|| { eprintln!("tmmaps seed-item MAP --out OUT"); std::process::exit(2) });
+            let out = tmmaps::cli::flag(&args, "--out").map(String::from).unwrap_or_else(|| { eprintln!("--out OUT"); std::process::exit(2) });
+            let g = tmmaps::gbx::Gbx::parse(&std::fs::read(&src).expect("read map"));
+            let body = tmmaps::map::seed_item_record(&g.body, 26).unwrap_or_else(|e| { eprintln!("tmmaps seed-item: {e}"); std::process::exit(1) });
+            std::fs::write(&out, g.write_body_recompressed(&body)).expect("write");
+            println!("{out}: body {} -> {} bytes", g.body.len(), body.len());
+        }
         "segat" => segments::cmd_segat(&args),
         "segments" => inspect::segment_table(&args),
         "ladder" => ladder::ladder(&args),
@@ -228,7 +275,11 @@ READING A MAP
 
 TINY MAPS (half-scale campaign: every authored block/item -> an embedded static item)
   tmmaps tiny MAP --mapping placements.tsv --library ITEMS.zip --out F [--scale 0.5]
-      [--anchor x,y,z] [--host HOST.Map.Gbx] [--keep-ghost] [--name NAME | --keep-name] [--keep-zone-block]
+      [--anchor x,y,z | --anchor fit] [--host HOST.Map.Gbx] [--keep-ghost] [--name NAME | --keep-name] [--keep-zone-block]
+      [--uid-prefix Tin2] [--name-prefix "Tiny "]
+        --scale 2 with --anchor fit, --uid-prefix Gia2 and --name-prefix "Giant " is the GIANT
+        (double-size) build: the transformed extent is centred in the map grid by whole cells,
+        an overflow above the grid's top row is reported (TINY.md "Giant maps")
         replace every authored block by its library item (mapping rows
         `@index<TAB>ITEM|-<TAB>model_scale<TAB>sx<TAB>sz`; `-` = intentionally
         nothing) and re-point/drop items (`i@index<TAB>ITEM|stock model|-`);

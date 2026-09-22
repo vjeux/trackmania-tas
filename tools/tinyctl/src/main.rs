@@ -37,8 +37,13 @@ mod upload;
 mod pagestatus;
 mod video;
 mod motion;
+mod nadeo;
+mod batch;
+mod pipeline;
 mod mtrender;
 mod mapzips;
+mod dist;
+mod release;
 mod views;
 mod wsx;
 
@@ -51,8 +56,13 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         genealogy zones + policy, zone-block census, waypoints, models;
         with --paks a dry library build listing the models the packs lack
   tinyctl build NN… [--src-dir /tmp/summer2026] [--out-root /tmp] [--tag auto] [--recipe /tmp/tiny3/recipe.env] [--env K=V …]
+                [--out-prefix Summer] [--scale 0.5]
         the tiny build of campaign maps end to end (packs by collection, recipe env,
         mapgeom tiny-library, tmmaps tiny, library unzipped) into <out-root>/tinyNN/<tag>/
+        as <out-prefix>-NN-Tiny.Map.Gbx (the source is <src-dir>/NN-*.Map.Gbx, any campaign);
+        --scale 2 is the GIANT build: every item at ×2, <out-prefix>-NN-Giant.Map.Gbx, map name
+        "Giant <source>", uid Gia2…, the geometry centred in the grid (tmmaps tiny --anchor fit);
+        pipeline takes the same flag (TINY.md "Giant maps")
   tinyctl views SRC.Map.Gbx [--out VIEWS.tsv] [--gate-dist 48] [--ghost G --at MS[,MS…] [--chase-dist 30] [--chase-v 0.3] [--only-chase]]
                 [--trees N --mapping placements.tsv [--tree-dist 30] [--only-trees]]
         (the tiny side sees the trees at half of --tree-dist, and the editor camera
@@ -194,6 +204,13 @@ fn main() {
         "camcheck" => camcheck::cmd(rest),
         "publish-map" => publish::publish_map_cmd(rest),
         "publish-here" => publish::publish_here_cmd(rest),
+        "nadeo-here" => nadeo::cmd(rest),
+        "publish-batch" => batch::publish_batch_cmd(rest),
+        "publish-set" => batch::publish_set_cmd(rest),
+        "tracker-club" => batch::tracker_club_cmd(rest),
+        "pipeline" => pipeline::cmd(rest),
+        "convert-all" => pipeline::convert_all_cmd(rest),
+        "tracker-md" => pipeline::tracker_md_cmd(rest),
         "unproject" => unproject::cmd(rest),
         "upload" => upload::cmd(rest),
         "video" => video::cmd(rest),
@@ -204,6 +221,12 @@ fn main() {
         "motion" => motion::cmd(rest),
         "mtrender" => mtrender::cmd(rest),
         "mapzips" => mapzips::cmd(rest),
+        "dist" => dist::cmd(rest),
+        "release-upload" => release::cmd(rest),
+        "hunt-update" => release::hunt_update_cmd(rest),
+        "hunt-push" => release::hunt_push_cmd(rest),
+        "rezip" => release::rezip_cmd(rest),
+        "release-rebuild" => release::release_rebuild_cmd(rest),
         "box-build" => boxbuild::box_build_cmd(rest),
         "selfbuild" => boxbuild::selfbuild_cmd(rest),
         "help" | "--help" | "-h" => {

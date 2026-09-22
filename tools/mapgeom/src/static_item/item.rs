@@ -333,9 +333,28 @@ impl CGameItemModel {
             _ => None,
         })
     }
-    /// The static object, through entity model -> static object.
+    /// The static object, through entity model -> static object (or the block
+    /// item's first variant with one, for an embedded custom BLOCK).
     pub fn static_object(&self) -> Option<&CPlugStaticObjectModel> {
-        self.model()?.entity_model()?.static_object()
+        let mc = self.model()?;
+        // a block item sits in the entity-model-EDITION slot (the game writes the
+        // edition ref first; `entity_model` follows only when it is null)
+        for slot in [&mc.entity_model_edition, &mc.entity_model] {
+            if let Some(super::Node::BlockItem(b)) = slot.inline.as_deref() {
+                return b.static_object();
+            }
+        }
+        mc.entity_model()?.static_object()
+    }
+    /// The archetype block info an embedded custom BLOCK borrows, if this is one.
+    pub fn block_archetype(&self) -> Option<String> {
+        let mc = self.model()?;
+        for slot in [&mc.entity_model_edition, &mc.entity_model] {
+            if let Some(super::Node::BlockItem(b)) = slot.inline.as_deref() {
+                return b.archetype.as_str().map(|s| s.to_string()).filter(|s| !s.is_empty());
+            }
+        }
+        None
     }
     /// The prefab entity model of a moving item: straight under the model
     /// chunk (the pack's layout) or inside a `CGameCommonItemEntityModel`.

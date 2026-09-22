@@ -160,6 +160,56 @@ pub fn find_item_file(store: &DataStore, model: &str) -> Option<String> {
 pub const STILL_FLAG_KEY: &str = "still";
 
 pub fn stock_half_variant(model: &str, variant: u8) -> Option<&'static str> {
+    stock_scaled_variant(model, variant, 0.5)
+}
+
+/// The stock twin of `model` at `scale`: the half-size one for 0.5 (the table
+/// below), and for 2 the same table read BACKWARDS — a `Flag8m` placement of a
+/// giant build becomes the stock `Flag16m` (its cloth is exactly the 8 m cloth
+/// at ×2, waving under the game's own tween), `ShowFogger8m` the 16 m fogger
+/// (the same box, a plume that carries twice as far), `Screen2x3` the
+/// `Screen2x3Big`, and so on. A model with no twin at the scale bakes as a
+/// scaled static copy like everything else; any other scale bakes everything.
+pub fn stock_scaled_variant(model: &str, variant: u8, scale: f32) -> Option<&'static str> {
+    if (scale - 0.5).abs() < 1e-6 {
+        return stock_half_variant_impl(model, variant);
+    }
+    if (scale - 2.0).abs() < 1e-6 {
+        // the inverse table: every (big, small) pair of the half table, the
+        // Show-rig variant (a single variant, no whole-model twin) left out
+        const BIG_OF: &[(&str, &str)] = &[
+            ("RaceScreen6x1Small", "RaceScreen6x1"),
+            ("Screen16x9Small", "Screen16x9"),
+            ("Screen2x3", "Screen2x3Big"),
+            ("Screen2x3Small", "Screen2x3"),
+            ("Screen4x1Small", "Screen4x1"),
+            ("Screen2x1Small", "Screen2x1"),
+            ("Screen1x1Small", "Screen1x1"),
+            ("Screen155Small", "Screen155"),
+        ];
+        if let Some((_, big)) = BIG_OF.iter().find(|(small, _)| *small == model) {
+            return Some(big);
+        }
+        if model == "Flag8m" && std::env::var("TINY_FLAG_STOCK").as_deref() != Ok("0") {
+            return Some("Flag16m");
+        }
+        if std::env::var("TINY_FX_STOCK").as_deref() != Ok("0") {
+            const FX_BIG: &[(&str, &str)] = &[
+                ("ShowFogger8m", "ShowFogger16m"),
+                ("ShowFoggerWithLight8m", "ShowFoggerWithLight16m"),
+                ("Sparkler8m", "Sparkler16m"),
+                ("ShowTorchSmall", "ShowTorch"),
+            ];
+            if let Some((_, big)) = FX_BIG.iter().find(|(small, _)| *small == model) {
+                return Some(big);
+            }
+        }
+        return None;
+    }
+    None
+}
+
+fn stock_half_variant_impl(model: &str, variant: u8) -> Option<&'static str> {
     const SCREENS: &[(&str, &str)] = &[
         ("RaceScreen6x1", "RaceScreen6x1Small"),
         ("Screen16x9", "Screen16x9Small"),
@@ -248,8 +298,10 @@ pub fn stock_half_variant(model: &str, variant: u8) -> Option<&'static str> {
 /// item carries its A1/A2/A3 variants; `PalmTreeBigB3` -> `PalmTreeBigB`) —
 /// with the collection's smaller species for it: (original item, substitute
 /// item), the substitute being the original when no smaller species exists in
-/// the packs. None when no item matches.
-fn veget_item_pair(store: &DataStore, collection: u32, model_path: &str, cache: &mut BTreeMap<String, Option<String>>) -> Option<(String, String)> {
+/// the packs. None when no item matches. A build that GROWS the map (scale ≥ 1,
+/// the giant maps) keeps every species itself: the smaller-species ladder is
+/// the shrinking build's compromise for a model the game will not scale.
+fn veget_item_pair(store: &DataStore, collection: u32, model_path: &str, scale: f32, cache: &mut BTreeMap<String, Option<String>>) -> Option<(String, String)> {
     let file = model_path.rsplit('\\').next().unwrap_or(model_path);
     let low = file.to_ascii_lowercase();
     let stem = if low.ends_with(".vegettreemodel.gbx") { &file[..file.len() - ".vegettreemodel.gbx".len()] } else { file };
@@ -273,7 +325,7 @@ fn veget_item_pair(store: &DataStore, collection: u32, model_path: &str, cache: 
     // PlantSmallA"). No smaller species in the packs: the species itself stays.
     let out = found.map(|item| {
         let sub = match veget_substitute(collection, &item) {
-            Some(sub) if find_item_file(store, sub).is_some() => sub.to_string(),
+            Some(sub) if scale < 1.0 && find_item_file(store, sub).is_some() => sub.to_string(),
             _ => item.clone(),
         };
         (item, sub)
@@ -659,12 +711,43 @@ struct BlockBake<'b> {
 
 /// The block info of a key, through the index (`--debug lookup` says why a
 /// name has none).
-fn load_block_info(idx: &mut crate::blockmap::BlockInfoIndex, store: &mut DataStore, name: &str) -> Result<(String, crate::blockinfo::BlockInfo), String> {
-    let Some(path) = idx.path_for(name) else {
-        if crate::debug::on("lookup") {
-            eprintln!("  lookup {name:?}: no path; index knows {} stems; store has {} entries", idx.stem_count(), store.entries().count());
+/// Block names old maps carry that the current pack spells differently (the game
+/// resolves them at load; Everios96's u10s maps, 2026-09-13): the typo'd
+/// `PlatformGrasssSlope2UTop`, the ice diagonal with wall whose word order moved
+/// (`RoadIceDiagLeftWithWallStraight` -> `RoadIceWithWallDiagLeftStraight`), and
+/// the flat `OpenIceRoadToZoneRight` the pack no longer ships (Tech and Dirt keep
+/// theirs) -> the symmetric `…ToZoneCenter` transition stands in.
+pub fn block_rename(name: &str) -> Option<String> {
+    if name.contains("Grasss") {
+        return Some(name.replace("Grasss", "Grass"));
+    }
+    for side in ["Left", "Right"] {
+        let from = format!("RoadIceDiag{side}WithWall");
+        if let Some(rest) = name.strip_prefix(from.as_str()) {
+            return Some(format!("RoadIceWithWallDiag{side}{rest}"));
         }
-        return Err("no block info file with this name".into());
+    }
+    if name == "OpenIceRoadToZoneRight" || name == "OpenIceRoadToZoneLeft" {
+        return Some("OpenIceRoadToZoneCenter".into());
+    }
+    None
+}
+
+fn load_block_info(idx: &mut crate::blockmap::BlockInfoIndex, store: &mut DataStore, name: &str) -> Result<(String, crate::blockinfo::BlockInfo), String> {
+    let path = match idx.path_for(name) {
+        Some(p) => p,
+        None => match block_rename(name).and_then(|n| idx.path_for(&n).map(|p| (n, p))) {
+            Some((n, p)) => {
+                eprintln!("  block {name}: not in the pack; the current name {n} stands in");
+                p
+            }
+            None => {
+                if crate::debug::on("lookup") {
+                    eprintln!("  lookup {name:?}: no path; index knows {} stems; store has {} entries", idx.stem_count(), store.entries().count());
+                }
+                return Err("no block info file with this name".into());
+            }
+        },
     };
     let bi = idx.load(store, &path).map_err(|e| format!("block info: {e}"))?.clone();
     Ok((path, bi))
@@ -853,6 +936,68 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
                 }
             }
             None => m.notes.push("GateSpecial block without a Collision-material trigger disc in its block info".to_string()),
+        }
+    }
+    // A CAR-CHANGE gate BLOCK (GateGameplaySnow / Rally / Desert / Stadium): the
+    // family shares one prefab and one trigger shape (`Gate\Gameplay_Trigger.Shape.Gbx`,
+    // the variant's trigger_shapes) and the CAR is the modifier folder's
+    // `Collision` material — gameplay 0x15 Snow, 0x16 Rally, 0x17 Desert; the
+    // Stadium gate has no modifier folder and the shape's own
+    // `CollisionGateGameplay` material says 0x14. Until 2026-09-13 the baker
+    // knew only `GateSpecial*`, so every car gate came out as a plain ring
+    // (Everios96: "on map 966 there is a stadium gate placed, but on the
+    // original its snow car" — no trigger at all, in fact).
+    if m.special.is_none() && name.starts_with("GateGameplay") {
+        let mut done = false;
+        for sp in &plan.pk.variant.trigger_shapes {
+            let sm = match store.load_model(sp) {
+                Ok(x) => x,
+                Err(e) => { m.notes.push(format!("gameplay trigger shape {sp}: {e}")); continue; }
+            };
+            let mut lb = crate::static_item::LookbackState::default();
+            lb.defined_nodes.extend(sm.external_indices().iter().copied());
+            let mut r = crate::static_item::Rd::new(&sm.body, 0, lb);
+            let sf = match CPlugSurface::parse(&mut r) {
+                Ok(x) => x,
+                Err(e) => { m.notes.push(format!("gameplay trigger shape {sp}: {e}")); continue; }
+            };
+            // the effect: the modifier folder's Collision material, else the shape's own
+            let (ids, from) = match crate::static_item::build::special_collision_ids(store, &m) {
+                Some((link, ids)) => (ids, link),
+                None => {
+                    let own = match &sf.surf {
+                        crate::static_item::surface::Surf::Mesh { triangles, .. } => triangles.iter().map(|t| (t.material_id, t.gameplay)).find(|(_, gp)| *gp != 0),
+                        _ => None,
+                    };
+                    match own {
+                        Some(ids) => (ids, "the trigger shape's own material".to_string()),
+                        None => {
+                            // the shape's external material file (CollisionGateGameplay: 0x14 Stadium)
+                            let mat = sm.externals.iter().map(|(_, p)| p.clone()).find(|p| p.to_ascii_lowercase().contains("collision"));
+                            match mat.and_then(|p| crate::static_item::materials::material_surface_ids(store, &p).map(|i| (i, p))) {
+                                Some((i, p)) => (i, p),
+                                None => ((0, 0), "nothing".to_string()),
+                            }
+                        }
+                    }
+                }
+            };
+            if ids.1 == 0 {
+                m.notes.push(format!("gameplay gate: no gameplay id found ({from}); trigger not emitted"));
+                continue;
+            }
+            match crate::static_item::build::trigger_mesh(&sf, &crate::geom::IDENTITY, scale, ids) {
+                Some(t) => {
+                    m.notes.push(format!("gameplay gate trigger from {}: physics {} gameplay {} from {from} — prefab form", sp.rsplit('\\').next().unwrap_or(sp), ids.0, ids.1));
+                    m.special = Some(t);
+                    done = true;
+                    break;
+                }
+                None => m.notes.push(format!("gameplay trigger shape {sp}: no triangles")),
+            }
+        }
+        if !done && plan.pk.variant.trigger_shapes.is_empty() {
+            m.notes.push("gameplay gate block without a trigger shape in its variant".to_string());
         }
     }
     // waypoint: type from the block info; the trigger is the
@@ -1067,7 +1212,7 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             // baked card (ship18c/18d baked them: 02 lost 3 475 placements, 12 7 250);
             // only species with NO stock item (BlueBay JungleForest cards) are inlined
             let mut pair_cache: BTreeMap<String, Option<String>> = BTreeMap::new();
-            let has_stock = !has_hull && veget_item_pair(store, collection, &p, &mut pair_cache).is_some();
+            let has_stock = !has_hull && veget_item_pair(store, collection, &p, scale, &mut pair_cache).is_some();
             if has_hull || has_stock { trees.push((p, iso)); } else { filler.push((p, iso)); }
         }
         m.veget = trees;
@@ -1695,6 +1840,10 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // model at the second's placements (2026-09-09: the occupied-cell probe of
     // Summer 20 "lost" its caps that way). A probe build takes a base of its own.
     let mut next_alias = alias_base();
+    // embedded custom blocks already baked: relative path -> (alias, sx, sz, units)
+    let mut custom_blocks: BTreeMap<String, (String, u32, u32, Vec<[i32; 3]>)> = BTreeMap::new();
+    // the map's own embedded files (custom items under Items\…, custom blocks anywhere)
+    let embedded: BTreeMap<String, Vec<u8>> = crate::embedded::files(&source).unwrap_or_default();
     // `v@ALIAS` rows (the prefabs' vegetation as stock items) and the
     // VegetTreeModel stem -> stock item cache behind them.
     let mut veget_rows = String::new();
@@ -1793,6 +1942,106 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     marks.mark("trees baked, round 1 (worker pool)");
     // the bookkeeping, in key order
     for (i, (key, info)) in infos.iter().enumerate() {
+        // A CUSTOM BLOCK the map embeds (`<path>.Block.Gbx_CustomBlock`: a mesh-modeler
+        // crystal in a CGameBlockItem, no pack block info) bakes like a custom item, in
+        // the block's frame; its footprint is read off the baked collision (cells of
+        // 32 × 8 × 32 m); a gameplay archetype (…Special…) lends its trigger.
+        // Everios96's u10s maps: TM2 dirt ports, magnet platforms, colourable bars
+        // (5 of the first 75 maps, 2026-09-13).
+        if let Some(rel) = key.name.strip_suffix("_CustomBlock").filter(|r| r.to_ascii_lowercase().ends_with(".block.gbx")) {
+            if let Some((alias, sx, sz, units)) = custom_blocks.get(rel) {
+                block_map.insert(key.map_key(), (alias.clone(), *sx, *sz, units.clone()));
+                continue;
+            }
+            let want = format!("\\{}", rel.replace('/', "\\").to_ascii_lowercase());
+            let found = embedded.iter().find(|(k, _)| {
+                let k = format!("\\{}", k.replace('/', "\\").to_ascii_lowercase());
+                k.ends_with(&want)
+            });
+            let Some((_, bytes)) = found else {
+                outcomes.push(key.outcome("", key.source(), Err(format!("custom block: the map embeds no file ending in `{rel}`"))));
+                continue;
+            };
+            // the archetype's gameplay trigger, baked the way its pack block bakes
+            let arche = crate::static_item::parse_file(bytes)
+                .ok()
+                .and_then(|f| f.item.block_archetype())
+                .or_else(|| crate::crystal_model::locate(&tmmaps::gbx::Gbx::parse(bytes).body).ok().and_then(|l| l.archetype.map(|(a, _)| a)).filter(|a| !a.is_empty()));
+            let mut special: Option<(CPlugSurface, Option<String>)> = None;
+            let mut special_note = String::new();
+            if let Some(a) = arche.as_deref().filter(|a| a.contains("Special")) {
+                match load_block_info(&mut idx, store, a) {
+                    Ok((apath, abi)) => {
+                        let akey = BlockKey { name: a, flags: key.flags & !crate::blockmap::FLAG_GHOST, inherited_mods: "", placements: 0 };
+                        match plan_block(&abi, &akey, collection, &ambient, &tile_zones, &BTreeMap::new()) {
+                            BlockPlan::Bake(aplan) => match bake_block(store, &aplan, a, &apath, &abi, "Archetype.Item.Gbx", scale, collection, &legacy, None, false) {
+                                Ok((_, am, _)) => {
+                                    special = am.special.clone().map(|s| (s, am.gate_kind.clone()));
+                                    if special.is_none() {
+                                        let why: Vec<String> = am.notes.iter().filter(|n| n.contains("special") || n.contains("Special")).take(2).cloned().collect();
+                                        special_note = format!("; archetype {a} baked without a special trigger ({})", why.join(" | "));
+                                    }
+                                }
+                                Err(e) => special_note = format!("; archetype {a} bake failed: {}", e.lines().next().unwrap_or("")),
+                            },
+                            BlockPlan::Nothing { why, .. } => special_note = format!("; archetype {a}: nothing to bake ({why})"),
+                            BlockPlan::Refused { error, .. } => special_note = format!("; archetype {a} refused: {error}"),
+                            BlockPlan::Reuse { .. } => special_note = format!("; archetype {a}: reuse plan (no trigger taken)"),
+                        }
+                    }
+                    Err(e) => special_note = format!("; archetype {a}: {e}"),
+                }
+            }
+            let alias = format!("AC{next_alias:08}");
+            next_alias += 1;
+            let ident = format!("{alias}.Item.Gbx");
+            match crate::static_item::build::static_item_from_custom_block(bytes, &ident, &ident, scale, collection, special) {
+                Ok((out, m, arche)) if !m.visuals.is_empty() => {
+                    // footprint in cells from the scaled collision (fallback: the visuals)
+                    let mut max = [0.0f32; 3];
+                    let pts: Vec<[f32; 3]> = if m.surf_vertices.is_empty() { m.visuals.iter().filter_map(|v| v.visual.main.as_ref().map(|mm| { let b = mm.bounding_box; [b[3], b[4], b[5]] })).collect() } else { m.surf_vertices.clone() };
+                    for p in &pts {
+                        for i in 0..3 {
+                            max[i] = max[i].max(p[i] / scale);
+                        }
+                    }
+                    let cells = |extent: f32, size: f32| ((extent - 0.05) / size).ceil().max(1.0) as u32;
+                    let (sx, sy, sz) = (cells(max[0], 32.0), cells(max[1], 8.0), cells(max[2], 32.0));
+                    let mut units: Vec<[i32; 3]> = Vec::new();
+                    for x in 0..sx as i32 {
+                        for y in 0..sy as i32 {
+                            for z in 0..sz as i32 {
+                                units.push([x, y, z]);
+                            }
+                        }
+                    }
+                    for (file, dds) in &m.pictures {
+                        pictures.entry(format!("Items/{file}")).or_insert_with(|| dds.clone());
+                    }
+                    let summary = format!("custom block{}: {} bytes, {} visuals, {} collision tris, footprint {sx}x{sz} ({sy} high){}", arche.as_ref().map(|a| format!(" (archetype {a})")).unwrap_or_default(), out.len(), m.visuals.len(), m.surf_triangles.len(), if m.special.is_some() { ", special trigger".to_string() } else { special_note.clone() });
+                    files.insert(format!("Items/{ident}"), out);
+                    outcomes.push(key.outcome(&alias, key.source(), Ok(summary)));
+                    block_map.insert(key.map_key(), (alias.clone(), sx, sz, units.clone()));
+                    custom_blocks.insert(rel.to_string(), (alias, sx, sz, units));
+                }
+                // a block file with no geometry at all (`Trou.Block.Gbx`, 644 bytes: a hole
+                // marker) or one whose bake has no visuals: intentionally no item
+                Ok((_, m, _)) => {
+                    next_alias -= 1;
+                    block_map.insert(key.map_key(), ("-".into(), 1, 1, vec![[0, 0, 0]]));
+                    custom_blocks.insert(rel.to_string(), ("-".into(), 1, 1, vec![[0, 0, 0]]));
+                    outcomes.push(key.outcome("-", key.source(), Ok(format!("custom block without visuals: intentionally no item ({})", m.notes.iter().take(2).cloned().collect::<Vec<_>>().join("; ")))));
+                }
+                Err(e) if e.contains("has no inline mesh") && bytes.len() < 4096 => {
+                    next_alias -= 1;
+                    block_map.insert(key.map_key(), ("-".into(), 1, 1, vec![[0, 0, 0]]));
+                    custom_blocks.insert(rel.to_string(), ("-".into(), 1, 1, vec![[0, 0, 0]]));
+                    outcomes.push(key.outcome("-", key.source(), Ok(format!("empty custom block ({} bytes, no mesh): intentionally no item", bytes.len()))));
+                }
+                Err(e) => outcomes.push(key.outcome(&alias, key.source(), Err(format!("custom block: {e}")))),
+            }
+            continue;
+        }
         let (path, bi) = match info {
             Ok(x) => x,
             Err(e) => {
@@ -1890,7 +2139,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                             baked_tree_rows += 1;
                             continue;
                         }
-                        let Some((orig, item)) = veget_item_pair(store, collection, p, &mut veget_cache) else { continue };
+                        let Some((orig, item)) = veget_item_pair(store, collection, p, scale, &mut veget_cache) else { continue };
                         let sink = veget_sink(store, &orig, &item, scale, &mut height_cache);
                         if sink > 0.0 {
                             sunk_rows += 1;
@@ -1989,8 +2238,6 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     }
     // (model, variant, light skin) -> new model name: an embedded alias (AI...Item.Gbx) or a stock species
     let mut item_map: BTreeMap<(String, u8, Option<String>), String> = BTreeMap::new();
-    // the map's own embedded files (custom items live under Items\…)
-    let embedded: BTreeMap<String, Vec<u8>> = crate::embedded::files(&source).unwrap_or_default();
     let mut item_alias_n = alias_base();
     // a model without a variant list is built once; later variants reuse it
     let mut single_variant: BTreeMap<String, String> = BTreeMap::new();
@@ -2135,7 +2382,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         // file). The mapping row carries model_scale = scale so the placement
         // is treated like a half-size copy (scale 1, pivot halved).
         // (The gates have no such twin, see `stock_half_variant`.)
-        if let Some(small) = stock_half_variant(model, *variant) {
+        if let Some(small) = stock_scaled_variant(model, *variant, scale) {
             if let Some(logical) = find_item_file(store, small) {
                 // The placement must carry the item's OWN ident, case-exact: the
                 // pack stores `Stadium\Items\ShowFogger8M.Item.Gbx` whose header
@@ -2155,22 +2402,26 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 // a stand-in for the model as a whole is remembered for its
                 // later variants; one for a single variant (`Show` 28, the
                 // fogger rig) leaves the others to the bake
-                if stock_half_variant(model, 0) == Some(small) {
+                if stock_scaled_variant(model, 0, scale) == Some(small) {
                     single_variant.insert(model.clone(), small.to_string());
                 }
                 item_map.insert(key, small.to_string());
                 half_stock.insert(small.to_string());
                 let why = match small {
-                    "Flag8m" => "its cloth waves under the game's own vertex tween",
+                    "Flag8m" | "Flag16m" => "its cloth waves under the game's own vertex tween",
                     "ShowFogger8m" | "ShowFoggerWithLight8m" => "its smoke is the game's own particle system, at half reach",
+                    "ShowFogger16m" | "ShowFoggerWithLight16m" => "its smoke is the game's own particle system, at twice the reach",
                     "Sparkler8m" if model == "Sparkler8m" => "kept as the stock item, its sparks are the game's own particle system at their full 8 m reach (no 4 m sibling exists)",
                     "Sparkler8m" => "its sparks are the game's own particle system, at half reach",
+                    "Sparkler16m" => "its sparks are the game's own particle system, at twice the reach",
                     "ShowTorchSmall" => "its flame is the game's own particle system, on the small torch",
+                    "ShowTorch" => "its flame is the game's own particle system, on the big torch",
                     _ => "its screen keeps the live advertisement",
                 };
+                let kind_word = if scale > 1.0 { "double-size" } else { "half-size" };
                 // the report names the variant when only that one stands in
-                let source = if stock_half_variant(model, 0) == Some(small) { model.clone() } else { format!("{model} v{variant}") };
-                outcomes.push(Outcome { alias: small.to_string(), kind: "item", source, placements: *n, result: Ok(format!("stock half-size variant {small}: the game's own item, {why}")) });
+                let source = if stock_scaled_variant(model, 0, scale) == Some(small) { model.clone() } else { format!("{model} v{variant}") };
+                outcomes.push(Outcome { alias: small.to_string(), kind: "item", source, placements: *n, result: Ok(format!("stock {kind_word} variant {small}: the game's own item, {why}")) });
                 continue;
             }
         }
@@ -2294,7 +2545,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                         baked_tree_rows += 1;
                         continue;
                     }
-                    let Some((orig, item)) = veget_item_pair(store, collection, p, &mut veget_cache) else { continue };
+                    let Some((orig, item)) = veget_item_pair(store, collection, p, scale, &mut veget_cache) else { continue };
                     let sink = veget_sink(store, &orig, &item, scale, &mut height_cache);
                     if sink > 0.0 {
                         sunk_rows += 1;
@@ -2324,7 +2575,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                         outcomes.push(Outcome { alias: tree, kind: "item", source: source_name, placements: *n, result: Ok("vegetation: baked half-size (see the tree row)".into()) });
                         continue;
                     }
-                    let by_species = species.as_deref().and_then(|p| veget_item_pair(store, collection, p, &mut veget_cache));
+                    let by_species = species.as_deref().and_then(|p| veget_item_pair(store, collection, p, scale, &mut veget_cache));
                     let by_name = || veget_substitute(collection, model).filter(|s| find_item_file(store, s).is_some()).map(|s| (model.clone(), s.to_string()));
                     match by_species.or_else(by_name) {
                         Some((orig, sub)) => {

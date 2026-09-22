@@ -21,9 +21,9 @@ use std::time::{Duration, Instant};
 
 use crate::wsx::Wsx;
 
-const CORE: &str = "https://prod.trackmania.core.nadeo.online";
-const LIVE: &str = "https://live-services.trackmania.nadeo.live";
-const STORE: &str = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter";
+pub const CORE: &str = "https://prod.trackmania.core.nadeo.online";
+pub const LIVE: &str = "https://live-services.trackmania.nadeo.live";
+pub const STORE: &str = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter";
 const BOX_TOOLS: &str = "/home/vjeux/trackmania-tas/tools/target/release";
 const STAGE: &str = "/home/vjeux/shoot/_stage";
 const POWERSHELL: &str = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
@@ -71,7 +71,7 @@ fn curl(args: &[&str]) -> Result<(String, String), String> {
     Ok((body, code))
 }
 
-fn token(shootctl: &str, aud: &str) -> Result<String, String> {
+pub fn token(shootctl: &str, aud: &str) -> Result<String, String> {
     let st = Command::new(shootctl).arg("get").arg(format!("/nadeotoken?aud={aud}")).output().map_err(|e| format!("{shootctl}: {e}"))?;
     if !st.status.success() {
         return Err(format!("/nadeotoken?aud={aud}: {}", String::from_utf8_lossy(&st.stderr).trim()));
@@ -135,19 +135,30 @@ pub fn publish_here_cmd(args: &[String]) -> Result<(), String> {
     // 2026-09-09: 6–8 min a map at ~60 KB/s), during which the game is idle
     // and every other driver waited on this lock for nothing.
     let owner = format!("publish-{}", o_stem(&opts.map));
-    let res = match render_lock(&opts.shootctl, &owner, "acquire", &["--wait", "900"]) {
-        Ok(()) => {
-            let toks = token(&opts.shootctl, "NadeoServices").and_then(|core| token(&opts.shootctl, "NadeoLiveServices").map(|live| (core, live)));
-            if !opts.playcheck {
-                let _ = render_lock(&opts.shootctl, &owner, "release", &[]);
-            }
-            let r = toks.and_then(|(core, live)| publish_here(&opts, &core, &live));
-            if opts.playcheck {
-                let _ = render_lock(&opts.shootctl, &owner, "release", &[]);
-            }
-            r
+    // Tokens the plugin wrote in the last 40 minutes are reused without the
+    // lock (nadeo.rs; 2026-09-12: the lock had no queue and the u10s publishes
+    // starved behind a lightmap batch) — unless a playcheck follows, which
+    // needs the game itself.
+    let reuse = if opts.playcheck { None } else { crate::nadeo::fresh_tokens() };
+    let res = match reuse {
+        Some((core, live)) => {
+            println!("tokens: reusing the plugin's files (no render lock taken)");
+            publish_here(&opts, &core, &live)
         }
-        Err(e) => Err(format!("render lock: {e}")),
+        None => match render_lock(&opts.shootctl, &owner, "acquire", &["--wait", "900"]) {
+            Ok(()) => {
+                let toks = token(&opts.shootctl, "NadeoServices").and_then(|core| token(&opts.shootctl, "NadeoLiveServices").map(|live| (core, live)));
+                if !opts.playcheck {
+                    let _ = render_lock(&opts.shootctl, &owner, "release", &[]);
+                }
+                let r = toks.and_then(|(core, live)| publish_here(&opts, &core, &live));
+                if opts.playcheck {
+                    let _ = render_lock(&opts.shootctl, &owner, "release", &[]);
+                }
+                r
+            }
+            Err(e) => Err(format!("render lock: {e}")),
+        },
     };
     let summary = match &res {
         Ok(lines) => format!("OK in {:.0}s\n{}\n", t0.elapsed().as_secs_f64(), lines.join("\n")),
@@ -163,7 +174,7 @@ pub fn publish_here_cmd(args: &[String]) -> Result<(), String> {
 /// one-driver lock (a directory beside the game; shootset and playshots take
 /// the same one). Through the CLI rather than a crate link: the box builds
 /// shootctl and tinyctl side by side, and the lock's home is shootctl's.
-fn render_lock(shootctl: &str, owner: &str, verb: &str, extra: &[&str]) -> Result<(), String> {
+pub fn render_lock(shootctl: &str, owner: &str, verb: &str, extra: &[&str]) -> Result<(), String> {
     let out = Command::new(shootctl).arg("lock").arg(verb).arg("--owner").arg(owner).args(extra).output().map_err(|e| format!("{shootctl}: {e}"))?;
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     if let Some(l) = text.lines().find(|l| l.contains("render lock")) {
@@ -418,11 +429,11 @@ pub fn publish_map_cmd(args: &[String]) -> Result<(), String> {
 /// One map. `build_dir` (the --tag form) derives --map, --items-dir, --paks and
 /// --name; the flags still win when given. Returns the one-line verdict
 /// (name, uid, mapId, stored md5 verdict, playcheck).
-fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Result<String, String> {
+pub fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Result<String, String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let map = match (f("--map"), build_dir) {
         (Some(m), _) => PathBuf::from(m),
-        (None, Some(d)) => d.join(format!("Summer-{n:02}-Tiny.Map.Gbx")),
+        (None, Some(d)) => d.join(crate::build::built_map_name(args, &format!("{n:02}"))),
         (None, None) => return Err("publish-map needs --map TINY.Map.Gbx (or --tag T)".into()),
     };
     if !map.exists() {
@@ -452,9 +463,13 @@ fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Result<St
     if hdr.uid == "-" || hdr.authortime == "-" || hdr.envir == "-" {
         return Err("the header lacks uid / authortime / envir — not publishable".into());
     }
-    if !hdr.uid.starts_with("Tin") && !tmmaps::cli::has(args, "--any-uid") {
-        return Err(format!("uid {} does not start with `Tin` — is this the tiny map? (--any-uid to publish anyway)", hdr.uid));
+    // the uid head says which build this is: `Tin…` a tiny one, `Gia…` a giant
+    // one (tmmaps tiny --uid-prefix), `Sam…` a scale-1 rebuild
+    let label = label_of_uid(&hdr.uid);
+    if label.is_none() && !tmmaps::cli::has(args, "--any-uid") {
+        return Err(format!("uid {} does not start with `Tin`, `Gia` or `Sam` — is this a converted map? (--any-uid to publish anyway)", hdr.uid));
     }
+    let label = label.unwrap_or("Tiny");
     // gate: item-check over the library items when given (in-process: the
     // same code `mapgeom item-check` runs; prints one line per item)
     if let Some(dir) = items_dir.clone() {
@@ -504,11 +519,11 @@ fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Result<St
         return Err(format!("{}: {size} bytes is over Nadeo's 25 MiB upload cap ({NADEO_MAX_BYTES}) — the store answers HTTP 400 \"not a valid file\"; rebuild with a tighter --lod-pick-min-verts", map.display()));
     }
     let wsx = Wsx::new(args);
-    let remote = format!("{STAGE}/Tiny{n:02}.Map.Gbx");
+    let remote = format!("{STAGE}/{}", box_stage_name(label, n));
     eprintln!("pushing {} → box {remote} …", map.display());
     wsx.push(&map, &remote)?;
     let tinyctl = f("--box-tinyctl").unwrap_or_else(|| format!("{BOX_TOOLS}/tinyctl"));
-    let remote_out = format!("/mnt/c/Users/vjeux/tinyshots/publish-{n:02}");
+    let remote_out = format!("/mnt/c/Users/vjeux/tinyshots/{}", box_publish_dir(label, n));
     let mut cmd = format!("{tinyctl} publish-here --detach --map {remote} --name '{}' --club {} --campaign {} --campaign-name '{}' --outdir {remote_out} --position {}", name.replace('\'', ""), f("--club").unwrap_or_else(|| DEFAULT_CLUB.into()), f("--campaign").unwrap_or_else(|| DEFAULT_CAMPAIGN.into()), f("--campaign-name").unwrap_or_else(|| DEFAULT_CAMPAIGN_NAME.into()).replace('\'', ""), f("--position").unwrap_or_else(|| (n - 1).to_string()));
     if tmmaps::cli::has(args, "--playcheck") {
         cmd.push_str(" --playcheck");
@@ -527,18 +542,50 @@ fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Result<St
         }
     }
     // the verdict line: name, uid, mapId, stored-bytes verdict, playcheck
-    let pick = |prefix: &str, k: &str| -> String {
-        done.lines().find(|l| l.starts_with(prefix)).and_then(|l| l.split('\t').find(|c| c.trim_start().starts_with(k))).map(|s| s.trim().to_string()).unwrap_or_else(|| format!("{k} ?"))
-    };
-    let stored = if done.lines().any(|l| l.starts_with("stored") && l.contains("IDENTICAL")) { "stored IDENTICAL" } else { "stored ?" };
-    let play = done.lines().find(|l| l.starts_with("playcheck")).map(|l| l.replace('\t', " ")).unwrap_or_else(|| "playcheck: not run".into());
+    // The done text arrives FLATTENED (wait_done reads it with `tr '\n' ' '`), so the
+    // verdict is read from its whitespace tokens, not its lines (2026-09-12).
+    let toks: Vec<&str> = done.split_whitespace().collect();
+    let after = |k: &str| -> String { toks.iter().position(|t| *t == k).and_then(|i| toks.get(i + 1)).map(|s| format!("{k} {s}")).unwrap_or_else(|| format!("{k} ?")) };
+    let pick = |_prefix: &str, k: &str| -> String { after(k) };
+    let stored = if done.contains("IDENTICAL") { "stored IDENTICAL" } else { "stored ?" };
+    let play = done.find("playcheck").map(|i| done[i..].replace('\t', " ")).unwrap_or_else(|| "playcheck: not run".into());
     let play_short: String = play.chars().take(110).collect();
-    let how = done.lines().find(|l| l.starts_with("upload")).and_then(|l| l.split('\t').nth(1)).unwrap_or("?").to_uppercase();
+    let how = toks.iter().position(|t| *t == "upload").and_then(|i| toks.get(i + 1)).unwrap_or(&"?").to_uppercase();
     Ok(format!("{name}\tuid {}\t{}\t{how}\t{}\t{play_short}", hdr.uid, pick("upload", "mapId"), stored))
 }
 
 /// Lowercase hex md5 — what `md5sum` prints, so the numbers here can be
 /// checked against a shell's by eye.
-fn md5_hex(data: &[u8]) -> String {
+pub fn md5_hex(data: &[u8]) -> String {
     mapgeom::md5::md5(data).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The build a converted map's uid head names: `Tin` → Tiny, `Gia` → Giant,
+/// `Sam` → Same (see `build::uid_prefix`); None for any other uid.
+pub fn label_of_uid(uid: &str) -> Option<&'static str> {
+    if uid.starts_with("Tin") {
+        Some("Tiny")
+    } else if uid.starts_with("Gia") {
+        Some("Giant")
+    } else if uid.starts_with("Sam") {
+        Some("Same")
+    } else {
+        None
+    }
+}
+
+/// The box's staging file for map `n` of a build: `Tiny05.Map.Gbx` (the name
+/// every tiny run has used), `Giant05.Map.Gbx` for a giant build — the two runs
+/// share the box's `_stage` and must not overwrite each other (2026-09-13).
+pub fn box_stage_name(label: &str, n: usize) -> String {
+    format!("{label}{n:02}.Map.Gbx")
+}
+
+/// The box's publish output directory (under `tinyshots/`) for map `n` of a
+/// build: `publish-05` for a tiny build, `publish-giant-05` for a giant one.
+pub fn box_publish_dir(label: &str, n: usize) -> String {
+    match label {
+        "Tiny" => format!("publish-{n:02}"),
+        other => format!("publish-{}-{n:02}", other.to_ascii_lowercase()),
+    }
 }

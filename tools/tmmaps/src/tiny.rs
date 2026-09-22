@@ -217,6 +217,69 @@ fn cell_for(p: [f32; 3]) -> (i32, i32, i32) {
     )
 }
 
+/// The world box (source coordinates) everything that becomes an item lies in:
+/// a GRID block covers its footprint cells (the variant's units, turned with
+/// the block's direction), a FREE block or an item counts by its position.
+/// Blocks without geometry (`-` rows) and terrain tiles under blocks are left
+/// out like the placer leaves them out. Used by `--anchor fit`.
+fn source_extent(source: &MapFile, mapping: &Mappings) -> ([f32; 3], [f32; 3]) {
+    let mut lo = [f32::INFINITY; 3];
+    let mut hi = [f32::NEG_INFINITY; 3];
+    let mut add = |p: [f32; 3]| {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    };
+    let mut block = |b: &BlockRec, m: &Mapping| {
+        if m.model == "-" {
+            return;
+        }
+        match b.free_pos {
+            Some(p) => add(p),
+            None => {
+                let (cx, cy, cz) = b.coords();
+                let mut ext = [1i32, 1, 1];
+                for u in &m.units {
+                    ext[0] = ext[0].max(u[0] + 1);
+                    ext[1] = ext[1].max(u[1] + 1);
+                    ext[2] = ext[2].max(u[2] + 1);
+                }
+                if let Some((sx, sz)) = m.footprint {
+                    ext[0] = ext[0].max(sx as i32);
+                    ext[2] = ext[2].max(sz as i32);
+                }
+                // a quarter turn swaps the x and z extents
+                let (fx, fz) = if b.dir & 1 == 1 { (ext[2], ext[0]) } else { (ext[0], ext[2]) };
+                let corner = [cx as f32 * crate::map::CELL_XZ, cy as f32 * crate::map::CELL_Y + ground(), cz as f32 * crate::map::CELL_XZ];
+                add(corner);
+                add([corner[0] + fx as f32 * crate::map::CELL_XZ, corner[1] + ext[1] as f32 * crate::map::CELL_Y, corner[2] + fz as f32 * crate::map::CELL_XZ]);
+            }
+        }
+    };
+    for b in &source.blocks {
+        if let Some(m) = mapping.by_index.get(&b.index).or_else(|| mapping.by_name.get(&b.name)) {
+            block(b, m);
+        }
+    }
+    for b in &source.baked {
+        if let Some(m) = mapping.baked_by_index.get(&b.index) {
+            block(b, m);
+        }
+    }
+    for it in &source.items {
+        if mapping.drop_items.contains(&it.index) || mapping.items_by_index.get(&it.index).map(|m| m.model == "-").unwrap_or(false) {
+            continue;
+        }
+        add(it.pos);
+    }
+    if lo[0].is_infinite() {
+        (source.items.first().map(|i| i.pos).unwrap_or([0.0; 3]), source.items.first().map(|i| i.pos).unwrap_or([0.0; 3]))
+    } else {
+        (lo, hi)
+    }
+}
+
 pub fn cmd_batch(args: &[String]) {
     let input = PathBuf::from(&args[2]);
     let output = PathBuf::from(cli::flag(args, "--out").expect("tiny-batch needs --out DIR"));
@@ -282,7 +345,7 @@ pub fn cmd_batch(args: &[String]) {
             }
             one.extend(["--mapping".to_string(), mapping.display().to_string(), "--library".to_string(), lib.display().to_string()]);
         }
-        for flag in ["--mapping", "--library", "--scale", "--anchor"] {
+        for flag in ["--mapping", "--library", "--scale", "--anchor", "--uid-prefix", "--name-prefix"] {
             if let Some(value) = cli::flag(args, flag) {
                 one.push(flag.to_string());
                 one.push(value.to_string());
@@ -318,7 +381,19 @@ pub fn cmd(args: &[String]) {
         scale.is_finite() && scale > 0.0,
         "--scale must be positive and finite"
     );
-    let anchor_flag = cli::flag(args, "--anchor").map(|a| vec3(a, "--anchor"));
+    // --anchor x,y,z: the target anchor outright; --anchor fit: the default
+    // (spawn keeps x,z) shifted so the transformed geometry sits CENTRED in the
+    // map's grid — the giant (×2) builds, whose spread about the spawn would
+    // otherwise leave the arena on one side (2026-09-13)
+    let anchor_raw = cli::flag(args, "--anchor");
+    let anchor_fit = anchor_raw == Some("fit");
+    let anchor_flag = anchor_raw.filter(|a| *a != "fit").map(|a| vec3(a, "--anchor"));
+    // --uid-prefix PPPP (default `Tin2`): the 4 bytes that replace the source
+    // uid's head (`Gia2` for the giant builds); --name-prefix S (default
+    // "Tiny "): what goes before the source name when --name is not given
+    let uid_prefix = cli::flag(args, "--uid-prefix").unwrap_or("Tin2").to_string();
+    assert!(uid_prefix.len() == 4 && uid_prefix.is_ascii(), "--uid-prefix must be 4 ASCII characters (Tin2, Gia2), got `{uid_prefix}`");
+    let name_prefix = cli::flag(args, "--name-prefix").unwrap_or("Tiny ").to_string();
     let mapping = read_mapping(&mapping_path);
     // --host HOST.Map.Gbx: build the copy INTO another map (e.g. an empty
     // Stadium map, where real Stadium materials are accepted) instead of into
@@ -349,7 +424,66 @@ pub fn cmd(args: &[String]) {
     // stays where it is, so y' = 7 + (y - 7) * scale. Summer 01: spawn 1584,16,784 -> 1584,11.5,784.
     let collection = source.items.first().map(|it| it.collection_raw).unwrap_or(26);
     let plane = fixed_plane(collection);
-    let target_anchor = anchor_flag.unwrap_or([source_anchor[0], plane + (source_anchor[1] - plane) * scale, source_anchor[2]]);
+    let mut target_anchor = anchor_flag.unwrap_or([source_anchor[0], plane + (source_anchor[1] - plane) * scale, source_anchor[2]]);
+    if anchor_fit {
+        // The transformed extent of everything that becomes an item (grid
+        // blocks by their footprint cells, free blocks and items by their
+        // position), centred in the map's x/z grid by a whole number of cells
+        // (the cell alignment of the transform is kept: a 32 m corner stays
+        // on a 32 m multiple). y keeps the plane rule — the ground stays the
+        // ground — and an overflow above the grid's top row is reported, not
+        // fixed: what the engine does with objects outside the volume is the
+        // test map's question (TINY.md "Giant maps").
+        let (lo, hi) = source_extent(&source, &mapping);
+        let base = target_anchor;
+        let t0 = |p: [f32; 3]| transform(p, source_anchor, base, scale);
+        let (tlo, thi) = (t0(lo), t0(hi));
+        let grid = [source.size[0] as f32 * crate::map::CELL_XZ, source.size[1] as f32 * crate::map::CELL_Y, source.size[2] as f32 * crate::map::CELL_XZ];
+        let mut shift = [0.0f32; 3];
+        for k in [0usize, 2] {
+            let span = thi[k] - tlo[k];
+            let want = ((grid[k] - span) / 2.0 - tlo[k]) / crate::map::CELL_XZ;
+            shift[k] = want.round() * crate::map::CELL_XZ;
+            target_anchor[k] += shift[k];
+        }
+        // A WHOLE scale keeps the cell lattice — every source cell corner lands
+        // on a corner of the target grid (t ≡ s·source_anchor mod the cell, per
+        // axis; the anchor is a cell CENTRE, so doubling about it alone puts the
+        // corners on half-cells), so the engine's own grid blocks can stand in
+        // the transformed cells (the giant maps' native water, `mapgeom
+        // giantwater`, 2026-09-13). Nearest such value to the centring shift;
+        // for y the rows (ty ≡ s·sy − (s−1)·ground mod 8) — on Stadium at ×2
+        // the one that puts the source's grass floor (y 8) back on the grass.
+        if (scale - scale.round()).abs() < 1e-6 && scale >= 1.0 {
+            for (k, cell) in [(0usize, crate::map::CELL_XZ), (1, crate::map::CELL_Y), (2, crate::map::CELL_XZ)] {
+                let want = if k == 1 { scale * source_anchor[1] - (scale - 1.0) * ground() } else { scale * source_anchor[k] };
+                let ty = target_anchor[k];
+                let snapped = want + ((ty - want) / cell).round() * cell;
+                shift[k] += snapped - ty;
+                target_anchor[k] = snapped;
+            }
+        }
+        let t = |p: [f32; 3]| transform(p, source_anchor, target_anchor, scale);
+        let (flo, fhi) = (t(lo), t(hi));
+        let mut notes: Vec<String> = Vec::new();
+        for (k, name) in [(0usize, "x"), (2usize, "z")] {
+            if flo[k] < 0.0 || fhi[k] > grid[k] {
+                notes.push(format!("{name} {:.0}..{:.0} m OVERFLOWS the 0..{:.0} m grid", flo[k], fhi[k], grid[k]));
+            }
+        }
+        let top = ground() + grid[1];
+        if fhi[1] > top {
+            notes.push(format!("y top {:.0} m is {:.0} m ABOVE the grid's top row ({:.0} m)", fhi[1], fhi[1] - top, top));
+        }
+        if flo[1] < ground() {
+            notes.push(format!("y bottom {:.0} m is under the grid's row 0 ({:.0} m)", flo[1], ground()));
+        }
+        println!(
+            "  fit: source extent [{:.0}, {:.0}, {:.0}]..[{:.0}, {:.0}, {:.0}] -> [{:.0}, {:.0}, {:.0}]..[{:.0}, {:.0}, {:.0}] in the {}x{}x{}-cell grid ({:.0}x{:.0}x{:.0} m), shifted by {:.0},{:.0} m to centre it, y by {:+.0} m onto the row lattice{}",
+            lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], flo[0], flo[1], flo[2], fhi[0], fhi[1], fhi[2], source.size[0], source.size[1], source.size[2], grid[0], grid[1], grid[2], shift[0], shift[2], shift[1],
+            if notes.is_empty() { "; fits".to_string() } else { format!("; {}", notes.join("; ")) }
+        );
+    }
     println!("  anchor: spawn {:?} -> {:?} (scale {scale})", source_anchor, target_anchor);
 
     // ALL authored blocks are required. A missing model is a refusal, never a
@@ -783,7 +917,17 @@ pub fn cmd(args: &[String]) {
     let tmp2 = out.with_extension(format!("tiny-{}.waypoints.Map.Gbx", std::process::id()));
 
     // Stage 0: grow the item array before any saved offsets are used.
-    let base = host.clone().unwrap_or_else(|| src.clone());
+    let mut base = host.clone().unwrap_or_else(|| src.clone());
+    // A source with NO items (U10S_113) gets one template record first — the
+    // clone donor every later placement is copied from (`seed_item_record`).
+    if MapFile::load(&base).items.is_empty() {
+        let seeded = out.with_extension(format!("tiny-{}.seeded.Map.Gbx", std::process::id()));
+        let g = crate::gbx::Gbx::parse(&std::fs::read(&base).expect("read source"));
+        let body = crate::map::seed_item_record(&g.body, 26).expect("seed an item record into a 0-item map");
+        std::fs::write(&seeded, g.write_body_recompressed(&body)).expect("write seeded stage");
+        println!("  0 items in the source: one template item record seeded (the clone donor)");
+        base = seeded;
+    }
     let mut m = MapFile::load(&base);
     m.append_item_clones(specs.len());
     m.write_to(&tmp0).expect("write item-slot stage");
@@ -808,7 +952,11 @@ pub fn cmd(args: &[String]) {
         .first()
         .and_then(|f| f.name.clone())
         .expect("map uid");
-    let new_uid = format!("Tin2{}", &old_uid[..23]);
+    // Same byte length as the source's (the header is patched in place):
+    // Nadeo uids are 27 characters — or 26 (U10S_21 `6UeZdl25tShCAUHzEqz4Pxxljs`,
+    // 2026-09-12), so the prefix eats the first 4 whatever the length.
+    assert!(old_uid.len() > 4, "source uid `{old_uid}` is too short to re-uid");
+    let new_uid = format!("{uid_prefix}{}", &old_uid[..old_uid.len() - 4]);
     {
         // The foundation records stay: `Sea` (BlueBay's water).
         let keep_baked: BTreeSet<String> = ["Sea".to_string()].into_iter().collect();
@@ -959,7 +1107,7 @@ pub fn cmd(args: &[String]) {
         if old.is_empty() || old == "-" {
             println!("  map name: the source declares none; left alone");
         } else {
-            let new = name_flag.clone().unwrap_or_else(|| format!("Tiny {old}"));
+            let new = name_flag.clone().unwrap_or_else(|| format!("{name_prefix}{old}"));
             let (h, b) = m.set_map_name(&old, &new);
             println!("  map name: {old:?} -> {new:?} ({h} in the header, {b} in the body)");
         }
@@ -999,8 +1147,9 @@ pub fn cmd(args: &[String]) {
                     // honours the chunk's trigger size — measured 2026-09-07: the
                     // same clip fired at the same car position with the 3x1x3 and
                     // the 6x2x6 encoding (camera jump 12.96 s / 13.01 s into the
-                    // logs, entry 12.97 / 13.03).
-                    if let Some(t0) = mt.trigger_size {
+                    // logs, entry 12.97 / 13.03). A GROWING build (giant, ×2) keeps
+                    // the source grid: its volumes cover whole source-size cells.
+                    if let Some(t0) = mt.trigger_size.filter(|_| scale < 1.0) {
                         if let Err(e) = mt.set_trigger_size([t0[0] * 2, t0[1] * 2, t0[2] * 2]) {
                             eprintln!("  WARNING: trigger grid kept at {t0:?}: {e}");
                         }
@@ -1102,8 +1251,12 @@ pub fn cmd(args: &[String]) {
         }
     }
     m.write_to(&out).expect("write output");
-    for p in [&tmp0, &tmp1, &tmp2] {
-        let _ = std::fs::remove_file(p);
+    let seeded_tmp = out.with_extension(format!("tiny-{}.seeded.Map.Gbx", std::process::id()));
+    // TMMAPS_KEEP_STAGES=1 keeps the intermediate maps (bisecting a load failure)
+    if std::env::var("TMMAPS_KEEP_STAGES").is_err() {
+        for p in [&tmp0, &tmp1, &tmp2, &seeded_tmp] {
+            let _ = std::fs::remove_file(p);
+        }
     }
     // Genealogies (chunk 0x03043043) are the per-cell terrain zones the game
     // regenerates Land/Beach/Hill/Cliff blocks from at load: with the authored
