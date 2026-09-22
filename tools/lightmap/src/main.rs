@@ -1547,6 +1547,90 @@ fn main() {
             println!("raw per channel: sky {:?} sun {:?} up {:?} const {:?}", [rgb[0][0], rgb[1][0], rgb[2][0]], [rgb[0][1], rgb[1][1], rgb[2][1]], [rgb[0][2], rgb[1][2], rgb[2][2]], [rgb[0][3], rgb[1][3], rgb[2][3]]);
             eprintln!("moodfit done ({:.0}s)", t0.elapsed().as_secs_f32());
         }
+        "framecmp" => {
+            // lmtool framecmp REF.ppm OURS.ppm OUTBASE [--frames N]: per stacked frame (equal heights), the
+            // luminance RMSE and mean abs diff (HUD strip skipped), the max-diff spot, and a sheet
+            // OUTBASE-cmp.ppm: [ref | ours | |diff|×4] per frame plus a 160×120 crop around the max diff ×4
+            let load = |p: &str| -> (usize, usize, Vec<u8>) {
+                let data = std::fs::read(p).expect("read ppm");
+                let mut idx = 0; let mut fields = Vec::new();
+                while fields.len() < 4 { let s = idx; while data[idx] != b' ' && data[idx] != b'\n' { idx += 1; } fields.push(std::str::from_utf8(&data[s..idx]).unwrap().to_string()); idx += 1; }
+                (fields[1].parse().unwrap(), fields[2].parse().unwrap(), data[idx..].to_vec())
+            };
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let (w, h, pa) = load(&a[1]);
+            let (w2, h2, pb) = load(&a[2]);
+            assert!(w == w2 && h == h2, "sheets differ in size");
+            let nframes: usize = f("--frames").map(|s| s.parse().unwrap()).unwrap_or(3);
+            let fh = h / nframes;
+            let lum = |p: &[u8], i: usize| 0.2126 * p[i] as f64 + 0.7152 * p[i + 1] as f64 + 0.0722 * p[i + 2] as f64;
+            let cw = 160usize; let ch = 120usize; let sc = 4usize;
+            let out_w = w * 3 + cw * sc * 2 + 8;
+            let out_h = fh * nframes;
+            let mut out = lightmap::img::Rgb::new(out_w as u32, out_h as u32);
+            println!("frame\tRMSE(lum)\tmeanAbs\tmaxDiff\tat(x,y)\tmeanLumRef\tmeanLumOurs");
+            for fr in 0..nframes {
+                let y0 = fr * fh + fh / 8; // skip the HUD strip
+                let (mut se, mut sa, mut n, mut mr, mut mo) = (0f64, 0f64, 0usize, 0f64, 0f64);
+                let mut best = (0f64, 0usize, 0usize);
+                for y in y0..(fr + 1) * fh { for x in 0..w {
+                    let i = (y * w + x) * 3;
+                    let (la, lb) = (lum(&pa, i), lum(&pb, i));
+                    let d = lb - la;
+                    se += d * d; sa += d.abs(); n += 1; mr += la; mo += lb;
+                    if d.abs() > best.0 { best = (d.abs(), x, y); }
+                }}
+                let rmse = (se / n as f64).sqrt();
+                println!("{fr}\t{rmse:.2}\t{:.2}\t{:.0}\t({},{})\t{:.1}\t{:.1}", sa / n as f64, best.0, best.1, best.2, mr / n as f64, mo / n as f64);
+                for y in fr * fh..(fr + 1) * fh { for x in 0..w {
+                    let i = (y * w + x) * 3;
+                    out.set(x as u32, y as u32, [pa[i], pa[i + 1], pa[i + 2]]);
+                    out.set((w + x) as u32, y as u32, [pb[i], pb[i + 1], pb[i + 2]]);
+                    let d = ((lum(&pb, i) - lum(&pa, i)) * 4.0).clamp(-255.0, 255.0);
+                    let c = if d >= 0.0 { [d as u8, d as u8 / 3, 0] } else { [0, (-d) as u8 / 3, (-d) as u8] };
+                    out.set((2 * w + x) as u32, y as u32, c);
+                }}
+                // crops around the max-diff spot
+                let (cx, cy) = (best.1.clamp(cw / 2, w - cw / 2), best.2.clamp(fr * fh + ch / 2, (fr + 1) * fh - ch / 2));
+                for yy in 0..ch * sc { for xx in 0..cw * sc {
+                    let sx = cx - cw / 2 + xx / sc; let sy = cy - ch / 2 + yy / sc;
+                    let i = (sy * w + sx) * 3;
+                    let oy = fr * fh + yy; if oy >= (fr + 1) * fh { continue; }
+                    out.set((3 * w + 4 + xx) as u32, oy as u32, [pa[i], pa[i + 1], pa[i + 2]]);
+                    out.set((3 * w + 8 + cw * sc + xx) as u32, oy as u32, [pb[i], pb[i + 1], pb[i + 2]]);
+                }}
+            }
+            lightmap::img::write_ppm(&out, &format!("{}-cmp.ppm", a[3])).unwrap();
+            println!("wrote {}-cmp.ppm ({}x{})", a[3], out_w, out_h);
+        }
+        "uvcover" => {
+            // lmtool uvcover MAP [--top N]: per model (the N with most triangles), the fraction of the uv1 square
+            // (or of the PreLightGen bounds) its triangles cover at 64×64 — the chart texels that carry geometry
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let top: usize = f("--top").map(|s| s.parse().unwrap()).unwrap_or(12);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let mut order: Vec<usize> = (0..scene.models.len()).collect();
+            order.sort_by_key(|&m| std::cmp::Reverse(scene.models[m].tris.len()));
+            let (mut tot_cov, mut tot_n) = (0f64, 0usize);
+            for &mi in order.iter().take(top) {
+                let Some(ii) = scene.instances.iter().position(|i| i.model == mi) else { continue };
+                let (_, cov) = lightmap::bake::rasterise_pub(&scene, ii, 64, 64, false, true);
+                let c = cov.iter().filter(|&&b| b).count() as f64 / cov.len() as f64;
+                tot_cov += c; tot_n += 1;
+                println!("{:<24} {:>7} tris  uv1-bounds coverage {:>5.1}%  (m/uv {:.1})", scene.model_names[mi], scene.models[mi].tris.len(), 100.0 * c, scene.models[mi].metres_per_uv);
+            }
+            // all models, weighted by placements
+            let (mut wsum, mut wcov) = (0f64, 0f64);
+            for (mi, m) in scene.models.iter().enumerate() {
+                if m.tris.is_empty() { continue; }
+                let Some(ii) = scene.instances.iter().position(|i| i.model == mi) else { continue };
+                let n = scene.instances.iter().filter(|i| i.model == mi).count() as f64;
+                let (_, cov) = lightmap::bake::rasterise_pub(&scene, ii, 32, 32, false, true);
+                let c = cov.iter().filter(|&&b| b).count() as f64 / cov.len() as f64;
+                wsum += n; wcov += n * c;
+            }
+            println!("top {tot_n} models: mean coverage {:.1}%; all placements (32×32): mean coverage {:.1}%", 100.0 * tot_cov / tot_n.max(1) as f64, 100.0 * wcov / wsum.max(1.0));
+        }
         _ => {
             eprintln!("unknown command");
             std::process::exit(2);

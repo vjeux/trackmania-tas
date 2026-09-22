@@ -691,18 +691,57 @@ pub fn repack_lightmap_parts(visuals: &mut [super::merged::MergedVisual]) -> Opt
     // the pack margin (0.001) scaled with the cell, plus a gutter between cells
     let margin = cell * 0.01;
     let inner = cell - 2.0 * margin;
+    // `TINY_LIGHTMAP_REPACK=fit`: a part's uv1 BOUNDS fill its cell (uniform scale, centred) instead of
+    // its [0,1]² square — a pack block's charts sit in a small corner of the square (a platform piece uses
+    // 0.12 × 0.045 of it), so the default leaves each part a dot of texels and its lightmap one value per
+    // part (the editor's bake shows the same). Off by default: it changes every merged item's lightmap
+    // UVs, i.e. the shipped item lists' bytes. Pair it with TINY_LIGHTMAP_U02=measured.
+    let fit = std::env::var("TINY_LIGHTMAP_REPACK").map(|v| v == "fit").unwrap_or(false);
+    let mut part_bounds: std::collections::HashMap<u32, [f32; 4]> = std::collections::HashMap::new();
+    if fit {
+        for mv in visuals.iter() {
+            if mv.part == 0 {
+                continue;
+            }
+            let Some(s) = mv.visual.stream() else { continue };
+            let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
+            if let Elem::Float2(uv) = &s.elems[i] {
+                let b = part_bounds.entry(mv.part).or_insert([f32::MAX, f32::MAX, f32::MIN, f32::MIN]);
+                for p in uv {
+                    b[0] = b[0].min(p[0]);
+                    b[1] = b[1].min(p[1]);
+                    b[2] = b[2].max(p[0]);
+                    b[3] = b[3].max(p[1]);
+                }
+            }
+        }
+    }
     for mv in visuals.iter_mut() {
         if mv.part == 0 {
             continue;
         }
         let k = parts.iter().position(|p| *p == mv.part).unwrap_or(0) as f64;
         let (cx, cy) = ((k % grid) * cell + margin, (k / grid).floor() * cell + margin);
+        let fitb = if fit { part_bounds.get(&mv.part).copied().filter(|b| b[2] > b[0] && b[3] > b[1]) } else { None };
         let Some(s) = mv.visual.stream_mut() else { continue };
         let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
         if let Elem::Float2(uv) = &mut s.elems[i] {
-            for p in uv.iter_mut() {
-                p[0] = (cx + p[0].clamp(0.0, 1.0) as f64 * inner) as f32;
-                p[1] = (cy + p[1].clamp(0.0, 1.0) as f64 * inner) as f32;
+            match fitb {
+                Some(b) => {
+                    let (w, h) = ((b[2] - b[0]) as f64, (b[3] - b[1]) as f64);
+                    let sc = inner / w.max(h);
+                    let (ox, oy) = (cx + (inner - w * sc) * 0.5, cy + (inner - h * sc) * 0.5);
+                    for p in uv.iter_mut() {
+                        p[0] = (ox + (p[0] - b[0]) as f64 * sc) as f32;
+                        p[1] = (oy + (p[1] - b[1]) as f64 * sc) as f32;
+                    }
+                }
+                None => {
+                    for p in uv.iter_mut() {
+                        p[0] = (cx + p[0].clamp(0.0, 1.0) as f64 * inner) as f32;
+                        p[1] = (cy + p[1].clamp(0.0, 1.0) as f64 * inner) as f32;
+                    }
+                }
             }
         }
     }
