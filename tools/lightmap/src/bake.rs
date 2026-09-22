@@ -598,6 +598,61 @@ pub fn texel_correlation(scene: &Scene, bvh: &Bvh, sel: &[(usize, u32, u32, u32,
     (s / n.max(1) as f64, n)
 }
 
+/// Shadow agreement: on charts whose reference luminance is bimodal (lit and
+/// shadowed texels), the fraction of texels whose predicted sun visibility
+/// (one ray towards `prm.sun_dir`) agrees with the reference's lit/shadowed
+/// label. Returns (agreement, texels used). Only charts with a real
+/// dark/bright split count; charts without shadows say nothing about the sun.
+pub fn shadow_agreement(scene: &Scene, bvh: &Bvh, sel: &[(usize, u32, u32, u32, u32)], atlas: &crate::img::Rgb, prm: &BakeParams) -> (f64, usize) {
+    let threads = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(8).min(160);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let acc = std::sync::Mutex::new((0usize, 0usize));
+    std::thread::scope(|sc| {
+        for _ in 0..threads {
+            sc.spawn(|| loop {
+                let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if k >= sel.len() {
+                    break;
+                }
+                let (ii, px, py, pw, ph) = sel[k];
+                let (samples, _) = rasterise_inset(scene, ii, pw, ph, prm.flip_v, prm.uv_bounds, prm.inset_px);
+                if samples.len() < 24 {
+                    continue;
+                }
+                let mut lums: Vec<f32> = samples
+                    .iter()
+                    .map(|s| {
+                        let n = atlas.get((px + s.px).min(atlas.w - 1), (py + s.py).min(atlas.h - 1));
+                        0.2126 * n[0] as f32 + 0.7152 * n[1] as f32 + 0.0722 * n[2] as f32
+                    })
+                    .collect();
+                let mut sorted = lums.clone();
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let (lo, hi) = (sorted[sorted.len() / 5], sorted[sorted.len() * 4 / 5]);
+                if hi - lo < 40.0 {
+                    continue; // no shadow split on this chart
+                }
+                let thr = 0.5 * (lo + hi);
+                let (mut agree, mut n) = (0usize, 0usize);
+                for (s, l) in samples.iter().zip(lums.drain(..)) {
+                    let o = add(s.p, mul(s.n, 0.03));
+                    let facing = dot(s.n, prm.sun_dir) > 0.05;
+                    let lit = facing && !bvh.occluded(o, prm.sun_dir, 1.0e4, ii as u32, 0.05);
+                    if lit == (l >= thr) {
+                        agree += 1;
+                    }
+                    n += 1;
+                }
+                let mut g = acc.lock().unwrap();
+                g.0 += agree;
+                g.1 += n;
+            });
+        }
+    });
+    let (a, n) = acc.into_inner().unwrap();
+    (a as f64 / n.max(1) as f64, n)
+}
+
 /// Pooled (all texels of all selected charts) comparison: our HDR luminance
 /// vs the reference atlas luminance × its chart scale. Returns (pearson,
 /// slope reference/ours, count). `sel` = (inst, px, py, pw, ph, fb0).

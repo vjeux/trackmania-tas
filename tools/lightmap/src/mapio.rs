@@ -30,3 +30,19 @@ pub fn save_with_chunk(m: &MapLightmap, payload: &[u8], out: &str) -> Result<(),
     nb.extend_from_slice(&body[p + size..]);
     gbx::container::write_gbx(&m.gbx, nb, out)
 }
+
+/// A template: a `.Map.Gbx` (its lightmap chunk) or a raw `.lmchunk` file
+/// (the chunk payload alone, as `lmtool dump` writes `chunk.bin`).
+pub struct Template {
+    pub chunk: LightmapChunk,
+}
+
+pub fn load_template(path: &str) -> Result<Template, String> {
+    if path.ends_with(".lmchunk") || path.ends_with(".bin") {
+        let data = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+        let chunk = LightmapChunk::parse(&data).map_err(|e| format!("{path}: {e}"))?;
+        return Ok(Template { chunk });
+    }
+    let m = load(path)?;
+    Ok(Template { chunk: m.chunk })
+}

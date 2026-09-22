@@ -39,11 +39,13 @@ pub struct Chart {
     pub a1: Vec<[u8; 3]>,
     pub b: u8,
     pub fb: [u8; 3],
+    /// The bind's first word (sub-chart index | flags); 0 for a one-chart object.
+    pub sub: u32,
 }
 
 impl Chart {
     pub fn flat(obj: u32, px: u32, spec: ChartSpec) -> Chart {
-        Chart { obj, w: px, h: px, a: vec![spec.a; (px * px) as usize], a1: Vec::new(), b: spec.b, fb: spec.fb }
+        Chart { obj, w: px, h: px, a: vec![spec.a; (px * px) as usize], a1: Vec::new(), b: spec.b, fb: spec.fb, sub: 0 }
     }
 
     /// `from_hdr` plus a frame-1 (point light) HDR chart normalised the same way (fb1 = 255·max/k).
@@ -75,7 +77,7 @@ impl Chart {
                 [f(c[0]), f(c[1]), f(c[2])]
             })
             .collect();
-        Chart { obj, w, h, a, a1: Vec::new(), b, fb: [fb0, 0, 0] }
+        Chart { obj, w, h, a, a1: Vec::new(), b, fb: [fb0, 0, 0], sub: 0 }
     }
 }
 
@@ -211,15 +213,15 @@ pub fn build_full(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: 
     for p in ib.px.iter_mut() {
         *p = 128;
     }
-    charts.sort_by_key(|c| c.obj);
-    let mut placed_by_obj: std::collections::HashMap<u32, (u32, u32)> = std::collections::HashMap::new();
+    charts.sort_by_key(|c| (c.obj, c.sub));
+    let mut placed_by_obj: std::collections::HashMap<(u32, u32), (u32, u32)> = std::collections::HashMap::new();
     {
         let mut shelf = Shelf::new(1024);
         let mut order: Vec<usize> = (0..charts.len()).collect();
         order.sort_by_key(|&i| (std::cmp::Reverse(charts[i].h), std::cmp::Reverse(charts[i].w)));
         for &i in &order {
             let c = &charts[i];
-            placed_by_obj.insert(c.obj, shelf.place(c.w, c.h)?);
+            placed_by_obj.insert((c.obj, c.sub), shelf.place(c.w, c.h)?);
         }
     }
     let n = charts.len();
@@ -228,7 +230,7 @@ pub fn build_full(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: 
     let mut binds = Vec::with_capacity(n);
     let mut fb: Vec<Vec<u8>> = vec![Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n)];
     for c in &charts {
-        let (px, py) = placed_by_obj[&c.obj];
+        let (px, py) = placed_by_obj[&(c.obj, c.sub)];
         // the chart, plus a 1-pixel border of its own edge pixels (bilinear safety)
         for y in 0..c.h + 2 {
             for x in 0..c.w + 2 {
@@ -248,7 +250,7 @@ pub fn build_full(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: 
         }
         pos.push(((2 * px - 1) as u16, (2 * py - 1) as u16));
         size.push(((2 * c.w) as u16, (2 * c.h) as u16));
-        binds.push(ObjBind { obj_idx: 0, obj_group_idx: c.obj * 4 });
+        binds.push(ObjBind { obj_idx: c.sub, obj_group_idx: c.obj * 4 });
         for k in 0..3 {
             fb[k].push(c.fb[k]);
         }

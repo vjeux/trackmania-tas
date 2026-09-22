@@ -9,6 +9,7 @@ pub mod format;
 pub mod geometry;
 pub mod img;
 pub mod mapio;
+pub mod moods;
 pub mod probe;
 pub mod probes;
 pub mod synth;
