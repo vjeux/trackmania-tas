@@ -1113,7 +1113,8 @@ pub fn itemdump_cmd(args: &[String]) -> Result<(), String> {
     let want = crate::cli::flag(args, "--model").unwrap_or("");
     let m = MapFile::load(Path::new(input));
     let body = &m.gbx.body;
-    for it in m.items.iter().filter(|it| it.model.contains(want)).take(3) {
+    let take: usize = crate::cli::flag(args, "--take").and_then(|v| v.parse().ok()).unwrap_or(3);
+    for it in m.items.iter().filter(|it| it.model.contains(want)).take(take) {
         let (a, b) = it.record_region;
         println!("item {} {} at ({:.1},{:.2},{:.1}) yaw {:.4} pitch {:.4} roll {:.4} pivot {:?} scale {} flags {:#x} author {:?} coll {:#x} cell {:?} waypoint {:?} skin {:?} record {}..{} ({} bytes)", it.index, file_stem(&it.model), it.pos[0], it.pos[1], it.pos[2], it.yaw, it.pitch, it.roll, it.pivot, it.scale, it.flags, it.author, it.collection_raw, it.file_cell, it.waypoint_tag, it.skin_region, a, b, b - a);
         let hex: String = body[a..b].iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" ");

@@ -151,7 +151,40 @@ fn plan(m: &MapFile, input: &Path) -> Result<Plan, String> {
     }
     let ground = crate::map::ground_y(collection);
     let mut fates: Vec<Fate> = m.blocks.iter().map(|b| fate(&b.name)).collect();
-    let item_keep: Vec<bool> = m.items.iter().map(|it| item_kept(&it.model)).collect();
+    let mut item_keep: Vec<bool> = m.items.iter().map(|it| item_kept(&it.model)).collect();
+    // bisection knobs (a port the game refused, 2026-09-22): drop every item, every
+    // free block, or every block whose name contains STADIUM_DROP
+    if std::env::var("STADIUM_DROP_ITEMS").is_ok() {
+        item_keep.iter_mut().for_each(|k| *k = false);
+    }
+    if std::env::var("STADIUM_DROP_FREE").is_ok() {
+        for (b, f) in m.blocks.iter().zip(fates.iter_mut()) {
+            if b.free_pos.is_some() {
+                *f = Fate::Drop("bisect: free");
+            }
+        }
+    }
+    if let Ok(pat) = std::env::var("STADIUM_DROP_ITEM") {
+        for (it, k) in m.items.iter().zip(item_keep.iter_mut()) {
+            if pat.split(',').any(|p| !p.is_empty() && it.model.contains(p)) {
+                *k = false;
+            }
+        }
+    }
+    if let Ok(pat) = std::env::var("STADIUM_KEEP_ITEM_ONLY") {
+        for (it, k) in m.items.iter().zip(item_keep.iter_mut()) {
+            if !pat.split(',').any(|p| !p.is_empty() && it.model.contains(p)) {
+                *k = false;
+            }
+        }
+    }
+    if let Ok(pat) = std::env::var("STADIUM_DROP") {
+        for (b, f) in m.blocks.iter().zip(fates.iter_mut()) {
+            if pat.split(',').any(|p| !p.is_empty() && b.name.contains(p)) {
+                *f = Fate::Drop("bisect: name");
+            }
+        }
+    }
     // the route: waypoints + the validation ghost's cells (x, z)
     let mut route: Vec<[i32; 3]> = Vec::new();
     for b in &m.blocks {
@@ -219,7 +252,6 @@ fn plan(m: &MapFile, input: &Path) -> Result<Plan, String> {
         }
     }
     // items outside the window are scenery too
-    let mut item_keep = item_keep;
     let mut items_trimmed = 0usize;
     for (it, k) in m.items.iter().zip(item_keep.iter_mut()) {
         if !*k {
