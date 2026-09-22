@@ -1,33 +1,44 @@
 //! The trailer after `FACADE01` in the `CHmsLightMapCache` blob: the
-//! **probe volume** — a 3D grid of light probes (16 m cells) over the lit
-//! objects' bounding box, cut into 32×16×32-cell blocks, each block's occupied
-//! cell range stored as a stack of 2D slices in the small third atlas
-//! (frame 0 image 2). Decoded 2026-09-22 (session lightmap-baker) from the
-//! 25 Summer sources + the editor's tiny bakes; the layout below is what
-//! `parse` reads and `write` reproduces byte for byte.
+//! **probe volume** — a 3D grid of light probes on 16 m cells, in 480 m
+//! world SLOTS (5×3×5 of them from the origin), one record per occupied slot
+//! with its occupied cell range, each height level of the range a 2D tile in
+//! the "small" third atlas (frame 0 image 2). Decoded 2026-09-22 (session
+//! lightmap-baker) from the 25 Summer sources, the editor's tiny bakes and two
+//! probe bakes (maps with isolated blobs at known places); `parse` reads the
+//! layout below and `write` reproduces it byte for byte.
 //!
 //! ```text
 //! u32 91                       version / magic
 //! u32 1024 ×4                  (constant)
 //! u32 30, 5, 0, 0, 6           (constant)
-//! 3 × { f32 a, u32 b }         per frame (a ≈ 0.2–2.0, b a count)
-//! u32 g0, g1, g2               grid cells (x, z, y): (bbox extent / 16 m) rounded up to 32/16/32
+//! 3 × { f32 scale, u32 end }   per probe image k = 0..2: its value scale and the END
+//!                              byte offset of its WEBP inside the third atlas blob —
+//!                              that blob is a CONCATENATION of four WEBP files
+//!                              (0 probe colour, 1 occlusion, 2 pale colour, 3 point
+//!                              lights; the fourth runs to the end of the blob)
+//! u32 g0, g1, g2               label grid: 32·cols, 16·rows, 32 (cols = ceil(√(n/2)))
 //! u32 nblocks
-//! nblocks × Block (60 B)       { u32 origin[3] (cells), u32 min[3], u32 max[3],
-//!                                f32 cell[3] = 16,16,16, f32 pos[3] }
+//! nblocks × Block (60 B)       { u32 origin[3] (label cell of the block: 32·col, 16·row, 0),
+//!                                u32 min[3], u32 max[3] (occupied cell range, label space,
+//!                                2 cells of margin), f32 cell[3] = 16,16,16,
+//!                                f32 pos[3] (world offset: probe x,z = pos + 16·(cell+½),
+//!                                probe y = pos.y + 16·(cell−½); pos = 480·(i,·,k) − 8 minus
+//!                                16 × origin, pos.y = −46 for the ground slot row) }
 //! u32 npairs                   = Σ over blocks of (max[1] − min[1])
-//! npairs × { u32 x, u32 y }    per block, per slice along axis 1: the slice's
-//!                              tile position in the third atlas (pixels), or
-//!                              (−1, −1) for a slice that is not stored
+//! npairs × { u32 x, u32 y }    per block, per height level: the level's tile position in
+//!                              the third atlas (pixels; tile = (max0−min0) × (max2−min2),
+//!                              rows = z), or (−1, −1) for a level that is not stored
+//!                              (the two margin levels under the geometry)
 //! u32 ncell4                   = ceil(w/4) × ceil(h/4) of the third atlas
-//! ncell4 × u16                 per 4×4 pixel cell of the atlas: a 16-bit mask
-//! u32 5, 3, 5                  slot grid of a virtual 3D texture (i, j, k)
-//! u32 30, 14, 30               slot tile size in cells (block size minus 2)
+//! ncell4 × u16                 per 4×4 pixel cell: bit (y%4)·4 + x%4 = 0 for a probe INSIDE
+//!                              geometry (dark, not to be interpolated), 1 otherwise
+//! u32 5, 3, 5                  slot grid (i, j, k): 480 m × 224 m × 480 m from the origin
+//! u32 30, 14, 30               usable cells per slot (block size minus the 2-cell overlap)
 //! u32 32, 16, 32               block size in cells
-//! f32 1/480, 1/224, 1/480      1 / (slot tile × 16 m)
+//! f32 1/480, 1/224, 1/480      1 / slot pitch
 //! f32 −0, 0.1696, −0
-//! u32 75; 75 × i32             slot table: block index per slot (−1 = free)
-//! u32 a, u32 b, u32 0, 0, 0    two counts
+//! u32 75; 75 × i32             slot table: block index per slot i + 5·j + 15·k (−1 = empty)
+//! u32 a, u32 b, u32 0, 0, 0    two counts (meaning unknown; copied from the template)
 //! u32 6, f32 1.0, u8[128] 0    (constant)
 //! u32 6, f32 1.0, u8[128] 0    (constant, second copy — sometimes absent)
 //! u32 5
