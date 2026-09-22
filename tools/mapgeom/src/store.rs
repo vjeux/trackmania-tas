@@ -6,6 +6,11 @@
 //! every load goes through `resolve`, and a load that fails says which
 //! candidates it tried — a missing prefab is then a fact about the pack, not a
 //! silent empty mesh.
+//!
+//! A store can be FORKED for a worker thread (`fork`): the forks share the
+//! pack bytes, the index and the decoded-file cache (one decode per file,
+//! however many threads read it), so `tiny-library` bakes on every core
+//! without holding a second copy of a 1.7 GB pack per thread.
 
 use crate::container::Gbx;
 use crate::names;
@@ -13,6 +18,7 @@ use crate::node::Graph;
 use crate::pak::{read_pak, Pak, PakEntry};
 use crate::pakfile::{self as read, read_file};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 /// The Stadium pack's encryption key. It is a property of the pack file, not
 /// of a session or a machine: the same key opens the same bytes anywhere, and
@@ -28,10 +34,14 @@ pub struct OpenPak {
 }
 
 pub struct DataStore {
-    paks: Vec<OpenPak>,
+    paks: Vec<Arc<OpenPak>>,
     /// UPPERCASE path -> (pak index, entry index).
-    index: HashMap<String, (usize, usize)>,
-    cache: HashMap<String, Option<Vec<u8>>>,
+    index: Arc<HashMap<String, (usize, usize)>>,
+    /// Decoded files (or None for a path no pack has), by UPPERCASE logical
+    /// path — shared by every fork of this store. The lock is held for the
+    /// lookup only; a decode runs outside it (two threads racing on one file
+    /// decode it twice, harmlessly).
+    cache: Arc<Mutex<HashMap<String, Option<Arc<Vec<u8>>>>>>,
     /// Files that shadow the packs, by UPPERCASE logical path: the scaled
     /// copies a rescale produced, so a walk that follows their renamed
     /// references finds them. Nothing here is ever a pack file.
@@ -144,9 +154,21 @@ impl DataStore {
     pub fn empty() -> DataStore {
         DataStore {
             paks: Vec::new(),
-            index: HashMap::new(),
-            cache: HashMap::new(),
+            index: Arc::new(HashMap::new()),
+            cache: Arc::new(Mutex::new(HashMap::new())),
             overlay: HashMap::new(),
+        }
+    }
+
+    /// A store for another thread: the same packs, index and decoded-file
+    /// cache (shared, not copied), its own overlay. Reads through either
+    /// store fill the one cache.
+    pub fn fork(&self) -> DataStore {
+        DataStore {
+            paks: self.paks.clone(),
+            index: Arc::clone(&self.index),
+            cache: Arc::clone(&self.cache),
+            overlay: self.overlay.clone(),
         }
     }
 
@@ -163,18 +185,20 @@ impl DataStore {
             let enc_start = pak_encrypted_header_start(&data, version)?;
             let pak = read_pak(&data, enc_start, version, &key);
             let pi = store.paks.len();
+            // (a store is only ever extended before it is forked: `make_mut`
+            // never has to copy the index here)
+            let index = Arc::make_mut(&mut store.index);
             for (ei, e) in pak.entries.iter().enumerate() {
-                store
-                    .index
+                index
                     .entry(e.path().to_uppercase())
                     .or_insert((pi, ei));
             }
-            store.paks.push(OpenPak {
+            store.paks.push(Arc::new(OpenPak {
                 data,
                 pak,
                 header_max_size,
                 key,
-            });
+            }));
         }
         Ok(())
     }
@@ -212,9 +236,10 @@ impl DataStore {
         if let Some(b) = self.overlay.get(&key) {
             return Ok(b.clone());
         }
-        if let Some(hit) = self.cache.get(&key) {
+        let hit = self.cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned();
+        if let Some(hit) = hit {
             return hit
-                .clone()
+                .map(|b| b.to_vec())
                 .ok_or_else(|| format!("{}: not in any pack", logical));
         }
         let resolved = self.resolve(logical);
@@ -223,23 +248,29 @@ impl DataStore {
             Some(path) => {
                 let (pi, ei) = self.index[&path.to_uppercase()];
                 let p = &self.paks[pi];
-                Some(read_file(
+                Some(Arc::new(read_file(
                     &p.data,
                     p.header_max_size,
                     &p.pak.entries[ei],
                     &p.key,
                     p.pak.version,
-                )?)
+                )?))
             }
         };
-        self.cache.insert(key, out.clone());
-        out.ok_or_else(|| {
+        self.cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, out.clone());
+        out.map(|b| b.to_vec()).ok_or_else(|| {
             format!(
                 "{}: not in any pack (tried {})",
                 logical,
                 names::candidates(logical).join(", ")
             )
         })
+    }
+
+    /// How many decoded files the (shared) cache holds, and their bytes.
+    pub fn cache_stats(&self) -> (usize, usize) {
+        let c = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        (c.len(), c.values().flatten().map(|b| b.len()).sum())
     }
 
     /// Load a GBX file and walk its body into a node graph, with the file's
