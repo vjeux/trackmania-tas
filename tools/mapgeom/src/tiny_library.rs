@@ -390,6 +390,56 @@ struct TreeBaker {
     /// bytes of the items and their textures added to the library
     item_bytes: usize,
     texture_bytes: usize,
+    /// species model path (lower-cased) -> its bake by the worker pool, under
+    /// the neutral ident, waiting for `ident_for` to take it (`prebake`)
+    prebaked: BTreeMap<String, Option<TreeOut>>,
+    /// cache hits / fresh bakes among the trees taken or baked
+    hits: usize,
+    fresh: usize,
+}
+
+/// The neutral ident a tree is pre-baked under (same length as `AV{n:08}`).
+const NEUTRAL_TREE: &str = "AV00000000.Item.Gbx";
+
+/// A tree bake as the worker pool (or the cache) hands it over.
+struct TreeOut {
+    res: Result<(Vec<u8>, crate::static_item::build::Merged, crate::static_item::build::VegetBake), String>,
+    /// a cache hit's (visuals, materials) counts — the rebuilt `Merged` has neither
+    counts: Option<(usize, usize)>,
+    hit: bool,
+}
+
+impl TreeOut {
+    fn renamed(mut self, from: &str, to: &str) -> TreeOut {
+        if from != to {
+            self.res = match self.res {
+                Ok((bytes, m, b)) => Ok((crate::crystal::rename_ident(&bytes, from, to), m, b)),
+                Err(e) => Err(e.replace(from, to)),
+            };
+        }
+        self
+    }
+}
+
+/// One tree species through the cache: the cached copy under `ident`, else the
+/// bake (`static_item_from_veget_report`), stored.
+fn bake_tree_cached(store: &mut DataStore, model_path: &str, ident: &str, scale: f32, collection: u32) -> TreeOut {
+    let cache_key = crate::bake_cache::key(&format!("tree:{}", model_path.to_ascii_lowercase()), scale, collection, false, None);
+    if let Some(c) = crate::bake_cache::get(&cache_key, ident) {
+        if let Some(t) = &c.tree {
+            let bake = crate::static_item::build::VegetBake { model: t.model.clone(), levels: t.levels.clone(), switch: t.switch.clone(), textures: t.textures.clone(), height: t.height, radius: t.radius, hull_triangles: t.hull_triangles, stripped: Vec::new() };
+            let m = c.merged();
+            return TreeOut { res: Ok((c.bytes, m, bake)), counts: Some((c.n_visuals, c.n_materials)), hit: true };
+        }
+    }
+    bake_env_reset(collection);
+    let r = crate::static_item::build::static_item_from_veget_report(store, model_path, ident, ident, scale, collection);
+    if let Ok((bytes, m, bake)) = &r {
+        let mut b = crate::bake_cache::Baked::of(bytes, m, false);
+        b.tree = Some(crate::bake_cache::TreeMeta { model: bake.model.clone(), levels: bake.levels.clone(), switch: bake.switch.clone(), textures: bake.textures.clone(), height: bake.height, radius: bake.radius, hull_triangles: bake.hull_triangles });
+        crate::bake_cache::put(&cache_key, ident, &b);
+    }
+    TreeOut { res: r, counts: None, hit: false }
 }
 
 impl TreeBaker {
@@ -400,7 +450,35 @@ impl TreeBaker {
         let enabled = mode == "bake";
         let min_height = Self::MIN_HEIGHT;
         let bake_hullless = std::env::var("TINY_TREE_BAKE_HULLLESS").map(|v| v == "1").unwrap_or(false);
-        TreeBaker { enabled, min_height, bake_hullless, baked: BTreeMap::new(), dims: BTreeMap::new(), next: alias_base(), item_bytes: 0, texture_bytes: 0 }
+        TreeBaker { enabled, min_height, bake_hullless, baked: BTreeMap::new(), dims: BTreeMap::new(), next: alias_base(), item_bytes: 0, texture_bytes: 0, prebaked: BTreeMap::new(), hits: 0, fresh: 0 }
+    }
+
+    /// The species `ident_for` would bake on first sight — every one of
+    /// `species` (a vegetation entity's model path or a vegetation item file)
+    /// not seen before — baked on the worker pool now, under the neutral
+    /// ident; `ident_for` takes them from `prebaked` in encounter order and
+    /// renames. A species whose model path does not resolve is left to
+    /// `ident_for` (it reports that).
+    fn prebake<'s>(&mut self, store: &mut DataStore, species: impl Iterator<Item = &'s str>, scale: f32, collection: u32) -> (usize, std::time::Duration) {
+        let t0 = std::time::Instant::now();
+        if !self.enabled {
+            return (0, t0.elapsed());
+        }
+        let mut jobs: Vec<String> = Vec::new();
+        for sp in species {
+            let Ok(model_path) = crate::veget::tree_model_path(store, sp) else { continue };
+            let key = model_path.to_ascii_lowercase();
+            if self.baked.contains_key(&key) || self.prebaked.contains_key(&key) {
+                continue;
+            }
+            self.prebaked.insert(key, None);
+            jobs.push(model_path);
+        }
+        let outs = crate::par::map(store, &jobs, |st, _, model_path| bake_tree_cached(st, model_path, NEUTRAL_TREE, scale, collection));
+        for (model_path, out) in jobs.iter().zip(outs) {
+            self.prebaked.insert(model_path.to_ascii_lowercase(), Some(out));
+        }
+        (jobs.len(), t0.elapsed())
     }
 
     /// The baked item ident for a species model path (an `.Item.Gbx` of the
@@ -423,9 +501,18 @@ impl TreeBaker {
         }
         let stem = model_path.rsplit('\\').next().unwrap_or(&model_path).trim_end_matches(".VegetTreeModel.Gbx").to_string();
         let ident = format!("AV{:08}.Item.Gbx", self.next);
-        let result = crate::static_item::build::static_item_from_veget_report(store, &model_path, &ident, &ident, scale, collection);
-        let out = match result {
+        let out = match self.prebaked.get_mut(&key).and_then(|slot| slot.take()) {
+            Some(o) => o.renamed(NEUTRAL_TREE, &ident),
+            None => bake_tree_cached(store, &model_path, &ident, scale, collection),
+        };
+        if out.hit {
+            self.hits += 1;
+        } else {
+            self.fresh += 1;
+        }
+        let out = match out.res {
             Ok((bytes, m, bake)) => {
+                let (n_visuals, n_materials) = out.counts.unwrap_or((m.visuals.len(), m.materials.len()));
                 if bake.height < self.min_height {
                     outcomes.push(Outcome { alias: "-".into(), kind: "tree", source: stem.clone(), placements: 0, result: Ok(format!("{:.1} m tall: under the {:.1} m bake threshold, stays a stock item", bake.height, self.min_height)) });
                     None
@@ -457,11 +544,11 @@ impl TreeBaker {
                         result: Ok(format!(
                             "{} bytes, {} visuals in {} levels {:?}, switch {:?} m (unscaled), {} materials, hull {} tris, {:.1} m tall r {:.1} -> {:.1} m; textures {}",
                             bytes.len(),
-                            m.visuals.len(),
+                            n_visuals,
                             bake.levels.len(),
                             bake.levels,
                             bake.switch,
-                            m.materials.len(),
+                            n_materials,
                             bake.hull_triangles,
                             bake.height,
                             bake.radius,
@@ -996,6 +1083,158 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     Ok((crate::static_item::file::write_file(&f), m, deepened))
 }
 
+/// The per-thread state a bake reads or leaves behind, reset before every bake
+/// so that a bake comes out the same on any thread, in any order (the worker
+/// pool of `par.rs` runs them on every core):
+/// * `VEGET_COLLECTION`, the leaf-colour table's collection: set by a TREE bake
+///   and READ by a block bake that inlines filler foliage — until 2026-09-22 a
+///   BlueBay block baked before the build's first tree took Stadium's table;
+/// * the item reference table (`EXTERNALS`) and the sidecars a bake that failed
+///   half-way could leave behind for the next item on the thread.
+fn bake_env_reset(collection: u32) {
+    crate::static_item::build::VEGET_COLLECTION.with(|c| c.set(collection));
+    crate::static_item::assemble::EXTERNALS.with(|e| e.borrow_mut().clear());
+    crate::static_item::assemble::SIDECARS.with(|s| s.borrow_mut().clear());
+    crate::static_item::assemble::REPACK_NOTE.with(|c| c.set(None));
+}
+
+/// What a block bake hands the bookkeeping: the bake (or the cache's copy of
+/// it) under `ident`, whether it came from the cache, and — for a cache hit —
+/// the visual count the sidecar recorded (the rebuilt `Merged` carries no
+/// visuals).
+struct BlockOut {
+    res: Result<(Vec<u8>, crate::static_item::build::Merged, bool), String>,
+    cached_visuals: Option<usize>,
+    hit: bool,
+}
+
+impl BlockOut {
+    /// The same bake under another (same-length) ident: a worker baked it under
+    /// the alias it PREDICTED for its job; the bookkeeping renames the few whose
+    /// prediction slipped (an empty prefab ahead of it gave its alias back).
+    fn renamed(mut self, from: &str, to: &str) -> BlockOut {
+        if from != to {
+            self.res = match self.res {
+                Ok((bytes, m, d)) => Ok((crate::crystal::rename_ident(&bytes, from, to), m, d)),
+                Err(e) => Err(e.replace(from, to)),
+            };
+        }
+        self
+    }
+}
+
+/// One block bake through the cache (`bake_cache.rs`): the cached copy under
+/// `ident` when the key is known, else the bake, stored for next time.
+#[allow(clippy::too_many_arguments)]
+fn bake_block_cached(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, bi: &crate::blockinfo::BlockInfo, cache_key: &str, ident: &str, scale: f32, collection: u32, legacy: &BTreeMap<String, Vec<u8>>, water: Option<(u8, f32)>, at_water_row: bool) -> BlockOut {
+    if let Some(c) = crate::bake_cache::get(cache_key, ident) {
+        let m = c.merged();
+        return BlockOut { res: Ok((c.bytes, m, c.deepened)), cached_visuals: Some(c.n_visuals), hit: true };
+    }
+    bake_env_reset(collection);
+    let r = bake_block(store, plan, name, path, bi, ident, scale, collection, legacy, water, at_water_row);
+    if let Ok((bytes, m, deepened)) = &r {
+        if !m.visuals.is_empty() {
+            crate::bake_cache::put(cache_key, ident, &crate::bake_cache::Baked::of(bytes, m, *deepened));
+        }
+    }
+    BlockOut { res: r, cached_visuals: None, hit: false }
+}
+
+
+/// The neutral ident an item model is pre-baked under (same length as `AI{n:08}`).
+const NEUTRAL_ITEM: &str = "AI00000000.Item.Gbx";
+
+/// Where an item model's bytes come from, in the order `build` looks.
+enum ItemSrc<'a> {
+    /// `--items-dir DIR/<model>.Item.Gbx`
+    Local(std::path::PathBuf),
+    /// a custom item the MAP embeds (the TME_* nation items)
+    Embedded(&'a [u8]),
+    /// a pack item, by logical path
+    Pack(String),
+}
+
+fn item_src<'a>(store: &DataStore, model: &str, items_dir: Option<&Path>, embedded: &'a BTreeMap<String, Vec<u8>>) -> Option<ItemSrc<'a>> {
+    if let Some(p) = items_dir.map(|d| d.join(format!("{model}.Item.Gbx"))).filter(|p| p.is_file()) {
+        return Some(ItemSrc::Local(p));
+    }
+    if let Some(bytes) = embedded.iter().find(|(k, _)| k.replace('/', "\\").eq_ignore_ascii_case(&format!("Items\\{model}"))).map(|(_, v)| v) {
+        return Some(ItemSrc::Embedded(bytes));
+    }
+    find_item_file(store, model).map(ItemSrc::Pack)
+}
+
+/// The cache key of an item bake: the pack path, or the hash of the bytes for
+/// a file the map embeds or `--items-dir` supplies (a name alone could stand
+/// for other bytes tomorrow), with the variant and the light skin.
+fn item_cache_key(src: &ItemSrc, variant: u8, lskin: &Option<String>, scale: f32, collection: u32) -> String {
+    let what = match src {
+        ItemSrc::Local(p) => format!("item-file:{}", crate::bake_cache::sha256_hex(&std::fs::read(p).unwrap_or_default())),
+        ItemSrc::Embedded(b) => format!("item-embedded:{}", crate::bake_cache::sha256_hex(b)),
+        ItemSrc::Pack(l) => format!("item:{l}"),
+    };
+    crate::bake_cache::key(&format!("{what}|v{variant}|skin{lskin:?}"), scale, collection, false, None)
+}
+
+/// An item bake as the worker pool (or the cache) hands it over.
+struct ItemOut {
+    res: Result<(Vec<u8>, crate::static_item::build::Merged), String>,
+    /// a cache hit's (visuals, moving parts, lights) counts — the rebuilt `Merged` has none
+    counts: Option<(usize, usize, usize)>,
+    hit: bool,
+}
+
+impl ItemOut {
+    fn renamed(mut self, from: &str, to: &str) -> ItemOut {
+        if from != to {
+            self.res = match self.res {
+                Ok((bytes, m)) => Ok((crate::crystal::rename_ident(&bytes, from, to), m)),
+                Err(e) => Err(e.replace(from, to)),
+            };
+        }
+        self
+    }
+}
+
+/// One item model's bake (the still-flag form when `still_flag`: the tween
+/// parts off — `TWEEN_OVERRIDE`, a thread-local, set around the bake on the
+/// thread that bakes).
+#[allow(clippy::too_many_arguments)]
+fn bake_item(store: &mut DataStore, src: &ItemSrc, ident: &str, scale: f32, collection: u32, variant: u8, light_skin: &Option<crate::light_skin::LightSkin>, still_flag: bool) -> Result<(Vec<u8>, crate::static_item::build::Merged), String> {
+    bake_env_reset(collection);
+    match src {
+        ItemSrc::Local(p) => crate::static_item::build::static_item_from_item_report(&std::fs::read(p).unwrap(), ident, ident, scale, collection),
+        ItemSrc::Embedded(bytes) => crate::static_item::build::static_item_from_item_report(bytes, ident, ident, scale, collection),
+        ItemSrc::Pack(logical) => {
+            if still_flag {
+                crate::static_item::build::TWEEN_OVERRIDE.with(|o| o.set(Some(false)));
+            }
+            let r = crate::static_item::build::static_item_from_pack_item_report_skin(store, logical, ident, ident, scale, collection, variant as usize, light_skin.clone());
+            crate::static_item::build::TWEEN_OVERRIDE.with(|o| o.set(None));
+            r
+        }
+    }
+}
+
+/// One item model through the cache: the cached copy under `ident`, else the
+/// bake, stored when it produced anything (visuals, moving parts, or the tree
+/// entities of a vegetation cluster).
+#[allow(clippy::too_many_arguments)]
+fn bake_item_cached(store: &mut DataStore, src: &ItemSrc, cache_key: &str, ident: &str, scale: f32, collection: u32, variant: u8, light_skin: &Option<crate::light_skin::LightSkin>, still_flag: bool) -> ItemOut {
+    if let Some(c) = crate::bake_cache::get(cache_key, ident) {
+        let m = c.merged();
+        return ItemOut { res: Ok((c.bytes, m)), counts: Some((c.n_visuals, c.n_dyna, c.n_lights)), hit: true };
+    }
+    let r = bake_item(store, src, ident, scale, collection, variant, light_skin, still_flag);
+    if let Ok((bytes, m)) = &r {
+        if !m.visuals.is_empty() || !m.dyna.is_empty() || !m.veget.is_empty() {
+            crate::bake_cache::put(cache_key, ident, &crate::bake_cache::Baked::of(bytes, m, false));
+        }
+    }
+    ItemOut { res: r, counts: None, hit: false }
+}
+
 #[allow(clippy::too_many_arguments)]
 /// The cells covered by any UNIT of an authored non-pillar, non-terrain block
 /// (the footprint turned like `blockmap::footprint`): what the `covered` filler
@@ -1040,8 +1279,27 @@ fn unit_cells(b: &tmmaps::map::BlockRec, units: &[[i32; 3]]) -> Vec<[u8; 3]> {
     out
 }
 
+/// `--debug bakes`: one line per phase of `build`, with the seconds since the
+/// previous mark — where a build's time goes.
+struct Marks(std::time::Instant, std::time::Instant);
+impl Marks {
+    fn new() -> Marks {
+        let t = std::time::Instant::now();
+        Marks(t, t)
+    }
+    fn mark(&mut self, what: &str) {
+        if crate::debug::on("bakes") {
+            let now = std::time::Instant::now();
+            println!("  bakes: {what}: {:.2} s (at {:.2} s)", (now - self.1).as_secs_f64(), (now - self.0).as_secs_f64());
+            self.1 = now;
+        }
+    }
+}
+
 pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Path, report: Option<&Path>, scale: f32, legacy_zip: Option<&Path>, items_dir: Option<&Path>, veget_mode: &str, collection_name: &str, only: Option<&str>) {
+    let mut marks = Marks::new();
     let source = MapFile::load(map);
+    marks.mark("map loaded");
     let collection = source.items.first().map(|it| it.collection_raw).unwrap_or(26);
     println!("  map collection {collection:#x}; {} blocks, {} items", source.blocks.len(), source.items.len());
     // block infos are looked up under the map's own collection first
@@ -1054,6 +1312,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         None => BTreeMap::new(),
     };
     let mut idx = crate::blockmap::BlockInfoIndex::build(store, collection_name);
+    marks.mark("block-info index built");
 
     // A generated filler takes the MATERIAL MODIFIER of the authored block it
     // finishes: the game grows the FC clips of a PlatformDirt platform in the
@@ -1373,6 +1632,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     if !ponds.is_empty() {
         println!("  {} pond cell(s): enclosed Sea records get a sea-floor item ({})", ponds.len(), ponds.iter().map(|c| format!("{},{},{}", c[0], c[1], c[2])).collect::<Vec<_>>().join(" "));
     }
+    marks.mark("cell modifiers resolved");
     let mut keys: BTreeMap<(String, u32, String), usize> = BTreeMap::new();
     // Free-placed blocks (flag 0x20000000) are keyed like the rest: their
     // variant bits are the same, `tmmaps tiny` places them from free_pos /
@@ -1454,20 +1714,94 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let substitute = veget_mode == "substitute" || veget_mode == "bake";
     let mut baked_tree_rows = 0usize;
     let mut cache_hits = 0usize;
+    let mut fresh_bakes = 0usize;
     let ambient = source.ambient_zone().unwrap_or_default();
-    for ((name, flags, inherited_mods), n) in &keys {
-        if !wanted(name) {
-            continue;
+    let t_bakes = std::time::Instant::now();
+    // ---------------------------------------------------------------------
+    // THE PARALLEL PRE-BAKE (`par.rs`, 2026-09-22: "Why does it take 10 min?
+    // Do we not parallelize it?"). A bake is a pure function of its inputs,
+    // so the blocks' bakes run on every core first, then the items', then the
+    // trees' (which species need one is known only once blocks and items are
+    // baked). The bookkeeping — alias numbering, the recipe -> alias table,
+    // the mapping rows, the report — is the sequential loop it always was, in
+    // key order, reading the pre-baked results instead of baking in place
+    // (and baking in place when the result it needs is not there: a recipe
+    // baked again under another block after its first bake failed). The
+    // output is byte-identical to the one-thread build whatever the worker
+    // count; `TINY_BAKE_JOBS=1` IS that build.
+    // ---------------------------------------------------------------------
+    // pass 1: the block info of every wanted key, in key order
+    marks.mark("block keys planned");
+    let infos: Vec<(BlockKey, Result<(String, crate::blockinfo::BlockInfo), String>)> = keys
+        .iter()
+        .filter(|((name, _, _), _)| wanted(name))
+        .map(|((name, flags, inherited_mods), n)| (BlockKey { name, flags: *flags, inherited_mods, placements: *n }, load_block_info(&mut idx, store, name)))
+        .collect();
+    let at_water_row_of = |name: &str, flags: u32| water.map(|(wrow, _)| rows_by_key.get(&(name.to_string(), flags)).map(|r| r.len() == 1 && r.contains(&wrow)).unwrap_or(false)).unwrap_or(false);
+    // pass 2: one bake job per distinct recipe, at its FIRST key — the bake the
+    // loop below does there (a later key of the same recipe reuses its alias) —
+    // under the alias PREDICTED for it: every job ahead keeps its alias. (An
+    // empty prefab gives its alias back, and the loop then renames the jobs
+    // behind it — same-length names, `BlockOut::renamed`.)
+    struct BlockJob<'b> {
+        i: usize,
+        plan: Box<BlockBake<'b>>,
+        at_water_row: bool,
+        cache_key: String,
+        ident: String,
+    }
+    let mut block_jobs: Vec<BlockJob> = Vec::new();
+    {
+        let mut seen: BTreeMap<String, String> = BTreeMap::new();
+        for (i, (key, info)) in infos.iter().enumerate() {
+            let Ok((_, bi)) = info else { continue };
+            if let BlockPlan::Bake(plan) = plan_block(bi, key, collection, &ambient, &tile_zones, &seen) {
+                seen.insert(plan.recipe.clone(), String::new());
+                let at_water_row = at_water_row_of(key.name, key.flags);
+                let cache_key = crate::bake_cache::key(&plan.recipe, scale, collection, at_water_row, water);
+                let ident = format!("AC{:08}.Item.Gbx", alias_base() + block_jobs.len());
+                block_jobs.push(BlockJob { i, plan, at_water_row, cache_key, ident });
+            }
         }
-        let key = BlockKey { name, flags: *flags, inherited_mods, placements: *n };
-        let (path, bi) = match load_block_info(&mut idx, store, name) {
+    }
+    let outs = crate::par::map(store, &block_jobs, |st, _, job| {
+        let (key, info) = &infos[job.i];
+        let (path, bi) = info.as_ref().expect("a bake job comes from a key with a block info");
+        bake_block_cached(st, &job.plan, key.name, path, bi, &job.cache_key, &job.ident, scale, collection, &legacy, water, job.at_water_row)
+    });
+    let t_blocks = t_bakes.elapsed();
+    marks.mark("blocks baked (worker pool)");
+    // recipe -> (the key it was baked for, its predicted ident, the bake)
+    let mut prebaked: BTreeMap<&str, (usize, &str, Option<BlockOut>)> = BTreeMap::new();
+    for (job, out) in block_jobs.iter().zip(outs) {
+        prebaked.insert(job.plan.recipe.as_str(), (job.i, job.ident.as_str(), Some(out)));
+    }
+    if crate::debug::on("bakes") {
+        println!("  bakes: {} block jobs on {} workers in {:.2} s", block_jobs.len(), crate::par::workers(), t_blocks.as_secs_f64());
+    }
+    // the tree species the blocks' bakes place (their vegetation entities),
+    // pre-baked before the loop below asks `ident_for` for them
+    let (tree_jobs1, t_trees1) = if substitute {
+        let species: Vec<&str> = prebaked.values().filter_map(|(_, _, o)| o.as_ref()).filter_map(|o| o.res.as_ref().ok()).flat_map(|(_, m, _)| m.veget.iter().map(|(p, _)| p.as_str())).collect();
+        baker.prebake(store, species.into_iter(), scale, collection)
+    } else {
+        (0, std::time::Duration::ZERO)
+    };
+    if crate::debug::on("bakes") {
+        println!("  bakes: {} block jobs on {} workers in {:.2} s; {tree_jobs1} tree jobs in {:.2} s", block_jobs.len(), crate::par::workers(), t_blocks.as_secs_f64(), t_trees1.as_secs_f64());
+    }
+    marks.mark("trees baked, round 1 (worker pool)");
+    // the bookkeeping, in key order
+    for (i, (key, info)) in infos.iter().enumerate() {
+        let (path, bi) = match info {
             Ok(x) => x,
             Err(e) => {
-                outcomes.push(key.outcome("", key.source(), Err(e)));
+                outcomes.push(key.outcome("", key.source(), Err(e.clone())));
                 continue;
             }
         };
-        let plan = match plan_block(&bi, &key, collection, &ambient, &tile_zones, &alias_of_recipe) {
+        let (name, flags) = (key.name, key.flags);
+        let plan = match plan_block(bi, key, collection, &ambient, &tile_zones, &alias_of_recipe) {
             BlockPlan::Nothing { why, label, footprint } => {
                 let (sx, sz, units) = match &footprint {
                     Some(f) => (f.sx, f.sz, f.units.clone()),
@@ -1503,53 +1837,26 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         let alias = format!("AC{next_alias:08}");
         next_alias += 1;
         let ident = format!("{alias}.Item.Gbx");
-        let at_water_row = water.map(|(wrow, _)| rows_by_key.get(&(name.clone(), *flags)).map(|r| r.len() == 1 && r.contains(&wrow)).unwrap_or(false)).unwrap_or(false);
-        // THE BAKE CACHE (`bake_cache.rs`): the same recipe under the same converter and
-        // knobs is the same bake — reuse it under this build's alias instead of the
-        // ~1.5 s of CPU per model (vjeux, 2026-09-21).
-        let cache_key = crate::bake_cache::key(&plan.recipe, scale, collection, at_water_row, water);
-        let mut cached_visuals: Option<usize> = None;
-        let res: Result<(Vec<u8>, crate::static_item::build::Merged, bool), String> = match crate::bake_cache::get(&cache_key, &ident) {
-            Some(c) => {
-                cache_hits += 1;
-                let mut m = crate::static_item::build::Merged::default();
-                m.pictures = c.pictures.into_iter().collect();
-                m.notes = c.notes;
-                m.surf_vertices = c.surf_vertices;
-                m.surf_triangles = c.surf_triangles;
-                m.veget = c.veget;
-                m.waypoint_type = c.waypoint_type;
-                m.spawn = c.spawn;
-                m.trigger = c.trigger;
-                cached_visuals = Some(c.n_visuals);
-                Ok((c.bytes, m, c.deepened))
-            }
-            None => {
-                let r = bake_block(store, &plan, name, &path, &bi, &ident, scale, collection, &legacy, water, at_water_row);
-                if let Ok((bytes, m, deepened)) = &r {
-                    if !m.visuals.is_empty() {
-                        crate::bake_cache::put(
-                            &cache_key,
-                            &ident,
-                            &crate::bake_cache::Baked {
-                                bytes: bytes.clone(),
-                                pictures: m.pictures.iter().cloned().collect(),
-                                n_visuals: m.visuals.len(),
-                                notes: m.notes.clone(),
-                                surf_vertices: m.surf_vertices.clone(),
-                                surf_triangles: m.surf_triangles.clone(),
-                                veget: m.veget.clone(),
-                                waypoint_type: m.waypoint_type,
-                                spawn: m.spawn,
-                                trigger: m.trigger.clone(),
-                                deepened: *deepened,
-                            },
-                        );
-                    }
-                }
-                r
+        let at_water_row = at_water_row_of(name, flags);
+        // THE BAKE CACHE (`bake_cache.rs`): the same recipe under the same converter
+        // and knobs is the same bake — reused under this build's alias instead of
+        // baked again (vjeux, 2026-09-21). The workers above went through it.
+        let out = match prebaked.get_mut(plan.recipe.as_str()) {
+            Some((src, predicted, slot)) if *src == i && slot.is_some() => slot.take().unwrap().renamed(predicted, &ident),
+            // the recipe's first bake (under another key) failed and set no alias:
+            // this key's own bake, in place
+            _ => {
+                let cache_key = crate::bake_cache::key(&plan.recipe, scale, collection, at_water_row, water);
+                bake_block_cached(store, &plan, name, path, bi, &cache_key, &ident, scale, collection, &legacy, water, at_water_row)
             }
         };
+        if out.hit {
+            cache_hits += 1;
+        } else {
+            fresh_bakes += 1;
+        }
+        let cached_visuals = out.cached_visuals;
+        let res = out.res;
         let (sx, sz, units) = (plan.footprint.sx, plan.footprint.sz, &plan.footprint.units);
         let label = &plan.pk.label;
         let recipe = &plan.recipe;
@@ -1604,7 +1911,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 // a deck block's driving surface, for the tree clearance below
                 if crate::tree_clear::is_deck_block(name) {
                     deck_tris.insert(ident.clone(), crate::tree_clear::up_facing(&m.surf_vertices, &m.surf_triangles));
-                    deck_name.insert(ident.clone(), name.clone());
+                    deck_name.insert(ident.clone(), name.to_string());
                 }
                 block_map.insert(key.map_key(), (alias, sx, sz, units.clone()));
             }
@@ -1627,6 +1934,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // …and per LIGHT COLOUR SKIN (light_skin.rs): a placement whose skin is
     // `Skins\Stadium\LightColors\Coral.dds` gets its own copy with coral
     // lights and glass (Summer 17: 108 Orange lamps; 20: 115 Green tubes).
+    marks.mark("blocks: bookkeeping");
     let footprint_cells = covered_cells(&source, &block_map, &tile_zones);
     // The flag driver guard (2026-09-08, anim thread). An embedded tween cloth
     // draws right only while a STOCK flag is drawn in the same view at the
@@ -1699,7 +2007,97 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // stock half-size variants used as targets: their mapping rows carry
     // model_scale = scale like an embedded half-size copy
     let mut half_stock: std::collections::BTreeSet<String> = Default::default();
-    for ((model, variant, lskin), n) in &item_counts {
+    // THE ITEMS' PRE-BAKE: the keys the loop below bakes, decided the way it
+    // decides them — a stock stand-in or a light skin that is no swatch bakes
+    // nothing; a model without a variant list is baked once and its later
+    // variants reuse it (speculated as succeeding: when it did not, the loop
+    // bakes the next variant in place) — baked on the worker pool under the
+    // neutral ident. A kinematic strip flag (TINY_FLAG8M=strips) bakes in place.
+    struct ItemJob<'a> {
+        i: usize,
+        variant: u8,
+        still_flag: bool,
+        light_skin: Option<crate::light_skin::LightSkin>,
+        src: ItemSrc<'a>,
+        cache_key: String,
+    }
+    let t0 = std::time::Instant::now();
+    let mut item_jobs: Vec<ItemJob> = Vec::new();
+    {
+        let mut single: std::collections::BTreeSet<&str> = Default::default();
+        for (i, ((model, variant, lskin), _)) in item_counts.iter().enumerate() {
+            if model.is_empty() || !wanted(model) || (lskin.is_none() && single.contains(model.as_str())) {
+                continue;
+            }
+            let still_flag = lskin.as_deref() == Some(STILL_FLAG_KEY);
+            let light_skin = match lskin {
+                Some(_) if still_flag => None,
+                Some(name) => match crate::light_skin::lookup(name) {
+                    Some(s) => Some(s),
+                    None => continue,
+                },
+                None => None,
+            };
+            if let Some(small) = stock_half_variant(model, *variant) {
+                if find_item_file(store, small).is_some() {
+                    if stock_half_variant(model, 0) == Some(small) {
+                        single.insert(model.as_str());
+                    }
+                    continue;
+                }
+            }
+            let Some(src) = item_src(store, model, items_dir, &embedded) else { continue };
+            if model == "Flag8m" && strip_n.is_some() && matches!(src, ItemSrc::Pack(_)) {
+                continue;
+            }
+            let multi = match &src {
+                ItemSrc::Pack(logical) => crate::static_item::build::pack_item_variants(store, logical).map(|v| v.len() > 1).unwrap_or(false),
+                _ => false,
+            };
+            if !multi && lskin.is_none() {
+                single.insert(model.as_str());
+            }
+            let cache_key = item_cache_key(&src, *variant, lskin, scale, collection);
+            item_jobs.push(ItemJob { i, variant: *variant, still_flag, light_skin, src, cache_key });
+        }
+    }
+    let outs = crate::par::map(store, &item_jobs, |st, _, job| bake_item_cached(st, &job.src, &job.cache_key, NEUTRAL_ITEM, scale, collection, job.variant, &job.light_skin, job.still_flag));
+    let t_items = t0.elapsed();
+    marks.mark("items baked (worker pool)");
+    // key index -> its bake, waiting for the loop
+    let mut item_prebaked: BTreeMap<usize, Option<ItemOut>> = item_jobs.iter().zip(outs).map(|(j, o)| (j.i, Some(o))).collect();
+    // the tree species the items place: a vegetation cluster's entities, the
+    // map's own vegetation items (the species its variant names, else the item)
+    let (tree_jobs2, t_trees2) = if substitute {
+        let mut species: Vec<String> = Vec::new();
+        for job in &item_jobs {
+            let Some(Some(o)) = item_prebaked.get(&job.i) else { continue };
+            let model = &item_counts.keys().nth(job.i).expect("job index").0;
+            match &o.res {
+                Ok((_, m)) => {
+                    let (nv, nd, _) = o.counts.unwrap_or((m.visuals.len(), m.dyna.len(), m.lights_out.len()));
+                    if nv == 0 && nd == 0 {
+                        species.extend(m.veget.iter().map(|(p, _)| p.clone()));
+                    }
+                }
+                Err(e) if e.contains("procedural vegetation") => {
+                    let sp = e.split_once("procedural vegetation: ").and_then(|(_, rest)| rest.split(" (").next()).filter(|p| p.to_ascii_lowercase().ends_with(".vegettreemodel.gbx")).map(|s| s.to_string());
+                    if let Some(s) = sp.or_else(|| find_item_file(store, model)) {
+                        species.push(s);
+                    }
+                }
+                _ => {}
+            }
+        }
+        baker.prebake(store, species.iter().map(|s| s.as_str()), scale, collection)
+    } else {
+        (0, std::time::Duration::ZERO)
+    };
+    if crate::debug::on("bakes") {
+        println!("  bakes: {} item jobs in {:.2} s; {tree_jobs2} tree jobs in {:.2} s", item_jobs.len(), t_items.as_secs_f64(), t_trees2.as_secs_f64());
+    }
+    marks.mark("trees baked, round 2 (worker pool)");
+    for (i, ((model, variant, lskin), n)) in item_counts.iter().enumerate() {
         if model.is_empty() || !wanted(model) {
             continue;
         }
@@ -1778,57 +2176,72 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         }
         let alias = format!("AI{item_alias_n:08}");
         let ident = format!("{alias}.Item.Gbx");
-        let local = items_dir.map(|d| d.join(format!("{model}.Item.Gbx"))).filter(|p| p.is_file());
+        let src = item_src(store, model, items_dir, &embedded);
         // how many variants the item's file lists (pack items only)
         let mut variants: Vec<String> = Vec::new();
-        let res = match &local {
-            Some(p) => crate::static_item::build::static_item_from_item_report(&std::fs::read(p).unwrap(), &ident, &ident, scale, collection),
-            None => match embedded.iter().find(|(k, _)| k.replace('/', "\\").eq_ignore_ascii_case(&format!("Items\\{model}"))).map(|(_, v)| v) {
-                // a custom item the MAP embeds (the TME_* nation items)
-                Some(bytes) => crate::static_item::build::static_item_from_item_report(bytes, &ident, &ident, scale, collection),
-                None => match find_item_file(store, model) {
-                    Some(logical) => {
-                        variants = crate::static_item::build::pack_item_variants(store, &logical).unwrap_or_default();
-                        {
-                            if still_flag {
-                                crate::static_item::build::TWEEN_OVERRIDE.with(|o| o.set(Some(false)));
-                            }
-                            // TINY_FLAG8M=strips[:N]: strips 1..N first (their own
-                            // aliases), strip 0 — with the pole — is the placement's model
-                            let strips = if model == "Flag8m" { strip_n } else { None };
-                            if let Some(nstrips) = strips {
-                                let mut extra: Vec<(String, u8)> = Vec::new();
-                                for k in 1..nstrips {
-                                    let ident_k = format!("AI{:08}.Item.Gbx", item_alias_n + k);
-                                    crate::static_item::build::STRIP_OVERRIDE.with(|o| o.set(Some((k, nstrips))));
-                                    let rk = crate::static_item::build::static_item_from_pack_item_report_skin(store, &logical, &ident_k, &ident_k, scale, collection, *variant as usize, light_skin.clone());
-                                    crate::static_item::build::STRIP_OVERRIDE.with(|o| o.set(None));
-                                    let source_k = format!("{model} strip {k}/{nstrips}");
-                                    match rk {
-                                        Ok((out_k, mk)) if !mk.dyna.is_empty() => {
-                                            let phase8 = ((k * 8 / nstrips) % 8) as u8;
-                                            files.insert(format!("Items/{ident_k}"), out_k);
-                                            outcomes.push(Outcome { alias: ident_k.clone(), kind: "item", source: source_k, placements: *n, result: Ok(format!("kinematic strip {k} of {nstrips}, phase byte {phase8}, {} bytes", mk.dyna.len())) });
-                                            extra.push((ident_k, phase8));
-                                        }
-                                        Ok(_) => outcomes.push(Outcome { alias: ident_k, kind: "item", source: source_k, placements: 0, result: Err("no moving part came out of the strip bake".into()) }),
-                                        Err(e) => outcomes.push(Outcome { alias: ident_k, kind: "item", source: source_k, placements: 0, result: Err(e) }),
-                                    }
-                                }
-                                item_alias_n += nstrips - 1;
-                                strip_rows.insert((model.clone(), *variant, lskin.clone()), extra);
-                                crate::static_item::build::STRIP_OVERRIDE.with(|o| o.set(Some((0, nstrips))));
-                            }
-                            let r = crate::static_item::build::static_item_from_pack_item_report_skin(store, &logical, &ident, &ident, scale, collection, *variant as usize, light_skin.clone());
-                            crate::static_item::build::STRIP_OVERRIDE.with(|o| o.set(None));
-                            crate::static_item::build::TWEEN_OVERRIDE.with(|o| o.set(None));
-                            r
+        let out: ItemOut = match &src {
+            None => ItemOut { res: Err("no .Item.Gbx in the client packs, the map's embedded files, or --items-dir".into()), counts: None, hit: false },
+            Some(src) => {
+                if let ItemSrc::Pack(logical) = src {
+                    variants = crate::static_item::build::pack_item_variants(store, logical).unwrap_or_default();
+                }
+                // TINY_FLAG8M=strips[:N]: strips 1..N first (their own
+                // aliases), strip 0 — with the pole — is the placement's model
+                let strips = if model == "Flag8m" { strip_n } else { None };
+                match (strips, src) {
+                    (Some(nstrips), ItemSrc::Pack(logical)) => {
+                        if still_flag {
+                            crate::static_item::build::TWEEN_OVERRIDE.with(|o| o.set(Some(false)));
                         }
+                        let mut extra: Vec<(String, u8)> = Vec::new();
+                        for k in 1..nstrips {
+                            let ident_k = format!("AI{:08}.Item.Gbx", item_alias_n + k);
+                            crate::static_item::build::STRIP_OVERRIDE.with(|o| o.set(Some((k, nstrips))));
+                            let rk = crate::static_item::build::static_item_from_pack_item_report_skin(store, logical, &ident_k, &ident_k, scale, collection, *variant as usize, light_skin.clone());
+                            crate::static_item::build::STRIP_OVERRIDE.with(|o| o.set(None));
+                            let source_k = format!("{model} strip {k}/{nstrips}");
+                            match rk {
+                                Ok((out_k, mk)) if !mk.dyna.is_empty() => {
+                                    let phase8 = ((k * 8 / nstrips) % 8) as u8;
+                                    files.insert(format!("Items/{ident_k}"), out_k);
+                                    outcomes.push(Outcome { alias: ident_k.clone(), kind: "item", source: source_k, placements: *n, result: Ok(format!("kinematic strip {k} of {nstrips}, phase byte {phase8}, {} bytes", mk.dyna.len())) });
+                                    extra.push((ident_k, phase8));
+                                }
+                                Ok(_) => outcomes.push(Outcome { alias: ident_k, kind: "item", source: source_k, placements: 0, result: Err("no moving part came out of the strip bake".into()) }),
+                                Err(e) => outcomes.push(Outcome { alias: ident_k, kind: "item", source: source_k, placements: 0, result: Err(e) }),
+                            }
+                        }
+                        item_alias_n += nstrips - 1;
+                        strip_rows.insert((model.clone(), *variant, lskin.clone()), extra);
+                        crate::static_item::build::STRIP_OVERRIDE.with(|o| o.set(Some((0, nstrips))));
+                        let r = crate::static_item::build::static_item_from_pack_item_report_skin(store, logical, &ident, &ident, scale, collection, *variant as usize, light_skin.clone());
+                        crate::static_item::build::STRIP_OVERRIDE.with(|o| o.set(None));
+                        crate::static_item::build::TWEEN_OVERRIDE.with(|o| o.set(None));
+                        fresh_bakes += 1;
+                        ItemOut { res: r, counts: None, hit: false }
                     }
-                    None => Err("no .Item.Gbx in the client packs, the map's embedded files, or --items-dir".into()),
-                },
-            },
+                    // the worker pool's bake of this key, else (the key was speculated
+                    // as reusing an earlier variant's item, and that bake failed) in place
+                    _ => {
+                        let o = match item_prebaked.get_mut(&i).and_then(|slot| slot.take()) {
+                            Some(o) => o.renamed(NEUTRAL_ITEM, &ident),
+                            None => {
+                                let cache_key = item_cache_key(src, *variant, lskin, scale, collection);
+                                bake_item_cached(store, src, &cache_key, &ident, scale, collection, *variant, &light_skin, still_flag)
+                            }
+                        };
+                        if o.hit {
+                            cache_hits += 1;
+                        } else {
+                            fresh_bakes += 1;
+                        }
+                        o
+                    }
+                }
+            }
         };
+        let counts = out.counts;
+        let res = out.res;
         let multi = variants.len() > 1;
         let mut source_name = if multi {
             let picked = variants.get(*variant as usize).or(variants.first()).map(|p| p.rsplit('\\').next().unwrap_or(p).to_string()).unwrap_or_default();
@@ -1845,14 +2258,18 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                 single_variant.insert(model.clone(), target.to_string());
             }
         };
+        // (a cache hit's `Merged` carries no visuals, moving parts or lights —
+        // their counts come with it)
+        let n_of = |m: &crate::static_item::build::Merged| counts.unwrap_or((m.visuals.len(), m.dyna.len(), m.lights_out.len()));
         match res {
             // a moving item (rotor, tube) may have NO static visuals: all of
             // its geometry rides on the dyna parts
-            Ok((out, m)) if !m.visuals.is_empty() || !m.dyna.is_empty() => {
+            Ok((out, m)) if { let (nv, nd, _) = n_of(&m); nv > 0 || nd > 0 } => {
+                let (nv, nd, nl) = n_of(&m);
                 item_alias_n += 1;
-                let lights = if m.lights_out.is_empty() { String::new() } else { format!(", {} light(s) embedded", m.lights_out.len()) };
-                let moving = if m.dyna.is_empty() { String::new() } else { format!(", {} moving part(s)", m.dyna.len()) };
-                let summary = format!("{} bytes, {} visuals, {} collision tris{lights}{moving}{}{}", out.len(), m.visuals.len(), m.surf_triangles.len(), lod_summary(&m), match m.waypoint_type { Some(t) => format!(", waypoint {t} trigger {} spawn {:?}", m.trigger.is_some(), m.spawn), None => String::new() });
+                let lights = if nl == 0 { String::new() } else { format!(", {nl} light(s) embedded") };
+                let moving = if nd == 0 { String::new() } else { format!(", {nd} moving part(s)") };
+                let summary = format!("{} bytes, {} visuals, {} collision tris{lights}{moving}{}{}", out.len(), nv, m.surf_triangles.len(), lod_summary(&m), match m.waypoint_type { Some(t) => format!(", waypoint {t} trigger {} spawn {:?}", m.trigger.is_some(), m.spawn), None => String::new() });
                 files.insert(format!("Items/{ident}"), out);
                 for (file, dds) in &m.pictures {
                     pictures.entry(format!("Items/{file}")).or_insert_with(|| dds.clone());
@@ -1947,6 +2364,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             Err(e) => outcomes.push(Outcome { alias: String::new(), kind: "item", source: source_name, placements: *n, result: Err(e) }),
         }
     }
+    marks.mark("items: bookkeeping");
     // every embedded item claims the map's collection (header + body idents)
     for bytes in files.values_mut() {
         *bytes = crate::tiny_assets::set_ident_collection(bytes, collection);
@@ -1974,7 +2392,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         }
         println!("  pictures: {n} DDS from {} into Items/", std::path::Path::new(&dir).display());
     }
+    marks.mark("idents set to the collection");
     let archive = crate::tiny_assets::zip(&files);
+    marks.mark("library zipped");
     std::fs::write(out_zip, &archive).unwrap();
     // mapping: @index rows for blocks (alias or "-" = intentionally nothing), i@ rows for items
     let mut mapping = String::from("# tiny-library mapping: @block_index<TAB>ITEM|-<TAB>model_scale<TAB>sx<TAB>sz<TAB>units(x,y,z;...)<TAB>auto_terrain(dx,dy,dz=Zone;...|placetype) ; i@item_index<TAB>ITEM|stock model|-\n");
@@ -2023,6 +2443,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     }
     {
         let faces = crate::fillers::faces(store, &mut idx, &source);
+        marks.mark("filler faces");
         if occupied_rule {
             // TINY_OCCUPIED_RULE=1: every covered record (the crude probe);
             // TINY_OCCUPIED_RULE=2: covered AND the clip's CanBeDeletedByFullFreeClip
@@ -2256,7 +2677,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     }
     mapping.push_str(&veget_rows);
     // the verdicts: `xv@N\tK` / `xvb@N\tK` / `xvi@N\tK` / `xi@N` rows, one per dropped tree
+    marks.mark("mapping rows");
     let verdict = crate::tree_clear::judge(&grid, &trees);
+    marks.mark("tree clearance judged");
     // A BAKED tree is judged for the census only: at half size in a half-size
     // place it meets a deck exactly when the original did — the verdicts are
     // printed, not written.
@@ -2317,6 +2740,7 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         }
     }
     std::fs::write(out_mapping, &mapping).unwrap();
+    marks.mark("mapping written");
     // report
     let mut rep = String::from("kind\talias\tplacements\tstatus\tsource\tdetail\n");
     let (mut ok, mut bad) = (0, 0);
@@ -2611,5 +3035,5 @@ pub fn alias_base() -> usize {
 thread_local! {
     /// The filler-foliage species bakes, shared by every block of one library
     /// build (`inline_filler_foliage`): a species is baked once per process.
-    static FILLER_CACHE: std::cell::RefCell<Option<BTreeMap<String, Option<crate::static_item::build::Merged>>>> = const { std::cell::RefCell::new(None) };
+    static FILLER_CACHE: std::cell::RefCell<Option<BTreeMap<String, Result<crate::static_item::build::Merged, String>>>> = const { std::cell::RefCell::new(None) };
 }

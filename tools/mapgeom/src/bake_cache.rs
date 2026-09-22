@@ -1,29 +1,36 @@
-//! The BLOCK BAKE CACHE — `tiny-library` never bakes the same block twice.
+//! THE BAKE CACHE — `tiny-library` never bakes the same model twice.
 //!
-//! A tiny build re-bakes every one of a map's ~400 block/item models into a
-//! half-size item: ~10 minutes of CPU per map, and identical from one build to
-//! the next unless the converter or its knobs changed (vjeux, 2026-09-21: "Why
-//! don't we cache all these bakes!?"). A bake is a pure function of
+//! A tiny build bakes every one of a map's ~400 block models, its item models
+//! and its tree species into half-size items, and the result is identical from
+//! one build to the next unless the converter or its knobs changed (vjeux,
+//! 2026-09-21: "Why don't we cache all these bakes!?"). A bake is a pure
+//! function of
 //!
-//! * the block's RECIPE (`BlockBake::recipe`: what gets baked + waypoint +
-//!   modifier — the key that already shares one item between two block keys of
-//!   one build), the scale, the collection, the water-row flag,
-//! * the converter build (`MAPGEOM_BUILD_ID`, the git hash compiled in) and
-//!   every `TINY_*` knob that steers a bake (the whole `TINY_*` environment
-//!   minus the per-build naming knobs — a knob that does not matter costs a
-//!   miss, never a wrong hit),
+//! * WHAT is baked: a block's RECIPE (`BlockBake::recipe`: prefabs + waypoint +
+//!   units + modifier — the key that already shares one item between two block
+//!   keys of one build) with the water-row flag, an item's pack path (or the
+//!   hash of its bytes when the map embeds it) with its variant and light skin,
+//!   a tree species' model path; plus the scale and the collection,
+//! * the converter build (`MAPGEOM_BUILD_ID`: the git hash and a hash of the
+//!   converter's sources, from `build.rs`) and every `TINY_*` knob that steers
+//!   a bake (the whole `TINY_*` environment minus the knobs that never change
+//!   a bake — naming, the cache itself, the worker count; a knob that does not
+//!   matter costs a miss, never a wrong hit),
 //!
 //! so the key is the SHA-256 of all of that, and the value is the bake's output
-//! under a NEUTRAL ident (`AC00000000.Item.Gbx`): the item bytes, the sign-logo
-//! pictures, and the small sidecar the library builder reads back (visual count,
-//! notes, collision triangles, vegetation entities, waypoint kind, spawn,
-//! trigger). On a hit the ident is renamed to the build's alias
-//! (`crystal::rename_ident`, the same edit `tiny-library` does for pack items)
-//! and the sidecar rebuilt; the caller cannot tell a hit from a bake.
+//! under a NEUTRAL ident (`AC00000000.Item.Gbx` — same length as every alias):
+//! the item bytes, the pictures the item names, and the small sidecar the
+//! library builder reads back (visual / moving-part / light / material counts,
+//! notes, detail-level switch distances, collision triangles, vegetation
+//! entities, waypoint kind, spawn, trigger, a tree's measurements). On a hit the
+//! ident is renamed to the build's alias (`crystal::rename_ident`, the same
+//! edit `tiny-library` does for pack items) and the sidecar rebuilt; the caller
+//! cannot tell a hit from a bake.
 //!
 //! Location: `$TINY_BAKE_CACHE`, else `~/.cache/tiny-bake`; `TINY_BAKE_CACHE=0`
 //! disables it. One directory per key: `item.bin`, `meta.bin`, `pictures/`.
-//! Writes are atomic (temp dir + rename), so a killed build leaves no half entry.
+//! Writes are atomic (temp dir + rename), so a killed build leaves no half entry
+//! and two workers storing one key cannot corrupt it.
 
 use crate::static_item::surface::{CPlugSurface, Triangle};
 use std::collections::BTreeMap;
@@ -32,11 +39,35 @@ use std::path::{Path, PathBuf};
 /// The neutral ident cached bytes are written under.
 pub const NEUTRAL_IDENT: &str = "AC00000000.Item.Gbx";
 
+/// The converter build the cache keys on: the git commit and a hash of the
+/// converter's sources (`build.rs`), so an uncommitted edit misses too.
+pub const BUILD_ID: &str = match option_env!("MAPGEOM_BUILD_ID") {
+    Some(id) => id,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
+/// A tree bake's measurements (`static_item::build::VegetBake`), for the
+/// report and the height / hull rules of the tree baker.
+#[derive(Clone, Default)]
+pub struct TreeMeta {
+    pub model: String,
+    pub levels: Vec<usize>,
+    pub switch: Vec<f32>,
+    pub textures: Vec<(String, usize)>,
+    pub height: f32,
+    pub radius: f32,
+    pub hull_triangles: usize,
+}
+
 /// What a bake produces that the library builder consumes.
 pub struct Baked {
     pub bytes: Vec<u8>,
     pub pictures: BTreeMap<String, Vec<u8>>,
     pub n_visuals: usize,
+    pub n_dyna: usize,
+    pub n_lights: usize,
+    pub n_materials: usize,
+    pub lod_max_dist: Vec<f32>,
     pub notes: Vec<String>,
     pub surf_vertices: Vec<[f32; 3]>,
     pub surf_triangles: Vec<Triangle>,
@@ -45,6 +76,48 @@ pub struct Baked {
     pub spawn: [f32; 3],
     pub trigger: Option<CPlugSurface>,
     pub deepened: bool,
+    pub tree: Option<TreeMeta>,
+}
+
+impl Baked {
+    /// The sidecar of a fresh bake: everything the builder reads off `m` after
+    /// a bake, copied.
+    pub fn of(bytes: &[u8], m: &crate::static_item::build::Merged, deepened: bool) -> Baked {
+        Baked {
+            bytes: bytes.to_vec(),
+            pictures: m.pictures.iter().cloned().collect(),
+            n_visuals: m.visuals.len(),
+            n_dyna: m.dyna.len(),
+            n_lights: m.lights_out.len(),
+            n_materials: m.materials.len(),
+            lod_max_dist: m.lod_max_dist.clone(),
+            notes: m.notes.clone(),
+            surf_vertices: m.surf_vertices.clone(),
+            surf_triangles: m.surf_triangles.clone(),
+            veget: m.veget.clone(),
+            waypoint_type: m.waypoint_type,
+            spawn: m.spawn,
+            trigger: m.trigger.clone(),
+            deepened,
+            tree: None,
+        }
+    }
+
+    /// The `Merged` a cache hit stands in with: the fields the builder reads
+    /// (no visuals, materials or moving parts — their COUNTS are `n_*`).
+    pub fn merged(&self) -> crate::static_item::build::Merged {
+        let mut m = crate::static_item::build::Merged::default();
+        m.pictures = self.pictures.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        m.notes = self.notes.clone();
+        m.surf_vertices = self.surf_vertices.clone();
+        m.surf_triangles = self.surf_triangles.clone();
+        m.veget = self.veget.clone();
+        m.waypoint_type = self.waypoint_type;
+        m.spawn = self.spawn;
+        m.trigger = self.trigger.clone();
+        m.lod_max_dist = self.lod_max_dist.clone();
+        m
+    }
 }
 
 pub fn dir() -> Option<PathBuf> {
@@ -55,18 +128,19 @@ pub fn dir() -> Option<PathBuf> {
     }
 }
 
-/// The per-build naming knobs: they change the ident, never the bake.
-const NAMING_KNOBS: &[&str] = &["TINY_ALIAS_BASE", "TINY_PICTURE_SUFFIX", "TINY_BAKE_CACHE"];
+/// The knobs that never change a bake: the per-build naming knobs (they change
+/// the ident, never the bytes), the cache location, the worker count.
+const NON_BAKE_KNOBS: &[&str] = &["TINY_ALIAS_BASE", "TINY_PICTURE_SUFFIX", "TINY_BAKE_CACHE", "TINY_BAKE_JOBS"];
 
-/// The bake key: recipe + scale + collection + water row + converter build + knobs.
+/// The bake key: what is baked + scale + collection + water row + converter build + knobs.
 pub fn key(recipe: &str, scale: f32, collection: u32, at_water_row: bool, water: Option<(u8, f32)>) -> String {
     let mut h = Sha256::new();
-    h.update(option_env!("MAPGEOM_BUILD_ID").unwrap_or(env!("CARGO_PKG_VERSION")).as_bytes());
+    h.update(BUILD_ID.as_bytes());
     h.update(b"\0");
     h.update(recipe.as_bytes());
     h.update(b"\0");
     h.update(format!("scale={scale} coll={collection} wrow={at_water_row} water={water:?}").as_bytes());
-    let mut knobs: Vec<(String, String)> = std::env::vars().filter(|(k, _)| k.starts_with("TINY_") && !NAMING_KNOBS.contains(&k.as_str())).collect();
+    let mut knobs: Vec<(String, String)> = std::env::vars().filter(|(k, _)| k.starts_with("TINY_") && !NON_BAKE_KNOBS.contains(&k.as_str())).collect();
     knobs.sort();
     for (k, v) in knobs {
         h.update(b"\0");
@@ -77,6 +151,13 @@ pub fn key(recipe: &str, scale: f32, collection: u32, at_water_row: bool, water:
     h.hex()
 }
 
+/// The SHA-256 of some bytes, hex: the identity of an embedded or local item
+/// file in a key (its name alone could stand for other bytes tomorrow).
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(bytes);
+    h.hex()
+}
 fn w_u32(v: &mut Vec<u8>, x: u32) {
     v.extend_from_slice(&x.to_le_bytes());
 }
@@ -120,12 +201,31 @@ impl<'a> Cursor<'a> {
     }
 }
 
-const META_MAGIC: u32 = 0x5442_4B31; // "TBK1"
+const META_MAGIC: u32 = 0x5442_4B32; // "TBK2" (TBK1 had no counts, lod, tree)
+
+fn w_tris(v: &mut Vec<u8>, tris: &[Triangle]) {
+    w_u32(v, tris.len() as u32);
+    for t in tris {
+        for k in 0..3 {
+            w_u32(v, t.indices[k]);
+        }
+        v.push(t.material_id);
+        v.push(t.gameplay);
+        v.extend_from_slice(&t.surface_index.to_le_bytes());
+    }
+}
 
 fn encode_meta(b: &Baked) -> Vec<u8> {
     let mut v = Vec::new();
     w_u32(&mut v, META_MAGIC);
     w_u32(&mut v, b.n_visuals as u32);
+    w_u32(&mut v, b.n_dyna as u32);
+    w_u32(&mut v, b.n_lights as u32);
+    w_u32(&mut v, b.n_materials as u32);
+    w_u32(&mut v, b.lod_max_dist.len() as u32);
+    for d in &b.lod_max_dist {
+        w_f32(&mut v, *d);
+    }
     w_u32(&mut v, b.notes.len() as u32);
     for n in &b.notes {
         w_str(&mut v, n);
@@ -136,15 +236,7 @@ fn encode_meta(b: &Baked) -> Vec<u8> {
             w_f32(&mut v, p[k]);
         }
     }
-    w_u32(&mut v, b.surf_triangles.len() as u32);
-    for t in &b.surf_triangles {
-        for k in 0..3 {
-            w_u32(&mut v, t.indices[k]);
-        }
-        v.push(t.material_id);
-        v.push(t.gameplay);
-        v.extend_from_slice(&t.surface_index.to_le_bytes());
-    }
+    w_tris(&mut v, &b.surf_triangles);
     w_u32(&mut v, b.veget.len() as u32);
     for (p, iso) in &b.veget {
         w_str(&mut v, p);
@@ -174,33 +266,66 @@ fn encode_meta(b: &Baked) -> Vec<u8> {
         None => v.push(0),
     }
     v.push(b.deepened as u8);
+    match &b.tree {
+        Some(t) => {
+            v.push(1);
+            w_str(&mut v, &t.model);
+            w_u32(&mut v, t.levels.len() as u32);
+            for l in &t.levels {
+                w_u32(&mut v, *l as u32);
+            }
+            w_u32(&mut v, t.switch.len() as u32);
+            for s in &t.switch {
+                w_f32(&mut v, *s);
+            }
+            w_u32(&mut v, t.textures.len() as u32);
+            for (f, n) in &t.textures {
+                w_str(&mut v, f);
+                w_u32(&mut v, *n as u32);
+            }
+            w_f32(&mut v, t.height);
+            w_f32(&mut v, t.radius);
+            w_u32(&mut v, t.hull_triangles as u32);
+        }
+        None => v.push(0),
+    }
     v
 }
 
-fn decode_meta(buf: &[u8]) -> Result<(usize, Vec<String>, Vec<[f32; 3]>, Vec<Triangle>, Vec<(String, [f32; 12])>, Option<i32>, [f32; 3], Option<CPlugSurface>, bool), String> {
+/// The sidecar decoded into a `Baked` whose `bytes` and `pictures` are still
+/// empty (the caller fills them).
+fn decode_meta(buf: &[u8]) -> Result<Baked, String> {
     let mut c = Cursor { b: buf, o: 0 };
     if c.u32()? != META_MAGIC {
         return Err("bad cache magic".into());
     }
     let n_visuals = c.u32()? as usize;
+    let n_dyna = c.u32()? as usize;
+    let n_lights = c.u32()? as usize;
+    let n_materials = c.u32()? as usize;
+    let nl = c.u32()? as usize;
+    let mut lod_max_dist = Vec::with_capacity(nl);
+    for _ in 0..nl {
+        lod_max_dist.push(c.f32()?);
+    }
     let nn = c.u32()? as usize;
     let mut notes = Vec::with_capacity(nn);
     for _ in 0..nn {
         notes.push(c.str()?);
     }
     let nv = c.u32()? as usize;
-    let mut verts = Vec::with_capacity(nv);
+    let mut surf_vertices = Vec::with_capacity(nv);
     for _ in 0..nv {
-        verts.push([c.f32()?, c.f32()?, c.f32()?]);
+        surf_vertices.push([c.f32()?, c.f32()?, c.f32()?]);
     }
     let nt = c.u32()? as usize;
-    let mut tris = Vec::with_capacity(nt);
+    let mut surf_triangles = Vec::with_capacity(nt);
     for _ in 0..nt {
         let indices = [c.u32()?, c.u32()?, c.u32()?];
         let material_id = c.take(1)?[0];
         let gameplay = c.take(1)?[0];
         let surface_index = i16::from_le_bytes(c.take(2)?.try_into().unwrap());
-        tris.push(Triangle { indices, material_id, gameplay, surface_index });
+        surf_triangles.push(Triangle { indices, material_id, gameplay, surface_index });
     }
     let ng = c.u32()? as usize;
     let mut veget = Vec::with_capacity(ng);
@@ -222,7 +347,33 @@ fn decode_meta(buf: &[u8]) -> Result<(usize, Vec<String>, Vec<[f32; 3]>, Vec<Tri
         None
     };
     let deepened = c.take(1)?[0] == 1;
-    Ok((n_visuals, notes, verts, tris, veget, waypoint_type, spawn, trigger, deepened))
+    let tree = if c.take(1)?[0] == 1 {
+        let model = c.str()?;
+        let n = c.u32()? as usize;
+        let mut levels = Vec::with_capacity(n);
+        for _ in 0..n {
+            levels.push(c.u32()? as usize);
+        }
+        let n = c.u32()? as usize;
+        let mut switch = Vec::with_capacity(n);
+        for _ in 0..n {
+            switch.push(c.f32()?);
+        }
+        let n = c.u32()? as usize;
+        let mut textures = Vec::with_capacity(n);
+        for _ in 0..n {
+            let f = c.str()?;
+            let k = c.u32()? as usize;
+            textures.push((f, k));
+        }
+        let height = c.f32()?;
+        let radius = c.f32()?;
+        let hull_triangles = c.u32()? as usize;
+        Some(TreeMeta { model, levels, switch, textures, height, radius, hull_triangles })
+    } else {
+        None
+    };
+    Ok(Baked { bytes: Vec::new(), pictures: BTreeMap::new(), n_visuals, n_dyna, n_lights, n_materials, lod_max_dist, notes, surf_vertices, surf_triangles, veget, waypoint_type, spawn, trigger, deepened, tree })
 }
 
 /// A cached bake under `ident`, or None (miss, disabled, or unreadable).
@@ -230,17 +381,16 @@ pub fn get(key: &str, ident: &str) -> Option<Baked> {
     let d = dir()?.join(key);
     let item = std::fs::read(d.join("item.bin")).ok()?;
     let meta = std::fs::read(d.join("meta.bin")).ok()?;
-    let (n_visuals, notes, surf_vertices, surf_triangles, veget, waypoint_type, spawn, trigger, deepened) = decode_meta(&meta).ok()?;
-    let mut pictures = BTreeMap::new();
+    let mut b = decode_meta(&meta).ok()?;
     if let Ok(rd) = std::fs::read_dir(d.join("pictures")) {
         for e in rd.flatten() {
             if let (Some(name), Ok(bytes)) = (e.file_name().to_str().map(String::from), std::fs::read(e.path())) {
-                pictures.insert(name, bytes);
+                b.pictures.insert(name, bytes);
             }
         }
     }
-    let bytes = if ident == NEUTRAL_IDENT { item } else { crate::crystal::rename_ident(&item, NEUTRAL_IDENT, ident) };
-    Some(Baked { bytes, pictures, n_visuals, notes, surf_vertices, surf_triangles, veget, waypoint_type, spawn, trigger, deepened })
+    b.bytes = if ident == NEUTRAL_IDENT { item } else { crate::crystal::rename_ident(&item, NEUTRAL_IDENT, ident) };
+    Some(b)
 }
 
 /// Store a bake (whose bytes carry `ident`) under `key`, neutralised. Errors are
@@ -251,7 +401,8 @@ pub fn put(key: &str, ident: &str, b: &Baked) {
     if final_dir.exists() {
         return;
     }
-    let tmp = root.join(format!(".{key}.{}", std::process::id()));
+    // (the thread id keeps two workers of one process apart)
+    let tmp = root.join(format!(".{key}.{}.{:?}", std::process::id(), std::thread::current().id()).replace(['(', ')', ' '], ""));
     let _ = std::fs::remove_dir_all(&tmp);
     if std::fs::create_dir_all(tmp.join("pictures")).is_err() {
         return;

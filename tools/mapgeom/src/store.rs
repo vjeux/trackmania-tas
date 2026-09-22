@@ -18,7 +18,7 @@ use crate::node::Graph;
 use crate::pak::{read_pak, Pak, PakEntry};
 use crate::pakfile::{self as read, read_file};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 
 /// The Stadium pack's encryption key. It is a property of the pack file, not
 /// of a session or a machine: the same key opens the same bytes anywhere, and
@@ -38,10 +38,11 @@ pub struct DataStore {
     /// UPPERCASE path -> (pak index, entry index).
     index: Arc<HashMap<String, (usize, usize)>>,
     /// Decoded files (or None for a path no pack has), by UPPERCASE logical
-    /// path — shared by every fork of this store. The lock is held for the
-    /// lookup only; a decode runs outside it (two threads racing on one file
-    /// decode it twice, harmlessly).
-    cache: Arc<Mutex<HashMap<String, Option<Arc<Vec<u8>>>>>>,
+    /// path — shared by every fork of this store, in `SHARDS` read-write
+    /// locked shards (166 workers on one mutex spent more time in futex than
+    /// baking). A lock is held for the lookup only; a decode runs outside it
+    /// (two threads racing on one file decode it twice, harmlessly).
+    cache: Arc<Vec<RwLock<HashMap<String, Option<Arc<Vec<u8>>>>>>>,
     /// Files that shadow the packs, by UPPERCASE logical path: the scaled
     /// copies a rescale produced, so a walk that follows their renamed
     /// references finds them. Nothing here is ever a pack file.
@@ -155,7 +156,7 @@ impl DataStore {
         DataStore {
             paks: Vec::new(),
             index: Arc::new(HashMap::new()),
-            cache: Arc::new(Mutex::new(HashMap::new())),
+            cache: Arc::new((0..SHARDS).map(|_| RwLock::new(HashMap::new())).collect()),
             overlay: HashMap::new(),
         }
     }
@@ -236,7 +237,8 @@ impl DataStore {
         if let Some(b) = self.overlay.get(&key) {
             return Ok(b.clone());
         }
-        let hit = self.cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key).cloned();
+        let shard = &self.cache[shard_of(&key)];
+        let hit = shard.read().unwrap_or_else(|e| e.into_inner()).get(&key).cloned();
         if let Some(hit) = hit {
             return hit
                 .map(|b| b.to_vec())
@@ -257,7 +259,7 @@ impl DataStore {
                 )?))
             }
         };
-        self.cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, out.clone());
+        shard.write().unwrap_or_else(|e| e.into_inner()).insert(key, out.clone());
         out.map(|b| b.to_vec()).ok_or_else(|| {
             format!(
                 "{}: not in any pack (tried {})",
@@ -269,8 +271,14 @@ impl DataStore {
 
     /// How many decoded files the (shared) cache holds, and their bytes.
     pub fn cache_stats(&self) -> (usize, usize) {
-        let c = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        (c.len(), c.values().flatten().map(|b| b.len()).sum())
+        let mut n = 0;
+        let mut bytes = 0;
+        for s in self.cache.iter() {
+            let c = s.read().unwrap_or_else(|e| e.into_inner());
+            n += c.len();
+            bytes += c.values().flatten().map(|b| b.len()).sum::<usize>();
+        }
+        (n, bytes)
     }
 
     /// Load a GBX file and walk its body into a node graph, with the file's
@@ -333,4 +341,17 @@ impl Model {
             .map(|(_, p)| p.clone())
             .collect()
     }
+}
+
+/// Shards of the decoded-file cache (a power of two).
+const SHARDS: usize = 64;
+
+fn shard_of(key: &str) -> usize {
+    // FNV-1a over the key
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in key.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    (h as usize) & (SHARDS - 1)
 }

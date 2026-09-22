@@ -3348,7 +3348,7 @@ pub fn trigger_fx_pass(store: &mut crate::store::DataStore, m: &mut Merged) {
 /// Species WITH a hull (real trees) keep the item path (`m.veget` rows), so
 /// the caller passes only the entities it did not re-emit.
 /// `TINY_VEGET_INLINE=0` turns the pass off.
-pub fn inline_filler_foliage(store: &mut crate::store::DataStore, m: &mut Merged, entities: &[(String, Xform)], scale: f32, cache: &mut std::collections::BTreeMap<String, Option<Merged>>) -> usize {
+pub fn inline_filler_foliage(store: &mut crate::store::DataStore, m: &mut Merged, entities: &[(String, Xform)], scale: f32, cache: &mut std::collections::BTreeMap<String, Result<Merged, String>>) -> usize {
     // DEFAULT ON since 2026-09-11 05:20Z: same-camera editor frames of 01's hills from the
     // video's line of sight show the original's jungle cover back on the tiny hills and
     // the lake hidden behind the shoulder as in the original (proof-hillcover.jpg).
@@ -3377,18 +3377,21 @@ pub fn inline_filler_foliage(store: &mut crate::store::DataStore, m: &mut Merged
                 }
                 Ok(sm)
             })();
-            match baked {
-                Ok(sm) => {
-                    m.notes.push(format!("filler foliage {species}: {} LOD0 visual(s), {} material(s) inlined", sm.visuals.len(), sm.materials.len()));
-                    cache.insert(key.clone(), Some(sm));
-                }
-                Err(e) => {
-                    m.notes.push(format!("filler foliage {species}: not inlined ({e})"));
-                    cache.insert(key.clone(), None);
-                }
-            }
+            cache.insert(key.clone(), baked.map_err(|e| e.to_string()));
         }
-        let Some(Some(sm)) = cache.get(&key) else { continue };
+        // (the note is per BLOCK, cached species or not, so the report of a block
+        // does not depend on which blocks the same thread baked before it)
+        let sm = match cache.get(&key) {
+            Some(Ok(sm)) => {
+                m.notes.push(format!("filler foliage {species}: {} LOD0 visual(s), {} material(s) inlined", sm.visuals.len(), sm.materials.len()));
+                sm
+            }
+            Some(Err(e)) => {
+                m.notes.push(format!("filler foliage {species}: not inlined ({e})"));
+                continue;
+            }
+            None => continue,
+        };
         let slots = slot_maps.entry(key.clone()).or_insert_with(|| {
             let mut v = Vec::with_capacity(sm.materials.len());
             for mat in &sm.materials {
