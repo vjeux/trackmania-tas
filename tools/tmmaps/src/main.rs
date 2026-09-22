@@ -148,6 +148,12 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        "altered-itemdump" => {
+            if let Err(e) = tmmaps::altered::itemdump_cmd(&args[1..]) {
+                eprintln!("tmmaps altered-itemdump: {e}");
+                std::process::exit(1);
+            }
+        }
         "altered-apply" => {
             if let Err(e) = tmmaps::altered::apply_cmd(&args[1..]) {
                 eprintln!("tmmaps altered-apply: {e}");

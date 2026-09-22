@@ -236,8 +236,8 @@ struct Learn {
     water_cov: BTreeMap<String, (usize, usize)>,
     water_far: usize,
     water_names: BTreeMap<String, usize>,
-    /// item record properties per model: author, flags, scale
-    itemrec: BTreeMap<String, (String, u16, f32)>,
+    /// item record properties per model: author, flags, scale, collection, pivot
+    itemrec: BTreeMap<String, (String, u16, f32, u32, [f32; 3])>,
     files: BTreeMap<String, Vec<u8>>,
     manifest: BTreeMap<String, String>,
 }
@@ -324,7 +324,7 @@ fn learn_pair(l: &mut Learn, nn: &str, orig: &MapFile, alt: &MapFile, stems: &BT
                 }
                 l.map.entry((norm_block(&b.name, stems), it.model.clone(), b.dir & 3, variant_bits(b.flags))).or_default().push((off, it.yaw));
                 covered.insert(b.index);
-                l.itemrec.entry(it.model.clone()).or_insert((it.author.clone().unwrap_or_default(), it.flags, it.scale));
+                l.itemrec.entry(it.model.clone()).or_insert((it.author.clone().unwrap_or_default(), it.flags, it.scale, it.collection_raw, it.pivot));
             }
             None => {
                 *l.unmatched_items.entry(it.model.clone()).or_default() += 1;
@@ -526,8 +526,8 @@ pub fn learn_cmd(args: &[String]) -> Result<(), String> {
     for (m, n) in &l.unmatched_items {
         w.push_str(&format!("unmatched\t\t{m}\t\t\t\t\t{n}\t\n"));
     }
-    for (m, (author, flags, scale)) in &l.itemrec {
-        w.push_str(&format!("itemrec\t\t{m}\t{author}\t{flags}\t{scale}\t\t\t\n"));
+    for (m, (author, flags, scale, coll, pivot)) in &l.itemrec {
+        w.push_str(&format!("itemrec\t\t{m}\t{author}\t{flags}\t{scale}\t{coll}\t{:.3},{:.3},{:.3}\t\n", pivot[0], pivot[1], pivot[2]));
     }
     std::fs::write(&out, w).map_err(|e| format!("{}: {e}", out.display()))?;
     if let Some(dir) = items_out {
@@ -568,8 +568,8 @@ struct Rules {
     swaps: BTreeMap<String, Vec<(u32, String, u32, usize)>>,
     /// (norm block, dir, variant bits) → (item model, world offset from the cell corner, item yaw, count)
     items: BTreeMap<(String, u8, u32), Vec<(String, [f32; 3], f32, usize)>>,
-    /// item model → (author, flags, scale)
-    itemrec: BTreeMap<String, (String, u16, f32)>,
+    /// item model → (author, flags, scale, collection, pivot)
+    itemrec: BTreeMap<String, (String, u16, f32, u32, [f32; 3])>,
     stems: BTreeSet<String>,
 }
 
@@ -659,7 +659,10 @@ fn read_rules(paths: &[String]) -> Result<Rules, String> {
                     }
                 }
                 "itemrec" => {
-                    r.itemrec.insert(f[2].to_string(), (f[3].to_string(), f[4].parse().unwrap_or(1), f[5].parse().unwrap_or(1.0)));
+                    let coll: u32 = f[6].parse().unwrap_or(26);
+                    let pv: Vec<f32> = f[7].split(',').map(|x| x.trim().parse().unwrap_or(0.0)).collect();
+                    let pivot = if pv.len() == 3 { [pv[0], pv[1], pv[2]] } else { [0.0; 3] };
+                    r.itemrec.insert(f[2].to_string(), (f[3].to_string(), f[4].parse().unwrap_or(1), f[5].parse().unwrap_or(1.0), coll, pivot));
                 }
                 _ => {}
             }
@@ -915,14 +918,17 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
         let mut m = MapFile::load(&tmp);
         for (k, (model, pos, yaw)) in item_plan.iter().enumerate() {
             let i = first + k;
-            let (author, flags, scale) = rules.itemrec.get(model).cloned().unwrap_or((String::new(), 1, 1.0));
+            // the record wears what AR's records wear: his author id, the ITEM FILE's
+            // collection (Stadium 0x1a even inside a WhiteShore map — a mismatch drops
+            // the item silently), the pivot the item was authored with
+            let (author, flags, scale, coll, pivot) = rules.itemrec.get(model).cloned().unwrap_or((String::new(), 1, 1.0, collection, [0.0; 3]));
             m.set_item_model(i, model);
             if !author.is_empty() {
                 m.set_item_author(i, &author);
             }
-            m.set_item_collection(i, collection);
+            m.set_item_collection(i, coll);
             m.move_item(i, *pos, *yaw, crate::tiny::cell_for(*pos));
-            m.set_item_frame(i, [*yaw, 0.0, 0.0], [0.0, 0.0, 0.0]);
+            m.set_item_frame(i, [*yaw, 0.0, 0.0], pivot);
             m.set_item_scale(i, scale);
             m.clear_item_variant(i);
             m.set_item_flags(i, flags);
@@ -978,6 +984,23 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
         m.write_to(&out).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(&tmp);
         println!("  -> {} ({})", out.display(), new_name);
+    }
+    Ok(())
+}
+
+
+/// `tmmaps altered-itemdump MAP --model SUBSTR`: the raw record bytes of the matching
+/// items (hex) — for comparing a placement we wrote with one the editor wrote.
+pub fn itemdump_cmd(args: &[String]) -> Result<(), String> {
+    let input = args.iter().skip(1).find(|a| a.ends_with(".Map.Gbx")).ok_or("MAP")?;
+    let want = crate::cli::flag(args, "--model").unwrap_or("");
+    let m = MapFile::load(Path::new(input));
+    let body = &m.gbx.body;
+    for it in m.items.iter().filter(|it| it.model.contains(want)).take(3) {
+        let (a, b) = it.record_region;
+        println!("item {} {} at ({:.1},{:.2},{:.1}) yaw {:.4} pitch {:.4} roll {:.4} pivot {:?} scale {} flags {:#x} author {:?} coll {:#x} cell {:?} waypoint {:?} skin {:?} record {}..{} ({} bytes)", it.index, file_stem(&it.model), it.pos[0], it.pos[1], it.pos[2], it.yaw, it.pitch, it.roll, it.pivot, it.scale, it.flags, it.author, it.collection_raw, it.file_cell, it.waypoint_tag, it.skin_region, a, b, b - a);
+        let hex: String = body[a..b].iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" ");
+        println!("  {hex}");
     }
     Ok(())
 }
