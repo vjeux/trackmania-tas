@@ -218,6 +218,23 @@ fn plan(m: &MapFile, input: &Path) -> Result<Plan, String> {
             trimmed += 1;
         }
     }
+    // items outside the window are scenery too
+    let mut item_keep = item_keep;
+    let mut items_trimmed = 0usize;
+    for (it, k) in m.items.iter().zip(item_keep.iter_mut()) {
+        if !*k {
+            continue;
+        }
+        let cx = (it.pos[0] / 32.0).floor() as i32;
+        let cz = (it.pos[2] / 32.0).floor() as i32;
+        if cx < lo[0] || cx > hi[0] || cz < lo[2] || cz > hi[2] {
+            *k = false;
+            items_trimmed += 1;
+        }
+    }
+    if items_trimmed > 0 {
+        trimmed += items_trimmed;
+    }
     // y: the lowest kept block on the ground; the top must stay under row 40
     let kept_cells: Vec<[i32; 3]> = m.blocks.iter().zip(&fates).filter(|(_, f)| !matches!(f, Fate::Drop(_))).map(|(b, _)| block_cell(b, ground)).collect();
     let (klo, khi) = route_box(&kept_cells).ok_or("no built blocks in the window")?;
@@ -230,6 +247,15 @@ fn plan(m: &MapFile, input: &Path) -> Result<Plan, String> {
     }
     let dx = (SIZE[0] - (hi[0] - lo[0] + 1)) / 2 - lo[0];
     let dz = (SIZE[2] - (hi[2] - lo[2] + 1)) / 2 - lo[2];
+    for (it, k) in m.items.iter().zip(item_keep.iter_mut()) {
+        if *k {
+            let row = ((it.pos[1] - ground) / 8.0).floor() as i32 + dy;
+            if row < 0 || row >= SIZE[1] {
+                *k = false;
+                trimmed += 1;
+            }
+        }
+    }
     let mut dropped: BTreeMap<String, usize> = BTreeMap::new();
     let mut twins: BTreeMap<String, usize> = BTreeMap::new();
     for (b, f) in m.blocks.iter().zip(&fates) {
@@ -363,6 +389,9 @@ pub fn port_cmd(args: &[String]) -> Result<(), String> {
         let mut m = MapFile::load(&tmp);
         let [dx, dy, dz] = p.shift;
         let world = [dx as f32 * 32.0, dy as f32 * 8.0, dz as f32 * 32.0];
+        // world y of the SAME cell row differs between the vista's frame and the stadium's
+        // by (ground_stadium − ground_vista): items and free blocks carry metres
+        let ground_delta = crate::map::ground_y(STADIUM) - p.ground;
         let mut moved = 0usize;
         let mut risen = 0usize;
         for i in 0..m.blocks.len() {
@@ -375,7 +404,9 @@ pub fn port_cmd(args: &[String]) -> Result<(), String> {
                 risen += 1;
             }
             match b.free_pos {
-                Some(pos) => m.move_block_free(i, [pos[0] + world[0], pos[1] + world[1] + up as f32 * 8.0, pos[2] + world[2]]),
+                // one move: the cell shift + the stadium's cell frame (the vista's ground row
+                // is not the stadium's) — a second move would start from the OLD position
+                Some(pos) => m.move_block_free(i, [pos[0] + world[0], pos[1] + world[1] + up as f32 * 8.0 + ground_delta, pos[2] + world[2]]),
                 None => {
                     let (x, y, z) = b.coords();
                     m.move_block_cell(i, (x + dx, y + dy + up, z + dz));
@@ -386,24 +417,32 @@ pub fn port_cmd(args: &[String]) -> Result<(), String> {
         if risen > 0 {
             println!("  {risen} twins raised to their deck row");
         }
-        // the stadium's ground is 64 higher in the cell frame than the vista's: world y
-        // of the SAME cell row differs by (ground_stadium − ground_vista)
-        let ground_delta = crate::map::ground_y(STADIUM) - p.ground;
         crate::tiny::set_ground(STADIUM);
         for i in 0..m.items.len() {
             let it = m.items[i].clone();
             let pos = [it.pos[0] + world[0], it.pos[1] + world[1] + ground_delta, it.pos[2] + world[2]];
             m.move_item(i, pos, it.yaw, crate::tiny::cell_for(pos));
         }
-        // free blocks: the same world-frame correction
-        for i in 0..m.blocks.len() {
-            if let Some(pos) = m.blocks[i].free_pos {
-                if ground_delta != 0.0 {
-                    m.move_block_free(i, [pos[0], pos[1] + ground_delta, pos[2]]);
-                }
+        m.write_to(&tmp).map_err(|e| e.to_string())?;
+        // every block and item inside the stadium (a block outside makes the load fail)
+        let m = MapFile::load(&tmp);
+        let mut outside = 0usize;
+        for b in &m.blocks {
+            let c = block_cell(b, crate::map::ground_y(STADIUM));
+            if c[0] < 0 || c[0] >= SIZE[0] || c[1] < 0 || c[1] >= SIZE[1] || c[2] < 0 || c[2] >= SIZE[2] {
+                outside += 1;
+                println!("  OUTSIDE: {} at {:?} (free {:?})", b.name, c, b.free_pos);
             }
         }
-        m.write_to(&tmp).map_err(|e| e.to_string())?;
+        for it in &m.items {
+            if it.pos[0] < 0.0 || it.pos[0] >= 48.0 * 32.0 || it.pos[2] < 0.0 || it.pos[2] >= 48.0 * 32.0 || it.pos[1] < -64.0 || it.pos[1] >= 40.0 * 8.0 - 64.0 {
+                outside += 1;
+                println!("  OUTSIDE item: {} at {:?}", it.model, it.pos);
+            }
+        }
+        if outside > 0 {
+            return Err(format!("{outside} blocks/items outside the 48×40×48 stadium"));
+        }
         println!("  stage 3: {moved} blocks and {} items shifted by {:?} cells (world y +{ground_delta:.0} for the stadium's cell frame)", m.items.len(), p.shift);
         // 3b. the GROUND bit (0x1000): a native Stadium map carries it only on row 9 —
         // a vista block wore it on its hill; off the ground row it becomes the air variant
