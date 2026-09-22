@@ -1,23 +1,99 @@
 //! Synthesis of the probe volume (the trailer after `FACADE01` and the
-//! four-image "small atlas" blob): world 480 m slots, 16 m probe cells,
-//! per-slot occupied ranges, per-level tiles packed into one atlas, the
-//! validity mask, the slot table — everything `volume::Volume` decodes,
-//! written from our own geometry and lighting.
+//! four-image "small atlas" blob): world slots of 480 × 224 × 480 m, 16 m
+//! probe cells, per-slot occupied ranges, per-level tiles packed into one
+//! atlas, the validity mask, the slot table — everything `volume::Volume`
+//! decodes, written from our own geometry and lighting.
 //!
-//! Probe positions: x = 480·i + 16·cx, z = 480·k + 16·cz (cx, cz ∈ [0, 32);
-//! cells 30, 31 duplicate the next slot's 0, 1), y = −38 + 16·L (L ∈ [0, 16)):
-//! record `pos` = (480·i − 8, −46, 480·k − 8) minus 16 × the label origin,
-//! so that probe x, z = pos + 16·(label + ½) and probe y = pos.y + 16·(label − ½)
-//! (the tiny 16 editor volume and the 12-blob probe map agree on both).
+//! Slot grid (`SlotGrid`): origin O (per decoration: the terrain's bottom —
+//! BlueBay/GreenCoast −38 m, RedIsland/WhiteShore −118 m, Stadium −62 m with
+//! the stands' x at −304 m) and counts n = ceil((extent − O) / pitch) per axis,
+//! where the extent is the larger of the map grid (size words × 32 / 8 / 32 m)
+//! and the lit geometry. Probe (i, j, k; cx, L, cz) sits at
+//! x = O.x + 480 i + 16 cx, y = O.y + 224 j + 16 (L − 1), z = O.z + 480 k + 16 cz
+//! (cx, cz ∈ [0, 32), L ∈ [0, 16); the last two cells duplicate the next slot's
+//! first two). A block's record: label origin (32 col, 16 row, 0),
+//! pos = O + pitch·(i, j, k) − 8 − 16·(label origin), so that probe x, z =
+//! pos + 16 (label + ½) and y = pos.y + 16 (label − ½); the slot table index is
+//! i + n.x j + n.x n.y k. Every one of these was read off Nadeo's 25 Summer
+//! sources (5×3×5 and the Stadium 5×2×4 grids, j = 1 rows included) and the
+//! two probe bakes.
 
 use crate::bake::BakeParams;
 use crate::bvh::Bvh;
 use crate::geometry::{add, dot, mul, norm, sub, LightDef, Scene, V3};
 use crate::volume::{Block, Volume};
 
-pub const SLOT: f32 = 480.0;
 pub const CELL: f32 = 16.0;
-pub const Y0: f32 = -54.0;
+/// Slot pitch in metres (usable cells × 16).
+pub const PITCH: [f32; 3] = [480.0, 224.0, 480.0];
+pub const BLOCK_CELLS: [u32; 3] = [32, 16, 32];
+
+/// The slot grid of a map.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SlotGrid {
+    pub origin: [f32; 3],
+    pub n: [u32; 3],
+}
+
+impl SlotGrid {
+    /// The decoration's origin: where the game's grid starts (its terrain bottom
+    /// in y; the Stadium stands in x). `envir` = the header's collection,
+    /// `decoration` = the map's decoration id.
+    pub fn origin_for(envir: &str, decoration: &str) -> [f32; 3] {
+        let e = envir.to_ascii_lowercase();
+        let d = decoration.to_ascii_lowercase();
+        if e.contains("stadium") {
+            // the stands reach −304 m in x; a NoStadium decoration has none — origin 0 assumed (unverified)
+            [if d.starts_with("nostadium") { 0.0 } else { -304.0 }, -62.0, 0.0]
+        } else if e.contains("blue") || e.contains("green") || d.ends_with("64") {
+            [0.0, -38.0, 0.0]
+        } else {
+            [0.0, -118.0, 0.0]
+        }
+    }
+
+    /// Counts from the extents: `grid_m` = the map grid in metres (size words ×
+    /// 32 / 8 / 32), `geom_hi` = the lit geometry's max corner.
+    pub fn from_extent(origin: [f32; 3], grid_m: [f32; 3], geom_hi: [f32; 3]) -> SlotGrid {
+        let mut n = [0u32; 3];
+        for k in 0..3 {
+            let ext = grid_m[k].max(geom_hi[k]) - origin[k];
+            n[k] = ((ext / PITCH[k]).ceil() as u32).max(1);
+        }
+        SlotGrid { origin, n }
+    }
+
+    pub fn slot_count(&self) -> usize {
+        (self.n[0] * self.n[1] * self.n[2]) as usize
+    }
+
+    pub fn index(&self, i: u32, j: u32, k: u32) -> usize {
+        (i + self.n[0] * j + self.n[0] * self.n[1] * k) as usize
+    }
+
+    /// World position of probe cell (cx, L, cz) of slot (i, j, k).
+    pub fn probe(&self, s: [u32; 3], c: [u32; 3]) -> V3 {
+        [
+            self.origin[0] + PITCH[0] * s[0] as f32 + CELL * c[0] as f32,
+            self.origin[1] + PITCH[1] * s[1] as f32 + CELL * (c[1] as f32 - 1.0),
+            self.origin[2] + PITCH[2] * s[2] as f32 + CELL * c[2] as f32,
+        ]
+    }
+
+    /// The record's `pos` for slot s with label origin `lab`.
+    pub fn record_pos(&self, s: [u32; 3], lab: [u32; 3]) -> V3 {
+        [
+            self.origin[0] + PITCH[0] * s[0] as f32 - 8.0 - CELL * lab[0] as f32,
+            self.origin[1] + PITCH[1] * s[1] as f32 - 8.0 - CELL * lab[1] as f32,
+            self.origin[2] + PITCH[2] * s[2] as f32 - 8.0 - CELL * lab[2] as f32,
+        ]
+    }
+
+    /// `unk_f` of the trailer: −origin / pitch.
+    pub fn unk_f(&self) -> [f32; 3] {
+        [-self.origin[0] / PITCH[0], -self.origin[1] / PITCH[1], -self.origin[2] / PITCH[2]]
+    }
+}
 
 pub struct ProbeSample {
     /// Frame-0 irradiance (K = 1 units), sky visibility, point-light irradiance.
@@ -178,64 +254,61 @@ pub struct ProbeOut {
     pub atlas_h: u32,
     pub blocks: usize,
     pub slices: usize,
+    pub grid: SlotGrid,
 }
 
-/// Build the probe volume for `scene`; `template` supplies the constants we do
-/// not derive (head words, slot geometry, the tail, the unknown counts and the
-/// third image's scale).
-pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, LightDef)], light_k: f32, template: &Volume, vp8_q: u8) -> Result<ProbeOut, String> {
-    // world bbox of the geometry
-    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-    for t in &bvh.tris {
-        for p in [t.p0, add(t.p0, t.e1), add(t.p0, t.e2)] {
-            for k in 0..3 {
-                lo[k] = lo[k].min(p[k]);
-                hi[k] = hi[k].max(p[k]);
-            }
-        }
-    }
-    if lo[0] > hi[0] {
+/// Build the probe volume for `scene` over `grid`; `template` supplies the
+/// constants we do not derive (head words, the tail, the unknown counts and
+/// the third image's scale).
+pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, LightDef)], light_k: f32, template: &Volume, vp8_q: u8, grid: &SlotGrid) -> Result<ProbeOut, String> {
+    if bvh.tris.is_empty() {
         return Err("no geometry".into());
     }
-    let slot_lo = |v: f32| (v / SLOT).floor().max(0.0) as i32;
-    let (i0, i1) = (slot_lo(lo[0] - 32.0), slot_lo(hi[0]));
-    let (k0, k1) = (slot_lo(lo[2] - 32.0), slot_lo(hi[2]));
-    if i1 >= 5 || k1 >= 5 {
-        return Err(format!("geometry reaches slot ({i1}, {k1}): the 5×3×5 slot grid covers 2400 m from the origin"));
-    }
-    // occupancy per candidate slot: cells (cx, cz, L) with geometry within the 16 m cell box
+    let [bx, by, bz] = BLOCK_CELLS;
+    // occupancy per slot: cells (cx, L, cz) with geometry within the 16 m cell box
     struct Occ {
-        i: i32,
-        k: i32,
-        cells: Vec<bool>, // 32 × 16 × 32 (cx, L, cz)
+        s: [u32; 3],
+        cells: Vec<bool>, // bx × by × bz (cx, L, cz)
     }
-    let idx = |cx: u32, l: u32, cz: u32| (cz * 32 * 16 + l * 32 + cx) as usize;
+    let idx = |cx: u32, l: u32, cz: u32| (cz * bx * by + l * bx + cx) as usize;
     let mut occs: Vec<Occ> = Vec::new();
-    for k in k0..=k1 {
-        for i in i0..=i1 {
-            let mut cells = vec![false; 32 * 16 * 32];
-            let mut any = false;
-            for cz in 0..32u32 {
-                for cx in 0..32u32 {
-                    let (x, z) = (SLOT * i as f32 + CELL * cx as f32, SLOT * k as f32 + CELL * cz as f32);
-                    // quick column test
-                    if !bvh.any_in_box([x - 8.0, -1.0e6, z - 8.0], [x + 8.0, 1.0e6, z + 8.0]) {
-                        continue;
-                    }
-                    for l in 0..16u32 {
-                        let y = Y0 + CELL * l as f32;
-                        if bvh.any_in_box([x - 8.0, y - 8.0, z - 8.0], [x + 8.0, y + 8.0, z + 8.0]) {
-                            cells[idx(cx, l, cz)] = true;
-                            any = true;
+    for k in 0..grid.n[2] {
+        for j in 0..grid.n[1] {
+            for i in 0..grid.n[0] {
+                let s = [i, j, k];
+                // quick slot test
+                let lo = grid.probe(s, [0, 0, 0]);
+                let hi = grid.probe(s, [bx - 1, by - 1, bz - 1]);
+                if !bvh.any_in_box([lo[0] - 8.0, lo[1] - 8.0, lo[2] - 8.0], [hi[0] + 8.0, hi[1] + 8.0, hi[2] + 8.0]) {
+                    continue;
+                }
+                let mut cells = vec![false; (bx * by * bz) as usize];
+                let mut any = false;
+                for cz in 0..bz {
+                    for cx in 0..bx {
+                        let c0 = grid.probe(s, [cx, 0, cz]);
+                        let c1 = grid.probe(s, [cx, by - 1, cz]);
+                        if !bvh.any_in_box([c0[0] - 8.0, c0[1] - 8.0, c0[2] - 8.0], [c1[0] + 8.0, c1[1] + 8.0, c1[2] + 8.0]) {
+                            continue;
+                        }
+                        for l in 0..by {
+                            let c = grid.probe(s, [cx, l, cz]);
+                            if bvh.any_in_box([c[0] - 8.0, c[1] - 8.0, c[2] - 8.0], [c[0] + 8.0, c[1] + 8.0, c[2] + 8.0]) {
+                                cells[idx(cx, l, cz)] = true;
+                                any = true;
+                            }
                         }
                     }
                 }
-            }
-            if any {
-                occs.push(Occ { i, k, cells });
+                if any {
+                    occs.push(Occ { s, cells });
+                }
             }
         }
     }
+    // Nadeo lists blocks by increasing z, then y, then x (slot index order): k-major above, i fastest — but
+    // the label grid enumerates blocks in slot-index order too: keep them as found
+    occs.sort_by_key(|o| grid.index(o.s[0], o.s[1], o.s[2]));
     let n = occs.len();
     if n == 0 {
         return Err("no occupied slot".into());
@@ -245,15 +318,15 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
     let rows = (n as u32 + cols - 1) / cols;
     let mut blocks: Vec<Block> = Vec::new();
     let mut slices: Vec<Slice> = Vec::new();
-    let mut slot_table = vec![-1i32; 75];
+    let mut slot_table = vec![-1i32; grid.slot_count()];
     for (bi, o) in occs.iter().enumerate() {
         let (col, row) = (bi as u32 % cols, bi as u32 / cols);
-        let origin = [32 * col, 16 * row, 0];
+        let origin = [bx * col, by * row, 0];
         // ranges
-        let (mut xlo, mut xhi, mut llo, mut lhi, mut zlo, mut zhi) = (32u32, 0u32, 16u32, 0u32, 32u32, 0u32);
-        for cz in 0..32u32 {
-            for l in 0..16u32 {
-                for cx in 0..32u32 {
+        let (mut xlo, mut xhi, mut llo, mut lhi, mut zlo, mut zhi) = (bx, 0u32, by, 0u32, bz, 0u32);
+        for cz in 0..bz {
+            for l in 0..by {
+                for cx in 0..bx {
                     if o.cells[idx(cx, l, cz)] {
                         xlo = xlo.min(cx);
                         xhi = xhi.max(cx + 1);
@@ -265,10 +338,10 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
                 }
             }
         }
-        let (xlo, xhi) = (xlo.saturating_sub(2), (xhi + 2).min(32));
-        let (zlo, zhi) = (zlo.saturating_sub(2), (zhi + 2).min(32));
-        let (llo_r, lhi_r) = (llo.saturating_sub(2), (lhi + 2).min(16));
-        let pos = [SLOT * o.i as f32 - 8.0 - CELL * origin[0] as f32, -46.0 - CELL * origin[1] as f32, SLOT * o.k as f32 - 8.0];
+        let (xlo, xhi) = (xlo.saturating_sub(2), (xhi + 2).min(bx));
+        let (zlo, zhi) = (zlo.saturating_sub(2), (zhi + 2).min(bz));
+        let (llo_r, lhi_r) = (llo.saturating_sub(2), (lhi + 2).min(by));
+        let pos = grid.record_pos(o.s, origin);
         let mut b = Block {
             origin,
             min: [origin[0] + xlo, origin[1] + llo_r, zlo],
@@ -285,11 +358,7 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
                 slices.push(Slice { block: bi, level: l, w: xhi - xlo, h: zhi - zlo, px: Vec::new() });
             }
         }
-        let j = 0i32;
-        let si = o.i + 5 * j + 15 * o.k;
-        if (0..75).contains(&si) {
-            slot_table[si as usize] = bi as i32;
-        }
+        slot_table[grid.index(o.s[0], o.s[1], o.s[2])] = bi as i32;
         blocks.push(b);
     }
     // shade every slice's probes (threads over slices)
@@ -311,7 +380,7 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
                     let mut px = Vec::with_capacity((s.w * s.h) as usize);
                     for cz in b.min[2]..b.max[2] {
                         for cx in (b.min[0] - b.origin[0])..(b.max[0] - b.origin[0]) {
-                            let p = [SLOT * o.i as f32 + CELL * cx as f32, Y0 + CELL * s.level as f32, SLOT * o.k as f32 + CELL * cz as f32];
+                            let p = grid.probe(o.s, [cx, s.level, cz]);
                             px.push(shade_probe(bvh, prm, lights, light_k, p, &mut rng));
                         }
                     }
@@ -418,18 +487,18 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
     let volume = Volume {
         head_consts: template.head_consts.clone(),
         frame_info,
-        grid: [32 * cols, 16 * rows, 32],
+        grid: [bx * cols, by * rows, bz],
         blocks,
         cell4_dims: Some((cw4, (ah + 3) / 4)),
         cell4,
-        slot_grid: template.slot_grid,
-        slot_tile: template.slot_tile,
-        block_size: template.block_size,
-        inv_scale: template.inv_scale,
-        unk_f: template.unk_f,
+        slot_grid: grid.n,
+        slot_tile: [bx - 2, by - 2, bz - 2],
+        block_size: BLOCK_CELLS,
+        inv_scale: [1.0 / PITCH[0], 1.0 / PITCH[1], 1.0 / PITCH[2]],
+        unk_f: grid.unk_f(),
         slots: slot_table,
         counts: template.counts,
         tail: template.tail.clone(),
     };
-    Ok(ProbeOut { volume, images, blob, atlas_w: aw, atlas_h: ah, blocks: n, slices: slices.len() })
+    Ok(ProbeOut { volume, images, blob, atlas_w: aw, atlas_h: ah, blocks: n, slices: slices.len(), grid: *grid })
 }

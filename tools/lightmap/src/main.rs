@@ -651,7 +651,19 @@ fn main() {
             if has("--uv-bounds") { prm.uv_bounds = true; }
             prm.pattern = has("--pattern");
             let sun_dir = |az: f32, el: f32| -> [f32; 3] { let (a, e) = (az.to_radians(), el.to_radians()); [e.cos() * a.sin(), e.sin(), e.cos() * a.cos()] };
-            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(mood_sel.map(|p| p.base).unwrap_or(4096));
+            // --base N | auto (the default with a mood): decoration constant + blocks + empty ground columns (moods.rs)
+            let base: u32 = match f("--base").as_deref() {
+                Some("auto") | None if mood_sel.is_some() || f("--base").as_deref() == Some("auto") => {
+                    let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
+                    let h = hdr.as_ref().expect("header");
+                    let cells = mf.blocks.iter().map(|b| { let c = b.coords(); (c.0, c.2, b.name.as_str()) }).chain(mf.baked.iter().map(|b| { let c = b.coords(); (c.0, c.2, b.name.as_str()) }));
+                    let r = lightmap::moods::base_rule(&h.envir, &mf.decoration_id, mf.size, cells);
+                    eprintln!("base auto: {} = {} (decoration) + {} blocks ({} custom blocks not counted) + {} empty ground columns of {} + {} stadium extra", r.base(), r.deco_const, r.blocks, r.custom_blocks, r.empty_cols, r.ground_cols, r.stadium_extra);
+                    r.base()
+                }
+                Some(s) => s.parse().unwrap(),
+                None => 4096,
+            };
             // the map's own (Nadeo/editor) bake, for fitting and comparison
             let own = lightmap::mapio::load(&map_path).ok();
             let own_charts: Option<std::collections::HashMap<u32, (u8, [f32; 3])>> = own.as_ref().and_then(|m| {
@@ -775,7 +787,23 @@ fn main() {
                 let tv = lightmap::volume::Volume::parse(&tpl.chunk.data.as_ref().unwrap().cache.trailer).expect("template trailer");
                 let mut pp = prm.clone();
                 pp.sky_samples = f("--probe-samples").map(|s| s.parse().unwrap()).unwrap_or(48);
-                let po = lightmap::probes::build(&scene, &bvh, &pp, &lights, prm.light_k, &tv, vp8_q.unwrap_or(8)).expect("probes");
+                // the slot grid: origin per decoration, counts from the map grid (size words) and the lit
+                // geometry; --slots NX,NY,NZ / --slot-origin X,Y,Z override, --slots template copies the template's
+                let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
+                let h = hdr.as_ref().expect("header");
+                let grid_m = [mf.size[0] as f32 * 32.0, mf.size[1] as f32 * 8.0, mf.size[2] as f32 * 32.0];
+                let mut origin = lightmap::probes::SlotGrid::origin_for(&h.envir, &mf.decoration_id);
+                if let Some(o) = f("--slot-origin") { origin = parse_rgb(&o); }
+                let (mut glo, mut ghi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                for t in &bvh.tris { for p in [t.p0, lightmap::geometry::add(t.p0, t.e1), lightmap::geometry::add(t.p0, t.e2)] { for k in 0..3 { glo[k] = glo[k].min(p[k]); ghi[k] = ghi[k].max(p[k]); } } }
+                let mut grid = lightmap::probes::SlotGrid::from_extent(origin, grid_m, ghi);
+                match f("--slots").as_deref() {
+                    Some("template") => { grid.n = tv.slot_grid; grid.origin = tv.world_origin(); }
+                    Some(s) => { let v: Vec<u32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); grid.n = [v[0], v[1], v[2]]; }
+                    None => {}
+                }
+                eprintln!("slot grid {:?} origin {:?} (map {:?} = {:.0}×{:.0}×{:.0} m, decoration {}, geometry to ({:.0}, {:.0}, {:.0}); template {:?} origin {:?})", grid.n, grid.origin, mf.size, grid_m[0], grid_m[1], grid_m[2], mf.decoration_id, ghi[0], ghi[1], ghi[2], tv.slot_grid, tv.world_origin());
+                let po = lightmap::probes::build(&scene, &bvh, &pp, &lights, prm.light_k, &tv, vp8_q.unwrap_or(8), &grid).expect("probes");
                 eprintln!("probe volume: {} blocks, {} slices, atlas {}x{}, blob {} B ({:.1}s)", po.blocks, po.slices, po.atlas_w, po.atlas_h, po.blob.len(), t0.elapsed().as_secs_f32());
                 Some(lightmap::synth::ProbeBlob { blob: po.blob, trailer: po.volume.write() })
             };
@@ -1646,6 +1674,38 @@ fn main() {
                 wsum += n; wcov += n * c;
             }
             println!("top {tot_n} models: mean coverage {:.1}%; all placements (32×32): mean coverage {:.1}%", 100.0 * tot_cov / tot_n.max(1) as f64, 100.0 * wcov / wsum.max(1.0));
+        }
+        "mapinfo" => {
+            // lmtool mapinfo MAP...: size words, decoration, block/item counts, item extent — what the probe
+            // grid and the object base derive from
+            for p in &a[1..] {
+                let m = tmmaps::map::MapFile::load(std::path::Path::new(p));
+                let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                for it in &m.items { for k in 0..3 { lo[k] = lo[k].min(it.pos[k]); hi[k] = hi[k].max(it.pos[k]); } }
+                let nb = m.blocks.len();
+                let lm = lightmap::mapio::load(p).ok();
+                let (ncharts, minobj, bbox) = match &lm {
+                    Some(l) => { let d = l.chunk.data.as_ref(); match d.and_then(|d| d.cache.mapping()) { Some(mp) => { let objs: Vec<u32> = mp.binds.iter().map(|b| b.obj_group_idx / 4).collect(); (mp.count, objs.iter().copied().min().unwrap_or(0), Some((mp.bbox_min, mp.bbox_max))) } None => (0, 0, None) } }
+                    None => (0, 0, None),
+                };
+                println!("{p}\n  size {:?} ({} m × {} m × {} m)  decoration {}  blocks {nb}  items {}  item pos x [{:.0}, {:.0}] y [{:.0}, {:.0}] z [{:.0}, {:.0}]\n  lightmap: {ncharts} charts, min object {minobj}, bbox {bbox:?}", m.size, m.size[0] * 32, m.size[1] * 8, m.size[2] * 32, m.decoration_id, m.items.len(), lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+                if let Some(l) = &lm { if let Some(d) = l.chunk.data.as_ref() { if let Ok(v) = lightmap::volume::Volume::parse(&d.cache.trailer) { println!("  probe volume: slot grid {:?} label grid {:?} blocks {} unk_f {:?} → origin ({:.0}, {:.0}, {:.0}) m", v.slot_grid, v.grid, v.blocks.len(), v.unk_f, -v.unk_f[0] * 480.0, -v.unk_f[1] * 224.0, -v.unk_f[2] * 480.0); } } }
+            }
+        }
+        "basecheck" => {
+            // lmtool basecheck MAP...: the base rule against each map's own bake (objects − items)
+            println!("map\tsize\tdecoration\tunbaked\tbaked\tcustom\tcovered_cols\tempty_cols\titems\tmeasured_base\trule_base\tok");
+            for p in &a[1..] {
+                let mf = tmmaps::map::MapFile::load(std::path::Path::new(p));
+                let h = tmmaps::header::read(p).expect("header");
+                let Ok(lm) = lightmap::mapio::load(p) else { continue };
+                let Some(mp) = lm.chunk.data.as_ref().and_then(|d| d.cache.mapping()) else { continue };
+                let max_obj = mp.binds.iter().map(|b| b.obj_group_idx / 4).max().unwrap_or(0) + 1;
+                let measured = max_obj as i64 - mf.items.len() as i64;
+                let cells = mf.blocks.iter().map(|b| { let c = b.coords(); (c.0, c.2, b.name.as_str()) }).chain(mf.baked.iter().map(|b| { let c = b.coords(); (c.0, c.2, b.name.as_str()) }));
+                let r = lightmap::moods::base_rule(&h.envir, &mf.decoration_id, mf.size, cells);
+                println!("{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", p.rsplit('/').next().unwrap_or(p), mf.size, mf.decoration_id, mf.blocks.len(), mf.baked.len(), r.custom_blocks, r.ground_cols - r.empty_cols, r.empty_cols, mf.items.len(), measured, r.base(), if measured == r.base() as i64 { "OK" } else if measured < r.base() as i64 && r.base() as i64 - measured <= 16 { "OK (last items chart-less)" } else { "DIFF" });
+            }
         }
         _ => {
             eprintln!("unknown command");

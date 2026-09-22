@@ -92,3 +92,60 @@ pub fn table() -> String {
     }
     s
 }
+
+/// The chart→object base (the object index of item 0) of a map — `--base auto`.
+///
+/// Measured on the 25 Summer sources and the tiny bakes (2026-09-22; to be
+/// confirmed on the giant editor bakes): the objects before the items are
+/// `decoration constant + blocks + empty ground columns`:
+///
+/// * every block (unbaked and baked, free ones included) is one object —
+///   except embedded CUSTOM blocks (`…_CustomBlock`: the tiny 05's 46 free
+///   water tiles add nothing);
+/// * every ground column (grid cell in x, z) WITHOUT a block gets one object
+///   (the decoration's own ground tile) — a Nadeo map has none of those (its
+///   Grass/terrain blocks cover every column: base = block count exactly), a
+///   tiny build with 2412 partial-fill blocks lands on 4096 = 64²;
+/// * the Stadium decorations reserve 16384 objects in front (0..3 are the
+///   decoration's own charts, 4..16383 unused) and an EMPTY 48×48 Stadium map
+///   counts 2736 ground objects = 2304 + 432 (one data point, the tiny 05
+///   bake; the Nadeo Stadium maps cover all 2304 columns and show no extra
+///   432 — so the 432 are modelled as ground objects that exist only while
+///   the map has no ground blocks: `stadium_extra`, to be settled by the 96³
+///   giant bakes).
+pub struct BaseRule {
+    pub deco_const: u32,
+    pub ground_cols: u32,
+    pub blocks: u32,
+    pub custom_blocks: u32,
+    pub empty_cols: u32,
+    pub stadium_extra: u32,
+}
+
+impl BaseRule {
+    pub fn base(&self) -> u32 {
+        self.deco_const + self.blocks + self.empty_cols + self.stadium_extra
+    }
+}
+
+/// `blocks`: (grid cell x, grid cell z, name) of every unbaked and baked block.
+pub fn base_rule<'a>(envir: &str, decoration: &str, size: [i32; 3], blocks: impl Iterator<Item = (i32, i32, &'a str)>) -> BaseRule {
+    let stadium = envir.eq_ignore_ascii_case("stadium") || decoration.to_ascii_lowercase().contains("stadium") || decoration.to_ascii_lowercase().contains("48x48");
+    let (sx, sz) = (size[0].max(1) as u32, size[2].max(1) as u32);
+    let ground_cols = sx * sz;
+    let mut covered = std::collections::HashSet::new();
+    let (mut n_blocks, mut n_custom) = (0u32, 0u32);
+    for (cx, cz, name) in blocks {
+        if name.ends_with("_CustomBlock") {
+            n_custom += 1;
+            continue;
+        }
+        n_blocks += 1;
+        if cx >= 0 && cz >= 0 && (cx as u32) < sx && (cz as u32) < sz {
+            covered.insert((cx as u32, cz as u32));
+        }
+    }
+    let empty_cols = ground_cols - (covered.len() as u32).min(ground_cols);
+    let stadium_extra = if stadium && covered.is_empty() { 432 } else { 0 };
+    BaseRule { deco_const: if stadium { 16384 } else { 0 }, ground_cols, blocks: n_blocks, custom_blocks: n_custom, empty_cols, stadium_extra }
+}

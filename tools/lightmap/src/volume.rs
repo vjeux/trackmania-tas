@@ -234,32 +234,64 @@ impl Volume {
         o
     }
 
+    /// The slot grid's world origin: `unk_f` is −origin / slot pitch.
+    pub fn world_origin(&self) -> [f32; 3] {
+        let pitch = self.slot_pitch();
+        [-self.unk_f[0] * pitch[0], -self.unk_f[1] * pitch[1], -self.unk_f[2] * pitch[2]]
+    }
+
+    /// Slot pitch in metres: usable cells × 16 (480, 224, 480).
+    pub fn slot_pitch(&self) -> [f32; 3] {
+        [self.slot_tile[0] as f32 * 16.0, self.slot_tile[1] as f32 * 16.0, self.slot_tile[2] as f32 * 16.0]
+    }
+
+    /// The slot (i, j, k) a block's `pos` encodes: pos = origin + pitch·slot − 8 − 16·label origin
+    /// (the y term uses the label origin too; x/z labels carry the column, y the row).
+    pub fn block_slot(&self, b: &Block) -> (i32, i32, i32) {
+        let o = self.world_origin();
+        let p = self.slot_pitch();
+        let f = |k: usize| ((b.pos[k] + 8.0 + 16.0 * b.origin[k] as f32 - o[k]) / p[k]).round() as i32;
+        (f(0), f(1), f(2))
+    }
+
+    /// World bounds of a block's occupied cell range: probe centres x,z = pos + 16·(cell + ½),
+    /// y = pos.y + 16·(cell − ½); the range spans [min, max) cells.
+    pub fn block_world_range(&self, b: &Block) -> ([f32; 3], [f32; 3]) {
+        let lo = [b.pos[0] + 16.0 * b.min[0] as f32, b.pos[1] + 16.0 * (b.min[1] as f32 - 1.0), b.pos[2] + 16.0 * b.min[2] as f32];
+        let hi = [b.pos[0] + 16.0 * b.max[0] as f32, b.pos[1] + 16.0 * (b.max[1] as f32 - 1.0), b.pos[2] + 16.0 * b.max[2] as f32];
+        (lo, hi)
+    }
+
     pub fn describe(&self) -> String {
         let mut s = String::new();
         s.push_str(&format!("head {:?}\nframe_info {:?}\ngrid {:?} blocks {}\n", self.head_consts, self.frame_info, self.grid, self.blocks.len()));
+        let origin = self.world_origin();
+        let mut table_ok = 0;
+        let mut table_bad = Vec::new();
         for (i, b) in self.blocks.iter().enumerate() {
             let stored = b.slices.iter().filter(|s| s.is_some()).count();
-            // slot implied by pos: pos = slot·tile·16 − 16·origin + const
-            let sl: Vec<String> = (0..3)
-                .map(|k| {
-                    let t = self.slot_tile[k] as f32 * 16.0;
-                    format!("{:.3}", (b.pos[k] + 16.0 * b.origin[k] as f32) / t)
-                })
-                .collect();
+            let (si, sj, sk) = self.block_slot(b);
+            let idx = si + self.slot_grid[0] as i32 * sj + self.slot_grid[0] as i32 * self.slot_grid[1] as i32 * sk;
+            if self.slots.get(idx as usize).copied() == Some(i as i32) {
+                table_ok += 1;
+            } else {
+                table_bad.push(format!("block {i} slot ({si},{sj},{sk}) idx {idx} table {:?}", self.slots.get(idx as usize)));
+            }
+            let (lo, hi) = self.block_world_range(b);
             s.push_str(&format!(
-                "  block {i:>2}: origin {:?} min {:?} max {:?} ext {:?} cell {:?} pos {:?} slot~({}) slices {}/{}: {:?}\n",
+                "  block {i:>2}: origin {:?} min {:?} max {:?} ext {:?} pos {:?} slot ({si},{sj},{sk}) world x [{:.0},{:.0}) y [{:.0},{:.0}) z [{:.0},{:.0}) slices {}/{}: {:?}\n",
                 b.origin,
                 b.min,
                 b.max,
                 [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]],
-                b.cell,
                 b.pos,
-                sl.join(","),
+                lo[0], hi[0], lo[1], hi[1], lo[2], hi[2],
                 stored,
                 b.slices.len(),
                 b.slices
             ));
         }
+        s.push_str(&format!("world origin ({:.0}, {:.0}, {:.0}); slot table consistent for {table_ok} blocks{}\n", origin[0], origin[1], origin[2], if table_bad.is_empty() { String::new() } else { format!(", NOT for: {}", table_bad.join("; ")) }));
         let nz = self.cell4.iter().filter(|&&v| v != 0xffff).count();
         s.push_str(&format!("cell4 table: {} entries, {} not 0xffff\n", self.cell4.len(), nz));
         s.push_str(&format!("slot grid {:?} tile {:?} block {:?} inv_scale {:?} unk_f {:?}\n", self.slot_grid, self.slot_tile, self.block_size, self.inv_scale, self.unk_f));
