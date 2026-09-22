@@ -167,6 +167,23 @@ for a Stadium decoration's own list). The first word's low 24 bits index the
 chart within the object; bit 28 (0x10) marks 15 % of the charts on Nadeo's
 maps (none on tiny bakes; meaning unknown).
 
+#### The object base (`--base auto`) **[FILE]**
+
+Objects come in file order [blocks][items] on a Nadeo map, [ground][items]
+on a tiny build — the same rule: before the items stand `decoration
+constant + blocks + empty ground columns`. Every unbaked and baked block is
+one object (free blocks included; embedded CUSTOM blocks `…_CustomBlock` are
+none); every (x, z) grid column without a block gets one object (the
+decoration's ground tile) — a Nadeo map has none (its Grass/terrain covers
+every column: base = block count, 25/25 sources), a tiny build with 2412
+ground-fill blocks lands on 4096 = 64². The Stadium decorations reserve
+16384 objects in front (0..3 = the decoration's own charts, 4..16383
+unused) and an EMPTY 48×48 Stadium map counts 2736 = 2304 + 432 ground
+objects (the tiny 05 bake; the Nadeo Stadium maps show block count + 16384
+exactly, so the 432 are modelled as present only while no column is
+covered — one data point; the 96³ giant bakes decide). `lmtool basecheck`
+prints the rule against every map's own bake.
+
 ### 3.7 Validation at load **[INFERRED]**
 
 A stored lightmap whose object space does not fit the scene (the stale source
@@ -216,13 +233,27 @@ u32 6, f32 1.0, u8[128] 0    ×2 (constant; the second copy sometimes absent);  
 
 Probe positions **[GAME, verified with two probe bakes: blobs at known
 places → their own blocks]**: x, z = pos + 16·(label + ½), y = pos.y +
-16·(label − ½). For the ground slot row pos = (480·i − 8 − 16·origin0, −46,
-480·k − 8), so the probes sit at x = 480·i + 16·cx, y = −54 + 16·L, z =
-480·k + 16·cz with cx, cz ∈ [0, 32) — cells 30, 31 duplicate the next slot's
-0, 1 (the overlap). Stadium maps anchor the x slots at −304 instead of 0
-**[FILE, unexplained]**. The occupied range is the bounding box of the 16 m
-cells that contain geometry, +2 cells each side; levels below the first
-occupied one are `(−1, −1)`, two levels above it are stored.
+16·(label − ½). With the grid origin O (below) and the slot (i, j, k):
+pos = O + (480 i, 224 j, 480 k) − 8 − 16·(label origin), so the probes sit at
+x = O.x + 480 i + 16 cx, y = O.y + 224 j + 16 (L − 1), z = O.z + 480 k + 16 cz
+with cx, cz ∈ [0, 32), L ∈ [0, 16) — the last two cells of a slot duplicate
+the next slot's first two (the overlap; 30/14/30 usable). The slot table
+index is i + n.x·j + n.x·n.y·k (checked on all 25 sources, j = 1 rows and the
+Stadium 5×2×4 grids included). The occupied range is the bounding box of the
+16 m cells that contain geometry, +2 cells each side clipped to the block;
+levels below the first occupied one are `(−1, −1)`, two levels above it are
+stored; a j = 1 block continues from level 0 without a margin.
+
+**The slot grid follows the map** (`probes::SlotGrid`, 2026-09-22 evening):
+origin O per decoration — BlueBay/GreenCoast (0, −38, 0), RedIsland/
+WhiteShore (0, −118, 0), Stadium (−304, −62, 0): the terrain's bottom in y,
+the stands' reach in x (`unk_f` = −O / pitch); some sources shift x or z by
+−16 m (geometry just outside the grid). Counts n = ceil((extent − O) /
+pitch) with the extent = max(map grid = size words × (32, 8, 32) m, lit
+geometry): 64³ → 5×3×5, Stadium 48×40×48 → 5×2×4 (x: (1536 + 304 + the far
+stands 296) / 480 → 5), a 128³ BlueBay map → 9×5×9 (405 slots), 96³ Stadium
+→ 7×4×7. **[FILE for the sources; the 128³/96³ counts against the giant
+editor bakes: see REPORT-3]**.
 
 ### 3.9 The third atlas: four WEBPs **[FILE]** / **[GAME]**
 
