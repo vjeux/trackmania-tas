@@ -352,3 +352,42 @@ pub fn batch(args: &[String]) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// `tinyctl lightmap-graft --from LIT.Map.Gbx --into SHIPPED=OUT [--into …]` — the
+/// transplant alone, no box: chunk 0x0304305B of a lit file (an editor re-save
+/// pulled earlier, or `lmtool bake --out` — which writes an UNCOMPRESSED body,
+/// 0.5–1.5 MB heavier than the shipped file's LZO stream) goes into the shipped
+/// file, whose body is recompressed by tmmaps; the item count must match. The
+/// 25 MiB Nadeo cap is checked on every output (2026-09-22, the giant campaigns:
+/// 33 of the 75 shipped files are within 2 MB of the cap).
+pub fn graft(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(|s| s.to_string());
+    let from = PathBuf::from(f("--from").ok_or("lightmap-graft needs --from LIT.Map.Gbx")?);
+    let re = tmmaps::map::MapFile::load(&from);
+    let mut n = 0usize;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--into" {
+            let spec = args.get(i + 1).ok_or("--into needs SRC=DST")?;
+            let (src, dst) = spec.split_once('=').ok_or("--into wants SRC=DST")?;
+            let (src, dst) = (Path::new(src), Path::new(dst));
+            if let Some(p) = dst.parent() {
+                std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
+            }
+            transplant(src, &re, &from, dst)?;
+            report(dst, "the graft")?;
+            let size = std::fs::metadata(dst).map(|m| m.len()).unwrap_or(0);
+            if size > 25 * 1024 * 1024 {
+                return Err(format!("{}: {size} bytes is over Nadeo's 25 MiB cap after the lightmap — rebuild the shipped file one rung down", dst.display()));
+            }
+            n += 1;
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    if n == 0 {
+        return Err("lightmap-graft: no --into SRC=DST given".into());
+    }
+    Ok(())
+}

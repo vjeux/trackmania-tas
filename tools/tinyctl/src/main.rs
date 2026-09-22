@@ -215,6 +215,7 @@ fn main() {
         "bake-copies" => bakecopy::cmd(rest),
         "giant-tracker" => gianttracker::cmd(rest),
         "lightmap-batch" => lightmap::batch(rest),
+        "lightmap-graft" => lightmap::graft(rest),
         "convert-all" => pipeline::convert_all_cmd(rest),
         "tracker-md" => pipeline::tracker_md_cmd(rest),
         "unproject" => unproject::cmd(rest),

@@ -666,6 +666,14 @@ fn main() {
                 Some(s) => s.parse().unwrap(),
                 None => 4096,
             };
+            // --base-candidates B1,B2,…: the object-index base MEASURED in one load — the
+            // items' charts are emitted once per candidate base, each candidate in its own
+            // hue (red, green, blue, yellow, magenta, cyan) over a neutral 4 m world
+            // checkerboard (--pattern); the hue whose checkers render continuous on the
+            // items in play is the game's base for this file class (2026-09-22, the giant
+            // grids: is the base S², S²+N authored blocks, or the Stadium constant?)
+            let candidates: Vec<u32> = f("--base-candidates").map(|s| s.split(',').filter(|t| !t.trim().is_empty()).map(|t| t.trim().parse().expect("--base-candidates wants numbers")).collect()).unwrap_or_default();
+            if !candidates.is_empty() { prm.pattern = true; prm.pattern_flat = true; }
             // the map's own (Nadeo/editor) bake, for fitting and comparison
             let own = lightmap::mapio::load(&map_path).ok();
             let own_charts: Option<std::collections::HashMap<u32, (u8, [f32; 3])>> = own.as_ref().and_then(|m| {
@@ -782,7 +790,32 @@ fn main() {
             }
             for obj in deco_const..base { out_charts.push(lightmap::synth::Chart::from_hdr(obj, 2, 2, &[ground_e; 4], k, 128)); }
             let mut have = vec![false; scene.item_count];
-            for c in &charts { have[c.item] = true; out_charts.push(lightmap::synth::Chart::from_hdr2(base + c.item as u32, c.w, c.h, &c.rgb, &c.rgb1, k, 128)); }
+            if candidates.is_empty() {
+                for c in &charts { have[c.item] = true; out_charts.push(lightmap::synth::Chart::from_hdr2(base + c.item as u32, c.w, c.h, &c.rgb, &c.rgb1, k, 128)); }
+            } else {
+                // the candidate test: every item's chart once per candidate base, in that
+                // candidate's hue; overlapping candidate ranges would double-book objects
+                let n_items = scene.item_count as u32;
+                for (i, a) in candidates.iter().enumerate() {
+                    for b in candidates.iter().skip(i + 1) {
+                        if a.max(b) < &(a.min(b) + n_items) { panic!("--base-candidates {a} and {b} overlap over {n_items} items"); }
+                    }
+                }
+                let hues: [[f32; 3]; 6] = [[1.0, 0.12, 0.12], [0.12, 1.0, 0.12], [0.2, 0.2, 1.0], [1.0, 1.0, 0.12], [1.0, 0.12, 1.0], [0.12, 1.0, 1.0]];
+                let names = ["red", "green", "blue", "yellow", "magenta", "cyan"];
+                for (j, cb) in candidates.iter().enumerate() {
+                    let hue = hues[j % hues.len()];
+                    eprintln!("  base candidate {cb}: items in {}", names[j % names.len()]);
+                    for c in &charts {
+                        have[c.item] = true;
+                        let rgb: Vec<[f32; 3]> = c.rgb.iter().map(|p| [p[0] * hue[0], p[1] * hue[1], p[2] * hue[2]]).collect();
+                        let rgb1: Vec<[f32; 3]> = c.rgb1.iter().map(|p| [p[0] * hue[0], p[1] * hue[1], p[2] * hue[2]]).collect();
+                        out_charts.push(lightmap::synth::Chart::from_hdr2(cb + c.item as u32, c.w, c.h, &rgb, &rgb1, k, 128));
+                    }
+                }
+                // the ground slots of the primary base stay; slots claimed by a candidate range are dropped
+                out_charts.retain(|ch| !(ch.obj < base && candidates.iter().any(|cb| ch.obj >= *cb && ch.obj < cb + n_items) && ch.w == 2 && ch.h == 2));
+            }
             for (i, h) in have.iter().enumerate() { if !h { out_charts.push(lightmap::synth::Chart::from_hdr(base + i as u32, 2, 2, &[prm.sky; 4], k, 128)); } }
             let tm = tpl.chunk.data.as_ref().unwrap().cache.mapping().unwrap();
             // the probe volume: ours unless --template-probes

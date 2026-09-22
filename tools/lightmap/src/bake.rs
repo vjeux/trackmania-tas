@@ -46,6 +46,9 @@ pub struct BakeParams {
     pub want_bounce: bool,
     /// Debug: paint texels by world position (a 4 m checkerboard) instead of lighting.
     pub pattern: bool,
+    /// With `pattern`: a neutral (white) checker — the hue comes from the caller
+    /// (the `--base-candidates` test paints one hue per candidate object base).
+    pub pattern_flat: bool,
     /// Point-light scale for frame 1 (K = 1 units per unit light intensity); 0 = frame 1 not baked.
     pub light_k: f32,
 }
@@ -75,6 +78,7 @@ impl Default for BakeParams {
             inset_px: 0.0,
             fit_regressor: 0,
             pattern: false,
+            pattern_flat: false,
             light_k: 0.27,
         }
     }
@@ -277,7 +281,7 @@ fn shade_full(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
         let c = ((s.p[0] / 4.0).floor() as i64 + (s.p[2] / 4.0).floor() as i64).rem_euclid(2);
         let band = ((s.p[1] / 4.0).floor() as i64).rem_euclid(3);
         let base = if c == 0 { 1.0 } else { 0.25 };
-        let col = match band { 0 => [1.0, 0.3, 0.3], 1 => [0.3, 1.0, 0.3], _ => [0.3, 0.3, 1.0] };
+        let col = if prm.pattern_flat { [1.0, 1.0, 1.0] } else { match band { 0 => [1.0, 0.3, 0.3], 1 => [0.3, 1.0, 0.3], _ => [0.3, 0.3, 1.0] } };
         return Shaded { e: [col[0] * base, col[1] * base, col[2] * base], sky_vis: 1.0, sun_vis: 1.0, bounce: [0.0; 3] };
     }
     let o = add(s.p, mul(s.n, 0.03));
