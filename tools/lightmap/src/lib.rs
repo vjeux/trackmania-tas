@@ -11,6 +11,9 @@ pub mod img;
 pub mod mapio;
 pub mod probe;
 pub mod synth;
+pub mod volume;
+pub mod vp8_tables;
+pub mod vp8enc;
 pub mod walk;
 
 pub const LIGHTMAP_CHUNK: u32 = 0x0304_305B;

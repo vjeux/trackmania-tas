@@ -304,6 +304,35 @@ impl Bvh {
         best
     }
 
+    /// Does any triangle's bounding box overlap the box `[lo, hi]`? (probe-volume occupancy)
+    pub fn any_in_box(&self, lo: V3, hi: V3) -> bool {
+        if self.nodes.is_empty() {
+            return false;
+        }
+        let mut stack: [u32; 64] = [0; 64];
+        let mut sp = 1usize;
+        while sp > 0 {
+            sp -= 1;
+            let n = &self.nodes[stack[sp] as usize];
+            if (0..3).any(|k| n.bmax[k] < lo[k] || n.bmin[k] > hi[k]) {
+                continue;
+            }
+            if n.count > 0 {
+                for i in n.first..n.first + n.count {
+                    let (a, b) = tri_bounds(&self.tris[i as usize]);
+                    if (0..3).all(|k| b[k] >= lo[k] && a[k] <= hi[k]) {
+                        return true;
+                    }
+                }
+            } else {
+                stack[sp] = n.first;
+                stack[sp + 1] = n.first + 1;
+                sp += 2;
+            }
+        }
+        false
+    }
+
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }

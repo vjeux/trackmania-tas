@@ -1023,6 +1023,229 @@ fn main() {
             println!("per channel (K=1 units): sky r,g,b = {:.4},{:.4},{:.4}  sun = {:.4},{:.4},{:.4}  bounce(lum-weight) = {:.4},{:.4},{:.4}  const = {:.4},{:.4},{:.4}", rgb[0][0], rgb[1][0], rgb[2][0], rgb[0][1], rgb[1][1], rgb[2][1], rgb[0][2], rgb[1][2], rgb[2][2], rgb[0][3], rgb[1][3], rgb[2][3]);
             println!("component fit: ref_lum(K=1 units) = {ca:.4}·skyVis + {cb:.4}·(N·L·sunVis) + {cc:.4}   r² {r2:.3}   sun/sky ratio {:.3}", cb / ca.max(1e-9));
         }
+        "trailer" => {
+            for f in &a[1..] {
+                let m = lightmap::mapio::load(f).expect("load");
+                let d = m.chunk.data.as_ref().unwrap();
+                println!("== {f}: trailer {} bytes", d.cache.trailer.len());
+                match lightmap::volume::Volume::parse(&d.cache.trailer) {
+                    Ok(v) => {
+                        let rt = v.write() == d.cache.trailer; print!("{}", v.describe()); println!("round-trip {}", if rt { "OK" } else { "MISMATCH" });
+                        // cell4 hypothesis: one u16 per 4x4 atlas cell, bit = pixel covered by a stored tile
+                        if let Ok(im) = lightmap::img::decode_webp(&d.frames[0].images[2]) {
+                            let (cw, chh) = ((im.w + 3) / 4, (im.h + 3) / 4);
+                            println!("atlas {}x{} -> {}x{} cells = {} (table {})", im.w, im.h, cw, chh, cw * chh, v.cell4.len());
+                            let mut cov = vec![false; (cw * 4 * chh * 4) as usize];
+                            for b in &v.blocks { let (tw, th) = (b.max[0] - b.min[0], b.max[2] - b.min[2]); for s in b.slices.iter().flatten() { for y in 0..th { for x in 0..tw { let (px, py) = (s.0 + x, s.1 + y); if px < cw * 4 && py < chh * 4 { cov[(py * cw * 4 + px) as usize] = true; } } } } }
+                            // variant: bit = NOT a dark probe (uncovered pixels count as set)
+                            let mut lit = vec![true; (cw * 4 * chh * 4) as usize];
+                            for y in 0..im.h { for x in 0..im.w { let c = im.get(x, y); let l = 0.2126 * c[0] as f32 + 0.7152 * c[1] as f32 + 0.0722 * c[2] as f32; if l < 40.0 && cov[(y * cw * 4 + x) as usize] { lit[(y * cw * 4 + x) as usize] = false; } } }
+                            let mut agree_lit = 0; let mut shown2 = 0;
+                            for cy in 0..chh { for cx in 0..cw { let mut mask = 0u16; for y in 0..4 { for x in 0..4 { if lit[((cy * 4 + y) * cw * 4 + cx * 4 + x) as usize] { mask |= 1 << (y * 4 + x); } } } let stored = v.cell4.get((cy * cw + cx) as usize).copied().unwrap_or(0); if stored == mask { agree_lit += 1; } else if shown2 < 6 { println!("  LIT cell ({cx},{cy}): stored {stored:016b} lit {mask:016b}"); shown2 += 1; } } }
+                            println!("cell4 LIT variant: {} of {} agree", agree_lit, cw * chh);
+                            let mut agree = 0; let mut agree_inv = 0; let mut shown = 0;
+                            for cy in 0..chh { for cx in 0..cw {
+                                let mut mask = 0u16;
+                                for y in 0..4 { for x in 0..4 { if cov[((cy * 4 + y) * cw * 4 + cx * 4 + x) as usize] { mask |= 1 << (y * 4 + x); } } }
+                                let stored = v.cell4.get((cy * cw + cx) as usize).copied().unwrap_or(0);
+                                if stored == mask { agree += 1; } if stored == !mask { agree_inv += 1; }
+                                if stored != mask && stored != !mask && shown < 6 { println!("  cell ({cx},{cy}): stored {stored:016b} covered {mask:016b}"); shown += 1; }
+                            }}
+                            println!("cell4: {} of {} cells equal the coverage mask, {} equal its inverse", agree, cw * chh, agree_inv);
+                        }
+                    }
+                    Err(e) => println!("ERR {e}"),
+                }
+            }
+        }
+        "voltiles" => {
+            // lmtool voltiles MAP OUTDIR: every stored probe-volume slice as a x8 PPM + dark-fraction stats
+            let m = lightmap::mapio::load(&a[1]).expect("load");
+            let d = m.chunk.data.as_ref().unwrap();
+            let v = lightmap::volume::Volume::parse(&d.cache.trailer).expect("trailer");
+            let im = lightmap::img::decode_webp(&d.frames[0].images[2]).expect("atlas 2");
+            std::fs::create_dir_all(&a[2]).unwrap();
+            println!("atlas {}x{}", im.w, im.h);
+            for (bi, b) in v.blocks.iter().enumerate() {
+                let (tw, th) = (b.max[0] - b.min[0], b.max[2] - b.min[2]);
+                for (si, s) in b.slices.iter().enumerate() {
+                    let Some((tx, ty)) = s else { continue };
+                    let mut dark = 0usize;
+                    let mut sum = [0f64; 3];
+                    let mut rows_dark = vec![0usize; th as usize];
+                    let sc = 8u32;
+                    let mut out = lightmap::img::Rgb::new(tw * sc, th * sc);
+                    for y in 0..th {
+                        for x in 0..tw {
+                            let c = im.get((tx + x).min(im.w - 1), (ty + y).min(im.h - 1));
+                            let l = 0.2126 * c[0] as f64 + 0.7152 * c[1] as f64 + 0.0722 * c[2] as f64;
+                            if l < 40.0 {
+                                dark += 1;
+                                rows_dark[y as usize] += 1;
+                            }
+                            for k in 0..3 {
+                                sum[k] += c[k] as f64;
+                            }
+                            for oy in 0..sc {
+                                for ox in 0..sc {
+                                    out.set(x * sc + ox, y * sc + oy, c);
+                                }
+                            }
+                        }
+                    }
+                    let n = (tw * th) as f64;
+                    let rd: Vec<String> = rows_dark.iter().map(|r| format!("{}", (10 * *r as u32 / tw.max(1)).min(9))).collect();
+                    // darkest texel (for point-like probes)
+                    let mut best = (f32::MAX, 0u32, 0u32);
+                    for y in 0..th { for x in 0..tw { let c = im.get((tx + x).min(im.w - 1), (ty + y).min(im.h - 1)); let l = 0.2126 * c[0] as f32 + 0.7152 * c[1] as f32 + 0.0722 * c[2] as f32; if l < best.0 { best = (l, x, y); } } }
+                    print!("darkest ({},{}) lum {:.0}  ", best.1, best.2, best.0);
+                    println!("block {bi:>2} slice {si:>2} (axis1 cell {}) tile {}x{} at ({},{}): dark {:.1}% mean ({:.0},{:.0},{:.0}) rows-dark/10 {}", b.min[1] + si as u32, tw, th, tx, ty, 100.0 * dark as f64 / n, sum[0] / n, sum[1] / n, sum[2] / n, rd.join(""));
+                    lightmap::img::write_ppm(&out, &format!("{}/b{bi:02}_s{si:02}.ppm", a[2])).unwrap();
+                }
+            }
+        }
+        "volfit" => {
+            // lmtool volfit MAP [--dy D,...]: with probe world = pos + 16·(cell + ½) (x, z) and
+            // y = pos.y + 16·(c1 + ½) + dy, how well do the dark texels match "inside geometry"
+            // (the first hit of a ray straight up is a back face)?
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let m = lightmap::mapio::load(&a[1]).expect("load");
+            let d = m.chunk.data.as_ref().unwrap();
+            let v = lightmap::volume::Volume::parse(&d.cache.trailer).expect("trailer");
+            let im = lightmap::img::decode_webp(&d.frames[0].images[2]).expect("atlas 2");
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let bvh = lightmap::bvh::Bvh::build(lightmap::bake::world_tris(&scene));
+            let mut samples: Vec<([f32; 3], bool)> = Vec::new();
+            for b in &v.blocks {
+                let (tw, th) = (b.max[0] - b.min[0], b.max[2] - b.min[2]);
+                for (si, s) in b.slices.iter().enumerate() {
+                    let Some((tx, ty)) = s else { continue };
+                    let c1 = b.min[1] + si as u32;
+                    for y in 0..th { for x in 0..tw {
+                        let c = im.get((tx + x).min(im.w - 1), (ty + y).min(im.h - 1));
+                        let l = 0.2126 * c[0] as f32 + 0.7152 * c[1] as f32 + 0.0722 * c[2] as f32;
+                        let (cx, cz) = (b.min[0] + x, b.min[2] + y);
+                        let p = [b.pos[0] + 16.0 * (cx as f32 + 0.5), b.pos[1] + 16.0 * (c1 as f32 + 0.5), b.pos[2] + 16.0 * (cz as f32 + 0.5)];
+                        samples.push((p, l < 40.0));
+                    }}
+                }
+            }
+            println!("{} texels, {} dark", samples.len(), samples.iter().filter(|s| s.1).count());
+            let dys: Vec<f32> = f("--dy").map(|s| s.split(',').map(|x| x.parse().unwrap()).collect()).unwrap_or_else(|| vec![-24.0, -16.0, -8.0, 0.0, 8.0, 16.0]);
+            // per-level profile: dark fraction vs box-overlap fraction at dy = 0 (levels relative to pos.y)
+            {
+                let mut per: std::collections::BTreeMap<i32, (usize, usize, usize)> = Default::default();
+                for (p, dark) in &samples {
+                    let l = ((p[1] + 46.0 - 8.0) / 16.0).round() as i32; // c1 relative (pos.y = -46 - 256·row)
+                    let e = per.entry(l).or_insert((0, 0, 0));
+                    e.0 += 1; if *dark { e.1 += 1; }
+                    if bvh.any_in_box([p[0] - 8.0, p[1] - 8.0, p[2] - 8.0], [p[0] + 8.0, p[1] + 8.0, p[2] + 8.0]) { e.2 += 1; }
+                }
+                for (l, (n, d, o)) in &per { println!("level {l:>2} (probe y {:>4}): {n:>6} texels dark {:>5.1}% box-overlap {:>5.1}%", -46.0 + 16.0 * (*l as f32 + 0.5), 100.0 * *d as f64 / *n as f64, 100.0 * *o as f64 / *n as f64); }
+            }
+            for &dy in &dys { for &sign in &[1.0f32, -1.0, 0.0, 4.0, 8.0] {
+                let (mut tp, mut fp, mut fnn, mut tn) = (0usize, 0usize, 0usize, 0usize);
+                for (p, dark) in &samples {
+                    let o = [p[0], p[1] + dy, p[2]];
+                    // sign 0/4/8: "any triangle within r m of the probe" instead (r = 0 → the 16-m cell box)
+                    let inside = if sign == 0.0 || sign > 1.5 {
+                        let r = if sign == 0.0 { 8.0 } else { sign };
+                        bvh.any_in_box([o[0] - r, o[1] - r, o[2] - r], [o[0] + r, o[1] + r, o[2] + r])
+                    } else { match bvh.closest(o, [0.0, 1.0, 0.0], 1000.0) {
+                        Some(h) => { let t = &bvh.tris[h.tri as usize]; let n = lightmap::geometry::cross(t.e1, t.e2); sign * n[1] > 0.0 }
+                        None => false,
+                    } };
+                    match (inside, *dark) { (true, true) => tp += 1, (true, false) => fp += 1, (false, true) => fnn += 1, (false, false) => tn += 1 }
+                }
+                let (tpf, fpf, fnf, tnf) = (tp as f64, fp as f64, fnn as f64, tn as f64);
+                let den = ((tpf + fpf) * (tpf + fnf) * (tnf + fpf) * (tnf + fnf)).sqrt().max(1e-9);
+                println!("dy {dy:>5} sign {sign:>3}: mcc {:.3}  tp {tp} fp {fp} fn {fnn} tn {tn}", (tpf * tnf - fpf * fnf) / den);
+            }}
+        }
+        "volmosaic" => {
+            // lmtool volmosaic MAP LEVEL OUT.ppm: the probe-volume slices of height level LEVEL (0..16 within
+            // each block) assembled on one canvas: x = record axis 0 (cells), rows = strip (origin[1]/16) × 32 + axis 2
+            let m = lightmap::mapio::load(&a[1]).expect("load");
+            let d = m.chunk.data.as_ref().unwrap();
+            let v = lightmap::volume::Volume::parse(&d.cache.trailer).expect("trailer");
+            let im = lightmap::img::decode_webp(&d.frames[0].images[2]).expect("atlas 2");
+            let level: u32 = a[2].parse().unwrap();
+            let strips = v.grid[1] / 16;
+            let (cw, ch) = (v.grid[0], strips * 32);
+            let sc = 4u32;
+            let mut out = lightmap::img::Rgb::new(cw * sc, ch * sc);
+            for p in out.px.iter_mut() { *p = 90; }
+            for b in &v.blocks {
+                let strip = b.origin[1] / 16;
+                let c1 = b.origin[1] + level;
+                if c1 < b.min[1] || c1 >= b.max[1] { continue; }
+                let Some((tx, ty)) = b.slices[(c1 - b.min[1]) as usize] else {
+                    // absent slice: mark the block's footprint dark grey
+                    for z in b.min[2]..b.max[2] { for x in b.min[0]..b.max[0] {
+                        for oy in 0..sc { for ox in 0..sc { out.set(x * sc + ox, (strip * 32 + z) * sc + oy, [40, 40, 40]); } }
+                    }}
+                    continue;
+                };
+                let (tw, th) = (b.max[0] - b.min[0], b.max[2] - b.min[2]);
+                for y in 0..th { for x in 0..tw {
+                    let c = im.get((tx + x).min(im.w - 1), (ty + y).min(im.h - 1));
+                    let (cx, cy) = (b.min[0] + x, strip * 32 + b.min[2] + y);
+                    for oy in 0..sc { for ox in 0..sc { out.set(cx * sc + ox, cy * sc + oy, c); } }
+                }}
+            }
+            lightmap::img::write_ppm(&out, &a[3]).unwrap();
+            println!("wrote {} ({}x{} cells, {} strips)", a[3], cw, ch, strips);
+        }
+        "geombox" => {
+            // lmtool geombox MAP: world AABB of the item meshes grouped by pivot position (probe-map analysis)
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let mut groups: std::collections::BTreeMap<String, ([f32; 3], [f32; 3], usize)> = Default::default();
+            for inst in &scene.instances {
+                let md = &scene.models[inst.model];
+                let piv = [inst.xf[9], inst.xf[10], inst.xf[11]];
+                let key = format!("{:.0},{:.0},{:.0}", piv[0], piv[1], piv[2]);
+                let e = groups.entry(key).or_insert(([f32::MAX; 3], [f32::MIN; 3], 0));
+                e.2 += 1;
+                for t in &md.tris { for p in &t.p { let w = lightmap::geometry::xf_point(&inst.xf, *p); for k in 0..3 { e.0[k] = e.0[k].min(w[k]); e.1[k] = e.1[k].max(w[k]); } } }
+            }
+            for (k, (lo, hi, n)) in &groups { println!("pivot {k}: {n} instances, mesh bbox [{:.1},{:.1},{:.1}]..[{:.1},{:.1},{:.1}]", lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]); }
+        }
+        "volpaint" => {
+            // lmtool volpaint MAP --out OUT [--img K --color r,g,b]... [--mask-all] [--vp8 Q]
+            //   repaint probe image K (0 colour, 1 occlusion, 2 pale colour, 3 lights) with one colour;
+            //   the blob is rebuilt as the concatenation of the 4 WEBPs with the trailer offsets updated
+            let mut m = lightmap::mapio::load(&a[1]).expect("load");
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let q: u8 = f("--vp8").map(|s| s.parse().unwrap()).unwrap_or(8);
+            let d = m.chunk.data.as_mut().expect("has lightmaps");
+            let mut v = lightmap::volume::Volume::parse(&d.cache.trailer).expect("trailer");
+            let mut parts = lightmap::volume::split_probe_blob(&d.frames[0].images[2], &v.frame_info);
+            println!("probe blob: {} images: {:?}", parts.len(), parts.iter().map(|p| p.len()).collect::<Vec<_>>());
+            let mut i = 0;
+            while i < a.len() {
+                if a[i] == "--img" {
+                    let k: usize = a[i + 1].parse().unwrap();
+                    let col: Vec<u8> = a[i + 3].split(',').map(|x| x.trim().parse().unwrap()).collect();
+                    let mut im = lightmap::img::decode_webp(&parts[k]).expect("decode part");
+                    for p in im.px.chunks_mut(3) { p.copy_from_slice(&col[..3]); }
+                    parts[k] = lightmap::vp8enc::encode(&im.px, im.w, im.h, q);
+                    println!("image {k} -> {:?} ({} bytes)", col, parts[k].len());
+                    i += 4;
+                } else if a[i] == "--reencode" {
+                    for (k, p) in parts.iter_mut().enumerate() { let im = lightmap::img::decode_webp(p).expect("decode"); *p = lightmap::vp8enc::encode(&im.px, im.w, im.h, q); println!("image {k} re-encoded ({} bytes)", p.len()); }
+                    i += 1;
+                } else { i += 1; }
+            }
+            if a.iter().any(|x| x == "--mask-all") { for c in v.cell4.iter_mut() { *c = 0xffff; } }
+            let (blob, ends) = lightmap::volume::join_probe_blob(&parts);
+            for (k, e) in ends.iter().enumerate() { if k < v.frame_info.len() { v.frame_info[k].1 = *e; } }
+            d.frames[0].images[2] = blob;
+            d.cache.trailer = v.write();
+            let payload = m.chunk.write(true);
+            let out = f("--out").expect("--out");
+            lightmap::mapio::save_with_chunk(&m, &payload, &out).expect("save");
+            println!("wrote {out}");
+        }
         _ => {
             eprintln!("unknown command");
             std::process::exit(2);
