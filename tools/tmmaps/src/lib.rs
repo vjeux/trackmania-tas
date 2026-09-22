@@ -24,6 +24,7 @@
 //! calls in here rather than keeping a second `.Map.Gbx` reader, for the same
 //! reason `tmmaps` calls into `ghost` for a reference ghost's splits.
 
+pub mod altered;
 pub mod census;
 pub mod changelog;
 pub mod cli;

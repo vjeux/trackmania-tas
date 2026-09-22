@@ -347,7 +347,7 @@ pub fn cmd(args: &[String]) {
         let yaw = crate::tiny::block_yaw(b);
         let pos = [origin[0], origin[1] + deck - 1.6, origin[2]];
         println!("  stage 3c: wet pad under #{} {} — PlatformWaterRampBase (free) at ({:.1}, {:.2}, {:.1}) yaw {:.3}, deck {deck} (water 0.4 m over it)", r.index, r.name, pos[0], pos[1], pos[2], yaw);
-        wet_pads.push(crate::map::FreeBlockSpec { name: "PlatformWaterRampBase".into(), author: None, flags: 0x0020_0000, pos, rot: [yaw, 0.0, 0.0], grid: None });
+        wet_pads.push(crate::map::FreeBlockSpec { name: "PlatformWaterRampBase".into(), author: None, flags: 0x0020_0000, pos, rot: [yaw, 0.0, 0.0], grid: None, dir: 0 });
     }
     // a wet plan whose start is an ITEM (a start gate item, a custom start: no START
     // block row to mark) gets the pad under the Spawn item: the item's own cell,
@@ -357,7 +357,7 @@ pub fn cmd(args: &[String]) {
             let cell = |v: f32| (v / crate::map::CELL_XZ).floor() * crate::map::CELL_XZ;
             let pos = [cell(it.pos[0]), it.pos[1] - 1.6, cell(it.pos[2])];
             println!("  stage 3c: wet pad under the start ITEM {} at ({:.1}, {:.2}, {:.1}) — PlatformWaterRampBase (free) at ({:.1}, {:.2}, {:.1}), unturned (a quarter turn would shift the free block out of the cell)", it.model, it.pos[0], it.pos[1], it.pos[2], pos[0], pos[1], pos[2]);
-            wet_pads.push(crate::map::FreeBlockSpec { name: "PlatformWaterRampBase".into(), author: None, flags: 0x0020_0000, pos, rot: [0.0, 0.0, 0.0], grid: None });
+            wet_pads.push(crate::map::FreeBlockSpec { name: "PlatformWaterRampBase".into(), author: None, flags: 0x0020_0000, pos, rot: [0.0, 0.0, 0.0], grid: None, dir: 0 });
         }
         if wet_pads.is_empty() {
             println!("  stage 3c: WET: no start block and no Spawn item found — the map stays dry");

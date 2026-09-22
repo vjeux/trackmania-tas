@@ -141,6 +141,19 @@ fn main() {
         // changed (Everios96 2026-09-20 Q5: "did the physics change on the never-wiped maps?").
         // the hunters' change log of the altered sets (GeraldDuke 2026-09-22): rows from the
         // box's changelog.sh → README.md + one markdown file per alteration
+        // the Altered Nadeo Wood / Wet Wood recipes learned from AR's campaigns (json9841 2026-09-22)
+        "altered-learn" => {
+            if let Err(e) = tmmaps::altered::learn_cmd(&args[1..]) {
+                eprintln!("tmmaps altered-learn: {e}");
+                std::process::exit(1);
+            }
+        }
+        "altered-apply" => {
+            if let Err(e) = tmmaps::altered::apply_cmd(&args[1..]) {
+                eprintln!("tmmaps altered-apply: {e}");
+                std::process::exit(1);
+            }
+        }
         "changelog" => {
             if let Err(e) = tmmaps::changelog::cmd(&args[1..]) {
                 eprintln!("tmmaps changelog: {e}");

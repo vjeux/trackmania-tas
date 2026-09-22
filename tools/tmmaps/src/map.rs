@@ -2189,10 +2189,12 @@ impl MapFile {
         // item of each model, 2026-09-13), the donor's definition fields are
         // rewritten in the CLONE as references to the slot the donor defined
         // (`0x40000000 | slot+1`), which follows the definition in the file.
+        // (and without a skin packDesc — a skinned donor's clones misparse, Winter 2026 - 06)
         let donor = self
             .items
             .iter()
-            .find(|it| it.waypoint_tag.is_none() && !self.item_ids[it.model_field].is_def && !self.item_ids[it.author_field].is_def)
+            .find(|it| it.waypoint_tag.is_none() && it.skin_region.is_none() && !self.item_ids[it.model_field].is_def && !self.item_ids[it.author_field].is_def)
+            .or_else(|| self.items.iter().find(|it| it.waypoint_tag.is_none() && it.skin_region.is_none()))
             .or_else(|| self.items.iter().find(|it| it.waypoint_tag.is_none()))
             .expect("map needs one non-waypoint item to clone");
         let mut bytes = self.gbx.body[donor.record_region.0..donor.record_region.1].to_vec();
@@ -3217,7 +3219,7 @@ impl MapFile {
                 }
             };
             put_id(&mut new_blocks, &spec.name, &mut table);
-            new_blocks.push(0u8); // dir
+            new_blocks.push(if spec.grid.is_some() { spec.dir & 3 } else { 0u8 }); // dir
             let flags = match spec.grid {
                 Some(c) => {
                     new_blocks.extend_from_slice(&[(c[0] + 1) as u8, c[1] as u8, (c[2] + 1) as u8]);
@@ -3545,6 +3547,8 @@ pub struct FreeBlockSpec {
     /// Some(cell) = a GRID block instead (the game's cell; the file stores it +(1,0,1));
     /// no free-pos entry, FREE_BLOCK_FLAG not added.
     pub grid: Option<[i32; 3]>,
+    /// the quarter turn of a GRID block (the record's dir byte; 0 for a free block)
+    pub dir: u8,
 }
 
 /// A map with NO items cannot be converted by the tiny writer, which clones an
