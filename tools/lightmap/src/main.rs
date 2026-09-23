@@ -2368,6 +2368,20 @@ fn run(a: Vec<String>) {
                         if let Some(mp) = dd.cache.mapping_mut() {
                             for i in 0..3 { let r = 60 + 66 * i + 8; if r + 4 <= mp.head.len() { mp.head[r..r + 4].copy_from_slice(&rec_val.to_le_bytes()); } }
                         }
+                        // the cache chunk 0x06022015 (5, joint id, 3, 0x1c, Id decoration, 1, 0, DayTime) carries the
+                        // time too — and THAT is the word the editor adopts when it opens the map (every DayTime
+                        // variant of 2026-09-23 baked at the chunk's old time until this was patched)
+                        for c in dd.cache.chunks.iter_mut() {
+                            if c.id == 0x0602_2015 {
+                                if let lightmap::format::ChunkBody::Raw(b) = &mut c.body {
+                                    if b.len() >= 40 && b[20..24] == [0, 0, 0, 0x40] {
+                                        let name_len = u32::from_le_bytes([b[24], b[25], b[26], b[27]]) as usize;
+                                        let o = 28 + name_len + 8;
+                                        if o + 4 <= b.len() { b[o..o + 4].copy_from_slice(&rec_val.to_le_bytes()); }
+                                    }
+                                }
+                            }
+                        }
                         let payload = chunk.write(true);
                         // splice the rewritten lightmap chunk into the body (its skippable size fields follow)
                         if let Some((off, pl, size)) = lightmap::find_chunk(&nb) {
