@@ -1,4 +1,4 @@
-//! From a file name to triangles: the recursive walk that turns a prefab tree
+//! From a file name to triangles: the prefab tree
 //! into geometry, following external references across pack files.
 //!
 //! A block's shape is not one mesh. `RoadDirtTiltCurve3` is a prefab holding
@@ -308,23 +308,24 @@ impl<'a> Collector<'a> {
                     } else {
                         material_label(s, g.material, slots)
                     };
-                    if let Some(Node::Visual(v)) = slots.get(vi.max(0) as usize).and_then(as_node) {
-                        let mut positions = v.inline_positions.clone();
-                        for si in &v.vertex_streams {
-                            if let Some(Node::VertexStream(vs)) =
-                                slots.get((*si).max(0) as usize).and_then(as_node)
-                            {
-                                positions.extend_from_slice(&vs.positions);
-                            }
-                        }
-                        let verts: Vec<[f32; 3]> =
-                            positions.iter().map(|p| apply(at, *p)).collect();
-                        let idx = decode_indices(&v.indices, v.index_is_absolute, verts.len());
-                        if std::env::var_os("MAPGEOM_TRACE").is_some() {
-                            eprintln!("solid2 geom: visual {} material idx {} -> {:?}: {} inline pos, {} streams, {} verts, {} indices -> {} tris; verts {:?} idx {:?}", vi, g.material, mat, v.inline_positions.len(), v.vertex_streams.len(), verts.len(), v.indices.len(), idx.len(), &verts[..verts.len().min(9)], &idx[..idx.len().min(8)]);
-                        }
-                        self.scene.add_tris(&mat, &verts, idx.into_iter());
-                    }
+                    self.visual_tris(vi, slots, at, &mat, g.material);
+                }
+            }
+            // A CPlugSolid's tree: the local transform composes, a leaf's visual
+            // is drawn under its shader's (material's) name — the decoration
+            // Scene3d's island/sea/shadow-caster solids (`scene3d.rs`).
+            Node::Tree(t) => {
+                let m = match &t.transform {
+                    Some(x) => compose(at, x),
+                    None => *at,
+                };
+                if t.visual >= 0 {
+                    let mat = shader_label(t.shader, slots);
+                    self.stats.visual_meshes += 1;
+                    self.visual_tris(t.visual, slots, &m, &mat, t.shader);
+                }
+                for c in &t.children {
+                    self.slot(*c, slots, &m, depth);
                 }
             }
             Node::ItemModel(i) => self.slot(*i, slots, at, depth),
@@ -397,7 +398,25 @@ impl<'a> Collector<'a> {
         }
     }
 
-    fn slot(&mut self, idx: i32, slots: &[Slot], at: &Xform, depth: usize) {
+    /// One visual's triangles, transformed by `at`, into the scene under `mat`.
+    fn visual_tris(&mut self, vi: i32, slots: &[Slot], at: &Xform, mat: &str, material_idx: i32) {
+        if let Some(Node::Visual(v)) = slots.get(vi.max(0) as usize).and_then(as_node) {
+            let mut positions = v.inline_positions.clone();
+            for si in &v.vertex_streams {
+                if let Some(Node::VertexStream(vs)) = slots.get((*si).max(0) as usize).and_then(as_node) {
+                    positions.extend_from_slice(&vs.positions);
+                }
+            }
+            let verts: Vec<[f32; 3]> = positions.iter().map(|p| apply(at, *p)).collect();
+            let idx = decode_indices(&v.indices, v.index_is_absolute, verts.len());
+            if std::env::var_os("MAPGEOM_TRACE").is_some() {
+                eprintln!("visual {} material idx {} -> {:?}: {} inline pos, {} streams, {} verts, {} indices -> {} tris; verts {:?} idx {:?}", vi, material_idx, mat, v.inline_positions.len(), v.vertex_streams.len(), verts.len(), v.indices.len(), idx.len(), &verts[..verts.len().min(9)], &idx[..idx.len().min(8)]);
+            }
+            self.scene.add_tris(mat, &verts, idx.into_iter());
+        }
+    }
+
+    pub fn slot(&mut self, idx: i32, slots: &[Slot], at: &Xform, depth: usize) {
         if idx < 0 {
             return;
         }
@@ -553,4 +572,21 @@ fn material_label(s: &crate::node::Solid2, idx: i32, slots: &[Slot]) -> String {
         }
     }
     "Visual".to_string()
+}
+
+/// The name a CPlugTree leaf's shader (material) node draws under: the
+/// external `.Material.Gbx`'s file stem (`Water`, `WarpSand`,
+/// `InvisibleShadowCaster`), an inline material's name, else `Visual`.
+pub fn shader_label(shader: i32, slots: &[Slot]) -> String {
+    match slots.get(shader.max(0) as usize) {
+        Some(Slot::External(p)) if shader >= 0 => {
+            let stem = strip_material_ext(p);
+            stem.rsplit(['\\', '/']).next().unwrap_or(&stem).to_string()
+        }
+        Some(Slot::Node(Node::Material(n, _))) if shader >= 0 => {
+            let n = strip_material_ext(n);
+            n.rsplit(['\\', '/']).next().unwrap_or(&n).to_string()
+        }
+        _ => "Visual".to_string(),
+    }
 }

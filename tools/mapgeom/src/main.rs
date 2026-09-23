@@ -24,6 +24,9 @@ COMMANDS
   dump <path> [--body F]        walk a file's node graph and summarise it;
                                 --body writes the decompressed body out
   model <path> --out F          a single file's geometry, as .glb or .obj
+  scene3d <path> --out F.obj    a decoration Scene3d (<Coll>\\GameCtnDecoration\\Scene3d\\
+                                Base64x64.Scene3d.Gbx): its island / sea /
+                                shadow-caster solids, grouped by material name
   constraint <path>             a .KinematicConstraint.Gbx, every anim sub-function (ease, reverse, ms)
   static-item <prefab-or-item> --out F --ident NAME.Item.Gbx --author X
       [--scale 0.5] [--collection 26]
@@ -1790,6 +1793,27 @@ fn main() {
             report(&c.stats, &c.scene);
             write_scene(&c.scene, &out);
         }
+        // the decoration Scene3d's solids (island, sea, shadow casters) as one
+        // OBJ, grouped by material name — the baker's `--decoration` input
+        "scene3d" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| "scene3d.obj".to_string());
+            let mut c = mapgeom::geom::Collector::new(&mut store);
+            let r = mapgeom::scene3d::collect(&mut c, &p).unwrap_or_else(die);
+            for (idx, name, tris) in &r.solids {
+                if *idx >= 0 {
+                    println!("  solid node {idx} {name:?}: {tris} triangles");
+                } else {
+                    println!("  external solid {name}: {tris} triangles");
+                }
+            }
+            for (name, tris, bb) in &r.groups {
+                println!("  group {name}: {tris} triangles, x {:.1}..{:.1} y {:.1}..{:.1} z {:.1}..{:.1}", bb[0], bb[3], bb[1], bb[4], bb[2], bb[5]);
+            }
+            println!("  {} triangles in all", r.triangles);
+            write_scene(&c.scene, &out);
+        }
         "collhash" => {
             if a.rest.iter().any(|x| x == "--triage") {
                 let mut store = open(&a);
@@ -3552,6 +3576,11 @@ fn describe(n: &Node) -> String {
             "CPlugRoadChunk v{} {:?} points {}/{}/{}/{} id {:?}/{:?} left {:?}..{:?} right {:?}..{:?}",
             r.version, (r.u01, r.u02), r.u03.len(), r.u04.len(), r.u05.len(), r.u07.len(), r.u14, r.u17,
             r.u04.first(), r.u04.last(), r.u05.first(), r.u05.last()
+        ),
+        Node::Tree(t) => format!(
+            "CPlugTree {:?} children {:?} visual {} shader {} surface {} flags 0x{:x} transform {}",
+            t.name, t.children, t.visual, t.shader, t.surface, t.flags,
+            t.transform.map(|m| format!("rot {:?} pos [{}, {}, {}]", &m[..9], m[9], m[10], m[11])).unwrap_or_else(|| "-".into())
         ),
         Node::Light(c, l) => {
             if *c == 0x0901D000 {

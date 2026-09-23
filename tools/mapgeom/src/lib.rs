@@ -60,6 +60,7 @@ pub mod probe;
 pub mod reader;
 pub mod render;
 pub mod scene;
+pub mod scene3d;
 pub mod store;
 pub mod crystal;
 pub mod debug;

@@ -584,37 +584,50 @@ impl<'a> Graph<'a> {
                 }
                 Ok(())
             }
+            // The tree is kept (`Node::Tree`): the decoration Scene3d solids
+            // (`scene3d.rs`) are CPlugSolid trees whose leaves carry the
+            // island, sea and shadow-caster visuals.
             0x0904F006 => {
                 let lv = self.r.u32()?;
                 if lv != 10 {
                     return Err(format!("CPlugTree children list version {} (expected 10)", lv));
                 }
                 let n = self.r.u32()? as usize;
+                let mut children = Vec::with_capacity(n);
                 for _ in 0..n {
-                    self.noderef()?;
+                    children.push(self.noderef()?);
                 }
+                acc.tree_mut().children = children;
                 Ok(())
             }
             0x0904F00D => {
+                let name = self.r.lookback()?;
                 self.r.lookback()?;
-                self.r.lookback()?;
+                acc.tree_mut().name = name;
                 Ok(())
             }
             0x0904F011 | 0x0904F017 => {
                 self.noderef()?;
+                acc.tree_mut();
                 Ok(())
             }
             0x0904F016 => {
-                self.noderef()?; // Visual
-                self.noderef()?; // Shader
-                self.noderef()?; // Surface
+                let visual = self.noderef()?;
+                let shader = self.noderef()?;
+                let surface = self.noderef()?;
                 self.noderef()?; // Generator
+                let t = acc.tree_mut();
+                t.visual = visual;
+                t.shader = shader;
+                t.surface = surface;
                 Ok(())
             }
             0x0904F01A => {
                 let flags = self.r.u32()?;
+                let t = acc.tree_mut();
+                t.flags = flags;
                 if flags & 4 != 0 {
-                    self.r.iso4()?;
+                    t.transform = Some(self.r.iso4()?);
                 }
                 Ok(())
             }

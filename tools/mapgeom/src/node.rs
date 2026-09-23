@@ -36,6 +36,10 @@ pub const C_BLOCK_ITEM: u32 = 0x2E025000;
 pub const C_CRYSTAL: u32 = 0x09003000;
 pub const C_COMMON_ITEM_ENTITY_MODEL: u32 = 0x2E027000;
 pub const C_DYNA_OBJECT: u32 = 0x09144000;
+/// `CPlugSolid`: a tree of `CPlugTree` nodes (the decoration Scene3d's island,
+/// a block variant's trigger solid); read as a redirection to its tree.
+pub const C_SOLID: u32 = 0x09005000;
+pub const C_TREE: u32 = 0x0904F000;
 
 /// Classes whose node body is a single struct with no chunk framing.
 fn no_body_chunks(class_id: u32) -> bool {
@@ -273,7 +277,26 @@ pub enum Node {
     RoadChunk(Box<crate::blockinfo::RoadChunkRaw>),
     /// `CPlugLight` or a `GxLight*` (the class id says which).
     Light(u32, Box<LightInfo>),
+    /// `CPlugTree`: one node of a `CPlugSolid`'s tree — its children, its
+    /// visual and the material (shader) it is drawn with, its local transform.
+    Tree(Box<Tree>),
     Other(u32),
+}
+
+/// A `CPlugTree` (`0x0904F000`) node: what the decoration Scene3d solids
+/// and block trigger solids are built from (`scene3d.rs`).
+#[derive(Clone, Debug, Default)]
+pub struct Tree {
+    pub name: String,
+    pub children: Vec<i32>,
+    /// `0x0904F016`: Visual, Shader (the material), Surface, Generator.
+    pub visual: i32,
+    pub shader: i32,
+    pub surface: i32,
+    /// `0x0904F01A`: flags, and the Iso4 (3×3 rotation, translation) when
+    /// bit 2 is set.
+    pub flags: u32,
+    pub transform: Option<[f32; 12]>,
 }
 
 impl Node {
@@ -297,6 +320,7 @@ impl Node {
             Node::Genealogy(_) => crate::blockinfo::C_ZONE_GENEALOGY,
             Node::RoadChunk(_) => crate::blockinfo::C_ROAD_CHUNK,
             Node::Light(c, _) => *c,
+            Node::Tree(_) => 0x0904F000,
             Node::Other(c) => *c,
         }
     }
@@ -385,6 +409,15 @@ impl<'a> Graph<'a> {
     }
 
     /// Read a node reference. Returns the node index, or -1 for null.
+    /// An inline node whose `[i32 index][u32 class id][body]` sits at body
+    /// offset `off` — the way into a file whose outer class has no reader yet
+    /// (`scene3d.rs` walks the CPlugSolid subtrees of a CSceneLayout this way).
+    pub fn node_at_offset(&mut self, off: usize) -> R<i32> {
+        self.r.o = off;
+        self.r.mid_body = off > 0;
+        self.noderef()
+    }
+
     pub fn noderef(&mut self) -> R<i32> {
         let at = self.r.o;
         let idx = self.r.i32()?;
@@ -507,6 +540,7 @@ pub struct Acc {
     pub material_name: String,
     pub physics_id: u8,
     pub light: Option<Box<LightInfo>>,
+    pub tree: Option<Box<Tree>>,
     pub touched: bool,
 }
 
@@ -528,8 +562,14 @@ impl Acc {
             material_name: String::new(),
             physics_id: 0,
             light: None,
+            tree: None,
             touched: false,
         }
+    }
+    /// The tree accumulator, created on the first CPlugTree chunk.
+    pub fn tree_mut(&mut self) -> &mut Tree {
+        self.touched = true;
+        self.tree.get_or_insert_with(|| Box::new(Tree { visual: -1, shader: -1, surface: -1, ..Tree::default() }))
     }
     /// The light accumulator, created on the first light chunk.
     pub fn light_mut(&mut self) -> &mut LightInfo {
@@ -546,6 +586,9 @@ impl Acc {
         if let Some(l) = self.light {
             return Node::Light(class_id, l);
         }
+        if let Some(t) = self.tree {
+            return Node::Tree(t);
+        }
         match class_id {
             C_SURFACE => Node::Surface(self.surface),
             C_SOLID2MODEL => Node::Solid2(self.solid2),
@@ -559,7 +602,9 @@ impl Acc {
                 meshes: self.crystals,
             }),
             C_VERTEX_STREAM => Node::VertexStream(self.vstream),
-            C_ITEM_MODEL | C_COMMON_ITEM_ENTITY_MODEL | C_BLOCK_ITEM => {
+            C_ITEM_MODEL | C_COMMON_ITEM_ENTITY_MODEL | C_BLOCK_ITEM | C_SOLID => {
+                Node::ItemModel(self.entity_model)
+            }| C_COMMON_ITEM_ENTITY_MODEL | C_BLOCK_ITEM => {
                 Node::ItemModel(self.entity_model)
             }
             c if is_visual(c) => Node::Visual(self.visual),
@@ -596,6 +641,7 @@ pub fn node_kind_name(n: &Node) -> &'static str {
         Node::Genealogy(_) => "CGameCtnZoneGenealogy",
         Node::RoadChunk(_) => "CPlugRoadChunk",
         Node::Light(c, _) => if *c == 0x0901D000 { "CPlugLight" } else { "GxLight" },
+        Node::Tree(_) => "CPlugTree",
         Node::Other(_) => "other",
     }
 }
