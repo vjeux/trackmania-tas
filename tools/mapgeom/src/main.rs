@@ -1906,6 +1906,7 @@ fn main() {
         "item-bounds" => mapgeom::item_set::bounds_cmd(&a.rest),
         "item-set-zips" => mapgeom::item_set::zips_cmd(&a.rest),
         "item-set-shoot" => mapgeom::item_set::shoot_cmd(&a.rest),
+        "shot-crop" => mapgeom::item_set::shot_crop_cmd(&a.rest),
         "item-set-items" => {
             let mut store = open(&a);
             mapgeom::item_set::items_cmd(&mut store, &a.rest);

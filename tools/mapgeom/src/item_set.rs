@@ -1372,3 +1372,71 @@ fn run_shoot(rest: &[String]) -> Result<(), String> {
     std::fs::write(out.join("cams.tsv"), &cams).map_err(|e| e.to_string())?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Set pictures from the editor screenshots (`mapgeom shot-crop`)
+// ---------------------------------------------------------------------------
+
+/// `mapgeom shot-crop --in SHOT.png --square OUT.jpg --wide OUT2.jpg [--max-kb 250]`:
+/// the item.exchange pictures from a 4K editor screenshot — the editor's UI
+/// sits at the top (map panel, ~320 px) and the bottom (toolbar, from ~1740),
+/// so both crops come from the band in between: the SQUARE thumbnail (IX
+/// wants square, 1–250 KB) is the centre of that band scaled to 1000 px, the
+/// WIDE gallery picture a 16:9 cut of it at 1920 px. JPEG quality steps down
+/// until the thumbnail fits `max-kb`.
+pub fn shot_crop_cmd(rest: &[String]) {
+    if let Err(e) = run_shot_crop(rest) {
+        eprintln!("shot-crop: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn run_shot_crop(rest: &[String]) -> Result<(), String> {
+    let flag = |name: &str| rest.iter().position(|a| a == name).and_then(|i| rest.get(i + 1)).cloned();
+    let input = flag("--in").ok_or("--in SHOT.png is required")?;
+    let square = flag("--square");
+    let wide = flag("--wide");
+    let max_kb: usize = flag("--max-kb").unwrap_or_else(|| "250".into()).parse().map_err(|e| format!("--max-kb: {e}"))?;
+    let img = image::open(&input).map_err(|e| format!("{input}: {e}"))?.to_rgb8();
+    let (w, h) = (img.width(), img.height());
+    // the UI-free band, in the picture's own scale (measured on 3840x2160)
+    let top = (h as f32 * 0.148) as u32;
+    let bottom = (h as f32 * 0.805) as u32;
+    let band = bottom.saturating_sub(top).max(1);
+    let encode = |im: &image::RgbImage, quality: u8| -> Result<Vec<u8>, String> {
+        let mut out = Vec::new();
+        let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality);
+        enc.encode(im.as_raw(), im.width(), im.height(), image::ExtendedColorType::Rgb8).map_err(|e| e.to_string())?;
+        Ok(out)
+    };
+    if let Some(sq) = square {
+        let side = band.min(w);
+        let x0 = (w - side) / 2;
+        let y0 = top + (band - side) / 2;
+        let cut = image::imageops::crop_imm(&img, x0, y0, side, side).to_image();
+        let small = image::imageops::resize(&cut, 1000, 1000, image::imageops::FilterType::Lanczos3);
+        let mut q = 88u8;
+        let bytes = loop {
+            let b = encode(&small, q)?;
+            if b.len() <= max_kb * 1000 || q <= 40 {
+                break b;
+            }
+            q -= 6;
+        };
+        std::fs::write(&sq, &bytes).map_err(|e| format!("{sq}: {e}"))?;
+        eprintln!("{sq}: {}x{} from ({x0},{y0}) {side}px, {} KB (q{q})", 1000, 1000, bytes.len() / 1000);
+    }
+    if let Some(wd) = wide {
+        // 16:9 inside the band, as wide as the band allows
+        let cw = (band as f32 * 16.0 / 9.0).min(w as f32) as u32;
+        let ch = (cw as f32 * 9.0 / 16.0) as u32;
+        let x0 = (w - cw) / 2;
+        let y0 = top + (band - ch) / 2;
+        let cut = image::imageops::crop_imm(&img, x0, y0, cw, ch).to_image();
+        let out = image::imageops::resize(&cut, 1920, 1080, image::imageops::FilterType::Lanczos3);
+        let bytes = encode(&out, 86)?;
+        std::fs::write(&wd, &bytes).map_err(|e| format!("{wd}: {e}"))?;
+        eprintln!("{wd}: 1920x1080 from ({x0},{y0}) {cw}x{ch}, {} KB", bytes.len() / 1000);
+    }
+    Ok(())
+}
