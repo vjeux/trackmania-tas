@@ -26,6 +26,8 @@ pub mod assemble;
 pub mod blame;
 pub mod blockinfo;
 pub mod blockmap;
+pub mod catalog;
+pub mod item_set;
 pub mod blowfish;
 pub mod classinfo;
 pub mod classes;

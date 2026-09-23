@@ -31,6 +31,7 @@ pub mod visual;
 pub mod solid2;
 pub mod surface;
 pub mod item;
+pub mod placement;
 pub mod file;
 pub mod prefab;
 pub mod dyna;

@@ -644,11 +644,11 @@ fn unit_box_trigger(units: &[[i32; 3]], scale: f32) -> CPlugSurface {
 /// (variant bits) and the material modifier a generated filler inherits from
 /// the authored block it finishes (`inherited_mod`; empty for an authored
 /// block), with how many placements share it.
-struct BlockKey<'k> {
-    name: &'k str,
-    flags: u32,
-    inherited_mods: &'k str,
-    placements: usize,
+pub(crate) struct BlockKey<'k> {
+    pub(crate) name: &'k str,
+    pub(crate) flags: u32,
+    pub(crate) inherited_mods: &'k str,
+    pub(crate) placements: usize,
 }
 
 impl BlockKey<'_> {
@@ -670,16 +670,16 @@ impl BlockKey<'_> {
 /// footprint they span, and the terrain tiles the variant brings with it
 /// (`auto_terrains`, offset + zone, and the place type; `None` for a terrain
 /// tile itself — only the OTHER blocks hide tiles).
-struct Footprint {
-    sx: u32,
-    sz: u32,
-    units: Vec<[i32; 3]>,
-    auto_terrain: Option<(Vec<([i32; 3], String)>, i32)>,
+pub(crate) struct Footprint {
+    pub(crate) sx: u32,
+    pub(crate) sz: u32,
+    pub(crate) units: Vec<[i32; 3]>,
+    pub(crate) auto_terrain: Option<(Vec<([i32; 3], String)>, i32)>,
 }
 
 /// What the library does about one distinct block key, decided before
 /// anything is baked.
-enum BlockPlan<'b> {
+pub(crate) enum BlockPlan<'b> {
     /// No item, on purpose (an ambient zone the genealogy regenerates, the
     /// Stadium grass floor, a variant without geometry): `why` is the report
     /// line, `label` the variant's when one was picked.
@@ -693,20 +693,25 @@ enum BlockPlan<'b> {
 }
 
 /// Everything a block bake needs, resolved from the block info.
-struct BlockBake<'b> {
-    pk: crate::blockinfo::Picked<'b>,
-    footprint: Footprint,
+pub(crate) struct BlockBake<'b> {
+    pub(crate) pk: crate::blockinfo::Picked<'b>,
+    pub(crate) footprint: Footprint,
     /// The variant's prefabs: path, mobil translation, mobil rotation.
-    prefabs: Vec<(String, Option<[f32; 3]>, Option<[f32; 3]>)>,
+    pub(crate) prefabs: Vec<(String, Option<[f32; 3]>, Option<[f32; 3]>)>,
     /// A converted-archive item standing in for a prefab-less model (`LEGACY`).
-    legacy_item: Option<&'static str>,
+    pub(crate) legacy_item: Option<&'static str>,
     /// The recipe key: what gets baked + waypoint + modifier (two keys with
     /// the same recipe share one item).
-    recipe: String,
+    pub(crate) recipe: String,
     /// The block's own modifier refs plus the inherited one.
-    effective_mods: Vec<String>,
+    pub(crate) effective_mods: Vec<String>,
     /// A terrain tile (Flat/Frontier/Transition zone block).
-    terrain: bool,
+    pub(crate) terrain: bool,
+    /// Extra prefabs merged after the block's own, each with its full
+    /// transform in the block frame (unscaled): the free-clip FILLERS a
+    /// standalone block gets from the engine (`item_set::standalone_fillers`).
+    /// Empty for a map library, whose fillers are the map's own baked records.
+    pub(crate) fillers: Vec<(String, crate::geom::Xform)>,
 }
 
 /// The block info of a key, through the index (`--debug lookup` says why a
@@ -733,7 +738,7 @@ pub fn block_rename(name: &str) -> Option<String> {
     None
 }
 
-fn load_block_info(idx: &mut crate::blockmap::BlockInfoIndex, store: &mut DataStore, name: &str) -> Result<(String, crate::blockinfo::BlockInfo), String> {
+pub(crate) fn load_block_info(idx: &mut crate::blockmap::BlockInfoIndex, store: &mut DataStore, name: &str) -> Result<(String, crate::blockinfo::BlockInfo), String> {
     let path = match idx.path_for(name) {
         Some(p) => p,
         None => match block_rename(name).and_then(|n| idx.path_for(&n).map(|p| (n, p))) {
@@ -754,7 +759,7 @@ fn load_block_info(idx: &mut crate::blockmap::BlockInfoIndex, store: &mut DataSt
 }
 
 /// The decision ladder for one block key.
-fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collection: u32, ambient: &str, tile_zones: &std::collections::BTreeSet<String>, alias_of_recipe: &BTreeMap<String, String>) -> BlockPlan<'b> {
+pub(crate) fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collection: u32, ambient: &str, tile_zones: &std::collections::BTreeSet<String>, alias_of_recipe: &BTreeMap<String, String>) -> BlockPlan<'b> {
     let name = key.name;
     let flags = key.flags;
     // Stadium's Grass floor is the one terrain the tiny map keeps FULL
@@ -815,7 +820,7 @@ fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collectio
         return BlockPlan::Reuse { alias: alias.clone(), footprint };
     }
     let terrain = matches!(bi.kind, crate::blockinfo::Kind::Flat | crate::blockinfo::Kind::Frontier | crate::blockinfo::Kind::Transition);
-    BlockPlan::Bake(Box::new(BlockBake { pk, footprint, prefabs, legacy_item, recipe, effective_mods, terrain }))
+    BlockPlan::Bake(Box::new(BlockBake { pk, footprint, prefabs, legacy_item, recipe, effective_mods, terrain, fillers: Vec::new() }))
 }
 
 /// The bake of one block key into an item: the legacy archive item
@@ -824,7 +829,7 @@ fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collectio
 /// the collection's water row and the surface's height above that row's
 /// floor; `at_water_row`: whether every placement of this key sits on it.
 #[allow(clippy::too_many_arguments)]
-fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, bi: &crate::blockinfo::BlockInfo, ident: &str, scale: f32, collection: u32, legacy: &BTreeMap<String, Vec<u8>>, water: Option<(u8, f32)>, at_water_row: bool) -> Result<(Vec<u8>, crate::static_item::build::Merged, bool), String> {
+pub(crate) fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, bi: &crate::blockinfo::BlockInfo, ident: &str, scale: f32, collection: u32, legacy: &BTreeMap<String, Vec<u8>>, water: Option<(u8, f32)>, at_water_row: bool) -> Result<(Vec<u8>, crate::static_item::build::Merged, bool), String> {
     if let Some(l) = plan.legacy_item {
         return match legacy.get(l) {
             Some(bytes) => crate::static_item::build::static_item_from_item_report(bytes, ident, ident, scale, collection).map(|(b, m)| (b, m, false)),
@@ -892,16 +897,21 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
         // the beginning"). Only Y rotations exist in the packs (surveyed:
         // every OnLand* block info); any other axis is still refused loudly.
         if let Some(r) = rot.filter(|r| r.iter().any(|v| v.abs() > 1e-6)) {
-            if r[0].abs() > 1e-6 || r[2].abs() > 1e-6 {
-                return Err(format!("{p}: mobil rotation {r:?} has an x/z component; only a yaw is implemented"));
-            }
-            // yaw_quarter(2) == 180° either way; for other angles the sign
-            // convention is the grid dir's (clockwise looking down)
-            let yaw = crate::geom::yaw(r[1].to_radians(), [at[9], at[10], at[11]]);
-            at = yaw;
+            // Euler degrees about x, y, z, X first (`geom::rotation_xyz_deg`:
+            // the Platform*WallCheckpoint* blocks stand their checkpoint slab
+            // up with [-90, 0, 0] and turn it in the wall with a z component;
+            // yaw_quarter(2) == 180° either way for the OnLandHill blocks)
+            at = crate::geom::rotation_xyz_deg(r, [at[9], at[10], at[11]]);
             m.notes.push(format!("mobil rotation {:?} applied for {p} (translation {:?})", r, tr));
         }
         crate::static_item::build::add_prefab(store, p, &at, scale, &mut m, 0)?;
+    }
+    // the standalone fillers (item sets): already in the block frame
+    for (p, at) in &plan.fillers {
+        crate::static_item::build::add_prefab(store, p, at, scale, &mut m, 0)?;
+    }
+    if !plan.fillers.is_empty() {
+        m.notes.push(format!("{} free-clip filler prefab(s) merged: {}", plan.fillers.len(), plan.fillers.iter().map(|(p, _)| p.rsplit('\\').next().unwrap_or(p)).collect::<Vec<_>>().join(", ")));
     }
     // A terrain tile at the water row: the sea floor regains its depth (the
     // apron under the water would otherwise sit at half depth and shade the
@@ -1236,7 +1246,7 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
 ///   BlueBay block baked before the build's first tree took Stadium's table;
 /// * the item reference table (`EXTERNALS`) and the sidecars a bake that failed
 ///   half-way could leave behind for the next item on the thread.
-fn bake_env_reset(collection: u32) {
+pub(crate) fn bake_env_reset(collection: u32) {
     crate::static_item::build::VEGET_COLLECTION.with(|c| c.set(collection));
     crate::static_item::assemble::EXTERNALS.with(|e| e.borrow_mut().clear());
     crate::static_item::assemble::SIDECARS.with(|s| s.borrow_mut().clear());

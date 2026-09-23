@@ -62,6 +62,10 @@ COMMANDS
       [--collection BlueBay]
                                 every authored block with its picked variant,
                                 cells, prefabs and what each side faces
+  blockinfo-catalog [<substring>] [--out TSV] [--collection Stadium]
+                                every block info's browser facts from its collector
+                                header: page (folder), name, flags, catalog position,
+                                production state, icon
   blockinfo-all [<substring>] [--out TSV] [--clips]
                                 parse every block info in the packs and report
   map <file.Map.Gbx> --out F [--yoff N] [--no-items] [--no-deco]
@@ -1472,6 +1476,41 @@ fn main() {
                 }
             }
         }
+        // place-params [SUBSTRING] [--items 'Stadium\Items\']: every pack item's
+        // placement parameters, decoded (its external .PlaceParam.Gbx) — the
+        // yardstick for an item set's editor settings (static_item/placement.rs)
+        "place-params" => {
+            let mut store = open(&a);
+            let pat = a.rest.get(1).filter(|x| !x.starts_with("--")).cloned().unwrap_or_default().to_ascii_lowercase();
+            let prefix = flag(&a.rest, "--items").unwrap_or_else(|| "Stadium\\Items\\".to_string()).to_ascii_lowercase();
+            let paths: Vec<String> = store.entries().map(|e| e.path()).filter(|p| p.to_ascii_lowercase().starts_with(&prefix) && p.ends_with(".Item.Gbx") && p.to_ascii_lowercase().contains(&pat)).collect();
+            let mut by_param: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+            for p in &paths {
+                let m = match store.load_model(p) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        println!("{p}\tERROR {e}");
+                        continue;
+                    }
+                };
+                let pp = m.externals.iter().map(|(_, e)| e.clone()).find(|e| e.ends_with(".PlaceParam.Gbx"));
+                match pp {
+                    None => println!("{p}\t(inline or no placement param)"),
+                    Some(pp) => match store.read(&pp).map_err(|e| e.to_string()).and_then(|b| mapgeom::static_item::placement::parse_place_param_file(&b)) {
+                        Ok(d) => {
+                            let name = pp.rsplit('\\').next().unwrap_or(&pp).to_string();
+                            println!("{p}\t{name}\t{}", d.summary());
+                            by_param.entry(name).or_default().push(p.rsplit('\\').next().unwrap_or(p).to_string());
+                        }
+                        Err(e) => println!("{p}\t{pp}\tERROR {e}"),
+                    },
+                }
+            }
+            eprintln!("{} items, {} distinct placement files", paths.len(), by_param.len());
+            for (k, v) in &by_param {
+                eprintln!("  {k}: {} items", v.len());
+            }
+        }
         "item-fields" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
@@ -1852,6 +1891,19 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        "blockinfo-catalog" => {
+            let mut store = open(&a);
+            mapgeom::catalog::cmd(&mut store, &a.rest);
+        }
+        "browser-tree" => {
+            let mut store = open(&a);
+            mapgeom::catalog::tree_cmd(&mut store, &a.rest);
+        }
+        "item-set" => {
+            let mut store = open(&a);
+            mapgeom::item_set::cmd(&mut store, &a.rest);
+        }
+        "item-bounds" => mapgeom::item_set::bounds_cmd(&a.rest),
         "blockinfo-all" => {
             let mut store = open(&a);
             let pat = a.rest.get(1).filter(|x| !x.starts_with("--")).cloned().unwrap_or_default().to_uppercase();

@@ -554,3 +554,24 @@ fn material_label(s: &crate::node::Solid2, idx: i32, slots: &[Slot]) -> String {
     }
     "Visual".to_string()
 }
+
+/// A block-info mobil's `geom_rotation`: Euler degrees about (x, y, z),
+/// applied X first, then Y, then Z (`R = Rz · Ry · Rx`, each the standard
+/// right-handed matrix — `yaw` is `Ry`), then a translation. Measured on the
+/// Platform*WallCheckpoint* blocks (2026-09-22): `[-90, 0, 0]` + `(0, 0, 32)`
+/// stands the checkpoint slab (y 1..11.6, z 0..32) up against the block's
+/// north face (y 0..32, z 20..31), and `[-90, 0, 90]` + `(32, 0, 32)` turns it
+/// within that wall; the opposite handedness puts the slab under the cell.
+pub fn rotation_xyz_deg(deg: [f32; 3], t: [f32; 3]) -> Xform {
+    let (sx, cx) = deg[0].to_radians().sin_cos();
+    let (sy, cy) = deg[1].to_radians().sin_cos();
+    let (sz, cz) = deg[2].to_radians().sin_cos();
+    let rx: Xform = [1.0, 0.0, 0.0, 0.0, cx, sx, 0.0, -sx, cx, 0.0, 0.0, 0.0];
+    let ry: Xform = [cy, 0.0, -sy, 0.0, 1.0, 0.0, sy, 0.0, cy, 0.0, 0.0, 0.0];
+    let rz: Xform = [cz, sz, 0.0, -sz, cz, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+    let mut r = compose(&rz, &compose(&ry, &rx));
+    r[9] = t[0];
+    r[10] = t[1];
+    r[11] = t[2];
+    r
+}
