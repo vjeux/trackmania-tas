@@ -722,7 +722,11 @@ fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<St
     let new_uid = format!("MK{idx:02}{}", &old_uid[4..]);
     m.set_map_uid(&new_uid);
     let xml = tmmaps::header::user_chunks(&m.gbx.user_data).and_then(|c| tmmaps::header::header_xml(&c)).unwrap_or_default();
-    let old_name = tmmaps::header::attr_pub(&xml, "ident", "name").unwrap_or_default();
+    // the name to replace is the IDENT chunk's (0x03043003), which the body repeats —
+    // the header XML's can differ (the TMX void base: XML "128³ Day Void Base", ident
+    // "\u{feff}128³ Day Void Base Console"; the editor showed the ident's, 2026-09-23)
+    let xml_name = tmmaps::header::attr_pub(&xml, "ident", "name").unwrap_or_default();
+    let old_name = ident_name(&m.gbx.user_data, &xml_name).unwrap_or(xml_name);
     m.write_to(&t1).expect("write uid stage");
 
     // models + placements; the surplus host slots park a copy of the first item far below
@@ -908,4 +912,30 @@ pub fn material_images(mesh: &Mesh, assets: &AssetIndex, rom: &mut Rom) -> (Hash
         }
     }
     (out, missing)
+}
+
+/// The map name as the ident header chunk (0x03043003) spells it: the first
+/// length-prefixed UTF-8 string in that chunk that contains the XML name's
+/// first characters (BOM and suffixes included), when there is one.
+fn ident_name(user_data: &[u8], xml_name: &str) -> Option<String> {
+    let chunks = tmmaps::header::user_chunks(user_data)?;
+    let c = chunks.iter().find(|c| c.id == 0x0304_3003)?;
+    let key: String = xml_name.chars().take(6).collect();
+    if key.is_empty() {
+        return None;
+    }
+    let b = &c.data;
+    let mut i = 0usize;
+    while i + 4 <= b.len() {
+        let n = u32::from_le_bytes(b[i..i + 4].try_into().unwrap()) as usize;
+        if n >= 1 && n <= 256 && i + 4 + n <= b.len() {
+            if let Ok(t) = std::str::from_utf8(&b[i + 4..i + 4 + n]) {
+                if t.contains(&key) {
+                    return Some(t.to_string());
+                }
+            }
+        }
+        i += 1;
+    }
+    None
 }

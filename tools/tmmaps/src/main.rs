@@ -82,7 +82,7 @@ fn main() {
     const WANTS_MAP: &[&str] = &[
         "waypoints", "census", "gridinfo", "skins", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "ponds", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
-        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "settimes", "lmquality", "ghostchunk", "genealogy-fill", "delblocks", "striplightmap", "itembytes", "mediatracker", "music",
+        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "settimes", "lmquality", "ghostchunk", "genealogy-fill", "delblocks", "striplightmap", "itembytes", "mediatracker", "music", "strings",
     ];
     if WANTS_MAP.contains(&cmd) && args.len() < 3 {
         eprintln!("tmmaps {} needs a MAP path.\n\n{}", cmd, USAGE);
@@ -236,6 +236,35 @@ fn main() {
         "header" => header::cmd(&args),
         "dropscan" => dropscan::cmd(&args),
         "mediatracker" => tmmaps::mediatracker::cmd(&args),
+        "strings" => {
+            // tmmaps strings MAP [--grep S] [--min N]: length-prefixed strings of the
+            // decompressed body (and the header), with their offsets
+            let path = std::path::Path::new(&args[2]);
+            let m = tmmaps::map::MapFile::load(path);
+            let want = tmmaps::cli::flag(&args, "--grep").map(String::from);
+            let min: usize = tmmaps::cli::flag(&args, "--min").and_then(|s| s.parse().ok()).unwrap_or(4);
+            let scan = |label: &str, b: &[u8]| {
+                let mut i = 0usize;
+                while i + 4 <= b.len() {
+                    let n = u32::from_le_bytes(b[i..i + 4].try_into().unwrap()) as usize;
+                    if n >= min && n <= 512 && i + 4 + n <= b.len() {
+                        let s = &b[i + 4..i + 4 + n];
+                        if s.iter().all(|c| (*c >= 0x20 && *c != 0x7f) || *c == b'\t') {
+                            if let Ok(t) = std::str::from_utf8(s) {
+                                if want.as_deref().map(|w| t.contains(w)).unwrap_or(true) {
+                                    println!("{label} {i}: {t:?}");
+                                }
+                                i += 4 + n;
+                                continue;
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+            };
+            scan("header", &m.gbx.user_data);
+            scan("body", &m.gbx.body);
+        }
         "music" => {
             // tmmaps music MAP [--set URL [--path P] --out F]: the custom music FileRef
             let path = std::path::Path::new(&args[2]);
