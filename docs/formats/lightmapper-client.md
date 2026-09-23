@@ -560,13 +560,34 @@ result: s_final = sqrt(scale_lo·D) (result+0x14, "AllocatedTexelByMeter" in lay
 **TryPack(s)** (0x140295d30). The order array is the state of the stable
 LSD radix sorter 0x14012c850 (4 byte passes over the float bits, sign-aware,
 a pass skipped when the keys are already ordered); `AllocateBlocks_` feeds
-it four keys with N = block count — `|blockExtent|²` (block +0x44..+0x4c),
+it four keys with N = block count — `|halfExtent|²` (block +0x44..+0x4c),
 then block +0x38, +0x3c, +0x40 — and `BlockSplit` adds the chart **area**
-last, so the order is **ascending area with ties broken by +0x40, then
-+0x3c, +0x38, |extent|², then IdForLightMap index** (when the chart count
-differs from the block count the sorter resets: area then index only).
-TryPack walks `order[N−1] … order[0]`, i.e. largest area first and, among
-equal areas, the chart with the largest +0x40 first:
+last, so the order is **ascending area with ties broken by +0x40 (world
+centre z), then +0x3c (centre y), +0x38 (centre x), |halfExtent|², then the
+block-array index** (when the chart count differs from the block count the
+sorter resets: area then index only). TryPack walks `order[N−1] … order[0]`,
+i.e. largest area first and, among equal areas, the chart with the largest
+centre z first (then largest y, largest x, largest index) [DIFFERENTIAL
+baker 2026-09-23: all 34 items of the BlueBay test bake match size and
+position with these keys].
+
+The record fields are the **world AABB of the solid model's own bbox**
+[DISASSEMBLY `FUN_14020e3c0` (CHmsLightMap add-from-mobil) →
+`FUN_140185f70(&rec+0x38, solid+0xc8 = {centre, halfExtent}, mobil+0x20 +
+k·0x30 = the 4×3 world matrix, k = FUN_140941ec0())`]:
+
+```text
+centre_w = (m00·c.x + m01·c.y + m02·c.z + T.x,  m10·c.x + m11·c.y + m12·c.z + T.y,  m20·c.x + m21·c.y + m22·c.z + T.z)   → +0x38, +0x3c, +0x40
+half_w   = (|m00|·h.x + |m01|·h.y + |m02|·h.z,  |m10|·h.x + |m11|·h.y + |m12|·h.z,  |m20|·h.x + |m21|·h.y + |m22|·h.z)   → +0x44, +0x48, +0x4c
++0x50 = qualityByte/255 ; +0x54 flags: 0x10 = PreLightGen uv-set-1 bbox non-degenerate, 0x8 = no PreLightGen (else 0x20), 0x4 = material class DAT_141e7c768
+```
+
+float32 in that order (the abs is an `andps` with 0x7fffffff). For a zone
+tile the solid is the tile mesh, so centre.y is the mesh's mid-height (sea,
+shore and land tiles at one z sort by height before x) and a mesh that
+overhangs its cell shifts the centre. The record is appended through
+`FUN_140248710(mobil+0xd0, lm+0x90, lm+0xa8)` in bind order, which is the
+final tie-break.
 
 ```text
 reset packer to (W, H); fail if m²·N ≥ W·H
@@ -725,6 +746,22 @@ rotated`…). A rejected cache → the coarse load-time recompute
 `AllocLmBlockTexels`/`RenderLightIndirect`) — its parameters **pending**.
 `hasLightmaps = 0` takes the same path.
 
+**The editor crashes on some of our maps — five distinct sites in the box's
+Application event log (Event 1000, module Trackmania.exe 2026.2.2.1751,
+read 2026-09-23; offsets are exe-relative, +0x140000000):**
+
+| when (UTC) | code | site | what it is [DISASSEMBLY] |
+|---|---|---|---|
+| 09-22 21:01–21:22, 9× (the WhiteShore tiny copies / maps 20, 24 window) | c0000005 | 0x280bf4 in `FUN_140280190` | the frame → texture upload: per chart rect it reads 3-byte pixels from the frame's image 0 and image 2 (`FUN_1401d5a50` slices the three images by the frame's end offsets [0x15..0x17], `FUN_140460940` = WebP decode) and blends them with the frame weights; the rect comes from **image 0's** size (`local_170`) and the faulting read is image 2's pixel — an image 1/2 **smaller than image 0** (or a chart rect outside them) reads past the bitmap. A frame whose three images do not share image 0's dimensions crashes at upload, i.e. ~9 s after the map opens, before any compute. Fix in the converter: never emit a frame whose images differ in size (or drop the chunk, `hasLightmaps = 0`, and let the coarse load-time bake stand in). The chart **sort** cannot be it — it is a stable radix sort with no data-dependent branch. |
+| 09-15 05:08–16:59, 9× | c0000005 | 0x456513 | generic container/renderer code, not lightmapper |
+| 09-22 22:44–23:31, 4× | c000001d | 0x11da01 (`ud2`) | a deliberate fatal trap (assert) |
+| 09-23 07:03–07:43, 3× | c000001d | 0x2d1d14 (`ud2` in `FUN_1402d1d00`) | fatal: `FUN_1402e7e00(classId, obj)` returned 0 — a class-id lookup failed while loading a Gbx (an unknown/unsupported node class in a hand-built file) |
+| 09-23 06:09–06:58 | c0000005 | 0xa51d4c (`Shadow_RenderDelayed`), 0x5385e3 (array grow), 0x18d768c (CRT copy), 0xa0d308 (refcount on obj+0x100) | dangling pointers in the renderer during/after a compute — use-after-free of a render pipeline object; not reproducible from file content |
+
+The event log is read with one PowerShell call through the bridge
+(`Get-WinEvent -FilterHashtable @{LogName="Application"; Id=1000}`), no
+render lock needed; do that first for any new crash instead of guessing.
+
 ## 6. What the game reads from the mood
 
 * `Mood.MoodSetting.xml` (pack `Media\Moods\<Mood>\`): `LAmbient HdrColor`,
@@ -771,6 +808,28 @@ rotated`…). A rejected cache → the coarse load-time recompute
   `DefaultEnvCubicHdrScaleA2.dds`, `Techno2\…\DefaultCubeAmbientP.dds`,
   `Clouds\…\Cumulus02.tga` are the fallbacks the blender loads
   (`FUN_14028aea0`) when a scene has no mood [DISASSEMBLY].
+* The **surroundings** the peel sees (BlueBay's island, sea, cliffs) are the
+  decoration's `Scene3d`: `<Coll>\GameCtnDecoration\Base64x64<Mood>.Decoration.Gbx`
+  → `Size\64x64.DecorationSize.Gbx` (0x0303B000, chunk 0x0303B002 = {4, 64,
+  64, 64, 1, 1}) → `Scene3d\Base64x64.Scene3d.Gbx` (class 0x0A003000, 75 KB
+  in BlueBay.pak). That entry **fails the pak reader's fold hunt** ("bad
+  match offset 7755 (hist 5273) in the chunk at compressed offset 1749",
+  budget 3 M tries) — the one file the baker needs for the horizon
+  geometry is not extractable with mapgeom as it stands; a fix to the LZ4
+  fold reader (pakfile.rs) is the way to it.
+* Casters [DISASSEMBLY `NPlugSolid2::GetShadedGeoms_CastShadow_IsOk`
+  0x1401fd390]: each shaded geom carries u32 group bits (the material's
+  `CastShadowGrp0..3`, names at 0x141b62720), masked by `(1 << groups) − 1`;
+  a visual with flag `+0x144 & 0x40000` never casts; a material of type 7 or
+  with a special pass becomes a *conditional* caster (`ShadowCasterCond`
+  shader: `ShadowCasterAlphaRef/AlphaCut/IgnoreAlpha`). The render lists
+  (`RenderLightAddBlocksOrPackedGeoms` 0x14023e950) hold the packed zone
+  geometry (lm+0x600, stride 0x48) plus every kind ≠ 0 block record; kind-0
+  blocks only through their packed geom. Which list the peel colour pass
+  filters by (all geoms vs casters only) is not read; the baker's 0.93–1.02
+  under raised terrain-tile items says tile items do not occlude the dome —
+  a material without cast groups is the likely reason. Test: flip a tile
+  material's CastShadowGrp bits and re-bake.
 * `CPlugDayTime` = class 0x09181000 (`FuncDayTime`; constructor 0x140592ca0,
   0x138 bytes): chunk 0x09181000 = {50000, 50, 0.25, 5, 0.125}, 0x09181001 =
   {1, 1×6}, 0x09181002 = {0.75}, 0x09181004…08 as banked. The DayTime →
@@ -778,7 +837,16 @@ rotated`…). A rejected cache → the coarse load-time recompute
   mood-XML parser 0x1405143c0 or the DecorationMood class; candidates: the
   CPlugDayTime methods 0x140592000–0x140596000, `CPlugWeather`). Until then
   the baker's differential (bakes of one map at several DayTimes inside one
-  quarter, azimuth of the sky glow) is the way to the formula.
+  quarter, azimuth of the sky glow) is the way to the formula. Working
+  hypothesis [INFERRED]: the sun is the quarter mood's **own** authored sun
+  — `Mood.MoodSetting.xml` `Latitude φ`, `DayTime01 t` — with `el =
+  asin(cos φ · cos(360°·(t − ½)))` and the azimuth from the hour angle (Sunset
+  t = 0.75 → hour 18 → el ≈ 0°, due West = +X in game axes; Day t = 0.644 →
+  el ≈ 35°); RE child 1 found this reproduces Stadium Day (34.9° vs 35°
+  fitted) but not BlueBay Sunrise (69° vs 45°), so the 64×64 decorations'
+  `DecorationMood` (Latitude 30, Longitude 2, DeltaGMT 1, TimeSunRise 10:00,
+  TimeSunFall 14:00 on BlueBay Sunset) may remap `t` for those; the map's
+  DayTime word only selects the quarter.
 * The stored `LAmbient` of frame 0 is not the XML colour (Tiny 16: (0.751,
   1.833, 1.116); Tiny 11: (1.581, 1.792, 1.614)) — a derived reference the
   runtime scales by; treat as opaque.
