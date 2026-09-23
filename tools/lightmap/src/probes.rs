@@ -75,8 +75,12 @@ impl SlotGrid {
     /// * while n.x·n.y·n.z > 512 the cell doubles: pitch ×2, origin − cell/2 (so
     ///   the coarse probes sit on every other fine one: 25 ×3 origin (−24, −582,
     ///   −24), 5×4×5; 25 ×4 7×5×7).
-    pub fn for_map(envir: &str, decoration: &str, grid_m: [f32; 3], geom_lo: [f32; 3], geom_hi: [f32; 3]) -> SlotGrid {
+    pub fn for_map(envir: &str, decoration: &str, grid_m: [f32; 3], geom_lo: [f32; 3], mut geom_hi: [f32; 3]) -> SlotGrid {
         let deco = Self::origin_for(envir, decoration);
+        // the Screen155 stadium's stands reach 304 m beyond the grid on the +x side too (source 05: 5 x-slots)
+        if deco[0] < 0.0 {
+            geom_hi[0] = geom_hi[0].max(grid_m[0] - deco[0]);
+        }
         let mut origin = deco;
         for k in [0usize, 2] {
             if geom_lo[k] < origin[k] {
