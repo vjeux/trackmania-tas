@@ -95,28 +95,37 @@ u32 3                       frame count
 u32 2, u32 0, u32 0         (before the struct below; constant)
 ```
 
-### 3.2 Frame record (66 bytes, ×3)
+### 3.2 Frame record (66 bytes, ×3) **[FILE]** / **[DISASSEMBLY]**
+
+The three records follow the `1,2,1,3,1,4` words directly — there is no
+frame-count word (the "u32 3" once read as a count is record 0's kind).
 
 ```text
-u32 kind        3, 3, 2 on every file
+u32 Bump          3 = HBasis_Color (frames 0, 1), 2 = None (frame 2)
 u32 0
-u32 moodhash    0x9b59 Day64, 0xdaab Sunrise64, 0xceb8 48x48Screen155Day
-f32 -FLT_MAX
-f32 maxHdr      3.0 (2.7 on Stadium) — the mood's T3LightMap MaxHDR
-f32 actualMax   per map (2.15–3.0; frame 2: 0.31–3.0)
-f32 bounce      2.0 (1.8 Stadium) — T3LightMap BounceFactor
-f32 sky         1.0 — T3LightMap SkyFactor
-u32 1
-f16[3]          frame 0: a colour (~0.6–1.8); frames 1,2: −1,−1,−1
-u32             frame 0: 1; else 0
-u32 frameIndex  0, 1, 2
-u32 2
-f32[3]          frame 0: a colour; frames 1,2: −1,−1,−1
+u32 DayTime       the map's own chunk 0x03043056 word (0xdaab on Tiny 16; 0xffffffff = default)
+f32 ReplayTime    −FLT_MAX
+f32 MaxHDR_Mood   the EFFECTIVE mood's T3LightMap MaxHDR (3.0 BlueBay Sunset, 2.7 Stadium Sunset, 1.7 GreenCoast Night)
+f32 MaxHDR        min(the brightest chart's value, MaxHDR_Mood) — the frame's absolute scale (§3.4)
+f32 BounceFactor  the mood's (2.0 / 1.8 / 1.6)
+f32 SkyFactor     the mood's (1.0 / 0.65 RedIsland Day / 0.5 WhiteShore Day / 5.0 GreenCoast Night)
+u32 SkyUseClouds  1
+f16[3]            MaxHDR_HBasisScaled234: the three directional coefficients' maxima (frame 0; −1 elsewhere)
+u32 StoreLAmbient 1 on frame 0
+u32 LocalLight_Storage   0 None (frame 0), 1 All (frame 1), 2 OnlyRgbAccum (frame 2)
+u32 LocalLight_Switch    0 On, 1 Off, 2 Unknown
+f32[3] LAmbient   a stored reference colour — NOT the XML LAmbient (Tiny 16: 0.751, 1.833, 1.116); meaning open
 ```
 
-The mood constants come from the pack's `Media\Moods\<Mood>\Mood.MoodSetting.xml`
-(`<T3LightMap MaxHDR BounceFactor SkyFactor SkyUseClouds/>`, `<LAmbient
-HdrColor>`, `<LDirSun HdrColor>`, `Latitude`, `DayTime01`).
+**The effective mood is the map's DayTime quarter, not the decoration**: Night
+[0, ¼), Sunrise [¼, ½), Day [½, ¾), Sunset [¾, 1); a default word keeps the
+decoration's mood. All 25 Summer sources' MaxHDR/Bounce/Sky triples are the
+XML triple of that mood (0.10 → Night, 0.306/0.3175 → Sunrise, 0.504/0.607 →
+Day, 0.8075/0.854 → Sunset). Tiny 16 ("Sunrise64", 0.854) is a SUNSET bake.
+`lmtool daytime MAP [--out F --set N|0xHEX|default]` reads/writes the word;
+`lightmap::moods::effective_mood` applies the rule; `MOOD_XML` holds the 20
+moods' constants (LAmbient, LDirSun, LDirMoon, MaxHDR, Bounce, SkyFactor,
+Latitude, DayTime01) read from the five paks' `Mood.MoodSetting.xml`.
 
 ### 3.3 The `SHmsLightMapCacheMapping` struct (version 9)
 
@@ -140,24 +149,40 @@ u32 1, f32 (0.5–1.5), u32 0, u32 0
 are sorted by object. `raw_z` in the parser keeps the stored streams so a
 round-trip is byte-identical; any edit recompresses (miniz level 9).
 
-### 3.4 What the per-chart frame byte is **[GAME]**
+### 3.4 Texel encoding and the per-chart frame byte **[DISASSEMBLY]** / **[GAME]**
 
-`fb0` is the chart's **maximum HDR value on a linear scale**: the colour atlas
-holds each chart normalised so its brightest channel is ≈255, and the pixel is
-multiplied back by `fb0` at load. Measured: items with fb0 = 64 render at
-0.37× and fb0 = 224 at 1.5× the brightness of fb0 = 148 (linear prediction
-0.43× / 1.51×; the low end is compressed by the tone mapper). fb1/fb2 are the
-same per-frame scale for the point-light frames (0 = the chart gets nothing
-from that frame). The absolute scale K (fb0 = 255·max/K) is fitted against
-Nadeo's bakes (§5).
+Stored texels are **sqrt-encoded** (the game's `LmCompress_HBasis_YCbCr4`
+shader): per channel `p = sqrt(E / m)`, written through BT.601 studio-swing
+YCbCr into the WebP (so a plain WebP decode yields the sqrt-encoded colour);
+the runtime squares the decoded colour and multiplies by the chart's HDR
+scale. With `fb0` the chart's frame byte and `MaxHDR` the frame record's:
 
-### 3.5 The grey atlas (frame 0, image 1) **[GAME]**
+```text
+E = (p / 255)² · (fb0 / 255) · MaxHDR          (fb0 = 255 · chartMax / MaxHDR)
+```
 
-R=G=B everywhere; 128 where the colour atlas is black; 119 on open water at
-sunrise; 40–240 with hard structure on complex items. Setting it to 0 or 255
-on an item changes the item's brightness by <5 %: it is a **directional term**
-for normal-mapped materials (the "Bump" of the cache name), not light. 128 is
-a safe neutral value when authoring.
+Every earlier "linear" reading of an editor atlas (and every linear write —
+`lmtool` before 2026-09-23) was wrong by the square: a linear write shows a
+mid-grey at ¼ brightness, which is what the "black start pad" and the
+"darker, harder shadows" were. `synth::encode_value/decode_value` are the
+two directions; `fb1` scales frame 1 the same way against ITS record's
+MaxHDR. Frame 0's MaxHDR = min(brightest chart, the mood's MaxHDR): Tiny 16
+2.381 (< 3), Tiny 11 3.0 (clipped).
+
+The old brightness measurements (fb0 64 → 0.37×, 224 → 1.5× of 148) are
+consistent with this once the square is applied to the pixel, not the byte.
+
+### 3.5 Frame 0 image 1: three concatenated WebPs **[DISASSEMBLY]**
+
+The "grey atlas" is **three** Y-only WebPs back to back (Tiny 16: 121262 +
+52812 + 122268 B), the H-basis directional coefficients C1..C3, sign-sqrt
+encoded: `p = sign(c)·sqrt(|c|/m_i)·0.5 + 0.5` (128 = zero), `m_i` = the
+record's `MaxHDR_HBasisScaled234[i]`. Runtime: `c_i = sign(2p−1)·(2p−1)²·m_i`
+and the irradiance for a tangent-space bump normal n (y = the surface normal)
+is `E(n) = C0 − C1·n.x + C2·(1 − n.y) − C3·n.z`, so a flat normal gets C0 =
+the colour atlas alone. A bake without directional terms writes three neutral
+(128) images; a single image makes the loader read the 2nd/3rd past the end.
+Frame 1 has no directional images; frame 2 (Bump None) has none either.
 
 ### 3.6 Binds
 
@@ -299,7 +324,16 @@ image crashes the client (it reads the next image at the stored offset).
 The game accepts lossy VP8 (Nadeo's form) for all four; VP8L also decodes
 (the crash attributed to VP8L earlier was the concatenation).
 
-### 3.10 Frame 1 = the items' point lights **[GAME]**
+### 3.10 Frame 1 = the local lights **[GAME]** / **[DISASSEMBLY]**
+
+Frame 1 (`LocalLight_Storage = All`, HBasis_Color, coefficient 0 only) holds
+the scene's local lights: the items' `CPlugLight`s AND whatever the blocks and
+the decoration bring (a Stadium map's frame 1 is lit almost everywhere by the
+stadium floodlights; the 25 ×2 editor bake's by its 1056 blocks' lamps) — the
+item-only law below is verified only on item-only maps (a test-map bake with
+lamp posts is pending). Frame 1 texels are sqrt-encoded against frame 1's own
+MaxHDR (§3.4).
+
 
 Frame 1 image 0 holds, per chart, the irradiance of the items'
 `CPlugLight`s (`CPlugSolid2Model.lights`: socket transform, GxLightSpot
@@ -324,7 +358,61 @@ chunk). `lmtool paint` recolours the charts of a real bake in place (the
 red/green/blue-by-index proof). `lmtool bake` computes sky + sun (+ bounce)
 irradiance per texel from the map's own item geometry (§5).
 
-## 5. The baker (`lmtool bake`) **[GAME]**
+## 5. The baker (`lmtool bake`) **[GAME]** / **[DISASSEMBLY]**
+
+```text
+lmtool bake MAP --out OUT [--model xml|fitted] [--mood auto|Day|…] [--sky-scale S] [--bounce B]
+            [--albedo A] [--no-ao] [--vp8 8] [--probe-vp8 28] [--base auto|N] [--baked-total N]
+            [--base-extra G] [--tpm T] [--templates DIR]
+lmtool check OUT           validates the result against every rule below (exit 1 on a FAIL)
+```
+
+### 5.1 The lighting model (`--model xml`, the default)
+
+The game's lightmap is **diffuse ambient**: the textures are `LDiffuseAmb`,
+the direct sun and its shadows are real-time (shadow maps). Frame 0 =
+
+```text
+E(x, n) = LAmbient · (0.8 + 0.2·n.y) · V(x)            the ambient pass (V: dome visibility, see below)
+        + LAmbient · SkyFactor · S · skyVis(x, n)      the sky dome
+        + BounceFactor · albedo · bounce(x, n)         one bounce off lit surfaces (the sun exists only here)
+```
+
+with the constants of the EFFECTIVE mood (§3.2). `skyVis` is the cosine-
+weighted unoccluded fraction of the hemisphere (64 stratified rays against the
+BVH and the sea plane); `bounce` = the mean over the occluded rays of the hit
+surface's radiance (its ambient + its direct sun `LDirSun·max(0, n·L)` +
+half its sky). The sun direction (bounce input only) follows the map's
+DayTime on the mood's latitude, clamped ≥ 5° (the exact path: DecorationMood
+chunks 0x0303A000/0x0303A012, pending). The ambient pass multiplied by the
+dome visibility is what the editor bakes show (a fully enclosed texel is ≈ 0,
+Tiny 16 p5 = 0.05 HDR against LAmbient 0.40); the game's own alpha
+accumulation in the peel passes is the presumed mechanism.
+
+Measured against the editor on the BlueBay test map (Sunset quarter, abs HDR):
+an open horizontal surface = 2.8 × LAmbient in exactly LAmbient's hue; a pad
+under a 16 m roof 12 m up = 86 % of open; a north wall = 0.43 lum and orange
+(the sky term is directional near the sun — not yet modelled, `S` is a flat
+scale); no shadow of a 52 m tower on the pads (no direct sun).
+
+Absolute units: the frame's MaxHDR = min(the brightest chart, the mood's
+MaxHDR); every chart byte `fb = 255·chartMax/MaxHDR`; texels sqrt-encoded
+(§3.4); the frame records are rewritten with the mood constants and the map's
+DayTime. Frame 0 image 1 = three neutral images (§3.5). Ground tiles get
+`LAmbient + sky` (an open horizontal surface).
+
+### 5.2 Layout
+
+`--base auto` (§3.8's rule: P + N_authored + S² − replaced + G; `--baked-total`
+= the game's `/mapblocks2?list=baked` count replaces S² + G; custom blocks
+count as authored — the tiny 05's 46 water tiles), the probe grid from the map
+size and lit geometry (§3.8), and the **atlas density auto-step**: the item
+charts at the requested density plus every 2×2 ground/geometry-less chart must
+shelf-pack into 1024², else the largest density that packs is found by binary
+search and reported (24 ×4: 22853 items + 64516 tiles → 0.443 texels/m, fill
+50 %). The bodies are LZO-recompressed on write.
+
+### 5.3 The 2026-09-22 model (`--model fitted`)
 
 ```text
 lmtool bake TINY.Map.Gbx --out OUT.Map.Gbx [--mood auto] [--vp8 8] [--templates DIR]
