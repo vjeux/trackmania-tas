@@ -16,6 +16,13 @@ fn cache_chunks(cache: &[u8]) -> Vec<(u32, Vec<u8>)> {
     out
 }
 
+/// Does the map's DayTime quarter carry a directional (sun/horizon) term in the editor's bakes?
+/// Measured: Day no, Sunset yes (low, pink, ESE); Sunrise assumed yes (mirrored), Night no.
+fn t_quarter(dt: Option<u32>, x: &lightmap::moods::MoodXml) -> bool {
+    let t = match dt { Some(v) if v != 0xffff_ffff => v as f32 / 65536.0, _ => lightmap::moods::default_daytime(&x.collection, x.mood) as f32 / 65536.0 };
+    (0.25..0.5).contains(&t) || t >= 0.75
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     if a.is_empty() {
@@ -791,9 +798,16 @@ fn main() {
                 // test bakes until the DecorationMood formula is pinned: Sunset quarter (0.854) ≈ az 115° (ESE),
                 // el 2° (floors get 3 % of it, east walls full). Other quarters: the noon-at-½ arc on the
                 // mood's latitude until their test bakes land. --sun-az/--sun-el override.
-                prm.direct_sun = if has("--no-direct-sun") { 0.0 } else { 1.0 };
+                // NO direct sun on the receiving texels (RE child 2, RenderLightIndirectPeel: the sun lights only
+                // the peeled bounce surfaces; the low pink ESE term of the Sunset-quarter bakes is the rendered
+                // SKY's sun-side glow — Tech3/Sky_p, not LDirSun). --direct-sun forces the old term back on.
+                let _ = t_quarter(dt, &x);
+                prm.direct_sun = if has("--direct-sun") { 1.0 } else { 0.0 };
                 prm.sun_radius = f("--sun-radius").map(|s: String| s.parse::<f32>().unwrap()).unwrap_or(2.0f32).to_radians();
                 let t = match dt { Some(v) if v != 0xffff_ffff => v as f32 / 65536.0, _ => lightmap::moods::default_daytime(&x.collection, x.mood) as f32 / 65536.0 };
+                // the sun DIRECTION (bounce input + the sky glow's azimuth): measured at the Sunset quarter
+                // (0.854, BlueBay): az ≈ 115° (ESE), el ≈ 1–2°; other quarters: the noon-at-½ arc until the
+                // DecorationMood formula is read (RE child 2)
                 let (mut az_d, mut el_d) = if t >= 0.75 {
                     (115.0f32, 2.0f32)
                 } else {
@@ -2824,6 +2838,34 @@ fn main() {
             for (k, v) in &per { if v.len() > 1 && shown < 5 { shown += 1; println!("  pixel {:?}: normals {:?}", k, v.iter().map(|n| [(n[0] * 100.0).round() / 100.0, (n[1] * 100.0).round() / 100.0, (n[2] * 100.0).round() / 100.0]).collect::<Vec<_>>()); } }
             let ys: Vec<f32> = samples.iter().filter(|s| s.n[1] > 0.9).map(|s| s.p[1]).collect();
             if !ys.is_empty() { let (mn, mx) = ys.iter().fold((f32::MAX, f32::MIN), |(a, b), &y| (a.min(y), b.max(y))); println!("  up-facing sample heights {mn:.3}..{mx:.3}"); }
+        }
+        "skyprofile" => {
+            // lmtool skyprofile CUBE.dds: radiance by elevation band (mean over azimuth) and the share of the
+            // up-facing irradiance that comes from above 60° / 30° elevation — is the sky zenith-concentrated?
+            let cube = lightmap::skycube::CubeMap::load(&a[1]).expect("cube");
+            let mut bands = vec![([0f64; 3], 0usize); 9]; // −90..90 in 20° bands
+            let (mut e_up, mut e_up60, mut e_up30) = ([0f64; 3], [0f64; 3], [0f64; 3]);
+            let n = 400usize;
+            for i in 0..n { for j in 0..(2 * n) {
+                let el = -std::f64::consts::FRAC_PI_2 + std::f64::consts::PI * (i as f64 + 0.5) / n as f64;
+                let az = 2.0 * std::f64::consts::PI * (j as f64 + 0.5) / (2 * n) as f64;
+                let d = [(el.cos() * az.sin()) as f32, el.sin() as f32, (el.cos() * az.cos()) as f32];
+                let l = cube.sample(d);
+                let b = (((el.to_degrees() + 90.0) / 20.0) as usize).min(8);
+                for k in 0..3 { bands[b].0[k] += l[k] as f64; } bands[b].1 += 1;
+                if el > 0.0 {
+                    let w = el.sin() * el.cos() * (std::f64::consts::PI / n as f64) * (std::f64::consts::PI / n as f64); // cosθ dω
+                    for k in 0..3 { e_up[k] += l[k] as f64 * w; if el.to_degrees() > 60.0 { e_up60[k] += l[k] as f64 * w; } if el.to_degrees() > 30.0 { e_up30[k] += l[k] as f64 * w; } }
+                }
+            } }
+            println!("{}", a[1].rsplit('/').next().unwrap());
+            for (b, (s, c)) in bands.iter().enumerate() { if *c > 0 { let cc = *c as f64; println!("  el {:>4}..{:<4} mean L ({:.3}, {:.3}, {:.3})", b as i32 * 20 - 90, b as i32 * 20 - 70, s[0] / cc, s[1] / cc, s[2] / cc); } }
+            let lum = |e: [f64; 3]| 0.2126 * e[0] + 0.7152 * e[1] + 0.0722 * e[2];
+            println!("  E(up) = ({:.3}, {:.3}, {:.3}) lum {:.3}; share from el > 30°: {:.2}, el > 60°: {:.2}", e_up[0], e_up[1], e_up[2], lum(e_up), lum(e_up30) / lum(e_up).max(1e-9), lum(e_up60) / lum(e_up).max(1e-9));
+            for (name, nrm) in [("north wall (+z)", [0f32, 0.0, 1.0]), ("east wall (+x)", [1.0, 0.0, 0.0]), ("south wall", [0.0, 0.0, -1.0]), ("west wall", [-1.0, 0.0, 0.0])] {
+                let e = cube.irradiance(nrm);
+                println!("  E({name}) = ({:.3}, {:.3}, {:.3}) lum {:.3} = {:.2} of up", e[0], e[1], e[2], lum(e), lum(e) / lum(e_up).max(1e-9));
+            }
         }
         "sunaz" => {
             // lmtool sunaz MAP [--base N] [--items N]: over the whole bake, vertical texels binned by the azimuth of
