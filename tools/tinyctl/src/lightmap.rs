@@ -38,7 +38,7 @@ const LIGHTMAP_CHUNK: u32 = 0x0304_305B;
 pub fn cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(|s| s.to_string());
     // every positional that is not a flag value is a map
-    let flag_with_value = ["--out", "--out-dir", "--quality", "--name", "--uid", "--box-shootctl", "--wsx", "--into"];
+    let flag_with_value = ["--out", "--out-dir", "--quality", "--name", "--uid", "--box-shootctl", "--wsx", "--into", "--owner"];
     let mut maps: Vec<PathBuf> = Vec::new();
     let mut i = 0;
     while i < args.len() {
