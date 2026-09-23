@@ -92,7 +92,7 @@ struct WaypointReq {
 
 pub fn cmd_build(args: &[String]) {
     let usage = "mk64 build COURSE --host HOST.Map.Gbx --out OUT.Map.Gbx [--decomp DIR] [--rom FILE]
-      [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt] [--no-vertex-colours] [--no-actors] [--author-ms MS]
+      [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt] [--no-vertex-colours] [--no-actors] [--author-ms MS] [--tag T]
       [--items-out DIR]  (also write every item + texture as loose files)";
     let dir = match args.get(2) {
         Some(c) if !c.starts_with("--") => c.clone(),
@@ -116,6 +116,13 @@ pub fn cmd_build(args: &[String]) {
     let name = flag(args, "--name").map(String::from).unwrap_or_else(|| format!("MK64 {}", course::course_title(&dir)));
     let no_stadium = !args.iter().any(|a| a == "--stadium");
     let items_out = flag(args, "--items-out").map(PathBuf::from);
+    // the client caches item models AND textures by file name for a whole game
+    // session: every build names its files with a tag (--tag, default: the
+    // build minute in hex) so a rebuilt map never shows the previous build's models
+    let tag: String = flag(args, "--tag").map(String::from).unwrap_or_else(|| {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        format!("{:x}", secs / 60 % 0xFFFFFF)
+    });
 
     let mut c = Course::load(&decomp, &dir).unwrap_or_else(|e| {
         eprintln!("{dir}: {e}");
@@ -183,7 +190,7 @@ pub fn cmd_build(args: &[String]) {
     let mut pictures: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     for (i, mat) in m.materials.iter().enumerate() {
         let img = images[&i].upscale(TEXTURE_UPSCALE);
-        pictures.insert(format!("{}.dds", mat.stem()), write_dds_picture(img.w, img.h, &img.rgba));
+        pictures.insert(format!("{tag}_{}.dds", mat.stem()), write_dds_picture(img.w, img.h, &img.rgba));
     }
 
     // waypoints along the centre path
@@ -262,8 +269,8 @@ pub fn cmd_build(args: &[String]) {
             println!("  WARNING: piece {pname} would carry {} waypoints; keeping the first", wps.len());
         }
         let wp = wps.first().copied();
-        let name = format!("MK64_{}_{:03}.Item.Gbx", dir, stats_items);
-        match build_item(&name, tris, &ctris, &m, &alpha, wp) {
+        let name = format!("MK64_{}_{}_{:03}.Item.Gbx", dir, tag, stats_items);
+        match build_item(&name, tris, &ctris, &m, &alpha, wp, &tag) {
             Ok((bytes, pos, yaw)) => {
                 specs.push(ItemSpec { name, bytes, pos, yaw, tag: wp.map(|w| w.tag.to_string()), order: 0 });
                 stats_items += 1;
@@ -276,8 +283,8 @@ pub fn cmd_build(args: &[String]) {
         if coll_used.contains(dl) || ctris.is_empty() {
             continue;
         }
-        let name = format!("MK64_{}_{:03}.Item.Gbx", dir, stats_items);
-        match build_item(&name, &[], ctris, &m, &alpha, None) {
+        let name = format!("MK64_{}_{}_{:03}.Item.Gbx", dir, tag, stats_items);
+        match build_item(&name, &[], ctris, &m, &alpha, None, &tag) {
             Ok((bytes, pos, yaw)) => {
                 specs.push(ItemSpec { name, bytes, pos, yaw, tag: None, order: 0 });
                 stats_items += 1;
@@ -363,7 +370,7 @@ fn to_local(p: [f32; 3], origin: [f32; 3], yaw: f32) -> [f32; 3] {
 
 /// One static item from a piece's visual triangles and its collision.
 /// Returns the item bytes and its placement (position, yaw).
-fn build_item(name: &str, tris: &[&mesh::Tri], ctris: &[mesh::CollTri], m: &Mesh, alpha: &[bool], wp: Option<&WaypointReq>) -> Result<(Vec<u8>, [f32; 3], f32), String> {
+fn build_item(name: &str, tris: &[&mesh::Tri], ctris: &[mesh::CollTri], m: &Mesh, alpha: &[bool], wp: Option<&WaypointReq>, tag: &str) -> Result<(Vec<u8>, [f32; 3], f32), String> {
     let pts = tris.iter().flat_map(|t| t.c.iter().map(|c| c.pos)).chain(ctris.iter().flat_map(|t| t.p.iter().copied()));
     let (origin, yaw) = local_frame(pts, wp);
     let mut merged = Merged::default();
@@ -378,7 +385,7 @@ fn build_item(name: &str, tris: &[&mesh::Tri], ctris: &[mesh::CollTri], m: &Mesh
         let key = t.mat;
         let mi = *slot_of.entry(key).or_insert_with(|| {
             let inst = match key {
-                Some(k) => custom_material(&m.materials[k], alpha[k], PHYS_ASPHALT),
+                Some(k) => custom_material(&m.materials[k], alpha[k], PHYS_ASPHALT, tag),
                 None => flat_material(),
             };
             merged.materials.push(inst);
@@ -483,10 +490,10 @@ fn trigger_box(c: [f32; 3], along: [f32; 3], width: f32, height: f32, depth: f32
 /// The custom-texture material: the item-editor form (`IsUsingGameMaterial`
 /// off, shading model `TDSN` — or `TDOSN` for an alpha-cut texture, which
 /// reads the DiffuseO slot), the texture named by its bare file name.
-pub fn custom_material(mat: &mesh::Material, alpha: bool, physics: u8) -> CPlugMaterialUserInst {
+pub fn custom_material(mat: &mesh::Material, alpha: bool, physics: u8, tag: &str) -> CPlugMaterialUserInst {
     let mut inst = CPlugMaterialUserInst::game_material("Stadium\\Media\\Material\\PlatformTech", physics);
     let stem = mat.stem();
-    let file = format!("{stem}.dds");
+    let file = format!("{tag}_{stem}.dds");
     if let Some(main) = inst.main.as_mut() {
         main.is_using_game_material = false;
         main.model = Id::Str(if alpha { "TDOSN".into() } else { "TDSN".into() });
