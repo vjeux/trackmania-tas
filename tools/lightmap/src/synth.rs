@@ -391,7 +391,12 @@ pub fn build_full2(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template:
                 // frame 0 image 1 = THREE concatenated WebPs (the H-basis directional coefficients C1..C3,
                 // sign-sqrt encoded with 128 = zero); a flat-normal bake writes three neutral images
                 (0, 1) => {
-                    let one = enc_q(&ib, 30.0)?;
+                    // the greys go in as a Y plane with flat chroma (the game's FUN_14029bf40)
+                    let grey: Vec<u8> = ib.px.chunks(3).map(|c| c[1]).collect();
+                    let one = match vp8_q {
+                        None => crate::webpenc::encode_grey(&grey, ib.w, ib.h, 30.0).map(Ok).unwrap_or_else(|| enc_q(&ib, 30.0))?,
+                        Some(_) => enc_q(&ib, 30.0)?,
+                    };
                     let mut three = one.clone();
                     three.extend_from_slice(&one);
                     three.extend_from_slice(&one);

@@ -95,6 +95,8 @@ mod ffi {
         pub fn WebPMemoryWriterInit(writer: *mut WebPMemoryWriter);
         pub fn WebPMemoryWrite(data: *const u8, size: usize, pic: *const WebPPicture) -> c_int;
         pub fn WebPMemoryWriterClear(writer: *mut WebPMemoryWriter);
+        pub fn WebPPictureImportRGB(pic: *mut WebPPicture, rgb: *const u8, rgb_stride: c_int) -> c_int;
+        pub fn WebPPictureFree(pic: *mut WebPPicture);
     }
 }
 
@@ -144,11 +146,50 @@ pub fn rgb_to_yuv420(rgb: &[u8], w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u
     (y, u, v)
 }
 
-/// Encode an RGB image with libwebp: preset DEFAULT at `quality`, planes fed directly.
-/// `None` when libwebp is not linked.
+/// Encode an RGB image with libwebp: preset DEFAULT at `quality`, the RGB bitmap imported by
+/// libwebp itself (its own RGB→YUV — the game feeds the colour atlas, the probe images and the
+/// frame-1 image this way: FUN_14029bc10 → WebPPictureImportRGB). `None` without libwebp.
+#[cfg(have_libwebp)]
 pub fn encode_rgb(rgb: &[u8], w: u32, h: u32, quality: f32) -> Option<Vec<u8>> {
-    let (y, u, v) = rgb_to_yuv420(rgb, w as usize, h as usize);
-    encode_yuv(&y, &u, &v, w, h, quality)
+    use ffi::*;
+    unsafe {
+        let mut config: WebPConfig = std::mem::zeroed();
+        if WebPConfigInitInternal(&mut config, 0, quality, WEBP_ENCODER_ABI_VERSION) == 0 {
+            return None;
+        }
+        let mut pic: WebPPicture = std::mem::zeroed();
+        if WebPPictureInitInternal(&mut pic, WEBP_ENCODER_ABI_VERSION) == 0 {
+            return None;
+        }
+        pic.use_argb = 0;
+        pic.width = w as i32;
+        pic.height = h as i32;
+        if WebPPictureImportRGB(&mut pic, rgb.as_ptr(), (w * 3) as i32) == 0 {
+            return None;
+        }
+        let mut wr: WebPMemoryWriter = std::mem::zeroed();
+        WebPMemoryWriterInit(&mut wr);
+        pic.writer = Some(WebPMemoryWrite);
+        pic.custom_ptr = &mut wr as *mut _ as *mut std::os::raw::c_void;
+        let ok = WebPEncode(&config, &mut pic);
+        let out = if ok != 0 && !wr.mem.is_null() { Some(std::slice::from_raw_parts(wr.mem, wr.size).to_vec()) } else { None };
+        WebPMemoryWriterClear(&mut wr);
+        WebPPictureFree(&mut pic);
+        out
+    }
+}
+
+#[cfg(not(have_libwebp))]
+pub fn encode_rgb(_rgb: &[u8], _w: u32, _h: u32, _quality: f32) -> Option<Vec<u8>> {
+    None
+}
+
+/// Encode a GREY image the game's way for the three directional images: the Y plane fed
+/// directly, U = V = 128 planes (FUN_14029bf40). `None` without libwebp.
+pub fn encode_grey(grey: &[u8], w: u32, h: u32, quality: f32) -> Option<Vec<u8>> {
+    let (cw, ch) = (((w + 1) / 2) as usize, ((h + 1) / 2) as usize);
+    let u = vec![128u8; cw * ch];
+    encode_yuv(grey, &u, &u, w, h, quality)
 }
 
 /// Encode Y/U/V planes (Y `w`×`h`, U/V `(w+1)/2`×`(h+1)/2`) with libwebp, preset DEFAULT.

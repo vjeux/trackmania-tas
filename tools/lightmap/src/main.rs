@@ -2825,6 +2825,61 @@ fn main() {
             let ys: Vec<f32> = samples.iter().filter(|s| s.n[1] > 0.9).map(|s| s.p[1]).collect();
             if !ys.is_empty() { let (mn, mx) = ys.iter().fold((f32::MAX, f32::MIN), |(a, b), &y| (a.min(y), b.max(y))); println!("  up-facing sample heights {mn:.3}..{mx:.3}"); }
         }
+        "sunaz" => {
+            // lmtool sunaz MAP [--base N] [--items N]: over the whole bake, vertical texels binned by the azimuth of
+            // their normal (mean absolute HDR and colour) — the brightest bin faces the baked sun; plus the
+            // horizontal texels' mean, the p95 of both, and the colour of the brightest 5 % of vertical texels
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let own = lightmap::mapio::load(&a[1]).expect("own");
+            let d = own.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).unwrap();
+            let fm = d.cache.frame_max_hdr().unwrap_or(1.0);
+            let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
+            let step = (scene.instances.len() / f("--items").map(|s| s.parse().unwrap()).unwrap_or(3000)).max(1);
+            let mut bins = vec![(0f64, [0f64; 3], 0usize); 12];
+            let mut vert: Vec<(f32, [f32; 3])> = Vec::new();
+            let mut horiz: Vec<f32> = Vec::new();
+            for (ii, inst) in scene.instances.iter().enumerate().step_by(step) {
+                let Some(&ci) = chart_of.get(&(inst.item as u32)) else { continue };
+                let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
+                let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32 / 2).max(1), (h as u32 / 2).max(1));
+                if pw < 2 || ph < 2 { continue; }
+                let fb = mp.frame_bytes[0][ci];
+                if fb == 0 { continue; }
+                let (samples, _) = lightmap::bake::rasterise_pub(&scene, ii, pw, ph, false, true);
+                for s in samples.iter().step_by(3) {
+                    let c = ia.get((px + s.px).min(ia.w - 1), (py + s.py).min(ia.h - 1));
+                    let rgb = [lightmap::synth::decode_value(c[0], fb) * fm, lightmap::synth::decode_value(c[1], fb) * fm, lightmap::synth::decode_value(c[2], fb) * fm];
+                    let lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+                    if s.n[1].abs() < 0.3 {
+                        let az = s.n[0].atan2(s.n[2]).to_degrees().rem_euclid(360.0);
+                        let b = ((az / 30.0) as usize).min(11);
+                        bins[b].0 += lum as f64; for k in 0..3 { bins[b].1[k] += rgb[k] as f64; } bins[b].2 += 1;
+                        vert.push((lum, rgb));
+                    } else if s.n[1] > 0.9 {
+                        horiz.push(lum);
+                    }
+                }
+            }
+            let hdr = tmmaps::header::read(&a[1]).expect("header");
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let dt = lightmap::mapio::daytime(&own.gbx.body);
+            println!("{}: {} {} daytime {:?} mood {} frame MaxHDR {fm:.3}; {} vertical / {} horizontal texels sampled", a[1].rsplit('/').next().unwrap(), hdr.envir, mf.decoration_id, dt.map(|t| format!("{:.3}", t as f32 / 65536.0)), lightmap::moods::effective_mood(&mf.decoration_id, dt), vert.len(), horiz.len());
+            horiz.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            if !horiz.is_empty() { println!("  horizontal: mean {:.3} median {:.3} p95 {:.3}", horiz.iter().sum::<f32>() / horiz.len() as f32, horiz[horiz.len() / 2], horiz[horiz.len() * 95 / 100]); }
+            vert.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+            if !vert.is_empty() {
+                let top = &vert[vert.len() * 95 / 100..];
+                let mut c = [0f32; 3]; for (_, rgb) in top { for k in 0..3 { c[k] += rgb[k]; } }
+                let n = top.len() as f32;
+                println!("  vertical: median {:.3} p95 {:.3}; brightest 5 % mean rgb ({:.3}, {:.3}, {:.3}) = hue ({:.2}, {:.2}, {:.2})", vert[vert.len() / 2].0, vert[vert.len() * 95 / 100].0, c[0] / n, c[1] / n, c[2] / n, 1.0, c[1] / c[0].max(1e-6), c[2] / c[0].max(1e-6));
+            }
+            for (b, (s, rgb, n)) in bins.iter().enumerate() { if *n > 0 { let nn = *n as f64; println!("  az {:>3}–{:<3} n {:>7}  lum {:.4}  rgb ({:.3}, {:.3}, {:.3})", b * 30, (b + 1) * 30, n, s / nn, rgb[0] / nn, rgb[1] / nn, rgb[2] / nn); } }
+        }
         "webpcmp" => {
             // lmtool webpcmp MAP [--q 91] [--image 0]: re-encode the map's frame-0 image with our libwebp at --q and
             // compare the VP8 frame header (segment quantizers, filter) and the size with the editor's bytes
