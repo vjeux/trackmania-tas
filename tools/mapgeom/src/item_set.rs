@@ -1046,6 +1046,9 @@ fn run_zips(rest: &[String]) -> Result<(), String> {
     let out = PathBuf::from(flag("--out").ok_or("--out DIR is required")?);
     let max_bytes: usize = (flag("--max-mb").unwrap_or_else(|| "28".into()).parse::<f64>().map_err(|e| format!("--max-mb: {e}"))? * 1_000_000.0) as usize;
     let prefix = flag("--prefix").unwrap_or_else(|| "Tiny Blocks - ".into());
+    // `--group-depth 1`: sets per TOP folder (the small TinyItems tree: 9 sets
+    // instead of 48 crumbs)
+    let group_depth: usize = flag("--group-depth").unwrap_or_else(|| "2".into()).parse().map_err(|e| format!("--group-depth: {e}"))?;
     let skip: std::collections::HashSet<String> = match flag("--skip") {
         Some(f) => std::fs::read_to_string(&f).map_err(|e| format!("{f}: {e}"))?.lines().map(|l| l.trim().replace('\\', "/")).filter(|l| !l.is_empty()).collect(),
         None => Default::default(),
@@ -1077,7 +1080,7 @@ fn run_zips(rest: &[String]) -> Result<(), String> {
             continue;
         }
         let parts: Vec<&str> = rel.split('/').collect();
-        let family = parts[..parts.len().saturating_sub(1).min(2)].join("/");
+        let family = parts[..parts.len().saturating_sub(1).min(group_depth)].join("/");
         by_family.entry(family).or_default().push((rel, size));
     }
     for v in by_family.values_mut() {
@@ -1123,7 +1126,7 @@ fn run_zips(rest: &[String]) -> Result<(), String> {
     };
     let sub_of = |rel: &str| -> String {
         let parts: Vec<&str> = rel.split('/').collect();
-        if parts.len() >= 4 { parts[2].to_string() } else { String::new() }
+        if parts.len() >= group_depth + 2 { parts[group_depth].to_string() } else { String::new() }
     };
     let mut manifest = String::from("set\tfolder\tpart\tparts\titems\tzip_bytes\tzip\tsubfolders\tpaths\n");
     let mut total_sets = 0usize;
@@ -1236,13 +1239,19 @@ fn run_shoot(rest: &[String]) -> Result<(), String> {
     let mut lines = text.lines();
     let head: Vec<&str> = lines.next().unwrap_or("").split('\t').collect();
     let col = |name: &str| head.iter().position(|h| *h == name);
-    let (c_folder, c_stem, c_status, c_fp) = (col("folder").ok_or("report: no folder column")?, col("stem").ok_or("report: no stem column")?, col("status").ok_or("report: no status column")?, col("footprint").ok_or("report: no footprint column")?);
+    // the item report (TinyItems) has no footprint column: every piece
+    // counts as 2x2 there (Nadeo's items are up to ~30 m)
+    let (c_folder, c_stem, c_status) = (col("folder").ok_or("report: no folder column")?, col("stem").ok_or("report: no stem column")?, col("status").ok_or("report: no status column")?);
+    let c_fp = col("footprint");
     for l in lines {
         let f: Vec<&str> = l.split('\t').collect();
-        if f.len() <= c_fp || f[c_status] != "OK" {
+        if f.len() <= c_status.max(c_stem) || f[c_status] != "OK" {
             continue;
         }
-        let (sx, sz) = f[c_fp].split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))).unwrap_or((1, 1));
+        let (sx, sz) = match c_fp {
+            Some(c) if f.len() > c => f[c].split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))).unwrap_or((1, 1)),
+            _ => (2, 2),
+        };
         footprint.insert(format!("{}/{}.Item.Gbx", f[c_folder], f[c_stem]), (sx, sz));
     }
     let mtext = std::fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
