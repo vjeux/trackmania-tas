@@ -3516,3 +3516,31 @@ pub fn seed_item_record(body: &[u8], collection: u32) -> Result<Vec<u8>, String>
     grow(&mut out2, 0x0304_3069, &0xFFFF_FFFFu32.to_le_bytes(), false, n_blocks)?;
     Ok(out2)
 }
+
+/// Custom music: chunk 0x03043024 (`CustomMusicPackDesc`, a FileRef) of the
+/// body, right after chunk 0x03043022 (`u32 1`). The game fetches the URL
+/// (an .ogg; .mux too) when the local path is missing.
+impl MapFile {
+    /// The chunk's FileRef and its body span (id word excluded).
+    pub fn custom_music(&self) -> Option<(crate::header::FileRef, (usize, usize))> {
+        let body = &self.gbx.body;
+        let mut needle = Vec::new();
+        needle.extend_from_slice(&0x0304_3022u32.to_le_bytes());
+        needle.extend_from_slice(&1u32.to_le_bytes());
+        needle.extend_from_slice(&0x0304_3024u32.to_le_bytes());
+        let at = find_all(body, &needle).into_iter().next()?;
+        let start = at + needle.len();
+        let (fr, n) = crate::header::FileRef::decode(&body[start..])?;
+        Some((fr, (start, start + n)))
+    }
+
+    /// Point the map's music at `url` (a public .ogg), `path` the game-side
+    /// file name it caches it under (`Skins\Any\Music\<name>.ogg` style).
+    /// A variable-length splice: apply with the other splices.
+    pub fn set_custom_music(&mut self, path: &str, url: &str) -> Result<(), String> {
+        let (_, span) = self.custom_music().ok_or("no CustomMusicPackDesc chunk (0x03043024) in the body")?;
+        let fr = crate::header::FileRef { version: 3, checksum: [0u8; 32], path: path.to_string(), url: url.to_string() };
+        self.raw_splices.push((span, fr.encode()));
+        Ok(())
+    }
+}

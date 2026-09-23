@@ -92,7 +92,7 @@ struct WaypointReq {
 
 pub fn cmd_build(args: &[String]) {
     let usage = "mk64 build COURSE --host HOST.Map.Gbx --out OUT.Map.Gbx [--decomp DIR] [--rom FILE]
-      [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt] [--no-vertex-colours] [--no-actors] [--author-ms MS] [--tag T] [--mood Day|Sunrise|Sunset|Night] [--pak Stadium.pak:KEY (spinning item boxes)] [--no-item-boxes] [--illum|--no-illum] [--minimap-zones N] [--intro]
+      [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt] [--no-vertex-colours] [--no-actors] [--author-ms MS] [--tag T] [--mood Day|Sunrise|Sunset|Night] [--pak Stadium.pak:KEY (spinning item boxes)] [--no-item-boxes] [--illum|--no-illum] [--minimap-zones N] [--intro] [--no-music]
       [--items-out DIR]  (also write every item + texture as loose files)";
     let dir = match args.get(2) {
         Some(c) if !c.starts_with("--") => c.clone(),
@@ -376,7 +376,8 @@ pub fn cmd_build(args: &[String]) {
     // the authored CameraCustom clip loads (the box's play route was down
     // when it was written, 2026-09-23 02:00)
     let intro = if args.iter().any(|a| a == "--intro") { crate::intro::shots(&path) } else { Vec::new() };
-    write_map(&host, &out, &specs, &pictures, &name, laps, no_stadium, &dir, times, &mood, &hud, &intro);
+    let music = if args.iter().any(|a| a == "--no-music") { None } else { music_theme(&dir) };
+    write_map(&host, &out, &specs, &pictures, &name, laps, no_stadium, &dir, times, &mood, &hud, &intro, music);
 }
 
 /// y of the triangle's plane at (x, z) when the point is inside it (top view).
@@ -644,6 +645,29 @@ fn existing_manifest(body: &[u8]) -> Vec<(String, String)> {
 /// The map: the host's blocks deleted (a void base keeps its GrassRemovers),
 /// its items re-pointed at ours (and grown as needed), our items + textures
 /// embedded, multilap set.
+/// Where the course themes are hosted (OGG Vorbis, the repo's `mk64-music`
+/// orphan branch; vjeux 2026-09-23: "It's okay to put the soundtrack, this is
+/// derivative work").
+pub const MUSIC_BASE_URL: &str = "https://raw.githubusercontent.com/vjeux/trackmania-tas/mk64-music/";
+
+/// The course's theme (race_logic.c: `play_sequence(SEQ_TRACK_*)` per course).
+pub fn music_theme(dir: &str) -> Option<&'static str> {
+    Some(match dir {
+        "mario_raceway" | "royal_raceway" | "luigi_raceway" | "wario_stadium" => "raceway",
+        "toads_turnpike" => "turnpike",
+        "yoshi_valley" | "moo_moo_farm" => "farm",
+        "choco_mountain" => "mountain",
+        "kalimari_desert" => "desert",
+        "koopa_troopa_beach" => "beach",
+        "bowsers_castle" => "castle",
+        "banshee_boardwalk" => "scary",
+        "frappe_snowland" | "sherbet_land" => "snow",
+        "rainbow_road" => "rainbow",
+        "dks_jungle_parkway" => "jungle",
+        _ => return None,
+    })
+}
+
 /// The decoration mood a course is played under (Day / Sunrise / Sunset / Night).
 pub fn default_mood(dir: &str) -> &'static str {
     match dir {
@@ -653,7 +677,7 @@ pub fn default_mood(dir: &str) -> &'static str {
     }
 }
 
-fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<String, Vec<u8>>, name: &str, laps: u32, no_stadium: bool, dir: &str, times: [u32; 4], mood: &str, hud: &[tmmaps::mtauthor::HudClip], intro: &[Vec<tmmaps::mtauthor::CamKey>]) {
+fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<String, Vec<u8>>, name: &str, laps: u32, no_stadium: bool, dir: &str, times: [u32; 4], mood: &str, hud: &[tmmaps::mtauthor::HudClip], intro: &[Vec<tmmaps::mtauthor::CamKey>], music: Option<&str>) {
     let tmp = |tag: &str| out.with_extension(format!("mk64-{}.{tag}.Map.Gbx", std::process::id()));
     let t_seed = tmp("seeded");
     let t0 = tmp("slots");
@@ -822,6 +846,16 @@ fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<St
             let j = x[i..].find("/>")? + i + 2;
             Some(format!("{}<times bronze=\"{br}\" silver=\"{s}\" gold=\"{g}\" authortime=\"{a}\" authorscore=\"0\" hasclones=\"0\"/>{}", &x[..i], &x[j..]))
         });
+    }
+    // the course theme (race_logic.c course→sequence): the game fetches the
+    // .ogg from the URL (the repo's `mk64-music` branch); --no-music skips
+    if let Some(key) = music {
+        let file = format!("mk64_{key}.ogg");
+        let url = format!("{MUSIC_BASE_URL}{file}");
+        match m.set_custom_music(&format!("Skins\\Any\\Music\\{file}"), &url) {
+            Ok(()) => println!("  music: {url}"),
+            Err(e) => println!("  music: {e}"),
+        }
     }
     m.remove_password();
     m.write_to(out).expect("write map");

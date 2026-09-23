@@ -82,7 +82,7 @@ fn main() {
     const WANTS_MAP: &[&str] = &[
         "waypoints", "census", "gridinfo", "skins", "fillers", "region", "colors", "phases", "genealogy", "tiny-catalog", "lineup", "shared-cells", "ponds", "tiny", "tiny-batch", "clear", "shift", "segments", "move", "rotate", "ladder",
         "roundtrip",
-        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "settimes", "lmquality", "ghostchunk", "genealogy-fill", "delblocks", "striplightmap", "itembytes", "mediatracker",
+        "renamecheck", "cporder", "origin", "chunks", "blockrefs", "setuid", "settimes", "lmquality", "ghostchunk", "genealogy-fill", "delblocks", "striplightmap", "itembytes", "mediatracker", "music",
     ];
     if WANTS_MAP.contains(&cmd) && args.len() < 3 {
         eprintln!("tmmaps {} needs a MAP path.\n\n{}", cmd, USAGE);
@@ -236,6 +236,22 @@ fn main() {
         "header" => header::cmd(&args),
         "dropscan" => dropscan::cmd(&args),
         "mediatracker" => tmmaps::mediatracker::cmd(&args),
+        "music" => {
+            // tmmaps music MAP [--set URL [--path P] --out F]: the custom music FileRef
+            let path = std::path::Path::new(&args[2]);
+            let mut m = tmmaps::map::MapFile::load(path);
+            match m.custom_music() {
+                None => println!("{}: no CustomMusicPackDesc chunk", path.display()),
+                Some((fr, span)) => println!("{}: music v{} path {:?} url {:?} (body {}..{})", path.display(), fr.version, fr.path, fr.url, span.0, span.1),
+            }
+            if let Some(url) = tmmaps::cli::flag(&args, "--set") {
+                let out = tmmaps::cli::flag(&args, "--out").unwrap_or_else(|| tmmaps::cli::die("--set wants --out F"));
+                let p = tmmaps::cli::flag(&args, "--path").map(String::from).unwrap_or_else(|| format!("Skins\\Any\\Music\\{}", url.rsplit('/').next().unwrap_or("music.ogg")));
+                m.set_custom_music(&p, url).unwrap_or_else(|e| tmmaps::cli::die(&e));
+                m.write_to(std::path::Path::new(out)).expect("write");
+                println!("  wrote {out}");
+            }
+        }
         "chunks" => inspect::chunks(&args),
         "blockrefs" => inspect::blockrefs(&args),
         "genealogy" => inspect::genealogy(&args),
