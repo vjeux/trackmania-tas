@@ -1738,6 +1738,15 @@ fn main() {
                         None => model.externals.iter().find(|(k, _)| *k as i32 == e.model.index).map(|(_, p)| format!("external {p}")).unwrap_or_else(|| format!("node {}", e.model.index)),
                     };
                     println!("  entity {i}: {what} pos {:?} rot {:?} params_id {} ({} bytes) u01 {} bytes", e.pos, e.rot, e.params_id, e.params.len(), e.u01.len());
+                    // NPlugItemPlacement_SPlacement: version, i32, [[ (key, value) ]] — the
+                    // zone vegetation names its species here (the model ref is null)
+                    if e.params_id == 0x2F0A9000 {
+                        let mut r = mapgeom::crystal_model::Rd::new(&e.params, 0, Default::default());
+                        let v = r.u32().unwrap_or(0);
+                        let k = r.i32().unwrap_or(0);
+                        let groups: Vec<Vec<(String, String)>> = r.array(|r| r.array(|r| Ok((r.string()?, r.string()?)))).unwrap_or_default();
+                        println!("           SPlacement v{v} {k} {groups:?}");
+                    }
                     // the trigger structs' own bytes (NPlugTrigger_SWaypoint
                     // {version, type, shape ref, NoRespawn}, SSpawn, 0x0917B000):
                     // small plain bodies whose every word means something
