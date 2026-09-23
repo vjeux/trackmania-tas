@@ -147,8 +147,12 @@ pub fn cmd_build(args: &[String]) {
     let frame = Frame { scale, mirror, offset };
     let mut m = mesh::visual_mesh(&c, &pieces, Some(&assets), &frame);
     if !args.iter().any(|a| a == "--no-actors") {
-        let (n, t) = crate::actors::add_trees(&c, &mut m, &frame);
-        println!("  actors: {n} trees ({t} triangles)");
+        for kind in ["tree", "cow"] {
+            let (n, t) = crate::actors::add_billboards(&c, &mut m, &frame, kind);
+            if n > 0 {
+                println!("  actors: {n} {kind}s ({t} triangles)");
+            }
+        }
     }
     let (splits, variants) = if args.iter().any(|a| a == "--no-vertex-colours") { (0, m.materials.len()) } else { mesh::bake_vertex_colours(&mut m, 16, 24, 4) };
     println!("  vertex colours baked: {splits} triangle splits, {variants} texture variants");

@@ -241,7 +241,9 @@ fn cmd_render(args: &[String]) {
         let pieces = c.visual_pieces();
         let mut m = mesh::visual_mesh(&c, &pieces, assets.as_ref(), &frame);
         if !has(args, "--no-actors") {
-            mk64::actors::add_trees(&c, &mut m, &frame);
+            for kind in ["tree", "cow"] {
+                mk64::actors::add_billboards(&c, &mut m, &frame, kind);
+            }
         }
         if !has(args, "--no-vertex-colours") {
             mesh::bake_vertex_colours(&mut m, 16, 24, 4);

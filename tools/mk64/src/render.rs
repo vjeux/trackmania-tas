@@ -114,7 +114,7 @@ fn raster(img: &mut TopDown, ybuf: &mut [f32], t: &crate::mesh::Tri, textures: &
                 let u = w0 * t.c[0].uv[0] + w1 * t.c[1].uv[0] + w2 * t.c[2].uv[0];
                 let v = w0 * t.c[0].uv[1] + w1 * t.c[1].uv[1] + w2 * t.c[2].uv[1];
                 let tx = ((u.rem_euclid(1.0)) * tex.w as f32) as u32;
-                let ty = ((v.rem_euclid(1.0)) * tex.h as f32) as u32;
+                let ty = (((1.0 - v).rem_euclid(1.0)) * tex.h as f32) as u32; // uv v runs bottom-up (the game's convention)
                 let px4 = tex.pixel(tx.min(tex.w - 1), ty.min(tex.h - 1));
                 if px4[3] < 128 {
                     continue; // alpha cutout

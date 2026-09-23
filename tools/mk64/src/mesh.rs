@@ -172,8 +172,9 @@ pub fn visual_mesh(course: &Course, pieces: &[Piece], assets: Option<&AssetIndex
 
 /// N64 texture coordinates (S10.5 texels, scaled by `gsSPTexture`, offset by
 /// the tile origin) → normalised UV over the material's image (2× wide/high
-/// when mirrored). `v` is NOT flipped here: the DDS writer keeps the image's
-/// row order and the game samples v downwards from the top row, like the N64.
+/// when mirrored). `v` IS flipped: the game samples v upwards from the DDS's
+/// bottom row (vjeux, driving Luigi Raceway: "all the textures are upside
+/// down" with the N64 top-down v; docs/formats/textures-dds-skins.md §1).
 pub fn uv_of(st: &TexState, m: &Material, tc: [i16; 2]) -> [f32; 2] {
     let ss = if st.scale_s == 0 { 1.0 } else { st.scale_s as f32 / 65536.0 };
     let tt = if st.scale_t == 0 { 1.0 } else { st.scale_t as f32 / 65536.0 };
@@ -187,7 +188,7 @@ pub fn uv_of(st: &TexState, m: &Material, tc: [i16; 2]) -> [f32; 2] {
     }
     let period_s = if m.mirror_s { 2.0 * m.w as f32 } else { m.w as f32 };
     let period_t = if m.mirror_t { 2.0 * m.h as f32 } else { m.h as f32 };
-    [s / period_s, t / period_t]
+    [s / period_s, 1.0 - t / period_t]
 }
 
 /// The collision soup: every `TrackSections` piece, TM frame, reversed winding.

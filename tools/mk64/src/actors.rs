@@ -158,19 +158,27 @@ pub fn is_billboard(tris: &[ModelTri]) -> bool {
 /// model (crossed twice when it is a billboard). Appends to `mesh` under the
 /// piece name `actors:tree`. Returns (spawns placed, triangles added).
 pub fn add_trees(course: &Course, mesh: &mut Mesh, frame: &Frame) -> (usize, usize) {
-    let lists = model_lists(course, "tree");
+    add_billboards(course, mesh, frame, "tree")
+}
+
+/// Every spawn of `<x>_<kind>_spawn` gets the model of the first display
+/// list that loads a `Vtx` array named after `kind` (the cows' first
+/// animation frame, the trees), crossed when it is a billboard.
+pub fn add_billboards(course: &Course, mesh: &mut Mesh, frame: &Frame, kind: &str) -> (usize, usize) {
+    let lists = model_lists(course, kind);
     let Some(dl) = lists.first() else { return (0, 0) };
     let model = model_triangles(course, dl);
     if model.is_empty() {
         return (0, 0);
     }
     let billboard = is_billboard(&model);
-    let spawns: Vec<[i16; 3]> = course.spawns.iter().filter(|(n, _)| n.ends_with("_tree_spawn")).flat_map(|(_, v)| v.iter().map(|s| s.pos)).collect();
+    let suffix = format!("_{kind}_spawn");
+    let spawns: Vec<[i16; 3]> = course.spawns.iter().filter(|(n, _)| n.ends_with(&suffix)).flat_map(|(_, v)| v.iter().map(|s| s.pos)).collect();
     if spawns.is_empty() {
         return (0, 0);
     }
     let piece = mesh.piece_names.len() as u32;
-    mesh.piece_names.push("actors:tree".to_string());
+    mesh.piece_names.push(format!("actors:{kind}"));
     let mut mats: HashMap<(String, bool, bool), usize> = HashMap::new();
     let mut added = 0;
     for sp in &spawns {
@@ -198,6 +206,7 @@ pub fn add_trees(course: &Course, mesh: &mut Mesh, frame: &Frame) -> (usize, usi
                     if t.tex.as_ref().map(|x| x.4).unwrap_or(false) {
                         vv = vv.clamp(0.0, 1.0);
                     }
+                    vv = 1.0 - vv; // the game samples v from the bottom row
                     Corner { pos: frame.to_tm_f(world), uv: [u, vv], rgba: [v.rgb[0], v.rgb[1], v.rgb[2], 255] }
                 };
                 let (a, b, cc) = (corner(&t.c[0]), corner(&t.c[2]), corner(&t.c[1]));
