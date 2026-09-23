@@ -129,6 +129,8 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/reload") return HttpResponse(200, ArmReload());
     if (r == "/members") return HttpResponse(200, DumpMembers(QArg(qs, "t")));
     if (r == "/mobils") return HttpResponse(200, SceneMobils(qs));
+    // the live forest instances of the vegetation items (TreeInst.as): /treeinst[?raw=1|info=1]
+    if (r == "/treeinst") return HttpResponse(200, TreeInst(qs));
     if (r == "/state") return HttpResponse(200, GetState());
     if (r == "/tree") return HttpResponse(200, DumpTree());
     if (r == "/dialogtree") return HttpResponse(200, DumpDialogTree());

@@ -1734,10 +1734,17 @@ fn main() {
             let mut store = open(&a);
             let map = a.rest.get(1).cloned().unwrap_or_else(|| die("veget-instances MAP [--no-rotation]".into()));
             let with_rotation = !a.rest.iter().any(|x| x == "--no-rotation");
+            // --runtime FILE: the GhostShooter /treeinst dump (i model flag qw qx qy qz x y z scale)
+            // of the same map — every computed instance is matched by position and its
+            // quaternion + scale compared BIT FOR BIT (the two must be identical f32s)
+            let runtime = flag(&a.rest, "--runtime");
+            let mut computed: Vec<([f32; 3], [f32; 4], f32, String)> = Vec::new();
             let source = tmmaps::map::MapFile::load(std::path::Path::new(&map));
             let mut species_cache: std::collections::BTreeMap<String, Result<Vec<String>, String>> = Default::default();
             let mut params_cache: std::collections::BTreeMap<String, Result<mapgeom::veget_instance::TreeParams, String>> = Default::default();
-            println!("item\tmodel\tvariant\tspecies\tx\ty\tz\titem_yaw\tqw\tqx\tqy\tqz\tscale\tseed\tyaw\ttilt_x\ttilt_z");
+            if runtime.is_none() {
+                println!("item\tmodel\tvariant\tspecies\tx\ty\tz\titem_yaw\tqw\tqx\tqy\tqz\tscale\tseed\tyaw\ttilt_x\ttilt_z");
+            }
             for (i, it) in source.items.iter().enumerate() {
                 let list = species_cache
                     .entry(it.model.clone())
@@ -1769,7 +1776,13 @@ fn main() {
                 let inst = mapgeom::veget_instance::variation(q1, t, seed, params, with_rotation);
                 let stem = species.rsplit('\\').next().unwrap_or(species).trim_end_matches(".VegetTreeModel.Gbx");
                 let (yaw, tx, tz) = inst.rotation.map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string())).unwrap_or_else(|| ("-".into(), "-".into(), "-".into()));
-                println!("i{i}\t{}\t{}\t{stem}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:08x}\t{yaw}\t{tx}\t{tz}", it.model, v, t[0], t[1], t[2], it.yaw, inst.quat[0], inst.quat[1], inst.quat[2], inst.quat[3], inst.scale, inst.seed);
+                if runtime.is_none() {
+                    println!("i{i}\t{}\t{}\t{stem}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:08x}\t{yaw}\t{tx}\t{tz}", it.model, v, t[0], t[1], t[2], it.yaw, inst.quat[0], inst.quat[1], inst.quat[2], inst.quat[3], inst.scale, inst.seed);
+                }
+                computed.push((t, inst.quat, inst.scale, format!("i{i} {} v{v} {stem}", it.model)));
+            }
+            if let Some(rt) = runtime {
+                mapgeom::veget_instance::compare_runtime(&computed, &rt);
             }
         }
         // veget-slots --collection BlueBay [ZONE...]: every vegetation slot of

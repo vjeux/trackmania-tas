@@ -291,7 +291,15 @@ pub fn item_pose(yaw: f32, pitch: f32, roll: f32, pos: [f32; 3], pivot: [f32; 3]
     let q0 = ypr_to_quat(yaw, pitch, roll);
     let m = quat_to_mat(q0);
     let t = iso4_translation(&m, pivot, pos);
-    let q1 = mat_to_quat(&m);
+    let mut q1 = mat_to_quat(&m);
+    // RUNTIME 2026-09-23 (S16, 1969 trees vs the live NHmsForestVis records):
+    // the game's quaternion carries +0 where this chain yields −0 (exact quadrant
+    // yaws: sin/cos = 0 exactly); the hash covers the bytes, so canonicalise
+    for v in q1.iter_mut() {
+        if *v == 0.0 {
+            *v = 0.0;
+        }
+    }
     let mut bytes = Vec::with_capacity(28);
     for v in q1.iter().chain(t.iter()) {
         bytes.extend_from_slice(&v.to_le_bytes());
@@ -410,9 +418,119 @@ mod tests {
     fn quat_round_trip() {
         let q0 = ypr_to_quat(-0.0761, -0.0, -0.0);
         let m = quat_to_mat(q0);
-        let q1 = mat_to_quat(&m);
+        let mut q1 = mat_to_quat(&m);
+    // RUNTIME 2026-09-23 (S16, 1969 trees vs the live NHmsForestVis records):
+    // the game's quaternion carries +0 where this chain yields −0 (exact quadrant
+    // yaws: sin/cos = 0 exactly); the hash covers the bytes, so canonicalise
+    for v in q1.iter_mut() {
+        if *v == 0.0 {
+            *v = 0.0;
+        }
+    }
         // same rotation up to sign
         let dot: f32 = q0.iter().zip(q1.iter()).map(|(a, b)| a * b).sum();
         assert!((dot.abs() - 1.0).abs() < 1e-5, "{q0:?} vs {q1:?}");
     }
+}
+
+/// Compare computed instances against the GhostShooter `/treeinst` dump of the
+/// same map (`i model flag qw qx qy qz x y z scale`, `%.9g` floats, one row per
+/// live NHmsForestVis record — the decoration's own forests included; the
+/// record quaternion is stored (x, y, z, w)). Every
+/// computed instance is matched to the runtime record at the same position
+/// (|Δ| ≤ 0.002 m on each axis; the variation never moves a tree) and its
+/// quaternion and scale are compared as f32 BITS. Prints the tally and the
+/// first mismatches.
+pub fn compare_runtime(computed: &[([f32; 3], [f32; 4], f32, String)], runtime_tsv: &str) {
+    let text = std::fs::read_to_string(runtime_tsv).unwrap_or_else(|e| panic!("{runtime_tsv}: {e}"));
+    let mut rows: Vec<([f32; 3], [f32; 4], f32, u32, u32)> = Vec::new();
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 11 || f[0].parse::<u32>().is_err() {
+            continue;
+        }
+        let p = |k: usize| f[k].parse::<f32>().unwrap_or(f32::NAN);
+        // the record stores the quaternion as (x, y, z, w); ours is (w, x, y, z)
+        rows.push(([p(7), p(8), p(9)], [p(6), p(3), p(4), p(5)], p(10), f[1].parse().unwrap_or(255), f[2].parse().unwrap_or(255)));
+    }
+    // a coarse grid on x/z for the position lookup
+    let key = |p: [f32; 3]| ((p[0] / 0.5).floor() as i64, (p[2] / 0.5).floor() as i64);
+    let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> = Default::default();
+    for (i, r) in rows.iter().enumerate() {
+        grid.entry(key(r.0)).or_default().push(i);
+    }
+    let (mut matched, mut exact, mut scale_ok, mut quat_ok, mut unmatched) = (0usize, 0usize, 0usize, 0usize, 0usize);
+    let mut shown = 0;
+    let mut max_q = 0f32;
+    let mut quat_neg = 0usize;
+    for (pos, q, s, label) in computed {
+        let (kx, kz) = key(*pos);
+        let mut best: Option<(usize, usize)> = None;
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                if let Some(v) = grid.get(&(kx + dx, kz + dz)) {
+                    for &i in v {
+                        let r = &rows[i];
+                        if (r.0[0] - pos[0]).abs() <= 0.002 && (r.0[1] - pos[1]).abs() <= 0.002 && (r.0[2] - pos[2]).abs() <= 0.002 {
+                            // several trees can share a position (stacked placements):
+                            // prefer the record whose quaternion bits are ours
+                            // (stacked items of different species share the pose, so the
+                            // seed and the rotation draws too: the scale tells them apart)
+                            let same_q = (0..4).all(|k| r.1[k].to_bits() == q[k].to_bits());
+                            let same_s = r.2.to_bits() == s.to_bits();
+                            let rank = usize::from(same_q) + usize::from(same_q && same_s);
+                            if best.map_or(true, |(_, br)| rank > br) {
+                                best = Some((i, rank));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let Some((i, _)) = best else {
+            unmatched += 1;
+            if shown < 10 {
+                println!("UNMATCHED {label} at {:?}", pos);
+                shown += 1;
+            }
+            continue;
+        };
+        matched += 1;
+        let r = &rows[i];
+        let same_q = (0..4).all(|k| r.1[k].to_bits() == q[k].to_bits());
+        let same_q_neg = (0..4).all(|k| r.1[k].to_bits() == (-q[k]).to_bits());
+        let same_s = r.2.to_bits() == s.to_bits();
+        if same_q_neg && !same_q {
+            quat_neg += 1;
+        }
+        if same_q || same_q_neg {
+            quat_ok += 1;
+        }
+        if same_s {
+            scale_ok += 1;
+        }
+        if (same_q || same_q_neg) && same_s {
+            exact += 1;
+        } else if shown < 25 {
+            let dq = (0..4).map(|k| (r.1[k] - q[k]).abs().min((r.1[k] + q[k]).abs())).fold(0f32, f32::max);
+            max_q = max_q.max(dq);
+            let same_p = (0..3).all(|k| r.0[k].to_bits() == pos[k].to_bits());
+            println!(
+                "DIFF {label}: pos_bits_equal={same_p} runtime p=({}, {}, {}) computed p=({}, {}, {}) | runtime q=({}, {}, {}, {}) s={} model={} flag={} | computed q=({}, {}, {}, {}) s={} | max|dq|={dq:e}",
+                r.0[0], r.0[1], r.0[2], pos[0], pos[1], pos[2], r.1[0], r.1[1], r.1[2], r.1[3], r.2, r.3, r.4, q[0], q[1], q[2], q[3], s
+            );
+            shown += 1;
+        }
+    }
+    println!(
+        "runtime records {} | computed {} | matched by position {} | unmatched {} | quaternion bit-exact {} (of which sign-flipped {}) | scale bit-exact {} | BOTH exact {}",
+        rows.len(),
+        computed.len(),
+        matched,
+        unmatched,
+        quat_ok,
+        quat_neg,
+        scale_ok,
+        exact
+    );
 }
