@@ -349,7 +349,19 @@ pub fn move_blocks(args: &[String]) {
         let mv = flag_multi(&args, "--move");
         assert!(!mv.is_empty(), "--move BLK:cx,cy,cz [BLK:cx,cy,cz ...]");
         let mut m = map::MapFile::load(&src);
-        for s in &mv {
+
+    // the item cell convention of THIS map: the y offset that puts most items in their declared row
+    let item_yoff: Option<f32> = {
+        let mut best = (0usize, 0f32);
+        for step in 0..=128 {
+            let o = step as f32 * 0.5;
+            let n = m.items.iter().filter(|it| ((it.pos[1] + o) / tmmaps::map::CELL_Y).floor() as i32 == it.file_cell[1] as i32).count();
+            if n > best.0 {
+                best = (n, o);
+            }
+        }
+        if best.0 * 10 >= m.items.len() * 9 { Some(best.1) } else { None }
+    };        for s in &mv {
             let pm = parse_move(s);
             pm.reject_baked_cell();
             match pm {
@@ -387,6 +399,16 @@ pub fn move_blocks(args: &[String]) {
                     let model = m.items[ii].model.clone();
                     let home = m.items[ii].pos;
                     m.move_item_pos(ii, p);
+                    // the declared cell follows the position (the map's own items give the y offset:
+                    // BlueBay cy = floor((y + 40)/8), 8617 of 8619 on Tiny 16); a stale cell leaves the
+                    // editor searching for the item's block at the old place
+                    if let Some(yoff) = item_yoff {
+                        let cell = ((p[0] / tmmaps::map::CELL_XZ).floor() as i32, ((p[1] + yoff) / tmmaps::map::CELL_Y).floor() as i32, (p[2] / tmmaps::map::CELL_XZ).floor() as i32);
+                        if (0..256).contains(&cell.0) && (0..256).contains(&cell.1) && (0..256).contains(&cell.2) {
+                            let it = &m.items[ii];
+                            m.raw_patches.push((it.coord_off, vec![cell.0 as u8, cell.1 as u8, cell.2 as u8]));
+                        }
+                    }
                     if let Some(y) = y {
                         m.set_item_yaw(ii, y);
                     }
