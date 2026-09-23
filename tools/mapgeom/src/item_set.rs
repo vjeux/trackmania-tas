@@ -1364,8 +1364,8 @@ fn run_shoot(rest: &[String]) -> Result<(), String> {
         // the grid fills ~70 % of the frame width (the picture is cropped to
         // its centre afterwards: the editor UI sits at the top and bottom)
         let extent = w.max(d * 1.4);
-        let dist = (extent * 0.62 + 10.0).max(30.0);
-        cams.push_str(&format!("{set}\t{}\t{:.1},{:.1},{:.1},{:.1},{:.3},{:.3}\t{cols}x{rows}\t{n}\n", file.file_name().unwrap().to_string_lossy(), centre[0], centre[1], centre[2], dist, 2.356, 0.62));
+        let dist = (extent * 0.8 + 10.0).max(30.0);
+        cams.push_str(&format!("{set}\t{}\t{:.1},{:.1},{:.1},{:.1},{:.3},{:.3}\t{cols}x{rows}\t{n}\n", file.file_name().unwrap().to_string_lossy(), centre[0], centre[1], centre[2], dist, 2.356, 0.72));
         eprintln!("{set}: {n} items in {cols}x{rows}, {total_w:.0} x {total_d:.0} m -> {}", file.display());
     }
     let _ = host_items;
