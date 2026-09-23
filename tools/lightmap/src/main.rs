@@ -2576,6 +2576,17 @@ fn main() {
                 }
             }
         }
+        "graft" => {
+            // lmtool graft MAP --from OTHER.Map.Gbx --out OUT: MAP with OTHER's lightmap chunk verbatim (a deliberately
+            // foreign chunk makes the editor recompute the lightmap at load — the slow open the save path needs)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let m = lightmap::mapio::load(&a[1]).expect("load");
+            let src = lightmap::mapio::load(&f("--from").expect("--from")).expect("load --from");
+            let payload = src.chunk.write(false);
+            let out = f("--out").expect("--out");
+            lightmap::mapio::save_with_chunk(&m, &payload, &out).expect("save");
+            println!("wrote {out} with the lightmap chunk of {} ({} B)", f("--from").unwrap(), payload.len());
+        }
         "strip" => {
             // lmtool strip MAP --out OUT: the map with an EMPTY lightmap chunk (has_lightmaps = 0) — the editor then
             // bakes fresh instead of recomputing a coarse lightmap at load for a stored one that no longer fits

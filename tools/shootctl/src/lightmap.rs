@@ -191,6 +191,9 @@ fn go(opts: &Opts) -> Result<String, String> {
     loop {
         std::thread::sleep(Duration::from_millis(1000));
         let c = super::http_get("/ctx", 10).unwrap_or_default();
+        if c.trim().is_empty() && tsave.elapsed().as_secs() > 5 && !super::plugin_up() {
+            return Err(format!("the game died during SaveMap after {:.0} s (no plugin answer) — the editor crashed saving this map", tsave.elapsed().as_secs_f64()));
+        }
         if c.contains("FrameAskYesNo") {
             println!("{} DIALOG {}", el(&t0), super::http_get("/dlgtext", 10).unwrap_or_default().trim());
             let _ = super::http_get("/yes", 10);
