@@ -779,7 +779,7 @@ fn main() {
                             Ok(mut g) => {
                                 // the gradient's global scale: 1.6 fits the BlueBay Sunset open floor (0.607) — per-mood
                                 // values pending (GlobalScale·ScaleGrad0 from the runtime sky constants)
-                                g.scale = f("--sky-grad-scale").map(|s| s.parse().unwrap()).unwrap_or(1.6);
+                                g.scale = f("--sky-grad-scale").map(|s| s.parse().unwrap()).unwrap_or(1.6) * x.sky_factor;
                                 g.sun_dir = prm.sun_dir;
                                 g.sun_az = prm.sun_dir[0].atan2(prm.sun_dir[2]);
                                 g.v_full = has("--v-full");
@@ -2575,6 +2575,35 @@ fn main() {
                     lightmap::img::write_ppm(&rgb, &format!("{dir}/face{fi}.ppm")).unwrap();
                 }
             }
+        }
+        "transplant" => {
+            // lmtool transplant --from REDUCED_BAKED.Map.Gbx --into FULL.Map.Gbx --kept i1,i2,… --out OUT [--base N]:
+            // the editor's lightmap of a REDUCED item set (the groves / light-carrying items dropped so the editor
+            // survives) put into the FULL map — every item chart's object id is renumbered from the reduced index
+            // to the full index (kept[r]); the dropped items get no chart (the game lights them from the probes).
+            // Tiles (object < base) keep their ids.
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let kept: Vec<u32> = f("--kept").expect("--kept").split(',').filter(|s| !s.is_empty()).map(|s| s.trim().parse().unwrap()).collect();
+            let from = lightmap::mapio::load(&f("--from").expect("--from")).expect("load --from");
+            let into = lightmap::mapio::load(&f("--into").expect("--into")).expect("load --into");
+            let mut chunk = from.chunk.clone();
+            let d = chunk.data.as_mut().expect("the reduced bake has no lightmap");
+            let mp = d.cache.mapping_mut().expect("mapping");
+            let (mut items, mut tiles, mut oob) = (0usize, 0usize, 0usize);
+            for b in mp.binds.iter_mut() {
+                let obj = b.obj_group_idx / 4;
+                let sub = b.obj_group_idx % 4;
+                if obj >= base {
+                    let r = (obj - base) as usize;
+                    match kept.get(r) { Some(&full) => { b.obj_group_idx = (base + full) * 4 + sub; items += 1; } None => { oob += 1; } }
+                } else { tiles += 1; }
+            }
+            // the mapping's own count of items may live in the head/tail — the bind ids are what the loader uses
+            let payload = chunk.write(true);
+            let out = f("--out").expect("--out");
+            lightmap::mapio::save_with_chunk(&into, &payload, &out).expect("save");
+            println!("wrote {out}: {items} item charts renumbered (reduced → full), {tiles} tile charts kept, {oob} charts beyond the kept list; the full map has {} items, the reduced bake {}", tmmaps::map::MapFile::load(std::path::Path::new(&f("--into").unwrap())).items.len(), kept.len());
         }
         "graft" => {
             // lmtool graft MAP --from OTHER.Map.Gbx --out OUT: MAP with OTHER's lightmap chunk verbatim (a deliberately
