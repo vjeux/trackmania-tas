@@ -41,6 +41,12 @@ pub struct BakeParams {
     /// The cut-out masks the world triangles' `alpha` index (alpha-tested materials: the baked vegetation
     /// cards) — the peel and the sun shadow map skip their transparent texels like the GPU's alpha test.
     pub alpha_masks: std::sync::Arc<Vec<crate::geometry::AlphaMask>>,
+    /// The decoration's stand-in lightmap: LAmbient × this (its ILightInput's C0 in the peel).
+    pub decor_ambient: f32,
+    /// The mood's LAmbient (kept whatever the receivers' ambient term is).
+    pub l_ambient: [f32; 3],
+    /// The open-sky irradiance of an up-facing surface (computed by the peel when zero).
+    pub decor_sky_up: [f32; 3],
     /// One-bounce factor (0 = off) and the average albedo it uses.
     pub bounce: f32,
     pub albedo: f32,
@@ -127,9 +133,12 @@ impl Default for BakeParams {
             raster_peel: false,
             ss: 3,
             peel_res: 2048,
-            peel_bias: 0.1,
+            peel_bias: 0.02,
             flat_albedo: false,
             alpha_masks: std::sync::Arc::new(Vec::new()),
+            decor_ambient: 1.0,
+            l_ambient: [0.0; 3],
+            decor_sky_up: [0.0; 3],
             albedo: 0.5,
             flip_v: false,
             uv_bounds: false,
@@ -294,6 +303,8 @@ struct Sample {
     n: V3,
     px: u32,
     py: u32,
+    /// The triangle's material is alpha-tested (a vegetation card).
+    cut: bool,
 }
 
 /// Chart size in pixels (w, h). With a PreLightGen the game's own rule is
@@ -373,7 +384,7 @@ fn rasterise_inset(scene: &Scene, ii: usize, w: u32, h: u32, flip_v: bool, use_b
                 let idx = (py as u32 * w + px as u32) as usize;
                 if !covered[idx] {
                     covered[idx] = true;
-                    samples.push(Sample { p, n, px: px as u32, py: py as u32 });
+                    samples.push(Sample { p, n, px: px as u32, py: py as u32, cut: t.alpha != u16::MAX });
                 }
                 any = true;
             }
@@ -384,7 +395,7 @@ fn rasterise_inset(scene: &Scene, ii: usize, w: u32, h: u32, flip_v: bool, use_b
                 covered[idx] = true;
                 let p = mul(add(add(wp[0], wp[1]), wp[2]), 1.0 / 3.0);
                 let n = norm(add(add(wn[0], wn[1]), wn[2]));
-                samples.push(Sample { p, n, px: cx as u32, py: cy as u32 });
+                samples.push(Sample { p, n, px: cx as u32, py: cy as u32, cut: t.alpha != u16::MAX });
             }
         }
     }
@@ -443,7 +454,7 @@ pub struct Shaded {
 
 /// Shade one world point with a normal (debug probes).
 pub fn shade_point_inst(scene: &Scene, bvh: &Bvh, prm: &BakeParams, p: V3, n: V3, ii: u32) -> Shaded {
-    let s = Sample { px: 0, py: 0, p, n };
+    let s = Sample { px: 0, py: 0, p, n, cut: false };
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ ((p[0] * 1000.0) as u64).wrapping_mul(0x2545_F491_4F6C_DD1D));
     shade_full(scene, bvh, prm, &s, ii, &mut rng)
 }
@@ -453,7 +464,7 @@ pub fn solve4_pub(m: [[f64; 4]; 4], r: [f64; 4]) -> Option<[f64; 4]> {
 }
 
 pub fn shade_point(scene: &Scene, bvh: &Bvh, prm: &BakeParams, p: V3, n: V3) -> Shaded {
-    let s = Sample { px: 0, py: 0, p, n };
+    let s = Sample { px: 0, py: 0, p, n, cut: false };
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     shade_full(scene, bvh, prm, &s, u32::MAX, &mut rng)
 }
@@ -1128,10 +1139,12 @@ pub struct PubSample {
     pub n: V3,
     pub px: u32,
     pub py: u32,
+    /// The triangle's material is alpha-tested (a vegetation card).
+    pub cut: bool,
 }
 pub fn rasterise_pub(scene: &Scene, ii: usize, w: u32, h: u32, flip_v: bool, use_bounds: bool) -> (Vec<PubSample>, Vec<bool>) {
     let (s, c) = rasterise_mode(scene, ii, w, h, flip_v, use_bounds);
-    (s.into_iter().map(|x| PubSample { p: x.p, n: x.n, px: x.px, py: x.py }).collect(), c)
+    (s.into_iter().map(|x| PubSample { p: x.p, n: x.n, px: x.px, py: x.py, cut: x.cut }).collect(), c)
 }
 
 /// `bake_subset` at a fixed chart size.

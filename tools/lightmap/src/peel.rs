@@ -332,6 +332,11 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
                 f.lookup(scene, wt.inst, wt.tri, b1, b2).map(|e| [e[0] / prm.bounce_decode, e[1] / prm.bounce_decode, e[2] / prm.bounce_decode]).unwrap_or([0.0; 3])
             }
         }
+        // the decoration (and any geometry without a lightmap) has no C0 of its own: the game's
+        // GeomILightIn0 reads the ambient in its place — the mood's LAmbient (the undersides of the
+        // tiny maps' ground-level items read 0.2 over the sea in the editor, our water gave 0.05 with
+        // nothing but the low sun on it; DIFFERENTIAL: the factor is 1, --decor-ambient K overrides)
+        _ if wt.inst == DECOR_INST => { let s = prm.decor_sky_up; [s[0] * prm.decor_ambient, s[1] * prm.decor_ambient, s[2] * prm.decor_ambient] },
         _ => [0.0; 3],
     };
     let ndl = dot(n, prm.sun_dir).max(0.0);
@@ -365,6 +370,22 @@ struct SubSample {
 /// The whole dome sweep, rasterised. `sizes[ii]` = the colour-resolution chart size of instance `ii`
 /// (the layout rect is twice that; the raster runs at `prm.ss` sub-samples per layout texel).
 pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u32, u32)]) -> Vec<ChartBake> {
+    // the decoration's stand-in lightmap = what an unoccluded up-facing surface gets from this sky
+    // (the sea and sand are lit by the sky like everything else; they have no lightmap of their own)
+    let mut prm_local = prm.clone();
+    if prm.decor_sky_up == [0.0; 3] {
+        let dirs = &prm.sphere_dirs;
+        let n = dirs.len().max(1) as f32;
+        let mut e = [0f32; 3];
+        for d in dirs.iter() {
+            if d[1] <= 0.0 { continue; }
+            let s = sky_radiance(prm, *d);
+            for k in 0..3 { e[k] += 4.0 / n * d[1] * s[k]; }
+        }
+        prm_local.decor_sky_up = e;
+        eprintln!("peel: open-sky irradiance of an up-facing surface ({:.3},{:.3},{:.3}) → the decoration's stand-in lightmap (× {})", e[0], e[1], e[2], prm.decor_ambient);
+    }
+    let prm = &prm_local;
     let t0 = std::time::Instant::now();
     let threads = if prm.threads == 0 { std::thread::available_parallelism().map(|x| x.get()).unwrap_or(8).min(160) } else { prm.threads };
     let ss = prm.ss.max(1);
@@ -408,7 +429,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             let p = [psum[0] / c, psum[1] / c, psum[2] / c];
             let n = norm(nsum);
             let (tx, ty) = (lx / 2, ly / 2);
-            subs.push(SubSample { p, n, own_tri: tri_base[ii] + tri, group: 0, chart: ii as u32, texel: ty.min(ch - 1) * cw + tx.min(cw - 1) });
+            subs.push(SubSample { p, n, own_tri: bvh.perm[(tri_base[ii] + tri) as usize], group: 0, chart: ii as u32, texel: ty.min(ch - 1) * cw + tx.min(cw - 1) });
         }
         if false {
         if std::env::var_os("LMTOOL_PEEL_DEBUG").is_some() && ii < 3 {
@@ -432,7 +453,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         for s in &r.subs {
             let (tx, ty) = (s.sx / ss / 2, s.sy / ss / 2);
             let group = ((s.sy % ss) * ss + s.sx % ss) as u8;
-            subs.push(SubSample { p: s.p, n: s.n, own_tri: tri_base[ii] + s.tri, group, chart: ii as u32, texel: ty.min(ch - 1) * cw + tx.min(cw - 1) });
+            subs.push(SubSample { p: s.p, n: s.n, own_tri: bvh.perm[(tri_base[ii] + s.tri) as usize], group, chart: ii as u32, texel: ty.min(ch - 1) * cw + tx.min(cw - 1) });
         }
         }
     }
@@ -489,7 +510,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         // SetILightDir 0x140234df0): the sky colour along d is weighted by the direction's elevation cosine
         // and below-horizon directions carry no sky (they see the ground); SkyFactor rides in sky_radiance
         let sky = { let s = sky_radiance(prm, *d); let dy = if sky_dy { d[1].max(0.0) } else if d[1] > 0.0 { 1.0 } else { 0.0 }; [s[0] * dy, s[1] * dy, s[2] * dy] };
-        let bias = bias_m.max(0.5 * frame.pixel_m());
+        let bias = bias_m;
         let range = &order[group_start[g]..group_start[g + 1]];
         let chunk = (range.len() / threads.max(1)).max(1024);
         // the gather writes acc[i] for i in its own range only
@@ -517,7 +538,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 let (x, y, z) = frame.project(s.p);
                 let (xi, yi) = (x.round() as i64, y.round() as i64);
                 let list = if xi >= 0 && yi >= 0 && xi < frame.res as i64 && yi < frame.res as i64 { ab.at(xi as u32, yi as u32) } else { &[] };
-                let bias = bias_m.max(0.5 * frame.pixel_m());
+                let bias = bias_m;
                 let front: Vec<String> = list.iter().filter(|f| f.z < z - bias).map(|f| { let wt = &bvh.tris[f.tri as usize]; format!("tri {} inst {} z {:.2}{}", f.tri, wt.inst, f.z, if f.tri == s.own_tri { " OWN" } else { "" }) }).collect();
                 eprintln!("  dir {di} d ({:.2},{:.2},{:.2}) ndd {ndd:.2}: pixel ({xi},{yi}) z {z:.2} bias {bias:.2}; {} frags, in front: [{}]; sky ({:.2},{:.2},{:.2})", d[0], d[1], d[2], list.len(), front.join(" | "), sky[0], sky[1], sky[2]);
                 dbg_printed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -546,20 +567,36 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                             // the first surface along D beyond the texel by more than the rasteriser's depth bias
                             // (DepthBias 1 + SlopeScaledDepthBias 1.0, RE child 3): one depth unit plus one pixel's
                             // worth of the receiver's own depth slope, tan θ = √(1 − (n·D)²)/(n·D), capped
-                            let slope = ((1.0 - ndd * ndd).max(0.0).sqrt() / ndd.max(1e-3)).min(20.0);
-                            let limit = z - bias.max(frame.pixel_m() * (1.0 + slope));
-                            // fragments are sorted by z: binary search the first with z >= limit
+                            let _ = ndd;
+                            // The game's peel layers are rasterised with D3D DepthBias 1 + SlopeScaledDepthBias 1.0
+                            // (RE child 4): every stored layer depth is pushed toward the camera by one depth ulp
+                            // plus ONE PIXEL of the fragment's own depth slope, and the texel takes the last layer
+                            // still beyond it — so a surface occludes when it lies beyond the texel by more than
+                            // (ε + pixel · tan θ_f), θ_f the angle between that surface and the peel direction: a
+                            // sea plane half a metre under a deck counts (its slope is ~0 along a downward peel),
+                            // a coplanar neighbour of the texel's own surface at grazing angle does not.
+                            let limit_min = z - bias;
+                            // fragments are sorted by z: binary search the first with z >= limit_min
                             let mut lo = 0usize;
                             let mut hi = list.len();
                             while lo < hi {
                                 let mid = (lo + hi) / 2;
-                                if list[mid].z < limit { lo = mid + 1 } else { hi = mid }
+                                if list[mid].z < limit_min { lo = mid + 1 } else { hi = mid }
                             }
+                            let px_m = frame.pixel_m();
                             let mut k = lo;
                             while k > 0 {
                                 k -= 1;
                                 let f = list[k];
                                 if f.tri == s.own_tri {
+                                    continue;
+                                }
+                                // the fragment's slope: tan of the angle between its triangle and D
+                                let wt = &bvh.tris[f.tri as usize];
+                                let nf = norm(cross(wt.e1, wt.e2));
+                                let c = dot(nf, *d).abs().max(1e-3);
+                                let slope_f = ((1.0 - c * c).max(0.0).sqrt() / c).min(64.0);
+                                if f.z >= z - bias.max(px_m * slope_f) {
                                     continue;
                                 }
                                 l = fragment_radiance(scene, bvh, prm, shadow, f.tri, *d, [s.p[0] + d[0] * (z - f.z), s.p[1] + d[1] * (z - f.z), s.p[2] + d[2] * (z - f.z)], sun_bias);
@@ -630,7 +667,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 if ndd <= 0.0 { eprintln!("   dir {di} d ({:.2},{:.2},{:.2}) ndd {ndd:.2}: facing away", d[0], d[1], d[2]); continue; }
                 let ab = build_abuffer(&bvh.tris, &frame, threads);
                 let list = if xi >= 0 && yi >= 0 && xi < frame.res as i64 && yi < frame.res as i64 { ab.at(xi as u32, yi as u32) } else { &[] };
-                let bias = bias_m.max(0.5 * frame.pixel_m());
+                let bias = bias_m;
                 let front: Vec<String> = list.iter().filter(|f| f.z < z - bias).map(|f| { let wt = &bvh.tris[f.tri as usize]; format!("tri {} inst {} z {:.2}{}", f.tri, wt.inst, f.z, if f.tri == s.own_tri { " OWN" } else { "" }) }).collect();
                 eprintln!("   dir {di} d ({:.2},{:.2},{:.2}) ndd {ndd:.2}: pixel ({xi},{yi}) z {z:.2}; {} frags [{}]; in front: [{}]", d[0], d[1], d[2], list.len(), list.iter().map(|f| format!("{:.2}", f.z)).collect::<Vec<_>>().join(","), front.join(" | "));
             }

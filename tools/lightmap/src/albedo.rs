@@ -106,6 +106,16 @@ pub fn for_link(link: &str) -> Option<[f32; 3]> {
         return Some(v);
     }
     let last = link.rsplit(['\\', '/']).next().unwrap_or(link).to_ascii_lowercase();
+    // LMTOOL_ALBEDO_WATER=r,g,b / LMTOOL_ALBEDO_SAND=r,g,b: the decoration planes' albedo (fit knobs)
+    for (key, env) in [("water", "LMTOOL_ALBEDO_WATER"), ("sand", "LMTOOL_ALBEDO_SAND")] {
+        if last.contains(key) {
+            if let Ok(s) = std::env::var(env) {
+                let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                if v.len() == 3 { return Some([v[0], v[1], v[2]]); }
+                if v.len() == 1 { return Some([v[0]; 3]); }
+            }
+        }
+    }
     for (k, v) in TABLE {
         if last.contains(k) {
             return Some(*v);

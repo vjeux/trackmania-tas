@@ -31,6 +31,8 @@ struct Node {
 }
 
 pub struct Bvh {
+    /// `world_tris` index → index into `tris` (the build reorders).
+    pub perm: Vec<u32>,
     pub tris: Vec<WTri>,
     nodes: Vec<Node>,
 }
@@ -302,7 +304,13 @@ impl Bvh {
         let nodes = build_rec(&mut order, &bounds, &cents, 0, 0);
         let reordered: Vec<WTri> = order.iter().map(|&i| tris[i as usize]).collect();
         tris = reordered;
-        Bvh { tris, nodes }
+        // original index → position in `tris` (the build reorders the triangles; a caller that numbers
+        // triangles in `world_tris` order — the peel's own-triangle exclusion — maps through this)
+        let mut perm = vec![0u32; n];
+        for (new_i, &old_i) in order.iter().enumerate() {
+            perm[old_i as usize] = new_i as u32;
+        }
+        Bvh { tris, nodes, perm }
     }
 
     #[inline]

@@ -129,7 +129,7 @@ fn run(a: Vec<String>) {
             println!("chart\tobj\tsub\tflags\tx\ty\tw\th\tf32\tfb0\tfb1\tfb2");
             for i in from..(from + n).min(m.count as usize) {
                 let b = m.binds[i];
-                println!("{i}\t{}\t{}\t{:#x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", b.obj_group_idx / 4, b.obj_idx & 0xffffff, b.obj_idx >> 24, m.pos[i].0, m.pos[i].1, m.size[i].0, m.size[i].1, m.chart_f32[i], m.frame_bytes[0][i], m.frame_bytes[1][i], m.frame_bytes[2][i]);
+                println!("{i}\t{}\t{}\t{:#x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", b.obj_group_idx / 4, b.obj_idx & 0xffffff, b.obj_idx >> 24, m.pos[i].0, m.pos[i].1, m.size[i].0, m.size[i].1, m.chart_f32[i], m.frame_bytes[0][i], m.frame_bytes.get(1).map(|v| v[i]).unwrap_or(0), m.frame_bytes.get(2).map(|v| v[i]).unwrap_or(0));
             }
         }
         "daytime" if a.iter().any(|x| x == "--set") => {
@@ -813,6 +813,7 @@ fn run(a: Vec<String>) {
                 let sky_s: f32 = f("--sky-scale").map(|s| s.parse().unwrap()).unwrap_or(if dome { 1.55 } else { 1.0 });
                 prm.dome_deg = if dome { f("--cone-deg").map(|s| s.parse().unwrap()).unwrap_or(30.0) } else { 90.0 };
                 prm.ambient_la = if dome { [0.0; 3] } else { x.l_ambient };
+                prm.l_ambient = x.l_ambient;
                 prm.sky = [x.l_ambient[0] * x.sky_factor * sky_s, x.l_ambient[1] * x.sky_factor * sky_s, x.l_ambient[2] * x.sky_factor * sky_s];
                 if let Some(g) = f("--ground-bounce") { prm.ground_bounce = g.parse().unwrap(); }
                 prm.bounce_sphere = has("--bounce-sphere");
@@ -911,6 +912,7 @@ fn run(a: Vec<String>) {
                     }
                 }
                 prm.sun = if has("--no-sun-bounce") { [0.0; 3] } else { x.l_dir_sun };
+                if let Some(v) = f("--decor-ambient") { prm.decor_ambient = v.parse().unwrap(); }
                 prm.direct_sun = 0.0;
                 prm.ambient = [0.0; 3]; prm.up = [0.0; 3];
                 prm.bounce = f("--bounce").map(|s| s.parse().unwrap()).unwrap_or(x.bounce_factor);
@@ -1150,8 +1152,23 @@ fn run(a: Vec<String>) {
             if let Some(v) = f("--ss") { prm.ss = v.parse().unwrap(); } else { prm.ss = match f("--quality").map(|s| s.parse::<u32>().unwrap()).unwrap_or(3) { 0 => 1, 1 => 2, _ => 3 }; }
             if let Some(v) = f("--peel-res") { prm.peel_res = v.parse().unwrap(); }
             if let Some(v) = f("--peel-bias") { prm.peel_bias = v.parse().unwrap(); }
+            // --layout-from REF.Map.Gbx: every item chart takes the reference bake's chart SIZE (its object id
+            // = base + item), so the two bakes share texel grids — the gate then measures the lighting alone, not
+            // the packer (a measurement aid; the product sizes charts by the game's allocation walk)
+            let ref_sizes: Option<std::collections::HashMap<usize, (u32, u32)>> = f("--layout-from").map(|rp| {
+                let r = lightmap::mapio::load(&rp).expect("--layout-from");
+                let d = r.chunk.data.expect("reference lightmap");
+                let mp = d.cache.mapping().unwrap();
+                let mut out = std::collections::HashMap::new();
+                for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { out.insert((obj - base) as usize, ((mp.size[i].0 as u32 / 2).max(1), (mp.size[i].1 as u32 / 2).max(1))); } }
+                eprintln!("layout from {rp}: {} item chart sizes", out.len());
+                out
+            });
             let chart_sizes = |p: &lightmap::bake::BakeParams| -> Vec<(u32, u32)> {
-                scene.instances.iter().map(|inst| { let m = &scene.models[inst.model]; let sc = (inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]).sqrt(); lightmap::bake::chart_size(m, sc, p) }).collect()
+                scene.instances.iter().map(|inst| {
+                    if let Some(rs) = &ref_sizes { if let Some(&s) = rs.get(&inst.item) { return s; } }
+                    let m = &scene.models[inst.model]; let sc = (inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]).sqrt(); lightmap::bake::chart_size(m, sc, p)
+                }).collect()
             };
             let mut charts = if prm.raster_peel { lightmap::peel::bake_peel_raster(&scene, &bvh, &prm, &chart_sizes(&prm)) } else { lightmap::bake::bake(&scene, &bvh, &prm, &lights) };
             eprintln!("baked {} charts ({:.1}s)", charts.len(), t0.elapsed().as_secs_f32());
@@ -2726,6 +2743,10 @@ fn run(a: Vec<String>) {
                 } else { tiles += 1; }
             }
             // the mapping's own count of items may live in the head/tail — the bind ids are what the loader uses
+            // the writer keeps a table's STORED compressed bytes when it has them — drop them so the
+            // renumbered binds are what gets written (every `--reduced` reference before 2026-09-23 21:00Z
+            // carried the reduced indices: chart r landed on full item r — a mis-association)
+            for z in mp.raw_z.iter_mut() { *z = None; }
             let payload = chunk.write(true);
             let out = f("--out").expect("--out");
             lightmap::mapio::save_with_chunk(&into, &payload, &out).expect("save");
@@ -3611,6 +3632,40 @@ fn run(a: Vec<String>) {
                 println!("{name} profile (ratio to open, by distance from the roof centre): {}", line.join(" "));
             }
         }
+        "chartrule" => {
+            // lmtool chartrule EDITOR.Map.Gbx [--base N]: per model, the editor's chart size next to the model's
+            // PreLightGen u02, uv1 extent, world bbox and metres-per-uv — to read the game's chart-size rule
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let own = lightmap::mapio::load(&a[1]).expect("load");
+            let d = own.chunk.data.clone().expect("lightmap");
+            let mp = d.cache.mapping().unwrap();
+            let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
+            // the per-item lightmap quality byte (chunk 0x03043068: Normal 0, High 1, VeryHigh 2, Highest 3,
+            // Lowest 4, VeryLow 5, Low 6), after the blocks' and baked blocks' bytes
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let qual: Vec<u8> = tmmaps::gbx::all_skip_chunks(&mf.gbx.body).iter().find(|(c, ..)| *c == 0x0304_3068).map(|&(_, _, payload, size)| {
+                let start = payload + 4 + mf.blocks.len() + mf.baked.len();
+                mf.gbx.body[start..(payload + size).min(start + mf.items.len())].to_vec()
+            }).unwrap_or_default();
+            let per_item = a.iter().any(|x| x == "--per-item");
+            let mut seen: std::collections::BTreeSet<usize> = Default::default();
+            println!("model\tu02\tew\teh\tm_per_uv\tbbox_x\tbbox_y\tbbox_z\ted_w\ted_h\tu02rule_w\tu02rule_h\tquality\titem");
+            for inst in &scene.instances {
+                if !per_item && !seen.insert(inst.model) { continue; }
+                let Some(&ci) = chart_of.get(&(inst.item as u32)) else { continue };
+                let (w, h) = mp.size[ci];
+                let g = &scene.models[inst.model];
+                let (ew, eh) = match g.plg_bounds { Some(b) => (b[2] - b[0], b[3] - b[1]), None => (1.0, 1.0) };
+                let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                for t in &g.tris { for p in t.p { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } } }
+                let rw = g.plg_u02 * 0.5625 * ew / 2.0;
+                let rh = g.plg_u02 * 0.5625 * eh / 2.0;
+                println!("{}\t{:.2}\t{:.3}\t{:.3}\t{:.2}\t{:.1}\t{:.1}\t{:.1}\t{}\t{}\t{:.1}\t{:.1}\t{}\t{}", inst.model_name, g.plg_u02, ew, eh, g.metres_per_uv, hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], w / 2, h / 2, rw, rh, qual.get(inst.item).copied().unwrap_or(255), inst.item);
+            }
+        }
         "chartimg" => {
             // lmtool chartimg MAP.Map.Gbx ITEM... --out X.png [--base N] [--scale S]: the frame-0 colour texels of the
             // items' charts (sqrt-decoded, × frame MaxHDR, × S, clipped) side by side as an 8-bit PNG, each chart
@@ -3738,6 +3793,8 @@ fn run(a: Vec<String>) {
             let mut per_rows: Vec<(usize, String, usize, f64, f64, f64)> = Vec::new(); // item, model, n, ref mean, ours mean, rmse
             let mut per_rgb: Vec<(usize, [f64; 3], [f64; 3])> = Vec::new();
             let mut flat_skipped = 0usize;
+            let mut classes: Vec<u8> = Vec::new();
+            let mut rows_rgb: Vec<([f32; 3], [f32; 3])> = Vec::new();
             for (ii, inst) in scene.instances.iter().enumerate().step_by(step) {
                 let row0 = rows.len();
                 let (Some(&i), Some(&j)) = (ca.get(&(inst.item as u32)), cb.get(&(inst.item as u32))) else { continue };
@@ -3761,6 +3818,11 @@ fn run(a: Vec<String>) {
                     let c2 = ib.get((pxb + qx).min(ib.w - 1), (pyb + qy).min(ib.h - 1));
                     let lb = (0.2126 * lightmap::synth::decode_value(c2[0], fbb) + 0.7152 * lightmap::synth::decode_value(c2[1], fbb) + 0.0722 * lightmap::synth::decode_value(c2[2], fbb)) * fmb;
                     rows.push((la as f64, lb as f64, s.n[1] > 0.9));
+                    rows_rgb.push(([lightmap::synth::decode_value(c[0], fba) * fma, lightmap::synth::decode_value(c[1], fba) * fma, lightmap::synth::decode_value(c[2], fba) * fma], [lightmap::synth::decode_value(c2[0], fbb) * fmb, lightmap::synth::decode_value(c2[1], fbb) * fmb, lightmap::synth::decode_value(c2[2], fbb) * fmb]));
+                    // the gate class: vegetation (AV items and alpha-tested cards), else small chart (< 64 texels),
+                    // else by the normal: floor (up), underside (down), wall (vertical), slanted
+                    let cls: u8 = if inst.model_name.starts_with("AV") || s.cut { 4 } else if (pwa * pha) < 64 { 5 } else if s.n[1] > 0.7 { 0 } else if s.n[1] < -0.7 { 1 } else if s.n[1].abs() < 0.3 { 2 } else { 3 };
+                    classes.push(cls);
                     if per_item { let e = if per_rgb.last().map(|r| r.0) == Some(inst.item) { per_rgb.last_mut().unwrap() } else { per_rgb.push((inst.item, [0.0; 3], [0.0; 3])); per_rgb.last_mut().unwrap() }; for k in 0..3 { e.1[k] += (lightmap::synth::decode_value(c[k], fba) * fma) as f64; e.2[k] += (lightmap::synth::decode_value(c2[k], fbb) * fmb) as f64; } }
                 }
                 // an UNWRITTEN reference chart (every texel the same value: the atlas background, e.g. the
@@ -3770,6 +3832,8 @@ fn run(a: Vec<String>) {
                     let (mn, mx) = r.iter().fold((f64::MAX, f64::MIN), |(lo, hi), x| (lo.min(x.0), hi.max(x.0)));
                     if r.len() >= 4 && mx - mn < 1e-6 {
                         rows.truncate(row0);
+                        classes.truncate(row0);
+                        rows_rgb.truncate(row0);
                         if per_item { if per_rgb.last().map(|q| q.0) == Some(inst.item) { per_rgb.pop(); } }
                         flat_skipped += 1;
                         continue;
@@ -3785,6 +3849,21 @@ fn run(a: Vec<String>) {
                 }
             }
             if flat_skipped > 0 { println!("{flat_skipped} items skipped: their reference chart is unwritten (one flat value)"); }
+            // the per-class gate table
+            {
+                let names = ["floors (up)", "undersides (down)", "walls (vertical)", "slanted", "vegetation (AV items + cards)", "small charts (< 64 texels)"];
+                println!("per class: texels ref-mean ours-mean ratio rmse(% of ref mean)");
+                for c in 0..names.len() {
+                    let sel: Vec<&(f64, f64, bool)> = rows.iter().zip(classes.iter()).filter(|(_, k)| **k as usize == c).map(|(r, _)| r).collect();
+                    if sel.is_empty() { continue; }
+                    let n = sel.len() as f64;
+                    let (ma, mb) = (sel.iter().map(|r| r.0).sum::<f64>() / n, sel.iter().map(|r| r.1).sum::<f64>() / n);
+                    let rmse = (sel.iter().map(|r| (r.0 - r.1) * (r.0 - r.1)).sum::<f64>() / n).sqrt();
+                    let mut ra = [0f64; 3]; let mut rb = [0f64; 3];
+                    for ((_, k), (pa, pb)) in rows.iter().zip(classes.iter()).zip(rows_rgb.iter()) { if *k as usize == c { for j in 0..3 { ra[j] += pa[j] as f64; rb[j] += pb[j] as f64; } } }
+                    println!("  {:<32} {:>8} {ma:.3} {mb:.3} {:.3} {:.1} %   ref rgb ({:.2},{:.2},{:.2}) ours ({:.2},{:.2},{:.2})", names[c], sel.len(), mb / ma.max(1e-9), 100.0 * rmse / ma.max(1e-9), ra[0] / n, ra[1] / n, ra[2] / n, rb[0] / n, rb[1] / n, rb[2] / n);
+                }
+            }
             if per_item {
                 per_rows.sort_by(|a, b| b.5.partial_cmp(&a.5).unwrap());
                 println!("per item (worst RMSE first): item model texels ref-mean ours-mean ratio rmse");
