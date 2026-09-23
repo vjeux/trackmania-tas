@@ -1425,7 +1425,7 @@ fn main() {
                     Ok(m) => {
                         let s = m.stats();
                         let lods: Vec<String> = m.lods.iter().map(|l| format!("{}", l.iter().map(|e| format!("{}v", e.visual.main.as_ref().map(|mm| mm.count).unwrap_or(0))).collect::<Vec<_>>().join("+"))).collect();
-                        println!("{p}: {} levels [{}] switch {:?} far {} ; {} materials ({}); hull {} verts {} tris; bottom {:.2} top {:.2} (height {:.2}) radius {:.2} m", m.lods.len(), lods.join(" | "), m.switch, m.far, m.materials.len(), m.materials.iter().map(|mt| format!("{}{}", mt.name, if mt.leaf { "*" } else { "" })).collect::<Vec<_>>().join(", "), m.hull_vertices.len(), m.hull_triangles.len(), s.bottom, s.top, s.top - s.bottom, s.radius);
+                        println!("{p}: {} levels [{}] switch {:?} far {} ; {} materials ({}); hull {} verts {} tris; bottom {:.2} top {:.2} (height {:.2}) radius {:.2} m; instance variation: scale 1-(k/7)*{} tilt +-{} deg random yaw {}", m.lods.len(), lods.join(" | "), m.switch, m.far, m.materials.len(), m.materials.iter().map(|mt| format!("{}{}", mt.name, if mt.leaf { "*" } else { "" })).collect::<Vec<_>>().join(", "), m.hull_vertices.len(), m.hull_triangles.len(), s.bottom, s.top, s.top - s.bottom, s.radius, m.scale_var01, m.angle_max_rot_xz_deg, m.enable_random_rotation_y);
                         if brief {
                             continue;
                         }
@@ -1720,6 +1720,56 @@ fn main() {
                         None => println!("  layer {li} {}", l.kind.name()),
                     }
                 }
+            }
+        }
+        // veget-instances MAP [--no-rotation]: every vegetation ITEM of the map
+        // (a placement whose model is a pack .Item.Gbx referencing
+        // .VegetTreeModel.Gbx files), resolved to the species its variant byte
+        // names and to the FOREST INSTANCE the game creates for it: the pose
+        // hash, the scale draw, the yaw/tilt draws (veget_instance.rs — the exact
+        // chain 0x03101002 fields -> 0x140d8d5f0 -> 0x141081910 -> 0x14026b4f0).
+        // TSV: item, model, variant, species, pos, item yaw, quaternion after the
+        // variation (w,x,y,z), scale, seed, yaw / tilt x / tilt z draws (radians).
+        "veget-instances" => {
+            let mut store = open(&a);
+            let map = a.rest.get(1).cloned().unwrap_or_else(|| die("veget-instances MAP [--no-rotation]".into()));
+            let with_rotation = !a.rest.iter().any(|x| x == "--no-rotation");
+            let source = tmmaps::map::MapFile::load(std::path::Path::new(&map));
+            let mut species_cache: std::collections::BTreeMap<String, Result<Vec<String>, String>> = Default::default();
+            let mut params_cache: std::collections::BTreeMap<String, Result<mapgeom::veget_instance::TreeParams, String>> = Default::default();
+            println!("item\tmodel\tvariant\tspecies\tx\ty\tz\titem_yaw\tqw\tqx\tqy\tqz\tscale\tseed\tyaw\ttilt_x\ttilt_z");
+            for (i, it) in source.items.iter().enumerate() {
+                let list = species_cache
+                    .entry(it.model.clone())
+                    .or_insert_with(|| {
+                        let file = mapgeom::tiny_library::find_item_file(&store, &it.model).ok_or_else(|| format!("no pack item {}", it.model))?;
+                        mapgeom::veget::item_species(&mut store, &file)
+                    })
+                    .clone();
+                let Ok(list) = list else { continue };
+                if list.is_empty() {
+                    continue;
+                }
+                let v = it.variant() as usize;
+                let Some(species) = list.get(v).or_else(|| list.first()) else { continue };
+                let params = params_cache
+                    .entry(species.clone())
+                    .or_insert_with(|| {
+                        mapgeom::veget::parse_tree_model(&mut store, species).map(|m| mapgeom::veget_instance::TreeParams { scale_var01: m.scale_var01, angle_max_rot_xz_deg: m.angle_max_rot_xz_deg, enable_random_rotation_y: m.enable_random_rotation_y != 0 })
+                    })
+                    .clone();
+                let params = match params {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("{species}: {e}");
+                        continue;
+                    }
+                };
+                let (q1, t, seed) = mapgeom::veget_instance::item_pose(it.yaw, it.pitch, it.roll, it.pos, it.pivot);
+                let inst = mapgeom::veget_instance::variation(q1, t, seed, params, with_rotation);
+                let stem = species.rsplit('\\').next().unwrap_or(species).trim_end_matches(".VegetTreeModel.Gbx");
+                let (yaw, tx, tz) = inst.rotation.map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string())).unwrap_or_else(|| ("-".into(), "-".into(), "-".into()));
+                println!("i{i}\t{}\t{}\t{stem}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:08x}\t{yaw}\t{tx}\t{tz}", it.model, v, t[0], t[1], t[2], it.yaw, inst.quat[0], inst.quat[1], inst.quat[2], inst.quat[3], inst.scale, inst.seed);
             }
         }
         // veget-slots --collection BlueBay [ZONE...]: every vegetation slot of
