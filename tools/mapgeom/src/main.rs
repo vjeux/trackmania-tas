@@ -20,6 +20,7 @@ COMMANDS
   ls [<substring>]              pack entries whose path contains <substring>
   resolve <logical-path>        which pack entry a logical path is stored under
   refs <logical-path>           a file's external reference table
+  raw <path> --out F            the decoded bytes of any pack entry (dds, tga, xml)
   dump <path> [--body F]        walk a file's node graph and summarise it;
                                 --body writes the decompressed body out
   model <path> --out F          a single file's geometry, as .glb or .obj
@@ -1086,6 +1087,16 @@ fn main() {
             }
             std::fs::write(&out, &bytes).unwrap_or_else(|e| die(e.to_string()));
             println!("{p}: {streams} vertex streams, {moved} positions moved by {dy} in y -> {out}");
+        }
+        "raw" => {
+            // mapgeom raw <logical-path> --out F : the decoded bytes of any pack
+            // entry, GBX or not (textures, XML, tga), for banking mood assets
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("raw: --out F is required".to_string()));
+            let bytes = store.read(&p).unwrap_or_else(die);
+            std::fs::write(&out, &bytes[..]).unwrap_or_else(|e| die(e.to_string()));
+            println!("wrote {} ({} bytes)", out, bytes.len());
         }
         "dump" => {
             let mut store = open(&a);

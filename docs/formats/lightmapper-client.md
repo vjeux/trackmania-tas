@@ -28,16 +28,20 @@ code, address given), **[RUNTIME]** (read from the running game), **[FILE]**
    0x140a3a000–0x140aa0000) allocates charts, builds direction sets, runs the
    passes as a background coroutine (`NGlobal::ComputeLoop`, states resumed
    frame by frame) and packs/compresses the result.
-2. The stored lightmap holds **the sun, the sky and the bounces for static
-   geometry** — "Compute shadows" is the sun-shadow bake. (An earlier revision
-   of this document claimed the opposite from the runtime material shaders,
-   which carry a real-time PSSM sun term — that term serves dynamic and
-   lightmap-less rendering; the CPU bypasses it for lightmapped statics.
-   Corrected 2026-09-23 on the baker's BlueBay test bake [DIFFERENTIAL]: a
-   free-standing wall's east face reads p90 1.10 HDR in `LDirSun`'s orange at
-   DayTime 0.854, more than any bounce source could deliver.) The sun enters
-   through `LmLBumpLDir` (§2.2) and, through the lit frame × albedo, the
-   bounces (§2.4).
+2. The stored lightmap holds **the sky and the bounces for static
+   geometry** — the direct sun is **not** in frame 0. RE child 1's first
+   reading (from the runtime material shaders, which add the PSSM sun
+   themselves) was right; its 2026-09-23 "correction" came from a wall
+   reading 1.10 HDR "in LDirSun's orange" at the Sunset quarter — that term
+   is the **sky itself**: the dome pass renders the mood's sky dome
+   (`Tech3/Sky_p`: the `SkyColor` gradient shifted to the sun's azimuth plus
+   the `Atmo1/Atmo2` sun-glow lobes), so at low sun the horizon toward the
+   sun is a bright pink patch and at noon nothing directional remains
+   [DISASSEMBLY §2.3, DIFFERENTIAL baker 2026-09-23: Day-quarter bakes are
+   azimuth-flat with blue brightest verticals, Sunset-quarter bakes carry a
+   1–2° ESE pink term]. The sun enters only the **bounce** input (the peeled
+   surfaces are lit by `LightDirRgb·max(0,n·−L)·shadow` in `GeomILightIn0`,
+   §2.4). The cache flag `IsOnlyIndirectDir0` says the same.
 3. The stored values are **H-basis coefficients** (4 per texel: one constant,
    three directional), **sqrt-encoded and normalised per chart, written as
    BT.601 studio-swing YCbCr planes** — a WEBP decode gives the encoded values
@@ -109,7 +113,13 @@ under occluders, not from the ambient. `AmbientAtTop` is the mood's
 §2.5). Local-light passes preload the same shape as `LightToAdd ·
 lerp(LightToAdd_ScaleYm, LightToAdd_ScaleYp, 0.5 + 0.5 n.y)`.
 
-### 2.2 The sun — 64 shadow-mapped disc samples into the frame [DISASSEMBLY]
+### 2.2 The directional-light machinery (sun): sample set and shaders [DISASSEMBLY]
+
+`LmLBumpLDir` is the generic directional-light pass; for frame 0 the sun is
+**not** drawn into the texels (§0, §2.3) — it lights the peeled bounce
+surfaces through `GeomILightIn0` (§2.4) with a single shadow map
+(`TMapShadowLDir0`), and this section describes the pass that other
+directional lights (and the NLocal/preview paths) use.
 
 `LmLBumpLDir_Inst_p` (no-bump permutation):
 
@@ -172,29 +182,65 @@ path and `1/N` for the H-basis path, read at 0x140233b94: `[+0x54] = 1/N`,
    (`LmLHBasisILighting_Inst_p`) projects the same sample into the four
    coefficients instead (§2.5).
 
-**What the sky actually is** [DIFFERENTIAL, baker 2026-09-23 on BlueBay
-Sunset-quarter test bakes; DISASSEMBLY for the mechanism]: the stored frame
-0 has **no unoccluded ambient** (a wall reads 0.09 HDR where
-`LAmbient·(0.8+0.2n.y)` would give ≥ 0.32) and the "sky" is a **narrow
-cone around the zenith**: a 16 m plate 15.8 m above a pad darkens the pad
-centre to 0.21 of the open value (a hemisphere would leave 0.76), the edge
-to 0.45, +4 m outside 0.78, +8 m 0.93; a vertical wall reads 0.15 of the
-floor. A cosine-weighted cone of half-angle **30–32°** fits (rms 0.055). An
-open horizontal floor reads **1.55 × LAmbient in exactly LAmbient's hue**
-(0.61, 0.58, 0.77 HDR for Sunset). This is the §2.2 cone generator applied
-to a **zenith-pointing directional light of angular radius ≈ 30° and
-LAmbient-hued colour** — the sky is modelled as a wide directional light
-with shadow maps, not as a hemisphere. Where its angle and colour scale are
-set is the one CPU item still open (candidates: the `CHmsLightMapMood`
-defaults, §6, or the mood's `LAmbient` light object); until then use A =
-30°, colour = 1.55·LAmbient·SkyFactor. Two numerical coincidences worth
-testing [INFERRED]: 256 directions taken as the most zenithal points of the
-4112-point set is a cone of exactly 28.9° (256/4112 = (1 − cos A)/2), and
-1.55 ≈ π/2 = 1.571 (the irradiance a hemisphere of radiance L/2 delivers),
-so the sky may simply be "LAmbient as hemisphere radiance, sampled through
-the 256-point zenith cone". The `LmLBumpAmbient` shader (§2.1)
-is therefore not part of the stored frame (the preview/in-gameplay path,
-or the runtime's use of the record's `StoreLAmbient`/`LAmbient`).
+**What the sky actually is** [DISASSEMBLY `RenderLightIndirectPeel`
+0x140234df0, `Tech3/Sky_p`+`Sky_v`; DIFFERENTIAL baker 2026-09-23]: the
+peel is an ordinary orthographic scene render along `D`, and the scene
+includes the mood's **sky dome**, which peels as the farthest layer with the
+radiance the runtime sky shader gives it. Nothing is cleared to a constant
+"sky colour"; texels that see no surface see the dome. `Tech3/Sky_p`
+(constants from `Mood.MoodSetting.xml` `<Atmo><HdrSun Power><Atmo1 Power
+Color Scale/><Atmo2 …/>`, the gradient textures `<Collection>\Media\Moods\
+<Mood>\SkyColor.dds` (TMapGradientV, BC6H_UF16 HDR 2048×1024, 12 mips) and
+`SkyClouds.dds` (TMapGradientV1, the clouds layer, `SkyUseClouds`)):
+
+```text
+uv     = dome vertex uv ; u = GradientV_ForceX ≥ 0 ? GradientV_ForceX : u − LightDirAngle_m11Zx     (azimuth RELATIVE TO THE SUN)
+         v = GradientV_InvertY ? 1 − v : v
+rgb    = TMapGradientV(uv)·ScaleGrad0  [+ TMapGradientV1(uv)·ScaleGrad1 if ScaleGrad1 > 1e-6]
+c      = max(0, dir · −LightDirDirInWorld0)                                    (cosine to the sun)
+rgb   += SunIsVisible ? c^SunPower · SunPower · LightDirRgbLinear0 : 0        (the disc: Power 500000 → 0.1°, never hit by a dome direction)
+rgb   += c^Atmo1.Power · Atmo1.Scale · Atmo1.RgbLinear + c^Atmo2.Power · Atmo2.Scale · Atmo2.RgbLinear     (the glow; Sunset: 200/3.00042/ff7713 and 3/0.50007/ffaa69)
+rgb    = lerp(rgb, Fog_LinearRGB, FogIntens) · GlobalScale ; min 16375
+```
+
+During the **first** dome sweep (bounce counter 0, bit 0 of pipeline+0x258)
+the peel renders surfaces with the lightmap decode scale forced to 0 and a
+sun-visibility scale set to `CHmsLightMapMood+0x24` (1.0), so the peeled
+surfaces show `LightDirRgb·max(0,n·−L)·shadow·MDiffuse` — the sun's first
+bounce — and the dome shows the sky; both restored to 1.0 afterwards
+(`FUN_140234df0` lines 480–530). What the baker measured is exactly that: a
+pad under a 16 m plate reads 12 % of an open pad at the Sunset quarter
+(the sky radiance is zenith-heavy / the horizon sees dark peeled terrain),
+verticals read 0.8 of floors at the Day quarter (bounce). The dome mesh's
+uv convention, `LightDirAngle_m11Zx`, `ScaleGrad0/1`, `GlobalScale` and
+`FogIntens` at bake time are **pending** (runtime sky constants; the
+lightmapper locates the dome object by its material having both the
+`GradientV` and `GradientV1` texture slots, `FUN_14028aea0`). Game compass
+[DISASSEMBLY, icon-shooter reflection strings]: azimuth 0 = North (+Z),
+90 = East (−X), 180 = South (−Z), 270 = West (+X); altitude 0 = horizon.
+
+**The dome direction set** [DISASSEMBLY `RenderLightIndirectBounces`
+0x140230ac0 lines 925–940, `FUN_140213c20` line 116, `FUN_140234c80`]: the
+list at `CHmsLightMap+0x4c8` with count `+0x4d0` = N = `m_LightAmbSampleCount`
+= 256, copied at init from the PackLightMap object's three direction sets
+(`[0],[1],[2]` ↔ the 256/64/25 sample counts; `Tech3_HDR_PSSM.PackLightMap.Gbx`
+references `Std.PointsInSphere.Gbx`, whose 135 sets include n = 256, 64, 25)
+— a uniform **sphere** set: with `Scale = 4/N` the accumulation
+`Σ_D Scale·max(0,n·D)` is exactly 1 for a uniform environment (downward
+directions see the peeled ground = bounce, upward ones the sky). The sweep
+order interleaves the list into ss² groups (ss = the supersample factor,
+3 → 9; `FUN_140460270` round-robin) — order only. `PeelDirInW` = the list
+direction itself. The same list serves every bounce sweep. The LCG
+`FUN_140238b60` (seed 0x7d3fb6ac at index 0; `x' = (0x3039 − x·0x3e39b193)
+mod 2³² & 0x7fffffff`, `r = (x'>>16)/32767`, index k > 0 re-seeds from the
+saved state plus one discarded draw) produces per direction a 6-float
+block `{0.5u, 0.5v, −(0.05 + 0.45w), c1, c2, −sqrt(1 − c1² − c2²)}` with
+(u,v,w) uniform in the unit half-ball (w ≥ 0, rejection) and (c1,c2)
+uniform in the unit disc; `FUN_140234c80` adds `CHmsLightMap+0x4a8/+0x4ac`
+to its 3rd/4th floats and uploads it as the 32-byte `SetILightDir` vertex
+constant — the peel camera's raster jitter, not the direction. The earlier
+"30° zenith cone" reading of this document was a fit to the plate
+measurements and is withdrawn.
 
 ### 2.4 Bounces [DISASSEMBLY]
 
@@ -214,8 +260,18 @@ draws the sphere directions: `n = min(n, g_MaxSpherePoints)` (global at
 stratified sphere-point generator (`FUN_14045fbd0(count·n)` then pick the
 subset `pass % n`), so consecutive bounce passes use different direction
 subsets. `BounceFactor` (2, 1.6 on BlueBay Sunrise, 1.8 Stadium Sunset, 3
-RedIsland Night) is the mood's multiplier on the bounced radiance
-[FILE: frame record; the exact multiply site is pending]. **Bounce iterations per quality**
+RedIsland Night) enters at `RenderLightIndirectBounces` 0x140230ac0 lines
+270–278 [DISASSEMBLY]: the four lightmap decode scales at scene+0x8f8..+0x904
+(`GbxP_LightGenPHdrScale`, `HBasisHdrScales3`, saved to the state and
+restored afterwards) are multiplied by `1/frame.BounceFactor` for the bounce
+sweeps — the intermediate lightmap is read back by `GeomILightIn0` through a
+scale divided by BounceFactor. How that yields a net ×BounceFactor on the
+stored result (the frame's own normalisation) is not yet reconciled —
+verify the sign on the baker's underside ratio before porting. The peel's
+texture LOD bias is `−0.5·log2(N)` (`FUN_140237fd0`, N = the sweep's
+direction count) and `MDiffuse` is the material's diffuse texture rasterised
+once per lightmap texel by the `Block_*_PeelDiff` shaders, so the albedo is
+a per-texel texture sample, not a material mean [DISASSEMBLY]. **Bounce iterations per quality**
 = the table at 0x141e6f248 = {VFast 0, Fast 2, Default 2, High 4, Ultra 6,
 Ultra2 6} (`RenderLightIndirectBounces` compares its bounce counter
 `[+0x158]` against it) [DISASSEMBLY]. The baker's undersides read 0.37 of
@@ -272,34 +328,79 @@ to `Bumpiness`, then renormalised):
 E(n) = max(0, C0 − C1·n.x + C2·(1 − n.y) − C3·n.z)        flat normal ⇒ E = C0
 ```
 
-**The WEBP encoder** [DISASSEMBLY 0x1404613e0 (the plane export), the
-writer at 0x1402159f0]: `libwebp64.dll` is libwebp **1.6.0**
-(`WebPGetEncoderVersion` → 0x010600, SharpYuv 0.4.2; the import table is
-virtualised by the protector, only `WebPPictureImportRGBX` shows by name).
-The lightmap planes are fed **directly**: `WebPPictureInit`, `use_argb = 0`,
-`colorspace = WEBP_YUV420`, `y/u/v` = the compress shader's planes,
-`y_stride = w`, `uv_stride = (w+1)/2` — libwebp does no colour conversion,
-the shader's BT.601 studio-swing YCbCr is what is coded. Config =
-`WebPConfigInit(WEBP_PRESET_DEFAULT, quality)` with **nothing else changed**
-(method 4, sns_strength 50, filter_strength 60, sharpness 0, strong filter,
-4 segments, 1 partition, 1 pass, no sharp-yuv, lossless 0). Quality: the
-colour image **91.0** (0x42b60000; the other branch of the same writer uses
-95.0) — `cwebp -q 91` (libwebp 1.5.0) on the decoded Tiny-16 colour image
-reproduces its VP8 header exactly (segment quantizers 11/8/6/4, filter
-strengths 3/2/0/0, level 3, one partition); the probe images, frame 1 and
-frame 2 carry the same 91-quality header (11/10/8/6, level 3); the three
-grey directional images are coded at a **lower quality** (base quantizer 68
-= q ≈ 24–26 by libwebp's quality→quantizer law; constant not yet located).
-Byte-identical WEBPs need libwebp 1.6.0 exactly plus identical planes.
+**From the compress shader to the stored images** [DISASSEMBLY
+`LightSumRenderToStatic` 0x14022be30 → `FUN_14022b370` → `FUN_14029c450`
+(NHmsLightMapBlender, per frame) → `FUN_14029c830`/`FUN_14029add0`/
+`FUN_14029bc10`/`FUN_14029bf40`; 2026-09-23]. The compress shader
+normalises the **whole frame** by one value — `t4` holds the four frame
+maxima, there is no per-chart buffer — `m_0 = min(max0, Mood.MaxHDR·2.5066283)`
+(the CPU also scales the four maxima by `1/max(1, max0/(Mood.MaxHDR·2.5066283))`
+and stores `MaxHDR = max0·0.39894226`, `HBasis234 = max1..3·0.6909883` in
+the 0x44-byte in-memory `SFrame`: +0xc MaxHDR, +0x10 HBasis234, +0x1c
+Bounce, +0x20 Sky, +0x24 Clouds, +0x28 StoreLAmbient, +0x2c Storage, +0x30
+Switch, +0x34 LAmbient, +0x40 Bump). Its outputs are 8-bit `Y4` (Y of the
+four coefficients, at the working resolution) and `Cb4`/`Cr4` at half
+resolution. The CPU then builds the stored images:
 
-**The per-chart byte** (`z4`, one per chart per frame, map-lightmap.md §3.4):
-the chart's own maximum relative to the frame's `MaxHDR`
-[DIFFERENTIAL §3.4 + the encoding above]: `fb = round(255 · chartMax /
-frame.MaxHDR)`, and the chart's pixels are `sqrt(E / (fb/255 · MaxHDR))`
-[INFERRED — the per-chart compress dispatch is the pending CPU item; the
-per-image maxima buffer `g_In_MaxHdrHBasis` is bound per chart]. Frame
-records [FILE, `clientre lmimages`]: 66-byte `SFrame` × 3 right after the
-constant head (no count word): `{u32 Bump, u32 0, u32 DayTime, f32
+```text
+colour image (frame image 0) = YCbCr_to_RGB_Down2x2 (0x14022af60), size = the chroma texture's:
+    Y' = (Y4[2x,2y].c0 + Y4[2x+1,2y].c0 + Y4[2x,2y+1].c0 + Y4[2x+1,2y+1].c0) · 0.25 · 1.1643835         (8-bit values)
+    R = Y' − 222.92155 + Cr·1.5960268 ;  G = Y' + 135.5753 − Cb·0.3917623 − Cr·0.81296766 ;  B = Y' − 276.83585 + Cb·2.0172322
+    each: v = (int)R ; v < 1 → 0 ; v > 254 → 255                                                       (truncation, no rounding)
+grey images (frame-0 image 1, three of them) = channels 1..3 of Y4 at Y4's size:  g = (int)(Y·1.1643835 − 18.630136), same clamp
+```
+
+Both stored at 1024² in every file we have; the code as read makes the
+colour half the size of the greys, so either the greys are halved on a path
+not yet located or the Y4 surface the CPU reads is already 1024² — **open**;
+a 1-texel checker item bake decides it (the colour would show a 2×2 box
+blur relative to the greys).
+
+**The per-chart byte** (`z4`, one per chart per frame, map-lightmap.md
+§3.4) is computed by `FUN_14029add0` on the 8-bit colour image **before**
+its WEBP encode, and the image is modified by it:
+
+```text
+for every chart i with w,h ≠ 0 (mapping version ≥ 9):
+    x0 = floor(x·imgW/W) ; y0 = floor(y·imgH/H) ; x1 = ceil((x+w)·imgW/W) − 1 ; y1 = ceil((y+h)·imgH/H) − 1   (clamped ≥ x0/y0)
+        → with imgW = 1024, W = 2048, x odd, w even this is exactly the packer node: node.x/2 … (node.x+node.w)/2 − 1
+    byte[i] = max over the rect of R, G and B                                            (empty rect → 0xff)
+charts whose position is exactly (x_j, y_j + h_j) of another chart j (same x, starting on j's bottom edge — only the
+    contiguous identical-chart groups of big maps; impossible for two packer nodes) form a vertical chain that shares
+    the chain's max and excludes its bottom row from the rescale
+for every chart with 1 ≤ byte ≤ 254:  every R,G,B in the rect = (uint8)(int)((float)v · (255.0f / (float)byte))      (0 and 255: untouched)
+```
+
+So the stored chart is stretched to a 255 maximum in the sqrt domain and
+the byte is its pre-stretch maximum: `chartMax_E = (byte/255)² · m_0`
+(irradiance `(byte/255)²·MaxHDR`) — the baker's measured rule. Frames 1
+and 2 run the same code on their own image 0. The greys are not touched.
+
+**The WEBP encoder** [DISASSEMBLY 0x1404613e0 (the plane export),
+`FUN_14029bc10` (colour), `FUN_14029bf40` (greys)]: `libwebp64.dll` is
+libwebp **1.6.0** (`WebPGetEncoderVersion` → 0x010600, SharpYuv 0.4.2; the
+import table is virtualised by the protector, only `WebPPictureImportRGBX`
+shows by name). Both callers build the same 16-byte request `{quality
+(float), lossless = quality > 100, 1, 100}` on top of
+`WebPConfigInit(WEBP_PRESET_DEFAULT, quality)` (method 4, sns_strength 50,
+filter_strength 60, sharpness 0, strong filter, 4 segments, 1 partition, 1
+pass, no sharp-yuv). The **colour** image (and frame 1, frame 2, the probe
+images) goes through `FUN_140460dd0` = the RGB bitmap import — libwebp does
+its own RGB→YUV — at quality **91** (`0x5b`, literal in `FUN_14029c640`/
+`FUN_14029c450`). The three **greys** go through `FUN_14029bf40`: Y plane =
+channel k of the grey bitmap, U = V = 0x80 planes of ((w+1)/2, (h+1)/2), fed
+directly (no conversion), concatenated with their end offsets recorded, at
+the quality held in the runtime global `DAT_14205c7fc` (read at
+0x14029c51f; a .bss variable with no visible initialiser — the baker's
+VP8-header match gives **30**; when `DAT_14205c7f8` is 0 the game writes
+one q-80 RGB webp of the three coefficients instead, which no file of ours
+shows). `cwebp -q 91` on the decoded Tiny-16 colour image reproduces its
+VP8 header exactly (segment quantizers 11/8/6/4, filter strengths 3/2/0/0,
+level 3, one partition). Byte-identical WEBPs need libwebp 1.6.0 exactly
+plus identical planes.
+
+Frame records [FILE, `clientre lmimages`]: 66-byte `SFrame` × 3 right after
+the constant head (no count word): `{u32 Bump, u32 0, u32 DayTime, f32
 ReplayTime = −FLT_MAX, f32 MaxHDR_Mood, f32 MaxHDR, f32 BounceFactor, f32
 SkyFactor, u32 SkyUseClouds, f16×3 MaxHDR_HBasisScaled234, u32
 StoreLAmbient, u32 LocalLight_Storage {0 None, 1 All, 2 OnlyRgbAccum}, u32
@@ -358,64 +459,134 @@ still pending.
 
 ## 3. Charts, packing, probes
 
-### 3.1 Chart allocation — the walk [DISASSEMBLY, typed decompile banked as client-re/decomp2-typed.tgz]
+### 3.1 Chart allocation — the walk [DISASSEMBLY, typed decompile banked as client-re/decomp2-typed.tgz; every constant below read off the code, 2026-09-23 RE child 2]
 
 Call chain: `NHmsLightMap::UpdateMapping` 0x14020f510 → `AllocateBlocks`
 0x14028f6e0 → `AllocateBlocks_` 0x1402901a0 → `AllocateWithScale_`
-0x140294830 → `AllocateWithScale_BlockSplit` 0x1402954f0 → `TryPack`
-0x140295d30 → the binary-tree rect packer 0x140492750/0x1404927b0/
-0x1404928b0/0x140492a80. (The probe/sprite atlases go through the same
-`AllocateBlocks_` with alloc mode 2 → 0x140296000: per-chart (w,h) = the
-model's stored size, stable sort by area, largest first, atlas side =
-`ceil(sqrt(Σwh + 0.5)·1.01) + 1` grown by 1 until everything fits — that is
-why the probe images are 198×194-ish, not powers of two.)
+0x140294830 → (chart list `FUN_140291450`, grouping `FUN_1402938c0`) →
+`AllocateWithScale_BlockSplit` 0x1402954f0 → `TryPack` 0x140295d30 → the
+binary-tree rect packer 0x140492750/0x1404927b0/0x1404928b0/0x140492a80 →
+write-back `SetUvTransfo` 0x1402923b0 (or `FUN_140291f20` in simple mode).
+(The probe/sprite atlases go through the same `AllocateBlocks_` with alloc
+mode 2 → 0x140296000: per-chart (w,h) = the model's stored `spriteCount`
+pair, stable sort by area, largest first, atlas side = `ceil(sqrt(Σwh +
+0.5)·1.01) + 1` grown by 1 until everything fits — that is why the probe
+images are 198×194-ish, not powers of two.)
+
+**The layout size, granularity and pad are not passed in — they are
+derived** (RE child 1 read `UpdateMapping`'s 5th argument as dims; it is the
+block array `{ptr, count}` at `CHmsLightMap+0xd8/+0xe0`):
+
+```text
+W = H = {1024, 2048, 4096}[T[quality]]      T = table 0x141e6f278 = {VFast 1, Fast 1, Default 1, High 1, Ultra 2, Ultra2 2}
+                                            (FUN_14020dd80 → FUN_14020dd90, stored at SGlobal+0x478 by RenderLighting_Frames 0x14021e340;
+                                             ComputeLighting 0x14021a9b0 lowers the index to 0 (1024) when VRAM < 0xC400000 B and to 1 when
+                                             VRAM < 0x2BC00000 B; a re-bake with a valid cache reuses the cache mapping's stored W,H)
+k  = (max(W,H) | 1024) >> 10 ;  lg = bsr(k) + 1          (FUN_14028f190, called by AllocateBlocks_ right after the dims copy)
+g  = 1 << (lg − 1)                                       granularity   → 2048: 2   (1024: 1, 4096: 4)
+pad = 1 << max(0, lg − 2)                                border        → 2048: 1   (1024: 1, 4096: 2)
+m  = roundup(max(4·pad, 6), g)                           minimum chart side (FUN_140295ce0) → 6
+```
+
+The layout unit is therefore **half a stored texel** at 2048 (the images are
+1024²): `pad = 1` is the half-texel centre inset, `g = 2` makes every chart a
+whole number of stored texels, and `m = 6` = 3 stored texels.
 
 **Per chart** (`FUN_1402917e0` + `GetPreLightGenMeterByUv` 0x14028f480):
 
 ```text
-f      = PreLightGen.MeterByUv (float +0, our "u02") × block.scale      (uv set 0: bounds at PreLightGen+4..+0x14 = u0,v0,u1,v1;
-                                                                          per-sub-visual table when flags & 0x10000; an override when & 0x20000)
+f      = PreLightGen.MeterByUv (float +0, our "u02") × blockScale     (uv set 0 bounds at PreLightGen+4..+0x10 = u0,v0,u1,v1;
+                                                                       alloc mode 1 uses the second set at +0x14..+0x20;
+                                                                       per-sub-visual table at PreLightGen+0x40 (stride 0x14: {f, u0,v0,u1,v1}) when flags & 0x10000;
+                                                                       the merged group's bounds and average f when flags & 0x20000)
+blockScale = (kind 0 block: BlockInfo float at model+0x98→+0x3c ; items: 1.0) × qualityByte/255       (FUN_14021d8b0, FUN_14021d8e0)
 ext    = ((u1−u0)·f, (v1−v0)·f)          metres; non-finite → (0,0)
 area   = ext.x · ext.y                    m²
 ```
 
+The quality byte is the per-element `MapElemLightmapQuality` (chunk
+`0x03043068`, block+0x9d / item+0xc2) through `FUN_140dcc1c0` =
+`(√2)^e · G`, `e = {0 Normal:0, 1:+1, 2:+2, 3:+3, 4:−1, 5:−2, 6:−3, other:0}`
+(FUN_140dcc160), `G` = 1.0 for the map's own objects, 0.0625 for the
+decoration challenge's objects on the Stadium-family collection id, 0.5 on
+the others (`CGameCtnApp::HmsLightMapUpdateBlocksAndItemsQuality`
+0x140dcc290); `byte = clamp(int(f·255), 1, 255)` (values < 2 → 1) into the
+scene-bound lm record +0x38. A terrain-class block also gets an 8-byte
+neighbour mask at +0x40 (its quality blended with each of the 8 neighbouring
+tiles: `(q_self + q_nb)/2`, 0 when either < 0.01) — the packed-geometry
+charts.
+
+**The chart list** (`FUN_140291450`): one 0x18-byte record `{model*, u32
+flags|subvisual, u32 blockparam, u32 blockIndex, u32 group}` per 0x58-byte
+block record when the model's sub-visual count (`PreLightGen+0x48`) is < 2 —
+`flags = 0, group = −1`. A model with n ≥ 2 sub-visuals (the
+`Item_Prefab_MultiMesh` case) gets **two** records: `{flags 0x10000 | 0,
+group −1}` = sub-visual 0 on its own, and `{flags 0x20000, group g}` = sub-
+visuals 1..n−1 merged: `FUN_14028f1d0` packs their uv rects into one rect
+(`FUN_141402b00`, spacing 0.015) and stores the average `MeterByUv` and the
+merged bounds in the group record (stride 0x28; +0x18 → the per-sub-visual
+ST table used by `SetUvTransfo`). Tiny/campaign items are single-visual:
+one chart per item.
+
+**Simple mode** (`AllocateWithScale_` sets state+0x138 when no chart has a
+group or the 0x30000 flags; always true for our maps): the charts are first
+grouped by `FUN_1402938c0`: charts with the same `(model, blockScale)` and
+`ext.x·D ≤ 100 && ext.y·D ≤ 100` (D = W·H/Σarea, in (layout/m)²; a
+dimensionally odd test, but that is the code) share a group laid out as a
+`cols × rows` grid (`FUN_140293d70`; contiguous cells, only the last column/
+row inset by 2·pad, `FUN_140291f20`); the Stadium `DecoWall`
+`Base_VFCMiddle_Air.Prefab.Gbx` pieces are strip-merged (`FUN_14028ff90`
+entry+0x24). On the tiny maps D is in the hundreds, so **every chart is its
+own group** and the packing below sees one rect per chart.
+
 **Density and scale search** (`AllocateWithScale_BlockSplit`):
 
 ```text
-D = W·H / Σ area                      texels per m² (W = H = the packer atlas side, dims[0..1]); fixed-density mode instead uses WantedTexelByMeter² (+0x28 set when param[1]==0 && param[4] > 1e-9)
-scale_hi = 1.0 ; if sqrt(D)·max_ext.x > W or sqrt(D)·max_ext.y > H: scale_hi = 1 / max(ratio)²
-if (W/g)·(H/g)·0.9 < N: scale_hi = 0.01                               (g = granularity, dims[2])
+D = W·H / Σ area                      (layout units/m)²  (fixed-density mode instead uses WantedTexelByMeter² — alloc mode 0 with dims+0x10 > 1e-9; not the editor)
+scale_hi = 1.0 ; if sqrt(D)·max_ext.x / W > 1 or sqrt(D)·max_ext.y / H > 1: scale_hi = 1 / max(ratio)²
+if (W/m)·(H/m)·0.9 < N: scale_hi = 0.01                               (integer divisions)
 iter = 0
 loop:  iter++ ; scale_lo = scale_hi·0.9 ; s = sqrt(scale_lo·D)
-       if TryPack(s) succeeds: break                                    (also stops when the largest chart's ext·s < g)
+       if TryPack(s) succeeds: break
        scale_hi = scale_lo
+       if the largest-area chart has ext.x·s < m or ext.y·s < m: break   (nothing left to shrink)
 iter = min(iter, 1)
 bisect while iter < maxIter[quality] = {VFast 1, Fast 3, Default 6, High 8, Ultra 10, Ultra2 10}:
        iter++ ; mid = (scale_lo + scale_hi)/2 ; s = sqrt(mid·D)
-       TryPack(s) into the spare node buffer: success → scale_lo = mid, swap buffers ; failure → scale_hi = mid
-result: s_final = sqrt(scale_lo·D) (= "AllocatedTexelByMeter"), the node buffer of the last success
+       TryPack(s) into the spare packer: success → scale_lo = mid, swap packers ; failure → scale_hi = mid
+result: s_final = sqrt(scale_lo·D) (result+0x14, "AllocatedTexelByMeter" in layout units per metre), the last successful packer
 ```
 
-**TryPack(s)** (0x140295d30; the order array is a *stable LSD radix sort*
-of the charts by the float bits of `area`, 0x14012cf66 — equal areas keep
-IdForLightMap order; TryPack walks it from the largest down, so among equal
-areas the higher index is placed first):
+**TryPack(s)** (0x140295d30). The order array is the state of the stable
+LSD radix sorter 0x14012c850 (4 byte passes over the float bits, sign-aware,
+a pass skipped when the keys are already ordered); `AllocateBlocks_` feeds
+it four keys with N = block count — `|blockExtent|²` (block +0x44..+0x4c),
+then block +0x38, +0x3c, +0x40 — and `BlockSplit` adds the chart **area**
+last, so the order is **ascending area with ties broken by +0x40, then
++0x3c, +0x38, |extent|², then IdForLightMap index** (when the chart count
+differs from the block count the sorter resets: area then index only).
+TryPack walks `order[N−1] … order[0]`, i.e. largest area first and, among
+equal areas, the chart with the largest +0x40 first:
 
 ```text
-reset packer to (W, H); fail if g²·N ≥ W·H
+reset packer to (W, H); fail if m²·N ≥ W·H
 carry = 0
 for k = N−1 … 0:  i = order[k]
-    if ext.x == 0 or ext.y == 0: (w,h) = g·mins[i]
+    if ext.x == 0 or ext.y == 0: (w,h) = m·mins[i]                       (mins = (1,1) for every chart in simple mode)
     else:
-        a  = (ext.x·s)·(ext.y·s)
-        Fit(a):      t = sqrt(a / (ext.x·ext.y));  w0 = ceil(ext.x·t), h0 = ceil(ext.y·t)          (= ceil(ext·s))
-        Fit(a + max(carry, 0)) → (w1, h1)
-        w = w0 + (w0 < w1) ; if w % g: w -= w % g, and if w0 < w1: w += g ; w = max(w, g·mins[i].x)
-        h = h0 + (h0 < h1) ; if h % g: h -= h % g, and if h0 < h1: h += g ; h = max(h, g·mins[i].y)
-        carry += a − w·h                                            (the area deficit is carried to the next chart)
+        a  = ((ext.y·s)·ext.x)·s                                          float32, in that order
+        Fit(A): t = sqrtf(A / (ext.x·ext.y)); w = (int)floorf(ext.x·t); h = (int)floorf(ext.y·t)     ← FLOOR (FUN_14028f570 / floorf 0x14195c7b8), not ceil
+        (w0,h0) = Fit(a) ;  (w1,h1) = Fit(a + max(carry, 0))
+        w' = w0 + (w0 < w1) ; if w' % g: { w = w' − w' % g ; if w' < w1: w += g } else w = w' ; w = max(w, m·mins[i].x)
+        h' = h0 + (h0 < h1) ; if h' % g: { h = h' − h' % g ; if h' < h1: h += g } else h = h' ; h = max(h, m·mins[i].y)
+        carry += a − float(w·h)                                         (the floor leaves a POSITIVE deficit that the next chart pays back with +1)
     if !insert((w,h), i+1): fail
 success
 ```
+
+This is the origin of the ±1/±2 bumps the baker measured (26 identical pads
+at 302 and one at 304): the first charts of a run of equal areas are floored
+and a later one absorbs the accumulated deficit.
 
 **The packer** (0x140492a80, the classic binary-tree lightmap packer; node
 = `{u16 x, y, w, h; ptr user; i32 child0, child1}`, root = (0, 0, W, H)):
@@ -432,30 +603,22 @@ insert(node, w, h):
           node = child0
 ```
 
-**Write-back** (`SetUvTransfo` 0x1402923b0, exact): for every packer node
-with a user, with `pad = dims.pad` (forced to 1 when 0, TryPack):
+**Write-back** (`SetUvTransfo` 0x1402923b0; simple mode `FUN_140291f20`,
+identical for singleton groups): for every packer node with a user,
+`pad = result+0x20` (set by FUN_14028f190; TryPack forces 1 when 0):
 
 ```text
 x = node.x + pad ;  y = node.y + pad ;  w = node.w − 2·pad ;  h = node.h − 2·pad      (+ a sub-atlas origin when given)
-layout[idx] = {i16 x, i16 y, i16 w, i16 h}                     ← the per-chart rect of the mapping (map-lightmap.md §3.3)
-uvTransfo[idx] = ST from (x, y, w, h), the atlas dims and the chart's uv bounds (FUN_140200970)
+layout[idx] = {i16 x, i16 y, i16 w, i16 h}                     ← the per-chart rect of the mapping (map-lightmap.md §3.3): x,y odd, w,h even
+uvTransfo[idx] (FUN_140200970): e = W/16384 ;  ox = (x + e)/W ; oy = (y + e)/H ; sx = (w − 2e)/W ; sy = (h − 2e)/H
+                                composed with uv → (uv − u0)/(u1 − u0)          (charts with w or h = 0 get {0, 0, −1, −1})
 ```
 
-With the packer run in the 2048-unit layout space (W = H = 2048, g = 2,
-pad = 1 — the only values that give the observed even sizes at odd
-positions: node coordinates are multiples of g = 2, so `x = node.x + 1` is
-odd and `w = node.w − 2` even) the image texel size of a chart is `w/2`,
-and `ceil(ext·s)` in TryPack is the chart's size *including* its two gutter
-texels [dims INFERRED from the layout statistics; the constants are passed
-by `UpdateMapping` 0x14020f510 — read them there to close this].
-
-Still to read for a bit-identical table: `FUN_140291450` (builds the chart
-list from the blocks: which visuals make a chart, the `mins` pairs and the
-`+0x14`/flag 0x30000 grouping), `FUN_1402938c0`/`FUN_140293d70`/
-`FUN_140294220` (the "simple mode" grouping of charts into blocks before the
-split — active when no chart has a group id or the 0x30000 flags),
-`FUN_140295ce0` (g), `FUN_1402923b0` (the layout write-back and the
-per-frame scale byte), and the dims passed by `UpdateMapping` (W, H, g).
+In stored-texel terms the uv range [u0,u1] maps to
+`[node.x/2 + 0.5 + 1/16, node.x/2 + node.w/2 − 0.5 − 1/16]`: the chart's
+edges sit on the **centres** of its first and last texels (the classic
+bilinear inset); the node IS the chart's texel footprint, there is no gutter
+between charts beyond the packer's own free space.
 
 ### 3.2 The probe volume [DISASSEMBLY `ProbeGrid_*`, FILE map-lightmap.md §3.8–3.9]
 
@@ -596,6 +759,26 @@ rotated`…). A rejected cache → the coarse load-time recompute
   (class 0x09181000: 50000, 50, 0.25, 5, 0.125; 0.75; …) and the default
   mood XML (`Latitude 35, DayTime01 0.644, LAmbient cce2ff × 0.815, LDirSun
   fffef1 × 2.86, T3LightMap MaxHDR 5 Bounce 3 Sky 0.3`) [FILE].
+* The sky the dome pass renders comes from the mood folder
+  `<Collection>\Media\Moods\<Mood>\`: `SkyColor.dds` (BC6H_UF16 2048×1024,
+  12 mips — `TMapGradientV`), `SkyClouds.dds` (`TMapGradientV1`),
+  `AmbCubeP.dds`, `EnvCubicHdr.dds`, `Clouds.tga`, `Mood.MoodSetting.xml`
+  (`<Atmo><HdrSun Power><Atmo1/2 Power Color Scale>` = the `Sky_p` lobes,
+  `<Fog Color IntensMax …>`). All 20 collection×mood sets are banked under
+  `client-re/moods/<Collection>-<Mood>-<file>` (`mapgeom raw <pack path>
+  --out F`). `Techno3\MotionManagerWeathers\Default.MoodSetting.xml` and
+  `Techno3\Media\Texture\Image\DefaultSkyGradV.dds/.exr`,
+  `DefaultEnvCubicHdrScaleA2.dds`, `Techno2\…\DefaultCubeAmbientP.dds`,
+  `Clouds\…\Cumulus02.tga` are the fallbacks the blender loads
+  (`FUN_14028aea0`) when a scene has no mood [DISASSEMBLY].
+* `CPlugDayTime` = class 0x09181000 (`FuncDayTime`; constructor 0x140592ca0,
+  0x138 bytes): chunk 0x09181000 = {50000, 50, 0.25, 5, 0.125}, 0x09181001 =
+  {1, 1×6}, 0x09181002 = {0.75}, 0x09181004…08 as banked. The DayTime →
+  sun-direction function is **still not located** (no sinf/cosf call in the
+  mood-XML parser 0x1405143c0 or the DecorationMood class; candidates: the
+  CPlugDayTime methods 0x140592000–0x140596000, `CPlugWeather`). Until then
+  the baker's differential (bakes of one map at several DayTimes inside one
+  quarter, azimuth of the sky glow) is the way to the formula.
 * The stored `LAmbient` of frame 0 is not the XML colour (Tiny 16: (0.751,
   1.833, 1.116); Tiny 11: (1.581, 1.792, 1.614)) — a derived reference the
   runtime scales by; treat as opaque.
@@ -612,55 +795,61 @@ rotated`…). A rejected cache → the coarse load-time recompute
    write three 128-grey images (zero directional terms) — or the real
    coefficients from §2.5 with the item's tangent frame; store their maxima
    in the frame record's f16×3.
-3. **Direct sun: keep it** (corrected). lmtool adds
-   `sun·max(0,n·L)·sunVis`; the client does the same with 64 disc samples
-   (§2.2), shadow-mapped, LDirSun of the quarter-mood, and feeds the lit
-   result into the bounces. Fix: only the sample pattern (64, disc of radius
-   sin(EmittAngularSize), 30°-rotated jittered grid) and the direction
-   formula (pending) differ.
+3. **Direct sun: NOT in frame 0** (re-corrected 2026-09-23, §0). lmtool
+   adds `sun·max(0,n·L)·sunVis` to the texel; the client lights only the
+   *peeled bounce surfaces* with the sun (`GeomILightIn0`: one shadow map,
+   `LightDirRgb·max(0,n·−L)·shadow·MDiffuse`) and the texel receives it
+   through the dome directions that hit those surfaces. Fix: drop the
+   direct term; put `LDirSun` on the bounce-surface radiance only.
 4. **Ambient shape.** lmtool: `ambient + up·(0.5+0.5 n.y) + sky·skyVis`
-   (fitted). Client (stored frame): **no unoccluded term at all** — the sky
-   cone (item 5) plus the bounces; nothing else. Fix: drop `ambient` and
-   `up`.
-5. **Sky = a 30° zenith cone light.** lmtool: 64 cosine-weighted hemisphere
-   rays × a fitted sky colour. Client: N (= 256) uniform directions inside a
-   cone of half-angle ≈ 30° around +y (taken from the game's sphere point
-   table), each a shadow-mapped directional light of colour ≈
-   1.55·LAmbient·SkyFactor, summed with `max(0, n·D)/N`. Fix: replace the
-   hemisphere with the cone (this is why the editor's shadows under plates
-   are near-black and lmtool's were grey, and why walls are dark).
+   (fitted). Client (stored frame): **no unoccluded term at all** — the
+   dome sweep (item 5) plus the bounces; nothing else. Fix: drop `ambient`
+   and `up`.
+5. **Sky = the rendered sky dome over a uniform sphere set.** lmtool: 64
+   cosine-weighted hemisphere rays × a fitted sky colour. Client: N = 256
+   directions of the PointsInSphere 256-set (order interleaved in 9 groups),
+   each an orthographic depth-peel; a texel that sees no surface along `D`
+   sees `Sky_p(D)` = `SkyColor.dds` (u shifted by the sun azimuth) ×
+   ScaleGrad0 + clouds layer + the two `Atmo` glow lobes around the sun,
+   fogged, × GlobalScale (§2.3); accumulation `Σ_D (4/N)·max(0,n·D)·L(D)`
+   (H-basis: 1/N with the projection weights). Fix: decode the mood's BC6H
+   `SkyColor` (banked under client-re/moods/), implement `Sky_p`, use the
+   256 sphere directions; the "30° cone" is withdrawn.
 6. **Bounce.** lmtool: one bounce, constant albedo 0.5, off by default.
-   Client: 2 (Default) / 4 (High) / 6 (Ultra) sweeps with the material
-   albedo (`MDiffuse`) and the direct sun on the bounce surfaces, ×
-   `BounceFactor` (2 / 1.6 / 1.8 / 3); the sea/ground bounce is what lights
-   undersides (0.37 of the open floor). Fix: albedo from the material diffuse
-   textures (mean colour per material is enough at lightmap resolution), the
-   sun (64 disc samples, its EmittAngularSize) on the bounce input,
-   BounceFactor from the quarter-mood XML, 2 iterations for a Default bake.
-7. **Direction sets.** lmtool: stratified random. Client: the precomputed
-   `Std.PointsInSphere.Gbx` sets (banked under client-re/): the sky cone =
-   the points of the 4112-set inside 30° of +y (≈ 275 → the stored 256),
-   the sun = a 30°-rotated jittered grid of 64 in the disc of radius sin(A),
-   the bounces = the same table through `ComputeBounces_SpherePoints`
-   (64·n and 32·n point sets partitioned into n interleaved subsets, one
-   subset per pass). Fix: read the table and use the same sets; the noise
-   pattern then matches the editor's texel for texel.
+   Client: 2 (Default) / 4 (High) / 6 (Ultra) sweeps with the per-texel
+   material albedo (`MDiffuse`, LOD bias −0.5·log2 N) and the direct sun on
+   the bounce surfaces, decode scale ÷ `BounceFactor` during the sweeps
+   (§2.4 — reconcile the sign against the 0.37 underside ratio before
+   porting); the sea/ground bounce is what lights undersides. Fix: albedo
+   from the material diffuse textures, the sun on the bounce input, the
+   BounceFactor handling as read, 2 iterations for a Default bake.
+7. **Direction sets.** lmtool: stratified random. Client: the 256-point
+   sphere set for sky and bounces (§2.3), the per-direction LCG jitter block
+   (seed 0x7d3fb6ac) for the peel camera, the disc grid (§2.2) only for
+   directional-light passes that frame 0 does not run. Fix: read
+   `Std.PointsInSphere.Gbx` (banked), take its 256-set, reproduce the LCG;
+   the noise pattern then matches the editor's texel for texel.
 8. **Mood parameters by DayTime quarter**, not by the decoration's name
    (§6). Fix: read `0x03043056`, pick the quarter's XML; the frame record's
    MaxHDR_Mood/Bounce/Sky must be that mood's.
 9. **Frame record.** lmtool copies a template's. Client: per-bake `MaxHDR =
    min(peak irradiance, Mood.MaxHDR)`, `MaxHDR_HBasisScaled234` = the three
    directional maxima, DayTime = the map's word. Fix: compute them.
-10. **Per-chart byte.** lmtool: `fb0 = 255·max/K` with a fitted K. Client:
-    K = the frame's `MaxHDR` (§2.5). Fix: K := frame.MaxHDR (drop the fit).
+10. **Per-chart byte.** lmtool: `fb0 = 255·max/K` with a fitted K. Client
+    (§2.5, `FUN_14029add0`): on the finished 8-bit colour image, `byte =
+    max(R,G,B)` over the chart's node rect, then the rect's pixels ×
+    `255/byte` truncated (bytes 1..254 only); frames 1, 2 alike. Fix: port
+    it verbatim after the compress emulation; drop the fit.
 11. **Chart density and packing.** lmtool: `u02 × 0.5625` per metre, fixed,
-    own packer. Client: §3.1 exactly — `D = W·H/Σarea`, shrink ×0.9 until
-    it packs, then 5/7/9 bisection steps (Default/High/Ultra), charts sized
-    `ceil(ext·s)` with the area-deficit carry, stable radix order by area,
-    largest first, the binary-tree packer with the `dw > dh` cut rule.
-    Fix: port §3.1 verbatim (it is ~150 lines); the 0.5625 was `s_final`
-    for the tiny maps' Σarea.
-12. **Probes.** Image 1 = sky-cone visibility fraction, image 2 = the
+    own packer. Client: §3.1 exactly — W = H = 2048 with g = 2, pad = 1, m =
+    6 derived from W; `D = W·H/Σarea`; shrink ×0.9 until it packs, then
+    5/7/9 bisection steps (Default/High/Ultra); charts sized `floor(ext·t)`
+    with the positive area-deficit carry and the +1 bumps; stable radix order
+    by area with the +0x40/+0x3c/+0x38/|extent|² tie-breaks, largest first;
+    the binary-tree packer with the `dw > dh` cut rule; x = node.x + 1, w =
+    node.w − 2. Fix: port §3.1 verbatim (~200 lines); the 0.5625 was
+    `s_final/2` for the tiny maps' Σarea.
+12. **Probes.** Image 1 = sky (dome-direction) visibility fraction, image 2 = the
     unoccluded ambient (inferred), validity = front-face fraction over the
     directions (§3.2); pixels are **sRGB(value/scale)**, not sqrt and not
     linear. lmtool's "inside test by back-face rays" is the same idea; make
