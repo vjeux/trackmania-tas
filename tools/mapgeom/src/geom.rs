@@ -328,6 +328,16 @@ impl<'a> Collector<'a> {
                     self.slot(*c, slots, &m, depth);
                 }
             }
+            // The decoration Scene3d: every mobil's solid at its placement (the
+            // light rig draws nothing).
+            Node::Layout(l) => {
+                for m in &l.mobils {
+                    if m.solid >= 0 {
+                        let x = compose(at, &from_quat(m.rot, m.pos));
+                        self.slot(m.solid, slots, &x, depth);
+                    }
+                }
+            }
             Node::ItemModel(i) => self.slot(*i, slots, at, depth),
             Node::Material(..) => {}
             Node::Crystal(c) => {

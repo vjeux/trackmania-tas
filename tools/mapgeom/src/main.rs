@@ -3586,6 +3586,22 @@ fn describe(n: &Node) -> String {
             r.version, (r.u01, r.u02), r.u03.len(), r.u04.len(), r.u05.len(), r.u07.len(), r.u14, r.u17,
             r.u04.first(), r.u04.last(), r.u05.first(), r.u05.last()
         ),
+        Node::Layout(l) => {
+            let mut s = format!("CSceneLayout v{} {} lights, {} mobils, extra {}", l.version, l.lights.len(), l.mobils.len(), l.extra);
+            for (i, li) in l.lights.iter().enumerate() {
+                s.push_str(&format!(
+                    "\n      light {i} {:?} pos [{:.3}, {:.3}, {:.3}] rot xyzw [{:.4}, {:.4}, {:.4}, {:.4}] v{} bitmaps {:?} light node {} u01 {}",
+                    li.name, li.pos[0], li.pos[1], li.pos[2], li.rot[0], li.rot[1], li.rot[2], li.rot[3], li.version, li.bitmaps, li.light, li.u01
+                ));
+            }
+            for (i, m) in l.mobils.iter().enumerate() {
+                s.push_str(&format!(
+                    "\n      mobil {i} {:?} pos [{:.3}, {:.3}, {:.3}] rot xyzw [{:.4}, {:.4}, {:.4}, {:.4}] u01 {} flags 0x{:x} solid node {} u02 {} prefab {}",
+                    m.name, m.pos[0], m.pos[1], m.pos[2], m.rot[0], m.rot[1], m.rot[2], m.rot[3], m.u01, m.flags, m.solid, m.u02, m.prefab
+                ));
+            }
+            s
+        }
         Node::Tree(t) => format!(
             "CPlugTree {:?} children {:?} visual {} shader {} surface {} flags 0x{:x} transform {}",
             t.name, t.children, t.visual, t.shader, t.surface, t.flags,

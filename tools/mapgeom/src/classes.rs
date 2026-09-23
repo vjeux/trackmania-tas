@@ -631,6 +631,61 @@ impl<'a> Graph<'a> {
                 }
                 Ok(())
             }
+            // ------------------------------------------------ CSceneLayout
+            // The decoration Scene3d (DISASSEMBLY: CSceneLayout::ArchiveChunk
+            // 0x1407efc20, case 0x1c at 0x1407f0554). Versions < 3 take the
+            // legacy reader 0x1407ef190, never met.
+            0x0A00301C => {
+                let version = self.r.u32()?;
+                if version < 3 {
+                    return Err(format!("CSceneLayout chunk 0x0A00301C version {version} (legacy reader not implemented)"));
+                }
+                let mut layout = Layout { version, ..Layout::default() };
+                let n = self.r.u32()? as usize;
+                for _ in 0..n {
+                    let name = self.r.lookback()?;
+                    let pos = self.r.vec3()?;
+                    let rot = self.r.quat()?;
+                    let lv = self.r.u32()?;
+                    let bitmaps = [self.noderef()?, self.noderef()?, self.noderef()?];
+                    let light = self.noderef()?;
+                    let u01 = self.r.u32()?;
+                    layout.lights.push(LayoutLight { name, pos, rot, version: lv, bitmaps, light, u01 });
+                }
+                let n = self.r.u32()? as usize;
+                for _ in 0..n {
+                    let name = self.r.lookback()?;
+                    let pos = self.r.vec3()?;
+                    let rot = self.r.quat()?;
+                    let u01 = u16::from_le_bytes(self.r.take(2)?.try_into().unwrap());
+                    let flags = u64::from_le_bytes(self.r.take(8)?.try_into().unwrap());
+                    let solid = self.noderef()?;
+                    let u02 = if version >= 4 { self.noderef()? } else { -1 };
+                    let prefab = if version >= 5 { self.noderef()? } else { -1 };
+                    layout.mobils.push(LayoutMobil { name, pos, rot, u01, flags, solid, u02, prefab });
+                }
+                layout.extra = self.noderef()?;
+                // v ≥ 2 tail (0x1407f072e): the weather (DayTime.MotionManager-
+                // Weathers), a u32 list, three CPlugBitmap refs (the env cube
+                // 0x2a = DefaultEnvCubicHdrScaleA2), an 11-word block
+                // (0x141406680: 6 + 5 u32), four u32, a 0x0A03A000 ref.
+                if version >= 2 {
+                    layout.weather = self.noderef()?;
+                    let n = self.r.u32()? as usize;
+                    self.r.take(4 * n)?;
+                    layout.env_bitmaps = [self.noderef()?, self.noderef()?, self.noderef()?];
+                    for v in layout.params.iter_mut() {
+                        *v = self.r.f32()?;
+                    }
+                    for v in layout.u03.iter_mut() {
+                        *v = self.r.u32()?;
+                    }
+                    layout.u04 = self.noderef()?;
+                }
+                acc.touched = true;
+                acc.layout = Some(Box::new(layout));
+                Ok(())
+            }
             // CPlugMediaClipList / CGamePodiumInfo: version, external clips.
             0x09189000 | 0x03168000 => {
                 let _v = self.r.u32()?;
@@ -2324,6 +2379,7 @@ fn known(_class_id: u32, cid: u32) -> bool {
             | 0x0904F016
             | 0x0904F017
             | 0x0904F01A
+            | 0x0A00301C
             | 0x09189000
             | 0x03168000
             | 0x0900C003

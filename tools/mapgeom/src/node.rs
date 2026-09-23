@@ -280,6 +280,8 @@ pub enum Node {
     /// `CPlugTree`: one node of a `CPlugSolid`'s tree — its children, its
     /// visual and the material (shader) it is drawn with, its local transform.
     Tree(Box<Tree>),
+    /// `CSceneLayout` chunk 0x0A00301C: the decoration's light rig and solids.
+    Layout(Box<Layout>),
     Other(u32),
 }
 
@@ -297,6 +299,62 @@ pub struct Tree {
     /// bit 2 is set.
     pub flags: u32,
     pub transform: Option<[f32; 12]>,
+}
+
+/// `CSceneLayout` (0x0A003000) chunk `0x0A00301C` — the decoration Scene3d:
+/// its light rig and the solids placed in the world. Layout from the
+/// reader `CSceneLayout::ArchiveChunk` 0x1407efc20 (case 0x1c at
+/// 0x1407f0554, versions ≥ 3; v5 on the current packs):
+/// `u32 version; lights[]: { Id name; Vec3 pos; Quat xyzw; u32 v; ref[3]
+/// CPlugBitmap; ref GxLight; u32 }; mobils[]: { Id name; Vec3 pos; Quat
+/// xyzw; u16; u64 flags; ref CPlugSolid; v≥4 ref 0x090BB000; v≥5 ref
+/// CPlugPrefab }; ref 0x0A040000` (DISASSEMBLY 2026-09-23; leaf readers
+/// 0x141462f40 + 0x140194a20 = pos then quat, 0x1407ef120 = the light
+/// record, 0x140155240 / 0x1404b8570 / 0x1407f0d90 = the typed refs).
+#[derive(Clone, Debug, Default)]
+pub struct Layout {
+    pub version: u32,
+    pub lights: Vec<LayoutLight>,
+    pub mobils: Vec<LayoutMobil>,
+    /// The `0x0A040000` reference after the mobils.
+    pub extra: i32,
+    /// v ≥ 2: the weather node (`DayTime.MotionManagerWeathers.Gbx`).
+    pub weather: i32,
+    /// v ≥ 2: three CPlugBitmap refs (the third is the environment cube).
+    pub env_bitmaps: [i32; 3],
+    /// v ≥ 2: an 11-float block (0x141406680) — meaning not pinned.
+    pub params: [f32; 11],
+    pub u03: [u32; 4],
+    /// v ≥ 2: a `0x0A03A000` reference.
+    pub u04: i32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct LayoutLight {
+    pub name: String,
+    pub pos: [f32; 3],
+    /// x, y, z, w
+    pub rot: [f32; 4],
+    pub version: u32,
+    pub bitmaps: [i32; 3],
+    /// The GxLight node (inline `GxLightAmbient` / `GxLightDirectional`).
+    pub light: i32,
+    pub u01: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct LayoutMobil {
+    pub name: String,
+    pub pos: [f32; 3],
+    pub rot: [f32; 4],
+    /// A u16 (`Read2` 0x14012c330): 0x401 on the sky dome, 1 on the solids.
+    pub u01: u16,
+    pub flags: u64,
+    /// The `CPlugSolid` (inline for BlueBay, an external `.Solid.Gbx` for
+    /// the other collections).
+    pub solid: i32,
+    pub u02: i32,
+    pub prefab: i32,
 }
 
 impl Node {
@@ -321,6 +379,7 @@ impl Node {
             Node::RoadChunk(_) => crate::blockinfo::C_ROAD_CHUNK,
             Node::Light(c, _) => *c,
             Node::Tree(_) => 0x0904F000,
+            Node::Layout(_) => 0x0A003000,
             Node::Other(c) => *c,
         }
     }
@@ -541,6 +600,7 @@ pub struct Acc {
     pub physics_id: u8,
     pub light: Option<Box<LightInfo>>,
     pub tree: Option<Box<Tree>>,
+    pub layout: Option<Box<Layout>>,
     pub touched: bool,
 }
 
@@ -563,6 +623,7 @@ impl Acc {
             physics_id: 0,
             light: None,
             tree: None,
+            layout: None,
             touched: false,
         }
     }
@@ -589,6 +650,9 @@ impl Acc {
         if let Some(t) = self.tree {
             return Node::Tree(t);
         }
+        if let Some(l) = self.layout {
+            return Node::Layout(l);
+        }
         match class_id {
             C_SURFACE => Node::Surface(self.surface),
             C_SOLID2MODEL => Node::Solid2(self.solid2),
@@ -603,8 +667,6 @@ impl Acc {
             }),
             C_VERTEX_STREAM => Node::VertexStream(self.vstream),
             C_ITEM_MODEL | C_COMMON_ITEM_ENTITY_MODEL | C_BLOCK_ITEM | C_SOLID => {
-                Node::ItemModel(self.entity_model)
-            }| C_COMMON_ITEM_ENTITY_MODEL | C_BLOCK_ITEM => {
                 Node::ItemModel(self.entity_model)
             }
             c if is_visual(c) => Node::Visual(self.visual),
@@ -642,6 +704,7 @@ pub fn node_kind_name(n: &Node) -> &'static str {
         Node::RoadChunk(_) => "CPlugRoadChunk",
         Node::Light(c, _) => if *c == 0x0901D000 { "CPlugLight" } else { "GxLight" },
         Node::Tree(_) => "CPlugTree",
+        Node::Layout(_) => "CSceneLayout",
         Node::Other(_) => "other",
     }
 }
