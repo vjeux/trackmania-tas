@@ -546,7 +546,12 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
             }
         }
     }
-    let images: Vec<Vec<u8>> = imgs.iter().map(|im| crate::vp8enc::encode(&im.px, im.w, im.h, vp8_q)).collect();
+    // the game writes the probe images with libwebp at quality 91 (RE child); our own encoder is the
+    // fallback (`vp8_q` on its 0–10 scale)
+    let images: Vec<Vec<u8>> = imgs
+        .iter()
+        .map(|im| crate::webpenc::encode_rgb(&im.px, im.w, im.h, 91.0).unwrap_or_else(|| crate::vp8enc::encode(&im.px, im.w, im.h, vp8_q)))
+        .collect();
     let (blob, ends) = crate::volume::join_probe_blob(&images);
     let mut frame_info = template.frame_info.clone();
     while frame_info.len() < 3 {

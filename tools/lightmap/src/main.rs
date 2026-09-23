@@ -2825,6 +2825,82 @@ fn main() {
             let ys: Vec<f32> = samples.iter().filter(|s| s.n[1] > 0.9).map(|s| s.p[1]).collect();
             if !ys.is_empty() { let (mn, mx) = ys.iter().fold((f32::MAX, f32::MIN), |(a, b), &y| (a.min(y), b.max(y))); println!("  up-facing sample heights {mn:.3}..{mx:.3}"); }
         }
+        "packtest" => {
+            // lmtool packtest MAP [--base N] [--w 1024] [--g 1] [--iter 8] [--tile-ext M]: run the editor's chart
+            // allocation walk (§3.1) on the map's items (ext = uv bounds × MeterByUv) + the zone tiles, and compare
+            // the sizes/positions with the map's own (editor) chart table
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let w_atlas: u16 = f("--w").map(|s| s.parse().unwrap()).unwrap_or(1024);
+            let g: u16 = f("--g").map(|s| s.parse().unwrap()).unwrap_or(1);
+            let max_iter: u32 = f("--iter").map(|s| s.parse().unwrap()).unwrap_or(8);
+            let tile_ext: f32 = f("--tile-ext").map(|s| s.parse().unwrap()).unwrap_or(0.0);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let own = lightmap::mapio::load(&a[1]).expect("own");
+            let d = own.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            // the editor's table: object id → (x, y, w, h) in 2048 units
+            let mut ed: std::collections::HashMap<u32, (u16, u16, u16, u16)> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; ed.insert(obj, (mp.pos[i].0, mp.pos[i].1, mp.size[i].0, mp.size[i].1)); }
+            let n_tiles = ed.keys().filter(|&&o| o < base).count();
+            {
+                let mut hist: std::collections::BTreeMap<(u16, u16), usize> = Default::default();
+                for (&o, &(_, _, w, h)) in &ed { if o < base { *hist.entry((w, h)).or_default() += 1; } }
+                println!("editor tile chart sizes: {:?}", hist);
+                println!("editor atlas {}×{}, m_u01 {}, m_u02 {}, m_u03 {}", mp.atlas_w, mp.atlas_h, mp.m_u01, mp.m_u02, mp.m_u03);
+            }
+            // our chart list in IdForLightMap order: tiles (ids 0..base) then items (base + item)
+            let mut charts: Vec<lightmap::pack::ChartExt> = Vec::new();
+            let mut ids: Vec<u32> = Vec::new();
+            for o in 0..base { if ed.contains_key(&o) { charts.push(lightmap::pack::ChartExt { ext: [tile_ext, tile_ext], mins: [1, 1] }); ids.push(o); } }
+            for inst in &scene.instances {
+                let m = &scene.models[inst.model];
+                let sc = ((inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]) as f32).sqrt();
+                let ext = match m.plg_bounds { Some(b) => [(b[2] - b[0]) * m.plg_u02 * sc, (b[3] - b[1]) * m.plg_u02 * sc], None => [0.0, 0.0] };
+                charts.push(lightmap::pack::ChartExt { ext, mins: [1, 1] });
+                ids.push(base + inst.item as u32);
+            }
+            let sum_area: f32 = charts.iter().map(|c| c.ext[0] * c.ext[1]).sum();
+            println!("{} charts ({n_tiles} tiles in the editor's table, {} items), Σarea {sum_area:.1} m², W {w_atlas} g {g} maxIter {max_iter}", charts.len(), scene.instances.len());
+            {
+                // the biggest extents (uv-tiled models blow the area up)
+                let mut big: Vec<(f32, usize)> = charts.iter().enumerate().map(|(k, c)| (c.ext[0] * c.ext[1], k)).collect();
+                big.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+                for &(area, k) in big.iter().take(6) {
+                    if ids[k] >= base { let inst = scene.instances.iter().find(|i| i.item as u32 == ids[k] - base).unwrap(); let mdl = &scene.models[inst.model]; println!("  ext ({:.1}, {:.1}) m = {area:.0} m²: item {} model {} (MeterByUv {:.4}, uv bounds {:?}, metres_per_uv {:?}); editor chart {:?}", charts[k].ext[0], charts[k].ext[1], ids[k] - base, inst.model_name, mdl.plg_u02, mdl.plg_bounds, mdl.metres_per_uv, ed.get(&ids[k])); }
+                }
+            }
+            // --scan: the size-match count against the editor's table over a grid of s (which s did the editor use?)
+            if a.iter().any(|x| x == "--scan") {
+                let order = lightmap::pack::area_order(&charts);
+                let mut best = (0usize, 0f32);
+                let mut s = 4.0f32;
+                while s < 6.0 {
+                    if let Some(p) = lightmap::pack::try_pack(&charts, &order, s, 4096, 4096, g) {
+                        let ok = p.iter().enumerate().filter(|(k, q)| ed.get(&ids[*k]).map(|&(_, _, ew, eh)| 2 * (q.w as u32).saturating_sub(1) == ew as u32 && 2 * (q.h as u32).saturating_sub(1) == eh as u32).unwrap_or(false)).count();
+                        if ok > best.0 { best = (ok, s); }
+                        if (s * 1000.0).round() as i32 % 50 == 0 { println!("  s {s:.3}: {ok} sizes equal"); }
+                    }
+                    s += 0.002;
+                }
+                println!("best: s {:.3} with {} of {} sizes equal", best.1, best.0, charts.len());
+                return;
+            }
+            let Some((s, placed)) = lightmap::pack::allocate(&charts, w_atlas, w_atlas, g, max_iter) else { println!("allocation failed"); return };
+            println!("s_final {s:.4} texels/m");
+            let (mut n_cmp, mut size_ok, mut pos_ok) = (0, 0, 0);
+            let mut shown = 0;
+            for (k, p) in placed.iter().enumerate() {
+                let Some(&(ex, ey, ew, eh)) = ed.get(&ids[k]) else { continue };
+                n_cmp += 1;
+                let (ox, oy, ow, oh) = (2 * p.x as u32 + 1, 2 * p.y as u32 + 1, 2 * (p.w as u32).saturating_sub(1), 2 * (p.h as u32).saturating_sub(1));
+                let s_ok = ow == ew as u32 && oh == eh as u32;
+                let p_ok = s_ok && ox == ex as u32 && oy == ey as u32;
+                size_ok += s_ok as u32; pos_ok += p_ok as u32;
+                if !s_ok && shown < 12 && ids[k] >= base { shown += 1; println!("  item {} ext ({:.2}, {:.2}) m: ours {}×{} at ({}, {}) vs editor {}×{} at ({}, {})", ids[k] - base, charts[k].ext[0], charts[k].ext[1], ow, oh, ox, oy, ew, eh, ex, ey); }
+            }
+            println!("compared {n_cmp}: sizes equal {size_ok}, positions equal {pos_ok}");
+        }
         "points" => {
             // lmtool points [FILE]: the game's sphere point sets — set sizes, and the zenith cone counts at 30°
             let p = a.get(1).cloned().unwrap_or_else(lightmap::dome::default_path);

@@ -366,12 +366,20 @@ pub fn build_full2(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template:
         None => td.cache.trailer.clone(),
     };
     let cache = CacheBlob { chunks, trailer };
-    let enc = |im: &Rgb| -> Result<Vec<u8>, String> {
+    // the game's encoder settings (RE child, disassembly): libwebp preset DEFAULT, quality 91 for
+    // the colour atlas / frame 1 / probes, ≈ 25 for the three grey directional images, planes fed
+    // as BT.601 studio YUV420. With libwebp linked that is what we write; `--vp8 Q` forces our own
+    // encoder; without libwebp and without --vp8 the images are lossless
+    let enc_q = |im: &Rgb, quality: f32| -> Result<Vec<u8>, String> {
         match vp8_q {
             Some(q) => Ok(crate::vp8enc::encode(&im.px, im.w, im.h, q)),
-            None => encode_webp_lossless(im),
+            None => match crate::webpenc::encode_rgb(&im.px, im.w, im.h, quality) {
+                Some(b) => Ok(b),
+                None => encode_webp_lossless(im),
+            },
         }
     };
+    let enc = |im: &Rgb| enc_q(im, 91.0);
     let black = enc(&Rgb::new(1024, 1024))?;
     let mut frames = Vec::new();
     for fi in 0..td.frames.len() {
@@ -383,7 +391,7 @@ pub fn build_full2(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template:
                 // frame 0 image 1 = THREE concatenated WebPs (the H-basis directional coefficients C1..C3,
                 // sign-sqrt encoded with 128 = zero); a flat-normal bake writes three neutral images
                 (0, 1) => {
-                    let one = enc(&ib)?;
+                    let one = enc_q(&ib, 25.0)?;
                     let mut three = one.clone();
                     three.extend_from_slice(&one);
                     three.extend_from_slice(&one);
