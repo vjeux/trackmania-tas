@@ -121,6 +121,15 @@ impl<'a> Cur<'a> {
     fn i32(&mut self) -> Result<i32, String> {
         Ok(self.u32()? as i32)
     }
+    /// An element count: bounded by the bytes left (garbage tails read as
+    /// counts of billions and `with_capacity` aborts the process).
+    fn count(&mut self) -> Result<usize, String> {
+        let n = self.u32()? as usize;
+        if n > self.b.len().saturating_sub(self.o) {
+            return Err(format!("absurd count {n} at 0x{:x}", self.o - 4));
+        }
+        Ok(n)
+    }
     fn u16(&mut self) -> Result<u16, String> {
         Ok(u16::from_le_bytes(self.take(2)?.try_into().unwrap()))
     }
@@ -178,7 +187,7 @@ impl SClass {
             }
         }
         let size_group = c.id(table)?;
-        let n = c.u32()? as usize;
+        let n = c.count()?;
         let mut compatible_groups = Vec::with_capacity(n);
         for _ in 0..n {
             compatible_groups.push(c.id(table)?);
@@ -187,7 +196,7 @@ impl SClass {
         let align_to_interior = c.u32()? != 0;
         let align_to_world_dir = c.u32()? != 0;
         let world_dir = c.vec3()?;
-        let n = c.u32()? as usize;
+        let n = c.count()?;
         let mut patch_layouts = Vec::with_capacity(n);
         for _ in 0..n {
             let item_count = c.i32()?;
@@ -196,7 +205,7 @@ impl SClass {
             let fill_dir = c.i32()?;
             let normed_pos = c.f32()?;
             let dist_from_normed_pos = c.f32()?;
-            let k = c.u32()? as usize;
+            let k = c.count()?;
             let mut only_on_groups = Vec::with_capacity(k);
             for _ in 0..k {
                 only_on_groups.push(c.id(table)?);
@@ -205,7 +214,7 @@ impl SClass {
             let fill_border_offset = c.f32()?;
             patch_layouts.push(PatchLayout { item_count, item_spacing, fill_align, fill_dir, normed_pos, dist_from_normed_pos, only_on_groups, altitude, fill_border_offset });
         }
-        let n = c.u32()? as usize;
+        let n = c.count()?;
         let mut group_cur_patch_layouts = Vec::with_capacity(n);
         for _ in 0..n {
             group_cur_patch_layouts.push(c.i32()?);
@@ -276,12 +285,12 @@ impl PlacementParam {
                     p.pivot_snap_distance = c.f32()?;
                 }
                 0x2E020001 => {
-                    let n = c.u32()? as usize;
+                    let n = c.count()?;
                     p.pivot_positions.clear();
                     for _ in 0..n {
                         p.pivot_positions.push(c.vec3()?);
                     }
-                    let n = c.u32()? as usize;
+                    let n = c.count()?;
                     p.pivot_rotations.clear();
                     for _ in 0..n {
                         p.pivot_rotations.push([c.f32()?, c.f32()?, c.f32()?, c.f32()?]);
@@ -289,7 +298,7 @@ impl PlacementParam {
                 }
                 0x2E020004 => {
                     p.magnet_version = c.u32()?;
-                    let n = c.u32()? as usize;
+                    let n = c.count()?;
                     p.magnet_locs.clear();
                     for _ in 0..n {
                         p.magnet_locs.push((c.vec3()?, c.vec3()?));
@@ -425,17 +434,79 @@ impl PlacementParam {
 }
 
 /// Parse a standalone `.PlaceParam.Gbx` body (uncompressed; chunks up to
-/// the FACADE).
+/// the FACADE). TOLERANT: some pack files come out of the reader with a
+/// garbage tail (`GateRacing32m`, `Flag`, `Screen`: intact for ~250 bytes,
+/// noise after — a pak-reader gap, 2026-09-22); the chunks read before the
+/// first malformed one are kept, so at least the grid / fly / flags chunk
+/// (0x2E020000, the first ~50 bytes) comes through. An error only when not
+/// even that chunk parsed. `was_truncated` says whether the tail was lost.
 pub fn parse_place_param_file(bytes: &[u8]) -> Result<PlacementParam, String> {
     let g = tmmaps::gbx::Gbx::parse(bytes);
     if g.class_id != 0x2E020000 {
         return Err(format!("class 0x{:08X} is not CGameItemPlacementParam", g.class_id));
     }
-    let mut lb = super::LookbackState::default();
-    lb.defined_nodes.extend(0..g.num_nodes);
-    let mut r = super::Rd::new(&g.body, 0, lb);
-    let node = CGameItemPlacementParam::parse(&mut r)?;
-    PlacementParam::from_chunks(&node.chunks, true)
+    let b = &g.body;
+    let mut o = 0usize;
+    let mut chunks: Vec<RawChunk> = Vec::new();
+    let mut truncated = false;
+    loop {
+        let Some(idb) = b.get(o..o + 4) else {
+            truncated = true;
+            break;
+        };
+        let id = u32::from_le_bytes(idb.try_into().unwrap());
+        if id == super::FACADE {
+            break;
+        }
+        if id >> 12 != 0x2E020 || b.get(o + 4..o + 8) != Some(&b"PIKS"[..]) {
+            truncated = true;
+            break;
+        }
+        let Some(nb) = b.get(o + 8..o + 12) else {
+            truncated = true;
+            break;
+        };
+        let n = u32::from_le_bytes(nb.try_into().unwrap()) as usize;
+        let Some(payload) = b.get(o + 12..o + 12 + n) else {
+            truncated = true;
+            break;
+        };
+        chunks.push(RawChunk { id, payload: payload.to_vec() });
+        o += 12 + n;
+    }
+    // chunk by chunk: the first one that does not parse ends the file (garbage from there)
+    let mut good: Vec<RawChunk> = Vec::new();
+    for c in chunks {
+        let mut trial = good.clone();
+        trial.push(c.clone());
+        if PlacementParam::from_chunks(&trial, true).is_ok() {
+            good.push(c);
+        } else {
+            truncated = true;
+            break;
+        }
+    }
+    if !good.iter().any(|c| c.id == 0x2E020000) {
+        return Err(format!("no readable placement chunk (0x2E020000) in {} body bytes", b.len()));
+    }
+    let mut p = PlacementParam::from_chunks(&good, true)?;
+    if truncated {
+        p.extra.push((usize::MAX, RawChunk { id: 0, payload: Vec::new() }));
+    }
+    Ok(p)
+}
+
+/// Whether `parse_place_param_file` stopped before the file's end (a garbage
+/// tail): marked by a zero-id pseudo chunk in `extra`, which `to_chunks`
+/// must not write — strip it with `without_marker`.
+pub fn was_truncated(p: &PlacementParam) -> bool {
+    p.extra.iter().any(|(_, c)| c.id == 0)
+}
+
+pub fn without_marker(p: &PlacementParam) -> PlacementParam {
+    let mut q = p.clone();
+    q.extra.retain(|(_, c)| c.id != 0);
+    q
 }
 
 #[cfg(test)]

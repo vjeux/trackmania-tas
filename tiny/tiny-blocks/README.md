@@ -11,7 +11,7 @@ Unzip into `Documents\Trackmania\Items\` so that you get
 `Documents\Trackmania\Items\TinyBlocks\Roads\…`, then **restart the game** —
 the editor indexes the Items folder at launch, not while it runs.
 
-The set comes in one zip per block family (they can be installed independently):
+The set comes in one zip per block family (they can be installed independently), plus the Tiny Items zip (below):
 
 | zip | folder | items | size |
 |---|---|---|---|
@@ -62,3 +62,16 @@ campaign, `mapgeom item-set` in <https://github.com/vjeux/trackmania-tas>
 derives for it, merged at scale 0.5 into a static item with the block's
 materials, collision, waypoint trigger and icon. Report a wrong piece with its
 name and a screenshot.
+
+## Tiny Items — Nadeo's items at half scale (TinyItems-*.zip)
+
+The same for the **item** browser: every Nadeo item of the Stadium item
+browser at scale 0.5 (632 items — vegetation, decorations, flags, signs,
+screens, light tubes, gates, podiums, inflatables, moving obstacles,
+supports), under `Items\TinyItems\<the item browser's folders>\`, with the
+items' own icons. Each keeps Nadeo's own placement settings scaled by half
+(a 32 m gate snaps every 1 m instead of 2, its magnets at ±8 m instead of ±16).
+Where the game data did not yield the settings, the item-editor defaults
+(0.5 m snap, free rotation) stand. Moving obstacles keep their animation;
+the size groups that make Nadeo items snap to one another are not carried
+over.

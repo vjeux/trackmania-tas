@@ -670,3 +670,257 @@ impl std::fmt::Display for Bounds {
         write!(f, "x {:.2}..{:.2}  y {:.2}..{:.2}  z {:.2}..{:.2}", self.min[0], self.max[0], self.min[1], self.max[1], self.min[2], self.max[2])
     }
 }
+
+// ---------------------------------------------------------------------------
+// The item browser: Nadeo's own items at half scale (`mapgeom item-set-items`)
+// ---------------------------------------------------------------------------
+
+/// The pack item's own placement parameters (its external `.PlaceParam.Gbx`,
+/// or the inline node of its body), or the item-editor defaults.
+fn pack_item_placement(store: &mut DataStore, item_path: &str) -> Result<PlacementParam, String> {
+    let m = store.load_model(item_path)?;
+    if let Some(pp) = m.externals.iter().map(|(_, e)| e.clone()).find(|e| e.ends_with(".PlaceParam.Gbx")) {
+        let bytes = store.read(&pp)?;
+        return crate::static_item::placement::parse_place_param_file(&bytes);
+    }
+    // inline: through the typed item parser (the body is uncompressed in the packs)
+    let bytes = store.read(item_path)?;
+    if let Ok(f) = crate::static_item::parse_file(&bytes) {
+        for c in &f.item.chunks {
+            if let ItemChunk::DefaultPlacement { placement, .. } = c {
+                if let Some(Node::Placement(p)) = placement.inline.as_deref() {
+                    return PlacementParam::from_node(p);
+                }
+            }
+        }
+    }
+    Ok(PlacementParam::default())
+}
+
+/// The placement of a scaled copy: every length scaled, the flags kept, the
+/// placement class reduced to the item-editor default (a size group is an Id
+/// in the body's lookback table, which the raw chunk cannot name).
+pub fn scaled_placement(p: &PlacementParam, scale: f32, sclass_index: i32) -> PlacementParam {
+    let s = |v: f32| if v > 0.0 { v * scale } else { v };
+    PlacementParam {
+        version: p.version,
+        flags: p.flags,
+        cube_center: [p.cube_center[0] * scale, p.cube_center[1] * scale, p.cube_center[2] * scale],
+        cube_size: p.cube_size * scale,
+        grid_h_step: s(p.grid_h_step),
+        grid_v_step: s(p.grid_v_step),
+        grid_h_offset: p.grid_h_offset * scale,
+        grid_v_offset: p.grid_v_offset * scale,
+        fly_v_step: s(p.fly_v_step),
+        fly_v_offset: p.fly_v_offset * scale,
+        pivot_snap_distance: s(p.pivot_snap_distance),
+        pivot_positions: p.pivot_positions.iter().map(|v| [v[0] * scale, v[1] * scale, v[2] * scale]).collect(),
+        pivot_rotations: p.pivot_rotations.clone(),
+        magnet_locs: p.magnet_locs.iter().map(|(pos, rot)| ([pos[0] * scale, pos[1] * scale, pos[2] * scale], *rot)).collect(),
+        magnet_version: p.magnet_version,
+        sclass: Some((sclass_index, SClass::default())),
+        extra: Vec::new(),
+    }
+}
+
+/// Re-dress a baked item copy of a pack item: ident/author/name/description,
+/// the pack item's icon, its placement scaled.
+fn dress_item(bytes: &[u8], ident: &str, stem: &str, author: &str, collection: u32, icon: Option<&[u8]>, description: &str, placement: &PlacementParam, scale: f32) -> Result<Vec<u8>, String> {
+    let mut f = crate::static_item::parse_file(bytes)?;
+    if let Some(k) = f.header_chunks.iter().position(|c| c.id == 0x2E001003) {
+        f.header_chunks[k] = desc_chunk(ident, collection, author, stem);
+        f.header_chunks.retain(|c| c.id != 0x2E001004);
+        if let Some(icon) = icon {
+            f.header_chunks.insert(k + 1, HeaderChunk { id: 0x2E001004, heavy: true, payload: icon.to_vec() });
+        }
+    } else {
+        return Err("baked item has no collector description header chunk".into());
+    }
+    let mut placed = false;
+    for c in f.item.chunks.iter_mut() {
+        match c {
+            ItemChunk::Ident { path, author: a, .. } => {
+                *path = crate::static_item::Id::Str(ident.to_string());
+                *a = crate::static_item::Id::Str(author.to_string());
+            }
+            ItemChunk::Name(n) => *n = stem.to_string(),
+            ItemChunk::Description(d) => *d = description.to_string(),
+            ItemChunk::DefaultPlacement { placement: pref, .. } => {
+                let Some(node) = pref.inline.as_deref_mut() else { return Err("placement node is not inline".into()) };
+                let Node::Placement(p) = node else { return Err("placement ref is not a CGameItemPlacementParam".into()) };
+                let old = PlacementParam::from_node(p)?;
+                let sclass_index = old.sclass.as_ref().map(|(i, _)| *i).unwrap_or(-1);
+                *p = scaled_placement(placement, scale, sclass_index).to_node()?;
+                placed = true;
+            }
+            _ => {}
+        }
+    }
+    if !placed {
+        return Err("baked item has no placement chunk (0x2E00201C)".into());
+    }
+    f.body_comp = b'C';
+    Ok(crate::static_item::write_file(&f))
+}
+
+#[derive(Clone, Debug)]
+struct ItemJob {
+    folders: Vec<String>,
+    name: String,
+    path: String,
+    stem: String,
+    ident: String,
+}
+
+fn bake_item_job(store: &mut DataStore, job: &ItemJob, opts: &Opts) -> Result<(Baked, PlacementParam, Option<Vec<u8>>), String> {
+    bake_env_reset(opts.collection);
+    let mut pnotes: Vec<String> = Vec::new();
+    let placement = match pack_item_placement(store, &job.path) {
+        Ok(p) => {
+            if crate::static_item::placement::was_truncated(&p) {
+                pnotes.push("placement file: garbage tail after the grid chunk (pak reader); pivots/magnets/class from what parsed".into());
+            }
+            crate::static_item::placement::without_marker(&p)
+        }
+        Err(e) => {
+            pnotes.push(format!("placement params unreadable ({e}); item-editor defaults"));
+            PlacementParam::default()
+        }
+    };
+    let icon = store.read(&job.path).ok().and_then(|b| crate::catalog::CollectorDesc::from_file(&b).ok()).and_then(|(_, i)| i.map(|i| i.payload));
+    // vegetation (a VegetTreeModel behind the item) takes the tree bake; everything else the pack-item path
+    let is_tree = crate::veget::tree_model_path(store, &job.path).is_ok();
+    let (bytes, m) = if is_tree {
+        let (b, m, _) = crate::static_item::build::static_item_from_veget_report(store, &job.path, &job.ident, &opts.author, opts.scale, opts.collection)?;
+        (b, m)
+    } else {
+        crate::static_item::build::static_item_from_pack_item_report_skin(store, &job.path, &job.ident, &opts.author, opts.scale, opts.collection, 0, None)?
+    };
+    let triangles = m.visuals.iter().map(|v| v.visual.index_buffer.as_ref().map(|ib| ib.indices.len() / 3).unwrap_or(0)).sum();
+    let mut notes = m.notes.clone();
+    notes.extend(pnotes);
+    Ok((Baked { bytes, pictures: m.pictures.clone(), visuals: m.visuals.len(), triangles, notes, waypoint: m.waypoint_type }, placement, icon))
+}
+
+/// `mapgeom item-set-items --out DIR [--set TinyItems] [--scale 0.5] [--author ID]
+/// [--only N,N] [--folder Deco/Flags] [--limit N] [--plan-only] [--report TSV]`:
+/// every item of the editor's item browser (the pack's CGameItemModelTreeRoot,
+/// `Dev` excluded) as a half-scale copy under `Items/<set>/<browser folders>/`,
+/// with the item's own icon and its own placement parameters scaled.
+pub fn run_items(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
+    let mut opts = parse_opts(rest)?;
+    if !rest.iter().any(|a| a == "--set") {
+        opts.set = "TinyItems".to_string();
+    }
+    let t0 = std::time::Instant::now();
+    let trees = crate::catalog::browser_trees(store, &opts.collection_name);
+    let (_, _, leaves) = trees.into_iter().filter(|(_, c, _)| c == "CGameItemModelTreeRoot").max_by_key(|(_, _, l)| l.len()).ok_or("no CGameItemModelTreeRoot tree file in the packs")?;
+    let leaves: Vec<crate::catalog::TreeLeaf> = leaves.into_iter().filter(|l| l.folders.first().map(|f| f != "Dev").unwrap_or(true)).collect();
+    eprintln!("{} items in the {} item browser (Dev excluded)", leaves.len(), opts.collection_name);
+    let mut report = String::from("folder\titem\tstem\tstatus\tpack\tvisuals\ttriangles\tbytes\tplacement\tdetail\n");
+    let mut jobs: Vec<ItemJob> = Vec::new();
+    for leaf in &leaves {
+        if let Some(only) = &opts.only {
+            if !only.iter().any(|n| n == &leaf.name) {
+                continue;
+            }
+        }
+        if let Some(f) = &opts.folder {
+            if !leaf.folders.join("/").starts_with(f.as_str()) {
+                continue;
+            }
+        }
+        if let Some(l) = opts.limit {
+            if jobs.len() >= l {
+                break;
+            }
+        }
+        let folder = leaf.folders.join("/");
+        // a leaf may be a bare name or a pack path
+        let path = if leaf.name.contains('\\') { Some(leaf.name.clone()) } else { crate::tiny_library::find_item_file(store, &leaf.name) };
+        let Some(path) = path else {
+            report.push_str(&format!("{folder}\t{}\t-\tMISSING\t-\t-\t-\t-\t-\tno .Item.Gbx of this name in the packs\n", leaf.name));
+            continue;
+        };
+        let stem = leaf.name.rsplit('\\').next().unwrap_or(&leaf.name).trim_end_matches(".Item.Gbx").to_string();
+        let mut ident_parts = vec![opts.set.clone()];
+        ident_parts.extend(leaf.folders.iter().cloned());
+        let ident = format!("{}\\{stem}.Item.Gbx", ident_parts.join("\\"));
+        jobs.push(ItemJob { folders: leaf.folders.clone(), name: leaf.name.clone(), path, stem, ident });
+    }
+    eprintln!("{} items planned in {:.1} s", jobs.len(), t0.elapsed().as_secs_f32());
+    if opts.plan_only {
+        for j in &jobs {
+            println!("{}\t{}\t{}", j.folders.join("/"), j.stem, j.path);
+        }
+        if let Some(r) = &opts.report {
+            std::fs::write(r, &report).map_err(|e| format!("{}: {e}", r.display()))?;
+        }
+        return Ok(());
+    }
+    let t1 = std::time::Instant::now();
+    let results = crate::par::map(store, &jobs, |st, _, job| bake_item_job(st, job, &opts));
+    eprintln!("{} bakes in {:.1} s", results.len(), t1.elapsed().as_secs_f32());
+    let root = opts.out.join("Items").join(&opts.set);
+    let (mut written, mut failed, mut total_bytes) = (0usize, 0usize, 0usize);
+    for (job, res) in jobs.iter().zip(results) {
+        let folder = job.folders.join("/");
+        match res {
+            Err(e) => {
+                failed += 1;
+                report.push_str(&format!("{folder}\t{}\t{}\tFAILED\t{}\t-\t-\t-\t-\t{}\n", job.name, job.stem, job.path, tsv_escape(&e)));
+            }
+            Ok((b, placement, icon)) => {
+                if b.visuals == 0 && !b.notes.iter().any(|n| n.contains("moving") || n.contains("dyna") || n.contains("tree")) {
+                    failed += 1;
+                    report.push_str(&format!("{folder}\t{}\t{}\tEMPTY\t{}\t0\t0\t-\t-\t{}\n", job.name, job.stem, job.path, tsv_escape(&b.notes.join(" | "))));
+                    continue;
+                }
+                let description = format!("Tiny Items: the Nadeo item {} at scale {}, folder {}. Its own placement settings, scaled.", job.stem, opts.scale, folder);
+                match dress_item(&b.bytes, &job.ident, &job.stem, &opts.author, opts.collection, icon.as_deref(), &description, &placement, opts.scale) {
+                    Err(e) => {
+                        failed += 1;
+                        report.push_str(&format!("{folder}\t{}\t{}\tDRESS-FAILED\t{}\t-\t-\t-\t-\t{}\n", job.name, job.stem, job.path, tsv_escape(&e)));
+                    }
+                    Ok(bytes) => {
+                        let dir: PathBuf = job.folders.iter().fold(root.clone(), |d, f| d.join(f));
+                        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+                        let file = dir.join(format!("{}.Item.Gbx", job.stem));
+                        std::fs::write(&file, &bytes).map_err(|e| format!("{}: {e}", file.display()))?;
+                        for (pic, dds) in &b.pictures {
+                            let pf = dir.join(pic);
+                            if !pf.is_file() {
+                                std::fs::write(&pf, dds).map_err(|e| format!("{}: {e}", pf.display()))?;
+                            }
+                        }
+                        total_bytes += bytes.len();
+                        let notes: Vec<&str> = b.notes.iter().filter(|n| n.contains("skipped") || n.contains("failed") || n.contains("unnamed") || n.contains("refused") || n.contains("placement")).map(|s| s.as_str()).collect();
+                        if std::env::var_os("ITEMSET_NOTES").is_some() {
+                            for n in &b.notes {
+                                eprintln!("  [{}] {n}", job.stem);
+                            }
+                        }
+                        report.push_str(&format!("{folder}\t{}\t{}\tOK\t{}\t{}\t{}\t{}\t{}\t{}\n", job.name, job.stem, job.path, b.visuals, b.triangles, bytes.len(), tsv_escape(&scaled_placement(&placement, opts.scale, 0).summary()), tsv_escape(&notes.join(" | "))));
+                        written += 1;
+                    }
+                }
+            }
+        }
+    }
+    match &opts.report {
+        Some(r) => std::fs::write(r, &report).map_err(|e| format!("{}: {e}", r.display()))?,
+        None => {
+            std::fs::create_dir_all(&opts.out).ok();
+            std::fs::write(opts.out.join("item-set-items-report.tsv"), &report).ok();
+        }
+    }
+    eprintln!("{written} items written ({:.1} MB), {failed} failed, under {} in {:.1} s", total_bytes as f64 / 1e6, root.display(), t0.elapsed().as_secs_f32());
+    Ok(())
+}
+
+pub fn items_cmd(store: &mut DataStore, rest: &[String]) {
+    if let Err(e) = run_items(store, rest) {
+        eprintln!("item-set-items: {e}");
+        std::process::exit(1);
+    }
+}

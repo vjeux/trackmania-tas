@@ -1904,6 +1904,10 @@ fn main() {
             mapgeom::item_set::cmd(&mut store, &a.rest);
         }
         "item-bounds" => mapgeom::item_set::bounds_cmd(&a.rest),
+        "item-set-items" => {
+            let mut store = open(&a);
+            mapgeom::item_set::items_cmd(&mut store, &a.rest);
+        }
         "blockinfo-all" => {
             let mut store = open(&a);
             let pat = a.rest.get(1).filter(|x| !x.starts_with("--")).cloned().unwrap_or_default().to_uppercase();
