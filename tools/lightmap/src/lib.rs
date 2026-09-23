@@ -13,6 +13,7 @@ pub mod mapio;
 pub mod moods;
 pub mod probe;
 pub mod probes;
+pub mod skycube;
 pub mod synth;
 pub mod volume;
 pub mod vp8_tables;

@@ -161,3 +161,75 @@ pub fn base_rule<'a>(envir: &str, decoration: &str, size: [i32; 3], authored: im
         None => BaseRule { deco_const: if stadium { 16384 } else { 0 }, authored: n_auth, custom_blocks: n_custom, ground_cols, replaced, extra, stadium },
     }
 }
+
+/// The lighting mood the game uses for a map: its DayTime word (chunk 0x03043056)
+/// selects the QUARTER of the day — Night [0, ¼), Sunrise [¼, ½), Day [½, ¾),
+/// Sunset [¾, 1) — else (0xffffffff = default) the decoration's own mood.
+/// Measured on the 25 Summer sources: every frame record's MaxHDR/BounceFactor/
+/// SkyFactor triple is the XML triple of THAT mood (0.10 → Night 1.7/2/5 on
+/// GreenCoast 09; 0.306/0.3175 → Sunrise; 0.504/0.607 → Day; 0.8075/0.854 →
+/// Sunset — Tiny 16's "Sunrise64" decoration bakes as a SUNSET at 0.854).
+pub fn effective_mood(decoration_mood: &str, daytime: Option<u32>) -> &'static str {
+    match daytime {
+        Some(t) if t != 0xffff_ffff => {
+            let f = t as f64 / 65536.0;
+            if f < 0.25 {
+                "Night"
+            } else if f < 0.5 {
+                "Sunrise"
+            } else if f < 0.75 {
+                "Day"
+            } else {
+                "Sunset"
+            }
+        }
+        _ => normalise_mood(decoration_mood),
+    }
+}
+
+/// The pack's `Mood.MoodSetting.xml` constants for a collection × mood (read 2026-09-22 from the
+/// five paks; the `MoodXml` fields are the XML attributes).
+#[derive(Clone, Copy, Debug)]
+pub struct MoodXml {
+    pub collection: &'static str,
+    pub mood: &'static str,
+    pub latitude: f32,
+    pub daytime01: f32,
+    pub l_ambient: [f32; 3],
+    pub l_dir_sun: [f32; 3],
+    pub l_dir_moon: [f32; 3],
+    pub max_hdr: f32,
+    pub bounce_factor: f32,
+    pub sky_factor: f32,
+}
+
+const fn x(collection: &'static str, mood: &'static str, latitude: f32, daytime01: f32, l_ambient: [f32; 3], l_dir_sun: [f32; 3], l_dir_moon: [f32; 3], max_hdr: f32, bounce_factor: f32, sky_factor: f32) -> MoodXml {
+    MoodXml { collection, mood, latitude, daytime01, l_ambient, l_dir_sun, l_dir_moon, max_hdr, bounce_factor, sky_factor }
+}
+
+pub const MOOD_XML: &[MoodXml] = &[
+    x("BlueBay", "Day", 20.0, 0.644, [0.492269, 0.620016, 0.815248], [2.86093, 2.83547, 2.51654], [0.0; 3], 3.0, 2.0, 1.0),
+    x("BlueBay", "Night", 20.0, 0.15, [0.00973407, 0.00973407, 0.0123014], [0.0; 3], [0.0566298, 0.0742476, 0.2], 1.7, 2.0, 3.0),
+    x("BlueBay", "Sunrise", 20.0, 0.515, [0.407062, 0.458064, 0.546095], [1.9, 1.387, 0.399], [0.0; 3], 1.0, 1.6, 1.0),
+    x("BlueBay", "Sunset", 20.0, 0.75, [0.395648, 0.361113, 0.515065], [2.84039, 0.994136, 0.482866], [0.0; 3], 3.0, 2.0, 1.0),
+    x("GreenCoast", "Day", 48.0, 0.644, [0.492269, 0.620016, 0.815248], [2.86093, 2.83547, 2.51654], [0.0; 3], 3.0, 2.0, 1.0),
+    x("GreenCoast", "Night", 48.0, 0.15, [0.00973407, 0.00973407, 0.0123014], [0.0; 3], [0.0566298, 0.0742476, 0.2], 1.7, 2.0, 5.0),
+    x("GreenCoast", "Sunrise", 48.0, 0.515, [0.407062, 0.458064, 0.546095], [1.683, 1.207, 0.255], [0.0; 3], 1.8, 1.6, 0.6),
+    x("GreenCoast", "Sunset", 48.0, 0.75, [0.395648, 0.361113, 0.515065], [2.84039, 0.994136, 0.482866], [0.0; 3], 3.0, 2.0, 0.8),
+    x("RedIsland", "Day", 36.0, 0.644, [0.492269, 0.620016, 0.815248], [2.86093, 2.83547, 2.51654], [0.0; 3], 3.0, 2.0, 0.65),
+    x("RedIsland", "Night", 36.0, 0.15, [0.00973407, 0.00973407, 0.0123014], [0.0; 3], [0.05663, 0.0742475, 0.2], 1.7, 3.0, 3.0),
+    x("RedIsland", "Sunrise", 36.0, 0.515, [0.407062, 0.458064, 0.546095], [1.8, 1.29091, 0.272727], [0.0; 3], 1.0, 2.0, 1.0),
+    x("RedIsland", "Sunset", 36.0, 0.75, [0.395648, 0.361113, 0.515065], [2.84039, 0.994136, 0.482866], [0.0; 3], 3.0, 2.0, 1.0),
+    x("Stadium", "Day", 45.0, 0.6, [0.245533, 0.332724, 0.500045], [3.00027, 2.42108, 1.69429], [0.0; 3], 3.0, 2.0, 1.0),
+    x("Stadium", "Night", 45.0, 0.15, [0.00406201, 0.00426893, 0.00539485], [0.0; 3], [0.0314011, 0.0456443, 0.100007], 3.5, 2.0, 1.0),
+    x("Stadium", "Sunrise", 45.0, 0.52, [0.17888, 0.218505, 0.260498], [1.80022, 1.24912, 0.557112], [0.0; 3], 2.2, 2.0, 1.0),
+    x("Stadium", "Sunset", 45.0, 0.73, [0.518425, 0.418344, 0.482193], [2.00018, 0.549404, 0.0818378], [0.0; 3], 2.7, 1.8, 1.0),
+    x("WhiteShore", "Day", 60.0, 0.644, [0.492269, 0.620016, 0.815248], [2.86093, 2.83547, 2.51654], [0.0; 3], 3.0, 2.0, 0.5),
+    x("WhiteShore", "Night", 60.0, 0.15, [0.00973407, 0.00973407, 0.0123014], [0.0; 3], [0.0251189, 0.0329335, 0.0887126], 1.7, 2.0, 3.0),
+    x("WhiteShore", "Sunrise", 60.0, 0.515, [0.407062, 0.458064, 0.546095], [1.7, 1.309, 0.510925], [0.0; 3], 1.0, 1.6, 0.5),
+    x("WhiteShore", "Sunset", 60.0, 0.75, [0.395648, 0.361113, 0.515065], [2.84039, 1.0403, 0.533484], [0.0; 3], 3.0, 2.0, 1.0),
+];
+
+pub fn mood_xml(collection: &str, mood: &str) -> Option<&'static MoodXml> {
+    MOOD_XML.iter().find(|m| m.collection.eq_ignore_ascii_case(collection) && m.mood.eq_ignore_ascii_case(mood))
+}

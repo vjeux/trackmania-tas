@@ -722,9 +722,10 @@ fn main() {
             let mood_sel: Option<&lightmap::moods::MoodParams> = if a[0] == "bake" && (f("--template").is_none() || f("--mood").is_some()) {
                 let h = hdr.as_ref().expect("map header (needed for --mood auto)");
                 let mood_name = match f("--mood") { Some(m) if m != "auto" => m, _ => h.mood.clone() };
-                let p = lightmap::moods::lookup(&h.envir, &mood_name).unwrap_or_else(|| panic!("no mood parameters for {} / {} — known:\n{}", h.envir, mood_name, lightmap::moods::table()));
-                eprintln!("mood: {} {} ({}) — sun az {} el {}, template {}", p.collection, p.mood, p.confidence, p.sun_az, p.sun_el, p.template);
-                Some(p)
+                match lightmap::moods::lookup(&h.envir, &mood_name) {
+                    Some(p) => { if f("--model").as_deref() == Some("fitted") { eprintln!("mood: {} {} ({}) — sun az {} el {}, template {}", p.collection, p.mood, p.confidence, p.sun_az, p.sun_el, p.template); } Some(p) }
+                    None => { if f("--model").as_deref() == Some("fitted") { panic!("no fitted mood parameters for {} / {} — known:\n{}", h.envir, mood_name, lightmap::moods::table()); } None }
+                }
             } else { None };
             let scene = lightmap::geometry::Scene::from_map(&map_path).expect("scene");
             eprintln!("scene: {} models, {} instances, {} triangles ({:.1}s)", scene.models.len(), scene.instances.len(), scene.tri_count(), t0.elapsed().as_secs_f32());
@@ -733,13 +734,46 @@ fn main() {
             eprintln!("bvh: {} nodes ({:.1}s)", bvh.node_count(), t0.elapsed().as_secs_f32());
             let parse_rgb = |s: &str| -> [f32; 3] { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); [v[0], v[1], v[2]] };
             let mut prm = lightmap::bake::BakeParams::default();
-            if let Some(p) = mood_sel {
+            // --model xml (default) | fitted: the game's model (RE child, 2026-09-23) — the effective mood by the
+            // map's DayTime quarter, E = LAmbient·(0.8+0.2n.y) + LAmbient·SkyFactor·skyVis·S + BounceFactor·albedo·bounce,
+            // NO direct sun (real-time; it only feeds the bounce), absolute HDR units; `fitted` = the 2026-09-22 rows
+            let model = f("--model").unwrap_or_else(|| "xml".into());
+            let mut xml_sel: Option<&lightmap::moods::MoodXml> = None;
+            if a[0] == "bake" && model == "xml" {
+                let h = hdr.as_ref().expect("map header");
+                let mf0 = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
+                let dt = lightmap::mapio::daytime(&mf0.gbx.body);
+                let mood = match f("--mood") { Some(m) if m != "auto" => lightmap::moods::normalise_mood(&m), _ => lightmap::moods::effective_mood(&mf0.decoration_id, dt) };
+                let x = lightmap::moods::mood_xml(&h.envir, mood).unwrap_or_else(|| panic!("no mood XML for {} {mood}", h.envir));
+                xml_sel = Some(x);
+                let sky_s: f32 = f("--sky-scale").map(|s| s.parse().unwrap()).unwrap_or(1.0);
+                prm.ambient_la = x.l_ambient;
+                prm.sky = [x.l_ambient[0] * x.sky_factor * sky_s, x.l_ambient[1] * x.sky_factor * sky_s, x.l_ambient[2] * x.sky_factor * sky_s];
+                prm.sun = x.l_dir_sun;
+                prm.direct_sun = 0.0;
+                prm.ambient = [0.0; 3]; prm.up = [0.0; 3];
+                prm.bounce = f("--bounce").map(|s| s.parse().unwrap()).unwrap_or(x.bounce_factor);
+                prm.albedo = f("--albedo").map(|s| s.parse().unwrap()).unwrap_or(0.35);
+                prm.uv_bounds = true; prm.sky_model = 0; prm.texels_per_m = 1.0; prm.sky_samples = 64; prm.sun_samples = 4;
+                prm.ambient_ao = !has("--no-ao");
+                // the sun (bounce input only): the map's time of day on the mood's latitude, noon at t = ½
+                let t = match dt { Some(v) if v != 0xffff_ffff => v as f32 / 65536.0, _ => x.daytime01 };
+                let hour_angle = (t - 0.5) * 2.0 * std::f32::consts::PI;
+                let lat = x.latitude.to_radians();
+                let el = (lat.cos() * hour_angle.cos()).asin();
+                let az = hour_angle.sin().atan2(-lat.sin() * hour_angle.cos()) ;
+                let el = el.max(5.0f32.to_radians());
+                prm.sun_dir = [el.cos() * az.sin(), el.sin(), el.cos() * az.cos()];
+                eprintln!("model xml: {} {} (decoration {}, daytime {}) — LAmbient {:?} SkyFactor {} Bounce {} MaxHDR {}; sun (bounce only) el {:.1}° az {:.1}°", x.collection, x.mood, mf0.decoration_id, match dt { Some(v) if v != 0xffff_ffff => format!("{:.3}", v as f32 / 65536.0), _ => "default".into() }, x.l_ambient, x.sky_factor, x.bounce_factor, x.max_hdr, el.to_degrees(), az.to_degrees());
+            } else if let Some(p) = mood_sel {
                 prm.sky = p.sky; prm.sun = p.sun; prm.ambient = p.ambient; prm.up = p.up; prm.light_k = p.light_k;
                 prm.uv_bounds = true; prm.sky_model = 1; prm.texels_per_m = 1.0; prm.sky_samples = 64; prm.sun_samples = 4;
                 let (ar, er) = (p.sun_az.to_radians(), p.sun_el.to_radians());
                 prm.sun_dir = [er.cos() * ar.sin(), er.sin(), er.cos() * ar.cos()];
             }
             if let Some(s) = f("--sky") { prm.sky = parse_rgb(&s); }
+            if let Some(p) = f("--sky-cube") { prm.sky_cube = Some(std::sync::Arc::new(lightmap::skycube::CubeMap::load(&p).expect("sky cube"))); prm.sky = [0.0; 3]; }
+            if let Some(s) = f("--sky-scale") { prm.sky_cube_scale = s.parse().unwrap(); }
             if let Some(s) = f("--sun") { prm.sun = parse_rgb(&s); }
             if let Some(s) = f("--ambient") { prm.ambient = parse_rgb(&s); }
             if let Some(s) = f("--up") { prm.up = parse_rgb(&s); }
@@ -862,15 +896,39 @@ fn main() {
             let charts = lightmap::bake::bake(&scene, &bvh, &prm, &lights);
             eprintln!("baked {} charts ({:.1}s)", charts.len(), t0.elapsed().as_secs_f32());
             compare(&charts, "bake vs own");
-            let k: f32 = match f("--k") { Some(s) => s.parse().unwrap(), None if mood_sel.is_some() => 1.0, None => { let k = f32::from_bits(IMPLIED_K.load(std::sync::atomic::Ordering::Relaxed)); if k > 0.0 { eprintln!("K matched to the map's own bake: {k:.3}"); k } else { 3.0 } } };
+            let k: f32 = match f("--k") {
+                Some(s) => s.parse().unwrap(),
+                None if xml_sel.is_some() => {
+                    // absolute units: the frame's MaxHDR = min(the brightest chart, the mood's MaxHDR); fb = 255·chartMax/K
+                    let x = xml_sel.unwrap();
+                    let max_e = charts.iter().flat_map(|c| c.rgb.iter()).flat_map(|c| c.iter().copied()).fold(0.0f32, f32::max);
+                    let kk = max_e.min(x.max_hdr).max(0.05);
+                    eprintln!("frame MaxHDR = min(max E {max_e:.3}, mood MaxHDR {}) = {kk:.4}", x.max_hdr);
+                    kk
+                }
+                None if mood_sel.is_some() => 1.0,
+                None => { let k = f32::from_bits(IMPLIED_K.load(std::sync::atomic::Ordering::Relaxed)); if k > 0.0 { eprintln!("K matched to the map's own bake: {k:.3}"); k } else { 3.0 } }
+            };
             let tpl_path = match f("--template") {
                 Some(p) => p,
                 None => {
-                    let p = mood_sel.expect("--template or --mood auto");
                     let dir = f("--templates").or_else(|| std::env::var("LMTOOL_TEMPLATES").ok()).unwrap_or_else(|| format!("{}/persistent/private-30d/tm-player/tiny/lightmap-re/templates", std::env::var("HOME").unwrap_or_default()));
-                    format!("{dir}/{}.lmchunk", p.template)
+                    match xml_sel {
+                        // the template only supplies the constants the baker does not derive: the effective mood's
+                        // chunk when the bank has one, else any chunk of the collection
+                        Some(x) => {
+                            let want = format!("{dir}/{}-{}.lmchunk", x.collection, x.mood);
+                            if std::path::Path::new(&want).exists() { want } else {
+                                let mut any: Vec<String> = std::fs::read_dir(&dir).map(|rd| rd.flatten().map(|e| e.path().to_string_lossy().to_string()).filter(|p| p.rsplit('/').next().unwrap_or("").starts_with(&format!("{}-", x.collection)) && p.ends_with(".lmchunk")).collect()).unwrap_or_default();
+                                any.sort();
+                                any.first().cloned().unwrap_or_else(|| panic!("no template chunk for {} under {dir}", x.collection))
+                            }
+                        }
+                        None => { let p = mood_sel.expect("--template or --mood auto"); format!("{dir}/{}.lmchunk", p.template) }
+                    }
                 }
             };
+            eprintln!("template {tpl_path}");
             let tpl = lightmap::mapio::load_template(&tpl_path).expect("template");
             let m = lightmap::mapio::load(&map_path).expect("map");
             let ground_e: [f32; 3] = { let l = prm.sun_dir[1].max(0.0); [prm.ambient[0] + prm.up[0] + prm.sky[0] + prm.sun[0] * l, prm.ambient[1] + prm.up[1] + prm.sky[1] + prm.sun[1] * l, prm.ambient[2] + prm.up[2] + prm.sky[2] + prm.sun[2] * l] };
@@ -960,48 +1018,21 @@ fn main() {
                 eprintln!("probe volume: {} blocks, {} slices, atlas {}x{}, blob {} B ({:.1}s)", po.blocks, po.slices, po.atlas_w, po.atlas_h, po.blob.len(), t0.elapsed().as_secs_f32());
                 Some(lightmap::synth::ProbeBlob { blob: po.blob, trailer: po.volume.write() })
             };
-            let mut s = lightmap::synth::build_full(out_charts, (tm.bbox_min, tm.bbox_max), &tpl.chunk, probes, vp8_q).expect("build");
-            // the mapping head's time-of-day word (0x48 in `lmtool head`) comes from the TEMPLATE;
-            // the game's own bakes carry the MAP's time (chunk 0x03043056, or the mood default when
-            // the map has none) — --daytime auto (default) writes that, --daytime N a value, --daytime
-            // template leaves the template's (2026-09-23: 08/18 at 0.854 and 20 at 0.318 shipped with
-            // the template's 0.607 / 0.808 before this)
-            {
-                let want: Option<u32> = match f("--daytime").as_deref() {
-                    Some("template") => None,
-                    Some(n) if n != "auto" => Some(n.parse().expect("--daytime auto|template|N")),
-                    _ => {
-                        let own = tmmaps::gbx::all_skip_chunks(&m.gbx.body).into_iter().find(|c| c.0 == 0x0304_3056 && c.3 >= 12).map(|(_, _, p, _)| u32::from_le_bytes(m.gbx.body[p + 8..p + 12].try_into().unwrap()));
-                        match own {
-                            Some(0xFFFF_FFFF) | None => hdr.as_ref().and_then(|h| match (h.envir.as_str(), h.mood.as_str()) { ("Stadium", "Day") => Some(33041), (_, "Day") => Some(39769), ("RedIsland", "Sunrise") => Some(20043), _ => None }),
-                            o => o,
-                        }
-                    }
+            // the frame records' time-of-day word: the MAP's (chunk 0x03043056), or the mood's default word
+            // when the map has none (what Nadeo's editor baked the default-word sources with) — `--daytime N`
+            // overrides, `--daytime template` keeps the template's (giant child 2026-09-23 + baker-3)
+            let frame_params = xml_sel.map(|x| {
+                let mf0 = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
+                let own = lightmap::mapio::daytime(&mf0.gbx.body).unwrap_or(0xffff_ffff);
+                let daytime = match f("--daytime").as_deref() {
+                    Some("template") => 0xffff_ffff,
+                    Some(n) if n != "auto" => n.parse().expect("--daytime auto|template|N"),
+                    _ if own == 0xffff_ffff => match (x.collection.as_str(), x.mood) { ("Stadium", "Day") => 33041, ("Stadium", "Sunrise") => 20808, ("Stadium", "Sunset") => 52920, (_, "Day") => 39769, (_, "Sunrise") => 20043, (_, "Sunset") => 55979, (_, "Night") => 6554, _ => own },
+                    _ => own,
                 };
-                if let Some(w) = want {
-                    if let Some(d) = s.chunk.data.as_mut() {
-                        let mut touched = false;
-                        for c in d.cache.chunks.iter_mut() {
-                            if let lightmap::format::ChunkBody::Mapping(mp) = &mut c.body {
-                                if mp.head.len() >= 72 {
-                                    let old = u32::from_le_bytes(mp.head[68..72].try_into().unwrap());
-                                    mp.head[68..72].copy_from_slice(&w.to_le_bytes());
-                                    eprintln!("daytime word: {old} -> {w} ({:.3}, the map's)", w as f32 / 65535.0);
-                                    touched = true;
-                                }
-                            }
-                        }
-                        if touched {
-                            // the chunk carries the cache pre-compressed: re-serialise after the edit
-                            let raw = d.cache.write();
-                            d.cache_compressed = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 9);
-                            d.cache_uncompressed_len = raw.len() as u32;
-                        }
-                    }
-                } else if f("--daytime").as_deref() != Some("template") {
-                    eprintln!("daytime word: left as the template's (the map has no custom time and no known default for its mood)");
-                }
-            }
+                lightmap::synth::FrameParams { daytime, max_hdr_mood: x.max_hdr, max_hdr: k, bounce: x.bounce_factor, sky: x.sky_factor }
+            });
+            let s = lightmap::synth::build_full2(out_charts, (tm.bbox_min, tm.bbox_max), &tpl.chunk, probes, vp8_q, frame_params).expect("build");
             let payload = s.chunk.write(false);
             let out = f("--out").expect("--out");
             lightmap::mapio::save_with_chunk(&m, &payload, &out).expect("save");
@@ -1693,6 +1724,45 @@ fn main() {
                 if dist < 40.0 { println!("  inst {li} ({}) pos ({:.1},{:.1},{:.1}) dir ({:.2},{:.2},{:.2}) R {:.1} I {:.2} cone {:?} dist {dist:.1}", scene.instances[li].model_name, l.pos[0], l.pos[1], l.pos[2], l.dir[0], l.dir[1], l.dir[2], l.radius, l.intensity, l.cone); }
             }
         }
+        "ambfit" => {
+            // lmtool ambfit MAP [--items N] [--sun-az A --sun-el E]: the RE model — E = LA·(0.8+0.2n.y) + S·skyVis + b·bounce
+            // with LA = the effective mood's LAmbient (XML), no direct sun (it only feeds the bounce); fits S and b per
+            // channel plus a constant against the map's own (sqrt-decoded, MaxHDR-scaled) editor bake
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let bvh = lightmap::bvh::Bvh::build(lightmap::bake::world_tris(&scene));
+            let own = lightmap::mapio::load(&a[1]).expect("own");
+            let d = own.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).unwrap();
+            let hdr = tmmaps::header::read(&a[1]).expect("header");
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let dt = lightmap::mapio::daytime(&own.gbx.body);
+            let mood = lightmap::moods::effective_mood(&mf.decoration_id, dt);
+            let xml = lightmap::moods::mood_xml(&hdr.envir, mood).expect("mood xml");
+            let frame_max = d.cache.frame_max_hdr().unwrap_or(1.0);
+            println!("{}: decoration {} daytime {:?} → mood {} ; XML LAmbient {:?} MaxHDR {} Bounce {} Sky {} ; frame MaxHDR {:.4}", a[1].rsplit('/').next().unwrap(), mf.decoration_id, dt.filter(|t| *t != 0xffff_ffff).map(|t| t as f64 / 65536.0), mood, xml.l_ambient, xml.max_hdr, xml.bounce_factor, xml.sky_factor, frame_max);
+            let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
+            let step = (scene.instances.len() / f("--items").map(|s| s.parse().unwrap()).unwrap_or(1500)).max(1);
+            let fsel: Vec<(usize, u32, u32, u32, u32, u8)> = scene.instances.iter().enumerate().step_by(step).filter_map(|(ii, inst)| {
+                let &ci = chart_of.get(&(inst.item as u32))?;
+                let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
+                let (pw, ph) = (w as u32 / 2, h as u32 / 2);
+                if pw < 2 || ph < 2 { return None; }
+                Some((ii, (x as u32 + 1) / 2, (y as u32 + 1) / 2, pw, ph, mp.frame_bytes[0][ci]))
+            }).collect();
+            let mut prm = lightmap::bake::BakeParams::default();
+            prm.uv_bounds = true; prm.sky_samples = 32; prm.sun_samples = 1; prm.sky_model = 0; prm.direct_sun = 0.0;
+            prm.ambient_la = xml.l_ambient; prm.sun = xml.l_dir_sun; prm.sky = [1.0; 3]; prm.want_bounce = true;
+            let (az, el) = (f("--sun-az").map(|s| s.parse().unwrap()).unwrap_or(77.5f32), f("--sun-el").map(|s| s.parse().unwrap()).unwrap_or(45.0f32));
+            let (ar, er) = (az.to_radians(), el.to_radians());
+            prm.sun_dir = [er.cos() * ar.sin(), er.sin(), er.cos() * ar.cos()];
+            // the fit: regressors [skyVis, (unused sun) 0, bounce, 1]; target = decoded value × frame MaxHDR − LA·(0.8+0.2n.y)
+            let (rgb, r2) = lightmap::bake::component_fit_rgb2(&scene, &bvh, &fsel, &ia, &prm, frame_max);
+            println!("fit r² {r2:.3}: sky S = ({:.3}, {:.3}, {:.3})  ambient A·(0.8+0.2n.y) with A = ({:.3}, {:.3}, {:.3}) [XML LA ({:.3}, {:.3}, {:.3})]  bounce b = ({:.3}, {:.3}, {:.3})  const = ({:.3}, {:.3}, {:.3})", rgb[0][0], rgb[1][0], rgb[2][0], rgb[0][1], rgb[1][1], rgb[2][1], xml.l_ambient[0], xml.l_ambient[1], xml.l_ambient[2], rgb[0][2], rgb[1][2], rgb[2][2], rgb[0][3], rgb[1][3], rgb[2][3]);
+        }
         "moodfit" => {
             // lmtool moodfit MAP [--items N] [--fine]: the sun direction (per-texel correlation over the largest
             // charts, coarse grid then a fine grid around the best) and the per-channel component fit
@@ -1731,6 +1801,8 @@ fn main() {
             }).collect();
             let mut prm = lightmap::bake::BakeParams::default();
             prm.uv_bounds = true; prm.sky_samples = 16; prm.sun_samples = 1; prm.sky_model = 1;
+            if let Some(p) = f("--sky-cube") { prm.sky_cube = Some(std::sync::Arc::new(lightmap::skycube::CubeMap::load(&p).expect("sky cube"))); }
+            let no_sun = a.iter().any(|x| x == "--no-sun");
             let dir = |az: f32, el: f32| -> [f32; 3] { let (ar, er) = (az.to_radians(), el.to_radians()); [er.cos() * ar.sin(), er.sin(), er.cos() * ar.cos()] };
             let mut best = (f64::MIN, 0.0f32, 0.0f32);
             let mut grid: Vec<(f32, f32)> = Vec::new();
@@ -1738,6 +1810,7 @@ fn main() {
             // objective: --shadow = lit/shadowed agreement on bimodal charts (robust to blur and scale); default = texel correlation
             let shadow = a.iter().any(|x| x == "--shadow");
             let score = |prm: &lightmap::bake::BakeParams| -> f64 { if shadow { lightmap::bake::shadow_agreement(&scene, &bvh, &sel, &ia, prm).0 } else { lightmap::bake::texel_correlation(&scene, &bvh, &sel, &ia, prm).0 } };
+            if no_sun { grid.clear(); best = (0.0, f("--sun-az").map(|s| s.parse().unwrap()).unwrap_or(0.0), f("--sun-el").map(|s| s.parse().unwrap()).unwrap_or(45.0)); }
             for &(az, el) in &grid {
                 prm.sun_dir = dir(az, el);
                 let c = score(&prm);
@@ -1745,7 +1818,7 @@ fn main() {
             }
             eprintln!("coarse: az {} el {} score {:.4} ({:.0}s)", best.1, best.2, best.0, t0.elapsed().as_secs_f32());
             let (caz, cel) = (best.1, best.2);
-            for del in [-7.5f32, -5.0, -2.5, 0.0, 2.5, 5.0, 7.5] { for daz in [-10.0f32, -7.5, -5.0, -2.5, 0.0, 2.5, 5.0, 7.5, 10.0] {
+            for del in if no_sun { vec![] } else { vec![-7.5f32, -5.0, -2.5, 0.0, 2.5, 5.0, 7.5] } { for daz in [-10.0f32, -7.5, -5.0, -2.5, 0.0, 2.5, 5.0, 7.5, 10.0] {
                 let (az, el) = (caz + daz, (cel + del).clamp(2.0, 88.0));
                 prm.sun_dir = dir(az, el);
                 let c = score(&prm);
@@ -1765,6 +1838,7 @@ fn main() {
             let (rgb, r2) = lightmap::bake::component_fit_rgb(&scene, &bvh, &fsel, &ia, &prm);
             // rgb[ch] = [sky, sun, upness, const]
             let cl = |k: usize| format!("{:.3},{:.3},{:.3}", rgb[0][k].max(0.0), rgb[1][k].max(0.0), rgb[2][k].max(0.0));
+            if prm.sky_cube.is_some() { println!("fit r² {r2:.3} WITH THE SKY CUBE: sky-scale per channel {} (1.0 = the cube's E/π as is), sun {}, up {}, const {}", cl(0), cl(1), cl(2), cl(3)); }
             println!("fit r² {r2:.3}: --sun-az {:.1} --sun-el {:.1} --ambient {} --up {} --sky {} --sun {}", best.1, best.2, cl(3), cl(2), cl(0), cl(1));
             println!("raw per channel: sky {:?} sun {:?} up {:?} const {:?}", [rgb[0][0], rgb[1][0], rgb[2][0]], [rgb[0][1], rgb[1][1], rgb[2][1]], [rgb[0][2], rgb[1][2], rgb[2][2]], [rgb[0][3], rgb[1][3], rgb[2][3]]);
             eprintln!("moodfit done ({:.0}s)", t0.elapsed().as_secs_f32());
@@ -1946,6 +2020,7 @@ fn main() {
             let mut ratios: Vec<f64> = Vec::new();
             let mut all: Vec<f64> = Vec::new();
             let mut horiz: Vec<(f64, f64)> = Vec::new(); // (value, n.y) for horizontal-ish texels
+            let mut horiz_rgb: Vec<([f64; 3], f64)> = Vec::new();
             for (ii, inst) in scene.instances.iter().enumerate() {
                 let Some(&ci) = chart_of.get(&(inst.item as u32)) else { continue };
                 let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
@@ -1954,8 +2029,10 @@ fn main() {
                 let (samples, _) = lightmap::bake::rasterise_pub(&scene, ii, pw, ph, false, true);
                 if samples.len() < min_px { continue; }
                 let k = mp.frame_bytes[0][ci] as f64 / 255.0;
-                let mut v: Vec<f64> = samples.iter().map(|s| { let c = ia.get((px + s.px).min(ia.w - 1), (py + s.py).min(ia.h - 1)); (0.2126 * c[0] as f64 + 0.7152 * c[1] as f64 + 0.0722 * c[2] as f64) / 255.0 * k }).collect();
-                for (s, val) in samples.iter().zip(v.iter()) { if s.n[1] > 0.9 { horiz.push((*val, s.n[1] as f64)); } }
+                let fbv = mp.frame_bytes[0][ci];
+                let dv = |c: [u8; 3]| -> [f64; 3] { [lightmap::synth::decode_value(c[0], fbv) as f64, lightmap::synth::decode_value(c[1], fbv) as f64, lightmap::synth::decode_value(c[2], fbv) as f64] };
+                let mut v: Vec<f64> = samples.iter().map(|s| { let c = dv(ia.get((px + s.px).min(ia.w - 1), (py + s.py).min(ia.h - 1))); 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2] }).collect();
+                for (s, val) in samples.iter().zip(v.iter()) { if s.n[1] > 0.9 { horiz.push((*val, s.n[1] as f64)); let c = dv(ia.get((px + s.px).min(ia.w - 1), (py + s.py).min(ia.h - 1))); horiz_rgb.push((c, *val)); } }
                 all.extend(v.iter().copied());
                 v.sort_by(|a, b| a.partial_cmp(b).unwrap());
                 let (p10, p90) = (v[v.len() / 10], v[v.len() * 9 / 10]);
@@ -1975,6 +2052,10 @@ fn main() {
                 let (mut sl, mut nl, mut sh, mut nh) = (0.0, 0usize, 0.0, 0usize);
                 for v in &hv { if *v < thr { sl += v; nl += 1; } else { sh += v; nh += 1; } }
                 println!("horizontal texels: {} ; p10 {:.3} p90 {:.3}; below/above the midpoint: {} at mean {:.3} | {} at mean {:.3} → shadow/lit ratio {:.3}", hv.len(), lo, hi, nl, sl / nl.max(1) as f64, nh, sh / nh.max(1) as f64, (sl / nl.max(1) as f64) / (sh / nh.max(1) as f64).max(1e-6));
+                let (mut rl, mut rh, mut nl2, mut nh2) = ([0f64; 3], [0f64; 3], 0usize, 0usize);
+                for (rgb, v) in &horiz_rgb { if *v < thr { for c in 0..3 { rl[c] += rgb[c]; } nl2 += 1; } else { for c in 0..3 { rh[c] += rgb[c]; } nh2 += 1; } }
+                let n1 = nl2.max(1) as f64; let n2 = nh2.max(1) as f64;
+                println!("  shadow mean rgb ({:.3}, {:.3}, {:.3})  lit mean rgb ({:.3}, {:.3}, {:.3})  lit − shadow ({:.3}, {:.3}, {:.3})", rl[0] / n1, rl[1] / n1, rl[2] / n1, rh[0] / n2, rh[1] / n2, rh[2] / n2, rh[0] / n2 - rl[0] / n1, rh[1] / n2 - rl[1] / n1, rh[2] / n2 - rl[2] / n1);
             }
         }
         "modelinfo" => {
@@ -2019,11 +2100,12 @@ fn main() {
         }
         "testmap" => {
             // lmtool testmap MAP [--base N] [--dump T.tsv]: the BlueBay-style lighting test map (3 pad groups at y 40,
-            // a 16 m pole on the pad centre (324, 324), a tower east of group B, a roof over the group-C centre) read
+            // a 16 m pole on the pad centre (324, 324), a tower east of group B, a roof over the group-C centre; --y0 = the pad tops' height, 160) read
             // from the map's own bake: per region the HDR luminance stats (K = 1 units), the pole shadow's direction
             // and length → sun azimuth/elevation, the tower faces' values, the roofed pad's value.
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
             let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let y0: f32 = f("--y0").map(|s| s.parse().unwrap()).unwrap_or(160.0); // the pad tops
             let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
             let own = lightmap::mapio::load(&a[1]).expect("own");
             let d = own.chunk.data.as_ref().unwrap();
@@ -2039,11 +2121,11 @@ fn main() {
                 let Some(&ci) = chart_of.get(&(inst.item as u32)) else { continue };
                 let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
                 let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32 / 2).max(1), (h as u32 / 2).max(1));
-                let k = mp.frame_bytes[0][ci] as f32 / 255.0;
+                let fbv = mp.frame_bytes[0][ci];
                 let (samples, _) = lightmap::bake::rasterise_pub(&scene, ii, pw, ph, false, true);
                 for s in &samples {
                     let c = ia.get((px + s.px).min(ia.w - 1), (py + s.py).min(ia.h - 1));
-                    let rgb = [c[0] as f32 / 255.0 * k, c[1] as f32 / 255.0 * k, c[2] as f32 / 255.0 * k];
+                    let rgb = [lightmap::synth::decode_value(c[0], fbv), lightmap::synth::decode_value(c[1], fbv), lightmap::synth::decode_value(c[2], fbv)];
                     tx.push(Tx { p: s.p, n: s.n, rgb, lum: 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2] });
                 }
             }
@@ -2063,7 +2145,7 @@ fn main() {
                 println!("{name:<44} n {:>6}  lum median {:.4}  p10 {:.4}  p90 {:.4}  mean rgb ({:.3}, {:.3}, {:.3})", v.len(), med, l[l.len() / 10], l[l.len() * 9 / 10], mean_rgb[0], mean_rgb[1], mean_rgb[2]);
                 (med, v.len())
             };
-            let up = |t: &Tx| t.n[1] > 0.9 && t.p[1] > 39.0 && t.p[1] < 41.5;
+            let up = |t: &Tx| t.n[1] > 0.9 && t.p[1] > y0 - 1.0 && t.p[1] < y0 + 1.5;
             // group A: pads x 300..348, z 300..348; the pole base at (323.2..324.7, 323.2..324.7)
             let in_a = |t: &Tx| up(t) && t.p[0] >= 300.0 && t.p[0] < 348.0 && t.p[2] >= 300.0 && t.p[2] < 348.0;
             let (med_a, _) = stats("A open pads (all)", &in_a);
@@ -2089,20 +2171,111 @@ fn main() {
             stats("B lit", &|t: &Tx| in_b(t) && t.lum >= 0.75 * med_b.max(med_a));
             stats("B shadow", &|t: &Tx| in_b(t) && t.lum < 0.75 * med_b.max(med_a));
             // tower faces (item at (448, 40, 316), yaw 0; mesh lo (−0.7, 0, −1.1), 17.4 × 52 × 19.6)
-            let tower = |t: &Tx| t.p[0] > 446.0 && t.p[0] < 466.5 && t.p[2] > 313.0 && t.p[2] < 337.0 && t.p[1] > 42.0 && t.p[1] < 92.0;
+            let tower = |t: &Tx| t.p[0] > 446.0 && t.p[0] < 466.5 && t.p[2] > 313.0 && t.p[2] < 337.0 && t.p[1] > y0 + 2.0 && t.p[1] < y0 + 52.0;
             stats("tower face −x (west)", &|t: &Tx| tower(t) && t.n[0] < -0.9);
             stats("tower face +x (east)", &|t: &Tx| tower(t) && t.n[0] > 0.9);
             stats("tower face −z (south)", &|t: &Tx| tower(t) && t.n[2] < -0.9);
             stats("tower face +z (north)", &|t: &Tx| tower(t) && t.n[2] > 0.9);
-            stats("tower top", &|t: &Tx| t.p[0] > 446.0 && t.p[0] < 466.5 && t.p[2] > 313.0 && t.p[2] < 337.0 && t.p[1] > 88.0 && t.n[1] > 0.9);
+            stats("tower top", &|t: &Tx| t.p[0] > 446.0 && t.p[0] < 466.5 && t.p[2] > 313.0 && t.p[2] < 337.0 && t.p[1] > y0 + 48.0 && t.n[1] > 0.9);
             // group C: pads x 300..348, z 400..448; the roof (316, 52, 416): 16 × 16 above the centre pad, 12 m up
             let in_c = |t: &Tx| up(t) && t.p[0] >= 300.0 && t.p[0] < 348.0 && t.p[2] >= 400.0 && t.p[2] < 448.0;
             stats("C open pads (not under the roof)", &|t: &Tx| in_c(t) && !(t.p[0] >= 316.0 && t.p[0] < 332.0 && t.p[2] >= 416.0 && t.p[2] < 432.0));
             stats("C pad under the roof", &|t: &Tx| in_c(t) && t.p[0] >= 316.0 && t.p[0] < 332.0 && t.p[2] >= 416.0 && t.p[2] < 432.0);
             stats("C pad under the roof, inner 8×8", &|t: &Tx| in_c(t) && t.p[0] >= 320.0 && t.p[0] < 328.0 && t.p[2] >= 420.0 && t.p[2] < 428.0);
-            stats("roof top", &|t: &Tx| t.n[1] > 0.9 && t.p[1] > 55.0 && t.p[1] < 58.0 && t.p[0] >= 316.0 && t.p[0] < 332.0 && t.p[2] >= 416.0 && t.p[2] < 432.0);
-            stats("roof underside", &|t: &Tx| t.n[1] < -0.9 && t.p[1] > 51.0 && t.p[1] < 54.0 && t.p[0] >= 316.0 && t.p[0] < 332.0 && t.p[2] >= 416.0 && t.p[2] < 432.0);
-            stats("pad undersides (n.y < −0.9, y ≈ 40)", &|t: &Tx| t.n[1] < -0.9 && t.p[1] > 39.0 && t.p[1] < 41.0);
+            stats("roof top", &|t: &Tx| t.n[1] > 0.9 && t.p[1] > y0 + 15.0 && t.p[1] < y0 + 18.0 && t.p[0] >= 316.0 && t.p[0] < 332.0 && t.p[2] >= 416.0 && t.p[2] < 432.0);
+            stats("roof underside", &|t: &Tx| t.n[1] < -0.9 && t.p[1] > y0 + 11.0 && t.p[1] < y0 + 14.0 && t.p[0] >= 316.0 && t.p[0] < 332.0 && t.p[2] >= 416.0 && t.p[2] < 432.0);
+            stats("pad undersides (n.y < −0.9)", &|t: &Tx| t.n[1] < -0.9 && t.p[1] > y0 - 1.0 && t.p[1] < y0 + 1.0);
+        }
+        "sky" => {
+            // lmtool sky FILE.dds [--face-out DIR]: decode a BC6H DDS (a cubemap or a 2:1 panorama) and print, per face,
+            // the mean radiance, and the cosine-weighted irradiance E(n) = ∫ L(ω) max(0, n·ω) dω for the six axis
+            // normals — what a sky-lit surface receives from that image (K = XML HDR units)
+            let data = std::fs::read(&a[1]).expect("read dds");
+            let dds = lightmap::bc6h::parse_dds(&data).expect("dds");
+            println!("{}: {}x{} format {} mips {} cubemap {}", a[1], dds.w, dds.h, dds.format, dds.mips, dds.cubemap);
+            let faces = if dds.cubemap { 6 } else { 1 };
+            let mut imgs: Vec<Vec<[f32; 3]>> = Vec::new();
+            if dds.cubemap {
+                let cube = lightmap::skycube::CubeMap::load(&a[1]).expect("cube");
+                imgs = cube.faces;
+            } else {
+                assert!(dds.format == 95 || dds.format == 96, "not BC6H");
+                imgs.push(lightmap::bc6h::decode_image(dds.data, dds.w, dds.h, dds.format == 96));
+            }
+            let names = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"];
+            let mut total = [0f64; 3];
+            for (fi, im) in imgs.iter().enumerate() {
+                let mut s = [0f64; 3];
+                let mut mx = 0f32;
+                for p in im { for c in 0..3 { s[c] += p[c] as f64; total[c] += p[c] as f64; } mx = mx.max(p[0].max(p[1]).max(p[2])); }
+                let n = im.len() as f64;
+                println!("  face {} ({}): mean ({:.4}, {:.4}, {:.4}) max {:.3}", fi, if dds.cubemap { names[fi] } else { "pano" }, s[0] / n, s[1] / n, s[2] / n, mx);
+            }
+            // direction of texel (face, u, v) in the D3D cubemap convention
+            let dir_of = |face: usize, u: f32, v: f32| -> [f32; 3] {
+                // u, v in [-1, 1], v down
+                match face { 0 => [1.0, -v, -u], 1 => [-1.0, -v, u], 2 => [u, 1.0, v], 3 => [u, -1.0, -v], 4 => [u, -v, 1.0], _ => [-u, -v, -1.0] }
+            };
+            let normals = [("up +Y", [0.0f32, 1.0, 0.0]), ("down -Y", [0.0, -1.0, 0.0]), ("+X", [1.0, 0.0, 0.0]), ("-X", [-1.0, 0.0, 0.0]), ("+Z", [0.0, 0.0, 1.0]), ("-Z", [0.0, 0.0, -1.0])];
+            let mut irr = vec![[0f64; 3]; normals.len()];
+            let mut solid = 0f64;
+            if dds.cubemap {
+                let n = dds.w;
+                for face in 0..6 { for y in 0..n { for x in 0..n {
+                    let (u, v) = ((x as f32 + 0.5) / n as f32 * 2.0 - 1.0, (y as f32 + 0.5) / n as f32 * 2.0 - 1.0);
+                    let d = dir_of(face, u, v);
+                    let len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+                    let dn = [d[0] / len2.sqrt(), d[1] / len2.sqrt(), d[2] / len2.sqrt()];
+                    // solid angle of a cube texel: (2/n)² / len³
+                    let dw = (4.0 / (n * n) as f64) / (len2 as f64).powf(1.5);
+                    solid += dw;
+                    let p = imgs[face][y * n + x];
+                    for (k, (_, nn)) in normals.iter().enumerate() {
+                        let c = dn[0] * nn[0] + dn[1] * nn[1] + dn[2] * nn[2];
+                        if c > 0.0 { for ch in 0..3 { irr[k][ch] += p[ch] as f64 * c as f64 * dw; } }
+                    }
+                }}}
+            } else {
+                // equirectangular panorama: x → azimuth, y → polar angle from the top
+                let (w, h) = (dds.w, dds.h);
+                for y in 0..h { for x in 0..w {
+                    let theta = (y as f32 + 0.5) / h as f32 * std::f32::consts::PI;
+                    let phi = (x as f32 + 0.5) / w as f32 * 2.0 * std::f32::consts::PI;
+                    let dn = [theta.sin() * phi.sin(), theta.cos(), theta.sin() * phi.cos()];
+                    let dw = (theta.sin() as f64) * (std::f64::consts::PI / h as f64) * (2.0 * std::f64::consts::PI / w as f64);
+                    solid += dw;
+                    let p = imgs[0][y * w + x];
+                    for (k, (_, nn)) in normals.iter().enumerate() {
+                        let c = dn[0] * nn[0] + dn[1] * nn[1] + dn[2] * nn[2];
+                        if c > 0.0 { for ch in 0..3 { irr[k][ch] += p[ch] as f64 * c as f64 * dw; } }
+                    }
+                }}
+            }
+            println!("  solid angle check {:.4} (4π = {:.4})", solid, 4.0 * std::f64::consts::PI);
+            for (k, (name, _)) in normals.iter().enumerate() {
+                let e = irr[k];
+                println!("  irradiance E(n) for n = {name:<8}: ({:.4}, {:.4}, {:.4})  lum {:.4}   E/π = ({:.4}, {:.4}, {:.4})", e[0], e[1], e[2], 0.2126 * e[0] + 0.7152 * e[1] + 0.0722 * e[2], e[0] / std::f64::consts::PI, e[1] / std::f64::consts::PI, e[2] / std::f64::consts::PI);
+            }
+            if let Some(dir) = a.iter().position(|x| x == "--face-out").and_then(|i| a.get(i + 1)) {
+                std::fs::create_dir_all(dir).unwrap();
+                for (fi, im) in imgs.iter().enumerate() {
+                    let mut rgb = lightmap::img::Rgb::new(dds.w as u32, dds.h as u32);
+                    for (i, p) in im.iter().enumerate() { let q = |v: f32| ((v / (1.0 + v)).powf(1.0 / 2.2) * 255.0).clamp(0.0, 255.0) as u8; rgb.px[i * 3] = q(p[0]); rgb.px[i * 3 + 1] = q(p[1]); rgb.px[i * 3 + 2] = q(p[2]); }
+                    lightmap::img::write_ppm(&rgb, &format!("{dir}/face{fi}.ppm")).unwrap();
+                }
+            }
+        }
+        "strip" => {
+            // lmtool strip MAP --out OUT: the map with an EMPTY lightmap chunk (has_lightmaps = 0) — the editor then
+            // bakes fresh instead of recomputing a coarse lightmap at load for a stored one that no longer fits
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let mut m = lightmap::mapio::load(&a[1]).expect("load");
+            let v = m.chunk.version;
+            m.chunk = lightmap::format::LightmapChunk { version: v, u01: 0, u02: 0, data: None };
+            let payload = m.chunk.write(false);
+            let out = f("--out").expect("--out");
+            lightmap::mapio::save_with_chunk(&m, &payload, &out).expect("save");
+            println!("wrote {out} with an empty lightmap chunk ({} B)", payload.len());
         }
         _ => {
             eprintln!("unknown command");

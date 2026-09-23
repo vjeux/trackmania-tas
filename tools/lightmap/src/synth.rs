@@ -29,6 +29,20 @@ impl Default for ChartSpec {
 }
 
 /// One chart ready for packing: 8-bit atlas content per pixel.
+/// The stored texel for an HDR value: the game's `LmCompress_HBasis_YCbCr4` writes
+/// p = sqrt(E / m) per channel and the runtime squares the decoded colour
+/// (RE child, 2026-09-23, from the lightmapper shaders); `m` = the chart max the
+/// frame byte encodes. A linear write shows every mid-tone at p².
+pub fn encode_value(e: f32, enc_max: f32) -> u8 {
+    ((e.max(0.0) / enc_max).min(1.0).sqrt() * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// The inverse: the HDR value (in the frame byte's units, K = 1) a stored texel means.
+pub fn decode_value(p: u8, fb: u8) -> f32 {
+    let q = p as f32 / 255.0;
+    q * q * fb as f32 / 255.0
+}
+
 #[derive(Clone, Debug)]
 pub struct Chart {
     pub obj: u32,
@@ -56,7 +70,7 @@ impl Chart {
             if max1 > 1e-4 {
                 let fb1 = (255.0 * max1 / k).round().clamp(1.0, 255.0) as u8;
                 let enc_max = fb1 as f32 / 255.0 * k;
-                c.a1 = rgb1.iter().map(|v| { let f = |x: f32| (x / enc_max * 255.0).round().clamp(0.0, 255.0) as u8; [f(v[0]), f(v[1]), f(v[2])] }).collect();
+                c.a1 = rgb1.iter().map(|v| [encode_value(v[0], enc_max), encode_value(v[1], enc_max), encode_value(v[2], enc_max)]).collect();
                 c.fb[1] = fb1;
             }
         }
@@ -70,13 +84,7 @@ impl Chart {
         let fb0 = (255.0 * max / k).round().clamp(1.0, 255.0) as u8;
         // the stored max is quantised: normalise against what the byte encodes
         let enc_max = fb0 as f32 / 255.0 * k;
-        let a: Vec<[u8; 3]> = rgb
-            .iter()
-            .map(|c| {
-                let f = |v: f32| (v / enc_max * 255.0).round().clamp(0.0, 255.0) as u8;
-                [f(c[0]), f(c[1]), f(c[2])]
-            })
-            .collect();
+        let a: Vec<[u8; 3]> = rgb.iter().map(|c| [encode_value(c[0], enc_max), encode_value(c[1], enc_max), encode_value(c[2], enc_max)]).collect();
         Chart { obj, w, h, a, a1: Vec::new(), b, fb: [fb0, 0, 0], sub: 0 }
     }
 }
@@ -160,7 +168,41 @@ pub fn build(charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: &Lightmap
     build_full(charts, bbox, template, None, None)
 }
 
-pub fn build_full(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: &LightmapChunk, probes: Option<ProbeBlob>, vp8_q: Option<u8>) -> Result<Synth, String> {
+/// The frame records' mood constants (the template's are replaced when given).
+#[derive(Clone, Copy, Debug)]
+pub struct FrameParams {
+    /// The map's DayTime word (0xffffffff = default).
+    pub daytime: u32,
+    pub max_hdr_mood: f32,
+    /// Frame 0's MaxHDR: min(the brightest chart, the mood's MaxHDR) — the K the frame bytes are scaled by.
+    pub max_hdr: f32,
+    pub bounce: f32,
+    pub sky: f32,
+}
+
+/// Patch the three 66-byte frame records inside a mapping head (see `CacheBlob::frame_max_hdr`).
+pub fn patch_frame_records(head: &mut [u8], fp: &FrameParams) {
+    for i in 0..3 {
+        let r = 60 + 66 * i;
+        if r + 32 > head.len() {
+            break;
+        }
+        // 0xffffffff = keep the template's time word
+        if fp.daytime != 0xffff_ffff {
+            head[r + 8..r + 12].copy_from_slice(&fp.daytime.to_le_bytes());
+        }
+        head[r + 16..r + 20].copy_from_slice(&fp.max_hdr_mood.to_le_bytes());
+        head[r + 20..r + 24].copy_from_slice(&fp.max_hdr.to_le_bytes());
+        head[r + 24..r + 28].copy_from_slice(&fp.bounce.to_le_bytes());
+        head[r + 28..r + 32].copy_from_slice(&fp.sky.to_le_bytes());
+    }
+}
+
+pub fn build_full(charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: &LightmapChunk, probes: Option<ProbeBlob>, vp8_q: Option<u8>) -> Result<Synth, String> {
+    build_full2(charts, bbox, template, probes, vp8_q, None)
+}
+
+pub fn build_full2(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: &LightmapChunk, probes: Option<ProbeBlob>, vp8_q: Option<u8>, frame: Option<FrameParams>) -> Result<Synth, String> {
     let td = template.data.as_ref().ok_or("template has no lightmap")?;
     let tm = td.cache.mapping().ok_or("template has no mapping chunk")?;
     // fit: shrink every chart uniformly until the shelf packer accepts the set
@@ -275,6 +317,10 @@ pub fn build_full(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: 
         tail: tm.tail.clone(),
         raw_z: Vec::new(),
     };
+    let mut mapping = mapping;
+    if let Some(fp) = &frame {
+        patch_frame_records(&mut mapping.head, fp);
+    }
     let chunks: Vec<CacheChunk> = td
         .cache
         .chunks
@@ -303,7 +349,15 @@ pub fn build_full(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: 
             let src = &td.frames[fi].images[ii];
             let im = match (fi, ii) {
                 (0, 0) => enc(&ia)?,
-                (0, 1) => enc(&ib)?,
+                // frame 0 image 1 = THREE concatenated WebPs (the H-basis directional coefficients C1..C3,
+                // sign-sqrt encoded with 128 = zero); a flat-normal bake writes three neutral images
+                (0, 1) => {
+                    let one = enc(&ib)?;
+                    let mut three = one.clone();
+                    three.extend_from_slice(&one);
+                    three.extend_from_slice(&one);
+                    three
+                }
                 (0, 2) => match &probes {
                     Some(p) => p.blob.clone(),
                     None => src.clone(),

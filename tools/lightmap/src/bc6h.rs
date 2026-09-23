@@ -508,7 +508,9 @@ pub fn parse_dds(d: &[u8]) -> Result<Dds<'_>, String> {
     let (h, w, mips) = (u(12) as usize, u(16) as usize, u(28).max(1) as usize);
     let fourcc = &d[84..88];
     let caps2 = u(112);
-    let (format, off) = if fourcc == b"DX10" { (u(128), 148) } else { (0, 128) };
+    // a legacy fourcc that is a plain number is a D3DFMT code (113 = A16B16G16R16F)
+    let legacy = u(84);
+    let (format, off) = if fourcc == b"DX10" { (u(128), 148) } else if legacy < 256 { (legacy, 128) } else { (0, 128) };
     Ok(Dds { w, h, format, mips, cubemap: caps2 & 0x200 != 0, data: &d[off..] })
 }
 

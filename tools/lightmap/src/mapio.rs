@@ -61,3 +61,11 @@ pub fn load_template(path: &str) -> Result<Template, String> {
     let m = load(path)?;
     Ok(Template { chunk: m.chunk })
 }
+
+/// The map's DayTime word from chunk 0x03043056 (None when the chunk is absent).
+pub fn daytime(body: &[u8]) -> Option<u32> {
+    let cs = tmmaps::gbx::all_skip_chunks(body);
+    let c = cs.iter().find(|c| c.0 == 0x03043056)?;
+    let p = c.2;
+    Some(u32::from_le_bytes([body[p + 8], body[p + 9], body[p + 10], body[p + 11]]))
+}

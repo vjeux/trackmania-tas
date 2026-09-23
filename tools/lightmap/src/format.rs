@@ -239,6 +239,27 @@ impl CacheBlob {
             _ => None,
         })
     }
+    /// Frame 0's MaxHDR (the frame record's second float: min(max chart value, the mood's MaxHDR));
+    /// stored texel → HDR: (p/255)² · fb0/255 · this.
+    pub fn frame_max_hdr(&self) -> Option<f32> {
+        let m = self.mapping()?;
+        // head = the bytes after the chunk version: u32 1, u32[6], u32 256 64 25, u32 1 2 1 3 1 4, then the
+        // 66-byte records (no count word): kind, 0, daytime, −FLT_MAX, MaxHDR_Mood, MaxHDR, Bounce, Sky, …
+        let rec0 = 60;
+        let o = rec0 + 20;
+        let b = m.head.get(o..o + 4)?;
+        Some(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    /// Frame 0's mood MaxHDR (the record's first float) and its DayTime word.
+    pub fn frame_mood_max_hdr(&self) -> Option<(f32, u32)> {
+        let m = self.mapping()?;
+        let rec0 = 60;
+        let b = m.head.get(rec0 + 16..rec0 + 20)?;
+        let t = m.head.get(rec0 + 8..rec0 + 12)?;
+        Some((f32::from_le_bytes([b[0], b[1], b[2], b[3]]), u32::from_le_bytes([t[0], t[1], t[2], t[3]])))
+    }
+
     pub fn mapping_mut(&mut self) -> Option<&mut Mapping> {
         self.chunks.iter_mut().find_map(|c| match &mut c.body {
             ChunkBody::Mapping(m) => Some(m),

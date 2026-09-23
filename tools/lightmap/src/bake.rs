@@ -51,6 +51,17 @@ pub struct BakeParams {
     pub pattern_flat: bool,
     /// Point-light scale for frame 1 (K = 1 units per unit light intensity); 0 = frame 1 not baked.
     pub light_k: f32,
+    /// The mood's LAmbient: E += LAmbient·(0.8 + 0.2·n.y), unoccluded (the game's ambient pass).
+    pub ambient_la: [f32; 3],
+    /// 1 = the direct sun is baked (the pre-2026-09-23 model); 0 = the sun only feeds the bounce
+    /// (the game: the sun is real-time, the lightmap is diffuse AMBIENT — RE child, disassembly).
+    pub direct_sun: f32,
+    /// Multiply the ambient term by the dome visibility (the editor's enclosed texels go to ~0).
+    pub ambient_ao: bool,
+    /// The mood's HDR sky as a light source: every unoccluded cosine-sampled ray adds
+    /// `sky_cube_scale × L(ω)`; with a cube the constant `sky` term is not used.
+    pub sky_cube: Option<std::sync::Arc<crate::skycube::CubeMap>>,
+    pub sky_cube_scale: f32,
 }
 
 impl Default for BakeParams {
@@ -80,6 +91,11 @@ impl Default for BakeParams {
             pattern: false,
             pattern_flat: false,
             light_k: 0.27,
+            ambient_la: [0.0; 3],
+            direct_sun: 1.0,
+            ambient_ao: false,
+            sky_cube: None,
+            sky_cube_scale: 1.0,
         }
     }
 }
@@ -268,6 +284,8 @@ pub struct Shaded {
     pub sky_vis: f32,
     pub sun_vis: f32,
     pub bounce: [f32; 3],
+    /// Per-channel sky term: the cube-weighted mean (E/π) with a cube, else sky_vis in every channel.
+    pub sky_rgb: [f32; 3],
 }
 
 fn shade(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -> ([f32; 3], f32, f32) {
@@ -282,11 +300,12 @@ fn shade_full(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
         let band = ((s.p[1] / 4.0).floor() as i64).rem_euclid(3);
         let base = if c == 0 { 1.0 } else { 0.25 };
         let col = if prm.pattern_flat { [1.0, 1.0, 1.0] } else { match band { 0 => [1.0, 0.3, 0.3], 1 => [0.3, 1.0, 0.3], _ => [0.3, 0.3, 1.0] } };
-        return Shaded { e: [col[0] * base, col[1] * base, col[2] * base], sky_vis: 1.0, sun_vis: 1.0, bounce: [0.0; 3] };
+        return Shaded { e: [col[0] * base, col[1] * base, col[2] * base], sky_vis: 1.0, sun_vis: 1.0, bounce: [0.0; 3], sky_rgb: [1.0; 3] };
     }
     let o = add(s.p, mul(s.n, 0.03));
     let (t, b) = frame(s.n);
     let mut sky_vis = 0f32;
+    let mut sky_e = [0f32; 3];
     let mut bounce = [0f32; 3];
     let nsky = prm.sky_samples.max(1);
     let rot = rng.next();
@@ -321,6 +340,12 @@ fn shade_full(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
                 // sky radiance weight: uniform (cosine weighting is in the sampling)
                 let wgt = if prm.sky_model == 1 { 0.5 + 0.5 * d[1].max(0.0) } else { 1.0 };
                 sky_vis += wgt;
+                if let Some(cube) = &prm.sky_cube {
+                    let l = cube.sample(d);
+                    for k in 0..3 {
+                        sky_e[k] += l[k];
+                    }
+                }
             } else if prm.bounce > 0.0 || prm.want_bounce {
                 // one bounce: the hit surface's own direct sun + half sky, times albedo
                 let hit = if ground_hit && !blocked { None } else { bvh.closest(o, d, tmax) };
@@ -336,9 +361,11 @@ fn shade_full(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
                 let ho = add(hp, mul(hn, 0.03));
                 let ndl = dot(hn, prm.sun_dir).max(0.0);
                 let sun_v = if ndl > 0.0 && !bvh.occluded(ho, prm.sun_dir, 1.0e4, u32::MAX, 0.0) { 1.0 } else { 0.0 };
+                // the occluder's own radiance (the lightmapper's peel passes: its ambient, its
+                // direct sun — the sun exists only here — and half the sky), before the albedo
                 let sky_half = 0.5 * (0.5 + 0.5 * hn[1]);
                 for k in 0..3 {
-                    bounce[k] += prm.sun[k] * ndl * sun_v + prm.sky[k] * sky_half;
+                    bounce[k] += prm.ambient_la[k] * (0.8 + 0.2 * hn[1]) + prm.sun[k] * ndl * sun_v + prm.sky[k] * sky_half;
                 }
             }
         }
@@ -367,9 +394,20 @@ fn shade_full(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
     let mut e = [0f32; 3];
     let bounce_n = [bounce[0] / count as f32, bounce[1] / count as f32, bounce[2] / count as f32];
     for k in 0..3 {
-        e[k] = prm.ambient[k] + prm.up[k] * (0.5 + 0.5 * s.n[1]) + prm.sky[k] * sky_vis + prm.sun[k] * ndl.max(0.0) * sun_vis + prm.bounce * prm.albedo * bounce_n[k];
+        // with a sky cube the mean cube radiance over the cosine-sampled hemisphere IS E/π of the sky
+        let sky_term = match &prm.sky_cube {
+            Some(_) => prm.sky_cube_scale * sky_e[k] / count as f32,
+            None => prm.sky[k] * sky_vis,
+        };
+        // the ambient pass is occluded by the dome visibility when `ambient_ao` (the peel passes' alpha)
+        let ao = if prm.ambient_ao { sky_vis } else { 1.0 };
+        e[k] = prm.ambient_la[k] * (0.8 + 0.2 * s.n[1]) * ao + prm.ambient[k] + prm.up[k] * (0.5 + 0.5 * s.n[1]) + sky_term + prm.sun[k] * ndl.max(0.0) * sun_vis * prm.direct_sun + prm.bounce * prm.albedo * bounce_n[k];
     }
-    Shaded { e, sky_vis, sun_vis, bounce: bounce_n }
+    let sky_rgb = match &prm.sky_cube {
+        Some(_) => [sky_e[0] / count as f32, sky_e[1] / count as f32, sky_e[2] / count as f32],
+        None => [sky_vis, sky_vis, sky_vis],
+    };
+    Shaded { e, sky_vis, sun_vis, bounce: bounce_n, sky_rgb }
 }
 
 /// Bake every instance. Returns one chart per instance (index = instance).
@@ -716,7 +754,7 @@ pub fn component_fit_rgb(scene: &Scene, bvh: &Bvh, sel: &[(usize, u32, u32, u32,
     let prm = &prm;
     let threads = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(8).min(160);
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let acc = std::sync::Mutex::new(Vec::<[f64; 6]>::new());
+    let acc = std::sync::Mutex::new(Vec::<[f64; 9]>::new());
     std::thread::scope(|sc| {
         for _ in 0..threads {
             sc.spawn(|| loop {
@@ -731,10 +769,12 @@ pub fn component_fit_rgb(scene: &Scene, bvh: &Bvh, sel: &[(usize, u32, u32, u32,
                 for s in &samples {
                     let sh = shade_full(bvh, prm, s, ii as u32, &mut rng);
                     let ndl = dot(s.n, prm.sun_dir).max(0.0);
-                    let n = atlas.get((px + s.px).min(atlas.w - 1), (py + s.py).min(atlas.h - 1));
-                    let sc = fb0 as f64 / 255.0 / 255.0;
+                    let n0 = atlas.get((px + s.px).min(atlas.w - 1), (py + s.py).min(atlas.h - 1));
+                    // the atlas is sqrt-encoded: E = (p/255)² · fb0/255 (K = 1 units)
+                    let n = [crate::synth::decode_value(n0[0], fb0) as f64, crate::synth::decode_value(n0[1], fb0) as f64, crate::synth::decode_value(n0[2], fb0) as f64];
+                    let sc = 1.0;
                     let bl = if prm.fit_regressor == 1 { (0.5 + 0.5 * s.n[1]) as f64 } else if prm.fit_regressor == 2 { (sh.sky_vis * sh.sky_vis) as f64 } else { (0.2126 * sh.bounce[0] + 0.7152 * sh.bounce[1] + 0.0722 * sh.bounce[2]) as f64 };
-                    local.push([sh.sky_vis as f64, (ndl * sh.sun_vis) as f64, bl, n[0] as f64 * sc, n[1] as f64 * sc, n[2] as f64 * sc]);
+                    local.push([sh.sky_vis as f64, (ndl * sh.sun_vis) as f64, bl, n[0] as f64 * sc, n[1] as f64 * sc, n[2] as f64 * sc, sh.sky_rgb[0] as f64, sh.sky_rgb[1] as f64, sh.sky_rgb[2] as f64]);
                 }
                 acc.lock().unwrap().extend(local);
             });
@@ -743,11 +783,12 @@ pub fn component_fit_rgb(scene: &Scene, bvh: &Bvh, sel: &[(usize, u32, u32, u32,
     let v = acc.into_inner().unwrap();
     let mut out = [[0f64; 4]; 3];
     let mut r2sum = 0.0;
+    let cube = prm.sky_cube.is_some();
     for ch in 0..3 {
         let mut m = [[0f64; 4]; 4];
         let mut r = [0f64; 4];
         for p in &v {
-            let x = [p[0], p[1], p[2], 1.0];
+            let x = [if cube { p[6 + ch] } else { p[0] }, p[1], p[2], 1.0];
             for i in 0..4 {
                 for j in 0..4 {
                     m[i][j] += x[i] * x[j];
@@ -759,7 +800,71 @@ pub fn component_fit_rgb(scene: &Scene, bvh: &Bvh, sel: &[(usize, u32, u32, u32,
         let mean = v.iter().map(|p| p[3 + ch]).sum::<f64>() / v.len() as f64;
         let (mut ss_res, mut ss_tot) = (0.0, 0.0);
         for p in &v {
-            let pred = coef[0] * p[0] + coef[1] * p[1] + coef[2] * p[2] + coef[3];
+            let x0 = if cube { p[6 + ch] } else { p[0] };
+            let pred = coef[0] * x0 + coef[1] * p[1] + coef[2] * p[2] + coef[3];
+            ss_res += (p[3 + ch] - pred) * (p[3 + ch] - pred);
+            ss_tot += (p[3 + ch] - mean) * (p[3 + ch] - mean);
+        }
+        out[ch] = coef;
+        r2sum += 1.0 - ss_res / ss_tot.max(1e-12);
+    }
+    (out, r2sum / 3.0)
+}
+
+/// The RE-model fit: target = frame_max × decoded texel − LAmbient·(0.8 + 0.2·n.y); regressors
+/// [skyVis (or the cube term), sun·vis (0 with direct_sun = 0), bounce estimate, 1].
+pub fn component_fit_rgb2(scene: &Scene, bvh: &Bvh, sel: &[(usize, u32, u32, u32, u32, u8)], atlas: &crate::img::Rgb, prm: &BakeParams, frame_max: f32) -> ([[f64; 4]; 3], f64) {
+    let mut prm = prm.clone();
+    prm.want_bounce = true;
+    let prm = &prm;
+    let threads = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(8).min(160);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let acc = std::sync::Mutex::new(Vec::<[f64; 9]>::new());
+    std::thread::scope(|sc| {
+        for _ in 0..threads {
+            sc.spawn(|| loop {
+                let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if k >= sel.len() {
+                    break;
+                }
+                let (ii, px, py, pw, ph, fb0) = sel[k];
+                let (samples, _) = rasterise_inset(scene, ii, pw, ph, prm.flip_v, prm.uv_bounds, prm.inset_px);
+                let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ ((ii as u64 + 1) * 0x2545_F491_4F6C_DD1D));
+                let mut local = Vec::with_capacity(samples.len());
+                for s in &samples {
+                    let sh = shade_full(bvh, prm, s, ii as u32, &mut rng);
+                    let ndl = dot(s.n, prm.sun_dir).max(0.0);
+                    let n0 = atlas.get((px + s.px).min(atlas.w - 1), (py + s.py).min(atlas.h - 1));
+                    let amb = (0.8 + 0.2 * s.n[1]) as f64;
+                    let t = |c: usize| (crate::synth::decode_value(n0[c], fb0) * frame_max) as f64;
+                    // columns: skyVis, ambient shape (0.8+0.2n.y), unused, target rgb, bounce rgb
+                    local.push([sh.sky_vis as f64, amb, (ndl * sh.sun_vis) as f64 * prm.direct_sun as f64, t(0), t(1), t(2), sh.bounce[0] as f64, sh.bounce[1] as f64, sh.bounce[2] as f64]);
+                }
+                acc.lock().unwrap().extend(local);
+            });
+        }
+    });
+    let v = acc.into_inner().unwrap();
+    let mut out = [[0f64; 4]; 3];
+    let mut r2sum = 0.0;
+    for ch in 0..3 {
+        let mut m = [[0f64; 4]; 4];
+        let mut r = [0f64; 4];
+        // regressors: [skyVis, ambient shape, bounce, 1]
+        for p in &v {
+            let x = [p[0], p[1], p[6 + ch], 1.0];
+            for i in 0..4 {
+                for j in 0..4 {
+                    m[i][j] += x[i] * x[j];
+                }
+                r[i] += x[i] * p[3 + ch];
+            }
+        }
+        let Some(coef) = solve4(m, r) else { continue };
+        let mean = v.iter().map(|p| p[3 + ch]).sum::<f64>() / v.len() as f64;
+        let (mut ss_res, mut ss_tot) = (0.0, 0.0);
+        for p in &v {
+            let pred = coef[0] * p[0] + coef[1] * p[1] + coef[2] * p[6 + ch] + coef[3];
             ss_res += (p[3 + ch] - pred) * (p[3 + ch] - pred);
             ss_tot += (p[3 + ch] - mean) * (p[3 + ch] - mean);
         }
