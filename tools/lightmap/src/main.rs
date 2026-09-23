@@ -157,15 +157,25 @@ fn main() {
                 let mut total = 0usize;
                 let mut perfect = 0usize;
                 // every item object must carry a chart: an empty stretch of the object space is no base
-                if (b..b + n_items).any(|o| sig[o].is_empty()) { continue; }
+                // (a few items have no lightmappable mesh — flags, lights — and no chart)
+                if (b..b + n_items).filter(|o| sig[*o].is_empty()).count() * 2 > n_items { continue; }
+                // … and the items are DIVERSE: a stretch of identical zone-tile charts (every Sea tile
+                // has the same chart) would score a perfect 1.00 for any model split — require at
+                // least one distinct signature per three models
+                {
+                    let mut distinct: Vec<&str> = Vec::new();
+                    for o in b..b + n_items { let s = sig[o].as_str(); if !distinct.contains(&s) { distinct.push(s); if distinct.len() * 3 >= groups.len() { break; } } }
+                    if distinct.len() * 3 < groups.len() { continue; }
+                }
                 for grp in &groups {
                     let mut seen: Vec<&str> = Vec::new();
                     for &i in grp.iter() {
                         let s = sig[b + i].as_str();
+                        if s.is_empty() { continue; } // a chartless item says nothing
                         if !seen.contains(&s) { seen.push(s); }
                     }
-                    total += seen.len();
-                    if seen.len() == 1 { perfect += 1; }
+                    total += seen.len().max(1);
+                    if seen.len() <= 1 { perfect += 1; }
                 }
                 scored.push((total as f64 / groups.len().max(1) as f64, perfect, b));
             }
