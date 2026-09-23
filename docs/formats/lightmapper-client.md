@@ -225,8 +225,11 @@ list at `CHmsLightMap+0x4c8` (count `+0x4d0` = N) is rebuilt **per sweep**
 with `N = table 0x141e6f290[quality·6 + sweep]` (§2.7: Default 256 then 128;
 High 1024, 512, 256, 128; Ultra 2048, 1024, 1024, 512, 256, 128) from the
 `Std.PointsInSphere.Gbx` table object at `lm+0x330` (`FUN_14045fbd0(table,
-&set, N)` picks the set for N; sweep-specific overrides at `lm+0x500 +
-sweep·0x10` when present), then every point is rotated by the fixed matrix
+&set, N)`: binary search of the table's {count, offset} index for N, then
+the **nearest** count wins — ties to the smaller — so 1024 → the 1032-point
+set, 2048 → 2040, 4096 → 4112, and 256/512/128/64/32 exactly; the set's own
+count becomes `lm+0x4d0` and the `Scale = 4/N` denominator; sweep-specific
+overrides at `lm+0x500 + sweep·0x10` when present), then every point is rotated by the fixed matrix
 `M = Rz(0.313338965) · Ry(0.0599014498) · Rx(0.124326788)` (radians:
 17.953°, 3.432°, 7.123°; standard right-handed rotations, `d = M·p`, float32
 row·point sums) — and, when `CHmsLightMapMood+0xcc ≠ 0` and
