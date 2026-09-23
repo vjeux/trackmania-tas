@@ -1058,15 +1058,29 @@ pub fn terrain_cmd(args: &[String]) -> Result<(), String> {
 /// same bytes loaded under a fresh id, not under the old one). The letter replaces the
 /// character after the prefix; unset = the first generation (the id as before).
 pub fn stable_uid(prefix: &str, src_uid: &str) -> String {
-    if src_uid.len() > prefix.len() + 1 {
-        let tail = &src_uid[prefix.len()..];
-        match std::env::var("ALTERED_UID_GEN").ok().and_then(|g| g.chars().next()).filter(|c| c.is_ascii_alphanumeric()) {
-            Some(g) => format!("{prefix}{g}{}", &tail[1..]),
-            None => format!("{prefix}{tail}"),
-        }
-    } else {
-        crate::altered::new_uid(prefix, 27)
+    if src_uid.len() <= prefix.len() + 1 {
+        return crate::altered::new_uid(prefix, 27);
     }
+    let Some(gen) = std::env::var("ALTERED_UID_GEN").ok().filter(|g| !g.is_empty()) else {
+        return format!("{prefix}{}", &src_uid[prefix.len()..]);
+    };
+    // a generation: the tail is a deterministic hash of (source uid, generation) — NOT the
+    // source tail with one letter changed: Nadeo's uid lookup is case-insensitive
+    // (`StadBvJYD…` resolved to the live `StadbvJYD…` → "Mismatching map uid", Winter 14)
+    let alphabet: Vec<char> = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-".chars().collect();
+    let mut x: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in format!("{src_uid}:{gen}").bytes() {
+        x ^= b as u64;
+        x = x.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let mut out = prefix.to_string();
+    while out.len() < 27 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        out.push(alphabet[(x % 64) as usize]);
+    }
+    out
 }
 
 /// `tmmaps stadium-slopedir MAP… [--block SUBSTR]`: per block NAME, the validation ghost's
