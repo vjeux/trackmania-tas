@@ -859,19 +859,12 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
             }
             // keep the record's form bits (free / waypoint / author) as they are — a rename in place
             let keep = 0x2000_0000 | 0x4000_0000 | 0x0010_0000 | 0x0000_8000;
-            // the target flags: AR's exact value when this block's flags match his source's;
-            // otherwise HIS EDIT (the bits he set / cleared) applied to THIS block's flags — the
-            // variant bits (12, 21, 22 …) stay the map's own (copying another placement's
-            // absolute value put bit 21 on every base and bit 28 + 22 on the checkpoint slope:
-            // json9841 2026-09-23 "Spring 2026 01 wood: incorrect block height at CP3")
-            let (cand_s, cand_t) = (best.map(|c| c.0).unwrap_or(b.flags), *tflags);
-            let flags = if cand_s == b.flags {
-                (tflags & !keep) | (b.flags & keep)
-            } else {
-                let set = cand_t & !cand_s;
-                let clear = cand_s & !cand_t;
-                (((b.flags | set) & !clear) & !keep) | (b.flags & keep)
-            };
+            // AR's flags VERBATIM (minus the record-form bits): a mesh-modeler block is an
+            // ADDITIONAL VARIANT of its archetype, bit 21 selects the custom mesh — his records
+            // all carry it. Applying only his set/clear diff (v6, 2026-09-23) dropped bit 21 on
+            // every base placed over a 00000000 source → the game drew the vanilla archetype
+            // (json9841: "very few of the blocks driven on are wood")
+            let flags = (tflags & !keep) | (b.flags & keep);
             if b.flags & crate::map::FREE_BLOCK_FLAG != 0 && crate::cli::has(args, "--author-free-swaps") {
                 // opt-in: a FREE vanilla block removed and re-added as a custom block with AR's
                 // author field (flags | 0x8000). Not the default: a renamed-in-place custom block
