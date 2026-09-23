@@ -47,6 +47,13 @@ pub struct Opts {
     pub plan_only: bool,
     pub report: Option<PathBuf>,
     pub zip: Option<PathBuf>,
+    /// `--no-skin-header`: leave out the source model's CPlugGameSkin header
+    /// chunk (0x090F4000, the advertisement / colour skin slot). item.exchange's
+    /// parser (an old ManiaPlanetSharp) refuses items that carry the version-8
+    /// chunk the game writes today (2026-09-22: every set with a start,
+    /// checkpoint or finish failed to upload); without it the slot shows the
+    /// material's own default picture.
+    pub no_skin_header: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -127,6 +134,9 @@ fn desc_chunk(ident: &str, collection: u32, author: &str, name: &str) -> HeaderC
 /// grid placement in place of the library's free one.
 fn dress(bytes: &[u8], job: &Job, opts: &Opts, icon: Option<&[u8]>, description: &str) -> Result<Vec<u8>, String> {
     let mut f = crate::static_item::parse_file(bytes)?;
+    if opts.no_skin_header {
+        f.header_chunks.retain(|c| c.id != 0x090F4000);
+    }
     // header: desc, then the icon right after it (Nadeo's order)
     if let Some(k) = f.header_chunks.iter().position(|c| c.id == 0x2E001003) {
         f.header_chunks[k] = desc_chunk(&job.ident, opts.collection, &opts.author, &job.stem);
@@ -219,6 +229,7 @@ fn parse_opts(rest: &[String]) -> Result<Opts, String> {
         plan_only: has("--plan-only"),
         report: flag("--report").map(PathBuf::from),
         zip: flag("--zip").map(PathBuf::from),
+        no_skin_header: has("--no-skin-header"),
     })
 }
 
