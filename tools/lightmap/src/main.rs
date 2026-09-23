@@ -121,6 +121,38 @@ fn main() {
                 println!("{i}\t{}\t{}\t{:#x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", b.obj_group_idx / 4, b.obj_idx & 0xffffff, b.obj_idx >> 24, m.pos[i].0, m.pos[i].1, m.size[i].0, m.size[i].1, m.chart_f32[i], m.frame_bytes[0][i], m.frame_bytes[1][i], m.frame_bytes[2][i]);
             }
         }
+        "daytime" => {
+            // lmtool daytime MAP… — the map's time of day (skippable chunk 0x03043056: version, u01,
+            // DAYTIME 0..65535 = the fraction of the day, u02, dynamic-daylight, day duration ms)
+            // against the time the game baked the lightmap at (the cache mapping head's word at
+            // 0x48, `lmtool head`). The editor keeps its time of day across the maps opened in
+            // one session (baker child, 2026-09-23): a bake made right after another map can
+            // carry that map's time — the two words must agree before a file ships. Exit 1 on
+            // any mismatch.
+            let mut bad = 0usize;
+            for f in a[1..].iter().filter(|x| !x.starts_with("--")) {
+                let data = std::fs::read(f).expect("read");
+                let g = gbx::Gbx::parse(&data);
+                let own: Option<u32> = tmmaps::gbx::all_skip_chunks(&g.body).into_iter().find(|c| c.0 == 0x0304_3056 && c.3 >= 12).map(|(_, _, p, _)| u32::from_le_bytes(g.body[p + 8..p + 12].try_into().unwrap()));
+                let lm: Option<u32> = lightmap::mapio::load(f).ok().and_then(|m| m.chunk.data.as_ref().and_then(|d| d.cache.mapping()).and_then(|mp| (mp.head.len() >= 72).then(|| u32::from_le_bytes(mp.head[68..72].try_into().unwrap()))));
+                // 0xFFFFFFFF = no custom time: the mood default — measured on the giant Summer bakes
+                // (2026-09-23; every -1 map got it whatever map preceded it in the game session):
+                // Day 39769 (0.607) on BlueBay/RedIsland/GreenCoast/WhiteShore, Stadium Day 33041
+                // (0.504), Sunrise 20043 (0.306) on RedIsland
+                let hdr = tmmaps::header::read(f).ok();
+                let default: Option<u32> = hdr.as_ref().and_then(|h| match (h.envir.as_str(), h.mood.as_str()) { ("Stadium", "Day") => Some(33041), (_, "Day") => Some(39769), ("RedIsland", "Sunrise") => Some(20043), _ => None });
+                let own_eff = match own { Some(0xFFFF_FFFF) => default, o => o };
+                let verdict = match (own_eff, lm) {
+                    (Some(o), Some(l)) if o == l => if own == Some(0xFFFF_FFFF) { "OK (mood default)" } else { "OK" },
+                    (None, Some(_)) if own == Some(0xFFFF_FFFF) => "CHECK: no custom time and no known default for this mood",
+                    (Some(_), Some(_)) => { bad += 1; "MISMATCH" }
+                    (None, _) => "no daytime chunk",
+                    (_, None) => "no baked lightmap",
+                };
+                println!("{f}\tmap {}\tlightmap {}\t{verdict}", own.map(|v| format!("{v} ({:.3})", v as f32 / 65535.0)).unwrap_or_else(|| "-".into()), lm.map(|v| format!("{v} ({:.3})", v as f32 / 65535.0)).unwrap_or_else(|| "-".into()));
+            }
+            if bad > 0 { eprintln!("lmtool daytime: {bad} lightmaps baked at another time than the map's"); std::process::exit(1); }
+        }
         "itembase" => {
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
             // lmtool itembase LIT.Map.Gbx [--min-items 3]: the object-index base of the ITEMS in a
