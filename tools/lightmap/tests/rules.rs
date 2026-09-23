@@ -17,9 +17,12 @@ fn sqrt_encoding_round_trips_and_pins_the_game_curve() {
         let e = decode_value(p, 255);
         assert_eq!(encode_value(e, 1.0), p, "p {p}");
     }
-    // a chart byte scales the whole chart: fb 128 ⇒ the chart max is 128/255
-    assert!((decode_value(255, 128) - 128.0 / 255.0).abs() < 1e-6);
-    assert!((decode_value(180, 128) - 0.5 * 128.0 / 255.0).abs() < 2e-3);
+    // the chart byte is sqrt-encoded too (two editor bakes of one pad agree only this way):
+    // fb 128 ⇒ the chart max is (128/255)² of the frame's MaxHDR
+    let m = (128.0f32 / 255.0).powi(2);
+    assert!((decode_value(255, 128) - m).abs() < 1e-6);
+    assert!((decode_value(180, 128) - 0.5 * m).abs() < 2e-3);
+    assert_eq!(lightmap::synth::frame_byte(m, 1.0), 128);
 }
 
 #[test]
