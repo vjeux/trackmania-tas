@@ -832,8 +832,13 @@ fn run(a: Vec<String>) {
                                 let lobe_scale: f32 = f("--lobe-scale").map(|s| s.parse().unwrap()).unwrap_or(1.0);
                                 if let Ok(xml) = std::fs::read_to_string(lightmap::skygrad::mood_file(coll, mood, "Mood.MoodSetting.xml")) {
                                     g.lobes = lightmap::skygrad::lobes_from_xml(&xml).into_iter().map(|(p, c, s)| (p, c, s * lobe_scale)).collect();
+                                    // Tech3/Sky_p: the dome is at the fog's far depth → lerp(sky, Fog.Color, Fog.IntensMax); --no-fog / --fog-intens F
+                                    let dome_m: f32 = f("--fog-dome-m").map(|s| s.parse().unwrap()).unwrap_or(4000.0);
+                                    if !has("--no-fog") { g.fog = lightmap::skygrad::fog_from_xml(&xml, dome_m).map(|(c, i)| (c, f("--fog-intens").map(|s| s.parse().unwrap()).unwrap_or(i))); }
                                 }
-                                eprintln!("sky: {} ({}×{}), scale {}, lobes {:?}", path.rsplit('/').next().unwrap(), g.w, g.h, g.scale, g.lobes.iter().map(|l| (l.0, l.2)).collect::<Vec<_>>());
+                                // with the fog blend the fitted per-mood number is GlobalScale (the gradient's own ScaleGrad0 = 1 for the HDR BC6H texture)
+                                if g.fog.is_some() && f("--sky-grad-scale").is_none() { g.global_scale = g.scale / x.sky_factor.max(1e-3); g.scale = 1.0 * x.sky_factor; }
+                                eprintln!("sky: {} ({}×{}), grad scale {}, global scale {}, fog {:?}, lobes {:?}", path.rsplit('/').next().unwrap(), g.w, g.h, g.scale, g.global_scale, g.fog, g.lobes.iter().map(|l| (l.0, l.2)).collect::<Vec<_>>());
                                 prm.sky_grad = Some(std::sync::Arc::new(g));
                             }
                             Err(e) => eprintln!("sky gradient: {e}; flat sky"),
@@ -853,7 +858,6 @@ fn run(a: Vec<String>) {
                     if let Some(v) = f("--horizon-el") { prm.horizon_el = v.parse().unwrap(); }
                     if let Some(v) = f("--horizon-rgb") { prm.horizon_radiance = parse_rgb(&v); }
                 }
-                if has("--no-sun-bounce") { prm.sun = [0.0; 3]; }
                 // the decoration's ground/sea plane (the terrain collections' water sits at y ≈ 8 in the tiny
                 // maps' frame, the Stadium floor likewise) — a stand-in for the decoration meshes
                 if f("--ground-y").is_none() { prm.ground_y = 8.0; }
@@ -873,7 +877,7 @@ fn run(a: Vec<String>) {
                         Err(e) => eprintln!("dome: {e}; using stratified random directions"),
                     }
                 }
-                prm.sun = x.l_dir_sun;
+                prm.sun = if has("--no-sun-bounce") { [0.0; 3] } else { x.l_dir_sun };
                 prm.direct_sun = 0.0;
                 prm.ambient = [0.0; 3]; prm.up = [0.0; 3];
                 prm.bounce = f("--bounce").map(|s| s.parse().unwrap()).unwrap_or(x.bounce_factor);
@@ -897,20 +901,31 @@ fn run(a: Vec<String>) {
                 prm.direct_sun = if has("--direct-sun") { 1.0 } else { 0.0 };
                 prm.sun_radius = f("--sun-radius").map(|s: String| s.parse::<f32>().unwrap()).unwrap_or(2.0f32).to_radians();
                 let t = match dt { Some(v) if v != 0xffff_ffff => v as f32 / 65536.0, _ => lightmap::moods::default_daytime(&x.collection, x.mood) as f32 / 65536.0 };
-                // the sun DIRECTION (bounce input + the sky glow's centre): the standard equinox path,
-                // H = 2π(t − t_noon), el = asin(cos φ·cos H), az_game = 180° + atan2(sin H, cos H·sin φ) (game
-                // compass: 0 = +z north, 90 = east = −x), fitted on the 2026-09-23 BlueBay DayTime series
-                // (t_noon 0.583, φ 30°): t 0.312 glow east, 0.607 near-zenith, 0.75 WSW at 26°, 0.854 west at
-                // −6.6° (below the horizon → the twilight sky: dark low sky, horizon glow). --sun-lat/--sun-noon.
-                let lat_d: f32 = f("--sun-lat").map(|s| s.parse().unwrap()).unwrap_or(30.0);
-                let t_noon: f32 = f("--sun-noon").map(|s| s.parse().unwrap()).unwrap_or(0.583);
+                // the sun DIRECTION — the game's own functions [DISASSEMBLY, RE child 3 2026-09-23]: the map's
+                // DayTime word/65536 is a BLEND KEY u; the decoration's CPlugMoodBlender curve turns it into a
+                // time t (SunRise t_r 06:00, SunFall t_s 18:00, w = 30 min — the defaults; BlueBay's blender entry
+                // is not decoded yet), t into the arc parameter b (0 at sunrise, 1 at sunset; night → 0 or 1), and
+                // the light direction is D = (cos πb, −cos(lat)·sin πb, −sin(lat)·sin πb) with the mood XML's
+                // Latitude: the sun rises towards −X, culminates at 90° − lat leaning +Z, sets towards +X.
+                // Checked against the BlueBay DayTime series: u 0.312 → the glow due −X at 1.8°, u 0.854 → +X
+                // at 4.1°, u 0.607 → 67° high. --sunrise/--sunfall/--sun-w override the curve, --sun-lat the latitude.
+                let t_r: f32 = f("--sunrise").map(|s| s.parse().unwrap()).unwrap_or(0.25);
+                let t_s: f32 = f("--sunfall").map(|s| s.parse().unwrap()).unwrap_or(0.75);
+                let w_b: f32 = f("--sun-w").map(|s| s.parse().unwrap()).unwrap_or(1.0 / 48.0);
+                let lat_d: f32 = f("--sun-lat").map(|s| s.parse().unwrap()).unwrap_or(x.latitude);
                 let (mut az_d, mut el_d) = {
-                    let h = 2.0 * std::f32::consts::PI * (t - t_noon);
-                    let phi = lat_d.to_radians();
-                    let el = (phi.cos() * h.cos()).asin();
-                    let az_game = std::f32::consts::PI + h.sin().atan2(h.cos() * phi.sin());
-                    // our az = atan2(x, z) with +x = game west: az_mine = −az_game
-                    ((-az_game).to_degrees().rem_euclid(360.0), el.to_degrees())
+                    let u = t; // the blend key
+                    let time = if u <= 0.25 { (t_s + 4.0 * u * (t_r + 1.0 - t_s)).rem_euclid(1.0) }
+                        else if u <= 0.5 { t_r + 4.0 * (u - 0.25) * w_b }
+                        else if u <= 0.75 { t_r + w_b + 4.0 * (u - 0.5) * (t_s - t_r - 2.0 * w_b) }
+                        else { t_s - w_b + 4.0 * (u - 0.75) * w_b };
+                    let b = if time >= t_r && time <= t_s { ((time - t_r) / (t_s - t_r)).clamp(0.0, 1.0) } else if time > (t_r + t_s) * 0.5 { 1.0 } else { 0.0 };
+                    let (pb, lat) = (std::f32::consts::PI * b, lat_d.to_radians());
+                    // the light direction (sun → ground); the sun's position is −D
+                    let dl = [pb.cos(), -lat.cos() * pb.sin(), -lat.sin() * pb.sin()];
+                    let sp = [-dl[0], -dl[1], -dl[2]];
+                    eprintln!("sun: blend key {u:.4} → time {time:.4} → arc b {b:.4}, latitude {lat_d}°");
+                    (sp[0].atan2(sp[2]).to_degrees().rem_euclid(360.0), sp[1].clamp(-1.0, 1.0).asin().to_degrees())
                 };
                 if let Some(v) = f("--sun-az") { az_d = v.parse().unwrap(); }
                 if let Some(v) = f("--sun-el") { el_d = v.parse().unwrap(); }
@@ -1224,7 +1239,7 @@ fn run(a: Vec<String>) {
                 let h = hdr.as_ref().expect("header");
                 let grid_m = [mf.size[0] as f32 * 32.0, mf.size[1] as f32 * 8.0, mf.size[2] as f32 * 32.0];
                 let (mut glo, mut ghi) = ([f32::MAX; 3], [f32::MIN; 3]);
-                for t in &bvh.tris { for p in [t.p0, lightmap::geometry::add(t.p0, t.e1), lightmap::geometry::add(t.p0, t.e2)] { for k in 0..3 { glo[k] = glo[k].min(p[k]); ghi[k] = ghi[k].max(p[k]); } } }
+                for t in bvh.tris.iter().filter(|t| t.inst != lightmap::geometry::DECOR_INST) { for p in [t.p0, lightmap::geometry::add(t.p0, t.e1), lightmap::geometry::add(t.p0, t.e2)] { for k in 0..3 { glo[k] = glo[k].min(p[k]); ghi[k] = ghi[k].max(p[k]); } } }
                 // every item's position counts for the extent, stock (non-embedded) items included: the giant
                 // builds park unused vegetation at (8, −900, 8) and the game's grid follows them
                 for it in &mf.items { for k in 0..3 { glo[k] = glo[k].min(it.pos[k] - 16.0); ghi[k] = ghi[k].max(it.pos[k]); } }
@@ -3543,6 +3558,62 @@ fn run(a: Vec<String>) {
                 println!("{name} profile (ratio to open, by distance from the roof centre): {}", line.join(" "));
             }
         }
+        "chartimg" => {
+            // lmtool chartimg MAP.Map.Gbx ITEM... --out X.png [--base N] [--scale S]: the frame-0 colour texels of the
+            // items' charts (sqrt-decoded, × frame MaxHDR, × S, clipped) side by side as an 8-bit PNG, each chart
+            // magnified 4× — to LOOK at the structure the numbers hide
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let scale: f32 = f("--scale").map(|s| s.parse().unwrap()).unwrap_or(1.0);
+            let out = f("--out").expect("--out");
+            let items: Vec<u32> = a[2..].iter().take_while(|x| !x.starts_with("--")).map(|s| s.parse().unwrap()).collect();
+            let own = lightmap::mapio::load(&a[1]).expect("load");
+            let d = own.chunk.data.clone().expect("lightmap");
+            let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).expect("atlas");
+            let fm = d.cache.frame_max_hdr().unwrap_or(1.0);
+            let mp = d.cache.mapping().unwrap();
+            let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
+            let mag = 4usize;
+            let scene_opt = if a.iter().any(|x| x == "--faces") { lightmap::geometry::Scene::from_map(&a[1]).ok() } else { None };
+            let mut tiles: Vec<(usize, usize, Vec<u8>)> = Vec::new();
+            for it in &items {
+                let Some(&i) = chart_of.get(it) else { eprintln!("item {it}: no chart"); continue };
+                let (x, y) = mp.pos[i]; let (w, h) = mp.size[i];
+                let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32 / 2).max(1), (h as u32 / 2).max(1));
+                let fb = mp.frame_bytes[0][i];
+                let mut rgb = vec![0u8; pw as usize * ph as usize * 3];
+                for ty in 0..ph { for tx in 0..pw {
+                    let c = ia.get((px + tx).min(ia.w - 1), (py + ty).min(ia.h - 1));
+                    for k in 0..3 { let v = lightmap::synth::decode_value(c[k], fb) * fm * scale; rgb[((ty * pw + tx) * 3 + k as u32) as usize] = (v.clamp(0.0, 1.0) * 255.0) as u8; }
+                } }
+                eprintln!("item {it}: chart {i} rect ({px},{py}) {pw}×{ph} fb {fb} MaxHDR {fm:.3}");
+                // per-face means (texels grouped by the surface normal the raster gives them)
+                if let Some(ii) = scene_opt.as_ref().and_then(|s| s.instances.iter().position(|q| q.item as u32 == *it)) {
+                    let scene = scene_opt.as_ref().unwrap();
+                    let (samples, _) = lightmap::bake::rasterise_pub(scene, ii, pw, ph, false, true);
+                    let mut acc: std::collections::BTreeMap<&str, (f64, usize)> = Default::default();
+                    for s in &samples {
+                        let cls = if s.n[1] > 0.7 { "up" } else if s.n[1] < -0.7 { "down" } else if s.n[0] > 0.7 { "+x" } else if s.n[0] < -0.7 { "-x" } else if s.n[2] > 0.7 { "+z" } else if s.n[2] < -0.7 { "-z" } else { "slanted" };
+                        let c = ia.get((px + s.px).min(ia.w - 1), (py + s.py).min(ia.h - 1));
+                        let l = (0.2126 * lightmap::synth::decode_value(c[0], fb) + 0.7152 * lightmap::synth::decode_value(c[1], fb) + 0.0722 * lightmap::synth::decode_value(c[2], fb)) * fm;
+                        let e = acc.entry(cls).or_insert((0.0, 0)); e.0 += l as f64; e.1 += 1;
+                    }
+                    eprintln!("   faces: {}", acc.iter().map(|(k, (s, n))| format!("{k} {:.3} ({n})", s / *n as f64)).collect::<Vec<_>>().join("  "));
+                }
+                tiles.push((pw as usize, ph as usize, rgb));
+            }
+            let tw: usize = tiles.iter().map(|t| t.0 * mag + 4).sum();
+            let th: usize = tiles.iter().map(|t| t.1 * mag).max().unwrap_or(1);
+            let mut img = mapgeom::render::Image { w: tw.max(1), h: th.max(1), rgb: vec![40u8; tw.max(1) * th.max(1) * 3] };
+            let mut ox = 0usize;
+            for (pw, ph, rgb) in &tiles {
+                for y in 0..ph * mag { for x in 0..pw * mag { for k in 0..3 { img.rgb[((y * img.w) + ox + x) * 3 + k] = rgb[((y / mag) * pw + x / mag) * 3 + k]; } } }
+                ox += pw * mag + 4;
+            }
+            std::fs::write(&out, mapgeom::render::png(&img)).expect("write png");
+            println!("wrote {out} ({}×{})", img.w, img.h);
+        }
         "coverage" => {
             // lmtool coverage EDITOR.Map.Gbx [--base N] [--items N] [--ss 3]: the chart raster's coverage against the
             // editor's — per item chart, raster the object's TexCoord1 geometry into the chart's layout rect at ss
@@ -3612,6 +3683,7 @@ fn run(a: Vec<String>) {
             let mut rows: Vec<(f64, f64, bool)> = Vec::new();
             let per_item = a.iter().any(|x| x == "--per-item");
             let mut per_rows: Vec<(usize, String, usize, f64, f64, f64)> = Vec::new(); // item, model, n, ref mean, ours mean, rmse
+            let mut per_rgb: Vec<(usize, [f64; 3], [f64; 3])> = Vec::new();
             for (ii, inst) in scene.instances.iter().enumerate().step_by(step) {
                 let row0 = rows.len();
                 let (Some(&i), Some(&j)) = (ca.get(&(inst.item as u32)), cb.get(&(inst.item as u32))) else { continue };
@@ -3635,6 +3707,7 @@ fn run(a: Vec<String>) {
                     let c2 = ib.get((pxb + qx).min(ib.w - 1), (pyb + qy).min(ib.h - 1));
                     let lb = (0.2126 * lightmap::synth::decode_value(c2[0], fbb) + 0.7152 * lightmap::synth::decode_value(c2[1], fbb) + 0.0722 * lightmap::synth::decode_value(c2[2], fbb)) * fmb;
                     rows.push((la as f64, lb as f64, s.n[1] > 0.9));
+                    if per_item { let e = if per_rgb.last().map(|r| r.0) == Some(inst.item) { per_rgb.last_mut().unwrap() } else { per_rgb.push((inst.item, [0.0; 3], [0.0; 3])); per_rgb.last_mut().unwrap() }; for k in 0..3 { e.1[k] += (lightmap::synth::decode_value(c[k], fba) * fma) as f64; e.2[k] += (lightmap::synth::decode_value(c2[k], fbb) * fmb) as f64; } }
                 }
                 if per_item && rows.len() > row0 {
                     let r = &rows[row0..];
@@ -3649,7 +3722,8 @@ fn run(a: Vec<String>) {
                 per_rows.sort_by(|a, b| b.5.partial_cmp(&a.5).unwrap());
                 println!("per item (worst RMSE first): item model texels ref-mean ours-mean ratio rmse");
                 for (item, model, n, ma, mb, rm) in per_rows.iter().take(40) {
-                    println!("  {item:>5} {model:<28} {n:>7} {ma:.3} {mb:.3} {:.3} {rm:.3}", mb / ma.max(1e-6));
+                    let rgb = per_rgb.iter().find(|r| r.0 == *item).map(|r| format!("  ref rgb ({:.2},{:.2},{:.2}) ours ({:.2},{:.2},{:.2})", r.1[0] / *n as f64, r.1[1] / *n as f64, r.1[2] / *n as f64, r.2[0] / *n as f64, r.2[1] / *n as f64, r.2[2] / *n as f64)).unwrap_or_default();
+                    println!("  {item:>5} {model:<28} {n:>7} {ma:.3} {mb:.3} {:.3} {rm:.3}{rgb}", mb / ma.max(1e-6));
                 }
             }
             let report = |name: &str, rows: &[(f64, f64, bool)]| {

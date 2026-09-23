@@ -41,11 +41,27 @@ fn tables() -> &'static std::collections::HashMap<String, [f32; 3]> {
     })
 }
 
+/// LMTOOL_ALBEDO_SRGB=1: hand out the measured albedo in sRGB ENCODING (the raw texture bytes/255 —
+/// what a UNORM sample of a BC1_UNORM diffuse map gives, as opposed to the hardware-linearised
+/// BC1_UNORM_SRGB read). The lightmapper's MDiffuse raster reads the material's diffuse map; which of the
+/// two the format gives is not read from the exe yet — this switch lets the references decide.
+fn encode(v: [f32; 3]) -> [f32; 3] {
+    static SRGB: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    // default ON (DIFFERENTIAL, 2026-09-23): the sRGB-encoded values bring the test map's wall (lit by the
+    // pads' sun bounce) from 0.43 to 0.62 of the editor's; LMTOOL_ALBEDO_SRGB=0 for linear
+    if *SRGB.get_or_init(|| std::env::var("LMTOOL_ALBEDO_SRGB").map(|x| x != "0").unwrap_or(true)) {
+        let f = |x: f32| if x <= 0.0031308 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 };
+        [f(v[0]), f(v[1]), f(v[2])]
+    } else {
+        v
+    }
+}
+
 fn measured(link: &str) -> Option<[f32; 3]> {
     let t = tables();
     let l = link.to_ascii_lowercase();
     if let Some(v) = t.get(&l) {
-        return Some(*v);
+        return Some(encode(*v));
     }
     // a modifier material: the base material of the same name
     let parts: Vec<&str> = l.split('\\').collect();
@@ -53,7 +69,7 @@ fn measured(link: &str) -> Option<[f32; 3]> {
         let name = parts.last().copied().unwrap_or("");
         for coll in [parts[0], "stadium"] {
             if let Some(v) = t.get(&format!("{coll}\\media\\material\\{name}")) {
-                return Some(*v);
+                return Some(encode(*v));
             }
         }
     }

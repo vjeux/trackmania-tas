@@ -27,6 +27,11 @@ pub struct SkyGradient {
     /// (power, rgb, scale) glow lobes around the sun direction.
     pub lobes: Vec<(f32, [f32; 3], f32)>,
     pub sun_dir: [f32; 3],
+    /// Tech3/Sky_p's fog blend: `lerp(sky, fog_rgb, fog_intens)` before the global scale (the mood XML
+    /// <Fog Color IntensMax>; the dome sits at the far depth, so the intensity is IntensMax).
+    pub fog: Option<([f32; 3], f32)>,
+    /// GlobalScale — applied after the fog blend (the gradient's own ScaleGrad0 is `scale`).
+    pub global_scale: f32,
 }
 
 impl SkyGradient {
@@ -34,7 +39,7 @@ impl SkyGradient {
         let d = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
         let dds = crate::bc6h::parse_dds(&d)?;
         let px = crate::bc6h::decode_image(dds.data, dds.w, dds.h, dds.format == 96);
-        Ok(SkyGradient { w: dds.w, h: dds.h, px, sun_az: 0.0, u_sun: 0.0, u_sign: 1.0, v_top_is_zenith: true, v_full: false, scale: 1.0, lobes: Vec::new(), sun_dir: [0.0, 1.0, 0.0] })
+        Ok(SkyGradient { w: dds.w, h: dds.h, px, sun_az: 0.0, u_sun: 0.0, u_sign: 1.0, v_top_is_zenith: true, v_full: false, scale: 1.0, lobes: Vec::new(), sun_dir: [0.0, 1.0, 0.0], fog: None, global_scale: 1.0 })
     }
 
     /// The texel at (u, v) in 0..1 (u wraps, v clamps), nearest.
@@ -59,6 +64,15 @@ impl SkyGradient {
             for k in 0..3 {
                 out[k] += f * rgb[k];
             }
+        }
+        // Sky_p: lerp toward the fog colour, then the global scale
+        if let Some((fog, fi)) = self.fog {
+            for k in 0..3 {
+                out[k] = out[k] * (1.0 - fi) + fog[k] * fi;
+            }
+        }
+        for k in 0..3 {
+            out[k] *= self.global_scale;
         }
         out
     }
@@ -106,6 +120,25 @@ pub fn lobes_from_xml(xml: &str) -> Vec<(f32, [f32; 3], f32)> {
         out.push((power, rgb, scale));
     }
     out
+}
+
+/// The mood XML's fog for the sky dome at distance `dome_m`: (linear Color, intensity) with
+/// `Intens = IntensMin + (IntensMax − IntensMin)·((d − DepthMin)/(DepthMax − DepthMin))^Exponant`
+/// (`<Fog … DepthMin="256" DepthMax="25000" Exponant="0.7" IntensMin="0" IntensMax="0.976" Color="b8d7f5">`).
+/// The dome distance is not read from the exe; 4000 m reproduces the BlueBay Day open-pad colour
+/// (the fitted intensity 0.27) — DIFFERENTIAL.
+pub fn fog_from_xml(xml: &str, dome_m: f32) -> Option<([f32; 3], f32)> {
+    let p = xml.find("<Fog ")?;
+    let seg = &xml[p..xml[p..].find('>').map(|e| p + e).unwrap_or(xml.len())];
+    let attr = |name: &str| -> Option<&str> { let k = format!("{name}=\""); let s = seg.find(&k)? + k.len(); let e = seg[s..].find('"')? + s; Some(&seg[s..e]) };
+    let num = |name: &str, dflt: f32| -> f32 { attr(name).and_then(|v| v.parse().ok()).unwrap_or(dflt) };
+    let color = attr("Color")?;
+    let (imin, imax, dmin, dmax, ex) = (num("IntensMin", 0.0), num("IntensMax", 1.0), num("DepthMin", 0.0), num("DepthMax", 25000.0), num("Exponant", 1.0));
+    let t = ((dome_m - dmin) / (dmax - dmin).max(1.0)).clamp(0.0, 1.0).powf(ex);
+    let intens = imin + (imax - imin) * t;
+    let hex = u32::from_str_radix(color.trim_start_matches('#'), 16).ok()?;
+    let srgb = |c: u32| -> f32 { let v = c as f32 / 255.0; if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) } };
+    Some(([srgb((hex >> 16) & 255), srgb((hex >> 8) & 255), srgb(hex & 255)], intens))
 }
 
 /// The banked mood files: `…/lightmap-re/client-re/moods/<Collection>-<Mood>-<file>`.

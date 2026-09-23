@@ -87,18 +87,37 @@ impl ABuffer {
     }
 }
 
-/// Raster every world triangle into the frame's A-buffer.
+/// Raster every world triangle into the frame's A-buffer: the raster runs in parallel over triangle
+/// chunks, each thread binning its fragments into horizontal BANDS of the target; the per-band CSR
+/// build (counting sort by pixel, depth sort within a pixel) then runs in parallel over the bands.
 pub fn build_abuffer(tris: &[WTri], frame: &PeelFrame, threads: usize) -> ABuffer {
+    build_abuffer_upto(tris, frame, threads, f32::INFINITY)
+}
+
+/// `build_abuffer` keeping only fragments with depth < `zmax` — a fragment deeper than every receiver
+/// can occlude nothing (the gather looks for surfaces in FRONT of a texel), and the decoration's sea
+/// and ground planes would otherwise fill every pixel of every peel.
+pub fn build_abuffer_upto(tris: &[WTri], frame: &PeelFrame, threads: usize, zmax: f32) -> ABuffer {
     let res = frame.res;
-    let chunk = (tris.len() / threads.max(1)).max(4096);
-    let parts: Vec<Vec<(u32, Frag)>> = std::thread::scope(|sc| {
+    // LMTOOL_PEEL_CULL_BACK=1 (hypothesis under test): the peel renders only the faces turned toward
+    // the receivers' side (geometric normal against D); back faces are culled, not drawn black — so a
+    // thin wall's own far face does not occlude its texels and a hollow tower sees out
+    let cull_back = std::env::var("LMTOOL_PEEL_CULL_BACK").map(|v| v == "1").unwrap_or(false);
+    let d = frame.d;
+    let bands = 32u32.min(res);
+    let band_h = (res + bands - 1) / bands;
+    // small chunks so the few huge decoration triangles (each covering the whole frame) spread over
+    // the threads; the per-chunk overhead is a band vector set
+    let chunk = (tris.len() / (threads.max(1) * 4)).max(256);
+    // parts[thread][band] = (pixel, frag)
+    let parts: Vec<Vec<Vec<(u32, Frag)>>> = std::thread::scope(|sc| {
         let hs: Vec<_> = tris
             .chunks(chunk)
             .enumerate()
             .map(|(ci, ch)| {
                 let frame = frame.clone();
                 sc.spawn(move || {
-                    let mut out: Vec<(u32, Frag)> = Vec::new();
+                    let mut out: Vec<Vec<(u32, Frag)>> = (0..bands).map(|_| Vec::new()).collect();
                     for (k, t) in ch.iter().enumerate() {
                         let ti = (ci * chunk + k) as u32;
                         let p0 = t.p0;
@@ -107,9 +126,20 @@ pub fn build_abuffer(tris: &[WTri], frame: &PeelFrame, threads: usize) -> ABuffe
                         let (x0, y0, z0) = frame.project(p0);
                         let (x1, y1, z1) = frame.project(p1);
                         let (x2, y2, z2) = frame.project(p2);
+                        if z0.min(z1).min(z2) >= zmax {
+                            continue;
+                        }
+                        if cull_back && t.inst != DECOR_INST {
+                            let ng = cross(t.e1, t.e2);
+                            if dot(ng, d) > 0.0 {
+                                continue;
+                            }
+                        }
                         raster::triangle(res, res, [[x0, y0], [x1, y1], [x2, y2]], |x, y, b| {
                             let z = z0 * b[0] + z1 * b[1] + z2 * b[2];
-                            out.push((y * res + x, Frag { z, tri: ti }));
+                            if z < zmax {
+                                out[(y / band_h) as usize].push((y * res + x, Frag { z, tri: ti }));
+                            }
                         });
                     }
                     out
@@ -118,35 +148,61 @@ pub fn build_abuffer(tris: &[WTri], frame: &PeelFrame, threads: usize) -> ABuffe
             .collect();
         hs.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    // counting sort by pixel
+    // per band: counting sort by pixel + depth sort, in parallel
     let n = (res * res) as usize;
-    let mut count = vec![0u32; n + 1];
-    for part in &parts {
-        for (px, _) in part {
-            count[*px as usize + 1] += 1;
+    let band_results: Vec<(Vec<u32>, Vec<Frag>)> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (0..bands)
+            .map(|b| {
+                let parts = &parts;
+                sc.spawn(move || {
+                    let y0 = b * band_h;
+                    let y1 = ((b + 1) * band_h).min(res);
+                    let npx = ((y1 - y0) * res) as usize;
+                    let base = (y0 * res) as usize;
+                    let mut count = vec![0u32; npx + 1];
+                    for part in parts {
+                        for (px, _) in &part[b as usize] {
+                            count[*px as usize - base + 1] += 1;
+                        }
+                    }
+                    for i in 0..npx {
+                        count[i + 1] += count[i];
+                    }
+                    let total = count[npx] as usize;
+                    let mut frags = vec![Frag { z: 0.0, tri: 0 }; total];
+                    let mut fill = count.clone();
+                    for part in parts {
+                        for (px, f) in &part[b as usize] {
+                            let i = fill[*px as usize - base] as usize;
+                            frags[i] = *f;
+                            fill[*px as usize - base] += 1;
+                        }
+                    }
+                    for i in 0..npx {
+                        let (a, c) = (count[i] as usize, count[i + 1] as usize);
+                        if c - a > 1 {
+                            frags[a..c].sort_by(|p, q| p.z.partial_cmp(&q.z).unwrap_or(std::cmp::Ordering::Equal));
+                        }
+                    }
+                    (count, frags)
+                })
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    // stitch the bands into one CSR
+    let mut start = Vec::with_capacity(n + 1);
+    let mut frags = Vec::new();
+    start.push(0u32);
+    for (count, f) in band_results {
+        let off = frags.len() as u32;
+        // count[i+1] is the running total within the band; global start = off + count[i+1]
+        for i in 1..count.len() {
+            start.push(off + count[i]);
         }
+        frags.extend(f);
     }
-    for i in 0..n {
-        count[i + 1] += count[i];
-    }
-    let total = count[n] as usize;
-    let mut frags = vec![Frag { z: 0.0, tri: 0 }; total];
-    let mut fill = count.clone();
-    for part in &parts {
-        for (px, f) in part {
-            let i = fill[*px as usize] as usize;
-            frags[i] = *f;
-            fill[*px as usize] += 1;
-        }
-    }
-    // depth order within a pixel (nearest first)
-    for i in 0..n {
-        let (a, b) = (count[i] as usize, count[i + 1] as usize);
-        if b - a > 1 {
-            frags[a..b].sort_by(|p, q| p.z.partial_cmp(&q.z).unwrap_or(std::cmp::Ordering::Equal));
-        }
-    }
-    ABuffer { res, start: count, frags }
+    ABuffer { res, start, frags }
 }
 
 /// A depth-only orthographic raster along the sun (the direct pass' shadow map).
@@ -255,12 +311,18 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
     };
     let ndl = dot(n, prm.sun_dir).max(0.0);
     let lit = if ndl > 0.0 && prm.sun_dir[1] > 0.0 { shadow.map(|s| s.lit(hit_p, sun_bias)).unwrap_or(1.0) } else { 0.0 };
+    SUN_STATS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if ndl > 0.0 { SUN_STATS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+    if lit > 0.0 { SUN_STATS[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
     let mut out = [0f32; 3];
     for k in 0..3 {
         out[k] = alb[k] * (stored[k] + prm.sun[k] * ndl * lit);
     }
     out
 }
+
+/// Diagnostics: fragment radiance calls, of which facing the sun, of which lit.
+pub static SUN_STATS: [std::sync::atomic::AtomicUsize; 3] = [std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0)];
 
 /// One lightmap sub-sample awaiting its dome gather.
 struct SubSample {
@@ -281,7 +343,6 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     let t0 = std::time::Instant::now();
     let threads = if prm.threads == 0 { std::thread::available_parallelism().map(|x| x.get()).unwrap_or(8).min(160) } else { prm.threads };
     let ss = prm.ss.max(1);
-    let groups = (ss * ss) as usize;
     // 1. every chart's sub-samples
     let mut subs: Vec<SubSample> = Vec::new();
     let mut chart_meta: Vec<(u32, u32)> = Vec::with_capacity(scene.instances.len());
@@ -299,11 +360,32 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             }
         }
     }
+    // Per-texel gather: the editor's charts are smooth, so every layout texel gathers ALL the sweep's
+    // directions at the centroid of its covered sub-samples (the ss² sub-samples decide coverage and the
+    // resolve weight; interleaving the directions over the sub-samples — my first reading of the ss²
+    // groups — gave block-correlated noise the editor does not show). `groups` is then 1.
+    let groups = 1usize;
     for (ii, _inst) in scene.instances.iter().enumerate() {
         let (cw, ch) = sizes[ii];
         chart_meta.push((cw, ch));
         let (lw, lh) = (cw * 2, ch * 2);
         let r = crate::chartraster::raster_chart(scene, ii, lw, lh, ss, prm.flip_v, prm.uv_bounds);
+        // fold the sub-samples into layout texels: centroid position, mean normal, majority triangle
+        let mut tex: std::collections::HashMap<(u32, u32), (V3, V3, u32, u32)> = std::collections::HashMap::new();
+        for s in &r.subs {
+            let key = (s.sx / ss, s.sy / ss);
+            let e = tex.entry(key).or_insert(([0.0; 3], [0.0; 3], s.tri, 0));
+            for k in 0..3 { e.0[k] += s.p[k]; e.1[k] += s.n[k]; }
+            e.3 += 1;
+        }
+        for ((lx, ly), (psum, nsum, tri, cnt)) in tex {
+            let c = cnt as f32;
+            let p = [psum[0] / c, psum[1] / c, psum[2] / c];
+            let n = norm(nsum);
+            let (tx, ty) = (lx / 2, ly / 2);
+            subs.push(SubSample { p, n, own_tri: tri_base[ii] + tri, group: 0, chart: ii as u32, texel: ty.min(ch - 1) * cw + tx.min(cw - 1) });
+        }
+        if false {
         if std::env::var_os("LMTOOL_PEEL_DEBUG").is_some() && ii < 3 {
             let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
             for s in &r.subs { for k in 0..3 { lo[k] = lo[k].min(s.p[k]); hi[k] = hi[k].max(s.p[k]); } }
@@ -327,8 +409,9 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             let group = ((s.sy % ss) * ss + s.sx % ss) as u8;
             subs.push(SubSample { p: s.p, n: s.n, own_tri: tri_base[ii] + s.tri, group, chart: ii as u32, texel: ty.min(ch - 1) * cw + tx.min(cw - 1) });
         }
+        }
     }
-    eprintln!("peel: {} sub-samples over {} charts (ss {ss}, {} groups) ({:.1}s)", subs.len(), scene.instances.len(), groups, t0.elapsed().as_secs_f32());
+    eprintln!("peel: {} layout texels over {} charts (ss {ss} for coverage) ({:.1}s)", subs.len(), scene.instances.len(), t0.elapsed().as_secs_f32());
     // 2. group the sub-samples so each direction touches one contiguous range
     let mut order: Vec<u32> = (0..subs.len() as u32).collect();
     order.sort_by_key(|&i| subs[i as usize].group);
@@ -352,6 +435,13 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         group_count[di % groups] += 1;
     }
     let bias_m = prm.peel_bias;
+    let sky_no_cos = std::env::var("LMTOOL_SKY_NO_COS").map(|v| v == "1").unwrap_or(false);
+    // LMTOOL_SKY_DY=0: the sky colour along d without the d.y factor (plain receiver-cosine weighting)
+    // default OFF (DIFFERENTIAL, 2026-09-23 17:45Z): with plain receiver-cosine weighting the editor's
+    // wall/floor structure at Day is reproduced (walls 1.0–1.1 × the open floor, faces 1.3–1.5 like the
+    // editor's 1.2–1.5); with the d.y factor the walls come out at 0.4 × — RE child 3's 4·w·d.y·SkyFactor
+    // constant is then the AddSkyVisibility scalar's weight, not the radiance weight (to be confirmed)
+    let sky_dy = std::env::var("LMTOOL_SKY_DY").map(|v| v == "1").unwrap_or(false);
     // LMTOOL_PEEL_DEBUG=x,y,z,r: trace the gather of the sub-samples within r of a world point
     let dbg: Option<(V3, f32)> = std::env::var("LMTOOL_PEEL_DEBUG").ok().and_then(|s| { let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 4 { Some(([v[0], v[1], v[2]], v[3])) } else { None } });
     let mut dbg_subs: Vec<u32> = match dbg { Some((c, r)) => subs.iter().enumerate().filter(|(_, s)| { let e = sub(s.p, c); dot(e, e) < r * r }).map(|(i, _)| i as u32).take(3).collect(), None => Vec::new() };
@@ -365,8 +455,15 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         let g = di % groups;
         let scale = 4.0 / group_count[g].max(1) as f32;
         let frame = PeelFrame::new(*d, bmin, bmax, prm.peel_res);
-        let ab = build_abuffer(&bvh.tris, &frame, threads);
-        let sky = sky_radiance(prm, *d);
+        let tb = std::time::Instant::now();
+        // the deepest receiver along this direction: nothing beyond it can occlude
+        let zmax = (0..8).map(|i| { let p = [if i & 1 == 0 { bmin[0] } else { bmax[0] }, if i & 2 == 0 { bmin[1] } else { bmax[1] }, if i & 4 == 0 { bmin[2] } else { bmax[2] }]; frame.project(p).2 }).fold(f32::MIN, f32::max);
+        let ab = build_abuffer_upto(&bvh.tris, &frame, threads, zmax);
+        let t_build = tb.elapsed().as_secs_f32();
+        // the sky term's per-direction constant is w·4·d.y·SkyFactor (RE child 3, AddSkyVisibility /
+        // SetILightDir 0x140234df0): the sky colour along d is weighted by the direction's elevation cosine
+        // and below-horizon directions carry no sky (they see the ground); SkyFactor rides in sky_radiance
+        let sky = { let s = sky_radiance(prm, *d); let dy = if sky_dy { d[1].max(0.0) } else if d[1] > 0.0 { 1.0 } else { 0.0 }; [s[0] * dy, s[1] * dy, s[2] * dy] };
         let bias = bias_m.max(0.5 * frame.pixel_m());
         let range = &order[group_start[g]..group_start[g + 1]];
         let chunk = (range.len() / threads.max(1)).max(1024);
@@ -418,10 +515,14 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         let (x, y, z) = frame.project(s.p);
                         let (xi, yi) = (x.round() as i64, y.round() as i64);
                         let mut l = sky;
+                        let mut occluded = false;
                         if xi >= 0 && yi >= 0 && xi < frame.res as i64 && yi < frame.res as i64 {
                             let list = ab.at(xi as u32, yi as u32);
-                            // the deepest fragment still in front of the texel (depth < z − bias), not its own surface
-                            let limit = z - bias;
+                            // the first surface along D beyond the texel by more than the rasteriser's depth bias
+                            // (DepthBias 1 + SlopeScaledDepthBias 1.0, RE child 3): one depth unit plus one pixel's
+                            // worth of the receiver's own depth slope, tan θ = √(1 − (n·D)²)/(n·D), capped
+                            let slope = ((1.0 - ndd * ndd).max(0.0).sqrt() / ndd.max(1e-3)).min(20.0);
+                            let limit = z - bias.max(frame.pixel_m() * (1.0 + slope));
                             // fragments are sorted by z: binary search the first with z >= limit
                             let mut lo = 0usize;
                             let mut hi = list.len();
@@ -437,10 +538,15 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                                     continue;
                                 }
                                 l = fragment_radiance(scene, bvh, prm, shadow, f.tri, *d, [s.p[0] + d[0] * (z - f.z), s.p[1] + d[1] * (z - f.z), s.p[2] + d[2] * (z - f.z)], sun_bias);
+                                occluded = true;
                                 break;
                             }
                         }
-                        let w = scale * ndd;
+                        // LMTOOL_SKY_NO_COS=1: the sky pass (AddSkyVisibility) without the receiver's cosine — the
+                        // per-direction constant 4·w·d.y·SkyFactor times the visibility only (a hypothesis under test:
+                        // the editor's walls exceed its open floors even at sunrise)
+                        let hit_sky = !occluded;
+                        let w = if hit_sky && sky_no_cos { scale } else { scale * ndd };
                         // SAFETY: each chunk owns a disjoint set of indices i; no other thread touches acc[i]
                         let slot = unsafe { &mut *(acc_ptr as *mut [f32; 3]).add(i as usize) };
                         for c in 0..3 {
@@ -451,7 +557,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             }
         });
         if di % 64 == 0 || di + 1 == n_dirs {
-            eprintln!("peel: direction {}/{} ({} fragments, {:.1}s)", di + 1, n_dirs, ab.frags.len(), t0.elapsed().as_secs_f32());
+            eprintln!("peel: direction {}/{} ({} fragments, build {:.2}s, gather {:.2}s; {:.1}s)", di + 1, n_dirs, ab.frags.len(), t_build, tb.elapsed().as_secs_f32() - t_build, t0.elapsed().as_secs_f32());
         }
     }
     // 5. resolve: per colour texel the mean over its covered sub-samples
@@ -521,6 +627,6 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         let c = &out[s.chart as usize];
         eprintln!("peel debug: sub {i} acc {:?} → chart {} texel {} ({}×{}) rgb {:?} over {} subs", acc[i as usize], s.chart, s.texel, c.w, c.h, c.rgb[s.texel as usize], counts[s.chart as usize][s.texel as usize]);
     }
-    eprintln!("peel: done, {} directions over {} sub-samples ({:.1}s)", n_dirs, subs.len(), t0.elapsed().as_secs_f32());
+    eprintln!("peel: done, {} directions over {} sub-samples ({:.1}s); fragment radiance calls {}, facing the sun {}, lit {}", n_dirs, subs.len(), t0.elapsed().as_secs_f32(), SUN_STATS[0].load(std::sync::atomic::Ordering::Relaxed), SUN_STATS[1].load(std::sync::atomic::Ordering::Relaxed), SUN_STATS[2].load(std::sync::atomic::Ordering::Relaxed));
     out
 }
