@@ -236,10 +236,15 @@ pub fn face_normal(p: &[[f32; 3]; 3]) -> [f32; 3] {
     normalize(cross(sub(p[1], p[0]), sub(p[2], p[0])))
 }
 
-/// Metres per MK64 unit: the official lap lengths over the centre-path
-/// lengths agree to 0.3 % on all 15 measured courses (0.0565–0.0568;
-/// Rainbow Road's rounded "2000 m" reads 0.0562). One constant for all.
-pub const UNITS_TO_M: f32 = 0.05673;
+/// Metres per MK64 unit. Calibrated on the CAR: the kart's footprint is its
+/// shadow quad, 18 × 18 units scaled by the character size 0.75 = 13.5 units
+/// (render_player.c, some_data.c `D_800E51D0`/`D_800E5210`), and the TM2020
+/// CarSport is 2.05 m wide — vjeux, 2026-09-22: "the trackmania car seems to
+/// be too big, can we align so the width of the car matches in both games".
+/// (Nintendo's published lap lengths imply 0.0567 m/unit — a 0.77 m kart —
+/// which made the TM car 2.7× too wide for the roads; `OFFICIAL_UNITS_TO_M`.)
+pub const UNITS_TO_M: f32 = 2.05 / 13.5;
+pub const OFFICIAL_UNITS_TO_M: f32 = 0.05673;
 
 /// The plateau problem: a course sits above the Stadium grass (its lowest
 /// road point must clear the solid ground plane), so its outer terrain edges
