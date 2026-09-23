@@ -29,7 +29,7 @@ Two ways to get it:
 | TinyBlocks-Themes.zip | Themes (Snow, Rally) | 237 | 0.09 GB |
 | TinyBlocks-Technics.zip | Technics (gates, structures, lights, screens) | 307 | 0.14 GB |
 | TinyBlocks-Walls.zip | Walls (TrackWall, DecoWall) | 1,013 | 0.19 GB |
-| TinyItems.zip | Nadeo's items at half scale (see below) | 632 | 0.09 GB |
+| TinyItems.zip | Nadeo's items at half scale (see below) | 596 | 0.08 GB |
 
 (Sizes on disk; the zips are about a third smaller.)
 
@@ -83,9 +83,10 @@ name and a screenshot.
 ## Tiny Items — Nadeo's items at half scale (TinyItems-*.zip)
 
 The same for the **item** browser: every Nadeo item of the Stadium item
-browser at scale 0.5 (632 items — vegetation, decorations, flags, signs,
-screens, light tubes, gates, podiums, inflatables, moving obstacles,
-supports), under `Items\TinyItems\<the item browser's folders>\`, with the
+browser at scale 0.5 (596 items — decorations, flags, signs, screens, light
+tubes, gates, podiums, inflatables, moving obstacles, supports; the 36
+vegetation items are left out: as loose items the trees lose their leaf and
+bark textures), under `Items\TinyItems\<the item browser's folders>\`, with the
 items' own icons. Each keeps Nadeo's own placement settings scaled by half
 (a 32 m gate snaps every 1 m instead of 2, its magnets at ±8 m instead of ±16).
 Where the game data did not yield the settings, the item-editor defaults
