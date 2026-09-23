@@ -809,6 +809,29 @@ fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<St
     if !old_name.is_empty() {
         m.set_map_name(&old_name, name);
     }
+    // the header XML's own uid/name, which may differ from the ident chunk's
+    // (the TMX host: TMX rewrote them) — TMX/servers read the XML
+    {
+        let (uid_new, name_new) = (new_uid.clone(), name.to_string());
+        m.edit_header_xml(&|x: &str| {
+            let mut out = x.to_string();
+            if let Some(i) = out.find("<ident ") {
+                if let Some(j) = out[i..].find("/>").map(|k| k + i) {
+                    let mut tag = out[i..j].to_string();
+                    for (attr, val) in [("uid", uid_new.as_str()), ("name", name_new.as_str())] {
+                        if let Some(a) = tag.find(&format!(" {attr}=\"")) {
+                            let vs = a + attr.len() + 3;
+                            if let Some(ve) = tag[vs..].find('"').map(|k| k + vs) {
+                                tag.replace_range(vs..ve, &val.replace('&', "&amp;").replace('"', "&quot;"));
+                            }
+                        }
+                    }
+                    out.replace_range(i..j, &tag);
+                }
+            }
+            Some(out)
+        });
+    }
     // multilap: chunk 0x03043018 (IsLapRace, NbLaps) and the header's nblaps
     {
         let chunks = tmmaps::gbx::all_skip_chunks(&m.gbx.body);
