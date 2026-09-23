@@ -75,7 +75,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             (_, Some(d)) => d.join(map.file_name().ok_or("map path has no file name")?),
             _ => unreachable!(),
         };
-        match one(args, map, &out) {
+        let r = if tmmaps::cli::has(args, "--reduced") { reduced(args, map, &out) } else { one(args, map, &out) };
+        match r {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("lightmap {}: {e}", map.display());
@@ -88,6 +89,52 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     } else {
         Err(format!("{} of {} maps failed:\n  {}", failures.len(), maps.len(), failures.join("\n  ")))
     }
+}
+
+/// `--reduced`: the editor survives only a map WITHOUT Nadeo's stock vegetation clusters (Grove, Forest,
+/// SpringPalmTree, Sparkler16m, ShowFogger8m — ComputeShadows dies at 7 s) and WITHOUT the items that
+/// carry local lights (SaveMap dies) — bisected 2026-09-23 on WhiteShore/Stadium. So: build the reduced
+/// map (`tmmaps keepitems` of everything else), bake THAT in the editor, and put its lightmap into the
+/// full map with `lmtool transplant` (item charts renumbered by the kept list; the dropped items get no
+/// chart — the game lights them from the probes; the local-light frames come from lmtool). The sibling
+/// binaries (`lmtool`, `tmmaps`) are taken from this executable's directory.
+fn reduced(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
+    let dir = std::env::current_exe().map_err(|e| e.to_string())?.parent().ok_or("exe dir")?.to_path_buf();
+    let lmtool = dir.join("lmtool");
+    let tmmaps_bin = dir.join("tmmaps");
+    let run = |bin: &Path, a: &[&str]| -> Result<String, String> {
+        let o = std::process::Command::new(bin).args(a).output().map_err(|e| format!("{}: {e}", bin.display()))?;
+        if !o.status.success() {
+            return Err(format!("{} {}: {}", bin.display(), a.join(" "), String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("").to_string()));
+        }
+        Ok(String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr))
+    };
+    // the light-carrying models: `lmtool lights MAP` lists "<Model> (N placements): L lights"
+    let lights_out = run(&lmtool, &["lights", map.to_str().unwrap()])?;
+    let light_models: std::collections::HashSet<String> = lights_out
+        .lines()
+        .filter_map(|l| { let (name, rest) = l.split_once(" (")?; let n: usize = rest.split(' ').next()?.parse().ok()?; if n > 0 && !l.starts_with(' ') { Some(name.to_string()) } else { None } })
+        .collect();
+    const CLUSTERS: [&str; 5] = ["Grove", "Forest", "SpringPalmTree", "Sparkler16m", "ShowFogger8m"];
+    let m = tmmaps::map::MapFile::load(map);
+    let kept: Vec<usize> = m.items.iter().enumerate().filter(|(_, it)| !CLUSTERS.contains(&it.model.as_str()) && !light_models.contains(&it.model)).map(|(i, _)| i).collect();
+    let dropped = m.items.len() - kept.len();
+    let kept_list = kept.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    eprintln!("--reduced: {} of {} items kept ({dropped} dropped: {} light-carrying models + the vegetation clusters)", kept.len(), m.items.len(), light_models.len());
+    if dropped == 0 {
+        return one(args, map, out);
+    }
+    let red0 = out.with_extension("reduced0.Map.Gbx");
+    let red = out.with_extension("reduced.Map.Gbx");
+    let red_ed = out.with_extension("reduced-editor.Map.Gbx");
+    run(&tmmaps_bin, &["keepitems", map.to_str().unwrap(), "--out", red0.to_str().unwrap(), "--items", &kept_list])?;
+    // a valid (lmtool) chunk in the copy: the editor's lightmapper wants one to work from
+    let q = tmmaps::cli::flag(args, "--quality").unwrap_or("3").to_string();
+    run(&lmtool, &["bake", red0.to_str().unwrap(), "--out", red.to_str().unwrap(), "--quality", &q])?;
+    one(args, &red, &red_ed)?;
+    run(&lmtool, &["transplant", "--from", red_ed.to_str().unwrap(), "--into", map.to_str().unwrap(), "--kept", &kept_list, "--out", out.to_str().unwrap()])?;
+    eprintln!("--reduced: wrote {} (the reduced set's editor lightmap in the full map; {dropped} items chartless)", out.display());
+    Ok(())
 }
 
 fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
