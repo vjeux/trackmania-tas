@@ -2723,6 +2723,14 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
     // puts the ice deck material (look + RoadIce physics 74) on a tech road's
     // deck. Rows go FIRST: the first matching collision row wins.
     let mut surface_rows = surface_redress_rows(store);
+    // TINY_DECO_SNOW_SCOPE=<prefix>: the `Deco` snow-top row applies only to blocks of that
+    // family (the author-placed DecoPlatformIce tops of the non-snow sets); every other
+    // block keeps its grass `Deco` faces (the open roads' patches, wood 53, 2026-09-23)
+    if let Ok(scope) = std::env::var("TINY_DECO_SNOW_SCOPE") {
+        if !scope.is_empty() && !name.starts_with(scope.as_str()) {
+            surface_rows.retain(|(from, to, _)| !(from == "Deco" && to.contains("PlatformIce")));
+        }
+    }
     // a STAGE deck is `TechnicsTrims` metal all over (the trim material every other block
     // uses for its metal edges): on the stage blocks alone that stem is the deck and takes
     // the surface (the first row's link + physics — the `RoadTech` deck row)

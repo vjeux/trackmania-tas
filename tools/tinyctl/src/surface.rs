@@ -94,7 +94,13 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // the DecoPlatform tops of the ICE set and of WET wood: baked with the vanilla snow-top
     // look at physics Snow 21 (the ice twin block is a null surface in the game, 2026-09-20)
     // every set: the row is what the author-placed ice tops bake with too (2026-09-20 14:37)
+    // … in the other sets the row is scoped to the DecoPlatform family by the library
+    // (TINY_DECO_SNOW_SCOPE=DecoPlatform): the open roads' small `Deco` grass patches took
+    // it too — snow triangles on the grass of wood 53 (Everios96 2026-09-23 12:39)
     rows.push("Deco=Stadium\\Media\\Modifier\\PlatformIce\\Deco@21".to_string());
+    if !(s == "Ice" || (s == "Wood" && wet)) {
+        env.push(("TINY_DECO_SNOW_SCOPE".to_string(), "DecoPlatform".to_string()));
+    }
     // the penalty road frames' FLOOR under a snow penalty: the Ice terrain modifier (wet wood)
     if s == "Wood" && wet && std::env::var("TINY_WET_SNOW_PENALTY").map(|v| v != "0").unwrap_or(true) {
         env.push(("TINY_PENALTY_FLOOR".to_string(), "Ice".to_string()));
