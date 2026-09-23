@@ -66,6 +66,20 @@ is 64-aligned with an 8-byte IV prefix + payload + zero padding.
   found by CONSENSUS of matches reaching before the output start).
 * The gbx-headers blob decodes with the header key, then the LZ4 block
   stream with the dictionary.
+* **Entries with flag `0x40` use a COUNTER-mode Blowfish, not CBC** **[DISASSEMBLY
+  0x14055a590 → cipher kind 4, vtable 0x141bc4ac8; opener 0x1413b0a10, reader
+  0x1413b1090 through the 8-round wrapper 0x1413b1cd0]**: the same key as every
+  other entry and the same 8-round schedule (`InitBlowfish` 0x140128240 with
+  `P[i] ^= key_le_word[i & 3]`, i < 10), but mode 2 — the P array is NOT
+  reversed as the CBC kinds do — and no chaining: the entry begins with an
+  8-byte IV; for body byte offset `o`, batch `b = o/256`, block `k = (o%256)/8`,
+  the keystream is the little-endian block encryption of the little-endian
+  counter `IV + 8 + 256·b + k` and `plain = cipher ^ keystream`. The dummy-write
+  fold is never applied (random-access reader). `blowfish::counter_decrypt`;
+  the only encrypted `0x40` entries in the six packs are the five
+  `CPlugMoodBlender` XMLs (`GameCtnDecoration\\<hash>`, 0x0911A000) — the
+  Maniaplanet shader/material `0x…041` entries carry bit 50 (ForceNoCrypt) and
+  were always plain.
 
 ## 3. Hashed file names (`names.rs`) **[FILE]** — every prefab in the pack resolves
 

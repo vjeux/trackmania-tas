@@ -65,6 +65,22 @@ Facts:
 * The variant byte (`flags >> 8`) selects an entry of a variant-list item
   (Summer 11's `Show` rigs: 4 = RigStraight32m, 23 = Light4Spots, 28 =
   Fogger16M; a `PalmForest` placement's variant is its palm species).
+  The variant is chosen by the EDITOR when the mapper fills the zone
+  (`NSceneItemPlacement` 0x1408223a0: per slot a uniform Nadeo-LCG pick among
+  the variants whose tags cover the slot's tag option, seeded by the editor's
+  global LCG state, DAT_141e71438 = 0x3df7 at start, stepped per re-roll;
+  Summer 16's fills are chain steps 3, 18, 20, 21) — the game never re-picks
+  at load **[DISASSEMBLY]**. What the game DOES compute per placed tree is the
+  **instance variation** (`NHmsForestVis` 0x14026b4f0): MurmurHash2 of the
+  28-byte pose (quaternion, position; seed 0x57489862) seeds an LCG that draws
+  `scale = 1 − (k/7)·ScaleVar01`, a random world-Y yaw when the species'
+  `EnableRandomRotationY` is on and two tilts in ±`AngleMax_RotXZ_Deg` about
+  world X and Z — so a placed palm's real orientation is pseudo-random,
+  decided by the bits of its pose. `mapgeom veget-instances MAP` reproduces
+  the chain bit for bit (`tools/mapgeom/src/veget_instance.rs`: the engine's
+  own sincos routines, quaternion/matrix conversions and pivot Iso4 in the
+  game's operand order); per-species parameters in `veget-info`
+  **[DISASSEMBLY, RE child 4 2026-09-23]**.
 * The skin `FileRef` (`u8 version; [u8;32] checksum (v≥3); string path; string
   url`) names e.g. `Skins\Stadium\LightColors\WhiteCold.dds` (Summer 15's 462
   skinned lights) or the older `Skins\Stadium\LightTube\<Name>.zip` (an EMPTY

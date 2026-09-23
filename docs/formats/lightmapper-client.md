@@ -252,6 +252,54 @@ constant — the peel camera's raster jitter, not the direction. The earlier
 "30° zenith cone" reading of this document was a fit to the plate
 measurements and is withdrawn.
 
+**How layer k excludes layer k−1** [DISASSEMBLY, RE child 4 2026-09-23; peel
+camera = a `CHmsVolumeShadow` (scene+0x1b0, class 0x0603C000), matrices
+0x140a4c9a0, render 0x140a4fab0]: the compare sampler is GREATER_EQUAL and
+`WorldPw01Shadow.z` is bit-identical to the projection z of
+`GbxV_WorldPrCamera` (the bias row of `Pw01 = Bias·Proj·View` is `(0,0,1,0)`
+for the lightmapper's shadow group: its texel-size z term is gated on
+`CHmsShadowGroup+0x4c & 0xc < 4` and the lightmapper sets that field to 8).
+The exclusion is the **D3D11 rasterizer depth bias of the layer render**: the
+volume-shadow render calls `SetDepthBias(sign·DepthBiasConst,
+sign·DepthBiasSlope, 0)` from the lightmapper's `CHmsShadowGroup` (lm+0x628:
+the peel function sets Const = 1, Slope = 1.0 — `CHmsLightMapParam+0xfc`, a
+default-1 switch — around its layer loop) and the backend (0x140a81220)
+negates the three into `D3D11_RASTERIZER_DESC`; `sign = −1` when the volume
+shadow has a colour target (the peel), so the layers rasterize with
+**DepthBias = +1, SlopeScaledDepthBias = +1.0 on a D32_FLOAT target**:
+`d_stored = z + 2^(exponent(max z of the triangle) − 23) + 1.0·max(|∂z/∂x|,
+|∂z/∂y|)`, pushed **toward the camera** (reversed z: 1 = near). Layer k+1
+keeps fragments with `z ≥ d_k` — nearer to the camera than layer k by more
+than the bias, so the same surface fails and the peel is **far-to-near**
+(the depth test keeps the farthest survivor). `LmILightDir_Set`'s texel test
+`z_texel ≥ d_k` therefore selects the last layer still farther than the
+texel: the first surface along `D` beyond it; the texel's own layer is
+excluded by the same bias, the 1-pixel slope term covering the
+interpolation difference between the LM raster and the layer raster. The
+depth lookup is POINT-sampled after a **one-texel inset**: `u_lookup = 0.5 +
+(u_render − 0.5)·(w−2)/w` (Bias rows `sx = −0.5·(w−2)/w`, `sy =
+−0.5·(h−2)/h`, offsets 0.5). One depth unit = the peel frustum's full depth
+(`2·halfD`, frustum copy at vs+0x2d4). The sun shadow maps (§2.2) go through
+the same code with `sign = +1` (no colour target): DepthBias −1, slope −1.0,
+stored depth pushed away from the light, so `lit = z_recv ≥ z_stored` never
+self-shadows.
+
+**The sky dome's radiance** [DISASSEMBLY 0x1409f7a40 (the `Tech3/Sky_p`
+ShaderP filler) and 0x1402694c0 (mood → vision constants)]: `SunPower =
+HdrSun.Power`, `PowScale1_2 = (Atmo1.Power, Atmo1.Scale, Atmo2.Power,
+Atmo2.Scale)`, `RgbLinear1/2 = Atmo1/2.Color` (all from the mood's `<Atmo>`),
+`SunIsVisible = HdrSun.Power > 1` **but forced 0 for the lightmapper's dome
+pass** (0x140234df0 l.480–522: no sun disc in the bake; the two atmo lobes
+stay), `GlobalScale = CHmsLightMapParam+0x24` (default 1.0) for that pass,
+`ScaleGrad0 = (1−t)·1.0`, `ScaleGrad1 = t·1.0` with `t` the mood blender's
+blend weight between the two gradient textures = the two moods being
+blended (a single mood → the SkyColor.dds at scale 1), and `FogIntens =
+Fog.Enabled ? <Fog><SkyClouds GlobalIntens> : 0` (BlueBay Day 0.414; the
+MediaTracker Fog block's "Sky intensity" is this same field). Shader: `out =
+min(16375, GlobalScale · lerp(FogRGB, grad·ScaleGrad + atmo, 1 − FogIntens))`
+with `atmo = Σ cos^Power_i · Scale_i · Rgb_i` around the sun direction.
+
+
 ### 2.4 Bounces [DISASSEMBLY]
 
 `GeomILightIn0_p` builds the peel input radiance of a surface point:
@@ -795,6 +843,21 @@ render lock needed; do that first for any new crash instead of guessing.
   not the one the sun uses. The sun direction as a function of DayTime through
   these is **pending**; the baker measures the sun from the east at el ≈ 1–2°
   at DayTime 0.854 on BlueBay (Sunset quarter) [DIFFERENTIAL].
+* **The sun's inputs, pinned** [DISASSEMBLY 0x14028cd20 (the lightmapper's
+  mood → sun direction), 0x140494690/0x140494810, RE children 3+4]: the day
+  fraction `b = clamp((t − SunRise)/(SunFall − SunRise))` comes from the
+  **decoration's `CPlugMoodBlender`** curve (`GameCtnDecoration\<hash>`, class
+  0x0911A000, an XML stored as the pack's only counter-mode-encrypted entry —
+  pak-nadeopak.md §2), and the direction `D = (cos πb, −cos(lat)·sin πb,
+  −sin(lat)·sin πb)` uses **the mood XML's `<Light Latitude>`** (`mood+0x1c`:
+  20 for the BlueBay moods), NOT the blender's. The decoded blenders [FILE,
+  banked in tm-player/tiny/lightmap-re/moods/]: BlueBay, RedIsland, Stadium
+  `Latitude="47.5" SunRise="06:00:00" SunFall="21:00:00"
+  LocalLight_SwitchOff="06:30:00" LocalLight_SwitchOn="18:30:00"`; GreenCoast
+  the same with `SwitchOn="19:10:00"`; WhiteShore `Latitude="55"`; all with
+  `<MoodWeights>` keys at X 0.08/0.2/0.55/0.69, weight 0. The blender's
+  Latitude is stored in the curve (+0) but not read by the two functions
+  above.
 * `LightMap\HmsPackLightMap\Tech3_HDR_PSSM.PackLightMap.Gbx` (Maniaplanet.pak,
   class 0x06021000) is the lightmapper's pack configuration: it references
   the sphere point table, `LightMap\HmsPackLightMapMood\Tech3
