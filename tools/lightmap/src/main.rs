@@ -29,6 +29,10 @@ fn main() {
         eprintln!("usage: lmtool walk MAP.Gbx... | lmtool dump MAP.Gbx OUTDIR | lmtool probe MAP.Gbx [OUTDIR]");
         std::process::exit(2);
     }
+    run(a);
+}
+
+fn run(a: Vec<String>) {
     match a[0].as_str() {
         "walk" => {
             for f in &a[1..] {
@@ -127,6 +131,12 @@ fn main() {
                 let b = m.binds[i];
                 println!("{i}\t{}\t{}\t{:#x}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", b.obj_group_idx / 4, b.obj_idx & 0xffffff, b.obj_idx >> 24, m.pos[i].0, m.pos[i].1, m.size[i].0, m.size[i].1, m.chart_f32[i], m.frame_bytes[0][i], m.frame_bytes[1][i], m.frame_bytes[2][i]);
             }
+        }
+        "daytime" if a.iter().any(|x| x == "--set") => {
+            // lmtool daytime MAP --out F --set N|default: the baker's setter (chunk word + lightmap frame records)
+            let mut b = a.clone();
+            b[0] = "daytime-set".into();
+            return run(b);
         }
         "daytime" => {
             // lmtool daytime MAP… — the map's time of day (skippable chunk 0x03043056: version, u01,
@@ -2333,7 +2343,7 @@ fn main() {
             rows.sort_by_key(|r| std::cmp::Reverse(r.0));
             for r in rows { println!("{}", r.1); }
         }
-        "daytime" => {
+        "daytime-set" => {
             // lmtool daytime MAP [--out OUT --set N|default]: read (and set) the map's DayTime word in chunk
             // 0x03043056 { u32 version, u32, u32 daytime (0xffffffff = the mood's own), bool dynamic, u32 duration_ms }
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
