@@ -3,6 +3,7 @@
 //!
 //! Work in progress: the walker first, then the typed structure.
 
+pub mod albedo;
 pub mod bake;
 pub mod bc6h;
 pub mod bvh;

@@ -28,6 +28,9 @@ pub struct BakeParams {
     pub min_px: u32,
     /// The sea / ground plane: rays going below it are blocked.
     pub ground_y: f32,
+    /// Per-material albedo (`crate::albedo`) is used for a hit surface unless `flat_albedo` — then
+    /// `albedo` applies to every surface (an explicit `--albedo`).
+    pub flat_albedo: bool,
     /// One-bounce factor (0 = off) and the average albedo it uses.
     pub bounce: f32,
     pub albedo: f32,
@@ -111,6 +114,7 @@ impl Default for BakeParams {
             min_px: 2,
             ground_y: -1.0e9,
             bounce: 0.0,
+            flat_albedo: false,
             albedo: 0.5,
             flip_v: false,
             uv_bounds: false,
@@ -744,6 +748,23 @@ fn shade_dome(scene: &Scene, bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, r
 /// A hit surface's irradiance for the bounce: the previous iteration's stored value when a
 /// field is given (the game's "lightmap so far"), else its unoccluded sky share; plus its direct
 /// sun. `hp` = the hit point offset off the surface, `hn` = the surface normal facing the ray.
+/// The albedo of the surface a ray hit: the material's (`Tri.mat` → `mat_albedo`, measured from the
+/// diffuse texture or the keyword table), `prm.albedo` for an unknown material, or flat `prm.albedo`.
+pub fn hit_albedo(scene: &Scene, bvh: &Bvh, prm: &BakeParams, h: &crate::bvh::Hit) -> [f32; 3] {
+    if prm.flat_albedo {
+        return [prm.albedo; 3];
+    }
+    let wt = &bvh.tris[h.tri as usize];
+    let inst = &scene.instances[wt.inst as usize];
+    let m = &scene.models[inst.model];
+    // a known material (measured or keyword) is taken as is; an unknown one gets the per-collection
+    // default `prm.albedo`
+    match m.tris.get(wt.tri as usize).map(|t| t.mat) {
+        Some(mi) if (mi as usize) < m.mat_albedo.len() && m.mat_albedo[mi as usize][0].is_finite() => m.mat_albedo[mi as usize],
+        _ => [prm.albedo; 3],
+    }
+}
+
 fn hit_irradiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, h: &crate::bvh::Hit, o: V3, d: V3, hn: V3, cone_cos: f32) -> [f32; 3] {
     let hp = add(add(o, mul(d, h.t)), mul(hn, 0.03));
     let ndl_h = dot(hn, prm.sun_dir).max(0.0);
@@ -765,8 +786,9 @@ fn hit_irradiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, h: &crate::bvh::Hi
         // the first sweep peels the surfaces with their lightmap term forced to 0 (RE child 2): the
         // bounce input is the direct sun only; later sweeps read the lightmap so far. The older dome
         // model (no peel) keeps its one-bounce sky-share estimate.
+        // the stored value is read back divided by bounce_decode (BounceFactor); the direct sun is not
         let base = match stored {
-            Some(s) => s[k],
+            Some(s) => s[k] / if prm.peel { prm.bounce_decode } else { 1.0 },
             None if prm.peel => 0.0,
             None => prm.sky[k] * cone_factor(hn, cone_cos),
         };
@@ -864,11 +886,11 @@ fn shade_peel(scene: &Scene, bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, r
                 let hn = norm(cross(tri.e1, tri.e2));
                 let hn = if dot(hn, d) > 0.0 { mul(hn, -1.0) } else { hn };
                 let e_hit = hit_irradiance(scene, bvh, prm, &h, o, d, hn, cone_cos);
-                // hit_irradiance adds the direct sun to the stored/own value; the stored part is read
-                // back divided by bounce_decode
-                let stored_share = if prm.field.is_some() { 1.0 / prm.bounce_decode } else { 1.0 };
+                // hit_irradiance returns (stored/bounce_decode + direct sun) — see there; the surface's
+                // own material albedo scales what it gives back
+                let alb = hit_albedo(scene, bvh, prm, &h);
                 for k in 0..3 {
-                    bounce_acc[k] += w * prm.bounce * prm.albedo * e_hit[k] * stored_share;
+                    bounce_acc[k] += w * prm.bounce * alb[k] * e_hit[k];
                 }
             }
         }

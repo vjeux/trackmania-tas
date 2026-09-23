@@ -846,6 +846,7 @@ fn run(a: Vec<String>) {
                 prm.ambient = [0.0; 3]; prm.up = [0.0; 3];
                 prm.bounce = f("--bounce").map(|s| s.parse().unwrap()).unwrap_or(x.bounce_factor);
                 prm.albedo = f("--albedo").map(|s| s.parse().unwrap()).unwrap_or(if prm.peel { lightmap::moods::sky_fit(x.collection, x.mood).1 } else { 0.18 });
+                prm.flat_albedo = f("--albedo").is_some() || has("--flat-albedo");
                 prm.uv_bounds = true; prm.sky_model = 0; prm.texels_per_m = 1.0; prm.sky_samples = 64; prm.sun_samples = 4;
                 prm.ambient_ao = !has("--no-ao");
                 // local lights, absolute units: E = k·I·c·max(0,n·l)·(1−(d/R)²)²; k = 0.56 puts the peak under a lamp post
@@ -2637,6 +2638,33 @@ fn run(a: Vec<String>) {
             let out = f("--out").expect("--out");
             lightmap::mapio::save_with_chunk(&into, &payload, &out).expect("save");
             println!("wrote {out}: {items} item charts renumbered (reduced → full), {tiles} tile charts kept, {oob} charts beyond the kept list; the full map has {} items, the reduced bake {}", tmmaps::map::MapFile::load(std::path::Path::new(&f("--into").unwrap())).items.len(), kept.len());
+        }
+        "materials" => {
+            // lmtool materials MAP: the game-material links of the map's item models, triangles per link (over all
+            // placements) and the bounce albedo the table gives each — what the per-material bounce works from
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let mut per: std::collections::BTreeMap<String, (usize, usize, [f32; 3])> = std::collections::BTreeMap::new();
+            let mut unknown = 0usize;
+            for inst in &scene.instances {
+                let m = &scene.models[inst.model];
+                for t in &m.tris {
+                    if (t.mat as usize) < m.mat_links.len() {
+                        let e = per.entry(m.mat_links[t.mat as usize].clone()).or_insert((0, 0, m.mat_albedo[t.mat as usize]));
+                        let _ = lightmap::albedo::is_measured(&m.mat_links[t.mat as usize]);
+                        e.0 += 1;
+                    } else {
+                        unknown += 1;
+                    }
+                }
+                for l in &m.mat_links { if let Some(e) = per.get_mut(l) { e.1 += 1; } }
+            }
+            let mut rows: Vec<_> = per.into_iter().collect();
+            rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+            println!("{} material links over {} instances; {unknown} triangles without a material", rows.len(), scene.instances.len());
+            for (link, (tris, insts, alb)) in rows {
+                let tag = if lightmap::albedo::is_measured(&link) { "measured" } else if alb[0].is_finite() { "keyword " } else { "DEFAULT " };
+                println!("{tris:>9} tris {insts:>6} inst  {tag} albedo ({:.2},{:.2},{:.2}) lum {:.2}  {link}", alb[0], alb[1], alb[2], lightmap::albedo::lum(alb));
+            }
         }
         "chunkhex" => {
             // lmtool chunkhex MAP ID…: the payload bytes of small skippable body chunks (hex + u32/f32 readings)

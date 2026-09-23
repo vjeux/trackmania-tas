@@ -425,6 +425,31 @@ fn main() {
                 }
             }
         }
+        "nodescan" => {
+            // mapgeom nodescan FILE.gbx [--all]: a (partially) decrypted Gbx file's header refs and every plausible
+            // inline-node start in its body — [u32 idx ≤ num_nodes][u32 class, low 12 bits clear][u32 chunk of that
+            // class's family] — for extending parents.rs when a pak entry's fold schedule stops short
+            let f = a.rest.get(1).cloned().expect("nodescan FILE");
+            let data = std::fs::read(&f).expect("read");
+            let g = mapgeom::container::Gbx::parse(&data).expect("gbx header");
+            let body_start = data.len() - g.body.len();
+            println!("{f}: class {:#x}, {} nodes, {} externals, body at {body_start:#x} ({} B present)", g.class_id, g.num_nodes, g.refs.len(), g.body.len());
+            for r in &g.refs {
+                println!("  ext node {:>3}  {}", r.node_index, r.name);
+            }
+            let b = &g.body;
+            let rd = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+            let mut i = 0usize;
+            while i + 12 <= b.len() {
+                let (idx, class, chunk) = (rd(i), rd(i + 4), rd(i + 8));
+                if idx >= 1 && idx <= g.num_nodes && class & 0xFFF == 0 && (0x0100_0000..0x4000_0000).contains(&class) && chunk >> 24 == class >> 24 && chunk & 0xFFF < 0x80 {
+                    let parent = mapgeom::parents::dummy_write_class(class);
+                    let ctx: String = b[i.saturating_sub(16)..i].iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" ");
+                    println!("  node start at body+{i:#06x} (file {:#06x}): idx {idx:>3} class {class:#010x} first chunk {chunk:#010x}  parent {}   before: {ctx}", body_start + i, parent.map(|p| format!("{p:#010x}")).unwrap_or("UNKNOWN → CPlug fallback".into()));
+                }
+                i += 1;
+            }
+        }
         "refs" => {
             let mut store = open(&a);
             let p = a.rest.get(1).cloned().unwrap_or_default();
@@ -466,6 +491,61 @@ fn main() {
                     Err(e) => println!("{}    ({e})", "  ".repeat(depth - 1)),
                 }
             }
+        }
+        "material-albedo" => {
+            // material-albedo LINK… [--out TSV]: the MEAN LINEAR RGB of each game material's diffuse texture — the
+            // lightmapper's MDiffuse stand-in for the bounce. LINK = "Stadium\Media\Material\RoadTech" (the
+            // CPlugMaterialUserInst link); the material file's externals are followed transitively and the
+            // diffuse image is the `<name>_D.dds` matching the material's own name, else the first `_D.dds`,
+            // else the first .dds. The DDS (BC1/BC3 via the store) is decoded at ≤ 256 px, sRGB → linear,
+            // averaged with alpha as the weight when the image has one. Prints link, image, rgb, luminance.
+            let mut store = open(&a);
+            let out_path = flag(&a.rest, "--out");
+            let mut rows: Vec<String> = Vec::new();
+            let mut links: Vec<String> = Vec::new();
+            let mut it = a.rest.iter().skip(1);
+            while let Some(x) = it.next() {
+                if x == "--out" { it.next(); continue; }
+                if x.starts_with("--") { continue; }
+                links.push(x.clone());
+            }
+            for link in &links {
+                let file = format!("{link}.Material.Gbx");
+                let name = link.rsplit('\\').next().unwrap_or(link).to_ascii_lowercase();
+                let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+                let mut dds: Vec<String> = Vec::new();
+                let mut stack: Vec<(usize, String)> = vec![(0, file.clone())];
+                while let Some((depth, path)) = stack.pop() {
+                    if depth > 4 || !seen.insert(path.to_ascii_lowercase()) { continue; }
+                    if path.to_ascii_lowercase().ends_with(".dds") { dds.push(path); continue; }
+                    if store.resolve(&path).is_none() { continue; }
+                    if let Ok(child) = store.load_model(&path) {
+                        for (_, p) in child.externals.iter() { stack.push((depth + 1, p.clone())); }
+                    }
+                }
+                let stem = |p: &str| p.rsplit('\\').next().unwrap_or(p).to_ascii_lowercase();
+                let pick = dds.iter().find(|p| stem(p) == format!("{name}_d.dds"))
+                    .or_else(|| dds.iter().find(|p| stem(p).ends_with("_d.dds")))
+                    .or_else(|| dds.first());
+                let Some(img) = pick else { println!("{link}\t(no diffuse image among {} externals)", seen.len()); continue };
+                let bytes = match store.read(img) { Ok(b) => b.to_vec(), Err(e) => { println!("{link}\t{img}\t(unreadable: {e})"); continue } };
+                let (w, h, rgba) = match mapgeom::static_item::texture::decode_capped_rgba(&bytes, 256) { Ok(x) => x, Err(e) => { println!("{link}\t{img}\t(undecodable: {e})"); continue } };
+                let to_lin = |c: u8| { let x = c as f64 / 255.0; if x <= 0.04045 { x / 12.92 } else { ((x + 0.055) / 1.055).powf(2.4) } };
+                let (mut acc, mut wsum) = ([0f64; 3], 0f64);
+                let has_alpha = rgba.chunks_exact(4).any(|p| p[3] < 250);
+                for p in rgba.chunks_exact(4) {
+                    let wt = if has_alpha { p[3] as f64 / 255.0 } else { 1.0 };
+                    for k in 0..3 { acc[k] += to_lin(p[k]) * wt; }
+                    wsum += wt;
+                }
+                if wsum <= 0.0 { println!("{link}\t{img}\t(fully transparent)"); continue; }
+                let rgb = [acc[0] / wsum, acc[1] / wsum, acc[2] / wsum];
+                let lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+                let row = format!("{link}\t{img}\t{w}x{h}\t{:.4}\t{:.4}\t{:.4}\t{:.4}", rgb[0], rgb[1], rgb[2], lum);
+                println!("{row}");
+                rows.push(row);
+            }
+            if let Some(o) = out_path { std::fs::write(&o, rows.join("\n") + "\n").unwrap_or_else(|e| die(format!("{o}: {e}"))); }
         }
         "blockitem-archetype" => {
             // blockitem-archetype IN.Block.Gbx --out OUT --archetype NAME [--no-collide]:

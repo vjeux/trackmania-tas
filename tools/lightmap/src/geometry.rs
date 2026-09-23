@@ -16,6 +16,8 @@ pub struct Tri {
     pub n: [V3; 3],
     /// TexCoord1 of each vertex.
     pub uv: [[f32; 2]; 3],
+    /// Index into the model's `mat_links` (u16::MAX = unknown material).
+    pub mat: u16,
 }
 
 /// A light socket of a model (`CPlugSolid2Model.lights`): position and axis in
@@ -45,6 +47,11 @@ pub struct ModelGeom {
     pub metres_per_uv: f32,
     pub uv_min: [f32; 2],
     pub uv_max: [f32; 2],
+    /// The game-material links of the model's shaded geoms (`CPlugMaterialUserInst.link`, e.g.
+    /// `Stadium\Media\Material\RoadTech`), indexed by `Tri.mat`.
+    pub mat_links: Vec<String>,
+    /// Per material link: the diffuse albedo the bounce uses (`crate::albedo`).
+    pub mat_albedo: Vec<[f32; 3]>,
 }
 
 pub fn sub(a: V3, b: V3) -> V3 {
@@ -113,6 +120,15 @@ pub fn load_model(bytes: &[u8]) -> Result<ModelGeom, String> {
         let t = &l.u05;
         g.lights.push(LightDef { pos: [t[9], t[10], t[11]], dir: norm([t[6], t[7], t[8]]), color, intensity, radius, cone, animated: pl.is_animated() });
     }
+    if std::env::var_os("LMTOOL_MAT_DEBUG").is_some() {
+        eprintln!("solid2: {} materials (deprec {}), {} custom materials, folder {:?}, {} shaded geoms, {} custom material ids", s2.materials.len(), s2.materials_deprec, s2.custom_materials.len(), s2.materials_folder, s2.shaded_geoms.len(), s2.material_ids.len());
+        for (i, cm) in s2.custom_materials.iter().enumerate() { eprintln!("  custom[{i}] {:?} → link {:?}", cm.name, cm.inst().and_then(|m| m.link())); }
+        for (i, mr) in s2.materials.iter().enumerate() {
+            let kind = match mr.inline.as_deref() { Some(Node::Material(m)) => format!("Material link {:?} name {:?}", m.link(), m.main.as_ref().map(|x| format!("{:?}", x.material_name))), Some(Node::OldMaterial(_)) => "OldMaterial".into(), Some(_) => "other node".into(), None => "by index".into() };
+            eprintln!("  material[{i}] index {} → {kind}", mr.index);
+        }
+        for sg in s2.shaded_geoms.iter().take(6) { eprintln!("  shaded geom: visual {} material_index {} lod {}", sg.visual_index, sg.material_index, sg.lod_mask); }
+    }
     let (mut aw, mut au) = (0f64, 0f64);
     let (mut umin, mut umax) = ([f32::MAX; 2], [f32::MIN; 2]);
     for sg in &s2.shaded_geoms {
@@ -122,6 +138,25 @@ pub fn load_model(bytes: &[u8]) -> Result<ModelGeom, String> {
         }
         let Some(vr) = s2.visuals.get(sg.visual_index as usize) else { continue };
         let Some(Node::Visual(v)) = vr.inline.as_deref() else { continue };
+        // the shaded geom's material link → an index into mat_links (deduplicated)
+        // (the tiny items carry their materials as `custom_materials` — name + CPlugMaterialUserInst whose
+        // link is the game material; `materials` is the older list)
+        let link: String = usize::try_from(sg.material_index).ok().and_then(|mi| {
+            s2.custom_materials.get(mi).and_then(|cm| cm.inst().and_then(|m| m.link().map(|l| l.to_string())).or_else(|| if cm.name.is_empty() { None } else { Some(cm.name.clone()) }))
+                .or_else(|| s2.materials.get(mi).and_then(|mr| match mr.inline.as_deref() { Some(Node::Material(m)) => m.link().map(|l| l.to_string()), _ => None }))
+        }).unwrap_or_default();
+        let mat: u16 = if link.is_empty() {
+            u16::MAX
+        } else {
+            match g.mat_links.iter().position(|l| *l == link) {
+                Some(i) => i as u16,
+                None => {
+                    g.mat_links.push(link.clone());
+                    g.mat_albedo.push(crate::albedo::for_link(&link).unwrap_or([f32::NAN; 3]));
+                    (g.mat_links.len() - 1) as u16
+                }
+            }
+        };
         let Some(ib) = v.index_buffer.as_ref() else { continue };
         let Some(st) = v.stream() else { continue };
         let get = |name: u32| st.decls.iter().zip(st.elems.iter()).find(|(d, _)| d.name() == name).map(|(_, e)| e);
@@ -181,7 +216,7 @@ pub fn load_model(bytes: &[u8]) -> Result<ModelGeom, String> {
             au += (((uv[1][0] - uv[0][0]) as f64) * ((uv[2][1] - uv[0][1]) as f64) - ((uv[2][0] - uv[0][0]) as f64) * ((uv[1][1] - uv[0][1]) as f64)).abs() / 2.0;
             let cr = cross(sub(p[1], p[0]), sub(p[2], p[0]));
             aw += (dot(cr, cr) as f64).sqrt() / 2.0;
-            g.tris.push(Tri { p, n, uv });
+            g.tris.push(Tri { p, n, uv, mat });
         }
     }
     g.metres_per_uv = if au > 1e-9 && aw > 1e-9 { (aw / au).sqrt() as f32 } else { 0.0 };
