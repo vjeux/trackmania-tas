@@ -88,7 +88,15 @@ pub fn read_file(
         return Err("offset past EOF".into());
     }
     // raw (possibly still compressed) bytes
-    let raw: Vec<u8> = if e.is_encrypted() {
+    let raw: Vec<u8> = if e.is_encrypted() && e.flags & 0x40 != 0 && version >= 18 {
+        // the counter-mode entries (0x40): IV + 8·k keystream, no chaining, no
+        // dummy-write fold (blowfish::counter_decrypt)
+        let n = 8 + e.compressed_size.max(0) as usize;
+        if base + n > data.len() {
+            return Err("counter-mode entry past EOF".into());
+        }
+        crate::blowfish::counter_decrypt(key, &data[base..base + n])
+    } else if e.is_encrypted() {
         if !e.is_compressed() && !e.dont_use_dummy_write() {
             return decrypt_with_dummy_writes(data, base, e, key, version);
         }
