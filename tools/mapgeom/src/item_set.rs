@@ -132,7 +132,9 @@ fn dress(bytes: &[u8], job: &Job, opts: &Opts, icon: Option<&[u8]>, description:
         f.header_chunks[k] = desc_chunk(&job.ident, opts.collection, &opts.author, &job.stem);
         f.header_chunks.retain(|c| c.id != 0x2E001004);
         if let Some(icon) = icon {
-            f.header_chunks.insert(k + 1, HeaderChunk { id: 0x2E001004, heavy: false, payload: icon.to_vec() });
+            // the icon is a HEAVY header chunk (bit 31 of its size word) in every
+            // game-written file — block infos and item-editor items alike
+            f.header_chunks.insert(k + 1, HeaderChunk { id: 0x2E001004, heavy: true, payload: icon.to_vec() });
         }
     } else {
         return Err("baked item has no collector description header chunk".into());
