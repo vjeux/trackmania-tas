@@ -220,17 +220,24 @@ lightmapper locates the dome object by its material having both the
 90 = East (−X), 180 = South (−Z), 270 = West (+X); altitude 0 = horizon.
 
 **The dome direction set** [DISASSEMBLY `RenderLightIndirectBounces`
-0x140230ac0 lines 925–940, `FUN_140213c20` line 116, `FUN_140234c80`]: the
-list at `CHmsLightMap+0x4c8` with count `+0x4d0` = N = `m_LightAmbSampleCount`
-= 256, copied at init from the PackLightMap object's three direction sets
-(`[0],[1],[2]` ↔ the 256/64/25 sample counts; `Tech3_HDR_PSSM.PackLightMap.Gbx`
-references `Std.PointsInSphere.Gbx`, whose 135 sets include n = 256, 64, 25)
-— a uniform **sphere** set: with `Scale = 4/N` the accumulation
-`Σ_D Scale·max(0,n·D)` is exactly 1 for a uniform environment (downward
-directions see the peeled ground = bounce, upward ones the sky). The sweep
-order interleaves the list into ss² groups (ss = the supersample factor,
-3 → 9; `FUN_140460270` round-robin) — order only. `PeelDirInW` = the list
-direction itself. The same list serves every bounce sweep. The LCG
+0x140230ac0 line 917 → `FUN_140236da0(lm, N, sweep)`, `FUN_140234c80`]: the
+list at `CHmsLightMap+0x4c8` (count `+0x4d0` = N) is rebuilt **per sweep**
+with `N = table 0x141e6f290[quality·6 + sweep]` (§2.7: Default 256 then 128;
+High 1024, 512, 256, 128; Ultra 2048, 1024, 1024, 512, 256, 128) from the
+`Std.PointsInSphere.Gbx` table object at `lm+0x330` (`FUN_14045fbd0(table,
+&set, N)` picks the set for N; sweep-specific overrides at `lm+0x500 +
+sweep·0x10` when present), then every point is rotated by the fixed matrix
+`M = Rz(0.313338965) · Ry(0.0599014498) · Rx(0.124326788)` (radians:
+17.953°, 3.432°, 7.123°; standard right-handed rotations, `d = M·p`, float32
+row·point sums) — and, when `CHmsLightMapMood+0xcc ≠ 0` and
+`FUN_14020cde0(lm) == 0`, every direction's y is forced negative (`y = −|y|`,
+the set folded onto one hemisphere). A uniform **sphere** set with `Scale =
+4/N` makes `Σ_D Scale·max(0,n·D)` exactly 1 for a uniform environment
+(downward directions see the peeled ground = bounce, upward ones the sky);
+the underside readings (0.37–0.4 of the floor) say the fold is off for the
+campaign moods. The sweep order interleaves the list into ss² groups (ss =
+the supersample factor, 3 → 9; `FUN_140460270` round-robin) — order only.
+`PeelDirInW` = the list direction itself. The LCG
 `FUN_140238b60` (seed 0x7d3fb6ac at index 0; `x' = (0x3039 − x·0x3e39b193)
 mod 2³² & 0x7fffffff`, `r = (x'>>16)/32767`, index k > 0 re-seeds from the
 saved state plus one discarded draw) produces per direction a 6-float
@@ -450,12 +457,18 @@ The supersampled render target is the atlas size × the per-axis factor
 (0x140217e10: `param+0x128` overrides the table). The 2-D table at
 0x141e6f290 (6 words per quality: {0…}, {64, 32, 0…}, {256, 128, 0…},
 {1024, 512, 256, 128, 0, 0}, {2048, 1024, 1024, 512, 256, 128}, {4096,
-2048, 1024, 512, 256, 128}) is read by `RenderLightDirectGetLocalLightDescs`
-and the bounce/NLocal code with a per-light class column — the local
-lights' shadow-map sizes per quality. The stored `m_LightAmbSampleCount =
-256` (the sky cone's direction count) has no per-quality table in the
-ranges read so far; the texel budget (`WantedTexelByMeter`) per quality is
-still pending.
+2048, 1024, 512, 256, 128}) is the **dome direction count per sweep**
+[DISASSEMBLY `RenderLightIndirectBounces` line 917 → `FUN_140236da0`;
+`NLocal::ComputeInGameplay3` 0x140a40ae0 line 284 sums the same row]: the
+"bounce iterations" column above is the number of sweeps and this row gives
+each sweep's N — a Default bake is one 256-direction sky+bounce sweep plus
+one 128-direction bounce sweep; High is 1024 + 512 + 256 + 128 (the Tiny 16
+q4 reference). The stored `m_LightAmbSampleCount = 256` is Default's first
+entry. `NLocal::ComputeInGameplay3` also sets `lm+0x4c = 10` and runs the
+same tables with the client's quality setting; the texel budget
+(`WantedTexelByMeter`) per quality is still pending. Floats/ints after the
+tables at 0x141e6f350: 3.1e-05, 1.0, 32767, 5000, 1000, 200, 100, 0.2, … (the
+in-gameplay time budgets, not read).
 
 ## 3. Charts, packing, probes
 
