@@ -258,7 +258,7 @@ pub fn default_daytime(collection: &str, mood: &str) -> u32 {
 pub fn sky_fit(collection: &str, mood: &str) -> (f32, f32, bool) {
     let c = collection.to_ascii_lowercase();
     match (c.as_str(), normalise_mood(mood)) {
-        ("bluebay", "Day") => (1.92, 0.3, false),
+        ("bluebay", "Day") => (2.05, 0.3, false),
         ("bluebay", "Sunset") => (2.75, 0.3, false),
         ("bluebay", "Sunrise") => (1.7, 0.3, false),
         ("bluebay", "Night") => (2.1, 0.3, false),

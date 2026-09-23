@@ -74,16 +74,29 @@ pub struct Frag {
 /// All fragments of a peel, CSR by pixel, sorted by depth within a pixel.
 pub struct ABuffer {
     pub res: u32,
-    pub start: Vec<u32>,
-    pub frags: Vec<Frag>,
+    /// Rows per band; the bands' CSR tables stay separate (no serial stitch of ~100 M fragments).
+    pub band_h: u32,
+    pub bands: Vec<(Vec<u32>, Vec<Frag>)>,
 }
 
 impl ABuffer {
     /// The fragments of pixel (x, y), nearest first.
     #[inline]
     pub fn at(&self, x: u32, y: u32) -> &[Frag] {
-        let i = (y * self.res + x) as usize;
-        &self.frags[self.start[i] as usize..self.start[i + 1] as usize]
+        let b = &self.bands[(y / self.band_h) as usize];
+        let i = ((y - (y / self.band_h) * self.band_h) * self.res + x) as usize;
+        &b.1[b.0[i] as usize..b.0[i + 1] as usize]
+    }
+    /// Total fragment count.
+    pub fn len(&self) -> usize {
+        self.bands.iter().map(|b| b.1.len()).sum()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Every fragment, band by band.
+    pub fn iter(&self) -> impl Iterator<Item = &Frag> {
+        self.bands.iter().flat_map(|b| b.1.iter())
     }
 }
 
@@ -104,7 +117,7 @@ pub fn build_abuffer_upto(tris: &[WTri], frame: &PeelFrame, threads: usize, zmax
     // thin wall's own far face does not occlude its texels and a hollow tower sees out
     let cull_back = std::env::var("LMTOOL_PEEL_CULL_BACK").map(|v| v == "1").unwrap_or(false);
     let d = frame.d;
-    let bands = 32u32.min(res);
+    let bands = 128u32.min(res);
     let band_h = (res + bands - 1) / bands;
     // small chunks so the few huge decoration triangles (each covering the whole frame) spread over
     // the threads; the per-chunk overhead is a band vector set
@@ -190,19 +203,8 @@ pub fn build_abuffer_upto(tris: &[WTri], frame: &PeelFrame, threads: usize, zmax
             .collect();
         hs.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    // stitch the bands into one CSR
-    let mut start = Vec::with_capacity(n + 1);
-    let mut frags = Vec::new();
-    start.push(0u32);
-    for (count, f) in band_results {
-        let off = frags.len() as u32;
-        // count[i+1] is the running total within the band; global start = off + count[i+1]
-        for i in 1..count.len() {
-            start.push(off + count[i]);
-        }
-        frags.extend(f);
-    }
-    ABuffer { res, start, frags }
+    let _ = n;
+    ABuffer { res, band_h, bands: band_results }
 }
 
 /// A depth-only orthographic raster along the sun (the direct pass' shadow map).
@@ -471,7 +473,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         if !dbg_subs.is_empty() && di < 40 {
             if let Ok(k) = std::env::var("LMTOOL_PEEL_DEBUG_ITEM") {
                 let k: u32 = k.parse().unwrap_or(0);
-                let n = ab.frags.iter().filter(|f| bvh.tris[f.tri as usize].inst == k).count();
+                let n = ab.iter().filter(|f| bvh.tris[f.tri as usize].inst == k).count();
                 let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
                 let mut ntri = 0;
                 for t in bvh.tris.iter().filter(|t| t.inst == k) {
@@ -557,7 +559,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             }
         });
         if di % 64 == 0 || di + 1 == n_dirs {
-            eprintln!("peel: direction {}/{} ({} fragments, build {:.2}s, gather {:.2}s; {:.1}s)", di + 1, n_dirs, ab.frags.len(), t_build, tb.elapsed().as_secs_f32() - t_build, t0.elapsed().as_secs_f32());
+            eprintln!("peel: direction {}/{} ({} fragments, build {:.2}s, gather {:.2}s; {:.1}s)", di + 1, n_dirs, ab.len(), t_build, tb.elapsed().as_secs_f32() - t_build, t0.elapsed().as_secs_f32());
         }
     }
     // 5. resolve: per colour texel the mean over its covered sub-samples

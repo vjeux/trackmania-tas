@@ -833,11 +833,14 @@ fn run(a: Vec<String>) {
                                 if let Ok(xml) = std::fs::read_to_string(lightmap::skygrad::mood_file(coll, mood, "Mood.MoodSetting.xml")) {
                                     g.lobes = lightmap::skygrad::lobes_from_xml(&xml).into_iter().map(|(p, c, s)| (p, c, s * lobe_scale)).collect();
                                     // Tech3/Sky_p: the dome is at the fog's far depth → lerp(sky, Fog.Color, Fog.IntensMax); --no-fog / --fog-intens F
-                                    let dome_m: f32 = f("--fog-dome-m").map(|s| s.parse().unwrap()).unwrap_or(4000.0);
+                                    // 5300 m: the BlueBay Day open pad's colour (fog intensity 0.32; the pad-only test map vs the editor, 2026-09-23)
+                                    let dome_m: f32 = f("--fog-dome-m").map(|s| s.parse().unwrap()).unwrap_or(5300.0);
                                     if !has("--no-fog") { g.fog = lightmap::skygrad::fog_from_xml(&xml, dome_m).map(|(c, i)| (c, f("--fog-intens").map(|s| s.parse().unwrap()).unwrap_or(i))); }
                                 }
                                 // with the fog blend the fitted per-mood number is GlobalScale (the gradient's own ScaleGrad0 = 1 for the HDR BC6H texture)
                                 if g.fog.is_some() && f("--sky-grad-scale").is_none() { g.global_scale = g.scale / x.sky_factor.max(1e-3); g.scale = 1.0 * x.sky_factor; }
+                                // --sky-global-scale G: Sky_p's GlobalScale (after the fog blend) — the per-mood fitted number
+                                if let Some(v) = f("--sky-global-scale") { g.global_scale = v.parse().unwrap(); }
                                 eprintln!("sky: {} ({}×{}), grad scale {}, global scale {}, fog {:?}, lobes {:?}", path.rsplit('/').next().unwrap(), g.w, g.h, g.scale, g.global_scale, g.fog, g.lobes.iter().map(|l| (l.0, l.2)).collect::<Vec<_>>());
                                 prm.sky_grad = Some(std::sync::Arc::new(g));
                             }
@@ -3701,6 +3704,7 @@ fn run(a: Vec<String>) {
             let per_item = a.iter().any(|x| x == "--per-item");
             let mut per_rows: Vec<(usize, String, usize, f64, f64, f64)> = Vec::new(); // item, model, n, ref mean, ours mean, rmse
             let mut per_rgb: Vec<(usize, [f64; 3], [f64; 3])> = Vec::new();
+            let mut flat_skipped = 0usize;
             for (ii, inst) in scene.instances.iter().enumerate().step_by(step) {
                 let row0 = rows.len();
                 let (Some(&i), Some(&j)) = (ca.get(&(inst.item as u32)), cb.get(&(inst.item as u32))) else { continue };
@@ -3726,6 +3730,18 @@ fn run(a: Vec<String>) {
                     rows.push((la as f64, lb as f64, s.n[1] > 0.9));
                     if per_item { let e = if per_rgb.last().map(|r| r.0) == Some(inst.item) { per_rgb.last_mut().unwrap() } else { per_rgb.push((inst.item, [0.0; 3], [0.0; 3])); per_rgb.last_mut().unwrap() }; for k in 0..3 { e.1[k] += (lightmap::synth::decode_value(c[k], fba) * fma) as f64; e.2[k] += (lightmap::synth::decode_value(c2[k], fbb) * fmb) as f64; } }
                 }
+                // an UNWRITTEN reference chart (every texel the same value: the atlas background, e.g. the
+                // charts of items a `--reduced` bake dropped) is no reference — dropped from every statistic
+                if rows.len() > row0 && !a.iter().any(|x| x == "--keep-flat") {
+                    let r = &rows[row0..];
+                    let (mn, mx) = r.iter().fold((f64::MAX, f64::MIN), |(lo, hi), x| (lo.min(x.0), hi.max(x.0)));
+                    if r.len() >= 4 && mx - mn < 1e-6 {
+                        rows.truncate(row0);
+                        if per_item { if per_rgb.last().map(|q| q.0) == Some(inst.item) { per_rgb.pop(); } }
+                        flat_skipped += 1;
+                        continue;
+                    }
+                }
                 if per_item && rows.len() > row0 {
                     let r = &rows[row0..];
                     let n = r.len() as f64;
@@ -3735,6 +3751,7 @@ fn run(a: Vec<String>) {
                     per_rows.push((inst.item, inst.model_name.clone(), r.len(), ma, mb, rm));
                 }
             }
+            if flat_skipped > 0 { println!("{flat_skipped} items skipped: their reference chart is unwritten (one flat value)"); }
             if per_item {
                 per_rows.sort_by(|a, b| b.5.partial_cmp(&a.5).unwrap());
                 println!("per item (worst RMSE first): item model texels ref-mean ours-mean ratio rmse");
