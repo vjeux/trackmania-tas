@@ -284,6 +284,7 @@ pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
             Variants::Air => &[false],
         };
         let mut baked_variants: Vec<(bool, String, u32, u32, String)> = Vec::new(); // (ground, recipe, sx, sz, label)
+        let mut baked_bakes: Vec<Box<crate::tiny_library::BlockBake<'_>>> = Vec::new();
         for &ground in wanted {
             let variant = if ground { "ground" } else { "air" };
             match plan_standalone(store, &bi, ground, &mut clip_cache) {
@@ -298,13 +299,38 @@ pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
                         report.push_str(&format!("{folder}\t{}\t{variant}\t-\tNOTE\t-\t-\t-\t-\t-\t{}\n", leaf.name, tsv_escape(&n)));
                     }
                     baked_variants.push((ground, b.recipe.clone(), b.footprint.sx, b.footprint.sz, b.pk.label.clone()));
+                    baked_bakes.push(b);
                 }
             }
         }
-        let both_differ = baked_variants.len() == 2 && baked_variants[0].1 != baked_variants[1].1;
-        for (k, (ground, recipe, sx, sz, label)) in baked_variants.iter().enumerate() {
-            if k == 1 && !both_differ {
-                report.push_str(&format!("{folder}\t{}\t{}\t{}\tSAME\t-\t-\t-\t-\t-\tidentical to the {} variant\n", leaf.name, if *ground { "ground" } else { "air" }, leaf.name, if *ground { "air" } else { "ground" }));
+        // a ground variant that is the air one MINUS some fillers (the
+        // platforms: air = side skirts + underside slab, ground = the skirts)
+        // adds nothing a mapper can see once the piece sits on something: one
+        // item, the air one. A ground variant that ADDS a filler (the roads'
+        // grass skirt) or changes the prefabs is a second item.
+        let ground_is_subset = baked_bakes.len() == 2 && {
+            let (a, g) = if baked_variants[0].0 { (&baked_bakes[1], &baked_bakes[0]) } else { (&baked_bakes[0], &baked_bakes[1]) };
+            let key = |(p, x): &(String, crate::geom::Xform)| format!("{p}@{:?}", x.iter().map(|v| (v * 100.0).round() as i32).collect::<Vec<_>>());
+            let mut pool: Vec<String> = a.fillers.iter().map(key).collect();
+            let core_same = a.prefabs == g.prefabs && a.footprint.units == g.footprint.units && a.effective_mods == g.effective_mods;
+            core_same
+                && g.fillers.iter().all(|f| {
+                    let k = key(f);
+                    match pool.iter().position(|q| *q == k) {
+                        Some(i) => {
+                            pool.swap_remove(i);
+                            true
+                        }
+                        None => false,
+                    }
+                })
+        };
+        let recipes_differ = baked_variants.len() == 2 && baked_variants[0].1 != baked_variants[1].1;
+        let both_differ = recipes_differ && !ground_is_subset;
+        for (ground, recipe, sx, sz, label) in baked_variants.iter() {
+            if baked_variants.len() == 2 && !both_differ && *ground {
+                let why = if recipes_differ { "the air variant minus some fillers (its underside): the air item stands for both" } else { "identical to the air variant" };
+                report.push_str(&format!("{folder}\t{}\tground\t{}\tSAME\t-\t-\t-\t-\t-\t{why}\n", leaf.name, leaf.name));
                 continue;
             }
             let stem = if both_differ && *ground { format!("{}_Ground", leaf.name) } else { leaf.name.clone() };

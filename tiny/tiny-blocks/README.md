@@ -1,7 +1,7 @@
 # Tiny Blocks — the Stadium block set at half scale, as items
 
 Every block of the Trackmania (2020) Stadium block browser at scale 0.5, as
-items you place freely in the editor: 3,757 blocks, 7,491 items counting the
+items you place freely in the editor: 3,757 blocks, 7,229 items counting the
 ground variants. The same pieces the *Tiny Summer 2026* campaign (club
 **Vjeux**) is built from, so you can build tiny maps of your own.
 
@@ -15,14 +15,14 @@ The set comes in one zip per block family (they can be installed independently),
 
 | zip | folder | items | size |
 |---|---|---|---|
-| TinyBlocks-Roads.zip | Roads (Tech, Dirt, Bump, Ice, Water) | 1,948 | 1.6 GB |
-| TinyBlocks-Platforms.zip | Platforms (Tech, Dirt, Ice, Grass, Plastic, Water) | 1,920 | 0.94 GB |
-| TinyBlocks-Opens.zip | Opens (Tech, Dirt, Ice, Grass) | 912 | 0.16 GB |
-| TinyBlocks-Terrain.zip | Terrain (Grass, Dirt, Ice, Water) | 1,106 | 0.38 GB |
-| TinyBlocks-Themes.zip | Themes (Snow, Rally) | 249 | 0.1 GB |
-| TinyBlocks-Technics.zip | Technics (gates, structures, lights, screens) | 322 | 0.18 GB |
-| TinyBlocks-Walls.zip | Walls (TrackWall, DecoWall) | 1,034 | 0.19 GB |
-| TinyItems.zip | Nadeo's items at half scale (see below) | 632 | 0.08 GB |
+| TinyBlocks-Roads.zip | Roads (Tech, Dirt, Bump, Ice, Water) | 1,947 | 1.6 GB |
+| TinyBlocks-Platforms.zip | Platforms (Tech, Dirt, Ice, Grass, Plastic, Water) | 1,787 | 0.9 GB |
+| TinyBlocks-Opens.zip | Opens (Tech, Dirt, Ice, Grass) | 844 | 0.16 GB |
+| TinyBlocks-Terrain.zip | Terrain (Grass, Dirt, Ice, Water) | 1,094 | 0.4 GB |
+| TinyBlocks-Themes.zip | Themes (Snow, Rally) | 237 | 0.1 GB |
+| TinyBlocks-Technics.zip | Technics (gates, structures, lights, screens) | 307 | 0.18 GB |
+| TinyBlocks-Walls.zip | Walls (TrackWall, DecoWall) | 1,013 | 0.2 GB |
+| TinyItems.zip | Nadeo's items at half scale (see below) | 632 | 0.09 GB |
 
 ## In the editor
 
@@ -37,8 +37,9 @@ icons and names. A tiny block unit is **16 × 4 × 16 m** (half of 32 × 8 × 32
 * **Pivot**: the centre of the footprint, so a piece rotates in place.
 * `Block` is the block as it looks anywhere but on the ground row (the *air*
   variant); `Block_Ground` is the ground variant (the grass or dirt skirt the
-  game draws around a block sitting on the ground). Only blocks whose two
-  variants differ have both.
+  game draws around a block sitting on the ground). Only blocks whose ground
+  variant shows something the air one does not have both (a ground variant
+  that merely lacks the underside is not shipped: the air item stands for it).
 * Every item includes what the game draws around a **lone** block — end caps,
   undersides, side skirts. Two tiles side by side hide those faces inside the
   joint, like the original blocks do.
