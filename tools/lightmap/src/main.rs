@@ -2535,7 +2535,7 @@ fn main() {
             let fsz = std::fs::metadata(p).map(|x| x.len()).unwrap_or(0);
             println!("  [{}] file {} B vs the 25 MiB upload cap (an embedded-items map may legitimately exceed it locally)", if fsz < 25 * 1024 * 1024 { " ok " } else { "warn" }, fsz);
             // frames
-            report(d.frames.len() == 3 && d.frames[0].images.len() == 3, &format!("3 frames × 3 image slots ({} frames)", d.frames.len()));
+            report((d.frames.len() == 3 || d.frames.len() == 2) && d.frames[0].images.len() == 3, &format!("3 frames (2 without local lights) × 3 image slots ({} frames)", d.frames.len()));
             let riffs = |b: &[u8]| -> usize { let mut n = 0; let mut o = 0; while o + 12 <= b.len() && &b[o..o + 4] == b"RIFF" { let sz = u32::from_le_bytes([b[o + 4], b[o + 5], b[o + 6], b[o + 7]]) as usize + 8; n += 1; o += sz + (sz & 1); } if o == b.len() { n } else { 0 } };
             report(riffs(&d.frames[0].images[0]) == 1, "frame 0 image 0 is one WebP (H-basis colour)");
             report(riffs(&d.frames[0].images[1]) == 3, &format!("frame 0 image 1 is THREE concatenated WebPs (directional coefficients; found {})", riffs(&d.frames[0].images[1])));
@@ -2585,7 +2585,15 @@ fn main() {
                 if mp.frame_bytes[0][i] > 0 { n += 1; if mx >= 200 { near += 1; } }
             }
             report(n > 0 && near * 10 >= n * 7, &format!("chart maxima reach the top of the sqrt scale ({near} of {n} sampled charts ≥ 200)"));
-            if let Some(fm) = d.cache.frame_max_hdr() { println!("  [info] frame MaxHDR {fm:.4}, daytime {:?}", lightmap::mapio::daytime(&m.gbx.body).map(|t| if t == 0xffff_ffff { "default".to_string() } else { format!("{:.3}", t as f64 / 65536.0) })); }
+            // the time the bake was made at (the frame record) must be the map's (chunk 0x03043056; a default
+            // word = the decoration mood's own): the editor keeps its time across the maps of one session
+            if let Some((_, rec_t)) = d.cache.frame_mood_max_hdr() {
+                let map_t = lightmap::mapio::daytime(&m.gbx.body).unwrap_or(0xffff_ffff);
+                let mood_name = lightmap::moods::effective_mood(&mf.decoration_id, Some(map_t));
+                let expect_t = if map_t == 0xffff_ffff { lightmap::moods::default_daytime(&hdr.envir, mood_name) } else { map_t };
+                report(rec_t == expect_t, &format!("baked at the map's time: record {rec_t:#x} ({:.3}) vs map word {} → {expect_t:#x} ({:.3}); mood {mood_name}", rec_t as f64 / 65536.0, if map_t == 0xffff_ffff { "default".to_string() } else { format!("{map_t:#x}") }, expect_t as f64 / 65536.0));
+            }
+            if let Some(fm) = d.cache.frame_max_hdr() { println!("  [info] frame MaxHDR {fm:.4}"); }
             println!("{}", if fails == 0 { "CHECK PASSED" } else { "CHECK FAILED" });
             if fails > 0 { std::process::exit(1); }
         }
