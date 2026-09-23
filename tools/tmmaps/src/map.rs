@@ -3211,6 +3211,170 @@ impl MapFile {
     }
 }
 
+impl MapFile {
+    /// DELETE item records: every item `drop` selects goes, as a rewrite of
+    /// everything that lists items —
+    ///
+    ///   * chunk 0x03043040: the kept records with the sub-archive's lookback
+    ///     table re-encoded first-use-defines (a dropped record may have held
+    ///     the only definition of a model name), the count fixed, the id
+    ///     version word kept in front of the first record, the snapped-on
+    ///     tables filtered (a group naming a dropped item goes, its members
+    ///     are un-snapped; `snapped` keeps one entry per kept item);
+    ///   * chunks 0x03043062 (colour) and 0x03043068 (lightmap quality): the
+    ///     dropped items' bytes go;
+    ///   * chunk 0x03043069: the dropped items' macroblock refs go.
+    ///
+    /// The embedded-items zip (0x03043054) is untouched: an unused model costs
+    /// nothing. Variable-length, staged as `raw_splices` like `remove_blocks`:
+    /// write, reload, then continue. Returns the number of items dropped.
+    pub fn remove_items<F>(&mut self, drop: F) -> usize
+    where
+        F: Fn(&ItemRec) -> bool,
+    {
+        assert!(self.renames.is_empty(), "remove_items cannot share a write with renames (write and reload first)");
+        assert!(self.raw_splices.is_empty(), "remove_items wants a fresh load (other variable-length edits are pending)");
+        let coff = self.items_chunk_off.expect("map has no items chunk");
+        let body = &self.gbx.body;
+        let version = u32::from_le_bytes(body[coff + 12..coff + 16].try_into().unwrap());
+        assert!(version == 7 || version == 8, "remove_items supports chunk 0x03043040 versions 7 and 8 (got {version})");
+        let keep: Vec<bool> = self.items.iter().map(|it| !drop(it)).collect();
+        let dropped = keep.iter().filter(|k| !**k).count();
+        if dropped == 0 {
+            return 0;
+        }
+        let ni = self.items.len();
+        let count_off = self.items_count_off.expect("items count");
+        // --- the records: contiguous kept regions, Fresh-encoded ids; the id version word (3)
+        // sits inside the FIRST record before its model id and must lead the new first record
+        let first_model_off = self.item_ids[self.items[0].model_field].off;
+        let has_version_word = first_model_off >= 4 && u32::from_le_bytes(body[first_model_off - 4..first_model_off].try_into().unwrap()) == 3;
+        let mut regions: Vec<(usize, usize)> = Vec::new();
+        let mut insert_after_region: Option<usize> = None; // emit the version word after this region index
+        let mut first_kept = true;
+        for (i, it) in self.items.iter().enumerate() {
+            if !keep[i] {
+                continue;
+            }
+            let (s, e) = it.record_region;
+            if first_kept {
+                first_kept = false;
+                if i == 0 || !has_version_word {
+                    regions.push((s, e));
+                } else {
+                    // split at the model id so the version word can be inserted there
+                    let m = self.item_ids[it.model_field].off;
+                    regions.push((s, m));
+                    insert_after_region = Some(regions.len() - 1);
+                    regions.push((m, e));
+                }
+            } else {
+                regions.push((s, e));
+            }
+        }
+        let fields: Vec<IdField> = self
+            .item_ids
+            .iter()
+            .filter(|f| regions.iter().any(|(s, e)| f.off >= *s && f.off < *e))
+            .cloned()
+            .collect();
+        let (outs, _table_len) = encode(body, &regions, &fields, Mode::Fresh);
+        let mut records: Vec<u8> = Vec::new();
+        for (i, o) in outs.iter().enumerate() {
+            records.extend_from_slice(o);
+            if insert_after_region == Some(i) {
+                records.extend_from_slice(&3u32.to_le_bytes());
+            }
+        }
+        // the record span: from the count word (rewritten) to the last record's end
+        let records_start = count_off;
+        let records_end = self.items.last().unwrap().record_region.1;
+        let mut new_records = ((ni - dropped) as u32).to_le_bytes().to_vec();
+        new_records.extend_from_slice(&records);
+        let mut splices: Vec<((usize, usize), Vec<u8>)> = vec![((records_start, records_end), new_records)];
+        // --- the tail: v7 Int2 list (items on items) filtered, the snapped-on tables filtered
+        let mut new_index: Vec<i32> = Vec::with_capacity(ni);
+        let mut next = 0i32;
+        for k in &keep {
+            new_index.push(if *k { next } else { -1 });
+            if *k {
+                next += 1;
+            }
+        }
+        if version == 7 {
+            let mut r = Reader::at(body, records_end);
+            let n = r.u32() as usize;
+            let mut out = Vec::new();
+            let mut kept = 0u32;
+            for _ in 0..n {
+                let (a, b) = (r.i32(), r.i32());
+                let (na, nb) = (new_index.get(a as usize).copied().unwrap_or(-1), new_index.get(b as usize).copied().unwrap_or(-1));
+                if na >= 0 && nb >= 0 {
+                    out.extend_from_slice(&na.to_le_bytes());
+                    out.extend_from_slice(&nb.to_le_bytes());
+                    kept += 1;
+                }
+            }
+            let mut bytes = kept.to_le_bytes().to_vec();
+            bytes.extend_from_slice(&out);
+            splices.push(((records_end, r.o), bytes));
+        }
+        if let Some(st) = self.snap_tables() {
+            let g = st.block_indexes.len();
+            assert_eq!(st.snapped.len(), ni, "snapped-on table has {} entries for {ni} items", st.snapped.len());
+            let mut group_map: Vec<i32> = vec![-1; g];
+            let mut out = SnapTables { span: st.span, block_indexes: vec![], item_indexes: vec![], snap_groups: vec![], u07: vec![], snapped: vec![] };
+            for k in 0..g {
+                let ii = st.item_indexes[k];
+                let new_ii = if ii == -1 { -1 } else { new_index.get(ii as usize).copied().unwrap_or(-1) };
+                if ii != -1 && new_ii == -1 {
+                    continue; // the group hung off a dropped item
+                }
+                group_map[k] = out.block_indexes.len() as i32;
+                out.block_indexes.push(st.block_indexes[k]);
+                out.item_indexes.push(new_ii);
+                out.snap_groups.push(st.snap_groups[k]);
+                out.u07.push(st.u07[k]);
+            }
+            for (i, &sg) in st.snapped.iter().enumerate() {
+                if !keep[i] {
+                    continue;
+                }
+                out.snapped.push(if sg < 0 { -1 } else { group_map[sg as usize] });
+            }
+            splices.push((st.span, out.encode()));
+        }
+        // --- per-item bytes: colours (0x62) and lightmap quality (0x68)
+        let chunks = crate::gbx::all_skip_chunks(body);
+        let nb = self.blocks.len();
+        let nk = self.baked.len();
+        for cid in [0x0304_3062u32, 0x0304_3068] {
+            let Some(&(_, _, payload, size)) = chunks.iter().find(|(c, ..)| *c == cid) else { continue };
+            assert_eq!(size, 4 + nb + nk + ni, "chunk {cid:#010x} has {size} bytes, not 4 + {nb} blocks + {nk} baked + {ni} items");
+            let mut kept = Vec::with_capacity(ni - dropped);
+            for (j, k) in keep.iter().enumerate() {
+                if *k {
+                    kept.push(body[payload + 4 + nb + nk + j]);
+                }
+            }
+            splices.push(((payload + 4 + nb + nk, payload + 4 + nb + nk + ni), kept));
+        }
+        // --- 0x03043069: the per-item macroblock refs
+        if let Some(mb) = self.macroblock_refs() {
+            let mut kept = Vec::with_capacity((ni - dropped) * 4);
+            for (v, k) in mb.items.iter().zip(&keep) {
+                if *k {
+                    kept.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+            let start = mb.payload + 4 + 4 * nb;
+            splices.push(((start, start + 4 * ni), kept));
+        }
+        self.raw_splices.extend(splices);
+        dropped
+    }
+}
+
 fn spans_from_starts(starts: &[usize], end: usize) -> Vec<(usize, usize)> {
     starts
         .iter()

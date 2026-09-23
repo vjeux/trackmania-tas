@@ -942,3 +942,31 @@ pub fn recdump(args: &[String]) {
     println!("  {} bytes: {}", b.len(), b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" "));
     println!("  ascii: {}", b.iter().map(|x| if x.is_ascii_graphic() { *x as char } else { '.' }).collect::<String>());
 }
+
+/// `tmmaps keepitems MAP --out F --items i1,i2,…` — drop every item but the listed
+/// ones (census indices `iN` or plain numbers). The test-map tool: a lighting test
+/// wants a handful of items and nothing else in the scene (the editor's lightmapper
+/// cost follows the scene's extent, and a stray item 500 m away triples it).
+pub fn keepitems(args: &[String]) {
+    let src = PathBuf::from(args.get(2).expect("keepitems MAP --out F --items i1,i2,…"));
+    let out = PathBuf::from(flag(args, "--out").expect("--out F"));
+    let list = flag(args, "--items").expect("--items i1,i2,…");
+    let keep: std::collections::BTreeSet<usize> = list
+        .split(',')
+        .map(|t| t.trim().trim_start_matches('i').parse::<usize>().unwrap_or_else(|_| panic!("--items: bad index {t:?}")))
+        .collect();
+    let mut m = map::MapFile::load(&src);
+    let n = m.items.len();
+    for &k in &keep {
+        assert!(k < n, "item i{k}: the map has {n} items");
+    }
+    let dropped = m.remove_items(|it| !keep.contains(&it.index));
+    m.write_to(&out).unwrap_or_else(|e| die(&format!("{}: {e}", out.display())));
+    // reload and verify the count
+    let m2 = map::MapFile::load(&out);
+    assert_eq!(m2.items.len(), n - dropped, "reloaded item count");
+    println!("{}: kept {} of {n} items ({dropped} dropped); reloads with {} items", out.display(), keep.len(), m2.items.len());
+    for it in &m2.items {
+        println!("  i{} {} at ({:.1}, {:.1}, {:.1}) cell {:?}", it.index, it.model, it.pos[0], it.pos[1], it.pos[2], it.file_cell);
+    }
+}

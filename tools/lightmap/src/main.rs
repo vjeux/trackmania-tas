@@ -756,6 +756,9 @@ fn main() {
                 prm.albedo = f("--albedo").map(|s| s.parse().unwrap()).unwrap_or(0.35);
                 prm.uv_bounds = true; prm.sky_model = 0; prm.texels_per_m = 1.0; prm.sky_samples = 64; prm.sun_samples = 4;
                 prm.ambient_ao = !has("--no-ao");
+                // local lights, absolute units: E = k·I·c·max(0,n·l)·(1−(d/R)²)², k = 1.48 from the lamp-post profile of the
+                // BlueBay test bake (r² 0.89 over 122 pad texels; (1−x²)^1.75…2 indistinguishable there)
+                prm.light_k = 1.48;
                 // the sun (bounce input only): the map's time of day on the mood's latitude, noon at t = ½
                 let t = match dt { Some(v) if v != 0xffff_ffff => v as f32 / 65536.0, _ => x.daytime01 };
                 let hour_angle = (t - 0.5) * 2.0 * std::f32::consts::PI;
@@ -1643,6 +1646,8 @@ fn main() {
             let d = own.chunk.data.as_ref().unwrap();
             let mp = d.cache.mapping().unwrap();
             let i1 = lightmap::img::decode_webp(&d.frames[1].images[0]).unwrap();
+            let f1_max = d.cache.frame_max_hdr_n(1).unwrap_or(1.0);
+            eprintln!("frame 1 MaxHDR {f1_max:.4} (frame 0 {:.4})", d.cache.frame_max_hdr().unwrap_or(0.0));
             let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
             for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
             let laws: Vec<(&str, Box<dyn Fn(f64) -> f64 + Sync>)> = vec![
@@ -1703,7 +1708,10 @@ fn main() {
                         single.push((xr, base_term));
                     }
                     let c = i1.get((px + s.px).min(i1.w - 1), (py + s.py).min(i1.h - 1));
-                    let lum = (0.2126 * c[0] as f64 + 0.7152 * c[1] as f64 + 0.0722 * c[2] as f64) / 255.0 * fb1 as f64 / 255.0;
+                    // sqrt-encoded like frame 0; absolute with frame 1's own MaxHDR
+                    let linear = std::env::var("LMTOOL_LINEAR").is_ok();
+                    let dv = |p: u8| if linear { p as f64 / 255.0 * fb1 as f64 / 255.0 } else { lightmap::synth::decode_value(p, fb1) as f64 * f1_max as f64 };
+                    let lum = 0.2126 * dv(c[0]) + 0.7152 * dv(c[1]) + 0.0722 * dv(c[2]);
                     let sg = if single.len() == 1 { Some(single[0]) } else { None };
                     local.push((lum, sg, sums));
                 }
@@ -1715,6 +1723,17 @@ fn main() {
             for (v, sg, _) in &rows { if let Some((xr, bt)) = sg { if *bt > 1e-4 { let b = ((xr * 20.0) as usize).min(19); bins[b].0 += v / bt; bins[b].1 += 1; } } }
             for (b, (s, n)) in bins.iter().enumerate() { if *n > 0 { println!("d/R {:.2}-{:.2}: n={n:>6} mean ref/(I·c·ndl·spot) = {:.4}", b as f32 / 20.0, (b + 1) as f32 / 20.0, s / *n as f64); } }
             let my = rows.iter().map(|r| r.0).sum::<f64>() / rows.len().max(1) as f64;
+            {
+                // robust view: the ratio ref/model for the (1-x²)² law, its quartiles; texels the model misses and vice versa
+                let mut ratios: Vec<f64> = rows.iter().filter(|r| r.2[0] > 1e-4 && r.0 > 1e-4).map(|r| r.0 / r.2[0]).collect();
+                ratios.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let q = |f: f64| ratios.get(((ratios.len() as f64 - 1.0) * f) as usize).copied().unwrap_or(0.0);
+                let ref_only = rows.iter().filter(|r| r.2[0] <= 1e-4 && r.0 > 0.02).count();
+                let model_only = rows.iter().filter(|r| r.2[0] > 1e-4 && r.0 <= 1e-4).count();
+                let max_model = rows.iter().map(|r| r.2[0]).fold(0.0, f64::max);
+                let max_ref = rows.iter().map(|r| r.0).fold(0.0, f64::max);
+                println!("ratio ref/model (law (1-x²)²) over {} texels: p10 {:.4} p25 {:.4} median {:.4} p75 {:.4} p90 {:.4}; ref>0.02 with no model light: {ref_only}; model>0 with ref 0: {model_only}; max model {max_model:.2} max ref {max_ref:.3}", ratios.len(), q(0.1), q(0.25), q(0.5), q(0.75), q(0.9));
+            }
             for (j, (name, _)) in laws.iter().enumerate() {
                 let (mut sxy, mut sxx, mut ssr, mut sst) = (0.0, 0.0, 0.0, 0.0);
                 for (v, _, sums) in &rows { sxy += sums[j] * v; sxx += sums[j] * sums[j]; }
@@ -2381,6 +2400,178 @@ fn main() {
             if let Some(fm) = d.cache.frame_max_hdr() { println!("  [info] frame MaxHDR {fm:.4}, daytime {:?}", lightmap::mapio::daytime(&m.gbx.body).map(|t| if t == 0xffff_ffff { "default".to_string() } else { format!("{:.3}", t as f64 / 65536.0) })); }
             println!("{}", if fails == 0 { "CHECK PASSED" } else { "CHECK FAILED" });
             if fails > 0 { std::process::exit(1); }
+        }
+        "itemcharts" => {
+            // lmtool itemcharts MAP [--base N] [--model NAME]: per model, the chart sizes the map's own bake gives its
+            // placements (min/median/max px), the frame bytes, and whether our loader has geometry for it — finds the
+            // items the editor charts that we skip (no TexCoord1) or size differently
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let own = lightmap::mapio::load(&a[1]).expect("own");
+            let d = own.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
+            let mut have_geom = vec![false; mf.items.len()];
+            for inst in &scene.instances { if inst.item < have_geom.len() { have_geom[inst.item] = true; } }
+            let want = f("--model");
+            let mut per: std::collections::BTreeMap<String, (usize, Vec<u32>, Vec<u8>, usize, usize)> = Default::default(); // placements, areas px, fb0, with geom, charted
+            for (i, it) in mf.items.iter().enumerate() {
+                if let Some(w) = &want { if &it.model != w { continue; } }
+                let e = per.entry(it.model.clone()).or_default();
+                e.0 += 1;
+                if have_geom[i] { e.3 += 1; }
+                if let Some(&ci) = chart_of.get(&(i as u32)) {
+                    e.4 += 1;
+                    let (w, h) = mp.size[ci];
+                    e.1.push((w as u32 / 2) * (h as u32 / 2));
+                    e.2.push(mp.frame_bytes[0][ci]);
+                }
+            }
+            let mut rows: Vec<_> = per.into_iter().collect();
+            rows.sort_by_key(|(_, e)| std::cmp::Reverse(e.0));
+            println!("{:<26} {:>6} {:>6} {:>7}  chart px² min/med/max   fb0 med", "model", "placed", "geom", "charted");
+            for (m, (n, mut areas, mut fbs, g, c)) in rows {
+                areas.sort(); fbs.sort();
+                let med = |v: &Vec<u32>| v.get(v.len() / 2).copied().unwrap_or(0);
+                println!("{:<26} {:>6} {:>6} {:>7}  {:>4}/{:>4}/{:>4}   {}", m, n, g, c, areas.first().copied().unwrap_or(0), med(&areas), areas.last().copied().unwrap_or(0), fbs.get(fbs.len() / 2).copied().unwrap_or(0));
+            }
+        }
+        "lightprofile" => {
+            // lmtool lightprofile MAP --lamp x,z [--base N] [--y0 Y]: the frame-1 (local lights) value of the horizontal
+            // texels around a lamp, binned by horizontal distance (2 m bins), absolute HDR (sqrt-decoded × frame-1
+            // MaxHDR) — the falloff law and reach of the lamp's lights read straight off an editor bake; also lists
+            // the scene's lights within 30 m of the lamp (our reading of its CPlugLights)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let y0: f32 = f("--y0").map(|s| s.parse().unwrap()).unwrap_or(160.0);
+            let lamp: Vec<f32> = f("--lamp").expect("--lamp x,z").split(',').map(|s| s.trim().parse().unwrap()).collect();
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let own = lightmap::mapio::load(&a[1]).expect("own");
+            let d = own.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            let i1 = lightmap::img::decode_webp(&d.frames[1].images[0]).unwrap();
+            let i0 = lightmap::img::decode_webp(&d.frames[0].images[0]).unwrap();
+            let f1_max = d.cache.frame_max_hdr_n(1).unwrap_or(1.0);
+            let f0_max = d.cache.frame_max_hdr().unwrap_or(1.0);
+            println!("frame 1 MaxHDR {f1_max:.4}, frame 0 MaxHDR {f0_max:.4}");
+            for (li, l) in scene.world_lights() {
+                let dx = l.pos[0] - lamp[0]; let dz = l.pos[2] - lamp[1];
+                if (dx * dx + dz * dz).sqrt() < 30.0 {
+                    println!("  light of item {li}: pos ({:.2}, {:.2}, {:.2}) dir ({:.2}, {:.2}, {:.2}) colour ({:.2}, {:.2}, {:.2}) intensity {:.3} radius {:.2} cone ({:.1}, {:.1})", l.pos[0], l.pos[1], l.pos[2], l.dir[0], l.dir[1], l.dir[2], l.color[0], l.color[1], l.color[2], l.intensity, l.radius, l.cone.0, l.cone.1);
+                }
+            }
+            let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
+            let mut bins: Vec<(f64, [f64; 3], f64, usize)> = vec![(0.0, [0.0; 3], 0.0, 0); 40]; // lum1 sum, rgb1 sum, lum0 sum, n
+            for (ii, inst) in scene.instances.iter().enumerate() {
+                let dx = inst.xf[9] - lamp[0]; let dz = inst.xf[11] - lamp[1];
+                if (dx * dx + dz * dz).sqrt() > 120.0 { continue; }
+                let Some(&ci) = chart_of.get(&(inst.item as u32)) else { continue };
+                let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
+                let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32 / 2).max(1), (h as u32 / 2).max(1));
+                let (fb0, fb1) = (mp.frame_bytes[0][ci], mp.frame_bytes[1][ci]);
+                let (samples, _) = lightmap::bake::rasterise_pub(&scene, ii, pw, ph, false, true);
+                for s in &samples {
+                    if s.n[1] < 0.9 || (s.p[1] - y0).abs() > 1.5 { continue; }
+                    let r = ((s.p[0] - lamp[0]).powi(2) + (s.p[2] - lamp[1]).powi(2)).sqrt();
+                    let b = (r / 2.0) as usize;
+                    if b >= bins.len() { continue; }
+                    let c1 = i1.get((px + s.px).min(i1.w - 1), (py + s.py).min(i1.h - 1));
+                    let c0 = i0.get((px + s.px).min(i0.w - 1), (py + s.py).min(i0.h - 1));
+                    let v1 = [lightmap::synth::decode_value(c1[0], fb1) as f64 * f1_max as f64, lightmap::synth::decode_value(c1[1], fb1) as f64 * f1_max as f64, lightmap::synth::decode_value(c1[2], fb1) as f64 * f1_max as f64];
+                    let l0 = (0.2126 * lightmap::synth::decode_value(c0[0], fb0) as f64 + 0.7152 * lightmap::synth::decode_value(c0[1], fb0) as f64 + 0.0722 * lightmap::synth::decode_value(c0[2], fb0) as f64) * f0_max as f64;
+                    let e = &mut bins[b];
+                    e.0 += 0.2126 * v1[0] + 0.7152 * v1[1] + 0.0722 * v1[2];
+                    for k in 0..3 { e.1[k] += v1[k]; }
+                    e.2 += l0;
+                    e.3 += 1;
+                }
+            }
+            // the falloff read against the nearest light: g(x) = E / (I·c·ndl) per 0.05 of x = d/R, texel by texel
+            if let Some(h) = f("--light-h") {
+                let h: f32 = h.parse().unwrap(); // the light's height above the pad
+                let (r0, c0i) = (f("--light-r").map(|s| s.parse::<f32>().unwrap()).unwrap_or(10.0), f("--light-ic").map(|s| s.parse::<f32>().unwrap()).unwrap_or(0.92));
+                let mut xb: Vec<(f64, usize)> = vec![(0.0, 0); 21];
+                for (ii, inst) in scene.instances.iter().enumerate() {
+                    let dx = inst.xf[9] - lamp[0]; let dz = inst.xf[11] - lamp[1];
+                    if (dx * dx + dz * dz).sqrt() > 60.0 { continue; }
+                    let Some(&ci) = chart_of.get(&(inst.item as u32)) else { continue };
+                    let (x, y) = mp.pos[ci]; let (w, hh) = mp.size[ci];
+                    let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32 / 2).max(1), (hh as u32 / 2).max(1));
+                    let fb1 = mp.frame_bytes[1][ci];
+                    let (samples, _) = lightmap::bake::rasterise_pub(&scene, ii, pw, ph, false, true);
+                    for s in &samples {
+                        if s.n[1] < 0.9 || (s.p[1] - y0).abs() > 1.5 { continue; }
+                        let r = ((s.p[0] - lamp[0]).powi(2) + (s.p[2] - lamp[1]).powi(2)).sqrt();
+                        let d = (r * r + h * h).sqrt();
+                        let xx = d / r0;
+                        if xx >= 1.05 { continue; }
+                        let ndl = h / d;
+                        let c1 = i1.get((px + s.px).min(i1.w - 1), (py + s.py).min(i1.h - 1));
+                        let l1 = (0.2126 * lightmap::synth::decode_value(c1[0], fb1) as f64 + 0.7152 * lightmap::synth::decode_value(c1[1], fb1) as f64 + 0.0722 * lightmap::synth::decode_value(c1[2], fb1) as f64) * f1_max as f64;
+                        let g = l1 / (c0i as f64 * ndl as f64);
+                        let b = ((xx / 0.05) as usize).min(20);
+                        xb[b].0 += g; xb[b].1 += 1;
+                    }
+                }
+                // least squares over the texels for E = k·I·c·ndl·(1−x²)^p and a few other windows
+                let mut pts: Vec<(f64, f64, f64)> = Vec::new(); // (x, ndl, E)
+                for (ii, inst) in scene.instances.iter().enumerate() {
+                    let dx = inst.xf[9] - lamp[0]; let dz = inst.xf[11] - lamp[1];
+                    if (dx * dx + dz * dz).sqrt() > 60.0 { continue; }
+                    let Some(&ci) = chart_of.get(&(inst.item as u32)) else { continue };
+                    let (x, y) = mp.pos[ci]; let (w, hh) = mp.size[ci];
+                    let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32 / 2).max(1), (hh as u32 / 2).max(1));
+                    let fb1 = mp.frame_bytes[1][ci];
+                    let (samples, _) = lightmap::bake::rasterise_pub(&scene, ii, pw, ph, false, true);
+                    for s in &samples {
+                        if s.n[1] < 0.9 || (s.p[1] - y0).abs() > 1.5 { continue; }
+                        let r = ((s.p[0] - lamp[0]).powi(2) + (s.p[2] - lamp[1]).powi(2)).sqrt();
+                        let d = (r * r + h * h).sqrt();
+                        let xx = d / r0;
+                        if xx >= 1.2 { continue; }
+                        let c1 = i1.get((px + s.px).min(i1.w - 1), (py + s.py).min(i1.h - 1));
+                        let l1 = (0.2126 * lightmap::synth::decode_value(c1[0], fb1) as f64 + 0.7152 * lightmap::synth::decode_value(c1[1], fb1) as f64 + 0.0722 * lightmap::synth::decode_value(c1[2], fb1) as f64) * f1_max as f64;
+                        pts.push((xx as f64, (h / d) as f64, l1));
+                    }
+                }
+                let laws: Vec<(String, Box<dyn Fn(f64) -> f64>)> = {
+                    let mut v: Vec<(String, Box<dyn Fn(f64) -> f64>)> = Vec::new();
+                    for p in [1.0f64, 1.25, 1.5, 1.75, 2.0, 2.5] { v.push((format!("(1-x²)^{p}"), Box::new(move |x: f64| (1.0 - x * x).max(0.0).powf(p)))); }
+                    v.push(("(1-x)²".into(), Box::new(|x: f64| (1.0 - x).max(0.0).powi(2))));
+                    v.push(("(1-x)".into(), Box::new(|x: f64| (1.0 - x).max(0.0))));
+                    v.push(("(1-x³)²".into(), Box::new(|x: f64| (1.0 - x * x * x).max(0.0).powi(2))));
+                    v.push(("(1-x⁴)²".into(), Box::new(|x: f64| (1.0 - x.powi(4)).max(0.0).powi(2))));
+                    v.push(("smoothstep(1,0,x)".into(), Box::new(|x: f64| { let t = x.clamp(0.0, 1.0); 1.0 - t * t * (3.0 - 2.0 * t) })));
+                    v.push(("(1-x²)²/(1+x²)".into(), Box::new(|x: f64| (1.0 - x * x).max(0.0).powi(2) / (1.0 + x * x))));
+                    v.push(("(1-x²)/(1+3x²)".into(), Box::new(|x: f64| (1.0 - x * x).max(0.0) / (1.0 + 3.0 * x * x))));
+                    v
+                };
+                let my = pts.iter().map(|p| p.2).sum::<f64>() / pts.len().max(1) as f64;
+                for (name, law) in &laws {
+                    let (mut sxy, mut sxx) = (0.0, 0.0);
+                    for (x, ndl, e) in &pts { let m = c0i as f64 * ndl * law(*x); sxy += m * e; sxx += m * m; }
+                    let k = sxy / sxx.max(1e-12);
+                    let (mut ssr, mut sst) = (0.0, 0.0);
+                    for (x, ndl, e) in &pts { let p = k * c0i as f64 * ndl * law(*x); ssr += (e - p) * (e - p); sst += (e - my) * (e - my); }
+                    println!("  law {name:>18}: k = {k:.3}  r² = {:.4}  ({} texels)", 1.0 - ssr / sst.max(1e-12), pts.len());
+                }
+                println!("{:>11} {:>5} {:>10}  {:>9} {:>9} {:>9} {:>9}", "x = d/R", "n", "g = E/(Ic·ndl)", "(1-x²)²", "1-x²", "(1-x)²", "1/x²-1");
+                for (b, (s, n)) in xb.iter().enumerate() {
+                    if *n == 0 { continue; }
+                    let x = (b as f64 + 0.5) * 0.05;
+                    println!("{:>4.2}–{:<4.2} {:>5} {:>10.4}  {:>9.4} {:>9.4} {:>9.4} {:>9.4}", b as f64 * 0.05, (b + 1) as f64 * 0.05, n, s / *n as f64, (1.0 - x * x).max(0.0).powi(2), (1.0 - x * x).max(0.0), (1.0 - x).max(0.0).powi(2), (1.0 / (x * x) - 1.0).max(0.0));
+                }
+            }
+            println!("{:>10} {:>6} {:>12} {:>28} {:>12}", "r (m)", "n", "frame1 lum", "frame1 rgb", "frame0 lum");
+            for (b, (s1, rgb, s0, n)) in bins.iter().enumerate() {
+                if *n == 0 { continue; }
+                let nn = *n as f64;
+                println!("{:>4.0}–{:<4.0} {:>6} {:>12.4} ({:.4}, {:.4}, {:.4}) {:>12.4}", b as f64 * 2.0, (b + 1) as f64 * 2.0, n, s1 / nn, rgb[0] / nn, rgb[1] / nn, rgb[2] / nn, s0 / nn);
+            }
         }
         _ => {
             eprintln!("unknown command");

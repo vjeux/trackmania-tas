@@ -251,6 +251,14 @@ impl CacheBlob {
         Some(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
+    /// Frame `i`'s MaxHDR (frame 1 = the local lights; its bytes scale by this).
+    pub fn frame_max_hdr_n(&self, i: usize) -> Option<f32> {
+        let m = self.mapping()?;
+        let o = 60 + 66 * i + 20;
+        let b = m.head.get(o..o + 4)?;
+        Some(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
     /// Frame 0's mood MaxHDR (the record's first float) and its DayTime word.
     pub fn frame_mood_max_hdr(&self) -> Option<(f32, u32)> {
         let m = self.mapping()?;

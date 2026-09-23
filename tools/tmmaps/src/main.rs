@@ -192,6 +192,7 @@ fn main() {
         // ---- w612: write ONE map with several grid blocks moved.
         "rotate" => rotate::cmd(&args),
         "move" => ladder::move_blocks(&args),
+        "keepitems" => ladder::keepitems(&args),
         "blockprobe" => ladder::blockprobe(&args),
         "addblock" => ladder::addblock(&args),
         "recdump" => ladder::recdump(&args),
