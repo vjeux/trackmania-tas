@@ -370,7 +370,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 // item names unique per (part, map) across the whole club: the game caches
                 // an embedded model by FILE NAME for the session (`--alias-part P`, as the
                 // tiny pipeline: base (P*100+NN)*1000 + 500 leaves 500 names per map)
+                // --alias-base N: an explicit start (the Altered Nadeo builds number per campaign + map)
                 match f("--alias-part").and_then(|p| p.parse::<usize>().ok()) {
+                    _ if f("--alias-base").is_some() => {
+                        let base = f("--alias-base").unwrap();
+                        libcmd.env("TINY_ALIAS_BASE", &base);
+                        libcmd.env("TINY_PICTURE_SUFFIX", format!("_{surface}b{base}"));
+                    }
                     Some(part) => {
                         // every SURFACE gets its own name range (the game caches embedded models by
                         // FILE NAME for the session — a wood map's pieces would show in a grass map

@@ -166,6 +166,12 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        "stadium-deckprofile" => {
+            if let Err(e) = tmmaps::stadium::deckprofile_cmd(&args[1..]) {
+                eprintln!("tmmaps stadium-deckprofile: {e}");
+                std::process::exit(1);
+            }
+        }
         "stadium-slopedir" => {
             if let Err(e) = tmmaps::stadium::slopedir_cmd(&args[1..]) {
                 eprintln!("tmmaps stadium-slopedir: {e}");

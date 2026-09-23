@@ -958,28 +958,30 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
         // the sheet's height in the pad's own frame: 2.0 for the Stadium water blocks
         let sheet = zone_pad.map(|(_, h)| h).unwrap_or(2.0);
         let dy = 2.04 - sheet; // block base relative to the waypoint's cell floor (deck = floor + 2)
-        // AR's own pad heights per waypoint block (the rules' `water` rows: the pad's local
-        // y in the block's cell): a dirt deck sits ~0.8 m lower than a tech deck, so the
-        // 4 cm rule over the tech deck puts 80 cm of water on a RoadDirtCheckpoint
-        // (json9841 2026-09-22: "CP1 block is not passable due to pool height")
+        // the pad's base so that the sheet sits 4 cm over the waypoint block's DRIVING
+        // surface. The deck heights are measured from the validation ghosts (car centre
+        // over the cell floor, p50 of 100–2000 samples per family, 2026-09-22): tech /
+        // platform / open roads / bump 2.0; RoadDirt 0.55 (the bumpy dirt road — the
+        // tech-height pad put 60 cm of water on a dirt CP: json9841 "CP1 not passable");
+        // RallyRoad 1.5; RoadIce (the bobsleigh trough) 2.3. AR's own `water` rows were
+        // not usable here: a single dirt pad 30 m from its CP taught −0.77.
+        let deck_of = |name: &str| -> f32 {
+            let base = name.rsplit(['\\', '/']).next().unwrap_or(name).trim_start_matches("M2_");
+            if base.starts_with("RoadDirt") {
+                0.55
+            } else if base.starts_with("RallyRoad") || base.starts_with("RallyCastleRoad") {
+                1.5
+            } else if base.starts_with("RoadIce") {
+                2.3
+            } else {
+                2.0
+            }
+        };
         let pad_dy_for = |name: &str| -> f32 {
             if zone_pad.is_some() || stock_pad {
                 return dy;
             }
-            let key = norm_block(name, &rules.stems);
-            // the rule's ident is AR's custom block: `…\RoadDirtCheckpoint-HeavyWood.Block.Gbx_CustomBlock`
-            let stem_of = |ident: &str| -> String {
-                let base = ident.rsplit(['\\', '/']).next().unwrap_or(ident);
-                let base = base.trim_end_matches("_CustomBlock").trim_end_matches(".Block.Gbx").trim_end_matches(".Item.Gbx");
-                let base = base.trim_start_matches("M2_");
-                base.split("-HeavyWood").next().unwrap_or(base).split("-Wood").next().unwrap_or(base).to_string()
-            };
-            let ys: Vec<f32> = rules.water_raw.iter().filter(|(ident, _)| norm_block(&stem_of(ident), &rules.stems) == key).map(|(_, y)| *y).collect();
-            if ys.is_empty() {
-                dy
-            } else {
-                ys.iter().sum::<f32>() / ys.len() as f32
-            }
+            deck_of(name) + 0.04 - sheet
         };
         for b in &source.blocks {
             let tag = b.waypoint_tag.as_deref().unwrap_or("");

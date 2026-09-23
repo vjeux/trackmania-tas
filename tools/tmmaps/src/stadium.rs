@@ -829,6 +829,11 @@ pub fn terrain_cmd(args: &[String]) -> Result<(), String> {
         if !matches!(p.fates[i], Fate::Drop(_)) || is_water_zone(&b.name) || b.free_pos.is_some() {
             continue;
         }
+        // the tree decorations bake with embedded texture pictures — kept out (look-only,
+        // and the console's item loader is the open question of 2026-09-22)
+        if b.name.contains("Tree") {
+            continue;
+        }
         let c = block_cell(b, gsrc);
         if c[0] < lo[0] || c[0] > hi[0] || c[2] < lo[2] || c[2] > hi[2] || c[1] < lo[1] || c[1] > hi[1] {
             continue;
@@ -885,6 +890,13 @@ pub fn terrain_cmd(args: &[String]) -> Result<(), String> {
     }
     cmd.arg("tiny-library").arg(&pruned).arg("--scale").arg("1").arg("--library-out").arg(&lib).arg("--mapping-out").arg(&mapping).arg("--report").arg(&report).arg("--collection").arg(env);
     cmd.env("MAPGEOM_ITEM_COLLECTION", "26").env("TINY_WATER_BLOCKS", "0");
+    // --alias-base N: the AC item numbering starts at N — the game caches embedded item
+    // MODELS by file name for the whole session, so every map needs its own range
+    // (json9841 2026-09-22: "Missing Items: AC00000005…" on the second map opened)
+    if let Some(base) = f("--alias-base") {
+        cmd.env("TINY_ALIAS_BASE", &base);
+        cmd.env("TINY_PICTURE_SUFFIX", format!("_t{base}"));
+    }
     let o = cmd.output().map_err(|e| format!("{}: {e}", mapgeom.display()))?;
     let log = work.join("tiny-library.log");
     std::fs::write(&log, [o.stdout.as_slice(), o.stderr.as_slice()].concat()).ok();
@@ -967,15 +979,16 @@ pub fn terrain_cmd(args: &[String]) -> Result<(), String> {
         for (n, b) in crate::header::zip_entries(&zip_bytes) {
             let entry = n.replace('\\', "/");
             let file = entry.rsplit('/').next().unwrap_or(&entry).to_string();
-            if let Some(stem) = file.strip_suffix(".Item.Gbx") {
-                // only the items placed ride along (the library also holds the terrain's
-                // vegetation species, not placed here)
-                if !used.contains(file.as_str()) {
-                    continue;
-                }
-                if !rows.iter().any(|(i, _)| i == stem) {
-                    rows.push((stem.to_string(), stem.to_string()));
-                }
+            // only the items placed ride along (the library also holds the terrain's
+            // vegetation species and their texture pictures, not placed here)
+            if !used.contains(file.as_str()) {
+                continue;
+            }
+            // the manifest row is the item's IDENT as the placements name it — the full
+            // file name, author = the same (the Tiny/Giant maps' form); the bare stem was
+            // wrong (2026-09-22)
+            if file.ends_with(".Item.Gbx") && !rows.iter().any(|(i, _)| *i == file) {
+                rows.push((file.clone(), file.clone()));
             }
             files.entry(entry).or_insert(b);
             added += 1;
@@ -1096,5 +1109,44 @@ pub fn slopedir_cmd(args: &[String]) -> Result<(), String> {
         let nx = v.iter().filter(|p| p.0 < 0.0).count();
         println!("{name}\t{}\t{pz}\t{nz}\t{px}\t{nx}", v.len());
     }
+    Ok(())
+}
+
+/// `tmmaps stadium-deckprofile MAP --block SUBSTR`: the validation ghost's height over the cell
+/// floor while it crosses blocks whose name contains SUBSTR — the driving surface height of a
+/// block family, measured (RoadDirt is bumpy: 0.5..2.8 in the collision mesh).
+pub fn deckprofile_cmd(args: &[String]) -> Result<(), String> {
+    let want = crate::cli::flag(args, "--block").ok_or("--block SUBSTR")?;
+    let mut hs: Vec<f32> = Vec::new();
+    for path in args.iter().skip(1).filter(|a| a.ends_with(".Map.Gbx")) {
+        let m = MapFile::load(Path::new(path));
+        let coll = m.items.first().map(|it| it.collection_raw).unwrap_or(26);
+        let ground = crate::map::ground_y(coll);
+        let Ok(d) = gbx::record::decode_ghost(path) else { continue };
+        let mut cells: HashMap<(i32, i32), Vec<i32>> = HashMap::new();
+        for b in &m.blocks {
+            if b.free_pos.is_none() && b.name.contains(want) {
+                let c = block_cell(b, ground);
+                cells.entry((c[0], c[2])).or_default().push(c[1]);
+            }
+        }
+        for s in &d.samples {
+            let key = ((s.x / 32.0).floor() as i32, (s.z / 32.0).floor() as i32);
+            if let Some(rows) = cells.get(&key) {
+                for r in rows {
+                    let h = s.y - (*r as f32 * 8.0 + ground);
+                    if (-1.0..8.0).contains(&h) {
+                        hs.push(h);
+                    }
+                }
+            }
+        }
+    }
+    hs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    if hs.is_empty() {
+        return Err("no samples over such blocks".into());
+    }
+    let q = |p: f32| hs[((hs.len() - 1) as f32 * p) as usize];
+    println!("{want}: {} samples over the floor — car centre height p05 {:.2} p25 {:.2} p50 {:.2} p75 {:.2} p95 {:.2}", hs.len(), q(0.05), q(0.25), q(0.5), q(0.75), q(0.95));
     Ok(())
 }
