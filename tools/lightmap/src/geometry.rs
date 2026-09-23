@@ -238,6 +238,57 @@ pub struct Scene {
     pub model_names: Vec<String>,
     pub instances: Vec<Instance>,
     pub item_count: usize,
+    /// The decoration's surroundings (the collection's Scene3d: island, sea, invisible shadow casters —
+    /// `--decoration FILE.obj`): world-space triangles that occlude and bounce but get no chart. The
+    /// BVH carries them with `inst == DECOR_INST` and `tri` indexing this list.
+    pub decor: Vec<DecorTri>,
+}
+
+/// The BVH instance id of the decoration triangles.
+pub const DECOR_INST: u32 = u32::MAX;
+
+#[derive(Clone, Debug)]
+pub struct DecorTri {
+    pub p: [V3; 3],
+    /// Bounce albedo (0 = an invisible shadow caster: occludes, gives nothing back).
+    pub albedo: [f32; 3],
+}
+
+/// Load a Wavefront OBJ (v / f lines, polygons fanned; `usemtl NAME` selects the albedo by the
+/// material name through `crate::albedo::for_link`, `InvisibleShadowCaster` → 0) into world-space
+/// decoration triangles. `scale` and `offset` place it (the Scene3d is authored in metres, origin at
+/// the decoration's corner).
+pub fn load_obj_decor(path: &str, scale: f32, offset: V3) -> Result<Vec<DecorTri>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let mut verts: Vec<V3> = Vec::new();
+    let mut out = Vec::new();
+    let mut albedo = [0.3f32; 3];
+    for line in text.lines() {
+        let mut it = line.split_whitespace();
+        match it.next() {
+            Some("v") => {
+                let c: Vec<f32> = it.take(3).map(|x| x.parse().unwrap_or(0.0)).collect();
+                if c.len() == 3 {
+                    verts.push([c[0] * scale + offset[0], c[1] * scale + offset[1], c[2] * scale + offset[2]]);
+                }
+            }
+            Some("usemtl") => {
+                let name = it.next().unwrap_or("");
+                albedo = if name.to_ascii_lowercase().contains("invisible") { [0.0; 3] } else { crate::albedo::for_link(name).unwrap_or([0.3; 3]) };
+            }
+            Some("f") => {
+                let idx: Vec<usize> = it.map(|x| x.split('/').next().unwrap_or("0").parse::<i64>().unwrap_or(0)).map(|i| if i < 0 { (verts.len() as i64 + i) as usize } else { (i - 1).max(0) as usize }).collect();
+                for k in 1..idx.len().saturating_sub(1) {
+                    let (a, b, c) = (idx[0], idx[k], idx[k + 1]);
+                    if a < verts.len() && b < verts.len() && c < verts.len() {
+                        out.push(DecorTri { p: [verts[a], verts[b], verts[c]], albedo });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
 }
 
 impl Scene {
@@ -278,7 +329,7 @@ impl Scene {
         if !missing.is_empty() {
             eprintln!("  {} item models are not embedded (stock items?): {:?}", missing.len(), missing.iter().take(8).collect::<Vec<_>>());
         }
-        Ok(Scene { models, model_names, instances, item_count: m.items.len() })
+        Ok(Scene { models, model_names, instances, item_count: m.items.len(), decor: Vec::new() })
     }
 
     pub fn tri_count(&self) -> usize {
@@ -308,6 +359,10 @@ impl Scene {
 }
 
 /// Transform a point and a normal (rotation part only; assumes uniform scale).
+pub fn identity_xf() -> mapgeom::geom::Xform {
+    mapgeom::geom::IDENTITY
+}
+
 pub fn xf_point(m: &mapgeom::geom::Xform, v: V3) -> V3 {
     mapgeom::geom::apply(m, v)
 }

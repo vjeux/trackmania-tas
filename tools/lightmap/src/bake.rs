@@ -230,6 +230,9 @@ pub fn world_tris(scene: &Scene) -> Vec<WTri> {
     if skipped > 0 {
         eprintln!("bvh: {skipped} flat ground-tile items left out (receivers only)");
     }
+    for (di, d) in scene.decor.iter().enumerate() {
+        out.push(WTri { p0: d.p[0], e1: sub(d.p[1], d.p[0]), e2: sub(d.p[2], d.p[0]), inst: crate::geometry::DECOR_INST, tri: di as u32 });
+    }
     out
 }
 
@@ -374,6 +377,9 @@ impl RadianceField {
     /// The stored irradiance at the point where a ray hit triangle `tri` of instance `inst`
     /// with barycentrics (b1, b2) on (e1, e2).
     pub fn lookup(&self, scene: &Scene, inst: u32, tri: u32, b1: f32, b2: f32) -> Option<[f32; 3]> {
+        if inst == crate::geometry::DECOR_INST {
+            return None;
+        }
         let (w, h, px) = self.charts.get(inst as usize)?.as_ref()?;
         let instance = &scene.instances[inst as usize];
         let m = &scene.models[instance.model];
@@ -755,6 +761,9 @@ pub fn hit_albedo(scene: &Scene, bvh: &Bvh, prm: &BakeParams, h: &crate::bvh::Hi
         return [prm.albedo; 3];
     }
     let wt = &bvh.tris[h.tri as usize];
+    if wt.inst == crate::geometry::DECOR_INST {
+        return scene.decor.get(wt.tri as usize).map(|d| d.albedo).unwrap_or([prm.albedo; 3]);
+    }
     let inst = &scene.instances[wt.inst as usize];
     let m = &scene.models[inst.model];
     // a known material (measured or keyword) is taken as is; an unknown one gets the per-collection

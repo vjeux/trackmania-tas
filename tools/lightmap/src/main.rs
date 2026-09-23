@@ -744,8 +744,28 @@ fn run(a: Vec<String>) {
                     None => { if f("--model").as_deref() == Some("fitted") { panic!("no fitted mood parameters for {} / {} — known:\n{}", h.envir, mood_name, lightmap::moods::table()); } None }
                 }
             } else { None };
-            let scene = lightmap::geometry::Scene::from_map(&map_path).expect("scene");
-            eprintln!("scene: {} models, {} instances, {} triangles ({:.1}s)", scene.models.len(), scene.instances.len(), scene.tri_count(), t0.elapsed().as_secs_f32());
+            let mut scene = lightmap::geometry::Scene::from_map(&map_path).expect("scene");
+            // the decoration's surroundings: --decoration FILE.obj[,FILE…] [--decoration-scale S --decoration-offset x,y,z],
+            // or by default lightmap-re/scene3d/<Collection>.obj when it exists (RE child 3's Scene3d export),
+            // --no-decoration to leave it out
+            {
+                let coll = hdr.as_ref().map(|h| h.envir.clone()).unwrap_or_default();
+                let default_obj = format!("{}/persistent/private-30d/tm-player/tiny/lightmap-re/scene3d/{coll}.obj", std::env::var("HOME").unwrap_or_default());
+                let paths: Vec<String> = match f("--decoration") {
+                    Some(p) => p.split(',').map(|s| s.to_string()).collect(),
+                    None if !has("--no-decoration") && std::path::Path::new(&default_obj).exists() => vec![default_obj.clone()],
+                    None => Vec::new(),
+                };
+                let dscale: f32 = f("--decoration-scale").map(|s| s.parse().unwrap()).unwrap_or(1.0);
+                let doff: [f32; 3] = f("--decoration-offset").map(|s| { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); [v[0], v[1], v[2]] }).unwrap_or([0.0; 3]);
+                for p in paths {
+                    match lightmap::geometry::load_obj_decor(&p, dscale, doff) {
+                        Ok(t) => { eprintln!("decoration: {} triangles from {p}", t.len()); scene.decor.extend(t); }
+                        Err(e) => eprintln!("decoration: {e} (ignored)"),
+                    }
+                }
+            }
+            eprintln!("scene: {} models, {} instances, {} triangles (+ {} decoration) ({:.1}s)", scene.models.len(), scene.instances.len(), scene.tri_count(), scene.decor.len(), t0.elapsed().as_secs_f32());
             let tris = lightmap::bake::world_tris(&scene);
             let bvh = lightmap::bvh::Bvh::build(tris);
             eprintln!("bvh: {} nodes ({:.1}s)", bvh.node_count(), t0.elapsed().as_secs_f32());
@@ -988,7 +1008,7 @@ fn run(a: Vec<String>) {
                 prm.sky_samples = f("--sky-samples").map(|s| s.parse().unwrap()).unwrap_or(16);
                 prm.sun_samples = 1;
                 let step = (scene.instances.len() / nitems).max(1);
-                let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: scene.instances.iter().step_by(step).cloned().collect(), item_count: scene.item_count };
+                let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: scene.instances.iter().step_by(step).cloned().collect(), item_count: scene.item_count, decor: scene.decor.clone() };
                 // the subset's instances must keep their own inst id for self-hit filtering: rebuild the bvh over all, but
                 // the shade() skip uses the instance index in `sub` — so we bake the subset against a bvh of the FULL scene
                 // whose inst ids are full-scene indices; map them
@@ -1349,7 +1369,7 @@ fn run(a: Vec<String>) {
             prm.uv_bounds = has("--uv-bounds");
             if let Some(s) = f("--bounce") { prm.bounce = s.parse().unwrap(); }
             prm.sky_samples = 64;
-            let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![scene.instances[ii].clone()], item_count: scene.item_count };
+            let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![scene.instances[ii].clone()], item_count: scene.item_count, decor: scene.decor.clone() };
             // bake at Nadeo's resolution
             prm.min_px = pw.max(ph); prm.max_px = pw.max(ph);
             let mine = lightmap::bake::bake_subset_px(&sub, &[ii as u32], &bvh, &prm, pw, ph);
@@ -1423,7 +1443,7 @@ fn run(a: Vec<String>) {
                     let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
                     let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32) / 2, (h as u32) / 2);
                     if pw < 4 || ph < 4 { continue; }
-                    let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![inst.clone()], item_count: scene.item_count };
+                    let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![inst.clone()], item_count: scene.item_count, decor: scene.decor.clone() };
                     let mine = lightmap::bake::bake_subset_px(&sub, &[ii as u32], &bvh, &prm, pw, ph);
                     let c = &mine[0];
                     let (mut xs, mut ys) = (vec![], vec![]);
@@ -3501,6 +3521,47 @@ fn run(a: Vec<String>) {
                 let line: Vec<String> = bins.iter().enumerate().filter(|(_, b)| b.1 > 0).map(|(i, (s, n))| format!("{:.0}m:{:.3}", i as f32 * 1.5 + 0.75, s / *n as f64 / open.max(1e-6) as f64)).collect();
                 println!("{name} profile (ratio to open, by distance from the roof centre): {}", line.join(" "));
             }
+        }
+        "coverage" => {
+            // lmtool coverage EDITOR.Map.Gbx [--base N] [--items N] [--ss 3]: the chart raster's coverage against the
+            // editor's — per item chart, raster the object's TexCoord1 geometry into the chart's layout rect at ss
+            // sub-samples per axis; a colour texel (the atlas at layout/2) counts as OURS when any of its 2×2 layout
+            // texels has a sub-sample, as the EDITOR's when its stored value is non-black. Reports: our texels the
+            // editor also wrote (must → 100 %), the editor's texels we do not cover (its gutter dilation + our misses).
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let ss: u32 = f("--ss").map(|s| s.parse().unwrap()).unwrap_or(3);
+            let own = lightmap::mapio::load(&a[1]).expect("load");
+            let d = own.chunk.data.clone().expect("lightmap");
+            let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).expect("atlas");
+            let mp = d.cache.mapping().unwrap();
+            let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let step = (scene.instances.len() / f("--items").map(|s| s.parse().unwrap()).unwrap_or(2000)).max(1);
+            let (mut ours, mut ours_in_ed, mut ed, mut ed_not_ours, mut charts) = (0usize, 0usize, 0usize, 0usize, 0usize);
+            let mut ring: [usize; 2] = [0, 0]; // editor-only texels adjacent to ours (gutter) vs isolated
+            for (ii, inst) in scene.instances.iter().enumerate().step_by(step) {
+                let Some(&i) = chart_of.get(&(inst.item as u32)) else { continue };
+                let (x, y) = mp.pos[i]; let (w, h) = mp.size[i];
+                let (w, h) = (w as u32, h as u32);
+                if w < 4 || h < 4 || mp.frame_bytes[0][i] == 0 { continue; }
+                let r = lightmap::chartraster::raster_chart(&scene, ii, w, h, ss, false, true);
+                let (cw, ch) = ((w / 2).max(1), (h / 2).max(1));
+                let (px0, py0) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2);
+                let mut ours_mask = vec![false; (cw * ch) as usize];
+                for ty in 0..h { for tx in 0..w { if r.count[(ty * w + tx) as usize] > 0 { let (cx, cy) = ((tx / 2).min(cw - 1), (ty / 2).min(ch - 1)); ours_mask[(cy * cw + cx) as usize] = true; } } }
+                let ed_mask: Vec<bool> = (0..ch).flat_map(|cy| (0..cw).map(move |cx| (cx, cy))).map(|(cx, cy)| { let c = ia.get((px0 + cx).min(ia.w - 1), (py0 + cy).min(ia.h - 1)); c[0] > 2 || c[1] > 2 || c[2] > 2 }).collect();
+                for cy in 0..ch { for cx in 0..cw {
+                    let k = (cy * cw + cx) as usize;
+                    if ours_mask[k] { ours += 1; if ed_mask[k] { ours_in_ed += 1; } }
+                    if ed_mask[k] { ed += 1; if !ours_mask[k] { ed_not_ours += 1;
+                        let near = (-1i32..=1).any(|dy| (-1i32..=1).any(|dx| { let (nx, ny) = (cx as i32 + dx, cy as i32 + dy); nx >= 0 && ny >= 0 && (nx as u32) < cw && (ny as u32) < ch && ours_mask[(ny as u32 * cw + nx as u32) as usize] }));
+                        if near { ring[0] += 1; } else { ring[1] += 1; } } }
+                } }
+                charts += 1;
+            }
+            println!("{charts} charts at ss {ss}: ours {ours} colour texels, {:.2} % of them written by the editor; editor {ed} texels, {ed_not_ours} not covered by us ({:.2} %): {} adjacent to ours (gutter), {} isolated (our misses)", 100.0 * ours_in_ed as f64 / ours.max(1) as f64, 100.0 * ed_not_ours as f64 / ed.max(1) as f64, ring[0], ring[1]);
         }
         "atlascmp" => {
             // lmtool atlascmp REF.Map.Gbx OURS.Map.Gbx [--base N] [--items N]: the gate, camera-free — for every texel

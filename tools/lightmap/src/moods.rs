@@ -247,20 +247,30 @@ pub fn default_daytime(collection: &str, mood: &str) -> u32 {
     }
 }
 
-/// The rendered-sky fit per mood, FITTED on the q4 editor references (2026-09-23) so the horizontal and
-/// vertical texel means match: (gradient scale = GlobalScale·ScaleGrad0 stand-in, bounce albedo, v flipped =
-/// the texture's top row is the horizon (GradientV_InvertY) rather than the zenith). Measured: BlueBay Sunset
-/// (tiny 16) 1.45/0.5/no (H +16 %, V −9 %: the wall/floor balance needs the decoration); WhiteShore Day (tiny 03 reduced) 1.57/0.4/yes; GreenCoast Day (tiny 04 AC items)
-/// 2.6/0.3/yes; Stadium Sunrise (giant 20 ×2 reduced) 1.0/0.35/no. Unmeasured moods take their collection's.
+/// The rendered-sky fit per (collection, mood): (gradient scale = GlobalScale·ScaleGrad0 stand-in,
+/// default bounce albedo for materials without a measured value, v flipped = the texture's top row is
+/// the horizon (GradientV_InvertY) rather than the zenith). DIFFERENTIAL — fitted 2026-09-23 on the
+/// q4 editor references so the all-texel mean matches (sun path, bounce read-back /BounceFactor and the
+/// measured per-material albedo in force): BlueBay Day (tiny 11) and Sunset (tiny 16) 2.75, Sunrise /
+/// Night from the 31-item test map; WhiteShore Day (tiny 03 reduced) 1.6/flipped; GreenCoast Day (tiny
+/// 04 AC items) 2.5/flipped; Stadium Sunrise (giant 20 ×2 reduced) 1.0, Day (giant 10 ×2) 0.74, Sunset
+/// (giant 05 ×2) 0.30. An unmeasured mood takes its collection's nearest.
 pub fn sky_fit(collection: &str, mood: &str) -> (f32, f32, bool) {
     let c = collection.to_ascii_lowercase();
     match (c.as_str(), normalise_mood(mood)) {
-        ("bluebay", _) => (1.45, 0.5, false),
-        ("whiteshore", _) => (1.57, 0.4, true),
-        ("greencoast", _) => (2.6, 0.3, true),
-        ("stadium", _) => (1.0, 0.35, false),
-        ("redisland", _) => (1.45, 0.5, false),
-        _ => (1.45, 0.5, false),
+        ("bluebay", "Day") => (2.75, 0.3, false),
+        ("bluebay", "Sunset") => (2.75, 0.3, false),
+        ("bluebay", "Sunrise") => (1.7, 0.3, false),
+        ("bluebay", "Night") => (2.1, 0.3, false),
+        ("bluebay", _) => (2.75, 0.3, false),
+        ("whiteshore", _) => (1.6, 0.3, true),
+        ("greencoast", _) => (2.5, 0.3, true),
+        ("stadium", "Sunrise") => (1.0, 0.3, false),
+        ("stadium", "Day") => (0.74, 0.3, false),
+        ("stadium", "Sunset") => (0.30, 0.3, false),
+        ("stadium", _) => (0.74, 0.3, false),
+        ("redisland", _) => (2.0, 0.3, false),
+        _ => (2.0, 0.3, false),
     }
 }
 
