@@ -182,17 +182,45 @@ impl ChartBake {
     }
 }
 
-/// World-space triangles of every instance, for the BVH.
+/// Is this model a flat ground tile (a thin quad-like mesh: ≤ 16 triangles, under 0.6 m tall)? The
+/// editor's test bakes show such items do not occlude the dome (a 16×16 terrain tile 16 m above a pad
+/// leaves it at 0.86–1.02 of open on RedIsland/WhiteShore/Stadium) — Nadeo's ground tiles are receivers
+/// only (CastShadowGrp flags); they stay charted but leave the BVH.
+pub fn is_flat_tile(m: &crate::geometry::ModelGeom) -> bool {
+    if m.tris.is_empty() || m.tris.len() > 16 {
+        return false;
+    }
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    for t in &m.tris {
+        for p in &t.p {
+            lo = lo.min(p[1]);
+            hi = hi.max(p[1]);
+        }
+    }
+    hi - lo < 0.6
+}
+
+/// World-space triangles of every instance, for the BVH (flat ground tiles excluded unless
+/// `LMTOOL_TILES_CAST=1`).
 pub fn world_tris(scene: &Scene) -> Vec<WTri> {
+    let tiles_cast = std::env::var("LMTOOL_TILES_CAST").map(|v| v == "1").unwrap_or(false);
     let mut out = Vec::with_capacity(scene.tri_count());
+    let mut skipped = 0usize;
     for (ii, inst) in scene.instances.iter().enumerate() {
         let m = &scene.models[inst.model];
+        if !tiles_cast && is_flat_tile(m) {
+            skipped += 1;
+            continue;
+        }
         for (ti, t) in m.tris.iter().enumerate() {
             let p0 = xf_point(&inst.xf, t.p[0]);
             let p1 = xf_point(&inst.xf, t.p[1]);
             let p2 = xf_point(&inst.xf, t.p[2]);
             out.push(WTri { p0, e1: sub(p1, p0), e2: sub(p2, p0), inst: ii as u32, tri: ti as u32 });
         }
+    }
+    if skipped > 0 {
+        eprintln!("bvh: {skipped} flat ground-tile items left out (receivers only)");
     }
     out
 }
