@@ -492,6 +492,22 @@ fn main() {
                 }
             }
         }
+        "zone-slots" => {
+            // zone-slots <prefab logical path>: the zone tile prefab's entities — entity 0 the tile mesh, the rest the
+            // vegetation slots (params chunk 0x2F0A9000 = NPlugItemPlacement::SPlacement, printed raw + decoded tags)
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().expect("zone-slots <prefab>");
+            let model = store.load_model(&p).unwrap_or_else(die);
+            let prefab = mapgeom::static_item::prefab::CPlugPrefab::from_model(&model).unwrap_or_else(die);
+            println!("{p}: {} entities (v{})", prefab.ents.len(), prefab.version);
+            let raw = a.rest.iter().any(|x| x == "--raw");
+            for (i, e) in prefab.ents.iter().enumerate().take(if raw { 6 } else { usize::MAX }) {
+                let model_s = if e.model.index < 0 { "null".to_string() } else { format!("node {}", e.model.index) };
+                let tags = mapgeom::static_item::prefab::placement_tags(&e.params).unwrap_or_default();
+                println!("  ent {i:>3}: model {model_s:<8} pos ({:.2},{:.2},{:.2}) rot ({:.3},{:.3},{:.3},{:.3}) params {:#x} [{} B]{}", e.pos[0], e.pos[1], e.pos[2], e.rot[0], e.rot[1], e.rot[2], e.rot[3], e.params_id, e.params.len(), if tags.is_empty() { String::new() } else { format!(" tags {}", tags.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(",")) });
+                if raw && !e.params.is_empty() { println!("      {}", e.params.iter().take(96).map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")); }
+            }
+        }
         "material-albedo" => {
             // material-albedo LINK… [--out TSV]: the MEAN LINEAR RGB of each game material's diffuse texture — the
             // lightmapper's MDiffuse stand-in for the bounce. LINK = "Stadium\Media\Material\RoadTech" (the

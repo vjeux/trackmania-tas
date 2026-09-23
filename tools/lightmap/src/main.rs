@@ -2716,7 +2716,24 @@ fn run(a: Vec<String>) {
             }
             let mut rows: Vec<_> = per.into_iter().collect();
             rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
-            println!("{} material links over {} instances; {unknown} triangles without a material", rows.len(), scene.instances.len());
+            let (mut ylo, mut yhi) = (f32::MAX, f32::MIN);
+            for inst in &scene.instances { ylo = ylo.min(inst.xf[10]); yhi = yhi.max(inst.xf[10]); }
+            // per model: the lightmap uv1 range (spill past 0..1 lands in neighbouring charts in the editor)
+            {
+                let mut seen: std::collections::BTreeSet<usize> = Default::default();
+                for inst in &scene.instances {
+                    if !seen.insert(inst.model) { continue; }
+                    let g = &scene.models[inst.model];
+                    let mut per_mat: std::collections::BTreeMap<u16, ([f32; 2], [f32; 2], usize)> = Default::default();
+                    for t in &g.tris { let e = per_mat.entry(t.mat).or_insert(([f32::MAX; 2], [f32::MIN; 2], 0)); for uv in t.uv { for k in 0..2 { e.0[k] = e.0[k].min(uv[k]); e.1[k] = e.1[k].max(uv[k]); } } e.2 += 1; }
+                    let outside = per_mat.values().any(|(lo, hi, _)| lo[0] < -0.01 || lo[1] < -0.01 || hi[0] > 1.01 || hi[1] > 1.01);
+                    if outside || a.iter().any(|x| x == "--uv-all") {
+                        println!("  model {} ({}): uv1 {:?}..{:?} plg_bounds {:?}", inst.model, scene.model_names.get(inst.model).cloned().unwrap_or_default(), g.uv_min, g.uv_max, g.plg_bounds);
+                        for (mat, (lo, hi, n)) in &per_mat { println!("      mat {mat} ({}): {n} tris uv ({:.3},{:.3})..({:.3},{:.3})", g.mat_links.get(*mat as usize).map(|s| s.rsplit('\\').next().unwrap_or(s).to_string()).unwrap_or_else(|| "-".into()), lo[0], lo[1], hi[0], hi[1]); }
+                    }
+                }
+            }
+            println!("{} material links over {} instances (item y {ylo:.1}..{yhi:.1}); {unknown} triangles without a material", rows.len(), scene.instances.len());
             for (link, (tris, insts, alb)) in rows {
                 let tag = if lightmap::albedo::is_measured(&link) { "measured" } else if alb[0].is_finite() { "keyword " } else { "DEFAULT " };
                 println!("{tris:>9} tris {insts:>6} inst  {tag} albedo ({:.2},{:.2},{:.2}) lum {:.2}  {link}", alb[0], alb[1], alb[2], lightmap::albedo::lum(alb));
