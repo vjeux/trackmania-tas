@@ -695,7 +695,14 @@ pub fn publish_dir_cmd(args: &[String]) -> Result<(), String> {
     let local_manifest = results_dir.join(format!("manifest-{tag}.tsv"));
     std::fs::write(&local_manifest, &manifest).map_err(|e| format!("{}: {e}", local_manifest.display()))?;
     wsx.sh(&format!("mkdir -p {remote_dir}"))?;
+    // a file already on the box at the same size (a retried run) is not pushed again
+    let remote_sizes: std::collections::HashMap<String, u64> = wsx.sh(&format!("cd {remote_dir} 2>/dev/null && stat -c '%n %s' *.Map.Gbx 2>/dev/null || true")).unwrap_or_default().lines().filter_map(|l| { let (n, s) = l.rsplit_once(' ')?; Some((n.to_string(), s.parse().ok()?)) }).collect();
     for (m, file) in &to_push {
+        let local = std::fs::metadata(m).map(|x| x.len()).unwrap_or(0);
+        if remote_sizes.get(file) == Some(&local) {
+            eprintln!("{file}: already on the box ({local} B), not pushed again");
+            continue;
+        }
         eprintln!("pushing {file} …");
         wsx.push(m, &format!("{remote_dir}/{file}"))?;
     }
