@@ -92,7 +92,7 @@ struct WaypointReq {
 
 pub fn cmd_build(args: &[String]) {
     let usage = "mk64 build COURSE --host HOST.Map.Gbx --out OUT.Map.Gbx [--decomp DIR] [--rom FILE]
-      [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt] [--no-vertex-colours] [--no-actors] [--author-ms MS] [--tag T] [--mood Day|Sunrise|Sunset|Night] [--pak Stadium.pak:KEY (spinning item boxes)] [--no-item-boxes] [--illum|--no-illum]
+      [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt] [--no-vertex-colours] [--no-actors] [--author-ms MS] [--tag T] [--mood Day|Sunrise|Sunset|Night] [--pak Stadium.pak:KEY (spinning item boxes)] [--no-item-boxes] [--illum|--no-illum] [--minimap-zones N]
       [--items-out DIR]  (also write every item + texture as loose files)";
     let dir = match args.get(2) {
         Some(c) if !c.starts_with("--") => c.clone(),
@@ -360,7 +360,10 @@ pub fn cmd_build(args: &[String]) {
     let medal = |f: f32| ((author_ms as f32 * f / 1000.0).ceil() * 1000.0) as u32;
     let times = [author_ms, medal(1.06), medal(1.2), medal(1.5)];
     println!("  medals (ms): author {} gold {} silver {} bronze {}{}", times[0], times[1], times[2], times[3], if flag(args, "--author-ms").is_some() { "" } else { " (estimate: 150 km/h average)" });
-    write_map(&host, &out, &specs, &pictures, &name, laps, no_stadium, &dir, times, &mood);
+    // the minimap: MediaTracker zones along the lap (--minimap-zones N, 0 = none)
+    let zones: usize = flag(args, "--minimap-zones").map(|s| s.parse().expect("--minimap-zones N")).unwrap_or(48);
+    let hud = crate::minimap::clips(&path, zones, tmmaps::map::ground_y(STADIUM), [3, 1, 3]);
+    write_map(&host, &out, &specs, &pictures, &name, laps, no_stadium, &dir, times, &mood, &hud);
 }
 
 /// y of the triangle's plane at (x, z) when the point is inside it (top view).
@@ -637,7 +640,7 @@ pub fn default_mood(dir: &str) -> &'static str {
     }
 }
 
-fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<String, Vec<u8>>, name: &str, laps: u32, no_stadium: bool, dir: &str, times: [u32; 4], mood: &str) {
+fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<String, Vec<u8>>, name: &str, laps: u32, no_stadium: bool, dir: &str, times: [u32; 4], mood: &str, hud: &[tmmaps::mtauthor::HudClip]) {
     let tmp = |tag: &str| out.with_extension(format!("mk64-{}.{tag}.Map.Gbx", std::process::id()));
     let t_seed = tmp("seeded");
     let t0 = tmp("slots");
@@ -742,9 +745,16 @@ fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<St
     let mut manifest: Vec<(&str, &str)> = carried_rows.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     manifest.extend(specs.iter().map(|s| (s.name.as_str(), s.name.as_str())));
     m.replace_embedded_objects(&manifest, &zip);
-    // the host's MediaTracker clips (its intro flies over a map that is gone)
+    // the host's MediaTracker clips go (its intro flies over a map that is
+    // gone); the minimap's in-game clips come in, on fresh node indices
     if let Some(Ok(mut mt)) = m.mediatracker() {
         mt.strip = true;
+        if !hud.is_empty() {
+            let first = m.gbx.num_nodes;
+            let used = mt.set_in_game_authored(first, hud);
+            m.gbx.num_nodes += used;
+            println!("  minimap: {} zones, {} trigger cells, {} MediaTracker nodes", hud.len(), hud.iter().map(|c| c.cells.len()).sum::<usize>(), used);
+        }
         m.set_mediatracker(&mt);
     }
     if !old_name.is_empty() {

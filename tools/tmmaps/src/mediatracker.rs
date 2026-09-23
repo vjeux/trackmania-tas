@@ -207,6 +207,9 @@ pub enum Slot {
     Null,
     Clip(Clip),
     Group(Group),
+    /// A node authored from scratch (`mtauthor`): its complete bytes, index
+    /// word to node end, emitted as they are.
+    Authored(Vec<u8>),
 }
 
 #[derive(Clone, Debug)]
@@ -877,7 +880,7 @@ impl MediaTracker {
         let mut out = Vec::new();
         for (slot, s) in self.slots() {
             match s {
-                Slot::Null => {}
+                Slot::Null | Slot::Authored(_) => {}
                 Slot::Clip(c) => out.push((slot, c)),
                 Slot::Group(g) => out.extend(g.clips.iter().map(|c| (slot, c))),
             }
@@ -895,6 +898,9 @@ impl MediaTracker {
             match sl {
                 Slot::Null => {
                     let _ = writeln!(s, "{slot}: -");
+                }
+                Slot::Authored(b) => {
+                    let _ = writeln!(s, "{slot}: authored node ({} bytes)", b.len());
                 }
                 Slot::Clip(c) => report_clip(&mut s, slot, c, None, ts, ground),
                 Slot::Group(g) => {
@@ -1015,7 +1021,7 @@ impl MediaTracker {
         let used = |v: [f32; 3]| v.iter().any(|x| *x != 0.0);
         for (_, slot) in self.slots_mut() {
             let clips: Vec<&mut Clip> = match slot {
-                Slot::Null => Vec::new(),
+                Slot::Null | Slot::Authored(_) => Vec::new(),
                 Slot::Clip(c) => vec![c],
                 Slot::Group(g) => {
                     for t in &mut g.triggers {
@@ -1199,11 +1205,13 @@ impl MediaTracker {
             }
         };
         let clip = |out: &mut Vec<u8>, s: &Slot| match s {
+            Slot::Authored(b) => out.extend_from_slice(b),
             Slot::Clip(c) if !self.strip => copy(out, c.span),
             Slot::Group(_) => unreachable!("a clip slot holding a group"),
             _ => out.extend_from_slice(&NULL_REF.to_le_bytes()),
         };
         let group = |out: &mut Vec<u8>, s: &Slot| match s {
+            Slot::Authored(b) => out.extend_from_slice(b),
             Slot::Group(g) if !self.strip => {
                 out.extend_from_slice(&g.index.to_le_bytes());
                 out.extend_from_slice(&CLASS_GROUP.to_le_bytes());
@@ -1343,6 +1351,27 @@ pub fn cmd(args: &[String]) {
         None => println!("{}: no MediaTracker chunk (0x03043049)", path.display()),
         Some(Err(e)) => crate::cli::die(&format!("{}: MediaTracker: {e}", path.display())),
         Some(Ok(mt)) => {
+            // --hex: every clip's bytes (and each block span inside it), for
+            // authoring new nodes from a real sample
+            if crate::cli::has(args, "--hex") {
+                let body = &m.gbx.body;
+                for (slot, c) in mt.clips() {
+                    println!("{slot}: clip {:?} node {} body {}..{} ({} bytes)", c.name, c.index, c.span.0, c.span.1, c.span.1 - c.span.0);
+                    for t in &c.tracks {
+                        println!("  track {:?} node {} {}..{}", t.name, t.index, t.span.0, t.span.1);
+                        for b in &t.blocks {
+                            println!("    block node {} class {:#010x} {}..{}", b.index, b.class, b.span.0, b.span.1);
+                        }
+                    }
+                    for (i, row) in body[c.span.0..c.span.1].chunks(32).enumerate() {
+                        println!("  {:06x}: {}", c.span.0 + i * 32, row.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" "));
+                    }
+                }
+                if let Slot::Group(g) = &mt.end_race {
+                    println!("end-race group node {} tail {} bytes: {}", g.index, g.tail.len(), g.tail.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" "));
+                }
+                return;
+            }
             if crate::cli::has(args, "--brief") {
                 let clips = mt.clips();
                 let mut classes: std::collections::BTreeMap<String, usize> = Default::default();
