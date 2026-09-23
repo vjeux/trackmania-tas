@@ -185,7 +185,7 @@ struct Sample {
 /// Chart size in pixels (w, h). With a PreLightGen the game's own rule is
 /// followed: layout texels = u02 × 0.5625 × uv extent (Nadeo: u02 32 → 18,
 /// u02 104 × 0.326 → 20); `texels_per_m` scales that (1.0 = Nadeo density).
-fn chart_size(m: &crate::geometry::ModelGeom, scale: f32, prm: &BakeParams) -> (u32, u32) {
+pub fn chart_size(m: &crate::geometry::ModelGeom, scale: f32, prm: &BakeParams) -> (u32, u32) {
     let (ew, eh) = match (prm.uv_bounds, m.plg_bounds) {
         (true, Some(b)) => ((b[2] - b[0]).clamp(0.05, 1.0), (b[3] - b[1]).clamp(0.05, 1.0)),
         _ => (1.0, 1.0),

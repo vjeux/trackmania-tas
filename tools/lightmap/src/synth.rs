@@ -131,6 +131,14 @@ impl Shelf {
     }
 }
 
+/// Would these chart sizes shelf-pack into a `w`×`w` atlas (tallest first, 1-px gutters)?
+pub fn shelf_fits(sizes: &[(u32, u32)], w: u32) -> bool {
+    let mut order: Vec<usize> = (0..sizes.len()).collect();
+    order.sort_by_key(|&i| (std::cmp::Reverse(sizes[i].1), std::cmp::Reverse(sizes[i].0)));
+    let mut shelf = Shelf::new(w);
+    order.iter().all(|&i| shelf.place(sizes[i].0, sizes[i].1).is_ok())
+}
+
 pub struct Synth {
     pub chunk: LightmapChunk,
     pub charts: u32,
@@ -207,6 +215,14 @@ pub fn build_full2(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template:
     let tm = td.cache.mapping().ok_or("template has no mapping chunk")?;
     // fit: shrink every chart uniformly until the shelf packer accepts the set
     let mut factor = 1.0f32;
+    if std::env::var("LMTOOL_DEBUG_PACK").is_ok() {
+        let sizes: Vec<(u32, u32)> = charts.iter().map(|c| (c.w, c.h)).collect();
+        let area: u64 = sizes.iter().map(|(w, h)| (*w as u64 + 1) * (*h as u64 + 1)).sum();
+        let big = sizes.iter().filter(|(w, h)| *w > 64 || *h > 64).count();
+        let mut hist = std::collections::BTreeMap::new();
+        for (_, h) in &sizes { *hist.entry(*h).or_insert(0usize) += 1; }
+        eprintln!("  pack debug: {} charts, gutter area {area} px² ({:.1} % of 1024²), {big} charts over 64 px, fits {}; height histogram {:?}", sizes.len(), 100.0 * area as f64 / 1048576.0, shelf_fits(&sizes, 1024), hist.iter().take(12).collect::<Vec<_>>());
+    }
     loop {
         let mut shelf = Shelf::new(1024);
         let mut order: Vec<usize> = (0..charts.len()).collect();

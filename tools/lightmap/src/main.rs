@@ -885,7 +885,7 @@ fn main() {
                 println!("best: az {} el {} (score {:.3})", best.1, best.2, best.0);
                 return;
             }
-            if f("--sun-az").is_some() || f("--sun-el").is_some() || mood_sel.is_none() {
+            if f("--sun-az").is_some() || f("--sun-el").is_some() || (mood_sel.is_none() && xml_sel.is_none()) {
                 let az: f32 = f("--sun-az").map(|s| s.parse().unwrap()).unwrap_or(0.0);
                 let el: f32 = f("--sun-el").map(|s| s.parse().unwrap()).unwrap_or(45.0);
                 prm.sun_dir = sun_dir(az, el);
@@ -893,6 +893,36 @@ fn main() {
             let lights = if a.iter().any(|x| x == "--no-lights") { Vec::new() } else { scene.world_lights() };
             if let Some(s) = f("--light-k") { prm.light_k = s.parse().unwrap(); }
             eprintln!("{} point lights", lights.len());
+            // atlas density auto-step: the item charts at this density plus the ground/decoration charts must
+            // shelf-pack into 1024²; otherwise the largest density (binary search, 1 % steps) that packs is used
+            // (24 ×4: 64516 ground tiles + 20k items fail at the tiny maps' 1.0)
+            {
+                let n_ground = if hdr.as_ref().map(|h| h.envir.eq_ignore_ascii_case("stadium")).unwrap_or(false) { base.saturating_sub(16384) } else { base };
+                let fits = |tpm: f32| -> bool {
+                    let mut p2 = prm.clone();
+                    p2.texels_per_m = tpm;
+                    let mut sizes: Vec<(u32, u32)> = scene.instances.iter().map(|inst| {
+                        let m = &scene.models[inst.model];
+                        let c0 = [inst.xf[0], inst.xf[1], inst.xf[2]];
+                        lightmap::bake::chart_size(m, (c0[0] * c0[0] + c0[1] * c0[1] + c0[2] * c0[2]).sqrt(), &p2)
+                    }).collect();
+                    // ground tiles and the items without geometry (skipped models) are 2×2 charts
+                    sizes.extend(std::iter::repeat((2u32, 2u32)).take(n_ground as usize + scene.item_count.saturating_sub(scene.instances.len())));
+                    lightmap::synth::shelf_fits(&sizes, 1024)
+                };
+                if !fits(prm.texels_per_m) {
+                    let (mut lo, mut hi) = (0.05f32, prm.texels_per_m);
+                    if fits(lo) {
+                        for _ in 0..12 { let mid = 0.5 * (lo + hi); if fits(mid) { lo = mid; } else { hi = mid; } }
+                        eprintln!("atlas density: {:.2} texels/m does not pack {} items ({} with geometry) + {} ground charts into 1024²; stepping to {:.3}", prm.texels_per_m, scene.item_count, scene.instances.len(), n_ground, lo);
+                        prm.texels_per_m = lo;
+                    } else {
+                        eprintln!("atlas density: even {lo:.2} texels/m does not pack {} items + {} ground charts (2×2 minimum) into 1024² — the pack will shrink further", scene.instances.len(), n_ground);
+                    }
+                } else {
+                    eprintln!("atlas density {:.2} texels/m packs ({} items + {} ground charts)", prm.texels_per_m, scene.instances.len(), n_ground);
+                }
+            }
             let charts = lightmap::bake::bake(&scene, &bvh, &prm, &lights);
             eprintln!("baked {} charts ({:.1}s)", charts.len(), t0.elapsed().as_secs_f32());
             compare(&charts, "bake vs own");
@@ -931,7 +961,8 @@ fn main() {
             eprintln!("template {tpl_path}");
             let tpl = lightmap::mapio::load_template(&tpl_path).expect("template");
             let m = lightmap::mapio::load(&map_path).expect("map");
-            let ground_e: [f32; 3] = { let l = prm.sun_dir[1].max(0.0); [prm.ambient[0] + prm.up[0] + prm.sky[0] + prm.sun[0] * l, prm.ambient[1] + prm.up[1] + prm.sky[1] + prm.sun[1] * l, prm.ambient[2] + prm.up[2] + prm.sky[2] + prm.sun[2] * l] };
+            // a ground tile = an open horizontal surface: LA·1.0 + sky (+ the direct sun only when baked)
+            let ground_e: [f32; 3] = { let l = prm.sun_dir[1].max(0.0) * prm.direct_sun; [prm.ambient_la[0] + prm.ambient[0] + prm.up[0] + prm.sky[0] + prm.sun[0] * l, prm.ambient_la[1] + prm.ambient[1] + prm.up[1] + prm.sky[1] + prm.sun[1] * l, prm.ambient_la[2] + prm.ambient[2] + prm.up[2] + prm.sky[2] + prm.sun[2] * l] };
             let mut out_charts = Vec::new();
             // the Stadium decorations reserve objects 0..16383 (0..3 = the decoration's own charts); everything
             // between that constant and the item base is a block or a ground column → a flat ground chart
@@ -984,7 +1015,7 @@ fn main() {
                 // the ground slots of the primary base stay; slots claimed by a candidate range are dropped
                 out_charts.retain(|ch| !(ch.obj < base && candidates.iter().any(|cb| ch.obj >= *cb && ch.obj < cb + n_items) && ch.w == 2 && ch.h == 2));
             }
-            for (i, h) in have.iter().enumerate() { if !h { out_charts.push(lightmap::synth::Chart::from_hdr(base + i as u32, 2, 2, &[prm.sky; 4], k, 128)); } }
+            for (i, h) in have.iter().enumerate() { if !h { out_charts.push(lightmap::synth::Chart::from_hdr(base + i as u32, 2, 2, &[ground_e; 4], k, 128)); } }
             let tm = tpl.chunk.data.as_ref().unwrap().cache.mapping().unwrap();
             // the probe volume: ours unless --template-probes
             let vp8_q: Option<u8> = f("--vp8").map(|s| s.parse().unwrap());
@@ -1027,7 +1058,7 @@ fn main() {
                 let daytime = match f("--daytime").as_deref() {
                     Some("template") => 0xffff_ffff,
                     Some(n) if n != "auto" => n.parse().expect("--daytime auto|template|N"),
-                    _ if own == 0xffff_ffff => match (x.collection.as_str(), x.mood) { ("Stadium", "Day") => 33041, ("Stadium", "Sunrise") => 20808, ("Stadium", "Sunset") => 52920, (_, "Day") => 39769, (_, "Sunrise") => 20043, (_, "Sunset") => 55979, (_, "Night") => 6554, _ => own },
+                    _ if own == 0xffff_ffff => match (x.collection, x.mood) { ("Stadium", "Day") => 33041, ("Stadium", "Sunrise") => 20808, ("Stadium", "Sunset") => 52920, (_, "Day") => 39769, (_, "Sunrise") => 20043, (_, "Sunset") => 55979, (_, "Night") => 6554, _ => own },
                     _ => own,
                 };
                 lightmap::synth::FrameParams { daytime, max_hdr_mood: x.max_hdr, max_hdr: k, bounce: x.bounce_factor, sky: x.sky_factor }
