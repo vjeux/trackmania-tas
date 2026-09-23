@@ -1,0 +1,18 @@
+[package]
+name = "mk64"
+version.workspace = true
+edition = "2021"
+
+[[bin]]
+name = "mk64"
+path = "src/main.rs"
+
+[lib]
+name = "mk64"
+path = "src/lib.rs"
+
+# `mapgeom` owns the item format (Solid2, collision, materials, DDS) and the
+# map writer comes through it (`tmmaps`); mk64 only knows Mario Kart 64.
+[dependencies]
+mapgeom = { path = "../mapgeom" }
+tmmaps = { path = "../tmmaps" }
