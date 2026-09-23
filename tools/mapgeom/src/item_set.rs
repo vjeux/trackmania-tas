@@ -266,7 +266,12 @@ pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
         // the block's icon, for every item made of it
         if let Ok(bytes) = store.read(&path) {
             if let Ok((_, Some(icon))) = crate::catalog::CollectorDesc::from_file(&bytes) {
-                icons.insert(leaf.name.clone(), icon.payload);
+                match icon.to_raw_payload() {
+                    Ok(raw) => {
+                        icons.insert(leaf.name.clone(), raw);
+                    }
+                    Err(e) => report.push_str(&format!("{folder}\t{}\t-\t-\tNOTE\t-\t-\t-\t-\t-\ticon: {}\n", leaf.name, tsv_escape(&e))),
+                }
             }
         }
         // both base variants, then the names: one item when the two recipes
@@ -787,7 +792,7 @@ fn bake_item_job(store: &mut DataStore, job: &ItemJob, opts: &Opts) -> Result<(B
             PlacementParam::default()
         }
     };
-    let icon = store.read(&job.path).ok().and_then(|b| crate::catalog::CollectorDesc::from_file(&b).ok()).and_then(|(_, i)| i.map(|i| i.payload));
+    let icon = store.read(&job.path).ok().and_then(|b| crate::catalog::CollectorDesc::from_file(&b).ok()).and_then(|(_, i)| i).and_then(|i| i.to_raw_payload().ok());
     // vegetation (a VegetTreeModel behind the item) takes the tree bake; everything else the pack-item path
     let is_tree = crate::veget::tree_model_path(store, &job.path).is_ok();
     let (bytes, m) = if is_tree {

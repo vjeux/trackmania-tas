@@ -438,3 +438,38 @@ pub fn tree_cmd(store: &mut DataStore, rest: &[String]) {
         }
     }
 }
+
+impl Icon {
+    /// The icon as the raw form every item-editor item carries and the game
+    /// reads for items: `u16 width, u16 height`, then `height × width` BGRA
+    /// pixels stored BOTTOM-UP (measured 2026-09-22 on `Catan\Village_House_
+    /// Square.Item.gbx`: the raw rows show the house upside down, the v-flipped
+    /// rows the roof on top). A WEBP icon is decoded; a raw one is returned as
+    /// is. The block infos' WEBP icons copied verbatim into an item header read
+    /// "icon none" in the game's inventory while raw ones read "yes".
+    pub fn to_raw_payload(&self) -> Result<Vec<u8>, String> {
+        if !self.webp {
+            return Ok(self.payload.clone());
+        }
+        // payload: u16 w|0x8000, u16 h|0x8000, u16 version, u32 len, webp bytes
+        let len = u32::from_le_bytes(self.payload.get(6..10).ok_or("webp icon: short header")?.try_into().unwrap()) as usize;
+        let webp = self.payload.get(10..10 + len).ok_or("webp icon: truncated")?;
+        let mut dec = image_webp::WebPDecoder::new(std::io::Cursor::new(webp)).map_err(|e| format!("webp: {e}"))?;
+        let (w, h) = dec.dimensions();
+        let bpp = if dec.has_alpha() { 4 } else { 3 };
+        let mut buf = vec![0u8; (w * h) as usize * bpp];
+        dec.read_image(&mut buf).map_err(|e| format!("webp: {e}"))?;
+        let mut out = Vec::with_capacity(4 + (w * h) as usize * 4);
+        out.extend_from_slice(&(w as u16).to_le_bytes());
+        out.extend_from_slice(&(h as u16).to_le_bytes());
+        for row in (0..h as usize).rev() {
+            for x in 0..w as usize {
+                let p = &buf[(row * w as usize + x) * bpp..];
+                let (r, g, b) = (p[0], p[1], p[2]);
+                let a = if bpp == 4 { p[3] } else { 255 };
+                out.extend_from_slice(&[b, g, r, a]);
+            }
+        }
+        Ok(out)
+    }
+}

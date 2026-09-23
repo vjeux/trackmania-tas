@@ -17,5 +17,9 @@ path = "src/lib.rs"
 [dependencies]
 tmmaps = { path = "../tmmaps" }
 miniz_oxide = "0.9.1"
+# the block icons are WEBP; an item icon the game reads (2026-09-22: a WEBP one
+# copied into an item header read "icon none" in the inventory) is the raw
+# 64x64 BGRA form the item editor writes, so the icons are decoded
+image-webp = "0.2.4"
 gbx = { path = "../gbx" }
 
