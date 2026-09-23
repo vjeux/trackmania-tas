@@ -162,7 +162,7 @@ pub fn cmd_build(args: &[String]) {
     let frame = Frame { scale, mirror, offset };
     let mut m = mesh::visual_mesh(&c, &pieces, Some(&assets), &frame);
     if !args.iter().any(|a| a == "--no-actors") {
-        for kind in ["tree", "cow"] {
+        for kind in ["tree", "cow", "piranha_plant", "cactus"] {
             let (n, t) = crate::actors::add_billboards(&c, &mut m, &frame, kind);
             if n > 0 {
                 println!("  actors: {n} {kind}s ({t} triangles)");
@@ -329,7 +329,9 @@ pub fn cmd_build(args: &[String]) {
                 pictures.extend(ib.pictures);
                 let marks_name = name.replace("_itemboxes.Item.Gbx", "_itemmarks.Item.Gbx");
                 specs.push(ItemSpec { name, bytes: ib.bytes, pos: ib.pos, yaw: 0.0, tag: None, order: 0 });
-                specs.push(ItemSpec { name: marks_name, bytes: ib.marks, pos: ib.pos, yaw: 0.0, tag: None, order: 0 });
+                if !ib.marks.is_empty() {
+                    specs.push(ItemSpec { name: marks_name, bytes: ib.marks, pos: ib.pos, yaw: 0.0, tag: None, order: 0 });
+                }
             }
             Ok(None) => {}
             Err(e) => println!("  item boxes: {e}"),

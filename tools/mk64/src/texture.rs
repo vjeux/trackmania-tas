@@ -138,6 +138,8 @@ pub struct AssetIndex {
     pub symbols: HashMap<String, (String, String)>,
     /// per-course jsons: gTextureLuigiRacewaySignLeft → loc
     pub course_syms: HashMap<String, AssetLoc>,
+    /// data/other_textures.s: gTextureShrub → "textures/standalone/shrub.rgba16.png"
+    pub incbin: HashMap<String, String>,
 }
 
 impl AssetIndex {
@@ -181,6 +183,20 @@ impl AssetIndex {
             let parts: Vec<String> = rest.split(',').map(|x| x.trim().trim_matches(|c| c == '"' || c == ')' || c == ',').to_string()).collect();
             if parts.len() >= 2 && !sym.is_empty() {
                 ix.symbols.insert(sym, (parts[0].clone(), parts[1].clone()));
+            }
+        }
+        // data/other_textures.s: `glabel gTextureShrub` + `.incbin "textures/standalone/shrub.rgba16.mio0"`
+        if let Ok(s) = std::fs::read_to_string(decomp.join("data/other_textures.s")) {
+            let mut last: Option<String> = None;
+            for line in s.lines() {
+                let l = line.trim();
+                if let Some(sym) = l.strip_prefix("glabel ") {
+                    last = Some(sym.trim().to_string());
+                } else if let Some(rest) = l.strip_prefix(".incbin ") {
+                    if let (Some(sym), Some(path)) = (last.take(), between(rest, "\"", "\"")) {
+                        ix.incbin.insert(sym, path.replace(".mio0", ".png"));
+                    }
+                }
             }
         }
         let mut json_files: Vec<std::path::PathBuf> = Vec::new();
@@ -241,6 +257,11 @@ impl AssetIndex {
     fn locate_exact(&self, sym: &str) -> Option<AssetLoc> {
         if let Some(l) = self.course_syms.get(sym) {
             return Some(l.clone());
+        }
+        if let Some(path) = self.incbin.get(sym) {
+            if let Some(l) = self.by_path.get(path) {
+                return Some(l.clone());
+            }
         }
         let (stem, fmt) = self.symbols.get(sym)?;
         let suffix = format!("/{stem}.{fmt}.png");

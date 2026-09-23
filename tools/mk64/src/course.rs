@@ -275,7 +275,7 @@ impl Course {
                             }
                         }
                     }
-                    "struct ActorSpawnData" => {
+                    "struct ActorSpawnData" | "struct UnkActorSpawnData" => {
                         let mut v = Vec::new();
                         for it in &arr.items {
                             if let Some(row) = it.list() {
@@ -654,7 +654,15 @@ fn parse_gfx(items: &[Node], consts: &Consts, notes: &mut Vec<String>) -> Vec<Gf
                 });
             }
             "gsDPSetTextureImage" => {
-                let sym = args.get(3).and_then(|a| a.ident()).unwrap_or("?").to_string();
+                // a symbol, or a segmented address (`0x03009000`: an actor texture
+                // DMA'd into segment 3) kept as `@0x…` for the actor walker
+                let sym = match args.get(3).and_then(|a| a.ident()) {
+                    Some(s) => s.to_string(),
+                    None => match int(3) {
+                        Some(a) => format!("@{a:#x}"),
+                        None => "?".to_string(),
+                    },
+                };
                 out.push(Gfx::TexImage { fmt: int(0).unwrap_or(0) as u8, siz: int(1).unwrap_or(0) as u8, width: int(2).unwrap_or(0) as u32, sym });
             }
             "gsDPSetTile" => {

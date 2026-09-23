@@ -126,7 +126,13 @@ pub fn model_triangles(course: &Course, dl: &str) -> Vec<ModelTri> {
                 tex = segment3_symbol(&course.dir, *addr).map(|s| (s.to_string(), *w, *h, cms & 2 != 0, cmt & 2 != 0));
             }
             Gfx::TexImage { sym, .. } => {
-                let resolved = course.texture_aliases.get(sym).cloned().unwrap_or_else(|| sym.clone());
+                let resolved = match sym.strip_prefix('@') {
+                    Some(hex) => match u32::from_str_radix(hex.trim_start_matches("0x"), 16).ok().and_then(|a| segment3_symbol(&course.dir, a)) {
+                        Some(s) => s.to_string(),
+                        None => sym.clone(),
+                    },
+                    None => course.texture_aliases.get(sym).cloned().unwrap_or_else(|| sym.clone()),
+                };
                 tex = Some((resolved, 32, 32, false, false));
             }
             Gfx::TileSize { tile: 0, uls, ult, lrs, lrt } => {
@@ -166,7 +172,20 @@ pub fn add_trees(course: &Course, mesh: &mut Mesh, frame: &Frame) -> (usize, usi
 /// list that loads a `Vtx` array named after `kind` (the cows' first
 /// animation frame, the trees), crossed when it is a billboard.
 pub fn add_billboards(course: &Course, mesh: &mut Mesh, frame: &Frame, kind: &str) -> (usize, usize) {
-    let lists = model_lists(course, kind);
+    // a course whose model is not named after the kind (Bowser's "trees" are
+    // the bushes: one textured triangle over `unknown_model`)
+    let mut lists = model_lists(course, kind);
+    if lists.is_empty() {
+        let alt = match (course.dir.as_str(), kind) {
+            ("bowsers_castle", "tree") => Some("d_course_bowsers_castle_dl_bush"),
+            _ => None,
+        };
+        if let Some(a) = alt {
+            if course.dls.contains_key(a) {
+                lists.push(a.to_string());
+            }
+        }
+    }
     let Some(first) = lists.first() else { return (0, 0) };
     // Koopa Troopa Beach draws a tree as `dl_tree_top1` + `dl_tree_trunk1`
     // (three variants): every list sharing the first one's trailing digit is
@@ -176,13 +195,25 @@ pub fn add_billboards(course: &Course, mesh: &mut Mesh, frame: &Frame, kind: &st
         Some(d) if lists.iter().filter(|l| l.ends_with(d)).count() > 1 => lists.iter().filter(|l| l.ends_with(d)).collect(),
         _ => vec![first],
     };
-    let model: Vec<ModelTri> = picked.iter().flat_map(|dl| model_triangles(course, dl)).collect();
-    if model.is_empty() {
+    let default_model: Vec<ModelTri> = picked.iter().flat_map(|dl| model_triangles(course, dl)).collect();
+    if default_model.is_empty() {
         return (0, 0);
     }
-    let billboard = is_billboard(&model);
     let suffix = format!("_{kind}_spawn");
-    let spawns: Vec<[i16; 3]> = course.spawns.iter().filter(|(n, _)| n.ends_with(&suffix)).flat_map(|(_, v)| v.iter().map(|s| s.pos)).collect();
+    let suffix_s = format!("_{kind}_spawns");
+    let spawns: Vec<([i16; 3], i16)> = course.spawns.iter().filter(|(n, _)| n.ends_with(&suffix) || n.ends_with(&suffix_s)).flat_map(|(_, v)| v.iter().map(|s| (s.pos, s.id))).collect();
+    // per-spawn variants (the spawn id's low nibble picks the model: DK's
+    // jungle draws tree1/2/3 and the palm by it, actors.c)
+    let variant = |id: i16| -> Option<&str> {
+        match (course.dir.as_str(), kind, id & 0xF) {
+            ("dks_jungle_parkway", "tree", 0) => Some("d_course_dks_jungle_parkway_dl_tree1"),
+            ("dks_jungle_parkway", "tree", 4) => Some("d_course_dks_jungle_parkway_dl_tree2"),
+            ("dks_jungle_parkway", "tree", 5) => Some("d_course_dks_jungle_parkway_dl_tree3"),
+            ("dks_jungle_parkway", "tree", 6) => Some("d_course_dks_jungle_parkway_dl_palm_tree"),
+            _ => None,
+        }
+    };
+    let mut variant_models: HashMap<String, Vec<ModelTri>> = HashMap::new();
     if spawns.is_empty() {
         return (0, 0);
     }
@@ -190,11 +221,19 @@ pub fn add_billboards(course: &Course, mesh: &mut Mesh, frame: &Frame, kind: &st
     mesh.piece_names.push(format!("actors:{kind}"));
     let mut mats: HashMap<(String, bool, bool), usize> = HashMap::new();
     let mut added = 0;
-    for sp in &spawns {
+    for (sp, id) in &spawns {
+        let model: &Vec<ModelTri> = match variant(*id) {
+            Some(dl) if course.dls.contains_key(dl) => variant_models.entry(dl.to_string()).or_insert_with(|| model_triangles(course, dl)),
+            _ => &default_model,
+        };
+        if model.is_empty() {
+            continue;
+        }
+        let billboard = is_billboard(model);
         let yaws: &[f32] = if billboard { &[0.0, std::f32::consts::FRAC_PI_2] } else { &[0.0] };
         for &yaw in yaws {
             let (s, c) = (yaw.sin(), yaw.cos());
-            for t in &model {
+            for t in model {
                 let mat = t.tex.as_ref().map(|(sym, w, h, cs, ct)| {
                     *mats.entry((sym.clone(), *cs, *ct)).or_insert_with(|| {
                         mesh.materials.push(Material { sym: sym.clone(), mirror_s: false, mirror_t: false, clamp_s: *cs, clamp_t: *ct, w: *w, h: *h, fmt: 2, tint: [255, 255, 255] });

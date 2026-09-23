@@ -239,6 +239,11 @@ pub struct Merged {
     /// CHmsMgrVisDyna::ModelCreate found the material array (`Solid2+0xc8`,
     /// the file refs) is what the animated-model checks look at.
     pub materials_external: bool,
+    /// Custom-texture materials shared BY NODE across the item's solids: a
+    /// material already written (by its name) is back-referenced instead of
+    /// inlined again, and the static entity is written first so it defines
+    /// them (a moving part resolves no user texture of its own, 2026-09-22).
+    pub share_materials: bool,
     /// With `materials_external`: the reference names the BARE file
     /// (`ItemFlag.Material.Gbx`, a copy carried in the map archive next to the
     /// item) instead of the pack path — the 2026-09-08 probe of a sidecar

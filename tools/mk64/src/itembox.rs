@@ -110,14 +110,27 @@ pub fn build(store: &mut DataStore, name: &str, spawns: &[[i16; 3]], frame: &Fra
         // texture checker; `..\Items\` crashed the client). So the spinning
         // cube wears a GAME material (MK64_IB_LINK, default a glowing sign
         // material) and the "?" is a STATIC crossed billboard inside it.
-        let link = std::env::var("MK64_IB_LINK").unwrap_or_else(|_| "Stadium\\Media\\Material\\SpecialSignTurbo".to_string());
-        let cube_slot = {
+        // MK64_IB_SHARED=1: the cube wears the custom-texture materials the item's
+        // STATIC part defines (shared material nodes, `Merged::share_materials`)
+        let shared = std::env::var("MK64_IB_SHARED").as_deref() == Ok("1");
+        mesh.share_materials = shared;
+        let (mut per_material, slots): (Vec<Vec<[Corner; 3]>>, Vec<usize>) = if shared {
+            let mut pm = Vec::new();
+            let mut sl = Vec::new();
+            mesh.materials.push(with_prefix(crate::tm::custom_material(&q_mat, true, crate::tm::PHYS_CONCRETE, tag)));
+            sl.push(mesh.materials.len() - 1);
+            pm.push(cube_faces(OUTER_M, None));
+            for (k, fm) in flat_mats.iter().enumerate() {
+                mesh.materials.push(with_prefix(crate::tm::custom_material(fm, false, crate::tm::PHYS_CONCRETE, tag)));
+                sl.push(mesh.materials.len() - 1);
+                pm.push(cube_faces(INNER_M, Some(k)));
+            }
+            (pm, sl)
+        } else {
+            let link = std::env::var("MK64_IB_LINK").unwrap_or_else(|_| "Stadium\\Media\\Material\\SpecialSignTurbo".to_string());
             mesh.materials.push(CPlugMaterialUserInst::game_material(&link, crate::tm::PHYS_CONCRETE));
-            mesh.materials.len() - 1
+            (vec![cube_frame(OUTER_M, 0.12 * OUTER_M)], vec![mesh.materials.len() - 1])
         };
-        let mut per_material: Vec<Vec<[Corner; 3]>> = vec![cube_frame(OUTER_M, 0.12 * OUTER_M)];
-        let slots = vec![cube_slot];
-        let _ = (&q_mat, &flat_mats, &with_prefix);
         let has_uv1 = vec![true; per_material.len()];
         bake::assign_lightmap_atlas(&mut per_material, &has_uv1);
         for (i, tris) in per_material.iter_mut().enumerate() {
@@ -154,13 +167,32 @@ pub fn build(store: &mut DataStore, name: &str, spawns: &[[i16; 3]], frame: &Fra
     }
     // the "?" marks: a static crossed billboard (alpha-cut custom texture) at
     // every box centre — its own plain static item
-    let mut marks = Merged::default();
-    marks.file_write_time = merged.file_write_time;
+    let shared = std::env::var("MK64_IB_SHARED").as_deref() == Ok("1");
+    let mut marks_item = Merged::default();
+    marks_item.file_write_time = merged.file_write_time;
+    merged.share_materials = shared;
     {
+        // shared: the marks live in the moving item's STATIC part, defining
+        // the material nodes the cubes back-reference (plus a 1 mm triangle
+        // per tint so every cube material is defined there)
+        let marks: &mut Merged = if shared { &mut merged } else { &mut marks_item };
         let q_slot = {
             marks.materials.push(crate::tm::custom_material(&q_mat, true, crate::tm::PHYS_CONCRETE, tag));
             marks.materials.len() - 1
         };
+        if shared {
+            for fm in &flat_mats {
+                marks.materials.push(crate::tm::custom_material(fm, false, crate::tm::PHYS_CONCRETE, tag));
+                let slot = marks.materials.len() - 1;
+                let c = |x: f32, z: f32| Corner { pos: [x, -3.0, z], normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], uv1: [0.0, 0.0], tan_u: [1.0, 0.0, 0.0], tan_v: [0.0, 0.0, 1.0], face: 0, group: 0 };
+                let mut pm = vec![vec![[c(0.0, 0.0), c(0.001, 0.0), c(0.0, 0.001)]]];
+                bake::assign_lightmap_atlas(&mut pm, &[true]);
+                bake::tangents_vprim(&mut pm[0], 0);
+                for v in bake::make_visuals(&mut pm[0], VisualLayout::Full, "range") {
+                    marks.visuals.push(MergedVisual::every_level(v, slot));
+                }
+            }
+        }
         let mut tris: Vec<[Corner; 3]> = Vec::new();
         let hw = INNER_M * 0.5 * 0.5; // the texture is 32×64: half as wide as tall
         let hh = INNER_M * 0.5;
@@ -192,10 +224,14 @@ pub fn build(store: &mut DataStore, name: &str, spawns: &[[i16; 3]], frame: &Fra
     for (n, b) in mapgeom::static_item::assemble::SIDECARS.with(|s| std::mem::take(&mut *s.borrow_mut())) {
         pictures.insert(n, b);
     }
-    let marks_name = name.replace("_itemboxes.Item.Gbx", "_itemmarks.Item.Gbx");
-    let mopts = BuildOpts { ident: marks_name.clone(), author: marks_name, scale: 1.0, collection: crate::tm::STADIUM, skin: None };
-    let mf = assemble(&marks, &mopts)?;
-    Ok(Some(ItemBoxes { bytes: write_file(&f), marks: write_file(&mf), pos: origin, pictures, count: spawns.len() }))
+    let marks_bytes = if shared {
+        Vec::new()
+    } else {
+        let marks_name = name.replace("_itemboxes.Item.Gbx", "_itemmarks.Item.Gbx");
+        let mopts = BuildOpts { ident: marks_name.clone(), author: marks_name, scale: 1.0, collection: crate::tm::STADIUM, skin: None };
+        write_file(&assemble(&marks_item, &mopts)?)
+    };
+    Ok(Some(ItemBoxes { bytes: write_file(&f), marks: marks_bytes, pos: origin, pictures, count: spawns.len() }))
 }
 
 /// The 12 triangles of an axis-aligned cube of side `s` centred at the

@@ -242,7 +242,7 @@ fn cmd_render(args: &[String]) {
         let pieces = c.visual_pieces();
         let mut m = mesh::visual_mesh(&c, &pieces, assets.as_ref(), &frame);
         if !has(args, "--no-actors") {
-            for kind in ["tree", "cow"] {
+            for kind in ["tree", "cow", "piranha_plant", "cactus"] {
                 mk64::actors::add_billboards(&c, &mut m, &frame, kind);
             }
         }

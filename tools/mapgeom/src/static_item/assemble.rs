@@ -92,6 +92,9 @@ thread_local! {
     /// the dyna object and its mesh as files): (bare file name, bytes). The
     /// `static-item` command writes them into the --out directory.
     pub static SIDECARS: std::cell::RefCell<Vec<(String, Vec<u8>)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// `Merged::share_materials`: custom-texture material nodes already written
+    /// in this item, by their identity (name, model, textures) → node index.
+    pub static SHARED_MATS: std::cell::RefCell<std::collections::HashMap<String, i32>> = std::cell::RefCell::new(std::collections::HashMap::new());
     /// How many parts the last `build_solid2` repacked lightmap atlases for
     /// (`repack_lightmap_parts`); None = nothing to repack. For the report.
     pub static REPACK_NOTE: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
@@ -225,6 +228,17 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
             s2.materials.push(super::NodeRef { index: i, inline: None });
             continue;
         }
+        if m.share_materials {
+            if let Some(main) = inst.main.as_ref().filter(|mm| !mm.is_using_game_material) {
+                let key = format!("{:?}|{:?}|{:?}", main.material_name, main.model, main.user_textures.iter().map(|t| (t.u01, t.texture.clone())).collect::<Vec<_>>());
+                let known = SHARED_MATS.with(|s| s.borrow().get(&key).copied());
+                if let Some(idx) = known {
+                    s2.custom_materials.push(Material { name: String::new(), node: Some(super::NodeRef { index: idx, inline: None }) });
+                    continue;
+                }
+                SHARED_MATS.with(|s| s.borrow_mut().insert(key, *next));
+            }
+        }
         s2.custom_materials.push(Material { name: String::new(), node: Some(inline(*next, Node::Material(inst))) });
         *next += 1;
     }
@@ -332,6 +346,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     // form — nobody respawns at a finish, and the form is the proven one.
     let no_respawn_wp = m.no_respawn && m.trigger.is_some() && m.waypoint_type == Some(2);
     let prefab_form = !m.dyna.is_empty() || m.special.is_some() || !m.fx.is_empty() || no_respawn_wp;
+    SHARED_MATS.with(|s| s.borrow_mut().clear());
     let mut next = if !prefab_form { 4i32 } else { 2i32 };
     // The static geometry: one static object (mesh + collision) — the whole
     // item when nothing moves, else one entity of the prefab.
@@ -387,6 +402,14 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             let i = next_index(next);
             super::prefab::Entity { model: inline(i, Node::StaticObject(so)), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() }
         };
+        // shared materials: the static entity comes first, defining the nodes
+        // the moving parts back-reference
+        let mut static_object = static_object;
+        if m.share_materials {
+            if let Some(so) = static_object.take() {
+                ents.push(static_entity(&mut next, so));
+            }
+        }
         for part in &m.dyna {
             // TINY_FLAG_REF=dyna: the entity model is the pack's own dyna FILE
             // (reference table), nothing of ours but the pose and the params
