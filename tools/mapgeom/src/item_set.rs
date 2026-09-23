@@ -85,6 +85,11 @@ struct Job {
     /// Footprint in block units (x, z).
     sx: u32,
     sz: u32,
+    /// The inventory's sort key (header 0x2E001003 catalog position — MEASURED
+    /// 2026-09-23: the Custom tree orders a folder's items by it, ascending;
+    /// equal positions fall back to the file name DESCENDING): the leaf's index
+    /// in its browser folder, the ground variant right after its air twin.
+    catalog: i16,
     /// The variant's label, for the report.
     label: String,
 }
@@ -117,6 +122,12 @@ pub fn placement_for(sx: u32, sz: u32, scale: f32, sclass_index: i32) -> Placeme
 /// `Items` page, item-editor flags (8), catalog position 1, the display name,
 /// prod state 3 — `assemble::header_chunks` with a name.
 fn desc_chunk(ident: &str, collection: u32, author: &str, name: &str) -> HeaderChunk {
+    desc_chunk_at(ident, collection, author, name, 1)
+}
+
+/// `desc_chunk` with a catalog position (the inventory's sort key? — the
+/// 2026-09-23 experiment, `mapgeom item-desc`).
+pub fn desc_chunk_at(ident: &str, collection: u32, author: &str, name: &str, catalog_position: i16) -> HeaderChunk {
     let mut d = Vec::new();
     let mut lb = crate::static_item::LookbackState::default();
     {
@@ -128,7 +139,7 @@ fn desc_chunk(ident: &str, collection: u32, author: &str, name: &str) -> HeaderC
         w.string("Items");
         w.id(&crate::static_item::Id::Null);
         w.i32(8);
-        w.i16(1);
+        w.i16(catalog_position);
         w.string(name);
         w.u8(3);
     }
@@ -145,7 +156,7 @@ fn dress(bytes: &[u8], job: &Job, opts: &Opts, icon: Option<&[u8]>, description:
     }
     // header: desc, then the icon right after it (Nadeo's order)
     if let Some(k) = f.header_chunks.iter().position(|c| c.id == 0x2E001003) {
-        f.header_chunks[k] = desc_chunk(&job.ident, opts.collection, &opts.author, &job.stem);
+        f.header_chunks[k] = desc_chunk_at(&job.ident, opts.collection, &opts.author, &job.stem, job.catalog);
         f.header_chunks.retain(|c| c.id != 0x2E001004);
         if let Some(icon) = icon {
             // the icon is a HEAVY header chunk (bit 31 of its size word) in every
@@ -265,6 +276,8 @@ fn tsv_escape(s: &str) -> String {
 pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
     let opts = parse_opts(rest)?;
     let t0 = std::time::Instant::now();
+    // the browser position within each folder (the inventory sort key, see Job::catalog)
+    let mut folder_counter: std::collections::HashMap<String, i32> = Default::default();
     let leaves = crate::catalog::block_browser(store, &opts.collection_name)?;
     let mut idx = crate::blockmap::BlockInfoIndex::build(store, &opts.collection_name);
     eprintln!("{} blocks in the {} block browser (DEV excluded); block-info index {} stems", leaves.len(), opts.collection_name, idx.stem_count());
@@ -374,7 +387,11 @@ pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
             let mut ident_parts = vec![opts.set.clone()];
             ident_parts.extend(leaf.folders.iter().cloned());
             let ident = format!("{}\\{stem}.Item.Gbx", ident_parts.join("\\"));
-            jobs.push(Job { folders: leaf.folders.clone(), name: leaf.name.clone(), path: path.clone(), ground: *ground, stem, ident, sx: *sx, sz: *sz, label: label.clone() });
+            // from 1: position 0 sorted AFTER position 1 in the game (2026-09-23:
+            // Straight_Ground before Straight, every other pair in order)
+            let catalog = *folder_counter.entry(leaf.folders.join("/")).or_insert(1);
+            folder_counter.insert(leaf.folders.join("/"), catalog + 1);
+            jobs.push(Job { folders: leaf.folders.clone(), name: leaf.name.clone(), path: path.clone(), ground: *ground, stem, ident, sx: *sx, sz: *sz, catalog: catalog as i16, label: label.clone() });
             planned += 1;
         }
     }
@@ -815,13 +832,13 @@ pub fn scaled_placement(p: &PlacementParam, scale: f32, sclass_index: i32) -> Pl
 
 /// Re-dress a baked item copy of a pack item: ident/author/name/description,
 /// the pack item's icon, its placement scaled.
-fn dress_item(bytes: &[u8], ident: &str, stem: &str, author: &str, collection: u32, icon: Option<&[u8]>, description: &str, placement: &PlacementParam, scale: f32, no_skin_header: bool) -> Result<Vec<u8>, String> {
+fn dress_item(bytes: &[u8], ident: &str, stem: &str, author: &str, collection: u32, icon: Option<&[u8]>, description: &str, placement: &PlacementParam, scale: f32, no_skin_header: bool, catalog: i16) -> Result<Vec<u8>, String> {
     let mut f = crate::static_item::parse_file(bytes)?;
     if no_skin_header {
         f.header_chunks.retain(|c| c.id != 0x090F4000);
     }
     if let Some(k) = f.header_chunks.iter().position(|c| c.id == 0x2E001003) {
-        f.header_chunks[k] = desc_chunk(ident, collection, author, stem);
+        f.header_chunks[k] = desc_chunk_at(ident, collection, author, stem, catalog);
         f.header_chunks.retain(|c| c.id != 0x2E001004);
         if let Some(icon) = icon {
             f.header_chunks.insert(k + 1, HeaderChunk { id: 0x2E001004, heavy: true, payload: icon.to_vec() });
@@ -863,6 +880,8 @@ struct ItemJob {
     path: String,
     stem: String,
     ident: String,
+    /// the item browser's position within the folder (see `Job::catalog`)
+    catalog: i16,
 }
 
 fn bake_item_job(store: &mut DataStore, job: &ItemJob, opts: &Opts) -> Result<(Baked, PlacementParam, Option<Vec<u8>>), String> {
@@ -909,6 +928,7 @@ pub fn run_items(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
     let trees = crate::catalog::browser_trees(store, &opts.collection_name);
     let (_, _, leaves) = trees.into_iter().filter(|(_, c, _)| c == "CGameItemModelTreeRoot").max_by_key(|(_, _, l)| l.len()).ok_or("no CGameItemModelTreeRoot tree file in the packs")?;
     let leaves: Vec<crate::catalog::TreeLeaf> = leaves.into_iter().filter(|l| l.folders.first().map(|f| f != "Dev").unwrap_or(true)).collect();
+    let mut item_folder_counter: std::collections::HashMap<String, i32> = Default::default();
     eprintln!("{} items in the {} item browser (Dev excluded)", leaves.len(), opts.collection_name);
     let mut report = String::from("folder\titem\tstem\tstatus\tpack\tvisuals\ttriangles\tbytes\tplacement\tdetail\n");
     let mut jobs: Vec<ItemJob> = Vec::new();
@@ -939,7 +959,9 @@ pub fn run_items(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
         let mut ident_parts = vec![opts.set.clone()];
         ident_parts.extend(leaf.folders.iter().cloned());
         let ident = format!("{}\\{stem}.Item.Gbx", ident_parts.join("\\"));
-        jobs.push(ItemJob { folders: leaf.folders.clone(), name: leaf.name.clone(), path, stem, ident });
+        let catalog = *item_folder_counter.entry(leaf.folders.join("/")).or_insert(1);
+        item_folder_counter.insert(leaf.folders.join("/"), catalog + 1);
+        jobs.push(ItemJob { folders: leaf.folders.clone(), name: leaf.name.clone(), path, stem, ident, catalog: catalog as i16 });
     }
     eprintln!("{} items planned in {:.1} s", jobs.len(), t0.elapsed().as_secs_f32());
     if opts.plan_only {
@@ -971,7 +993,7 @@ pub fn run_items(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
                     continue;
                 }
                 let description = format!("Tiny Items: the Nadeo item {} at scale {}, folder {}. Its own placement settings, scaled.", job.stem, opts.scale, folder);
-                match dress_item(&b.bytes, &job.ident, &job.stem, &opts.author, opts.collection, icon.as_deref(), &description, &placement, opts.scale, opts.no_skin_header) {
+                match dress_item(&b.bytes, &job.ident, &job.stem, &opts.author, opts.collection, icon.as_deref(), &description, &placement, opts.scale, opts.no_skin_header, job.catalog) {
                     Err(e) => {
                         failed += 1;
                         report.push_str(&format!("{folder}\t{}\t{}\tDRESS-FAILED\t{}\t-\t-\t-\t-\t{}\n", job.name, job.stem, job.path, tsv_escape(&e)));
@@ -1442,4 +1464,30 @@ fn run_shot_crop(rest: &[String]) -> Result<(), String> {
         eprintln!("{wd}: 1920x1080 from ({x0},{y0}) {cw}x{ch}, {} KB", bytes.len() / 1000);
     }
     Ok(())
+}
+
+/// `mapgeom item-desc --in F --out G --ident I --name N [--catalog K] [--author A]`:
+/// the item's header desc chunk rewritten (ident, display name, catalog
+/// position) and the body ident renamed — the inventory-order experiment.
+pub fn item_desc_cmd(rest: &[String]) {
+    let flag = |name: &str| rest.iter().position(|a| a == name).and_then(|i| rest.get(i + 1)).cloned();
+    let (Some(input), Some(out), Some(ident), Some(name)) = (flag("--in"), flag("--out"), flag("--ident"), flag("--name")) else {
+        eprintln!("item-desc: --in F --out G --ident I --name N [--catalog K] [--author A]");
+        std::process::exit(2);
+    };
+    let catalog: i16 = flag("--catalog").unwrap_or_else(|| "1".into()).parse().unwrap_or(1);
+    let author = flag("--author").unwrap_or_else(|| crate::tiny_assets::AUTHOR.to_string());
+    let bytes = std::fs::read(&input).unwrap_or_else(|e| { eprintln!("{input}: {e}"); std::process::exit(1) });
+    let mut f = crate::static_item::parse_file(&bytes).unwrap_or_else(|e| { eprintln!("{input}: {e}"); std::process::exit(1) });
+    let (old_ident, _) = tmmaps::header::item_ident_author(&bytes).unwrap_or_else(|| { eprintln!("{input}: no ident in the header"); std::process::exit(1) });
+    if let Some(k) = f.header_chunks.iter().position(|c| c.id == 0x2E001003) {
+        // the header desc with the OLD ident (the body still carries it); the
+        // rename below moves both to the new one
+        f.header_chunks[k] = desc_chunk_at(&old_ident, 26, &author, &name, catalog);
+    }
+    f.body_comp = b'C';
+    let written = crate::static_item::write_file(&f);
+    let renamed = if ident != old_ident { crate::crystal::rename_ident(&written, &old_ident, &ident) } else { written };
+    std::fs::write(&out, renamed).unwrap_or_else(|e| { eprintln!("{out}: {e}"); std::process::exit(1) });
+    eprintln!("{out}: ident {ident}, name {name}, catalog {catalog}");
 }
