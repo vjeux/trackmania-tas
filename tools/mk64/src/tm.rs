@@ -92,7 +92,7 @@ struct WaypointReq {
 
 pub fn cmd_build(args: &[String]) {
     let usage = "mk64 build COURSE --host HOST.Map.Gbx --out OUT.Map.Gbx [--decomp DIR] [--rom FILE]
-      [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt] [--no-vertex-colours] [--no-actors]
+      [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt] [--no-vertex-colours] [--no-actors] [--author-ms MS]
       [--items-out DIR]  (also write every item + texture as loose files)";
     let dir = match args.get(2) {
         Some(c) if !c.starts_with("--") => c.clone(),
@@ -298,7 +298,13 @@ pub fn cmd_build(args: &[String]) {
         }
     }
 
-    write_map(&host, &out, &specs, &pictures, &name, laps, no_stadium, &dir);
+    // medals: --author-ms, else an estimate (the lap at 150 km/h × laps); gold/silver/bronze = ×1.06/1.2/1.5 to the second
+    let lap_m = c.path_length() as f32 * scale;
+    let author_ms: u32 = flag(args, "--author-ms").map(|s| s.parse().expect("--author-ms N")).unwrap_or(((lap_m / 41.7) * laps as f32 * 1000.0) as u32);
+    let medal = |f: f32| ((author_ms as f32 * f / 1000.0).ceil() * 1000.0) as u32;
+    let times = [author_ms, medal(1.06), medal(1.2), medal(1.5)];
+    println!("  medals (ms): author {} gold {} silver {} bronze {}{}", times[0], times[1], times[2], times[3], if flag(args, "--author-ms").is_some() { "" } else { " (estimate: 150 km/h average)" });
+    write_map(&host, &out, &specs, &pictures, &name, laps, no_stadium, &dir, times);
 }
 
 /// y of the triangle's plane at (x, z) when the point is inside it (top view).
@@ -559,7 +565,7 @@ fn existing_manifest(body: &[u8]) -> Vec<(String, String)> {
 /// The map: the host's blocks deleted (a void base keeps its GrassRemovers),
 /// its items re-pointed at ours (and grown as needed), our items + textures
 /// embedded, multilap set.
-fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<String, Vec<u8>>, name: &str, laps: u32, no_stadium: bool, dir: &str) {
+fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<String, Vec<u8>>, name: &str, laps: u32, no_stadium: bool, dir: &str, times: [u32; 4]) {
     let tmp = |tag: &str| out.with_extension(format!("mk64-{}.{tag}.Map.Gbx", std::process::id()));
     let t_seed = tmp("seeded");
     let t0 = tmp("slots");
@@ -681,6 +687,28 @@ fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<St
             let re = x.find("nblaps=\"")?;
             let end = x[re + 8..].find('"')? + re + 8;
             Some(format!("{}nblaps=\"{}\"{}", &x[..re], laps_s, &x[end + 1..]))
+        });
+    }
+    // medal times: chunk 0x0305B00A (tip string, bronze, silver, gold, author in
+    // ms) and the header's <times>; a driven lap replaces these estimates
+    {
+        let chunks = tmmaps::gbx::all_skip_chunks(&m.gbx.body);
+        if let Some(&(_, _, payload, size)) = chunks.iter().find(|(c, ..)| *c == 0x0305_B00A) {
+            let tip_len = u32::from_le_bytes(m.gbx.body[payload..payload + 4].try_into().unwrap()) as usize;
+            let at = payload + 4 + tip_len;
+            if at + 16 <= payload + size {
+                let mut b = Vec::new();
+                for t in [times[3], times[2], times[1], times[0]] {
+                    b.extend_from_slice(&t.to_le_bytes());
+                }
+                m.raw_patches.push((at, b));
+            }
+        }
+        let (a, g, s, br) = (times[0], times[1], times[2], times[3]);
+        m.edit_header_xml(&|x: &str| {
+            let i = x.find("<times ")?;
+            let j = x[i..].find("/>")? + i + 2;
+            Some(format!("{}<times bronze=\"{br}\" silver=\"{s}\" gold=\"{g}\" authortime=\"{a}\" authorscore=\"0\" hasclones=\"0\"/>{}", &x[..i], &x[j..]))
         });
     }
     m.remove_password();
