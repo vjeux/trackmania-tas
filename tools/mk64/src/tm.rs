@@ -92,7 +92,7 @@ struct WaypointReq {
 
 pub fn cmd_build(args: &[String]) {
     let usage = "mk64 build COURSE --host HOST.Map.Gbx --out OUT.Map.Gbx [--decomp DIR] [--rom FILE]
-      [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt] [--no-vertex-colours] [--no-actors] [--author-ms MS] [--tag T]
+      [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt] [--no-vertex-colours] [--no-actors] [--author-ms MS] [--tag T] [--mood Day|Sunrise|Sunset|Night]
       [--items-out DIR]  (also write every item + texture as loose files)";
     let dir = match args.get(2) {
         Some(c) if !c.starts_with("--") => c.clone(),
@@ -115,6 +115,8 @@ pub fn cmd_build(args: &[String]) {
     let n_cps: usize = flag(args, "--cps").map(|s| s.parse().expect("--cps N")).unwrap_or(4);
     let name = flag(args, "--name").map(String::from).unwrap_or_else(|| format!("MK64 {}", course::course_title(&dir)));
     let no_stadium = !args.iter().any(|a| a == "--stadium");
+    // the mood (decoration variant): MK64's night courses under a night sky
+    let mood: String = flag(args, "--mood").map(String::from).unwrap_or_else(|| default_mood(&dir).to_string());
     let items_out = flag(args, "--items-out").map(PathBuf::from);
     // the client caches item models AND textures by file name for a whole game
     // session: every build names its files with a tag (--tag, default: the
@@ -315,7 +317,7 @@ pub fn cmd_build(args: &[String]) {
     let medal = |f: f32| ((author_ms as f32 * f / 1000.0).ceil() * 1000.0) as u32;
     let times = [author_ms, medal(1.06), medal(1.2), medal(1.5)];
     println!("  medals (ms): author {} gold {} silver {} bronze {}{}", times[0], times[1], times[2], times[3], if flag(args, "--author-ms").is_some() { "" } else { " (estimate: 150 km/h average)" });
-    write_map(&host, &out, &specs, &pictures, &name, laps, no_stadium, &dir, times);
+    write_map(&host, &out, &specs, &pictures, &name, laps, no_stadium, &dir, times, &mood);
 }
 
 /// y of the triangle's plane at (x, z) when the point is inside it (top view).
@@ -576,7 +578,16 @@ fn existing_manifest(body: &[u8]) -> Vec<(String, String)> {
 /// The map: the host's blocks deleted (a void base keeps its GrassRemovers),
 /// its items re-pointed at ours (and grown as needed), our items + textures
 /// embedded, multilap set.
-fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<String, Vec<u8>>, name: &str, laps: u32, no_stadium: bool, dir: &str, times: [u32; 4]) {
+/// The decoration mood a course is played under (Day / Sunrise / Sunset / Night).
+pub fn default_mood(dir: &str) -> &'static str {
+    match dir {
+        "banshee_boardwalk" | "rainbow_road" | "toads_turnpike" => "Night",
+        "bowsers_castle" => "Sunset",
+        _ => "Day",
+    }
+}
+
+fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<String, Vec<u8>>, name: &str, laps: u32, no_stadium: bool, dir: &str, times: [u32; 4], mood: &str) {
     let tmp = |tag: &str| out.with_extension(format!("mk64-{}.{tag}.Map.Gbx", std::process::id()));
     let t_seed = tmp("seeded");
     let t0 = tmp("slots");
@@ -650,10 +661,19 @@ fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<St
 
     // the decoration is a lookback rename: its own write (splices come next)
     let mut m = MapFile::load(&t3);
-    if no_stadium && !kind.void {
-        let deco = "NoStadium48x48Day";
-        m.set_decoration(deco);
-        m.set_header_decoration("48x48Screen155Day", deco);
+    let host_deco = m.decoration_id.clone();
+    let want_deco = if no_stadium || kind.void { format!("NoStadium48x48{mood}") } else { format!("48x48Screen155{mood}") };
+    if want_deco != host_deco {
+        m.set_decoration(&want_deco);
+        m.set_header_decoration(&host_deco, &want_deco);
+        let mood_s = mood.to_string();
+        let ns = no_stadium || kind.void;
+        m.edit_header_xml(&|x: &str| {
+            let i = x.find("mood=\"")?;
+            let j = x[i + 6..].find('"')? + i + 6;
+            Some(format!("{}mood=\"{}{}\"{}", &x[..i], mood_s, if ns { " (no stadium)" } else { "" }, &x[j..]))
+        });
+        println!("  decoration {host_deco} → {want_deco}");
     }
     m.write_to(&t4).expect("write decoration stage");
 
