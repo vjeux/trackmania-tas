@@ -765,6 +765,18 @@ fn run(a: Vec<String>) {
                     }
                 }
             }
+            // the raster peel has no analytic ground: without a decoration mesh, a ground/sea quad at
+            // --ground-y (8 m: the sea of the terrain collections, the Stadium floor) with the ground's bounce
+            // albedo stands in (a downward direction must hit SOMETHING dark, not the sky gradient's bottom rows)
+            if has("--raster") && scene.decor.is_empty() && !has("--no-ground") {
+                let gy: f32 = f("--ground-y").map(|s| s.parse().unwrap()).unwrap_or(8.0);
+                let ga: f32 = f("--ground-bounce").map(|s| s.parse().unwrap()).unwrap_or(0.37);
+                let (lo, hi) = (-4096.0f32, 8192.0f32);
+                let q = [[lo, gy, lo], [hi, gy, lo], [hi, gy, hi], [lo, gy, hi]];
+                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[1], q[2]], albedo: [ga; 3] });
+                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[3]], albedo: [ga; 3] });
+                eprintln!("decoration: none — a ground quad at y = {gy} (albedo {ga}) stands in");
+            }
             eprintln!("scene: {} models, {} instances, {} triangles (+ {} decoration) ({:.1}s)", scene.models.len(), scene.instances.len(), scene.tri_count(), scene.decor.len(), t0.elapsed().as_secs_f32());
             let tris = lightmap::bake::world_tris(&scene);
             let bvh = lightmap::bvh::Bvh::build(tris);
@@ -1081,7 +1093,16 @@ fn run(a: Vec<String>) {
             // estimate, every further pass reads the previous pass's charts at the hit points
             let q_sweeps = lightmap::dome::sweep_counts(f("--quality").map(|s| s.parse().unwrap()).unwrap_or(3));
             let iterations: usize = f("--bounces").map(|s| s.parse().unwrap()).unwrap_or(if prm.peel && !q_sweeps.is_empty() { q_sweeps.len() } else if xml_sel.is_some() { 2 } else { 1 });
-            let mut charts = lightmap::bake::bake(&scene, &bvh, &prm, &lights);
+            // --raster: the dome peel as a software raster (crate::peel) — the game's own pipeline; --ss N
+            // sub-samples per axis (the quality table: 1/2/3/3/3/3), --peel-res PX, --peel-bias M
+            prm.raster_peel = has("--raster");
+            if let Some(v) = f("--ss") { prm.ss = v.parse().unwrap(); } else { prm.ss = match f("--quality").map(|s| s.parse::<u32>().unwrap()).unwrap_or(3) { 0 => 1, 1 => 2, _ => 3 }; }
+            if let Some(v) = f("--peel-res") { prm.peel_res = v.parse().unwrap(); }
+            if let Some(v) = f("--peel-bias") { prm.peel_bias = v.parse().unwrap(); }
+            let chart_sizes = |p: &lightmap::bake::BakeParams| -> Vec<(u32, u32)> {
+                scene.instances.iter().map(|inst| { let m = &scene.models[inst.model]; let sc = (inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]).sqrt(); lightmap::bake::chart_size(m, sc, p) }).collect()
+            };
+            let mut charts = if prm.raster_peel { lightmap::peel::bake_peel_raster(&scene, &bvh, &prm, &chart_sizes(&prm)) } else { lightmap::bake::bake(&scene, &bvh, &prm, &lights) };
             eprintln!("baked {} charts ({:.1}s)", charts.len(), t0.elapsed().as_secs_f32());
             for it in 1..iterations {
                 let mut field = lightmap::bake::RadianceField { charts: vec![None; scene.instances.len()], flip_v: prm.flip_v, uv_bounds: prm.uv_bounds };
@@ -1095,7 +1116,7 @@ fn run(a: Vec<String>) {
                         if let Ok(ps) = lightmap::dome::PointSets::load(&pp) { if let Some(set) = ps.nearest(n) { p2.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); } }
                     }
                 }
-                charts = lightmap::bake::bake(&scene, &bvh, &p2, &lights);
+                charts = if prm.raster_peel { lightmap::peel::bake_peel_raster(&scene, &bvh, &p2, &chart_sizes(&p2)) } else { lightmap::bake::bake(&scene, &bvh, &p2, &lights) };
                 let mean: f32 = charts.iter().flat_map(|c| c.rgb.iter()).map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]).sum::<f32>() / charts.iter().map(|c| c.rgb.len()).sum::<usize>().max(1) as f32;
                 eprintln!("bounce iteration {it}: mean texel {mean:.4} ({:.1}s)", t0.elapsed().as_secs_f32());
             }
@@ -3589,7 +3610,10 @@ fn run(a: Vec<String>) {
             let step = (scene.instances.len() / f("--items").map(|s| s.parse().unwrap()).unwrap_or(4000)).max(1);
             // rows: (ref lum, ours lum, horizontal?)
             let mut rows: Vec<(f64, f64, bool)> = Vec::new();
+            let per_item = a.iter().any(|x| x == "--per-item");
+            let mut per_rows: Vec<(usize, String, usize, f64, f64, f64)> = Vec::new(); // item, model, n, ref mean, ours mean, rmse
             for (ii, inst) in scene.instances.iter().enumerate().step_by(step) {
+                let row0 = rows.len();
                 let (Some(&i), Some(&j)) = (ca.get(&(inst.item as u32)), cb.get(&(inst.item as u32))) else { continue };
                 let (xa, ya) = mpa.pos[i]; let (wa, ha) = mpa.size[i];
                 let (xb, yb) = mpb.pos[j]; let (wb, hb) = mpb.size[j];
@@ -3611,6 +3635,21 @@ fn run(a: Vec<String>) {
                     let c2 = ib.get((pxb + qx).min(ib.w - 1), (pyb + qy).min(ib.h - 1));
                     let lb = (0.2126 * lightmap::synth::decode_value(c2[0], fbb) + 0.7152 * lightmap::synth::decode_value(c2[1], fbb) + 0.0722 * lightmap::synth::decode_value(c2[2], fbb)) * fmb;
                     rows.push((la as f64, lb as f64, s.n[1] > 0.9));
+                }
+                if per_item && rows.len() > row0 {
+                    let r = &rows[row0..];
+                    let n = r.len() as f64;
+                    let ma = r.iter().map(|x| x.0).sum::<f64>() / n;
+                    let mb = r.iter().map(|x| x.1).sum::<f64>() / n;
+                    let rm = (r.iter().map(|x| (x.0 - x.1) * (x.0 - x.1)).sum::<f64>() / n).sqrt();
+                    per_rows.push((inst.item, inst.model_name.clone(), r.len(), ma, mb, rm));
+                }
+            }
+            if per_item {
+                per_rows.sort_by(|a, b| b.5.partial_cmp(&a.5).unwrap());
+                println!("per item (worst RMSE first): item model texels ref-mean ours-mean ratio rmse");
+                for (item, model, n, ma, mb, rm) in per_rows.iter().take(40) {
+                    println!("  {item:>5} {model:<28} {n:>7} {ma:.3} {mb:.3} {:.3} {rm:.3}", mb / ma.max(1e-6));
                 }
             }
             let report = |name: &str, rows: &[(f64, f64, bool)]| {

@@ -28,6 +28,13 @@ pub struct BakeParams {
     pub min_px: u32,
     /// The sea / ground plane: rays going below it are blocked.
     pub ground_y: f32,
+    /// The rasterised dome peel (`crate::peel`) instead of the ray-cast sphere sweep: the sub-samples
+    /// per axis of the atlas raster, the peel target size (pixels per side) and the depth bias (metres)
+    /// that keeps a texel's own surface from occluding it.
+    pub raster_peel: bool,
+    pub ss: u32,
+    pub peel_res: u32,
+    pub peel_bias: f32,
     /// Per-material albedo (`crate::albedo`) is used for a hit surface unless `flat_albedo` — then
     /// `albedo` applies to every surface (an explicit `--albedo`).
     pub flat_albedo: bool,
@@ -114,6 +121,10 @@ impl Default for BakeParams {
             min_px: 2,
             ground_y: -1.0e9,
             bounce: 0.0,
+            raster_peel: false,
+            ss: 3,
+            peel_res: 2048,
+            peel_bias: 0.1,
             flat_albedo: false,
             albedo: 0.5,
             flip_v: false,
@@ -808,7 +819,7 @@ fn hit_irradiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, h: &crate::bvh::Hi
 
 
 /// The sky radiance in direction `d` (unit): the cube when given, else the constant colour.
-fn sky_radiance(prm: &BakeParams, d: V3) -> [f32; 3] {
+pub fn sky_radiance(prm: &BakeParams, d: V3) -> [f32; 3] {
     if let Some(g) = &prm.sky_grad {
         return g.radiance(d);
     }

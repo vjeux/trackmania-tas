@@ -10,6 +10,7 @@ pub mod bvh;
 pub mod chartraster;
 pub mod dome;
 pub mod pack;
+pub mod peel;
 pub mod format;
 pub mod geometry;
 pub mod img;
