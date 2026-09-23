@@ -6,6 +6,7 @@
 pub mod bake;
 pub mod bc6h;
 pub mod bvh;
+pub mod dome;
 pub mod format;
 pub mod geometry;
 pub mod img;

@@ -754,6 +754,22 @@ fn main() {
                 prm.ambient_la = if dome { [0.0; 3] } else { x.l_ambient };
                 prm.sky = [x.l_ambient[0] * x.sky_factor * sky_s, x.l_ambient[1] * x.sky_factor * sky_s, x.l_ambient[2] * x.sky_factor * sky_s];
                 if let Some(g) = f("--ground-bounce") { prm.ground_bounce = g.parse().unwrap(); }
+                // the game's own directions: the sphere-table points inside the cone (the banked table, or --points)
+                if dome && !has("--random-dome") {
+                    let pp = f("--points").unwrap_or_else(lightmap::dome::default_path);
+                    match lightmap::dome::PointSets::load(&pp) {
+                        Ok(ps) => {
+                            // the generator draws N/((1−cos A)/2) table points and keeps those in the cone (N = 256)
+                            let draw = (256.0 / ((1.0 - prm.dome_deg.to_radians().cos()) / 2.0)) as usize;
+                            let set = ps.set(draw.max(256)).cloned().unwrap_or_default();
+                            let c = prm.dome_deg.to_radians().cos();
+                            let dirs: Vec<[f32; 3]> = set.iter().copied().filter(|p| p[1] >= c).take(256).collect();
+                            eprintln!("dome: {} of the table's {}-set inside {}° ({} drawn)", dirs.len(), set.len(), prm.dome_deg, draw.min(set.len()));
+                            prm.dome_dirs = std::sync::Arc::new(dirs);
+                        }
+                        Err(e) => eprintln!("dome: {e}; using stratified random directions"),
+                    }
+                }
                 prm.sun = x.l_dir_sun;
                 prm.direct_sun = 0.0;
                 prm.ambient = [0.0; 3]; prm.up = [0.0; 3];
@@ -2658,6 +2674,19 @@ fn main() {
             for (k, v) in &per { if v.len() > 1 && shown < 5 { shown += 1; println!("  pixel {:?}: normals {:?}", k, v.iter().map(|n| [(n[0] * 100.0).round() / 100.0, (n[1] * 100.0).round() / 100.0, (n[2] * 100.0).round() / 100.0]).collect::<Vec<_>>()); } }
             let ys: Vec<f32> = samples.iter().filter(|s| s.n[1] > 0.9).map(|s| s.p[1]).collect();
             if !ys.is_empty() { let (mn, mx) = ys.iter().fold((f32::MAX, f32::MIN), |(a, b), &y| (a.min(y), b.max(y))); println!("  up-facing sample heights {mn:.3}..{mx:.3}"); }
+        }
+        "points" => {
+            // lmtool points [FILE]: the game's sphere point sets — set sizes, and the zenith cone counts at 30°
+            let p = a.get(1).cloned().unwrap_or_else(lightmap::dome::default_path);
+            let ps = lightmap::dome::PointSets::load(&p).expect("point sets");
+            println!("{} sets: {:?}", ps.sets.len(), ps.sets.iter().map(|s| s.len()).collect::<Vec<_>>());
+            for n in [256usize, 512, 1032, 2040, 4112, 8192] {
+                let c = ps.cone(n, 30.0);
+                let mean_y = c.iter().map(|p| p[1] as f64).sum::<f64>() / c.len().max(1) as f64;
+                let norms: Vec<f32> = ps.set(n).map(|s| s.iter().map(|p| (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt()).collect()).unwrap_or_default();
+                let (nmin, nmax) = norms.iter().fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)));
+                println!("  set {n}: {} points within 30° of +y (mean cosθ {mean_y:.4}; expected uniform (1+cos30)/2 = {:.4}); |p| {nmin:.4}..{nmax:.4}", c.len(), (1.0 + 30f64.to_radians().cos()) / 2.0);
+            }
         }
         "conefit" => {
             // lmtool conefit R1:V1,R2:V2,…: the editor's response under a 16×16 roof 12 m up (pad value at distance R

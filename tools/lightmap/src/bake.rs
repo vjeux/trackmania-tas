@@ -66,6 +66,8 @@ pub struct BakeParams {
     pub dome_deg: f32,
     /// Effective albedo × BounceFactor of the sea/ground plane (undersides read 0.37 of an open floor).
     pub ground_bounce: f32,
+    /// The game's own dome directions (the sphere-table points inside the cone); stratified random when empty.
+    pub dome_dirs: std::sync::Arc<Vec<[f32; 3]>>,
     /// The mood's HDR sky as a light source: every unoccluded cosine-sampled ray adds
     /// `sky_cube_scale × L(ω)`; with a cube the constant `sky` term is not used.
     pub sky_cube: Option<std::sync::Arc<crate::skycube::CubeMap>>,
@@ -104,6 +106,7 @@ impl Default for BakeParams {
             ambient_ao: false,
             dome_deg: 90.0,
             ground_bounce: 0.37,
+            dome_dirs: std::sync::Arc::new(Vec::new()),
             sky_cube: None,
             sky_cube_scale: 1.0,
         }
@@ -456,18 +459,26 @@ fn shade_dome(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
     let mut bounce = [0f32; 3];
     let mut count = 0usize;
     let bounce_on = prm.bounce > 0.0;
-    for i in 0..side {
-        for j in 0..side {
-            if count >= n {
+    let exact = !prm.dome_dirs.is_empty();
+    let total = if exact { prm.dome_dirs.len() } else { n };
+    for idx in 0..total {
+        {
+            let (i, j) = (idx / side, idx % side);
+            if count >= total {
                 break;
             }
             count += 1;
-            let u = (i as f32 + rng.next()) / side as f32;
-            let v = ((j as f32 + rng.next()) / side as f32 + rot).fract();
-            let cos_t = 1.0 - (1.0 - cone_cos) * u; // uniform in solid angle within the cone
-            let sin_t = (1.0 - cos_t * cos_t).max(0.0).sqrt();
-            let phi = 2.0 * std::f32::consts::PI * v;
-            let up = [sin_t * phi.cos(), cos_t, sin_t * phi.sin()];
+            let up = if exact {
+                prm.dome_dirs[idx]
+            } else {
+                let u = (i as f32 + rng.next()) / side as f32;
+                let v = ((j as f32 + rng.next()) / side as f32 + rot).fract();
+                let cos_t = 1.0 - (1.0 - cone_cos) * u; // uniform in solid angle within the cone
+                let sin_t = (1.0 - cos_t * cos_t).max(0.0).sqrt();
+                let phi = 2.0 * std::f32::consts::PI * v;
+                [sin_t * phi.cos(), cos_t, sin_t * phi.sin()]
+            };
+            let cos_t = up[1];
             cone_total += cos_t;
             let ndl = dot(s.n, up);
             if ndl.abs() < 1e-4 {
