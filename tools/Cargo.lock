@@ -84,6 +84,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "clientre"
+version = "1.0.0"
+dependencies = [
+ "gbx",
+ "lightmap",
+]
+
+[[package]]
 name = "clip"
 version = "1.0.0"
 dependencies = [

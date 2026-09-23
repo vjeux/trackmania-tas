@@ -1,0 +1,12 @@
+[package]
+name = "clientre"
+version.workspace = true
+edition = "2021"
+
+[[bin]]
+name = "clientre"
+path = "src/main.rs"
+
+[dependencies]
+gbx = { path = "../gbx" }
+lightmap = { path = "../lightmap" }
