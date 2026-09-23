@@ -161,6 +161,9 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
     if std::env::var("TINY_LIGHTMAP_FILL").map(|v| v == "1").unwrap_or(false) {
         fill_scale = fill_lightmap_atlas(&mut pre);
     }
+    // The PreLightGen bounds (u04) must cover EVERY visual's uv1 — the game maps uv1 through the chart's
+    // ST built from them, so anything outside lands in the neighbouring items' atlas rects (2026-09-23).
+    let uv1_union: Option<[f32; 4]> = if super::build::card_uv1_legacy() { None } else { uv1_bounds(&pre) };
     harmonize_layouts_with(&mut pre, &want_tangents);
     let visuals = coalesce(&pre);
     // Only the materials some visual draws with, in first-use order (the
@@ -291,6 +294,13 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
             pl.u04[1] = bounds[1];
             pl.u04[2] = bounds[2];
             pl.u04[3] = bounds[3];
+        } else if let Some(b) = uv1_union {
+            // the union of every visual's uv1 (block mesh AND vegetation cards, after the part repack),
+            // never narrower than what the source declared
+            pl.u04[0] = pl.u04[0].min(b[0]);
+            pl.u04[1] = pl.u04[1].min(b[1]);
+            pl.u04[2] = pl.u04[2].max(b[2]);
+            pl.u04[3] = pl.u04[3].max(b[3]);
         }
         // TINY_LIGHTMAP_U02=measured (probe, 2026-09-12): the scale word from the
         // geometry itself, the same metres-per-uv rule for every item.
@@ -924,6 +934,27 @@ pub fn fill_lightmap_atlas(visuals: &mut [super::merged::MergedVisual]) -> Optio
         }
     }
     Some((s, lo, [margin as f32, margin as f32, (margin + w * s) as f32, (margin + h * s) as f32]))
+}
+
+/// The union of every visual's TexCoord1 range: [min u, min v, max u, max v]; None without a uv1 stream.
+pub fn uv1_bounds(visuals: &[super::merged::MergedVisual]) -> Option<[f32; 4]> {
+    use super::vstream::{Elem, N_TEXCOORD0};
+    let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+    let mut any = false;
+    for mv in visuals {
+        let Some(s) = mv.visual.stream() else { continue };
+        let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
+        if let Elem::Float2(uv) = &s.elems[i] {
+            for p in uv {
+                b[0] = b[0].min(p[0]);
+                b[1] = b[1].min(p[1]);
+                b[2] = b[2].max(p[0]);
+                b[3] = b[3].max(p[1]);
+                any = true;
+            }
+        }
+    }
+    if any { Some(b) } else { None }
 }
 
 /// The lightmap texel scale word measured off the geometry: sqrt(Σ world

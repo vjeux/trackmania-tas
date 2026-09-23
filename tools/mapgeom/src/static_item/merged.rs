@@ -38,6 +38,10 @@ pub struct MergedVisual {
     pub part: u32,
 }
 
+/// Lightmap part ids from here up are vegetation card sets (one per tree model baked into the item);
+/// block parts count from 1.
+pub const VEGET_PART_BASE: u32 = 0x4000_0000;
+
 impl MergedVisual {
     /// A visual drawn at every distance (a part without detail levels).
     pub fn every_level(visual: CPlugVisualIndexedTriangles, material: usize) -> MergedVisual {
@@ -1328,6 +1332,32 @@ pub fn harmonize_layouts_with(visuals: &mut [MergedVisual], want_tangents: &[usi
             u.entry(name).or_insert((Decl::with_stride(name, T_DEC3N, SPACE_LOCAL3D, 0, 0), T_DEC3N));
         }
     }
+    // A synthesised TexCoord1 used to be a copy of uv0 — which spans the unit square and so lands
+    // OUTSIDE the item's PreLightGen bounds whenever its real charts do not fill the square: the
+    // lightmapper then rasterises that visual over the neighbouring items' atlas rects (2026-09-23).
+    // Now it is one point inside the item's existing uv1 range (a zero-area chart: the visual gets no
+    // lightmap texels of its own and samples that point); uv0 stays the fallback for an item without any
+    // uv1 at all. TINY_CARD_UV1=legacy restores the copy.
+    let uv1_point: Option<[f32; 2]> = if super::build::card_uv1_legacy() {
+        None
+    } else {
+        let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        let mut any = false;
+        for mv in visuals.iter() {
+            let Some(s) = mv.visual.stream() else { continue };
+            let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
+            if let Elem::Float2(uv) = &s.elems[i] {
+                for p in uv {
+                    b[0] = b[0].min(p[0]);
+                    b[1] = b[1].min(p[1]);
+                    b[2] = b[2].max(p[0]);
+                    b[3] = b[3].max(p[1]);
+                    any = true;
+                }
+            }
+        }
+        if any { Some([0.5 * (b[0] + b[2]), 0.5 * (b[1] + b[3])]) } else { None }
+    };
     for mv in visuals.iter_mut() {
         let Some(union) = unions.get(&mv.material) else { continue };
         let Some(m) = mv.visual.main.as_mut() else { continue };
@@ -1356,8 +1386,9 @@ pub fn harmonize_layouts_with(visuals: &mut [MergedVisual], want_tangents: &[usi
                 None => match (*name, *stored) {
                     // the value the prefab gives its uniform Transition* visuals: decal off
                     (N_COLOR0, _) => Elem::Word(vec![0xFFFF_00FF; n]),
-                    (11, T_FLOAT2) => match &uv0 {
-                        Some(Elem::Float2(v)) => Elem::Float2(v.clone()),
+                    (11, T_FLOAT2) => match (&uv1_point, &uv0) {
+                        (Some(p), _) => Elem::Float2(vec![*p; n]),
+                        (None, Some(Elem::Float2(v))) => Elem::Float2(v.clone()),
                         _ => Elem::Float2(vec![[0.0, 0.0]; n]),
                     },
                     (N_TANGENT_U | N_TANGENT_V, T_DEC3N) => {
