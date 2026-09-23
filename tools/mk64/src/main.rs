@@ -177,6 +177,9 @@ fn cmd_stats(args: &[String]) {
     let two_sided = pieces.iter().flat_map(|p| &p.tris).filter(|t| t.geom & (mesh::G_CULL_BACK | mesh::G_CULL_FRONT) == 0).count();
     let lit = pieces.iter().flat_map(|p| &p.tris).filter(|t| t.geom & mesh::G_LIGHTING != 0).count();
     println!("two-sided tris: {two_sided}; lit tris: {lit}");
+    let vm = mesh::visual_mesh(&c, &pieces, assets.as_ref(), &frame);
+    let (flat, grad, ncol, npairs) = mesh::colour_census(&vm, 8);
+    println!("vertex colours: {flat} flat tris, {grad} gradient tris, {ncol} distinct colours, {npairs} (material, colour/8) pairs");
     for n in c.notes.iter().take(20) {
         println!("note: {n}");
     }
@@ -236,7 +239,13 @@ fn cmd_render(args: &[String]) {
         (mm, HashMap::new())
     } else {
         let pieces = c.visual_pieces();
-        let m = mesh::visual_mesh(&c, &pieces, assets.as_ref(), &frame);
+        let mut m = mesh::visual_mesh(&c, &pieces, assets.as_ref(), &frame);
+        if !has(args, "--no-actors") {
+            mk64::actors::add_trees(&c, &mut m, &frame);
+        }
+        if !has(args, "--no-vertex-colours") {
+            mesh::bake_vertex_colours(&mut m, 16, 24, 4);
+        }
         let images = match (assets.as_ref(), rom_path(args)) {
             (Some(a), Some(_)) => {
                 let mut rom = open_rom(args);

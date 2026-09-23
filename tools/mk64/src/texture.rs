@@ -45,6 +45,19 @@ impl Image {
         }
         Image { w, h, rgba }
     }
+    /// Multiplied by a colour (the N64 vertex-colour modulation, baked).
+    pub fn tinted(&self, tint: [u8; 3]) -> Image {
+        if tint == [255, 255, 255] {
+            return self.clone();
+        }
+        let mut rgba = self.rgba.clone();
+        for p in rgba.chunks_mut(4) {
+            for k in 0..3 {
+                p[k] = ((p[k] as u32 * tint[k] as u32 + 127) / 255) as u8;
+            }
+        }
+        Image { w: self.w, h: self.h, rgba }
+    }
     pub fn has_alpha(&self) -> bool {
         self.rgba.chunks(4).any(|p| p[3] < 250)
     }
@@ -112,6 +125,8 @@ pub struct AssetLoc {
     pub w: u32,
     pub h: u32,
     pub fmt: String,
+    /// The palette symbol of a colour-indexed (`ci8`/`ci4`) texture.
+    pub tlut: Option<String>,
 }
 
 /// Symbol → asset location, over the three tables of the decomp.
@@ -152,7 +167,7 @@ impl AssetIndex {
                 _ => continue,
             };
             let fmt = key.rsplit('.').nth(1).unwrap_or("").to_string();
-            ix.by_path.insert(key, AssetLoc { rom_offset: hex(&us[0]), block_offset: hex(&us[1]), w, h, fmt });
+            ix.by_path.insert(key, AssetLoc { rom_offset: hex(&us[0]), block_offset: hex(&us[1]), w, h, fmt, tlut: None });
         }
         let gen = std::fs::read_to_string(decomp.join("tools/linkonly_generator.py")).map_err(|e| format!("linkonly_generator.py: {e}"))?;
         for line in gen.lines() {
@@ -168,14 +183,19 @@ impl AssetIndex {
                 ix.symbols.insert(sym, (parts[0].clone(), parts[1].clone()));
             }
         }
-        if let Ok(rd) = std::fs::read_dir(decomp.join("assets/courses")) {
-            for e in rd.flatten() {
-                let p = e.path();
+        let mut json_files: Vec<std::path::PathBuf> = Vec::new();
+        for d in ["assets", "assets/courses"] {
+            if let Ok(rd) = std::fs::read_dir(decomp.join(d)) {
+                json_files.extend(rd.flatten().map(|e| e.path()));
+            }
+        }
+        {
+            for p in json_files {
                 if p.extension().map(|x| x == "json").unwrap_or(false) {
                     if let Ok(txt) = std::fs::read_to_string(&p) {
                         for line in txt.lines() {
                             let l = line.trim();
-                            if !l.starts_with("\"gTexture") {
+                            if !(l.starts_with("\"gT") || l.starts_with("\"common_tlut") || l.starts_with("\"texture_")) {
                                 continue;
                             }
                             let sym = between(l, "\"", "\"").unwrap_or("").to_string();
@@ -184,8 +204,9 @@ impl AssetIndex {
                             let w = between(l, "\"width\": ", ",").and_then(|x| x.trim().parse().ok());
                             let h = between(l, "\"height\": ", ",").and_then(|x| x.trim().parse().ok());
                             let fmt = between(l, "\"type\": \"", "\"").unwrap_or("").to_string();
+                            let tlut = between(l, "\"tlut\": \"", "\"").map(|s| s.to_string());
                             if let (Some(ro), Some(w), Some(h)) = (ro, w, h) {
-                                ix.course_syms.insert(sym, AssetLoc { rom_offset: ro, block_offset: bo, w, h, fmt });
+                                ix.course_syms.insert(sym, AssetLoc { rom_offset: ro, block_offset: bo, w, h, fmt, tlut });
                             }
                         }
                     }
@@ -274,8 +295,15 @@ impl Rom {
         }
     }
 
-    pub fn texture(&mut self, loc: &AssetLoc) -> Result<Image, String> {
+    /// A texture as RGBA8; a colour-indexed one needs its palette (`tlut`,
+    /// an rgba16 asset of 16×16 or 8×29 entries).
+    pub fn texture(&mut self, loc: &AssetLoc, tlut: Option<&AssetLoc>) -> Result<Image, String> {
         let raw = self.asset_bytes(loc)?;
+        if loc.fmt == "ci8" || loc.fmt == "ci4" {
+            let t = tlut.ok_or_else(|| format!("{} texture without a palette", loc.fmt))?;
+            let pal = self.asset_bytes(t)?;
+            return decode_ci(&loc.fmt, loc.w, loc.h, &raw, &pal);
+        }
         decode(&loc.fmt, loc.w, loc.h, &raw)
     }
 }
@@ -374,4 +402,32 @@ mod tests {
         assert_eq!(img.pixel(0, 0), [255, 255, 255, 255]);
         assert_eq!(img.pixel(1, 0), [0, 0, 0, 0]);
     }
+}
+
+/// Colour-indexed texels through an rgba16 palette.
+pub fn decode_ci(fmt: &str, w: u32, h: u32, raw: &[u8], pal: &[u8]) -> Result<Image, String> {
+    let n = (w * h) as usize;
+    let entries = pal.len() / 2;
+    let mut rgba = Vec::with_capacity(n * 4);
+    for i in 0..n {
+        let idx = match fmt {
+            "ci8" => raw[i] as usize,
+            "ci4" => {
+                let b = raw[i / 2];
+                (if i % 2 == 0 { b >> 4 } else { b & 0xF }) as usize
+            }
+            other => return Err(format!("{other} is not a colour-indexed format")),
+        };
+        if idx >= entries {
+            rgba.extend_from_slice(&[255, 0, 255, 255]);
+            continue;
+        }
+        let v = u16::from_be_bytes([pal[2 * idx], pal[2 * idx + 1]]);
+        let r = ((v >> 11) & 0x1F) as u8;
+        let g = ((v >> 6) & 0x1F) as u8;
+        let b = ((v >> 1) & 0x1F) as u8;
+        let a = (v & 1) as u8;
+        rgba.extend_from_slice(&[(r << 3) | (r >> 2), (g << 3) | (g >> 2), (b << 3) | (b >> 2), if a == 1 { 255 } else { 0 }]);
+    }
+    Ok(Image { w, h, rgba })
 }

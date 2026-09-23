@@ -61,9 +61,9 @@ pub fn physics_for_surface(s: u8) -> Option<(u8, u8)> {
     })
 }
 
-/// Texture upscale before DXT (nearest): keeps the N64 pixels crisp through
-/// the block compression.
-pub const TEXTURE_UPSCALE: u32 = 8;
+/// Texture upscale before DXT (nearest): at ×4 every 4×4 DXT block is ONE
+/// texel, so the compression is exact and the N64 pixels stay crisp.
+pub const TEXTURE_UPSCALE: u32 = 4;
 
 fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(|s| s.as_str())
@@ -92,7 +92,7 @@ struct WaypointReq {
 
 pub fn cmd_build(args: &[String]) {
     let usage = "mk64 build COURSE --host HOST.Map.Gbx --out OUT.Map.Gbx [--decomp DIR] [--rom FILE]
-      [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt]
+      [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt] [--no-vertex-colours] [--no-actors]
       [--items-out DIR]  (also write every item + texture as loose files)";
     let dir = match args.get(2) {
         Some(c) if !c.starts_with("--") => c.clone(),
@@ -146,6 +146,12 @@ pub fn cmd_build(args: &[String]) {
     let offset = [centre[0] - (lo_v[0] + hi_v[0]) / 2.0, STADIUM_GROUND_Y + 0.3 - min_y, centre[1] - (lo_v[2] + hi_v[2]) / 2.0];
     let frame = Frame { scale, mirror, offset };
     let mut m = mesh::visual_mesh(&c, &pieces, Some(&assets), &frame);
+    if !args.iter().any(|a| a == "--no-actors") {
+        let (n, t) = crate::actors::add_trees(&c, &mut m, &frame);
+        println!("  actors: {n} trees ({t} triangles)");
+    }
+    let (splits, variants) = if args.iter().any(|a| a == "--no-vertex-colours") { (0, m.materials.len()) } else { mesh::bake_vertex_colours(&mut m, 16, 24, 4) };
+    println!("  vertex colours baked: {splits} triangle splits, {variants} texture variants");
     let want_skirt = if args.iter().any(|a| a == "--no-skirt") { false } else if args.iter().any(|a| a == "--skirt") { true } else { !kind.void };
     let skirts = if want_skirt { mesh::add_skirt(&mut m, STADIUM_GROUND_Y - 0.2) } else { 0 };
     let soup = mesh::collision_mesh(&c, &coll, &frame);
@@ -326,8 +332,13 @@ fn local_frame(pts: impl Iterator<Item = [f32; 3]>, wp: Option<&WaypointReq>) ->
         Some(w) if w.kind == 4 => [snap(w.pos[0]), snap(lo[1]), snap(w.pos[2])],
         _ => [snap((lo[0] + hi[0]) / 2.0), snap(lo[1]), snap((lo[2] + hi[2]) / 2.0)],
     };
+    // the game spawns the car facing the item's local −z (Luigi Raceway,
+    // 2026-09-22: yaw = atan2(dx, dz) put the car backwards on the straight)
     let yaw = match wp {
-        Some(w) if w.kind == 4 => w.dir[0].atan2(w.dir[2]),
+        Some(w) if w.kind == 4 => {
+            let y = w.dir[0].atan2(w.dir[2]) + std::f32::consts::PI;
+            if y > std::f32::consts::PI { y - 2.0 * std::f32::consts::PI } else { y }
+        }
         _ => 0.0,
     };
     (origin, yaw)
@@ -704,9 +715,17 @@ pub fn material_images(mesh: &Mesh, assets: &AssetIndex, rom: &mut Rom) -> (Hash
     let mut out = HashMap::new();
     let mut missing = Vec::new();
     for (i, m) in mesh.materials.iter().enumerate() {
-        match assets.locate(&m.sym).ok_or_else(|| "not in the asset index".to_string()).and_then(|loc| rom.texture(&loc)) {
+        let base = if m.is_flat() {
+            Ok(Image::solid(4, 4, [255, 255, 255, 255]))
+        } else {
+            assets.locate(&m.sym).ok_or_else(|| "not in the asset index".to_string()).and_then(|loc| {
+                let tlut = loc.tlut.as_deref().and_then(|t| assets.locate(t));
+                rom.texture(&loc, tlut.as_ref())
+            })
+        };
+        match base {
             Ok(img) => {
-                out.insert(i, img.mirrored(m.mirror_s, m.mirror_t));
+                out.insert(i, img.mirrored(m.mirror_s, m.mirror_t).tinted(m.tint));
             }
             Err(e) => {
                 missing.push(format!("{}: {e}", m.sym));

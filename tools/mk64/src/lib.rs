@@ -5,6 +5,7 @@
 //! the geometry in Trackmania's frame, `render` draws it from above, `tm`
 //! writes the items and the map.
 
+pub mod actors;
 pub mod cdata;
 pub mod course;
 pub mod mesh;

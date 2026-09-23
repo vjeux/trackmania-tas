@@ -48,7 +48,13 @@ pub struct Material {
     pub w: u32,
     pub h: u32,
     pub fmt: u8,
+    /// The vertex-colour tint baked into this variant of the texture
+    /// (255,255,255 = the texture as is). `Flat` materials are a tint alone.
+    pub tint: [u8; 3],
 }
+
+/// The synthetic "texture" of untextured (vertex-coloured) faces.
+pub const FLAT_SYM: &str = "Flat";
 
 impl Material {
     /// The file stem of this material's texture (`Road1`, `Road1_ms` for a mirrored-s copy).
@@ -65,7 +71,13 @@ impl Material {
                 s.push('t');
             }
         }
+        if self.tint != [255, 255, 255] {
+            s.push_str(&format!("_c{:02x}{:02x}{:02x}", self.tint[0], self.tint[1], self.tint[2]));
+        }
         s
+    }
+    pub fn is_flat(&self) -> bool {
+        self.sym == FLAT_SYM
     }
 }
 
@@ -127,6 +139,7 @@ pub fn visual_mesh(course: &Course, pieces: &[Piece], assets: Option<&AssetIndex
                     w,
                     h,
                     fmt: st.fmt,
+                    tint: [255, 255, 255],
                 };
                 *mat_index.entry(m.clone()).or_insert_with(|| {
                     mesh.materials.push(m);
@@ -315,4 +328,119 @@ pub fn add_skirt(mesh: &mut Mesh, ground_y: f32) -> usize {
     }
     mesh.tris.extend(new_tris);
     added
+}
+
+/// Vertex-colour census of a mesh: (triangles with one colour at all three
+/// corners, triangles with a gradient, distinct corner colours, distinct
+/// (material, colour) pairs after quantising to `levels` per channel).
+pub fn colour_census(mesh: &Mesh, levels: u32) -> (usize, usize, usize, usize) {
+    let q = |c: u8| ((c as u32 * (levels - 1) + 127) / 255) as u8;
+    let mut colours = std::collections::HashSet::new();
+    let mut pairs = std::collections::HashSet::new();
+    let (mut flat, mut grad) = (0, 0);
+    for t in &mesh.tris {
+        let c: Vec<[u8; 3]> = t.c.iter().map(|k| [k.rgba[0], k.rgba[1], k.rgba[2]]).collect();
+        if c[0] == c[1] && c[1] == c[2] {
+            flat += 1;
+        } else {
+            grad += 1;
+        }
+        for k in &c {
+            colours.insert(*k);
+            pairs.insert((t.mat, [q(k[0]), q(k[1]), q(k[2])]));
+        }
+    }
+    (flat, grad, colours.len(), pairs.len())
+}
+
+/// TM's item shaders ignore vertex colours (`TDSN`/`TDOSN` never read
+/// colour0 — verified 2026-09), and MK64 shades everything with them: the
+/// tunnel's darkness, the hill's greens, Bowser's Castle's gloom, the sand's
+/// warm tint. So the colours go into the TEXTURES: every triangle takes the
+/// (texture × tint) variant of its material, tints quantised to `levels` per
+/// channel; a triangle whose corners disagree by more than `max_spread` is
+/// split along its longest edge (colour, uv, position interpolated) until they
+/// do, so gradients become steps finer than the eye picks out on a texture.
+/// Untextured faces become `Flat` materials (a tint alone). Lit faces (their
+/// "colours" were normals) count as white. Returns (triangles split, variants).
+pub fn bake_vertex_colours(mesh: &mut Mesh, levels: u32, max_spread: u8, max_depth: u32) -> (usize, usize) {
+    let q = |c: u8| -> u8 {
+        let step = 255.0 / (levels - 1) as f32;
+        ((c as f32 / step).round() * step).round().clamp(0.0, 255.0) as u8
+    };
+    let mut variants: HashMap<(Option<usize>, [u8; 3]), usize> = HashMap::new();
+    let base_materials = mesh.materials.clone();
+    let mut out: Vec<Tri> = Vec::with_capacity(mesh.tris.len() * 2);
+    let mut splits = 0usize;
+    let tris = std::mem::take(&mut mesh.tris);
+    let mut stack: Vec<(Tri, u32)> = Vec::new();
+    for t in tris {
+        stack.push((t, 0));
+        while let Some((mut t, depth)) = stack.pop() {
+            if t.lit {
+                for c in t.c.iter_mut() {
+                    c.rgba = [255, 255, 255, 255];
+                }
+            }
+            let spread = (0..3)
+                .map(|ch| {
+                    let v: Vec<u8> = t.c.iter().map(|c| c.rgba[ch]).collect();
+                    v.iter().max().unwrap() - v.iter().min().unwrap()
+                })
+                .max()
+                .unwrap_or(0);
+            if spread > max_spread && depth < max_depth {
+                // split the longest edge
+                let len = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
+                let e = [len(t.c[0].pos, t.c[1].pos), len(t.c[1].pos, t.c[2].pos), len(t.c[2].pos, t.c[0].pos)];
+                let k = if e[0] >= e[1] && e[0] >= e[2] { 0 } else if e[1] >= e[2] { 1 } else { 2 };
+                let (a, b, c) = (t.c[k], t.c[(k + 1) % 3], t.c[(k + 2) % 3]);
+                let m = Corner {
+                    pos: [(a.pos[0] + b.pos[0]) / 2.0, (a.pos[1] + b.pos[1]) / 2.0, (a.pos[2] + b.pos[2]) / 2.0],
+                    uv: [(a.uv[0] + b.uv[0]) / 2.0, (a.uv[1] + b.uv[1]) / 2.0],
+                    rgba: [
+                        ((a.rgba[0] as u16 + b.rgba[0] as u16) / 2) as u8,
+                        ((a.rgba[1] as u16 + b.rgba[1] as u16) / 2) as u8,
+                        ((a.rgba[2] as u16 + b.rgba[2] as u16) / 2) as u8,
+                        255,
+                    ],
+                };
+                splits += 1;
+                stack.push((Tri { c: [a, m, c], ..t }, depth + 1));
+                stack.push((Tri { c: [m, b, c], ..t }, depth + 1));
+                continue;
+            }
+            let avg = |ch: usize| ((t.c[0].rgba[ch] as u16 + t.c[1].rgba[ch] as u16 + t.c[2].rgba[ch] as u16) / 3) as u8;
+            let tint = [q(avg(0)), q(avg(1)), q(avg(2))];
+            let key = (t.mat, tint);
+            let mi = *variants.entry(key).or_insert_with(|| {
+                let mut m = match t.mat {
+                    Some(i) => base_materials[i].clone(),
+                    None => Material { sym: FLAT_SYM.to_string(), mirror_s: false, mirror_t: false, clamp_s: false, clamp_t: false, w: 4, h: 4, fmt: 0, tint: [255, 255, 255] },
+                };
+                m.tint = tint;
+                mesh.materials.push(m);
+                mesh.materials.len() - 1
+            });
+            t.mat = Some(mi);
+            out.push(t);
+        }
+    }
+    // drop the untinted bases nobody uses any more: remap indices
+    let used: std::collections::HashSet<usize> = out.iter().filter_map(|t| t.mat).collect();
+    let mut remap: HashMap<usize, usize> = HashMap::new();
+    let mut kept: Vec<Material> = Vec::new();
+    for (i, m) in mesh.materials.iter().enumerate() {
+        if used.contains(&i) {
+            remap.insert(i, kept.len());
+            kept.push(m.clone());
+        }
+    }
+    for t in out.iter_mut() {
+        t.mat = t.mat.map(|i| remap[&i]);
+    }
+    let n_variants = kept.len();
+    mesh.materials = kept;
+    mesh.tris = out;
+    (splits, n_variants)
 }

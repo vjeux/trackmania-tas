@@ -82,6 +82,11 @@ pub enum Gfx {
     Vertex { index: usize, n: usize, v0: usize },
     /// A vertex load from another segment (an object model) — not course geometry.
     ForeignVertex { addr: u32, n: usize, v0: usize },
+    /// A vertex load from a named `Vtx` array (an object model in course_data.c).
+    VertexSym { sym: String, n: usize, v0: usize },
+    /// `gsDPLoadTextureBlock(addr, fmt, siz, w, h, pal, cms, cmt, masks, maskt, ...)`: a
+    /// whole texture set up in one macro, by segmented address (object models).
+    LoadTextureBlock { addr: u32, fmt: u8, siz: u8, w: u32, h: u32, cms: u8, cmt: u8 },
     Tri([usize; 3]),
     Call(String),
     End,
@@ -167,6 +172,9 @@ pub struct Course {
     pub path: Vec<PathPoint>,
     pub item_boxes: Vec<Spawn>,
     pub spawns: Vec<(String, Vec<Spawn>)>,
+    /// Object models: the full-format `Vtx` arrays of course_data.c (trees,
+    /// signs, balloons), by symbol.
+    pub objects: HashMap<String, Vec<Vertex>>,
     pub tex_syms: Vec<String>,
     pub tex_states: Vec<TexState>,
     tex_state_index: HashMap<TexState, u16>,
@@ -216,6 +224,17 @@ impl Course {
                             c.render_lists.push(arr.name.clone());
                         }
                         c.dls.insert(arr.name.clone(), cmds);
+                    }
+                    "Vtx" => {
+                        let mut v = Vec::new();
+                        for it in &arr.items {
+                            if let Some(x) = parse_full_vertex(it, &consts) {
+                                v.push(x);
+                            }
+                        }
+                        if !v.is_empty() {
+                            c.objects.insert(arr.name.clone(), v);
+                        }
                     }
                     "TrackSections" => {
                         for it in &arr.items {
@@ -352,6 +371,14 @@ impl Course {
                         }
                     }
                 }
+                Gfx::VertexSym { n, v0, .. } | Gfx::ForeignVertex { addr: 0, n, v0 } => {
+                    for k in 0..*n {
+                        if v0 + k < st.slots.len() {
+                            st.slots[v0 + k] = None;
+                        }
+                    }
+                }
+                Gfx::LoadTextureBlock { .. } => {}
                 Gfx::ForeignVertex { addr, n, v0 } => {
                     self.notes.push(format!("{name}: vertex load from segment {:#x} ({n} at slot {v0}) skipped", addr >> 24));
                     for k in 0..*n {
@@ -573,9 +600,13 @@ fn parse_gfx(items: &[Node], consts: &Consts, notes: &mut Vec<String>) -> Vec<Gf
         let int = |i: usize| args.get(i).and_then(|a| a.int(consts));
         match name {
             "gsSPVertex" => {
-                let addr = int(0).unwrap_or(0) as u32;
                 let n = int(1).unwrap_or(0) as usize;
                 let v0 = int(2).unwrap_or(0) as usize;
+                if let Some(sym) = args.first().and_then(|a| a.ident()) {
+                    out.push(Gfx::VertexSym { sym: sym.to_string(), n, v0 });
+                    continue;
+                }
+                let addr = int(0).unwrap_or(0) as u32;
                 if addr >> 24 == 4 {
                     out.push(Gfx::Vertex { index: ((addr & 0x00FF_FFFF) / 16) as usize, n, v0 });
                 } else {
@@ -595,6 +626,17 @@ fn parse_gfx(items: &[Node], consts: &Consts, notes: &mut Vec<String>) -> Vec<Gf
                 }
             }
             "gsSPEndDisplayList" => out.push(Gfx::End),
+            "gsDPLoadTextureBlock" => {
+                out.push(Gfx::LoadTextureBlock {
+                    addr: int(0).unwrap_or(0) as u32,
+                    fmt: int(1).unwrap_or(0) as u8,
+                    siz: int(2).unwrap_or(0) as u8,
+                    w: int(3).unwrap_or(0) as u32,
+                    h: int(4).unwrap_or(0) as u32,
+                    cms: int(6).unwrap_or(0) as u8,
+                    cmt: int(7).unwrap_or(0) as u8,
+                });
+            }
             "gsDPSetTextureImage" => {
                 let sym = args.get(3).and_then(|a| a.ident()).unwrap_or("?").to_string();
                 out.push(Gfx::TexImage { fmt: int(0).unwrap_or(0) as u8, siz: int(1).unwrap_or(0) as u8, width: int(2).unwrap_or(0) as u32, sym });
@@ -647,4 +689,23 @@ pub fn course_title(dir: &str) -> &'static str {
 
 pub fn official_length_m(dir: &str) -> Option<f32> {
     COURSES.iter().find(|(d, _, _)| *d == dir).and_then(|(_, _, l)| *l)
+}
+
+/// A full RSP `Vtx` initializer: `{ { { x, y, z }, flag, { s, t }, { r, g, b, a } } }`.
+fn parse_full_vertex(n: &Node, consts: &Consts) -> Option<Vertex> {
+    let mut row = n.list()?;
+    // unwrap the union braces down to the 4-field record
+    while row.len() == 1 {
+        row = row[0].list()?;
+    }
+    if row.len() < 4 {
+        return None;
+    }
+    let p: Vec<i64> = row[0].list()?.iter().filter_map(|x| x.int(consts)).collect();
+    let t: Vec<i64> = row[2].list()?.iter().filter_map(|x| x.int(consts)).collect();
+    let c: Vec<i64> = row[3].list()?.iter().filter_map(|x| x.int(consts)).collect();
+    if p.len() != 3 || t.len() != 2 || c.len() < 3 {
+        return None;
+    }
+    Some(Vertex { pos: [p[0] as i16, p[1] as i16, p[2] as i16], tc: [t[0] as i16, t[1] as i16], rgb: [c[0] as u8, c[1] as u8, c[2] as u8], flag: 0 })
 }
