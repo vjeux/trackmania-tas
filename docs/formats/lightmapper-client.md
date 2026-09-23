@@ -358,22 +358,94 @@ still pending.
 
 ## 3. Charts, packing, probes
 
-### 3.1 Chart allocation [DISASSEMBLY `AllocateWithScale_BlockSplit` 0x140295516, `AllocateWithScale_` 0x140294860]
+### 3.1 Chart allocation — the walk [DISASSEMBLY, typed decompile banked as client-re/decomp2-typed.tgz]
 
-`m_AllocMode = 2` = `BestSize+UseFree`: the layout is a fixed 2048×2048
-texel space (1024² images, map-lightmap.md §2) and the **texel density is
-whatever fills it**: `[+0x1c] = (W·H) / Σ surface` (texels per surface unit
-over every chart's surface), a scale `[+0x20] = 1`, and if any chart's side
-`sqrt(scale·density)·extent` exceeds the atlas side the scale is cut to
-`1/ratio²`; `AllocateWithScale` then packs at `sqrt(scale·density)` and
-retries with a smaller scale until the packing succeeds (states 0x3eb). The
-per-chart "surface" is the sum of four floats per chart (the visual's uv-1
-extent × `PreLightGen.u02` metres-per-uv, [INFERRED]). The measured
-"`u02 × 0.5625` layout texels per metre" of map-lightmap.md §5 is the value
-this search lands on for the tiny maps' total surface, not a constant of the
-game — a map with more lightmapped surface gets smaller charts. Chart sizes
-are quantised (even sizes, odd positions, 1-texel gutters — `TinyAlloc_16b`
-in `EQualityVer`).
+Call chain: `NHmsLightMap::UpdateMapping` 0x14020f510 → `AllocateBlocks`
+0x14028f6e0 → `AllocateBlocks_` 0x1402901a0 → `AllocateWithScale_`
+0x140294830 → `AllocateWithScale_BlockSplit` 0x1402954f0 → `TryPack`
+0x140295d30 → the binary-tree rect packer 0x140492750/0x1404927b0/
+0x1404928b0/0x140492a80. (The probe/sprite atlases go through the same
+`AllocateBlocks_` with alloc mode 2 → 0x140296000: per-chart (w,h) = the
+model's stored size, stable sort by area, largest first, atlas side =
+`ceil(sqrt(Σwh + 0.5)·1.01) + 1` grown by 1 until everything fits — that is
+why the probe images are 198×194-ish, not powers of two.)
+
+**Per chart** (`FUN_1402917e0` + `GetPreLightGenMeterByUv` 0x14028f480):
+
+```text
+f      = PreLightGen.MeterByUv (float +0, our "u02") × block.scale      (uv set 0: bounds at PreLightGen+4..+0x14 = u0,v0,u1,v1;
+                                                                          per-sub-visual table when flags & 0x10000; an override when & 0x20000)
+ext    = ((u1−u0)·f, (v1−v0)·f)          metres; non-finite → (0,0)
+area   = ext.x · ext.y                    m²
+```
+
+**Density and scale search** (`AllocateWithScale_BlockSplit`):
+
+```text
+D = W·H / Σ area                      texels per m² (W = H = the packer atlas side, dims[0..1]); fixed-density mode instead uses WantedTexelByMeter² (+0x28 set when param[1]==0 && param[4] > 1e-9)
+scale_hi = 1.0 ; if sqrt(D)·max_ext.x > W or sqrt(D)·max_ext.y > H: scale_hi = 1 / max(ratio)²
+if (W/g)·(H/g)·0.9 < N: scale_hi = 0.01                               (g = granularity, dims[2])
+iter = 0
+loop:  iter++ ; scale_lo = scale_hi·0.9 ; s = sqrt(scale_lo·D)
+       if TryPack(s) succeeds: break                                    (also stops when the largest chart's ext·s < g)
+       scale_hi = scale_lo
+iter = min(iter, 1)
+bisect while iter < maxIter[quality] = {VFast 1, Fast 3, Default 6, High 8, Ultra 10, Ultra2 10}:
+       iter++ ; mid = (scale_lo + scale_hi)/2 ; s = sqrt(mid·D)
+       TryPack(s) into the spare node buffer: success → scale_lo = mid, swap buffers ; failure → scale_hi = mid
+result: s_final = sqrt(scale_lo·D) (= "AllocatedTexelByMeter"), the node buffer of the last success
+```
+
+**TryPack(s)** (0x140295d30; the order array is a *stable LSD radix sort*
+of the charts by the float bits of `area`, 0x14012cf66 — equal areas keep
+IdForLightMap order; TryPack walks it from the largest down, so among equal
+areas the higher index is placed first):
+
+```text
+reset packer to (W, H); fail if g²·N ≥ W·H
+carry = 0
+for k = N−1 … 0:  i = order[k]
+    if ext.x == 0 or ext.y == 0: (w,h) = g·mins[i]
+    else:
+        a  = (ext.x·s)·(ext.y·s)
+        Fit(a):      t = sqrt(a / (ext.x·ext.y));  w0 = ceil(ext.x·t), h0 = ceil(ext.y·t)          (= ceil(ext·s))
+        Fit(a + max(carry, 0)) → (w1, h1)
+        w = w0 + (w0 < w1) ; if w % g: w -= w % g, and if w0 < w1: w += g ; w = max(w, g·mins[i].x)
+        h = h0 + (h0 < h1) ; if h % g: h -= h % g, and if h0 < h1: h += g ; h = max(h, g·mins[i].y)
+        carry += a − w·h                                            (the area deficit is carried to the next chart)
+    if !insert((w,h), i+1): fail
+success
+```
+
+**The packer** (0x140492a80, the classic binary-tree lightmap packer; node
+= `{u16 x, y, w, h; ptr user; i32 child0, child1}`, root = (0, 0, W, H)):
+
+```text
+insert(node, w, h):
+    loop: if w > node.w or h > node.h: return −1
+          if node has children: r = insert(child0, w, h); if r ≠ −1: return r; node = child1; continue
+          if node.user: return −1
+          if w == node.w and h == node.h: return node                   (caller sets user, used += w·h)
+          dw = node.w − w ; dh = node.h − h ; allocate child0, child1
+          if dw > dh: child0 = (x, y, w, node.h),   child1 = (x + w, y, dw, node.h)       (vertical cut)
+          else:       child0 = (x, y, node.w, h),   child1 = (x, y + h, node.w, dh)       (horizontal cut)
+          node = child0
+```
+
+Write-back (from the mode-2 twin 0x140296000, the main path's writer
+`FUN_1402923b0` 0x1402923b0 still to read): chart ST = `((x + 0.5)/W, (y +
+0.5)/H, (w − 1)/W, (h − 1)/H)` — the packer's `w` includes one gutter texel,
+which is the "even sizes, odd positions" of the 2048-unit layout
+(`X = 2x + 1`, `W = 2(w − 1)` for W_pack = 1024) [INFERRED from the SH path;
+verify in 0x1402923b0].
+
+Still to read for a bit-identical table: `FUN_140291450` (builds the chart
+list from the blocks: which visuals make a chart, the `mins` pairs and the
+`+0x14`/flag 0x30000 grouping), `FUN_1402938c0`/`FUN_140293d70`/
+`FUN_140294220` (the "simple mode" grouping of charts into blocks before the
+split — active when no chart has a group id or the 0x30000 flags),
+`FUN_140295ce0` (g), `FUN_1402923b0` (the layout write-back and the
+per-frame scale byte), and the dims passed by `UpdateMapping` (W, H, g).
 
 ### 3.2 The probe volume [DISASSEMBLY `ProbeGrid_*`, FILE map-lightmap.md §3.8–3.9]
 
@@ -571,11 +643,13 @@ rotated`…). A rejected cache → the coarse load-time recompute
    directional maxima, DayTime = the map's word. Fix: compute them.
 10. **Per-chart byte.** lmtool: `fb0 = 255·max/K` with a fitted K. Client:
     K = the frame's `MaxHDR` (§2.5). Fix: K := frame.MaxHDR (drop the fit).
-11. **Chart density.** lmtool: `u02 × 0.5625` per metre, fixed. Client:
-    fills the 2048² layout — density = budget/Σsurface, shrunk until it packs.
-    Fix: keep the constant for the tiny maps (it is what the search yields
-    there); for the giants implement the search (§3.1) so charts match the
-    editor's sizes.
+11. **Chart density and packing.** lmtool: `u02 × 0.5625` per metre, fixed,
+    own packer. Client: §3.1 exactly — `D = W·H/Σarea`, shrink ×0.9 until
+    it packs, then 5/7/9 bisection steps (Default/High/Ultra), charts sized
+    `ceil(ext·s)` with the area-deficit carry, stable radix order by area,
+    largest first, the binary-tree packer with the `dw > dh` cut rule.
+    Fix: port §3.1 verbatim (it is ~150 lines); the 0.5625 was `s_final`
+    for the tiny maps' Σarea.
 12. **Probes.** Image 1 = sky-cone visibility fraction, image 2 = the
     unoccluded ambient (inferred), validity = front-face fraction over the
     directions (§3.2); pixels are **sRGB(value/scale)**, not sqrt and not
