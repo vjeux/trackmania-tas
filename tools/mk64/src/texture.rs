@@ -184,9 +184,17 @@ impl AssetIndex {
             }
         }
         let mut json_files: Vec<std::path::PathBuf> = Vec::new();
-        for d in ["assets", "assets/courses"] {
-            if let Ok(rd) = std::fs::read_dir(decomp.join(d)) {
-                json_files.extend(rd.flatten().map(|e| e.path()));
+        // assets/*.json and every assets/<dir>/*.json (courses, lakitu, karts…)
+        if let Ok(rd) = std::fs::read_dir(decomp.join("assets")) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    if let Ok(rd2) = std::fs::read_dir(&p) {
+                        json_files.extend(rd2.flatten().map(|e| e.path()));
+                    }
+                } else {
+                    json_files.push(p);
+                }
             }
         }
         {
@@ -195,7 +203,7 @@ impl AssetIndex {
                     if let Ok(txt) = std::fs::read_to_string(&p) {
                         for line in txt.lines() {
                             let l = line.trim();
-                            if !(l.starts_with("\"gT") || l.starts_with("\"common_tlut") || l.starts_with("\"texture_")) {
+                            if !(l.starts_with("\"gT") || l.starts_with("\"common_") || l.starts_with("\"texture_") || l.starts_with("\"minimap_")) {
                                 continue;
                             }
                             let sym = between(l, "\"", "\"").unwrap_or("").to_string();

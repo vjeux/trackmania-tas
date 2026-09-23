@@ -72,6 +72,7 @@ fn main() {
         "courses" => cmd_courses(&args),
         "stats" => cmd_stats(&args),
         "textures" => cmd_textures(&args),
+        "texture" => cmd_texture(&args),
         "render" => cmd_render(&args),
         "build" => mk64::tm::cmd_build(&args),
         _ => {
@@ -304,5 +305,32 @@ pub fn surface_colour(s: u8) -> [u8; 3] {
         0xFD => [255, 0, 0],   // out of bounds
         0xFF => [255, 255, 0], // ramp
         _ => [255, 0, 255],
+    }
+}
+
+/// `mk64 texture SYM [SYM…] --out DIR`: named ROM textures (any asset json
+/// symbol: `gTextureLakituRedLights01`, `minimap_luigi_raceway`, …) as PNGs,
+/// alpha shown over magenta.
+fn cmd_texture(args: &[String]) {
+    let decomp = PathBuf::from(flag(args, "--decomp").map(String::from).or_else(|| std::env::var("MK64_DECOMP").ok()).expect("--decomp DIR or MK64_DECOMP"));
+    let out = PathBuf::from(flag(args, "--out").expect("--out DIR"));
+    std::fs::create_dir_all(&out).expect("create --out");
+    let assets = AssetIndex::load(&decomp).expect("asset index");
+    let mut rom = open_rom(args);
+    for sym in args.iter().skip(2).take_while(|a| !a.starts_with("--")) {
+        let Some(loc) = assets.locate(sym) else {
+            println!("{sym}: not in the asset index");
+            continue;
+        };
+        let tlut = loc.tlut.as_deref().and_then(|t| assets.locate(t));
+        match rom.texture(&loc, tlut.as_ref()) {
+            Ok(img) => {
+                let rgb: Vec<u8> = img.rgba.chunks(4).flat_map(|p| if p[3] < 128 { [255, 0, 255] } else { [p[0], p[1], p[2]] }).collect();
+                let png = mapgeom::render::png(&mapgeom::render::Image { w: img.w as usize, h: img.h as usize, rgb });
+                std::fs::write(out.join(format!("{sym}.png")), png).expect("write png");
+                println!("{sym:<40} {}×{} {} {}", img.w, img.h, loc.fmt, if img.has_alpha() { "alpha" } else { "" });
+            }
+            Err(e) => println!("{sym}: {e}"),
+        }
     }
 }

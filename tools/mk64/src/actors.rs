@@ -227,3 +227,38 @@ pub fn add_billboards(course: &Course, mesh: &mut Mesh, frame: &Frame, kind: &st
     }
     (spawns.len(), added)
 }
+
+/// Lakitu with the start light (`gTextureLakituBlueLight1`, the GO frame) as
+/// a crossed two-sided billboard hovering over the start line: `at` is the
+/// start point (units), `dir` the travel direction (unit vector, units frame).
+/// The sprite is 56×72 texels drawn ~31×40 units — about three kart widths.
+pub fn add_lakitu(mesh: &mut Mesh, frame: &Frame, at: [f32; 3], dir: [f32; 3]) -> usize {
+    const SYM: &str = "gTextureLakituBlueLight1";
+    const W: f32 = 31.0;
+    const H: f32 = 40.0;
+    const UP: f32 = 30.0;
+    const AHEAD: f32 = 60.0;
+    let centre = [at[0] + dir[0] * AHEAD, at[1] + UP, at[2] + dir[2] * AHEAD];
+    let piece = mesh.piece_names.len() as u32;
+    mesh.piece_names.push("actors:lakitu".to_string());
+    mesh.materials.push(Material { sym: SYM.to_string(), mirror_s: false, mirror_t: false, clamp_s: true, clamp_t: true, w: 56, h: 72, fmt: 2, tint: [255, 255, 255] });
+    let mat = Some(mesh.materials.len() - 1);
+    // the first quad faces the travel direction (the drivers see him), the
+    // second is perpendicular
+    let right = [-dir[2], 0.0, dir[0]];
+    let mut n = 0;
+    for axis in [right, dir] {
+        let corner = |su: f32, sv: f32| {
+            let world = [centre[0] + axis[0] * su * W / 2.0, centre[1] + sv * H / 2.0, centre[2] + axis[2] * su * W / 2.0];
+            // u left→right, v: the game samples bottom-up (sv = −1 is the sprite's bottom row)
+            Corner { pos: frame.to_tm_f(world), uv: [(su + 1.0) / 2.0, (sv + 1.0) / 2.0], rgba: [255, 255, 255, 255] }
+        };
+        let (a, b, c, d) = (corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0));
+        for tri in [[a, b, c], [a, c, d]] {
+            let c3 = if frame.mirror { [tri[0], tri[2], tri[1]] } else { tri };
+            mesh.tris.push(Tri { c: c3, mat, two_sided: true, lit: false, piece });
+            n += 1;
+        }
+    }
+    n
+}

@@ -7,6 +7,7 @@
 
 pub mod actors;
 pub mod cdata;
+pub mod itembox;
 pub mod course;
 pub mod mesh;
 pub mod render;

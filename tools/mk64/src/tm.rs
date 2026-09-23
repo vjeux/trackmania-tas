@@ -92,7 +92,7 @@ struct WaypointReq {
 
 pub fn cmd_build(args: &[String]) {
     let usage = "mk64 build COURSE --host HOST.Map.Gbx --out OUT.Map.Gbx [--decomp DIR] [--rom FILE]
-      [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt] [--no-vertex-colours] [--no-actors] [--author-ms MS] [--tag T] [--mood Day|Sunrise|Sunset|Night]
+      [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt] [--no-vertex-colours] [--no-actors] [--author-ms MS] [--tag T] [--mood Day|Sunrise|Sunset|Night] [--pak Stadium.pak:KEY (spinning item boxes)] [--no-item-boxes] [--illum|--no-illum]
       [--items-out DIR]  (also write every item + texture as loose files)";
     let dir = match args.get(2) {
         Some(c) if !c.starts_with("--") => c.clone(),
@@ -117,6 +117,12 @@ pub fn cmd_build(args: &[String]) {
     let no_stadium = !args.iter().any(|a| a == "--stadium");
     // the mood (decoration variant): MK64's night courses under a night sky
     let mood: String = flag(args, "--mood").map(String::from).unwrap_or_else(|| default_mood(&dir).to_string());
+    // self-lit materials: default for the Night courses (--illum / --no-illum)
+    let illum = if args.iter().any(|a| a == "--illum") { true } else if args.iter().any(|a| a == "--no-illum") { false } else { mood == "Night" };
+    ILLUM.store(illum, std::sync::atomic::Ordering::Relaxed);
+    if illum {
+        println!("  materials: self-lit (TDSNI) — the N64 look under a night sky");
+    }
     let items_out = flag(args, "--items-out").map(PathBuf::from);
     // the client caches item models AND textures by file name for a whole game
     // session: every build names its files with a tag (--tag, default: the
@@ -161,6 +167,17 @@ pub fn cmd_build(args: &[String]) {
             if n > 0 {
                 println!("  actors: {n} {kind}s ({t} triangles)");
             }
+        }
+        // Lakitu over the start line, facing the drivers (units frame: the
+        // direction from path[0] to path[1], mirrored courses included)
+        if !c.path.is_empty() {
+            let p0 = c.path[0].pos;
+            let p1 = c.path[1 % c.path.len()].pos;
+            let d = mesh::normalize([(p1[0] - p0[0]) as f32, 0.0, (p1[2] - p0[2]) as f32]);
+            let d = if frame.mirror { [-d[0], 0.0, d[2]] } else { d };
+            let at = [p0[0] as f32, p0[1] as f32, p0[2] as f32];
+            let t = crate::actors::add_lakitu(&mut m, &frame, at, d);
+            println!("  actors: Lakitu over the start ({t} triangles)");
         }
     }
     let (splits, variants) = if args.iter().any(|a| a == "--no-vertex-colours") { (0, m.materials.len()) } else { mesh::bake_vertex_colours(&mut m, 16, 24, 4) };
@@ -293,6 +310,32 @@ pub fn cmd_build(args: &[String]) {
             }
             Err(e) => println!("  collision piece {dl}: item build failed: {e}"),
         }
+    }
+    // the spinning item boxes: kinematic parts need a pack template (--pak F:KEY)
+    let paks: Vec<&str> = args.iter().enumerate().filter(|(_, a)| *a == "--pak").filter_map(|(i, _)| args.get(i + 1)).map(|s| s.as_str()).collect();
+    if !paks.is_empty() && !args.iter().any(|a| a == "--no-item-boxes") {
+        let mut store = mapgeom::store::DataStore::empty();
+        for p in &paks {
+            let (path, key) = p.rsplit_once(':').unwrap_or((p, ""));
+            if let Err(e) = store.add_pak(path, key) {
+                println!("  pak {path}: {e}");
+            }
+        }
+        let spawns: Vec<[i16; 3]> = c.item_boxes.iter().map(|s| s.pos).collect();
+        let name = format!("MK64_{}_{}_itemboxes.Item.Gbx", dir, tag);
+        match crate::itembox::build(&mut store, &name, &spawns, &frame, &assets, &mut rom, &tag) {
+            Ok(Some(ib)) => {
+                println!("  item boxes: {} spinning cubes in one item ({} bytes)", ib.count, ib.bytes.len());
+                pictures.extend(ib.pictures);
+                let marks_name = name.replace("_itemboxes.Item.Gbx", "_itemmarks.Item.Gbx");
+                specs.push(ItemSpec { name, bytes: ib.bytes, pos: ib.pos, yaw: 0.0, tag: None, order: 0 });
+                specs.push(ItemSpec { name: marks_name, bytes: ib.marks, pos: ib.pos, yaw: 0.0, tag: None, order: 0 });
+            }
+            Ok(None) => {}
+            Err(e) => println!("  item boxes: {e}"),
+        }
+    } else if paks.is_empty() {
+        println!("  item boxes: skipped (no --pak F:KEY for the dyna template)");
     }
     let n_wp = specs.iter().filter(|s| s.tag.is_some()).count();
     println!("  {} items ({} with waypoints: {}), {} textures", specs.len(), n_wp, specs.iter().filter_map(|s| s.tag.as_deref()).collect::<Vec<_>>().join(","), pictures.len());
@@ -492,16 +535,23 @@ fn trigger_box(c: [f32; 3], along: [f32; 3], width: f32, height: f32, depth: f32
 /// The custom-texture material: the item-editor form (`IsUsingGameMaterial`
 /// off, shading model `TDSN` — or `TDOSN` for an alpha-cut texture, which
 /// reads the DiffuseO slot), the texture named by its bare file name.
+/// `ILLUM`: the night courses' materials glow with their own texture (model
+/// `TDSNI`, the DDS in slot 0 AND slot 8 SelfIllum) — the N64 has no lighting
+/// at all, so an unlit Rainbow Road under a TM night is the faithful look.
+/// Alpha-tested textures stay `TDOSN` (no self-lit alpha model exists).
+pub static ILLUM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn custom_material(mat: &mesh::Material, alpha: bool, physics: u8, tag: &str) -> CPlugMaterialUserInst {
     let mut inst = CPlugMaterialUserInst::game_material("Stadium\\Media\\Material\\PlatformTech", physics);
     let stem = mat.stem();
     let file = format!("{tag}_{stem}.dds");
+    let illum = ILLUM.load(std::sync::atomic::Ordering::Relaxed) && !alpha;
     if let Some(main) = inst.main.as_mut() {
         main.is_using_game_material = false;
-        main.model = Id::Str(if alpha { "TDOSN".into() } else { "TDSN".into() });
+        main.model = Id::Str(if alpha { "TDOSN".into() } else if illum { "TDSNI".into() } else { "TDSN".into() });
         main.material_name = Id::Str(stem.clone());
         main.link = Id::Null;
-        main.user_textures = vec![UserTexture { u01: if alpha { 1 } else { 0 }, texture: file }];
+        main.user_textures = if illum { vec![UserTexture { u01: 0, texture: file.clone() }, UserTexture { u01: 8, texture: file }] } else { vec![UserTexture { u01: if alpha { 1 } else { 0 }, texture: file }] };
     }
     inst
 }
