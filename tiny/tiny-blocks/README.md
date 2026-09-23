@@ -22,6 +22,7 @@ The set comes in one zip per block family (they can be installed independently),
 | TinyBlocks-Themes.zip | Themes (Snow, Rally) | 249 | 0.1 GB |
 | TinyBlocks-Technics.zip | Technics (gates, structures, lights, screens) | 322 | 0.18 GB |
 | TinyBlocks-Walls.zip | Walls (TrackWall, DecoWall) | 1,034 | 0.19 GB |
+| TinyItems.zip | Nadeo's items at half scale (see below) | 632 | 0.08 GB |
 
 ## In the editor
 
