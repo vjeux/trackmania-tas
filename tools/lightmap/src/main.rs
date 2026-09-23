@@ -2825,6 +2825,31 @@ fn main() {
             let ys: Vec<f32> = samples.iter().filter(|s| s.n[1] > 0.9).map(|s| s.p[1]).collect();
             if !ys.is_empty() { let (mn, mx) = ys.iter().fold((f32::MAX, f32::MIN), |(a, b), &y| (a.min(y), b.max(y))); println!("  up-facing sample heights {mn:.3}..{mx:.3}"); }
         }
+        "webpcmp" => {
+            // lmtool webpcmp MAP [--q 91] [--image 0]: re-encode the map's frame-0 image with our libwebp at --q and
+            // compare the VP8 frame header (segment quantizers, filter) and the size with the editor's bytes
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let q: f32 = f("--q").map(|s| s.parse().unwrap()).unwrap_or(91.0);
+            let idx: usize = f("--image").map(|s| s.parse().unwrap()).unwrap_or(0);
+            let own = lightmap::mapio::load(&a[1]).expect("load");
+            let d = own.chunk.data.as_ref().unwrap();
+            let src = &d.frames[0].images[idx];
+            // the first RIFF of a possibly concatenated blob
+            let src0: Vec<u8> = if src.len() > 12 && &src[..4] == b"RIFF" { let sz = u32::from_le_bytes([src[4], src[5], src[6], src[7]]) as usize + 8; src[..sz.min(src.len())].to_vec() } else { src.clone() };
+            let im = lightmap::img::decode_webp(&src0).expect("decode");
+            println!("libwebp {} linked: {}", lightmap::webpenc::version(), lightmap::webpenc::available());
+            let ours = lightmap::webpenc::encode_rgb(&im.px, im.w, im.h, q).expect("libwebp");
+            let hdr = |b: &[u8]| -> String { let p = b.iter().position(|&x| x == b'V').map(|i| i).unwrap_or(0); let start = p + 8; b[start..(start + 24).min(b.len())].iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" ") };
+            println!("editor image {idx}: {} bytes, VP8 frame head: {}", src0.len(), hdr(&src0));
+            println!("ours q{q}:      {} bytes, VP8 frame head: {}", ours.len(), hdr(&ours));
+            let same = src0.len() == ours.len() && src0 == ours;
+            let common = src0.iter().zip(ours.iter()).take_while(|(a, b)| a == b).count();
+            println!("byte-identical: {same}; common prefix {common} bytes");
+            let back = lightmap::img::decode_webp(&ours).expect("decode ours");
+            let mut diff = 0u64; let mut maxd = 0u8;
+            for (a, b) in im.px.iter().zip(back.px.iter()) { let dd = a.abs_diff(*b); diff += dd as u64; maxd = maxd.max(dd); }
+            println!("decoded difference vs the editor's decoded image: mean {:.3} levels, max {maxd}", diff as f64 / im.px.len() as f64);
+        }
         "cacheuid" => {
             // lmtool cacheuid MAP [--out OUT [--set HEX|fresh]]: the header's lightmapCacheUID (chunk 0x03043003:
             // … string mapStyle, u64 lightmapCacheUID, u8 lightmapVersion, string titleId). The game keys its
