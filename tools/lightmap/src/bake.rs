@@ -58,6 +58,14 @@ pub struct BakeParams {
     pub direct_sun: f32,
     /// Multiply the ambient term by the dome visibility (the editor's enclosed texels go to ~0).
     pub ambient_ao: bool,
+    /// The dome model (the editor's, measured 2026-09-23): the sky is a cosine-weighted cone of
+    /// this half-angle around the ZENITH (a 16 m roof 15.8 m up shadows a pad like a 30–32° cone,
+    /// a north wall reads 0.15 of a floor like a 40° one; 35° is the compromise), unoccluded
+    /// directions in it add `sky`; every direction of a sphere set that
+    /// hits a surface adds that surface's bounced radiance. 90 = the plain hemisphere model.
+    pub dome_deg: f32,
+    /// Effective albedo × BounceFactor of the sea/ground plane (undersides read 0.37 of an open floor).
+    pub ground_bounce: f32,
     /// The mood's HDR sky as a light source: every unoccluded cosine-sampled ray adds
     /// `sky_cube_scale × L(ω)`; with a cube the constant `sky` term is not used.
     pub sky_cube: Option<std::sync::Arc<crate::skycube::CubeMap>>,
@@ -76,7 +84,7 @@ impl Default for BakeParams {
             sky_samples: 64,
             sun_samples: 8,
             texels_per_m: 1.1,
-            max_px: 96,
+            max_px: 512,
             min_px: 2,
             ground_y: -1.0e9,
             bounce: 0.0,
@@ -94,6 +102,8 @@ impl Default for BakeParams {
             ambient_la: [0.0; 3],
             direct_sun: 1.0,
             ambient_ao: false,
+            dome_deg: 90.0,
+            ground_bounce: 0.37,
             sky_cube: None,
             sky_cube_scale: 1.0,
         }
@@ -288,6 +298,13 @@ pub struct Shaded {
     pub sky_rgb: [f32; 3],
 }
 
+/// Shade one world point with a normal (debug probes).
+pub fn shade_point(bvh: &Bvh, prm: &BakeParams, p: V3, n: V3) -> Shaded {
+    let s = Sample { px: 0, py: 0, p, n };
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    shade_full(bvh, prm, &s, u32::MAX, &mut rng)
+}
+
 fn shade(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -> ([f32; 3], f32, f32) {
     let r = shade_full(bvh, prm, s, ii, rng);
     (r.e, r.sky_vis, r.sun_vis)
@@ -301,6 +318,9 @@ fn shade_full(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
         let base = if c == 0 { 1.0 } else { 0.25 };
         let col = if prm.pattern_flat { [1.0, 1.0, 1.0] } else { match band { 0 => [1.0, 0.3, 0.3], 1 => [0.3, 1.0, 0.3], _ => [0.3, 0.3, 1.0] } };
         return Shaded { e: [col[0] * base, col[1] * base, col[2] * base], sky_vis: 1.0, sun_vis: 1.0, bounce: [0.0; 3], sky_rgb: [1.0; 3] };
+    }
+    if prm.dome_deg < 89.0 {
+        return shade_dome(bvh, prm, s, ii, rng);
     }
     let o = add(s.p, mul(s.n, 0.03));
     let (t, b) = frame(s.n);
@@ -408,6 +428,125 @@ fn shade_full(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
         None => [sky_vis, sky_vis, sky_vis],
     };
     Shaded { e, sky_vis, sun_vis, bounce: bounce_n, sky_rgb }
+}
+
+
+/// The dome model: directions uniformly over the sphere (stratified), weight max(0, n·D).
+/// An unoccluded direction inside the zenith cone adds the sky (normalised so an open
+/// horizontal surface receives exactly `sky`); an occluded one adds the hit surface's
+/// bounced radiance (its direct sun + its own sky share, times BounceFactor·albedo); a
+/// direction reaching the sea/ground plane adds the plane's bounce.
+fn shade_dome(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -> Shaded {
+    let o = add(s.p, mul(s.n, 0.03));
+    let n = prm.sky_samples.max(16);
+    let side = (n as f32).sqrt().ceil() as usize;
+    let cone_cos = prm.dome_deg.to_radians().cos();
+    let cone_norm = std::f32::consts::PI * (1.0 - cone_cos * cone_cos); // ∫_cone cosθ dω
+    let rot = rng.next();
+    let mut sky_acc = 0f32; // Σ (n·D)⁺ over unoccluded cone directions
+    let mut bounce = [0f32; 3];
+    let mut count = 0usize;
+    let mut open_cone = 0f32; // for sky_vis: the fraction of the cone this surface sees
+    let mut cone_total = 0f32;
+    for i in 0..side {
+        for j in 0..side {
+            if count >= n {
+                break;
+            }
+            count += 1;
+            // uniform over the sphere: cosθ ∈ [−1, 1], φ ∈ [0, 2π)
+            let u = (i as f32 + rng.next()) / side as f32;
+            let v = ((j as f32 + rng.next()) / side as f32 + rot).fract();
+            let cos_t = 1.0 - 2.0 * u;
+            let sin_t = (1.0 - cos_t * cos_t).max(0.0).sqrt();
+            let phi = 2.0 * std::f32::consts::PI * v;
+            let d = [sin_t * phi.cos(), cos_t, sin_t * phi.sin()];
+            let ndl = dot(s.n, d);
+            let in_cone = cos_t >= cone_cos;
+            if in_cone {
+                cone_total += cos_t;
+            }
+            if ndl <= 0.0 {
+                continue;
+            }
+            let mut tmax = 1.0e4f32;
+            let mut ground_hit = false;
+            if d[1] < 0.0 && o[1] > prm.ground_y {
+                let tg = (prm.ground_y - o[1]) / d[1];
+                if tg < tmax {
+                    tmax = tg;
+                    ground_hit = true;
+                }
+            }
+            let hit = bvh.closest(o, d, tmax);
+            match hit {
+                None if !ground_hit => {
+                    if in_cone {
+                        sky_acc += ndl;
+                        open_cone += cos_t;
+                    }
+                }
+                None => {
+                    // the sea/ground plane: a lit horizontal surface, sky + sun, times its effective albedo
+                    let hp = add(o, mul(d, tmax));
+                    let sun_v = if prm.sun_dir[1] > 0.0 && !bvh.occluded(add(hp, [0.0, 0.03, 0.0]), prm.sun_dir, 1.0e4, u32::MAX, 0.0) { 1.0 } else { 0.0 };
+                    for k in 0..3 {
+                        let e_ground = prm.sky[k] + prm.sun[k] * prm.sun_dir[1].max(0.0) * sun_v;
+                        bounce[k] += prm.ground_bounce * e_ground / std::f32::consts::PI * ndl;
+                    }
+                }
+                Some(h) => {
+                    let tri = &bvh.tris[h.tri as usize];
+                    let hn = norm(cross(tri.e1, tri.e2));
+                    let hn = if dot(hn, d) > 0.0 { mul(hn, -1.0) } else { hn };
+                    let hp = add(add(o, mul(d, h.t)), mul(hn, 0.03));
+                    // the hit surface's own light: its sky share (the cone it sees — approximated by its
+                    // normal's unoccluded cone factor) and its direct sun
+                    let sky_share = cone_factor(hn, cone_cos);
+                    let ndl_h = dot(hn, prm.sun_dir).max(0.0);
+                    let sun_v = if ndl_h > 0.0 && !bvh.occluded(hp, prm.sun_dir, 1.0e4, u32::MAX, 0.0) { 1.0 } else { 0.0 };
+                    for k in 0..3 {
+                        let e_hit = prm.sky[k] * sky_share + prm.sun[k] * ndl_h * sun_v;
+                        bounce[k] += prm.bounce * prm.albedo * e_hit / std::f32::consts::PI * ndl;
+                    }
+                }
+            }
+        }
+    }
+    let w = 4.0 * std::f32::consts::PI / count as f32; // solid angle per direction
+    let sky_frac = sky_acc * w / cone_norm; // 1 for an open horizontal surface
+    let mut e = [0f32; 3];
+    let bounce_n = [bounce[0] * w, bounce[1] * w, bounce[2] * w];
+    for k in 0..3 {
+        e[k] = prm.sky[k] * sky_frac + bounce_n[k] + prm.ambient[k] + prm.up[k] * (0.5 + 0.5 * s.n[1]);
+    }
+    let sky_vis = if cone_total > 0.0 { open_cone / cone_total } else { 0.0 };
+    Shaded { e, sky_vis, sun_vis: 0.0, bounce: bounce_n, sky_rgb: [sky_frac; 3] }
+}
+
+/// The share of the zenith cone's cosine-weighted light a surface of normal `hn` collects when
+/// nothing occludes it: ∫_cone max(0, hn·D) dω / ∫_cone cosθ dω (1 for a floor, ~0.16 for a
+/// wall at 40°, 0 for a ceiling). Numerical, cached per call site would be nicer; cheap enough.
+fn cone_factor(hn: V3, cone_cos: f32) -> f32 {
+    if hn[1] > 0.999 {
+        return 1.0;
+    }
+    if hn[1] < -0.999 {
+        return 0.0;
+    }
+    let (mut num, mut den) = (0f32, 0f32);
+    let steps = 12;
+    for i in 0..steps {
+        let cos_t = cone_cos + (1.0 - cone_cos) * (i as f32 + 0.5) / steps as f32;
+        let sin_t = (1.0 - cos_t * cos_t).max(0.0).sqrt();
+        for j in 0..24 {
+            let phi = 2.0 * std::f32::consts::PI * (j as f32 + 0.5) / 24.0;
+            let d = [sin_t * phi.cos(), cos_t, sin_t * phi.sin()];
+            num += dot(hn, d).max(0.0);
+            den += cos_t;
+        }
+    }
+    num / den.max(1e-6)
 }
 
 /// Bake every instance. Returns one chart per instance (index = instance).

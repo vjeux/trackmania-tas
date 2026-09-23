@@ -37,10 +37,25 @@ pub fn encode_value(e: f32, enc_max: f32) -> u8 {
     ((e.max(0.0) / enc_max).min(1.0).sqrt() * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
-/// The inverse: the HDR value (in the frame byte's units, K = 1) a stored texel means.
+/// The inverse: the HDR value a stored texel means, in units of the frame's MaxHDR.
+/// The chart's frame byte is sqrt-encoded too — chartMax = (fb/255)²·MaxHDR: the same
+/// open pad reads 0.60 (fb 191, MaxHDR 1.45) and 0.56 (fb 122, MaxHDR 2.98) on two
+/// BlueBay test bakes this way, 0.81 vs 1.17 with a linear byte (2026-09-23).
 pub fn decode_value(p: u8, fb: u8) -> f32 {
     let q = p as f32 / 255.0;
-    q * q * fb as f32 / 255.0
+    let m = fb as f32 / 255.0;
+    q * q * m * m
+}
+
+/// The frame byte for a chart whose brightest value is `max`, against the frame's MaxHDR `k`.
+pub fn frame_byte(max: f32, k: f32) -> u8 {
+    ((max.max(0.0) / k).min(1.0).sqrt() * 255.0).round().clamp(1.0, 255.0) as u8
+}
+
+/// The chart max a frame byte encodes (the value a 255 texel means), against `k`.
+pub fn chart_max(fb: u8, k: f32) -> f32 {
+    let m = fb as f32 / 255.0;
+    m * m * k
 }
 
 #[derive(Clone, Debug)]
@@ -68,8 +83,8 @@ impl Chart {
         if !rgb1.is_empty() {
             let max1 = rgb1.iter().flat_map(|c| c.iter().copied()).fold(0.0f32, f32::max);
             if max1 > 1e-4 {
-                let fb1 = (255.0 * max1 / k).round().clamp(1.0, 255.0) as u8;
-                let enc_max = fb1 as f32 / 255.0 * k;
+                let fb1 = frame_byte(max1, k);
+                let enc_max = chart_max(fb1, k);
                 c.a1 = rgb1.iter().map(|v| [encode_value(v[0], enc_max), encode_value(v[1], enc_max), encode_value(v[2], enc_max)]).collect();
                 c.fb[1] = fb1;
             }
@@ -81,9 +96,9 @@ impl Chart {
     /// per-chart byte is relative to (fb0 = 255·max/k).
     pub fn from_hdr(obj: u32, w: u32, h: u32, rgb: &[[f32; 3]], k: f32, b: u8) -> Chart {
         let max = rgb.iter().flat_map(|c| c.iter().copied()).fold(0.0f32, f32::max).max(1e-4);
-        let fb0 = (255.0 * max / k).round().clamp(1.0, 255.0) as u8;
+        let fb0 = frame_byte(max, k);
         // the stored max is quantised: normalise against what the byte encodes
-        let enc_max = fb0 as f32 / 255.0 * k;
+        let enc_max = chart_max(fb0, k);
         let a: Vec<[u8; 3]> = rgb.iter().map(|c| [encode_value(c[0], enc_max), encode_value(c[1], enc_max), encode_value(c[2], enc_max)]).collect();
         Chart { obj, w, h, a, a1: Vec::new(), b, fb: [fb0, 0, 0], sub: 0 }
     }

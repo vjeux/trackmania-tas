@@ -746,14 +746,19 @@ fn main() {
                 let mood = match f("--mood") { Some(m) if m != "auto" => lightmap::moods::normalise_mood(&m), _ => lightmap::moods::effective_mood(&mf0.decoration_id, dt) };
                 let x = lightmap::moods::mood_xml(&h.envir, mood).unwrap_or_else(|| panic!("no mood XML for {} {mood}", h.envir));
                 xml_sel = Some(x);
-                let sky_s: f32 = f("--sky-scale").map(|s| s.parse().unwrap()).unwrap_or(1.0);
-                prm.ambient_la = x.l_ambient;
+                // the dome model: sky = 1.55·LAmbient·SkyFactor (an open floor on the BlueBay Sunset-quarter test
+                // bakes reads (0.61, 0.58, 0.77) = 1.55 × LAmbient in LAmbient's hue), no separate ambient term
+                let dome = !has("--hemi");
+                let sky_s: f32 = f("--sky-scale").map(|s| s.parse().unwrap()).unwrap_or(if dome { 1.55 } else { 1.0 });
+                prm.dome_deg = if dome { f("--cone-deg").map(|s| s.parse().unwrap()).unwrap_or(35.0) } else { 90.0 };
+                prm.ambient_la = if dome { [0.0; 3] } else { x.l_ambient };
                 prm.sky = [x.l_ambient[0] * x.sky_factor * sky_s, x.l_ambient[1] * x.sky_factor * sky_s, x.l_ambient[2] * x.sky_factor * sky_s];
+                if let Some(g) = f("--ground-bounce") { prm.ground_bounce = g.parse().unwrap(); }
                 prm.sun = x.l_dir_sun;
                 prm.direct_sun = 0.0;
                 prm.ambient = [0.0; 3]; prm.up = [0.0; 3];
                 prm.bounce = f("--bounce").map(|s| s.parse().unwrap()).unwrap_or(x.bounce_factor);
-                prm.albedo = f("--albedo").map(|s| s.parse().unwrap()).unwrap_or(0.35);
+                prm.albedo = f("--albedo").map(|s| s.parse().unwrap()).unwrap_or(0.18);
                 prm.uv_bounds = true; prm.sky_model = 0; prm.texels_per_m = 1.0; prm.sky_samples = 64; prm.sun_samples = 4;
                 prm.ambient_ao = !has("--no-ao");
                 // local lights, absolute units: E = k·I·c·max(0,n·l)·(1−(d/R)²)², k = 1.48 from the lamp-post profile of the
@@ -913,6 +918,9 @@ fn main() {
                     sizes.extend(std::iter::repeat((2u32, 2u32)).take(n_ground as usize + scene.item_count.saturating_sub(scene.instances.len())));
                     lightmap::synth::shelf_fits(&sizes, 1024)
                 };
+                // the editor's density is adaptive (a 33-item test map gets 153-px pads where the full map gets
+                // 9-px ones): the largest density that packs, searched both ways unless --tpm pins it
+                let pinned = f("--tpm").is_some();
                 if !fits(prm.texels_per_m) {
                     let (mut lo, mut hi) = (0.05f32, prm.texels_per_m);
                     if fits(lo) {
@@ -922,8 +930,18 @@ fn main() {
                     } else {
                         eprintln!("atlas density: even {lo:.2} texels/m does not pack {} items + {} ground charts (2×2 minimum) into 1024² — the pack will shrink further", scene.instances.len(), n_ground);
                     }
+                } else if !pinned {
+                    let (mut lo, mut hi) = (prm.texels_per_m, prm.texels_per_m * 2.0);
+                    while hi < 64.0 && fits(hi) { lo = hi; hi *= 2.0; }
+                    for _ in 0..10 { let mid = 0.5 * (lo + hi); if fits(mid) { lo = mid; } else { hi = mid; } }
+                    if lo > prm.texels_per_m * 1.05 {
+                        eprintln!("atlas density: {:.2} texels/m leaves room — stepping UP to {:.3} ({} items + {} ground charts)", prm.texels_per_m, lo, scene.instances.len(), n_ground);
+                        prm.texels_per_m = lo;
+                    } else {
+                        eprintln!("atlas density {:.2} texels/m packs ({} items + {} ground charts)", prm.texels_per_m, scene.instances.len(), n_ground);
+                    }
                 } else {
-                    eprintln!("atlas density {:.2} texels/m packs ({} items + {} ground charts)", prm.texels_per_m, scene.instances.len(), n_ground);
+                    eprintln!("atlas density {:.2} texels/m (pinned) packs ({} items + {} ground charts)", prm.texels_per_m, scene.instances.len(), n_ground);
                 }
             }
             let charts = lightmap::bake::bake(&scene, &bvh, &prm, &lights);
@@ -2234,6 +2252,19 @@ fn main() {
             stats("C open pads (not under the roof)", &|t: &Tx| in_c(t) && !((t.p[0] - dx) >= 316.0 && (t.p[0] - dx) < 332.0 && (t.p[2] - dz) >= 416.0 && (t.p[2] - dz) < 432.0));
             stats("C pad under the roof", &|t: &Tx| in_c(t) && (t.p[0] - dx) >= 316.0 && (t.p[0] - dx) < 332.0 && (t.p[2] - dz) >= 416.0 && (t.p[2] - dz) < 432.0);
             stats("C pad under the roof, inner 8×8", &|t: &Tx| in_c(t) && (t.p[0] - dx) >= 320.0 && (t.p[0] - dx) < 328.0 && (t.p[2] - dz) >= 420.0 && (t.p[2] - dz) < 428.0);
+            // radial profile under/around the roof: pad texels of group C binned by distance from the roof centre
+            {
+                let (cx, cz) = (324.0f32 + dx, 424.0f32 + dz);
+                let mut bins = vec![(0f64, 0usize); 16];
+                for t in tx.iter().filter(|t| in_c(t)) {
+                    let r = ((t.p[0] - cx).powi(2) + (t.p[2] - cz).powi(2)).sqrt();
+                    let b = (r / 1.5) as usize;
+                    if b < bins.len() { bins[b].0 += t.lum as f64; bins[b].1 += 1; }
+                }
+                let open = bins.iter().rev().find(|b| b.1 > 0).map(|b| b.0 / b.1 as f64).unwrap_or(1.0);
+                println!("C pads by distance from the roof centre (roof 16×16 at +12 m; ratio to the outermost bin):");
+                for (b, (s, n)) in bins.iter().enumerate() { if *n > 0 { println!("  r {:>4.1}–{:<4.1} m  n {:>6}  lum {:.4}  ratio {:.3}", b as f32 * 1.5, (b + 1) as f32 * 1.5, n, s / *n as f64, s / *n as f64 / open); } }
+            }
             stats("roof top", &|t: &Tx| t.n[1] > 0.9 && t.p[1] > y0 + 15.0 && t.p[1] < y0 + 18.0 && (t.p[0] - dx) >= 316.0 && (t.p[0] - dx) < 332.0 && (t.p[2] - dz) >= 416.0 && (t.p[2] - dz) < 432.0);
             stats("roof underside", &|t: &Tx| t.n[1] < -0.9 && t.p[1] > y0 + 11.0 && t.p[1] < y0 + 14.0 && (t.p[0] - dx) >= 316.0 && (t.p[0] - dx) < 332.0 && (t.p[2] - dz) >= 416.0 && (t.p[2] - dz) < 432.0);
             stats("pad undersides (n.y < −0.9)", &|t: &Tx| t.n[1] < -0.9 && t.p[1] > y0 - 1.0 && t.p[1] < y0 + 1.0);
@@ -2571,6 +2602,68 @@ fn main() {
                 if *n == 0 { continue; }
                 let nn = *n as f64;
                 println!("{:>4.0}–{:<4.0} {:>6} {:>12.4} ({:.4}, {:.4}, {:.4}) {:>12.4}", b as f64 * 2.0, (b + 1) as f64 * 2.0, n, s1 / nn, rgb[0] / nn, rgb[1] / nn, rgb[2] / nn, s0 / nn);
+            }
+        }
+        "shadeat" => {
+            // lmtool shadeat MAP x,y,z nx,ny,nz [--cone-deg D] [--samples N]: the dome model's components at one point
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let v3 = |s: &str| -> [f32; 3] { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); [v[0], v[1], v[2]] };
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let bvh = lightmap::bvh::Bvh::build(lightmap::bake::world_tris(&scene));
+            let mut prm = lightmap::bake::BakeParams::default();
+            prm.dome_deg = f("--cone-deg").map(|s| s.parse().unwrap()).unwrap_or(40.0);
+            prm.sky_samples = f("--samples").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            prm.sky = [1.0; 3]; prm.sun = [0.0; 3]; prm.direct_sun = 0.0; prm.bounce = 2.0; prm.albedo = 0.18; prm.ground_y = 8.0;
+            let sh = lightmap::bake::shade_point(&bvh, &prm, v3(&a[2]), v3(&a[3]));
+            println!("at {} n {}: sky share {:.4} (cone vis {:.4}), bounce {:?}, E {:?}", a[2], a[3], sh.sky_rgb[0], sh.sky_vis, sh.bounce, sh.e);
+            // the geometry above: the first hit straight up and at 30° tilts
+            let o = lightmap::geometry::add(v3(&a[2]), lightmap::geometry::mul(v3(&a[3]), 0.03));
+            for tilt in [0.0f32, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0] {
+                let mut line = format!("  tilt {tilt:>4.0}°:");
+                for az in [0.0f32, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0] {
+                    let (t, p) = (tilt.to_radians(), az.to_radians());
+                    let d = [t.sin() * p.sin(), t.cos(), t.sin() * p.cos()];
+                    match bvh.closest(o, d, 1.0e4) { Some(h) => line.push_str(&format!(" {:>6.1}", h.t)), None => line.push_str("   open") }
+                }
+                println!("{line}");
+            }
+        }
+        "conefit" => {
+            // lmtool conefit R1:V1,R2:V2,…: the editor's response under a 16×16 roof 12 m up (pad value at distance R
+            // from the roof centre over the open value) against dome models — a cosine-weighted cone of half-angle
+            // θc around the zenith, and a cos^k-weighted hemisphere — prints the profile per model and its RMS error
+            let obs: Vec<(f64, f64)> = a[1].split(',').map(|t| { let (r, v) = t.split_once(':').unwrap(); (r.parse().unwrap(), v.parse().unwrap()) }).collect();
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let roof_h: f64 = f("--roof-h").map(|s| s.parse().unwrap()).unwrap_or(12.0); let half: f64 = f("--half").map(|s| s.parse().unwrap()).unwrap_or(8.0);
+            let vis = |r: f64, weight: &dyn Fn(f64) -> f64| -> f64 {
+                // cosine-weighted directions over the hemisphere on a fine grid; occluded if the ray hits the roof square
+                let (n_th, n_ph) = (180usize, 360usize);
+                let (mut num, mut den) = (0.0, 0.0);
+                for i in 0..n_th {
+                    let th = (i as f64 + 0.5) / n_th as f64 * std::f64::consts::FRAC_PI_2;
+                    let w = weight(th) * th.cos() * th.sin();
+                    for j in 0..n_ph {
+                        let ph = (j as f64 + 0.5) / n_ph as f64 * 2.0 * std::f64::consts::PI;
+                        let (dx, dz) = (th.sin() * ph.cos(), th.sin() * ph.sin());
+                        let t = roof_h / th.cos().max(1e-6);
+                        let (hx, hz) = (r + dx * t, dz * t);
+                        let blocked = hx.abs() <= half && hz.abs() <= half;
+                        den += w;
+                        if !blocked { num += w; }
+                    }
+                }
+                num / den
+            };
+            let mut models: Vec<(String, Box<dyn Fn(f64) -> f64>)> = Vec::new();
+            for tc in [25.0f64, 27.5, 30.0, 32.5, 35.0, 40.0, 45.0, 60.0, 90.0] { let c = tc.to_radians(); models.push((format!("cone {tc}°"), Box::new(move |th: f64| if th <= c { 1.0 } else { 0.0 }))); }
+            for (tc, soft) in [(30.0f64, 10.0f64), (35.0, 10.0), (35.0, 20.0), (40.0, 20.0)] { let (c, s) = (tc.to_radians(), soft.to_radians()); models.push((format!("cone {tc}°±{soft}"), Box::new(move |th: f64| ((c + s / 2.0 - th) / s).clamp(0.0, 1.0)))); }
+            for k in [1.0f64, 2.0, 4.0, 6.0, 8.0, 12.0] { models.push((format!("cos^{k}"), Box::new(move |th: f64| th.cos().powf(k)))); }
+            println!("{:<10} {}", "model", obs.iter().map(|(r, _)| format!("{r:>6.1}")).collect::<Vec<_>>().join(" "));
+            println!("{:<10} {}", "observed", obs.iter().map(|(_, v)| format!("{v:>6.3}")).collect::<Vec<_>>().join(" "));
+            for (name, w) in &models {
+                let pred: Vec<f64> = obs.iter().map(|(r, _)| vis(*r, w)).collect();
+                let rms = (obs.iter().zip(&pred).map(|((_, v), p)| (v - p) * (v - p)).sum::<f64>() / obs.len() as f64).sqrt();
+                println!("{:<10} {}  rms {rms:.3}", name, pred.iter().map(|p| format!("{p:>6.3}")).collect::<Vec<_>>().join(" "));
             }
         }
         _ => {
