@@ -380,7 +380,8 @@ pub fn port_cmd(args: &[String]) -> Result<(), String> {
         let src_uid = hdr.as_ref().map(|h| h.uid.clone()).unwrap_or_default();
         m.set_map_uid(&stable_uid("Stad", &src_uid));
         m.write_to(&out).map_err(|e| e.to_string())?;
-        if let Some(n) = f("--name") {
+        let n = gen_name(&f("--name").unwrap_or_else(|| old_name.clone()));
+        if !old_name.is_empty() && n != old_name {
             let mut m = MapFile::load(&out);
             m.set_map_name(&old_name, &n);
             m.write_to(&out).map_err(|e| e.to_string())?;
@@ -583,7 +584,7 @@ pub fn port_cmd(args: &[String]) -> Result<(), String> {
         let hdr = crate::header::read(tmp.to_str().unwrap_or_default()).ok();
         let old_name = hdr.as_ref().map(|h| h.name.clone()).unwrap_or_default();
         let src_uid = hdr.as_ref().map(|h| h.uid.clone()).unwrap_or_default();
-        let new_name = f("--name").unwrap_or_else(|| format!("{old_name} [Stadium]"));
+        let new_name = gen_name(&f("--name").unwrap_or_else(|| format!("{old_name} [Stadium]")));
         m.set_map_uid(&stable_uid("Stad", &src_uid));
         m.write_to(&tmp).map_err(|e| e.to_string())?;
         let mut m = MapFile::load(&tmp);
@@ -1053,6 +1054,16 @@ pub fn terrain_cmd(args: &[String]) -> Result<(), String> {
 
 /// `<prefix>` + the source uid's tail: the same length as the source's, and the same
 /// value on every rebuild, so a re-publish updates the record instead of adding one.
+/// `ALTERED_NAME_SUFFIX=<text>`: appended to every generated map NAME (a formatting code such
+/// as `$z` is invisible in game) — the console remembers a map by NAME as well as by id
+/// (json9841 2026-09-23: fresh ids under the old names still failed; new names loaded).
+pub fn gen_name(name: &str) -> String {
+    match std::env::var("ALTERED_NAME_SUFFIX") {
+        Ok(sfx) if !sfx.is_empty() && !name.ends_with(sfx.as_str()) => format!("{name}{sfx}"),
+        _ => name.to_string(),
+    }
+}
+
 /// `ALTERED_UID_GEN=<letter>`: a publish GENERATION — the console keeps a stale copy of a
 /// map id it has opened, so every fix round ships under NEW ids (json9841 2026-09-23: the
 /// same bytes loaded under a fresh id, not under the old one). The letter replaces the

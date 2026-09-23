@@ -1152,7 +1152,7 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
         let hdr = crate::header::read(tmp.to_str().unwrap_or_default()).ok();
         let old_name = hdr.as_ref().map(|h| h.name.clone()).unwrap_or_default();
         let old_uid = hdr.as_ref().map(|h| h.uid.clone()).unwrap_or_default();
-        let new_name = f("--name").unwrap_or_else(|| format!("{old_name} {}", if wet { "Wet Wood" } else { "Wood" }));
+        let new_name = crate::stadium::gen_name(&f("--name").unwrap_or_else(|| format!("{old_name} {}", if wet { "Wet Wood" } else { "Wood" })));
         // deterministic since 2026-09-22: prefix + the source uid's tail (a rebuild updates
         // the same record); --random-uid for the old behaviour
         let prefix = f("--uid-prefix").unwrap_or_else(|| if wet { "WetW".into() } else { "Wood".into() });
