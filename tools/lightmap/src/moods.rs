@@ -234,6 +234,52 @@ pub fn mood_xml(collection: &str, mood: &str) -> Option<&'static MoodXml> {
     MOOD_XML.iter().find(|m| m.collection.eq_ignore_ascii_case(collection) && m.mood.eq_ignore_ascii_case(mood))
 }
 
+/// The mood BLEND at a blend key: the two moods whose `DayTime01` keys bracket it (cyclic — BlueBay:
+/// Night 0.15 → Sunrise 0.515 → Day 0.644 → Sunset 0.75 → Night 1.15) and the fraction toward the
+/// second. The game's CPlugMoodBlender lerps every mood field between them (RE child 3, 0x14028d0b0);
+/// the moods' `DayTime01` are blend keys (the map's DayTime word/65536 is one too).
+pub fn blend(collection: &str, key: f32) -> Option<(&'static MoodXml, &'static MoodXml, f32)> {
+    let mut ms: Vec<&'static MoodXml> = MOOD_XML.iter().filter(|m| m.collection.eq_ignore_ascii_case(collection)).collect();
+    if ms.is_empty() {
+        return None;
+    }
+    ms.sort_by(|a, b| a.daytime01.partial_cmp(&b.daytime01).unwrap());
+    let k = key.rem_euclid(1.0);
+    let n = ms.len();
+    for i in 0..n {
+        let (a, b) = (ms[i], ms[(i + 1) % n]);
+        let (ka, mut kb) = (a.daytime01, b.daytime01);
+        if kb <= ka {
+            kb += 1.0;
+        }
+        let kk = if k < ka { k + 1.0 } else { k };
+        if kk >= ka && kk < kb {
+            return Some((a, b, ((kk - ka) / (kb - ka).max(1e-6)).clamp(0.0, 1.0)));
+        }
+    }
+    Some((ms[n - 1], ms[0], 0.0))
+}
+
+/// The blended mood constants at a key (the collection/mood names are the nearer mood's).
+pub fn blended_xml(collection: &str, key: f32) -> Option<MoodXml> {
+    let (a, b, t) = blend(collection, key)?;
+    let l3 = |p: [f32; 3], q: [f32; 3]| [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, p[2] + (q[2] - p[2]) * t];
+    let l1 = |p: f32, q: f32| p + (q - p) * t;
+    let near = if t < 0.5 { a } else { b };
+    Some(MoodXml {
+        collection: near.collection,
+        mood: near.mood,
+        latitude: l1(a.latitude, b.latitude),
+        daytime01: key,
+        l_ambient: l3(a.l_ambient, b.l_ambient),
+        l_dir_sun: l3(a.l_dir_sun, b.l_dir_sun),
+        l_dir_moon: l3(a.l_dir_moon, b.l_dir_moon),
+        max_hdr: near.max_hdr,
+        bounce_factor: l1(a.bounce_factor, b.bounce_factor),
+        sky_factor: l1(a.sky_factor, b.sky_factor),
+    })
+}
+
 /// The DayTime word a mood's default maps to: what Nadeo's editor baked the default-word sources
 /// with (their frame records; 2026-09-23): Day 0x9b59 (Stadium 0x8111), Sunrise 0x4e4b (Stadium
 /// 0x5148), Sunset 0xdaab (Stadium 0xceb8), Night 0x199a.
@@ -259,7 +305,7 @@ pub fn sky_fit(collection: &str, mood: &str) -> (f32, f32, bool) {
     let c = collection.to_ascii_lowercase();
     match (c.as_str(), normalise_mood(mood)) {
         ("bluebay", "Day") => (2.05, 0.3, false),
-        ("bluebay", "Sunset") => (2.75, 0.3, false),
+        ("bluebay", "Sunset") => (2.0, 0.3, false),
         ("bluebay", "Sunrise") => (1.7, 0.3, false),
         ("bluebay", "Night") => (2.1, 0.3, false),
         ("bluebay", _) => (2.75, 0.3, false),

@@ -32,6 +32,10 @@ pub struct SkyGradient {
     pub fog: Option<([f32; 3], f32)>,
     /// GlobalScale — applied after the fog blend (the gradient's own ScaleGrad0 is `scale`).
     pub global_scale: f32,
+    /// The second mood's gradient texture and the blend fraction toward it (the mood blender lerps the
+    /// moods; the texture is lerped per texel here). Same size as `px`.
+    pub px2: Option<Vec<[f32; 3]>>,
+    pub blend_t: f32,
 }
 
 impl SkyGradient {
@@ -39,14 +43,39 @@ impl SkyGradient {
         let d = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
         let dds = crate::bc6h::parse_dds(&d)?;
         let px = crate::bc6h::decode_image(dds.data, dds.w, dds.h, dds.format == 96);
-        Ok(SkyGradient { w: dds.w, h: dds.h, px, sun_az: 0.0, u_sun: 0.0, u_sign: 1.0, v_top_is_zenith: true, v_full: false, scale: 1.0, lobes: Vec::new(), sun_dir: [0.0, 1.0, 0.0], fog: None, global_scale: 1.0 })
+        Ok(SkyGradient { w: dds.w, h: dds.h, px, sun_az: 0.0, u_sun: 0.0, u_sign: 1.0, v_top_is_zenith: true, v_full: false, scale: 1.0, lobes: Vec::new(), sun_dir: [0.0, 1.0, 0.0], fog: None, global_scale: 1.0, px2: None, blend_t: 0.0 })
     }
 
     /// The texel at (u, v) in 0..1 (u wraps, v clamps), nearest.
     pub fn texel(&self, u: f32, v: f32) -> [f32; 3] {
         let x = ((u.rem_euclid(1.0) * self.w as f32) as usize).min(self.w - 1);
         let y = ((v.clamp(0.0, 0.99999) * self.h as f32) as usize).min(self.h - 1);
-        self.px[y * self.w + x]
+        let p = self.px[y * self.w + x];
+        match &self.px2 {
+            Some(q) if self.blend_t > 0.0 => {
+                let q = q[(y * self.w + x).min(q.len() - 1)];
+                let t = self.blend_t;
+                [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t, p[2] + (q[2] - p[2]) * t]
+            }
+            _ => p,
+        }
+    }
+
+    /// Blend toward a second mood's gradient (same size, else resampled by nearest).
+    pub fn blend_with(&mut self, other: &SkyGradient, t: f32) {
+        if other.w == self.w && other.h == self.h {
+            self.px2 = Some(other.px.clone());
+        } else {
+            let mut q = Vec::with_capacity(self.w * self.h);
+            for y in 0..self.h {
+                for x in 0..self.w {
+                    let (ox, oy) = ((x * other.w / self.w).min(other.w - 1), (y * other.h / self.h).min(other.h - 1));
+                    q.push(other.px[oy * other.w + ox]);
+                }
+            }
+            self.px2 = Some(q);
+        }
+        self.blend_t = t;
     }
 
     /// The sky radiance in direction `d` (unit).
@@ -139,6 +168,29 @@ pub fn fog_from_xml(xml: &str, dome_m: f32) -> Option<([f32; 3], f32)> {
     let hex = u32::from_str_radix(color.trim_start_matches('#'), 16).ok()?;
     let srgb = |c: u32| -> f32 { let v = c as f32 / 255.0; if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) } };
     Some(([srgb((hex >> 16) & 255), srgb((hex >> 8) & 255), srgb(hex & 255)], intens))
+}
+
+/// Lerp two lobe lists element-wise (Atmo1, Atmo2 of the two moods; the shorter list's missing lobes count
+/// as zero-scale copies of the other's).
+pub fn lerp_lobes(a: &[(f32, [f32; 3], f32)], b: &[(f32, [f32; 3], f32)], t: f32) -> Vec<(f32, [f32; 3], f32)> {
+    let n = a.len().max(b.len());
+    (0..n)
+        .map(|i| {
+            let la = a.get(i).copied().or_else(|| b.get(i).map(|l| (l.0, l.1, 0.0))).unwrap();
+            let lb = b.get(i).copied().or_else(|| a.get(i).map(|l| (l.0, l.1, 0.0))).unwrap();
+            let l1 = |p: f32, q: f32| p + (q - p) * t;
+            (l1(la.0, lb.0), [l1(la.1[0], lb.1[0]), l1(la.1[1], lb.1[1]), l1(la.1[2], lb.1[2])], l1(la.2, lb.2))
+        })
+        .collect()
+}
+
+/// Lerp two fog settings (colour and intensity).
+pub fn lerp_fog(a: Option<([f32; 3], f32)>, b: Option<([f32; 3], f32)>, t: f32) -> Option<([f32; 3], f32)> {
+    match (a, b) {
+        (Some((ca, ia)), Some((cb, ib))) => Some(([ca[0] + (cb[0] - ca[0]) * t, ca[1] + (cb[1] - ca[1]) * t, ca[2] + (cb[2] - ca[2]) * t], ia + (ib - ia) * t)),
+        (Some(x), None) | (None, Some(x)) => Some(x),
+        _ => None,
+    }
 }
 
 /// The banked mood files: `…/lightmap-re/client-re/moods/<Collection>-<Mood>-<file>`.

@@ -72,6 +72,9 @@ pub struct Frag {
 }
 
 /// All fragments of a peel, CSR by pixel, sorted by depth within a pixel.
+/// The peel's layer cap (the client's state machine stops after layer 20).
+pub const MAX_LAYERS: usize = 20;
+
 pub struct ABuffer {
     pub res: u32,
     /// Rows per band; the bands' CSR tables stay separate (no serial stitch of ~100 M fragments).
@@ -85,7 +88,10 @@ impl ABuffer {
     pub fn at(&self, x: u32, y: u32) -> &[Frag] {
         let b = &self.bands[(y / self.band_h) as usize];
         let i = ((y - (y / self.band_h) * self.band_h) * self.res + x) as usize;
-        &b.1[b.0[i] as usize..b.0[i + 1] as usize]
+        // the game peels at most 20 layers per direction (RenderLightIndirectPeel, counter > 0x13 stops):
+        // a texel deeper than the 20th surface from the sky takes that 20th layer, never a deeper one
+        let (a, c) = (b.0[i] as usize, b.0[i + 1] as usize);
+        &b.1[a..c.min(a + MAX_LAYERS)]
     }
     /// Total fragment count.
     pub fn len(&self) -> usize {

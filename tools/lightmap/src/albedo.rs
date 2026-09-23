@@ -79,7 +79,7 @@ fn measured(link: &str) -> Option<[f32; 3]> {
 /// `(keyword, albedo rgb)` — the FIRST keyword found in the link's last path component wins;
 /// matching is case-insensitive.
 const TABLE: &[(&str, [f32; 3])] = &[
-    ("water", [0.06, 0.08, 0.10]),
+    ("water", [0.30, 0.34, 0.40]),
     ("sand", [0.55, 0.50, 0.40]),
     ("beach", [0.55, 0.50, 0.40]),
     ("snow", [0.75, 0.75, 0.78]),

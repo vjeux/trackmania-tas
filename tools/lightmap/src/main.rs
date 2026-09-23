@@ -793,8 +793,19 @@ fn run(a: Vec<String>) {
                 let mf0 = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
                 let dt = lightmap::mapio::daytime(&mf0.gbx.body);
                 let mood = match f("--mood") { Some(m) if m != "auto" => lightmap::moods::normalise_mood(&m), _ => lightmap::moods::effective_mood(&mf0.decoration_id, dt) };
-                let x = lightmap::moods::mood_xml(&h.envir, mood).unwrap_or_else(|| panic!("no mood XML for {} {mood}", h.envir));
-                xml_sel = Some(x);
+                // the mood BLEND: the map's DayTime word is a blend key between the moods' DayTime01 keys and the
+                // game lerps every mood field between the two bracketing moods (--no-mood-blend: the quarter's mood
+                // alone, the pre-2026-09-23 form; --mood M forces a pure mood)
+                let key: f32 = match dt { Some(t) if t != 0xffff_ffff => t as f32 / 65536.0, _ => lightmap::moods::default_daytime(&h.envir, mood) as f32 / 65536.0 };
+                // OPT-IN (--mood-blend) until the blender's semantics are pinned: at key 0.75 (pure "Sunset" by the
+                // DayTime01 keys) the editor's open pad is as blue and bright as at Day (0.85 of it), which the
+                // Sunset mood's own sky does not give — the per-mood fits are made at the moods' DEFAULT words
+                let blend = if has("--mood-blend") && f("--mood").map(|m| m == "auto").unwrap_or(true) { lightmap::moods::blend(&h.envir, key) } else { None };
+                let x_pure = lightmap::moods::mood_xml(&h.envir, mood).unwrap_or_else(|| panic!("no mood XML for {} {mood}", h.envir));
+                let x_blended: lightmap::moods::MoodXml = match blend { Some(_) => lightmap::moods::blended_xml(&h.envir, key).unwrap(), None => *x_pure };
+                let x: &lightmap::moods::MoodXml = &x_blended;
+                if let Some((a, b, t)) = blend { eprintln!("mood blend: key {key:.4} = {} {:.0} % + {} {:.0} % (record mood {mood})", a.mood, (1.0 - t) * 100.0, b.mood, t * 100.0); }
+                xml_sel = Some(x_pure);
                 // the dome model: sky = 1.55·LAmbient·SkyFactor (an open floor on the BlueBay Sunset-quarter test
                 // bakes reads (0.61, 0.58, 0.77) = 1.55 × LAmbient in LAmbient's hue), no separate ambient term
                 let dome = !has("--hemi");
@@ -816,13 +827,22 @@ fn run(a: Vec<String>) {
                     // --sky-grad-scale k scales the gradient (GlobalScale·ScaleGrad0 stand-in), --lobe-scale the lobes
                     if !has("--flat-sky") {
                         let coll = x.collection;
-                        let mood = x.mood;
-                        let path = f("--sky-grad").unwrap_or_else(|| lightmap::skygrad::mood_file(coll, mood, "SkyColor.dds"));
+                        let (mood_a, mood_b, bt) = match blend { Some((a, b, t)) => (a.mood, b.mood, t), None => (x.mood, x.mood, 0.0) };
+                        let mood = mood_a;
+                        let path = f("--sky-grad").unwrap_or_else(|| lightmap::skygrad::mood_file(coll, mood_a, "SkyColor.dds"));
                         match lightmap::skygrad::SkyGradient::load(&path) {
                             Ok(mut g) => {
+                                if bt > 0.0 && f("--sky-grad").is_none() {
+                                    match lightmap::skygrad::SkyGradient::load(&lightmap::skygrad::mood_file(coll, mood_b, "SkyColor.dds")) {
+                                        Ok(g2) => g.blend_with(&g2, bt),
+                                        Err(e) => eprintln!("sky gradient of {mood_b}: {e}; no texture blend"),
+                                    }
+                                }
                                 // the gradient's global scale: 1.6 fits the BlueBay Sunset open floor (0.607) — per-mood
                                 // values pending (GlobalScale·ScaleGrad0 from the runtime sky constants)
-                                g.scale = f("--sky-grad-scale").map(|s| s.parse().unwrap()).unwrap_or_else(|| lightmap::moods::sky_grad_scale(coll, mood)) * x.sky_factor;
+                                // the fitted per-mood scale, lerped between the two moods like every other field
+                                let fitted = lightmap::moods::sky_grad_scale(coll, mood_a) * (1.0 - bt) + lightmap::moods::sky_grad_scale(coll, mood_b) * bt;
+                                g.scale = f("--sky-grad-scale").map(|s| s.parse().unwrap()).unwrap_or(fitted) * x.sky_factor;
                                 g.sun_dir = prm.sun_dir;
                                 g.sun_az = prm.sun_dir[0].atan2(prm.sun_dir[2]);
                                 g.v_full = has("--v-full");
@@ -830,12 +850,20 @@ fn run(a: Vec<String>) {
                                 if let Some(o) = f("--u-sun") { g.u_sun = o.parse().unwrap(); }
                                 if has("--u-flip") { g.u_sign = -1.0; }
                                 let lobe_scale: f32 = f("--lobe-scale").map(|s| s.parse().unwrap()).unwrap_or(1.0);
-                                if let Ok(xml) = std::fs::read_to_string(lightmap::skygrad::mood_file(coll, mood, "Mood.MoodSetting.xml")) {
-                                    g.lobes = lightmap::skygrad::lobes_from_xml(&xml).into_iter().map(|(p, c, s)| (p, c, s * lobe_scale)).collect();
-                                    // Tech3/Sky_p: the dome is at the fog's far depth → lerp(sky, Fog.Color, Fog.IntensMax); --no-fog / --fog-intens F
-                                    // 5300 m: the BlueBay Day open pad's colour (fog intensity 0.32; the pad-only test map vs the editor, 2026-09-23)
-                                    let dome_m: f32 = f("--fog-dome-m").map(|s| s.parse().unwrap()).unwrap_or(5300.0);
-                                    if !has("--no-fog") { g.fog = lightmap::skygrad::fog_from_xml(&xml, dome_m).map(|(c, i)| (c, f("--fog-intens").map(|s| s.parse().unwrap()).unwrap_or(i))); }
+                                // 5300 m: the BlueBay Day open pad's colour (fog intensity 0.32; the pad-only test map vs the editor, 2026-09-23)
+                                let dome_m: f32 = f("--fog-dome-m").map(|s| s.parse().unwrap()).unwrap_or(5300.0);
+                                let xml_a = std::fs::read_to_string(lightmap::skygrad::mood_file(coll, mood_a, "Mood.MoodSetting.xml")).ok();
+                                let xml_b = if bt > 0.0 { std::fs::read_to_string(lightmap::skygrad::mood_file(coll, mood_b, "Mood.MoodSetting.xml")).ok() } else { None };
+                                if let Some(xa) = &xml_a {
+                                    let la = lightmap::skygrad::lobes_from_xml(xa);
+                                    let lobes = match &xml_b { Some(xb) => lightmap::skygrad::lerp_lobes(&la, &lightmap::skygrad::lobes_from_xml(xb), bt), None => la };
+                                    g.lobes = lobes.into_iter().map(|(p, c, s)| (p, c, s * lobe_scale)).collect();
+                                    // Tech3/Sky_p: the dome is at the fog's far depth → lerp(sky, Fog.Color, Fog.Intens(dome)); --no-fog / --fog-intens F
+                                    if !has("--no-fog") {
+                                        let fa = lightmap::skygrad::fog_from_xml(xa, dome_m);
+                                        let fog = match &xml_b { Some(xb) => lightmap::skygrad::lerp_fog(fa, lightmap::skygrad::fog_from_xml(xb, dome_m), bt), None => fa };
+                                        g.fog = fog.map(|(c, i)| (c, f("--fog-intens").map(|s| s.parse().unwrap()).unwrap_or(i)));
+                                    }
                                 }
                                 // with the fog blend the fitted per-mood number is GlobalScale (the gradient's own ScaleGrad0 = 1 for the HDR BC6H texture)
                                 if g.fog.is_some() && f("--sky-grad-scale").is_none() { g.global_scale = g.scale / x.sky_factor.max(1e-3); g.scale = 1.0 * x.sky_factor; }
@@ -924,8 +952,11 @@ fn run(a: Vec<String>) {
                         else { t_s - w_b + 4.0 * (u - 0.75) * w_b };
                     let b = if time >= t_r && time <= t_s { ((time - t_r) / (t_s - t_r)).clamp(0.0, 1.0) } else if time > (t_r + t_s) * 0.5 { 1.0 } else { 0.0 };
                     let (pb, lat) = (std::f32::consts::PI * b, lat_d.to_radians());
-                    // the light direction (sun → ground); the sun's position is −D
-                    let dl = [pb.cos(), -lat.cos() * pb.sin(), -lat.sin() * pb.sin()];
+                    // the light direction (sun → ground); the sun's position is −D. The Z sign: the rotation is
+                    // about X by −lat (newZ = sin(−lat)·Y + cos(−lat)·Z with Y = −sin πb), so D_z = +sin(lat)·sin(πb)
+                    // and the sun culminates leaning towards −Z — the editor's wall on the pad-only test map is
+                    // brightest on its −z face (the sky glow side), 2026-09-23.
+                    let dl = [pb.cos(), -lat.cos() * pb.sin(), lat.sin() * pb.sin()];
                     let sp = [-dl[0], -dl[1], -dl[2]];
                     eprintln!("sun: blend key {u:.4} → time {time:.4} → arc b {b:.4}, latitude {lat_d}°");
                     (sp[0].atan2(sp[2]).to_degrees().rem_euclid(360.0), sp[1].clamp(-1.0, 1.0).asin().to_degrees())
@@ -3755,7 +3786,8 @@ fn run(a: Vec<String>) {
             if per_item {
                 per_rows.sort_by(|a, b| b.5.partial_cmp(&a.5).unwrap());
                 println!("per item (worst RMSE first): item model texels ref-mean ours-mean ratio rmse");
-                for (item, model, n, ma, mb, rm) in per_rows.iter().take(40) {
+                let take = if a.iter().any(|x| x == "--per-item-all") { usize::MAX } else { 40 };
+                for (item, model, n, ma, mb, rm) in per_rows.iter().take(take) {
                     let rgb = per_rgb.iter().find(|r| r.0 == *item).map(|r| format!("  ref rgb ({:.2},{:.2},{:.2}) ours ({:.2},{:.2},{:.2})", r.1[0] / *n as f64, r.1[1] / *n as f64, r.1[2] / *n as f64, r.2[0] / *n as f64, r.2[1] / *n as f64, r.2[2] / *n as f64)).unwrap_or_default();
                     println!("  {item:>5} {model:<28} {n:>7} {ma:.3} {mb:.3} {:.3} {rm:.3}{rgb}", mb / ma.max(1e-6));
                 }
