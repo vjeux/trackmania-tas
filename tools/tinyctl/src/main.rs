@@ -82,7 +82,7 @@ const USAGE: &str = r#"tinyctl — tiny-campaign operations (Rust, no shell)
         shot through the anchor like the tiny side; --fresh: restart the game first,
         under the lock — the client caches item models by file name per session)
   tinyctl play --map MAP --tag T [--shots 4] [--every-ms 200] [--first-ms 300] [--timeout 600] [--outdir D]
-               [--drive-ms MS [--drive-at-ms 13500]]
+               [--drive-ms MS [--drive-at-ms 13500]] [--via-editor]
         the map in PLAY mode on the box (shootctl playshots): N timed frames from
         the playground opening — the MediaTracker intro — as one stacked sheet
   tinyctl startcheck --map MAP [--tag T] [--tolerance 12] [--outdir D]

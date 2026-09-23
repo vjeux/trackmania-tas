@@ -56,7 +56,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
     let camlog = f("--camlog-ms").map(|ms| format!(" --camlog-ms {ms}")).unwrap_or_default();
     // --wheels-ms MS: the surface under each wheel per frame (wheels-<tag>.tsv, pulled back)
     let wheels = f("--wheels-ms").map(|ms| format!(" --wheels-ms {ms}")).unwrap_or_default();
-    let cmd = format!("{shootctl} playshots --detach --map {remote_map} --outdir {remote_dir} --tag {tag} --shots {shots} --every-ms {every_ms} --first-ms {first_ms} --timeout {timeout}{drive}{camlog}{wheels}");
+    // --via-editor: EditMap + the editor's TEST button instead of the title's PlayMap
+    let via = if args.iter().any(|a| a == "--via-editor") { " --via-editor" } else { "" };
+    let cmd = format!("{shootctl} playshots --detach --map {remote_map} --outdir {remote_dir} --tag {tag} --shots {shots} --every-ms {every_ms} --first-ms {first_ms} --timeout {timeout}{drive}{camlog}{wheels}{via}");
     eprintln!("playing {tag} on the box ({shots} frames) — waits for the render lock if another thread holds the game …");
     let started = wsx.sh(&cmd)?;
     if wsx.verbose {

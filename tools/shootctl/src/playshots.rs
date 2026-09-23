@@ -46,6 +46,9 @@ pub struct Opts {
     /// under the car on the original vs the tiny build (2026-09-07).
     pub wheels_ms: u64,
     pub detach: bool,
+    /// `--via-editor`: open the map in the editor and press TEST instead of
+    /// the title's PlayMap (which stopped opening maps on 2026-09-23).
+    pub via_editor: bool,
 }
 
 pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
@@ -69,6 +72,7 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         camlog_ms: num("--camlog-ms", 0)?,
         wheels_ms: num("--wheels-ms", 0)?,
         detach: args.iter().any(|a| a == "--detach"),
+        via_editor: args.iter().any(|a| a == "--via-editor"),
     })
 }
 
@@ -77,7 +81,7 @@ pub fn run(args: &[String]) -> i32 {
         Ok(o) => o,
         Err(e) => {
             eprintln!("{e}");
-            eprintln!("usage: shootctl playshots --map MAP --outdir /mnt/c/... [--tag T] [--shots N] [--every-ms MS] [--first-ms MS] [--carlog-ms MS] [--drive-ms MS [--drive-at-ms MS]] [--camlog-ms MS] [--wheels-ms MS] [--timeout S] [--detach]");
+            eprintln!("usage: shootctl playshots --map MAP --outdir /mnt/c/... [--tag T] [--shots N] [--every-ms MS] [--first-ms MS] [--carlog-ms MS] [--drive-ms MS [--drive-at-ms MS]] [--camlog-ms MS] [--wheels-ms MS] [--timeout S] [--detach] [--via-editor]");
             return 2;
         }
     };
@@ -122,7 +126,35 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     let store = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter";
     let _ = std::fs::create_dir_all(store);
     std::fs::write(format!("{store}/editmap.txt"), &game_map).map_err(|e| format!("editmap.txt: {e}"))?;
-    println!("{} /playmap: {}", el(), super::http_get("/playmap?mode=", 30).unwrap_or_default().trim());
+    if opts.via_editor {
+        // `--via-editor`: EditMap, then the editor's TEST button — a playground
+        // inside the editor, in-game MediaTracker clips live. The title's
+        // PlayMap stopped opening ANY map on 2026-09-23 (~01:40 PT: ok, then
+        // ctx 0 forever and an empty `<map>` line in UGCErrorsLog, stock maps
+        // included, across restarts); the editor route was unaffected.
+        println!("{} /editmap: {}", el(), super::http_get("/editmap", 30).unwrap_or_default().trim());
+        let ed0 = Instant::now();
+        loop {
+            if ed0.elapsed().as_secs() > opts.timeout_s {
+                return Err(format!("no editor in {} s; last ctx {}", opts.timeout_s, super::http_get("/ctx", 10).unwrap_or_default().trim()));
+            }
+            if !super::tm_running() {
+                return Err("the game process is gone — the map crashed the client".into());
+            }
+            let c = super::http_get("/ctx", 10).unwrap_or_default();
+            if c.contains("FrameAskYesNo") {
+                let _ = super::http_get("/yes", 10);
+            }
+            if super::ctx() == Some(1) && c.contains("\"map\":\"") {
+                std::thread::sleep(Duration::from_millis(1500));
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        println!("{} editor after {:.1}s; /edtest: {}", el(), ed0.elapsed().as_secs_f64(), super::http_get("/edtest", 30).unwrap_or_default().trim());
+    } else {
+        println!("{} /playmap: {}", el(), super::http_get("/playmap?mode=", 30).unwrap_or_default().trim());
+    }
     let load0 = Instant::now();
     loop {
         if load0.elapsed().as_secs() > opts.timeout_s {
