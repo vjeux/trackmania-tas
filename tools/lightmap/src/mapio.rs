@@ -63,9 +63,28 @@ pub fn load_template(path: &str) -> Result<Template, String> {
 }
 
 /// The map's DayTime word from chunk 0x03043056 (None when the chunk is absent).
+/// The map's DayTime word. The editor reads chunk **0x0304306B** `{u32 0, u32 DayTime, u32 0, u32 0,
+/// u32 300000}` (found 2026-09-23 12:55Z: every DayTime variant that patched only 0x03043056 and the
+/// lightmap records still baked at this chunk's word); the legacy 0x03043056 `{version 3, u32, DayTime,
+/// dynamic, duration}` carries the same value on Nadeo's files and is the fallback.
 pub fn daytime(body: &[u8]) -> Option<u32> {
     let cs = tmmaps::gbx::all_skip_chunks(body);
+    if let Some(c) = cs.iter().find(|c| c.0 == 0x0304306B && c.3 >= 8) {
+        let p = c.2;
+        return Some(u32::from_le_bytes([body[p + 4], body[p + 5], body[p + 6], body[p + 7]]));
+    }
     let c = cs.iter().find(|c| c.0 == 0x03043056)?;
     let p = c.2;
     Some(u32::from_le_bytes([body[p + 8], body[p + 9], body[p + 10], body[p + 11]]))
+}
+
+/// The offsets (in `body`) of every DayTime word: 0x0304306B at +4 and 0x03043056 at +8.
+pub fn daytime_word_offsets(body: &[u8]) -> Vec<usize> {
+    let cs = tmmaps::gbx::all_skip_chunks(body);
+    let mut out = Vec::new();
+    for c in &cs {
+        if c.0 == 0x0304306B && c.3 >= 8 { out.push(c.2 + 4); }
+        if c.0 == 0x03043056 && c.3 >= 12 { out.push(c.2 + 8); }
+    }
+    out
 }

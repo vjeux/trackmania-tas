@@ -2354,10 +2354,12 @@ fn run(a: Vec<String>) {
             let p = c.2;
             let rd = |o: usize| u32::from_le_bytes([body[p + o], body[p + o + 1], body[p + o + 2], body[p + o + 3]]);
             println!("0x03043056: version {} u {} daytime {:#x} ({}) dynamic {} duration {} ms", rd(0), rd(4), rd(8), if rd(8) == 0xffff_ffff { "default = the mood's DayTime01".to_string() } else { format!("{:.4} of the day", rd(8) as f64 / 65536.0) }, rd(12), rd(16));
+            let offs = lightmap::mapio::daytime_word_offsets(body);
+            if let Some(w) = lightmap::mapio::daytime(body) { println!("0x0304306B (the word the editor uses): {w:#x}; {} DayTime words in the body", offs.len()); }
             if let (Some(out), Some(v)) = (f("--out"), f("--set")) {
                 let val: u32 = if v == "default" { 0xffff_ffff } else if let Some(h) = v.strip_prefix("0x") { u32::from_str_radix(h, 16).unwrap() } else { v.parse().unwrap() };
                 let mut nb = body.clone();
-                nb[p + 8..p + 12].copy_from_slice(&val.to_le_bytes());
+                for o in &offs { nb[*o..*o + 4].copy_from_slice(&val.to_le_bytes()); }
                 // the lightmap chunk's frame records carry the time too — the editor takes ITS time from them
                 // when it opens the map (a bake copy with a stale record re-bakes at the stale time)
                 let mut rec_note = String::new();
@@ -2630,6 +2632,19 @@ fn run(a: Vec<String>) {
             let out = f("--out").expect("--out");
             lightmap::mapio::save_with_chunk(&into, &payload, &out).expect("save");
             println!("wrote {out}: {items} item charts renumbered (reduced → full), {tiles} tile charts kept, {oob} charts beyond the kept list; the full map has {} items, the reduced bake {}", tmmaps::map::MapFile::load(std::path::Path::new(&f("--into").unwrap())).items.len(), kept.len());
+        }
+        "chunkhex" => {
+            // lmtool chunkhex MAP ID…: the payload bytes of small skippable body chunks (hex + u32/f32 readings)
+            let m = lightmap::mapio::load(&a[1]).expect("load");
+            let cs = tmmaps::gbx::all_skip_chunks(&m.gbx.body);
+            for id_s in &a[2..] {
+                let id = u32::from_str_radix(id_s.trim_start_matches("0x"), 16).unwrap();
+                for c in cs.iter().filter(|c| c.0 == id) {
+                    let b = &m.gbx.body[c.2..c.2 + c.3.min(128)];
+                    let words: Vec<String> = b.chunks(4).filter(|w| w.len() == 4).map(|w| { let u = u32::from_le_bytes([w[0], w[1], w[2], w[3]]); let f = f32::from_bits(u); if f.is_finite() && f.abs() > 1e-5 && f.abs() < 1e6 && u > 0x1000 { format!("{u}/{f:.4}") } else { format!("{u}") } }).collect();
+                    println!("{id_s} ({} B): {}  = [{}]", c.3, b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" "), words.join(", "));
+                }
+            }
         }
         "graft" => {
             // lmtool graft MAP --from OTHER.Map.Gbx --out OUT: MAP with OTHER's lightmap chunk verbatim (a deliberately
