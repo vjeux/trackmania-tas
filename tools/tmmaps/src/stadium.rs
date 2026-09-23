@@ -1073,8 +1073,10 @@ pub fn stable_uid(prefix: &str, src_uid: &str) -> String {
         x ^= b as u64;
         x = x.wrapping_mul(0x0000_0100_0000_01b3);
     }
+    // the SAME length as the source uid (26 or 27 chars: set_map_uid keeps the record size —
+    // Spring 2026 - 10's 26-char uid asserted on the box)
     let mut out = prefix.to_string();
-    while out.len() < 27 {
+    while out.len() < src_uid.len().max(prefix.len() + 8) {
         x ^= x << 13;
         x ^= x >> 7;
         x ^= x << 17;
