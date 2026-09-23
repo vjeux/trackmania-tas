@@ -141,7 +141,19 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         } else if let Some(p) = f.item.prefab() {
             let mut constraints = 0usize;
             let mut tween_parts = 0usize;
+            // the instanced form: a static object defined inline by one entity and
+            // REFERENCED by index by the later instances (the GBX node cache) —
+            // those bare indices are internal, not externals
+            let defined: std::collections::HashSet<i32> = p.ents.iter().filter(|e| e.model.inline.is_some()).map(|e| e.model.index).collect();
+            let mut instances = 0usize;
             for (i, e) in p.ents.iter().enumerate() {
+                if e.model.inline.is_none() && defined.contains(&e.model.index) {
+                    instances += 1;
+                    if facts {
+                        println!("{path}: entity {i}: instance of node {} at {:?}", e.model.index, e.pos);
+                    }
+                    continue;
+                }
                 match e.model.inline.as_deref() {
                     Some(super::Node::Dyna(d)) => match d.mesh.inline.as_deref() {
                         Some(super::Node::Solid2(s2)) => {
@@ -224,8 +236,13 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                         if item_type != Some(wp.wtype) {
                             problems.push(format!("entity {i}: waypoint trigger type {} but the item chunk says {:?}", wp.wtype, item_type));
                         }
-                        if wp.no_respawn == 0 {
-                            problems.push(format!("entity {i}: waypoint trigger in prefab form without NoRespawn — the entity-model form is the one for a respawnable waypoint"));
+                        // a respawnable trigger (checkpoint, multilap) in the prefab
+                        // form needs the prefab's own spawn entity
+                        // (NPlugTrigger_SSpawn, Nadeo's gate layout) — without one
+                        // the client respawned at the item's pivot (2026-09-09)
+                        let has_spawn = p.ents.iter().any(|e| matches!(e.model.inline.as_deref(), Some(super::Node::Opaque(o)) if o.class_id == 0x0917A000));
+                        if wp.no_respawn == 0 && wp.wtype != 1 && !has_spawn {
+                            problems.push(format!("entity {i}: respawnable waypoint trigger in prefab form without a spawn entity (NPlugTrigger_SSpawn)"));
                         }
                     }
                     // an effect system (the Show items' smoke / sparks): an entity
@@ -316,6 +333,9 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
             let moving = p.ents.iter().filter(|e| matches!(e.model.inline.as_deref(), Some(super::Node::Dyna(_)))).count() - tween_parts;
             if constraints != moving {
                 problems.push(format!("{moving} moving parts but {constraints} constraints"));
+            }
+            if instances > 0 && facts {
+                println!("{path}: {instances} instance entities over {} defined static objects", defined.len());
             }
             if parts.is_empty() {
                 println!("{path}: FAIL prefab with no solid");

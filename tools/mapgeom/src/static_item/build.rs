@@ -169,6 +169,23 @@ pub fn add_prefab(store: &mut crate::store::DataStore, path: &str, at: &Xform, s
                     let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).or(common).unwrap_or(0);
                     Some((p, link, phys))
                 };
+                // the instanced form: this static object baked once at the
+                // origin under its (prefab, entity) key, the placement
+                // recorded — see `Merged::share`
+                if m.share {
+                    let key = format!("{path}#{i}");
+                    match m.share_instance(&key, &iso) {
+                        super::merged::ShareStep::Recorded => continue,
+                        super::merged::ShareStep::Bake => {
+                            let mut sub = m.child();
+                            sub.add_static_object(so, &IDENTITY, scale, &mut resolve).map_err(|err| format!("{path} entity {i}: {err}"))?;
+                            sub.resolve_pending_lights(store);
+                            m.share_push(&key, &iso, sub);
+                            continue;
+                        }
+                        super::merged::ShareStep::Merge => {}
+                    }
+                }
                 m.add_static_object(so, &iso, scale, &mut resolve).map_err(|err| format!("{path} entity {i}: {err}"))?;
                 m.resolve_pending_lights(store);
             }
@@ -897,6 +914,19 @@ pub fn add_static_object_file(store: &mut crate::store::DataStore, path: &str, a
         let phys = physics_for_link(&link).or_else(|| material_physics(store, &p).filter(|x| *x != 0)).or(common).unwrap_or(0);
         Some((p, link, phys))
     };
+    if m.share {
+        match m.share_instance(path, at) {
+            super::merged::ShareStep::Recorded => return Ok(()),
+            super::merged::ShareStep::Bake => {
+                let mut sub = m.child();
+                sub.add_static_object(&so, &IDENTITY, scale, &mut resolve).map_err(|err| format!("{path}: {err}"))?;
+                sub.resolve_pending_lights(store);
+                m.share_push(path, at, sub);
+                return Ok(());
+            }
+            super::merged::ShareStep::Merge => {}
+        }
+    }
     m.add_static_object(&so, at, scale, &mut resolve).map_err(|err| format!("{path}: {err}"))?;
     m.resolve_pending_lights(store);
     Ok(())
@@ -1865,6 +1895,7 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
 pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStore, item_path: &str, ident: &str, author: &str, scale: f32, collection: u32, variant: usize, light_skin: Option<crate::light_skin::LightSkin>) -> R<(Vec<u8>, Merged)> {
     let variants = pack_item_variants(store, item_path)?;
     let mut m = Merged::default();
+    m.share = crate::static_item::merged::share_default();
     m.light_skin = light_skin;
     m.keep_water = keep_water_for(collection);
     if variants.is_empty() {

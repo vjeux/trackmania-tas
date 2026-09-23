@@ -54,6 +54,15 @@ pub struct Opts {
     /// checkpoint or finish failed to upload); without it the slot shows the
     /// material's own default picture.
     pub no_skin_header: bool,
+    /// `--form merged`: one merged mesh per item (the campaign's static form)
+    /// instead of the default INSTANCED prefab (`Merged::share`: one node per
+    /// distinct sub-object, one entity per placement — 12 % smaller over the
+    /// set, 40 % on the road straights, and every sub-object keeps the pack's
+    /// own lightmap layout).
+    pub merged: bool,
+    /// `--no-spawn-comp`: leave the spawn point where the bake put it.
+    /// Default: the pivot compensation (see `dress`).
+    pub no_spawn_comp: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -174,6 +183,39 @@ fn dress(bytes: &[u8], job: &Job, opts: &Opts, icon: Option<&[u8]>, description:
     if !placed {
         return Err("baked item has no placement chunk (0x2E00201C)".into());
     }
+    // The spawn point and the placement pivot. Measured 2026-09-23 (TinySet4/7:
+    // a RoadTechStart with pivot V = (8,0,8) placed at P, yaw 270°): the game
+    // put the car at P + R(s + V) for a spawn written at s — in BOTH forms,
+    // the prefab's SSpawn entity position and the entity model's iso — while
+    // the geometry sits at P + R(p - V): the pivot enters the spawn with the
+    // opposite sign. (Nadeo's own gates have a zero pivot and never see it.)
+    // So the spawn is written at s - 2V, and the car lands at P + R(s - V),
+    // the block's spawn point. `--no-spawn-comp` leaves s.
+    if !opts.no_spawn_comp && std::env::var("TINY_SPAWN_FORM").as_deref() != Ok("iso") {
+        let pivot = placement_for(job.sx, job.sz, opts.scale, 0).pivot_positions[0];
+        if let Some(p) = f.item.prefab_mut() {
+            for e in p.ents.iter_mut() {
+                if matches!(e.model.inline.as_deref(), Some(Node::Opaque(o)) if o.class_id == 0x0917A000) {
+                    e.pos = [e.pos[0] - 2.0 * pivot[0], e.pos[1] - 2.0 * pivot[1], e.pos[2] - 2.0 * pivot[2]];
+                }
+            }
+        }
+        // the merged form: the entity model's iso carries the spawn (a start
+        // has no trigger, so any waypoint type but "none" counts)
+        let wt = f.item.chunks.iter().find_map(|c| match c {
+            ItemChunk::Waypoint { waypoint_type, .. } => Some(*waypoint_type),
+            _ => None,
+        });
+        if wt.map(|t| t != 3).unwrap_or(false) {
+            if let Some(mc) = f.item.model_mut() {
+                if let Some(Node::EntityModel(em)) = mc.entity_model.inline.as_deref_mut() {
+                    em.iso[9] -= 2.0 * pivot[0];
+                    em.iso[10] -= 2.0 * pivot[1];
+                    em.iso[11] -= 2.0 * pivot[2];
+                }
+            }
+        }
+    }
     // loose files on disk are LZO-compressed like the game's own (an embedded
     // zip deflates them instead; 600 KB of vertex data become ~200)
     f.body_comp = b'C';
@@ -191,9 +233,9 @@ fn bake_job(store: &mut DataStore, job: &Job, opts: &Opts) -> Result<Baked, Stri
     };
     let legacy = BTreeMap::new();
     let (bytes, m, _) = bake_block(store, &plan, &job.name, &job.path, &bi, &job.ident, opts.scale, opts.collection, &legacy, None, false)?;
-    let triangles = m.visuals.iter().map(|v| v.visual.index_buffer.as_ref().map(|ib| ib.indices.len() / 3).unwrap_or(0)).sum();
+    let triangles = m.triangle_count();
     notes.extend(m.notes.iter().cloned());
-    Ok(Baked { bytes, pictures: m.pictures.clone(), visuals: m.visuals.len(), triangles, notes, waypoint: m.waypoint_type })
+    Ok(Baked { bytes, pictures: m.pictures.clone(), visuals: m.visual_count(), triangles, notes, waypoint: m.waypoint_type })
 }
 
 fn parse_opts(rest: &[String]) -> Result<Opts, String> {
@@ -230,6 +272,8 @@ fn parse_opts(rest: &[String]) -> Result<Opts, String> {
         report: flag("--report").map(PathBuf::from),
         zip: flag("--zip").map(PathBuf::from),
         no_skin_header: has("--no-skin-header"),
+        merged: flag("--form").map(|f| f == "merged").unwrap_or(false),
+        no_spawn_comp: has("--no-spawn-comp"),
     })
 }
 
@@ -366,6 +410,7 @@ pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
 
     // --- bake, on every core -------------------------------------------------
     let t1 = std::time::Instant::now();
+    crate::static_item::merged::SHARE.store(!opts.merged, std::sync::atomic::Ordering::Relaxed);
     let results: Vec<Result<Baked, String>> = crate::par::map(store, &jobs, |st, _, job| bake_job(st, job, &opts));
     eprintln!("{} bakes in {:.1} s", results.len(), t1.elapsed().as_secs_f32());
 
@@ -624,12 +669,34 @@ pub fn bounds_cmd(rest: &[String]) {
             });
             println!("{path}\n  visual (LOD 0) {all}\n  collision {}", coll.unwrap_or_else(|| "none (mesh collidable or no shape)".into()));
         } else if let Some(Node::Prefab(p)) = f.item.model().and_then(|mc| mc.entity_model.inline.as_deref()) {
-            // the prefab form: every entity's static object, through its pose
+            // the prefab form: every entity's static object, through its pose —
+            // an INSTANCE entity (a bare reference to a node an earlier entity
+            // defined) through the defining entity's model
             let mut nso = 0usize;
+            let mut coll_all = Bounds::default();
+            let mut coll_n = 0usize;
+            let defined: std::collections::HashMap<i32, &crate::static_item::item::CPlugStaticObjectModel> = p.ents.iter().filter_map(|e| match e.model.inline.as_deref() { Some(Node::StaticObject(so)) => Some((e.model.index, so)), _ => None }).collect();
             for (k, e) in p.ents.iter().enumerate() {
-                let Some(Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
+                let so = match e.model.inline.as_deref() {
+                    Some(Node::StaticObject(so)) => so,
+                    None => match defined.get(&e.model.index) { Some(so) => *so, None => continue },
+                    _ => continue,
+                };
                 nso += 1;
                 let at = crate::geom::from_quat(e.rot, e.pos);
+                if let Some(Node::Surface(sf)) = so.shape.inline.as_deref() {
+                    if let crate::static_item::surface::Surf::Mesh { vertices, .. } = &sf.surf {
+                        let mut cb = Bounds::default();
+                        for q in vertices {
+                            cb.add(crate::geom::apply(&at, *q));
+                        }
+                        coll_n += vertices.len();
+                        coll_all.merge(&cb);
+                        if verbose {
+                            lines.push(format!("  entity {k:3} collision at {:?}: {cb} ({} vertices)", e.pos, vertices.len()));
+                        }
+                    }
+                }
                 if let Some(s2) = so.solid2() {
                     let mut eb = Bounds::default();
                     for (vk, v) in s2.visuals.iter().enumerate() {
@@ -651,7 +718,7 @@ pub fn bounds_cmd(rest: &[String]) {
                     all.merge(&eb);
                 }
             }
-            println!("{path}\n  prefab form: {} entities, {nso} static objects; visual (LOD 0) {all}", p.ents.len());
+            println!("{path}\n  prefab form: {} entities, {nso} static objects (instances included); visual (LOD 0) {all}\n  collision {coll_all} ({coll_n} vertices)", p.ents.len());
         } else {
             println!("{path}\n  (no static object: block item or unknown form)");
         }
@@ -767,8 +834,11 @@ pub fn scaled_placement(p: &PlacementParam, scale: f32, sclass_index: i32) -> Pl
 
 /// Re-dress a baked item copy of a pack item: ident/author/name/description,
 /// the pack item's icon, its placement scaled.
-fn dress_item(bytes: &[u8], ident: &str, stem: &str, author: &str, collection: u32, icon: Option<&[u8]>, description: &str, placement: &PlacementParam, scale: f32) -> Result<Vec<u8>, String> {
+fn dress_item(bytes: &[u8], ident: &str, stem: &str, author: &str, collection: u32, icon: Option<&[u8]>, description: &str, placement: &PlacementParam, scale: f32, no_skin_header: bool) -> Result<Vec<u8>, String> {
     let mut f = crate::static_item::parse_file(bytes)?;
+    if no_skin_header {
+        f.header_chunks.retain(|c| c.id != 0x090F4000);
+    }
     if let Some(k) = f.header_chunks.iter().position(|c| c.id == 0x2E001003) {
         f.header_chunks[k] = desc_chunk(ident, collection, author, stem);
         f.header_chunks.retain(|c| c.id != 0x2E001004);
@@ -838,10 +908,10 @@ fn bake_item_job(store: &mut DataStore, job: &ItemJob, opts: &Opts) -> Result<(B
     } else {
         crate::static_item::build::static_item_from_pack_item_report_skin(store, &job.path, &job.ident, &opts.author, opts.scale, opts.collection, 0, None)?
     };
-    let triangles = m.visuals.iter().map(|v| v.visual.index_buffer.as_ref().map(|ib| ib.indices.len() / 3).unwrap_or(0)).sum();
+    let triangles = m.triangle_count();
     let mut notes = m.notes.clone();
     notes.extend(pnotes);
-    Ok((Baked { bytes, pictures: m.pictures.clone(), visuals: m.visuals.len(), triangles, notes, waypoint: m.waypoint_type }, placement, icon))
+    Ok((Baked { bytes, pictures: m.pictures.clone(), visuals: m.visual_count(), triangles, notes, waypoint: m.waypoint_type }, placement, icon))
 }
 
 /// `mapgeom item-set-items --out DIR [--set TinyItems] [--scale 0.5] [--author ID]
@@ -900,6 +970,7 @@ pub fn run_items(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
         }
         return Ok(());
     }
+    crate::static_item::merged::SHARE.store(!opts.merged, std::sync::atomic::Ordering::Relaxed);
     let t1 = std::time::Instant::now();
     let results = crate::par::map(store, &jobs, |st, _, job| bake_item_job(st, job, &opts));
     eprintln!("{} bakes in {:.1} s", results.len(), t1.elapsed().as_secs_f32());
@@ -919,7 +990,7 @@ pub fn run_items(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
                     continue;
                 }
                 let description = format!("Tiny Items: the Nadeo item {} at scale {}, folder {}. Its own placement settings, scaled.", job.stem, opts.scale, folder);
-                match dress_item(&b.bytes, &job.ident, &job.stem, &opts.author, opts.collection, icon.as_deref(), &description, &placement, opts.scale) {
+                match dress_item(&b.bytes, &job.ident, &job.stem, &opts.author, opts.collection, icon.as_deref(), &description, &placement, opts.scale, opts.no_skin_header) {
                     Err(e) => {
                         failed += 1;
                         report.push_str(&format!("{folder}\t{}\t{}\tDRESS-FAILED\t{}\t-\t-\t-\t-\t{}\n", job.name, job.stem, job.path, tsv_escape(&e)));
@@ -965,4 +1036,338 @@ pub fn items_cmd(store: &mut DataStore, rest: &[String]) {
         eprintln!("item-set-items: {e}");
         std::process::exit(1);
     }
+}
+
+// ---------------------------------------------------------------------------
+// item.exchange packing: one set per browser folder, ≤ N MB zipped
+// ---------------------------------------------------------------------------
+
+/// `mapgeom item-set-zips --root Items/TinyBlocks --out DIR [--max-mb 28]
+/// [--skip LIST] [--prefix "Tiny Blocks - "]`: the items under `root` grouped
+/// by FAMILY (the browser's second level: Roads/RoadTech, Terrain/Grass) and
+/// packed in sub-folder order into zips of at most `max-mb` (paths relative
+/// to the Items folder, deflate) — a family over the cap becomes `(k/n: the
+/// sub-folders it holds)` parts; item.exchange refuses any request over
+/// 30,000,000 bytes (2026-09-22). `--skip`
+/// names a file of item paths (relative to root, one per line) already
+/// published. Writes `manifest.tsv` in `out`: set name, folder, part, items,
+/// zip bytes, zip file, the items' paths (`|`-joined).
+pub fn zips_cmd(rest: &[String]) {
+    if let Err(e) = run_zips(rest) {
+        eprintln!("item-set-zips: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn run_zips(rest: &[String]) -> Result<(), String> {
+    let flag = |name: &str| rest.iter().position(|a| a == name).and_then(|i| rest.get(i + 1)).cloned();
+    let root = PathBuf::from(flag("--root").ok_or("--root DIR (the Items/<set> folder) is required")?);
+    let out = PathBuf::from(flag("--out").ok_or("--out DIR is required")?);
+    let max_bytes: usize = (flag("--max-mb").unwrap_or_else(|| "28".into()).parse::<f64>().map_err(|e| format!("--max-mb: {e}"))? * 1_000_000.0) as usize;
+    let prefix = flag("--prefix").unwrap_or_else(|| "Tiny Blocks - ".into());
+    let skip: std::collections::HashSet<String> = match flag("--skip") {
+        Some(f) => std::fs::read_to_string(&f).map_err(|e| format!("{f}: {e}"))?.lines().map(|l| l.trim().replace('\\', "/")).filter(|l| !l.is_empty()).collect(),
+        None => Default::default(),
+    };
+    let set_name = root.file_name().and_then(|s| s.to_str()).ok_or("--root has no final component")?.to_string();
+    let readme_bytes = std::fs::read(root.join("README.txt")).ok();
+    fn walk(dir: &Path, root: &Path, acc: &mut Vec<(String, u64)>) -> Result<(), String> {
+        for e in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+            let e = e.map_err(|e| e.to_string())?;
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, root, acc)?;
+            } else if p.to_string_lossy().ends_with(".Item.Gbx") {
+                let rel = p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+                acc.push((rel, e.metadata().map_err(|e| e.to_string())?.len()));
+            }
+        }
+        Ok(())
+    }
+    let mut all = Vec::new();
+    walk(&root, &root, &mut all)?;
+    // by FAMILY (the browser's second level: Roads/RoadTech, Terrain/Grass, …),
+    // the items in sub-folder order so a part holds whole sub-folders
+    let mut by_family: BTreeMap<String, Vec<(String, u64)>> = BTreeMap::new();
+    let mut skipped = 0usize;
+    for (rel, size) in all {
+        if skip.contains(&rel) {
+            skipped += 1;
+            continue;
+        }
+        let parts: Vec<&str> = rel.split('/').collect();
+        let family = parts[..parts.len().saturating_sub(1).min(2)].join("/");
+        by_family.entry(family).or_default().push((rel, size));
+    }
+    for v in by_family.values_mut() {
+        v.sort();
+    }
+    eprintln!("{} families, {} items ({skipped} skipped)", by_family.len(), by_family.values().map(|v| v.len()).sum::<usize>());
+    std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    // the zip of a run of items (+ the pictures of their folders + the README)
+    let zip_of = |items: &[(String, u64)]| -> Result<Vec<u8>, String> {
+        let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut dirs_done: std::collections::HashSet<PathBuf> = Default::default();
+        for (rel, _) in items {
+            let p = root.join(rel);
+            files.insert(format!("{set_name}/{rel}"), std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?);
+            let dir = p.parent().unwrap().to_path_buf();
+            if dirs_done.insert(dir.clone()) {
+                for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
+                    let q = e.map_err(|e| e.to_string())?.path();
+                    let name = q.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                    if q.is_file() && !name.ends_with(".Item.Gbx") && name != "README.txt" {
+                        let qrel = q.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+                        files.insert(format!("{set_name}/{qrel}"), std::fs::read(&q).map_err(|e| e.to_string())?);
+                    }
+                }
+            }
+        }
+        if let Some(r) = &readme_bytes {
+            files.insert(format!("{set_name}/README.txt"), r.clone());
+        }
+        Ok(tmmaps::header::deflated_zip(&files))
+    };
+    // a display name for the family: the second-level folder when it names
+    // its kind itself (RoadTech, PlatformDirt, TrackWall, OpenIce), else with
+    // the top folder in front (Terrain Grass, Themes RallyCastle)
+    let family_label = |family: &str| -> String {
+        let mut it = family.split('/');
+        let top = it.next().unwrap_or("");
+        match it.next() {
+            None => top.to_string(),
+            Some(second) if second.starts_with("Road") || second.starts_with("Platform") || second.starts_with("Open") || second.ends_with("Wall") => second.to_string(),
+            Some(second) => format!("{top} {second}"),
+        }
+    };
+    let sub_of = |rel: &str| -> String {
+        let parts: Vec<&str> = rel.split('/').collect();
+        if parts.len() >= 4 { parts[2].to_string() } else { String::new() }
+    };
+    let mut manifest = String::from("set\tfolder\tpart\tparts\titems\tzip_bytes\tzip\tsubfolders\tpaths\n");
+    let mut total_sets = 0usize;
+    for (family, items) in &by_family {
+        // greedy bins in sub-folder order: estimated at 0.62 of the LZO bytes,
+        // each zip verified and split in two when it still passes the cap
+        let mut bins: Vec<Vec<(String, u64)>> = Vec::new();
+        let mut cur: Vec<(String, u64)> = Vec::new();
+        let mut cur_est = 0.0f64;
+        for it in items {
+            let est = it.1 as f64 * 0.62;
+            if !cur.is_empty() && cur_est + est > max_bytes as f64 * 0.97 {
+                bins.push(std::mem::take(&mut cur));
+                cur_est = 0.0;
+            }
+            cur.push(it.clone());
+            cur_est += est;
+        }
+        if !cur.is_empty() {
+            bins.push(cur);
+        }
+        // verify; a bin over the cap is halved until it fits
+        let mut zips: Vec<(Vec<u8>, Vec<(String, u64)>)> = Vec::new();
+        let mut queue: std::collections::VecDeque<Vec<(String, u64)>> = bins.into_iter().collect();
+        while let Some(bin) = queue.pop_front() {
+            let z = zip_of(&bin)?;
+            if z.len() > max_bytes {
+                if bin.len() == 1 {
+                    return Err(format!("{family}: {} alone is {} bytes zipped, over the cap", bin[0].0, z.len()));
+                }
+                let half = bin.len() / 2;
+                let (a, b) = bin.split_at(half);
+                // keep the order: the second half goes right after the first
+                queue.push_front(b.to_vec());
+                queue.push_front(a.to_vec());
+                continue;
+            }
+            zips.push((z, bin));
+        }
+        let n = zips.len();
+        let label = family_label(family);
+        for (k, (z, bin)) in zips.iter().enumerate() {
+            let mut subs: Vec<String> = Vec::new();
+            for (rel, _) in bin {
+                let s = sub_of(rel);
+                if !subs.contains(&s) {
+                    subs.push(s);
+                }
+            }
+            let subs_text = subs.iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(", ");
+            let name = if n == 1 {
+                format!("{prefix}{label}")
+            } else {
+                let mut t = subs_text.clone();
+                if t.len() > 60 {
+                    t.truncate(57);
+                    t.push_str("...");
+                }
+                if t.is_empty() { format!("{prefix}{label} ({}/{n})", k + 1) } else { format!("{prefix}{label} ({}/{n}: {t})", k + 1) }
+            };
+            let file = format!("{}{}.zip", family.replace('/', "-"), if n > 1 { format!("-{}of{n}", k + 1) } else { String::new() });
+            std::fs::write(out.join(&file), z).map_err(|e| format!("{file}: {e}"))?;
+            manifest.push_str(&format!("{name}\t{family}\t{}\t{n}\t{}\t{}\t{file}\t{}\t{}\n", k + 1, bin.len(), z.len(), tsv_escape(&subs_text), bin.iter().map(|(r, _)| r.as_str()).collect::<Vec<_>>().join("|")));
+            eprintln!("{name}: {} items, {:.1} MB -> {file}", bin.len(), z.len() as f64 / 1e6);
+            total_sets += 1;
+        }
+    }
+    std::fs::write(out.join("manifest.tsv"), &manifest).map_err(|e| e.to_string())?;
+    eprintln!("{total_sets} sets -> {}", out.display());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Set screenshots: one map per set, its items in a grid (`mapgeom item-set-shoot`)
+// ---------------------------------------------------------------------------
+
+/// `mapgeom item-set-shoot --manifest DIR/manifest.tsv --report REPORT.tsv --host HOST.Map.Gbx
+/// --out DIR [--author ID] [--origin 400,8,400] [--max-items 30]`: for every set of the
+/// manifest a map with the set's items laid out in a grid on the block-free
+/// host (every host item record parked far away, one re-pointed per item —
+/// `item_set_map`'s method), written as `DIR/<zip stem>.Map.Gbx`, and
+/// `DIR/cams.tsv`: set name, map file, the editor camera (target, distance,
+/// h, v — the probe plugin's cam.txt spec) framing the whole grid, the grid
+/// size. The footprint of every item comes from the bake report (column
+/// `footprint`, `SxSz` in tiny units): the grid pitch is the set's largest
+/// footprint plus a gap, so pieces never overlap.
+pub fn shoot_cmd(rest: &[String]) {
+    if let Err(e) = run_shoot(rest) {
+        eprintln!("item-set-shoot: {e}");
+        std::process::exit(1);
+    }
+}
+
+fn run_shoot(rest: &[String]) -> Result<(), String> {
+    let flag = |name: &str| rest.iter().position(|a| a == name).and_then(|i| rest.get(i + 1)).cloned();
+    let manifest = PathBuf::from(flag("--manifest").ok_or("--manifest FILE is required")?);
+    let report = PathBuf::from(flag("--report").ok_or("--report FILE (the bake report) is required")?);
+    let host = PathBuf::from(flag("--host").ok_or("--host MAP is required")?);
+    let out = PathBuf::from(flag("--out").ok_or("--out DIR is required")?);
+    let author = flag("--author").unwrap_or_else(|| crate::tiny_assets::AUTHOR.to_string());
+    let max_items: usize = flag("--max-items").unwrap_or_else(|| "30".into()).parse().map_err(|e| format!("--max-items: {e}"))?;
+    let origin: Vec<f32> = flag("--origin").unwrap_or_else(|| "400,8,400".into()).split(',').filter_map(|v| v.parse().ok()).collect();
+    if origin.len() != 3 {
+        return Err("--origin needs x,y,z".into());
+    }
+    std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    // footprints by item path (relative to the set root), from the report
+    let mut footprint: std::collections::HashMap<String, (u32, u32)> = Default::default();
+    let text = std::fs::read_to_string(&report).map_err(|e| format!("{}: {e}", report.display()))?;
+    let mut lines = text.lines();
+    let head: Vec<&str> = lines.next().unwrap_or("").split('\t').collect();
+    let col = |name: &str| head.iter().position(|h| *h == name);
+    let (c_folder, c_stem, c_status, c_fp) = (col("folder").ok_or("report: no folder column")?, col("stem").ok_or("report: no stem column")?, col("status").ok_or("report: no status column")?, col("footprint").ok_or("report: no footprint column")?);
+    for l in lines {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() <= c_fp || f[c_status] != "OK" {
+            continue;
+        }
+        let (sx, sz) = f[c_fp].split_once('x').and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?))).unwrap_or((1, 1));
+        footprint.insert(format!("{}/{}.Item.Gbx", f[c_folder], f[c_stem]), (sx, sz));
+    }
+    let mtext = std::fs::read_to_string(&manifest).map_err(|e| format!("{}: {e}", manifest.display()))?;
+    let mut mlines = mtext.lines();
+    let mhead: Vec<&str> = mlines.next().unwrap_or("").split('\t').collect();
+    let mcol = |name: &str| mhead.iter().position(|h| *h == name);
+    let (c_set, c_zip, c_paths) = (mcol("set").ok_or("manifest: no set column")?, mcol("zip").ok_or("manifest: no zip column")?, mcol("paths").ok_or("manifest: no paths column")?);
+    let set_root = manifest.parent().and_then(|p| p.parent()).map(|_| ()).unwrap_or(());
+    let _ = set_root;
+    let mut cams = String::from("set\tmap\tcamera\tgrid\titems\n");
+    let base = tmmaps::map::MapFile::load(&host);
+    let host_items = base.items.len();
+    drop(base);
+    for l in mlines {
+        let f: Vec<&str> = l.split('\t').collect();
+        if f.len() <= c_paths {
+            continue;
+        }
+        let set = f[c_set];
+        let zip = f[c_zip];
+        let all_paths: Vec<&str> = f[c_paths].split('|').filter(|p| !p.is_empty()).collect();
+        if all_paths.is_empty() {
+            continue;
+        }
+        // a readable picture shows at most `max_items` pieces, sampled evenly
+        // through the set (every sub-folder gets its share)
+        let paths: Vec<&str> = if all_paths.len() <= max_items {
+            all_paths.clone()
+        } else {
+            (0..max_items).map(|k| all_paths[k * all_paths.len() / max_items]).collect()
+        };
+        // the set folder name is the first component of the ident
+        let set_dir = paths[0].split('/').next().unwrap_or("TinyBlocks");
+        let _ = set_dir;
+        let n = paths.len();
+        // a wide grid for a 16:9 frame
+        let cols = ((n as f64) * 1.6).sqrt().ceil().max(1.0) as usize;
+        let rows = (n + cols - 1) / cols;
+        // a variable grid: the pieces sorted big to small, every column as
+        // wide as its widest piece and every row as deep as its deepest (16 m
+        // per tiny unit) plus an 8 m gap — a 4x4 loop and a 1x1 straight in one
+        // set no longer put 72 m between every pair of straights
+        let mut paths: Vec<&str> = paths;
+        paths.sort_by_key(|p| { let (sx, sz) = footprint.get(*p).copied().unwrap_or((1, 1)); std::cmp::Reverse(sx.max(sz) * 8 + sx + sz) });
+        let gap = 8.0f32;
+        let mut col_w = vec![0f32; cols];
+        let mut row_d = vec![0f32; rows];
+        for (i, p) in paths.iter().enumerate() {
+            let (sx, sz) = footprint.get(*p).copied().unwrap_or((1, 1));
+            let (r, c) = (i / cols, i % cols);
+            col_w[c] = col_w[c].max(sx as f32 * 16.0 + gap);
+            row_d[r] = row_d[r].max(sz as f32 * 16.0 + gap);
+        }
+        let col_x: Vec<f32> = col_w.iter().scan(0.0f32, |acc, w| { let x = *acc; *acc += w; Some(x) }).collect();
+        let row_z: Vec<f32> = row_d.iter().scan(0.0f32, |acc, d| { let z = *acc; *acc += d; Some(z) }).collect();
+        let total_w: f32 = col_w.iter().sum();
+        let total_d: f32 = row_d.iter().sum();
+        // the item array grows only in the written file: grow, write, reload
+        let stem = zip.trim_end_matches(".zip");
+        let grown = out.join(format!("{stem}.grown.Map.Gbx"));
+        let mut m = tmmaps::map::MapFile::load(&host);
+        if m.items.len() < n {
+            m.append_item_clones(n);
+            m.write_to(&grown).map_err(|e| format!("{}: {e}", grown.display()))?;
+            m = tmmaps::map::MapFile::load(&grown);
+            if m.items.len() < n {
+                return Err(format!("{set}: the host grew to {} item records, {n} needed", m.items.len()));
+            }
+        }
+        m.set_map_uid(&format!("Sho{:024}", (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u128 + zip.len() as u128) % 10u128.pow(24)));
+        for i in 0..m.items.len() {
+            m.move_item_pos(i, [16.0, -1000.0, 16.0]);
+        }
+        let cell = |p: [f32; 3]| ((p[0] / 32.0) as i32, ((p[1] + 64.0) / 8.0) as i32, (p[2] / 32.0) as i32);
+        for (i, p) in paths.iter().enumerate() {
+            let (sx, sz) = footprint.get(*p).copied().unwrap_or((1, 1));
+            let (r, c) = (i / cols, i % cols);
+            // the piece's pivot is its footprint centre: place it at the cell centre
+            let pos = [origin[0] + col_x[c] + col_w[c] / 2.0, origin[1], origin[2] + row_z[r] + row_d[r] / 2.0];
+            let pivot = [sx as f32 * 8.0, 0.0, sz as f32 * 8.0];
+            let ident = p.replace('/', "\\");
+            m.move_item(i, pos, 0.0, cell(pos));
+            m.set_item_frame(i, [0.0, 0.0, 0.0], pivot);
+            m.set_item_scale(i, 1.0);
+            m.set_item_model(i, &ident);
+            m.set_item_author(i, &author);
+        }
+        let file = out.join(format!("{stem}.Map.Gbx"));
+        let stage = out.join(format!("{stem}.stage.Map.Gbx"));
+        m.write_to(&stage).map_err(|e| format!("{}: {e}", stage.display()))?;
+        let mut m2 = tmmaps::map::MapFile::load(&stage);
+        m2.remove_password();
+        m2.write_to(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let _ = std::fs::remove_file(&stage);
+        let _ = std::fs::remove_file(&grown);
+        // the camera: the grid centre, from the south-east and above, far
+        // enough that the whole grid fits a 16:9 frame
+        let w = total_w;
+        let d = total_d;
+        let centre = [origin[0] + w / 2.0, origin[1], origin[2] + d / 2.0];
+        let extent = w.max(d * 1.4);
+        let dist = (extent * 0.95 + 20.0).max(40.0);
+        cams.push_str(&format!("{set}\t{}\t{:.1},{:.1},{:.1},{:.1},{:.3},{:.3}\t{cols}x{rows}\t{n}\n", file.file_name().unwrap().to_string_lossy(), centre[0], centre[1], centre[2], dist, 2.356, 0.55));
+        eprintln!("{set}: {n} items in {cols}x{rows}, {total_w:.0} x {total_d:.0} m -> {}", file.display());
+    }
+    let _ = host_items;
+    std::fs::write(out.join("cams.tsv"), &cams).map_err(|e| e.to_string())?;
+    Ok(())
 }

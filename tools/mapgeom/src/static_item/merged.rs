@@ -247,6 +247,140 @@ pub struct Merged {
     /// Write NO PreLightGen (the pack's dyna meshes — Flag.Mesh.Gbx — carry
     /// none; a static item always gets one).
     pub no_prelight: bool,
+    /// Share sub-models (the INSTANCED prefab form). When set, `add_prefab`
+    /// bakes every static object ONCE — at the origin, scaled — into
+    /// `shared[k].mesh` and records where its instances sit, instead of
+    /// merging each placement's transformed copy into `visuals`; `assemble`
+    /// then writes one `CPlugStaticObjectModel` node per sub-model and one
+    /// prefab entity per instance, the layout of Nadeo's own prefabs (a
+    /// RoadTech straight is one deck + 2 border prefabs + 3 spots + 8
+    /// supports: 9,800 merged vertices, 2,950 unique — 2026-09-23). The
+    /// item-level parts (triggers, spawn, moving parts, effects, vegetation)
+    /// are untouched; a non-rigid placement (mirror, non-unit scale) falls
+    /// back to the merge.
+    pub share: bool,
+    pub shared: Vec<SharedSubModel>,
+}
+
+/// A sub-object baked once for the instanced prefab form (`Merged::share`).
+#[derive(Clone, Debug)]
+pub struct SharedSubModel {
+    /// `<prefab path>#<entity index>` for a static object inline in a
+    /// prefab, the file path for an external `.StaticObject.Gbx`.
+    pub key: String,
+    /// The sub-object at the origin, scaled: its own visuals, materials,
+    /// collision, lights and detail ladder (one part — its lightmap atlas
+    /// stays as the pack laid it out).
+    pub mesh: Box<Merged>,
+    /// Every placement, in the item's UNSCALED frame (rigid transforms).
+    pub instances: Vec<Xform>,
+}
+
+impl Merged {
+    /// A fresh accumulator with this one's CONFIGURATION (modifier, redress,
+    /// skins, water and detail-level knobs) and none of its content: the
+    /// accumulator a shared sub-model is baked into.
+    pub fn child(&self) -> Merged {
+        Merged {
+            file_write_time: self.file_write_time,
+            gate_kind: self.gate_kind.clone(),
+            light_skin: self.light_skin.clone(),
+            no_split: self.no_split,
+            modifier: self.modifier.clone(),
+            collision_redress: self.collision_redress.clone(),
+            modifier_suffix: self.modifier_suffix.clone(),
+            keep_water: self.keep_water,
+            all_lods: self.all_lods,
+            ladder_scale: self.ladder_scale,
+            one_level: self.one_level,
+            vis_cst_type: self.vis_cst_type,
+            solid2_u07: self.solid2_u07,
+            solid2_u13: self.solid2_u13,
+            materials_external: self.materials_external,
+            materials_bare: self.materials_bare,
+            no_prelight: self.no_prelight,
+            ..Default::default()
+        }
+    }
+
+    /// Whether a placement can be an instance of a shared sub-model: a
+    /// proper rotation (orthonormal, det +1) — a mirror or a scale has to be
+    /// baked into the vertices.
+    pub fn is_rigid(iso: &Xform) -> bool {
+        let c = |k: usize| [iso[3 * k], iso[3 * k + 1], iso[3 * k + 2]];
+        let (a, b, cc) = (c(0), c(1), c(2));
+        let dot = |u: [f32; 3], v: [f32; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+        let unit = |u: [f32; 3]| (dot(u, u) - 1.0).abs() < 1e-3;
+        let det = a[0] * (b[1] * cc[2] - b[2] * cc[1]) - a[1] * (b[0] * cc[2] - b[2] * cc[0]) + a[2] * (b[0] * cc[1] - b[1] * cc[0]);
+        unit(a) && unit(b) && unit(cc) && dot(a, b).abs() < 1e-3 && dot(a, cc).abs() < 1e-3 && dot(b, cc).abs() < 1e-3 && (det - 1.0).abs() < 1e-3
+    }
+
+    /// One placement of a shared sub-model: `Merge` when it is not rigid (the
+    /// caller merges it the old way), `Recorded` when `key` was already baked
+    /// (the instance is added), `Bake` when the caller must bake the
+    /// sub-object at the origin into `self.child()` and hand it to
+    /// `share_push`.
+    pub fn share_instance(&mut self, key: &str, iso: &Xform) -> ShareStep {
+        if !Self::is_rigid(iso) {
+            self.notes.push(format!("{key}: non-rigid placement, merged instead of instanced"));
+            return ShareStep::Merge;
+        }
+        if let Some(s) = self.shared.iter_mut().find(|s| s.key == key) {
+            s.instances.push(*iso);
+            return ShareStep::Recorded;
+        }
+        ShareStep::Bake
+    }
+
+    /// The freshly baked sub-object under `key`, with its first instance.
+    pub fn share_push(&mut self, key: &str, iso: &Xform, mut sub: Merged) {
+        // what the item-level report and archive need from the sub-bake
+        self.notes.append(&mut sub.notes);
+        for (name, bytes) in sub.pictures.drain(..) {
+            if !self.pictures.iter().any(|(n, _)| *n == name) {
+                self.pictures.push((name, bytes));
+            }
+        }
+        self.lights += sub.lights;
+        for l in &sub.illum_links {
+            if !self.illum_links.contains(l) {
+                self.illum_links.push(l.clone());
+            }
+        }
+        self.parts += 1;
+        self.shared.push(SharedSubModel { key: key.to_string(), mesh: Box::new(sub), instances: vec![*iso] });
+    }
+
+    /// Whether anything static was baked, merged or shared.
+    pub fn has_visuals(&self) -> bool {
+        !self.visuals.is_empty() || self.shared.iter().any(|s| !s.mesh.visuals.is_empty())
+    }
+
+    /// Distinct visuals written: the merged ones plus every shared sub-model's.
+    pub fn visual_count(&self) -> usize {
+        self.visuals.len() + self.shared.iter().map(|s| s.mesh.visuals.len()).sum::<usize>()
+    }
+
+    /// Triangles written once (merged + one copy of every shared sub-model).
+    pub fn triangle_count(&self) -> usize {
+        let tri = |vs: &[MergedVisual]| vs.iter().map(|v| v.visual.index_buffer.as_ref().map(|ib| ib.indices.len() / 3).unwrap_or(0)).sum::<usize>();
+        tri(&self.visuals) + self.shared.iter().map(|s| tri(&s.mesh.visuals)).sum::<usize>()
+    }
+
+    /// The instanced form's geometry in numbers: (distinct sub-models,
+    /// instances, vertices written once, vertices a merge would write).
+    pub fn share_stats(&self) -> (usize, usize, usize, usize) {
+        let mut once = 0usize;
+        let mut merged = 0usize;
+        let mut inst = 0usize;
+        for s in &self.shared {
+            let v: usize = s.mesh.visuals.iter().map(|mv| mv.visual.main.as_ref().map(|mm| mm.count.max(0) as usize).unwrap_or(0)).sum();
+            once += v;
+            merged += v * s.instances.len();
+            inst += s.instances.len();
+        }
+        (self.shared.len(), inst, once, merged)
+    }
 }
 
 /// One `CPlugDynaObjectModel` entity of the source prefab, scaled: its mesh
@@ -733,6 +867,25 @@ impl Merged {
         let lod0_only = (lod0_only() && !self.all_lods) || self.one_level.is_some();
         let part_levels = if lod0_only { 1 } else { lod_levels_of(&s2.lod_max_dist, &s2.shaded_geoms) };
         let mut part_ladder: Vec<f32> = Vec::new();
+        // TINY_TRIM_NEAR=V,D: a part whose NEAREST level holds more than V
+        // vertices and hands over within D metres (scaled) drops that level —
+        // its second level becomes the nearest, drawn from 0 m. The size lever
+        // for the loose item set (2026-09-23: the ice walls' 82,750-vertex near
+        // level, drawn only within 13 m at half scale, then 1,418 vertices).
+        let mut trim_near = false;
+        if part_levels > 1 {
+            if let Some((v_min, d_max)) = trim_near_knob() {
+                let dist_scale = self.ladder_scale.unwrap_or(scale);
+                let level0_verts: i32 = s2.shaded_geoms.iter().filter(|h| h.lod_mask != 0 && h.lod_mask & 1 != 0 && h.lod_mask & !1 == 0).filter_map(|h| s2.visuals.get(h.visual_index as usize).and_then(|r| r.inline.as_deref())).filter_map(|n| if let Node::Visual(v) = n { v.main.as_ref().map(|m| m.count) } else { None }).sum();
+                let d0 = s2.lod_max_dist.first().copied().unwrap_or(f32::INFINITY) * dist_scale;
+                let has_level1 = s2.shaded_geoms.iter().any(|h| h.lod_mask & 2 != 0);
+                if level0_verts > v_min && d0 <= d_max && has_level1 {
+                    trim_near = true;
+                    self.notes.push(format!("near level trimmed: {level0_verts} vertices drawn only within {d0:.1} m; the {} m level is the nearest now", d0));
+                }
+            }
+        }
+        let part_levels = if trim_near { part_levels - 1 } else { part_levels };
         if part_levels > 1 {
             let before = self.lod_max_dist.clone();
             // a ladder shorter than its masks (a mask bit past the last
@@ -745,6 +898,9 @@ impl Merged {
             // TINY_FLAG_LADDER=pack) keeps its own factor instead.
             let dist_scale = self.ladder_scale.unwrap_or(scale);
             let mut dists: Vec<f32> = s2.lod_max_dist.iter().map(|d| d * dist_scale).collect();
+            if trim_near && !dists.is_empty() {
+                dists.remove(0);
+            }
             while (dists.len() as u32) + 1 < part_levels {
                 let last = dists.last().copied().unwrap_or(32.0 * dist_scale);
                 dists.push(last * 2.0);
@@ -985,7 +1141,14 @@ impl Merged {
                     continue;
                 }
             }
-            let lod = (g.lod_mask.max(0) as u32, part_ladder.clone());
+            // the trimmed part: bit 0 (the dropped near level) gone, the rest one level down
+            if trim_near {
+                if g.lod_mask != 0 && g.lod_mask & !1 == 0 {
+                    continue;
+                }
+            }
+            let eff_mask = if trim_near && g.lod_mask != 0 { (g.lod_mask.max(0) as u32) >> 1 } else { g.lod_mask.max(0) as u32 };
+            let lod = (eff_mask, part_ladder.clone());
             let vis = match s2.visuals.get(g.visual_index as usize).and_then(|r| r.inline.as_deref()) {
                 Some(Node::Visual(v)) => v,
                 _ => {
@@ -1779,4 +1942,32 @@ impl Merged {
         self.notes.push(format!("TINY_SCREENS=dark: {moved} ad screen face visual(s) re-dressed as ScreenBack"));
         moved
     }
+}
+
+/// What `Merged::share_instance` asks of the caller.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ShareStep {
+    Merge,
+    Recorded,
+    Bake,
+}
+
+/// `TINY_TRIM_NEAR=V,D` parsed once: (vertex threshold, distance in metres, scaled).
+pub fn trim_near_knob() -> Option<(i32, f32)> {
+    thread_local! { static K: std::cell::OnceCell<Option<(i32, f32)>> = const { std::cell::OnceCell::new() }; }
+    K.with(|k| {
+        *k.get_or_init(|| {
+            let v = std::env::var("TINY_TRIM_NEAR").ok()?;
+            let (a, b) = v.split_once(',')?;
+            Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+        })
+    })
+}
+
+/// The instanced form switched on by a caller (item_set) for every bake of
+/// the process; `TINY_SHARE=1` does the same from the environment.
+pub static SHARE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn share_default() -> bool {
+    SHARE.load(std::sync::atomic::Ordering::Relaxed) || std::env::var("TINY_SHARE").as_deref() == Ok("1")
 }

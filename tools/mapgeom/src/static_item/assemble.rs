@@ -314,7 +314,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     REPACK_NOTE.with(|c| c.set(None));
     use super::item::*;
     use super::Id;
-    if m.visuals.is_empty() && m.dyna.is_empty() {
+    if m.visuals.is_empty() && m.dyna.is_empty() && m.shared.iter().all(|s| s.mesh.visuals.is_empty()) {
         return Err("no visuals: nothing to build".into());
     }
     // node 1 = the entity model; a static item fixes 2 (static object) and 3
@@ -331,8 +331,24 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
     // (GateFinish, GateExpandableFinish: NoRespawn too) keeps the entity-model
     // form — nobody respawns at a finish, and the form is the proven one.
     let no_respawn_wp = m.no_respawn && m.trigger.is_some() && m.waypoint_type == Some(2);
-    let prefab_form = !m.dyna.is_empty() || m.special.is_some() || !m.fx.is_empty() || no_respawn_wp;
-    let mut next = if !prefab_form { 4i32 } else { 2i32 };
+    // The INSTANCED form (`Merged::share`): every static object an entity of
+    // the prefab, repeated sub-models by node reference. A waypoint item in
+    // this form takes Nadeo's own gate layout — an NPlugTrigger_SWaypoint
+    // entity for the trigger (finish, checkpoint, multilap) and an
+    // NPlugTrigger_SSpawn entity AT the spawn position (start, checkpoint,
+    // multilap; StartCenter8m.Prefab: entity 2 = SSpawn at (0, 0, -10.6),
+    // identity Iso4 in the node). The 0x0917B000 node beside Nadeo's SSpawn
+    // is {0, node ref} pointing at the gate's EDITOR HELPER prefab
+    // (StartCenter8m: 5 = Start_Helper.Prefab, CheckpointCenter8mV2: 11 =
+    // Checkpoint_Helper.Prefab; FinishCenter8m has neither) — our items have
+    // no helper, so none is written (the 2026-09-10 crash wrote {0, 0}: a
+    // reference to the ROOT node). TINY_WP_FORM=wrap is the other candidate:
+    // the prefab as the static object of a CGameCommonItemEntityModel that
+    // carries trigger and spawn the entity-model way.
+    let shared_form = !m.shared.is_empty();
+    let prefab_form = !m.dyna.is_empty() || m.special.is_some() || !m.fx.is_empty() || no_respawn_wp || shared_form;
+    let wp_wrap = shared_form && m.waypoint_type.is_some() && std::env::var("TINY_WP_FORM").as_deref() == Ok("wrap");
+    let mut next = if !prefab_form { 4i32 } else if wp_wrap { 3i32 } else { 2i32 };
     // The static geometry: one static object (mesh + collision) — the whole
     // item when nothing moves, else one entity of the prefab.
     let static_object = if m.visuals.is_empty() {
@@ -475,6 +491,30 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         if let Some(so) = static_object {
             ents.push(static_entity(&mut next, so));
         }
+        // the shared sub-models: one static-object node each, its first
+        // instance defining the node inline and every later one a bare
+        // reference to it (the pack's own layout — Straight_Air.Prefab:
+        // "entity 6..13: model node 19")
+        for sub in &m.shared {
+            if sub.mesh.visuals.is_empty() {
+                continue;
+            }
+            let mesh_index = next_index(&mut next);
+            let s2 = build_solid2(&sub.mesh, opts, &mut next).map_err(|e| format!("{}: {e}", sub.key))?;
+            let surface_index = next_index(&mut next);
+            let so = CPlugStaticObjectModel { version: 3, mesh: inline(mesh_index, Node::Solid2(s2)), is_mesh_collidable: false, shape: inline(surface_index, Node::Surface(build_surface(&sub.mesh))) };
+            let so_index = next_index(&mut next);
+            let mut first = Some(so);
+            for iso in &sub.instances {
+                let model = match first.take() {
+                    Some(so) => inline(so_index, Node::StaticObject(so)),
+                    None => super::NodeRef { index: so_index, inline: None },
+                };
+                let rot = crate::geom::to_quat(iso);
+                let pos = [iso[9] * opts.scale, iso[10] * opts.scale, iso[11] * opts.scale];
+                ents.push(super::prefab::Entity { model, rot, pos, params_id: -1, params: Vec::new(), u01: Vec::new() });
+            }
+        }
         // the gameplay gate's effect volume, the pack's entity 1: an
         // NPlugTrigger_SGateSpecial at the identity with its shape inline
         if let Some(sp) = &m.special {
@@ -496,7 +536,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         // frame — the block's yaw is the placement's), the floor centre when
         // the block info has none. The SSpawn body is the pack's byte for byte
         // (chunk 0x0917A000 v3: Iso4, then 24 bytes 0,0,0,0,-1.0,0; FACADE).
-        if no_respawn_wp {
+        if no_respawn_wp && !shared_form {
             let wi = next_index(&mut next);
             let wp = super::WaypointTrigger { version: 1, wtype: m.waypoint_type.unwrap_or(2), shape: trigger.clone(), no_respawn: 1 };
             ents.push(super::prefab::Entity { model: inline(wi, Node::WaypointTrigger(wp)), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
@@ -533,6 +573,39 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         // the effect systems (smoke, sparks), after the static part like the
         // pack's Show prefabs (Fogger16M: entity 0 the box, entity 1 the FxSys)
         ents.extend(fx_entities(m, opts.scale, &mut next));
+        // the instanced form's waypoint: Nadeo's gate layout (see `shared_form`)
+        if shared_form && !wp_wrap {
+            if let Some(wt) = m.waypoint_type {
+                // finish (1), checkpoint (2), multilap (4): the trigger entity
+                if wt != 0 && m.trigger.is_some() {
+                    let wi = next_index(&mut next);
+                    let wp = super::WaypointTrigger { version: 1, wtype: wt, shape: trigger.clone(), no_respawn: if m.no_respawn { 1 } else { 0 } };
+                    ents.push(super::prefab::Entity { model: inline(wi, Node::WaypointTrigger(wp)), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
+                }
+                // start (0), checkpoint (2), multilap (4): the spawn entity at
+                // the spawn position (the block's spawn location, scaled)
+                if wt != 1 {
+                    let si = next_index(&mut next);
+                    // TINY_SPAWN_FORM: `entity` (default) = the spawn in the entity
+                    // position, identity Iso4 (Nadeo's start gates); `iso` = entity at
+                    // 0, the spawn in the node's Iso4. (item_set's `dress` may move
+                    // the entity by the placement pivot afterwards.)
+                    let form = std::env::var("TINY_SPAWN_FORM").unwrap_or_default();
+                    let (node, epos) = match form.as_str() {
+                        "iso" => (spawn_trigger_node_at(m.spawn), [0.0f32; 3]),
+                        _ => (spawn_trigger_node(), m.spawn),
+                    };
+                    ents.push(super::prefab::Entity { model: inline(si, Node::Opaque(node)), rot: [0.0, 0.0, 0.0, 1.0], pos: epos, params_id: -1, params: Vec::new(), u01: Vec::new() });
+                    // TINY_WP_COMPANION=null: the 0x0917B000 node with a NULL helper reference
+                    if std::env::var("TINY_WP_COMPANION").as_deref() == Ok("null") {
+                        let ti = next_index(&mut next);
+                        let mut raw = vec![0u8; 8];
+                        raw[4..8].copy_from_slice(&(-1i32).to_le_bytes());
+                        ents.push(super::prefab::Entity { model: inline(ti, Node::Opaque(super::OpaqueNode { class_id: 0x0917B000, raw })), rot: [0.0, 0.0, 0.0, 1.0], pos: [0.0; 3], params_id: -1, params: Vec::new(), u01: Vec::new() });
+                    }
+                }
+            }
+        }
         for (k, part) in m.dyna.iter().enumerate() {
             // Ent2 ranks the dyna objects of the prefab (the k-th
             // CPlugDynaObjectModel entity), whatever sits between them
@@ -555,6 +628,10 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             let pi = next_index(&mut next);
             let tags = vec![("MatModifier".to_string(), "Grass".to_string()), ("MatModifier".to_string(), "Dirt".to_string()), ("MatModifier".to_string(), "Ice".to_string()), ("Type".to_string(), "Flag".to_string())];
             inline(1, Node::VariantList(super::VariantList { version: 1, variants: vec![super::Variant { tags, model: inline(pi, Node::Prefab(prefab)), hidden: 0 }] }))
+        } else if wp_wrap {
+            // the test form: the prefab as the static object of the
+            // entity-model wrapper, which carries trigger and spawn
+            inline(1, Node::EntityModel(common(inline(2, Node::Prefab(prefab)))))
         } else {
             inline(1, Node::Prefab(prefab))
         }

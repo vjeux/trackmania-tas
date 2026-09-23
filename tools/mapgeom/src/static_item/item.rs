@@ -373,6 +373,22 @@ impl CGameItemModel {
             _ => None,
         }
     }
+    /// `prefab`, mutable (item_set moves a spawn entity by the pivot).
+    pub fn prefab_mut(&mut self) -> Option<&mut super::prefab::CPlugPrefab> {
+        let mc = self.model_mut()?;
+        match mc.entity_model.inline.as_deref_mut()? {
+            super::Node::Prefab(p) => Some(p),
+            super::Node::EntityModel(e) => match e.static_object.inline.as_deref_mut()? {
+                super::Node::Prefab(p) => Some(p),
+                _ => None,
+            },
+            super::Node::VariantList(v) => match v.variants.first_mut()?.model.inline.as_deref_mut()? {
+                super::Node::Prefab(p) => Some(p),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
     pub fn item_type(&self) -> i32 {
         self.chunks
             .iter()

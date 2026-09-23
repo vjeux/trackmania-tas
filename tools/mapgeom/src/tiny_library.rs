@@ -839,6 +839,8 @@ pub(crate) fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, pa
     let mut m = crate::static_item::build::Merged::default();
     m.keep_water = crate::static_item::build::keep_water_for(collection);
     m.modifier = modifier_links(store, &plan.effective_mods);
+    // TINY_SHARE=1: the instanced prefab form (shared sub-models) — see `Merged::share`
+    m.share = crate::static_item::merged::share_default();
     m.collision_redress = modifier_redress(store, &plan.effective_mods, &m.modifier);
     // The collection SKIN (`<Env>\Media\Modifier\StadiumOnTerrain\<slot>`, the
     // four terrain collections) is one material file per slot: look AND
@@ -1289,7 +1291,7 @@ fn bake_block_cached(store: &mut DataStore, plan: &BlockBake, name: &str, path: 
     bake_env_reset(collection);
     let r = bake_block(store, plan, name, path, bi, ident, scale, collection, legacy, water, at_water_row);
     if let Ok((bytes, m, deepened)) = &r {
-        if !m.visuals.is_empty() {
+        if m.has_visuals() {
             crate::bake_cache::put(cache_key, ident, &crate::bake_cache::Baked::of(bytes, m, *deepened));
         }
     }
@@ -1383,7 +1385,7 @@ fn bake_item_cached(store: &mut DataStore, src: &ItemSrc, cache_key: &str, ident
     }
     let r = bake_item(store, src, ident, scale, collection, variant, light_skin, still_flag);
     if let Ok((bytes, m)) = &r {
-        if !m.visuals.is_empty() || !m.dyna.is_empty() || !m.veget.is_empty() {
+        if m.has_visuals() || !m.dyna.is_empty() || !m.veget.is_empty() {
             crate::bake_cache::put(cache_key, ident, &crate::bake_cache::Baked::of(bytes, m, false));
         }
     }
