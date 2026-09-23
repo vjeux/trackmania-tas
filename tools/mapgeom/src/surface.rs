@@ -455,7 +455,9 @@ fn plan_one(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, count: 
     let snow_top = (s == "Ice" || (wet && s == "Wood" && snow_env)) && name.starts_with("DecoPlatform") && !name.ends_with("Pillar") && snow_top_env;
     if snow_top {
         let mut r = plan_one_dry(store, idx, name, count, flags, s);
-        if matches!(r.action, Action::Rename | Action::Same) {
+        // (Keep too: the deck-only rule leaves DecoPlatform alone since 2026-09-23 — the wet
+        // wood snow top must still bake)
+        if matches!(r.action, Action::Rename | Action::Same | Action::Keep) {
             r.action = Action::Bake;
             r.target = name.replacen("DecoPlatform", "DecoPlatformSnow", 1);
             r.detail.push_str("; snow top: baked with Modifier\\PlatformIce\\Deco @Snow (the ice twin's top is a null surface in the game)");
