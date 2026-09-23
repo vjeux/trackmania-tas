@@ -656,9 +656,11 @@ fn main() {
                 Some("auto") | None if mood_sel.is_some() || f("--base").as_deref() == Some("auto") => {
                     let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
                     let h = hdr.as_ref().expect("header");
-                    let cells = mf.blocks.iter().map(|b| { let c = b.coords(); (c.0, c.2, b.name.as_str()) }).chain(mf.baked.iter().map(|b| { let c = b.coords(); (c.0, c.2, b.name.as_str()) }));
-                    let r = lightmap::moods::base_rule(&h.envir, &mf.decoration_id, mf.size, cells);
-                    eprintln!("base auto: {} = {} (decoration) + {} blocks ({} custom blocks not counted) + {} empty ground columns of {} + {} stadium extra", r.base(), r.deco_const, r.blocks, r.custom_blocks, r.empty_cols, r.ground_cols, r.stadium_extra);
+                    let cells = mf.blocks.iter().map(|b| { let c = b.coords(); (c.0, c.2, b.name.as_str()) });
+                    let extra: u32 = f("--base-extra").map(|s| s.parse().unwrap()).unwrap_or(0);
+                    let r = lightmap::moods::base_rule(&h.envir, &mf.decoration_id, mf.size, cells, extra);
+                    eprintln!("base auto: {} = {} (decoration) + {} authored blocks ({} custom blocks not counted) + {} ground tiles − {} replaced + {} generated pieces{}", r.base(), r.deco_const, r.authored, r.custom_blocks, r.ground_cols, r.replaced, r.extra, if !mf.baked.is_empty() { format!(" ({} baked records in the file do not count)", mf.baked.len()) } else { String::new() });
+                    if r.stadium && r.authored > 0 && extra == 0 { eprintln!("  WARNING: {} authored blocks on a Stadium decoration — the game grows pillars/walls under elevated blocks (25 ×2: 7 under one platform; 05 ×2: 2108 around 604 pool tiles); pass --base-extra N from an editor bake or --base N", r.authored); }
                     r.base()
                 }
                 Some(s) => s.parse().unwrap(),
@@ -794,18 +796,24 @@ fn main() {
                 let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
                 let h = hdr.as_ref().expect("header");
                 let grid_m = [mf.size[0] as f32 * 32.0, mf.size[1] as f32 * 8.0, mf.size[2] as f32 * 32.0];
-                let mut origin = lightmap::probes::SlotGrid::origin_for(&h.envir, &mf.decoration_id);
-                if let Some(o) = f("--slot-origin") { origin = parse_rgb(&o); }
                 let (mut glo, mut ghi) = ([f32::MAX; 3], [f32::MIN; 3]);
                 for t in &bvh.tris { for p in [t.p0, lightmap::geometry::add(t.p0, t.e1), lightmap::geometry::add(t.p0, t.e2)] { for k in 0..3 { glo[k] = glo[k].min(p[k]); ghi[k] = ghi[k].max(p[k]); } } }
-                let mut grid = lightmap::probes::SlotGrid::from_extent(origin, grid_m, ghi);
+                // every item's position counts for the extent, stock (non-embedded) items included: the giant
+                // builds park unused vegetation at (8, −900, 8) and the game's grid follows them
+                for it in &mf.items { for k in 0..3 { glo[k] = glo[k].min(it.pos[k] - 16.0); ghi[k] = ghi[k].max(it.pos[k]); } }
+                let mut grid = lightmap::probes::SlotGrid::for_map(&h.envir, &mf.decoration_id, grid_m, glo, ghi);
+                if let Some(o) = f("--slot-origin") { grid.origin = parse_rgb(&o); }
                 match f("--slots").as_deref() {
-                    Some("template") => { grid.n = tv.slot_grid; grid.origin = tv.world_origin(); }
+                    Some("template") => { grid.n = tv.slot_grid; grid.origin = tv.world_origin(); grid.cell = tv.cell_size(); }
                     Some(s) => { let v: Vec<u32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); grid.n = [v[0], v[1], v[2]]; }
                     None => {}
                 }
-                eprintln!("slot grid {:?} origin {:?} (map {:?} = {:.0}×{:.0}×{:.0} m, decoration {}, geometry to ({:.0}, {:.0}, {:.0}); template {:?} origin {:?})", grid.n, grid.origin, mf.size, grid_m[0], grid_m[1], grid_m[2], mf.decoration_id, ghi[0], ghi[1], ghi[2], tv.slot_grid, tv.world_origin());
-                let po = lightmap::probes::build(&scene, &bvh, &pp, &lights, prm.light_k, &tv, vp8_q.unwrap_or(8), &grid).expect("probes");
+                if let Some(c) = f("--probe-cell") { grid.cell = c.parse().unwrap(); }
+                eprintln!("slot grid {:?} origin {:?} cell {} m (map {:?} = {:.0}×{:.0}×{:.0} m, decoration {}, geometry ({:.0}, {:.0}, {:.0})..({:.0}, {:.0}, {:.0}); template {:?} origin {:?})", grid.n, grid.origin, grid.cell, mf.size, grid_m[0], grid_m[1], grid_m[2], mf.decoration_id, glo[0], glo[1], glo[2], ghi[0], ghi[1], ghi[2], tv.slot_grid, tv.world_origin());
+                // the probe images are Monte-Carlo noisy: a coarser quantizer than the atlases (Nadeo's 874² probe
+                // blob is 394 KB; ours at q 8 was 1.5 MB — over the 25 MiB file cap on the ×4 maps)
+                let probe_q: u8 = f("--probe-vp8").map(|s| s.parse().unwrap()).unwrap_or(28);
+                let po = lightmap::probes::build(&scene, &bvh, &pp, &lights, prm.light_k, &tv, probe_q, &grid).expect("probes");
                 eprintln!("probe volume: {} blocks, {} slices, atlas {}x{}, blob {} B ({:.1}s)", po.blocks, po.slices, po.atlas_w, po.atlas_h, po.blob.len(), t0.elapsed().as_secs_f32());
                 Some(lightmap::synth::ProbeBlob { blob: po.blob, trailer: po.volume.write() })
             };
@@ -1696,7 +1704,7 @@ fn main() {
         }
         "basecheck" => {
             // lmtool basecheck MAP...: the base rule against each map's own bake (objects − items)
-            println!("map\tsize\tdecoration\tunbaked\tbaked\tcustom\tcovered_cols\tempty_cols\titems\tmeasured_base\trule_base\tok");
+            println!("map\tsize\tdecoration\tunbaked\tbaked\tcustom\treplaced\tpieces\titems\tmeasured\trule(P+auth+S²−repl+G)\tok\tnadeo(P+unbaked+baked)\tok");
             for p in &a[1..] {
                 let mf = tmmaps::map::MapFile::load(std::path::Path::new(p));
                 let h = tmmaps::header::read(p).expect("header");
@@ -1704,9 +1712,11 @@ fn main() {
                 let Some(mp) = lm.chunk.data.as_ref().and_then(|d| d.cache.mapping()) else { continue };
                 let max_obj = mp.binds.iter().map(|b| b.obj_group_idx / 4).max().unwrap_or(0) + 1;
                 let measured = max_obj as i64 - mf.items.len() as i64;
-                let cells = mf.blocks.iter().map(|b| { let c = b.coords(); (c.0, c.2, b.name.as_str()) }).chain(mf.baked.iter().map(|b| { let c = b.coords(); (c.0, c.2, b.name.as_str()) }));
-                let r = lightmap::moods::base_rule(&h.envir, &mf.decoration_id, mf.size, cells);
-                println!("{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", p.rsplit('/').next().unwrap_or(p), mf.size, mf.decoration_id, mf.blocks.len(), mf.baked.len(), r.custom_blocks, r.ground_cols - r.empty_cols, r.empty_cols, mf.items.len(), measured, r.base(), if measured == r.base() as i64 { "OK" } else if measured < r.base() as i64 && r.base() as i64 - measured <= 16 { "OK (last items chart-less)" } else { "DIFF" });
+                let cells = mf.blocks.iter().map(|b| { let c = b.coords(); (c.0, c.2, b.name.as_str()) });
+                let r = lightmap::moods::base_rule(&h.envir, &mf.decoration_id, mf.size, cells, 0);
+                let nadeo = r.deco_const + mf.blocks.len() as u32 + mf.baked.len() as u32;
+                let verdict = |v: u32| if measured == v as i64 { "OK" } else if measured < v as i64 && v as i64 - measured <= 16 { "OK (last items chart-less)" } else { "DIFF" };
+                println!("{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", p.rsplit('/').next().unwrap_or(p), mf.size, mf.decoration_id, mf.blocks.len(), mf.baked.len(), r.custom_blocks, r.replaced, r.extra, mf.items.len(), measured, r.base(), verdict(r.base()), nadeo, verdict(nadeo));
             }
         }
         "volcmp" => {

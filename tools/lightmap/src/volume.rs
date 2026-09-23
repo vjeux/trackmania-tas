@@ -240,9 +240,15 @@ impl Volume {
         [-self.unk_f[0] * pitch[0], -self.unk_f[1] * pitch[1], -self.unk_f[2] * pitch[2]]
     }
 
-    /// Slot pitch in metres: usable cells × 16 (480, 224, 480).
+    /// Slot pitch in metres: 1 / inv_scale (usable cells × cell size: 480, 224, 480 at
+    /// 16 m cells; the game doubles the cell on big maps → 960, 448, 960).
     pub fn slot_pitch(&self) -> [f32; 3] {
-        [self.slot_tile[0] as f32 * 16.0, self.slot_tile[1] as f32 * 16.0, self.slot_tile[2] as f32 * 16.0]
+        [1.0 / self.inv_scale[0], 1.0 / self.inv_scale[1], 1.0 / self.inv_scale[2]]
+    }
+
+    /// The probe cell size in metres (from the first block; 16 by default).
+    pub fn cell_size(&self) -> f32 {
+        self.blocks.first().map(|b| b.cell[0]).unwrap_or(16.0)
     }
 
     /// The slot (i, j, k) a block's `pos` encodes: pos = origin + pitch·slot − 8 − 16·label origin
@@ -250,15 +256,17 @@ impl Volume {
     pub fn block_slot(&self, b: &Block) -> (i32, i32, i32) {
         let o = self.world_origin();
         let p = self.slot_pitch();
-        let f = |k: usize| ((b.pos[k] + 8.0 + 16.0 * b.origin[k] as f32 - o[k]) / p[k]).round() as i32;
+        let c = b.cell[0];
+        let f = |k: usize| ((b.pos[k] + c / 2.0 + c * b.origin[k] as f32 - o[k]) / p[k]).round() as i32;
         (f(0), f(1), f(2))
     }
 
     /// World bounds of a block's occupied cell range: probe centres x,z = pos + 16·(cell + ½),
     /// y = pos.y + 16·(cell − ½); the range spans [min, max) cells.
     pub fn block_world_range(&self, b: &Block) -> ([f32; 3], [f32; 3]) {
-        let lo = [b.pos[0] + 16.0 * b.min[0] as f32, b.pos[1] + 16.0 * (b.min[1] as f32 - 1.0), b.pos[2] + 16.0 * b.min[2] as f32];
-        let hi = [b.pos[0] + 16.0 * b.max[0] as f32, b.pos[1] + 16.0 * (b.max[1] as f32 - 1.0), b.pos[2] + 16.0 * b.max[2] as f32];
+        let c = b.cell[0];
+        let lo = [b.pos[0] + c * b.min[0] as f32, b.pos[1] + c * (b.min[1] as f32 - 1.0), b.pos[2] + c * b.min[2] as f32];
+        let hi = [b.pos[0] + c * b.max[0] as f32, b.pos[1] + c * (b.max[1] as f32 - 1.0), b.pos[2] + c * b.max[2] as f32];
         (lo, hi)
     }
 
@@ -279,11 +287,12 @@ impl Volume {
             }
             let (lo, hi) = self.block_world_range(b);
             s.push_str(&format!(
-                "  block {i:>2}: origin {:?} min {:?} max {:?} ext {:?} pos {:?} slot ({si},{sj},{sk}) world x [{:.0},{:.0}) y [{:.0},{:.0}) z [{:.0},{:.0}) slices {}/{}: {:?}\n",
+                "  block {i:>2}: origin {:?} min {:?} max {:?} ext {:?} cell {} pos {:?} slot ({si},{sj},{sk}) world x [{:.0},{:.0}) y [{:.0},{:.0}) z [{:.0},{:.0}) slices {}/{}: {:?}\n",
                 b.origin,
                 b.min,
                 b.max,
                 [b.max[0] - b.min[0], b.max[1] - b.min[1], b.max[2] - b.min[2]],
+                b.cell[0],
                 b.pos,
                 lo[0], hi[0], lo[1], hi[1], lo[2], hi[2],
                 stored,
@@ -291,7 +300,7 @@ impl Volume {
                 b.slices
             ));
         }
-        s.push_str(&format!("world origin ({:.0}, {:.0}, {:.0}); slot table consistent for {table_ok} blocks{}\n", origin[0], origin[1], origin[2], if table_bad.is_empty() { String::new() } else { format!(", NOT for: {}", table_bad.join("; ")) }));
+        s.push_str(&format!("world origin ({:.0}, {:.0}, {:.0}), cell {} m, pitch {:?}; slot table consistent for {table_ok} blocks{}\n", origin[0], origin[1], origin[2], self.cell_size(), self.slot_pitch(), if table_bad.is_empty() { String::new() } else { format!(", NOT for: {}", table_bad.join("; ")) }));
         let nz = self.cell4.iter().filter(|&&v| v != 0xffff).count();
         s.push_str(&format!("cell4 table: {} entries, {} not 0xffff\n", self.cell4.len(), nz));
         s.push_str(&format!("slot grid {:?} tile {:?} block {:?} inv_scale {:?} unk_f {:?}\n", self.slot_grid, self.slot_tile, self.block_size, self.inv_scale, self.unk_f));

@@ -23,16 +23,21 @@ use crate::bvh::Bvh;
 use crate::geometry::{add, dot, mul, norm, sub, LightDef, Scene, V3};
 use crate::volume::{Block, Volume};
 
+/// Default probe cell (m); the game doubles it on big maps (see `SlotGrid::for_map`).
 pub const CELL: f32 = 16.0;
-/// Slot pitch in metres (usable cells × 16).
-pub const PITCH: [f32; 3] = [480.0, 224.0, 480.0];
+/// Usable cells per slot (block minus the 2-cell overlap); pitch = these × cell.
+pub const SLOT_CELLS: [u32; 3] = [30, 14, 30];
 pub const BLOCK_CELLS: [u32; 3] = [32, 16, 32];
+/// The game doubles the cell while the slot count exceeds this (25 ×3 at 16 m
+/// would be 9×8×9 = 648 → 32 m cells and 5×4×5; 01 ×2 keeps 9×5×9 = 405).
+pub const MAX_SLOTS: u32 = 512;
 
 /// The slot grid of a map.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SlotGrid {
     pub origin: [f32; 3],
     pub n: [u32; 3],
+    pub cell: f32,
 }
 
 impl SlotGrid {
@@ -42,8 +47,8 @@ impl SlotGrid {
     pub fn origin_for(envir: &str, decoration: &str) -> [f32; 3] {
         let e = envir.to_ascii_lowercase();
         let d = decoration.to_ascii_lowercase();
-        if e.contains("stadium") {
-            // the stands reach −304 m in x; a NoStadium decoration has none — origin 0 assumed (unverified)
+        if e.contains("stadium") || d.contains("48x48") || d.contains("stadium") {
+            // the stands reach −304 m in x; a NoStadium decoration has none (05 ×2 editor bake: origin 0)
             [if d.starts_with("nostadium") { 0.0 } else { -304.0 }, -62.0, 0.0]
         } else if e.contains("blue") || e.contains("green") || d.ends_with("64") {
             [0.0, -38.0, 0.0]
@@ -52,15 +57,62 @@ impl SlotGrid {
         }
     }
 
-    /// Counts from the extents: `grid_m` = the map grid in metres (size words ×
-    /// 32 / 8 / 32), `geom_hi` = the lit geometry's max corner.
+    pub fn pitch(&self) -> [f32; 3] {
+        [SLOT_CELLS[0] as f32 * self.cell, SLOT_CELLS[1] as f32 * self.cell, SLOT_CELLS[2] as f32 * self.cell]
+    }
+
+    /// The grid the game builds for a map (read off the editor bakes of the
+    /// 64³/48×40×48 sources and the 96³/128³/192³ giant copies, 2026-09-22):
+    ///
+    /// * origin O = the decoration's (above); x/z drop to floor(min/16)·16 when
+    ///   lit geometry starts below 0 (25 ×2: −16); y drops to O.y − 512 when lit
+    ///   geometry lies far below the terrain (items parked at −900 → −574; the
+    ///   volume does not reach them — their cells are clamped into the bottom
+    ///   row);
+    /// * counts n = ceil((max(map grid, lit geometry) − O) / pitch) — the map
+    ///   grid = size words × (32, 8, 32) m: 01 ×2 (128³, items to 394 m) has 5
+    ///   rows for its 1024 m of grid;
+    /// * while n.x·n.y·n.z > 512 the cell doubles: pitch ×2, origin − cell/2 (so
+    ///   the coarse probes sit on every other fine one: 25 ×3 origin (−24, −582,
+    ///   −24), 5×4×5; 25 ×4 7×5×7).
+    pub fn for_map(envir: &str, decoration: &str, grid_m: [f32; 3], geom_lo: [f32; 3], geom_hi: [f32; 3]) -> SlotGrid {
+        let deco = Self::origin_for(envir, decoration);
+        let mut origin = deco;
+        for k in [0usize, 2] {
+            if geom_lo[k] < origin[k] {
+                origin[k] = (geom_lo[k] / CELL).floor() * CELL;
+            }
+        }
+        if geom_lo[1] < deco[1] - CELL {
+            origin[1] = deco[1] - 512.0;
+        }
+        let mut g = SlotGrid { origin, n: [1; 3], cell: CELL };
+        loop {
+            let p = g.pitch();
+            for k in 0..3 {
+                let ext = grid_m[k].max(geom_hi[k]) - g.origin[k];
+                g.n[k] = ((ext / p[k]).ceil() as u32).max(1);
+            }
+            if g.slot_count() as u32 <= MAX_SLOTS || g.cell >= 128.0 {
+                break;
+            }
+            for k in 0..3 {
+                g.origin[k] -= g.cell / 2.0;
+            }
+            g.cell *= 2.0;
+        }
+        g
+    }
+
+    /// Counts from the extents at 16 m cells, origin as given (the pre-2026-09-23 rule).
     pub fn from_extent(origin: [f32; 3], grid_m: [f32; 3], geom_hi: [f32; 3]) -> SlotGrid {
-        let mut n = [0u32; 3];
+        let mut g = SlotGrid { origin, n: [1; 3], cell: CELL };
+        let p = g.pitch();
         for k in 0..3 {
             let ext = grid_m[k].max(geom_hi[k]) - origin[k];
-            n[k] = ((ext / PITCH[k]).ceil() as u32).max(1);
+            g.n[k] = ((ext / p[k]).ceil() as u32).max(1);
         }
-        SlotGrid { origin, n }
+        g
     }
 
     pub fn slot_count(&self) -> usize {
@@ -73,25 +125,29 @@ impl SlotGrid {
 
     /// World position of probe cell (cx, L, cz) of slot (i, j, k).
     pub fn probe(&self, s: [u32; 3], c: [u32; 3]) -> V3 {
+        let p = self.pitch();
         [
-            self.origin[0] + PITCH[0] * s[0] as f32 + CELL * c[0] as f32,
-            self.origin[1] + PITCH[1] * s[1] as f32 + CELL * (c[1] as f32 - 1.0),
-            self.origin[2] + PITCH[2] * s[2] as f32 + CELL * c[2] as f32,
+            self.origin[0] + p[0] * s[0] as f32 + self.cell * c[0] as f32,
+            self.origin[1] + p[1] * s[1] as f32 + self.cell * (c[1] as f32 - 1.0),
+            self.origin[2] + p[2] * s[2] as f32 + self.cell * c[2] as f32,
         ]
     }
 
     /// The record's `pos` for slot s with label origin `lab`.
     pub fn record_pos(&self, s: [u32; 3], lab: [u32; 3]) -> V3 {
+        let p = self.pitch();
+        let h = self.cell / 2.0;
         [
-            self.origin[0] + PITCH[0] * s[0] as f32 - 8.0 - CELL * lab[0] as f32,
-            self.origin[1] + PITCH[1] * s[1] as f32 - 8.0 - CELL * lab[1] as f32,
-            self.origin[2] + PITCH[2] * s[2] as f32 - 8.0 - CELL * lab[2] as f32,
+            self.origin[0] + p[0] * s[0] as f32 - h - self.cell * lab[0] as f32,
+            self.origin[1] + p[1] * s[1] as f32 - h - self.cell * lab[1] as f32,
+            self.origin[2] + p[2] * s[2] as f32 - h - self.cell * lab[2] as f32,
         ]
     }
 
     /// `unk_f` of the trailer: −origin / pitch.
     pub fn unk_f(&self) -> [f32; 3] {
-        [-self.origin[0] / PITCH[0], -self.origin[1] / PITCH[1], -self.origin[2] / PITCH[2]]
+        let p = self.pitch();
+        [-self.origin[0] / p[0], -self.origin[1] / p[1], -self.origin[2] / p[2]]
     }
 }
 
@@ -277,9 +333,10 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
             for i in 0..grid.n[0] {
                 let s = [i, j, k];
                 // quick slot test
+                let h = grid.cell / 2.0;
                 let lo = grid.probe(s, [0, 0, 0]);
                 let hi = grid.probe(s, [bx - 1, by - 1, bz - 1]);
-                if !bvh.any_in_box([lo[0] - 8.0, lo[1] - 8.0, lo[2] - 8.0], [hi[0] + 8.0, hi[1] + 8.0, hi[2] + 8.0]) {
+                if !bvh.any_in_box([lo[0] - h, lo[1] - h, lo[2] - h], [hi[0] + h, hi[1] + h, hi[2] + h]) {
                     continue;
                 }
                 let mut cells = vec![false; (bx * by * bz) as usize];
@@ -288,12 +345,12 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
                     for cx in 0..bx {
                         let c0 = grid.probe(s, [cx, 0, cz]);
                         let c1 = grid.probe(s, [cx, by - 1, cz]);
-                        if !bvh.any_in_box([c0[0] - 8.0, c0[1] - 8.0, c0[2] - 8.0], [c1[0] + 8.0, c1[1] + 8.0, c1[2] + 8.0]) {
+                        if !bvh.any_in_box([c0[0] - h, c0[1] - h, c0[2] - h], [c1[0] + h, c1[1] + h, c1[2] + h]) {
                             continue;
                         }
                         for l in 0..by {
                             let c = grid.probe(s, [cx, l, cz]);
-                            if bvh.any_in_box([c[0] - 8.0, c[1] - 8.0, c[2] - 8.0], [c[0] + 8.0, c[1] + 8.0, c[2] + 8.0]) {
+                            if bvh.any_in_box([c[0] - h, c[1] - h, c[2] - h], [c[0] + h, c[1] + h, c[2] + h]) {
                                 cells[idx(cx, l, cz)] = true;
                                 any = true;
                             }
@@ -346,7 +403,7 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
             origin,
             min: [origin[0] + xlo, origin[1] + llo_r, zlo],
             max: [origin[0] + xhi, origin[1] + lhi_r, zhi],
-            cell: [16.0; 3],
+            cell: [grid.cell; 3],
             pos,
             slices: Vec::new(),
         };
@@ -494,7 +551,7 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
         slot_grid: grid.n,
         slot_tile: [bx - 2, by - 2, bz - 2],
         block_size: BLOCK_CELLS,
-        inv_scale: [1.0 / PITCH[0], 1.0 / PITCH[1], 1.0 / PITCH[2]],
+        inv_scale: { let p = grid.pitch(); [1.0 / p[0], 1.0 / p[1], 1.0 / p[2]] },
         unk_f: grid.unk_f(),
         slots: slot_table,
         counts: template.counts,

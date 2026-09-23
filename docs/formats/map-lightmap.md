@@ -169,20 +169,33 @@ maps (none on tiny bakes; meaning unknown).
 
 #### The object base (`--base auto`) **[FILE]**
 
-Objects come in file order [blocks][items] on a Nadeo map, [ground][items]
-on a tiny build — the same rule: before the items stand `decoration
-constant + blocks + empty ground columns`. Every unbaked and baked block is
-one object (free blocks included; embedded CUSTOM blocks `…_CustomBlock` are
-none); every (x, z) grid column without a block gets one object (the
-decoration's ground tile) — a Nadeo map has none (its Grass/terrain covers
-every column: base = block count, 25/25 sources), a tiny build with 2412
-ground-fill blocks lands on 4096 = 64². The Stadium decorations reserve
-16384 objects in front (0..3 = the decoration's own charts, 4..16383
-unused) and an EMPTY 48×48 Stadium map counts 2736 = 2304 + 432 ground
-objects (the tiny 05 bake; the Nadeo Stadium maps show block count + 16384
-exactly, so the 432 are modelled as present only while no column is
-covered — one data point; the 96³ giant bakes decide). `lmtool basecheck`
-prints the rule against every map's own bake.
+Objects are [decoration][authored blocks][the game's generated blocks][items];
+the item base is
+
+```text
+base = P + N_authored + (S_x·S_z − replaced) + G
+```
+
+* P = 16384 on the Stadium decorations (48x48Screen155*: objects 0..3 are the
+  decoration's own charts; NoStadium48x48*: none), 0 on the terrain
+  collections;
+* N_authored = the unbaked blocks (free ones included; embedded
+  `…_CustomBlock`s count nothing — the tiny 05's 46 free water tiles);
+* S_x·S_z ground tiles generated for the map grid — the baked records in the
+  file do NOT count (01 ×2 carries 1886 Sea records: base 128² exactly; a tiny
+  build's 2412 fill records: 4096); on a terrain collection an authored block
+  replaces its column's tile (17 ×2, 04 ×2: one kept block → S²), on Stadium it
+  does not (25 ×2: 16384 + 1 + 96² + 7);
+* G = the other generated pieces: the Screen155 stadium's 432 apron pieces
+  (the empty tiny 05: 2736 = 2304 + 432), the pillars/walls grown under
+  elevated Stadium blocks (7 under 25 ×2's kept platform, 2108 around 05 ×2's
+  604 pool tiles) — map-specific; `--base-extra N` or an editor bake for such
+  maps (`lmtool bake` warns).
+
+A Nadeo map's baked chunk IS the game's generated set, so there base = P +
+unbaked + baked (25/25 sources). Measured by the giant child's `lmtool
+itembase` and by `lmtool basecheck` (max charted object − items; both
+columns printed).
 
 ### 3.7 Validation at load **[INFERRED]**
 
@@ -244,16 +257,30 @@ Stadium 5×2×4 grids included). The occupied range is the bounding box of the
 levels below the first occupied one are `(−1, −1)`, two levels above it are
 stored; a j = 1 block continues from level 0 without a margin.
 
-**The slot grid follows the map** (`probes::SlotGrid`, 2026-09-22 evening):
-origin O per decoration — BlueBay/GreenCoast (0, −38, 0), RedIsland/
-WhiteShore (0, −118, 0), Stadium (−304, −62, 0): the terrain's bottom in y,
-the stands' reach in x (`unk_f` = −O / pitch); some sources shift x or z by
-−16 m (geometry just outside the grid). Counts n = ceil((extent − O) /
-pitch) with the extent = max(map grid = size words × (32, 8, 32) m, lit
-geometry): 64³ → 5×3×5, Stadium 48×40×48 → 5×2×4 (x: (1536 + 304 + the far
-stands 296) / 480 → 5), a 128³ BlueBay map → 9×5×9 (405 slots), 96³ Stadium
-→ 7×4×7. **[FILE for the sources; the 128³/96³ counts against the giant
-editor bakes: see REPORT-3]**.
+**The slot grid follows the map** (`probes::SlotGrid::for_map`; read off
+the 25 sources and the giant editor bakes 01 ×2 / 04 ×2 (128³ BlueBay), 05 ×2 /
+25 ×2 (96³ NoStadium), 17 ×2 (96³ RedIsland), 25 ×3 (128³), 25 ×4 (192³) —
+2026-09-23) **[FILE]**:
+
+* origin O per decoration — BlueBay/GreenCoast (0, −38, 0), RedIsland/
+  WhiteShore (0, −118, 0), Stadium 48x48Screen155 (−304, −62, 0), NoStadium
+  (0, −62, 0): the terrain's bottom in y, the stands' reach in x (`unk_f` =
+  −O / pitch). x/z drop to floor(min/16)·16 when lit geometry starts below 0
+  (25 ×2: −16); y drops to O.y − 512 when lit geometry lies far below the
+  terrain (the giant builds park stock trees at y −900 → −574 — the volume
+  does not reach them, their cells are clamped into the bottom row);
+* counts n = ceil((max(map grid, lit geometry) − O) / pitch) with the map
+  grid = size words × (32, 8, 32) m: 64³ → 5×3×5; Stadium 48×40×48 → 5×2×4
+  (x: (1536 + 304 + the far stands) / 480 → 5); 128³ → 9×5×9 (405 slots —
+  the 5 rows come from the 1024 m of grid, the items stop at 394 m); 96³ →
+  7×4×7; 96³ with the −574 floor → 7×6×7;
+* while n.x·n.y·n.z > 512 the **cell doubles**: pitch (960, 448, 960), origin
+  − cell/2 so the coarse probes sit on every other fine one, block records
+  with `cell` = 32: 25 ×3 (128³ with the deep items: 9×8×9 = 648 at 16 m) →
+  5×4×5 at origin (−24, −582, −24); 25 ×4 (192³) → 7×5×7. `lmtool bake`
+  reproduces every grid above (`lmtool volcmp EDITOR OURS`: same counts,
+  origin, cell and label grid; 47/47 blocks on 25 ×3, 98/99 on 01 ×2 — the
+  missing one holds a stock item we have no mesh for).
 
 ### 3.9 The third atlas: four WEBPs **[FILE]** / **[GAME]**
 
