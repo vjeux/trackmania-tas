@@ -75,6 +75,7 @@ fn main() {
         "texture" => cmd_texture(&args),
         "render" => cmd_render(&args),
         "build" => mk64::tm::cmd_build(&args),
+        "build-all" => mk64::tm::cmd_build_all(&args),
         _ => {
             eprintln!("{USAGE}");
             std::process::exit(2);

@@ -962,3 +962,37 @@ fn ident_name(user_data: &[u8], xml_name: &str) -> Option<String> {
     }
     None
 }
+
+/// `mk64 build-all --host MAP --out-dir DIR [build flags…]`: every race course
+/// (the 16 with an official lap length; battle courses skipped) as
+/// `DIR/MK64 <Title>.Map.Gbx`, the other flags passed through to `build`.
+pub fn cmd_build_all(args: &[String]) {
+    let out_dir = PathBuf::from(flag(args, "--out-dir").expect("--out-dir DIR"));
+    std::fs::create_dir_all(&out_dir).expect("create --out-dir");
+    let mut passthrough: Vec<String> = Vec::new();
+    let mut i = 2;
+    while i < args.len() {
+        if args[i] == "--out-dir" {
+            i += 2;
+            continue;
+        }
+        passthrough.push(args[i].clone());
+        i += 1;
+    }
+    let mut built = 0;
+    for (dir, title, laps) in course::COURSES {
+        if laps.is_none() {
+            continue;
+        }
+        let file_title = title.replace('\'', "");
+        let out = out_dir.join(format!("MK64 {file_title}.Map.Gbx"));
+        let mut a: Vec<String> = vec!["mk64".into(), "build".into(), dir.to_string()];
+        a.extend(passthrough.iter().cloned());
+        a.push("--out".into());
+        a.push(out.to_string_lossy().into_owned());
+        println!("=== {dir} → {}", out.display());
+        cmd_build(&a);
+        built += 1;
+    }
+    println!("built {built} maps into {}", out_dir.display());
+}
