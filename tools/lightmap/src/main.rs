@@ -1142,7 +1142,7 @@ fn main() {
                 let daytime = match f("--daytime").as_deref() {
                     Some("template") => 0xffff_ffff,
                     Some(n) if n != "auto" => n.parse().expect("--daytime auto|template|N"),
-                    _ if own == 0xffff_ffff => match (x.collection, x.mood) { ("Stadium", "Day") => 33041, ("Stadium", "Sunrise") => 20808, ("Stadium", "Sunset") => 52920, (_, "Day") => 39769, (_, "Sunrise") => 20043, (_, "Sunset") => 55979, (_, "Night") => 6554, _ => own },
+                    _ if own == 0xffff_ffff => lightmap::moods::default_daytime(x.collection, x.mood),
                     _ => own,
                 };
                 lightmap::synth::FrameParams { daytime, max_hdr_mood: x.max_hdr, max_hdr: k, bounce: x.bounce_factor, sky: x.sky_factor }
