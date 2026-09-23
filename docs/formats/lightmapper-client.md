@@ -386,23 +386,49 @@ lighting: `DynaBox_SetLightAmb_FromHandle_c`, `DynaBox_ILightDir_SetFromPeel_c`)
 Sprites (vegetation) get their own SH: `LmSpriteSS_LightAtt_p` (9 jittered
 positions in the sprite's volume) → `LmSpriteSS_ResolveAndProjSH_p`.
 
-## 4. Object order
+## 4. Object order [DISASSEMBLY `CGameCtnChallenge::AutoSetIdsForLightMap` 0x140b88a1c, `NGameMgrMap::IdsForLightMap_BindToScene` 0x140dc5c4c]
 
-The chart→object index is the "IdForLightMap" assigned by
-`CGameCtnChallenge::AutoSetIdsForLightMap` (0x140b88a1c) and bound to the
-scene by `NGameMgrMap::IdsForLightMap_BindToScene` (0x140dc5c4c);
-`TransferIdForLightMapFromBakedBlocksToBlocks` (0x140b91f00) moves ids from
-the file's baked records to the regenerated blocks, `LightMapGetMostRecentBlock`
-(0x140b965d0) is the "MostRecentBlock" timestamp the cache checks. The
-measured rule (map-lightmap.md §3.6: `[decoration][authored blocks][generated
-blocks][items]`, `base = P + N_authored + (S_x·S_z − replaced) + G`) is the
-order these functions enumerate: blocks (authored, then the game's
-generated/baked list in generation order), then items. `G` is the count of
-generated pieces — the same list `mapgeom bake` simulates (clip fillers,
-pillars, aprons) — so predicting `G` offline = running that simulation on
-the map; the lightmapper itself just walks the challenge's BakedBlocks
-array [DISASSEMBLY: the functions exist and are named so; their bodies are
-coroutine-split, exact walk **pending**].
+The chart→object index is the object's `IdForLightMap` (`block+0x98`,
+`item+0x168`), assigned by `AutoSetIdsForLightMap` in one pass:
+
+```text
+challenges = [the decoration's own map (Stadium: Deco48x48*.Map.Gbx) if the decoration has one, then the map]
+id = 0
+for each challenge C:
+    for b in C.Blocks (+0x278):              if lightmappable(C, b): b.id = id++
+    for b in C.BakedBlocks (+0x288):         b.id = id++                    (no filter)
+    for a in C.AnchoredObjects/items (+0x2a8): a.id = id++
+    if C is the decoration map (+0x828 != 0): id = max(id, 0x4000)         → the map starts at 16384
+```
+
+`lightmappable(C, b)` (0x140b88500): a block with no BlockInfo counts;
+otherwise **no id** for a `CGameCtnBlockInfoClip` (0x03053000) or
+`CGameCtnBlockInfoFrontier` (0x03055000) block, and no id for a
+terrain-class block (three BlockInfo classes, 0x140f31840/850/860) whose
+cell holds another block that passes `FUN_140d2b3d0` (a ground block
+replacing the tile). Everything else in the authored list counts, embedded
+custom blocks included only when they have a BlockInfo of a counted class.
+
+`IdsForLightMap_BindToScene` writes the bind words the mapping stores
+(map-lightmap.md §3.6): for every visual (mobil) of a block or item
+`word1 = id·4 | (mobil & 3)`, `word0 = 0`; for the terrain **packed
+geometry** of a baked block (`CHmsZoneVPacker`, blocks merged per zone)
+`word1 = id·4`, `word0 = geomIndex | 0x10000000` — **bit 28 marks a
+packed-geometry chart**, which is why Nadeo's maps have them (15 %) and
+tiny/item-only maps have none. Baked blocks flagged `0x1000` at +0x90 are
+skipped in the bind (they keep their id).
+
+Consequences: `base(items) = P + |Blocks counted| + |BakedBlocks|` with
+P = 16384 when the decoration ships a map — exactly the measured rule
+(`P + N_authored + (S_x·S_z − replaced) + G`): the generated ground tiles
+and the clip fillers/pillars/aprons are the game's `BakedBlocks` list at
+bake time, in generation order. `G` is therefore predicted by whatever
+reproduces that list (`mapgeom bake` for the clip fillers; the Stadium apron
+and pillar generators are the remaining part), not by anything in the
+lightmapper. `TransferIdForLightMapFromBakedBlocksToBlocks` (0x140b91f00)
+carries ids from a file's baked records onto regenerated blocks so a stored
+cache survives a regeneration; `LightMapGetMostRecentBlock` (0x140b965d0)
+feeds the `MostRecentBlock` timestamp the cache compares.
 
 ## 5. At load
 
