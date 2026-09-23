@@ -38,6 +38,9 @@ struct Opts {
     load_timeout_s: u64,
     compute_timeout_s: u64,
     log_dir: PathBuf,
+    /// Render-lock owner name (default `lightmap-<pid>`); a caller names itself so the lock
+    /// status says WHO is baking on the shared box.
+    owner: Option<String>,
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
@@ -53,6 +56,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
         load_timeout_s: f("--load-timeout").and_then(|s| s.parse().ok()).unwrap_or(420),
         compute_timeout_s: f("--compute-timeout").and_then(|s| s.parse().ok()).unwrap_or(1800),
         log_dir: PathBuf::from(f("--outdir").unwrap_or_else(|| "/mnt/c/Users/vjeux/tinyshots/lightmap".into())),
+        owner: f("--owner"),
     })
 }
 
@@ -92,7 +96,7 @@ fn go(opts: &Opts) -> Result<String, String> {
     let el = |t0: &Instant| format!("[{:6.1}s]", t0.elapsed().as_secs_f64());
     let _lock = if opts.lock {
         let d = super::lock::lock_dir();
-        let owner = format!("lightmap-{}", std::process::id());
+        let owner = opts.owner.clone().unwrap_or_else(|| format!("lightmap-{}", std::process::id()));
         super::lock::acquire(&d, &owner, 1500, 0).map_err(|e| format!("lock: {e}"))?;
         Some(super::shootset::LockGuard::new(d, owner))
     } else {

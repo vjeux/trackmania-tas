@@ -2106,6 +2106,8 @@ fn main() {
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
             let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
             let y0: f32 = f("--y0").map(|s| s.parse().unwrap()).unwrap_or(160.0); // the pad tops
+            let dx: f32 = f("--dx").map(|s| s.parse().unwrap()).unwrap_or(0.0); // layout offset (compact layout: 540, 790)
+            let dz: f32 = f("--dz").map(|s| s.parse().unwrap()).unwrap_or(0.0);
             let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
             let own = lightmap::mapio::load(&a[1]).expect("own");
             let d = own.chunk.data.as_ref().unwrap();
@@ -2117,7 +2119,7 @@ fn main() {
             struct Tx { p: [f32; 3], n: [f32; 3], rgb: [f32; 3], lum: f32 }
             let mut tx: Vec<Tx> = Vec::new();
             for (ii, inst) in scene.instances.iter().enumerate() {
-                if inst.xf[9] > 600.0 { continue; }
+                if inst.xf[9] - dx > 600.0 || inst.xf[11] - dz > 600.0 || inst.xf[9] - dx < 250.0 || inst.xf[11] - dz < 250.0 { continue; }
                 let Some(&ci) = chart_of.get(&(inst.item as u32)) else { continue };
                 let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
                 let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32 / 2).max(1), (h as u32 / 2).max(1));
@@ -2147,43 +2149,43 @@ fn main() {
             };
             let up = |t: &Tx| t.n[1] > 0.9 && t.p[1] > y0 - 1.0 && t.p[1] < y0 + 1.5;
             // group A: pads x 300..348, z 300..348; the pole base at (323.2..324.7, 323.2..324.7)
-            let in_a = |t: &Tx| up(t) && t.p[0] >= 300.0 && t.p[0] < 348.0 && t.p[2] >= 300.0 && t.p[2] < 348.0;
+            let in_a = |t: &Tx| up(t) && (t.p[0] - dx) >= 300.0 && (t.p[0] - dx) < 348.0 && (t.p[2] - dz) >= 300.0 && (t.p[2] - dz) < 348.0;
             let (med_a, _) = stats("A open pads (all)", &in_a);
             // shadow texels of A: lum < 0.75 × median, away from the pole itself
-            let shadow: Vec<&Tx> = tx.iter().filter(|t| in_a(t) && t.lum < 0.75 * med_a && ((t.p[0] - 324.0).abs() > 1.5 || (t.p[2] - 324.0).abs() > 1.5)).collect();
+            let shadow: Vec<&Tx> = tx.iter().filter(|t| in_a(t) && t.lum < 0.75 * med_a && (((t.p[0] - dx) - 324.0).abs() > 1.5 || ((t.p[2] - dz) - 324.0).abs() > 1.5)).collect();
             println!("A shadow texels (< 75 % of median): {}", shadow.len());
             if shadow.len() >= 3 {
                 // direction: mean vector from the pole base; length: the farthest shadow texel along that direction
                 let (mut sx, mut sz) = (0f32, 0f32);
-                for t in &shadow { sx += t.p[0] - 324.0; sz += t.p[2] - 324.0; }
+                for t in &shadow { sx += (t.p[0] - dx) - 324.0; sz += (t.p[2] - dz) - 324.0; }
                 let len = (sx * sx + sz * sz).sqrt(); let (dx, dz) = (sx / len, sz / len);
-                let far = shadow.iter().map(|t| (t.p[0] - 324.0) * dx + (t.p[2] - 324.0) * dz).fold(0f32, f32::max);
+                let far = shadow.iter().map(|t| ((t.p[0] - dx) - 324.0) * dx + ((t.p[2] - dz) - 324.0) * dz).fold(0f32, f32::max);
                 // the sun is opposite the shadow; az measured like the baker: dir = (cos el sin az, sin el, cos el cos az)
                 let sun_az = (-dx).atan2(-dz).to_degrees().rem_euclid(360.0);
                 let el = (16.0f32 / far.max(0.1)).atan().to_degrees();
                 println!("pole shadow: direction ({dx:.2}, {dz:.2}) length {far:.1} m (pole 16 m) → SUN az {sun_az:.1}° el {el:.1}° (el from the shadow tip; texel size limits it to ±{:.1}°)", (16.0f32 / (far - 2.0).max(0.1)).atan().to_degrees() - el);
                 stats("A lit pads (≥ 75 % of median)", &|t: &Tx| in_a(t) && t.lum >= 0.75 * med_a);
-                stats("A shadow", &|t: &Tx| in_a(t) && t.lum < 0.75 * med_a && ((t.p[0] - 324.0).abs() > 1.5 || (t.p[2] - 324.0).abs() > 1.5));
+                stats("A shadow", &|t: &Tx| in_a(t) && t.lum < 0.75 * med_a && (((t.p[0] - dx) - 324.0).abs() > 1.5 || ((t.p[2] - dz) - 324.0).abs() > 1.5));
             }
             // group B pads and the tower shadow
-            let in_b = |t: &Tx| up(t) && t.p[0] >= 400.0 && t.p[0] < 448.0 && t.p[2] >= 300.0 && t.p[2] < 348.0;
+            let in_b = |t: &Tx| up(t) && (t.p[0] - dx) >= 400.0 && (t.p[0] - dx) < 448.0 && (t.p[2] - dz) >= 300.0 && (t.p[2] - dz) < 348.0;
             let (med_b, _) = stats("B pads (tower east of them)", &in_b);
             stats("B lit", &|t: &Tx| in_b(t) && t.lum >= 0.75 * med_b.max(med_a));
             stats("B shadow", &|t: &Tx| in_b(t) && t.lum < 0.75 * med_b.max(med_a));
             // tower faces (item at (448, 40, 316), yaw 0; mesh lo (−0.7, 0, −1.1), 17.4 × 52 × 19.6)
-            let tower = |t: &Tx| t.p[0] > 446.0 && t.p[0] < 466.5 && t.p[2] > 313.0 && t.p[2] < 337.0 && t.p[1] > y0 + 2.0 && t.p[1] < y0 + 52.0;
+            let tower = |t: &Tx| (t.p[0] - dx) > 446.0 && (t.p[0] - dx) < 466.5 && (t.p[2] - dz) > 313.0 && (t.p[2] - dz) < 337.0 && t.p[1] > y0 + 2.0 && t.p[1] < y0 + 52.0;
             stats("tower face −x (west)", &|t: &Tx| tower(t) && t.n[0] < -0.9);
             stats("tower face +x (east)", &|t: &Tx| tower(t) && t.n[0] > 0.9);
             stats("tower face −z (south)", &|t: &Tx| tower(t) && t.n[2] < -0.9);
             stats("tower face +z (north)", &|t: &Tx| tower(t) && t.n[2] > 0.9);
-            stats("tower top", &|t: &Tx| t.p[0] > 446.0 && t.p[0] < 466.5 && t.p[2] > 313.0 && t.p[2] < 337.0 && t.p[1] > y0 + 48.0 && t.n[1] > 0.9);
+            stats("tower top", &|t: &Tx| (t.p[0] - dx) > 446.0 && (t.p[0] - dx) < 466.5 && (t.p[2] - dz) > 313.0 && (t.p[2] - dz) < 337.0 && t.p[1] > y0 + 48.0 && t.n[1] > 0.9);
             // group C: pads x 300..348, z 400..448; the roof (316, 52, 416): 16 × 16 above the centre pad, 12 m up
-            let in_c = |t: &Tx| up(t) && t.p[0] >= 300.0 && t.p[0] < 348.0 && t.p[2] >= 400.0 && t.p[2] < 448.0;
-            stats("C open pads (not under the roof)", &|t: &Tx| in_c(t) && !(t.p[0] >= 316.0 && t.p[0] < 332.0 && t.p[2] >= 416.0 && t.p[2] < 432.0));
-            stats("C pad under the roof", &|t: &Tx| in_c(t) && t.p[0] >= 316.0 && t.p[0] < 332.0 && t.p[2] >= 416.0 && t.p[2] < 432.0);
-            stats("C pad under the roof, inner 8×8", &|t: &Tx| in_c(t) && t.p[0] >= 320.0 && t.p[0] < 328.0 && t.p[2] >= 420.0 && t.p[2] < 428.0);
-            stats("roof top", &|t: &Tx| t.n[1] > 0.9 && t.p[1] > y0 + 15.0 && t.p[1] < y0 + 18.0 && t.p[0] >= 316.0 && t.p[0] < 332.0 && t.p[2] >= 416.0 && t.p[2] < 432.0);
-            stats("roof underside", &|t: &Tx| t.n[1] < -0.9 && t.p[1] > y0 + 11.0 && t.p[1] < y0 + 14.0 && t.p[0] >= 316.0 && t.p[0] < 332.0 && t.p[2] >= 416.0 && t.p[2] < 432.0);
+            let in_c = |t: &Tx| up(t) && (t.p[0] - dx) >= 300.0 && (t.p[0] - dx) < 348.0 && (t.p[2] - dz) >= 400.0 && (t.p[2] - dz) < 448.0;
+            stats("C open pads (not under the roof)", &|t: &Tx| in_c(t) && !((t.p[0] - dx) >= 316.0 && (t.p[0] - dx) < 332.0 && (t.p[2] - dz) >= 416.0 && (t.p[2] - dz) < 432.0));
+            stats("C pad under the roof", &|t: &Tx| in_c(t) && (t.p[0] - dx) >= 316.0 && (t.p[0] - dx) < 332.0 && (t.p[2] - dz) >= 416.0 && (t.p[2] - dz) < 432.0);
+            stats("C pad under the roof, inner 8×8", &|t: &Tx| in_c(t) && (t.p[0] - dx) >= 320.0 && (t.p[0] - dx) < 328.0 && (t.p[2] - dz) >= 420.0 && (t.p[2] - dz) < 428.0);
+            stats("roof top", &|t: &Tx| t.n[1] > 0.9 && t.p[1] > y0 + 15.0 && t.p[1] < y0 + 18.0 && (t.p[0] - dx) >= 316.0 && (t.p[0] - dx) < 332.0 && (t.p[2] - dz) >= 416.0 && (t.p[2] - dz) < 432.0);
+            stats("roof underside", &|t: &Tx| t.n[1] < -0.9 && t.p[1] > y0 + 11.0 && t.p[1] < y0 + 14.0 && (t.p[0] - dx) >= 316.0 && (t.p[0] - dx) < 332.0 && (t.p[2] - dz) >= 416.0 && (t.p[2] - dz) < 432.0);
             stats("pad undersides (n.y < −0.9)", &|t: &Tx| t.n[1] < -0.9 && t.p[1] > y0 - 1.0 && t.p[1] < y0 + 1.0);
         }
         "sky" => {

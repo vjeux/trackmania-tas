@@ -153,7 +153,9 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
     // 11 with different quality bytes came back "never busy" at q=4). Drop them first.
     let dropped = wsx.sh("ls /mnt/c/ProgramData/Trackmania/Cache/ | grep -c LightMap.zip; rm -f /mnt/c/ProgramData/Trackmania/Cache/*.LightMap.zip").unwrap_or_default();
     eprintln!("game lightmap cache: {} entries dropped", dropped.trim());
-    let cmd = format!("{shootctl} lightmap --detach --map {r_map} --out '{rel}' --quality {quality} --outdir {r_dir}");
+    // --owner NAME (tinyctl) → the box lock owner; the default stays shootctl's `lightmap-<pid>`
+    let owner_flag = match f("--owner") { Some(o) => format!(" --owner '{o}'"), None => String::new() };
+    let cmd = format!("{shootctl} lightmap --detach --map {r_map} --out '{rel}' --quality {quality} --outdir {r_dir}{owner_flag}");
     eprintln!("computing the lightmap (quality {quality}) …");
     let started = wsx.sh(&cmd)?;
     if wsx.verbose {
