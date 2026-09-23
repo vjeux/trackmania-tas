@@ -1722,6 +1722,125 @@ fn main() {
                 }
             }
         }
+        // veget-slots --collection BlueBay [ZONE...]: every vegetation slot of
+        // the collection's zone tiles (the block infos the zone genealogy
+        // regenerates — Flat / Frontier / Transition families), resolved to
+        // the VegetTreeModels its tags match in the placement-group items
+        // (Items\Vegetation\<Placement>.Item.Gbx, an NPlugItem::SVariantList).
+        // TSV: zone, variant, prefab, slot, x, y, z, yaw°, tags, candidates.
+        "veget-slots" => {
+            let mut store = open(&a);
+            let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "BlueBay".to_string());
+            let only: Vec<String> = a.rest.iter().skip(1).filter(|x| !x.starts_with("--") && **x != coll).cloned().collect();
+            let zones: Vec<String> = store
+                .entries()
+                .map(|e| e.path())
+                .filter(|p| p.starts_with(&format!("{coll}\\GameCtnBlockInfo\\GameCtnBlockInfo")) && (p.contains("\\GameCtnBlockInfoFlat\\") || p.contains("\\GameCtnBlockInfoFrontier\\") || p.contains("\\GameCtnBlockInfoTransition\\")))
+                .filter(|p| only.is_empty() || only.iter().any(|z| p.rsplit('\\').next().map(|f| f.starts_with(&format!("{z}."))).unwrap_or(false)))
+                .collect();
+            // the placement groups: Placement tag value -> [(tags, model path)]
+            let mut groups: std::collections::BTreeMap<String, Vec<(Vec<(String, String)>, String)>> = Default::default();
+            let group_paths: Vec<String> = store.entries().map(|e| e.path()).filter(|p| p.starts_with(&format!("{coll}\\Items\\Vegetation\\")) && p.ends_with(".Item.Gbx")).collect();
+            for gp in &group_paths {
+                let m = match store.load_model(gp) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                let mut lb = mapgeom::static_item::LookbackState::default();
+                lb.defined_nodes.extend(m.external_indices().iter().copied());
+                let mut r = mapgeom::static_item::Rd::new(&m.body, 0, lb);
+                let item = match mapgeom::static_item::item::CGameItemModel::parse(&mut r) {
+                    Ok(i) => i,
+                    Err(_) => continue,
+                };
+                let Some(mc) = item.model() else { continue };
+                let Some(mapgeom::static_item::Node::VariantList(vl)) = mc.entity_model.inline.as_deref() else { continue };
+                let stem = gp.rsplit('\\').next().unwrap_or(gp).trim_end_matches(".Item.Gbx").to_string();
+                let list = groups.entry(stem).or_default();
+                for v in &vl.variants {
+                    let model = m.externals.iter().find(|(k, _)| *k as i32 == v.model.index).map(|(_, p)| p.clone()).unwrap_or_else(|| format!("node {}", v.model.index));
+                    list.push((v.tags.clone(), model));
+                }
+            }
+            println!("zone\tvariant\tprefab\tslot\tx\ty\tz\tyaw_deg\ttags\tcandidates");
+            for zp in &zones {
+                let bi = match mapgeom::blockinfo::load(&mut store, zp) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("{zp}: {e}");
+                        continue;
+                    }
+                };
+                let zone = zp.rsplit('\\').next().unwrap_or(zp).split('.').next().unwrap_or("").to_string();
+                let mut variants: Vec<(&mapgeom::blockinfo::Variant, String)> = Vec::new();
+                if let Some(v) = &bi.variant_base_ground {
+                    variants.push((v, "ground".into()));
+                }
+                for (i, v) in bi.additional_ground.iter().enumerate() {
+                    variants.push((v, format!("ground+{}", i + 1)));
+                }
+                if let Some(v) = &bi.variant_base_air {
+                    variants.push((v, "air".into()));
+                }
+                for (i, v) in bi.additional_air.iter().enumerate() {
+                    variants.push((v, format!("air+{}", i + 1)));
+                }
+                for (v, label) in variants {
+                    for layer in &v.mobils {
+                        for mb in layer {
+                            let Some(pp) = &mb.prefab else { continue };
+                            let pm = match store.load_model(pp) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    eprintln!("{pp}: {e}");
+                                    continue;
+                                }
+                            };
+                            let pf = match mapgeom::static_item::prefab::CPlugPrefab::from_model(&pm) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    eprintln!("{pp}: {e}");
+                                    continue;
+                                }
+                            };
+                            for (i, e) in pf.ents.iter().enumerate() {
+                                if e.params_id != 0x2F0A9000 {
+                                    continue;
+                                }
+                                let mut r = mapgeom::crystal_model::Rd::new(&e.params, 0, Default::default());
+                                let _v = r.u32().unwrap_or(0);
+                                let _k = r.i32().unwrap_or(0);
+                                let tag_groups: Vec<Vec<(String, String)>> = r.array(|r| r.array(|r| Ok((r.string()?, r.string()?)))).unwrap_or_default();
+                                // Options = alternative tag sets; a variant qualifies when its
+                                // tags carry every tag of one option (the Placement tag names the
+                                // group in BlueBay's files; RedIsland's slots have none and are
+                                // matched across every group item)
+                                let mut cands: Vec<String> = Vec::new();
+                                for option in &tag_groups {
+                                    for list in groups.values() {
+                                        for (vt, model) in list {
+                                            if option.iter().all(|w| vt.iter().any(|t| t == w)) {
+                                                let name = model.rsplit('\\').next().unwrap_or(model).trim_end_matches(".VegetTreeModel.Gbx").to_string();
+                                                if !cands.contains(&name) {
+                                                    cands.push(name);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                let tags: Vec<(String, String)> = tag_groups.iter().flatten().cloned().collect();
+                                // yaw about +Y from the quaternion (x, y, z, w)
+                                let [qx, qy, qz, qw] = e.rot;
+                                let yaw = (2.0 * (qw * qy + qx * qz)).atan2(1.0 - 2.0 * (qy * qy + qz * qz)).to_degrees();
+                                let tag_s: Vec<String> = tag_groups.iter().map(|g| g.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(",")).collect();
+                                let _ = &tags;
+                                println!("{zone}\t{label}\t{}\t{i}\t{:.3}\t{:.3}\t{:.3}\t{:.1}\t{}\t{}", pp.rsplit('\\').next().unwrap_or(pp), e.pos[0], e.pos[1], e.pos[2], yaw, tag_s.join("|"), cands.join(";"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // prefab-ents <pack .Prefab.Gbx>: every entity of a prefab — model
         // class (or external file), position, rotation, params chunk id and
         // size — the layout an item in prefab form has to reproduce.
