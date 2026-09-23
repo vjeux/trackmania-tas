@@ -118,6 +118,7 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
         let mut parts: Vec<(String, &super::solid2::CPlugSolid2Model, Option<&super::surface::CPlugSurface>)> = Vec::new();
         // indices into `parts` whose missing hull is fine (tween parts)
         let mut hull_optional: Vec<usize> = Vec::new();
+        let mut shapeless = 0usize;
         if let Some(so) = f.item.static_object() {
             match so.solid2() {
                 Some(s2) => {
@@ -196,7 +197,17 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                         _ => problems.push(format!("entity {i}: moving part without an inline mesh")),
                     },
                     Some(super::Node::StaticObject(so)) => match so.solid2() {
-                        Some(s2) => parts.push((format!("entity {i}: "), s2, so.surface())),
+                        Some(s2) => {
+                            // a sub-object without a shape (a shared sub-model of a
+                            // pack object that has none: screens, speedometers,
+                            // supports) is the pack's own layout; the ITEM must
+                            // still collide somewhere (checked below)
+                            if !so.is_mesh_collidable && so.shape.index < 0 && so.shape.inline.is_none() {
+                                hull_optional.push(parts.len());
+                                shapeless += 1;
+                            }
+                            parts.push((format!("entity {i}: "), s2, so.surface()))
+                        }
                         None => problems.push(format!("entity {i}: static object without an inline solid")),
                     },
                     Some(super::Node::Kinematic(k)) => {
@@ -341,6 +352,16 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                 println!("{path}: FAIL prefab with no solid");
                 bad += 1;
                 continue;
+            }
+            // the item as a whole must collide: an item without any collision
+            // is dropped by the editor on re-save (2026-09-07)
+            if shapeless > 0 {
+                let with_hull = parts.iter().filter(|(_, _, sf)| sf.is_some()).count();
+                if with_hull == 0 {
+                    problems.push(format!("{shapeless} shape-less static objects and no hull anywhere"));
+                } else if facts {
+                    println!("{path}: {shapeless} shape-less static objects (pack objects without a shape), {with_hull} with a hull");
+                }
             }
         } else {
             println!("{path}: FAIL no static object (nor a prefab entity model)");

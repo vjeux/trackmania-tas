@@ -501,8 +501,20 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
             }
             let mesh_index = next_index(&mut next);
             let s2 = build_solid2(&sub.mesh, opts, &mut next).map_err(|e| format!("{}: {e}", sub.key))?;
-            let surface_index = next_index(&mut next);
-            let so = CPlugStaticObjectModel { version: 3, mesh: inline(mesh_index, Node::Solid2(s2)), is_mesh_collidable: false, shape: inline(surface_index, Node::Surface(build_surface(&sub.mesh))) };
+            // A sub-model without a hull (the start's Speedometer, screens,
+            // barrier supports — the pack's own objects have no shape) gets NO
+            // shape: `build_surface`'s "1 mm triangle 4 m under the origin"
+            // placeholder is for a whole item without collision, and here the
+            // entity's rotation swung it up into the road — the car stopped
+            // dead at the start arch (2026-09-23, TinySet16: seven of them
+            // across the road 0.8 m above the deck).
+            let shape = if sub.mesh.surf_triangles.is_empty() {
+                super::NodeRef { index: -1, inline: None }
+            } else {
+                let surface_index = next_index(&mut next);
+                inline(surface_index, Node::Surface(build_surface(&sub.mesh)))
+            };
+            let so = CPlugStaticObjectModel { version: 3, mesh: inline(mesh_index, Node::Solid2(s2)), is_mesh_collidable: false, shape };
             let so_index = next_index(&mut next);
             let mut first = Some(so);
             for iso in &sub.instances {

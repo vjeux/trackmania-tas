@@ -348,6 +348,9 @@ impl Merged {
             }
         }
         self.parts += 1;
+        if std::env::var("TINY_SHARE_DEBUG").is_ok() {
+            eprintln!("shared sub-model {key}: {} visuals, {} hull triangles, physics {:?}", sub.visuals.len(), sub.surf_triangles.len(), sub.surf_ids);
+        }
         self.shared.push(SharedSubModel { key: key.to_string(), mesh: Box::new(sub), instances: vec![*iso] });
     }
 
