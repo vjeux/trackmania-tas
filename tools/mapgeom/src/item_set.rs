@@ -1230,9 +1230,9 @@ fn run_shoot(rest: &[String]) -> Result<(), String> {
     // the set folder under Items/ the idents start with (`TinyBlocks\Roads\…`)
     let set_name = flag("--set-name").unwrap_or_else(|| "TinyBlocks".into());
     let max_items: usize = flag("--max-items").unwrap_or_else(|| "30".into()).parse().map_err(|e| format!("--max-items: {e}"))?;
-    // `--unit 6`: metres per footprint unit for the grid pitch (16 = a tiny block; the
+    // `--grid-unit 6`: metres per footprint unit for the grid pitch (16 = a tiny block; the
     // TinyItems are small, 6 packs them closer)
-    let unit: f32 = flag("--unit").unwrap_or_else(|| "16".into()).parse().map_err(|e| format!("--unit: {e}"))?;
+    let unit: f32 = flag("--grid-unit").unwrap_or_else(|| "16".into()).parse().map_err(|e| format!("--unit: {e}"))?;
     let origin: Vec<f32> = flag("--origin").unwrap_or_else(|| "400,8,400".into()).split(',').filter_map(|v| v.parse().ok()).collect();
     if origin.len() != 3 {
         return Err("--origin needs x,y,z".into());
