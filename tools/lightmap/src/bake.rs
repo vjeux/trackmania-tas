@@ -68,6 +68,12 @@ pub struct BakeParams {
     pub ground_bounce: f32,
     /// The game's own dome directions (the sphere-table points inside the cone); stratified random when empty.
     pub dome_dirs: std::sync::Arc<Vec<[f32; 3]>>,
+    /// Bounce over the full sphere of directions (the game's ComputeBounces_SpherePoints) instead of
+    /// the ±dome cone; weight |n·D|/π per direction (radiance → irradiance).
+    pub bounce_sphere: bool,
+    /// The previous iteration's lightmap (multi-bounce): a hit surface's radiance = albedo ×
+    /// (its stored value + its direct sun) instead of the one-bounce estimate.
+    pub field: Option<std::sync::Arc<RadianceField>>,
     /// The mood's HDR sky as a light source: every unoccluded cosine-sampled ray adds
     /// `sky_cube_scale × L(ω)`; with a cube the constant `sky` term is not used.
     pub sky_cube: Option<std::sync::Arc<crate::skycube::CubeMap>>,
@@ -107,6 +113,8 @@ impl Default for BakeParams {
             dome_deg: 90.0,
             ground_bounce: 0.37,
             dome_dirs: std::sync::Arc::new(Vec::new()),
+            bounce_sphere: false,
+            field: None,
             sky_cube: None,
             sky_cube_scale: 1.0,
         }
@@ -158,11 +166,11 @@ pub fn world_tris(scene: &Scene) -> Vec<WTri> {
     let mut out = Vec::with_capacity(scene.tri_count());
     for (ii, inst) in scene.instances.iter().enumerate() {
         let m = &scene.models[inst.model];
-        for t in &m.tris {
+        for (ti, t) in m.tris.iter().enumerate() {
             let p0 = xf_point(&inst.xf, t.p[0]);
             let p1 = xf_point(&inst.xf, t.p[1]);
             let p2 = xf_point(&inst.xf, t.p[2]);
-            out.push(WTri { p0, e1: sub(p1, p0), e2: sub(p2, p0), inst: ii as u32 });
+            out.push(WTri { p0, e1: sub(p1, p0), e2: sub(p2, p0), inst: ii as u32, tri: ti as u32 });
         }
     }
     out
@@ -291,6 +299,42 @@ fn rasterise_inset(scene: &Scene, ii: usize, w: u32, h: u32, flip_v: bool, use_b
 }
 
 /// Shade one sample. Returns (irradiance, sky visibility, sun visibility).
+/// The previous bounce iteration's lightmap: one chart per instance, looked up from a hit
+/// through the triangle's uv1 (the same uv → pixel map the rasteriser uses).
+impl std::fmt::Debug for RadianceField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RadianceField({} charts)", self.charts.len())
+    }
+}
+
+pub struct RadianceField {
+    pub charts: Vec<Option<(u32, u32, Vec<[f32; 3]>)>>,
+    pub flip_v: bool,
+    pub uv_bounds: bool,
+}
+
+impl RadianceField {
+    /// The stored irradiance at the point where a ray hit triangle `tri` of instance `inst`
+    /// with barycentrics (b1, b2) on (e1, e2).
+    pub fn lookup(&self, scene: &Scene, inst: u32, tri: u32, b1: f32, b2: f32) -> Option<[f32; 3]> {
+        let (w, h, px) = self.charts.get(inst as usize)?.as_ref()?;
+        let instance = &scene.instances[inst as usize];
+        let m = &scene.models[instance.model];
+        let t = m.tris.get(tri as usize)?;
+        let uv = [t.uv[0][0] + b1 * (t.uv[1][0] - t.uv[0][0]) + b2 * (t.uv[2][0] - t.uv[0][0]), t.uv[0][1] + b1 * (t.uv[1][1] - t.uv[0][1]) + b2 * (t.uv[2][1] - t.uv[0][1])];
+        let (u0, v0, su, sv) = match (self.uv_bounds, m.plg_bounds) {
+            (true, Some(b)) => (b[0], b[1], 1.0 / (b[2] - b[0]), 1.0 / (b[3] - b[1])),
+            _ => (0.0, 0.0, 1.0, 1.0),
+        };
+        let u = (uv[0] - u0) * su;
+        let v = (uv[1] - v0) * sv;
+        let v = if self.flip_v { 1.0 - v } else { v };
+        let x = ((u * *w as f32) as i64).clamp(0, *w as i64 - 1) as u32;
+        let y = ((v * *h as f32) as i64).clamp(0, *h as i64 - 1) as u32;
+        px.get((y * w + x) as usize).copied()
+    }
+}
+
 /// Per-texel lighting components (the bounce estimate is per unit albedo·bounce).
 pub struct Shaded {
     pub e: [f32; 3],
@@ -302,18 +346,28 @@ pub struct Shaded {
 }
 
 /// Shade one world point with a normal (debug probes).
-pub fn shade_point(bvh: &Bvh, prm: &BakeParams, p: V3, n: V3) -> Shaded {
+pub fn shade_point_inst(scene: &Scene, bvh: &Bvh, prm: &BakeParams, p: V3, n: V3, ii: u32) -> Shaded {
     let s = Sample { px: 0, py: 0, p, n };
-    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
-    shade_full(bvh, prm, &s, u32::MAX, &mut rng)
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ ((p[0] * 1000.0) as u64).wrapping_mul(0x2545_F491_4F6C_DD1D));
+    shade_full(scene, bvh, prm, &s, ii, &mut rng)
 }
 
-fn shade(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -> ([f32; 3], f32, f32) {
-    let r = shade_full(bvh, prm, s, ii, rng);
+pub fn solve4_pub(m: [[f64; 4]; 4], r: [f64; 4]) -> Option<[f64; 4]> {
+    solve4(m, r)
+}
+
+pub fn shade_point(scene: &Scene, bvh: &Bvh, prm: &BakeParams, p: V3, n: V3) -> Shaded {
+    let s = Sample { px: 0, py: 0, p, n };
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    shade_full(scene, bvh, prm, &s, u32::MAX, &mut rng)
+}
+
+fn shade(scene: &Scene, bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -> ([f32; 3], f32, f32) {
+    let r = shade_full(scene, bvh, prm, s, ii, rng);
     (r.e, r.sky_vis, r.sun_vis)
 }
 
-fn shade_full(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -> Shaded {
+fn shade_full(scene: &Scene, bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -> Shaded {
     if prm.pattern {
         // 4 m checkerboard in x/z, hue by height band: continuous across items iff the uv mapping is right
         let c = ((s.p[0] / 4.0).floor() as i64 + (s.p[2] / 4.0).floor() as i64).rem_euclid(2);
@@ -323,7 +377,7 @@ fn shade_full(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
         return Shaded { e: [col[0] * base, col[1] * base, col[2] * base], sky_vis: 1.0, sun_vis: 1.0, bounce: [0.0; 3], sky_rgb: [1.0; 3] };
     }
     if prm.dome_deg < 89.0 {
-        return shade_dome(bvh, prm, s, ii, rng);
+        return shade_dome(scene, bvh, prm, s, ii, rng);
     }
     let o = add(s.p, mul(s.n, 0.03));
     let (t, b) = frame(s.n);
@@ -439,7 +493,7 @@ fn shade_full(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
 /// horizontal surface receives exactly `sky`); an occluded one adds the hit surface's
 /// bounced radiance (its direct sun + its own sky share, times BounceFactor·albedo); a
 /// direction reaching the sea/ground plane adds the plane's bounce.
-fn shade_dome(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -> Shaded {
+fn shade_dome(scene: &Scene, bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -> Shaded {
     let o = add(s.p, mul(s.n, 0.03));
     let n = prm.sky_samples.max(16);
     let side = (n as f32).sqrt().ceil() as usize;
@@ -459,6 +513,7 @@ fn shade_dome(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
     let mut bounce = [0f32; 3];
     let mut count = 0usize;
     let bounce_on = prm.bounce > 0.0;
+    let cone_bounce = bounce_on && !prm.bounce_sphere;
     let exact = !prm.dome_dirs.is_empty();
     let total = if exact { prm.dome_dirs.len() } else { n };
     for idx in 0..total {
@@ -491,22 +546,18 @@ fn shade_dome(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
                         sky_acc += ndl;
                         open_cone += cos_t;
                     }
-                    Some(h) if bounce_on => {
+                    Some(h) if cone_bounce => {
                         let tri = &bvh.tris[h.tri as usize];
                         let hn = norm(cross(tri.e1, tri.e2));
                         let hn = if dot(hn, up) > 0.0 { mul(hn, -1.0) } else { hn };
-                        let hp = add(add(o, mul(up, h.t)), mul(hn, 0.03));
-                        let sky_share = cone_factor(hn, cone_cos);
-                        let ndl_h = dot(hn, prm.sun_dir).max(0.0);
-                        let sun_v = if ndl_h > 0.0 && !bvh.occluded(hp, prm.sun_dir, 1.0e4, u32::MAX, 0.0) { 1.0 } else { 0.0 };
+                        let e_hit = hit_irradiance(scene, bvh, prm, &h, o, up, hn, cone_cos);
                         for k in 0..3 {
-                            let e_hit = prm.sky[k] * sky_share + prm.sun[k] * ndl_h * sun_v;
-                            bounce[k] += prm.bounce * prm.albedo * e_hit * ndl;
+                            bounce[k] += prm.bounce * prm.albedo * e_hit[k] * ndl;
                         }
                     }
                     Some(_) => {}
                 }
-            } else if bounce_on {
+            } else if cone_bounce {
                 // facing down along D: what lies below
                 let down = mul(up, -1.0);
                 let w = -ndl;
@@ -533,13 +584,9 @@ fn shade_dome(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
                         let tri = &bvh.tris[h.tri as usize];
                         let hn = norm(cross(tri.e1, tri.e2));
                         let hn = if dot(hn, down) > 0.0 { mul(hn, -1.0) } else { hn };
-                        let hp = add(add(o, mul(down, h.t)), mul(hn, 0.03));
-                        let sky_share = cone_factor(hn, cone_cos);
-                        let ndl_h = dot(hn, prm.sun_dir).max(0.0);
-                        let sun_v = if ndl_h > 0.0 && !bvh.occluded(hp, prm.sun_dir, 1.0e4, u32::MAX, 0.0) { 1.0 } else { 0.0 };
+                        let e_hit = hit_irradiance(scene, bvh, prm, &h, o, down, hn, cone_cos);
                         for k in 0..3 {
-                            let e_hit = prm.sky[k] * sky_share + prm.sun[k] * ndl_h * sun_v;
-                            bounce[k] += prm.bounce * prm.albedo * e_hit * w;
+                            bounce[k] += prm.bounce * prm.albedo * e_hit[k] * w;
                         }
                     }
                 }
@@ -549,12 +596,123 @@ fn shade_dome(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
     let norm_c = cone_total.max(1e-6);
     let sky_frac = sky_acc / norm_c;
     let sky_vis = open_cone / norm_c;
-    let bounce_n = [bounce[0] / norm_c, bounce[1] / norm_c, bounce[2] / norm_c];
+    let mut bounce_n = [bounce[0] / norm_c, bounce[1] / norm_c, bounce[2] / norm_c];
+    if bounce_on && prm.bounce_sphere {
+        // the sphere pass: uniform directions over the sphere, each hit surface's bounced radiance
+        // (L = albedo·E_hit/π) weighted by (n·D)⁺·(4π/N) — an enclosing Lambertian surface of
+        // irradiance E gives back albedo·E
+        let nb = prm.sky_samples.max(16);
+        let bside = (nb as f32).sqrt().ceil() as usize;
+        let rot2 = rng.next();
+        let mut acc = [0f32; 3];
+        let mut cnt = 0usize;
+        for i in 0..bside {
+            for j in 0..bside {
+                if cnt >= nb {
+                    break;
+                }
+                cnt += 1;
+                let u = (i as f32 + rng.next()) / bside as f32;
+                let v = ((j as f32 + rng.next()) / bside as f32 + rot2).fract();
+                let cos_t = 1.0 - 2.0 * u;
+                let sin_t = (1.0 - cos_t * cos_t).max(0.0).sqrt();
+                let phi = 2.0 * std::f32::consts::PI * v;
+                let d = [sin_t * phi.cos(), cos_t, sin_t * phi.sin()];
+                let ndl = dot(s.n, d);
+                if ndl <= 0.0 {
+                    continue;
+                }
+                let mut tmax = 1.0e4f32;
+                let mut ground_hit = false;
+                if d[1] < 0.0 && o[1] > prm.ground_y {
+                    let tg = (prm.ground_y - o[1]) / d[1];
+                    if tg < tmax {
+                        tmax = tg;
+                        ground_hit = true;
+                    }
+                }
+                match bvh.closest(o, d, tmax) {
+                    None if !ground_hit => {}
+                    None => {
+                        let hp = add(o, mul(d, tmax));
+                        let sun_v = if prm.sun_dir[1] > 0.0 && !bvh.occluded(add(hp, [0.0, 0.03, 0.0]), prm.sun_dir, 1.0e4, u32::MAX, 0.0) { 1.0 } else { 0.0 };
+                        for k in 0..3 {
+                            let e_ground = prm.sky[k] + prm.sun[k] * prm.sun_dir[1].max(0.0) * sun_v;
+                            acc[k] += prm.ground_bounce * e_ground / std::f32::consts::PI * ndl;
+                        }
+                    }
+                    Some(h) => {
+                        let tri = &bvh.tris[h.tri as usize];
+                        let hn = norm(cross(tri.e1, tri.e2));
+                        let hn = if dot(hn, d) > 0.0 { mul(hn, -1.0) } else { hn };
+                        let e_hit = hit_irradiance(scene, bvh, prm, &h, o, d, hn, cone_cos);
+                        for k in 0..3 {
+                            acc[k] += prm.bounce * prm.albedo * e_hit[k] / std::f32::consts::PI * ndl;
+                        }
+                    }
+                }
+            }
+        }
+        let w = 4.0 * std::f32::consts::PI / cnt.max(1) as f32;
+        bounce_n = [acc[0] * w, acc[1] * w, acc[2] * w];
+    }
+    // the direct sun: a jittered disc of angular radius sun_radius, shadow rays against the scene
+    // and the ground plane
+    let ndl = dot(s.n, prm.sun_dir);
+    let mut sun_vis = 0f32;
+    if prm.direct_sun > 0.0 && ndl > 0.0 && prm.sun_dir[1] > 0.0 {
+        let nsun = prm.sun_samples.max(1);
+        let (st, sb) = frame(prm.sun_dir);
+        for k in 0..nsun {
+            let d = if k == 0 && nsun == 1 {
+                prm.sun_dir
+            } else {
+                let r = prm.sun_radius * rng.next().sqrt();
+                let phi = 2.0 * std::f32::consts::PI * rng.next();
+                norm(add(prm.sun_dir, add(mul(st, r * phi.cos()), mul(sb, r * phi.sin()))))
+            };
+            if !bvh.occluded(o, d, 1.0e4, ii, 0.05) {
+                sun_vis += 1.0;
+            }
+        }
+        sun_vis /= nsun as f32;
+    }
     let mut e = [0f32; 3];
     for k in 0..3 {
-        e[k] = prm.sky[k] * sky_frac + bounce_n[k] + prm.ambient[k] + prm.up[k] * (0.5 + 0.5 * s.n[1]);
+        e[k] = prm.sky[k] * sky_frac + bounce_n[k] + prm.ambient[k] + prm.up[k] * (0.5 + 0.5 * s.n[1]) + prm.direct_sun * prm.sun[k] * ndl.max(0.0) * sun_vis;
     }
-    Shaded { e, sky_vis, sun_vis: 0.0, bounce: bounce_n, sky_rgb: [sky_frac; 3] }
+    Shaded { e, sky_vis, sun_vis, bounce: bounce_n, sky_rgb: [sky_frac; 3] }
+}
+
+
+/// A hit surface's irradiance for the bounce: the previous iteration's stored value when a
+/// field is given (the game's "lightmap so far"), else its unoccluded sky share; plus its direct
+/// sun. `hp` = the hit point offset off the surface, `hn` = the surface normal facing the ray.
+fn hit_irradiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, h: &crate::bvh::Hit, o: V3, d: V3, hn: V3, cone_cos: f32) -> [f32; 3] {
+    let hp = add(add(o, mul(d, h.t)), mul(hn, 0.03));
+    let ndl_h = dot(hn, prm.sun_dir).max(0.0);
+    let sun_v = if ndl_h > 0.0 && prm.sun_dir[1] > 0.0 && !bvh.occluded(hp, prm.sun_dir, 1.0e4, u32::MAX, 0.0) { 1.0 } else { 0.0 };
+    let stored: Option<[f32; 3]> = prm.field.as_ref().and_then(|f| {
+        let tri = &bvh.tris[h.tri as usize];
+        let v = sub(add(o, mul(d, h.t)), tri.p0);
+        let (d00, d01, d11, d20, d21) = (dot(tri.e1, tri.e1), dot(tri.e1, tri.e2), dot(tri.e2, tri.e2), dot(v, tri.e1), dot(v, tri.e2));
+        let den = d00 * d11 - d01 * d01;
+        if den.abs() < 1e-12 {
+            return None;
+        }
+        let b1 = ((d11 * d20 - d01 * d21) / den).clamp(0.0, 1.0);
+        let b2 = ((d00 * d21 - d01 * d20) / den).clamp(0.0, 1.0);
+        f.lookup(scene, tri.inst, tri.tri, b1, b2)
+    });
+    let mut e = [0f32; 3];
+    for k in 0..3 {
+        let base = match stored {
+            Some(s) => s[k],
+            None => prm.sky[k] * cone_factor(hn, cone_cos),
+        };
+        e[k] = base + prm.sun[k] * ndl_h * sun_v;
+    }
+    e
 }
 
 /// The share of the zenith cone's cosine-weighted light a surface of normal `hn` collects when
@@ -610,7 +768,7 @@ pub fn bake(scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, crate:
                 let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ ((ii as u64 + 1) * 0x2545_F491_4F6C_DD1D));
                 let (mut sv, mut kv) = (0f32, 0f32);
                 for s in &samples {
-                    let (e, sky_vis, sun_vis) = shade(bvh, prm, s, ii as u32, &mut rng);
+                    let (e, sky_vis, sun_vis) = shade(scene, bvh, prm, s, ii as u32, &mut rng);
                     rgb[(s.py * w + s.px) as usize] = e;
                     if want_lights {
                         let o = add(s.p, mul(s.n, 0.03));
@@ -718,7 +876,7 @@ pub fn bake_subset(sub: &Scene, full_ids: &[u32], bvh: &Bvh, prm: &BakeParams) -
                 let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ ((ii as u64 + 1) * 0x2545_F491_4F6C_DD1D));
                 let (mut sv, mut kv) = (0f32, 0f32);
                 for s in &samples {
-                    let (e, sky_vis, sun_vis) = shade(bvh, prm, s, full_ids[ii], &mut rng);
+                    let (e, sky_vis, sun_vis) = shade(sub, bvh, prm, s, full_ids[ii], &mut rng);
                     rgb[(s.py * px + s.px) as usize] = e;
                     sv += sun_vis;
                     kv += sky_vis;
@@ -752,7 +910,7 @@ pub fn bake_subset_px(sub: &Scene, full_ids: &[u32], bvh: &Bvh, prm: &BakeParams
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ ((ii as u64 + 1) * 0x2545_F491_4F6C_DD1D));
         let (mut sv, mut kv) = (0f32, 0f32);
         for s in &samples {
-            let (e, sky_vis, sun_vis) = shade(bvh, prm, s, full_ids[ii], &mut rng);
+            let (e, sky_vis, sun_vis) = shade(sub, bvh, prm, s, full_ids[ii], &mut rng);
             rgb[(s.py * w + s.px) as usize] = e;
             sv += sun_vis;
             kv += sky_vis;
@@ -782,7 +940,7 @@ pub fn texel_correlation(scene: &Scene, bvh: &Bvh, sel: &[(usize, u32, u32, u32,
                 let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ ((ii as u64 + 1) * 0x2545_F491_4F6C_DD1D));
                 let (mut xs, mut ys) = (Vec::new(), Vec::new());
                 for s in &samples {
-                    let (e, _, _) = shade(bvh, prm, s, ii as u32, &mut rng);
+                    let (e, _, _) = shade(scene, bvh, prm, s, ii as u32, &mut rng);
                     let lum_m = 0.2126 * e[0] + 0.7152 * e[1] + 0.0722 * e[2];
                     let n = atlas.get((px + s.px).min(atlas.w - 1), (py + s.py).min(atlas.h - 1));
                     let lum_n = 0.2126 * n[0] as f32 + 0.7152 * n[1] as f32 + 0.0722 * n[2] as f32;
@@ -886,7 +1044,7 @@ pub fn pooled_fit(scene: &Scene, bvh: &Bvh, sel: &[(usize, u32, u32, u32, u32, u
                 let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ ((ii as u64 + 1) * 0x2545_F491_4F6C_DD1D));
                 let mut local = Vec::with_capacity(samples.len());
                 for s in &samples {
-                    let (e, _, _) = shade(bvh, prm, s, ii as u32, &mut rng);
+                    let (e, _, _) = shade(scene, bvh, prm, s, ii as u32, &mut rng);
                     let lum_m = 0.2126 * e[0] + 0.7152 * e[1] + 0.0722 * e[2];
                     let n = atlas.get((px + s.px).min(atlas.w - 1), (py + s.py).min(atlas.h - 1));
                     let lum_n = (0.2126 * n[0] as f32 + 0.7152 * n[1] as f32 + 0.0722 * n[2] as f32) / 255.0 * fb0 as f32 / 255.0;
@@ -939,7 +1097,7 @@ pub fn component_fit_rgb(scene: &Scene, bvh: &Bvh, sel: &[(usize, u32, u32, u32,
                 let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ ((ii as u64 + 1) * 0x2545_F491_4F6C_DD1D));
                 let mut local = Vec::with_capacity(samples.len());
                 for s in &samples {
-                    let sh = shade_full(bvh, prm, s, ii as u32, &mut rng);
+                    let sh = shade_full(scene, bvh, prm, s, ii as u32, &mut rng);
                     let ndl = dot(s.n, prm.sun_dir).max(0.0);
                     let n0 = atlas.get((px + s.px).min(atlas.w - 1), (py + s.py).min(atlas.h - 1));
                     // the atlas is sqrt-encoded: E = (p/255)² · fb0/255 (K = 1 units)
@@ -1004,7 +1162,7 @@ pub fn component_fit_rgb2(scene: &Scene, bvh: &Bvh, sel: &[(usize, u32, u32, u32
                 let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ ((ii as u64 + 1) * 0x2545_F491_4F6C_DD1D));
                 let mut local = Vec::with_capacity(samples.len());
                 for s in &samples {
-                    let sh = shade_full(bvh, prm, s, ii as u32, &mut rng);
+                    let sh = shade_full(scene, bvh, prm, s, ii as u32, &mut rng);
                     let ndl = dot(s.n, prm.sun_dir).max(0.0);
                     let n0 = atlas.get((px + s.px).min(atlas.w - 1), (py + s.py).min(atlas.h - 1));
                     let amb = (0.8 + 0.2 * s.n[1]) as f64;

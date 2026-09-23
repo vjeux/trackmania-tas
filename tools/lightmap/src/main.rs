@@ -754,6 +754,11 @@ fn main() {
                 prm.ambient_la = if dome { [0.0; 3] } else { x.l_ambient };
                 prm.sky = [x.l_ambient[0] * x.sky_factor * sky_s, x.l_ambient[1] * x.sky_factor * sky_s, x.l_ambient[2] * x.sky_factor * sky_s];
                 if let Some(g) = f("--ground-bounce") { prm.ground_bounce = g.parse().unwrap(); }
+                prm.bounce_sphere = has("--bounce-sphere");
+                if has("--no-sun-bounce") { prm.sun = [0.0; 3]; }
+                // the decoration's ground/sea plane (the terrain collections' water sits at y ≈ 8 in the tiny
+                // maps' frame, the Stadium floor likewise) — a stand-in for the decoration meshes
+                if f("--ground-y").is_none() { prm.ground_y = 8.0; }
                 // the game's own directions: the sphere-table points inside the cone (the banked table, or --points)
                 if dome && !has("--random-dome") {
                     let pp = f("--points").unwrap_or_else(lightmap::dome::default_path);
@@ -781,15 +786,28 @@ fn main() {
                 // (2 omni lights, I 1, c 0.92, R 10 m, 4 m up) at the editor's 0.35–0.38 HDR (two BlueBay test bakes,
                 // 9-px and 153-px pads); the tail beyond x ≈ 0.85 is fatter than (1−x²)² in the editor (unpinned)
                 prm.light_k = 0.56;
-                // the sun (bounce input only): the map's time of day on the mood's latitude, noon at t = ½
-                let t = match dt { Some(v) if v != 0xffff_ffff => v as f32 / 65536.0, _ => x.daytime01 };
-                let hour_angle = (t - 0.5) * 2.0 * std::f32::consts::PI;
-                let lat = x.latitude.to_radians();
-                let el = (lat.cos() * hour_angle.cos()).asin();
-                let az = hour_angle.sin().atan2(-lat.sin() * hour_angle.cos()) ;
-                let el = el.max(5.0f32.to_radians());
-                prm.sun_dir = [el.cos() * az.sin(), el.sin(), el.cos() * az.cos()];
-                eprintln!("model xml: {} {} (decoration {}, daytime {}) — LAmbient {:?} SkyFactor {} Bounce {} MaxHDR {}; sun (bounce only) el {:.1}° az {:.1}°", x.collection, x.mood, mf0.decoration_id, match dt { Some(v) if v != 0xffff_ffff => format!("{:.3}", v as f32 / 65536.0), _ => "default".into() }, x.l_ambient, x.sky_factor, x.bounce_factor, x.max_hdr, el.to_degrees(), az.to_degrees());
+                // the sun: IN the stored frame (a wall facing it reads 1.1 HDR on the Sunset-quarter test bake —
+                // above any bounce source) with a jittered disc; its direction per quarter is MEASURED on the
+                // test bakes until the DecorationMood formula is pinned: Sunset quarter (0.854) ≈ az 115° (ESE),
+                // el 2° (floors get 3 % of it, east walls full). Other quarters: the noon-at-½ arc on the
+                // mood's latitude until their test bakes land. --sun-az/--sun-el override.
+                prm.direct_sun = if has("--no-direct-sun") { 0.0 } else { 1.0 };
+                prm.sun_radius = f("--sun-radius").map(|s: String| s.parse::<f32>().unwrap()).unwrap_or(2.0f32).to_radians();
+                let t = match dt { Some(v) if v != 0xffff_ffff => v as f32 / 65536.0, _ => lightmap::moods::default_daytime(&x.collection, x.mood) as f32 / 65536.0 };
+                let (mut az_d, mut el_d) = if t >= 0.75 {
+                    (115.0f32, 2.0f32)
+                } else {
+                    let hour_angle = (t - 0.5) * 2.0 * std::f32::consts::PI;
+                    let lat = x.latitude.to_radians();
+                    let el = (lat.cos() * hour_angle.cos()).asin();
+                    let az = hour_angle.sin().atan2(-lat.sin() * hour_angle.cos());
+                    (az.to_degrees(), el.to_degrees().max(2.0))
+                };
+                if let Some(v) = f("--sun-az") { az_d = v.parse().unwrap(); }
+                if let Some(v) = f("--sun-el") { el_d = v.parse().unwrap(); }
+                let (ar, er) = (az_d.to_radians(), el_d.to_radians());
+                prm.sun_dir = [er.cos() * ar.sin(), er.sin(), er.cos() * ar.cos()];
+                eprintln!("model xml: {} {} (decoration {}, daytime {}) — LAmbient {:?} SkyFactor {} Bounce {} MaxHDR {}; sun az {az_d:.1}° el {el_d:.1}° (direct {})", x.collection, x.mood, mf0.decoration_id, match dt { Some(v) if v != 0xffff_ffff => format!("{:.3}", v as f32 / 65536.0), _ => format!("default → {t:.3}") }, x.l_ambient, x.sky_factor, x.bounce_factor, x.max_hdr, prm.direct_sun > 0.0);
             } else if let Some(p) = mood_sel {
                 prm.sky = p.sky; prm.sun = p.sun; prm.ambient = p.ambient; prm.up = p.up; prm.light_k = p.light_k;
                 prm.uv_bounds = true; prm.sky_model = 1; prm.texels_per_m = 1.0; prm.sky_samples = 64; prm.sun_samples = 4;
@@ -910,7 +928,7 @@ fn main() {
                 println!("best: az {} el {} (score {:.3})", best.1, best.2, best.0);
                 return;
             }
-            if f("--sun-az").is_some() || f("--sun-el").is_some() || (mood_sel.is_none() && xml_sel.is_none()) {
+            if xml_sel.is_none() && (f("--sun-az").is_some() || f("--sun-el").is_some() || mood_sel.is_none()) {
                 let az: f32 = f("--sun-az").map(|s| s.parse().unwrap()).unwrap_or(0.0);
                 let el: f32 = f("--sun-el").map(|s| s.parse().unwrap()).unwrap_or(45.0);
                 prm.sun_dir = sun_dir(az, el);
@@ -961,8 +979,22 @@ fn main() {
                     eprintln!("atlas density {:.2} texels/m (pinned) packs ({} items + {} ground charts)", prm.texels_per_m, scene.instances.len(), n_ground);
                 }
             }
-            let charts = lightmap::bake::bake(&scene, &bvh, &prm, &lights);
+            // multi-bounce (the game: 2 iterations at Default, 4 High, 6 Ultra — each a sweep whose input
+            // radiance is the lightmap so far + the direct sun): iteration 0 bakes with the one-bounce
+            // estimate, every further pass reads the previous pass's charts at the hit points
+            let iterations: usize = f("--bounces").map(|s| s.parse().unwrap()).unwrap_or(if xml_sel.is_some() { 2 } else { 1 });
+            let mut charts = lightmap::bake::bake(&scene, &bvh, &prm, &lights);
             eprintln!("baked {} charts ({:.1}s)", charts.len(), t0.elapsed().as_secs_f32());
+            for it in 1..iterations {
+                let mut field = lightmap::bake::RadianceField { charts: vec![None; scene.instances.len()], flip_v: prm.flip_v, uv_bounds: prm.uv_bounds };
+                let inst_of_item: std::collections::HashMap<usize, usize> = scene.instances.iter().enumerate().map(|(ii, inst)| (inst.item, ii)).collect();
+                for c in &charts { if let Some(&ii) = inst_of_item.get(&c.item) { field.charts[ii] = Some((c.w, c.h, c.rgb.clone())); } }
+                let mut p2 = prm.clone();
+                p2.field = Some(std::sync::Arc::new(field));
+                charts = lightmap::bake::bake(&scene, &bvh, &p2, &lights);
+                let mean: f32 = charts.iter().flat_map(|c| c.rgb.iter()).map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]).sum::<f32>() / charts.iter().map(|c| c.rgb.len()).sum::<usize>().max(1) as f32;
+                eprintln!("bounce iteration {it}: mean texel {mean:.4} ({:.1}s)", t0.elapsed().as_secs_f32());
+            }
             compare(&charts, "bake vs own");
             let k: f32 = match f("--k") {
                 Some(s) => s.parse().unwrap(),
@@ -1848,6 +1880,72 @@ fn main() {
             let (rgb, r2) = lightmap::bake::component_fit_rgb2(&scene, &bvh, &fsel, &ia, &prm, frame_max);
             println!("fit r² {r2:.3}: sky S = ({:.3}, {:.3}, {:.3})  ambient A·(0.8+0.2n.y) with A = ({:.3}, {:.3}, {:.3}) [XML LA ({:.3}, {:.3}, {:.3})]  bounce b = ({:.3}, {:.3}, {:.3})  const = ({:.3}, {:.3}, {:.3})", rgb[0][0], rgb[1][0], rgb[2][0], rgb[0][1], rgb[1][1], rgb[2][1], xml.l_ambient[0], xml.l_ambient[1], xml.l_ambient[2], rgb[0][2], rgb[1][2], rgb[2][2], rgb[0][3], rgb[1][3], rgb[2][3]);
         }
+        "domefit" => {
+            // lmtool domefit MAP [--base N] [--items N] [--cone-deg A] [--sun-az A --sun-el E]: fit the dome model's
+            // three gains against the map's own editor bake — per channel, E = S·skyFrac + K·(n·L)·sunVis + B·bounce₁
+            // (+ c), with bounce₁ the one-bounce estimate at unit albedo·BounceFactor; prints S/LAmbient, K/LDirSun, B, r²
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let bvh = lightmap::bvh::Bvh::build(lightmap::bake::world_tris(&scene));
+            let own = lightmap::mapio::load(&a[1]).expect("own");
+            let d = own.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).unwrap();
+            let fm = d.cache.frame_max_hdr().unwrap_or(1.0);
+            let hdr = tmmaps::header::read(&a[1]).expect("header");
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let dt = lightmap::mapio::daytime(&own.gbx.body);
+            let mood = lightmap::moods::effective_mood(&mf.decoration_id, dt);
+            let xml = lightmap::moods::mood_xml(&hdr.envir, mood).expect("mood xml");
+            let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
+            let mut prm = lightmap::bake::BakeParams::default();
+            prm.uv_bounds = true; prm.sky_samples = 64; prm.sun_samples = 4; prm.direct_sun = 1.0;
+            prm.dome_deg = f("--cone-deg").map(|s| s.parse().unwrap()).unwrap_or(25.0);
+            prm.sky = [1.0; 3]; prm.sun = [1.0; 3]; prm.bounce = 1.0; prm.albedo = 1.0; prm.ground_bounce = 0.0; prm.ground_y = 8.0;
+            prm.bounce_sphere = !a.iter().any(|x| x == "--bounce-cone");
+            prm.sun_radius = 2.0f32.to_radians();
+            let (az, el) = (f("--sun-az").map(|s| s.parse().unwrap()).unwrap_or(115.0f32), f("--sun-el").map(|s| s.parse().unwrap()).unwrap_or(2.0f32));
+            let (ar, er) = (az.to_radians(), el.to_radians());
+            prm.sun_dir = [er.cos() * ar.sin(), er.sin(), er.cos() * ar.cos()];
+            let step = (scene.instances.len() / f("--items").map(|s| s.parse().unwrap()).unwrap_or(1500)).max(1);
+            let sel: Vec<(usize, usize)> = scene.instances.iter().enumerate().step_by(step).filter_map(|(ii, inst)| { let &ci = chart_of.get(&(inst.item as u32))?; let (w, h) = mp.size[ci]; if w < 4 || h < 4 || mp.frame_bytes[0][ci] == 0 { return None; } Some((ii, ci)) }).collect();
+            // rows: [skyFrac, ndl·sunVis, bounce lum, target r, g, b, bounce r, g, b]
+            let rows = std::sync::Mutex::new(Vec::<[f64; 9]>::new());
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let threads = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(8).min(160);
+            std::thread::scope(|sc| { for _ in 0..threads { sc.spawn(|| loop {
+                let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if k >= sel.len() { break; }
+                let (ii, ci) = sel[k];
+                let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
+                let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, w as u32 / 2, h as u32 / 2);
+                let fb = mp.frame_bytes[0][ci];
+                let (samples, _) = lightmap::bake::rasterise_pub(&scene, ii, pw, ph, false, true);
+                let mut local = Vec::new();
+                for s in samples.iter().step_by(2) {
+                    let sh = lightmap::bake::shade_point_inst(&scene, &bvh, &prm, s.p, s.n, ii as u32);
+                    let ndl = lightmap::geometry::dot(s.n, prm.sun_dir).max(0.0);
+                    let c = ia.get((px + s.px).min(ia.w - 1), (py + s.py).min(ia.h - 1));
+                    let t = |k: usize| lightmap::synth::decode_value(c[k], fb) as f64 * fm as f64;
+                    local.push([sh.sky_rgb[0] as f64, (ndl * sh.sun_vis) as f64, 0.0, t(0), t(1), t(2), sh.bounce[0] as f64, sh.bounce[1] as f64, sh.bounce[2] as f64]);
+                }
+                rows.lock().unwrap().extend(local);
+            }); } });
+            let v = rows.into_inner().unwrap();
+            println!("{}: mood {mood}, frame MaxHDR {fm:.4}, {} texels; sun az {az} el {el}, cone {}°, bounce {}", a[1].rsplit('/').next().unwrap(), v.len(), prm.dome_deg, if prm.bounce_sphere { "sphere" } else { "cone" });
+            let names = ["r", "g", "b"];
+            for ch in 0..3 {
+                let mut mtx = [[0f64; 4]; 4]; let mut r = [0f64; 4];
+                for p in &v { let x = [p[0], p[1], p[6 + ch], 1.0]; for i in 0..4 { for j in 0..4 { mtx[i][j] += x[i] * x[j]; } r[i] += x[i] * p[3 + ch]; } }
+                let Some(coef) = lightmap::bake::solve4_pub(mtx, r) else { continue };
+                let mean = v.iter().map(|p| p[3 + ch]).sum::<f64>() / v.len() as f64;
+                let (mut ssr, mut sst) = (0.0, 0.0);
+                for p in &v { let pred = coef[0] * p[0] + coef[1] * p[1] + coef[2] * p[6 + ch] + coef[3]; ssr += (p[3 + ch] - pred).powi(2); sst += (p[3 + ch] - mean).powi(2); }
+                println!("  {}: S {:.3} (= {:.2} × LAmbient {:.3})  K_sun {:.3} (= {:.2} × LDirSun {:.3})  B {:.3}  c {:.3}   r² {:.3}", names[ch], coef[0], coef[0] / xml.l_ambient[ch].max(1e-6) as f64, xml.l_ambient[ch], coef[1], coef[1] / xml.l_dir_sun[ch].max(1e-6) as f64, xml.l_dir_sun[ch], coef[2], coef[3], 1.0 - ssr / sst.max(1e-12));
+            }
+        }
         "moodfit" => {
             // lmtool moodfit MAP [--items N] [--fine]: the sun direction (per-texel correlation over the largest
             // charts, coarse grid then a fine grid around the best) and the per-channel component fit
@@ -2177,10 +2275,34 @@ fn main() {
                 let val: u32 = if v == "default" { 0xffff_ffff } else if let Some(h) = v.strip_prefix("0x") { u32::from_str_radix(h, 16).unwrap() } else { v.parse().unwrap() };
                 let mut nb = body.clone();
                 nb[p + 8..p + 12].copy_from_slice(&val.to_le_bytes());
+                // the lightmap chunk's frame records carry the time too — the editor takes ITS time from them
+                // when it opens the map (a bake copy with a stale record re-bakes at the stale time)
+                let mut rec_note = String::new();
+                if let Some(d) = &m.chunk.data {
+                    let rec_val = if val == 0xffff_ffff { d.cache.frame_mood_max_hdr().map(|(_, t)| t).unwrap_or(val) } else { val };
+                    let mut chunk = m.chunk.clone();
+                    if let Some(dd) = chunk.data.as_mut() {
+                        if let Some(mp) = dd.cache.mapping_mut() {
+                            for i in 0..3 { let r = 60 + 66 * i + 8; if r + 4 <= mp.head.len() { mp.head[r..r + 4].copy_from_slice(&rec_val.to_le_bytes()); } }
+                        }
+                        let payload = chunk.write(true);
+                        // splice the rewritten lightmap chunk into the body (its skippable size fields follow)
+                        if let Some((off, pl, size)) = lightmap::find_chunk(&nb) {
+                            // chunk id, skip marker, size, then the payload
+                            let mut out_body = Vec::with_capacity(nb.len());
+                            out_body.extend_from_slice(&nb[..off + 8]);
+                            out_body.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                            out_body.extend_from_slice(&payload);
+                            out_body.extend_from_slice(&nb[pl + size..]);
+                            nb = out_body;
+                            rec_note = format!(" and the lightmap frame records ({rec_val:#x})");
+                        }
+                    }
+                }
                 let uncompressed = { let mut f = m.gbx.header_bytes_u(); f.extend_from_slice(body); f };
                 let t = tmmaps::gbx::Gbx::parse(&uncompressed);
                 std::fs::write(&out, t.write_body_recompressed(&nb)).expect("write");
-                println!("wrote {out} with daytime {val:#x}");
+                println!("wrote {out} with daytime {val:#x}{rec_note}");
             }
         }
         "testmap" => {
@@ -2285,6 +2407,24 @@ fn main() {
             stats("roof top", &|t: &Tx| t.n[1] > 0.9 && t.p[1] > y0 + 15.0 && t.p[1] < y0 + 18.0 && (t.p[0] - dx) >= 316.0 && (t.p[0] - dx) < 332.0 && (t.p[2] - dz) >= 416.0 && (t.p[2] - dz) < 432.0);
             stats("roof underside", &|t: &Tx| t.n[1] < -0.9 && t.p[1] > y0 + 11.0 && t.p[1] < y0 + 14.0 && (t.p[0] - dx) >= 316.0 && (t.p[0] - dx) < 332.0 && (t.p[2] - dz) >= 416.0 && (t.p[2] - dz) < 432.0);
             stats("pad undersides (n.y < −0.9)", &|t: &Tx| t.n[1] < -0.9 && t.p[1] > y0 - 1.0 && t.p[1] < y0 + 1.0);
+            // vertical texels by the azimuth of their normal (12 bins of 30°): the brightest bin faces the sun
+            {
+                let mut bins = vec![(0f64, [0f64; 3], 0usize); 12];
+                for t in tx.iter().filter(|t| t.n[1].abs() < 0.3) {
+                    let az = t.n[0].atan2(t.n[2]).to_degrees().rem_euclid(360.0); // 0 = +z (north), 90 = +x (east)
+                    let b = ((az / 30.0) as usize).min(11);
+                    bins[b].0 += t.lum as f64; for k in 0..3 { bins[b].1[k] += t.rgb[k] as f64; } bins[b].2 += 1;
+                }
+                println!("vertical texels by normal azimuth (0 = +z north, 90 = +x east): mean lum / rgb");
+                for (b, (s, rgb, n)) in bins.iter().enumerate() { if *n > 0 { let nn = *n as f64; println!("  az {:>3}–{:<3} n {:>6}  lum {:.4}  rgb ({:.3}, {:.3}, {:.3})", b * 30, (b + 1) * 30, n, s / nn, rgb[0] / nn, rgb[1] / nn, rgb[2] / nn); } }
+            }
+            // the free-standing wall AC16902402 (1×8×16) at compact (448, 160, 410): west face looks at the B pads, east face at the sea
+            let wall = |t: &Tx| (t.p[0] - dx) > 440.0 && (t.p[0] - dx) < 470.0 && (t.p[2] - dz) > 405.0 && (t.p[2] - dz) < 430.0 && t.p[1] > y0 + 0.5 && t.p[1] < y0 + 9.0;
+            stats("wall west face (−x, towards the B pads)", &|t: &Tx| wall(t) && t.n[0] < -0.9);
+            stats("wall east face (+x, towards the sea)", &|t: &Tx| wall(t) && t.n[0] > 0.9);
+            stats("wall west face, lower half (y0..y0+4)", &|t: &Tx| wall(t) && t.n[0] < -0.9 && t.p[1] < y0 + 4.0);
+            stats("wall west face, upper half", &|t: &Tx| wall(t) && t.n[0] < -0.9 && t.p[1] >= y0 + 4.0);
+            stats("wall top", &|t: &Tx| wall(t) && t.n[1] > 0.9 && t.p[1] > y0 + 6.0);
         }
         "sky" => {
             // lmtool sky FILE.dds [--face-out DIR]: decode a BC6H DDS (a cubemap or a 2:1 panorama) and print, per face,
@@ -2623,7 +2763,9 @@ fn main() {
                 let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32 / 2).max(1), (h as u32 / 2).max(1));
                 let mut mx1 = 0u8; let mut mx0 = 0u8;
                 for yy in 0..ph { for xx in 0..pw { let c = i1.get((px + xx).min(i1.w - 1), (py + yy).min(i1.h - 1)); mx1 = mx1.max(c[0]).max(c[1]).max(c[2]); let c0 = i0.get((px + xx).min(i0.w - 1), (py + yy).min(i0.h - 1)); mx0 = mx0.max(c0[0]).max(c0[1]).max(c0[2]); } }
-                println!("  chart of item {} ({}) at ({:.0}, {:.0}): {}×{} px, fb0 {} fb1 {} fb2 {}, brightest pixel frame0 {} frame1 {}", inst.item, inst.model_name, inst.xf[9], inst.xf[11], pw, ph, mp.frame_bytes[0][ci], mp.frame_bytes[1][ci], mp.frame_bytes[2][ci], mx0, mx1);
+                let mut sum0 = 0u64; let mut cnt = 0u64;
+                for yy in 0..ph { for xx in 0..pw { let c0 = i0.get((px + xx).min(i0.w - 1), (py + yy).min(i0.h - 1)); sum0 += c0[1] as u64; cnt += 1; } }
+                println!("  chart of item {} ({}) at ({:.0}, {:.0}): chart {ci} at atlas ({px}, {py}) {}×{} px, fb0 {} fb1 {} fb2 {}, brightest pixel frame0 {} frame1 {}, mean G frame0 {:.1}", inst.item, inst.model_name, inst.xf[9], inst.xf[11], pw, ph, mp.frame_bytes[0][ci], mp.frame_bytes[1][ci], mp.frame_bytes[2][ci], mx0, mx1, sum0 as f64 / cnt.max(1) as f64);
             }
             println!("{:>10} {:>6} {:>12} {:>28} {:>12}", "r (m)", "n", "frame1 lum", "frame1 rgb", "frame0 lum");
             for (b, (s1, rgb, s0, n)) in bins.iter().enumerate() {
@@ -2642,7 +2784,7 @@ fn main() {
             prm.dome_deg = f("--cone-deg").map(|s| s.parse().unwrap()).unwrap_or(40.0);
             prm.sky_samples = f("--samples").map(|s| s.parse().unwrap()).unwrap_or(4096);
             prm.sky = [1.0; 3]; prm.sun = [0.0; 3]; prm.direct_sun = 0.0; prm.bounce = 2.0; prm.albedo = 0.18; prm.ground_y = 8.0;
-            let sh = lightmap::bake::shade_point(&bvh, &prm, v3(&a[2]), v3(&a[3]));
+            let sh = lightmap::bake::shade_point(&scene, &bvh, &prm, v3(&a[2]), v3(&a[3]));
             println!("at {} n {}: sky share {:.4} (cone vis {:.4}), bounce {:?}, E {:?}", a[2], a[3], sh.sky_rgb[0], sh.sky_vis, sh.bounce, sh.e);
             // the geometry above: the first hit straight up and at 30° tilts
             let o = lightmap::geometry::add(v3(&a[2]), lightmap::geometry::mul(v3(&a[3]), 0.03));
@@ -2800,6 +2942,83 @@ fn main() {
                 let line: Vec<String> = bins.iter().enumerate().filter(|(_, b)| b.1 > 0).map(|(i, (s, n))| format!("{:.0}m:{:.3}", i as f32 * 1.5 + 0.75, s / *n as f64 / open.max(1e-6) as f64)).collect();
                 println!("{name} profile (ratio to open, by distance from the roof centre): {}", line.join(" "));
             }
+        }
+        "atlascmp" => {
+            // lmtool atlascmp REF.Map.Gbx OURS.Map.Gbx [--base N] [--items N]: the gate, camera-free — for every texel
+            // of the reference bake (sqrt-decoded, absolute HDR) the other bake's value at the same texel of the same
+            // chart (both files are the same map, so charts map 1:1 by item; when chart sizes differ the other atlas
+            // is sampled at the same uv). Reports the mean luminance of both, their ratio, the per-texel RMSE
+            // (absolute and relative to the reference mean), the lit/occluded split (reference texels above/below
+            // its median) and the mean ratio in each half, and the same numbers for horizontal texels only.
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let load = |p: &str| {
+                let own = lightmap::mapio::load(p).expect("load");
+                let d = own.chunk.data.clone().expect("lightmap");
+                let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).expect("atlas");
+                let fm = d.cache.frame_max_hdr().unwrap_or(1.0);
+                (d, ia, fm)
+            };
+            let (da, ia, fma) = load(&a[1]);
+            let (db, ib, fmb) = load(&a[2]);
+            let (mpa, mpb) = (da.cache.mapping().unwrap(), db.cache.mapping().unwrap());
+            let chart_of = |mp: &lightmap::format::Mapping| { let mut h: std::collections::HashMap<u32, usize> = Default::default(); for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { h.insert(obj - base, i); } } h };
+            let (ca, cb) = (chart_of(mpa), chart_of(mpb));
+            let (flip_u, flip_v, swap_uv) = (a.iter().any(|x| x == "--flip-u"), a.iter().any(|x| x == "--flip-v"), a.iter().any(|x| x == "--swap-uv"));
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let step = (scene.instances.len() / f("--items").map(|s| s.parse().unwrap()).unwrap_or(4000)).max(1);
+            // rows: (ref lum, ours lum, horizontal?)
+            let mut rows: Vec<(f64, f64, bool)> = Vec::new();
+            for (ii, inst) in scene.instances.iter().enumerate().step_by(step) {
+                let (Some(&i), Some(&j)) = (ca.get(&(inst.item as u32)), cb.get(&(inst.item as u32))) else { continue };
+                let (xa, ya) = mpa.pos[i]; let (wa, ha) = mpa.size[i];
+                let (xb, yb) = mpb.pos[j]; let (wb, hb) = mpb.size[j];
+                let (pxa, pya, pwa, pha) = ((xa as u32 + 1) / 2, (ya as u32 + 1) / 2, (wa as u32 / 2).max(1), (ha as u32 / 2).max(1));
+                let (pxb, pyb, pwb, phb) = ((xb as u32 + 1) / 2, (yb as u32 + 1) / 2, (wb as u32 / 2).max(1), (hb as u32 / 2).max(1));
+                if pwa < 2 || pha < 2 { continue; }
+                let (fba, fbb) = (mpa.frame_bytes[0][i], mpb.frame_bytes[0][j]);
+                if fba == 0 || fbb == 0 { continue; }
+                let (samples, _) = lightmap::bake::rasterise_pub(&scene, ii, pwa, pha, false, true);
+                for s in &samples {
+                    let c = ia.get((pxa + s.px).min(ia.w - 1), (pya + s.py).min(ia.h - 1));
+                    let la = (0.2126 * lightmap::synth::decode_value(c[0], fba) + 0.7152 * lightmap::synth::decode_value(c[1], fba) + 0.0722 * lightmap::synth::decode_value(c[2], fba)) * fma;
+                    // the same uv in the other chart
+                    let (mut u, mut v) = ((s.px as f32 + 0.5) / pwa as f32, (s.py as f32 + 0.5) / pha as f32);
+                    if flip_u { u = 1.0 - u; }
+                    if flip_v { v = 1.0 - v; }
+                    if swap_uv { std::mem::swap(&mut u, &mut v); }
+                    let (qx, qy) = (((u * pwb as f32) as u32).min(pwb - 1), ((v * phb as f32) as u32).min(phb - 1));
+                    let c2 = ib.get((pxb + qx).min(ib.w - 1), (pyb + qy).min(ib.h - 1));
+                    let lb = (0.2126 * lightmap::synth::decode_value(c2[0], fbb) + 0.7152 * lightmap::synth::decode_value(c2[1], fbb) + 0.0722 * lightmap::synth::decode_value(c2[2], fbb)) * fmb;
+                    rows.push((la as f64, lb as f64, s.n[1] > 0.9));
+                }
+            }
+            let report = |name: &str, rows: &[(f64, f64, bool)]| {
+                if rows.is_empty() { println!("{name}: no texels"); return; }
+                let n = rows.len() as f64;
+                let (ma, mb) = (rows.iter().map(|r| r.0).sum::<f64>() / n, rows.iter().map(|r| r.1).sum::<f64>() / n);
+                let rmse = (rows.iter().map(|r| (r.0 - r.1) * (r.0 - r.1)).sum::<f64>() / n).sqrt();
+                let mut sorted: Vec<f64> = rows.iter().map(|r| r.0).collect();
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let med = sorted[sorted.len() / 2];
+                let (lo, hi): (Vec<&(f64, f64, bool)>, Vec<&(f64, f64, bool)>) = rows.iter().partition(|r| r.0 < med);
+                let mean = |v: &Vec<&(f64, f64, bool)>, k: usize| v.iter().map(|r| if k == 0 { r.0 } else { r.1 }).sum::<f64>() / v.len().max(1) as f64;
+                let (lo_a, lo_b, hi_a, hi_b) = (mean(&lo, 0), mean(&lo, 1), mean(&hi, 0), mean(&hi, 1));
+                println!("{name}: {} texels — mean lum ref {ma:.4} ours {mb:.4} ratio {:.4} ({:+.1} %); RMSE {rmse:.4} ({:.1} % of the ref mean); occluded half (below the ref median {med:.3}) ref {lo_a:.4} ours {lo_b:.4} ratio {:.3}; lit half ref {hi_a:.4} ours {hi_b:.4} ratio {:.3}; contrast (lit/occluded) ref {:.3} ours {:.3}",
+                    rows.len(), mb / ma.max(1e-9), 100.0 * (mb / ma.max(1e-9) - 1.0), 100.0 * rmse / ma.max(1e-9), lo_b / lo_a.max(1e-9), hi_b / hi_a.max(1e-9), hi_a / lo_a.max(1e-9), hi_b / lo_b.max(1e-9));
+            };
+            println!("{} (frame MaxHDR {fma:.4}) vs {} (frame MaxHDR {fmb:.4})", a[1].rsplit('/').next().unwrap(), a[2].rsplit('/').next().unwrap());
+            // the joint relation: ref value bins → mean and spread of ours
+            {
+                let mut bins: Vec<(f64, f64, usize)> = vec![(0.0, 0.0, 0); 12];
+                for (ra, rb, _) in &rows { let b = ((ra / 0.1) as usize).min(11); bins[b].0 += rb; bins[b].1 += rb * rb; bins[b].2 += 1; }
+                println!("ref bin → ours mean ± sd (n): {}", bins.iter().enumerate().filter(|(_, b)| b.2 > 0).map(|(i, (s, s2, n))| { let m = s / *n as f64; let sd = (s2 / *n as f64 - m * m).max(0.0).sqrt(); format!("[{:.1}–{:.1}) {m:.3}±{sd:.3} ({n})", i as f64 * 0.1, (i + 1) as f64 * 0.1) }).collect::<Vec<_>>().join("  "));
+            }
+            report("all texels", &rows);
+            let horiz: Vec<(f64, f64, bool)> = rows.iter().copied().filter(|r| r.2).collect();
+            report("horizontal texels", &horiz);
+            let vert: Vec<(f64, f64, bool)> = rows.iter().copied().filter(|r| !r.2).collect();
+            report("non-horizontal texels", &vert);
         }
         _ => {
             eprintln!("unknown command");

@@ -310,7 +310,22 @@ impl Mapping {
         if version != 13 {
             return Err(format!("mapping chunk version {version}: only 13 is decoded"));
         }
-        let head = c.take(MAPPING_HEAD_LEN)?.to_vec();
+        // the head holds one 66-byte record per frame (3 normally; 2 when the scene has no local
+        // lights) after 60 bytes of constants and before `u32 2, 0, 0`; the struct version 9 follows
+        let head_len = {
+            let base = c.o;
+            let candidates = [3usize, 2, 1, 4].map(|k| 60 + 66 * k + 12);
+            candidates
+                .iter()
+                .copied()
+                .find(|&len| {
+                    let o = base + len;
+                    p.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) == Some(9)
+                        && p.get(o - 12..o - 8).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])) == Some(2)
+                })
+                .unwrap_or(MAPPING_HEAD_LEN)
+        };
+        let head = c.take(head_len)?.to_vec();
         let map_version = c.u32()?;
         if map_version != 9 {
             return Err(format!("mapping struct version {map_version} (expected 9) at {:#x}", c.o - 4));

@@ -12,6 +12,8 @@ pub struct WTri {
     pub e2: V3,
     /// Which item (instance) the triangle belongs to (self-hit filtering).
     pub inst: u32,
+    /// The triangle's index in its model (the hit → uv → texel lookup of the bounce passes).
+    pub tri: u32,
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -233,3 +233,16 @@ pub const MOOD_XML: &[MoodXml] = &[
 pub fn mood_xml(collection: &str, mood: &str) -> Option<&'static MoodXml> {
     MOOD_XML.iter().find(|m| m.collection.eq_ignore_ascii_case(collection) && m.mood.eq_ignore_ascii_case(mood))
 }
+
+/// The DayTime word a mood's default maps to: what Nadeo's editor baked the default-word sources
+/// with (their frame records; 2026-09-23): Day 0x9b59 (Stadium 0x8111), Sunrise 0x4e4b (Stadium
+/// 0x5148), Sunset 0xdaab (Stadium 0xceb8), Night 0x199a.
+pub fn default_daytime(collection: &str, mood: &str) -> u32 {
+    let stadium = collection.eq_ignore_ascii_case("stadium");
+    match normalise_mood(mood) {
+        "Night" => 0x199a,
+        "Sunrise" => if stadium { 0x5148 } else { 0x4e4b },
+        "Sunset" => if stadium { 0xceb8 } else { 0xdaab },
+        _ => if stadium { 0x8111 } else { 0x9b59 },
+    }
+}
