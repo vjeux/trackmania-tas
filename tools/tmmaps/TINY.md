@@ -1781,3 +1781,38 @@ the pipeline's tracker (the ladder's rung + `TINY_LIGHTMAP_FILL=1`, card-less on
 BlueBay, `--keep-zone-block` on a 0-block file; item counts checked),
 `tinyctl lightmap-batch --manifest` bakes them one after the other with a fresh
 game every few maps and transplants the chunk into the shipped files.
+
+### The lightmap's object table: where the items are (measured 2026-09-22)
+
+The lightmap chunk binds charts to OBJECTS by index. Eight quality-3 editor
+bakes of giant files (bank: `giant-summer/ref/editor-bakes/`, README with the
+table) read with `lmtool itembase FILE` — the base where every placement of one
+model shares one chart signature (only a ±2 px padding varies; chartless items
+such as flags and lights say nothing; a stretch of identical zone-tile charts
+is no base) — give one rule, the items ALWAYS the last objects:
+
+    item i = object  P + N_authored + S_x·S_z + G + i
+
+* P = 16384 on Stadium — every 48x48 decoration, `NoStadium48x48Day` included
+  (objects 0..16383 carry no charts under NoStadium); P = 0 on BlueBay,
+  RedIsland, GreenCoast (WhiteShore never bakes in the editor — assumed alike).
+* S_x·S_z = one zone slot per grid cell: 96² 9216, 128² 16384, 192² 36864; the
+  file's baked records (BlueBay's Sea) do not count (01 ×2: 16384 with 1886
+  Sea records kept). A kept terrain block on a terrain collection takes its
+  cell's slot (17 ×2 RedIsland, 04 ×2 GreenCoast: exactly S²); on Stadium an
+  authored block ADDS itself.
+* G = the game's generated pieces: 0 without authored blocks (25 ×2 shipped:
+  25600 = 16384 + 9216); 7 for one kept Grass block at every S (25 ×2/×3/×4
+  copies: 25608 / 32776 / 53256); 2108 for the 604 pool tiles of 05 ×2
+  (28312); 386 for the 46 tiles of the tiny 05 "full" bake of 2026-09-12
+  (19120 = 16384 + 46 + 2304 + 386 — the "Stadium constant 16384 + 2736" of
+  moods.rs is that one file's N + G). G is map-specific: a file WITH authored
+  blocks takes the EDITOR bake (`tinyctl lightmap-batch`; its bake copy must
+  carry the same blocks — same G — and a `--keep-zone-block` copy transplanted
+  onto a 0-block Stadium file is off by 8 objects). The big-grid 0-block
+  files bake in the editor without a kept block (25 ×2 shipped, 04 ×2).
+
+`tinyctl lmbake --maps … --lit-dir D [--base auto]` applies the rule
+(`lmtool bake --base` = P + S², refusing files with authored blocks) and grafts
+the chunk back compressed (`tinyctl lightmap-graft`; `lmtool bake --out` writes
+an uncompressed body, 0.5–1.5 MB heavier). 63 giant files in 71 s on 6 jobs.

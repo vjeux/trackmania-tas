@@ -158,14 +158,15 @@ fn main() {
                 let mut perfect = 0usize;
                 // every item object must carry a chart: an empty stretch of the object space is no base
                 // (a few items have no lightmappable mesh — flags, lights — and no chart)
-                if (b..b + n_items).filter(|o| sig[*o].is_empty()).count() * 2 > n_items { continue; }
+                let last = b + n_items == maxo + 1;
+                if !last && (b..b + n_items).filter(|o| sig[*o].is_empty()).count() * 2 > n_items { continue; }
                 // … and the items are DIVERSE: a stretch of identical zone-tile charts (every Sea tile
                 // has the same chart) would score a perfect 1.00 for any model split — require at
                 // least one distinct signature per three models
                 {
                     let mut distinct: Vec<&str> = Vec::new();
                     for o in b..b + n_items { let s = sig[o].as_str(); if !distinct.contains(&s) { distinct.push(s); if distinct.len() * 3 >= groups.len() { break; } } }
-                    if distinct.len() * 3 < groups.len() { continue; }
+                    if !last && distinct.len() * 3 < groups.len() { continue; }
                 }
                 for grp in &groups {
                     let mut seen: Vec<&str> = Vec::new();
@@ -180,6 +181,11 @@ fn main() {
                 scored.push((total as f64 / groups.len().max(1) as f64, perfect, b));
             }
             scored.sort_by(|x, y| x.0.partial_cmp(&y.0).unwrap().then(y.1.cmp(&x.1)));
+            // the items-last candidate wins whenever it is within 10 % of the best (every game bake
+            // measured so far put the items last; a run of chartless vegetation weakens its score)
+            if let Some(pos) = scored.iter().position(|s| s.2 + n_items == maxo + 1) {
+                if pos > 0 && scored[pos].0 <= scored[0].0 * 1.10 { let it = scored.remove(pos); scored.insert(0, it); }
+            }
             println!("{} items, {} models with >= {min_items} placements, object space {} (max object {maxo}); authored blocks {}, baked records {}, size words {:?}", n_items, groups.len(), maxo + 1, m.blocks.len(), m.baked.len(), m.size);
             for (score, perfect, b) in scored.iter().take(5) {
                 println!("  base {b}: {score:.2} chart signatures per model, {perfect} models with one signature{}", if *b + n_items == maxo + 1 { "  (the items are the LAST objects)" } else { "" });
