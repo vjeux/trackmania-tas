@@ -117,14 +117,29 @@ E_sun = shadow(P) · max(0, n · −DirInWorld) · LightRgb · OutScale ;  alpha
 shadow(P) = sample_c_lz(TMapShadow, (WorldPw01Shadow · P).xy, depth)   — one hardware comparison
 ```
 
-`RenderLightDirMulti` runs it once per sun sample with `OutScale = 1/N`
-(`m_LightDirSampleCount = 64` samples, the disc jitter is on the CPU side —
-`RenderLightDir` 0x14023809e); the shadow map is one orthographic depth render
-of the whole scene per sample. This sum is what the bounce sees as
-"sun-lit surfaces" (§2.4); the stored frames do not contain it (§0.2). The
-bump permutation writes the three RNM targets `Tx/Ty/Tz`
-(`BumpInTgts[i]`): `target_i = NdotL · 3 · w_i / (Σw + 1e-4)`,
-`w_i = max(0, L_tan · BumpInTgts[i])`; `LmLightSumBumpAvg` = their mean.
+**Sample set of a directional light** (`FUN_140237330`, the generator
+`RenderLightDirMulti` runs before its passes; N from the per-quality table
+at 0x141e6f338 = {VFast 1, Fast 16, Default 64, High 64, Ultra 64} unless the
+light carries its own count at +0x120; the light's angular radius A =
+`GxLightDirectional.EmittAngularSize` (degrees, field +0x80 of the light):
+
+* A > 19.5°: draw `N / ((1 − cos A)/2)` points of the **precomputed sphere
+  point table** (`Techno\Media\PointsInSphere\Std.PointsInSphere.Gbx`,
+  class 0x09066000: 135 unit-vector sets of n = 4…132, 256, 512, 1032, 2040,
+  4112, 8192 points, 24 916 vectors; the first set is the tetrahedron) and
+  keep those with `dot(dir, axis) ≥ cos A` — **N uniform directions inside
+  the cone of half-angle A** around the light's axis;
+* A ≤ 19.5° (the sun): a regular grid of ≈N points inside the disc of radius
+  `sin A` around the axis, step `2/sqrt(4N/π)`, each point jittered by a hash
+  of its cell (`FUN_1418f6a04`) and the whole grid **rotated by 30°**
+  (`0.5235988` at 0x140227146 → the 2×2 rotation at light+0x4e8).
+
+Each sample is one orthographic shadow-map render of the scene and one
+`LmLBumpLDir` pass with `OutScale = LightRgb·intensity / (N / (batch))`
+(`RenderLightDir` 0x1402381ef); the sum over the samples is the sun term.
+It feeds the bounce only (§2.4). The bump permutation writes the three RNM
+targets `Tx/Ty/Tz`: `target_i = NdotL · 3 · w_i / (Σw + 1e-4)`, `w_i =
+max(0, L_tan · BumpInTgts[i])`; `LmLightSumBumpAvg` = their mean.
 
 ### 2.3 Sky and indirect light — a directional depth-peel raycast [DISASSEMBLY]
 
@@ -152,14 +167,24 @@ path and `1/N` for the H-basis path, read at 0x140233b94: `[+0x54] = 1/N`,
    (`LmLHBasisILighting_Inst_p`) projects the same sample into the four
    coefficients instead (§2.5).
 
-The sky radiance `L_sky(D)`: the mood's sky, scaled by `SkyFactor`
-(`T3LightMap SkyFactor`, 1 on Day/Sunrise/Sunset, 0.65 RedIsland Day, 3
-Night; `SkyUseClouds` folds the cloud layer in) — the per-direction source
-(the `SkyColor.dds` 2048×1024 BC6H HDR panorama vs `AmbCubeP.dds` 64² HDR
-cube vs a rendered sky) is on the CPU side of the dome pass, **[INFERRED,
-pending]**; the baker's fit says it is brighter than `LAmbient·SkyFactor`
-(open horizontal texels come out 0.75–0.8× with that), which fits an HDR sky
-texture rather than the ambient colour.
+**What the sky actually is** [DIFFERENTIAL, baker 2026-09-23 on BlueBay
+Sunset-quarter test bakes; DISASSEMBLY for the mechanism]: the stored frame
+0 has **no unoccluded ambient** (a wall reads 0.09 HDR where
+`LAmbient·(0.8+0.2n.y)` would give ≥ 0.32) and the "sky" is a **narrow
+cone around the zenith**: a 16 m plate 15.8 m above a pad darkens the pad
+centre to 0.21 of the open value (a hemisphere would leave 0.76), the edge
+to 0.45, +4 m outside 0.78, +8 m 0.93; a vertical wall reads 0.15 of the
+floor. A cosine-weighted cone of half-angle **30–32°** fits (rms 0.055). An
+open horizontal floor reads **1.55 × LAmbient in exactly LAmbient's hue**
+(0.61, 0.58, 0.77 HDR for Sunset). This is the §2.2 cone generator applied
+to a **zenith-pointing directional light of angular radius ≈ 30° and
+LAmbient-hued colour** — the sky is modelled as a wide directional light
+with shadow maps, not as a hemisphere. Where its angle and colour scale are
+set is the one CPU item still open (candidates: the `CHmsLightMapMood`
+defaults, §6, or the mood's `LAmbient` light object); until then use A =
+30°, colour = 1.55·LAmbient·SkyFactor. The `LmLBumpAmbient` shader (§2.1)
+is therefore not part of the stored frame (the preview/in-gameplay path,
+or the runtime's use of the record's `StoreLAmbient`/`LAmbient`).
 
 ### 2.4 Bounces [DISASSEMBLY]
 
@@ -180,10 +205,13 @@ stratified sphere-point generator (`FUN_14045fbd0(count·n)` then pick the
 subset `pass % n`), so consecutive bounce passes use different direction
 subsets. `BounceFactor` (2, 1.6 on BlueBay Sunrise, 1.8 Stadium Sunset, 3
 RedIsland Night) is the mood's multiplier on the bounced radiance
-[FILE: frame record; the exact multiply site is pending]. Number of bounce
-iterations: **pending** (the "Lighting bounce %1" progress string counts
-them; `DialogComputeShadowsQuality_CheckSaveBounces` is the editor's "save
-bounces" checkbox).
+[FILE: frame record; the exact multiply site is pending]. **Bounce iterations per quality**
+= the table at 0x141e6f248 = {VFast 0, Fast 2, Default 2, High 4, Ultra 6,
+Ultra2 6} (`RenderLightIndirectBounces` compares its bounce counter
+`[+0x158]` against it) [DISASSEMBLY]. The baker's undersides read 0.37 of
+the open floor = BounceFactor 2 × a sea albedo ≈ 0.18 [DIFFERENTIAL].
+`DialogComputeShadowsQuality_CheckSaveBounces` is the editor's "save
+bounces" checkbox.
 
 ### 2.5 Encoding — H-basis, sqrt, YCbCr [DISASSEMBLY `LmCompress_HBasis_YCbCr4_c`, `LightSumRenderToStatic`; runtime `Block_TDSN_COut_DecalMod_p`]
 
@@ -270,17 +298,33 @@ absent); frame 2 = `OnlyRgbAccum`, `Bump None` (an rgb accumulation used by
 the light-index/switch machinery: `LmLIndex_*`, `TBindedMapLM_LListIndex/W/IsLit`,
 `GbxP_LmLocals`). At runtime frame 1 is `TBindedMapLM_LocalDirect`, added as
 `albedo · LocalDirect · LocalDirectScale01` (no square in the shader — its
-load path `CacheLocal_LoadLightMapDiffuse` 0x140213c6f converts; whether the
-stored frame-1 pixels are sqrt-encoded like frame 0 is **pending** — the
-frame's `Bump = HBasis_Color` says the same compress ran).
+load path `CacheLocal_LoadLightMapDiffuse` 0x140213c6f converts; the stored
+frame-1 pixels are sqrt-encoded like frame 0 (the same `HBasis_Color`
+compress): the baker's frame-1 fit on a linear read gave `(1 − (d/R)²)²`,
+which is `att = 1 − d²/R²` read through the sqrt, with the hard cutoff at
+`d = R` the shader's `max(0, ·)` produces [DIFFERENTIAL + DISASSEMBLY]).
 
-### 2.7 Quality levels
+### 2.7 Quality levels [DISASSEMBLY, tables in .data indexed by `EHmsLightMapQuality`]
 
-`EHmsLightMapQuality {VFast, Fast, Default, High, Ultra}`. The stored sample
-counts are the same at every level (§1); what changes: the texel budget
-(`WantedTexelByMeter`) and the supersampling factor (`cSamplePerAxe`,
-`LM01_Scale_RasterSS`; the `LmSSGid_UpSampleY` permutation divides by 3) —
-exact table **pending** (in `CGameCtnApp::HmsLightMapCompute`).
+| quality | dir (sun) samples 0x141e6f338 | point-light samples 0x141e6f320 | bounce iterations 0x141e6f248 | supersampling per axis 0x141e6f260 | 0x141e6f278 |
+|---|---|---|---|---|---|
+| 0 VFast | 1 | 1 | 0 | 1 | 1 |
+| 1 Fast | 16 | 7 | 2 | 2 | 1 |
+| 2 Default | 64 | 25 | 2 | 3 | 1 |
+| 3 High | 64 | 25 | 4 | 3 | 1 |
+| 4 Ultra | 64 | 25 | 6 | 3 | 2 |
+| 5 Ultra2 | 64 | 25 | 6 | 3 | 2 |
+
+The supersampled render target is the atlas size × the per-axis factor
+(0x140217e10: `param+0x128` overrides the table). The 2-D table at
+0x141e6f290 (6 words per quality: {0…}, {64, 32, 0…}, {256, 128, 0…},
+{1024, 512, 256, 128, 0, 0}, {2048, 1024, 1024, 512, 256, 128}, {4096,
+2048, 1024, 512, 256, 128}) is read by `RenderLightDirectGetLocalLightDescs`
+and the bounce/NLocal code with a per-light class column — the local
+lights' shadow-map sizes per quality. The stored `m_LightAmbSampleCount =
+256` (the sky cone's direction count) has no per-quality table in the
+ranges read so far; the texel budget (`WantedTexelByMeter`) per quality is
+still pending.
 
 ## 3. Charts, packing, probes
 
@@ -324,6 +368,15 @@ geometry). Per dome direction `D` (the same peel layers as §2.3):
   `IsLightPos = 0` gives the sun visibility.
 * `ProbeGrid_LightWeightMax_p`: the max light weight over cSamplePerAxe³
   jittered positions in the cell (for the light list).
+
+**Encoding of the four probe images** [DISASSEMBLY 0x14022d8f0, the probe
+grid download ("!! ProbeGrid download crash helpers")]: the f16 probe
+textures are converted on the CPU through the **sRGB** table at
+0x141a64760 (4096 entries, the exact sRGB curve; inverse table of 256 floats
+at 0x141a64360): `byte = sRGB(value / scale_k)`, `scale_k` = the image's
+maximum = `frame_info[k].scale` of the trailer; the fourth channel of the
+first image is the linear f16 alpha rounded to a byte, and a validity byte
+is set where that alpha ≥ 0.5 (zero pixels otherwise). Not sqrt, not linear.
 
 Image 2 (pale bluish, grey inside geometry): the remaining accumulation is
 `LmILightDir_AddAmbient_c` — the ambient/sky **without** occlusion (the
@@ -387,6 +440,23 @@ rotated`…). A rejected cache → the coarse load-time recompute
   0x0303A012 `RemappedStartDayTime` [FILE]. The XML `Latitude` (20/36/45) is
   not the one the sun uses. The sun direction as a function of DayTime through
   these is **pending** (it only matters for the bounce input).
+* `LightMap\HmsPackLightMap\Tech3_HDR_PSSM.PackLightMap.Gbx` (Maniaplanet.pak,
+  class 0x06021000) is the lightmapper's pack configuration: it references
+  the sphere point table, `LightMap\HmsPackLightMapMood\Tech3
+  MoodSettings.PackLightMapMood.Gbx` (`CHmsLightMapMood`, class 0x06023000:
+  chunk 0x06023000 = five floats (1, 1, 0, 1, 1) at +0x18…+0x28; chunk
+  0x06023004 v0 = MaxHDR 3, BounceFactor 1, SkyFactor 1, SkyUseClouds 1,
+  then 4.0, 0.01, 3.0 at +0x40/+0x44/+0x48 — the defaults the XML
+  `T3LightMap` overrides; the last three are lightmap-only constants whose
+  use is pending), the working textures (ColorPeeled, ILightInput,
+  ILightDir, Shadow1, DepthToPeel, ProbeBBoxInvHDiag, ProbeGrid…) and the
+  sprite shaders [FILE].
+* `Techno3\MotionManagerWeathers\DayTime.MotionManagerWeathers.Gbx` ("Sunny")
+  binds the lights' day curves (`LightAmbSunny.tga`, `LightSunSunny.tga`,
+  `LightMoonSunny.tga`), `Techno3\Func\FuncDayTime\Default.FuncDayTime.Gbx`
+  (class 0x09181000: 50000, 50, 0.25, 5, 0.125; 0.75; …) and the default
+  mood XML (`Latitude 35, DayTime01 0.644, LAmbient cce2ff × 0.815, LDirSun
+  fffef1 × 2.86, T3LightMap MaxHDR 5 Bounce 3 Sky 0.3`) [FILE].
 * The stored `LAmbient` of frame 0 is not the XML colour (Tiny 16: (0.751,
   1.833, 1.116); Tiny 11: (1.581, 1.792, 1.614)) — a derived reference the
   runtime scales by; treat as opaque.
@@ -407,24 +477,32 @@ rotated`…). A rejected cache → the coarse load-time recompute
    Client: none (real-time). Fix: drop it from E; keep the sun only inside
    the bounce input (§2.4).
 4. **Ambient shape.** lmtool: `ambient + up·(0.5+0.5 n.y) + sky·skyVis`
-   (fitted). Client: `LAmbient·(0.8 + 0.2 n.y)` unoccluded, plus the sky as
-   the cosine-weighted mean of `L_sky(D)` over unoccluded directions, plus
-   bounces. Fix: two terms with the mood's numbers, no fitted constants.
-5. **Sky radiance.** lmtool: a fitted constant. Client: per-direction sky ×
-   `SkyFactor` (source pending; brighter than LAmbient). Fix: use the mood's
-   HDR sky (SkyColor.dds panorama, BC6H) once the source is pinned; until then
-   the baker's fitted sky colour scaled to match open-horizontal texels.
+   (fitted). Client (stored frame): **no unoccluded term at all** — the sky
+   cone (item 5) plus the bounces; nothing else. Fix: drop `ambient` and
+   `up`.
+5. **Sky = a 30° zenith cone light.** lmtool: 64 cosine-weighted hemisphere
+   rays × a fitted sky colour. Client: N (= 256) uniform directions inside a
+   cone of half-angle ≈ 30° around +y (taken from the game's sphere point
+   table), each a shadow-mapped directional light of colour ≈
+   1.55·LAmbient·SkyFactor, summed with `max(0, n·D)/N`. Fix: replace the
+   hemisphere with the cone (this is why the editor's shadows under plates
+   are near-black and lmtool's were grey, and why walls are dark).
 6. **Bounce.** lmtool: one bounce, constant albedo 0.5, off by default.
-   Client: several dome sweeps with the material albedo (`MDiffuse`) and the
-   direct sun on the bounce surfaces, × `BounceFactor` (2 / 1.6 / 1.8 / 3).
-   Fix: albedo from the material diffuse textures (mean colour per material
-   is enough at lightmap resolution), sun on the bounce input, BounceFactor
-   from the quarter-mood XML.
-7. **Direction sets.** lmtool: 64 stratified cosine-weighted hemisphere
-   rays. Client: 256 uniform sphere directions with the cosine in the weight
-   (`Scale·max(0,n·D)`), 64 sun samples, 25 point-light samples. Fix: match
-   the counts; a 256-direction uniform sphere set gives the same noise
-   character as the editor's.
+   Client: 2 (Default) / 4 (High) / 6 (Ultra) sweeps with the material
+   albedo (`MDiffuse`) and the direct sun on the bounce surfaces, ×
+   `BounceFactor` (2 / 1.6 / 1.8 / 3); the sea/ground bounce is what lights
+   undersides (0.37 of the open floor). Fix: albedo from the material diffuse
+   textures (mean colour per material is enough at lightmap resolution), the
+   sun (64 disc samples, its EmittAngularSize) on the bounce input,
+   BounceFactor from the quarter-mood XML, 2 iterations for a Default bake.
+7. **Direction sets.** lmtool: stratified random. Client: the precomputed
+   `Std.PointsInSphere.Gbx` sets (banked under client-re/): the sky cone =
+   the points of the 4112-set inside 30° of +y (≈ 275 → the stored 256),
+   the sun = a 30°-rotated jittered grid of 64 in the disc of radius sin(A),
+   the bounces = the same table through `ComputeBounces_SpherePoints`
+   (64·n and 32·n point sets partitioned into n interleaved subsets, one
+   subset per pass). Fix: read the table and use the same sets; the noise
+   pattern then matches the editor's texel for texel.
 8. **Mood parameters by DayTime quarter**, not by the decoration's name
    (§6). Fix: read `0x03043056`, pick the quarter's XML; the frame record's
    MaxHDR_Mood/Bounce/Sky must be that mood's.
@@ -438,11 +516,11 @@ rotated`…). A rejected cache → the coarse load-time recompute
     Fix: keep the constant for the tiny maps (it is what the search yields
     there); for the giants implement the search (§3.1) so charts match the
     editor's sizes.
-12. **Probe image 1 = sky visibility fraction, image 2 = unoccluded ambient
-    (inferred), validity = front-face fraction over the dome** (§3.2).
-    lmtool's "inside test by back-face rays" is the same idea; make the
-    threshold and the sky-visibility definition match (fraction of the 256
-    directions, not a cosine-weighted hemisphere).
+12. **Probes.** Image 1 = sky-cone visibility fraction, image 2 = the
+    unoccluded ambient (inferred), validity = front-face fraction over the
+    directions (§3.2); pixels are **sRGB(value/scale)**, not sqrt and not
+    linear. lmtool's "inside test by back-face rays" is the same idea; make
+    the threshold, the cone and the encoding match.
 13. **Local lights.** lmtool: `0.27·I·colour·n·l·(1−(d/R)²)²·spot`. Client:
     `LightRgb · att · spot · n·l · shadow`, `att = max(0, 1 − d²/R²)` (or the
     HN2 form when the light carries it), `spot = smoothstep` on the cosine
