@@ -2825,6 +2825,50 @@ fn main() {
             let ys: Vec<f32> = samples.iter().filter(|s| s.n[1] > 0.9).map(|s| s.p[1]).collect();
             if !ys.is_empty() { let (mn, mx) = ys.iter().fold((f32::MAX, f32::MIN), |(a, b), &y| (a.min(y), b.max(y))); println!("  up-facing sample heights {mn:.3}..{mx:.3}"); }
         }
+        "cacheuid" => {
+            // lmtool cacheuid MAP [--out OUT [--set HEX|fresh]]: the header's lightmapCacheUID (chunk 0x03043003:
+            // … string mapStyle, u64 lightmapCacheUID, u8 lightmapVersion, string titleId). The game keys its
+            // C:\ProgramData\Trackmania\Cache\*.Bump.LightMap.zip entries by it — a stale entry for the uid
+            // makes the editor re-open the cached bake (and ITS time of day) instead of the map's word.
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let m = lightmap::mapio::load(&a[1]).expect("load");
+            let hb = m.gbx.header_bytes_u();
+            // locate: the titleId Id = u32 0x40000000 + u32 len + "TMStadium", preceded by u8 lightmapVersion
+            // and the u64 lightmapCacheUID
+            let title = b"TMStadium";
+            let mut pos = None;
+            for i in 0..hb.len().saturating_sub(title.len() + 4) {
+                if &hb[i + 4..i + 4 + title.len()] == title && u32::from_le_bytes([hb[i], hb[i + 1], hb[i + 2], hb[i + 3]]) as usize == title.len() { pos = Some(i); break; }
+            }
+            let Some(p) = pos else { println!("no titleId in the header"); return };
+            let p = p - 4; // the Id flag word
+            if hb[p..p + 4] != [0, 0, 0, 0x40] { println!("unexpected Id word before titleId at {p:#x}"); return }
+            let ver = hb[p - 1];
+            let uid = u64::from_le_bytes(hb[p - 9..p - 1].try_into().unwrap());
+            println!("lightmapCacheUID {uid:#018x} lightmapVersion {ver}");
+            if a.iter().any(|x| x == "--hex") {
+                let lo = p.saturating_sub(48);
+                for row in (lo..p + 16).step_by(16) {
+                    let bytes: Vec<String> = hb[row..(row + 16).min(hb.len())].iter().map(|b| format!("{b:02x}")).collect();
+                    let ascii: String = hb[row..(row + 16).min(hb.len())].iter().map(|&b| if (32..127).contains(&b) { b as char } else { '.' }).collect();
+                    println!("  {row:06x}: {}  {ascii}", bytes.join(" "));
+                }
+            }
+            if let (Some(out), Some(v)) = (f("--out"), f("--set")) {
+                let nv: u64 = if v == "fresh" {
+                    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+                    (nanos as u64) ^ 0x9E37_79B9_7F4A_7C15
+                } else { u64::from_str_radix(v.trim_start_matches("0x"), 16).unwrap() };
+                let mut nh = hb.clone();
+                nh[p - 9..p - 1].copy_from_slice(&nv.to_le_bytes());
+                // rebuild the file: patched header + the original body
+                let mut file = nh.clone();
+                file.extend_from_slice(&m.gbx.body);
+                let t = tmmaps::gbx::Gbx::parse(&file);
+                std::fs::write(&out, t.write_body_recompressed(&m.gbx.body)).expect("write");
+                println!("wrote {out} with lightmapCacheUID {nv:#018x}");
+            }
+        }
         "packtest" => {
             // lmtool packtest MAP [--base N] [--w 1024] [--g 1] [--iter 8] [--tile-ext M]: run the editor's chart
             // allocation walk (§3.1) on the map's items (ext = uv bounds × MeterByUv) + the zone tiles, and compare
@@ -2833,6 +2877,8 @@ fn main() {
             let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
             let w_atlas: u16 = f("--w").map(|s| s.parse().unwrap()).unwrap_or(1024);
             let g: u16 = f("--g").map(|s| s.parse().unwrap()).unwrap_or(1);
+            // --pad P: the 2048-space variant (W 2048, g 2, pad 1): stored X = x + pad, W = w − 2·pad
+            let pad: u32 = f("--pad").map(|s| s.parse().unwrap()).unwrap_or(0);
             let max_iter: u32 = f("--iter").map(|s| s.parse().unwrap()).unwrap_or(8);
             let tile_ext: f32 = f("--tile-ext").map(|s| s.parse().unwrap()).unwrap_or(0.0);
             let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
@@ -2876,8 +2922,9 @@ fn main() {
                 let mut best = (0usize, 0f32);
                 let mut s = 4.0f32;
                 while s < 6.0 {
-                    if let Some(p) = lightmap::pack::try_pack(&charts, &order, s, 4096, 4096, g) {
-                        let ok = p.iter().enumerate().filter(|(k, q)| ed.get(&ids[*k]).map(|&(_, _, ew, eh)| 2 * (q.w as u32).saturating_sub(1) == ew as u32 && 2 * (q.h as u32).saturating_sub(1) == eh as u32).unwrap_or(false)).count();
+                    if let Some(p) = lightmap::pack::try_pack(&charts, &order, s, 8192, 8192, g) {
+                        let sz = |q: &lightmap::pack::Placed| if pad > 0 { ((q.w as u32).saturating_sub(2 * pad), (q.h as u32).saturating_sub(2 * pad)) } else { (2 * (q.w as u32).saturating_sub(1), 2 * (q.h as u32).saturating_sub(1)) };
+                        let ok = p.iter().enumerate().filter(|(k, q)| ed.get(&ids[*k]).map(|&(_, _, ew, eh)| sz(q) == (ew as u32, eh as u32)).unwrap_or(false)).count();
                         if ok > best.0 { best = (ok, s); }
                         if (s * 1000.0).round() as i32 % 50 == 0 { println!("  s {s:.3}: {ok} sizes equal"); }
                     }
@@ -2893,7 +2940,7 @@ fn main() {
             for (k, p) in placed.iter().enumerate() {
                 let Some(&(ex, ey, ew, eh)) = ed.get(&ids[k]) else { continue };
                 n_cmp += 1;
-                let (ox, oy, ow, oh) = (2 * p.x as u32 + 1, 2 * p.y as u32 + 1, 2 * (p.w as u32).saturating_sub(1), 2 * (p.h as u32).saturating_sub(1));
+                let (ox, oy, ow, oh) = if pad > 0 { (p.x as u32 + pad, p.y as u32 + pad, (p.w as u32).saturating_sub(2 * pad), (p.h as u32).saturating_sub(2 * pad)) } else { (2 * p.x as u32 + 1, 2 * p.y as u32 + 1, 2 * (p.w as u32).saturating_sub(1), 2 * (p.h as u32).saturating_sub(1)) };
                 let s_ok = ow == ew as u32 && oh == eh as u32;
                 let p_ok = s_ok && ox == ex as u32 && oy == ey as u32;
                 size_ok += s_ok as u32; pos_ok += p_ok as u32;
