@@ -432,12 +432,22 @@ insert(node, w, h):
           node = child0
 ```
 
-Write-back (from the mode-2 twin 0x140296000, the main path's writer
-`FUN_1402923b0` 0x1402923b0 still to read): chart ST = `((x + 0.5)/W, (y +
-0.5)/H, (w − 1)/W, (h − 1)/H)` — the packer's `w` includes one gutter texel,
-which is the "even sizes, odd positions" of the 2048-unit layout
-(`X = 2x + 1`, `W = 2(w − 1)` for W_pack = 1024) [INFERRED from the SH path;
-verify in 0x1402923b0].
+**Write-back** (`SetUvTransfo` 0x1402923b0, exact): for every packer node
+with a user, with `pad = dims.pad` (forced to 1 when 0, TryPack):
+
+```text
+x = node.x + pad ;  y = node.y + pad ;  w = node.w − 2·pad ;  h = node.h − 2·pad      (+ a sub-atlas origin when given)
+layout[idx] = {i16 x, i16 y, i16 w, i16 h}                     ← the per-chart rect of the mapping (map-lightmap.md §3.3)
+uvTransfo[idx] = ST from (x, y, w, h), the atlas dims and the chart's uv bounds (FUN_140200970)
+```
+
+With the packer run in the 2048-unit layout space (W = H = 2048, g = 2,
+pad = 1 — the only values that give the observed even sizes at odd
+positions: node coordinates are multiples of g = 2, so `x = node.x + 1` is
+odd and `w = node.w − 2` even) the image texel size of a chart is `w/2`,
+and `ceil(ext·s)` in TryPack is the chart's size *including* its two gutter
+texels [dims INFERRED from the layout statistics; the constants are passed
+by `UpdateMapping` 0x14020f510 — read them there to close this].
 
 Still to read for a bit-identical table: `FUN_140291450` (builds the chart
 list from the blocks: which visuals make a chart, the `mins` pairs and the
