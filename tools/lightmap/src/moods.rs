@@ -324,3 +324,16 @@ pub fn sky_fit(collection: &str, mood: &str) -> (f32, f32, bool) {
 pub fn sky_grad_scale(collection: &str, mood: &str) -> f32 {
     sky_fit(collection, mood).0
 }
+
+/// Sky_p's FogIntens for the dome per mood, DIFFERENTIAL: the mood XML's depth formula does not give it
+/// (Day 0.976 → 0.32 at 5300 m fits, but Sunset's parameters give 0.77 of a dark fog where 0.32 fits
+/// again — the pad-only test maps at 0x9b59 and 0xdaab, 2026-09-23). None = the XML formula at the dome
+/// distance.
+pub fn fog_intens(collection: &str, mood: &str) -> Option<f32> {
+    let c = collection.to_ascii_lowercase();
+    match (c.as_str(), normalise_mood(mood)) {
+        ("bluebay", "Day") | ("bluebay", "Sunset") => Some(0.32),
+        ("bluebay", _) => Some(0.32),
+        _ => None,
+    }
+}

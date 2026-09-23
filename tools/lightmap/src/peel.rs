@@ -110,13 +110,13 @@ impl ABuffer {
 /// chunks, each thread binning its fragments into horizontal BANDS of the target; the per-band CSR
 /// build (counting sort by pixel, depth sort within a pixel) then runs in parallel over the bands.
 pub fn build_abuffer(tris: &[WTri], frame: &PeelFrame, threads: usize) -> ABuffer {
-    build_abuffer_upto(tris, frame, threads, f32::INFINITY)
+    build_abuffer_upto(tris, frame, threads, f32::INFINITY, &[])
 }
 
 /// `build_abuffer` keeping only fragments with depth < `zmax` — a fragment deeper than every receiver
 /// can occlude nothing (the gather looks for surfaces in FRONT of a texel), and the decoration's sea
 /// and ground planes would otherwise fill every pixel of every peel.
-pub fn build_abuffer_upto(tris: &[WTri], frame: &PeelFrame, threads: usize, zmax: f32) -> ABuffer {
+pub fn build_abuffer_upto(tris: &[WTri], frame: &PeelFrame, threads: usize, zmax: f32, masks: &[crate::geometry::AlphaMask]) -> ABuffer {
     let res = frame.res;
     // LMTOOL_PEEL_CULL_BACK=1 (hypothesis under test): the peel renders only the faces turned toward
     // the receivers' side (geometric normal against D); back faces are culled, not drawn black — so a
@@ -154,9 +154,18 @@ pub fn build_abuffer_upto(tris: &[WTri], frame: &PeelFrame, threads: usize, zmax
                                 continue;
                             }
                         }
+                        let mask = if t.alpha != u16::MAX { masks.get(t.alpha as usize) } else { None };
                         raster::triangle(res, res, [[x0, y0], [x1, y1], [x2, y2]], |x, y, b| {
                             let z = z0 * b[0] + z1 * b[1] + z2 * b[2];
                             if z < zmax {
+                                // the alpha test: the cut-out texture at the fragment's TexCoord0
+                                if let Some(m) = mask {
+                                    let u = t.uv0[0][0] * b[0] + t.uv0[1][0] * b[1] + t.uv0[2][0] * b[2];
+                                    let v = t.uv0[0][1] * b[0] + t.uv0[1][1] * b[1] + t.uv0[2][1] * b[2];
+                                    if !m.opaque(u, v) {
+                                        return;
+                                    }
+                                }
                                 out[(y / band_h) as usize].push((y * res + x, Frag { z, tri: ti }));
                             }
                         });
@@ -220,7 +229,7 @@ pub struct ShadowMap {
 }
 
 impl ShadowMap {
-    pub fn build(tris: &[WTri], sun_dir: V3, bmin: V3, bmax: V3, res: u32) -> ShadowMap {
+    pub fn build(tris: &[WTri], sun_dir: V3, bmin: V3, bmax: V3, res: u32, masks: &[crate::geometry::AlphaMask]) -> ShadowMap {
         let frame = PeelFrame::new(sun_dir, bmin, bmax, res);
         let mut depth = raster::Depth::new(res, res);
         for t in tris {
@@ -230,7 +239,15 @@ impl ShadowMap {
             let (x0, y0, z0) = frame.project(p0);
             let (x1, y1, z1) = frame.project(p1);
             let (x2, y2, z2) = frame.project(p2);
+            let mask = if t.alpha != u16::MAX { masks.get(t.alpha as usize) } else { None };
             raster::triangle(res, res, [[x0, y0], [x1, y1], [x2, y2]], |x, y, b| {
+                if let Some(m) = mask {
+                    let u = t.uv0[0][0] * b[0] + t.uv0[1][0] * b[1] + t.uv0[2][0] * b[2];
+                    let v = t.uv0[0][1] * b[0] + t.uv0[1][1] * b[1] + t.uv0[2][1] * b[2];
+                    if !m.opaque(u, v) {
+                        return;
+                    }
+                }
                 let z = z0 * b[0] + z1 * b[1] + z2 * b[2];
                 depth.test_write(x, y, z);
             });
@@ -433,7 +450,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     let mut acc: Vec<[f32; 3]> = vec![[0.0; 3]; subs.len()];
     // 3. the sun shadow map for the fragment radiance
     let (bmin, bmax) = scene_bounds(&bvh.tris);
-    let shadow = if prm.sun_dir[1] > 0.0 && prm.sun.iter().any(|c| *c > 0.0) { Some(ShadowMap::build(&bvh.tris, prm.sun_dir, bmin, bmax, prm.peel_res.max(1024))) } else { None };
+    let shadow = if prm.sun_dir[1] > 0.0 && prm.sun.iter().any(|c| *c > 0.0) { Some(ShadowMap::build(&bvh.tris, prm.sun_dir, bmin, bmax, prm.peel_res.max(1024), &prm.alpha_masks)) } else { None };
     let sun_bias = 2.5 * (bmax[0] - bmin[0]).max(bmax[2] - bmin[2]) / prm.peel_res.max(1024) as f32 + 0.05;
     // 4. the directions, interleaved into the groups
     let dirs: Vec<V3> = prm.sphere_dirs.iter().copied().collect();
@@ -466,7 +483,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         let tb = std::time::Instant::now();
         // the deepest receiver along this direction: nothing beyond it can occlude
         let zmax = (0..8).map(|i| { let p = [if i & 1 == 0 { bmin[0] } else { bmax[0] }, if i & 2 == 0 { bmin[1] } else { bmax[1] }, if i & 4 == 0 { bmin[2] } else { bmax[2] }]; frame.project(p).2 }).fold(f32::MIN, f32::max);
-        let ab = build_abuffer_upto(&bvh.tris, &frame, threads, zmax);
+        let ab = build_abuffer_upto(&bvh.tris, &frame, threads, zmax, &prm.alpha_masks);
         let t_build = tb.elapsed().as_secs_f32();
         // the sky term's per-direction constant is w·4·d.y·SkyFactor (RE child 3, AddSkyVisibility /
         // SetILightDir 0x140234df0): the sky colour along d is weighted by the direction's elevation cosine

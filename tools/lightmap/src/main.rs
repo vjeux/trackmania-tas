@@ -778,11 +778,12 @@ fn run(a: Vec<String>) {
                 eprintln!("decoration: none — a ground quad at y = {gy} (albedo {ga}) stands in");
             }
             eprintln!("scene: {} models, {} instances, {} triangles (+ {} decoration) ({:.1}s)", scene.models.len(), scene.instances.len(), scene.tri_count(), scene.decor.len(), t0.elapsed().as_secs_f32());
-            let tris = lightmap::bake::world_tris(&scene);
+            let (tris, alpha_masks) = lightmap::bake::world_tris_masks(&scene);
             let bvh = lightmap::bvh::Bvh::build(tris);
             eprintln!("bvh: {} nodes ({:.1}s)", bvh.node_count(), t0.elapsed().as_secs_f32());
             let parse_rgb = |s: &str| -> [f32; 3] { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); [v[0], v[1], v[2]] };
             let mut prm = lightmap::bake::BakeParams::default();
+            prm.alpha_masks = std::sync::Arc::new(alpha_masks);
             // --model xml (default) | fitted: the game's model (RE child, 2026-09-23) — the effective mood by the
             // map's DayTime quarter, E = LAmbient·(0.8+0.2n.y) + LAmbient·SkyFactor·skyVis·S + BounceFactor·albedo·bounce,
             // NO direct sun (real-time; it only feeds the bounce), absolute HDR units; `fitted` = the 2026-09-22 rows
@@ -862,7 +863,8 @@ fn run(a: Vec<String>) {
                                     if !has("--no-fog") {
                                         let fa = lightmap::skygrad::fog_from_xml(xa, dome_m);
                                         let fog = match &xml_b { Some(xb) => lightmap::skygrad::lerp_fog(fa, lightmap::skygrad::fog_from_xml(xb, dome_m), bt), None => fa };
-                                        g.fog = fog.map(|(c, i)| (c, f("--fog-intens").map(|s| s.parse().unwrap()).unwrap_or(i)));
+                                        let fitted_fi = match blend { Some((a, b, t)) => match (lightmap::moods::fog_intens(coll, a.mood), lightmap::moods::fog_intens(coll, b.mood)) { (Some(p), Some(q)) => Some(p + (q - p) * t), (p, q) => p.or(q) }, None => lightmap::moods::fog_intens(coll, mood_a) };
+                                        g.fog = fog.map(|(c, i)| (c, f("--fog-intens").map(|s| s.parse().unwrap()).or(fitted_fi).unwrap_or(i)));
                                     }
                                 }
                                 // with the fog blend the fitted per-mood number is GlobalScale (the gradient's own ScaleGrad0 = 1 for the HDR BC6H texture)
@@ -1069,7 +1071,7 @@ fn run(a: Vec<String>) {
                 prm.sky_samples = f("--sky-samples").map(|s| s.parse().unwrap()).unwrap_or(16);
                 prm.sun_samples = 1;
                 let step = (scene.instances.len() / nitems).max(1);
-                let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: scene.instances.iter().step_by(step).cloned().collect(), item_count: scene.item_count, decor: scene.decor.clone() };
+                let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: scene.instances.iter().step_by(step).cloned().collect(), item_count: scene.item_count, decor: scene.decor.clone(), alpha_masks: scene.alpha_masks.clone() };
                 // the subset's instances must keep their own inst id for self-hit filtering: rebuild the bvh over all, but
                 // the shade() skip uses the instance index in `sub` — so we bake the subset against a bvh of the FULL scene
                 // whose inst ids are full-scene indices; map them
@@ -1439,7 +1441,7 @@ fn run(a: Vec<String>) {
             prm.uv_bounds = has("--uv-bounds");
             if let Some(s) = f("--bounce") { prm.bounce = s.parse().unwrap(); }
             prm.sky_samples = 64;
-            let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![scene.instances[ii].clone()], item_count: scene.item_count, decor: scene.decor.clone() };
+            let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![scene.instances[ii].clone()], item_count: scene.item_count, decor: scene.decor.clone(), alpha_masks: scene.alpha_masks.clone() };
             // bake at Nadeo's resolution
             prm.min_px = pw.max(ph); prm.max_px = pw.max(ph);
             let mine = lightmap::bake::bake_subset_px(&sub, &[ii as u32], &bvh, &prm, pw, ph);
@@ -1513,7 +1515,7 @@ fn run(a: Vec<String>) {
                     let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
                     let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32) / 2, (h as u32) / 2);
                     if pw < 4 || ph < 4 { continue; }
-                    let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![inst.clone()], item_count: scene.item_count, decor: scene.decor.clone() };
+                    let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![inst.clone()], item_count: scene.item_count, decor: scene.decor.clone(), alpha_masks: scene.alpha_masks.clone() };
                     let mine = lightmap::bake::bake_subset_px(&sub, &[ii as u32], &bvh, &prm, pw, ph);
                     let c = &mine[0];
                     let (mut xs, mut ys) = (vec![], vec![]);

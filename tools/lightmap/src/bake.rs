@@ -38,6 +38,9 @@ pub struct BakeParams {
     /// Per-material albedo (`crate::albedo`) is used for a hit surface unless `flat_albedo` — then
     /// `albedo` applies to every surface (an explicit `--albedo`).
     pub flat_albedo: bool,
+    /// The cut-out masks the world triangles' `alpha` index (alpha-tested materials: the baked vegetation
+    /// cards) — the peel and the sun shadow map skip their transparent texels like the GPU's alpha test.
+    pub alpha_masks: std::sync::Arc<Vec<crate::geometry::AlphaMask>>,
     /// One-bounce factor (0 = off) and the average albedo it uses.
     pub bounce: f32,
     pub albedo: f32,
@@ -126,6 +129,7 @@ impl Default for BakeParams {
             peel_res: 2048,
             peel_bias: 0.1,
             flat_albedo: false,
+            alpha_masks: std::sync::Arc::new(Vec::new()),
             albedo: 0.5,
             flip_v: false,
             uv_bounds: false,
@@ -219,32 +223,50 @@ pub fn is_flat_tile(m: &crate::geometry::ModelGeom) -> bool {
 /// World-space triangles of every instance, for the BVH (flat ground tiles excluded only with
 /// `LMTOOL_TILES_CAST=0`).
 pub fn world_tris(scene: &Scene) -> Vec<WTri> {
+    world_tris_masks(scene).0
+}
+
+/// The world triangles and the cut-out mask list their `alpha` indexes (the scene's masks in name order;
+/// a triangle whose material has no decodable mask is opaque).
+pub fn world_tris_masks(scene: &Scene) -> (Vec<WTri>, Vec<crate::geometry::AlphaMask>) {
     // OFF by default: BlueBay's track plates (AC16902154, a zero-thickness quad too) DO occlude in the
     // editor, the RI/WS/Stadium terrain tiles do not — the difference is the item's CastShadow flag,
     // not its shape; without the flag every mesh casts. LMTOOL_TILES_CAST=0 drops the flat quads.
     let tiles_cast = std::env::var("LMTOOL_TILES_CAST").map(|v| v != "0").unwrap_or(true);
+    // LMTOOL_ALPHA_TEST=0: the cut-out materials as opaque geometry
+    let alpha_test = std::env::var("LMTOOL_ALPHA_TEST").map(|v| v != "0").unwrap_or(true);
+    let mask_names: Vec<&String> = scene.alpha_masks.keys().collect();
+    let masks: Vec<crate::geometry::AlphaMask> = scene.alpha_masks.values().cloned().collect();
     let mut out = Vec::with_capacity(scene.tri_count());
     let mut skipped = 0usize;
+    let mut cut_tris = 0usize;
     for (ii, inst) in scene.instances.iter().enumerate() {
         let m = &scene.models[inst.model];
         if !tiles_cast && is_flat_tile(m) {
             skipped += 1;
             continue;
         }
+        // per model material → mask index
+        let mask_of: Vec<u16> = m.alpha_tex.iter().map(|f| mask_names.iter().position(|n| *n == f).map(|i| i as u16).unwrap_or(u16::MAX)).collect();
         for (ti, t) in m.tris.iter().enumerate() {
             let p0 = xf_point(&inst.xf, t.p[0]);
             let p1 = xf_point(&inst.xf, t.p[1]);
             let p2 = xf_point(&inst.xf, t.p[2]);
-            out.push(WTri { p0, e1: sub(p1, p0), e2: sub(p2, p0), inst: ii as u32, tri: ti as u32 });
+            let alpha = if alpha_test && t.alpha != u16::MAX { mask_of.get(t.alpha as usize).copied().unwrap_or(u16::MAX) } else { u16::MAX };
+            if alpha != u16::MAX { cut_tris += 1; }
+            out.push(WTri { p0, e1: sub(p1, p0), e2: sub(p2, p0), inst: ii as u32, tri: ti as u32, alpha, uv0: t.uv0 });
         }
     }
     if skipped > 0 {
         eprintln!("bvh: {skipped} flat ground-tile items left out (receivers only)");
     }
-    for (di, d) in scene.decor.iter().enumerate() {
-        out.push(WTri { p0: d.p[0], e1: sub(d.p[1], d.p[0]), e2: sub(d.p[2], d.p[0]), inst: crate::geometry::DECOR_INST, tri: di as u32 });
+    if cut_tris > 0 {
+        eprintln!("bvh: {cut_tris} alpha-tested triangles ({} cut-out masks)", masks.len());
     }
-    out
+    for (di, d) in scene.decor.iter().enumerate() {
+        out.push(WTri { p0: d.p[0], e1: sub(d.p[1], d.p[0]), e2: sub(d.p[2], d.p[0]), inst: crate::geometry::DECOR_INST, tri: di as u32, alpha: u16::MAX, uv0: [[0.0; 2]; 3] });
+    }
+    (out, masks)
 }
 
 struct Rng(u64);

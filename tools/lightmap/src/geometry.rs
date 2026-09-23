@@ -16,8 +16,12 @@ pub struct Tri {
     pub n: [V3; 3],
     /// TexCoord1 of each vertex.
     pub uv: [[f32; 2]; 3],
+    /// TexCoord0 of each vertex (the alpha-tested materials' cut-out lookup; zeros when absent).
+    pub uv0: [[f32; 2]; 3],
     /// Index into the model's `mat_links` (u16::MAX = unknown material).
     pub mat: u16,
+    /// Index into the model's `alpha_tex` (u16::MAX = opaque): the material's cut-out texture.
+    pub alpha: u16,
 }
 
 /// A light socket of a model (`CPlugSolid2Model.lights`): position and axis in
@@ -50,6 +54,10 @@ pub struct ModelGeom {
     /// The game-material links of the model's shaded geoms (`CPlugMaterialUserInst.link`, e.g.
     /// `Stadium\Media\Material\RoadTech`), indexed by `Tri.mat`.
     pub mat_links: Vec<String>,
+    /// The cut-out textures (file names inside the map's item zip) of the alpha-tested materials: a
+    /// material whose `CPlugMaterialUserInst` fills the DiffuseO slot (1) — the baked vegetation cards'
+    /// TDOSN model reads its colour AND its alpha cut from it (mapgeom: `model_color_slot`).
+    pub alpha_tex: Vec<String>,
     /// Per material link: the diffuse albedo the bounce uses (`crate::albedo`).
     pub mat_albedo: Vec<[f32; 3]>,
 }
@@ -145,6 +153,17 @@ pub fn load_model(bytes: &[u8]) -> Result<ModelGeom, String> {
             s2.custom_materials.get(mi).and_then(|cm| cm.inst().and_then(|m| m.link().map(|l| l.to_string())).or_else(|| if cm.name.is_empty() { None } else { Some(cm.name.clone()) }))
                 .or_else(|| s2.materials.get(mi).and_then(|mr| match mr.inline.as_deref() { Some(Node::Material(m)) => m.link().map(|l| l.to_string()), _ => None }))
         }).unwrap_or_default();
+        // the material's cut-out texture: the DiffuseO (slot 1) user texture
+        let alpha: u16 = usize::try_from(sg.material_index).ok().and_then(|mi| s2.custom_materials.get(mi)).and_then(|cm| cm.inst()).and_then(|m| m.main.as_ref())
+            .and_then(|mm| mm.user_textures.iter().find(|t| t.u01 == 1).map(|t| t.texture.clone()))
+            .map(|file| {
+                let base = file.rsplit(['/', '\\']).next().unwrap_or(&file).to_string();
+                match g.alpha_tex.iter().position(|f| *f == base) {
+                    Some(i) => i as u16,
+                    None => { g.alpha_tex.push(base); (g.alpha_tex.len() - 1) as u16 }
+                }
+            })
+            .unwrap_or(u16::MAX);
         let mat: u16 = if link.is_empty() {
             u16::MAX
         } else {
@@ -195,6 +214,7 @@ pub fn load_model(bytes: &[u8]) -> Result<ModelGeom, String> {
             Some(Elem::Word(w)) => Some(w.iter().map(|&x| dec3n(x)).collect()),
             _ => None,
         };
+        let uv0s: Option<&Vec<[f32; 2]>> = match get(N_TEXCOORD0) { Some(Elem::Float2(u)) => Some(u), _ => None };
         for t in ib.indices.chunks_exact(3) {
             let (a, b, c) = (t[0] as usize, t[1] as usize, t[2] as usize);
             if a >= pos.len() || b >= pos.len() || c >= pos.len() || a >= uv1.len() || b >= uv1.len() || c >= uv1.len() {
@@ -216,7 +236,8 @@ pub fn load_model(bytes: &[u8]) -> Result<ModelGeom, String> {
             au += (((uv[1][0] - uv[0][0]) as f64) * ((uv[2][1] - uv[0][1]) as f64) - ((uv[2][0] - uv[0][0]) as f64) * ((uv[1][1] - uv[0][1]) as f64)).abs() / 2.0;
             let cr = cross(sub(p[1], p[0]), sub(p[2], p[0]));
             aw += (dot(cr, cr) as f64).sqrt() / 2.0;
-            g.tris.push(Tri { p, n, uv, mat });
+            let uv0 = match uv0s { Some(u) if a < u.len() && b < u.len() && c < u.len() => [u[a], u[b], u[c]], _ => [[0.0; 2]; 3] };
+            g.tris.push(Tri { p, n, uv, uv0, mat, alpha: if uv0s.is_some() { alpha } else { u16::MAX } });
         }
     }
     g.metres_per_uv = if au > 1e-9 && aw > 1e-9 { (aw / au).sqrt() as f32 } else { 0.0 };
@@ -242,6 +263,40 @@ pub struct Scene {
     /// `--decoration FILE.obj`): world-space triangles that occlude and bounce but get no chart. The
     /// BVH carries them with `inst == DECOR_INST` and `tri` indexing this list.
     pub decor: Vec<DecorTri>,
+    /// The cut-out masks by texture file name (the map zip's `Items/*.dds` decoded at ≤ 256 px, alpha ≥ 0.5).
+    pub alpha_masks: BTreeMap<String, AlphaMask>,
+}
+
+/// A binary cut-out mask (alpha ≥ threshold) sampled with wrapping uv, nearest texel.
+#[derive(Clone, Debug)]
+pub struct AlphaMask {
+    pub w: usize,
+    pub h: usize,
+    pub bits: Vec<u8>,
+}
+
+impl AlphaMask {
+    pub fn from_rgba(w: usize, h: usize, rgba: &[u8], threshold: u8) -> AlphaMask {
+        let mut bits = vec![0u8; (w * h + 7) / 8];
+        for i in 0..w * h {
+            if rgba.get(i * 4 + 3).copied().unwrap_or(255) >= threshold {
+                bits[i >> 3] |= 1 << (i & 7);
+            }
+        }
+        AlphaMask { w, h, bits }
+    }
+    /// Fraction of opaque texels.
+    pub fn coverage(&self) -> f32 {
+        let n: u32 = self.bits.iter().map(|b| b.count_ones()).sum();
+        n as f32 / (self.w * self.h).max(1) as f32
+    }
+    #[inline]
+    pub fn opaque(&self, u: f32, v: f32) -> bool {
+        let x = ((u.rem_euclid(1.0) * self.w as f32) as usize).min(self.w - 1);
+        let y = ((v.rem_euclid(1.0) * self.h as f32) as usize).min(self.h - 1);
+        let i = y * self.w + x;
+        self.bits[i >> 3] & (1 << (i & 7)) != 0
+    }
 }
 
 /// The BVH instance id of the decoration triangles.
@@ -326,10 +381,30 @@ impl Scene {
             let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
             instances.push(Instance { item: i, model: mi, xf, model_name: it.model.clone() });
         }
+        // the cut-out masks of the alpha-tested materials (the zip's Items/*.dds by base name)
+        let mut alpha_masks: BTreeMap<String, AlphaMask> = BTreeMap::new();
+        for g in &models {
+            for file in &g.alpha_tex {
+                if alpha_masks.contains_key(file) { continue; }
+                let Some(bytes) = by_name.get(file) else { continue };
+                match mapgeom::static_item::texture::decode_capped_rgba(bytes, 256) {
+                    Ok((w, h, rgba)) => {
+                        let m = AlphaMask::from_rgba(w as usize, h as usize, &rgba, 128);
+                        // a mask that cuts nothing is not worth the lookups
+                        if m.coverage() < 0.999 { alpha_masks.insert(file.clone(), m); }
+                    }
+                    Err(e) => eprintln!("  alpha mask {file}: {e}"),
+                }
+            }
+        }
+        if !alpha_masks.is_empty() {
+            let cov: Vec<String> = alpha_masks.iter().take(4).map(|(k, m)| format!("{k} {:.0} %", m.coverage() * 100.0)).collect();
+            eprintln!("  {} cut-out masks (alpha-tested materials): {}…", alpha_masks.len(), cov.join(", "));
+        }
         if !missing.is_empty() {
             eprintln!("  {} item models are not embedded (stock items?): {:?}", missing.len(), missing.iter().take(8).collect::<Vec<_>>());
         }
-        Ok(Scene { models, model_names, instances, item_count: m.items.len(), decor: Vec::new() })
+        Ok(Scene { models, model_names, instances, item_count: m.items.len(), decor: Vec::new(), alpha_masks })
     }
 
     pub fn tri_count(&self) -> usize {

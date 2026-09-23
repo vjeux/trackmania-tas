@@ -14,6 +14,10 @@ pub struct WTri {
     pub inst: u32,
     /// The triangle's index in its model (the hit → uv → texel lookup of the bounce passes).
     pub tri: u32,
+    /// The cut-out mask (index into `Scene`'s mask list as `world_tris` orders it; u16::MAX = opaque)
+    /// and the TexCoord0 corners it is sampled with.
+    pub alpha: u16,
+    pub uv0: [[f32; 2]; 3],
 }
 
 #[derive(Clone, Copy, Debug)]
