@@ -2900,10 +2900,13 @@ fn main() {
             // the sizes/positions with the map's own (editor) chart table
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
             let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
-            let w_atlas: u16 = f("--w").map(|s| s.parse().unwrap()).unwrap_or(1024);
-            let g: u16 = f("--g").map(|s| s.parse().unwrap()).unwrap_or(1);
-            // --pad P: the 2048-space variant (W 2048, g 2, pad 1): stored X = x + pad, W = w − 2·pad
-            let pad: u32 = f("--pad").map(|s| s.parse().unwrap()).unwrap_or(0);
+            // the layout side per quality: 2048 for VFast..High, 4096 for Ultra (RE child 2); g/pad/m derive from it
+            let w_atlas: u16 = f("--w").map(|s| s.parse().unwrap()).unwrap_or(2048);
+            let (g0, pad0, m0) = lightmap::pack::layout_params(w_atlas, w_atlas);
+            let g: u16 = f("--g").map(|s| s.parse().unwrap()).unwrap_or(g0);
+            let pad: u32 = f("--pad").map(|s| s.parse().unwrap()).unwrap_or(pad0 as u32);
+            let mmin: u16 = f("--m").map(|s| s.parse().unwrap()).unwrap_or(m0);
+            println!("layout {w_atlas}: g {g} pad {pad} min {mmin}");
             let max_iter: u32 = f("--iter").map(|s| s.parse().unwrap()).unwrap_or(8);
             let tile_ext: f32 = f("--tile-ext").map(|s| s.parse().unwrap()).unwrap_or(0.0);
             let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
@@ -2945,20 +2948,20 @@ fn main() {
             if a.iter().any(|x| x == "--scan") {
                 let order = lightmap::pack::area_order(&charts);
                 let mut best = (0usize, 0f32);
-                let mut s = 4.0f32;
-                while s < 6.0 {
-                    if let Some(p) = lightmap::pack::try_pack(&charts, &order, s, 8192, 8192, g) {
+                let mut s = 8.0f32;
+                while s < 12.0 {
+                    if let Some(p) = lightmap::pack::try_pack(&charts, &order, s, 8192, 8192, g, mmin) {
                         let sz = |q: &lightmap::pack::Placed| if pad > 0 { ((q.w as u32).saturating_sub(2 * pad), (q.h as u32).saturating_sub(2 * pad)) } else { (2 * (q.w as u32).saturating_sub(1), 2 * (q.h as u32).saturating_sub(1)) };
                         let ok = p.iter().enumerate().filter(|(k, q)| ed.get(&ids[*k]).map(|&(_, _, ew, eh)| sz(q) == (ew as u32, eh as u32)).unwrap_or(false)).count();
                         if ok > best.0 { best = (ok, s); }
-                        if (s * 1000.0).round() as i32 % 50 == 0 { println!("  s {s:.3}: {ok} sizes equal"); }
+                        if (s * 1000.0).round() as i32 % 100 == 0 { println!("  s {s:.3}: {ok} sizes equal"); }
                     }
-                    s += 0.002;
+                    s += 0.004;
                 }
                 println!("best: s {:.3} with {} of {} sizes equal", best.1, best.0, charts.len());
                 return;
             }
-            let Some((s, placed)) = lightmap::pack::allocate(&charts, w_atlas, w_atlas, g, max_iter) else { println!("allocation failed"); return };
+            let Some((s, placed)) = lightmap::pack::allocate(&charts, w_atlas, w_atlas, g, mmin, max_iter) else { println!("allocation failed"); return };
             println!("s_final {s:.4} texels/m");
             let (mut n_cmp, mut size_ok, mut pos_ok) = (0, 0, 0);
             let mut shown = 0;
