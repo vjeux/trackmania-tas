@@ -215,6 +215,7 @@ fn main() {
         "pipeline" => pipeline::cmd(rest),
         "bake-copies" => bakecopy::cmd(rest),
         "lmbake" => lmbake::cmd(rest),
+        "lit-verify" => lmbake::verify(rest),
         "giant-tracker" => gianttracker::cmd(rest),
         "lightmap-batch" => lightmap::batch(rest),
         "lightmap-graft" => lightmap::graft(rest),
