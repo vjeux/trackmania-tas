@@ -117,7 +117,10 @@ fn reduced(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
         .collect();
     const CLUSTERS: [&str; 5] = ["Grove", "Forest", "SpringPalmTree", "Sparkler16m", "ShowFogger8m"];
     let m = tmmaps::map::MapFile::load(map);
-    let kept: Vec<usize> = m.items.iter().enumerate().filter(|(_, it)| !CLUSTERS.contains(&it.model.as_str()) && !light_models.contains(&it.model)).map(|(i, _)| i).collect();
+    // --reduced-veget: also drop our own vegetation statics (AV*.Item.Gbx) — GreenCoast tiny 04 with its 5352 of
+    // them dies 7 min into the compute, without them it bakes
+    let drop_av = tmmaps::cli::has(args, "--reduced-veget");
+    let kept: Vec<usize> = m.items.iter().enumerate().filter(|(_, it)| !CLUSTERS.contains(&it.model.as_str()) && !light_models.contains(&it.model) && !(drop_av && it.model.starts_with("AV") && it.model.ends_with(".Item.Gbx"))).map(|(i, _)| i).collect();
     let dropped = m.items.len() - kept.len();
     let kept_list = kept.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
     eprintln!("--reduced: {} of {} items kept ({dropped} dropped: {} light-carrying models + the vegetation clusters)", kept.len(), m.items.len(), light_models.len());
