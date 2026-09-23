@@ -1230,6 +1230,9 @@ fn run_shoot(rest: &[String]) -> Result<(), String> {
     // the set folder under Items/ the idents start with (`TinyBlocks\Roads\…`)
     let set_name = flag("--set-name").unwrap_or_else(|| "TinyBlocks".into());
     let max_items: usize = flag("--max-items").unwrap_or_else(|| "30".into()).parse().map_err(|e| format!("--max-items: {e}"))?;
+    // `--unit 6`: metres per footprint unit for the grid pitch (16 = a tiny block; the
+    // TinyItems are small, 6 packs them closer)
+    let unit: f32 = flag("--unit").unwrap_or_else(|| "16".into()).parse().map_err(|e| format!("--unit: {e}"))?;
     let origin: Vec<f32> = flag("--origin").unwrap_or_else(|| "400,8,400".into()).split(',').filter_map(|v| v.parse().ok()).collect();
     if origin.len() != 3 {
         return Err("--origin needs x,y,z".into());
@@ -1304,8 +1307,8 @@ fn run_shoot(rest: &[String]) -> Result<(), String> {
         for (i, p) in paths.iter().enumerate() {
             let (sx, sz) = footprint.get(*p).copied().unwrap_or((1, 1));
             let (r, c) = (i / cols, i % cols);
-            col_w[c] = col_w[c].max(sx as f32 * 16.0 + gap);
-            row_d[r] = row_d[r].max(sz as f32 * 16.0 + gap);
+            col_w[c] = col_w[c].max(sx as f32 * unit + gap);
+            row_d[r] = row_d[r].max(sz as f32 * unit + gap);
         }
         let col_x: Vec<f32> = col_w.iter().scan(0.0f32, |acc, w| { let x = *acc; *acc += w; Some(x) }).collect();
         let row_z: Vec<f32> = row_d.iter().scan(0.0f32, |acc, d| { let z = *acc; *acc += d; Some(z) }).collect();
@@ -1338,7 +1341,7 @@ fn run_shoot(rest: &[String]) -> Result<(), String> {
             // yaw 0 the piece's corner sits at P + V — the cell's corner less the
             // pivot, the piece centred in its cell
             let pivot = [sx as f32 * 8.0, 0.0, sz as f32 * 8.0];
-            let corner = [origin[0] + col_x[c] + (col_w[c] - gap - sx as f32 * 16.0) / 2.0, origin[1], origin[2] + row_z[r] + (row_d[r] - gap - sz as f32 * 16.0) / 2.0];
+            let corner = [origin[0] + col_x[c] + (col_w[c] - gap - sx as f32 * unit) / 2.0, origin[1], origin[2] + row_z[r] + (row_d[r] - gap - sz as f32 * unit) / 2.0];
             let pos = [corner[0] - pivot[0], corner[1] - pivot[1], corner[2] - pivot[2]];
             let ident = format!("{set_name}\\{}", p.replace('/', "\\"));
             m.move_item(i, pos, 0.0, cell(pos));
