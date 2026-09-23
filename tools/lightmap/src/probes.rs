@@ -509,10 +509,14 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
             for xx in 0..s.w {
                 let p = &s.px[(zz * s.w + xx) as usize];
                 let (ax, ay) = (tx + xx, ty + zz);
-                // the probe colour and light images take the lightmapper's sqrt encoding (the compress
-                // shader is shared with the charts); the occlusion and pale images are written as is
                 let q = |v: f32, m: f32| (v / m * 255.0).round().clamp(0.0, 255.0) as u8;
-                let qs = |v: f32, m: f32| crate::synth::encode_value(v, m);
+                // the probe images are sRGB-encoded against the image max (the game's probe-grid download
+                // converts f16 → byte through its sRGB table; RE child, disassembly)
+                let qs = |v: f32, m: f32| -> u8 {
+                    let x = (v.max(0.0) / m).min(1.0);
+                    let s = if x <= 0.0031308 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 };
+                    (s * 255.0).round().clamp(0.0, 255.0) as u8
+                };
                 imgs[0].set(ax, ay, [qs(p.e[0], e_max), qs(p.e[1], e_max), qs(p.e[2], e_max)]);
                 let b = q((p.sky_vis * 1.5).min(1.0), 1.0);
                 imgs[1].set(ax, ay, [b, b, b]);

@@ -750,7 +750,7 @@ fn main() {
                 // bakes reads (0.61, 0.58, 0.77) = 1.55 × LAmbient in LAmbient's hue), no separate ambient term
                 let dome = !has("--hemi");
                 let sky_s: f32 = f("--sky-scale").map(|s| s.parse().unwrap()).unwrap_or(if dome { 1.55 } else { 1.0 });
-                prm.dome_deg = if dome { f("--cone-deg").map(|s| s.parse().unwrap()).unwrap_or(35.0) } else { 90.0 };
+                prm.dome_deg = if dome { f("--cone-deg").map(|s| s.parse().unwrap()).unwrap_or(30.0) } else { 90.0 };
                 prm.ambient_la = if dome { [0.0; 3] } else { x.l_ambient };
                 prm.sky = [x.l_ambient[0] * x.sky_factor * sky_s, x.l_ambient[1] * x.sky_factor * sky_s, x.l_ambient[2] * x.sky_factor * sky_s];
                 if let Some(g) = f("--ground-bounce") { prm.ground_bounce = g.parse().unwrap(); }
@@ -761,9 +761,10 @@ fn main() {
                 prm.albedo = f("--albedo").map(|s| s.parse().unwrap()).unwrap_or(0.18);
                 prm.uv_bounds = true; prm.sky_model = 0; prm.texels_per_m = 1.0; prm.sky_samples = 64; prm.sun_samples = 4;
                 prm.ambient_ao = !has("--no-ao");
-                // local lights, absolute units: E = k·I·c·max(0,n·l)·(1−(d/R)²)², k = 1.48 from the lamp-post profile of the
-                // BlueBay test bake (r² 0.89 over 122 pad texels; (1−x²)^1.75…2 indistinguishable there)
-                prm.light_k = 1.48;
+                // local lights, absolute units: E = k·I·c·max(0,n·l)·(1−(d/R)²)²; k = 0.56 puts the peak under a lamp post
+                // (2 omni lights, I 1, c 0.92, R 10 m, 4 m up) at the editor's 0.35–0.38 HDR (two BlueBay test bakes,
+                // 9-px and 153-px pads); the tail beyond x ≈ 0.85 is fatter than (1−x²)² in the editor (unpinned)
+                prm.light_k = 0.56;
                 // the sun (bounce input only): the map's time of day on the mood's latitude, noon at t = ½
                 let t = match dt { Some(v) if v != 0xffff_ffff => v as f32 / 65536.0, _ => x.daytime01 };
                 let hour_angle = (t - 0.5) * 2.0 * std::f32::consts::PI;
@@ -2597,6 +2598,17 @@ fn main() {
                     println!("{:>4.2}–{:<4.2} {:>5} {:>10.4}  {:>9.4} {:>9.4} {:>9.4} {:>9.4}", b as f64 * 0.05, (b + 1) as f64 * 0.05, n, s / *n as f64, (1.0 - x * x).max(0.0).powi(2), (1.0 - x * x).max(0.0), (1.0 - x).max(0.0).powi(2), (1.0 / (x * x) - 1.0).max(0.0));
                 }
             }
+            // raw bytes of the charts within 12 m of the lamp: fb0, fb1 and the brightest frame-1 pixel
+            for (ii, inst) in scene.instances.iter().enumerate() {
+                let dx = inst.xf[9] - lamp[0]; let dz = inst.xf[11] - lamp[1];
+                if (dx * dx + dz * dz).sqrt() > 12.0 { continue; }
+                let Some(&ci) = chart_of.get(&(inst.item as u32)) else { continue };
+                let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
+                let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32 / 2).max(1), (h as u32 / 2).max(1));
+                let mut mx1 = 0u8; let mut mx0 = 0u8;
+                for yy in 0..ph { for xx in 0..pw { let c = i1.get((px + xx).min(i1.w - 1), (py + yy).min(i1.h - 1)); mx1 = mx1.max(c[0]).max(c[1]).max(c[2]); let c0 = i0.get((px + xx).min(i0.w - 1), (py + yy).min(i0.h - 1)); mx0 = mx0.max(c0[0]).max(c0[1]).max(c0[2]); } }
+                println!("  chart of item {} ({}) at ({:.0}, {:.0}): {}×{} px, fb0 {} fb1 {} fb2 {}, brightest pixel frame0 {} frame1 {}", inst.item, inst.model_name, inst.xf[9], inst.xf[11], pw, ph, mp.frame_bytes[0][ci], mp.frame_bytes[1][ci], mp.frame_bytes[2][ci], mx0, mx1);
+            }
             println!("{:>10} {:>6} {:>12} {:>28} {:>12}", "r (m)", "n", "frame1 lum", "frame1 rgb", "frame0 lum");
             for (b, (s1, rgb, s0, n)) in bins.iter().enumerate() {
                 if *n == 0 { continue; }
@@ -2627,6 +2639,25 @@ fn main() {
                 }
                 println!("{line}");
             }
+        }
+        "rastcheck" => {
+            // lmtool rastcheck MAP ITEM_INDEX [W H]: how many rasterised samples land on each chart pixel of an
+            // instance, and the normals of the duplicates (shared-uv top/bottom faces shade the same texel)
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let item: usize = a[2].parse().unwrap();
+            let ii = scene.instances.iter().position(|i| i.item == item).expect("instance");
+            let (w, h): (u32, u32) = (a.get(3).map(|s| s.parse().unwrap()).unwrap_or(64), a.get(4).map(|s| s.parse().unwrap()).unwrap_or(64));
+            let (samples, _) = lightmap::bake::rasterise_pub(&scene, ii, w, h, false, true);
+            let mut per: std::collections::HashMap<(u32, u32), Vec<[f32; 3]>> = Default::default();
+            for s in &samples { per.entry((s.px, s.py)).or_default().push(s.n); }
+            let dup = per.values().filter(|v| v.len() > 1).count();
+            let mut up = 0; let mut down = 0; let mut side = 0;
+            for s in &samples { if s.n[1] > 0.9 { up += 1 } else if s.n[1] < -0.9 { down += 1 } else { side += 1 } }
+            println!("item {item} ({}): {} samples on {} pixels ({} pixels with several samples); normals up {up} down {down} side {side}", scene.instances[ii].model_name, samples.len(), per.len(), dup);
+            let mut shown = 0;
+            for (k, v) in &per { if v.len() > 1 && shown < 5 { shown += 1; println!("  pixel {:?}: normals {:?}", k, v.iter().map(|n| [(n[0] * 100.0).round() / 100.0, (n[1] * 100.0).round() / 100.0, (n[2] * 100.0).round() / 100.0]).collect::<Vec<_>>()); } }
+            let ys: Vec<f32> = samples.iter().filter(|s| s.n[1] > 0.9).map(|s| s.p[1]).collect();
+            if !ys.is_empty() { let (mn, mx) = ys.iter().fold((f32::MAX, f32::MIN), |(a, b), &y| (a.min(y), b.max(y))); println!("  up-facing sample heights {mn:.3}..{mx:.3}"); }
         }
         "conefit" => {
             // lmtool conefit R1:V1,R2:V2,…: the editor's response under a 16×16 roof 12 m up (pad value at distance R

@@ -397,9 +397,11 @@ pub fn encode(rgb: &[u8], w: u32, h: u32, q: u8) -> Vec<u8> {
             let sx = x.min(w - 1);
             let i = (sy * w + sx) * 3;
             let (r, g, b) = (rgb[i] as i32, rgb[i + 1] as i32, rgb[i + 2] as i32);
-            let yy = 16 + ((65738 * r + 129057 * g + 25064 * b + 128000) >> 18);
-            let uu = 128 * 1024 + ((-37945 * r - 74494 * g + 112439 * b) >> 8);
-            let vv = 128 * 1024 + ((112439 * r - 94154 * g - 18285 * b) >> 8);
+            // BT.601 studio swing with libwebp's constants (16839, 33059, 6420 / 65536 for Y); the
+            // earlier set was 2.4 % low and returned every flat bright field 4–5 levels darker
+            let yy = 16 + ((67356 * r + 132236 * g + 25680 * b + 131072) >> 18);
+            let uu = 128 * 1024 + ((-38876 * r - 76324 * g + 115200 * b) >> 8);
+            let vv = 128 * 1024 + ((115200 * r - 96464 * g - 18736 * b) >> 8);
             yp[y * pw + x] = yy.clamp(0, 255) as u8;
             let ci = (y / 2) * (pw / 2) + x / 2;
             uacc[ci] += uu;
@@ -641,5 +643,35 @@ mod tests {
         let psnr = 10.0 * (255.0f64 * 255.0 / mse.max(1e-9)).log10();
         eprintln!("vp8 roundtrip: {} bytes, psnr {psnr:.1} dB", bytes.len());
         assert!(psnr > 35.0, "psnr {psnr}");
+    }
+}
+
+#[cfg(test)]
+mod flat_tests {
+    use super::*;
+
+    /// A flat bright field must come back at its own value: the lightmap's open floors are large
+    /// flat areas near the top of the sqrt scale, and a bias there is a tone error in the game.
+    #[test]
+    fn flat_fields_keep_their_level() {
+        for (r, g, b) in [(222u8, 205u8, 240u8), (254, 254, 254), (128, 128, 128), (60, 70, 90), (222, 222, 222)] {
+            let (w, h) = (256u32, 256u32);
+            let mut rgb = vec![0u8; (w * h * 3) as usize];
+            for i in 0..(w * h) as usize {
+                rgb[i * 3] = r;
+                rgb[i * 3 + 1] = g;
+                rgb[i * 3 + 2] = b;
+            }
+            for q in [8u8, 28] {
+                let bytes = encode(&rgb, w, h, q);
+                let dec = crate::img::decode_webp(&bytes).expect("decodes");
+                let n = (w * h) as f64;
+                let mean = |c: usize| dec.px.iter().skip(c).step_by(3).map(|v| *v as f64).sum::<f64>() / n;
+                let (mr, mg, mb) = (mean(0), mean(1), mean(2));
+                eprintln!("flat ({r},{g},{b}) q{q}: decoded mean ({mr:.1}, {mg:.1}, {mb:.1})");
+                let tol = if q <= 28 { 2.5 } else { 4.0 }; // coarser quantisers round the DC harder
+                assert!((mr - r as f64).abs() <= tol && (mg - g as f64).abs() <= tol && (mb - b as f64).abs() <= tol, "flat ({r},{g},{b}) q{q} came back as ({mr:.1}, {mg:.1}, {mb:.1})");
+            }
+        }
     }
 }

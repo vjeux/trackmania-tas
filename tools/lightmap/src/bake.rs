@@ -441,86 +441,108 @@ fn shade_dome(bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -
     let n = prm.sky_samples.max(16);
     let side = (n as f32).sqrt().ceil() as usize;
     let cone_cos = prm.dome_deg.to_radians().cos();
-    let cone_norm = std::f32::consts::PI * (1.0 - cone_cos * cone_cos); // ∫_cone cosθ dω
     let rot = rng.next();
-    let mut sky_acc = 0f32; // Σ (n·D)⁺ over unoccluded cone directions
+    // All transport runs along the dome directions D (N uniform directions inside the zenith cone —
+    // the game's cone-light sample set, FUN_140237330 — swept as depth peels): a texel facing up
+    // along D receives what lies above it (the sky when nothing does, else the occluder's bounced
+    // radiance); a texel facing down along D receives what lies below it (a surface's bounced
+    // radiance, the sea/ground plane's, nothing over the void). Weight |n·D|, normalised by the
+    // cone's mean cosθ so an open floor gets exactly `sky` and an underside over the sea gets
+    // `ground_bounce × the sea's value`. A wall (|n·D| small for every D) gets little of either —
+    // the editor's wall/floor ratio of 0.15 = cone factor + 0.37 × cone factor.
+    let mut sky_acc = 0f32;
+    let mut open_cone = 0f32;
+    let mut cone_total = 0f32;
     let mut bounce = [0f32; 3];
     let mut count = 0usize;
-    let mut open_cone = 0f32; // for sky_vis: the fraction of the cone this surface sees
-    let mut cone_total = 0f32;
+    let bounce_on = prm.bounce > 0.0;
     for i in 0..side {
         for j in 0..side {
             if count >= n {
                 break;
             }
             count += 1;
-            // uniform over the sphere: cosθ ∈ [−1, 1], φ ∈ [0, 2π)
             let u = (i as f32 + rng.next()) / side as f32;
             let v = ((j as f32 + rng.next()) / side as f32 + rot).fract();
-            let cos_t = 1.0 - 2.0 * u;
+            let cos_t = 1.0 - (1.0 - cone_cos) * u; // uniform in solid angle within the cone
             let sin_t = (1.0 - cos_t * cos_t).max(0.0).sqrt();
             let phi = 2.0 * std::f32::consts::PI * v;
-            let d = [sin_t * phi.cos(), cos_t, sin_t * phi.sin()];
-            let ndl = dot(s.n, d);
-            let in_cone = cos_t >= cone_cos;
-            if in_cone {
-                cone_total += cos_t;
-            }
-            if ndl <= 0.0 {
+            let up = [sin_t * phi.cos(), cos_t, sin_t * phi.sin()];
+            cone_total += cos_t;
+            let ndl = dot(s.n, up);
+            if ndl.abs() < 1e-4 {
                 continue;
             }
-            let mut tmax = 1.0e4f32;
-            let mut ground_hit = false;
-            if d[1] < 0.0 && o[1] > prm.ground_y {
-                let tg = (prm.ground_y - o[1]) / d[1];
-                if tg < tmax {
-                    tmax = tg;
-                    ground_hit = true;
-                }
-            }
-            let hit = bvh.closest(o, d, tmax);
-            match hit {
-                None if !ground_hit => {
-                    if in_cone {
+            if ndl > 0.0 {
+                // facing up along D: the sky, or the occluder above
+                match bvh.closest(o, up, 1.0e4) {
+                    None => {
                         sky_acc += ndl;
                         open_cone += cos_t;
                     }
+                    Some(h) if bounce_on => {
+                        let tri = &bvh.tris[h.tri as usize];
+                        let hn = norm(cross(tri.e1, tri.e2));
+                        let hn = if dot(hn, up) > 0.0 { mul(hn, -1.0) } else { hn };
+                        let hp = add(add(o, mul(up, h.t)), mul(hn, 0.03));
+                        let sky_share = cone_factor(hn, cone_cos);
+                        let ndl_h = dot(hn, prm.sun_dir).max(0.0);
+                        let sun_v = if ndl_h > 0.0 && !bvh.occluded(hp, prm.sun_dir, 1.0e4, u32::MAX, 0.0) { 1.0 } else { 0.0 };
+                        for k in 0..3 {
+                            let e_hit = prm.sky[k] * sky_share + prm.sun[k] * ndl_h * sun_v;
+                            bounce[k] += prm.bounce * prm.albedo * e_hit * ndl;
+                        }
+                    }
+                    Some(_) => {}
                 }
-                None => {
-                    // the sea/ground plane: a lit horizontal surface, sky + sun, times its effective albedo
-                    let hp = add(o, mul(d, tmax));
-                    let sun_v = if prm.sun_dir[1] > 0.0 && !bvh.occluded(add(hp, [0.0, 0.03, 0.0]), prm.sun_dir, 1.0e4, u32::MAX, 0.0) { 1.0 } else { 0.0 };
-                    for k in 0..3 {
-                        let e_ground = prm.sky[k] + prm.sun[k] * prm.sun_dir[1].max(0.0) * sun_v;
-                        bounce[k] += prm.ground_bounce * e_ground / std::f32::consts::PI * ndl;
+            } else if bounce_on {
+                // facing down along D: what lies below
+                let down = mul(up, -1.0);
+                let w = -ndl;
+                let mut tmax = 1.0e4f32;
+                let mut ground_hit = false;
+                if o[1] > prm.ground_y {
+                    let tg = (prm.ground_y - o[1]) / down[1];
+                    if tg < tmax {
+                        tmax = tg;
+                        ground_hit = true;
                     }
                 }
-                Some(h) => {
-                    let tri = &bvh.tris[h.tri as usize];
-                    let hn = norm(cross(tri.e1, tri.e2));
-                    let hn = if dot(hn, d) > 0.0 { mul(hn, -1.0) } else { hn };
-                    let hp = add(add(o, mul(d, h.t)), mul(hn, 0.03));
-                    // the hit surface's own light: its sky share (the cone it sees — approximated by its
-                    // normal's unoccluded cone factor) and its direct sun
-                    let sky_share = cone_factor(hn, cone_cos);
-                    let ndl_h = dot(hn, prm.sun_dir).max(0.0);
-                    let sun_v = if ndl_h > 0.0 && !bvh.occluded(hp, prm.sun_dir, 1.0e4, u32::MAX, 0.0) { 1.0 } else { 0.0 };
-                    for k in 0..3 {
-                        let e_hit = prm.sky[k] * sky_share + prm.sun[k] * ndl_h * sun_v;
-                        bounce[k] += prm.bounce * prm.albedo * e_hit / std::f32::consts::PI * ndl;
+                match bvh.closest(o, down, tmax) {
+                    None if ground_hit => {
+                        let hp = add(o, mul(down, tmax));
+                        let sun_v = if prm.sun_dir[1] > 0.0 && !bvh.occluded(add(hp, [0.0, 0.03, 0.0]), prm.sun_dir, 1.0e4, u32::MAX, 0.0) { 1.0 } else { 0.0 };
+                        for k in 0..3 {
+                            let e_ground = prm.sky[k] + prm.sun[k] * prm.sun_dir[1].max(0.0) * sun_v;
+                            bounce[k] += prm.ground_bounce * e_ground * w;
+                        }
+                    }
+                    None => {}
+                    Some(h) => {
+                        let tri = &bvh.tris[h.tri as usize];
+                        let hn = norm(cross(tri.e1, tri.e2));
+                        let hn = if dot(hn, down) > 0.0 { mul(hn, -1.0) } else { hn };
+                        let hp = add(add(o, mul(down, h.t)), mul(hn, 0.03));
+                        let sky_share = cone_factor(hn, cone_cos);
+                        let ndl_h = dot(hn, prm.sun_dir).max(0.0);
+                        let sun_v = if ndl_h > 0.0 && !bvh.occluded(hp, prm.sun_dir, 1.0e4, u32::MAX, 0.0) { 1.0 } else { 0.0 };
+                        for k in 0..3 {
+                            let e_hit = prm.sky[k] * sky_share + prm.sun[k] * ndl_h * sun_v;
+                            bounce[k] += prm.bounce * prm.albedo * e_hit * w;
+                        }
                     }
                 }
             }
         }
     }
-    let w = 4.0 * std::f32::consts::PI / count as f32; // solid angle per direction
-    let sky_frac = sky_acc * w / cone_norm; // 1 for an open horizontal surface
+    let norm_c = cone_total.max(1e-6);
+    let sky_frac = sky_acc / norm_c;
+    let sky_vis = open_cone / norm_c;
+    let bounce_n = [bounce[0] / norm_c, bounce[1] / norm_c, bounce[2] / norm_c];
     let mut e = [0f32; 3];
-    let bounce_n = [bounce[0] * w, bounce[1] * w, bounce[2] * w];
     for k in 0..3 {
         e[k] = prm.sky[k] * sky_frac + bounce_n[k] + prm.ambient[k] + prm.up[k] * (0.5 + 0.5 * s.n[1]);
     }
-    let sky_vis = if cone_total > 0.0 { open_cone / cone_total } else { 0.0 };
     Shaded { e, sky_vis, sun_vis: 0.0, bounce: bounce_n, sky_rgb: [sky_frac; 3] }
 }
 
