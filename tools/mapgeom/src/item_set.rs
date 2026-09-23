@@ -60,6 +60,10 @@ pub struct Opts {
     /// set, 40 % on the road straights, and every sub-object keeps the pack's
     /// own lightmap layout).
     pub merged: bool,
+    /// `--icon webp`: the block's icon chunk copied VERBATIM (WEBP, the form the
+    /// game's block infos and its current item editor write) instead of the
+    /// decoded raw BGRA (`Icon::to_raw_payload`, the 2020 item-editor form).
+    pub icon_webp: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -266,6 +270,7 @@ fn parse_opts(rest: &[String]) -> Result<Opts, String> {
         zip: flag("--zip").map(PathBuf::from),
         no_skin_header: has("--no-skin-header"),
         merged: flag("--form").map(|f| f == "merged").unwrap_or(false),
+        icon_webp: flag("--icon").map(|f| f == "webp").unwrap_or(false),
     })
 }
 
@@ -315,11 +320,15 @@ pub fn run(store: &mut DataStore, rest: &[String]) -> Result<(), String> {
         // the block's icon, for every item made of it
         if let Ok(bytes) = store.read(&path) {
             if let Ok((_, Some(icon))) = crate::catalog::CollectorDesc::from_file(&bytes) {
-                match icon.to_raw_payload() {
-                    Ok(raw) => {
-                        icons.insert(leaf.name.clone(), raw);
+                if opts.icon_webp {
+                    icons.insert(leaf.name.clone(), icon.payload.clone());
+                } else {
+                    match icon.to_raw_payload() {
+                        Ok(raw) => {
+                            icons.insert(leaf.name.clone(), raw);
+                        }
+                        Err(e) => report.push_str(&format!("{folder}\t{}\t-\t-\tNOTE\t-\t-\t-\t-\t-\ticon: {}\n", leaf.name, tsv_escape(&e))),
                     }
-                    Err(e) => report.push_str(&format!("{folder}\t{}\t-\t-\tNOTE\t-\t-\t-\t-\t-\ticon: {}\n", leaf.name, tsv_escape(&e))),
                 }
             }
         }
