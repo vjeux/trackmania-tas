@@ -7,6 +7,8 @@
 //!
 //! usage: item_set_map HOST.Map.Gbx OUT.Map.Gbx AUTHOR SPEC...
 //!   SPEC = IDENT@x,y,z[/yaw_deg[,pitch_deg[,roll_deg]]][/px,py,pz][#Spawn|Checkpoint|Goal]   (pivot default 8,0,8: a 1x1 tiny block's centre;
+//!          x,y,z is the record position P; the game puts the item at P + R(p + V) — at yaw 0 the
+//!          piece's corner is P + pivot;
 //!          the #tag is the placement's waypoint property — a start/CP/finish item needs one)
 //!   e.g. 'TinyBlocks\Roads\RoadTech\Main\Main\RoadTechStraight.Item.Gbx@408,8,408'
 //! The host must have at least as many item records as specs.
@@ -22,9 +24,20 @@ fn main() {
     let (host, out, author) = (&a[1], &a[2], &a[3]);
     let specs = &a[4..];
     let mut tags: Vec<(usize, String)> = Vec::new();
-    let mut m = MapFile::load(Path::new(host));
-    if m.items.len() < specs.len() {
-        eprintln!("host has {} item records, {} specs", m.items.len(), specs.len());
+    // The records used are CLONES appended to the host (`append_item_clones`,
+    // written and reloaded first): uniform records from one donor. Re-pointing
+    // the host's own records (2026-09-23, TinySet11/12) gave every item but
+    // the first NO collision — those U10S records carry per-placement state
+    // (snap groups, flags) the game reads.
+    let base = MapFile::load(Path::new(host));
+    let first = base.items.len();
+    let grown = Path::new(out).with_extension("grown.Map.Gbx");
+    let mut mg = base;
+    mg.append_item_clones(first + specs.len());
+    mg.write_to(&grown).unwrap();
+    let mut m = MapFile::load(&grown);
+    if m.items.len() < first + specs.len() {
+        eprintln!("host grew to {} item records, {} needed", m.items.len(), first + specs.len());
         std::process::exit(1);
     }
     m.set_map_uid(&format!("Set{:024}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() % 10u128.pow(24)));
@@ -32,7 +45,8 @@ fn main() {
     for i in 0..m.items.len() {
         m.move_item_pos(i, [16.0, -1000.0, 16.0]);
     }
-    for (i, spec) in specs.iter().enumerate() {
+    for (k, spec) in specs.iter().enumerate() {
+        let i = first + k;
         let (spec, tag) = match spec.split_once('#') {
             Some((s, t)) => (s, Some(t)),
             None => (spec.as_str(), None),
@@ -59,6 +73,11 @@ fn main() {
         m.set_item_scale(i, 1.0);
         m.set_item_model(i, ident);
         m.set_item_author(i, author);
+        // the donor's variant byte (the high byte of the placement flags: a
+        // Nadeo vegetation variant index) means nothing on our items and broke
+        // the placement (2026-09-23: records with 0x300 had no collision, a
+        // start with one hung the game on "Updating data...")
+        m.clear_item_variant(i);
         if let Some(t) = tag {
             tags.push((i, t.to_string()));
         }
@@ -75,5 +94,6 @@ fn main() {
     m2.remove_password();
     m2.write_to(Path::new(out)).unwrap();
     let _ = std::fs::remove_file(stage);
-    println!("test map: {out} with {} loose items (author {author})", specs.len());
+    let _ = std::fs::remove_file(grown);
+    println!("test map: {out} with {} loose items on cloned records {first}.. (author {author})", specs.len());
 }

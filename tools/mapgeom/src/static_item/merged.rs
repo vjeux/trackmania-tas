@@ -1971,3 +1971,14 @@ pub static SHARE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 pub fn share_default() -> bool {
     SHARE.load(std::sync::atomic::Ordering::Relaxed) || std::env::var("TINY_SHARE").as_deref() == Ok("1")
 }
+
+thread_local! {
+    /// A per-bake override of `share_default()` (item_set: the waypoint
+    /// items take the entity-model form — see `item_set::bake_job`).
+    pub static SHARE_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// `share_default()` unless the current thread's bake says otherwise.
+pub fn share_now() -> bool {
+    SHARE_OVERRIDE.with(|o| o.get()).unwrap_or_else(share_default)
+}

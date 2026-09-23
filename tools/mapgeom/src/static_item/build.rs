@@ -1895,7 +1895,7 @@ pub fn static_item_from_pack_item_report(store: &mut crate::store::DataStore, it
 pub fn static_item_from_pack_item_report_skin(store: &mut crate::store::DataStore, item_path: &str, ident: &str, author: &str, scale: f32, collection: u32, variant: usize, light_skin: Option<crate::light_skin::LightSkin>) -> R<(Vec<u8>, Merged)> {
     let variants = pack_item_variants(store, item_path)?;
     let mut m = Merged::default();
-    m.share = crate::static_item::merged::share_default();
+    m.share = crate::static_item::merged::share_now();
     m.light_skin = light_skin;
     m.keep_water = keep_water_for(collection);
     if variants.is_empty() {

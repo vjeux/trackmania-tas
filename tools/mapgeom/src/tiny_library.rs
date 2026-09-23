@@ -840,7 +840,7 @@ pub(crate) fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, pa
     m.keep_water = crate::static_item::build::keep_water_for(collection);
     m.modifier = modifier_links(store, &plan.effective_mods);
     // TINY_SHARE=1: the instanced prefab form (shared sub-models) — see `Merged::share`
-    m.share = crate::static_item::merged::share_default();
+    m.share = crate::static_item::merged::share_now();
     m.collision_redress = modifier_redress(store, &plan.effective_mods, &m.modifier);
     // The collection SKIN (`<Env>\Media\Modifier\StadiumOnTerrain\<slot>`, the
     // four terrain collections) is one material file per slot: look AND

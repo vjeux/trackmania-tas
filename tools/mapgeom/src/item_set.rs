@@ -60,9 +60,6 @@ pub struct Opts {
     /// set, 40 % on the road straights, and every sub-object keeps the pack's
     /// own lightmap layout).
     pub merged: bool,
-    /// `--no-spawn-comp`: leave the spawn point where the bake put it.
-    /// Default: the pivot compensation (see `dress`).
-    pub no_spawn_comp: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -183,39 +180,15 @@ fn dress(bytes: &[u8], job: &Job, opts: &Opts, icon: Option<&[u8]>, description:
     if !placed {
         return Err("baked item has no placement chunk (0x2E00201C)".into());
     }
-    // The spawn point and the placement pivot. Measured 2026-09-23 (TinySet4/7:
-    // a RoadTechStart with pivot V = (8,0,8) placed at P, yaw 270°): the game
-    // put the car at P + R(s + V) for a spawn written at s — in BOTH forms,
-    // the prefab's SSpawn entity position and the entity model's iso — while
-    // the geometry sits at P + R(p - V): the pivot enters the spawn with the
-    // opposite sign. (Nadeo's own gates have a zero pivot and never see it.)
-    // So the spawn is written at s - 2V, and the car lands at P + R(s - V),
-    // the block's spawn point. `--no-spawn-comp` leaves s.
-    if !opts.no_spawn_comp && std::env::var("TINY_SPAWN_FORM").as_deref() != Ok("iso") {
-        let pivot = placement_for(job.sx, job.sz, opts.scale, 0).pivot_positions[0];
-        if let Some(p) = f.item.prefab_mut() {
-            for e in p.ents.iter_mut() {
-                if matches!(e.model.inline.as_deref(), Some(Node::Opaque(o)) if o.class_id == 0x0917A000) {
-                    e.pos = [e.pos[0] - 2.0 * pivot[0], e.pos[1] - 2.0 * pivot[1], e.pos[2] - 2.0 * pivot[2]];
-                }
-            }
-        }
-        // the merged form: the entity model's iso carries the spawn (a start
-        // has no trigger, so any waypoint type but "none" counts)
-        let wt = f.item.chunks.iter().find_map(|c| match c {
-            ItemChunk::Waypoint { waypoint_type, .. } => Some(*waypoint_type),
-            _ => None,
-        });
-        if wt.map(|t| t != 3).unwrap_or(false) {
-            if let Some(mc) = f.item.model_mut() {
-                if let Some(Node::EntityModel(em)) = mc.entity_model.inline.as_deref_mut() {
-                    em.iso[9] -= 2.0 * pivot[0];
-                    em.iso[10] -= 2.0 * pivot[1];
-                    em.iso[11] -= 2.0 * pivot[2];
-                }
-            }
-        }
-    }
+    // THE PLACEMENT RULE (measured 2026-09-23, TinySet4..15 on the render box):
+    // a loose item with pivot V placed at P with rotation R has its geometry,
+    // its collision AND its spawn entity at P + R(p + V) — the same rule for
+    // all three. (A morning was lost to the assumption "geometry at P + R(p -
+    // V)": the spawn then looked displaced by 2V, a compensation put the car
+    // off the deck, and every drop test was read against the wrong deck.) The
+    // pack's ISO layout — spawn in the SSpawn node's Iso4, entity at 0 —
+    // differs: that one lands at P + R(s), without the pivot; so the spawn is
+    // the ENTITY position (Nadeo's start gates' layout), nothing compensated.
     // loose files on disk are LZO-compressed like the game's own (an embedded
     // zip deflates them instead; 600 KB of vertex data become ~200)
     f.body_comp = b'C';
@@ -232,7 +205,16 @@ fn bake_job(store: &mut DataStore, job: &Job, opts: &Opts) -> Result<Baked, Stri
         Standalone::Refused(e) => return Err(e),
     };
     let legacy = BTreeMap::new();
-    let (bytes, m, _) = bake_block(store, &plan, &job.name, &job.path, &bi, &job.ident, opts.scale, opts.collection, &legacy, None, false)?;
+    // The form: the instanced prefab unless `--form merged`; `TINY_WP_MERGED=1`
+    // bakes the waypoint blocks (start, checkpoint, finish, multilap) in the
+    // entity-model form (a test knob — the prefab form's SSpawn layout is the
+    // one verified in-game, see `dress`).
+    let waypoint = bi.waypoint_type.map(|t| t != 3).unwrap_or(false);
+    let share = !opts.merged && !(waypoint && std::env::var("TINY_WP_MERGED").as_deref() == Ok("1"));
+    crate::static_item::merged::SHARE_OVERRIDE.with(|o| o.set(Some(share)));
+    let r = bake_block(store, &plan, &job.name, &job.path, &bi, &job.ident, opts.scale, opts.collection, &legacy, None, false);
+    crate::static_item::merged::SHARE_OVERRIDE.with(|o| o.set(None));
+    let (bytes, m, _) = r?;
     let triangles = m.triangle_count();
     notes.extend(m.notes.iter().cloned());
     Ok(Baked { bytes, pictures: m.pictures.clone(), visuals: m.visual_count(), triangles, notes, waypoint: m.waypoint_type })
@@ -273,7 +255,6 @@ fn parse_opts(rest: &[String]) -> Result<Opts, String> {
         zip: flag("--zip").map(PathBuf::from),
         no_skin_header: has("--no-skin-header"),
         merged: flag("--form").map(|f| f == "merged").unwrap_or(false),
-        no_spawn_comp: has("--no-spawn-comp"),
     })
 }
 
@@ -1319,35 +1300,42 @@ fn run_shoot(rest: &[String]) -> Result<(), String> {
         let row_z: Vec<f32> = row_d.iter().scan(0.0f32, |acc, d| { let z = *acc; *acc += d; Some(z) }).collect();
         let total_w: f32 = col_w.iter().sum();
         let total_d: f32 = row_d.iter().sum();
-        // the item array grows only in the written file: grow, write, reload
+        // CLONED records for every piece (uniform, from one donor): the host's own
+        // records carry per-placement state (2026-09-23: re-pointed U10S records
+        // collided only for the first one). The item array grows only in the
+        // written file: grow, write, reload.
         let stem = zip.trim_end_matches(".zip");
         let grown = out.join(format!("{stem}.grown.Map.Gbx"));
         let mut m = tmmaps::map::MapFile::load(&host);
-        if m.items.len() < n {
-            m.append_item_clones(n);
-            m.write_to(&grown).map_err(|e| format!("{}: {e}", grown.display()))?;
-            m = tmmaps::map::MapFile::load(&grown);
-            if m.items.len() < n {
-                return Err(format!("{set}: the host grew to {} item records, {n} needed", m.items.len()));
-            }
+        let first = m.items.len();
+        m.append_item_clones(first + n);
+        m.write_to(&grown).map_err(|e| format!("{}: {e}", grown.display()))?;
+        m = tmmaps::map::MapFile::load(&grown);
+        if m.items.len() < first + n {
+            return Err(format!("{set}: the host grew to {} item records, {} needed", m.items.len(), first + n));
         }
         m.set_map_uid(&format!("Sho{:024}", (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u128 + zip.len() as u128) % 10u128.pow(24)));
         for i in 0..m.items.len() {
             m.move_item_pos(i, [16.0, -1000.0, 16.0]);
         }
         let cell = |p: [f32; 3]| ((p[0] / 32.0) as i32, ((p[1] + 64.0) / 8.0) as i32, (p[2] / 32.0) as i32);
-        for (i, p) in paths.iter().enumerate() {
+        for (k, p) in paths.iter().enumerate() {
+            let i = first + k;
             let (sx, sz) = footprint.get(*p).copied().unwrap_or((1, 1));
-            let (r, c) = (i / cols, i % cols);
-            // the piece's pivot is its footprint centre: place it at the cell centre
-            let pos = [origin[0] + col_x[c] + col_w[c] / 2.0, origin[1], origin[2] + row_z[r] + row_d[r] / 2.0];
+            let (r, c) = (k / cols, k % cols);
+            // the placement rule (see `dress`): geometry at P + R(p + V), so at
+            // yaw 0 the piece's corner sits at P + V — the cell's corner less the
+            // pivot, the piece centred in its cell
             let pivot = [sx as f32 * 8.0, 0.0, sz as f32 * 8.0];
+            let corner = [origin[0] + col_x[c] + (col_w[c] - gap - sx as f32 * 16.0) / 2.0, origin[1], origin[2] + row_z[r] + (row_d[r] - gap - sz as f32 * 16.0) / 2.0];
+            let pos = [corner[0] - pivot[0], corner[1] - pivot[1], corner[2] - pivot[2]];
             let ident = p.replace('/', "\\");
             m.move_item(i, pos, 0.0, cell(pos));
             m.set_item_frame(i, [0.0, 0.0, 0.0], pivot);
             m.set_item_scale(i, 1.0);
             m.set_item_model(i, &ident);
             m.set_item_author(i, &author);
+            m.clear_item_variant(i);
         }
         let file = out.join(format!("{stem}.Map.Gbx"));
         let stage = out.join(format!("{stem}.stage.Map.Gbx"));
