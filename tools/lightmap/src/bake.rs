@@ -52,6 +52,8 @@ pub struct BakeParams {
     /// The sun's specular glitter on water: radiance += K · cos^P(r·sun) · LDirSun.
     pub water_sun: f32,
     pub water_sun_pow: f32,
+    /// Vegetation cards take the sun on one side only (default: both sides).
+    pub card_one_sided: bool,
     /// One-bounce factor (0 = off) and the average albedo it uses.
     pub bounce: f32,
     pub albedo: f32,
@@ -147,6 +149,7 @@ impl Default for BakeParams {
             water_reflect: 0.5,
             water_sun: 0.0,
             water_sun_pow: 8.0,
+            card_one_sided: std::env::var_os("LMTOOL_CARD_ONE_SIDED").is_some(),
             albedo: 0.5,
             flip_v: false,
             uv_bounds: false,
@@ -313,6 +316,8 @@ struct Sample {
     py: u32,
     /// The triangle's material is alpha-tested (a vegetation card).
     cut: bool,
+    /// The triangle's material index (`ModelGeom::mat_links`; u16::MAX = none).
+    mat: u16,
 }
 
 /// Chart size in pixels (w, h). With a PreLightGen the game's own rule is
@@ -392,7 +397,7 @@ fn rasterise_inset(scene: &Scene, ii: usize, w: u32, h: u32, flip_v: bool, use_b
                 let idx = (py as u32 * w + px as u32) as usize;
                 if !covered[idx] {
                     covered[idx] = true;
-                    samples.push(Sample { p, n, px: px as u32, py: py as u32, cut: t.alpha != u16::MAX });
+                    samples.push(Sample { p, n, px: px as u32, py: py as u32, cut: t.alpha != u16::MAX, mat: t.mat });
                 }
                 any = true;
             }
@@ -403,7 +408,7 @@ fn rasterise_inset(scene: &Scene, ii: usize, w: u32, h: u32, flip_v: bool, use_b
                 covered[idx] = true;
                 let p = mul(add(add(wp[0], wp[1]), wp[2]), 1.0 / 3.0);
                 let n = norm(add(add(wn[0], wn[1]), wn[2]));
-                samples.push(Sample { p, n, px: cx as u32, py: cy as u32, cut: t.alpha != u16::MAX });
+                samples.push(Sample { p, n, px: cx as u32, py: cy as u32, cut: t.alpha != u16::MAX, mat: t.mat });
             }
         }
     }
@@ -462,7 +467,7 @@ pub struct Shaded {
 
 /// Shade one world point with a normal (debug probes).
 pub fn shade_point_inst(scene: &Scene, bvh: &Bvh, prm: &BakeParams, p: V3, n: V3, ii: u32) -> Shaded {
-    let s = Sample { px: 0, py: 0, p, n, cut: false };
+    let s = Sample { px: 0, py: 0, p, n, cut: false, mat: u16::MAX };
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ ((p[0] * 1000.0) as u64).wrapping_mul(0x2545_F491_4F6C_DD1D));
     shade_full(scene, bvh, prm, &s, ii, &mut rng)
 }
@@ -472,7 +477,7 @@ pub fn solve4_pub(m: [[f64; 4]; 4], r: [f64; 4]) -> Option<[f64; 4]> {
 }
 
 pub fn shade_point(scene: &Scene, bvh: &Bvh, prm: &BakeParams, p: V3, n: V3) -> Shaded {
-    let s = Sample { px: 0, py: 0, p, n, cut: false };
+    let s = Sample { px: 0, py: 0, p, n, cut: false, mat: u16::MAX };
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     shade_full(scene, bvh, prm, &s, u32::MAX, &mut rng)
 }
@@ -820,10 +825,18 @@ pub fn hit_albedo(scene: &Scene, bvh: &Bvh, prm: &BakeParams, h: &crate::bvh::Hi
     let m = &scene.models[inst.model];
     // a known material (measured or keyword) is taken as is; an unknown one gets the per-collection
     // default `prm.albedo`
-    match m.tris.get(wt.tri as usize).map(|t| t.mat) {
-        Some(mi) if (mi as usize) < m.mat_albedo.len() && m.mat_albedo[mi as usize][0].is_finite() => m.mat_albedo[mi as usize],
-        _ => [prm.albedo; 3],
+    let Some(t) = m.tris.get(wt.tri as usize) else { return [prm.albedo; 3] };
+    if (t.mat as usize) < m.mat_albedo.len() && m.mat_albedo[t.mat as usize][0].is_finite() {
+        return m.mat_albedo[t.mat as usize];
     }
+    // a vegetation card (a cut-out material without a game-material link): the texture's own mean colour —
+    // the game's MDiffuse for the card is its leaf texture, and a dense canopy relights itself in that colour
+    if t.alpha != u16::MAX {
+        if let Some(file) = m.alpha_tex.get(t.alpha as usize) {
+            if let Some(&c) = scene.card_albedo.get(file) { return c; }
+        }
+    }
+    [prm.albedo; 3]
 }
 
 fn hit_irradiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, h: &crate::bvh::Hit, o: V3, d: V3, hn: V3, cone_cos: f32) -> [f32; 3] {
@@ -1149,10 +1162,11 @@ pub struct PubSample {
     pub py: u32,
     /// The triangle's material is alpha-tested (a vegetation card).
     pub cut: bool,
+    pub mat: u16,
 }
 pub fn rasterise_pub(scene: &Scene, ii: usize, w: u32, h: u32, flip_v: bool, use_bounds: bool) -> (Vec<PubSample>, Vec<bool>) {
     let (s, c) = rasterise_mode(scene, ii, w, h, flip_v, use_bounds);
-    (s.into_iter().map(|x| PubSample { p: x.p, n: x.n, px: x.px, py: x.py, cut: x.cut }).collect(), c)
+    (s.into_iter().map(|x| PubSample { p: x.p, n: x.n, px: x.px, py: x.py, cut: x.cut, mat: x.mat }).collect(), c)
 }
 
 /// `bake_subset` at a fixed chart size.

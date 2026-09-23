@@ -265,6 +265,8 @@ pub struct Scene {
     pub decor: Vec<DecorTri>,
     /// The cut-out masks by texture file name (the map zip's `Items/*.dds` decoded at ≤ 256 px, alpha ≥ 0.5).
     pub alpha_masks: BTreeMap<String, AlphaMask>,
+    /// The cut-out textures' mean opaque colour by file (the cards' albedo; sRGB-encoded 0..1).
+    pub card_albedo: BTreeMap<String, [f32; 3]>,
 }
 
 /// A binary cut-out mask (alpha ≥ threshold) sampled with wrapping uv, nearest texel.
@@ -273,17 +275,23 @@ pub struct AlphaMask {
     pub w: usize,
     pub h: usize,
     pub bits: Vec<u8>,
+    /// The texture's mean colour over its opaque texels (sRGB-encoded 0..1): the card's albedo.
+    pub albedo: [f32; 3],
 }
 
 impl AlphaMask {
     pub fn from_rgba(w: usize, h: usize, rgba: &[u8], threshold: u8) -> AlphaMask {
         let mut bits = vec![0u8; (w * h + 7) / 8];
+        let (mut sum, mut n) = ([0f64; 3], 0usize);
         for i in 0..w * h {
             if rgba.get(i * 4 + 3).copied().unwrap_or(255) >= threshold {
                 bits[i >> 3] |= 1 << (i & 7);
+                for k in 0..3 { sum[k] += rgba[i * 4 + k] as f64 / 255.0; }
+                n += 1;
             }
         }
-        AlphaMask { w, h, bits }
+        let albedo = if n > 0 { [(sum[0] / n as f64) as f32, (sum[1] / n as f64) as f32, (sum[2] / n as f64) as f32] } else { [0.3; 3] };
+        AlphaMask { w, h, bits, albedo }
     }
     /// Fraction of opaque texels.
     pub fn coverage(&self) -> f32 {
@@ -387,6 +395,7 @@ impl Scene {
         }
         // the cut-out masks of the alpha-tested materials (the zip's Items/*.dds by base name)
         let mut alpha_masks: BTreeMap<String, AlphaMask> = BTreeMap::new();
+        let mut card_albedo: BTreeMap<String, [f32; 3]> = BTreeMap::new();
         for g in &models {
             for file in &g.alpha_tex {
                 if alpha_masks.contains_key(file) { continue; }
@@ -394,6 +403,7 @@ impl Scene {
                 match mapgeom::static_item::texture::decode_capped_rgba(bytes, 256) {
                     Ok((w, h, rgba)) => {
                         let m = AlphaMask::from_rgba(w as usize, h as usize, &rgba, 128);
+                        card_albedo.insert(file.clone(), m.albedo);
                         // a mask that cuts nothing is not worth the lookups
                         if m.coverage() < 0.999 { alpha_masks.insert(file.clone(), m); }
                     }
@@ -408,7 +418,7 @@ impl Scene {
         if !missing.is_empty() {
             eprintln!("  {} item models are not embedded (stock items?): {:?}", missing.len(), missing.iter().take(8).collect::<Vec<_>>());
         }
-        Ok(Scene { models, model_names, instances, item_count: m.items.len(), decor: Vec::new(), alpha_masks })
+        Ok(Scene { models, model_names, instances, item_count: m.items.len(), decor: Vec::new(), alpha_masks, card_albedo })
     }
 
     pub fn tri_count(&self) -> usize {

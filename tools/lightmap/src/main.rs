@@ -886,7 +886,9 @@ fn run(a: Vec<String>) {
                                 // values pending (GlobalScale·ScaleGrad0 from the runtime sky constants)
                                 // the fitted per-mood scale, lerped between the two moods like every other field
                                 let fitted = lightmap::moods::sky_grad_scale(coll, mood_a) * (1.0 - bt) + lightmap::moods::sky_grad_scale(coll, mood_b) * bt;
-                                g.scale = f("--sky-grad-scale").map(|s| s.parse().unwrap()).unwrap_or(fitted) * x.sky_factor;
+                                // ScaleGrad0 = 1 (RE child 4); the mood's SkyFactor scales the WHOLE dome result (it rides
+                                // in the sky pass constant 4·D.y·SkyFactor/N), so it goes into global_scale below, not here
+                                g.scale = f("--sky-grad-scale").map(|s| s.parse().unwrap()).unwrap_or(fitted);
                                 g.sun_dir = prm.sun_dir;
                                 g.sun_az = prm.sun_dir[0].atan2(prm.sun_dir[2]);
                                 g.v_full = has("--v-full");
@@ -912,7 +914,7 @@ fn run(a: Vec<String>) {
                                     }
                                 }
                                 // with the fog blend the fitted per-mood number is GlobalScale (the gradient's own ScaleGrad0 = 1 for the HDR BC6H texture)
-                                if g.fog.is_some() && f("--sky-grad-scale").is_none() { g.global_scale = g.scale / x.sky_factor.max(1e-3); g.scale = 1.0 * x.sky_factor; }
+                                if f("--sky-grad-scale").is_none() { g.global_scale = g.scale * x.sky_factor; g.scale = 1.0; }
                                 // --sky-global-scale G: Sky_p's GlobalScale (after the fog blend) — the per-mood fitted number
                                 if let Some(v) = f("--sky-global-scale") { g.global_scale = v.parse().unwrap(); }
                                 eprintln!("sky: {} ({}×{}), grad scale {}, global scale {}, fog {:?}, lobes {:?}", path.rsplit('/').next().unwrap(), g.w, g.h, g.scale, g.global_scale, g.fog, g.lobes.iter().map(|l| (l.0, l.2)).collect::<Vec<_>>());
@@ -1124,7 +1126,7 @@ fn run(a: Vec<String>) {
                 prm.sky_samples = f("--sky-samples").map(|s| s.parse().unwrap()).unwrap_or(16);
                 prm.sun_samples = 1;
                 let step = (scene.instances.len() / nitems).max(1);
-                let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: scene.instances.iter().step_by(step).cloned().collect(), item_count: scene.item_count, decor: scene.decor.clone(), alpha_masks: scene.alpha_masks.clone() };
+                let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: scene.instances.iter().step_by(step).cloned().collect(), item_count: scene.item_count, decor: scene.decor.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone() };
                 // the subset's instances must keep their own inst id for self-hit filtering: rebuild the bvh over all, but
                 // the shade() skip uses the instance index in `sub` — so we bake the subset against a bvh of the FULL scene
                 // whose inst ids are full-scene indices; map them
@@ -1509,7 +1511,7 @@ fn run(a: Vec<String>) {
             prm.uv_bounds = has("--uv-bounds");
             if let Some(s) = f("--bounce") { prm.bounce = s.parse().unwrap(); }
             prm.sky_samples = 64;
-            let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![scene.instances[ii].clone()], item_count: scene.item_count, decor: scene.decor.clone(), alpha_masks: scene.alpha_masks.clone() };
+            let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![scene.instances[ii].clone()], item_count: scene.item_count, decor: scene.decor.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone() };
             // bake at Nadeo's resolution
             prm.min_px = pw.max(ph); prm.max_px = pw.max(ph);
             let mine = lightmap::bake::bake_subset_px(&sub, &[ii as u32], &bvh, &prm, pw, ph);
@@ -1583,7 +1585,7 @@ fn run(a: Vec<String>) {
                     let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
                     let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32) / 2, (h as u32) / 2);
                     if pw < 4 || ph < 4 { continue; }
-                    let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![inst.clone()], item_count: scene.item_count, decor: scene.decor.clone(), alpha_masks: scene.alpha_masks.clone() };
+                    let sub = lightmap::geometry::Scene { models: scene.models.clone(), model_names: scene.model_names.clone(), instances: vec![inst.clone()], item_count: scene.item_count, decor: scene.decor.clone(), alpha_masks: scene.alpha_masks.clone(), card_albedo: scene.card_albedo.clone() };
                     let mine = lightmap::bake::bake_subset_px(&sub, &[ii as u32], &bvh, &prm, pw, ph);
                     let c = &mine[0];
                     let (mut xs, mut ys) = (vec![], vec![]);
@@ -2835,6 +2837,20 @@ fn run(a: Vec<String>) {
                     let mut per_mat: std::collections::BTreeMap<u16, ([f32; 2], [f32; 2], usize)> = Default::default();
                     for t in &g.tris { let e = per_mat.entry(t.mat).or_insert(([f32::MAX; 2], [f32::MIN; 2], 0)); for uv in t.uv { for k in 0..2 { e.0[k] = e.0[k].min(uv[k]); e.1[k] = e.1[k].max(uv[k]); } } e.2 += 1; }
                     let outside = per_mat.values().any(|(lo, hi, _)| lo[0] < -0.01 || lo[1] < -0.01 || hi[0] > 1.01 || hi[1] > 1.01);
+                    if a.iter().any(|x| x == "--normals") {
+                        // vertex normal vs winding normal agreement per material
+                        let mut agree: std::collections::BTreeMap<u16, (usize, usize)> = Default::default();
+                        for t in &g.tris {
+                            let fn_ = lightmap::geometry::norm(lightmap::geometry::cross(lightmap::geometry::sub(t.p[1], t.p[0]), lightmap::geometry::sub(t.p[2], t.p[0])));
+                            let vn = lightmap::geometry::norm([t.n[0][0] + t.n[1][0] + t.n[2][0], t.n[0][1] + t.n[1][1] + t.n[2][1], t.n[0][2] + t.n[1][2] + t.n[2][2]]);
+                            let e = agree.entry(t.mat).or_insert((0, 0));
+                            if lightmap::geometry::dot(fn_, vn) >= 0.0 { e.0 += 1 } else { e.1 += 1 }
+                        }
+                        let (mut cut, mut opaque_nomat) = (0usize, 0usize);
+                        for t in &g.tris { if t.alpha != u16::MAX { cut += 1 } else if t.mat == u16::MAX { opaque_nomat += 1 } }
+                        println!("  model {}: {} alpha-tested tris, {} OPAQUE tris without a material link; alpha textures {:?}", inst.model, cut, opaque_nomat, g.alpha_tex);
+                        println!("  model {} ({}): vertex-normal vs winding: {}", inst.model, scene.model_names.get(inst.model).cloned().unwrap_or_default(), agree.iter().map(|(mat, (a, d))| format!("mat {} ({}): {a} agree / {d} disagree", mat, g.mat_links.get(*mat as usize).map(|s| s.rsplit('\\').next().unwrap_or(s).to_string()).unwrap_or_else(|| "-".into()))).collect::<Vec<_>>().join("; "));
+                    }
                     if outside || a.iter().any(|x| x == "--uv-all") {
                         println!("  model {} ({}): uv1 {:?}..{:?} plg_bounds {:?}", inst.model, scene.model_names.get(inst.model).cloned().unwrap_or_default(), g.uv_min, g.uv_max, g.plg_bounds);
                         for (mat, (lo, hi, n)) in &per_mat { println!("      mat {mat} ({}): {n} tris uv ({:.3},{:.3})..({:.3},{:.3})", g.mat_links.get(*mat as usize).map(|s| s.rsplit('\\').next().unwrap_or(s).to_string()).unwrap_or_else(|| "-".into()), lo[0], lo[1], hi[0], hi[1]); }
@@ -3848,6 +3864,7 @@ fn run(a: Vec<String>) {
             let mut classes: Vec<u8> = Vec::new();
             let mut rows_rgb: Vec<([f32; 3], [f32; 3])> = Vec::new();
             let sun_az_ref: Option<f32> = f("--sun-az-ref").map(|s| s.parse().unwrap());
+            let mut class_mats: std::collections::BTreeMap<(u8, String), (usize, f64, f64)> = Default::default();
             for (ii, inst) in scene.instances.iter().enumerate().step_by(step) {
                 let row0 = rows.len();
                 let (Some(&i), Some(&j)) = (ca.get(&(inst.item as u32)), cb.get(&(inst.item as u32))) else { continue };
@@ -3879,6 +3896,11 @@ fn run(a: Vec<String>) {
                     let facing_sun = match sun_az_ref { Some(az) => { let (sx, sz) = (az.to_radians().sin(), az.to_radians().cos()); s.n[0] * sx + s.n[2] * sz > 0.0 } None => true };
                     let cls: u8 = if inst.model_name.starts_with("AV") || s.cut { 4 } else if (pwa * pha) < 64 { 5 } else if s.n[1] > 0.7 { 0 } else if s.n[1] < -0.7 { 1 } else if s.n[1].abs() < 0.3 { if facing_sun { 2 } else { 7 } } else if facing_sun { 3 } else { 6 };
                     classes.push(cls);
+                    if cls == 3 || cls == 6 || cls == 2 || cls == 7 {
+                        let mname = scene.models[inst.model].mat_links.get(s.mat as usize).map(|l| l.rsplit('\\').next().unwrap_or(l).to_string()).unwrap_or_else(|| "-".into());
+                        let e = class_mats.entry((cls, format!("{} {}", inst.model_name, mname))).or_insert((0usize, 0.0f64, 0.0f64));
+                        e.0 += 1; e.1 += la as f64; e.2 += lb as f64;
+                    }
                     if per_item { let e = if per_rgb.last().map(|r| r.0) == Some(inst.item) { per_rgb.last_mut().unwrap() } else { per_rgb.push((inst.item, [0.0; 3], [0.0; 3])); per_rgb.last_mut().unwrap() }; for k in 0..3 { e.1[k] += (lightmap::synth::decode_value(c[k], fba) * fma) as f64; e.2[k] += (lightmap::synth::decode_value(c2[k], fbb) * fmb) as f64; } }
                 }
                 // an UNWRITTEN reference chart (every texel the same value: the atlas background, e.g. the
@@ -3905,6 +3927,14 @@ fn run(a: Vec<String>) {
                 }
             }
             if flat_skipped > 0 { println!("{flat_skipped} items skipped: their reference chart is unwritten (one flat value)"); }
+            if a.iter().any(|x| x == "--class-mats") {
+                for cls in [3u8, 6, 2, 7] {
+                    let mut rows: Vec<(&(u8, String), &(usize, f64, f64))> = class_mats.iter().filter(|(k, _)| k.0 == cls).collect();
+                    rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+                    println!("class {cls} top model+material by texels:");
+                    for (k, (n, sa, sb)) in rows.iter().take(6) { println!("   {:<60} {n:>7} ref {:.3} ours {:.3}", k.1, sa / *n as f64, sb / *n as f64); }
+                }
+            }
             // the per-class gate table
             {
                 let names = ["floors (up)", "undersides (down)", "walls (vertical, sun side)", "slanted (sun side)", "vegetation (AV items + cards)", "small charts (< 64 texels)", "slanted (away from the sun)", "walls (away from the sun)"];

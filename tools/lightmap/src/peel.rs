@@ -116,12 +116,27 @@ pub fn build_abuffer(tris: &[WTri], frame: &PeelFrame, threads: usize) -> ABuffe
 /// `build_abuffer` keeping only fragments with depth < `zmax` — a fragment deeper than every receiver
 /// can occlude nothing (the gather looks for surfaces in FRONT of a texel), and the decoration's sea
 /// and ground planes would otherwise fill every pixel of every peel.
+/// Whether the vegetation cards (alpha-tested materials) occlude in the peel and the sun shadow map.
+/// LMTOOL_CARDS_OCCLUDE=0 takes them out (they stay receivers): the hill test map's slopes under a
+/// dense bush canopy read 0.19 in the editor at Day where cards that occlude give 0.035 (2026-09-23).
+pub fn cards_occlude() -> bool {
+    std::env::var("LMTOOL_CARDS_OCCLUDE").map(|v| v != "0").unwrap_or(true)
+}
+
+/// Whether the cards cast SUN shadows (the bake's sun shadow map). LMTOOL_CARDS_SHADOW=0 leaves them out.
+pub fn cards_shadow() -> bool {
+    // default OFF (DIFFERENTIAL, the hill test map 2026-09-23 23:50Z: the slopes under a dense canopy read
+    // 0.19 of the editor's at Day with the cards in the sun shadow map, 0.76–1.4 without); =1 puts them in
+    std::env::var("LMTOOL_CARDS_SHADOW").map(|v| v == "1").unwrap_or(false)
+}
+
 pub fn build_abuffer_upto(tris: &[WTri], frame: &PeelFrame, threads: usize, zmax: f32, masks: &[crate::geometry::AlphaMask]) -> ABuffer {
     let res = frame.res;
     // LMTOOL_PEEL_CULL_BACK=1 (hypothesis under test): the peel renders only the faces turned toward
     // the receivers' side (geometric normal against D); back faces are culled, not drawn black — so a
     // thin wall's own far face does not occlude its texels and a hollow tower sees out
     let cull_back = std::env::var("LMTOOL_PEEL_CULL_BACK").map(|v| v == "1").unwrap_or(false);
+    let cards_occlude = cards_occlude();
     let d = frame.d;
     let bands = 128u32.min(res);
     let band_h = (res + bands - 1) / bands;
@@ -153,6 +168,9 @@ pub fn build_abuffer_upto(tris: &[WTri], frame: &PeelFrame, threads: usize, zmax
                             if dot(ng, d) > 0.0 {
                                 continue;
                             }
+                        }
+                        if !cards_occlude && t.alpha != u16::MAX {
+                            continue;
                         }
                         let mask = if t.alpha != u16::MAX { masks.get(t.alpha as usize) } else { None };
                         raster::triangle(res, res, [[x0, y0], [x1, y1], [x2, y2]], |x, y, b| {
@@ -239,6 +257,9 @@ impl ShadowMap {
             let (x0, y0, z0) = frame.project(p0);
             let (x1, y1, z1) = frame.project(p1);
             let (x2, y2, z2) = frame.project(p2);
+            if (!cards_occlude() || !cards_shadow()) && t.alpha != u16::MAX {
+                continue;
+            }
             let mask = if t.alpha != u16::MAX { masks.get(t.alpha as usize) } else { None };
             raster::triangle(res, res, [[x0, y0], [x1, y1], [x2, y2]], |x, y, b| {
                 if let Some(m) = mask {
@@ -339,7 +360,10 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
         _ if wt.inst == DECOR_INST => { let s = prm.decor_sky_up; [s[0] * prm.decor_ambient, s[1] * prm.decor_ambient, s[2] * prm.decor_ambient] },
         _ => [0.0; 3],
     };
-    let ndl = dot(n, prm.sun_dir).max(0.0);
+    // a vegetation card is lit from both sides (thin foliage: the leaf shader's sun term does not care
+    // which face the peel sees) — LMTOOL_CARD_ONE_SIDED=1 restores the plain n·L
+    let is_card = wt.alpha != u16::MAX;
+    let ndl = if is_card && !prm.card_one_sided { dot(n, prm.sun_dir).abs() } else { dot(n, prm.sun_dir).max(0.0) };
     let lit = if ndl > 0.0 && prm.sun_dir[1] > 0.0 { shadow.map(|s| s.lit(hit_p, sun_bias)).unwrap_or(1.0) } else { 0.0 };
     SUN_STATS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if ndl > 0.0 { SUN_STATS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
@@ -657,11 +681,49 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         })
         .collect();
     let mut counts: Vec<Vec<u16>> = chart_meta.iter().map(|(w, h)| vec![0u16; (w * h) as usize]).collect();
+    // the vegetation cards' texels are PRELIT: the editor writes light × the leaf colour into them (the hill
+    // test map, 2026-09-23 23:10Z: the card cells of a bush-bearing hill's chart are saturated yellow-green
+    // at Day and orange at Sunset, B ≈ 0, where a bare irradiance would be sky-coloured) — the card LOD
+    // shaders draw the lightmap as their colour. LMTOOL_CARD_PRELIT=0 stores the plain irradiance.
+    let card_prelit = std::env::var("LMTOOL_CARD_PRELIT").map(|v| v != "0").unwrap_or(true);
+    let card_open = std::env::var("LMTOOL_CARD_OPEN").map(|v| v != "0").unwrap_or(true);
     for (i, s) in subs.iter().enumerate() {
         let c = &mut out[s.chart as usize];
         let t = s.texel as usize;
+        let mut v = acc[i];
+        if card_prelit {
+            let wt = &bvh.tris[s.own_tri as usize];
+            if wt.alpha != u16::MAX && wt.inst != DECOR_INST {
+                let inst = &scene.instances[wt.inst as usize];
+                let m = &scene.models[inst.model];
+                if let Some(tri) = m.tris.get(wt.tri as usize) {
+                    if let Some(file) = m.alpha_tex.get(tri.alpha as usize) {
+                        if let Some(alb) = scene.card_albedo.get(file) {
+                            // the vegetation path lights the cards WITHOUT the peel's occlusion (the hill
+                            // test map: the card texels read 0.53 at Day under a canopy whose slopes read
+                            // 0.19 — the open sky × the leaf colour; INFERRED from RE 4's per-vertex tree
+                            // lighting): the card's texel = the open-sky irradiance for its normal (both
+                            // sides: a card is thin) × the leaf colour. LMTOOL_CARD_OPEN=0 keeps the gathered E.
+                            if card_open {
+                                let n = s.n;
+                                let mut e = [0f32; 3];
+                                let nd = dirs.len().max(1) as f32;
+                                for d in dirs.iter() {
+                                    if d[1] <= 0.0 { continue; }
+                                    let c = dot(n, *d).abs();
+                                    let sky = sky_radiance(prm, *d);
+                                    for k in 0..3 { e[k] += 4.0 / nd * c * sky[k]; }
+                                }
+                                v = e;
+                            }
+                            for k in 0..3 { v[k] *= alb[k]; }
+                        }
+                    }
+                }
+            }
+        }
         for k in 0..3 {
-            c.rgb[t][k] += acc[i][k];
+            c.rgb[t][k] += v[k];
         }
         counts[s.chart as usize][t] += 1;
         c.covered[t] = true;
