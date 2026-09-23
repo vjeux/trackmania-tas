@@ -762,9 +762,15 @@ fn main() {
                     let h = hdr.as_ref().expect("header");
                     let cells = mf.blocks.iter().map(|b| { let c = b.coords(); (c.0, c.2, b.name.as_str()) });
                     let extra: u32 = f("--base-extra").map(|s| s.parse().unwrap()).unwrap_or(0);
-                    let r = lightmap::moods::base_rule(&h.envir, &mf.decoration_id, mf.size, cells, extra);
-                    eprintln!("base auto: {} = {} (decoration) + {} authored blocks ({} custom blocks not counted) + {} ground tiles − {} replaced + {} generated pieces{}", r.base(), r.deco_const, r.authored, r.custom_blocks, r.ground_cols, r.replaced, r.extra, if !mf.baked.is_empty() { format!(" ({} baked records in the file do not count)", mf.baked.len()) } else { String::new() });
-                    if r.stadium && r.authored > 0 && extra == 0 { eprintln!("  WARNING: {} authored blocks on a Stadium decoration — the game grows pillars/walls under elevated blocks (25 ×2: 7 under one platform; 05 ×2: 2108 around 604 pool tiles); pass --base-extra N from an editor bake or --base N", r.authored); }
+                    let baked_total: Option<u32> = f("--baked-total").map(|s| s.parse().unwrap());
+                    let r = lightmap::moods::base_rule(&h.envir, &mf.decoration_id, mf.size, cells, extra, baked_total);
+                    match baked_total {
+                        Some(t) => eprintln!("base auto: {} = {} (decoration) + {} authored blocks ({} custom) + {} baked (the game's list: S² + G)", r.base(), r.deco_const, r.authored, r.custom_blocks, t),
+                        None => {
+                            eprintln!("base auto: {} = {} (decoration) + {} authored blocks ({} custom) + {} ground tiles − {} replaced + {} generated pieces{}", r.base(), r.deco_const, r.authored, r.custom_blocks, r.ground_cols, r.replaced, r.extra, if !mf.baked.is_empty() { format!(" ({} baked records in the file do not count)", mf.baked.len()) } else { String::new() });
+                            if r.stadium && r.authored > 0 && extra == 0 { eprintln!("  WARNING: {} authored blocks on a Stadium decoration — the game grows pillars/walls under elevated blocks (386 around the tiny 05's 46 water tiles, 7 under 25 ×2's platform, 2108 around 05 ×2's 604 pool tiles); pass --baked-total N (/mapblocks2?list=baked) or --base-extra G or --base N", r.authored); }
+                        }
+                    }
                     r.base()
                 }
                 Some(s) => s.parse().unwrap(),
@@ -1891,7 +1897,7 @@ fn main() {
                 let max_obj = mp.binds.iter().map(|b| b.obj_group_idx / 4).max().unwrap_or(0) + 1;
                 let measured = max_obj as i64 - mf.items.len() as i64;
                 let cells = mf.blocks.iter().map(|b| { let c = b.coords(); (c.0, c.2, b.name.as_str()) });
-                let r = lightmap::moods::base_rule(&h.envir, &mf.decoration_id, mf.size, cells, 0);
+                let r = lightmap::moods::base_rule(&h.envir, &mf.decoration_id, mf.size, cells, 0, None);
                 let nadeo = r.deco_const + mf.blocks.len() as u32 + mf.baked.len() as u32;
                 let verdict = |v: u32| if measured == v as i64 { "OK" } else if measured < v as i64 && v as i64 - measured <= 16 { "OK (last items chart-less)" } else { "DIFF" };
                 println!("{}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", p.rsplit('/').next().unwrap_or(p), mf.size, mf.decoration_id, mf.blocks.len(), mf.baked.len(), r.custom_blocks, r.replaced, r.extra, mf.items.len(), measured, r.base(), verdict(r.base()), nadeo, verdict(nadeo));
@@ -1922,6 +1928,181 @@ fn main() {
                 }
             }
             println!("{same} slots with identical ranges, {diff} differ");
+        }
+        "contrast" => {
+            // lmtool contrast MAP [--base N] [--min-px N]: per-chart luminance contrast of the frame-0 atlas — for every
+            // item chart with ≥ min-px covered texels (own rasterisation), the p10/p90 of the HDR value (fb0-scaled),
+            // then the distribution of p10/p90 over charts and the pooled lit/shadow split (a mood's shadow depth)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let min_px: usize = f("--min-px").map(|s| s.parse().unwrap()).unwrap_or(40);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let own = lightmap::mapio::load(&a[1]).expect("own");
+            let d = own.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).unwrap();
+            let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
+            let mut ratios: Vec<f64> = Vec::new();
+            let mut all: Vec<f64> = Vec::new();
+            let mut horiz: Vec<(f64, f64)> = Vec::new(); // (value, n.y) for horizontal-ish texels
+            for (ii, inst) in scene.instances.iter().enumerate() {
+                let Some(&ci) = chart_of.get(&(inst.item as u32)) else { continue };
+                let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
+                let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, w as u32 / 2, h as u32 / 2);
+                if pw < 4 || ph < 4 { continue; }
+                let (samples, _) = lightmap::bake::rasterise_pub(&scene, ii, pw, ph, false, true);
+                if samples.len() < min_px { continue; }
+                let k = mp.frame_bytes[0][ci] as f64 / 255.0;
+                let mut v: Vec<f64> = samples.iter().map(|s| { let c = ia.get((px + s.px).min(ia.w - 1), (py + s.py).min(ia.h - 1)); (0.2126 * c[0] as f64 + 0.7152 * c[1] as f64 + 0.0722 * c[2] as f64) / 255.0 * k }).collect();
+                for (s, val) in samples.iter().zip(v.iter()) { if s.n[1] > 0.9 { horiz.push((*val, s.n[1] as f64)); } }
+                all.extend(v.iter().copied());
+                v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let (p10, p90) = (v[v.len() / 10], v[v.len() * 9 / 10]);
+                if p90 > 1e-4 { ratios.push(p10 / p90); }
+            }
+            ratios.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            all.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let q = |v: &Vec<f64>, p: f64| v[((v.len() as f64 - 1.0) * p) as usize];
+            println!("{} charts, {} texels; per-chart p10/p90 ratio: median {:.3}, p25 {:.3}, p75 {:.3}", ratios.len(), all.len(), q(&ratios, 0.5), q(&ratios, 0.25), q(&ratios, 0.75));
+            println!("pooled HDR value (K=1 units): p5 {:.3} p25 {:.3} p50 {:.3} p75 {:.3} p95 {:.3} max {:.3}", q(&all, 0.05), q(&all, 0.25), q(&all, 0.5), q(&all, 0.75), q(&all, 0.95), all[all.len() - 1]);
+            // horizontal texels (n.y > 0.9): two-mode split by the midpoint between p10 and p90
+            let mut hv: Vec<f64> = horiz.iter().map(|h| h.0).collect();
+            hv.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            if hv.len() > 100 {
+                let (lo, hi) = (q(&hv, 0.1), q(&hv, 0.9));
+                let thr = 0.5 * (lo + hi);
+                let (mut sl, mut nl, mut sh, mut nh) = (0.0, 0usize, 0.0, 0usize);
+                for v in &hv { if *v < thr { sl += v; nl += 1; } else { sh += v; nh += 1; } }
+                println!("horizontal texels: {} ; p10 {:.3} p90 {:.3}; below/above the midpoint: {} at mean {:.3} | {} at mean {:.3} → shadow/lit ratio {:.3}", hv.len(), lo, hi, nl, sl / nl.max(1) as f64, nh, sh / nh.max(1) as f64, (sl / nl.max(1) as f64) / (sh / nh.max(1) as f64).max(1e-6));
+            }
+        }
+        "modelinfo" => {
+            // lmtool modelinfo MAP [--min-tris N]: per embedded model — placements, triangles, local bbox size, m/uv
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let min_tris: usize = f("--min-tris").map(|s| s.parse().unwrap()).unwrap_or(1);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let mut counts = vec![0usize; scene.models.len()];
+            let mut first_item = vec![usize::MAX; scene.models.len()];
+            for inst in &scene.instances { counts[inst.model] += 1; first_item[inst.model] = first_item[inst.model].min(inst.item); }
+            let mut rows: Vec<(usize, String)> = Vec::new();
+            for (mi, m) in scene.models.iter().enumerate() {
+                if m.tris.len() < min_tris { continue; }
+                let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                for t in &m.tris { for p in t.p { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } } }
+                let up = m.tris.iter().filter(|t| t.n[0][1].abs() > 0.9).count();
+                rows.push((counts[mi], format!("{:<26} {:>5} placed  first item {:>5}  {:>7} tris ({:>3}% horizontal)  size {:>6.1} × {:>5.1} × {:>6.1} m  lo ({:.1},{:.1},{:.1})  m/uv {:.1}  lights {}", scene.model_names[mi], counts[mi], first_item[mi], m.tris.len(), 100 * up / m.tris.len().max(1), hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2], lo[0], lo[1], lo[2], m.metres_per_uv, m.lights.len())));
+            }
+            rows.sort_by_key(|r| std::cmp::Reverse(r.0));
+            for r in rows { println!("{}", r.1); }
+        }
+        "daytime" => {
+            // lmtool daytime MAP [--out OUT --set N|default]: read (and set) the map's DayTime word in chunk
+            // 0x03043056 { u32 version, u32, u32 daytime (0xffffffff = the mood's own), bool dynamic, u32 duration_ms }
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let m = lightmap::mapio::load(&a[1]).expect("load");
+            let body = &m.gbx.body;
+            let cs = tmmaps::gbx::all_skip_chunks(body);
+            let Some(c) = cs.iter().find(|c| c.0 == 0x03043056) else { println!("no chunk 0x03043056"); return };
+            let p = c.2;
+            let rd = |o: usize| u32::from_le_bytes([body[p + o], body[p + o + 1], body[p + o + 2], body[p + o + 3]]);
+            println!("0x03043056: version {} u {} daytime {:#x} ({}) dynamic {} duration {} ms", rd(0), rd(4), rd(8), if rd(8) == 0xffff_ffff { "default = the mood's DayTime01".to_string() } else { format!("{:.4} of the day", rd(8) as f64 / 65536.0) }, rd(12), rd(16));
+            if let (Some(out), Some(v)) = (f("--out"), f("--set")) {
+                let val: u32 = if v == "default" { 0xffff_ffff } else if let Some(h) = v.strip_prefix("0x") { u32::from_str_radix(h, 16).unwrap() } else { v.parse().unwrap() };
+                let mut nb = body.clone();
+                nb[p + 8..p + 12].copy_from_slice(&val.to_le_bytes());
+                let uncompressed = { let mut f = m.gbx.header_bytes_u(); f.extend_from_slice(body); f };
+                let t = tmmaps::gbx::Gbx::parse(&uncompressed);
+                std::fs::write(&out, t.write_body_recompressed(&nb)).expect("write");
+                println!("wrote {out} with daytime {val:#x}");
+            }
+        }
+        "testmap" => {
+            // lmtool testmap MAP [--base N] [--dump T.tsv]: the BlueBay-style lighting test map (3 pad groups at y 40,
+            // a 16 m pole on the pad centre (324, 324), a tower east of group B, a roof over the group-C centre) read
+            // from the map's own bake: per region the HDR luminance stats (K = 1 units), the pole shadow's direction
+            // and length → sun azimuth/elevation, the tower faces' values, the roofed pad's value.
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let own = lightmap::mapio::load(&a[1]).expect("own");
+            let d = own.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).unwrap();
+            let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
+            // every texel of every instance inside the test area (x < 600)
+            struct Tx { p: [f32; 3], n: [f32; 3], rgb: [f32; 3], lum: f32 }
+            let mut tx: Vec<Tx> = Vec::new();
+            for (ii, inst) in scene.instances.iter().enumerate() {
+                if inst.xf[9] > 600.0 { continue; }
+                let Some(&ci) = chart_of.get(&(inst.item as u32)) else { continue };
+                let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
+                let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32 / 2).max(1), (h as u32 / 2).max(1));
+                let k = mp.frame_bytes[0][ci] as f32 / 255.0;
+                let (samples, _) = lightmap::bake::rasterise_pub(&scene, ii, pw, ph, false, true);
+                for s in &samples {
+                    let c = ia.get((px + s.px).min(ia.w - 1), (py + s.py).min(ia.h - 1));
+                    let rgb = [c[0] as f32 / 255.0 * k, c[1] as f32 / 255.0 * k, c[2] as f32 / 255.0 * k];
+                    tx.push(Tx { p: s.p, n: s.n, rgb, lum: 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2] });
+                }
+            }
+            println!("{} texels in the test area", tx.len());
+            if let Some(out) = f("--dump") {
+                let mut s = String::from("x\ty\tz\tnx\tny\tnz\tr\tg\tb\tlum\n");
+                for t in &tx { s.push_str(&format!("{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.4}\t{:.4}\t{:.4}\t{:.4}\n", t.p[0], t.p[1], t.p[2], t.n[0], t.n[1], t.n[2], t.rgb[0], t.rgb[1], t.rgb[2], t.lum)); }
+                std::fs::write(&out, s).unwrap();
+            }
+            let stats = |name: &str, sel: &dyn Fn(&Tx) -> bool| -> (f32, usize) {
+                let v: Vec<&Tx> = tx.iter().filter(|t| sel(t)).collect();
+                if v.is_empty() { println!("{name:<44} (no texels)"); return (0.0, 0); }
+                let mut l: Vec<f32> = v.iter().map(|t| t.lum).collect();
+                l.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let mean_rgb = { let mut s = [0f32; 3]; for t in &v { for c in 0..3 { s[c] += t.rgb[c]; } } [s[0] / v.len() as f32, s[1] / v.len() as f32, s[2] / v.len() as f32] };
+                let med = l[l.len() / 2];
+                println!("{name:<44} n {:>6}  lum median {:.4}  p10 {:.4}  p90 {:.4}  mean rgb ({:.3}, {:.3}, {:.3})", v.len(), med, l[l.len() / 10], l[l.len() * 9 / 10], mean_rgb[0], mean_rgb[1], mean_rgb[2]);
+                (med, v.len())
+            };
+            let up = |t: &Tx| t.n[1] > 0.9 && t.p[1] > 39.0 && t.p[1] < 41.5;
+            // group A: pads x 300..348, z 300..348; the pole base at (323.2..324.7, 323.2..324.7)
+            let in_a = |t: &Tx| up(t) && t.p[0] >= 300.0 && t.p[0] < 348.0 && t.p[2] >= 300.0 && t.p[2] < 348.0;
+            let (med_a, _) = stats("A open pads (all)", &in_a);
+            // shadow texels of A: lum < 0.75 × median, away from the pole itself
+            let shadow: Vec<&Tx> = tx.iter().filter(|t| in_a(t) && t.lum < 0.75 * med_a && ((t.p[0] - 324.0).abs() > 1.5 || (t.p[2] - 324.0).abs() > 1.5)).collect();
+            println!("A shadow texels (< 75 % of median): {}", shadow.len());
+            if shadow.len() >= 3 {
+                // direction: mean vector from the pole base; length: the farthest shadow texel along that direction
+                let (mut sx, mut sz) = (0f32, 0f32);
+                for t in &shadow { sx += t.p[0] - 324.0; sz += t.p[2] - 324.0; }
+                let len = (sx * sx + sz * sz).sqrt(); let (dx, dz) = (sx / len, sz / len);
+                let far = shadow.iter().map(|t| (t.p[0] - 324.0) * dx + (t.p[2] - 324.0) * dz).fold(0f32, f32::max);
+                // the sun is opposite the shadow; az measured like the baker: dir = (cos el sin az, sin el, cos el cos az)
+                let sun_az = (-dx).atan2(-dz).to_degrees().rem_euclid(360.0);
+                let el = (16.0f32 / far.max(0.1)).atan().to_degrees();
+                println!("pole shadow: direction ({dx:.2}, {dz:.2}) length {far:.1} m (pole 16 m) → SUN az {sun_az:.1}° el {el:.1}° (el from the shadow tip; texel size limits it to ±{:.1}°)", (16.0f32 / (far - 2.0).max(0.1)).atan().to_degrees() - el);
+                stats("A lit pads (≥ 75 % of median)", &|t: &Tx| in_a(t) && t.lum >= 0.75 * med_a);
+                stats("A shadow", &|t: &Tx| in_a(t) && t.lum < 0.75 * med_a && ((t.p[0] - 324.0).abs() > 1.5 || (t.p[2] - 324.0).abs() > 1.5));
+            }
+            // group B pads and the tower shadow
+            let in_b = |t: &Tx| up(t) && t.p[0] >= 400.0 && t.p[0] < 448.0 && t.p[2] >= 300.0 && t.p[2] < 348.0;
+            let (med_b, _) = stats("B pads (tower east of them)", &in_b);
+            stats("B lit", &|t: &Tx| in_b(t) && t.lum >= 0.75 * med_b.max(med_a));
+            stats("B shadow", &|t: &Tx| in_b(t) && t.lum < 0.75 * med_b.max(med_a));
+            // tower faces (item at (448, 40, 316), yaw 0; mesh lo (−0.7, 0, −1.1), 17.4 × 52 × 19.6)
+            let tower = |t: &Tx| t.p[0] > 446.0 && t.p[0] < 466.5 && t.p[2] > 313.0 && t.p[2] < 337.0 && t.p[1] > 42.0 && t.p[1] < 92.0;
+            stats("tower face −x (west)", &|t: &Tx| tower(t) && t.n[0] < -0.9);
+            stats("tower face +x (east)", &|t: &Tx| tower(t) && t.n[0] > 0.9);
+            stats("tower face −z (south)", &|t: &Tx| tower(t) && t.n[2] < -0.9);
+            stats("tower face +z (north)", &|t: &Tx| tower(t) && t.n[2] > 0.9);
+            stats("tower top", &|t: &Tx| t.p[0] > 446.0 && t.p[0] < 466.5 && t.p[2] > 313.0 && t.p[2] < 337.0 && t.p[1] > 88.0 && t.n[1] > 0.9);
+            // group C: pads x 300..348, z 400..448; the roof (316, 52, 416): 16 × 16 above the centre pad, 12 m up
+            let in_c = |t: &Tx| up(t) && t.p[0] >= 300.0 && t.p[0] < 348.0 && t.p[2] >= 400.0 && t.p[2] < 448.0;
+            stats("C open pads (not under the roof)", &|t: &Tx| in_c(t) && !(t.p[0] >= 316.0 && t.p[0] < 332.0 && t.p[2] >= 416.0 && t.p[2] < 432.0));
+            stats("C pad under the roof", &|t: &Tx| in_c(t) && t.p[0] >= 316.0 && t.p[0] < 332.0 && t.p[2] >= 416.0 && t.p[2] < 432.0);
+            stats("C pad under the roof, inner 8×8", &|t: &Tx| in_c(t) && t.p[0] >= 320.0 && t.p[0] < 328.0 && t.p[2] >= 420.0 && t.p[2] < 428.0);
+            stats("roof top", &|t: &Tx| t.n[1] > 0.9 && t.p[1] > 55.0 && t.p[1] < 58.0 && t.p[0] >= 316.0 && t.p[0] < 332.0 && t.p[2] >= 416.0 && t.p[2] < 432.0);
+            stats("roof underside", &|t: &Tx| t.n[1] < -0.9 && t.p[1] > 51.0 && t.p[1] < 54.0 && t.p[0] >= 316.0 && t.p[0] < 332.0 && t.p[2] >= 416.0 && t.p[2] < 432.0);
+            stats("pad undersides (n.y < −0.9, y ≈ 40)", &|t: &Tx| t.n[1] < -0.9 && t.p[1] > 39.0 && t.p[1] < 41.0);
         }
         _ => {
             eprintln!("unknown command");

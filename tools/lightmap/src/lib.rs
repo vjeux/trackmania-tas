@@ -4,6 +4,7 @@
 //! Work in progress: the walker first, then the typed structure.
 
 pub mod bake;
+pub mod bc6h;
 pub mod bvh;
 pub mod format;
 pub mod geometry;
