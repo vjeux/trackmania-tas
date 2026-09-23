@@ -156,7 +156,24 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
     // a plain decal material on geometry without a vertex colour: the colour says
     // "decal on" (see `harmonize_layouts_full`)
     let want_color0: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map(|l| l.rsplit('\\').next().map(|st| st.starts_with("DecalMarks")).unwrap_or(false)).unwrap_or(false)).map(|(i, _)| i).collect();
-    harmonize_layouts_full(&mut pre, &want_tangents, &want_color0);
+    // every pack DECK material gets a lightmap uv (TexCoord1) as its prefabs carry one; the
+    // decals and the mesh-modeler / custom materials are left as authored (see
+    // `harmonize_layouts_full_uv1`). TINY_UV1_ALL=0 restores the old layouts.
+    let uv1_all = std::env::var("TINY_UV1_ALL").map(|v| v != "0").unwrap_or(true);
+    let want_uv1: Vec<usize> = m
+        .materials
+        .iter()
+        .enumerate()
+        .filter(|(_, mat)| {
+            uv1_all
+                && mat.link().map(|l| {
+                    let stem = l.rsplit('\\').next().unwrap_or(l);
+                    (l.starts_with("Stadium\\Media\\Material\\") || l.starts_with("Stadium\\Media\\Modifier\\")) && !stem.starts_with("Decal") && !l.contains("Material_BlockCustom")
+                }).unwrap_or(false)
+        })
+        .map(|(i, _)| i)
+        .collect();
+    super::merged::harmonize_layouts_full_uv1(&mut pre, &want_tangents, &want_color0, &want_uv1);
     let visuals = coalesce(&pre);
     // Only the materials some visual draws with, in first-use order (the
     // reference items list exactly one material per visual).

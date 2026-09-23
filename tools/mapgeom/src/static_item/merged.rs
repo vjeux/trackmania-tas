@@ -1573,7 +1573,16 @@ pub fn harmonize_layouts_with(visuals: &mut [MergedVisual], want_tangents: &[usi
 /// colour) drew a BLACK T (Dirt 11, 2026-09-15): the shader read the missing
 /// colour as off. The prefabs' own decal quads carry 0xffffffff.
 pub fn harmonize_layouts_full(visuals: &mut [MergedVisual], want_tangents: &[usize], want_color0_on: &[usize]) {
-    use super::vstream::{Decl, SPACE_LOCAL3D, T_COLOR, T_FLOAT2};
+    harmonize_layouts_full_uv1(visuals, want_tangents, want_color0_on, &[]);
+}
+
+/// … plus `want_uv1`: material slots whose visuals all get a TexCoord1 (a copy of uv0
+/// when the source had none). A pack DECK material (ThemeSnowRoad, RoadDirt, the
+/// PlatformTech modifiers…) declares the lightmap uv: a mesh-modeler block's deck
+/// (position, normal, uv0 only — the roulette turbo of wood 61, Everios96 2026-09-23)
+/// re-dressed with one drew as a blank grey slab, as the tangent-less decks did before.
+pub fn harmonize_layouts_full_uv1(visuals: &mut [MergedVisual], want_tangents: &[usize], want_color0_on: &[usize], want_uv1: &[usize]) {
+    use super::vstream::{Decl, SPACE_GLOBAL2D, SPACE_LOCAL3D, T_COLOR, T_FLOAT2};
     use std::collections::BTreeMap;
     // material -> union of (name -> donor decl, stored type)
     let mut unions: BTreeMap<usize, BTreeMap<u32, (Decl, u32)>> = BTreeMap::new();
@@ -1594,6 +1603,10 @@ pub fn harmonize_layouts_full(visuals: &mut [MergedVisual], want_tangents: &[usi
     for slot in want_color0_on {
         let u = unions.entry(*slot).or_default();
         u.entry(N_COLOR0).or_insert((Decl::with_stride(N_COLOR0, T_COLOR, 0, 0, 0), T_COLOR));
+    }
+    for slot in want_uv1 {
+        let u = unions.entry(*slot).or_default();
+        u.entry(11).or_insert((Decl::with_stride(11, T_FLOAT2, SPACE_GLOBAL2D, 0, 0), T_FLOAT2));
     }
     for mv in visuals.iter_mut() {
         let color_on = want_color0_on.contains(&mv.material);
