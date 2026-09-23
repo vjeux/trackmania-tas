@@ -954,7 +954,48 @@ fn main() {
                 eprintln!("probe volume: {} blocks, {} slices, atlas {}x{}, blob {} B ({:.1}s)", po.blocks, po.slices, po.atlas_w, po.atlas_h, po.blob.len(), t0.elapsed().as_secs_f32());
                 Some(lightmap::synth::ProbeBlob { blob: po.blob, trailer: po.volume.write() })
             };
-            let s = lightmap::synth::build_full(out_charts, (tm.bbox_min, tm.bbox_max), &tpl.chunk, probes, vp8_q).expect("build");
+            let mut s = lightmap::synth::build_full(out_charts, (tm.bbox_min, tm.bbox_max), &tpl.chunk, probes, vp8_q).expect("build");
+            // the mapping head's time-of-day word (0x48 in `lmtool head`) comes from the TEMPLATE;
+            // the game's own bakes carry the MAP's time (chunk 0x03043056, or the mood default when
+            // the map has none) — --daytime auto (default) writes that, --daytime N a value, --daytime
+            // template leaves the template's (2026-09-23: 08/18 at 0.854 and 20 at 0.318 shipped with
+            // the template's 0.607 / 0.808 before this)
+            {
+                let want: Option<u32> = match f("--daytime").as_deref() {
+                    Some("template") => None,
+                    Some(n) if n != "auto" => Some(n.parse().expect("--daytime auto|template|N")),
+                    _ => {
+                        let own = tmmaps::gbx::all_skip_chunks(&m.gbx.body).into_iter().find(|c| c.0 == 0x0304_3056 && c.3 >= 12).map(|(_, _, p, _)| u32::from_le_bytes(m.gbx.body[p + 8..p + 12].try_into().unwrap()));
+                        match own {
+                            Some(0xFFFF_FFFF) | None => hdr.as_ref().and_then(|h| match (h.envir.as_str(), h.mood.as_str()) { ("Stadium", "Day") => Some(33041), (_, "Day") => Some(39769), ("RedIsland", "Sunrise") => Some(20043), _ => None }),
+                            o => o,
+                        }
+                    }
+                };
+                if let Some(w) = want {
+                    if let Some(d) = s.chunk.data.as_mut() {
+                        let mut touched = false;
+                        for c in d.cache.chunks.iter_mut() {
+                            if let lightmap::format::ChunkBody::Mapping(mp) = &mut c.body {
+                                if mp.head.len() >= 72 {
+                                    let old = u32::from_le_bytes(mp.head[68..72].try_into().unwrap());
+                                    mp.head[68..72].copy_from_slice(&w.to_le_bytes());
+                                    eprintln!("daytime word: {old} -> {w} ({:.3}, the map's)", w as f32 / 65535.0);
+                                    touched = true;
+                                }
+                            }
+                        }
+                        if touched {
+                            // the chunk carries the cache pre-compressed: re-serialise after the edit
+                            let raw = d.cache.write();
+                            d.cache_compressed = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 9);
+                            d.cache_uncompressed_len = raw.len() as u32;
+                        }
+                    }
+                } else if f("--daytime").as_deref() != Some("template") {
+                    eprintln!("daytime word: left as the template's (the map has no custom time and no known default for its mood)");
+                }
+            }
             let payload = s.chunk.write(false);
             let out = f("--out").expect("--out");
             lightmap::mapio::save_with_chunk(&m, &payload, &out).expect("save");
