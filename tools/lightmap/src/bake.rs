@@ -74,6 +74,16 @@ pub struct BakeParams {
     /// The previous iteration's lightmap (multi-bounce): a hit surface's radiance = albedo ×
     /// (its stored value + its direct sun) instead of the one-bounce estimate.
     pub field: Option<std::sync::Arc<RadianceField>>,
+    /// The game's peel model (RE child 2): the 256-point full-sphere set, `Scale = 4/N`, per
+    /// direction the FIRST surface — the sky (upward, unoccluded), a lit surface's bounce
+    /// (albedo·(E_prev/bounce_decode + direct sun)), or the ground/sea below.
+    pub peel: bool,
+    /// The sphere directions of the peel model (empty → stratified random over the sphere).
+    pub sphere_dirs: std::sync::Arc<Vec<[f32; 3]>>,
+    /// The bounce read-back divisor (RE child 2 (d): the lightmap so far is decoded /BounceFactor).
+    pub bounce_decode: f32,
+    /// The rendered sky as the dome radiance (Tech3/Sky_p: the mood's SkyColor gradient + glow lobes).
+    pub sky_grad: Option<std::sync::Arc<crate::skygrad::SkyGradient>>,
     /// The mood's HDR sky as a light source: every unoccluded cosine-sampled ray adds
     /// `sky_cube_scale × L(ω)`; with a cube the constant `sky` term is not used.
     pub sky_cube: Option<std::sync::Arc<crate::skycube::CubeMap>>,
@@ -115,6 +125,10 @@ impl Default for BakeParams {
             dome_dirs: std::sync::Arc::new(Vec::new()),
             bounce_sphere: false,
             field: None,
+            peel: false,
+            sphere_dirs: std::sync::Arc::new(Vec::new()),
+            bounce_decode: 1.0,
+            sky_grad: None,
             sky_cube: None,
             sky_cube_scale: 1.0,
         }
@@ -375,6 +389,9 @@ fn shade_full(scene: &Scene, bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, r
         let base = if c == 0 { 1.0 } else { 0.25 };
         let col = if prm.pattern_flat { [1.0, 1.0, 1.0] } else { match band { 0 => [1.0, 0.3, 0.3], 1 => [0.3, 1.0, 0.3], _ => [0.3, 0.3, 1.0] } };
         return Shaded { e: [col[0] * base, col[1] * base, col[2] * base], sky_vis: 1.0, sun_vis: 1.0, bounce: [0.0; 3], sky_rgb: [1.0; 3] };
+    }
+    if prm.peel {
+        return shade_peel(scene, bvh, prm, s, ii, rng);
     }
     if prm.dome_deg < 89.0 {
         return shade_dome(scene, bvh, prm, s, ii, rng);
@@ -713,6 +730,108 @@ fn hit_irradiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, h: &crate::bvh::Hi
         e[k] = base + prm.sun[k] * ndl_h * sun_v;
     }
     e
+}
+
+
+/// The sky radiance in direction `d` (unit): the cube when given, else the constant colour.
+fn sky_radiance(prm: &BakeParams, d: V3) -> [f32; 3] {
+    if let Some(g) = &prm.sky_grad {
+        return g.radiance(d);
+    }
+    match &prm.sky_cube {
+        Some(cube) => {
+            let l = cube.sample(d);
+            [l[0] * prm.sky_cube_scale, l[1] * prm.sky_cube_scale, l[2] * prm.sky_cube_scale]
+        }
+        None => prm.sky,
+    }
+}
+
+/// The game's peel model: E(texel) = Σ_D (4/N)·max(0, n·D)·L(D) over the full-sphere direction
+/// set, L(D) = the first surface along D — the sky (its radiance, as the dome renders it), a hit
+/// surface's bounce `albedo·(E_hit/bounce_decode + sun·max(0,n_h·L)·shadow)` (E_hit = the
+/// previous iteration's stored value, else its own sky share), or the ground/sea plane's bounce.
+/// With a uniform sky S over the sphere and no geometry, an up-facing texel gets exactly S.
+fn shade_peel(scene: &Scene, bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, rng: &mut Rng) -> Shaded {
+    let o = add(s.p, mul(s.n, 0.03));
+    let exact = !prm.sphere_dirs.is_empty();
+    let n = if exact { prm.sphere_dirs.len() } else { prm.sky_samples.max(16) };
+    let side = (n as f32).sqrt().ceil() as usize;
+    let rot = rng.next();
+    let mut e = [0f32; 3];
+    let mut sky_acc = [0f32; 3];
+    let mut bounce_acc = [0f32; 3];
+    let mut sky_vis = 0f32;
+    let mut sun_vis = 0f32;
+    let cone_cos = 0.0f32; // hit surfaces' own sky share: the hemisphere (cone_factor(hn, 0) = ½·(1+n.y))
+    for idx in 0..n {
+        let d = if exact {
+            prm.sphere_dirs[idx]
+        } else {
+            let (i, j) = (idx / side, idx % side);
+            let u = (i as f32 + rng.next()) / side as f32;
+            let v = ((j as f32 + rng.next()) / side as f32 + rot).fract();
+            let cos_t = 1.0 - 2.0 * u;
+            let sin_t = (1.0 - cos_t * cos_t).max(0.0).sqrt();
+            let phi = 2.0 * std::f32::consts::PI * v;
+            [sin_t * phi.cos(), cos_t, sin_t * phi.sin()]
+        };
+        let ndl = dot(s.n, d);
+        if ndl <= 0.0 {
+            continue;
+        }
+        let w = 4.0 / n as f32 * ndl;
+        // the ground/sea plane
+        let mut tmax = 1.0e4f32;
+        let mut ground_hit = false;
+        if d[1] < 0.0 && o[1] > prm.ground_y {
+            let tg = (prm.ground_y - o[1]) / d[1];
+            if tg < tmax {
+                tmax = tg;
+                ground_hit = true;
+            }
+        }
+        match bvh.closest(o, d, tmax) {
+            None if !ground_hit => {
+                let l = sky_radiance(prm, d);
+                for k in 0..3 {
+                    sky_acc[k] += w * l[k];
+                }
+                sky_vis += w;
+            }
+            None => {
+                // the sea/ground: its own sky share (a horizontal plane, half the sphere) + direct sun
+                let hp = add(o, mul(d, tmax));
+                let sun_v = if prm.sun_dir[1] > 0.0 && !bvh.occluded(add(hp, [0.0, 0.03, 0.0]), prm.sun_dir, 1.0e4, u32::MAX, 0.0) { 1.0 } else { 0.0 };
+                let up_sky = sky_radiance(prm, [0.0, 1.0, 0.0]);
+                for k in 0..3 {
+                    let e_ground = up_sky[k] / prm.bounce_decode + prm.sun[k] * prm.sun_dir[1].max(0.0) * sun_v;
+                    bounce_acc[k] += w * prm.ground_bounce * e_ground;
+                }
+            }
+            Some(h) => {
+                let tri = &bvh.tris[h.tri as usize];
+                let hn = norm(cross(tri.e1, tri.e2));
+                let hn = if dot(hn, d) > 0.0 { mul(hn, -1.0) } else { hn };
+                let e_hit = hit_irradiance(scene, bvh, prm, &h, o, d, hn, cone_cos);
+                // hit_irradiance adds the direct sun to the stored/own value; the stored part is read
+                // back divided by bounce_decode
+                let stored_share = if prm.field.is_some() { 1.0 / prm.bounce_decode } else { 1.0 };
+                for k in 0..3 {
+                    bounce_acc[k] += w * prm.bounce * prm.albedo * e_hit[k] * stored_share;
+                }
+            }
+        }
+    }
+    // the direct sun on the receiver only when asked (the game has none)
+    let ndl = dot(s.n, prm.sun_dir);
+    if prm.direct_sun > 0.0 && ndl > 0.0 && prm.sun_dir[1] > 0.0 && !bvh.occluded(o, prm.sun_dir, 1.0e4, ii, 0.05) {
+        sun_vis = 1.0;
+    }
+    for k in 0..3 {
+        e[k] = sky_acc[k] + bounce_acc[k] + prm.direct_sun * prm.sun[k] * ndl.max(0.0) * sun_vis;
+    }
+    Shaded { e, sky_vis: sky_vis / 2.0, sun_vis, bounce: bounce_acc, sky_rgb: sky_acc }
 }
 
 /// The share of the zenith cone's cosine-weighted light a surface of normal `hn` collects when

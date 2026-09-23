@@ -157,6 +157,12 @@ pub fn layout_params(w: u16, h: u16) -> (u16, u16, u16) {
 /// The full walk: density from the total area, the shrink-then-bisect scale search with
 /// `max_iter` steps. Returns (s_final texels/m, placements in packer units).
 pub fn allocate(charts: &[ChartExt], w_atlas: u16, h_atlas: u16, g: u16, m: u16, max_iter: u32) -> Option<(f32, Vec<Placed>)> {
+    let order = area_order(charts);
+    allocate_ordered(charts, &order, w_atlas, h_atlas, g, m, max_iter)
+}
+
+/// `allocate` with a caller-supplied ascending-area order (ties resolved by the caller).
+pub fn allocate_ordered(charts: &[ChartExt], order: &[usize], w_atlas: u16, h_atlas: u16, g: u16, m: u16, max_iter: u32) -> Option<(f32, Vec<Placed>)> {
     let n = charts.len();
     let sum_area: f64 = charts.iter().map(|c| (c.ext[0] as f64) * (c.ext[1] as f64)).sum();
     if sum_area <= 0.0 {
@@ -172,7 +178,6 @@ pub fn allocate(charts: &[ChartExt], w_atlas: u16, h_atlas: u16, g: u16, m: u16,
     if (w_atlas as f32 / g as f32) * (h_atlas as f32 / g as f32) * 0.9 < n as f32 {
         scale_hi = 0.01;
     }
-    let order = area_order(charts);
     let mut iter = 0u32;
     let mut scale_lo;
     let mut best;
@@ -180,7 +185,7 @@ pub fn allocate(charts: &[ChartExt], w_atlas: u16, h_atlas: u16, g: u16, m: u16,
         iter += 1;
         scale_lo = scale_hi * 0.9;
         let s = (scale_lo * d).sqrt();
-        if let Some(p) = try_pack(charts, &order, s, w_atlas, h_atlas, g, m) {
+        if let Some(p) = try_pack(charts, order, s, w_atlas, h_atlas, g, m) {
             best = p;
             break;
         }
@@ -200,7 +205,7 @@ pub fn allocate(charts: &[ChartExt], w_atlas: u16, h_atlas: u16, g: u16, m: u16,
         iter += 1;
         let mid = (scale_lo + scale_hi) / 2.0;
         let s = (mid * d).sqrt();
-        match try_pack(charts, &order, s, w_atlas, h_atlas, g, m) {
+        match try_pack(charts, order, s, w_atlas, h_atlas, g, m) {
             Some(p) => {
                 scale_lo = mid;
                 best = p;

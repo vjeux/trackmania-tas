@@ -16,6 +16,7 @@ pub mod moods;
 pub mod probe;
 pub mod probes;
 pub mod skycube;
+pub mod skygrad;
 pub mod synth;
 pub mod volume;
 pub mod vp8_tables;

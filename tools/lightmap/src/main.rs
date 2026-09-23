@@ -762,6 +762,37 @@ fn main() {
                 prm.sky = [x.l_ambient[0] * x.sky_factor * sky_s, x.l_ambient[1] * x.sky_factor * sky_s, x.l_ambient[2] * x.sky_factor * sky_s];
                 if let Some(g) = f("--ground-bounce") { prm.ground_bounce = g.parse().unwrap(); }
                 prm.bounce_sphere = has("--bounce-sphere");
+                // the game's peel model (RE child 2): the 256-point sphere set, first surface per direction
+                if has("--peel") {
+                    prm.peel = true;
+                    // the rendered sky: the mood's SkyColor gradient (+ Atmo lobes from its XML) unless --flat-sky;
+                    // --sky-grad-scale k scales the gradient (GlobalScale·ScaleGrad0 stand-in), --lobe-scale the lobes
+                    if !has("--flat-sky") {
+                        let coll = x.collection;
+                        let mood = x.mood;
+                        let path = f("--sky-grad").unwrap_or_else(|| lightmap::skygrad::mood_file(coll, mood, "SkyColor.dds"));
+                        match lightmap::skygrad::SkyGradient::load(&path) {
+                            Ok(mut g) => {
+                                g.scale = f("--sky-grad-scale").map(|s| s.parse().unwrap()).unwrap_or(1.0);
+                                g.sun_dir = prm.sun_dir;
+                                g.sun_az = prm.sun_dir[0].atan2(prm.sun_dir[2]);
+                                g.v_full = has("--v-full");
+                                if let Some(o) = f("--u-sun") { g.u_sun = o.parse().unwrap(); }
+                                if has("--u-flip") { g.u_sign = -1.0; }
+                                let lobe_scale: f32 = f("--lobe-scale").map(|s| s.parse().unwrap()).unwrap_or(1.0);
+                                if let Ok(xml) = std::fs::read_to_string(lightmap::skygrad::mood_file(coll, mood, "Mood.MoodSetting.xml")) {
+                                    g.lobes = lightmap::skygrad::lobes_from_xml(&xml).into_iter().map(|(p, c, s)| (p, c, s * lobe_scale)).collect();
+                                }
+                                eprintln!("sky: {} ({}×{}), scale {}, lobes {:?}", path.rsplit('/').next().unwrap(), g.w, g.h, g.scale, g.lobes.iter().map(|l| (l.0, l.2)).collect::<Vec<_>>());
+                                prm.sky_grad = Some(std::sync::Arc::new(g));
+                            }
+                            Err(e) => eprintln!("sky gradient: {e}; flat sky"),
+                        }
+                    }
+                    let pp = f("--points").unwrap_or_else(lightmap::dome::default_path);
+                    if let Ok(ps) = lightmap::dome::PointSets::load(&pp) { if let Some(set) = ps.set(256) { prm.sphere_dirs = std::sync::Arc::new(set.clone()); eprintln!("peel: {} sphere directions", set.len()); } }
+                    if let Some(v) = f("--bounce-decode") { prm.bounce_decode = v.parse().unwrap(); }
+                }
                 if has("--no-sun-bounce") { prm.sun = [0.0; 3]; }
                 // the decoration's ground/sea plane (the terrain collections' water sits at y ≈ 8 in the tiny
                 // maps' frame, the Stadium floor likewise) — a stand-in for the decoration meshes
@@ -2806,6 +2837,10 @@ fn main() {
             prm.dome_deg = f("--cone-deg").map(|s| s.parse().unwrap()).unwrap_or(40.0);
             prm.sky_samples = f("--samples").map(|s| s.parse().unwrap()).unwrap_or(4096);
             prm.sky = [1.0; 3]; prm.sun = [0.0; 3]; prm.direct_sun = 0.0; prm.bounce = 2.0; prm.albedo = 0.18; prm.ground_y = 8.0;
+            if a.iter().any(|x| x == "--peel") {
+                prm.peel = true;
+                if let Ok(ps) = lightmap::dome::PointSets::load(&lightmap::dome::default_path()) { if let Some(set) = ps.set(256) { prm.sphere_dirs = std::sync::Arc::new(set.clone()); } }
+            }
             let sh = lightmap::bake::shade_point(&scene, &bvh, &prm, v3(&a[2]), v3(&a[3]));
             println!("at {} n {}: sky share {:.4} (cone vis {:.4}), bounce {:?}, E {:?}", a[2], a[3], sh.sky_rgb[0], sh.sky_vis, sh.bounce, sh.e);
             // the geometry above: the first hit straight up and at 30° tilts
@@ -2838,6 +2873,85 @@ fn main() {
             for (k, v) in &per { if v.len() > 1 && shown < 5 { shown += 1; println!("  pixel {:?}: normals {:?}", k, v.iter().map(|n| [(n[0] * 100.0).round() / 100.0, (n[1] * 100.0).round() / 100.0, (n[2] * 100.0).round() / 100.0]).collect::<Vec<_>>()); } }
             let ys: Vec<f32> = samples.iter().filter(|s| s.n[1] > 0.9).map(|s| s.p[1]).collect();
             if !ys.is_empty() { let (mn, mx) = ys.iter().fold((f32::MAX, f32::MIN), |(a, b), &y| (a.min(y), b.max(y))); println!("  up-facing sample heights {mn:.3}..{mx:.3}"); }
+        }
+        "diff" => {
+            // lmtool diff EDITOR.Map.Gbx OURS.Map.Gbx: the gate's lossless parts, field by field — chunk head, frame
+            // records, the mapping (count, atlas size, bbox, per-chart (x, y, w, h), binds, f32s, per-frame bytes),
+            // the other cache chunks, the probe trailer, and the blob sizes. Prints the differing entries and a
+            // total of differing bytes in the lossless parts (0 = bit-identical). Exit 1 on any difference.
+            let load = |p: &str| { let o = lightmap::mapio::load(p).expect("load"); let d = o.chunk.data.clone().expect("lightmap"); (o.chunk.version, o.chunk.u01, o.chunk.u02, d) };
+            let (va, ua1, ua2, da) = load(&a[1]);
+            let (vb, ub1, ub2, db) = load(&a[2]);
+            let mut bytes_diff = 0usize;
+            let mut note = |what: &str, same: bool, n: usize| { if !same { bytes_diff += n.max(1); println!("  DIFF {what}"); } };
+            note(&format!("chunk head version/u01/u02 {va}/{ua1}/{ua2} vs {vb}/{ub1}/{ub2}"), (va, ua1, ua2) == (vb, ub1, ub2), 12);
+            note(&format!("lightmap version {} vs {}", da.lightmap_version, db.lightmap_version), da.lightmap_version == db.lightmap_version, 4);
+            note(&format!("frame count {} vs {}", da.frames.len(), db.frames.len()), da.frames.len() == db.frames.len(), 4);
+            for (fi, (fa, fb)) in da.frames.iter().zip(db.frames.iter()).enumerate() {
+                for (ii, (ia, ib)) in fa.images.iter().zip(fb.images.iter()).enumerate() {
+                    if ia.len() != ib.len() { println!("  info: frame {fi} image {ii}: {} vs {} bytes (lossy — compared by texels elsewhere)", ia.len(), ib.len()); }
+                }
+            }
+            let (ma, mb) = (da.cache.mapping().expect("mapping A"), db.cache.mapping().expect("mapping B"));
+            // frame records: the 66-byte records in the head
+            for i in 0..3 {
+                let r = 60 + 66 * i;
+                if r + 66 <= ma.head.len() && r + 66 <= mb.head.len() {
+                    let (ra, rb) = (&ma.head[r..r + 66], &mb.head[r..r + 66]);
+                    if ra != rb {
+                        let fields = ["Bump", "u0", "DayTime", "ReplayTime", "MaxHDR_Mood", "MaxHDR", "Bounce", "Sky", "SkyUseClouds", "f16×3", "f16/StoreLAmbient", "LocalLight_Storage", "LocalLight_Switch", "LAmbient.r", "LAmbient.g", "LAmbient.b"];
+                        let mut d = Vec::new();
+                        for (k, name) in fields.iter().enumerate() { let o = k * 4; if o + 4 <= 66 && ra[o..o + 4] != rb[o..o + 4] { d.push(format!("{name}: {:02x?} vs {:02x?}", &ra[o..o + 4], &rb[o..o + 4])); } }
+                        note(&format!("frame record {i}: {}", d.join("; ")), false, ra.iter().zip(rb).filter(|(x, y)| x != y).count());
+                    }
+                }
+            }
+            note(&format!("head bytes 0..60 (constants) differ"), ma.head[..60.min(ma.head.len())] == mb.head[..60.min(mb.head.len())], 60);
+            note(&format!("head tail (after the records) differs"), ma.head.get(258..) == mb.head.get(258..), 12);
+            note(&format!("mapping u01/atlas/u02/u03 {}/{}x{}/{}/{} vs {}/{}x{}/{}/{}", ma.m_u01, ma.atlas_w, ma.atlas_h, ma.m_u02, ma.m_u03, mb.m_u01, mb.atlas_w, mb.atlas_h, mb.m_u02, mb.m_u03), (ma.m_u01, ma.atlas_w, ma.atlas_h, ma.m_u02, ma.m_u03) == (mb.m_u01, mb.atlas_w, mb.atlas_h, mb.m_u02, mb.m_u03), 20);
+            note(&format!("bbox {:?}..{:?} vs {:?}..{:?}", ma.bbox_min, ma.bbox_max, mb.bbox_min, mb.bbox_max), ma.bbox_min == mb.bbox_min && ma.bbox_max == mb.bbox_max, 24);
+            note(&format!("chart count {} vs {}", ma.count, mb.count), ma.count == mb.count, 4);
+            // per chart, matched by object id
+            let index = |m: &lightmap::format::Mapping| -> std::collections::HashMap<(u32, u32), usize> { (0..m.count as usize).map(|i| ((m.binds[i].obj_group_idx, m.binds[i].obj_idx), i)).collect() };
+            let (ia, ib) = (index(ma), index(mb));
+            let (mut pos_d, mut size_d, mut f32_d, mut fb_d, mut missing) = (0usize, 0usize, 0usize, 0usize, 0usize);
+            let mut shown = 0;
+            for (key, &i) in &ia {
+                let Some(&j) = ib.get(key) else { missing += 1; continue };
+                if ma.size[i] != mb.size[j] { size_d += 1; }
+                if ma.pos[i] != mb.pos[j] { pos_d += 1; }
+                if ma.chart_f32[i].to_bits() != mb.chart_f32[j].to_bits() { f32_d += 1; }
+                for fr in 0..ma.frame_bytes.len().min(mb.frame_bytes.len()) { if ma.frame_bytes[fr][i] != mb.frame_bytes[fr][j] { fb_d += 1; } }
+                if (ma.size[i] != mb.size[j] || ma.pos[i] != mb.pos[j]) && shown < 8 { shown += 1; println!("  chart obj {}: A {}×{} at {:?}, B {}×{} at {:?}", key.0 / 4, ma.size[i].0, ma.size[i].1, ma.pos[i], mb.size[j].0, mb.size[j].1, mb.pos[j]); }
+            }
+            let order_same = ma.binds == mb.binds;
+            note(&format!("bind order/ids identical"), order_same, if order_same { 0 } else { 8 * ma.count as usize });
+            note(&format!("{missing} charts of A missing in B"), missing == 0, missing * 16);
+            note(&format!("{size_d} chart sizes differ"), size_d == 0, size_d * 4);
+            note(&format!("{pos_d} chart positions differ"), pos_d == 0, pos_d * 4);
+            note(&format!("{f32_d} chart f32s differ"), f32_d == 0, f32_d * 4);
+            note(&format!("{fb_d} per-frame chart bytes differ (the sqrt-domain chart max; lossy-adjacent)"), fb_d == 0, fb_d);
+            note(&format!("mapping tail {} vs {} bytes", ma.tail.len(), mb.tail.len()), ma.tail == mb.tail, ma.tail.len().max(mb.tail.len()));
+            // the other cache chunks
+            for (ca, cb) in da.cache.chunks.iter().zip(db.cache.chunks.iter()) {
+                if ca.id != cb.id { note(&format!("cache chunk id {:#x} vs {:#x}", ca.id, cb.id), false, 4); continue; }
+                if let (lightmap::format::ChunkBody::Raw(x), lightmap::format::ChunkBody::Raw(y)) = (&ca.body, &cb.body) {
+                    let hex = |b: &[u8]| b.iter().map(|v| format!("{v:02x}")).collect::<Vec<_>>().join(" ");
+                    let f32s = |b: &[u8]| b.chunks(4).filter(|c| c.len() == 4).map(|c| { let u = u32::from_le_bytes([c[0], c[1], c[2], c[3]]); let f = f32::from_bits(u); if f.is_finite() && f.abs() > 1e-6 && f.abs() < 1e6 { format!("{f:.4}") } else { format!("{u}") } }).collect::<Vec<_>>().join(", ");
+                    note(&format!("cache chunk {:#x} raw body {} vs {} bytes\n       A [{}] = ({})\n       B [{}] = ({})", ca.id, x.len(), y.len(), hex(x), f32s(x), hex(y), f32s(y)), x == y, x.len().max(y.len()));
+                }
+            }
+            note(&format!("cache chunk count {} vs {}", da.cache.chunks.len(), db.cache.chunks.len()), da.cache.chunks.len() == db.cache.chunks.len(), 4);
+            note(&format!("probe trailer {} vs {} bytes", da.cache.trailer.len(), db.cache.trailer.len()), da.cache.trailer == db.cache.trailer, da.cache.trailer.iter().zip(db.cache.trailer.iter()).filter(|(x, y)| x != y).count().max((da.cache.trailer.len() as i64 - db.cache.trailer.len() as i64).unsigned_abs() as usize));
+            println!("lossless parts: {bytes_diff} differing bytes{}", if bytes_diff == 0 { " — BIT-IDENTICAL" } else { "" });
+            if bytes_diff > 0 { std::process::exit(1); }
+        }
+        "skygrad" => {
+            // lmtool skygrad SkyColor.dds: decode the mood's sky gradient and print its row profile
+            let g = lightmap::skygrad::SkyGradient::load(&a[1]).expect("SkyColor");
+            println!("{}: {}×{}", a[1].rsplit('/').next().unwrap(), g.w, g.h);
+            println!("{}", g.profile());
+            // the column profile of the row through the brightest texel (the sun glow's u)
         }
         "skyprofile" => {
             // lmtool skyprofile CUBE.dds: radiance by elevation band (mean over azimuth) and the share of the
@@ -3058,8 +3172,22 @@ fn main() {
                 println!("best: s {:.3} with {} of {} sizes equal", best.1, best.0, charts.len());
                 return;
             }
-            let Some((s, placed)) = lightmap::pack::allocate(&charts, w_atlas, w_atlas, g, mmin, max_iter) else { println!("allocation failed"); return };
-            println!("s_final {s:.4} texels/m");
+            // --tie KEY: the order among equal areas (the editor sorts by block position-like keys before the
+            // area): index (default), x, z, y, -x, -z, -y, or combos like "z,x" (last key = most significant)
+            let tie = f("--tie").unwrap_or_else(|| "index".into());
+            let placed_order: Vec<usize> = {
+                let mut idx: Vec<usize> = (0..charts.len()).collect();
+                let pos_of = |k: usize| -> [f32; 3] { if ids[k] >= base { let inst = scene.instances.iter().find(|i| i.item as u32 == ids[k] - base).unwrap(); [inst.xf[9], inst.xf[10], inst.xf[11]] } else { let o = ids[k]; [(o % 64) as f32 * 16.0, 0.0, (o / 64) as f32 * 16.0] } };
+                for key in tie.split(',') {
+                    let (neg, axis) = match key.trim() { "x" => (false, 0), "y" => (false, 1), "z" => (false, 2), "-x" => (true, 0), "-y" => (true, 1), "-z" => (true, 2), _ => (false, 9) };
+                    if axis < 3 { idx.sort_by(|&a, &b| { let (pa, pb) = (pos_of(a)[axis], pos_of(b)[axis]); let o = pa.partial_cmp(&pb).unwrap(); if neg { o.reverse() } else { o } }); }
+                }
+                // the area sort last (stable)
+                idx.sort_by_key(|&i| (charts[i].ext[0] * charts[i].ext[1]).to_bits());
+                idx
+            };
+            let Some((s, placed)) = lightmap::pack::allocate_ordered(&charts, &placed_order, w_atlas, w_atlas, g, mmin, max_iter) else { println!("allocation failed"); return };
+            println!("s_final {s:.4} texels/m (tie {tie})");
             let (mut n_cmp, mut size_ok, mut pos_ok) = (0, 0, 0);
             let mut shown = 0;
             for (k, p) in placed.iter().enumerate() {
