@@ -179,6 +179,13 @@ pub fn cmd_build(args: &[String]) {
             let t = crate::actors::add_lakitu(&mut m, &frame, at, d);
             println!("  actors: Lakitu over the start ({t} triangles)");
         }
+        // Bowser's Thwomps, static, 2 m over the road
+        if dir == "bowsers_castle" {
+            let soup = mesh::collision_mesh(&c, &coll, &frame);
+            let floor = |x: f32, z: f32| -> Option<f32> { soup.iter().filter_map(|t| height_under(t, x, z)).fold(None, |m: Option<f32>, h| Some(m.map_or(h, |v| v.max(h)))) };
+            let t = crate::actors::add_thwomps(&c, &mut m, &frame, &floor, 2.0);
+            println!("  actors: Thwomps ({t} triangles)");
+        }
     }
     let (splits, variants) = if args.iter().any(|a| a == "--no-vertex-colours") { (0, m.materials.len()) } else { mesh::bake_vertex_colours(&mut m, 16, 24, 4) };
     println!("  vertex colours baked: {splits} triangle splits, {variants} texture variants");
