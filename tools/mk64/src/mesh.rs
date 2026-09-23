@@ -222,3 +222,97 @@ pub fn normalize(v: [f32; 3]) -> [f32; 3] {
 pub fn face_normal(p: &[[f32; 3]; 3]) -> [f32; 3] {
     normalize(cross(sub(p[1], p[0]), sub(p[2], p[0])))
 }
+
+/// Metres per MK64 unit: the official lap lengths over the centre-path
+/// lengths agree to 0.3 % on all 15 measured courses (0.0565–0.0568;
+/// Rainbow Road's rounded "2000 m" reads 0.0562). One constant for all.
+pub const UNITS_TO_M: f32 = 0.05673;
+
+/// The plateau problem: a course sits above the Stadium grass (its lowest
+/// road point must clear the solid ground plane), so its outer terrain edges
+/// hang in the air. This closes them: every upward-facing triangle edge with
+/// no geometry beyond it (top view) grows a vertical quad down to `ground_y`,
+/// textured like the triangle it hangs from. Returns the number of quads.
+pub fn add_skirt(mesh: &mut Mesh, ground_y: f32) -> usize {
+    let key = |p: [f32; 3]| [(p[0] * 100.0).round() as i64, (p[1] * 100.0).round() as i64, (p[2] * 100.0).round() as i64];
+    // edge → (count, first triangle index)
+    let mut edges: HashMap<([i64; 3], [i64; 3]), (u32, usize)> = HashMap::new();
+    let mut up: Vec<usize> = Vec::new();
+    for (ti, t) in mesh.tris.iter().enumerate() {
+        let n = face_normal(&[t.c[0].pos, t.c[1].pos, t.c[2].pos]);
+        if n[1] < 0.6 || t.two_sided {
+            continue;
+        }
+        up.push(ti);
+        for e in 0..3 {
+            let (a, b) = (key(t.c[e].pos), key(t.c[(e + 1) % 3].pos));
+            let k = if a < b { (a, b) } else { (b, a) };
+            let ent = edges.entry(k).or_insert((0, ti));
+            ent.0 += 1;
+        }
+    }
+    // coverage: every non-vertical triangle projected to the ground
+    let cover: Vec<[[f32; 3]; 3]> = mesh
+        .tris
+        .iter()
+        .filter(|t| face_normal(&[t.c[0].pos, t.c[1].pos, t.c[2].pos])[1].abs() > 0.05)
+        .map(|t| [t.c[0].pos, t.c[1].pos, t.c[2].pos])
+        .collect();
+    let covered = |x: f32, z: f32, y: f32| -> bool {
+        cover.iter().any(|p| {
+            let e = |a: [f32; 3], b: [f32; 3]| (b[0] - a[0]) * (z - a[2]) - (b[2] - a[2]) * (x - a[0]);
+            let (w0, w1, w2) = (e(p[1], p[2]), e(p[2], p[0]), e(p[0], p[1]));
+            let inside = (w0 >= -1e-3 && w1 >= -1e-3 && w2 >= -1e-3) || (w0 <= 1e-3 && w1 <= 1e-3 && w2 <= 1e-3);
+            inside && p.iter().any(|q| (q[1] - y).abs() < 40.0)
+        })
+    };
+    let mut added = 0;
+    let mut new_tris: Vec<Tri> = Vec::new();
+    for &ti in &up {
+        let t = mesh.tris[ti];
+        for e in 0..3 {
+            let (pa, pb) = (t.c[e].pos, t.c[(e + 1) % 3].pos);
+            let (a, b) = (key(pa), key(pb));
+            let k = if a < b { (a, b) } else { (b, a) };
+            let Some(&(count, first)) = edges.get(&k) else { continue };
+            if count != 1 || first != ti {
+                continue;
+            }
+            let pc = t.c[(e + 2) % 3].pos;
+            let mid = [(pa[0] + pb[0]) / 2.0, (pa[1] + pb[1]) / 2.0, (pa[2] + pb[2]) / 2.0];
+            let out = normalize([mid[0] - pc[0], 0.0, mid[2] - pc[2]]);
+            let probe = [mid[0] + out[0] * 1.5, mid[2] + out[2] * 1.5];
+            if covered(probe[0], probe[1], mid[1]) {
+                continue;
+            }
+            if pa[1] <= ground_y + 0.05 && pb[1] <= ground_y + 0.05 {
+                continue;
+            }
+            // texture density along the source edge (texture repeats per metre)
+            let (ua, ub) = (t.c[e].uv, t.c[(e + 1) % 3].uv);
+            let len = ((pb[0] - pa[0]).powi(2) + (pb[2] - pa[2]).powi(2)).sqrt().max(0.01);
+            let du = ((ub[0] - ua[0]).powi(2) + (ub[1] - ua[1]).powi(2)).sqrt();
+            let density = if du > 1e-4 { du / len } else { 0.25 };
+            let depth_a = pa[1] - ground_y;
+            let depth_b = pb[1] - ground_y;
+            let ga = [pa[0], ground_y, pa[2]];
+            let gb = [pb[0], ground_y, pb[2]];
+            let c = |p: [f32; 3], uv: [f32; 2], rgba: [u8; 4]| Corner { pos: p, uv, rgba };
+            let ca = c(pa, [0.0, 0.0], t.c[e].rgba);
+            let cb = c(pb, [len * density, 0.0], t.c[(e + 1) % 3].rgba);
+            let cga = c(ga, [0.0, depth_a * density], t.c[e].rgba);
+            let cgb = c(gb, [len * density, depth_b * density], t.c[(e + 1) % 3].rgba);
+            // winding: normal = cross(b−a, c−a) must point along `out`
+            let quad = [[ca, cb, cgb], [ca, cgb, cga]];
+            for q in quad {
+                let n = face_normal(&[q[0].pos, q[1].pos, q[2].pos]);
+                let dot = n[0] * out[0] + n[2] * out[2];
+                let cc = if dot >= 0.0 { q } else { [q[0], q[2], q[1]] };
+                new_tris.push(Tri { c: cc, mat: t.mat, two_sided: false, lit: t.lit, piece: t.piece });
+            }
+            added += 1;
+        }
+    }
+    mesh.tris.extend(new_tris);
+    added
+}

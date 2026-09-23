@@ -58,11 +58,8 @@ pub fn frame_for(course: &Course, args: &[String]) -> Frame {
     let scale = match flag(args, "--scale") {
         Some(s) => s.parse::<f32>().expect("--scale number"),
         None => {
-            let len = course.path_length() as f32;
-            match course::official_length_m(&course.dir) {
-                Some(m) if len > 0.0 => m / len,
-                _ => 0.1,
-            }
+            let _ = course;
+            mesh::UNITS_TO_M
         }
     };
     Frame { scale, mirror: has(args, "--mirror"), offset: [0.0; 3] }
@@ -188,24 +185,6 @@ fn cmd_stats(args: &[String]) {
     }
 }
 
-/// Every material's image, mirrored per the material's wrap flags, from the ROM.
-pub fn material_images(mesh: &mesh::Mesh, assets: &AssetIndex, rom: &mut Rom) -> (HashMap<usize, Image>, Vec<String>) {
-    let mut out = HashMap::new();
-    let mut missing = Vec::new();
-    for (i, m) in mesh.materials.iter().enumerate() {
-        match assets.locate(&m.sym).ok_or_else(|| "not in the asset index".to_string()).and_then(|loc| rom.texture(&loc)) {
-            Ok(img) => {
-                out.insert(i, img.mirrored(m.mirror_s, m.mirror_t));
-            }
-            Err(e) => {
-                missing.push(format!("{}: {e}", m.sym));
-                out.insert(i, Image::solid(m.w.max(1), m.h.max(1), [255, 0, 255, 255]));
-            }
-        }
-    }
-    (out, missing)
-}
-
 fn open_rom(args: &[String]) -> Rom {
     let p = rom_path(args).unwrap_or_else(|| {
         eprintln!("need --rom FILE or $MK64_ROM");
@@ -226,7 +205,7 @@ fn cmd_textures(args: &[String]) {
     let pieces = c.visual_pieces();
     let frame = frame_for(&c, args);
     let m = mesh::visual_mesh(&c, &pieces, Some(&assets), &frame);
-    let (images, missing) = material_images(&m, &assets, &mut rom);
+    let (images, missing) = mk64::tm::material_images(&m, &assets, &mut rom);
     for (i, mat) in m.materials.iter().enumerate() {
         let img = &images[&i];
         let png = mapgeom::render::png(&mapgeom::render::Image { w: img.w as usize, h: img.h as usize, rgb: img.rgba.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect() });
@@ -261,7 +240,7 @@ fn cmd_render(args: &[String]) {
         let images = match (assets.as_ref(), rom_path(args)) {
             (Some(a), Some(_)) => {
                 let mut rom = open_rom(args);
-                let (imgs, missing) = material_images(&m, a, &mut rom);
+                let (imgs, missing) = mk64::tm::material_images(&m, a, &mut rom);
                 for x in missing {
                     eprintln!("texture missing: {x}");
                 }
