@@ -779,7 +779,7 @@ fn main() {
                             Ok(mut g) => {
                                 // the gradient's global scale: 1.6 fits the BlueBay Sunset open floor (0.607) — per-mood
                                 // values pending (GlobalScale·ScaleGrad0 from the runtime sky constants)
-                                g.scale = f("--sky-grad-scale").map(|s| s.parse().unwrap()).unwrap_or(1.6) * x.sky_factor;
+                                g.scale = f("--sky-grad-scale").map(|s| s.parse().unwrap()).unwrap_or_else(|| lightmap::moods::sky_grad_scale(coll, mood)) * x.sky_factor;
                                 g.sun_dir = prm.sun_dir;
                                 g.sun_az = prm.sun_dir[0].atan2(prm.sun_dir[2]);
                                 g.v_full = has("--v-full");

@@ -246,3 +246,18 @@ pub fn default_daytime(collection: &str, mood: &str) -> u32 {
         _ => if stadium { 0x8111 } else { 0x9b59 },
     }
 }
+
+/// The sky gradient's global scale per mood (GlobalScale·ScaleGrad0 of the runtime sky, not yet read
+/// from the exe) — FITTED on the q4 editor references so an open floor's mean matches: BlueBay Sunset
+/// (tiny 16) 1.6, WhiteShore Day (tiny 03 reduced) 1.57, Stadium Sunrise (giant 20 ×2 reduced) 0.88;
+/// unmeasured moods take the collection's nearest or 1.6.
+pub fn sky_grad_scale(collection: &str, mood: &str) -> f32 {
+    let c = collection.to_ascii_lowercase();
+    match (c.as_str(), normalise_mood(mood)) {
+        ("bluebay", "Sunset") => 1.6,
+        ("whiteshore", "Day") => 1.57,
+        ("stadium", "Sunrise") => 0.88,
+        ("stadium", _) => 0.88,
+        _ => 1.6,
+    }
+}
