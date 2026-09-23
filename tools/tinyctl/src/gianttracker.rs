@@ -45,6 +45,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
     }
     // publish results: path name uid mapId how bytes md5 verdict
+    // --sources S.tsv: scale, nn, lightmap source (editor|lmtool), object base
+    let mut sources: HashMap<String, (String, String)> = HashMap::new();
+    for p in f("--sources").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
+        for r in rows(p).into_iter().skip(1) {
+            if r.len() >= 4 { sources.insert(format!("{}\t{}", r[0], r[1]), (r[2].clone(), r[3].clone())); }
+        }
+    }
     let mut publish: HashMap<String, (String, String, String)> = HashMap::new();
     for p in f("--publish").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
         for r in rows(p) {
@@ -56,8 +63,8 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         }
     }
     let mut md = String::new();
-    md.push_str("| scale | map | name | uid | author | gold | silver | bronze | grid | decoration | pool tiles | bytes | item-check | start-check | lightmap | Nadeo mapId | stored md5 |\n");
-    md.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
+    md.push_str("| scale | map | name | uid | author | gold | silver | bronze | grid | decoration | pool tiles | bytes | item-check | start-check | lightmap | base | Nadeo mapId | stored md5 |\n");
+    md.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     let mut n = 0usize;
     for r in rows(&summary) {
         if r.len() < 8 {
@@ -68,12 +75,17 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
         let t = |i: usize| times.get(i).map(|s| tmmaps::secs::secs_str(s)).unwrap_or_else(|| "-".into());
         let key = format!("{scale}\t{nn}");
         let sc = startcheck.get(&key).cloned().unwrap_or_else(|| "-".into());
-        let (lm, lm_bytes) = lightmap.get(&key).cloned().unwrap_or_else(|| ("-".into(), String::new()));
-        let bytes = if lm == "ok" && !lm_bytes.is_empty() { lm_bytes.clone() } else { r.get(8).cloned().unwrap_or_default() };
+        let (lm0, lm_bytes) = lightmap.get(&key).cloned().unwrap_or_else(|| ("-".into(), String::new()));
+        let (src, base) = sources.get(&key).cloned().unwrap_or_else(|| (lm0.clone(), "-".into()));
+        let lm = src;
+        // --final ROOT: the shipped file ROOT/xK/Summer-NN-Giant.Map.Gbx gives the bytes
+        let final_path = f("--final").map(|root| format!("{root}/{scale}/Summer-{nn}-Giant.Map.Gbx"));
+        let final_bytes = final_path.as_ref().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len().to_string());
+        let bytes = final_bytes.unwrap_or_else(|| if lm == "ok" && !lm_bytes.is_empty() { lm_bytes.clone() } else { r.get(8).cloned().unwrap_or_default() });
         let (map_id, md5, verdict) = publish.get(uid).cloned().unwrap_or_else(|| ("-".into(), "-".into(), String::new()));
         let md5_col = if verdict.is_empty() { "-".to_string() } else { format!("{} {}", &md5[..md5.len().min(8)], verdict) };
         let over = r.get(9).map(|o| o.trim()).filter(|o| !o.is_empty()).map(|o| format!(" ({o})")).unwrap_or_default();
-        md.push_str(&format!("| {scale} | {nn} | {name} | `{uid}` | {} | {} | {} | {} | {}{over} | {} | {} | {} | ok | {} | {} | {} | {} |\n", t(0), t(1), t(2), t(3), r[5], r[6], r[7], bytes, sc, lm, map_id, md5_col));
+        md.push_str(&format!("| {scale} | {nn} | {name} | `{uid}` | {} | {} | {} | {} | {}{over} | {} | {} | {} | ok | {} | {} | {} | {} | {} |\n", t(0), t(1), t(2), t(3), r[5], r[6], r[7], bytes, sc, lm, base, map_id, md5_col));
         n += 1;
     }
     std::fs::write(&out, &md).map_err(|e| format!("{}: {e}", out.display()))?;
