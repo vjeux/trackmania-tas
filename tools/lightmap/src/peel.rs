@@ -355,11 +355,19 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
             if dt.water {
                 // the light arrives along −D at the texel, i.e. it left the water travelling along −D; it came
                 // from the sky direction r = reflect(−D about the water normal (up)) = (−D) − 2(−D·n)n
-                let inc = [-d[0], -d[1], -d[2]];
-                let r = [inc[0], -inc[1], inc[2]];
+                // (d points from the texel down onto the water; the sky ray that reflects into −d comes from
+                // the direction (d.x, −d.y, d.z) seen from the water)
+                let r = [d[0], -d[1], d[2]];
                 if r[1] > 0.0 {
                     let s = sky_radiance(prm, r);
                     for k in 0..3 { out[k] += prm.water_reflect * s[k]; }
+                    // the sun's glitter: a broad specular lobe of the sun on the sea (--water-sun K [--water-sun-pow P]);
+                    // the editor's Sunset slopes facing the sea carry the sun's own colour (R:G:B 1:0.8:0.16)
+                    if prm.water_sun > 0.0 && prm.sun_dir[1] > 0.0 {
+                        let c = dot(r, prm.sun_dir).max(0.0);
+                        let f = prm.water_sun * c.powf(prm.water_sun_pow);
+                        for k in 0..3 { out[k] += f * prm.sun[k]; }
+                    }
                 }
             }
         }
@@ -545,7 +553,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 eprintln!("  dir {di}: instance {k} has {ntri} tris, world {:?}..{:?}, projecting to x {:.1}..{:.1} y {:.1}..{:.1}, {n} fragments in the A-buffer (res {}); frame r ({:.2},{:.2},{:.2}) u ({:.2},{:.2},{:.2}) s0 {:.1} t0 {:.1} scale {:.3}", wlo, whi, lo[0], hi[0], lo[1], hi[1], frame.res, frame.r[0], frame.r[1], frame.r[2], frame.u[0], frame.u[1], frame.u[2], frame.s0, frame.t0, frame.scale);
             }
         }
-        if !dbg_subs.is_empty() && dbg_printed.load(std::sync::atomic::Ordering::Relaxed) < 40 {
+        if !dbg_subs.is_empty() && (dbg_printed.load(std::sync::atomic::Ordering::Relaxed) < 40 || std::env::var_os("LMTOOL_PEEL_DEBUG_ALL").is_some()) {
             for &i in &dbg_subs {
                 let s = &subs[i as usize];
                 if s.group as usize != g { continue; }

@@ -49,6 +49,9 @@ pub struct BakeParams {
     pub decor_sky_up: [f32; 3],
     /// The water surfaces' sky reflectance in the peel (0 = none).
     pub water_reflect: f32,
+    /// The sun's specular glitter on water: radiance += K · cos^P(r·sun) · LDirSun.
+    pub water_sun: f32,
+    pub water_sun_pow: f32,
     /// One-bounce factor (0 = off) and the average albedo it uses.
     pub bounce: f32,
     pub albedo: f32,
@@ -142,6 +145,8 @@ impl Default for BakeParams {
             l_ambient: [0.0; 3],
             decor_sky_up: [0.0; 3],
             water_reflect: 0.5,
+            water_sun: 0.0,
+            water_sun_pow: 8.0,
             albedo: 0.5,
             flip_v: false,
             uv_bounds: false,

@@ -765,6 +765,48 @@ fn run(a: Vec<String>) {
                     }
                 }
             }
+            // THE ZONE TILES the game regenerates from the genealogy (chunk 0x03043043: one CurrentZoneId per
+            // cell; the tiny maps' BlueBay genealogy is Sea ×4096) — the Scene3d meshes leave the whole map
+            // area open (the Water and WarpSand have a hole over 0..2048 × 0..2048), the tiles fill it. Each
+            // Sea/Water/Lake cell = a water quad at the collection's sea level (BlueBay 7.0, RedIsland −0.3,
+            // WhiteShore −1.0, GreenCoast −0.8 — the Scene3d water heights) over a sand floor 3 m under it;
+            // a Land-type cell = a land plane at sea level + 3 (BlueBay's Land tile top is at +2 over the
+            // cell above the sea's). With an EMPTY genealogy the map's own Sea BLOCKS are the water cells.
+            // --no-zone-tiles drops them.
+            if !has("--no-zone-tiles") {
+                let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
+                let envir = hdr.as_ref().map(|h| h.envir.to_ascii_lowercase()).unwrap_or_default();
+                let sea_y: f32 = f("--sea-y").map(|s| s.parse().unwrap()).unwrap_or(match envir.as_str() { "bluebay" => 7.0, "redisland" => -0.3, "whiteshore" => -1.0, "greencoast" => -0.8, _ => f32::NAN });
+                if sea_y.is_finite() {
+                    let zones = mf.genealogy_zones();
+                    let mut water_cells: Vec<(u32, u32)> = Vec::new();
+                    let mut land_cells: Vec<(u32, u32)> = Vec::new();
+                    if zones.len() == 4096 {
+                        for (i, z) in zones.iter().enumerate() {
+                            let (cx, cz) = ((i % 64) as u32, (i / 64) as u32);
+                            let zl = z.to_ascii_lowercase();
+                            if zl.contains("sea") || zl.contains("water") || zl.contains("lake") { water_cells.push((cx, cz)); } else if !zl.is_empty() { land_cells.push((cx, cz)); }
+                        }
+                    } else {
+                        for b in mf.blocks.iter().chain(mf.baked.iter()) {
+                            let nl = b.name.to_ascii_lowercase();
+                            if nl == "sea" || nl == "water" || nl == "lake" { let c = b.coords(); water_cells.push((c.0 as u32, c.2 as u32)); }
+                        }
+                    }
+                    let water_alb = lightmap::albedo::for_link("Water").unwrap_or([0.3; 3]);
+                    let sand_alb = lightmap::albedo::for_link("Sand").unwrap_or([0.5; 3]);
+                    let land_alb = lightmap::albedo::for_link("Land").unwrap_or([0.2; 3]);
+                    let mut quad = |cx: u32, cz: u32, y: f32, alb: [f32; 3], water: bool| {
+                        let (x0, z0) = (cx as f32 * 32.0, cz as f32 * 32.0);
+                        let q = [[x0, y, z0], [x0 + 32.0, y, z0], [x0 + 32.0, y, z0 + 32.0], [x0, y, z0 + 32.0]];
+                        scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[1]], albedo: alb, water });
+                        scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[3], q[2]], albedo: alb, water });
+                    };
+                    for &(cx, cz) in &water_cells { quad(cx, cz, sea_y, water_alb, true); quad(cx, cz, sea_y - 3.0, sand_alb, false); }
+                    for &(cx, cz) in &land_cells { quad(cx, cz, sea_y + 3.0, land_alb, false); }
+                    eprintln!("zone tiles: {} water cells (sea level {sea_y}), {} land cells ({})", water_cells.len(), land_cells.len(), if zones.len() == 4096 { "from the genealogy" } else { "from the map's Sea blocks — the genealogy is empty" });
+                }
+            }
             // the raster peel has no analytic ground: without a decoration mesh, a ground/sea quad at
             // --ground-y (8 m: the sea of the terrain collections, the Stadium floor) with the ground's bounce
             // albedo stands in (a downward direction must hit SOMETHING dark, not the sky gradient's bottom rows)
@@ -919,6 +961,8 @@ fn run(a: Vec<String>) {
                 prm.sun = if has("--no-sun-bounce") { [0.0; 3] } else { x.l_dir_sun };
                 if let Some(v) = f("--decor-ambient") { prm.decor_ambient = v.parse().unwrap(); }
                 if let Some(v) = f("--water-reflect") { prm.water_reflect = v.parse().unwrap(); }
+                if let Some(v) = f("--water-sun") { prm.water_sun = v.parse().unwrap(); }
+                if let Some(v) = f("--water-sun-pow") { prm.water_sun_pow = v.parse().unwrap(); }
                 prm.direct_sun = 0.0;
                 prm.ambient = [0.0; 3]; prm.up = [0.0; 3];
                 prm.bounce = f("--bounce").map(|s| s.parse().unwrap()).unwrap_or(x.bounce_factor);
@@ -3803,6 +3847,7 @@ fn run(a: Vec<String>) {
             let mut flat_skipped = 0usize;
             let mut classes: Vec<u8> = Vec::new();
             let mut rows_rgb: Vec<([f32; 3], [f32; 3])> = Vec::new();
+            let sun_az_ref: Option<f32> = f("--sun-az-ref").map(|s| s.parse().unwrap());
             for (ii, inst) in scene.instances.iter().enumerate().step_by(step) {
                 let row0 = rows.len();
                 let (Some(&i), Some(&j)) = (ca.get(&(inst.item as u32)), cb.get(&(inst.item as u32))) else { continue };
@@ -3829,7 +3874,10 @@ fn run(a: Vec<String>) {
                     rows_rgb.push(([lightmap::synth::decode_value(c[0], fba) * fma, lightmap::synth::decode_value(c[1], fba) * fma, lightmap::synth::decode_value(c[2], fba) * fma], [lightmap::synth::decode_value(c2[0], fbb) * fmb, lightmap::synth::decode_value(c2[1], fbb) * fmb, lightmap::synth::decode_value(c2[2], fbb) * fmb]));
                     // the gate class: vegetation (AV items and alpha-tested cards), else small chart (< 64 texels),
                     // else by the normal: floor (up), underside (down), wall (vertical), slanted
-                    let cls: u8 = if inst.model_name.starts_with("AV") || s.cut { 4 } else if (pwa * pha) < 64 { 5 } else if s.n[1] > 0.7 { 0 } else if s.n[1] < -0.7 { 1 } else if s.n[1].abs() < 0.3 { 2 } else { 3 };
+                    // slanted and vertical faces split by whether they face the sun's azimuth (--sun-az-ref D, my
+                    // frame: atan2(x, z)) — classes 6/7 = slanted/walls turned AWAY from it
+                    let facing_sun = match sun_az_ref { Some(az) => { let (sx, sz) = (az.to_radians().sin(), az.to_radians().cos()); s.n[0] * sx + s.n[2] * sz > 0.0 } None => true };
+                    let cls: u8 = if inst.model_name.starts_with("AV") || s.cut { 4 } else if (pwa * pha) < 64 { 5 } else if s.n[1] > 0.7 { 0 } else if s.n[1] < -0.7 { 1 } else if s.n[1].abs() < 0.3 { if facing_sun { 2 } else { 7 } } else if facing_sun { 3 } else { 6 };
                     classes.push(cls);
                     if per_item { let e = if per_rgb.last().map(|r| r.0) == Some(inst.item) { per_rgb.last_mut().unwrap() } else { per_rgb.push((inst.item, [0.0; 3], [0.0; 3])); per_rgb.last_mut().unwrap() }; for k in 0..3 { e.1[k] += (lightmap::synth::decode_value(c[k], fba) * fma) as f64; e.2[k] += (lightmap::synth::decode_value(c2[k], fbb) * fmb) as f64; } }
                 }
@@ -3859,7 +3907,7 @@ fn run(a: Vec<String>) {
             if flat_skipped > 0 { println!("{flat_skipped} items skipped: their reference chart is unwritten (one flat value)"); }
             // the per-class gate table
             {
-                let names = ["floors (up)", "undersides (down)", "walls (vertical)", "slanted", "vegetation (AV items + cards)", "small charts (< 64 texels)"];
+                let names = ["floors (up)", "undersides (down)", "walls (vertical, sun side)", "slanted (sun side)", "vegetation (AV items + cards)", "small charts (< 64 texels)", "slanted (away from the sun)", "walls (away from the sun)"];
                 println!("per class: texels ref-mean ours-mean ratio rmse(% of ref mean)");
                 for c in 0..names.len() {
                     let sel: Vec<&(f64, f64, bool)> = rows.iter().zip(classes.iter()).filter(|(_, k)| **k as usize == c).map(|(r, _)| r).collect();
