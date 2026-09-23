@@ -773,8 +773,8 @@ fn run(a: Vec<String>) {
                 let ga: f32 = f("--ground-bounce").map(|s| s.parse().unwrap()).unwrap_or(0.37);
                 let (lo, hi) = (-4096.0f32, 8192.0f32);
                 let q = [[lo, gy, lo], [hi, gy, lo], [hi, gy, hi], [lo, gy, hi]];
-                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[1], q[2]], albedo: [ga; 3] });
-                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[3]], albedo: [ga; 3] });
+                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[1], q[2]], albedo: [ga; 3], water: false });
+                scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[3]], albedo: [ga; 3], water: false });
                 eprintln!("decoration: none — a ground quad at y = {gy} (albedo {ga}) stands in");
             }
             eprintln!("scene: {} models, {} instances, {} triangles (+ {} decoration) ({:.1}s)", scene.models.len(), scene.instances.len(), scene.tri_count(), scene.decor.len(), t0.elapsed().as_secs_f32());
@@ -848,6 +848,7 @@ fn run(a: Vec<String>) {
                                 g.sun_dir = prm.sun_dir;
                                 g.sun_az = prm.sun_dir[0].atan2(prm.sun_dir[2]);
                                 g.v_full = has("--v-full");
+                                g.v_sin = !has("--v-linear");
                                 if has("--v-flip") || (fit.2 && !has("--no-v-flip")) { g.v_top_is_zenith = false; }
                                 if let Some(o) = f("--u-sun") { g.u_sun = o.parse().unwrap(); }
                                 if has("--u-flip") { g.u_sign = -1.0; }
@@ -888,7 +889,11 @@ fn run(a: Vec<String>) {
                     if let Ok(ps) = lightmap::dome::PointSets::load(&pp) { if let Some(set) = ps.nearest(n0) { prm.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); eprintln!("peel: quality {q}, sweeps {:?}, first set {} directions (rotated)", counts, set.len()); } }
                     // the lightmap-so-far is read back divided by BounceFactor (RE child 2 (d)); the Day-quarter
                     // test bake confirms a weak bounce (a pad under an 8 m plate: 51 % of open, walls 43 % of floors)
-                    prm.bounce_decode = f("--bounce-decode").map(|v| v.parse().unwrap()).unwrap_or(x.bounce_factor.max(1.0));
+                    // the read-back divisor: 1 (DIFFERENTIAL, 2026-09-23 21:35Z — the pad-only test map's post
+                    // faces at Day 0.93 → 0.98 and at Sunset 0.67 → 0.76 of the editor with the floors unchanged;
+                    // RE 3 read the ÷BounceFactor on the decode scales but not whether the accumulate constant
+                    // compensates it — the measurement says it does). --bounce-decode overrides.
+                    prm.bounce_decode = f("--bounce-decode").map(|v| v.parse().unwrap()).unwrap_or(1.0);
                     if let Some(v) = f("--horizon-el") { prm.horizon_el = v.parse().unwrap(); }
                     if let Some(v) = f("--horizon-rgb") { prm.horizon_radiance = parse_rgb(&v); }
                 }
@@ -913,6 +918,7 @@ fn run(a: Vec<String>) {
                 }
                 prm.sun = if has("--no-sun-bounce") { [0.0; 3] } else { x.l_dir_sun };
                 if let Some(v) = f("--decor-ambient") { prm.decor_ambient = v.parse().unwrap(); }
+                if let Some(v) = f("--water-reflect") { prm.water_reflect = v.parse().unwrap(); }
                 prm.direct_sun = 0.0;
                 prm.ambient = [0.0; 3]; prm.up = [0.0; 3];
                 prm.bounce = f("--bounce").map(|s| s.parse().unwrap()).unwrap_or(x.bounce_factor);
@@ -945,7 +951,8 @@ fn run(a: Vec<String>) {
                 // Checked against the BlueBay DayTime series: u 0.312 → the glow due −X at 1.8°, u 0.854 → +X
                 // at 4.1°, u 0.607 → 67° high. --sunrise/--sunfall/--sun-w override the curve, --sun-lat the latitude.
                 let t_r: f32 = f("--sunrise").map(|s| s.parse().unwrap()).unwrap_or(0.25);
-                let t_s: f32 = f("--sunfall").map(|s| s.parse().unwrap()).unwrap_or(0.75);
+                // the decoration blenders (RE child 4, the five CPlugMoodBlender XMLs): SunRise 06:00, SunFall 21:00
+                let t_s: f32 = f("--sunfall").map(|s| s.parse().unwrap()).unwrap_or(0.875);
                 let w_b: f32 = f("--sun-w").map(|s| s.parse().unwrap()).unwrap_or(1.0 / 48.0);
                 let lat_d: f32 = f("--sun-lat").map(|s| s.parse().unwrap()).unwrap_or(x.latitude);
                 let (mut az_d, mut el_d) = {
@@ -3700,14 +3707,15 @@ fn run(a: Vec<String>) {
                 if let Some(ii) = scene_opt.as_ref().and_then(|s| s.instances.iter().position(|q| q.item as u32 == *it)) {
                     let scene = scene_opt.as_ref().unwrap();
                     let (samples, _) = lightmap::bake::rasterise_pub(scene, ii, pw, ph, false, true);
-                    let mut acc: std::collections::BTreeMap<&str, (f64, usize)> = Default::default();
+                    let mut acc: std::collections::BTreeMap<&str, (f64, usize, [f64; 3])> = Default::default();
                     for s in &samples {
                         let cls = if s.n[1] > 0.7 { "up" } else if s.n[1] < -0.7 { "down" } else if s.n[0] > 0.7 { "+x" } else if s.n[0] < -0.7 { "-x" } else if s.n[2] > 0.7 { "+z" } else if s.n[2] < -0.7 { "-z" } else { "slanted" };
                         let c = ia.get((px + s.px).min(ia.w - 1), (py + s.py).min(ia.h - 1));
-                        let l = (0.2126 * lightmap::synth::decode_value(c[0], fb) + 0.7152 * lightmap::synth::decode_value(c[1], fb) + 0.0722 * lightmap::synth::decode_value(c[2], fb)) * fm;
-                        let e = acc.entry(cls).or_insert((0.0, 0)); e.0 += l as f64; e.1 += 1;
+                        let rgb = [lightmap::synth::decode_value(c[0], fb) * fm, lightmap::synth::decode_value(c[1], fb) * fm, lightmap::synth::decode_value(c[2], fb) * fm];
+                        let l = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+                        let e = acc.entry(cls).or_insert((0.0, 0, [0.0; 3])); e.0 += l as f64; e.1 += 1; for k in 0..3 { e.2[k] += rgb[k] as f64; }
                     }
-                    eprintln!("   faces: {}", acc.iter().map(|(k, (s, n))| format!("{k} {:.3} ({n})", s / *n as f64)).collect::<Vec<_>>().join("  "));
+                    eprintln!("   faces: {}", acc.iter().map(|(k, (s, n, c))| format!("{k} {:.3} ({:.2},{:.2},{:.2}) ({n})", s / *n as f64, c[0] / *n as f64, c[1] / *n as f64, c[2] / *n as f64)).collect::<Vec<_>>().join("  "));
                 }
                 tiles.push((pw as usize, ph as usize, rgb));
             }

@@ -47,6 +47,8 @@ pub struct BakeParams {
     pub l_ambient: [f32; 3],
     /// The open-sky irradiance of an up-facing surface (computed by the peel when zero).
     pub decor_sky_up: [f32; 3],
+    /// The water surfaces' sky reflectance in the peel (0 = none).
+    pub water_reflect: f32,
     /// One-bounce factor (0 = off) and the average albedo it uses.
     pub bounce: f32,
     pub albedo: f32,
@@ -139,6 +141,7 @@ impl Default for BakeParams {
             decor_ambient: 1.0,
             l_ambient: [0.0; 3],
             decor_sky_up: [0.0; 3],
+            water_reflect: 0.5,
             albedo: 0.5,
             flip_v: false,
             uv_bounds: false,

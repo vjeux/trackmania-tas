@@ -301,23 +301,14 @@ pub fn default_daytime(collection: &str, mood: &str) -> u32 {
 /// Night from the 31-item test map; WhiteShore Day (tiny 03 reduced) 1.6/flipped; GreenCoast Day (tiny
 /// 04 AC items) 2.5/flipped; Stadium Sunrise (giant 20 ×2 reduced) 1.0, Day (giant 10 ×2) 0.74, Sunset
 /// (giant 05 ×2) 0.30. An unmeasured mood takes its collection's nearest.
-pub fn sky_fit(collection: &str, mood: &str) -> (f32, f32, bool) {
-    let c = collection.to_ascii_lowercase();
-    match (c.as_str(), normalise_mood(mood)) {
-        ("bluebay", "Day") => (2.05, 0.3, false),
-        ("bluebay", "Sunset") => (2.0, 0.3, false),
-        ("bluebay", "Sunrise") => (1.7, 0.3, false),
-        ("bluebay", "Night") => (2.1, 0.3, false),
-        ("bluebay", _) => (2.75, 0.3, false),
-        ("whiteshore", _) => (1.6, 0.3, true),
-        ("greencoast", _) => (2.5, 0.3, true),
-        ("stadium", "Sunrise") => (1.0, 0.3, false),
-        ("stadium", "Day") => (0.74, 0.3, false),
-        ("stadium", "Sunset") => (0.30, 0.3, false),
-        ("stadium", _) => (0.74, 0.3, false),
-        ("redisland", _) => (2.0, 0.3, false),
-        _ => (2.0, 0.3, false),
-    }
+pub fn sky_fit(_collection: &str, _mood: &str) -> (f32, f32, bool) {
+    // ONE number for every collection and mood (2026-09-23 21:50Z): with the game's own sky constants
+    // (GlobalScale 1, ScaleGrad0 1, FogIntens = SkyClouds GlobalIntens, the mood XML's Atmo lobes, the
+    // texture's v = sin(elevation)) the sky term needs ×2 against my accumulation E = Σ 4/N·max(0,n·D)·L
+    // — the BlueBay pad-only test map at Day comes out at −2.6 % (floors 0.97, walls 0.97) and at Sunset
+    // at +9.6 % (floors 1.10, walls 0.91). DIFFERENTIAL: the factor is a convention I have not located
+    // (the direction weights or the dome target's scale); no v-flip anywhere any more.
+    (2.0, 0.3, false)
 }
 
 /// The sky gradient's global scale per mood — see `sky_fit`.
@@ -329,11 +320,8 @@ pub fn sky_grad_scale(collection: &str, mood: &str) -> f32 {
 /// (Day 0.976 → 0.32 at 5300 m fits, but Sunset's parameters give 0.77 of a dark fog where 0.32 fits
 /// again — the pad-only test maps at 0x9b59 and 0xdaab, 2026-09-23). None = the XML formula at the dome
 /// distance.
-pub fn fog_intens(collection: &str, mood: &str) -> Option<f32> {
-    let c = collection.to_ascii_lowercase();
-    match (c.as_str(), normalise_mood(mood)) {
-        ("bluebay", "Day") | ("bluebay", "Sunset") => Some(0.32),
-        ("bluebay", _) => Some(0.32),
-        _ => None,
-    }
+pub fn fog_intens(_collection: &str, _mood: &str) -> Option<f32> {
+    // pinned by RE child 4 (21:45Z): Sky_p's FogIntens = the mood XML's <SkyClouds GlobalIntens>, read by
+    // skygrad::fog_from_xml — no per-mood fit any more
+    None
 }

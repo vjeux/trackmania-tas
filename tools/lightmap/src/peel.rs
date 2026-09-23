@@ -348,6 +348,22 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
     for k in 0..3 {
         out[k] = alb[k] * (stored[k] + prm.sun[k] * ndl * lit);
     }
+    // a water surface mirrors the sky: the reflected direction's sky colour × the reflectance
+    // (--water-reflect K, default 0.5; the sea under a sunset glow lights the faces that look at it)
+    if wt.inst == DECOR_INST && prm.water_reflect > 0.0 {
+        if let Some(dt) = scene.decor.get(wt.tri as usize) {
+            if dt.water {
+                // the light arrives along −D at the texel, i.e. it left the water travelling along −D; it came
+                // from the sky direction r = reflect(−D about the water normal (up)) = (−D) − 2(−D·n)n
+                let inc = [-d[0], -d[1], -d[2]];
+                let r = [inc[0], -inc[1], inc[2]];
+                if r[1] > 0.0 {
+                    let s = sky_radiance(prm, r);
+                    for k in 0..3 { out[k] += prm.water_reflect * s[k]; }
+                }
+            }
+        }
+    }
     out
 }
 

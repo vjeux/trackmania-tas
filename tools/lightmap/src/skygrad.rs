@@ -36,6 +36,8 @@ pub struct SkyGradient {
     /// moods; the texture is lerped per texel here). Same size as `px`.
     pub px2: Option<Vec<[f32; 3]>>,
     pub blend_t: f32,
+    /// v = sin(elevation) (a dome whose texture v follows the height) instead of elevation/90°.
+    pub v_sin: bool,
 }
 
 impl SkyGradient {
@@ -43,7 +45,7 @@ impl SkyGradient {
         let d = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
         let dds = crate::bc6h::parse_dds(&d)?;
         let px = crate::bc6h::decode_image(dds.data, dds.w, dds.h, dds.format == 96);
-        Ok(SkyGradient { w: dds.w, h: dds.h, px, sun_az: 0.0, u_sun: 0.0, u_sign: 1.0, v_top_is_zenith: true, v_full: false, scale: 1.0, lobes: Vec::new(), sun_dir: [0.0, 1.0, 0.0], fog: None, global_scale: 1.0, px2: None, blend_t: 0.0 })
+        Ok(SkyGradient { w: dds.w, h: dds.h, px, sun_az: 0.0, u_sun: 0.0, u_sign: 1.0, v_top_is_zenith: true, v_full: false, scale: 1.0, lobes: Vec::new(), sun_dir: [0.0, 1.0, 0.0], fog: None, global_scale: 1.0, px2: None, blend_t: 0.0, v_sin: false })
     }
 
     /// The texel at (u, v) in 0..1 (u wraps, v clamps), nearest.
@@ -83,7 +85,7 @@ impl SkyGradient {
         let az = d[0].atan2(d[2]);
         let el = d[1].clamp(-1.0, 1.0).asin();
         let u = self.u_sun + self.u_sign * (az - self.sun_az) / (2.0 * std::f32::consts::PI);
-        let v_up = if self.v_full { (el / std::f32::consts::PI) + 0.5 } else { (el / std::f32::consts::FRAC_PI_2).max(0.0) };
+        let v_up = if self.v_full { (el / std::f32::consts::PI) + 0.5 } else if self.v_sin { el.sin().max(0.0) } else { (el / std::f32::consts::FRAC_PI_2).max(0.0) };
         let v = if self.v_top_is_zenith { 1.0 - v_up } else { v_up };
         let t = self.texel(u, v);
         let mut out = [t[0] * self.scale, t[1] * self.scale, t[2] * self.scale];
@@ -162,9 +164,20 @@ pub fn fog_from_xml(xml: &str, dome_m: f32) -> Option<([f32; 3], f32)> {
     let attr = |name: &str| -> Option<&str> { let k = format!("{name}=\""); let s = seg.find(&k)? + k.len(); let e = seg[s..].find('"')? + s; Some(&seg[s..e]) };
     let num = |name: &str, dflt: f32| -> f32 { attr(name).and_then(|v| v.parse().ok()).unwrap_or(dflt) };
     let color = attr("Color")?;
+    // Sky_p's FogIntens is the <Fog><SkyClouds GlobalIntens="…"/> value (RE child 4, the Vision sky
+    // constant filler 0x1409f7a40: cb+0x3c = fog+0x3c when Fog.Enabled) — BlueBay Day 0.414, Sunset 0,
+    // Sunrise 0.048, Night 0.068. The depth formula below is the fallback when the tag is missing
+    // (dome_m ≤ 0 also forces it off).
+    let sky_clouds: Option<f32> = xml.find("<SkyClouds ").and_then(|q| {
+        let seg2 = &xml[q..xml[q..].find("/>").map(|e| q + e).unwrap_or(xml.len())];
+        let k = "GlobalIntens=\"";
+        let s = seg2.find(k)? + k.len();
+        let e = seg2[s..].find('"')? + s;
+        seg2[s..e].parse().ok()
+    });
     let (imin, imax, dmin, dmax, ex) = (num("IntensMin", 0.0), num("IntensMax", 1.0), num("DepthMin", 0.0), num("DepthMax", 25000.0), num("Exponant", 1.0));
     let t = ((dome_m - dmin) / (dmax - dmin).max(1.0)).clamp(0.0, 1.0).powf(ex);
-    let intens = imin + (imax - imin) * t;
+    let intens = match sky_clouds { Some(v) if dome_m > 0.0 => v, _ => imin + (imax - imin) * t };
     let hex = u32::from_str_radix(color.trim_start_matches('#'), 16).ok()?;
     let srgb = |c: u32| -> f32 { let v = c as f32 / 255.0; if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) } };
     Some(([srgb((hex >> 16) & 255), srgb((hex >> 8) & 255), srgb(hex & 255)], intens))

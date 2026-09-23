@@ -307,6 +307,8 @@ pub struct DecorTri {
     pub p: [V3; 3],
     /// Bounce albedo (0 = an invisible shadow caster: occludes, gives nothing back).
     pub albedo: [f32; 3],
+    /// A water surface: it also mirrors the sky (the peel reads the sky along the reflected direction).
+    pub water: bool,
 }
 
 /// Load a Wavefront OBJ (v / f lines, polygons fanned; `usemtl NAME` selects the albedo by the
@@ -318,6 +320,7 @@ pub fn load_obj_decor(path: &str, scale: f32, offset: V3) -> Result<Vec<DecorTri
     let mut verts: Vec<V3> = Vec::new();
     let mut out = Vec::new();
     let mut albedo = [0.3f32; 3];
+    let mut water = false;
     for line in text.lines() {
         let mut it = line.split_whitespace();
         match it.next() {
@@ -330,13 +333,14 @@ pub fn load_obj_decor(path: &str, scale: f32, offset: V3) -> Result<Vec<DecorTri
             Some("usemtl") => {
                 let name = it.next().unwrap_or("");
                 albedo = if name.to_ascii_lowercase().contains("invisible") { [0.0; 3] } else { crate::albedo::for_link(name).unwrap_or([0.3; 3]) };
+                water = name.to_ascii_lowercase().contains("water");
             }
             Some("f") => {
                 let idx: Vec<usize> = it.map(|x| x.split('/').next().unwrap_or("0").parse::<i64>().unwrap_or(0)).map(|i| if i < 0 { (verts.len() as i64 + i) as usize } else { (i - 1).max(0) as usize }).collect();
                 for k in 1..idx.len().saturating_sub(1) {
                     let (a, b, c) = (idx[0], idx[k], idx[k + 1]);
                     if a < verts.len() && b < verts.len() && c < verts.len() {
-                        out.push(DecorTri { p: [verts[a], verts[b], verts[c]], albedo });
+                        out.push(DecorTri { p: [verts[a], verts[b], verts[c]], albedo, water });
                     }
                 }
             }
