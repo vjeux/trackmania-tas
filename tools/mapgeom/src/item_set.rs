@@ -1204,7 +1204,7 @@ fn run_zips(rest: &[String]) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 /// `mapgeom item-set-shoot --manifest DIR/manifest.tsv --report REPORT.tsv --host HOST.Map.Gbx
-/// --out DIR [--author ID] [--origin 400,8,400] [--max-items 30]`: for every set of the
+/// --out DIR [--author ID] [--origin 400,8,400] [--max-items 30] [--set-name TinyBlocks]`: for every set of the
 /// manifest a map with the set's items laid out in a grid on the block-free
 /// host (every host item record parked far away, one re-pointed per item —
 /// `item_set_map`'s method), written as `DIR/<zip stem>.Map.Gbx`, and
@@ -1227,6 +1227,8 @@ fn run_shoot(rest: &[String]) -> Result<(), String> {
     let host = PathBuf::from(flag("--host").ok_or("--host MAP is required")?);
     let out = PathBuf::from(flag("--out").ok_or("--out DIR is required")?);
     let author = flag("--author").unwrap_or_else(|| crate::tiny_assets::AUTHOR.to_string());
+    // the set folder under Items/ the idents start with (`TinyBlocks\Roads\…`)
+    let set_name = flag("--set-name").unwrap_or_else(|| "TinyBlocks".into());
     let max_items: usize = flag("--max-items").unwrap_or_else(|| "30".into()).parse().map_err(|e| format!("--max-items: {e}"))?;
     let origin: Vec<f32> = flag("--origin").unwrap_or_else(|| "400,8,400".into()).split(',').filter_map(|v| v.parse().ok()).collect();
     if origin.len() != 3 {
@@ -1338,7 +1340,7 @@ fn run_shoot(rest: &[String]) -> Result<(), String> {
             let pivot = [sx as f32 * 8.0, 0.0, sz as f32 * 8.0];
             let corner = [origin[0] + col_x[c] + (col_w[c] - gap - sx as f32 * 16.0) / 2.0, origin[1], origin[2] + row_z[r] + (row_d[r] - gap - sz as f32 * 16.0) / 2.0];
             let pos = [corner[0] - pivot[0], corner[1] - pivot[1], corner[2] - pivot[2]];
-            let ident = p.replace('/', "\\");
+            let ident = format!("{set_name}\\{}", p.replace('/', "\\"));
             m.move_item(i, pos, 0.0, cell(pos));
             m.set_item_frame(i, [0.0, 0.0, 0.0], pivot);
             m.set_item_scale(i, 1.0);
