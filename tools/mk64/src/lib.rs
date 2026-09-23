@@ -7,6 +7,7 @@
 
 pub mod actors;
 pub mod cdata;
+pub mod intro;
 pub mod itembox;
 pub mod minimap;
 pub mod course;

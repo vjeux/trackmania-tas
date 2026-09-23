@@ -92,7 +92,7 @@ struct WaypointReq {
 
 pub fn cmd_build(args: &[String]) {
     let usage = "mk64 build COURSE --host HOST.Map.Gbx --out OUT.Map.Gbx [--decomp DIR] [--rom FILE]
-      [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt] [--no-vertex-colours] [--no-actors] [--author-ms MS] [--tag T] [--mood Day|Sunrise|Sunset|Night] [--pak Stadium.pak:KEY (spinning item boxes)] [--no-item-boxes] [--illum|--no-illum] [--minimap-zones N]
+      [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt] [--no-vertex-colours] [--no-actors] [--author-ms MS] [--tag T] [--mood Day|Sunrise|Sunset|Night] [--pak Stadium.pak:KEY (spinning item boxes)] [--no-item-boxes] [--illum|--no-illum] [--minimap-zones N] [--intro]
       [--items-out DIR]  (also write every item + texture as loose files)";
     let dir = match args.get(2) {
         Some(c) if !c.starts_with("--") => c.clone(),
@@ -372,7 +372,11 @@ pub fn cmd_build(args: &[String]) {
     // the minimap: MediaTracker zones along the lap (--minimap-zones N, 0 = none)
     let zones: usize = flag(args, "--minimap-zones").map(|s| s.parse().expect("--minimap-zones N")).unwrap_or(48);
     let hud = crate::minimap::clips(&path, zones, tmmaps::map::ground_y(STADIUM), [3, 1, 3]);
-    write_map(&host, &out, &specs, &pictures, &name, laps, no_stadium, &dir, times, &mood, &hud);
+    // the intro fly-over: opt-in (--intro) until a play-mode check confirms
+    // the authored CameraCustom clip loads (the box's play route was down
+    // when it was written, 2026-09-23 02:00)
+    let intro = if args.iter().any(|a| a == "--intro") { crate::intro::shots(&path) } else { Vec::new() };
+    write_map(&host, &out, &specs, &pictures, &name, laps, no_stadium, &dir, times, &mood, &hud, &intro);
 }
 
 /// y of the triangle's plane at (x, z) when the point is inside it (top view).
@@ -649,7 +653,7 @@ pub fn default_mood(dir: &str) -> &'static str {
     }
 }
 
-fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<String, Vec<u8>>, name: &str, laps: u32, no_stadium: bool, dir: &str, times: [u32; 4], mood: &str, hud: &[tmmaps::mtauthor::HudClip]) {
+fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<String, Vec<u8>>, name: &str, laps: u32, no_stadium: bool, dir: &str, times: [u32; 4], mood: &str, hud: &[tmmaps::mtauthor::HudClip], intro: &[Vec<tmmaps::mtauthor::CamKey>]) {
     let tmp = |tag: &str| out.with_extension(format!("mk64-{}.{tag}.Map.Gbx", std::process::id()));
     let t_seed = tmp("seeded");
     let t0 = tmp("slots");
@@ -758,6 +762,14 @@ fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<St
     // gone); the minimap's in-game clips come in, on fresh node indices
     if let Some(Ok(mut mt)) = m.mediatracker() {
         mt.strip = true;
+        // node indices in slot order (intro before in-game): the walker reads
+        // them as definitions only when they ascend through the chunk
+        if !intro.is_empty() {
+            let first = m.gbx.num_nodes;
+            let used = mt.set_intro_authored(first, intro);
+            m.gbx.num_nodes += used;
+            println!("  intro: {} shots, {} MediaTracker nodes", intro.len(), used);
+        }
         if !hud.is_empty() {
             let first = m.gbx.num_nodes;
             let used = mt.set_in_game_authored(first, hud);

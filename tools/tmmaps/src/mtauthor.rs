@@ -251,3 +251,111 @@ impl MediaTracker {
         used
     }
 }
+
+/// A CameraCustom key (chunk 0x030A2006 v4; the tangents are the game's
+/// hermite handles, zero = the game's own smoothing).
+#[derive(Clone, Debug)]
+pub struct CamKey {
+    pub time: f32,
+    pub position: [f32; 3],
+    /// pitch (positive looks down), yaw (0 = +z, positive toward +x:
+    /// atan2(dx, dz) — the Summer 05 end-race camera), roll
+    pub pitch_yaw_roll: [f32; 3],
+    pub fov: f32,
+}
+
+fn write_camera_state(w: &mut W, position: [f32; 3], pyr: [f32; 3], fov: f32) {
+    for v in position {
+        w.f32(v);
+    }
+    for v in pyr {
+        w.f32(v);
+    }
+    w.f32(fov);
+    for _ in 0..3 {
+        w.f32(0.0); // target position
+    }
+    w.f32(0.05);
+    w.f32(1.0);
+}
+
+fn write_camera_custom(w: &mut W, idx: u32, keys: &[CamKey]) {
+    w.u32(idx);
+    w.u32(0x030A_2000);
+    w.u32(0x030A_2006);
+    w.u32(4);
+    w.u32(keys.len() as u32);
+    for k in keys {
+        w.f32(k.time);
+        w.i32(1); // interpolation
+        w.i32(0); // anchor rot
+        w.i32(-1); // anchor
+        w.i32(1); // anchor vis
+        w.i32(-1); // target
+        write_camera_state(w, k.position, k.pitch_yaw_roll, k.fov);
+        write_camera_state(w, [0.0; 3], [0.0; 3], 0.0); // left tangent
+        write_camera_state(w, [0.0; 3], [0.0; 3], 0.0); // right tangent
+    }
+    w.u32(NODE_END);
+}
+
+/// An intro clip: one track of CameraCustom blocks (one per shot, cuts
+/// between them). Node indices from `first_idx`; returns (bytes, nodes used).
+pub fn intro_clip(first_idx: u32, shots: &[Vec<CamKey>]) -> (Vec<u8>, u32) {
+    let mut w = W(Vec::new());
+    let mut next = first_idx;
+    let clip_idx = next;
+    next += 1;
+    let track_idx = next;
+    next += 1;
+    w.u32(clip_idx);
+    w.u32(CLASS_CLIP);
+    w.u32(0x0307_900D);
+    w.u32(1);
+    w.u32(10);
+    w.u32(1);
+    // the track, by hand (several blocks)
+    w.u32(track_idx);
+    w.u32(CLASS_TRACK);
+    w.u32(0x0307_8001);
+    w.string("Custom camera");
+    w.u32(10);
+    w.u32(shots.len() as u32);
+    for keys in shots {
+        let bi = next;
+        next += 1;
+        write_camera_custom(&mut w, bi, keys);
+    }
+    w.u32(NULL_REF);
+    w.u32(0x0307_8005);
+    w.u32(1);
+    w.u32(1);
+    w.u32(0);
+    w.u32(0);
+    w.f32(-1.0);
+    w.f32(-1.0);
+    w.u32(NODE_END);
+    w.string("");
+    w.u32(0); // StopWhenLeave
+    w.u32(0);
+    w.u32(1); // StopWhenRespawn
+    w.string("");
+    w.f32(0.2);
+    w.i32(-1);
+    w.u32(0x0307_900E);
+    w.0.extend_from_slice(b"PIKS");
+    w.u32(8);
+    w.u32(1);
+    w.u32(0);
+    w.u32(NODE_END);
+    (w.0, next - first_idx)
+}
+
+impl MediaTracker {
+    /// Put an authored intro clip in place of the current one.
+    pub fn set_intro_authored(&mut self, first_idx: u32, shots: &[Vec<CamKey>]) -> u32 {
+        let (bytes, used) = intro_clip(first_idx, shots);
+        self.intro = Slot::Authored(bytes);
+        used
+    }
+}
