@@ -30,6 +30,10 @@ pub const INNER_M: f32 = 8.0 * mesh::UNITS_TO_M;
 /// at kart height).
 pub const HOVER_UNITS: f32 = 9.0;
 pub const SPIN_MS: u32 = 3000;
+/// The game material of the spinning cube (a moving part shows no embedded
+/// texture) and whether it is a full cube or an edge frame.
+pub const DEFAULT_LINK: &str = "Stadium\\Media\\Material\\SpecialSignTurbo";
+pub const DEFAULT_FULL: bool = false;
 /// The rainbow of the inner cube: one tint per face.
 pub const FACE_TINTS: [[u8; 3]; 6] = [[255, 64, 64], [255, 220, 0], [64, 220, 64], [64, 220, 255], [80, 96, 255], [255, 96, 255]];
 
@@ -87,7 +91,7 @@ pub fn build(store: &mut DataStore, name: &str, spawns: &[[i16; 3]], frame: &Fra
     let mut merged = Merged::default();
     let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     merged.file_write_time = unix * 10_000_000 + 116444736000000000;
-    for sp in spawns {
+    for (box_index, sp) in spawns.iter().enumerate() {
         let world = frame.to_tm_f([sp[0] as f32, sp[1] as f32 + HOVER_UNITS, sp[2] as f32]);
         let pos = [world[0] - origin[0], world[1] - origin[1], world[2] - origin[2]];
         let mut mesh = Merged::default();
@@ -127,9 +131,15 @@ pub fn build(store: &mut DataStore, name: &str, spawns: &[[i16; 3]], frame: &Fra
             }
             (pm, sl)
         } else {
-            let link = std::env::var("MK64_IB_LINK").unwrap_or_else(|_| "Stadium\\Media\\Material\\SpecialSignTurbo".to_string());
+            // MK64_IB_SURVEY="link,link,…": box k wears candidate k (mod n) as a
+            // FULL cube — the material line-up shot. MK64_IB_LINK: one material
+            // for all; MK64_IB_FULL=1: a full cube instead of the frame.
+            let survey: Vec<String> = std::env::var("MK64_IB_SURVEY").map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()).unwrap_or_default();
+            let link = if survey.is_empty() { std::env::var("MK64_IB_LINK").unwrap_or_else(|_| DEFAULT_LINK.to_string()) } else { survey[box_index % survey.len()].clone() };
             mesh.materials.push(CPlugMaterialUserInst::game_material(&link, crate::tm::PHYS_CONCRETE));
-            (vec![cube_frame(OUTER_M, 0.12 * OUTER_M)], vec![mesh.materials.len() - 1])
+            let full = !survey.is_empty() || std::env::var("MK64_IB_FULL").is_ok() || DEFAULT_FULL;
+            let geometry = if full { cube_faces(OUTER_M, None) } else { cube_frame(OUTER_M, 0.12 * OUTER_M) };
+            (vec![geometry], vec![mesh.materials.len() - 1])
         };
         let has_uv1 = vec![true; per_material.len()];
         bake::assign_lightmap_atlas(&mut per_material, &has_uv1);
