@@ -3014,6 +3014,137 @@ fn main() {
                 }
             }
         }
+        "routediff" => {
+            // The systematic check for a re-dressed layer (json9841 2026-09-23 "did you
+            // check for similar issues in all maps?"): along the BASE map's validation
+            // ghost, every surface the LAYER map adds inside the car's volume (between the
+            // floor and 3 m above the sample) and every floor that moved by more than
+            // 0.3 m — each with its owner (an item / block of the layer). The base and
+            // the layer share the frame (the layer is the base with swaps and items).
+            //   mapgeom … routediff BASE.Map.Gbx LAYER.Map.Gbx [--yoff -64] [--every MS] [--reach M]
+            let base_p = a.rest.get(1).cloned().unwrap_or_default();
+            let layer_p = a.rest.get(2).cloned().unwrap_or_default();
+            let yoff: f32 = flag(&a.rest, "--yoff").and_then(|s| s.parse().ok()).unwrap_or(-64.0);
+            let every: i32 = flag(&a.rest, "--every").and_then(|s| s.parse().ok()).unwrap_or(200);
+            let above: f32 = flag(&a.rest, "--reach").and_then(|s| s.parse().ok()).unwrap_or(3.0);
+            let mut store = open(&a);
+            let base = tmmaps::map::MapFile::load(std::path::Path::new(&base_p));
+            let layer = tmmaps::map::MapFile::load(std::path::Path::new(&layer_p));
+            // --ghost SRC.Map.Gbx --shift cx,cy,cz: a port's ghost lives in its SOURCE (the
+            // vista map); the shift is the one `tmmaps stadium-port` printed (cells), the y also
+            // moves by the two collections' ground constants
+            let (gpath, shift, gdelta) = match flag(&a.rest, "--ghost") {
+                Some(g) => {
+                    let sh: Vec<i32> = flag(&a.rest, "--shift").map(|v| v.split(',').filter_map(|t| t.trim().parse().ok()).collect()).unwrap_or_default();
+                    let src = tmmaps::map::MapFile::load(std::path::Path::new(&g));
+                    let coll = src.items.first().map(|it| it.collection_raw).unwrap_or(26);
+                    let gd = tmmaps::map::ground_y(26) - tmmaps::map::ground_y(coll);
+                    (g, if sh.len() == 3 { [sh[0], sh[1], sh[2]] } else { [0, 0, 0] }, gd)
+                }
+                None => (base_p.clone(), [0, 0, 0], 0.0),
+            };
+            let mut d = gbx::record::decode_ghost(&gpath).unwrap_or_else(|e| die(format!("{gpath}: no validation ghost ({e})")));
+            for smp in d.samples.iter_mut() {
+                smp.x += shift[0] as f32 * 32.0;
+                smp.y += shift[1] as f32 * 8.0 + gdelta;
+                smp.z += shift[2] as f32 * 32.0;
+            }
+            let (sb, _, _) = build(&mut store, &base, yoff, true, false, false);
+            let (sl, _, _) = build(&mut store, &layer, yoff, true, false, false);
+            let ib = mapgeom::probe::Index::build(&sb, 32.0);
+            let il = mapgeom::probe::Index::build(&sl, 32.0);
+            // owners of the layer's surfaces (lazy per hit, like `who`)
+            let mut asm = mapgeom::assemble::Assembler::new(&mut store);
+            asm.with_embedded(&layer).ok();
+            let mut owners: Vec<(String, mapgeom::geom::Xform, String, bool)> = Vec::new();
+            for b in &layer.blocks {
+                let free = b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0;
+                let Some(lm) = asm.block_model(&b.name) else { continue };
+                let size = lm.size;
+                let xf = if free {
+                    match (b.free_pos, b.free_rot) {
+                        (Some(p), Some(r)) => mapgeom::place::free(p, r),
+                        (Some(p), None) => mapgeom::place::free(p, [0.0; 3]),
+                        _ => continue,
+                    }
+                } else {
+                    mapgeom::place::grid_block(b.coords(), b.dir, size, yoff)
+                };
+                owners.push((format!("block {} {:?}", b.name, b.coords()), xf, b.name.clone(), true));
+            }
+            for it in &layer.items {
+                if asm.item_model(&it.model).is_none() {
+                    continue;
+                }
+                let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                owners.push((format!("item {} at ({:.0},{:.1},{:.0})", it.model, it.pos[0], it.pos[1], it.pos[2]), xf, it.model.clone(), false));
+            }
+            let who_at = |asm: &mut mapgeom::assemble::Assembler, x: f32, y: f32, z: f32| -> String {
+                for (who, xf, model, is_block) in &owners {
+                    let lm = if *is_block { asm.block_model(model) } else { asm.item_model(model) };
+                    let Some(lm) = lm else { continue };
+                    for (_, g) in &lm.scene.groups {
+                        for t in &g.tris {
+                            let a3 = mapgeom::geom::apply(xf, g.verts[t[0] as usize]);
+                            let b3 = mapgeom::geom::apply(xf, g.verts[t[1] as usize]);
+                            let c3 = mapgeom::geom::apply(xf, g.verts[t[2] as usize]);
+                            if let Some(yy) = mapgeom::probe::height_at(a3, b3, c3, x, z) {
+                                if (yy - y).abs() <= 0.05 {
+                                    return who.clone();
+                                }
+                            }
+                        }
+                    }
+                }
+                "?".to_string()
+            };
+            let mut obstacles: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+            let mut floors: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+            let mut n = 0usize;
+            let mut last_t = -every;
+            let mut first_obstacle: Option<String> = None;
+            for s in &d.samples {
+                if s.time_ms - last_t < every {
+                    continue;
+                }
+                last_t = s.time_ms;
+                n += 1;
+                let cb = ib.column(s.x, s.z);
+                let cl = il.column(s.x, s.z);
+                // the floor: the highest surface under the sample (within 4 m — the car centre
+                // sits ~0.5–2.5 m over the deck)
+                let floor = |c: &Vec<(f32, String)>| c.iter().filter(|(y, _)| *y <= s.y + 0.3 && *y >= s.y - 4.0).map(|(y, _)| *y).fold(f32::NAN, f32::max);
+                let (fb, fl) = (floor(&cb), floor(&cl));
+                if !fb.is_nan() && !fl.is_nan() && (fb - fl).abs() > 0.3 {
+                    let who = who_at(&mut asm, s.x, fl, s.z);
+                    *floors.entry(format!("floor {:+.1} m by {who}", fl - fb)).or_default() += 1;
+                }
+                // surfaces of the layer inside the car's volume that the base has not
+                let lo = if fb.is_nan() { s.y - 1.0 } else { fb + 0.3 };
+                for (y, _) in cl.iter().filter(|(y, _)| *y > lo && *y < s.y + above) {
+                    if cb.iter().any(|(yb, _)| (yb - y).abs() < 0.05) {
+                        continue;
+                    }
+                    let who = who_at(&mut asm, s.x, *y, s.z);
+                    *obstacles.entry(who.clone()).or_default() += 1;
+                    if first_obstacle.is_none() {
+                        first_obstacle = Some(format!("{:.2} s at ({:.0},{:.1},{:.0}) surface y {:.2}: {who}", s.time_ms as f32 / 1000.0, s.x, s.y, s.z, y));
+                    }
+                }
+            }
+            let ob: usize = obstacles.values().sum();
+            let fl: usize = floors.values().sum();
+            println!("{}: {n} samples; obstacles {ob}; floor changes {fl}", std::path::Path::new(&layer_p).file_name().and_then(|f| f.to_str()).unwrap_or(&layer_p));
+            for (who, k) in obstacles.iter().take(12) {
+                println!("  obstacle ×{k}: {who}");
+            }
+            for (who, k) in floors.iter().take(12) {
+                println!("  {who} ×{k}");
+            }
+            if let Some(f) = first_obstacle {
+                println!("  first: {f}");
+            }
+        }
         "coplanar-sinks" => {
             // Which FREE baked records (the clips of free-placed blocks) have a
             // TOP face lying exactly in an authored placement's top face — two
