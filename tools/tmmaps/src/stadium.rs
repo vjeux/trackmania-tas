@@ -1053,9 +1053,17 @@ pub fn terrain_cmd(args: &[String]) -> Result<(), String> {
 
 /// `<prefix>` + the source uid's tail: the same length as the source's, and the same
 /// value on every rebuild, so a re-publish updates the record instead of adding one.
+/// `ALTERED_UID_GEN=<letter>`: a publish GENERATION — the console keeps a stale copy of a
+/// map id it has opened, so every fix round ships under NEW ids (json9841 2026-09-23: the
+/// same bytes loaded under a fresh id, not under the old one). The letter replaces the
+/// character after the prefix; unset = the first generation (the id as before).
 pub fn stable_uid(prefix: &str, src_uid: &str) -> String {
-    if src_uid.len() > prefix.len() {
-        format!("{prefix}{}", &src_uid[prefix.len()..])
+    if src_uid.len() > prefix.len() + 1 {
+        let tail = &src_uid[prefix.len()..];
+        match std::env::var("ALTERED_UID_GEN").ok().and_then(|g| g.chars().next()).filter(|c| c.is_ascii_alphanumeric()) {
+            Some(g) => format!("{prefix}{g}{}", &tail[1..]),
+            None => format!("{prefix}{tail}"),
+        }
     } else {
         crate::altered::new_uid(prefix, 27)
     }

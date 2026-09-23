@@ -227,8 +227,8 @@ fn pairs(orig: &Path, alt: &Path) -> Vec<(String, PathBuf, PathBuf)> {
 
 #[derive(Default)]
 struct Learn {
-    /// (norm block, item model, block dir, variant bits) → (world offset from the cell corner, item yaw) seen
-    map: BTreeMap<(String, String, u8, u32), Vec<([f32; 3], f32)>>,
+    /// (norm block, item model, block dir, variant bits) → (world offset from the cell corner, item yaw/pitch/roll) seen
+    map: BTreeMap<(String, String, u8, u32), Vec<([f32; 3], [f32; 3])>>,
     /// norm block → (total in originals, with an item)
     coverage: BTreeMap<String, (usize, usize)>,
     removed: BTreeMap<String, usize>,
@@ -237,7 +237,7 @@ struct Learn {
     swaps: BTreeMap<(String, u32, String, u32), usize>,
     unmatched_items: BTreeMap<String, usize>,
     /// water: (waypoint norm block) → local offsets + rot delta
-    water: BTreeMap<String, Vec<([f32; 3], f32)>>,
+    water: BTreeMap<String, Vec<([f32; 3], [f32; 3])>>,
     water_cov: BTreeMap<String, (usize, usize)>,
     water_far: usize,
     water_names: BTreeMap<String, usize>,
@@ -327,7 +327,7 @@ fn learn_pair(l: &mut Learn, nn: &str, orig: &MapFile, alt: &MapFile, stems: &BT
                 if std::env::var("ALTERED_DEBUG").is_ok() {
                     eprintln!("    sample {nn} {} dir {} at {:?} → {} item ({:.1},{:.1},{:.1}) yaw {:.3} → off ({:.1},{:.1},{:.1})", b.name, b.dir & 3, b.coords(), file_stem(&it.model), it.pos[0], it.pos[1], it.pos[2], it.yaw, off[0], off[1], off[2]);
                 }
-                l.map.entry((norm_block(&b.name, stems), it.model.clone(), b.dir & 3, variant_bits(b.flags))).or_default().push((off, it.yaw));
+                l.map.entry((norm_block(&b.name, stems), it.model.clone(), b.dir & 3, variant_bits(b.flags))).or_default().push((off, [it.yaw, it.pitch, it.roll]));
                 covered.insert(b.index);
                 l.itemrec.entry(it.model.clone()).or_insert((it.author.clone().unwrap_or_default(), it.flags, it.scale, it.collection_raw, it.pivot));
             }
@@ -392,7 +392,7 @@ fn learn_pair(l: &mut Learn, nn: &str, orig: &MapFile, alt: &MapFile, stems: &BT
                     let c = cell_center(w, ground);
                     let yaw = dir_yaw(w.dir);
                     let rot = b.free_rot.map(|r| r[0]).unwrap_or(dir_yaw(b.dir));
-                    l.water.entry(norm_block(&w.name, stems)).or_default().push((to_local(p, c, yaw), norm_angle(rot - yaw)));
+                    l.water.entry(norm_block(&w.name, stems)).or_default().push((to_local(p, c, yaw), [norm_angle(rot - yaw), 0.0, 0.0]));
                     wp_with_water.insert(w.index);
                 }
                 _ => l.water_far += 1,
@@ -452,17 +452,25 @@ fn learn_pair(l: &mut Learn, nn: &str, orig: &MapFile, alt: &MapFile, stems: &BT
     eprintln!("  {nn}: {} new items, {} removed / {} added blocks", new_items.len(), removed_here.len(), added_here.len());
 }
 
-fn stats(v: &[([f32; 3], f32)]) -> ([f32; 3], f32, f32) {
-    // the modal offset (rounded to 1 cm) and the share that agrees with it; the yaw modal on its own
+fn stats(v: &[([f32; 3], [f32; 3])]) -> ([f32; 3], [f32; 3], f32) {
+    // the modal offset (rounded to 1 cm) and the share that agrees with it; the yaw / pitch /
+    // roll modals on their own (AR's PlatformBase-Wood filler is placed UPSIDE DOWN at the cell
+    // top — pitch π; a rule without the pitch put the box one row up: Spring 2026 - 01 wood CP3,
+    // json9841 2026-09-23)
     let mut counts: BTreeMap<(i64, i64, i64), usize> = BTreeMap::new();
-    let mut yaws: BTreeMap<i64, usize> = BTreeMap::new();
-    for (p, y) in v {
+    let mut angles: [BTreeMap<i64, usize>; 3] = [BTreeMap::new(), BTreeMap::new(), BTreeMap::new()];
+    for (p, r) in v {
         *counts.entry(key3(*p)).or_default() += 1;
-        *yaws.entry((*y * 100.0).round() as i64).or_default() += 1;
+        for k in 0..3 {
+            *angles[k].entry((r[k] * 100.0).round() as i64).or_default() += 1;
+        }
     }
     let (k, n) = counts.into_iter().max_by_key(|(_, n)| *n).unwrap();
-    let (y, _) = yaws.into_iter().max_by_key(|(_, n)| *n).unwrap();
-    ([k.0 as f32 / 100.0, k.1 as f32 / 100.0, k.2 as f32 / 100.0], y as f32 / 100.0, n as f32 / v.len() as f32)
+    let mut rot = [0.0f32; 3];
+    for (k, a) in angles.into_iter().enumerate() {
+        rot[k] = a.into_iter().max_by_key(|(_, n)| *n).map(|(y, _)| y as f32 / 100.0).unwrap_or(0.0);
+    }
+    ([k.0 as f32 / 100.0, k.1 as f32 / 100.0, k.2 as f32 / 100.0], rot, n as f32 / v.len() as f32)
 }
 
 pub fn learn_cmd(args: &[String]) -> Result<(), String> {
@@ -496,10 +504,10 @@ pub fn learn_cmd(args: &[String]) -> Result<(), String> {
         learn_pair(&mut l, nn, &om, &am, &stems, *water);
     }
     let mut w = String::new();
-    w.push_str("# kind\tblock\titem/added\tdx\tdy\tdz\tyaw\tcount\tagree\tdir\tvariant\n");
+    w.push_str("# kind\tblock\titem/added\tdx\tdy\tdz\tyaw\tcount\tagree\tdir\tvariant\tpitch\troll\n");
     for ((block, item, dir, var), v) in &l.map {
-        let (p, y, agree) = stats(v);
-        w.push_str(&format!("map\t{block}\t{item}\t{:.2}\t{:.2}\t{:.2}\t{:.4}\t{}\t{:.2}\t{dir}\t{var:08X}\n", p[0], p[1], p[2], y, v.len(), agree));
+        let (p, r, agree) = stats(v);
+        w.push_str(&format!("map\t{block}\t{item}\t{:.2}\t{:.2}\t{:.2}\t{:.4}\t{}\t{:.2}\t{dir}\t{var:08X}\t{:.4}\t{:.4}\n", p[0], p[1], p[2], r[0], v.len(), agree, r[1], r[2]));
     }
     for (block, (t, c)) in &l.coverage {
         if *c > 0 || stems.iter().any(|s| block_matches_stem(block, s)) {
@@ -516,8 +524,8 @@ pub fn learn_cmd(args: &[String]) -> Result<(), String> {
         w.push_str(&format!("added\t{a}\t\t\t\t\t\t{n}\t\n"));
     }
     for (wp, v) in &l.water {
-        let (p, y, agree) = stats(v);
-        w.push_str(&format!("water\t{wp}\t\t{:.2}\t{:.2}\t{:.2}\t{:.4}\t{}\t{:.2}\n", p[0], p[1], p[2], y, v.len(), agree));
+        let (p, r, agree) = stats(v);
+        w.push_str(&format!("water\t{wp}\t\t{:.2}\t{:.2}\t{:.2}\t{:.4}\t{}\t{:.2}\n", p[0], p[1], p[2], r[0], v.len(), agree));
     }
     for (wp, (t, c)) in &l.water_cov {
         w.push_str(&format!("watercov\t{wp}\t\t\t\t\t\t{t}\t{c}\n"));
@@ -571,8 +579,8 @@ struct Rules {
     /// vanilla block name → candidate custom-block targets: (target, target flags, count) —
     /// keyed by the source flags too, so a ground variant keeps its ground twin
     swaps: BTreeMap<String, Vec<(u32, String, u32, usize)>>,
-    /// (norm block, dir, variant bits) → (item model, world offset from the cell corner, item yaw, count)
-    items: BTreeMap<(String, u8, u32), Vec<(String, [f32; 3], f32, usize)>>,
+    /// (norm block, dir, variant bits) → (item model, world offset from the cell corner, item yaw/pitch/roll, count)
+    items: BTreeMap<(String, u8, u32), Vec<(String, [f32; 3], [f32; 3], usize)>>,
     /// item model → (author, flags, scale, collection, pivot)
     itemrec: BTreeMap<String, (String, u16, f32, u32, [f32; 3])>,
     /// `water` rows: (waypoint block ident in AR's map, the pad's local y in the cell)
@@ -661,7 +669,8 @@ fn read_rules(paths: &[String]) -> Result<Rules, String> {
                     let var: u32 = f.get(10).and_then(|d| u32::from_str_radix(d.trim(), 16).ok()).unwrap_or(0);
                     if agree >= 0.5 && f[2].contains("Wood") {
                         let off = [f[3].parse().unwrap_or(0.0), f[4].parse().unwrap_or(0.0), f[5].parse().unwrap_or(0.0)];
-                        r.items.entry((f[1].to_string(), dir, var)).or_default().push((f[2].to_string(), off, f[6].parse().unwrap_or(0.0), n));
+                        let rot = [f[6].parse().unwrap_or(0.0), f.get(11).and_then(|x| x.trim().parse().ok()).unwrap_or(0.0), f.get(12).and_then(|x| x.trim().parse().ok()).unwrap_or(0.0)];
+                        r.items.entry((f[1].to_string(), dir, var)).or_default().push((f[2].to_string(), off, rot, n));
                         r.stems.insert(f[1].to_string());
                     }
                 }
@@ -884,7 +893,7 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
         }
     }
     // 2. items (the terrain environments, and any block a swap did not cover)
-    let mut item_plan: Vec<(String, [f32; 3], f32)> = Vec::new();
+    let mut item_plan: Vec<(String, [f32; 3], [f32; 3])> = Vec::new();
     let swapped_idx: BTreeSet<usize> = swap_plan.iter().map(|s| s.0).collect();
     let mut itemed: BTreeMap<String, usize> = BTreeMap::new();
     for b in &source.blocks {
@@ -907,7 +916,7 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
             rules.items.iter().filter(|((k, d, _), _)| *k == key && *d == dir).flat_map(|(_, v)| v.iter()).max_by_key(|c| c.3)
         });
         let placement = match exact {
-            Some((model, off, yaw, _)) => Some((model.clone(), [corner[0] + off[0], corner[1] + off[1], corner[2] + off[2]], *yaw)),
+            Some((model, off, rot, _)) => Some((model.clone(), [corner[0] + off[0], corner[1] + off[1], corner[2] + off[2]], *rot)),
             None => {
                 // another quarter turn known: rotate its offset about the cell centre — only
                 // for a piece whose known placements all sit at the cell centre (a 1×1 piece;
@@ -918,19 +927,19 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
                     *skipped_undriven.entry(format!("{} (dir {dir} never seen)", b.name)).or_default() += 1;
                     continue;
                 }
-                (0u8..4).filter_map(|d| rules.items.iter().filter(|((k, dd, _), _)| *k == key && *dd == d).flat_map(|(_, v)| v.iter()).max_by_key(|c| c.3).map(|c| (d, c))).next().map(|(d, (model, off, yaw, _))| {
+                (0u8..4).filter_map(|d| rules.items.iter().filter(|((k, dd, _), _)| *k == key && *dd == d).flat_map(|(_, v)| v.iter()).max_by_key(|c| c.3).map(|c| (d, c))).next().map(|(d, (model, off, rot, _))| {
                     let delta = dir_yaw(dir) - dir_yaw(d);
                     let c = [corner[0] + 16.0, corner[1], corner[2] + 16.0];
                     let local = [off[0] - 16.0, off[1], off[2] - 16.0];
-                    (model.clone(), from_local(local, c, delta), norm_angle(yaw + delta))
+                    (model.clone(), from_local(local, c, delta), [norm_angle(rot[0] + delta), rot[1], rot[2]])
                 })
             }
         };
-        let Some((model, pos, yaw)) = placement else { continue };
+        let Some((model, pos, rot)) = placement else { continue };
         if lib.get(&model).is_none() {
             continue;
         }
-        item_plan.push((model.clone(), pos, yaw));
+        item_plan.push((model.clone(), pos, rot));
         *itemed.entry(b.name.clone()).or_default() += 1;
         needed.insert(model);
     }
@@ -1078,7 +1087,7 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
         m.append_item_clones(first + item_plan.len());
         m.write_to(&tmp).map_err(|e| e.to_string())?;
         let mut m = MapFile::load(&tmp);
-        for (k, (model, pos, yaw)) in item_plan.iter().enumerate() {
+        for (k, (model, pos, rot)) in item_plan.iter().enumerate() {
             let i = first + k;
             // the record wears what AR's records wear: his author id, the ITEM FILE's
             // collection (Stadium 0x1a even inside a WhiteShore map — a mismatch drops
@@ -1089,8 +1098,8 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
                 m.set_item_author(i, &author);
             }
             m.set_item_collection(i, coll);
-            m.move_item(i, *pos, *yaw, crate::tiny::cell_for(*pos));
-            m.set_item_frame(i, [*yaw, 0.0, 0.0], pivot);
+            m.move_item(i, *pos, rot[0], crate::tiny::cell_for(*pos));
+            m.set_item_frame(i, *rot, pivot);
             m.set_item_scale(i, scale);
             m.clear_item_variant(i);
             m.set_item_flags(i, flags);
