@@ -182,7 +182,12 @@ LAmbient-hued colour** — the sky is modelled as a wide directional light
 with shadow maps, not as a hemisphere. Where its angle and colour scale are
 set is the one CPU item still open (candidates: the `CHmsLightMapMood`
 defaults, §6, or the mood's `LAmbient` light object); until then use A =
-30°, colour = 1.55·LAmbient·SkyFactor. The `LmLBumpAmbient` shader (§2.1)
+30°, colour = 1.55·LAmbient·SkyFactor. Two numerical coincidences worth
+testing [INFERRED]: 256 directions taken as the most zenithal points of the
+4112-point set is a cone of exactly 28.9° (256/4112 = (1 − cos A)/2), and
+1.55 ≈ π/2 = 1.571 (the irradiance a hemisphere of radiance L/2 delivers),
+so the sky may simply be "LAmbient as hemisphere radiance, sampled through
+the 256-point zenith cone". The `LmLBumpAmbient` shader (§2.1)
 is therefore not part of the stored frame (the preview/in-gameplay path,
 or the runtime's use of the record's `StoreLAmbient`/`LAmbient`).
 
