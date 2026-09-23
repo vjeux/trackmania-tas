@@ -28,15 +28,16 @@ code, address given), **[RUNTIME]** (read from the running game), **[FILE]**
    0x140a3a000–0x140aa0000) allocates charts, builds direction sets, runs the
    passes as a background coroutine (`NGlobal::ComputeLoop`, states resumed
    frame by frame) and packs/compresses the result.
-2. The stored lightmap holds **ambient + sky + indirect light only — there is
-   no direct sun in it** [DISASSEMBLY]. The runtime material shaders
-   (`Tech3/Block_*_p.hlsl`, e.g. `Block_TDSN_COut_DecalMod_p` blob 1, lines
-   225–735 of the disassembly) sample the real-time cascaded sun shadow maps
-   (`TBindedMapShadowLDir0`, `…_Clip`, `GbxP_Pssm_*`) and add
-   `shadow · π · GbxP_LightDirRgbLinear0 · saturate(n·−GbxP_LightDirDirInWorld0)`
-   themselves; the lightmap textures are `TBindedMapLM0_LDiffuseAmb0..3`
-   ("L diffuse ambient"). The lightmapper renders the sun only as the *input*
-   of the bounce passes (`GeomILightIn0_p`, §2.4).
+2. The stored lightmap holds **the sun, the sky and the bounces for static
+   geometry** — "Compute shadows" is the sun-shadow bake. (An earlier revision
+   of this document claimed the opposite from the runtime material shaders,
+   which carry a real-time PSSM sun term — that term serves dynamic and
+   lightmap-less rendering; the CPU bypasses it for lightmapped statics.
+   Corrected 2026-09-23 on the baker's BlueBay test bake [DIFFERENTIAL]: a
+   free-standing wall's east face reads p90 1.10 HDR in `LDirSun`'s orange at
+   DayTime 0.854, more than any bounce source could deliver.) The sun enters
+   through `LmLBumpLDir` (§2.2) and, through the lit frame × albedo, the
+   bounces (§2.4).
 3. The stored values are **H-basis coefficients** (4 per texel: one constant,
    three directional), **sqrt-encoded and normalised per chart, written as
    BT.601 studio-swing YCbCr planes** — a WEBP decode gives the encoded values
@@ -70,7 +71,7 @@ function]:
 | coverage / ids | — | `LmCoverage_Inst_*`, `LmSSGid_SetId_Inst_p`, `LmSSGid_MergeId_p`, `LmSSGid_UpSampleY_p` | which supersampled texel belongs to which geometry id (gutter filling later) |
 | albedo | `Compute_MDiffuse` 0x1402246e3/0x140224f15, `RenderLM_MDiffuse` | `Block_*_PeelDiff_p`, `SetWaterId_*` | the materials' diffuse colour per lightmap texel (`TMapLM_MDiffuse`) — the bounce albedo |
 | ambient | `RenderLightDirect` 0x140229669 | `LmLBumpAmbient_Inst_p` | §2.1 |
-| sun (for the bounce input only) | `RenderLightDir` 0x14023809e, `RenderLightDirMulti` 0x140237d37, `RenderLightDir0ToBitmap` 0x14022fd8a | `LmLBumpLDir_Inst_p`, `LmLHBasisDirect_Inst_p`, `ZOnlyParaboloid_Inst_v` (ball-light shadow cubes) | §2.2 |
+| sun (shadow-mapped, into the frame) | `RenderLightDir` 0x14023809e, `RenderLightDirMulti` 0x140237d37, `RenderLightDir0ToBitmap` 0x14022fd8a | `LmLBumpLDir_Inst_p`, `LmLHBasisDirect_Inst_p`, `ZOnlyParaboloid_Inst_v` (ball-light shadow cubes) | §2.2 |
 | local lights | `RenderLightBall(Multi)`, `RenderLightSpot(Multi)`, `RenderLightIndex_NoBump_Inst`, `ComputeLightIndex` 0x14024240f, `LightId_Share1_SetLists` | `LmLBumpDirect_Inst_p`, `LmLIndex_Inst_p`, `LmLIndex_Sort_c` | §2.6 |
 | supersample resolve | `SuperSampleNormalize_LightSums` 0x14023e269, `RenderAddAlphaSSAA` | `LmSSResolve_LBump_p`, `LmSSResolve_Light_p`, `LmSSNormWithA_p`, `LmSSNormOrGutterWithA_p`, `LmSSResolve_Spread*` | box-average the cSamplePerAxe² sub-texels, divide by the accumulated weight, spread into gutters |
 | sky + bounces | `RenderLightIndirectDome` 0x140233b94, `RenderLightIndirectPeel` 0x140234e45, `RenderLightIndirectBounces` 0x140230b12 ("Lighting bounce %1"), `ComputeBounces_SpherePoints` 0x140a9e6b4 | `PeelZDiffuse_*`, `GeomILightIn0_*`, `LmILightDir_Set_p`, `LmLBumpILighting_Inst_p`, `LmLHBasisILighting_Inst_p`, `LmILightDir_AddAmbient_c` | §2.3–2.4 |
@@ -108,7 +109,7 @@ under occluders, not from the ambient. `AmbientAtTop` is the mood's
 §2.5). Local-light passes preload the same shape as `LightToAdd ·
 lerp(LightToAdd_ScaleYm, LightToAdd_ScaleYp, 0.5 + 0.5 n.y)`.
 
-### 2.2 The sun — rendered, not stored [DISASSEMBLY]
+### 2.2 The sun — 64 shadow-mapped disc samples into the frame [DISASSEMBLY]
 
 `LmLBumpLDir_Inst_p` (no-bump permutation):
 
@@ -136,8 +137,12 @@ light carries its own count at +0x120; the light's angular radius A =
 
 Each sample is one orthographic shadow-map render of the scene and one
 `LmLBumpLDir` pass with `OutScale = LightRgb·intensity / (N / (batch))`
-(`RenderLightDir` 0x1402381ef); the sum over the samples is the sun term.
-It feeds the bounce only (§2.4). The bump permutation writes the three RNM
+(`RenderLightDir` 0x1402381ef); the sum over the samples is the sun term
+**accumulated into the frame** (and, through the lit frame × albedo, the
+bounce input, §2.4). Shadow casters are filtered by the solids'
+`CastShadowGrp0..3` flags (`NPlugSolid2::GetShadedGeoms_CastShadow_IsOk`,
+material `ShadowCasterCond`/`NoShadow`) — Nadeo's ground tiles barely shadow
+a pad below them [DIFFERENTIAL], i.e. they are receivers only [INFERRED]. The bump permutation writes the three RNM
 targets `Tx/Ty/Tz`: `target_i = NdotL · 3 · w_i / (Σw + 1e-4)`, `w_i =
 max(0, L_tan · BumpInTgts[i])`; `LmLightSumBumpAvg` = their mean.
 
@@ -199,7 +204,7 @@ or the runtime's use of the record's `StoreLAmbient`/`LAmbient`).
 ILightInput = ( C0(lightmap so far, decoded) + LightDirRgb · max(0, n·−LightDirDirW) · shadow_LDir0(P) ) · MDiffuse(P)
 ```
 
-i.e. (ambient + sky + previous bounces, **plus the direct sun**) × the
+i.e. (the lit frame so far — sun, sky, previous bounces) × the
 material's real diffuse albedo (`TMapLM_MDiffuse`, the material textures
 rasterised into lightmap space by `Compute_MDiffuse`) — no constant albedo.
 `RenderLightIndirectBounces` ("Lighting bounce %1", "%d/%d") repeats the
@@ -266,6 +271,26 @@ to `Bumpiness`, then renormalised):
 ```text
 E(n) = max(0, C0 − C1·n.x + C2·(1 − n.y) − C3·n.z)        flat normal ⇒ E = C0
 ```
+
+**The WEBP encoder** [DISASSEMBLY 0x1404613e0 (the plane export), the
+writer at 0x1402159f0]: `libwebp64.dll` is libwebp **1.6.0**
+(`WebPGetEncoderVersion` → 0x010600, SharpYuv 0.4.2; the import table is
+virtualised by the protector, only `WebPPictureImportRGBX` shows by name).
+The lightmap planes are fed **directly**: `WebPPictureInit`, `use_argb = 0`,
+`colorspace = WEBP_YUV420`, `y/u/v` = the compress shader's planes,
+`y_stride = w`, `uv_stride = (w+1)/2` — libwebp does no colour conversion,
+the shader's BT.601 studio-swing YCbCr is what is coded. Config =
+`WebPConfigInit(WEBP_PRESET_DEFAULT, quality)` with **nothing else changed**
+(method 4, sns_strength 50, filter_strength 60, sharpness 0, strong filter,
+4 segments, 1 partition, 1 pass, no sharp-yuv, lossless 0). Quality: the
+colour image **91.0** (0x42b60000; the other branch of the same writer uses
+95.0) — `cwebp -q 91` (libwebp 1.5.0) on the decoded Tiny-16 colour image
+reproduces its VP8 header exactly (segment quantizers 11/8/6/4, filter
+strengths 3/2/0/0, level 3, one partition); the probe images, frame 1 and
+frame 2 carry the same 91-quality header (11/10/8/6, level 3); the three
+grey directional images are coded at a **lower quality** (base quantizer 68
+= q ≈ 24–26 by libwebp's quality→quantizer law; constant not yet located).
+Byte-identical WEBPs need libwebp 1.6.0 exactly plus identical planes.
 
 **The per-chart byte** (`z4`, one per chart per frame, map-lightmap.md §3.4):
 the chart's own maximum relative to the frame's `MaxHDR`
@@ -470,7 +495,8 @@ rotated`…). A rejected cache → the coarse load-time recompute
   (45,2,0,6–18), (48,0,0,6–18), (45,0,0,10–14), (65,2,1,10–14)) and
   0x0303A012 `RemappedStartDayTime` [FILE]. The XML `Latitude` (20/36/45) is
   not the one the sun uses. The sun direction as a function of DayTime through
-  these is **pending** (it only matters for the bounce input).
+  these is **pending**; the baker measures the sun from the east at el ≈ 1–2°
+  at DayTime 0.854 on BlueBay (Sunset quarter) [DIFFERENTIAL].
 * `LightMap\HmsPackLightMap\Tech3_HDR_PSSM.PackLightMap.Gbx` (Maniaplanet.pak,
   class 0x06021000) is the lightmapper's pack configuration: it references
   the sphere point table, `LightMap\HmsPackLightMapMood\Tech3
@@ -504,9 +530,12 @@ rotated`…). A rejected cache → the coarse load-time recompute
    write three 128-grey images (zero directional terms) — or the real
    coefficients from §2.5 with the item's tangent frame; store their maxima
    in the frame record's f16×3.
-3. **No direct sun term.** lmtool adds `sun·max(0,n·L)·sunVis` to frame 0.
-   Client: none (real-time). Fix: drop it from E; keep the sun only inside
-   the bounce input (§2.4).
+3. **Direct sun: keep it** (corrected). lmtool adds
+   `sun·max(0,n·L)·sunVis`; the client does the same with 64 disc samples
+   (§2.2), shadow-mapped, LDirSun of the quarter-mood, and feeds the lit
+   result into the bounces. Fix: only the sample pattern (64, disc of radius
+   sin(EmittAngularSize), 30°-rotated jittered grid) and the direction
+   formula (pending) differ.
 4. **Ambient shape.** lmtool: `ambient + up·(0.5+0.5 n.y) + sky·skyVis`
    (fitted). Client (stored frame): **no unoccluded term at all** — the sky
    cone (item 5) plus the bounces; nothing else. Fix: drop `ambient` and
