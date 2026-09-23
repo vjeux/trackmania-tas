@@ -337,7 +337,15 @@ pub struct Graph<'a> {
     /// Where every chunked node body began, as (body offset, class id), in
     /// read order: the points where the game "dummy-writes" the node's parent
     /// class id into a pak file's cipher (`parents.rs`, `pakfile.rs`).
+    /// A node that begins INSIDE a skippable chunk is listed in
+    /// `node_starts_skipped` instead: the game reads such a chunk whole into
+    /// a memory buffer before parsing it, and a dummy write into a memory
+    /// buffer is a no-op (`CMwNod::Archive` 0x1402d0720, memory buffer Write
+    /// 0x140123c80), so those nodes never touch the cipher.
     pub node_starts: Vec<(usize, u32)>,
+    pub node_starts_skipped: Vec<(usize, u32)>,
+    /// How many skippable chunks the walk is currently inside.
+    skip_depth: u32,
 }
 
 const FACADE: u32 = 0xFACADE01;
@@ -352,7 +360,7 @@ impl<'a> Graph<'a> {
                 slots[i] = Slot::External(name.clone());
             }
         }
-        Graph { r: Reader::new(body), slots, root: None, seen: HashMap::new(), recovered: Vec::new(), noderef_sites: Vec::new(), skipped: Vec::new(), collector_name: String::new(), bi_stack: Vec::new(), node_starts: Vec::new() }
+        Graph { r: Reader::new(body), slots, root: None, seen: HashMap::new(), recovered: Vec::new(), noderef_sites: Vec::new(), skipped: Vec::new(), collector_name: String::new(), bi_stack: Vec::new(), node_starts: Vec::new(), node_starts_skipped: Vec::new(), skip_depth: 0 }
     }
 
     /// Parse a whole file body, rooted at `class_id`.
@@ -411,7 +419,11 @@ impl<'a> Graph<'a> {
         if no_body_chunks(class_id) {
             return self.plain_body(class_id);
         }
-        self.node_starts.push((self.r.o, class_id));
+        if self.skip_depth == 0 {
+            self.node_starts.push((self.r.o, class_id));
+        } else {
+            self.node_starts_skipped.push((self.r.o, class_id));
+        }
         let mut acc = Acc::new(class_id);
         self.bi_stack.push(crate::blockinfo::BiAcc::default());
         let walked = self.node_chunks(class_id, &mut acc);
@@ -449,7 +461,10 @@ impl<'a> Graph<'a> {
                             cid, size
                         ));
                     }
-                    self.chunk(class_id, cid, acc)?;
+                    self.skip_depth += 1;
+                    let walked = self.chunk(class_id, cid, acc);
+                    self.skip_depth -= 1;
+                    walked?;
                     // Trailing bytes inside a skippable chunk are normal (the
                     // game writes more than any one reader consumes); jump to
                     // the declared end rather than trusting our own cursor.

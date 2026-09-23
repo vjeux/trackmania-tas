@@ -164,8 +164,10 @@ fn decrypt_scheduled(data: &[u8], base: usize, key: &[u8; 16], version: i32, n: 
 }
 
 /// The node-body starts of a (partially) decrypted Gbx file, as
-/// (file offset, parent class id folded there), in read order: the main node
-/// at the start of the body, then every inline node right after its class id.
+/// (file offset, fold value folded there), in read order: the main node
+/// at the start of the body, then every inline node right after its class id
+/// (`parents.rs` has the engine's rule; a node inside a skippable chunk is
+/// left out, as the engine's memory-buffer detour makes its fold a no-op).
 /// The walk stops at the first byte it cannot read; what it found before that
 /// is right as long as the bytes were.
 fn dummy_write_points(plain: &[u8], class_id: u32) -> Vec<(usize, u32)> {
@@ -176,7 +178,8 @@ fn dummy_write_points(plain: &[u8], class_id: u32) -> Vec<(usize, u32)> {
         // not know (the probe for a table-less class's parent)
         std::env::var("MAPGEOM_FOLD_MAIN").ok().and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok())
     });
-    let mut out: Vec<(usize, u32)> = main_fold.map(|c| (body_start, c)).into_iter().collect();
+    // `Some(0)`: a root class (CMwNod), which folds nothing
+    let mut out: Vec<(usize, u32)> = main_fold.filter(|c| *c != 0).map(|c| (body_start, c)).into_iter().collect();
     let externals: Vec<(u32, String)> = g.refs.iter().map(|e| (e.node_index, e.name.clone())).collect();
     let mut graph = crate::node::Graph::new(&g.body, g.num_nodes, &externals);
     let walked = graph.node_body(class_id);
@@ -186,7 +189,7 @@ fn dummy_write_points(plain: &[u8], class_id: u32) -> Vec<(usize, u32)> {
         if *off == 0 {
             continue;
         }
-        if let Some(fold) = crate::parents::dummy_write_class(*c) {
+        if let Some(fold) = crate::parents::dummy_write_class(*c).filter(|f| *f != 0) {
             out.push((body_start + off, fold));
         }
     }
@@ -217,8 +220,8 @@ fn dummy_write_points(plain: &[u8], class_id: u32) -> Vec<(usize, u32)> {
                 if c == chunk_class {
                     return true;
                 }
-                match crate::parents::dummy_write_class(c) {
-                    Some(p) if p != c => c = p,
+                match crate::parents::engine_parent(crate::parents::normalise(c)) {
+                    Some(p) if p != 0 && p != c => c = p,
                     _ => return false,
                 }
             }
@@ -232,7 +235,9 @@ fn dummy_write_points(plain: &[u8], class_id: u32) -> Vec<(usize, u32)> {
             let plausible_class = class & 0xFFF == 0 && matches!(class >> 24, 0x03 | 0x04 | 0x05 | 0x09 | 0x0A | 0x24 | 0x2E | 0x2F);
             if idx >= 1 && idx <= n && plausible_class && chunk_of(class, chunk & !0xFFF) && !known.contains(&(i + 8)) {
                 let fold = crate::parents::dummy_write_class(class).unwrap_or(crate::parents::C_PLUG);
-                out.push((i + 8, fold));
+                if fold != 0 {
+                    out.push((i + 8, fold));
+                }
                 i += 8;
                 continue;
             }
@@ -379,18 +384,18 @@ fn lz4_continue(raw: &[u8], from: usize, hist: &mut Vec<u8>, dict_len: usize, wa
 }
 
 /// Where a dummy write at PLAIN offset `p` reaches the cipher of a compressed
-/// file: the writer's node bodies go through the LZ4 block compressor (4096
-/// plain bytes per chunk), so the four bytes of the parent class id fold into
-/// the cipher at the compressed position the stream has reached when the
-/// chunk holding `p` is emitted — the start of the next chunk. Measured on
-/// `Stadium\Media\VegetTreeModel\PalmTreeSmall.VegetTreeModel.Gbx` (169 KB,
-/// flags 0x5): the first chunk decoded right without any fold and the second
-/// went bad past a 0x100 boundary, which a fold before the first chunk could
-/// not produce (`MAPGEOM_LZ4_FOLD=before` keeps that model for A/B).
+/// file. DISASSEMBLY (2026-09-23): the reader's LZ4 buffer (`0x1413ac620`,
+/// ReadPartial of the class built at 0x1413ac4c0) pulls the next
+/// `[u16 len][block]` from the crypt buffer only when a read finds its
+/// window empty — so with `p` plain bytes consumed the crypt stream stands at
+/// the start of chunk `ceil(p / 4096)`: chunk k+1 for a node body that
+/// begins strictly inside chunk k, chunk k for one that begins exactly on a
+/// 4096 boundary (chunk k-1 is exhausted, chunk k not yet pulled). The four
+/// bytes then land at the crypt's next 0x100-byte batch (`blowfish.rs`).
+/// First measured on `Stadium\Media\VegetTreeModel\PalmTreeSmall.VegetTreeModel.Gbx`
+/// (chunk 1 needed the folds of chunk 0's nodes), pinned by the disassembly.
 fn fold_position(p: usize, chunk_starts: &[usize]) -> Option<usize> {
-    let k = p / 4096;
-    let idx = if std::env::var_os("MAPGEOM_LZ4_FOLD").map(|v| v == "before").unwrap_or(false) { k } else { k + 1 };
-    chunk_starts.get(idx).copied()
+    chunk_starts.get(p.div_ceil(4096)).copied()
 }
 
 /// Decrypt `n` bytes at `base`, folding `(offset, class)` pairs in the given

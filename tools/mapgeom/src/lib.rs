@@ -53,6 +53,7 @@ pub mod names;
 pub mod node;
 pub mod pak;
 pub mod pakfile;
+pub mod engine_classes;
 pub mod parents;
 pub mod place;
 pub mod probe;
