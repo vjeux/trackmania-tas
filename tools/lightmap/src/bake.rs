@@ -182,7 +182,8 @@ impl ChartBake {
     }
 }
 
-/// Is this model a flat ground tile (a thin quad-like mesh: ≤ 16 triangles, under 0.6 m tall)? The
+/// Is this model a flat ground tile (a zero-thickness quad-like mesh: ≤ 16 triangles, under 5 cm tall —
+/// the "16×16×0" terrain tiles; a track plate with a real thickness is a caster)? The
 /// editor's test bakes show such items do not occlude the dome (a 16×16 terrain tile 16 m above a pad
 /// leaves it at 0.86–1.02 of open on RedIsland/WhiteShore/Stadium) — Nadeo's ground tiles are receivers
 /// only (CastShadowGrp flags); they stay charted but leave the BVH.
@@ -197,13 +198,16 @@ pub fn is_flat_tile(m: &crate::geometry::ModelGeom) -> bool {
             hi = hi.max(p[1]);
         }
     }
-    hi - lo < 0.6
+    hi - lo < 0.05
 }
 
-/// World-space triangles of every instance, for the BVH (flat ground tiles excluded unless
-/// `LMTOOL_TILES_CAST=1`).
+/// World-space triangles of every instance, for the BVH (flat ground tiles excluded only with
+/// `LMTOOL_TILES_CAST=0`).
 pub fn world_tris(scene: &Scene) -> Vec<WTri> {
-    let tiles_cast = std::env::var("LMTOOL_TILES_CAST").map(|v| v == "1").unwrap_or(false);
+    // OFF by default: BlueBay's track plates (AC16902154, a zero-thickness quad too) DO occlude in the
+    // editor, the RI/WS/Stadium terrain tiles do not — the difference is the item's CastShadow flag,
+    // not its shape; without the flag every mesh casts. LMTOOL_TILES_CAST=0 drops the flat quads.
+    let tiles_cast = std::env::var("LMTOOL_TILES_CAST").map(|v| v != "0").unwrap_or(true);
     let mut out = Vec::with_capacity(scene.tri_count());
     let mut skipped = 0usize;
     for (ii, inst) in scene.instances.iter().enumerate() {

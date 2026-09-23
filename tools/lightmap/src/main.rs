@@ -815,7 +815,9 @@ fn run(a: Vec<String>) {
                     let n0 = counts.first().copied().unwrap_or(256);
                     let pp = f("--points").unwrap_or_else(lightmap::dome::default_path);
                     if let Ok(ps) = lightmap::dome::PointSets::load(&pp) { if let Some(set) = ps.nearest(n0) { prm.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); eprintln!("peel: quality {q}, sweeps {:?}, first set {} directions (rotated)", counts, set.len()); } }
-                    if let Some(v) = f("--bounce-decode") { prm.bounce_decode = v.parse().unwrap(); }
+                    // the lightmap-so-far is read back divided by BounceFactor (RE child 2 (d)); the Day-quarter
+                    // test bake confirms a weak bounce (a pad under an 8 m plate: 51 % of open, walls 43 % of floors)
+                    prm.bounce_decode = f("--bounce-decode").map(|v| v.parse().unwrap()).unwrap_or(x.bounce_factor.max(1.0));
                     if let Some(v) = f("--horizon-el") { prm.horizon_el = v.parse().unwrap(); }
                     if let Some(v) = f("--horizon-rgb") { prm.horizon_radiance = parse_rgb(&v); }
                 }
@@ -862,17 +864,20 @@ fn run(a: Vec<String>) {
                 prm.direct_sun = if has("--direct-sun") { 1.0 } else { 0.0 };
                 prm.sun_radius = f("--sun-radius").map(|s: String| s.parse::<f32>().unwrap()).unwrap_or(2.0f32).to_radians();
                 let t = match dt { Some(v) if v != 0xffff_ffff => v as f32 / 65536.0, _ => lightmap::moods::default_daytime(&x.collection, x.mood) as f32 / 65536.0 };
-                // the sun DIRECTION (bounce input + the sky glow's azimuth): measured at the Sunset quarter
-                // (0.854, BlueBay): az ≈ 115° (ESE), el ≈ 1–2°; other quarters: the noon-at-½ arc until the
-                // DecorationMood formula is read (RE child 2)
-                let (mut az_d, mut el_d) = if t >= 0.75 {
-                    (115.0f32, 2.0f32)
-                } else {
-                    let hour_angle = (t - 0.5) * 2.0 * std::f32::consts::PI;
-                    let lat = x.latitude.to_radians();
-                    let el = (lat.cos() * hour_angle.cos()).asin();
-                    let az = hour_angle.sin().atan2(-lat.sin() * hour_angle.cos());
-                    (az.to_degrees(), el.to_degrees().max(2.0))
+                // the sun DIRECTION (bounce input + the sky glow's centre): the standard equinox path,
+                // H = 2π(t − t_noon), el = asin(cos φ·cos H), az_game = 180° + atan2(sin H, cos H·sin φ) (game
+                // compass: 0 = +z north, 90 = east = −x), fitted on the 2026-09-23 BlueBay DayTime series
+                // (t_noon 0.583, φ 30°): t 0.312 glow east, 0.607 near-zenith, 0.75 WSW at 26°, 0.854 west at
+                // −6.6° (below the horizon → the twilight sky: dark low sky, horizon glow). --sun-lat/--sun-noon.
+                let lat_d: f32 = f("--sun-lat").map(|s| s.parse().unwrap()).unwrap_or(30.0);
+                let t_noon: f32 = f("--sun-noon").map(|s| s.parse().unwrap()).unwrap_or(0.583);
+                let (mut az_d, mut el_d) = {
+                    let h = 2.0 * std::f32::consts::PI * (t - t_noon);
+                    let phi = lat_d.to_radians();
+                    let el = (phi.cos() * h.cos()).asin();
+                    let az_game = std::f32::consts::PI + h.sin().atan2(h.cos() * phi.sin());
+                    // our az = atan2(x, z) with +x = game west: az_mine = −az_game
+                    ((-az_game).to_degrees().rem_euclid(360.0), el.to_degrees())
                 };
                 if let Some(v) = f("--sun-az") { az_d = v.parse().unwrap(); }
                 if let Some(v) = f("--sun-el") { el_d = v.parse().unwrap(); }
