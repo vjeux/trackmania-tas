@@ -532,7 +532,10 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
         // frame: the re-dressed item copy (rails in the surface) plus a GENERATED snow
         // floor quad (`Merged::add_flat_quad` in the library bake) — Everios96
         // 2026-09-21 "you forgot to turn the road part of the block into wood"
-        if shape.is_empty() && !floor.is_empty() && !matches!(s, "Ice" | "Dirt" | "Tech" | "Grass") {
+        // … and since 2026-09-23 the GRASS-floor frame too (plastic 37: the frame's road
+        // strips stayed asphalt under plastic — shcr): the library generates the plain
+        // `Material\Penalty` (Grass) floor
+        if shape.is_empty() && !matches!(s, "Ice" | "Dirt" | "Tech" | "Grass") {
             // fall through to the bake path below; the library adds the floor
         } else {
         let road_word = match s { "Ice" | "Dirt" | "Tech" => s.to_string(), _ => road.to_string() };
@@ -552,11 +555,10 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
         // bakes as a re-dressed copy like a custom item — except a block that already IS
         // the surface (a community wood block in the wood sets: its name says so)
         let redress = std::env::var("TINY_CUSTOM_BLOCK_REDRESS").map(|v| v == "1").unwrap_or(false);
-        let already = (s == "Wood" && name.to_ascii_lowercase().contains("wood"))
-            || (s == "Plastic" && name.to_ascii_lowercase().contains("plastic"))
-            || (s == "Dirt" && name.to_ascii_lowercase().contains("dirt"))
-            || (s == "Grass" && name.to_ascii_lowercase().contains("grass"))
-            || (s == "Ice" && name.to_ascii_lowercase().contains("ice"));
+        // the NAME shortcut stays for wood only (the community wood roads' own planks): a
+        // `…RoadDirtToRoadHalfB_Plastic` block is dirt-textured with an asphalt half
+        // (plastic 26, shcr 2026-09-23) — every other surface re-dresses regardless
+        let already = s == "Wood" && name.to_ascii_lowercase().contains("wood");
         if redress && !already {
             return mk(Action::Bake, "", "embedded custom block: re-dressed copy".into());
         }
@@ -587,7 +589,11 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     // stayed dirt on the castle towers of 267 ("castle blocks with dirt on top
     // were not properly updated", Everios96 2026-09-15); they take the wood deck
     // like the Platform family does
-    if deck_only(s) && is_terrain_family(name) && !(s == "Wood" && name.starts_with("DecoPlatform")) {
+    // (2026-09-15 → 2026-09-23 the DecoPlatform pieces under WOOD were baked for "the castle
+    // towers of 267" — those are ITEMS (Everios96 2026-09-22), and the bake picked up the
+    // every-set snow-top row: grass platforms turned to snow across the wood set —
+    // Everios96 2026-09-23 11:12 "only wet wood". The author-placed ice tops still bake above.)
+    if deck_only(s) && is_terrain_family(name) {
         return mk(Action::Keep, "", format!("terrain family: no {s} form, left as is"));
     }
     // the wall-ride family IS wood (TrackWall = Wood 14), and so is the snow theme's

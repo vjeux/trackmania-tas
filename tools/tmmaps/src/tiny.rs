@@ -852,7 +852,8 @@ pub fn cmd(args: &[String]) {
             // Nadeo models kept as-is (vegetation, gates) keep author Nadeo.
             // an embedded library item (any *.Item.Gbx) is its own author; a
             // stock model (vegetation substitute) is Nadeo's
-            m.set_item_author(i, if s.model.ends_with(".Item.Gbx") { &s.model } else { "Nadeo" });
+            let author = if s.model.ends_with(".Item.Gbx") { crate::surface::item_author(&s.model) } else { "Nadeo".to_string() };
+            m.set_item_author(i, &author);
             // … and the map's collection, which is what the manifest row
             // says: a source placement of a club item (a Stadium-collection
             // ident inside a BlueBay map, Summer 21's TME items) keeps its
@@ -1054,10 +1055,8 @@ pub fn cmd(args: &[String]) {
                 zip = crate::header::deflated_zip(&kept);
             }
         }
-        let manifest: Vec<(&str, &str)> = embedded_names
-            .iter()
-            .map(|name| (name.as_str(), name.as_str()))
-            .collect();
+        let authors: Vec<String> = embedded_names.iter().map(|n| crate::surface::item_author(n)).collect();
+        let manifest: Vec<(&str, &str)> = embedded_names.iter().zip(authors.iter()).map(|(name, a)| (name.as_str(), a.as_str())).collect();
         m.replace_embedded_objects(&manifest, &zip);
     }
     // The source's VALIDATION GHOST (chunk 0x0305B00F) is the original's

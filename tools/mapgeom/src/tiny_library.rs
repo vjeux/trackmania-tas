@@ -423,7 +423,7 @@ impl TreeBaker {
         }
         let stem = model_path.rsplit('\\').next().unwrap_or(&model_path).trim_end_matches(".VegetTreeModel.Gbx").to_string();
         let ident = format!("AV{:08}.Item.Gbx", self.next);
-        let result = crate::static_item::build::static_item_from_veget_report(store, &model_path, &ident, &ident, scale, collection);
+        let result = crate::static_item::build::static_item_from_veget_report(store, &model_path, &ident, &item_author(&ident), scale, collection);
         let out = match result {
             Ok((bytes, m, bake)) => {
                 if bake.height < self.min_height {
@@ -699,7 +699,7 @@ fn plan_block<'b>(bi: &'b crate::blockinfo::BlockInfo, key: &BlockKey, collectio
 fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, bi: &crate::blockinfo::BlockInfo, ident: &str, scale: f32, collection: u32, legacy: &BTreeMap<String, Vec<u8>>, water: Option<(u8, f32)>, at_water_row: bool) -> Result<(Vec<u8>, crate::static_item::build::Merged, bool), String> {
     if let Some(l) = plan.legacy_item {
         return match legacy.get(l) {
-            Some(bytes) => crate::static_item::build::static_item_from_item_report(bytes, ident, ident, scale, collection).map(|(b, m)| (b, m, false)),
+            Some(bytes) => crate::static_item::build::static_item_from_item_report(bytes, ident, &item_author(ident), scale, collection).map(|(b, m)| (b, m, false)),
             None => Err(format!("{l} absent from the legacy archive (pass --legacy-zip)")),
         };
     }
@@ -1112,7 +1112,8 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             let floor = match std::env::var("TINY_PENALTY_FLOOR").ok().as_deref() {
                 Some("Ice") => Some(("Stadium\\Media\\Modifier\\PlatformIce\\Penalty", 21u8)),
                 Some("Dirt") => Some(("Stadium\\Media\\Modifier\\PlatformDirt\\Penalty", 5u8)),
-                _ => None,
+                // the plain frame's floor: the zone's grass (`Material\Penalty`, Grass 2)
+                _ => Some(("Stadium\\Media\\Material\\Penalty", 2u8)),
             };
             if let Some((flink, fphys)) = floor {
                 let y = 2.0 * scale;
@@ -1129,7 +1130,7 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             }
         }
     }
-    let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: ident.to_string(), scale, collection, skin: m.skin.clone() };
+    let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: item_author(ident), scale, collection, skin: m.skin.clone() };
     let f = crate::static_item::build::assemble(&m, &opts)?;
     Ok((crate::static_item::file::write_file(&f), m, deepened))
 }
@@ -2736,6 +2737,17 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
             surface_rows.push(("Structure".to_string(), link, ids));
         }
     }
+    // a DECO PLATFORM piece (rounded corners / slopes of the grass and dirt platforms) is a
+    // PENALTY surface: its `DecoHill` top takes the snow row like its flat `Deco` top when the
+    // build has one (ice / wet wood) — Everios96 2026-09-22: "rounded corner penalty blocks …
+    // should be snow"; the plain wood set keeps these blocks unbaked (surface.rs)
+    if name.starts_with("DecoPlatform") {
+        if let Some(pos) = surface_rows.iter().position(|(from, to, _)| from == "DecoHill" && !to.is_empty() && !to.contains("PlatformIce")) {
+            if let Some((_, snow, ids)) = surface_rows.iter().find(|(from, to, _)| from == "Deco" && to.contains("PlatformIce")).cloned() {
+                surface_rows[pos] = ("DecoHill".to_string(), snow.replace("\\Deco", "\\DecoHill"), ids);
+            }
+        }
+    }
     for (stem, link, ids) in &surface_rows {
         let note_link = if link.is_empty() { format!("Stadium\\Media\\Material\\{stem} (own look, physics {})", ids.0) } else { link.clone() };
         m.collision_redress.insert(0, Redress { matches: RedressKey::File(format!("{}.material.gbx", stem.to_ascii_lowercase())), link: note_link, ids: *ids });
@@ -2893,6 +2905,13 @@ mod special_family_tests {
 /// of one map — embedding different pieces as `AC00000200.Item.Gbx` show the
 /// first-loaded model in the second (2026-09-09: tiny 20's "slabs" were ship13's
 /// pieces under ship14's names; vjeux plays several tiny maps in one session).
+/// `TINY_ITEM_AUTHOR`: the author id written into every generated item's ident (and
+/// expected in the placements). Default = the item's own ident. A real account id is the
+/// console-side experiment of 2026-09-22 (json9841: every `AC…` item "missing" on console).
+pub fn item_author(ident: &str) -> String {
+    std::env::var("TINY_ITEM_AUTHOR").ok().filter(|a| !a.is_empty()).unwrap_or_else(|| ident.to_string())
+}
+
 pub fn alias_base() -> usize {
     std::env::var("TINY_ALIAS_BASE").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(0)
 }

@@ -269,7 +269,7 @@ pub fn cmd(args: &[String]) {
         for (k, (_, s)) in item_specs.iter().enumerate() {
             let i = first + k;
             m.set_item_model(i, &s.model);
-            m.set_item_author(i, &s.model);
+            m.set_item_author(i, &item_author(&s.model));
             m.set_item_collection(i, collection);
             m.move_item(i, s.pos, s.rot[0], crate::tiny::cell_for(s.pos));
             m.set_item_frame(i, s.rot, [0.0, 0.0, 0.0]);
@@ -303,7 +303,7 @@ pub fn cmd(args: &[String]) {
         // and items (`Blocks/WoodRally/…/RallyRoadWoodHighCurve1.Block.Gbx`) that
         // the kept records still name. Dropped until 2026-09-14 — every alteration
         // of a map with custom objects failed to load (plastic 630/640/641).
-        let mut manifest_rows: Vec<(String, String)> = names.iter().map(|n| (n.clone(), n.clone())).collect();
+        let mut manifest_rows: Vec<(String, String)> = names.iter().map(|n| (n.clone(), item_author(n))).collect();
         let mut carried = 0usize;
         if let Some((rows, src_zip)) = source.embedded_objects() {
             for (name, bytes) in crate::header::zip_entries(&src_zip) {
@@ -550,4 +550,11 @@ mod tree_tests {
         assert_eq!(icy_tree("FallTreeTall", 0), Some(("FrozenTreeTall", 0)));
         assert_eq!(icy_tree("SummerPalmTree", 3), Some(("WinterFrozenTree", 5))); // a palm cluster -> a frozen cluster
     }
+}
+
+
+/// `TINY_ITEM_AUTHOR`: the author id the generated items were written with (mapgeom
+/// `tiny_library::item_author`); the placements and the manifest say the same.
+pub fn item_author(model: &str) -> String {
+    std::env::var("TINY_ITEM_AUTHOR").ok().filter(|a| !a.is_empty()).unwrap_or_else(|| model.to_string())
 }

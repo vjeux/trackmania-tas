@@ -947,7 +947,7 @@ pub fn terrain_cmd(args: &[String]) -> Result<(), String> {
         for (k, (model, pos, yaw)) in placements.iter().enumerate() {
             let i = first + k;
             m.set_item_model(i, model);
-            m.set_item_author(i, model); // an embedded item is its own author (mapgeom's nameless body ident)
+            m.set_item_author(i, &crate::surface::item_author(model)); // TINY_ITEM_AUTHOR or the item's own name
             m.set_item_collection(i, STADIUM);
             m.move_item(i, *pos, *yaw, crate::tiny::cell_for(*pos));
             m.set_item_frame(i, [*yaw, 0.0, 0.0], [0.0; 3]);
@@ -988,7 +988,7 @@ pub fn terrain_cmd(args: &[String]) -> Result<(), String> {
             // file name, author = the same (the Tiny/Giant maps' form); the bare stem was
             // wrong (2026-09-22)
             if file.ends_with(".Item.Gbx") && !rows.iter().any(|(i, _)| *i == file) {
-                rows.push((file.clone(), file.clone()));
+                rows.push((file.clone(), crate::surface::item_author(&file)));
             }
             files.entry(entry).or_insert(b);
             added += 1;
