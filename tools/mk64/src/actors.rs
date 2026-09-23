@@ -126,7 +126,8 @@ pub fn model_triangles(course: &Course, dl: &str) -> Vec<ModelTri> {
                 tex = segment3_symbol(&course.dir, *addr).map(|s| (s.to_string(), *w, *h, cms & 2 != 0, cmt & 2 != 0));
             }
             Gfx::TexImage { sym, .. } => {
-                tex = Some((sym.clone(), 32, 32, false, false));
+                let resolved = course.texture_aliases.get(sym).cloned().unwrap_or_else(|| sym.clone());
+                tex = Some((resolved, 32, 32, false, false));
             }
             Gfx::TileSize { tile: 0, uls, ult, lrs, lrt } => {
                 if let Some(t) = tex.as_mut() {
@@ -166,8 +167,16 @@ pub fn add_trees(course: &Course, mesh: &mut Mesh, frame: &Frame) -> (usize, usi
 /// animation frame, the trees), crossed when it is a billboard.
 pub fn add_billboards(course: &Course, mesh: &mut Mesh, frame: &Frame, kind: &str) -> (usize, usize) {
     let lists = model_lists(course, kind);
-    let Some(dl) = lists.first() else { return (0, 0) };
-    let model = model_triangles(course, dl);
+    let Some(first) = lists.first() else { return (0, 0) };
+    // Koopa Troopa Beach draws a tree as `dl_tree_top1` + `dl_tree_trunk1`
+    // (three variants): every list sharing the first one's trailing digit is
+    // one model; other courses have one list (or animation frames: the first)
+    let digit = first.chars().last().filter(|c| c.is_ascii_digit());
+    let picked: Vec<&String> = match digit {
+        Some(d) if lists.iter().filter(|l| l.ends_with(d)).count() > 1 => lists.iter().filter(|l| l.ends_with(d)).collect(),
+        _ => vec![first],
+    };
+    let model: Vec<ModelTri> = picked.iter().flat_map(|dl| model_triangles(course, dl)).collect();
     if model.is_empty() {
         return (0, 0);
     }
@@ -209,7 +218,7 @@ pub fn add_billboards(course: &Course, mesh: &mut Mesh, frame: &Frame, kind: &st
                     vv = 1.0 - vv; // the game samples v from the bottom row
                     Corner { pos: frame.to_tm_f(world), uv: [u, vv], rgba: [v.rgb[0], v.rgb[1], v.rgb[2], 255] }
                 };
-                let (a, b, cc) = (corner(&t.c[0]), corner(&t.c[2]), corner(&t.c[1]));
+                let (a, b, cc) = (corner(&t.c[0]), corner(&t.c[1]), corner(&t.c[2]));
                 let c3 = if frame.mirror { [a, cc, b] } else { [a, b, cc] };
                 mesh.tris.push(Tri { c: c3, mat, two_sided: true, lit: false, piece });
                 added += 1;

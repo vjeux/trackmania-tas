@@ -18,9 +18,9 @@ pub struct TopDown {
 }
 
 impl TopDown {
-    /// Pixel of a world point (row 0 = north = max z).
+    /// Pixel of a world point (row 0 = north = MIN z: both games have north at −z).
     pub fn px(&self, x: f32, z: f32) -> (i32, i32) {
-        (((x - self.x0) / self.m_per_px) as i32, ((self.z0 - z) / self.m_per_px) as i32)
+        (((x - self.x0) / self.m_per_px) as i32, ((z - self.z0) / self.m_per_px) as i32)
     }
     pub fn dot(&mut self, x: f32, z: f32, r: i32, rgb: [u8; 3]) {
         let (cx, cy) = self.px(x, z);
@@ -66,7 +66,7 @@ pub fn top_down(mesh: &Mesh, textures: &HashMap<usize, Image>, max_px: usize) ->
     let margin = 8.0 * m_per_px;
     let w = ((span_x + 2.0 * margin) / m_per_px).ceil() as usize;
     let h = ((span_z + 2.0 * margin) / m_per_px).ceil() as usize;
-    let mut img = TopDown { w, h, rgb: vec![24; w * h * 3], x0: lo[0] - margin, z0: hi[2] + margin, m_per_px };
+    let mut img = TopDown { w, h, rgb: vec![24; w * h * 3], x0: lo[0] - margin, z0: lo[2] - margin, m_per_px };
     let mut ybuf = vec![f32::NEG_INFINITY; w * h];
     // draw in order, higher y wins (a bridge over a road shows the bridge)
     for t in &mesh.tris {
@@ -77,7 +77,7 @@ pub fn top_down(mesh: &Mesh, textures: &HashMap<usize, Image>, max_px: usize) ->
 
 fn raster(img: &mut TopDown, ybuf: &mut [f32], t: &crate::mesh::Tri, textures: &HashMap<usize, Image>) {
     let tex = t.mat.and_then(|m| textures.get(&m));
-    let to_px = |c: &Corner| -> (f32, f32) { ((c.pos[0] - img.x0) / img.m_per_px, (img.z0 - c.pos[2]) / img.m_per_px) };
+    let to_px = |c: &Corner| -> (f32, f32) { ((c.pos[0] - img.x0) / img.m_per_px, (c.pos[2] - img.z0) / img.m_per_px) };
     let p = [to_px(&t.c[0]), to_px(&t.c[1]), to_px(&t.c[2])];
     let min_x = p.iter().map(|q| q.0).fold(f32::INFINITY, f32::min).floor().max(0.0) as i64;
     let max_x = p.iter().map(|q| q.0).fold(f32::NEG_INFINITY, f32::max).ceil().min(img.w as f32 - 1.0) as i64;

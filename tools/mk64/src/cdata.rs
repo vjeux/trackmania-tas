@@ -78,6 +78,20 @@ pub fn strip(src: &str) -> String {
     while i < b.len() {
         let c = b[i];
         if line_start && c == b'#' {
+            // `#include "x.inc.c"` inside an initializer is the array's whole
+            // content (a texture symbol aliasing an asset): keep it as a call
+            if b[i..].starts_with(b"#include \"") {
+                let start = i + "#include ".len();
+                let mut j = start + 1;
+                while j < b.len() && b[j] != b'"' {
+                    j += 1;
+                }
+                out.push_str("__include(");
+                out.push_str(std::str::from_utf8(&b[start..=j.min(b.len() - 1)]).unwrap_or(""));
+                out.push_str("),");
+                i = j + 1;
+                continue;
+            }
             while i < b.len() && b[i] != b'\n' {
                 // a preprocessor line may continue with a backslash
                 if b[i] == b'\\' && i + 1 < b.len() && b[i + 1] == b'\n' {

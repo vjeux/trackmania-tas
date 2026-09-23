@@ -2,10 +2,10 @@
 //! world-space triangles with normalised UVs and per-texture materials, and
 //! the `TrackSections` pieces turned into a collision soup with surfaces.
 //!
-//! Frames: MK64 is right-handed with y up and north = −z; TM2020 is x east,
-//! y up, z north (left-handed). The map is (x, y, z) → (x, y, −z) · scale,
-//! and every triangle's vertex order is reversed so that the TM convention
-//! `normal = cross(b−a, c−a)` still points the way the N64 face did.
+//! Frames: MK64 and TM2020 are BOTH right-handed with y up and north = −z
+//! (Luigi Raceway's wall text read mirrored under a z-flip, 2026-09-22), so
+//! the map is (x, y, z) → (x, y, z) · scale + offset and the vertex order is
+//! kept (N64 counter-clockwise front faces = TM `normal = cross(b−a, c−a)`).
 
 use crate::course::{Course, Piece, TexState};
 use crate::texture::AssetIndex;
@@ -108,11 +108,11 @@ pub struct Frame {
 impl Frame {
     pub fn to_tm(&self, p: [i16; 3]) -> [f32; 3] {
         let x = if self.mirror { -(p[0] as f32) } else { p[0] as f32 };
-        [x * self.scale + self.offset[0], p[1] as f32 * self.scale + self.offset[1], -(p[2] as f32) * self.scale + self.offset[2]]
+        [x * self.scale + self.offset[0], p[1] as f32 * self.scale + self.offset[1], p[2] as f32 * self.scale + self.offset[2]]
     }
     pub fn to_tm_f(&self, p: [f32; 3]) -> [f32; 3] {
         let x = if self.mirror { -p[0] } else { p[0] };
-        [x * self.scale + self.offset[0], p[1] * self.scale + self.offset[1], -p[2] * self.scale + self.offset[2]]
+        [x * self.scale + self.offset[0], p[1] * self.scale + self.offset[1], p[2] * self.scale + self.offset[2]]
     }
 }
 
@@ -154,9 +154,8 @@ pub fn visual_mesh(course: &Course, pieces: &[Piece], assets: Option<&AssetIndex
                 };
                 Corner { pos: frame.to_tm(v.pos), uv, rgba: [v.rgb[0], v.rgb[1], v.rgb[2], 255] }
             };
-            // reversed order: see the module doc (the z flip mirrors the winding)
-            let (a, b, c) = (corner(t.v[0]), corner(t.v[2]), corner(t.v[1]));
-            // a mirrored course flips it back
+            // the N64 order is the TM order; a mirrored course (x flipped) reverses it
+            let (a, b, c) = (corner(t.v[0]), corner(t.v[1]), corner(t.v[2]));
             let c3 = if frame.mirror { [a, c, b] } else { [a, b, c] };
             mesh.tris.push(Tri {
                 c: c3,
@@ -191,13 +190,13 @@ pub fn uv_of(st: &TexState, m: &Material, tc: [i16; 2]) -> [f32; 2] {
     [s / period_s, 1.0 - t / period_t]
 }
 
-/// The collision soup: every `TrackSections` piece, TM frame, reversed winding.
+/// The collision soup: every `TrackSections` piece, TM frame.
 pub fn collision_mesh(course: &Course, coll: &[(crate::course::Section, Piece)], frame: &Frame) -> Vec<CollTri> {
     let mut out = Vec::new();
     for (sec, piece) in coll {
         for t in &piece.tris {
             let p = |vi: u32| frame.to_tm(course.vertices[vi as usize].pos);
-            let (a, b, c) = (p(t.v[0]), p(t.v[2]), p(t.v[1]));
+            let (a, b, c) = (p(t.v[0]), p(t.v[1]), p(t.v[2]));
             let p3 = if frame.mirror { [a, c, b] } else { [a, b, c] };
             out.push(CollTri { p: p3, surface: sec.surface, section_id: sec.section_id });
         }

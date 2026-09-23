@@ -175,6 +175,9 @@ pub struct Course {
     /// Object models: the full-format `Vtx` arrays of course_data.c (trees,
     /// signs, balloons), by symbol.
     pub objects: HashMap<String, Vec<Vertex>>,
+    /// `u8 d_course_x_thing[] = { #include "assets/…/gTextureThing.inc.c" }`:
+    /// a course data symbol that IS an asset texture, by asset symbol.
+    pub texture_aliases: HashMap<String, String>,
     pub tex_syms: Vec<String>,
     pub tex_states: Vec<TexState>,
     tex_state_index: HashMap<TexState, u16>,
@@ -224,6 +227,18 @@ impl Course {
                             c.render_lists.push(arr.name.clone());
                         }
                         c.dls.insert(arr.name.clone(), cmds);
+                    }
+                    "u8" => {
+                        if let Some((name, a)) = arr.items.first().and_then(|n| n.call()) {
+                            if name == "__include" {
+                                if let Some(path) = a.first().and_then(|x| x.text()) {
+                                    let base = path.trim_matches('"').rsplit('/').next().unwrap_or("").trim_end_matches(".inc.c").to_string();
+                                    if !base.is_empty() {
+                                        c.texture_aliases.insert(arr.name.clone(), base);
+                                    }
+                                }
+                            }
+                        }
                     }
                     "Vtx" => {
                         let mut v = Vec::new();
@@ -405,7 +420,8 @@ impl Course {
                 }
                 Gfx::End => break,
                 Gfx::TexImage { fmt, siz, width, sym } => {
-                    st.tex_sym = Some(self.tex_sym(sym));
+                    let resolved = self.texture_aliases.get(sym).cloned().unwrap_or_else(|| sym.clone());
+                    st.tex_sym = Some(self.tex_sym(&resolved));
                     st.tex_fmt = *fmt;
                     st.tex_siz = *siz;
                     st.tex_width = *width;
