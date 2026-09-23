@@ -813,7 +813,12 @@ pub fn apply_cmd(args: &[String]) -> Result<(), String> {
             if b.flags & crate::map::FREE_BLOCK_FLAG != 0 && b.name.contains("_CustomBlock") {
                 continue;
             }
-            let dbg = std::env::var("ALTERED_DEBUG").is_ok() && (b.waypoint_tag.is_some() || b.name.contains("Start"));
+            // ALTERED_DEBUG=1: waypoints + starts; ALTERED_DEBUG=<substring>: the blocks whose name carries it
+            let dbg = match std::env::var("ALTERED_DEBUG") {
+                Ok(v) if v == "1" => b.waypoint_tag.is_some() || b.name.contains("Start"),
+                Ok(v) => !v.is_empty() && b.name.contains(v.as_str()),
+                Err(_) => false,
+            };
             if !wants(b, &mut skipped_undriven) {
                 if dbg {
                     eprintln!("    [swap] {} #{} at {:?}: off the route", b.name, b.index, b.coords());

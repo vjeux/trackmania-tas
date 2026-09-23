@@ -225,6 +225,18 @@ fn plan(m: &MapFile, input: &Path) -> Result<Plan, String> {
     // the kept blocks' cells
     let kept_cells: Vec<[i32; 3]> = m.blocks.iter().zip(&fates).filter(|(_, f)| !matches!(f, Fate::Drop(_))).map(|(b, _)| block_cell(b, ground)).collect();
     let (mut lo, mut hi) = route_box(&kept_cells).ok_or("no built blocks")?;
+    // … widened to every WAYPOINT ITEM: a checkpoint gate standing on landscape past the
+    // last kept block was trimmed as scenery (Spring 2026 - 03's 2nd gate — json9841
+    // 2026-09-23 "incorrect block placement after cp 3": the map had one CP fewer)
+    for it in &m.items {
+        if it.waypoint_tag.is_some() && item_keep[m.items.iter().position(|x| std::ptr::eq(x, it)).unwrap_or(0)] {
+            let c = [(it.pos[0] / 32.0).floor() as i32, ((it.pos[1] - ground) / 8.0).floor() as i32, (it.pos[2] / 32.0).floor() as i32];
+            for k in [0usize, 2] {
+                lo[k] = lo[k].min(c[k]);
+                hi[k] = hi[k].max(c[k]);
+            }
+        }
+    }
     let route_bb = route_box(&route);
     // x/z window: 48 cells centred on the route box (kept blocks trimmed to it); the
     // route box itself must fit
@@ -266,6 +278,10 @@ fn plan(m: &MapFile, input: &Path) -> Result<Plan, String> {
         let cx = (it.pos[0] / 32.0).floor() as i32;
         let cz = (it.pos[2] / 32.0).floor() as i32;
         if cx < lo[0] || cx > hi[0] || cz < lo[2] || cz > hi[2] {
+            if it.waypoint_tag.is_some() {
+                fits = false; // a waypoint past the 48-cell window: the port cannot hold the route
+                continue;
+            }
             *k = false;
             items_trimmed += 1;
         }
@@ -289,6 +305,10 @@ fn plan(m: &MapFile, input: &Path) -> Result<Plan, String> {
         if *k {
             let row = ((it.pos[1] - ground) / 8.0).floor() as i32 + dy;
             if row < 0 || row >= SIZE[1] {
+                if it.waypoint_tag.is_some() {
+                    fits = false;
+                    continue;
+                }
                 *k = false;
                 trimmed += 1;
             }
@@ -1148,5 +1168,42 @@ pub fn deckprofile_cmd(args: &[String]) -> Result<(), String> {
     }
     let q = |p: f32| hs[((hs.len() - 1) as f32 * p) as usize];
     println!("{want}: {} samples over the floor — car centre height p05 {:.2} p25 {:.2} p50 {:.2} p75 {:.2} p95 {:.2}", hs.len(), q(0.05), q(0.25), q(0.5), q(0.75), q(0.95));
+    Ok(())
+}
+
+/// `tmmaps stadium-cporder MAP`: the order the validation ghost crosses the map's waypoint
+/// blocks (grid cell match, first sample within the cell column), with the time.
+pub fn cporder_cmd(args: &[String]) -> Result<(), String> {
+    let path = args.iter().skip(1).find(|a| a.ends_with(".Map.Gbx")).ok_or("MAP")?;
+    let m = MapFile::load(Path::new(path));
+    let coll = m.items.first().map(|it| it.collection_raw).unwrap_or(26);
+    let ground = crate::map::ground_y(coll);
+    let d = gbx::record::decode_ghost(path).map_err(|e| format!("ghost: {e}"))?;
+    let mut hits: Vec<(i32, String, [i32; 3])> = Vec::new();
+    for b in &m.blocks {
+        let Some(tag) = b.waypoint_tag.as_deref() else { continue };
+        if !matches!(tag, "Checkpoint" | "LinkedCheckpoint" | "Goal" | "Multilap" | "StartFinish" | "Spawn") {
+            continue;
+        }
+        let c = block_cell(b, ground);
+        let first = d.samples.iter().find(|s| ((s.x / 32.0).floor() as i32 == c[0] || (s.x / 32.0).floor() as i32 == c[0] + 1 || (s.x / 32.0).floor() as i32 == c[0] - 1) && ((s.z / 32.0).floor() as i32 == c[2] || (s.z / 32.0).floor() as i32 == c[2] + 1 || (s.z / 32.0).floor() as i32 == c[2] - 1) && (s.y - (c[1] as f32 * 8.0 + ground)).abs() < 12.0);
+        hits.push((first.map(|s| s.time_ms).unwrap_or(i32::MAX), format!("{} [{tag}]", b.name), c));
+    }
+    for it in &m.items {
+        let Some(tag) = it.waypoint_tag.as_deref() else { continue };
+        if !matches!(tag, "Checkpoint" | "LinkedCheckpoint" | "Goal" | "Multilap" | "StartFinish" | "Spawn") {
+            continue;
+        }
+        let first = d.samples.iter().find(|s| (s.x - it.pos[0]).abs() < 24.0 && (s.z - it.pos[2]).abs() < 24.0 && (s.y - it.pos[1]).abs() < 12.0);
+        hits.push((first.map(|s| s.time_ms).unwrap_or(i32::MAX), format!("{} [{tag}] (item)", it.model), [it.pos[0] as i32, it.pos[1] as i32, it.pos[2] as i32]));
+    }
+    hits.sort();
+    for (t, n, c) in hits {
+        if t == i32::MAX {
+            println!("  never   {n} at {c:?}");
+        } else {
+            println!("  {:6.2} s  {n} at {c:?}", t as f32 / 1000.0);
+        }
+    }
     Ok(())
 }
