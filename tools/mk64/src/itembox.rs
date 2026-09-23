@@ -32,8 +32,13 @@ pub const HOVER_UNITS: f32 = 9.0;
 pub const SPIN_MS: u32 = 3000;
 /// The game material of the spinning cube (a moving part shows no embedded
 /// texture) and whether it is a full cube or an edge frame.
-pub const DEFAULT_LINK: &str = "Stadium\\Media\\Material\\SpecialSignTurbo";
-pub const DEFAULT_FULL: bool = false;
+/// Line-up of 24 game materials on the spinning cube (2026-09-23, editor shots
+/// ibsc/ibsd, box 0 at the RIGHT): `SpecialFXTurbo` — the turbo gate's glowing
+/// translucent gold, the "?" inside shows through — is the closest to the N64
+/// box; `LightShape` (milky white glow, opaque up close) second; the TriggerFX/Inflatable/Gate ones are invisible or
+/// flat, Pylon/GlossyFloor opaque grey, SpecialSignTurbo a flat yellow.
+pub const DEFAULT_LINK: &str = "Stadium\\Media\\Material\\SpecialFXTurbo";
+pub const DEFAULT_FULL: bool = true;
 /// The rainbow of the inner cube: one tint per face.
 pub const FACE_TINTS: [[u8; 3]; 6] = [[255, 64, 64], [255, 220, 0], [64, 220, 64], [64, 220, 255], [80, 96, 255], [255, 96, 255]];
 
