@@ -1176,7 +1176,12 @@ fn main() {
                     _ if own == 0xffff_ffff => lightmap::moods::default_daytime(x.collection, x.mood),
                     _ => own,
                 };
-                lightmap::synth::FrameParams { daytime, max_hdr_mood: x.max_hdr, max_hdr: k, bounce: x.bounce_factor, sky: x.sky_factor }
+                // Σ chart area (m²): the items' PreLightGen extents × scale + √2² per zone tile (BlueBay measured;
+                // the editor's chunk 0x0602200B) — the density the editor's own layout would use
+                let items_area: f32 = scene.instances.iter().map(|inst| { let mdl = &scene.models[inst.model]; let sc = (inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]).sqrt(); match mdl.plg_bounds { Some(b) => (b[2] - b[0]) * mdl.plg_u02 * sc * (b[3] - b[1]) * mdl.plg_u02 * sc, None => 0.0 } }).sum();
+                let n_tiles = base.saturating_sub(deco_const) as f32;
+                let quality: u32 = f("--quality").map(|s| s.parse::<u32>().unwrap()).unwrap_or(3).saturating_sub(1);
+                lightmap::synth::FrameParams { daytime, max_hdr_mood: x.max_hdr, max_hdr: k, bounce: x.bounce_factor, sky: x.sky_factor, sum_area: Some(items_area + 2.0 * n_tiles), quality: Some(quality), decoration: Some(mf0.decoration_id.clone()) }
             });
             let s = lightmap::synth::build_full2(out_charts, (tm.bbox_min, tm.bbox_max), &tpl.chunk, probes, vp8_q, frame_params).expect("build");
             let payload = s.chunk.write(false);

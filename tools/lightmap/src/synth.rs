@@ -192,7 +192,7 @@ pub fn build(charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: &Lightmap
 }
 
 /// The frame records' mood constants (the template's are replaced when given).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct FrameParams {
     /// The map's DayTime word (0xffffffff = default).
     pub daytime: u32,
@@ -201,9 +201,59 @@ pub struct FrameParams {
     pub max_hdr: f32,
     pub bounce: f32,
     pub sky: f32,
+    /// The bake's per-file cache values (RE child 2 / lmtool diff on editor bakes): Σ chart area in m²
+    /// (chunk 0x0602200B = (1, Σarea)), the quality index (0x0602200F = (q, 0); High = 2), the
+    /// decoration name and the bake's FILETIME (0x06022015 / 0x06022013). None = keep the template's.
+    pub sum_area: Option<f32>,
+    pub quality: Option<u32>,
+    pub decoration: Option<String>,
 }
 
 /// Patch the three 66-byte frame records inside a mapping head (see `CacheBlob::frame_max_hdr`).
+/// The small per-bake cache chunks: 0x0602200B (1, Σarea), 0x0602200F (quality, 0), 0x06022013
+/// (1, 1, FILETIME), 0x06022015 (5, hash, 3, 0x1c, Id decoration, 1, 0, DayTime, zeros).
+fn patch_raw_chunk(id: u32, b: &[u8], fp: Option<&FrameParams>) -> Vec<u8> {
+    let Some(fp) = fp else { return b.to_vec() };
+    let mut o = b.to_vec();
+    match id {
+        0x0602_200B if o.len() >= 8 => {
+            if let Some(a) = fp.sum_area {
+                o[4..8].copy_from_slice(&a.to_le_bytes());
+            }
+        }
+        0x0602_200F if o.len() >= 8 => {
+            if let Some(q) = fp.quality {
+                o[0..4].copy_from_slice(&q.to_le_bytes());
+            }
+        }
+        0x0602_2013 if o.len() >= 16 => {
+            // FILETIME (100-ns ticks since 1601-01-01)
+            let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() / 100).unwrap_or(0) as u64;
+            let ft = unix + 116_444_736_000_000_000;
+            o[8..16].copy_from_slice(&ft.to_le_bytes());
+        }
+        0x0602_2015 if o.len() >= 40 => {
+            // (5, u64, 3, 0x1c, Id(0x40000000, len, name), 1, 0, DayTime, 0…): rewrite the name and the time
+            let name_len = u32::from_le_bytes([o[24], o[25], o[26], o[27]]) as usize;
+            if o.len() >= 28 + name_len + 12 && &o[20..24] == &[0, 0, 0, 0x40] {
+                let tail = o[28 + name_len..].to_vec();
+                let mut n = o[..24].to_vec();
+                let name = fp.decoration.clone().unwrap_or_else(|| String::from_utf8_lossy(&o[28..28 + name_len]).to_string());
+                n.extend_from_slice(&(name.len() as u32).to_le_bytes());
+                n.extend_from_slice(name.as_bytes());
+                let mut tail = tail;
+                if tail.len() >= 12 && fp.daytime != 0xffff_ffff {
+                    tail[8..12].copy_from_slice(&fp.daytime.to_le_bytes());
+                }
+                n.extend_from_slice(&tail);
+                o = n;
+            }
+        }
+        _ => {}
+    }
+    o
+}
+
 pub fn patch_frame_records(head: &mut [u8], fp: &FrameParams) {
     for i in 0..3 {
         let r = 60 + 66 * i;
@@ -358,7 +408,7 @@ pub fn build_full2(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template:
         .iter()
         .map(|c| match &c.body {
             ChunkBody::Mapping(_) => CacheChunk { id: c.id, body: ChunkBody::Mapping(mapping.clone()) },
-            ChunkBody::Raw(b) => CacheChunk { id: c.id, body: ChunkBody::Raw(b.clone()) },
+            ChunkBody::Raw(b) => CacheChunk { id: c.id, body: ChunkBody::Raw(patch_raw_chunk(c.id, b, frame.as_ref())) },
         })
         .collect();
     let trailer = match &probes {
