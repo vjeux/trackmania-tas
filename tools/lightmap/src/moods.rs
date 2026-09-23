@@ -247,17 +247,24 @@ pub fn default_daytime(collection: &str, mood: &str) -> u32 {
     }
 }
 
-/// The sky gradient's global scale per mood (GlobalScale·ScaleGrad0 of the runtime sky, not yet read
-/// from the exe) — FITTED on the q4 editor references so an open floor's mean matches: BlueBay Sunset
-/// (tiny 16) 1.6, WhiteShore Day (tiny 03 reduced) 1.57, Stadium Sunrise (giant 20 ×2 reduced) 0.88;
-/// unmeasured moods take the collection's nearest or 1.6.
-pub fn sky_grad_scale(collection: &str, mood: &str) -> f32 {
+/// The rendered-sky fit per mood, FITTED on the q4 editor references (2026-09-23) so the horizontal and
+/// vertical texel means match: (gradient scale = GlobalScale·ScaleGrad0 stand-in, bounce albedo, v flipped =
+/// the texture's top row is the horizon (GradientV_InvertY) rather than the zenith). Measured: BlueBay Sunset
+/// (tiny 16) 1.45/0.5/no (H +16 %, V −9 %: the wall/floor balance needs the decoration); WhiteShore Day (tiny 03 reduced) 1.57/0.4/yes; GreenCoast Day (tiny 04 AC items)
+/// 2.6/0.3/yes; Stadium Sunrise (giant 20 ×2 reduced) 1.0/0.35/no. Unmeasured moods take their collection's.
+pub fn sky_fit(collection: &str, mood: &str) -> (f32, f32, bool) {
     let c = collection.to_ascii_lowercase();
     match (c.as_str(), normalise_mood(mood)) {
-        ("bluebay", "Sunset") => 1.6,
-        ("whiteshore", "Day") => 1.57,
-        ("stadium", "Sunrise") => 0.88,
-        ("stadium", _) => 0.88,
-        _ => 1.6,
+        ("bluebay", _) => (1.45, 0.5, false),
+        ("whiteshore", _) => (1.57, 0.4, true),
+        ("greencoast", _) => (2.6, 0.3, true),
+        ("stadium", _) => (1.0, 0.35, false),
+        ("redisland", _) => (1.45, 0.5, false),
+        _ => (1.45, 0.5, false),
     }
+}
+
+/// The sky gradient's global scale per mood — see `sky_fit`.
+pub fn sky_grad_scale(collection: &str, mood: &str) -> f32 {
+    sky_fit(collection, mood).0
 }

@@ -768,7 +768,8 @@ fn main() {
                 let peel = !has("--cone") && !has("--hemi") && !has("--no-peel");
                 if peel {
                     prm.peel = true;
-                    if f("--albedo").is_none() { prm.albedo = 0.4; }
+                    let fit = lightmap::moods::sky_fit(x.collection, x.mood);
+                    if f("--albedo").is_none() { prm.albedo = fit.1; }
                     // the rendered sky: the mood's SkyColor gradient (+ Atmo lobes from its XML) unless --flat-sky;
                     // --sky-grad-scale k scales the gradient (GlobalScale·ScaleGrad0 stand-in), --lobe-scale the lobes
                     if !has("--flat-sky") {
@@ -783,6 +784,7 @@ fn main() {
                                 g.sun_dir = prm.sun_dir;
                                 g.sun_az = prm.sun_dir[0].atan2(prm.sun_dir[2]);
                                 g.v_full = has("--v-full");
+                                if has("--v-flip") || (fit.2 && !has("--no-v-flip")) { g.v_top_is_zenith = false; }
                                 if let Some(o) = f("--u-sun") { g.u_sun = o.parse().unwrap(); }
                                 if has("--u-flip") { g.u_sign = -1.0; }
                                 let lobe_scale: f32 = f("--lobe-scale").map(|s| s.parse().unwrap()).unwrap_or(1.0);
@@ -831,7 +833,7 @@ fn main() {
                 prm.direct_sun = 0.0;
                 prm.ambient = [0.0; 3]; prm.up = [0.0; 3];
                 prm.bounce = f("--bounce").map(|s| s.parse().unwrap()).unwrap_or(x.bounce_factor);
-                prm.albedo = f("--albedo").map(|s| s.parse().unwrap()).unwrap_or(if prm.peel { 0.4 } else { 0.18 });
+                prm.albedo = f("--albedo").map(|s| s.parse().unwrap()).unwrap_or(if prm.peel { lightmap::moods::sky_fit(x.collection, x.mood).1 } else { 0.18 });
                 prm.uv_bounds = true; prm.sky_model = 0; prm.texels_per_m = 1.0; prm.sky_samples = 64; prm.sun_samples = 4;
                 prm.ambient_ao = !has("--no-ao");
                 // local lights, absolute units: E = k·I·c·max(0,n·l)·(1−(d/R)²)²; k = 0.56 puts the peak under a lamp post
