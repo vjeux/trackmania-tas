@@ -136,7 +136,24 @@ pub fn load_model(bytes: &[u8]) -> Result<ModelGeom, String> {
         } else {
             None
         };
-        let uv1: Option<&Vec<[f32; 2]>> = uv1.or(uv1_alt.as_ref());
+        // no lightmap uvs at all (terrain tiles: positions + normals only; the editor still charts
+        // them at the default density): TexCoord0 when there is one, else a planar map over the
+        // visual's own footprint — the triangles must exist in any case, they occlude
+        let uv_fallback: Option<Vec<[f32; 2]>> = if uv1.is_none() && uv1_alt.is_none() {
+            match get(N_TEXCOORD0) {
+                Some(Elem::Float2(u)) => Some(u.clone()),
+                _ => {
+                    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                    for p in pos.iter() { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+                    let ex = (hi[0] - lo[0]).max(1e-3);
+                    let ez = (hi[2] - lo[2]).max(1e-3);
+                    Some(pos.iter().map(|p| [(p[0] - lo[0]) / ex, (p[2] - lo[2]) / ez]).collect())
+                }
+            }
+        } else {
+            None
+        };
+        let uv1: Option<&Vec<[f32; 2]>> = uv1.or(uv1_alt.as_ref()).or(uv_fallback.as_ref());
         let Some(uv1) = uv1 else { continue };
         let normals: Option<Vec<V3>> = match get(N_NORMAL) {
             Some(Elem::Float3(n)) => Some(n.clone()),

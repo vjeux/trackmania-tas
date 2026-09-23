@@ -2697,6 +2697,81 @@ fn main() {
                 println!("{:<10} {}  rms {rms:.3}", name, pred.iter().map(|p| format!("{p:>6.3}")).collect::<Vec<_>>().join(" "));
             }
         }
+        "testmap2" => {
+            // lmtool testmap2 MAP [--x0 1000 --z0 1000 --y0 160] [--base N]: the per-collection layout — 3×3 tiles (16 m)
+            // at (x0.., z0..) with a tile 16 m above the centre, a second 3×3 at (x0+48.., z0..) with a tile 8 m above
+            // its centre, a block east of it at (x0+104, z0+16); prints the regions' values in frame-MaxHDR units and
+            // the roof profiles (ratio to the open tiles)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let base: u32 = f("--base").map(|s| s.parse().unwrap()).unwrap_or(4096);
+            let x0: f32 = f("--x0").map(|s| s.parse().unwrap()).unwrap_or(1000.0);
+            let z0: f32 = f("--z0").map(|s| s.parse().unwrap()).unwrap_or(1000.0);
+            let y0: f32 = f("--y0").map(|s| s.parse().unwrap()).unwrap_or(160.0);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let own = lightmap::mapio::load(&a[1]).expect("own");
+            let d = own.chunk.data.as_ref().unwrap();
+            let mp = d.cache.mapping().unwrap();
+            let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).unwrap();
+            let fm = d.cache.frame_max_hdr().unwrap_or(1.0);
+            let mut chart_of: std::collections::HashMap<u32, usize> = Default::default();
+            for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; if obj >= base { chart_of.insert(obj - base, i); } }
+            struct Tx { p: [f32; 3], n: [f32; 3], rgb: [f32; 3], lum: f32 }
+            let mut tx: Vec<Tx> = Vec::new();
+            for (ii, inst) in scene.instances.iter().enumerate() {
+                let Some(&ci) = chart_of.get(&(inst.item as u32)) else { continue };
+                let (x, y) = mp.pos[ci]; let (w, h) = mp.size[ci];
+                let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32 / 2).max(1), (h as u32 / 2).max(1));
+                let fbv = mp.frame_bytes[0][ci];
+                let (samples, _) = lightmap::bake::rasterise_pub(&scene, ii, pw, ph, false, true);
+                for s in &samples {
+                    let c = ia.get((px + s.px).min(ia.w - 1), (py + s.py).min(ia.h - 1));
+                    let rgb = [lightmap::synth::decode_value(c[0], fbv) * fm, lightmap::synth::decode_value(c[1], fbv) * fm, lightmap::synth::decode_value(c[2], fbv) * fm];
+                    tx.push(Tx { p: s.p, n: s.n, rgb, lum: 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2] });
+                }
+            }
+            println!("{}: frame MaxHDR {fm:.4}, {} texels (absolute HDR below)", a[1].rsplit('/').next().unwrap(), tx.len());
+            let stats = |name: &str, sel: &dyn Fn(&Tx) -> bool| -> f32 {
+                let v: Vec<&Tx> = tx.iter().filter(|t| sel(t)).collect();
+                if v.is_empty() { println!("{name:<40} (no texels)"); return 0.0; }
+                let mut l: Vec<f32> = v.iter().map(|t| t.lum).collect();
+                l.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let mut s = [0f32; 3]; for t in &v { for c in 0..3 { s[c] += t.rgb[c]; } }
+                let nn = v.len() as f32;
+                println!("{name:<40} n {:>7}  lum median {:.4}  p10 {:.4}  p90 {:.4}  mean rgb ({:.3}, {:.3}, {:.3})", v.len(), l[l.len() / 2], l[l.len() / 10], l[l.len() * 9 / 10], s[0] / nn, s[1] / nn, s[2] / nn);
+                l[l.len() / 2]
+            };
+            let top = |t: &Tx, y: f32| t.n[1] > 0.9 && (t.p[1] - y).abs() < 1.6; // the tiles' tops sit 1 m above the item position
+            let in_a = |t: &Tx| t.p[0] >= x0 && t.p[0] < x0 + 48.0 && t.p[2] >= z0 && t.p[2] < z0 + 48.0;
+            let in_b = |t: &Tx| t.p[0] >= x0 + 48.0 && t.p[0] < x0 + 96.0 && t.p[2] >= z0 && t.p[2] < z0 + 48.0;
+            let under_a = |t: &Tx| t.p[0] >= x0 + 16.0 && t.p[0] < x0 + 32.0 && t.p[2] >= z0 + 16.0 && t.p[2] < z0 + 32.0;
+            let under_b = |t: &Tx| t.p[0] >= x0 + 64.0 && t.p[0] < x0 + 80.0 && t.p[2] >= z0 + 16.0 && t.p[2] < z0 + 32.0;
+            let open = stats("A open tiles (not under the 16 m roof)", &|t: &Tx| top(t, y0) && in_a(t) && !under_a(t));
+            stats("A centre tile under the 16 m roof, all", &|t: &Tx| top(t, y0) && in_a(t) && under_a(t));
+            stats("A centre under the 16 m roof, inner 8×8", &|t: &Tx| top(t, y0) && under_a(t) && (t.p[0] - x0 - 24.0).abs() < 4.0 && (t.p[2] - z0 - 24.0).abs() < 4.0);
+            stats("B open tiles (not under the 8 m roof)", &|t: &Tx| top(t, y0) && in_b(t) && !under_b(t));
+            stats("B centre under the 8 m roof, inner 8×8", &|t: &Tx| top(t, y0) && under_b(t) && (t.p[0] - x0 - 72.0).abs() < 4.0 && (t.p[2] - z0 - 24.0).abs() < 4.0);
+            stats("16 m roof top", &|t: &Tx| top(t, y0 + 16.0) && under_a(t));
+            stats("8 m roof top", &|t: &Tx| top(t, y0 + 8.0) && under_b(t));
+            stats("roof undersides (n down)", &|t: &Tx| t.n[1] < -0.9 && t.p[1] > y0 + 6.0 && t.p[1] < y0 + 18.0);
+            stats("tile undersides (n down, y ≈ y0)", &|t: &Tx| t.n[1] < -0.9 && (t.p[1] - y0).abs() < 1.6);
+            let blk = |t: &Tx| t.p[0] >= x0 + 100.0 && t.p[0] < x0 + 124.0 && t.p[2] >= z0 + 12.0 && t.p[2] < z0 + 36.0 && t.p[1] > y0 - 1.0 && t.p[1] < y0 + 20.0;
+            stats("block face −x (west)", &|t: &Tx| blk(t) && t.n[0] < -0.9);
+            stats("block face +x (east)", &|t: &Tx| blk(t) && t.n[0] > 0.9);
+            stats("block face −z (south)", &|t: &Tx| blk(t) && t.n[2] < -0.9);
+            stats("block face +z (north)", &|t: &Tx| blk(t) && t.n[2] > 0.9);
+            stats("block top", &|t: &Tx| blk(t) && t.n[1] > 0.9 && t.p[1] > y0 + 2.0);
+            for (name, cx, cz, roof_h) in [("16 m roof", x0 + 24.0, z0 + 24.0, 16.0f32), ("8 m roof", x0 + 72.0, z0 + 24.0, 8.0)] {
+                let mut bins = vec![(0f64, 0usize); 16];
+                let grp: &dyn Fn(&Tx) -> bool = if roof_h > 10.0 { &in_a } else { &in_b };
+                for t in tx.iter().filter(|t| top(t, y0) && grp(t)) {
+                    let r = ((t.p[0] - cx).powi(2) + (t.p[2] - cz).powi(2)).sqrt();
+                    let b = (r / 1.5) as usize;
+                    if b < bins.len() { bins[b].0 += t.lum as f64; bins[b].1 += 1; }
+                }
+                let line: Vec<String> = bins.iter().enumerate().filter(|(_, b)| b.1 > 0).map(|(i, (s, n))| format!("{:.0}m:{:.3}", i as f32 * 1.5 + 0.75, s / *n as f64 / open.max(1e-6) as f64)).collect();
+                println!("{name} profile (ratio to open, by distance from the roof centre): {}", line.join(" "));
+            }
+        }
         _ => {
             eprintln!("unknown command");
             std::process::exit(2);
