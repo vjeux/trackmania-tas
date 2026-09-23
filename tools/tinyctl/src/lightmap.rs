@@ -155,6 +155,8 @@ fn one(args: &[String], map: &Path, out: &Path) -> Result<(), String> {
     eprintln!("game lightmap cache: {} entries dropped", dropped.trim());
     // --owner NAME (tinyctl) → the box lock owner; the default stays shootctl's `lightmap-<pid>`
     let owner_flag = match f("--owner") { Some(o) => format!(" --owner '{o}'"), None => String::new() };
+    // --fresh: restart the game inside the lock — the editor keeps its time of day across maps
+    let owner_flag = if tmmaps::cli::has(args, "--fresh") { format!("{owner_flag} --fresh") } else { owner_flag };
     let cmd = format!("{shootctl} lightmap --detach --map {r_map} --out '{rel}' --quality {quality} --outdir {r_dir}{owner_flag}");
     eprintln!("computing the lightmap (quality {quality}) …");
     let started = wsx.sh(&cmd)?;

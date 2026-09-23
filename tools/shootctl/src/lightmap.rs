@@ -41,6 +41,9 @@ struct Opts {
     /// Render-lock owner name (default `lightmap-<pid>`); a caller names itself so the lock
     /// status says WHO is baking on the shared box.
     owner: Option<String>,
+    /// Restart the game first (inside the lock): the editor keeps its time of day across the
+    /// maps of one game session — a bake at the MAP's time needs a fresh session.
+    fresh: bool,
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
@@ -57,6 +60,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
         compute_timeout_s: f("--compute-timeout").and_then(|s| s.parse().ok()).unwrap_or(1800),
         log_dir: PathBuf::from(f("--outdir").unwrap_or_else(|| "/mnt/c/Users/vjeux/tinyshots/lightmap".into())),
         owner: f("--owner"),
+        fresh: args.iter().any(|a| a == "--fresh"),
     })
 }
 
@@ -106,7 +110,7 @@ fn go(opts: &Opts) -> Result<String, String> {
     let game_map = super::game_path(&staged)?;
     let want_uid = super::map_uid(&staged);
     println!("{} map {} (uid {}) quality {}", el(&t0), game_map, want_uid.clone().unwrap_or_else(|| "?".into()), opts.quality);
-    if super::launch(180, false) != 0 {
+    if super::launch(180, opts.fresh) != 0 {
         return Err("the game did not come up".into());
     }
     super::to_menu()?;
