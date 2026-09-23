@@ -290,7 +290,10 @@ pub fn shade_probe(bvh: &Bvh, prm: &BakeParams, lights: &[(usize, LightDef)], li
     let mut e = [0f32; 3];
     for c in 0..3 {
         // a probe has no normal: the "upness" term at its mean (0.5), the sun at half its normal-incidence value
-        e[c] = if inside { 0.0 } else { prm.ambient[c] + 0.5 * prm.up[c] + prm.sky[c] * sky_vis + 0.5 * prm.sun[c] * sun_vis };
+        // a probe has no normal: the ambient at its mean (0.8), the sky by its spherical visibility;
+        // the direct sun only when the model bakes it (direct_sun), else it lights the probe through
+        // the world's bounce — approximated here as a fraction of the sun times the sky visibility
+        e[c] = if inside { 0.0 } else { prm.ambient_la[c] * 0.8 * (if prm.ambient_ao { sky_vis } else { 1.0 }) + prm.ambient[c] + 0.5 * prm.up[c] + prm.sky[c] * sky_vis + 0.5 * prm.sun[c] * sun_vis * prm.direct_sun + prm.bounce * prm.albedo * 0.25 * prm.sun[c] * sun_vis * (1.0 - prm.direct_sun) };
     }
     let lights_e = if inside { [0.0; 3] } else { light_sum(bvh, lights, p, None, light_k, u32::MAX) };
     ProbeSample { e, sky_vis, lights: lights_e, inside }
@@ -506,13 +509,16 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
             for xx in 0..s.w {
                 let p = &s.px[(zz * s.w + xx) as usize];
                 let (ax, ay) = (tx + xx, ty + zz);
+                // the probe colour and light images take the lightmapper's sqrt encoding (the compress
+                // shader is shared with the charts); the occlusion and pale images are written as is
                 let q = |v: f32, m: f32| (v / m * 255.0).round().clamp(0.0, 255.0) as u8;
-                imgs[0].set(ax, ay, [q(p.e[0], e_max), q(p.e[1], e_max), q(p.e[2], e_max)]);
+                let qs = |v: f32, m: f32| crate::synth::encode_value(v, m);
+                imgs[0].set(ax, ay, [qs(p.e[0], e_max), qs(p.e[1], e_max), qs(p.e[2], e_max)]);
                 let b = q((p.sky_vis * 1.5).min(1.0), 1.0);
                 imgs[1].set(ax, ay, [b, b, b]);
                 let cv = if p.inside { 0.15 } else { 0.55 + 0.45 * p.sky_vis };
                 imgs[2].set(ax, ay, [q(cv * c_tint[0], 1.0), q(cv * c_tint[1], 1.0), q(cv * c_tint[2], 1.0)]);
-                imgs[3].set(ax, ay, [q(p.lights[0], l_max), q(p.lights[1], l_max), q(p.lights[2], l_max)]);
+                imgs[3].set(ax, ay, [qs(p.lights[0], l_max), qs(p.lights[1], l_max), qs(p.lights[2], l_max)]);
                 if p.inside {
                     let ci = ((ay / 4) * cw4 + ax / 4) as usize;
                     cell4[ci] &= !(1u16 << ((ay % 4) * 4 + ax % 4));

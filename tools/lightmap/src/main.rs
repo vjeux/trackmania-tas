@@ -2277,6 +2277,78 @@ fn main() {
             lightmap::mapio::save_with_chunk(&m, &payload, &out).expect("save");
             println!("wrote {out} with an empty lightmap chunk ({} B)", payload.len());
         }
+        "check" => {
+            // lmtool check MAP [--base N|auto] [--baked-total N]: validate a lit map against the rules — chunk
+            // structure (frames, kinds, the three-image blob1, four-image probe blob), the object base, the probe
+            // grid (slot table, origin, cell, tiles inside the atlas), atlas fill, texel encoding sanity
+            // (fb0 vs chart max), file size; exit 1 on any FAIL
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let mut fails = 0;
+            let mut report = |ok: bool, what: &str| { println!("  [{}] {what}", if ok { " ok " } else { "FAIL" }); if !ok { fails += 1; } };
+            let p = &a[1];
+            let m = lightmap::mapio::load(p).expect("load");
+            let d = m.chunk.data.as_ref().expect("has lightmaps");
+            let mp = d.cache.mapping().expect("mapping");
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(p));
+            let hdr = tmmaps::header::read(p).expect("header");
+            println!("{p}: {} {}, size {:?}, {} items, {} unbaked + {} baked blocks, file {} B", hdr.envir, mf.decoration_id, mf.size, mf.items.len(), mf.blocks.len(), mf.baked.len(), std::fs::metadata(p).map(|x| x.len()).unwrap_or(0));
+            let fsz = std::fs::metadata(p).map(|x| x.len()).unwrap_or(0);
+            println!("  [{}] file {} B vs the 25 MiB upload cap (an embedded-items map may legitimately exceed it locally)", if fsz < 25 * 1024 * 1024 { " ok " } else { "warn" }, fsz);
+            // frames
+            report(d.frames.len() == 3 && d.frames[0].images.len() == 3, &format!("3 frames × 3 image slots ({} frames)", d.frames.len()));
+            let riffs = |b: &[u8]| -> usize { let mut n = 0; let mut o = 0; while o + 12 <= b.len() && &b[o..o + 4] == b"RIFF" { let sz = u32::from_le_bytes([b[o + 4], b[o + 5], b[o + 6], b[o + 7]]) as usize + 8; n += 1; o += sz + (sz & 1); } if o == b.len() { n } else { 0 } };
+            report(riffs(&d.frames[0].images[0]) == 1, "frame 0 image 0 is one WebP (H-basis colour)");
+            report(riffs(&d.frames[0].images[1]) == 3, &format!("frame 0 image 1 is THREE concatenated WebPs (directional coefficients; found {})", riffs(&d.frames[0].images[1])));
+            let v = lightmap::volume::Volume::parse(&d.cache.trailer);
+            report(v.is_ok(), "probe trailer parses");
+            if let Ok(v) = &v {
+                report(v.write() == d.cache.trailer, "probe trailer round-trips byte for byte");
+                let parts = lightmap::volume::split_probe_blob(&d.frames[0].images[2], &v.frame_info);
+                report(parts.len() == 4 && parts.iter().all(|x| x.len() > 12 && &x[..4] == b"RIFF"), &format!("probe blob = four WebPs at the trailer offsets (found {})", parts.len()));
+                let dims: Vec<(u32, u32)> = parts.iter().filter_map(|x| lightmap::img::decode_webp(x).ok().map(|i| (i.w, i.h))).collect();
+                report(dims.len() == 4 && dims.iter().all(|x| *x == dims[0]), &format!("probe images decode with one size {:?}", dims.first()));
+                if let Some(&(aw, ah)) = dims.first() {
+                    report(v.cell4.len() as u32 == ((aw + 3) / 4) * ((ah + 3) / 4), "mask table matches the probe atlas");
+                    let inside = v.blocks.iter().all(|b| { let (tw, th) = (b.max[0] - b.min[0], b.max[2] - b.min[2]); b.slices.iter().flatten().all(|s| s.0 + tw <= aw && s.1 + th <= ah) });
+                    report(inside, "every stored probe tile lies inside the atlas");
+                }
+                let table_ok = v.blocks.iter().enumerate().all(|(i, b)| { let (si, sj, sk) = v.block_slot(b); let idx = si + v.slot_grid[0] as i32 * sj + (v.slot_grid[0] * v.slot_grid[1]) as i32 * sk; idx >= 0 && v.slots.get(idx as usize).copied() == Some(i as i32) });
+                report(table_ok, &format!("slot table consistent with every block's pos ({} blocks, grid {:?}, origin {:?}, cell {} m)", v.blocks.len(), v.slot_grid, v.world_origin(), v.cell_size()));
+                let grid_m = [mf.size[0] as f32 * 32.0, mf.size[1] as f32 * 8.0, mf.size[2] as f32 * 32.0];
+                let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                for it in &mf.items { for k in 0..3 { lo[k] = lo[k].min(it.pos[k] - 16.0); hi[k] = hi[k].max(it.pos[k]); } }
+                let want = lightmap::probes::SlotGrid::for_map(&hdr.envir, &mf.decoration_id, grid_m, lo, hi);
+                report(want.n == v.slot_grid, &format!("slot grid {:?} = the rule's {:?} for size {:?} (from item positions alone)", v.slot_grid, want.n, mf.size));
+            }
+            // base
+            let max_obj = mp.binds.iter().map(|b| b.obj_group_idx / 4).max().unwrap_or(0) + 1;
+            let measured = max_obj as i64 - mf.items.len() as i64;
+            let cells = mf.blocks.iter().map(|b| { let c = b.coords(); (c.0, c.2, b.name.as_str()) });
+            let r = lightmap::moods::base_rule(&hdr.envir, &mf.decoration_id, mf.size, cells, 0, f("--baked-total").map(|s| s.parse().unwrap()));
+            let expect: i64 = match f("--base") { Some(s) if s != "auto" => s.parse().unwrap(), _ => r.base() as i64 };
+            report(measured == expect || (measured < expect && expect - measured <= 16), &format!("object base {measured} (max charted object − items) = rule {expect} (P {} + authored {} + tiles {} − replaced {} + G {})", r.deco_const, r.authored, r.ground_cols, r.replaced, r.extra));
+            // charts: every item has a chart; fill
+            let mut have = std::collections::HashSet::new();
+            for b in &mp.binds { let o = b.obj_group_idx / 4; if o as i64 >= expect { have.insert(o as i64 - expect); } }
+            let missing = (0..mf.items.len() as i64).filter(|i| !have.contains(i)).count();
+            report(missing <= mf.items.len() / 100, &format!("{missing} of {} items without a chart", mf.items.len()));
+            let area: u64 = mp.size.iter().map(|(w, h)| (*w as u64 / 2) * (*h as u64 / 2)).sum();
+            println!("  [info] atlas fill {:.1} % ({} charts)", 100.0 * area as f64 / (1024.0 * 1024.0), mp.count);
+            // encoding sanity: the brightest texel of a sample of charts should sit near 255 (p = sqrt(E/max) → 255 at the max)
+            let ia = lightmap::img::decode_webp(&d.frames[0].images[0]).expect("atlas");
+            let mut near = 0; let mut n = 0;
+            for i in (0..mp.count as usize).step_by((mp.count as usize / 400).max(1)) {
+                let (x, y) = mp.pos[i]; let (w, h) = mp.size[i];
+                let (px, py, pw, ph) = ((x as u32 + 1) / 2, (y as u32 + 1) / 2, (w as u32 / 2).max(1), (h as u32 / 2).max(1));
+                let mut mx = 0u8;
+                for yy in 0..ph { for xx in 0..pw { let c = ia.get((px + xx).min(ia.w - 1), (py + yy).min(ia.h - 1)); mx = mx.max(c[0]).max(c[1]).max(c[2]); } }
+                if mp.frame_bytes[0][i] > 0 { n += 1; if mx >= 200 { near += 1; } }
+            }
+            report(n > 0 && near * 10 >= n * 7, &format!("chart maxima reach the top of the sqrt scale ({near} of {n} sampled charts ≥ 200)"));
+            if let Some(fm) = d.cache.frame_max_hdr() { println!("  [info] frame MaxHDR {fm:.4}, daytime {:?}", lightmap::mapio::daytime(&m.gbx.body).map(|t| if t == 0xffff_ffff { "default".to_string() } else { format!("{:.3}", t as f64 / 65536.0) })); }
+            println!("{}", if fails == 0 { "CHECK PASSED" } else { "CHECK FAILED" });
+            if fails > 0 { std::process::exit(1); }
+        }
         _ => {
             eprintln!("unknown command");
             std::process::exit(2);
