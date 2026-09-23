@@ -84,6 +84,11 @@ pub struct BakeParams {
     pub bounce_decode: f32,
     /// The rendered sky as the dome radiance (Tech3/Sky_p: the mood's SkyColor gradient + glow lobes).
     pub sky_grad: Option<std::sync::Arc<crate::skygrad::SkyGradient>>,
+    /// A stand-in for the decoration terrain around the map until its geometry is in the BVH: every
+    /// unoccluded direction below this elevation (degrees) sees a surface of `horizon_radiance` instead
+    /// of the sky (0 = off).
+    pub horizon_el: f32,
+    pub horizon_radiance: [f32; 3],
     /// The mood's HDR sky as a light source: every unoccluded cosine-sampled ray adds
     /// `sky_cube_scale × L(ω)`; with a cube the constant `sky` term is not used.
     pub sky_cube: Option<std::sync::Arc<crate::skycube::CubeMap>>,
@@ -129,6 +134,8 @@ impl Default for BakeParams {
             sphere_dirs: std::sync::Arc::new(Vec::new()),
             bounce_decode: 1.0,
             sky_grad: None,
+            horizon_el: 0.0,
+            horizon_radiance: [0.0; 3],
             sky_cube: None,
             sky_cube_scale: 1.0,
         }
@@ -723,8 +730,12 @@ fn hit_irradiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, h: &crate::bvh::Hi
     });
     let mut e = [0f32; 3];
     for k in 0..3 {
+        // the first sweep peels the surfaces with their lightmap term forced to 0 (RE child 2): the
+        // bounce input is the direct sun only; later sweeps read the lightmap so far. The older dome
+        // model (no peel) keeps its one-bounce sky-share estimate.
         let base = match stored {
             Some(s) => s[k],
+            None if prm.peel => 0.0,
             None => prm.sky[k] * cone_factor(hn, cone_cos),
         };
         e[k] = base + prm.sun[k] * ndl_h * sun_v;
@@ -793,11 +804,18 @@ fn shade_peel(scene: &Scene, bvh: &Bvh, prm: &BakeParams, s: &Sample, ii: u32, r
         }
         match bvh.closest(o, d, tmax) {
             None if !ground_hit => {
-                let l = sky_radiance(prm, d);
-                for k in 0..3 {
-                    sky_acc[k] += w * l[k];
+                let el = d[1].asin().to_degrees();
+                if prm.horizon_el > 0.0 && el < prm.horizon_el {
+                    for k in 0..3 {
+                        bounce_acc[k] += w * prm.horizon_radiance[k];
+                    }
+                } else {
+                    let l = sky_radiance(prm, d);
+                    for k in 0..3 {
+                        sky_acc[k] += w * l[k];
+                    }
+                    sky_vis += w;
                 }
-                sky_vis += w;
             }
             None => {
                 // the sea/ground: its own sky share (a horizontal plane, half the sphere) + direct sun

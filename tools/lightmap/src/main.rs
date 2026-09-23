@@ -762,9 +762,13 @@ fn main() {
                 prm.sky = [x.l_ambient[0] * x.sky_factor * sky_s, x.l_ambient[1] * x.sky_factor * sky_s, x.l_ambient[2] * x.sky_factor * sky_s];
                 if let Some(g) = f("--ground-bounce") { prm.ground_bounce = g.parse().unwrap(); }
                 prm.bounce_sphere = has("--bounce-sphere");
-                // the game's peel model (RE child 2): the 256-point sphere set, first surface per direction
-                if has("--peel") {
+                // the game's peel model (RE child 2): the 256-point sphere set, first surface per direction —
+                // the DEFAULT since 2026-09-23 09:15Z (it beats the cone on the tiny-16 q4 reference: per-texel
+                // RMSE 64 % vs 92 %); --cone / --hemi select the older models
+                let peel = !has("--cone") && !has("--hemi") && !has("--no-peel");
+                if peel {
                     prm.peel = true;
+                    if f("--albedo").is_none() { prm.albedo = 0.4; }
                     // the rendered sky: the mood's SkyColor gradient (+ Atmo lobes from its XML) unless --flat-sky;
                     // --sky-grad-scale k scales the gradient (GlobalScale·ScaleGrad0 stand-in), --lobe-scale the lobes
                     if !has("--flat-sky") {
@@ -773,7 +777,9 @@ fn main() {
                         let path = f("--sky-grad").unwrap_or_else(|| lightmap::skygrad::mood_file(coll, mood, "SkyColor.dds"));
                         match lightmap::skygrad::SkyGradient::load(&path) {
                             Ok(mut g) => {
-                                g.scale = f("--sky-grad-scale").map(|s| s.parse().unwrap()).unwrap_or(1.0);
+                                // the gradient's global scale: 1.6 fits the BlueBay Sunset open floor (0.607) — per-mood
+                                // values pending (GlobalScale·ScaleGrad0 from the runtime sky constants)
+                                g.scale = f("--sky-grad-scale").map(|s| s.parse().unwrap()).unwrap_or(1.6);
                                 g.sun_dir = prm.sun_dir;
                                 g.sun_az = prm.sun_dir[0].atan2(prm.sun_dir[2]);
                                 g.v_full = has("--v-full");
@@ -789,9 +795,17 @@ fn main() {
                             Err(e) => eprintln!("sky gradient: {e}; flat sky"),
                         }
                     }
+                    // the sweeps' direction counts follow the quality (RE child 2: High = 1024, 512, 256, 128; the
+                    // table set nearest the count, rotated by the lightmapper's fixed matrix); the first sweep's set
+                    // is loaded here, the later ones per iteration below
+                    let q: u32 = f("--quality").map(|s| s.parse().unwrap()).unwrap_or(3);
+                    let counts = lightmap::dome::sweep_counts(q);
+                    let n0 = counts.first().copied().unwrap_or(256);
                     let pp = f("--points").unwrap_or_else(lightmap::dome::default_path);
-                    if let Ok(ps) = lightmap::dome::PointSets::load(&pp) { if let Some(set) = ps.set(256) { prm.sphere_dirs = std::sync::Arc::new(set.clone()); eprintln!("peel: {} sphere directions", set.len()); } }
+                    if let Ok(ps) = lightmap::dome::PointSets::load(&pp) { if let Some(set) = ps.nearest(n0) { prm.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); eprintln!("peel: quality {q}, sweeps {:?}, first set {} directions (rotated)", counts, set.len()); } }
                     if let Some(v) = f("--bounce-decode") { prm.bounce_decode = v.parse().unwrap(); }
+                    if let Some(v) = f("--horizon-el") { prm.horizon_el = v.parse().unwrap(); }
+                    if let Some(v) = f("--horizon-rgb") { prm.horizon_radiance = parse_rgb(&v); }
                 }
                 if has("--no-sun-bounce") { prm.sun = [0.0; 3]; }
                 // the decoration's ground/sea plane (the terrain collections' water sits at y ≈ 8 in the tiny
@@ -817,7 +831,7 @@ fn main() {
                 prm.direct_sun = 0.0;
                 prm.ambient = [0.0; 3]; prm.up = [0.0; 3];
                 prm.bounce = f("--bounce").map(|s| s.parse().unwrap()).unwrap_or(x.bounce_factor);
-                prm.albedo = f("--albedo").map(|s| s.parse().unwrap()).unwrap_or(0.18);
+                prm.albedo = f("--albedo").map(|s| s.parse().unwrap()).unwrap_or(if prm.peel { 0.4 } else { 0.18 });
                 prm.uv_bounds = true; prm.sky_model = 0; prm.texels_per_m = 1.0; prm.sky_samples = 64; prm.sun_samples = 4;
                 prm.ambient_ao = !has("--no-ao");
                 // local lights, absolute units: E = k·I·c·max(0,n·l)·(1−(d/R)²)²; k = 0.56 puts the peak under a lamp post
@@ -1027,7 +1041,8 @@ fn main() {
             // multi-bounce (the game: 2 iterations at Default, 4 High, 6 Ultra — each a sweep whose input
             // radiance is the lightmap so far + the direct sun): iteration 0 bakes with the one-bounce
             // estimate, every further pass reads the previous pass's charts at the hit points
-            let iterations: usize = f("--bounces").map(|s| s.parse().unwrap()).unwrap_or(if xml_sel.is_some() { 2 } else { 1 });
+            let q_sweeps = lightmap::dome::sweep_counts(f("--quality").map(|s| s.parse().unwrap()).unwrap_or(3));
+            let iterations: usize = f("--bounces").map(|s| s.parse().unwrap()).unwrap_or(if prm.peel && !q_sweeps.is_empty() { q_sweeps.len() } else if xml_sel.is_some() { 2 } else { 1 });
             let mut charts = lightmap::bake::bake(&scene, &bvh, &prm, &lights);
             eprintln!("baked {} charts ({:.1}s)", charts.len(), t0.elapsed().as_secs_f32());
             for it in 1..iterations {
@@ -1036,6 +1051,12 @@ fn main() {
                 for c in &charts { if let Some(&ii) = inst_of_item.get(&c.item) { field.charts[ii] = Some((c.w, c.h, c.rgb.clone())); } }
                 let mut p2 = prm.clone();
                 p2.field = Some(std::sync::Arc::new(field));
+                if prm.peel {
+                    if let Some(&n) = q_sweeps.get(it) {
+                        let pp = f("--points").unwrap_or_else(lightmap::dome::default_path);
+                        if let Ok(ps) = lightmap::dome::PointSets::load(&pp) { if let Some(set) = ps.nearest(n) { p2.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); } }
+                    }
+                }
                 charts = lightmap::bake::bake(&scene, &bvh, &p2, &lights);
                 let mean: f32 = charts.iter().flat_map(|c| c.rgb.iter()).map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]).sum::<f32>() / charts.iter().map(|c| c.rgb.len()).sum::<usize>().max(1) as f32;
                 eprintln!("bounce iteration {it}: mean texel {mean:.4} ({:.1}s)", t0.elapsed().as_secs_f32());
@@ -2589,6 +2610,23 @@ fn main() {
             let riffs = |b: &[u8]| -> usize { let mut n = 0; let mut o = 0; while o + 12 <= b.len() && &b[o..o + 4] == b"RIFF" { let sz = u32::from_le_bytes([b[o + 4], b[o + 5], b[o + 6], b[o + 7]]) as usize + 8; n += 1; o += sz + (sz & 1); } if o == b.len() { n } else { 0 } };
             report(riffs(&d.frames[0].images[0]) == 1, "frame 0 image 0 is one WebP (H-basis colour)");
             report(riffs(&d.frames[0].images[1]) == 3, &format!("frame 0 image 1 is THREE concatenated WebPs (directional coefficients; found {})", riffs(&d.frames[0].images[1])));
+            // the frame → texture upload reads every image of a frame at chart rects taken from image 0's
+            // size (RE child 2: the 09-22 editor crashes at Trackmania.exe+0x280bf4): all the frame's
+            // full-size images must share image 0's dimensions
+            {
+                let dims = |b: &[u8]| -> Option<(u32, u32)> { let mut o = 0; let mut first = None; while o + 12 <= b.len() && &b[o..o + 4] == b"RIFF" { let sz = u32::from_le_bytes([b[o + 4], b[o + 5], b[o + 6], b[o + 7]]) as usize + 8; if let Ok(im) = lightmap::img::decode_webp(&b[o..(o + sz).min(b.len())]) { if first.is_none() { first = Some((im.w, im.h)); } else if first != Some((im.w, im.h)) { return None; } } o += sz + (sz & 1); } first };
+                let mut all_ok = true;
+                let mut notes = Vec::new();
+                for (fi, fr) in d.frames.iter().enumerate() {
+                    let d0 = fr.images.first().filter(|b| !b.is_empty()).and_then(|b| dims(b));
+                    for (ii, im) in fr.images.iter().enumerate().skip(1) {
+                        if im.is_empty() || (fi == 0 && ii == 2) { continue; } // frame 0 image 2 = the probe atlas (its own size)
+                        let di = dims(im);
+                        if d0.is_some() && di != d0 { all_ok = false; notes.push(format!("frame {fi} image {ii} {:?} vs image 0 {:?}", di, d0)); }
+                    }
+                }
+                report(all_ok, &format!("every frame's images share image 0's size (the upload reads them at image 0's chart rects){}", if notes.is_empty() { String::new() } else { format!(": {}", notes.join(", ")) }));
+            }
             let v = lightmap::volume::Volume::parse(&d.cache.trailer);
             report(v.is_ok(), "probe trailer parses");
             if let Ok(v) = &v {
@@ -3133,6 +3171,13 @@ fn main() {
             let mut ed: std::collections::HashMap<u32, (u16, u16, u16, u16)> = Default::default();
             for i in 0..mp.count as usize { let obj = mp.binds[i].obj_group_idx / 4; ed.insert(obj, (mp.pos[i].0, mp.pos[i].1, mp.size[i].0, mp.size[i].1)); }
             let n_tiles = ed.keys().filter(|&&o| o < base).count();
+            if a.iter().any(|x| x == "--tile-order") {
+                // the editor's tile charts by atlas row then column: the object-id pattern reveals the placement order
+                let mut tiles: Vec<(u32, (u16, u16, u16, u16))> = ed.iter().filter(|(&o, _)| o < base).map(|(&o, &r)| (o, r)).collect();
+                tiles.sort_by_key(|(_, r)| (r.1, r.0));
+                for (o, r) in tiles.iter().take(40) { println!("  tile obj {o:>5} (cell x {:>2} z {:>2}) at ({:>4}, {:>4}) {}×{}", o % 64, o / 64, r.0, r.1, r.2, r.3); }
+                return;
+            }
             {
                 let mut hist: std::collections::BTreeMap<(u16, u16), usize> = Default::default();
                 for (&o, &(_, _, w, h)) in &ed { if o < base { *hist.entry((w, h)).or_default() += 1; } }
@@ -3182,7 +3227,17 @@ fn main() {
             let tie = f("--tie").unwrap_or_else(|| "index".into());
             let placed_order: Vec<usize> = {
                 let mut idx: Vec<usize> = (0..charts.len()).collect();
-                let pos_of = |k: usize| -> [f32; 3] { if ids[k] >= base { let inst = scene.instances.iter().find(|i| i.item as u32 == ids[k] - base).unwrap(); [inst.xf[9], inst.xf[10], inst.xf[11]] } else { let o = ids[k]; [(o % 64) as f32 * 16.0, 0.0, (o / 64) as f32 * 16.0] } };
+                // the keys are the block's world bbox CENTRE (RE child 2): items from their transformed
+                // triangles, tiles from their cell (x-major or z-major: --tiles-zmajor) at the sea height
+                let tile_zmajor = a.iter().any(|x| x == "--tiles-zmajor");
+                let tile_y: f32 = f("--tile-y").map(|s| s.parse().unwrap()).unwrap_or(8.0);
+                let centres: std::collections::HashMap<u32, [f32; 3]> = scene.instances.iter().map(|inst| {
+                    let mdl = &scene.models[inst.model];
+                    let mut lo = [f32::MAX; 3]; let mut hi = [f32::MIN; 3];
+                    for t in &mdl.tris { for p in &t.p { let w = lightmap::geometry::xf_point(&inst.xf, *p); for k in 0..3 { lo[k] = lo[k].min(w[k]); hi[k] = hi[k].max(w[k]); } } }
+                    (base + inst.item as u32, [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0])
+                }).collect();
+                let pos_of = |k: usize| -> [f32; 3] { if ids[k] >= base { centres.get(&ids[k]).copied().unwrap_or([0.0; 3]) } else { let o = ids[k]; let (cx, cz) = if tile_zmajor { (o / 64, o % 64) } else { (o % 64, o / 64) }; [cx as f32 * 16.0 + 8.0, tile_y, cz as f32 * 16.0 + 8.0] } };
                 for key in tie.split(',') {
                     let (neg, axis) = match key.trim() { "x" => (false, 0), "y" => (false, 1), "z" => (false, 2), "-x" => (true, 0), "-y" => (true, 1), "-z" => (true, 2), _ => (false, 9) };
                     if axis < 3 { idx.sort_by(|&a, &b| { let (pa, pb) = (pos_of(a)[axis], pos_of(b)[axis]); let o = pa.partial_cmp(&pb).unwrap(); if neg { o.reverse() } else { o } }); }
@@ -3204,7 +3259,8 @@ fn main() {
                 size_ok += s_ok as u32; pos_ok += p_ok as u32;
                 if !s_ok && shown < 12 && ids[k] >= base { shown += 1; println!("  item {} ext ({:.2}, {:.2}) m: ours {}×{} at ({}, {}) vs editor {}×{} at ({}, {})", ids[k] - base, charts[k].ext[0], charts[k].ext[1], ow, oh, ox, oy, ew, eh, ex, ey); }
             }
-            println!("compared {n_cmp}: sizes equal {size_ok}, positions equal {pos_ok}");
+            let items_ok = placed.iter().enumerate().filter(|(k, p)| ids[*k] >= base && ed.get(&ids[*k]).map(|&(ex, ey, ew, eh)| { let (ox, oy, ow, oh) = if pad > 0 { (p.x as u32 + pad, p.y as u32 + pad, (p.w as u32).saturating_sub(2 * pad), (p.h as u32).saturating_sub(2 * pad)) } else { (2 * p.x as u32 + 1, 2 * p.y as u32 + 1, 2 * (p.w as u32).saturating_sub(1), 2 * (p.h as u32).saturating_sub(1)) }; (ox, oy, ow, oh) == (ex as u32, ey as u32, ew as u32, eh as u32) }).unwrap_or(false)).count();
+            println!("compared {n_cmp}: sizes equal {size_ok}, positions equal {pos_ok} (items fully equal: {items_ok} of {})", scene.instances.len());
         }
         "points" => {
             // lmtool points [FILE]: the game's sphere point sets — set sizes, and the zenith cone counts at 30°

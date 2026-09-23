@@ -51,6 +51,16 @@ impl PointSets {
         self.sets.iter().find(|s| s.len() == n).or_else(|| self.sets.iter().filter(|s| s.len() >= n).min_by_key(|s| s.len())).or_else(|| self.sets.iter().max_by_key(|s| s.len()))
     }
 
+    /// The game's pick for a requested count (FUN_14045fbd0): the first set with count ≥ n, or its
+    /// predecessor when that is nearer (ties → the smaller): 1024 → 1032, 2048 → 2040, 4096 → 4112.
+    pub fn nearest(&self, n: usize) -> Option<&Vec<[f32; 3]>> {
+        let mut sizes: Vec<usize> = self.sets.iter().map(|s| s.len()).collect();
+        sizes.sort_unstable();
+        let up = sizes.iter().position(|&c| c >= n)?;
+        let pick = if up > 0 && (sizes[up - 1] as i64 - n as i64).abs() <= (sizes[up] as i64 - n as i64).abs() { sizes[up - 1] } else { sizes[up] };
+        self.sets.iter().find(|s| s.len() == pick)
+    }
+
     /// The points of the `n`-set inside the cone of half-angle `deg` around +y.
     pub fn cone(&self, n: usize, deg: f32) -> Vec<[f32; 3]> {
         let c = deg.to_radians().cos();
@@ -61,4 +71,33 @@ impl PointSets {
 /// The banked copy's default location.
 pub fn default_path() -> String {
     format!("{}/persistent/private-30d/tm-player/tiny/lightmap-re/client-re/Std.PointsInSphere.Gbx", std::env::var("HOME").unwrap_or_default())
+}
+
+/// The lightmapper's fixed rotation of every table point (RE child 2): M = Rz(0.313338965)·Ry(0.0599014498)·Rx(0.124326788),
+/// applied as d = M·p.
+pub fn rotate_set(points: &[[f32; 3]]) -> Vec<[f32; 3]> {
+    let (ax, ay, az) = (0.124326788f32, 0.0599014498f32, 0.313338965f32);
+    let rx = [[1.0, 0.0, 0.0], [0.0, ax.cos(), -ax.sin()], [0.0, ax.sin(), ax.cos()]];
+    let ry = [[ay.cos(), 0.0, ay.sin()], [0.0, 1.0, 0.0], [-ay.sin(), 0.0, ay.cos()]];
+    let rz = [[az.cos(), -az.sin(), 0.0], [az.sin(), az.cos(), 0.0], [0.0, 0.0, 1.0]];
+    let mul = |a: &[[f32; 3]; 3], b: &[[f32; 3]; 3]| -> [[f32; 3]; 3] {
+        let mut o = [[0f32; 3]; 3];
+        for i in 0..3 { for j in 0..3 { for k in 0..3 { o[i][j] += a[i][k] * b[k][j]; } } }
+        o
+    };
+    // M ← Rx·I, M ← Ry·M, M ← Rz·M
+    let m = mul(&rz, &mul(&ry, &rx));
+    points.iter().map(|p| [m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2], m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2], m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2]]).collect()
+}
+
+/// The dome direction counts per sweep for a tinyctl quality (1..=5 → the game's enum 0..=4):
+/// Fast {64, 32}; Default {256, 128}; High {1024, 512, 256, 128}; Ultra {2048, 1024, 1024, 512, 256, 128}.
+pub fn sweep_counts(quality: u32) -> Vec<usize> {
+    match quality {
+        0 | 1 => vec![],
+        2 => vec![64, 32],
+        3 => vec![256, 128],
+        4 => vec![1024, 512, 256, 128],
+        _ => vec![2048, 1024, 1024, 512, 256, 128],
+    }
 }

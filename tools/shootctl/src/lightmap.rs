@@ -165,6 +165,11 @@ fn go(opts: &Opts) -> Result<String, String> {
             let _ = super::http_get("/yes", 10);
         }
         let s = super::http_get("/shadowsq", 10).unwrap_or_default();
+        // an empty answer = the plugin is gone = the game died (the editor's lightmapper crashes ~9 s
+        // after a map opens on some maps — Trackmania.exe+0x280bf4, the frame → texture upload)
+        if s.trim().is_empty() && !super::plugin_up() {
+            return Err(format!("the game died during ComputeShadows after {:.0} s (no plugin answer) — the editor crashed on this map", ts.elapsed().as_secs_f64()));
+        }
         if s.contains("\"ready\":false") {
             saw_busy = true;
         } else if saw_busy || ts.elapsed().as_secs() > 20 {
