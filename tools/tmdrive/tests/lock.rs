@@ -262,3 +262,35 @@ fn map_paths_outside_the_user_dir_are_refused() {
     let back = tmdrive::game_path("C:\\Users\\vjeux\\x.Map.Gbx").unwrap();
     assert_eq!(back, "C:/Users/vjeux/x.Map.Gbx", "backslashes are normalised");
 }
+
+#[test]
+fn a_killed_run_releases_the_box() {
+    // 2026-09-24: `kill <tmdrive run pid>` left a record with a dead keeper --
+    // destructors do not run on a signal -- and everyone saw HELD for 120 s.
+    let Some(_host) = setup(Duration::from_secs(1800)) else { return };
+    let tm = concat!(env!("CARGO_MANIFEST_DIR"), "/../target/release/tmdrive");
+    let mut run = Command::new(tm)
+        .args(["run", "--purpose", "about to be killed", "--", "/bin/sh", "-c", "sleep 60"])
+        .env("TM_SESSION", A)
+        .env("TM_SESSION_TITLE", "A")
+        .env_remove("TM_LOCK_TOKEN")
+        .spawn()
+        .expect("spawn run");
+    // Wait until it holds the box.
+    let t0 = Instant::now();
+    while read("session") != A {
+        assert!(t0.elapsed() < Duration::from_secs(30), "the run never took the box");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    unsafe {
+        libc::kill(run.id() as i32, libc::SIGTERM);
+    }
+    let st = run.wait().expect("wait");
+    assert!(!st.success(), "a signalled run does not report success");
+    let t1 = Instant::now();
+    while !read("session").is_empty() {
+        assert!(t1.elapsed() < Duration::from_secs(5), "the box must be FREE within seconds of SIGTERM, not after the lease");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    clear_ours_or_abort();
+}

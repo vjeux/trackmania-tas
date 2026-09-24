@@ -102,7 +102,34 @@ uint g_JumpCount = 0;
 string g_LastJumpInfo = "";
 
 uint g_Heartbeat = 0;
+// The last command sequence number acted on. Starts at -1 in memory, but a
+// plugin RELOAD resets memory while cmd.txt keeps its last line -- so every
+// reload re-ran the previous command (a stale editplay fired on each of the
+// three reloads of 2026-09-24, one of them 10 minutes after it was issued).
+// The watermark is therefore persisted beside the command file and read back
+// on load: a command is acted on once, across reloads too.
 int g_CmdSeq = -1;
+bool g_CmdSeqLoaded = false;
+
+void LoadCmdSeq() {
+    g_CmdSeqLoaded = true;
+    string path = StoragePath("cmd.seq");
+    if (!IO::FileExists(path)) return;
+    try {
+        IO::File f(path, IO::FileMode::Read);
+        string t = f.ReadToEnd().Trim();
+        f.Close();
+        if (t.Length > 0) g_CmdSeq = Text::ParseInt(t);
+    } catch {}
+}
+
+void SaveCmdSeq() {
+    try {
+        IO::File f(StoragePath("cmd.seq"), IO::FileMode::Write);
+        f.Write("" + g_CmdSeq);
+        f.Close();
+    } catch {}
+}
 string g_CmdResult = "";
 float g_PeakY = 0.0f;
 float g_JumpStartY = 0.0f;
@@ -479,6 +506,7 @@ string RunCommand(const string &in verb, const string &in arg) {
 }
 
 void PollCommand() {
+    if (!g_CmdSeqLoaded) LoadCmdSeq();
     string path = StoragePath("cmd.txt");
     if (!IO::FileExists(path)) return;
 
@@ -507,6 +535,7 @@ void PollCommand() {
     string arg = parts.Length > 2 ? parts[2] : "";
 
     g_CmdSeq = seq;
+    SaveCmdSeq();
     g_CmdResult = RunCommand(verb, arg);
     trace("[Jump] cmd #" + seq + " " + verb + " -> " + g_CmdResult);
 }

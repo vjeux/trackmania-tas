@@ -45,6 +45,30 @@ fn num(args: &[String], k: &str, d: u64) -> u64 {
     flag(args, k).and_then(|v| v.parse().ok()).unwrap_or(d)
 }
 
+static SIGNALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static CHILD_PID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+extern "C" fn on_signal(sig: libc::c_int) {
+    // Async-signal-safe only: set a flag, forward to the child. The main
+    // thread notices the flag, reaps the child, and returns through the
+    // normal path so the lock guard drops.
+    SIGNALLED.store(true, std::sync::atomic::Ordering::SeqCst);
+    let child = CHILD_PID.load(std::sync::atomic::Ordering::SeqCst);
+    if child > 0 {
+        unsafe {
+            libc::kill(child, sig);
+        }
+    }
+}
+
+fn install_forwarding_signal_handler() {
+    unsafe {
+        libc::signal(libc::SIGTERM, on_signal as libc::sighandler_t);
+        libc::signal(libc::SIGINT, on_signal as libc::sighandler_t);
+        libc::signal(libc::SIGHUP, on_signal as libc::sighandler_t);
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
@@ -194,12 +218,33 @@ fn main() {
                     }
                 }
             }
+            // A KILLED RUN MUST STILL RELEASE THE BOX. Rust destructors do
+            // not run on a signal, so `kill <run pid>` used to leave a record
+            // with a dead keeper behind -- every later driver saw HELD until
+            // the 120 s lease expired (2026-09-24, when a run was stopped to
+            // hand the box over). The handler forwards the signal to the
+            // child and lets the main thread unwind normally, so the guard's
+            // Drop runs and the release is the same code path as a clean exit.
+            install_forwarding_signal_handler();
             with_lock(&host, &purpose, &args, move |l| {
-                let st = std::process::Command::new(&cmd[0])
+                let mut child = std::process::Command::new(&cmd[0])
                     .args(&cmd[1..])
                     .env("TM_LOCK_TOKEN", l.token())
-                    .status()
+                    .spawn()
                     .map_err(|e| Error::Op(format!("{}: {e}", cmd[0])))?;
+                CHILD_PID.store(child.id() as i32, std::sync::atomic::Ordering::SeqCst);
+                let st = loop {
+                    if SIGNALLED.load(std::sync::atomic::Ordering::SeqCst) {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(Error::Op("interrupted by a signal; the box was released".into()));
+                    }
+                    match child.try_wait() {
+                        Ok(Some(st)) => break st,
+                        Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+                        Err(e) => return Err(Error::Op(format!("waiting for {}: {e}", cmd[0]))),
+                    }
+                };
                 if !st.success() {
                     return Err(Error::Op(format!("command exited {st}")));
                 }
