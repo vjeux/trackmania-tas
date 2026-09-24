@@ -264,6 +264,97 @@ pub fn plugin(lock: &GameLock, endpoint: &str, query: &str) -> Result<String> {
     out
 }
 
+/// Bump a plugin source file's mtime so Openplanet (developer mode) reloads
+/// it. A mutating game operation — it restarts a plugin inside the running
+/// game — so it takes the guard like the rest.
+pub fn touch_plugin_source(lock: &GameLock, rel_path: &str) -> Result<()> {
+    if rel_path.contains("..") {
+        return Err(Error::Op(format!("{rel_path}: not a plugin-relative path")));
+    }
+    lock.host
+        .read_cmd(&format!(
+            "touch '/mnt/c/Users/vjeux/OpenplanetNext/Plugins/{}'",
+            rel_path.replace('\'', "")
+        ))
+        .map_err(Error::Op)?;
+    lock.renew();
+    Ok(())
+}
+
+/// Get a DRIVABLE playground for a map, the way that actually works.
+///
+/// The title's `PlayMap` stopped opening any map on 2026-09-23 (~01:40 PT):
+/// it returns ok, the title reports ready, `ctx` sits at 0 forever, and
+/// UGCErrorsLog gets an empty `<map>` line — stock maps included, across
+/// restarts. The u10s session found the route that was unaffected: open the
+/// map in the EDITOR, then press the editor's TEST button. That yields a real
+/// playground with the player's car in it, which is all a driver needs.
+///
+/// This is the route every driver should use to get into a map. `play_map`
+/// stays for the day PlayMap works again, but nothing here depends on it.
+///
+/// Waits for the editor (answering any yes/no dialog on the way), presses
+/// TEST, and returns once a playground exists — or says exactly which step
+/// did not happen.
+pub fn enter_map_via_editor(lock: &GameLock, map_path: &str, timeout_s: u64) -> Result<String> {
+    let p = crate::loadable_map_path(map_path).map_err(Error::Op)?;
+    lock.host
+        .read_cmd(&format!("printf '%s' '{}' > '{EDITMAP_TXT}'", p.replace('\'', "")))
+        .map_err(Error::Op)?;
+    let r = plugin(lock, "editmap", "")?;
+    if r.contains("token-refused") {
+        return Err(Error::Op(r));
+    }
+
+    // Wait for the editor with the map loaded. `/ctx` is a read and needs no
+    // token; `ctx:1` is the editor, and the map name appears once it is in.
+    let deadline = crate::now_s() + timeout_s;
+    loop {
+        if crate::now_s() >= deadline {
+            let c = crate::plugin::get("/ctx", 10).unwrap_or_default();
+            return Err(Error::Op(format!(
+                "no editor within {timeout_s}s after /editmap; last ctx: {}",
+                c.trim()
+            )));
+        }
+        if crate::game_pid(&lock.host).is_none() {
+            return Err(Error::Op("the game exited while opening the editor".into()));
+        }
+        let c = crate::plugin::get("/ctx", 10).unwrap_or_default();
+        if c.contains("FrameAskYesNo") {
+            let _ = plugin(lock, "yes", "");
+        }
+        if c.contains("\"ctx\":1") && c.contains("\"map\":\"") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        lock.renew();
+    }
+    // The editor needs a beat after the map appears before TEST is accepted.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let t = plugin(lock, "edtest", "")?;
+
+    // Now a playground: ctx becomes 2+ (a play context inside the editor).
+    loop {
+        if crate::now_s() >= deadline {
+            let c = crate::plugin::get("/ctx", 10).unwrap_or_default();
+            return Err(Error::Op(format!(
+                "TEST pressed but no playground within {timeout_s}s; last ctx: {}",
+                c.trim()
+            )));
+        }
+        if crate::game_pid(&lock.host).is_none() {
+            return Err(Error::Op("the game exited after TEST".into()));
+        }
+        let c = crate::plugin::get("/ctx", 10).unwrap_or_default();
+        if c.contains("\"playground\":true") {
+            return Ok(format!("in a playground via the editor [{p}] (edtest: {})", t.trim()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        lock.renew();
+    }
+}
+
 /// GhostShooter reads the map path from this file, NOT from the request.
 const EDITMAP_TXT: &str =
     "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter/editmap.txt";
@@ -279,7 +370,7 @@ const EDITMAP_TXT: &str =
 /// PlayMap fail silently — it returns, the title reports ready, and no
 /// playground ever appears.
 pub fn play_map(lock: &GameLock, map_path: &str) -> Result<String> {
-    let p = crate::game_path(map_path).map_err(Error::Op)?;
+    let p = crate::loadable_map_path(map_path).map_err(Error::Op)?;
     lock.host
         .read_cmd(&format!("printf '%s' '{}' > '{EDITMAP_TXT}'", p.replace('\'', "")))
         .map_err(Error::Op)?;
@@ -319,15 +410,3 @@ pub fn write_game_file(lock: &GameLock, local: &str, remote: &str) -> Result<()>
     Ok(())
 }
 
-fn urlencode(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{:02X}", b)),
-        }
-    }
-    out
-}

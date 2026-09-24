@@ -286,6 +286,37 @@ pub fn assert_single_install(host: &Host) -> Result<()> {
 /// So the conversion happens HERE, once, for every driver — and anything
 /// still unresolvable is REFUSED rather than handed over, because a wiring
 /// error must not be able to come back as a fact about a map.
+/// The game's user directory — where it looks for maps, items, replays.
+///
+/// NOT `Documents\Trackmania`: on this box Documents is redirected to
+/// OneDrive, and the game's own log names
+/// `C:/Users/vjeux/OneDrive/Documents/Trackmania/` as its user dir. A stray
+/// `Documents\Trackmania` exists beside it with two maps in it, and a map
+/// there is invisible to the loader: EditMap and PlayMap both return ok and
+/// open nothing (ctx 0 forever, no dialog, no log line). That is what every
+/// "the editor route stopped working" on 2026-09-24 turned out to be — the
+/// route was fine, the map was in a directory the game never reads.
+pub const GAME_USER_DIR: &str = "C:/Users/vjeux/OneDrive/Documents/Trackmania";
+
+/// A map path the game will actually LOAD, or a refusal that says why.
+///
+/// On top of `game_path`'s spelling rules: the map must live under the game's
+/// user directory, because a map anywhere else is accepted and silently
+/// ignored. Refusing here turns a silent no-op into an error with the fix in
+/// it.
+pub fn loadable_map_path(p: &str) -> std::result::Result<String, String> {
+    let g = game_path(p)?;
+    let norm = g.replace('\\', "/");
+    if !norm.to_lowercase().starts_with(&GAME_USER_DIR.to_lowercase()) {
+        return Err(format!(
+            "{g}: not under the game's user directory ({GAME_USER_DIR}). The game accepts a \
+             path outside it and loads NOTHING — no error, no dialog, ctx 0 forever. Copy \
+             the map under {GAME_USER_DIR}/Maps/ and point at it there."
+        ));
+    }
+    Ok(g)
+}
+
 pub fn game_path(p: &str) -> std::result::Result<String, String> {
     // /mnt/<drive>/rest -> <DRIVE>:/rest
     if let Some(rest) = p.strip_prefix("/mnt/") {

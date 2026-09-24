@@ -189,7 +189,13 @@ fn wait_for(host: &Host, event: &str, timeout: Duration) -> Result<Outcome, Stri
             }
             let hit = match event {
                 "process" | "exit" | "lock-free" => false,
-                "alive" => s.heartbeat > base_heartbeat + 3,
+                // "Alive" = the heartbeat is MOVING, in either direction. It
+                // counts from 0 on every plugin load, so after a relaunch the
+                // fresh count is far BELOW the stale baseline; requiring
+                // `> base + 3` then never held, and three launches in a row
+                // timed out at 300 s each on a game that was perfectly fine.
+                "alive" => s.heartbeat != base_heartbeat
+                    && (s.heartbeat > base_heartbeat + 3 || s.heartbeat < base_heartbeat),
                 "hooked" => s.hooked,
                 "in-map" => s.in_playground,
                 "car" => s.car_valid,
@@ -333,16 +339,35 @@ fn main() {
 
         // Everything below drives the game, so everything below holds the lock.
         "launch" => with_lock(host.clone(), "jump-button launch", |lock| {
-            let t = dur(args.get(1), 300);
-            let pid = ops::launch(lock, t.as_secs()).map_err(|e| e.to_string())?;
-            println!("  game pid {pid}");
-            let o = wait_for(lock.host(), "alive", t)?;
-            if !o.state.build_supported {
-                return Err(format!("build NOT supported: {}", o.state.status));
-            }
-            let o = wait_for(lock.host(), "hooked", Duration::from_secs(30))?;
-            println!("hook installed, ticks={}", o.state.hook_ticks);
-            Ok(())
+            launch_and_hook(lock, dur(args.get(1), 300))
+        }),
+
+        // THE WHOLE SEQUENCE, under one hold, with retries. Replaces the
+        // runjump.sh shell script -- harnesses are Rust here, not bash.
+        "run" => with_lock(host.clone(), "jump button: full verification run", |lock| {
+            let map = args.get(1).cloned().unwrap_or_else(|| DEFAULT_MAP.to_string());
+            run_full(lock, &map, 3)
+        }),
+
+        // Hot-reload the plugin repeatedly WHILE physics runs, and require the
+        // game to survive and still jump. Guards the use-after-free fix:
+        // RemoveHook used to free the trampoline island while a physics thread
+        // could still be inside it, and every reload was a coin-flip that
+        // killed the game with no dump and no log line. Replaces reloadstress.sh.
+        "reloadstress" => with_lock(host.clone(), "jump button: reload stress", |lock| {
+            let n: u32 = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(6);
+            reload_stress(lock, n)
+        }),
+
+        // Measure the jump across strengths so the default is chosen from
+        // data. Replaces tune.sh.
+        "tune" => with_lock(host.clone(), "jump button: strength sweep", |lock| {
+            let strengths: Vec<f64> = if args.len() > 1 {
+                args[1..].iter().filter_map(|a| a.parse().ok()).collect()
+            } else {
+                vec![4.0, 6.0, 8.0, 10.0, 12.0, 15.0]
+            };
+            tune(lock, &strengths)
         }),
 
         "cmd" => with_lock(host.clone(), "jump-button command", |lock| {
@@ -351,7 +376,7 @@ fn main() {
             // A map path the game cannot resolve loads nothing and reports
             // success, so normalise it here rather than handing the game a
             // spelling it will silently ignore.
-            if verb == "playmap" && !arg.is_empty() {
+            if (verb == "playmap" || verb == "editplay") && !arg.is_empty() {
                 arg = tmdrive::game_path(&arg)?;
             }
             send_command(lock.host(), &verb, &arg, Duration::from_secs(30)).map(|_| ())
@@ -363,8 +388,51 @@ fn main() {
             Ok(())
         }),
 
-        "jumptest" => with_lock(host.clone(), "jump-button test", |lock| {
-            let h = lock.host();
+        "jumptest" => with_lock(host.clone(), "jump-button test", |lock| jump_test(lock).map(|_| ())),
+
+        other => Err(format!("unknown subcommand '{}'", other)),
+    };
+
+    if let Err(e) = r {
+        eprintln!("FAIL: {}", e);
+        std::process::exit(1);
+    }
+}
+
+const DEFAULT_MAP: &str = "C:/Users/vjeux/OneDrive/Documents/Trackmania/Maps/Probe/old630.Map.Gbx";
+
+/// Game up, Openplanet started, the build supported, the hook installed.
+fn launch_and_hook(lock: &GameLock, t: Duration) -> Result<(), String> {
+    let pid = ops::launch(lock, t.as_secs()).map_err(|e| e.to_string())?;
+    println!("  game pid {pid}");
+    let o = wait_for(lock.host(), "alive", t)?;
+    if !o.state.build_supported {
+        return Err(format!("build NOT supported: {}", o.state.status));
+    }
+    let o = wait_for(lock.host(), "hooked", Duration::from_secs(30))?;
+    println!("  hook installed, ticks={}", o.state.hook_ticks);
+    Ok(())
+}
+
+/// Into a drivable playground. Through the EDITOR's TEST button: the title's
+/// PlayMap has loaded nothing since 2026-09-23, and the editor route is the
+/// one that works. tmdrive owns that recipe so every driver shares it.
+fn enter_map(lock: &GameLock, map: &str) -> Result<(), String> {
+    let r = ops::enter_map_via_editor(lock, map, 180).map_err(|e| e.to_string())?;
+    println!("  {r}");
+    wait_for(lock.host(), "in-map", Duration::from_secs(60))?;
+    println!("  in a map");
+    wait_for(lock.host(), "car", Duration::from_secs(60))?;
+    println!("  car pointer captured");
+    wait_for(lock.host(), "ticking", Duration::from_secs(30))?;
+    println!("  physics hook is firing");
+    Ok(())
+}
+
+/// One measured jump. Returns the height gained.
+fn jump_test(lock: &GameLock) -> Result<f64, String> {
+    let h = lock.host();
+    {
             println!("== preconditions ==");
             wait_for(h, "alive", Duration::from_secs(60))?;
             wait_for(h, "hooked", Duration::from_secs(30))?;
@@ -393,16 +461,84 @@ fn main() {
                 return Err(format!("JUMP DID NOT LIFT THE CAR: gain {:.3} m ('{}')", gain, res));
             }
             println!("RESULT: jump works — car rose {:.2} m", gain);
-            Ok(())
-        }),
-
-        other => Err(format!("unknown subcommand '{}'", other)),
-    };
-
-    if let Err(e) = r {
-        eprintln!("FAIL: {}", e);
-        std::process::exit(1);
+            Ok(gain)
     }
+}
+
+/// launch -> map -> jump, retried whole. A launch can stall in Openplanet's
+/// Nadeo login (tmdrive relaunches it) and the box is shared; each attempt
+/// starts from a clean game so a half-state never leaks into the next.
+fn run_full(lock: &GameLock, map: &str, attempts: u32) -> Result<(), String> {
+    let mut last = String::new();
+    for attempt in 1..=attempts {
+        println!("######## attempt {attempt}/{attempts} ########");
+        let r = (|| -> Result<(), String> {
+            println!("=== 1. game up, Openplanet started, hook installed ===");
+            launch_and_hook(lock, Duration::from_secs(300))?;
+            println!("=== 2. into a map (editor + TEST) ===");
+            enter_map(lock, map)?;
+            println!("=== 3. the jump ===");
+            jump_test(lock)?;
+            Ok(())
+        })();
+        match r {
+            Ok(()) => {
+                println!("######## SUCCESS on attempt {attempt} ########");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("  attempt {attempt} failed: {e}");
+                last = e;
+                if attempt < attempts {
+                    let _ = ops::kill(lock);
+                    let _ = wait_for(lock.host(), "exit", Duration::from_secs(30));
+                }
+            }
+        }
+    }
+    Err(format!("all {attempts} attempts failed; last: {last}"))
+}
+
+/// See the `reloadstress` subcommand.
+fn reload_stress(lock: &GameLock, reloads: u32) -> Result<(), String> {
+    let h = lock.host();
+    println!("=== get to a driving car ===");
+    launch_and_hook(lock, Duration::from_secs(300))?;
+    enter_map(lock, DEFAULT_MAP)?;
+    println!("=== reload the plugin {reloads}x while physics runs ===");
+    for i in 1..=reloads {
+        // Openplanet's developer mode reloads a plugin on mtime change.
+        ops::touch_plugin_source(lock, "JumpButton/Main.as").map_err(|e| e.to_string())?;
+        // The hook must come BACK, not just the plugin: `hooked` flips false
+        // on unload and true again on reinstall.
+        wait_for(h, "hooked", Duration::from_secs(30))
+            .map_err(|e| format!("reload #{i}: the hook did not reinstall: {e}"))?;
+        if tmdrive::game_pid(h).is_none() {
+            return Err(format!("reload #{i}: THE GAME DIED on reload"));
+        }
+        println!("  reload #{i}: game alive, hook reinstalled");
+    }
+    println!("=== the jump still works after all those reloads ===");
+    wait_for(h, "ticking", Duration::from_secs(60))?;
+    wait_for(h, "grounded", Duration::from_secs(60))?;
+    jump_test(lock).map(|_| ())
+}
+
+/// Peak height against strength, from the game's own physics state.
+fn tune(lock: &GameLock, strengths: &[f64]) -> Result<(), String> {
+    let h = lock.host();
+    println!("strength  gain_m");
+    for &s in strengths {
+        send_command(h, "strength", &format!("{s}"), Duration::from_secs(10))?;
+        // Land and settle before the next measurement, or the previous arc
+        // pollutes it.
+        wait_for(h, "grounded", Duration::from_secs(30))?;
+        match jump_test(lock) {
+            Ok(gain) => println!("{s:<9} {gain:.3}"),
+            Err(e) => println!("{s:<9} FAILED: {e}"),
+        }
+    }
+    Ok(())
 }
 
 fn with_lock<F>(host: Host, purpose: &str, f: F) -> Result<(), String>
