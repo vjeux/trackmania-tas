@@ -195,6 +195,9 @@ pub struct ChartBake {
     /// Sun-visibility mean over the chart (diagnostics / fitting).
     pub sun_vis: f32,
     pub sky_vis: f32,
+    /// The plain gathered irradiance when `rgb` holds something else (the prelit card texels): what the
+    /// next sweep's bounce reads back. Empty = `rgb` is the irradiance.
+    pub rgb_irr: Vec<[f32; 3]>,
 }
 
 impl ChartBake {
@@ -1053,7 +1056,7 @@ pub fn bake(scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, crate:
                 if want_lights {
                     dilate(&mut rgb1, &covered, w, h, [0.0; 3]);
                 }
-                *results[ii].lock().unwrap() = Some(ChartBake { item: inst.item, w, h, rgb, rgb1, covered, sun_vis: sv / ns, sky_vis: kv / ns });
+                *results[ii].lock().unwrap() = Some(ChartBake { item: inst.item, w, h, rgb, rgb1, covered, sun_vis: sv / ns, sky_vis: kv / ns, rgb_irr: Vec::new() });
             });
         }
     });
@@ -1153,7 +1156,7 @@ pub fn bake_subset(sub: &Scene, full_ids: &[u32], bvh: &Bvh, prm: &BakeParams) -
                     kv += sky_vis;
                 }
                 let ns = samples.len().max(1) as f32;
-                *results[ii].lock().unwrap() = Some(ChartBake { item: inst.item, w: px, h: px, rgb, rgb1: Vec::new(), covered, sun_vis: sv / ns, sky_vis: kv / ns });
+                *results[ii].lock().unwrap() = Some(ChartBake { item: inst.item, w: px, h: px, rgb, rgb1: Vec::new(), covered, sun_vis: sv / ns, sky_vis: kv / ns, rgb_irr: Vec::new() });
             });
         }
     });
@@ -1190,7 +1193,7 @@ pub fn bake_subset_px(sub: &Scene, full_ids: &[u32], bvh: &Bvh, prm: &BakeParams
             kv += sky_vis;
         }
         let ns = samples.len().max(1) as f32;
-        out.push(ChartBake { item: inst.item, w, h, rgb, rgb1: Vec::new(), covered, sun_vis: sv / ns, sky_vis: kv / ns });
+        out.push(ChartBake { item: inst.item, w, h, rgb, rgb1: Vec::new(), covered, sun_vis: sv / ns, sky_vis: kv / ns, rgb_irr: Vec::new() });
     }
     out
 }

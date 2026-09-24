@@ -1228,7 +1228,7 @@ fn run(a: Vec<String>) {
             for it in 1..iterations {
                 let mut field = lightmap::bake::RadianceField { charts: vec![None; scene.instances.len()], flip_v: prm.flip_v, uv_bounds: prm.uv_bounds };
                 let inst_of_item: std::collections::HashMap<usize, usize> = scene.instances.iter().enumerate().map(|(ii, inst)| (inst.item, ii)).collect();
-                for c in &charts { if let Some(&ii) = inst_of_item.get(&c.item) { field.charts[ii] = Some((c.w, c.h, c.rgb.clone())); } }
+                for c in &charts { if let Some(&ii) = inst_of_item.get(&c.item) { field.charts[ii] = Some((c.w, c.h, if c.rgb_irr.is_empty() { c.rgb.clone() } else { c.rgb_irr.clone() })); } }
                 let mut p2 = prm.clone();
                 p2.field = Some(std::sync::Arc::new(field));
                 if prm.peel {

@@ -677,7 +677,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         .enumerate()
         .map(|(ii, inst)| {
             let (w, h) = chart_meta[ii];
-            ChartBake { item: inst.item, w, h, rgb: vec![[0.0; 3]; (w * h) as usize], rgb1: Vec::new(), covered: vec![false; (w * h) as usize], sun_vis: 0.0, sky_vis: 0.0 }
+            ChartBake { item: inst.item, w, h, rgb: vec![[0.0; 3]; (w * h) as usize], rgb1: Vec::new(), covered: vec![false; (w * h) as usize], sun_vis: 0.0, sky_vis: 0.0, rgb_irr: Vec::new() }
         })
         .collect();
     let mut counts: Vec<Vec<u16>> = chart_meta.iter().map(|(w, h)| vec![0u16; (w * h) as usize]).collect();
@@ -687,9 +687,13 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     // shaders draw the lightmap as their colour. LMTOOL_CARD_PRELIT=0 stores the plain irradiance.
     let card_prelit = std::env::var("LMTOOL_CARD_PRELIT").map(|v| v != "0").unwrap_or(true);
     let card_open = std::env::var("LMTOOL_CARD_OPEN").map(|v| v != "0").unwrap_or(true);
+    // the plain irradiance alongside (the bounce of the next sweep reads THIS, not the prelit value — with
+    // the prelit fed back, tiny 16's 21 M card triangles lit the whole map +40 %)
+    let mut irr: Vec<Vec<[f32; 3]>> = chart_meta.iter().map(|(w, h)| vec![[0.0; 3]; (w * h) as usize]).collect();
     for (i, s) in subs.iter().enumerate() {
         let c = &mut out[s.chart as usize];
         let t = s.texel as usize;
+        for k in 0..3 { irr[s.chart as usize][t][k] += acc[i][k]; }
         let mut v = acc[i];
         if card_prelit {
             let wt = &bvh.tris[s.own_tri as usize];
@@ -734,9 +738,11 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             if n > 0 {
                 for k in 0..3 {
                     c.rgb[t][k] /= n as f32;
+                    irr[ci][t][k] /= n as f32;
                 }
             }
         }
+        if card_prelit { c.rgb_irr = std::mem::take(&mut irr[ci]); }
     }
     if std::env::var_os("LMTOOL_PEEL_DEBUG_BLACK").is_some() {
         // re-gather two black sub-samples of chart 0 with prints
