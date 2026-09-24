@@ -1440,3 +1440,76 @@ pub fn addblock_cmd(args: &[String]) -> Result<(), String> {
     println!("{} + {name} → {} ({:?})", input.display(), out.display(), r);
     Ok(())
 }
+
+
+/// `tmmaps effect-catalog HOST.Map.Gbx --list BLOCKS.tsv --out OUT.Map.Gbx [--cols 11] [--pitch 3] [--y 12]`:
+/// the exhaustive effect-block audit map (vjeux 2026-09-24 "one map with all of them aligned in
+/// a grid, one screenshot of the front and one of the back"). The host is emptied (every
+/// authored block and item removed), then every row of BLOCKS.tsv (`name<TAB>flags-hex`, one
+/// distinct effect block kind per row, e.g. the census of the 975 sources) is placed as a
+/// GRID block facing north (dir 0) on a `pitch`-cell lattice — cell (x0 + 3*col, y, z0 + 3*row),
+/// so each block's generated skirts have room and a camera sees it alone. A ground-flagged
+/// kind (0x1000) goes on the ground row (cell y 9), the rest float at `--y`. The grid TSV
+/// beside OUT lists `name, flags, cell, world centre` for the cameras. Save the result
+/// through the EDITOR once (the game generates the fillers on save) before converting it.
+pub fn effect_catalog_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| crate::cli::flag(args, k).map(String::from);
+    let host = PathBuf::from(args.iter().skip(1).find(|a| !a.starts_with("--") && a.ends_with(".Map.Gbx")).ok_or("HOST.Map.Gbx")?);
+    let list = PathBuf::from(f("--list").ok_or("--list BLOCKS.tsv")?);
+    let out = PathBuf::from(f("--out").ok_or("--out")?);
+    let cols: i32 = f("--cols").and_then(|v| v.parse().ok()).unwrap_or(11);
+    let pitch: i32 = f("--pitch").and_then(|v| v.parse().ok()).unwrap_or(3);
+    let y_air: i32 = f("--y").and_then(|v| v.parse().ok()).unwrap_or(12);
+    let (x0, z0) = (4i32, 4i32);
+    let text = std::fs::read_to_string(&list).map_err(|e| format!("{}: {e}", list.display()))?;
+    let mut rows: Vec<(String, u32)> = Vec::new();
+    for line in text.lines() {
+        let mut it = line.split('\t');
+        let (Some(name), Some(flags)) = (it.next(), it.next()) else { continue };
+        if name.is_empty() || name.starts_with('#') {
+            continue;
+        }
+        let flags = u32::from_str_radix(flags.trim().trim_start_matches("0x"), 16).map_err(|e| format!("{line}: flags {e}"))?;
+        rows.push((name.to_string(), flags));
+    }
+    let mut specs: Vec<crate::map::FreeBlockSpec> = Vec::new();
+    let mut tsv = String::from("name\tflags\tcx\tcy\tcz\twx\twy\twz\n");
+    for (i, (name, flags)) in rows.iter().enumerate() {
+        let (col, row) = ((i as i32) % cols, (i as i32) / cols);
+        let ground = flags & 0x1000 != 0;
+        let cell = [x0 + col * pitch, if ground { 9 } else { y_air }, z0 + row * pitch];
+        // grid → world (Stadium: 32 m cells, 8 m rows, the map's y origin at −62 like `census`)
+        let world = [cell[0] as f32 * 32.0 + 16.0, cell[1] as f32 * 8.0 - 62.0, cell[2] as f32 * 32.0 + 16.0];
+        tsv.push_str(&format!("{name}\t{flags:08x}\t{}\t{}\t{}\t{:.1}\t{:.1}\t{:.1}\n", cell[0], cell[1], cell[2], world[0], world[1], world[2]));
+        specs.push(crate::map::FreeBlockSpec { name: name.clone(), author: None, flags: *flags, pos: [0.0; 3], rot: [0.0; 3], grid: Some(cell), dir: 0 });
+    }
+    // a START (the race must begin for the playground camera to yield to /lookat) and a
+    // FINISH, in the grid's south-west corner, out of every block's frame
+    specs.push(crate::map::FreeBlockSpec { name: "PlatformTechStart".into(), author: None, flags: 0x1000, pos: [0.0; 3], rot: [0.0; 3], grid: Some([1, 9, 1]), dir: 0 });
+    specs.push(crate::map::FreeBlockSpec { name: "PlatformTechFinish".into(), author: None, flags: 0x1000, pos: [0.0; 3], rot: [0.0; 3], grid: Some([1, 9, 2]), dir: 0 });
+    let mut m = MapFile::load(&host);
+    // --keep-baked: the host's generated records stay (a file with NO baked record may be what
+    // the editor refuses — probe of 2026-09-24)
+    let keep_baked = crate::cli::has(args, "--keep-baked");
+    let r = m.remove_and_add_blocks(|_| true, |_| !keep_baked, &specs);
+    m.write_to(&out).map_err(|e| e.to_string())?;
+    // every original item REMOVED (parking them under the map put them outside the 48×40×48
+    // volume — a likely reason the editor refused the file, 2026-09-24)
+    let mut m = MapFile::load(&out);
+    let n_items = m.items.len();
+    let keep: Vec<bool> = vec![false; n_items];
+    m.remove_items(&keep);
+    m.write_to(&out).map_err(|e| e.to_string())?;
+    let mut m = MapFile::load(&out);
+    let hdr = crate::header::read(out.to_str().unwrap_or_default()).ok();
+    let uid_len = hdr.as_ref().map(|h| h.uid.len()).unwrap_or(27);
+    m.set_map_uid(&new_uid("Cat", uid_len));
+    m.write_to(&out).map_err(|e| e.to_string())?;
+    if !crate::cli::has(args, "--keep-genealogy") {
+        let _ = MapFile::clear_genealogy_file(&out);
+    }
+    let tsv_path = out.with_extension("grid.tsv");
+    std::fs::write(&tsv_path, tsv).map_err(|e| e.to_string())?;
+    println!("{}: {} blocks on a {cols}-wide grid (pitch {pitch}), {} items parked, host cleared {:?}; grid {}", out.display(), rows.len(), n_items, r, tsv_path.display());
+    Ok(())
+}

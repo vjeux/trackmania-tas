@@ -238,6 +238,12 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        "effect-catalog" => {
+            if let Err(e) = tmmaps::altered::effect_catalog_cmd(&args[1..]) {
+                eprintln!("tmmaps effect-catalog: {e}");
+                std::process::exit(1);
+            }
+        }
         "altered-apply" => {
             if let Err(e) = tmmaps::altered::apply_cmd(&args[1..]) {
                 eprintln!("tmmaps altered-apply: {e}");

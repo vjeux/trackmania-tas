@@ -1253,6 +1253,29 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     let terrain_mods = |bi: &crate::blockinfo::BlockInfo| -> Vec<String> {
         bi.material_modifier.iter().map(|r| r.replace(' ', "")).filter(|r| r.ends_with(".TerrainModifier.Gbx") || is_track_wall_to_deco_cliff(r)).collect()
     };
+    // A COMMUNITY effect block (`…\M2_PlatformTechSpecialTurboRoulette.Block.Gbx_CustomBlock`,
+    // `…\PlatformWoodSpecialTurbo2.Block.Gbx_CustomBlock`) has no block info in the pack, so
+    // no modifier of its own — yet the game generates vanilla `PlatformSpecialFC*` skirts
+    // around it and dresses them with ITS kind. The kind is in the name: `Special<Kind>`
+    // → the pack's `<Kind>.TerrainModifier` (U10S_61's roulette pads and U10S_287's wood
+    // Turbo2 pads had Turbo skirts, 2026-09-24).
+    let kind_from_name = |name: &str| -> Option<String> {
+        let pos = name.rfind("Special")?;
+        let after = &name[pos + 7..];
+        const KINDS: [&str; 13] = ["TurboRoulette", "Turbo2", "Turbo", "Boost2", "Boost", "Reset", "SlowMotion", "NoEngine", "NoSteering", "NoBrake", "Cruise", "Fragile", "Bumper"];
+        let kind = KINDS.iter().find(|k| after.starts_with(*k))?;
+        let folder = format!("STADIUM\\MEDIA\\MODIFIER\\{}", kind.to_uppercase());
+        gameplay_folders.contains(&folder).then(|| format!("Stadium\\Media\\Modifier\\{kind}.TerrainModifier.Gbx"))
+    };
+    let with_named_kind = |name: &str, mut mods: Vec<String>| -> Vec<String> {
+        let has_gameplay = mods.iter().any(|r| r.strip_suffix(".TerrainModifier.Gbx").map(|f| gameplay_folders.contains(&f.to_uppercase())).unwrap_or(false));
+        if !has_gameplay {
+            if let Some(m) = kind_from_name(name) {
+                mods.push(m);
+            }
+        }
+        mods
+    };
     let mut cell_mod: std::collections::HashMap<(u8, u8, u8), Vec<String>> = std::collections::HashMap::new();
     // the cells of the generated pillars (flag 0x4000), for the pillar clause
     // of the inheritance below
@@ -1267,8 +1290,8 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // kinds the block places (lowercase stems), unit is the origin cell)
     let mut unit_columns: std::collections::HashMap<(u8, u8), Vec<(u8, bool, Vec<String>, String, Vec<String>, bool)>> = std::collections::HashMap::new();
     for b in source.blocks.iter().filter(|b| b.flags & crate::blockmap::FLAG_FREE == 0) {
-        let Some(path) = idx.path_for(&b.name) else { continue };
-        let (mods, units, places): (Vec<String>, Vec<[i32; 3]>, Vec<String>) = match idx.load(store, &path) {
+        let Some(path) = idx.path_for(&b.name).or_else(|| kind_from_name(&b.name).map(|_| String::new())) else { continue };
+        let (mods, units, places): (Vec<String>, Vec<[i32; 3]>, Vec<String>) = match if path.is_empty() { Err(String::from("custom block: no block info")) } else { idx.load(store, &path).map_err(|e| e.to_string()) } {
             Ok(bi) => {
                 let ground = b.flags & crate::blockmap::FLAG_GROUND != 0;
                 let vindex = (b.flags & crate::blockmap::FLAG_VARIANT_MASK) as usize;
@@ -1278,9 +1301,9 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                     .pick_placement_add(ground, vindex, sub, addv)
                     .map(|pk| (pk.variant.block_units.iter().map(|u| u.offset).collect(), pk.variant.placed_pillars.iter().filter_map(|(n, _)| n.as_deref()).map(crate::fillers::stem).collect()))
                     .unwrap_or_default();
-                (terrain_mods(bi), units, places)
+                (with_named_kind(&b.name, terrain_mods(bi)), units, places)
             }
-            Err(_) => (Vec::new(), Vec::new(), Vec::new()),
+            Err(_) => (with_named_kind(&b.name, Vec::new()), Vec::new(), Vec::new()),
         };
         let c = (b.file_cell[0], b.file_cell[1], b.file_cell[2]);
         let pillar = b.flags & crate::blockmap::FLAG_PILLAR != 0;
@@ -1373,16 +1396,47 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
     // FREE gameplay blocks (Argentina 21's six GateExpandableSpecialNoEngine
     // gates, its two PlatformIceSpecialResetTilt2 pads) for their free clip
     // records: (name, position, modifier refs)
+    // A free block's CENTRE: its origin corner plus the rotated half footprint (dir 1 =
+    // yaw -pi/2 maps local +x onto world +z, local +z onto world -x — `tiny::block_origin`).
+    // Owners are matched centre to centre: origin to origin picked the wrong pad when two
+    // pad rows of different kinds stood side by side (U10S_15's free Reset / NoSteering pads:
+    // the Reset row's left skirt was 45 m from a NoSteering ORIGIN and 64 m from its own
+    // pad's, 32 m from its own pad's CENTRE — it came out NoSteering, 2026-09-24).
+    // keyed by (is_baked, index): the skirts are BAKED records, the pads authored blocks
+    let mut free_centres: std::collections::HashMap<(bool, usize), [f32; 3]> = std::collections::HashMap::new();
+    for (is_baked, b) in source.blocks.iter().map(|b| (false, b)).chain(source.baked.iter().map(|b| (true, b))).filter(|(_, b)| b.flags & crate::blockmap::FLAG_FREE != 0 && b.name.contains("Special")) {
+        let Some(pos) = b.free_pos else { continue };
+        let yaw = b.free_rot.map(|r| r[0]).unwrap_or(0.0);
+        let mut half = (16.0f32, 16.0f32);
+        if let Some(path) = idx.path_for(&b.name) {
+            if let Ok(bi) = idx.load(store, &path) {
+                let ground = b.flags & crate::blockmap::FLAG_GROUND != 0;
+                let vindex = (b.flags & crate::blockmap::FLAG_VARIANT_MASK) as usize;
+                let sub = ((b.flags >> crate::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
+                let addv = ((b.flags >> crate::blockmap::FLAG_ADDITIONAL_SHIFT) & 0x7F) as usize;
+                if let Some(pk) = bi.pick_placement_add(ground, vindex, sub, addv) {
+                    let mx = pk.variant.block_units.iter().map(|u| u.offset[0]).max().unwrap_or(0);
+                    let mz = pk.variant.block_units.iter().map(|u| u.offset[2]).max().unwrap_or(0);
+                    half = ((mx + 1) as f32 * 16.0, (mz + 1) as f32 * 16.0);
+                }
+            }
+        }
+        let (s, c) = yaw.sin_cos();
+        free_centres.insert((is_baked, b.index), [pos[0] + half.0 * c + half.1 * s, pos[1], pos[2] - half.0 * s + half.1 * c]);
+    }
+    let free_centre_block = |b: &tmmaps::map::BlockRec| -> Option<[f32; 3]> { free_centres.get(&(false, b.index)).copied() };
+    // the clip records `inherited_mod` dresses are BAKED records
+    let free_centre = |b: &tmmaps::map::BlockRec| -> Option<[f32; 3]> { free_centres.get(&(true, b.index)).copied() };
     let free_gameplay: Vec<(String, [f32; 3], Vec<String>)> = source
         .blocks
         .iter()
         .filter(|b| b.flags & crate::blockmap::FLAG_FREE != 0 && b.name.contains("Special"))
         .filter_map(|b| {
-            let pos = b.free_pos?;
-            let path = idx.path_for(&b.name)?;
-            let mods = idx.load(store, &path).map(|bi| terrain_mods(bi)).unwrap_or_default();
+            let centre = free_centre_block(b)?;
+            let mods = idx.path_for(&b.name).and_then(|path| idx.load(store, &path).ok().map(|bi| terrain_mods(bi))).unwrap_or_default();
+            let mods = with_named_kind(&b.name, mods);
             let gameplay = mods.iter().any(|r| r.strip_suffix(".TerrainModifier.Gbx").map(|f| gameplay_folders.contains(&f.to_uppercase())).unwrap_or(false));
-            gameplay.then(|| (b.name.clone(), pos, mods))
+            gameplay.then(|| (b.name.clone(), centre, mods))
         })
         .collect();
     let inherited_mod = |b: &tmmaps::map::BlockRec| -> Vec<String> {
@@ -1392,13 +1446,14 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
             // footprint, ≤ 64 m of the owner's origin) dresses it — else the
             // plain (Turbo) dress of the prefab, as before
             if b.name.contains("Special") {
-                if let Some(p) = b.free_pos {
+                if let Some(p) = free_centre(b) {
                     let mut best: Option<(f32, Vec<String>)> = None;
                     for (name, q, mods) in &free_gameplay {
                         if !same_special_family(&b.name, name) {
                             continue;
                         }
-                        // a Tilt2 pad's skirt stands two cells from the pad's origin
+                        // centre to centre: a skirt touching its pad is one cell (32 m) away,
+                        // a Tilt2 pad's skirt up to two
                         let d = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
                         if d <= 100.0 && best.as_ref().map(|(bd, _)| d < *bd).unwrap_or(true) {
                             best = Some((d, mods.clone()));
@@ -1429,17 +1484,26 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
         if b.name.contains("Special") {
             let stem_len = |a: &str, k: &str| a.chars().zip(k.chars()).take_while(|(x, y)| x == y).count();
             let mut best: Option<(usize, Vec<String>)> = None;
-            let mut cells: Vec<(u8, u8, u8)> = vec![c];
+            // The cells in the order the GEOMETRY ranks them: a side clip (FCLeft/FCRight,
+            // the VFC panels) is the wall on its cell's side `dir`, finishing the block
+            // ACROSS — that cell first; then the own cell (a top cap or a pillar clip in the
+            // owner's own cell), then below / above (FCT / FCB caps). Two gameplay pads of
+            // different kinds side by side (U10S_12's Turbo2 pad next to a Turbo pad) share
+            // the same name stem with the skirt, so the stem length cannot break the tie —
+            // the cell rank does (2026-09-24; before, the first cell scanned won).
+            let mut cells: Vec<((u8, u8, u8), usize)> = Vec::new();
             if let Some(a) = tmmaps::fillers::across(b.file_cell, b.dir) {
-                cells.push((a[0], a[1], a[2]));
+                cells.push(((a[0], a[1], a[2]), 3));
             }
+            cells.push((c, 2));
             if c.1 > 0 {
-                cells.push((c.0, c.1 - 1, c.2));
+                cells.push(((c.0, c.1 - 1, c.2), 1));
             }
             if c.1 < 255 {
-                cells.push((c.0, c.1 + 1, c.2));
+                cells.push(((c.0, c.1 + 1, c.2), 1));
             }
-            for cell in cells {
+            let mut best_rank: usize = 0;
+            for (cell, rank) in cells {
                 for (name, mods) in cell_blocks.get(&cell).map(|v| v.as_slice()).unwrap_or(&[]) {
                     // a block with a gameplay kind: its modifier ref names a
                     // folder that carries a `Sign` material
@@ -1450,8 +1514,46 @@ pub fn build(store: &mut DataStore, map: &Path, out_zip: &Path, out_mapping: &Pa
                         continue;
                     }
                     let n = stem_len(&b.name, &special_family_name(name));
-                    if best.as_ref().map(|(bn, _)| n > *bn).unwrap_or(true) {
+                    let better = match &best {
+                        None => true,
+                        Some((bn, _)) => rank > best_rank || (rank == best_rank && n > *bn),
+                    };
+                    if better {
                         best = Some((n, mods.clone()));
+                        best_rank = rank;
+                    }
+                }
+            }
+            if let Some((_, mods)) = best {
+                return mods;
+            }
+        }
+        // A PENALTY frame's floor fillers (`<Road>[Shape]PenaltyHFC*`, in the frame's cell and
+        // its neighbours) wear the FRAME's floor modifier: `PenaltyDirt`/`PenaltyIce
+        // .TerrainModifier` re-dress the filler prefab's plain `Penalty` plate to sand / snow
+        // (the game does it at runtime through the frame block; baked, the record must
+        // carry it — U10S_524's RoadIcePenaltyDirt frames came out grass in wood,
+        // 2026-09-24). The nearest frame by name stem (same road word) within one cell wins.
+        if b.name.contains("PenaltyHFC") {
+            let stem_len = |a: &str, k: &str| a.chars().zip(k.chars()).take_while(|(x, y)| x == y).count();
+            let mut best: Option<(usize, Vec<String>)> = None;
+            for dx in -1i32..=1 {
+                for dy in -1i32..=1 {
+                    for dz in -1i32..=1 {
+                        let (x, y, z) = (c.0 as i32 + dx, c.1 as i32 + dy, c.2 as i32 + dz);
+                        if !(0..=255).contains(&x) || !(0..=255).contains(&y) || !(0..=255).contains(&z) {
+                            continue;
+                        }
+                        for (name, mods) in cell_blocks.get(&(x as u8, y as u8, z as u8)).map(|v| v.as_slice()).unwrap_or(&[]) {
+                            if !name.contains("Penalty") || name.contains("HFC") {
+                                continue;
+                            }
+                            let n = stem_len(&b.name, name);
+                            if n >= 4 && best.as_ref().map(|(bn, _)| n > *bn).unwrap_or(true) {
+                                let floor_mods: Vec<String> = mods.iter().filter(|r| r.contains("Penalty")).cloned().collect();
+                                best = Some((n, floor_mods));
+                            }
+                        }
                     }
                 }
             }
@@ -2687,6 +2789,15 @@ pub fn special_family_name(name: &str) -> String {
             return format!("{root}{}", &name[i..]);
         }
     }
+    // a community block's name is a path (`…\M2_PlatformTechSpecialTurboRoulette.Block.Gbx_CustomBlock`):
+    // the family root sits somewhere inside the head
+    for root in ["Platform", "Road"] {
+        if let Some(k) = head.rfind(root) {
+            if k > 0 {
+                return format!("{root}{}", &name[i..]);
+            }
+        }
+    }
     name.to_string()
 }
 
@@ -2861,6 +2972,16 @@ pub fn modifier_links(store: &DataStore, refs: &[String]) -> Vec<String> {
             continue;
         }
         let Some(base) = r.strip_suffix(".TerrainModifier.Gbx") else { continue };
+        // the penalty frames' floor modifiers have no material folder of their own: the
+        // game paints the frame's `Penalty` plate with the PLATFORM modifier's Penalty
+        // material (sand for PenaltyDirt, snow for PenaltyIce) — 2026-09-24
+        if let Some(floor) = base.rsplit('\\').next().and_then(|b| b.strip_prefix("Penalty")) {
+            let link = format!("Stadium\\Media\\Modifier\\Platform{floor}\\Penalty");
+            if store.entries().any(|e| e.path().eq_ignore_ascii_case(&format!("{link}.Material.Gbx"))) {
+                out.push(link);
+            }
+            continue;
+        }
         let prefix = format!("{base}\\").to_uppercase();
         // one folder's links sorted for a stable recipe; FOLDER ORDER KEPT: a
         // stem is resolved by the first folder that has it, and a global sort

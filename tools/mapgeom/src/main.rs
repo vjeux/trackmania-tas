@@ -1680,6 +1680,230 @@ fn main() {
         //   record places), with what decides "convert or scenery": maps, placements,
         //   footprint, drivable deck area of its collision, road materials, verdict.
         //   Everios96 / vjeux 2026-09-14 14:31–14:39: "classify the item types".
+        // mapgeom effect-audit MAP --report report.tsv [--tsv OUT]: the static half of the
+        // effect-block audit (vjeux 2026-09-24 "100% accurate"): every embedded item that a
+        // conversion baked from a gameplay block (`Special<Kind>` in the report row) must carry
+        // the KIND's own dress — the `Stadium\Media\Modifier\<Kind>\…` materials (Decal on a pad,
+        // Sign on a gate / skirt) — and nothing of another kind. Prints one row per item:
+        // alias, block, kind, verdict, the kind folders found.
+        "effect-audit" => {
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let report = flag(&a.rest, "--report").unwrap_or_else(|| die("effect-audit needs --report report.tsv".to_string()));
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+            let files = mapgeom::embedded::files(&m).unwrap_or_else(die);
+            let by_alias: std::collections::HashMap<String, &Vec<u8>> = files
+                .iter()
+                .filter_map(|(name, bytes)| {
+                    let stem = std::path::Path::new(name).file_name()?.to_str()?;
+                    let alias = stem.strip_suffix(".Item.Gbx").or_else(|| stem.strip_suffix(".Item.gbx"))?;
+                    Some((alias.to_string(), bytes))
+                })
+                .collect();
+            let text = std::fs::read_to_string(&report).unwrap_or_else(|e| die(format!("{report}: {e}")));
+            let kinds = ["Turbo2", "TurboRoulette", "Turbo", "Boost2", "Boost", "Reset", "SlowMotion", "NoEngine", "NoSteering", "NoBrake", "Cruise", "Fragile", "Bumper"];
+            // alias -> kind of every baked PAD (a Special block that is not a skirt)
+            let mut pad_kind_by_alias: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
+            for line in text.lines() {
+                let f: Vec<&str> = line.split('\t').collect();
+                if f.first() != Some(&"block") || f.len() < 5 {
+                    continue;
+                }
+                let block = f[4].split(' ').next().unwrap_or("");
+                if let Some(pos) = block.find("Special") {
+                    let after = &block[pos + 7..];
+                    if !after.contains("FC") {
+                        if let Some(k) = kinds.iter().find(|k| after.starts_with(*k)) {
+                            pad_kind_by_alias.insert(f[1].to_string(), k);
+                        }
+                    }
+                }
+            }
+            // A skirt's owner: the gameplay block (a baked PAD item, or a kept GATE block) in its
+            // own cell or a neighbour cell (|dx|,|dz| ≤ 1, |dy| ≤ 1); the longest shared name stem
+            // ("PlatformSpecialSlope2Up…" ↔ "…SpecialTurboSlope2Up") wins, as in the library.
+            fn skirt_owner_kind<'k>(alias: &str, skirt_block: &str, m: &tmmaps::map::MapFile, pads: &std::collections::HashMap<String, &'k str>, kinds: &[&'k str]) -> Option<&'k str> {
+                let model_of = |it: &tmmaps::map::ItemRec| it.model.trim_end_matches(".Item.Gbx").trim_end_matches(".Item.gbx").to_string();
+                // an item's position is its block's origin CORNER; the cell is read at the centre
+                // of a one-cell footprint turned by the yaw (dir 1 = yaw -pi/2: local +x -> world +z)
+                let cell_of_item = |it: &tmmaps::map::ItemRec| {
+                    let (s, c) = it.yaw.sin_cos();
+                    let p = [it.pos[0] + 16.0 * c + 16.0 * s, it.pos[1] + 1.0, it.pos[2] - 16.0 * s + 16.0 * c];
+                    [(p[0] / 32.0).floor() as i32, ((p[1] + 64.0) / 8.0).floor() as i32, (p[2] / 32.0).floor() as i32]
+                };
+                // owners: (cell, kind, name)
+                let mut owners: Vec<([i32; 3], &'k str, String)> = Vec::new();
+                for it in m.items.iter() {
+                    if let Some(k) = pads.get(&model_of(it)) {
+                        owners.push((cell_of_item(it), *k, model_of(it)));
+                    }
+                }
+                for b in m.blocks.iter() {
+                    if let Some(pos) = b.name.find("Special") {
+                        let after = &b.name[pos + 7..];
+                        if !after.contains("FC") {
+                            if let Some(k) = kinds.iter().find(|k| after.starts_with(*k)) {
+                                let (x, y, z) = b.coords();
+                                owners.push(([x, y, z], k, b.name.clone()));
+                            }
+                        }
+                    }
+                }
+                let skirt_stem: String = skirt_block.split("Special").next().unwrap_or("").to_string();
+                let shape: String = skirt_block.split("Special").nth(1).unwrap_or("").split("FC").next().unwrap_or("").to_string();
+                let mut found: Option<&'k str> = None;
+                for it in m.items.iter().filter(|it| model_of(it) == alias) {
+                    let c = cell_of_item(it);
+                    // the library's geometry: the cell ACROSS the skirt's side first (a side clip
+                    // finishes the block across), then the own cell, then below / above
+                    let dir: u8 = {
+                        let q = (it.yaw / std::f32::consts::FRAC_PI_2).round() as i32;
+                        ((-q).rem_euclid(4)) as u8
+                    };
+                    let mut ranked: Vec<([i32; 3], usize)> = Vec::new();
+                    if c[0] >= 0 && c[2] >= 0 && c[0] <= 255 && c[2] <= 255 {
+                        if let Some(a) = tmmaps::fillers::across([c[0] as u8, c[1].clamp(0, 255) as u8, c[2] as u8], dir) {
+                            ranked.push(([a[0] as i32, a[1] as i32, a[2] as i32], 3));
+                        }
+                    }
+                    ranked.push((c, 2));
+                    ranked.push(([c[0], c[1] - 1, c[2]], 1));
+                    ranked.push(([c[0], c[1] + 1, c[2]], 1));
+                    let mut best: Option<(usize, usize, &'k str)> = None; // (rank, stem score, kind)
+                    for (cell, rank) in &ranked {
+                        for (oc, k, name) in &owners {
+                            if oc != cell {
+                                continue;
+                            }
+                            let mut score = 0;
+                            if !skirt_stem.is_empty() && name.starts_with(&skirt_stem) {
+                                score += 4;
+                            }
+                            if !shape.is_empty() && name.contains(&shape) {
+                                score += 2;
+                            } else if shape.is_empty() && !name.contains("Slope") && !name.contains("Tilt") {
+                                score += 1;
+                            }
+                            if best.map(|(br, bs, _)| *rank > br || (*rank == br && score > bs)).unwrap_or(true) {
+                                best = Some((*rank, score, k));
+                            }
+                        }
+                    }
+                    match (best, found) {
+                        (Some((_, _, k)), None) => found = Some(k),
+                        (Some((_, _, k)), Some(f)) if k != f => return None,
+                        (None, _) => return None,
+                        _ => {}
+                    }
+                }
+                found
+            }
+            let mut rows: Vec<String> = Vec::new();
+            let (mut ok, mut bad, mut unknown) = (0usize, 0usize, 0usize);
+            for line in text.lines() {
+                let f: Vec<&str> = line.split('\t').collect();
+                if f.first() != Some(&"block") || f.len() < 5 {
+                    continue;
+                }
+                let (alias, source) = (f[1], f[4]);
+                let block = source.split(' ').next().unwrap_or("");
+                let Some(pos) = block.find("Special") else { continue };
+                let after = &block[pos + 7..];
+                let kind: &str = match kinds.iter().find(|k| after.starts_with(*k)) {
+                    Some(k) => k,
+                    None if after.starts_with("FC") || after.contains("FC") => {
+                        // a SKIRT: its kind is its owner's — the nearest gameplay pad placement
+                        // within 48 m of each of this alias's placements; every placement must
+                        // agree with the skirt's dress
+                        let owner_kind = skirt_owner_kind(alias, block, &m, &pad_kind_by_alias, kinds.as_slice());
+                        match owner_kind {
+                            Some(k) => k,
+                            None => "?",
+                        }
+                    }
+                    None => {
+                        rows.push(format!("{alias}\t{block}\t?\tUNKNOWN-KIND\t"));
+                        unknown += 1;
+                        continue;
+                    }
+                };
+                let Some(bytes) = by_alias.get(alias) else {
+                    rows.push(format!("{alias}\t{block}\t{kind}\tNO-FILE\t"));
+                    bad += 1;
+                    continue;
+                };
+                let model = match mapgeom::store::Model::parse(bytes, alias) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        rows.push(format!("{alias}\t{block}\t{kind}\tUNPARSED {e}\t"));
+                        bad += 1;
+                        continue;
+                    }
+                };
+                let mut folders: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+                let graph = match model.graph() {
+                    Ok(g) => g,
+                    Err(e) => {
+                        rows.push(format!("{alias}\t{block}\t{kind}\tUNPARSED {e}\t"));
+                        bad += 1;
+                        continue;
+                    }
+                };
+                let nodes: Vec<&Node> = graph.root.iter().chain(graph.slots.iter().filter_map(|s| if let Slot::Node(n) = s { Some(n) } else { None })).collect();
+                // a baked item's materials are CPlugMaterialUserInst NODES (the Solid2's
+                // material_names are empty then); take both spellings
+                let mut names: Vec<String> = Vec::new();
+                for node in nodes {
+                    match node {
+                        Node::Solid2(s2) => names.extend(s2.material_names.iter().cloned()),
+                        Node::Material(n, _) => names.push(n.clone()),
+                        _ => {}
+                    }
+                }
+                for name in &names {
+                    let up = name.to_uppercase();
+                    if let Some(i) = up.find("\\MODIFIER\\") {
+                        let rest = &name[i + 10..];
+                        if let Some(folder) = rest.split('\\').next() {
+                            folders.insert(folder.to_string());
+                        }
+                    }
+                }
+                // the prefab's own Turbo dress is plain materials (DecalSpecialTurbo, SpecialFXTurbo):
+                // a kind spelled in a material stem counts like a modifier folder
+                for name in &names {
+                    let stem = name.rsplit('\\').next().unwrap_or(name);
+                    for k in kinds {
+                        if stem.starts_with(&format!("DecalSpecial{k}")) || stem.starts_with(&format!("SpecialFX{k}")) {
+                            folders.insert(k.to_string());
+                        }
+                    }
+                }
+                let kind_folders: Vec<&String> = folders.iter().filter(|f| kinds.iter().any(|k| f.eq_ignore_ascii_case(k))).collect();
+                let verdict = if kind == "?" {
+                    bad += 1;
+                    "SKIRT-NO-OWNER"
+                } else if kind_folders.iter().any(|f| f.eq_ignore_ascii_case(kind)) && kind_folders.len() == 1 {
+                    ok += 1;
+                    "OK"
+                } else if kind_folders.is_empty() {
+                    bad += 1;
+                    "NO-KIND-DRESS"
+                } else {
+                    bad += 1;
+                    "WRONG-KIND"
+                };
+                rows.push(format!("{alias}\t{block}\t{kind}\t{verdict}\t{}", folders.iter().cloned().collect::<Vec<_>>().join(",")));
+            }
+            let header = "alias\tblock\tkind\tverdict\tmodifier folders";
+            if let Some(out) = flag(&a.rest, "--tsv") {
+                std::fs::write(&out, format!("{header}\n{}\n", rows.join("\n"))).unwrap_or_else(|e| die(e.to_string()));
+            }
+            println!("{header}");
+            for r in &rows {
+                println!("{r}");
+            }
+            println!("{p}: {} effect items — {ok} OK, {bad} bad, {unknown} unknown kind", rows.len());
+        }
         // mapgeom raw LOGICAL --out FILE — any pack entry's bytes (a .dds bitmap, a .tga),
         // resolved through the hashed-name candidates like every other path
         "raw" => {
