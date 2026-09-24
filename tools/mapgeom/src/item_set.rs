@@ -132,6 +132,20 @@ fn desc_chunk(ident: &str, collection: u32, author: &str, name: &str) -> HeaderC
 /// `desc_chunk` with a catalog position (the inventory's sort key? — the
 /// 2026-09-23 experiment, `mapgeom item-desc`).
 pub fn desc_chunk_at(ident: &str, collection: u32, author: &str, name: &str, catalog_position: i16) -> HeaderChunk {
+    desc_chunk_flags(ident, collection, author, name, catalog_position, desc_flags_default())
+}
+
+/// The collector flags word of a set item. MEASURED 2026-09-23: 0x10 on every
+/// collector that shows an icon — the 3,758 browser blocks, the item editor's
+/// own items, community items (Cobla) — and 0xA on the 1,851 pack blocks
+/// WITHOUT one; we wrote 8 (the desc VERSION misread as the flags). The box
+/// showed the icons regardless (its logged-in account is the items' author);
+/// Svitman's game showed grey cards. `TINY_ITEM_DESC_FLAGS` overrides.
+pub fn desc_flags_default() -> i32 {
+    std::env::var("TINY_ITEM_DESC_FLAGS").ok().and_then(|v| v.strip_prefix("0x").map(|h| i32::from_str_radix(h, 16).ok()).unwrap_or_else(|| v.parse().ok())).unwrap_or(0x10)
+}
+
+pub fn desc_chunk_flags(ident: &str, collection: u32, author: &str, name: &str, catalog_position: i16, flags: i32) -> HeaderChunk {
     let mut d = Vec::new();
     let mut lb = crate::static_item::LookbackState::default();
     {
@@ -142,7 +156,7 @@ pub fn desc_chunk_at(ident: &str, collection: u32, author: &str, name: &str, cat
         w.u32(8);
         w.string("Items");
         w.id(&crate::static_item::Id::Null);
-        w.i32(8);
+        w.i32(flags);
         w.i16(catalog_position);
         w.string(name);
         w.u8(3);
@@ -1485,6 +1499,7 @@ pub fn item_desc_cmd(rest: &[String]) {
         std::process::exit(2);
     };
     let catalog: i16 = flag("--catalog").unwrap_or_else(|| "1".into()).parse().unwrap_or(1);
+    let dflags: i32 = flag("--flags").and_then(|v| v.strip_prefix("0x").map(|h| i32::from_str_radix(h, 16).ok()).unwrap_or_else(|| v.parse().ok())).unwrap_or_else(desc_flags_default);
     let author = flag("--author").unwrap_or_else(|| crate::tiny_assets::AUTHOR.to_string());
     let bytes = std::fs::read(&input).unwrap_or_else(|e| { eprintln!("{input}: {e}"); std::process::exit(1) });
     let mut f = crate::static_item::parse_file(&bytes).unwrap_or_else(|e| { eprintln!("{input}: {e}"); std::process::exit(1) });
@@ -1492,11 +1507,11 @@ pub fn item_desc_cmd(rest: &[String]) {
     if let Some(k) = f.header_chunks.iter().position(|c| c.id == 0x2E001003) {
         // the header desc with the OLD ident (the body still carries it); the
         // rename below moves both to the new one
-        f.header_chunks[k] = desc_chunk_at(&old_ident, 26, &author, &name, catalog);
+        f.header_chunks[k] = desc_chunk_flags(&old_ident, 26, &author, &name, catalog, dflags);
     }
     f.body_comp = b'C';
     let written = crate::static_item::write_file(&f);
     let renamed = if ident != old_ident { crate::crystal::rename_ident(&written, &old_ident, &ident) } else { written };
     std::fs::write(&out, renamed).unwrap_or_else(|e| { eprintln!("{out}: {e}"); std::process::exit(1) });
-    eprintln!("{out}: ident {ident}, name {name}, catalog {catalog}");
+    eprintln!("{out}: ident {ident}, name {name}, catalog {catalog}, flags 0x{dflags:x}");
 }
