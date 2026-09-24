@@ -57,7 +57,54 @@ Two things worth knowing about it:
   `agent-first-unblock-me.internalmeta.com`.
 
 This repo is **public**, so cloning and fetching need no credentials at all.
-Pushing needs one — see below.
+Pushing does not work from there — see the next section, which is the part
+that decides the workflow.
+
+## An agent-first devserver can CLONE but cannot PUSH
+
+This is the important limit, and it is not a misconfiguration to fix.
+Measured on 2026-09-24 from an OSS Builder box, all with the same valid
+`repo`-scoped token:
+
+| operation | result |
+|---|---|
+| `git clone` / `git fetch` (public repo, no auth) | works, 3.6 s |
+| `GET .../info/refs?service=git-upload-pack` (read) | 200 |
+| `GET .../info/refs?service=git-receive-pack` (push) | **401 "No anonymous write access"** |
+| `gh api /user` (authenticated read) | 200 |
+| `gh api -X PATCH /repos/...` (authenticated **write**) | **works** |
+| `git push` with the token in the credential helper | 401 |
+| `git push` with the token inline in the URL, no helper | **401** |
+
+The last row is what makes it conclusive: with the credential helper taken
+out of the picture entirely, the push still comes back anonymous. The
+credential is fine — `gh` authenticates as `vjeux` and the API reports
+`push: true, admin: true` on the repo. The egress proxy is stripping
+authentication on the git push path specifically, while leaving reads and the
+REST API alone.
+
+That is a deliberate control rather than a gap: `git push` is the bulk
+data-out channel, which is exactly the exfiltration vector the agent-egress
+framework exists to close. Read it as the same policy that keeps github.com
+off the ordinary allowlist, applied one layer in.
+
+So **do not bother setting up `gh auth` for pushing** — it cannot buy that. It
+is still worth having if you want `gh` for the REST API (issues, PRs, release
+metadata, higher rate limits), and nothing about this repo's build or test
+loop needs it.
+
+**Push from the WhiteStick box**, which reaches GitHub on its own network with
+the repo deploy key, and is the one machine that has always worked. To move
+commits there from an agent-first box:
+
+```sh
+git bundle create /tmp/work.bundle <base>..HEAD      # on the agent-first box
+# hand it to the box (see below), then:
+wsx sh 'cd /home/vjeux/trackmania-tas && git fetch /tmp/work.bundle HEAD:refs/incoming/work'
+```
+
+`wsx` runs on the devserver, not on the agent-first box, so the bundle goes
+devserver-ward first.
 
 ## The game: only the WhiteStick box
 
@@ -84,9 +131,10 @@ check that means something.
 
 | work | where |
 |---|---|
-| Edit, build, test, clone, fetch, push | agent-first devserver |
+| Clone, fetch, edit, build, test | agent-first devserver (no credentials needed — the repo is public) |
+| **Push** | WhiteStick box — the proxy blocks push everywhere else |
 | Anything that runs the game — plugins, maps, renders, the jump | WhiteStick box, via `wsx`, under `tmdrive` |
-| Move build artifacts to the box | `wsx push` |
+| Move build artifacts or commits to the box | `wsx push`, or `git bundle` |
 
 Do **not** keep a long-lived clone on an ordinary devserver. It can commit,
 and nothing it commits is ever visible to anyone — that is not a hypothetical:
