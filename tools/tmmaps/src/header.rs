@@ -495,6 +495,19 @@ pub fn cmd(args: &[String]) {
             h.zip_entries.len(),
             h.thumb_bytes
         );
+        // the stored lightmap (chunk 0x0304305B): a map without one makes the client bake a
+        // coarse per-item lightmap at load — big flat items as light/dark rectangles
+        // ("the shadow calculation is bugged", GranaDy on Giant x2 Summer 01, 2026-09-24)
+        {
+            let g = crate::gbx::Gbx::parse(&std::fs::read(&h.path).unwrap_or_default());
+            match crate::gbx::all_skip_chunks(&g.body).iter().find(|(c, ..)| *c == 0x0304_305B) {
+                Some(&(_, _, payload, size)) if size >= 8 => {
+                    let has = u32::from_le_bytes(g.body[payload + 4..payload + 8].try_into().unwrap_or([0; 4]));
+                    println!("  lightmap    chunk 0x0304305B {size} bytes, HasLightmaps {has} (header lightmap=\"{}\")", h.lightmap);
+                }
+                _ => println!("  lightmap    no chunk 0x0304305B (header lightmap=\"{}\")", h.lightmap),
+            }
+        }
         for z in h.zip_entries.iter().take(40) {
             println!("              {z}");
         }
