@@ -267,3 +267,9 @@ in this repo out of the map's skin filenames. [`NAMES.md`](NAMES.md) is the
 audit and the retraction; `tmsite names` is the scan that keeps it true. Naming
 somebody's map something they did not name it is the same class of mistake as
 misreporting their time.
+
+## Where to develop
+
+On the WhiteStick box, not a devserver — the devserver cannot reach GitHub,
+so anything committed there is invisible to everyone. See
+[tools/DEVELOPING.md](tools/DEVELOPING.md).
