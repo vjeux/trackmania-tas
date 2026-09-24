@@ -13,5 +13,7 @@ pub mod minimap;
 pub mod course;
 pub mod mesh;
 pub mod render;
+pub mod sprites;
+pub mod skins;
 pub mod texture;
 pub mod tm;
