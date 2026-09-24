@@ -836,6 +836,12 @@ pub fn hit_albedo(scene: &Scene, bvh: &Bvh, prm: &BakeParams, h: &crate::bvh::Hi
             if let Some(&c) = scene.card_albedo.get(file) { return c; }
         }
     }
+    // a custom-texture material (no game link): its diffuse texture's mean colour
+    if t.diff != u16::MAX {
+        if let Some(file) = m.diff_tex.get(t.diff as usize) {
+            if let Some(&c) = scene.tex_albedo.get(file) { return c; }
+        }
+    }
     [prm.albedo; 3]
 }
 

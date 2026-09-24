@@ -22,6 +22,8 @@ pub struct Tri {
     pub mat: u16,
     /// Index into the model's `alpha_tex` (u16::MAX = opaque): the material's cut-out texture.
     pub alpha: u16,
+    /// Index into the model's `diff_tex` (u16::MAX = none): a link-less material's diffuse texture (slot 0).
+    pub diff: u16,
 }
 
 /// A light socket of a model (`CPlugSolid2Model.lights`): position and axis in
@@ -58,6 +60,9 @@ pub struct ModelGeom {
     /// material whose `CPlugMaterialUserInst` fills the DiffuseO slot (1) — the baked vegetation cards'
     /// TDOSN model reads its colour AND its alpha cut from it (mapgeom: `model_color_slot`).
     pub alpha_tex: Vec<String>,
+    /// The diffuse textures (slot 0) of the link-less user materials: the bounce albedo of a custom-texture
+    /// item (the tiny Stadium blocks) is that texture's mean colour.
+    pub diff_tex: Vec<String>,
     /// Per material link: the diffuse albedo the bounce uses (`crate::albedo`).
     pub mat_albedo: Vec<[f32; 3]>,
 }
@@ -164,6 +169,18 @@ pub fn load_model(bytes: &[u8]) -> Result<ModelGeom, String> {
                 }
             })
             .unwrap_or(u16::MAX);
+        let diff: u16 = if !link.is_empty() { u16::MAX } else {
+            usize::try_from(sg.material_index).ok().and_then(|mi| s2.custom_materials.get(mi)).and_then(|cm| cm.inst()).and_then(|m| m.main.as_ref())
+                .and_then(|mm| mm.user_textures.iter().find(|t| t.u01 == 0).map(|t| t.texture.clone()))
+                .map(|file| {
+                    let base = file.rsplit(['/', '\\']).next().unwrap_or(&file).to_string();
+                    match g.diff_tex.iter().position(|f| *f == base) {
+                        Some(i) => i as u16,
+                        None => { g.diff_tex.push(base); (g.diff_tex.len() - 1) as u16 }
+                    }
+                })
+                .unwrap_or(u16::MAX)
+        };
         let mat: u16 = if link.is_empty() {
             u16::MAX
         } else {
@@ -237,7 +254,7 @@ pub fn load_model(bytes: &[u8]) -> Result<ModelGeom, String> {
             let cr = cross(sub(p[1], p[0]), sub(p[2], p[0]));
             aw += (dot(cr, cr) as f64).sqrt() / 2.0;
             let uv0 = match uv0s { Some(u) if a < u.len() && b < u.len() && c < u.len() => [u[a], u[b], u[c]], _ => [[0.0; 2]; 3] };
-            g.tris.push(Tri { p, n, uv, uv0, mat, alpha: if uv0s.is_some() { alpha } else { u16::MAX } });
+            g.tris.push(Tri { p, n, uv, uv0, mat, alpha: if uv0s.is_some() { alpha } else { u16::MAX }, diff });
         }
     }
     g.metres_per_uv = if au > 1e-9 && aw > 1e-9 { (aw / au).sqrt() as f32 } else { 0.0 };
@@ -267,6 +284,8 @@ pub struct Scene {
     pub alpha_masks: BTreeMap<String, AlphaMask>,
     /// The cut-out textures' mean opaque colour by file (the cards' albedo; sRGB-encoded 0..1).
     pub card_albedo: BTreeMap<String, [f32; 3]>,
+    /// The link-less materials' diffuse textures' mean colour by file (their bounce albedo).
+    pub tex_albedo: BTreeMap<String, [f32; 3]>,
 }
 
 /// A binary cut-out mask (alpha ≥ threshold) sampled with wrapping uv, nearest texel.
@@ -396,6 +415,23 @@ impl Scene {
         // the cut-out masks of the alpha-tested materials (the zip's Items/*.dds by base name)
         let mut alpha_masks: BTreeMap<String, AlphaMask> = BTreeMap::new();
         let mut card_albedo: BTreeMap<String, [f32; 3]> = BTreeMap::new();
+        // the link-less materials' diffuse textures → their mean colour (sRGB-encoded 0..1)
+        let mut tex_albedo: BTreeMap<String, [f32; 3]> = BTreeMap::new();
+        for g in &models {
+            for file in &g.diff_tex {
+                if tex_albedo.contains_key(file) { continue; }
+                let Some(bytes) = by_name.get(file) else { continue };
+                if let Ok((w, h, rgba)) = mapgeom::static_item::texture::decode_capped_rgba(bytes, 64) {
+                    let m = AlphaMask::from_rgba(w as usize, h as usize, &rgba, 128);
+                    tex_albedo.insert(file.clone(), m.albedo);
+                }
+            }
+        }
+        if !tex_albedo.is_empty() {
+            let mut v: Vec<(&String, &[f32; 3])> = tex_albedo.iter().collect();
+            v.sort_by(|a, b| a.0.cmp(b.0));
+            eprintln!("  {} diffuse textures of link-less materials → bounce albedo: {}…", tex_albedo.len(), v.iter().take(4).map(|(k, c)| format!("{k} ({:.2},{:.2},{:.2})", c[0], c[1], c[2])).collect::<Vec<_>>().join(", "));
+        }
         for g in &models {
             for file in &g.alpha_tex {
                 if alpha_masks.contains_key(file) { continue; }
@@ -418,7 +454,7 @@ impl Scene {
         if !missing.is_empty() {
             eprintln!("  {} item models are not embedded (stock items?): {:?}", missing.len(), missing.iter().take(8).collect::<Vec<_>>());
         }
-        Ok(Scene { models, model_names, instances, item_count: m.items.len(), decor: Vec::new(), alpha_masks, card_albedo })
+        Ok(Scene { models, model_names, instances, item_count: m.items.len(), decor: Vec::new(), alpha_masks, card_albedo, tex_albedo })
     }
 
     pub fn tri_count(&self) -> usize {
