@@ -2108,6 +2108,10 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
     // from rasterising them across the neighbouring items' atlas rects (the leaf-card garbage found on the
     // pads next to a bush-bearing cliff item, 2026-09-23). TINY_CARD_UV1=legacy restores part 0.
     let vpart: u32 = if card_uv1_legacy() { 0 } else { m.visuals.iter().map(|v| v.part).max().unwrap_or(0).max(super::merged::VEGET_PART_BASE - 1) + 1 };
+    // the tree's SOLID entities (trunk, branches: the model's own atlas over the unit square) are a part of
+    // their own next to the cards' — one part for both had the trunk's charts under the cards' (LM-02,
+    // 2026-09-23)
+    let tpart: u32 = if card_uv1_legacy() { 0 } else { vpart + 1 };
     let stats = t.stats();
     let leaf_model = std::env::var("TINY_TREE_LEAF_MODEL").unwrap_or_else(|_| "TDOSN".into());
     let bark_model = std::env::var("TINY_TREE_BARK_MODEL").unwrap_or_else(|_| "TDSN".into());
@@ -2756,7 +2760,7 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                         counts.push(kept);
                         if kept > 0 {
                             let sv = super::merged::sub_visual(&v, &keep)?;
-                            m.visuals.push(MergedVisual { visual: sv, material: band_slots_per_mat[e.material as usize][bi], lod_mask, lod_ladder: ladder.clone(), part: vpart });
+                            m.visuals.push(MergedVisual { visual: sv, material: band_slots_per_mat[e.material as usize][bi], lod_mask, lod_ladder: ladder.clone(), part: if leaf { vpart } else { tpart } });
                             n += 1;
                         }
                         lo = *thr;
@@ -2766,7 +2770,7 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                     counts.push(kept);
                     if kept > 0 {
                         let sv = super::merged::sub_visual(&v, &keep)?;
-                        m.visuals.push(MergedVisual { visual: sv, material: slots[e.material as usize], lod_mask, lod_ladder: ladder.clone(), part: vpart });
+                        m.visuals.push(MergedVisual { visual: sv, material: slots[e.material as usize], lod_mask, lod_ladder: ladder.clone(), part: if leaf { vpart } else { tpart } });
                         n += 1;
                     }
                     m.notes.push(format!("depth bands level {l}: {ntri} triangles per band (inner..outer) {counts:?}"));
@@ -2775,7 +2779,7 @@ pub fn add_veget_tree_model(store: &mut crate::store::DataStore, model_path: &st
                     }
                 }
                 _ => {
-                    m.visuals.push(MergedVisual { visual: v, material: slots[e.material as usize], lod_mask, lod_ladder: ladder.clone(), part: vpart });
+                    m.visuals.push(MergedVisual { visual: v, material: slots[e.material as usize], lod_mask, lod_ladder: ladder.clone(), part: if leaf { vpart } else { tpart } });
                     n += 1;
                 }
             }

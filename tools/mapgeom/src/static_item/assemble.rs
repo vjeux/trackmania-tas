@@ -145,8 +145,26 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
     // Every merged PART's lightmap atlas into its own cell (see
     // `repack_lightmap_parts`); TINY_LIGHTMAP_REPACK=0 keeps the overlap.
     if std::env::var("TINY_LIGHTMAP_REPACK").map(|v| v != "0").unwrap_or(true) {
+        // a solid visual without a lightmap uv in an item that has one elsewhere gets a planar chart of
+        // its own (its own part → its own cell below); the game does not chart a visual without
+        // TexCoord1 at all — a bush-bearing hill's slopes took whatever its cards' cell held (2026-09-23)
+        if !super::build::card_uv1_legacy() {
+            synthesize_solid_uv1(&mut pre, m);
+        }
         if let Some(n) = repack_lightmap_parts(&mut pre) {
             REPACK_NOTE.with(|c| c.set(Some(n)));
+        }
+        if std::env::var_os("MAPGEOM_UV1_DEBUG").is_some() {
+            use super::vstream::{Elem, N_TEXCOORD0};
+            for (vi, mv) in pre.iter().enumerate() {
+                let Some(s) = mv.visual.stream() else { continue };
+                let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { eprintln!("uv1 debug: visual {vi} part {:#x} mat {} lod {:#x}: no uv1", mv.part, mv.material, mv.lod_mask); continue };
+                if let Elem::Float2(uv) = &s.elems[i] {
+                    let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                    for p in uv { for k in 0..2 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+                    eprintln!("uv1 debug: visual {vi} part {:#x} mat {} lod {:#x}: uv1 ({:.3},{:.3})..({:.3},{:.3}) over {} verts", mv.part, mv.material, mv.lod_mask, lo[0], lo[1], hi[0], hi[1], uv.len());
+                }
+            }
         }
     }
     // TINY_LIGHTMAP_FILL=1 (probe, 2026-09-12, the shadow-seam "one tone per
@@ -697,6 +715,58 @@ pub fn header_chunks(opts: &BuildOpts) -> Vec<super::file::HeaderChunk> {
 }
 
 
+/// A TexCoord1 for every SOLID visual that has none, when some visual of the item does have one: a
+/// planar projection of the visual's positions onto the plane of its two largest bbox extents,
+/// normalised to [0.001, 0.999]², under a fresh part id (`SOLID_PART_BASE` + k) so the repack
+/// gives it a cell of its own. A cut-out (card) material's visual is left to the card path. The
+/// game charts only visuals with TexCoord1; without one, a hill's slopes sampled the corner texel
+/// of its chart — the leaf-card cell (the hill test map, 2026-09-23). Returns how many were given one.
+pub fn synthesize_solid_uv1(visuals: &mut [super::merged::MergedVisual], m: &super::merged::Merged) -> usize {
+    use super::vstream::{Decl, Elem, N_POSITION, N_TEXCOORD0, SPACE_LOCAL3D, T_FLOAT2};
+    let has_uv1 = |v: &super::merged::MergedVisual| v.visual.stream().map(|s| s.decls.iter().any(|d| d.name() == N_TEXCOORD0 + 1)).unwrap_or(false);
+    if !visuals.iter().any(|v| has_uv1(v)) {
+        return 0;
+    }
+    let is_card = |v: &super::merged::MergedVisual| m.materials.get(v.material).map(|mat| mat.link().map(|l| l.is_empty()).unwrap_or(true) && mat.main.as_ref().map(|mm| mm.user_textures.iter().any(|t| t.u01 == 1)).unwrap_or(false)).unwrap_or(false);
+    let mut next_part = visuals.iter().map(|v| v.part).max().unwrap_or(0).max(super::merged::SOLID_PART_BASE) + 1;
+    let mut n_done = 0usize;
+    for mv in visuals.iter_mut() {
+        if has_uv1(mv) || is_card(mv) {
+            continue;
+        }
+        let Some(main) = mv.visual.main.as_mut() else { continue };
+        let Some(super::Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { continue };
+        let Some(pi) = s.decls.iter().position(|d| d.name() == N_POSITION) else { continue };
+        let Elem::Float3(pos) = &s.elems[pi] else { continue };
+        if pos.is_empty() { continue; }
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for p in pos { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+        let ext = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+        // drop the smallest axis
+        let drop = if ext[0] <= ext[1] && ext[0] <= ext[2] { 0 } else if ext[1] <= ext[2] { 1 } else { 2 };
+        let (ax, ay) = match drop { 0 => (2, 1), 1 => (0, 2), _ => (0, 1) };
+        let (ex, ey) = (ext[ax].max(1e-4), ext[ay].max(1e-4));
+        let uv: Vec<[f32; 2]> = pos.iter().map(|p| [0.001 + 0.998 * (p[ax] - lo[ax]) / ex, 0.001 + 0.998 * (p[ay] - lo[ay]) / ey]).collect();
+        // append the element: decls carry the stride in bits 20..27 (in 4-byte units) — recompute
+        let compress = s.compress_local3d.unwrap_or(false);
+        let old_stride: u32 = s.decls.iter().map(|d| super::vstream::type_size(d.stored_type(compress)).unwrap_or(4) as u32).sum();
+        let stride = old_stride + 8;
+        let mut decls: Vec<Decl> = Vec::new();
+        let mut offset = 0u32;
+        for d in &s.decls {
+            decls.push(Decl::with_stride(d.name(), d.ty(), d.space(), offset, stride / 4));
+            offset += super::vstream::type_size(d.stored_type(compress)).unwrap_or(4) as u32;
+        }
+        decls.push(Decl::with_stride(N_TEXCOORD0 + 1, T_FLOAT2, SPACE_LOCAL3D, offset, stride / 4));
+        s.decls = decls;
+        s.elems.push(Elem::Float2(uv));
+        mv.part = next_part;
+        next_part += 1;
+        n_done += 1;
+    }
+    n_done
+}
+
 /// Every merged PART's lightmap atlas into its own cell of a grid over the
 /// unit square, so no two parts' charts share lightmap texels.
 ///
@@ -707,12 +777,16 @@ pub fn header_chunks(opts: &BuildOpts) -> Vec<super::file::HeaderChunk> {
 /// every load — then wrote every part's light into the same texels: a
 /// cross-talk the trees showed at its extreme (every leaf on one region,
 /// 2026-09-09). Parts are found by `MergedVisual::part`; a visual without
-/// uv1, or a part id of 0, is left alone. With ONE part nothing moves
-/// (Nadeo's layout is kept as authored). Returns the number of parts
+/// uv1 is left alone. Part 0 (a block's own mesh) is a part like the others
+/// when the item has more than one: leaving it at its authored layout put a
+/// bush-bearing hill's slopes under its cards' cells (the game's bake wrote
+/// the cards' light over the slopes, 2026-09-23). With ONE part nothing
+/// moves (Nadeo's layout is kept as authored). Returns the number of parts
 /// repacked, or None when there was nothing to do.
 pub fn repack_lightmap_parts(visuals: &mut [super::merged::MergedVisual]) -> Option<usize> {
     use super::vstream::{Elem, N_TEXCOORD0};
-    let mut parts: Vec<u32> = visuals.iter().map(|v| v.part).filter(|p| *p != 0).collect();
+    // only visuals that carry uv1 count as parts
+    let mut parts: Vec<u32> = visuals.iter().filter(|v| v.visual.stream().map(|s| s.decls.iter().any(|d| d.name() == N_TEXCOORD0 + 1)).unwrap_or(false)).map(|v| v.part).collect();
     parts.sort_unstable();
     parts.dedup();
     if parts.len() < 2 {
@@ -733,9 +807,6 @@ pub fn repack_lightmap_parts(visuals: &mut [super::merged::MergedVisual]) -> Opt
     let mut part_bounds: std::collections::HashMap<u32, [f32; 4]> = std::collections::HashMap::new();
     if fit {
         for mv in visuals.iter() {
-            if mv.part == 0 {
-                continue;
-            }
             let Some(s) = mv.visual.stream() else { continue };
             let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
             if let Elem::Float2(uv) = &s.elems[i] {
@@ -750,10 +821,8 @@ pub fn repack_lightmap_parts(visuals: &mut [super::merged::MergedVisual]) -> Opt
         }
     }
     for mv in visuals.iter_mut() {
-        if mv.part == 0 {
-            continue;
-        }
-        let k = parts.iter().position(|p| *p == mv.part).unwrap_or(0) as f64;
+        let Some(k) = parts.iter().position(|p| *p == mv.part) else { continue };
+        let k = k as f64;
         let (cx, cy) = ((k % grid) * cell + margin, (k / grid).floor() * cell + margin);
         let fitb = if fit { part_bounds.get(&mv.part).copied().filter(|b| b[2] > b[0] && b[3] > b[1]) } else { None };
         let Some(s) = mv.visual.stream_mut() else { continue };

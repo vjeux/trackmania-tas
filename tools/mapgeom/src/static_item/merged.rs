@@ -41,6 +41,8 @@ pub struct MergedVisual {
 /// Lightmap part ids from here up are vegetation card sets (one per tree model baked into the item);
 /// block parts count from 1.
 pub const VEGET_PART_BASE: u32 = 0x4000_0000;
+/// Part ids given to solid visuals whose lightmap uv is synthesised at assembly (`synthesize_solid_uv1`).
+pub const SOLID_PART_BASE: u32 = 0x2000_0000;
 
 impl MergedVisual {
     /// A visual drawn at every distance (a part without detail levels).
