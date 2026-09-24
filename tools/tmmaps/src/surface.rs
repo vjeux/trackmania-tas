@@ -130,16 +130,46 @@ pub fn cmd(args: &[String]) {
     // 2026-09-24): baked with the pad, records dropped. A pad's skirts sit in its 4 neighbours.
     let is_pad = |n: &str| n.contains("Special") && !n.contains("FC");
     let pad_cells: Vec<[i32; 3]> = plan.iter().filter(|r| baked_indices.contains(&r.index) && is_pad(&r.name)).map(|r| r.cell).collect();
-    // reach: a slope frame's fillers and a Slope2/Tilt2 pad's skirts stand one row above the
-    // owner's origin, a Tilt2 pad's skirts two cells away (the catalog audit of 2026-09-24
-    // found the Slope2/Tilt2 skirts left as orphan records)
-    let near = |cells: &[[i32; 3]], b: &crate::map::BlockRec, reach: i32| -> bool {
+    // A skirt record belongs to ONE pad: the block across the skirt's side `dir` (a side
+    // clip finishes the block across), else its own cell, else a row above or below (a
+    // Slope2/Tilt2 pad's skirts stand a row off its origin). Only a skirt whose OWNER bakes
+    // is baked and dropped — a "reach" rule (±2 cells, 2026-09-24 morning) stole the wedge
+    // records of a kept neighbour pad (the catalog's icy Tilt2 pad lost its base).
+    // Owner cells: every authored pad by cell (baked or not), so a kept pad's skirt is seen as
+    // owned-by-kept and left alone.
+    let pads_by_cell: std::collections::HashMap<[i32; 3], (usize, String)> = plan.iter().filter(|r| is_pad(&r.name) && !r.free).map(|r| (r.cell, (r.index, r.name.clone()))).collect();
+    let free_pads: Vec<(usize, String, [f32; 3])> = plan.iter().filter(|r| is_pad(&r.name) && r.free).filter_map(|r| source.blocks.get(r.index).and_then(|b| b.free_pos).map(|p| (r.index, r.name.clone(), p))).collect();
+    let skirt_owner = |b: &crate::map::BlockRec| -> Option<usize> {
+        if b.free_pos.is_some() {
+            // a free skirt: the nearest free pad centre within 100 m (one-cell footprints)
+            let p = b.free_pos.unwrap();
+            let (s, c) = b.free_rot.map(|r| r[0]).unwrap_or(0.0).sin_cos();
+            let centre = [p[0] + 16.0 * c + 16.0 * s, p[1], p[2] - 16.0 * s + 16.0 * c];
+            return free_pads.iter().filter_map(|(i, _, q)| {
+                let d = ((q[0] + 16.0 - centre[0]).powi(2) + (q[1] - centre[1]).powi(2) + (q[2] + 16.0 - centre[2]).powi(2)).sqrt();
+                (d <= 100.0).then_some((d as i64, *i))
+            }).min().map(|(_, i)| i);
+        }
         let (x, y, z) = b.coords();
-        cells.iter().any(|c| (c[1] - y).abs() <= 1 && (c[0] - x).abs() <= reach && (c[2] - z).abs() <= reach)
+        let mut ranked: Vec<[i32; 3]> = Vec::new();
+        for dy in [0i32, -1, 1] {
+            if let Some(a) = crate::fillers::across(b.file_cell, b.dir) {
+                ranked.push([a[0] as i32, y + dy, a[2] as i32]);
+            }
+            ranked.push([x, y + dy, z]);
+        }
+        ranked.iter().find_map(|c| pads_by_cell.get(c).map(|(i, _)| *i))
     };
     let is_frame_filler = |b: &crate::map::BlockRec| -> bool {
+        if b.name.contains("PenaltyHFC") {
+            let (x, y, z) = b.coords();
+            return frame_cells.iter().any(|c| (c[1] - y).abs() <= 1 && (c[0] - x).abs() <= 1 && (c[2] - z).abs() <= 1);
+        }
         // (a WATER pad stays a block — its clips stay the game's records)
-        (b.name.contains("PenaltyHFC") && near(&frame_cells, b, 1)) || (b.name.contains("Special") && b.name.contains("FC") && !b.name.contains("Water") && near(&pad_cells, b, 2))
+        if b.name.contains("Special") && b.name.contains("FC") && !b.name.contains("Water") {
+            return skirt_owner(b).map(|i| baked_indices.contains(&i)).unwrap_or(false);
+        }
+        false
     };
     let mut filler_specs: Vec<ItemSpec> = Vec::new();
     let mut filler_unmapped = 0usize;
