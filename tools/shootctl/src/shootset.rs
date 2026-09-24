@@ -237,10 +237,9 @@ fn run_set(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     // ONE GAME, ONE DRIVER — the same lock `shootctl run` takes. Held for the
     // whole set; released on every exit path below through `_lock`.
     let _lock = if opts.lock {
-        let d = super::lock::lock_dir();
-        let owner = format!("shootset-{}-{}", opts.tag, opts.side);
-        super::lock::acquire(&d, &owner, 600, 0).map_err(|e| format!("lock: {e}"))?;
-        Some(LockGuard { dir: d, owner })
+        let purpose = format!("shootset {} side {}", opts.tag, opts.side);
+        super::lock::acquire(&purpose).map_err(|e| format!("lock: {e}"))?;
+        Some(LockGuard)
     } else {
         None
     };
@@ -341,13 +340,10 @@ fn run_set(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     Ok(lines)
 }
 
-struct LockGuard {
-    dir: PathBuf,
-    owner: String,
-}
+struct LockGuard;
 impl Drop for LockGuard {
     fn drop(&mut self) {
-        let _ = super::lock::release(&self.dir, &self.owner);
+        let _ = super::lock::release();
     }
 }
 

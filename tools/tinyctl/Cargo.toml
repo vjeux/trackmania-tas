@@ -12,6 +12,7 @@ path = "src/main.rs"
 # shots, publish. `tmmaps` reads the map, `mapgeom` bakes the library the probe
 # measures against; the PNG codec is miniz_oxide (already in the workspace).
 [dependencies]
+tmdrive = { path = "../tmdrive" }
 tmmaps = { path = "../tmmaps" }
 mapgeom = { path = "../mapgeom" }
 miniz_oxide = "0.9.1"

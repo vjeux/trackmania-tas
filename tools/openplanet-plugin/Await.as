@@ -181,3 +181,21 @@ string LoadedMap() {
          + ",\"name\":\"" + map.MapName + "\""
          + ",\"ctx\":" + CurrentCtx() + "}";
 }
+
+// The medal times the GAME itself parsed out of the loaded map — the same
+// CGameCtnChallenge fields the medals plugins read (2026-09-12: the tiny
+// campaign's author time and medals had to be verified in game, not from the
+// file on disk).
+string LoadedTimes() {
+    auto app = GetApp();
+    auto map = app.RootMap;
+    if (map is null) return "{\"loaded\":false}";
+    string uid = "";
+    if (map.MapInfo !is null) uid = map.MapInfo.MapUid;
+    return "{\"loaded\":true,\"uid\":\"" + uid + "\""
+         + ",\"name\":\"" + map.MapName + "\""
+         + ",\"author\":" + map.TMObjective_AuthorTime
+         + ",\"gold\":" + map.TMObjective_GoldTime
+         + ",\"silver\":" + map.TMObjective_SilverTime
+         + ",\"bronze\":" + map.TMObjective_BronzeTime + "}";
+}

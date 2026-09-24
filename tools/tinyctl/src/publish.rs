@@ -250,6 +250,12 @@ fn playcheck(o: &PublishOpts, auth_core: &str, file_url: &str, uid: &str) -> Res
     if !cdn.starts_with("http") {
         return Err(format!("no CDN redirect for {file_url}: `{cdn}`"));
     }
+    // ONE GAME, ONE DRIVER: playcheck loads a map into the live game, so it
+    // holds the lock for the whole check. The guard drops at the end of this
+    // function, and `tmdrive` exports the token so the `shootctl` children
+    // below carry it -- without it the plugin refuses them.
+    let _game = tmdrive::acquire(tmdrive::Host::detect(), &format!("playcheck {uid}"))
+        .map_err(|e| format!("game lock: {e}"))?;
     let get = |route: &str| -> String {
         Command::new(&o.shootctl).arg("get").arg(route).output().map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string()).unwrap_or_default()
     };

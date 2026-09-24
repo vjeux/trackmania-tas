@@ -17,17 +17,12 @@
 //!     the game's own object graph, with a timeout that reports what it saw.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::io::Read;
 use std::time::{Duration, Instant};
 
-mod host;
-use host::plugin_addrs;
 mod lock;
 mod shootset;
 
-use std::sync::OnceLock;
-static ADDR: OnceLock<String> = OnceLock::new();
 
 /// The first candidate address that accepts a connection, remembered for the
 /// rest of the run.
@@ -38,35 +33,13 @@ static ADDR: OnceLock<String> = OnceLock::new();
 /// machine from the game's) and then dialled it for three minutes while the
 /// plugin sat there answering on the real address. Exactly the trap host.rs
 /// documents, wearing a different hat: never remember a guess.
-fn plugin_addr() -> String {
-    if let Some(a) = ADDR.get() { return a.clone(); }
-    for a in plugin_addrs() {
-        let Ok(sa) = a.parse::<SocketAddr>() else { continue };
-        if TcpStream::connect_timeout(&sa, Duration::from_millis(400)).is_ok() {
-            let _ = ADDR.set(a.clone());
-            return a;
-        }
-    }
-    "127.0.0.1:29800".to_string()
-}
+
 
 /// Is the plugin answering anywhere? Tries every candidate, caches on success.
 /// This is the launch's gate -- it must not depend on an address chosen before
 /// the server existed.
 fn plugin_up() -> bool {
-    if let Some(a) = ADDR.get() {
-        if let Ok(sa) = a.parse::<SocketAddr>() {
-            return TcpStream::connect_timeout(&sa, Duration::from_millis(500)).is_ok();
-        }
-    }
-    for a in plugin_addrs() {
-        let Ok(sa) = a.parse::<SocketAddr>() else { continue };
-        if TcpStream::connect_timeout(&sa, Duration::from_millis(500)).is_ok() {
-            let _ = ADDR.set(a);
-            return true;
-        }
-    }
-    false
+    tmdrive::plugin::alive()
 }
 
 // ---------------------------------------------------------------------------
@@ -74,18 +47,11 @@ fn plugin_up() -> bool {
 // ---------------------------------------------------------------------------
 
 fn http_get(route: &str, timeout_s: u64) -> Result<String, String> {
-    let mut s = TcpStream::connect(plugin_addr().as_str()).map_err(|e| format!("connect: {e}"))?;
-    s.set_read_timeout(Some(Duration::from_secs(timeout_s))).ok();
-    s.set_write_timeout(Some(Duration::from_secs(timeout_s))).ok();
-    let req = format!("GET {route} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-    s.write_all(req.as_bytes()).map_err(|e| format!("write: {e}"))?;
-    let mut buf = Vec::new();
-    s.read_to_end(&mut buf).map_err(|e| format!("read: {e}"))?;
-    let text = String::from_utf8_lossy(&buf).to_string();
-    match text.find("\r\n\r\n") {
-        Some(i) => Ok(text[i + 4..].to_string()),
-        None => Ok(text),
-    }
+    // ONE GAME, ONE DRIVER: every in-game command goes through tmdrive, which
+    // stamps it with this driver's lock token. The plugin refuses anything
+    // untokened, so a shootctl that skipped the lock is turned away by the
+    // game itself rather than trusted to have checked.
+    tmdrive::plugin::get(route, timeout_s)
 }
 
 /// A map path the GAME can resolve, or a refusal.
@@ -1047,39 +1013,56 @@ usage:
         );
         std::process::exit(2);
     }
+    // ONE GAME, ONE DRIVER, TAKEN UP FRONT.
+    //
+    // These subcommands change the running game. Acquiring here rather than
+    // at the first mutating call means a busy box fails immediately, before
+    // any work is done, and the guard covers the whole command rather than
+    // each operation separately. (`get` is deliberately absent: it is the
+    // read-only probe, and the plugin gates the mutating routes itself.)
+    const NEEDS_GAME: &[&str] =
+        &["launch", "run", "shoot", "setup", "shootset", "playshots", "quit"];
+    if NEEDS_GAME.contains(&args[0].as_str()) {
+        let purpose = format!("shootctl {}", args.join(" "));
+        let purpose: String = purpose.chars().take(120).collect();
+        if let Err(e) = lock::acquire(&purpose) {
+            eprintln!("{e}");
+            // 75 = EX_TEMPFAIL: the caller should wait and retry, not treat
+            // this as a broken command.
+            std::process::exit(75);
+        }
+    }
+
     let code = match args[0].as_str() {
         // ONE GAME, ONE DRIVER. See `lock.rs`: two concurrent renders do not
         // fail, they produce two plausible clips of which one is of the wrong
         // run. Every arm driving this box takes the lock first.
         "lock" => {
+            // The owner is now the SESSION (tmdrive reads TM_SESSION), not a
+            // free-text name: a blocked driver must be able to reach whoever
+            // holds the box, and "pid-1234" was not reachable.
             let val = |k: &str| -> Option<String> {
                 args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned()
             };
-            let owner = val("--owner").unwrap_or_else(|| {
-                std::env::var("SHOOTCTL_OWNER").unwrap_or_else(|_| format!("pid-{}", std::process::id()))
-            });
-            let num = |k: &str, d: u64| val(k).and_then(|v| v.parse().ok()).unwrap_or(d);
-            let d = lock::lock_dir();
+            let purpose = val("--purpose").unwrap_or_else(|| "shootctl".into());
             match args.get(1).map(|s| s.as_str()) {
-                Some("acquire") => match lock::acquire(&d, &owner, num("--wait", 0), num("--max-age", 0)) {
+                Some("acquire") => match lock::acquire(&purpose) {
                     Ok(()) => 0,
                     Err(e) => {
                         eprintln!("{e}");
                         1
                     }
                 },
-                Some("release") => match lock::release(&d, &owner) {
+                Some("release") => match lock::release() {
                     Ok(()) => 0,
                     Err(e) => {
                         eprintln!("{e}");
                         1
                     }
                 },
-                Some("status") => lock::status(&d),
+                Some("status") => lock::status(),
                 _ => {
-                    eprintln!(
-                        "shootctl lock acquire|release|status [--owner WHO] [--wait S] [--max-age S]"
-                    );
+                    eprintln!("shootctl lock acquire|release|status [--purpose WHAT]");
                     2
                 }
             }
@@ -1693,14 +1676,12 @@ fn to_menu() -> Result<(), String> {
 /// has stopped answering. Best effort by design: no game running is the
 /// desired end state, so "not found" is success.
 fn quit_game() {
-    for image in ["Trackmania.exe", "TmForever.exe"] {
-        let _ = std::process::Command::new("taskkill.exe")
-            .args(["/IM", image, "/F"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+    // Through the guard: killing the game is exactly the operation that ruins
+    // another session's render if we do not hold the box.
+    match lock::with(|l| tmdrive::ops::kill(l).map_err(|e| e.to_string())) {
+        Ok(()) => println!("  game closed"),
+        Err(e) => eprintln!("  game NOT closed: {e}"),
     }
-    println!("  game closed");
 }
 
 fn launch(timeout_s: u64, force: bool) -> i32 {
@@ -1720,9 +1701,11 @@ fn launch(timeout_s: u64, force: bool) -> i32 {
         return 0;
     }
 
-    for exe in ["Trackmania.exe", "UbisoftGameLauncher.exe"] {
-        let _ = std::process::Command::new("/mnt/c/Windows/System32/taskkill.exe")
-            .args(["/F", "/IM", exe]).output();
+    if let Err(e) = lock::with(|l| {
+        tmdrive::ops::kill_with_launcher(l).map_err(|e| e.to_string())
+    }) {
+        eprintln!("{e}");
+        return 1;
     }
     // Wait for them to be GONE. tasklist is a process spawn, ~100 ms; that is
     // the pacing, not a sleep.
@@ -1743,8 +1726,13 @@ fn launch(timeout_s: u64, force: bool) -> i32 {
     // Now the log IS the diagnosis, and a hung login is retried rather than
     // reported as a broken install.
     for attempt in 1..=3 {
-        let game = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Trackmania\\Trackmania.exe";
-        let _ = std::process::Command::new("/mnt/c/Windows/explorer.exe").arg(game).output();
+        let game = tmdrive::ops::GAME_EXE_WIN;
+        if let Err(e) = lock::with(|l| {
+            tmdrive::ops::launch_via_explorer(l, game).map_err(|e| e.to_string())
+        }) {
+            eprintln!("{e}");
+            return 1;
+        }
         println!("[{:.1}s] launched via explorer (attempt {attempt})", el(&t0));
 
         // Wait for the plugin socket, trying EVERY candidate address each time
@@ -1776,9 +1764,11 @@ fn launch(timeout_s: u64, force: bool) -> i32 {
             OpStage::StalledAtLogin => {
                 eprintln!("[{:.1}s] Openplanet hung on the Nadeo login (attempt {attempt}) -- restarting",
                           el(&t0));
-                for exe in ["Trackmania.exe", "UbisoftGameLauncher.exe"] {
-                    let _ = std::process::Command::new("/mnt/c/Windows/System32/taskkill.exe")
-                        .args(["/F", "/IM", exe]).output();
+                if let Err(e) = lock::with(|l| {
+                    tmdrive::ops::kill_with_launcher(l).map_err(|e| e.to_string())
+                }) {
+                    eprintln!("{e}");
+                    return 1;
                 }
                 while tm_running() {}
             }

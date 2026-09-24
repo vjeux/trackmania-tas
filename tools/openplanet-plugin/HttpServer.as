@@ -174,6 +174,24 @@ class HttpServer {
             warn("After reading headers and body there are " + client.Available() + " bytes remaining!");
         }
         HttpResponse@ resp = HttpResponse();
+        // ONE GAME, ONE DRIVER. A command that changes the game must carry the
+        // lock holder's token; anything else is refused here, in the game,
+        // where no caller can talk its way past it. See TokenGate.as.
+        string refusal = TokenGate::Refuse(reqRoute);
+        if (refusal.Length > 0) {
+            resp.status = 409;
+            resp.body = refusal;
+            warn("[TokenGate] refused " + reqType + " " + reqRoute + " from "
+                 + client.GetRemoteIP() + ": " + refusal);
+            string hdrs409 = FormatHeaders(resp.headers);
+            string full409 = httpVersion + " " + resp.status + " " + resp.StatusMsgText()
+                + "\r\n" + hdrs409 + "\r\n\r\n" + resp.body;
+            auto buf409 = MemoryBuffer();
+            buf409.Write(full409);
+            buf409.Seek(0);
+            client.Write(buf409, buf409.GetSize());
+            return;
+        }
         try {
             @resp = RequestHandler(reqType, reqRoute, headers, buf);
         } catch {
@@ -237,7 +255,7 @@ string FormatHeaders(dictionary@ headers) {
             keys[i] += ": " + string(headers[keys[i]]);
         }
     }
-    return string::Join(keys, "\r\n");
+    return Text::Join(keys, "\r\n");
 }
 
 
