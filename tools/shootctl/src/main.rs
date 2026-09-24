@@ -21,9 +21,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
-mod host;
 mod lightmap;
-use host::plugin_addrs;
 mod loadloop;
 mod loadprof;
 mod lock;
@@ -50,34 +48,18 @@ static LOAD_TIMEOUT_S: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 /// plugin sat there answering on the real address. Exactly the trap host.rs
 /// documents, wearing a different hat: never remember a guess.
 fn plugin_addr() -> String {
-    if let Some(a) = ADDR.get() { return a.clone(); }
-    for a in plugin_addrs() {
-        let Ok(sa) = a.parse::<SocketAddr>() else { continue };
-        if TcpStream::connect_timeout(&sa, Duration::from_millis(400)).is_ok() {
-            let _ = ADDR.set(a.clone());
-            return a;
-        }
-    }
-    "127.0.0.1:29800".to_string()
+    // tmdrive owns plugin addressing now, including the WSL-loopback trap the
+    // old host.rs documented: the game is a Windows process, so 127.0.0.1
+    // from a Linux binary in WSL is a DIFFERENT machine. Only a working
+    // address is ever cached -- never a guess.
+    tmdrive::plugin::addr().unwrap_or_else(|| "127.0.0.1:29800".to_string())
 }
 
 /// Is the plugin answering anywhere? Tries every candidate, caches on success.
 /// This is the launch's gate -- it must not depend on an address chosen before
 /// the server existed.
 fn plugin_up() -> bool {
-    if let Some(a) = ADDR.get() {
-        if let Ok(sa) = a.parse::<SocketAddr>() {
-            return TcpStream::connect_timeout(&sa, Duration::from_millis(500)).is_ok();
-        }
-    }
-    for a in plugin_addrs() {
-        let Ok(sa) = a.parse::<SocketAddr>() else { continue };
-        if TcpStream::connect_timeout(&sa, Duration::from_millis(500)).is_ok() {
-            let _ = ADDR.set(a);
-            return true;
-        }
-    }
-    false
+    tmdrive::plugin::alive()
 }
 
 // ---------------------------------------------------------------------------
@@ -85,6 +67,22 @@ fn plugin_up() -> bool {
 // ---------------------------------------------------------------------------
 
 fn http_get(route: &str, timeout_s: u64) -> Result<String, String> {
+    // ONE GAME, ONE DRIVER: a command that changes the game must carry this
+    // driver's lock token, or the plugin refuses it. Reads are unaffected —
+    // the gate only guards mutating routes — so this stamps every request and
+    // lets the game decide which ones need it.
+    //
+    // The token comes from the lock this process holds, or from TM_LOCK_TOKEN
+    // when a parent (`tmdrive run ... -- script`) holds it for us.
+    let route: String = match tmdrive::plugin::current_token() {
+        Some(t) => {
+            let sep = if route.contains('?') { '&' } else { '?' };
+            format!("{route}{sep}token={t}")
+        }
+        None => route.to_string(),
+    };
+    let route = route.as_str();
+
     // connect WITH a timeout: a WSL connect to a Windows port nobody listens
     // on is dropped, not refused, and a plain `connect` then sits in the
     // kernel's SYN retries for ~2 minutes — which is how a dead game kept a
@@ -99,10 +97,17 @@ fn http_get(route: &str, timeout_s: u64) -> Result<String, String> {
     let mut buf = Vec::new();
     s.read_to_end(&mut buf).map_err(|e| format!("read: {e}"))?;
     let text = String::from_utf8_lossy(&buf).to_string();
-    match text.find("\r\n\r\n") {
-        Some(i) => Ok(text[i + 4..].to_string()),
-        None => Ok(text),
+    let body = match text.find("\r\n\r\n") {
+        Some(i) => text[i + 4..].to_string(),
+        None => text,
+    };
+    if body.contains("token-refused") {
+        return Err(format!(
+            "{body}\n  (take the box first: `tmdrive run --purpose '...' -- <your command>`, \
+             or `shootctl lock acquire`)"
+        ));
     }
+    Ok(body)
 }
 
 /// A map path the GAME can resolve, or a refusal.
@@ -1113,6 +1118,28 @@ usage:
         );
         std::process::exit(2);
     }
+    // ONE GAME, ONE DRIVER, TAKEN UP FRONT.
+    //
+    // These subcommands change the running game. Acquiring here rather than
+    // at the first mutating call means a busy box fails immediately, before
+    // any work is done, and one hold covers the whole command. Subcommands
+    // that take the lock themselves (shootset, playshots, run) are absent —
+    // `acquire` is re-entrant, but there is no reason to double it.
+    //
+    // Read-only subcommands are deliberately absent too: gating them would
+    // mean every observer holds the box, which is the same as no lock.
+    const NEEDS_GAME: &[&str] =
+        &["launch", "shoot", "setup", "quit", "key", "import", "mapsave", "render", "loadloop", "lightmap"];
+    if NEEDS_GAME.contains(&args[0].as_str()) {
+        let purpose: String = format!("shootctl {}", args.join(" ")).chars().take(120).collect();
+        if let Err(e) = lock::acquire(&lock::lock_dir(), &purpose, 0, 0) {
+            eprintln!("{e}");
+            // 75 = EX_TEMPFAIL: the caller should wait and retry, not treat
+            // this as a broken command.
+            std::process::exit(75);
+        }
+    }
+
     let code = match args[0].as_str() {
         // ONE GAME, ONE DRIVER. See `lock.rs`: two concurrent renders do not
         // fail, they produce two plausible clips of which one is of the wrong

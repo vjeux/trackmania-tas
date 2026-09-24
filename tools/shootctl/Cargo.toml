@@ -3,6 +3,9 @@ name = "shootctl"
 version.workspace = true
 edition = "2021"
 
+[dependencies]
+tmdrive = { path = "../tmdrive" }
+
 [[bin]]
 name = "shootctl"
 path = "src/main.rs"

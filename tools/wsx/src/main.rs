@@ -81,14 +81,6 @@ const PULL_CHUNK: usize = 2 << 20;
 /// two, 14 s at four, 5-8 s at six and eight.
 const DEFAULT_JOBS: usize = 8;
 
-/// How long a single dispatch may take before we give up on it and send it
-/// again. `whitestick`'s own ceiling is 300 s, which is far past the point
-/// where a stalled call is worth waiting for.
-const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(90);
-
-/// Attempts for one command before wsx gives up.
-const MAX_ATTEMPTS: usize = 3;
-
 /// Below this many base64 characters, asking the box whether it already has
 /// the file costs about what sending it costs, so push does not ask.
 const PROBE_WORTH: usize = 65_536;
@@ -143,25 +135,14 @@ fn dispatch(cmd: &str) -> Result<String, String> {
         .map_err(|e| format!("cannot feed the bridge: {e}"))?;
     drop(child.stdin.take());
 
-    // Wait, but not forever: a dispatch that has gone quiet is cheaper to
-    // resend than to sit out. Killing the client is enough -- the commands wsx
-    // sends are all safe to run twice.
-    let deadline = std::time::Instant::now() + ATTEMPT_TIMEOUT;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s,
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = out_reader.join();
-                    let _ = err_reader.join();
-                    return Err(format!("no answer in {} s", ATTEMPT_TIMEOUT.as_secs()));
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            Err(e) => return Err(format!("bridge did not finish: {e}")),
-        }
+    // Wait for the bridge to finish. There is NO client-side deadline: a
+    // command runs for as long as it runs, and its own exit status is the
+    // answer. Killing a live call and re-sending it was worse than useless --
+    // it re-ran commands that had already started, and a "quiet" call is
+    // usually one still working (a 100 s silent command is normal).
+    let status = match child.wait() {
+        Ok(s) => s,
+        Err(e) => return Err(format!("bridge did not finish: {e}")),
     };
     let out = out_reader.join().map_err(|_| "reader thread died".to_string())?;
     let err = err_reader.join().map_err(|_| "reader thread died".to_string())?;
@@ -184,9 +165,10 @@ fn dispatch(cmd: &str) -> Result<String, String> {
 /// and fifty base64 chunks — the navi bridge metered every call against a daily
 /// quota, and a chunked 75 MB mp4 was 150 of them.
 ///
-/// `timeout` scales with the payload at the caller; a transfer that goes quiet
-/// is killed and retried by [`remote_raw_try`] (the remote write is atomic).
+/// `timeout` is accepted for call compatibility and no longer enforced here:
+/// a transfer runs to completion and reports its own exit status.
 fn dispatch_raw(cmd: &str, input: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
+    let _ = timeout;
     let mut command = Command::new(bridge_path());
     if input.is_empty() {
         command.arg("--no-stdin");
@@ -222,22 +204,12 @@ fn dispatch_raw(cmd: &str, input: &[u8], timeout: Duration) -> Result<Vec<u8>, S
             Ok(())
         })
     });
-    let deadline = std::time::Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s,
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = out_reader.join();
-                    let _ = err_reader.join();
-                    return Err(format!("no answer in {} s", timeout.as_secs()));
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            Err(e) => return Err(format!("bridge did not finish: {e}")),
-        }
+    // No client-side deadline here either: killing a live transfer and
+    // resending it is the behaviour that re-ran commands which had already
+    // started. The bridge's own ceiling still applies.
+    let status = match child.wait() {
+        Ok(s) => s,
+        Err(e) => return Err(format!("bridge did not finish: {e}")),
     };
     if let Some(w) = writer {
         w.join().map_err(|_| "writer thread died".to_string())??;
@@ -255,23 +227,15 @@ fn dispatch_raw(cmd: &str, input: &[u8], timeout: Duration) -> Result<Vec<u8>, S
     Ok(out)
 }
 
-/// [`dispatch_raw`] with the same retry rule as [`remote_try`]: the writes it
-/// carries land through a `$$`-suffixed temporary, so a transfer whose answer
-/// went missing is simply sent again.
+/// One raw dispatch, exactly once.
+///
+/// This used to retry a transfer that went quiet, justified by every write
+/// landing through a `$$`-suffixed temporary. That justification stopped
+/// holding once wsx carried commands with side effects, and a "quiet" call is
+/// usually one still working: the retry re-ran commands that had already
+/// started. A command now runs once and reports its own exit status.
 fn remote_raw_try(cmd: &str, input: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
-    let mut last = String::new();
-    for attempt in 1..=MAX_ATTEMPTS {
-        match dispatch_raw(cmd, input, timeout) {
-            Ok(out) => return Ok(out),
-            Err(e) => {
-                if attempt < MAX_ATTEMPTS {
-                    eprintln!("\nwsx: retrying ({e})");
-                }
-                last = e;
-            }
-        }
-    }
-    Err(last)
+    dispatch_raw(cmd, input, timeout)
 }
 
 /// How long a streamed transfer of `bytes` may take before it is resent: two
@@ -281,24 +245,9 @@ fn transfer_timeout(bytes: usize) -> Duration {
     Duration::from_secs(120 + (bytes / 100_000) as u64)
 }
 
-/// Run one command on the render box, retrying a dispatch that fails or goes
-/// quiet. Safe because every command wsx sends is idempotent: writes go to a
-/// `$$`-suffixed temporary and are renamed into place, so running one twice
-/// produces the same bytes and a reader never sees a partial file.
+/// Run one command on the render box, exactly once. See `remote_raw_try`.
 fn remote_try(cmd: &str) -> Result<String, String> {
-    let mut last = String::new();
-    for attempt in 1..=MAX_ATTEMPTS {
-        match dispatch(cmd) {
-            Ok(out) => return Ok(out),
-            Err(e) => {
-                if attempt < MAX_ATTEMPTS {
-                    eprintln!("\nwsx: retrying ({e})");
-                }
-                last = e;
-            }
-        }
-    }
-    Err(last)
+    dispatch(cmd)
 }
 
 fn remote(cmd: &str) -> String {
