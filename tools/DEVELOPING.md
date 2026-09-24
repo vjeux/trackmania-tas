@@ -57,54 +57,77 @@ Two things worth knowing about it:
   `agent-first-unblock-me.internalmeta.com`.
 
 This repo is **public**, so cloning and fetching need no credentials at all.
-Pushing does not work from there — see the next section, which is the part
-that decides the workflow.
+Pushing works too, with one trap that looks like an auth failure — next
+section.
 
-## An agent-first devserver can CLONE but cannot PUSH
+## Pushing from an agent-first devserver: works, with one trap
 
-This is the important limit, and it is not a misconfiguration to fix.
-Measured on 2026-09-24 from an OSS Builder box, all with the same valid
-`repo`-scoped token:
+**Pushes work from an agent-first devserver** once the sandbox is disabled
+(vjeux did that on 2026-09-24; verified by pushing and deleting a scratch
+branch). Before that change, every authenticated write came back 401 — an
+earlier version of this note called that deliberate policy. It was not; see
+the cache trap below, which is the part that will bite you.
 
-| operation | result |
-|---|---|
-| `git clone` / `git fetch` (public repo, no auth) | works, 3.6 s |
-| `GET .../info/refs?service=git-upload-pack` (read) | 200 |
-| `GET .../info/refs?service=git-receive-pack` (push) | **401 "No anonymous write access"** |
-| `gh api /user` (authenticated read) | 200 |
-| `gh api -X PATCH /repos/...` (authenticated **write**) | **works** |
-| `git push` with the token in the credential helper | 401 |
-| `git push` with the token inline in the URL, no helper | **401** |
+### The trap: fwdproxy caches responses per URL, ignoring `Authorization`
 
-The last row is what makes it conclusive: with the credential helper taken
-out of the picture entirely, the push still comes back anonymous. The
-credential is fine — `gh` authenticates as `vjeux` and the API reports
-`push: true, admin: true` on the repo. The egress proxy is stripping
-authentication on the git push path specifically, while leaving reads and the
-REST API alone.
+The A1D's egress is fwdproxy2 (the `via:` header names it, on `:8082`), and
+it caches HTTP responses **keyed on the URL alone**. Git's push protocol
+starts with an ANONYMOUS probe of
+`.../info/refs?service=git-receive-pack`, which GitHub answers with 401
+"No anonymous write access". The proxy caches that 401. Every later request
+for the same URL — including the authenticated retry git makes a moment
+later — gets the cached 401 back. Same `x-github-request-id`, for 15+
+minutes and counting.
 
-That is a deliberate control rather than a gap: `git push` is the bulk
-data-out channel, which is exactly the exfiltration vector the agent-egress
-framework exists to close. Read it as the same policy that keeps github.com
-off the ordinary allowlist, applied one layer in.
+That produces exactly the symptoms that look like "auth is stripped":
 
-So **do not bother setting up `gh auth` for pushing** — it cannot buy that. It
-is still worth having if you want `gh` for the REST API (issues, PRs, release
-metadata, higher rate limits), and nothing about this repo's build or test
-loop needs it.
+* `git push` fails with "Authentication failed" while the token is valid
+* `gh api` writes succeed (different URL, never poisoned)
+* `curl -u` to the same URL ALSO fails once the cache is poisoned
+* a cache-buster query string gets a fresh (404) response; `Cache-Control:
+  no-cache` does not help
 
-**Push from the WhiteStick box**, which reaches GitHub on its own network with
-the repo deploy key, and is the one machine that has always worked. To move
-commits there from an agent-first box:
+### The fix: authenticate on git's FIRST request
+
+Send the credential preemptively, so the first request for the URL is
+authenticated and what gets cached is the 200:
 
 ```sh
-git bundle create /tmp/work.bundle <base>..HEAD      # on the agent-first box
-# hand it to the box (see below), then:
-wsx sh 'cd /home/vjeux/trackmania-tas && git fetch /tmp/work.bundle HEAD:refs/incoming/work'
+AUTH=$(printf 'vjeux:%s' "$(gh auth token)" | base64 -w0)
+git -c http.extraHeader="Authorization: Basic $AUTH" push origin HEAD:refs/heads/<branch>
 ```
 
-`wsx` runs on the devserver, not on the agent-first box, so the bundle goes
-devserver-ward first.
+Inline URL credentials (`https://user:token@…`) do NOT work — git still
+probes anonymously first. The credential helper does not either, for the same
+reason. Only `http.extraHeader` puts auth on the first request.
+
+If the canonical URL is already poisoned, use a differently-cased repo path as
+a fresh cache key — GitHub treats repo names case-insensitively and answers
+with a "repository moved" hint, harmlessly:
+
+```sh
+git -c http.extraHeader="Authorization: Basic $AUTH" \
+    push https://github.com/vjeux/TRACKMANIA-tas.git HEAD:refs/heads/<branch>
+```
+
+### Always push with an EXPLICIT refspec
+
+`git push <url> <branchname>` with a bare branch name resolved against
+`main`'s upstream and landed a scratch commit on `main` (2026-09-24,
+reverted within 20 s). Write `HEAD:refs/heads/<branch>` every time.
+
+### Getting a token there
+
+`gh auth login --hostname github.com --web` runs the device flow: it prints a
+one-time code, vjeux approves it in a browser, and GitHub mints the token
+straight onto the box — nothing passes through the agent. The token does NOT
+persist to the next box: agent-first devservers sync dotfiles against their
+own `agent_first_devserver` dotsync universe, deliberately isolated from
+regular devservers, and `.config/gh` is not in that set. Adding it there is
+possible and would make every future A1D log in automatically; it would also
+park a `repo`-scoped token in the snapshot. That is vjeux's call, not made.
+
+Clone and fetch need no token at all — the repo is public.
 
 ## The game: only the WhiteStick box
 
@@ -132,7 +155,7 @@ check that means something.
 | work | where |
 |---|---|
 | Clone, fetch, edit, build, test | agent-first devserver (no credentials needed — the repo is public) |
-| **Push** | WhiteStick box — the proxy blocks push everywhere else |
+| **Push** | agent-first devserver with preemptive auth (see the trap above), or the WhiteStick box |
 | Anything that runs the game — plugins, maps, renders, the jump | WhiteStick box, via `wsx`, under `tmdrive` |
 | Move build artifacts or commits to the box | `wsx push`, or `git bundle` |
 
