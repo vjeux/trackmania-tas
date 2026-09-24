@@ -64,16 +64,26 @@ echo "=== 3. the lock is released when the holder exits ==="
 out=$($TM status 2>&1)
 case "$out" in FREE*) ok "released automatically on exit";; *) bad "still held after the holder exited: $out";; esac
 
-echo "=== 4. a holder whose GAME died is reclaimable ==="
+echo "=== 4. a dead game alone does NOT free the box ==="
+# This asserts the MK64 fix, and is the INVERSE of what it used to assert.
+# "Game gone => reclaimable" looked obviously right and was wrong: a holder
+# restarting the game as part of its own work has no game process for a
+# while, and the box got handed to someone else mid-run. A holder that is
+# still renewing owns the box whatever the game is doing; a genuinely dead
+# holder stops renewing and case 5 catches it.
 free_lock
 mkdir -p "$LOCK"
-printf '%s' "$A" > "$LOCK/session"; printf '%s' "dead-game" > "$LOCK/purpose"
-printf '%s' "A"  > "$LOCK/title";   printf '%s' "999999"    > "$LOCK/game_pid"
+printf '%s' "$A" > "$LOCK/session"; printf '%s' "game restarting" > "$LOCK/purpose"
+printf '%s' "A"  > "$LOCK/title";   printf '%s' "999999"          > "$LOCK/game_pid"
 now=$(date +%s); printf '%s' "$now" > "$LOCK/acquired_at"; printf '%s' "$now" > "$LOCK/renewed_at"
 out=$(TM_SESSION=$B $TM status 2>&1)
-case "$out" in *"DEAD(game gone)"*) ok "a dead game marks the lock reclaimable";; *) bad "not flagged: $out";; esac
-out=$(TM_SESSION=$B TM_SESSION_TITLE=B $TM plugin ctx --purpose "taking a dead lock" 2>&1)
-case "$out" in *"taking a DEAD lock"*) ok "reclaimed, loudly";; *) bad "not reclaimed: $out";; esac
+case "$out" in
+  *HELD*) ok "a fresh lease keeps the box even with no game process";;
+  *) bad "the box was declared free on a dead game alone: $out";;
+esac
+out=$(TM_SESSION=$B TM_SESSION_TITLE=B $TM plugin ctx --purpose "B barging in" 2>&1); rc=$?
+[ "$rc" = "75" ] && ok "another session is refused while the holder restarts" \
+                 || bad "another session took the box from a live holder (rc=$rc)"
 
 echo "=== 5. a holder that stopped renewing is reclaimable ==="
 free_lock
