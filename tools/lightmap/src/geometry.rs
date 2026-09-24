@@ -436,9 +436,29 @@ impl Scene {
             for file in &g.alpha_tex {
                 if alpha_masks.contains_key(file) { continue; }
                 let Some(bytes) = by_name.get(file) else { continue };
+                // LMTOOL_MASK_RES=N: the cut-out decided on the texture reduced to N×N (its alpha box-averaged
+                // — the game's peel samples the leaf texture at the peel's pixel footprint, i.e. a coarse mip,
+                // and a sparse leaf texture passes the alpha test far less often there); default 256 = full
+                let mask_res: usize = std::env::var("LMTOOL_MASK_RES").ok().and_then(|v| v.parse().ok()).unwrap_or(256);
                 match mapgeom::static_item::texture::decode_capped_rgba(bytes, 256) {
                     Ok((w, h, rgba)) => {
-                        let m = AlphaMask::from_rgba(w as usize, h as usize, &rgba, 128);
+                        let (w, h, rgba) = if mask_res < (w as usize).min(h as usize) {
+                            // box-average down to mask_res × mask_res (alpha and colour)
+                            let (nw, nh) = (mask_res, mask_res);
+                            let mut out = vec![0u8; nw * nh * 4];
+                            for y in 0..nh { for x in 0..nw {
+                                let (x0, x1) = (x * w as usize / nw, ((x + 1) * w as usize / nw).max(x * w as usize / nw + 1));
+                                let (y0, y1) = (y * h as usize / nh, ((y + 1) * h as usize / nh).max(y * h as usize / nh + 1));
+                                let mut acc = [0u64; 4]; let mut n = 0u64;
+                                for yy in y0..y1 { for xx in x0..x1 { let i = (yy * w as usize + xx) * 4; for k in 0..4 { acc[k] += rgba[i + k] as u64; } n += 1; } }
+                                let o = (y * nw + x) * 4;
+                                for k in 0..4 { out[o + k] = (acc[k] / n.max(1)) as u8; }
+                            } }
+                            (nw as u32, nh as u32, out)
+                        } else { (w, h, rgba) };
+                        // LMTOOL_MASK_THRESHOLD=T (0..255, default 128): the alpha a texel needs to count as leaf
+                        let thr: u8 = std::env::var("LMTOOL_MASK_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(128);
+                        let m = AlphaMask::from_rgba(w as usize, h as usize, &rgba, thr);
                         card_albedo.insert(file.clone(), m.albedo);
                         // a mask that cuts nothing is not worth the lookups
                         if m.coverage() < 0.999 { alpha_masks.insert(file.clone(), m); }
