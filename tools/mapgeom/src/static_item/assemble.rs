@@ -151,7 +151,14 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
         if !super::build::card_uv1_legacy() {
             synthesize_solid_uv1(&mut pre, m);
         }
-        if let Some(n) = repack_lightmap_parts(&mut pre) {
+        // the parts made only of cut-out cards (a light weight in the repack)
+        let is_card_mat = |mi: usize| m.materials.get(mi).map(|mat| mat.link().map(|l| l.is_empty()).unwrap_or(true) && mat.main.as_ref().map(|mm| mm.user_textures.iter().any(|t| t.u01 == 1)).unwrap_or(false)).unwrap_or(false);
+        let card_parts: std::collections::HashSet<u32> = {
+            let mut all: std::collections::HashMap<u32, bool> = Default::default();
+            for v in pre.iter() { let e = all.entry(v.part).or_insert(true); *e = *e && is_card_mat(v.material); }
+            all.into_iter().filter(|(_, c)| *c).map(|(p, _)| p).collect()
+        };
+        if let Some(n) = repack_lightmap_parts_weighted(&mut pre, &card_parts) {
             REPACK_NOTE.with(|c| c.set(Some(n)));
         }
         if std::env::var_os("MAPGEOM_UV1_DEBUG").is_some() {
@@ -831,6 +838,47 @@ pub fn synthesize_solid_uv1(visuals: &mut [super::merged::MergedVisual], m: &sup
     n_done
 }
 
+/// The unit square split into one rectangle per weight by recursive bisection (sorted by weight, the
+/// list split where the weight sums balance, the rectangle split along its longer side in that ratio).
+/// Returned as `[x, y, w, h]` in the order of `weights`.
+pub fn weighted_cells(weights: &[f64]) -> Vec<[f64; 4]> {
+    let n = weights.len();
+    let mut out = vec![[0.0, 0.0, 1.0, 1.0]; n];
+    if n == 0 {
+        return out;
+    }
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|a, b| weights[*b].partial_cmp(&weights[*a]).unwrap_or(std::cmp::Ordering::Equal));
+    fn rec(idx: &[usize], w: &[f64], rect: [f64; 4], out: &mut Vec<[f64; 4]>) {
+        if idx.len() == 1 {
+            out[idx[0]] = rect;
+            return;
+        }
+        let total: f64 = idx.iter().map(|&i| w[i]).sum::<f64>().max(1e-12);
+        // split point: the prefix whose weight first reaches half
+        let mut acc = 0.0;
+        let mut cut = 1;
+        for (k, &i) in idx.iter().enumerate() {
+            acc += w[i];
+            if acc >= total * 0.5 && k + 1 < idx.len() {
+                cut = k + 1;
+                break;
+            }
+            cut = (k + 1).min(idx.len() - 1);
+        }
+        let fa: f64 = (idx[..cut].iter().map(|&i| w[i]).sum::<f64>() / total).clamp(0.05, 0.95);
+        let (a, b) = if rect[2] >= rect[3] {
+            ([rect[0], rect[1], rect[2] * fa, rect[3]], [rect[0] + rect[2] * fa, rect[1], rect[2] * (1.0 - fa), rect[3]])
+        } else {
+            ([rect[0], rect[1], rect[2], rect[3] * fa], [rect[0], rect[1] + rect[3] * fa, rect[2], rect[3] * (1.0 - fa)])
+        };
+        rec(&idx[..cut], w, a, out);
+        rec(&idx[cut..], w, b, out);
+    }
+    rec(&order, weights, [0.0, 0.0, 1.0, 1.0], &mut out);
+    out
+}
+
 /// Every merged PART's lightmap atlas into its own cell of a grid over the
 /// unit square, so no two parts' charts share lightmap texels.
 ///
@@ -848,6 +896,12 @@ pub fn synthesize_solid_uv1(visuals: &mut [super::merged::MergedVisual], m: &sup
 /// moves (Nadeo's layout is kept as authored). Returns the number of parts
 /// repacked, or None when there was nothing to do.
 pub fn repack_lightmap_parts(visuals: &mut [super::merged::MergedVisual]) -> Option<usize> {
+    repack_lightmap_parts_weighted(visuals, &Default::default())
+}
+
+/// `repack_lightmap_parts` with the parts that are nothing but cut-out cards named (a twentieth of
+/// their area's weight — see the weights below).
+pub fn repack_lightmap_parts_weighted(visuals: &mut [super::merged::MergedVisual], card_parts: &std::collections::HashSet<u32>) -> Option<usize> {
     use super::vstream::{Elem, N_TEXCOORD0};
     // only visuals that carry uv1 count as parts
     let mut parts: Vec<u32> = visuals.iter().filter(|v| v.visual.stream().map(|s| s.decls.iter().any(|d| d.name() == N_TEXCOORD0 + 1)).unwrap_or(false)).map(|v| v.part).collect();
@@ -857,11 +911,46 @@ pub fn repack_lightmap_parts(visuals: &mut [super::merged::MergedVisual]) -> Opt
         return None;
     }
     let n = parts.len();
+    // WEIGHTED CELLS: every part gets a rectangle of the unit square in proportion to the square root of
+    // its world-space triangle area (a hill's 16 m slopes against a gate sign), the vegetation cards at a
+    // twentieth of theirs (their texels are one prelit colour per card cluster in the game's bake — a dense
+    // bush's 20 000 card triangles would otherwise starve the block mesh they sit on, which is what an
+    // equal 3×3 grid did: a cliff's faces got 4×4 texels and the editor left them black, 2026-09-24).
+    // Recursive bisection of the square: the parts sorted by weight, split into two halves of equal
+    // weight, the rectangle split along its longer side in that ratio. TINY_LIGHTMAP_REPACK=grid keeps
+    // the old equal grid.
+    let weights: Vec<f64> = parts.iter().map(|&p| {
+        let mut area = 0f64;
+        for mv in visuals.iter().filter(|v| v.part == p) {
+            let Some(s) = mv.visual.stream() else { continue };
+            let Some(pi) = s.decls.iter().position(|d| d.name() == super::vstream::N_POSITION) else { continue };
+            let Elem::Float3(pos) = &s.elems[pi] else { continue };
+            let Some(ib) = mv.visual.index_buffer.as_ref() else { continue };
+            for t in ib.indices.chunks_exact(3) {
+                let (Some(a), Some(b), Some(c)) = (pos.get(t[0] as usize), pos.get(t[1] as usize), pos.get(t[2] as usize)) else { continue };
+                let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                let cr = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                area += 0.5 * ((cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]) as f64).sqrt();
+            }
+        }
+        let card = p >= super::merged::VEGET_PART_BASE || card_parts.contains(&p);
+        (area.max(1e-3)).sqrt() * if card { 0.05 } else { 1.0 }
+    }).collect();
+    let equal_grid = std::env::var("TINY_LIGHTMAP_REPACK").map(|v| v == "grid").unwrap_or(false);
+    let cells: Vec<[f64; 4]> = if equal_grid {
+        let grid = (n as f64).sqrt().ceil().max(1.0);
+        let cell = 1.0 / grid;
+        (0..n).map(|k| { let (cx, cy) = ((k as f64 % grid) * cell, (k as f64 / grid).floor() * cell); [cx, cy, cell, cell] }).collect()
+    } else {
+        weighted_cells(&weights)
+    };
+    // the pack margin (0.001) scaled with the cell, plus a gutter between cells
     let grid = (n as f64).sqrt().ceil().max(1.0);
     let cell = 1.0 / grid;
-    // the pack margin (0.001) scaled with the cell, plus a gutter between cells
     let margin = cell * 0.01;
     let inner = cell - 2.0 * margin;
+    let _ = (cell, inner);
     // `TINY_LIGHTMAP_REPACK=fit`: a part's uv1 BOUNDS fill its cell (uniform scale, centred) instead of
     // its [0,1]² square — a pack block's charts sit in a small corner of the square (a platform piece uses
     // 0.12 × 0.045 of it), so the default leaves each part a dot of texels and its lightmap one value per
@@ -886,8 +975,11 @@ pub fn repack_lightmap_parts(visuals: &mut [super::merged::MergedVisual]) -> Opt
     }
     for mv in visuals.iter_mut() {
         let Some(k) = parts.iter().position(|p| *p == mv.part) else { continue };
-        let k = k as f64;
-        let (cx, cy) = ((k % grid) * cell + margin, (k / grid).floor() * cell + margin);
+        let c = cells[k];
+        let margin = c[2].min(c[3]) * 0.01;
+        let (cx, cy) = (c[0] + margin, c[1] + margin);
+        let (inner_w, inner_h) = (c[2] - 2.0 * margin, c[3] - 2.0 * margin);
+        let inner = inner_w.min(inner_h);
         let fitb = if fit { part_bounds.get(&mv.part).copied().filter(|b| b[2] > b[0] && b[3] > b[1]) } else { None };
         let Some(s) = mv.visual.stream_mut() else { continue };
         let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
@@ -904,8 +996,8 @@ pub fn repack_lightmap_parts(visuals: &mut [super::merged::MergedVisual]) -> Opt
                 }
                 None => {
                     for p in uv.iter_mut() {
-                        p[0] = (cx + p[0].clamp(0.0, 1.0) as f64 * inner) as f32;
-                        p[1] = (cy + p[1].clamp(0.0, 1.0) as f64 * inner) as f32;
+                        p[0] = (cx + p[0].clamp(0.0, 1.0) as f64 * inner_w) as f32;
+                        p[1] = (cy + p[1].clamp(0.0, 1.0) as f64 * inner_h) as f32;
                     }
                 }
             }
@@ -973,9 +1065,10 @@ mod repack_tests {
         }
     }
 
-    /// One part: Nadeo's layout is kept. Three parts: a 2x2 grid, every
-    /// part inside its own cell, the full-square chart of one part never
-    /// touching another's cell.
+    /// One part: Nadeo's layout is kept. Three parts: every part inside its
+    /// own rectangle (weighted by area; the test visuals have no positions, so
+    /// equal weights), the full-square chart of one part never overlapping
+    /// another's rectangle, the two visuals of one part sharing theirs.
     #[test]
     fn parts_land_in_disjoint_cells() {
         let full = vec![[0.001, 0.001], [0.999, 0.001], [0.999, 0.999], [0.001, 0.999]];
@@ -984,20 +1077,30 @@ mod repack_tests {
         assert_eq!(uv1_of(&one[0]), full);
         let mut three = vec![visual(1, full.clone()), visual(2, full.clone()), visual(1, full.clone()), visual(3, full.clone())];
         assert_eq!(super::repack_lightmap_parts(&mut three), Some(3));
-        let cell = |uv: [f32; 2]| ((uv[0] * 2.0).floor() as i32, (uv[1] * 2.0).floor() as i32);
-        let cells: Vec<(i32, i32)> = three.iter().map(|mv| {
-            let uv = uv1_of(mv);
-            let c = cell(uv[0]);
-            for p in &uv {
-                assert_eq!(cell(*p), c, "a chart crossed a cell border: {p:?}");
-                assert!((0.0..=1.0).contains(&p[0]) && (0.0..=1.0).contains(&p[1]));
-            }
-            c
-        }).collect();
-        assert_eq!(cells[0], cells[2], "the two visuals of part 1 share a cell");
-        assert_ne!(cells[0], cells[1]);
-        assert_ne!(cells[1], cells[3]);
-        assert_ne!(cells[0], cells[3]);
+        let bbox = |uv: &[[f32; 2]]| {
+            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for p in uv { for k in 0..2 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); assert!((0.0..=1.0).contains(&p[k])); } }
+            [lo[0], lo[1], hi[0], hi[1]]
+        };
+        let boxes: Vec<[f32; 4]> = three.iter().map(|mv| bbox(&uv1_of(mv))).collect();
+        assert_eq!(boxes[0], boxes[2], "the two visuals of part 1 share a rectangle");
+        let overlap = |a: [f32; 4], b: [f32; 4]| a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+        assert!(!overlap(boxes[0], boxes[1]));
+        assert!(!overlap(boxes[1], boxes[3]));
+        assert!(!overlap(boxes[0], boxes[3]));
+    }
+
+    #[test]
+    fn weighted_cells_tile_the_square() {
+        let cells = super::weighted_cells(&[4.0, 1.0, 1.0]);
+        let area: f64 = cells.iter().map(|c| c[2] * c[3]).sum();
+        assert!((area - 1.0).abs() < 1e-9, "the rectangles tile the unit square: {area}");
+        assert!(cells[0][2] * cells[0][3] > cells[1][2] * cells[1][3], "the heavy part gets the larger rectangle: {cells:?}");
+        for (i, a) in cells.iter().enumerate() { for (j, b) in cells.iter().enumerate() { if i != j {
+            let ov = a[0] < b[2] - 1e-9 && b[0] < a[2] - 1e-9 && a[1] < b[3] - 1e-9 && b[1] < a[3] - 1e-9;
+            let _ = (a[2], b[2]);
+            assert!(!ov || !(a[0] + a[2] > b[0] + 1e-9 && b[0] + b[2] > a[0] + 1e-9 && a[1] + a[3] > b[1] + 1e-9 && b[1] + b[3] > a[1] + 1e-9), "rectangles {i} and {j} overlap: {a:?} {b:?}");
+        } } }
     }
 }
 
