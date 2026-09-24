@@ -310,6 +310,15 @@ void ReadCarState() {
     }
 }
 
+// The game's own user directory (`C:/Users/.../OneDrive/Documents/Trackmania/`),
+// forward slashes, trailing slash -- asked of the game, never guessed.
+string UserDir() {
+    string d = IO::FromUserGameFolder("");
+    d = d.Replace("\\", "/");
+    if (d.Length > 0 && d.SubStr(d.Length - 1) != "/") d += "/";
+    return d;
+}
+
 bool InPlayground() {
     // A playground is a playground whether or not the editor is behind it.
     // The editor's TEST mode gives a real one with the player's car, and since
@@ -410,6 +419,19 @@ string RunCommand(const string &in verb, const string &in arg) {
     if (verb == "strength") { S_JumpStrength = Text::ParseFloat(arg); return "strength=" + S_JumpStrength; }
     if (verb == "requireground") { S_RequireGround = (arg == "1" || arg == "true"); return "requireground=" + S_RequireGround; }
     if (verb == "cooldown") { S_Cooldown = Text::ParseFloat(arg); return "cooldown=" + S_Cooldown; }
+    if (verb == "playmap" || verb == "editplay") {
+        // REFUSE A MAP THE GAME WOULD SILENTLY IGNORE. The loader accepts any
+        // path and, for one outside the user directory, loads nothing: ok,
+        // no dialog, no log line, ctx 0 forever. That cost most of a day on
+        // 2026-09-24 with a map in a stray Documents\Trackmania. tmdrive
+        // checks this first; this is the check for callers that do not go
+        // through it, at the last place the path can still be refused.
+        string userDir = UserDir();
+        if (userDir.Length > 0 && arg.ToLower().IndexOf(userDir.ToLower()) != 0) {
+            return "REFUSED: " + arg + " is not under the game user directory (" + userDir
+                + "). The game would accept it and load NOTHING. Put the map under " + userDir + "Maps\\ and retry.";
+        }
+    }
     if (verb == "playmap") {
         auto app = cast<CTrackMania>(GetApp());
         if (app is null) return "no CTrackMania";

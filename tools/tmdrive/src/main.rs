@@ -120,6 +120,19 @@ fn main() {
 
         "playmap" => {
             let Some(p) = args.get(1).cloned() else { usage() };
+            // VALIDATE BEFORE THE LOCK. A map outside the game's user
+            // directory is refused with the fix in the message -- and that
+            // refusal must not cost a wait for the box first. Checking the
+            // path needs no lock, so it comes first and fails in
+            // milliseconds; the game is never asked to load something it
+            // would silently ignore.
+            let p = match tmdrive::loadable_map_path(&p) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("tmdrive: {e}");
+                    std::process::exit(2);
+                }
+            };
             with_lock(&host, &purpose, &args, |l| {
                 println!("{}", ops::play_map(l, &p)?);
                 Ok(())

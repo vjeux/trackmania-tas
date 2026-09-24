@@ -344,10 +344,17 @@ fn main() {
 
         // THE WHOLE SEQUENCE, under one hold, with retries. Replaces the
         // runjump.sh shell script -- harnesses are Rust here, not bash.
-        "run" => with_lock(host.clone(), "jump button: full verification run", |lock| {
+        "run" => {
             let map = args.get(1).cloned().unwrap_or_else(|| DEFAULT_MAP.to_string());
-            run_full(lock, &map, 3)
-        }),
+            // Refuse a map the game would silently ignore BEFORE taking the
+            // box: milliseconds, not a lock wait plus a 90 s timeout.
+            match tmdrive::loadable_map_path(&map) {
+                Ok(map) => with_lock(host.clone(), "jump button: full verification run", |lock| {
+                    run_full(lock, &map, 3)
+                }),
+                Err(e) => Err(e),
+            }
+        }
 
         // Hot-reload the plugin repeatedly WHILE physics runs, and require the
         // game to survive and still jump. Guards the use-after-free fix:
@@ -377,7 +384,7 @@ fn main() {
             // success, so normalise it here rather than handing the game a
             // spelling it will silently ignore.
             if (verb == "playmap" || verb == "editplay") && !arg.is_empty() {
-                arg = tmdrive::game_path(&arg)?;
+                arg = tmdrive::loadable_map_path(&arg)?;
             }
             send_command(lock.host(), &verb, &arg, Duration::from_secs(30)).map(|_| ())
         }),
@@ -414,14 +421,25 @@ fn launch_and_hook(lock: &GameLock, t: Duration) -> Result<(), String> {
     Ok(())
 }
 
-/// Into a drivable playground. Through the EDITOR's TEST button: the title's
-/// PlayMap has loaded nothing since 2026-09-23, and the editor route is the
-/// one that works. tmdrive owns that recipe so every driver shares it.
+/// Into a drivable playground.
+///
+/// PlayMap first: it was never broken -- every "PlayMap loads nothing" since
+/// 2026-09-23 was a map outside the game's user directory, which the loader
+/// accepts and silently ignores (tmdrive::loadable_map_path now refuses that
+/// up front). The u10s session entered a stock map through plain /playmap in
+/// 5 s today. The editor route stays as the fallback for a map PlayMap will
+/// not take.
 fn enter_map(lock: &GameLock, map: &str) -> Result<(), String> {
-    let r = ops::enter_map_via_editor(lock, map, 180).map_err(|e| e.to_string())?;
-    println!("  {r}");
+    let r = ops::play_map(lock, map).map_err(|e| e.to_string())?;
+    println!("  {}", r.trim());
+    if wait_for(lock.host(), "in-map", Duration::from_secs(90)).is_ok() {
+        println!("  in a map (PlayMap)");
+    } else {
+        println!("  PlayMap gave no playground in 90 s; trying the editor's TEST button");
+        let r = ops::enter_map_via_editor(lock, map, 180).map_err(|e| e.to_string())?;
+        println!("  {r}");
+    }
     wait_for(lock.host(), "in-map", Duration::from_secs(60))?;
-    println!("  in a map");
     wait_for(lock.host(), "car", Duration::from_secs(60))?;
     println!("  car pointer captured");
     wait_for(lock.host(), "ticking", Duration::from_secs(30))?;
