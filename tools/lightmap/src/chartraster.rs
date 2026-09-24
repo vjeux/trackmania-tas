@@ -100,8 +100,8 @@ mod tests {
         let p = |x: f32, z: f32| [x, 0.0, z];
         let n = [0.0, 1.0, 0.0];
         let tris = vec![
-            Tri { p: [p(0.0, 0.0), p(8.0, 0.0), p(8.0, 8.0)], n: [n; 3], uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]], uv0: [[0.0; 2]; 3], alpha: u16::MAX, mat: u16::MAX },
-            Tri { p: [p(0.0, 0.0), p(8.0, 8.0), p(0.0, 8.0)], n: [n; 3], uv: [[0.0, 0.0], [1.0, 1.0], [0.0, 1.0]], uv0: [[0.0; 2]; 3], alpha: u16::MAX, mat: u16::MAX },
+            Tri { p: [p(0.0, 0.0), p(8.0, 0.0), p(8.0, 8.0)], n: [n; 3], uv: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]], uv0: [[0.0; 2]; 3], alpha: u16::MAX, mat: u16::MAX, diff: u16::MAX },
+            Tri { p: [p(0.0, 0.0), p(8.0, 8.0), p(0.0, 8.0)], n: [n; 3], uv: [[0.0, 0.0], [1.0, 1.0], [0.0, 1.0]], uv0: [[0.0; 2]; 3], alpha: u16::MAX, mat: u16::MAX, diff: u16::MAX },
         ];
         let m = ModelGeom { tris, metres_per_uv: 8.0, uv_min: [0.0, 0.0], uv_max: [1.0, 1.0], ..ModelGeom::default() };
         Scene {
@@ -111,6 +111,8 @@ mod tests {
             item_count: 1,
             decor: Vec::new(),
             alpha_masks: Default::default(),
+            card_albedo: Default::default(),
+            tex_albedo: Default::default(),
         }
     }
 
