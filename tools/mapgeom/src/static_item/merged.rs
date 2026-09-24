@@ -1203,6 +1203,7 @@ impl Merged {
         if !layer_table.is_empty() {
             self.notes.push(format!("layer table {}", layer_table.iter().map(|(id, m)| format!("{id:x}->{}", self.materials[*m].link().unwrap_or("?").rsplit('\\').next().unwrap_or("?"))).collect::<Vec<_>>().join(" ")));
         }
+        let mut part_pick_deviation: Option<Option<f32>> = None;
         for g in &s2.shaded_geoms {
             // A geom's lod mask says which detail levels draw it (bit 0 =
             // nearest). Every level is kept with its mask and the ladder's
@@ -1218,9 +1219,44 @@ impl Merged {
                 // its nearest level is heavy enough (`LodPick::min_verts`), else
                 // the nearest
                 let level0_verts: i32 = s2.shaded_geoms.iter().filter(|h| h.lod_mask == 0 || h.lod_mask & 1 != 0).filter_map(|h| s2.visuals.get(h.visual_index as usize).and_then(|r| r.inline.as_deref())).filter_map(|n| if let Node::Visual(v) = n { v.main.as_ref().map(|m| m.count) } else { None }).sum();
+                // A part the car can TOUCH may go coarser only while the coarser level STAYS
+                // ON its collision hull: the hull is the nearest level's shape, and a coarser
+                // curved sheet leaves it by the facet sagitta (Giant 100's banked wall-ride at
+                // every part on level 1: 7 segments drawn over a 49-segment hull, 1.2 m off —
+                // the car "sinks into the wall" on the bulging facets and floats on the others;
+                // Everios96 2026-09-23). Measured once per part: the candidate level's edge
+                // midpoints and centroids against the hull triangles (local frame, unscaled);
+                // over TINY_LOD_PICK_TOL metres (default 0.05) the part keeps its nearest
+                // level. A flat piece (pillar, box) passes and still shrinks.
                 let pick = match self.one_level {
                     Some(n) => n,
-                    None => lod_pick().filter(|p| level0_verts >= p.min_verts).map(|p| p.level).filter(|p| s2.shaded_geoms.iter().any(|h| h.lod_mask & (1 << p) != 0)).unwrap_or(0),
+                    None => {
+                        let want = lod_pick().filter(|p| level0_verts >= p.min_verts).map(|p| p.level).filter(|p| s2.shaded_geoms.iter().any(|h| h.lod_mask & (1 << p) != 0)).unwrap_or(0);
+                        if want == 0 {
+                            0
+                        } else {
+                            let tol: f32 = std::env::var("TINY_LOD_PICK_TOL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.3);
+                            // relative to the nearest level's own distance from the hull: a
+                            // finish arch whose hull is a box under a detailed visual may go
+                            // coarser (the collision never followed the visual), a wall whose
+                            // nearest level IS the hull may not
+                            // in WORLD metres (the local frame times the item scale: the Giant's
+                            // wall-ride is 0.21 m off unscaled, 0.42 m in the game)
+                            let phys_of_geom = |g: &super::solid2::ShadedGeom| -> u8 {
+                                slots.get(g.material_index.max(0) as usize).copied().flatten().map(|m| self.materials[m].physics()).unwrap_or(0)
+                            };
+                            match part_pick_deviation.get_or_insert_with(|| match (coarse_level_deviation(so, s2, want, &phys_of_geom), coarse_level_deviation(so, s2, 0, &phys_of_geom)) {
+                                (Some(c), Some(n)) => Some((c - n) * scale),
+                                _ => None,
+                            }) {
+                                Some(dev) if *dev > tol => {
+                                    self.notes.push(format!("lod-pick: level {want} leaves the collision hull by {dev:.2} m more than the nearest level — nearest level kept"));
+                                    0
+                                }
+                                _ => want,
+                            }
+                        }
+                    }
                 };
                 let keep = g.lod_mask == 0 || g.lod_mask & (1 << pick) != 0;
                 if !keep {
@@ -2066,4 +2102,79 @@ impl Merged {
         self.notes.push(format!("TINY_SCREENS=dark: {moved} ad screen face visual(s) re-dressed as ScreenBack"));
         moved
     }
+}
+
+
+/// How far a part's detail level `level` strays from the part's own collision hull:
+/// the largest distance from any edge midpoint / centroid of that level's visuals to
+/// the nearest hull triangle (metres, local frame). `None` when the part has no mesh
+/// hull or the level has no visual (nothing to compare — the caller then coarsens).
+/// Only DRIVING surfaces count — probes come from the level's visuals whose material the
+/// car rolls on, distances go to hull triangles of a driving physics: a finish arch's metal
+/// struts may go coarse over their box hull, a plastic wall-ride may not leave its face.
+fn structural_physics(p: u8) -> bool {
+    // 4 Metal (TechnicsTrims), 22 ResonantMetal (Structure/Pylon/TrackWallClips), 9 Rubber
+    // (TrackBorders), 0 unknown, 80 no contact
+    matches!(p, 0 | 4 | 9 | 22 | 80)
+}
+
+fn coarse_level_deviation(so: &super::item::CPlugStaticObjectModel, s2: &super::solid2::CPlugSolid2Model, level: u32, phys_of_geom: &dyn Fn(&super::solid2::ShadedGeom) -> u8) -> Option<f32> {
+    let sf = so.surface()?;
+    let (hv, ht) = match &sf.surf {
+        Surf::Mesh { vertices, triangles, .. } if !triangles.is_empty() => (vertices.clone(), triangles.iter().filter(|t| !structural_physics(t.material_id)).map(|t| t.indices).collect::<Vec<_>>()),
+        other => other.triangulate().map(|(v, t)| (v, t.iter().map(|t| t.indices).collect::<Vec<_>>()))?,
+    };
+    if ht.is_empty() {
+        return None;
+    }
+    let tri = |t: &[u32; 3]| -> Option<[[f32; 3]; 3]> { Some([*hv.get(t[0] as usize)?, *hv.get(t[1] as usize)?, *hv.get(t[2] as usize)?]) };
+    let hull: Vec<[[f32; 3]; 3]> = ht.iter().filter_map(tri).collect();
+    // a coarse grid over the hull triangles' centroids keeps the probe from being O(points × tris)
+    let dist_to_hull = |p: [f32; 3]| -> f32 {
+        let mut best = f32::MAX;
+        for t in &hull {
+            let d = crate::probe::point_triangle_distance(p, t[0], t[1], t[2]);
+            if d < best {
+                best = d;
+            }
+        }
+        best
+    };
+    let mut worst = 0.0f32;
+    let mut probed = 0usize;
+    for g in &s2.shaded_geoms {
+        if g.lod_mask != 0 && g.lod_mask & (1 << level) == 0 {
+            continue;
+        }
+        if structural_physics(phys_of_geom(g)) {
+            continue;
+        }
+        let Some(Node::Visual(v)) = s2.visuals.get(g.visual_index as usize).and_then(|r| r.inline.as_deref()) else { continue };
+        let Some(stream) = v.stream() else { continue };
+        let pos: Vec<[f32; 3]> = match stream.decls.iter().zip(stream.elems.iter()).find(|(d, _)| d.name() == super::vstream::N_POSITION).map(|(_, e)| e) {
+            Some(super::vstream::Elem::Float3(p)) => p.clone(),
+            _ => continue,
+        };
+        let Some(ib) = v.index_buffer.as_ref() else { continue };
+        // every 4th triangle is plenty: a facet's sagitta shows on any of its triangles
+        for t in ib.indices.chunks(3).step_by(4) {
+            if t.len() < 3 {
+                continue;
+            }
+            let (Some(a), Some(b), Some(c)) = (pos.get(t[0] as usize), pos.get(t[1] as usize), pos.get(t[2] as usize)) else { continue };
+            let mid = |p: &[f32; 3], q: &[f32; 3]| [(p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0, (p[2] + q[2]) / 2.0];
+            let cen = [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0];
+            for p in [mid(a, b), mid(b, c), mid(c, a), cen] {
+                let d = dist_to_hull(p);
+                if d > worst {
+                    worst = d;
+                }
+                probed += 1;
+                if probed > 4000 {
+                    return Some(worst);
+                }
+            }
+        }
+    }
+    if probed == 0 { None } else { Some(worst) }
 }
