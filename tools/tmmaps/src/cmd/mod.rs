@@ -2,3 +2,4 @@
 pub mod inspect;
 pub mod ladder;
 pub mod surgery;
+pub mod straight;

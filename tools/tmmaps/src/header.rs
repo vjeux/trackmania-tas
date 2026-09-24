@@ -314,7 +314,45 @@ pub fn read(path: &str) -> Result<MapHeader, String> {
     })
 }
 
+/// `tmmaps header MAP --set-flag NAME=V --out F`: flip a ONE-CHARACTER attribute in
+/// the header XML in place (same length, so nothing moves). Written for the
+/// 2026-09-13 bisect of "a map the editor saved after importing a MediaTracker
+/// ghost will not enter a playground": `hasghostblocks="1"` is the flag the save
+/// sets, and the question is whether the GAME reads it.
+pub fn set_flag(args: &[String]) {
+    let path = std::path::Path::new(&args[2]);
+    let spec = crate::cli::flag(args, "--set-flag").unwrap_or_else(|| crate::cli::die("tmmaps header MAP --set-flag NAME=V --out F"));
+    let out = crate::cli::flag(args, "--out").unwrap_or_else(|| crate::cli::die("--out F"));
+    let (name, val) = spec.split_once('=').unwrap_or_else(|| crate::cli::die("--set-flag NAME=V"));
+    if val.len() != 1 {
+        crate::cli::die("--set-flag takes a ONE-character value (the edit must not resize the header)");
+    }
+    let mut m = crate::map::MapFile::load(path);
+    let pat = format!("{name}=\"");
+    let hay = m.gbx.user_data.clone();
+    let at = hay.windows(pat.len()).position(|w| w == pat.as_bytes()).unwrap_or_else(|| crate::cli::die(&format!("{}: no {name}=\"…\" in the header XML", path.display())));
+    let vat = at + pat.len();
+    let old = hay[vat] as char;
+    if hay[vat + 1] != b'"' {
+        crate::cli::die(&format!("{name} is not a one-character attribute in this header"));
+    }
+    m.gbx.user_data[vat] = val.as_bytes()[0];
+    m.write_to(std::path::Path::new(out)).unwrap_or_else(|e| crate::cli::die(&format!("{out}: {e}")));
+    let back = crate::map::MapFile::load(std::path::Path::new(out));
+    let now = back.gbx.user_data[vat] as char;
+    if now != val.chars().next().unwrap() {
+        crate::cli::die(&format!("{out}: the flag reads back as {now:?}, not {val:?}"));
+    }
+    println!("wrote {out}: header {name} {old:?} -> {now:?}");
+}
+
 pub fn cmd(args: &[String]) {
+    if crate::cli::flag(args, "--set-flag").is_some() {
+        return set_flag(args);
+    }
+    if crate::cli::has(args, "--strip-deps") {
+        return strip_deps(args);
+    }
     let mut paths: Vec<String> = Vec::new();
     let mut tsv = false;
     let mut want_xml = false;
@@ -324,6 +362,8 @@ pub fn cmd(args: &[String]) {
             "--tsv" => tsv = true,
             "--xml" => want_xml = true,
             "--names" => names = true,
+            "--set-flag" | "--out" => {}
+            s if s.starts_with("--set-flag=") || s.starts_with("--out=") => {}
             s if s.starts_with("--") => {
                 eprintln!("tmmaps header: unknown option `{s}`");
                 std::process::exit(2);
@@ -701,25 +741,36 @@ pub fn deflated_zip(files: &std::collections::BTreeMap<String, Vec<u8>>) -> Vec<
 }
 
 pub fn stored_zip(files: &std::collections::BTreeMap<String, Vec<u8>>) -> Vec<u8> {
+    // DEFLATE entries with a valid DOS timestamp. Despite the name this writer no longer
+    // stores: the client crashes importing a ghost whose skin zip has Store (method 0)
+    // entries, and renders the same files Deflated (2026-09-14: QJ store+date -> crash,
+    // QK deflate -> hill on screen). Every skin zip that ever rendered was Deflate.
+    const DOS_TIME: [u8; 2] = 0x1000u16.to_le_bytes(); // 02:00:00
+    const DOS_DATE: [u8; 2] = 0x5D2Eu16.to_le_bytes(); // 2026-09-14
     let mut out = Vec::new();
     let mut central = Vec::new();
     for (name, data) in files {
         let off = out.len() as u32;
         let crc = crc32(data);
         let n = name.as_bytes();
+        let packed = miniz_oxide::deflate::compress_to_vec(data, 6);
         out.extend_from_slice(b"PK\x03\x04");
-        out.extend_from_slice(&[20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        out.extend_from_slice(&[20, 0, 0, 0, 8, 0]);
+        out.extend_from_slice(&DOS_TIME);
+        out.extend_from_slice(&DOS_DATE);
         out.extend_from_slice(&crc.to_le_bytes());
-        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(packed.len() as u32).to_le_bytes());
         out.extend_from_slice(&(data.len() as u32).to_le_bytes());
         out.extend_from_slice(&(n.len() as u16).to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes());
         out.extend_from_slice(n);
-        out.extend_from_slice(data);
+        out.extend_from_slice(&packed);
         central.extend_from_slice(b"PK\x01\x02");
-        central.extend_from_slice(&[20, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        central.extend_from_slice(&[20, 0, 20, 0, 0, 0, 8, 0]);
+        central.extend_from_slice(&DOS_TIME);
+        central.extend_from_slice(&DOS_DATE);
         central.extend_from_slice(&crc.to_le_bytes());
-        central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        central.extend_from_slice(&(packed.len() as u32).to_le_bytes());
         central.extend_from_slice(&(data.len() as u32).to_le_bytes());
         central.extend_from_slice(&(n.len() as u16).to_le_bytes());
         central.extend_from_slice(&[0u8; 8]);
@@ -1017,3 +1068,35 @@ pub fn embedded_zip_bytes(body: &[u8]) -> Option<(Vec<u8>, Vec<String>)> {
 /// an exhaustive search, ~2 % smaller at several times the compression time —
 /// not what moves a map off the upload cap; the detail-level pick is).
 pub const DEFLATE_LEVEL: u8 = 6;
+
+/// `tmmaps header MAP --strip-deps --out F`: blank the header XML's `<deps>…</deps>`
+/// entries (same length, spaces — the header must not resize). A map whose sunk or
+/// deleted items still advertise skin dependencies makes the client sit in an
+/// "Updating data…" modal on load instead of opening the editor (2026-09-14, the
+/// straight showcase map built from Summer 2025 - 02's Screen items).
+pub fn strip_deps_in(m: &mut crate::map::MapFile) -> usize {
+    let hay = m.gbx.user_data.clone();
+    let find = |pat: &[u8], from: usize| hay[from..].windows(pat.len()).position(|w| w == pat).map(|p| p + from);
+    let (Some(a), ) = (find(b"<deps>", 0),) else { return 0 };
+    let Some(b) = find(b"</deps>", a) else { return 0 };
+    let inner = a + "<deps>".len()..b;
+    let n = inner.len();
+    for i in inner {
+        m.gbx.user_data[i] = b' ';
+    }
+    n
+}
+
+pub fn strip_deps(args: &[String]) {
+    let path = std::path::Path::new(&args[2]);
+    let out = crate::cli::flag(args, "--out").unwrap_or_else(|| crate::cli::die("--out F"));
+    let mut m = crate::map::MapFile::load(path);
+    let n = strip_deps_in(&mut m);
+    m.write_to(std::path::Path::new(out)).unwrap_or_else(|e| crate::cli::die(&format!("{out}: {e}")));
+    let back = crate::map::MapFile::load(std::path::Path::new(out));
+    let xml = String::from_utf8_lossy(&back.gbx.user_data).to_string();
+    if xml.contains("<dep ") {
+        crate::cli::die(&format!("{out}: a <dep> survived"));
+    }
+    println!("wrote {out}: {n} bytes of <deps> blanked");
+}

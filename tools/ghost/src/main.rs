@@ -402,6 +402,7 @@ fn main() {
         "tape" => cmd_tape(rest),
         "map" => cmd_map(rest),
         "trim" => trim::cmd(rest),
+        "static" => ghost::statik::cmd(rest),
         "splice" => splice::cmd(rest),
         "synth" => synth::cmd(rest),
         "unwrap" => ghost::unwrap::cmd(rest),

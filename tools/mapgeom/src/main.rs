@@ -292,13 +292,14 @@ fn main() {
                 let p = e.path();
                 if pat.is_empty() || p.to_uppercase().contains(&pat) {
                     println!(
-                        "{}\tclass 0x{:08X}\t{} bytes\tflags 0x{:x}{}{}",
+                        "{}\tclass 0x{:08X}\t{} bytes\tflags 0x{:x}{}{}{}",
                         p,
                         e.class_id,
                         e.uncompressed_size,
                         e.flags,
                         if e.is_compressed() { " lz4" } else { " raw" },
-                        if e.dont_use_dummy_write() { "" } else { " dummywrite" }
+                        if e.dont_use_dummy_write() { "" } else { " dummywrite" },
+                        if e.compressed_size != e.uncompressed_size { format!(" (stored {} B)", e.compressed_size) } else { String::new() }
                     );
                     n += 1;
                 }
@@ -1529,7 +1530,8 @@ fn main() {
         // writer reproduces a pack mesh (the flag cloth's inline-vertex frames,
         // 2026-09-07). Prints the two lengths and the first differing offset.
         "solid2-roundtrip" => {
-            let mut store = open(&a);
+            let p0 = a.rest.get(1).cloned().unwrap_or_default();
+            let mut store = if std::path::Path::new(&p0).is_file() && a.paks.is_empty() { DataStore::empty() } else { open(&a) };
             let p = a.rest.get(1).cloned().unwrap_or_default();
             let m = load_any(&mut store, &p);
             let mut lb = mapgeom::static_item::LookbackState::default();
@@ -1557,6 +1559,1190 @@ fn main() {
             if let Some(out_path) = flag(&a.rest, "--out") {
                 std::fs::write(&out_path, &out).unwrap_or_else(|e| die(e.to_string()));
                 println!("wrote {out_path}");
+            }
+        }
+        // skin-inspect <MainBody.Mesh.gbx>: a car SKIN mesh (a bare CPlugSolid2Model
+        // whose materials are NAMES the vehicle vis model resolves) laid out for
+        // the skin-scenery study — the joints, every visual's shading material,
+        // lod mask, skin data (bones), vertex declarations with their element
+        // names/types/spaces/offsets and the value ranges of each element.
+        "skin-inspect" => {
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            // A skin mesh on disk needs no pack: its materials are NAMES. Only
+            // fall back to the store when the argument is a pack path.
+            let mut store = if std::path::Path::new(&p).is_file() && a.paks.is_empty() {
+                DataStore::empty()
+            } else {
+                open(&a)
+            };
+            let m = load_any(&mut store, &p);
+            let mut lb = mapgeom::static_item::LookbackState::default();
+            lb.defined_nodes.extend(m.external_indices().iter().copied());
+            let mut r = mapgeom::static_item::Rd::new(&m.body, 0, lb);
+            let s2 = mapgeom::static_item::solid2::CPlugSolid2Model::parse(&mut r).unwrap_or_else(|e| die(format!("{p}: {e}")));
+            println!("{p}: solid2 v{} chunks {:x?} damage_zone {} flags {:#x} u05 {} u07 {} vis_cst_type {} lod_max_dist {:?} u13 {} u15 {} u16 {}", s2.version, s2.chunks, s2.damage_zone, s2.flags, s2.u05, s2.u07, s2.vis_cst_type, s2.lod_max_dist, s2.u13, s2.u15, s2.u16);
+            println!("  skel ref index {} inline {}", s2.skel.index, s2.skel.inline.is_some());
+            if let Some(node) = s2.skel.inline.as_deref() {
+                if let mapgeom::static_item::Node::Skel(sk) = node {
+                    println!("  skel v{} name {:?}: {} joints, {} sockets, joints_lods {:?}, rotation_order {:?}, u10 {:?}, v20_word {}, c_lod {}, lod_max_dists {:?}, u03 {} u04 {} u05 {:?} raw chunks {:?}",
+                        sk.version, sk.name, sk.joints.len(), sk.sockets.len(), sk.joints_lods, sk.rotation_order, sk.u10, sk.v20_word, sk.c_lod, sk.lod_max_dists,
+                        sk.u03.is_some(), sk.u04.is_some(), sk.u05, sk.raw.iter().map(|c| format!("{:#x}:{}", c.id, c.payload.len())).collect::<Vec<_>>());
+                    for (i, j) in sk.joints.iter().enumerate() {
+                        let g = &j.global_loc;
+                        println!("    joint {i:2} {:<22} parent {:3} pos ({:.3}, {:.3}, {:.3}) rot [{:.2} {:.2} {:.2} | {:.2} {:.2} {:.2} | {:.2} {:.2} {:.2}]{}",
+                            j.name.as_str().unwrap_or("?"), j.parent, g[9], g[10], g[11], g[0], g[1], g[2], g[3], g[4], g[5], g[6], g[7], g[8],
+                            j.old.map(|(q, p)| format!(" old q{q:?} p{p:?}")).unwrap_or_default());
+                    }
+                    for (i, s) in sk.sockets.iter().enumerate() {
+                        let g = &s.loc;
+                        println!("    socket {i:2} {:<22} joint {:3} pos ({:.3}, {:.3}, {:.3})", s.name.as_str().unwrap_or("?"), s.linked_joint, g[9], g[10], g[11]);
+                    }
+                    if let Some(u) = &sk.u03 { println!("    u03: a {} b {} c {} d {} e {}", u.a.len(), u.b.len(), u.c.len(), u.d, u.e); }
+                    if let Some(u) = &sk.u04 { println!("    u04: names {:?} a {:?} b {:?} quats {}", u.names.iter().map(|i| i.as_str().unwrap_or("?").to_string()).collect::<Vec<_>>(), u.a, u.b, u.quats.len()); }
+                } else {
+                    println!("  skel inline node is not a CPlugSkel: class {:#x}", node.class_id());
+                }
+            }
+            println!("  material_ids ({}): {:?}", s2.material_ids.len(), s2.material_ids.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>());
+            println!("  custom_materials {} materials(refs) {} materials_folder {:?}", s2.custom_materials.len(), s2.materials.len(), s2.materials_folder);
+            println!("  joints ({}): {:?}", s2.joints.len(), s2.joints.iter().map(|i| i.as_str().unwrap_or("?").to_string()).collect::<Vec<_>>());
+            println!("  u10 {:?} u12 {:?} u19 {:?}", s2.u10, s2.u12, s2.u19);
+            for rc in &s2.raw {
+                let head: Vec<String> = rc.payload.iter().take(64).map(|b| format!("{b:02x}")).collect();
+                println!("  raw chunk {:#x} ({} bytes): {}", rc.id, rc.payload.len(), head.join(" "));
+            }
+            let names = |n: u32| -> &'static str {
+                match n {
+                    0 => "Position",
+                    1 => "BlendWeight",
+                    2 => "BlendIndices",
+                    5 => "Normal",
+                    8 => "Color0",
+                    9 => "Color1",
+                    10 => "TexCoord0",
+                    11 => "TexCoord1",
+                    12 => "TexCoord2",
+                    18 => "TangentU",
+                    20 => "TangentV",
+                    _ => "?",
+                }
+            };
+            let tys = |t: u32| -> &'static str {
+                match t {
+                    0 => "Float1",
+                    1 => "Float2",
+                    2 => "Float3",
+                    3 => "Float4",
+                    4 => "Color",
+                    5 => "Int32",
+                    14 => "Dec3N",
+                    _ => "?",
+                }
+            };
+            for (gi, g) in s2.shaded_geoms.iter().enumerate() {
+                let mat = s2.material_ids.get(g.material_index as usize).and_then(|i| i.as_str()).unwrap_or("?");
+                let Some(vr) = s2.visuals.get(g.visual_index as usize) else { continue };
+                let Some(mapgeom::static_item::Node::Visual(v)) = vr.inline.as_deref() else {
+                    println!("  geom {gi}: visual {} not inline", g.visual_index);
+                    continue;
+                };
+                let main = v.main.as_ref();
+                let nidx = v.index_buffer.as_ref().map(|b| b.indices.len()).unwrap_or(0);
+                println!(
+                    "  geom {gi}: visual {} material {} ({}) lod_mask {} u01 {} u02 {} | {} verts {} indices ({} tris) chunk_flags {:#x} bbox {:?}",
+                    g.visual_index, g.material_index, mat, g.lod_mask, g.u01, g.u02,
+                    main.map(|m| m.count).unwrap_or(0), nidx, nidx / 3,
+                    main.map(|m| m.chunk_flags).unwrap_or(0),
+                    main.map(|m| m.bounding_box).unwrap_or([0.0; 6])
+                );
+                if let Some(mn) = main {
+                    if let Some(sk) = &mn.skin {
+                        println!("      skin data: u01 {} u02 {} u03 {} u04 {} bones ({}) {:?} u07 {:?}", sk.u01, sk.u02, sk.u03, sk.u04, sk.bones.len(), sk.bones.iter().map(|b| b.as_str().unwrap_or("?").to_string()).collect::<Vec<_>>(), sk.u07);
+                    } else {
+                        println!("      skin data: none");
+                    }
+                    println!("      tex_coord_sets {} uv_groups {} bitmap_elems {} u02 {} u03 {} u04 {:?}", mn.tex_coord_sets.len(), mn.uv_groups.len(), mn.bitmap_elems.len(), mn.u02, mn.u03, mn.u04);
+                    for tc in &mn.tex_coord_sets {
+                        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                        for (uv, _, _) in &tc.coords {
+                            for k in 0..2 {
+                                lo[k] = lo[k].min(uv[k]);
+                                hi[k] = hi[k].max(uv[k]);
+                            }
+                        }
+                        println!("      texcoords v{} flags {:?} n {} u range {:.3}..{:.3} v range {:.3}..{:.3}", tc.version, tc.flags, tc.coords.len(), lo[0], hi[0], lo[1], hi[1]);
+                    }
+                    for sr in &mn.vertex_streams {
+                        let Some(mapgeom::static_item::Node::VertexStream(s)) = sr.inline.as_deref() else {
+                            println!("      stream: not inline (index {})", sr.index);
+                            continue;
+                        };
+                        println!("      stream v{} count {} flags {:#x} compress_local3d {:?} decls {}", s.version, s.count, s.flags, s.compress_local3d, s.decls.len());
+                        for (di, d) in s.decls.iter().enumerate() {
+                            let stride = (d.flags1 >> 20) & 0xFF;
+                            let mut range = String::new();
+                            if let Some(e) = s.elems.get(di) {
+                                match e {
+                                    mapgeom::static_item::vstream::Elem::Float3(v) => {
+                                        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                                        for x in v {
+                                            for k in 0..3 {
+                                                lo[k] = lo[k].min(x[k]);
+                                                hi[k] = hi[k].max(x[k]);
+                                            }
+                                        }
+                                        range = format!("range x {:.3}..{:.3} y {:.3}..{:.3} z {:.3}..{:.3} first {:?}", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], v.first());
+                                    }
+                                    mapgeom::static_item::vstream::Elem::Float2(v) => {
+                                        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                                        for x in v {
+                                            for k in 0..2 {
+                                                lo[k] = lo[k].min(x[k]);
+                                                hi[k] = hi[k].max(x[k]);
+                                            }
+                                        }
+                                        range = format!("range u {:.3}..{:.3} v {:.3}..{:.3} first {:?}", lo[0], hi[0], lo[1], hi[1], v.first());
+                                    }
+                                    mapgeom::static_item::vstream::Elem::Float4(v) => {
+                                        range = format!("first {:?} second {:?}", v.first(), v.get(1));
+                                    }
+                                    mapgeom::static_item::vstream::Elem::Word(v) => {
+                                        let mut distinct: Vec<u32> = v.clone();
+                                        distinct.sort_unstable();
+                                        distinct.dedup();
+                                        let show: Vec<String> = distinct.iter().take(8).map(|x| format!("{x:#010x}")).collect();
+                                        range = format!("{} distinct words, e.g. {}", distinct.len(), show.join(" "));
+                                    }
+                                    mapgeom::static_item::vstream::Elem::Raw { size, bytes } => {
+                                        range = format!("raw {} bytes/elem, first {:02x?}", size, &bytes[..(*size).min(bytes.len())]);
+                                    }
+                                }
+                            }
+                            println!(
+                                "        decl {di}: name {} ({}) type {} ({}) space {} offset {} stride_words {} flags1 {:#010x} flags2 {:#010x} extra {:?} {}",
+                                d.name(), names(d.name()), d.ty(), tys(d.ty()), d.space(), d.offset(), stride, d.flags1, d.flags2, d.extra, range
+                            );
+                        }
+                    }
+                }
+                if let Some((tu, tv)) = &v.tangents {
+                    println!("      inline tangents: {} + {} bytes", tu.len(), tv.len());
+                }
+                if let Some(ib) = &v.index_buffer {
+                    let mx = ib.indices.iter().copied().max().unwrap_or(0);
+                    println!("      index buffer chunk {:#x} flags {:#x} max index {}", ib.chunk, ib.flags, mx);
+                }
+            }
+        }
+        // skel-roundtrip FILE.Skel.Gbx: parse a CPlugSkel file body with skel.rs and write it
+        // back — the byte check behind inlining a skeleton into a skin mesh.
+        "skel-roundtrip" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let m = load_any(&mut store, &p);
+            let mut r = mapgeom::static_item::Rd::new(&m.body, 0, mapgeom::static_item::LookbackState::default());
+            let sk = mapgeom::static_item::skel::CPlugSkel::parse(&mut r).unwrap_or_else(|e| die(format!("{p}: {e}")));
+            let consumed = r.o;
+            let mut out = Vec::new();
+            {
+                let mut lb = mapgeom::static_item::LookbackState::default();
+                let mut w = mapgeom::static_item::Wr { w: &mut out, lb: &mut lb };
+                sk.write(&mut w);
+            }
+            let same = out == m.body;
+            println!("{p}: skel v{} name {:?} {} joints, {} sockets, u03 {} u04 {} joints_lods {} rotation_order {} u10 {} c_lod {} lod_max_dists {:?}; body {} B ({consumed} consumed), rewritten {} B, {}", sk.version, sk.name, sk.joints.len(), sk.sockets.len(), sk.u03.is_some(), sk.u04.is_some(), sk.joints_lods.len(), sk.rotation_order.len(), sk.u10.len(), sk.c_lod, sk.lod_max_dists, m.body.len(), out.len(), if same { "IDENTICAL" } else { "DIFFERENT" });
+            println!("  joints: {:?}", sk.joint_names());
+            println!("  sockets: {:?}", sk.sockets.iter().map(|s| format!("{}->{}", s.name.as_str().unwrap_or("?"), s.linked_joint)).collect::<Vec<_>>());
+        }
+        // skin-inline-skel MESH.Mesh.gbx --skel FILE.Skel.Gbx --out F: the stock pak mesh
+        // with its skeleton carried inline (the shape `skinfix.py` leaves NadeoImporter
+        // output in) — the reference test for the zip loader.
+        "skin-inline-skel" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let skp = flag(&a.rest, "--skel").unwrap_or_else(|| die("--skel FILE.Skel.Gbx".into()));
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| die("--out F".into()));
+            let m = load_any(&mut store, &p);
+            let mut lb = mapgeom::static_item::LookbackState::default();
+            lb.defined_nodes.extend(m.external_indices().iter().copied());
+            let mut r = mapgeom::static_item::Rd::new(&m.body, 0, lb);
+            let mut s2 = mapgeom::static_item::solid2::CPlugSolid2Model::parse(&mut r).unwrap_or_else(|e| die(format!("{p}: {e}")));
+            let sm = load_any(&mut store, &skp);
+            let mut r2 = mapgeom::static_item::Rd::new(&sm.body, 0, mapgeom::static_item::LookbackState::default());
+            let sk = mapgeom::static_item::skel::CPlugSkel::parse(&mut r2).unwrap_or_else(|e| die(format!("{skp}: {e}")));
+            // node indices: root 0, visuals + streams as written, then the skel
+            let mut max_idx: i32 = 0;
+            for v in &s2.visuals {
+                max_idx = max_idx.max(v.index);
+                if let Some(mapgeom::static_item::Node::Visual(vis)) = v.inline.as_deref() {
+                    if let Some(mn) = &vis.main {
+                        for s in &mn.vertex_streams { max_idx = max_idx.max(s.index); }
+                    }
+                }
+            }
+            s2.skel = mapgeom::static_item::NodeRef { index: max_idx + 1, inline: Some(Box::new(mapgeom::static_item::Node::Skel(sk.clone()))) };
+            let mut body = Vec::new();
+            {
+                let mut lbw = mapgeom::static_item::LookbackState::default();
+                let mut w = mapgeom::static_item::Wr { w: &mut body, lb: &mut lbw };
+                s2.write(&mut w);
+            }
+            let file = mapgeom::static_item::file::write_node_file(0x090BB000, &body, (max_idx + 2) as u32, &[]);
+            std::fs::write(&out, &file).unwrap_or_else(|e| die(e.to_string()));
+            println!("wrote {out}: {} bytes, skel inline at node {} ({} joints: {:?}), solid2 joints {:?}", file.len(), max_idx + 1, sk.joints.len(), &sk.joint_names()[..sk.joints.len().min(6)], s2.joints.iter().map(|j| j.as_str().unwrap_or("?")).collect::<Vec<_>>());
+        }
+        // skin-fbx --out DIR --name NAME (--cube SIZE | --map … as skin-build): the FBX +
+        // MeshParams.xml for the NadeoImporter route (MeshType Vehicle, one Body bone).
+        "skin-fbx" => {
+            use mapgeom::static_item::skin;
+            let mut store = open(&a);
+            let out_dir = std::path::PathBuf::from(flag(&a.rest, "--out").unwrap_or_else(|| die("--out DIR".into())));
+            let name = flag(&a.rest, "--name").unwrap_or_else(|| "MainBody".to_string());
+            let texset_default = flag(&a.rest, "--texset").unwrap_or_else(|| "Details".to_string());
+            let family = flag(&a.rest, "--family").unwrap_or_else(|| "DetailsDmgNormal".to_string());
+            let mut parts: Vec<skin::Part> = Vec::new();
+            if let Some(sz) = flag(&a.rest, "--cube") {
+                let size: f32 = sz.parse().unwrap_or_else(|_| die("--cube SIZE".into()));
+                parts.push(skin::cube(size, &texset_default));
+            }
+            if let Some(map_path) = flag(&a.rest, "--map") {
+                let anchor: Vec<f32> = flag(&a.rest, "--anchor").unwrap_or_else(|| die("--anchor X,Y,Z".into())).split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                if anchor.len() != 3 { die::<()>("--anchor X,Y,Z".into()); }
+                let anchor = [anchor[0], anchor[1], anchor[2]];
+                let want: Vec<usize> = flag(&a.rest, "--items").unwrap_or_default().split(',').filter_map(|s| s.trim().trim_start_matches('i').parse().ok()).collect();
+                let texmap: Vec<(String, String)> = flag(&a.rest, "--texmap").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|kv| { let (k, v) = kv.split_once('=').unwrap_or_else(|| die(format!("--texmap {kv}: LINK=SET"))); (k.to_string(), v.to_string()) }).collect();
+                let strict = a.rest.iter().any(|x| x == "--texmap-strict");
+                let planar: Option<f32> = flag(&a.rest, "--planar-uv").map(|s| s.parse().unwrap_or_else(|_| die("--planar-uv METRES".into())));
+                let only: Vec<String> = flag(&a.rest, "--planar-sets").map(|s| s.split(',').map(|x| x.trim().to_string()).collect()).unwrap_or_default();
+                let m = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
+                let files = mapgeom::embedded::files(&m).unwrap_or_else(die);
+                let by_key: std::collections::BTreeMap<String, Vec<u8>> = files.into_iter().map(|(k, v)| (k.replace('\\', "/").to_lowercase(), v)).collect();
+                for it in &m.items {
+                    if !want.is_empty() && !want.contains(&it.index) { continue; }
+                    let key = it.model.replace('\\', "/").to_lowercase();
+                    let Some(bytes) = by_key.get(&key).or_else(|| by_key.iter().find(|(k, _)| k.ends_with(&format!("/{key}"))).map(|(_, v)| v)) else { continue };
+                    let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                    let material_of = |link: &str| -> Option<String> {
+                        for (k, v) in &texmap { if link == k || link.ends_with(&format!("\\{k}")) || link.contains(k.as_str()) { return if v == "-" { None } else { Some(v.clone()) }; } }
+                        if strict { None } else { Some(texset_default.clone()) }
+                    };
+                    if let Ok(ps) = skin::item_parts(bytes, &it.model, &material_of) {
+                        for (_, p) in ps {
+                            let mut placed = skin::place(&p, &xf, anchor);
+                            if let Some(mpt) = planar { if only.is_empty() || only.contains(&placed.texset) { skin::planar_uv(&mut placed, anchor, mpt); } }
+                            parts.push(placed);
+                        }
+                    }
+                }
+            }
+            if parts.is_empty() { die::<()>("nothing to export".into()); }
+            let material_name = |set: &str| -> String { format!("{family}_{set}") };
+            let text = mapgeom::static_item::fbx::fbx(&parts, &material_name, &name);
+            std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(e.to_string()));
+            let fbx_path = out_dir.join(format!("{name}.fbx"));
+            std::fs::write(&fbx_path, &text).unwrap_or_else(|e| die(e.to_string()));
+            let mut mats: Vec<String> = Vec::new();
+            for p in &parts { let mn = material_name(&p.texset); if !mats.contains(&mn) { mats.push(mn); } }
+            let xml = mapgeom::static_item::fbx::mesh_params(&format!("{name}.fbx"), &mats);
+            std::fs::write(out_dir.join(format!("{name}.MeshParams.xml")), &xml).unwrap_or_else(|e| die(e.to_string()));
+            let nv: usize = parts.iter().map(|p| p.pos.len()).sum();
+            let nt: usize = parts.iter().map(|p| p.idx.len() / 3).sum();
+            println!("wrote {} ({} bytes) + {name}.MeshParams.xml: {nv} vertices, {nt} triangles, materials {:?}", fbx_path.display(), text.len(), mats);
+        }
+        // skin-build --template MainBody.Mesh.gbx --out DIR [--zip F.zip]
+        //    (--cube SIZE | --map MAP --items i1,i2,… --anchor X,Y,Z [--texmap LINK=SET,…] [--planar-uv METRES])
+        //    [--binding noskel|body] [--family Details|Skin|Glass] [--vis-flags HEX] [--no-skin-data]
+        //    [--lod-max N,…] [--max-verts N] [--tex FILE.dds] [--checker N]
+        // A CarSport 3D skin (MainBody.Mesh.gbx + <Set>_{B,N,R,I,AO,DirtMask}.dds) from
+        // a probe cube or from embedded items of a map placed in the world and
+        // re-expressed in the frame of a ghost parked at --anchor (static_item::skin).
+        "skin-build" => {
+            use mapgeom::static_item::skin;
+            // no pack needed unless one is named: the template is a file, textures come
+            // from the map, a --tex file or a checker
+            let mut store = if a.paks.is_empty() { DataStore::empty() } else { open(&a) };
+            let tpl_path = flag(&a.rest, "--template").unwrap_or_else(|| die("--template <stock MainBody.Mesh.gbx>".into()));
+            let out_dir = std::path::PathBuf::from(flag(&a.rest, "--out").unwrap_or_else(|| die("--out DIR".into())));
+            let tpl_model = load_any(&mut store, &tpl_path);
+            let template = skin::template_from_body(&tpl_model.body).unwrap_or_else(|e| die(format!("{tpl_path}: {e}")));
+            let mut o = skin::Options::default();
+            if let Some(b) = flag(&a.rest, "--binding") {
+                o.binding = match b.as_str() { "noskel" => skin::Binding::NoSkel, "body" => skin::Binding::Body, "template" => skin::Binding::Template, x => die(format!("--binding {x}: noskel|body|template")) };
+            }
+            if let Some(f) = flag(&a.rest, "--family") { o.family = f; }
+            if let Some(v) = flag(&a.rest, "--vis-flags") { o.vis_flags = u32::from_str_radix(v.trim_start_matches("0x"), 16).unwrap_or_else(|_| die("--vis-flags HEX".into())); }
+            if a.rest.iter().any(|x| x == "--no-skin-data") { o.skin_data = false; }
+            if a.rest.iter().any(|x| x == "--prune-materials") { o.prune_materials = true; }
+            if let Some(m) = flag(&a.rest, "--matname") { o.material_override = m.split(',').filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))).collect(); }
+            if let Some(l) = flag(&a.rest, "--lod-max") { o.lod_max_dist = l.split(',').filter_map(|s| s.trim().parse().ok()).collect(); }
+            if let Some(m) = flag(&a.rest, "--max-verts") { o.max_verts = m.parse().unwrap_or_else(|_| die("--max-verts N".into())); }
+            if let Some(s) = flag(&a.rest, "--skel") {
+                o.skel = Some(if s == "body" { mapgeom::static_item::skel::CPlugSkel::body_only() } else {
+                    let sm = load_any(&mut store, &s);
+                    let mut r2 = mapgeom::static_item::Rd::new(&sm.body, 0, mapgeom::static_item::LookbackState::default());
+                    mapgeom::static_item::skel::CPlugSkel::parse(&mut r2).unwrap_or_else(|e| die(format!("{s}: {e}")))
+                });
+            }
+            let texset_default = flag(&a.rest, "--texset").unwrap_or_else(|| "Details".to_string());
+            let mut parts: Vec<skin::Part> = Vec::new();
+            let mut report: Vec<String> = Vec::new();
+            // the parked ghost's world position: every vertex is written relative to it
+            let anchor_world: [f32; 3] = match flag(&a.rest, "--anchor") {
+                Some(s) => { let v: Vec<f32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 3 { [v[0], v[1], v[2]] } else { [0.0; 3] } }
+                None => [0.0; 3],
+            };
+            if let Some(sz) = flag(&a.rest, "--cube") {
+                let size: f32 = sz.parse().unwrap_or_else(|_| die("--cube SIZE".into()));
+                parts.push(skin::cube(size, &texset_default));
+                report.push(format!("probe cube {size} m on y=0, one texture tile per face"));
+            }
+            // --cubes "SIZE@X,Y,Z;SIZE@X,Y,Z…": several probe cubes at skin-frame offsets — the
+            // axis probe (which way is the car's +x/+z in a frame) of 2026-09-12
+            if let Some(spec) = flag(&a.rest, "--cubes") {
+                for item in spec.split(';').filter(|s| !s.trim().is_empty()) {
+                    let (sz, at) = item.split_once('@').unwrap_or_else(|| die(format!("--cubes {item}: SIZE@X,Y,Z")));
+                    let size: f32 = sz.trim().parse().unwrap_or_else(|_| die(format!("--cubes {item}: SIZE@X,Y,Z")));
+                    let o: Vec<f32> = at.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                    if o.len() != 3 { die::<()>(format!("--cubes {item}: SIZE@X,Y,Z")); }
+                    let mut c = skin::cube(size, &texset_default);
+                    for p in c.pos.iter_mut() { p[0] += o[0]; p[1] += o[1]; p[2] += o[2]; }
+                    c.source = format!("cube {size} m at ({}, {}, {})", o[0], o[1], o[2]);
+                    parts.push(c);
+                    report.push(format!("probe cube {size} m at skin-frame ({}, {}, {})", o[0], o[1], o[2]));
+                }
+            }
+            if let Some(map_path) = flag(&a.rest, "--map") {
+                let anchor: Vec<f32> = flag(&a.rest, "--anchor").unwrap_or_else(|| die("--anchor X,Y,Z (the parked ghost's position)".into())).split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                if anchor.len() != 3 { die::<()>("--anchor X,Y,Z".into()); }
+                let anchor = [anchor[0], anchor[1], anchor[2]];
+                let want: Vec<usize> = flag(&a.rest, "--items").unwrap_or_default().split(',').filter_map(|s| s.trim().trim_start_matches('i').parse().ok()).collect();
+                // LINK=SET pairs; a link not listed goes to the default set unless --texmap-strict
+                let texmap: Vec<(String, String)> = flag(&a.rest, "--texmap").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|kv| {
+                    let (k, v) = kv.split_once('=').unwrap_or_else(|| die(format!("--texmap {kv}: LINK=SET")));
+                    (k.to_string(), v.to_string())
+                }).collect();
+                let strict = a.rest.iter().any(|x| x == "--texmap-strict");
+                let atlas = a.rest.iter().any(|x| x == "--atlas");
+                let planar: Option<f32> = flag(&a.rest, "--planar-uv").map(|s| s.parse().unwrap_or_else(|_| die("--planar-uv METRES".into())));
+                let m = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
+                let files = mapgeom::embedded::files(&m).unwrap_or_else(die);
+                let by_key: std::collections::BTreeMap<String, Vec<u8>> = files.into_iter().map(|(k, v)| (k.replace('\\', "/").to_lowercase(), v)).collect();
+                let mut links_seen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+                // A campaign map places STOCK items (`PalmTreeMedium.Item.Gbx`) it does not
+                // embed: their bytes come from the packs (or from --models NAME=PATH), so a
+                // Nadeo map's own scenery can be rebuilt as skin geometry. --name-filter
+                // SUBSTR,… keeps only the models whose name matches (2026-09-13: the trees of
+                // Summer 2025 - 01, carried by parked ghosts that swap at every checkpoint).
+                let models: Vec<(String, String)> = flag(&a.rest, "--models").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|kv| {
+                    let (k, v) = kv.split_once('=').unwrap_or_else(|| die(format!("--models {kv}: NAME=PATH")));
+                    (k.to_lowercase(), v.to_string())
+                }).collect();
+                // --mapping TSV --items-dir DIR: the tiny-library contract (i@<index> -> item
+                // file), so a campaign map's VEGETATION — baked from its prefabs into static
+                // items — can be rebuilt as skin geometry (2026-09-13, the scenery swap).
+                let mapping: std::collections::BTreeMap<usize, String> = match flag(&a.rest, "--mapping") {
+                    None => Default::default(),
+                    Some(p) => std::fs::read_to_string(&p).unwrap_or_else(|e| die(format!("{p}: {e}"))).lines()
+                        .filter_map(|l| { let mut it = l.split('\t'); let k = it.next()?; let v = it.next()?; let idx: usize = k.strip_prefix("i@")?.parse().ok()?; if v == "-" { None } else { Some((idx, v.to_string())) } })
+                        .collect(),
+                };
+                let items_dir = flag(&a.rest, "--items-dir").unwrap_or_else(|| ".".to_string());
+                let name_filter: Vec<String> = flag(&a.rest, "--name-filter").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| s.to_lowercase()).collect();
+                let mut stock_cache: std::collections::BTreeMap<String, Vec<u8>> = std::collections::BTreeMap::new();
+                let mut missing: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+                for it in &m.items {
+                    if !want.is_empty() && !want.contains(&it.index) { continue; }
+                    let key = it.model.replace('\\', "/").to_lowercase();
+                    if !name_filter.is_empty() && !name_filter.iter().any(|f| key.contains(f.as_str())) { continue; }
+                    // --near X,Z,R: only the placements within R metres of (X, Z). One
+                    // checkpoint interval's scenery, so the skin stays close to its ghost.
+                    // items parked far below the map (a sunk item, `tmmaps sinkitems` / `tiny`)
+                    // carry nothing worth a skin: skip them (--skip-below Y, default -500)
+                    let skip_below: f32 = flag(&a.rest, "--skip-below").and_then(|s| s.parse().ok()).unwrap_or(-500.0);
+                    if it.pos[1] < skip_below { continue; }
+                    if let Some(spec) = flag(&a.rest, "--near") {
+                        let v: Vec<f32> = spec.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                        if v.len() != 3 { die::<()>("--near X,Z,RADIUS".into()); }
+                        let d = ((it.pos[0] - v[0]).powi(2) + (it.pos[2] - v[1]).powi(2)).sqrt();
+                        if d > v[2] { continue; }
+                    }
+                    let mapped: Option<Vec<u8>> = mapping.get(&it.index).and_then(|f| {
+                        let p = format!("{items_dir}/{f}");
+                        match std::fs::read(&p) { Ok(b) => Some(b), Err(_) => { *missing.entry(p).or_insert(0) += 1; None } }
+                    });
+                    let embedded = mapped.or_else(|| by_key.get(&key).or_else(|| by_key.iter().find(|(k, _)| k.ends_with(&format!("/{key}"))).map(|(_, v)| v)).cloned());
+                    let owned: Vec<u8> = match embedded {
+                        Some(b) => b,
+                        None => {
+                            let stem = key.rsplit('/').next().unwrap_or(&key).to_string();
+                            if let Some(b) = stock_cache.get(&stem) {
+                                b.clone()
+                            } else {
+                                let from_flag = models.iter().find(|(n, _)| stem.starts_with(n.as_str())).map(|(_, p)| p.clone());
+                                // a stock item record names the model WITHOUT its pack folder
+                                // ("PalmTreeMedium"): find the pack entry whose file name is
+                                // that name with .Item.Gbx, case-insensitively.
+                                let want1 = format!("/{}", stem.trim_end_matches(".item.gbx"));
+                                let want2 = format!("{want1}.item.gbx");
+                                let in_pack: Option<String> = store.entries().map(|e| e.path().to_string()).find(|p| {
+                                    let lp = p.replace('\\', "/").to_lowercase();
+                                    lp.ends_with(&want2) || lp.ends_with(&want1)
+                                });
+                                let loaded = match from_flag {
+                                    Some(p) if std::path::Path::new(&p).is_file() => std::fs::read(&p).ok(),
+                                    // store.read gives an Arc<Vec<u8>> (the pak
+                                    // store caches shared buffers); to_vec to
+                                    // match the on-disk arm, as elsewhere here.
+                                    Some(p) => store.read(&p).ok().map(|b| b.to_vec()),
+                                    None => match store.read(&it.model).ok().map(|b| b.to_vec()) {
+                                        Some(b) => Some(b),
+                                        None => in_pack.and_then(|p| store.read(&p).ok().map(|b| b.to_vec())),
+                                    },
+                                };
+                                match loaded {
+                                    Some(b) => { stock_cache.insert(stem.clone(), b.clone()); b }
+                                    None => { *missing.entry(it.model.clone()).or_insert(0) += 1; continue; }
+                                }
+                            }
+                        }
+                    };
+                    let bytes = &owned[..];
+                    let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                    let material_of = |link: &str| -> Option<String> {
+                        // --atlas: keep the material LINK as the part's set; the atlas step
+                        // below packs every link's texture into one Details_B and remaps uvs
+                        if atlas { return Some(link.to_string()); }
+                        for (k, v) in &texmap {
+                            if link == k || link.ends_with(&format!("\\{k}")) || link.contains(k.as_str()) { return if v == "-" { None } else { Some(v.clone()) }; }
+                        }
+                        if strict { None } else { Some(texset_default.clone()) }
+                    };
+                    match skin::item_parts(bytes, &it.model, &material_of) {
+                        Ok(ps) => {
+                            for (link, p) in ps {
+                                *links_seen.entry(link).or_insert(0) += p.pos.len();
+                                let mut placed = skin::place(&p, &xf, anchor);
+                                if let Some(mpt) = planar {
+                                    // --planar-sets A,B limits the projection to those texture sets (foliage keeps its atlas UVs)
+                                    let only: Vec<String> = flag(&a.rest, "--planar-sets").map(|s| s.split(',').map(|x| x.trim().to_string()).collect()).unwrap_or_default();
+                                    if only.is_empty() || only.contains(&placed.texset) { skin::planar_uv(&mut placed, anchor, mpt); }
+                                }
+                                placed.source = format!("i{} {}", it.index, placed.source);
+                                parts.push(placed);
+                            }
+                        }
+                        Err(e) => report.push(format!("i{}: {e}", it.index)),
+                    }
+                }
+                for (l, n) in &links_seen { report.push(format!("material {l}: {n} vertices")); }
+                for (mdl, n) in &missing { report.push(format!("{mdl}: {n} placement(s) — model not embedded and not in the packs")); }
+            }
+            if parts.is_empty() {
+                for line in &report { eprintln!("  {line}"); }
+                die::<()>("nothing to build: --cube SIZE or --map … --items …".into());
+            }
+            // --atlas: every material of the placed items packed into ONE texture on the default
+            // set (the shape proven to render: one material id, Details geometry, Deflate zip).
+            // Each distinct material link gets a 512x512 cell of a grid; uvs are wrapped into
+            // the cell. --season ice|fall recolours the leaf cells (links containing "Branch",
+            // "Leaf" or "Foliage") and lightly frosts the rest for ice. Textures come from
+            // --items-dir (`<Name>.dds`, `<Name>_D.dds`, a TDOSN_/TDSN_ prefix stripped);
+            // a link without a file gets a flat colour. 2026-09-14: the real palms.
+            let mut atlas_tex: Option<(u32, u32, Vec<u8>)> = None;
+            if a.rest.iter().any(|x| x == "--atlas") {
+                let items_dir = flag(&a.rest, "--items-dir").unwrap_or_else(|| ".".to_string());
+                let season = flag(&a.rest, "--season").unwrap_or_else(|| "summer".to_string());
+                let mut links: Vec<String> = Vec::new();
+                for p in &parts { if !links.contains(&p.texset) { links.push(p.texset.clone()); } }
+                links.sort();
+                // a SQUARE, power-of-two atlas: the 8x7 grid of 512 px cells (4096x3584) of the
+                // straight showcase rendered every tree grey (2026-09-14) — the engine wants
+                // power-of-two sides. Grid side = the smallest power of two whose square holds
+                // every material; the cell shrinks so the atlas never exceeds 4096.
+                let mut side: u32 = 1;
+                while side * side < links.len() as u32 { side *= 2; }
+                let cell: u32 = (4096 / side).min(512).max(64);
+                #[allow(non_snake_case)]
+                let CELL: u32 = cell;
+                let cols = side;
+                let rows = side;
+                let (aw, ah) = (cols * CELL, rows * CELL);
+                let mut canvas = vec![0u8; (aw * ah * 4) as usize];
+                let leafy = |l: &str| { let ll = l.to_lowercase(); ll.contains("branch") || ll.contains("leaf") || ll.contains("foliage") };
+                let grassy = |l: &str| { let ll = l.to_lowercase(); ll.contains("grass") || ll.contains("hill") || ll.contains("platform") };
+                // --atlas-flat MATCH=RRGGBB,…: the colour of a link WITHOUT a texture file
+                // (the hill blocks' pack materials); first substring match wins
+                let flats: Vec<(String, [u8; 4])> = flag(&a.rest, "--atlas-flat").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|kv| {
+                    let (k, v) = kv.split_once('=').unwrap_or_else(|| die(format!("--atlas-flat {kv}: MATCH=RRGGBB")));
+                    let n = u32::from_str_radix(v.trim_start_matches('#'), 16).unwrap_or_else(|_| die(format!("--atlas-flat {kv}: RRGGBB")));
+                    (k.to_lowercase(), [(n >> 16) as u8, (n >> 8) as u8, n as u8, 255])
+                }).collect();
+                let mut cell_of: std::collections::BTreeMap<String, (u32, u32)> = Default::default();
+                for (i, link) in links.iter().enumerate() {
+                    let (col, row) = (i as u32 % cols, i as u32 / cols);
+                    cell_of.insert(link.clone(), (col, row));
+                    // the texture: <stem>.dds / <stem>_D.dds in --items-dir, prefix stripped
+                    let last = link.rsplit(|c| c == '\\' || c == '/').next().unwrap_or(link).to_string();
+                    let stripped = match last.split_once('_') { Some((pre, rest)) if pre.chars().all(|c| c.is_ascii_uppercase()) => rest.to_string(), _ => last.clone() };
+                    let mut found: Option<(u32, u32, Vec<u8>)> = None;
+                    for cand in [format!("{last}.dds"), format!("{last}_D.dds"), format!("{stripped}.dds"), format!("{stripped}_D.dds")] {
+                        let path = std::path::Path::new(&items_dir).join(&cand);
+                        if path.is_file() {
+                            if let Ok(bytes) = std::fs::read(&path) {
+                                if let Ok(t) = mapgeom::static_item::texture::decode_capped_rgba(&bytes, CELL) { found = Some(t); report.push(format!("atlas cell {col},{row}: {link} <- {cand}")); break; }
+                            }
+                        }
+                    }
+                    let (tw, th, trgba) = found.unwrap_or_else(|| {
+                        let ll = link.to_lowercase();
+                        let c: [u8; 4] = match flats.iter().find(|(k, _)| ll.contains(k.as_str())) {
+                            Some((_, c)) => *c,
+                            None if leafy(link) => [62, 150, 40, 255],
+                            None if grassy(link) => [78, 140, 52, 255],
+                            None if ll.contains("dirt") => [139, 107, 62, 255],
+                            None => [110, 110, 105, 255],
+                        };
+                        report.push(format!("atlas cell {col},{row}: {link} <- flat (no texture file)"));
+                        (4, 4, c.iter().cycle().take(64).cloned().collect())
+                    });
+                    let is_leaf = leafy(link);
+                    let is_grass = !is_leaf && grassy(link);
+                    for y in 0..CELL {
+                        for x in 0..CELL {
+                            let sx = (x * tw / CELL).min(tw - 1) as usize;
+                            let sy = (y * th / CELL).min(th - 1) as usize;
+                            let si = (sy * tw as usize + sx) * 4;
+                            let (mut r, mut g, mut b) = (trgba[si] as f32, trgba[si + 1] as f32, trgba[si + 2] as f32);
+                            match (season.as_str(), is_leaf, is_grass) {
+                                ("ice", true, _) => { let l = 0.3 * r + 0.59 * g + 0.11 * b; r = l * 0.5 + 232.0 * 0.5; g = l * 0.5 + 242.0 * 0.5; b = l * 0.5 + 255.0 * 0.5; }
+                                ("ice", _, true) => { let l = 0.3 * r + 0.59 * g + 0.11 * b; r = l * 0.25 + 236.0 * 0.75; g = l * 0.25 + 242.0 * 0.75; b = l * 0.25 + 252.0 * 0.75; }
+                                ("ice", _, _) => { r = r * 0.7 + 215.0 * 0.3; g = g * 0.7 + 222.0 * 0.3; b = b * 0.7 + 235.0 * 0.3; }
+                                ("fall", true, _) => { let m = r.max(g); r = (m * 1.18).min(255.0); g *= 0.55; b *= 0.25; }
+                                ("fall", _, true) => { let l = 0.3 * r + 0.59 * g + 0.11 * b; r = (l * 0.4 + 176.0 * 0.6).min(255.0); g = l * 0.4 + 142.0 * 0.6; b = l * 0.4 + 58.0 * 0.6; }
+                                _ => {}
+                            }
+                            // the game samples v = 0 at the BOTTOM of the texture: write the grid
+                            // bottom-up, or every cell lands one mirrored row off (measured
+                            // 2026-09-14: the road came out grass-green, the hills road-grey)
+                            let dy = ah - 1 - (row * CELL + y);
+                            let di = ((dy * aw + col * CELL + x) * 4) as usize;
+                            canvas[di] = r as u8; canvas[di + 1] = g as u8; canvas[di + 2] = b as u8; canvas[di + 3] = 255;
+                        }
+                    }
+                }
+                // remap every part's uvs into its cell (wrapped, with a small inset), one set
+                let inset = 2.0 / CELL as f32;
+                for p in parts.iter_mut() {
+                    let (col, row) = cell_of[&p.texset];
+                    for uv in p.uv.iter_mut() {
+                        let fu = (uv[0] - uv[0].floor()).clamp(inset, 1.0 - inset);
+                        let fv = (uv[1] - uv[1].floor()).clamp(inset, 1.0 - inset);
+                        uv[0] = (col as f32 + fu) / cols as f32;
+                        uv[1] = (row as f32 + fv) / rows as f32;
+                    }
+                    p.texset = texset_default.clone();
+                }
+                println!("atlas: {} material(s) in a {cols}x{rows} grid of {CELL} px cells ({aw}x{ah}), season {season}", links.len());
+                atlas_tex = Some((aw, ah, canvas));
+            }
+            // --clusters R: a vehicle skin whose geometry reaches far from the car crashes
+            // the client (measured 2026-09-13: 20 cards spread over 680 m die, the same 20
+            // cards inside ~450 m render), so the scenery ships as one skin per REGION.
+            // Each cluster gets its own zip and its own parked ghost at the cluster's
+            // centre; `<out>/clusters.tsv` lists name, anchor and vertex count.
+            if let Some(r) = flag(&a.rest, "--clusters") {
+                let radius: f32 = r.parse().unwrap_or_else(|_| die("--clusters METRES".to_string()));
+                let mut centres: Vec<[f32; 3]> = Vec::new();
+                let mut assign: Vec<usize> = Vec::new();
+                let key_of = |p: &skin::Part| -> [f32; 3] {
+                    let (lo, hi) = p.bounds();
+                    [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5]
+                };
+                for p in &parts {
+                    let c = key_of(p);
+                    let near = centres.iter().position(|q| {
+                        let d = ((q[0] - c[0]).powi(2) + (q[2] - c[2]).powi(2)).sqrt();
+                        d <= radius
+                    });
+                    match near {
+                        Some(i) => assign.push(i),
+                        None => { centres.push(c); assign.push(centres.len() - 1); }
+                    }
+                }
+                let zip_base = flag(&a.rest, "--zip").unwrap_or_else(|| die("--clusters needs --zip BASE.zip".to_string()));
+                let base = zip_base.trim_end_matches(".zip").to_string();
+                let mut tsv = String::from("# name\tanchor_x\tanchor_y\tanchor_z\tparts\tvertices\n");
+                for (k, centre) in centres.iter().enumerate() {
+                    // the cluster's own anchor, in world coordinates
+                    let world = [anchor_world[0] + centre[0], anchor_world[1] + centre[1], anchor_world[2] + centre[2]];
+                    let mut mine: Vec<skin::Part> = parts.iter().zip(&assign).filter(|(_, a)| **a == k).map(|(p, _)| {
+                        let mut q = p.clone();
+                        for v in q.pos.iter_mut() {
+                            v[0] -= centre[0];
+                            v[1] -= centre[1];
+                            v[2] -= centre[2];
+                        }
+                        q
+                    }).collect();
+                    let mut parts = std::mem::take(&mut mine);
+                    // --cards: replace each placed item by two crossed quads spanning its own
+                    // bounding box — 8 vertices a tree instead of ~1250. A car skin asserts
+                    // somewhere between 25k and 54k vertices (measured 2026-09-13: 25,014 renders,
+                    // 53,688 dies with the destroyed-object int3), and a campaign map's 260 trees
+                    // are 325k, so the whole scenery only fits as cards.
+                    if a.rest.iter().any(|x| x == "--cards") {
+                        let mut by_src: std::collections::BTreeMap<String, (([f32; 3], [f32; 3]), String)> = std::collections::BTreeMap::new();
+                        for p in &parts {
+                            let key = p.source.split_whitespace().next().unwrap_or("").to_string();
+                            let (lo, hi) = p.bounds();
+                            let e = by_src.entry(key).or_insert(((lo, hi), p.texset.clone()));
+                            for k in 0..3 {
+                                (e.0).0[k] = (e.0).0[k].min(lo[k]);
+                                (e.0).1[k] = (e.0).1[k].max(hi[k]);
+                            }
+                        }
+                        let n_src = by_src.len();
+                        let set = flag(&a.rest, "--cards-set").unwrap_or_else(|| texset_default.clone());
+                        let shrink: f32 = flag(&a.rest, "--cards-width").and_then(|s| s.parse().ok()).unwrap_or(0.8);
+                        parts.clear();
+                        let mut card = skin::Part { texset: set.clone(), pos: Vec::new(), nrm: Vec::new(), uv: Vec::new(), idx: Vec::new(), source: format!("{n_src} cards") };
+                        for (_, ((lo, hi), _)) in by_src {
+                            let cx = (lo[0] + hi[0]) * 0.5;
+                            let cz = (lo[2] + hi[2]) * 0.5;
+                            let w = ((hi[0] - lo[0]).max(hi[2] - lo[2]) * shrink * 0.5).max(0.25);
+                            for (dx, dz, nx, nz) in [(w, 0.0f32, 0.0f32, 1.0f32), (0.0, w, 1.0, 0.0)] {
+                                let b = card.pos.len() as u32;
+                                card.pos.push([cx - dx, lo[1], cz - dz]);
+                                card.pos.push([cx + dx, lo[1], cz + dz]);
+                                card.pos.push([cx + dx, hi[1], cz + dz]);
+                                card.pos.push([cx - dx, hi[1], cz - dz]);
+                                for _ in 0..4 { card.nrm.push([nx, 0.0, nz]); }
+                                card.uv.push([0.0, 1.0]);
+                                card.uv.push([1.0, 1.0]);
+                                card.uv.push([1.0, 0.0]);
+                                card.uv.push([0.0, 0.0]);
+                                // both faces, so a card is visible from either side
+                                card.idx.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3, b, b + 2, b + 1, b, b + 3, b + 2]);
+                            }
+                        }
+                        println!("cards: {n_src} placements -> {} vertices", card.pos.len());
+                        parts.push(card);
+                    }
+                    // --merge: one visual per texture set per --max-verts run, instead of one per
+                    // source geom. A campaign map's 260 trees arrive as 1008 little geoms, and a car
+                    // skin with 1008 visuals takes the client down on import (measured 2026-09-13:
+                    // the connection drops mid-import, no crash dump); merged, the same 325k
+                    // vertices are ~12 visuals.
+                    if a.rest.iter().any(|x| x == "--merge") {
+                        let cap = o.max_verts.max(3);
+                        let mut by_set: std::collections::BTreeMap<String, Vec<skin::Part>> = std::collections::BTreeMap::new();
+                        for p in parts.drain(..) {
+                            by_set.entry(p.texset.clone()).or_default().push(p);
+                        }
+                        let before: usize = by_set.values().map(|v| v.len()).sum();
+                        for (set, group) in by_set {
+                            let fresh = || skin::Part { texset: set.clone(), pos: Vec::new(), nrm: Vec::new(), uv: Vec::new(), idx: Vec::new(), source: format!("{set} merged") };
+                            let mut cur = fresh();
+                            for p in group {
+                                if !cur.pos.is_empty() && cur.pos.len() + p.pos.len() > cap {
+                                    parts.push(std::mem::replace(&mut cur, fresh()));
+                                }
+                                let base = cur.pos.len() as u32;
+                                cur.pos.extend_from_slice(&p.pos);
+                                cur.nrm.extend_from_slice(&p.nrm);
+                                cur.uv.extend_from_slice(&p.uv);
+                                cur.idx.extend(p.idx.iter().map(|i| i + base));
+                            }
+                            if !cur.pos.is_empty() {
+                                parts.push(cur);
+                            }
+                        }
+                        println!("merged {before} geoms into {} visual(s) of at most {cap} vertices", parts.len());
+                    }
+                    let mut mine = parts;
+                    let nverts: usize = mine.iter().map(|p| p.pos.len()).sum();
+                    if false {
+                        let cap = o.max_verts.max(3);
+                        let mut by_set: std::collections::BTreeMap<String, Vec<skin::Part>> = std::collections::BTreeMap::new();
+                        for p in mine.drain(..) { by_set.entry(p.texset.clone()).or_default().push(p); }
+                        for (set, group) in by_set {
+                            let fresh = || skin::Part { texset: set.clone(), pos: Vec::new(), nrm: Vec::new(), uv: Vec::new(), idx: Vec::new(), source: format!("{set} merged") };
+                            let mut cur = fresh();
+                            for p in group {
+                                if !cur.pos.is_empty() && cur.pos.len() + p.pos.len() > cap { mine.push(std::mem::replace(&mut cur, fresh())); }
+                                let b = cur.pos.len() as u32;
+                                cur.pos.extend_from_slice(&p.pos);
+                                cur.nrm.extend_from_slice(&p.nrm);
+                                cur.uv.extend_from_slice(&p.uv);
+                                cur.idx.extend(p.idx.iter().map(|i| i + b));
+                            }
+                            if !cur.pos.is_empty() { mine.push(cur); }
+                        }
+                    }
+                    let built = skin::build(&template, &mine, &o).unwrap_or_else(die);
+                    let dir = out_dir.join(format!("c{k}"));
+                    std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(e.to_string()));
+                    std::fs::write(dir.join("MainBody.Mesh.gbx"), &built.file).unwrap_or_else(|e| die(e.to_string()));
+                    println!("cluster {k}: anchor {:.1},{:.1},{:.1}  {} visual(s)  {nverts} vertices", world[0], world[1], world[2], mine.len());
+                    tsv.push_str(&format!("{base}-{k}.zip\t{:.3}\t{:.3}\t{:.3}\t{}\t{nverts}\n", world[0], world[1], world[2], mine.len()));
+                    // the textures are written once below; this pass only needs the meshes
+                }
+                std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(e.to_string()));
+                std::fs::write(out_dir.join("clusters.tsv"), &tsv).unwrap_or_else(|e| die(e.to_string()));
+                println!("{} cluster(s) within {radius} m -> {}", centres.len(), out_dir.join("clusters.tsv").display());
+            }
+            // --cards: replace each placed item by two crossed quads spanning its own
+            // bounding box — 8 vertices a tree instead of ~1250. A car skin asserts
+            // somewhere between 25k and 54k vertices (measured 2026-09-13: 25,014 renders,
+            // 53,688 dies with the destroyed-object int3), and a campaign map's 260 trees
+            // are 325k, so the whole scenery only fits as cards.
+            // --cones: each placed item becomes a two-cone tree — a brown trunk (texture set
+            // --cones-trunk-set, default Skin) and a season-coloured crown (the default set),
+            // both CLOSED solids like attempt 2's hills. Cards were the 8-vertex answer;
+            // cones read as trees from the chase camera (2026-09-14).
+            if a.rest.iter().any(|x| x == "--cones") {
+                let mut by_src: std::collections::BTreeMap<String, ([f32; 3], [f32; 3])> = std::collections::BTreeMap::new();
+                for p in &parts {
+                    let key = p.source.split_whitespace().next().unwrap_or("").to_string();
+                    let (lo, hi) = p.bounds();
+                    let e = by_src.entry(key).or_insert((lo, hi));
+                    for k in 0..3 {
+                        e.0[k] = e.0[k].min(lo[k]);
+                        e.1[k] = e.1[k].max(hi[k]);
+                    }
+                }
+                let n_src = by_src.len();
+                let crown_set = texset_default.clone();
+                let trunk_set = flag(&a.rest, "--cones-trunk-set").unwrap_or_else(|| texset_default.clone());
+                let segs: usize = flag(&a.rest, "--cones-segments").and_then(|s| s.parse().ok()).unwrap_or(7);
+                let fresh = |set: &str| skin::Part { texset: set.to_string(), pos: Vec::new(), nrm: Vec::new(), uv: Vec::new(), idx: Vec::new(), source: format!("{n_src} cone trees ({set})") };
+                let mut crown = fresh(&crown_set);
+                let mut trunk = fresh(&trunk_set);
+                // a closed cone: base ring at y0 (radius r), apex at y1, plus a base fan
+                // every cone gets a CONSTANT uv: trunks read the left half of the set's _B texture,
+                // crowns the right half (`--flat Details=BROWN|GREEN` writes such a two-half texture),
+                // so one texture set carries both colours — the one-set shape the shoot renders.
+                let mut cone = |part: &mut skin::Part, cx: f32, cz: f32, y0: f32, y1: f32, r: f32, u: f32| {
+                    let b = part.pos.len() as u32;
+                    let h = (y1 - y0).max(0.1);
+                    for i in 0..segs {
+                        let a = i as f32 / segs as f32 * std::f32::consts::TAU;
+                        let (s, c) = a.sin_cos();
+                        part.pos.push([cx + r * c, y0, cz + r * s]);
+                        // outward normal of the slanted side
+                        let l = (h * h + r * r).sqrt();
+                        part.nrm.push([c * h / l, r / l, s * h / l]);
+                        // a varying uv inside the cone's half of the texture: identical uvs on every
+                        // vertex give a degenerate tangent basis (NaN after Dec3N packing) and the
+                        // client dies on import (QC/QD/QE/QF, 2026-09-14)
+                        part.uv.push([u - 0.2 + 0.4 * (i as f32 / segs as f32), 1.0]);
+                    }
+                    part.pos.push([cx, y1, cz]);
+                    part.nrm.push([0.0, 1.0, 0.0]);
+                    part.uv.push([u, 0.0]);
+                    part.pos.push([cx, y0, cz]);
+                    part.nrm.push([0.0, -1.0, 0.0]);
+                    part.uv.push([u, 0.9]);
+                    let apex = b + segs as u32;
+                    let base = apex + 1;
+                    for i in 0..segs as u32 {
+                        let j = (i + 1) % segs as u32;
+                        part.idx.extend_from_slice(&[b + i, apex, b + j]);
+                        part.idx.extend_from_slice(&[b + j, base, b + i]);
+                    }
+                };
+                for (_, (lo, hi)) in by_src {
+                    let cx = (lo[0] + hi[0]) * 0.5;
+                    let cz = (lo[2] + hi[2]) * 0.5;
+                    let h = (hi[1] - lo[1]).max(1.0);
+                    let w = ((hi[0] - lo[0]).max(hi[2] - lo[2]) * 0.5).max(0.4);
+                    cone(&mut trunk, cx, cz, lo[1] - 0.5, lo[1] + 0.45 * h, (w * 0.12).max(0.15), 0.25);
+                    cone(&mut crown, cx, cz, lo[1] + 0.3 * h, hi[1], w, 0.75);
+                }
+                println!("cones: {n_src} placements -> {} vertices", crown.pos.len() + trunk.pos.len());
+                parts.clear();
+                parts.push(trunk);
+                parts.push(crown);
+            }
+            if a.rest.iter().any(|x| x == "--cards") {
+                let mut by_src: std::collections::BTreeMap<String, (([f32; 3], [f32; 3]), String)> = std::collections::BTreeMap::new();
+                for p in &parts {
+                    let key = p.source.split_whitespace().next().unwrap_or("").to_string();
+                    let (lo, hi) = p.bounds();
+                    let e = by_src.entry(key).or_insert(((lo, hi), p.texset.clone()));
+                    for k in 0..3 {
+                        (e.0).0[k] = (e.0).0[k].min(lo[k]);
+                        (e.0).1[k] = (e.0).1[k].max(hi[k]);
+                    }
+                }
+                let n_src = by_src.len();
+                let set = flag(&a.rest, "--cards-set").unwrap_or_else(|| texset_default.clone());
+                let shrink: f32 = flag(&a.rest, "--cards-width").and_then(|s| s.parse().ok()).unwrap_or(0.8);
+                parts.clear();
+                let mut card = skin::Part { texset: set.clone(), pos: Vec::new(), nrm: Vec::new(), uv: Vec::new(), idx: Vec::new(), source: format!("{n_src} cards") };
+                for (_, ((lo, hi), _)) in by_src {
+                    let cx = (lo[0] + hi[0]) * 0.5;
+                    let cz = (lo[2] + hi[2]) * 0.5;
+                    let w = ((hi[0] - lo[0]).max(hi[2] - lo[2]) * shrink * 0.5).max(0.25);
+                    for (dx, dz, nx, nz) in [(w, 0.0f32, 0.0f32, 1.0f32), (0.0, w, 1.0, 0.0)] {
+                        let b = card.pos.len() as u32;
+                        card.pos.push([cx - dx, lo[1], cz - dz]);
+                        card.pos.push([cx + dx, lo[1], cz + dz]);
+                        card.pos.push([cx + dx, hi[1], cz + dz]);
+                        card.pos.push([cx - dx, hi[1], cz - dz]);
+                        for _ in 0..4 { card.nrm.push([nx, 0.0, nz]); }
+                        card.uv.push([0.0, 1.0]);
+                        card.uv.push([1.0, 1.0]);
+                        card.uv.push([1.0, 0.0]);
+                        card.uv.push([0.0, 0.0]);
+                        // both faces, so a card is visible from either side
+                        card.idx.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3, b, b + 2, b + 1, b, b + 3, b + 2]);
+                    }
+                }
+                println!("cards: {n_src} placements -> {} vertices", card.pos.len());
+                parts.push(card);
+            }
+            // --merge: one visual per texture set per --max-verts run, instead of one per
+            // source geom. A campaign map's 260 trees arrive as 1008 little geoms, and a car
+            // skin with 1008 visuals takes the client down on import (measured 2026-09-13:
+            // the connection drops mid-import, no crash dump); merged, the same 325k
+            // vertices are ~12 visuals.
+            if a.rest.iter().any(|x| x == "--merge") {
+                let cap = o.max_verts.max(3);
+                let mut by_set: std::collections::BTreeMap<String, Vec<skin::Part>> = std::collections::BTreeMap::new();
+                for p in parts.drain(..) {
+                    by_set.entry(p.texset.clone()).or_default().push(p);
+                }
+                let before: usize = by_set.values().map(|v| v.len()).sum();
+                for (set, group) in by_set {
+                    let fresh = || skin::Part { texset: set.clone(), pos: Vec::new(), nrm: Vec::new(), uv: Vec::new(), idx: Vec::new(), source: format!("{set} merged") };
+                    let mut cur = fresh();
+                    for p in group {
+                        if !cur.pos.is_empty() && cur.pos.len() + p.pos.len() > cap {
+                            parts.push(std::mem::replace(&mut cur, fresh()));
+                        }
+                        let base = cur.pos.len() as u32;
+                        cur.pos.extend_from_slice(&p.pos);
+                        cur.nrm.extend_from_slice(&p.nrm);
+                        cur.uv.extend_from_slice(&p.uv);
+                        cur.idx.extend(p.idx.iter().map(|i| i + base));
+                    }
+                    if !cur.pos.is_empty() {
+                        parts.push(cur);
+                    }
+                }
+                println!("merged {before} geoms into {} visual(s) of at most {cap} vertices", parts.len());
+            }
+            // --dump-obj F: the parts as Wavefront OBJ (skin frame), to look at what a skin
+            // holds without a render — which edge of a slope block is the high one, etc.
+            if let Some(obj) = flag(&a.rest, "--dump-obj") {
+                let mut text = String::new();
+                let mut base = 0usize;
+                for p in &parts {
+                    text.push_str(&format!("o {}\n", p.source.replace(' ', "_")));
+                    for v in &p.pos { text.push_str(&format!("v {} {} {}\n", v[0], v[1], v[2])); }
+                    for t in p.idx.chunks(3) { if t.len() == 3 { text.push_str(&format!("f {} {} {}\n", base + t[0] as usize + 1, base + t[1] as usize + 1, base + t[2] as usize + 1)); } }
+                    base += p.pos.len();
+                }
+                std::fs::write(&obj, text).unwrap_or_else(|e| die(format!("{obj}: {e}")));
+                println!("obj {obj}: {} part(s)", parts.len());
+            }
+            let built = skin::build(&template, &parts, &o).unwrap_or_else(die);
+            std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(e.to_string()));
+            std::fs::write(out_dir.join("MainBody.Mesh.gbx"), &built.file).unwrap_or_else(|e| die(e.to_string()));
+            // textures: one set per material, from --tex (a DDS decoded and re-encoded) or a checker
+            let mut sets: Vec<String> = Vec::new();
+            for p in &parts { if !sets.contains(&p.texset) { sets.push(p.texset.clone()); } }
+            let checker_cells: u32 = flag(&a.rest, "--checker").and_then(|s| s.parse().ok()).unwrap_or(8);
+            let mut files: std::collections::BTreeMap<String, Vec<u8>> = std::collections::BTreeMap::new();
+            files.insert("MainBody.Mesh.gbx".into(), built.file.clone());
+            for s in &sets {
+                // --tex SET=FILE.dds (or FILE.dds for the default set)
+                let tex_for = flag(&a.rest, "--tex").and_then(|spec| {
+                    spec.split(',').find_map(|kv| match kv.split_once('=') {
+                        Some((k, v)) if k == s => Some(v.to_string()),
+                        None if s == &texset_default => Some(kv.to_string()),
+                        _ => None,
+                    })
+                });
+                let atlas_here = if s == &texset_default { atlas_tex.clone() } else { None };
+                let (w, h, rgba) = match (atlas_here, tex_for) {
+                    (Some(t), _) => t,
+                    (None, tex_for) => match tex_for {
+                    Some(path) => {
+                        let bytes = if std::path::Path::new(&path).is_file() { std::fs::read(&path).unwrap_or_else(|e| die(e.to_string())) } else { store.read(&path).unwrap_or_else(die).to_vec() };
+                        let cap: u32 = flag(&a.rest, "--tex-cap").and_then(|s| s.parse().ok()).unwrap_or(1024);
+                        mapgeom::static_item::texture::decode_capped_rgba(&bytes, cap).unwrap_or_else(|e| die(format!("{path}: {e}")))
+                    }
+                    // --flat RRGGBB (or SET=RRGGBB,…): one colour, for scenery tests where
+                    // the material's own texture array cannot be carried
+                    None => match flag(&a.rest, "--flat").and_then(|spec| spec.split(',').find_map(|kv| match kv.split_once('=') {
+                        Some((k, v)) if k == s => Some(v.to_string()),
+                        None if s == &texset_default || !kv.contains('=') => Some(kv.to_string()),
+                        _ => None,
+                    })) {
+                        Some(hex) => {
+                            // RRGGBB, or LEFT|RIGHT: a 64x64 texture whose left half is one
+                            // colour and right half another (cone trees: trunk | crown, one set)
+                            let parse = |s: &str| -> [u8; 4] {
+                                let h = s.trim().trim_start_matches('#');
+                                let v = u32::from_str_radix(h, 16).unwrap_or_else(|_| die(format!("--flat {hex}: RRGGBB")));
+                                [(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]
+                            };
+                            match hex.split_once('|') {
+                                Some((l, r)) => {
+                                    let (a, b) = (parse(l), parse(r));
+                                    let mut rgba = Vec::with_capacity(64 * 64 * 4);
+                                    for _y in 0..64 {
+                                        for x in 0..64 {
+                                            rgba.extend_from_slice(if x < 32 { &a } else { &b });
+                                        }
+                                    }
+                                    (64, 64, rgba)
+                                }
+                                None => (64, 64, skin::flat_rgba(64, parse(&hex))),
+                            }
+                        }
+                        None => (512, 512, skin::checker_rgba(512, checker_cells)),
+                    },
+                    },
+                };
+                // --tint SET=RRGGBB,…  (or one RRGGBB for every set): multiply the decoded
+                // texture by a colour. One atlas, three seasons: green x white-blue = icy,
+                // green x orange = autumn (2026-09-13, the checkpoint scenery swap).
+                let mut rgba = rgba;
+                if let Some(hex) = flag(&a.rest, "--tint").and_then(|spec| spec.split(',').find_map(|kv| match kv.split_once('=') {
+                    Some((k, v)) if k == s => Some(v.to_string()),
+                    None => Some(kv.to_string()),
+                    _ => None,
+                })) {
+                    let h = hex.trim_start_matches('#');
+                    let v = u32::from_str_radix(h, 16).unwrap_or_else(|_| die(format!("--tint {hex}: RRGGBB")));
+                    let t = [(v >> 16) as u32 & 0xff, (v >> 8) as u32 & 0xff, v as u32 & 0xff];
+                    for px in rgba.chunks_mut(4) {
+                        for c in 0..3 { px[c] = ((px[c] as u32 * t[c]) / 255) as u8; }
+                    }
+                }
+                let rough: u8 = flag(&a.rest, "--roughness").and_then(|s| s.parse().ok()).unwrap_or(200);
+                for (name, bytes) in skin::texture_set(s, w, h, &rgba, rough) {
+                    std::fs::write(out_dir.join(&name), &bytes).unwrap_or_else(|e| die(e.to_string()));
+                    files.insert(name, bytes);
+                }
+                report.push(format!("texture set {s}: {w}x{h} base colour"));
+            }
+            // THE ZIP RULE (measured 2026-09-12, hillB-min / X2 vs X1 / X3): the vehicle
+            // loads the Skin, Wheels and Glass sets whether or not the mesh names them,
+            // and a set with no files behind it crashes the import. Fill every missing
+            // standard set with 4x4 flats by default (--no-fill-sets to opt out).
+            if !a.rest.iter().any(|x| x == "--no-fill-sets") {
+                for req in ["Details", "Skin", "Wheels", "Glass"] {
+                    if sets.iter().any(|s| s == req) { continue; }
+                    for (name, bytes) in skin::texture_set(req, 4, 4, &skin::flat_rgba(4, [128, 128, 128, 255]), 200) {
+                        std::fs::write(out_dir.join(&name), &bytes).unwrap_or_else(|e| die(e.to_string()));
+                        files.insert(name, bytes);
+                    }
+                    report.push(format!("texture set {req}: 4x4 grey flats (required by the vehicle even when unused)"));
+                }
+            }
+            // --tex-verbatim DIR: ship the texture files of a KNOWN-GOOD skin unchanged (every
+            // *.dds in DIR replaces or adds to what was generated, and generated files DIR
+            // does not have are dropped) — keeping only our mesh and, if --keep-tex names it,
+            // our own Details_B. 2026-09-14: attempt 2's proven zip carries 64x64 _B maps for
+            // all four sets and no Glass_D/Glass_T; ours carried 4x4 fillers plus those two, and
+            // the client crashed on import or drew nothing.
+            if let Some(dir) = flag(&a.rest, "--tex-verbatim") {
+                let keep: Vec<String> = flag(&a.rest, "--keep-tex").unwrap_or_default().split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
+                let mut verbatim: std::collections::BTreeMap<String, Vec<u8>> = std::collections::BTreeMap::new();
+                for e in std::fs::read_dir(&dir).unwrap_or_else(|e| die(format!("{dir}: {e}"))).flatten() {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if name.to_lowercase().ends_with(".dds") {
+                        verbatim.insert(name.clone(), std::fs::read(e.path()).unwrap_or_else(|e| die(e.to_string())));
+                    }
+                }
+                let ours: Vec<String> = files.keys().filter(|k| k.to_lowercase().ends_with(".dds")).cloned().collect();
+                for k in ours {
+                    if !keep.contains(&k) {
+                        files.remove(&k);
+                    }
+                }
+                for (k, v) in verbatim {
+                    if !keep.contains(&k) {
+                        files.insert(k, v);
+                    }
+                }
+                report.push(format!("textures taken verbatim from {dir} (kept ours: {keep:?}); zip now {} files", files.len()));
+            }
+            // --mesh-verbatim FILE: ship THAT mesh instead of the one just built (a known-good
+            // mesh through our zip writer isolates the writer from the builder)
+            if let Some(m) = flag(&a.rest, "--mesh-verbatim") {
+                files.insert("MainBody.Mesh.gbx".into(), std::fs::read(&m).unwrap_or_else(|e| die(format!("{m}: {e}"))));
+                report.push(format!("mesh taken verbatim from {m}"));
+            }
+            if let Some(z) = flag(&a.rest, "--zip") {
+                let zip = tmmaps::header::stored_zip(&files);
+                std::fs::write(&z, &zip).unwrap_or_else(|e| die(e.to_string()));
+                report.push(format!("zip {z}: {} bytes, {} files (deflate)", zip.len(), files.len()));
+                // --clusters wrote one mesh per region; each becomes its own zip, with the
+                // same texture set as the whole-scenery zip beside it.
+                if flag(&a.rest, "--clusters").is_some() {
+                    let base = z.trim_end_matches(".zip").to_string();
+                    let mut k = 0usize;
+                    while let Ok(mesh) = std::fs::read(out_dir.join(format!("c{k}")).join("MainBody.Mesh.gbx")) {
+                        let mut f = files.clone();
+                        f.insert("MainBody.Mesh.gbx".into(), mesh);
+                        let zip = tmmaps::header::stored_zip(&f);
+                        let path = format!("{base}-{k}.zip");
+                        std::fs::write(&path, &zip).unwrap_or_else(|e| die(e.to_string()));
+                        let sha: String = gbx::sha::sha256(&zip).iter().map(|b| format!("{b:02x}")).collect();
+                        println!("  cluster zip {path}: {} bytes  sha256 {sha}", zip.len());
+                        k += 1;
+                    }
+                }
+            }
+            println!(
+                "wrote {}/MainBody.Mesh.gbx: {} bytes, {} visuals, {} vertices, {} triangles, materials {:?}, bounds x {:.2}..{:.2} y {:.2}..{:.2} z {:.2}..{:.2} (skin frame: metres from the ghost, +z = car front)",
+                out_dir.display(), built.file.len(), built.visuals, built.vertices, built.triangles, built.materials,
+                built.bounds.0[0], built.bounds.1[0], built.bounds.0[1], built.bounds.1[1], built.bounds.0[2], built.bounds.1[2]
+            );
+            for r in report { println!("  {r}"); }
+        }
+        // scenery-split MAP --ghost G [--radius 24] [--out TSV] [--min-bytes 0]
+        // The skin-scenery size question (5): every embedded model's placements
+        // measured against the driven line (the ghost's samples as a polyline):
+        // a placement whose world AABB comes within --radius of the line is
+        // DRIVABLE-ADJACENT, anything farther is SCENERY. A model is removable
+        // from the map when ALL its placements are scenery; the report sums the
+        // embedded bytes (zip entry sizes, stored) that would leave the file.
+        "scenery-split" => {
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let gpath = flag(&a.rest, "--ghost").unwrap_or_else(|| die("--ghost G.Ghost.Gbx".into()));
+            let radius: f32 = flag(&a.rest, "--radius").and_then(|s| s.parse().ok()).unwrap_or(24.0);
+            let m = tmmaps::map::MapFile::load(std::path::Path::new(&p));
+            let d = gbx::record::decode_ghost(&gpath).unwrap_or_else(|e| die(format!("{gpath}: {e}")));
+            let path: Vec<[f32; 3]> = d.samples.iter().map(|s| [s.x as f32, s.y as f32, s.z as f32]).collect();
+            if path.len() < 2 { die::<()>("the ghost has fewer than two samples".into()); }
+            let files = mapgeom::embedded::files(&m).unwrap_or_else(die);
+            let by_key: std::collections::BTreeMap<String, Vec<u8>> = files.iter().map(|(k, v)| (k.replace('\\', "/").to_lowercase(), v.clone())).collect();
+            // the zip's own entry sizes (stored: the bytes the map file carries)
+            let zip_sizes: std::collections::BTreeMap<String, usize> = files.iter().map(|(k, v)| (k.replace('\\', "/").to_lowercase(), v.len())).collect();
+            // model -> local AABB (from the Solid2 visuals' bounds) and its texture files
+            let mut aabb: std::collections::BTreeMap<String, ([f32; 3], [f32; 3])> = std::collections::BTreeMap::new();
+            let mut textures_of: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+            let mut bytes_of: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+            let mut model_key: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+            for it in &m.items {
+                if aabb.contains_key(&it.model) { continue; }
+                let key = it.model.replace('\\', "/").to_lowercase();
+                let hit = by_key.get(&key).map(|v| (key.clone(), v)).or_else(|| by_key.iter().find(|(k, _)| k.ends_with(&format!("/{key}"))).map(|(k, v)| (k.clone(), v)));
+                let Some((zkey, bytes)) = hit else { continue };
+                model_key.insert(it.model.clone(), zkey.clone());
+                bytes_of.insert(it.model.clone(), zip_sizes.get(&zkey).copied().unwrap_or(bytes.len()));
+                // textures: the item's external refs ending in .dds, resolved to zip entries
+                if let Ok(model) = mapgeom::store::Model::parse(bytes, &it.model) {
+                    let mut t = Vec::new();
+                    for (_, ext) in &model.externals {
+                        if ext.to_lowercase().ends_with(".dds") {
+                            let bare = ext.rsplit('\\').next().unwrap_or(ext).to_lowercase();
+                            if let Some((zk, _)) = zip_sizes.iter().find(|(k, _)| k.ends_with(&format!("/{bare}")) || **k == bare) { t.push(zk.clone()); }
+                        }
+                    }
+                    textures_of.insert(it.model.clone(), t);
+                }
+                let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                if let Ok(f) = mapgeom::static_item::parse_file(bytes) {
+                    if let Some(s2) = f.item.static_object().and_then(|so| so.solid2()) {
+                        for vr in &s2.visuals {
+                            if let Some(mapgeom::static_item::Node::Visual(v)) = vr.inline.as_deref() {
+                                if let Some(mn) = &v.main {
+                                    let b = mn.bounding_box;
+                                    for k in 0..3 { lo[k] = lo[k].min(b[k] - b[k + 3].abs()); hi[k] = hi[k].max(b[k] + b[k + 3].abs()); }
+                                }
+                            }
+                        }
+                    }
+                }
+                if lo[0] == f32::MAX { lo = [0.0; 3]; hi = [0.0; 3]; }
+                aabb.insert(it.model.clone(), (lo, hi));
+            }
+            // distance from an AABB to the polyline: sample the polyline's segments finely
+            let seg_dist = |q: [f32; 3], a: [f32; 3], b: [f32; 3]| -> f32 {
+                let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let l2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+                let t = if l2 < 1e-9 { 0.0 } else { (((q[0] - a[0]) * ab[0] + (q[1] - a[1]) * ab[1] + (q[2] - a[2]) * ab[2]) / l2).clamp(0.0, 1.0) };
+                let c = [a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]];
+                ((q[0] - c[0]).powi(2) + (q[1] - c[1]).powi(2) + (q[2] - c[2]).powi(2)).sqrt()
+            };
+            let aabb_dist = |lo: [f32; 3], hi: [f32; 3]| -> f32 {
+                // min over segments of the distance between the box and the segment,
+                // taken as: clamp the segment's closest point to the box (exact for a
+                // point; for a segment sample 8 points along it)
+                let mut best = f32::MAX;
+                for w in path.windows(2) {
+                    for k in 0..=8 {
+                        let t = k as f32 / 8.0;
+                        let q = [w[0][0] + t * (w[1][0] - w[0][0]), w[0][1] + t * (w[1][1] - w[0][1]), w[0][2] + t * (w[1][2] - w[0][2])];
+                        let c = [q[0].clamp(lo[0], hi[0]), q[1].clamp(lo[1], hi[1]), q[2].clamp(lo[2], hi[2])];
+                        let dd = seg_dist(c, w[0], w[1]);
+                        if dd < best { best = dd; }
+                    }
+                }
+                best
+            };
+            struct Row { model: String, total: usize, scenery: usize, min_d: f32, verts_hint: usize }
+            let mut rows: std::collections::BTreeMap<String, Row> = std::collections::BTreeMap::new();
+            let mut per_placement: Vec<(usize, String, f32)> = Vec::new();
+            for it in &m.items {
+                let Some((lo, hi)) = aabb.get(&it.model) else { continue };
+                let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                let (mut wlo, mut whi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                for c in 0..8 {
+                    let v = [if c & 1 == 0 { lo[0] } else { hi[0] }, if c & 2 == 0 { lo[1] } else { hi[1] }, if c & 4 == 0 { lo[2] } else { hi[2] }];
+                    let w = mapgeom::geom::apply(&xf, v);
+                    for k in 0..3 { wlo[k] = wlo[k].min(w[k]); whi[k] = whi[k].max(w[k]); }
+                }
+                let dist = aabb_dist(wlo, whi);
+                per_placement.push((it.index, it.model.clone(), dist));
+                let r = rows.entry(it.model.clone()).or_insert(Row { model: it.model.clone(), total: 0, scenery: 0, min_d: f32::MAX, verts_hint: 0 });
+                r.total += 1;
+                if dist > radius { r.scenery += 1; }
+                if dist < r.min_d { r.min_d = dist; }
+                r.verts_hint = 0;
+            }
+            let mut removable_bytes = 0usize;
+            let mut kept_bytes = 0usize;
+            let mut removable_models = 0usize;
+            let mut removable_placements = 0usize;
+            let mut total_placements = 0usize;
+            let mut tex_needed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            let mut tex_all: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            let mut out_rows: Vec<(usize, String)> = Vec::new();
+            for r in rows.values() {
+                let b = bytes_of.get(&r.model).copied().unwrap_or(0);
+                total_placements += r.total;
+                let all_scenery = r.scenery == r.total;
+                if all_scenery { removable_bytes += b; removable_models += 1; removable_placements += r.total; } else { kept_bytes += b; }
+                for t in textures_of.get(&r.model).cloned().unwrap_or_default() {
+                    tex_all.insert(t.clone());
+                    if !all_scenery { tex_needed.insert(t); }
+                }
+                out_rows.push((b, format!("{}\t{}\t{}\t{}\t{:.1}\t{}", r.model, b, r.total, r.scenery, r.min_d, if all_scenery { "REMOVABLE" } else if r.scenery > 0 { "mixed" } else { "line" })));
+            }
+            let tex_removable: usize = tex_all.difference(&tex_needed).map(|t| zip_sizes.get(t).copied().unwrap_or(0)).sum();
+            let tex_total: usize = tex_all.iter().map(|t| zip_sizes.get(t).copied().unwrap_or(0)).sum();
+            out_rows.sort_by(|x, y| y.0.cmp(&x.0));
+            println!("{p}: {} embedded files, {} placed models, {} placements; line = {} samples; radius {radius} m", files.len(), rows.len(), total_placements, path.len());
+            println!("model\tzip_bytes\tplacements\tscenery_placements\tmin_dist_to_line_m\tverdict");
+            let min_bytes: usize = flag(&a.rest, "--min-bytes").and_then(|s| s.parse().ok()).unwrap_or(0);
+            for (b, row) in &out_rows { if *b >= min_bytes { println!("{row}"); } }
+            let zip_total: usize = zip_sizes.values().sum();
+            println!("TOTAL embedded {} bytes in {} files; models {} bytes; textures {} bytes", zip_total, files.len(), kept_bytes + removable_bytes, tex_total);
+            println!("REMOVABLE (every placement > {radius} m from the line): {removable_models} models, {removable_placements} placements, {removable_bytes} bytes of models + {tex_removable} bytes of textures only they use = {} bytes ({:.1} % of the embedded zip)", removable_bytes + tex_removable, 100.0 * (removable_bytes + tex_removable) as f64 / zip_total.max(1) as f64);
+            println!("KEPT (some placement within {radius} m): {} models, {kept_bytes} bytes", rows.len() - removable_models);
+            if let Some(o) = flag(&a.rest, "--out") {
+                let mut s = String::from("index\tmodel\tdist_m\n");
+                for (i, mdl, dd) in &per_placement { s.push_str(&format!("i{i}\t{mdl}\t{dd:.2}\n")); }
+                std::fs::write(&o, s).unwrap_or_else(|e| die(e.to_string()));
+                println!("per-placement distances: {o}");
             }
         }
         // item-rename IN.Item.Gbx --out OUT --ident NAME.Item.Gbx [--author A]: the

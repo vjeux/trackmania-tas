@@ -295,6 +295,14 @@ pub fn cmd(a: &[String]) {
                     continue;
                 }
                 println!("{:<14} {:>8}  {:?}", x.role.label(), x.at, x.s);
+                // a skin path is preceded by its PackDesc checksum (sha256 of the zip,
+                // measured 2026-09-12): print it, it is half of what makes a skin
+                // fetchable and a zero one makes the game try to "update" the file
+                if x.role == Role::Skin && x.at >= 32 {
+                    let h: String = c.body()[x.at - 32..x.at].iter().map(|b| format!("{b:02x}")).collect();
+                    let zero = h.chars().all(|ch| ch == '0');
+                    println!("{:<14} {:>8}  {}{}", "  checksum", x.at - 32, h, if zero { "  (ZERO -- the game will try to update this file from its locator)" } else { "" });
+                }
             }
         }
         "set" => {
@@ -306,6 +314,26 @@ pub fn cmd(a: &[String]) {
             let name = flag(rest, "--name");
             let trigram = flag(rest, "--trigram");
             let skin = flag(rest, "--skin");
+            // --locator URL and --skin-file ZIP | --checksum HEX64 (2026-09-13): the skin
+            // PackDesc is `u8 3 | sha256(zip) | path | locator`; a ghost that names a zip
+            // the player lacks needs the real hash and the URL for the game to fetch it.
+            let locator = flag(rest, "--locator");
+            if let Some(u) = locator {
+                if !(u.is_empty() || u.starts_with("http://") || u.starts_with("https://")) {
+                    die(format!("--locator {u:?}: not an http(s) URL"));
+                }
+            }
+            let checksum: Option<[u8; 32]> = match (flag(rest, "--skin-file"), flag(rest, "--checksum")) {
+                (Some(f), _) => Some(gbx::sha::sha256_file(std::path::Path::new(f)).unwrap_or_else(|e| die(format!("--skin-file {f}: {e}")))),
+                (None, Some(h)) => {
+                    let h = h.trim();
+                    if h.len() != 64 { die("--checksum wants 64 hex chars (sha256 of the zip)"); }
+                    let mut o = [0u8; 32];
+                    for i in 0..32 { o[i] = u8::from_str_radix(&h[i * 2..i * 2 + 2], 16).unwrap_or_else(|_| die("--checksum: not hex")); }
+                    Some(o)
+                }
+                _ => None,
+            };
             let login = flag(rest, "--login");
             let zone = flag(rest, "--zone");
             let clubtag = flag(rest, "--clubtag");
@@ -376,7 +404,7 @@ pub fn cmd(a: &[String]) {
                     // is a change to make with the corpus in front of you.
                     Role::Zone => zone.map(|s| s.to_string()),
                     Role::ClubTag => clubtag.map(|s| s.to_string()).or(if anon { Some(String::new()) } else { None }),
-                    Role::Locator => if anon { Some(String::new()) } else { None },
+                    Role::Locator => locator.map(|s| s.to_string()).or(if anon { Some(String::new()) } else { None }),
                     Role::AccountId => if anon { Some(String::new()) } else { None },
                     Role::Prestige => if anon { Some(String::new()) } else { None },
                     _ => None,
@@ -421,7 +449,21 @@ pub fn cmd(a: &[String]) {
                     }
                 }
             }
-            if edits.is_empty() {
+            // a locator on a ghost whose locator string is EMPTY: the scanner never lists
+            // an empty string, so it is addressed structurally -- the length word right
+            // after the skin path (as `ghost static` does)
+            if let Some(u) = locator {
+                if !fields.iter().any(|f| f.role == Role::Locator) {
+                    if let Some(sk) = fields.iter().find(|f| f.role == Role::Skin) {
+                        let at = sk.at + 4 + sk.len;
+                        let old_len = u32::from_le_bytes(c.body()[at..at + 4].try_into().unwrap()) as usize;
+                        if old_len > 1024 { die(format!("the word after the skin path reads {old_len}, not a plausible locator length")); }
+                        log.push(format!("  {:<12} (empty) -> {:?}", "locator", u));
+                        edits.push((at, old_len, u.as_bytes().to_vec()));
+                    }
+                }
+            }
+            if edits.is_empty() && checksum.is_none() {
                 // A NO-OP IS A RESULT, AND IT WAS KILLING THE CALLER.
                 //
                 // `die` here is right for a person at a terminal: they asked
@@ -450,6 +492,14 @@ pub fn cmd(a: &[String]) {
                 if *at >= 32 {
                     for b in pre[at - 32..*at].iter_mut() {
                         *b = 0;
+                    }
+                }
+            }
+            if let Some(h) = checksum {
+                for f in fields.iter().filter(|f| f.role == Role::Skin) {
+                    if f.at >= 32 {
+                        pre[f.at - 32..f.at].copy_from_slice(&h);
+                        log.push(format!("  {:<12} checksum -> sha256 {}", "skin", h.iter().map(|b| format!("{b:02x}")).collect::<String>()));
                     }
                 }
             }

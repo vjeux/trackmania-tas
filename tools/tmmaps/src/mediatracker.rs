@@ -1137,6 +1137,47 @@ impl MediaTracker {
         Ok(())
     }
 
+    /// `--promote-ingame-intro NAME`: make the in-game clip called NAME the map's
+    /// INTRO clip (the clip a played map runs at load, no trigger needed), dropping
+    /// the old intro. The play-mode skin-locator test of 2026-09-12: the game's own
+    /// MediaTracker editor wrote the ghost block into an in-game clip (`shootctl
+    /// setup` + /mapsave); promoted, the ghost plays when the map is played.
+    pub fn promote_in_game_to_intro(&mut self, name: &str) -> Result<(), String> {
+        let Slot::Group(g) = &mut self.in_game else { return Err("no in-game group".into()) };
+        let i = g.clips.iter().position(|c| c.name == name).ok_or_else(|| format!("no in-game clip named {name:?} (have {:?})", g.clips.iter().map(|c| c.name.clone()).collect::<Vec<_>>()))?;
+        let clip = g.clips.remove(i);
+        if i < g.triggers.len() {
+            g.triggers.remove(i);
+        }
+        self.intro = Slot::Clip(clip);
+        Ok(())
+    }
+
+    /// `--drop-ingame-clip NAME`: delete in-game clip NAME (and its trigger). The
+    /// 2026-09-13 bisect: does a map the editor saved with an imported MediaTracker
+    /// ghost block refuse to enter a playground BECAUSE of that block?
+    pub fn drop_in_game_clip(&mut self, name: &str) -> Result<(), String> {
+        let Slot::Group(g) = &mut self.in_game else { return Err("no in-game group".into()) };
+        let i = g.clips.iter().position(|c| c.name == name).ok_or_else(|| format!("no in-game clip named {name:?} (have {:?})", g.clips.iter().map(|c| c.name.clone()).collect::<Vec<_>>()))?;
+        g.clips.remove(i);
+        if i < g.triggers.len() {
+            g.triggers.remove(i);
+        }
+        Ok(())
+    }
+
+    /// `--set-ingame-trigger NAME=cx,cy,cz;cx,cy,cz…`: give the in-game clip NAME these
+    /// trigger cells (trigger-grid units, see `trigger_world_box`) — a clip with a
+    /// trigger on the spawn plays right after the intro (the end-race promotion
+    /// experiment saw it). No node moves: the trigger lists are re-emitted anyway.
+    pub fn set_in_game_trigger(&mut self, name: &str, cells: Vec<[i32; 3]>) -> Result<(), String> {
+        let Slot::Group(g) = &mut self.in_game else { return Err("no in-game group".into()) };
+        let i = g.clips.iter().position(|c| c.name == name).ok_or_else(|| format!("no in-game clip named {name:?} (have {:?})", g.clips.iter().map(|c| c.name.clone()).collect::<Vec<_>>()))?;
+        let t = g.triggers.get_mut(i).ok_or("the clip has no trigger record")?;
+        t.coords = cells;
+        Ok(())
+    }
+
     /// EXPERIMENT (`--shift-trigger dx,dy,dz`): move the LAST in-game trigger
     /// by whole cells — the promoted clip's, to put it on the straight ahead
     /// of the spawn where a driven car enters it.
@@ -1417,6 +1458,25 @@ pub fn cmd(args: &[String]) {
                 let first = again.iter().zip(orig).position(|(a, b)| a != b);
                 crate::cli::die(&format!("re-emitting the chunk unchanged gives {} bytes for {} (first difference at {:?}): the writer does not reproduce this map", again.len(), orig.len(), first));
             }
+            // --from OTHER.Map.Gbx --out F: transplant OTHER's whole MediaTracker chunk into
+            // MAP (OTHER's clip bytes, node indices as they are — for a re-save of the SAME
+            // map, whose non-MT nodes keep their numbers). The play-mode locator test of
+            // 2026-09-12: the editor's re-save would not PlayMap, the original does.
+            if let (Some(from), Some(out)) = (crate::cli::flag(args, "--from"), crate::cli::flag(args, "--out")) {
+                let o = crate::map::MapFile::load(std::path::Path::new(from));
+                let omt = o.mediatracker().unwrap_or_else(|| crate::cli::die(&format!("{from}: no MediaTracker chunk"))).unwrap_or_else(|e| crate::cli::die(&format!("{from}: {e}")));
+                let bytes = omt.emit(&o.gbx.body);
+                let mut w = crate::map::MapFile::load(path);
+                w.raw_splices.push(((mt.start, mt.end), bytes.clone()));
+                w.write_to(std::path::Path::new(out)).unwrap_or_else(|e| crate::cli::die(&format!("{out}: {e}")));
+                let back = crate::map::MapFile::load(std::path::Path::new(out));
+                match back.mediatracker() {
+                    Some(Ok(b)) => println!("wrote {out}: MediaTracker of {from} ({} bytes, {} clips) transplanted; reads back with {} clips", bytes.len(), omt.clips().len(), b.clips().len()),
+                    Some(Err(e)) => crate::cli::die(&format!("{out}: the transplanted MediaTracker does not read back: {e}")),
+                    None => crate::cli::die(&format!("{out}: no MediaTracker chunk after the transplant")),
+                }
+                return;
+            }
             // experiments: --promote-endrace N, --trigger-size a,b,c, --strip; written with --out
             if let Some(out) = crate::cli::flag(args, "--out") {
                 let mut mt = mt;
@@ -1424,6 +1484,29 @@ pub fn cmd(args: &[String]) {
                     let n: usize = n.parse().unwrap_or_else(|_| crate::cli::die("--promote-endrace wants a 1-based clip number"));
                     mt.promote_end_race(n).unwrap_or_else(|e| crate::cli::die(&e));
                     println!("end-race clip {n} moved into the in-game group");
+                }
+                if let Some(name) = crate::cli::flag(args, "--promote-ingame-intro") {
+                    mt.promote_in_game_to_intro(name).unwrap_or_else(|e| crate::cli::die(&e));
+                    println!("in-game clip {name:?} is now the intro clip");
+                }
+                if let Some(name) = crate::cli::flag(args, "--drop-ingame-clip") {
+                    mt.drop_in_game_clip(name).unwrap_or_else(|e| crate::cli::die(&e));
+                    println!("in-game clip {name:?} dropped");
+                }
+                // dropping a clip removes NODES (the clip, its tracks, its blocks): the
+                // container's node count has to follow or the game says "Couldn't load
+                // map!" (2026-09-13). Signed, because adding one is the same job.
+                let nodes_delta: i64 = crate::cli::flag(args, "--nodes-delta").map(|s| s.parse().unwrap_or_else(|_| crate::cli::die("--nodes-delta N (may be negative)"))).unwrap_or(0);
+                if let Some(spec) = crate::cli::flag(args, "--set-ingame-trigger") {
+                    let (name, cells) = spec.split_once('=').unwrap_or_else(|| crate::cli::die("--set-ingame-trigger NAME=cx,cy,cz;…"));
+                    let cells: Vec<[i32; 3]> = cells.split(';').filter(|s| !s.trim().is_empty()).map(|c| {
+                        let v: Vec<i32> = c.split(',').map(|x| x.trim().parse().unwrap_or_else(|_| crate::cli::die("--set-ingame-trigger: cells are cx,cy,cz"))).collect();
+                        if v.len() != 3 { crate::cli::die("--set-ingame-trigger: cells are cx,cy,cz"); }
+                        [v[0], v[1], v[2]]
+                    }).collect();
+                    let n = cells.len();
+                    mt.set_in_game_trigger(name, cells).unwrap_or_else(|e| crate::cli::die(&e));
+                    println!("in-game clip {name:?}: trigger set to {n} cell(s)");
                 }
                 if let Some(d) = crate::cli::flag(args, "--shift-trigger") {
                     let v: Vec<i32> = d.split(',').map(|x| x.trim().parse().unwrap_or_else(|_| crate::cli::die("--shift-trigger wants dx,dy,dz (cells)"))).collect();
@@ -1446,6 +1529,11 @@ pub fn cmd(args: &[String]) {
                 }
                 let mut w = crate::map::MapFile::load(path);
                 w.set_mediatracker(&mt);
+                if nodes_delta != 0 {
+                    let before = w.gbx.num_nodes;
+                    w.gbx.num_nodes = (before as i64 + nodes_delta) as u32;
+                    println!("nodes {before} -> {}", w.gbx.num_nodes);
+                }
                 w.write_to(std::path::Path::new(out)).unwrap_or_else(|e| crate::cli::die(&format!("{out}: {e}")));
                 let check = crate::map::MapFile::load(std::path::Path::new(out));
                 match check.mediatracker() {

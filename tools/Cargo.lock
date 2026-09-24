@@ -448,6 +448,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
+name = "jumprig"
+version = "1.0.0"
+dependencies = [
+ "tmdrive",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -743,6 +750,9 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "shootctl"
 version = "1.0.0"
+dependencies = [
+ "tmdrive",
+]
 
 [[package]]
 name = "signal-hook-registry"
@@ -863,6 +873,7 @@ dependencies = [
  "mapgeom",
  "miniz_oxide",
  "serde_json",
+ "tmdrive",
  "tmmaps",
 ]
 
@@ -884,6 +895,10 @@ dependencies = [
  "ghost",
  "tmmaps",
 ]
+
+[[package]]
+name = "tmdrive"
+version = "1.0.0"
 
 [[package]]
 name = "tmmaps"

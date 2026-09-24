@@ -553,9 +553,34 @@ pub fn delblocks(args: &[String]) {
         let keep: std::collections::BTreeSet<String> = tmmaps::cli::flag(&args, "--keep-baked").unwrap_or("").split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
         // --keep-first N: the first N authored blocks stay (the "does ONE block suffice" probe)
         let keep_first: usize = tmmaps::cli::flag(&args, "--keep-first").and_then(|v| v.parse().ok()).unwrap_or(0);
+        // --name PAT[,PAT…]: drop only the AUTHORED blocks whose name contains a pattern
+        // (case-insensitive); the generated blocks stay. The scenery-swap use: take a
+        // campaign map's Deco hill/platform/cliff blocks out so parked ghosts can carry
+        // them (2026-09-14). Without --name the old behaviour: everything goes.
+        let pats: Vec<String> = tmmaps::cli::flag(&args, "--name").unwrap_or("").split(',').filter(|s| !s.is_empty()).map(|s| s.to_lowercase()).collect();
         let mut m = tmmaps::map::MapFile::load(&src);
         let (nb, nk) = (m.blocks.len(), m.baked.len());
-        let r = m.remove_blocks(|b| b.index >= keep_first, |b| !keep.contains(&b.name));
+        let r = if pats.is_empty() {
+            m.remove_blocks(|b| b.index >= keep_first, |b| !keep.contains(&b.name))
+        } else {
+            let mut by_name: std::collections::BTreeMap<String, usize> = Default::default();
+            for b in &m.blocks {
+                let ln = b.name.to_lowercase();
+                if pats.iter().any(|p| ln.contains(p.as_str())) { *by_name.entry(b.name.clone()).or_insert(0) += 1; }
+            }
+            for (n, c) in &by_name { println!("  {c} x {n}"); }
+            // the generated (baked) blocks carry most of a hill's geometry (a DecoHill
+            // authored block spawns DecoHillSlope…FC/VFC generated ones): drop those too
+            let mut by_baked: std::collections::BTreeMap<String, usize> = Default::default();
+            for b in &m.baked {
+                let ln = b.name.to_lowercase();
+                if pats.iter().any(|p| ln.contains(p.as_str())) { *by_baked.entry(b.name.clone()).or_insert(0) += 1; }
+            }
+            for (n, c) in &by_baked { println!("  {c} x {n} (generated)"); }
+            let pats2 = pats.clone();
+            let pats3 = pats.clone();
+            m.remove_blocks(move |b| { let ln = b.name.to_lowercase(); pats2.iter().any(|p| ln.contains(p.as_str())) }, move |b| { let ln = b.name.to_lowercase(); pats3.iter().any(|p| ln.contains(p.as_str())) })
+        };
         println!("deleted {} of {nb} authored and {} of {nk} generated blocks; {} free entries, {} snap groups ({} items un-snapped)", r.blocks, r.baked, r.free_entries, r.snap_groups, r.snapped_items_cleared);
         let tmp = out.with_extension("del0.Map.Gbx");
         m.write_to(&tmp).expect("write");
@@ -705,10 +730,20 @@ pub fn validate(args: &[String]) {
     chunk.extend_from_slice(b"PIKS");
     chunk.extend_from_slice(&(blob.len() as u32).to_le_bytes());
     chunk.extend_from_slice(&blob);
+    // The embedded ghost is a NODE: a file that did not carry one before gains one, and
+    // the container's node count has to say so, or the game answers "Couldn't load map!"
+    // (measured 2026-09-13 on a map saved after a MediaTracker session, whose 0x0305B00F
+    // was the 12-byte empty form). `--nodes-delta N` overrides the inferred bump.
+    // `--no-ghost`: write the TIMES and validated="1" only, leaving chunk 0x0305B00F
+    // alone — no node is added, so the container's node table stays exactly as the
+    // game wrote it (2026-09-13: what a map needs to be playable after a MediaTracker
+    // session is an author time; the embedded ghost is a separate thing).
+    let no_ghost = tmmaps::cli::has(args, "--no-ghost");
     let skips = tmmaps::gbx::all_skip_chunks(&m.gbx.body);
-    let placed = if let Some(&(_, off, payload, size)) = skips.iter().find(|(c, ..)| *c == 0x0305_B00F) {
+    let placed = if no_ghost { "ghost chunk left alone (--no-ghost)" } else if let Some(&(_, off, payload, size)) = skips.iter().find(|(c, ..)| *c == 0x0305_B00F) {
         m.raw_splices.push(((off, payload + size), chunk.clone()));
-        "replaced"
+        // a 12-byte 0x0305B00F is the EMPTY form (null node ref): replacing it adds a node
+        if size <= 16 { "replaced_empty" } else { "replaced" }
     } else {
         let &(_, _o, p, s) = skips.iter().find(|(c, ..)| *c == 0x0305_B00E).expect("no ChallengeParameters chunk 0x0305B00E");
         m.raw_splices.push(((p + s, p + s), chunk.clone()));
@@ -728,10 +763,18 @@ pub fn validate(args: &[String]) {
 /// 0x0305B00F is not touched. `set_validated` flips the XML's `validated="0"`.
 fn write_times(m: &mut map::MapFile, hdr: &tmmaps::header::MapHeader, bronze: u32, silver: u32, gold: u32, author: u32, set_validated: bool) {
     let skips = tmmaps::gbx::all_skip_chunks(&m.gbx.body);
-    let old_b: u32 = hdr.bronze.parse().ok().expect("header times");
-    let old_s: u32 = hdr.silver.parse().ok().expect("header times");
-    let old_g: u32 = hdr.gold.parse().ok().expect("header times");
-    let old_a: u32 = hdr.authortime.parse().ok().expect("header times");
+    // An UNVALIDATED map carries -1 in every time field (the editor writes that
+    // when an edit invalidates the map: measured 2026-09-13 on maps saved after
+    // a MediaTracker session, which the game then refuses to start a race on).
+    // Read them as i64 and keep the bit pattern, so the layout check below still
+    // works -- `parse::<u32>()` panicked on those maps.
+    let as_time = |s: &str| -> u32 {
+        s.trim().parse::<i64>().map(|v| v as u32).unwrap_or_else(|_| panic!("header time {s:?} is not a number"))
+    };
+    let old_b: u32 = as_time(&hdr.bronze);
+    let old_s: u32 = as_time(&hdr.silver);
+    let old_g: u32 = as_time(&hdr.gold);
+    let old_a: u32 = as_time(&hdr.authortime);
     let expect = |buf: &[u8], at: usize, want: u32, what: &str| {
         let got = u32::from_le_bytes(buf[at..at + 4].try_into().unwrap());
         assert!(got == want, "{what}: read {got} where the header says {want} — layout mismatch, nothing written");
@@ -930,4 +973,54 @@ pub fn genealogy_fill(args: &[String]) {
     std::fs::copy(&src, &out).expect("copy");
     let (zone, n) = tmmaps::map::MapFile::fill_genealogy_file_n(&out, count).expect("fill genealogies");
     println!("{}: genealogy chunk filled: {n} cells of {zone} -> {}", src.display(), out.display());
+}
+
+/// `tmmaps sinkitems MAP --items 1,2,… | --name-filter SUBSTR --out F [--y -900]`:
+/// park the listed items far below the map, the way `tmmaps tiny` parks an item its
+/// mapping drops. Written 2026-09-13 to take a campaign map's own trees out of
+/// the picture while parked ghosts carry the same trees as skins — the scenery
+/// swap is only visible if the map is not still drawing the summer originals.
+pub fn sinkitems(args: &[String]) {
+    let path = std::path::Path::new(&args[2]);
+    let out = tmmaps::cli::flag(args, "--out").expect("sinkitems needs --out F");
+    let y: f32 = tmmaps::cli::flag(args, "--y").map(|s| s.parse().expect("--y METRES")).unwrap_or(-900.0);
+    let want: Vec<usize> = tmmaps::cli::flag(args, "--items").unwrap_or("")
+        .split(',').filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().trim_start_matches('i').parse().expect("--items 1,2,…"))
+        .collect();
+    let filters: Vec<String> = tmmaps::cli::flag(args, "--name-filter").unwrap_or("")
+        .split(',').filter(|s| !s.trim().is_empty()).map(|s| s.trim().to_lowercase()).collect();
+    let mut m = map::MapFile::load(path);
+    let picked: Vec<(usize, String, [f32; 3])> = m.items.iter()
+        .filter(|it| {
+            let by_index = want.contains(&it.index);
+            let by_name = !filters.is_empty() && filters.iter().any(|f| it.model.to_lowercase().contains(f.as_str()));
+            by_index || by_name
+        })
+        .map(|it| (it.index, it.model.clone(), it.pos))
+        .collect();
+    if picked.is_empty() {
+        tmmaps::cli::die("sinkitems: no item matched --items/--name-filter");
+    }
+    // park them the way `tmmaps tiny` parks a dropped item: one cell, far below.
+    // The declared CELL has to follow the position (a y of −900 under the item's own
+    // cell crashes the client on load — measured 2026-09-13).
+    for (idx, _, _pos) in &picked {
+        m.move_item(*idx, [8.0, y, 8.0], 0.0, (0, 0, 0));
+    }
+    m.write_to(std::path::Path::new(out)).unwrap_or_else(|e| panic!("{out}: {e}"));
+    // control: read the file back and check every picked item really moved
+    let back = map::MapFile::load(std::path::Path::new(out));
+    let bad: Vec<usize> = picked.iter().filter(|(i, _, _)| back.items.iter().find(|it| it.index == *i).map(|it| (it.pos[1] - y).abs() > 0.01).unwrap_or(true)).map(|(i, _, _)| *i).collect();
+    if !bad.is_empty() {
+        tmmaps::cli::die(&format!("{out}: {} item(s) did not move (first {:?})", bad.len(), &bad[..bad.len().min(5)]));
+    }
+    let mut by_model: std::collections::BTreeMap<String, usize> = Default::default();
+    for (_, model, _) in &picked {
+        *by_model.entry(model.clone()).or_insert(0) += 1;
+    }
+    println!("wrote {out}: {} item(s) parked at y {y}", picked.len());
+    for (model, n) in by_model {
+        println!("  {n} x {model}");
+    }
 }
