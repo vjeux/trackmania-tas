@@ -2849,6 +2849,15 @@ fn run(a: Vec<String>) {
                         let (mut cut, mut opaque_nomat) = (0usize, 0usize);
                         for t in &g.tris { if t.alpha != u16::MAX { cut += 1 } else if t.mat == u16::MAX { opaque_nomat += 1 } }
                         println!("  model {}: {} alpha-tested tris, {} OPAQUE tris without a material link; alpha textures {:?}", inst.model, cut, opaque_nomat, g.alpha_tex);
+                        // uv1 orientation: the signed area of each triangle in lightmap-uv space (the game's chart
+                        // raster may cull one winding)
+                        let mut uvo: std::collections::BTreeMap<u16, (usize, usize)> = Default::default();
+                        for t in &g.tris {
+                            let a = (t.uv[1][0] - t.uv[0][0]) * (t.uv[2][1] - t.uv[0][1]) - (t.uv[2][0] - t.uv[0][0]) * (t.uv[1][1] - t.uv[0][1]);
+                            let e = uvo.entry(t.mat).or_insert((0, 0));
+                            if a >= 0.0 { e.0 += 1 } else { e.1 += 1 }
+                        }
+                        println!("  model {}: uv1 winding per material (ccw / cw): {}", inst.model, uvo.iter().map(|(mat, (p, n))| format!("mat {mat}: {p} / {n}")).collect::<Vec<_>>().join("; "));
                         println!("  model {} ({}): vertex-normal vs winding: {}", inst.model, scene.model_names.get(inst.model).cloned().unwrap_or_default(), agree.iter().map(|(mat, (a, d))| format!("mat {} ({}): {a} agree / {d} disagree", mat, g.mat_links.get(*mat as usize).map(|s| s.rsplit('\\').next().unwrap_or(s).to_string()).unwrap_or_else(|| "-".into()))).collect::<Vec<_>>().join("; "));
                     }
                     if outside || a.iter().any(|x| x == "--uv-all") {
