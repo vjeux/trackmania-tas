@@ -12,9 +12,11 @@
 //! (the N64 mirrors sprites for that half too). A chassis slab in the kart's
 //! colour sits between the game's own wheels, which stay.
 //!
-//! Frames (measured on the contact sheet, `mk64 sprites`): the 21 frames
-//! 0..=20 sweep back → right side → front in 9° steps; 0 = straight back,
-//! 10 = right profile, 20 = straight front.
+//! Frames (measured on the contact sheets, `mk64 sprites`): the game stores
+//! the right half of the turn only (the left is mirrored at draw time) in 21
+//! steps per group; group 9 (189..=208) is the level-pitch turn: 189 = straight
+//! back, 199 = right profile, 208 = straight front (group 0 = the same sweep
+//! at a steeper camera pitch, 0 = back).
 //!
 //! Skin frame (measured 2026-09-12): +z = car front, +x = the car's LEFT, y up,
 //! origin = the car position; the template's body spans the same frame.
@@ -26,17 +28,25 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 pub const FRAME_BACK: usize = 0;
-pub const FRAME_RIGHT: usize = 10;
-pub const FRAME_FRONT: usize = 20;
+pub const FRAME_RIGHT: usize = 199;
+pub const FRAME_FRONT: usize = 208;
 
 /// Metres per sprite pixel: the sprite's kart body (~48 of 64 px) as wide as
 /// the TM car (2.05 m, the same calibration the courses use).
-pub const M_PER_PX: f32 = 2.05 / 48.0;
+pub const M_PER_PX: f32 = 2.05 / 40.0;
 /// The atlas upscale (nearest): DXT blocks then straddle no pixel edge.
 pub const ATLAS_UPSCALE: u32 = 4;
 /// Half-thickness of the standee cross: the back and front sheets sit this far
 /// behind/ahead of the centre, the side sheets this far right/left.
 pub const SHEET_OFFSET: f32 = 0.06;
+/// The back sheet sits this far behind the car origin: the game draws its pilot
+/// avatar at the template's PlayerSeat joint near the origin, and the chase
+/// camera must not see him through the kart (00:24 shot).
+pub const BACK_SHEET_Z: f32 = -0.75;
+pub const FRONT_SHEET_Z: f32 = 0.75;
+/// Side sheets shifted forward: the profile sprite spans ~±1.3 m about the
+/// origin; +0.55 puts its rear edge at the back sheet.
+pub const SIDE_SHIFT_Z: f32 = 0.55;
 
 pub struct Sheets {
     pub back: Image,
@@ -169,12 +179,15 @@ pub fn standee(frame: &Image, slot: usize, view: View, ground_y: f32, texset: &s
             let sy1 = sy0 + s;
             // screen → skin frame per view (right-handed, y up; the viewer looks
             // along `fwd`, screen-right = fwd × up)
+            // side views slide forward so their rear edge meets the back sheet's plane
+            // (their shadow fell across the back sprite in the 00:28 shot)
+            let side_shift = SIDE_SHIFT_Z;
             let to_world = |sx: f32, sy: f32| -> [f32; 3] {
                 match view {
-                    View::Back => [-sx, sy, -SHEET_OFFSET],  // viewer behind, looking +z: right = −x
-                    View::Front => [sx, sy, SHEET_OFFSET],   // viewer ahead, looking −z: right = +x
-                    View::Right => [-SHEET_OFFSET, sy, sx],  // viewer at the car's right (−x), looking +x: right = +z
-                    View::Left => [SHEET_OFFSET, sy, sx],    // viewer at the car's left (+x), looking −x: right = −z … the same
+                    View::Back => [-sx, sy, BACK_SHEET_Z],    // viewer behind, looking +z: right = −x
+                    View::Front => [sx, sy, FRONT_SHEET_Z],   // viewer ahead, looking −z: right = +x
+                    View::Right => [-SHEET_OFFSET, sy, sx + side_shift],  // viewer at the car's right (−x), looking +x: right = +z
+                    View::Left => [SHEET_OFFSET, sy, sx + side_shift],    // viewer at the car's left (+x), looking −x: right = −z … the same
                                                              // frame seen from behind the sheet = the mirrored sprite
                 }
             };
@@ -208,7 +221,7 @@ pub fn standee(frame: &Image, slot: usize, view: View, ground_y: f32, texset: &s
 
 /// The chassis slab between the wheels, in the kart colour.
 pub fn slab(ground_y: f32, texset: &str) -> Part {
-    let (hx, y0, y1, hz) = (0.95f32, ground_y + 0.12, ground_y + 0.32, 1.25f32);
+    let (hx, y0, y1, hz) = (0.90f32, ground_y + 0.02, ground_y + 0.12, 1.20f32);
     let mut p = Part { texset: texset.to_string(), source: "slab".into(), ..Default::default() };
     let c = uv(ATLAS_SLOTS[3].0 + 16, ATLAS_SLOTS[3].1 + 16);
     let mut quad = |a: [f32; 3], b: [f32; 3], cc: [f32; 3], d: [f32; 3], n: [f32; 3], uvs: Option<[[f32; 2]; 4]>| {
@@ -265,6 +278,31 @@ pub fn template_bounds(t: &mapgeom::static_item::solid2::CPlugSolid2Model) -> Op
     any.then_some((lo, hi))
 }
 
+/// A mip chain where each level is a nearest-neighbour pick of the level above
+/// (pixel art stays pixel art in the distance).
+fn nearest_chain(w: u32, h: u32, rgba: &[u8]) -> Vec<mapgeom::static_item::texture::Level> {
+    let mut levels = vec![mapgeom::static_item::texture::Level { w, h, rgba: rgba.to_vec() }];
+    let (mut lw, mut lh) = (w, h);
+    while lw > 1 || lh > 1 {
+        let (nw, nh) = ((lw / 2).max(1), (lh / 2).max(1));
+        let prev = levels.last().unwrap();
+        let mut out = vec![0u8; (nw * nh * 4) as usize];
+        for y in 0..nh {
+            for x in 0..nw {
+                let sx = (x * 2).min(lw - 1);
+                let sy = (y * 2).min(lh - 1);
+                let si = ((sy * lw + sx) * 4) as usize;
+                let di = ((y * nw + x) * 4) as usize;
+                out[di..di + 4].copy_from_slice(&prev.rgba[si..si + 4]);
+            }
+        }
+        levels.push(mapgeom::static_item::texture::Level { w: nw, h: nh, rgba: out });
+        lw = nw;
+        lh = nh;
+    }
+    levels
+}
+
 pub struct SkinOut {
     pub name: String,
     pub zip: Vec<u8>,
@@ -313,8 +351,31 @@ pub fn build_character(
     }
     let mut files: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     files.insert("MainBody.Mesh.gbx".into(), built.file.clone());
-    for (n, b) in skin::texture_set("Details", w, h, &rgba, 230) {
+    let variant = std::env::var("MK64_SKIN_VARIANT").unwrap_or_else(|_| "noemis".into());
+    let rgba: Vec<u8> = if variant == "red" { skin::flat_rgba(w, [255, 0, 0, 255]) } else { rgba };
+    for (n, b) in skin::texture_set("Details", w, h, &rgba, 200) {
         files.insert(n, b);
+    }
+    // the mip chain of the atlas, NEAREST-sampled: a 5 cm pixel quad is a few
+    // texels on screen, so the sampler lives in the small mips — a box-filtered
+    // chain there is the average grey of the whole atlas (the 00:12 shot: a grey
+    // Mario). Every level keeps a palette colour instead.
+    // UNCOMPRESSED A8R8G8B8 with a nearest mip chain: the BC3 chain of the same
+    // atlas drew the sprite in greys (00:12–00:20 shots); this drew it exactly
+    // (00:24). `bc3` keeps the compressed form for comparison.
+    if variant == "bc3" {
+        files.insert("Details_B.dds".into(), mapgeom::static_item::texture::write_dds_dxt5_mips(&nearest_chain(w, h, &rgba)));
+    } else {
+        files.insert("Details_B.dds".into(), mapgeom::static_item::texture::write_dds_rgba_mips(&nearest_chain(w, h, &rgba)));
+    }
+    // the sprite as its own emissive map: the vehicle shader lights vertical faces
+    // ~40 % darker and clips the base colour (skin-scenery notes), so the standees
+    // came out near-black in the first shot (2026-09-24 00:07); emission keeps the
+    // N64 palette readable from every side
+    if variant != "noemis" {
+        let gain = if variant == "emisfull" { 10 } else { 7 };
+        let em: Vec<u8> = rgba.chunks(4).flat_map(|p| [(p[0] as u32 * gain / 10) as u8, (p[1] as u32 * gain / 10) as u8, (p[2] as u32 * gain / 10) as u8, 255u8]).collect();
+        files.insert("Details_I.dds".into(), mapgeom::static_item::texture::write_dds_rgba_mips(&nearest_chain(w, h, &em)));
     }
     // wheels: MK64 tyres are plain black rubber with a grey hub; the game's wheel
     // mesh keeps its own UVs, so a uniform dark base is the faithful choice

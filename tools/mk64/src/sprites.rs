@@ -250,3 +250,49 @@ pub fn contact_sheet(images: &[Image], cols: u32, scale: u32) -> Image {
     }
     sheet
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn tlut_list_keeps_order() {
+        let t = r#"{"mario_kart_frame000": {"output_dir": "mario/frames", "rom_offset": "0x1E01F0", "width": 64, "height": 64, "type": "ci8", "tlut": ["mario_kart_palette", "kart_000_wheel_0"], "meta": ["stitched_palette"]},
+"kart_000_wheel_0": {"output_dir": "mario/palettes", "rom_offset": "0x24E6A0", "width": 16, "height": 4, "type": "rgba16"}}"#;
+        let rows = parse_table(t);
+        assert_eq!(rows.len(), 2);
+        let loc = raw_loc(&rows[0].1).unwrap();
+        assert_eq!(loc.tlut, vec!["mario_kart_palette".to_string(), "kart_000_wheel_0".to_string()]);
+        assert_eq!(loc.rom_offset, 0x1E01F0);
+        assert_eq!(raw_loc(&rows[1].1).unwrap().rom_offset, 0x24E6A0);
+    }
+}
+
+#[cfg(test)]
+mod rom_tests {
+    use super::*;
+    #[test]
+    fn mario_frame0_is_red() {
+        let Ok(decomp) = std::env::var("MK64_DECOMP") else { return };
+        let Ok(romp) = std::env::var("MK64_ROM") else { return };
+        let rom = Rom::load(Path::new(&romp)).unwrap();
+        let ks = KartSprites::load(Path::new(&decomp), "mario", "mario").unwrap();
+        let loc = &ks.frames[0];
+        eprintln!("frame0 {:x?} tlut {:?}", loc.rom_offset, loc.tlut);
+        for t in &loc.tlut {
+            let p = ks.palettes.get(t).unwrap();
+            let b = KartSprites::raw_bytes(&rom, p).unwrap();
+            eprintln!("{t}: off {:x} {}x{} {} -> {} bytes, first {:02x?}", p.rom_offset, p.w, p.h, p.fmt, b.len(), &b[..8]);
+        }
+        let img = ks.frame(&rom, 0).unwrap();
+        let mut hist = std::collections::HashMap::new();
+        for p in img.rgba.chunks(4) {
+            if p[3] > 0 {
+                *hist.entry([p[0], p[1], p[2]]).or_insert(0u32) += 1;
+            }
+        }
+        let mut v: Vec<_> = hist.into_iter().collect();
+        v.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        eprintln!("top colours {:?}", &v[..v.len().min(6)]);
+        assert!(v.iter().take(6).any(|(c, _)| c[0] > 200 && c[1] < 60), "no red among the top colours");
+    }
+}
