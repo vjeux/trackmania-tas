@@ -1,0 +1,377 @@
+diff --git a/tools/mapgeom/src/static_item/bake.rs b/tools/mapgeom/src/static_item/bake.rs
+--- a/tools/mapgeom/src/static_item/bake.rs
++++ b/tools/mapgeom/src/static_item/bake.rs
+@@ -620,7 +620,33 @@
+ /// (0.002,-0.387,-0.920)), i.e. V is primary (from dv), U derived --
+ /// not du-gradient + Gram-Schmidt. Degenerate (det~=0) corners keep
+ /// zero tangents (fallback downstream).
+-pub fn tangents_vprim(tris: &mut [[Corner; 3]], mode: u8) {
++pub fn tangents_vprim(tris: &mut [[Corner; 3]], mode: u8, isoframe: bool) {
++    // Census of bit-doubled uv pairs (sorted position-pair -> count):
++    // a doubled pair shared by 2+ tris (fan-mates across a degenerate
++    // diagonal) must get AGREEING frames so the mates weld; unique pairs
++    // get index-order frames (mirror-opposed, splitting like his).
++    use std::collections::BTreeMap;
++    let mut paircount: BTreeMap<[[u32; 3]; 2], usize> = BTreeMap::new();
++    if isoframe {
++        for t in tris.iter() {
++            let du1 = t[1].uv[0] - t[0].uv[0];
++            let dv1 = t[1].uv[1] - t[0].uv[1];
++            let du2 = t[2].uv[0] - t[0].uv[0];
++            let dv2 = t[2].uv[1] - t[0].uv[1];
++            if du1 * dv2 - du2 * dv1 != 0.0 {
++                continue;
++            }
++            for (a, b) in [(0usize, 1usize), (1, 2), (2, 0)] {
++                if t[a].uv[0] == t[b].uv[0] && t[a].uv[1] == t[b].uv[1] {
++                    let pa = [t[a].pos[0].to_bits(), t[a].pos[1].to_bits(), t[a].pos[2].to_bits()];
++                    let pb = [t[b].pos[0].to_bits(), t[b].pos[1].to_bits(), t[b].pos[2].to_bits()];
++                    let key = if pa <= pb { [pa, pb] } else { [pb, pa] };
++                    *paircount.entry(key).or_default() += 1;
++                    break;
++                }
++            }
++        }
++    }
+     for t in tris.iter_mut() {
+         let e1 = sub(t[1].pos, t[0].pos);
+         let e2 = sub(t[2].pos, t[0].pos);
+@@ -630,15 +656,82 @@
+         let dv2 = t[2].uv[1] - t[0].uv[1];
+         let det = du1 * dv2 - du2 * dv1;
+         if det.abs() < 1e-12 {
+-            // Degenerate uv: fallback U = sign(det) * (up x N) with
+-            // up=(0,1,0) (measured: two det~=0 tris at one position give
+-            // opposite +-x frames; sign from signed-zero det).
++            // Degenerate uv: if two corners share bit-exact uvs, the
++            // iso-uv edge is real geometry: U = N x iso with iso ordered
++            // lo->hi by position bits (quad-consistent: same doubled pair
++            // gives the same frame so fan-mates weld; mirror-correct).
++            // Otherwise (float-cancellation det~=0, e.g. TB slivers)
++            // fallback U = sign(det) * (up x N), up=(0,1,0).
+             // (TINY_VPRIM_FBK=0 disables, keeping zero tangents.)
+             if std::env::var("TINY_VPRIM_FBK").as_deref() == Ok("0") {
+                 continue;
+             }
++            // Iso-edge rule only for EXACT-zero det (bit-doubled uvs):
++            // tiny-nonzero-det slivers with a coincidental exact pair keep
++            // the raw gradient (his matches it bit-exact: Technics twins).
++            let mut isopair: Option<(usize, usize)> = None;
++            if det == 0.0 {
++                for (a, b) in [(0usize, 1usize), (1, 2), (2, 0)] {
++                    if t[a].uv[0] == t[b].uv[0] && t[a].uv[1] == t[b].uv[1] {
++                        isopair = Some((a, b));
++                        break;
++                    }
++                }
++            }
++            // Iso-edge frames for bit-doubled uvs, gated per material
++            // (TINY_ISOFRAME="Stem,..." or =1): TSpecials needs them
++            // (exotic H0 splits); Technics merges those corners (upY
++            // fallback welds them) so it opts out. Exact-zero det only.
++            if let Some((a, b)) = isopair {
++                // lo->hi by position bits for determinism
++                let pa = [t[a].pos[0].to_bits(), t[a].pos[1].to_bits(), t[a].pos[2].to_bits()];
++                let pb = [t[b].pos[0].to_bits(), t[b].pos[1].to_bits(), t[b].pos[2].to_bits()];
++                let (lo, hi) = if pa <= pb { (a, b) } else { (b, a) };
++                let iv = [
++                    t[hi].pos[0] - t[lo].pos[0],
++                    t[hi].pos[1] - t[lo].pos[1],
++                    t[hi].pos[2] - t[lo].pos[2],
++                ];
++                // Set-aware: shared pair -> N x lo-hi-iso (mates agree,
++                // weld); unique pair -> GS(index-order edge) (mirror-opposed
++                // fan doublets split like his 610/611).
++                let shared = paircount.get(&if pa <= pb { [pa, pb] } else { [pb, pa] }).copied().unwrap_or(0) > 1;
++                let idxe = [t[b].pos[0] - t[a].pos[0], t[b].pos[1] - t[a].pos[1], t[b].pos[2] - t[a].pos[2]];
++                for (ci, c) in t.iter_mut().enumerate() {
++                    if ci != a && ci != b {
++                        continue;
++                    }
++                    if !isoframe {
++                        break;
++                    }
++                    let n = c.normal;
++                    let (fx, fy, fz) = if shared {
++                        (n[1] * iv[2] - n[2] * iv[1], n[2] * iv[0] - n[0] * iv[2], n[0] * iv[1] - n[1] * iv[0])
++                    } else {
++                        let dd = idxe[0] * n[0] + idxe[1] * n[1] + idxe[2] * n[2];
++                        (idxe[0] - dd * n[0], idxe[1] - dd * n[1], idxe[2] - dd * n[2])
++                    };
++                    let fl = (fx * fx + fy * fy + fz * fz).sqrt().max(1e-30);
++                    let u = [fx / fl, fy / fl, fz / fl];
++                    let wx = n[1] * u[2] - n[2] * u[1];
++                    let wy = n[2] * u[0] - n[0] * u[2];
++                    let wz = n[0] * u[1] - n[1] * u[0];
++                    let wl = (wx * wx + wy * wy + wz * wz).sqrt().max(1e-30);
++                    c.tan_u = u;
++                    c.tan_v = [wx / wl, wy / wl, wz / wl];
++                }
++                // Without isoframe the iso corners keep zero frames and
++                // fall through to the up-fallback like everything else.
++                if isoframe {
++                    continue;
++                }
++            }
+             let up = [0.0f32, 1.0, 0.0];
+             for c in t.iter_mut() {
++                // (skip corners already carrying iso-edge frames)
++                if c.tan_u != [0.0; 3] {
++                    continue;
++                }
+                 let n = c.normal;
+                 let fx = up[1] * n[2] - up[2] * n[1];
+                 let fy = up[2] * n[0] - up[0] * n[2];
+@@ -747,6 +840,101 @@
+ /// average to his single frame, while 180°-opposed coil frames stay split.
+ /// Gated by TINY_USMOOTH=1; runs after VPRIM, before welding. Key (UKEYQ)
+ /// consumes the smoothed quantized U.
++/// Re-derive V = sgn(det)*(N x U) for one corner after U was set to
++/// `uavg` (shared by U-cluster and U-corner smoothing so both behave
++/// identically, incl. TINY_KEEPFLATV / TINY_USGN / primary-sign logic).
++fn rederive_v(tris: &mut [[Corner; 3]], ti: usize, k: usize, uavg: [f32; 3], mode: u8) {
++    // TINY_KEEPFLATV=1 keeps the VPRIM-flat V instead.
++    if std::env::var("TINY_KEEPFLATV").is_ok() {
++        return;
++    }
++    let t = &tris[ti];
++    let du1 = t[1].uv[0] - t[0].uv[0];
++    let dv1 = t[1].uv[1] - t[0].uv[1];
++    let du2 = t[2].uv[0] - t[0].uv[0];
++    let dv2 = t[2].uv[1] - t[0].uv[1];
++    let det = du1 * dv2 - du2 * dv1;
++    // V re-derive sign follows the corner's primary: dv corners carry sgn
++    // in U already (USGN) so s=1; du corners need s=sgn(det) as stored.
++    // (No USGN: all s=sgn(det).)
++    let dup = tri_primary_du(&tris[ti], mode);
++    let s = if std::env::var("TINY_USGN").is_ok() && !dup {
++        1.0
++    } else if det.is_sign_negative() {
++        -1.0
++    } else {
++        1.0
++    };
++    let nn = tris[ti][k].normal;
++    let wx = s * (nn[1] * uavg[2] - nn[2] * uavg[1]);
++    let wy = s * (nn[2] * uavg[0] - nn[0] * uavg[2]);
++    let wz = s * (nn[0] * uavg[1] - nn[1] * uavg[0]);
++    let wl = (wx * wx + wy * wy + wz * wz).sqrt().max(1e-30);
++    tris[ti][k].tan_v = [wx / wl, wy / wl, wz / wl];
++}
++
++/// Per-CORNER threshold U averaging (order-free): each corner's U is the
++/// weighted mean of the V-primary frames at its position whose angle to
++/// ITS OWN frame is <= max_deg. Seed-clustering (first-match or Lloyd)
++/// misplaces knife-edge corners (a corner 2.7deg from cluster A processed
++/// after cluster B 59.8deg away joins B; Lloyd migrates true-split outliers
++/// into A): per-corner sets give both the merge and the split correctly.
++/// V re-derived per corner exactly like the cluster path.
++pub fn smooth_u_corner(tris: &mut [[Corner; 3]], max_deg: f32, angle_weight: bool, mag_weight: bool, mode: u8) {
++    use std::collections::BTreeMap;
++    if max_deg <= 0.0 {
++        return;
++    }
++    let cos_max = (max_deg.to_radians()).cos();
++    let mut by_pos: BTreeMap<[u32; 3], Vec<(usize, usize)>> = BTreeMap::new();
++    for (ti, t) in tris.iter().enumerate() {
++        for (k, c) in t.iter().enumerate() {
++            if c.tan_u == [0.0; 3] {
++                continue;
++            }
++            by_pos
++                .entry([c.pos[0].to_bits(), c.pos[1].to_bits(), c.pos[2].to_bits()])
++                .or_default()
++                .push((ti, k));
++        }
++    }
++    for (_, corners) in by_pos {
++        if corners.len() < 2 {
++            continue;
++        }
++        let mut out: Vec<[f32; 3]> = Vec::with_capacity(corners.len());
++        for i in 0..corners.len() {
++            let (mti, mk) = corners[i];
++            let me = tris[mti][mk].tan_u;
++            let mut acc = [0.0f64; 3];
++            let mut wsum = 0.0f64;
++            for &(ti, k) in &corners {
++                let u = tris[ti][k].tan_u;
++                if me[0] * u[0] + me[1] * u[1] + me[2] * u[2] < cos_max {
++                    continue;
++                }
++                let w = if mag_weight {
++                    du_grad_mag(&tris[ti])
++                } else if angle_weight {
++                    corner_angle(&tris[ti], k) as f64
++                } else {
++                    1.0
++                };
++                for d in 0..3 {
++                    acc[d] += u[d] as f64 * w;
++                }
++                wsum += w;
++            }
++            let lavg = (acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]).sqrt().max(1e-30);
++            out.push([(acc[0] / lavg) as f32, (acc[1] / lavg) as f32, (acc[2] / lavg) as f32]);
++        }
++        for (i, &(ti, k)) in corners.iter().enumerate() {
++            tris[ti][k].tan_u = out[i];
++            rederive_v(tris, ti, k, out[i], mode);
++        }
++    }
++}
++
+ pub fn smooth_u_vprim(tris: &mut [[Corner; 3]], max_deg: f32, angle_weight: bool, mag_weight: bool, mode: u8) {
+     use std::collections::BTreeMap;
+     if max_deg <= 0.0 {
+@@ -776,7 +964,12 @@
+         if corners.len() < 2 {
+             continue;
+         }
+-        // seed-largest by tri area
++        // seed-largest by tri area, then Lloyd-relax to convergence:
++        // phase 1 seeds first-match (order-dependent at knife edges: a
++        // corner 2.7deg from seed A but processed after seed B 59.8deg away
++        // joins B); phase 2 reassigns every corner to its NEAREST seed and
++        // recomputes seed=weighted average until stable. True splits (seeds
++        // >theta apart) survive; knife-edge members migrate correctly.
+         let area = |ti: usize| tri_area_of(&tris[ti]);
+         let mut ord: Vec<usize> = (0..corners.len()).collect();
+         ord.sort_by(|a, b| area(corners[*b].0).partial_cmp(&area(corners[*a].0)).unwrap());
+@@ -795,6 +988,58 @@
+                 }
+             }
+         }
++        let wgt = |ti: usize, k: usize| -> f64 {
++            if mag_weight {
++                du_grad_mag(&tris[ti])
++            } else if angle_weight {
++                corner_angle(&tris[ti], k) as f64
++            } else {
++                1.0
++            }
++        };
++        for _ in 0..20 {
++            // nearest-seed assignment
++            let mut moved = false;
++            for oi in 0..corners.len() {
++                let (ti, k) = corners[oi];
++                let u = tris[ti][k].tan_u;
++                let mut best = cluster_of[oi];
++                let mut bd = if best == usize::MAX { -2.0 } else { seeds[best][0]*u[0]+seeds[best][1]*u[1]+seeds[best][2]*u[2] };
++                for (c, s) in seeds.iter().enumerate() {
++                    let d = s[0]*u[0]+s[1]*u[1]+s[2]*u[2];
++                    if d > bd { bd = d; best = c; }
++                }
++                if best != cluster_of[oi] { cluster_of[oi] = best; moved = true; }
++            }
++            // recompute seeds as weighted averages
++            let mut acc = vec![[0.0f64; 3]; seeds.len()];
++            let mut wsum = vec![0.0f64; seeds.len()];
++            for oi in 0..corners.len() {
++                let (ti, k) = corners[oi];
++                let c = cluster_of[oi];
++                if c == usize::MAX { continue; }
++                let w = wgt(ti, k);
++                for d in 0..3 { acc[c][d] += tris[ti][k].tan_u[d] as f64 * w; }
++                wsum[c] += w;
++            }
++            for (c, s) in seeds.iter_mut().enumerate() {
++                if wsum[c] <= 0.0 { continue; }
++                let l = (acc[c][0]*acc[c][0]+acc[c][1]*acc[c][1]+acc[c][2]*acc[c][2]).sqrt().max(1e-30);
++                *s = [(acc[c][0]/l) as f32, (acc[c][1]/l) as f32, (acc[c][2]/l) as f32];
++            }
++            if !moved { break; }
++        }
++        // drop dissolved seeds (all members migrated): compact ids
++        {
++            let mut remap = vec![usize::MAX; seeds.len()];
++            let mut next = 0;
++            for oi in 0..corners.len() {
++                let c = cluster_of[oi];
++                if remap[c] == usize::MAX { remap[c] = next; next += 1; }
++            }
++            for oi in 0..corners.len() { cluster_of[oi] = remap[cluster_of[oi]]; }
++            nclusters = next;
++        }
+         for c in 0..nclusters {
+             let members: Vec<usize> = (0..corners.len()).filter(|i| cluster_of[*i] == c).collect();
+             if members.is_empty() {
+@@ -821,35 +1066,7 @@
+             for &oi in &members {
+                 let (ti, k) = corners[oi];
+                 tris[ti][k].tan_u = uavg;
+-                // re-derive V = sgn(det)*(N x U). TINY_KEEPFLATV=1 keeps
+-                // the VPRIM-flat V instead (flat V in key splits slivers
+-                // whose per-face V disagrees; smoothed U welds the rest).
+-                if std::env::var("TINY_KEEPFLATV").is_ok() {
+-                    continue;
+-                }
+-                let t = &tris[ti];
+-                let du1 = t[1].uv[0] - t[0].uv[0];
+-                let dv1 = t[1].uv[1] - t[0].uv[1];
+-                let du2 = t[2].uv[0] - t[0].uv[0];
+-                let dv2 = t[2].uv[1] - t[0].uv[1];
+-                let det = du1 * dv2 - du2 * dv1;
+-                // V re-derive sign follows the corner's primary: dv corners
+-                // carry sgn in U already (USGN) so s=1; du corners need
+-                // s=sgn(det) as stored. (No USGN: all s=sgn(det).)
+-                let dup = tri_primary_du(&tris[ti], mode);
+-                let s = if std::env::var("TINY_USGN").is_ok() && !dup {
+-                    1.0
+-                } else if det.is_sign_negative() {
+-                    -1.0
+-                } else {
+-                    1.0
+-                };
+-                let nn = tris[ti][k].normal;
+-                let wx = s * (nn[1] * uavg[2] - nn[2] * uavg[1]);
+-                let wy = s * (nn[2] * uavg[0] - nn[0] * uavg[2]);
+-                let wz = s * (nn[0] * uavg[1] - nn[1] * uavg[0]);
+-                let wl = (wx * wx + wy * wy + wz * wz).sqrt().max(1e-30);
+-                tris[ti][k].tan_v = [wx / wl, wy / wl, wz / wl];
++                rederive_v(tris, ti, k, uavg, mode);
+             }
+         }
+     }
+@@ -2530,7 +2747,14 @@
+         // it): du|duoff = 1, dv = 2, else range = 0.
+         let umode_n: u8 = if umode == "du" || umode == "duoff" { 1 } else if umode == "dv" { 2 } else { 0 };
+         if std::env::var("TINY_VPRIM").is_ok() {
+-            tangents_vprim(&mut per_material[i], umode_n);
++            // Iso-edge det=0 frames per material (TINY_ISOFRAME_MAP=
++            // "Stem,..." or TINY_ISOFRAME=1): TSpecials needs them.
++            let isoframe = std::env::var("TINY_ISOFRAME").map(|v| v == "1").unwrap_or(false)
++                || std::env::var("TINY_ISOFRAME_MAP")
++                    .ok()
++                    .map(|s| s.split(',').any(|kv| kv.trim() == crease_stems[i]))
++                    .unwrap_or(false);
++            tangents_vprim(&mut per_material[i], umode_n, isoframe);
+         }
+         // U-cluster smoothing of V-primary frames (TINY_USMOOTH=1):
+         // averages agreeing U (bevels), splits opposed (coils). Angle from
+@@ -2577,7 +2801,23 @@
+                     s.split(',').any(|kv| kv.trim() == crease_stems[i])
+                 })
+                 .unwrap_or(false);
+-            smooth_u_vprim(&mut per_material[i], tangle, angle_w, mag_w, umode_n);
++            // TINY_UCORNER="Stem,..." (or =1 for all): per-corner
++            // threshold U averaging (smooth_u_corner) instead of seed
++            // clustering. Order-free: fixes knife-edge misassignment both
++            // ways (false merges + lost true splits).
++            let ucorner = std::env::var("TINY_UCORNER").map(|v| v == "1").unwrap_or(false)
++                || std::env::var("TINY_UCORNER_MAP")
++                    .ok()
++                    .map(|s| {
++                        s.split(',')
++                            .any(|kv| kv.trim() == crease_stems[i])
++                    })
++                    .unwrap_or(false);
++            if ucorner {
++                smooth_u_corner(&mut per_material[i], tangle, angle_w, mag_w, umode_n);
++            } else {
++                smooth_u_vprim(&mut per_material[i], tangle, angle_w, mag_w, umode_n);
++            }
+         }
+         if std::env::var("TINY_TAN_SMOOTH").is_ok() {
+             let tan_map: std::collections::BTreeMap<String, f32> = std::env::var("TINY_TAN_MAP")

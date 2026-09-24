@@ -1,0 +1,29 @@
+diff --git a/tools/bake-tiny-road17.sh b/tools/bake-tiny-road17.sh
+--- a/tools/bake-tiny-road17.sh
++++ b/tools/bake-tiny-road17.sh
+@@ -1,8 +1,8 @@
+ #!/bin/sh
+ # Bake RoadTechSpecialTurbo -> Tiny_Road_17 equivalent (stage-1 recipe).
+-# 14068/14030 verts (9/11 visuals exact; TSpecials +38 = U-split rule,
+-# Road +4); normals: partitions exact on 9/11 materials; structure/links/orders/UV0/
+-# surf/prelight/filetime exact; positions 100% bit-exact.
++# 14032/14030 verts (10/11 visuals exact; TSpecials -4, Technics +6);
++# N partitions exact everywhere (corner rule TS/SFX/Road, cluster elsewhere);
++# structure/links/orders/UV0/surf/prelight/filetime exact; positions bit-exact.
+ # Usage: bake-tiny-road17.sh SRC.ITEM.GBX REF.ITEM.GBX OUT.ITEM.GBX IDENT [PACKS_DIR]
+ # (run from tools/ so target/release/mapgeom resolves).
+ set -e
+@@ -17,10 +17,11 @@
+ export TINY_WEIGHT_MAP="${TINY_WEIGHT_MAP:-TrackBorders:angle,Technics:angle,TechnicsTrims:angle}"
+ export TINY_UMAG_MAP="${TINY_UMAG_MAP:-TechnicsSpecials}"
+ export TINY_POS_REF="${TINY_POS_REF:-$REF}"
+-export TINY_CREASE_MAP="${TINY_CREASE_MAP:-TrackBorders:65,TechnicsTrims:45,TechnicsSpecials:55,Technics:52,RoadTech:20,SpecialFXTurbo:55}"
++export TINY_CREASE_MAP="${TINY_CREASE_MAP:-TrackBorders:65,TechnicsTrims:45,TechnicsSpecials:55,Technics:52,RoadTech:50,SpecialFXTurbo:55}"
++export TINY_ISOFRAME_MAP="${TINY_ISOFRAME_MAP:-TechnicsSpecials}"
+ # Per-corner threshold averaging with one vote per source polygon (his rule
+ # on TSpecials/SFX: N partitions exact, N 99.1% bit-exact at 55 deg).
+-export TINY_NMODE_MAP="${TINY_NMODE_MAP:-TechnicsSpecials:corner,SpecialFXTurbo:corner}"
++export TINY_NMODE_MAP="${TINY_NMODE_MAP:-TechnicsSpecials:corner,SpecialFXTurbo:corner,RoadTech:corner}"
+ export TINY_NDEDUP="${TINY_NDEDUP:-face}"
+ export TINY_MATERIAL_ORDER="${TINY_MATERIAL_ORDER:-TrackBorders,SignOff,TechnicsTrims,Sign,TechnicsSpecials,Technics,TrackWallClips,RoadTech,SpecialFXTurbo,DecalPaint2Logo4x1,Decal}"
+ export TINY_SURF_ORDER="${TINY_SURF_ORDER:-3,T,1,10,8,7,6,5,11,12,0,9,F2}"
