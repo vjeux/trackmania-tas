@@ -128,12 +128,16 @@ pub fn cmd(args: &[String]) {
     // 2026-09-24): baked with the pad, records dropped. A pad's skirts sit in its 4 neighbours.
     let is_pad = |n: &str| n.contains("Special") && !n.contains("FC");
     let pad_cells: Vec<[i32; 3]> = plan.iter().filter(|r| baked_indices.contains(&r.index) && is_pad(&r.name)).map(|r| r.cell).collect();
-    let near = |cells: &[[i32; 3]], b: &crate::map::BlockRec| -> bool {
+    // reach: a slope frame's fillers and a Slope2/Tilt2 pad's skirts stand one row above the
+    // owner's origin, a Tilt2 pad's skirts two cells away (the catalog audit of 2026-09-24
+    // found the Slope2/Tilt2 skirts left as orphan records)
+    let near = |cells: &[[i32; 3]], b: &crate::map::BlockRec, reach: i32| -> bool {
         let (x, y, z) = b.coords();
-        cells.iter().any(|c| c[1] == y && (c[0] - x).abs() <= 1 && (c[2] - z).abs() <= 1)
+        cells.iter().any(|c| (c[1] - y).abs() <= 1 && (c[0] - x).abs() <= reach && (c[2] - z).abs() <= reach)
     };
     let is_frame_filler = |b: &crate::map::BlockRec| -> bool {
-        (b.name.contains("PenaltyHFC") && near(&frame_cells, b)) || (b.name.contains("Special") && b.name.contains("FC") && near(&pad_cells, b))
+        // (a WATER pad stays a block — its clips stay the game's records)
+        (b.name.contains("PenaltyHFC") && near(&frame_cells, b, 1)) || (b.name.contains("Special") && b.name.contains("FC") && !b.name.contains("Water") && near(&pad_cells, b, 2))
     };
     let mut filler_specs: Vec<ItemSpec> = Vec::new();
     let mut filler_unmapped = 0usize;

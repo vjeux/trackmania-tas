@@ -380,7 +380,7 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
             // Everios96 2026-09-24 "effect blocks' side textures often wrong")
             if names.iter().any(|n| n.contains("Special") && !n.contains("FC")) {
                 let src_map = tmmaps::map::MapFile::load(&src);
-                let mut skirts: Vec<String> = src_map.baked.iter().filter(|b| b.name.contains("Special") && b.name.contains("FC")).map(|b| b.name.clone()).collect();
+                let mut skirts: Vec<String> = src_map.baked.iter().filter(|b| b.name.contains("Special") && b.name.contains("FC") && !b.name.contains("Water")).map(|b| b.name.clone()).collect();
                 skirts.sort();
                 skirts.dedup();
                 for n in skirts {

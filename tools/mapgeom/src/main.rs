@@ -1759,15 +1759,18 @@ fn main() {
                         let q = (it.yaw / std::f32::consts::FRAC_PI_2).round() as i32;
                         ((-q).rem_euclid(4)) as u8
                     };
+                    // a slope pad's skirt stands a row above or below its owner's origin: every
+                    // ranked cell is tried at the skirt's row and one row either side
                     let mut ranked: Vec<([i32; 3], usize)> = Vec::new();
-                    if c[0] >= 0 && c[2] >= 0 && c[0] <= 255 && c[2] <= 255 {
-                        if let Some(a) = tmmaps::fillers::across([c[0] as u8, c[1].clamp(0, 255) as u8, c[2] as u8], dir) {
-                            ranked.push(([a[0] as i32, a[1] as i32, a[2] as i32], 3));
+                    for dy in [0i32, -1, 1] {
+                        let rank_drop = if dy == 0 { 0 } else { 1 };
+                        if c[0] >= 0 && c[2] >= 0 && c[0] <= 255 && c[2] <= 255 {
+                            if let Some(a) = tmmaps::fillers::across([c[0] as u8, (c[1] + dy).clamp(0, 255) as u8, c[2] as u8], dir) {
+                                ranked.push(([a[0] as i32, a[1] as i32, a[2] as i32], 6 - rank_drop));
+                            }
                         }
+                        ranked.push(([c[0], c[1] + dy, c[2]], 4 - rank_drop));
                     }
-                    ranked.push((c, 2));
-                    ranked.push(([c[0], c[1] - 1, c[2]], 1));
-                    ranked.push(([c[0], c[1] + 1, c[2]], 1));
                     let mut best: Option<(usize, usize, &'k str)> = None; // (rank, stem score, kind)
                     for (cell, rank) in &ranked {
                         for (oc, k, name) in &owners {
@@ -1798,7 +1801,7 @@ fn main() {
                 found
             }
             let mut rows: Vec<String> = Vec::new();
-            let (mut ok, mut bad, mut unknown) = (0usize, 0usize, 0usize);
+            let (mut ok, mut bad, mut unknown, mut unplaced) = (0usize, 0usize, 0usize, 0usize);
             for line in text.lines() {
                 let f: Vec<&str> = line.split('\t').collect();
                 if f.first() != Some(&"block") || f.len() < 5 {
@@ -1827,6 +1830,12 @@ fn main() {
                     }
                 };
                 let Some(bytes) = by_alias.get(alias) else {
+                    // a library item the map never placed (a skirt whose pad stayed a block): not
+                    // in the archive, nothing to judge
+                    if !m.items.iter().any(|it| it.model.trim_end_matches(".Item.Gbx").trim_end_matches(".Item.gbx") == alias) {
+                        unplaced += 1;
+                        continue;
+                    }
                     rows.push(format!("{alias}\t{block}\t{kind}\tNO-FILE\t"));
                     bad += 1;
                     continue;
@@ -1902,7 +1911,7 @@ fn main() {
             for r in &rows {
                 println!("{r}");
             }
-            println!("{p}: {} effect items — {ok} OK, {bad} bad, {unknown} unknown kind", rows.len());
+            println!("{p}: {} effect items — {ok} OK, {bad} bad, {unknown} unknown kind ({unplaced} library items the map never placed)", rows.len());
         }
         // mapgeom raw LOGICAL --out FILE — any pack entry's bytes (a .dds bitmap, a .tga),
         // resolved through the hashed-name candidates like every other path
