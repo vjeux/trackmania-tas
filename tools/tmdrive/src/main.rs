@@ -81,8 +81,13 @@ fn main() {
             }
         },
 
-        "wait" => {
-            let me = match Identity::from_env() {
+        // Run detached by `acquire_detached`; not for humans.
+        "renew-daemon" => {
+            tmdrive::renew_daemon(&host);
+            0
+        }
+
+        "wait" => {            let me = match Identity::from_env() {
                 Ok(i) => i.session_id,
                 Err(e) => {
                     eprintln!("{e}");

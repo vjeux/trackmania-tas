@@ -189,6 +189,27 @@ fn launch_settle(lock: &GameLock, timeout_s: u64, attempt: u32) -> std::result::
     Err("Openplanet stalled during startup (the Nadeo login never completed)".into())
 }
 
+/// Start the game through Steam, and return immediately.
+///
+/// The raw start, for callers with their own settle logic (`shootctl launch`
+/// has a retry/diagnosis loop worth keeping). [`launch`] is the one that waits
+/// for a stable pid and a finished Openplanet startup.
+///
+/// Steam, not the exe: running Trackmania.exe directly leaves Ubisoft Connect
+/// to sort out entitlement, which it does by showing a modal that silently
+/// prevents the game from starting.
+pub fn launch_via_steam(lock: &GameLock) -> Result<()> {
+    crate::assert_single_install(&lock.host)?;
+    lock.host
+        .read_cmd(&format!(
+            "{}/Windows/explorer.exe 'steam://rungameid/{STEAM_APP_ID}' >/dev/null 2>&1 || true",
+            drive_c()
+        ))
+        .map_err(Error::Op)?;
+    lock.renew();
+    Ok(())
+}
+
 /// Kill the game processes by image name. Low-level: callers wanting
 /// diagnosis and retry (like `shootctl launch`) build on this.
 pub fn kill_images(lock: &GameLock, images: &[&str]) -> Result<()> {

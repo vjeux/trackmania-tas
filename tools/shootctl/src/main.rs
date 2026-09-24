@@ -52,7 +52,7 @@ fn plugin_addr() -> String {
     // old host.rs documented: the game is a Windows process, so 127.0.0.1
     // from a Linux binary in WSL is a DIFFERENT machine. Only a working
     // address is ever cached -- never a guess.
-    tmdrive::plugin::addr().unwrap_or_else(|| "127.0.0.1:29800".to_string())
+    tmdrive::plugin::addr_or_default()
 }
 
 /// Is the plugin answering anywhere? Tries every candidate, caches on success.
@@ -1154,7 +1154,7 @@ usage:
             let num = |k: &str, d: u64| val(k).and_then(|v| v.parse().ok()).unwrap_or(d);
             let d = lock::lock_dir();
             match args.get(1).map(|s| s.as_str()) {
-                Some("acquire") => match lock::acquire(&d, &owner, num("--wait", 0), num("--max-age", 0)) {
+                Some("acquire") => match lock::acquire_cli(&d, &owner, num("--wait", 0)) {
                     Ok(()) => {
                         // The CLI acquire exits as soon as it holds the lock, so
                         // ITS pid is dead a millisecond later and the next
@@ -1195,7 +1195,7 @@ usage:
                         1
                     }
                 },
-                Some("release") => match lock::release(&d, &owner) {
+                Some("release") => match lock::release_cli(&d, &owner) {
                     Ok(()) => 0,
                     Err(e) => {
                         eprintln!("{e}");
@@ -1925,14 +1925,12 @@ fn to_menu() -> Result<(), String> {
 /// has stopped answering. Best effort by design: no game running is the
 /// desired end state, so "not found" is success.
 fn quit_game() {
-    for image in ["Trackmania.exe", "TmForever.exe"] {
-        let _ = std::process::Command::new("taskkill.exe")
-            .args(["/IM", image, "/F"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+    // Through the guard: killing the game is exactly the operation that ruins
+    // another session's render if we do not hold the box.
+    match lock::with(|l| tmdrive::ops::kill(l).map_err(|e| e.to_string())) {
+        Ok(()) => println!("  game closed"),
+        Err(e) => eprintln!("  game NOT closed: {e}"),
     }
-    println!("  game closed");
 }
 
 fn launch(timeout_s: u64, force: bool) -> i32 {
@@ -1952,9 +1950,9 @@ fn launch(timeout_s: u64, force: bool) -> i32 {
         return 0;
     }
 
-    for exe in ["Trackmania.exe", "UbisoftGameLauncher.exe"] {
-        let _ = std::process::Command::new("/mnt/c/Windows/System32/taskkill.exe")
-            .args(["/F", "/IM", exe]).output();
+    if let Err(e) = lock::with(|l| tmdrive::ops::kill_with_launcher(l).map_err(|e| e.to_string())) {
+        eprintln!("{e}");
+        return 1;
     }
     // Wait for them to be GONE. tasklist is a process spawn, ~100 ms; that is
     // the pacing, not a sleep.
@@ -1975,9 +1973,13 @@ fn launch(timeout_s: u64, force: bool) -> i32 {
     // Now the log IS the diagnosis, and a hung login is retried rather than
     // reported as a broken install.
     for attempt in 1..=3 {
-        let game = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Trackmania\\Trackmania.exe";
-        let _ = std::process::Command::new("/mnt/c/Windows/explorer.exe").arg(game).output();
-        println!("[{:.1}s] launched via explorer (attempt {attempt})", el(&t0));
+        if let Err(e) = lock::with(|l| {
+            tmdrive::ops::launch_via_steam(l).map_err(|e| e.to_string())
+        }) {
+            eprintln!("{e}");
+            return 1;
+        }
+        println!("[{:.1}s] launched via steam (attempt {attempt})", el(&t0));
 
         // Wait for the plugin socket, trying EVERY candidate address each time
         // -- the right one cannot be known before the server exists.
@@ -2008,9 +2010,9 @@ fn launch(timeout_s: u64, force: bool) -> i32 {
             OpStage::StalledAtLogin => {
                 eprintln!("[{:.1}s] Openplanet hung on the Nadeo login (attempt {attempt}) -- restarting",
                           el(&t0));
-                for exe in ["Trackmania.exe", "UbisoftGameLauncher.exe"] {
-                    let _ = std::process::Command::new("/mnt/c/Windows/System32/taskkill.exe")
-                        .args(["/F", "/IM", exe]).output();
+                if let Err(e) = lock::with(|l| tmdrive::ops::kill_with_launcher(l).map_err(|e| e.to_string())) {
+                    eprintln!("{e}");
+                    return 1;
                 }
                 while tm_running() {}
             }

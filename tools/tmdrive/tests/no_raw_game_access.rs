@@ -44,10 +44,11 @@ const FORBIDDEN: &[(&str, &str)] = &[
 fn allowed(rel: &Path) -> bool {
     let p = rel.to_string_lossy().replace('\\', "/");
     p.starts_with("tmdrive/")
-        // Analyses a .dmp/.exe on disk; never talks to a running instance.
-        || p.starts_with("mapgeom/src/minidump.rs")
-        || p.starts_with("mapgeom/src/keyhunt.rs")
-        || p.starts_with("mapgeom/src/main.rs")
+        // mapgeom is OFFLINE analysis: crash dumps, .exe files at rest, map
+        // geometry. It names the executable because it parses it, and it has
+        // no path to a running game at all — there is nothing here for a lock
+        // to protect.
+        || p.starts_with("mapgeom/")
         // The bridge transport: generic, and forbidden from knowing about the
         // game -- guarded by `wsx_is_pure_transport` below.
         || p.starts_with("wsx/")
@@ -92,6 +93,20 @@ fn only_tmdrive_touches_the_game() {
         for (line_no, line) in text.lines().enumerate() {
             // Comments describe; they do not drive.
             let code = line.split("//").next().unwrap_or("");
+            // A DELIBERATE, REVIEWABLE ESCAPE HATCH.
+            //
+            // Some of these names appear in code that is not driving the game
+            // at all -- a profiler killing its own `typeperf` child, say. The
+            // rule must not be weakened for those (a broad exemption for
+            // "taskkill" would let a real bypass through), so instead the line
+            // carries `tmdrive-allow: <why>` and the reason is in the diff
+            // where a reviewer sees it.
+            let allowed_here = line.contains("tmdrive-allow:")
+                || (line_no > 0
+                    && text.lines().nth(line_no - 1).map_or(false, |p| p.contains("tmdrive-allow:")));
+            if allowed_here {
+                continue;
+            }
             for (needle, what) in FORBIDDEN {
                 if code.contains(needle) {
                     violations.push(format!(

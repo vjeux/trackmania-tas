@@ -661,6 +661,84 @@ impl GameLock {
     }
 }
 
+/// Take the box and KEEP it after this process exits.
+///
+/// For the shell pattern `acquire; long job; release`, where the acquiring
+/// process is a CLI call that exits immediately. An in-process guard renews
+/// itself; a CLI one cannot, and without a renewer its lease would expire
+/// mid-job and hand the box to someone else — so this spawns a detached
+/// renewer that beats until the lock is released or stops being ours.
+///
+/// That keeps the lease honest either way: a lease that goes unrenewed now
+/// genuinely means nobody is tending the box, rather than "the holder was a
+/// short-lived command".
+pub fn acquire_detached(host: Host, purpose: &str) -> Result<()> {
+    let lock = acquire(host, purpose)?;
+    let exe = std::env::current_exe()
+        .map_err(|e| Error::Lock(format!("cannot find my own path for the renewer: {e}")))?;
+    // The renewer inherits the session id, so it renews as the same holder.
+    let spawned = std::process::Command::new(exe)
+        .arg("renew-daemon")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match spawned {
+        Ok(_) => {
+            // The lock must outlive this process: do NOT run Drop.
+            std::mem::forget(lock);
+            Ok(())
+        }
+        Err(e) => Err(Error::Lock(format!("cannot start the lease renewer: {e}"))),
+    }
+}
+
+/// Renew the lock for as long as it is ours. Run detached by
+/// [`acquire_detached`]; exits when the lock is released, taken, or its game
+/// and session are both gone.
+pub fn renew_daemon(host: &Host) {
+    let me = match Identity::from_env() {
+        Ok(i) => i.session_id,
+        Err(_) => return,
+    };
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs((LEASE_S / 3).max(5)));
+        let still_ours = host
+            .read_cmd(&format!(
+                "L={LOCK_DIR}; [ -d \"$L\" ] || {{ echo gone; exit 0; }}; \
+                 [ \"$(cat \"$L/session\" 2>/dev/null)\" = '{me}' ] && echo ours || echo theirs"
+            ))
+            .unwrap_or_else(|_| "gone".into());
+        match still_ours.trim() {
+            "ours" => {
+                let _ = host.read_cmd(&format!(
+                    "printf '%s' '{}' > '{LOCK_DIR}/renewed_at'",
+                    now_s()
+                ));
+            }
+            _ => return,
+        }
+    }
+}
+
+/// Release a lock taken by [`acquire_detached`] from another process.
+pub fn release_detached(host: &Host) -> Result<String> {
+    let me = Identity::from_env()?.session_id;
+    let out = host
+        .read_cmd(&format!(
+            "L={LOCK_DIR}; if [ ! -d \"$L\" ]; then echo not-locked; exit 0; fi; \
+             o=$(cat \"$L/session\" 2>/dev/null); \
+             if [ \"$o\" != '{me}' ]; then echo \"refused:$o\"; exit 0; fi; \
+             rm -rf \"$L\"; echo released"
+        ))
+        .map_err(Error::Lock)?;
+    let out = out.trim().to_string();
+    if let Some(who) = out.strip_prefix("refused:") {
+        return Err(Error::Lock(format!("held by {who}, not us — refusing to release it")));
+    }
+    Ok(out)
+}
+
 /// Is the box free for this session right now?
 pub fn is_free(host: &Host, session_id: &str) -> bool {
     match holder(host) {

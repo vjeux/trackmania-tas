@@ -230,10 +230,10 @@ fn all(args: &[String]) -> Result<(), String> {
             let wsx = Wsx::new(args);
             let shootctl = f("--box-shootctl").unwrap_or_else(|| format!("{BOX_TOOLS}/shootctl"));
             let cmd = format!(
-                "sh -c 'if {shootctl} lock acquire --owner tinyctl-idle-quit --wait 0 2>/dev/null; then \
-                   timeout 30 /mnt/c/Windows/System32/taskkill.exe /IM Trackmania.exe /F 2>&1 | tr -d \"\\r\"; \
-                   {shootctl} lock release --owner tinyctl-idle-quit 2>/dev/null; echo CLOSED; \
-                 else echo BUSY; fi'"
+                // Through shootctl's own `quit`, which takes the lock and kills
+                // the game via tmdrive — a raw taskkill here bypassed the guard
+                // and could close another session's game between its frames.
+                "sh -c 'if {shootctl} quit 2>&1 | tr -d \"\\r\"; then echo CLOSED; else echo BUSY; fi'"
             );
             match wsx.sh(&cmd) {
                 Ok(o) if o.contains("BUSY") => eprintln!("[idle {} min] the render lock is held — the game is in use by another thread; not closed", idle_quit.as_secs() / 60),

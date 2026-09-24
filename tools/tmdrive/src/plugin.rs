@@ -27,6 +27,9 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::OnceLock;
 use std::time::Duration;
 
+/// The plugin's HTTP port.
+pub const PORT: u16 = 29800;
+
 static ADDR: OnceLock<String> = OnceLock::new();
 
 /// Candidate addresses, best first.
@@ -79,6 +82,15 @@ pub fn addr() -> Option<String> {
         }
     }
     None
+}
+
+/// The working address, or the conventional one when nothing answers.
+///
+/// Callers that need a string for a message or a connect attempt use this
+/// instead of repeating the literal — the port is game knowledge and lives
+/// here with the rest of it.
+pub fn addr_or_default() -> String {
+    addr().unwrap_or_else(|| format!("127.0.0.1:{PORT}"))
 }
 
 /// Is the plugin answering anywhere?
