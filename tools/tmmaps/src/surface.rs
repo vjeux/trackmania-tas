@@ -123,12 +123,17 @@ pub fn cmd(args: &[String]) {
     // IT — wet wood 37, 2026-09-24). Fillers sit in the frame's cell and its 4 neighbours.
     let is_frame = |n: &str| n.starts_with("Road") && (n.ends_with("Penalty") || n.ends_with("PenaltyIce") || n.ends_with("PenaltyDirt"));
     let frame_cells: Vec<[i32; 3]> = plan.iter().filter(|r| baked_indices.contains(&r.index) && is_frame(&r.name)).map(|r| r.cell).collect();
-    let is_frame_filler = |b: &crate::map::BlockRec| -> bool {
-        if !b.name.contains("PenaltyHFC") {
-            return false;
-        }
+    // … and the gameplay PADS' generated side skirts (`*Special*FC*`: LED-sign panels dressed
+    // by the owner pad's effect — orphaned records draw a wrong effect or direction, Everios96
+    // 2026-09-24): baked with the pad, records dropped. A pad's skirts sit in its 4 neighbours.
+    let is_pad = |n: &str| n.contains("Special") && !n.contains("FC");
+    let pad_cells: Vec<[i32; 3]> = plan.iter().filter(|r| baked_indices.contains(&r.index) && is_pad(&r.name)).map(|r| r.cell).collect();
+    let near = |cells: &[[i32; 3]], b: &crate::map::BlockRec| -> bool {
         let (x, y, z) = b.coords();
-        frame_cells.iter().any(|c| c[1] == y && (c[0] - x).abs() <= 1 && (c[2] - z).abs() <= 1)
+        cells.iter().any(|c| c[1] == y && (c[0] - x).abs() <= 1 && (c[2] - z).abs() <= 1)
+    };
+    let is_frame_filler = |b: &crate::map::BlockRec| -> bool {
+        (b.name.contains("PenaltyHFC") && near(&frame_cells, b)) || (b.name.contains("Special") && b.name.contains("FC") && near(&pad_cells, b))
     };
     let mut filler_specs: Vec<ItemSpec> = Vec::new();
     let mut filler_unmapped = 0usize;
@@ -147,8 +152,8 @@ pub fn cmd(args: &[String]) {
             }
         }
     }
-    if !frame_cells.is_empty() {
-        println!("  penalty frames: {} → items; {} filler records baked as items, {} without a library row", frame_cells.len(), filler_specs.len(), filler_unmapped);
+    if !frame_cells.is_empty() || !pad_cells.is_empty() {
+        println!("  penalty frames: {} → items, pads: {} → items; {} owned filler records baked as items, {} without a library row", frame_cells.len(), pad_cells.len(), filler_specs.len(), filler_unmapped);
     }
     // the fillers ride with the authored bakes (index usize::MAX: no authored block behind them)
     let mut item_specs = item_specs;

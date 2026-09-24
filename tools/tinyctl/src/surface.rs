@@ -366,6 +366,21 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                     }
                 }
             }
+            // … and a gameplay PAD that bakes (Platform<S>Special<Kind>…) takes its generated
+            // side skirts along (`*Special*FC*` records: the LED-sign panels whose dress is the
+            // OWNER pad's effect — orphaned records draw with a wrong effect / direction,
+            // Everios96 2026-09-24 "effect blocks' side textures often wrong")
+            if names.iter().any(|n| n.contains("Special") && !n.contains("FC")) {
+                let src_map = tmmaps::map::MapFile::load(&src);
+                let mut skirts: Vec<String> = src_map.baked.iter().filter(|b| b.name.contains("Special") && b.name.contains("FC")).map(|b| b.name.clone()).collect();
+                skirts.sort();
+                skirts.dedup();
+                for n in skirts {
+                    if !names.contains(&n) {
+                        names.push(n);
+                    }
+                }
+            }
             bake_models = names.clone();
             // 2. the baked copies
             let lib = dir.join("lib.zip");
