@@ -104,6 +104,9 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // the penalty road frames' FLOOR under a snow penalty: the Ice terrain modifier (wet wood)
     if s == "Wood" && wet && std::env::var("TINY_WET_SNOW_PENALTY").map(|v| v != "0").unwrap_or(true) {
         env.push(("TINY_PENALTY_FLOOR".to_string(), "Ice".to_string()));
+        // the frames' floor fillers (`PenaltyHFC*` prefabs) carry the plain `Material\Penalty`
+        // grass plate: under a snow penalty it takes the ice modifier's Penalty (Snow 21)
+        rows.push("Penalty=Stadium\\Media\\Modifier\\PlatformIce\\Penalty@21".to_string());
     }
     // the open roads' GRASS SHOULDERS (`DecoHill2`, physics Grass) under a snow penalty:
     // the snow modifier's own DecoHill2 (Snow 21) — Everios96 2026-09-20 17:25 "half grass
@@ -347,6 +350,19 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 for m in item_models {
                     if !names.contains(&m) {
                         names.push(m);
+                    }
+                }
+            }
+            // a penalty frame that bakes takes its generated `<Road>PenaltyHFC*` floor fillers
+            // along (the vanilla floor: deck ends, penalty middle, kerbs — tmmaps surface
+            // places them as items from the library's `b@` rows; 2026-09-24)
+            let frame_names: Vec<String> = names.iter().filter(|n| n.starts_with("Road") && (n.ends_with("Penalty") || n.ends_with("PenaltyIce") || n.ends_with("PenaltyDirt"))).cloned().collect();
+            for fnm in frame_names {
+                let stem = fnm.trim_end_matches("Dirt").trim_end_matches("Ice").to_string(); // Road<S>Penalty
+                for suffix in ["HFC", "HFCEnds"] {
+                    let n = format!("{stem}{suffix}");
+                    if !names.contains(&n) {
+                        names.push(n);
                     }
                 }
             }

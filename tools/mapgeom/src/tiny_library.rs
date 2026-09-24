@@ -1111,8 +1111,10 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
     // the wheels read ITS grass (the 2026-09-21..24 layout had the slabs rotated 90° AND
     // face-down — "penalty grass", Everios96). TINY_PENALTY_FLOOR_LIFT metres raises the
     // slabs off the deck height (default 0: flush with the neighbouring road decks).
+    // Since 2026-09-24 the floor comes from the frame's own `PenaltyHFC*` filler prefabs, baked
+    // as items next to the frame (tmmaps surface) — the slabs stay as TINY_PENALTY_SLABS=1.
     if let Some((_, shape, _)) = crate::surface::split_penalty(name) {
-        if shape.is_empty() {
+        if shape.is_empty() && std::env::var("TINY_PENALTY_SLABS").map(|v| v == "1").unwrap_or(false) {
             let floor = match std::env::var("TINY_PENALTY_FLOOR").ok().as_deref() {
                 Some("Ice") => Some(("Stadium\\Media\\Modifier\\PlatformIce\\Penalty", 21u8)),
                 Some("Dirt") => Some(("Stadium\\Media\\Modifier\\PlatformDirt\\Penalty", 5u8)),

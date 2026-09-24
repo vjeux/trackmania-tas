@@ -115,6 +115,44 @@ pub fn cmd(args: &[String]) {
         println!("  {} bake rows stay blocks: {}", unbaked.len(), unbaked.join(", "));
     }
     let baked_indices: BTreeSet<usize> = item_specs.iter().map(|(i, _)| *i).collect();
+    // The generated `<Road>PenaltyHFC*` filler records of every penalty frame that becomes
+    // an item: the game draws the frame's whole FLOOR from them (deck at the ends, penalty
+    // between the posts, kerbs — the vanilla Penalty_Air prefab is posts and kerbs only), so
+    // they bake too, re-dressed like the frame (the library maps them under `b@INDEX`), and
+    // the records go (else the plate stays under the copies: z-fight, and the wheels touch
+    // IT — wet wood 37, 2026-09-24). Fillers sit in the frame's cell and its 4 neighbours.
+    let is_frame = |n: &str| n.starts_with("Road") && (n.ends_with("Penalty") || n.ends_with("PenaltyIce") || n.ends_with("PenaltyDirt"));
+    let frame_cells: Vec<[i32; 3]> = plan.iter().filter(|r| baked_indices.contains(&r.index) && is_frame(&r.name)).map(|r| r.cell).collect();
+    let is_frame_filler = |b: &crate::map::BlockRec| -> bool {
+        if !b.name.contains("PenaltyHFC") {
+            return false;
+        }
+        let (x, y, z) = b.coords();
+        frame_cells.iter().any(|c| c[1] == y && (c[0] - x).abs() <= 1 && (c[2] - z).abs() <= 1)
+    };
+    let mut filler_specs: Vec<ItemSpec> = Vec::new();
+    let mut filler_unmapped = 0usize;
+    if let Some(mp) = &mapping {
+        for b in source.baked.iter().filter(|b| is_frame_filler(b)) {
+            match mp.baked_by_index.get(&b.index).filter(|m| m.model != "-" && m.model.ends_with(".Item.Gbx")) {
+                Some(map) => {
+                    let rot = b.free_rot.unwrap_or([crate::tiny::block_yaw(b), 0.0, 0.0]);
+                    let pos = match map.footprint {
+                        Some(fp) => crate::tiny::block_origin(b, fp),
+                        None => crate::tiny::block_pos(b),
+                    };
+                    filler_specs.push(ItemSpec { model: map.model.clone(), pos, rot, scale: 1.0 / map.model_scale, tag: None, color: 0 });
+                }
+                None => filler_unmapped += 1,
+            }
+        }
+    }
+    if !frame_cells.is_empty() {
+        println!("  penalty frames: {} → items; {} filler records baked as items, {} without a library row", frame_cells.len(), filler_specs.len(), filler_unmapped);
+    }
+    // the fillers ride with the authored bakes (index usize::MAX: no authored block behind them)
+    let mut item_specs = item_specs;
+    item_specs.extend(filler_specs.into_iter().map(|sp| (usize::MAX, sp)));
     let deletions: BTreeSet<usize> = plan.iter().filter(|r| r.delete).map(|r| r.index).chain(baked_indices.iter().copied()).collect();
     let renames: Vec<&PlanRec> = plan.iter().filter(|r| r.action == "rename" && !r.delete).collect();
     let moves: Vec<&PlanRec> = renames.iter().copied().filter(|r| if r.free { r.new_pos.is_some() } else { r.new_cell != r.cell }).collect();
@@ -132,20 +170,9 @@ pub fn cmd(args: &[String]) {
     // posts only), and under the item's own slabs that plate z-fights and is what the wheels
     // touch (wet wood 37, 2026-09-24). The fillers sit in the frame's cell and its four
     // neighbours (the "Ends" pieces one cell along the road, the side piece one cell across).
-    let is_frame = |n: &str| n.starts_with("Road") && (n.ends_with("Penalty") || n.ends_with("PenaltyIce") || n.ends_with("PenaltyDirt"));
-    let frame_cells: Vec<[i32; 3]> = plan.iter().filter(|r| baked_indices.contains(&r.index) && is_frame(&r.name)).map(|r| r.cell).collect();
     let mut m = MapFile::load(&src);
     if !deletions.is_empty() {
-        let r = m.remove_blocks(
-            |b| deletions.contains(&b.index),
-            |b| {
-                if !b.name.contains("PenaltyHFC") {
-                    return false;
-                }
-                let (x, y, z) = b.coords();
-                frame_cells.iter().any(|c| c[1] == y && (c[0] - x).abs() <= 1 && (c[2] - z).abs() <= 1)
-            },
-        );
+        let r = m.remove_blocks(|b| deletions.contains(&b.index), |b| is_frame_filler(b));
         println!("  stage 1: deleted {} blocks ({} free entries, {} snap groups), {} penalty-frame filler records", r.blocks, r.free_entries, r.snap_groups, r.baked);
     }
     m.write_to(&tmp1).expect("write stage 1");
@@ -342,8 +369,8 @@ pub fn cmd(args: &[String]) {
         m.replace_embedded_objects(&manifest, &zip);
         m.write_to(&tmp3).expect("write archive stage");
         let mut tally: BTreeMap<String, usize> = BTreeMap::new();
-        for (i, _) in &item_specs {
-            *tally.entry(source.blocks[*i].name.clone()).or_default() += 1;
+        for (i, sp) in &item_specs {
+            *tally.entry(source.blocks.get(*i).map(|b| b.name.clone()).unwrap_or_else(|| format!("filler {}", sp.model))).or_default() += 1;
         }
         println!("  stage 3b: {} blocks became items ({} models, archive {} of {} entries, {} bytes): {}", item_specs.len(), names.len(), kept.len(), before, zip.len(), tally.iter().map(|(k, v)| format!("{k}×{v}")).collect::<Vec<_>>().join(" "));
     }

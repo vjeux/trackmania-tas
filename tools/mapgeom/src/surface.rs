@@ -537,7 +537,10 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
         // … and since 2026-09-23 the GRASS-floor frame too (plastic 37: the frame's road
         // strips stayed asphalt under plastic — shcr): the library generates the plain
         // `Material\Penalty` (Grass) floor
-        if shape.is_empty() && !matches!(s, "Ice" | "Dirt" | "Tech" | "Grass") {
+        // … and the grass set too (Everios96 2026-09-24: "for other alterations the road part
+        // is still road, it should be the alteration; the penalty stays"): the deck ends take
+        // the grass platform look, the penalty floor stays the zone's grass
+        if shape.is_empty() && !matches!(s, "Ice" | "Dirt" | "Tech") {
             // fall through to the bake path below; the library adds the floor
         } else {
         let road_word = match s { "Ice" | "Dirt" | "Tech" => s.to_string(), _ => road.to_string() };
