@@ -118,6 +118,40 @@ wait $runner 2>/dev/null
 
 echo "=== 11. the game survived the whole test ==="
 [ -n "$(game_pid)" ] && ok "game still running" || bad "the test destroyed the game instance"
+
+echo "=== 12. a nested acquire does NOT end the outer hold ==="
+# `tmdrive kill` inside `tmdrive run` used to join the outer lock and then
+# delete it on exit, taking the token with it — kill+launch inside one hold
+# was impossible (MK64 session, 2026-09-23).
+free_lock
+TM_SESSION=$A TM_SESSION_TITLE="A" $TM run --purpose "outer hold" -- /bin/sh -c "
+  TM_SESSION=$A TM_SESSION_TITLE=A $TM status >/dev/null 2>&1
+  sleep 2
+  [ -f '$LOCK/token' ] && echo NESTED_OK || echo NESTED_LOST
+  sleep 3
+" > /tmp/nested.out 2>&1
+if grep -q NESTED_OK /tmp/nested.out; then ok "the outer hold survived a nested acquire"; else bad "a nested acquire destroyed the outer hold"; fi
+out=$($TM status 2>&1)
+case "$out" in FREE*) ok "the outer hold released normally at the end";; *) bad "outer hold leaked: $out";; esac
+
+echo "=== 13. a holder keeps the box across its OWN game restart ==="
+# A bisect restarts the game inside its run; the old "game gone => reclaimable"
+# rule handed the box to someone else mid-run.
+free_lock
+TM_SESSION=$A TM_SESSION_TITLE="A" $TM run --purpose "restarting the game myself" -- /bin/sh -c "
+  /mnt/c/Windows/System32/taskkill.exe /F /IM Trackmania.exe >/dev/null 2>&1
+  sleep 8
+" >/dev/null 2>&1 &
+runner=$!
+sleep 6
+out=$(TM_SESSION=$B $TM status 2>&1)
+case "$out" in
+  *"HELD"*) ok "still HELD while its game is down";;
+  *) bad "the box was released during the holder's own restart: $out";;
+esac
+out=$(TM_SESSION=$B TM_SESSION_TITLE=B $TM plugin ctx --purpose "B barging in mid-restart" 2>&1); rc=$?
+[ "$rc" = "75" ] && ok "another session is still refused mid-restart" || bad "another session took the box mid-restart (rc=$rc)"
+wait $runner 2>/dev/null
 free_lock
 
 echo

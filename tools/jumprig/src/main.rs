@@ -23,6 +23,12 @@ use tmdrive::{ops, Error, GameLock, Host};
 const POLL_TICK: Duration = Duration::from_millis(50);
 const PROGRESS_EVERY: Duration = Duration::from_secs(5);
 
+/// How long the game may be absent before a wait calls it dead. The startup
+/// handoff (bootstrapper -> launcher -> game) leaves a real gap of a few
+/// seconds; anything longer is a genuine exit.
+const GONE_GRACE_S: u64 = 20;
+const GONE_CHECKS_BEFORE_DEAD: u64 = GONE_GRACE_S; // one check per ~1s (every 20 samples)
+
 fn storage_dir() -> PathBuf {
     PathBuf::from(format!(
         "{}/Users/vjeux/OpenplanetNext/PluginStorage/JumpButton",
@@ -150,6 +156,7 @@ fn wait_for(host: &Host, event: &str, timeout: Duration) -> Result<Outcome, Stri
     let mut out = Outcome { max_y: f64::MIN, ..Default::default() };
     let mut last_progress = Instant::now();
     let mut last_seen: Option<State> = None;
+    let mut gone_for: u64 = 0;
 
     loop {
         let running = || tmdrive::game_pid(host).is_some();
@@ -205,14 +212,27 @@ fn wait_for(host: &Host, event: &str, timeout: Duration) -> Result<Outcome, Stri
             }
         }
 
-        // A dead game can never satisfy a plugin event: fail now, not at the
-        // end of the timeout.
-        if !process_event && out.samples % 20 == 0 && tmdrive::game_pid(host).is_none() {
-            return Err(format!(
-                "GAME EXITED while waiting for '{}' after {:.1}s",
-                event,
-                start.elapsed().as_secs_f64()
-            ));
+        // A dead game can never satisfy a plugin event: fail fast rather than
+        // burning the whole timeout.
+        //
+        // But tolerate a GAP: Trackmania hands off between processes during
+        // startup (bootstrapper exits, launcher spawns the real game), so a
+        // momentary absence is normal and reading it as death aborted every
+        // run with "GAME EXITED" while the game was starting fine.
+        if !process_event && out.samples % 20 == 0 {
+            if tmdrive::game_pid(host).is_none() {
+                gone_for += 1;
+            } else {
+                gone_for = 0;
+            }
+            if gone_for >= GONE_CHECKS_BEFORE_DEAD {
+                return Err(format!(
+                    "GAME EXITED while waiting for '{}' after {:.1}s (absent for {}s)",
+                    event,
+                    start.elapsed().as_secs_f64(),
+                    GONE_GRACE_S
+                ));
+            }
         }
 
         if start.elapsed() >= timeout {
@@ -327,7 +347,13 @@ fn main() {
 
         "cmd" => with_lock(host.clone(), "jump-button command", |lock| {
             let verb = args.get(1).cloned().unwrap_or_default();
-            let arg = args[2..].join(" ");
+            let mut arg = args[2..].join(" ");
+            // A map path the game cannot resolve loads nothing and reports
+            // success, so normalise it here rather than handing the game a
+            // spelling it will silently ignore.
+            if verb == "playmap" && !arg.is_empty() {
+                arg = tmdrive::game_path(&arg)?;
+            }
             send_command(lock.host(), &verb, &arg, Duration::from_secs(30)).map(|_| ())
         }),
 

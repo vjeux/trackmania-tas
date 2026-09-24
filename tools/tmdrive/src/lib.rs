@@ -140,8 +140,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Reclaim {
     /// Already ours: renew, say nothing.
     Ours,
-    /// The game instance the lock protected is gone.
-    GameGone,
     /// The lease ran out with no renewal: the holder is dead or wedged.
     LeaseExpired,
     /// The owning agentcloud session is no longer running.
@@ -152,13 +150,6 @@ impl Reclaim {
     fn describe(self, h: &Holder) -> Option<String> {
         match self {
             Reclaim::Ours => None,
-            Reclaim::GameGone => Some(format!(
-                "tmdrive: taking a DEAD lock from session {} ('{}') — the game instance it \
-                 protected (pid {}) is gone, so that driver died mid-run.",
-                h.session_id,
-                h.purpose,
-                h.game_pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into())
-            )),
             Reclaim::LeaseExpired => Some(format!(
                 "tmdrive: taking an EXPIRED lock from session {} ('{}') — no renewal for {}s \
                  (lease {}s), so that driver is gone or wedged.",
@@ -180,6 +171,9 @@ pub struct Holder {
     pub title: String,
     pub purpose: String,
     pub game_pid: Option<u32>,
+    /// No game process right now. INFORMATIONAL ONLY — never a reason to take
+    /// the lock: a holder restarting the game still owns the box.
+    pub game_gone: bool,
     pub age_s: u64,
     pub since_renewed_s: u64,
     /// `None` when the lock is live; `Some(reason)` when it may be taken.
@@ -193,7 +187,6 @@ impl Holder {
             match self.reclaimable {
                 None => "HELD",
                 Some(Reclaim::Ours) => "OURS",
-                Some(Reclaim::GameGone) => "DEAD(game gone)",
                 Some(Reclaim::LeaseExpired) => "DEAD(lease expired)",
                 Some(Reclaim::SessionSettled) => "DEAD(session settled)",
             },
@@ -203,7 +196,7 @@ impl Holder {
             self.game_pid.map(|p| p.to_string()).unwrap_or_else(|| "-".into()),
             self.age_s,
             self.since_renewed_s
-        )
+        ) + if self.game_gone { "  [no game process right now]" } else { "" }
     }
 }
 
@@ -274,6 +267,46 @@ pub fn assert_single_install(host: &Host) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A map path the GAME can resolve, or a refusal.
+///
+/// The title API accepts anything and silently loads nothing: given
+/// `/mnt/c/Users/...` — the WSL spelling of a path that is perfectly real on
+/// this side of the bridge — it answers ok, reports ready, keeps rendering,
+/// and no playground ever appears. That is indistinguishable from a map the
+/// game cannot load, and it has now cost two separate evenings: once in the
+/// render pipeline, and again on 2026-09-23 with backslashes in the jump
+/// harness. Every successful load in the logs reads `C:/Users/...`.
+///
+/// So the conversion happens HERE, once, for every driver — and anything
+/// still unresolvable is REFUSED rather than handed over, because a wiring
+/// error must not be able to come back as a fact about a map.
+pub fn game_path(p: &str) -> std::result::Result<String, String> {
+    // /mnt/<drive>/rest -> <DRIVE>:/rest
+    if let Some(rest) = p.strip_prefix("/mnt/") {
+        let mut it = rest.splitn(2, '/');
+        if let (Some(d), Some(tail)) = (it.next(), it.next()) {
+            if d.len() == 1 && d.chars().next().unwrap().is_ascii_alphabetic() {
+                return Ok(format!("{}:/{}", d.to_ascii_uppercase(), tail));
+            }
+        }
+        return Err(format!("{p}: looks like a WSL path but names no drive"));
+    }
+    let b = p.as_bytes();
+    if b.len() >= 3
+        && (b[0] as char).is_ascii_alphabetic()
+        && b[1] == b':'
+        && (b[2] == b'/' || b[2] == b'\\')
+    {
+        // Backslashes reach the game as-is and it loads nothing; normalise.
+        return Ok(p.replace('\\', "/"));
+    }
+    Err(format!(
+        "{p}: not a path the game can resolve. The title API accepts anything and silently \
+         loads nothing, so this is refused here. Give a Windows path (C:/Users/...) or a WSL \
+         path under /mnt/<drive>/."
+    ))
 }
 
 /// Is the game running, and as which pid?
@@ -371,25 +404,37 @@ pub fn holder(host: &Host) -> Result<Option<Holder>> {
             title,
             purpose,
             game_pid: locked_pid,
+            game_gone: game_pid(host).is_none(),
             age_s,
             since_renewed_s,
             reclaimable: if since_renewed_s > LEASE_S { Some(Reclaim::LeaseExpired) } else { None },
         }));
     }
 
-    // R2: the lock protects a game instance. If that instance is gone, the
-    // lock is dead however recently it was renewed -- no TTL, no guessing.
+    // R2 WAS "the game is gone" AND THAT WAS WRONG.
+    //
+    // A holder that restarts the game as part of its own work (a bisect, a
+    // relaunch after a settings change) has no game process for a while. The
+    // old rule handed the box to somebody else in that gap, mid-run — the
+    // MK64 session hit exactly this on 2026-09-23 and lost its hold every
+    // time its script restarted the game.
+    //
+    // An actively renewing holder IS using the box, whatever the game process
+    // is doing. A holder that has genuinely died stops renewing, and the
+    // lease catches it within LEASE_S; a settled session is caught sooner.
+    // So game-gone is reported, never acted on.
     let live_pid = game_pid(host);
-    let game_gone = match (locked_pid, live_pid) {
-        (Some(want), Some(now_pid)) => want != now_pid,
-        (Some(_), None) => true,
-        // Taken before a launch: honoured for the grace window.
-        (None, _) => age_s > LAUNCH_GRACE_S,
-    };
+    let game_gone = live_pid.is_none();
 
-    let reclaimable = if game_gone {
-        Some(Reclaim::GameGone)
-    } else if since_renewed_s > LEASE_S {
+    // Keep the record pointing at the live instance, so `status` stays
+    // truthful across the startup handoff and across a holder's own restart.
+    if let (Some(live), Some(locked)) = (live_pid, locked_pid) {
+        if live != locked {
+            let _ = host.read_cmd(&format!("printf '%s' '{live}' > '{}'", lock_file("game_pid")));
+        }
+    }
+
+    let reclaimable = if since_renewed_s > LEASE_S {
         Some(Reclaim::LeaseExpired)
     } else if session_running(&session_id) == Some(false) {
         Some(Reclaim::SessionSettled)
@@ -402,6 +447,7 @@ pub fn holder(host: &Host) -> Result<Option<Holder>> {
         title,
         purpose,
         game_pid: locked_pid,
+        game_gone,
         age_s,
         since_renewed_s,
         reclaimable,
@@ -416,6 +462,13 @@ pub struct GameLock {
     pub(crate) identity: Identity,
     pub(crate) token: String,
     released: Arc<AtomicBool>,
+    /// Did THIS guard create the lock, or join one its session already held?
+    ///
+    /// A nested acquire must not end the outer hold. `tmdrive kill` inside a
+    /// `tmdrive run ... -- script` joined the script's lock and then deleted
+    /// it on exit, taking the token with it and making kill+launch inside one
+    /// hold impossible (MK64 session, 2026-09-23). Only the creator releases.
+    owns: bool,
 }
 
 impl GameLock {
@@ -452,6 +505,10 @@ impl GameLock {
 
     fn release_inner(&mut self) -> Result<()> {
         if self.released.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        if !self.owns {
+            // Re-entrant guard: the outer hold owns the lifetime.
             return Ok(());
         }
         set_held_token(None);
@@ -560,8 +617,17 @@ pub fn acquire_as(host: Host, identity: Identity, purpose: &str) -> Result<GameL
     // (tinyctl -> shootctl, a .sh wrapper) carries the lock with it.
     std::env::set_var("TM_LOCK_TOKEN", &token);
 
-    let lock = GameLock { host, identity, token, released: Arc::new(AtomicBool::new(false)) };
-    lock.spawn_renewer();
+    let lock = GameLock {
+        host,
+        identity,
+        token,
+        released: Arc::new(AtomicBool::new(false)),
+        owns: out == "ok",
+    };
+    // Only the creator needs a renewer; a nested guard rides the outer one's.
+    if lock.owns {
+        lock.spawn_renewer();
+    }
     Ok(lock)
 }
 
