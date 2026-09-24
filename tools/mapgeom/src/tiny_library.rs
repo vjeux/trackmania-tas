@@ -1136,6 +1136,28 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
             }
         }
     }
+    // A WATER OVERLAY (TINY_OVERLAY_NAMES, `overlay` plan rows): the game's block stays for
+    // its water volume and collision; this copy is LOOK only — no collision hull, and the
+    // water quads dropped (the block draws them). Everios96 2026-09-24: "change the plastic
+    // parts of those blocks to something else without losing the water physics".
+    if std::env::var("TINY_OVERLAY_NAMES").ok().map(|v| v.split(',').any(|n| n == name)).unwrap_or(false) {
+        let tris = m.surf_triangles.len();
+        m.surf_triangles.clear();
+        m.surf_vertices.clear();
+        // no second start/finish/checkpoint: the block keeps the waypoint
+        m.waypoint_type = None;
+        let before = m.visuals.len();
+        // the WATER quads go (the block draws its water); the pool floor and walls
+        // (`Underwater`, the plastic parts) stay and take the swap's dress
+        let water_mat: Vec<usize> = m.materials.iter().enumerate().filter(|(_, mat)| mat.link().map(|l| l.ends_with("\\Material\\Water")).unwrap_or(false)).map(|(i, _)| i).collect();
+        m.visuals.retain(|v| !water_mat.contains(&v.material));
+        // a 3 cm shell: the copy's faces are the block's own faces, coplanar ones z-fight
+        let shell: f32 = std::env::var("TINY_OVERLAY_SHELL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.03);
+        for v in m.visuals.iter_mut() {
+            let _ = crate::static_item::build::shell_offset(&mut v.visual, shell);
+        }
+        m.notes.push(format!("water overlay: visual-only copy ({tris} collision triangles dropped, {} water visuals dropped, {shell} m shell)", before - m.visuals.len()));
+    }
     let opts = crate::static_item::build::BuildOpts { ident: ident.to_string(), author: item_author(ident), scale, collection, skin: m.skin.clone() };
     let f = crate::static_item::build::assemble(&m, &opts)?;
     Ok((crate::static_item::file::write_file(&f), m, deepened))

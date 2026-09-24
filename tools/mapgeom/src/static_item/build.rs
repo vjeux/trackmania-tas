@@ -21,7 +21,7 @@
 //! entry points.
 
 use super::surface::{CPlugSurface, Surf, Triangle};
-use super::vstream::{Elem, N_COLOR0, N_NORMAL, N_TANGENT_U, N_TANGENT_V, N_TEXCOORD0};
+use super::vstream::{Elem, N_COLOR0, N_NORMAL, N_POSITION, N_TANGENT_U, N_TANGENT_V, N_TEXCOORD0};
 use super::{Node, Ref, R};
 use crate::crystal_model::CPlugMaterialUserInst;
 use crate::geom::{apply, compose, Xform, IDENTITY};
@@ -3160,6 +3160,46 @@ pub fn ensure_texcoord1(s: &mut super::vstream::CPlugVertexStream) -> bool {
 /// and the item shading models answer that with a blown-out yellow-white
 /// glare wherever the sun stands behind the card (the "crumpled paper"
 /// bushes of tiny 24's cp8, 2026-09-08).
+/// Push every vertex of a visual OUT along its normal by `d` metres — the "shell" of a
+/// visual-only overlay item that shares its faces with the block it dresses (the water
+/// overlays of 2026-09-24): coplanar faces z-fight, a 2–3 cm shell draws cleanly on top.
+/// Positions are FLOAT3 in these streams; a DEC3N-packed normal is unpacked for the direction.
+pub fn shell_offset(v: &mut super::visual::CPlugVisualIndexedTriangles, d: f32) -> Result<(), String> {
+    use super::vstream::T_DEC3N;
+    let Some(main) = v.main.as_mut() else { return Ok(()) };
+    let Some(Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { return Ok(()) };
+    let compress = s.compress_local3d.unwrap_or(false);
+    // the normals first (read), then the positions (written)
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    for (dcl, e) in s.decls.iter().zip(s.elems.iter()) {
+        if dcl.name() != N_NORMAL {
+            continue;
+        }
+        match e {
+            Elem::Float3(x) => normals = x.clone(),
+            Elem::Word(x) if dcl.stored_type(compress) == T_DEC3N => normals = x.iter().map(|w| dec3n_unpack(*w)).collect(),
+            _ => {}
+        }
+    }
+    if normals.is_empty() {
+        return Ok(());
+    }
+    for (dcl, e) in s.decls.iter().zip(s.elems.iter_mut()) {
+        if dcl.name() != N_POSITION {
+            continue;
+        }
+        if let Elem::Float3(x) = e {
+            for (p, n) in x.iter_mut().zip(normals.iter()) {
+                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                if len > 1e-4 {
+                    *p = [p[0] + n[0] / len * d, p[1] + n[1] / len * d, p[2] + n[2] / len * d];
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn double_sided(v: &mut super::visual::CPlugVisualIndexedTriangles) -> Result<(), String> {
     use super::vstream::T_DEC3N;
     let Some(main) = v.main.as_mut() else { return Ok(()) };

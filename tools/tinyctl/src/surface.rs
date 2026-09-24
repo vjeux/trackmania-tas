@@ -64,7 +64,9 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
     // wood (snow-theme plank) roads ("vanilla wood blocks are also not changed")
     // ThemeRallyCastleWallUV / ThemeRallyCastleWall: the castle road pieces' deck
     // (custom castle roads of U10S_953 stayed in their look, Everios96 2026-09-15)
-    let road_stems = ["RoadTech", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "ItemInflatableTube", "ItemInflatableMat", "ItemInflatableFloor", "ThemeSnowRoad", "ThemeSnowRoadBorder", "ThemeRallyCastleWallUV", "ThemeRallyCastleWall"];
+    // + `Underwater`: the water roads' pool floor and walls (physics Plastic 77) — only ever
+    // baked as a visual-only WATER OVERLAY (TINY_WATER_OVERLAY=1, 2026-09-24), the block keeps its water
+    let road_stems = ["RoadTech", "RoadDirt", "RoadDirtFullColorize", "RoadBump", "RoadIce", "OpenTechBorders", "Underwater", "ItemInflatableTube", "ItemInflatableMat", "ItemInflatableFloor", "ThemeSnowRoad", "ThemeSnowRoadBorder", "ThemeRallyCastleWallUV", "ThemeRallyCastleWall"];
     let mut rows: Vec<String> = match s {
         // the snow PLANK roads take the ice platform look, not the bobsleigh one
         // (Everios96 2026-09-19 08:24 on icy 152: "use the ice platform texture")
@@ -209,11 +211,20 @@ fn plan_tally(records: &Path) -> Result<(BTreeMap<String, usize>, Vec<String>), 
         let (name, action, delete) = (f.get(1).copied().unwrap_or(""), f.get(2).copied().unwrap_or(""), f.get(14).copied().unwrap_or("0"));
         let key = if delete == "1" { "delete" } else { action };
         *tally.entry(key.to_string()).or_default() += 1;
-        if action == "bake" && delete != "1" && !bake_names.contains(&name.to_string()) {
+        if (action == "bake" || action == "overlay") && delete != "1" && !bake_names.contains(&name.to_string()) {
             bake_names.push(name.to_string());
+        }
+        if action == "overlay" && delete != "1" {
+            OVERLAY_NAMES.with(|o| { let mut o = o.borrow_mut(); if !o.contains(&name.to_string()) { o.push(name.to_string()); } });
         }
     }
     Ok((tally, bake_names))
+}
+
+thread_local! {
+    /// the `overlay` rows of the last plan read: the library bakes them visual-only
+    /// (TINY_OVERLAY_NAMES), tmmaps surface places them without removing the block
+    static OVERLAY_NAMES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 pub fn cmd(args: &[String]) -> Result<(), String> {
@@ -390,6 +401,13 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 }
             }
             bake_models = names.clone();
+            // the overlay kinds reach the library through the process environment (the
+            // library command inherits it; `env` is shared read-only with the plan step)
+            let overlay: Vec<String> = OVERLAY_NAMES.with(|o| o.borrow().clone());
+            if !overlay.is_empty() {
+                std::env::set_var("TINY_OVERLAY_NAMES", overlay.join(","));
+                println!("  water overlay: {} block kinds baked visual-only beside their kept blocks", overlay.len());
+            }
             // 2. the baked copies
             let lib = dir.join("lib.zip");
             let mapping = dir.join("placements.tsv");

@@ -239,6 +239,10 @@ pub enum Action {
     /// a surface block with no same-shape twin: baked as a re-dressed ITEM copy
     /// (`tmmaps surface --library --mapping`)
     Bake,
+    /// a WATER block kept as the game's block (its volume) PLUS a visual-only re-dressed
+    /// item copy of everything but its water (Everios96 2026-09-24: "change the plastic parts
+    /// of those blocks to something else without losing the water physics"); TINY_WATER_OVERLAY=1
+    Overlay,
 }
 
 impl Action {
@@ -250,6 +254,7 @@ impl Action {
             Action::None_ => "none",
             Action::Mismatch => "mismatch",
             Action::Bake => "bake",
+            Action::Overlay => "overlay",
         }
     }
     pub fn parse(s: &str) -> Option<Action> {
@@ -260,6 +265,7 @@ impl Action {
             "none" => Action::None_,
             "mismatch" => Action::Mismatch,
             "bake" => Action::Bake,
+            "overlay" => Action::Overlay,
             _ => return None,
         })
     }
@@ -648,6 +654,9 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
         let fam = if name.starts_with("TrackWall") { "TrackWall family has no surface variants" } else { "no such block in the pack" };
         let detail = format!("{fam}; cells {}", cells_of(&src.variant_base_ground).len().max(cells_of(&src.variant_base_air).len()));
         if has_water {
+            if s != "Water" && base_prefab(&src).is_some() && std::env::var("TINY_WATER_OVERLAY").map(|v| v == "1").unwrap_or(false) {
+                return mk(Action::Overlay, "", format!("water volume, no {s} twin: kept as water + visual-only re-dressed overlay ({fam})"));
+            }
             return mk(Action::Keep, "", format!("water volume, no {s} twin: kept as water ({fam})"));
         }
         // A GAMEPLAY PAD (`Platform<Fam>Special<Effect>`: Turbo, Turbo2, Boost,

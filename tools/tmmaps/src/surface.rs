@@ -114,7 +114,9 @@ pub fn cmd(args: &[String]) {
     if !unbaked.is_empty() {
         println!("  {} bake rows stay blocks: {}", unbaked.len(), unbaked.join(", "));
     }
-    let baked_indices: BTreeSet<usize> = item_specs.iter().map(|(i, _)| *i).collect();
+    // an `overlay` row's block stays (the water volume lives in the block; the item is look only)
+    let overlay_indices: BTreeSet<usize> = plan.iter().filter(|r| r.action == "overlay" && !r.delete).map(|r| r.index).collect();
+    let baked_indices: BTreeSet<usize> = item_specs.iter().map(|(i, _)| *i).filter(|i| !overlay_indices.contains(i)).collect();
     // The generated `<Road>PenaltyHFC*` filler records of every penalty frame that becomes
     // an item: the game draws the frame's whole FLOOR from them (deck at the ends, penalty
     // between the posts, kerbs — the vanilla Penalty_Air prefab is posts and kerbs only), so
@@ -165,7 +167,10 @@ pub fn cmd(args: &[String]) {
     let deletions: BTreeSet<usize> = plan.iter().filter(|r| r.delete).map(|r| r.index).chain(baked_indices.iter().copied()).collect();
     let renames: Vec<&PlanRec> = plan.iter().filter(|r| r.action == "rename" && !r.delete).collect();
     let moves: Vec<&PlanRec> = renames.iter().copied().filter(|r| if r.free { r.new_pos.is_some() } else { r.new_cell != r.cell }).collect();
-    println!("surface: {} authored blocks; plan: {} renames ({} moved a cell), {} baked as items, {} deletions, {} left as they are", source.blocks.len(), renames.len(), moves.len(), item_specs.len(), deletions.len() - item_specs.len(), source.blocks.len() - renames.len() - deletions.len());
+    if !overlay_indices.is_empty() {
+        println!("  water overlay: {} blocks kept with a visual-only item beside them", overlay_indices.len());
+    }
+    println!("surface: {} authored blocks; plan: {} renames ({} moved a cell), {} baked as items, {} deletions, {} left as they are", source.blocks.len(), renames.len(), moves.len(), item_specs.len(), deletions.len().saturating_sub(baked_indices.len()), source.blocks.len() - renames.len() - deletions.len());
     let old_uid = source.body_ids.first().and_then(|f| f.name.clone()).expect("map uid");
     assert!(old_uid.len() > 4, "source uid `{old_uid}` too short");
     let new_uid = format!("{uid_prefix}{}", &old_uid[4..]);
@@ -501,7 +506,7 @@ struct ItemSpec {
 fn item_specs(source: &MapFile, plan: &[PlanRec], mapping: &crate::tiny::Mappings, colors: &crate::map::Colors) -> (Vec<(usize, ItemSpec)>, Vec<String>) {
     let mut specs = Vec::new();
     let mut unbaked = Vec::new();
-    for r in plan.iter().filter(|r| r.action == "bake" && !r.delete) {
+    for r in plan.iter().filter(|r| (r.action == "bake" || r.action == "overlay") && !r.delete) {
         let b = &source.blocks[r.index];
         let Some(map) = mapping.by_index.get(&r.index).or_else(|| mapping.by_name.get(&r.name)) else {
             unbaked.push(format!("#{} {} (no library row)", r.index, r.name));
@@ -516,7 +521,9 @@ fn item_specs(source: &MapFile, plan: &[PlanRec], mapping: &crate::tiny::Mapping
             Some(fp) => crate::tiny::block_origin(b, fp),
             None => crate::tiny::block_pos(b),
         };
-        specs.push((r.index, ItemSpec { model: map.model.clone(), pos, rot, scale: 1.0 / map.model_scale, tag: b.waypoint_tag.clone(), color: colors.block(b.index) }));
+        // an overlay item carries no waypoint (the kept block has it)
+        let tag = if r.action == "overlay" { None } else { b.waypoint_tag.clone() };
+        specs.push((r.index, ItemSpec { model: map.model.clone(), pos, rot, scale: 1.0 / map.model_scale, tag, color: colors.block(b.index) }));
     }
     (specs, unbaked)
 }
