@@ -23,7 +23,47 @@ pass=0; fail=0
 
 ok()  { echo "  PASS  $1"; pass=$((pass+1)); }
 bad() { echo "  FAIL  $1"; fail=$((fail+1)); }
-free_lock() { rm -rf "$LOCK"; }
+
+# THE SUITE MUST NEVER DELETE SOMEONE ELSE'S LIVE LOCK.
+#
+# `free_lock` used to be a bare `rm -rf "$LOCK"`, run between cases with no
+# check at all. On 2026-09-24 that deleted the u10s session's record three
+# separate times while its publish was mid-flight -- once after my own
+# `tmdrive wait` had TIMED OUT and the script pressed on regardless. Each
+# time, their run kept executing with nothing behind it, their renewer saw
+# the directory gone and stopped, and it surfaced to them as "the lease
+# expired" and "no session holds the game lock" -- a phantom lock bug that
+# cost a morning of debugging on both sides. The suite was the one thing on
+# the box exempt from the lock, and it was the thing breaking it.
+#
+# So: the suite only ever removes records belonging to ITS OWN fake sessions
+# (A and B) or to the session running it. A live record from anyone else
+# aborts the whole suite, loudly, and `free_lock` is never a way past that.
+OWN_SESSIONS="$A $B ${TM_SESSION:-}"
+foreign_hold() {
+  [ -d "$LOCK" ] || return 1
+  o=$(cat "$LOCK/session" 2>/dev/null)
+  for s in $OWN_SESSIONS; do [ "$o" = "$s" ] && return 1; done
+  return 0
+}
+free_lock() {
+  if foreign_hold; then
+    echo "  ABORT: the box is held by $(cat "$LOCK/session" 2>/dev/null | cut -c1-8) ('$(cat "$LOCK/purpose" 2>/dev/null)') -- not ours to remove."
+    echo "         The suite refuses to run over a live foreign hold. Wait for the box."
+    exit 75
+  fi
+  rm -rf "$LOCK"
+}
+
+# Before anything else: the box must be free, or ours.
+if foreign_hold; then
+  echo "the box is held by another session: $($TM status 2>&1 | head -1)"
+  echo "the suite will not run over a live hold. Waiting up to 30 min..."
+  if ! $TM wait --timeout 1800 >/dev/null 2>&1; then
+    echo "ABORT: still held after 30 min; not running."
+    exit 75
+  fi
+fi
 game_pid() {
   # tasklist prints "INFO: No tasks are running..." when there is no match, so
   # filter for the row before taking a field -- reading that message as a pid
@@ -188,6 +228,22 @@ TM_SESSION=$A TM_SESSION_TITLE="A" $TM run --purpose "launch inside the run" -- 
   [ -n \"\$t2\" ] && [ \"\$t1\" = \"\$t2\" ] && echo HELD_THROUGH || echo \"LOST \$t1 -> \$t2\"
 " > /tmp/restart.out 2>&1
 grep -q HELD_THROUGH /tmp/restart.out && ok "the token and the hold survive the game dying mid-run" || bad "the hold was lost when the game died: $(cat /tmp/restart.out | tail -1)"
+free_lock
+
+echo "=== 17. a SECOND run from the same session is refused (not silently nested) ==="
+# u10s, 2026-09-24: a probe run started while the publisher's run was live
+# joined its hold and restarted the game under it — twice. Same session is
+# not the same job.
+free_lock
+TM_SESSION=$A TM_SESSION_TITLE="A" $TM run --purpose "publisher" -- /bin/sh -c "sleep 12" >/dev/null 2>&1 &
+pub=$!
+sleep 4
+out=$(TM_SESSION=$A TM_SESSION_TITLE="A" env -u TM_LOCK_TOKEN $TM run --purpose "probe" -- /bin/sh -c "echo NESTED_RAN" 2>&1); rc=$?
+[ "$rc" = "75" ] && ok "a second run from the same session is refused (rc=75)" || bad "a second run joined the first (rc=$rc): $out"
+echo "$out" | grep -q "ALREADY holds" && ok "and it names the job it would have trampled" || bad "no explanation: $out"
+out2=$(TM_SESSION=$A TM_SESSION_TITLE="A" env -u TM_LOCK_TOKEN $TM run --nested --purpose "probe" -- /bin/sh -c "echo NESTED_RAN" 2>&1)
+echo "$out2" | grep -q NESTED_RAN && ok "--nested opts in deliberately" || bad "--nested did not nest: $out2"
+wait $pub 2>/dev/null
 free_lock
 
 echo "=== 13. a holder keeps the box across its OWN game restart ==="

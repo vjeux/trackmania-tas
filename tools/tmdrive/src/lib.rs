@@ -174,6 +174,10 @@ pub struct Holder {
     /// No game process right now. INFORMATIONAL ONLY — never a reason to take
     /// the lock: a holder restarting the game still owns the box.
     pub game_gone: bool,
+    /// The process keeping this lock alive (the creator, or a detached
+    /// renewer), and whether it is still running.
+    pub owner_pid: Option<u32>,
+    pub keeper_alive: bool,
     pub age_s: u64,
     pub since_renewed_s: u64,
     /// `None` when the lock is live; `Some(reason)` when it may be taken.
@@ -378,7 +382,8 @@ pub fn holder(host: &Host) -> Result<Option<Holder>> {
                  \"$(cat \"$L/purpose\" 2>/dev/null)\" \
                  \"$(cat \"$L/game_pid\" 2>/dev/null)\" \
                  \"$(cat \"$L/acquired_at\" 2>/dev/null)\" \
-                 \"$(cat \"$L/renewed_at\" 2>/dev/null)\""
+                 \"$(cat \"$L/renewed_at\" 2>/dev/null)\" \
+                 \"$(k=$(cat \"$L/owner_pid\" 2>/dev/null); printf '%s:' \"$k\"; [ -n \"$k\" ] && kill -0 \"$k\" 2>/dev/null && echo alive || echo dead)\""
         ))
         .map_err(Error::Lock)?;
     if out.trim() == "NONE" {
@@ -391,6 +396,14 @@ pub fn holder(host: &Host) -> Result<Option<Holder>> {
     let locked_pid: Option<u32> = it.next().and_then(|s| s.trim().parse().ok());
     let acquired_at: u64 = it.next().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
     let renewed_at: u64 = it.next().and_then(|s| s.trim().parse().ok()).unwrap_or(acquired_at);
+    let (owner_pid, keeper_alive) = match it.next().map(str::trim) {
+        Some(k) => {
+            let mut parts = k.splitn(2, ':');
+            let pid = parts.next().and_then(|p| p.parse::<u32>().ok());
+            (pid, parts.next() == Some("alive"))
+        }
+        None => (None, false),
+    };
 
     let now = now_s();
     let age_s = now.saturating_sub(acquired_at);
@@ -405,6 +418,8 @@ pub fn holder(host: &Host) -> Result<Option<Holder>> {
             purpose,
             game_pid: locked_pid,
             game_gone: game_pid(host).is_none(),
+            owner_pid,
+            keeper_alive,
             age_s,
             since_renewed_s,
             reclaimable: if since_renewed_s > LEASE_S { Some(Reclaim::LeaseExpired) } else { None },
@@ -448,6 +463,8 @@ pub fn holder(host: &Host) -> Result<Option<Holder>> {
         purpose,
         game_pid: locked_pid,
         game_gone,
+        owner_pid,
+        keeper_alive,
         age_s,
         since_renewed_s,
         reclaimable,
@@ -679,23 +696,67 @@ impl GameLock {
         let host = self.host.clone();
         let released = Arc::clone(&self.released);
         let me = self.identity.session_id.clone();
-        std::thread::spawn(move || {
-            let every = std::time::Duration::from_secs((LEASE_S / 3).max(5));
-            loop {
-                std::thread::sleep(every);
-                if released.load(Ordering::SeqCst) {
-                    return;
+        // A NAMED thread, and a renewer that says why it stopped.
+        //
+        // On 2026-09-24 a live `tmdrive run` (pid alive, its script still
+        // working) was found with ONE thread and a lease 122 s stale: its
+        // renewer had gone, silently, and the box was reclaimed from under a
+        // job that was mid-publish. The exact repro of the reported sequence
+        // (nested `shootctl launch` after killing the game) did NOT reproduce
+        // it, so the cause is still open. What this does about that: every
+        // exit path of the renewer is now logged with its reason, the thread
+        // is named so `ls /proc/<pid>/task/*/comm` shows whether it is alive,
+        // and a renew that FAILS is retried on the next tick instead of being
+        // silently discarded. If it happens again, the log says why.
+        let _ = std::thread::Builder::new()
+            .name("tmdrive-renewer".into())
+            .spawn(move || {
+                let every = std::time::Duration::from_secs((LEASE_S / 3).max(5));
+                let mut consecutive_failures = 0u32;
+                loop {
+                    std::thread::sleep(every);
+                    if released.load(Ordering::SeqCst) {
+                        return; // normal: the guard was released
+                    }
+                    // Only renew while the record is still ours: if we were
+                    // reclaimed, stop rather than stamping someone else's lock.
+                    let r = host.read_cmd(&format!(
+                        "L={LOCK_DIR}; [ -d \"$L\" ] || {{ echo GONE; exit 0; }}; \
+                         o=$(cat \"$L/session\" 2>/dev/null); \
+                         [ \"$o\" = '{me}' ] || {{ echo \"THEIRS:$o\"; exit 0; }}; \
+                         printf '%s' '{}' > \"$L/renewed_at\" && echo OK",
+                        now_s()
+                    ));
+                    match r.as_deref().map(str::trim) {
+                        Ok("OK") => consecutive_failures = 0,
+                        Ok("GONE") => {
+                            eprintln!("tmdrive renewer: the lock record is GONE — someone removed it; stopping");
+                            return;
+                        }
+                        Ok(other) if other.starts_with("THEIRS:") => {
+                            eprintln!(
+                                "tmdrive renewer: the lock is now held by {} — we were reclaimed; stopping",
+                                other.trim_start_matches("THEIRS:")
+                            );
+                            return;
+                        }
+                        Ok(other) => {
+                            consecutive_failures += 1;
+                            eprintln!("tmdrive renewer: unexpected renew result {other:?} ({consecutive_failures} in a row); retrying");
+                        }
+                        Err(e) => {
+                            // A transient bridge/sh failure must NOT end the
+                            // lease: retry next tick, and only give up loudly
+                            // after the lease itself would have expired.
+                            consecutive_failures += 1;
+                            eprintln!("tmdrive renewer: renew failed ({consecutive_failures} in a row): {e}");
+                            if u64::from(consecutive_failures) * every.as_secs() > LEASE_S {
+                                eprintln!("tmdrive renewer: could not renew for a full lease; the box may be reclaimed");
+                            }
+                        }
+                    }
                 }
-                // Only renew while the record is still ours: if we were
-                // reclaimed, stop rather than stamping someone else's lock.
-                let _ = host.read_cmd(&format!(
-                    "L={LOCK_DIR}; [ -d \"$L\" ] || exit 0; \
-                     [ \"$(cat \"$L/session\" 2>/dev/null)\" = '{me}' ] || exit 0; \
-                     printf '%s' '{}' > \"$L/renewed_at\"",
-                    now_s()
-                ));
-            }
-        });
+            });
     }
 }
 

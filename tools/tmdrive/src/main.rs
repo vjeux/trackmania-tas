@@ -152,6 +152,35 @@ fn main() {
             if cmd.is_empty() {
                 usage();
             }
+            // TWO RUNS OF THE SAME SESSION MUST NOT SILENTLY NEST.
+            //
+            // The lock is re-entrant per session on purpose (a run's script
+            // calls other lock-aware tools). But a SECOND `tmdrive run` from
+            // the same session — a probe started in another terminal while a
+            // publish is mid-flight — joins the first run's hold and then
+            // drives the game under its feet: the u10s publisher lost its
+            // game twice this way on 2026-09-24. Same session is not the same
+            // job. So a run refuses when its own session already holds the
+            // box with a LIVE keeper, unless the caller says it means to nest
+            // (`--nested`, or TM_LOCK_TOKEN already in the environment, which
+            // is what a run's own child processes carry).
+            let explicitly_nested =
+                args.iter().any(|a| a == "--nested") || std::env::var_os("TM_LOCK_TOKEN").is_some();
+            if !explicitly_nested {
+                if let (Ok(me), Ok(Some(h))) = (Identity::from_env(), tmdrive::holder(&host)) {
+                    if h.session_id == me.session_id && h.reclaimable.is_none() && h.keeper_alive {
+                        eprintln!(
+                            "tmdrive: this session ALREADY holds the box — '{}' ({}s ago, keeper pid {}).\n\
+                             A second run would drive the game under that job's feet. Wait for it, or\n\
+                             pass --nested if this run is deliberately part of it.",
+                            h.purpose,
+                            h.age_s,
+                            h.owner_pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into())
+                        );
+                        std::process::exit(75);
+                    }
+                }
+            }
             with_lock(&host, &purpose, &args, move |l| {
                 let st = std::process::Command::new(&cmd[0])
                     .args(&cmd[1..])
