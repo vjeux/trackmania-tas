@@ -1432,11 +1432,14 @@ pub fn addblock_cmd(args: &[String]) -> Result<(), String> {
     let mut m = MapFile::load(&input);
     let r = m.remove_and_add_blocks(|_| false, |_| false, &[spec]);
     m.write_to(&out).map_err(|e| e.to_string())?;
-    let mut m = MapFile::load(&out);
-    let hdr = crate::header::read(out.to_str().unwrap_or_default()).ok();
-    let uid_len = hdr.as_ref().map(|h| h.uid.len()).unwrap_or(27);
-    m.set_map_uid(&new_uid("Blk", uid_len));
-    m.write_to(&out).map_err(|e| e.to_string())?;
+    // --keep-uid: the editor-refusal bisect of 2026-09-24 (is it the add, or the new uid?)
+    if !crate::cli::has(args, "--keep-uid") {
+        let mut m = MapFile::load(&out);
+        let hdr = crate::header::read(out.to_str().unwrap_or_default()).ok();
+        let uid_len = hdr.as_ref().map(|h| h.uid.len()).unwrap_or(27);
+        m.set_map_uid(&new_uid("Blk", uid_len));
+        m.write_to(&out).map_err(|e| e.to_string())?;
+    }
     println!("{} + {name} → {} ({:?})", input.display(), out.display(), r);
     Ok(())
 }

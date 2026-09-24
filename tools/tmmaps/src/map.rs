@@ -317,6 +317,11 @@ pub struct MapFile {
     pub items: Vec<ItemRec>,
     /// pending edits
     pub renames: Vec<(bool, usize, String)>, // (is_item, field index, new name)
+    /// Set by `set_map_uid`: the password chunk 0x03043029 carries a CRC over the ORIGINAL
+    /// uid, and with a new uid the EDITOR refuses to open the file (play mode never checks;
+    /// bisected 2026-09-24 on U10S_01: re-uid'd → refused, the same file without the chunk
+    /// → opened). `write_to` strips the chunk in a second pass when this is set.
+    pub uid_changed: bool,
     /// (item Id-field index, new raw word) for the collection words the
     /// re-encoder would otherwise copy verbatim (`set_item_collection`)
     pub item_raw_overrides: Vec<(usize, u32)>,
@@ -727,6 +732,7 @@ impl MapFile {
             item_ids,
             items,
             renames: Vec::new(),
+            uid_changed: false,
             item_raw_overrides: Vec::new(),
             raw_patches: Vec::new(),
             raw_splices: Vec::new(),
@@ -1222,6 +1228,7 @@ impl MapFile {
             old.len()
         );
         self.renames.push((false, 0, uid.to_string()));
+        self.uid_changed = true;
         let mut hits = 0;
         for i in 0..=self.gbx.user_data.len().saturating_sub(old.len()) {
             if &self.gbx.user_data[i..i + old.len()] == old.as_bytes() {
@@ -1634,6 +1641,16 @@ impl MapFile {
         }
         let (bytes, sp) = self.build_reporting();
         std::fs::write(path, bytes)?;
+        if self.uid_changed && std::env::var("TMMAPS_KEEP_PASSWORD").map(|v| v != "1").unwrap_or(true) {
+            // the stale-CRC password chunk goes (see `uid_changed`); a file without the
+            // chunk is what the editor's own "save" writes for a password-less map
+            let mut m2 = MapFile::load(path);
+            if crate::gbx::all_skip_chunks(&m2.gbx.body).into_iter().any(|(cid, ..)| cid == 0x0304_3029) {
+                m2.remove_password();
+                let (bytes2, _) = m2.build_reporting();
+                std::fs::write(path, bytes2)?;
+            }
+        }
         Ok(sp)
     }
 }

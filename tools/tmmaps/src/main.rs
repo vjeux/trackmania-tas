@@ -505,6 +505,15 @@ fn main() {
                 println!("{}: name `{old}` -> `{new}` ({h} header, {b} body)", out.display());
             }
         }
+        // tmmaps unlock MAP --out OUT: drop the editor-password controls (needUnlock + the
+        // 0x03043029 password-hash/CRC chunk) — the editor-refusal bisect of 2026-09-24
+        "unlock" => {
+            let out = tmmaps::cli::flag(&args, "--out").expect("--out OUT");
+            let mut m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
+            m.remove_password();
+            m.write_to(std::path::Path::new(out)).expect("write");
+            println!("{}: password controls removed -> {out}", args[2]);
+        }
         "reuid" => {
             let src = std::path::PathBuf::from(&args[2]);
             let out = std::path::PathBuf::from(tmmaps::cli::flag(&args, "--out").expect("--out OUT"));
