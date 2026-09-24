@@ -1098,15 +1098,19 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
         }
     }
     // a FLAT penalty road frame under a snow/sand floor swap (TINY_PENALTY_FLOOR=Ice|Dirt):
-    // the game's floor is the terrain modifier's zone tile, absent from the prefab — a
-    // generated slab between the two "Road" chunk lines (x 3.2..28.8, the road deck
-    // height 2.0) stands in: the ice modifier's Penalty material (snow, 21) or the dirt
-    // modifier's (sand, 5). Slopes/bumps/diagonals keep the rename (surface.rs).
-    // The game's frame draws a ROAD deck strip on each side of the floor (measured on the
-    // vanilla RoadTechPenaltyIce, wet wood 37: kerb, ~5 m of deck, ~16 m of floor): the
-    // strips take the swap's deck (the `RoadTech` row: ThemeSnowRoad@14 for wood), the
-    // floor the modifier's Penalty material — Everios96 2026-09-21 "road part → wood,
-    // penalty part → snow".
+    // the vanilla Penalty_Air prefab is ONLY the two kerbs (TrackBorders, x 0..3.2 and
+    // 28.8..32, full length), lamp posts at z 8 and 24 and barrier supports — the whole
+    // floor is the game's zone plate, drawn from the block's generated `<Road>PenaltyHFC*`
+    // filler records: road deck at the ENTRY and EXIT (z 0..8 and 24..32) and the penalty
+    // surface BETWEEN the posts (z 8..24), full width between the kerbs (x 3.2..28.8) —
+    // measured with per-wheel surface reads on wet wood 37, 2026-09-24. The item stands in
+    // with three generated slabs of that layout: the deck ends take the swap's deck (the
+    // `RoadTech` row: ThemeSnowRoad@14 for wood), the middle the modifier's Penalty
+    // material (snow 21 / sand 5). The converter drops the frame's HFC records
+    // (`tmmaps surface`), else the plate stays under the slabs: coplanar it z-fights, and
+    // the wheels read ITS grass (the 2026-09-21..24 layout had the slabs rotated 90° AND
+    // face-down — "penalty grass", Everios96). TINY_PENALTY_FLOOR_LIFT metres raises the
+    // slabs off the deck height (default 0: flush with the neighbouring road decks).
     if let Some((_, shape, _)) = crate::surface::split_penalty(name) {
         if shape.is_empty() {
             let floor = match std::env::var("TINY_PENALTY_FLOOR").ok().as_deref() {
@@ -1116,23 +1120,16 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
                 _ => Some(("Stadium\\Media\\Material\\Penalty", 2u8)),
             };
             if let Some((flink, fphys)) = floor {
-                // The generated slab sits a hair ABOVE the road deck height: a frame at GROUND
-                // level has the game's own grass plane exactly at 2.0 (the frame block is gone,
-                // so the cell's ground tile is drawn and collides) — coplanar, the two z-fight
-                // and the wheels read the ground's Grass instead of the snow (wet wood 37,
-                // Everios96 2026-09-24 "flickering a lot, and it's penalty grass").
-                // TINY_PENALTY_FLOOR_LIFT metres (default 0.015; 0 = the old coplanar slab).
-                let lift: f32 = std::env::var("TINY_PENALTY_FLOOR_LIFT").ok().and_then(|v| v.parse().ok()).unwrap_or(0.015);
+                let lift: f32 = std::env::var("TINY_PENALTY_FLOOR_LIFT").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
                 let y = (2.0 + lift) * scale;
-                let (sx0, sx1) = (3.2 * scale, 8.0 * scale);
-                let (ex0, ex1) = (24.0 * scale, 28.8 * scale);
-                let (w0, w1) = (0.0, 32.0 * scale);
+                let (x0, x1) = (3.2 * scale, 28.8 * scale);
+                let (z0, z1, z2, z3) = (0.0, 8.0 * scale, 24.0 * scale, 32.0 * scale);
                 if let Some((_, deck, dphys)) = m.link_rewrite.iter().find(|(from, to, _)| from == "RoadTech" && !to.is_empty()).cloned() {
-                    m.add_flat_quad(sx0, w0, sx1, w1, y, &deck, dphys);
-                    m.add_flat_quad(ex0, w0, ex1, w1, y, &deck, dphys);
-                    m.add_flat_quad(sx1, w0, ex0, w1, y, flink, fphys);
+                    m.add_flat_quad(x0, z0, x1, z1, y, &deck, dphys);
+                    m.add_flat_quad(x0, z2, x1, z3, y, &deck, dphys);
+                    m.add_flat_quad(x0, z1, x1, z2, y, flink, fphys);
                 } else {
-                    m.add_flat_quad(sx0, w0, ex1, w1, y, flink, fphys);
+                    m.add_flat_quad(x0, z0, x1, z3, y, flink, fphys);
                 }
             }
         }

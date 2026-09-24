@@ -749,10 +749,16 @@ impl Merged {
         for v in make_visuals(&tris, layout, "off") {
             self.visuals.push(MergedVisual::every_level(v, slot));
         }
+        // The collision quad must face UP: with corners a(x0,z0) b(x1,z0) c(x1,z1) d(x0,z1) the
+        // winding [a,b,c] has its normal DOWN ((b−a)×(c−a) = (dx,0,0)×(dx,0,dz) → −y), and a
+        // one-sided hull facing down is never touched — the car fell through to the plate
+        // beneath and read ITS physics (the wet wood 37 frame: wheels on Grass/Asphalt, never
+        // Snow, measured 2026-09-24; the z-fighting look came from the same plate). [a,c,b]
+        // and [a,d,c] face up.
         let verts = [[x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1]];
         let hull = [
-            Triangle { indices: [0, 1, 2], material_id: physics, gameplay: 0, surface_index: 0 },
-            Triangle { indices: [0, 2, 3], material_id: physics, gameplay: 0, surface_index: 0 },
+            Triangle { indices: [0, 2, 1], material_id: physics, gameplay: 0, surface_index: 0 },
+            Triangle { indices: [0, 3, 2], material_id: physics, gameplay: 0, surface_index: 0 },
         ];
         self.add_surface_mesh(&verts, &hull, &IDENTITY, 1.0);
         self.notes.push(format!("generated flat quad {x0}..{x1} × {z0}..{z1} at y {y}: {link} (physics {physics})"));

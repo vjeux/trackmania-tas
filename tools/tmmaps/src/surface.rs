@@ -126,11 +126,27 @@ pub fn cmd(args: &[String]) {
     let tmp2 = out.with_extension("s2.Map.Gbx");
     let tmp3 = out.with_extension("s3.Map.Gbx");
 
-    // 1. deletions
+    // 1. deletions — with the generated `<Road>PenaltyHFC*` filler records of every penalty
+    // frame that becomes an item: the game draws the frame's whole floor from them (road
+    // deck at the ends, penalty surface between the posts; the vanilla prefab is kerbs and
+    // posts only), and under the item's own slabs that plate z-fights and is what the wheels
+    // touch (wet wood 37, 2026-09-24). The fillers sit in the frame's cell and its four
+    // neighbours (the "Ends" pieces one cell along the road, the side piece one cell across).
+    let is_frame = |n: &str| n.starts_with("Road") && (n.ends_with("Penalty") || n.ends_with("PenaltyIce") || n.ends_with("PenaltyDirt"));
+    let frame_cells: Vec<[i32; 3]> = plan.iter().filter(|r| baked_indices.contains(&r.index) && is_frame(&r.name)).map(|r| r.cell).collect();
     let mut m = MapFile::load(&src);
     if !deletions.is_empty() {
-        let r = m.remove_blocks(|b| deletions.contains(&b.index), |_| false);
-        println!("  stage 1: deleted {} blocks ({} free entries, {} snap groups)", r.blocks, r.free_entries, r.snap_groups);
+        let r = m.remove_blocks(
+            |b| deletions.contains(&b.index),
+            |b| {
+                if !b.name.contains("PenaltyHFC") {
+                    return false;
+                }
+                let (x, y, z) = b.coords();
+                frame_cells.iter().any(|c| c[1] == y && (c[0] - x).abs() <= 1 && (c[2] - z).abs() <= 1)
+            },
+        );
+        println!("  stage 1: deleted {} blocks ({} free entries, {} snap groups), {} penalty-frame filler records", r.blocks, r.free_entries, r.snap_groups, r.baked);
     }
     m.write_to(&tmp1).expect("write stage 1");
     // old index -> new index
