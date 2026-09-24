@@ -44,14 +44,28 @@ fn md5_hex(data: &[u8]) -> String {
     mapgeom::md5::md5(data).iter().map(|b| format!("{b:02x}")).collect()
 }
 
+#[derive(Clone)]
 struct Tokens {
     core: String,
     live: String,
     me: String,
     shootctl: String,
+    /// `--files-only`: the plugin's token files are the only source (no game, no lock);
+    /// a 401 ends the batch with "re-mint" instead of calling the plugin
+    files_only: bool,
 }
 
 impl Tokens {
+    /// The plugin's token FILES, no game call: the uploads themselves are plain HTTPS to
+    /// Nadeo's core service, so with a young token the batch runs from any process,
+    /// outside the game lock and in parallel (vjeux 2026-09-24: "figure out what endpoint
+    /// is used for uploading so you can do it without the game").
+    fn from_files() -> Result<Tokens, String> {
+        let (core, live) = crate::nadeo::fresh_tokens().ok_or("no fresh plugin token files (older than 20 min or absent): mint first — a 3-second `shootctl get /nadeotoken?aud=NadeoServices` + `…aud=NadeoLiveServices` under tmdrive")?;
+        let (mine, c) = curl(&["-H", &format!("Authorization: {live}"), &format!("{LIVE}/api/token/club/mine?length=1&offset=0")])?;
+        let me = json_str(&mine, "authorAccountId").ok_or_else(|| format!("club/mine: HTTP {c} without authorAccountId (token files stale?)"))?;
+        Ok(Tokens { core, live, me, shootctl: String::new(), files_only: true })
+    }
     fn mint(shootctl: &str) -> Result<Tokens, String> {
         // The plugin's token files are reused when young, but the game rotates its
         // live token on its own schedule (a 401 on club/mine with 20-minute-old
@@ -61,7 +75,7 @@ impl Tokens {
             let (core, live) = crate::nadeo::batch_tokens(shootctl)?;
             let (mine, c) = curl(&["-H", &format!("Authorization: {live}"), &format!("{LIVE}/api/token/club/mine?length=1&offset=0")])?;
             if let Some(me) = json_str(&mine, "authorAccountId") {
-                return Ok(Tokens { core, live, me, shootctl: shootctl.to_string() });
+                return Ok(Tokens { core, live, me, shootctl: shootctl.to_string(), files_only: false });
             }
             if attempt == 0 {
                 println!("tokens: club/mine HTTP {c} with the reused files — minting fresh");
@@ -76,6 +90,9 @@ impl Tokens {
     }
     /// A 401 means the game rotated its token: drop the files and mint again.
     fn refresh(&mut self) -> Result<(), String> {
+        if self.files_only {
+            return Err("token expired (HTTP 401) — files-only mode: re-mint and resume".into());
+        }
         for aud in ["NadeoServices", "NadeoLiveServices"] {
             let _ = std::fs::remove_file(format!("{}/token-{aud}.txt", crate::publish::STORE));
         }
@@ -228,11 +245,79 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
             (c.len() >= 2).then(|| (PathBuf::from(c[0].trim()), c[1].trim().to_string(), (c.len() >= 4 && c[3].trim() == "skip").then(|| format!("{}\t{}", c[2].trim(), c.get(4).map(|s| s.trim()).unwrap_or("-")))))
         })
         .collect();
+    let jobs: usize = f("--jobs").and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
+    let files_only = tmmaps::cli::has(args, "--files-only");
     let summary = (|| -> Result<String, String> {
-        let mut t = Tokens::mint(&shootctl)?;
+        let mut t = if files_only { Tokens::from_files()? } else { Tokens::mint(&shootctl)? };
         let mut out = String::from("path\tname\tuid\tmapId\thow\tbytes\tmd5\tverdict\n");
         let mut uids: Vec<String> = Vec::new();
         let mut failed = 0usize;
+        if jobs > 1 {
+            // `--jobs N`: N uploads at once, each worker with its own copy of the tokens (plain
+            // HTTPS, no game); results land in manifest order, the file is rewritten as they come
+            let n = rows.len();
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let slots: std::sync::Mutex<Vec<Option<(String, bool, Option<String>)>>> = std::sync::Mutex::new(vec![None; n]);
+            let stop = std::sync::atomic::AtomicBool::new(false);
+            std::thread::scope(|sc| {
+                for _w in 0..jobs.min(n.max(1)) {
+                    let mut tw = t.clone();
+                    let (rows, slots, next, stop, outdir, results) = (&rows, &slots, &next, &stop, &outdir, &results);
+                    sc.spawn(move || loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if i >= n || stop.load(std::sync::atomic::Ordering::SeqCst) {
+                            break;
+                        }
+                        let (p, name, skip) = &rows[i];
+                        let t1 = Instant::now();
+                        let entry = if let Some(skip) = skip {
+                            let (uid, md5) = skip.split_once('\t').unwrap_or((skip.as_str(), "-"));
+                            println!("[{:>4.0}s] {}/{} {name}\t{uid}\talready on Nadeo — playlist only", t0.elapsed().as_secs_f64(), i + 1, n);
+                            (format!("{}\t{name}\t{uid}\t-\tskip\t0\t{md5}\tIDENTICAL\n", p.display()), true, Some(uid.to_string()))
+                        } else {
+                            match upload_one(&mut tw, p, name, outdir) {
+                                Ok((uid, map_id, how, bytes, md5, verdict)) => {
+                                    println!("[{:>4.0}s] {}/{} {name}\t{uid}\t{how}\t{bytes} B\t{verdict}\t({:.0}s)", t0.elapsed().as_secs_f64(), i + 1, n, t1.elapsed().as_secs_f64());
+                                    let ok = verdict == "IDENTICAL";
+                                    (format!("{}\t{name}\t{uid}\t{map_id}\t{how}\t{bytes}\t{md5}\t{verdict}\n", p.display()), ok, ok.then_some(uid))
+                                }
+                                Err(e) => {
+                                    println!("[{:>4.0}s] {}/{} {name}\tFAILED\t{e}", t0.elapsed().as_secs_f64(), i + 1, n);
+                                    if e.contains("token expired") {
+                                        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                                    }
+                                    (format!("{}\t{name}\t-\t-\t-\t0\t-\tFAILED {}\n", p.display(), e.lines().next().unwrap_or("").replace('\t', " ")), false, None)
+                                }
+                            }
+                        };
+                        slots.lock().unwrap()[i] = Some(entry);
+                        // the results file after every map, in manifest order (the done ones so far)
+                        let mut text = String::from("path\tname\tuid\tmapId\thow\tbytes\tmd5\tverdict\n");
+                        for e in slots.lock().unwrap().iter().flatten() {
+                            text.push_str(&e.0);
+                        }
+                        let _ = std::fs::write(results, &text);
+                    });
+                }
+            });
+            let done = slots.into_inner().unwrap();
+            for e in done.iter() {
+                match e {
+                    Some((line, ok, uid)) => {
+                        out.push_str(line);
+                        if *ok {
+                            if let Some(u) = uid {
+                                uids.push(u.clone());
+                            }
+                        } else {
+                            failed += 1;
+                        }
+                    }
+                    None => failed += 1,
+                }
+            }
+            std::fs::write(&results, &out).map_err(|e| format!("{}: {e}", results.display()))?;
+        } else {
         for (i, (p, name, skip)) in rows.iter().enumerate() {
             let t1 = Instant::now();
             if let Some(skip) = skip {
@@ -259,6 +344,7 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
                 }
             }
             std::fs::write(&results, &out).map_err(|e| format!("{}: {e}", results.display()))?;
+        }
         }
         let mut camp_line = String::from("campaign\tnot set");
         if let (Some(club), Some(camp), Some(cname)) = (f("--club"), f("--campaign"), f("--campaign-name")) {
