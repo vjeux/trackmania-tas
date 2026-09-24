@@ -1,173 +1,184 @@
-//! The engine's class hierarchy, as far as the pak cipher needs it.
+//! The pak cipher's "dummy write": which value the engine folds into the
+//! Blowfish stream at the start of every node body, read off the client
+//! itself (`Trackmania.exe`, `CMwNod::Archive` at 0x1402d0720 — vtable slot
+//! 14 of every node class; DISASSEMBLY 2026-09-23, `docs/formats/pak-nadeopak.md` §4).
 //!
-//! While the game reads an ENCRYPTED, UNCOMPRESSED pak file it "dummy-writes"
-//! into the cipher: at the start of every node body (the main node's, and each
-//! inline node's, right after its class id) it folds the four bytes of the
-//! node's PARENT class id into the Blowfish stream's IV perturbation (GBX.NET:
-//! `GbxReader.TryInitializeDecryption` -> `BlowfishStream.Initialize`). The
-//! perturbation lands at the next 0x100-byte boundary of the stream, and the
-//! IV chains through every later block, so a reader that skips it decodes the
-//! first 256 bytes of such a file and garbage after — which is how every
-//! `.Light.Gbx` of the Stadium pack (all 73 of them, 275-485 bytes) read until
-//! 2026-09-07. Files flagged `DontUseDummyWrite` (pak entry flag bit 32) and
-//! LZ4-compressed ones are exempt.
+//! ```text
+//! CMwNod::Archive(this, archive):
+//!     info = this->GetClassInfo()                       // vtable slot 2
+//!     if (info->parent != NULL) {                       // +0x20; only CMwNod and the primitive types have none
+//!         archive->buffer->dummy = 1                    // top buffer +0x10: its Write folds instead of writing
+//!         switch (info->classId) {                      // +0x18, the ENGINE id
+//!             case 0x0A003000:              v = 0x0A001000   // CSceneLayout  → CScene       (its parent is CMwNod today)
+//!             case 0x090BF000:              v = 0x0804B000   // CPlugMaterialFx-family → its Maniaplanet-era parent
+//!             case 0x0917E000, 0x09184000:  v = 0x05010000
+//!             case 0x09185000:              v = 0x05002000   // → CFuncShader
+//!             default:                      v = REMAP(info->parent->classId)   // 0x1402f3570: 0x03xxxxxx → 0x24xxxxxx, else identity
+//!                                           if (v == 0x07031000) v = 0x07001000  // a CControlText child folds CControlBase (the pre-CControlText layout)
+//!         }
+//!         if (v == 0) v = 0xFFFFFFFF                    // 0x1402d1d00 (never taken: a parent always has an id)
+//!         archive->Write4(&v)                           // 0x14012bbe0 → crypt buffer Write 0x1413b0e00 in dummy mode:
+//!                                                       //   per byte b: iv_xor = rotl64(iv_xor, 13) ^ (b | 0xAA)
+//!         archive->buffer->dummy = 0
+//!     }
+//!     … the chunk loop …
+//! ```
 //!
-//! The table is GBX.NET's `inherits:` lines (its chunkl corpus, 251 classes);
-//! a class without an entry falls back on the engine's own layout: a Plug
-//! class (0x09xxxxxx) derives from `CPlug` (0x0902B000), everything else from
-//! `CMwNod` (0x01001000). GBX.NET's own special cases (its hierarchy differs
-//! from the engine's in a few places) are folded in below the table.
+//! The fold reaches the cipher at its next 0x100-byte batch (`blowfish.rs`);
+//! `pakfile.rs` places it. Three more engine facts the placement needs
+//! (same function and `ArchiveNodRef` 0x140905cb0):
+//! * a node reference folds ONLY when it creates a new inline node (index
+//!   not yet in the node table); `-1` refs, back-references and external
+//!   (reference-table) nodes fold nothing;
+//! * an inline node inside a SKIPPABLE chunk folds nothing: the reader
+//!   pulls the whole chunk into a memory buffer first (`PIKS` + size), and
+//!   the memory buffer's dummy Write is a no-op (0x140123c80);
+//! * `DontUseDummyWrite` (pak entry flag bit 32 → crypt buffer +0x18) turns
+//!   every dummy write into a no-op.
+//!
+//! Three explicit per-class dummy writes exist besides the generic one (GBX.NET
+//! knows them too): `CPlugVehiclePhyTuning`/`CPlugVehicleCarPhyTuning` fold
+//! the first four bytes of their name (0x1405fbcca, 0x1405da97d) and
+//! `CPlugSurfaceGeom` chunk 0x0900F004 folds `f32(box.X − box.X2)` (0x14051ed4e).
+//!
+//! The fold lives in `CMwNod::Archive` — the chunk loop. A class whose own
+//! `Archive` override never calls it (a plain-struct body: CPlugVegetTreeModel,
+//! CPlugDynaObjectModel, CPlugPrefab, CPlugStaticObjectModel, the
+//! `NPlug*::S*` structs — `NO_FOLD_CLASSES`, 92 of the 1857 vtables, read off
+//! slot 14 of every vtable) folds nothing even though it has a parent: the
+//! 172 `.VegetTreeModel.Gbx` and 24 `.DynaObject.Gbx` pak entries decode
+//! without a main-node fold and garble with one (measured 2026-09-23). The
+//! CPlugVisual* family, CPlugBitmap and CPlugMaterial override `Archive` but
+//! tail-call the base before writing anything, so they fold at the body start
+//! like everyone else.
+//!
+//! The class table is the engine's own (`engine_classes.rs`, 1905 classes
+//! from the class registrations), not GBX.NET's `inherits:` lines: the two
+//! differ where it matters (CGameCtnChallenge : CMwNod here, CGameCtnBlockInfo
+//! : CGameCtnCollector 0x2E001000, CPlugDynaObjectModel : CMwNod), and the
+//! special cases above are not derivable from any hierarchy. A class id read
+//! from a file is first put through NORMALISE (0x1402f2610: the read-side
+//! id aliasing, e.g. `0x24003000 → 0x03043000`), as the engine does before
+//! its registry lookup.
+
+use crate::engine_classes::{ENGINE_CLASSES, NORMALISE, NO_FOLD_CLASSES, REMAP};
 
 pub const C_MWNOD: u32 = 0x01001000;
 pub const C_PLUG: u32 = 0x0902B000;
 
-/// (class, parent) — from GBX.NET's chunkl `inherits:` lines.
-const PARENTS: &[(u32, u32)] = &[
-    (0x01031000, 0x01052000), // CMwCmdInst : CMwCmdScript
-    (0x01032000, 0x01031000), // CMwCmdAffectIdent : CMwCmdInst
-    (0x01038000, 0x01052000), // CMwCmdExp : CMwCmdScript
-    (0x01052000, 0x01005000), // CMwCmdScript : CMwCmd
-    (0x01056000, 0x01038000), // CMwCmdExpClass : CMwCmdExp
-    (0x01057000, 0x01038000), // CMwCmdExpNum : CMwCmdExp
-    (0x01058000, 0x01057000), // CMwCmdExpNumConst : CMwCmdExpNum
-    (0x0105B000, 0x01052000), // CMwCmdBlock : CMwCmdScript
-    (0x0105C000, 0x01052000), // CMwCmdBlockCast : CMwCmdScript
-    (0x03028000, 0x03028000), // CGameCtnMediaBlockFx : CGameCtnMediaBlock
-    (0x0302B000, 0x03028000), // CGameCtnMediaBlockFxColors : CGameCtnMediaBlockFx
-    (0x03030000, 0x03028000), // CGameCtnMediaBlockDOF : CGameCtnMediaBlockFx
-    (0x0303F000, 0x03028000), // CGameCtnMediaBlockFxBloom : CGameCtnMediaBlockFx
-    (0x03043000, 0x0301A000), // CGameCtnChallenge : CGameCtnCollector
-    (0x03053000, 0x03028000), // CGameCtnMediaBlockFxBlur : CGameCtnMediaBlockFx
-    (0x03054000, 0x03028000), // CGameCtnMediaBlockFxBlurDepth : CGameCtnMediaBlockFxBlur
-    (0x03055000, 0x03028000), // CGameCtnMediaBlockFxBlurMotion : CGameCtnMediaBlockFxBlur
-    (0x0305D000, 0x0301C000), // CGameCtnZoneFlat : CGameCtnZone
-    (0x0305E000, 0x0301C000), // CGameCtnZoneFrontier : CGameCtnZone
-    (0x0305F000, 0x0301C000), // CGameCtnZoneTransition : CGameCtnZone
-    (0x03062000, 0x0301C000), // CGameCtnZoneGenealogy : CGameCtnZone
-    (0x03066000, 0x0301A000), // CGameCtnMacroBlockInfo : CGameCtnCollector
-    (0x0306A000, 0x0301A000), // CGameCtnArticleGroup : CGameCtnCollector
-    (0x0306B000, 0x0301A000), // CGameCtnDecorationSize : CGameCtnCollector
-    (0x0306D000, 0x03078000), // CGameCtnMediaBlockFxCameraBlend : CGameCtnMediaBlockFx
-    (0x03072000, 0x03078000), // CGameCtnMediaBlockFxBloom2 : CGameCtnMediaBlockFx
-    (0x0307D000, 0x03078000), // CGameCtnMediaBlockFxLensFlare : CGameCtnMediaBlockFx
-    (0x0307E000, 0x03078000), // CGameCtnMediaBlockFxSaturation : CGameCtnMediaBlockFx
-    (0x03080000, 0x03078000), // CGameCtnMediaBlockFxTone : CGameCtnMediaBlockFx
-    (0x03084000, 0x03028000), // CGameCtnMediaBlockCameraCustom : CGameCtnMediaBlockCamera
-    (0x030A2000, 0x03028000), // CGameCtnMediaBlockTriangles2D : CGameCtnMediaBlockTriangles
-    (0x030A3000, 0x03028000), // CGameCtnMediaBlockTriangles3D : CGameCtnMediaBlockTriangles
-    (0x030A4000, 0x03028000), // CGameCtnMediaBlockCameraPath : CGameCtnMediaBlockCamera
-    (0x030A5000, 0x03028000), // CGameCtnMediaBlockCameraEffectShake : CGameCtnMediaBlockCameraEffect
-    (0x030A6000, 0x03028000), // CGameCtnMediaBlockCameraEffectScript : CGameCtnMediaBlockCameraEffect
-    (0x030A7000, 0x03028000), // CGameCtnMediaBlockTransitionFade : CGameCtnMediaBlockFx
-    (0x030A8000, 0x03028000), // CGameCtnMediaBlockCameraGame : CGameCtnMediaBlockCamera
-    (0x030A9000, 0x03028000), // CGameCtnMediaBlockCameraOrbital : CGameCtnMediaBlockCamera
-    (0x030E0000, 0x03028000), // CGameCtnMediaBlockDirtyLens : CGameCtnMediaBlockFx
-    (0x03165000, 0x03028000), // CGameCtnMediaBlockFxGrain : CGameCtnMediaBlockFx
-    (0x03166000, 0x03028000), // CGameCtnMediaBlockFxTone2 : CGameCtnMediaBlockFx
-    (0x03167000, 0x03028000), // CGameCtnMediaBlockFxTone3 : CGameCtnMediaBlockFx
-    (0x0316A000, 0x03028000), // CGameCtnMediaBlockTrails : CGameCtnMediaBlockFx
-    (0x0316B000, 0x03028000), // CGameCtnMediaBlockShoot : CGameCtnMediaBlockFx
-    (0x0316C000, 0x03028000), // CGameCtnMediaBlockFog : CGameCtnMediaBlockFx
-    (0x0316D000, 0x03028000), // CGameCtnMediaBlockFxDirtyLens : CGameCtnMediaBlockFx
-    (0x0316E000, 0x03028000), // CGameCtnMediaBlockManialink : CGameCtnMediaBlockFx
-    (0x03196000, 0x03028000), // CGameCtnMediaBlockOpponentVisibility : CGameCtnMediaBlockFx
-    (0x03197000, 0x03028000), // CGameCtnMediaBlockToneMapping : CGameCtnMediaBlockFx
-    (0x03198000, 0x03028000), // CGameCtnMediaBlockFxSSAO : CGameCtnMediaBlockFx
-    (0x03199000, 0x03028000), // CGameCtnMediaBlockEntity : CGameCtnMediaBlock
-    (0x0319A000, 0x03028000), // CGameCtnMediaBlockBloomHdr : CGameCtnMediaBlockFx
-    (0x0319B000, 0x03028000), // CGameCtnMediaBlockColorGrading : CGameCtnMediaBlockFx
-    (0x0319C000, 0x03028000), // CGameCtnMediaBlockTimeSpeed : CGameCtnMediaBlockFx
-    (0x0319D000, 0x03028000), // CGameCtnMediaBlockSound2 : CGameCtnMediaBlockSound
-    (0x0319E000, 0x03028000), // CGameCtnMediaBlockInterface : CGameCtnMediaBlockFx
-    (0x0319F000, 0x03028000), // CGameCtnMediaBlockFxDirtyLens2 : CGameCtnMediaBlockFx
-    (0x031A0000, 0x03028000), // CGameCtnMediaBlockTrails2 : CGameCtnMediaBlockFx
-    (0x031A1000, 0x03028000), // CGameCtnMediaBlockFxVertigo : CGameCtnMediaBlockFx
-    (0x031A2000, 0x03028000), // CGameCtnMediaBlockFxFisheye : CGameCtnMediaBlockFx
-    (0x031A3000, 0x03028000), // CGameCtnMediaBlockFxWaterDrops : CGameCtnMediaBlockFx
-    (0x031A4000, 0x03028000), // CGameCtnMediaBlockFxDistortion : CGameCtnMediaBlockFx
-    (0x031A5000, 0x03028000), // CGameCtnMediaBlockFxDazzle : CGameCtnMediaBlockFx
-    (0x031A6000, 0x03028000), // CGameCtnMediaBlockFxSharpen : CGameCtnMediaBlockFx
-    (0x031A7000, 0x03028000), // CGameCtnMediaBlockFxMotionBlur : CGameCtnMediaBlockFx
-    (0x031A8000, 0x03028000), // CGameCtnMediaBlockFxLensFlare2 : CGameCtnMediaBlockFx
-    (0x031A9000, 0x03028000), // CGameCtnMediaBlockFxChromaticAberration : CGameCtnMediaBlockFx
-    (0x031AA000, 0x03028000), // CGameCtnMediaBlockFxFilmGrain : CGameCtnMediaBlockFx
-    (0x031AB000, 0x03028000), // CGameCtnMediaBlockFxVignette : CGameCtnMediaBlockFx
-    (0x031AC000, 0x03028000), // CGameCtnMediaBlockFxTiltShift : CGameCtnMediaBlockFx
-    (0x031AD000, 0x03028000), // CGameCtnMediaBlockFxColorGrading2 : CGameCtnMediaBlockFx
-    (0x031AE000, 0x03028000), // CGameCtnMediaBlockFxDepthOfField : CGameCtnMediaBlockFx
-    (0x031AF000, 0x03028000), // CGameCtnMediaBlockFxBloom3 : CGameCtnMediaBlockFx
-    (0x031B0000, 0x03028000), // CGameCtnMediaBlockFxLensDirt : CGameCtnMediaBlockFx
-    (0x031B1000, 0x03028000), // CGameCtnMediaBlockFxRainbow : CGameCtnMediaBlockFx
-    (0x031B2000, 0x03028000), // CGameCtnMediaBlockFxSpeedLines : CGameCtnMediaBlockFx
-    (0x04002000, 0x04003000), // GxLightBall : GxLightPoint
-    (0x04003000, 0x04006000), // GxLightPoint : GxLightNotAmbient
-    (0x04005000, 0x04001000), // GxLightAmbient : GxLight
-    (0x04006000, 0x04001000), // GxLightNotAmbient : GxLight
-    (0x04007000, 0x04006000), // GxLightDirectional : GxLightNotAmbient
-    (0x0400A000, 0x04002000), // GxLightFrustum : GxLightBall
-    (0x0400B000, 0x04002000), // GxLightSpot : GxLightBall
-    (0x0500B000, 0x05002000), // CFuncPlug : CFuncShader
-    (0x05015000, 0x05002000), // CFuncShaderLayerUV : CFuncShader
-    (0x05016000, 0x05002000), // CFuncShaderLayerUVCubeMap : CFuncShader
-    (0x0501F000, 0x05002000), // CFuncKeysReal : CFuncKeys
-    (0x05020000, 0x05002000), // CFuncClouds : CFuncShader
-    (0x07031000, 0x07001000), // CControlFrame : CControlContainer
-    (0x0900E000, 0x0902B000), // CPlugShaderApply : CPlugShader
-    (0x0901D000, 0x0902B000), // CPlugLight : CPlug
-    (0x0901E000, 0x0906A000), // CPlugVisualIndexedTriangles : CPlugVisualIndexed
-    (0x0902C000, 0x09006000), // CPlugVisual3D : CPlugVisual
-    (0x0903A000, 0x0902B000), // CPlugMaterialCustom : CPlug
-    (0x09051000, 0x0902B000), // CPlugTreeGenerator : CPlug
-    (0x09056000, 0x0902B000), // CPlugVertexStream : CPlug
-    (0x09057000, 0x0902B000), // CPlugIndexBuffer : CPlug
-    (0x0906A000, 0x0902C000), // CPlugVisualIndexed : CPlugVisual3D
-    (0x09079000, 0x0902B000), // CPlugMaterial : CPlug
-    (0x090BB000, 0x0902B000), // CPlugSolid2Model : CPlug
-    (0x090FD000, 0x0902B000), // CPlugMaterialUserInst : CPlug
-    // The particle chain of the Show items (measured 2026-09-08 on
-    // `Fogger16M.FxSys.Gbx` + `Fogger16M.ParticleModel.Gbx`: each main node
-    // and every inline node needs its fold, and CPlug's fold decodes them —
-    // CPlug and CMwNod fold to the same bytes, `(b | 0xAA)` per byte).
-    (0x0915C000, 0x0902B000), // CPlugFxSystem : CPlug
-    (0x090B3000, 0x0902B000), // CPlugParticleEmitterModel : CPlug
-    (0x090B2000, 0x0902B000), // CPlugParticleEmitterSubModel : CPlug
-    (0x090B5000, 0x0902B000), // particle shape/spawn model (sub-model node 2) : CPlug
-    (0x090C5000, 0x0902B000), // particle sub-node 3 : CPlug
-    (0x090C6000, 0x0902B000), // particle sub-node 4 : CPlug
-    (0x09011000, 0x0902B000), // CPlugBitmap (`*.Texture.gbx`) : CPlug — decodes with it (2026-09-08)
-    (0x0A02B000, 0x0A02B000), // CSceneVehicleCar : CSceneVehicle
-    (0x24005000, 0x24005000), // CGameCtnBlockInfo : CGameCtnCollector
-];
+fn lookup(table: &[(u32, u32)], key: u32) -> Option<u32> {
+    // the generated tables are sorted by key
+    table.binary_search_by_key(&key, |&(k, _)| k).ok().map(|i| table[i].1)
+}
 
-/// The class id the game folds into the cipher at the start of this class's
-/// node body — `None` for a class the table does not know: the fold happens
-/// only for a class with a declared parent (GBX.NET folds nothing when
-/// `GetParentClassId` is null). Measured 2026-09-07 on
-/// `ObstaclePusher8mPiston.DynaObject.Gbx` (CPlugDynaObjectModel, 278 bytes,
-/// raw, dummy-written, no inline node): its bytes past 0x100 are right with NO
-/// fold (LocAnim -1, WaterModel -1, zeros) and garbage with the CPlug fallback
-/// fold, while `ItemLampSpot.Light.Gbx` (CPlugLight : CPlug in the table)
-/// needs its fold. The old fallback (CPlug for 0x09xxxxxx, CMwNod otherwise)
-/// corrupted every table-less raw class past 0x100.
-/// Every class id the table mentions (children and parents) plus the two
-/// roots — the candidate set of a fold hunt.
+/// A class id as it appears in a file → the engine's class id (0x1402f2610).
+pub fn normalise(file_id: u32) -> u32 {
+    lookup(NORMALISE, file_id).unwrap_or(file_id)
+}
+
+/// An engine class id → the id the engine writes for it (0x1402f3570).
+pub fn remap(engine_id: u32) -> u32 {
+    lookup(REMAP, engine_id).unwrap_or(engine_id)
+}
+
+/// The engine's parent of a class (engine ids); `None` for a class the
+/// table does not know, `Some(0)` for a root (CMwNod, the primitive types).
+pub fn engine_parent(engine_id: u32) -> Option<u32> {
+    lookup(ENGINE_CLASSES, engine_id)
+}
+
+/// The value the engine folds into the cipher at the start of this class's
+/// node body (`class_id` as read from the file), or `None` when the class is
+/// unknown to the table — the caller falls back on the fold hunt then. A
+/// known root class folds nothing: `Some(NO_FOLD)`... expressed as `None`
+/// would hide the difference, so roots return `Some(0)` and callers skip a
+/// zero.
+pub fn dummy_write_class(class_id: u32) -> Option<u32> {
+    let e = normalise(class_id);
+    let parent = engine_parent(e)?;
+    if parent == 0 || NO_FOLD_CLASSES.binary_search(&e).is_ok() {
+        return Some(0);
+    }
+    Some(fold_value(e, parent))
+}
+
+/// `CMwNod::Archive`'s switch: the fold value for an engine class with the
+/// given engine parent.
+pub fn fold_value(engine_id: u32, engine_parent: u32) -> u32 {
+    match engine_id {
+        0x0A003000 => 0x0A001000,
+        0x090BF000 => 0x0804B000,
+        0x0917E000 | 0x09184000 => 0x05010000,
+        0x09185000 => 0x05002000,
+        _ => {
+            let v = remap(engine_parent);
+            if v == 0x07031000 { 0x07001000 } else { v }
+        }
+    }
+}
+
+/// Every fold value a node of a known class can produce — the alphabet of a
+/// fold hunt (canonicalised by the caller: only bits 0/2/4/6 of each byte
+/// reach the cipher).
 pub fn known_classes() -> Vec<u32> {
-    let mut v: Vec<u32> = PARENTS.iter().flat_map(|(c, p)| [*c, *p]).collect();
-    v.extend([C_MWNOD, C_PLUG, 0x2401C000, 0x24005000, 0x07001000]);
+    let mut v: Vec<u32> = ENGINE_CLASSES
+        .iter()
+        .filter(|&&(_, p)| p != 0)
+        .map(|&(c, p)| fold_value(c, p))
+        .collect();
+    v.extend([0xFFFF_FFFF]);
     v.sort();
     v.dedup();
     v
 }
 
-pub fn dummy_write_class(class_id: u32) -> Option<u32> {
-    // GBX.NET's own overrides where its hierarchy differs from the engine's
-    match class_id {
-        0x07031000 => return Some(0x07001000),          // CControlFrame
-        0x0A02E000 => return Some(0x0A02E000),          // CPlugVehiclePhyTuning (its own id)
-        0x0501F000 => return Some(C_MWNOD),             // CFuncKeysReal ("weird case of CPlugCurveSimpleNod")
-        0x0305D000 | 0x0305E000 | 0x0305F000 | 0x03062000 => return Some(0x2401C000), // CGameCtnZone*
-        0x03051000 | 0x0304E000 | 0x0304F000 | 0x03050000 => return Some(0x24005000), // CGameCtnBlockInfo*
-        _ => {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scene3d_folds() {
+        // BlueBay\GameCtnDecoration\Scene3d\Base64x64.Scene3d.Gbx, 43 folds
+        // measured 2026-09-23: the main node's is the engine special case
+        assert_eq!(dummy_write_class(0x0A003000), Some(0x0A001000));
+        assert_eq!(dummy_write_class(0x04005000), Some(0x04001000)); // GxLightAmbient : GxLight
+        assert_eq!(dummy_write_class(0x04007000), Some(0x04006000)); // GxLightDirectional : GxLightNotAmbient
+        assert_eq!(dummy_write_class(0x09005000), Some(C_PLUG)); // CPlugSolid
+        assert_eq!(dummy_write_class(0x0904F000), Some(C_PLUG)); // CPlugTree
+        assert_eq!(dummy_write_class(0x09056000), Some(C_PLUG)); // CPlugVertexStream
+        assert_eq!(dummy_write_class(0x0901E000), Some(0x0906A000)); // CPlugVisualIndexedTriangles : CPlugVisualIndexed
+        assert_eq!(dummy_write_class(0x09057000), Some(C_PLUG)); // CPlugIndexBuffer
+        assert_eq!(dummy_write_class(C_MWNOD), Some(0)); // the root folds nothing
+        assert_eq!(dummy_write_class(0x0901D000), Some(C_PLUG)); // CPlugLight (the .Light.Gbx files)
     }
-    PARENTS.iter().find(|(c, _)| *c == class_id).map(|(_, p)| *p)
+
+    #[test]
+    fn plain_struct_bodies_fold_nothing() {
+        // a parent, but an `Archive` that never reaches CMwNod::Archive
+        assert_eq!(dummy_write_class(0x2F086000), Some(0)); // CPlugVegetTreeModel
+        assert_eq!(dummy_write_class(0x09144000), Some(0)); // CPlugDynaObjectModel
+        assert_eq!(dummy_write_class(0x09145000), Some(0)); // CPlugPrefab
+        assert_eq!(dummy_write_class(0x09159000), Some(0)); // CPlugStaticObjectModel
+        // CMwNod-parented classes with the chunk loop DO fold (CMwNod's id)
+        assert_eq!(dummy_write_class(0x0303A000), Some(C_MWNOD)); // CGameCtnDecorationMood
+        assert_eq!(dummy_write_class(0x2E020000), Some(C_MWNOD)); // CGameItemPlacementParam
+        assert_eq!(dummy_write_class(0x0915C000), Some(C_MWNOD)); // CPlugFxSystem
+        // an override that tail-calls the base folds at the body start
+        assert_eq!(dummy_write_class(0x09011000), Some(C_PLUG)); // CPlugBitmap
+    }
+
+    #[test]
+    fn remapped_ids() {
+        // a CGameCtnBlockInfoClassic (file id 0x03051000) folds its parent
+        // CGameCtnBlockInfo as written in files: 0x24005000
+        assert_eq!(dummy_write_class(0x03051000), Some(0x24005000));
+        // the file spelling of a remapped class normalises back
+        assert_eq!(normalise(0x24003000), 0x03043000);
+        assert_eq!(remap(0x03043000), 0x24003000);
+        assert_eq!(dummy_write_class(0x24003000), Some(C_MWNOD)); // CGameCtnChallenge : CMwNod
+        // a CControlText (0x07031000) child folds CControlBase, the class's
+        // pre-CControlText parent; CControlText itself folds its real parent
+        assert_eq!(dummy_write_class(0x07006000), Some(0x07001000)); // CControlLabel
+        assert_eq!(dummy_write_class(0x07031000), Some(0x07001000)); // CControlText : CControlBase
+    }
 }

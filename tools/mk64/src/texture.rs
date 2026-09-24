@@ -13,6 +13,10 @@ pub struct Image {
 }
 
 impl Image {
+    /// RGB PNG bytes (alpha dropped).
+    pub fn png(&self) -> Vec<u8> {
+        mapgeom::render::png(&mapgeom::render::Image { w: self.w as usize, h: self.h as usize, rgb: self.rgba.chunks(4).flat_map(|p| [p[0], p[1], p[2]]).collect() })
+    }
     pub fn solid(w: u32, h: u32, rgba: [u8; 4]) -> Image {
         Image { w, h, rgba: rgba.iter().copied().cycle().take((w * h * 4) as usize).collect() }
     }

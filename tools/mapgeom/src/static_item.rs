@@ -28,6 +28,9 @@
 pub mod oldmat;
 pub mod vstream;
 pub mod visual;
+pub mod skin;
+pub mod skel;
+pub mod fbx;
 pub mod solid2;
 pub mod surface;
 pub mod item;
@@ -91,6 +94,8 @@ pub enum Node {
     /// `CPlugDynaObjectModel`s and their kinematic constraints).
     Prefab(prefab::CPlugPrefab),
     Dyna(dyna::CPlugDynaObjectModel),
+    /// `CPlugSkel` (0x090BA000): a skeleton — inline in a ZIP car skin (skel.rs).
+    Skel(skel::CPlugSkel),
     Kinematic(dyna::KinematicConstraint),
     /// `NPlugTrigger_SGateSpecial` (0x09179000): a gameplay gate's effect
     /// volume as a prefab entity — { version 2, trigger shape ref, u32 }, the
@@ -221,6 +226,7 @@ impl Node {
             Node::LightUserModel(_) => light::C_LIGHT_USER_MODEL,
             Node::Prefab(_) => C_PREFAB,
             Node::Dyna(_) => dyna::C_DYNA_OBJECT_MODEL,
+            Node::Skel(_) => skel::CLASS,
             Node::Kinematic(_) => dyna::C_KINEMATIC_CONSTRAINT,
             Node::GateSpecial(_) => C_GATE_SPECIAL_TRIGGER,
             Node::WaypointTrigger(_) => C_WAYPOINT_TRIGGER,
@@ -251,6 +257,7 @@ pub fn read_node(r: &mut Rd, class_id: u32) -> R<Node> {
         light::C_LIGHT_USER_MODEL => Node::LightUserModel(light::CPlugLightUserModel::parse(r)?),
         C_PREFAB => Node::Prefab(prefab::CPlugPrefab::parse_in(r)?),
         dyna::C_DYNA_OBJECT_MODEL => Node::Dyna(dyna::CPlugDynaObjectModel::parse(r)?),
+        skel::CLASS => Node::Skel(skel::CPlugSkel::parse(r)?),
         dyna::C_KINEMATIC_CONSTRAINT => Node::Kinematic(dyna::KinematicConstraint::parse(r)?),
         // Trigger-side and path classes of the gate / special prefabs: no
         // geometry, unskippable bodies. Read as the generic walker
@@ -347,6 +354,7 @@ pub fn write_node(w: &mut Wr, n: &Node) {
         Node::LightUserModel(x) => x.write(w),
         Node::Prefab(x) => x.write_in(w),
         Node::Dyna(x) => x.write(w),
+        Node::Skel(x) => x.write(w),
         Node::Kinematic(x) => x.write(w),
         Node::GateSpecial(x) => {
             w.u32(x.version);

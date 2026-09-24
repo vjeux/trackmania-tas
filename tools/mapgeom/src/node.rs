@@ -36,6 +36,10 @@ pub const C_BLOCK_ITEM: u32 = 0x2E025000;
 pub const C_CRYSTAL: u32 = 0x09003000;
 pub const C_COMMON_ITEM_ENTITY_MODEL: u32 = 0x2E027000;
 pub const C_DYNA_OBJECT: u32 = 0x09144000;
+/// `CPlugSolid`: a tree of `CPlugTree` nodes (the decoration Scene3d's island,
+/// a block variant's trigger solid); read as a redirection to its tree.
+pub const C_SOLID: u32 = 0x09005000;
+pub const C_TREE: u32 = 0x0904F000;
 
 /// Classes whose node body is a single struct with no chunk framing.
 fn no_body_chunks(class_id: u32) -> bool {
@@ -273,7 +277,84 @@ pub enum Node {
     RoadChunk(Box<crate::blockinfo::RoadChunkRaw>),
     /// `CPlugLight` or a `GxLight*` (the class id says which).
     Light(u32, Box<LightInfo>),
+    /// `CPlugTree`: one node of a `CPlugSolid`'s tree — its children, its
+    /// visual and the material (shader) it is drawn with, its local transform.
+    Tree(Box<Tree>),
+    /// `CSceneLayout` chunk 0x0A00301C: the decoration's light rig and solids.
+    Layout(Box<Layout>),
     Other(u32),
+}
+
+/// A `CPlugTree` (`0x0904F000`) node: what the decoration Scene3d solids
+/// and block trigger solids are built from (`scene3d.rs`).
+#[derive(Clone, Debug, Default)]
+pub struct Tree {
+    pub name: String,
+    pub children: Vec<i32>,
+    /// `0x0904F016`: Visual, Shader (the material), Surface, Generator.
+    pub visual: i32,
+    pub shader: i32,
+    pub surface: i32,
+    /// `0x0904F01A`: flags, and the Iso4 (3×3 rotation, translation) when
+    /// bit 2 is set.
+    pub flags: u32,
+    pub transform: Option<[f32; 12]>,
+}
+
+/// `CSceneLayout` (0x0A003000) chunk `0x0A00301C` — the decoration Scene3d:
+/// its light rig and the solids placed in the world. Layout from the
+/// reader `CSceneLayout::ArchiveChunk` 0x1407efc20 (case 0x1c at
+/// 0x1407f0554, versions ≥ 3; v5 on the current packs):
+/// `u32 version; lights[]: { Id name; Vec3 pos; Quat xyzw; u32 v; ref[3]
+/// CPlugBitmap; ref GxLight; u32 }; mobils[]: { Id name; Vec3 pos; Quat
+/// xyzw; u16; u64 flags; ref CPlugSolid; v≥4 ref 0x090BB000; v≥5 ref
+/// CPlugPrefab }; ref 0x0A040000` (DISASSEMBLY 2026-09-23; leaf readers
+/// 0x141462f40 + 0x140194a20 = pos then quat, 0x1407ef120 = the light
+/// record, 0x140155240 / 0x1404b8570 / 0x1407f0d90 = the typed refs).
+#[derive(Clone, Debug, Default)]
+pub struct Layout {
+    pub version: u32,
+    pub lights: Vec<LayoutLight>,
+    pub mobils: Vec<LayoutMobil>,
+    /// The `0x0A040000` reference after the mobils.
+    pub extra: i32,
+    /// v ≥ 2: the weather node (`DayTime.MotionManagerWeathers.Gbx`).
+    pub weather: i32,
+    /// v ≥ 2: three CPlugBitmap refs (the third is the environment cube).
+    pub env_bitmaps: [i32; 3],
+    /// v ≥ 2: an 11-float block (0x141406680) — meaning not pinned.
+    pub params: [f32; 11],
+    pub u03: [u32; 4],
+    /// v ≥ 2: a `0x0A03A000` reference.
+    pub u04: i32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct LayoutLight {
+    pub name: String,
+    pub pos: [f32; 3],
+    /// x, y, z, w
+    pub rot: [f32; 4],
+    pub version: u32,
+    pub bitmaps: [i32; 3],
+    /// The GxLight node (inline `GxLightAmbient` / `GxLightDirectional`).
+    pub light: i32,
+    pub u01: u32,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct LayoutMobil {
+    pub name: String,
+    pub pos: [f32; 3],
+    pub rot: [f32; 4],
+    /// A u16 (`Read2` 0x14012c330): 0x401 on the sky dome, 1 on the solids.
+    pub u01: u16,
+    pub flags: u64,
+    /// The `CPlugSolid` (inline for BlueBay, an external `.Solid.Gbx` for
+    /// the other collections).
+    pub solid: i32,
+    pub u02: i32,
+    pub prefab: i32,
 }
 
 impl Node {
@@ -297,6 +378,8 @@ impl Node {
             Node::Genealogy(_) => crate::blockinfo::C_ZONE_GENEALOGY,
             Node::RoadChunk(_) => crate::blockinfo::C_ROAD_CHUNK,
             Node::Light(c, _) => *c,
+            Node::Tree(_) => 0x0904F000,
+            Node::Layout(_) => 0x0A003000,
             Node::Other(c) => *c,
         }
     }
@@ -337,7 +420,15 @@ pub struct Graph<'a> {
     /// Where every chunked node body began, as (body offset, class id), in
     /// read order: the points where the game "dummy-writes" the node's parent
     /// class id into a pak file's cipher (`parents.rs`, `pakfile.rs`).
+    /// A node that begins INSIDE a skippable chunk is listed in
+    /// `node_starts_skipped` instead: the game reads such a chunk whole into
+    /// a memory buffer before parsing it, and a dummy write into a memory
+    /// buffer is a no-op (`CMwNod::Archive` 0x1402d0720, memory buffer Write
+    /// 0x140123c80), so those nodes never touch the cipher.
     pub node_starts: Vec<(usize, u32)>,
+    pub node_starts_skipped: Vec<(usize, u32)>,
+    /// How many skippable chunks the walk is currently inside.
+    skip_depth: u32,
 }
 
 const FACADE: u32 = 0xFACADE01;
@@ -352,7 +443,7 @@ impl<'a> Graph<'a> {
                 slots[i] = Slot::External(name.clone());
             }
         }
-        Graph { r: Reader::new(body), slots, root: None, seen: HashMap::new(), recovered: Vec::new(), noderef_sites: Vec::new(), skipped: Vec::new(), collector_name: String::new(), bi_stack: Vec::new(), node_starts: Vec::new() }
+        Graph { r: Reader::new(body), slots, root: None, seen: HashMap::new(), recovered: Vec::new(), noderef_sites: Vec::new(), skipped: Vec::new(), collector_name: String::new(), bi_stack: Vec::new(), node_starts: Vec::new(), node_starts_skipped: Vec::new(), skip_depth: 0 }
     }
 
     /// Parse a whole file body, rooted at `class_id`.
@@ -377,6 +468,15 @@ impl<'a> Graph<'a> {
     }
 
     /// Read a node reference. Returns the node index, or -1 for null.
+    /// An inline node whose `[i32 index][u32 class id][body]` sits at body
+    /// offset `off` — the way into a file whose outer class has no reader yet
+    /// (`scene3d.rs` walks the CPlugSolid subtrees of a CSceneLayout this way).
+    pub fn node_at_offset(&mut self, off: usize) -> R<i32> {
+        self.r.o = off;
+        self.r.mid_body = off > 0;
+        self.noderef()
+    }
+
     pub fn noderef(&mut self) -> R<i32> {
         let at = self.r.o;
         let idx = self.r.i32()?;
@@ -411,7 +511,11 @@ impl<'a> Graph<'a> {
         if no_body_chunks(class_id) {
             return self.plain_body(class_id);
         }
-        self.node_starts.push((self.r.o, class_id));
+        if self.skip_depth == 0 {
+            self.node_starts.push((self.r.o, class_id));
+        } else {
+            self.node_starts_skipped.push((self.r.o, class_id));
+        }
         let mut acc = Acc::new(class_id);
         self.bi_stack.push(crate::blockinfo::BiAcc::default());
         let walked = self.node_chunks(class_id, &mut acc);
@@ -449,7 +553,10 @@ impl<'a> Graph<'a> {
                             cid, size
                         ));
                     }
-                    self.chunk(class_id, cid, acc)?;
+                    self.skip_depth += 1;
+                    let walked = self.chunk(class_id, cid, acc);
+                    self.skip_depth -= 1;
+                    walked?;
                     // Trailing bytes inside a skippable chunk are normal (the
                     // game writes more than any one reader consumes); jump to
                     // the declared end rather than trusting our own cursor.
@@ -492,6 +599,8 @@ pub struct Acc {
     pub material_name: String,
     pub physics_id: u8,
     pub light: Option<Box<LightInfo>>,
+    pub tree: Option<Box<Tree>>,
+    pub layout: Option<Box<Layout>>,
     pub touched: bool,
 }
 
@@ -513,8 +622,15 @@ impl Acc {
             material_name: String::new(),
             physics_id: 0,
             light: None,
+            tree: None,
+            layout: None,
             touched: false,
         }
+    }
+    /// The tree accumulator, created on the first CPlugTree chunk.
+    pub fn tree_mut(&mut self) -> &mut Tree {
+        self.touched = true;
+        self.tree.get_or_insert_with(|| Box::new(Tree { visual: -1, shader: -1, surface: -1, ..Tree::default() }))
     }
     /// The light accumulator, created on the first light chunk.
     pub fn light_mut(&mut self) -> &mut LightInfo {
@@ -531,6 +647,12 @@ impl Acc {
         if let Some(l) = self.light {
             return Node::Light(class_id, l);
         }
+        if let Some(t) = self.tree {
+            return Node::Tree(t);
+        }
+        if let Some(l) = self.layout {
+            return Node::Layout(l);
+        }
         match class_id {
             C_SURFACE => Node::Surface(self.surface),
             C_SOLID2MODEL => Node::Solid2(self.solid2),
@@ -544,7 +666,7 @@ impl Acc {
                 meshes: self.crystals,
             }),
             C_VERTEX_STREAM => Node::VertexStream(self.vstream),
-            C_ITEM_MODEL | C_COMMON_ITEM_ENTITY_MODEL | C_BLOCK_ITEM => {
+            C_ITEM_MODEL | C_COMMON_ITEM_ENTITY_MODEL | C_BLOCK_ITEM | C_SOLID => {
                 Node::ItemModel(self.entity_model)
             }
             c if is_visual(c) => Node::Visual(self.visual),
@@ -581,6 +703,8 @@ pub fn node_kind_name(n: &Node) -> &'static str {
         Node::Genealogy(_) => "CGameCtnZoneGenealogy",
         Node::RoadChunk(_) => "CPlugRoadChunk",
         Node::Light(c, _) => if *c == 0x0901D000 { "CPlugLight" } else { "GxLight" },
+        Node::Tree(_) => "CPlugTree",
+        Node::Layout(_) => "CSceneLayout",
         Node::Other(_) => "other",
     }
 }

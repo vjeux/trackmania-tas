@@ -722,7 +722,11 @@ fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<St
     let new_uid = format!("MK{idx:02}{}", &old_uid[4..]);
     m.set_map_uid(&new_uid);
     let xml = tmmaps::header::user_chunks(&m.gbx.user_data).and_then(|c| tmmaps::header::header_xml(&c)).unwrap_or_default();
-    let old_name = tmmaps::header::attr_pub(&xml, "ident", "name").unwrap_or_default();
+    // the name to replace is the IDENT chunk's (0x03043003), which the body repeats —
+    // the header XML's can differ (the TMX void base: XML "128³ Day Void Base", ident
+    // "\u{feff}128³ Day Void Base Console"; the editor showed the ident's, 2026-09-23)
+    let xml_name = tmmaps::header::attr_pub(&xml, "ident", "name").unwrap_or_default();
+    let old_name = ident_name(&m.gbx.user_data, &xml_name).unwrap_or(xml_name);
     m.write_to(&t1).expect("write uid stage");
 
     // models + placements; the surplus host slots park a copy of the first item far below
@@ -804,6 +808,29 @@ fn write_map(host: &Path, out: &Path, specs: &[ItemSpec], pictures: &BTreeMap<St
     }
     if !old_name.is_empty() {
         m.set_map_name(&old_name, name);
+    }
+    // the header XML's own uid/name, which may differ from the ident chunk's
+    // (the TMX host: TMX rewrote them) — TMX/servers read the XML
+    {
+        let (uid_new, name_new) = (new_uid.clone(), name.to_string());
+        m.edit_header_xml(&|x: &str| {
+            let mut out = x.to_string();
+            if let Some(i) = out.find("<ident ") {
+                if let Some(j) = out[i..].find("/>").map(|k| k + i) {
+                    let mut tag = out[i..j].to_string();
+                    for (attr, val) in [("uid", uid_new.as_str()), ("name", name_new.as_str())] {
+                        if let Some(a) = tag.find(&format!(" {attr}=\"")) {
+                            let vs = a + attr.len() + 3;
+                            if let Some(ve) = tag[vs..].find('"').map(|k| k + vs) {
+                                tag.replace_range(vs..ve, &val.replace('&', "&amp;").replace('"', "&quot;"));
+                            }
+                        }
+                    }
+                    out.replace_range(i..j, &tag);
+                }
+            }
+            Some(out)
+        });
     }
     // multilap: chunk 0x03043018 (IsLapRace, NbLaps) and the header's nblaps
     {
@@ -908,4 +935,64 @@ pub fn material_images(mesh: &Mesh, assets: &AssetIndex, rom: &mut Rom) -> (Hash
         }
     }
     (out, missing)
+}
+
+/// The map name as the ident header chunk (0x03043003) spells it: the first
+/// length-prefixed UTF-8 string in that chunk that contains the XML name's
+/// first characters (BOM and suffixes included), when there is one.
+fn ident_name(user_data: &[u8], xml_name: &str) -> Option<String> {
+    let chunks = tmmaps::header::user_chunks(user_data)?;
+    let c = chunks.iter().find(|c| c.id == 0x0304_3003)?;
+    let key: String = xml_name.chars().take(6).collect();
+    if key.is_empty() {
+        return None;
+    }
+    let b = &c.data;
+    let mut i = 0usize;
+    while i + 4 <= b.len() {
+        let n = u32::from_le_bytes(b[i..i + 4].try_into().unwrap()) as usize;
+        if n >= 1 && n <= 256 && i + 4 + n <= b.len() {
+            if let Ok(t) = std::str::from_utf8(&b[i + 4..i + 4 + n]) {
+                if t.contains(&key) {
+                    return Some(t.to_string());
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `mk64 build-all --host MAP --out-dir DIR [build flags…]`: every race course
+/// (the 16 with an official lap length; battle courses skipped) as
+/// `DIR/MK64 <Title>.Map.Gbx`, the other flags passed through to `build`.
+pub fn cmd_build_all(args: &[String]) {
+    let out_dir = PathBuf::from(flag(args, "--out-dir").expect("--out-dir DIR"));
+    std::fs::create_dir_all(&out_dir).expect("create --out-dir");
+    let mut passthrough: Vec<String> = Vec::new();
+    let mut i = 2;
+    while i < args.len() {
+        if args[i] == "--out-dir" {
+            i += 2;
+            continue;
+        }
+        passthrough.push(args[i].clone());
+        i += 1;
+    }
+    let mut built = 0;
+    for (dir, title, laps) in course::COURSES {
+        if laps.is_none() {
+            continue;
+        }
+        let file_title = title.replace('\'', "");
+        let out = out_dir.join(format!("MK64 {file_title}.Map.Gbx"));
+        let mut a: Vec<String> = vec!["mk64".into(), "build".into(), dir.to_string()];
+        a.extend(passthrough.iter().cloned());
+        a.push("--out".into());
+        a.push(out.to_string_lossy().into_owned());
+        println!("=== {dir} → {}", out.display());
+        cmd_build(&a);
+        built += 1;
+    }
+    println!("built {built} maps into {}", out_dir.display());
 }

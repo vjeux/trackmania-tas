@@ -72,9 +72,12 @@ fn main() {
         "courses" => cmd_courses(&args),
         "stats" => cmd_stats(&args),
         "textures" => cmd_textures(&args),
+        "sprites" => cmd_sprites(&args),
+        "skins" => mk64::skins::cmd(&args, &decomp_dir(&args), &rom_path(&args).expect("--rom FILE ($MK64_ROM)")),
         "texture" => cmd_texture(&args),
         "render" => cmd_render(&args),
         "build" => mk64::tm::cmd_build(&args),
+        "build-all" => mk64::tm::cmd_build_all(&args),
         _ => {
             eprintln!("{USAGE}");
             std::process::exit(2);
@@ -333,4 +336,48 @@ fn cmd_texture(args: &[String]) {
             Err(e) => println!("{sym}: {e}"),
         }
     }
+}
+
+/// `mk64 sprites CHAR --out DIR [--frames A-B] [--scale N]`: contact sheets of a
+/// character's kart sprite frames, select faces and portrait (to pick the
+/// view angles the car skins use).
+fn cmd_sprites(args: &[String]) {
+    let stem = args.get(2).cloned().expect("mk64 sprites CHAR --out DIR");
+    let out = PathBuf::from(flag(args, "--out").expect("--out DIR"));
+    std::fs::create_dir_all(&out).expect("create out dir");
+    let decomp = decomp_dir(args);
+    let rom_path = rom_path(args).expect("--rom FILE ($MK64_ROM)");
+    let mut rom = mk64::texture::Rom::load(&rom_path).expect("rom");
+    let assets = mk64::texture::AssetIndex::load(&decomp).expect("asset index");
+    let scale: u32 = flag(args, "--scale").and_then(|s| s.parse().ok()).unwrap_or(2);
+    let (a, b) = flag(args, "--frames")
+        .and_then(|s| s.split_once('-'))
+        .and_then(|(a, b)| Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?)))
+        .unwrap_or((0, 41));
+    let face_stem = mk64::sprites::CHARACTERS.iter().find(|(s, _, _)| *s == stem).map(|(_, f, _)| *f).unwrap_or(stem.as_str());
+    let ks = mk64::sprites::KartSprites::load(&decomp, &stem, face_stem).expect("kart sprites");
+    println!("{stem}: {} kart frames, {} faces", ks.frame_count(), ks.face_count());
+    let mut frames = Vec::new();
+    for i in a..=b.min(ks.frame_count().saturating_sub(1)) {
+        match ks.frame(&rom, i) {
+            Ok(img) => frames.push(img),
+            Err(e) => println!("  frame {i}: {e}"),
+        }
+    }
+    let sheet = mk64::sprites::contact_sheet(&frames, 7, scale);
+    std::fs::write(out.join(format!("{stem}_frames_{a}-{b}.png")), sheet.png()).expect("write sheet");
+    let mut faces = Vec::new();
+    for i in 0..ks.face_count() {
+        if let Ok(img) = ks.face(&rom, i) {
+            faces.push(img);
+        }
+    }
+    if !faces.is_empty() {
+        std::fs::write(out.join(format!("{stem}_faces.png")), mk64::sprites::contact_sheet(&faces, 6, scale).png()).expect("write faces");
+    }
+    match ks.portrait(&mut rom, &assets) {
+        Ok(p) => std::fs::write(out.join(format!("{stem}_portrait.png")), mk64::sprites::contact_sheet(&[p], 1, scale * 2).png()).expect("write portrait"),
+        Err(e) => println!("  portrait: {e}"),
+    }
+    println!("wrote sheets to {}", out.display());
 }

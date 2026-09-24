@@ -24,6 +24,9 @@ COMMANDS
   dump <path> [--body F]        walk a file's node graph and summarise it;
                                 --body writes the decompressed body out
   model <path> --out F          a single file's geometry, as .glb or .obj
+  scene3d <path> --out F.obj    a decoration Scene3d (<Coll>\\GameCtnDecoration\\Scene3d\\
+                                Base64x64.Scene3d.Gbx): its island / sea /
+                                shadow-caster solids, grouped by material name
   constraint <path>             a .KinematicConstraint.Gbx, every anim sub-function (ease, reverse, ms)
   static-item <prefab-or-item> --out F --ident NAME.Item.Gbx --author X
       [--scale 0.5] [--collection 26]
@@ -1422,7 +1425,7 @@ fn main() {
                     Ok(m) => {
                         let s = m.stats();
                         let lods: Vec<String> = m.lods.iter().map(|l| format!("{}", l.iter().map(|e| format!("{}v", e.visual.main.as_ref().map(|mm| mm.count).unwrap_or(0))).collect::<Vec<_>>().join("+"))).collect();
-                        println!("{p}: {} levels [{}] switch {:?} far {} ; {} materials ({}); hull {} verts {} tris; bottom {:.2} top {:.2} (height {:.2}) radius {:.2} m", m.lods.len(), lods.join(" | "), m.switch, m.far, m.materials.len(), m.materials.iter().map(|mt| format!("{}{}", mt.name, if mt.leaf { "*" } else { "" })).collect::<Vec<_>>().join(", "), m.hull_vertices.len(), m.hull_triangles.len(), s.bottom, s.top, s.top - s.bottom, s.radius);
+                        println!("{p}: {} levels [{}] switch {:?} far {} ; {} materials ({}); hull {} verts {} tris; bottom {:.2} top {:.2} (height {:.2}) radius {:.2} m; instance variation: scale 1-(k/7)*{} tilt +-{} deg random yaw {}", m.lods.len(), lods.join(" | "), m.switch, m.far, m.materials.len(), m.materials.iter().map(|mt| format!("{}{}", mt.name, if mt.leaf { "*" } else { "" })).collect::<Vec<_>>().join(", "), m.hull_vertices.len(), m.hull_triangles.len(), s.bottom, s.top, s.top - s.bottom, s.radius, m.scale_var01, m.angle_max_rot_xz_deg, m.enable_random_rotation_y);
                         if brief {
                             continue;
                         }
@@ -1719,6 +1722,188 @@ fn main() {
                 }
             }
         }
+        // veget-instances MAP [--no-rotation]: every vegetation ITEM of the map
+        // (a placement whose model is a pack .Item.Gbx referencing
+        // .VegetTreeModel.Gbx files), resolved to the species its variant byte
+        // names and to the FOREST INSTANCE the game creates for it: the pose
+        // hash, the scale draw, the yaw/tilt draws (veget_instance.rs — the exact
+        // chain 0x03101002 fields -> 0x140d8d5f0 -> 0x141081910 -> 0x14026b4f0).
+        // TSV: item, model, variant, species, pos, item yaw, quaternion after the
+        // variation (w,x,y,z), scale, seed, yaw / tilt x / tilt z draws (radians).
+        "veget-instances" => {
+            let mut store = open(&a);
+            let map = a.rest.get(1).cloned().unwrap_or_else(|| die("veget-instances MAP [--no-rotation]".into()));
+            let with_rotation = !a.rest.iter().any(|x| x == "--no-rotation");
+            // --runtime FILE: the GhostShooter /treeinst dump (i model flag qw qx qy qz x y z scale)
+            // of the same map — every computed instance is matched by position and its
+            // quaternion + scale compared BIT FOR BIT (the two must be identical f32s)
+            let runtime = flag(&a.rest, "--runtime");
+            let mut computed: Vec<([f32; 3], [f32; 4], f32, String)> = Vec::new();
+            let source = tmmaps::map::MapFile::load(std::path::Path::new(&map));
+            let mut species_cache: std::collections::BTreeMap<String, Result<Vec<String>, String>> = Default::default();
+            let mut params_cache: std::collections::BTreeMap<String, Result<mapgeom::veget_instance::TreeParams, String>> = Default::default();
+            if runtime.is_none() {
+                println!("item\tmodel\tvariant\tspecies\tx\ty\tz\titem_yaw\tqw\tqx\tqy\tqz\tscale\tseed\tyaw\ttilt_x\ttilt_z");
+            }
+            for (i, it) in source.items.iter().enumerate() {
+                let list = species_cache
+                    .entry(it.model.clone())
+                    .or_insert_with(|| {
+                        let file = mapgeom::tiny_library::find_item_file(&store, &it.model).ok_or_else(|| format!("no pack item {}", it.model))?;
+                        mapgeom::veget::item_species(&mut store, &file)
+                    })
+                    .clone();
+                let Ok(list) = list else { continue };
+                if list.is_empty() {
+                    continue;
+                }
+                let v = it.variant() as usize;
+                let Some(species) = list.get(v).or_else(|| list.first()) else { continue };
+                let params = params_cache
+                    .entry(species.clone())
+                    .or_insert_with(|| {
+                        mapgeom::veget::parse_tree_model(&mut store, species).map(|m| mapgeom::veget_instance::TreeParams { scale_var01: m.scale_var01, angle_max_rot_xz_deg: m.angle_max_rot_xz_deg, enable_random_rotation_y: m.enable_random_rotation_y != 0 })
+                    })
+                    .clone();
+                let params = match params {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("{species}: {e}");
+                        continue;
+                    }
+                };
+                let (q1, t, seed) = mapgeom::veget_instance::item_pose(it.yaw, it.pitch, it.roll, it.pos, it.pivot);
+                let inst = mapgeom::veget_instance::variation(q1, t, seed, params, with_rotation);
+                let stem = species.rsplit('\\').next().unwrap_or(species).trim_end_matches(".VegetTreeModel.Gbx");
+                let (yaw, tx, tz) = inst.rotation.map(|(a, b, c)| (a.to_string(), b.to_string(), c.to_string())).unwrap_or_else(|| ("-".into(), "-".into(), "-".into()));
+                if runtime.is_none() {
+                    println!("i{i}\t{}\t{}\t{stem}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:08x}\t{yaw}\t{tx}\t{tz}", it.model, v, t[0], t[1], t[2], it.yaw, inst.quat[0], inst.quat[1], inst.quat[2], inst.quat[3], inst.scale, inst.seed);
+                }
+                computed.push((t, inst.quat, inst.scale, format!("i{i} {} v{v} {stem}", it.model)));
+            }
+            if let Some(rt) = runtime {
+                mapgeom::veget_instance::compare_runtime(&computed, &rt);
+            }
+        }
+        // veget-slots --collection BlueBay [ZONE...]: every vegetation slot of
+        // the collection's zone tiles (the block infos the zone genealogy
+        // regenerates — Flat / Frontier / Transition families), resolved to
+        // the VegetTreeModels its tags match in the placement-group items
+        // (Items\Vegetation\<Placement>.Item.Gbx, an NPlugItem::SVariantList).
+        // TSV: zone, variant, prefab, slot, x, y, z, yaw°, tags, candidates.
+        "veget-slots" => {
+            let mut store = open(&a);
+            let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "BlueBay".to_string());
+            let only: Vec<String> = a.rest.iter().skip(1).filter(|x| !x.starts_with("--") && **x != coll).cloned().collect();
+            let zones: Vec<String> = store
+                .entries()
+                .map(|e| e.path())
+                .filter(|p| p.starts_with(&format!("{coll}\\GameCtnBlockInfo\\GameCtnBlockInfo")) && (p.contains("\\GameCtnBlockInfoFlat\\") || p.contains("\\GameCtnBlockInfoFrontier\\") || p.contains("\\GameCtnBlockInfoTransition\\")))
+                .filter(|p| only.is_empty() || only.iter().any(|z| p.rsplit('\\').next().map(|f| f.starts_with(&format!("{z}."))).unwrap_or(false)))
+                .collect();
+            // the placement groups: Placement tag value -> [(tags, model path)]
+            let mut groups: std::collections::BTreeMap<String, Vec<(Vec<(String, String)>, String)>> = Default::default();
+            let group_paths: Vec<String> = store.entries().map(|e| e.path()).filter(|p| p.starts_with(&format!("{coll}\\Items\\Vegetation\\")) && p.ends_with(".Item.Gbx")).collect();
+            for gp in &group_paths {
+                let m = match store.load_model(gp) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                let mut lb = mapgeom::static_item::LookbackState::default();
+                lb.defined_nodes.extend(m.external_indices().iter().copied());
+                let mut r = mapgeom::static_item::Rd::new(&m.body, 0, lb);
+                let item = match mapgeom::static_item::item::CGameItemModel::parse(&mut r) {
+                    Ok(i) => i,
+                    Err(_) => continue,
+                };
+                let Some(mc) = item.model() else { continue };
+                let Some(mapgeom::static_item::Node::VariantList(vl)) = mc.entity_model.inline.as_deref() else { continue };
+                let stem = gp.rsplit('\\').next().unwrap_or(gp).trim_end_matches(".Item.Gbx").to_string();
+                let list = groups.entry(stem).or_default();
+                for v in &vl.variants {
+                    let model = m.externals.iter().find(|(k, _)| *k as i32 == v.model.index).map(|(_, p)| p.clone()).unwrap_or_else(|| format!("node {}", v.model.index));
+                    list.push((v.tags.clone(), model));
+                }
+            }
+            println!("zone\tvariant\tprefab\tslot\tx\ty\tz\tyaw_deg\ttags\tcandidates");
+            for zp in &zones {
+                let bi = match mapgeom::blockinfo::load(&mut store, zp) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("{zp}: {e}");
+                        continue;
+                    }
+                };
+                let zone = zp.rsplit('\\').next().unwrap_or(zp).split('.').next().unwrap_or("").to_string();
+                let mut variants: Vec<(&mapgeom::blockinfo::Variant, String)> = Vec::new();
+                if let Some(v) = &bi.variant_base_ground {
+                    variants.push((v, "ground".into()));
+                }
+                for (i, v) in bi.additional_ground.iter().enumerate() {
+                    variants.push((v, format!("ground+{}", i + 1)));
+                }
+                if let Some(v) = &bi.variant_base_air {
+                    variants.push((v, "air".into()));
+                }
+                for (i, v) in bi.additional_air.iter().enumerate() {
+                    variants.push((v, format!("air+{}", i + 1)));
+                }
+                for (v, label) in variants {
+                    for layer in &v.mobils {
+                        for mb in layer {
+                            let Some(pp) = &mb.prefab else { continue };
+                            let pm = match store.load_model(pp) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    eprintln!("{pp}: {e}");
+                                    continue;
+                                }
+                            };
+                            let pf = match mapgeom::static_item::prefab::CPlugPrefab::from_model(&pm) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    eprintln!("{pp}: {e}");
+                                    continue;
+                                }
+                            };
+                            for (i, e) in pf.ents.iter().enumerate() {
+                                if e.params_id != 0x2F0A9000 {
+                                    continue;
+                                }
+                                let mut r = mapgeom::crystal_model::Rd::new(&e.params, 0, Default::default());
+                                let _v = r.u32().unwrap_or(0);
+                                let _k = r.i32().unwrap_or(0);
+                                let tag_groups: Vec<Vec<(String, String)>> = r.array(|r| r.array(|r| Ok((r.string()?, r.string()?)))).unwrap_or_default();
+                                // Options = alternative tag sets; a variant qualifies when its
+                                // tags carry every tag of one option (the Placement tag names the
+                                // group in BlueBay's files; RedIsland's slots have none and are
+                                // matched across every group item)
+                                let mut cands: Vec<String> = Vec::new();
+                                for option in &tag_groups {
+                                    for list in groups.values() {
+                                        for (vt, model) in list {
+                                            if option.iter().all(|w| vt.iter().any(|t| t == w)) {
+                                                let name = model.rsplit('\\').next().unwrap_or(model).trim_end_matches(".VegetTreeModel.Gbx").to_string();
+                                                if !cands.contains(&name) {
+                                                    cands.push(name);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                let tags: Vec<(String, String)> = tag_groups.iter().flatten().cloned().collect();
+                                // yaw about +Y from the quaternion (x, y, z, w)
+                                let [qx, qy, qz, qw] = e.rot;
+                                let yaw = (2.0 * (qw * qy + qx * qz)).atan2(1.0 - 2.0 * (qy * qy + qz * qz)).to_degrees();
+                                let tag_s: Vec<String> = tag_groups.iter().map(|g| g.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(",")).collect();
+                                let _ = &tags;
+                                println!("{zone}\t{label}\t{}\t{i}\t{:.3}\t{:.3}\t{:.3}\t{:.1}\t{}\t{}", pp.rsplit('\\').next().unwrap_or(pp), e.pos[0], e.pos[1], e.pos[2], yaw, tag_s.join("|"), cands.join(";"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // prefab-ents <pack .Prefab.Gbx>: every entity of a prefab — model
         // class (or external file), position, rotation, params chunk id and
         // size — the layout an item in prefab form has to reproduce.
@@ -1735,6 +1920,15 @@ fn main() {
                         None => model.externals.iter().find(|(k, _)| *k as i32 == e.model.index).map(|(_, p)| format!("external {p}")).unwrap_or_else(|| format!("node {}", e.model.index)),
                     };
                     println!("  entity {i}: {what} pos {:?} rot {:?} params_id {} ({} bytes) u01 {} bytes", e.pos, e.rot, e.params_id, e.params.len(), e.u01.len());
+                    // NPlugItemPlacement_SPlacement: version, i32, [[ (key, value) ]] — the
+                    // zone vegetation names its species here (the model ref is null)
+                    if e.params_id == 0x2F0A9000 {
+                        let mut r = mapgeom::crystal_model::Rd::new(&e.params, 0, Default::default());
+                        let v = r.u32().unwrap_or(0);
+                        let k = r.i32().unwrap_or(0);
+                        let groups: Vec<Vec<(String, String)>> = r.array(|r| r.array(|r| Ok((r.string()?, r.string()?)))).unwrap_or_default();
+                        println!("           SPlacement v{v} {k} {groups:?}");
+                    }
                     // the trigger structs' own bytes (NPlugTrigger_SWaypoint
                     // {version, type, shape ref, NoRespawn}, SSpawn, 0x0917B000):
                     // small plain bodies whose every word means something
@@ -1788,6 +1982,27 @@ fn main() {
             let mut c = mapgeom::geom::Collector::new(&mut store);
             c.model(&loaded, &mapgeom::geom::IDENTITY, 0);
             report(&c.stats, &c.scene);
+            write_scene(&c.scene, &out);
+        }
+        // the decoration Scene3d's solids (island, sea, shadow casters) as one
+        // OBJ, grouped by material name — the baker's `--decoration` input
+        "scene3d" => {
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let out = flag(&a.rest, "--out").unwrap_or_else(|| "scene3d.obj".to_string());
+            let mut c = mapgeom::geom::Collector::new(&mut store);
+            let r = mapgeom::scene3d::collect(&mut c, &p).unwrap_or_else(die);
+            for (idx, name, tris) in &r.solids {
+                if *idx >= 0 {
+                    println!("  solid node {idx} {name:?}: {tris} triangles");
+                } else {
+                    println!("  external solid {name}: {tris} triangles");
+                }
+            }
+            for (name, tris, bb) in &r.groups {
+                println!("  group {name}: {tris} triangles, x {:.1}..{:.1} y {:.1}..{:.1} z {:.1}..{:.1}", bb[0], bb[3], bb[1], bb[4], bb[2], bb[5]);
+            }
+            println!("  {} triangles in all", r.triangles);
             write_scene(&c.scene, &out);
         }
         "collhash" => {
@@ -3552,6 +3767,27 @@ fn describe(n: &Node) -> String {
             "CPlugRoadChunk v{} {:?} points {}/{}/{}/{} id {:?}/{:?} left {:?}..{:?} right {:?}..{:?}",
             r.version, (r.u01, r.u02), r.u03.len(), r.u04.len(), r.u05.len(), r.u07.len(), r.u14, r.u17,
             r.u04.first(), r.u04.last(), r.u05.first(), r.u05.last()
+        ),
+        Node::Layout(l) => {
+            let mut s = format!("CSceneLayout v{} {} lights, {} mobils, extra {}", l.version, l.lights.len(), l.mobils.len(), l.extra);
+            for (i, li) in l.lights.iter().enumerate() {
+                s.push_str(&format!(
+                    "\n      light {i} {:?} pos [{:.3}, {:.3}, {:.3}] rot xyzw [{:.4}, {:.4}, {:.4}, {:.4}] v{} bitmaps {:?} light node {} u01 {}",
+                    li.name, li.pos[0], li.pos[1], li.pos[2], li.rot[0], li.rot[1], li.rot[2], li.rot[3], li.version, li.bitmaps, li.light, li.u01
+                ));
+            }
+            for (i, m) in l.mobils.iter().enumerate() {
+                s.push_str(&format!(
+                    "\n      mobil {i} {:?} pos [{:.3}, {:.3}, {:.3}] rot xyzw [{:.4}, {:.4}, {:.4}, {:.4}] u01 {} flags 0x{:x} solid node {} u02 {} prefab {}",
+                    m.name, m.pos[0], m.pos[1], m.pos[2], m.rot[0], m.rot[1], m.rot[2], m.rot[3], m.u01, m.flags, m.solid, m.u02, m.prefab
+                ));
+            }
+            s
+        }
+        Node::Tree(t) => format!(
+            "CPlugTree {:?} children {:?} visual {} shader {} surface {} flags 0x{:x} transform {}",
+            t.name, t.children, t.visual, t.shader, t.surface, t.flags,
+            t.transform.map(|m| format!("rot {:?} pos [{}, {}, {}]", &m[..9], m[9], m[10], m[11])).unwrap_or_else(|| "-".into())
         ),
         Node::Light(c, l) => {
             if *c == 0x0901D000 {

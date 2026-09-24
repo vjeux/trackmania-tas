@@ -145,8 +145,33 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
     // Every merged PART's lightmap atlas into its own cell (see
     // `repack_lightmap_parts`); TINY_LIGHTMAP_REPACK=0 keeps the overlap.
     if std::env::var("TINY_LIGHTMAP_REPACK").map(|v| v != "0").unwrap_or(true) {
-        if let Some(n) = repack_lightmap_parts(&mut pre) {
+        // a solid visual without a lightmap uv in an item that has one elsewhere gets a planar chart of
+        // its own (its own part → its own cell below); the game does not chart a visual without
+        // TexCoord1 at all — a bush-bearing hill's slopes took whatever its cards' cell held (2026-09-23)
+        if !super::build::card_uv1_legacy() {
+            synthesize_solid_uv1(&mut pre, m);
+        }
+        // the parts made only of cut-out cards (a light weight in the repack)
+        let is_card_mat = |mi: usize| m.materials.get(mi).map(|mat| mat.link().map(|l| l.is_empty()).unwrap_or(true) && mat.main.as_ref().map(|mm| mm.user_textures.iter().any(|t| t.u01 == 1)).unwrap_or(false)).unwrap_or(false);
+        let card_parts: std::collections::HashSet<u32> = {
+            let mut all: std::collections::HashMap<u32, bool> = Default::default();
+            for v in pre.iter() { let e = all.entry(v.part).or_insert(true); *e = *e && is_card_mat(v.material); }
+            all.into_iter().filter(|(_, c)| *c).map(|(p, _)| p).collect()
+        };
+        if let Some(n) = repack_lightmap_parts_weighted(&mut pre, &card_parts) {
             REPACK_NOTE.with(|c| c.set(Some(n)));
+        }
+        if std::env::var_os("MAPGEOM_UV1_DEBUG").is_some() {
+            use super::vstream::{Elem, N_TEXCOORD0};
+            for (vi, mv) in pre.iter().enumerate() {
+                let Some(s) = mv.visual.stream() else { continue };
+                let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { eprintln!("uv1 debug: visual {vi} part {:#x} mat {} lod {:#x}: no uv1", mv.part, mv.material, mv.lod_mask); continue };
+                if let Elem::Float2(uv) = &s.elems[i] {
+                    let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                    for p in uv { for k in 0..2 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+                    eprintln!("uv1 debug: visual {vi} part {:#x} mat {} lod {:#x}: uv1 ({:.3},{:.3})..({:.3},{:.3}) over {} verts", mv.part, mv.material, mv.lod_mask, lo[0], lo[1], hi[0], hi[1], uv.len());
+                }
+            }
         }
     }
     // TINY_LIGHTMAP_FILL=1 (probe, 2026-09-12, the shadow-seam "one tone per
@@ -161,6 +186,9 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
     if std::env::var("TINY_LIGHTMAP_FILL").map(|v| v == "1").unwrap_or(false) {
         fill_scale = fill_lightmap_atlas(&mut pre);
     }
+    // The PreLightGen bounds (u04) must cover EVERY visual's uv1 — the game maps uv1 through the chart's
+    // ST built from them, so anything outside lands in the neighbouring items' atlas rects (2026-09-23).
+    let uv1_union: Option<[f32; 4]> = if super::build::card_uv1_legacy() { None } else { uv1_bounds(&pre) };
     harmonize_layouts_with(&mut pre, &want_tangents);
     let visuals = coalesce(&pre);
     // Only the materials some visual draws with, in first-use order (the
@@ -291,6 +319,13 @@ pub fn build_solid2(m: &Merged, opts: &BuildOpts, next: &mut i32) -> R<CPlugSoli
             pl.u04[1] = bounds[1];
             pl.u04[2] = bounds[2];
             pl.u04[3] = bounds[3];
+        } else if let Some(b) = uv1_union {
+            // the union of every visual's uv1 (block mesh AND vegetation cards, after the part repack),
+            // never narrower than what the source declared
+            pl.u04[0] = pl.u04[0].min(b[0]);
+            pl.u04[1] = pl.u04[1].min(b[1]);
+            pl.u04[2] = pl.u04[2].max(b[2]);
+            pl.u04[3] = pl.u04[3].max(b[3]);
         }
         // TINY_LIGHTMAP_U02=measured (probe, 2026-09-12): the scale word from the
         // geometry itself, the same metres-per-uv rule for every item.
@@ -687,6 +722,163 @@ pub fn header_chunks(opts: &BuildOpts) -> Vec<super::file::HeaderChunk> {
 }
 
 
+/// A TexCoord1 for every SOLID visual that has none, when some visual of the item does have one: a
+/// planar projection of the visual's positions onto the plane of its two largest bbox extents,
+/// normalised to [0.001, 0.999]², under a fresh part id (`SOLID_PART_BASE` + k) so the repack
+/// gives it a cell of its own. A cut-out (card) material's visual is left to the card path. The
+/// game charts only visuals with TexCoord1; without one, a hill's slopes sampled the corner texel
+/// of its chart — the leaf-card cell (the hill test map, 2026-09-23). Returns how many were given one.
+pub fn synthesize_solid_uv1(visuals: &mut [super::merged::MergedVisual], m: &super::merged::Merged) -> usize {
+    use super::vstream::{Decl, Elem, N_POSITION, N_TEXCOORD0, SPACE_LOCAL3D, T_FLOAT2};
+    let has_uv1 = |v: &super::merged::MergedVisual| v.visual.stream().map(|s| s.decls.iter().any(|d| d.name() == N_TEXCOORD0 + 1)).unwrap_or(false);
+    if !visuals.iter().any(|v| has_uv1(v)) {
+        return 0;
+    }
+    let is_card = |v: &super::merged::MergedVisual| m.materials.get(v.material).map(|mat| mat.link().map(|l| l.is_empty()).unwrap_or(true) && mat.main.as_ref().map(|mm| mm.user_textures.iter().any(|t| t.u01 == 1)).unwrap_or(false)).unwrap_or(false);
+    let mut next_part = visuals.iter().map(|v| v.part).max().unwrap_or(0).max(super::merged::SOLID_PART_BASE) + 1;
+    let mut n_done = 0usize;
+    for mv in visuals.iter_mut() {
+        if has_uv1(mv) || is_card(mv) {
+            continue;
+        }
+        // the index list first (the unweld below rewrites it)
+        let Some(ib) = mv.visual.index_buffer.as_ref() else { continue };
+        let idx: Vec<u32> = ib.indices.clone();
+        if idx.len() < 3 { continue; }
+        let Some(main) = mv.visual.main.as_mut() else { continue };
+        let Some(super::Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { continue };
+        let Some(pi) = s.decls.iter().position(|d| d.name() == N_POSITION) else { continue };
+        let Elem::Float3(pos) = &s.elems[pi] else { continue };
+        if pos.is_empty() { continue; }
+        // BOX UNWRAP: every triangle goes to the group of its face normal's dominant axis (±x ±y ±z), each
+        // group is projected onto its perpendicular plane and laid in one cell of a 3×2 grid of the unit
+        // square — no two faces share texels (a plain planar map put a cliff's front and back faces on
+        // top of each other and the editor's bake left both near black, 2026-09-23). Vertices are unwelded
+        // (three per triangle) so each face can carry its own uv1.
+        let ntri = idx.len() / 3;
+        let mut group: Vec<usize> = Vec::with_capacity(ntri);
+        for t in 0..ntri {
+            let p: Vec<[f32; 3]> = (0..3).map(|k| pos.get(idx[t * 3 + k] as usize).copied().unwrap_or([0.0; 3])).collect();
+            let e1 = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
+            let e2 = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
+            let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+            let ax = if n[0].abs() >= n[1].abs() && n[0].abs() >= n[2].abs() { 0 } else if n[1].abs() >= n[2].abs() { 1 } else { 2 };
+            group.push(ax * 2 + if n[ax] >= 0.0 { 0 } else { 1 });
+        }
+        // per group: the projected bounds
+        let plane = |ax: usize| -> (usize, usize) { match ax { 0 => (2, 1), 1 => (0, 2), _ => (0, 1) } };
+        let mut gb: Vec<[f32; 4]> = vec![[f32::MAX, f32::MAX, f32::MIN, f32::MIN]; 6];
+        for t in 0..ntri {
+            let g = group[t];
+            let (ax, ay) = plane(g / 2);
+            for k in 0..3 {
+                let p = pos.get(idx[t * 3 + k] as usize).copied().unwrap_or([0.0; 3]);
+                let b = &mut gb[g];
+                b[0] = b[0].min(p[ax]); b[1] = b[1].min(p[ay]); b[2] = b[2].max(p[ax]); b[3] = b[3].max(p[ay]);
+            }
+        }
+        // the cells: the groups in use, side by side (up to 6 → 3×2)
+        let used: Vec<usize> = (0..6).filter(|g| group.iter().any(|x| x == g)).collect();
+        let cols = if used.len() <= 1 { 1 } else if used.len() <= 4 { 2 } else { 3 };
+        let rows = (used.len() + cols - 1) / cols;
+        let (cw, ch) = (1.0 / cols as f32, 1.0 / rows as f32);
+        let margin = 0.004f32;
+        // the unwelded stream: every element gathered per index, plus the new TexCoord1
+        let n_new = idx.len();
+        let mut uv1: Vec<[f32; 2]> = Vec::with_capacity(n_new);
+        for t in 0..ntri {
+            let g = group[t];
+            let ci = used.iter().position(|x| *x == g).unwrap_or(0);
+            let (cx, cy) = ((ci % cols) as f32 * cw + margin, (ci / cols) as f32 * ch + margin);
+            let (iw, ih) = (cw - 2.0 * margin, ch - 2.0 * margin);
+            let (ax, ay) = plane(g / 2);
+            let b = gb[g];
+            let (ex, ey) = ((b[2] - b[0]).max(1e-4), (b[3] - b[1]).max(1e-4));
+            // uniform scale inside the cell, centred
+            let sc = (iw / ex).min(ih / ey);
+            let (ox, oy) = (cx + (iw - ex * sc) * 0.5, cy + (ih - ey * sc) * 0.5);
+            for k in 0..3 {
+                let p = pos.get(idx[t * 3 + k] as usize).copied().unwrap_or([0.0; 3]);
+                uv1.push([ox + (p[ax] - b[0]) * sc, oy + (p[ay] - b[1]) * sc]);
+            }
+        }
+        let gather = |e: &Elem| -> Elem {
+            match e {
+                Elem::Float2(v) => Elem::Float2(idx.iter().map(|&i| v.get(i as usize).copied().unwrap_or([0.0; 2])).collect()),
+                Elem::Float3(v) => Elem::Float3(idx.iter().map(|&i| v.get(i as usize).copied().unwrap_or([0.0; 3])).collect()),
+                Elem::Float4(v) => Elem::Float4(idx.iter().map(|&i| v.get(i as usize).copied().unwrap_or([0.0; 4])).collect()),
+                Elem::Word(v) => Elem::Word(idx.iter().map(|&i| v.get(i as usize).copied().unwrap_or(0)).collect()),
+                Elem::Raw { size, bytes } => Elem::Raw { size: *size, bytes: idx.iter().flat_map(|&i| { let o = i as usize * *size; bytes.get(o..o + *size).map(|b| b.to_vec()).unwrap_or_else(|| vec![0; *size]) }).collect() },
+            }
+        };
+        let new_elems: Vec<Elem> = s.elems.iter().map(gather).collect();
+        let compress = s.compress_local3d.unwrap_or(false);
+        let old_stride: u32 = s.decls.iter().map(|d| super::vstream::type_size(d.stored_type(compress)).unwrap_or(4) as u32).sum();
+        let stride = old_stride + 8;
+        let mut decls: Vec<Decl> = Vec::new();
+        let mut offset = 0u32;
+        for d in &s.decls {
+            decls.push(Decl::with_stride(d.name(), d.ty(), d.space(), offset, stride / 4));
+            offset += super::vstream::type_size(d.stored_type(compress)).unwrap_or(4) as u32;
+        }
+        decls.push(Decl::with_stride(N_TEXCOORD0 + 1, T_FLOAT2, SPACE_LOCAL3D, offset, stride / 4));
+        s.decls = decls;
+        s.elems = new_elems;
+        s.elems.push(Elem::Float2(uv1));
+        s.count = n_new as i32;
+        // the visual's own vertex count and its index list (now 0..n)
+        main.count = n_new as i32;
+        if let Some(ib) = mv.visual.index_buffer.as_mut() {
+            ib.indices = (0..n_new as u32).collect();
+        }
+        mv.part = next_part;
+        next_part += 1;
+        n_done += 1;
+    }
+    n_done
+}
+
+/// The unit square split into one rectangle per weight by recursive bisection (sorted by weight, the
+/// list split where the weight sums balance, the rectangle split along its longer side in that ratio).
+/// Returned as `[x, y, w, h]` in the order of `weights`.
+pub fn weighted_cells(weights: &[f64]) -> Vec<[f64; 4]> {
+    let n = weights.len();
+    let mut out = vec![[0.0, 0.0, 1.0, 1.0]; n];
+    if n == 0 {
+        return out;
+    }
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|a, b| weights[*b].partial_cmp(&weights[*a]).unwrap_or(std::cmp::Ordering::Equal));
+    fn rec(idx: &[usize], w: &[f64], rect: [f64; 4], out: &mut Vec<[f64; 4]>) {
+        if idx.len() == 1 {
+            out[idx[0]] = rect;
+            return;
+        }
+        let total: f64 = idx.iter().map(|&i| w[i]).sum::<f64>().max(1e-12);
+        // split point: the prefix whose weight first reaches half
+        let mut acc = 0.0;
+        let mut cut = 1;
+        for (k, &i) in idx.iter().enumerate() {
+            acc += w[i];
+            if acc >= total * 0.5 && k + 1 < idx.len() {
+                cut = k + 1;
+                break;
+            }
+            cut = (k + 1).min(idx.len() - 1);
+        }
+        let fa: f64 = (idx[..cut].iter().map(|&i| w[i]).sum::<f64>() / total).clamp(0.05, 0.95);
+        let (a, b) = if rect[2] >= rect[3] {
+            ([rect[0], rect[1], rect[2] * fa, rect[3]], [rect[0] + rect[2] * fa, rect[1], rect[2] * (1.0 - fa), rect[3]])
+        } else {
+            ([rect[0], rect[1], rect[2], rect[3] * fa], [rect[0], rect[1] + rect[3] * fa, rect[2], rect[3] * (1.0 - fa)])
+        };
+        rec(&idx[..cut], w, a, out);
+        rec(&idx[cut..], w, b, out);
+    }
+    rec(&order, weights, [0.0, 0.0, 1.0, 1.0], &mut out);
+    out
+}
+
 /// Every merged PART's lightmap atlas into its own cell of a grid over the
 /// unit square, so no two parts' charts share lightmap texels.
 ///
@@ -697,23 +889,68 @@ pub fn header_chunks(opts: &BuildOpts) -> Vec<super::file::HeaderChunk> {
 /// every load — then wrote every part's light into the same texels: a
 /// cross-talk the trees showed at its extreme (every leaf on one region,
 /// 2026-09-09). Parts are found by `MergedVisual::part`; a visual without
-/// uv1, or a part id of 0, is left alone. With ONE part nothing moves
-/// (Nadeo's layout is kept as authored). Returns the number of parts
+/// uv1 is left alone. Part 0 (a block's own mesh) is a part like the others
+/// when the item has more than one: leaving it at its authored layout put a
+/// bush-bearing hill's slopes under its cards' cells (the game's bake wrote
+/// the cards' light over the slopes, 2026-09-23). With ONE part nothing
+/// moves (Nadeo's layout is kept as authored). Returns the number of parts
 /// repacked, or None when there was nothing to do.
 pub fn repack_lightmap_parts(visuals: &mut [super::merged::MergedVisual]) -> Option<usize> {
+    repack_lightmap_parts_weighted(visuals, &Default::default())
+}
+
+/// `repack_lightmap_parts` with the parts that are nothing but cut-out cards named (a twentieth of
+/// their area's weight — see the weights below).
+pub fn repack_lightmap_parts_weighted(visuals: &mut [super::merged::MergedVisual], card_parts: &std::collections::HashSet<u32>) -> Option<usize> {
     use super::vstream::{Elem, N_TEXCOORD0};
-    let mut parts: Vec<u32> = visuals.iter().map(|v| v.part).filter(|p| *p != 0).collect();
+    // only visuals that carry uv1 count as parts
+    let mut parts: Vec<u32> = visuals.iter().filter(|v| v.visual.stream().map(|s| s.decls.iter().any(|d| d.name() == N_TEXCOORD0 + 1)).unwrap_or(false)).map(|v| v.part).collect();
     parts.sort_unstable();
     parts.dedup();
     if parts.len() < 2 {
         return None;
     }
     let n = parts.len();
+    // WEIGHTED CELLS: every part gets a rectangle of the unit square in proportion to the square root of
+    // its world-space triangle area (a hill's 16 m slopes against a gate sign), the vegetation cards at a
+    // twentieth of theirs (their texels are one prelit colour per card cluster in the game's bake — a dense
+    // bush's 20 000 card triangles would otherwise starve the block mesh they sit on, which is what an
+    // equal 3×3 grid did: a cliff's faces got 4×4 texels and the editor left them black, 2026-09-24).
+    // Recursive bisection of the square: the parts sorted by weight, split into two halves of equal
+    // weight, the rectangle split along its longer side in that ratio. TINY_LIGHTMAP_REPACK=grid keeps
+    // the old equal grid.
+    let weights: Vec<f64> = parts.iter().map(|&p| {
+        let mut area = 0f64;
+        for mv in visuals.iter().filter(|v| v.part == p) {
+            let Some(s) = mv.visual.stream() else { continue };
+            let Some(pi) = s.decls.iter().position(|d| d.name() == super::vstream::N_POSITION) else { continue };
+            let Elem::Float3(pos) = &s.elems[pi] else { continue };
+            let Some(ib) = mv.visual.index_buffer.as_ref() else { continue };
+            for t in ib.indices.chunks_exact(3) {
+                let (Some(a), Some(b), Some(c)) = (pos.get(t[0] as usize), pos.get(t[1] as usize), pos.get(t[2] as usize)) else { continue };
+                let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                let cr = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                area += 0.5 * ((cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]) as f64).sqrt();
+            }
+        }
+        let card = p >= super::merged::VEGET_PART_BASE || card_parts.contains(&p);
+        (area.max(1e-3)).sqrt() * if card { 0.05 } else { 1.0 }
+    }).collect();
+    let equal_grid = std::env::var("TINY_LIGHTMAP_REPACK").map(|v| v == "grid").unwrap_or(false);
+    let cells: Vec<[f64; 4]> = if equal_grid {
+        let grid = (n as f64).sqrt().ceil().max(1.0);
+        let cell = 1.0 / grid;
+        (0..n).map(|k| { let (cx, cy) = ((k as f64 % grid) * cell, (k as f64 / grid).floor() * cell); [cx, cy, cell, cell] }).collect()
+    } else {
+        weighted_cells(&weights)
+    };
+    // the pack margin (0.001) scaled with the cell, plus a gutter between cells
     let grid = (n as f64).sqrt().ceil().max(1.0);
     let cell = 1.0 / grid;
-    // the pack margin (0.001) scaled with the cell, plus a gutter between cells
     let margin = cell * 0.01;
     let inner = cell - 2.0 * margin;
+    let _ = (cell, inner);
     // `TINY_LIGHTMAP_REPACK=fit`: a part's uv1 BOUNDS fill its cell (uniform scale, centred) instead of
     // its [0,1]² square — a pack block's charts sit in a small corner of the square (a platform piece uses
     // 0.12 × 0.045 of it), so the default leaves each part a dot of texels and its lightmap one value per
@@ -723,9 +960,6 @@ pub fn repack_lightmap_parts(visuals: &mut [super::merged::MergedVisual]) -> Opt
     let mut part_bounds: std::collections::HashMap<u32, [f32; 4]> = std::collections::HashMap::new();
     if fit {
         for mv in visuals.iter() {
-            if mv.part == 0 {
-                continue;
-            }
             let Some(s) = mv.visual.stream() else { continue };
             let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
             if let Elem::Float2(uv) = &s.elems[i] {
@@ -740,11 +974,12 @@ pub fn repack_lightmap_parts(visuals: &mut [super::merged::MergedVisual]) -> Opt
         }
     }
     for mv in visuals.iter_mut() {
-        if mv.part == 0 {
-            continue;
-        }
-        let k = parts.iter().position(|p| *p == mv.part).unwrap_or(0) as f64;
-        let (cx, cy) = ((k % grid) * cell + margin, (k / grid).floor() * cell + margin);
+        let Some(k) = parts.iter().position(|p| *p == mv.part) else { continue };
+        let c = cells[k];
+        let margin = c[2].min(c[3]) * 0.01;
+        let (cx, cy) = (c[0] + margin, c[1] + margin);
+        let (inner_w, inner_h) = (c[2] - 2.0 * margin, c[3] - 2.0 * margin);
+        let inner = inner_w.min(inner_h);
         let fitb = if fit { part_bounds.get(&mv.part).copied().filter(|b| b[2] > b[0] && b[3] > b[1]) } else { None };
         let Some(s) = mv.visual.stream_mut() else { continue };
         let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
@@ -761,8 +996,8 @@ pub fn repack_lightmap_parts(visuals: &mut [super::merged::MergedVisual]) -> Opt
                 }
                 None => {
                     for p in uv.iter_mut() {
-                        p[0] = (cx + p[0].clamp(0.0, 1.0) as f64 * inner) as f32;
-                        p[1] = (cy + p[1].clamp(0.0, 1.0) as f64 * inner) as f32;
+                        p[0] = (cx + p[0].clamp(0.0, 1.0) as f64 * inner_w) as f32;
+                        p[1] = (cy + p[1].clamp(0.0, 1.0) as f64 * inner_h) as f32;
                     }
                 }
             }
@@ -830,9 +1065,10 @@ mod repack_tests {
         }
     }
 
-    /// One part: Nadeo's layout is kept. Three parts: a 2x2 grid, every
-    /// part inside its own cell, the full-square chart of one part never
-    /// touching another's cell.
+    /// One part: Nadeo's layout is kept. Three parts: every part inside its
+    /// own rectangle (weighted by area; the test visuals have no positions, so
+    /// equal weights), the full-square chart of one part never overlapping
+    /// another's rectangle, the two visuals of one part sharing theirs.
     #[test]
     fn parts_land_in_disjoint_cells() {
         let full = vec![[0.001, 0.001], [0.999, 0.001], [0.999, 0.999], [0.001, 0.999]];
@@ -841,20 +1077,30 @@ mod repack_tests {
         assert_eq!(uv1_of(&one[0]), full);
         let mut three = vec![visual(1, full.clone()), visual(2, full.clone()), visual(1, full.clone()), visual(3, full.clone())];
         assert_eq!(super::repack_lightmap_parts(&mut three), Some(3));
-        let cell = |uv: [f32; 2]| ((uv[0] * 2.0).floor() as i32, (uv[1] * 2.0).floor() as i32);
-        let cells: Vec<(i32, i32)> = three.iter().map(|mv| {
-            let uv = uv1_of(mv);
-            let c = cell(uv[0]);
-            for p in &uv {
-                assert_eq!(cell(*p), c, "a chart crossed a cell border: {p:?}");
-                assert!((0.0..=1.0).contains(&p[0]) && (0.0..=1.0).contains(&p[1]));
-            }
-            c
-        }).collect();
-        assert_eq!(cells[0], cells[2], "the two visuals of part 1 share a cell");
-        assert_ne!(cells[0], cells[1]);
-        assert_ne!(cells[1], cells[3]);
-        assert_ne!(cells[0], cells[3]);
+        let bbox = |uv: &[[f32; 2]]| {
+            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for p in uv { for k in 0..2 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); assert!((0.0..=1.0).contains(&p[k])); } }
+            [lo[0], lo[1], hi[0], hi[1]]
+        };
+        let boxes: Vec<[f32; 4]> = three.iter().map(|mv| bbox(&uv1_of(mv))).collect();
+        assert_eq!(boxes[0], boxes[2], "the two visuals of part 1 share a rectangle");
+        let overlap = |a: [f32; 4], b: [f32; 4]| a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+        assert!(!overlap(boxes[0], boxes[1]));
+        assert!(!overlap(boxes[1], boxes[3]));
+        assert!(!overlap(boxes[0], boxes[3]));
+    }
+
+    #[test]
+    fn weighted_cells_tile_the_square() {
+        let cells = super::weighted_cells(&[4.0, 1.0, 1.0]);
+        let area: f64 = cells.iter().map(|c| c[2] * c[3]).sum();
+        assert!((area - 1.0).abs() < 1e-9, "the rectangles tile the unit square: {area}");
+        assert!(cells[0][2] * cells[0][3] > cells[1][2] * cells[1][3], "the heavy part gets the larger rectangle: {cells:?}");
+        for (i, a) in cells.iter().enumerate() { for (j, b) in cells.iter().enumerate() { if i != j {
+            let ov = a[0] < b[2] - 1e-9 && b[0] < a[2] - 1e-9 && a[1] < b[3] - 1e-9 && b[1] < a[3] - 1e-9;
+            let _ = (a[2], b[2]);
+            assert!(!ov || !(a[0] + a[2] > b[0] + 1e-9 && b[0] + b[2] > a[0] + 1e-9 && a[1] + a[3] > b[1] + 1e-9 && b[1] + b[3] > a[1] + 1e-9), "rectangles {i} and {j} overlap: {a:?} {b:?}");
+        } } }
     }
 }
 
@@ -924,6 +1170,27 @@ pub fn fill_lightmap_atlas(visuals: &mut [super::merged::MergedVisual]) -> Optio
         }
     }
     Some((s, lo, [margin as f32, margin as f32, (margin + w * s) as f32, (margin + h * s) as f32]))
+}
+
+/// The union of every visual's TexCoord1 range: [min u, min v, max u, max v]; None without a uv1 stream.
+pub fn uv1_bounds(visuals: &[super::merged::MergedVisual]) -> Option<[f32; 4]> {
+    use super::vstream::{Elem, N_TEXCOORD0};
+    let mut b = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+    let mut any = false;
+    for mv in visuals {
+        let Some(s) = mv.visual.stream() else { continue };
+        let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
+        if let Elem::Float2(uv) = &s.elems[i] {
+            for p in uv {
+                b[0] = b[0].min(p[0]);
+                b[1] = b[1].min(p[1]);
+                b[2] = b[2].max(p[0]);
+                b[3] = b[3].max(p[1]);
+                any = true;
+            }
+        }
+    }
+    if any { Some(b) } else { None }
 }
 
 /// The lightmap texel scale word measured off the geometry: sqrt(Σ world

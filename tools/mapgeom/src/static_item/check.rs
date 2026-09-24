@@ -463,6 +463,86 @@ pub fn run(rest: &[String], open: &mut dyn FnMut() -> DataStore) -> Result<(), S
                 }
             }
         }
+        // LM-01: EVERY VISUAL'S TexCoord1 LIES INSIDE THE PreLightGen BOUNDS (u04[0..4]). The lightmapper
+        // maps uv1 through the chart's ST built from those bounds, so a vertex outside them is rasterised
+        // into the NEIGHBOURING items' atlas rects — the leaf-card garbage found on the pads next to a
+        // bush-bearing cliff item (2026-09-23: the cards' per-card atlas spanned the unit square while the
+        // bounds covered the block mesh's third of it). A visual without a uv1 stream is not checked.
+        if let Some(pl) = s2.pre_light_gen.as_ref() {
+            use crate::static_item::vstream::{Elem, N_TEXCOORD0};
+            let b = pl.u04;
+            let tol = 1e-3f32;
+            for (vi, vis) in s2.visuals.iter().enumerate() {
+                let Some(super::Node::Visual(v)) = vis.inline.as_deref() else { continue };
+                let Some(s) = v.stream() else { continue };
+                let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
+                let Elem::Float2(uv) = &s.elems[i] else { continue };
+                let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                for p in uv { for k in 0..2 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+                if uv.is_empty() { continue; }
+                if lo[0] < b[0] - tol || lo[1] < b[1] - tol || hi[0] > b[2] + tol || hi[1] > b[3] + tol {
+                    problems.push(format!(
+                        "LM-01 visual {vi}: TexCoord1 spans ({:.3},{:.3})..({:.3},{:.3}) but the PreLightGen bounds are ({:.3},{:.3})..({:.3},{:.3}) — the lightmapper rasterises the excess into other items' atlas rects (rebuild the item: TINY_CARD_UV1 fix of 2026-09-23)",
+                        lo[0], lo[1], hi[0], hi[1], b[0], b[1], b[2], b[3]
+                    ));
+                }
+            }
+        }
+        // LM-02: A CUT-OUT VISUAL'S uv1 TEXELS DO NOT OVERLAP A SOLID VISUAL'S. The vegetation cards (a
+        // material with a slot-1 cut-out texture and no game link) get their own atlas cells; a card cell over
+        // the block mesh's own uv1 had the game's bake write the cards' light over a hill's slopes (the hill
+        // test map, 2026-09-23 — repack_lightmap_parts left part 0 at its authored layout). Occupancy is
+        // rasterised per visual on a 128² grid of the unit square (a coalesced visual's bounding box spans
+        // several cells, so boxes would false-alarm); an overlap of more than 1 % of the cards' cells fails.
+        {
+            use crate::static_item::vstream::{Elem, N_TEXCOORD0};
+            const G: usize = 128;
+            let mut occ: Vec<(usize, bool, Vec<u8>, usize)> = Vec::new();
+            for (vi, vis) in s2.visuals.iter().enumerate() {
+                let Some(super::Node::Visual(v)) = vis.inline.as_deref() else { continue };
+                let Some(s) = v.stream() else { continue };
+                let Some(i) = s.decls.iter().position(|d| d.name() == N_TEXCOORD0 + 1) else { continue };
+                let Elem::Float2(uv) = &s.elems[i] else { continue };
+                if uv.is_empty() { continue; }
+                let cut = s2.shaded_geoms.iter().filter(|sg| sg.visual_index as usize == vi).any(|sg| {
+                    usize::try_from(sg.material_index).ok().and_then(|mi| s2.custom_materials.get(mi)).and_then(|cm| cm.inst()).map(|m| {
+                        m.link().map(|l| l.is_empty()).unwrap_or(true) && m.main.as_ref().map(|mm| mm.user_textures.iter().any(|t| t.u01 == 1)).unwrap_or(false)
+                    }).unwrap_or(false)
+                });
+                let mut grid = vec![0u8; G * G];
+                let mut n = 0usize;
+                let Some(ib) = v.index_buffer.as_ref() else { continue };
+                for t in ib.indices.chunks_exact(3) {
+                    let p: Vec<[f32; 2]> = t.iter().filter_map(|&k| uv.get(k as usize).copied()).collect();
+                    if p.len() != 3 { continue; }
+                    let (lo_x, hi_x) = (p.iter().map(|q| q[0]).fold(f32::MAX, f32::min), p.iter().map(|q| q[0]).fold(f32::MIN, f32::max));
+                    let (lo_y, hi_y) = (p.iter().map(|q| q[1]).fold(f32::MAX, f32::min), p.iter().map(|q| q[1]).fold(f32::MIN, f32::max));
+                    let (x0, x1) = (((lo_x * G as f32).floor() as i64).clamp(0, G as i64 - 1), ((hi_x * G as f32).ceil() as i64).clamp(0, G as i64 - 1));
+                    let (y0, y1) = (((lo_y * G as f32).floor() as i64).clamp(0, G as i64 - 1), ((hi_y * G as f32).ceil() as i64).clamp(0, G as i64 - 1));
+                    for gy in y0..=y1 { for gx in x0..=x1 {
+                        let (cx, cy) = ((gx as f32 + 0.5) / G as f32, (gy as f32 + 0.5) / G as f32);
+                        // point-in-triangle (barycentric)
+                        let d = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[2][0] - p[0][0]) * (p[1][1] - p[0][1]);
+                        if d.abs() < 1e-12 { continue; }
+                        let a = ((p[1][0] - cx) * (p[2][1] - cy) - (p[2][0] - cx) * (p[1][1] - cy)) / d;
+                        let b = ((p[2][0] - cx) * (p[0][1] - cy) - (p[0][0] - cx) * (p[2][1] - cy)) / d;
+                        let cc = 1.0 - a - b;
+                        if a >= -1e-4 && b >= -1e-4 && cc >= -1e-4 { let k = gy as usize * G + gx as usize; if grid[k] == 0 { n += 1; } grid[k] = 1; }
+                    } }
+                }
+                occ.push((vi, cut, grid, n));
+            }
+            for (a, ca, ga, na) in &occ {
+                if !ca || *na == 0 { continue; }
+                for (b, cb, gb, _) in &occ {
+                    if *cb { continue; }
+                    let both = ga.iter().zip(gb.iter()).filter(|(x, y)| **x != 0 && **y != 0).count();
+                    if both as f32 > 0.01 * *na as f32 {
+                        problems.push(format!("LM-02 visual {a} (cut-out cards) shares {both} of its {na} lightmap cells (of 128²) with visual {b} (solid) — the game's bake writes the cards' light over that mesh (rebuild the item: the part-0 repack fix of 2026-09-23)"));
+                    }
+                }
+            }
+        }
         // Two slots are duplicates when they draw the same (`same_look`: link,
         // physics and every constant, names aside). A mesh-modeler item
         // (Summer 21's TME nation items) legitimately carries one game

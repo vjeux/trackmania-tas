@@ -210,3 +210,34 @@ impl PakCipher {
         out.len()
     }
 }
+
+/// The COUNTER-mode entry cipher of v18 paks (entry flag 0x40, "kind 4",
+/// vtable 0x141bc4ac8; opener 0x1413b0a10, reader 0x1413b1090 through the
+/// 8-round wrapper 0x1413b1cd0 of Trackmania.exe): the same 8-round Blowfish
+/// schedule as the CBC entries (InitBlowfish 0x140128240 with the 8-round key
+/// mixing `P[i] ^= key_le_word[i & 3]`, i < 10) but "mode 2" — the P array is
+/// NOT reversed — and no chaining: with the 8-byte IV read off the start of
+/// the entry, keystream block k of 256-byte batch b is
+/// `E(ctr)` with `ctr = IV + 8 + 256·b + k` fed as (lo → xl, hi → xr) and the
+/// output stored (xr ^ P[9]) | (xl << 32), i.e. exactly the little-endian
+/// 8-byte block encryption of the little-endian counter; plain = cipher ^ E.
+/// The dummy-write perturbation (+0x58) is never consulted by this reader.
+pub fn counter_decrypt(key: &[u8; 16], entry: &[u8]) -> Vec<u8> {
+    let mut bf = Blowfish::new(key, Trick::LittleEndianPak18);
+    // undo the mode-1 reversal Blowfish::new applies for v18: kind 4 is mode 2
+    bf.p[0..10].reverse();
+    let iv = u64::from_le_bytes(entry[0..8].try_into().unwrap());
+    let body = &entry[8..];
+    let mut out = Vec::with_capacity(body.len());
+    for (i, chunk) in body.chunks(8).enumerate() {
+        // 0x1413b1090: ctr = (stream position of the 256-byte batch) + IV − (entry start),
+        // then +1 per 8-byte block inside the batch
+        let ctr = iv.wrapping_add(8 + 256 * (i as u64 / 32) + (i as u64 % 32));
+        let mut ks = ctr.to_le_bytes();
+        bf.encrypt_block_le(&mut ks);
+        for (j, &c) in chunk.iter().enumerate() {
+            out.push(c ^ ks[j]);
+        }
+    }
+    out
+}

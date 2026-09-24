@@ -66,6 +66,20 @@ is 64-aligned with an 8-byte IV prefix + payload + zero padding.
   found by CONSENSUS of matches reaching before the output start).
 * The gbx-headers blob decodes with the header key, then the LZ4 block
   stream with the dictionary.
+* **Entries with flag `0x40` use a COUNTER-mode Blowfish, not CBC** **[DISASSEMBLY
+  0x14055a590 → cipher kind 4, vtable 0x141bc4ac8; opener 0x1413b0a10, reader
+  0x1413b1090 through the 8-round wrapper 0x1413b1cd0]**: the same key as every
+  other entry and the same 8-round schedule (`InitBlowfish` 0x140128240 with
+  `P[i] ^= key_le_word[i & 3]`, i < 10), but mode 2 — the P array is NOT
+  reversed as the CBC kinds do — and no chaining: the entry begins with an
+  8-byte IV; for body byte offset `o`, batch `b = o/256`, block `k = (o%256)/8`,
+  the keystream is the little-endian block encryption of the little-endian
+  counter `IV + 8 + 256·b + k` and `plain = cipher ^ keystream`. The dummy-write
+  fold is never applied (random-access reader). `blowfish::counter_decrypt`;
+  the only encrypted `0x40` entries in the six packs are the five
+  `CPlugMoodBlender` XMLs (`GameCtnDecoration\\<hash>`, 0x0911A000) — the
+  Maniaplanet shader/material `0x…041` entries carry bit 50 (ForceNoCrypt) and
+  were always plain.
 
 ## 3. Hashed file names (`names.rs`) **[FILE]** — every prefab in the pack resolves
 
@@ -86,33 +100,117 @@ prefix: `A\B\C\name` may be stored as `A\B\C\<h(name)>`, `A\B\<h(C\name)>`,
 points. Where the names come from: a block model's GBX REFERENCE TABLE names
 its prefabs in plain text (folder index 1-based, 0 = the ancestor directory).
 
-## 4. The "dummy write" — the cipher is perturbed from INSIDE the GBX parse **[EXE]**
+## 4. The "dummy write" — the cipher is perturbed from INSIDE the GBX parse **[DISASSEMBLY]**
 
-While the game reads an ENCRYPTED, UNCOMPRESSED pak entry it arms the
-Blowfish IV perturbation at the start of every NODE body (the main node after
-the header; each inline node after its class id) with the four LE bytes of
-that node's PARENT class id, folded as `iv_xor ← rotl64(iv_xor, 13) ^ (byte |
-0xAA)` per byte; a `CPlugVehiclePhyTuning`-derived node arms again with the
-first four ASCII bytes of its name; `CPlugSurfaceGeom` chunk `0x0900F004` with
-`BitConverter.GetBytes(box.X − box.X2)`. The accumulated fold lands at the
-next `0x100` boundary of the COMPRESSED read and chains through every later
-block; a read spanning no boundary carries its armings forward. Exempt: LZ4
-entries and entries with flag bit 32 (`DontUseDummyWrite`). The parent table
-is GBX.NET's `inherits:` lines (251 classes) with the engine fallback (a
-`0x09xxxxxx` Plug class → `CPlug 0x0902B000`, else `CMwNod 0x01001000`;
-`GxLightSpot → GxLightBall 0x04002000`); the fold exists only for a class WITH
-a declared parent (a blanket fallback garbled the DynaObject files). This is
-how all 73 Stadium `.Light.Gbx` (275–485 B) read garbage past byte 0x100
-until 2026-09-07, and how the Sport/Snow/Rally/Desert tuning entries
-(`0x090EC000`) decode to their exact declared sizes with every boundary
-PREDICTED (test vectors: Snow `CarSnow\E100BAE2` `0x700 →
-0x5B0525E6FA585C38` after 12 armings, `0xD00 → 0x00005502E81540AB`).
-Compressed dummy-written files (flags 0x5, no bit 50: every `VegetTreeModel`,
-48 in Stadium) fold the parent class id of every node body starting inside
-plain chunk k into the cipher at the compressed offset where chunk k+1 begins;
-`mapgeom pak-foldhunt` accepts a fold under which the chunk decodes to exactly
-4096 plain bytes.
+Read off `Trackmania.exe` (Aug 2025 client, md5 `4a28c00429c6f75c894cf7bc4378a8a2`)
+on 2026-09-23 with `tools/asmdig` over an `objdump` listing; the addresses are
+that build's. Until then the rule was GBX.NET's guess (its `inherits:` lines),
+which failed on every class the C# corpus does not carry — the decoration
+`Scene3d` among them.
 
+### 4.1 Who folds, and what
+
+`CMwNod::Archive` (`0x1402d0720`, vtable slot 14 of every node class — the
+chunk loop that reads or writes a node body) starts, in BOTH directions, with:
+
+```text
+info = this->GetClassInfo()                       // vtable slot 2
+if (info->parent != NULL) {                       // CMwClassInfo +0x20; only CMwNod and the primitive types have none
+    archive->buffer->dummy = 1                    // the TOP buffer's +0x10 flag
+    switch (info->classId) {                      // +0x18, the ENGINE id
+        0x0A003000 (CSceneLayout)              → v = 0x0A001000 (CScene)
+        0x090BF000                             → v = 0x0804B000
+        0x0917E000, 0x09184000                 → v = 0x05010000
+        0x09185000                             → v = 0x05002000
+        default                                → v = REMAP(info->parent->classId)     // 0x1402f3570
+                                                 if (v == 0x07031000) v = 0x07001000   // a CControlText child folds CControlBase
+    }
+    if (v == 0) v = 0xFFFFFFFF                    // 0x1402d1d00 (never taken)
+    archive->Write4(&v)                           // 0x14012bbe0 → the buffer chain's Write, in dummy mode
+    archive->buffer->dummy = 0
+}
+```
+
+* `REMAP` (`0x1402f3570`, 161 entries) is the id the engine WRITES for a class
+  — the CGame `0x03xxxxxx` ids files carry as `0x24xxxxxx`
+  (`0x03043000 → 0x24003000`, `0x0304E000 → 0x24005000`, …); identity for
+  everything else. Its read-side inverse plus the legacy aliases
+  (`0x0301A000 → 0x2E001000`, the `0x0805xxxx → 0x090Bxxxx` particle classes)
+  is `0x1402f2610` (191 entries), applied to every class id read from a file
+  before the class registry lookup (`0x1402f20a0`). Both tables and the whole
+  hierarchy (1905 classes, from the two `CMwClassInfo::Register` spellings at
+  `0x1402d52e0` / `0x1402ea9e0`) are generated into
+  `tools/mapgeom/src/engine_classes.rs` by `asmdig classtree` / `cmptree`.
+* The buffer chain: the archive's top buffer is the LZ4 decoder for a
+  compressed entry (ctor `0x1413ac4c0`, read core `0x1413ac620`, write
+  `0x1413ac900`), the Blowfish buffer for a raw one (`0x1413b0430`; VT_A
+  `0x141bc4a18` = 8 rounds for pak v18, read `0x1413b0b90`, write
+  `0x1413b0e00`). A Write in dummy mode passes straight through the LZ4 buffer
+  (`0x1413ac934`: it sets the underlying's flag and forwards) and, in the
+  crypt buffer, folds instead of writing: per byte `iv_xor = rotl64(iv_xor, 13)
+  ^ (b | 0xAA)` (`0x1413b0e72..0e8f`). `+0x18` of the crypt buffer = pak entry
+  flag bit 32 (`DontUseDummyWrite`, set in `CreateFileBuffer` `0x14055a590`)
+  turns the fold into a no-op. A memory buffer's dummy Write is a no-op
+  (`0x140123c80`).
+* The fold lands when the crypt buffer next refills its 0x100-byte batch
+  (`0x1413b0c02`: `iv ^= iv_xor; iv_xor = 0` before decrypting the 32 blocks);
+  the writer applies it after encrypting a batch (`0x1413b0ff3`), which is the
+  same boundary. Block chaining: `plain = BF(cipher) ^ iv; iv = (iv >> 47) ^
+  9·iv ^ cipher`.
+
+### 4.2 Which nodes fold — and which do not
+
+* Every node body the chunk loop reads: the main node (its `Archive` is
+  called from `LoadGbx_Body` `0x1409031d0` via `0x140900560`) and every inline
+  node `ArchiveNodRef` (`0x140905cb0`) creates: index not yet in the node
+  table → read class id → `CreateByMwClassId` (`0x1402cf380`) → `Archive`.
+  A `-1` reference, a back-reference and an external (reference-table) node
+  fold nothing.
+* NOT a class whose own `Archive` never reaches `CMwNod::Archive` — a
+  plain-struct body: `CPlugVegetTreeModel`, `CPlugDynaObjectModel`,
+  `CPlugPrefab`, `CPlugStaticObjectModel`, the `NPlug*::S*` structs, the
+  `CPlugFile*` loaders (92 of 1857 vtables; `engine_classes::NO_FOLD_CLASSES`,
+  from `asmdig vtables`: slot 14 ≠ `0x1402d0720` and no call/jmp to it). The
+  172 `.VegetTreeModel.Gbx` and 24 `.DynaObject.Gbx` entries of the five
+  packs decode without a main-node fold and garble with one. The CPlugVisual
+  family (`0x1404031e0`), CPlugBitmap and CPlugMaterial override `Archive`
+  but tail-call the base before writing anything: they fold at the body start.
+* NOT a node inside a SKIPPABLE chunk: the loop reads `PIKS` + size, pulls
+  the whole chunk into a memory buffer, swaps it in as the archive's buffer
+  (`0x1402d0a30..0x1402d0aa8`) and parses from there — the inline nodes'
+  dummy writes hit the memory buffer and vanish.
+* Three explicit per-class dummy writes exist besides the generic one:
+  `CPlugVehiclePhyTuning` / `CPlugVehicleCarPhyTuning` fold the first four
+  bytes of their name (`0x1405fbcca`, `0x1405da97d`) and `CPlugSurfaceGeom`
+  chunk `0x0900F004` folds `f32(box.X − box.X2)` (`0x14051ed4e`). GBX.NET
+  knew these three.
+
+### 4.3 Where the fold lands in a compressed entry
+
+The LZ4 read core pulls the next `[u16 len][block]` from the crypt buffer only
+when a read finds its window empty (`0x1413ac686..0x1413ac6fa`): with `p`
+plain bytes consumed, the crypt stream stands at the start of chunk
+`ceil(p / 4096)` — chunk k+1 for a body that begins strictly inside chunk k,
+chunk k for one that begins exactly on a 4096 boundary. The fold then applies
+at the next 0x100 boundary of the compressed stream from there (`pakfile.rs::
+fold_position`). Folds between two boundaries accumulate in read order.
+
+### 4.4 What this unlocked
+
+`BlueBay\GameCtnDecoration\Scene3d\Base64x64.Scene3d.Gbx` (CSceneLayout
+`0x0A003000`, 75 325 B, 44 nodes, 19 LZ4 chunks) needed 43 folds; the one no
+table had was the main node's — `0x0A003000` is a hard-coded special case
+(folds `0x0A001000`), not derivable from any hierarchy. It now decodes whole,
+as do the other collections' layouts; `mapgeom scene3d` exports the island /
+sea / shadow-caster solids (`scene3d.rs`). Over the 734 encrypted
+dummy-written entries of the five packs the engine table decodes 10 files
+GBX.NET's guess could not (CPlugDecalModel, CGameCtnDecorationMood,
+CGameItemPlacementParam, CPlugGameSkin(AndFolder) — all `CMwNod`-parented
+classes GBX.NET's list lacked) and loses none. Test vectors (uncompressed):
+Snow `CarSnow\E100BAE2` `0x700 → 0x5B0525E6FA585C38` after 12 armings,
+`0xD00 → 0x00005502E81540AB`. `mapgeom pak-foldhunt` remains the fallback
+for a class the table does not know (it accepts a fold under which a chunk
+decodes to exactly 4096 plain bytes).
 ## 5. The four integrity fields a repacked pack must carry **[VERIFIED-GAME]**
 
 A pack that gets ANY of these wrong is refused by the client (the process
@@ -132,6 +230,10 @@ when repacking: data + header fields (offsets, sizes, `md5(slot)`) →
 
 ## 6. What we extract, and with what
 
+* `mapgeom scene3d <Coll>\GameCtnDecoration\Scene3d\Base64x64.Scene3d.Gbx --out X.obj`:
+  the decoration's island / sea / shadow-caster solids (CSceneLayout → CPlugSolid
+  → CPlugTree → visuals; `scene3d.rs`), grouped by material name — the baker's
+  `--decoration` input. Stadium256's layout holds only the sky dome.
 * `mapgeom` (`store.rs`): block infos, prefabs, static objects, Solid2s,
   surfaces, materials, lights, FxSystems, particle models, veget models,
   decorations — by logical path through the hash resolver, with an OVERLAY
@@ -164,6 +266,7 @@ file-level hashes localise nothing — diff INSIDE the pack (memory
 * The header-flag bits' individual meaning; `headerFlags 7` packs are
   encrypted, 0 in the clear.
 * The remaining `.pak` cases the reader fails on: `LightRay.DynaObject.Gbx`
-  (`bad match offset 49599`), one LZ4 case.
+  (`bad match offset 49599`), one LZ4 case; two 250–440 KB VegetTreeModels
+  (`BlueBay\Media\A21207AF…`, `RedIsland\Media\A2EBE59E…`) still need the fold hunt.
 * The pack keys of `Skins_Stadium`, `Titles`, `Resource`, `Title.Pack`
   (a title-pack key seen in lab evidence: `a6a873d36485d18b99454be644dcf0ac`).

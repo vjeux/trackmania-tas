@@ -156,3 +156,29 @@ impl CPlugPrefab {
         crate::geom::from_quat(e.rot, e.pos)
     }
 }
+
+
+/// The tags of an `NPlugItemPlacement::SPlacement` params blob (chunk 0x2F0A9000): `{u32 version, i32
+/// iLayout, Options: array of arrays of (key, value) strings}` — the zone prefabs' vegetation slots carry
+/// Placement/Type/Size/Variant. Strings are length-prefixed UTF-8 (no lookback). Returns the flattened
+/// (key, value) list; None when the blob does not read as such.
+pub fn placement_tags(params: &[u8]) -> Option<Vec<(String, String)>> {
+    let rd_u32 = |o: &mut usize| -> Option<u32> { let v = u32::from_le_bytes(params.get(*o..*o + 4)?.try_into().ok()?); *o += 4; Some(v) };
+    let rd_str = |o: &mut usize| -> Option<String> { let n = u32::from_le_bytes(params.get(*o..*o + 4)?.try_into().ok()?) as usize; *o += 4; if n > 256 { return None; } let s = String::from_utf8_lossy(params.get(*o..*o + n)?).to_string(); *o += n; Some(s) };
+    let mut o = 0usize;
+    let _version = rd_u32(&mut o)?;
+    let _layout = rd_u32(&mut o)?;
+    let n_groups = rd_u32(&mut o)? as usize;
+    if n_groups > 64 { return None; }
+    let mut out = Vec::new();
+    for _ in 0..n_groups {
+        let n = rd_u32(&mut o)? as usize;
+        if n > 64 { return None; }
+        for _ in 0..n {
+            let k = rd_str(&mut o)?;
+            let v = rd_str(&mut o)?;
+            out.push((k, v));
+        }
+    }
+    Some(out)
+}

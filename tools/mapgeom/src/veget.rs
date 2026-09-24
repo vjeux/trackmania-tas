@@ -21,7 +21,8 @@
 //!         0x0901E000, CPlugVisualIndexedTriangles body (to FACADE), u8 (0)
 //! f32 × (lod_count-1) switch distances (metres, the model's own; 50, 100)
 //! u8 (1)   f32 far distance (100 | 150)   u8 (3)   u8 (2)   u64 FILETIME
-//! f32 (1.0)   f32 (0.1)   u32   u32 (1)   u32 (7)   u32 (7)
+//! f32 Params.AngleMax_RotXZ_Deg (1.0)   f32 Params.ScaleVar01 (0.1)
+//! u32 Params.EnableRandomRotationY   u32 hull entries (1)   u32 (7)   u32 (7)
 //! u32 hull vertex count, vec3 × n      u32 hull triangle count,
 //!     (u32 a, u32 b, u32 c, u32 surface material id — 14 Wood) × n
 //! … wind / impostor parameters (kept raw)
@@ -90,6 +91,15 @@ pub struct VegetTreeModel {
     /// Past this the mesh is culled (the game's impostor takes over).
     pub far: f32,
     pub file_write_time: u64,
+    /// `Params.AngleMax_RotXZ_Deg` (STreeModel+4): the per-instance random
+    /// tilt half-range about the world X and Z axes, degrees.
+    pub angle_max_rot_xz_deg: f32,
+    /// `Params.ScaleVar01` (STreeModel+0): the per-instance scale is
+    /// 1 - (k/7)*ScaleVar01 with k = the Nadeo LCG int in 0..=7.
+    pub scale_var01: f32,
+    /// `Params.EnableRandomRotationY` (STreeModel+8): a random world-Y yaw
+    /// per instance (only when the spawner asks for the variation).
+    pub enable_random_rotation_y: u32,
     pub hull_vertices: Vec<[f32; 3]>,
     /// (indices, surface material id).
     pub hull_triangles: Vec<([u32; 3], u32)>,
@@ -147,6 +157,34 @@ pub fn tree_model_paths(store: &mut DataStore, path: &str) -> Result<Vec<String>
     }
     let m = store.load_model(path)?;
     Ok(m.externals.iter().map(|(_, p)| p.clone()).filter(|n| n.to_ascii_lowercase().ends_with(".vegettreemodel.gbx")).collect())
+}
+
+/// The species a placement's VARIANT BYTE names, for an item whose entity
+/// model is an `NPlugItem::SVariantList` (0x2F0BC000: `Items\Vegetation\
+/// PalmForest.Item.Gbx` and kin): `Variants[v].EntityModel`, resolved through
+/// the file's reference table — the game indexes the Variants array (the
+/// spawner 0x141081910 reads `SVariantList+0x40[v]`), and that array's order
+/// is what this returns, whatever the reference table's order. An item whose
+/// entity model is not a variant list (a single-species item) yields its
+/// tree-model references in reference order. Empty when the item places no
+/// vegetation.
+pub fn item_species(store: &mut DataStore, item_path: &str) -> Result<Vec<String>, String> {
+    let m = store.load_model(item_path)?;
+    let mut lb = crate::static_item::LookbackState::default();
+    lb.defined_nodes.extend(m.external_indices().iter().copied());
+    let mut r = crate::static_item::Rd::new(&m.body, 0, lb);
+    if let Ok(item) = crate::static_item::item::CGameItemModel::parse(&mut r) {
+        if let Some(mc) = item.model() {
+            if let Some(crate::static_item::Node::VariantList(vl)) = mc.entity_model.inline.as_deref() {
+                return Ok(vl
+                    .variants
+                    .iter()
+                    .map(|v| m.externals.iter().find(|(k, _)| *k as i32 == v.model.index).map(|(_, p)| p.clone()).unwrap_or_else(|| format!("node {}", v.model.index)))
+                    .collect());
+            }
+        }
+    }
+    tree_model_paths(store, item_path)
 }
 
 /// The model file's decoded body and its externals, whole or — when the
@@ -256,10 +294,13 @@ fn parse_body(body: &[u8], externals: &[(u32, String)]) -> R<VegetTreeModel> {
     let _three_b = r.u8()?;
     let _two = r.u8()?;
     let file_write_time = r.u64()?;
-    let _f1 = r.f32()?;
-    let _f01 = r.f32()?;
-    let _a = r.u32()?;
-    let _b = r.u32()?;
+    // the CPlugVegetTreeModel archive (0x1404ad350, version 21) after the
+    // FILETIME: v>=9 Params.AngleMax_RotXZ_Deg (+4) then Params.ScaleVar01 (+0);
+    // v>=10 Params.EnableRandomRotationY (+8); v>=13 the hull entry count
+    let angle_max_rot_xz_deg = r.f32()?;
+    let scale_var01 = r.f32()?;
+    let enable_random_rotation_y = r.u32()?;
+    let _hull_entries = r.u32()?;
     // the hull: kind 7 = a mesh (then a second 7, the vertices, the triangles);
     // -1 = none (grass, flowers, the small cacti and some bushes)
     let hull_kind = r.i32()?;
@@ -297,7 +338,7 @@ fn parse_body(body: &[u8], externals: &[(u32, String)]) -> R<VegetTreeModel> {
     }
     let tail_at = r.o;
     let tail = body[tail_at.min(body.len())..].to_vec();
-    Ok(VegetTreeModel { version, h1, materials, lods, switch, far, file_write_time, hull_vertices, hull_triangles, tail_at, tail })
+    Ok(VegetTreeModel { version, h1, materials, lods, switch, far, file_write_time, angle_max_rot_xz_deg, scale_var01, enable_random_rotation_y, hull_vertices, hull_triangles, tail_at, tail })
 }
 
 /// Every inline `CPlugVisualIndexedTriangles` of a tree model file and the

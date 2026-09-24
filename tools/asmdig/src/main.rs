@@ -17,6 +17,12 @@
 //   asmdig xref   ASM     <hexaddr>          rip-relative and call/jmp refs
 //   asmdig calls  ASM ELF <hexaddr>          annotated call trace of a function
 //   asmdig consts     ELF <f32>[,<f32>..]    where a float literal lives
+//   asmdig ptrs       ELF <hexaddr>...       which qwords hold these addresses (vtable slots)
+//   asmdig find       ELF <hexbytes>         a byte pattern (`??` wildcard) in every section
+//   asmdig argsof ASM ELF <hexaddr>...       resolved arguments at every call site of the targets
+//   asmdig cmptree ASM ELF <hexaddr> [reg] [--rust]  a compare-tree id→id function as a table
+//   asmdig classtree ASM ELF <reg1> <reg2> [--rust]  the engine's class hierarchy off its registrations
+//   asmdig vtables ASM ELF <base-archive> [--reg2 A] [--rust]  every node vtable: class, Archive kind
 //
 // Addresses everywhere are objdump/file addresses in hex, no `0x`.
 use std::collections::HashMap;
@@ -311,10 +317,25 @@ fn func_chunks_in(insns: &[Insn], elf: &Elf, addr: u64) -> Vec<(usize, usize)> {
 enum Val {
     Imm(u64),
     Ptr(u64),
+    /// A pointer to a stack slot known to hold this immediate: what the
+    /// engine's tiny `GetClassId(&out) { *out = ID; return out; }` helpers
+    /// return (the class registrations of ~100 classes fetch both ids that way).
+    Boxed(u64),
     Unknown,
 }
 
 fn reg_slot(r: &str) -> Option<&'static str> {
+    // the x64 stack-argument slots (the 5th argument on) — a class
+    // registration passes the parent class id in `[rsp+0x20]`
+    if let Some(rest) = r.strip_prefix("DWORD PTR [rsp+0x").or_else(|| r.strip_prefix("QWORD PTR [rsp+0x")) {
+        return Some(match rest {
+            "20]" => "sp20",
+            "28]" => "sp28",
+            "30]" => "sp30",
+            "38]" => "sp38",
+            _ => return None,
+        });
+    }
     Some(match r {
         "rdi" | "edi" | "di" | "dil" => "rdi",
         "rsi" | "esi" | "si" | "sil" => "rsi",
@@ -338,6 +359,7 @@ fn reg_slot(r: &str) -> Option<&'static str> {
 fn show(elf: &Elf, name: &str, v: &Val) -> Option<String> {
     match v {
         Val::Imm(n) => Some(format!("{}=0x{:x}({})", name, n, *n as i64)),
+        Val::Boxed(n) => Some(format!("{}=&0x{:x}", name, n)),
         Val::Ptr(a) => {
             if name.starts_with("xmm") {
                 elf.f32at(*a)
@@ -354,6 +376,32 @@ fn show(elf: &Elf, name: &str, v: &Val) -> Option<String> {
 }
 
 fn trace_calls(insns: &[Insn], elf: &Elf, s: usize, e: usize) {
+    trace_calls_filtered(insns, elf, s, e, &[]);
+}
+
+/// `trace_calls`, printing only the calls to `only` (every call when empty).
+fn trace_calls_filtered(insns: &[Insn], elf: &Elf, s: usize, e: usize, only: &[u64]) {
+    for (tgt, addr, regs) in trace_call_states(insns, s, e, only) {
+        let mut parts = Vec::new();
+        for r in ["rdi", "rsi", "rdx", "rcx", "r8", "r9", "sp20", "sp28", "sp30", "sp38", "xmm0", "xmm1"] {
+            if let Some(v) = regs.get(r) {
+                if let Some(t) = show(elf, r, v) {
+                    parts.push(t);
+                }
+            }
+        }
+        println!("{:x}  call {:>8}  {}", addr, tgt.map(|t| format!("{:x}", t)).unwrap_or("?".into()), parts.join("  "));
+    }
+}
+
+/// The argument-register state at every call in `insns[s..=e]` to one of
+/// `only` (every call when empty), as (target, call address, registers).
+fn trace_call_args(insns: &[Insn], _elf: &Elf, s: usize, e: usize, only: &[u64]) -> Vec<(u64, HashMap<&'static str, Val>)> {
+    trace_call_states(insns, s, e, only).into_iter().filter_map(|(t, _, r)| t.map(|t| (t, r))).collect()
+}
+
+fn trace_call_states(insns: &[Insn], s: usize, e: usize, only: &[u64]) -> Vec<(Option<u64>, u64, HashMap<&'static str, Val>)> {
+    let mut out = Vec::new();
     let mut regs: HashMap<&'static str, Val> = HashMap::new();
     for ins in &insns[s..=e] {
         let (dst, src) = match ins.ops.split_once(',') {
@@ -378,6 +426,10 @@ fn trace_calls(insns: &[Insn], elf: &Elf, s: usize, e: usize) {
                     } else if let Some(sr) = reg_slot(src) {
                         let v = regs.get(sr).cloned().unwrap_or(Val::Unknown);
                         regs.insert(r, v);
+                    } else if let Some(boxed) = src.strip_prefix("DWORD PTR [").and_then(|s| s.strip_suffix("]")).and_then(reg_slot) {
+                        // `mov edx, DWORD PTR [rax]` off a Boxed pointer = the immediate
+                        let v = match regs.get(boxed) { Some(Val::Boxed(n)) => Val::Imm(*n), _ => Val::Unknown };
+                        regs.insert(r, v);
                     } else {
                         regs.insert(r, Val::Unknown);
                     }
@@ -399,25 +451,20 @@ fn trace_calls(insns: &[Insn], elf: &Elf, s: usize, e: usize) {
             }
             "call" => {
                 let tgt = ins.ops.split_whitespace().next().and_then(hex);
-                let mut parts = Vec::new();
-                for r in ["rdi", "rsi", "rdx", "rcx", "r8", "r9", "xmm0", "xmm1"] {
-                    if let Some(v) = regs.get(r) {
-                        if let Some(t) = show(elf, r, v) {
-                            parts.push(t);
-                        }
-                    }
+                if only.is_empty() || tgt.map(|t| only.contains(&t)).unwrap_or(false) {
+                    out.push((tgt, ins.addr, regs.clone()));
                 }
-                println!(
-                    "{:x}  call {:>8}  {}",
-                    ins.addr,
-                    tgt.map(|t| format!("{:x}", t)).unwrap_or("?".into()),
-                    parts.join("  ")
-                );
                 // the callee clobbers the argument registers
-                for r in [
-                    "rdi", "rsi", "rdx", "rcx", "r8", "r9", "rax", "xmm0", "xmm1",
-                ] {
-                    regs.remove(r);
+                // a class-id getter touches only rcx and rax (LTCG keeps the
+                // other argument registers live across it); any other callee
+                // clobbers them all
+                if let Some(n) = tgt.and_then(|t| id_getter(insns, t)) {
+                    regs.insert("rax", Val::Boxed(n));
+                    regs.insert("rcx", Val::Unknown);
+                } else {
+                    for r in ["rdi", "rsi", "rdx", "rcx", "r8", "r9", "rax", "xmm0", "xmm1"] {
+                        regs.remove(r);
+                    }
                 }
             }
             _ => {
@@ -429,6 +476,7 @@ fn trace_calls(insns: &[Insn], elf: &Elf, s: usize, e: usize) {
             }
         }
     }
+    out
 }
 
 // ------------------------------------------------------------------ commands
@@ -448,7 +496,7 @@ fn main() {
         std::process::exit(0);
     }
     let a: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "asmdig fn|calls ASM ELF ADDR | asmdig near ASM NEEDLE1 NEEDLE2 N [LO HI] | asmdig callers ASM ELF ADDR... | asmdig bytes ELF ADDR N | asmdig xref ASM ADDR | asmdig xrefs ASM ADDR... | asmdig jumptable ELF ADDR COUNT [TARGET] | asmdig consts ELF V,V,..";
+    let usage = "asmdig fn|calls ASM ELF ADDR | asmdig near ASM NEEDLE1 NEEDLE2 N [LO HI] | asmdig callers ASM ELF ADDR... | asmdig bytes ELF ADDR N | asmdig xref ASM ADDR | asmdig xrefs ASM ADDR... | asmdig jumptable ELF ADDR COUNT [TARGET] | asmdig ptrs ELF ADDR... | asmdig find ELF HEXBYTES | asmdig argsof ASM ELF ADDR... | asmdig cmptree ASM ELF ADDR [REG] [--rust] | asmdig classtree ASM ELF REG1 REG2 [--rust] | asmdig vtables ASM ELF BASE_ARCHIVE [--reg2 ADDR] [--rust] | asmdig consts ELF V,V,..";
     match a.first().map(|s| s.as_str()) {
         Some("fn") => {
             let insns = load_asm(&a[1]);
@@ -634,6 +682,395 @@ fn main() {
                 }
             }
         }
+        Some("ptrs") => {
+            // Where 8-byte little-endian pointers to the given VMAs live in
+            // the image's file-backed sections — a virtual method's vtable
+            // slots (a stripped C++ binary calls it only through `call
+            // [rax+0x10]`, so `callers` sees nothing), a function pointer
+            // table, a static initialiser list. The row prints the holding
+            // VMA and, when the neighbouring qwords are code pointers too,
+            // the start of that run (the vtable's first slot) and the slot
+            // index — which is what a `call [reg+off]` site needs.
+            //   asmdig ptrs ELF ADDR...
+            let elf = Elf::open(&a[1]);
+            let targets: Vec<u64> = a[2..].iter().map(|s| hex(s).expect("addr")).collect();
+            let text = elf.secs.first().map(|&(v, _, s)| (v, v + s)).unwrap_or((0, 0));
+            let is_code = |v: u64| v >= text.0 && v < text.1;
+            for &(vaddr, off, size) in &elf.secs {
+                let bytes = &elf.data[off as usize..(off + size) as usize];
+                for i in (0..bytes.len().saturating_sub(8)).step_by(8) {
+                    let v = u64::from_le_bytes(bytes[i..i + 8].try_into().unwrap());
+                    if !targets.contains(&v) {
+                        continue;
+                    }
+                    // walk back over code pointers to the run's first slot
+                    let mut j = i;
+                    while j >= 8 {
+                        let p = u64::from_le_bytes(bytes[j - 8..j].try_into().unwrap());
+                        if !is_code(p) {
+                            break;
+                        }
+                        j -= 8;
+                    }
+                    let mut k = i;
+                    while k + 16 <= bytes.len() {
+                        let p = u64::from_le_bytes(bytes[k + 8..k + 16].try_into().unwrap());
+                        if !is_code(p) {
+                            break;
+                        }
+                        k += 8;
+                    }
+                    println!(
+                        "{:x}\tat {:x}\trun {:x}..{:x} ({} slots)\tslot {} (+0x{:x})",
+                        v,
+                        vaddr + i as u64,
+                        vaddr + j as u64,
+                        vaddr + k as u64 + 8,
+                        (k - j) / 8 + 1,
+                        (i - j) / 8,
+                        i - j
+                    );
+                }
+            }
+        }
+        Some("find") => {
+            // Every VMA where a byte pattern (hex, spaces optional, `??` a
+            // wildcard byte) occurs in a file-backed section — a table
+            // located by its first bytes (the LZ4 preset dictionary's `DDS |`
+            // head, a Blowfish P-array's first π words), a magic string.
+            //   asmdig find ELF HEXBYTES
+            let elf = Elf::open(&a[1]);
+            let pat: Vec<Option<u8>> = a[2]
+                .split_whitespace()
+                .flat_map(|w| {
+                    let w = w.to_string();
+                    (0..w.len() / 2).map(move |i| {
+                        let p = &w[2 * i..2 * i + 2];
+                        if p == "??" { None } else { Some(u8::from_str_radix(p, 16).expect("hex byte")) }
+                    })
+                })
+                .collect();
+            for &(vaddr, off, size) in &elf.secs {
+                let bytes = &elf.data[off as usize..(off + size) as usize];
+                let mut i = 0usize;
+                while i + pat.len() <= bytes.len() {
+                    if pat.iter().zip(&bytes[i..]).all(|(p, b)| p.map_or(true, |p| p == *b)) {
+                        println!("{:x}\t(file {:x})", vaddr + i as u64, off as usize + i);
+                    }
+                    i += 1;
+                }
+            }
+        }
+        Some("argsof") => {
+            // The resolved argument registers at EVERY call site of the
+            // targets, in one pass: the class-registration call
+            // (`Register(&info, classId, &parentInfo, "Name")`, ~3000 sites)
+            // read as a table instead of one `calls` run per caller — each
+            // run re-parses a 400 MB listing.
+            //   asmdig argsof ASM ELF ADDR...
+            let insns = load_asm(&a[1]);
+            let elf = Elf::open(&a[2]);
+            let targets: Vec<u64> = a[3..].iter().map(|s| hex(s).expect("addr")).collect();
+            let mut done_funcs: Vec<(usize, usize)> = Vec::new();
+            for (i, ins) in insns.iter().enumerate() {
+                if ins.mnem != "call" {
+                    continue;
+                }
+                let Some(t) = ins.ops.split_whitespace().next().and_then(hex) else { continue };
+                if !targets.contains(&t) {
+                    continue;
+                }
+                let chunks = func_chunks_in(&insns, &elf, ins.addr);
+                let Some(&(s, e)) = chunks.iter().find(|&&(s, e)| s <= i && i <= e) else { continue };
+                if done_funcs.contains(&(s, e)) {
+                    continue;
+                }
+                done_funcs.push((s, e));
+                trace_calls_filtered(&insns, &elf, s, e, &targets);
+            }
+        }
+        Some("cmptree") => {
+            // Evaluate a pure compare-tree function of one 32-bit register
+            // (`cmp edx,IMM` / conditional jumps / `mov eax,IMM` /
+            // `mov [rcx],eax|edx` / ret — the shape MSVC gives a big
+            // `switch` that maps ids to ids) at every immediate it compares
+            // against, and print the input → output table. The engine's
+            // class-id remap (0x1402f3570: 161 CGame ids → their 0x24xxxxxx
+            // archive ids) read as a table instead of 1000 lines of asm.
+            //   asmdig cmptree ASM ELF ADDR [REG] [--rust]
+            let insns = load_asm(&a[1]);
+            let elf = Elf::open(&a[2]);
+            let start = hex(&a[3]).expect("addr");
+            let rust = a.iter().any(|s| s == "--rust");
+            let reg = a.get(4).filter(|s| s.as_str() != "--rust").map(|s| s.as_str()).unwrap_or("edx");
+            let chunks = func_chunks_in(&insns, &elf, start);
+            let (s, e) = (chunks[0].0, chunks[chunks.len() - 1].1);
+            let body = &insns[s..=e];
+            let idx_of = |addr: u64| body.binary_search_by_key(&addr, |i| i.addr).ok();
+            let mut inputs: Vec<u64> = body
+                .iter()
+                .filter(|i| i.mnem == "cmp" && i.ops.starts_with(reg))
+                .filter_map(|i| i.ops.split_once(',').and_then(|(_, v)| hex(v.trim())))
+                .collect();
+            inputs.sort();
+            inputs.dedup();
+            for &input in &inputs {
+                let mut pc = idx_of(start).expect("start in function");
+                let (mut eax, mut out): (Option<u64>, Option<u64>) = (None, None);
+                let mut flags: Option<(u64, u64)> = None; // (lhs, rhs) of the last cmp
+                let mut steps = 0;
+                let result = loop {
+                    steps += 1;
+                    if steps > 10_000 || pc >= body.len() {
+                        break Err("runaway");
+                    }
+                    let ins = &body[pc];
+                    let (dst, src) = ins.ops.split_once(',').map(|(d, s)| (d.trim(), s.trim())).unwrap_or((ins.ops.trim(), ""));
+                    let tgt = || ins.ops.split_whitespace().next().and_then(hex).and_then(idx_of);
+                    match ins.mnem.as_str() {
+                        "cmp" if dst == reg => {
+                            flags = Some((input & 0xffff_ffff, hex(src).unwrap_or(0)));
+                            pc += 1;
+                        }
+                        "jmp" => match tgt() { Some(t) => pc = t, None => break Err("jmp out") },
+                        "ja" | "je" | "jne" | "jb" | "jbe" | "jae" => {
+                            let Some((l, r)) = flags else { break Err("jump without cmp") };
+                            let take = match ins.mnem.as_str() {
+                                "ja" => l > r,
+                                "jae" => l >= r,
+                                "je" => l == r,
+                                "jne" => l != r,
+                                "jb" => l < r,
+                                _ => l <= r,
+                            };
+                            if take {
+                                match tgt() { Some(t) => pc = t, None => break Err("jcc out") }
+                            } else {
+                                pc += 1;
+                            }
+                        }
+                        "mov" if dst == "eax" => {
+                            eax = if src == reg { Some(input) } else { hex(src) };
+                            pc += 1;
+                        }
+                        "mov" if dst == "DWORD PTR [rcx]" => {
+                            out = if src == "eax" { eax } else if src == reg { Some(input) } else { hex(src) };
+                            pc += 1;
+                        }
+                        "mov" | "sub" | "add" | "lea" | "nop" => pc += 1,
+                        "ret" => break Ok(out),
+                        _ => break Err("unsupported insn"),
+                    }
+                };
+                match result {
+                    Ok(Some(o)) if o != input && rust => println!("    (0x{:08X}, 0x{:08X}),", input, o),
+                    Ok(Some(o)) if o != input => println!("{:08x}\t{:08x}", input, o),
+                    Ok(Some(_)) if rust => {}
+                    Ok(Some(_)) => println!("{:08x}\t=", input),
+                    Ok(None) => println!("{:08x}	(no store)", input),
+                    Err(e) => println!("{:08x}	! {}", input, e),
+                }
+            }
+        }
+        Some("classtree") => {
+            // The engine's class hierarchy, read off the class registrations
+            // (Trackmania.exe: 0x1402d52e0 `Register(&info, classId,
+            // &parentInfo, "Name", …)` — 1631 sites — and 0x1402ea9e0
+            // `Register2(classId, "Name", size, isNod, parentClassId, …)`).
+            // Prints `classId TAB name TAB parentClassId TAB parentName` per
+            // class, sorted; `--rust` prints it as a Rust slice literal
+            // (mapgeom's `engine_classes.rs`). The pak cipher's dummy write
+            // folds the PARENT class id of every node, so this table is what
+            // the pak reader needs, straight from the binary that wrote the
+            // files rather than from a third party's chunk grammar.
+            //   asmdig classtree ASM ELF REG1 REG2 [--rust]
+            let insns = load_asm(&a[1]);
+            let elf = Elf::open(&a[2]);
+            let reg1 = hex(&a[3]).expect("reg1");
+            let reg2 = hex(&a[4]).expect("reg2");
+            let rust = a.get(5).map(|s| s == "--rust").unwrap_or(false);
+            // (info address, class id, name, parent info address) / (class id, name, parent id)
+            let mut by_info: HashMap<u64, (u64, String, u64)> = HashMap::new();
+            let mut direct: Vec<(u64, String, u64)> = Vec::new();
+            let mut done_funcs: Vec<(usize, usize)> = Vec::new();
+            for (i, ins) in insns.iter().enumerate() {
+                if ins.mnem != "call" {
+                    continue;
+                }
+                let Some(t) = ins.ops.split_whitespace().next().and_then(hex) else { continue };
+                if t != reg1 && t != reg2 {
+                    continue;
+                }
+                let chunks = func_chunks_in(&insns, &elf, ins.addr);
+                let Some(&(s, e)) = chunks.iter().find(|&&(s, e)| s <= i && i <= e) else { continue };
+                if done_funcs.contains(&(s, e)) {
+                    continue;
+                }
+                done_funcs.push((s, e));
+                for (tgt, regs) in trace_call_args(&insns, &elf, s, e, &[reg1, reg2]) {
+                    let imm = |r: &str| match regs.get(r) { Some(Val::Imm(n)) => Some(*n), _ => None };
+                    let ptr = |r: &str| match regs.get(r) { Some(Val::Ptr(p)) => Some(*p), _ => None };
+                    let name = |r: &str| ptr(r).and_then(|p| elf.cstr(p));
+                    if tgt == reg1 {
+                        if let (Some(info), Some(id), Some(n)) = (ptr("rcx"), imm("rdx"), name("r9")) {
+                            let parent = ptr("r8").unwrap_or(0);
+                            by_info.insert(info, (id, n, parent));
+                        }
+                    } else if let (Some(id), Some(n)) = (imm("rcx"), name("rdx")) {
+                        // r9d = 1 marks a CMwNod-derived class; structs pass 0
+                        if imm("r9") == Some(1) || imm("sp20").map(|p| p != 0).unwrap_or(false) {
+                            direct.push((id, n, imm("sp20").unwrap_or(0)));
+                        }
+                    }
+                }
+            }
+            let mut rows: Vec<(u64, String, u64, String)> = Vec::new();
+            for (_, (id, n, parent)) in &by_info {
+                let (pid, pname) = match by_info.get(parent) {
+                    Some((pid, pn, _)) => (*pid, pn.clone()),
+                    None => (0, String::new()),
+                };
+                rows.push((*id, n.clone(), pid, pname));
+            }
+            let name_of: HashMap<u64, String> = rows.iter().map(|(id, n, _, _)| (*id, n.clone())).collect();
+            for (id, n, pid) in &direct {
+                rows.push((*id, n.clone(), *pid, name_of.get(pid).cloned().unwrap_or_default()));
+            }
+            rows.sort();
+            rows.dedup_by_key(|r| r.0);
+            for (id, n, pid, pn) in &rows {
+                if rust {
+                    println!("    (0x{:08X}, 0x{:08X}), // {} : {}", id, pid, n, if pn.is_empty() { "-" } else { pn });
+                } else {
+                    println!("{:08X}	{}	{:08X}	{}", id, n, pid, pn);
+                }
+            }
+        }
+        Some("vtables") => {
+            // Every CMwNod-class vtable in the image, found by its shape: slot
+            // 3 is `GetClassId(&out) { *out = ID; }` (`mov DWORD PTR [rdx],ID`)
+            // and slot 4 `IsClassId(id)` compares against the same ID. Prints
+            // `classId TAB vtable TAB slot14 TAB kind` where slot 14 is the
+            // node's virtual `Archive(CClassicArchive&)` and kind says whether
+            // it is CMwNod::Archive itself (`base`), an override that calls
+            // it (`chains`), or one that never does (`custom`) — the pak
+            // cipher's dummy write lives in CMwNod::Archive, so a `custom`
+            // class (a plain-struct body: CPlugVegetTreeModel,
+            // CPlugDynaObjectModel, CPlugPrefab, …) folds nothing.
+            //   asmdig vtables ASM ELF BASE_ARCHIVE [--reg2 ADDR] [--rust]
+            let insns = load_asm(&a[1]);
+            let elf = Elf::open(&a[2]);
+            let base = hex(&a[3]).expect("CMwNod::Archive address");
+            let rust = a.iter().any(|s| s == "--rust");
+            let text = elf.secs.first().map(|&(v, _, s)| (v, v + s)).unwrap_or((0, 0));
+            let is_code = |v: u64| v >= text.0 && v < text.1;
+            let insn_at = |addr: u64| insns.binary_search_by_key(&addr, |x| x.addr).ok().map(|i| &insns[i]);
+            // does the function at `f` reach `base` (a call or a tail jmp, in any of its chunks)?
+            let reaches = |f: u64| -> bool {
+                for (s, e) in func_chunks_in(&insns, &elf, f) {
+                    for ins in &insns[s..=e] {
+                        if (ins.mnem == "call" || ins.mnem == "jmp") && ins.ops.split_whitespace().next().and_then(hex) == Some(base) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            };
+            let mut rows: Vec<(u64, u64, u64, &str)> = Vec::new();
+            for &(vaddr, off, size) in &elf.secs {
+                if is_code(vaddr) {
+                    continue;
+                }
+                let bytes = &elf.data[off as usize..(off + size) as usize];
+                let q = |i: usize| u64::from_le_bytes(bytes[i..i + 8].try_into().unwrap());
+                let mut i = 0usize;
+                while i + 15 * 8 <= bytes.len() {
+                    let s3 = q(i + 3 * 8);
+                    let s4 = q(i + 4 * 8);
+                    if is_code(s3) && is_code(s4) {
+                        let id3 = insn_at(s3).filter(|x| x.mnem == "mov" && x.ops.starts_with("DWORD PTR [rdx],")).and_then(|x| hex(x.ops.split_once(',').unwrap().1.trim()));
+                        // IsClassId: `cmp edx,ID` first, or after a `xor eax,eax` (CMwNod itself)
+                        let id4 = insns.binary_search_by_key(&s4, |x| x.addr).ok().and_then(|i| {
+                            insns[i..(i + 2).min(insns.len())].iter().find(|x| x.mnem == "cmp" && x.ops.starts_with("edx,")).and_then(|x| hex(x.ops.split_once(',').unwrap().1.trim()))
+                        });
+                        if let (Some(id), Some(id_b)) = (id3, id4) {
+                            if id == id_b && id & 0xFFF == 0 {
+                                let s14 = q(i + 14 * 8);
+                                let kind = if s14 == base { "base" } else if is_code(s14) && reaches(s14) { "chains" } else { "custom" };
+                                rows.push((id, vaddr + i as u64, s14, kind));
+                            }
+                        }
+                    }
+                    i += 8;
+                }
+            }
+            // Second anchor, for the classes registered through `Register2`
+            // (0x1402ea9e0), whose vtables carry no GetClassId/IsClassId pair:
+            // slot 2 (GetClassInfo) is `mov rax,[rip+INFO]; ret`, and the
+            // class's registration function ends with `call …; mov [rip+INFO],rax`
+            // right after its `Register2(classId, …)` call — so INFO names the
+            // registering function, whose Register2 arguments name the class.
+            if let Some(reg2) = a.iter().position(|s| s == "--reg2").and_then(|i| a.get(i + 1)).and_then(|s| hex(s)) {
+                // INFO pointer → the function storing it
+                let mut store_fn: HashMap<u64, (usize, usize)> = HashMap::new();
+                for (i, ins) in insns.iter().enumerate() {
+                    if ins.mnem == "mov" && ins.ops.starts_with("QWORD PTR [rip+") && ins.ops.ends_with(",rax") {
+                        if let Some(t) = ins.riptgt {
+                            if let Some(&(s, e)) = func_chunks_in(&insns, &elf, ins.addr).iter().find(|&&(s, e)| s <= i && i <= e) {
+                                store_fn.insert(t, (s, e));
+                            }
+                        }
+                    }
+                }
+                let known: std::collections::HashSet<u64> = rows.iter().map(|r| r.1).collect();
+                let mut extra: Vec<(u64, u64, u64, &str)> = Vec::new();
+                for &(vaddr, off, size) in &elf.secs {
+                    if is_code(vaddr) {
+                        continue;
+                    }
+                    let bytes = &elf.data[off as usize..(off + size) as usize];
+                    let q = |i: usize| u64::from_le_bytes(bytes[i..i + 8].try_into().unwrap());
+                    let mut i = 0usize;
+                    while i + 15 * 8 <= bytes.len() {
+                        let vt = vaddr + i as u64;
+                        let s2 = q(i + 2 * 8);
+                        if !known.contains(&vt) && is_code(s2) && is_code(q(i)) && is_code(q(i + 8)) {
+                            if let Some(x) = insn_at(s2).filter(|x| x.mnem == "mov" && x.ops.starts_with("rax,QWORD PTR [rip+")).and_then(|x| x.riptgt) {
+                                let next_is_ret = insns.binary_search_by_key(&s2, |x| x.addr).ok().and_then(|k| insns.get(k + 1)).map(|x| x.mnem == "ret").unwrap_or(false);
+                                if next_is_ret {
+                                    if let Some(&(s, e)) = store_fn.get(&x) {
+                                        for (tgt, regs) in trace_call_args(&insns, &elf, s, e, &[reg2]) {
+                                            if tgt != reg2 {
+                                                continue;
+                                            }
+                                            if let Some(Val::Imm(id)) = regs.get("rcx") {
+                                                let s14 = q(i + 14 * 8);
+                                                let kind = if s14 == base { "base" } else if is_code(s14) && reaches(s14) { "chains" } else { "custom" };
+                                                extra.push((*id, vt, s14, kind));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        i += 8;
+                    }
+                }
+                rows.extend(extra);
+                rows.sort();
+                rows.dedup();
+            }
+            rows.sort();
+            for (id, vt, s14, kind) in &rows {
+                if rust {
+                    if *kind == "custom" {
+                        println!("    0x{:08X}, // vtable {:x}, Archive {:x}", id, vt, s14);
+                    }
+                } else {
+                    println!("{:08X}	{:x}	{:x}	{}", id, vt, s14, kind);
+                }
+            }
+        }
         Some("consts") => {
             let elf = Elf::open(&a[1]);
             let wanted: Vec<f32> = a[2].split(',').map(|s| s.parse().expect("f32")).collect();
@@ -655,4 +1092,17 @@ fn main() {
         }
         _ => eprintln!("{}", usage),
     }
+}
+
+/// The immediate a 3-instruction `mov DWORD PTR [rcx],IMM; mov rax,rcx; ret`
+/// helper stores — the engine's per-class `GetClassId(&out)` getters.
+fn id_getter(insns: &[Insn], addr: u64) -> Option<u64> {
+    let i = insns.binary_search_by_key(&addr, |x| x.addr).ok()?;
+    let a = insns.get(i)?;
+    let b = insns.get(i + 1)?;
+    let c = insns.get(i + 2)?;
+    if a.mnem == "mov" && a.ops.starts_with("DWORD PTR [rcx],") && b.mnem == "mov" && b.ops == "rax,rcx" && c.mnem == "ret" {
+        return hex(a.ops.split_once(',')?.1.trim());
+    }
+    None
 }

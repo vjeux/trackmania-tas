@@ -46,6 +46,9 @@ pub struct Reader<'a> {
     pub marks: Vec<(usize, usize)>,
     /// Whether the one-per-body lookback version word has been consumed.
     lb_ver: bool,
+    /// The walk began mid-body (`Graph::node_at_offset`): the lookback
+    /// version word and earlier strings went by unseen.
+    pub mid_body: bool,
 }
 
 #[derive(Debug)]
@@ -69,7 +72,7 @@ pub type R<T> = Result<T, String>;
 
 impl<'a> Reader<'a> {
     pub fn new(b: &'a [u8]) -> Reader<'a> {
-        Reader { b, o: 0, lb: Vec::new(), lb_ver: false, marks: Vec::new() }
+        Reader { b, o: 0, lb: Vec::new(), lb_ver: false, marks: Vec::new(), mid_body: false }
     }
 
     /// A reader over a sub-slice that SHARES this reader's lookback table.
@@ -81,7 +84,7 @@ impl<'a> Reader<'a> {
         if end > self.b.len() {
             return Err(format!("sub-chunk of {} bytes past end of body", n));
         }
-        let mut r = Reader { b: &self.b[self.o..end], o: 0, lb: std::mem::take(&mut self.lb), lb_ver: self.lb_ver, marks: Vec::new() };
+        let mut r = Reader { b: &self.b[self.o..end], o: 0, lb: std::mem::take(&mut self.lb), lb_ver: self.lb_ver, marks: Vec::new(), mid_body: self.mid_body };
         let base = self.o;
         let out = f(&mut r);
         self.lb = std::mem::take(&mut r.lb);
@@ -201,14 +204,21 @@ impl<'a> Reader<'a> {
     /// The GBX "lookback" string: either a literal (which joins the table), a
     /// back-reference into the table, or a collection id.
     pub fn lookback(&mut self) -> R<String> {
-        if !self.lb_ver {
+        let mut raw = if self.lb_ver {
+            self.u32()?
+        } else {
             let v = self.u32()?;
-            if v != 3 {
+            self.lb_ver = true;
+            if v == 3 {
+                self.u32()?
+            } else if self.mid_body && (v >> 30 != 0) {
+                // A walk that began mid-body (`Graph::node_at_offset`): the
+                // version word went by earlier; this is already an index word.
+                v
+            } else {
                 return Err(format!("lookback version {} (expected 3) at 0x{:x}", v, self.o - 4));
             }
-            self.lb_ver = true;
-        }
-        let raw = self.u32()?;
+        };
         let flags = raw >> 30;
         let idx = raw & 0x3FFF_FFFF;
         if idx == 0x3FFF_FFFF {
@@ -225,8 +235,11 @@ impl<'a> Reader<'a> {
             self.lb.push(s.clone());
             return Ok(s);
         }
-        match self.lb.get(idx as usize - 1) {
+        raw = idx;
+        match self.lb.get(raw as usize - 1) {
             Some(s) => Ok(s.clone()),
+            // strings written before a mid-body walk began are not in the table
+            None if self.mid_body => Ok(format!("#lookback{raw}")),
             None => Err(format!(
                 "lookback index {} but only {} strings written (at 0x{:x})",
                 idx,
