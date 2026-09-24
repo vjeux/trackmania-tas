@@ -432,12 +432,20 @@ fn launch_and_hook(lock: &GameLock, t: Duration) -> Result<(), String> {
 fn enter_map(lock: &GameLock, map: &str) -> Result<(), String> {
     let r = ops::play_map(lock, map).map_err(|e| e.to_string())?;
     println!("  {}", r.trim());
-    if wait_for(lock.host(), "in-map", Duration::from_secs(90)).is_ok() {
-        println!("  in a map (PlayMap)");
-    } else {
-        println!("  PlayMap gave no playground in 90 s; trying the editor's TEST button");
-        let r = ops::enter_map_via_editor(lock, map, 180).map_err(|e| e.to_string())?;
-        println!("  {r}");
+    // THE LOAD CAN TAKE MINUTES, and the game says so if asked. A 90 s
+    // window here declared PlayMap dead three times on 2026-09-24 while the
+    // map was still loading; the car was on the track by the time anyone
+    // looked. So: no fixed window. Wait as long as the game is still busy
+    // loading (GhostShooter's /ctx keeps answering, the process is alive,
+    // no dialog), and give up only when it is demonstrably idle at the menu
+    // with nothing in flight -- or after the hard ceiling.
+    match wait_for_playground(lock, Duration::from_secs(600)) {
+        Ok(()) => println!("  in a map (PlayMap)"),
+        Err(why) => {
+            println!("  PlayMap: {why}; trying the editor's TEST button");
+            let r = ops::enter_map_via_editor(lock, map, 300).map_err(|e| e.to_string())?;
+            println!("  {r}");
+        }
     }
     wait_for(lock.host(), "in-map", Duration::from_secs(60))?;
     wait_for(lock.host(), "car", Duration::from_secs(60))?;
@@ -447,7 +455,40 @@ fn enter_map(lock: &GameLock, map: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// One measured jump. Returns the height gained.
+/// Wait for a playground, for as long as the game is plausibly still loading
+/// one. Progress is judged from the game, not a clock: the process alive,
+/// the plugin heartbeat advancing, no dialog up. A dialog means the load
+/// failed and is waiting on a human -- that is the one thing that ends the
+/// wait early, and it is answered with `yes` once before giving up.
+fn wait_for_playground(lock: &GameLock, ceiling: Duration) -> Result<(), String> {
+    let start = Instant::now();
+    let mut answered_dialog = false;
+    loop {
+        if let Some(s) = read_state() {
+            if s.in_playground && s.car_valid {
+                return Ok(());
+            }
+        }
+        if start.elapsed() > ceiling {
+            return Err(format!("no playground within the {}s ceiling", ceiling.as_secs()));
+        }
+        if tmdrive::game_pid(lock.host()).is_none() {
+            return Err("the game exited while loading".into());
+        }
+        let ctx = tmdrive::plugin::get("/ctx", 10).unwrap_or_default();
+        if ctx.contains("\"dialog\":\"") && !ctx.contains("\"dialog\":null") {
+            if answered_dialog {
+                return Err(format!("a dialog is blocking the load: {}", ctx.trim()));
+            }
+            let _ = ops::plugin(lock, "yes", "");
+            answered_dialog = true;
+        }
+        // The guard's renewer thread keeps the lease; nothing to do here.
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// One measured jump. Returns the height gained./// One measured jump. Returns the height gained.
 fn jump_test(lock: &GameLock) -> Result<f64, String> {
     let h = lock.host();
     {
