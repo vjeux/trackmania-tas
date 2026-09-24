@@ -70,8 +70,14 @@ const TOKEN_REUSE_SECS: u64 = 20 * 60;
 /// The plugin's (core, live) token files when both are younger than
 /// `TOKEN_REUSE_SECS` and look like tokens; `None` means mint under the lock.
 pub fn fresh_tokens() -> Option<(String, String)> {
+    fresh_tokens_in(STORE)
+}
+
+/// The same, from any directory (the devserver's copy pulled over the bridge —
+/// `tinyctl round-publish`, 2026-09-24).
+pub fn fresh_tokens_in(dir: &str) -> Option<(String, String)> {
     let fresh = |aud: &str| -> Option<String> {
-        let p = format!("{STORE}/token-{aud}.txt");
+        let p = format!("{dir}/token-{aud}.txt");
         let age = std::fs::metadata(&p).ok()?.modified().ok()?.elapsed().ok()?;
         let t = std::fs::read_to_string(&p).ok()?.trim().to_string();
         (age.as_secs() < TOKEN_REUSE_SECS && t.len() > 20).then_some(t)

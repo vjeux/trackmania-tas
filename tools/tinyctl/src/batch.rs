@@ -60,8 +60,8 @@ impl Tokens {
     /// Nadeo's core service, so with a young token the batch runs from any process,
     /// outside the game lock and in parallel (vjeux 2026-09-24: "figure out what endpoint
     /// is used for uploading so you can do it without the game").
-    fn from_files() -> Result<Tokens, String> {
-        let (core, live) = crate::nadeo::fresh_tokens().ok_or("no fresh plugin token files (older than 20 min or absent): mint first — a 3-second `shootctl get /nadeotoken?aud=NadeoServices` + `…aud=NadeoLiveServices` under tmdrive")?;
+    fn from_files(dir: &str) -> Result<Tokens, String> {
+        let (core, live) = crate::nadeo::fresh_tokens_in(dir).ok_or_else(|| format!("no fresh token files in {dir} (older than 20 min or absent): mint first — a 3-second `shootctl get /nadeotoken?aud=NadeoServices` + `…aud=NadeoLiveServices` under tmdrive"))?;
         let (mine, c) = curl(&["-H", &format!("Authorization: {live}"), &format!("{LIVE}/api/token/club/mine?length=1&offset=0")])?;
         let me = json_str(&mine, "authorAccountId").ok_or_else(|| format!("club/mine: HTTP {c} without authorAccountId (token files stale?)"))?;
         Ok(Tokens { core, live, me, shootctl: String::new(), files_only: true })
@@ -248,7 +248,8 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
     let jobs: usize = f("--jobs").and_then(|v| v.parse().ok()).unwrap_or(1).max(1);
     let files_only = tmmaps::cli::has(args, "--files-only");
     let summary = (|| -> Result<String, String> {
-        let mut t = if files_only { Tokens::from_files()? } else { Tokens::mint(&shootctl)? };
+        let token_dir = f("--token-dir").unwrap_or_else(|| crate::publish::STORE.to_string());
+        let mut t = if files_only { Tokens::from_files(&token_dir)? } else { Tokens::mint(&shootctl)? };
         let mut out = String::from("path\tname\tuid\tmapId\thow\tbytes\tmd5\tverdict\n");
         let mut uids: Vec<String> = Vec::new();
         let mut failed = 0usize;

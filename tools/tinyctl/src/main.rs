@@ -42,6 +42,7 @@ mod pagestatus;
 mod video;
 mod motion;
 mod nadeo;
+mod roundpub;
 mod batch;
 mod customsheet;
 mod thumbs;
@@ -209,6 +210,7 @@ fn main() {
         "publish-here" => publish::publish_here_cmd(rest),
         "nadeo-here" => nadeo::cmd(rest),
         "publish-batch" => batch::publish_batch_cmd(rest),
+        "round-publish" => roundpub::cmd(rest),
         "skip-manifest" => batch::skip_manifest_cmd(rest),
         "custom-sheet" => customsheet::cmd(rest),
         "thumbs" => thumbs::cmd(rest),

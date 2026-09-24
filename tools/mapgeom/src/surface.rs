@@ -579,6 +579,17 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     // Nadeo's own typo `PlatformGrasssSlope2UTop` spells its twins with the plain word
     let cand_name = name.replace("Grasss", "Grass").replace("DiagLeftWithWall", "WithWallDiagLeft").replace("DiagRightWithWall", "WithWallDiagRight");
     let Some(cand) = candidate(&cand_name, s) else {
+        // TINY_WATER_OVERLAY=1: a water block OUTSIDE the surface families (`WaterBase`, the
+        // pool walls and floors — Everios96 2026-09-24: "all blocks with water present")
+        // keeps its volume and gets the visual-only re-dressed copy too
+        if std::env::var("TINY_WATER_OVERLAY").map(|v| v == "1").unwrap_or(false) && s != "Water" {
+            if let Some(b) = idx.path_for(name).and_then(|p| idx.load(store, &p).ok().cloned()) {
+                let water_here = b.variant_base_ground.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false) || b.variant_base_air.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false);
+                if water_here && base_prefab(&b).is_some() {
+                    return mk(Action::Overlay, "", "water volume outside the surface families: kept as water + visual-only re-dressed overlay".into());
+                }
+            }
+        }
         return mk(Action::Keep, "", "not a surface family".into());
     };
     // The ICE START (`RoadIceStart`, the bobsleigh family's raised pad) has no
@@ -605,6 +616,16 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
     // every-set snow-top row: grass platforms turned to snow across the wood set —
     // Everios96 2026-09-23 11:12 "only wet wood". The author-placed ice tops still bake above.)
     if deck_only(s) && is_terrain_family(name) {
+        // TINY_WATER_OVERLAY=1: a WATER piece of the terrain families (`WaterBase`, the pool
+        // walls and floors) keeps its volume and gets the visual-only re-dressed copy
+        if name.contains("Water") && std::env::var("TINY_WATER_OVERLAY").map(|v| v == "1").unwrap_or(false) {
+            if let Some(b) = idx.path_for(name).and_then(|p| idx.load(store, &p).ok().cloned()) {
+                let water_here = b.variant_base_ground.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false) || b.variant_base_air.as_ref().map(|v| v.water_volumes > 0).unwrap_or(false);
+                if water_here && base_prefab(&b).is_some() {
+                    return mk(Action::Overlay, "", "water piece of a terrain family: kept as water + visual-only re-dressed overlay".into());
+                }
+            }
+        }
         return mk(Action::Keep, "", format!("terrain family: no {s} form, left as is"));
     }
     // the wall-ride family IS wood (TrackWall = Wood 14), and so is the snow theme's

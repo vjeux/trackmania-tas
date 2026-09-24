@@ -555,3 +555,8 @@ pub fn publish_one(n: usize, args: &[String], build_dir: Option<&Path>) -> Resul
 fn md5_hex(data: &[u8]) -> String {
     mapgeom::md5::md5(data).iter().map(|b| format!("{b:02x}")).collect()
 }
+
+/// `json_str` for the other modules (the first string value of key `k`, anywhere in `body`).
+pub fn json_str_pub(body: &str, k: &str) -> Option<String> {
+    json_str(body, k)
+}
