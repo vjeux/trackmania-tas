@@ -98,7 +98,7 @@ pub struct Atlas {
     pub img: Image, // 128×128 at sprite resolution (the DDS is this ×ATLAS_UPSCALE)
 }
 
-pub fn atlas(sh: &Sheets, slab: [u8; 3]) -> Atlas {
+pub fn atlas(sh: &Sheets, slab: [u8; 3], portrait: Option<&Image>) -> Atlas {
     let mut img = Image::solid(128, 128, [0, 0, 0, 255]);
     let blit = |img: &mut Image, src: &Image, ox: u32, oy: u32| {
         for y in 0..src.h {
@@ -123,6 +123,13 @@ pub fn atlas(sh: &Sheets, slab: [u8; 3]) -> Atlas {
         for x in 64..128 {
             let di = ((y * 128 + x) * 4) as usize;
             img.rgba[di..di + 3].copy_from_slice(&slab);
+        }
+    }
+    // the result-screen portrait (32×32) at (96, 96): the slab's rear face wears
+    // it like a licence plate
+    if let Some(p) = portrait {
+        if p.w == 32 && p.h == 32 {
+            blit(&mut img, p, 96, 96);
         }
     }
     Atlas { img }
@@ -203,23 +210,30 @@ pub fn standee(frame: &Image, slot: usize, view: View, ground_y: f32, texset: &s
 pub fn slab(ground_y: f32, texset: &str) -> Part {
     let (hx, y0, y1, hz) = (0.95f32, ground_y + 0.12, ground_y + 0.32, 1.25f32);
     let mut p = Part { texset: texset.to_string(), source: "slab".into(), ..Default::default() };
-    let c = uv(ATLAS_SLOTS[3].0 + 32, ATLAS_SLOTS[3].1 + 32);
-    let mut quad = |a: [f32; 3], b: [f32; 3], cc: [f32; 3], d: [f32; 3], n: [f32; 3]| {
+    let c = uv(ATLAS_SLOTS[3].0 + 16, ATLAS_SLOTS[3].1 + 16);
+    let mut quad = |a: [f32; 3], b: [f32; 3], cc: [f32; 3], d: [f32; 3], n: [f32; 3], uvs: Option<[[f32; 2]; 4]>| {
         let base = p.pos.len() as u32;
-        for v in [a, b, cc, d] {
+        for (k, v) in [a, b, cc, d].into_iter().enumerate() {
             p.pos.push(v);
             p.nrm.push(n);
-            p.uv.push(c);
+            p.uv.push(uvs.map(|u| u[k]).unwrap_or(c));
         }
         p.idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     };
+    // the portrait square of the atlas (96..128 × 96..128), v flipped like `uv`
+    let (pu0, pu1, pv_top, pv_bot) = (96.0 / 128.0, 128.0 / 128.0, 1.0 - 96.0 / 128.0, 1.0 - 128.0 / 128.0);
     // top (+y), bottom (−y), front (+z), back (−z), left (+x), right (−x)
-    quad([-hx, y1, -hz], [-hx, y1, hz], [hx, y1, hz], [hx, y1, -hz], [0.0, 1.0, 0.0]);
-    quad([-hx, y0, hz], [-hx, y0, -hz], [hx, y0, -hz], [hx, y0, hz], [0.0, -1.0, 0.0]);
-    quad([-hx, y0, hz], [hx, y0, hz], [hx, y1, hz], [-hx, y1, hz], [0.0, 0.0, 1.0]);
-    quad([hx, y0, -hz], [-hx, y0, -hz], [-hx, y1, -hz], [hx, y1, -hz], [0.0, 0.0, -1.0]);
-    quad([hx, y0, hz], [hx, y0, -hz], [hx, y1, -hz], [hx, y1, hz], [1.0, 0.0, 0.0]);
-    quad([-hx, y0, -hz], [-hx, y0, hz], [-hx, y1, hz], [-hx, y1, -hz], [-1.0, 0.0, 0.0]);
+    quad([-hx, y1, -hz], [-hx, y1, hz], [hx, y1, hz], [hx, y1, -hz], [0.0, 1.0, 0.0], None);
+    quad([-hx, y0, hz], [-hx, y0, -hz], [hx, y0, -hz], [hx, y0, hz], [0.0, -1.0, 0.0], None);
+    quad([-hx, y0, hz], [hx, y0, hz], [hx, y1, hz], [-hx, y1, hz], [0.0, 0.0, 1.0], None);
+    // back face, seen from behind (screen-right = −x): the portrait, square,
+    // centred, as tall as the slab
+    let ph = (y1 - y0) * 0.5;
+    quad([ph, y0, -hz], [-ph, y0, -hz], [-ph, y1, -hz], [ph, y1, -hz], [0.0, 0.0, -1.0], Some([[pu0, pv_bot], [pu1, pv_bot], [pu1, pv_top], [pu0, pv_top]]));
+    quad([hx, y0, -hz], [ph, y0, -hz], [ph, y1, -hz], [hx, y1, -hz], [0.0, 0.0, -1.0], None);
+    quad([-ph, y0, -hz], [-hx, y0, -hz], [-hx, y1, -hz], [-ph, y1, -hz], [0.0, 0.0, -1.0], None);
+    quad([hx, y0, hz], [hx, y0, -hz], [hx, y1, -hz], [hx, y1, hz], [1.0, 0.0, 0.0], None);
+    quad([-hx, y0, -hz], [-hx, y0, hz], [-hx, y1, hz], [-hx, y1, -hz], [-1.0, 0.0, 0.0], None);
     p
 }
 
@@ -262,14 +276,16 @@ pub struct SkinOut {
 pub fn build_character(
     template: &mapgeom::static_item::solid2::CPlugSolid2Model,
     ks: &KartSprites,
-    rom: &Rom,
+    rom: &mut Rom,
+    assets: &AssetIndex,
     display: &str,
     ground_y: f32,
     with_slab: bool,
 ) -> Result<SkinOut, String> {
     let sh = sheets(ks, rom)?;
     let colour = kart_colour(&sh.back);
-    let at = atlas(&sh, colour);
+    let portrait = ks.portrait(rom, assets).ok();
+    let at = atlas(&sh, colour, portrait.as_ref());
     let mut parts = vec![
         standee(&sh.back, 0, View::Back, ground_y, "Details"),
         standee(&sh.front, 1, View::Front, ground_y, "Details"),
@@ -325,8 +341,8 @@ pub fn cmd(args: &[String], decomp: &Path, rom_path: &Path) {
     let tpl = flag("--template").expect("--template <community MainBody.Mesh.gbx>");
     let out = std::path::PathBuf::from(flag("--out").expect("--out DIR"));
     std::fs::create_dir_all(&out).expect("create --out");
-    let rom = Rom::load(rom_path).expect("rom");
-    let _assets = AssetIndex::load(decomp).expect("asset index");
+    let mut rom = Rom::load(rom_path).expect("rom");
+    let assets = AssetIndex::load(decomp).expect("asset index");
     let bytes = std::fs::read(&tpl).expect("template");
     let model = mapgeom::store::Model::parse(&bytes, &tpl).expect("template model");
     let template = skin::template_from_body(&model.body).expect("template solid2");
@@ -349,7 +365,7 @@ pub fn cmd(args: &[String], decomp: &Path, rom_path: &Path) {
                 continue;
             }
         };
-        match build_character(&template, &ks, &rom, display, ground_y, with_slab) {
+        match build_character(&template, &ks, &mut rom, &assets, display, ground_y, with_slab) {
             Ok(s) => {
                 let file = out.join(format!("{}.zip", s.name));
                 std::fs::write(&file, &s.zip).expect("write zip");
