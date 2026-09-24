@@ -12,6 +12,7 @@
 #
 # Run on the box. Prints PASS/FAIL per case and a count at the end.
 
+SHOOTCTL=/home/vjeux/bin/shootctl
 TM=/home/vjeux/bin/tmdrive
 LOCK=/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/TmDriveLock
 CURL=/mnt/c/Windows/System32/curl.exe
@@ -143,6 +144,51 @@ TM_SESSION=$A TM_SESSION_TITLE="A" $TM run --purpose "outer hold" -- /bin/sh -c 
 if grep -q NESTED_OK /tmp/nested.out; then ok "the outer hold survived a nested acquire"; else bad "a nested acquire destroyed the outer hold"; fi
 out=$($TM status 2>&1)
 case "$out" in FREE*) ok "the outer hold released normally at the end";; *) bad "outer hold leaked: $out";; esac
+
+echo "=== 14. a nested acquire does NOT change the token ==="
+# THE BUG (u10s session, 2026-09-24): the nested ("ours") path minted a FRESH
+# token and overwrote the file. The outer `tmdrive run` had already exported
+# the old one as TM_LOCK_TOKEN, so every later command in the run carried a
+# stale key and the game refused them all.
+free_lock
+TM_SESSION=$A TM_SESSION_TITLE="A" $TM run --purpose "outer hold" -- /bin/sh -c "
+  t1=\$(cat '$LOCK/token' 2>/dev/null)
+  TM_SESSION=$A TM_SESSION_TITLE=A $TM status >/dev/null 2>&1
+  TM_SESSION=$A TM_SESSION_TITLE=A $TM plugin ctx --purpose 'nested' >/dev/null 2>&1
+  t2=\$(cat '$LOCK/token' 2>/dev/null)
+  [ \"\$t1\" = \"\$t2\" ] && echo TOKEN_STABLE || echo \"TOKEN_CHANGED \$t1 -> \$t2\"
+  [ \"\$TM_LOCK_TOKEN\" = \"\$t2\" ] && echo ENV_MATCHES || echo \"ENV_STALE\"
+" > /tmp/tok.out 2>&1
+grep -q TOKEN_STABLE /tmp/tok.out && ok "the token survives a nested acquire" || bad "a nested acquire changed the token: $(grep TOKEN_ /tmp/tok.out)"
+grep -q ENV_MATCHES  /tmp/tok.out && ok "the run's TM_LOCK_TOKEN still matches the file" || bad "the run's TM_LOCK_TOKEN went stale"
+
+echo "=== 15. a nested RELEASE does not free the outer hold ==="
+# The other half of the same report: `shootctl lock release` inside a live
+# `tmdrive run` matched on session id -- and a nested call is the same
+# session -- so it deleted the box out from under the running job.
+free_lock
+TM_SESSION=$A TM_SESSION_TITLE="A" $TM run --purpose "outer hold" -- /bin/sh -c "
+  TM_SESSION=$A TM_SESSION_TITLE=A $SHOOTCTL lock release >/dev/null 2>&1
+  [ -f '$LOCK/token' ] && echo STILL_HELD || echo LOCK_DESTROYED
+  sleep 2
+" > /tmp/rel.out 2>&1
+grep -q STILL_HELD /tmp/rel.out && ok "a nested release left the outer hold alone" || bad "a nested release destroyed the outer hold"
+out=$($TM status 2>&1)
+case "$out" in FREE*) ok "and the outer hold released normally at the end";; *) bad "the outer hold leaked: $out";; esac
+
+echo "=== 16. the hold survives the game dying INSIDE the run ==="
+# Their exact scenario: a run that starts with no game, launches one, and
+# keeps driving it.
+free_lock
+TM_SESSION=$A TM_SESSION_TITLE="A" $TM run --purpose "launch inside the run" -- /bin/sh -c "
+  t1=\$(cat '$LOCK/token' 2>/dev/null)
+  /mnt/c/Windows/System32/taskkill.exe /F /IM Trackmania.exe >/dev/null 2>&1
+  sleep 6
+  t2=\$(cat '$LOCK/token' 2>/dev/null)
+  [ -n \"\$t2\" ] && [ \"\$t1\" = \"\$t2\" ] && echo HELD_THROUGH || echo \"LOST \$t1 -> \$t2\"
+" > /tmp/restart.out 2>&1
+grep -q HELD_THROUGH /tmp/restart.out && ok "the token and the hold survive the game dying mid-run" || bad "the hold was lost when the game died: $(cat /tmp/restart.out | tail -1)"
+free_lock
 
 echo "=== 13. a holder keeps the box across its OWN game restart ==="
 # A bisect restarts the game inside its run; the old "game gone => reclaimable"

@@ -516,17 +516,28 @@ impl GameLock {
         let me = &self.identity.session_id;
         // Removing the directory removes the token with it, so a released lock
         // cannot leave a key behind that still opens the game.
+        //
+        // ONLY THE KEEPER MAY DELETE IT. `owner_pid` is the process holding
+        // this lock open; if it is alive and is not us, this is a nested
+        // release inside somebody else's hold and deleting would pull the box
+        // out from under a running job. The lease still reclaims a lock whose
+        // keeper died, so refusing here cannot wedge anything.
         let out = self.host.read_cmd(&format!(
             "L={LOCK_DIR}; if [ ! -d \"$L\" ]; then echo not-locked; exit 0; fi; \
              o=$(cat \"$L/session\" 2>/dev/null); \
              if [ \"$o\" != '{me}' ]; then echo \"refused:$o\"; exit 0; fi; \
-             rm -rf \"$L\"; echo released"
+             k=$(cat \"$L/owner_pid\" 2>/dev/null); \
+             if [ -n \"$k\" ] && [ \"$k\" != '{mypid}' ] && kill -0 \"$k\" 2>/dev/null; then \
+               echo \"nested:$k\"; exit 0; fi; \
+             rm -rf \"$L\"; echo released",
+            mypid = std::process::id()
         ));
         match out {
             Ok(s) if s.trim().starts_with("refused:") => Err(Error::Lock(format!(
                 "refusing to release a lock now held by {}",
                 s.trim().trim_start_matches("refused:")
             ))),
+            Ok(s) if s.trim().starts_with("nested:") => Ok(()),
             Ok(_) => Ok(()),
             Err(e) => Err(Error::Lock(e)),
         }
@@ -572,6 +583,20 @@ pub fn acquire_as(host: Host, identity: Identity, purpose: &str) -> Result<GameL
     // held by an unnamed owner -- `holder` treats that as HELD, which is the
     // safe reading (the reverse order would let a second driver create the
     // directory while the first was still naming itself).
+    // ONE TOKEN FOR THE LOCK'S LIFETIME.
+    //
+    // The nested ("ours") path used to mint a FRESH token and overwrite the
+    // file. That silently broke the outer hold: the parent had already
+    // exported the old token as TM_LOCK_TOKEN, every later command in the run
+    // still carried it, and the game refused them all. Reported by the u10s
+    // session on 2026-09-24 as "the run's TM_LOCK_TOKEN went stale".
+    //
+    // A nested acquire now REUSES the token and touches only purpose and the
+    // lease. The token is minted exactly once, by whoever creates the lock, so
+    // it also survives the holder restarting the game inside its own run.
+    //
+    // `owner_pid` is the process that keeps this lock alive (see release): the
+    // creator, or its renewer for a detached CLI hold.
     let script = format!(
         "L={LOCK_DIR}; \
          if mkdir -p \"$(dirname \"$L\")\" 2>/dev/null && mkdir \"$L\" 2>/dev/null; then \
@@ -581,15 +606,15 @@ pub fn acquire_as(host: Host, identity: Identity, purpose: &str) -> Result<GameL
            printf '%s' '{pid}'     > \"$L/game_pid\"; \
            printf '%s' '{now}'     > \"$L/acquired_at\"; \
            printf '%s' '{now}'     > \"$L/renewed_at\"; \
+           printf '%s' '{owner}'   > \"$L/owner_pid\"; \
            printf '%s' '{token}'   > \"$L/token\"; \
            echo ok; \
          else \
            o=$(cat \"$L/session\" 2>/dev/null); \
            if [ \"$o\" = '{session}' ]; then \
              printf '%s' '{purpose}' > \"$L/purpose\"; \
-             printf '%s' '{token}'   > \"$L/token\"; \
              printf '%s' '{now}'     > \"$L/renewed_at\"; \
-             echo ours; \
+             echo \"ours:$(cat \"$L/token\" 2>/dev/null)\"; \
            else echo \"busy:$o\"; fi; \
          fi",
         session = esc(&identity.session_id),
@@ -597,6 +622,7 @@ pub fn acquire_as(host: Host, identity: Identity, purpose: &str) -> Result<GameL
         purpose = esc(purpose),
         pid = pid.map(|p| p.to_string()).unwrap_or_default(),
         now = now,
+        owner = std::process::id(),
         token = esc(&token),
     );
 
@@ -608,9 +634,21 @@ pub fn acquire_as(host: Host, identity: Identity, purpose: &str) -> Result<GameL
             None => Err(Error::Lock("lost the acquire race, then the lock vanished".into())),
         };
     }
-    if out != "ok" && out != "ours" {
+    let owns = out == "ok";
+    // A nested acquire adopts the token already in the file.
+    let token = if owns {
+        token
+    } else if let Some(existing) = out.strip_prefix("ours:") {
+        let existing = existing.trim();
+        if existing.is_empty() {
+            return Err(Error::Lock(
+                "we hold the lock but it carries no token — release it and take it again".into(),
+            ));
+        }
+        existing.to_string()
+    } else {
         return Err(Error::Lock(format!("unexpected acquire result: {out}")));
-    }
+    };
 
     set_held_token(Some(token.clone()));
     // Children inherit the token, so a driver that shells out to another tool
@@ -622,7 +660,7 @@ pub fn acquire_as(host: Host, identity: Identity, purpose: &str) -> Result<GameL
         identity,
         token,
         released: Arc::new(AtomicBool::new(false)),
-        owns: out == "ok",
+        owns,
     };
     // Only the creator needs a renewer; a nested guard rides the outer one's.
     if lock.owns {
@@ -684,7 +722,14 @@ pub fn acquire_detached(host: Host, purpose: &str) -> Result<()> {
         .stderr(std::process::Stdio::null())
         .spawn();
     match spawned {
-        Ok(_) => {
+        Ok(child) => {
+            // The RENEWER is the keeper now: this process is about to exit,
+            // so recording its pid would make the very next release think the
+            // keeper had died. Release checks owner_pid, so it must name a
+            // process that lives as long as the hold.
+            let _ = lock
+                .host
+                .read_cmd(&format!("printf '%s' '{}' > '{LOCK_DIR}/owner_pid'", child.id()));
             // The lock must outlive this process: do NOT run Drop.
             std::mem::forget(lock);
             Ok(())
@@ -724,17 +769,32 @@ pub fn renew_daemon(host: &Host) {
 /// Release a lock taken by [`acquire_detached`] from another process.
 pub fn release_detached(host: &Host) -> Result<String> {
     let me = Identity::from_env()?.session_id;
+    // Same keeper rule as the in-process release: a nested
+    // `shootctl lock release` inside a live `tmdrive run` must NOT delete the
+    // outer hold. This is the bug the u10s session hit on 2026-09-24 — the
+    // release matched on session id alone, and the same session is exactly
+    // what a nested call is.
     let out = host
         .read_cmd(&format!(
             "L={LOCK_DIR}; if [ ! -d \"$L\" ]; then echo not-locked; exit 0; fi; \
              o=$(cat \"$L/session\" 2>/dev/null); \
              if [ \"$o\" != '{me}' ]; then echo \"refused:$o\"; exit 0; fi; \
-             rm -rf \"$L\"; echo released"
+             k=$(cat \"$L/owner_pid\" 2>/dev/null); \
+             if [ -n \"$k\" ] && [ \"$k\" != '{mypid}' ] && kill -0 \"$k\" 2>/dev/null; then \
+               echo \"nested:$k\"; exit 0; fi; \
+             rm -rf \"$L\"; echo released",
+            mypid = std::process::id()
         ))
         .map_err(Error::Lock)?;
     let out = out.trim().to_string();
     if let Some(who) = out.strip_prefix("refused:") {
         return Err(Error::Lock(format!("held by {who}, not us — refusing to release it")));
+    }
+    if let Some(keeper) = out.strip_prefix("nested:") {
+        return Ok(format!(
+            "left held — this release is nested inside a live hold (keeper pid {keeper}), \
+             which owns the lock's lifetime"
+        ));
     }
     Ok(out)
 }
