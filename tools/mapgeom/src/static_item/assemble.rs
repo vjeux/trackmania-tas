@@ -734,20 +734,77 @@ pub fn synthesize_solid_uv1(visuals: &mut [super::merged::MergedVisual], m: &sup
         if has_uv1(mv) || is_card(mv) {
             continue;
         }
+        // the index list first (the unweld below rewrites it)
+        let Some(ib) = mv.visual.index_buffer.as_ref() else { continue };
+        let idx: Vec<u32> = ib.indices.clone();
+        if idx.len() < 3 { continue; }
         let Some(main) = mv.visual.main.as_mut() else { continue };
         let Some(super::Node::VertexStream(s)) = main.vertex_streams.first_mut().and_then(|r| r.inline.as_deref_mut()) else { continue };
         let Some(pi) = s.decls.iter().position(|d| d.name() == N_POSITION) else { continue };
         let Elem::Float3(pos) = &s.elems[pi] else { continue };
         if pos.is_empty() { continue; }
-        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-        for p in pos { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
-        let ext = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
-        // drop the smallest axis
-        let drop = if ext[0] <= ext[1] && ext[0] <= ext[2] { 0 } else if ext[1] <= ext[2] { 1 } else { 2 };
-        let (ax, ay) = match drop { 0 => (2, 1), 1 => (0, 2), _ => (0, 1) };
-        let (ex, ey) = (ext[ax].max(1e-4), ext[ay].max(1e-4));
-        let uv: Vec<[f32; 2]> = pos.iter().map(|p| [0.001 + 0.998 * (p[ax] - lo[ax]) / ex, 0.001 + 0.998 * (p[ay] - lo[ay]) / ey]).collect();
-        // append the element: decls carry the stride in bits 20..27 (in 4-byte units) — recompute
+        // BOX UNWRAP: every triangle goes to the group of its face normal's dominant axis (±x ±y ±z), each
+        // group is projected onto its perpendicular plane and laid in one cell of a 3×2 grid of the unit
+        // square — no two faces share texels (a plain planar map put a cliff's front and back faces on
+        // top of each other and the editor's bake left both near black, 2026-09-23). Vertices are unwelded
+        // (three per triangle) so each face can carry its own uv1.
+        let ntri = idx.len() / 3;
+        let mut group: Vec<usize> = Vec::with_capacity(ntri);
+        for t in 0..ntri {
+            let p: Vec<[f32; 3]> = (0..3).map(|k| pos.get(idx[t * 3 + k] as usize).copied().unwrap_or([0.0; 3])).collect();
+            let e1 = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
+            let e2 = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
+            let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+            let ax = if n[0].abs() >= n[1].abs() && n[0].abs() >= n[2].abs() { 0 } else if n[1].abs() >= n[2].abs() { 1 } else { 2 };
+            group.push(ax * 2 + if n[ax] >= 0.0 { 0 } else { 1 });
+        }
+        // per group: the projected bounds
+        let plane = |ax: usize| -> (usize, usize) { match ax { 0 => (2, 1), 1 => (0, 2), _ => (0, 1) } };
+        let mut gb: Vec<[f32; 4]> = vec![[f32::MAX, f32::MAX, f32::MIN, f32::MIN]; 6];
+        for t in 0..ntri {
+            let g = group[t];
+            let (ax, ay) = plane(g / 2);
+            for k in 0..3 {
+                let p = pos.get(idx[t * 3 + k] as usize).copied().unwrap_or([0.0; 3]);
+                let b = &mut gb[g];
+                b[0] = b[0].min(p[ax]); b[1] = b[1].min(p[ay]); b[2] = b[2].max(p[ax]); b[3] = b[3].max(p[ay]);
+            }
+        }
+        // the cells: the groups in use, side by side (up to 6 → 3×2)
+        let used: Vec<usize> = (0..6).filter(|g| group.iter().any(|x| x == g)).collect();
+        let cols = if used.len() <= 1 { 1 } else if used.len() <= 4 { 2 } else { 3 };
+        let rows = (used.len() + cols - 1) / cols;
+        let (cw, ch) = (1.0 / cols as f32, 1.0 / rows as f32);
+        let margin = 0.004f32;
+        // the unwelded stream: every element gathered per index, plus the new TexCoord1
+        let n_new = idx.len();
+        let mut uv1: Vec<[f32; 2]> = Vec::with_capacity(n_new);
+        for t in 0..ntri {
+            let g = group[t];
+            let ci = used.iter().position(|x| *x == g).unwrap_or(0);
+            let (cx, cy) = ((ci % cols) as f32 * cw + margin, (ci / cols) as f32 * ch + margin);
+            let (iw, ih) = (cw - 2.0 * margin, ch - 2.0 * margin);
+            let (ax, ay) = plane(g / 2);
+            let b = gb[g];
+            let (ex, ey) = ((b[2] - b[0]).max(1e-4), (b[3] - b[1]).max(1e-4));
+            // uniform scale inside the cell, centred
+            let sc = (iw / ex).min(ih / ey);
+            let (ox, oy) = (cx + (iw - ex * sc) * 0.5, cy + (ih - ey * sc) * 0.5);
+            for k in 0..3 {
+                let p = pos.get(idx[t * 3 + k] as usize).copied().unwrap_or([0.0; 3]);
+                uv1.push([ox + (p[ax] - b[0]) * sc, oy + (p[ay] - b[1]) * sc]);
+            }
+        }
+        let gather = |e: &Elem| -> Elem {
+            match e {
+                Elem::Float2(v) => Elem::Float2(idx.iter().map(|&i| v.get(i as usize).copied().unwrap_or([0.0; 2])).collect()),
+                Elem::Float3(v) => Elem::Float3(idx.iter().map(|&i| v.get(i as usize).copied().unwrap_or([0.0; 3])).collect()),
+                Elem::Float4(v) => Elem::Float4(idx.iter().map(|&i| v.get(i as usize).copied().unwrap_or([0.0; 4])).collect()),
+                Elem::Word(v) => Elem::Word(idx.iter().map(|&i| v.get(i as usize).copied().unwrap_or(0)).collect()),
+                Elem::Raw { size, bytes } => Elem::Raw { size: *size, bytes: idx.iter().flat_map(|&i| { let o = i as usize * *size; bytes.get(o..o + *size).map(|b| b.to_vec()).unwrap_or_else(|| vec![0; *size]) }).collect() },
+            }
+        };
+        let new_elems: Vec<Elem> = s.elems.iter().map(gather).collect();
         let compress = s.compress_local3d.unwrap_or(false);
         let old_stride: u32 = s.decls.iter().map(|d| super::vstream::type_size(d.stored_type(compress)).unwrap_or(4) as u32).sum();
         let stride = old_stride + 8;
@@ -759,7 +816,14 @@ pub fn synthesize_solid_uv1(visuals: &mut [super::merged::MergedVisual], m: &sup
         }
         decls.push(Decl::with_stride(N_TEXCOORD0 + 1, T_FLOAT2, SPACE_LOCAL3D, offset, stride / 4));
         s.decls = decls;
-        s.elems.push(Elem::Float2(uv));
+        s.elems = new_elems;
+        s.elems.push(Elem::Float2(uv1));
+        s.count = n_new as i32;
+        // the visual's own vertex count and its index list (now 0..n)
+        main.count = n_new as i32;
+        if let Some(ib) = mv.visual.index_buffer.as_mut() {
+            ib.indices = (0..n_new as u32).collect();
+        }
         mv.part = next_part;
         next_part += 1;
         n_done += 1;
