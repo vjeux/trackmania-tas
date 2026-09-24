@@ -1116,7 +1116,14 @@ fn bake_block(store: &mut DataStore, plan: &BlockBake, name: &str, path: &str, b
                 _ => Some(("Stadium\\Media\\Material\\Penalty", 2u8)),
             };
             if let Some((flink, fphys)) = floor {
-                let y = 2.0 * scale;
+                // The generated slab sits a hair ABOVE the road deck height: a frame at GROUND
+                // level has the game's own grass plane exactly at 2.0 (the frame block is gone,
+                // so the cell's ground tile is drawn and collides) — coplanar, the two z-fight
+                // and the wheels read the ground's Grass instead of the snow (wet wood 37,
+                // Everios96 2026-09-24 "flickering a lot, and it's penalty grass").
+                // TINY_PENALTY_FLOOR_LIFT metres (default 0.015; 0 = the old coplanar slab).
+                let lift: f32 = std::env::var("TINY_PENALTY_FLOOR_LIFT").ok().and_then(|v| v.parse().ok()).unwrap_or(0.015);
+                let y = (2.0 + lift) * scale;
                 let (sx0, sx1) = (3.2 * scale, 8.0 * scale);
                 let (ex0, ex1) = (24.0 * scale, 28.8 * scale);
                 let (w0, w1) = (0.0, 32.0 * scale);
