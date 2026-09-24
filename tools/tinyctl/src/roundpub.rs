@@ -34,7 +34,6 @@ use crate::batch;
 use crate::wsx::Wsx;
 
 const STORE_REMOTE: &str = "/mnt/c/Users/vjeux/OpenplanetNext/PluginStorage/GhostShooter";
-const BOX_HUNT: &str = "/home/vjeux/shoot/hunt";
 const WOOD_BUILD: &str = "2026-02-02_17_51";
 const WOOD_RECORD: &str = "date=2026-02-02_17_51 git=128149-c7d05ad2551 GameVersion=3.3.0";
 
@@ -221,35 +220,33 @@ fn read_identical(results: &Path) -> BTreeMap<String, String> {
 /// The plugin mints both tokens under the game lock (a few seconds), the files come over
 /// the bridge into `token_dir` (`token-NadeoServices.txt`, `token-NadeoLiveServices.txt`).
 fn mint_tokens(wsx: &Wsx, token_dir: &Path) -> Result<(), String> {
-    // The box may be held by another job for a long time: the mint is started DETACHED on
-    // the box (it queues on `tmdrive run --wait`), and this side polls for the token files
-    // with short bridge calls (the bridge caps one call at 150 s).
-    let stamp = format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
-    let env = "export TM_SESSION=080a15b8-2c6a-4fff-9d8a-db7d0072ee43; export TM_SESSION_TITLE='Tiny u10s publish'; export PATH=/home/vjeux/bin:$PATH";
-    let launch = "if [ \"$(tasklist.exe 2>/dev/null | grep -ci trackmania)\" = 0 ]; then sed -i 's/^DeveloperMode=false/DeveloperMode=true/' /mnt/c/Users/vjeux/OpenplanetNext/Settings.ini; tmdrive launch --timeout 240 --purpose \"mint (launch)\" --wait 1800; fi";
-    let mint = format!(
-        "rm -f {STORE_REMOTE}/token-*.txt; tmdrive run --purpose \"mint Nadeo tokens\" --wait 1800 -- /home/vjeux/bin/shootctl get /nadeotoken?aud=NadeoServices; tmdrive run --purpose \"mint Nadeo tokens\" --wait 1800 -- /home/vjeux/bin/shootctl get /nadeotoken?aud=NadeoLiveServices; for i in 1 2 3 4 5 6 7 8 9 10; do [ -s {STORE_REMOTE}/token-NadeoLiveServices.txt ] && [ -s {STORE_REMOTE}/token-NadeoServices.txt ] && break; sleep 1; done; echo MINT-END-{stamp} >> {BOX_HUNT}/mint.log"
-    );
-    let detached = format!("cd {BOX_HUNT}; echo MINT-START-{stamp} >> mint.log; (setsid nohup bash -c '{env}; {launch}; {mint}' >> mint.log 2>&1 < /dev/null &); echo started");
-    wsx.sh(&detached).map_err(|e| format!("mint start: {e}"))?;
+    // The box may be held by another job for a long time, and one bridge call is capped
+    // at 150 s: wait for the box in ≤120-second slices, then mint in one short call
+    // (the two `tmdrive run` steps take a few seconds each; a lost race just loops).
+    let env = "cd /home/vjeux/shoot/hunt; export TM_SESSION=080a15b8-2c6a-4fff-9d8a-db7d0072ee43; export TM_SESSION_TITLE=\"Tiny u10s publish\"; export PATH=/home/vjeux/bin:$PATH";
     let t0 = Instant::now();
     loop {
-        std::thread::sleep(std::time::Duration::from_secs(8));
-        let probe = wsx.sh(&format!("grep -c MINT-END-{stamp} {BOX_HUNT}/mint.log; ls -la {STORE_REMOTE}/token-NadeoServices.txt {STORE_REMOTE}/token-NadeoLiveServices.txt 2>/dev/null | wc -l; tail -2 {BOX_HUNT}/mint.log | cut -c1-100")).unwrap_or_default();
-        let mut lines = probe.lines();
-        let ended = lines.next().map(|l| l.trim() != "0").unwrap_or(false);
-        let files = lines.next().and_then(|l| l.trim().parse::<u32>().ok()).unwrap_or(0);
-        if ended && files == 2 {
-            break;
+        // the game itself: launched as its own lock step when it is not running
+        let up = wsx.sh("tasklist.exe 2>/dev/null | grep -ci trackmania").unwrap_or_default().trim().to_string();
+        if up == "0" {
+            println!("  mint: the game is not running — launching (own lock step)");
+            let _ = wsx.sh(&format!("{env}; sed -i \"s/^DeveloperMode=false/DeveloperMode=true/\" /mnt/c/Users/vjeux/OpenplanetNext/Settings.ini; tmdrive launch --timeout 120 --purpose \"mint (launch)\" --wait 100"));
         }
-        if ended {
-            return Err(format!("mint ended without both token files: {}", probe.trim()));
+        let out = wsx.sh(&format!("{env}; tmdrive wait --timeout 120 > /dev/null 2>&1; echo RC=$?")).unwrap_or_default();
+        if out.contains("RC=0") {
+            let mint = format!(
+                "{env}; rm -f {STORE_REMOTE}/token-*.txt; tmdrive run --purpose \"mint Nadeo tokens\" --wait 60 -- /home/vjeux/bin/shootctl get /nadeotoken?aud=NadeoServices > /dev/null 2>&1; echo RC1=$?; tmdrive run --purpose \"mint Nadeo tokens\" --wait 60 -- /home/vjeux/bin/shootctl get /nadeotoken?aud=NadeoLiveServices > /dev/null 2>&1; echo RC2=$?; for i in 1 2 3 4 5 6 7 8 9 10; do [ -s {STORE_REMOTE}/token-NadeoLiveServices.txt ] && [ -s {STORE_REMOTE}/token-NadeoServices.txt ] && break; sleep 1; done; ls {STORE_REMOTE}/token-*.txt 2>/dev/null | wc -l"
+            );
+            let r = wsx.sh(&mint).unwrap_or_default();
+            if r.lines().last().map(|l| l.trim() == "2").unwrap_or(false) {
+                break;
+            }
+            println!("  mint: no token files yet ({}) — retrying", r.replace('\n', " ").trim());
+        } else if t0.elapsed().as_secs() % 600 < 130 {
+            println!("  mint: waiting for the box ({}s)", t0.elapsed().as_secs());
         }
-        if t0.elapsed().as_secs() > 2400 {
-            return Err(format!("mint: no tokens after 40 min (box held?): {}", probe.trim()));
-        }
-        if t0.elapsed().as_secs() % 120 < 8 {
-            println!("  mint: waiting for the box ({}s) — {}", t0.elapsed().as_secs(), probe.lines().last().unwrap_or("").trim());
+        if t0.elapsed().as_secs() > 3600 {
+            return Err("mint: no tokens after 60 min (box held?)".into());
         }
     }
     for aud in ["NadeoServices", "NadeoLiveServices"] {
