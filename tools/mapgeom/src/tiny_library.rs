@@ -2891,6 +2891,18 @@ pub fn apply_surface_swap(store: &mut DataStore, m: &mut crate::static_item::bui
     // decals) take their plain variant when the pack has one (Everios96
     // 2026-09-14 10:27: the plastic 11 bobsleigh start "is still ice mostly")
     if !surface_rows.is_empty() && !surface_rows.iter().any(|(_, to, _)| to.contains("RoadIce")) {
+        // The bobsleigh family's `RoadIce` faces are seen from INSIDE the trough and the
+        // start pad's walls from both sides; the game's ice material draws both faces, the
+        // one-sided deck materials the swaps put on them do not — magnet 11's start block
+        // had "parts invisible" (Everios96 2026-09-24 17:57). Every RoadIce-family visual
+        // of a RoadIce block gets its back faces (TINY_ICE_TWO_SIDED=0 leaves it).
+        if name.starts_with("RoadIce") && std::env::var("TINY_ICE_TWO_SIDED").map(|v| v != "0").unwrap_or(true) {
+            for l in ["RoadIce", "TrackWall", "DecalMarksStartOnRoadIce", "DecalSponsor1x1BigAOnRoadIce", "DecalSponsor4x1AOnRoadIce", "DecalSponsor4x1BOnRoadIce", "DecalSponsor4x1COnRoadIce", "DecalSponsor4x1DOnRoadIce"] {
+                if !m.two_sided_links.iter().any(|t| t == l) {
+                    m.two_sided_links.push(l.to_string());
+                }
+            }
+        }
         // the pack stores these under hashed names, so they are named here; each
         // plain twin is looked up by name (the store hashes it) before a row is made
         let pairs: [(&str, &[&str]); 6] = [

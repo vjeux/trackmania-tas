@@ -1073,7 +1073,11 @@ impl Merged {
                         continue;
                     }
                 }
-                src_links.push(if m.name.is_empty() { None } else { Some(m.name.clone()) });
+                // the source link for `two_sided_links`: the UserInst's own link when the
+                // custom material carries no name (every modern Stadium prefab — the ice
+                // start's RoadIce faces never matched before, 2026-09-24)
+                let inst_link: Option<String> = m.inst().and_then(|inst| inst.link().map(|s| s.to_string())).filter(|l| !l.is_empty());
+                src_links.push(if !m.name.is_empty() { Some(m.name.clone()) } else { inst_link });
                 slots.push(match m.inst() {
                     Some(inst) => Some(self.material_inst_slot(inst, &s2.materials_folder)),
                     None if !m.name.is_empty() => Some(self.link_slot(&m.name, 0)),

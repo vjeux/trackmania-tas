@@ -87,7 +87,15 @@ pub fn surface_env(surface: &str) -> Result<Vec<(String, String)>, String> {
         // look: a BLACK deck (vjeux 2026-09-14 19:30Z: "strong magnet, with a black
         // texture" — the mesh-editor magnet checker was too busy), the modeler
         // concrete tinted #101010, physics TechSuperMagnetic 62 forced
-        "Magnet" => road_stems.iter().chain(["PlatformTech", "TrackWall"].iter()).map(|st| format!("{st}=Stadium\\Media\\Material_BlockCustom\\CustomConcrete@62#101010")).collect(),
+        // … and the BOBSLEIGH family's sponsor decals (`…OnRoadIce`: 274 m² of the ice start's
+        // 350 m² pad is one big ad) go black too — "the bobsleigh's magnet color is purple,
+        // and not the black magnet we wanted" (Everios96 2026-09-24 17:57 on magnet 11). The
+        // other starts' small deck ads are left as they are.
+        "Magnet" => road_stems
+            .iter()
+            .chain(["PlatformTech", "TrackWall", "DecalSponsor1x1BigAOnRoadIce", "DecalSponsor4x1AOnRoadIce", "DecalSponsor4x1BOnRoadIce", "DecalSponsor4x1COnRoadIce", "DecalSponsor4x1DOnRoadIce"].iter())
+            .map(|st| format!("{st}=Stadium\\Media\\Material_BlockCustom\\CustomConcrete@62#101010"))
+            .collect(),
         "Tech" => road_stems.iter().filter(|st| **st != "RoadTech").map(|st| format!("{st}=Stadium\\Media\\Material\\RoadTech")).collect(),
         other => return Err(format!("surface `{other}`: no dress table")),
     };
