@@ -270,6 +270,7 @@ misreporting their time.
 
 ## Where to develop
 
-On the WhiteStick box, not a devserver — the devserver cannot reach GitHub,
-so anything committed there is invisible to everyone. See
-[tools/DEVELOPING.md](tools/DEVELOPING.md).
+GitHub work on an AGENT-FIRST devserver (`envspec=agentic-ai-short-term-lease`,
+full internet); game work on the WhiteStick box. An ordinary devserver or OD
+cannot reach GitHub at all, so anything committed there is invisible to
+everyone. See [tools/DEVELOPING.md](tools/DEVELOPING.md).
