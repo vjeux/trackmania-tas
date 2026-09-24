@@ -70,6 +70,14 @@ pub fn census(label: &str, sf: &CPlugSurface, at: &Xform, up_cos: f32, mat_name:
     };
     println!("{label}: surf type {} v{}/{} {} vertices {} triangles materials [{}] ids {:?}", sf.surf.type_id(), sf.version, sf.surf_version, verts.len(), tris.len(), mats.join(", "), sf.material_ids);
     let verts: Vec<[f32; 3]> = verts.iter().map(|v| apply(at, *v)).collect();
+    // SURFHIST_TRIS=1: every collision triangle's vertices (the hull shape itself — a wall
+    // whose collision face sits behind its visual face, Giant 100's bob, 2026-09-23)
+    if std::env::var("SURFHIST_TRIS").map(|v| v == "1").unwrap_or(false) {
+        for (k, t) in tris.iter().enumerate() {
+            let p: Vec<String> = t.indices.iter().filter_map(|i| verts.get(*i as usize)).map(|v| format!("({:.2},{:.2},{:.2})", v[0], v[1], v[2])).collect();
+            println!("  tri {k:4} physics {:3} {}", t.material_id, p.join(" "));
+        }
+    }
     let mut rows: BTreeMap<(u8, u8, i16), Row> = BTreeMap::new();
     for t in &tris {
         let Some([a, b, c]) = t.indices.iter().map(|i| verts.get(*i as usize).copied()).collect::<Option<Vec<_>>>().map(|v| [v[0], v[1], v[2]]) else { continue };
