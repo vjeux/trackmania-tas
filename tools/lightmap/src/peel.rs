@@ -89,9 +89,16 @@ impl ABuffer {
         let b = &self.bands[(y / self.band_h) as usize];
         let i = ((y - (y / self.band_h) * self.band_h) * self.res + x) as usize;
         // the game peels at most 20 layers per direction (RenderLightIndirectPeel, counter > 0x13 stops):
-        // a texel deeper than the 20th surface from the sky takes that 20th layer, never a deeper one
+        // the 20 kept here are the 20 nearest the SKY (smallest z); a texel deeper than all of them takes
+        // the 20th. (Keeping the 20 nearest the receivers instead — "layer 1 = the deepest surface" — was
+        // tried 2026-09-24 02:00Z: tiny 16 went from +42 % to +57 %; neither explains the editor's darker
+        // hills under dense canopies. LMTOOL_LAYERS_NEAR=1 selects the receiver-side reading.)
         let (a, c) = (b.0[i] as usize, b.0[i + 1] as usize);
-        &b.1[a..c.min(a + MAX_LAYERS)]
+        if std::env::var_os("LMTOOL_LAYERS_NEAR").is_some() {
+            &b.1[c.saturating_sub(MAX_LAYERS).max(a)..c]
+        } else {
+            &b.1[a..c.min(a + MAX_LAYERS)]
+        }
     }
     /// Total fragment count.
     pub fn len(&self) -> usize {
