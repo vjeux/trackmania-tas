@@ -187,7 +187,17 @@ pub fn add_static(course: &Course, mesh: &mut Mesh, frame: &Frame, obj: &CourseO
 /// A `CustomPlastic` game material tinted `rgb` (sRGB bytes → linear floats
 /// in the material's `TargetColor` constant).
 pub fn plastic(rgb: [u8; 3], physics: u8) -> CPlugMaterialUserInst {
-    let mut m = CPlugMaterialUserInst::game_material("Stadium\\Media\\Material_BlockCustom\\CustomPlastic", physics);
+    // MK64_OBJ_MAT: the game material the moving figures wear. CustomPlastic +
+    // TargetColor drew NOTHING on a moving part (2026-09-24 22:00: mounds and
+    // mole SHADOWS, no moles) — the modeler materials are resolved by the item
+    // editor, not by a prefab's dyna part. The item-box line-up's opaque ones
+    // (Pylon grey, TechnicsTrims dark) do draw there — 22:52 A/B: both show a
+    // Monty Mole silhouette on its mound; the dark one reads as a mole.
+    let link = std::env::var("MK64_OBJ_MAT").unwrap_or_else(|_| "Stadium\\Media\\Material\\TechnicsTrims".to_string());
+    if !link.contains("Custom") {
+        return CPlugMaterialUserInst::game_material(&link, physics);
+    }
+    let mut m = CPlugMaterialUserInst::game_material(&link, physics);
     if let Some(main) = m.main.as_mut() {
         main.material_name = Id::Str(format!("Plastic_{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]));
         main.csts = vec![Cst { u01: Id::Str("TargetColor".into()), u02: Id::Str("Real".into()), u03: 3 }];

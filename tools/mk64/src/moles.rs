@@ -103,7 +103,12 @@ fn quantise(rgb: [u8; 3]) -> [u8; 3] {
 
 /// A `CustomPlastic` game material tinted `rgb` through its `TargetColor`.
 fn plastic(rgb: [u8; 3], physics: u8) -> CPlugMaterialUserInst {
-    let mut m = CPlugMaterialUserInst::game_material("Stadium\\Media\\Material_BlockCustom\\CustomPlastic", physics);
+    // see objects::plastic — CustomPlastic drew nothing on a moving part
+    let link = std::env::var("MK64_OBJ_MAT").unwrap_or_else(|_| "Stadium\\Media\\Material\\TechnicsTrims".to_string());
+    if !link.contains("Custom") {
+        return CPlugMaterialUserInst::game_material(&link, physics);
+    }
+    let mut m = CPlugMaterialUserInst::game_material(&link, physics);
     if let Some(main) = m.main.as_mut() {
         main.material_name = Id::Str(format!("Mole_{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]));
         main.csts = vec![Cst { u01: Id::Str("TargetColor".into()), u02: Id::Str("Real".into()), u03: 3 }];
