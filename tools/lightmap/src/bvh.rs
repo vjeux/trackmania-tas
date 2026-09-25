@@ -576,6 +576,14 @@ impl Bvh {
         let mut t0 = 0f32;
         let mut t1 = tmax;
         for k in 0..3 {
+            if inv[k].is_infinite() {
+                // an axis-aligned ray (d_k = 0): the slab test degenerates to "is the origin inside the slab";
+                // (bmin − o)·∞ would be NaN when the origin sits exactly on the slab plane (a probe on a cell edge)
+                if o[k] < bmin[k] || o[k] > bmax[k] {
+                    return false;
+                }
+                continue;
+            }
             let a = (bmin[k] - o[k]) * inv[k];
             let b = (bmax[k] - o[k]) * inv[k];
             let (lo, hi) = if a < b { (a, b) } else { (b, a) };

@@ -2770,6 +2770,68 @@ fn run(a: Vec<String>) {
                 for b in 0..6 { if cnt[b] > 0.0 { println!("  {}: n={:>8} mean HDR (K=1 units) r {:.3} g {:.3} b {:.3}", dirs[b], cnt[b], sum[b][0] / cnt[b], sum[b][1] / cnt[b], sum[b][2] / cnt[b]); } }
             }
         }
+        "probe-safety" => {
+            // lmtool probe-safety MAP [--block 22,4,20,29,12,27] [--pos 472,-46,-8] [--cell 16]: the game's
+            // ProbeCpt_SafetyOffset_Compute over the port's BVH (probesafety.rs) — prints every offset probe as the
+            // SNORM16 triple the TMapProbeSafetyOffset volume stores (pwc-day: (25, 5, 23) → (0, 5529, 0))
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let nums = |s: String| -> Vec<f32> { s.split(',').map(|v| v.trim().parse::<f32>().unwrap()).collect() };
+            let blk = f("--block").map(nums).unwrap_or_else(|| vec![22.0, 4.0, 20.0, 29.0, 12.0, 27.0]);
+            let pos = f("--pos").map(nums).unwrap_or_else(|| vec![472.0, -46.0, -8.0]);
+            let cell: f32 = f("--cell").map(|s| s.parse().unwrap()).unwrap_or(16.0);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let bvh = lightmap::bvh::Bvh::build(lightmap::bake::world_tris(&scene));
+            let mn = [blk[0] as u32, blk[1] as u32, blk[2] as u32];
+            let mx = [blk[3] as u32, blk[4] as u32, blk[5] as u32];
+            for (i, inst) in scene.instances.iter().enumerate() {
+                let m = &scene.models[inst.model];
+                let mut lo = [f32::MAX; 3];
+                let mut hi = [f32::MIN; 3];
+                for t in &bvh.tris {
+                    if t.inst as usize != i { continue; }
+                    for p in [t.p0, [t.p0[0] + t.e1[0], t.p0[1] + t.e1[1], t.p0[2] + t.e1[2]], [t.p0[0] + t.e2[0], t.p0[1] + t.e2[1], t.p0[2] + t.e2[2]]] {
+                        for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); }
+                    }
+                }
+                eprintln!("  instance {i}: model {} ({} tris) pose {:?} world box {lo:?}..{hi:?}", inst.model_name, m.tris.len(), inst.pose.pos);
+            }
+            if let Some(dbg) = f("--debug-probe") {
+                let c: Vec<u32> = dbg.split(',').map(|v| v.trim().parse().unwrap()).collect();
+                let p = [pos[0] + cell * c[0] as f32, pos[1] + cell * c[1] as f32, pos[2] + cell * c[2] as f32];
+                let r = (cell * 0.45 * 0.5).max(0.5);
+                eprintln!("probe {c:?} at {p:?}, r {r}:");
+                for d in [[r, 0.0, 0.0], [-r, 0.0, 0.0], [0.0, r, 0.0], [0.0, -r, 0.0], [0.0, 0.0, r], [0.0, 0.0, -r]] {
+                    use lightmap::probesafety::RayQuery;
+                    match bvh.cast(p, d) { Some(h) => eprintln!("  ray {d:?}: hit t {} normal {:?}", h.t, h.normal), None => eprintln!("  ray {d:?}: none") }
+                }
+                eprintln!("  unit −y closest tmax 20: {:?}", bvh.closest(p, [0.0, -1.0, 0.0], 20.0).map(|h| (h.t, h.tri)));
+                eprintln!("  unit −y closest from y+0.01 tmax 20: {:?}", bvh.closest([p[0], p[1] + 0.01, p[2]], [0.0, -1.0, 0.0], 20.0).map(|h| (h.t, h.tri)));
+                eprintln!("  tilted closest: {:?}", bvh.closest(p, [0.001, -1.0, 0.001], 20.0).map(|h| (h.t, h.tri)));
+                eprintln!("  offset: {:?}", lightmap::probesafety::probe_safety_offset(&bvh, p, [cell; 3]));
+            }
+            let offs = lightmap::probesafety::block_offsets(&bvh, mn, mx, [pos[0], pos[1], pos[2]], cell);
+            println!("{} triangles; block {mn:?}..{mx:?} pos {pos:?} cell {cell}: {} offset probes", bvh.tris.len(), offs.len());
+            for (x, y, z, o) in &offs {
+                let p = [pos[0] + cell * *x as f32, pos[1] + cell * *y as f32, pos[2] + cell * *z as f32];
+                println!("  probe ({x}, {y}, {z}) at {p:?}: snorm16 {o:?} = {:?} cells", o.map(|v| v as f32 / 32767.0));
+            }
+            // --compare FILE.dds[.gz]: the captured TMapProbeSafetyOffset (R16G16B16A16_SNORM 32×16×32) against ours, as raw i16
+            if let Some(cmp) = f("--compare") {
+                let b = lightmap::prepass::read_maybe_gz(std::path::Path::new(&cmp)).unwrap_or_else(|e| panic!("{e}"));
+                let (w, h, d) = (u32::from_le_bytes(b[16..20].try_into().unwrap()), u32::from_le_bytes(b[12..16].try_into().unwrap()), u32::from_le_bytes(b[24..28].try_into().unwrap()));
+                let data = &b[148..];
+                let mut ours = vec![[0i16; 3]; (w * h * d) as usize];
+                for (x, y, z, o) in &offs { ours[((*z * h + *y) * w + *x) as usize] = *o; }
+                let mut diff = 0usize;
+                let mut nz = 0usize;
+                for i in 0..(w * h * d) as usize {
+                    let cap = [i16::from_le_bytes([data[i * 8], data[i * 8 + 1]]), i16::from_le_bytes([data[i * 8 + 2], data[i * 8 + 3]]), i16::from_le_bytes([data[i * 8 + 4], data[i * 8 + 5]])];
+                    if cap != [0; 3] { nz += 1; }
+                    if cap != ours[i] { diff += 1; if diff <= 10 { println!("  DIFF at ({}, {}, {}): captured {cap:?} ours {:?}", i as u32 % w, (i as u32 / w) % h, i as u32 / (w * h), ours[i]); } }
+                }
+                println!("compare {cmp}: {w}×{h}×{d}, {nz} non-zero captured probes, {diff} probes differ → {}", if diff == 0 { "BIT-EXACT" } else { "MISMATCH" });
+            }
+        }
         "chartcmp" => {
             // lmtool chartcmp MAP ITEM OUTBASE [--sun-az D --sun-el D] [--flip-v] [--k K]: Nadeo's chart vs ours for one item, x8 PPMs
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
