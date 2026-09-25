@@ -60,6 +60,11 @@ fn main() {
     run(a);
 }
 
+/// A POSIX shell single-quoting of one argument (for the `ssh host lmtool …` range bakes).
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn run(a: Vec<String>) {
     match a[0].as_str() {
         "walk" => {
@@ -6467,6 +6472,11 @@ fn run(a: Vec<String>) {
             //   Markdown table beside it. --writer transcribed asks the bake for the transcribed file chain
             //   (finalisation → filecheck::file_images → the writer) once it is wired (--file-transcribed); the
             //   default is the port's own chunk encoder. Nothing is uploaded.
+            // --boxes N [--hosts h1,h2,…] [--work DIR] [--keep-work]: THE DIRECTION-RANGE SPLIT (contrib.rs) — every
+            //   sweep of a map runs as N range bakes (box k takes the directions k/N; local child processes, or
+            //   `ssh host lmtool …` per host of --hosts, which must see this binary, the map and --work at the same
+            //   paths), then one merge that replays the contributions in issue order and writes the sweep's field
+            //   for the next sweep's boxes (the last one writes the map) — bit-identical to the single-box bake
             let mut maps: Vec<String> = Vec::new();
             let mut extra: Vec<String> = Vec::new();
             let mut quality = "4".to_string();
@@ -6474,6 +6484,10 @@ fn run(a: Vec<String>) {
             let mut out_dir: Option<String> = None;
             let mut manifest: Option<String> = None;
             let mut writer = "port".to_string();
+            let mut boxes = 1usize;
+            let mut hosts: Vec<String> = Vec::new();
+            let mut work: Option<String> = None;
+            let mut keep_work = false;
             let mut i = 1;
             let mut in_extra = false;
             while i < a.len() {
@@ -6486,6 +6500,10 @@ fn run(a: Vec<String>) {
                     "--out-dir" => { out_dir = Some(a[i + 1].clone()); i += 1; }
                     "--manifest" => { manifest = Some(a[i + 1].clone()); i += 1; }
                     "--writer" => { writer = a[i + 1].clone(); i += 1; }
+                    "--boxes" => { boxes = a[i + 1].parse().expect("--boxes"); i += 1; }
+                    "--hosts" => { hosts = a[i + 1].split(',').map(|h| h.trim().to_string()).filter(|h| !h.is_empty()).collect(); i += 1; }
+                    "--work" => { work = Some(a[i + 1].clone()); i += 1; }
+                    "--keep-work" => keep_work = true,
                     "--maps" => { let txt = std::fs::read_to_string(&a[i + 1]).expect("--maps list"); for l in txt.lines() { let l = l.trim(); if !l.is_empty() && !l.starts_with('#') { maps.push(l.to_string()); } } i += 1; }
                     _ => maps.push(x.clone()),
                 }
@@ -6512,10 +6530,85 @@ fn run(a: Vec<String>) {
                         let out = out_dir.join(&name);
                         let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
                         let t = std::time::Instant::now();
-                        let mut cmd = std::process::Command::new(&exe);
-                        cmd.arg("bake").arg(m).arg("--raster").arg("--quality").arg(&quality).arg("--game-peel").arg("--profile").arg("--out").arg(&out);
-                        for e in &extra { cmd.arg(e); }
-                        let output = cmd.output();
+                        let output: std::io::Result<std::process::Output> = if boxes <= 1 {
+                            let mut cmd = std::process::Command::new(&exe);
+                            cmd.arg("bake").arg(m).arg("--raster").arg("--quality").arg(&quality).arg("--game-peel").arg("--profile").arg("--out").arg(&out);
+                            for e in &extra { cmd.arg(e); }
+                            cmd.output()
+                        } else {
+                            // THE SPLIT: per sweep the N range bakes (local, or one per host), then the merge
+                            let n_sweeps = lightmap::dome::sweep_counts(quality.parse().unwrap_or(3)).len().max(1);
+                            let wroot = std::path::PathBuf::from(work.clone().unwrap_or_else(|| out_dir.join("work").to_string_lossy().to_string())).join(&name);
+                            let _ = std::fs::create_dir_all(&wroot);
+                            let mut all_err = String::new();
+                            let mut all_out = String::new();
+                            let mut ok = true;
+                            for sw in 0..n_sweeps {
+                                let field_prev = wroot.join(format!("field{}.bin", sw.wrapping_sub(1)));
+                                let mut children: Vec<(usize, std::process::Child)> = Vec::new();
+                                let t_sw = std::time::Instant::now();
+                                for k in 0..boxes {
+                                    let cdir = wroot.join(format!("s{sw}-box{k}"));
+                                    let mut args: Vec<String> = vec!["bake".into(), m.clone(), "--raster".into(), "--quality".into(), quality.clone(), "--game-peel".into(), "--profile".into()];
+                                    args.extend(extra.iter().cloned());
+                                    args.extend(["--sweep-only".into(), sw.to_string(), "--dir-range".into(), format!("{k}/{boxes}"), "--contrib-out".into(), cdir.to_string_lossy().to_string(), "--out".into(), wroot.join(format!("s{sw}-box{k}.Map.Gbx")).to_string_lossy().to_string()]);
+                                    if sw > 0 { args.extend(["--field-from".into(), field_prev.to_string_lossy().to_string()]); }
+                                    let mut cmd = if hosts.is_empty() {
+                                        let mut c = std::process::Command::new(&exe);
+                                        c.args(&args);
+                                        c
+                                    } else {
+                                        let host = &hosts[k % hosts.len()];
+                                        let mut c = std::process::Command::new("ssh");
+                                        c.arg("-o").arg("BatchMode=yes").arg(host).arg(exe.to_string_lossy().to_string());
+                                        for x in &args { c.arg(shell_quote(x)); }
+                                        c
+                                    };
+                                    cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+                                    match cmd.spawn() {
+                                        Ok(ch) => children.push((k, ch)),
+                                        Err(e) => { all_err += &format!("sweep {sw} box {k}: spawn: {e}\n"); ok = false; }
+                                    }
+                                }
+                                for (k, ch) in children {
+                                    match ch.wait_with_output() {
+                                        Ok(o) => {
+                                            let err = String::from_utf8_lossy(&o.stderr).to_string();
+                                            let _ = std::fs::write(wroot.join(format!("s{sw}-box{k}.log")), &err);
+                                            if !o.status.success() { ok = false; all_err += &format!("sweep {sw} box {k} FAILED: {}\n", err.lines().rev().take(3).collect::<Vec<_>>().join(" | ")); }
+                                        }
+                                        Err(e) => { ok = false; all_err += &format!("sweep {sw} box {k}: {e}\n"); }
+                                    }
+                                }
+                                let range_s = t_sw.elapsed().as_secs_f32();
+                                if !ok { break; }
+                                // THE MERGE of the sweep (the last one writes the map)
+                                let t_m = std::time::Instant::now();
+                                let mut cmd = std::process::Command::new(&exe);
+                                cmd.arg("bake").arg(m).arg("--raster").arg("--quality").arg(&quality).arg("--game-peel").arg("--profile");
+                                for e in &extra { cmd.arg(e); }
+                                let dirs: Vec<String> = (0..boxes).map(|k| wroot.join(format!("s{sw}-box{k}")).to_string_lossy().to_string()).collect();
+                                cmd.arg("--sweep-only").arg(sw.to_string()).arg("--merge-contrib").arg(dirs.join(",")).arg("--field-out").arg(wroot.join(format!("field{sw}.bin")));
+                                if sw > 0 { cmd.arg("--field-from").arg(&field_prev); }
+                                cmd.arg("--out").arg(if sw + 1 == n_sweeps { out.clone() } else { wroot.join(format!("merge{sw}.Map.Gbx")) });
+                                match cmd.output() {
+                                    Ok(o) => {
+                                        let err = String::from_utf8_lossy(&o.stderr).to_string();
+                                        all_out += &String::from_utf8_lossy(&o.stdout);
+                                        // the merge's profile lines carry the sweep totals of the merge alone: the row's
+                                        // sweep timings are the range bakes' wall + the merge's
+                                        all_err += &err.lines().filter(|l| !l.starts_with("profile [sweep ")).collect::<Vec<_>>().join("\n");
+                                        all_err += &format!("\nprofile [sweep {sw}]: split over {boxes} box(es): range bakes {range_s:.1}s, merge {:.1}s; sweep total {:.1}s\n", t_m.elapsed().as_secs_f32(), range_s + t_m.elapsed().as_secs_f32());
+                                        if !o.status.success() { ok = false; all_err += &format!("sweep {sw} merge FAILED: {}\n", err.lines().rev().take(3).collect::<Vec<_>>().join(" | ")); }
+                                        if !keep_work { for d in &dirs { let _ = std::fs::remove_dir_all(d); } }
+                                    }
+                                    Err(e) => { ok = false; all_err += &format!("sweep {sw} merge: {e}\n"); }
+                                }
+                                if !ok { break; }
+                            }
+                            if !keep_work && ok { let _ = std::fs::remove_dir_all(&wroot); }
+                            Ok(std::process::Output { status: std::process::Command::new(if ok { "true" } else { "false" }).status().expect("status"), stdout: all_out.into_bytes(), stderr: all_err.into_bytes() })
+                        };
                         let bake_s = t.elapsed().as_secs_f32();
                         let mut row = Row { map: m.clone(), out: out.to_string_lossy().to_string(), bake_s, started, host: host.clone(), ..Default::default() };
                         match output {
@@ -6569,7 +6662,7 @@ fn run(a: Vec<String>) {
             js.push_str("  ]\n}\n");
             std::fs::write(&manifest, &js).expect("manifest");
             let mut md = String::new();
-            md.push_str(&format!("# lmtool relight-batch — quality {quality}, {} maps, {} at a time, writer {writer}, extra {:?}, {:.0} s wall ({})\n\n| map | triangles | items | texels | peels/dir | sweeps (s) | bake (s) | peak RSS | check | |\n|---|---|---|---|---|---|---|---|---|---|\n", rows.len(), jobs, extra, t_all.elapsed().as_secs_f32(), host));
+            md.push_str(&format!("# lmtool relight-batch — quality {quality}, {} maps, {} at a time, {boxes} box(es) per map{}, writer {writer}, extra {:?}, {:.0} s wall ({})\n\n| map | triangles | items | texels | peels/dir | sweeps (s) | bake (s) | peak RSS | check | |\n|---|---|---|---|---|---|---|---|---|---|\n", rows.len(), jobs, if hosts.is_empty() { String::new() } else { format!(" on {}", hosts.join(",")) }, extra, t_all.elapsed().as_secs_f32(), host));
             for r in &rows {
                 md.push_str(&format!("| {} | {} | {} | {} | {} | {} | {:.1} | {} | {} | {} |\n", std::path::Path::new(&r.map).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default(), r.tris, r.insts, r.texels, r.peels, r.sweeps.iter().map(|s| format!("{s:.1}")).collect::<Vec<_>>().join(" / "), r.bake_s, r.rss, if r.check_ok { "ok".to_string() } else if r.bake_ok { format!("{} FAIL", r.check_fails) } else { "bake FAILED".to_string() }, r.note));
             }
