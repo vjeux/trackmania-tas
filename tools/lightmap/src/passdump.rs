@@ -159,6 +159,15 @@ pub struct Entry {
     pub viewport: Option<Vec<f32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eid_last: Option<u64>,
+    /// A capture's accumulation snapshot: the index (issue order within the sweep) of the direction
+    /// just accumulated, and whether the buffer was banked.
+    /// Which capture run an entry came from (a capture's direction indices are its own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sweep_direction_index: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banked: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raster: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -417,6 +426,9 @@ pub fn entry(pass: &str, file: String, space: &str) -> Entry {
         direction: None,
         layer: None,
         peel: None,
+        capture: None,
+        sweep_direction_index: None,
+        banked: None,
         chart: None,
         file,
         format: String::new(),

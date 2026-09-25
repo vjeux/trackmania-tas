@@ -809,10 +809,16 @@ fn run(a: Vec<String>) {
                         scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[1]], albedo: alb, water });
                         scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[3], q[2]], albedo: alb, water });
                     };
-                    // the game's tile is one surface: the capture's second world layer holds the items alone (651 px
-                    // against 10.5 M with a floor under the water) — no sand floor unless --sand-floor
+                    // THE CAPTURE (2026-09-24, passcap-info on the world peel's layer 0): the game's zone tile is ONE flat
+                    // surface at y = 3.76 + bias ≈ 4.0 = the SEABED, 3 m under the collection's sea level — the water
+                    // plane is not in the peel at all (the second world layer holds the items alone: 651 px against
+                    // 10.5 M with a floor under a water quad). The tile is the sand floor; --tile-water restores the
+                    // water quad at the sea level (with the old sand floor under it: --sand-floor)
+                    let tile_water = has("--tile-water");
                     let sand = has("--sand-floor");
-                    for &(cx, cz) in &water_cells { quad(cx, cz, sea_y, water_alb, true); if sand { quad(cx, cz, sea_y - 3.0, sand_alb, false); } }
+                    for &(cx, cz) in &water_cells {
+                        if tile_water { quad(cx, cz, sea_y, water_alb, true); if sand { quad(cx, cz, sea_y - 3.0, sand_alb, false); } } else { quad(cx, cz, sea_y - 3.0, sand_alb, false); }
+                    }
                     for &(cx, cz) in &land_cells { quad(cx, cz, sea_y + 3.0, land_alb, false); }
                     eprintln!("zone tiles: {} water cells (sea level {sea_y}), {} land cells ({})", water_cells.len(), land_cells.len(), if zones.len() == 4096 { "from the genealogy" } else { "from the map's Sea blocks — the genealogy is empty" });
                 }
@@ -1308,9 +1314,63 @@ fn run(a: Vec<String>) {
                     let m = &scene.models[inst.model]; let sc = (inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]).sqrt(); lightmap::bake::chart_size(m, sc, p)
                 }).collect()
             };
+            // --sky-probe GAME/MANIFEST.json: the FIRST DIVERGENT PASS's own tool — the game's dome colour along
+            // every captured direction against our sky model for the same vector (per-channel ratios, the
+            // elevation), then exit; --sky-probe-fit tries the model's switches and reports the best
+            // --dir-order GAME/MANIFEST.json: bake the first sweep's directions in the GAME's issue order (from
+            // its accumulation snapshots), so the accumulation after direction k is the game's after k; the
+            // directions the capture has not reached yet follow in our order. --dump-lightsum-after LIST|game:
+            // dump the accumulation target after those directions (game = the banked snapshots' indices)
+            if let Some(gm) = f("--dir-order") {
+                let game = lightmap::passdiff::read_manifest(&std::fs::read_to_string(&gm).expect("--dir-order manifest")).expect("--dir-order manifest");
+                let ord = lightmap::passdiff::game_issue_order(&game, 0, &prm.sphere_dirs);
+                let mut used = vec![false; prm.sphere_dirs.len()];
+                let mut new_dirs: Vec<[f32; 3]> = Vec::new();
+                let mut worst = 0.0f32;
+                for (k, oi) in &ord {
+                    if new_dirs.len() != *k as usize { eprintln!("dir-order: the capture's issue order has a gap before position {k} (have {}); the order is followed as far as it goes", new_dirs.len()); break; }
+                    if used[*oi as usize] { eprintln!("dir-order: our direction {oi} matched twice; stopping at position {k}"); break; }
+                    used[*oi as usize] = true;
+                    let gd = game.passes.iter().find(|e| e.sweep_direction_index == Some(*k) && e.dir.is_some()).and_then(|e| e.dir).unwrap();
+                    let od = prm.sphere_dirs[*oi as usize];
+                    worst = worst.max((od[0] * gd[0] + od[1] * gd[1] + od[2] * gd[2]).clamp(-1.0, 1.0).acos().to_degrees());
+                    new_dirs.push(od);
+                }
+                let matched = new_dirs.len();
+                for (i, d) in prm.sphere_dirs.iter().enumerate() { if !used[i] { new_dirs.push(*d); } }
+                eprintln!("dir-order: {matched} of {} directions in the game's issue order (worst match {worst:.3}°), the rest in ours", new_dirs.len());
+                prm.sphere_dirs = std::sync::Arc::new(new_dirs);
+                if let Some(v) = f("--dump-lightsum-after") {
+                    prm.lightsum_after = if v == "game" {
+                        game.passes.iter().filter(|e| e.pass == "hbasis0" && e.banked.unwrap_or(true) && e.sweep.unwrap_or(0) == 0).filter_map(|e| e.sweep_direction_index).filter(|k| (*k as usize) < matched).collect()
+                    } else { v.split(',').map(|x| x.trim().parse().expect("--dump-lightsum-after")).collect() };
+                    eprintln!("dump-lightsum-after: {:?}", prm.lightsum_after);
+                }
+            } else if let Some(v) = f("--dump-lightsum-after") {
+                prm.lightsum_after = v.split(',').map(|x| x.trim().parse().expect("--dump-lightsum-after")).collect();
+            }
+            if let Some(gm) = f("--sky-probe") {
+                let root = std::path::Path::new(&gm).parent().unwrap().to_path_buf();
+                let game = lightmap::passdiff::read_manifest(&std::fs::read_to_string(&gm).expect("--sky-probe manifest")).expect("--sky-probe manifest");
+                let mut domes = lightmap::passdiff::dome_colours(&game, &root);
+                domes.sort_by(|a, b| a.0[1].partial_cmp(&b.0[1]).unwrap());
+                println!("| game dir / peel | D (x, y, z) | elevation | game dome | ours | ratio ours/game |");
+                println!("|---|---|---|---|---|---|");
+                let (mut lr, mut n) = ([0f64; 3], 0usize);
+                for (d, g, di, pi) in &domes {
+                    let o = lightmap::bake::sky_radiance(&prm, *d);
+                    let r = [o[0] / g[0].max(1e-6), o[1] / g[1].max(1e-6), o[2] / g[2].max(1e-6)];
+                    println!("| {di} / {pi} | ({:.3}, {:.3}, {:.3}) | {:+.1}° | ({:.4}, {:.4}, {:.4}) | ({:.4}, {:.4}, {:.4}) | ({:.3}, {:.3}, {:.3}) |", d[0], d[1], d[2], d[1].asin().to_degrees(), g[0], g[1], g[2], o[0], o[1], o[2], r[0], r[1], r[2]);
+                    if g[1] > 1e-3 { for c in 0..3 { lr[c] += (r[c] as f64).ln(); } n += 1; }
+                }
+                if n > 0 { println!("\ngeometric mean ratio ours/game over {n} directions: ({:.4}, {:.4}, {:.4})", (lr[0] / n as f64).exp(), (lr[1] / n as f64).exp(), (lr[2] / n as f64).exp()); }
+                return;
+            }
+            // (the sweep's direction list goes into the manifest before the sweep bakes, so a manifest written
+            // at the end of the sweep already carries it)
+            if let Some(d) = &prm.dump { let mut dm = d.lock().unwrap(); let n = prm.sphere_dirs.len() as u32; dm.manifest.sweeps.push(lightmap::passdump::Sweep { sweep: 0, n_dirs: n, scale: 4.0 / n.max(1) as f32, dirs: prm.sphere_dirs.iter().copied().collect() }); }
             let mut charts = if prm.raster_peel { lightmap::peel::bake_peel_raster(&scene, &bvh, &prm, &chart_sizes(&prm)) } else { lightmap::bake::bake(&scene, &bvh, &prm, &lights) };
             eprintln!("baked {} charts ({:.1}s)", charts.len(), t0.elapsed().as_secs_f32());
-            if let Some(d) = &prm.dump { let mut dm = d.lock().unwrap(); let n = prm.sphere_dirs.len() as u32; dm.manifest.sweeps.push(lightmap::passdump::Sweep { sweep: 0, n_dirs: n, scale: 4.0 / n.max(1) as f32, dirs: prm.sphere_dirs.iter().copied().collect() }); }
             for it in 1..iterations {
                 let mut field = lightmap::bake::RadianceField { charts: vec![None; scene.instances.len()], flip_v: prm.flip_v, uv_bounds: prm.uv_bounds };
                 let inst_of_item: std::collections::HashMap<usize, usize> = scene.instances.iter().enumerate().map(|(ii, inst)| (inst.item, ii)).collect();
@@ -2927,11 +2987,25 @@ fn run(a: Vec<String>) {
                         // a few samples: the centre and the corners
                         let sample = |x: u32, y: u32| -> String { (0..ch).map(|c| format!("{:.4}", b.get(x.min(b.w - 1), y.min(b.h - 1), c as u32))).collect::<Vec<_>>().join(",") };
                         println!("    centre ({}) corners ({}) ({}) ({}) ({})", sample(b.w / 2, b.h / 2), sample(0, 0), sample(b.w - 1, 0), sample(0, b.h - 1), sample(b.w - 1, b.h - 1));
-                        // the distribution of a depth buffer: the histogram over 8 bins
+                        // the distribution of a depth buffer: the histogram over 8 bins, and — with a frustum — the
+                        // world height of the surface at a few pixels (a peel of the ground gives the tile's y)
                         if ch == 1 {
                             let mut bins = [0usize; 8];
                             for i in 0..npx { let v = b.data[i]; if v > 0.0 && v.is_finite() { bins[((v.clamp(0.0, 0.99999) * 8.0) as usize).min(7)] += 1; } }
                             println!("    depth bins (z01 0..1 in 8): {:?}", bins);
+                            if let Some(fr) = &e.frustum {
+                                let mut ys: Vec<f32> = Vec::new();
+                                for (x, y) in [(b.w / 2, b.h / 2), (b.w / 4, b.h / 4), (3 * b.w / 4, b.h / 4), (b.w / 4, 3 * b.h / 4), (3 * b.w / 4, 3 * b.h / 4), (b.w / 2, b.h / 4), (b.w / 2, 3 * b.h / 4)] {
+                                    let z = b.get(x, y, 0);
+                                    if z > 0.0 && z < 1.0 { let p = fr.unproject(x as f32 + 0.5, y as f32 + 0.5, z, b.w, b.h); ys.push(p[1]); }
+                                }
+                                // the most common height among the whole buffer's surfaces (1 cm bins, every 64th pixel)
+                                let mut hist: std::collections::HashMap<i32, usize> = Default::default();
+                                for i in (0..npx).step_by(64) { let z = b.data[i]; if z > 0.0 && z < 1.0 { let (x, y) = ((i % b.w as usize) as f32 + 0.5, (i / b.w as usize) as f32 + 0.5); let p = fr.unproject(x, y, z, b.w, b.h); *hist.entry((p[1] * 100.0).round() as i32).or_insert(0) += 1; } }
+                                let mut top: Vec<(i32, usize)> = hist.into_iter().collect();
+                                top.sort_by(|a, b| b.1.cmp(&a.1));
+                                println!("    surface heights y at centre/quarter pixels: {:?}; most common y (1 cm bins): {:?}", ys.iter().map(|v| format!("{v:.2}")).collect::<Vec<_>>(), top.iter().take(4).map(|(k, n)| format!("{:.2} m ×{n}", *k as f32 / 100.0)).collect::<Vec<_>>());
+                            }
                         }
                     }
                     Err(err) => println!("{head}: {err}"),
@@ -2954,6 +3028,7 @@ fn run(a: Vec<String>) {
             let game = std::path::PathBuf::from(&a[1]);
             let ours = std::path::PathBuf::from(&a[2]);
             let mut opts = lightmap::passdiff::Opts::default();
+            if let Some(v) = f("--hbasis-scale") { opts.hbasis_scale = v.parse().expect("--hbasis-scale"); }
             opts.pass = f("--pass");
             if let Some(v) = f("--tol") { opts.tol = v.parse().expect("--tol"); }
             if let Some(v) = f("--floor") { opts.floor = v.parse().expect("--floor"); }

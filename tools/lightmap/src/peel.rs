@@ -1153,6 +1153,25 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             }
         });
         let ab_len = frag_total;
+        // the harness: the accumulation target after this direction (the game's H-basis MRT snapshot after
+        // its k-th direction, `--dump-lightsum-after`); direction = the index in the sweep's issue order
+        if let Some(dump) = &prm.dump {
+            if prm.lightsum_after.contains(&(di as u32)) {
+                let mut dmp = dump.lock().unwrap();
+                let mut imgs: Vec<Vec<[f32; 3]>> = chart_meta.iter().map(|(cw, ch)| vec![[0.0f32; 3]; (cw * 2 * ss_eff * ch * 2 * ss_eff) as usize]).collect();
+                for (i, s) in subs.iter().enumerate() {
+                    let gw = chart_meta[s.chart as usize].0 * 2 * ss_eff;
+                    imgs[s.chart as usize][(s.sy * gw + s.sx) as usize] = acc[i];
+                }
+                for ii in 0..chart_meta.len() {
+                    let (cw, ch) = chart_meta[ii];
+                    let mut e = crate::passdump::entry("lightsum", chart_file("lightsum", Some(prm.sweep), Some(di as u32), ii), "chart_ss");
+                    e.chart = Some(chart_ref(ii)); e.sweep = Some(prm.sweep); e.direction = Some(di as u32); e.dir = Some(*d);
+                    e.notes = Some(format!("the accumulation target after direction {di} of the sweep (issue order) — {}", if prm.accum_hbasis { format!("H-basis C0 × κ {}", prm.hbasis_kappa) } else { "RNM E".into() }));
+                    dmp.write_rgb(e, cw * 2 * ss_eff, ch * 2 * ss_eff, &imgs[ii], prm.quant_accum, prm.rounding).expect("dump lightsum snapshot");
+                }
+            }
+        }
         if want_dir_dump {
             if let Some(dump) = &prm.dump {
                 let mut dmp = dump.lock().unwrap();
@@ -1260,8 +1279,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         for ii in 0..chart_meta.len() {
             let (cw, ch) = chart_meta[ii];
             let mut e = crate::passdump::entry("lightsum", chart_file("lightsum", Some(prm.sweep), None, ii), "chart_ss");
-            e.chart = Some(chart_ref(ii)); e.sweep = Some(prm.sweep);
-            e.notes = Some(format!("E = Σ_D 4/N·max(0,n·D)·L_D over the sweep's {} directions per sub-sample (uncovered = 0)", dirs.len()));
+            e.chart = Some(chart_ref(ii)); e.sweep = Some(prm.sweep); e.direction = Some(dirs.len() as u32 - 1);
+            e.notes = Some(format!("the accumulation target after the sweep's {} directions per sub-sample (uncovered = 0): {}", dirs.len(), if prm.accum_hbasis { format!("H-basis C0 = Σ_D (4π/N)·P(n·D)·L_D × κ {}", prm.hbasis_kappa) } else { "E = Σ_D 4/N·max(0,n·D)·L_D".into() }));
             dmp.write_rgb(e, cw * 2 * ss_eff, ch * 2 * ss_eff, &imgs[ii], prm.quant_accum, prm.rounding).expect("dump lightsum");
             let mut e = crate::passdump::entry("lightsum_resolved", chart_file("lightsum_resolved", Some(prm.sweep), None, ii), "chart");
             e.chart = Some(chart_ref(ii)); e.sweep = Some(prm.sweep);

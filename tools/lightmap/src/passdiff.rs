@@ -184,6 +184,7 @@ pub fn read_manifest(txt: &str) -> Result<Manifest, String> {
             }
         }
     }
+    reindex_directions(&mut m);
     assign_peels(&mut m);
     Ok(m)
 }
@@ -205,6 +206,49 @@ fn peels_of(m: &Manifest, sweep: u32, direction: u32) -> Vec<Frustum> {
         }
     }
     out
+}
+
+/// A capture's direction indices are its own (two capture runs both start at 0 with different
+/// vectors): give every distinct direction VECTOR one index across the manifest, in order of first
+/// appearance, so the harness's (sweep, direction) keys mean one direction. Entries without a vector
+/// take the index of a sibling entry of the same (capture, sweep, direction).
+pub fn reindex_directions(m: &mut Manifest) {
+    let quant = |d: [f32; 3]| -> (i32, i32, i32) { ((d[0] * 2000.0).round() as i32, (d[1] * 2000.0).round() as i32, (d[2] * 2000.0).round() as i32) };
+    let mut ids: HashMap<(i32, i32, i32), u32> = HashMap::new();
+    let mut vec_of: HashMap<(Option<String>, Option<u32>, u32), [f32; 3]> = HashMap::new();
+    for e in &m.passes {
+        if let (Some(d), Some(v)) = (e.direction, e.dir) {
+            if v != [0.0; 3] { vec_of.entry((e.capture.clone(), e.sweep, d)).or_insert(v); }
+        }
+    }
+    let mut order: Vec<(i32, i32, i32)> = Vec::new();
+    for e in &m.passes {
+        if let Some(d) = e.direction {
+            let v = e.dir.filter(|v| *v != [0.0; 3]).or_else(|| vec_of.get(&(e.capture.clone(), e.sweep, d)).copied());
+            if let Some(v) = v { let q = quant(v); if !ids.contains_key(&q) { ids.insert(q, order.len() as u32); order.push(q); } }
+        }
+    }
+    if ids.is_empty() { return; }
+    let mut unresolved = 0;
+    for e in m.passes.iter_mut() {
+        if let Some(d) = e.direction {
+            let v = e.dir.filter(|v| *v != [0.0; 3]).or_else(|| vec_of.get(&(e.capture.clone(), e.sweep, d)).copied());
+            match v.and_then(|v| ids.get(&quant(v)).copied()) {
+                Some(id) => { e.direction = Some(id); if e.dir.is_none() { e.dir = v; } }
+                None => unresolved += 1,
+            }
+        }
+    }
+    if unresolved > 0 { eprintln!("passdiff: {unresolved} entries with a direction index but no vector kept their capture's index"); }
+    // the sweep lists: rebuilt from the vectors in index order
+    for sw in m.sweeps.iter_mut() {
+        if !sw.dirs.is_empty() {
+            let mut dirs: Vec<[f32; 3]> = vec![[0.0; 3]; order.len()];
+            for (q, id) in &ids { dirs[*id as usize] = [q.0 as f32 / 2000.0, q.1 as f32 / 2000.0, q.2 as f32 / 2000.0]; }
+            sw.dirs = dirs;
+            sw.n_dirs = order.len() as u32;
+        }
+    }
 }
 
 /// Fill every peel entry's `peel` index (0 = the first frustum seen for the direction, 1 = the next…).
@@ -234,6 +278,44 @@ pub fn assign_peels(m: &mut Manifest) {
             }
         }
     }
+}
+
+/// The game's DOME colours: for every peel of every direction in the capture whose first snapshot
+/// is the sky layer (≥ 30 % of its depth at 0), the colour target's central value (the median of a
+/// 9×9 block at the frame centre, R11G11B10 as stored) with the direction vector — the sky radiance
+/// the game renders along D, as many directions as the capture holds.
+pub fn dome_colours(game: &Manifest, root: &std::path::Path) -> Vec<([f32; 3], [f32; 3], u32, u32)> {
+    let mut groups: std::collections::BTreeMap<(Option<u32>, Option<u32>, Option<u32>), Vec<usize>> = Default::default();
+    for (i, e) in game.passes.iter().enumerate() {
+        if e.pass == "peel_depth" && e.direction.is_some() {
+            groups.entry((e.sweep, e.direction, e.peel)).or_default().push(i);
+        }
+    }
+    let mut out = Vec::new();
+    for (key, idx) in &groups {
+        let first = idx.iter().copied().min_by_key(|&i| (game.passes[i].eid_last.unwrap_or(0), game.passes[i].layer.unwrap_or(0))).unwrap();
+        let e = &game.passes[first];
+        let Ok(b) = load_entry(root, e) else { continue };
+        let n = (b.data.len() / 3).max(1);
+        let zero_frac = b.data.iter().step_by(3).filter(|v| **v == 0.0).count() as f64 / n as f64;
+        if zero_frac < 0.3 {
+            continue;
+        }
+        // the colour snapshot of the same event
+        let Some(c) = game.passes.iter().find(|c| c.pass == "peel_color" && (c.sweep, c.direction, c.peel) == *key && c.eid_last == e.eid_last) else { continue };
+        let Ok(cb) = load_entry(root, c) else { continue };
+        let (cx, cy) = (cb.w / 2, cb.h / 2);
+        let mut med = [0f32; 3];
+        for ch in 0..3 {
+            let mut v: Vec<f32> = Vec::new();
+            for y in cy.saturating_sub(4)..(cy + 5).min(cb.h) { for x in cx.saturating_sub(4)..(cx + 5).min(cb.w) { v.push(cb.get(x, y, ch)); } }
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            med[ch as usize] = v[v.len() / 2];
+        }
+        let dir = c.dir.or(e.dir).or_else(|| e.frustum.as_ref().map(|f| f.forward)).unwrap_or([0.0; 3]);
+        out.push((dir, med, key.1.unwrap_or(0), key.2.unwrap_or(0)));
+    }
+    out
 }
 
 /// `peel_frustums_for` with our direction list empty: indexed by the game's own direction index.
@@ -891,6 +973,8 @@ fn depth_to_metres(b: &Buf, f: &Frustum) -> Buf {
 
 /// Options of a run.
 pub struct Opts {
+    /// The scale applied to the game's final `hbasis0` when it stands in for our `final_hdr` (default 1).
+    pub hbasis_scale: f32,
     pub pass: Option<String>,
     pub tol: f32,
     pub floor: f32,
@@ -903,7 +987,7 @@ pub struct Opts {
 
 impl Default for Opts {
     fn default() -> Self {
-        Opts { pass: None, tol: 0.02, floor: 1e-3, stride: 1, pass_threshold: 99.0, game_map: None, keep_pairs: true, quiet: false }
+        Opts { hbasis_scale: 1.0, pass: None, tol: 0.02, floor: 1e-3, stride: 1, pass_threshold: 99.0, game_map: None, keep_pairs: true, quiet: false }
     }
 }
 
@@ -930,6 +1014,23 @@ fn game_dirs(game: &Manifest, sweep: u32) -> Vec<[f32; 3]> {
     }
     let Some((&max, _)) = by.iter().next_back() else { return Vec::new() };
     (0..=max).map(|d| by.get(&d).copied().unwrap_or([0.0; 3])).collect()
+}
+
+/// The game's ISSUE ORDER of a sweep's directions, as our indices: the accumulation snapshots (`hbasis0`
+/// with a sweep_direction_index, banked or not) carry the direction just accumulated; each is matched
+/// to our nearest vector. Returns (our index per issue position) — positions the capture lacks are
+/// left out, so the caller appends the unmatched directions of ours after them.
+pub fn game_issue_order(game: &Manifest, sweep: u32, ours: &[[f32; 3]]) -> Vec<(u32, u32)> {
+    let mut es: Vec<(u32, [f32; 3])> = game.passes.iter().filter(|e| (e.pass == "hbasis0" || e.pass == "lightsum") && e.sweep.unwrap_or(0) == sweep && e.sweep_direction_index.is_some() && e.dir.is_some()).map(|e| (e.sweep_direction_index.unwrap(), e.dir.unwrap())).collect();
+    es.sort_by_key(|e| e.0);
+    es.dedup_by_key(|e| e.0);
+    es.iter()
+        .filter_map(|(k, gd)| {
+            if ours.is_empty() { return None; }
+            let best = (0..ours.len()).max_by(|&a, &b| { let ca = ours[a][0] * gd[0] + ours[a][1] * gd[1] + ours[a][2] * gd[2]; let cb = ours[b][0] * gd[0] + ours[b][1] * gd[1] + ours[b][2] * gd[2]; ca.partial_cmp(&cb).unwrap_or(std::cmp::Ordering::Equal) }).unwrap();
+            Some((*k, best as u32))
+        })
+        .collect()
 }
 
 /// Our indices of the directions the game captured in a sweep (by nearest vector), sorted.
@@ -1004,6 +1105,12 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
             dome_groups.push((*key, zero_frac));
         }
         for (key, zero_frac) in &dome_groups {
+            // a first snapshot without the dome's depth-0 footprint is a geometry layer: the capture began
+            // after the peel's sky render (direction 0's world peel in frame 40648) — nothing to relabel
+            if *zero_frac < 0.3 {
+                findings.push(format!("dome_layer(game sweep {:?} direction {:?} peel {:?}: no sky layer captured — its first snapshot has {:.1} % of its pixels at depth 0; the layers are taken as geometry layers 0..)", key.0, key.1, key.2, 100.0 * zero_frac));
+                continue;
+            }
             // the group's entries in event order: the first (depth + colour pair) is the sky layer
             let mut eids: Vec<u64> = game.passes.iter().filter(|e| (e.pass == "peel_depth" || e.pass == "peel_color") && (e.sweep, e.direction, e.peel) == *key).map(|e| e.eid_last.unwrap_or(0)).collect();
             eids.sort();
@@ -1022,6 +1129,20 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
             }
             findings.push(format!("dome_layer(game sweep {:?} direction {:?} peel {:?}: the peel's first snapshot is the sky dome ({:.1} % of its pixels at depth 0) → `peel_sky`; its {} geometry layers re-indexed from 0)", key.0, key.1, key.2, 100.0 * zero_frac, eids.len().saturating_sub(1)));
         }
+    }
+    // THE GAME'S ACCUMULATION SNAPSHOTS: an `hbasis0` entry with a sweep_direction_index is the H-basis
+    // constant term after that direction (issue order) — our `lightsum` after the same direction when ours
+    // was baked in the game's order (--dir-order); the value is the raw C0 (ours dumped with κ = 1)
+    {
+        let mut n = 0;
+        for e in game.passes.iter_mut() {
+            if e.pass == "hbasis0" && e.sweep_direction_index.is_some() && e.banked.unwrap_or(true) {
+                e.pass = "lightsum".into();
+                e.direction = e.sweep_direction_index;
+                n += 1;
+            }
+        }
+        if n > 0 { findings.push(format!("accumulation_snapshots(the game's {n} banked `hbasis0` snapshots after direction k → `lightsum` after direction k; compare with ours baked in the game's order (--dir-order) and κ = 1)")); }
     }
     let ours = read_manifest(&std::fs::read_to_string(ours_root.join("MANIFEST.json")).map_err(|e| format!("{}: {e}", ours_root.join("MANIFEST.json").display()))?)?;
     // the game's chart rects (its layout, or the baked map's mapping); ours from our layout
@@ -1097,8 +1218,10 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
         let pick = |v: &Vec<usize>| -> Option<usize> { v.iter().copied().max_by_key(|&i| game.passes[i].eid_last.unwrap_or(0)) };
         let mut ge_i = game_idx.get(&key_chart).and_then(pick).or_else(|| if obj.is_some() { game_idx.get(&key_atlas).and_then(pick) } else { None });
         if ge_i.is_none() && oe.pass == "final_hdr" {
-            ge_i = game_idx.get(&("hbasis0".to_string(), None, None, None, None, None)).and_then(|v| v.first().copied());
-            if ge_i.is_some() { pre_scale = Some((0.398_942_28, "hbasis_c0_to_irradiance(game C0 × 1/√(2π))")); }
+            // the game's final hbasis0 (no snapshot index): C0 in the target's units; --hbasis-scale S scales it
+            // into ours (1 when ours is dumped with κ = 1, 1/√(2π) for the port's E units)
+            ge_i = game_idx.get(&("hbasis0".to_string(), None, None, None, None, None)).and_then(pick);
+            if ge_i.is_some() && (opts.hbasis_scale - 1.0).abs() > 1e-6 { pre_scale = Some((opts.hbasis_scale, "hbasis_c0_scale(game C0 × --hbasis-scale)")); }
         }
         let Some(ge_i) = ge_i else { *missing.entry(oe.pass.clone()).or_insert(0) += 1; continue };
         let ge = &game.passes[ge_i];

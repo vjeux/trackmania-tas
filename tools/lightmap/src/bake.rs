@@ -163,6 +163,8 @@ pub struct BakeParams {
     /// The sun on the peeled surfaces in the FIRST sweep (the RE reading); the capture shows black peel
     /// colours in sweep 0, so it is off by default.
     pub sweep0_sun: bool,
+    /// Directions (indices in the sweep's issue order) after which the accumulation target is dumped.
+    pub lightsum_after: std::collections::BTreeSet<u32>,
 }
 
 impl Default for BakeParams {
@@ -240,6 +242,7 @@ impl Default for BakeParams {
             accum_hbasis: false,
             hbasis_kappa: 0.398_942_28,
             sweep0_sun: false,
+            lightsum_after: Default::default(),
         }
     }
 }
