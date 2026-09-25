@@ -442,11 +442,14 @@ fn main() {
         // prove it is gone with the Speed Cap plugin set to unlimited. The
         // probe is `setspeed`, read back from the car's own velocity.
         //   jumprig captest [--map PATH]
+        //   jumprig captest [--map PATH] [--install]   (--install: copy the
+        //   plugin sources from the repo into the game first)
         "captest" => {
             let map = arg_after(&args, "--map").unwrap_or_else(|| DRIVE_MAP.to_string());
+            let install = args.iter().any(|a| a == "--install");
             match tmdrive::loadable_map_path(&map) {
                 Ok(map) => with_lock(host.clone(), "speed cap: verification run", |lock| {
-                    captest::cap_test(lock, &map)
+                    captest::cap_test(lock, &map, install)
                 }),
                 Err(e) => Err(e),
             }

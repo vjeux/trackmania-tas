@@ -221,14 +221,36 @@ fn back_to_start(lock: &GameLock) -> Result<(), String> {
     }
 }
 
-pub fn cap_test(lock: &GameLock, map: &str) -> Result<(), String> {
+/// Copy the plugin sources from the repo into the game's Plugins folder, so
+/// the run verifies what is committed rather than whatever an earlier hand
+/// left on the box. Under the lock: the next launch compiles them.
+fn install_plugins(lock: &GameLock) -> Result<(), String> {
+    let _ = lock;
+    let repo = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.ancestors().nth(3).map(|a| a.to_path_buf()))
+        .ok_or("cannot locate the repo from the jumprig binary")?;
+    let plugins = PathBuf::from(format!("{}/Users/vjeux/OpenplanetNext/Plugins", tmdrive::drive_c()));
+    for (dir, files) in [("SpeedCap", &["Main.as", "info.toml"][..]), ("JumpButton", &["Main.as", "info.toml"][..])] {
+        let src = repo.join("openplanet-plugin").join(dir);
+        let dst = plugins.join(dir);
+        fs::create_dir_all(&dst).map_err(|e| format!("cannot create {}: {e}", dst.display()))?;
+        for f in files {
+            fs::copy(src.join(f), dst.join(f))
+                .map_err(|e| format!("cannot install {}/{f}: {e}", dir))?;
+        }
+        println!("  installed {dir} from {}", src.display());
+    }
+    Ok(())
+}
+
+pub fn cap_test(lock: &GameLock, map: &str, install: bool) -> Result<(), String> {
     let h = lock.host();
+    if install {
+        println!("=== 0. install the plugins from the repo ===");
+        install_plugins(lock)?;
+    }
     println!("=== 1. a fresh game, both plugins alive ===");
-    // The plugin's file protocol is off for players; the marker turns it on
-    // for this harness (read once, when the plugin loads).
-    fs::create_dir_all(speedcap_dir()).map_err(|e| format!("cannot create the Speed Cap storage folder: {e}"))?;
-    fs::write(speedcap_dir().join("automation.on"), "jumprig captest\n")
-        .map_err(|e| format!("cannot write the automation marker: {e}"))?;
     // A game left running by the previous holder loaded whatever SpeedCap
     // source it found at ITS start, and a plugin that failed to compile then
     // is never reloaded (a file written from outside did not trigger the
@@ -240,7 +262,20 @@ pub fn cap_test(lock: &GameLock, map: &str) -> Result<(), String> {
         wait_for(h, "exit", Duration::from_secs(60))?;
     }
     launch_and_hook(lock, Duration::from_secs(300))?;
-    let a = wait_cap(h, "alive", Duration::from_secs(60))?;
+    // A plugin that did not compile never writes a state file; say so from
+    // the game's own log instead of timing out on `alive`.
+    let a = match wait_cap(h, "alive", Duration::from_secs(60)) {
+        Ok(a) => a,
+        Err(e) => {
+            let log = fs::read_to_string(format!("{}/Users/vjeux/OpenplanetNext/Openplanet.log", tmdrive::drive_c()))
+                .unwrap_or_default();
+            let errs: Vec<&str> = log.lines().filter(|l| l.contains("SpeedCap") && l.contains("ERR")).collect();
+            if !errs.is_empty() {
+                return Err(format!("SpeedCap did not compile:\n{}", errs.join("\n")));
+            }
+            return Err(e);
+        }
+    };
     println!("  speed cap plugin alive: {}", a.status);
 
     println!("=== 2. into a map ===");
