@@ -24,7 +24,23 @@ fn t_quarter(dt: Option<u32>, x: &lightmap::moods::MoodXml) -> bool {
 }
 
 fn main() {
-    let a: Vec<String> = std::env::args().skip(1).collect();
+    let mut a: Vec<String> = std::env::args().skip(1).collect();
+    // `bake … --lm-from-map` IMPLIES the transcribed chain: the game's peel and accumulation (--game-peel), one raster
+    // sub-sample (--ss 1), the sky at the game's scale (--sky-global-scale 1), the H-basis without the port's kappa
+    // (--hbasis-kappa 1), the first sweep's sun through the ILightInput chain (--sweep0-sun) and the game's layout
+    // (--layout-game) — a run without them wrote an all-zero lightmap. --legacy-port keeps the flags as given.
+    if a.first().map(|s| s.as_str()) == Some("bake") && a.iter().any(|x| x == "--lm-from-map") && !a.iter().any(|x| x == "--legacy-port") {
+        let implied: &[(&str, Option<&str>)] = &[("--game-peel", None), ("--ss", Some("1")), ("--sky-global-scale", Some("1")), ("--hbasis-kappa", Some("1")), ("--sweep0-sun", None), ("--layout-game", None)];
+        let mut added: Vec<String> = Vec::new();
+        for (flag, val) in implied {
+            if !a.iter().any(|x| x == flag) {
+                a.push(flag.to_string());
+                if let Some(v) = val { a.push(v.to_string()); }
+                added.push(match val { Some(v) => format!("{flag} {v}"), None => flag.to_string() });
+            }
+        }
+        if !added.is_empty() { eprintln!("lm-from-map implies: {}", added.join(", ")); }
+    }
     if a.is_empty() {
         eprintln!("usage: lmtool walk MAP.Gbx... | lmtool dump MAP.Gbx OUTDIR | lmtool probe MAP.Gbx [OUTDIR]");
         std::process::exit(2);
@@ -5145,6 +5161,129 @@ fn run(a: Vec<String>) {
                 // --pak FILE:KEY: the tile mesh from the zone prefab
                 if let Some(pak) = f("--pak") { let (pak_path, key) = pak.rsplit_once(':').expect("--pak FILE:KEY"); let mut store = mapgeom::store::DataStore::empty(); store.add_pak(pak_path, key).expect("pak"); match lightmap::lmmesh::lm_mesh_of_zone(&mut store, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into())) { Ok(Some(ours)) => { let d = lightmap::lmmesh::diff_meshes(&ours, m); println!("    from the pak: ours {} verts / {} tris; positions exact {} (worst {:.2e}); normals exact {}, uvs exact {}, tangents exact {}, psize exact {}; triangle list {}", d.n_ours, ours.indices.len() / 3, d.pos_exact, d.pos_worst, d.nrm_exact, d.uv_exact, d.tan_exact, d.psize_exact, if d.tris_equal { "IDENTICAL" } else { "differs" }); if a.iter().any(|x| x == "--verbose") { for i in 0..ours.verts.len().min(m.verts.len()) { let (o, t) = (&ours.verts[i], &m.verts[i]); println!("      v{i}: ours pos {:?} uv {:?} | captured pos {:?} uv {:?}", o.pos, o.uv, t.pos, t.uv); } } } Ok(None) => println!("    from the pak: no lightmapped visual"), Err(e) => println!("    from the pak: {e}") } }
             } }
+        }
+        "dome-check" => {
+            // lmtool dome-check PASSCAP [--frame 127448] [--direction 0] [--filter f32|f16|f16sum] [--weights floor|round|f32] [--rsq-approx]
+            //   [--half H] [--top N]: PS 16774 transcribed on the frame's own inputs against the captured environment layer (domecheck.rs)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let root = std::path::PathBuf::from(&a[1]);
+            let frame_no: u32 = f("--frame").map(|v| v.parse().unwrap()).unwrap_or(127448);
+            let direction: u32 = f("--direction").map(|v| v.parse().unwrap()).unwrap_or(0);
+            let st = lightmap::domecheck::Study {
+                filter: match f("--filter").as_deref() { Some("f16") => lightmap::domecheck::FilterArith::F16Each, Some("f16sum") => lightmap::domecheck::FilterArith::F16Sum, Some("f16prod") => lightmap::domecheck::FilterArith::F16Prod, Some("f16lerp") => lightmap::domecheck::FilterArith::F16Lerp, Some("f16fma") => lightmap::domecheck::FilterArith::F16Fma, Some("f16sumrtz") => lightmap::domecheck::FilterArith::F16SumRtz, _ => lightmap::domecheck::FilterArith::F32 },
+                weights: match f("--weights").as_deref() { Some("round") => lightmap::domecheck::WeightPrec::Round8, Some("f32") => lightmap::domecheck::WeightPrec::F32, Some("floor9") => lightmap::domecheck::WeightPrec::Floor9, Some("even8") => lightmap::domecheck::WeightPrec::Even8, Some("coord8") => lightmap::domecheck::WeightPrec::Coord8, Some("coord8floor") => lightmap::domecheck::WeightPrec::Coord8Floor, _ => lightmap::domecheck::WeightPrec::Floor8 },
+                rsq_approx: a.iter().any(|x| x == "--rsq-approx"),
+                half: f("--half").map(|v| v.parse().unwrap()).unwrap_or(0.5),
+                frac_bits: f("--frac-bits").map(|v| v.parse().unwrap()).unwrap_or(8),
+            };
+            // the draw's constants from the frame's draws log
+            let draws = lightmap::lmaccum::load_draws(&root, frame_no).expect("draws log");
+            let dome = draws.iter().find(|e| e.pointer("/Pixel/shader").and_then(|v| v.as_str()) == Some("16774")).expect("the dome draw (PS 16774)");
+            let g = |p: &str| dome.pointer(p).cloned().unwrap_or(serde_json::Value::Null);
+            let f3 = |v: &serde_json::Value| -> [f32; 3] { let a = v.as_array().expect("float3"); [a[0].as_f64().unwrap() as f32, a[1].as_f64().unwrap() as f32, a[2].as_f64().unwrap() as f32] };
+            let f4 = |v: &serde_json::Value| -> [f32; 4] { let a = v.as_array().expect("float4"); [a[0].as_f64().unwrap() as f32, a[1].as_f64().unwrap() as f32, a[2].as_f64().unwrap() as f32, a[3].as_f64().unwrap() as f32] };
+            let cb = "/Pixel/cbuffers/ShaderP/g_CBuffer";
+            let sp = "/Pixel/cbuffers/SceneP";
+            let c = lightmap::domecheck::DomeConsts {
+                scale_grad0: g(&format!("{cb}/ScaleGrad0")).as_f64().unwrap() as f32,
+                scale_grad1: g(&format!("{cb}/ScaleGrad1")).as_f64().unwrap() as f32,
+                sun_power: g(&format!("{cb}/SunPower")).as_f64().unwrap() as f32,
+                sun_is_visible: g(&format!("{cb}/SunIsVisible")).as_f64().unwrap_or(0.0) != 0.0,
+                pow_scale: f4(&g(&format!("{cb}/SunAtmo_PowScale1_PowScale2"))),
+                rgb1: f3(&g(&format!("{cb}/SunAtmo_RgbLinear1"))),
+                rgb2: f3(&g(&format!("{cb}/SunAtmo_RgbLinear2"))),
+                fog_intens: g(&format!("{cb}/FogIntens")).as_f64().unwrap() as f32,
+                global_scale: g(&format!("{cb}/GlobalScale")).as_f64().unwrap() as f32,
+                light_dir: f3(&g(&format!("{sp}/GbxP_LightDirDirInWorld0"))),
+                light_rgb: f3(&g(&format!("{sp}/GbxP_LightDirRgbLinear0"))),
+                fog_rgb: f3(&g(&format!("{sp}/GbxP_Fog_LinearRGB"))),
+                eye: f3(&g(&format!("{sp}/GbxP_EyeInWorld"))),
+                light_dir_angle: g("/Vertex/cbuffers/DrawV/GbxSkyV0/LightDirAngle_m11Zx").as_f64().unwrap() as f32,
+                force_x: g("/Vertex/cbuffers/DrawV/GbxSkyV0/GradientV_ForceX").as_f64().unwrap_or(-1.0) as f32,
+                invert_y: g("/Vertex/cbuffers/DrawV/GbxSkyV0/GradientV_InvertY").as_f64().unwrap_or(1.0) != 0.0,
+            };
+            println!("dome draw eid {}: {:?}", dome["eid"], c);
+            let grad0 = lightmap::domecheck::load_grad(&root, frame_no, 16801).expect("TMapGradientV");
+            let grad1 = lightmap::domecheck::load_grad(&root, frame_no, 16803).expect("TMapGradientV1");
+            println!("TMapGradientV {} | TMapGradientV1 {}", lightmap::domecheck::grad_summary(&grad0), lightmap::domecheck::grad_summary(&grad1));
+            // the world peel's frustum + the captured environment layer (colour + depth) of the direction
+            let txt = std::fs::read_to_string(root.join("MANIFEST.json")).or_else(|_| std::fs::read_to_string(f("--manifest").unwrap_or_default())).expect("MANIFEST.json (or --manifest)");
+            let m = lightmap::passdiff::read_manifest(&txt).expect("manifest");
+            // the direction's FIRST environment layer (the world peel: the lowest event id) — colour + depth
+            // (a frame holds one direction's environment render; the manifest's direction indices are re-numbered on read, so the
+            // frame is the key — --direction only labels the run)
+            let mut ents: Vec<&lightmap::passdump::Entry> = m.passes.iter().filter(|e| e.frame == Some(frame_no) && e.layer == Some(0) && (e.pass == "peel_color" || e.pass == "peel_depth")).collect();
+            let _ = direction;
+            ents.sort_by_key(|e| e.eid_last.unwrap_or(0));
+            let col = ents.iter().find(|e| e.pass == "peel_color").expect("the captured environment colour layer");
+            let dep = ents.iter().find(|e| e.pass == "peel_depth" && e.eid_last == col.eid_last).or_else(|| ents.iter().find(|e| e.pass == "peel_depth"));
+            // the world peel's frustum: the captured one when the entry carries it, else the TRANSCRIBED fit (lightcam, bit-identical to
+            // the captured pwc-day cameras) for the draw's forward axis (GbxP_WorldToCamera's third row)
+            let fwd_row = dome.pointer("/Pixel/cbuffers/SceneP/GbxP_WorldToCamera").and_then(|v| v.as_array()).map(|rows| f3(&rows[2])).unwrap_or([0.3454769, 0.1170782, 0.9310952]);
+            let fr: lightmap::passdump::Frustum = match &col.frustum { Some(fr) => fr.clone(), None => { let fit = lightmap::lightcam::peel_frusta(fwd_row, &lightmap::lightcam::PeelBoxes::pwc_day(), 4096, &lightmap::lightcam::FitRules::default()); fit.into_iter().next().expect("the transcribed world peel frustum") } };
+            let frame = lightmap::peel::PeelFrame::from_frustum(&fr, if col.width > 0 { col.width } else { 4096 }, if col.height > 0 { col.height } else { 4096 });
+            println!("frustum ({}): centre {:?} half {:?} forward {:?}; colour {} ({} eid {:?}); depth {}", if col.frustum.is_some() { "captured" } else { "transcribed fit" }, fr.center, fr.half, fr.forward, col.file, col.capture.as_deref().unwrap_or("?"), col.eid_last, dep.map(|e| e.file.as_str()).unwrap_or("none"));
+            let game = lightmap::passdiff::load_entry(&root, col).expect("captured colour");
+            let gdepth = dep.map(|e| lightmap::passdiff::load_entry(&root, e).expect("captured depth"));
+            let mesh = lightmap::domemesh::DomeMesh::load(&root).expect("dome mesh");
+            let eye = if a.iter().any(|x| x == "--eye-centre") { frame.frustum().center } else { c.eye };
+            let dr = mesh.rasterise(&frame, eye, c.light_dir_angle, c.force_x, c.invert_y);
+            println!("dome mesh: {} kept triangles; eye {:?}", dr.triangles(), eye);
+            let mut stats = lightmap::domecheck::QuantaStats::default();
+            let (mut n_dome_game, mut n_ours_only, mut n_game_only) = (0usize, 0usize, 0usize);
+            let top: usize = f("--top").map(|v| v.parse().unwrap()).unwrap_or(8);
+            let mut worst: Vec<(i64, u32, u32, [f32; 3], [f32; 3], [f32; 2])> = Vec::new();
+            let inset = 1u32;
+            for y in inset..game.h - inset {
+                for x in inset..game.w - inset {
+                    // a dome pixel of the game: the env depth at the clear (0 = the dome) when a depth is banked, else any non-black
+                    let is_dome_game = match &gdepth { Some(d) => d.get(x, y, 0) == 0.0, None => { let p = lightmap::domecheck::buf_rgb(&game, x, y); p[0] > 0.0 || p[1] > 0.0 || p[2] > 0.0 } };
+                    let ours = dr.at(x, y);
+                    match (is_dome_game, ours) {
+                        (true, Some((uv, view))) => {
+                            n_dome_game += 1;
+                            let o = lightmap::domecheck::ps_16774(uv, view, &c, &grad0, &grad1, &st);
+                            let oq = lightmap::gpufmt::quantise_r11g11b10(o, lightmap::gpufmt::Rounding::Truncate);
+                            let gq = lightmap::domecheck::buf_rgb(&game, x, y);
+                            lightmap::domecheck::compare_quanta(oq, gq, &mut stats);
+                            let dsum: i64 = (0..3).map(|k| (lightmap::domecheck::r11_steps(oq[k], k == 2) - lightmap::domecheck::r11_steps(gq[k], k == 2)).abs()).sum();
+                            if dsum > 0 && worst.len() < 4000 { worst.push((dsum, x, y, o, gq, uv)); }
+                        }
+                        (true, None) => { n_dome_game += 1; n_game_only += 1; }
+                        (false, Some(_)) => { n_ours_only += 1; }
+                        _ => {}
+                    }
+                }
+            }
+            let pct = |v: usize| 100.0 * v as f64 / stats.n.max(1) as f64;
+            println!("dome pixels (game): {n_dome_game}; compared {}; game-only (no dome triangle of ours) {n_game_only}; ours-only (game not dome) {n_ours_only}", stats.n);
+            for k in 0..3 { println!("  {}: exact {} ({:.3} %), within ±1 step {} ({:.3} %), worse {}; +1 {} / −1 {}", ["R", "G", "B"][k], stats.exact[k], pct(stats.exact[k]), stats.within1[k], pct(stats.within1[k]), stats.worse[k], stats.plus1[k], stats.minus1[k]); }
+            worst.sort_by_key(|w| std::cmp::Reverse(w.0));
+            for w in worst.iter().take(top) { println!("  ({}, {}): ours f32 {:?} → game {:?}; uv ({:.6}, {:.6})", w.1, w.2, w.3, w.4, w.5[0], w.5[1]); }
+            // the residual's size: for each miss, the relative distance of our f32 value to the R11 boundary it should have crossed
+            // (ours below the boundary when the game is +1: the needed shift is positive) — the histogram in decades
+            {
+                let mut hist: std::collections::BTreeMap<i32, usize> = Default::default();
+                let mut signed: [i64; 2] = [0, 0];
+                for w in &worst {
+                    for k in 0..3 {
+                        let (a, b) = (lightmap::domecheck::r11_steps(lightmap::gpufmt::quantise_r11g11b10(w.3, lightmap::gpufmt::Rounding::Truncate)[k], k == 2), lightmap::domecheck::r11_steps(w.4[k], k == 2));
+                        if a == b { continue; }
+                        // the boundary = the game's quantised value when the game is above ours, else the next quantum above the game's
+                        let boundary = if b > a { w.4[k] } else { let up = lightmap::gpufmt::quantise_r11g11b10([if k == 0 { w.4[k] } else { 0.0 } + if k == 0 { 0.0 } else { 0.0 }; 3], lightmap::gpufmt::Rounding::Truncate); let _ = up; f32::NAN };
+                        if boundary.is_nan() { signed[1] += 1; continue; }
+                        signed[0] += 1;
+                        let rel = ((boundary - w.3[k]) / boundary.abs().max(1e-9)).abs();
+                        let dec = rel.log10().floor() as i32;
+                        *hist.entry(dec).or_default() += 1;
+                    }
+                }
+                println!("  needed relative shift (game above ours) by decade: {:?}; game below ours: {} channel misses", hist, signed[1]);
+            }
+            // the mismatch map by uv: where in the texture do the misses sit?
+            let mut vhist: std::collections::BTreeMap<u32, usize> = Default::default();
+            for w in &worst { *vhist.entry((w.5[1] * 64.0) as u32).or_default() += 1; }
+            println!("  misses by v band (1/64): {:?}", vhist);
         }
         "genealogy" => {
             // lmtool genealogy MAP: the zone genealogy records (chunk 0x03043043) — per cell the CurrentZoneId and its Dir,

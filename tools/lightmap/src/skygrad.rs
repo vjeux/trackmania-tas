@@ -101,11 +101,15 @@ impl SkyGradient {
         let fy = (v.clamp(0.0, 1.0) * self.h as f32 - 0.5).clamp(0.0, (self.h - 1) as f32);
         let (x0, y0) = (fx.floor(), fy.floor());
         let (mut tx, mut ty) = (fx - x0, fy - y0);
-        // the GPU's bilinear weights carry 8 fractional bits (D3D11 3.2.3: at least 8 bits of sub-texel
-        // precision; the fraction is truncated to 1/256 steps) — LMTOOL_BILINEAR_F32=1 keeps the f32 weights
+        // the GPU's bilinear weights carry 8 fractional bits (D3D11 3.2.3: at least 8 bits of sub-texel precision) — the
+        // fraction ROUNDED to the nearest 1/256 (half to even), and the filtered value of this f16 texture is an f16: the
+        // weighted sum rounded to nearest even (`lmtool dome-check` on the captured environment layer of pwc-day: floor
+        // weights + an f32 result 98.59 / 99.15 / 99.49 % exact per channel; rounded weights + the f16 result 99.80 / 99.89 /
+        // 99.96 %; 7- or 9-bit weights, truncated f16, per-product f16 all worse). LMTOOL_BILINEAR_F32=1 keeps the old form.
+        let q8 = |t: f32| -> f32 { let s = t * 256.0; let f = s.floor(); let d = s - f; (if d > 0.5 { f + 1.0 } else if d < 0.5 { f } else if (f as i64) % 2 == 0 { f } else { f + 1.0 }) / 256.0 };
         if !*BILINEAR_F32 {
-            tx = (tx * 256.0).floor() / 256.0;
-            ty = (ty * 256.0).floor() / 256.0;
+            tx = q8(tx);
+            ty = q8(ty);
         }
         let xi = |x: f32| -> usize {
             match u_mode {
@@ -118,8 +122,10 @@ impl SkyGradient {
         let p = |x: usize, y: usize| -> [f32; 3] { self.px[y * self.w + x] };
         let (p00, p10, p01, p11) = (p(xa, ya), p(xb, ya), p(xa, yb), p(xb, yb));
         let mut out = [0f32; 3];
+        let (w00, w10, w01, w11) = ((1.0 - tx) * (1.0 - ty), tx * (1.0 - ty), (1.0 - tx) * ty, tx * ty);
         for k in 0..3 {
-            out[k] = (p00[k] * (1.0 - tx) + p10[k] * tx) * (1.0 - ty) + (p01[k] * (1.0 - tx) + p11[k] * tx) * ty;
+            let v = p00[k] * w00 + p10[k] * w10 + p01[k] * w01 + p11[k] * w11;
+            out[k] = if *BILINEAR_F32 { v } else { crate::gpufmt::quantise_f16(v, crate::gpufmt::Rounding::NearestEven) };
         }
         out
     }

@@ -38,6 +38,7 @@ pub mod texsample;
 pub mod sunpass;
 pub mod lmaccum;
 pub mod shadowmap;
+pub mod domecheck;
 pub mod dxbc;
 pub mod layout;
 pub mod lmmesh;
