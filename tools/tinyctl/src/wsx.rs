@@ -75,7 +75,24 @@ impl Wsx {
     /// Run one command line on the box (`/bin/sh -c` there — keep it to ONE
     /// program invocation; logic belongs in the program).
     pub fn sh(&self, cmd: &str) -> Result<String, String> {
-        self.run(&["sh", cmd], Duration::from_secs(150))
+        self.run(&["sh", &Self::with_session(cmd)], Duration::from_secs(150))
+    }
+
+    /// The box-side tools take the `tmdrive` game lock in the name of an agentcloud SESSION (2026-09-24:
+    /// an anonymous holder is refused): the devserver's TM_SESSION / TM_SESSION_TITLE ride into every
+    /// remote command as exports, so the box-side shootctl/tmdrive see the same identity.
+    pub fn with_session(cmd: &str) -> String {
+        match std::env::var("TM_SESSION") {
+            Ok(s) if !s.trim().is_empty() => {
+                let title = std::env::var("TM_SESSION_TITLE").unwrap_or_else(|_| "untitled".into());
+                let q = |v: &str| v.replace('\'', "'\\''");
+                // a parent `tmdrive run` hold on the box (its token exported here as TM_LOCK_TOKEN) is
+                // adopted by the box-side tools instead of a second acquire
+                let tok = std::env::var("TM_LOCK_TOKEN").ok().filter(|t| !t.trim().is_empty()).map(|t| format!(" TM_LOCK_TOKEN='{}'", q(t.trim()))).unwrap_or_default();
+                format!("export TM_SESSION='{}' TM_SESSION_TITLE='{}'{tok}; {cmd}", q(s.trim()), q(&title))
+            }
+            _ => cmd.to_string(),
+        }
     }
 
     pub fn push(&self, local: &Path, remote: &str) -> Result<(), String> {
