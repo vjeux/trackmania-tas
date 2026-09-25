@@ -55,7 +55,7 @@ pub fn geom_summary(s2: &mapgeom::static_item::solid2::CPlugSolid2Model) -> Vec<
         let names: Vec<u32> = st.map(|s| s.decls.iter().map(|d| d.name()).collect()).unwrap_or_default();
         let nv = st.and_then(|s| s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == mapgeom::static_item::vstream::N_POSITION).map(|(_, e)| match e { Elem::Float3(p) => p.len(), _ => 0 })).unwrap_or(0);
         let nt = vis.index_buffer.as_ref().map(|ib| ib.indices.len() / 3).unwrap_or(0);
-        out.push(format!("geom {gi}: visual {} lod_mask {} material {} — {nv} verts, {nt} tris, stream decls {:?}, tex_coord_sets {}, lm uvs {}", sg.visual_index, sg.lod_mask, sg.material_index, names, vis.main.as_ref().map(|m| m.tex_coord_sets.len()).unwrap_or(0), lightmap_uvs(vis).is_some()));
+        out.push(format!("geom {gi}: visual {} lod_mask {} material {} — {nv} verts, {nt} tris, stream decls {:?}, tex_coord_sets {}, lm uvs {}, visual tangent arrays {:?} (inline_tangents {}), main flags {:#x}", sg.visual_index, sg.lod_mask, sg.material_index, names, vis.main.as_ref().map(|m| m.tex_coord_sets.len()).unwrap_or(0), lightmap_uvs(vis).is_some(), vis.tangents.as_ref().map(|(a, b)| (a.len(), b.len())), vis.inline_tangents, vis.main.as_ref().map(|m| m.flags()).unwrap_or(0)));
     }
     out
 }
@@ -131,8 +131,16 @@ pub fn lm_mesh_of_solid_ordered(s2: &mapgeom::static_item::solid2::CPlugSolid2Mo
         // the tangent: TANGENT_U the same way (w = 0); PSIZE = the tangent frame's handedness ±1 from TANGENT_V (the sign of
         // (n × tU) · tV), 3 for a mesh without tangents
         let dec_t = |e: Option<&Elem>| -> Option<Vec<[f32; 3]>> { match e { Some(Elem::Float4(t)) => Some(t.iter().map(|v| [v[0], v[1], v[2]]).collect()), Some(Elem::Float3(t)) => Some(t.clone()), Some(Elem::Word(w)) => Some(w.iter().map(|&x| dec3n_raw(x, 511.0)).collect()), _ => None } };
-        let tan_u = dec_t(get(mapgeom::static_item::vstream::N_TANGENT_U));
-        let tan_v = dec_t(get(mapgeom::static_item::vstream::N_TANGENT_V));
+        // the tangent frame is emitted for a geom whose material is a CUSTOM user material with its own shader model (the
+        // vegetation's TDOSN_/TDSN_ materials); a geom on a LINKED pack material (the tiny wall's TrackWallInWorld — its
+        // stream carries tangent words too — and the pad's Land) gets mode 3 and the (1, 0, 0) tangent
+        let linked = usize::try_from(sg.material_index).ok().map(|mi| {
+            let custom_link = s2.custom_materials.get(mi).and_then(|cm| cm.inst().and_then(|m| m.link().map(|l| l.to_string())));
+            let plain_link = s2.materials.get(mi).and_then(|mr| match mr.inline.as_deref() { Some(mapgeom::static_item::Node::Material(m)) => m.link().map(|l| l.to_string()), _ => None });
+            custom_link.or(plain_link).map(|l| !l.is_empty()).unwrap_or(false)
+        }).unwrap_or(false);
+        let tan_u = if linked { None } else { dec_t(get(mapgeom::static_item::vstream::N_TANGENT_U)) };
+        let tan_v = if linked { None } else { dec_t(get(mapgeom::static_item::vstream::N_TANGENT_V)) };
         let base = verts.len() as u16;
         for (i, p) in pos.iter().enumerate() {
             let n = normals.as_ref().and_then(|v| v.get(i)).copied().unwrap_or([0.0, 1.0, 0.0]);
