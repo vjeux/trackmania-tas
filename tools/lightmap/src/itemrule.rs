@@ -359,6 +359,102 @@ pub fn cell_edges(w: u32, n: u32, g: u32) -> Vec<u32> {
     edges
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// THE CHUNKS (RE 7, 2026-09-25 14:25Z — the last piece of the Σ term, verified 55/55 groups and 731/731 cells on the
+// baker's tiny-16 record dump). After the grouping, FUN_1402938c0's tail runs FUN_140292a50 then FUN_140292740:
+// * FUN_140292a50 re-assigns the ordinals inside every group by a 3-D MORTON sort of the rounded record centres
+//   (FUN_141401210: per coordinate lroundf(max(0, c)); key bits per level = (z, y, x) with x least significant; a
+//   stable LSD radix sort in three 10-bit passes): the record at group position i (record order) receives
+//   ordinal = perm[i], perm[i] = the group position of the i-th smallest key (the sort's output list, stored
+//   positionally — NOT the rank).
+// * FUN_140292740 splits every group into CHUNKS of c instances: k = (int)ceilf(1000 / n_models) (no split when
+//   k ≤ 1), c = FUN_1402926c0(trunc(n_records / (k·n_models))) with FUN_1402926c0(x) = max(1, x) then, for x < 12,
+//   x → x+1 when x equals 3, 5, 7 or 11 (checked in that order). A group with count > c becomes ceil(count/c)
+//   model entries: entry 0 keeps the group's place in the model list, the others are appended at the END of the
+//   list (for each model in list order); a record goes to entry ordinal / c with cell ordinal ordinal % c.
+//   tiny 16: 458 groups → k = 3, c = trunc(12214 / 1374) = 8 → the file's blocks of 8 (3×3 grids, one empty cell).
+// The model list then goes through grid_dims / grid_chart, and Σ = TotalLmSurfaceMeter is the f32 running sum of
+// the entries' area' in ascending-area order (BlockSplit sums along the radix order).
+
+/// FUN_1402926c0: max(1, x), then for x < 12 bump 3 → 4, 5 → 6, 7 → 8, 11 → 12 (sequential compares).
+pub fn avoid_bad_chunk(x: u32) -> u32 {
+    let mut v = x.max(1);
+    if x < 12 {
+        for t in [3u32, 5, 7, 11] {
+            if v == t {
+                v += 1;
+            }
+        }
+    }
+    v
+}
+
+/// FUN_140292740's chunk size: `Some(c)` when the split runs (k > 1), `None` when the map has so many models that
+/// k = ceil(1000 / n_models) ≤ 1 (≥ 1000 groups).
+pub fn chunk_size(n_records: u32, n_models: u32) -> Option<u32> {
+    if n_models == 0 {
+        return None;
+    }
+    let k = (1000.0f32 / n_models as f32).ceil() as i32;
+    if k <= 1 {
+        return None;
+    }
+    let x = (n_records as f32 / (k as u32 * n_models) as f32) as u32;
+    Some(avoid_bad_chunk(x))
+}
+
+/// FUN_141401210's key of a rounded centre: x in bit 0, y in bit 1, z in bit 2 of every 3-bit level (30 bits per
+/// coordinate; the three 10-bit radix passes are equivalent to one stable sort on this key).
+pub fn morton3(c: [f32; 3]) -> u128 {
+    let r = |v: f32| -> u32 { (v.max(0.0) + 0.5).floor() as u32 };
+    let (x, y, z) = (r(c[0]), r(c[1]), r(c[2]));
+    let mut m = 0u128;
+    for b in 0..30 {
+        m |= (((x >> b) & 1) as u128) << (3 * b);
+        m |= (((y >> b) & 1) as u128) << (3 * b + 1);
+        m |= (((z >> b) & 1) as u128) << (3 * b + 2);
+    }
+    m
+}
+
+/// FUN_140292a50: the ordinals of one group. `centres` in record order; returns `ordinal[i]` for the record at
+/// group position i: the group position of the i-th smallest Morton key (ties keep record order).
+pub fn group_ordinals(centres: &[[f32; 3]]) -> Vec<u32> {
+    let mut perm: Vec<usize> = (0..centres.len()).collect();
+    perm.sort_by_key(|&i| (morton3(centres[i]), i));
+    perm.iter().map(|&p| p as u32).collect()
+}
+
+/// One chart entry of the model list after the chunk split.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelChart {
+    /// Index of the (PreLightGen, blockparam) group this entry belongs to (order of first appearance).
+    pub group: usize,
+    /// Chunk number within the group (0 = the original entry, ≥ 1 = appended entries).
+    pub chunk: u32,
+    /// Instances in this entry.
+    pub count: u32,
+}
+
+/// FUN_140292740 applied to a model list: `counts[g]` instances per group (first-appearance order). Returns the
+/// entries in the game's model-list order (originals, then for each group in order its appended chunks) and, per
+/// group, the ordinal → (entry index, cell ordinal) mapping through `chunk`.
+pub fn split_chunks(counts: &[u32], chunk: Option<u32>) -> Vec<ModelChart> {
+    let mut out: Vec<ModelChart> = counts.iter().enumerate().map(|(g, &n)| ModelChart { group: g, chunk: 0, count: n }).collect();
+    let Some(c) = chunk else { return out };
+    for (g, &n) in counts.iter().enumerate() {
+        if n > c {
+            let parts = (n - 1) / c + 1;
+            out[g].count = c;
+            for k in 1..parts {
+                out.push(ModelChart { group: g, chunk: k, count: if k + 1 == parts { n - c * (parts - 1) } else { c } });
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,6 +580,35 @@ mod tests {
         // 48 units over 3 cells at g = 2: 16 each (the file's 12/14/16 cell sizes come from this spread; the exact
         // f32 accumulation order of FUN_140291c80 is only partially read — E: match against the dump's cells)
         assert_eq!(cell_edges(48, 3, 2), vec![0, 16, 32, 48]);
+    }
+
+    #[test]
+    fn chunks_of_eight_on_tiny16() {
+        assert_eq!(chunk_size(12214, 458), Some(8)); // k = ceil(1000/458) = 3; 12214 / 1374 = 8.89 → 8
+        assert_eq!(chunk_size(4099, 3), Some(4)); // a pwc-day-like count: k = 334 → 4099 / 1002 = 4
+        assert_eq!(chunk_size(20000, 1000), None); // k = 1 → no split
+        assert_eq!(avoid_bad_chunk(3), 4);
+        assert_eq!(avoid_bad_chunk(7), 8);
+        assert_eq!(avoid_bad_chunk(11), 12);
+        assert_eq!(avoid_bad_chunk(0), 1);
+        assert_eq!(avoid_bad_chunk(9), 9);
+        assert_eq!(avoid_bad_chunk(13), 13);
+        // the 12-instance model of the dump (records 4953 … 6159 in record order, world centres): the file's blocks are
+        // {4953,4954,4957,4967,4968,5114,5170,6159} (3×3 grid, 8 used) and {5113,5167,5168,5169} (2×2)
+        let centres = [
+            [977.0f32, 34.0, 457.0], [980.0, 34.0, 461.0], [982.0, 34.0, 457.0], [998.0, 34.0, 479.0], [996.0, 34.0, 467.0],
+            [1316.0, 65.0, 478.0], [1314.0, 62.0, 468.0], [1301.0, 65.0, 484.0], [1295.0, 60.0, 491.0], [1290.0, 58.0, 495.0],
+            [1282.0, 59.0, 492.0], [1263.0, 54.0, 511.0],
+        ];
+        let ords = group_ordinals(&centres);
+        let blocks: Vec<u32> = ords.iter().map(|o| o / 8).collect();
+        assert_eq!(blocks, vec![0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 0]);
+        let list = split_chunks(&[1, 12, 3, 9], Some(8));
+        assert_eq!(list.len(), 6);
+        assert_eq!(list[1], ModelChart { group: 1, chunk: 0, count: 8 });
+        assert_eq!(list[4], ModelChart { group: 1, chunk: 1, count: 4 });
+        assert_eq!(list[5], ModelChart { group: 3, chunk: 1, count: 1 });
+        assert_eq!(split_chunks(&[1, 12], None).len(), 2);
     }
 
     #[test]
