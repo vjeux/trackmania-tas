@@ -550,14 +550,17 @@ pub fn cmd_build(args: &[String]) {
         // (Default yellow, White, Green, Blue, Red, Black through
         // `ItemInflatableMat`): the N64's rainbow box; MK64_IB_MONO=1 keeps the
         // one-material gold cube
-        let faces: Vec<Option<usize>> = if std::env::var("MK64_IB_MONO").is_ok() { vec![None] } else { (0..6).map(Some).collect() };
+        // the translucent gold cube with the "?" inside (None) plus six coloured
+        // border-band items, one per face; MK64_IB_MONO=1 keeps the cube alone
+        let faces: Vec<Option<usize>> = if std::env::var("MK64_IB_MONO").is_ok() { vec![None] } else { std::iter::once(None).chain((0..6).map(Some)).collect() };
         // face → colour byte: the N64 box shows red, yellow, green, cyan, blue,
         // magenta; the nearest of the six item colours per face
         let colour_of = |k: usize| -> u8 {
             match std::env::var("MK64_IB_COLOUR_PROBE").ok().as_deref() {
                 Some("all2") => 2,
                 Some("ident") => k as u8,
-                _ => [4u8, 0, 2, 3, 1, 5][k % 6],
+                // +z red, −z yellow, +x green, −x blue, top white, bottom red
+                _ => [4u8, 0, 2, 3, 1, 4][k % 6],
             }
         };
         for face in faces {
@@ -567,7 +570,7 @@ pub fn cmd_build(args: &[String]) {
             };
             match crate::itembox::build_faces(&mut store, &name, &spawns, &frame, &assets, &mut rom, &tag, face) {
                 Ok(Some(ib)) => {
-                    if face.map_or(true, |k| k == 0) {
+                    if face.is_none() {
                         println!("  item boxes: {} spinning cubes{} ({} bytes/item)", ib.count, if face.is_some() { ", six colour faces" } else { "" }, ib.bytes.len());
                     }
                     pictures.extend(ib.pictures);

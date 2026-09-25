@@ -160,8 +160,10 @@ pub fn build_faces(store: &mut DataStore, name: &str, spawns: &[[i16; 3]], frame
             };
             mesh.materials.push(CPlugMaterialUserInst::game_material(&link, crate::tm::PHYS_CONCRETE));
             let full = !survey.is_empty() || std::env::var("MK64_IB_FULL").is_ok() || DEFAULT_FULL;
+            // a colour item is the BORDER band of its face, just outside the
+            // translucent gold cube (which stays, with the "?" showing through)
             let geometry = match face {
-                Some(k) => cube_faces(OUTER_M, Some(k)),
+                Some(k) => face_ring(OUTER_M * 1.02, k, 0.16 * OUTER_M),
                 None if full => cube_faces(OUTER_M, None),
                 None => cube_frame(OUTER_M, 0.12 * OUTER_M),
             };
@@ -260,7 +262,7 @@ pub fn build_faces(store: &mut DataStore, name: &str, spawns: &[[i16; 3]], frame
     for (n, b) in mapgeom::static_item::assemble::SIDECARS.with(|s| std::mem::take(&mut *s.borrow_mut())) {
         pictures.insert(n, b);
     }
-    let marks_bytes = if shared || matches!(face, Some(k) if k > 0) {
+    let marks_bytes = if shared || face.is_some() {
         Vec::new()
     } else {
         let marks_name = name.replace("_itemboxes.Item.Gbx", "_itemmarks.Item.Gbx");
@@ -342,6 +344,43 @@ fn cube_frame(s: f32, t: f32) -> Vec<[Corner; 3]> {
     for &x in &[-h, h] {
         for &z in &[-h, h] {
             push_box([x - t / 2.0, -h, z - t / 2.0], [x + t / 2.0, h, z + t / 2.0]); // along y
+        }
+    }
+    out
+}
+
+/// The border band of face `k` of a cube of side `s`: four quads `band` wide
+/// along the face's edges (the face's centre stays open), outward normal.
+fn face_ring(s: f32, k: usize, band: f32) -> Vec<[Corner; 3]> {
+    let h = s / 2.0;
+    let faces: [([f32; 3], [f32; 3], [f32; 3]); 6] = [
+        ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        ([0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]),
+        ([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+        ([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
+        ([0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+    ];
+    let (n, ua, va) = faces[k % 6];
+    let mut out = Vec::new();
+    let c = |su: f32, sv: f32| {
+        let pos = [n[0] * h + ua[0] * su + va[0] * sv, n[1] * h + ua[1] * su + va[1] * sv, n[2] * h + ua[2] * su + va[2] * sv];
+        let uv = [(su / h + 1.0) / 2.0, (sv / h + 1.0) / 2.0];
+        Corner { pos, normal: n, uv, uv1: uv, tan_u: ua, tan_v: va, face: k as u32 + 1, group: 0 }
+    };
+    let inner = h - band;
+    // four bands: (u0,u1,v0,v1) rectangles in face coordinates
+    let rects = [(-h, h, inner, h), (-h, h, -h, -inner), (-h, -inner, -inner, inner), (inner, h, -inner, inner)];
+    for (u0, u1, v0, v1) in rects {
+        let (a, b, cc, d) = (c(u0, v0), c(u1, v0), c(u1, v1), c(u0, v1));
+        let t1 = [a, b, cc];
+        let check = mesh::face_normal(&[t1[0].pos, t1[1].pos, t1[2].pos]);
+        if check[0] * n[0] + check[1] * n[1] + check[2] * n[2] > 0.0 {
+            out.push(t1);
+            out.push([a, cc, d]);
+        } else {
+            out.push([a, cc, b]);
+            out.push([a, d, cc]);
         }
     }
     out
