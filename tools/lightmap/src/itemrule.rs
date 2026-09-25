@@ -234,6 +234,131 @@ pub fn chart_records(plg: &PreLightGen) -> Vec<ChartRecord> {
     ]
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// THE MODEL GRIDS (RE 7, 2026-09-25 14:00Z): with no multi-sub-visual chart in the map (AllocateWithScale_
+// state+0x138 = 1 — every reference bake), the layout does NOT pack one chart per record. FUN_1402938c0 groups
+// the records by (PreLightGen pointer, blockparam = quality × BlockInfo scale) into ONE chart per group: a grid
+// of nb × na cells (FUN_140293d70), packed as one rect of extent (nb·ext.x, na·ext.y) with the minimum size
+// m·(nb, na) (TryPack's `mins`), area (nb·na)·ext.y·ext.x (FUN_140294220) — the sum of those areas is the
+// TotalLmSurfaceMeter of the file, and the grid SLACK (nb·na − n empty cells) is the area no record owns.
+// A record whose own extent × D₁ exceeds 100 on either side is a group of its own (D₁ = W·H / Σ of the
+// per-record areas, the first density). Each instance then gets one cell: the k-th cell in Z-ORDER
+// (FUN_140291b10: deinterleave i = 0..M², M = 2^ceil(log2 max(nb,na)), keep x < nb, y < na) by its ordinal in
+// the group (order of appearance in the record array), cell edges spread over the placed rect with an
+// error-diffused remainder in steps of g (FUN_140291c80), 2·pad gutter per cell (FUN_140291f20).
+
+/// FUN_140293d70's grid for a group of `n` instances whose per-instance extent is `ext` (metres), at the first
+/// density `d1` (texel²/m²) with the minimum chart size `m`: returns (nb, na) = (columns along x, rows along y).
+/// Transcribed: X = max(m, ext.x·d1), Y = max(m, ext.y·d1), r = X/Y; na₀ = iround(√(n·r)), nb₀ = iround(√(n/r))
+/// (CRT lroundf: half away from zero), floored at 1; while nb·na < n: with rem = n − nb·na, if (nb+1 < rem &&
+/// na+1 < rem) grow nb when (float)(nb / na) [integer division] ≤ 1/r else na, otherwise grow nb when nb ≤ na
+/// else na; then trim: while (nb−1)·na ≥ n → nb−−; else while (na−1)·nb ≥ n → na−−.
+pub fn grid_dims(n: u32, ext: [f32; 2], d1: f32, m: u32) -> (u32, u32) {
+    if n == 0 {
+        return (1, 1);
+    }
+    let mf = m as f32;
+    let x = mf.max(ext[0] * d1);
+    let y = mf.max(ext[1] * d1);
+    let r = x / y;
+    let inv = 1.0f32 / r;
+    let iround = |v: f32| -> u32 {
+        if !v.is_finite() || v == 0.0 {
+            return 0;
+        }
+        v.round() as u32 // roundf: half away from zero
+    };
+    let nf = n as f32;
+    let a = iround((nf * r).sqrt());
+    let b = iround((nf / r).sqrt());
+    let mut na = a.max(1);
+    let mut nb = b.max(1);
+    if na * nb < n {
+        let mut na1 = na + 1;
+        let mut nb1 = nb + 1;
+        while na * nb < n {
+            let rem = n - na * nb;
+            let take_b = if nb1 < rem && na1 < rem { ((nb / na) as f32) <= inv } else { nb <= na };
+            if take_b {
+                nb += 1;
+                nb1 += 1;
+            } else {
+                na += 1;
+                na1 += 1;
+            }
+        }
+    }
+    loop {
+        if (nb - 1) * na >= n {
+            nb -= 1;
+            continue;
+        }
+        if (na - 1) * nb >= n {
+            na -= 1;
+            continue;
+        }
+        break;
+    }
+    (nb, na)
+}
+
+/// FUN_140294220: the group chart's extent and area from the grid — `ext' = (nb·ext.x, na·ext.y)`,
+/// `area' = ((float)(nb·na) · ext.y) · ext.x` (f32, in this order).
+pub fn grid_chart(ext: [f32; 2], nb: u32, na: u32) -> ([f32; 2], f32) {
+    ([nb as f32 * ext[0], na as f32 * ext[1]], ((nb * na) as f32 * ext[1]) * ext[0])
+}
+
+/// FUN_1402938c0's solo test: a record whose extent × D₁ exceeds 100 on either side is not grouped.
+pub fn is_solo(ext: [f32; 2], d1: f32) -> bool {
+    100.0 < ext[0] * d1 || 100.0 < ext[1] * d1
+}
+
+/// FUN_140291b10: the Z-order cell list of an nb × na grid — the k-th instance of the group takes `cells[k]`
+/// = (column, row); x from the even bits, y from the odd bits of i = 0..M², M = 2^ceil(log2(max(nb, na))).
+pub fn zorder_cells(nb: u32, na: u32) -> Vec<(u32, u32)> {
+    let mx = nb.max(na).max(1);
+    let mut m = 1u32;
+    while m < mx {
+        m <<= 1;
+    }
+    let mut out = Vec::with_capacity((nb * na) as usize);
+    for i in 0..m * m {
+        let (mut x, mut y) = (0u32, 0u32);
+        for b in 0..16 {
+            x |= ((i >> (2 * b)) & 1) << b;
+            y |= ((i >> (2 * b + 1)) & 1) << b;
+        }
+        if x < nb && y < na {
+            out.push((x, y));
+        }
+    }
+    out
+}
+
+/// FUN_140291c80 (partial read — the exact f32 accumulation is not pinned): the cell boundaries along one axis —
+/// `w` placed units spread over `n` cells in steps of `g`: base = floor((w / n) / g)·g per cell, the remainder
+/// `w/n − base` diffused (a cell gets +g when the running remainder reaches g). Returns the n+1 edge offsets.
+pub fn cell_edges(w: u32, n: u32, g: u32) -> Vec<u32> {
+    let per = w as f32 / n as f32;
+    let base = (per as u32) - (per as u32) % g;
+    let frac = per - base as f32;
+    let mut edges = vec![0u32];
+    let mut acc = 0f32;
+    let mut pos = 0u32;
+    for _ in 0..n {
+        acc += frac;
+        let mut c = base;
+        if acc >= g as f32 {
+            acc -= g as f32;
+            c += g;
+        }
+        pos += c;
+        edges.push(pos);
+    }
+    edges
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,6 +453,37 @@ mod tests {
         let mut two = p.clone();
         two.uv1 = [0.0, 0.0, 0.5, 0.5];
         assert_eq!(chart_ext(&two, 1.0, 1), [0.5 * 446.6406, 0.5 * 446.6406]);
+    }
+
+    #[test]
+    fn model_grids_as_on_tiny16() {
+        // tiny 16 (baker's /lmrecords dump, D₁ = 2048² / 14 207 847 = 0.29521): 32-m items with n instances →
+        // the blocks the file shows: 6 → 3×2 (cols × rows), 7 → 3×3 (2 empty), 3 → 2×2, 2 → 2×1, 12 → 4×3
+        let d1 = 0.2952104f32;
+        let e = [32.02f32, 32.08];
+        assert_eq!(grid_dims(6, e, d1, 6), (3, 2));
+        assert_eq!(grid_dims(7, e, d1, 6), (3, 3));
+        assert_eq!(grid_dims(3, e, d1, 6), (2, 2));
+        assert_eq!(grid_dims(2, e, d1, 6), (2, 1));
+        assert_eq!(grid_dims(12, e, d1, 6), (4, 3));
+        assert_eq!(grid_dims(1, e, d1, 6), (1, 1));
+        assert_eq!(grid_dims(8, e, d1, 6), (3, 3));
+        // the far tiles (q 0.0442, ext 1.41 m → both sides under m → r = 1): 2572 → 51 × 51
+        assert_eq!(grid_dims(2572, [1.41, 1.42], d1, 6), (51, 51));
+        // a wide chart (r = 4): 4 instances stack in a column of rows
+        assert_eq!(grid_dims(4, [64.0, 16.0], d1, 6), (1, 4));
+        let (ext2, area2) = grid_chart(e, 3, 3);
+        assert_eq!(ext2, [3.0 * 32.02, 3.0 * 32.08]);
+        assert!((area2 - 9.0 * 32.08 * 32.02).abs() < 0.01);
+        assert!(!is_solo(e, d1));
+        assert!(is_solo([400.0, 30.0], d1)); // 400·0.295 = 118 > 100
+        // Z-order cells of a 3×3 grid: the 7 instances fill (0,0) (1,0) (0,1) (1,1) (2,0) (2,1) (0,2) — the two
+        // empty cells are (1,2) and (2,2)
+        assert_eq!(zorder_cells(3, 3), vec![(0, 0), (1, 0), (0, 1), (1, 1), (2, 0), (2, 1), (0, 2), (1, 2), (2, 2)]);
+        assert_eq!(zorder_cells(2, 1), vec![(0, 0), (1, 0)]);
+        // 48 units over 3 cells at g = 2: 16 each (the file's 12/14/16 cell sizes come from this spread; the exact
+        // f32 accumulation order of FUN_140291c80 is only partially read — E: match against the dump's cells)
+        assert_eq!(cell_edges(48, 3, 2), vec![0, 16, 32, 48]);
     }
 
     #[test]
