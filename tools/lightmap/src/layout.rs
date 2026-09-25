@@ -116,25 +116,53 @@ pub fn tile_cells(baked: &[(i32, i32)], sx: i32, sz: i32) -> Vec<(i32, i32)> {
 
 /// The generated tile's quality per cell (FUN_140dcc8e0's ring search over the item-marked 3-D grid).
 pub fn tile_quality(cells: &[(i32, i32)], tile_y: i32, item_cells: &std::collections::HashSet<(i32, i32, i32)>) -> Vec<f32> {
+    // THE RING IS THREE-DIMENSIONAL (E, stpad's editor table, 2026-09-25): r = the Chebyshev distance max(|dx|, |dy|, |dz|) to the
+    // nearest marked cell — the 180 WaterBase blocks one cell ABOVE the ground give their tiles q = (√2)^−1, not 1.0, and the
+    // eight ground-level items give theirs 1.0; a marked cell farther than 8 in any axis counts for nothing. On the one-level
+    // BlueBay maps this is the planar rule.
+    let mut ys: Vec<i32> = item_cells.iter().map(|c| c.1).collect();
+    ys.sort_unstable();
+    ys.dedup();
     cells
         .iter()
         .map(|&(cx, cz)| {
-            if item_cells.contains(&(cx, tile_y, cz)) {
-                return 1.0;
-            }
-            for r in 1..=8i32 {
-                for dx in -r..=r {
-                    for dz in -r..=r {
-                        if dx.abs() != r && dz.abs() != r {
-                            continue;
+            let mut best: i32 = i32::MAX;
+            for &y in &ys {
+                let dy = (y - tile_y).abs();
+                if dy > 8 || dy >= best {
+                    continue;
+                }
+                // the nearest marked cell at this level: planar Chebyshev radius p ascending, the 3-D distance max(dy, p)
+                for p in 0..=8i32 {
+                    let r = dy.max(p);
+                    if r >= best {
+                        break;
+                    }
+                    let mut hit = false;
+                    'scan: for dx in -p..=p {
+                        for dz in -p..=p {
+                            if dx.abs().max(dz.abs()) != p {
+                                continue;
+                            }
+                            if item_cells.contains(&(cx + dx, y, cz + dz)) {
+                                hit = true;
+                                break 'scan;
+                            }
                         }
-                        if item_cells.contains(&(cx + dx, tile_y, cz + dz)) {
-                            return (0.5f32).powf(r as f32 * 0.5);
-                        }
+                    }
+                    if hit {
+                        best = r;
+                        break;
                     }
                 }
             }
-            Q_FAR
+            if best == 0 {
+                1.0
+            } else if best <= 8 {
+                (0.5f32).powf(best as f32 * 0.5)
+            } else {
+                Q_FAR
+            }
         })
         .collect()
 }

@@ -5309,6 +5309,55 @@ fn run(a: Vec<String>) {
                 Err(e) => println!("{}: {e}", a[1]),
             }
         }
+        "records-check" => {
+            // lmtool records-check MAP --pak FILE:KEY --dump TSV [--collection Stadium] [--zone Grass] [--grid 96] [--cell-y 1] [--yoff 0]
+            //   [--tile-q-far]: our record list vs the baker's /lmrecords dump (records.rs)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let pak = f("--pak").expect("--pak FILE:KEY");
+            let (pp, key) = pak.rsplit_once(':').expect("--pak FILE:KEY");
+            let mut store = mapgeom::store::DataStore::empty();
+            store.add_pak(pp, key).expect("pak");
+            let dump = lightmap::records::read_dump(&f("--dump").expect("--dump TSV")).expect("dump");
+            let coll = f("--collection").unwrap_or_else(|| "Stadium".into());
+            let zone = f("--zone").unwrap_or_else(|| "Grass".into());
+            let grid: usize = f("--grid").map(|v| v.parse().unwrap()).unwrap_or(96);
+            let cell_y: f32 = f("--cell-y").map(|v| v.parse().unwrap()).unwrap_or(1.0);
+            let yoff: f32 = f("--yoff").map(|v| v.parse().unwrap()).unwrap_or(0.0);
+            // the items' cells for the ring rule: the map's items at their file cells (x, y, z) — the tile level = the ground row
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            // the marked cells: the items' file cells AND the blocks' cells (the WaterBase blocks one level above the ground mark
+            // their tiles at ring 1)
+            let mut item_cells: std::collections::HashSet<(i32, i32, i32)> = mf.items.iter().map(|it| (it.file_cell[0] as i32, it.file_cell[1] as i32, it.file_cell[2] as i32)).collect();
+            // (a GHOST block — flags bit 28 — marks nothing: stpad's 12 flagged WaterBase blocks leave their tiles at ring ≥ 2)
+            if !a.iter().any(|x| x == "--no-block-cells") { for b in &mf.blocks { if b.flags & 0x1000_0000 != 0 && !a.iter().any(|x| x == "--ghost-marks") { continue; } let (x, y, z) = b.coords(); item_cells.insert((x, y, z)); } }
+            let tile_y: i32 = f("--tile-level").map(|v| v.parse().unwrap()).unwrap_or(9);
+            println!("marked cells: {} (items {}, blocks {}); tile level {tile_y}; item cell y values {:?}", item_cells.len(), mf.items.len(), mf.blocks.len(), { let mut v: Vec<i32> = mf.items.iter().map(|it| it.file_cell[1] as i32).collect(); v.sort(); v.dedup(); v });
+            let cells: Vec<(i32, i32)> = (0..grid as i32).flat_map(|cx| (0..grid as i32).map(move |cz| (cx, cz))).collect();
+            let tq = lightmap::layout::tile_quality(&cells, tile_y, &item_cells);
+            let q_of = |cx: usize, cz: usize| -> f32 { tq[cx * grid + cz] };
+            let tiles = lightmap::records::zone_tiles(&mut store, &coll, &zone, grid, cell_y, yoff, &q_of).expect("zone tiles");
+            println!("{} zone tiles; first {:?}", tiles.len(), tiles.first().map(|r| (r.centre, r.half, r.meter_by_uv, r.uv, r.quality)));
+            let qh: std::collections::BTreeMap<u32, usize> = tiles.iter().fold(Default::default(), |mut m, r| { *m.entry(r.quality.to_bits()).or_default() += 1; m });
+            println!("  tile quality histogram: {:?}", qh.iter().map(|(b, n)| (f32::from_bits(*b), *n)).collect::<Vec<_>>());
+            lightmap::records::compare(&tiles, &dump);
+            // --ring-map: our tile ring index vs the dump's over the marked region (one char per cell: ours/dump differences marked)
+            if a.iter().any(|x| x == "--ring-map") {
+                let ring_of = |q: f32| -> char { let r = (-(q.log2()) * 2.0).round() as i32; if r >= 9 { '.' } else { char::from_digit(r as u32, 10).unwrap_or('?') } };
+                let mut dq: std::collections::HashMap<(i32, i32), f32> = Default::default();
+                for d in &dump { if (d.centre[1] - 8.125).abs() < 1e-3 && (d.meter_by_uv - 32.0641289).abs() < 1e-4 { dq.insert((((d.centre[0] - 6.6274185) / 32.0).round() as i32, ((d.centre[2] - 11.3137197) / 32.0).round() as i32), d.quality); } }
+                let (x0, x1, z0, z1): (i32, i32, i32, i32) = (10, 78, 20, 70);
+                println!("ring map (ours; a lowercase letter where the dump differs: the dump's ring as a..i = 0..8, j = far):");
+                for cz in z0..z1 {
+                    let mut line = String::new();
+                    for cx in x0..x1 {
+                        let ours = tq[(cx as usize) * grid + cz as usize];
+                        let oc = ring_of(ours);
+                        match dq.get(&(cx, cz)) { Some(&d) if (d - ours).abs() > 1e-6 => { let r = (-(d.log2()) * 2.0).round() as i32; line.push((b'a' + r.min(9) as u8) as char); } _ => line.push(oc) }
+                    }
+                    println!("{cz:3} {line}");
+                }
+            }
+        }
         "dome-check" => {
             // lmtool dome-check PASSCAP [--frame 127448] [--direction 0] [--filter f32|f16|f16sum] [--weights floor|round|f32] [--rsq-approx]
             //   [--half H] [--top N]: PS 16774 transcribed on the frame's own inputs against the captured environment layer (domecheck.rs)
