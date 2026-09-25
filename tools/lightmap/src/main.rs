@@ -792,6 +792,13 @@ fn run(a: Vec<String>) {
                             let nl = b.name.to_ascii_lowercase();
                             if nl == "sea" || nl == "water" || nl == "lake" { let c = b.coords(); water_cells.push((c.0 as u32, c.2 as u32)); }
                         }
+                        // THE CAPTURE (2026-09-24, pwc-day: 2412 Sea blocks): the game's peel renders the zone tile as
+                        // 4096 instances — every cell of the 64×64 grid carries a tile whether or not a Sea block is
+                        // authored there (the empty genealogy's default zone); --zone-fill blocks keeps the authored cells only
+                        if f("--zone-fill").as_deref() != Some("blocks") && mf.size[0] == 64 && mf.size[2] == 64 {
+                            let have: std::collections::HashSet<(u32, u32)> = water_cells.iter().copied().collect();
+                            for cz in 0..64u32 { for cx in 0..64u32 { if !have.contains(&(cx, cz)) { water_cells.push((cx, cz)); } } }
+                        }
                     }
                     let water_alb = lightmap::albedo::for_link("Water").unwrap_or([0.3; 3]);
                     let sand_alb = lightmap::albedo::for_link("Sand").unwrap_or([0.5; 3]);
@@ -802,7 +809,10 @@ fn run(a: Vec<String>) {
                         scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[2], q[1]], albedo: alb, water });
                         scene.decor.push(lightmap::geometry::DecorTri { p: [q[0], q[3], q[2]], albedo: alb, water });
                     };
-                    for &(cx, cz) in &water_cells { quad(cx, cz, sea_y, water_alb, true); quad(cx, cz, sea_y - 3.0, sand_alb, false); }
+                    // the game's tile is one surface: the capture's second world layer holds the items alone (651 px
+                    // against 10.5 M with a floor under the water) — no sand floor unless --sand-floor
+                    let sand = has("--sand-floor");
+                    for &(cx, cz) in &water_cells { quad(cx, cz, sea_y, water_alb, true); if sand { quad(cx, cz, sea_y - 3.0, sand_alb, false); } }
                     for &(cx, cz) in &land_cells { quad(cx, cz, sea_y + 3.0, land_alb, false); }
                     eprintln!("zone tiles: {} water cells (sea level {sea_y}), {} land cells ({})", water_cells.len(), land_cells.len(), if zones.len() == 4096 { "from the genealogy" } else { "from the map's Sea blocks — the genealogy is empty" });
                 }
@@ -1231,6 +1241,12 @@ fn run(a: Vec<String>) {
             prm.depth_clip = !has("--no-depth-clip");
             prm.depth_bits = f("--depth-bits").map(|v| v.parse().unwrap()).unwrap_or(16);
             prm.peel_inset = has("--inset");
+            // --accum hbasis|rnm: the game's H-basis constant-term projection (the capture's PS 17536) or the
+            // RNM-style clamped cosine; default hbasis under a dump / game-peel, rnm on the product path until the
+            // level is settled (--hbasis-kappa K: 1/√(2π) default, 1 = the raw C0)
+            prm.accum_hbasis = match f("--accum").as_deref() { Some("hbasis") => true, Some("rnm") => false, Some(o) => panic!("--accum hbasis|rnm, not {o}"), None => prm.game_peel };
+            if let Some(k) = f("--hbasis-kappa") { prm.hbasis_kappa = k.parse().expect("--hbasis-kappa"); }
+            prm.sweep0_sun = has("--sweep0-sun");
             prm.obj_base = base;
             let game_manifest: Option<lightmap::passdump::Manifest> = f("--frustum-from").map(|p| {
                 let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--frustum-from {p}: {e}"));
@@ -1269,6 +1285,8 @@ fn run(a: Vec<String>) {
                 dmp.convention("chart_ss", serde_json::json!(format!("per-chart buffers at (2·w·{ss})×(2·h·{ss}) = the layout footprint × ss (the game's atlas × ss, cut by chart); `chart` = stored texels", ss = if prm.per_subsample { prm.ss } else { 1 })));
                 dmp.convention("obj_base", serde_json::json!(base));
                 dmp.convention("game_peel", serde_json::json!(prm.game_peel));
+                dmp.convention("sweep0_sun", serde_json::json!(prm.sweep0_sun));
+                dmp.convention("accumulate", serde_json::json!(if prm.accum_hbasis { format!("H-basis C0: E += (4π/N)·P(n·D)·L × κ, P = 0.093506(3s²−1) + 0.398928 s + 0.199472, κ = {}", prm.hbasis_kappa) } else { "RNM: E += 4/N·max(0, n·D)·L".to_string() }));
                 dmp.convention("frustum_source", serde_json::json!(if game_manifest.is_some() { "the captured MANIFEST (--frustum-from)" } else { "the receivers' bbox + 1 m, square, (res − 1) px over the larger extent; the far plane pushed out to every occluder (ground, sea, decoration)" }));
                 prm.dump = Some(std::sync::Arc::new(std::sync::Mutex::new(dmp)));
             }
@@ -2890,7 +2908,7 @@ fn run(a: Vec<String>) {
                 if let Some(p) = f("--pass") { if e.pass != p { continue; } }
                 if n >= max { break; }
                 n += 1;
-                let head = format!("{} s{:?} d{:?} l{:?} {} {}×{} {}", e.pass, e.sweep, e.direction, e.layer, e.format, e.width, e.height, e.file);
+                let head = format!("{} s{:?} d{:?} p{:?} l{:?} eid{:?} {} {}×{} {}", e.pass, e.sweep, e.direction, e.peel, e.layer, e.eid_last, e.format, e.width, e.height, e.file);
                 match lightmap::passdiff::load_entry(&root, e) {
                     Ok(b) => {
                         let ch = b.channels as usize;

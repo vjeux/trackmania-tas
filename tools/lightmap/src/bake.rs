@@ -155,6 +155,14 @@ pub struct BakeParams {
     pub depth_clip: bool,
     /// The peel depth target's bits: 16 (D16_UNORM, the capture) or 32 (D32_FLOAT).
     pub depth_bits: u32,
+    /// The accumulate: the game's H-basis constant-term projection (4π/N)·P(n·D) (true) or the RNM-style
+    /// 4/N·max(0, n·D); `hbasis_kappa` scales the H-basis C0 into the port's E units (1/√(2π) keeps a
+    /// uniform sky at E = L; 1.0 = the raw C0 the game's target holds).
+    pub accum_hbasis: bool,
+    pub hbasis_kappa: f32,
+    /// The sun on the peeled surfaces in the FIRST sweep (the RE reading); the capture shows black peel
+    /// colours in sweep 0, so it is off by default.
+    pub sweep0_sun: bool,
 }
 
 impl Default for BakeParams {
@@ -229,6 +237,9 @@ impl Default for BakeParams {
             obj_base: 4096,
             depth_clip: false,
             depth_bits: 16,
+            accum_hbasis: false,
+            hbasis_kappa: 0.398_942_28,
+            sweep0_sun: false,
         }
     }
 }

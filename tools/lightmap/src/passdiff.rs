@@ -208,15 +208,29 @@ fn peels_of(m: &Manifest, sweep: u32, direction: u32) -> Vec<Frustum> {
 }
 
 /// Fill every peel entry's `peel` index (0 = the first frustum seen for the direction, 1 = the next…).
+/// An entry without a frustum (the dome draw's snapshot carries no peel camera) joins the peel that
+/// FOLLOWS it in event order — it is that peel's opening sky layer.
 pub fn assign_peels(m: &mut Manifest) {
     let keys: std::collections::BTreeSet<(u32, u32)> = m.passes.iter().filter(|e| (e.pass == "peel_depth" || e.pass == "peel_color") && e.direction.is_some()).map(|e| (e.sweep.unwrap_or(0), e.direction.unwrap())).collect();
     for (sw, d) in keys {
         let peels = peels_of(m, sw, d);
+        // (eid, peel) of the entries with a frustum, to place the frustum-less ones
+        let mut placed: Vec<(u64, u32)> = Vec::new();
         for e in m.passes.iter_mut() {
             if (e.pass == "peel_depth" || e.pass == "peel_color") && e.sweep.unwrap_or(0) == sw && e.direction == Some(d) && e.peel.is_none() {
                 if let Some(f) = &e.frustum {
                     e.peel = peels.iter().position(|g| same_frustum(g, f)).map(|i| i as u32);
+                    if let Some(p) = e.peel { placed.push((e.eid_last.unwrap_or(0), p)); }
                 }
+            }
+        }
+        placed.sort();
+        for e in m.passes.iter_mut() {
+            if (e.pass == "peel_depth" || e.pass == "peel_color") && e.sweep.unwrap_or(0) == sw && e.direction == Some(d) && e.peel.is_none() && e.frustum.is_none() {
+                let eid = e.eid_last.unwrap_or(0);
+                e.peel = placed.iter().find(|(x, _)| *x > eid).map(|(_, p)| *p).or_else(|| placed.last().map(|(_, p)| *p));
+                // it also takes that peel's frustum (the dome is drawn into the same targets)
+                if let Some(p) = e.peel { e.frustum = peels.get(p as usize).cloned(); }
             }
         }
     }
@@ -980,31 +994,33 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
                 groups.entry((e.sweep, e.direction, e.peel)).or_default().push(i);
             }
         }
-        let mut dome_groups: Vec<(Option<u32>, Option<u32>, Option<u32>)> = Vec::new();
+        // every peel opens with the dome drawn over (or after) its first geometry render: that first
+        // snapshot is the sky layer (depth 0 where the dome covers; the fraction is reported)
+        let mut dome_groups: Vec<((Option<u32>, Option<u32>, Option<u32>), f64)> = Vec::new();
         for (key, idx) in &groups {
-            let first = idx.iter().copied().min_by_key(|&i| (game.passes[i].layer.unwrap_or(0), game.passes[i].eid_last.unwrap_or(0))).unwrap();
+            let first = idx.iter().copied().min_by_key(|&i| (game.passes[i].eid_last.unwrap_or(0), game.passes[i].layer.unwrap_or(0))).unwrap();
             let e = &game.passes[first];
-            if let Ok(b) = load_entry(game_root, e) {
-                let n = b.data.len().max(1);
-                let zeros = b.data.iter().step_by(3).filter(|v| **v == 0.0).count() * 3;
-                if zeros as f64 / n as f64 > 0.9 {
-                    dome_groups.push(*key);
-                }
-            }
+            let zero_frac = load_entry(game_root, e).map(|b| { let n = (b.data.len() / 3).max(1); b.data.iter().step_by(3).filter(|v| **v == 0.0).count() as f64 / n as f64 }).unwrap_or(-1.0);
+            dome_groups.push((*key, zero_frac));
         }
-        for key in &dome_groups {
-            let first_layer = game.passes.iter().filter(|e| (e.pass == "peel_depth" || e.pass == "peel_color") && (e.sweep, e.direction, e.peel) == *key).map(|e| e.layer.unwrap_or(0)).min().unwrap_or(0);
+        for (key, zero_frac) in &dome_groups {
+            // the group's entries in event order: the first (depth + colour pair) is the sky layer
+            let mut eids: Vec<u64> = game.passes.iter().filter(|e| (e.pass == "peel_depth" || e.pass == "peel_color") && (e.sweep, e.direction, e.peel) == *key).map(|e| e.eid_last.unwrap_or(0)).collect();
+            eids.sort();
+            eids.dedup();
+            let first_eid = eids.first().copied().unwrap_or(0);
             for e in game.passes.iter_mut() {
                 if (e.pass == "peel_depth" || e.pass == "peel_color") && (e.sweep, e.direction, e.peel) == *key {
-                    let l = e.layer.unwrap_or(0);
-                    if l == first_layer {
+                    let eid = e.eid_last.unwrap_or(0);
+                    if eid == first_eid {
                         if e.pass == "peel_color" { e.pass = "peel_sky".into(); e.layer = None; } else { e.pass = "peel_sky_depth".into(); e.layer = None; }
                     } else {
-                        e.layer = Some(l - first_layer - 1);
+                        let rank = eids.iter().position(|x| *x == eid).unwrap_or(1);
+                        e.layer = Some((rank - 1) as u32);
                     }
                 }
             }
-            findings.push(format!("dome_layer(game sweep {:?} direction {:?} peel {:?}: its first layer is the sky dome at depth 0 → `peel_sky`, the geometry layers re-indexed from 0)", key.0, key.1, key.2));
+            findings.push(format!("dome_layer(game sweep {:?} direction {:?} peel {:?}: the peel's first snapshot is the sky dome ({:.1} % of its pixels at depth 0) → `peel_sky`; its {} geometry layers re-indexed from 0)", key.0, key.1, key.2, 100.0 * zero_frac, eids.len().saturating_sub(1)));
         }
     }
     let ours = read_manifest(&std::fs::read_to_string(ours_root.join("MANIFEST.json")).map_err(|e| format!("{}: {e}", ours_root.join("MANIFEST.json").display()))?)?;

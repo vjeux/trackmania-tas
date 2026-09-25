@@ -455,14 +455,19 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
         // GeomILightIn0 reads the ambient in its place — the mood's LAmbient (the undersides of the
         // tiny maps' ground-level items read 0.2 over the sea in the editor, our water gave 0.05 with
         // nothing but the low sun on it; DIFFERENTIAL: the factor is 1, --decor-ambient K overrides)
-        _ if wt.inst == DECOR_INST => { let s = prm.decor_sky_up; [s[0] * prm.decor_ambient, s[1] * prm.decor_ambient, s[2] * prm.decor_ambient] },
+        // (nothing is accumulated yet in the first sweep: the stand-in is 0 there, like every C0)
+        _ if wt.inst == DECOR_INST && (prm.sweep > 0 || prm.sweep0_sun) => { let s = prm.decor_sky_up; [s[0] * prm.decor_ambient, s[1] * prm.decor_ambient, s[2] * prm.decor_ambient] },
         _ => [0.0; 3],
     };
     // a vegetation card is lit from both sides (thin foliage: the leaf shader's sun term does not care
     // which face the peel sees) — LMTOOL_CARD_ONE_SIDED=1 restores the plain n·L
     let is_card = wt.alpha != u16::MAX;
     let ndl = if is_card && !prm.card_one_sided { dot(n, prm.sun_dir).abs() } else { dot(n, prm.sun_dir).max(0.0) };
-    let lit = if ndl > 0.0 && prm.sun_dir[1] > 0.0 { shadow.map(|s| s.lit(hit_p, sun_bias)).unwrap_or(1.0) } else { 0.0 };
+    // THE CAPTURE (2026-09-24): the first sweep's peel colours are black — no sun on the peeled surfaces
+    // in sweep 0 (the sun's bounce enters with the stored C0 from sweep 1 on); --sweep0-sun restores the
+    // RE reading of FUN_140234df0 (sun-visibility scale 1.0 in the first sweep)
+    let sun_on = prm.sweep > 0 || prm.sweep0_sun;
+    let lit = if sun_on && ndl > 0.0 && prm.sun_dir[1] > 0.0 { shadow.map(|s| s.lit(hit_p, sun_bias)).unwrap_or(1.0) } else { 0.0 };
     SUN_STATS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if ndl > 0.0 { SUN_STATS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
     if lit > 0.0 { SUN_STATS[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
@@ -851,7 +856,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // the same sun term the peel gives a fragment of this surface (a card is lit from both sides)
             let is_card = bvh.tris[s.own_tri as usize].alpha != u16::MAX;
             let ndl = if is_card && !prm.card_one_sided { dot(s.n, prm.sun_dir).abs() } else { dot(s.n, prm.sun_dir).max(0.0) };
-            let lit = if ndl > 0.0 && prm.sun_dir[1] > 0.0 { shadow.as_ref().map(|sm| sm.lit(s.p, sun_bias)).unwrap_or(1.0) } else { 0.0 };
+            let sun_on = prm.sweep > 0 || prm.sweep0_sun;
+            let lit = if sun_on && ndl > 0.0 && prm.sun_dir[1] > 0.0 { shadow.as_ref().map(|sm| sm.lit(s.p, sun_bias)).unwrap_or(1.0) } else { 0.0 };
             let mut v = [0f32; 3];
             for k in 0..3 { v[k] = alb[k] * (stored[k] + prm.sun[k] * ndl * lit); }
             ilight[ii][gi] = v;
@@ -1110,6 +1116,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     for &i in ch {
                         let s = &subs[i as usize];
                         let ndd = dot(s.n, *d);
+                        // (the H-basis accumulate draws every texel: LmILightDir_Set discards the texels facing away,
+                        // so their ILightDir stays the clear = 0 and P(sz < 0)·0 adds nothing — same as skipping)
                         if ndd <= 0.0 {
                             continue;
                         }
@@ -1117,7 +1125,17 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         // LMTOOL_SKY_NO_COS=1: the sky pass (AddSkyVisibility) without the receiver's cosine — the
                         // per-direction constant 4·w·d.y·SkyFactor times the visibility only (a hypothesis under test)
                         let hit_sky = !occl[i as usize];
-                        let w = if hit_sky && sky_no_cos { scale } else { scale * ndd };
+                        // THE GAME'S H-BASIS ACCUMULATE (PS 17536 read off the capture, 2026-09-24): C0 += (4π/N)·L·P(n·D)
+                        // with P(s) = 0.093506·(3s² − 1) + 0.398928·s + 0.199472 (no clamp; P(1) = π/4, ∫₀¹ P = 0.399,
+                        // P ≈ 0 below the horizon), i.e. the H-basis projection of the clamped cosine; the constant
+                        // coefficient is kept in the port's units through κ = 1/√(2π) (a uniform sky gives E = L as
+                        // with the RNM-style Σ 4/N·max(0,n·D)·L, which `--accum rnm` restores). Below-horizon
+                        // directions contribute slightly negative weights, as in the game.
+                        let w = if prm.accum_hbasis {
+                            let sz = ndd;
+                            let pz = 0.093506 * (3.0 * sz * sz - 1.0) + 0.398928 * sz + 0.199472;
+                            (std::f32::consts::PI * scale) * pz * prm.hbasis_kappa
+                        } else if hit_sky && sky_no_cos { scale } else { scale * ndd };
                         if ldir_on {
                             // SAFETY: as for acc — disjoint indices per chunk
                             let lslot = unsafe { &mut *(ldir_ptr as *mut [f32; 3]).add(i as usize) };
