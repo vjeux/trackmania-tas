@@ -2197,12 +2197,16 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         if let Some(pb) = &prm.probe_bake { pb.lock().unwrap().sky_log = Some(Vec::new()); }
     }
     let mut n_replayed = 0usize;
+    let prefetch: Option<crate::contrib::Prefetch> = prm.merge_contrib.as_ref().map(|dirs_in| {
+        let order: Vec<u32> = (0..dirs.len()).filter(|di| prm.dir_range.map(|(a, b)| *di >= a && *di < b).unwrap_or(true)).map(|di| di as u32).collect();
+        crate::contrib::Prefetch::new(dirs_in.clone(), prm.sweep, order, 8, 24)
+    });
     for (di, d) in dirs.iter().enumerate() {
         if let Some((a, b)) = prm.dir_range {
             if di < a || di >= b { continue; }
         }
-        let replay: Option<crate::contrib::DirContrib> = prm.merge_contrib.as_ref().map(|dirs_in| {
-            let c = crate::contrib::DirContrib::load(dirs_in, prm.sweep, di as u32).unwrap_or_else(|e| panic!("merge-contrib: {e}"));
+        let replay: Option<crate::contrib::DirContrib> = prefetch.as_ref().map(|pf| {
+            let c = pf.take(di as u32).unwrap_or_else(|e| panic!("merge-contrib: {e}"));
             n_replayed += 1;
             c
         });

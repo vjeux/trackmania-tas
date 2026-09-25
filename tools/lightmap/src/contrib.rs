@@ -104,11 +104,36 @@ impl DirContrib {
         Ok(DirContrib { sweep, di, n_subs, sel, occl_bits, probe_cur, sky_adds })
     }
 
+    pub fn occl(&self, i: usize) -> bool {
+        self.occl_bits.get(i >> 6).map(|w| (w >> (i & 63)) & 1 == 1).unwrap_or(false)
+    }
+
+    /// The file's bytes: the encoding deflated (zlib, level 2 — the packed radiances repeat: ~4× smaller; the
+    /// boxes exchange the files through a slow shared store) behind a small header.
+    pub fn file_bytes(&self) -> Vec<u8> {
+        let raw = self.encode();
+        let z = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 2);
+        let mut v = Vec::with_capacity(z.len() + 16);
+        v.extend_from_slice(b"LMCTRBZ1");
+        v.extend_from_slice(&(raw.len() as u64).to_le_bytes());
+        v.extend_from_slice(&z);
+        v
+    }
+
+    pub fn from_file_bytes(b: &[u8]) -> Result<DirContrib, String> {
+        if b.len() >= 16 && &b[0..8] == b"LMCTRBZ1" {
+            let n = u64::from_le_bytes(b[8..16].try_into().unwrap()) as usize;
+            let raw = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&b[16..], n.max(1)).map_err(|e| format!("contribution inflate: {e:?}"))?;
+            return DirContrib::decode(&raw);
+        }
+        DirContrib::decode(b)
+    }
+
     pub fn write(&self, dir: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
         let tmp = dir.join(format!("{}.tmp", file_name(self.sweep, self.di)));
         let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(&self.encode())?;
+        f.write_all(&self.file_bytes())?;
         f.sync_all()?;
         std::fs::rename(&tmp, dir.join(file_name(self.sweep, self.di)))
     }
@@ -121,16 +146,68 @@ impl DirContrib {
             if p.exists() {
                 let mut b = Vec::new();
                 std::fs::File::open(&p).and_then(|mut f| f.read_to_end(&mut b)).map_err(|e| format!("{}: {e}", p.display()))?;
-                return DirContrib::decode(&b).map_err(|e| format!("{}: {e}", p.display()));
+                return DirContrib::from_file_bytes(&b).map_err(|e| format!("{}: {e}", p.display()));
             }
         }
         Err(format!("no contribution for sweep {sweep} direction {di} ({name}) in {:?}", dirs))
     }
+}
 
-    pub fn occl(&self, i: usize) -> bool {
-        self.occl_bits.get(i >> 6).map(|w| (w >> (i & 63)) & 1 == 1).unwrap_or(false)
+/// The merge's reader: `threads` readers fetch the directions' files ahead of the replay (the shared store
+/// serves a single reader at ~14 MB/s and several in parallel), at most `ahead` decoded contributions held.
+pub struct Prefetch {
+    ready: std::sync::Arc<(std::sync::Mutex<std::collections::BTreeMap<u32, Result<DirContrib, String>>>, std::sync::Condvar)>,
+    #[allow(dead_code)]
+    next_to_read: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    #[allow(dead_code)]
+    order: std::sync::Arc<Vec<u32>>,
+    consumed: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    _threads: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl Prefetch {
+    pub fn new(dirs: Vec<PathBuf>, sweep: u32, order: Vec<u32>, threads: usize, ahead: usize) -> Prefetch {
+        let ready = std::sync::Arc::new((std::sync::Mutex::new(std::collections::BTreeMap::new()), std::sync::Condvar::new()));
+        let next_to_read = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let order = std::sync::Arc::new(order);
+        let consumed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..threads.max(1) {
+            let (ready, next_to_read, order, dirs, consumed) = (ready.clone(), next_to_read.clone(), order.clone(), dirs.clone(), consumed.clone());
+            handles.push(std::thread::spawn(move || loop {
+                let k = next_to_read.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if k >= order.len() { break; }
+                // stay at most `ahead` files past the consumer
+                while k > consumed.load(std::sync::atomic::Ordering::SeqCst) + ahead { std::thread::sleep(std::time::Duration::from_millis(5)); }
+                let di = order[k];
+                let r = DirContrib::load(&dirs, sweep, di);
+                let (m, cv) = &*ready;
+                m.lock().unwrap().insert(di, r);
+                cv.notify_all();
+            }));
+        }
+        Prefetch { ready, next_to_read, order, consumed: None, _threads: handles }.with_consumed(consumed)
+    }
+
+    fn with_consumed(mut self, c: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Prefetch {
+        self.consumed = Some(c);
+        self
+    }
+
+    /// The contribution of direction `di` (waits for its reader).
+    pub fn take(&self, di: u32) -> Result<DirContrib, String> {
+        let (m, cv) = &*self.ready;
+        let mut g = m.lock().unwrap();
+        loop {
+            if let Some(r) = g.remove(&di) {
+                if let Some(c) = &self.consumed { c.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+                return r;
+            }
+            g = cv.wait(g).unwrap();
+        }
     }
 }
+
 
 /// Which directions of `n` a box with index `k` of `boxes` takes: contiguous ranges of nearly equal length.
 pub fn range_of(n: usize, boxes: usize, k: usize) -> (usize, usize) {
@@ -162,7 +239,7 @@ mod tests {
     #[test]
     fn the_file_round_trips_packed_and_raw() {
         let mut c = DirContrib { sweep: 1, di: 7, n_subs: 130, sel: vec![[0.5, 1.0, 0.25], [2.0, 0.0, 65024.0]], occl_bits: vec![0xdead_beef_0000_0001, 3], probe_cur: vec![(5, [0.1, 0.2, 0.3, 1.0])], sky_adds: vec![(9, 0.0018293475)] };
-        let d = DirContrib::decode(&c.encode()).unwrap();
+        let d = DirContrib::from_file_bytes(&c.file_bytes()).unwrap();
         assert_eq!(d.sel, c.sel);
         assert_eq!(d.occl_bits, c.occl_bits);
         assert_eq!(d.probe_cur, c.probe_cur);
