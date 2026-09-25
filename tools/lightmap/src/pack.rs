@@ -78,6 +78,28 @@ impl Packer {
     }
 }
 
+/// The rounding of the fit (`func_0x14195c7b8` in FUN_14028f570, unresolved by the decompiler): 0 floor (default),
+/// 1 round half away from zero, 2 ceil, 3 truncate — `packtest --fit-round N` picks against the editor's table.
+pub static FIT_ROUND: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// The f32 bits of a Σarea to use instead of the charts' own sum (0 = none).
+pub static SUM_AREA_OVERRIDE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static CARRY_OFFSET: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// The carry accumulation's f32 op order under test: 0 c + (a − wh) (the decompile's rendering), 1 (c + a) − wh, 2 in f64, 3 (c − wh) + a.
+pub static CARRY_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// The f32 op order of `a = ext·ext·s²` under test: 0 ((y·s)·x)·s (the decompile's rendering), 1 ((x·s)·y)·s, 2 (x·s)·(y·s), 3 (x·y)·(s·s), 4 ((x·y)·s)·s, 5 (y·s)·(x·s).
+pub static A_ORDER: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(2);
+/// The packer node array's 4·N capacity limit (the game's; `packtest --no-node-cap` lifts it).
+pub static PACK_NODE_CAP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+fn fit_round(v: f32) -> i32 {
+    match FIT_ROUND.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => v.round() as i32,
+        2 => v.ceil() as i32,
+        3 => v.trunc() as i32,
+        _ => v.floor() as i32,
+    }
+}
+
 /// The stable order by the float bits of the area (an LSD radix sort on the u32 bits keeps
 /// equal keys in index order).
 pub fn area_order(charts: &[ChartExt]) -> Vec<usize> {
@@ -98,7 +120,8 @@ pub fn try_pack(charts: &[ChartExt], order: &[usize], s: f32, w_atlas: u16, h_at
     }
     let mut packer = Packer::new(w_atlas, h_atlas);
     let mut out = vec![Placed::default(); n];
-    let mut carry = 0f32;
+    // (CARRY_OFFSET: an f32 added to the initial carry — the study of the items' a rounding)
+    let mut carry = f32::from_bits(CARRY_OFFSET.load(std::sync::atomic::Ordering::Relaxed));
     let g32 = g as i32;
     for k in (0..n).rev() {
         let i = order[k];
@@ -106,10 +129,10 @@ pub fn try_pack(charts: &[ChartExt], order: &[usize], s: f32, w_atlas: u16, h_at
         let (w, h) = if c.ext[0] == 0.0 || c.ext[1] == 0.0 {
             (m * c.mins[0].max(1), m * c.mins[1].max(1))
         } else {
-            let a = ((c.ext[1] * s) * c.ext[0]) * s;
+            let a = match A_ORDER.load(std::sync::atomic::Ordering::Relaxed) { 1 => ((c.ext[0] * s) * c.ext[1]) * s, 2 => (c.ext[0] * s) * (c.ext[1] * s), 3 => (c.ext[0] * c.ext[1]) * (s * s), 4 => ((c.ext[0] * c.ext[1]) * s) * s, 5 => (c.ext[1] * s) * (c.ext[0] * s), _ => ((c.ext[1] * s) * c.ext[0]) * s };
             let fit = |a: f32| -> (i32, i32) {
                 let t = (a / (c.ext[0] * c.ext[1])).sqrt();
-                ((c.ext[0] * t).floor() as i32, (c.ext[1] * t).floor() as i32)
+                (fit_round(c.ext[0] * t), fit_round(c.ext[1] * t))
             };
             let (w0, h0) = fit(a);
             let (w1, h1) = fit(a + carry.max(0.0));
@@ -128,9 +151,17 @@ pub fn try_pack(charts: &[ChartExt], order: &[usize], s: f32, w_atlas: u16, h_at
             };
             let w = round(w0, w1, c.mins[0]);
             let h = round(h0, h1, c.mins[1]);
-            carry += a - (w * h) as f32;
+            if let Some(t) = std::env::var_os("LMTOOL_PACK_CARRY_TRACE") { let t: usize = t.to_str().unwrap().parse().unwrap(); let kk = n - k; if kk.abs_diff(t) <= 4 { let t1 = ((a + carry.max(0.0)) / (c.ext[0] * c.ext[1])).sqrt(); eprintln!("pack: chart #{kk} (order slot {k}): a {a} carry before {carry} → fit0 ({w0}, {h0}) fit1 ({w1}, {h1}) [x·t1 {} y·t1 {}] → {w}×{h}; carry after {}", c.ext[0] * t1, c.ext[1] * t1, carry + (a - (w * h) as f32)); } }
+            carry = match CARRY_MODE.load(std::sync::atomic::Ordering::Relaxed) { 1 => (carry + a) - (w * h) as f32, 2 => ((carry as f64 + a as f64) - (w * h) as f64) as f32, 3 => (carry - (w * h) as f32) + a, _ => carry + (a - (w * h) as f32) };
             (w.clamp(0, u16::MAX as i32) as u16, h.clamp(0, u16::MAX as i32) as u16)
         };
+        // the game's packer node array has a FIXED capacity of 4·N nodes (BlockSplit: FUN_140492660(packer, N << 2) once; TryPack
+        // asks for count + 4 before every insert and FAILS when the array cannot hold it): a layout that splits almost every
+        // chart twice runs out — `PACK_NODE_CAP` on (default) makes our TryPack fail the same way
+        if PACK_NODE_CAP.load(std::sync::atomic::Ordering::Relaxed) && packer.nodes.len() + 4 > 4 * n {
+            if std::env::var_os("LMTOOL_PACK_TRACE").is_some() { eprintln!("pack: s {s}: the node array would exceed 4·N = {} at chart {} of {n} ({} nodes)", 4 * n, n - k, packer.nodes.len()); }
+            return None;
+        }
         let r = packer.insert(0, w, h);
         if r < 0 {
             return None;
@@ -138,6 +169,7 @@ pub fn try_pack(charts: &[ChartExt], order: &[usize], s: f32, w_atlas: u16, h_at
         let node = packer.nodes[r as usize];
         out[i] = Placed { x: node.x, y: node.y, w, h };
     }
+    if std::env::var_os("LMTOOL_PACK_TRACE").is_some() { let used: u64 = out.iter().map(|p| p.w as u64 * p.h as u64).sum(); let free_leaves: u64 = packer.nodes.iter().filter(|nd| nd.child[0] < 0 && !nd.used).map(|nd| nd.w as u64 * nd.h as u64).sum(); let last: Vec<String> = (0..3).map(|j| { let i = order[j]; format!("({}, {}) {}×{}", out[i].x, out[i].y, out[i].w, out[i].h) }).collect(); eprintln!("pack: s {s}: packed {n} charts with {} nodes (4·N = {}); used {used} of {} ({:.2} %), free leaves {free_leaves}; the last three placed: {}", packer.nodes.len(), 4 * n, w_atlas as u64 * h_atlas as u64, 100.0 * used as f64 / (w_atlas as f64 * h_atlas as f64), last.join(", ")); }
     Some(out)
 }
 
@@ -163,12 +195,22 @@ pub fn allocate(charts: &[ChartExt], w_atlas: u16, h_atlas: u16, g: u16, m: u16,
 
 /// `allocate` with a caller-supplied ascending-area order (ties resolved by the caller).
 pub fn allocate_ordered(charts: &[ChartExt], order: &[usize], w_atlas: u16, h_atlas: u16, g: u16, m: u16, max_iter: u32) -> Option<(f32, Vec<Placed>)> {
+    allocate_ordered_forced(charts, order, w_atlas, h_atlas, g, m, max_iter, &[])
+}
+
+/// `allocate_ordered` with bisection iterations that are FORCED to fail (`force_fail`, 1-based iteration numbers) —
+/// to replay the editor's search path when our TryPack succeeds at a probe where the editor's failed.
+pub fn allocate_ordered_forced(charts: &[ChartExt], order: &[usize], w_atlas: u16, h_atlas: u16, g: u16, m: u16, max_iter: u32, force_fail: &[u32]) -> Option<(f32, Vec<Placed>)> {
     let n = charts.len();
     let sum_area: f64 = charts.iter().map(|c| (c.ext[0] as f64) * (c.ext[1] as f64)).sum();
     if sum_area <= 0.0 {
         return None;
     }
-    let d = (w_atlas as f64 * h_atlas as f64 / sum_area) as f32;
+    // D = W·H / Σarea in f32 (the game's TotalLmSurfaceMeter is an f32 running sum over the records; `SUM_AREA_OVERRIDE` = the
+    // editor's own value when replaying its search)
+    let sum_f32: f32 = { let o = f32::from_bits(SUM_AREA_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed)); if o > 0.0 { o } else { charts.iter().fold(0f32, |s, c| s + c.ext[0] * c.ext[1]) } };
+    let d = (w_atlas as f32 * h_atlas as f32) / sum_f32;
+    if std::env::var_os("LMTOOL_PACK_TRACE").is_some() { eprintln!("pack: Σarea f32 {sum_f32} (f64 {sum_area}), D {d} ({:#010x})", d.to_bits()); }
     let max_ext = charts.iter().fold([0f32; 2], |m, c| [m[0].max(c.ext[0]), m[1].max(c.ext[1])]);
     let mut scale_hi = 1.0f32;
     let (rx, ry) = (d.sqrt() * max_ext[0] / w_atlas as f32, d.sqrt() * max_ext[1] / h_atlas as f32);
@@ -185,6 +227,7 @@ pub fn allocate_ordered(charts: &[ChartExt], order: &[usize], w_atlas: u16, h_at
         iter += 1;
         scale_lo = scale_hi * 0.9;
         let s = (scale_lo * d).sqrt();
+        if std::env::var_os("LMTOOL_PACK_TRACE").is_some() { eprintln!("pack: shrink iter {iter}: scale {scale_lo:.9} s {s:.6}"); }
         if let Some(p) = try_pack(charts, order, s, w_atlas, h_atlas, g, m) {
             best = p;
             break;
@@ -205,12 +248,15 @@ pub fn allocate_ordered(charts: &[ChartExt], order: &[usize], w_atlas: u16, h_at
         iter += 1;
         let mid = (scale_lo + scale_hi) / 2.0;
         let s = (mid * d).sqrt();
-        match try_pack(charts, order, s, w_atlas, h_atlas, g, m) {
+        let trace = std::env::var_os("LMTOOL_PACK_TRACE").is_some();
+        let attempt = if force_fail.contains(&iter) { None } else { try_pack(charts, order, s, w_atlas, h_atlas, g, m) };
+        match attempt {
             Some(p) => {
+                if trace { eprintln!("pack: bisect iter {iter}: scale {mid:.9} s {s:.6} succeeds"); }
                 scale_lo = mid;
                 best = p;
             }
-            None => scale_hi = mid,
+            None => { if trace { eprintln!("pack: bisect iter {iter}: scale {mid:.9} s {s:.6} FAILS"); } scale_hi = mid }
         }
     }
     Some(((scale_lo * d).sqrt(), best))

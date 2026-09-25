@@ -3596,6 +3596,44 @@ fn run(a: Vec<String>) {
                     }
                 }
             }
+            // --tiles-map BAKED.Map.Gbx: every tile instance of the capture's instance stream → its chart rect in the editor's
+            // table (by the instance ST: the rect's x = T·2048 − 1/8, D's `lmtool lm-st` rule) → the object id; then the
+            // instance's world translation → the map cell: does obj = cell_z·64 + cell_x hold, and what order are the
+            // instances in?
+            if let Some(bp) = f("--tiles-map") {
+                let own = lightmap::mapio::load(&bp).expect("--tiles-map");
+                let d = own.chunk.data.as_ref().unwrap();
+                let mp = d.cache.mapping().unwrap();
+                let mut by_pos: std::collections::HashMap<(i32, i32), u32> = Default::default();
+                for i in 0..mp.count as usize { by_pos.insert((mp.pos[i].0 as i32, mp.pos[i].1 as i32), mp.binds[i].obj_group_idx / 4); }
+                let (mut n, mut ok_zx, mut ok_xz) = (0usize, 0usize, 0usize);
+                let mut rows: Vec<(usize, u32, i32, i32, [f32; 3])> = Vec::new();
+                for mi in 0..sc.meshes.len() {
+                    if sc.inst_count[mi] < 2 { continue; }
+                    for ii in sc.inst_first[mi]..sc.inst_first[mi] + sc.inst_count[mi] {
+                        let inst = &sc.instances[ii];
+                        // (the ST here is the stored instance float4 (scale.xy, trans.zw); the rect's x ≈ trans·2048 − 1/8)
+                        let px = ((inst.st[2] * 2048.0) - 0.125).round() as i32;
+                        let py = ((inst.st[3] * 2048.0) - 0.125).round() as i32;
+                        let mut found = None;
+                        'o: for dx in -2..=2 { for dy in -2..=2 { if let Some(o) = by_pos.get(&(px + dx, py + dy)) { found = Some(*o); break 'o; } } }
+                        let Some(o) = found else { if n < 5 { println!("  instance {ii}: ST {:?} → ({px},{py}) no rect", inst.st); } n += 1; continue };
+                        let (cx, cz) = ((inst.t[0] / 32.0).floor() as i32, (inst.t[2] / 32.0).floor() as i32);
+                        n += 1;
+                        if o as i32 == cz * 64 + cx { ok_zx += 1; }
+                        if o as i32 == cx * 64 + cz { ok_xz += 1; }
+                        rows.push((ii, o, cx, cz, inst.t));
+                    }
+                }
+                println!("{n} tile instances: obj = cz·64 + cx for {ok_zx}, obj = cx·64 + cz for {ok_xz}");
+                for r in rows.iter().take(12) { println!("  instance {:4}: obj {:4} cell x{:>2} z{:>2} t {:?}", r.0, r.1, r.2, r.3, r.4); }
+                let from: usize = f("--from").map(|s| s.parse().unwrap()).unwrap_or(usize::MAX);
+                for r in rows.iter().filter(|r| r.1 as usize >= from).take(40) { println!("  obj {:4} cell x{:>2} z{:>2} y {}", r.1, r.2, r.3, r.4[1]); }
+                // the instance-stream order vs the object id: is the stream in object order?
+                let mono = rows.windows(2).filter(|w| w[1].1 > w[0].1).count();
+                println!("  instance stream: {} of {} consecutive pairs ascend in obj id", mono, rows.len().saturating_sub(1));
+                return;
+            }
             // the tiles: the ST of the first few tile instances
             for i in 3..sc.instances.len().min(6) { let t = &sc.instances[i]; println!("tile instance {i}: q {:?} t {:?} scale {} st {:?}", t.q, t.t, t.scale, t.st); }
             // the items' world-space AABB (the fitted blocks' WorldBoxMinXZ / MaxXZ candidates)
@@ -6080,7 +6118,23 @@ fn run(a: Vec<String>) {
                 println!("wrote {out} with lightmapCacheUID {nv:#018x}");
             }
         }
+        "genealogy" => {
+            // lmtool genealogy MAP [--cells]: the zone genealogy chunk 0x03043043 per cell — the histogram of (CurrentZoneId, Dir)
+            // and, with --cells, one line per record: record index → cell (x = i % 64, z = i / 64), zone, dir, chain
+            let gb = tmmaps::gbx::Gbx::load(std::path::Path::new(&a[1])).expect("map");
+            let Some(&(_, _, payload, size)) = tmmaps::map::skip_chunks(&gb.body).iter().find(|(cid, ..)| *cid == 0x0304_3043) else { println!("no genealogy chunk"); return };
+            let recs = tmmaps::map::genealogy_full(&gb.body[payload..payload + size]).expect("genealogy");
+            // (record order = x·64 + z per tmmaps genealogy-cells)
+            let mut hist: std::collections::BTreeMap<(String, u32), usize> = Default::default();
+            for r in &recs { *hist.entry((r.current.clone(), r.dir)).or_default() += 1; }
+            println!("{} records; (zone, dir) histogram: {:?}", recs.len(), hist);
+            if a.iter().any(|x| x == "--cells") { for (i, r) in recs.iter().enumerate() { println!("{i:4} cell x{:>2} z{:>2} {} d{} [{}]", i / 64, i % 64, r.current, r.dir, r.ids.join(">")); } }
+        }
         "packtest" => {
+            // the zone tile's chart extent from its PreLightGen (uv bounds b, MeterByUv) and the block scale k: the game computes
+            // f = MeterByUv × blockScale, ext = (uvExt × f) (spec §3.1 per chart; korder 1) — korder 0 = (uvExt × MeterByUv) × k
+            let korder: u32 = a.iter().position(|x| x == "--k-order").and_then(|i| a.get(i + 1)).map(|s| s.parse().unwrap()).unwrap_or(1);
+            let tile_ext_of = |b: &[f32; 4], mbu: f32, k: f32, korder: u32| -> [f32; 2] { if korder == 0 { [((b[2] - b[0]) * mbu) * k, ((b[3] - b[1]) * mbu) * k] } else { let f = mbu * k; [(b[2] - b[0]) * f, (b[3] - b[1]) * f] } };
             // lmtool packtest MAP [--base N] [--w 1024] [--g 1] [--iter 8] [--tile-ext M]: run the editor's chart
             // allocation walk (§3.1) on the map's items (ext = uv bounds × MeterByUv) + the zone tiles, and compare
             // the sizes/positions with the map's own (editor) chart table
@@ -6093,11 +6147,25 @@ fn run(a: Vec<String>) {
             let pad: u32 = f("--pad").map(|s| s.parse().unwrap()).unwrap_or(pad0 as u32);
             let mmin: u16 = f("--m").map(|s| s.parse().unwrap()).unwrap_or(m0);
             println!("layout {w_atlas}: g {g} pad {pad} min {mmin}");
-            let max_iter: u32 = f("--iter").map(|s| s.parse().unwrap()).unwrap_or(8);
+            // the scale search's iteration count from the bake's quality (cache chunk 0x0602200F = (q, 0); the game's table by quality index
+            // {0: 1, 1: 3, 2: 6, 3: 8, 4: 10, 5: 10} — BlockSplit l.299–316); --iter overrides
+            let max_iter_default: u32 = { let own0 = lightmap::mapio::load(&a[1]).expect("map"); let d0 = own0.chunk.data.as_ref().unwrap(); let mut q = 2u32; for c in &d0.cache.chunks { if c.id == 0x0602_200F { if let lightmap::format::ChunkBody::Raw(b) = &c.body { if b.len() >= 4 { q = u32::from_le_bytes([b[0], b[1], b[2], b[3]]); } } } } let it = match q { 0 => 1, 1 => 3, 2 => 6, 3 => 8, _ => 10 }; println!("bake quality index {q} → scale search maxIter {it}"); it };
+            let max_iter: u32 = f("--iter").map(|s| s.parse().unwrap()).unwrap_or(max_iter_default);
             let tile_ext: f32 = f("--tile-ext").map(|s| s.parse().unwrap()).unwrap_or(0.0);
-            // --tile-ext-xy X,Y: a non-square tile extent (the tile mesh's uv1 extents scaled to the 2 m² area: the pwc-day
-            // tile mesh spans u 0.047975..0.947050, v 0.052767..0.959441 — aspect 1.00845 — so ext = (1.40827, 1.42017))
-            let tile_ext_xy: [f32; 2] = f("--tile-ext-xy").map(|s| { let v: Vec<f32> = s.split(',').map(|t| t.parse().unwrap()).collect(); [v[0], v[1]] }).unwrap_or([tile_ext, tile_ext]);
+            // THE ZONE TILE'S CHART EXTENT (the layout rule, closed on pwc-day 2026-09-25 — 4096 of 4096 tile rects + the 3 items
+            // reproduce the editor's chart table in position and size): f = MeterByUv × blockScale, ext = (uvExt × f) from the
+            // tile solid's PreLightGen (spec §3.1 per chart); blockScale = √2/32 (f32 0x3d3504f3) for the BlueBay ground tile
+            // (the BlockInfo float × the quality byte 255/255); the defaults below are the BlueBay `Zone\Sea\Base.Prefab.Gbx`
+            // entity-0 values (`mapgeom zone-tile-plg`); --tile-plg MBU,U0,V0,U1,V1 [--tile-k K] for another collection's tile,
+            // --tile-ext-xy X,Y an explicit extent, --tile-ext E a square one
+            let tile_plg: (f32, [f32; 4]) = f("--tile-plg").map(|s| { let v: Vec<f32> = s.split(',').map(|t| t.parse().unwrap()).collect(); (v[0], [v[1], v[2], v[3], v[4]]) }).unwrap_or((f32::from_bits(0x420dc57e), [f32::from_bits(0x3d448f40), f32::from_bits(0x3d58373f), f32::from_bits(0x3f7272d8), f32::from_bits(0x3f759e83)]));
+            let tile_k: f32 = f("--tile-k").map(|s| s.parse().unwrap()).unwrap_or(f32::from_bits(0x3d3504f3));
+            let tile_ext_xy: [f32; 2] = match (f("--tile-ext-xy"), tile_ext > 0.0) {
+                (Some(s), _) => { let v: Vec<f32> = s.split(',').map(|t| t.parse().unwrap()).collect(); [v[0], v[1]] }
+                (None, true) => [tile_ext, tile_ext],
+                (None, false) => tile_ext_of(&tile_plg.1, tile_plg.0, tile_k, korder),
+            };
+            println!("tile chart extent ({}, {}) m [{:#010x} {:#010x}] (area {}) from MeterByUv {} × k {} × uv extents ({}, {})", tile_ext_xy[0], tile_ext_xy[1], tile_ext_xy[0].to_bits(), tile_ext_xy[1].to_bits(), tile_ext_xy[0] * tile_ext_xy[1], tile_plg.0, tile_k, tile_plg.1[2] - tile_plg.1[0], tile_plg.1[3] - tile_plg.1[1]);
             let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
             let own = lightmap::mapio::load(&a[1]).expect("own");
             let d = own.chunk.data.as_ref().unwrap();
@@ -6129,10 +6197,30 @@ fn run(a: Vec<String>) {
                 let mut hist: std::collections::BTreeMap<(u16, u16), usize> = Default::default();
                 for (&o, &(_, _, w, h)) in &ed { if o < base { *hist.entry((w, h)).or_default() += 1; } }
                 println!("editor tile chart sizes: {:?}", hist);
+                let (mut mx, mut my) = (0u32, 0u32); let mut ymax_row: std::collections::BTreeMap<u32, usize> = Default::default(); for (&_o, &(x, y, w, h)) in &ed { mx = mx.max(x as u32 + w as u32); my = my.max(y as u32 + h as u32); *ymax_row.entry((y as u32 + h as u32) / 128).or_default() += 1; }
+                println!("editor layout extent: x up to {mx}, y up to {my} (of 2048); charts per 128-row band of their bottom edge: {:?}", ymax_row);
                 println!("editor atlas {}×{}, m_u01 {}, m_u02 {}, m_u03 {}", mp.atlas_w, mp.atlas_h, mp.m_u01, mp.m_u02, mp.m_u03);
                 // the editor's Σ chart area (TotalLmSurfaceMeter, cache chunk 0x0602200B = (1, Σarea))
                 for c in &d.cache.chunks { if c.id == 0x0602_200B { if let lightmap::format::ChunkBody::Raw(b) = &c.body { if b.len() >= 8 { let area = f32::from_le_bytes([b[4], b[5], b[6], b[7]]); println!("editor TotalLmSurfaceMeter (0x0602200B): {area} m²  → D = W·H/Σarea = {:.4} (layout units/m)²", (w_atlas as f64 * w_atlas as f64) / area as f64); } } } }
             }
+            // THE TILE OBJECT IDS (measured on pwc-day against the capture's instance stream, `lmscene --tiles-map`): tile
+            // object k < |baked records| is the k-th BAKED block record of the map file (the tiny build's fill records, in
+            // file order); the cells no record covers get the following ids in x-major order (x ascending, z ascending
+            // within x) — the game's own generation order. `cell_of[obj]` = (cx, cz).
+            let cell_of: Vec<(i32, i32)> = {
+                let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+                let (sx, sz) = (64i32, 64i32);
+                let mut covered = vec![false; (sx * sz) as usize];
+                let mut cells: Vec<(i32, i32)> = Vec::new();
+                for b in &mf.baked {
+                    let (cx, _cy, cz) = b.coords();
+                    if cx >= 0 && cx < sx && cz >= 0 && cz < sz { covered[(cx * sz + cz) as usize] = true; }
+                    cells.push((cx, cz));
+                }
+                for cx in 0..sx { for cz in 0..sz { if !covered[(cx * sz + cz) as usize] { cells.push((cx, cz)); } } }
+                println!("tile cells: {} baked records + {} generated = {}", mf.baked.len(), cells.len() - mf.baked.len(), cells.len());
+                cells
+            };
             // our chart list in IdForLightMap order: tiles (ids 0..base) then items (base + item)
             let mut charts: Vec<lightmap::pack::ChartExt> = Vec::new();
             let mut ids: Vec<u32> = Vec::new();
@@ -6146,6 +6234,7 @@ fn run(a: Vec<String>) {
             }
             let sum_area: f32 = charts.iter().map(|c| c.ext[0] * c.ext[1]).sum();
             println!("{} charts ({n_tiles} tiles in the editor's table, {} items), Σarea {sum_area:.1} m², W {w_atlas} g {g} maxIter {max_iter}", charts.len(), scene.instances.len());
+            { let items: f64 = charts.iter().zip(&ids).filter(|(_, &o)| o >= base).map(|(c, _)| c.ext[0] as f64 * c.ext[1] as f64).sum(); for c in &d.cache.chunks { if c.id == 0x0602_200B { if let lightmap::format::ChunkBody::Raw(b) = &c.body { if b.len() >= 8 { let total = f32::from_le_bytes([b[4], b[5], b[6], b[7]]) as f64; println!("items Σarea {items:.6} m² (f32 {}); editor total {total}; residual per tile ({total} − items)/{n_tiles} = {:.9} m²", items as f32, (total - items) / n_tiles as f64); } } } } }
             {
                 // the biggest extents (uv-tiled models blow the area up)
                 let mut big: Vec<(f32, usize)> = charts.iter().enumerate().map(|(k, c)| (c.ext[0] * c.ext[1], k)).collect();
@@ -6173,7 +6262,8 @@ fn run(a: Vec<String>) {
             }
             // --tie KEY: the order among equal areas (the editor sorts by block position-like keys before the
             // area): index (default), x, z, y, -x, -z, -y, or combos like "z,x" (last key = most significant)
-            let tie = f("--tie").unwrap_or_else(|| "index".into());
+            // the radix keys (RE 6 / spec §3.1): ascending (area, centre z, y, x, |h|², record index), walked from the end — "x,z"
+            let tie = f("--tie").unwrap_or_else(|| "x,z".into());
             let placed_order: Vec<usize> = {
                 let mut idx: Vec<usize> = (0..charts.len()).collect();
                 // the keys are the block's world bbox CENTRE (RE child 2): items from their transformed
@@ -6186,7 +6276,8 @@ fn run(a: Vec<String>) {
                     for t in &mdl.tris { for p in &t.p { let w = lightmap::geometry::xf_point(&inst.xf, *p); for k in 0..3 { lo[k] = lo[k].min(w[k]); hi[k] = hi[k].max(w[k]); } } }
                     (base + inst.item as u32, [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0])
                 }).collect();
-                let pos_of = |k: usize| -> [f32; 3] { if ids[k] >= base { centres.get(&ids[k]).copied().unwrap_or([0.0; 3]) } else { let o = ids[k]; let (cx, cz) = if tile_zmajor { (o / 64, o % 64) } else { (o % 64, o / 64) }; [cx as f32 * 16.0 + 8.0, tile_y, cz as f32 * 16.0 + 8.0] } };
+                // the tile's centre: its cell (the true obj → cell map above; --tiles-idgrid = the old (o % 64, o / 64) guess) at the sea height
+                let pos_of = |k: usize| -> [f32; 3] { if ids[k] >= base { centres.get(&ids[k]).copied().unwrap_or([0.0; 3]) } else { let o = ids[k]; let (cx, cz) = if a.iter().any(|x| x == "--tiles-idgrid") { if tile_zmajor { ((o / 64) as i32, (o % 64) as i32) } else { ((o % 64) as i32, (o / 64) as i32) } } else { cell_of.get(o as usize).copied().unwrap_or((0, 0)) }; [cx as f32 * 32.0 + 16.0, tile_y, cz as f32 * 32.0 + 16.0] } };
                 for key in tie.split(',') {
                     let (neg, axis) = match key.trim() { "x" => (false, 0), "y" => (false, 1), "z" => (false, 2), "-x" => (true, 0), "-y" => (true, 1), "-z" => (true, 2), _ => (false, 9) };
                     if axis < 3 { idx.sort_by(|&a, &b| { let (pa, pb) = (pos_of(a)[axis], pos_of(b)[axis]); let o = pa.partial_cmp(&pb).unwrap(); if neg { o.reverse() } else { o } }); }
@@ -6207,8 +6298,266 @@ fn run(a: Vec<String>) {
                 }
                 return;
             }
+            if let Some(r) = f("--fit-round") { lightmap::pack::FIT_ROUND.store(r.parse().unwrap(), std::sync::atomic::Ordering::Relaxed); }
+            if let Some(r) = f("--carry-mode") { lightmap::pack::CARRY_MODE.store(r.parse().unwrap(), std::sync::atomic::Ordering::Relaxed); }
+            if let Some(r) = f("--a-order") { lightmap::pack::A_ORDER.store(r.parse().unwrap(), std::sync::atomic::Ordering::Relaxed); }
+            if a.iter().any(|x| x == "--no-node-cap") { lightmap::pack::PACK_NODE_CAP.store(false, std::sync::atomic::Ordering::Relaxed); }
+            if a.iter().any(|x| x == "--editor-sum") { for c in &d.cache.chunks { if c.id == 0x0602_200B { if let lightmap::format::ChunkBody::Raw(b) = &c.body { if b.len() >= 8 { lightmap::pack::SUM_AREA_OVERRIDE.store(u32::from_le_bytes([b[4], b[5], b[6], b[7]]), std::sync::atomic::Ordering::Relaxed); } } } } }
             let forced_s: Option<f32> = f("--s").map(|v| v.parse().unwrap());
-            let Some((s, placed)) = (match forced_s { Some(s) => lightmap::pack::try_pack(&charts, &placed_order, s, w_atlas, w_atlas, g, mmin).map(|p| (s, p)), None => lightmap::pack::allocate_ordered(&charts, &placed_order, w_atlas, w_atlas, g, mmin, max_iter) }) else { println!("allocation failed"); return };
+            let fail_iters: Vec<u32> = f("--fail-iters").map(|v| v.split(',').map(|t| t.parse().unwrap()).collect()).unwrap_or_default();
+            // --carry-audit: replay the walk with the EDITOR's tile sizes (so the carry sequence is the game's up to a constant
+            // offset) and derive, per tile, the one-sided constraint the editor's bump decisions put on that offset: off ≥ c* − c
+            // where the editor bumped, off < c* − c where it did not (c* = A·(24/X)² − a, the carry at which the fit reaches 24).
+            // A consistent [lo, hi) window = the model is exact up to the items' carry; an empty one = a per-tile drift.
+            if a.iter().any(|x| x == "--carry-audit") {
+                let k = f32::from_bits(0x3d3504f3);
+                let (mbu, b) = (f32::from_bits(0x420dc57e), [f32::from_bits(0x3d448f40), f32::from_bits(0x3d58373f), f32::from_bits(0x3f7272d8), f32::from_bits(0x3f759e83)]);
+                let ext_t = tile_ext_of(&b, mbu, k, korder);
+                let mut ch = charts.clone();
+                for (c, &o) in ch.iter_mut().zip(&ids) { if o < base { c.ext = ext_t; } }
+                let Some((s, placed)) = lightmap::pack::allocate_ordered_forced(&ch, &placed_order, w_atlas, w_atlas, g, mmin, max_iter, &fail_iters) else { println!("allocation failed"); return };
+                let s = f32::from_bits((s.to_bits() as i64 + f("--s-ulps").map(|v| v.parse::<i64>().unwrap()).unwrap_or(0)) as u32);
+                let placed = lightmap::pack::try_pack(&ch, &placed_order, s, w_atlas, w_atlas, g, mmin).unwrap_or(placed);
+                let a_t = ((ext_t[1] * s) * ext_t[0]) * s;
+                let area_t = ext_t[0] * ext_t[1];
+                let (xx, yy) = (ext_t[0] as f64 * s as f64, ext_t[1] as f64 * s as f64);
+                let c_star = |v: f64, target: f64| -> f64 { area_t as f64 * (target / v).powi(2) * (s as f64).powi(2) / (s as f64).powi(2) - a_t as f64 + (area_t as f64 * ((target / v).powi(2) - 1.0)) * 0.0 };
+                // c* such that v·sqrt((a + c*)/A) = target  ⇔  c* = A·(target/v)² − a
+                let cs_w = a_t as f64 * ((24.0 / xx).powi(2) - 1.0);
+                let cs_h = a_t as f64 * ((24.0 / yy).powi(2) - 1.0);
+                let _ = c_star;
+                println!("carry-audit: s {s}, tile a {a_t}, X {xx:.6} Y {yy:.6}, bump thresholds c*_w {cs_w:.6} c*_h {cs_h:.6}");
+                let mut carry = 0f32;
+                let (mut lo, mut hi) = (f64::NEG_INFINITY, f64::INFINITY);
+                let (mut lo_k, mut hi_k) = (0usize, 0usize);
+                let mut kk = 0usize;
+                let mut n_bump_w = 0usize; let mut n_bump_h = 0usize;
+                for &i in placed_order.iter().rev() {
+                    if ids[i] >= base {
+                        let p = &placed[i]; let c = &ch[i];
+                        let av = ((c.ext[1] * s) * c.ext[0]) * s;
+                        carry = carry + (av - (p.w as i32 * p.h as i32) as f32);
+                        continue;
+                    }
+                    kk += 1;
+                    let Some(&(_, _, ew, eh)) = ed.get(&ids[i]) else { continue };
+                    let c = carry.max(0.0) as f64;
+                    let bw = ew == 22; let bh = eh == 22;
+                    if bw { n_bump_w += 1; if cs_w - c > lo { lo = cs_w - c; lo_k = kk; } } else if cs_w - c < hi { hi = cs_w - c; hi_k = kk; }
+                    if bh { n_bump_h += 1; if cs_h - c > lo { lo = cs_h - c; lo_k = kk; } } else if cs_h - c < hi { hi = cs_h - c; hi_k = kk; }
+                    let (pw, ph) = (ew as i32 + 2 * pad as i32, eh as i32 + 2 * pad as i32);
+                    carry = carry + (a_t - (pw * ph) as f32);
+                    if kk % 512 == 0 || kk == 4096 { println!("  through tile #{kk}: offset window [{lo:.6}, {hi:.6}) (lo from #{lo_k}, hi from #{hi_k}); carry {carry}"); }
+                }
+                println!("editor bumps: w {n_bump_w}, h {n_bump_h} of {kk}; the offset window over all tiles: [{lo:.6}, {hi:.6}) {}", if lo < hi { "CONSISTENT" } else { "EMPTY (drift)" });
+                return;
+            }
+            // --items-ext-variants: the items' ext under the candidate f32 formulas (uv bounds × MeterByUv) × the a op orders:
+            // which combination lands Σ(a − w·h) in the window the carry audit demands ([+0.198, +0.213) over ours at s − 1 ulp)
+            if a.iter().any(|x| x == "--items-ext-variants") {
+                let k = f32::from_bits(0x3d3504f3);
+                let (mbu, b) = (f32::from_bits(0x420dc57e), [f32::from_bits(0x3d448f40), f32::from_bits(0x3d58373f), f32::from_bits(0x3f7272d8), f32::from_bits(0x3f759e83)]);
+                let ext_t = tile_ext_of(&b, mbu, k, korder);
+                let mut ch = charts.clone();
+                for (c, &o) in ch.iter_mut().zip(&ids) { if o < base { c.ext = ext_t; } }
+                let Some((s, placed)) = lightmap::pack::allocate_ordered_forced(&ch, &placed_order, w_atlas, w_atlas, g, mmin, max_iter, &fail_iters) else { println!("allocation failed"); return };
+                let s = f32::from_bits((s.to_bits() as i64 + f("--s-ulps").map(|v| v.parse::<i64>().unwrap()).unwrap_or(0)) as u32);
+                let placed = lightmap::pack::try_pack(&ch, &placed_order, s, w_atlas, w_atlas, g, mmin).unwrap_or(placed);
+                let ext_f: [(&str, fn(&[f32; 4], f32) -> [f32; 2]); 4] = [
+                    ("(b2−b0)·u", |b, u| [(b[2] - b[0]) * u, (b[3] - b[1]) * u]),
+                    ("b2·u − b0·u", |b, u| [b[2] * u - b[0] * u, b[3] * u - b[1] * u]),
+                    ("u·(b2−b0)", |b, u| [u * (b[2] - b[0]), u * (b[3] - b[1])]),
+                    ("(b2−b0)·u·1.0 (byte 255/255)", |b, u| [((b[2] - b[0]) * u) * (255.0f32 / 255.0), ((b[3] - b[1]) * u) * (255.0f32 / 255.0)]),
+                ];
+                let a_f: [(&str, fn([f32; 2], f32) -> f32); 6] = [
+                    ("((y·s)·x)·s", |e, s| ((e[1] * s) * e[0]) * s),
+                    ("((x·s)·y)·s", |e, s| ((e[0] * s) * e[1]) * s),
+                    ("(x·s)·(y·s)", |e, s| (e[0] * s) * (e[1] * s)),
+                    ("(x·y)·(s·s)", |e, s| (e[0] * e[1]) * (s * s)),
+                    ("((x·y)·s)·s", |e, s| ((e[0] * e[1]) * s) * s),
+                    ("((y·x)·s)·s", |e, s| ((e[1] * e[0]) * s) * s),
+                ];
+                let ours: f32 = { let mut t = 0f32; for (kk, c) in ch.iter().enumerate() { if ids[kk] >= base { let p = &placed[kk]; t += ((c.ext[1] * s) * c.ext[0]) * s - (p.w as i32 * p.h as i32) as f32; } } t };
+                println!("items at s {s} ({:#010x}): ours Σ(a − wh) = {ours}", s.to_bits());
+                for (en, ef) in ext_f.iter() { for (an, af) in a_f.iter() {
+                    let mut tot = 0f32; let mut detail = String::new();
+                    for (kk, _c) in ch.iter().enumerate() {
+                        if ids[kk] < base { continue; }
+                        let inst = scene.instances.iter().find(|i| i.item as u32 == ids[kk] - base).unwrap();
+                        let m = &scene.models[inst.model];
+                        let Some(bb) = m.plg_bounds else { continue };
+                        let e = ef(&bb, m.plg_u02);
+                        let av = af(e, s);
+                        let p = &placed[kk];
+                        tot += av - (p.w as i32 * p.h as i32) as f32;
+                        detail += &format!(" [item {} ext ({}, {}) a {av}]", ids[kk] - base, e[0], e[1]);
+                    }
+                    let d = tot - ours;
+                    println!("  ext {en:<30} a {an:<12}: Σ {tot} (ours {d:+.6}){}{detail}", if (0.198..0.213).contains(&d) { "  ← IN THE WINDOW" } else { "" });
+                } }
+                return;
+            }
+            // --items-a: the items' a = ext·ext·s² under the candidate f32 op orders and their w·h — the initial carry the
+            // tiles inherit (the carry-offset scan says the editor's differs from ours by −0.0243 ± 0.0001)
+            if a.iter().any(|x| x == "--items-a") {
+                let k = f32::from_bits(0x3d3504f3);
+                let (mbu, b) = (f32::from_bits(0x420dc57e), [f32::from_bits(0x3d448f40), f32::from_bits(0x3d58373f), f32::from_bits(0x3f7272d8), f32::from_bits(0x3f759e83)]);
+                let ext_t = tile_ext_of(&b, mbu, k, korder);
+                let mut ch = charts.clone();
+                for (c, &o) in ch.iter_mut().zip(&ids) { if o < base { c.ext = ext_t; } }
+                let Some((s, placed)) = lightmap::pack::allocate_ordered_forced(&ch, &placed_order, w_atlas, w_atlas, g, mmin, max_iter, &fail_iters) else { println!("allocation failed"); return };
+                let s = f32::from_bits((s.to_bits() as i64 + f("--s-ulps").map(|v| v.parse::<i64>().unwrap()).unwrap_or(0)) as u32);
+                let placed = lightmap::pack::try_pack(&ch, &placed_order, s, w_atlas, w_atlas, g, mmin).unwrap_or(placed);
+                println!("s {s} ({:#010x})", s.to_bits());
+                let orders: [(&str, fn([f32; 2], f32) -> f32); 6] = [
+                    ("((y·s)·x)·s", |e, s| ((e[1] * s) * e[0]) * s),
+                    ("((x·s)·y)·s", |e, s| ((e[0] * s) * e[1]) * s),
+                    ("(x·s)·(y·s)", |e, s| (e[0] * s) * (e[1] * s)),
+                    ("(x·y)·(s·s)", |e, s| (e[0] * e[1]) * (s * s)),
+                    ("((x·y)·s)·s", |e, s| ((e[0] * e[1]) * s) * s),
+                    ("f64 exact", |e, s| ((e[0] as f64) * (e[1] as f64) * (s as f64) * (s as f64)) as f32),
+                ];
+                let mut totals = vec![0f32; orders.len()];
+                for (k, c) in ch.iter().enumerate() {
+                    if ids[k] < base { continue; }
+                    let p = &placed[k];
+                    let wh = (p.w as i32 * p.h as i32) as f32;
+                    let mut line = format!("  item {} ext ({}, {}) [{:#010x} {:#010x}] packer {}×{} (w·h {wh}):", ids[k] - base, c.ext[0], c.ext[1], c.ext[0].to_bits(), c.ext[1].to_bits(), p.w, p.h);
+                    for (oi, (name, f)) in orders.iter().enumerate() { let av = f(c.ext, s); totals[oi] += av - wh; line += &format!("  {name} a {av} (a−wh {})", av - wh); }
+                    println!("{line}");
+                }
+                for (oi, (name, _)) in orders.iter().enumerate() { println!("  Σ(a − wh) over the items with {name}: {} (vs order 0: {:+})", totals[oi], totals[oi] - totals[0]); }
+                // the tile's a under the same orders
+                for (name, f) in orders.iter() { println!("  tile a with {name}: {} ({:#010x})", f(ext_t, s), f(ext_t, s).to_bits()); }
+                return;
+            }
+            // --scan-carry LO,HI,N: the initial carry offset (the items' a rounding) that reproduces the most tile rects
+            if let Some(r) = f("--scan-carry") {
+                let v: Vec<f32> = r.split(',').map(|t| t.parse().unwrap()).collect();
+                let n = v[2] as usize;
+                let k = f32::from_bits(f("--k-bits").map(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).unwrap()).unwrap_or(0x3d3504f3));
+                let (mbu, b) = (f32::from_bits(0x420dc57e), [f32::from_bits(0x3d448f40), f32::from_bits(0x3d58373f), f32::from_bits(0x3f7272d8), f32::from_bits(0x3f759e83)]);
+                let ext = tile_ext_of(&b, mbu, k, korder);
+                let mut ch = charts.clone();
+                for (c, &o) in ch.iter_mut().zip(&ids) { if o < base { c.ext = ext; } }
+                let Some((s0, _)) = lightmap::pack::allocate_ordered_forced(&ch, &placed_order, w_atlas, w_atlas, g, mmin, max_iter, &fail_iters) else { println!("allocation failed"); return };
+                let n_tiles_c = ch.iter().zip(&ids).filter(|(_, &o)| o < base).count();
+                let mut best = (0usize, 0usize, 0f32);
+                for i in 0..=n {
+                    let off = v[0] + (v[1] - v[0]) * i as f32 / n as f32;
+                    lightmap::pack::CARRY_OFFSET.store(off.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                    let Some(placed) = lightmap::pack::try_pack(&ch, &placed_order, s0, w_atlas, w_atlas, g, mmin) else { continue };
+                    let mut first_bad = usize::MAX; let mut kk = 0usize; let mut m = 0usize;
+                    for &i in placed_order.iter().rev() {
+                        if ids[i] >= base { continue; }
+                        let p = &placed[i]; kk += 1;
+                        let ok = ed.get(&ids[i]).map(|&(ex, ey, ew, eh)| p.x as u32 + pad == ex as u32 && p.y as u32 + pad == ey as u32 && (p.w as u32).saturating_sub(2 * pad) == ew as u32 && (p.h as u32).saturating_sub(2 * pad) == eh as u32).unwrap_or(false);
+                        if ok { m += 1; } else if first_bad == usize::MAX { first_bad = kk; }
+                    }
+                    let fb = first_bad.min(n_tiles_c + 1);
+                    let detail = { let mut kk = 0usize; let mut s = String::new(); for &i in placed_order.iter().rev() { if ids[i] >= base { continue; } kk += 1; if kk == fb { let p = &placed[i]; if let Some(&(ex, ey, ew, eh)) = ed.get(&ids[i]) { s = format!(" (ours ({}, {}) {}×{} vs editor ({ex}, {ey}) {ew}×{eh})", p.x as u32 + pad, p.y as u32 + pad, (p.w as u32).saturating_sub(2 * pad), (p.h as u32).saturating_sub(2 * pad)); } } } s };
+                    if (fb, m) > (best.1, best.0) || a.iter().any(|x| x == "--scan-all") { if (fb, m) > (best.1, best.0) { best = (m, fb, off); } println!("  carry offset {off:+.5}: first mismatch at tile #{fb}{detail}, {m} of {n_tiles_c} equal"); }
+                }
+                lightmap::pack::CARRY_OFFSET.store(0, std::sync::atomic::Ordering::Relaxed);
+                println!("best carry offset {:+.5}: first mismatch at #{}, {} equal", best.2, best.1, best.0);
+                return;
+            }
+            // --scan-s-ulps N [--k-bits HEX]: with the tile extent from k (default √2/32 = 0x3d3504f3), TryPack at the replayed
+            // s and at s ± 1..N f32 ulps — is the search's last bit the residual?
+            if let Some(nu) = f("--scan-s-ulps") {
+                let nu: i32 = nu.parse().unwrap();
+                let k = f32::from_bits(f("--k-bits").map(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).unwrap()).unwrap_or(0x3d3504f3));
+                let (mbu, b) = (f32::from_bits(0x420dc57e), [f32::from_bits(0x3d448f40), f32::from_bits(0x3d58373f), f32::from_bits(0x3f7272d8), f32::from_bits(0x3f759e83)]);
+                let ext = tile_ext_of(&b, mbu, k, korder);
+                let mut ch = charts.clone();
+                for (c, &o) in ch.iter_mut().zip(&ids) { if o < base { c.ext = ext; } }
+                let Some((s0, _)) = lightmap::pack::allocate_ordered_forced(&ch, &placed_order, w_atlas, w_atlas, g, mmin, max_iter, &fail_iters) else { println!("allocation failed"); return };
+                let n_tiles_c = ch.iter().zip(&ids).filter(|(_, &o)| o < base).count();
+                for du in -nu..=nu {
+                    let s = f32::from_bits((s0.to_bits() as i64 + du as i64) as u32);
+                    let Some(placed) = lightmap::pack::try_pack(&ch, &placed_order, s, w_atlas, w_atlas, g, mmin) else { println!("  s {s} ({du:+} ulp): TryPack fails"); continue };
+                    let mut first_bad = usize::MAX; let mut kk = 0usize; let mut m = 0usize; let mut detail = String::new();
+                    for &i in placed_order.iter().rev() {
+                        if ids[i] >= base { continue; }
+                        let p = &placed[i]; kk += 1;
+                        let ok = ed.get(&ids[i]).map(|&(ex, ey, ew, eh)| p.x as u32 + pad == ex as u32 && p.y as u32 + pad == ey as u32 && (p.w as u32).saturating_sub(2 * pad) == ew as u32 && (p.h as u32).saturating_sub(2 * pad) == eh as u32).unwrap_or(false);
+                        if ok { m += 1; } else if first_bad == usize::MAX { first_bad = kk; if let Some(&(ex, ey, ew, eh)) = ed.get(&ids[i]) { detail = format!(" (ours ({}, {}) {}×{} vs editor ({ex}, {ey}) {ew}×{eh})", p.x as u32 + pad, p.y as u32 + pad, (p.w as u32).saturating_sub(2 * pad), (p.h as u32).saturating_sub(2 * pad)); } }
+                    }
+                    println!("  s {s} ({:#010x}, {du:+} ulp): first mismatch at tile #{}{detail}, {m} of {n_tiles_c} equal", s.to_bits(), first_bad.min(n_tiles_c + 1));
+                }
+                return;
+            }
+            // --scan-k LO,HI,N [--k-order 0|1]: the tile extent from the ZONE TILE'S OWN PreLightGen (the Sea prefab's entity 0:
+            // MeterByUv 35.442863 = 0x420dc57e, uv bounds 0x3d448f40 0x3d58373f 0x3f7272d8 0x3f759e83 — `mapgeom zone-tile-plg`)
+            // times a block scale k: ext = (uvExt × MeterByUv) × k (order 0) or uvExt × (MeterByUv × k) (order 1); the s of the
+            // replayed search is fixed (D from --editor-sum), so one TryPack per k; scored by the first mismatching tile rect
+            if let Some(r) = f("--scan-k") {
+                let v: Vec<f64> = r.split(',').map(|t| t.parse().unwrap()).collect();
+                let n = v[2] as usize;
+                // --scan-k-bits LO,HI: every f32 between the two hex bit patterns instead
+                let bit_range: Option<(u32, u32)> = f("--scan-k-bits").map(|s| { let (a, b) = s.split_once(',').unwrap(); (u32::from_str_radix(a.trim_start_matches("0x"), 16).unwrap(), u32::from_str_radix(b.trim_start_matches("0x"), 16).unwrap()) });
+                let n = bit_range.map(|(a, b)| (b - a) as usize).unwrap_or(n);
+                let order: u32 = korder;
+                let (mbu, b) = (f32::from_bits(0x420dc57e), [f32::from_bits(0x3d448f40), f32::from_bits(0x3d58373f), f32::from_bits(0x3f7272d8), f32::from_bits(0x3f759e83)]);
+                let uv_ext = [b[2] - b[0], b[3] - b[1]];
+                let Some((s_fixed, _)) = lightmap::pack::allocate_ordered_forced(&charts, &placed_order, w_atlas, w_atlas, g, mmin, max_iter, &fail_iters) else { println!("allocation failed"); return };
+                println!("scan-k: s {s_fixed} ({:#010x}), uvExt ({}, {}), MeterByUv {mbu}", s_fixed.to_bits(), uv_ext[0], uv_ext[1]);
+                let n_tiles_c = charts.iter().zip(&ids).filter(|(_, &o)| o < base).count();
+                let mut best = (0usize, 0usize, 0f32, [0f32; 2]);
+                let mut last_k = f32::NAN;
+                for i in 0..=n {
+                    let k = match bit_range { Some((a, _)) => f32::from_bits(a + i as u32), None => (v[0] + (v[1] - v[0]) * i as f64 / n as f64) as f32 };
+                    if k == last_k { continue; }
+                    last_k = k;
+                    let ext = tile_ext_of(&b, mbu, k, order);
+                    let mut ch = charts.clone();
+                    for (c, &o) in ch.iter_mut().zip(&ids) { if o < base { c.ext = ext; } }
+                    let Some(placed) = lightmap::pack::try_pack(&ch, &placed_order, s_fixed, w_atlas, w_atlas, g, mmin) else { continue };
+                    let mut first_bad = usize::MAX; let mut kk = 0usize; let mut m = 0usize;
+                    for &i in placed_order.iter().rev() {
+                        if ids[i] >= base { continue; }
+                        let p = &placed[i]; kk += 1;
+                        let ok = ed.get(&ids[i]).map(|&(ex, ey, ew, eh)| p.x as u32 + pad == ex as u32 && p.y as u32 + pad == ey as u32 && (p.w as u32).saturating_sub(2 * pad) == ew as u32 && (p.h as u32).saturating_sub(2 * pad) == eh as u32).unwrap_or(false);
+                        if ok { m += 1; } else if first_bad == usize::MAX { first_bad = kk; }
+                    }
+                    let fb = first_bad.min(n_tiles_c + 1);
+                    if (fb, m) > (best.1, best.0) { best = (m, fb, k, ext); println!("  k {k} ({:#010x}) ext ({}, {}) area {}: first mismatch at tile #{fb}, {m} of {n_tiles_c} rects equal", k.to_bits(), ext[0], ext[1], ext[0] * ext[1]); }
+                }
+                println!("best k {} ({:#010x}) ext ({}, {}): first mismatch at #{}, {} equal", best.2, best.2.to_bits(), best.3[0], best.3[1], best.1, best.0);
+                return;
+            }
+            // --fit-ext: search the tile extent (ext.x, ext.y) around the given one for the pair that reproduces the most of
+            // the editor's tile rects (position + size) in the walk order — the game's exact ext (uv bounds × MeterByUv ×
+            // block scale) is not read yet; the carry rounding is sensitive to its last digits
+            if a.iter().any(|x| x == "--fit-ext") {
+                let n_tiles_c = charts.iter().zip(&ids).filter(|(_, &o)| o < base).count();
+                let score = |ext: [f32; 2]| -> (usize, usize) {
+                    let mut ch = charts.clone();
+                    for (c, &o) in ch.iter_mut().zip(&ids) { if o < base { c.ext = ext; } }
+                    let Some((s, placed)) = lightmap::pack::allocate_ordered_forced(&ch, &placed_order, w_atlas, w_atlas, g, mmin, max_iter, &fail_iters) else { return (0, 0) };
+                    let _ = s;
+                    let mut first_bad = usize::MAX; let mut k = 0usize; let mut m = 0usize;
+                    for &i in placed_order.iter().rev() {
+                        if ids[i] >= base { continue; }
+                        let p = &placed[i]; k += 1;
+                        let ok = ed.get(&ids[i]).map(|&(ex, ey, ew, eh)| p.x as u32 + pad == ex as u32 && p.y as u32 + pad == ey as u32 && (p.w as u32).saturating_sub(2 * pad) == ew as u32 && (p.h as u32).saturating_sub(2 * pad) == eh as u32).unwrap_or(false);
+                        if ok { m += 1; } else if first_bad == usize::MAX { first_bad = k; }
+                    }
+                    (m, first_bad.min(n_tiles_c + 1))
+                };
+                let base_ext = tile_ext_xy;
+                let (sx, sy, nx, ny): (f32, f32, i32, i32) = f("--fit-ext-grid").map(|v| { let t: Vec<f32> = v.split(',').map(|x| x.parse().unwrap()).collect(); (t[0], t[1], t[2] as i32, t[3] as i32) }).unwrap_or((2e-5, 2e-5, 25, 25));
+                let mut best = (0usize, 0usize, base_ext);
+                let t0 = std::time::Instant::now();
+                for ix in -nx..=nx { for iy in -ny..=ny {
+                    let ext = [base_ext[0] + ix as f32 * sx, base_ext[1] + iy as f32 * sy];
+                    let (m, fb) = score(ext);
+                    if (fb, m) > (best.1, best.0) { best = (m, fb, ext); println!("  ext ({:.7}, {:.7}) area {:.8}: first mismatch at tile #{fb}, {m} of {n_tiles_c} rects equal", ext[0], ext[1], ext[0] * ext[1]); }
+                } }
+                println!("best ext ({:.7}, {:.7}) area {:.8}: first mismatch at #{}, {} equal ({:.1}s)", best.2[0], best.2[1], best.2[0] * best.2[1], best.1, best.0, t0.elapsed().as_secs_f32());
+                return;
+            }
+            let Some((s, placed)) = (match forced_s { Some(s) => lightmap::pack::try_pack(&charts, &placed_order, s, w_atlas, w_atlas, g, mmin).map(|p| (s, p)), None => lightmap::pack::allocate_ordered_forced(&charts, &placed_order, w_atlas, w_atlas, g, mmin, max_iter, &fail_iters) }) else { println!("allocation failed"); return };
             {
                 // our tile chart sizes (layout units) against the editor's histogram
                 let mut hist: std::collections::BTreeMap<(u32, u32), usize> = Default::default();
@@ -6233,7 +6582,8 @@ fn run(a: Vec<String>) {
                 // our first placed tiles in walk order (largest area first = the end of placed_order) with their atlas positions
                 println!("our walk (from the end of the order): the first 24 tiles");
                 let mut shown = 0;
-                for &k in placed_order.iter().rev() { if ids[k] >= base { continue; } let p = &placed[k]; let o = ids[k]; println!("  tile obj {o:>5} (cell x {:>2} z {:>2}) at ({:>4}, {:>4}) {}×{}", o % 64, o / 64, p.x as u32 + pad, p.y as u32 + pad, (p.w as u32).saturating_sub(2 * pad), (p.h as u32).saturating_sub(2 * pad)); shown += 1; if shown >= 24 { break; } }
+                let take: usize = f("--take").map(|s| s.parse().unwrap()).unwrap_or(24);
+                for &k in placed_order.iter().rev() { if ids[k] >= base { continue; } let p = &placed[k]; let o = ids[k]; let (cx, cz) = cell_of.get(o as usize).copied().unwrap_or((-1, -1)); let ed_r = ed.get(&o).map(|&(x, y, w, h)| format!("editor ({x:>4}, {y:>4}) {w}×{h}")).unwrap_or_default(); println!("  tile obj {o:>5} (cell x{cx:>2} z{cz:>2}) ours ({:>4}, {:>4}) {}×{}  {ed_r}", p.x as u32 + pad, p.y as u32 + pad, (p.w as u32).saturating_sub(2 * pad), (p.h as u32).saturating_sub(2 * pad)); shown += 1; if shown >= take { break; } }
             }
         }
         "points" => {

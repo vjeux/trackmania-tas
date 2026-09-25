@@ -492,6 +492,43 @@ fn main() {
                 }
             }
         }
+        "zone-tile-plg" => {
+            // zone-tile-plg <prefab logical path>: the zone tile prefab's entity 0 (the tile mesh) as a static object — its
+            // Solid2's PreLightGen (MeterByUv = u02, the uv1 bounds u04[0..4]) and every visual's uv0/uv1 range with the
+            // exact f32 bits: the factors of the tile's lightmap chart extent (the layout rule, REPORT-5 §4-E)
+            use mapgeom::static_item::vstream::{Elem, N_TEXCOORD0};
+            let mut store = open(&a);
+            let p = a.rest.get(1).cloned().expect("zone-tile-plg <prefab>");
+            let model = store.load_model(&p).unwrap_or_else(die);
+            let prefab = mapgeom::static_item::prefab::CPlugPrefab::from_model(&model).unwrap_or_else(die);
+            for (i, e) in prefab.ents.iter().enumerate() {
+                let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
+                let Some(s2) = so.solid2() else { println!("  ent {i}: static object without an inline Solid2"); continue };
+                match &s2.pre_light_gen {
+                    Some(g) => println!("  ent {i}: PreLightGen u02 (MeterByUv) {} ({:#010x}) u04 (uv bounds) {:?} ({:?}) boxes {} uv_groups {}; extents ({}, {})", g.u02, g.u02.to_bits(), &g.u04[..4], g.u04[..4].iter().map(|v| format!("{:#010x}", v.to_bits())).collect::<Vec<_>>(), g.boxes.len(), g.uv_groups.len(), g.u04[2] - g.u04[0], g.u04[3] - g.u04[1]),
+                    None => println!("  ent {i}: no PreLightGen"),
+                }
+                println!("  ent {i}: solid2 v{} {} visuals, {} shaded geoms, boxes {:?}", s2.version, s2.visuals.len(), s2.shaded_geoms.len(), s2.boxes);
+                for (vi, vr) in s2.visuals.iter().enumerate() {
+                    let Some(mapgeom::static_item::Node::Visual(v)) = vr.inline.as_deref() else { continue };
+                    let Some(main) = v.main.as_ref() else { continue };
+                    for sr in &main.vertex_streams {
+                        let Some(mapgeom::static_item::Node::VertexStream(s)) = sr.inline.as_deref() else { continue };
+                        for (name, sem) in [("uv0", N_TEXCOORD0), ("uv1", N_TEXCOORD0 + 1)] {
+                            let Some(vals) = s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == sem).and_then(|(_, e)| if let Elem::Float2(v) = e { Some(v.clone()) } else { None }) else { continue };
+                            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                            for p in &vals { for k in 0..2 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+                            println!("    visual {vi} {name}: {} verts, range [{}, {}]..[{}, {}] ({:#010x} {:#010x} {:#010x} {:#010x}); extents ({}, {})", vals.len(), lo[0], lo[1], hi[0], hi[1], lo[0].to_bits(), lo[1].to_bits(), hi[0].to_bits(), hi[1].to_bits(), hi[0] - lo[0], hi[1] - lo[1]);
+                        }
+                        if let Some(pos) = s.decls.iter().zip(s.elems.iter()).find(|(d, _)| d.name() == mapgeom::static_item::vstream::N_POSITION).and_then(|(_, e)| if let Elem::Float3(v) = e { Some(v.clone()) } else { None }) {
+                            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                            for p in &pos { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+                            println!("    visual {vi} positions: {} verts, AABB {:?}..{:?}", pos.len(), lo, hi);
+                        }
+                    }
+                }
+            }
+        }
         "zone-slots" => {
             // zone-slots <prefab logical path>: the zone tile prefab's entities — entity 0 the tile mesh, the rest the
             // vegetation slots (params chunk 0x2F0A9000 = NPlugItemPlacement::SPlacement, printed raw + decoded tags)
