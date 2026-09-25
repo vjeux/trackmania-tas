@@ -387,6 +387,36 @@ string DoJump() {
     return g_LastJumpInfo;
 }
 
+/// Rescale the car's velocity to `arg` metres/second, keeping its direction.
+///
+/// The probe behind `jumprig captest`: NSceneVehiclePhy::ComputeForces clamps
+/// any velocity above the model's MaxSpeed (277.78 m/s stock) on the next
+/// physics tick, so the magnitude read back a few ticks after a 300 m/s poke
+/// says whether the Speed Cap plugin's write reached the physics. Needs a
+/// moving car: a stationary one has no direction to scale.
+string SetSpeed(const string &in arg) {
+    if (!g_Hooked) return "setspeed: hook not installed";
+    if (!InPlayground()) return "setspeed: not driving";
+    if (!CarLooksSane(g_CarPtr)) return "setspeed: no car yet";
+    float want = Text::ParseFloat(arg);
+    if (want <= 0.0f) return "setspeed: bad value '" + arg + "'";
+    vec3 v = vec3(Dev::ReadFloat(g_CarPtr + CAR_VELOCITY),
+                  Dev::ReadFloat(g_CarPtr + CAR_VELOCITY + 4),
+                  Dev::ReadFloat(g_CarPtr + CAR_VELOCITY + 8));
+    float mag = v.Length();
+    if (mag < 0.5f) return "setspeed: car is not moving (|v|=" + F2(mag) + " m/s) - accelerate first";
+    vec3 nv = v * (want / mag);
+    Dev::Write(g_CarPtr + CAR_VELOCITY, nv.x);
+    Dev::Write(g_CarPtr + CAR_VELOCITY + 4, nv.y);
+    Dev::Write(g_CarPtr + CAR_VELOCITY + 8, nv.z);
+    vec3 rb = vec3(Dev::ReadFloat(g_CarPtr + CAR_VELOCITY),
+                   Dev::ReadFloat(g_CarPtr + CAR_VELOCITY + 4),
+                   Dev::ReadFloat(g_CarPtr + CAR_VELOCITY + 8));
+    string info = "setspeed: |v| " + F2(mag) + " -> " + F2(rb.Length()) + " m/s";
+    trace("[Jump] " + info);
+    return info;
+}
+
 string StoragePath(const string &in name) {
     return IO::FromStorageFolder(name);
 }
@@ -446,6 +476,20 @@ string RunCommand(const string &in verb, const string &in arg) {
     if (verb == "strength") { S_JumpStrength = Text::ParseFloat(arg); return "strength=" + S_JumpStrength; }
     if (verb == "requireground") { S_RequireGround = (arg == "1" || arg == "true"); return "requireground=" + S_RequireGround; }
     if (verb == "cooldown") { S_Cooldown = Text::ParseFloat(arg); return "cooldown=" + S_Cooldown; }
+    if (verb == "setspeed") return SetSpeed(arg);
+    if (verb == "restartmap") {
+        // The game's own restart, asked through the playground API instead of
+        // a synthesised key: a key needs the game window in the foreground
+        // and the right scan code, and the Backspace respawn did neither
+        // reliably on 2026-09-24. (There is no respawn / give-up call in this
+        // API; RequestRestartMap puts the car back on the start line.)
+        auto app = cast<CTrackMania>(GetApp());
+        if (app is null || app.Network is null) return "restartmap: no network object";
+        auto pg = app.Network.PlaygroundClientScriptAPI;
+        if (pg is null) return "restartmap: no playground client API";
+        pg.RequestRestartMap();
+        return "restartmap: requested";
+    }
     if (verb == "playmap" || verb == "editplay") {
         // REFUSE A MAP THE GAME WOULD SILENTLY IGNORE. The loader accepts any
         // path and, for one outside the user directory, loads nothing: ok,

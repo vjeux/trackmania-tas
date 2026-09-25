@@ -399,6 +399,9 @@ pub fn hold_key(lock: &GameLock, vk: u8, hold_ms: u64) -> Result<String> {
         0x27 => 0x4D, // RIGHT
         0xA0 | 0x10 => 0x2A, // LSHIFT / SHIFT
         0x20 => 0x39, // SPACE
+        0x08 => 0x0E, // BACKSPACE (respawn)
+        0x0D => 0x1C, // ENTER
+        0x2E => 0x53, // DELETE (give up)
         _ => 0,
     };
     // The script goes through a FILE, not a -Command string: three layers of

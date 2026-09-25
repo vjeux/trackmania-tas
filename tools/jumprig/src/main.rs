@@ -14,6 +14,8 @@
 //!    the resulting chaos on its own hook. It now takes [`tmdrive`]'s guard
 //!    like every other driver.
 
+mod captest;
+
 use std::fs;
 use std::path::PathBuf;
 use std::thread::sleep;
@@ -139,6 +141,8 @@ fn read_state() -> Option<State> {
 struct Outcome {
     state: State,
     max_y: f64,
+    /// Peak |velocity| seen while waiting (the captest probe reads it).
+    max_speed: f64,
     elapsed: Duration,
     samples: u64,
 }
@@ -187,6 +191,10 @@ fn wait_for(host: &Host, event: &str, timeout: Duration) -> Result<Outcome, Stri
             if s.pos[1] > out.max_y {
                 out.max_y = s.pos[1];
             }
+            let speed = (s.vel[0] * s.vel[0] + s.vel[1] * s.vel[1] + s.vel[2] * s.vel[2]).sqrt();
+            if speed > out.max_speed {
+                out.max_speed = speed;
+            }
             let hit = match event {
                 "process" | "exit" | "lock-free" => false,
                 // "Alive" = the heartbeat is MOVING, in either direction. It
@@ -204,6 +212,10 @@ fn wait_for(host: &Host, event: &str, timeout: Duration) -> Result<Outcome, Stri
                 "airborne" => s.wheels_down == 0,
                 "apex" => s.vel[1] <= 0.0,
                 "landed" => s.wheels_down > 0,
+                // The captest probe needs a velocity DIRECTION to scale ...
+                "moving" => speed > 3.0,
+                // ... and a car standing on its wheels again between phases.
+                "stopped" => s.wheels_down > 0 && speed < 0.5,
                 _ => match wanted_seq {
                     Some(n) => s.cmd_seq >= n,
                     None => return Err(format!("unknown event '{}'", event)),
@@ -315,7 +327,7 @@ fn dur(v: Option<&String>, default: u64) -> Duration {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
-        eprintln!("usage: jumprig <launch|state|waitfor|cmd|jumptest|kill> [args]");
+        eprintln!("usage: jumprig <launch|state|waitfor|cmd|jumptest|kill|captest|capstate|capcmd> [args]");
         eprintln!("  waitfor <event> [timeout_s]  process exit lock-free alive hooked in-map");
         eprintln!("                               car ticking grounded airborne apex landed");
         eprintln!("Every game-driving subcommand takes the tmdrive lock first.");
@@ -336,6 +348,13 @@ fn main() {
             let ev = args.get(1).cloned().unwrap_or_default();
             wait_for(&host, &ev, dur(args.get(2), 120)).map(|o| print_state(&o.state))
         }
+        "capstate" => match captest::read_cap_state() {
+            Some(s) => {
+                captest::print_cap_state(&s);
+                Ok(())
+            }
+            None => Err("no readable Speed Cap state (is the plugin loaded?)".into()),
+        },
 
         // Everything below drives the game, so everything below holds the lock.
         "launch" => with_lock(host.clone(), "jump-button launch", |lock| {
@@ -418,6 +437,25 @@ fn main() {
         }),
 
         "jumptest" => with_lock(host.clone(), "jump-button test", |lock| jump_test(lock).map(|_| ())),
+
+        // SPEED CAP: launch -> map -> prove the stock 1000 km/h clamp, then
+        // prove it is gone with the Speed Cap plugin set to unlimited. The
+        // probe is `setspeed`, read back from the car's own velocity.
+        //   jumprig captest [--map PATH]
+        "captest" => {
+            let map = arg_after(&args, "--map").unwrap_or_else(|| DRIVE_MAP.to_string());
+            match tmdrive::loadable_map_path(&map) {
+                Ok(map) => with_lock(host.clone(), "speed cap: verification run", |lock| {
+                    captest::cap_test(lock, &map)
+                }),
+                Err(e) => Err(e),
+            }
+        }
+        "capcmd" => with_lock(host.clone(), "speed-cap command", |lock| {
+            let verb = args.get(1).cloned().unwrap_or_default();
+            let arg = args[2..].join(" ");
+            captest::send_cap_command(lock.host(), &verb, &arg, Duration::from_secs(30)).map(|_| ())
+        }),
 
         other => Err(format!("unknown subcommand '{}'", other)),
     };
