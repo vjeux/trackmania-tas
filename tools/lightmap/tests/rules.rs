@@ -109,7 +109,8 @@ fn frame_records_are_patched_in_place() {
         let f = |o: usize| f32::from_le_bytes([head[r + o], head[r + o + 1], head[r + o + 2], head[r + o + 3]]);
         assert_eq!(u(8), 0xdaab);
         assert_eq!(f(16), 3.0);
-        assert_eq!(f(20), 2.3812);
+        // frame 0 carries the bake's K; the other frames (the black night frame) the editor's 1e-5
+        assert_eq!(f(20), if i == 0 { 2.3812 } else { 1e-5 });
         assert_eq!(f(24), 2.0);
         assert_eq!(f(28), 1.0);
         // the kind word and the −FLT_MAX slot are not the patch's business
