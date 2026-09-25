@@ -474,3 +474,109 @@ mod tests {
         assert_eq!(c.records[0].chunk, [2, 2, 2]);
     }
 }
+
+/// FUN_140d124c0(collection) = the "level" the probe rows are aligned on (h + 2), by the collection NUMBER (the
+/// engine compares interned Ids; the Id table 0x141e71130 is filled by 0x140ae6370 slot by slot with these numbers —
+/// slot 9 = 26 Stadium, 17 = 15 GreenCoast, 18 = 16 RedIsland, 19 = 28 BlueBay, 20 = 29 WhiteShore, 0 = 12 Canyon,
+/// 1 = 18 Valley, 2 = 19 Lagoon, 3 = 11, 4 = 20, 5 = 21, 6 = 13, 7 = 22, 8 = 23, 10 = 24, 11 = 25, 12 = 202, 27 = 6):
+/// FUN_140d123c0 gives 1.0 for {202, 6, 24, 25}, 0.0 for {26, 12, 18, 19}, 2.0 for {11, 20, 21, 13, 22, 23} and 0 for
+/// every other collection (its `FUN_140ae66a0() ? 2·FUN_140d12190 : 0` branch: FUN_140ae66a0 tests the slot lookup
+/// against 0x21, which the lookup can never return → always 0); then +8 for {13, 22, 23} and +8 for {6, 26}.
+/// TM2020: Stadium (26) → 8 (the Grass plane at 8 + 2 = 10 m), BlueBay / WhiteShore / RedIsland / GreenCoast → 0.
+pub fn level_h(collection: u32) -> f32 {
+    let base = match collection {
+        202 | 6 | 24 | 25 => 1.0,
+        26 | 12 | 18 | 19 => 0.0,
+        11 | 20 | 21 | 13 | 22 | 23 => 2.0,
+        _ => 0.0,
+    };
+    let a = if matches!(collection, 13 | 22 | 23) { 8.0 } else { 0.0 };
+    let b = if matches!(collection, 6 | 26) { 8.0 } else { 0.0 };
+    base + a + b
+}
+
+/// The decoration's vertical offsets per TM2020 collection [INFERRED from the fixed water/ground planes
+/// (tiny::fixed_plane) and the port's probe-origin table (probes.rs), consistent with the capture]: `yoff` = the
+/// block placement offset (world y = cell·8 + yoff), the probe grid's `offset.y` (challenge+0x7e8) = yoff + 2.
+/// BlueBay / GreenCoast (sea cell 5 / lake cell 4 → planes 7.0 / −0.8): −40 → −38; RedIsland / WhiteShore (cell 14
+/// → −0.5 / −1.0): −120 → −118; Stadium (Grass cell 9, plane 10.0): −64 → −62.
+pub fn deco_offsets(collection: u32) -> Option<(f32, f32)> {
+    match collection {
+        28 | 15 => Some((-40.0, -38.0)),
+        16 | 29 => Some((-120.0, -118.0)),
+        26 => Some((-64.0, -62.0)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod level_tests {
+    use super::*;
+
+    #[test]
+    fn stadium_rows_sit_on_the_grass_plane_and_the_island_collections_on_zero() {
+        assert_eq!(level_h(26), 8.0);
+        assert_eq!(level_h(28), 0.0);
+        assert_eq!(level_h(15), 0.0);
+        assert_eq!(level_h(16), 0.0);
+        assert_eq!(level_h(29), 0.0);
+        assert_eq!(level_h(13), 10.0, "2 + 8");
+        assert_eq!(level_h(6), 9.0, "1 + 8");
+        // Stadium 48×40×48 with 32 m cubes: rows aligned on 10 m → origin.y = −62 + 16 + frac⁺((10 − (−46))/32)·32 = −46 + 24 = −22
+        let g = grid_def([48, 40, 48], [32.0, 32.0, 32.0], [0.0, -62.0, 0.0], level_h(26), false);
+        assert_eq!(g.origin[1], -22.0);
+        assert_eq!(deco_offsets(28), Some((-40.0, -38.0)));
+    }
+}
+
+/// The MODEL PROBE BOX of an item's lm-data object (the 0x120-byte object at record+0x18, ctor 0x140454a20, filled by
+/// FUN_140454590 at bind): the object walks the model's geometry — a CPlugSolid2Model's shaded geoms with LOD bit 0
+/// (geom+0xc & 1) at the identity location, or a CPlugSolid's tree with each leaf's Location — and folds each visual's
+/// STORED box (visual+0x88) through FUN_140185f70 into TWO boxes with FUN_140184fa0: obj+0xd4 = the LIGHTMAP box (geoms
+/// whose material has flag 0x80 at material+0x158; the material class bits +0x144 & 0x600000 == 0x400000 set obj
+/// flag 4) and obj+0x100 = the PROBE box (the other geoms whose material has flag 0x1000 at material+0x244).
+/// RenderLighting_Frames uses obj+0x100 (valid when its h.x = obj+0x10c ≥ 0) through the mobil Iso4 as the probe box
+/// of a record whose quality² ≤ 0.9 (Lowest/VeryLow/Low elements: 0.706² = 0.498). Which game materials carry the
+/// 0x1000 flag is NOT read (a CPlugMaterial flags word) — `model_probe_box` takes the caller's selection of visual
+/// boxes; with every LOD-0 geom it is the whole model. Both folds start from the invalid box (the first box copied).
+pub fn model_probe_box(visual_boxes: &[CBox]) -> Option<CBox> {
+    let mut acc = CBox::INVALID;
+    for b in visual_boxes {
+        acc.union_into(b);
+    }
+    if acc.is_valid() { Some(acc) } else { None }
+}
+
+/// The probe boxes with the model boxes for the low-quality records (RenderLighting_Frames l.1085–1147 both
+/// branches): `(record, model probe box in model space)` pairs; a record with quality² > 0.9 gives its own box, one
+/// below gives its model's probe box through its Iso4 when that box is valid, else nothing.
+pub fn probe_boxes_with_models(items: &[(BlockRecord, Option<CBox>, crate::lmtiles::Iso4)]) -> Vec<CBox> {
+    let mut out = Vec::new();
+    for (r, model_probe, iso) in items {
+        if 0.9 < r.quality * r.quality {
+            out.push(r.world);
+        } else if let Some(mb) = model_probe {
+            if mb.h[0] >= 0.0 {
+                out.push(mb.transformed(iso));
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod model_probe_tests {
+    use super::*;
+
+    #[test]
+    fn low_quality_records_use_their_models_probe_box() {
+        let own = BlockRecord { world: CBox::new([10.0, 5.0, 10.0], [1.0, 1.0, 1.0]), quality: 1.0 };
+        let low = BlockRecord { world: CBox::new([50.0, 5.0, 50.0], [4.0, 4.0, 4.0]), quality: 180.0 / 255.0 };
+        let mp = model_probe_box(&[CBox::new([0.0, 1.0, 0.0], [2.0, 1.0, 2.0])]);
+        let iso: crate::lmtiles::Iso4 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 50.0, 4.0, 50.0];
+        let boxes = probe_boxes_with_models(&[(own, None, iso), (low, mp, iso), (low, None, iso)]);
+        assert_eq!(boxes.len(), 2);
+        assert_eq!(boxes[1], CBox::new([50.0, 5.0, 50.0], [2.0, 1.0, 2.0]));
+        assert_eq!(model_probe_box(&[]), None);
+    }
+}
