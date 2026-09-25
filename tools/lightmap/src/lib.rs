@@ -12,6 +12,7 @@ pub mod dome;
 #[cfg(test)]
 mod dome_oracle;
 pub mod pack;
+pub mod itemrule;
 pub mod passdiff;
 pub mod envcap;
 pub mod pool;

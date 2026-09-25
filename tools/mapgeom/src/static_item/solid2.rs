@@ -23,8 +23,10 @@ pub struct PreLightGen {
     pub u04: [f32; 8],
     pub sprite_count: [i32; 2],
     pub boxes: Vec<[f32; 6]>,
-    /// v1+
-    pub uv_groups: Vec<[i32; 4]>,
+    /// v1+: one `{MeterByUv, u0, v0, u1, v1}` per sub-visual chart group — the game reads `count × 20 bytes`
+    /// raw into its PreLightGen+0x40 table (FUN_140283cc0/FUN_140283d60, stride 0x14) and gives a model with
+    /// ≥ 2 groups TWO chart records (RE 7; `lightmap::itemrule`). Every reference item has none.
+    pub uv_groups: Vec<[f32; 5]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -204,7 +206,7 @@ fn read_prelight(r: &mut Rd) -> R<PreLightGen> {
     let u04 = r.floats::<8>()?;
     let sprite_count = [r.i32()?, r.i32()?];
     let boxes = r.array(|r| r.floats::<6>())?;
-    let uv_groups = if version >= 1 { r.array(|r| Ok([r.i32()?, r.i32()?, r.i32()?, r.i32()?]))? } else { Vec::new() };
+    let uv_groups = if version >= 1 { r.array(|r| r.floats::<5>())? } else { Vec::new() };
     Ok(PreLightGen { version, u01, u02, u03, u04, sprite_count, boxes, uv_groups })
 }
 
@@ -221,7 +223,7 @@ fn write_prelight(w: &mut Wr, p: &PreLightGen) {
     if p.version >= 1 {
         w.u32(p.uv_groups.len() as u32);
         for g in &p.uv_groups {
-            g.iter().for_each(|x| w.i32(*x));
+            w.floats(g);
         }
     }
 }

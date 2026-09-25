@@ -625,14 +625,42 @@ neighbour mask at +0x40 (its quality blended with each of the 8 neighbouring
 tiles: `(q_self + q_nb)/2`, 0 when either < 0.01) — the packed-geometry
 charts.
 
+**Which placed things get a record at all** [DISASSEMBLY, RE 7 2026-09-25; `tools/lightmap/src/itemrule.rs`]:
+the three record builders append to ONE array (CHmsLightMap+0xa8/+0xb0, 0x58-byte records) that `AllocateBlocks_`
+packs and `SHmsLightMapCacheMapping` (FUN_140288530 ← FUN_14027f1d0 ← RenderLighting_Frames) writes to the file —
+every record, in radix-key order, so a thing without a record is neither packed nor in the chart table:
+
+* kind 2 — a STATIC item (CPlugStaticObjectModel → the zone's static pool, FUN_1401e9a50 → FUN_14020e7b0): the
+  Solid2Model's PreLightGen must exist with `u01` ≠ 0 (the file's i32, kept as the byte PLG+0x50), uv-set-0 bounds
+  non-degenerate (u0 < u1 and v0 < v1) and the model's LIGHTMAP GEOMETRY non-empty (FUN_14045b730: the LOD-selected
+  indexed-triangle visuals whose material has a lightmap texcoord set (compiled material +0x40 bits 15..19 / material
+  +0x34 ≠ −1), positions ≤ that set's count) — else the warning "Mesh has invalid LightMap texture coordinates,
+  lighting may be wrong." and NO record (tiny 16's AC16497076 with one uv set: kept in the editor bake, no chart).
+  The model entry is also skipped when a material carries CPlugMaterial+0x18 & 0x6000 while the BSS knob
+  DAT_14205c82c is on ("CustomLM"; no checked game material file has those bits — chunk 0x09079016 flags = 0x240).
+  The record's quality (+0x50) is the pool entry's FLOAT (entry+0x34 ← FUN_1401eab80), NOT a byte.
+* kind 0 — a CHmsItem mobil (a CPlugSolid: legacy items, dyna/moving solids, the forest's per-tree solids via
+  FUN_14026dd00; the Solid2Model → CPlugSolid conversion FUN_1401fcc30 copies the PreLightGen whole): record iff the
+  solid's PreLightGen exists with u01 ≠ 0 (FUN_14020e3c0). Quality = `clamp(int(f·255), 1, 255) / 255`.
+* kind 1 — the CHmsZone+0x1f8 manager's per-model entries (FUN_14020eea0): PreLightGen with u01 ≠ 0 → a record
+  with quality 1.0, flags 9, centre 0 / half −1; a stored sprite size w·h ≠ 0 only gets a caster record (+0xb8).
+
+Quality per item (FUN_140dccde0): `f = powf(√2, e)·G`, e from the MapElemLightmapQuality byte {0:0, 1:+1, 2:+2,
+3:+3, 4:−1, 5:−2, 6:−3}; a static-pool item stores f as the FLOAT (its chart scale), a CHmsItem the byte.
+Area per record = `ext.y·ext.x` with `ext = (Δu·f, Δv·f)`, `f = MeterByUv × blockScale` (no placement scale;
+non-finite f → (0, 0) → the `m·mins` chart; f < 0 → 0.1). The 501 chart-less items of tiny 16 are NOT a game
+rule: they are the items `tmmaps keepitems` dropped before the editor bake (refs/tiny16-reduced-kept.txt; the
+"light-carrying" correlation is that filter) — only the two 1-uv-set items are the game's exclusion.
+
 **The chart list** (`FUN_140291450`): one 0x18-byte record `{model*, u32
 flags|subvisual, u32 blockparam, u32 blockIndex, u32 group}` per 0x58-byte
 block record when the model's sub-visual count (`PreLightGen+0x48`) is < 2 —
 `flags = 0, group = −1`. A model with n ≥ 2 sub-visuals (the
 `Item_Prefab_MultiMesh` case) gets **two** records: `{flags 0x10000 | 0,
-group −1}` = sub-visual 0 on its own, and `{flags 0x20000, group g}` = sub-
+group −1}` = sub-visual 0 on its own (its own `uvGroups[0]` = {f, u0, v0, u1, v1}: the file's uvGroups are
+count × 20 bytes, not [i32;4]), and `{flags 0x20000, group g}` = sub-
 visuals 1..n−1 merged: `FUN_14028f1d0` packs their uv rects into one rect
-(`FUN_141402b00`, spacing 0.015) and stores the average `MeterByUv` and the
+(`FUN_141402b00`, seed constant 1, spacing 0.015) and stores the average of the FINITE `MeterByUv`s (Σf/n, f32) and the
 merged bounds in the group record (stride 0x28; +0x18 → the per-sub-visual
 ST table used by `SetUvTransfo`). Tiny/campaign items are single-visual:
 one chart per item.

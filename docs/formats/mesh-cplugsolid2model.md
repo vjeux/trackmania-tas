@@ -24,7 +24,10 @@ ref skel
 f32[] lodMaxDist                                    (levels − 1 entries)
 i32 visCstType                                      (1 on items; 2 on Flag.Mesh = tween-animated)
 PreLightGen? { u32 version, i32 u01, f32 u02, bool u03, f32[8] u04, i32[2] spriteCount,
-               [f32;6][] boxes, [v≥1] [i32;4][] uvGroups }      (present ⇔ visCstType 1)
+               [f32;6][] boxes, [v≥1] [f32;5][] uvGroups }      (present ⇔ visCstType 1)
+               uvGroups = one {MeterByUv, u0, v0, u1, v1} per sub-visual chart group, read raw as count × 20 bytes
+               (FUN_140283cc0/FUN_140283d60 → PreLightGen+0x40, stride 0x14); u01 (the i32) is kept as the BYTE
+               PreLightGen+0x50 that gates the lightmap chart (0 → no chart); u03 → bit 8 of that word [EXE, RE 7]
 u64 fileWriteTime, string u03, string materialsFolder ("Stadium\Media\Material\"), string u04
 Light[] lights   { Id u01, bool u02, ref node (external CPlugLight when u02, else a string), string u04,
                    f32[12] iso, i32[6], bool u15, f32[3] }        — the light SOCKETS
