@@ -364,8 +364,29 @@ pub fn ground_zone(mf: &tmmaps::map::MapFile, collection: &str) -> String {
 pub fn for_map(map_path: &str, scene: &crate::geometry::Scene, base: u32, quality_index: u32, tile_plg: TilePlg, pak: Option<(&str, &str)>, collection: &str, zone: &str, kept: Option<&std::collections::HashSet<usize>>) -> Result<GameLayout, String> {
     let mf = tmmaps::map::MapFile::load(std::path::Path::new(map_path));
     let prof = CollectionProfile::of(collection);
-    let zone_owned = if mf.blocks.iter().any(|b| b.flags & 0x1000 != 0 && prof.flat_zones.contains(&b.name.as_str())) { ground_zone(&mf, collection) } else { zone.to_string() };
+    // the ground zone: the map's flat zone blocks name it; a caller's zone that is not one of the collection's flat zones (packtest's
+    // BlueBay default "Sea" on a Stadium map) yields to the profile's
+    let zone_owned = if mf.blocks.iter().any(|b| b.flags & 0x1000 != 0 && prof.flat_zones.contains(&b.name.as_str())) || !prof.flat_zones.contains(&zone) { ground_zone(&mf, collection) } else { zone.to_string() };
     let zone: &str = &zone_owned;
+    // A MAP WITH AUTHORED BLOCKS (Stadium's stpad: WaterBase blocks, their clips, walls) takes the record pipeline of records.rs
+    // (REPORT-5 §4-E.10: 12 141 / 12 141 rects on stpad) — the game's object ids (blocks from 16384, tiles, clips, items by
+    // record rank); LMTOOL_LAYOUT_TILES_ITEMS=1 keeps the tiles + items path
+    let has_authored = mf.blocks.iter().any(|b| !(b.flags & 0x1000 != 0 && prof.flat_zones.contains(&b.name.as_str())));
+    if has_authored && std::env::var_os("LMTOOL_LAYOUT_TILES_ITEMS").is_none() {
+        let Some((pak_path, key)) = pak else { return Err("a map with authored blocks needs --pak FILE:KEY (the block infos and clip prefabs)".into()) };
+        let mut store = mapgeom::store::DataStore::empty();
+        store.add_pak(pak_path, key).map_err(|e| format!("pak: {e}"))?;
+        let opts = crate::records::BuildOpts { collection: collection.to_string(), zone: Some(zone.to_string()), kept: kept.cloned(), ..Default::default() };
+        let mr = crate::records::build_map_records(map_path, scene, &mut store, &opts)?;
+        for n in &mr.notes { eprintln!("layout records: {n}"); }
+        let mut gl = crate::records::layout_of(&mr.recs, quality_index)?;
+        // the charts carry the records' object ids (LayoutChart.obj was the record index)
+        for c in gl.charts.iter_mut() { let k = c.obj as usize; c.obj = mr.recs[k].obj; }
+        gl.cell_of = mr.tile_cells.clone();
+        gl.tile_quality = mr.tile_quality.clone();
+        if std::env::var_os("LMTOOL_LAYOUT_TRACE").is_some() { eprintln!("layout records: {} blocks → {} records, {} tiles, {} clip records, {} items; objs blocks {}.. tiles {}.. clips {}.. items {}..", mr.n_blocks, mr.recs.len() - mr.n_tiles - mr.n_clips - mr.n_items, mr.n_tiles, mr.n_clips, mr.n_items, mr.block_obj0, mr.tile_obj0, mr.clip_obj0, mr.item_obj0); }
+        return Ok(gl);
+    }
     // the ground grid: the map's own size when its cell count is the tile base (the 64 × 64 tiny maps), else the collection's
     // decoration grid (Stadium's 96 × 96 ground under a 48 × 48 map)
     let (sx, sz) = if (mf.size[0].max(0) * mf.size[2].max(0)) as u32 == base { (mf.size[0], mf.size[2]) } else { (prof.grid, prof.grid) };

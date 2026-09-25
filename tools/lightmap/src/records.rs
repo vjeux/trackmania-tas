@@ -294,3 +294,178 @@ pub fn block_records_class(store: &mut mapgeom::store::DataStore, bi: &mapgeom::
     }
     Ok(out.len() - n0)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// THE MAP'S RECORD LIST (the closed rules of REPORT-5 §4-E.10, gathered for the bake's --layout-game)
+
+/// The knobs of `build_map_records` — the defaults are the closed rules; the others are the study switches records-check keeps.
+#[derive(Clone, Debug, Default)]
+pub struct BuildOpts {
+    pub collection: String,
+    /// The ground zone (None = layout::ground_zone).
+    pub zone: Option<String>,
+    /// The kept item set (RE 7's reductions).
+    pub kept: Option<std::collections::HashSet<usize>>,
+    pub tile_level: Option<i32>,
+    pub yoff: Option<f32>,
+    pub grid: Option<usize>,
+    /// Items mark in 3-D too (default: at the tiles' row only).
+    pub items_3d: bool,
+    /// Ghost blocks mark (default: no).
+    pub ghost_marks: bool,
+    pub no_block_cells: bool,
+    /// The clip order: "sim" keeps mapgeom's simulate order (default: the cell-hash owner walk).
+    pub clip_order_sim: bool,
+    pub face_order: Option<Vec<usize>>,
+    /// Clip kinds whose entities are one clone across the classes (the study).
+    pub one_class: Vec<String>,
+}
+
+/// What `build_map_records` returns besides the records.
+pub struct MapRecords {
+    pub recs: Vec<Rec>,
+    pub n_blocks: usize,
+    pub n_tiles: usize,
+    pub n_clips: usize,
+    pub n_items: usize,
+    /// The tile cells in record order.
+    pub tile_cells: Vec<(i32, i32)>,
+    pub tile_quality: Vec<f32>,
+    /// obj ids: the blocks from `block_obj0`, the tiles from `tile_obj0`, the clips from `clip_obj0`, the items from `item_obj0`.
+    pub block_obj0: u32,
+    pub tile_obj0: u32,
+    pub clip_obj0: u32,
+    pub item_obj0: u32,
+    pub notes: Vec<String>,
+}
+
+/// The map's records in the lightmapper's order: the authored blocks' prefab entities (file order), the zone tiles (the
+/// baked records first, then x-major), the engine's clips (the cell-hash owner walk), the items — with the game's object ids
+/// (a map with authored blocks numbers from 16384: stpad's blocks 16384.., tiles 16564.., clips 25780.., items 26808..;
+/// a tiny map without one from 0: tiles 0.., items from the tile count).
+pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: &mut mapgeom::store::DataStore, opts: &BuildOpts) -> Result<MapRecords, String> {
+    let mf = tmmaps::map::MapFile::load(std::path::Path::new(map_path));
+    let coll = opts.collection.as_str();
+    let prof = crate::layout::CollectionProfile::of(coll);
+    let zone = opts.zone.clone().unwrap_or_else(|| crate::layout::ground_zone(&mf, coll));
+    let grid: usize = opts.grid.unwrap_or(if coll == "Stadium" && (mf.size[0].max(0) * mf.size[2].max(0)) as i32 != prof.grid * prof.grid { prof.grid as usize } else { mf.size[0].max(1) as usize });
+    let tile_y: i32 = opts.tile_level.unwrap_or_else(|| crate::layout::tile_level(&mf, coll));
+    let yoff: f32 = opts.yoff.unwrap_or(prof.yoff);
+    let is_zone_block = |b: &tmmaps::map::BlockRec| b.flags & 0x1000 != 0 && prof.flat_zones.contains(&b.name.as_str());
+    let mut notes = Vec::new();
+    // THE MARKS: the items at the tiles' row, the blocks in 3-D (ghosts and flat zone blocks mark nothing)
+    let mut marks: std::collections::HashSet<(i32, i32, i32)> = mf.items.iter().map(|it| (it.file_cell[0] as i32, it.file_cell[1] as i32, it.file_cell[2] as i32)).filter(|c| opts.items_3d || c.1 == tile_y).collect();
+    if !opts.no_block_cells {
+        for b in &mf.blocks {
+            if b.flags & 0x1000_0000 != 0 && !opts.ghost_marks { continue; }
+            if is_zone_block(b) { continue; }
+            let (x, y, z) = b.coords();
+            marks.insert((x, y, z));
+        }
+    }
+    // the tile cells: the baked records first, then x-major
+    let baked: Vec<(i32, i32)> = mf.baked.iter().map(|b| { let (x, _, z) = b.coords(); (x, z) }).collect();
+    let cells = crate::layout::tile_cells(&baked, grid as i32, grid as i32);
+    let tq = crate::layout::tile_quality(&cells, tile_y, &marks);
+    let has_authored = mf.blocks.iter().any(|b| !is_zone_block(b));
+    let block_obj0: u32 = if has_authored { 16384 } else { 0 };
+    let n_blocks_authored = mf.blocks.iter().filter(|b| !is_zone_block(b)).count() as u32;
+    let tile_obj0 = block_obj0 + n_blocks_authored;
+    let mut recs: Vec<Rec> = Vec::new();
+    // 1. the authored blocks
+    let mut idx = mapgeom::blockmap::BlockInfoIndex::build(store, coll);
+    let mut n_block_recs = 0usize;
+    let mut bobj = block_obj0;
+    for b in mf.blocks.iter() {
+        if is_zone_block(b) { continue; }
+        let obj = bobj; bobj += 1;
+        let Some(path) = idx.path_for(&b.name) else { notes.push(format!("block {}: no block info", b.name)); continue };
+        let bi = match idx.load(store, &path) { Ok(bi) => bi.clone(), Err(e) => { notes.push(format!("block {}: {e}", b.name)); continue } };
+        let (x, y, z) = b.coords();
+        let ground = b.flags & mapgeom::blockmap::FLAG_GROUND != 0;
+        let variant = (b.flags & mapgeom::blockmap::FLAG_VARIANT_MASK) as usize;
+        let subvariant = ((b.flags >> mapgeom::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
+        let additional = ((b.flags >> mapgeom::blockmap::FLAG_ADDITIONAL_SHIFT) & 127) as usize;
+        n_block_recs += block_records_class(store, &bi, [x, y, z], b.dir, ground, variant, subvariant, additional, yoff, "block", obj, 1.0, b.flags & 0x1000_0000 != 0, &mut recs)?;
+    }
+    // 2. the tiles (the zone prefab at the tile row)
+    let n_tiles_before = recs.len();
+    {
+        let cells_of: Vec<(i32, i32)> = cells.clone();
+        let tiles_all = zone_tiles(store, coll, &zone, grid, tile_y as f32, yoff, &|cx, cz| tq[cx * grid + cz])?;
+        // zone_tiles is x-major over the whole grid; take them in `cells` order
+        let mut by_cell: std::collections::HashMap<(i32, i32), Rec> = tiles_all.into_iter().enumerate().map(|(i, r)| (((i / grid) as i32, (i % grid) as i32), r)).collect();
+        for (k, c) in cells_of.iter().enumerate() {
+            let Some(mut r) = by_cell.remove(c) else { return Err(format!("tile cell {c:?} missing")) };
+            r.obj = tile_obj0 + k as u32;
+            recs.push(r);
+        }
+    }
+    let n_tiles = recs.len() - n_tiles_before;
+    // 3. the engine's clips
+    let clip_obj0: u32 = tile_obj0 + n_tiles as u32;
+    let mut n_clip_recs = 0usize;
+    let mut n_clip_objs = 0u32;
+    if has_authored {
+        let faces = mapgeom::fillers::faces(store, &mut idx, &mf);
+        let dirs: std::collections::HashMap<usize, u8> = mf.blocks.iter().map(|b| (b.index, b.dir)).collect();
+        let grounds = mapgeom::bake::record_grounds(&faces, &mf);
+        let mut clips = mapgeom::bake::simulate(&faces, &dirs, &grounds);
+        if !opts.clip_order_sim {
+            let cells_b: Vec<[i32; 3]> = mf.blocks.iter().map(|b| { let (x, y, z) = b.coords(); [x, y, z] }).collect();
+            let frees: Vec<bool> = mf.blocks.iter().map(|b| b.flags & 0x1000_0000 != 0).collect();
+            let owner_order = crate::itemrule::clip_owner_order(&cells_b, &frees);
+            let owner_rank: std::collections::HashMap<usize, usize> = owner_order.iter().enumerate().map(|(r, &bi)| (mf.blocks[bi].index, r)).collect();
+            let face_order: Vec<usize> = opts.face_order.clone().unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5]);
+            let face_rank = |face: usize| face_order.iter().position(|&x| x == face).unwrap_or(9);
+            let pos_in_list: Vec<usize> = clips.iter().map(|c| faces.occupants.get(&c.cell).and_then(|os| os.iter().find(|o| o.index == c.owner_index && o.unit == c.unit)).and_then(|o| o.faces[c.face].iter().position(|n| *n == c.name)).unwrap_or(0)).collect();
+            let mut order: Vec<usize> = (0..clips.len()).collect();
+            order.sort_by_key(|&i| (owner_rank.get(&clips[i].owner_index).copied().unwrap_or(usize::MAX), clips[i].unit, face_rank(clips[i].face), pos_in_list[i]));
+            clips = order.iter().map(|&i| clips[i].clone()).collect();
+        }
+        for c in clips.iter().filter(|c| c.drawn()) {
+            let Some(path) = idx.path_for(&c.name) else { notes.push(format!("clip {}: no block info", c.name)); continue };
+            let bi = match idx.load(store, &path) { Ok(bi) => bi.clone(), Err(e) => { notes.push(format!("clip {}: {e}", c.name)); continue } };
+            let owner_b = mf.blocks.iter().find(|b| b.index == c.owner_index);
+            let owner_cell = match owner_b { Some(b) => { let (x, y, z) = b.coords(); [x, y, z] } None => [c.cell[0] as i32, c.cell[1] as i32, c.cell[2] as i32] };
+            let st = mapgeom::bake::step(c.face);
+            let (cell, d): ([i32; 3], u8) = if c.face < 4 {
+                ([owner_cell[0] + st.0, owner_cell[1] + st.1, owner_cell[2] + st.2], mapgeom::bake::opposite(c.face) as u8)
+            } else {
+                ([owner_cell[0] + st.0, owner_cell[1] + st.1, owner_cell[2] + st.2], c.dir_word() as u8)
+            };
+            let class: &'static str = match c.face { 0 => "clipN", 1 => "clipE", 2 => "clipS", 3 => "clipW", 4 => "clipT", _ => "clipB" };
+            // the horizontal clip's shape from the owner's neighbours at the piece's end (ghosts count)
+            let mut variant = 0usize;
+            if c.face < 4 && (c.name == "waterhfcleft" || c.name == "waterhfcright") {
+                let (lx, lz) = if c.name == "waterhfcleft" { (-st.2, st.0) } else { (st.2, -st.0) };
+                let occ = |dx: i32, dz: i32| mf.blocks.iter().any(|b| { let (x, y, z) = b.coords(); (x, y, z) == (owner_cell[0] + dx, owner_cell[1], owner_cell[2] + dz) });
+                let shape = if !occ(lx, lz) { 1 } else if occ(st.0 + lx, st.2 + lz) { 2 } else { 3 };
+                variant = if c.name == "waterhfcleft" { shape * 4 } else { shape };
+            }
+            let mut owner_free = owner_b.map(|b| b.flags & 0x1000_0000 != 0).unwrap_or(false);
+            if opts.one_class.iter().any(|n| *n == c.name) { owner_free = false; }
+            n_clip_recs += block_records_class(store, &bi, cell, d, c.ground, variant, 0, 0, yoff, class, clip_obj0 + n_clip_objs, 1.0, owner_free, &mut recs)?;
+            n_clip_objs += 1;
+        }
+    }
+    // 4. the items
+    let item_obj0 = clip_obj0 + n_clip_objs;
+    let irecs = crate::lmtiles::item_records(scene, 1.0, false);
+    let mut n_items = 0usize;
+    for inst in scene.instances.iter() {
+        if let Some(k) = &opts.kept { if !k.contains(&inst.item) { continue; } }
+        let m = &scene.models[inst.model];
+        let Some(b) = m.plg_bounds else { continue };
+        if !(b[2] > b[0] && b[3] > b[1]) { continue; }
+        let no_lm: Vec<String> = std::env::var("LMTOOL_NO_LM_MATERIALS").map(|v| v.split(',').map(|t| t.to_string()).collect()).unwrap_or_else(|_| vec!["RaceTriggerFX".into(), "\\Decal".into()]);
+        if !m.mat_links.is_empty() && m.mat_links.iter().all(|l| no_lm.iter().any(|n| l.contains(n.as_str()))) { continue; }
+        let Some(ir) = irecs.iter().find(|r| r.item == inst.item) else { continue };
+        let Some(rec) = &ir.record else { continue };
+        let q = crate::layout::item_quality(inst.lm_quality);
+        recs.push(Rec { class: "item", obj: item_obj0 + n_items as u32, sub: 0, meter_by_uv: m.plg_u02, uv: b, quality: q, centre: rec.world.c, half: rec.world.h, group: ((inst.model as u64) << 32) | q.to_bits() as u64, key_centre: None, pos_rank: None, wall: None });
+        n_items += 1;
+    }
+    let _ = n_block_recs;
+    Ok(MapRecords { recs, n_blocks: n_blocks_authored as usize, n_tiles, n_clips: n_clip_recs, n_items, tile_cells: cells, tile_quality: tq, block_obj0, tile_obj0, clip_obj0, item_obj0, notes })
+}
