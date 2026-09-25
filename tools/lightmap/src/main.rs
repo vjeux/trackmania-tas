@@ -1704,8 +1704,9 @@ fn run(a: Vec<String>) {
                     let dir_in_world = [-prm.sun_dir[0], -prm.sun_dir[1], -prm.sun_dir[2]];
                     let fm = lightmap::setupmap::build(&scene, &lm, &sbox, dir_in_world, prm.sun, &frozen, &item_bytes, false);
                     for n in &fm.notes { eprintln!("setup-from-map: {n}"); }
-                    // against the capture: the stages the e2e chain compares (the same entries)
-                    if let Some(root) = f("--lm-from").map(std::path::PathBuf::from) {
+                    // against the capture: the stages the e2e chain compares (the same entries) — --lm-from ROOT, or --lm-cap-root ROOT
+                    // when the LM scene is the map's (the capture-less run compared stage by stage without switching its inputs)
+                    if let Some(root) = f("--lm-from").or_else(|| f("--lm-cap-root")).map(std::path::PathBuf::from) {
                         if let Ok(txt) = std::fs::read_to_string(root.join("MANIFEST.json")) {
                             if let Ok(m) = lightmap::passdiff::read_manifest(&txt) {
                                 let cmp = |name: &str, ours: &lightmap::passdiff::Buf, pass: &str, frame: u32, suffix: &str, ch: u32, fmt: lightmap::gpucmp::Fmt| {
