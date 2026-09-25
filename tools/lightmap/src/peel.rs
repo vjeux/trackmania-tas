@@ -664,11 +664,16 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                 // (counting) an environment triangle: Some(drawn); an item triangle: its depth-bias term (once
                 // per triangle — `tri_slope` per fragment was 8 % of a bake)
                 let env_t = if counting { env_class(t) } else { None };
-                let bias_term = if counting && env_t.is_none() {
-                    let cx = count.as_ref().unwrap();
-                    let (slope, zmax_prim) = tri_slope(t, frame);
-                    d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), cx.prm.depth_bias, cx.prm.depth_bits)
-                } else { 0.0 };
+                // (computed on the first item fragment of the triangle in this band: most triangles in a band's
+                // list cover none of its pixel centres)
+                let mut bias_term_cache: Option<f32> = None;
+                let bias_term_of = |cache: &mut Option<f32>| -> f32 {
+                    *cache.get_or_insert_with(|| {
+                        let cx = count.as_ref().unwrap();
+                        let (slope, zmax_prim) = tri_slope_projected(frame, (x0, y0, z0), (x1, y1, z1), (x2, y2, z2));
+                        d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), cx.prm.depth_bias, cx.prm.depth_bits)
+                    })
+                };
                 raster::triangle_clipped_masked(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], band_clip, if counting { None } else { Some(bitmap) }, |x, y, bc| {
                     if raster_stats { rs_visits += 1; }
                     // the game's viewport (1, 1, w−2, h−2): the outer ring is never drawn
@@ -705,7 +710,7 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                                 }
                                 None => {
                                     let sl = &mut slots[li];
-                                    let cf = CFrag { z, tri: ti, bias: bias_term };
+                                    let cf = CFrag { z, tri: ti, bias: bias_term_of(&mut bias_term_cache) };
                                     if (sl.n as usize) < SLOT_K { sl.f[sl.n as usize] = cf; } else { overflow.push((li as u32, cf)); }
                                     sl.n += 1;
                                 }
@@ -1436,9 +1441,12 @@ pub fn d3d_depth_bias_fmt(zmax_prim: f32, slope: f32, bias: (i32, f32), bits: u3
 fn tri_slope(wt: &WTri, frame: &PeelFrame) -> (f32, f32) {
     let p1 = [wt.p0[0] + wt.e1[0], wt.p0[1] + wt.e1[1], wt.p0[2] + wt.e1[2]];
     let p2 = [wt.p0[0] + wt.e2[0], wt.p0[1] + wt.e2[1], wt.p0[2] + wt.e2[2]];
-    let (x0, y0, z0) = frame.project(wt.p0);
-    let (x1, y1, z1) = frame.project(p1);
-    let (x2, y2, z2) = frame.project(p2);
+    tri_slope_projected(frame, frame.project(wt.p0), frame.project(p1), frame.project(p2))
+}
+
+/// `tri_slope` from the vertices already projected into the frame (the raster projects them anyway; the
+/// same values, so the same result).
+fn tri_slope_projected(frame: &PeelFrame, (x0, y0, z0): (f32, f32, f32), (x1, y1, z1): (f32, f32, f32), (x2, y2, z2): (f32, f32, f32)) -> (f32, f32) {
     let (z0, z1, z2) = (frame.z01(z0), frame.z01(z1), frame.z01(z2));
     let det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
     if det.abs() < 1e-12 {
