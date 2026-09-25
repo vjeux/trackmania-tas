@@ -2682,7 +2682,11 @@ fn run(a: Vec<String>) {
             // only the fallback. The probe blob is still the port's (or the template's) until the transcribed probe passes run
             // over our peels in the bake; the LAmbient triple stays the template's — both flagged in the log.
             let writer_transcribed = match f("--writer").as_deref() { Some("port") => false, Some("transcribed") => true, Some(o) => panic!("--writer {o}: port|transcribed"), None => chain_finals.is_some() };
-            let mood_max_hdr_for_encode: f32 = frame_params.as_ref().map(|fp| fp.max_hdr_mood).unwrap_or(7.519885063171387);
+            // CS 23025's Mood_MaxHdr is NOT the record's MaxHdrMood word (3 for Day): it is MaxHdrMood × √(2π) in f32 — 3 × 2.5066283 =
+            // 7.519885063171387, the captured g_CBufferC value bit for bit (the baker's 14 % blob: the encoder was fed 3 → every
+            // encoded value off by the factor 2.5, fb0 0 of 4099; chain-final with --mood-max-hdr 3 reproduces exactly 14.434 %) — A 0033
+            const SQRT_2PI: f32 = 2.506_628_3;
+            let mood_max_hdr_for_encode: f32 = frame_params.as_ref().map(|fp| fp.max_hdr_mood * SQRT_2PI).unwrap_or(7.519885063171387);
             // LMTOOL_PROBE_DUMP_DIR=DIR: the transcribed probe accumulators as raw volumes (probebake::dump) — the
             // sparse/dense and split/single checks compare them byte for byte (engineer 2)
             if let (Some(pb), Ok(dir)) = (&prm.probe_bake, std::env::var("LMTOOL_PROBE_DUMP_DIR")) {
@@ -2693,6 +2697,36 @@ fn run(a: Vec<String>) {
             }
             let probes_for_transcribed = if writer_transcribed { probes.clone() } else { None };
             let frame_params_for_transcribed = if writer_transcribed { frame_params.clone() } else { None };
+            if let Some(gl) = game_layout.as_ref() {
+                let mut objs: Vec<(u32, i32, i32, i32, i32)> = gl.charts.iter().filter(|c| c.charted == lightmap::layout::Charted::Bound).map(|c| (c.obj, c.x, c.y, c.w, c.h)).collect();
+                objs.sort();
+                eprintln!("writer (diag): game layout charts {} bound; obj range {:?}..{:?}; first {:?}; last {:?}", objs.len(), objs.first().map(|o| o.0), objs.last().map(|o| o.0), objs.iter().take(3).collect::<Vec<_>>(), objs.iter().rev().take(3).collect::<Vec<_>>());
+                let mut oc: Vec<(u32, u32, u32, u32)> = out_charts.iter().map(|c| (c.obj, c.sub, c.w, c.h)).collect();
+                oc.sort();
+                eprintln!("writer (diag): port charts {}; first {:?}; last {:?}", oc.len(), oc.iter().take(3).collect::<Vec<_>>(), oc.iter().rev().take(3).collect::<Vec<_>>());
+                let hit = out_charts.iter().filter(|c| fixed_pos.as_ref().map(|m| m.contains_key(&(c.obj, 0))).unwrap_or(false)).count();
+                eprintln!("writer (diag): {hit} of {} port charts find a fixed position by (obj, 0)", out_charts.len());
+                // --layout-check SAVE.Map.Gbx: E's layout against a save's mapping, object by object (object = obj_group_idx / 4)
+                if let Some(chk) = f("--layout-check") {
+                    if let Ok(mm) = lightmap::mapio::load(&chk) {
+                        if let Some(mp) = mm.chunk.data.as_ref().and_then(|d| d.cache.mapping()) {
+                            let save: std::collections::HashMap<u32, (u32, u32, u32, u32, u32)> = (0..mp.count as usize).map(|i| (mp.binds[i].obj_group_idx / 4, (mp.pos[i].0 as u32, mp.pos[i].1 as u32, mp.size[i].0 as u32, mp.size[i].1 as u32, mp.binds[i].obj_idx))).collect();
+                            let (mut same, mut same_size, mut n) = (0usize, 0usize, 0usize);
+                            let mut first: Option<String> = None;
+                            for &(o, x, y, w, h) in &objs {
+                                n += 1;
+                                match save.get(&o) {
+                                    Some(&(sx, sy, sw, sh, sub)) => { if (sx, sy, sw, sh) == (x as u32, y as u32, w as u32, h as u32) { same += 1; } else { if (sw, sh) == (w as u32, h as u32) { same_size += 1; } if first.is_none() { first = Some(format!("object {o}: E ({x}, {y}, {w}×{h}) save ({sx}, {sy}, {sw}×{sh}, sub {sub})")); } } }
+                                    None => { if first.is_none() { first = Some(format!("object {o}: not in the save's mapping")); } }
+                                }
+                            }
+                            eprintln!("writer (diag): E's layout vs {chk}: {same} of {n} charts identical (pos + size), {same_size} more with the same size at another position; save charts {}; first difference: {}", mp.count, first.unwrap_or_default());
+                            let mut ss: Vec<(u32, u32, u32, u32, u32)> = save.iter().map(|(o, v)| (*o, v.0, v.1, v.2, v.3)).collect(); ss.sort();
+                            eprintln!("writer (diag): the save's first {:?} last {:?}", ss.iter().take(3).collect::<Vec<_>>(), ss.iter().rev().take(3).collect::<Vec<_>>());
+                        }
+                    }
+                }
+            }
             // THE MAPPING HEADER'S BBOX (RE 7's 0008, FUN_140287730): the min / max fold of every record's CENTRE at write time — no
             // half extents, no padding (stpad / tiny03 / tiny16 bit-exact); the template's box only when no game layout exists
             // (LMTOOL_BBOX_TEMPLATE=1 keeps it)
@@ -2709,6 +2743,14 @@ fn run(a: Vec<String>) {
                     let atlas8 = s.atlas8.take();
                     // the layout rects (2048 layout units) in the mapping's order = the placed charts (obj, sub) ascending
                     let rects: Vec<(u32, u32, u32, u32)> = s.placed.iter().map(|&(_o, _s, px, py, w, h)| ((2 * px).saturating_sub(1), (2 * py).saturating_sub(1), 2 * w, 2 * h)).collect();
+                    // (diagnostic) the writer's rects against the template's mapping — same count and order when --layout-game reproduced
+                    // the editor's layout: how many rects agree, and the first that does not
+                    {
+                        let n = tm.count as usize;
+                        let same = (0..n.min(rects.len())).filter(|&i| { let (x, y) = tm.pos[i]; let (w, h) = tm.size[i]; rects[i] == (x as u32, y as u32, w as u32, h as u32) }).count();
+                        let first = (0..n.min(rects.len())).find(|&i| { let (x, y) = tm.pos[i]; let (w, h) = tm.size[i]; rects[i] != (x as u32, y as u32, w as u32, h as u32) });
+                        eprintln!("writer: rects vs the template's mapping: {same} of {} identical{}", n.min(rects.len()), first.map(|i| format!("; first differing chart {i}: ours {:?} (placed {:?}) mapping pos {:?} size {:?} bind obj {} group {}", rects[i], s.placed[i], tm.pos[i], tm.size[i], tm.binds[i].obj_idx, tm.binds[i].obj_group_idx)).unwrap_or_default());
+                    }
                     match lightmap::e2e::transcribed_images(&enc, maxhdr, mood_max_hdr_for_encode, &rects, chain_ambient_xyz) {
                         Some(img) => match lightmap::synth::build_transcribed(&s.placed, mapping_bbox, &tpl.chunk, &img, probes_for_transcribed, frame_params_for_transcribed) {
                             Ok(st) => {
@@ -6621,6 +6663,9 @@ fn run(a: Vec<String>) {
         }
         "frozen-tables" => {
             lightmap::e2e::frozen_tables_print(a.clone());
+        }
+        "card-fit" => {
+            lightmap::cardfit::card_fit(a.clone());
         }
         "texstat" => {
             // lmtool texstat FILE.dds[.gz]: per mip the min / mean / max of each channel (a look at a texture the pass samples)

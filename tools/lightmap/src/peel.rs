@@ -971,6 +971,11 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                                         Some((tx, fp)) if !*ALPHA_POINT => tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge),
                                         _ => m.opaque(u, v),
                                     };
+                                    if CARD_DUMP.is_some() {
+                                        // the footprint's derivatives (the TapPlan no longer carries them): recomputed for the dump only
+                                        let (fdx, fdy) = fp.as_ref().map(|(tx, _)| { let f = crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()); (f.dx, f.dy) }).unwrap_or(([0.0; 2], [0.0; 2]));
+                                        CARD_FRAGS.lock().unwrap().push(CardFrag { x, y, z01: frame.z01(z), tri: ti, u, v, mask: t.alpha as u32, fp_dx: fdx, fp_dy: fdy, port_pass: op as u32 });
+                                    }
                                     if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}", t.inst, t.tri, t.alpha, frame.z01(z)); } }
                                     if !op {
                                         return;
@@ -2722,6 +2727,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     None => build_abuffer_wanted(&bvh.tris, frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks, None),
                 }
             } else { build_abuffer_upto(&bvh.tris, frame, threads, zmax, &prm.alpha_masks) };
+            card_dump_flush(prm.sweep, di, pi, frame, &prm.alpha_masks);
             t_build_total += tb2.elapsed().as_secs_f32();
             prof::add(&prof::BUILD, tb2);
             frag_total += ab.len();
@@ -3410,4 +3416,76 @@ mod tests {
         let (_, _, zt) = f2.project(tri.p0);
         assert!(f2.z01(zt) >= 0.0 && f2.z01(zt) < 0.05, "the far triangle is now inside, at the far end: {}", f2.z01(zt));
     }
+}
+
+/// LMTOOL_CARD_DUMP=DIR: every card fragment of the A-buffer builds (before the alpha test) — pixel, depth (z01), the
+/// BVH triangle, TexCoord0, the alpha mask, the footprint and the port's alpha-test answer — written per (direction,
+/// peel) as `DIR/cardfrags-d{di}-p{pi}.bin` for `lmtool card-fit` (the anisotropic footprint rule against the capture).
+pub static CARD_DUMP: std::sync::LazyLock<Option<std::path::PathBuf>> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_CARD_DUMP").map(std::path::PathBuf::from));
+pub static CARD_FRAGS: std::sync::Mutex<Vec<CardFrag>> = std::sync::Mutex::new(Vec::new());
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct CardFrag {
+    pub x: u32,
+    pub y: u32,
+    pub z01: f32,
+    pub tri: u32,
+    pub u: f32,
+    pub v: f32,
+    pub mask: u32,
+    pub fp_dx: [f32; 2],
+    pub fp_dy: [f32; 2],
+    /// the port's answer (1 = passes the alpha test)
+    pub port_pass: u32,
+}
+
+impl CardFrag {
+    pub const BYTES: usize = 48;
+    pub fn write(&self, out: &mut Vec<u8>) {
+        for v in [self.x, self.y] { out.extend_from_slice(&v.to_le_bytes()); }
+        out.extend_from_slice(&self.z01.to_le_bytes());
+        out.extend_from_slice(&self.tri.to_le_bytes());
+        for v in [self.u, self.v] { out.extend_from_slice(&v.to_le_bytes()); }
+        out.extend_from_slice(&self.mask.to_le_bytes());
+        for v in [self.fp_dx[0], self.fp_dx[1], self.fp_dy[0], self.fp_dy[1]] { out.extend_from_slice(&v.to_le_bytes()); }
+        out.extend_from_slice(&self.port_pass.to_le_bytes());
+    }
+    pub fn read(b: &[u8]) -> CardFrag {
+        let u32_at = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+        let f32_at = |o: usize| f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+        CardFrag { x: u32_at(0), y: u32_at(4), z01: f32_at(8), tri: u32_at(12), u: f32_at(16), v: f32_at(20), mask: u32_at(24), fp_dx: [f32_at(28), f32_at(32)], fp_dy: [f32_at(36), f32_at(40)], port_pass: u32_at(44) }
+    }
+}
+
+/// Write and clear the collected card fragments of one peel.
+pub fn card_dump_flush(sweep: u32, di: usize, pi: usize, frame: &PeelFrame, masks: &[crate::geometry::AlphaMask]) {
+    let Some(dir) = CARD_DUMP.as_ref() else { return };
+    let mut v = CARD_FRAGS.lock().unwrap();
+    if v.is_empty() { return; }
+    let _ = std::fs::create_dir_all(dir);
+    // the alpha mip chains the fragments reference, once per mask: "CMSK0001", levels, then per level w, h, bytes
+    let used: std::collections::BTreeSet<u32> = v.iter().map(|f| f.mask).collect();
+    for k in used {
+        let p = dir.join(format!("cardmask-{k}.bin"));
+        if p.exists() { continue; }
+        let Some(tex) = masks.get(k as usize).and_then(|m| m.tex.as_ref()) else { continue };
+        let mut out = Vec::new();
+        out.extend_from_slice(b"CMSK0001");
+        out.extend_from_slice(&(tex.levels.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(tex.flipped as u32).to_le_bytes());
+        for l in &tex.levels { out.extend_from_slice(&(l.w as u32).to_le_bytes()); out.extend_from_slice(&(l.h as u32).to_le_bytes()); out.extend_from_slice(&l.a); }
+        let _ = std::fs::write(&p, &out);
+    }
+    let mut out = Vec::with_capacity(v.len() * CardFrag::BYTES + 64);
+    // header: magic, count, the frame's resolution and direction
+    out.extend_from_slice(b"CFRG0001");
+    out.extend_from_slice(&(v.len() as u64).to_le_bytes());
+    out.extend_from_slice(&frame.res.to_le_bytes());
+    out.extend_from_slice(&frame.res_y.to_le_bytes());
+    for c in frame.d { out.extend_from_slice(&c.to_le_bytes()); }
+    for f in v.iter() { f.write(&mut out); }
+    let p = dir.join(format!("cardfrags-s{sweep}-d{di}-p{pi}.bin"));
+    if let Err(e) = std::fs::write(&p, &out) { eprintln!("card dump: {}: {e}", p.display()); } else { eprintln!("card dump: {} fragments → {}", v.len(), p.display()); }
+    v.clear();
 }

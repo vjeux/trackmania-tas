@@ -464,6 +464,7 @@ pub fn chain_final(a: Vec<String>) {
     let maxhdr = [crate::gpuenc::maxhdr_hbasis(&imgs[0]), crate::gpuenc::maxhdr_hbasis(&imgs[1]), crate::gpuenc::maxhdr_hbasis(&imgs[2]), crate::gpuenc::maxhdr_hbasis(&imgs[3])];
     let mut mood = 7.519885063171387f32;
     if let Some(fe) = m.final_encode.as_ref() { if let Some(v) = fe.get("cbuffers").and_then(|c| c.get("Shader")).and_then(|c| c.get("g_CBufferC")).and_then(|c| c.get("Mood_MaxHdr")).and_then(|v| v.as_f64()) { mood = v as f32; } }
+    if let Some(v) = arg(&a, "--mood-max-hdr") { mood = v.parse().expect("--mood-max-hdr"); }
     println!("[max reduce] MaxHdr ours {maxhdr:?}, Mood_MaxHdr {mood}");
     if let Some(r) = m.passes.iter().find(|e| e.pass == "final_05_maxreduce_buffer" && e.frame == Some(frame)) {
         if let Ok(b) = crate::passdiff::read_entry_bytes(&root, &r.file) { let cap: Vec<f32> = b.chunks_exact(4).take(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect(); println!("             captured MaxHdr {cap:?}"); }
