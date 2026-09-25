@@ -276,10 +276,11 @@ mod tests {
         assert!((q[3] - 0.0625).abs() < 1e-6, "{}", q[3]);
         assert_eq!(q[4], Q_FAR);
         assert_eq!(q[5], Q_FAR);
-        // another level does not count
+        // another level counts through the 3-D Chebyshev distance (E, stpad's editor table): an item three rows up
+        // (dy = 3) over the cell gives the cell the r = 3 ring's quality, not Q_FAR
         let mut other = std::collections::HashSet::new();
         other.insert((10, 8, 10));
-        assert_eq!(tile_quality(&cells, 5, &other)[0], Q_FAR);
+        assert!((tile_quality(&cells, 5, &other)[0] - 0.35355338).abs() < 1e-6, "{}", tile_quality(&cells, 5, &other)[0]);
     }
 
     #[test]
