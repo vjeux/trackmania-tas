@@ -615,11 +615,11 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         let env_ptrs: Vec<usize> = parts_all.iter().map(|(_, _, e)| e.as_ptr() as usize).collect();
         let env_lens: Vec<usize> = parts_all.iter().map(|(_, _, e)| e.len()).collect();
         let hists: Vec<([usize; MAX_LAYERS + 1], usize)> = crate::pool::pool().map(parts_all.len(), |b| {
-            // SAFETY: each task reads (and sorts a copy of) its own band's lists
-            let src: &[(u32, Frag)] = unsafe { std::slice::from_raw_parts(all_ptrs[b] as *const (u32, Frag), all_lens[b]) };
+            // SAFETY: each task sorts its own band's list in place (disjoint bands; the lists are not read
+            // again afterwards) and reads its own environment maxima
+            let frags: &mut [(u32, Frag)] = unsafe { std::slice::from_raw_parts_mut(all_ptrs[b] as *mut (u32, Frag), all_lens[b]) };
             let env: &[f32] = unsafe { std::slice::from_raw_parts(env_ptrs[b] as *const f32, env_lens[b]) };
             let by0 = clip.1 + (b * band_rows) as i32;
-            let mut frags: Vec<(u32, Frag)> = src.to_vec();
             frags.sort_by(|p, q| p.0.cmp(&q.0).then_with(|| p.1.z.total_cmp(&q.1.z)).then_with(|| p.1.tri.cmp(&q.1.tri)));
             let mut hist = [0usize; MAX_LAYERS + 1];
             let mut covered = 0usize;
