@@ -177,7 +177,7 @@ pub fn load_model_from_store(store: &mut mapgeom::store::DataStore, logical: &st
 
 /// A `ModelGeom` from a solid: the PreLightGen, lights, the LOD-0 shaded geoms' triangles (TexCoord1 = the lightmap uv),
 /// materials / cut-out textures, the uv range and the metres-per-uv; `ent_pose` = a prefab entity's (quaternion, position).
-fn geom_from_solid2(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, ent_pose: Option<([f32; 4], [f32; 3])>) -> ModelGeom {
+pub fn geom_from_solid2(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, ent_pose: Option<([f32; 4], [f32; 3])>) -> ModelGeom {
     let mut g = ModelGeom::default();
     if let Some(plg) = &s2.pre_light_gen {
         g.plg_u02 = plg.u02;

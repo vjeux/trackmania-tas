@@ -798,6 +798,30 @@ fn run(a: Vec<String>) {
                 }
             } else { None };
             let mut scene = lightmap::geometry::Scene::from_map(&map_path).expect("scene");
+            // THE RECORD SCENE (--lm-from-map on a map with authored blocks — Stadium): every block / clip / wall prefab entity and
+            // every zone tile of the record pipeline becomes a scene instance (records::add_record_geometry) — the peel's geometry,
+            // the shadow casters and the atlas-coloured fragments the game has; the instances' chart rects follow the layout
+            let mut record_scene: Option<(Vec<Option<usize>>, usize)> = None;
+            if has("--lm-from-map") && a.iter().any(|x| x == "--pak") && std::env::var_os("LMTOOL_NO_RECORD_SCENE").is_none() {
+                let mf0 = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
+                let coll_name = f("--collection").unwrap_or_else(|| hdr.as_ref().map(|h| h.envir.clone()).unwrap_or_else(|| "BlueBay".into()));
+                let prof = lightmap::layout::CollectionProfile::of(&coll_name);
+                let has_authored = mf0.blocks.iter().any(|b| !(b.flags & 0x1000 != 0 && prof.flat_zones.contains(&b.name.as_str())));
+                if has_authored || std::env::var_os("LMTOOL_RECORD_SCENE").is_some() {
+                    let pak_arg = f("--pak").unwrap();
+                    let (pp, key) = pak_arg.rsplit_once(':').expect("--pak FILE:KEY");
+                    let mut store = mapgeom::store::DataStore::empty();
+                    store.add_pak(pp, key).expect("pak");
+                    let kept: Option<std::collections::HashSet<usize>> = f("--kept").map(|p| std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--kept {p}: {e}")).split(|c: char| c == ',' || c.is_whitespace()).filter_map(|t| t.trim().parse().ok()).collect());
+                    let zone_name = f("--zone").unwrap_or_else(|| lightmap::layout::ground_zone(&mf0, &coll_name));
+                    let opts = lightmap::records::BuildOpts { collection: coll_name.clone(), zone: Some(zone_name.clone()), kept, ..Default::default() };
+                    let mr = lightmap::records::build_map_records(&map_path, &scene, &mut store, &opts).unwrap_or_else(|e| panic!("record scene: {e}"));
+                    let tile_y = lightmap::layout::tile_level(&mf0, &coll_name) as f32;
+                    let n_before = scene.instances.len();
+                    let inst_of = lightmap::records::add_record_geometry(&mut scene, &mut store, &mr, &coll_name, &zone_name, tile_y, prof.yoff).unwrap_or_else(|e| panic!("record scene: {e}"));
+                    record_scene = Some((inst_of, n_before));
+                }
+            }
             // the decoration's surroundings: --decoration FILE.obj[,FILE…] [--decoration-scale S --decoration-offset x,y,z],
             // or by default lightmap-re/scene3d/<Collection>.obj when it exists (RE child 3's Scene3d export),
             // --no-decoration to leave it out
@@ -918,7 +942,7 @@ fn run(a: Vec<String>) {
             // the raster peel has no analytic ground: without a decoration mesh, a ground/sea quad at
             // --ground-y (8 m: the sea of the terrain collections, the Stadium floor) with the ground's bounce
             // albedo stands in (a downward direction must hit SOMETHING dark, not the sky gradient's bottom rows)
-            if has("--raster") && scene.decor.is_empty() && !has("--no-ground") {
+            if has("--raster") && scene.decor.is_empty() && !has("--no-ground") && record_scene.is_none() {
                 let gy: f32 = f("--ground-y").map(|s| s.parse().unwrap()).unwrap_or(8.0);
                 let ga: f32 = f("--ground-bounce").map(|s| s.parse().unwrap()).unwrap_or(0.37);
                 let (lo, hi) = (-4096.0f32, 8192.0f32);
@@ -1578,6 +1602,11 @@ fn run(a: Vec<String>) {
                 eprintln!("layout-game: {} charts ({bound} bound), s {} layout units/m, Σarea {} m², quality index {q} ({} iterations), keys from {} ({:.1}s)", gl.charts.len(), gl.s, gl.sum_area, gl.max_iter, if pak.is_some() { "the block records (pak)" } else { "the cell / triangle centres" }, t0.elapsed().as_secs_f32());
                 game_layout = Some(gl);
             }
+            if let (Some(gl), Some((inst_of, _))) = (game_layout.as_ref(), record_scene.as_ref()) {
+                let mut n = 0usize;
+                for (k, ii) in inst_of.iter().enumerate() { if let Some(ii) = ii { let c = &gl.charts[k]; ref_rects.insert(scene.instances[*ii].item, [c.x, c.y, c.w, c.h]); n += 1; } }
+                eprintln!("record scene: {n} instances bound to their layout rects");
+            }
             let game_sizes: Option<std::collections::HashMap<usize, (u32, u32)>> = game_layout.as_ref().map(|gl| {
                 let mut out = std::collections::HashMap::new();
                 if !gl.records.is_empty() {
@@ -1644,7 +1673,7 @@ fn run(a: Vec<String>) {
                 if let Some(st) = lm_store.as_mut() {
                     match lightmap::lmmesh::lm_scene_add_entities(st, gl, &mut sc, 2048.0) { Ok(n) if n > 0 => eprintln!("lm-from-map: {n} prefab entity instances (blocks / clips / walls) added"), Ok(_) => {}, Err(e) => eprintln!("lm-from-map: prefab entities: {e}") }
                 }
-                eprintln!("lm-from-map: {} LM meshes, {} instances from the map's models + the layout", sc.meshes.len(), sc.instances.len());
+                eprintln!("lm-from-map: {} LM meshes, {} instances from the map's models + the layout (mesh sizes: {})", sc.meshes.len(), sc.instances.len(), sc.meshes.iter().zip(sc.inst_count.iter()).map(|(m, n)| format!("{}v/{}t×{}", m.verts.len(), m.indices.len() / 3, n)).collect::<Vec<_>>().join(" "));
                 // against the captured stream (--lm-from): the instances (q, t, st) in order and as sets, the tile mesh's vertices and table
                 if let Some(cap) = &captured_lm {
                     let same_order = sc.instances.iter().zip(cap.instances.iter()).filter(|(a, b)| a.t == b.t && a.st == b.st && a.q == b.q).count();
@@ -5864,6 +5893,26 @@ fn run(a: Vec<String>) {
                 return;
             }
             // --zone-plg COLL:ZONE: the zone prefab's PLG (records::zone_tiles)
+            // --zone-mesh COLL:ZONE --pak F:K: the zone tile LM mesh's extent (vertex bounds, uv bounds, triangle count) — is the tile planar?
+            if let Some(cz) = f("--zone-mesh") {
+                let (coll, zone) = cz.split_once(':').expect("--zone-mesh COLL:ZONE");
+                let pak_arg = f("--pak").expect("--pak FILE:KEY");
+                let (pp, key) = pak_arg.rsplit_once(':').expect("--pak FILE:KEY");
+                let mut store = mapgeom::store::DataStore::empty();
+                store.add_pak(pp, key).expect("pak");
+                match lightmap::lmmesh::lm_mesh_of_zone(&mut store, coll, zone) {
+                    Ok(Some(m)) => {
+                        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                        let (mut ulo, mut uhi) = ([f32::MAX; 2], [f32::MIN; 2]);
+                        for v in &m.verts { for a in 0..3 { lo[a] = lo[a].min(v.pos[a]); hi[a] = hi[a].max(v.pos[a]); } for a in 0..2 { ulo[a] = ulo[a].min(v.uv[a]); uhi[a] = uhi[a].max(v.uv[a]); } }
+                        let ys: std::collections::BTreeSet<u32> = m.verts.iter().map(|v| v.pos[1].to_bits()).collect();
+                        println!("{coll}/{zone}: {} verts, {} tris; pos {:?}..{:?}; uv {:?}..{:?}; {} distinct y values (first {:?})", m.verts.len(), m.indices.len() / 3, lo, hi, ulo, uhi, ys.len(), ys.iter().take(6).map(|b| f32::from_bits(*b)).collect::<Vec<_>>());
+                    }
+                    Ok(None) => println!("{coll}/{zone}: no LM mesh"),
+                    Err(e) => println!("{coll}/{zone}: {e}"),
+                }
+                return;
+            }
             if let Some(cz) = f("--zone-plg") {
                 let (coll, zone) = cz.split_once(':').expect("--zone-plg COLL:ZONE");
                 let pak_arg = f("--pak").expect("--pak FILE:KEY");

@@ -298,10 +298,42 @@ struct SetPrep {
     cds: Vec<[f32; 4]>,
 }
 
+/// An instance's world AABB from its mesh's local bounds (the 8 corners through the instance transform).
+pub fn instance_aabb(local: &([f32; 3], [f32; 3]), inst: &LmInstance) -> ([f32; 3], [f32; 3]) {
+    let rows = crate::sunpass::rotation_rows(inst.q);
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for k in 0..8 {
+        let c = [if k & 1 == 0 { local.0[0] } else { local.1[0] }, if k & 2 == 0 { local.0[1] } else { local.1[1] }, if k & 4 == 0 { local.0[2] } else { local.1[2] }];
+        let v = LmVertex { pos: c, chart_idx: 0, normal: [0.0, 1.0, 0.0], uv: [0.0, 0.0], psize: 0.0, tangent: [0.0, 0.0, 0.0, 1.0] };
+        let p = world_pos(&v, inst, &rows);
+        for a in 0..3 { lo[a] = lo[a].min(p[a]); hi[a] = hi[a].max(p[a]); }
+    }
+    (lo, hi)
+}
+
+/// The local bounds of every mesh (min, max over its vertex positions).
+pub fn mesh_bounds(meshes: &[LmMesh]) -> Vec<([f32; 3], [f32; 3])> {
+    meshes.iter().map(|m| { let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]); for v in &m.verts { for a in 0..3 { lo[a] = lo[a].min(v.pos[a]); hi[a] = hi[a].max(v.pos[a]); } } (lo, hi) }).collect()
+}
+
+/// THE WORLD-BLOCK CULL: an instance whose world AABB lies wholly beyond one of the block's four clip planes (VS 17115's
+/// `(x − MinX, z − MinZ, MaxX − x, MaxZ − z)`) has every vertex's clip distance on that plane negative, so every fragment
+/// of every triangle is rejected — skipping it changes nothing (Stadium stpad: 9 216 Grass tiles × 9 889 vertices per
+/// world block, 17 blocks). A 1 m margin keeps the test conservative.
+pub fn culled_by_world_box(aabb: &([f32; 3], [f32; 3]), world_box: &[[f32; 2]; 2]) -> bool {
+    let m = 1.0f32;
+    aabb.1[0] < world_box[0][0] - m || aabb.0[0] > world_box[1][0] + m || aabb.1[2] < world_box[0][1] - m || aabb.0[2] > world_box[1][1] + m
+}
+
 pub fn run_set_block_par(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 4]], draws: &[SetDraw], layer: &LayerTargets, cmp: DepthCompare, tgt: &mut DirTarget) {
     let (w, h) = (tgt.w, tgt.h);
     let threads = crate::pool::pool().threads.max(1);
-    let pairs: Vec<(usize, usize)> = draws.iter().enumerate().flat_map(|(di, d)| (d.instance_first..d.instance_first + d.instance_count).map(move |ii| (di, ii))).collect();
+    let bounds = mesh_bounds(meshes);
+    let cull = std::env::var_os("LMTOOL_NO_BLOCK_CULL").is_none();
+    let pairs: Vec<(usize, usize)> = draws.iter().enumerate().flat_map(|(di, d)| (d.instance_first..d.instance_first + d.instance_count).map(move |ii| (di, ii))).filter(|&(di, ii)| {
+        if !cull { return true; }
+        match &draws[di].world_box { Some(b) => !culled_by_world_box(&instance_aabb(&bounds[draws[di].mesh], &instances[ii]), b), None => true }
+    }).collect();
     let preps: Vec<SetPrep> = crate::pool::pool().map(pairs.len(), |k| {
         let (di, ii) = pairs[k];
         let d = &draws[di];

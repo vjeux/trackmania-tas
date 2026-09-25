@@ -577,3 +577,84 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
 }
 
 
+
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// THE RECORD SCENE: the peel / shadow / pre-pass geometry of every record that is not a placed item — the authored blocks'
+// and the clips' prefab entities (MeshRef) and the zone tiles — as scene instances with the record's mesh (TexCoord1 = the LM
+// uv, so the peel colours them from the ILightInput atlas through the chart ST like an item) placed by the record's world
+// transform. Returns, per record, the scene instance index it became (None for item records, which the scene already holds).
+
+pub fn add_record_geometry(scene: &mut crate::geometry::Scene, store: &mut mapgeom::store::DataStore, mr: &MapRecords, collection: &str, zone: &str, tile_y: f32, yoff: f32) -> Result<Vec<Option<usize>>, String> {
+    let mut model_of: std::collections::HashMap<(String, usize), usize> = Default::default();
+    let mut out: Vec<Option<usize>> = vec![None; mr.recs.len()];
+    let mut next_item = scene.item_count;
+    let mut n_ent = 0usize;
+    let mut n_tiles = 0usize;
+    // the zone tile: the ground zone prefab's first static object entity (records::zone_tiles' model)
+    let mut tile_model: Option<usize> = None;
+    let mut ti = 0usize;
+    for (k, r) in mr.recs.iter().enumerate() {
+        let (mi, xf) = if let Some(m) = &r.mesh {
+            let key = (m.prefab.clone(), m.entity);
+            let mi = match model_of.get(&key) {
+                Some(&mi) => mi,
+                None => {
+                    let pm = store.load_model(&m.prefab)?;
+                    let pf = mapgeom::static_item::prefab::CPlugPrefab::from_model(&pm)?;
+                    let Some(e) = pf.ents.get(m.entity) else { continue };
+                    let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
+                    let Some(s2) = so.solid2() else { continue };
+                    let g = crate::geometry::geom_from_solid2(s2, None);
+                    scene.models.push(g);
+                    scene.model_names.push(format!("{}#{}", m.prefab, m.entity));
+                    model_of.insert(key, scene.models.len() - 1);
+                    scene.models.len() - 1
+                }
+            };
+            n_ent += 1;
+            (mi, m.xf)
+        } else if r.class == "tile" {
+            let (cx, cz) = mr.tile_cells[ti]; ti += 1;
+            let mi = match tile_model {
+                Some(mi) => mi,
+                None => {
+                    let mut found: Option<usize> = None;
+                    for (fam, ext) in [("GameCtnBlockInfoFlat", "EDFlat"), ("GameCtnBlockInfoFrontier", "EDFrontier"), ("GameCtnBlockInfoTransition", "EDTransition"), ("GameCtnBlockInfoClassic", "EDClassic")] {
+                        let path = format!("{collection}\\GameCtnBlockInfo\\{fam}\\{zone}.{ext}.Gbx");
+                        let Ok(bi) = mapgeom::blockinfo::load(store, &path) else { continue };
+                        let Some(v) = bi.variant_base_ground.as_ref() else { continue };
+                        let Some(pp) = v.mobils.iter().flatten().find_map(|m| m.prefab.clone()) else { continue };
+                        let pm = store.load_model(&pp)?;
+                        let pf = mapgeom::static_item::prefab::CPlugPrefab::from_model(&pm)?;
+                        for e in &pf.ents {
+                            let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
+                            let Some(s2) = so.solid2() else { continue };
+                            let g = crate::geometry::geom_from_solid2(s2, None);
+                            scene.models.push(g);
+                            scene.model_names.push(format!("{pp}#tile"));
+                            found = Some(scene.models.len() - 1);
+                            break;
+                        }
+                        if found.is_some() { break; }
+                    }
+                    let Some(mi) = found else { return Err(format!("{collection}/{zone}: no zone tile static object")) };
+                    tile_model = Some(mi);
+                    mi
+                }
+            };
+            n_tiles += 1;
+            let mut xf = mapgeom::geom::IDENTITY;
+            xf[9] = cx as f32 * 32.0; xf[10] = tile_y * 8.0 + yoff; xf[11] = cz as f32 * 32.0;
+            (mi, xf)
+        } else {
+            continue;
+        };
+        let pose = crate::geometry::ItemPose { yaw: 0.0, pitch: 0.0, roll: 0.0, pos: [xf[9], xf[10], xf[11]], pivot: [0.0; 3], scale: 1.0 };
+        scene.instances.push(crate::geometry::Instance { item: next_item, model: mi, xf, model_name: scene.model_names[mi].clone(), pose, lm_quality: 0 });
+        out[k] = Some(scene.instances.len() - 1);
+        next_item += 1;
+    }
+    eprintln!("record scene: {n_ent} prefab entity instances + {n_tiles} zone tile instances added ({} models now, {} triangles)", scene.models.len(), scene.tri_count());
+    Ok(out)
+}
