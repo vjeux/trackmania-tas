@@ -10,8 +10,23 @@
 //                adds every ghost in it to the current playground -> JSON
 //   /pgghostrm   GhostMgr.Ghost_RemoveAll()
 
-string PgGhostAdd() {
+// /pgghost?offset=MS|now  the ghost's clock: `now` = its t=0 is the current
+// race time (added mid-race it starts from the grid this instant);
+// ?phys=1 adds it PHYSICALIZED (collidable, the Clones machinery) with
+// PlaySpeed ?speed=1.0
+string PgGhostAdd(const string &in qs) {
     string how;
+    int offset = 0;
+    string so = QArg(qs, "offset");
+    if (so == "now") {
+        auto sp = ScriptPlayer();
+        if (sp !is null) offset = sp.CurrentRaceTime;
+    } else if (so != "") {
+        offset = Text::ParseInt(so);
+    }
+    bool phys = QArg(qs, "phys") == "1";
+    float speed = 1.0f;
+    if (QArg(qs, "speed") != "") speed = Text::ParseFloat(QArg(qs, "speed"));
     auto dfm = DataFileMgr(how);
     if (dfm is null) return "{\"error\":\"no DataFileMgr (" + how + ")\"}";
     auto app = GetApp();
@@ -72,10 +87,14 @@ string PgGhostAdd() {
         }
     }
     if (dl !is null) {
-        // IsGhostLayer = true: rendered in the ghost layer (not subject to the
-        // opponents' hide-too-close rule near the followed car)
-        MwId id = gm.Ghost_Add(dl, true);
-        return "{\"path\":\"" + path + "\",\"via\":\"" + how + " [" + tried + "]\",\"ok\":1,\"ghosts\":1,\"added\":[{\"instance\":" + id.Value + ",\"nickname\":\"" + string(dl.Nickname) + "\"}]}";
+        MwId id;
+        if (phys) {
+            id = gm.Ghost_AddPhysicalized(dl, offset, speed, CGameGhostMgrScript::EGhostPhyMode::SoftCollisions, false);
+        } else {
+            // IsGhostLayer = true: rendered in the ghost layer
+            id = gm.Ghost_Add(dl, true, offset);
+        }
+        return "{\"path\":\"" + path + "\",\"via\":\"" + how + " [" + tried + "]\",\"ok\":1,\"ghosts\":1,\"offset\":" + offset + ",\"phys\":" + (phys ? 1 : 0) + ",\"added\":[{\"instance\":" + id.Value + ",\"nickname\":\"" + string(dl.Nickname) + "\"}]}";
     }
     uint t0 = Time::Now;
     how += " [" + tried + "]";
@@ -119,4 +138,13 @@ HttpResponse@ ServeFile(const string &in p) {
     MemoryBuffer@ buf = f.Read(f.Size());
     f.Close();
     return HttpResponse(200, buf);
+}
+
+// /pgghosts  how many ghosts the mode's manager holds right now
+string PgGhostCount() {
+    auto app = GetApp();
+    auto rules = cast<CSmArenaRulesMode>(app.PlaygroundScript);
+    if (rules is null || rules.GhostMgr is null) return "{\"error\":\"no mode GhostMgr\"}";
+    auto sp = ScriptPlayer();
+    return "{\"ghosts\":" + rules.Ghosts.Length + ",\"race_ms\":" + (sp is null ? -1 : sp.CurrentRaceTime) + "}";
 }
