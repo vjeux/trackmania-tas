@@ -39,6 +39,13 @@
 //! BIT-EXACT; with the port's item records alone it is a probe short on three sides. So the probe-box set = every record with
 //! q² > 0.9, tiles included — E's tile records must carry the rule's quality, not the 0.0442 default.
 //!
+//! STADIUM stpad (RE 7, 2026-09-25 22:55Z): size (96, 96, 96) → 192 × 48 × 192 probes; offset y −64 (deco_offsets(26)), level_h
+//! 8 (level_h(26): base 0 + the Stadium +8 → the rows sit on y ≡ 10 mod 16: origin.y −54); with the baker's c3 record dump
+//! (12 141 records, 2 933 q² > 0.9 boxes — the 21 items and the q-1 grass tiles) the layout is BIT-EXACT vs
+//! stpad-Stadium-Sunrise-q3-editor: 13 blocks, atlas 96 × 80 × 32, slot grid 7 × 4 × 7, every slot/min/max/pos, and the
+//! probe image tiling 200 × 200 (`probetiles`). A 95 × 94 image = the layout run with level_h 0 (or the tiles at the 0.0442
+//! default quality): `lmtool probe-layout stpad-source --against … --records-tsv …c3-H.tsv --offset 0,-62,0 --level-h 8`.
+//!
 //! pwc-day (`lmtool probe-chunks MAP`): size (64, 64, 64), BlueBay (32, 8, 32), offset y −40 (the decoration's base
 //! height, `deco_offsets`; the level alignment puts the first row at −30 — probes.rs's empirical "−38" is that
 //! origin minus the half cell) → 128 × 32 × 128 probes of 16 m at origin (8, −30, 8); the three items (q = 1) touch one chunk, (1, 0, 0) → the record's world origin (472, −46, −8), atlas 32 × 16 ×
@@ -540,6 +547,20 @@ mod tests {
         assert_eq!(c.grid.cell, [64.0, 64.0, 64.0]);
         assert_eq!(c.grid.n, [96, 8, 96]);
         assert_eq!((c.records.len(), c.atlas), (16, [128, 64, 32]));
+    }
+
+    #[test]
+    fn stadium_stpad_grid_and_level() {
+        // Stadium: level_h 8 → the alignment lifts the first row from −56 (= −64 + 8) to −54 (≡ 10 mod 16)
+        assert_eq!(level_h(26), 8.0);
+        let g = grid_def([96, 96, 96], [32.0, 8.0, 32.0], [0.0, -64.0, 0.0], 8.0, true);
+        assert_eq!(g.n, [192, 48, 192]);
+        assert_eq!(g.origin, [8.0, -54.0, 8.0]);
+        // the save's block 0: min (18,4,28) max (28,9,32) pos (472, −70, 472) — its row 0 = pos.y + 16·(4 − 0.5)… the
+        // pos.y −70 = −54 − 16 → atlas index 0 sits one cell under the first probe row
+        let (inv, unk) = trailer_scale(&g);
+        assert_eq!(inv[1].to_bits(), 0.004464286f32.to_bits());
+        assert_eq!(unk, [-((-0.5 * 16.0 + 8.0) * inv[0]), -((-0.5 * 16.0 - 54.0) * inv[1]), -((-0.5 * 16.0 + 8.0) * inv[2])]);
     }
 
     #[test]
