@@ -2250,6 +2250,8 @@ fn run(a: Vec<String>) {
             // the frame records' time-of-day word: the MAP's (chunk 0x03043056), or the mood's default word
             // when the map has none (what Nadeo's editor baked the default-word sources with) — `--daytime N`
             // overrides, `--daytime template` keeps the template's (giant child 2026-09-23 + baker-3)
+            // --bake-time now|TICKS: the file's FILETIME word; default = the template's (a deterministic writer)
+            let bake_filetime: Option<u64> = match f("--bake-time").as_deref() { Some("now") => Some(lightmap::synth::filetime_now()), Some(t) => Some(t.parse().expect("--bake-time now|TICKS")), None => None };
             let frame_params = xml_sel.map(|x| {
                 let mf0 = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
                 let own = lightmap::mapio::daytime(&mf0.gbx.body).unwrap_or(0xffff_ffff);
@@ -2264,7 +2266,7 @@ fn run(a: Vec<String>) {
                 let items_area: f32 = scene.instances.iter().map(|inst| { let mdl = &scene.models[inst.model]; let sc = (inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]).sqrt(); match mdl.plg_bounds { Some(b) => (b[2] - b[0]) * mdl.plg_u02 * sc * (b[3] - b[1]) * mdl.plg_u02 * sc, None => 0.0 } }).sum();
                 let n_tiles = base.saturating_sub(deco_const) as f32;
                 let quality: u32 = f("--quality").map(|s| s.parse::<u32>().unwrap()).unwrap_or(3).saturating_sub(1);
-                lightmap::synth::FrameParams { daytime, max_hdr_mood: x.max_hdr, max_hdr: k, bounce: x.bounce_factor, sky: x.sky_factor, sum_area: Some(items_area + 2.0 * n_tiles), quality: Some(quality), decoration: Some(mf0.decoration_id.clone()) }
+                lightmap::synth::FrameParams { daytime, max_hdr_mood: x.max_hdr, max_hdr: k, bounce: x.bounce_factor, sky: x.sky_factor, sum_area: Some(items_area + 2.0 * n_tiles), quality: Some(quality), filetime: bake_filetime, decoration: Some(mf0.decoration_id.clone()) }
             });
             // the game's positions when --layout-game: stored texel (px, py) = ((X + 1)/2, (Y + 1)/2) of the layout rect, for every chart
             // (the tiles included — their objects are the 4096 first)

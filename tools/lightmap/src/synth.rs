@@ -212,6 +212,10 @@ pub struct FrameParams {
     pub sum_area: Option<f32>,
     pub quality: Option<u32>,
     pub decoration: Option<String>,
+    /// The bake's FILETIME word (chunk 0x06022013, 100-ns ticks since 1601): None = KEEP THE TEMPLATE'S — the writer is
+    /// then deterministic run to run (two bakes of the same inputs give byte-identical files; the wall clock was the
+    /// only nondeterministic element, engineer 2 2026-09-25). `--bake-time now|TICKS` sets it.
+    pub filetime: Option<u64>,
 }
 
 /// Patch the three 66-byte frame records inside a mapping head (see `CacheBlob::frame_max_hdr`).
@@ -232,10 +236,11 @@ fn patch_raw_chunk(id: u32, b: &[u8], fp: Option<&FrameParams>) -> Vec<u8> {
             }
         }
         0x0602_2013 if o.len() >= 16 => {
-            // FILETIME (100-ns ticks since 1601-01-01)
-            let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() / 100).unwrap_or(0) as u64;
-            let ft = unix + 116_444_736_000_000_000;
-            o[8..16].copy_from_slice(&ft.to_le_bytes());
+            // FILETIME (100-ns ticks since 1601-01-01) — only when asked; the default keeps the template's word so the
+            // output is deterministic
+            if let Some(ft) = fp.filetime {
+                o[8..16].copy_from_slice(&ft.to_le_bytes());
+            }
         }
         0x0602_2015 if o.len() >= 40 => {
             // (5, u64, 3, 0x1c, Id(0x40000000, len, name), 1, 0, DayTime, 0…): rewrite the name and the time
@@ -257,6 +262,12 @@ fn patch_raw_chunk(id: u32, b: &[u8], fp: Option<&FrameParams>) -> Vec<u8> {
         _ => {}
     }
     o
+}
+
+/// The wall clock as a FILETIME word (for `--bake-time now`).
+pub fn filetime_now() -> u64 {
+    let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() / 100).unwrap_or(0) as u64;
+    unix + 116_444_736_000_000_000
 }
 
 pub fn patch_frame_records(head: &mut [u8], fp: &FrameParams) {
