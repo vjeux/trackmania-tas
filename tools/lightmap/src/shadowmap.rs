@@ -43,7 +43,9 @@
 //!   game + 1, 20 685 with ours = game − 1), none further; the 2^-20 truncation of z + bias was the decisive fact
 //!   (round-to-nearest of the exact plane: 96.4 %; a plane through the unsnapped positions: 98.2 %; 2^-19 / 2^-21:
 //!   96.6 / 98.0 %; the bias converted to the fixed point separately (floor/round/ceil): 98.7 / 98.5 / 94.6 %;
-//!   f32 or fixed-point plane coefficients, truncated barycentrics: no gain). The residual 0.68 % grows with the
+//!   f32 or fixed-point plane coefficients (floor / truncate / round at 32–40 bits, from the origin, vertex a or the
+//!   bbox), truncated barycentrics (20–26 bits), a relative scale of the fixed conversion, the vertex z quantised to
+//!   2^-20 / 2^-24 before the plane: no gain). The residual 0.68 % grows with the
 //!   screen y / the depth (0.12 % at the top rows, 0.4 % at the bottom) and is not yet modelled;
 //! * the chain: `lmtool sun-check --shadow OURS.dds` (the baker's transcribed direct-sun pass fed with OUR shadow
 //!   map instead of the captured one) gives the SAME counts against the captured sun_direct target as with the
@@ -361,6 +363,9 @@ pub struct RasterState {
     pub plane: PlaneEval,
     /// the fractional bits of the fixed-point increments for the FixedCoef* plane modes
     pub coef_bits: u32,
+    /// quantise each vertex's window z to 2^-N (0 = keep the f32) before the plane setup — the depth converted at the
+    /// vertex level (a hardware option the capture can rule in or out)
+    pub vertex_z_bits: u32,
 }
 
 /// How the biased depth reaches the 16-bit target.
@@ -388,6 +393,10 @@ pub enum PlaneEval {
     /// evaluation exact from the screen origin
     FixedCoefFloor,
     FixedCoefTrunc,
+    /// the increments rounded to nearest at 2^-N, the evaluation exact from the screen origin
+    FixedCoefRound,
+    /// increments AND the origin value rounded to nearest at 2^-N
+    FixedAllRound,
     /// barycentric weights truncated to 2^-N (N = `coef_bits`), z = Σ wᵢ·zᵢ exact
     BaryFixed,
 }
@@ -489,7 +498,7 @@ pub struct Fragment {
 /// Rasterise one triangle (clip-space vertices, per-vertex TEXCOORD0) with the D3D11 rules; `f` gets every
 /// covered pixel centre. Returns false when the triangle was culled or degenerate.
 fn rasterise(clip: [[f32; 4]; 3], uv: [[f32; 2]; 3], st: &RasterState, w: u32, h: u32, mut f: impl FnMut(Fragment)) -> bool {
-    let v: Vec<ScreenVertex> = (0..3).map(|i| to_screen(clip[i], uv[i], &st.viewport)).collect();
+    let v: Vec<ScreenVertex> = (0..3).map(|i| { let mut s = to_screen(clip[i], uv[i], &st.viewport); if st.vertex_z_bits > 0 { let q = (1u64 << st.vertex_z_bits) as f64; s.z = ((s.z as f64 * q).floor() / q) as f32; } s }).collect();
     // twice the signed area in sub-pixel units; with x right and y down a positive value is a CLOCKWISE triangle
     // on the render target
     let area2 = (v[1].fx - v[0].fx) * (v[2].fy - v[0].fy) - (v[2].fx - v[0].fx) * (v[1].fy - v[0].fy);
@@ -579,11 +588,12 @@ fn rasterise(clip: [[f32; 4]; 3], uv: [[f32; 2]; 3], st: &RasterState, w: u32, h
                     (a.z as f64 * wa + b.z as f64 * wb + c.z as f64 * wc) as f32
                 }
                 PlaneEval::F32CoefBbox => { let (bxp, byp) = (px0 as f64 + 0.5, py0 as f64 + 0.5); let z0 = a.z as f64 + dzdx * (bxp - ax) + dzdy * (byp - ay); (z0 + (dzdx as f32) as f64 * (px - px0) as f64 + (dzdy as f32) as f64 * (py - py0) as f64) as f32 }
-                PlaneEval::FixedCoefFloor | PlaneEval::FixedCoefTrunc => {
+                PlaneEval::FixedCoefFloor | PlaneEval::FixedCoefTrunc | PlaneEval::FixedCoefRound | PlaneEval::FixedAllRound => {
                     let s = (1u64 << st.coef_bits) as f64;
-                    let q = |v: f64| -> f64 { if st.plane == PlaneEval::FixedCoefFloor { (v * s).floor() / s } else { (v * s).trunc() / s } };
+                    let q = |v: f64| -> f64 { match st.plane { PlaneEval::FixedCoefFloor => (v * s).floor() / s, PlaneEval::FixedCoefTrunc => (v * s).trunc() / s, _ => (v * s).round() / s } };
                     let (aq, bq) = (q(dzdx), q(dzdy));
                     let z0 = a.z as f64 - dzdx * ax - dzdy * ay;
+                    let z0 = if st.plane == PlaneEval::FixedAllRound { q(z0) } else { z0 };
                     (z0 + aq * (px as f64 + 0.5) + bq * (py as f64 + 0.5)) as f32
                 }
             };
@@ -873,7 +883,7 @@ mod tests {
         assert_eq!(to_unorm16(0.0, UnormRounding::Nearest), 0);
         assert_eq!(to_unorm16(0.5, UnormRounding::Nearest), 32768); // 32767.5 rounds up
         assert_eq!(to_unorm16(0.5, UnormRounding::Truncate), 32767);
-        let st = RasterState { viewport: [1.0, 1.0, 4094.0, 4094.0, 0.0, 1.0], depth_bias: -1, slope_scaled_depth_bias: -1.0, depth_bias_clamp: -0.0, cull_back: true, front_ccw: true, depth_clip: true, plane: PlaneEval::F64Snapped, coef_bits: 0 };
+        let st = RasterState { viewport: [1.0, 1.0, 4094.0, 4094.0, 0.0, 1.0], depth_bias: -1, slope_scaled_depth_bias: -1.0, depth_bias_clamp: -0.0, cull_back: true, front_ccw: true, depth_clip: true, plane: PlaneEval::F64Snapped, coef_bits: 0, vertex_z_bits: 0 };
         // a flat triangle: only the constant term, one D16 step toward the far plane
         let b = depth_bias_d16(&st, 0.0);
         assert!((b + 1.0 / 65535.0).abs() < 1e-9);
@@ -882,7 +892,7 @@ mod tests {
     }
 
     fn state() -> RasterState {
-        RasterState { viewport: [0.0, 0.0, 8.0, 8.0, 0.0, 1.0], depth_bias: 0, slope_scaled_depth_bias: 0.0, depth_bias_clamp: 0.0, cull_back: false, front_ccw: true, depth_clip: true, plane: PlaneEval::F64Snapped, coef_bits: 0 }
+        RasterState { viewport: [0.0, 0.0, 8.0, 8.0, 0.0, 1.0], depth_bias: 0, slope_scaled_depth_bias: 0.0, depth_bias_clamp: 0.0, cull_back: false, front_ccw: true, depth_clip: true, plane: PlaneEval::F64Snapped, coef_bits: 0, vertex_z_bits: 0 }
     }
 
     #[test]
