@@ -10,9 +10,10 @@
 //! rig drives the car at the door under three regimes and logs the trajectory:
 //!
 //! ```text
-//! doorrig load  --map C:/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot/YannexDoor.Map.Gbx
-//!               play the map (PlayMap), wait for the playground BY PROGRESS
-//!               (ctx 3 + the map's name + a live car row), print /kine
+//! doorrig load  --map C:/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot/YannexDoor.Map.Gbx [--name "Yannex Door"]
+//!               (leave any open playground/editor first,) play the map (PlayMap),
+//!               wait for the playground BY PROGRESS (ctx 3 + the map's name +
+//!               a live car row), print /kine
 //! doorrig kine  [--name Pusher]          the /kine dump (read)
 //! doorrig hold  --i N --tmin X --tmax X [--phase P]   /kineset on shared signal N (write)
 //! doorrig drive --hold MS [--log MS] [--respawn [--key DEL]] [--label L] [--out FILE]
@@ -60,7 +61,7 @@ fn main() {
         }
         Err(e) => Err(e.to_string()),
         Ok(lock) => match args[0].as_str() {
-            "load" => load(&lock, &flag(&args, "--map").unwrap_or_else(|| usage())),
+            "load" => load(&lock, &flag(&args, "--map").unwrap_or_else(|| usage()), flag(&args, "--name")),
             "kine" => kine(&lock, &flag(&args, "--name").unwrap_or_else(|| "Pusher".into())).map(|s| println!("{s}")),
             "hold" => hold(&lock, &args),
             "drive" => drive(&lock, &args),
@@ -89,13 +90,37 @@ fn kine(lock: &GameLock, name: &str) -> Result<String, String> {
 }
 
 /// Into the map, by progress: the game is asked, not a clock.
-fn load(lock: &GameLock, map: &str) -> Result<(), String> {
+fn load(lock: &GameLock, map: &str, name: Option<String>) -> Result<(), String> {
+    // A playground that is already open (another session's map) is not ours:
+    // PlayMap from inside it does nothing visible, so go through the title
+    // screen first and wait until the old playground is gone.
+    let ctx0 = read("/ctx");
+    if ctx0.contains("\"playground\":true") || ctx0.contains("\"ctx\":1") || ctx0.contains("\"ctx\":2") {
+        println!("  another playground/editor is open ({}) -> /back", ctx0.trim());
+        let _ = plugin(lock, "back", "");
+        let t = Instant::now();
+        loop {
+            let c = read("/ctx");
+            if c.contains("\"ctx\":0") && c.contains("\"playground\":false") {
+                break;
+            }
+            if tmdrive::game_pid(lock.host()).is_none() {
+                return Err("the game exited on the way back to the menu".into());
+            }
+            if t.elapsed() > Duration::from_secs(60) {
+                return Err(format!("still not at the menu after 60 s: {}", c.trim()));
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        println!("  at the menu after {:.1}s", t.elapsed().as_secs_f64());
+    }
     let r = ops::play_map(lock, map).map_err(|e| e.to_string())?;
     println!("{}", r.trim());
     let t0 = Instant::now();
     let ceiling = Duration::from_secs(600);
     let mut answered = false;
     let mut stable_since: Option<Instant> = None;
+    let want = name.map(|n| format!("\"map\":\"{n}\""));
     loop {
         if t0.elapsed() > ceiling {
             return Err(format!("no playground within {}s; last ctx {}", ceiling.as_secs(), read("/ctx").trim()));
@@ -115,7 +140,8 @@ fn load(lock: &GameLock, map: &str) -> Result<(), String> {
         // the transient ctx 3 / map:null right after /playmap does not count;
         // the playground is open when ctx 3 holds with the map's name for 2 s
         // AND the car answers
-        if ctx.contains("\"ctx\":3") && ctx.contains("\"playground\":true") && !ctx.contains("\"map\":null") {
+        let named = want.as_ref().map(|w| ctx.contains(w.as_str())).unwrap_or(true);
+        if ctx.contains("\"ctx\":3") && ctx.contains("\"playground\":true") && !ctx.contains("\"map\":null") && named {
             let since = *stable_since.get_or_insert_with(Instant::now);
             if since.elapsed() >= Duration::from_secs(2) {
                 let car = read("/car");
