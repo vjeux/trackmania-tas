@@ -101,7 +101,7 @@ fn the_base_rule_reproduces_the_giant_measurements() {
 fn frame_records_are_patched_in_place() {
     // a head laid out like the game's: 60 bytes of constants, then three 66-byte records
     let mut head = vec![0u8; 60 + 3 * 66 + 12];
-    let fp = FrameParams { daytime: 0xdaab, max_hdr_mood: 3.0, max_hdr: 2.3812, bounce: 2.0, sky: 1.0, sum_area: None, quality: None, decoration: None };
+    let fp = FrameParams { daytime: 0xdaab, max_hdr_mood: 3.0, max_hdr: 2.3812, bounce: 2.0, sky: 1.0, sum_area: None, quality: None, decoration: None, filetime: None };
     patch_frame_records(&mut head, &fp);
     for i in 0..3 {
         let r = 60 + 66 * i;
