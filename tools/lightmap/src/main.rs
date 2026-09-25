@@ -32,6 +32,18 @@ fn main() {
     if a.first().map(|s| s.as_str()) == Some("bake") && a.iter().any(|x| x == "--lm-from-map") && !a.iter().any(|x| x == "--legacy-port") {
         let implied: &[(&str, Option<&str>)] = &[("--game-peel", None), ("--ss", Some("1")), ("--sky-global-scale", Some("1")), ("--hbasis-kappa", Some("1")), ("--sweep0-sun", None), ("--layout-game", None)];
         let mut added: Vec<String> = Vec::new();
+        // the peel COLOURS: the setup chain from the map (A's setupmap.rs, `--ilightinput-from map`) needs the frozen
+        // collection tables (`--env-from ROOT`); without an atlas the peels colour from the port's albedo × sun model,
+        // which came out ~2× too bright on pwc-day (2026-09-25 validation) — so imply `map` when --env-from is given
+        // and say so when it is not
+        if !a.iter().any(|x| x == "--ilightinput-from") {
+            if a.iter().any(|x| x == "--env-from") {
+                a.push("--ilightinput-from".to_string()); a.push("map".to_string());
+                added.push("--ilightinput-from map".to_string());
+            } else {
+                eprintln!("lm-from-map: no --env-from ROOT (the frozen collection tables) — the peels colour from the port's own model, NOT the transcribed ILightInput chain (measured ~2x too bright on pwc-day); pass --env-from PASSCAP_ROOT for the game's chain");
+            }
+        }
         for (flag, val) in implied {
             if !a.iter().any(|x| x == flag) {
                 a.push(flag.to_string());
