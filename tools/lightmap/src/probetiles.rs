@@ -8,20 +8,23 @@
 //!    x1 = g.x + amax.x, z1 = g.z + amax.z, cell.x, cell.z, tile −1, flags 0}; the level's group key = g.y + y
 //!    (groups in first-appearance order; members {slice index, entry, dx 0, dz 0} in record order). An empty level
 //!    writes (−1, −1).
-//! 2. MERGE, up to 3 passes while something merged, axis x then z (flag bit 1 << axis on the anchor entry, never
-//!    cleared): for member A (entry unflagged for the axis) and the first member B ≠ A (entry unflagged) with equal
+//! 2. MERGE, up to 3 passes while something merged, axis x then z (flag bit 1 << (2·pass + axis) on the anchor
+//!    entry, never cleared — one merge per anchor per axis per pass, chains merge over the passes): for member A
+//!    (entry unflagged for the bit) and the first member B ≠ A (entry unflagged) with equal
 //!    cell.x and cell.z (1e-5 · max(1, |v|)), the SAME range on the other axis, A.start ≤ B.start ≤ A.end and
 //!    A.end == B.start + 2 (the two shared margin probes): A.end = B.end; member(B).d = B.start − A.start along the
 //!    axis and member(B).entry = A; members that pointed at B (B had merged) move to A with their offset shifted;
 //!    B's entry is emptied (x0 = x1 = 0). One merge per anchor per axis pass.
-//! 3. Tiles: entries in order with x1 ≠ x0 → (w = x1 − x0, h = z1 − z0). Packer: Σ area (int) → W = H =
-//!    (int)sqrtf(Σ); stable radix order by area, placed from the LARGEST (equal areas: reverse entry order) into
-//!    `Packer::new(W, H)` (node cap 4·n); a failed insert grows the smaller side by max(1, ceil(rest / other)) —
-//!    rest = the areas not yet placed — and restarts; done: W = max(x + w), H = max(y + h) (no pow2 here).
+//! 3. Tiles: entries in order with x1 ≠ x0 → (w = x1 − x0, h = z1 − z0). Packer (FUN_140452f70): Σ area (int) →
+//!    W = H = (int)ceilf(sqrtf(Σ) · 1.1); stable radix order by area, placed from the LARGEST (equal areas: reverse
+//!    entry order) into the binary-tree node packer `pack::Packer` (growable node array — no 4·n cap here); a failed
+//!    insert grows the side that is not larger (W when W ≤ H, else H) by max(1, ceil(Σ unplaced areas / other side))
+//!    and restarts; done: W = max(x + w), H = max(y + h) (the pow2 rounding is off for this caller).
 //! 4. slices[member.slice] = (tile.x + dx, tile.y + dz).
 //!
-//! tiny 16's editor save (8 blocks, 62 stored levels, image 198 × 194) and pwc-day's (8 slices, 21 × 21): every
-//! slice pair bit-identical (`lmtool probe-slices EDITOR.Map.Gbx`).
+//! Every editor save at hand — pwc-day (21 × 21), hill4 (20 × 20), the three tiny 16 variants (8 blocks, 65 stored
+//! levels, 198 × 194) and both giant20x2 bakes (44 blocks, 458 stored levels, 579 × 579) — reproduces every slice
+//! pair and the image size (`lmtool probe-slices EDITOR.Map.Gbx…`).
 
 use crate::pack::Packer;
 use crate::volume::Block;
@@ -56,9 +59,6 @@ struct Group {
     members: Vec<Member>,
 }
 
-/// Study switch: grow by the sum of the unplaced areas instead of the failed tile's area.
-pub static GROW_REMAINING_SUM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 /// The packer of FUN_140452f70: (W, H, positions).
 pub fn pack_tiles(tiles: &[(u32, u32)]) -> (u32, u32, Vec<(u32, u32)>) {
     let n = tiles.len();
@@ -68,13 +68,11 @@ pub fn pack_tiles(tiles: &[(u32, u32)]) -> (u32, u32, Vec<(u32, u32)>) {
     let areas: Vec<u32> = tiles.iter().map(|&(w, h)| w * h).collect();
     let total: u32 = areas.iter().sum();
     // W0 = H0 = (int)ceilf(sqrtf(Σ area) · 1.1) (asm 0x140453000–0x14045303c; 0x141d1f420 = 1.1, 0x1419022e0 = ceilf)
-    let s0 = (total as f32).sqrt() * 1.1f32;
-    let s = match std::env::var("LMTOOL_TILES_ROUND").ok().as_deref() { Some("floor") => s0.floor(), Some("round") => s0.round(), _ => s0.ceil() } as u32;
+    let s = ((total as f32).sqrt() * 1.1f32).ceil() as u32;
     let (mut w_bin, mut h_bin) = (s, s);
     // stable ascending order by area (LSD radix on the u32 = a stable sort)
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by_key(|&i| areas[i]);
-    if std::env::var_os("LMTOOL_TILES_FWD").is_some() { order.sort_by_key(|&i| (areas[i], std::cmp::Reverse(i))); }
     let mut pos = vec![(0u32, 0u32); n];
     loop {
         let mut packer = Packer::new(w_bin.min(u16::MAX as u32) as u16, h_bin.min(u16::MAX as u32) as u16);
@@ -99,10 +97,8 @@ pub fn pack_tiles(tiles: &[(u32, u32)]) -> (u32, u32, Vec<(u32, u32)>) {
             }
             return (w_out, h_out, pos);
         }
-        // the growth term: the FAILED tile's area (pwc-day: 19×19 → +3 → 22×19 → +3 → 22×22 → the saved 21×21;
-        // the sum of the remaining areas would give 30×19 → 28×14)
-        let mode = std::env::var("LMTOOL_TILES_GROW").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(if GROW_REMAINING_SUM.load(std::sync::atomic::Ordering::Relaxed) { 1 } else { 1 });
-        let rest: u32 = match mode { 1 => (placed..n).map(|k| areas[order[n - 1 - k]]).sum(), 2 => 0, _ => areas[order[n - 1 - placed]] };
+        // the growth term: the areas not yet placed (asm 0x140453100–0x140453178), divided by the other side
+        let rest: u32 = (placed..n).map(|k| areas[order[n - 1 - k]]).sum();
         if h_bin < w_bin {
             h_bin += ((w_bin - 1 + rest) / w_bin).max(1);
         } else {
@@ -168,7 +164,9 @@ pub fn probe_slices(blocks: &[Block], stored: &[Vec<bool>]) -> (u32, u32, Vec<Ve
         loop {
             let mut merged = 0;
             for axis in 0..2usize {
-                let bit = 1u32 << axis;
+                // the flag bit is per (pass, axis): bit = 1 << (2·pass + axis) — so an anchor merges once per axis per
+                // pass and chains of blocks merge over the passes (the giant's 4-chains: pass 0 pairs, pass 1 the pairs)
+                let bit = 1u32 << (2 * pass + axis);
                 let other = 1 - axis;
                 let n = gr.members.len();
                 for ai in 0..n {
@@ -234,6 +232,11 @@ pub fn probe_slices(blocks: &[Block], stored: &[Vec<bool>]) -> (u32, u32, Vec<Ve
         eprintln!("probetiles: {} entries, {} tiles: {:?}", entries.len(), tiles.len(), tiles);
         for (gi, gr) in groups.iter().enumerate() { eprintln!("  group {gi} key {}: {:?}", gr.key, gr.members.iter().map(|m| (m.slice, m.entry, m.d)).collect::<Vec<_>>()); }
     }
+    if RECORD_STRUCTURE.load(std::sync::atomic::Ordering::Relaxed) {
+        let mut st: Vec<((u32, u32), Vec<(usize, i32, i32)>)> = tiles.iter().map(|&t| (t, Vec::new())).collect();
+        for gr in &groups { for m in &gr.members { let e = &entries[m.entry]; if e.tile >= 0 { st[e.tile as usize].1.push((m.slice, m.d[0], m.d[1])); } } }
+        TILE_STRUCTURE.with(|c| *c.borrow_mut() = st);
+    }
     let (w, h, pos) = pack_tiles(&tiles);
     if std::env::var_os("LMTOOL_TILES_TRACE").is_some() { eprintln!("probetiles: image {w}×{h}; positions {:?}", pos); }
     // the slices
@@ -257,9 +260,51 @@ pub fn probe_slices(blocks: &[Block], stored: &[Vec<bool>]) -> (u32, u32, Vec<Ve
     (w, h, slices)
 }
 
+/// The tile structure (for the study): per tile (w, h) and its members as (slice index, dx, dz).
+pub fn tile_structure(blocks: &[Block], stored: &[Vec<bool>]) -> Vec<((u32, u32), Vec<(usize, i32, i32)>)> {
+    // re-run the grouping part of probe_slices with a recording hook
+    TILE_STRUCTURE.with(|c| c.borrow_mut().clear());
+    RECORD_STRUCTURE.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = probe_slices(blocks, stored);
+    RECORD_STRUCTURE.store(false, std::sync::atomic::Ordering::Relaxed);
+    TILE_STRUCTURE.with(|c| c.borrow().clone())
+}
+thread_local! { static TILE_STRUCTURE: std::cell::RefCell<Vec<((u32, u32), Vec<(usize, i32, i32)>)>> = std::cell::RefCell::new(Vec::new()); }
+static RECORD_STRUCTURE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Re-tile a saved trailer from its own stored-level pattern and compare with its slices: (W, H, differences).
 pub fn check_against(v: &crate::volume::Volume) -> (u32, u32, Vec<String>) {
     let stored: Vec<Vec<bool>> = v.blocks.iter().map(|b| b.slices.iter().map(|s| s.is_some()).collect()).collect();
+    if std::env::var_os("LMTOOL_TILES_STRUCT").is_some() {
+        // does the save's layout agree with our tile structure? every member of a tile must sit at the save's tile origin + d
+        let flat: Vec<Option<(u32, u32)>> = v.blocks.iter().flat_map(|b| b.slices.iter().copied()).collect();
+        let st = tile_structure(&v.blocks, &stored);
+        let mut bad = 0;
+        for (ti, ((w, h), members)) in st.iter().enumerate() {
+            let origins: Vec<Option<(i32, i32)>> = members.iter().map(|&(si, dx, dz)| flat[si].map(|(x, y)| (x as i32 - dx, y as i32 - dz))).collect();
+            let first = origins[0];
+            if origins.iter().any(|o| *o != first) { bad += 1; eprintln!("  tile {ti} {w}×{h}: members {:?} → save origins {:?}", members, origins); }
+        }
+        eprintln!("tile structure: {} tiles, {bad} inconsistent with the save", st.len());
+        // the save's tiles in placement-ish order: by (y, x) of the tile origin
+        let mut rows: Vec<(i32, i32, u32, u32, usize)> = st.iter().enumerate().filter_map(|(ti, ((w, h), members))| { let (si, dx, dz) = members[0]; flat[si].map(|(x, y)| (y as i32 - dz, x as i32 - dx, *w, *h, ti)) }).collect();
+        rows.sort();
+        for r in rows.iter().take(40) { eprintln!("  save tile at ({}, {}) {}×{} area {} [tile {}]", r.1, r.0, r.2, r.3, r.2 * r.3, r.4); }
+        if let Some(t) = std::env::var("LMTOOL_TILES_SHOW").ok() {
+            let mut cum = 0usize;
+            let mut owner: Vec<(usize, usize)> = Vec::new(); // slice → (block, level)
+            for (bi, b) in v.blocks.iter().enumerate() { for li in 0..b.slices.len() { owner.push((bi, b.min[1] as usize + li)); cum += 1; } }
+            let _ = cum;
+            for ti in t.split(',').filter_map(|x| x.parse::<usize>().ok()) {
+                let ((w, h), members) = &st[ti];
+                eprintln!("  tile {ti} {w}×{h}: {:?}", members.iter().map(|&(si, dx, dz)| { let (bi, lv) = owner[si]; let b = &v.blocks[bi]; format!("block {bi} (min {:?} max {:?} pos {:?}) level {lv} d ({dx},{dz}) save {:?}", b.min, b.max, b.pos, flat[si]) }).collect::<Vec<_>>());
+            }
+        }
+        let mut sizes: std::collections::BTreeMap<(u32, u32), usize> = std::collections::BTreeMap::new();
+        for ((w, h), _) in &st { *sizes.entry((*w, *h)).or_default() += 1; }
+        eprintln!("  sizes: {:?}", sizes);
+        // also: the save's tiles that we did not merge — pairs of slices at the same y whose x differ by w−2
+    }
     let (w, h, ours) = probe_slices(&v.blocks, &stored);
     let mut d = Vec::new();
     for (bi, b) in v.blocks.iter().enumerate() {
@@ -288,6 +333,21 @@ mod tests {
         assert_eq!((w, h), (21, 21));
         let want = [(7, 14), (14, 7), (7, 7), (0, 14), (0, 7), (14, 0), (7, 0), (0, 0)];
         assert_eq!(s[0], want.iter().map(|&p| Some(p)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_four_chain_merges_over_two_passes() {
+        // the giant's blocks 9, 10, 11, 12 at one level: pairs in pass 0, the pairs in pass 1 → one 122-wide tile with
+        // the members at 0 / 30 / 60 / 90 (the save's (0,0), (30,0), (60,0), (90,0))
+        let mk = |min: [u32; 3], max: [u32; 3], pos: [f32; 3]| Block { origin: [0; 3], min, max, cell: [16.0; 3], pos, slices: Vec::new() };
+        let b9 = mk([128, 19, 0], [160, 32, 32], [-1576.0, -374.0, 952.0]);
+        let b10 = mk([0, 35, 0], [32, 48, 32], [952.0, -630.0, 952.0]);
+        let b11 = mk([32, 34, 0], [64, 48, 32], [920.0, -630.0, 952.0]);
+        let b12 = mk([64, 32, 0], [96, 48, 32], [888.0, -630.0, 952.0]);
+        let one = |n: usize, k: usize| { let mut v = vec![false; n]; v[k] = true; v };
+        let (w, h, s) = probe_slices(&[b9, b10, b11, b12], &[one(13, 12), one(13, 12), one(14, 13), one(16, 15)]);
+        assert_eq!((w, h), (122, 32));
+        assert_eq!((s[0][12], s[1][12], s[2][13], s[3][15]), (Some((0, 0)), Some((30, 0)), Some((60, 0)), Some((90, 0))));
     }
 
     #[test]
