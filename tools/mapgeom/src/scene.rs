@@ -168,6 +168,9 @@ fn physics_colour(id: u8) -> [f32; 4] {
 pub struct Group {
     pub verts: Vec<[f32; 3]>,
     pub tris: Vec<[u32; 3]>,
+    /// The vertices' first texture coordinate set, parallel to `verts` ((0, 0) where a visual has none) — the sky
+    /// dome's gradient (u, v) is read from it.
+    pub uvs: Vec<[f32; 2]>,
 }
 
 /// A polyline in world coordinates — a driven trajectory, a centreline, a
@@ -199,9 +202,23 @@ impl Scene {
         verts: &[[f32; 3]],
         tris: impl Iterator<Item = [i32; 3]>,
     ) {
+        self.add_tris_uv(material, verts, &[], tris);
+    }
+
+    /// `add_tris` with the vertices' texture coordinates (`uvs` parallel to `verts`, or empty).
+    pub fn add_tris_uv(
+        &mut self,
+        material: &str,
+        verts: &[[f32; 3]],
+        uvs: &[[f32; 2]],
+        tris: impl Iterator<Item = [i32; 3]>,
+    ) {
         let g = self.groups.entry(material.to_string()).or_default();
         let base = g.verts.len() as u32;
         g.verts.extend_from_slice(verts);
+        for i in 0..verts.len() {
+            g.uvs.push(uvs.get(i).copied().unwrap_or([0.0; 2]));
+        }
         for t in tris {
             if t.iter().any(|&i| i < 0 || i as usize >= verts.len()) {
                 continue;

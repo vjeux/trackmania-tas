@@ -413,9 +413,11 @@ impl<'a> Collector<'a> {
     fn visual_tris(&mut self, vi: i32, slots: &[Slot], at: &Xform, mat: &str, material_idx: i32) {
         if let Some(Node::Visual(v)) = slots.get(vi.max(0) as usize).and_then(as_node) {
             let mut positions = v.inline_positions.clone();
+            let mut uvs: Vec<[f32; 2]> = v.uv0.clone();
             for si in &v.vertex_streams {
                 if let Some(Node::VertexStream(vs)) = slots.get((*si).max(0) as usize).and_then(as_node) {
                     positions.extend_from_slice(&vs.positions);
+                    uvs.extend_from_slice(&vs.uv0);
                 }
             }
             let verts: Vec<[f32; 3]> = positions.iter().map(|p| apply(at, *p)).collect();
@@ -423,7 +425,7 @@ impl<'a> Collector<'a> {
             if std::env::var_os("MAPGEOM_TRACE").is_some() {
                 eprintln!("visual {} material idx {} -> {:?}: {} inline pos, {} streams, {} verts, {} indices -> {} tris; verts {:?} idx {:?}", vi, material_idx, mat, v.inline_positions.len(), v.vertex_streams.len(), verts.len(), v.indices.len(), idx.len(), &verts[..verts.len().min(9)], &idx[..idx.len().min(8)]);
             }
-            self.scene.add_tris(mat, &verts, idx.into_iter());
+            self.scene.add_tris_uv(mat, &verts, &uvs, idx.into_iter());
         }
     }
 

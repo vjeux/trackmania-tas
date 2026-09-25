@@ -1355,7 +1355,23 @@ fn run(a: Vec<String>) {
             // rasterised per peel and PS 16774 runs on the interpolated (u, v); --dome-analytic keeps the ellipsoid model
             if !has("--dome-analytic") {
                 // (--dome-mesh-from DIR: the captured dome mesh alone, to separate the dome's effect from the rest of --env-from)
-                if let Some(dir) = f("--dome-mesh-from").or_else(|| f("--env-from")) {
+                // the dome mesh FROM THE PACKS when --pak lines carry the Scene3d's sky solid (Maniaplanet.pak): --dome-mesh-from pak
+                let dome_from_pak = f("--dome-mesh-from").as_deref() == Some("pak") || (f("--dome-mesh-from").is_none() && f("--env-from").is_none() && a.iter().any(|x| x == "--pak") && has("--lm-from-map"));
+                if dome_from_pak {
+                    let paks: Vec<String> = a.iter().enumerate().filter(|(_, x)| *x == "--pak").filter_map(|(i, _)| a.get(i + 1).cloned()).collect();
+                    let mut store = mapgeom::store::DataStore::empty();
+                    for p in &paks { if let Some((pp, key)) = p.rsplit_once(':') { if let Err(e) = store.add_pak(pp, key) { eprintln!("dome mesh from the packs: --pak {p}: {e}"); } } }
+                    let coll = f("--collection").unwrap_or_else(|| hdr.as_ref().map(|h| h.envir.clone()).unwrap_or_else(|| "BlueBay".into()));
+                    let s3 = format!("{coll}\\GameCtnDecoration\\Scene3d\\Base64x64.Scene3d.Gbx");
+                    match lightmap::domemesh::DomeMesh::from_scene3d(&mut store, &s3) {
+                        Ok(m) => {
+                            let cmp = f("--lm-from").and_then(|d| lightmap::domemesh::DomeMesh::load(std::path::Path::new(&d)).ok()).map(|c| { let (same, ours, theirs) = m.compare(&c); format!("; vs the captured e001051: {same} of {ours} triangles identical (position + uv; captured {theirs})") }).unwrap_or_default();
+                            eprintln!("dome mesh from the packs ({s3}): {} vertices, {} triangles rasterised per peel{cmp}", m.pos.len(), m.indices.len() / 3);
+                            prm.dome_mesh = Some(std::sync::Arc::new(m));
+                        }
+                        Err(e) => eprintln!("dome mesh from the packs: {e} — the analytic dome stands in"),
+                    }
+                } else if let Some(dir) = f("--dome-mesh-from").or_else(|| f("--env-from")) {
                     match lightmap::domemesh::DomeMesh::load(std::path::Path::new(&dir)) {
                         Ok(m) => { eprintln!("env-from {dir}: the sky dome mesh ({} vertices, {} triangles) rasterised per peel", m.pos.len(), m.indices.len() / 3); prm.dome_mesh = Some(std::sync::Arc::new(m)); }
                         Err(e) => eprintln!("env-from {dir}: no dome mesh ({e}) — the analytic dome stands in"),

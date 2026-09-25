@@ -311,3 +311,42 @@ mod tests {
         assert!((bq[0] - 0.5).abs() < 1e-6 && (bq[1] - 0.25).abs() < 1e-6 && (bq[2] - 0.25).abs() < 1e-6, "{bq:?}");
     }
 }
+
+impl DomeMesh {
+    /// THE DOME MESH FROM THE PACKS: the decoration Scene3d places `Sky\Media\Solid\SkyDomeMirror.Solid.Gbx` (Maniaplanet.pak,
+    /// CPlugSolid) — mapgeom's scene3d collector yields its triangles under the "Tech3 Sky" material with the world transform
+    /// applied and, since the collector carries the first texture coordinate set, the gradient (u, v) PS 16774 reads.
+    pub fn from_scene3d(store: &mut mapgeom::store::DataStore, scene3d_path: &str) -> Result<DomeMesh, String> {
+        // the generic model walk (mapgeom's `model` command): the Scene3d's tree with its external solids — the sky dome among them
+        let model = store.load_model(scene3d_path)?;
+        let mut c = mapgeom::geom::Collector::new(store);
+        c.model(&model, &mapgeom::geom::IDENTITY, 0);
+        let (name, g) = c.scene.groups.iter().find(|(n, _)| n.to_ascii_lowercase().contains("sky")).ok_or_else(|| format!("{scene3d_path}: no Sky group among {:?}", c.scene.groups.keys().collect::<Vec<_>>()))?;
+        if g.uvs.len() != g.verts.len() {
+            return Err(format!("{name}: {} vertices but {} texture coordinates", g.verts.len(), g.uvs.len()));
+        }
+        let mut indices = Vec::with_capacity(g.tris.len() * 3);
+        for t in &g.tris {
+            for &i in t {
+                if i > u16::MAX as u32 {
+                    return Err(format!("{name}: vertex index {i} beyond u16"));
+                }
+                indices.push(i as u16);
+            }
+        }
+        Ok(DomeMesh { pos: g.verts.clone(), uv: g.uvs.clone(), indices })
+    }
+
+    /// Compare two dome meshes as triangle sets (the vertex order may differ): triangles whose three (position, uv) match.
+    pub fn compare(&self, other: &DomeMesh) -> (usize, usize, usize) {
+        let key = |m: &DomeMesh, i: u16| -> ([i64; 3], [i64; 2]) { let p = m.pos[i as usize]; let u = m.uv[i as usize]; ([(p[0] * 64.0).round() as i64, (p[1] * 64.0).round() as i64, (p[2] * 64.0).round() as i64], [(u[0] * 1e6).round() as i64, (u[1] * 1e6).round() as i64]) };
+        let set: std::collections::HashSet<Vec<([i64; 3], [i64; 2])>> = other.indices.chunks_exact(3).map(|t| { let mut v = vec![key(other, t[0]), key(other, t[1]), key(other, t[2])]; v.sort(); v }).collect();
+        let mut same = 0;
+        for t in self.indices.chunks_exact(3) {
+            let mut v = vec![key(self, t[0]), key(self, t[1]), key(self, t[2])];
+            v.sort();
+            if set.contains(&v) { same += 1; }
+        }
+        (same, self.indices.len() / 3, other.indices.len() / 3)
+    }
+}
