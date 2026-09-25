@@ -1814,6 +1814,13 @@ fn run(a: Vec<String>) {
             let out = f("--out").expect("--out");
             lightmap::mapio::save_with_chunk(&m, &payload, &out).expect("save");
             println!("{} charts, atlas fill {:.1}%, chunk {} B; wrote {out} ({:.1}s)", s.charts, s.fill * 100.0, payload.len(), t0.elapsed().as_secs_f32());
+            // the process's peak resident set (Linux: VmHWM of /proc/self/status) — `lmtool bench` reads it
+            if let Ok(st) = std::fs::read_to_string("/proc/self/status") {
+                if let Some(l) = st.lines().find(|l| l.starts_with("VmHWM:")) {
+                    let kb: u64 = l.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+                    eprintln!("peak RSS {:.2} GB", kb as f64 / 1_048_576.0);
+                }
+            }
         }
         "geomstats" => {
             let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
@@ -4835,6 +4842,96 @@ fn run(a: Vec<String>) {
                 let (n, d, mx, ch) = lightmap::gpuenc::compare_u8(&e.cr4, &cr4c);
                 println!("{o:?}: Cr4 {}×{}: {d} of {n} bytes differ (max |Δ| {mx}) per channel {ch:?}", e.w / 2, e.h / 2);
             }
+        }
+        "bench" => {
+            // lmtool bench MAP... [--quality Q] [--jobs J] [--out TABLE.md] [--dir OUTDIR] [-- EXTRA BAKE ARGS]:
+            // bake every map with `lmtool bake --raster --game-peel --profile` (J at a time, each a child
+            // process of this binary), read the profile lines, and write a Markdown timing table (map,
+            // triangles, instances, layout texels, per-sweep seconds, total, peak RSS) — the fleet-sizing table
+            let mut maps: Vec<String> = Vec::new();
+            let mut extra: Vec<String> = Vec::new();
+            let mut quality = "4".to_string();
+            let mut jobs = 1usize;
+            let mut table = "bench.md".to_string();
+            let mut outdir = std::env::temp_dir().join("lmtool-bench");
+            let mut i = 1;
+            let mut in_extra = false;
+            while i < a.len() {
+                let x = &a[i];
+                if in_extra { extra.push(x.clone()); i += 1; continue; }
+                match x.as_str() {
+                    "--" => in_extra = true,
+                    "--quality" => { quality = a[i + 1].clone(); i += 1; }
+                    "--jobs" => { jobs = a[i + 1].parse().expect("--jobs"); i += 1; }
+                    "--out" => { table = a[i + 1].clone(); i += 1; }
+                    "--dir" => { outdir = std::path::PathBuf::from(&a[i + 1]); i += 1; }
+                    _ => maps.push(x.clone()),
+                }
+                i += 1;
+            }
+            std::fs::create_dir_all(&outdir).expect("bench dir");
+            let exe = std::env::current_exe().expect("exe");
+            #[derive(Default, Clone)]
+            struct Row { map: String, tris: String, insts: String, texels: String, sweeps: Vec<f32>, total: f32, rss: String, ok: bool, note: String }
+            let rows: std::sync::Mutex<Vec<Row>> = std::sync::Mutex::new(Vec::new());
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let t_all = std::time::Instant::now();
+            std::thread::scope(|sc| {
+                for _ in 0..jobs.max(1) {
+                    sc.spawn(|| loop {
+                        let k = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if k >= maps.len() { break; }
+                        let m = &maps[k];
+                        let name = std::path::Path::new(m).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or(m.clone());
+                        let out = outdir.join(format!("{name}.baked.Map.Gbx"));
+                        let t = std::time::Instant::now();
+                        let mut cmd = std::process::Command::new(&exe);
+                        cmd.arg("bake").arg(m).arg("--raster").arg("--quality").arg(&quality).arg("--game-peel").arg("--profile").arg("--out").arg(&out);
+                        for e in &extra { cmd.arg(e); }
+                        let output = cmd.output();
+                        let wall = t.elapsed().as_secs_f32();
+                        let mut row = Row { map: name.clone(), total: wall, ..Default::default() };
+                        match output {
+                            Ok(o) => {
+                                row.ok = o.status.success();
+                                let err = String::from_utf8_lossy(&o.stderr).to_string();
+                                let log = outdir.join(format!("{name}.log"));
+                                let _ = std::fs::write(&log, format!("{}
+{}", String::from_utf8_lossy(&o.stdout), err));
+                                for l in err.lines() {
+                                    if let Some(r) = l.strip_prefix("scene: ") {
+                                        // "N models, N instances, N triangles (+ N decoration) (…s)"
+                                        let parts: Vec<&str> = r.split(", ").collect();
+                                        if parts.len() >= 3 { row.insts = parts[1].split(' ').next().unwrap_or("").to_string(); row.tris = parts[2].split(' ').next().unwrap_or("").to_string(); }
+                                    }
+                                    if l.starts_with("peel: ") && l.contains(" layout texels over ") && row.texels.is_empty() { row.texels = l["peel: ".len()..].split(' ').next().unwrap_or("").to_string(); }
+                                    if l.starts_with("profile [sweep ") { if let Some(p) = l.rfind("sweep total ") { row.sweeps.push(l[p + "sweep total ".len()..].trim_end_matches('s').parse().unwrap_or(0.0)); } }
+                                    if let Some(r) = l.strip_prefix("peak RSS ") { row.rss = r.to_string(); }
+                                }
+                                if !row.ok { row.note = err.lines().rev().take(2).collect::<Vec<_>>().join(" | "); }
+                            }
+                            Err(e) => { row.note = e.to_string(); }
+                        }
+                        eprintln!("bench: {name}: {:.1}s ({}) sweeps {:?} RSS {}", wall, if row.ok { "ok" } else { "FAILED" }, row.sweeps, row.rss);
+                        rows.lock().unwrap().push(row);
+                    });
+                }
+            });
+            let mut rows = rows.into_inner().unwrap();
+            rows.sort_by(|a, b| a.map.cmp(&b.map));
+            let mut md = String::new();
+            md.push_str(&format!("# lmtool bench — quality {quality}, {} maps, {} at a time, extra args {:?}, {:.0} s wall in all ({})
+
+", rows.len(), jobs, extra, t_all.elapsed().as_secs_f32(), std::env::var("HOSTNAME").unwrap_or_default()));
+            md.push_str("| map | triangles | items | layout texels | sweeps (s) | total (s) | peak RSS | |
+|---|---|---|---|---|---|---|---|
+");
+            for r in &rows {
+                md.push_str(&format!("| {} | {} | {} | {} | {} | {:.1} | {} | {} |
+", r.map, r.tris, r.insts, r.texels, r.sweeps.iter().map(|s| format!("{s:.1}")).collect::<Vec<_>>().join(" / "), r.total, r.rss, if r.ok { "ok".to_string() } else { format!("FAILED: {}", r.note) }));
+            }
+            std::fs::write(&table, &md).expect("bench table");
+            print!("{md}");
         }
         "passdiff" => {
             // lmtool passdiff GAME_DIR OURS_DIR [--pass P] [--tol T] [--floor F] [--stride S] [--threshold PCT]
