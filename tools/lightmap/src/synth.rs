@@ -182,6 +182,7 @@ pub fn synth(plan: &Plan, template: &LightmapChunk) -> Result<Synth, String> {
 }
 
 /// What replaces the template's probe volume: the small-atlas blob and the trailer.
+#[derive(Clone)]
 pub struct ProbeBlob {
     pub blob: Vec<u8>,
     pub trailer: Vec<u8>,
@@ -498,4 +499,151 @@ pub fn build_full2_placed(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), te
     };
     let placed: Vec<(u32, u32, u32, u32, u32, u32)> = charts.iter().map(|c| { let (px, py) = placed_by_obj[&(c.obj, c.sub)]; (c.obj, c.sub, px, py, c.w, c.h) }).collect();
     Ok(Synth { chunk, charts: n as u32, fill: area as f32 / (1024.0 * 1024.0), atlas8: Some(ia), placed })
+}
+
+// ───────────────────────────── THE TRANSCRIBED WRITER (the game's own encoding, no encoder of ours) ─────────────────────────────
+
+/// What the transcribed CPU chain hands the writer (see `filecheck::file_images` / `frame0_blobs` / `record_scales`):
+/// frame 0's blobs already encoded the game's way, the per-chart frame bytes in the mapping's order, and the
+/// record's scale fields. `lambient_f16` = None keeps the template's LAmbient triple.
+pub struct TranscribedImages {
+    pub blob0: Vec<u8>,
+    pub blob1: Vec<u8>,
+    pub fb0: Vec<u8>,
+    pub max_hdr: f32,
+    pub hbasis234: [f32; 3],
+    pub lambient_f16: Option<[u16; 3]>,
+}
+
+/// Patch the frame-0 record's MaxHDR_HBasisScaled234 triple (record +54/+58/+62) and, when given, the LAmbient f16
+/// triple (record +36..+42) — the record layout per engineer C's `filecheck::check_records` (record 0 starts 12 bytes
+/// before the −FLT_MAX word; `patch_frame_records` writes the same record's daytime/mood/MaxHDR/bounce/sky).
+pub fn patch_record_scales(head: &mut [u8], hbasis234: [f32; 3], lambient_f16: Option<[u16; 3]>) -> bool {
+    let Some(pos) = head.windows(4).position(|w| w == [0xff, 0xff, 0x7f, 0xff]) else { return false };
+    if pos < 12 || pos - 12 + 66 > head.len() {
+        return false;
+    }
+    let r = pos - 12;
+    for k in 0..3 {
+        head[r + 54 + 4 * k..r + 58 + 4 * k].copy_from_slice(&hbasis234[k].to_le_bytes());
+    }
+    if let Some(l) = lambient_f16 {
+        for k in 0..3 {
+            head[r + 36 + 2 * k..r + 38 + 2 * k].copy_from_slice(&l[k].to_le_bytes());
+        }
+    }
+    true
+}
+
+/// The chunk from the transcribed chain: `placed` = the charts in the MAPPING's order as (obj, sub, px, py, w, h) in
+/// stored texels (a `Synth::placed`, or `layout::for_map`'s table), `img` = the encoded frame-0 images and record
+/// scales (`fb0` one byte per chart in the same order), `probes` = the probe blob + trailer (None = the template's).
+/// Frame 1 image 0 stays the all-black 1024² at q 91 (the game's, byte-identical); frames 1–2's chart bytes are the
+/// template's when the counts match, else 0. Nothing here is encoded by the port's own encoder.
+pub fn build_transcribed(placed: &[(u32, u32, u32, u32, u32, u32)], bbox: ([f32; 3], [f32; 3]), template: &LightmapChunk, img: &TranscribedImages, probes: Option<ProbeBlob>, frame: Option<FrameParams>) -> Result<Synth, String> {
+    let td = template.data.as_ref().ok_or("template has no lightmap")?;
+    let tm = td.cache.mapping().ok_or("template has no mapping chunk")?;
+    let n = placed.len();
+    if img.fb0.len() != n {
+        return Err(format!("transcribed writer: {} frame bytes for {n} charts", img.fb0.len()));
+    }
+    let mut pos = Vec::with_capacity(n);
+    let mut size = Vec::with_capacity(n);
+    let mut binds = Vec::with_capacity(n);
+    let mut fb: Vec<Vec<u8>> = vec![Vec::with_capacity(n), Vec::with_capacity(n), Vec::with_capacity(n)];
+    let same_count = tm.frame_bytes.iter().all(|v| v.len() == n);
+    let mut area = 0u64;
+    for (i, &(obj, sub, px, py, w, h)) in placed.iter().enumerate() {
+        pos.push(((2 * px).saturating_sub(1) as u16, (2 * py).saturating_sub(1) as u16));
+        size.push(((2 * w) as u16, (2 * h) as u16));
+        binds.push(ObjBind { obj_idx: sub, obj_group_idx: obj * 4 });
+        fb[0].push(img.fb0[i]);
+        for k in 1..3 {
+            fb[k].push(if same_count { tm.frame_bytes.get(k).map(|v| v[i]).unwrap_or(0) } else { 0 });
+        }
+        area += (w * h) as u64;
+    }
+    let mut mapping = Mapping {
+        version: tm.version,
+        head: tm.head.clone(),
+        map_version: tm.map_version,
+        m_u01: tm.m_u01,
+        atlas_w: tm.atlas_w,
+        atlas_h: tm.atlas_h,
+        bbox_min: bbox.0,
+        bbox_max: bbox.1,
+        m_u02: tm.m_u02,
+        count: n as u32,
+        chart_f32: vec![-1.0; n],
+        binds,
+        pos,
+        size,
+        m_u03: tm.m_u03,
+        frame_bytes: fb,
+        tail: tm.tail.clone(),
+        raw_z: Vec::new(),
+    };
+    if let Some(fp) = &frame {
+        let mut fp2 = fp.clone();
+        fp2.max_hdr = img.max_hdr;
+        patch_frame_records(&mut mapping.head, &fp2);
+    } else {
+        // no mood parameters given: still the chain's MaxHDR in every record's slot
+        for i in 0..3 {
+            let r = 60 + 66 * i;
+            if r + 24 <= mapping.head.len() {
+                mapping.head[r + 20..r + 24].copy_from_slice(&img.max_hdr.to_le_bytes());
+            }
+        }
+    }
+    if !patch_record_scales(&mut mapping.head, img.hbasis234, img.lambient_f16) {
+        return Err("transcribed writer: the mapping head has no frame record (−FLT_MAX word)".into());
+    }
+    let chunks: Vec<CacheChunk> = td
+        .cache
+        .chunks
+        .iter()
+        .map(|c| match &c.body {
+            ChunkBody::Mapping(_) => CacheChunk { id: c.id, body: ChunkBody::Mapping(mapping.clone()) },
+            ChunkBody::Raw(b) => CacheChunk { id: c.id, body: ChunkBody::Raw(patch_raw_chunk(c.id, b, frame.as_ref())) },
+        })
+        .collect();
+    let trailer = match &probes {
+        Some(p) => p.trailer.clone(),
+        None => td.cache.trailer.clone(),
+    };
+    let cache = CacheBlob { chunks, trailer };
+    // the game's frame-1 image: an all-black 1024² RGB through libwebp at q 91 (byte-identical to the editor's, engineer C)
+    let black = match crate::webpenc::encode_rgb(&Rgb::new(1024, 1024).px, 1024, 1024, 91.0) {
+        Some(b) => b,
+        None => return Err("transcribed writer needs libwebp (webpenc) for the frame-1 image".into()),
+    };
+    let mut frames = Vec::new();
+    for fi in 0..td.frames.len() {
+        let mut images = Vec::new();
+        for ii in 0..td.frames[fi].images.len() {
+            let src = &td.frames[fi].images[ii];
+            let im = match (fi, ii) {
+                (0, 0) => img.blob0.clone(),
+                (0, 1) => img.blob1.clone(),
+                (0, 2) => match &probes {
+                    Some(p) => p.blob.clone(),
+                    None => src.clone(),
+                },
+                (_, 0) if !src.is_empty() => black.clone(),
+                _ => Vec::new(),
+            };
+            images.push(im);
+        }
+        frames.push(Frame { images });
+    }
+    let raw = cache.write();
+    let z = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 9);
+    let chunk = LightmapChunk {
+        version: template.version,
+        u01: template.u01,
+        u02: template.u02,
+        data: Some(LightmapData { lightmap_version: td.lightmap_version, frames, cache, cache_compressed: z, cache_uncompressed_len: raw.len() as u32 }),
+    };
+    Ok(Synth { chunk, charts: n as u32, fill: area as f32 / (1024.0 * 1024.0), atlas8: None, placed: placed.to_vec() })
 }

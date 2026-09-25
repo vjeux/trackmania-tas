@@ -463,6 +463,22 @@ pub fn chain_final(a: Vec<String>) {
 
         }
     }
+    // --write OUT.Map.Gbx --template TEMPLATE.Map.Gbx: THE TRANSCRIBED FILE from these images — the template's mapping (its
+    // chart table in the mapping's order; with --layout-game / --layout-from EDITOR the bake's layout IS the editor's) and
+    // its probe blob/trailer, frame 0's blobs and record scales from our chain (synth::build_transcribed), saved as a map
+    if let Some(out) = arg(&a, "--write") {
+        let tpath = arg(&a, "--template").expect("--write needs --template TEMPLATE.Map.Gbx (the layout's source)");
+        let tpl = crate::mapio::load(&tpath).unwrap_or_else(|e| panic!("{tpath}: {e}"));
+        let td = tpl.chunk.data.as_ref().expect("template has no lightmap");
+        let tm = td.cache.mapping().expect("template has no mapping");
+        let placed: Vec<(u32, u32, u32, u32, u32, u32)> = (0..tm.count as usize).map(|i| { let (x, y) = tm.pos[i]; let (w, h) = tm.size[i]; (tm.binds[i].obj_group_idx / 4, tm.binds[i].obj_idx, (x as u32 + 1) / 2, (y as u32 + 1) / 2, w as u32 / 2, h as u32 / 2) }).collect();
+        let rects: Vec<(u32, u32, u32, u32)> = (0..tm.count as usize).map(|i| { let (x, y) = tm.pos[i]; let (w, h) = tm.size[i]; (x as u32, y as u32, w as u32, h as u32) }).collect();
+        let img = transcribed_images(&enc, maxhdr, mood, &rects, None).expect("the frame-0 blobs need libwebp (webpenc)");
+        let st = crate::synth::build_transcribed(&placed, (tm.bbox_min, tm.bbox_max), &tpl.chunk, &img, None, None).unwrap_or_else(|e| panic!("transcribed chunk: {e}"));
+        let payload = st.chunk.write(false);
+        crate::mapio::save_with_chunk(&tpl, &payload, &out).unwrap_or_else(|e| panic!("save {out}: {e}"));
+        println!("[write] TRANSCRIBED {out}: {} charts from the template's mapping, blob0 {} B, blob1 {} B, fb0 {} bytes, record MaxHDR {} / √3κ·max {:?}; probes + LAmbient + records' mood fields = the template's; chunk {} B", st.charts, img.blob0.len(), img.blob1.len(), img.fb0.len(), img.max_hdr, img.hbasis234, payload.len());
+    }
     // the file: the blobs from our textures against the save
     if let Some(map) = arg(&a, "--map") {
         match crate::mapio::load(&map) {
@@ -485,4 +501,39 @@ pub fn chain_final(a: Vec<String>) {
             Err(e) => println!("[file] {map}: {e}"),
         }
     }
+}
+
+/// THE TRANSCRIBED TAIL from the four finalised (×2-added) coefficient images, in memory — the same kernels
+/// `chain_final` runs against the capture: PS 1034 (rgb into the resolve's alpha mask), PS 1332 × 8, the max reduce
+/// (`gpuenc::maxhdr_hbasis` per image), CS 23025 (`gpuenc::encode_ycbcr4`). Returns the dilated images, the MaxHdr
+/// buffer and the encoded Y4/Cb4/Cr4.
+pub fn finalise_tail(finals: &[Buf], mood_max_hdr: f32) -> (Vec<Buf>, [f32; 4], crate::gpuenc::YCbCr4) {
+    let store = Rounding::Truncate;
+    let mut imgs: Vec<Buf> = Vec::with_capacity(4);
+    for k in 0..4 {
+        let (w, h) = (finals[k].w, finals[k].h);
+        let mut base = Buf::new(w, h, 4);
+        for i in 0..(w * h) as usize {
+            base.data[i * 4 + 3] = finals[k].data[i * 4 + 3];
+        }
+        let mut img = crate::finalprep::write_masked(&base, &crate::finalprep::copy_ps1034(&finals[k], [1.0, 1.0, 0.0, 0.0], w, h), 7, store);
+        for _ in 0..8 {
+            img = crate::gpuenc::dilate_ps1332(&img);
+        }
+        imgs.push(img);
+    }
+    let maxhdr = [crate::gpuenc::maxhdr_hbasis(&imgs[0]), crate::gpuenc::maxhdr_hbasis(&imgs[1]), crate::gpuenc::maxhdr_hbasis(&imgs[2]), crate::gpuenc::maxhdr_hbasis(&imgs[3])];
+    let enc = crate::gpuenc::encode_ycbcr4([&imgs[0], &imgs[1], &imgs[2], &imgs[3]], maxhdr, mood_max_hdr, crate::gpuenc::EncodeOpts::default());
+    (imgs, maxhdr, enc)
+}
+
+/// The transcribed FILE images of a bake's own end state: the encoded textures through the client's CPU steps
+/// (`filecheck::frame0_blobs` — YCbCr_to_RGB_Down2x2, the per-chart fb0, the greys, libwebp at the game's settings)
+/// and the record's scale fields (`filecheck::record_scales`). `charts` = the layout rects (x, y, w, h in the 2048
+/// layout units) in the mapping's order; `ambient_xyz` = the AddAmbient accumulator at the end of sweep 0 when known.
+pub fn transcribed_images(enc: &crate::gpuenc::YCbCr4, maxhdr: [f32; 4], mood_max_hdr: f32, charts: &[(u32, u32, u32, u32)], ambient_xyz: Option<[f32; 3]>) -> Option<crate::synth::TranscribedImages> {
+    let (blob0, blob1, _sizes, fb0) = crate::filecheck::frame0_blobs(&enc.y4, &enc.cb4, &enc.cr4, enc.w as usize, enc.h as usize, charts)?;
+    let (max_hdr, hbasis234) = crate::filecheck::record_scales(maxhdr, mood_max_hdr);
+    let lambient_f16 = ambient_xyz.map(|a| [0, 1, 2].map(|k| crate::gpufmt::encode_f16(a[k], Rounding::NearestEven)));
+    Some(crate::synth::TranscribedImages { blob0, blob1, fb0, max_hdr, hbasis234, lambient_f16 })
 }

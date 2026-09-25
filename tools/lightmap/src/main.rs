@@ -1828,6 +1828,8 @@ fn run(a: Vec<String>) {
             }
             // --- the finalisation of the chain (ROW 12 + the baker's dilation and encode) on OUR sweeps' MRTs, against the captured
             //     finalisation chain (pwc4 frame 74490, another run of the same bake) — `--chain-final-dir DIR` writes the images
+            // the finalised (×2-added) coefficient images of the transcribed chain, kept for the transcribed FILE writer below
+            let mut chain_finals: Option<Vec<lightmap::passdiff::Buf>> = None;
             if hb_sweeps.len() >= 1 && e2e_out.is_some() {
                 let tf = std::time::Instant::now();
                 let n_sw = hb_sweeps.len();
@@ -1867,6 +1869,7 @@ fn run(a: Vec<String>) {
                     eprintln!("chain: wrote the finalised images under {dir}");
                 }
                 eprintln!("chain: finalisation of {n_sw} sweep(s) in {:.1}s", tf.elapsed().as_secs_f32());
+                chain_finals = Some(finals);
             }
             compare(&charts, "bake vs own");
             let k: f32 = match f("--k") {
@@ -2017,7 +2020,39 @@ fn run(a: Vec<String>) {
             // the game's positions when --layout-game: stored texel (px, py) = ((X + 1)/2, (Y + 1)/2) of the layout rect, for every chart
             // (the tiles included — their objects are the 4096 first)
             let fixed_pos: Option<std::collections::HashMap<(u32, u32), (u32, u32)>> = game_layout.as_ref().map(|gl| gl.charts.iter().filter(|c| c.charted == lightmap::layout::Charted::Bound).map(|c| ((c.obj, 0u32), (((c.x + 1) / 2) as u32, ((c.y + 1) / 2) as u32))).collect());
+            // THE TRANSCRIBED FILE WRITER (--writer transcribed|port; default: transcribed whenever the transcribed chain produced
+            // its finalised images, i.e. with --lm-from): the four finalised coefficient images → PS 1034 → PS 1332 × 8 → the max
+            // reduce → CS 23025 → the client's CPU steps (filecheck::frame0_blobs: YCbCr_to_RGB_Down2x2, per-chart fb0, the greys,
+            // libwebp at the game's settings) → the record's scale fields → synth::build_transcribed. The port's own encoder writes
+            // only the fallback. The probe blob is still the port's (or the template's) until the transcribed probe passes run
+            // over our peels in the bake; the LAmbient triple stays the template's — both flagged in the log.
+            let writer_transcribed = match f("--writer").as_deref() { Some("port") => false, Some("transcribed") => true, Some(o) => panic!("--writer {o}: port|transcribed"), None => chain_finals.is_some() };
+            let mood_max_hdr_for_encode: f32 = frame_params.as_ref().map(|fp| fp.max_hdr_mood).unwrap_or(7.519885063171387);
+            let probes_for_transcribed = if writer_transcribed { probes.clone() } else { None };
+            let frame_params_for_transcribed = if writer_transcribed { frame_params.clone() } else { None };
             let s = lightmap::synth::build_full2_placed(out_charts, (tm.bbox_min, tm.bbox_max), &tpl.chunk, probes, vp8_q, frame_params, fixed_pos.as_ref()).expect("build");
+            let s = match (writer_transcribed, &chain_finals) {
+                (true, Some(finals)) => {
+                    let tw = std::time::Instant::now();
+                    let (_imgs, maxhdr, enc) = lightmap::e2e::finalise_tail(finals, mood_max_hdr_for_encode);
+                    let mut s = s;
+                    let atlas8 = s.atlas8.take();
+                    // the layout rects (2048 layout units) in the mapping's order = the placed charts (obj, sub) ascending
+                    let rects: Vec<(u32, u32, u32, u32)> = s.placed.iter().map(|&(_o, _s, px, py, w, h)| ((2 * px).saturating_sub(1), (2 * py).saturating_sub(1), 2 * w, 2 * h)).collect();
+                    match lightmap::e2e::transcribed_images(&enc, maxhdr, mood_max_hdr_for_encode, &rects, None) {
+                        Some(img) => match lightmap::synth::build_transcribed(&s.placed, (tm.bbox_min, tm.bbox_max), &tpl.chunk, &img, probes_for_transcribed, frame_params_for_transcribed) {
+                            Ok(st) => {
+                                eprintln!("writer: TRANSCRIBED — MaxHdr {maxhdr:?} (Mood {mood_max_hdr_for_encode}), record MaxHDR {} / √3κ·max {:?}; blob0 {} B, blob1 {} B, {} charts; probes {} ; LAmbient = the template's ({:.1}s)", img.max_hdr, img.hbasis234, img.blob0.len(), img.blob1.len(), st.charts, if st.chunk.data.as_ref().map(|d| !d.frames[0].images[2].is_empty()).unwrap_or(false) { "the port's/template's blob (transcribed probe passes not yet in the bake)" } else { "none" }, tw.elapsed().as_secs_f32());
+                                lightmap::synth::Synth { atlas8, ..st }
+                            }
+                            Err(e) => { eprintln!("writer: transcribed chunk failed ({e}); the port's writer is used"); s }
+                        },
+                        None => { eprintln!("writer: the transcribed frame-0 blobs need libwebp (webpenc); the port's writer is used"); s }
+                    }
+                }
+                (true, None) => { eprintln!("writer: --writer transcribed needs the transcribed chain's images (--lm-from PASSCAP with --ilightinput-from e2e); the port's writer is used"); s }
+                _ => s,
+            };
             if let Some(d) = &prm.dump {
                 // the final atlas before encode: the 8-bit colour image, the HDR C0 composed on the same layout, and the layout itself
                 let mut dm = d.lock().unwrap();
