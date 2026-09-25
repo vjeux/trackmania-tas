@@ -6224,7 +6224,38 @@ fn run(a: Vec<String>) {
             // our chart list in IdForLightMap order: tiles (ids 0..base) then items (base + item)
             let mut charts: Vec<lightmap::pack::ChartExt> = Vec::new();
             let mut ids: Vec<u32> = Vec::new();
-            for o in 0..base { if ed.contains_key(&o) { charts.push(lightmap::pack::ChartExt { ext: tile_ext_xy, mins: [1, 1] }); ids.push(o); } }
+            // THE GENERATED TILE'S QUALITY (CGameCtnApp::HmsLightMapUpdateBlocksAndItemsQuality 0x140dcc290 → FUN_140dcc8e0, the
+            // ring search): the items mark their cells (file cell x, y, z) in a 3-D grid; a ground tile whose own cell is marked
+            // keeps the enum quality (Normal → 1.0); otherwise rings r = 1…8 around the tile AT ITS OWN LEVEL are searched for
+            // a marked cell — found at ring r → f = powf(0.5, r/2) = (√2)^−r; none within 8 → (√2)^−9 (the 0.044194 of the
+            // far tiles); the tile's chart scale = f × G (1.0 for the map's own objects) × the BlockInfo float (1.0 for Sea).
+            // (The blocks branch of the search — a block in the column whose height above the tile is ≤ r — is not needed for
+            // the item-only tiny maps and is not transcribed here.) Oracle: refs/hill*-q3-editor's size ladder, one size class per ring.
+            let tile_quality: Vec<f32> = {
+                let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+                let tile_y: i32 = mf.baked.first().map(|b| b.coords().1).unwrap_or(5);
+                let marked: std::collections::HashSet<(i32, i32, i32)> = mf.items.iter().map(|it| (it.file_cell[0] as i32, it.file_cell[1] as i32, it.file_cell[2] as i32)).collect();
+                // --quant-byte [F]: RE 6's reading — the record carries byte = clamp(int(255·q), 1, 255) and the chart scale is byte/255 (× F)
+                let quant: Option<f32> = a.iter().position(|x| x == "--quant-byte").map(|i| a.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(1.0));
+                let f_of = |r: u32| -> f32 { let q = (0.5f32).powf((r as f32 + 1.0) * 0.5); match quant { Some(ff) => { let b = ((q * 255.0) as i32).clamp(1, 255); b as f32 / 255.0 * ff } None => q } };
+                let mut hist: std::collections::BTreeMap<u32, usize> = Default::default();
+                let q: Vec<f32> = cell_of.iter().map(|&(cx, cz)| {
+                    if marked.contains(&(cx, tile_y, cz)) { *hist.entry(0).or_default() += 1; return match quant { Some(ff) => ff, None => 1.0 }; }
+                    let mut found = 9u32;
+                    'r: for r in 1..=8i32 {
+                        for dx in -r..=r { for dz in -r..=r {
+                            if dx.abs() != r && dz.abs() != r { continue; }
+                            if marked.contains(&(cx + dx, tile_y, cz + dz)) { found = r as u32; break 'r; }
+                        } }
+                    }
+                    *hist.entry(found).or_default() += 1;
+                    if found == 9 { f_of(8) } else { f_of(found - 1) }
+                }).collect();
+                if !a.iter().any(|x| x == "--uniform-tiles") { println!("tile quality by ring (0 = the item's own cell, 9 = none within 8): {:?}", hist); }
+                q
+            };
+            for o in 0..base { if ed.contains_key(&o) { // the tile's chart scale = its quality q ITSELF (1.0 on an item's cell = the same ext as a tile-quad item → an exact area tie the z key resolves; the far tiles' 0.5^4.5 = 0x3d3504f3 = tile_k)
+                let q = if a.iter().any(|x| x == "--uniform-tiles") { tile_k } else { tile_quality.get(o as usize).copied().unwrap_or(tile_k) }; let e = if f("--tile-ext-xy").is_some() || tile_ext > 0.0 { tile_ext_xy } else { tile_ext_of(&tile_plg.1, tile_plg.0, q, korder) }; charts.push(lightmap::pack::ChartExt { ext: e, mins: [1, 1] }); ids.push(o); } }
             for inst in &scene.instances {
                 let m = &scene.models[inst.model];
                 let sc = ((inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]) as f32).sqrt();
@@ -6260,12 +6291,73 @@ fn run(a: Vec<String>) {
                 println!("best: s {:.3} with {} of {} sizes equal", best.1, best.0, charts.len());
                 return;
             }
+            // --ring-hist: the editor's tile chart size against the tile's Chebyshev distance to the nearest ITEM anchor cell
+            // AT THE TILES' OWN CELL LEVEL (FUN_140dcc8e0: the ring search over the grid the items mark; a cell is found only
+            // when its marked level == the tile's) — the quality-byte rule's oracle
+            if a.iter().any(|x| x == "--ring-hist") {
+                let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+                let tile_y: i32 = mf.baked.first().map(|b| b.coords().1).unwrap_or(5);
+                // the items' cells as the file stores them (the census convention; the grid FUN_140dcc290 marks)
+                let anchors: Vec<(i32, i32, i32)> = mf.items.iter().map(|it| (it.file_cell[0] as i32, it.file_cell[1] as i32, it.file_cell[2] as i32)).collect();
+                println!("tiles at cell level y {tile_y}; item anchor cells (x, y, z): {:?}", anchors);
+                let mut hist: std::collections::BTreeMap<(i32, u16, u16), usize> = Default::default();
+                for (o, &(_, _, w, h)) in &ed {
+                    if *o >= base { continue; }
+                    let Some(&(cx, cz)) = cell_of.get(*o as usize) else { continue };
+                    let mut r = i32::MAX;
+                    for &(ax, ay, az) in &anchors { if ay != tile_y { continue; } r = r.min((ax - cx).abs().max((az - cz).abs())); }
+                    let r = if r == i32::MAX { 99 } else { r };
+                    *hist.entry((r, w, h)).or_default() += 1;
+                }
+                let mut cur = -1; let mut line = String::new();
+                for ((r, w, h), n) in &hist { if *r != cur { if !line.is_empty() { println!("{line}"); } cur = *r; line = format!("  r {r:>2}:"); } line += &format!("  {w}×{h} ×{n}"); }
+                println!("{line}");
+                return;
+            }
             // --tie KEY: the order among equal areas (the editor sorts by block position-like keys before the
             // area): index (default), x, z, y, -x, -z, -y, or combos like "z,x" (last key = most significant)
             // the radix keys (RE 6 / spec §3.1): ascending (area, centre z, y, x, |h|², record index), walked from the end — "x,z"
             let tie = f("--tie").unwrap_or_else(|| "x,z".into());
             let placed_order: Vec<usize> = {
                 let mut idx: Vec<usize> = (0..charts.len()).collect();
+                // --pak FILE:KEY [--collection BlueBay] [--zone Sea] [--cell-y 5] [--yoff -40]: THE GAME'S KEYS — every chart's
+                // block record (RE 6, lmtiles): the tiles from the zone prefab's stored visual boxes through the cell Iso4
+                // (`tile_records`), the items from their model's stored boxes through the item Iso4 (`item_records`); the radix
+                // order = ascending (area, centre z, centre y, centre x, |h|², record index), floats compared sign-aware
+                // (−0.0 below +0.0), walked from the end. Without --pak the cell-centre approximation below stands.
+                let game_keys: Option<std::collections::HashMap<u32, ([f32; 3], f32)>> = f("--pak").map(|pak| {
+                    let (pak_path, key) = pak.rsplit_once(':').expect("--pak FILE:KEY");
+                    let mut store = mapgeom::store::DataStore::empty();
+                    store.add_pak(pak_path, key).expect("pak");
+                    let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+                    let chunks = tmmaps::gbx::all_skip_chunks(&mf.gbx.body);
+                    let gen: Vec<(String, u32)> = chunks.iter().find(|(c, ..)| *c == 0x0304_3043).and_then(|&(_, _, payload, size)| tmmaps::map::genealogy_full(&mf.gbx.body[payload..payload + size]).ok()).map(|recs| recs.into_iter().map(|r| (r.current, r.dir)).collect()).unwrap_or_default();
+                    let size = [mf.size[0].max(0) as usize, mf.size[1].max(0) as usize, mf.size[2].max(0) as usize];
+                    let cell_y: f32 = f("--cell-y").map(|v| v.parse().unwrap()).unwrap_or(mf.baked.first().map(|b| b.coords().1 as f32).unwrap_or(5.0));
+                    let tiles = lightmap::lmtiles::tile_records(&mut store, &f("--collection").unwrap_or_else(|| "BlueBay".into()), size, &gen, &f("--zone").unwrap_or_else(|| "Sea".into()), cell_y, f("--yoff").map(|v| v.parse().unwrap()).unwrap_or(-40.0), 1.0).expect("tile records");
+                    let mut by_cell: std::collections::HashMap<(i32, i32), ([f32; 3], f32)> = Default::default();
+                    for (cx, cz, _zone, _dir, rec) in &tiles { let h = rec.world.h; by_cell.insert((*cx as i32, *cz as i32), (rec.world.c, (h[0] * h[0] + h[1] * h[1]) + h[2] * h[2])); }
+                    let mut keys: std::collections::HashMap<u32, ([f32; 3], f32)> = Default::default();
+                    for (o, &(cx, cz)) in cell_of.iter().enumerate() { if let Some(k) = by_cell.get(&(cx, cz)) { keys.insert(o as u32, *k); } }
+                    for it in lightmap::lmtiles::item_records(&scene, 1.0, false) { if let Some(r) = it.record { let h = r.world.h; keys.insert(base + it.item as u32, (r.world.c, (h[0] * h[0] + h[1] * h[1]) + h[2] * h[2])); } }
+                    println!("game keys: {} tile records (cell y {cell_y}), {} item records; e.g. tile 0 {:?}, items {:?}", tiles.len(), scene.instances.len(), keys.get(&0), scene.instances.iter().map(|i| keys.get(&(base + i.item as u32)).map(|k| k.0)).collect::<Vec<_>>());
+                    keys
+                });
+                if let Some(gk) = &game_keys {
+                    // sign-aware float order (the radix sorter compares the bit patterns: −0.0 sorts below +0.0)
+                    let fcmp = |x: f32, y: f32| -> std::cmp::Ordering { let kx = if x.is_sign_negative() { !(x.to_bits()) } else { x.to_bits() | 0x8000_0000 }; let ky = if y.is_sign_negative() { !(y.to_bits()) } else { y.to_bits() | 0x8000_0000 }; kx.cmp(&ky) };
+                    let mut idx: Vec<usize> = (0..charts.len()).collect();
+                    idx.sort_by(|&p, &q| {
+                        let (ap, aq) = (charts[p].ext[0] * charts[p].ext[1], charts[q].ext[0] * charts[q].ext[1]);
+                        let (kp, kq) = (gk.get(&ids[p]).copied().unwrap_or(([0.0; 3], 0.0)), gk.get(&ids[q]).copied().unwrap_or(([0.0; 3], 0.0)));
+                        // --key-order zyx (default: z most significant, then y, x) | yzx | zxy … — the study switch
+                        let ko = f("--key-order").unwrap_or_else(|| "zyx".into());
+                        let ax = |c: char| -> usize { match c { 'x' => 0, 'y' => 1, _ => 2 } };
+                        let kc: Vec<usize> = ko.chars().map(ax).collect();
+                        fcmp(ap, aq).then(fcmp(kp.0[kc[0]], kq.0[kc[0]])).then(fcmp(kp.0[kc[1]], kq.0[kc[1]])).then(fcmp(kp.0[kc[2]], kq.0[kc[2]])).then(fcmp(kp.1, kq.1)).then(ids[p].cmp(&ids[q]))
+                    });
+                    idx
+                } else {
                 // the keys are the block's world bbox CENTRE (RE child 2): items from their transformed
                 // triangles, tiles from their cell (x-major or z-major: --tiles-zmajor) at the sea height
                 let tile_zmajor = a.iter().any(|x| x == "--tiles-zmajor");
@@ -6274,8 +6366,10 @@ fn run(a: Vec<String>) {
                     let mdl = &scene.models[inst.model];
                     let mut lo = [f32::MAX; 3]; let mut hi = [f32::MIN; 3];
                     for t in &mdl.tris { for p in &t.p { let w = lightmap::geometry::xf_point(&inst.xf, *p); for k in 0..3 { lo[k] = lo[k].min(w[k]); hi[k] = hi[k].max(w[k]); } } }
+                    if std::env::var_os("LMTOOL_PACK_TRACE").is_some() { eprintln!("  item {} triangle bbox lo {:?} hi {:?} (xf {:?})", inst.item, lo, hi, inst.xf); }
                     (base + inst.item as u32, [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0])
                 }).collect();
+                for (o, c) in &centres { let inst = scene.instances.iter().find(|i| base + i.item as u32 == *o).unwrap(); println!("  item {} centre (triangle bbox) {:?}; the tile cells' centres are (cx·32 + 16, {tile_y}, cz·32 + 16)", o - base, c); let _ = inst; }
                 // the tile's centre: its cell (the true obj → cell map above; --tiles-idgrid = the old (o % 64, o / 64) guess) at the sea height
                 let pos_of = |k: usize| -> [f32; 3] { if ids[k] >= base { centres.get(&ids[k]).copied().unwrap_or([0.0; 3]) } else { let o = ids[k]; let (cx, cz) = if a.iter().any(|x| x == "--tiles-idgrid") { if tile_zmajor { ((o / 64) as i32, (o % 64) as i32) } else { ((o % 64) as i32, (o / 64) as i32) } } else { cell_of.get(o as usize).copied().unwrap_or((0, 0)) }; [cx as f32 * 32.0 + 16.0, tile_y, cz as f32 * 32.0 + 16.0] } };
                 for key in tie.split(',') {
@@ -6285,6 +6379,7 @@ fn run(a: Vec<String>) {
                 // the area sort last (stable)
                 idx.sort_by_key(|&i| (charts[i].ext[0] * charts[i].ext[1]).to_bits());
                 idx
+                }
             };
             // --s X: one TryPack at a given s (layout units per metre) instead of the scale search — to test the
             // sizes the editor's own s produces; --try-s A,B,N: the success/failure of TryPack over a range of s
