@@ -93,6 +93,11 @@ pub fn tokens(shootctl: &str, owner: &str) -> Result<(String, String), String> {
 /// plays and asking for an API fix, 2026-09-12 22:22Z — the mint is a 2-second
 /// plugin call that loads nothing).
 pub fn tokens_opt(shootctl: &str, owner: &str, lock: bool) -> Result<(String, String), String> {
+    // TINYCTL_TOKEN_DIR=DIR: tokens minted elsewhere (round-publish / port-fix-publish pull
+    // them from the box) — the devserver has no plugin to mint from (2026-09-25)
+    if let Ok(dir) = std::env::var("TINYCTL_TOKEN_DIR") {
+        return fresh_tokens_in(&dir).ok_or_else(|| format!("no fresh tokens in {dir} (younger than {} min)", TOKEN_REUSE_SECS / 60));
+    }
     if let Some(pair) = fresh_tokens() {
         eprintln!("tokens: reusing the plugin's files (younger than {} min)", TOKEN_REUSE_SECS / 60);
         return Ok(pair);
@@ -328,7 +333,9 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 let nn = i + 1;
                 let fname = format!("{nn:02}-{}.Map.Gbx", file_safe_name(&s(&rec, "name")));
                 let mut file_note = String::from("-");
-                if let Some(d) = &fetch {
+                // --fetch-only SUBSTR[,SUBSTR…]: download only the maps whose name contains one
+                let only_ok = f("--fetch-only").map(|v| v.split(',').any(|w| s(&rec, "name").contains(w.trim()))).unwrap_or(true);
+                if let (Some(d), true) = (&fetch, only_ok) {
                     let p = d.join(&fname);
                     if p.exists() && std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false) {
                         file_note = format!("have {} B", std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0));

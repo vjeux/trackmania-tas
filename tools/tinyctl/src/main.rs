@@ -215,6 +215,17 @@ fn main() {
         "round-publish" => roundpub::cmd(rest),
         "port-fix-publish" => roundpub::port_fix_publish(rest),
         "port-layers" => portlayers::cmd(rest),
+        // tinyctl mint-tokens --token-dir DIR: a fresh Nadeo token pair pulled from the box
+        // (a 4-second game-lock step there); every devserver-side Nadeo read/write takes
+        // TINYCTL_TOKEN_DIR=DIR afterwards
+        "mint-tokens" => (|| -> Result<(), String> {
+            let dir = tmmaps::cli::flag(rest, "--token-dir").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("/tmp/tinyctl-tokens"));
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let wsx = wsx::Wsx::new(rest);
+            roundpub::mint_tokens(&wsx, &dir)?;
+            println!("tokens in {}", dir.display());
+            Ok(())
+        })(),
         "remote-shots" => remoteshots::cmd(rest),
         "remote-drive" => remoteshots::drive_cmd(rest),
         "skip-manifest" => batch::skip_manifest_cmd(rest),
