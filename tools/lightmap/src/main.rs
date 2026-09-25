@@ -3028,7 +3028,8 @@ fn run(a: Vec<String>) {
             let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
             let root = std::path::PathBuf::from(&a[1]);
             let frame: u32 = f("--frame").map(|v| v.parse().expect("--frame")).unwrap_or(127448);
-            let blend = match f("--blend").as_deref() { Some("round-src") => lightmap::sunpass::BlendModel::RoundSrcAndSum, _ => lightmap::sunpass::BlendModel::RoundSum };
+            // default = what the capture shows: the shader output truncated to f16, the blend sum rounded to nearest
+            let blend = match f("--blend").as_deref() { Some("round-src") => lightmap::sunpass::BlendModel::RoundSrcAndSum, Some("trunc") => lightmap::sunpass::BlendModel::TruncSum, Some("trunc-src") => lightmap::sunpass::BlendModel::TruncSrcAndSum, Some("round") => lightmap::sunpass::BlendModel::RoundSum, _ => lightmap::sunpass::BlendModel::TruncSrcRoundSum };
             let txt = std::fs::read_to_string(root.join("MANIFEST.json")).expect("MANIFEST.json");
             let m = lightmap::passdiff::read_manifest(&txt).expect("manifest");
             let env = root.join(format!("env/frame{frame}"));
@@ -3093,11 +3094,39 @@ fn run(a: Vec<String>) {
             let mut by = std::collections::BTreeMap::<String, (usize, usize, f32)>::new();
             for i in 0..ours.px.len() { let (x, y) = ((i as u32) % ours.w, (i as u32) / ours.w); let ta = target.get(x, y, 3); if ta == 0.0 && ours.px[i][3] == 0.0 { continue; } let key = if (ta - 1.0).abs() < 1e-3 { "alpha=1".to_string() } else if (ta - 2.0).abs() < 1e-3 { "alpha=2".to_string() } else { "partial".to_string() }; let e = by.entry(key).or_insert((0, 0, 0.0)); e.0 += 1; let d = (0..3).map(|k| (ours.px[i][k] - target.get(x, y, k as u32)).abs()).fold(0f32, f32::max); if d > 0.0 { e.1 += 1; if d > e.2 { e.2 = d; } } }
             for (k, (n, bad, mx)) in by { println!("  {k}: {n} texels, {bad} with an rgb difference (max |Δ| {mx:.4})"); }
+            // partial texels: split the differences into "alpha differs" (coverage: a jitter edge decided differently) and
+            // "alpha equal, rgb differs" (the shading of the covered fraction)
+            let (mut a_diff, mut a_same_rgb_diff, mut shown) = (0usize, 0usize, 0usize);
+            for i in 0..ours.px.len() { let (x, y) = ((i as u32) % ours.w, (i as u32) / ours.w); let ta = target.get(x, y, 3); let oa = ours.px[i][3]; if (ta - 1.0).abs() < 1e-3 || (ta == 0.0 && oa == 0.0) { continue; } let rgbd = (0..3).map(|k| (ours.px[i][k] - target.get(x, y, k as u32)).abs()).fold(0f32, f32::max); if oa != ta { a_diff += 1; if shown < 6 { println!("  alpha differs at ({x},{y}): ours {:?} game {:?}", ours.px[i], [target.get(x, y, 0), target.get(x, y, 1), target.get(x, y, 2), ta]); shown += 1; } } else if rgbd > 0.0 { a_same_rgb_diff += 1; if shown < 12 { println!("  same alpha, rgb differs at ({x},{y}): ours {:?} game {:?}", ours.px[i], [target.get(x, y, 0), target.get(x, y, 1), target.get(x, y, 2), ta]); shown += 1; } } }
+            println!("  partial texels: alpha differs {a_diff}, alpha equal but rgb differs {a_same_rgb_diff}");
             if let Some(out) = f("--dump") {
                 let mut bytes = Vec::with_capacity(ours.px.len() * 8);
                 for p in &ours.px { for k in 0..4 { bytes.extend_from_slice(&lightmap::gpufmt::encode_f16(p[k], lightmap::gpufmt::Rounding::NearestEven).to_le_bytes()); } }
                 std::fs::write(&out, &bytes).expect("dump");
                 println!("wrote {out} (raw RGBA16F {}×{})", ours.w, ours.h);
+            }
+        }
+        "dilate-check" => {
+            // lmtool dilate-check PASSCAP_ROOT [--frame N]: the transcribed PS 1332 gutter dilation (gpuenc::dilate_ps1332), 8 passes on
+            // each captured final_03 image, compared f16 for f16 with the captured final_04 images
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let root = std::path::PathBuf::from(&a[1]);
+            let frame: u32 = f("--frame").map(|v| v.parse().expect("--frame")).unwrap_or(74490);
+            let txt = std::fs::read_to_string(root.join("MANIFEST.json")).expect("MANIFEST.json");
+            let m = lightmap::passdiff::read_manifest(&txt).expect("manifest");
+            for id in ["24858", "24752", "24749", "24852"] {
+                let before = m.passes.iter().find(|e| e.pass == "final_03_after_colormat_ps1034" && e.frame == Some(frame) && e.file.contains(&format!("_{id}.dds"))).expect("final_03 entry");
+                let after = m.passes.iter().find(|e| e.pass == "final_04_after_dilate8_ps1332" && e.frame == Some(frame) && e.file.contains(&format!("_{id}.dds"))).expect("final_04 entry");
+                let mut img = lightmap::passdiff::load_entry(&root, before).expect("load before");
+                let target = lightmap::passdiff::load_entry(&root, after).expect("load after");
+                let t0 = std::time::Instant::now();
+                let fma = a.iter().any(|x| x == "--fma");
+                // the capture shows the un-blended f16 store TRUNCATES (all 4 × 16 777 216 values identical with it, 3 % off by one ulp with RTNE)
+                let store = if a.iter().any(|x| x == "--rtne") { lightmap::gpufmt::Rounding::NearestEven } else { lightmap::gpufmt::Rounding::Truncate };
+                for _ in 0..8 { img = lightmap::gpuenc::dilate_ps1332_full(&img, fma, store); }
+                let (n, exact, ulp1, worse, maxd) = lightmap::gpuenc::compare_buf(&img, &target, 4);
+                let covered = (0..target.h).flat_map(|y| (0..target.w).map(move |x| (x, y))).filter(|&(x, y)| target.get(x, y, 3) > 0.0).count();
+                println!("image {id}: 8 × PS 1332 in {:.1} s → {exact} of {n} values bit-identical, {ulp1} within 1 f16 ulp, {worse} worse (max |Δ| {maxd:.5}); covered texels after: {covered}", t0.elapsed().as_secs_f32());
             }
         }
         "encode-check" => {

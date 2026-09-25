@@ -308,3 +308,135 @@ mod tests {
         assert_eq!(e.cb4[0][0], unorm8(0.501961, ne));
     }
 }
+
+/// PS 1332 (Pixel_1332.txt), the finalisation's gutter dilation, one pass: a texel whose alpha is < 1e-4 takes the
+/// alpha-weighted mean of its 8 neighbours (rgb·alpha summed, alpha summed; out-of-range loads read 0 as D3D `ld`
+/// does), alpha becomes 1 where any neighbour had alpha (sum.w > 1e-4); every other texel is copied. The target is
+/// RGBA16F: each pass's store truncates to f16 (verified bit-exact over 8 passes × 4 images, `lmtool dilate-check`).
+pub fn dilate_ps1332(src: &Buf) -> Buf {
+    dilate_ps1332_opt(src, false)
+}
+
+/// `fma`: the driver fuses each neighbour's `mul` + `add` into one fused multiply-add (rgb·w + acc).
+pub fn dilate_ps1332_opt(src: &Buf, fma: bool) -> Buf {
+    // the render-target store of a pixel-shader output (no blending) TRUNCATES to f16: with it all 67 108 864 values
+    // of the four captured images reproduce bit for bit (RTNE leaves 3 % one ulp off)
+    dilate_ps1332_full(src, fma, Rounding::Truncate)
+}
+
+pub fn dilate_ps1332_full(src: &Buf, fma: bool, store: Rounding) -> Buf {
+    let (w, h) = (src.w as i64, src.h as i64);
+    let mut out = Buf::new(src.w, src.h, 4);
+    let ld = |x: i64, y: i64| -> [f32; 4] {
+        if x < 0 || y < 0 || x >= w || y >= h { return [0.0; 4]; }
+        [src.get(x as u32, y as u32, 0), src.get(x as u32, y as u32, 1), src.get(x as u32, y as u32, 2), src.get(x as u32, y as u32, 3)]
+    };
+    // the 8 offsets in the bytecode's order
+    const OFF: [(i64, i64); 8] = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
+    for y in 0..h {
+        for x in 0..w {
+            let c = ld(x, y);
+            let mut o = c;
+            if c[3] < 0.0001 {
+                // 5-27: r2 = n0·w0; r2 += n_i·w_i for i = 1..6 (rgb weighted, w added); r0 = n7·w7; r0 = r0 + r2
+                let mut acc = [0f32; 4];
+                let n0 = ld(x + OFF[0].0, y + OFF[0].1);
+                acc = [n0[3] * n0[0], n0[3] * n0[1], n0[3] * n0[2], n0[3]];
+                for &(dx, dy) in &OFF[1..7] {
+                    let n = ld(x + dx, y + dy);
+                    if fma {
+                        acc = [n[3].mul_add(n[0], acc[0]), n[3].mul_add(n[1], acc[1]), n[3].mul_add(n[2], acc[2]), acc[3] + n[3]];
+                    } else {
+                        let t = [n[3] * n[0], n[3] * n[1], n[3] * n[2], n[3]];
+                        acc = [acc[0] + t[0], acc[1] + t[1], acc[2] + t[2], acc[3] + t[3]];
+                    }
+                }
+                let n7 = ld(x + OFF[7].0, y + OFF[7].1);
+                let r0 = if fma {
+                    [n7[3].mul_add(n7[0], acc[0]), n7[3].mul_add(n7[1], acc[1]), n7[3].mul_add(n7[2], acc[2]), n7[3] + acc[3]]
+                } else {
+                    let t = [n7[3] * n7[0], n7[3] * n7[1], n7[3] * n7[2], n7[3]];
+                    [t[0] + acc[0], t[1] + acc[1], t[2] + acc[2], t[3] + acc[3]]
+                };
+                // 28-30: if 1e-4 < sum.w: out = sum / sum.w (all four components) else the texel itself
+                if 0.0001 < r0[3] {
+                    o = [r0[0] / r0[3], r0[1] / r0[3], r0[2] / r0[3], r0[3] / r0[3]];
+                }
+            }
+            for k in 0..4 {
+                out.set(x as u32, y as u32, k, quantise_f16(o[k as usize], store));
+            }
+        }
+    }
+    out
+}
+
+/// PS 1335 (Pixel_1335.txt), the ILightInput dilation, one pass: MRT0 = colour (R11G11B10), MRT1 = coverage (R8).
+/// A texel whose coverage is < 1e-4 takes the coverage-weighted mean of its 8 neighbours' colours (the coverage sum
+/// as the weight) and coverage 1 where any neighbour is covered; otherwise the colour is copied and coverage is 1.
+/// Returns (colour f32 rgb — the caller quantises to the R11G11B10 target —, coverage in [0,1] for the R8 target).
+pub fn dilate_ps1335(color: &Buf, coverage: &Buf) -> (Buf, Buf) {
+    let (w, h) = (color.w as i64, color.h as i64);
+    let mut oc = Buf::new(color.w, color.h, 3);
+    let mut ocov = Buf::new(color.w, color.h, 1);
+    let ldc = |x: i64, y: i64| -> [f32; 3] { if x < 0 || y < 0 || x >= w || y >= h { [0.0; 3] } else { [color.get(x as u32, y as u32, 0), color.get(x as u32, y as u32, 1), color.get(x as u32, y as u32, 2)] } };
+    let ldw = |x: i64, y: i64| -> f32 { if x < 0 || y < 0 || x >= w || y >= h { 0.0 } else { coverage.get(x as u32, y as u32, 0) } };
+    const OFF: [(i64, i64); 8] = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)];
+    for y in 0..h {
+        for x in 0..w {
+            let c = ldc(x, y);
+            let cov = ldw(x, y);
+            let (mut o, mut ow) = (c, 1.0f32);
+            if cov < 0.0001 {
+                // 6-11: r3 = n(0,-1)·w(0,-1) then mad n(-1,-1)·w(-1,-1) + r3 ; 12: wsum = w(0,-1) + w(-1,-1)
+                let (n0, w0) = (ldc(x + OFF[0].0, y + OFF[0].1), ldw(x + OFF[0].0, y + OFF[0].1));
+                let (n1, w1) = (ldc(x + OFF[1].0, y + OFF[1].1), ldw(x + OFF[1].0, y + OFF[1].1));
+                let mut acc = [w1 * n1[0], w1 * n1[1], w1 * n1[2]];
+                acc = [n0[0] * w0 + acc[0], n0[1] * w0 + acc[1], n0[2] * w0 + acc[2]];
+                let mut wsum = w1 + w0;
+                // 13-32: the next five neighbours: mad n·w + acc ; wsum = w + wsum
+                for &(dx, dy) in &OFF[2..7] {
+                    let (n, wn) = (ldc(x + dx, y + dy), ldw(x + dx, y + dy));
+                    acc = [n[0] * wn + acc[0], n[1] * wn + acc[1], n[2] * wn + acc[2]];
+                    wsum = wn + wsum;
+                }
+                // 33-36: the last one: mad, then wsum = w7 + wsum (r0.x = w7 + r2.y)
+                let (n7, w7) = (ldc(x + OFF[7].0, y + OFF[7].1), ldw(x + OFF[7].0, y + OFF[7].1));
+                acc = [n7[0] * w7 + acc[0], n7[1] * w7 + acc[1], n7[2] * w7 + acc[2]];
+                wsum = w7 + wsum;
+                // 37-40
+                if 0.0001 < wsum {
+                    o = [acc[0] / wsum, acc[1] / wsum, acc[2] / wsum];
+                    ow = 1.0;
+                } else {
+                    o = c;
+                    ow = cov;
+                }
+            }
+            oc.set(x as u32, y as u32, 0, o[0]);
+            oc.set(x as u32, y as u32, 1, o[1]);
+            oc.set(x as u32, y as u32, 2, o[2]);
+            ocov.set(x as u32, y as u32, 0, ow);
+        }
+    }
+    (oc, ocov)
+}
+
+/// Compare two f32 buffers channel-wise: (values, exact, within 1 f16 ulp of theirs, worse, max |Δ|).
+pub fn compare_buf(ours: &Buf, theirs: &Buf, channels: u32) -> (usize, usize, usize, usize, f32) {
+    let (mut exact, mut ulp1, mut worse, mut maxd) = (0usize, 0usize, 0usize, 0f32);
+    let n = (ours.w * ours.h * channels) as usize;
+    for y in 0..ours.h {
+        for x in 0..ours.w {
+            for c in 0..channels {
+                let (o, t) = (ours.get(x, y, c), theirs.get(x, y, c));
+                let d = (o - t).abs();
+                if d == 0.0 { exact += 1; continue; }
+                let ulp = (crate::gpufmt::decode_f16(crate::gpufmt::encode_f16(t, Rounding::NearestEven).wrapping_add(1)) - t).abs();
+                if d <= ulp * 1.001 { ulp1 += 1; } else { worse += 1; }
+                if d > maxd { maxd = d; }
+            }
+        }
+    }
+    (n, exact, ulp1, worse, maxd)
+}

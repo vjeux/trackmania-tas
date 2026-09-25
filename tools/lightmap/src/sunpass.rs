@@ -208,6 +208,12 @@ pub enum BlendModel {
     RoundSum,
     /// acc = f16(acc + f16(src)) — the source rounded to the target format first
     RoundSrcAndSum,
+    /// acc = f16_rtz(acc + src) — the sum truncated on store
+    TruncSum,
+    /// acc = f16_rtz(acc + f16_rtz(src))
+    TruncSrcAndSum,
+    /// acc = f16_rtne(acc + f16_rtz(src)) — the shader output truncated to the target format, the blend rounded
+    TruncSrcRoundSum,
 }
 
 /// The 2048² RGBA16F accumulation target.
@@ -286,8 +292,14 @@ pub fn run_sun_pass(meshes: &[LmMesh], instances: &[LmInstance], table: &[[f32; 
                     let o = ps_15187(p, n, d, sm);
                     let px = &mut tgt.px[(y * w + x) as usize];
                     for k in 0..4 {
-                        let src = if blend == BlendModel::RoundSrcAndSum { quantise_f16(o[k], Rounding::NearestEven) } else { o[k] };
-                        px[k] = quantise_f16(px[k] + src, Rounding::NearestEven);
+                        let (src, r) = match blend {
+                            BlendModel::RoundSum => (o[k], Rounding::NearestEven),
+                            BlendModel::RoundSrcAndSum => (quantise_f16(o[k], Rounding::NearestEven), Rounding::NearestEven),
+                            BlendModel::TruncSum => (o[k], Rounding::Truncate),
+                            BlendModel::TruncSrcAndSum => (quantise_f16(o[k], Rounding::Truncate), Rounding::Truncate),
+                            BlendModel::TruncSrcRoundSum => (quantise_f16(o[k], Rounding::Truncate), Rounding::NearestEven),
+                        };
+                        px[k] = quantise_f16(px[k] + src, r);
                     }
                 });
             }
