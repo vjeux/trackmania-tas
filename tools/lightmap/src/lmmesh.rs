@@ -310,9 +310,19 @@ pub fn lm_mesh_of_zone(store: &mut mapgeom::store::DataStore, collection: &str, 
 /// (items first — model by model in first-appearance order — then the tiles in chart-array order); only overlapping
 /// charts could make the order matter, and charts never overlap.
 pub fn lm_scene_from_map(scene: &crate::geometry::Scene, layout: &crate::layout::GameLayout, base: u32, item_bytes: &dyn Fn(&str) -> Option<Vec<u8>>, tile_mesh: Option<LmMesh>, tile_plg: crate::layout::TilePlg, atlas: f32) -> Result<crate::lmaccum::LmScene, String> {
+    lm_scene_from_map_at(scene, layout, base, item_bytes, tile_mesh, tile_plg, atlas, 0.0)
+}
+
+/// `lm_scene_from_map` with the tiles' world y (the tile row · 8 + the collection's yoff; BlueBay's is 0).
+pub fn lm_scene_from_map_at(scene: &crate::geometry::Scene, layout: &crate::layout::GameLayout, base: u32, item_bytes: &dyn Fn(&str) -> Option<Vec<u8>>, tile_mesh: Option<LmMesh>, tile_plg: crate::layout::TilePlg, atlas: f32, tile_world_y: f32) -> Result<crate::lmaccum::LmScene, String> {
     use crate::lmaccum::LmScene;
     let mut sc = LmScene { meshes: Vec::new(), inst_first: Vec::new(), inst_count: Vec::new(), instances: Vec::new(), table: Vec::new(), eids: Vec::new() };
-    let rect_of: std::collections::HashMap<u32, [i32; 4]> = layout.charts.iter().filter(|c| c.charted == crate::layout::Charted::Bound).map(|c| (c.obj, [c.x, c.y, c.w, c.h])).collect();
+    // the item's rect: by its map item index when the layout carries its records (chart k ↔ record k), else by obj = base + item
+    let rect_of: std::collections::HashMap<u32, [i32; 4]> = if !layout.records.is_empty() {
+        layout.records.iter().enumerate().filter_map(|(k, r)| { let (ii, _) = r.item.as_ref()?; let c = &layout.charts[k]; (c.charted == crate::layout::Charted::Bound).then_some((base + *ii as u32, [c.x, c.y, c.w, c.h])) }).collect()
+    } else {
+        layout.charts.iter().filter(|c| c.charted == crate::layout::Charted::Bound).map(|c| (c.obj, [c.x, c.y, c.w, c.h])).collect()
+    };
     // items, grouped by model in first-appearance order
     let mut by_model: Vec<(usize, Vec<usize>)> = Vec::new(); // (model index, instance indices)
     for (ii, inst) in scene.instances.iter().enumerate() {
@@ -345,10 +355,17 @@ pub fn lm_scene_from_map(scene: &crate::geometry::Scene, layout: &crate::layout:
     if let Some(tm) = tile_mesh {
         let first = sc.instances.len();
         let mut n = 0usize;
-        for c in layout.charts.iter().filter(|c| c.obj < base) {
-            let (cx, cz) = layout.cell_of[c.obj as usize];
+        // the tile charts: the tile records in order (chart k ↔ record k; their cells = layout.cell_of in the same order), else
+        // the charts below the item base
+        let tile_charts: Vec<(usize, (i32, i32))> = if !layout.records.is_empty() {
+            layout.records.iter().enumerate().filter(|(_, r)| r.class == "tile").enumerate().map(|(ti, (k, _))| (k, layout.cell_of[ti])).collect()
+        } else {
+            layout.charts.iter().enumerate().filter(|(_, c)| c.obj < base).map(|(k, c)| (k, layout.cell_of[c.obj as usize])).collect()
+        };
+        for (k, (cx, cz)) in tile_charts {
+            let c = &layout.charts[k];
             let st = crate::peelcolor::chart_st([c.x, c.y, c.w, c.h], tile_plg.bounds, atlas);
-            sc.instances.push(LmInstance { q: [0.0, 0.0, 0.0, 1.0], t: [cx as f32 * 32.0, 0.0, cz as f32 * 32.0], scale: 1.0, st, st_x_bits: st[0].to_bits() });
+            sc.instances.push(LmInstance { q: [0.0, 0.0, 0.0, 1.0], t: [cx as f32 * 32.0, tile_world_y, cz as f32 * 32.0], scale: 1.0, st, st_x_bits: st[0].to_bits() });
             n += 1;
         }
         sc.meshes.push(tm);
@@ -390,4 +407,47 @@ pub fn visual_tile_verts_of_zone(store: &mut mapgeom::store::DataStore, collecti
         }
     }
     Ok(Vec::new())
+}
+
+/// THE PREFAB ENTITY RECORDS' LM MESHES (Stadium: the authored blocks' Base_Air, the engine's clips, the VFC walls): every
+/// record of `layout.records` with a `MeshRef` adds an instance of its entity's Solid2Model LM mesh (one mesh per (prefab,
+/// entity), first appearance) placed by the entity's world transform, with the chart ST of its own rect (chart k ↔ record k)
+/// and the entity's PreLightGen uv-0 bounds. The instances of one mesh follow record order.
+pub fn lm_scene_add_entities(store: &mut mapgeom::store::DataStore, layout: &crate::layout::GameLayout, sc: &mut crate::lmaccum::LmScene, atlas: f32) -> Result<usize, String> {
+    let mut by_mesh: Vec<((String, usize), Vec<usize>)> = Vec::new();
+    for (k, r) in layout.records.iter().enumerate() {
+        let Some(m) = &r.mesh else { continue };
+        let key = (m.prefab.clone(), m.entity);
+        match by_mesh.iter_mut().find(|(kk, _)| *kk == key) { Some((_, v)) => v.push(k), None => by_mesh.push((key, vec![k])) }
+    }
+    let mut added = 0usize;
+    for ((prefab, entity), recs) in &by_mesh {
+        let pm = store.load_model(prefab)?;
+        let pf = mapgeom::static_item::prefab::CPlugPrefab::from_model(&pm)?;
+        let Some(e) = pf.ents.get(*entity) else { continue };
+        let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
+        let Some(s2) = so.solid2() else { continue };
+        let Some(mesh) = lm_mesh_of_solid(s2) else { continue };
+        let first = sc.instances.len();
+        let mut n = 0usize;
+        for &k in recs {
+            let r = &layout.records[k];
+            let c = &layout.charts[k];
+            let m = r.mesh.as_ref().unwrap();
+            let iso = crate::lmtiles::from_xform(&m.xf);
+            let m9: [f32; 9] = [iso[0], iso[1], iso[2], iso[3], iso[4], iso[5], iso[6], iso[7], iso[8]];
+            let q = mapgeom::veget_instance::mat_to_quat(&m9);
+            // the stream quaternion is (x, y, z, w) of the rotation; mat_to_quat gives (w, x, y, z)
+            let st = crate::peelcolor::chart_st([c.x, c.y, c.w, c.h], r.uv, atlas);
+            sc.instances.push(crate::sunpass::LmInstance { q: [q[1], q[2], q[3], q[0]], t: [iso[9], iso[10], iso[11]], scale: 1.0, st, st_x_bits: st[0].to_bits() });
+            n += 1;
+        }
+        if n == 0 { continue; }
+        sc.meshes.push(mesh);
+        sc.inst_first.push(first);
+        sc.inst_count.push(n);
+        sc.eids.push(0);
+        added += n;
+    }
+    Ok(added)
 }

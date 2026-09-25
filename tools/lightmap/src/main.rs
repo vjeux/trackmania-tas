@@ -1575,16 +1575,33 @@ fn run(a: Vec<String>) {
             }
             let game_sizes: Option<std::collections::HashMap<usize, (u32, u32)>> = game_layout.as_ref().map(|gl| {
                 let mut out = std::collections::HashMap::new();
-                for c in &gl.charts { if c.obj >= base && c.charted == lightmap::layout::Charted::Bound { out.insert((c.obj - base) as usize, ((c.w as u32 / 2).max(1), (c.h as u32 / 2).max(1))); ref_rects.insert((c.obj - base) as usize, [c.x, c.y, c.w, c.h]); } }
+                if !gl.records.is_empty() {
+                    // the record pipeline: an item record names its map item (records::Rec.item); chart k ↔ record k
+                    for (k, r) in gl.records.iter().enumerate() { if let Some((ii, _)) = &r.item { let c = &gl.charts[k]; if c.charted == lightmap::layout::Charted::Bound { out.insert(*ii, ((c.w as u32 / 2).max(1), (c.h as u32 / 2).max(1))); ref_rects.insert(*ii, [c.x, c.y, c.w, c.h]); } } }
+                } else {
+                    for c in &gl.charts { if c.obj >= base && c.charted == lightmap::layout::Charted::Bound { out.insert((c.obj - base) as usize, ((c.w as u32 / 2).max(1), (c.h as u32 / 2).max(1))); ref_rects.insert((c.obj - base) as usize, [c.x, c.y, c.w, c.h]); } }
+                }
                 out
             });
             let ref_sizes = game_sizes.or(ref_sizes);
             // the tiles' chart ST from the layout (D's rule, peelcolor::chart_st, the Sea tile's PreLightGen bounds), per cell
             if let Some(gl) = &game_layout {
+                // (the table is 64 × 64 cells — the peel's tile ST lookup; a 96-cell Stadium grid keeps its first 64 × 64 here until
+                // the peel's tile table grows with the grid)
                 let mut table: Vec<Option<[f32; 4]>> = vec![None; 64 * 64];
-                for c in gl.charts.iter().filter(|c| c.obj < base) {
-                    let (cx, cz) = gl.cell_of[c.obj as usize];
-                    if (0..64).contains(&cx) && (0..64).contains(&cz) { table[(cz * 64 + cx) as usize] = Some(lightmap::peelcolor::chart_st([c.x, c.y, c.w, c.h], lightmap::layout::TilePlg::BLUEBAY_SEA.bounds, 2048.0)); }
+                if !gl.records.is_empty() {
+                    let mut ti = 0usize;
+                    for (k, r) in gl.records.iter().enumerate() {
+                        if r.class != "tile" { continue; }
+                        let (cx, cz) = gl.cell_of[ti]; ti += 1;
+                        let c = &gl.charts[k];
+                        if (0..64).contains(&cx) && (0..64).contains(&cz) { table[(cz * 64 + cx) as usize] = Some(lightmap::peelcolor::chart_st([c.x, c.y, c.w, c.h], r.uv, 2048.0)); }
+                    }
+                } else {
+                    for c in gl.charts.iter().filter(|c| c.obj < base) {
+                        let (cx, cz) = gl.cell_of[c.obj as usize];
+                        if (0..64).contains(&cx) && (0..64).contains(&cz) { table[(cz * 64 + cx) as usize] = Some(lightmap::peelcolor::chart_st([c.x, c.y, c.w, c.h], lightmap::layout::TilePlg::BLUEBAY_SEA.bounds, 2048.0)); }
+                    }
                 }
                 prm.tile_st = Some(std::sync::Arc::new(table));
             }
@@ -1600,11 +1617,24 @@ fn run(a: Vec<String>) {
                 let Some(gl) = game_layout.as_ref() else { panic!("--lm-from-map needs --layout-game") };
                 let pak_arg = f("--pak");
                 let pak: Option<(&str, &str)> = pak_arg.as_deref().and_then(|p| p.rsplit_once(':'));
-                let tile_mesh = match pak { Some((pp, key)) => { let mut store = mapgeom::store::DataStore::empty(); store.add_pak(pp, key).expect("pak"); lightmap::lmmesh::lm_mesh_of_zone(&mut store, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into())).expect("zone tile mesh") } None => { eprintln!("lm-from-map: no --pak — the zone tiles have no LM mesh (items only)"); None } };
+                let mf0 = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
+                let coll_name = f("--collection").unwrap_or_else(|| "BlueBay".into());
+                // the ground zone: --zone, else the map's flat zone blocks / the collection profile (layout::ground_zone)
+                let zone_name = f("--zone").unwrap_or_else(|| lightmap::layout::ground_zone(&mf0, &coll_name));
+                // the tiles' world y = the tile row · 8 + the collection's yoff (BlueBay 5·8 − 40 = 0; Stadium 9·8 − 64 = 8; WhiteShore 14·8 − 120 = −8)
+                let tile_world_y = lightmap::layout::tile_level(&mf0, &coll_name) as f32 * 8.0 + lightmap::layout::CollectionProfile::of(&coll_name).yoff;
+                let mut lm_store: Option<mapgeom::store::DataStore> = pak.map(|(pp, key)| { let mut st = mapgeom::store::DataStore::empty(); st.add_pak(pp, key).expect("pak"); st });
+                let tile_mesh = match lm_store.as_mut() { Some(st) => lightmap::lmmesh::lm_mesh_of_zone(st, &coll_name, &zone_name).expect("zone tile mesh"), None => { eprintln!("lm-from-map: no --pak — the zone tiles have no LM mesh (items only)"); None } };
                 let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
                 let files = mapgeom::embedded::files(&mf).expect("embedded items");
                 let by_name: std::collections::BTreeMap<String, Vec<u8>> = files.iter().map(|(k, v)| (k.rsplit(['/', '\\']).next().unwrap_or(k).to_string(), v.clone())).collect();
-                let sc = lightmap::lmmesh::lm_scene_from_map(&scene, gl, base, &|name| by_name.get(name).cloned(), tile_mesh, lightmap::layout::TilePlg::BLUEBAY_SEA, 2048.0).unwrap_or_else(|e| panic!("--lm-from-map: {e}"));
+                // the tile chart's PLG = the ground zone prefab's (the layout's tile records carry it; BlueBay's Sea as the fallback)
+                let tile_plg = gl.records.iter().find(|r| r.class == "tile").map(|r| lightmap::layout::TilePlg { meter_by_uv: r.meter_by_uv, bounds: r.uv }).unwrap_or(lightmap::layout::TilePlg::BLUEBAY_SEA);
+                let mut sc = lightmap::lmmesh::lm_scene_from_map_at(&scene, gl, base, &|name| by_name.get(name).cloned(), tile_mesh, tile_plg, 2048.0, tile_world_y).unwrap_or_else(|e| panic!("--lm-from-map: {e}"));
+                // the prefab entity records (Stadium's blocks, clips, walls) — their LM meshes from the pak
+                if let Some(st) = lm_store.as_mut() {
+                    match lightmap::lmmesh::lm_scene_add_entities(st, gl, &mut sc, 2048.0) { Ok(n) if n > 0 => eprintln!("lm-from-map: {n} prefab entity instances (blocks / clips / walls) added"), Ok(_) => {}, Err(e) => eprintln!("lm-from-map: prefab entities: {e}") }
+                }
                 eprintln!("lm-from-map: {} LM meshes, {} instances from the map's models + the layout", sc.meshes.len(), sc.instances.len());
                 // against the captured stream (--lm-from): the instances (q, t, st) in order and as sets, the tile mesh's vertices and table
                 if let Some(cap) = &captured_lm {

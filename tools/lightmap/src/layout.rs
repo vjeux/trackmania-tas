@@ -63,6 +63,9 @@ pub struct GameLayout {
     /// The record CENTRES in chart order (rec+0x38): the mapping header's bbox is their min / max fold (RE 7's 0008,
     /// itemrule::mapping_bbox — every record at write time, no half extents).
     pub centres: Vec<[f32; 3]>,
+    /// The records behind the charts (chart k ↔ record k) when the layout came through records::build_map_records —
+    /// the prefab entity records carry their LM mesh source (records::MeshRef) for the bake's LM scene.
+    pub records: Vec<crate::records::Rec>,
 }
 
 impl GameLayout {
@@ -259,7 +262,7 @@ pub fn allocate(input: &LayoutInput) -> Result<GameLayout, String> {
         .map(|(k, p)| LayoutChart { obj: objs[k].0, ext: charts[k].ext, charted: objs[k].1, x: p.x as i32 + pad as i32, y: p.y as i32 + pad as i32, w: p.w as i32 - 2 * pad as i32, h: p.h as i32 - 2 * pad as i32 })
         .collect();
     let centres: Vec<[f32; 3]> = keys.iter().map(|k| k.centre).collect();
-    Ok(GameLayout { charts: out, s, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new(), entries: Vec::new(), entry_keys: Vec::new(), centres })
+    Ok(GameLayout { charts: out, s, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new(), entries: Vec::new(), entry_keys: Vec::new(), centres, records: Vec::new() })
 }
 
 #[cfg(test)]
@@ -398,6 +401,7 @@ pub fn for_map(map_path: &str, scene: &crate::geometry::Scene, base: u32, qualit
         gl.cell_of = mr.tile_cells.clone();
         gl.tile_quality = mr.tile_quality.clone();
         if std::env::var_os("LMTOOL_LAYOUT_TRACE").is_some() { eprintln!("layout records: {} blocks → {} records, {} tiles, {} clip records, {} items; objs blocks {}.. tiles {}.. clips {}.. items {}..", mr.n_blocks, mr.recs.len() - mr.n_tiles - mr.n_clips - mr.n_items, mr.n_tiles, mr.n_clips, mr.n_items, mr.block_obj0, mr.tile_obj0, mr.clip_obj0, mr.item_obj0); }
+        gl.records = mr.recs;
         return Ok(gl);
     }
     // the ground grid: the map's own size when its cell count is the tile base (the 64 × 64 tiny maps), else the collection's
@@ -726,5 +730,5 @@ pub fn allocate_grouped_walls(input: &LayoutInput, groups: &[u64], pos: Option<&
     let _ = &walk_pos;
     WALK_POS.with(|w| *w.borrow_mut() = walk_pos.clone());
     let centres: Vec<[f32; 3]> = keys.iter().map(|k| k.centre).collect();
-    Ok(GameLayout { charts: out, s, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new(), entries: entry_out, entry_keys, centres })
+    Ok(GameLayout { charts: out, s, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new(), entries: entry_out, entry_keys, centres, records: Vec::new() })
 }
