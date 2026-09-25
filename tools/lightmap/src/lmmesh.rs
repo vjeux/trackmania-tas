@@ -358,3 +358,36 @@ pub fn lm_scene_from_map(scene: &crate::geometry::Scene, layout: &crate::layout:
     }
     Ok(sc)
 }
+
+/// The zone tile's VISUAL vertices — (position, f32 lightmap uv) as the peel / pre-pass vertex streams carry them (the
+/// LM stream quantises the uv to snorm16; the peel colour's atlas lookup (PS 17131) and the pre-pass raster read the
+/// visual stream's f32 TexCoord1 — a 1e-5 uv difference moves bilinear atlas taps).
+pub fn visual_tile_verts_of_zone(store: &mut mapgeom::store::DataStore, collection: &str, zone: &str) -> Result<Vec<([f32; 3], [f32; 2])>, String> {
+    use mapgeom::static_item::vstream::Elem;
+    for (fam, ext) in [("GameCtnBlockInfoFlat", "EDFlat"), ("GameCtnBlockInfoFrontier", "EDFrontier"), ("GameCtnBlockInfoTransition", "EDTransition"), ("GameCtnBlockInfoClassic", "EDClassic")] {
+        let path = format!("{collection}\\GameCtnBlockInfo\\{fam}\\{zone}.{ext}.Gbx");
+        let Ok(bi) = mapgeom::blockinfo::load(store, &path) else { continue };
+        let Some(v) = bi.variant_base_ground.as_ref() else { continue };
+        let Some(pp) = v.mobils.iter().flatten().find_map(|m| m.prefab.clone()) else { continue };
+        let pm = store.load_model(&pp)?;
+        let pf = mapgeom::static_item::prefab::CPlugPrefab::from_model(&pm)?;
+        for e in &pf.ents {
+            let Some(mapgeom::static_item::Node::StaticObject(so)) = e.model.inline.as_deref() else { continue };
+            let Some(s2) = so.solid2() else { continue };
+            let mut out = Vec::new();
+            for sg in &s2.shaded_geoms {
+                let Some(vr) = s2.visuals.get(sg.visual_index as usize) else { continue };
+                let Some(mapgeom::static_item::Node::Visual(vis)) = vr.inline.as_deref() else { continue };
+                let Some(uv1) = lightmap_uvs(vis) else { continue };
+                let Some(st) = vis.stream() else { continue };
+                let get = |name: u32| st.decls.iter().zip(st.elems.iter()).find(|(d, _)| d.name() == name).map(|(_, e)| e);
+                let Some(Elem::Float3(pos)) = get(mapgeom::static_item::vstream::N_POSITION) else { continue };
+                for (p, u) in pos.iter().zip(uv1.iter()) {
+                    out.push((*p, *u));
+                }
+            }
+            return Ok(out);
+        }
+    }
+    Ok(Vec::new())
+}

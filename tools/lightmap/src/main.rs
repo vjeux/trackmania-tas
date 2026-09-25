@@ -1415,7 +1415,7 @@ fn run(a: Vec<String>) {
                 let n_items = scene.item_count.max(1);
                 let il = lightmap::ilatlas::IlAtlas::new(atlas, &insts, &tile_vb, n_items);
                 let item_map = il.map_items(&scene);
-                eprintln!("ilightinput-from {src}: atlas {}×{}, {} LM instances ({} items, {} tiles by footprint), port items mapped {:?} ({:.1}s)", il.buf.w, il.buf.h, il.insts.len(), n_items, il.tile_of.len(), item_map, ti.elapsed().as_secs_f32());
+                eprintln!("ilightinput-from {src}: atlas {}×{}, {} LM instances ({} items, {} tiles by footprint), port items mapped {:?}; tile_uv {:?} tile_size {} ({:.1}s)", il.buf.w, il.buf.h, il.insts.len(), n_items, il.tile_of.len(), item_map, il.tile_uv, il.tile_size, ti.elapsed().as_secs_f32());
                 prm.ilatlas = Some(std::sync::Arc::new(lightmap::ilatlas::IlSource { atlas: il, item_map }));
                 prm.hb_out = Some(std::sync::Arc::new(lightmap::ilatlas::HbSlot(std::sync::Mutex::new(None))));
                 prm.ambient_out = Some(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
@@ -1530,7 +1530,10 @@ fn run(a: Vec<String>) {
             // streams) and every instance's chart ST from the game's layout; no capture needed. The fitted blocks' world box =
             // the items' block-record boxes (lmtiles) unless --fitted-world-box. --lm-game-manifest FILE (+ --lm-cap-root DIR) still
             // compares every direction with the capture's banked buffers.
-            if has("--lm-from-map") && prm.lm_scene.is_none() {
+            // (--lm-from-map wins over a captured LM scene from --lm-from: the capture then serves the comparisons only)
+            if has("--lm-from-map") {
+                if prm.lm_scene.is_some() { eprintln!("lm-from-map: replacing the captured LM scene of --lm-from by the map's (the capture serves the comparisons only)"); }
+                let captured_lm = prm.lm_scene.clone();
                 let Some(gl) = game_layout.as_ref() else { panic!("--lm-from-map needs --layout-game") };
                 let pak_arg = f("--pak");
                 let pak: Option<(&str, &str)> = pak_arg.as_deref().and_then(|p| p.rsplit_once(':'));
@@ -1540,6 +1543,26 @@ fn run(a: Vec<String>) {
                 let by_name: std::collections::BTreeMap<String, Vec<u8>> = files.iter().map(|(k, v)| (k.rsplit(['/', '\\']).next().unwrap_or(k).to_string(), v.clone())).collect();
                 let sc = lightmap::lmmesh::lm_scene_from_map(&scene, gl, base, &|name| by_name.get(name).cloned(), tile_mesh, lightmap::layout::TilePlg::BLUEBAY_SEA, 2048.0).unwrap_or_else(|e| panic!("--lm-from-map: {e}"));
                 eprintln!("lm-from-map: {} LM meshes, {} instances from the map's models + the layout", sc.meshes.len(), sc.instances.len());
+                // against the captured stream (--lm-from): the instances (q, t, st) in order and as sets, the tile mesh's vertices and table
+                if let Some(cap) = &captured_lm {
+                    let same_order = sc.instances.iter().zip(cap.instances.iter()).filter(|(a, b)| a.t == b.t && a.st == b.st && a.q == b.q).count();
+                    let set_hits = sc.instances.iter().filter(|a| cap.instances.iter().any(|b| a.t == b.t && a.st == b.st && a.q == b.q)).count();
+                    let st_ulp = sc.instances.iter().filter(|a| cap.instances.iter().any(|b| a.t == b.t && a.q == b.q && (0..4).all(|k| (a.st[k] - b.st[k]).abs() <= 2.0 * f32::EPSILON * a.st[k].abs().max(1e-6)))).count();
+                    let tm_ours = sc.meshes.iter().enumerate().find(|(k, _)| sc.inst_count[*k] >= 1000).map(|(_, m)| m);
+                    let tm_cap = cap.meshes.iter().enumerate().find(|(k, _)| cap.inst_count[*k] >= 1000).map(|(_, m)| m);
+                    let tile_mesh = match (tm_ours, tm_cap) {
+                        (Some(a), Some(b)) => {
+                            let same_v = a.verts.iter().zip(b.verts.iter()).filter(|(x, y)| x.pos == y.pos && x.uv == y.uv && x.normal == y.normal).count();
+                            let ci_a: std::collections::BTreeSet<u32> = a.verts.iter().map(|v| v.chart_idx).collect();
+                            let ci_b: std::collections::BTreeSet<u32> = b.verts.iter().map(|v| v.chart_idx).collect();
+                            format!("tile mesh: ours {} verts / {} idx, captured {} / {}; verts identical {}; chart_idx ours {:?} captured {:?}", a.verts.len(), a.indices.len(), b.verts.len(), b.indices.len(), same_v, ci_a, ci_b)
+                        }
+                        _ => "tile mesh: missing on one side".to_string(),
+                    };
+                    let first_diff = sc.instances.iter().zip(cap.instances.iter()).enumerate().find(|(_, (a, b))| !(a.t == b.t && a.st == b.st && a.q == b.q)).map(|(i, (a, b))| format!("first differing instance #{i}: ours t {:?} st {:?} q {:?} | captured t {:?} st {:?} q {:?}", a.t, a.st, a.q, b.t, b.st, b.q)).unwrap_or_default();
+                    let same_table = sc.table.iter().zip(cap.table.iter()).filter(|(a, b)| a == b).count();
+                    eprintln!("lm-from-map vs the captured stream: {} of {} instances identical in order, {} identical as a set, {} with the same (q, t) and st within 2 ulps; table {} vs {} entries ({} identical); {tile_mesh}; {first_diff}", same_order, sc.instances.len(), set_hits, st_ulp, sc.table.len(), cap.table.len(), same_table);
+                }
                 prm.fitted_world_box = match f("--fitted-world-box") {
                     Some(v) => { let c: Vec<f32> = v.split(',').map(|x| x.trim().parse().expect("--fitted-world-box x0,z0,x1,z1")).collect(); Some([[c[0], c[1]], [c[2], c[3]]]) }
                     None => {
@@ -1648,9 +1671,20 @@ fn run(a: Vec<String>) {
                         let dump = |name: &str, b: &lightmap::passdiff::Buf| { let mut out = Vec::with_capacity(b.data.len() * 4); for x in &b.data { out.extend_from_slice(&x.to_le_bytes()); } std::fs::write(format!("{dir}/{name}"), out).expect("write"); };
                         dump("frommap-shadow.f32", &fm.shadow); dump("frommap-sun.f32", &fm.sun); dump("frommap-attr.f32", &fm.attr); dump("frommap-mdiffuse8.f32", &fm.mdiffuse8); dump("frommap-ilightinput.f32", &fm.ilightinput);
                     }
-                    let il = lightmap::ilatlas::IlAtlas::from_lm_scene(fm.ilightinput.clone(), &lm);
+                    // the atlas lookup (PS 17131) reads the peel vertex stream's f32 TexCoord1: the zone tile's VISUAL vertices from the pak, not
+                    // the LM stream's snorm16 uv (a 1e-5 uv difference moves the bilinear taps: direction 0's tiles fell to 69 % exact with them)
+                    let tile_visual: Vec<([f32; 3], [f32; 2])> = {
+                        let paks: Vec<String> = a.iter().enumerate().filter(|(_, x)| *x == "--pak").filter_map(|(i, _)| a.get(i + 1).cloned()).collect();
+                        let mut store = mapgeom::store::DataStore::empty();
+                        for p in &paks { if let Some((pp, key)) = p.rsplit_once(':') { let _ = store.add_pak(pp, key); } }
+                        lightmap::lmmesh::visual_tile_verts_of_zone(&mut store, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into())).unwrap_or_default()
+                    };
+                    let il = if tile_visual.is_empty() { lightmap::ilatlas::IlAtlas::from_lm_scene(fm.ilightinput.clone(), &lm) } else {
+                        let n_items = lm.meshes.iter().enumerate().find(|(k, _)| lm.inst_count[*k] >= 1000).map(|(k, _)| lm.inst_first[k]).unwrap_or(lm.instances.len());
+                        lightmap::ilatlas::IlAtlas::from_parts(fm.ilightinput.clone(), lm.instances.clone(), &tile_visual, n_items)
+                    };
                     let item_map = il.map_items(&scene);
-                    eprintln!("setup-from-map: the peels colour from OUR from-map ILightInput atlas — {} LM instances ({} items, {} tiles by footprint), port items mapped {:?} ({:.1}s total)", il.insts.len(), il.n_items, il.tile_of.len(), item_map, ti.elapsed().as_secs_f32());
+                    eprintln!("setup-from-map: the peels colour from OUR from-map ILightInput atlas — {} LM instances ({} items, {} tiles by footprint), port items mapped {:?}; tile_uv {:?} tile_size {} ({:.1}s total)", il.insts.len(), il.n_items, il.tile_of.len(), item_map, il.tile_uv, il.tile_size, ti.elapsed().as_secs_f32());
                     prm.ilatlas = Some(std::sync::Arc::new(lightmap::ilatlas::IlSource { atlas: il, item_map }));
                     if prm.hb_out.is_none() { prm.hb_out = Some(std::sync::Arc::new(lightmap::ilatlas::HbSlot(std::sync::Mutex::new(None)))); }
                     if prm.ambient_out.is_none() { prm.ambient_out = Some(std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))); }
