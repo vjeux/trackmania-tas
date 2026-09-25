@@ -2878,9 +2878,31 @@ fn main() {
             let port_tris = collect(&mut store, &port, gport, [-world[0], -world[1], -world[2]], true); // port geometry in the SOURCE frame
             eprintln!("  source terrain triangles {}, port terrain triangles {}", src_tris.iter().filter(|t| t.3).count(), port_tris.iter().filter(|t| t.3).count());
             eprintln!("{} source triangles, {} port triangles (port frame shifted by {:?})", src_tris.len(), port_tris.len(), world);
-            let under = |tris: &[([f32; 3], [f32; 3], [f32; 3], bool, String)], x: f32, y: f32, z: f32| -> Option<(f32, bool, String)> {
+            // a uniform XZ grid over the triangles (8 m cells): a sample tests its cell's
+            // triangles only — without it Spring 16 (3.4 M triangles × 400 samples) ran 36 min
+            let grid = |tris: &[([f32; 3], [f32; 3], [f32; 3], bool, String)]| -> std::collections::HashMap<(i32, i32), Vec<usize>> {
+                let mut g: std::collections::HashMap<(i32, i32), Vec<usize>> = std::collections::HashMap::new();
+                for (i, (a3, b3, c3, _, _)) in tris.iter().enumerate() {
+                    let (x0, x1) = (a3[0].min(b3[0]).min(c3[0]), a3[0].max(b3[0]).max(c3[0]));
+                    let (z0, z1) = (a3[2].min(b3[2]).min(c3[2]), a3[2].max(b3[2]).max(c3[2]));
+                    if !(x0.is_finite() && x1.is_finite() && z0.is_finite() && z1.is_finite()) || x1 - x0 > 2048.0 || z1 - z0 > 2048.0 {
+                        continue;
+                    }
+                    for cx in (x0 / 8.0).floor() as i32..=(x1 / 8.0).floor() as i32 {
+                        for cz in (z0 / 8.0).floor() as i32..=(z1 / 8.0).floor() as i32 {
+                            g.entry((cx, cz)).or_default().push(i);
+                        }
+                    }
+                }
+                g
+            };
+            let src_grid = grid(&src_tris);
+            let port_grid = grid(&port_tris);
+            let under = |tris: &[([f32; 3], [f32; 3], [f32; 3], bool, String)], g: &std::collections::HashMap<(i32, i32), Vec<usize>>, x: f32, y: f32, z: f32| -> Option<(f32, bool, String)> {
                 let mut best: Option<(f32, bool, String)> = None;
-                for (a3, b3, c3, terrain, who) in tris {
+                let Some(cands) = g.get(&((x / 8.0).floor() as i32, (z / 8.0).floor() as i32)) else { return None };
+                for &i in cands {
+                    let (a3, b3, c3, terrain, who) = &tris[i];
                     if let Some(h) = mapgeom::probe::height_at(*a3, *b3, *c3, x, z) {
                         // the highest support; at equal height the ROAD (a deck on a tile)
                         if h <= y + 0.3 && best.as_ref().map(|(bh, bt, _)| h > *bh + 0.01 || ((h - *bh).abs() <= 0.01 && *bt && !*terrain)).unwrap_or(true) {
@@ -2890,9 +2912,11 @@ fn main() {
                 }
                 best
             };
-            let above_terrain = |tris: &[([f32; 3], [f32; 3], [f32; 3], bool, String)], x: f32, y: f32, z: f32| -> Option<(f32, String)> {
+            let above_terrain = |tris: &[([f32; 3], [f32; 3], [f32; 3], bool, String)], g: &std::collections::HashMap<(i32, i32), Vec<usize>>, x: f32, y: f32, z: f32| -> Option<(f32, String)> {
                 let mut best: Option<(f32, String)> = None;
-                for (a3, b3, c3, terrain, who) in tris {
+                let Some(cands) = g.get(&((x / 8.0).floor() as i32, (z / 8.0).floor() as i32)) else { return None };
+                for &i in cands {
+                    let (a3, b3, c3, terrain, who) = &tris[i];
                     if !*terrain {
                         continue;
                     }
@@ -2921,9 +2945,9 @@ fn main() {
                 }
                 next = smp.time_ms + every;
                 n += 1;
-                let s_u = under(&src_tris, smp.x, smp.y, smp.z);
-                let p_u = under(&port_tris, smp.x, smp.y, smp.z);
-                let p_a = above_terrain(&port_tris, smp.x, smp.y, smp.z);
+                let s_u = under(&src_tris, &src_grid, smp.x, smp.y, smp.z);
+                let p_u = under(&port_tris, &port_grid, smp.x, smp.y, smp.z);
+                let p_a = above_terrain(&port_tris, &port_grid, smp.x, smp.y, smp.z);
                 let (ss, ps) = (surface_of(&s_u, smp.y), surface_of(&p_u, smp.y));
                 if ss == ps { surf_same += 1; } else { *surf_diff.entry(format!("{ss} -> {ps}")).or_default() += 1; }
                 let (verdict, owner) = match (&s_u, &p_u, &p_a) {
@@ -3163,6 +3187,9 @@ fn main() {
             let out_dir = std::path::PathBuf::from(flag(&a.rest, "--out-dir").unwrap_or_else(|| die("--out-dir D".into())));
             let every = flag(&a.rest, "--every").unwrap_or_else(|| "200".into());
             let jobs: usize = flag(&a.rest, "--jobs").and_then(|v| v.parse().ok()).unwrap_or(4).max(1);
+            // --shift-from DIR: the Stadium PORT of each map (its Start block matches the source) —
+            // a wood/wet layer renames the start, so the shift comes from the port instead
+            let shift_from = flag(&a.rest, "--shift-from").map(std::path::PathBuf::from);
             std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(format!("{}: {e}", out_dir.display())));
             let mut pairs: Vec<(String, std::path::PathBuf, std::path::PathBuf)> = Vec::new();
             let mut ports: Vec<std::path::PathBuf> = std::fs::read_dir(&port_dir).unwrap_or_else(|e| die(format!("{}: {e}", port_dir.display()))).flatten().map(|e| e.path()).filter(|p| p.to_string_lossy().ends_with(".Map.Gbx")).collect();
@@ -3185,7 +3212,7 @@ fn main() {
             let t0 = std::time::Instant::now();
             std::thread::scope(|sc| {
                 for _ in 0..jobs.min(pairs.len().max(1)) {
-                    let (pairs, next, lines, exe, pak_args, out_dir, every) = (&pairs, &next, &lines, &exe, &pak_args, &out_dir, &every);
+                    let (pairs, next, lines, exe, pak_args, out_dir, every, shift_from) = (&pairs, &next, &lines, &exe, &pak_args, &out_dir, &every, &shift_from);
                     sc.spawn(move || loop {
                         let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         if i >= pairs.len() {
@@ -3193,12 +3220,27 @@ fn main() {
                         }
                         let (nn, src, port) = &pairs[i];
                         let out = out_dir.join(format!("route-{nn}.tsv"));
-                        let r = std::process::Command::new(exe).args(pak_args).arg("route-audit").arg(src).arg(port).arg("--every").arg(every).arg("--out").arg(&out).output();
+                        let mut cmd = std::process::Command::new(exe);
+                        cmd.args(pak_args).arg("route-audit").arg(src).arg(port).arg("--every").arg(every).arg("--out").arg(&out);
+                        if let Some(dir) = shift_from.as_ref() {
+                            // the shift from the port's Start vs the source's Start
+                            if let Some(pp) = std::fs::read_dir(dir).ok().and_then(|rd| rd.flatten().map(|e| e.path()).find(|p| p.file_name().map(|f| f.to_string_lossy().starts_with(&format!("{nn}-")) && f.to_string_lossy().ends_with(".Map.Gbx")).unwrap_or(false))) {
+                                let start = |m: &tmmaps::map::MapFile| m.blocks.iter().find(|b| b.name.contains("Start") && b.free_pos.is_none()).map(|b| (b.name.clone(), b.coords()));
+                                let sm = tmmaps::map::MapFile::load(src);
+                                let pm = tmmaps::map::MapFile::load(&pp);
+                                if let (Some((sn, (sx, sy, sz))), Some((pn, (px, py, pz)))) = (start(&sm), start(&pm)) {
+                                    if sn == pn {
+                                        cmd.arg("--shift").arg(format!(" {},{},{}", px - sx, py - sy, pz - sz));
+                                    }
+                                }
+                            }
+                        }
+                        let r = cmd.output();
                         let line = match r {
                             Ok(o) => {
                                 let text = String::from_utf8_lossy(&o.stdout).into_owned();
                                 let summ = text.lines().find(|l| l.contains("samples")).and_then(|l| l.split_once(": ").map(|(_, r)| r.to_string())).unwrap_or_else(|| format!("FAILED {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("").chars().take(120).collect::<String>()));
-                                let owners: Vec<String> = text.lines().filter(|l| l.starts_with("      ")).take(4).map(|l| l.trim().to_string()).collect();
+                                let owners: Vec<String> = text.lines().filter(|l| l.starts_with("      ") || l.starts_with("  surface")).take(8).map(|l| l.trim().to_string()).collect();
                                 format!("{nn}\t{summ}\t{}", owners.join(" | "))
                             }
                             Err(e) => format!("{nn}\tFAILED spawn: {e}\t"),

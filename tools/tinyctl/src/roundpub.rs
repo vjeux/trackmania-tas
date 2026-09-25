@@ -358,7 +358,39 @@ pub fn port_fix_publish(args: &[String]) -> Result<(), String> {
         return Err(format!("campaign {campaign}: no playlist read ({})", camp.chars().take(200).collect::<String>()));
     }
     println!("campaign {campaign} `{cname}`: {} maps in the playlist", playlist.len());
-    // the fixed files: live uid → fresh uid, staged
+    // the live records' NAMES (a rebuilt layer carries a different uid than the live one —
+    // the layers were derived from earlier port uids — so files match their slot by name)
+    let strip = |n: &str| -> String {
+        let mut out = String::new();
+        let mut it = n.chars().peekable();
+        while let Some(c) = it.next() {
+            if c == '$' {
+                match it.peek() {
+                    Some(&d) if d.is_ascii_hexdigit() => { for _ in 0..3 { it.next(); } }
+                    Some(_) => { it.next(); }
+                    None => {}
+                }
+                continue;
+            }
+            out.push(c);
+        }
+        out.trim().to_string()
+    };
+    let mut live_names: Vec<String> = vec![String::new(); playlist.len()];
+    for chunk in playlist.chunks(20) {
+        let rec = curl(&["-H", &format!("Authorization: {core}"), &format!("{}/maps/?mapUidList={}", crate::publish::CORE, chunk.join(","))])?;
+        // records come back in any order: pair name with uid per record object
+        for obj in rec.split("{\"").skip(1) {
+            let uid = crate::publish::json_str_pub(&format!("{{\"{obj}"), "mapUid");
+            let name = crate::publish::json_str_pub(&format!("{{\"{obj}"), "name");
+            if let (Some(u), Some(n)) = (uid, name) {
+                if let Some(i) = playlist.iter().position(|x| *x == u) {
+                    live_names[i] = strip(&n);
+                }
+            }
+        }
+    }
+    // the fixed files: live uid (or live name) → fresh uid, staged
     let mut fixed: Vec<PathBuf> = std::fs::read_dir(&fixed_dir).map_err(|e| format!("{}: {e}", fixed_dir.display()))?.flatten().map(|e| e.path()).filter(|p| p.to_string_lossy().ends_with(".Map.Gbx")).collect();
     fixed.sort();
     let mut slot_of: BTreeMap<usize, (PathBuf, String)> = BTreeMap::new();
@@ -370,8 +402,10 @@ pub fn port_fix_publish(args: &[String]) -> Result<(), String> {
             }
         }
         let hdr = tmmaps::header::read(p.to_str().unwrap()).map_err(|e| format!("{}: {e}", p.display()))?;
-        let Some(slot) = playlist.iter().position(|u| *u == hdr.uid) else {
-            println!("  {}: uid {} not in the playlist — skipped", p.display(), hdr.uid);
+        let by_uid = playlist.iter().position(|u| *u == hdr.uid);
+        let by_name = { let want = strip(&hdr.name); live_names.iter().position(|n| !n.is_empty() && *n == want) };
+        let Some(slot) = by_uid.or(by_name) else {
+            println!("  {}: uid {} / name {:?} not in the playlist — skipped", p.display(), hdr.uid, strip(&hdr.name));
             continue;
         };
         let new_uid = format!("{prefix}{}", &hdr.uid[4..]);
@@ -402,6 +436,5 @@ pub fn port_fix_publish(args: &[String]) -> Result<(), String> {
         "--outdir".into(), out_dir.join("readback").to_string_lossy().into_owned(), "--jobs".into(), jobs, "--files-only".into(), "--token-dir".into(), token_dir.to_string_lossy().into_owned(),
         "--club".into(), club, "--campaign".into(), campaign, "--campaign-name".into(), cname,
     ];
-    let _ = core;
     batch::publish_batch_cmd(&batch_args)
 }

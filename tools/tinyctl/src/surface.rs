@@ -463,14 +463,22 @@ pub fn cmd(args: &[String]) -> Result<(), String> {
                 for l in text.lines().filter(|l| l.contains("library:") || l.contains("FAILED")) {
                     println!("  {}", l.trim());
                 }
-                with_items = lib.exists();
-                // the items unpacked beside the map (publish-map's item-check gate)
-                let libx = dir.join("libx");
-                let _ = std::fs::remove_dir_all(&libx);
-                std::fs::create_dir_all(&libx).map_err(|e| format!("{}: {e}", libx.display()))?;
-                let unzip = Command::new("unzip").arg("-q").arg(&lib).arg("-d").arg(&libx).output().map_err(|e| format!("unzip: {e}"))?;
-                if !unzip.status.success() {
-                    return Err(format!("unzip {}: {}", lib.display(), String::from_utf8_lossy(&unzip.stderr)));
+                // an EMPTY library (every bake row a mesh-less custom block — AR's
+                // `Water Blocks (no mesh)\…RoadWaterStraight` in the Winter/Spring/Summer 2026
+                // wet layers, 2026-09-25): nothing to unpack, the rows stay blocks
+                let lib_entries = std::fs::read(&lib).map(|b| tmmaps::header::zip_entries(&b).len()).unwrap_or(0);
+                with_items = lib.exists() && lib_entries > 0;
+                if with_items {
+                    // the items unpacked beside the map (publish-map's item-check gate)
+                    let libx = dir.join("libx");
+                    let _ = std::fs::remove_dir_all(&libx);
+                    std::fs::create_dir_all(&libx).map_err(|e| format!("{}: {e}", libx.display()))?;
+                    let unzip = Command::new("unzip").arg("-q").arg(&lib).arg("-d").arg(&libx).output().map_err(|e| format!("unzip: {e}"))?;
+                    if !unzip.status.success() {
+                        return Err(format!("unzip {}: {}", lib.display(), String::from_utf8_lossy(&unzip.stderr)));
+                    }
+                } else {
+                    println!("  library: empty (no baked model produced a mesh) — the bake rows stay blocks");
                 }
             }
             // 3. the map
