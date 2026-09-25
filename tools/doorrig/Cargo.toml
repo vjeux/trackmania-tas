@@ -1,0 +1,11 @@
+[package]
+name = "doorrig"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tmdrive = { path = "../tmdrive" }
+
+[[bin]]
+name = "doorrig"
+path = "src/main.rs"
