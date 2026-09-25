@@ -1205,6 +1205,68 @@ fn run(a: Vec<String>) {
             if let Some(v) = f("--ss") { prm.ss = v.parse().unwrap(); } else { prm.ss = match f("--quality").map(|s| s.parse::<u32>().unwrap()).unwrap_or(3) { 0 => 1, 1 => 2, _ => 3 }; }
             if let Some(v) = f("--peel-res") { prm.peel_res = v.parse().unwrap(); }
             if let Some(v) = f("--peel-bias") { prm.peel_bias = v.parse().unwrap(); }
+            // THE DIFFERENTIAL HARNESS (port engineer 2, 2026-09-24): --dump-passes DIR writes every intermediate
+            // at the game's points (passdump.rs); --game-peel gathers with the game's layer semantics (default with
+            // a dump), --per-subsample at every ss² sub-sample (default with a dump; --centroid = the port's
+            // texel-centroid gather), --dump-dirs N|i,j,k|all selects the directions whose per-direction buffers
+            // are written (default the first 8 of each sweep), --frustum-from GAME/MANIFEST.json rasterises the
+            // peel and the sun shadow map in the captured frustums, --quant-peel/--quant-ilightdir/--quant-accum
+            // none|r11g11b10|f16 (the targets' formats; defaults r11g11b10 / r11g11b10 / f16 = RE child 3's
+            // pins), --rounding rtne|rtz, --depth-bias C,S (D3D, default 1,1.0), --no-inset, --no-dome-layer
+            let dump_dir = f("--dump-passes");
+            prm.game_peel = if has("--no-game-peel") { false } else { has("--game-peel") || dump_dir.is_some() };
+            prm.per_subsample = if has("--centroid") { false } else { has("--per-subsample") || dump_dir.is_some() };
+            prm.quant_peel = lightmap::gpufmt::Quant::parse(&f("--quant-peel").unwrap_or_else(|| "r11g11b10".into())).expect("--quant-peel none|r11g11b10|f16");
+            prm.quant_ilightdir = lightmap::gpufmt::Quant::parse(&f("--quant-ilightdir").unwrap_or_else(|| "r11g11b10".into())).expect("--quant-ilightdir none|r11g11b10|f16");
+            prm.quant_accum = lightmap::gpufmt::Quant::parse(&f("--quant-accum").unwrap_or_else(|| "f16".into())).expect("--quant-accum none|r11g11b10|f16");
+            if !prm.game_peel && f("--quant-peel").is_none() && f("--quant-ilightdir").is_none() && f("--quant-accum").is_none() {
+                // the product path stays f32 until the capture says otherwise
+                prm.quant_peel = lightmap::gpufmt::Quant::None; prm.quant_ilightdir = lightmap::gpufmt::Quant::None; prm.quant_accum = lightmap::gpufmt::Quant::None;
+            }
+            prm.rounding = match f("--rounding").as_deref() { Some("rtz") | Some("truncate") => lightmap::gpufmt::Rounding::Truncate, _ => lightmap::gpufmt::Rounding::NearestEven };
+            if let Some(v) = f("--depth-bias") { let p: Vec<&str> = v.split(',').collect(); prm.depth_bias = (p[0].trim().parse().unwrap(), p.get(1).map(|s| s.trim().parse().unwrap()).unwrap_or(1.0)); }
+            prm.peel_inset = !has("--no-inset");
+            prm.dome_layer = !has("--no-dome-layer");
+            prm.depth_clip = has("--depth-clip");
+            prm.obj_base = base;
+            let game_manifest: Option<lightmap::passdump::Manifest> = f("--frustum-from").map(|p| {
+                let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--frustum-from {p}: {e}"));
+                lightmap::passdiff::read_manifest(&txt).unwrap_or_else(|e| panic!("--frustum-from {p}: {e}"))
+            });
+            if let Some(gm) = &game_manifest {
+                // the sun shadow map's frustum and the per-direction peel frustums of sweep 0 (later sweeps below)
+                if let Some(e) = gm.passes.iter().find(|e| e.pass == "sun_shadow") { if let Some(fr) = &e.frustum { prm.shadow_frustum = Some(fr.clone()); eprintln!("frustum-from: the sun shadow map's frustum adopted (centre {:?}, half {:?})", fr.center, fr.half); } }
+                let fs = lightmap::passdiff::peel_frustums(gm, 0);
+                if !fs.is_empty() { eprintln!("frustum-from: {} peel frustums of sweep 0 adopted", fs.len()); prm.frustums = Some(std::sync::Arc::new(fs)); }
+                if let Some(e) = gm.passes.iter().find(|e| e.pass == "peel_depth") { if e.width > 0 && e.width != prm.peel_res { eprintln!("frustum-from: peel resolution {} → {}", prm.peel_res, e.width); prm.peel_res = e.width; } }
+            }
+            if let Some(dir) = &dump_dir {
+                let q: u32 = f("--quality").map(|s| s.parse().unwrap()).unwrap_or(3);
+                let mood_name = xml_sel.map(|x| format!("{}/{}", x.collection, x.mood)).unwrap_or_default();
+                let mut dmp = lightmap::passdump::PassDump::new(dir, &map_path, q, &mood_name, prm.ss).expect("--dump-passes dir");
+                dmp.dirs = match f("--dump-dirs").as_deref() {
+                    Some("all") => None,
+                    Some(s) if s.contains(',') => Some(s.split(',').map(|t| t.trim().parse().expect("--dump-dirs")).collect()),
+                    Some(s) => Some((0..s.parse::<u32>().expect("--dump-dirs N|i,j,k|all")).collect()),
+                    None => Some((0..8).collect()),
+                };
+                dmp.manifest.sun_dir = prm.sun_dir;
+                dmp.manifest.sun_rgb = prm.sun;
+                dmp.manifest.daytime_word = { let mf0 = tmmaps::map::MapFile::load(std::path::Path::new(&map_path)); lightmap::mapio::daytime(&mf0.gbx.body) };
+                dmp.convention("depth", serde_json::json!("reversed_z01: 0.5 + (center·forward − p·forward)/(2·half.z); forward = the peel direction D (the camera looks from the receivers towards the sky)"));
+                dmp.convention("layer0", serde_json::json!(if prm.dome_layer { "the sky dome, synthetic (depth 0, colour = the mood's Sky_p radiance along D)" } else { "the farthest real surface" }));
+                dmp.convention("layer_order", serde_json::json!("far-to-near (k = 0 farthest from the camera = nearest the sky)"));
+                dmp.convention("depth_bias", serde_json::json!({"const": prm.depth_bias.0, "slope": prm.depth_bias.1, "target": "D32_FLOAT", "applied_to": "peel_depth (stored), the layer selection"}));
+                dmp.convention("depth_clip", serde_json::json!(if prm.depth_clip { "fragments beyond the far plane dropped (DepthClipEnable)" } else { "pancaked: fragments beyond the far plane land on it at z01 = 0" }));
+                dmp.convention("lookup_inset", serde_json::json!(prm.peel_inset));
+                dmp.convention("gather", serde_json::json!(if prm.per_subsample { "per sub-sample (ss² per layout texel)" } else { "per layout texel at the centroid of its covered sub-samples" }));
+                dmp.convention("quantisers", serde_json::json!({"peel_color": prm.quant_peel.dxgi_rgb(), "ilightdir": prm.quant_ilightdir.dxgi_rgb(), "lightsum": prm.quant_accum.dxgi_rgb(), "rounding": format!("{:?}", prm.rounding)}));
+                dmp.convention("chart_ss", serde_json::json!(format!("per-chart buffers at (2·w·{ss})×(2·h·{ss}) = the layout footprint × ss (the game's atlas × ss, cut by chart); `chart` = stored texels", ss = if prm.per_subsample { prm.ss } else { 1 })));
+                dmp.convention("obj_base", serde_json::json!(base));
+                dmp.convention("game_peel", serde_json::json!(prm.game_peel));
+                dmp.convention("frustum_source", serde_json::json!(if game_manifest.is_some() { "the captured MANIFEST (--frustum-from)" } else { "the receivers' bbox + 1 m, square, (res − 1) px over the larger extent" }));
+                prm.dump = Some(std::sync::Arc::new(std::sync::Mutex::new(dmp)));
+            }
             // --layout-from REF.Map.Gbx: every item chart takes the reference bake's chart SIZE (its object id
             // = base + item), so the two bakes share texel grids — the gate then measures the lighting alone, not
             // the packer (a measurement aid; the product sizes charts by the game's allocation walk)
@@ -1225,18 +1287,22 @@ fn run(a: Vec<String>) {
             };
             let mut charts = if prm.raster_peel { lightmap::peel::bake_peel_raster(&scene, &bvh, &prm, &chart_sizes(&prm)) } else { lightmap::bake::bake(&scene, &bvh, &prm, &lights) };
             eprintln!("baked {} charts ({:.1}s)", charts.len(), t0.elapsed().as_secs_f32());
+            if let Some(d) = &prm.dump { let mut dm = d.lock().unwrap(); let n = prm.sphere_dirs.len() as u32; dm.manifest.sweeps.push(lightmap::passdump::Sweep { sweep: 0, n_dirs: n, scale: 4.0 / n.max(1) as f32, dirs: prm.sphere_dirs.iter().copied().collect() }); }
             for it in 1..iterations {
                 let mut field = lightmap::bake::RadianceField { charts: vec![None; scene.instances.len()], flip_v: prm.flip_v, uv_bounds: prm.uv_bounds };
                 let inst_of_item: std::collections::HashMap<usize, usize> = scene.instances.iter().enumerate().map(|(ii, inst)| (inst.item, ii)).collect();
                 for c in &charts { if let Some(&ii) = inst_of_item.get(&c.item) { field.charts[ii] = Some((c.w, c.h, if c.rgb_irr.is_empty() { c.rgb.clone() } else { c.rgb_irr.clone() })); } }
                 let mut p2 = prm.clone();
                 p2.field = Some(std::sync::Arc::new(field));
+                p2.sweep = it as u32;
                 if prm.peel {
                     if let Some(&n) = q_sweeps.get(it) {
                         let pp = f("--points").unwrap_or_else(lightmap::dome::default_path);
                         if let Ok(ps) = lightmap::dome::PointSets::load(&pp) { if let Some(set) = ps.nearest(n) { p2.sphere_dirs = std::sync::Arc::new(lightmap::dome::rotate_set(set)); } }
                     }
                 }
+                if let Some(gm) = &game_manifest { let fs = lightmap::passdiff::peel_frustums(gm, it as u32); p2.frustums = if fs.is_empty() { None } else { Some(std::sync::Arc::new(fs)) }; }
+                if let Some(d) = &prm.dump { let mut dm = d.lock().unwrap(); let n = p2.sphere_dirs.len() as u32; dm.manifest.sweeps.push(lightmap::passdump::Sweep { sweep: it as u32, n_dirs: n, scale: 4.0 / n.max(1) as f32, dirs: p2.sphere_dirs.iter().copied().collect() }); }
                 charts = if prm.raster_peel { lightmap::peel::bake_peel_raster(&scene, &bvh, &p2, &chart_sizes(&p2)) } else { lightmap::bake::bake(&scene, &bvh, &p2, &lights) };
                 let mean: f32 = charts.iter().flat_map(|c| c.rgb.iter()).map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]).sum::<f32>() / charts.iter().map(|c| c.rgb.len()).sum::<usize>().max(1) as f32;
                 eprintln!("bounce iteration {it}: mean texel {mean:.4} ({:.1}s)", t0.elapsed().as_secs_f32());
@@ -1385,6 +1451,34 @@ fn run(a: Vec<String>) {
                 lightmap::synth::FrameParams { daytime, max_hdr_mood: x.max_hdr, max_hdr: k, bounce: x.bounce_factor, sky: x.sky_factor, sum_area: Some(items_area + 2.0 * n_tiles), quality: Some(quality), decoration: Some(mf0.decoration_id.clone()) }
             });
             let s = lightmap::synth::build_full2(out_charts, (tm.bbox_min, tm.bbox_max), &tpl.chunk, probes, vp8_q, frame_params).expect("build");
+            if let Some(d) = &prm.dump {
+                // the final atlas before encode: the 8-bit colour image, the HDR C0 composed on the same layout, and the layout itself
+                let mut dm = d.lock().unwrap();
+                let item_of_obj: std::collections::HashMap<u32, usize> = charts.iter().map(|c| (base + c.item as u32, c.item)).collect();
+                for &(obj, sub, x, y, w, h) in &s.placed {
+                    let item = item_of_obj.get(&obj).copied().unwrap_or(usize::MAX);
+                    dm.manifest.layout.push(lightmap::passdump::ChartRect { obj, item: item as u32, sub, x: 2 * x as i32 - 1, y: 2 * y as i32 - 1, w: 2 * w as i32, h: 2 * h as i32, chart_w: w, chart_h: h });
+                }
+                if let Some(ia) = &s.atlas8 {
+                    let mut e = lightmap::passdump::entry("final_atlas", "final_atlas/color8.bin".into(), "atlas");
+                    e.format = "R8G8B8_UNORM".into();
+                    e.notes = Some("the sqrt-encoded, per-chart-normalised 8-bit colour image handed to the WEBP encoder (frame 0 image 0); the chart bytes are in `layout`".into());
+                    dm.write_u8(e, ia.w, ia.h, 3, &ia.px).expect("dump final_atlas");
+                    let mut hdr = vec![[0.0f32; 3]; (ia.w * ia.h) as usize];
+                    for &(obj, _sub, x, y, w, h) in &s.placed {
+                        if let Some(c) = item_of_obj.get(&obj).and_then(|it| charts.iter().find(|c| c.item == *it)) {
+                            if c.w == w && c.h == h {
+                                for yy in 0..h { for xx in 0..w { let (ax, ay) = (x + xx, y + yy); if ax < ia.w && ay < ia.h { hdr[(ay * ia.w + ax) as usize] = c.rgb[(yy * w + xx) as usize]; } } }
+                            }
+                        }
+                    }
+                    let mut e = lightmap::passdump::entry("final_hdr", "final_hdr/c0.bin".into(), "atlas");
+                    e.notes = Some(format!("the HDR irradiance (C0) per stored texel on the final layout, before the frame normalisation (MaxHDR {k:.4}) and the sqrt encode"));
+                    dm.write_rgb(e, ia.w, ia.h, &hdr, lightmap::gpufmt::Quant::None, prm.rounding).expect("dump final_hdr");
+                }
+                dm.finish().expect("write MANIFEST.json");
+                eprintln!("dump-passes: {} entries, {:.1} MB under {}", dm.manifest.passes.len(), dm.bytes_written as f64 / 1e6, dm.root.display());
+            }
             let payload = s.chunk.write(false);
             let out = f("--out").expect("--out");
             lightmap::mapio::save_with_chunk(&m, &payload, &out).expect("save");
@@ -2771,6 +2865,62 @@ fn run(a: Vec<String>) {
                     lightmap::img::write_ppm(&rgb, &format!("{dir}/face{fi}.ppm")).unwrap();
                 }
             }
+        }
+        "passdiff" => {
+            // lmtool passdiff GAME_DIR OURS_DIR [--pass P] [--tol T] [--floor F] [--stride S] [--threshold PCT]
+            //   [--game-map MAP.Gbx] [--heat DIR] [--all-heat] [--report FILE.md]
+            // the per-pass differential of the game's captured render targets against our --dump-passes tree
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let has = |k: &str| a.iter().any(|x| x == k);
+            let game = std::path::PathBuf::from(&a[1]);
+            let ours = std::path::PathBuf::from(&a[2]);
+            let mut opts = lightmap::passdiff::Opts::default();
+            opts.pass = f("--pass");
+            if let Some(v) = f("--tol") { opts.tol = v.parse().expect("--tol"); }
+            if let Some(v) = f("--floor") { opts.floor = v.parse().expect("--floor"); }
+            if let Some(v) = f("--stride") { opts.stride = v.parse().expect("--stride"); }
+            if let Some(v) = f("--threshold") { opts.pass_threshold = v.parse().expect("--threshold"); }
+            opts.game_map = f("--game-map");
+            let heat = f("--heat");
+            opts.keep_pairs = heat.is_some();
+            let t0 = std::time::Instant::now();
+            let (rows, findings) = lightmap::passdiff::run(&game, &ours, &opts).unwrap_or_else(|e| panic!("passdiff: {e}"));
+            let rep = lightmap::passdiff::report(&rows, &findings, opts.pass_threshold, opts.tol);
+            println!("{rep}");
+            // the per-buffer rows (every buffer of the first divergent pass, the worst 3 of the others)
+            let sums = lightmap::passdiff::summarise(&rows);
+            let first = sums.iter().find(|s| s.n > 0 && s.pct_within() < opts.pass_threshold).map(|s| s.pass.clone());
+            println!("per buffer (the first divergent pass in full, the worst 3 of every other pass):");
+            for s in &sums {
+                let mut rs: Vec<&lightmap::passdiff::Row> = rows.iter().filter(|r| r.pass == s.pass).collect();
+                rs.sort_by(|x, y| y.stats.rmse.partial_cmp(&x.stats.rmse).unwrap_or(std::cmp::Ordering::Equal));
+                let take = if Some(&s.pass) == first.as_ref() || has("--all-rows") { rs.len() } else { 3.min(rs.len()) };
+                for r in rs.iter().take(take) {
+                    println!("  {:<40} n {:>9} max {:>9.4} mean {:>9.5} rmse {:>9.5} Δ {:>+9.5} within {:>6.2} %  {}{}", r.key(), r.stats.n, r.stats.max_abs, r.stats.mean_abs, r.stats.rmse, r.stats.mean_signed, r.stats.pct_within(), r.transforms.join(", "), if r.note.is_empty() { String::new() } else { format!("  [{}]", r.note) });
+                }
+            }
+            if let Some(dir) = heat {
+                std::fs::create_dir_all(&dir).expect("--heat dir");
+                let mut n = 0;
+                for r in &rows {
+                    let dump_it = has("--all-heat") || Some(&r.pass) == first.as_ref();
+                    if !dump_it { continue; }
+                    if let Some((g, o, ch)) = &r.pair {
+                        let name = format!("{dir}/{}.png", r.key().replace(' ', "_"));
+                        lightmap::passdiff::heat_png(&name, g, o, *ch, opts.tol).expect("heat png");
+                        n += 1;
+                    }
+                }
+                println!("{n} heat maps (game | ours | relative Δ: blue ≤ tol, green 2×, yellow 4×, red ≥ 8×) under {dir}");
+            }
+            if let Some(p) = f("--report") {
+                let mut full = format!("# passdiff {} vs {}\n\n{}\n", a[1], a[2], rep);
+                full += "\n## Per buffer\n\n| buffer | texels | max abs | mean abs | RMSE | mean Δ | within | transforms | note |\n|---|---|---|---|---|---|---|---|---|\n";
+                for r in &rows { full += &format!("| {} | {} | {:.4} | {:.5} | {:.5} | {:+.5} | {:.2} % | {} | {} |\n", r.key(), r.stats.n, r.stats.max_abs, r.stats.mean_abs, r.stats.rmse, r.stats.mean_signed, r.stats.pct_within(), r.transforms.join(", "), r.note); }
+                std::fs::write(&p, full).expect("--report");
+                eprintln!("report written to {p}");
+            }
+            eprintln!("passdiff: {} buffers compared ({:.1}s)", rows.len(), t0.elapsed().as_secs_f32());
         }
         "transplant" => {
             // lmtool transplant --from REDUCED_BAKED.Map.Gbx --into FULL.Map.Gbx --kept i1,i2,… --out OUT [--base N]:

@@ -461,6 +461,8 @@ dependencies = [
  "image-webp",
  "mapgeom",
  "miniz_oxide",
+ "serde",
+ "serde_json",
  "tmmaps",
 ]
 

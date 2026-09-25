@@ -119,6 +119,38 @@ pub struct BakeParams {
     /// `sky_cube_scale × L(ω)`; with a cube the constant `sky` term is not used.
     pub sky_cube: Option<std::sync::Arc<crate::skycube::CubeMap>>,
     pub sky_cube_scale: f32,
+    /// The differential harness (`--dump-passes`): every intermediate written at the game's points.
+    pub dump: Option<std::sync::Arc<std::sync::Mutex<crate::passdump::PassDump>>>,
+    /// Which sweep this call bakes (0 = the sky sweep) — the dump's `sweep` field.
+    pub sweep: u32,
+    /// The game's peel semantics in the gather (`--game-peel`): depth layers peeled far-to-near with the
+    /// D3D rasteriser bias, the texel's POINT lookup with the one-texel inset, the layer's pixel colour
+    /// (not the exact hit point's), a synthetic dome layer 0; off = the port's A-buffer ray walk.
+    pub game_peel: bool,
+    /// Gather at every ss² sub-sample of a texel (the game's supersampled raster) instead of once at the
+    /// texel's centroid; the resolve box-averages the covered sub-samples either way.
+    pub per_subsample: bool,
+    /// Per-direction frustums to rasterise the peel in (a captured MANIFEST's), indexed like `sphere_dirs`.
+    pub frustums: Option<std::sync::Arc<Vec<crate::passdump::Frustum>>>,
+    /// The sun shadow map's frustum, when captured.
+    pub shadow_frustum: Option<crate::passdump::Frustum>,
+    /// The storage formats the game's targets quantise to: the peel colour, TMapILightDir, the
+    /// accumulation target; and the float→small-float rounding rule.
+    pub quant_peel: crate::gpufmt::Quant,
+    pub quant_ilightdir: crate::gpufmt::Quant,
+    pub quant_accum: crate::gpufmt::Quant,
+    pub rounding: crate::gpufmt::Rounding,
+    /// The D3D rasteriser depth bias of the peel layers (DepthBias, SlopeScaledDepthBias) on a D32 target.
+    pub depth_bias: (i32, f32),
+    /// The one-texel inset of the depth lookup (`u = 0.5 + (u − 0.5)·(w − 2)/w`).
+    pub peel_inset: bool,
+    /// Layer 0 = the sky dome (the mood's dome mesh peels as the farthest layer).
+    pub dome_layer: bool,
+    /// The object id of item 0 in the game's mapping (`base`): the dump's chart references.
+    pub obj_base: u32,
+    /// D3D DepthClipEnable on the peel layers: true drops fragments beyond the frustum's far plane, false
+    /// (pancaking) clamps them onto it.
+    pub depth_clip: bool,
 }
 
 impl Default for BakeParams {
@@ -177,6 +209,21 @@ impl Default for BakeParams {
             horizon_radiance: [0.0; 3],
             sky_cube: None,
             sky_cube_scale: 1.0,
+            dump: None,
+            sweep: 0,
+            game_peel: false,
+            per_subsample: false,
+            frustums: None,
+            shadow_frustum: None,
+            quant_peel: crate::gpufmt::Quant::None,
+            quant_ilightdir: crate::gpufmt::Quant::None,
+            quant_accum: crate::gpufmt::Quant::None,
+            rounding: crate::gpufmt::Rounding::NearestEven,
+            depth_bias: (1, 1.0),
+            peel_inset: true,
+            dome_layer: true,
+            obj_base: 4096,
+            depth_clip: false,
         }
     }
 }

@@ -159,6 +159,10 @@ pub struct Synth {
     pub charts: u32,
     /// Fraction of the 1024² atlas the charts occupy (gutters excluded).
     pub fill: f32,
+    /// The 8-bit colour atlas before its WEBP encode (the differential harness's `final_atlas`).
+    pub atlas8: Option<Rgb>,
+    /// Where every chart landed: (obj, sub, x, y, w, h) in stored texels (1024² space).
+    pub placed: Vec<(u32, u32, u32, u32, u32, u32)>,
 }
 
 /// Flat charts everywhere (the first acceptance test).
@@ -478,5 +482,6 @@ pub fn build_full2(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template:
             cache_uncompressed_len: raw.len() as u32,
         }),
     };
-    Ok(Synth { chunk, charts: n as u32, fill: area as f32 / (1024.0 * 1024.0) })
+    let placed: Vec<(u32, u32, u32, u32, u32, u32)> = charts.iter().map(|c| { let (px, py) = placed_by_obj[&(c.obj, c.sub)]; (c.obj, c.sub, px, py, c.w, c.h) }).collect();
+    Ok(Synth { chunk, charts: n as u32, fill: area as f32 / (1024.0 * 1024.0), atlas8: Some(ia), placed })
 }
