@@ -1827,15 +1827,32 @@ fn run(a: Vec<String>) {
             let probes_transcribed = match f("--probes").as_deref() { Some("transcribed") => true, Some("port") => false, Some(o) => panic!("--probes {o}: transcribed|port"), None => prm.lm_scene.is_some() && prm.game_peel };
             let mut probe_layout: Option<lightmap::probebake::ProbeLayoutSrc> = None;
             if probes_transcribed {
-                let src: Result<lightmap::probebake::ProbeLayoutSrc, String> = match f("--probe-layout-from") {
-                    Some(mp) => lightmap::mapio::load(&mp).and_then(|m| { let d = m.chunk.data.as_ref().ok_or("--probe-layout-from: no lightmap data")?; lightmap::volume::Volume::parse(&d.cache.trailer) }).map(|v| lightmap::probebake::ProbeLayoutSrc::from_volume(v)),
-                    None => { let (tv, grid) = build_slot_grid(&prm); lightmap::probes::layout(&bvh, &grid).map(|lay| lightmap::probebake::ProbeLayoutSrc::from_layout(lay, tv, grid)) }
+                // the layout: a saved map's trailer (--probe-layout-from MAP), else RE-6's transcribed chunking of the map's item
+                // records (probechunk::for_records — the game's block/slot/pos structure; its cell ranges differ from the saves by a
+                // margin cell: pwc-day min.x 23 vs 22, hill4 (21,3,19)–(28,9,27) vs (20,2,18)–(30,8,28) — eng 2 / RE-6's open item),
+                // else the port's SlotGrid layout (--probe-layout port)
+                let src: Result<lightmap::probebake::ProbeLayoutSrc, String> = match (f("--probe-layout-from"), f("--probe-layout").as_deref()) {
+                    (Some(mp), _) => lightmap::mapio::load(&mp).and_then(|m| { let d = m.chunk.data.as_ref().ok_or("--probe-layout-from: no lightmap data")?; lightmap::volume::Volume::parse(&d.cache.trailer) }).map(|v| lightmap::probebake::ProbeLayoutSrc::from_volume(v)),
+                    (None, Some("port")) => { let (tv, grid) = build_slot_grid(&prm); lightmap::probes::layout(&bvh, &grid).map(|lay| lightmap::probebake::ProbeLayoutSrc::from_layout(lay, tv, grid)) },
+                    (None, _) => {
+                        let tv = lightmap::volume::Volume::parse(&tpl.chunk.data.as_ref().unwrap().cache.trailer).expect("template trailer");
+                        let gq: f32 = f("--global-quality").map(|v| v.parse().unwrap()).unwrap_or(1.0);
+                        let recs: Vec<lightmap::lmtiles::BlockRecord> = lightmap::lmtiles::item_records(&scene, gq, has("--lod0")).iter().filter_map(|it| it.record).collect();
+                        let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
+                        let size = [mf.size[0].max(0) as u32, mf.size[1].max(0) as u32, mf.size[2].max(0) as u32];
+                        let scene_ch = lightmap::lmtiles::scene_box(&recs);
+                        let (_, _, chunking, _) = lightmap::probechunk::for_records(size, [32.0, 8.0, 32.0], [0.0, -38.0, 0.0], 0.0, &recs, &scene_ch, 2048);
+                        match lightmap::probebake::layout_from_chunking(&chunking, &tv, [0.0, -38.0, 0.0]) {
+                            Some(src) => Ok(src),
+                            None => { let (tv, grid) = build_slot_grid(&prm); lightmap::probes::layout(&bvh, &grid).map(|lay| lightmap::probebake::ProbeLayoutSrc::from_layout(lay, tv, grid)) }
+                        }
+                    }
                 };
                 match src {
                     Ok(src) => {
                         let dims = src.dims;
                         let offsets = f("--probe-offsets-from").map(|p| { let b = lightmap::prepass::read_maybe_gz(std::path::Path::new(&p)).unwrap_or_else(|e| panic!("{e}")); lightmap::probepass::load_dds_volume(&b, None, dims[2]).expect("--probe-offsets-from") });
-                        eprintln!("probes: TRANSCRIBED passes in the bake — volume {:?}, {} blocks ({}), atlas {}×{}, offsets {}, layout {}", dims, src.blocks.len(), src.blocks.iter().map(|b| format!("cells {:?}..{:?} pos {:?}", b.min, b.max, b.pos)).collect::<Vec<_>>().join("; "), src.atlas.0, src.atlas.1, if offsets.is_some() { "the capture's" } else { "none" }, if f("--probe-layout-from").is_some() { "the saved map's trailer" } else { "the port's" });
+                        eprintln!("probes: TRANSCRIBED passes in the bake — volume {:?}, {} blocks ({}), atlas {}×{}, offsets {}, layout {}", dims, src.blocks.len(), src.blocks.iter().map(|b| format!("cells {:?}..{:?} pos {:?}", b.min, b.max, b.pos)).collect::<Vec<_>>().join("; "), src.atlas.0, src.atlas.1, if offsets.is_some() { "the capture's" } else { "none" }, if f("--probe-layout-from").is_some() { "the saved map's trailer" } else if f("--probe-layout").as_deref() == Some("port") { "the port's" } else { "RE-6's chunking" });
                         prm.probe_bake = Some(std::sync::Arc::new(std::sync::Mutex::new(lightmap::probebake::ProbeBake::new(dims, src.blocks.clone(), offsets))));
                         probe_layout = Some(src);
                     }

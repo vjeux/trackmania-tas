@@ -2271,6 +2271,25 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         }
                     }
                 }
+                // THE PROBES' texels (probebake.rs): the world peel's layers must exist where the probe draws sample them —
+                // every block cell's (u, v) texel and its 3×3 neighbourhood (the sky visibility's 2×2 PCF footprint)
+                if let (Some(pb), true) = (&prm.probe_bake, pi == 0) {
+                    let pbl = pb.lock().unwrap();
+                    let pw01 = frame.world_pw01();
+                    let (w, h) = (frame.res as usize, frame.res_y as usize);
+                    for b in &pbl.blocks {
+                        let d = b.draw(&pw01, 1.0);
+                        for z in b.min[2]..b.max[2] { for y in b.min[1]..b.max[1] { for x in b.min[0]..b.max[0] {
+                            let p = crate::probepass::probe_point(x, y, z, pbl.offsets.as_ref());
+                            let sh = crate::probepass::to_shadow(p, &d.regs, pbl.opts.fma);
+                            let (tx, ty) = (crate::probepass::texel_point(sh[0], frame.res) as i64, crate::probepass::texel_point(sh[1], frame.res_y) as i64);
+                            for dy in -1..=1i64 { for dx in -1..=1i64 {
+                                let (px, py) = (tx + dx, ty + dy);
+                                if px >= 0 && py >= 0 && (px as usize) < w && (py as usize) < h { let i = py as usize * w + px as usize; m[i >> 6] |= 1u64 << (i & 63); }
+                            } }
+                        } } }
+                    }
+                }
                 Some(std::sync::Arc::new(PixelIndex::new(frame.res, frame.res_y, m)))
             } else { None };
             prof::add(&prof::B_INDEX, t_idx);

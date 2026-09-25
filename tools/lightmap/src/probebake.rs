@@ -494,3 +494,76 @@ pub fn chain_check(dir: &std::path::Path, root: &std::path::Path, map: &str, fra
     }
     Ok(())
 }
+
+/// The probe layout from RE-6's transcribed CHUNKING (`probechunk::for_records`, FUN_14021c980 / FUN_14021d730) — the
+/// no-box path's block records: per chunk record the block = (origin = slot, min = amin, max = amax, cell, pos = the
+/// world origin of atlas index 0), every level min.y..max.y stored, the tiles (max.x − min.x) × (max.z − min.z) packed
+/// per block in DESCENDING level order into the smallest square grid of tile cells (the saves: hill4's 4 levels of
+/// 10×10 in a 20×20 atlas at (0,0), (10,0), (0,10), (10,10) for levels 7, 6, 5, 4; pwc-day's 8 levels of 7×7 in 21×21
+/// — the game's packer takes (0,0), (7,0), (14,0), (0,7), (0,14), (7,7), (14,7), (7,14): the first row, the first
+/// column, then the rest; the rule for more blocks (the giant's 44) is not transcribed, so the table here is
+/// self-consistent, not the game's byte for byte). The trailer's slot grid / tile / pitch / origin fields come from the
+/// chunking's grid (`slot_origin` = the decoration offset, e.g. (0, −38, 0)).
+pub fn layout_from_chunking(c: &crate::probechunk::Chunking, template: &crate::volume::Volume, slot_origin: [f32; 3]) -> Option<ProbeLayoutSrc> {
+    if c.records.is_empty() {
+        return None;
+    }
+    let mut blocks: Vec<crate::volume::Block> = Vec::new();
+    // the tiles: (block, level, w, h) in placement order
+    let mut order: Vec<(usize, u32, u32, u32)> = Vec::new();
+    for (bi, r) in c.records.iter().enumerate() {
+        let u = |v: [i32; 3]| [v[0].max(0) as u32, v[1].max(0) as u32, v[2].max(0) as u32];
+        let (min, max) = (u(r.amin), u(r.amax));
+        let b = crate::volume::Block { origin: u(r.slot), min, max, cell: r.cell, pos: r.origin, slices: vec![None; (max[1].saturating_sub(min[1])) as usize] };
+        for level in (min[1]..max[1]).rev() {
+            order.push((bi, level, max[0] - min[0], max[2] - min[2]));
+        }
+        blocks.push(b);
+    }
+    // the packing: a square grid of the largest tile, filled first row → first column → the rest row-major (the pwc-day
+    // order); grows until every tile fits
+    let (tw, th) = order.iter().fold((1u32, 1u32), |(w, h), t| (w.max(t.2), h.max(t.3)));
+    let n = order.len() as u32;
+    let cols = ((n as f32).sqrt().ceil() as u32).max(1);
+    let rows = (n + cols - 1) / cols;
+    let mut cells: Vec<(u32, u32)> = Vec::new();
+    for cx in 0..cols { cells.push((cx, 0)); }
+    for cy in 1..rows { cells.push((0, cy)); }
+    for cy in 1..rows { for cx in 1..cols { cells.push((cx, cy)); } }
+    let (aw, ah) = (cols * tw, rows * th);
+    for (i, &(bi, level, _w, _h)) in order.iter().enumerate() {
+        let (cx, cy) = cells[i];
+        let sl = (level - blocks[bi].min[1]) as usize;
+        blocks[bi].slices[sl] = Some((cx * tw, cy * th));
+    }
+    let slot_count = (c.chunk_counts[0] * c.chunk_counts[1] * c.chunk_counts[2]) as usize;
+    let mut slots = vec![-1i32; slot_count];
+    for (bi, r) in c.records.iter().enumerate() {
+        let idx = (r.chunk[0] + c.chunk_counts[0] * (r.chunk[1] + c.chunk_counts[1] * r.chunk[2])) as usize;
+        if idx < slots.len() { slots[idx] = bi as i32; }
+    }
+    let tile = [crate::probechunk::CHUNK[0] as u32, crate::probechunk::CHUNK[1] as u32, crate::probechunk::CHUNK[2] as u32];
+    let pitch = [tile[0] as f32 * c.grid.cell[0], tile[1] as f32 * c.grid.cell[1], tile[2] as f32 * c.grid.cell[2]];
+    let mut frame_info = template.frame_info.clone();
+    while frame_info.len() < 3 { frame_info.push((1.0, 0)); }
+    let cw4 = (aw + 3) / 4;
+    let v = crate::volume::Volume {
+        head_consts: template.head_consts.clone(),
+        frame_info,
+        grid: c.atlas,
+        blocks,
+        cell4_dims: Some((cw4, (ah + 3) / 4)),
+        cell4: vec![0xffffu16; (cw4 * ((ah + 3) / 4)) as usize],
+        slot_grid: c.chunk_counts,
+        slot_tile: tile,
+        block_size: [crate::probechunk::TILE[0] as u32, crate::probechunk::TILE[1] as u32, crate::probechunk::TILE[2] as u32],
+        inv_scale: [1.0 / pitch[0], 1.0 / pitch[1], 1.0 / pitch[2]],
+        unk_f: [-slot_origin[0] / pitch[0], -slot_origin[1] / pitch[1], -slot_origin[2] / pitch[2]],
+        slots,
+        counts: template.counts,
+        tail: template.tail.clone(),
+    };
+    let mut src = ProbeLayoutSrc::from_volume(v);
+    src.atlas = (aw, ah);
+    Some(src)
+}
