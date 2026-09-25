@@ -814,7 +814,20 @@ fn run(a: Vec<String>) {
                 // the transcribed chain (--lm-from-map / --game-peel) takes the Scene3d as the GAME's environment block (envcap::env_block_from_scene3d:
                 // the sea box far faces + the terrain patches as the peels' environment layer and the shadow casters, the Water surface dropped)
                 let game_block = has("--lm-from-map") || has("--game-peel");
+                // straight from the packs when --pak lines are given (the Scene3d through mapgeom's model walk); the OBJ export is the fallback
+                let mut pak_block_done = false;
+                if game_block && a.iter().any(|x| x == "--pak") {
+                    let paks: Vec<String> = a.iter().enumerate().filter(|(_, x)| *x == "--pak").filter_map(|(i, _)| a.get(i + 1).cloned()).collect();
+                    let mut store = mapgeom::store::DataStore::empty();
+                    for p in &paks { if let Some((pp, key)) = p.rsplit_once(':') { if let Err(e) = store.add_pak(pp, key) { eprintln!("decoration: --pak {p}: {e}"); } } }
+                    let s3 = format!("{coll}\\GameCtnDecoration\\Scene3d\\Base64x64.Scene3d.Gbx");
+                    match lightmap::envcap::env_block_from_pak(&mut store, &s3) {
+                        Ok((t, dropped)) => { eprintln!("decoration: the game's environment block from the packs ({s3}): {} triangles ({dropped} water / sky triangles left out)", t.len()); scene.decor.extend(t); pak_block_done = true; }
+                        Err(e) => eprintln!("decoration: the environment block from the packs failed ({e}) — the Scene3d export is used"),
+                    }
+                }
                 for p in paths {
+                    if pak_block_done { break; }
                     if game_block {
                         match lightmap::envcap::env_block_from_scene3d(&p, dscale, doff) {
                             Ok((t, dropped)) => { eprintln!("decoration: the game's environment block from {p}: {} triangles ({dropped} water triangles dropped)", t.len()); scene.decor.extend(t); }

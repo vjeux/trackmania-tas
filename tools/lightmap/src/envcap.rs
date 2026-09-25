@@ -285,3 +285,24 @@ pub fn env_block_from_scene3d(path: &str, scale: f32, offset: [f32; 3]) -> Resul
     if let Some(m) = cur.take() { if !m.tris.is_empty() { meshes.push(m); } }
     Ok((env_decor(&meshes), dropped))
 }
+
+/// The same environment block straight from the packs (no OBJ export): the decoration Scene3d through mapgeom's model walk,
+/// its groups by material — `InvisibleShadowCaster` = the sea box, `WarpSand` = the terrain patches; `Water` and the sky
+/// dome (`Tech3 Sky`, rasterised by domemesh.rs) are not part of the block.
+pub fn env_block_from_pak(store: &mut mapgeom::store::DataStore, scene3d_path: &str) -> Result<(Vec<DecorTri>, usize), String> {
+    let model = store.load_model(scene3d_path)?;
+    let mut c = mapgeom::geom::Collector::new(store);
+    c.model(&model, &mapgeom::geom::IDENTITY, 0);
+    let mut meshes: Vec<EnvMesh> = Vec::new();
+    let mut dropped = 0usize;
+    for (name, g) in &c.scene.groups {
+        let lower = name.to_ascii_lowercase();
+        if lower.contains("water") || lower.contains("sky") {
+            dropped += g.tris.len();
+            continue;
+        }
+        let tris: Vec<[[f32; 3]; 3]> = g.tris.iter().map(|t| [g.verts[t[0] as usize], g.verts[t[1] as usize], g.verts[t[2] as usize]]).collect();
+        meshes.push(EnvMesh { name: if lower.contains("invisible") { "sea_box".into() } else { name.clone() }, tris });
+    }
+    Ok((env_decor(&meshes), dropped))
+}
