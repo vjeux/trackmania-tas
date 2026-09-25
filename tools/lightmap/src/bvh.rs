@@ -254,6 +254,145 @@ fn relayout(nodes: Vec<Node>) -> Vec<Node> {
     out
 }
 
+/// THE PARALLEL BUILD without re-layouts: the top of the tree (depth < TOP_DEPTH) is a complete binary
+/// tree laid out breadth-first (node i's children at 2i + 1, 2i + 2 — siblings adjacent, as the traversal
+/// wants), its splits partitioning `order` level by level (every node of a level in parallel); each top
+/// leaf's range then builds its subtree with `build_rec_iter` (all subtrees in parallel), and the subtrees
+/// are appended after the top tree with one index fix-up each — no walk of the whole tree per level.
+/// Deterministic: the splits do not depend on thread timing, and the triangle order equals the
+/// recursive build's (the same binned-SAH split sequence).
+const TOP_DEPTH: usize = 7;
+
+fn build_top_down(order: &mut [u32], bounds: &[(V3, V3)], cents: &[V3]) -> Vec<Node> {
+    let n_top = (1usize << (TOP_DEPTH + 1)) - 1;
+    // a top node: its range in `order` (lo, hi) and whether it is a leaf of the top tree (its subtree
+    // is built below) or was split
+    #[derive(Clone, Copy)]
+    enum Top {
+        Unused,
+        Range(usize, usize),
+    }
+    let mut top = vec![Top::Unused; n_top];
+    top[0] = Top::Range(0, order.len());
+    let mut nodes = vec![Node { bmin: [0.0; 3], bmax: [0.0; 3], first: 0, count: 0 }; n_top];
+    // per level: split every live node of the level in parallel; `order` is partitioned in disjoint ranges
+    let order_ptr = order.as_mut_ptr() as usize;
+    let order_len = order.len();
+    let t_top = std::time::Instant::now();
+    for depth in 0..TOP_DEPTH {
+        let (a, b) = ((1usize << depth) - 1, (1usize << (depth + 1)) - 1);
+        let live: Vec<usize> = (a..b).filter(|&i| matches!(top[i], Top::Range(..))).collect();
+        if live.is_empty() {
+            break;
+        }
+        // (node, bmin, bmax, Option<(mid, axis-split done)>): None = the node stays a leaf of the top tree
+        let results: Vec<(usize, V3, V3, Option<usize>)> = crate::pool::pool().map(live.len(), |k| {
+            let i = live[k];
+            let Top::Range(lo, hi) = top[i] else { unreachable!() };
+            // SAFETY: the live nodes of one level own disjoint ranges of `order`
+            let slice: &mut [u32] = unsafe { std::slice::from_raw_parts_mut((order_ptr as *mut u32).add(lo), hi - lo) };
+            let _ = order_len;
+            let (bmin, bmax, cmin, cmax) = range_bounds(slice, bounds, cents);
+            let count = hi - lo;
+            if count <= 4 {
+                return (i, bmin, bmax, None);
+            }
+            let Some((axis, split)) = choose_split(slice, bounds, cents, cmin, cmax) else { return (i, bmin, bmax, None) };
+            let mid = partition(slice, cents, axis, split);
+            (i, bmin, bmax, Some(lo + mid))
+        });
+        for (i, bmin, bmax, mid) in results {
+            nodes[i].bmin = bmin;
+            nodes[i].bmax = bmax;
+            let Top::Range(lo, hi) = top[i] else { unreachable!() };
+            match mid {
+                Some(m) => {
+                    nodes[i].first = (2 * i + 1) as u32;
+                    nodes[i].count = 0;
+                    top[2 * i + 1] = Top::Range(lo, m);
+                    top[2 * i + 2] = Top::Range(m, hi);
+                    top[i] = Top::Unused; // split: no longer a top leaf
+                    // (keep the range for bookkeeping: not needed further)
+                }
+                None => {
+                    // a top-tree leaf: a real leaf when small, else its subtree builds below
+                    nodes[i].first = lo as u32;
+                    nodes[i].count = (hi - lo) as u32;
+                }
+            }
+        }
+    }
+    // the ranges left at the bottom of the top tree: the small ones (≤ 4) are leaves (their bounds set
+    // here — the level loop never visited the last level), the big ones build subtrees below
+    for i in 0..n_top {
+        if let Top::Range(lo, hi) = top[i] {
+            if hi - lo <= 4 && nodes[i].count == 0 {
+                let (bmin, bmax, _, _) = range_bounds(&order[lo..hi], bounds, cents);
+                nodes[i] = Node { bmin, bmax, first: lo as u32, count: (hi - lo) as u32 };
+            }
+        }
+    }
+    let sub_roots: Vec<(usize, usize, usize)> = (0..n_top).filter_map(|i| match top[i] { Top::Range(lo, hi) if hi - lo > 4 => Some((i, lo, hi)), _ => None }).collect();
+    let t_sub = std::time::Instant::now();
+    let subtrees: Vec<Vec<Node>> = crate::pool::pool().map(sub_roots.len(), |k| {
+        let (_, lo, hi) = sub_roots[k];
+        // SAFETY: disjoint ranges
+        let slice: &mut [u32] = unsafe { std::slice::from_raw_parts_mut((order_ptr as *mut u32).add(lo), hi - lo) };
+        build_rec_iter(slice, bounds, cents, lo)
+    });
+    // append: each subtree's root replaces its top slot, its other nodes follow at `base`
+    let t_app = std::time::Instant::now();
+    if std::env::var_os("LMTOOL_PROFILE").is_some() { eprintln!("bvh build: top {:.2}s, {} subtrees {:.2}s (largest {} triangles)", (t_sub - t_top).as_secs_f32(), sub_roots.len(), (t_app - t_sub).as_secs_f32(), sub_roots.iter().map(|(_, lo, hi)| hi - lo).max().unwrap_or(0)); }
+    let total: usize = subtrees.iter().map(|v| v.len().saturating_sub(1)).sum();
+    nodes.reserve(total);
+    for (k, sub) in subtrees.into_iter().enumerate() {
+        let (slot, _, _) = sub_roots[k];
+        let base = nodes.len();
+        let fix = |nd: &Node| -> Node {
+            if nd.count == 0 { Node { bmin: nd.bmin, bmax: nd.bmax, first: nd.first - 1 + base as u32, count: 0 } } else { *nd }
+        };
+        nodes[slot] = fix(&sub[0]);
+        for nd in &sub[1..] {
+            nodes.push(fix(nd));
+        }
+    }
+    nodes
+}
+
+#[cfg(test)]
+mod build_tests {
+    use super::*;
+
+    fn tri(p: V3, e1: V3, e2: V3) -> WTri {
+        WTri { p0: p, e1, e2, inst: 0, tri: 0, alpha: u16::MAX, uv0: [[0.0; 2]; 3] }
+    }
+
+    #[test]
+    fn parallel_build_matches_the_recursive_one() {
+        // a few thousand random small triangles; every query must return the same hit either way
+        let mut seed = 12345u64;
+        let mut rnd = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; (seed % 10_000) as f32 / 10_000.0 };
+        let tris: Vec<WTri> = (0..5000).map(|_| { let p = [rnd() * 100.0, rnd() * 100.0, rnd() * 100.0]; tri(p, [rnd() * 2.0, rnd() * 2.0, 0.0], [0.0, rnd() * 2.0, rnd() * 2.0]) }).collect();
+        let bounds: Vec<(V3, V3)> = tris.iter().map(tri_bounds).collect();
+        let cents: Vec<V3> = tris.iter().map(centroid).collect();
+        let mut o1: Vec<u32> = (0..tris.len() as u32).collect();
+        let mut o2 = o1.clone();
+        let n_old = build_rec(&mut o1, &bounds, &cents, 0, 0);
+        let n_new = build_top_down(&mut o2, &bounds, &cents);
+        assert_eq!(o1, o2, "the triangle order");
+        let t1: Vec<WTri> = o1.iter().map(|&i| tris[i as usize]).collect();
+        let b_old = Bvh { tris: t1.clone(), nodes: n_old, perm: vec![0; tris.len()] };
+        let b_new = Bvh { tris: t1, nodes: n_new, perm: vec![0; tris.len()] };
+        for k in 0..2000 {
+            let o = [rnd() * 100.0, rnd() * 100.0, rnd() * 100.0];
+            let d = crate::geometry::norm([rnd() - 0.5, rnd() - 0.5, rnd() - 0.5]);
+            let a = b_old.occluded(o, d, 50.0, u32::MAX, 0.0);
+            let b = b_new.occluded(o, d, 50.0, u32::MAX, 0.0);
+            assert_eq!(a, b, "query {k}");
+        }
+    }
+}
+
 /// Sequential iterative build of a subtree (the original loop), local node indices.
 fn build_rec_iter(order: &mut [u32], bounds: &[(V3, V3)], cents: &[V3], base: usize) -> Vec<Node> {
     struct Task {
@@ -296,21 +435,50 @@ impl Bvh {
     /// children of every node down to `PAR_DEPTH` build on their own threads),
     /// the subtrees below sequentially. Deterministic: the result does not
     /// depend on thread timing.
-    pub fn build(mut tris: Vec<WTri>) -> Bvh {
+    pub fn build(tris: Vec<WTri>) -> Bvh {
         let n = tris.len();
-        let bounds: Vec<(V3, V3)> = tris.iter().map(tri_bounds).collect();
-        let cents: Vec<V3> = tris.iter().map(centroid).collect();
+        // the per-triangle bounds and centroids, the reorder and the permutation in parallel chunks (27 M
+        // triangles on the giants: each serial pass was half a second)
+        let chunk = (n / (crate::pool::pool().threads * 4).max(1)).max(65_536);
+        let n_chunks = (n + chunk - 1) / chunk;
+        let mut bounds: Vec<(V3, V3)> = vec![([0.0; 3], [0.0; 3]); n];
+        let mut cents: Vec<V3> = vec![[0.0; 3]; n];
+        {
+            let (bp, cp) = (bounds.as_mut_ptr() as usize, cents.as_mut_ptr() as usize);
+            let tris = &tris;
+            crate::pool::pool().run(n_chunks, |ci| {
+                for i in ci * chunk..((ci + 1) * chunk).min(n) {
+                    // SAFETY: disjoint index ranges per task
+                    unsafe {
+                        *(bp as *mut (V3, V3)).add(i) = tri_bounds(&tris[i]);
+                        *(cp as *mut V3).add(i) = centroid(&tris[i]);
+                    }
+                }
+            });
+        }
         let mut order: Vec<u32> = (0..n as u32).collect();
-        let nodes = build_rec(&mut order, &bounds, &cents, 0, 0);
-        let reordered: Vec<WTri> = order.iter().map(|&i| tris[i as usize]).collect();
-        tris = reordered;
+        let nodes = build_top_down(&mut order, &bounds, &cents);
+        let mut reordered: Vec<WTri> = Vec::with_capacity(n);
         // original index → position in `tris` (the build reorders the triangles; a caller that numbers
         // triangles in `world_tris` order — the peel's own-triangle exclusion — maps through this)
         let mut perm = vec![0u32; n];
-        for (new_i, &old_i) in order.iter().enumerate() {
-            perm[old_i as usize] = new_i as u32;
+        {
+            // SAFETY: `reordered` is filled at every index exactly once before set_len; `perm` likewise
+            unsafe { reordered.set_len(n); }
+            let (rp, pp) = (reordered.as_mut_ptr() as usize, perm.as_mut_ptr() as usize);
+            let (tris, order) = (&tris, &order);
+            crate::pool::pool().run(n_chunks, |ci| {
+                for new_i in ci * chunk..((ci + 1) * chunk).min(n) {
+                    let old_i = order[new_i] as usize;
+                    unsafe {
+                        std::ptr::write((rp as *mut WTri).add(new_i), tris[old_i]);
+                        *(pp as *mut u32).add(old_i) = new_i as u32;
+                    }
+                }
+            });
         }
-        Bvh { tris, nodes, perm }
+        drop(tris);
+        Bvh { tris: reordered, nodes, perm }
     }
 
     #[inline]
