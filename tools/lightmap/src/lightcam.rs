@@ -359,8 +359,14 @@ pub fn mat4_mul(a: &[[f32; 4]; 4], b: &[[f32; 4]; 4]) -> [[f32; 4]; 4] {
 /// its own centre (the light's position) → the frustum {0, |R|·h}; SetFar(far + pad); the ±|·|·eps expansion of the
 /// min/max corners; c = (max + min)·0.5, h = (max − min)·0.5.
 pub fn fit_camera(b: &Aabb, d: [f32; 3], r: &FitRules) -> OrthoCamera {
+    fit_camera_ch(if r.centre_from_half { b.centre_from_half() } else { b.centre() }, b.half(), d, r)
+}
+
+/// `fit_camera` on a box already in the engine's {centre, half} form (CHmsVolumeShadow+0x80 IS that form: the scene
+/// box of FUN_140226e80, the world peel's FUN_140184fa0 union, the tiling rule's tile records — `lmtiles`): the eye is
+/// the given centre, the extents come from the given halves, no min/max round trip.
+pub fn fit_camera_ch(centre: [f32; 3], hb: [f32; 3], d: [f32; 3], r: &FitRules) -> OrthoCamera {
     let (right, up, forward) = if r.game_basis { basis_game_opts(d, r.game_renorm) } else { basis_from_dir_opts(d, r.normalise, r.norm_forward, r.norm_up) };
-    let hb = b.half();
     let abs3 = |v: [f32; 3]| [v[0].abs(), v[1].abs(), v[2].abs()];
     // (b) h' = |R|·h — row k of the world→light rotation is the k-th axis
     let mut c = [0f32; 3];
@@ -383,7 +389,7 @@ pub fn fit_camera(b: &Aabb, d: [f32; 3], r: &FitRules) -> OrthoCamera {
         c[i] = (mx + mn) * 0.5;
         h[i] = (mx - mn) * 0.5;
     }
-    OrthoCamera { eye: if r.centre_from_half { b.centre_from_half() } else { b.centre() }, right, up, forward, c, h, dot: r.dot }
+    OrthoCamera { eye: centre, right, up, forward, c, h, dot: r.dot }
 }
 
 /// The distance between two f32 values in ulps of the captured one (0 = bit-identical).

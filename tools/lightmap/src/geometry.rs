@@ -72,6 +72,10 @@ pub struct ModelGeom {
     pub stored_bbox: Option<([f32; 3], [f32; 3])>,
     /// The visuals' stored boxes themselves, as written: (centre, half) per visual (the record arithmetic works on this form).
     pub stored_boxes: Vec<([f32; 3], [f32; 3])>,
+    /// EVERY shaded geom's stored visual box in shaded-geom order, LOD 0 or not: (lod mask, centre, half) — the
+    /// game's CPlugTree bounding box (the block record's box, `lmtiles::model_box`) is the union over the solid's
+    /// visuals in this order; `stored_boxes` keeps only the LOD-0 ones.
+    pub stored_boxes_all: Vec<(i32, [f32; 3], [f32; 3])>,
 }
 
 pub fn sub(a: V3, b: V3) -> V3 {
@@ -151,6 +155,15 @@ pub fn load_model(bytes: &[u8]) -> Result<ModelGeom, String> {
     }
     let (mut aw, mut au) = (0f64, 0f64);
     let (mut umin, mut umax) = ([f32::MAX; 2], [f32::MIN; 2]);
+    // every shaded geom's stored visual box, LOD 0 or not, in shaded-geom order (the CPlugTree bbox source)
+    for sg in &s2.shaded_geoms {
+        let Some(vr) = s2.visuals.get(sg.visual_index as usize) else { continue };
+        let Some(Node::Visual(v)) = vr.inline.as_deref() else { continue };
+        if let Some(mm) = v.main.as_ref() {
+            let b = mm.bounding_box;
+            g.stored_boxes_all.push((sg.lod_mask, [b[0], b[1], b[2]], [b[3], b[4], b[5]]));
+        }
+    }
     for sg in &s2.shaded_geoms {
         // lod 0 only: the lightmap is computed on the highest detail
         if sg.lod_mask > 0 && sg.lod_mask & 1 == 0 {
@@ -278,12 +291,29 @@ pub fn load_model(bytes: &[u8]) -> Result<ModelGeom, String> {
     Ok(g)
 }
 
+/// A map item's placement fields as the file carries them (CGameCtnAnchoredObject): the game builds the mobil's
+/// Iso4 from these (RE 4's chain, `lmtiles::item_iso4`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ItemPose {
+    pub yaw: f32,
+    pub pitch: f32,
+    pub roll: f32,
+    pub pos: [f32; 3],
+    pub pivot: [f32; 3],
+    pub scale: f32,
+}
+
 #[derive(Clone, Debug)]
 pub struct Instance {
     pub item: usize,
     pub model: usize,
     pub xf: mapgeom::geom::Xform,
     pub model_name: String,
+    /// The placement fields (zeros / scale 1 for a synthetic instance).
+    pub pose: ItemPose,
+    /// The item's MapElemLightmapQuality byte (chunk 0x03043068: Normal 0, High 1, VeryHigh 2, Highest 3, Lowest 4,
+    /// VeryLow 5, Low 6); 0 when the map has no such chunk.
+    pub lm_quality: u8,
 }
 
 pub struct Scene {
@@ -425,6 +455,11 @@ impl Scene {
         let mut index: BTreeMap<String, usize> = BTreeMap::new();
         let mut instances = Vec::new();
         let mut missing: BTreeMap<String, usize> = BTreeMap::new();
+        // the per-item lightmap quality bytes (chunk 0x03043068: one byte per block, baked block and item, in that order)
+        let lm_quality: Vec<u8> = tmmaps::gbx::all_skip_chunks(&m.gbx.body).iter().find(|(c, ..)| *c == 0x0304_3068).map(|&(_, _, payload, size)| {
+            let start = payload + 4 + m.blocks.len() + m.baked.len();
+            m.gbx.body[start.min(payload + size)..(payload + size).min(start + m.items.len())].to_vec()
+        }).unwrap_or_default();
         for (i, it) in m.items.iter().enumerate() {
             let mi = match index.get(&it.model) {
                 Some(&k) => k,
@@ -443,7 +478,8 @@ impl Scene {
                 },
             };
             let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
-            instances.push(Instance { item: i, model: mi, xf, model_name: it.model.clone() });
+            let pose = ItemPose { yaw: it.yaw, pitch: it.pitch, roll: it.roll, pos: it.pos, pivot: it.pivot, scale: it.scale };
+            instances.push(Instance { item: i, model: mi, xf, model_name: it.model.clone(), pose, lm_quality: lm_quality.get(i).copied().unwrap_or(0) });
         }
         // the cut-out masks of the alpha-tested materials (the zip's Items/*.dds by base name)
         let mut alpha_masks: BTreeMap<String, AlphaMask> = BTreeMap::new();

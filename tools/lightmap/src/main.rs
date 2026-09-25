@@ -4394,6 +4394,46 @@ fn run(a: Vec<String>) {
                 println!("wrote {out} (DDS R16_UNORM {}×{})", tgt.w, tgt.h);
             }
         }
+        "tiles" => {
+            // lmtool tiles MAP.Gbx --s S [--scene xmin,ymin,zmin,xmax,ymax,zmax] [--quality Q] [--vram-mb N] [--max-tiles 4]
+            //   [--global-quality G] [--lod0] [--no-half] [--size-override N]
+            //   the lightmapper's CPU inputs of the peel cameras WITHOUT a capture (lmtiles.rs): per item the stored visual
+            //   boxes, the model box (CPlugTree), the mobil Iso4 (RE 4's pose chain), the block record and its quality
+            //   scale; the scene box (the record fold — or --scene, e.g. the captured casters' when the zone tiles are not
+            //   items of the map) and the TILING RULE's target size, grid and fitted tiles at the alloc scale --s
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let has = |k: &str| a.iter().any(|x| x == k);
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("map scene");
+            let gq: f32 = f("--global-quality").map(|v| v.parse().unwrap()).unwrap_or(1.0);
+            let items = lightmap::lmtiles::item_records(&scene, gq, has("--lod0"));
+            let mut recs: Vec<lightmap::lmtiles::BlockRecord> = Vec::new();
+            for it in &items {
+                let inst = scene.instances.iter().find(|i| i.item == it.item).unwrap();
+                println!("item {} ({}): pose yaw {} pitch {} roll {} pos {:?} pivot {:?} scale {} lm-quality byte {}", it.item, it.model_name, inst.pose.yaw, inst.pose.pitch, inst.pose.roll, inst.pose.pos, inst.pose.pivot, inst.pose.scale, inst.lm_quality);
+                for (lod, c, h) in &scene.models[inst.model].stored_boxes_all { println!("    visual box (lod mask {lod}): c {:?} h {:?}", c, h); }
+                println!("    Iso4 rows {:?} {:?} {:?} t {:?}", &it.iso4[0..3], &it.iso4[3..6], &it.iso4[6..9], &it.iso4[9..12]);
+                match (&it.model_box, &it.record) {
+                    (Some(mb), Some(r)) => { println!("    model box c {:?} h {:?} → RECORD c {:?} h {:?} (x [{}, {}] y [{}, {}] z [{}, {}]) quality {:.4}{}", mb.c, mb.h, r.world.c, r.world.h, r.world.min()[0], r.world.max()[0], r.world.min()[1], r.world.max()[1], r.world.min()[2], r.world.max()[2], r.quality, if lightmap::lmtiles::in_fitted_tiles(r) { "" } else { " (below the 0.51 gate)" }); recs.push(*r); }
+                    _ => println!("    no stored bounding box"),
+                }
+            }
+            let scene_ch = match f("--scene") {
+                Some(s) => { let v: Vec<f32> = s.split(',').map(|x| x.parse().unwrap()).collect(); lightmap::lmtiles::CBox::from_min_max([v[0], v[1], v[2]], [v[3], v[4], v[5]]) }
+                None => lightmap::lmtiles::scene_box(&recs),
+            };
+            println!("SCENE BOX c {:?} h {:?} = [{}, {}] × [{}, {}] × [{}, {}]{}", scene_ch.c, scene_ch.h, scene_ch.min()[0], scene_ch.max()[0], scene_ch.min()[1], scene_ch.max()[1], scene_ch.min()[2], scene_ch.max()[2], if has("--scene") { " (given)" } else { " (the records' fold — the zone tiles are missing when they are not items)" });
+            let p = lightmap::lmtiles::TileParams {
+                alloc_scale: f("--s").map(|v| v.parse().unwrap()).unwrap_or(31.75),
+                quality: f("--quality").map(|v| v.parse().unwrap()).unwrap_or(3),
+                half_at_low_quality: !has("--no-half"),
+                size_override: f("--size-override").map(|v| v.parse().unwrap()).unwrap_or(0),
+                vram_bytes: f("--vram-mb").map(|v| v.parse::<i64>().unwrap() << 20).unwrap_or(8 << 30),
+                max_tiles: f("--max-tiles").map(|v| v.parse().unwrap()).unwrap_or(4),
+            };
+            let t = lightmap::lmtiles::peel_tiling(&scene_ch, &recs, &p);
+            println!("TILING {p:?}: ext {:.2} layout units → peel target {}², n = {} cells per axis, {} fitted tile(s){}", t.ext, t.size, t.n, t.tiles.len(), if t.tiles.is_empty() { " (world pass only)" } else { "" });
+            for tile in &t.tiles { println!("  tile c {:?} h {:?} = x [{}, {}] y [{}, {}] z [{}, {}]", tile.c, tile.h, tile.min()[0], tile.max()[0], tile.min()[1], tile.max()[1], tile.min()[2], tile.max()[2]); }
+        }
         "frustum-check" => {
             // lmtool frustum-check PASSCAP_ROOT [--frame N] [--manifest FROZEN.json] [--eps E] [--far-pad P] [--norm div|rsqrt] [--fma] [--expand-scale]
             //   the CPU light-camera fit (lightcam.rs) against the capture's SceneV cbuffers: every distinct camera of the
@@ -4467,15 +4507,19 @@ fn run(a: Vec<String>) {
             }
             // the sun camera from the capture's own geometry: the scene box = the union of the tiles + the items (the
             // shadow-map casters of VS 5394 — the same buffers as shadow-check)
+            // --scene xmin,ymin,zmin,xmax,ymax,zmax: the scene box given (a frame without the sun shadow pass / env: the
+            // peel cameras of the other frames against frame 127448's casters)
+            let scene_override: Option<lightmap::lightcam::Aabb> = f("--scene").map(|s| { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); lightmap::lightcam::Aabb { min: [v[0], v[1], v[2]], max: [v[3], v[4], v[5]] } });
             let mtxt = std::fs::read_to_string(f("--manifest").map(std::path::PathBuf::from).unwrap_or_else(|| root.join("MANIFEST.json"))).expect("MANIFEST.json");
             let mval: serde_json::Value = serde_json::from_str(&lightmap::passdiff::repair_truncated_json(&mtxt)).expect("manifest json");
-            let shadow_ent = mval["passes"].as_array().unwrap().iter().find(|e| e["pass"].as_str() == Some("sun_shadow") && e["frame"].as_u64() == Some(frame as u64)).expect("a sun_shadow entry for the frame");
-            let (eid_first, eid_last) = (shadow_ent["eid_first"].as_u64().unwrap_or(0), shadow_ent["eid_last"].as_u64().unwrap_or(u64::MAX));
-            let mesh_json: serde_json::Value = serde_json::from_str(&lightmap::passdiff::repair_truncated_json(&std::fs::read_to_string(env.join("mesh.json")).expect("mesh.json"))).expect("mesh.json");
-            let mut scene_box = lightmap::lightcam::Aabb::empty();
+            let shadow_ent = mval["passes"].as_array().unwrap().iter().find(|e| e["pass"].as_str() == Some("sun_shadow") && e["frame"].as_u64() == Some(frame as u64));
+            let (eid_first, eid_last) = shadow_ent.map(|s| (s["eid_first"].as_u64().unwrap_or(0), s["eid_last"].as_u64().unwrap_or(u64::MAX))).unwrap_or((u64::MAX, 0));
+            let mesh_json: serde_json::Value = if scene_override.is_some() { serde_json::Value::Array(vec![]) } else { serde_json::from_str(&lightmap::passdiff::repair_truncated_json(&std::fs::read_to_string(env.join("mesh.json")).expect("mesh.json"))).expect("mesh.json") };
+            let mut scene_box = scene_override.unwrap_or_else(lightmap::lightcam::Aabb::empty);
             let mut items_box = lightmap::lightcam::Aabb::empty();
             let mut sun_cap: Option<&Cap> = None;
             for e in draws.as_array().unwrap() {
+                if scene_override.is_some() { break; }
                 let eid = e["eid"].as_u64().unwrap_or(0);
                 if eid < eid_first || eid > eid_last || !e["flags"].as_str().map(|s| s.contains("Drawcall")).unwrap_or(false) { continue; }
                 let vs_id = e["Vertex"]["shader"].as_str().unwrap_or("");
@@ -4560,34 +4604,61 @@ fn run(a: Vec<String>) {
             let mut f_box = lightmap::lightcam::Aabb { min: [items_box.min[0], scene_box.min[1], items_box.min[2]], max: [items_box.max[0], scene_box.max[1], items_box.max[2]] };
             // --f-box xmin,zmin,xmax,zmax: the item RECORDS' x/z box (the models' own bounding boxes, not the meshes' vertices)
             if let Some(s) = f("--f-box") { let v: Vec<f32> = s.split(',').map(|x| x.parse().unwrap()).collect(); f_box.min[0] = v[0]; f_box.min[2] = v[1]; f_box.max[0] = v[2]; f_box.max[2] = v[3]; }
-            // --map MAP.Gbx: the item RECORDS' boxes from the map's own items — each model's stored bounding box (the
-            // CPlugVisual bounding_box, ±0.02 minimum half) through its placement as |M|·h + T (the block-record form) —
-            // the fitted peel's box source without a capture
+            // --map MAP.Gbx: the item RECORDS from the map's own items THE GAME'S WAY (lmtiles: the CPlugTree box = the
+            // stored visual boxes copied/unioned in geom order, the mobil Iso4 by RE 4's pose chain, FUN_140185f70) and the
+            // fitted peel's box from the TILING RULE (FUN_140230080, --s = the chart allocation scale in layout units/m,
+            // default the editor's 31.75 for pwc-day) — the tile's own {centre, half} feeds the fit (no Aabb round trip).
+            // --b-records keeps engineer B's route (mapgeom Xform, Aabb re-centring); --lod0 restricts the model box to
+            // the LOD-0 geoms; --global-quality G (1.0 = the map's own objects)
+            let mut f_tile: Option<lightmap::lmtiles::CBox> = None;
             if let Some(map) = f("--map") {
                 let scene = lightmap::geometry::Scene::from_map(&map).expect("map scene");
-                // per item: one record per stored visual box (--record-per-visual) or one per model (the union of its
-                // visual boxes in centre/half form, the default), through FUN_140185f70's arithmetic
-                let mut recs: Vec<([f32; 3], [f32; 3])> = Vec::new();
-                for inst in &scene.instances {
-                    let mdl = &scene.models[inst.model];
-                    if mdl.stored_boxes.is_empty() { println!("  item {} ({}): no stored bounding box", inst.item, inst.model_name); continue; }
-                    let boxes: Vec<([f32; 3], [f32; 3])> = if has("--record-per-visual") { mdl.stored_boxes.clone() } else {
-                        let u = lightmap::lightcam::union_of_records(&mdl.stored_boxes);
-                        vec![(u.centre(), u.half())]
-                    };
-                    for (c, h) in boxes {
-                        let (wc, wh) = lightmap::lightcam::record_box(c, h, &inst.xf);
-                        println!("  item {} ({}): model box centre {:?} half {:?} → record centre {:?} half {:?}", inst.item, inst.model_name, c, h, wc, wh);
-                        recs.push((wc, wh));
+                if has("--b-records") {
+                    let mut recs: Vec<([f32; 3], [f32; 3])> = Vec::new();
+                    for inst in &scene.instances {
+                        let mdl = &scene.models[inst.model];
+                        if mdl.stored_boxes.is_empty() { println!("  item {} ({}): no stored bounding box", inst.item, inst.model_name); continue; }
+                        let boxes: Vec<([f32; 3], [f32; 3])> = if has("--record-per-visual") { mdl.stored_boxes.clone() } else {
+                            let u = lightmap::lightcam::union_of_records(&mdl.stored_boxes);
+                            vec![(u.centre(), u.half())]
+                        };
+                        for (c, h) in boxes {
+                            let (wc, wh) = lightmap::lightcam::record_box(c, h, &inst.xf);
+                            println!("  item {} ({}): model box centre {:?} half {:?} → record centre {:?} half {:?}", inst.item, inst.model_name, c, h, wc, wh);
+                            recs.push((wc, wh));
+                        }
                     }
-                }
-                let rec_union = lightmap::lightcam::union_of_records(&recs);
-                println!("  item records' union: min {:?} max {:?}", rec_union.min, rec_union.max);
-                if !rec_union.is_empty() {
-                    f_box.min[0] = rec_union.min[0]; f_box.min[2] = rec_union.min[2]; f_box.max[0] = rec_union.max[0]; f_box.max[2] = rec_union.max[2];
-                }
-                if !rec_union.is_empty() {
-                    f_box.min[0] = rec_union.min[0]; f_box.min[2] = rec_union.min[2]; f_box.max[0] = rec_union.max[0]; f_box.max[2] = rec_union.max[2];
+                    let rec_union = lightmap::lightcam::union_of_records(&recs);
+                    println!("  item records' union (B's route): min {:?} max {:?}", rec_union.min, rec_union.max);
+                    if !rec_union.is_empty() {
+                        f_box.min[0] = rec_union.min[0]; f_box.min[2] = rec_union.min[2]; f_box.max[0] = rec_union.max[0]; f_box.max[2] = rec_union.max[2];
+                    }
+                } else {
+                    let gq: f32 = f("--global-quality").map(|v| v.parse().unwrap()).unwrap_or(1.0);
+                    let items = lightmap::lmtiles::item_records(&scene, gq, has("--lod0"));
+                    let mut recs: Vec<lightmap::lmtiles::BlockRecord> = Vec::new();
+                    for it in &items {
+                        match (&it.model_box, &it.record) {
+                            (Some(mb), Some(r)) => {
+                                println!("  item {} ({}): visual boxes {:?}; model box c {:?} h {:?}; Iso4 rows {:?} {:?} {:?} t {:?} → record c {:?} h {:?} q {:.4}", it.item, it.model_name, scene.models[scene.instances.iter().find(|i| i.item == it.item).unwrap().model].stored_boxes_all, mb.c, mb.h, &it.iso4[0..3], &it.iso4[3..6], &it.iso4[6..9], &it.iso4[9..12], r.world.c, r.world.h, r.quality);
+                                recs.push(*r);
+                            }
+                            _ => println!("  item {} ({}): no stored bounding box", it.item, it.model_name),
+                        }
+                    }
+                    let s_alloc: f32 = f("--s").map(|v| v.parse().unwrap()).unwrap_or(31.75);
+                    // the scene box for the tiling: the captured casters' (the tiles are not in the map's item list)
+                    // the captured casters give S as min/max; the game holds {c, h} — --scene-centre mean|half picks the round
+                    // trip (half = min + (max − min)·0.5, the sun camera's bit-exact form)
+                    let scene_ch = if f("--scene-centre").as_deref() == Some("mean") { lightmap::lmtiles::CBox::from_min_max(scene_box.min, scene_box.max) } else { lightmap::lmtiles::CBox::new(scene_box.centre_from_half(), scene_box.half()) };
+                    let params = lightmap::lmtiles::TileParams::pwc_day(s_alloc);
+                    let t = lightmap::lmtiles::peel_tiling(&scene_ch, &recs, &params);
+                    println!("  TILING (s {s_alloc}): ext {:.1} layout units → target {}², n {} → {} fitted tile(s)", t.ext, t.size, t.n, t.tiles.len());
+                    for tile in &t.tiles { println!("    tile c {:?} h {:?} = x [{}, {}] z [{}, {}]", tile.c, tile.h, tile.min()[0], tile.max()[0], tile.min()[2], tile.max()[2]); }
+                    if let Some(tile) = t.tiles.first() {
+                        f_tile = Some(*tile);
+                        f_box = tile.aabb();
+                    }
                 }
             }
             println!("PEEL boxes: W min {:?} max {:?}; F min {:?} max {:?}", w_box.min, w_box.max, f_box.min, f_box.max);
@@ -4610,7 +4681,8 @@ fn run(a: Vec<String>) {
                 let d = match (has("--dhat"), original_dir(dhat)) { (false, Some(o)) => { println!("  original D from the table: ({:.9}, {:.9}, {:.9}) vs the cbuffer's forward ({:.9}, {:.9}, {:.9}): {:+}/{:+}/{:+} ulp", o[0], o[1], o[2], dhat[0], dhat[1], dhat[2], lightmap::lightcam::ulps(o[0], dhat[0]), lightmap::lightcam::ulps(o[1], dhat[1]), lightmap::lightcam::ulps(o[2], dhat[2])); o } _ => dhat };
                 // which box: the eye tells (W's centre y 71 vs F's 49.75)
                 let (name, b) = if (cap.eye[0] - w_box.centre()[0]).abs() < 1.0 && (cap.eye[2] - w_box.centre()[2]).abs() < 1.0 { ("world peel", w_box) } else { ("fitted peel", f_box) };
-                let cam = lightmap::lightcam::fit_camera(&b, d, &rules);
+                // the fitted peel from the tile record's own {centre, half} when the tiling rule produced it
+                let cam = match (name, f_tile) { ("fitted peel", Some(tile)) => lightmap::lightcam::fit_camera_ch(tile.c, tile.h, d, &rules), _ => lightmap::lightcam::fit_camera(&b, d, &rules) };
                 println!("PEEL CAMERA eid {} ({name}, D ({:.4}, {:.4}, {:.4})):", cap.eid, d[0], d[1], d[2]);
                 report(name, &cam, cap);
                 // the lookup matrix of this camera's accumulate draws (PS 17112 with the same PeelDirInW, the first one
