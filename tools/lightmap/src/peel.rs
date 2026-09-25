@@ -355,11 +355,28 @@ fn raster_stats_on() -> bool {
 /// wanted rectangle (every thread walks every triangle that reaches its rows — a huge triangle no longer
 /// pins one thread), fragments bucketed by the dense index, one CSR over the wanted pixels. A pixel's
 /// fragments are produced by one band thread in triangle order, as the dense build orders them.
+/// What the combined build counts alongside the sparse A-buffer: the exact item-layer statistic over
+/// the whole frame (`exact_item_layers_direct`'s work, from the same raster pass).
+pub struct CountCtx<'a> {
+    pub scene: &'a Scene,
+    pub bvh: &'a Bvh,
+    pub prm: &'a BakeParams,
+}
+
 pub fn build_abuffer_sparse(tris: &[WTri], frame: &PeelFrame, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask], px: &std::sync::Arc<PixelIndex>) -> ABuffer {
+    build_abuffer_sparse_counted(tris, frame, threads, zmin, zmax, masks, px, None).0
+}
+
+/// `build_abuffer_sparse`, and — with a `CountCtx` — the exact layer-count statistic from the SAME raster
+/// pass: every pixel of the frame is visited, every fragment goes to the count, the wanted ones also to
+/// the A-buffer (one walk over the triangles instead of two).
+pub fn build_abuffer_sparse_counted(tris: &[WTri], frame: &PeelFrame, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask], px: &std::sync::Arc<PixelIndex>, count: Option<CountCtx>) -> (ABuffer, Option<(usize, Vec<f64>)>) {
     let res = frame.res;
     let res_y = frame.res_y;
     let t_clip = std::time::Instant::now();
-    let clip = px.bbox;
+    let counting = count.is_some();
+    // the count needs every pixel: the whole frame is the clip then
+    let clip = if counting { (0i32, 0i32, res as i32 - 1, res_y as i32 - 1) } else { px.bbox };
     let cull_back = {
         static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *V.get_or_init(|| std::env::var("LMTOOL_PEEL_CULL_BACK").map(|v| v == "1").unwrap_or(false))
@@ -431,12 +448,13 @@ pub fn build_abuffer_sparse(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
     // (one CSR bucket per pool thread: the per-pixel depth sorts of a dense canopy are the cost)
     let sparse_buckets = (threads as u32).clamp(1, 256);
     let sparse_bucket_size = ((px.len() as u32 + sparse_buckets - 1) / sparse_buckets).max(1);
-    let parts: Vec<Vec<Vec<(u32, Frag)>>> = crate::pool::pool().map(n_bands, |b| {
+    let parts_all: Vec<(Vec<Vec<(u32, Frag)>>, Vec<(u32, Frag)>)> = crate::pool::pool().map(n_bands, |b| {
         let by0 = clip.1 + (b * band_rows) as i32;
         let by1 = (clip.1 + ((b + 1) * band_rows) as i32 - 1).min(clip.3);
         let mut out: Vec<Vec<(u32, Frag)>> = (0..sparse_buckets).map(|_| Vec::new()).collect();
+        let mut all: Vec<(u32, Frag)> = Vec::new();
         if by0 > by1 {
-            return out;
+            return (out, all);
         }
         let band_clip = (clip.0, by0, clip.2, by1);
         for chunk_lists in &binned {
@@ -455,7 +473,7 @@ pub fn build_abuffer_sparse(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                 // no pixel centre at all)
                 let mut fp_tex: Option<Option<(&crate::alphatex::AlphaTex, crate::alphatex::Footprint)>> = None;
                 if raster_stats { RS_TRIS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
-                raster::triangle_clipped_masked(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], band_clip, Some(bitmap), |x, y, bc| {
+                raster::triangle_clipped_masked(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], band_clip, if counting { None } else { Some(bitmap) }, |x, y, bc| {
                     if raster_stats { RS_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
                     // the game's viewport (1, 1, w−2, h−2): the outer ring is never drawn
                     if x < inset || y < inset || x + inset >= res || y + inset >= res_y {
@@ -476,14 +494,101 @@ pub fn build_abuffer_sparse(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                                 return;
                             }
                         } else if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): tri {ti} inst {} model tri {} z {z:.3} z01 {:.5}", t.inst, t.tri, frame.z01(z)); } }
-                        let k = px.index_of_id(y * res + x);
+                        let id = y * res + x;
+                        if counting {
+                            all.push((id, Frag { z, tri: ti }));
+                            if !bit(bitmap, id as usize) {
+                                return;
+                            }
+                        }
+                        let k = px.index_of_id(id);
                         out[(k / sparse_bucket_size) as usize].push((k, Frag { z, tri: ti }));
                     }
                 });
             }
         }
-        out
+        (out, all)
     });
+    // the exact statistic from the bands' complete fragment lists
+    let counted: Option<(usize, Vec<f64>)> = count.map(|cx| {
+        let (scene, bvh, prm) = (cx.scene, cx.bvh, cx.prm);
+        let n = (res * res_y) as usize;
+        let is_env = |tri: u32| -> bool { let wt = &bvh.tris[tri as usize]; wt.inst == DECOR_INST && scene.decor.get(wt.tri as usize).map(|d| d.env).unwrap_or(false) };
+        let env_drawn = |tri: u32| -> bool {
+            let wt = &bvh.tris[tri as usize];
+            match scene.decor.get(wt.tri as usize) {
+                Some(dt) if dt.env_far_only => { let n = cross(wt.e1, wt.e2); dot(n, frame.d) > 0.0 }
+                _ => true,
+            }
+        };
+        let count_run = |list: &[(u32, Frag)]| -> usize {
+            let mut d_prev = f32::NEG_INFINITY;
+            if prm.dome_layer {
+                let mut env_d = 0.0f32;
+                for (_, f) in list {
+                    if is_env(f.tri) && env_drawn(f.tri) {
+                        let z01 = frame.z01(f.z);
+                        if z01 >= 0.0 && z01 <= 1.0 { env_d = env_d.max(z01); }
+                    }
+                }
+                d_prev = if env_d > 0.0 { if prm.depth_bits == 16 { (env_d * 65535.0).round() / 65535.0 } else { env_d } } else { 0.0 };
+            }
+            let mut items = 0usize;
+            for (_, f) in list {
+                if prm.dome_layer && is_env(f.tri) {
+                    continue;
+                }
+                let z01 = frame.z01(f.z).max(0.0);
+                if z01 < d_prev {
+                    continue;
+                }
+                if items >= MAX_LAYERS {
+                    break;
+                }
+                let wt = &bvh.tris[f.tri as usize];
+                let (slope, zmax_prim) = tri_slope(wt, frame);
+                let mut dd = z01 + d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), prm.depth_bias, prm.depth_bits);
+                if prm.depth_bits == 16 {
+                    dd = (dd.clamp(0.0, 1.0) * 65535.0).round() / 65535.0;
+                }
+                items += 1;
+                d_prev = dd;
+            }
+            items
+        };
+        // per band (in parallel): sort by (pixel, z, triangle), scan the runs
+        let all_ptrs: Vec<usize> = parts_all.iter().map(|(_, a)| a.as_ptr() as usize).collect();
+        let all_lens: Vec<usize> = parts_all.iter().map(|(_, a)| a.len()).collect();
+        let hists: Vec<([usize; MAX_LAYERS + 1], usize)> = crate::pool::pool().map(parts_all.len(), |b| {
+            // SAFETY: each task reads (and sorts a copy of) its own band's list
+            let src: &[(u32, Frag)] = unsafe { std::slice::from_raw_parts(all_ptrs[b] as *const (u32, Frag), all_lens[b]) };
+            let mut frags: Vec<(u32, Frag)> = src.to_vec();
+            frags.sort_by(|p, q| p.0.cmp(&q.0).then_with(|| p.1.z.total_cmp(&q.1.z)).then_with(|| p.1.tri.cmp(&q.1.tri)));
+            let mut hist = [0usize; MAX_LAYERS + 1];
+            let mut covered = 0usize;
+            let mut i = 0usize;
+            while i < frags.len() {
+                let mut j = i + 1;
+                while j < frags.len() && frags[j].0 == frags[i].0 { j += 1; }
+                hist[count_run(&frags[i..j]).min(MAX_LAYERS)] += 1;
+                covered += 1;
+                i = j;
+            }
+            (hist, covered)
+        });
+        let mut hist = [0usize; MAX_LAYERS + 1];
+        let mut covered = 0usize;
+        for (hh, c) in &hists { for k in 0..=MAX_LAYERS { hist[k] += hh[k]; } covered += c; }
+        hist[0] += n - covered;
+        let mut fractions: Vec<f64> = Vec::with_capacity(MAX_LAYERS);
+        let mut at_least = n;
+        for k in 0..MAX_LAYERS {
+            at_least -= hist[k];
+            fractions.push(at_least as f64 / n.max(1) as f64);
+        }
+        (prm.peel_stop.layers_rendered(&fractions), fractions)
+    });
+    let parts: Vec<Vec<Vec<(u32, Frag)>>> = parts_all.into_iter().map(|(o, _)| o).collect();
     prof::add(&prof::B_RASTER, t_raster);
     if raster_stats { eprintln!("raster stats (sparse, {n_bands} bands): {} triangles rasterised, {} pixel visits, clip {:?}, wanted {}, {:.3}s", RS_TRIS.swap(0, std::sync::atomic::Ordering::Relaxed), RS_VISITS.swap(0, std::sync::atomic::Ordering::Relaxed), clip, px.len(), t_raster.elapsed().as_secs_f32()); }
     let t_sort = std::time::Instant::now();
@@ -534,7 +639,7 @@ pub fn build_abuffer_sparse(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
         frags.extend(f);
     }
     prof::add(&prof::B_SORT, t_sort);
-    ABuffer { res, band_h: res_y.max(1), bands: vec![(start, frags)], sparse: Some(px.clone()) }
+    (ABuffer { res, band_h: res_y.max(1), bands: vec![(start, frags)], sparse: Some(px.clone()) }, counted)
 }
 
 pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask], wanted: Option<&std::sync::Arc<PixelIndex>>) -> ABuffer {
@@ -2057,21 +2162,38 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // build of the whole frame gives the written fraction of every item layer exactly, then the stop
             // rule; --layers-estimate takes the census estimate on the sparse build instead
             let t_exact = std::time::Instant::now();
-            let exact_layers: Option<usize> = if prm.game_peel && !want_dir_dump && !prm.layers_estimate {
+            let need_exact = prm.game_peel && !want_dir_dump && !prm.layers_estimate && {
                 let known = if prm.layers_from_capture { prm.peel_layer_counts.as_ref().and_then(|c| c.get(di)).and_then(|v| v.get(pi)).copied().flatten() } else { prm.peel_layers_fixed };
-                if known.is_none() {
-                    let (kept, fractions) = if std::env::var_os("LMTOOL_EXACT_DENSE").is_some() {
-                        let dense = build_abuffer_wanted(&bvh.tris, frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks, None);
-                        exact_item_layers(&dense, frame, scene, bvh, prm, threads)
-                    } else {
-                        exact_item_layers_direct(&bvh.tris, frame, scene, bvh, prm, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks)
-                    };
-                    if peel_layers_debug() { eprintln!("peel layers (exact, sweep {} direction {di} peel {pi}): fractions {:?} → {kept} rendered", prm.sweep, fractions.iter().take_while(|f| **f > 0.0).map(|f| format!("{f:.6}")).collect::<Vec<_>>()); }
-                    Some(kept)
-                } else { None }
-            } else { None };
+                known.is_none()
+            };
+            // (the separate forms of the exact pass, for the check: LMTOOL_EXACT_DENSE=1 the dense A-buffer,
+            // LMTOOL_EXACT_SEPARATE=1 the direct pass on its own; the default fuses it with the sparse build)
+            let mut exact_layers: Option<usize> = None;
+            let fuse = need_exact && std::env::var_os("LMTOOL_EXACT_DENSE").is_none() && std::env::var_os("LMTOOL_EXACT_SEPARATE").is_none();
+            if need_exact && !fuse {
+                let (kept, fractions) = if std::env::var_os("LMTOOL_EXACT_DENSE").is_some() {
+                    let dense = build_abuffer_wanted(&bvh.tris, frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks, None);
+                    exact_item_layers(&dense, frame, scene, bvh, prm, threads)
+                } else {
+                    exact_item_layers_direct(&bvh.tris, frame, scene, bvh, prm, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks)
+                };
+                if peel_layers_debug() { eprintln!("peel layers (exact, sweep {} direction {di} peel {pi}): fractions {:?} → {kept} rendered", prm.sweep, fractions.iter().take_while(|f| **f > 0.0).map(|f| format!("{f:.6}")).collect::<Vec<_>>()); }
+                exact_layers = Some(kept);
+            }
             prof::add(&prof::EXACT, t_exact);
-            let ab = if prm.game_peel { build_abuffer_wanted(&bvh.tris, frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks, wanted.as_ref()) } else { build_abuffer_upto(&bvh.tris, frame, threads, zmax, &prm.alpha_masks) };
+            let ab = if prm.game_peel {
+                match wanted.as_ref() {
+                    Some(px) => {
+                        let (ab, counted) = build_abuffer_sparse_counted(&bvh.tris, frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks, px, if fuse { Some(CountCtx { scene, bvh, prm }) } else { None });
+                        if let Some((kept, fractions)) = counted {
+                            if peel_layers_debug() { eprintln!("peel layers (exact, sweep {} direction {di} peel {pi}): fractions {:?} → {kept} rendered", prm.sweep, fractions.iter().take_while(|f| **f > 0.0).map(|f| format!("{f:.6}")).collect::<Vec<_>>()); }
+                            exact_layers = Some(kept);
+                        }
+                        ab
+                    }
+                    None => build_abuffer_wanted(&bvh.tris, frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks, None),
+                }
+            } else { build_abuffer_upto(&bvh.tris, frame, threads, zmax, &prm.alpha_masks) };
             t_build_total += tb2.elapsed().as_secs_f32();
             prof::add(&prof::BUILD, tb2);
             frag_total += ab.len();
