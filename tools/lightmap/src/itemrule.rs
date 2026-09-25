@@ -831,6 +831,56 @@ pub fn clip_owner_order(cells: &[[i32; 3]], free: &[bool]) -> Vec<usize> {
 // 912 (normal) + 360 (free), the base 128 + 52. Within one class the same entity reached through different clips
 // (WaterFCCenter vs the HFC ends) shares the clone.
 
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// THE LEGACY TREE RECORD'S BOX — bit-exact, 380/380 on the tiny 03 dump (RE 7, 2026-09-25 20:15Z). The chain:
+// FUN_141081910 (item spawn) → FUN_14026e000 → FUN_14026b4f0 = RE 4's `mapgeom::veget_instance::variation(item_pose(…))`
+// (the MurmurHash2 seed of the 28-byte pose, the Nadeo LCG scale draw, yaw ∈ [0, 2π) when EnableRandomRotationY, two
+// tilts ∈ ±AngleMax_RotXZ_Deg, q' = Rz ⊗ Rx ⊗ Ry ⊗ q) → FUN_14026df20 → FUN_14026dd00: a CHmsItem whose CPlugSolid is
+// the clone of the tree model's LM solid (model+0x398 → FUN_140414140) and whose Iso4 = FUN_140183670(q', pos) =
+// quat_to_mat(q') with the item position as translation — the SCALE draw is NOT in the Iso4 — then FUN_14020e3c0 makes
+// the record: box = FUN_140185f70(solid tree bbox, Iso4). The solid's bbox = FUN_140184fa0's fold of the LOD-0 visuals
+// whose material is NOT a leaf material (`VegetMaterial::leaf`; the leaf visuals are the two-sided alpha shader and are
+// not lightmap geometry): first box copied, then per axis min = minss(b.c − b.h, acc.c − acc.h), max = maxss(b.h + b.c,
+// acc.c + acc.h), c = (max + min)·0.5, h = (max − min)·0.5 — the stored per-visual boxes equal the vertex recompute
+// bit for bit on every WhiteShore tree. The variant pick (which VegetTreeModel of an SVariantList) is in the map file
+// (the anchored object's variant byte), not an RNG: tiny 03's 153/119/38/31/15/13/11 per species = `mapgeom
+// veget-instances` exactly.
+
+/// FUN_140184fa0: fold `b` (centre, half) into `acc` in the game's f32 order.
+pub fn fold_box(acc: Option<([f32; 3], [f32; 3])>, b: ([f32; 3], [f32; 3])) -> ([f32; 3], [f32; 3]) {
+    let Some((ac, ah)) = acc else { return b };
+    let mut c = [0f32; 3];
+    let mut h = [0f32; 3];
+    for k in 0..3 {
+        let mn = (b.0[k] - b.1[k]).min(ac[k] - ah[k]);
+        let mx = (b.1[k] + b.0[k]).max(ac[k] + ah[k]);
+        c[k] = (mx + mn) * 0.5;
+        h[k] = (mx - mn) * 0.5;
+    }
+    (c, h)
+}
+
+/// FUN_140185f70: the box through the Iso4 (row-major `m[3i + j]`, translation `t`): c'_i = ((m_i0·c_x + m_i1·c_y) +
+/// m_i2·c_z) + t_i, h'_i = (|m_i0|·h_x + |m_i1|·h_y) + |m_i2|·h_z.
+pub fn box_through_iso4(c: [f32; 3], h: [f32; 3], m: &[f32; 9], t: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+    let mut oc = [0f32; 3];
+    let mut oh = [0f32; 3];
+    for i in 0..3 {
+        let (a, b, d) = (m[3 * i], m[3 * i + 1], m[3 * i + 2]);
+        oc[i] = ((a * c[0] + b * c[1]) + d * c[2]) + t[i];
+        oh[i] = (a.abs() * h[0] + b.abs() * h[1]) + d.abs() * h[2];
+    }
+    (oc, oh)
+}
+
+/// The record box of a legacy tree item: `q` = the varied quaternion (w, x, y, z) of `veget_instance::variation`, `pos`
+/// = the item position, `(c, h)` = the model's bark-visual fold (`fold_box` over the LOD-0 non-leaf visuals' boxes).
+pub fn legacy_tree_record_box(q: [f32; 4], pos: [f32; 3], c: [f32; 3], h: [f32; 3]) -> ([f32; 3], [f32; 3]) {
+    let m = mapgeom::veget_instance::quat_to_mat(q);
+    box_through_iso4(c, h, &m, pos)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1066,6 +1116,42 @@ mod tests {
         assert_eq!(mn, [16.0, -113.994995, 16.0]);
         assert_eq!(mx, [2032.0, 60.0086555, 2032.0]);
         assert_eq!(mapping_bbox(&[]), ([f32::MAX; 3], [f32::MIN; 3]));
+    }
+
+    #[test]
+    fn legacy_tree_boxes_bit_exact_on_tiny03() {
+        // (species, varied quaternion (w,x,y,z), item position, dump centre, dump half) — one record per species of the
+        // baker's tiny 03 dump; the box (c, h) per species = the bark-only fold printed by `re7_treebox`
+        let boxes: &[(&str, [u32; 3], [u32; 3])] = &[
+            ("TreeFirSmallA1", [0x3d8b3d0c, 0x40295e9e, 0xbdc1da14], [0x3f439a5a, 0x4049fd3e, 0x3f3a9f1e]),
+            ("TreeFirVerySmallA1", [0x3c662600, 0x3f9660b2, 0xbd80a5b0], [0x3ecaa560, 0x3fd6b0f8, 0x3eb5291b]),
+            ("TreePineDeadSmallA", [0xbd9951d0, 0x40322c19, 0x3d2b0ee0], [0x3f73efa8, 0x4051bd75, 0x3f4dae42]),
+            ("TreeFirSmallA3", [0x384e6000, 0x402df439, 0xbcfbb180], [0x3f2b1e90, 0x404e7457, 0x3f359cba]),
+            ("TreeFirSmallA2", [0x3d11e7c0, 0x402e372b, 0xbd8c68d8], [0x3f43703b, 0x404ed5cb, 0x3f3fe250]),
+            ("TreeFirVerySmallA2", [0xbd3aa7a8, 0x3f9ff22c, 0xbca07a28], [0x3ee436ab, 0x3fe04270, 0x3eec34bc]),
+            ("TreeFirVerySmallA3", [0xbd090b38, 0x3f9ff22c, 0xbd12f324], [0x3ea89c90, 0x3fe04270, 0x3e92debe]),
+        ];
+        let f = |b: [u32; 3]| [f32::from_bits(b[0]), f32::from_bits(b[1]), f32::from_bits(b[2])];
+        let cases: &[(&str, [u32; 4], [u32; 3], [u32; 3], [u32; 3])] = &[
+            ("TreeFirSmallA1", [0xbf5d3aa0, 0x3af074c0, 0x3f00ce2f, 0xbbd109b0], [0x449734f3, 0x41480000, 0x44359836], [0x449737e1, 0x41725b8b, 0x44359761], [0x3f85215c, 0x404ac09f, 0x3f86fcb8]),
+            ("TreeFirVerySmallA1", [0xbe1adc01, 0xbaa2eed2, 0x3f7d0da2, 0xbb862a33], [0x4498e439, 0x41480000, 0x4435131e], [0x4498e441, 0x415ace05, 0x443516a4], [0x3efab614, 0x3fd720fa, 0x3ef015cf]),
+            ("TreePineDeadSmallA", [0xbe7f0139, 0xbb09b89f, 0x3f77ec5c, 0xbc16a23b], [0x449bfcac, 0x41840000, 0x44338bb6], [0x449bfd5b, 0x419a42cf, 0x44338413], [0x3fa0115f, 0x4052b40a, 0x3f9bef0a]),
+            ("TreeFirSmallA3", [0x3f7f2296, 0x3bfff059, 0x3da76103, 0xbb159c23], [0x4493dc71, 0x411199bb, 0x442701ab], [0x4493dcca, 0x413d1751, 0x4427025f], [0x3f4b38f6, 0x404f4a7c, 0x3f5b9837]),
+            ("TreeFirVerySmallA3", [0x3dc566e5, 0x3a384b18, 0xbf7ecde8, 0x3baeaece], [0x4493a381, 0x4108fd15, 0x44265d8a], [0x4493a4ae, 0x411cfcb0, 0x44265e8b], [0x3ec3d5d5, 0x3fe0a826, 0x3eb9e258]),
+            ("TreeFirVerySmallA2", [0xbf607537, 0x3a5ea2f8, 0xbef62811, 0x3c218e56], [0x449376c4, 0x411180f3, 0x4427010c], [0x4493761d, 0x4125823d, 0x442701f4], [0x3f284b95, 0x3fe1b87e, 0x3f249fdd]),
+            ("TreeFirSmallA2", [0xbf764986, 0x3aa0bb9b, 0x3e8bafe8, 0xbb20e7d4], [0x449d5818, 0x4134962f, 0x442f5039], [0x449d59dd, 0x4160244f, 0x442f4d0a], [0x3f8736aa, 0x404f24fb, 0x3f867c84]),
+        ];
+        for (sp, q, pos, want_c, want_h) in cases {
+            let (_, bc, bh) = boxes.iter().find(|b| b.0 == *sp).unwrap();
+            let q = [f32::from_bits(q[0]), f32::from_bits(q[1]), f32::from_bits(q[2]), f32::from_bits(q[3])];
+            let (c, h) = legacy_tree_record_box(q, f(*pos), f(*bc), f(*bh));
+            assert_eq!(c.map(f32::to_bits), *want_c, "{sp} centre");
+            assert_eq!(h.map(f32::to_bits), *want_h, "{sp} half");
+        }
+        // the fold: TreeFirVerySmallA1 = visual 7 (trunk) ⊕ visual 9 (branches)
+        let (c, h) = fold_box(Some(([0.013268247, 1.1748259, 0.0025309213], [0.063224815, 1.6772757, 0.060732137])), ([0.014047161, 1.3559852, -0.062816024], [0.39579296, 0.82029295, 0.35382923]));
+        assert_eq!(c.map(f32::to_bits), [0x3c662600, 0x3f9660b2, 0xbd80a5b0]);
+        assert_eq!(h.map(f32::to_bits), [0x3ecaa560, 0x3fd6b0f8, 0x3eb5291b]);
     }
 
     #[test]

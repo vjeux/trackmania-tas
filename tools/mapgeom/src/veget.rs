@@ -109,6 +109,40 @@ pub struct VegetTreeModel {
 }
 
 impl VegetTreeModel {
+    /// The lightmapper's record box of this tree (RE 7, bit-exact on the WhiteShore tiny 03 dump): the game's
+    /// CPlugSolid for a legacy tree item holds the LOD-0 visuals whose material is NOT a leaf material, and its bbox is
+    /// FUN_140184fa0's fold of their stored boxes (first copied, then per axis min = minss(b.c − b.h, acc.c − acc.h),
+    /// max = maxss(b.h + b.c, acc.c + acc.h), c = (max + min)·0.5, h = (max − min)·0.5). `None` when LOD 0 has no
+    /// bark visual. Returns (centre, half extents) in model space.
+    pub fn lightmap_record_box(&self) -> Option<([f32; 3], [f32; 3])> {
+        let lod0 = self.lods.first()?;
+        let mut acc: Option<([f32; 3], [f32; 3])> = None;
+        for e in lod0 {
+            let leaf = self.materials.get(e.material as usize).map(|m| m.leaf).unwrap_or(false);
+            if leaf {
+                continue;
+            }
+            let Some(main) = &e.visual.main else { continue };
+            let b = main.bounding_box;
+            let (bc, bh) = ([b[0], b[1], b[2]], [b[3], b[4], b[5]]);
+            acc = Some(match acc {
+                None => (bc, bh),
+                Some((ac, ah)) => {
+                    let mut c = [0f32; 3];
+                    let mut h = [0f32; 3];
+                    for k in 0..3 {
+                        let mn = (bc[k] - bh[k]).min(ac[k] - ah[k]);
+                        let mx = (bh[k] + bc[k]).max(ac[k] + ah[k]);
+                        c[k] = (mx + mn) * 0.5;
+                        h[k] = (mx - mn) * 0.5;
+                    }
+                    (c, h)
+                }
+            });
+        }
+        acc
+    }
+
     /// Lowest / highest y and widest horizontal half extent over the visuals
     /// of the nearest level (model metres).
     pub fn stats(&self) -> TreeStats {
