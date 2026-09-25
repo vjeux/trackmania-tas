@@ -50,6 +50,15 @@ pub struct Opts {
     /// GhostMgr.Ghost_Add — the way a leaderboard ghost is shown), so the shots
     /// show it driving. The plugin's JSON answer goes into the report.
     pub ghost: Option<String>,
+    /// `--mode SCRIPT`: the game mode PlayMap runs the map in (empty = the
+    /// map's own declared mode). `TrackMania/TM_TimeAttack_Local.Script.txt`
+    /// is the solo mode with a ghost manager.
+    pub mode: String,
+    /// `--skin ZIP`: the car wears this skin for the run — copied over
+    /// `Skins/Models/CarSport/PSG V2.zip` (the profile's skin, taken from a
+    /// LOCAL file of that name when the game's cached download of it is not
+    /// there) with the cached copy set aside first; both restored afterwards.
+    pub skin: Option<String>,
     pub detach: bool,
     /// `--via-editor`: open the map in the editor and press TEST instead of
     /// the title's PlayMap (which stopped opening maps on 2026-09-23).
@@ -77,6 +86,8 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         camlog_ms: num("--camlog-ms", 0)?,
         wheels_ms: num("--wheels-ms", 0)?,
         ghost: val("--ghost"),
+        mode: val("--mode").unwrap_or_default(),
+        skin: val("--skin"),
         detach: args.iter().any(|a| a == "--detach"),
         via_editor: args.iter().any(|a| a == "--via-editor"),
     })
@@ -87,7 +98,7 @@ pub fn run(args: &[String]) -> i32 {
         Ok(o) => o,
         Err(e) => {
             eprintln!("{e}");
-            eprintln!("usage: shootctl playshots --map MAP --outdir /mnt/c/... [--tag T] [--shots N] [--every-ms MS] [--first-ms MS] [--carlog-ms MS] [--drive-ms MS [--drive-at-ms MS]] [--camlog-ms MS] [--wheels-ms MS] [--ghost FILE] [--timeout S] [--detach] [--via-editor]");
+            eprintln!("usage: shootctl playshots --map MAP --outdir /mnt/c/... [--tag T] [--shots N] [--every-ms MS] [--first-ms MS] [--carlog-ms MS] [--drive-ms MS [--drive-at-ms MS]] [--camlog-ms MS] [--wheels-ms MS] [--ghost FILE] [--mode SCRIPT] [--skin ZIP] [--timeout S] [--detach] [--via-editor]");
             return 2;
         }
     };
@@ -124,7 +135,13 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     let staged = super::shootset::stage_map(&opts.map)?;
     let game_map = super::game_path(&staged)?;
     println!("{} map {}", el(), game_map);
-    if super::launch(180, false) != 0 {
+    // a skin for the run: the game reads the profile skin at start, so it
+    // must be in place BEFORE a fresh launch — and this forces one
+    let _skin_guard = match &opts.skin {
+        Some(z) => Some(SkinSwap::install(z)?),
+        None => None,
+    };
+    if super::launch(180, opts.skin.is_some()) != 0 {
         return Err("the game did not come up".into());
     }
     super::to_menu()?;
@@ -159,7 +176,7 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
         }
         println!("{} editor after {:.1}s; /edtest: {}", el(), ed0.elapsed().as_secs_f64(), super::http_get("/edtest", 30).unwrap_or_default().trim());
     } else {
-        println!("{} /playmap: {}", el(), super::http_get("/playmap?mode=", 30).unwrap_or_default().trim());
+        println!("{} /playmap: {}", el(), super::http_get(&format!("/playmap?mode={}", opts.mode), 30).unwrap_or_default().trim());
     }
     let load0 = Instant::now();
     loop {
@@ -623,4 +640,54 @@ pub fn tap_key(name: &str, hold_ms: u64) -> Result<String, String> {
         return Err(format!("keybd_event script: {text} {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
     Ok(text)
+}
+
+/// The profile skin swapped for a test zip, and put back on drop. The game
+/// resolves the profile's `Skins\Models\CarSport\PSG V2_<uuid>.zip` from
+/// its ProgramData cache (`75ECAA…zip`) and, when that is absent, from a LOCAL
+/// `Skins/Models/CarSport/PSG V2.zip` (measured 2026-09-24: with the cache
+/// present its textures won the mesh from the local file — a grey kart).
+struct SkinSwap {
+    local: PathBuf,
+    cache: PathBuf,
+    cache_aside: Option<PathBuf>,
+    loc_aside: Option<PathBuf>,
+}
+
+impl SkinSwap {
+    const CARSPORT: &'static str = "/mnt/c/Users/vjeux/OneDrive/Documents/Trackmania/Skins/Models/CarSport";
+    const CACHE: &'static str = "/mnt/c/ProgramData/Trackmania/Cache/75ECAA8448301EC0D930375BE94DC616C40FEE9A85872ACCA5B1ADB3A8A7D0C373E23B62A0818D3A7D4684E05F88C3F5.zip";
+    fn install(zip: &str) -> Result<SkinSwap, String> {
+        let local = PathBuf::from(format!("{}/PSG V2.zip", Self::CARSPORT));
+        std::fs::copy(zip, &local).map_err(|e| format!("{zip} -> {}: {e}", local.display()))?;
+        let cache = PathBuf::from(Self::CACHE);
+        let aside_dir = PathBuf::from("/home/vjeux/skins-aside");
+        let _ = std::fs::create_dir_all(&aside_dir);
+        let mut sw = SkinSwap { local, cache: cache.clone(), cache_aside: None, loc_aside: None };
+        if cache.is_file() {
+            let a = aside_dir.join("psg-v2-cache.zip");
+            std::fs::rename(&cache, &a).map_err(|e| format!("{}: {e}", cache.display()))?;
+            sw.cache_aside = Some(a);
+        }
+        let loc = PathBuf::from(format!("{}.loc", Self::CACHE));
+        if loc.is_file() {
+            let a = aside_dir.join("psg-v2-cache.zip.loc");
+            let _ = std::fs::rename(&loc, &a);
+            sw.loc_aside = Some(a);
+        }
+        println!("skin: {zip} installed as PSG V2.zip (cache set aside: {})", sw.cache_aside.is_some());
+        Ok(sw)
+    }
+}
+
+impl Drop for SkinSwap {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.local);
+        if let Some(a) = &self.cache_aside {
+            let _ = std::fs::rename(a, &self.cache);
+        }
+        if let Some(a) = &self.loc_aside {
+            let _ = std::fs::rename(a, format!("{}.loc", Self::CACHE));
+        }
+    }
 }
