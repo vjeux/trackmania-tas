@@ -95,6 +95,21 @@ impl PeelFrame {
     pub fn project(&self, p: V3) -> (f32, f32, f32) {
         ((dot(p, self.r) - self.s0) * self.scale, (dot(p, self.u) - self.t0) * self.scale_y, -dot(p, self.d))
     }
+    /// Where an axis-aligned box sits against this frame's volume (x ∈ [0, res], y ∈ [0, res_y], port z ∈
+    /// [zmin, zmax]): None = outside, Some(true) = wholly inside, Some(false) = partly — from the box's eight
+    /// corners projected (the box's image is convex, so the corner intervals bound it: a conservative test).
+    pub fn box_class(&self, bmin: V3, bmax: V3, zmin: f32, zmax: f32) -> Option<bool> {
+        let (mut x0, mut x1, mut y0, mut y1, mut z0, mut z1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+        for i in 0..8 {
+            let p = [if i & 1 == 0 { bmin[0] } else { bmax[0] }, if i & 2 == 0 { bmin[1] } else { bmax[1] }, if i & 4 == 0 { bmin[2] } else { bmax[2] }];
+            let (x, y, z) = self.project(p);
+            x0 = x0.min(x); x1 = x1.max(x); y0 = y0.min(y); y1 = y1.max(y); z0 = z0.min(z); z1 = z1.max(z);
+        }
+        if x1 < 0.0 || y1 < 0.0 || x0 > self.res as f32 || y0 > self.res_y as f32 || z1 < zmin || z0 >= zmax {
+            return None;
+        }
+        Some(x0 >= 0.0 && x1 <= self.res as f32 && y0 >= 0.0 && y1 <= self.res_y as f32 && z0 >= zmin && z1 < zmax)
+    }
     /// The game's reversed depth of a port depth.
     #[inline]
     pub fn z01(&self, z_port: f32) -> f32 {
@@ -371,6 +386,13 @@ pub fn build_abuffer_sparse(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
 /// pass: every pixel of the frame is visited, every fragment goes to the count, the wanted ones also to
 /// the A-buffer (one walk over the triangles instead of two).
 pub fn build_abuffer_sparse_counted(tris: &[WTri], frame: &PeelFrame, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask], px: &std::sync::Arc<PixelIndex>, count: Option<CountCtx>) -> (ABuffer, Option<(usize, Vec<f64>)>) {
+    build_abuffer_sparse_ranges(tris, &[(0, tris.len() as u32)], frame, threads, zmin, zmax, masks, px, count)
+}
+
+/// `build_abuffer_sparse_counted` over the triangle index RANGES the caller culled (the BVH's leaf ranges
+/// meeting the frame: `Bvh::ranges_where` with `PeelFrame::box_class`) — a tile of a giant considers a
+/// ninth of the scene. The ranges must be sorted and disjoint (the triangle order within a pixel).
+pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: &PeelFrame, threads: usize, zmin: f32, zmax: f32, masks: &[crate::geometry::AlphaMask], px: &std::sync::Arc<PixelIndex>, count: Option<CountCtx>) -> (ABuffer, Option<(usize, Vec<f64>)>) {
     let res = frame.res;
     let res_y = frame.res_y;
     let t_clip = std::time::Instant::now();
@@ -427,17 +449,28 @@ pub fn build_abuffer_sparse_counted(tris: &[WTri], frame: &PeelFrame, threads: u
         }
         Some((ry0, ry1))
     };
-    let prep_chunk = (tris.len() / (threads * 4).max(1)).max(4096);
-    let n_prep = (tris.len() + prep_chunk - 1) / prep_chunk;
-    // per chunk: per band the triangle indices
+    // the culled triangle set as chunks of index ranges (each chunk ~ n_total / (4·threads) triangles)
+    let n_total: usize = ranges.iter().map(|r| (r.1 - r.0) as usize).sum();
+    let prep_chunk = (n_total / (threads * 4).max(1)).max(4096);
+    let mut chunks: Vec<(u32, u32)> = Vec::new();
+    for &(a, b) in ranges {
+        let mut x = a;
+        while x < b {
+            let y = (x as usize + prep_chunk).min(b as usize) as u32;
+            chunks.push((x, y));
+            x = y;
+        }
+    }
+    let n_prep = chunks.len();
+    // per chunk: per band the triangle indices (in triangle order)
     let binned: Vec<Vec<Vec<u32>>> = crate::pool::pool().map(n_prep, |ci| {
         let mut out: Vec<Vec<u32>> = (0..n_bands).map(|_| Vec::new()).collect();
-        let a = ci * prep_chunk;
-        for (k, t) in tris[a..(a + prep_chunk).min(tris.len())].iter().enumerate() {
+        let (a, b) = chunks[ci];
+        for (k, t) in tris[a as usize..b as usize].iter().enumerate() {
             if let Some((ry0, ry1)) = rows_of(t) {
                 let (b0, b1) = (band_of(ry0), band_of(ry1));
-                for b in b0..=b1 {
-                    out[b].push((a + k) as u32);
+                for bb in b0..=b1 {
+                    out[bb].push(a + k as u32);
                 }
             }
         }
@@ -2235,7 +2268,16 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             let ab = if prm.game_peel {
                 match wanted.as_ref() {
                     Some(px) => {
-                        let (ab, counted) = build_abuffer_sparse_counted(&bvh.tris, frame, threads, if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0), &prm.alpha_masks, px, if fuse { Some(CountCtx { scene, bvh, prm }) } else { None });
+                        // the triangles the frame's volume can hold, as BVH leaf ranges (a tile's frame holds a part of the scene)
+                        let (zmin_f, zmax_f) = (if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0));
+                        let ranges = if std::env::var_os("LMTOOL_NO_CULL").is_some() { vec![(0u32, bvh.tris.len() as u32)] } else { bvh.ranges_where(|lo, hi| frame.box_class(lo, hi, zmin_f, zmax_f)) };
+                        if std::env::var_os("LMTOOL_CULL_DEBUG").is_some() {
+                            let n: u32 = ranges.iter().map(|r| r.1 - r.0).sum();
+                            // how many triangles project a vertex inside the frame (the ideal)
+                            let inside = bvh.tris.iter().filter(|t| { let (x, y, z) = frame.project(t.p0); x >= 0.0 && x <= frame.res as f32 && y >= 0.0 && y <= frame.res_y as f32 && z >= zmin_f && z < zmax_f }).count();
+                            eprintln!("cull: direction {di} peel {pi}: {} of {} triangles in {} BVH ranges (p0 inside the frame: {inside}); frame res {}×{} scale {:.4} s0 {:.1} t0 {:.1} zc {:.1} half_d {:.1}", n, bvh.tris.len(), ranges.len(), frame.res, frame.res_y, frame.scale, frame.s0, frame.t0, frame.zc, frame.half_d);
+                        }
+                        let (ab, counted) = build_abuffer_sparse_ranges(&bvh.tris, &ranges, frame, threads, zmin_f, zmax_f, &prm.alpha_masks, px, if fuse { Some(CountCtx { scene, bvh, prm }) } else { None });
                         if let Some((kept, fractions)) = counted {
                             if peel_layers_debug() { eprintln!("peel layers (exact, sweep {} direction {di} peel {pi}): fractions {:?} → {kept} rendered", prm.sweep, fractions.iter().take_while(|f| **f > 0.0).map(|f| format!("{f:.6}")).collect::<Vec<_>>()); }
                             exact_layers = Some(kept);

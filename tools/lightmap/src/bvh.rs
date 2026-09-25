@@ -486,6 +486,52 @@ impl Bvh {
         Bvh { tris: reordered, nodes, perm }
     }
 
+    /// The triangle ranges (`first..first + count` of `tris`, in leaf order) whose nodes' boxes meet an
+    /// oriented slab: `inside(bmin, bmax) -> Option<bool>` answers None (disjoint), Some(false) (partly) or
+    /// Some(true) (wholly inside — the subtree's whole range is taken without descending). A conservative
+    /// culling of the scene per peel frame: the frustum of a tile of a giant holds a ninth of the map.
+    pub fn ranges_where<F: Fn(V3, V3) -> Option<bool>>(&self, inside: F) -> Vec<(u32, u32)> {
+        let mut out: Vec<(u32, u32)> = Vec::new();
+        if self.nodes.is_empty() {
+            return out;
+        }
+        // the whole range under a node = its leftmost leaf's first .. its rightmost leaf's end: found by descent
+        fn range_of(nodes: &[Node], i: usize) -> (u32, u32) {
+            let mut lo = i;
+            while nodes[lo].count == 0 { lo = nodes[lo].first as usize; }
+            let mut hi = i;
+            while nodes[hi].count == 0 { hi = nodes[hi].first as usize + 1; }
+            (nodes[lo].first, nodes[hi].first + nodes[hi].count)
+        }
+        let mut stack: Vec<u32> = vec![0];
+        while let Some(i) = stack.pop() {
+            let n = &self.nodes[i as usize];
+            match inside(n.bmin, n.bmax) {
+                None => {}
+                Some(true) => out.push(range_of(&self.nodes, i as usize)),
+                Some(false) => {
+                    if n.count > 0 {
+                        out.push((n.first, n.first + n.count));
+                    } else {
+                        // right first so the left pops first: the ranges come out in leaf (triangle) order
+                        stack.push(n.first + 1);
+                        stack.push(n.first);
+                    }
+                }
+            }
+        }
+        // merge adjacent ranges
+        out.sort_unstable();
+        let mut merged: Vec<(u32, u32)> = Vec::with_capacity(out.len());
+        for r in out {
+            if let Some(last) = merged.last_mut() {
+                if r.0 <= last.1 { last.1 = last.1.max(r.1); continue; }
+            }
+            merged.push(r);
+        }
+        merged
+    }
+
     /// The minimum of `dot(p, dir)` over every triangle vertex: a branch-and-bound descent (a node whose
     /// box cannot beat the best so far is skipped) — the exact extreme, in microseconds on 27 M triangles.
     pub fn min_dot(&self, dir: V3) -> f32 {

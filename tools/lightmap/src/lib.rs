@@ -15,6 +15,7 @@ pub mod pack;
 pub mod passdiff;
 pub mod envcap;
 pub mod pool;
+pub mod tiledpeel;
 pub mod passdump;
 pub mod peel;
 pub mod peelcap;

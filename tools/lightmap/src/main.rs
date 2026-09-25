@@ -1689,6 +1689,36 @@ fn run(a: Vec<String>) {
                 }
                 return;
             }
+            // THE PEEL CAMERAS WITHOUT A CAPTURE (tiledpeel.rs): the world peel + the tiling rule's fitted tiles per
+            // direction, fit by the transcribed light camera — unless --frustum-from gave the captured ones or
+            // --no-tiles asks for the port's single frame; --tile-scale S = the allocation scale in layout units
+            // per metre (default: the port's atlas density × 2), --tile-quality Q (the EHmsLightMapQuality, 3),
+            // --tile-vram-mb N (8192), --tile-max N (4)
+            let peel_plan: Option<lightmap::tiledpeel::PeelPlan> = if prm.game_peel && prm.raster_peel && prm.frustums.is_none() && !has("--no-tiles") {
+                let gq: f32 = f("--global-quality").map(|v| v.parse().unwrap()).unwrap_or(1.0);
+                let recs: Vec<lightmap::lmtiles::BlockRecord> = lightmap::lmtiles::item_records(&scene, gq, has("--lod0")).iter().filter_map(|it| it.record).collect();
+                let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
+                let size = [mf.size[0].max(0) as u32, mf.size[1].max(0) as u32, mf.size[2].max(0) as u32];
+                // the zone tiles' box: the seabed quads over the map footprint (see the zone tiles above)
+                let envir_l = hdr.as_ref().map(|h| h.envir.to_ascii_lowercase()).unwrap_or_default();
+                let sea_y: f32 = f("--sea-y").map(|s| s.parse().unwrap()).unwrap_or(match envir_l.as_str() { "bluebay" => 7.0, "redisland" => -0.3, "whiteshore" => -1.0, "greencoast" => -0.8, _ => f32::NAN });
+                let tiles_box = if sea_y.is_finite() && !has("--no-zone-tiles") && size[0] > 0 && size[2] > 0 {
+                    let (w, d) = (size[0] as f32 * 32.0, size[2] as f32 * 32.0);
+                    Some(lightmap::lmtiles::CBox::from_min_max([0.0, sea_y - 3.0, 0.0], [w, sea_y - 3.0, d]))
+                } else { None };
+                let scene_ch = { let mut s = lightmap::lmtiles::scene_box(&recs); if let Some(t) = &tiles_box { if s.is_valid() { s.union_into(t); } else { s = *t; } } s };
+                let (_, _, _, chunks_aabb) = lightmap::probechunk::for_records(size, [32.0, 8.0, 32.0], [0.0, -38.0, 0.0], 0.0, &recs, &scene_ch, 2048);
+                let alloc_scale: f32 = f("--tile-scale").map(|v| v.parse().unwrap()).unwrap_or(prm.texels_per_m * 2.0);
+                let tq: u32 = f("--tile-quality").map(|v| v.parse().unwrap()).unwrap_or(3);
+                let vram: i64 = f("--tile-vram-mb").map(|v| v.parse::<i64>().unwrap() << 20).unwrap_or(8 << 30);
+                let max_tiles: u32 = f("--tile-max").map(|v| v.parse().unwrap()).unwrap_or(4);
+                let plan = lightmap::tiledpeel::plan(&recs, tiles_box, chunks_aabb.as_ref(), alloc_scale, tq, vram, max_tiles);
+                eprintln!("peel cameras: {} item records, scene box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}], world peel box [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]; tiling at scale {alloc_scale:.3} layout units/m: ext {:.1} → target {}², n = {}, {} fitted tile(s){}", recs.len(), plan.scene.min()[0], plan.scene.max()[0], plan.scene.min()[1], plan.scene.max()[1], plan.scene.min()[2], plan.scene.max()[2], plan.world.min[0], plan.world.max[0], plan.world.min[1], plan.world.max[1], plan.world.min[2], plan.world.max[2], plan.ext, plan.size, plan.n, plan.tiles.len(), if plan.tiles.is_empty() { " (the world pass only)" } else { "" });
+                for (i, t) in plan.tiles.iter().enumerate() { eprintln!("  tile {i}: [{:.1}, {:.1}]×[{:.1}, {:.1}]×[{:.1}, {:.1}]", t.min[0], t.max[0], t.min[1], t.max[1], t.min[2], t.max[2]); }
+                if plan.size != prm.peel_res { eprintln!("peel cameras: peel resolution {} → {}", prm.peel_res, plan.size); prm.peel_res = plan.size; }
+                prm.frustums = Some(std::sync::Arc::new(plan.table(&prm.sphere_dirs)));
+                Some(plan)
+            } else { None };
             // (the sweep's direction list goes into the manifest before the sweep bakes, so a manifest written
             // at the end of the sweep already carries it)
             if let Some(d) = &prm.dump { let mut dm = d.lock().unwrap(); let n = prm.sphere_dirs.len() as u32; dm.manifest.sweeps.push(lightmap::passdump::Sweep { sweep: 0, n_dirs: n, scale: 4.0 / n.max(1) as f32, dirs: prm.sphere_dirs.iter().copied().collect() }); }
@@ -1735,6 +1765,9 @@ fn run(a: Vec<String>) {
                         eprintln!("ilightinput-from-s1 {path}: {}×{} atlas — sweep {it}'s peel colour samples it at the LM uv", b.w, b.h);
                         p2.ilight_atlas = Some(std::sync::Arc::new(lightmap::peelcolor::AtlasTex::from_buf(&b)));
                     }
+                }
+                if let Some(plan) = &peel_plan {
+                    p2.frustums = Some(std::sync::Arc::new(plan.table(&p2.sphere_dirs)));
                 }
                 if let Some(gm) = &game_manifest {
                     let fs = lightmap::passdiff::peel_frustums_for(gm, it as u32, &p2.sphere_dirs);
