@@ -309,9 +309,12 @@ pub fn grid_chart(ext: [f32; 2], nb: u32, na: u32) -> ([f32; 2], f32) {
     ([nb as f32 * ext[0], na as f32 * ext[1]], ((nb * na) as f32 * ext[1]) * ext[0])
 }
 
-/// FUN_1402938c0's solo test: a record whose extent × D₁ exceeds 100 on either side is not grouped.
+/// FUN_1402938c0's solo test: a record whose extent × D₁ exceeds 100 is not grouped. The asm (0x140293ac4: two `ja`
+/// to the solo label) reads as EITHER side; the stpad dump says BOTH (the 152 + 60 records of ext (32, 8) — 163 × 41
+/// texels — are grouped into grids, and only the AND count (735 entries) gives the observed chunk size 8 and Σ):
+/// `is_solo` follows the data (AND); tiny 16 cannot tell the two apart (no side over 339 m).
 pub fn is_solo(ext: [f32; 2], d1: f32) -> bool {
-    100.0 < ext[0] * d1 || 100.0 < ext[1] * d1
+    100.0 < ext[0] * d1 && 100.0 < ext[1] * d1
 }
 
 /// FUN_140291b10: the Z-order cell list of an nb × na grid — the k-th instance of the group takes `cells[k]`
@@ -640,7 +643,13 @@ mod tests {
         assert_eq!(ext2, [3.0 * 32.02, 3.0 * 32.08]);
         assert!((area2 - 9.0 * 32.08 * 32.02).abs() < 0.01);
         assert!(!is_solo(e, d1));
-        assert!(is_solo([400.0, 30.0], d1)); // 400·0.295 = 118 > 100
+        assert!(is_solo([400.0, 400.0], d1)); // 400·0.295 = 118 > 100 on both sides
+        // stpad (D₁ 5.1097): the 66×14 border charts (32 × 8 m) are grouped, the 32 × 32 bases and the 22.6-m tiles solo
+        assert!(!is_solo([32.0, 8.0], 5.1097));
+        assert!(is_solo([32.0, 32.0], 5.1097));
+        assert!(is_solo([22.63, 22.63], 5.1097));
+        // stpad's chunk: 735 entries (AND) → k = 2 → 12141 / 1470 = 8.26 → 8
+        assert_eq!(chunk_size(12141, 735), Some(8));
         // Z-order cells of a 3×3 grid: the 7 instances fill (0,0) (1,0) (0,1) (1,1) (2,0) (2,1) (0,2) — the two
         // empty cells are (1,2) and (2,2)
         assert_eq!(zorder_cells(3, 3), vec![(0, 0), (1, 0), (0, 1), (1, 1), (2, 0), (2, 1), (0, 2), (1, 2), (2, 2)]);
