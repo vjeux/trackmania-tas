@@ -657,6 +657,31 @@ pub fn wall_strips(walls: &[WallRec]) -> Vec<Vec<usize>> {
 // A2 11: the variant pick is not uniform). The records follow the static items in the array and take the same
 // grouping (PLG, q) → chunks → grids as kind-2 records.
 
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// THE MAPPING HEADER'S BBOX (RE 7, 2026-09-25 19:55Z; FUN_140287730, called first thing by the mapping writer
+// FUN_140288530 with the record array and mapping+0x44): a plain min/max fold of every record's CENTRE (rec+0x38,
+// +0x3c, +0x40; stride 0x58), initialised to (FLT_MAX ×3, −FLT_MAX ×3) — the half extents are NOT added and nothing is
+// clamped. Bit-exact on the dumps: stpad ([6.6274185, 8.125, 11.31372], [3046.6274, 231.37134, 3051.3137]), tiny 03
+// ([16, −113.994995, 16], [2032, 60.008656, 2032]) = the files' bbox_min/bbox_max.
+
+/// The mapping bbox from the record centres (in record order; the fold is order-independent).
+pub fn mapping_bbox(centres: &[[f32; 3]]) -> ([f32; 3], [f32; 3]) {
+    let mut mn = [f32::MAX; 3];
+    let mut mx = [f32::MIN; 3];
+    for c in centres {
+        for k in 0..3 {
+            if c[k] < mn[k] {
+                mn[k] = c[k];
+            }
+            if c[k] > mx[k] {
+                mx[k] = c[k];
+            }
+        }
+    }
+    (mn, mx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -864,6 +889,14 @@ mod tests {
         assert_eq!(quality_byte(quality_float(0, 1.0)), 255);
         let e = chart_ext(&plg, quality_from_byte(255), 0);
         assert!((e[0] - 2.3818).abs() < 0.001 && (e[1] - 5.3298).abs() < 0.001, "{e:?}");
+    }
+
+    #[test]
+    fn mapping_bbox_is_the_centre_fold() {
+        let (mn, mx) = mapping_bbox(&[[16.0, -113.994995, 16.0], [2032.0, 60.0086555, 2032.0], [1000.0, 3.0, 500.0]]);
+        assert_eq!(mn, [16.0, -113.994995, 16.0]);
+        assert_eq!(mx, [2032.0, 60.0086555, 2032.0]);
+        assert_eq!(mapping_bbox(&[]), ([f32::MAX; 3], [f32::MIN; 3]));
     }
 
     #[test]
