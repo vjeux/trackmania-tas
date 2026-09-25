@@ -3712,7 +3712,7 @@ fn run(a: Vec<String>) {
                 let capture = f("--capture").unwrap_or_else(|| "pwc6".into());
                 let ids = if capture == "pwc2" { &lightmap::sweep1::PWC2_IDS } else { &lightmap::sweep1::PWC6_IDS };
                 if let Err(e) = lightmap::sweep1::check_direction(&root, frame, k.parse().expect("--direction"), env_frame, ids, &capture) { eprintln!("sweep1-check: {e}"); std::process::exit(1); }
-            } else if let Err(e) = lightmap::sweep1::check_ilightinput(&root, kappa, has("--fit-srgb"), has("--mask-c0")) { eprintln!("sweep1-check: {e}"); std::process::exit(1); }
+            } else if let Err(e) = lightmap::sweep1::check_ilightinput(&root, kappa, has("--fit-srgb"), has("--mask-sun")) { eprintln!("sweep1-check: {e}"); std::process::exit(1); }
         }
         "sweep-dirs" => {
             // lmtool sweep-dirs GAME/MANIFEST.json [--points FILE]: per sweep the point set the captured directions come

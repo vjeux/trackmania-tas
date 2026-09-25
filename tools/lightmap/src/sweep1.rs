@@ -169,16 +169,30 @@ pub fn mdiffuse_linear(mdiffuse8: &Buf, table: Option<&[[f32; 256]; 3]>) -> Buf 
 /// H-basis C0 target, the MDiffuse atlas and the chart coverage mask:
 ///
 /// 1. `finalprep::resolve_ps25113` of C0 (rgb/w with the partial-texel neighbour rule; w = the alpha =
-///    Σ 1/N of the sweep), stored RGBA16F (truncation);
-/// 2. × `kappa` (1/√(2π)), stored R11G11B10 (truncation);
-/// 3. × the linear MDiffuse (PS 1109, blend DstColor·Src), stored R11G11B10 (truncation);
-/// 4. `ilightin::dilate_ps1335` × 8 with the coverage mask (the chart interiors keep their value).
+///    Σ 1/N of the sweep), stored RGBA16F (truncation) — frame 7533 eids 13980–14040 (PS 8772 = 25113 on
+///    the four MRTs 8356/8475/8478/8481 → 8359/8356/8475/8478), then PS 1109 × (2, 2, 2, 0) into the
+///    "previous sweep" targets 8534/8537/8540/8543 (the finalisation's ×2 stage) and the MRTs cleared for
+///    sweep 1;
+/// 2. PS 1038 with `ColorMat4 = diag(0.3989423)` (κ = 1/√(2π) in f32) on the resolved C0 → 8490, stored
+///    R11G11B10 (truncation) — eid 14154;
+/// 3. PS 1038 with `ColorMat4` = the alpha column on the resolved C0 → the coverage mask 8499 (R8_UNORM,
+///    round to nearest: 1 where w ≥ 0.01, the raw w below) — eid 14177;
+/// 4. PS 1109 `ScaleSrc (1, 1, 1, 1)` of the MDiffuse atlas with blend DstColor·Src → 8490, stored R11G11B10
+///    (truncation) — eid 14201;
+/// 5. `ilightin::dilate_ps1335` × 8 with that mask (8490 ↔ 8493, masks 8499 → 8716 ↔ 8713) — eids 14222–14292.
 ///
-/// Interior texels reproduce the captured 8490 of frame 7534 exactly up to the GPU's sRGB table
-/// (`lmtool sweep1-check --ilightinput`); the draw sequence between the last sweep-0 direction and the
-/// first sweep-1 one (frame 7533) is what places κ — the numbers are the same either way.
-pub fn ilightinput_from_c0(c0: &Buf, mdiffuse_lin: &Buf, coverage: &Buf, kappa: f32) -> Buf {
+/// `lmtool sweep1-check`: the covered texels reproduce the captured 8490 of frame 7534 exactly up to the
+/// GPU's sRGB table; `coverage` = None takes the chain's own mask (step 3), Some(m) another one.
+pub fn ilightinput_from_c0(c0: &Buf, mdiffuse_lin: &Buf, coverage: Option<&Buf>, kappa: f32) -> Buf {
     let resolved = crate::finalprep::resolve_ps25113(c0, false, crate::gpufmt::Rounding::Truncate);
+    // the coverage mask of the chain: PS 1038 with ColorMat4 = the alpha column on the RESOLVED image (alpha 1 where
+    // w ≥ 0.01, the raw w below), stored R8_UNORM (round to nearest) — frame 7533 eid 14177
+    let mask_from_resolve = {
+        let mut m8 = Buf::new(c0.w, c0.h, 1);
+        for y in 0..c0.h { for x in 0..c0.w { m8.set(x, y, 0, crate::ilightin::unorm8_rt(resolved.get(x, y, 3), crate::gpuenc::UnormRounding::NearestEven)); } }
+        m8
+    };
+    let coverage = coverage.unwrap_or(&mask_from_resolve);
     let mut cur = Buf::new(c0.w, c0.h, 3);
     for y in 0..c0.h {
         for x in 0..c0.w {
@@ -304,24 +318,23 @@ pub fn check_ilightinput(root: &std::path::Path, kappa: f32, fit: bool, mask_fro
     let md = find("setup_ps17043", 127448, &|e| e.file.contains("_16969"))?;
     let mdiffuse8 = crate::passdiff::load_entry(root, &md)?;
     let cov_e = find("setup_ps1038", 127448, &|_| true)?;
-    let mut coverage = crate::passdiff::load_entry(root, &cov_e)?;
-    if mask_from_c0 {
-        // the mask recomputed from the C0 target's alpha: PS 1038 with ColorMat4 = the alpha column → R8_UNORM (RTNE)
-        let mut m8 = Buf::new(c0.w, c0.h, 1);
-        for y in 0..c0.h { for x in 0..c0.w { m8.set(x, y, 0, crate::ilightin::unorm8_rt(c0.get(x, y, 3), crate::gpuenc::UnormRounding::NearestEven)); } }
-        coverage = m8;
-        println!("coverage mask: PS 1038 of the C0 alpha (not the sweep-0 mask 17104)");
-    }
+    let sun_mask = crate::passdiff::load_entry(root, &cov_e)?;
+    // the chain's own mask (PS 1038 alpha of the RESOLVED C0, frame 7533 eid 14177) unless --mask-sun asks for
+    // sweep 0's mask 17104
+    let coverage: Option<Buf> = if mask_from_c0 { println!("coverage mask: sweep 0's 17104 (the sun_direct alpha)"); Some(sun_mask.clone()) } else { None };
     let target_e = m.passes.iter().filter(|e| e.pass == "ilightinput" && e.frame == Some(7534)).min_by_key(|e| e.eid.unwrap_or(u64::MAX)).cloned().ok_or("no ilightinput entry for frame 7534")?;
     let target = crate::passdiff::load_entry(root, &target_e)?;
-    println!("inputs: C0 {}×{} (alpha = Σ 1/N), MDiffuse {} ({}×{} ×{}), coverage {}; target {} ({}×{})", c0.w, c0.h, md.file, mdiffuse8.w, mdiffuse8.h, mdiffuse8.channels, cov_e.file, target_e.file, target.w, target.h);
+    println!("inputs: C0 {}×{} (alpha = Σ 1/N), MDiffuse {} ({}×{} ×{}); target {} ({}×{})", c0.w, c0.h, md.file, mdiffuse8.w, mdiffuse8.h, mdiffuse8.channels, target_e.file, target.w, target.h);
     // a covered texel keeps its own value through the dilation (PS 1335: coverage ≥ 1e-4 → o0 = the input);
     // the uncovered ones are the dilated gutter
-    let interior = |x: u32, y: u32| -> bool { !(coverage.get(x, y, 0) < 0.0001) };
+    // the chain's mask: 1 where the resolved alpha ≥ 0.01 (a covered texel keeps its own value through PS 1335)
+    let resolved_mask = { let r = crate::finalprep::resolve_ps25113(&c0, false, crate::gpufmt::Rounding::Truncate); let mut m8 = Buf::new(c0.w, c0.h, 1); for y in 0..c0.h { for x in 0..c0.w { m8.set(x, y, 0, crate::ilightin::unorm8_rt(r.get(x, y, 3), crate::gpuenc::UnormRounding::NearestEven)); } } m8 };
+    let mask_ref: &Buf = coverage.as_ref().unwrap_or(&resolved_mask);
+    let interior = |x: u32, y: u32| -> bool { !(mask_ref.get(x, y, 0) < 0.0001) };
     let run = |table: Option<&[[f32; 256]; 3]>, label: &str| {
         let lin = mdiffuse_linear(&mdiffuse8, table);
         let t0 = std::time::Instant::now();
-        let ours = ilightinput_from_c0(&c0, &lin, &coverage, kappa);
+        let ours = ilightinput_from_c0(&c0, &lin, coverage.as_ref(), kappa);
         let all = crate::gpucmp::compare(&ours, &target, 3, crate::gpucmp::Fmt::R11G11B10);
         let inner = crate::gpucmp::compare_where(&ours, &target, 3, crate::gpucmp::Fmt::R11G11B10, &|x, y| interior(x, y));
         let edge = crate::gpucmp::compare_where(&ours, &target, 3, crate::gpucmp::Fmt::R11G11B10, &|x, y| !interior(x, y) && (target.get(x, y, 0) != 0.0 || target.get(x, y, 1) != 0.0 || target.get(x, y, 2) != 0.0 || ours.get(x, y, 0) != 0.0));
@@ -329,7 +342,7 @@ pub fn check_ilightinput(root: &std::path::Path, kappa: f32, fit: bool, mask_fro
     };
     run(None, "IEC sRGB decode");
     if fit {
-        let cells = fit_srgb_table(&c0, &mdiffuse8, &coverage, &target, kappa);
+        let cells = fit_srgb_table(&c0, &mdiffuse8, mask_ref, &target, kappa);
         let mut table = [[0f32; 256]; 3];
         let mut inconsistent = 0;
         let mut fitted = 0;
