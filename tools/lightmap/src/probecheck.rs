@@ -204,3 +204,57 @@ pub fn run(root: &std::path::Path, co: &CheckOpts) -> Result<(), String> {
     println!("{}", if all_closed { "ROW 10 GPU side: every captured probe target reproduced bit for bit" } else { "ROW 10 GPU side: differences remain (see above)" });
     Ok(())
 }
+
+/// `lmtool probe-images MAP [OUTDIR]`: the baked map's probe volume (the trailer + the four WEBPs of
+/// frame 0 image 2) printed level by level — what the CPU stored from the accumulators.
+pub fn probe_images(map: &str, out: Option<&str>) -> Result<(), String> {
+    let m = crate::mapio::load(map)?;
+    let d = m.chunk.data.as_ref().ok_or("the map has no lightmap data")?;
+    let v = crate::volume::Volume::parse(&d.cache.trailer)?;
+    let parts = crate::volume::split_probe_blob(&d.frames[0].images[2], &v.frame_info);
+    println!("trailer: frame_info (scale, end) {:?}; {} probe images: {:?} bytes", v.frame_info, parts.len(), parts.iter().map(|p| p.len()).collect::<Vec<_>>());
+    let mut imgs = Vec::new();
+    for (k, p) in parts.iter().enumerate() {
+        let im = crate::img::decode_webp(p)?;
+        // the VP8 header: lossy or lossless
+        let kind = if p.len() > 15 && &p[12..16] == b"VP8L" { "VP8L" } else { "VP8" };
+        println!("image {k}: {}×{} {kind}", im.w, im.h);
+        if let Some(dir) = out {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            let sc = 8u32;
+            let mut big = vec![0u8; (im.w * sc * im.h * sc * 3) as usize];
+            for y in 0..im.h * sc { for x in 0..im.w * sc { let c = im.get(x / sc, y / sc); let i = ((y * im.w * sc + x) * 3) as usize; big[i..i + 3].copy_from_slice(&c); } }
+            crate::png::write_rgb(&format!("{dir}/probe_image{k}.png"), im.w * sc, im.h * sc, &big).map_err(|e| e.to_string())?;
+        }
+        imgs.push(im);
+    }
+    for (bi, b) in v.blocks.iter().enumerate() {
+        let (tw, th) = (b.max[0] - b.min[0], b.max[2] - b.min[2]);
+        println!("block {bi}: cells x {}..{} y {}..{} z {}..{}, pos {:?}, tiles {}×{} (x × z)", b.min[0], b.max[0], b.min[1], b.max[1], b.min[2], b.max[2], b.pos, tw, th);
+        for (si, s) in b.slices.iter().enumerate() {
+            let level = b.min[1] + si as u32;
+            let Some((tx, ty)) = s else { println!("  level {level}: not stored"); continue };
+            let mut line = format!("  level {level} (y = {:.0} m) tile at ({tx},{ty}):", b.pos[1] + 16.0 * level as f32);
+            for (k, im) in imgs.iter().enumerate() {
+                let mut mn = [255u8; 3]; let mut mx = [0u8; 3]; let mut sum = [0f32; 3];
+                for zz in 0..th { for xx in 0..tw { let c = im.get(tx + xx, ty + zz); for ch in 0..3 { mn[ch] = mn[ch].min(c[ch]); mx[ch] = mx[ch].max(c[ch]); sum[ch] += c[ch] as f32; } } }
+                let n = (tw * th) as f32;
+                line.push_str(&format!("  img{k} mean ({:.0},{:.0},{:.0}) min {:?} max {:?}", sum[0] / n, sum[1] / n, sum[2] / n, mn, mx));
+            }
+            println!("{line}");
+        }
+        // the full tables of image 1 (occlusion) and image 0 (colour) for the block, level by level
+        for (k, im) in imgs.iter().enumerate() {
+            println!("  image {k}, rows = z (cell {}..{}), columns = x (cell {}..{}):", b.min[2], b.max[2], b.min[0], b.max[0]);
+            for (si, s) in b.slices.iter().enumerate() {
+                let Some((tx, ty)) = s else { continue };
+                println!("    level {}:", b.min[1] + si as u32);
+                for zz in 0..th {
+                    let row: Vec<String> = (0..tw).map(|xx| { let c = im.get(tx + xx, ty + zz); if k == 1 || k == 3 { format!("{:3}", c[0]) } else { format!("{:3},{:3},{:3}", c[0], c[1], c[2]) } }).collect();
+                    println!("      {}", row.join(" | "));
+                }
+            }
+        }
+    }
+    Ok(())
+}

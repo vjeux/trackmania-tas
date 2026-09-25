@@ -37,6 +37,7 @@ pub mod probes;
 pub mod raster;
 pub mod skycube;
 pub mod skygrad;
+pub mod sweep1;
 pub mod synth;
 pub mod volume;
 pub mod vp8_tables;

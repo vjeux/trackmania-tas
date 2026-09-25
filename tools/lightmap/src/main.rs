@@ -3490,6 +3490,29 @@ fn run(a: Vec<String>) {
             }
             println!("w channel: {n_w_ok} of {n_w} snapshots equal Σ D.y/64 over the directions issued (Scale = 8·D.y/N, N = 256)");
         }
+        "sweep1-check" => {
+            // lmtool sweep1-check PASSCAP_ROOT [--kappa K] [--fit-srgb]: ROW 11 — the sweep-1 ILightInput chain (sweep1.rs:
+            //   PS 25113 resolve of the sweep-0 C0 → × 1/√(2π) → × MDiffuse (PS 1109) → PS 1335 × 8) from the captured inputs
+            //   vs the captured texture the sweep-1 peels sample (frame 7534 eid 32)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let has = |k: &str| a.iter().any(|x| x == k);
+            let root = std::path::PathBuf::from(&a[1]);
+            let kappa: f32 = f("--kappa").map(|v| v.parse().expect("--kappa")).unwrap_or(lightmap::sweep1::KAPPA_BOUNCE);
+            if let Err(e) = lightmap::sweep1::check_ilightinput(&root, kappa, has("--fit-srgb"), has("--mask-c0")) { eprintln!("sweep1-check: {e}"); std::process::exit(1); }
+        }
+        "sweep-dirs" => {
+            // lmtool sweep-dirs GAME/MANIFEST.json [--points FILE]: per sweep the point set the captured directions come
+            // from (the rotated N-set of Std.PointsInSphere), the issue order as set indices, the missing ones
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let txt = std::fs::read_to_string(&a[1]).expect("manifest");
+            let m = lightmap::passdiff::read_manifest(&txt).expect("manifest");
+            let ps = lightmap::dome::PointSets::load(&f("--points").unwrap_or_else(lightmap::dome::default_path)).expect("point sets");
+            print!("{}", lightmap::sweep1::report(&m, &ps));
+        }
+        "probe-images" => {
+            // lmtool probe-images MAP.Gbx [OUTDIR]: the baked map's four probe images level by level (+ ×8 PNGs)
+            if let Err(e) = lightmap::probecheck::probe_images(&a[1], a.get(2).map(|s| s.as_str())) { eprintln!("probe-images: {e}"); std::process::exit(1); }
+        }
         "dilate-check" => {
             // lmtool dilate-check PASSCAP_ROOT [--frame N]: the transcribed PS 1332 gutter dilation (gpuenc::dilate_ps1332), 8 passes on
             // each captured final_03 image, compared f16 for f16 with the captured final_04 images
