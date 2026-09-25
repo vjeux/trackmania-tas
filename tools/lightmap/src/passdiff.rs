@@ -25,9 +25,67 @@ use crate::gpufmt::{Quant, Rounding};
 use crate::passdump::{ChartRect, Entry, Frustum, Manifest};
 use std::collections::HashMap;
 
-/// Read a MANIFEST.json (ours or the game's — tolerant of missing fields).
+/// Read a MANIFEST.json (ours or the game's — tolerant of missing fields, of numbers written as
+/// strings, of a `dir` given as {x, y, z}, of `layer`/`direction`/`sweep` written as null).
 pub fn read_manifest(txt: &str) -> Result<Manifest, String> {
-    serde_json::from_str::<Manifest>(txt).map_err(|e| format!("MANIFEST.json: {e}"))
+    let mut v: serde_json::Value = serde_json::from_str(txt).map_err(|e| format!("MANIFEST.json: {e}"))?;
+    fn num(v: &mut serde_json::Value) {
+        if let Some(s) = v.as_str() {
+            if let Ok(n) = s.trim().parse::<f64>() {
+                *v = serde_json::json!(n);
+            }
+        }
+    }
+    fn vec3(v: &mut serde_json::Value) {
+        if let Some(o) = v.as_object() {
+            let get = |k: &str| o.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+            if o.contains_key("x") && o.contains_key("y") && o.contains_key("z") {
+                *v = serde_json::json!([get("x"), get("y"), get("z")]);
+            }
+        }
+        if let Some(a) = v.as_array_mut() {
+            for x in a.iter_mut() {
+                num(x);
+            }
+        }
+    }
+    if let Some(passes) = v.get_mut("passes").and_then(|p| p.as_array_mut()) {
+        for e in passes.iter_mut() {
+            let Some(o) = e.as_object_mut() else { continue };
+            for k in ["sweep", "direction", "layer", "width", "height", "row_pitch"] {
+                if let Some(x) = o.get_mut(k) {
+                    if x.is_null() {
+                        o.remove(k);
+                    } else {
+                        num(x);
+                        if let Some(f) = x.as_f64() { *x = serde_json::json!(f.round() as i64); }
+                    }
+                }
+            }
+            if let Some(d) = o.get_mut("dir") { vec3(d); }
+            if let Some(f) = o.get_mut("frustum").and_then(|f| f.as_object_mut()) {
+                for k in ["center", "half", "right", "up", "forward"] {
+                    if let Some(x) = f.get_mut(k) { vec3(x); }
+                }
+            }
+            if let Some(c) = o.get_mut("chart").and_then(|c| c.as_object_mut()) {
+                for k in ["obj", "item", "sub"] {
+                    if let Some(x) = c.get_mut(k) { num(x); if let Some(f) = x.as_f64() { *x = serde_json::json!(f.round() as i64); } }
+                }
+            }
+        }
+    }
+    if let Some(sweeps) = v.get_mut("sweeps").and_then(|p| p.as_array_mut()) {
+        for s in sweeps.iter_mut() {
+            if let Some(dirs) = s.get_mut("dirs").and_then(|d| d.as_array_mut()) {
+                for d in dirs.iter_mut() { vec3(d); }
+            }
+            if let Some(x) = s.get_mut("sweep") { num(x); if let Some(f) = x.as_f64() { *x = serde_json::json!(f.round() as i64); } }
+            if let Some(x) = s.get_mut("n_dirs") { num(x); if let Some(f) = x.as_f64() { *x = serde_json::json!(f.round() as i64); } }
+        }
+    }
+    if let Some(x) = v.get_mut("sun_dir") { vec3(x); }
+    serde_json::from_value::<Manifest>(v).map_err(|e| format!("MANIFEST.json: {e}"))
 }
 
 /// The per-direction peel frustums of a sweep, indexed by direction (from the `peel_depth` entries,
@@ -1109,5 +1167,24 @@ mod tests {
         assert!(m.passes[0].frustum.as_ref().unwrap().ortho);
         let fs = peel_frustums(&m, 0);
         assert_eq!(fs.len(), 3, "dense up to direction 2, filled from the nearest lower captured direction");
+    }
+}
+
+#[cfg(test)]
+mod lenient_tests {
+    use super::*;
+
+    #[test]
+    fn manifest_reader_coerces_strings_nulls_and_xyz_objects() {
+        let txt = r#"{"passes":[{"pass":"peel_color","sweep":"1","direction":7,"layer":null,"file":"a.dds","format":"R11G11B10_FLOAT","width":"2048","height":2048,"space":"peel","dir":{"x":0.1,"y":0.9,"z":0.0},"frustum":{"center":{"x":1,"y":2,"z":3},"half":[1,1,1],"right":[1,0,0],"up":[0,1,0],"forward":[0,0,1]}}],"sweeps":[{"sweep":"0","dirs":[{"x":0,"y":1,"z":0}]}]}"#;
+        let m = read_manifest(txt).unwrap();
+        let e = &m.passes[0];
+        assert_eq!(e.sweep, Some(1));
+        assert_eq!(e.layer, None);
+        assert_eq!(e.width, 2048);
+        assert_eq!(e.dir, Some([0.1, 0.9, 0.0]));
+        assert_eq!(e.frustum.as_ref().unwrap().center, [1.0, 2.0, 3.0]);
+        assert_eq!(m.sweeps[0].dirs, vec![[0.0, 1.0, 0.0]]);
+        assert_eq!(game_dirs(&m, 1), vec![[0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3], [0.0; 3], [0.1, 0.9, 0.0]], "sweep 1 has no list: built from the entries' dir, dense up to direction 7");
     }
 }
