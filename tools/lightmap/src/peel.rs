@@ -640,12 +640,13 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         // 600 M random cache-line writes per direction into a table larger than L2 — a quarter of the raster.)
         // The tables come from a per-thread pool; the scan resets what it read.
         let mut bufs = SLOT_BUFS.take();
-        let (mut cnt, mut env_max, mut list, mut csr, mut offs) = (std::mem::take(&mut bufs.0), std::mem::take(&mut bufs.1), std::mem::take(&mut bufs.2), std::mem::take(&mut bufs.3), std::mem::take(&mut bufs.4));
+        let (mut cnt, mut env_max, mut list, mut csr, mut offs, mut fill) = (std::mem::take(&mut bufs.0), std::mem::take(&mut bufs.1), std::mem::take(&mut bufs.2), std::mem::take(&mut bufs.3), std::mem::take(&mut bufs.4), std::mem::take(&mut bufs.5));
         if cnt.len() < band_px { cnt.resize(band_px, 0); }
         if env_max.len() < band_px { env_max.resize(band_px, 0.0); }
         list.clear();
+        let mut saturated = false;
         if by0 > by1 {
-            SLOT_BUFS.set((cnt, env_max, list, csr, offs));
+            SLOT_BUFS.set((cnt, env_max, list, csr, offs, fill));
             return (out, hist, covered);
         }
         let band_clip = (clip.0, by0, clip.2, by1);
@@ -713,7 +714,8 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                                     }
                                 }
                                 None => {
-                                    cnt[li] = cnt[li].saturating_add(1);
+                                    let c = &mut cnt[li];
+                                    if *c == u16::MAX { saturated = true; } else { *c += 1; }
                                     list.push((li as u32, CFrag { z, tri: ti, bias: bias_term_of(&mut bias_term_cache) }));
                                 }
                             }
@@ -730,43 +732,63 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         if counting {
             // THE SCAN: the list counting-sorted by pixel (the prefix over the counts gives every pixel's range,
             // the scatter fills it in visit order), then per pixel the fragments ordered by (z, triangle) and
-            // the layer logic. (A u16 count saturates at 65535 fragments on one pixel; the list keeps them all,
-            // so the range is sized from the list — the count only says whether the pixel is covered.)
+            // the layer logic. The prefix comes from the u16 counts (one pass over the band's pixels) unless
+            // a pixel saturated them — then from the list.
             if offs.len() < band_px + 1 { offs.resize(band_px + 1, 0); }
-            // the true per-pixel counts (u32) as the prefix — from the list, so saturation cannot lose a fragment
-            offs[..band_px + 1].fill(0);
-            for (li, _) in &list { offs[*li as usize + 1] += 1; }
-            for i in 0..band_px { offs[i + 1] += offs[i]; }
+            if fill.len() < band_px { fill.resize(band_px, 0); }
+            offs[0] = 0;
+            if saturated {
+                offs[..band_px + 1].fill(0);
+                for (li, _) in &list { offs[*li as usize + 1] += 1; }
+                for i in 0..band_px { offs[i + 1] += offs[i]; }
+            } else {
+                let mut acc = 0u32;
+                for i in 0..band_px { fill[i] = acc; acc += cnt[i] as u32; offs[i + 1] = acc; }
+            }
+            if saturated { fill[..band_px].copy_from_slice(&offs[..band_px]); }
             if csr.len() < list.len() { csr.resize(list.len(), CFrag { z: 0.0, tri: 0, bias: 0.0 }); }
-            {
-                // the scatter: offs[li] walks forward as its pixel's fragments land
-                let mut fill: Vec<u32> = offs[..band_px].to_vec();
-                for (li, cf) in &list {
-                    let k = fill[*li as usize] as usize;
-                    csr[k] = *cf;
-                    fill[*li as usize] += 1;
-                }
+            // the scatter: fill[li] walks forward as its pixel's fragments land
+            for (li, cf) in &list {
+                let f = &mut fill[*li as usize];
+                csr[*f as usize] = *cf;
+                *f += 1;
             }
             for li in 0..band_px {
+                if cnt[li] == 0 && !saturated {
+                    // no item fragment: nothing to count (an environment-only pixel resets its maximum)
+                    env_max[li] = 0.0;
+                    continue;
+                }
                 let env_d = std::mem::replace(&mut env_max[li], 0.0);
                 let (a, c) = (offs[li] as usize, offs[li + 1] as usize);
                 cnt[li] = 0;
                 if a == c { continue; }
                 covered += 1;
-                if c - a == 1 && env_d == 0.0 {
+                let n = c - a;
+                if n == 1 && env_d == 0.0 {
                     // one item fragment, no environment layer at the pixel: the layer logic accepts it
                     // (z01.max(0) ≥ the initial d_prev of 0 or −∞) — one layer, no sort, no z01
                     hist[1] += 1;
                     continue;
                 }
                 let buf = &mut csr[a..c];
-                if buf.len() > 1 {
-                    buf.sort_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri)));
+                // the (z, triangle) order — the keys are distinct within a pixel (a triangle visits a pixel
+                // once), so any correct sort gives the one order: tiny networks for the common sizes
+                let key = |f: &CFrag, g: &CFrag| f.z.total_cmp(&g.z).then_with(|| f.tri.cmp(&g.tri)) == std::cmp::Ordering::Greater;
+                match n {
+                    1 => {}
+                    2 => { if key(&buf[0], &buf[1]) { buf.swap(0, 1); } }
+                    3 => {
+                        if key(&buf[0], &buf[1]) { buf.swap(0, 1); }
+                        if key(&buf[1], &buf[2]) { buf.swap(1, 2); }
+                        if key(&buf[0], &buf[1]) { buf.swap(0, 1); }
+                    }
+                    _ => buf.sort_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri))),
                 }
                 hist[count_run(buf, env_d).min(MAX_LAYERS)] += 1;
             }
         }
-        SLOT_BUFS.set((cnt, env_max, list, csr, offs));
+        SLOT_BUFS.set((cnt, env_max, list, csr, offs, fill));
         if raster_stats { band_ns[b].store(t_band.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed); RS_TRIS.fetch_add(rs_tris, std::sync::atomic::Ordering::Relaxed); RS_TESTED.fetch_add(rs_tested, std::sync::atomic::Ordering::Relaxed); RS_VISITS.fetch_add(rs_visits, std::sync::atomic::Ordering::Relaxed); }
         (out, hist, covered)
     });
@@ -2020,7 +2042,7 @@ impl Slot {
 
 thread_local! {
     /// The raster band's slot and environment tables, kept per pool thread across bands (see the fused count).
-    static SLOT_BUFS: std::cell::Cell<(Vec<u16>, Vec<f32>, Vec<(u32, CFrag)>, Vec<CFrag>, Vec<u32>)> = const { std::cell::Cell::new((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())) };
+    static SLOT_BUFS: std::cell::Cell<(Vec<u16>, Vec<f32>, Vec<(u32, CFrag)>, Vec<CFrag>, Vec<u32>, Vec<u32>)> = const { std::cell::Cell::new((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())) };
 }
 
 /// Raster bands per pool thread (LMTOOL_BANDS_PER_THREAD, default 4).
