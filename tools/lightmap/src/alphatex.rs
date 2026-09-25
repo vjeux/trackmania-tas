@@ -48,6 +48,12 @@ pub struct AlphaLevel {
     /// levels of a leaf texture average to ~0.5 everywhere) the early-outs cost more than they save and
     /// `passes_planned` samples directly.
     pub mixed_frac: f32,
+    /// The texels as the sampler reads them: `a[i] as f32 / 255.0`, precomputed (the conversion and the
+    /// division were four of every tap's operations; the levels the taps read are small).
+    pub af: Vec<f32>,
+    /// The level's size as f32 (the sampler's scale).
+    pub wf: f32,
+    pub hf: f32,
 }
 
 impl AlphaLevel {
@@ -76,7 +82,8 @@ impl AlphaLevel {
             }
         }
         let mixed_frac = cls.iter().filter(|c| **c == 2).count() as f32 / (w * h).max(1) as f32;
-        AlphaLevel { w, h, a, blocks, bw, cls, mixed_frac }
+        let af: Vec<f32> = a.iter().map(|&v| v as f32 / 255.0).collect();
+        AlphaLevel { w, h, a, blocks, bw, cls, mixed_frac, af, wf: w as f32, hf: h as f32 }
     }
     /// The (min, max) alpha over the texels [x0, x1] × [y0, y1] (inclusive, clamped to the level).
     #[inline]
@@ -236,7 +243,7 @@ impl AlphaTex {
         };
         let (xa, xb) = (idx(x0 as i64, w), idx(x0 as i64 + 1, w));
         let (ya, yb) = (idx(y0 as i64, h), idx(y0 as i64 + 1, h));
-        let p = |x: usize, y: usize| -> f32 { l.a[y * l.w + x] as f32 / 255.0 };
+        let p = |x: usize, y: usize| -> f32 { l.af[y * l.w + x] };
         (p(xa, ya) * (1.0 - tx) + p(xb, ya) * tx) * (1.0 - ty) + (p(xa, yb) * (1.0 - tx) + p(xb, yb) * tx) * ty
     }
 
@@ -293,16 +300,24 @@ impl AlphaTex {
     /// The bilinear sample of one level with ClampEdge addressing — `sample_level`'s arithmetic, the
     /// addressing branches resolved (the plan's levels are known).
     #[inline]
+    #[inline]
     fn sample_level_clamp(l: &AlphaLevel, u: f32, v: f32) -> f32 {
-        let (w, h) = (l.w as i64, l.h as i64);
-        let fx = u.clamp(0.0, 1.0) * w as f32 - 0.5;
-        let fy = v.clamp(0.0, 1.0) * h as f32 - 0.5;
+        // (the same arithmetic as before, cheaper forms: the level's size as f32 precomputed; the weight's
+        // division by 256 as the multiplication by 2⁻⁸ — exact either way, the same f32; the texel indices in
+        // i32 with the clamps the value range allows: fx ∈ [−0.5, w − 0.5] → floor ∈ [−1, w − 1], so
+        // clamp(x0, 0, w−1) = max(x0, 0) and clamp(x0 + 1, 0, w−1) = min(x0 + 1, w−1); NaN converts to 0 in
+        // both forms)
+        let fx = u.clamp(0.0, 1.0) * l.wf - 0.5;
+        let fy = v.clamp(0.0, 1.0) * l.hf - 0.5;
         let (x0, y0) = (fx.floor(), fy.floor());
-        let (tx, ty) = (((fx - x0) * 256.0).floor() / 256.0, ((fy - y0) * 256.0).floor() / 256.0);
-        let (xa, xb) = ((x0 as i64).clamp(0, w - 1) as usize, (x0 as i64 + 1).clamp(0, w - 1) as usize);
-        let (ya, yb) = ((y0 as i64).clamp(0, h - 1) as usize, (y0 as i64 + 1).clamp(0, h - 1) as usize);
-        let p = |x: usize, y: usize| -> f32 { l.a[y * l.w + x] as f32 / 255.0 };
-        (p(xa, ya) * (1.0 - tx) + p(xb, ya) * tx) * (1.0 - ty) + (p(xa, yb) * (1.0 - tx) + p(xb, yb) * tx) * ty
+        let (tx, ty) = (((fx - x0) * 256.0).floor() * (1.0 / 256.0), ((fy - y0) * 256.0).floor() * (1.0 / 256.0));
+        let (xi, yi) = (x0 as i32, y0 as i32);
+        let (xa, xb) = (xi.max(0) as usize, (xi + 1).min(l.w as i32 - 1).max(0) as usize);
+        let (ya, yb) = (yi.max(0) as usize, (yi + 1).min(l.h as i32 - 1).max(0) as usize);
+        let row_a = ya * l.w;
+        let row_b = yb * l.w;
+        let (paa, pba, pab, pbb) = (l.af[row_a + xa], l.af[row_a + xb], l.af[row_b + xa], l.af[row_b + xb]);
+        (paa * (1.0 - tx) + pba * tx) * (1.0 - ty) + (pab * (1.0 - tx) + pbb * tx) * ty
     }
 
     /// `sample_aniso` / `sample_lod` with the plan's levels and fraction (the same arithmetic per tap:

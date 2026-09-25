@@ -2057,6 +2057,7 @@ pub mod prof {
     pub static BITMAP: AtomicU64 = AtomicU64::new(0);
     pub static CLEAR: AtomicU64 = AtomicU64::new(0);
     pub static CONTRIB: AtomicU64 = AtomicU64::new(0);
+    pub static CULL: AtomicU64 = AtomicU64::new(0);
     pub fn add(c: &AtomicU64, t: std::time::Instant) {
         c.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
@@ -2064,9 +2065,9 @@ pub mod prof {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e9;
         let staged = g(&BUILD) + g(&LAYERS) + g(&DUMP) + g(&GATHER) + g(&ACCUM) + g(&SNAP) + g(&FRAMES) + g(&EXACT);
         crate::alphatex::alpha_stats_report();
-        eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s", g(&DOME), g(&BITMAP), g(&CLEAR), g(&CONTRIB));
+        eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s, BVH cull {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s", g(&DOME), g(&BITMAP), g(&CULL), g(&CLEAR), g(&CONTRIB));
         eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s (parallel part {:.2}s), per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&L_PAR), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
-        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR, &DOME, &BITMAP, &CLEAR, &CONTRIB] { c.store(0, Ordering::Relaxed); }
+        for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR, &DOME, &BITMAP, &CLEAR, &CONTRIB, &CULL] { c.store(0, Ordering::Relaxed); }
     }
 }
 
@@ -2554,8 +2555,14 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 let nch = (threads * 2).max(1);
                 let per = (cur.len() + nch - 1) / nch;
                 let m: Vec<std::sync::atomic::AtomicU64> = (0..n).map(|_| std::sync::atomic::AtomicU64::new(0)).collect();
+                // a tile's frame: only the sub-samples inside the tile's world-XZ cell read it (the gather's
+                // clip rule below) — the others' pixels are not wanted (a giant's tile holds a ninth of them)
+                let clip_box: Option<[f32; 4]> = tile_clip.get(pi).copied().flatten();
                 crate::pool::pool().run(nch, |ci| {
                     for s in &cur[ci * per..((ci + 1) * per).min(cur.len())] {
+                        if let Some(b) = clip_box {
+                            if !(s.p[0] - b[0] >= 0.0 && s.p[2] - b[1] >= 0.0 && b[2] - s.p[0] >= 0.0 && b[3] - s.p[2] >= 0.0) { continue; }
+                        }
                         let (x, y, _) = frame.project(s.p);
                         let (px, py) = (lookup_pixel(x, frame.res, prm.peel_inset), lookup_pixel(y, frame.res_y, prm.peel_inset));
                         let i = py as usize * frame.res as usize + px as usize;
@@ -2674,6 +2681,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     Some(px) => {
                         // the triangles the frame's volume can hold, as BVH leaf ranges (a tile's frame holds a part of the scene)
                         let (zmin_f, zmax_f) = (if prm.depth_clip { frame.z_from_z01(0.0) } else { f32::NEG_INFINITY }, frame.z_from_z01(1.0));
+                        let t_cull = std::time::Instant::now();
                         let ranges = if std::env::var_os("LMTOOL_NO_CULL").is_some() { vec![(0u32, bvh.tris.len() as u32)] } else { bvh.ranges_where(|lo, hi| frame.box_class(lo, hi, zmin_f, zmax_f)) };
                         if std::env::var_os("LMTOOL_CULL_DEBUG").is_some() {
                             let n: u32 = ranges.iter().map(|r| r.1 - r.0).sum();
@@ -2681,6 +2689,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                             let inside = bvh.tris.iter().filter(|t| { let (x, y, z) = frame.project(t.p0); x >= 0.0 && x <= frame.res as f32 && y >= 0.0 && y <= frame.res_y as f32 && z >= zmin_f && z < zmax_f }).count();
                             eprintln!("cull: direction {di} peel {pi}: {} of {} triangles in {} BVH ranges (p0 inside the frame: {inside}); frame res {}×{} scale {:.4} s0 {:.1} t0 {:.1} zc {:.1} half_d {:.1}", n, bvh.tris.len(), ranges.len(), frame.res, frame.res_y, frame.scale, frame.s0, frame.t0, frame.zc, frame.half_d);
                         }
+                        prof::add(&prof::CULL, t_cull);
                         let (ab, counted) = build_abuffer_sparse_ranges(&bvh.tris, &ranges, frame, threads, zmin_f, zmax_f, &prm.alpha_masks, px, if fuse { Some(CountCtx { scene, bvh, prm }) } else { None });
                         if let Some((kept, fractions)) = counted {
                             if peel_layers_debug() { eprintln!("peel layers (exact, sweep {} direction {di} peel {pi}): fractions {:?} → {kept} rendered", prm.sweep, fractions.iter().take_while(|f| **f > 0.0).map(|f| format!("{f:.6}")).collect::<Vec<_>>()); }
