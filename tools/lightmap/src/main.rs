@@ -6651,6 +6651,150 @@ fn run(a: Vec<String>) {
                 println!("{o:?}: Cr4 {}×{}: {d} of {n} bytes differ (max |Δ| {mx}) per channel {ch:?}", e.w / 2, e.h / 2);
             }
         }
+        "relight-fleet" => {
+            // lmtool relight-fleet --maps LIST --out-dir DIR --work W --boxes N --box K [--quality Q] [--weights w0,…]
+            //   [--giant-pattern Giant] [--tmp DIR] [-- EXTRA BAKE ARGS]: THE RE-LIGHT FLEET RUN, one invocation per box
+            //   (K = 0..N−1), all sharing the work directory on the store. The GIANTS (the maps whose file name carries the
+            //   pattern) go first, every box cooperating on each through the in-process split (box 0 writes the map); then
+            //   every box bakes its shard of the SMALL maps whole (map i goes to box i mod N). Per map: the bake with the
+            //   creation time pinned to the source map's own modification time (LMTOOL_BAKE_TIME — the run is reproducible
+            //   byte for byte), `lmtool check` on the written file by the box that wrote it, a result record
+            //   (W/<name>/result-box<K>.json) and a done marker (W/<name>/done-box<K>): a restarted run skips the maps it
+            //   has done and redoes the failed ones. `lmtool relight-fleet --report --work W --out-dir DIR` composes the
+            //   manifest (JSON + Markdown) from the result records at any time. Nothing is uploaded.
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let has = |k: &str| a.iter().any(|x| x == k);
+            let work = std::path::PathBuf::from(f("--work").expect("--work W"));
+            let out_dir = std::path::PathBuf::from(f("--out-dir").expect("--out-dir DIR"));
+            std::fs::create_dir_all(&out_dir).expect("out dir");
+            std::fs::create_dir_all(&work).expect("work dir");
+            let pattern = f("--giant-pattern").unwrap_or_else(|| "Giant".to_string()).to_lowercase();
+            let maps: Vec<String> = {
+                let txt = std::fs::read_to_string(f("--maps").expect("--maps LIST")).expect("--maps list");
+                txt.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty() && !l.starts_with('#')).collect()
+            };
+            let name_of = |m: &str| std::path::Path::new(m).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| m.to_string());
+            if has("--report") {
+                // THE MANIFEST from the result records
+                let mut rows: Vec<serde_json::Value> = Vec::new();
+                for m in &maps {
+                    let name = name_of(m);
+                    let wdir = work.join(&name);
+                    let mut recs: Vec<serde_json::Value> = Vec::new();
+                    if let Ok(rd) = std::fs::read_dir(&wdir) {
+                        for e in rd.flatten() {
+                            let n = e.file_name().to_string_lossy().to_string();
+                            if n.starts_with("result-box") && n.ends_with(".json") {
+                                if let Ok(txt) = std::fs::read_to_string(e.path()) { if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) { recs.push(v); } }
+                            }
+                        }
+                    }
+                    recs.sort_by_key(|r| r["box"].as_u64().unwrap_or(0));
+                    let kind = recs.first().and_then(|r| r["kind"].as_str()).unwrap_or(if name.to_lowercase().contains(&pattern) { "giant" } else { "small" }).to_string();
+                    let done = recs.iter().any(|r| r["wrote_map"].as_bool().unwrap_or(false));
+                    let ok = done && recs.iter().filter(|r| r["wrote_map"].as_bool().unwrap_or(false)).all(|r| r["bake_ok"].as_bool().unwrap_or(false) && r["check_ok"].as_bool().unwrap_or(false));
+                    let wall = recs.iter().filter(|r| r["wrote_map"].as_bool().unwrap_or(false)).map(|r| r["bake_s"].as_f64().unwrap_or(0.0)).fold(0.0, f64::max);
+                    let sweeps: Vec<f64> = recs.iter().filter(|r| r["wrote_map"].as_bool().unwrap_or(false)).flat_map(|r| r["sweeps"].as_array().cloned().unwrap_or_default()).filter_map(|v| v.as_f64()).collect();
+                    let boxes_used: Vec<String> = recs.iter().map(|r| format!("{}{}", r["box"].as_u64().unwrap_or(0), if r["bake_ok"].as_bool().unwrap_or(false) { "" } else { "!" })).collect();
+                    let note = recs.iter().filter_map(|r| r["note"].as_str()).filter(|n| !n.is_empty()).collect::<Vec<_>>().join(" | ");
+                    rows.push(serde_json::json!({ "map": name, "kind": kind, "status": if !done { "pending" } else if ok { "ok" } else { "FAILED" }, "bake_s": wall, "sweeps": sweeps, "boxes": boxes_used, "note": note, "out": out_dir.join(&name).to_string_lossy() }));
+                }
+                let json = out_dir.join("relight-fleet-manifest.json");
+                std::fs::write(&json, serde_json::to_string_pretty(&serde_json::json!({ "maps": rows, "work": work.to_string_lossy(), "generated": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) })).unwrap()).expect("manifest");
+                let mut md = String::from("| map | kind | status | bake s | sweeps s | boxes | note |\n|---|---|---|---|---|---|---|\n");
+                let (mut n_ok, mut n_fail, mut n_pend) = (0, 0, 0);
+                for r in &rows {
+                    match r["status"].as_str() { Some("ok") => n_ok += 1, Some("FAILED") => n_fail += 1, _ => n_pend += 1 }
+                    md += &format!("| {} | {} | {} | {:.1} | {} | {} | {} |\n", r["map"].as_str().unwrap_or(""), r["kind"].as_str().unwrap_or(""), r["status"].as_str().unwrap_or(""), r["bake_s"].as_f64().unwrap_or(0.0), r["sweeps"].as_array().map(|v| v.iter().filter_map(|x| x.as_f64()).map(|x| format!("{x:.1}")).collect::<Vec<_>>().join(" / ")).unwrap_or_default(), r["boxes"].as_array().map(|v| v.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(",")).unwrap_or_default(), r["note"].as_str().unwrap_or("").replace('|', "/"));
+                }
+                md += &format!("\n{n_ok} ok, {n_fail} failed, {n_pend} pending of {} maps\n", rows.len());
+                std::fs::write(out_dir.join("relight-fleet-manifest.md"), &md).expect("manifest md");
+                println!("{md}");
+                return;
+            }
+            let boxes: usize = f("--boxes").expect("--boxes N").parse().expect("--boxes");
+            let k: usize = f("--box").expect("--box K").parse().expect("--box");
+            assert!(k < boxes, "--box K below --boxes N");
+            let quality = f("--quality").unwrap_or_else(|| "4".to_string());
+            let weights: Vec<f64> = f("--weights").map(|v| v.split(',').map(|x| x.trim().parse::<f64>().expect("--weights")).collect()).unwrap_or_else(|| vec![1.0; boxes]);
+            assert_eq!(weights.len(), boxes, "--weights: one per box");
+            let wstr = weights.iter().map(|x| format!("{x}")).collect::<Vec<_>>().join(",");
+            let tmp = std::path::PathBuf::from(f("--tmp").unwrap_or_else(|| std::env::temp_dir().join("lmtool-fleet").to_string_lossy().to_string()));
+            std::fs::create_dir_all(&tmp).expect("tmp");
+            let extra: Vec<String> = a.iter().position(|x| x == "--").map(|i| a[i + 1..].to_vec()).unwrap_or_default();
+            let exe = std::env::current_exe().expect("exe");
+            let host = std::env::var("HOSTNAME").unwrap_or_default();
+            // the plan: the giants (everyone), then this box's shard of the small maps
+            let giants: Vec<&String> = maps.iter().filter(|m| name_of(m).to_lowercase().contains(&pattern)).collect();
+            let smalls: Vec<&String> = maps.iter().filter(|m| !name_of(m).to_lowercase().contains(&pattern)).collect();
+            let mine: Vec<&String> = smalls.iter().enumerate().filter(|(i, _)| i % boxes == k).map(|(_, m)| *m).collect();
+            eprintln!("relight-fleet: box {k} of {boxes} ({host}): {} giant(s) with everyone, then {} of {} small maps; work {}, out {}", giants.len(), mine.len(), smalls.len(), work.display(), out_dir.display());
+            let t_all = std::time::Instant::now();
+            let queue: Vec<(&String, bool)> = giants.iter().map(|m| (*m, true)).chain(mine.iter().map(|m| (*m, false))).collect();
+            for (m, giant) in queue {
+                let name = name_of(m);
+                let wdir = work.join(&name);
+                let _ = std::fs::create_dir_all(&wdir);
+                let done = wdir.join(format!("done-box{k}"));
+                if done.exists() {
+                    eprintln!("relight-fleet: {name}: done already (box {k}), skipped");
+                    continue;
+                }
+                let _ = std::fs::remove_file(wdir.join(format!("failed-box{k}")));
+                let writes_map = !giant || k == 0;
+                let out = if writes_map { out_dir.join(&name) } else { tmp.join(format!("{name}.box{k}.Map.Gbx")) };
+                // the source map: its own modification time pins the bake's creation time; a local copy for the bake
+                let mtime = std::fs::metadata(m).and_then(|md| md.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+                let local = tmp.join(&name);
+                if !local.exists() { if let Err(e) = std::fs::copy(m, &local) { eprintln!("relight-fleet: {name}: copy failed: {e}"); let _ = std::fs::write(wdir.join(format!("failed-box{k}")), format!("copy: {e}")); continue; } }
+                let mut args: Vec<String> = vec!["bake".into(), local.to_string_lossy().to_string(), "--raster".into(), "--quality".into(), quality.clone(), "--game-peel".into(), "--profile".into()];
+                args.extend(extra.iter().cloned());
+                if giant {
+                    args.extend(["--split-box".into(), format!("{k}/{boxes}"), "--split-weights".into(), wstr.clone(), "--split-work".into(), wdir.to_string_lossy().to_string()]);
+                }
+                args.extend(["--out".into(), out.to_string_lossy().to_string()]);
+                eprintln!("relight-fleet: {name} ({}) …", if giant { format!("giant, box {k} of {boxes}") } else { "small, whole".to_string() });
+                let t = std::time::Instant::now();
+                let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let r = std::process::Command::new(&exe).args(&args).env("LMTOOL_BAKE_TIME", mtime.to_string()).output();
+                let bake_s = t.elapsed().as_secs_f32();
+                let (bake_ok, sweeps, note, log) = match &r {
+                    Ok(o) => {
+                        let err = String::from_utf8_lossy(&o.stderr).to_string();
+                        let sweeps: Vec<f32> = err.lines().filter(|l| l.starts_with("profile [sweep ")).filter_map(|l| l.rfind("sweep total ").and_then(|p| l[p + 12..].trim_end_matches('s').trim().parse::<f32>().ok())).collect();
+                        let note = if o.status.success() { String::new() } else { err.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ") };
+                        (o.status.success(), sweeps, note, err)
+                    }
+                    Err(e) => (false, Vec::new(), format!("spawn: {e}"), String::new()),
+                };
+                let _ = std::fs::write(wdir.join(format!("bake-box{k}.log")), &log);
+                // the structural self-check of the written file
+                let (check_ok, check_s) = if bake_ok && writes_map {
+                    let tc = std::time::Instant::now();
+                    let chk = std::process::Command::new(&exe).arg("check").arg(&out).output();
+                    let ok = chk.as_ref().map(|o| o.status.success()).unwrap_or(false);
+                    if let Ok(o) = &chk { let _ = std::fs::write(wdir.join("check.log"), String::from_utf8_lossy(&o.stdout).to_string() + &String::from_utf8_lossy(&o.stderr)); }
+                    (ok, tc.elapsed().as_secs_f32())
+                } else { (bake_ok, 0.0) };
+                let rec = serde_json::json!({ "map": name, "kind": if giant { "giant" } else { "small" }, "box": k, "host": host, "wrote_map": writes_map, "bake_ok": bake_ok, "check_ok": check_ok, "bake_s": bake_s, "check_s": check_s, "sweeps": sweeps, "bake_time_pinned": mtime, "started": started, "note": note, "out": if writes_map { out.to_string_lossy().to_string() } else { String::new() } });
+                let _ = std::fs::write(wdir.join(format!("result-box{k}.json")), serde_json::to_string_pretty(&rec).unwrap());
+                if bake_ok && check_ok {
+                    let _ = std::fs::write(&done, format!("ok {bake_s:.1}s\n"));
+                    eprintln!("relight-fleet: {name}: ok ({bake_s:.1}s, sweeps {sweeps:?}{})", if writes_map { format!(", check {}", if check_ok { "ok" } else { "FAIL" }) } else { String::new() });
+                    // a giant's packs and fields (hundreds of MB on the store) go once the map is written and checked
+                    if giant && k == 0 && !has("--keep-work") {
+                        if let Ok(rd) = std::fs::read_dir(&wdir) {
+                            for e in rd.flatten() { let p = e.path(); if p.extension().map(|x| x == "contribs" || x == "bin").unwrap_or(false) { let _ = std::fs::remove_file(p); } }
+                        }
+                    }
+                } else {
+                    let _ = std::fs::write(wdir.join(format!("failed-box{k}")), format!("{}\n{note}\n", if bake_ok { "check FAILED" } else { "bake FAILED" }));
+                    eprintln!("relight-fleet: {name}: FAILED ({}) — {note}", if bake_ok { "check" } else { "bake" });
+                }
+                if !writes_map { let _ = std::fs::remove_file(&out); }
+            }
+            eprintln!("relight-fleet: box {k}: done in {:.1}s", t_all.elapsed().as_secs_f32());
+        }
         "relight-worker" => {
             // lmtool relight-worker --work W --box K [--poll SECS] [--tmp DIR]: a box of a cooperative split (no ssh): polls
             //   W/*/plan-sweep*.json, claims the plans it has not done (claim-sweep<S>-box<K>), bakes its range with the
