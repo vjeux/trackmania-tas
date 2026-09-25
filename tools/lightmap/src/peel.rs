@@ -407,7 +407,8 @@ pub fn build_abuffer_sparse(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
     });
     prof::add(&prof::B_CLIP, t_clip);
     let t_raster = std::time::Instant::now();
-    let sparse_buckets = 32u32;
+    // (one CSR bucket per pool thread: the per-pixel depth sorts of a dense canopy are the cost)
+    let sparse_buckets = (threads as u32).clamp(1, 256);
     let sparse_bucket_size = ((px.len() as u32 + sparse_buckets - 1) / sparse_buckets).max(1);
     let parts: Vec<Vec<Vec<(u32, Frag)>>> = crate::pool::pool().map(n_bands, |b| {
         let by0 = clip.1 + (b * band_rows) as i32;
