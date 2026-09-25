@@ -1976,7 +1976,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             let draws: Vec<crate::lmaccum::HbDraw> = (0..lm.meshes.len()).map(|m| crate::lmaccum::HbDraw { eid: 0, mesh: m, instance_first: lm.inst_first[m], instance_count: lm.inst_count[m], raster, cb }).collect();
             let mut owner = vec![0u8; 2048 * 2048];
             crate::lmaccum::run_hbasis_probe(&lm.meshes, &lm.instances, &lm.table, &draws, dt, hb, crate::sunpass::BlendModel::TruncSrcRoundSum, Some(&mut owner), None);
-            if let Some((root, entries)) = &prm.hbasis_game {
+            // (the capture's sweep-1 snapshots come from another run (pwc6) with its own MRT history: sweep 0 only)
+            if let Some((root, entries)) = prm.hbasis_game.as_ref().filter(|_| prm.sweep == 0) {
                 // the game's ilightdir at its H-basis draw and its four MRTs after this direction (by the true issue index)
                 let sweep = prm.sweep;
                 let cap = |pass: &str| entries.iter().filter(|e| e.pass == pass && e.banked && e.sweep_direction_index == Some(di as u32) && e.sweep.unwrap_or(0) == sweep).max_by_key(|e| (e.frame, e.eid_last));
