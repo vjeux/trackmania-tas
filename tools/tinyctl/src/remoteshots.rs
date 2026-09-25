@@ -31,6 +31,68 @@ const MAPS_WIN: &str = "C:/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot
 const SHOTS: &str = "/mnt/c/Users/vjeux/tinyshots";
 const ENV: &str = "cd /home/vjeux/shoot/hunt; export TM_SESSION=080a15b8-2c6a-4fff-9d8a-db7d0072ee43; export TM_SESSION_TITLE=\"Tiny u10s publish\"; export PATH=/home/vjeux/bin:$PATH";
 
+/// `tinyctl remote-drive --maps A,B --outdir NAME [--drive-ms 10000] [--drive-at-ms 14500]
+/// [--carlog-ms 26000] [--pull DIR] [--purpose "…"]` — PLAY-mode probe per map, on the box from
+/// the devserver: the car spawned at the start, the accelerator held, the live car position
+/// logged per frame (`car-<map>.tsv`) — json9841's wheel-status test as data (2026-09-24).
+/// One `tmdrive run … shootctl playshots` per map, the box waited for in slices.
+pub fn drive_cmd(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
+    let maps: Vec<String> = f("--maps").ok_or("remote-drive needs --maps A,B")?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let outdir = f("--outdir").ok_or("remote-drive needs --outdir NAME")?;
+    let drive_ms = f("--drive-ms").unwrap_or_else(|| "10000".into());
+    let drive_at = f("--drive-at-ms").unwrap_or_else(|| "14500".into());
+    let carlog = f("--carlog-ms").unwrap_or_else(|| "26000".into());
+    let purpose = f("--purpose").unwrap_or_else(|| format!("drive probe: {}", maps.join(" ")));
+    let wsx = Wsx::new(args);
+    let t0 = Instant::now();
+    wsx.sh(&format!("mkdir -p {SHOTS}/{outdir}"))?;
+    let mut failed = Vec::new();
+    for m in &maps {
+        game_up(&wsx)?;
+        wait_box(&wsx, &purpose, 3600)?;
+        // the playground load + intro (~15 s) + the drive + the log: one call under 150 s
+        let run = format!(
+            "{ENV}; tmdrive run --purpose \"{purpose}\" --wait 100 -- /home/vjeux/bin/shootctl playshots --map \"{MAPS_WIN}/{m}.Map.Gbx\" --outdir {SHOTS}/{outdir} --tag {m} --shots 2 --first-ms 16000 --every-ms 6000 --drive-ms {drive_ms} --drive-at-ms {drive_at} --carlog-ms {carlog} --timeout 130 2>&1 | tail -3"
+        );
+        let mut out = wsx.sh(&run).unwrap_or_else(|e| format!("bridge: {e}"));
+        let mut rows: usize = wsx.sh(&format!("wc -l < {SHOTS}/{outdir}/car-{m}.tsv 2>/dev/null")).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+        if rows < 10 && (out.contains("could not get back to the menu") || out.contains("did not open") || out.contains("exit status: 1")) {
+            // a game stuck in an editor (a modal /back cannot answer): restarted as its own
+            // lock steps, the probe tried once more
+            println!("[{:>4.0}s] {m}: {} — restarting the game", t0.elapsed().as_secs_f64(), out.lines().last().unwrap_or("").chars().take(100).collect::<String>());
+            let _ = wsx.sh(&format!("{ENV}; tmdrive kill --purpose \"{purpose} (restart)\" --wait 100"));
+            let _ = wsx.sh(&format!("{ENV}; sed -i \"s/^DeveloperMode=false/DeveloperMode=true/\" /mnt/c/Users/vjeux/OpenplanetNext/Settings.ini; tmdrive launch --timeout 120 --purpose \"{purpose} (launch)\" --wait 100"));
+            wait_box(&wsx, &purpose, 3600)?;
+            out = wsx.sh(&run).unwrap_or_else(|e| format!("bridge: {e}"));
+            rows = wsx.sh(&format!("wc -l < {SHOTS}/{outdir}/car-{m}.tsv 2>/dev/null")).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+        }
+        println!("[{:>4.0}s] {m}: {rows} car rows — {}", t0.elapsed().as_secs_f64(), out.lines().last().unwrap_or("").chars().take(120).collect::<String>());
+        if rows < 10 {
+            failed.push(m.clone());
+        }
+    }
+    if let Some(dir) = f("--pull") {
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let tar = format!("{HUNT}/rd-{outdir}.tgz");
+        wsx.sh(&format!("cd {SHOTS}/{outdir} && tar czf {tar} car-*.tsv *.png 2>/dev/null; ls -la {tar}"))?;
+        let local = dir.join(format!("{outdir}.tgz"));
+        wsx.pull(&tar, &local)?;
+        let st = std::process::Command::new("tar").arg("xzf").arg(&local).arg("-C").arg(&dir).status().map_err(|e| e.to_string())?;
+        if !st.success() {
+            return Err(format!("tar xzf {}: {st}", local.display()));
+        }
+        let _ = std::fs::remove_file(&local);
+        println!("[{:>4.0}s] logs in {}", t0.elapsed().as_secs_f64(), dir.display());
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("remote-drive: no car log for {}", failed.join(", ")))
+    }
+}
+
 pub fn cmd(args: &[String]) -> Result<(), String> {
     let f = |k: &str| tmmaps::cli::flag(args, k).map(String::from);
     let maps: Vec<String> = f("--maps").ok_or("remote-shots needs --maps A,B")?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();

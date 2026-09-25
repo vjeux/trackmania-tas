@@ -680,6 +680,11 @@ fn plan_one_dry(store: &mut DataStore, idx: &mut BlockInfoIndex, name: &str, cou
             if s != "Water" && base_prefab(&src).is_some() && std::env::var("TINY_WATER_OVERLAY").map(|v| v == "1").unwrap_or(false) {
                 return mk(Action::Overlay, "", format!("water volume, no {s} twin: kept as water + visual-only re-dressed overlay ({fam})"));
             }
+            // TINY_WATER_CUSTOM_BLOCK=1: baked as a re-dressed copy that BECOMES a custom
+            // block derived from this block (`tmmaps custom-block`); the water volume test
+            if s != "Water" && base_prefab(&src).is_some() && std::env::var("TINY_WATER_CUSTOM_BLOCK").map(|v| v == "1").unwrap_or(false) {
+                return mk(Action::Bake, "", format!("water volume, no {s} twin: re-dressed copy for a custom block ({fam})"));
+            }
             return mk(Action::Keep, "", format!("water volume, no {s} twin: kept as water ({fam})"));
         }
         // A GAMEPLAY PAD (`Platform<Fam>Special<Effect>`: Turbo, Turbo2, Boost,

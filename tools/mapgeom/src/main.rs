@@ -2789,6 +2789,245 @@ fn main() {
                 );
             }
         }
+        // route-audit SRC.Map.Gbx PORT.Map.Gbx --shift dx,dy,dz [--every MS] [--rows] [--out R.tsv]
+        //   json9841's "wheel status" test from the files (2026-09-24): the author ghost of the
+        //   SOURCE vista map, replayed against the PORT's Stadium geometry (shifted into its
+        //   frame). Per sample: the highest surface under the car in the source (terrain zone
+        //   piece / road / nothing) and in the port, and any port terrain ABOVE the car within
+        //   the car's height (an intersection). Verdicts: INTERSECT (port terrain through the
+        //   route), MISSING (the source car rides terrain the port lacks under it), SHIFTED (the
+        //   support height differs by more than 0.5 m), ok.
+        "route-audit" => {
+            let mut store = open(&a);
+            let src_p = a.rest.get(1).cloned().unwrap_or_default();
+            let port_p = a.rest.get(2).cloned().unwrap_or_default();
+            let every: i32 = flag(&a.rest, "--every").and_then(|s| s.parse().ok()).unwrap_or(100);
+            let rows = a.rest.iter().any(|s| s == "--rows");
+            let d = gbx::record::decode_ghost(&src_p).unwrap_or_else(|e| die(format!("{src_p}: no validation ghost ({e})")));
+            let src = tmmaps::map::MapFile::load(std::path::Path::new(&src_p));
+            let port = tmmaps::map::MapFile::load(std::path::Path::new(&port_p));
+            // the shift: --shift dx,dy,dz, else derived from the START block (same name in both)
+            let mut shift: Vec<f32> = flag(&a.rest, "--shift").map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect()).unwrap_or_default();
+            if shift.len() != 3 {
+                let start = |m: &tmmaps::map::MapFile| m.blocks.iter().find(|b| b.name.contains("Start") && b.free_pos.is_none()).map(|b| (b.name.clone(), b.coords()));
+                match (start(&src), start(&port)) {
+                    (Some((sn, (sx, sy, sz))), Some((pn, (px, py, pz)))) if sn == pn => {
+                        shift = vec![(px - sx) as f32, (py - sy) as f32, (pz - sz) as f32];
+                        eprintln!("  shift derived from {sn}: [{}, {}, {}]", shift[0], shift[1], shift[2]);
+                    }
+                    _ => die::<()>("route-audit: no common Start block — give --shift dx,dy,dz".into()),
+                }
+            }
+            let gsrc = tmmaps::map::ground_y(src.items.first().map(|it| it.collection_raw).unwrap_or(0x10));
+            let gport = tmmaps::map::ground_y(26);
+            // source → port world: cells × (32, 8, 32) + the ground difference
+            let world = [shift[0] * 32.0, shift[1] * 8.0 + (gport - gsrc), shift[2] * 32.0];
+            // every collision-ish triangle of a map, tagged (terrain? , who)
+            let is_terrain_name = |n: &str| {
+                let l = n.to_ascii_lowercase();
+                ["dirt", "hill", "cliff", "grass", "sand", "rock", "snow", "ice", "zone", "water", "lake", "sea", "beach", "coast", "forest", "field", "moss", "gravel", "mud", "terrain", "landscape", "ac"].iter().any(|w| l.contains(w))
+                    && !l.contains("road") && !l.contains("platform") && !l.contains("start") && !l.contains("finish") && !l.contains("checkpoint")
+            };
+            // grid blocks: cell → world through the map's own ground (a vista's row 0 is at −120)
+            let collect = |store: &mut DataStore, m: &tmmaps::map::MapFile, ground: f32, offset: [f32; 3], only_terrain_tag: bool| -> Vec<([f32; 3], [f32; 3], [f32; 3], bool, String)> {
+                let mut asm = mapgeom::assemble::Assembler::new(store);
+                asm.with_embedded(m).ok();
+                let mut tris: Vec<([f32; 3], [f32; 3], [f32; 3], bool, String)> = Vec::new();
+                let mut push = |xf: &mapgeom::geom::Xform, lm: &mapgeom::assemble::LocalModel, who: &str, terrain: bool, tris: &mut Vec<([f32; 3], [f32; 3], [f32; 3], bool, String)>| {
+                    for (mat, g) in &lm.scene.groups {
+                        if mat == "NotCollidable" || mat == "Water" {
+                            continue;
+                        }
+                        for t in &g.tris {
+                            let mut v = [mapgeom::geom::apply(xf, g.verts[t[0] as usize]), mapgeom::geom::apply(xf, g.verts[t[1] as usize]), mapgeom::geom::apply(xf, g.verts[t[2] as usize])];
+                            for q in v.iter_mut() {
+                                *q = [q[0] + offset[0], q[1] + offset[1], q[2] + offset[2]];
+                            }
+                            tris.push((v[0], v[1], v[2], terrain, who.to_string()));
+                        }
+                    }
+                };
+                for b in m.blocks.iter().chain(m.baked.iter()) {
+                    let free = b.flags & tmmaps::map::FREE_BLOCK_FLAG != 0;
+                    let Some(lm) = asm.block_model(&b.name) else { continue };
+                    let size = lm.size;
+                    let xf = if free {
+                        match (b.free_pos, b.free_rot) {
+                            (Some(p), Some(r)) => mapgeom::place::free(p, r),
+                            (Some(p), None) => mapgeom::place::free(p, [0.0; 3]),
+                            _ => continue,
+                        }
+                    } else {
+                        mapgeom::place::grid_block(b.coords(), b.dir, size, ground)
+                    };
+                    let lm = lm.clone();
+                    let terrain = is_terrain_name(&b.name);
+                    push(&xf, &lm, &format!("block {}", b.name), terrain, &mut tris);
+                }
+                for it in &m.items {
+                    let Some(lm) = asm.item_model(&it.model) else { continue };
+                    let lm = lm.clone();
+                    let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
+                    // a port's baked terrain is an `AC…` item; a vista's own items are decoration
+                    let terrain = if only_terrain_tag { it.model.starts_with("AC") } else { is_terrain_name(&it.model) };
+                    push(&xf, &lm, &format!("item {}", it.model), terrain, &mut tris);
+                }
+                tris
+            };
+            let src_tris = collect(&mut store, &src, gsrc, [0.0; 3], false);
+            let port_tris = collect(&mut store, &port, gport, [-world[0], -world[1], -world[2]], true); // port geometry in the SOURCE frame
+            eprintln!("  source terrain triangles {}, port terrain triangles {}", src_tris.iter().filter(|t| t.3).count(), port_tris.iter().filter(|t| t.3).count());
+            eprintln!("{} source triangles, {} port triangles (port frame shifted by {:?})", src_tris.len(), port_tris.len(), world);
+            let under = |tris: &[([f32; 3], [f32; 3], [f32; 3], bool, String)], x: f32, y: f32, z: f32| -> Option<(f32, bool, String)> {
+                let mut best: Option<(f32, bool, String)> = None;
+                for (a3, b3, c3, terrain, who) in tris {
+                    if let Some(h) = mapgeom::probe::height_at(*a3, *b3, *c3, x, z) {
+                        // the highest support; at equal height the ROAD (a deck on a tile)
+                        if h <= y + 0.3 && best.as_ref().map(|(bh, bt, _)| h > *bh + 0.01 || ((h - *bh).abs() <= 0.01 && *bt && !*terrain)).unwrap_or(true) {
+                            best = Some((h, *terrain, who.clone()));
+                        }
+                    }
+                }
+                best
+            };
+            let above_terrain = |tris: &[([f32; 3], [f32; 3], [f32; 3], bool, String)], x: f32, y: f32, z: f32| -> Option<(f32, String)> {
+                let mut best: Option<(f32, String)> = None;
+                for (a3, b3, c3, terrain, who) in tris {
+                    if !*terrain {
+                        continue;
+                    }
+                    if let Some(h) = mapgeom::probe::height_at(*a3, *b3, *c3, x, z) {
+                        // the car body: 0.3 m above its origin up to ~1.6 m
+                        if h > y + 0.3 && h < y + 1.6 && best.as_ref().map(|(bh, _)| h < *bh).unwrap_or(true) {
+                            best = Some((h, who.clone()));
+                        }
+                    }
+                }
+                best
+            };
+            let (mut n, mut inter, mut missing, mut shifted, mut ok) = (0usize, 0usize, 0usize, 0usize, 0usize);
+            let mut next = i32::MIN;
+            let mut out = String::from("t	x	y	z	src_under	src_terrain	port_under	port_terrain	verdict	owner
+");
+            let mut owners: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+            for smp in &d.samples {
+                if every > 0 && smp.time_ms < next {
+                    continue;
+                }
+                next = smp.time_ms + every;
+                n += 1;
+                let s_u = under(&src_tris, smp.x, smp.y, smp.z);
+                let p_u = under(&port_tris, smp.x, smp.y, smp.z);
+                let p_a = above_terrain(&port_tris, smp.x, smp.y, smp.z);
+                let (verdict, owner) = match (&s_u, &p_u, &p_a) {
+                    (_, _, Some((_, who))) => { inter += 1; ("INTERSECT", who.clone()) }
+                    (Some((sh, true, who)), pu, _) if pu.as_ref().map(|(ph, _, _)| (ph - sh).abs() > 0.5).unwrap_or(true) && (smp.y - sh) < 1.5 => {
+                        // the source car rides terrain within 1.5 m; the port has nothing (or something else) there
+                        if pu.is_none() { missing += 1; ("MISSING", who.clone()) } else { shifted += 1; ("SHIFTED", who.clone()) }
+                    }
+                    _ => { ok += 1; ("ok", String::new()) }
+                };
+                if !owner.is_empty() {
+                    *owners.entry(format!("{verdict} {owner}")).or_default() += 1;
+                }
+                if rows || verdict != "ok" {
+                    out.push_str(&format!("{:.1}	{:.1}	{:.2}	{:.1}	{}	{}	{}	{}	{verdict}	{owner}
+", smp.time_ms as f64 / 1000.0, smp.x, smp.y, smp.z, s_u.as_ref().map(|(h, _, _)| format!("{h:.2}")).unwrap_or("-".into()), s_u.as_ref().map(|(_, t, _)| *t).unwrap_or(false), p_u.as_ref().map(|(h, _, _)| format!("{h:.2}")).unwrap_or("-".into()), p_u.as_ref().map(|(_, t, _)| *t).unwrap_or(false)));
+                }
+            }
+            println!("{}: {n} samples ({every} ms): INTERSECT {inter}, MISSING {missing}, SHIFTED {shifted}, ok {ok}", std::path::Path::new(&port_p).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
+            let mut top: Vec<(String, usize)> = owners.into_iter().collect();
+            top.sort_by(|a, b| b.1.cmp(&a.1));
+            for (who, k) in top.iter().take(12) {
+                println!("  {k:>5}  {who}");
+            }
+            if let Some(o) = flag(&a.rest, "--out") {
+                std::fs::write(&o, out).unwrap_or_else(|e| die(format!("{o}: {e}")));
+            }
+        }
+        // route-audit-all --src-dir A --port-dir B --out-dir D [--every MS] [--jobs 4]: every
+        // `NN-*.Map.Gbx` of B paired with A's `NN-*` (the vista source), one `route-audit`
+        // child per pair (this binary, the same --pak set), `--jobs` at a time; D/route-NN.tsv
+        // per map and D/summary.tsv (map, verdict counts, top owners). json9841 2026-09-24:
+        // "can you do this for all maps?"
+        "route-audit-all" => {
+            let src_dir = std::path::PathBuf::from(flag(&a.rest, "--src-dir").unwrap_or_else(|| die("--src-dir A".into())));
+            let port_dir = std::path::PathBuf::from(flag(&a.rest, "--port-dir").unwrap_or_else(|| die("--port-dir B".into())));
+            let out_dir = std::path::PathBuf::from(flag(&a.rest, "--out-dir").unwrap_or_else(|| die("--out-dir D".into())));
+            let every = flag(&a.rest, "--every").unwrap_or_else(|| "200".into());
+            let jobs: usize = flag(&a.rest, "--jobs").and_then(|v| v.parse().ok()).unwrap_or(4).max(1);
+            std::fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(format!("{}: {e}", out_dir.display())));
+            let mut pairs: Vec<(String, std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+            let mut ports: Vec<std::path::PathBuf> = std::fs::read_dir(&port_dir).unwrap_or_else(|e| die(format!("{}: {e}", port_dir.display()))).flatten().map(|e| e.path()).filter(|p| p.to_string_lossy().ends_with(".Map.Gbx")).collect();
+            ports.sort();
+            for port in ports {
+                let nn: String = port.file_name().unwrap().to_string_lossy().chars().take(2).collect();
+                if !nn.chars().all(|c| c.is_ascii_digit()) {
+                    continue;
+                }
+                let src = std::fs::read_dir(&src_dir).ok().and_then(|rd| rd.flatten().map(|e| e.path()).find(|p| p.file_name().map(|f| f.to_string_lossy().starts_with(&format!("{nn}-")) && f.to_string_lossy().ends_with(".Map.Gbx")).unwrap_or(false)));
+                match src {
+                    Some(s) => pairs.push((nn, s, port)),
+                    None => eprintln!("{nn}: no source in {}", src_dir.display()),
+                }
+            }
+            let exe = std::env::current_exe().unwrap_or_else(|e| die(format!("current_exe: {e}")));
+            let pak_args: Vec<String> = a.paks.iter().flat_map(|p| vec!["--pak".to_string(), p.clone()]).collect();
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let lines = std::sync::Mutex::new(Vec::<(String, String)>::new());
+            let t0 = std::time::Instant::now();
+            std::thread::scope(|sc| {
+                for _ in 0..jobs.min(pairs.len().max(1)) {
+                    let (pairs, next, lines, exe, pak_args, out_dir, every) = (&pairs, &next, &lines, &exe, &pak_args, &out_dir, &every);
+                    sc.spawn(move || loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if i >= pairs.len() {
+                            break;
+                        }
+                        let (nn, src, port) = &pairs[i];
+                        let out = out_dir.join(format!("route-{nn}.tsv"));
+                        let r = std::process::Command::new(exe).args(pak_args).arg("route-audit").arg(src).arg(port).arg("--every").arg(every).arg("--out").arg(&out).output();
+                        let line = match r {
+                            Ok(o) => {
+                                let text = String::from_utf8_lossy(&o.stdout).into_owned();
+                                let summ = text.lines().find(|l| l.contains("samples")).and_then(|l| l.split_once(": ").map(|(_, r)| r.to_string())).unwrap_or_else(|| format!("FAILED {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("").chars().take(120).collect::<String>()));
+                                let owners: Vec<String> = text.lines().filter(|l| l.starts_with("      ")).take(4).map(|l| l.trim().to_string()).collect();
+                                format!("{nn}\t{summ}\t{}", owners.join(" | "))
+                            }
+                            Err(e) => format!("{nn}\tFAILED spawn: {e}\t"),
+                        };
+                        eprintln!("[{:>5.0}s] {line}", t0.elapsed().as_secs_f64());
+                        lines.lock().unwrap().push((nn.clone(), line));
+                    });
+                }
+            });
+            let mut lines = lines.into_inner().unwrap();
+            lines.sort();
+            let mut text = String::from("map\tverdicts\ttop_owners\n");
+            for (_, l) in &lines {
+                text.push_str(l);
+                text.push('\n');
+            }
+            let summary = out_dir.join("summary.tsv");
+            std::fs::write(&summary, &text).unwrap_or_else(|e| die(format!("{}: {e}", summary.display())));
+            print!("{text}");
+            println!("{} maps audited in {:.0}s -> {}", lines.len(), t0.elapsed().as_secs_f64(), summary.display());
+        }
+        // item-chunks FILE.Item.Gbx|FILE.Block.Gbx: the CGameItemModel chunk list, typed
+        // (ItemType, Archetype, Waypoint, …) — what makes a custom BLOCK file a block
+        "item-chunks" => {
+            let p = a.rest.get(1).cloned().unwrap_or_default();
+            let bytes = std::fs::read(&p).unwrap_or_else(|e| die(format!("{p}: {e}")));
+            let f = mapgeom::static_item::file::parse_file(&bytes).unwrap_or_else(|e| die(format!("{p}: {e}")));
+            println!("{p}: class {:#010x}, {} header chunks, {} nodes", f.class_id, f.header_chunks.len(), f.num_nodes);
+            for h in &f.header_chunks {
+                println!("  header {:#010x} {} bytes", h.id, h.payload.len());
+            }
+            for c in &f.item.chunks {
+                let d = format!("{c:?}");
+                println!("  {:#010x} {}", c.id(), d.chars().take(300).collect::<String>());
+            }
+        }
         "ghostpath" => {
             // the author's validation ghost of a SOURCE map as a path: t (s), x, y, z in
             // the source frame, one row per sample (--every MS thins it) — the route order

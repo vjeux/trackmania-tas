@@ -562,8 +562,15 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         vfx: super::null_ref(),
         material_modifier: super::null_ref(),
     };
+    // TINY_CUSTOM_BLOCK_BASE=<BlockName>: the file is a CUSTOM BLOCK — the mesh-modeler
+    // form (Everios96's `WoodPlatform\…\PlatformWoodBase.Block.Gbx`, read 2026-09-24):
+    // ItemType 11, and the collector PAGE NAME carries the base block whose placement
+    // rules (and, the test asks, water volume) the block inherits.
+    let custom_base = std::env::var("TINY_CUSTOM_BLOCK_BASE").ok().filter(|v| !v.is_empty());
+    let page = custom_base.clone().unwrap_or_else(|| "Items".to_string());
+    let item_type = if custom_base.is_some() { 11 } else { 1 };
     let chunks = vec![
-        ItemChunk::Collector1009 { page_name: "Items".into(), icon: None, u01: Id::Null },
+        ItemChunk::Collector1009 { page_name: page.clone(), icon: None, u01: Id::Null },
         ident(),
         ItemChunk::Name("New Item".into()),
         ItemChunk::Description("No Description".into()),
@@ -574,7 +581,7 @@ pub fn assemble(m: &Merged, opts: &BuildOpts) -> R<super::StaticItemFile> {
         ItemChunk::Cameras(10, Vec::new()),
         ItemChunk::RaceInterface(super::null_ref()),
         ItemChunk::Ground { ground_point: [0.0; 3], floats: [0.0, 0.0, -1.0, 0.15] },
-        ItemChunk::ItemType(1),
+        ItemChunk::ItemType(item_type),
         ItemChunk::Model(model),
         ItemChunk::Node201A(super::null_ref()),
         ItemChunk::DefaultPlacement { version: 5, placement: inline(placement_index, Node::Placement(placement_param(sclass_index))) },
@@ -625,7 +632,7 @@ pub fn header_chunks(opts: &BuildOpts) -> Vec<super::file::HeaderChunk> {
         w.id(&super::Id::Raw(opts.collection));
         w.id(&super::Id::Str(opts.author.clone()));
         w.u32(8);
-        w.string("Items");
+        w.string(&std::env::var("TINY_CUSTOM_BLOCK_BASE").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "Items".to_string()));
         w.id(&super::Id::Null);
         // the collector flags word: 8 on every item-editor item, 0x10 on
         // every pack item (Flag16m, ObstaclePusher8mLevel1: flags 0x10,
@@ -644,7 +651,7 @@ pub fn header_chunks(opts: &BuildOpts) -> Vec<super::file::HeaderChunk> {
     }
     out.extend([
         HeaderChunk { id: 0x2E001006, heavy: false, payload: vec![0; 8] },
-        HeaderChunk { id: 0x2E002000, heavy: false, payload: 1u32.to_le_bytes().to_vec() },
+        HeaderChunk { id: 0x2E002000, heavy: false, payload: (if std::env::var("TINY_CUSTOM_BLOCK_BASE").map(|v| !v.is_empty()).unwrap_or(false) { 11u32 } else { 1u32 }).to_le_bytes().to_vec() },
         HeaderChunk { id: 0x2E002001, heavy: false, payload: vec![0; 4] },
     ]);
     out

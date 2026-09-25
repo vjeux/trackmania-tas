@@ -505,6 +505,40 @@ fn main() {
                 println!("{}: name `{old}` -> `{new}` ({h} header, {b} body)", out.display());
             }
         }
+        // tmmaps custom-block MAP --out OUT --block NAME --file X.Block.Gbx --as 'Dir\Name.Block.Gbx'
+        //   [--author LOGIN]: every authored record of block NAME becomes the CUSTOM block
+        //   `<as>_CustomBlock` (the mesh-modeler form: the file is embedded under
+        //   `Blocks/<as>` with a manifest row (as, author)). Everios96's water idea, 2026-09-24:
+        //   a custom block derived from a water block keeps the water volume? — the test.
+        "custom-block" => {
+            let out = tmmaps::cli::flag(&args, "--out").expect("--out OUT");
+            let block = tmmaps::cli::flag(&args, "--block").expect("--block NAME");
+            let file = tmmaps::cli::flag(&args, "--file").expect("--file X.Block.Gbx");
+            let as_name = tmmaps::cli::flag(&args, "--as").expect("--as 'Dir\\Name.Block.Gbx'");
+            let author = tmmaps::cli::flag(&args, "--author").unwrap_or("cU-UoxapSFaX40nbXophDw");
+            let bytes = std::fs::read(file).expect("read block file");
+            // pass 1: the records (a rename of the block-name Id, any length)
+            let mut m = tmmaps::map::MapFile::load(std::path::Path::new(&args[2]));
+            let idx: Vec<usize> = m.blocks.iter().filter(|b| b.name == block).map(|b| b.index).collect();
+            let custom = format!("{as_name}_CustomBlock");
+            for i in &idx {
+                m.set_block_name(*i, &custom);
+            }
+            m.write_to(std::path::Path::new(out)).expect("write (renames)");
+            // pass 2: the archive (a variable-length splice on a fresh load)
+            let mut m2 = tmmaps::map::MapFile::load(std::path::Path::new(out));
+            let (mut rows, zip) = m2.embedded_objects().unwrap_or((Vec::new(), Vec::new()));
+            let mut files: std::collections::BTreeMap<String, Vec<u8>> = tmmaps::header::zip_entries(&zip).into_iter().collect();
+            files.insert(format!("Blocks/{}", as_name.replace('\\', "/")), bytes);
+            if !rows.iter().any(|(p, _)| p == as_name) {
+                rows.push((as_name.to_string(), author.to_string()));
+            }
+            let rows_ref: Vec<(&str, &str)> = rows.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+            let zip2 = tmmaps::header::stored_zip(&files);
+            m2.replace_embedded_objects(&rows_ref, &zip2);
+            m2.write_to(std::path::Path::new(out)).expect("write (archive)");
+            println!("{out}: {} `{block}` records -> `{custom}`; archive {} files, {} manifest rows", idx.len(), files.len(), rows.len());
+        }
         // tmmaps isolate MAP --out OUT --keep NAME@x,y,z[;NAME@x,y,z…]: every authored block
         // but the listed ones goes, every generated record and every item too — a one- or
         // two-block probe map for a piece A/B in the editor (json9841's terrain, 2026-09-24)

@@ -213,6 +213,7 @@ fn main() {
         "publish-batch" => batch::publish_batch_cmd(rest),
         "round-publish" => roundpub::cmd(rest),
         "remote-shots" => remoteshots::cmd(rest),
+        "remote-drive" => remoteshots::drive_cmd(rest),
         "skip-manifest" => batch::skip_manifest_cmd(rest),
         "custom-sheet" => customsheet::cmd(rest),
         "thumbs" => thumbs::cmd(rest),
