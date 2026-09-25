@@ -1224,6 +1224,38 @@ fn main() {
             std::fs::write(&out, &bytes).unwrap_or_else(|e| die(e.to_string()));
             println!("{p}: {streams} vertex streams, {moved} positions moved by {dy} in y -> {out}");
         }
+        "deco-size" => {
+            // mapgeom deco-size [--collection BlueBay]: every CGameCtnDecorationSize (0x0303B000) of the collection —
+            // the fields the game's base height comes from (CGameCtnChallenge load 0x140b8cf0c: challenge+0x7e8 =
+            // −(OffsetBlockY ? BaseHeightBase + 1 + BaseHeightOffset : BaseHeightOffset) · blockSize.y; the chunk reader
+            // 0x140d1bd30: B001 = {BaseHeightBase, SizeX, SizeY, SizeZ, ref Scene}, B002 = {BaseHeightBase, Size xyz,
+            // OffsetBlockY, ref Scene}, B003 = {version, BaseHeightOffset})
+            let mut store = open(&a);
+            let coll = flag(&a.rest, "--collection").unwrap_or_else(|| "BlueBay".to_string());
+            // BlueBay-family paks keep it under <Coll>\GameCtnDecoration\<hash>, Stadium.pak at <Coll>\<hash>: filter by class
+            let paths: Vec<String> = store.entries().filter(|e| e.class_id == 0x0303_B000).map(|e| e.path()).filter(|p| p.starts_with(&format!("{coll}\\"))).collect();
+            for p in &paths {
+                let Ok(m) = store.load_model(p) else { continue };
+                if m.class_id != 0x0303_B000 { continue; }
+                let b = &m.body;
+                let rd = |o: usize| -> u32 { u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) };
+                let (mut base, mut off, mut offy, mut size) = (None, None, None, None);
+                let mut o = 0usize;
+                while o + 4 <= b.len() {
+                    let id = rd(o);
+                    if id == 0xFACA_DE01 { break; }
+                    match id {
+                        0x0303_B000 => { o += 4 + 20; }
+                        0x0303_B001 => { base = Some(rd(o + 4)); size = Some([rd(o + 8), rd(o + 12), rd(o + 16)]); offy = Some(0); o += 4 + 20; }
+                        0x0303_B002 => { base = Some(rd(o + 4)); size = Some([rd(o + 8), rd(o + 12), rd(o + 16)]); offy = Some(rd(o + 20)); o += 4 + 24; }
+                        0x0303_B003 => { if &b[o + 4..o + 8] == b"PIKS" { let n = rd(o + 8) as usize; off = Some(rd(o + 16)); o += 12 + n; } else { off = Some(rd(o + 8)); o += 12; } }
+                        _ => { if &b[o + 4..o + 8] == b"PIKS" { let n = rd(o + 8) as usize; o += 12 + n; } else { break; } }
+                    }
+                }
+                let n = match (base, off, offy) { (Some(bh), Some(bo), Some(oy)) => Some(if oy != 0 { bh + 1 + bo } else { bo }), _ => None };
+                println!("{p}: size {:?} BaseHeightBase {:?} BaseHeightOffset {:?} OffsetBlockY {:?} → n {:?} → base height −n·blockSize.y = {:?} (blockSize.y 8) / {:?} (32); externals {:?}", size, base, off, offy, n, n.map(|n| -(n as f32) * 8.0), n.map(|n| -(n as f32) * 32.0), m.externals);
+            }
+        }
         "raw" => {
             // mapgeom raw <logical-path> --out F : the decoded bytes of any pack
             // entry, GBX or not (textures, XML, tga), for banking mood assets

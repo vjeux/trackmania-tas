@@ -32,9 +32,9 @@
 //! 5. `chunks_aabb` — FUN_140233150: the AABB over c(i) = (float(i) − 0.5)·cell + origin' for i = +0xc and +0x18 of
 //!    every record, as {c = (max + min)·0.5, h = (max − min)·0.5}.
 //!
-//! pwc-day (`lmtool probe-chunks MAP`): size (64, 64, 64), BlueBay (32, 8, 32), offset y −38 (the decoration's base
-//! height — probes.rs's empirical origin table has the same −38) → 128 × 32 × 128 probes of 16 m at origin (8, −30,
-//! 8); the three items (q = 1) touch one chunk, (1, 0, 0) → the record's world origin (472, −46, −8), atlas 32 × 16 ×
+//! pwc-day (`lmtool probe-chunks MAP`): size (64, 64, 64), BlueBay (32, 8, 32), offset y −40 (the decoration's base
+//! height, `deco_offsets`; the level alignment puts the first row at −30 — probes.rs's empirical "−38" is that
+//! origin minus the half cell) → 128 × 32 × 128 probes of 16 m at origin (8, −30, 8); the three items (q = 1) touch one chunk, (1, 0, 0) → the record's world origin (472, −46, −8), atlas 32 × 16 ×
 //! 32, +0xc = (23, 4, 20), +0x18 = (26, 12, 26) — engineer B's ProbeToShadow-derived grid and RE 5's imax.y = 12
 //! exactly; the world peel's y max 138 = (12 − 0.5)·16 − 46.
 
@@ -495,14 +495,20 @@ pub fn level_h(collection: u32) -> f32 {
     base + a + b
 }
 
-/// The decoration's vertical offsets per TM2020 collection [INFERRED from the fixed water/ground planes
-/// (tiny::fixed_plane) and the port's probe-origin table (probes.rs), consistent with the capture]: `yoff` = the
-/// block placement offset (world y = cell·8 + yoff), the probe grid's `offset.y` (challenge+0x7e8) = yoff + 2.
-/// BlueBay / GreenCoast (sea cell 5 / lake cell 4 → planes 7.0 / −0.8): −40 → −38; RedIsland / WhiteShore (cell 14
-/// → −0.5 / −1.0): −120 → −118; Stadium (Grass cell 9, plane 10.0): −64 → −62.
+/// The decoration's base height per TM2020 collection — a FILE FACT: CGameCtnChallenge load (0x140b8cf0c) sets
+/// challenge+0x7e8 = FUN_140b8d2a0(decoration, collection) = −n · collection.blockSize.y with n = OffsetBlockY ?
+/// BaseHeightBase + 1 + BaseHeightOffset : BaseHeightOffset from the collection's CGameCtnDecorationSize (class
+/// 0x0303B000; chunk B001/B002 = {BaseHeightBase, SizeX, SizeY, SizeZ, [OffsetBlockY], ref Scene3d}, B003 = {version,
+/// BaseHeightOffset}; reader 0x140d1bd30; `mapgeom deco-size --collection C`). BlueBay / GreenCoast: base 4, offset
+/// 0, OffsetBlockY 1 → n 5 → −40; RedIsland / WhiteShore: 14 / 0 / 1 → n 15 → −120; Stadium (48×40×48): 0 / 8 / 0 →
+/// n 8 → −64. The SAME value is the block placement offset (world y = cell·8 + yoff) and the probe grid's offset.y
+/// (FUN_140c53ab0's param 4; the level alignment moves the rows to h + 2 — the "−38" the port's probes.rs table
+/// carries is the aligned probe origin, not the field). Returns (yoff, probe offset.y) = (v, v).
 pub fn deco_offsets(collection: u32) -> Option<(f32, f32)> {
     match collection {
-        28 | 15 => Some((-40.0, -38.0)),
+        28 | 15 => Some((-40.0, -40.0)),
+        16 | 29 => Some((-120.0, -120.0)),
+        26 => Some((-64.0, -64.0)),| 15 => Some((-40.0, -38.0)),
         16 | 29 => Some((-120.0, -118.0)),
         26 => Some((-64.0, -62.0)),
         _ => None,
@@ -525,7 +531,10 @@ mod level_tests {
         // Stadium 48×40×48 with 32 m cubes: rows aligned on 10 m → origin.y = −62 + 16 + frac⁺((10 − (−46))/32)·32 = −46 + 24 = −22
         let g = grid_def([48, 40, 48], [32.0, 32.0, 32.0], [0.0, -62.0, 0.0], level_h(26), false);
         assert_eq!(g.origin[1], -22.0);
-        assert_eq!(deco_offsets(28), Some((-40.0, -38.0)));
+        assert_eq!(deco_offsets(28), Some((-40.0, -40.0)));
+        // the probe rows land on the same place from the field value: BlueBay 64³, offset −40, h 0 → first row −30
+        let g = grid_def([64, 64, 64], [32.0, 8.0, 32.0], [0.0, -40.0, 0.0], 0.0, true);
+        assert_eq!(g.origin, [8.0, -30.0, 8.0]);
     }
 }
 

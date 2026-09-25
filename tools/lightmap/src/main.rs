@@ -4661,7 +4661,7 @@ fn run(a: Vec<String>) {
             let recs: Vec<lightmap::lmtiles::BlockRecord> = lightmap::lmtiles::item_records(&scene, gq, false).iter().filter_map(|it| it.record).collect();
             let scene_ch = match f("--scene") { Some(s) => { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); lightmap::lmtiles::CBox::from_min_max([v[0], v[1], v[2]], [v[3], v[4], v[5]]) } None => lightmap::lmtiles::scene_box(&recs) };
             let bs = f("--block-size").map(v3).unwrap_or([32.0, 8.0, 32.0]);
-            let off = f("--offset").map(v3).unwrap_or([0.0, -38.0, 0.0]);
+            let off = f("--offset").map(v3).unwrap_or([0.0, -40.0, 0.0]);
             let h: f32 = f("--level-h").map(|v| v.parse().unwrap()).unwrap_or(0.0);
             let max_dim: u32 = f("--max-dim").map(|v| v.parse().unwrap()).unwrap_or(2048);
             let (g, boxes, c, aabb) = lightmap::probechunk::for_records(size, bs, off, h, &recs, &scene_ch, max_dim);
@@ -5033,7 +5033,7 @@ fn run(a: Vec<String>) {
                         let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map));
                         let size = [mf.size[0].max(0) as u32, mf.size[1].max(0) as u32, mf.size[2].max(0) as u32];
                         let bs = f("--block-size").map(v3).unwrap_or([32.0, 8.0, 32.0]);
-                        let off = f("--offset").map(v3).unwrap_or([0.0, -38.0, 0.0]);
+                        let off = f("--offset").map(v3).unwrap_or([0.0, -40.0, 0.0]);
                         let h: f32 = f("--level-h").map(|v| v.parse().unwrap()).unwrap_or(0.0);
                         let (g, _boxes, c, aabb) = lightmap::probechunk::for_records(size, bs, off, h, &recs, &scene_ch, 2048);
                         println!("  PROBE GRID from the map: {} × {} × {} probes, cell {:?}, first probe {:?}; {} chunk(s), atlas {:?}", g.n[0], g.n[1], g.n[2], g.cell, g.origin, c.records.len(), c.atlas);
