@@ -313,6 +313,54 @@ pub fn prefab_entity_records_in(store: &mut mapgeom::store::DataStore, free: boo
 
 /// The block at `cell` with `dir` (the placement transform of mapgeom::place::grid_block for a 32 × 32 footprint) —
 /// the picked variant's mobils' prefabs, every entity a record.
+/// THE LIGHTS OF A PLACED BLOCK (RE 7, 2026-09-25 — stpad's lightmap frame 1): every CPlugLight of every static object in
+/// the picked placement's mobil prefabs, nested prefabs included (`Water\FCCenter_Air` → `TreeGen\RoadBorderSpot.Prefab` →
+/// its solid's `RoadBorderSpot.Light.Gbx`), in WORLD space through the same transforms as `block_records`.
+pub fn block_lights(store: &mut mapgeom::store::DataStore, bi: &mapgeom::blockinfo::BlockInfo, cell: [i32; 3], dir: u8, ground: bool, variant: usize, subvariant: usize, additional: usize, yoff: f32) -> Result<Vec<crate::geometry::LightDef>, String> {
+    let Some(picked) = bi.pick_placement_add(ground, variant, subvariant, additional) else { return Ok(Vec::new()) };
+    let xf = mapgeom::place::grid_block((cell[0], cell[1], cell[2]), dir, (32.0, 32.0), yoff);
+    let mut out = Vec::new();
+    for mb in &picked.mobils {
+        let Some(pp) = &mb.prefab else { continue };
+        let mxf = match (mb.translation, mb.rotation) {
+            (Some(t), r) => { let yaw = r.map(|v| v[1]).unwrap_or(0.0); mapgeom::geom::compose(&xf, &mapgeom::geom::yaw(yaw, t)) }
+            _ => xf,
+        };
+        prefab_entity_lights_in(store, pp, &mxf, 0, &mut out)?;
+    }
+    Ok(out)
+}
+
+/// The lights of a prefab file's entities in the frame `xf`, nested prefabs recursed (depth-bounded).
+pub fn prefab_entity_lights_in(store: &mut mapgeom::store::DataStore, prefab_path: &str, xf: &mapgeom::geom::Xform, depth: u32, out: &mut Vec<crate::geometry::LightDef>) -> Result<(), String> {
+    let pm = store.load_model(prefab_path)?;
+    let pf = mapgeom::static_item::prefab::CPlugPrefab::from_model(&pm)?;
+    for e in pf.ents.iter() {
+        let e_xf = mapgeom::geom::compose(xf, &mapgeom::geom::from_quat(e.rot, e.pos));
+        match e.model.inline.as_deref() {
+            Some(mapgeom::static_item::Node::StaticObject(so)) => {
+                let Some(s2) = so.solid2() else { continue };
+                for mut l in crate::geometry::solid2_lights_ext(s2, None, Some((store, &pm.externals))) {
+                    let p = mapgeom::geom::apply(&e_xf, l.pos);
+                    let tip = mapgeom::geom::apply(&e_xf, [l.pos[0] + l.dir[0], l.pos[1] + l.dir[1], l.pos[2] + l.dir[2]]);
+                    l.pos = p;
+                    l.dir = crate::geometry::norm([tip[0] - p[0], tip[1] - p[1], tip[2] - p[2]]);
+                    out.push(l);
+                }
+            }
+            None if e.model.index >= 0 && depth < 8 => {
+                let Some((_, path)) = pm.externals.iter().find(|(i, _)| *i == e.model.index as u32) else { continue };
+                if path.to_ascii_lowercase().ends_with(".prefab.gbx") {
+                    let path = path.clone();
+                    prefab_entity_lights_in(store, &path, &e_xf, depth + 1, out)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 pub fn block_records(store: &mut mapgeom::store::DataStore, bi: &mapgeom::blockinfo::BlockInfo, cell: [i32; 3], dir: u8, ground: bool, variant: usize, subvariant: usize, additional: usize, yoff: f32, class: &'static str, obj: u32, quality: f32, out: &mut Vec<Rec>) -> Result<usize, String> {
     block_records_class(store, bi, cell, dir, ground, variant, subvariant, additional, yoff, class, obj, quality, false, out)
 }
@@ -377,6 +425,11 @@ pub struct MapRecords {
     pub clip_obj0: u32,
     pub item_obj0: u32,
     pub notes: Vec<String>,
+    /// THE LOCAL LIGHTS of the blocks and the engine's clips (RE 7, 2026-09-25 — lightmap frame 1): every CPlugLight of the
+    /// placed prefabs, nested prefabs and external `.Light.Gbx` sockets recursed (stpad: 424 RoadBorderSpot lamps, 2 per drawn
+    /// WaterFCCenter clip), in world space, tagged with the owner ("block N name" / "clipX name of block N"). The items' lights
+    /// come with the scene (`geometry::Scene::lights`).
+    pub block_lights: Vec<(String, crate::geometry::LightDef)>,
 }
 
 /// The map's records in the lightmapper's order: the authored blocks' prefab entities (file order), the zone tiles (the
@@ -412,6 +465,7 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
     let n_blocks_authored = mf.blocks.iter().filter(|b| !is_zone_block(b)).count() as u32;
     let tile_obj0 = block_obj0 + n_blocks_authored;
     let mut recs: Vec<Rec> = Vec::new();
+    let mut block_lights_out: Vec<(String, crate::geometry::LightDef)> = Vec::new();
     // 1. the authored blocks
     let mut idx = mapgeom::blockmap::BlockInfoIndex::build(store, coll);
     let mut n_block_recs = 0usize;
@@ -427,6 +481,7 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
         let subvariant = ((b.flags >> mapgeom::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
         let additional = ((b.flags >> mapgeom::blockmap::FLAG_ADDITIONAL_SHIFT) & 127) as usize;
         n_block_recs += block_records_class(store, &bi, [x, y, z], b.dir, ground, variant, subvariant, additional, yoff, "block", obj, 1.0, b.flags & 0x1000_0000 != 0, &mut recs)?;
+        if let Ok(ls) = block_lights(store, &bi, [x, y, z], b.dir, ground, variant, subvariant, additional, yoff) { for l in ls { block_lights_out.push((format!("block {} {}", b.index, b.name), l)); } }
     }
     // 2. the tiles: the map's GENEALOGY (chunk 0x03043043) names every cell's zone and direction (BlueBay tiny16: Sea, Land,
     // frontier and transition tiles) — each cell's record is that zone prefab's PLG with its box through the cell's rotation
@@ -500,6 +555,7 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
             let mut owner_free = owner_b.map(|b| b.flags & 0x1000_0000 != 0).unwrap_or(false);
             if opts.one_class.iter().any(|n| *n == c.name) { owner_free = false; }
             n_clip_recs += block_records_class(store, &bi, cell, d, c.ground, variant, 0, 0, yoff, class, clip_obj0 + n_clip_objs, 1.0, owner_free, &mut recs)?;
+            if let Ok(ls) = block_lights(store, &bi, cell, d, c.ground, variant, 0, 0, yoff) { for l in ls { block_lights_out.push((format!("{class} {} of block {}", c.name, c.owner_index), l)); } }
             n_clip_objs += 1;
         }
     }
@@ -573,7 +629,7 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
     }
     if n_kind0 > 0 { notes.push(format!("{n_kind0} kind-0 legacy tree records")); }
     let _ = n_block_recs;
-    Ok(MapRecords { recs, n_blocks: n_blocks_authored as usize, n_tiles, n_clips: n_clip_recs, n_items, tile_cells: cells, tile_quality: tq, block_obj0, tile_obj0, clip_obj0, item_obj0, notes })
+    Ok(MapRecords { recs, n_blocks: n_blocks_authored as usize, n_tiles, n_clips: n_clip_recs, n_items, tile_cells: cells, tile_quality: tq, block_obj0, tile_obj0, clip_obj0, item_obj0, notes, block_lights: block_lights_out })
 }
 
 

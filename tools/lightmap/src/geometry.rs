@@ -175,18 +175,51 @@ pub fn load_model_from_store(store: &mut mapgeom::store::DataStore, logical: &st
     Ok(ModelGeom::default())
 }
 
-/// A `ModelGeom` from a solid: the PreLightGen, lights, the LOD-0 shaded geoms' triangles (TexCoord1 = the lightmap uv),
-/// materials / cut-out textures, the uv range and the metres-per-uv; `ent_pose` = a prefab entity's (quaternion, position).
-pub fn geom_from_solid2(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, ent_pose: Option<([f32; 4], [f32; 3])>) -> ModelGeom {
-    let mut g = ModelGeom::default();
-    if let Some(plg) = &s2.pre_light_gen {
-        g.plg_u02 = plg.u02;
-        if plg.u04[2] > plg.u04[0] && plg.u04[3] > plg.u04[1] && plg.u04[2].is_finite() {
-            g.plg_bounds = Some([plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]]);
-        }
-    }
+/// Rotate `v` by the quaternion `q` (x, y, z, w).
+pub fn quat_rot(q: [f32; 4], v: V3) -> V3 {
+    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+    let (xx, yy, zz, xy, xz, yz, wx, wy, wz) = (x * x, y * y, z * z, x * y, x * z, y * z, w * x, w * y, w * z);
+    [
+        (1.0 - 2.0 * (yy + zz)) * v[0] + 2.0 * (xy - wz) * v[1] + 2.0 * (xz + wy) * v[2],
+        2.0 * (xy + wz) * v[0] + (1.0 - 2.0 * (xx + zz)) * v[1] + 2.0 * (yz - wx) * v[2],
+        2.0 * (xz - wy) * v[0] + 2.0 * (yz + wx) * v[1] + (1.0 - 2.0 * (xx + yy)) * v[2],
+    ]
+}
+
+/// Hamilton product a·b of two (x, y, z, w) quaternions (apply b, then a).
+pub fn quat_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    [
+        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    ]
+}
+
+/// The lights of a solid, in the frame given by `pose` (a (quaternion, position) applied to the light's model-space
+/// position and direction).
+pub fn solid2_lights(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, pose: Option<([f32; 4], [f32; 3])>) -> Vec<LightDef> {
+    solid2_lights_ext(s2, pose, None)
+}
+
+/// `solid2_lights` that also follows EXTERNAL light sockets (`u02`: the socket names a `.Light.Gbx` of the packs by external
+/// index — the block prefabs' lamps, `TreeGen\RoadBorderSpot`'s `RoadBorderSpot.Light.Gbx`) through `(store, externals)`.
+pub fn solid2_lights_ext(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, pose: Option<([f32; 4], [f32; 3])>, ext: Option<(&mut mapgeom::store::DataStore, &[(u32, String)])>) -> Vec<LightDef> {
+    let mut out = Vec::new();
+    let mut ext = ext;
     for l in &s2.lights {
-        let Some(Node::Light(pl)) = l.node.inline.as_deref() else { continue };
+        let loaded: Option<mapgeom::static_item::light::CPlugLight> = match l.node.inline.as_deref() {
+            Some(Node::Light(_)) => None,
+            _ => match &mut ext {
+                Some((store, externals)) if l.node.index >= 0 => externals.iter().find(|(i, _)| *i == l.node.index as u32).and_then(|(_, path)| mapgeom::static_item::merged::load_light(store, path).ok()),
+                _ => None,
+            },
+        };
+        let pl: &mapgeom::static_item::light::CPlugLight = match (l.node.inline.as_deref(), &loaded) {
+            (Some(Node::Light(pl)), _) => pl,
+            (_, Some(pl)) => pl,
+            _ => continue,
+        };
         let Some(gx) = pl.gx_light() else { continue };
         let (color, intensity, radius) = gx.summary();
         let mut cone = (180.0f32, 180.0f32);
@@ -198,8 +231,75 @@ pub fn geom_from_solid2(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, ent
             }
         }
         let t = &l.u05;
-        g.lights.push(LightDef { pos: [t[9], t[10], t[11]], dir: norm([t[6], t[7], t[8]]), color, intensity, radius, cone, animated: pl.is_animated() });
+        let (mut pos, mut dir) = ([t[9], t[10], t[11]], norm([t[6], t[7], t[8]]));
+        if let Some((q, p)) = pose {
+            let r = quat_rot(q, pos);
+            pos = [r[0] + p[0], r[1] + p[1], r[2] + p[2]];
+            dir = quat_rot(q, dir);
+        }
+        out.push(LightDef { pos, dir, color, intensity, radius, cone, animated: pl.is_animated() });
     }
+    out
+}
+
+/// THE LIGHTS OF A PREFAB, RECURSIVELY (RE 7, 2026-09-25 — stpad's frame 1): every entity's static object contributes its
+/// solid's lights in the entity's pose, and an entity whose model is an EXTERNAL prefab (a block clip's
+/// `TreeGen\RoadBorderSpot.Prefab.Gbx` lamp post inside `Water\FCCenter_Air.Prefab.Gbx`) is loaded through the store and
+/// walked the same way with the composed pose — the game instantiates nested prefabs as such, so their CPlugLights are
+/// local lights of the map like an item's own. `pose` = the outer (quaternion, position); `depth` bounds cycles.
+pub fn prefab_lights(store: &mut mapgeom::store::DataStore, pf: &mapgeom::static_item::prefab::CPlugPrefab, externals: &[(u32, String)], pose: Option<([f32; 4], [f32; 3])>, depth: u32) -> Vec<LightDef> {
+    let mut out = Vec::new();
+    for e in &pf.ents {
+        let ent_pose = compose_pose(pose, (e.rot, e.pos));
+        match e.model.inline.as_deref() {
+            Some(Node::StaticObject(so)) => {
+                if let Some(s2) = so.solid2() { out.extend(solid2_lights(s2, Some(ent_pose))); }
+            }
+            Some(Node::Prefab(inner)) => {
+                if depth < 8 { out.extend(prefab_lights(store, inner, externals, Some(ent_pose), depth + 1)); }
+            }
+            None if e.model.index >= 0 => {
+                if let Some((_, path)) = externals.iter().find(|(i, _)| *i == e.model.index as u32) {
+                    if path.to_ascii_lowercase().ends_with(".prefab.gbx") && depth < 8 {
+                        if let Ok(pm) = store.load_model(path) {
+                            if let Ok(inner) = mapgeom::static_item::prefab::CPlugPrefab::from_model(&pm) {
+                                out.extend(prefab_lights(store, &inner, &pm.externals, Some(ent_pose), depth + 1));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// outer ∘ inner: the inner (q, p) expressed in the outer frame.
+pub fn compose_pose(outer: Option<([f32; 4], [f32; 3])>, inner: ([f32; 4], [f32; 3])) -> ([f32; 4], [f32; 3]) {
+    match outer {
+        None => inner,
+        Some((oq, op)) => {
+            let r = quat_rot(oq, inner.1);
+            (quat_mul(oq, inner.0), [r[0] + op[0], r[1] + op[1], r[2] + op[2]])
+        }
+    }
+}
+
+/// A `ModelGeom` from a solid: the PreLightGen, lights, the LOD-0 shaded geoms' triangles (TexCoord1 = the lightmap uv),
+/// materials / cut-out textures, the uv range and the metres-per-uv; `ent_pose` = a prefab entity's (quaternion, position).
+/// A `ModelGeom` from a solid: the PreLightGen, lights, the LOD-0 shaded geoms' triangles (TexCoord1 = the lightmap uv),
+/// materials / cut-out textures, the uv range and the metres-per-uv; `ent_pose` = a prefab entity's (quaternion, position).
+pub fn geom_from_solid2(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, ent_pose: Option<([f32; 4], [f32; 3])>) -> ModelGeom {
+    let mut g = ModelGeom::default();
+    if let Some(plg) = &s2.pre_light_gen {
+        g.plg_u02 = plg.u02;
+        if plg.u04[2] > plg.u04[0] && plg.u04[3] > plg.u04[1] && plg.u04[2].is_finite() {
+            g.plg_bounds = Some([plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]]);
+        }
+    }
+    // the lights follow the entity's pose like the triangles (they were left in the solid's frame before RE7/0015)
+    g.lights = solid2_lights(s2, ent_pose);
     if std::env::var_os("LMTOOL_MAT_DEBUG").is_some() {
         eprintln!("solid2: {} materials (deprec {}), {} custom materials, folder {:?}, {} shaded geoms, {} custom material ids", s2.materials.len(), s2.materials_deprec, s2.custom_materials.len(), s2.materials_folder, s2.shaded_geoms.len(), s2.material_ids.len());
         for (i, cm) in s2.custom_materials.iter().enumerate() { eprintln!("  custom[{i}] {:?} → link {:?}", cm.name, cm.inst().and_then(|m| m.link())); }

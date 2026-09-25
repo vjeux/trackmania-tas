@@ -325,3 +325,62 @@ pub fn fog_intens(_collection: &str, _mood: &str) -> Option<f32> {
     // skygrad::fog_from_xml — no per-mood fit any more
     None
 }
+
+/// THE LOCAL-LIGHT GATE (RE 7, 2026-09-25, FUN_14020d170 — the lightmapper's per-daytime table, entry 0x18 B = {u32 key
+/// word, u32 lights_on, 16 B}): the map's DayTime word u = word / 65536 is the mood blender's KEY; FUN_140494560 turns it
+/// back into the time of day t (the blender curve {Latitude, w = 1/48, SunRise t_r, SwitchOff, SwitchOn, SunFall t_s}:
+/// key ∈ [0.25, 0.5) → t = t_r + 4(u − 0.25)·w; [0.5, 0.75) → t_r + w + 4(u − 0.5)·(t_s − t_r − 2w); [0.75, 1] → t_s − w +
+/// 4(u − 0.75)·w; < 0.25 → the night wrap t_s + 4u·(t_r + 1 − t_s) mod 1), and the LOCAL LIGHTS ARE ON iff
+/// t < LocalLight_SwitchOff || t ≥ LocalLight_SwitchOn (`(fVar4 < curve+0xc) || (curve+0x10 <= fVar4)`). The five
+/// decoration blenders (RE 4): SunRise 06:00, SunFall 21:00, SwitchOff 06:30, SwitchOn 18:30 (GreenCoast 19:10).
+/// Sunrise 0x5148 → 06:08 ON (stpad / tiny16's lit frame 1); Day 0x9b59 → 12:29 OFF (the 1e-5 frames); Sunset 0xdaab →
+/// 20:42 ON (hill4's frame 1 is black only because it has no lamp).
+pub struct BlenderCurve {
+    pub w: f32,
+    pub sun_rise: f32,
+    pub switch_off: f32,
+    pub switch_on: f32,
+    pub sun_fall: f32,
+}
+
+impl BlenderCurve {
+    /// The decoration blenders' values (all five collections; GreenCoast's SwitchOn 19:10).
+    pub fn for_collection(collection: &str) -> BlenderCurve {
+        let switch_on = if collection.eq_ignore_ascii_case("GreenCoast") { (19.0 * 60.0 + 10.0) / 1440.0 } else { 18.5 / 24.0 };
+        BlenderCurve { w: 1.0 / 48.0, sun_rise: 6.0 / 24.0, switch_off: 6.5 / 24.0, switch_on, sun_fall: 21.0 / 24.0 }
+    }
+
+    /// FUN_140494560: the blend key back to the time of day (fraction of the day).
+    pub fn key_to_time(&self, u: f32) -> f32 {
+        let (t_r, t_s, w) = (self.sun_rise, self.sun_fall, self.w);
+        if u < 0.25 {
+            (t_s + 4.0 * u * (t_r + 1.0 - t_s)).rem_euclid(1.0)
+        } else if u < 0.5 {
+            t_r + 4.0 * (u - 0.25) * w
+        } else if u < 0.75 {
+            t_r + w + 4.0 * (u - 0.5) * (t_s - t_r - 2.0 * w)
+        } else {
+            t_s - w + 4.0 * (u - 0.75) * w
+        }
+    }
+
+    /// FUN_14020d170's flag: local lights on for this DayTime word.
+    pub fn local_lights_on(&self, daytime_word: u32) -> bool {
+        let t = self.key_to_time(daytime_word as f32 / 65536.0);
+        t < self.switch_off || t >= self.switch_on
+    }
+}
+
+#[cfg(test)]
+mod local_light_gate_tests {
+    use super::BlenderCurve;
+    #[test]
+    fn the_three_daytimes_of_the_saves() {
+        let c = BlenderCurve::for_collection("Stadium");
+        assert!(c.local_lights_on(0x5148), "Sunrise 06:08 → on (stpad's lit frame 1)");
+        assert!(!c.local_lights_on(0x9b59), "Day 12:29 → off (pwc-day's 1e-5 frame 1)");
+        assert!(c.local_lights_on(0xdaab), "Sunset 20:42 → on (tiny16's lit frame 1)");
+        let t = c.key_to_time(0x5148 as f32 / 65536.0) * 24.0;
+        assert!((t - 6.135).abs() < 0.01, "{t}");
+    }
+}

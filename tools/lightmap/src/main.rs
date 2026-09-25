@@ -5984,6 +5984,32 @@ fn run(a: Vec<String>) {
                 Err(e) => println!("{}: {e}", a[1]),
             }
         }
+        "map-lights" => {
+            // lmtool map-lights MAP --pak FILE:KEY [--collection C] [--out TSV]: THE LOCAL LIGHTS of a map — the items' CPlugLights
+            // (the scene) and the blocks' + engine clips' (records::build_map_records, nested prefabs and external .Light.Gbx
+            // sockets recursed), in world space; and the mood gate (moods::BlenderCurve::local_lights_on for the map's DayTime)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let pak = f("--pak").expect("--pak FILE:KEY");
+            let (pp, key) = pak.rsplit_once(':').expect("--pak FILE:KEY");
+            let mut store = mapgeom::store::DataStore::empty();
+            store.add_pak(pp, key).expect("pak");
+            let coll = f("--collection").unwrap_or_else(|| "Stadium".into());
+            let opts = lightmap::records::BuildOpts { collection: coll.clone(), zone: f("--zone"), kept: None, tile_level: None, yoff: None, grid: None, items_3d: false, ghost_marks: false, no_block_cells: false, clip_order_sim: false, face_order: None, one_class: Vec::new() };
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("scene");
+            let mr = lightmap::records::build_map_records(&a[1], &scene, &mut store, &opts).expect("records");
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let dt = lightmap::mapio::daytime(&mf.gbx.body).filter(|v| *v != 0xffff_ffff);
+            let gate = lightmap::moods::BlenderCurve::for_collection(&coll);
+            let on = dt.map(|w| gate.local_lights_on(w));
+            let item_lights = scene.world_lights();
+            let n_items = item_lights.len();
+            println!("{}: {} item lights + {} block/clip lights; DayTime {:?} → local lights {}", a[1], n_items, mr.block_lights.len(), dt.map(|w| format!("{w:#x} = {:.2} h", gate.key_to_time(w as f32 / 65536.0) * 24.0)), match on { Some(true) => "ON (frame 1 lit)", Some(false) => "OFF (frame 1 black)", None => "unknown (no DayTime)" });
+            let mut t = String::from("owner\tx\ty\tz\tdx\tdy\tdz\tr\tg\tb\tintensity\tradius\tcone_inner\tcone_outer\tanimated\n");
+            let row = |o: &str, l: &lightmap::geometry::LightDef| format!("{o}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", l.pos[0], l.pos[1], l.pos[2], l.dir[0], l.dir[1], l.dir[2], l.color[0], l.color[1], l.color[2], l.intensity, l.radius, l.cone.0, l.cone.1, l.animated);
+            for (i, l) in &item_lights { t.push_str(&row(&format!("item {i}"), l)); }
+            for (o, l) in &mr.block_lights { t.push_str(&row(o, l)); }
+            if let Some(out) = f("--out") { std::fs::write(&out, t).expect("write"); println!("→ {out}"); } else { for line in t.lines().take(12) { println!("{line}"); } }
+        }
         "records-check" => {
             // lmtool records-check MAP --pak FILE:KEY --dump TSV [--collection Stadium] [--zone Grass] [--grid 96] [--cell-y 1] [--yoff 0]
             //   [--tile-q-far]: our record list vs the baker's /lmrecords dump (records.rs)
