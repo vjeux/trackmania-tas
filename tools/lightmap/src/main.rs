@@ -6966,6 +6966,24 @@ fn run(a: Vec<String>) {
                 for it in [1555u32, 2398, 2399, 2400] { match ed.get(&(base + it)) { Some(r) => println!("  stock-screen item {it}: editor chart {}×{} at ({}, {})", r.2, r.3, r.0, r.1), None => println!("  stock-screen item {it}: NOT in the editor's mapping") } }
                 return;
             }
+            // --uv-stats-sum: Σ over the charted items of (the MESH's TexCoord1 range × MeterByUv)² against the PLG-bounds form — the
+            // TotalLmSurfaceMeter study (tiny 16: the records' PLG form sums to 14.2 M, the editor's total is 15.78 M)
+            if a.iter().any(|x| x == "--uv-stats-sum") {
+                let (mut s_plg, mut s_mesh, mut n, mut n_diff) = (0f64, 0f64, 0usize, 0usize);
+                let mut ex: Vec<(f64, f64, String)> = Vec::new();
+                for inst in &scene.instances {
+                    if let Some(k) = &kept { if !k.contains(&inst.item) { continue; } }
+                    let m = &scene.models[inst.model];
+                    let Some(b) = m.plg_bounds else { continue };
+                    let a_plg = ((b[2] - b[0]) * m.plg_u02) as f64 * ((b[3] - b[1]) * m.plg_u02) as f64;
+                    let a_mesh = ((m.uv_max[0] - m.uv_min[0]) * m.plg_u02) as f64 * ((m.uv_max[1] - m.uv_min[1]) * m.plg_u02) as f64;
+                    s_plg += a_plg; s_mesh += a_mesh; n += 1;
+                    if (a_plg - a_mesh).abs() > 1e-3 * a_plg.max(1.0) { n_diff += 1; if ex.len() < 8 { ex.push((a_plg, a_mesh, format!("{} plg [{:.4} {:.4} {:.4} {:.4}] mesh uv [{:.4} {:.4}]..[{:.4} {:.4}]", inst.model_name, b[0], b[1], b[2], b[3], m.uv_min[0], m.uv_min[1], m.uv_max[0], m.uv_max[1]))); } }
+                }
+                println!("uv-stats: {n} charted items; Σ area from the PLG bounds {s_plg:.1}, from the mesh TexCoord1 range {s_mesh:.1}; {n_diff} items differ");
+                for (p, mm, d) in &ex { println!("  plg {p:.1} vs mesh {mm:.1}: {d}"); }
+                return;
+            }
             // --ext-ratio: per charted item the editor's chart width against our ext.x — (w + 2)/ext.x should be one constant (the
             // editor's s) if our extents are the game's; a spread = per-item extent differences (the item-side rule)
             if a.iter().any(|x| x == "--ext-ratio") {
