@@ -176,6 +176,7 @@ pub fn layout_of(recs: &[Rec], quality_index: u32) -> Result<crate::layout::Game
     let any_pos = recs.iter().any(|r| r.pos_rank.is_some());
     let pos: Vec<u32> = recs.iter().enumerate().map(|(i, r)| r.pos_rank.unwrap_or(i as u32)).collect();
     let walls: Vec<Option<(u8, f32)>> = recs.iter().map(|r| if std::env::var("LMTOOL_NO_WALLS").is_ok() { None } else { r.wall }).collect();
+    crate::layout::STRIP_RECS.with(|s| { let mut s = s.borrow_mut(); s.clear(); for (k, r) in recs.iter().enumerate() { if r.class == "item0" { s.insert(k); } } });
     crate::layout::allocate_grouped_walls(&crate::layout::LayoutInput { tiles: Vec::new(), items, w_atlas: 2048, quality_index }, &groups, if any_pos { Some(&pos) } else { None }, Some(&walls))
 }
 
@@ -565,7 +566,7 @@ pub fn build_map_records(map_path: &str, scene: &crate::geometry::Scene, store: 
         // LMTOOL_KIND0_GROUP=item: every kind-0 record its own group (the study); default one group per species
         if std::env::var("LMTOOL_KIND0_GROUP").map(|v| v == "item").unwrap_or(false) { ("legacy", ii).hash(&mut hh); } else { ("legacy", species.as_str()).hash(&mut hh); }
         // LMTOOL_KIND0_KEY=pos|posc: the Morton key from the item position (+ the model box centre) instead of the record centre
-        let key_centre = match std::env::var("LMTOOL_KIND0_KEY").ok().as_deref() { Some("pos") => Some(it.pos), Some("posc") => Some([it.pos[0] + c[0], it.pos[1] + c[1], it.pos[2] + c[2]]), _ => None };
+        let key_centre = match std::env::var("LMTOOL_KIND0_KEY").ok().as_deref() { Some("pos") => Some(it.pos), Some("posc") => Some([it.pos[0] + c[0], it.pos[1] + c[1], it.pos[2] + c[2]]), Some("zero") => Some([0.0, 0.0, 0.0]), Some("cell") => Some([it.file_cell[0] as f32 * 32.0, it.file_cell[1] as f32 * 8.0, it.file_cell[2] as f32 * 32.0]), _ => None };
         recs.push(Rec { class: "item0", obj: item_obj0 + ii as u32, sub: 0, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality: q, centre, half, group: (hh.finish() & 0x0000_FFFF_FFFF_0000) | q.to_bits() as u64, key_centre, pos_rank: None, wall: None, item: Some((ii, species.clone())), scale: 1.0, mesh: None });
         n_items += 1;
         n_kind0 += 1;

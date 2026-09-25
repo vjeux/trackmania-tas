@@ -563,8 +563,15 @@ pub fn allocate_grouped_pos(input: &LayoutInput, groups: &[u64], pos: Option<&[u
 /// `walls[k]` = Some((facing code, height 2·h.y)) for a WALL record (RE 7's FUN_14028ff90: the Base_VFCMiddle_Air model with an
 /// axis-aligned third Iso4 row): walls leave the solo / hash grouping and the chunk count and become 1 × N vertical STRIP
 /// entries appended after the split (itemrule::wall_strips), their cells the members in ascending y.
+thread_local! {
+    /// The study: record indices whose entries take the LMTOOL_KIND0_DIMS shape (1xN | Nx1) instead of grid_dims.
+    pub static STRIP_RECS: std::cell::RefCell<std::collections::HashSet<usize>> = std::cell::RefCell::new(Default::default());
+}
+
 pub fn allocate_grouped_walls(input: &LayoutInput, groups: &[u64], pos: Option<&[u32]>, walls: Option<&[Option<(u8, f32)>]>) -> Result<GameLayout, String> {
     use crate::itemrule as ir;
+    let strip_recs: std::collections::HashSet<usize> = STRIP_RECS.with(|s| s.borrow().clone());
+    let kind0_dims = std::env::var("LMTOOL_KIND0_DIMS").ok();
     let (g, pad, m) = crate::pack::layout_params(input.w_atlas, input.w_atlas);
     let max_iter = max_iter_for_quality(input.quality_index);
     // the records
@@ -669,7 +676,7 @@ pub fn allocate_grouped_walls(input: &LayoutInput, groups: &[u64], pos: Option<&
         let k0 = members[e.group][0];
         first_member[ei] = Some(k0);
         let ext = exts[k0];
-        let (nb, na) = if is_strip(ei) { (1u32, e.count) } else { ir::grid_dims(e.count, ext, d1, m as u32) };
+        let (nb, na) = if is_strip(ei) { (1u32, e.count) } else if strip_recs.contains(&k0) && kind0_dims.is_some() { match kind0_dims.as_deref() { Some("1xN") => (1u32, e.count), Some("Nx1") => (e.count, 1u32), _ => ir::grid_dims(e.count, ext, d1, m as u32) } } else { ir::grid_dims(e.count, ext, d1, m as u32) };
         let (gext, _area) = ir::grid_chart(ext, nb, na);
         charts.push(ChartExt { ext: gext, mins: [nb as u16, na as u16] });
         ekeys.push(keys[k0]);
