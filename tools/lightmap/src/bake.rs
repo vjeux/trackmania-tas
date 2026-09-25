@@ -197,6 +197,13 @@ pub struct BakeParams {
     /// chart and clips each LM fragment by its world XZ against the tile (RE 7), so a texel reads only the
     /// tile whose cell holds it.
     pub peel_tile_clip: Option<std::sync::Arc<Vec<Option<[f32; 4]>>>>,
+    /// THE DIRECTION-RANGE SPLIT (contrib.rs): only the directions [a, b) of the sweep are baked …
+    pub dir_range: Option<(usize, usize)>,
+    /// … and each one's contribution is written to this directory (`--contrib-out`) …
+    pub contrib_out: Option<std::path::PathBuf>,
+    /// … or no direction is baked and every direction's contribution is replayed from these directories in
+    /// issue order (`--merge-contrib`).
+    pub merge_contrib: Option<Vec<std::path::PathBuf>>,
     /// The game's sky dome MESH (capture e001051), rasterised per peel with VS 16773's constants; None =
     /// the analytic ellipsoid model (`SkyGradient::dome_radiance`).
     pub dome_mesh: Option<std::sync::Arc<crate::domemesh::DomeMesh>>,
@@ -330,6 +337,9 @@ impl Default for BakeParams {
             layers_from_capture: true,
             layers_estimate: false,
             peel_tile_clip: None,
+            dir_range: None,
+            contrib_out: None,
+            merge_contrib: None,
             dome_mesh: None,
             lm_scene: None,
             ilatlas: None,

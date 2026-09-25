@@ -90,6 +90,9 @@ pub struct ProbeBake {
     pub skyvis: Volume3,
     /// The direction's volume (17157), cleared per direction.
     pub cur: Volume3,
+    /// With `Some`, every sky-visibility add of the direction is logged (flat probe index, src) in execution
+    /// order — the direction-range split replays them (`contrib.rs`).
+    pub sky_log: Option<Vec<(u32, f32)>>,
     pub opts: ProbeOpts,
     /// Counters: directions run, layers run, probes written, sky-visibility adds.
     pub n_dirs: usize,
@@ -115,6 +118,7 @@ impl ProbeBake {
             colour: Volume3::new(w, h, d, 4),
             updown: Volume3::new(w, h, d, 4),
             skyvis: Volume3::new(w, h, d, 1),
+            sky_log: None,
             cur: Volume3::new(w, h, d, 4),
             opts: ProbeOpts::default(),
             n_dirs: 0,
@@ -183,7 +187,7 @@ impl ProbeBake {
             let s = 4.0f32 * dir[1] / n_dirs as f32;
             for b in &self.blocks {
                 let d = b.draw(pw01, s);
-                self.n_sky_adds += crate::probepass::probe_add_sky_visibility(&mut self.skyvis, &d, depth, self.offsets.as_ref(), self.opts);
+                self.n_sky_adds += crate::probepass::probe_add_sky_visibility_logged(&mut self.skyvis, &d, depth, self.offsets.as_ref(), self.opts, self.sky_log.as_mut());
             }
         }
     }
@@ -208,6 +212,34 @@ impl ProbeBake {
         let depth = self.dims[2];
         crate::probepass::probe_fold(&mut self.colour, &self.cur, [two, two, two, a], 0, depth);
         crate::probepass::probe_fold(&mut self.updown, &self.cur, [s, s, s, s], 0, depth);
+    }
+
+    /// The direction's volume as its non-zero probes (flat index, four channels) — the split's contribution.
+    pub fn export_cur(&self) -> Vec<(u32, [f32; 4])> {
+        let n = (self.cur.w * self.cur.h * self.cur.d) as usize;
+        let mut out = Vec::new();
+        for i in 0..n {
+            let c = [self.cur.data[i * 4], self.cur.data[i * 4 + 1], self.cur.data[i * 4 + 2], self.cur.data[i * 4 + 3]];
+            if c.iter().any(|v| *v != 0.0) {
+                out.push((i as u32, c));
+            }
+        }
+        out
+    }
+
+    /// The direction's volume from `export_cur`'s form (after `begin_direction_of`), and its sky-visibility adds
+    /// replayed in order — then `end_direction` folds as the live direction would have.
+    pub fn import_direction(&mut self, cur: &[(u32, [f32; 4])], sky_adds: &[(u32, f32)]) {
+        assert_eq!(self.cur.channels, 4);
+        for (i, c) in cur {
+            let b = *i as usize * 4;
+            self.cur.data[b..b + 4].copy_from_slice(c);
+        }
+        for (i, src) in sky_adds {
+            let v = &mut self.skyvis.data[*i as usize];
+            *v = crate::probepass::blend_add_f16(*v, *src);
+            self.n_sky_adds += 1;
+        }
     }
 
     /// The end of the bake: the CPU download over the blocks' ranges → the four atlases over `tiles` (the

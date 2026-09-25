@@ -2000,6 +2000,9 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                 }
                 subs.push(SubSample { p, n, own_tri: own, group: 0, chart: ii as u32, texel: ty.min(ch - 1) * cw + tx.min(cw - 1), sx: lx, sy: ly });
             }
+            // (the hash map's order is random per process: a deterministic set order — one sub-sample per
+            // texel, so nothing downstream depends on it but the split's contribution files)
+            subs.sort_by_key(|s| (s.sy, s.sx));
         }
         (subs, geo)
     });
@@ -2182,7 +2185,27 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     let range_all_buf: Vec<u32> = if jitter { (0..max_set as u32).collect() } else { Vec::new() };
     // the tiles' world-XZ clip boxes per peel index (None = the world peel: no clip), see the gather
     let tile_clip: Vec<Option<[f32; 4]>> = prm.peel_tile_clip.as_ref().map(|v| v.as_ref().clone()).unwrap_or_default();
+    // THE DIRECTION-RANGE SPLIT (contrib.rs): a box bakes the directions of its range and writes what each
+    // contributes; the merge replays every direction's contribution through the accumulate below in order
+    let contrib_tx: Option<std::sync::mpsc::SyncSender<crate::contrib::DirContrib>> = prm.contrib_out.as_ref().map(|dir| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<crate::contrib::DirContrib>(4);
+        let dir = dir.clone();
+        std::thread::spawn(move || { for c in rx { c.write(&dir).expect("write contribution"); } });
+        tx
+    });
+    if prm.contrib_out.is_some() {
+        if let Some(pb) = &prm.probe_bake { pb.lock().unwrap().sky_log = Some(Vec::new()); }
+    }
+    let mut n_replayed = 0usize;
     for (di, d) in dirs.iter().enumerate() {
+        if let Some((a, b)) = prm.dir_range {
+            if di < a || di >= b { continue; }
+        }
+        let replay: Option<crate::contrib::DirContrib> = prm.merge_contrib.as_ref().map(|dirs_in| {
+            let c = crate::contrib::DirContrib::load(dirs_in, prm.sweep, di as u32).unwrap_or_else(|e| panic!("merge-contrib: {e}"));
+            n_replayed += 1;
+            c
+        });
         let t_dir = std::time::Instant::now();
         let g = di % groups;
         let scale = 4.0 / group_count[g].max(1) as f32;
@@ -2264,6 +2287,21 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         // the transcribed accumulate's TMapILightDir of this direction (cleared before the first block)
         let mut dir_lm: Option<crate::lmaccum::DirTarget> = prm.lm_scene.as_ref().map(|_| crate::lmaccum::DirTarget::cleared(2048, 2048));
         let mut frag_total = 0usize;
+        if let Some(c) = &replay {
+            // THE REPLAY: the contribution's sel for the facing sub-samples (in set order), its occl bits, the
+            // probe volume and the sky-visibility adds — then the same accumulate as a live direction
+            assert_eq!(c.n_subs as usize, cur.len(), "merge-contrib: direction {di}: the sub-sample set differs ({} vs {}) — a different map, layout or jitter", c.n_subs, cur.len());
+            let mut k = 0usize;
+            for (i, s) in cur.iter().enumerate() {
+                if dot(s.n, *d) > 0.0 {
+                    sel[i] = c.sel[k];
+                    k += 1;
+                }
+                occl[i] = c.occl(i);
+            }
+            assert_eq!(k, c.sel.len(), "merge-contrib: direction {di}: {} facing sub-samples, {} stored", k, c.sel.len());
+            if let Some(pb) = &prm.probe_bake { pb.lock().unwrap().import_direction(&c.probe_cur, &c.sky_adds); }
+        } else {
         for (pi, frame) in peels.iter().enumerate() {
             let tb2 = std::time::Instant::now();
             // the game's dome mesh rasterised in this peel's frame (the eye = GbxV_EyeInWorld = the frustum's
@@ -2301,6 +2339,30 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     }
                 });
                 let mut m: Vec<u64> = m.into_iter().map(|a| a.into_inner()).collect();
+                // THE PROBES' PIXELS (the transcribed probe passes read the world peel's layer targets at every
+                // probe's shadow coordinate — a 2×2 comparison filter and a point colour sample): the 3×3 around
+                // each probe's texel joins the wanted set, so the sparse layers hold what the passes read
+                if pi == 0 {
+                    if let Some(pb) = &prm.probe_bake {
+                        let pb = pb.lock().unwrap();
+                        let pw01 = frame.world_pw01();
+                        let (w, h) = (frame.res as i64, frame.res_y as i64);
+                        for b in &pb.blocks {
+                            let dr = b.draw(&pw01, 1.0);
+                            for z in b.min[2]..b.max[2] { for y in b.min[1]..b.max[1] { for x in b.min[0]..b.max[0] {
+                                let p = crate::probepass::probe_point(x, y, z, pb.offsets.as_ref());
+                                let sh = crate::probepass::to_shadow(p, &dr.regs, pb.opts.fma);
+                                let (fx, fy) = ((sh[0] * w as f32 - 0.5).floor(), (sh[1] * h as f32 - 0.5).floor());
+                                if !(fx.is_finite() && fy.is_finite()) { continue; }
+                                for dy in -1..=2i64 { for dx in -1..=2i64 {
+                                    let (px, py) = ((fx as i64 + dx).clamp(0, w - 1), (fy as i64 + dy).clamp(0, h - 1));
+                                    let i = (py * w + px) as usize;
+                                    m[i >> 6] |= 1u64 << (i & 63);
+                                } }
+                            } } }
+                        }
+                    }
+                }
                 // the CENSUS pixels for the layer-count rule's written fractions (every CENSUS_STEP-th pixel in x
                 // and y), unless this peel's item-layer count is known (captured or fixed)
                 let fixed_layers_known = if prm.layers_from_capture { prm.peel_layer_counts.as_ref().and_then(|c| c.get(di)).and_then(|v| v.get(pi)).copied().flatten().is_some() } else { prm.peel_layers_fixed.is_some() };
@@ -2667,6 +2729,22 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             });
             prof::add(&prof::GATHER, tg);
         }
+        } // (the live direction)
+        if let Some(tx) = &contrib_tx {
+            // THE CONTRIBUTION of this direction: sel of the facing sub-samples, the occl bits, the probes
+            let mut c = crate::contrib::DirContrib { sweep: prm.sweep, di: di as u32, n_subs: cur.len() as u32, ..Default::default() };
+            c.occl_bits = vec![0u64; (cur.len() + 63) / 64];
+            for (i, s) in cur.iter().enumerate() {
+                if dot(s.n, *d) > 0.0 { c.sel.push(sel[i]); }
+                if occl[i] { c.occl_bits[i >> 6] |= 1u64 << (i & 63); }
+            }
+            if let Some(pb) = &prm.probe_bake {
+                let mut pb = pb.lock().unwrap();
+                c.probe_cur = pb.export_cur();
+                c.sky_adds = pb.sky_log.replace(Vec::new()).unwrap_or_default();
+            }
+            tx.send(c).expect("contribution writer");
+        }
         let t_build = t_build_total;
         let ta = std::time::Instant::now();
         // THE PROBES: the direction's two folds (PS 1112) — the game issues them after the H-basis, the order is immaterial
@@ -2962,6 +3040,9 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         eprintln!("lm-accumulate: THE TRANSCRIBED ROWS 7–9 OVER OUR PEEL LAYERS vs the capture (sweep {}):", prm.sweep);
         for r in &lm_rows { eprintln!("  {r}"); }
     }
+    drop(contrib_tx);
+    if prm.merge_contrib.is_some() { eprintln!("merge-contrib: sweep {}: {n_replayed} directions replayed in issue order", prm.sweep); }
+    if let Some(dir) = &prm.contrib_out { eprintln!("contrib-out: sweep {}: the directions {:?} written to {}", prm.sweep, prm.dir_range.unwrap_or((0, dirs.len())), dir.display()); }
     // the sweep's transcribed H-basis MRTs to the caller (the sweep-transition chain / the finalisation)
     if let (Some(slot), Some(hb)) = (&prm.hb_out, hb_lm.take()) {
         *slot.0.lock().unwrap() = Some(hb);

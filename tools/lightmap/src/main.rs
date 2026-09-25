@@ -1343,6 +1343,17 @@ fn run(a: Vec<String>) {
             // --layers-estimate: the stop rule on a census estimate (every 8th pixel) instead of the exact
             // dense depth-only pass (the default: the game's statistic over the whole viewport)
             prm.layers_estimate = has("--layers-estimate");
+            // THE DIRECTION-RANGE SPLIT (contrib.rs): --dir-range a..b|k/N --contrib-out DIR writes the range's
+            // per-direction contributions; --merge-contrib DIR[,DIR…] replays every direction's in issue order;
+            // --sweep-only S runs sweep S alone (S ≥ 1 needs --field-from F = the previous sweep's merged field,
+            // --field-out F writes a sweep's field for the next one)
+            prm.contrib_out = f("--contrib-out").map(std::path::PathBuf::from);
+            prm.merge_contrib = f("--merge-contrib").map(|v| v.split(',').map(|s| std::path::PathBuf::from(s.trim())).collect());
+            let dir_range_arg = f("--dir-range");
+            let sweep_only: Option<usize> = f("--sweep-only").map(|v| v.parse().expect("--sweep-only"));
+            let field_from = f("--field-from");
+            let field_out = f("--field-out");
+            if prm.contrib_out.is_some() || prm.merge_contrib.is_some() { assert!(prm.lm_scene.is_none(), "the split does not carry the --lm-from harness accumulate"); }
             prm.obj_base = base;
             let game_manifest: Option<lightmap::passdump::Manifest> = f("--frustum-from").map(|p| {
                 let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--frustum-from {p}: {e}"));
@@ -1982,8 +1993,84 @@ fn run(a: Vec<String>) {
                     Err(e) => eprintln!("probes: transcribed passes skipped ({e})"),
                 }
             }
-            let mut charts = if prm.raster_peel { lightmap::peel::bake_peel_raster(&scene, &bvh, &prm, &chart_sizes(&prm)) } else { lightmap::bake::bake(&scene, &bvh, &prm, &lights) };
-            eprintln!("baked {} charts ({:.1}s)", charts.len(), t0.elapsed().as_secs_f32());
+            let write_field = |path: &str, charts: &[lightmap::bake::ChartBake]| {
+                // the sweep's field as the next sweep reads it: per instance (w, h, the plain irradiance)
+                let inst_of_item: std::collections::HashMap<usize, usize> = scene.instances.iter().enumerate().map(|(ii, inst)| (inst.item, ii)).collect();
+                let mut slots: Vec<Option<(u32, u32, Vec<[f32; 3]>)>> = vec![None; scene.instances.len()];
+                for c in charts { if let Some(&ii) = inst_of_item.get(&c.item) { slots[ii] = Some((c.w, c.h, if c.rgb_irr.is_empty() { c.rgb.clone() } else { c.rgb_irr.clone() })); } }
+                let mut v: Vec<u8> = Vec::new();
+                v.extend_from_slice(b"LMFIELD1");
+                v.extend_from_slice(&(slots.len() as u32).to_le_bytes());
+                for sl in &slots {
+                    match sl {
+                        None => v.extend_from_slice(&0u32.to_le_bytes()),
+                        Some((w, h, rgb)) => { v.extend_from_slice(&1u32.to_le_bytes()); v.extend_from_slice(&w.to_le_bytes()); v.extend_from_slice(&h.to_le_bytes()); for t in rgb { for k in 0..3 { v.extend_from_slice(&t[k].to_bits().to_le_bytes()); } } }
+                    }
+                }
+                // the probe accumulators after this sweep (they fold across sweeps: the next sweep's merge continues them)
+                match &prm.probe_bake {
+                    Some(pb) => {
+                        let pb = pb.lock().unwrap();
+                        v.extend_from_slice(&1u32.to_le_bytes());
+                        for vol in [&pb.colour, &pb.updown, &pb.skyvis] {
+                            for x in [vol.w, vol.h, vol.d, vol.channels] { v.extend_from_slice(&x.to_le_bytes()); }
+                            for f in &vol.data { v.extend_from_slice(&f.to_bits().to_le_bytes()); }
+                        }
+                        v.extend_from_slice(&(pb.n_sky_adds as u64).to_le_bytes());
+                    }
+                    None => v.extend_from_slice(&0u32.to_le_bytes()),
+                }
+                std::fs::write(path, &v).expect("--field-out");
+                eprintln!("field-out: {} ({} instances, {} B)", path, slots.len(), v.len());
+            };
+            let read_field = |path: &str| -> lightmap::bake::RadianceField {
+                let b = std::fs::read(path).expect("--field-from");
+                assert_eq!(&b[0..8], b"LMFIELD1", "--field-from: not a field file");
+                let mut o = 8usize;
+                let rd = |o: &mut usize| -> u32 { let v = u32::from_le_bytes(b[*o..*o + 4].try_into().unwrap()); *o += 4; v };
+                let n = rd(&mut o) as usize;
+                assert_eq!(n, scene.instances.len(), "--field-from: {n} instances, the scene has {}", scene.instances.len());
+                let mut charts: Vec<Option<(u32, u32, Vec<[f32; 3]>)>> = Vec::with_capacity(n);
+                for _ in 0..n {
+                    if rd(&mut o) == 0 { charts.push(None); continue; }
+                    let (w, h) = (rd(&mut o), rd(&mut o));
+                    let mut rgb = Vec::with_capacity((w * h) as usize);
+                    for _ in 0..w * h { rgb.push([f32::from_bits(rd(&mut o)), f32::from_bits(rd(&mut o)), f32::from_bits(rd(&mut o))]); }
+                    charts.push(Some((w, h, rgb)));
+                }
+                // the probe accumulators of the previous sweep
+                if o < b.len() && rd(&mut o) == 1 {
+                    let mut vols: Vec<lightmap::probepass::Volume3> = Vec::new();
+                    for _ in 0..3 {
+                        let (w, h, d, c) = (rd(&mut o), rd(&mut o), rd(&mut o), rd(&mut o));
+                        let n = (w * h * d * c) as usize;
+                        let mut data = Vec::with_capacity(n);
+                        for _ in 0..n { data.push(f32::from_bits(rd(&mut o))); }
+                        vols.push(lightmap::probepass::Volume3 { w, h, d, channels: c, data });
+                    }
+                    let sky_adds = u64::from_le_bytes(b[o..o + 8].try_into().unwrap()) as usize;
+                    if let Some(pb) = &prm.probe_bake {
+                        let mut pb = pb.lock().unwrap();
+                        assert_eq!((pb.colour.w, pb.colour.h, pb.colour.d), (vols[0].w, vols[0].h, vols[0].d), "--field-from: the probe grid differs");
+                        pb.skyvis = vols.pop().unwrap();
+                        pb.updown = vols.pop().unwrap();
+                        pb.colour = vols.pop().unwrap();
+                        pb.n_sky_adds = sky_adds;
+                        eprintln!("field-from: the probe accumulators restored");
+                    }
+                }
+                eprintln!("field-from: {path} ({n} instances)");
+                lightmap::bake::RadianceField { charts, flip_v: prm.flip_v, uv_bounds: prm.uv_bounds }
+            };
+            let dir_range_for = |n: usize| -> Option<(usize, usize)> { dir_range_arg.as_ref().map(|a| lightmap::contrib::parse_range(a, n).unwrap_or_else(|e| panic!("{e}"))) };
+            let run_sweep0 = sweep_only.map(|s| s == 0).unwrap_or(true);
+            let mut charts = if run_sweep0 {
+                prm.dir_range = dir_range_for(prm.sphere_dirs.len());
+                if let Some(r) = prm.dir_range { eprintln!("dir-range: sweep 0: directions {}..{} of {}", r.0, r.1, prm.sphere_dirs.len()); }
+                if prm.raster_peel { lightmap::peel::bake_peel_raster(&scene, &bvh, &prm, &chart_sizes(&prm)) } else { lightmap::bake::bake(&scene, &bvh, &prm, &lights) }
+            } else { Vec::new() };
+            if run_sweep0 { eprintln!("baked {} charts ({:.1}s)", charts.len(), t0.elapsed().as_secs_f32()); }
+            if let (Some(fo), true) = (&field_out, sweep_only == Some(0)) { write_field(fo, &charts); }
             // --- THE CHAIN through the sweeps (--ilightinput-from): the sweep's transcribed H-basis MRTs (E's lm-from targets)
             //     are the next sweep's ILightInput through C's sweep-transition chain (sweep1::ilightinput_from_c0: PS 25113 resolve,
             //     PS 1038 × κ = 1/√(2π), the alpha mask, PS 1109 × MDiffuse, PS 1335 × 8) and, after the last sweep, the finalisation
@@ -2030,9 +2117,16 @@ fn run(a: Vec<String>) {
             }
             let mrt_buf = |hb: &lightmap::lmaccum::HbTargets, m: usize| -> lightmap::passdiff::Buf { let mut b = lightmap::passdiff::Buf::new(hb.w, hb.h, 4); for i in 0..(hb.w * hb.h) as usize { for c in 0..4 { b.data[i * 4 + c] = hb.mrt[m][i][c]; } } b };
             for it in 1..iterations {
-                let mut field = lightmap::bake::RadianceField { charts: vec![None; scene.instances.len()], flip_v: prm.flip_v, uv_bounds: prm.uv_bounds };
-                let inst_of_item: std::collections::HashMap<usize, usize> = scene.instances.iter().enumerate().map(|(ii, inst)| (inst.item, ii)).collect();
-                for c in &charts { if let Some(&ii) = inst_of_item.get(&c.item) { field.charts[ii] = Some((c.w, c.h, if c.rgb_irr.is_empty() { c.rgb.clone() } else { c.rgb_irr.clone() })); } }
+                if let Some(s) = sweep_only { if it != s { continue; } }
+                let field = match (&field_from, sweep_only) {
+                    (Some(ff), Some(_)) => read_field(ff),
+                    _ => {
+                        let mut field = lightmap::bake::RadianceField { charts: vec![None; scene.instances.len()], flip_v: prm.flip_v, uv_bounds: prm.uv_bounds };
+                        let inst_of_item: std::collections::HashMap<usize, usize> = scene.instances.iter().enumerate().map(|(ii, inst)| (inst.item, ii)).collect();
+                        for c in &charts { if let Some(&ii) = inst_of_item.get(&c.item) { field.charts[ii] = Some((c.w, c.h, if c.rgb_irr.is_empty() { c.rgb.clone() } else { c.rgb_irr.clone() })); } }
+                        field
+                    }
+                };
                 let mut p2 = prm.clone();
                 p2.field = Some(std::sync::Arc::new(field));
                 p2.sweep = it as u32;
@@ -2127,7 +2221,10 @@ fn run(a: Vec<String>) {
                     eprintln!("chain: sweep {it} peels sample OUR sweep-{} ILightInput ({:.1}s)", it - 1, ts.elapsed().as_secs_f32());
                 }
                 if let Some(d) = &prm.dump { let mut dm = d.lock().unwrap(); let n = p2.sphere_dirs.len() as u32; dm.manifest.sweeps.push(lightmap::passdump::Sweep { sweep: it as u32, n_dirs: n, scale: 4.0 / n.max(1) as f32, dirs: p2.sphere_dirs.iter().copied().collect() }); }
+                p2.dir_range = dir_range_for(p2.sphere_dirs.len());
+                if let Some(r) = p2.dir_range { eprintln!("dir-range: sweep {it}: directions {}..{} of {}", r.0, r.1, p2.sphere_dirs.len()); }
                 charts = if prm.raster_peel { lightmap::peel::bake_peel_raster(&scene, &bvh, &p2, &chart_sizes(&p2)) } else { lightmap::bake::bake(&scene, &bvh, &p2, &lights) };
+                if let (Some(fo), Some(s)) = (&field_out, sweep_only) { if s == it { write_field(fo, &charts); } }
                 let mean: f32 = charts.iter().flat_map(|c| c.rgb.iter()).map(|c| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]).sum::<f32>() / charts.iter().map(|c| c.rgb.len()).sum::<usize>().max(1) as f32;
                 eprintln!("bounce iteration {it}: mean texel {mean:.4} ({:.1}s)", t0.elapsed().as_secs_f32());
                 if let Some(hb) = take_hb(&p2) { eprintln!("chain: sweep {it}'s H-basis MRTs taken"); hb_sweeps.push(hb); }
@@ -2313,6 +2410,14 @@ fn run(a: Vec<String>) {
             // over our peels in the bake; the LAmbient triple stays the template's — both flagged in the log.
             let writer_transcribed = match f("--writer").as_deref() { Some("port") => false, Some("transcribed") => true, Some(o) => panic!("--writer {o}: port|transcribed"), None => chain_finals.is_some() };
             let mood_max_hdr_for_encode: f32 = frame_params.as_ref().map(|fp| fp.max_hdr_mood).unwrap_or(7.519885063171387);
+            // LMTOOL_PROBE_DUMP_DIR=DIR: the transcribed probe accumulators as raw volumes (probebake::dump) — the
+            // sparse/dense and split/single checks compare them byte for byte (engineer 2)
+            if let (Some(pb), Ok(dir)) = (&prm.probe_bake, std::env::var("LMTOOL_PROBE_DUMP_DIR")) {
+                let d = std::path::PathBuf::from(&dir);
+                std::fs::create_dir_all(&d).expect("probe dump dir");
+                pb.lock().unwrap().dump(&d).expect("probe dump");
+                eprintln!("probes: accumulators dumped to {dir}");
+            }
             let probes_for_transcribed = if writer_transcribed { probes.clone() } else { None };
             let frame_params_for_transcribed = if writer_transcribed { frame_params.clone() } else { None };
             let s = lightmap::synth::build_full2_placed(out_charts, (tm.bbox_min, tm.bbox_max), &tpl.chunk, probes, vp8_q, frame_params, fixed_pos.as_ref()).expect("build");

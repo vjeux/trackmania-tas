@@ -426,6 +426,12 @@ pub fn probe_set_ilightdir(target: &mut Volume3, d: &ProbeDraw, color: &Buf, dep
 /// **PS 17154** `ProbeGrid_AddSkyVisibility`: `+= OutScale` (One/One f16) where the 2×2 PCF against the
 /// layer's depth is < 0.5, i.e. the probe is not behind the surface nearest the sky along D.
 pub fn probe_add_sky_visibility(target: &mut Volume3, d: &ProbeDraw, depth: &Buf, offsets: Option<&Volume3>, o: ProbeOpts) -> usize {
+    probe_add_sky_visibility_logged(target, d, depth, offsets, o, None)
+}
+
+/// `probe_add_sky_visibility`, logging the non-zero adds (flat probe index of channel 0, src) in order when
+/// `log` is given — the direction-range split replays them (an add of 0 leaves an f16 value as it is).
+pub fn probe_add_sky_visibility_logged(target: &mut Volume3, d: &ProbeDraw, depth: &Buf, offsets: Option<&Volume3>, o: ProbeOpts, mut log: Option<&mut Vec<(u32, f32)>>) -> usize {
     let (x0, y0, x1, y1) = draw_rect(d, target.w, target.h);
     let mut added = 0;
     for z in d.slice_start..(d.slice_start + d.slice_count).min(target.d) {
@@ -439,6 +445,9 @@ pub fn probe_add_sky_visibility(target: &mut Volume3, d: &ProbeDraw, depth: &Buf
                 let src = if pcf < 0.5 { d.out_scale } else { 0.0 };
                 if src != 0.0 {
                     added += 1;
+                    if let Some(l) = log.as_deref_mut() {
+                        for c in 0..target.channels { l.push((target.idx(x, y, z, c) as u32, src)); }
+                    }
                 }
                 for c in 0..target.channels {
                     let cur = target.get(x, y, z, c);
