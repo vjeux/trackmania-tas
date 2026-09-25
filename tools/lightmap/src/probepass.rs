@@ -398,8 +398,18 @@ pub fn blend_add_f16(dst: f32, src: f32) -> f32 {
 pub fn probe_set_ilightdir(target: &mut Volume3, d: &ProbeDraw, color: &Buf, depth: &Buf, offsets: Option<&Volume3>, o: ProbeOpts) -> usize {
     assert_eq!(target.channels, 4);
     let (x0, y0, x1, y1) = draw_rect(d, target.w, target.h);
-    let mut written = 0;
-    for z in d.slice_start..(d.slice_start + d.slice_count).min(target.d) {
+    // every probe writes its own slot: the slices in parallel (a block of the giant's grid is 458 k probes per
+    // layer per direction — serial, it was the transcribed probes' whole cost)
+    let z0 = d.slice_start;
+    let z1 = (d.slice_start + d.slice_count).min(target.d);
+    if z1 <= z0 || y1 <= y0 || x1 <= x0 {
+        return 0;
+    }
+    let (w, h, ch) = (target.w as usize, target.h as usize, target.channels as usize);
+    let tp = target.data.as_mut_ptr() as usize;
+    let per_slice: Vec<usize> = crate::pool::pool().map((z1 - z0) as usize, |zi| {
+        let z = z0 + zi as u32;
+        let mut written = 0usize;
         for y in y0..y1 {
             for x in x0..x1 {
                 let p = probe_point(x, y, z, offsets);
@@ -413,14 +423,17 @@ pub fn probe_set_ilightdir(target: &mut Volume3, d: &ProbeDraw, color: &Buf, dep
                 let sum = (rgb[0] + rgb[1]) + rgb[2];
                 let a = if 1e-6f32 < sum { 1.0 } else { 0.0 };
                 let out = [rgb[0] * d.out_scale, rgb[1] * d.out_scale, rgb[2] * d.out_scale, a * d.out_scale];
+                let base = ((z as usize * h + y as usize) * w + x as usize) * ch;
                 for c in 0..4 {
-                    target.set(x, y, z, c, store_f16(out[c as usize], o.store));
+                    // SAFETY: the slices are disjoint; every probe's four channels belong to this slice
+                    unsafe { *(tp as *mut f32).add(base + c) = store_f16(out[c], o.store); }
                 }
                 written += 1;
             }
         }
-    }
-    written
+        written
+    });
+    per_slice.iter().sum()
 }
 
 /// **PS 17154** `ProbeGrid_AddSkyVisibility`: `+= OutScale` (One/One f16) where the 2×2 PCF against the
@@ -431,10 +444,22 @@ pub fn probe_add_sky_visibility(target: &mut Volume3, d: &ProbeDraw, depth: &Buf
 
 /// `probe_add_sky_visibility`, logging the non-zero adds (flat probe index of channel 0, src) in order when
 /// `log` is given — the direction-range split replays them (an add of 0 leaves an f16 value as it is).
-pub fn probe_add_sky_visibility_logged(target: &mut Volume3, d: &ProbeDraw, depth: &Buf, offsets: Option<&Volume3>, o: ProbeOpts, mut log: Option<&mut Vec<(u32, f32)>>) -> usize {
+pub fn probe_add_sky_visibility_logged(target: &mut Volume3, d: &ProbeDraw, depth: &Buf, offsets: Option<&Volume3>, o: ProbeOpts, log: Option<&mut Vec<(u32, f32)>>) -> usize {
     let (x0, y0, x1, y1) = draw_rect(d, target.w, target.h);
-    let mut added = 0;
-    for z in d.slice_start..(d.slice_start + d.slice_count).min(target.d) {
+    let z0 = d.slice_start;
+    let z1 = (d.slice_start + d.slice_count).min(target.d);
+    if z1 <= z0 || y1 <= y0 || x1 <= x0 {
+        return 0;
+    }
+    // the slices in parallel (every probe blends its own slot); the logged adds of every slice in the serial
+    // order (z, y, x, channel), concatenated in slice order
+    let (w, h, ch) = (target.w as usize, target.h as usize, target.channels as usize);
+    let tp = target.data.as_mut_ptr() as usize;
+    let logging = log.is_some();
+    let per_slice: Vec<(usize, Vec<(u32, f32)>)> = crate::pool::pool().map((z1 - z0) as usize, |zi| {
+        let z = z0 + zi as u32;
+        let mut added = 0usize;
+        let mut sub: Vec<(u32, f32)> = Vec::new();
         for y in y0..y1 {
             for x in x0..x1 {
                 let p = probe_point(x, y, z, offsets);
@@ -443,18 +468,27 @@ pub fn probe_add_sky_visibility_logged(target: &mut Volume3, d: &ProbeDraw, dept
                 let pcf = sample_cmp_linear_ge(depth, s[0], s[1], reference, o.pcf_frac_bits);
                 // `lt r0.x, r0.x, 0.5` then `and o0, r0.xxxx, OutScale`: the value or 0, on every channel
                 let src = if pcf < 0.5 { d.out_scale } else { 0.0 };
+                let base = ((z as usize * h + y as usize) * w + x as usize) * ch;
                 if src != 0.0 {
                     added += 1;
-                    if let Some(l) = log.as_deref_mut() {
-                        for c in 0..target.channels { l.push((target.idx(x, y, z, c) as u32, src)); }
-                    }
+                    if logging { for c in 0..ch { sub.push(((base + c) as u32, src)); } }
                 }
-                for c in 0..target.channels {
-                    let cur = target.get(x, y, z, c);
-                    target.set(x, y, z, c, blend_add_f16(cur, src));
+                for c in 0..ch {
+                    // SAFETY: the slices are disjoint
+                    unsafe {
+                        let slot = (tp as *mut f32).add(base + c);
+                        *slot = blend_add_f16(*slot, src);
+                    }
                 }
             }
         }
+        (added, sub)
+    });
+    let mut added = 0usize;
+    if let Some(l) = log {
+        for (a, sub) in per_slice { added += a; l.extend(sub); }
+    } else {
+        for (a, _) in per_slice { added += a; }
     }
     added
 }
