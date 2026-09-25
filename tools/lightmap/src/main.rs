@@ -1851,12 +1851,14 @@ fn run(a: Vec<String>) {
             let mut hb_sweeps: Vec<lightmap::lmaccum::HbTargets> = Vec::new();
             let take_hb = |p: &lightmap::bake::BakeParams| -> Option<lightmap::lmaccum::HbTargets> { p.hb_out.as_ref().and_then(|s| s.0.lock().unwrap().take()) };
             if let Some(hb) = take_hb(&prm) { eprintln!("chain: sweep 0's H-basis MRTs taken ({}×{})", hb.w, hb.h); hb_sweeps.push(hb); }
+            let mut chain_ambient_xyz: Option<[f32; 3]> = None;
             // the AddAmbient accumulator of sweep 0 (E's CS 17125 on OUR environment renders' centre pixels) against every banked
             // pwc2 snapshot: a snapshot at (frame, eid) holds the directions 0..=k, k = the direction whose H-basis draws come next
             // (E's ambient-check rule); ours after direction k is compared value for value
             if let Some(acc) = &prm.ambient_out {
                 let ours = acc.lock().unwrap().clone();
                 let last = ours.last().copied().unwrap_or([0.0; 4]);
+                chain_ambient_xyz = Some([last[0], last[1], last[2]]);
                 eprintln!("chain: AddAmbient accumulator after sweep 0 (ours, {} directions): [{:.6}, {:.6}, {:.6}, w {:.6}]", ours.len(), last[0], last[1], last[2], last[3]);
                 if let Some(mp) = f("--frustum-from") {
                     if let Ok(entries) = lightmap::lmaccum::load_capture_entries(std::path::Path::new(&mp)) {
@@ -2137,9 +2139,8 @@ fn run(a: Vec<String>) {
             let writer_transcribed = match f("--writer").as_deref() { Some("port") => false, Some("transcribed") => true, Some(o) => panic!("--writer {o}: port|transcribed"), None => chain_finals.is_some() };
             let mood_max_hdr_for_encode: f32 = frame_params.as_ref().map(|fp| fp.max_hdr_mood).unwrap_or(7.519885063171387);
             // THE PROBES of the transcribed writer: the bake's ProbeBake (probebake.rs) downloaded → the four atlases → the WEBPs
-            // (the blob) + the trailer with the download's scales / validity. (The record's LAmbient = the AddAmbient accumulator
-            // is engineer A's BakeParams::ambient_out → transcribed_images' ambient_xyz; None here until it lands.)
-            let ambient_xyz: Option<[f32; 3]> = None;
+            // (the blob) + the trailer with the download's scales / validity. The record's LAmbient = engineer A's AddAmbient
+            // accumulator (BakeParams::ambient_out → chain_ambient_xyz → transcribed_images' ambient_xyz).
             let probes_for_transcribed: Option<lightmap::synth::ProbeBlob> = match (&prm.probe_bake, &probe_layout) {
                 (Some(pb), Some(src)) if writer_transcribed => {
                     let tp = std::time::Instant::now();
@@ -2168,7 +2169,7 @@ fn run(a: Vec<String>) {
                     let atlas8 = s.atlas8.take();
                     // the layout rects (2048 layout units) in the mapping's order = the placed charts (obj, sub) ascending
                     let rects: Vec<(u32, u32, u32, u32)> = s.placed.iter().map(|&(_o, _s, px, py, w, h)| ((2 * px).saturating_sub(1), (2 * py).saturating_sub(1), 2 * w, 2 * h)).collect();
-                    match lightmap::e2e::transcribed_images(&enc, maxhdr, mood_max_hdr_for_encode, &rects, ambient_xyz) {
+                    match lightmap::e2e::transcribed_images(&enc, maxhdr, mood_max_hdr_for_encode, &rects, chain_ambient_xyz) {
                         Some(img) => match lightmap::synth::build_transcribed(&s.placed, (tm.bbox_min, tm.bbox_max), &tpl.chunk, &img, probes_for_transcribed, frame_params_for_transcribed) {
                             Ok(st) => {
                                 eprintln!("writer: TRANSCRIBED — MaxHdr {maxhdr:?} (Mood {mood_max_hdr_for_encode}), record MaxHDR {} / √3κ·max {:?}; blob0 {} B, blob1 {} B, {} charts; probes {} ; LAmbient {} ({:.1}s)", img.max_hdr, img.hbasis234, img.blob0.len(), img.blob1.len(), st.charts, if prm.probe_bake.is_some() && probe_layout.is_some() { "the transcribed passes' blob" } else if st.chunk.data.as_ref().map(|d| !d.frames[0].images[2].is_empty()).unwrap_or(false) { "the port's/template's blob" } else { "none" }, match img.lambient_f16 { Some(l) => format!("= f16(AddAmbient) {l:?}"), None => "= the template's".into() }, tw.elapsed().as_secs_f32());
