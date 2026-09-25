@@ -975,7 +975,11 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                                     if CARD_DUMP.is_some() {
                                         // the footprint's derivatives (the TapPlan no longer carries them): recomputed for the dump only
                                         let (fdx, fdy) = fp.as_ref().map(|(tx, _)| { let f = crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()); (f.dx, f.dy) }).unwrap_or(([0.0; 2], [0.0; 2]));
-                                        CARD_FRAGS.lock().unwrap().push(CardFrag { x, y, z01: frame.z01(z), tri: ti, u, v, mask: t.alpha as u32, fp_dx: fdx, fp_dy: fdy, port_pass: op as u32 });
+                                        let z01 = frame.z01(z);
+                                        let (slope, zmax_prim) = tri_slope(t, &frame);
+                                        let dd = z01 + d3d_depth_bias_fmt(zmax_prim, slope.min(1e6), CARD_DUMP_BIAS.0, CARD_DUMP_BIAS.1);
+                                        let zq = if CARD_DUMP_BIAS.1 == 16 { (dd.clamp(0.0, 1.0) * 65535.0).round() / 65535.0 } else { dd };
+                                        CARD_FRAGS.lock().unwrap().push(CardFrag { x, y, z01, tri: ti, u, v, mask: t.alpha as u32, fp_dx: fdx, fp_dy: fdy, port_pass: op as u32, zq });
                                     }
                                     if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}", t.inst, t.tri, t.alpha, frame.z01(z)); } }
                                     if !op {
@@ -3424,6 +3428,8 @@ mod tests {
 /// peel) as `DIR/cardfrags-d{di}-p{pi}.bin` for `lmtool card-fit` (the anisotropic footprint rule against the capture).
 pub static CARD_DUMP: std::sync::LazyLock<Option<std::path::PathBuf>> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_CARD_DUMP").map(std::path::PathBuf::from));
 pub static CARD_FRAGS: std::sync::Mutex<Vec<CardFrag>> = std::sync::Mutex::new(Vec::new());
+/// The peel item draws' depth state for the dump's `zq` (the capture's: DepthBias 1, SlopeScaledDepthBias 1.0, a D16 target).
+pub const CARD_DUMP_BIAS: ((i32, f32), u32) = ((1, 1.0), 16);
 
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -3439,10 +3445,13 @@ pub struct CardFrag {
     pub fp_dy: [f32; 2],
     /// the port's answer (1 = passes the alpha test)
     pub port_pass: u32,
+    /// the depth the game's buffer holds for this fragment: z01 + the D3D11 depth bias (DepthBias 1, SlopeScaled 1.0 on the
+    /// peel's item draws) quantised to the target's D16 step
+    pub zq: f32,
 }
 
 impl CardFrag {
-    pub const BYTES: usize = 48;
+    pub const BYTES: usize = 52;
     pub fn write(&self, out: &mut Vec<u8>) {
         for v in [self.x, self.y] { out.extend_from_slice(&v.to_le_bytes()); }
         out.extend_from_slice(&self.z01.to_le_bytes());
@@ -3451,11 +3460,12 @@ impl CardFrag {
         out.extend_from_slice(&self.mask.to_le_bytes());
         for v in [self.fp_dx[0], self.fp_dx[1], self.fp_dy[0], self.fp_dy[1]] { out.extend_from_slice(&v.to_le_bytes()); }
         out.extend_from_slice(&self.port_pass.to_le_bytes());
+        out.extend_from_slice(&self.zq.to_le_bytes());
     }
     pub fn read(b: &[u8]) -> CardFrag {
         let u32_at = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
         let f32_at = |o: usize| f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
-        CardFrag { x: u32_at(0), y: u32_at(4), z01: f32_at(8), tri: u32_at(12), u: f32_at(16), v: f32_at(20), mask: u32_at(24), fp_dx: [f32_at(28), f32_at(32)], fp_dy: [f32_at(36), f32_at(40)], port_pass: u32_at(44) }
+        CardFrag { x: u32_at(0), y: u32_at(4), z01: f32_at(8), tri: u32_at(12), u: f32_at(16), v: f32_at(20), mask: u32_at(24), fp_dx: [f32_at(28), f32_at(32)], fp_dy: [f32_at(36), f32_at(40)], port_pass: u32_at(44), zq: f32_at(48) }
     }
 }
 

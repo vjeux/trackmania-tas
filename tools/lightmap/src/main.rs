@@ -6667,6 +6667,9 @@ fn run(a: Vec<String>) {
         "card-fit" => {
             lightmap::cardfit::card_fit(a.clone());
         }
+        "card-mask-check" => {
+            lightmap::cardfit::card_mask_check(a.clone());
+        }
         "texstat" => {
             // lmtool texstat FILE.dds[.gz]: per mip the min / mean / max of each channel (a look at a texture the pass samples)
             let t = lightmap::texsample::load_dds(std::path::Path::new(&a[1]), lightmap::texsample::Bc1Decode::Ideal).unwrap_or_else(|e| panic!("{e}"));

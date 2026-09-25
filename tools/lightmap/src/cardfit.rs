@@ -98,6 +98,25 @@ pub enum Rule {
     AnisoEven,
     /// Reference taps but the trilinear weight quantised to 1/256 and the taps averaged in 8-bit steps.
     AnisoQuant,
+    /// N = ceil(ratio), the level of detail from major / N (the integer tap count) instead of major / ratio.
+    AnisoLodOverN,
+    /// N = ceil(ratio) + 1 taps, reference positions and lod.
+    AnisoPlusOne,
+    /// N = 2·ceil(ratio) taps.
+    AnisoDouble,
+    /// N = ceil(ratio) taps at i/N − ½ (the first tap at the footprint's start, none at its end).
+    AnisoNoHalf,
+    /// N = ceil(ratio) taps, the span widened by one tap spacing (the taps cover major·(1 + 1/N)).
+    AnisoWideSpan,
+    /// Always 16 taps over the major axis; the level from major/16 (`lod_from_span`) or from the minor length.
+    Fixed16 { lod_from_span: bool },
+    /// 2·ceil(ratio) taps at the level of major / (2·ratio) (twice the taps, one level finer).
+    DoubleFine,
+    /// The reference rule at the sample point moved by (sx, sy) PIXELS along the footprint's derivatives (a pixel-centre
+    /// convention difference between the rasterisers would look like this).
+    RefShift { sx: f32, sy: f32 },
+    /// The reference rule at (u, 1 − v).
+    RefVFlip,
 }
 
 impl Rule {
@@ -116,8 +135,29 @@ impl Rule {
             ("aniso lod=log2(minor)".into(), Rule::AnisoLodMinor),
             ("aniso nearest level (no trilinear)".into(), Rule::AnisoNearestLevel),
             ("aniso lod=log2(mean(|dx|,|dy|))".into(), Rule::AnisoLodMean),
+            ("aniso lod bias −0.25".into(), Rule::AnisoBias { bias: -0.25 }),
             ("aniso lod bias −0.5".into(), Rule::AnisoBias { bias: -0.5 }),
+            ("aniso lod bias −0.75".into(), Rule::AnisoBias { bias: -0.75 }),
+            ("aniso lod bias −1.0".into(), Rule::AnisoBias { bias: -1.0 }),
             ("aniso lod bias +0.5".into(), Rule::AnisoBias { bias: 0.5 }),
+            ("aniso lod=log2(major/N) N=ceil".into(), Rule::AnisoLodOverN),
+            ("aniso N=ceil(ratio)+1".into(), Rule::AnisoPlusOne),
+            ("aniso N=2·ceil(ratio)".into(), Rule::AnisoDouble),
+            ("aniso taps at i/N − ½ (no half offset)".into(), Rule::AnisoNoHalf),
+            ("aniso taps at (i+½)/N − ½, span ×(1+1/N)".into(), Rule::AnisoWideSpan),
+            ("ref shifted by (+½, +½) px".into(), Rule::RefShift { sx: 0.5, sy: 0.5 }),
+            ("ref shifted by (−½, −½) px".into(), Rule::RefShift { sx: -0.5, sy: -0.5 }),
+            ("ref shifted by (+½, −½) px".into(), Rule::RefShift { sx: 0.5, sy: -0.5 }),
+            ("ref shifted by (−½, +½) px".into(), Rule::RefShift { sx: -0.5, sy: 0.5 }),
+            ("ref shifted by (+½, 0) px".into(), Rule::RefShift { sx: 0.5, sy: 0.0 }),
+            ("ref shifted by (0, +½) px".into(), Rule::RefShift { sx: 0.0, sy: 0.5 }),
+            ("ref shifted by (−½, 0) px".into(), Rule::RefShift { sx: -0.5, sy: 0.0 }),
+            ("ref shifted by (0, −½) px".into(), Rule::RefShift { sx: 0.0, sy: -0.5 }),
+            ("ref with v mirrored (1 − v)".into(), Rule::RefVFlip),
+            ("aniso N=16 fixed, lod=log2(major/16)".into(), Rule::Fixed16 { lod_from_span: true }),
+            ("aniso N=16 fixed, lod=log2(minor)".into(), Rule::Fixed16 { lod_from_span: false }),
+            ("aniso N=ceil(ratio), lod=log2(major/ratio) − 1".into(), Rule::AnisoBias { bias: -1.0 }),
+            ("aniso N=2·ceil(ratio), lod=log2(major/(2·ratio))".into(), Rule::DoubleFine),
             ("aniso N even".into(), Rule::AnisoEven),
             ("aniso 8-bit weights".into(), Rule::AnisoQuant),
             ("point level 0".into(), Rule::Point),
@@ -199,6 +239,48 @@ impl Rule {
                 let ratio = (major / minor).min(16.0).max(1.0);
                 Self::taps_along(tex, u, v, (major / ratio).log2(), fp.major_axis(), ratio.ceil() as usize, &centred, false, true)
             }
+            Rule::AnisoLodOverN => {
+                let ratio = (major / minor).min(16.0).max(1.0);
+                let n = ratio.ceil().max(1.0);
+                Self::taps_along(tex, u, v, (major / n).log2(), fp.major_axis(), n as usize, &centred, false, false)
+            }
+            Rule::AnisoPlusOne => {
+                let ratio = (major / minor).min(16.0).max(1.0);
+                Self::taps_along(tex, u, v, (major / ratio).log2(), fp.major_axis(), ratio.ceil() as usize + 1, &centred, false, false)
+            }
+            Rule::AnisoDouble => {
+                let ratio = (major / minor).min(16.0).max(1.0);
+                Self::taps_along(tex, u, v, (major / ratio).log2(), fp.major_axis(), 2 * ratio.ceil() as usize, &centred, false, false)
+            }
+            Rule::AnisoNoHalf => {
+                let ratio = (major / minor).min(16.0).max(1.0);
+                let pos = |i: usize, n: usize| i as f32 / n as f32 - 0.5;
+                Self::taps_along(tex, u, v, (major / ratio).log2(), fp.major_axis(), ratio.ceil() as usize, &pos, false, false)
+            }
+            Rule::AnisoWideSpan => {
+                let ratio = (major / minor).min(16.0).max(1.0);
+                let n = ratio.ceil() as usize;
+                let k = 1.0 + 1.0 / n as f32;
+                let ax = fp.major_axis();
+                Self::taps_along(tex, u, v, (major / ratio).log2(), [ax[0] * k, ax[1] * k], n, &centred, false, false)
+            }
+            Rule::Fixed16 { lod_from_span } => {
+                let lod = if lod_from_span { (major / 16.0).max(minor.min(major)).log2() } else { minor.log2() };
+                Self::taps_along(tex, u, v, lod, fp.major_axis(), 16, &centred, false, false)
+            }
+            Rule::DoubleFine => {
+                let ratio = (major / minor).min(16.0).max(1.0);
+                Self::taps_along(tex, u, v, (major / (2.0 * ratio)).log2(), fp.major_axis(), 2 * ratio.ceil() as usize, &centred, false, false)
+            }
+            Rule::RefShift { sx, sy } => {
+                let (u2, v2) = (u + (sx * fp.dx[0] + sy * fp.dy[0]) / fp.w, v + (sx * fp.dx[1] + sy * fp.dy[1]) / fp.h);
+                let ratio = (major / minor).min(16.0).max(1.0);
+                Self::taps_along(tex, u2, v2, (major / ratio).log2(), fp.major_axis(), ratio.ceil() as usize, &centred, false, false)
+            }
+            Rule::RefVFlip => {
+                let ratio = (major / minor).min(16.0).max(1.0);
+                Self::taps_along(tex, u, 1.0 - v, (major / ratio).log2(), fp.major_axis(), ratio.ceil() as usize, &centred, false, false)
+            }
         }
     }
 }
@@ -222,7 +304,7 @@ pub fn label(frags: &[CardFrag], layers: &[crate::passdiff::Buf], clear: f32, to
             counts[1] += 1;
             continue;
         }
-        let survived = layers.iter().any(|l| { let i = (f.y * l.w + f.x) as usize; i < l.data.len() && (l.data[i] - f.z01).abs() <= tol });
+        let survived = layers.iter().any(|l| { let i = (f.y * l.w + f.x) as usize; i < l.data.len() && (l.data[i] - f.zq).abs() <= tol });
         if survived { counts[2] += 1; } else { counts[3] += 1; }
         out.push(Labelled { frag: *f, survived });
     }
@@ -234,8 +316,9 @@ pub fn card_fit(a: Vec<String>) {
     let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1).cloned());
     let dump_path = std::path::PathBuf::from(&a[1]);
     let root = std::path::PathBuf::from(&a[2]);
-    // our z01 and the captured differ by a systematic ~1e-4 (the projection's rounding); distinct fronds sit ≥ 5e-3 apart
-    let tol: f32 = f("--tol").map(|v| v.parse().unwrap()).unwrap_or(4e-4);
+    // the fragment's `zq` = z01 + the item draws' depth bias, quantised to the D16 target — the value the game's buffer holds;
+    // the match tolerance is half a D16 step (the stored value differs from ours only through its own rounding)
+    let tol: f32 = f("--tol").map(|v| v.parse().unwrap()).unwrap_or(1.5 / 65535.0);
     let dump = read_dump(&dump_path).unwrap_or_else(|e| panic!("{e}"));
     let name = dump_path.file_name().unwrap().to_string_lossy().to_string();
     // cardfrags-s{sweep}-d{di}-p{pi}.bin
@@ -279,7 +362,18 @@ pub fn card_fit(a: Vec<String>) {
     // a look at the depth conventions: the first fragments' z01 against the captured layers' values at their pixel
     for fr in dump.frags.iter().take(6) {
         let vals: Vec<String> = layers.iter().map(|l| format!("{:.6}", l.data[(fr.y * l.w + fr.x) as usize])).collect();
-        println!("  frag ({}, {}) z01 {:.6} port_pass {} | captured layers {}", fr.x, fr.y, fr.z01, fr.port_pass, vals.join(" "));
+        println!("  frag ({}, {}) z01 {:.6} zq {:.6} port_pass {} | captured layers {}", fr.x, fr.y, fr.z01, fr.zq, fr.port_pass, vals.join(" "));
+    }
+    // the depth offset between our z01 and the captured (the nearest layer value within 2e-3): a histogram in 1e-5 bins
+    {
+        let mut h: std::collections::BTreeMap<i32, usize> = std::collections::BTreeMap::new();
+        for fr in &dump.frags {
+            let mut best: Option<f32> = None;
+            for l in &layers { let i = (fr.y * l.w + fr.x) as usize; if i < l.data.len() { let d = l.data[i] - fr.zq; if d.abs() < 2e-3 && best.map_or(true, |b: f32| d.abs() < b.abs()) { best = Some(d); } } }
+            if let Some(d) = best { *h.entry((d * 65535.0).round() as i32).or_default() += 1; }
+        }
+        let top: Vec<String> = { let mut v: Vec<(i32, usize)> = h.iter().map(|(k, n)| (*k, *n)).collect(); v.sort_by(|a, b| b.1.cmp(&a.1)); v.iter().take(8).map(|(k, n)| format!("{k:+} steps: {n}")).collect() };
+        println!("captured − ours (zq) depth offsets in D16 steps (nearest layer within 2e-3), the 8 most common: {}", top.join(", "));
     }
     let (lab, counts) = label(&dump.frags, &layers, clear, tol);
     println!("fragments {}: {} at pixels not fully observed (the layer cap), {} survived in the game, {} discarded (depth match tol {tol})", counts[0], counts[1], counts[2], counts[3]);
@@ -290,9 +384,106 @@ pub fn card_fit(a: Vec<String>) {
     // the fragments whose footprint is missing (no texture) cannot be scored
     let scorable: Vec<&Labelled> = lab.iter().filter(|l| masks.contains_key(&l.frag.mask) && (l.frag.fp_dx != [0.0; 2] || l.frag.fp_dy != [0.0; 2])).collect();
     println!("scorable (a texture and a footprint): {}", scorable.len());
+    // THE GROUPS: fragments sharing a pixel and a stored depth (coincident two-sided / duplicate card triangles) are one
+    // depth sample in the game's buffer — kept iff ANY of them passed; a rule is scored per group (OR of its fragments)
+    let mut groups: HashMap<(u32, u32, i32), Vec<usize>> = HashMap::new();
+    for (i, l) in scorable.iter().enumerate() { groups.entry((l.frag.x, l.frag.y, (l.frag.zq * 65535.0).round() as i32)).or_default().push(i); }
+    let multi = groups.values().filter(|v| v.len() > 1).count();
+    println!("{} depth groups (pixel, D16 depth) of the {} scorable fragments; {multi} groups hold more than one fragment (coincident card triangles)", groups.len(), scorable.len());
     let list_misses: usize = f("--list-misses").map(|v| v.parse().unwrap()).unwrap_or(0);
     let mut results: Vec<(String, usize, usize, usize)> = Vec::new();
+    // THE PEEL TEST (PS 17134 lines 4–7): sample_c GreaterEqual of the fragment's UNBIASED shadow-space depth against the
+    // previous layer's STORED depth (biased by DepthBias 1 + SlopeScaled 1.0, D16) — a fragment closer than the previous
+    // layer's bias behind it is peeled away with that layer, alpha or not. Per group: the game's previous layer = the largest
+    // captured depth below the group's stored depth; predicted kept = alpha passes AND z01 ≥ that depth.
+    let prev_layer = |x: u32, y: u32, zq: f32| -> f32 {
+        let mut best = 0.0f32;
+        for l in &layers { let d = l.data[(y * l.w + x) as usize]; if d < zq - tol && d > best { best = d; } }
+        best
+    };
     for (nm, rule) in Rule::all() {
+        {
+            let (mut g_agree, mut g_fp, mut g_fd, mut peeled) = (0usize, 0usize, 0usize, 0usize);
+            for (&(x, y, zs), idx) in &groups {
+                let survived = scorable[idx[0]].survived;
+                let zq = zs as f32 / 65535.0;
+                let prev = prev_layer(x, y, zq);
+                let any_pass = idx.iter().any(|&i| { let l = scorable[i]; let tex = &masks[&l.frag.mask]; let fp = Footprint { dx: l.frag.fp_dx, dy: l.frag.fp_dy, w: tex.w() as f32, h: tex.h() as f32 }; rule.alpha(tex, l.frag.u, l.frag.v, &fp) - crate::peel::ALPHA_THRESHOLD >= 0.0 && l.frag.z01 >= prev });
+                let alpha_only = idx.iter().any(|&i| { let l = scorable[i]; let tex = &masks[&l.frag.mask]; let fp = Footprint { dx: l.frag.fp_dx, dy: l.frag.fp_dy, w: tex.w() as f32, h: tex.h() as f32 }; rule.alpha(tex, l.frag.u, l.frag.v, &fp) - crate::peel::ALPHA_THRESHOLD >= 0.0 });
+                if alpha_only && !any_pass { peeled += 1; }
+                if any_pass == survived { g_agree += 1 } else if any_pass { g_fp += 1 } else { g_fd += 1 }
+            }
+            println!("{nm} [per depth group, WITH the peel test]: {g_agree} agree / {g_fp} pass-but-discarded / {g_fd} discard-but-kept  ({:.3} % agree); {peeled} alpha-passing groups peeled away by the previous layer's bias", 100.0 * g_agree as f64 / groups.len().max(1) as f64);
+            if matches!(rule, Rule::RefAniso { max_aniso: 16 }) {
+                let mut shown = 0;
+                for (&(x, y, zs), idx) in &groups {
+                    if shown >= 8 { break; }
+                    let survived = scorable[idx[0]].survived;
+                    let zq = zs as f32 / 65535.0;
+                    let prev = prev_layer(x, y, zq);
+                    let alpha_only = idx.iter().any(|&i| { let l = scorable[i]; let tex = &masks[&l.frag.mask]; let fp = Footprint { dx: l.frag.fp_dx, dy: l.frag.fp_dy, w: tex.w() as f32, h: tex.h() as f32 }; rule.alpha(tex, l.frag.u, l.frag.v, &fp) - crate::peel::ALPHA_THRESHOLD >= 0.0 });
+                    let z01 = scorable[idx[0]].frag.z01;
+                    if !(survived && alpha_only && z01 < prev) { continue; }
+                    let vals: Vec<String> = layers.iter().map(|l| { let d = l.data[(y * l.w + x) as usize]; if d >= 0.999 || d <= 0.0 { "—".into() } else { format!("{}", (d * 65535.0).round() as i32) } }).collect();
+                    let ours: Vec<String> = dump.frags.iter().filter(|f| f.x == x && f.y == y).map(|f| format!("t{} z01 {} zq {}{}", f.tri, (f.z01 * 65535.0).round() as i32, (f.zq * 65535.0).round() as i32, if f.port_pass != 0 { "" } else { " (α✗)" })).take(8).collect();
+                    println!("    kept-by-the-game but peeled in the model at ({x}, {y}): group zq {zs}, z01 {} (bias {} steps), prev layer {}; game layers [{}]; ours [{}]", (z01 * 65535.0).round() as i32, zs - (z01 * 65535.0).round() as i32, (prev * 65535.0).round() as i32, vals.join(" "), ours.join(", "));
+                    shown += 1;
+                }
+            }
+        }
+        {
+            let (mut g_agree, mut g_fp, mut g_fd) = (0usize, 0usize, 0usize);
+            for (_, idx) in &groups {
+                let survived = scorable[idx[0]].survived;
+                let any_pass = idx.iter().any(|&i| { let l = scorable[i]; let tex = &masks[&l.frag.mask]; let fp = Footprint { dx: l.frag.fp_dx, dy: l.frag.fp_dy, w: tex.w() as f32, h: tex.h() as f32 }; rule.alpha(tex, l.frag.u, l.frag.v, &fp) - crate::peel::ALPHA_THRESHOLD >= 0.0 });
+                if any_pass == survived { g_agree += 1 } else if any_pass { g_fp += 1 } else { g_fd += 1 }
+            }
+            println!("{nm} [per depth group]: {g_agree} agree / {g_fp} pass-but-discarded / {g_fd} discard-but-kept  ({:.3} % agree)", 100.0 * g_agree as f64 / groups.len().max(1) as f64);
+            if matches!(rule, Rule::RefAniso { max_aniso: 16 }) {
+                // where the pass-but-discarded groups sit: per triangle (misses / groups), the worst 12
+                let mut per_tri: HashMap<u32, (usize, usize)> = HashMap::new();
+                for (_, idx) in &groups {
+                    let survived = scorable[idx[0]].survived;
+                    let any_pass = idx.iter().any(|&i| { let l = scorable[i]; let tex = &masks[&l.frag.mask]; let fp = Footprint { dx: l.frag.fp_dx, dy: l.frag.fp_dy, w: tex.w() as f32, h: tex.h() as f32 }; rule.alpha(tex, l.frag.u, l.frag.v, &fp) - crate::peel::ALPHA_THRESHOLD >= 0.0 });
+                    for &i in idx { let e = per_tri.entry(scorable[i].frag.tri).or_default(); e.0 += 1; if any_pass && !survived { e.1 += 1; } }
+                }
+                let mut v: Vec<(u32, usize, usize)> = per_tri.iter().map(|(t, (n, m))| (*t, *n, *m)).collect();
+                v.sort_by(|a, b| b.2.cmp(&a.2));
+                println!("    pass-but-discarded by triangle (tri: misses/fragments), worst 12: {}", v.iter().take(12).map(|(t, n, m)| format!("{t}: {m}/{n}")).collect::<Vec<_>>().join(", "));
+                let whole: usize = v.iter().filter(|(_, n, m)| m == n && *n >= 4).count();
+                let tris_with_miss = v.iter().filter(|(_, _, m)| *m > 0).count();
+                println!("    triangles with a miss: {tris_with_miss} of {}; triangles ENTIRELY missed (≥ 4 fragments, all pass-but-discarded): {whole}", v.len());
+                // the pass-but-discarded groups' pixel neighbourhood: does the game have a fragment of ANY depth within ±1 px at that depth?
+                let mut near = 0usize; let mut total = 0usize;
+                for (&(x, y, zs), idx) in &groups {
+                    let survived = scorable[idx[0]].survived;
+                    let any_pass = idx.iter().any(|&i| { let l = scorable[i]; let tex = &masks[&l.frag.mask]; let fp = Footprint { dx: l.frag.fp_dx, dy: l.frag.fp_dy, w: tex.w() as f32, h: tex.h() as f32 }; rule.alpha(tex, l.frag.u, l.frag.v, &fp) - crate::peel::ALPHA_THRESHOLD >= 0.0 });
+                    if any_pass && !survived {
+                        total += 1;
+                        let z = zs as f32 / 65535.0;
+                        let hit = layers.iter().any(|l| { let mut h = false; for dy in -1i32..=1 { for dx in -1i32..=1 { let (xx, yy) = (x as i32 + dx, y as i32 + dy); if xx >= 0 && yy >= 0 && (xx as u32) < l.w && (yy as u32) < l.h { let i = (yy as u32 * l.w + xx as u32) as usize; if (l.data[i] - z).abs() <= 3.0 / 65535.0 { h = true; } } } } h });
+                        if hit { near += 1; }
+                    }
+                }
+                println!("    of the {total} pass-but-discarded groups, {near} have that depth in the game's layers within ±1 pixel (an edge / coverage difference), {} do not", total - near);
+                // the worst triangle's misses: our zq against the game's layer values at the pixel (in D16 steps), first 10
+                if let Some(&(wt, _, _)) = v.first() {
+                    let mut shown = 0;
+                    for (&(x, y, zs), idx) in &groups {
+                        if shown >= 10 { break; }
+                        if !idx.iter().any(|&i| scorable[i].frag.tri == wt) { continue; }
+                        let survived = scorable[idx[0]].survived;
+                        let any_pass = idx.iter().any(|&i| { let l = scorable[i]; let tex = &masks[&l.frag.mask]; let fp = Footprint { dx: l.frag.fp_dx, dy: l.frag.fp_dy, w: tex.w() as f32, h: tex.h() as f32 }; rule.alpha(tex, l.frag.u, l.frag.v, &fp) - crate::peel::ALPHA_THRESHOLD >= 0.0 });
+                        if !(any_pass && !survived) { continue; }
+                        let fr = &scorable[idx[0]].frag;
+                        let vals: Vec<String> = layers.iter().map(|l| { let d = l.data[(y * l.w + x) as usize]; if d >= 0.999 { "—".into() } else { format!("{:+}", ((d - zs as f32 / 65535.0) * 65535.0).round() as i32) } }).collect();
+                        let others: Vec<String> = dump.frags.iter().filter(|f| f.x == x && f.y == y && f.tri != wt).map(|f| format!("tri {} zq{:+}", f.tri, ((f.zq - zs as f32 / 65535.0) * 65535.0).round() as i32)).take(6).collect();
+                        println!("    tri {wt} miss at ({x}, {y}) z01 {:.5} zq step {zs} slope-bias {:+} steps, uv ({:.4}, {:.4}); game layers rel. to zq (steps): [{}]; our other fragments there: [{}]", fr.z01, ((fr.zq - fr.z01) * 65535.0).round() as i32, fr.u, fr.v, vals.join(" "), others.join(", "));
+                        shown += 1;
+                    }
+                }
+            }
+        }
         let (mut agree, mut fp_, mut fd) = (0usize, 0usize, 0usize);
         let mut misses: Vec<String> = Vec::new();
         for l in &scorable {
@@ -306,9 +497,83 @@ pub fn card_fit(a: Vec<String>) {
             }
         }
         println!("{nm}: {agree} agree / {fp_} pass-but-discarded / {fd} discard-but-kept  ({:.3} % agree)", 100.0 * agree as f64 / scorable.len().max(1) as f64);
+        if matches!(rule, Rule::RefAniso { max_aniso: 16 }) {
+            // the misses by their distance from the threshold (|alpha − 128/255|): precision noise sits within 0.02, a rule error further out
+            let mut hp = [0usize; 6]; let mut hd = [0usize; 6];
+            let bin = |d: f32| if d < 0.005 { 0 } else if d < 0.01 { 1 } else if d < 0.02 { 2 } else if d < 0.05 { 3 } else if d < 0.1 { 4 } else { 5 };
+            for l in &scorable {
+                let tex = &masks[&l.frag.mask];
+                let fp = Footprint { dx: l.frag.fp_dx, dy: l.frag.fp_dy, w: tex.w() as f32, h: tex.h() as f32 };
+                let a = rule.alpha(tex, l.frag.u, l.frag.v, &fp);
+                let pass = a - crate::peel::ALPHA_THRESHOLD >= 0.0;
+                if pass != l.survived { let b = bin((a - crate::peel::ALPHA_THRESHOLD).abs()); if pass { hp[b] += 1 } else { hd[b] += 1 } }
+            }
+            println!("    misses by |alpha − threshold| bins <0.005 / <0.01 / <0.02 / <0.05 / <0.1 / ≥0.1: pass-but-discarded {hp:?}, discard-but-kept {hd:?}");
+            // the texels under a few far misses (alpha ≥ threshold + 0.05, game discarded): the min / max alpha over the footprint's
+            // window at the two levels around the lod — if every texel there is opaque no sampling rule discards, the uv itself differs
+            let mut shown = 0;
+            for l in &scorable {
+                if shown >= 6 { break; }
+                let tex = &masks[&l.frag.mask];
+                let fp = Footprint { dx: l.frag.fp_dx, dy: l.frag.fp_dy, w: tex.w() as f32, h: tex.h() as f32 };
+                let a = rule.alpha(tex, l.frag.u, l.frag.v, &fp);
+                if l.survived || a < crate::peel::ALPHA_THRESHOLD + 0.05 { continue; }
+                let (major, minor) = Rule::lens(&fp);
+                let lod = (major / (major / minor).min(16.0).max(1.0)).log2().max(0.0);
+                let mut desc = Vec::new();
+                for lv in [lod.floor() as usize, (lod.floor() as usize + 1).min(tex.levels.len() - 1)] {
+                    let lev = &tex.levels[lv];
+                    let scale = (1u32 << lv) as f32;
+                    let (cx, cy) = (l.frag.u * lev.w as f32, l.frag.v * lev.h as f32);
+                    let r = (major / scale * 0.5 + 1.0).ceil() as i64;
+                    let (x0, x1, y0, y1) = ((cx as i64 - r).max(0), (cx as i64 + r).min(lev.w as i64 - 1), (cy as i64 - r).max(0), (cy as i64 + r).min(lev.h as i64 - 1));
+                    let (mn, mx) = lev.minmax(x0, y0, x1, y1);
+                    let centre = lev.a[(cy as usize).min(lev.h - 1) * lev.w + (cx as usize).min(lev.w - 1)];
+                    desc.push(format!("L{lv} ({}×{}) window x {x0}..{x1} y {y0}..{y1}: alpha min {mn} max {mx}, centre texel {centre}", lev.w, lev.h));
+                }
+                println!("    far miss ({}, {}) tri {} mask {} uv ({:.5}, {:.5}) major {major:.2} minor {minor:.2} lod {lod:.2} ours {a:.3}: {}", l.frag.x, l.frag.y, l.frag.tri, l.frag.mask, l.frag.u, l.frag.v, desc.join("; "));
+                shown += 1;
+            }
+            // and by the footprint's anisotropy ratio (1–2, 2–4, 4–8, 8–16, >16) and by texture
+            let mut hr = [(0usize, 0usize); 5];
+            for l in &scorable {
+                let tex = &masks[&l.frag.mask];
+                let fp = Footprint { dx: l.frag.fp_dx, dy: l.frag.fp_dy, w: tex.w() as f32, h: tex.h() as f32 };
+                let (major, minor) = Rule::lens(&fp);
+                let r = major / minor;
+                let b = if r < 2.0 { 0 } else if r < 4.0 { 1 } else if r < 8.0 { 2 } else if r < 16.0 { 3 } else { 4 };
+                hr[b].0 += 1;
+                let a = rule.alpha(tex, l.frag.u, l.frag.v, &fp);
+                if (a - crate::peel::ALPHA_THRESHOLD >= 0.0) != l.survived { hr[b].1 += 1; }
+            }
+            println!("    fragments / misses by anisotropy ratio <2 / <4 / <8 / <16 / ≥16: {hr:?}");
+            let mut ht: HashMap<u32, (usize, usize)> = HashMap::new();
+            for l in &scorable { let tex = &masks[&l.frag.mask]; let fp = Footprint { dx: l.frag.fp_dx, dy: l.frag.fp_dy, w: tex.w() as f32, h: tex.h() as f32 }; let a = rule.alpha(tex, l.frag.u, l.frag.v, &fp); let e = ht.entry(l.frag.mask).or_default(); e.0 += 1; if (a - crate::peel::ALPHA_THRESHOLD >= 0.0) != l.survived { e.1 += 1; } }
+            println!("    fragments / misses by texture: {:?}", ht);
+        }
         for s in misses { println!("{s}"); }
         results.push((nm, agree, fp_, fd));
     }
     results.sort_by(|a, b| b.1.cmp(&a.1));
     println!("best: {} ({} of {})", results[0].0, results[0].1, scorable.len());
+}
+
+/// `lmtool card-mask-check cardmask-K.bin CAPTURED.dds[.gz]`: our alpha mip chain (the item zip's DDS, rows reversed) against
+/// the GPU texture the capture dumped, level by level — is the game's chain the file's, or regenerated?
+pub fn card_mask_check(a: Vec<String>) {
+    let ours = read_mask(Path::new(&a[1])).unwrap_or_else(|e| panic!("{e}"));
+    let bytes = crate::prepass::read_maybe_gz(Path::new(&a[2])).unwrap_or_else(|e| panic!("{e}"));
+    let cap = AlphaTex::from_dds(&bytes, false).unwrap_or_else(|e| panic!("{e}"));
+    println!("ours: {} levels ({}×{}), captured: {} levels ({}×{})", ours.levels.len(), ours.w(), ours.h(), cap.levels.len(), cap.w(), cap.h());
+    for (k, (o, c)) in ours.levels.iter().zip(cap.levels.iter()).enumerate() {
+        if o.w != c.w || o.h != c.h { println!("level {k}: size {}×{} vs {}×{}", o.w, o.h, c.w, c.h); continue; }
+        let n = o.a.len();
+        let same = o.a.iter().zip(c.a.iter()).filter(|(x, y)| x == y).count();
+        let flipped_same = (0..o.h).map(|y| { let yy = o.h - 1 - y; (0..o.w).filter(|&x| o.a[y * o.w + x] == c.a[yy * o.w + x]).count() }).sum::<usize>();
+        let mut hist = [0usize; 5];
+        for (x, y) in o.a.iter().zip(c.a.iter()) { let d = (*x as i32 - *y as i32).unsigned_abs() as usize; hist[d.min(4)] += 1; }
+        let (mo, mc) = (o.a.iter().map(|&v| v as f64).sum::<f64>() / n as f64, c.a.iter().map(|&v| v as f64).sum::<f64>() / n as f64);
+        let (ge_o, ge_c) = (o.a.iter().filter(|&&v| v >= 128).count(), c.a.iter().filter(|&&v| v >= 128).count());
+        println!("level {k} ({}×{}): {same} of {n} identical as stored ({} flipped); |Δ| histogram 0/1/2/3/≥4 {:?}; mean alpha ours {mo:.2} captured {mc:.2}; ≥128: ours {ge_o} captured {ge_c}", o.w, o.h, flipped_same, hist);
+    }
 }
