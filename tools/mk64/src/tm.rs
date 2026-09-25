@@ -91,6 +91,27 @@ struct WaypointReq {
     tag: &'static str,
 }
 
+/// The course's frame in the map: scale from `--scale` or the calibrated
+/// constant, offset so the course is centred in the host (a 48-cell Stadium
+/// map centres at 768, the 128³ void base at 2048) with its lowest DRIVABLE
+/// collision point (upward-facing; the invisible walls reach further down)
+/// just over the grass. Shared by the map build and the centreline ghost so
+/// the two agree to the millimetre.
+pub fn course_frame(c: &Course, pieces: &[crate::course::Piece], coll: &[(crate::course::Section, crate::course::Piece)], assets: &AssetIndex, kind: &HostKind, args: &[String]) -> Frame {
+    let scale: f32 = flag(args, "--scale").map(|s| s.parse().expect("--scale")).unwrap_or(crate::mesh::UNITS_TO_M);
+    let mirror = args.iter().any(|a| a == "--mirror");
+    let f0 = Frame { scale, mirror, offset: [0.0; 3] };
+    let soup0 = mesh::collision_mesh(c, coll, &f0);
+    let mesh0 = mesh::visual_mesh(c, pieces, Some(assets), &f0);
+    let all_pts = mesh0.tris.iter().flat_map(|t| t.c.iter().map(|k| k.pos));
+    let (lo_v, hi_v) = mesh::bbox(all_pts).expect("course has geometry");
+    let min_coll_y = soup0.iter().filter(|t| mesh::face_normal(&t.p)[1] > 0.5).flat_map(|t| t.p.iter().map(|p| p[1])).fold(f32::INFINITY, f32::min);
+    let min_y = if min_coll_y.is_finite() { min_coll_y } else { lo_v[1] };
+    let centre = [kind.size[0] as f32 * 16.0, kind.size[2] as f32 * 16.0];
+    let offset = [centre[0] - (lo_v[0] + hi_v[0]) / 2.0, STADIUM_GROUND_Y + 0.3 - min_y, centre[1] - (lo_v[2] + hi_v[2]) / 2.0];
+    Frame { scale, mirror, offset }
+}
+
 pub fn cmd_build(args: &[String]) {
     let usage = "mk64 build COURSE --host HOST.Map.Gbx --out OUT.Map.Gbx [--decomp DIR] [--rom FILE]
       [--scale M_PER_UNIT] [--mirror] [--name NAME] [--laps N] [--cps N] [--stadium] [--skirt|--no-skirt] [--no-vertex-colours] [--no-actors] [--author-ms MS] [--tag T] [--mood Day|Sunrise|Sunset|Night] [--pak Stadium.pak:KEY (spinning item boxes)] [--no-item-boxes] [--illum|--no-illum] [--minimap-zones N] [--intro] [--no-music]
@@ -142,25 +163,14 @@ pub fn cmd_build(args: &[String]) {
     let pieces = c.visual_pieces();
     let coll = c.collision_pieces();
 
-    // frame: scale from the flag or the calibrated constant, offset so the
-    // course is centred in the map with its lowest collision point on the grass
-    let scale: f32 = flag(args, "--scale").map(|s| s.parse().expect("--scale")).unwrap_or(crate::mesh::UNITS_TO_M);
-    let mirror = args.iter().any(|a| a == "--mirror");
-    let f0 = Frame { scale, mirror, offset: [0.0; 3] };
-    let soup0 = mesh::collision_mesh(&c, &coll, &f0);
-    let mesh0 = mesh::visual_mesh(&c, &pieces, Some(&assets), &f0);
-    let all_pts = mesh0.tris.iter().flat_map(|t| t.c.iter().map(|k| k.pos));
-    let (lo_v, hi_v) = mesh::bbox(all_pts).expect("course has geometry");
-    // the lowest DRIVABLE point (upward-facing collision; the invisible walls
-    // reach further down) clears the grass
-    let min_coll_y = soup0.iter().filter(|t| mesh::face_normal(&t.p)[1] > 0.5).flat_map(|t| t.p.iter().map(|p| p[1])).fold(f32::INFINITY, f32::min);
-    let min_y = if min_coll_y.is_finite() { min_coll_y } else { lo_v[1] };
-    // the host decides the map centre (a 48-cell Stadium map centres at 768,
-    // the 128³ void base at 2048) and whether the course needs a skirt
     let kind = host_kind(&MapFile::load(&host));
-    let centre = [kind.size[0] as f32 * 16.0, kind.size[2] as f32 * 16.0];
-    let offset = [centre[0] - (lo_v[0] + hi_v[0]) / 2.0, STADIUM_GROUND_Y + 0.3 - min_y, centre[1] - (lo_v[2] + hi_v[2]) / 2.0];
-    let frame = Frame { scale, mirror, offset };
+    let frame = course_frame(&c, &pieces, &coll, &assets, &kind, args);
+    let (scale, offset) = (frame.scale, frame.offset);
+    let (lo_v, hi_v) = {
+        let f0 = Frame { scale, mirror: frame.mirror, offset: [0.0; 3] };
+        let mesh0 = mesh::visual_mesh(&c, &pieces, Some(&assets), &f0);
+        mesh::bbox(mesh0.tris.iter().flat_map(|t| t.c.iter().map(|k| k.pos))).expect("course has geometry")
+    };
     let mut m = mesh::visual_mesh(&c, &pieces, Some(&assets), &frame);
     if !args.iter().any(|a| a == "--no-actors") {
         for kind in ["tree", "cow", "piranha_plant", "cactus"] {
@@ -411,7 +421,7 @@ pub fn cmd_build(args: &[String]) {
 }
 
 /// y of the triangle's plane at (x, z) when the point is inside it (top view).
-fn height_under(t: &mesh::CollTri, x: f32, z: f32) -> Option<f32> {
+pub fn height_under(t: &mesh::CollTri, x: f32, z: f32) -> Option<f32> {
     let p = &t.p;
     let e = |a: [f32; 3], b: [f32; 3]| (b[0] - a[0]) * (z - a[2]) - (b[2] - a[2]) * (x - a[0]);
     let area = e(p[0], p[1]) + e(p[1], p[2]) + e(p[2], p[0]);

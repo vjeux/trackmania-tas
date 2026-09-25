@@ -530,6 +530,8 @@ dependencies = [
 name = "mk64"
 version = "1.0.0"
 dependencies = [
+ "gbx",
+ "ghost",
  "mapgeom",
  "tmmaps",
 ]

@@ -45,6 +45,11 @@ pub struct Opts {
     /// on its own thread like the camera log — what the PHYSICS resolved
     /// under the car on the original vs the tiny build (2026-09-07).
     pub wheels_ms: u64,
+    /// `--ghost FILE`: once the playground is open, load this ghost (or replay)
+    /// file and add every ghost in it to the race (`/pgghost`: Replay_Load +
+    /// GhostMgr.Ghost_Add — the way a leaderboard ghost is shown), so the shots
+    /// show it driving. The plugin's JSON answer goes into the report.
+    pub ghost: Option<String>,
     pub detach: bool,
     /// `--via-editor`: open the map in the editor and press TEST instead of
     /// the title's PlayMap (which stopped opening maps on 2026-09-23).
@@ -71,6 +76,7 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         drive_at_ms: num("--drive-at-ms", 13500)?,
         camlog_ms: num("--camlog-ms", 0)?,
         wheels_ms: num("--wheels-ms", 0)?,
+        ghost: val("--ghost"),
         detach: args.iter().any(|a| a == "--detach"),
         via_editor: args.iter().any(|a| a == "--via-editor"),
     })
@@ -81,7 +87,7 @@ pub fn run(args: &[String]) -> i32 {
         Ok(o) => o,
         Err(e) => {
             eprintln!("{e}");
-            eprintln!("usage: shootctl playshots --map MAP --outdir /mnt/c/... [--tag T] [--shots N] [--every-ms MS] [--first-ms MS] [--carlog-ms MS] [--drive-ms MS [--drive-at-ms MS]] [--camlog-ms MS] [--wheels-ms MS] [--timeout S] [--detach] [--via-editor]");
+            eprintln!("usage: shootctl playshots --map MAP --outdir /mnt/c/... [--tag T] [--shots N] [--every-ms MS] [--first-ms MS] [--carlog-ms MS] [--drive-ms MS [--drive-at-ms MS]] [--camlog-ms MS] [--wheels-ms MS] [--ghost FILE] [--timeout S] [--detach] [--via-editor]");
             return 2;
         }
     };
@@ -197,6 +203,18 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
     let opened = load0.elapsed();
     println!("{} playground after {:.1}s (ctx {})", el(), opened.as_secs_f64(), super::http_get("/ctx", 10).unwrap_or_default().trim());
     let mut lines = Vec::new();
+    if let Some(g) = &opts.ghost {
+        // the plugin reads the file from arg.txt (a C:/ path)
+        let game_ghost = super::game_path(g)?;
+        std::fs::write(format!("{store}/arg.txt"), &game_ghost).map_err(|e| format!("arg.txt: {e}"))?;
+        // /pgghost waits for the GhostMgr itself (up to 40 s after the playground)
+        let r = super::http_get("/pgghost", 90).unwrap_or_default();
+        println!("{} /pgghost: {}", el(), r.trim());
+        if !r.contains("\"ok\":1") {
+            return Err(format!("the ghost did not load: {}", r.trim()));
+        }
+        lines.push(format!("ghost\t{game_ghost}\t{}", r.trim()));
+    }
     let mut driver: Option<std::thread::JoinHandle<Result<String, String>>> = None;
     let mut camlog: Option<std::thread::JoinHandle<Result<String, String>>> = None;
     let mut wheels: Option<std::thread::JoinHandle<Result<String, String>>> = None;

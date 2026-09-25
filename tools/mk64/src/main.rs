@@ -74,6 +74,7 @@ fn main() {
         "textures" => cmd_textures(&args),
         "sprites" => cmd_sprites(&args),
         "overlaps" => cmd_overlaps(&args),
+        "ghost" => cmd_ghost(&args),
         "colours" => cmd_colours(&args),
         "skins" => mk64::skins::cmd(&args, &decomp_dir(&args), &rom_path(&args).expect("--rom FILE ($MK64_ROM)")),
         "texture" => cmd_texture(&args),
@@ -512,5 +513,54 @@ fn cmd_colours(args: &[String]) {
         let mean = means.iter().sum::<f32>() / means.len() as f32;
         let across = (means.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / means.len() as f32).sqrt();
         println!("{:<34} {:>5} {:>8.1} {:>8.1} {:>8.1} {:>6}", n, tris.len(), mean, within / tris.len() as f32, across, lit);
+    }
+}
+
+/// `mk64 ghost COURSE --host MAP --out FILE.Ghost.Gbx --donor GHOST [--laps N] [--vmax KMH]
+///             [--uid U] [--alat A] [--aacc A] [--abrk A]`
+/// The naive centreline ghost: see `ghost.rs`. `--host` is the same base map the
+/// build used (it fixes the course's frame); `--uid` the map's uid (`tmmaps
+/// header MAP`), so the client accepts the ghost in play; the donor is any
+/// ghost the client loads (a 50 ms record with one vehicle entity).
+fn die(msg: impl std::fmt::Display) -> ! {
+    eprintln!("{msg}");
+    std::process::exit(2)
+}
+
+fn cmd_ghost(args: &[String]) {
+    let (mut c, decomp) = load_course(args);
+    let dir = course_arg(args);
+    let out = flag(args, "--out").unwrap_or_else(|| die("--out FILE.Ghost.Gbx"));
+    let donor = flag(args, "--donor").unwrap_or_else(|| die("--donor GHOST (a ghost the client loads)"));
+    let host = flag(args, "--host").unwrap_or_else(|| die("--host MAP (the base map the build used)"));
+    let laps: u32 = flag(args, "--laps").and_then(|s| s.parse().ok()).unwrap_or(3);
+    let mut drive = mk64::ghost::Drive::default();
+    if let Some(v) = flag(args, "--vmax").and_then(|s| s.parse::<f32>().ok()) {
+        drive.vmax = v / 3.6;
+    }
+    if let Some(v) = flag(args, "--alat").and_then(|s| s.parse::<f32>().ok()) {
+        drive.a_lat = v;
+    }
+    if let Some(v) = flag(args, "--aacc").and_then(|s| s.parse::<f32>().ok()) {
+        drive.a_acc = v;
+    }
+    if let Some(v) = flag(args, "--abrk").and_then(|s| s.parse::<f32>().ok()) {
+        drive.a_brk = v;
+    }
+    let assets = mk64::texture::AssetIndex::load(&decomp).expect("asset index");
+    let pieces = c.visual_pieces();
+    let coll = c.collision_pieces();
+    let kind = mk64::tm::host_kind(&tmmaps::map::MapFile::load(std::path::Path::new(host)));
+    let frame = mk64::tm::course_frame(&c, &pieces, &coll, &assets, &kind, args);
+    let soup = mesh::collision_mesh(&c, &coll, &frame);
+    let p0 = frame.to_tm(c.path[0].pos);
+    let road0 = mk64::ghost::road_y(&soup, p0[0], p0[2], p0[1]);
+    println!("{dir}: path[0] at ({:.2}, {:.2}, {:.2}), road under it {:?}", p0[0], p0[1], p0[2], road0);
+    let traj = mk64::ghost::centreline(&c, &frame, &soup, laps, &drive, 50);
+    let vmax_seen = traj.poses.iter().map(|p| p.speed).fold(0.0f32, f32::max);
+    println!("  drive: vmax {:.0} km/h, a_lat {} a_acc {} a_brk {}; top speed reached {:.0} km/h; laps at {:?} s", drive.vmax * 3.6, drive.a_lat, drive.a_acc, drive.a_brk, vmax_seen * 3.6, traj.lap_ms.iter().map(|m| *m as f64 / 1000.0).collect::<Vec<_>>());
+    match mk64::ghost::write(&traj, donor, out, flag(args, "--uid"), 50) {
+        Ok(r) => println!("  {r}"),
+        Err(e) => die(format!("{out}: {e}")),
     }
 }
