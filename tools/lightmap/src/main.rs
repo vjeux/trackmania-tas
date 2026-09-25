@@ -32,17 +32,13 @@ fn main() {
     if a.first().map(|s| s.as_str()) == Some("bake") && a.iter().any(|x| x == "--lm-from-map") && !a.iter().any(|x| x == "--legacy-port") {
         let implied: &[(&str, Option<&str>)] = &[("--game-peel", None), ("--ss", Some("1")), ("--sky-global-scale", Some("1")), ("--hbasis-kappa", Some("1")), ("--sweep0-sun", None), ("--layout-game", None)];
         let mut added: Vec<String> = Vec::new();
-        // the peel COLOURS: the setup chain from the map (A's setupmap.rs, `--ilightinput-from map`) needs the frozen
-        // collection tables (`--env-from ROOT`); without an atlas the peels colour from the port's albedo × sun model,
-        // which came out ~2× too bright on pwc-day (2026-09-25 validation) — so imply `map` when --env-from is given
-        // and say so when it is not
+        // the peel COLOURS: the setup chain from the map (A's setupmap.rs, `--ilightinput-from map`) — the collection tables
+        // come from the paks (RE 8's paktables, A 0016) or, when `--env-from ROOT` is given, from the capture's frozen tables;
+        // without an atlas the peels would colour from the port's albedo × sun model (~2× too bright on pwc-day), so `map`
+        // is implied whenever --ilightinput-from is absent (`--ilightinput-from port` keeps the port's model)
         if !a.iter().any(|x| x == "--ilightinput-from") {
-            if a.iter().any(|x| x == "--env-from") {
-                a.push("--ilightinput-from".to_string()); a.push("map".to_string());
-                added.push("--ilightinput-from map".to_string());
-            } else {
-                eprintln!("lm-from-map: no --env-from ROOT (the frozen collection tables) — the peels colour from the port's own model, NOT the transcribed ILightInput chain (measured ~2x too bright on pwc-day); pass --env-from PASSCAP_ROOT for the game's chain");
-            }
+            a.push("--ilightinput-from".to_string()); a.push("map".to_string());
+            added.push("--ilightinput-from map".to_string());
         }
         for (flag, val) in implied {
             if !a.iter().any(|x| x == flag) {
@@ -1399,7 +1395,7 @@ fn run(a: Vec<String>) {
             // in place of the port's per-fragment albedo × sun
             let mut e2e_out: Option<lightmap::e2e::ChainOut> = None;
             let mut from_map_setup: Option<lightmap::setupmap::FromMap> = None;
-            if let Some(src) = f("--ilightinput-from").filter(|s| s != "map") {
+            if let Some(src) = f("--ilightinput-from").filter(|s| s != "map" && s != "port") {
                 let lm_root = std::path::PathBuf::from(f("--lm-from").expect("--ilightinput-from needs --lm-from PASSCAP_ROOT (the LM instance stream)"));
                 let env_frame: u32 = f("--lm-env-frame").map(|v| v.parse().expect("--lm-env-frame")).unwrap_or(127448);
                 let pre_frame: u32 = f("--pre-frame").map(|v| v.parse().expect("--pre-frame")).unwrap_or(127447);
@@ -1683,7 +1679,7 @@ fn run(a: Vec<String>) {
             // colour's texture — the harness's transcription of the colour path on the game's own input
             // (integration: the value `e2e` belongs to the chain's handler above — ilatlas from the transcribed setup
             // chain — and is not a file; D's peelcolor path takes a file only)
-            if let Some(path) = f("--ilightinput-from").filter(|p| p != "e2e" && p != "map") {
+            if let Some(path) = f("--ilightinput-from").filter(|p| p != "e2e" && p != "map" && p != "port") {
                 let pb = std::path::PathBuf::from(&path);
                 let (root, file) = (pb.parent().map(|p| p.to_path_buf()).unwrap_or_default(), pb.file_name().unwrap().to_string_lossy().to_string());
                 let mut e = lightmap::passdump::entry("ilightinput", file, "atlas");
