@@ -37,6 +37,7 @@ pub mod shadowmap;
 pub mod dxbc;
 pub mod lightcam;
 pub mod lmtiles;
+pub mod probechunk;
 pub mod format;
 pub mod geometry;
 pub mod img;

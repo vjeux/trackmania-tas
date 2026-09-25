@@ -4441,6 +4441,35 @@ fn run(a: Vec<String>) {
             println!("TILING {p:?}: ext {:.2} layout units → peel target {}², n = {} cells per axis, {} fitted tile(s){}", t.ext, t.size, t.n, t.tiles.len(), if t.tiles.is_empty() { " (world pass only)" } else { "" });
             for tile in &t.tiles { println!("  tile c {:?} h {:?} = x [{}, {}] y [{}, {}] z [{}, {}]", tile.c, tile.h, tile.min()[0], tile.max()[0], tile.min()[1], tile.max()[1], tile.min()[2], tile.max()[2]); }
         }
+        "probe-chunks" => {
+            // lmtool probe-chunks MAP.Gbx [--scene xmin,ymin,zmin,xmax,ymax,zmax] [--block-size 32,8,32] [--offset 0,-38,0]
+            //   [--level-h 0] [--global-quality 1] [--max-dim 2048]
+            //   the probe grid of a bake (probechunk.rs): the grid def from the map's size words + the collection's block
+            //   size + the decoration's base height (FUN_140c53ab0), the probe boxes (quality² > 0.9 records), the grid
+            //   expansion, the 30×14×30 chunking and its atlas, every chunk record (slot, atlas range, world origin) and the
+            //   chunks' AABB (the world peel's extra box)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let v3 = |s: String| -> [f32; 3] { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); [v[0], v[1], v[2]] };
+            let mf = tmmaps::map::MapFile::load(std::path::Path::new(&a[1]));
+            let size = [mf.size[0].max(0) as u32, mf.size[1].max(0) as u32, mf.size[2].max(0) as u32];
+            let scene = lightmap::geometry::Scene::from_map(&a[1]).expect("map scene");
+            let gq: f32 = f("--global-quality").map(|v| v.parse().unwrap()).unwrap_or(1.0);
+            let recs: Vec<lightmap::lmtiles::BlockRecord> = lightmap::lmtiles::item_records(&scene, gq, false).iter().filter_map(|it| it.record).collect();
+            let scene_ch = match f("--scene") { Some(s) => { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); lightmap::lmtiles::CBox::from_min_max([v[0], v[1], v[2]], [v[3], v[4], v[5]]) } None => lightmap::lmtiles::scene_box(&recs) };
+            let bs = f("--block-size").map(v3).unwrap_or([32.0, 8.0, 32.0]);
+            let off = f("--offset").map(v3).unwrap_or([0.0, -38.0, 0.0]);
+            let h: f32 = f("--level-h").map(|v| v.parse().unwrap()).unwrap_or(0.0);
+            let max_dim: u32 = f("--max-dim").map(|v| v.parse().unwrap()).unwrap_or(2048);
+            let (g, boxes, c, aabb) = lightmap::probechunk::for_records(size, bs, off, h, &recs, &scene_ch, max_dim);
+            let g0 = lightmap::probechunk::grid_def(size, bs, off, h, true);
+            println!("map size {:?} blocks × block size {:?} m, decoration offset {:?}, level h {h} → grid {} × {} × {} probes, cell {:?}, first probe at {:?}", size, bs, off, g0.n[0], g0.n[1], g0.n[2], g0.cell, g0.origin);
+            println!("{} probe boxes (records with quality² > 0.9{}):", boxes.len(), if recs.is_empty() { "; none → the scene box's x/z with y −32..128" } else { "" });
+            for b in &boxes { println!("  [{}, {}] × [{}, {}] × [{}, {}]", b.min()[0], b.max()[0], b.min()[1], b.max()[1], b.min()[2], b.max()[2]); }
+            if g != g0 { println!("EXPANDED grid → {} × {} × {} probes, first probe at {:?}", g.n[0], g.n[1], g.n[2], g.origin); }
+            println!("CHUNKING: {} × {} × {} chunks of 30 × 14 × 30 probes (cell {:?}); {} non-empty → atlas {} × {} × {} ({} columns × {} rows of 32 × 16 × 32 tiles)", c.chunk_counts[0], c.chunk_counts[1], c.chunk_counts[2], c.grid.cell, c.records.len(), c.atlas[0], c.atlas[1], c.atlas[2], c.columns, c.rows);
+            for r in &c.records { println!("  chunk {:?}: probes {:?}..={:?} → slot {:?}, atlas {:?}..{:?}, world origin of atlas index 0 {:?} (ProbeToWorld = diag(cell) + this), cells [{}, {}] × [{}, {}] × [{}, {}]", r.chunk, r.imin, r.imax, r.slot, r.amin, r.amax, r.origin, (r.amin[0] as f32 - 0.5) * r.cell[0] + r.origin[0], (r.amax[0] as f32 - 0.5) * r.cell[0] + r.origin[0], (r.amin[1] as f32 - 0.5) * r.cell[1] + r.origin[1], (r.amax[1] as f32 - 0.5) * r.cell[1] + r.origin[1], (r.amin[2] as f32 - 0.5) * r.cell[2] + r.origin[2], (r.amax[2] as f32 - 0.5) * r.cell[2] + r.origin[2]); }
+            if let Some(b) = aabb { println!("CHUNKS AABB (FUN_140233150, ∪ into the world peel box): c {:?} h {:?} = [{}, {}] × [{}, {}] × [{}, {}]", b.c, b.h, b.min()[0], b.max()[0], b.min()[1], b.max()[1], b.min()[2], b.max()[2]); let w = lightmap::lmtiles::world_peel_box(&scene_ch, Some(&b)); println!("WORLD PEEL BOX = scene ∪ chunks: c {:?} h {:?} = [{}, {}] × [{}, {}] × [{}, {}]", w.c, w.h, w.min()[0], w.max()[0], w.min()[1], w.max()[1], w.min()[2], w.max()[2]); }
+        }
         "frustum-check" => {
             // lmtool frustum-check PASSCAP_ROOT [--frame N] [--manifest FROZEN.json] [--eps E] [--far-pad P] [--norm div|rsqrt] [--fma] [--expand-scale]
             //   the CPU light-camera fit (lightcam.rs) against the capture's SceneV cbuffers: every distinct camera of the
@@ -4618,6 +4647,7 @@ fn run(a: Vec<String>) {
             // --b-records keeps engineer B's route (mapgeom Xform, Aabb re-centring); --lod0 restricts the model box to
             // the LOD-0 geoms; --global-quality G (1.0 = the map's own objects)
             let mut f_tile: Option<lightmap::lmtiles::CBox> = None;
+            let mut w_ch: Option<lightmap::lmtiles::CBox> = None;
             if let Some(map) = f("--map") {
                 let scene = lightmap::geometry::Scene::from_map(&map).expect("map scene");
                 if has("--b-records") {
@@ -4666,6 +4696,25 @@ fn run(a: Vec<String>) {
                         f_tile = Some(*tile);
                         f_box = tile.aabb();
                     }
+                    // the WORLD peel box from the map too: S ∪ the probe chunks' AABB (probechunk.rs — the map's size words, the
+                    // collection's block size --block-size, the decoration's base height --offset, the level --level-h)
+                    if !has("--no-probe-from-map") {
+                        let v3 = |s: String| -> [f32; 3] { let v: Vec<f32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); [v[0], v[1], v[2]] };
+                        let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map));
+                        let size = [mf.size[0].max(0) as u32, mf.size[1].max(0) as u32, mf.size[2].max(0) as u32];
+                        let bs = f("--block-size").map(v3).unwrap_or([32.0, 8.0, 32.0]);
+                        let off = f("--offset").map(v3).unwrap_or([0.0, -38.0, 0.0]);
+                        let h: f32 = f("--level-h").map(|v| v.parse().unwrap()).unwrap_or(0.0);
+                        let (g, _boxes, c, aabb) = lightmap::probechunk::for_records(size, bs, off, h, &recs, &scene_ch, 2048);
+                        println!("  PROBE GRID from the map: {} × {} × {} probes, cell {:?}, first probe {:?}; {} chunk(s), atlas {:?}", g.n[0], g.n[1], g.n[2], g.cell, g.origin, c.records.len(), c.atlas);
+                        for r in &c.records { println!("    chunk {:?}: world origin of atlas index 0 {:?}, atlas range {:?}..{:?}", r.chunk, r.origin, r.amin, r.amax); }
+                        if let Some(b) = aabb {
+                            let w = lightmap::lmtiles::world_peel_box(&scene_ch, Some(&b));
+                            println!("  WORLD PEEL BOX = S ∪ chunks AABB: c {:?} h {:?} = y [{}, {}]", w.c, w.h, w.min()[1], w.max()[1]);
+                            w_ch = Some(w);
+                            w_box = w.aabb();
+                        }
+                    }
                 }
             }
             println!("PEEL boxes: W min {:?} max {:?}; F min {:?} max {:?}", w_box.min, w_box.max, f_box.min, f_box.max);
@@ -4689,7 +4738,7 @@ fn run(a: Vec<String>) {
                 // which box: the eye tells (W's centre y 71 vs F's 49.75)
                 let (name, b) = if (cap.eye[0] - w_box.centre()[0]).abs() < 1.0 && (cap.eye[2] - w_box.centre()[2]).abs() < 1.0 { ("world peel", w_box) } else { ("fitted peel", f_box) };
                 // the fitted peel from the tile record's own {centre, half} when the tiling rule produced it
-                let cam = match (name, f_tile) { ("fitted peel", Some(tile)) => lightmap::lightcam::fit_camera_ch(tile.c, tile.h, d, &rules), _ => lightmap::lightcam::fit_camera(&b, d, &rules) };
+                let cam = match (name, f_tile, w_ch) { ("fitted peel", Some(tile), _) => lightmap::lightcam::fit_camera_ch(tile.c, tile.h, d, &rules), ("world peel", _, Some(w)) if !has("--world-aabb") => lightmap::lightcam::fit_camera_ch(w.c, w.h, d, &rules), _ => lightmap::lightcam::fit_camera(&b, d, &rules) };
                 println!("PEEL CAMERA eid {} ({name}, D ({:.4}, {:.4}, {:.4})):", cap.eid, d[0], d[1], d[2]);
                 report(name, &cam, cap);
                 // the lookup matrix of this camera's accumulate draws (PS 17112 with the same PeelDirInW, the first one
