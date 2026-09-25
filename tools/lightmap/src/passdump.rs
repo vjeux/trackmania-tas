@@ -191,6 +191,10 @@ pub struct Entry {
     /// The RenderDoc resource id of the buffer (a number or a string in the capture manifests).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub texture_id: Option<serde_json::Value>,
+    /// A capture's peel entry: whether the snapshot is the ENVIRONMENT BLOCK render (the sea box, the
+    /// terrain, the sky dome, the clouds — the layer the item layers peel behind) or an item layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_block: Option<bool>,
 }
 
 /// A chart's rectangle in the layout (2048-unit space, the mapping's convention) and its stored size.
@@ -520,6 +524,7 @@ pub fn entry(pass: &str, file: String, space: &str) -> Entry {
         eid_last: None,
         raster: None,
         depthstate: None,
+        environment_block: None,
     }
 }
 

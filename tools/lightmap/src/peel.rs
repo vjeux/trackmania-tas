@@ -40,6 +40,9 @@ pub struct PeelFrame {
     /// The frustum centre's `c·d` and its depth half extent: `z01 = 0.5 + (zc + z_port)/(2·half_d)`.
     pub zc: f32,
     pub half_d: f32,
+    /// The render viewport's inset in pixels: the game's peel draws use (1, 1, 4094, 4094) on the 4096²
+    /// target, so its outer ring is never written (a captured frame sets 1; the port's own frames 0).
+    pub inset_px: u32,
 }
 
 impl PeelFrame {
@@ -63,7 +66,7 @@ impl PeelFrame {
         // a half-pixel margin so the bounds' own points land inside
         let scale = (res as f32 - 1.0) / extent;
         let half_d = (0.5 * (zmax - zmin)).max(1e-3);
-        PeelFrame { d, r, u, s0: smin - 0.5 / scale, t0: tmin - 0.5 / scale, scale, scale_y: scale, res, res_y: res, zc: -0.5 * (zmin + zmax), half_d }
+        PeelFrame { d, r, u, s0: smin - 0.5 / scale, t0: tmin - 0.5 / scale, scale, scale_y: scale, res, res_y: res, zc: -0.5 * (zmin + zmax), half_d, inset_px: 0 }
     }
     /// A frame that rasterises exactly the captured frustum's pixel grid (`w`×`h` pixels): the game's
     /// pixel x grows along `right`, pixel y along −`up`, its camera looks along `forward` = the port's d.
@@ -73,7 +76,7 @@ impl PeelFrame {
         let u = norm([-f.up[0], -f.up[1], -f.up[2]]);
         let scale = w as f32 / (2.0 * f.half[0]);
         let scale_y = h as f32 / (2.0 * f.half[1]);
-        PeelFrame { d, r, u, s0: dot(f.center, r) - f.half[0], t0: dot(f.center, u) - f.half[1], scale, scale_y, res: w, res_y: h, zc: dot(f.center, d), half_d: f.half[2] }
+        PeelFrame { d, r, u, s0: dot(f.center, r) - f.half[0], t0: dot(f.center, u) - f.half[1], scale, scale_y, res: w, res_y: h, zc: dot(f.center, d), half_d: f.half[2], inset_px: 1 }
     }
     /// This frame as the game records a peel frustum.
     pub fn frustum(&self) -> crate::passdump::Frustum {
@@ -144,6 +147,20 @@ impl PeelFrame {
         self.zc = -0.5 * (zmin + zmax);
     }
 }
+
+/// LMTOOL_ABUF_DEBUG=x,y: print every fragment (and every alpha-tested candidate) of one peel pixel.
+pub static ABUF_DEBUG: std::sync::LazyLock<Option<(u32, u32)>> = std::sync::LazyLock::new(|| {
+    let s = std::env::var("LMTOOL_ABUF_DEBUG").ok()?;
+    let v: Vec<u32> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+    if v.len() == 2 { Some((v[0], v[1])) } else { None }
+});
+
+/// The cards' alpha test threshold: GbxShadowAlphaThreshold = 128/255 (the capture's ShaderP cbuffer).
+pub const ALPHA_THRESHOLD: f32 = 0.501_960_813_999_176;
+/// LMTOOL_ALPHA_POINT=1: the point-sampled cut-out mask instead of the filtered texture (a probe).
+pub static ALPHA_POINT: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_ALPHA_POINT").map(|v| v == "1").unwrap_or(false));
+/// LMTOOL_ALPHA_ANISO=N: the alpha sampler's anisotropy (16 = the capture's card sampler; 1 = trilinear).
+pub static ALPHA_ANISO: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_ALPHA_ANISO").ok().and_then(|v| v.parse().ok()).unwrap_or(16));
 
 /// One fragment of the A-buffer: depth and the world triangle (index into the BVH's triangle list).
 #[derive(Clone, Copy, Debug)]
@@ -346,6 +363,7 @@ pub fn build_abuffer_sparse(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
     };
     let cards_occlude = cards_occlude();
     let d = frame.d;
+    let inset = frame.inset_px;
     // THE BANDS: the wanted rectangle's rows split evenly over the threads; every triangle that reaches
     // the frame's depth range is binned into the bands its rows touch — a per-band list of triangle
     // indices (4 bytes each: tiny 16 has 2.4 M triangles, the giants 27 M — a projected record per
@@ -428,18 +446,30 @@ pub fn build_abuffer_sparse(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                 let (x1, y1, z1) = frame.project(p1);
                 let (x2, y2, z2) = frame.project(p2);
                 let mask = if t.alpha != u16::MAX { masks.get(t.alpha as usize) } else { None };
+                // THE FILTERED ALPHA TEST (engineer D; PS 17134: the opacity texture sampled at TexCoord0 with the
+                // material sampler, alpha ≥ GbxShadowAlphaThreshold): the triangle's uv footprint gives the level of detail
+                let fp_tex = mask.and_then(|m| m.tex.as_ref().map(|tx| (tx, crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()))));
                 if raster_stats { RS_TRIS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
                 raster::triangle_clipped_masked(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], band_clip, Some(bitmap), |x, y, bc| {
                     if raster_stats { RS_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+                    // the game's viewport (1, 1, w−2, h−2): the outer ring is never drawn
+                    if x < inset || y < inset || x + inset >= res || y + inset >= res_y {
+                        return;
+                    }
                     let z = z0 * bc[0] + z1 * bc[1] + z2 * bc[2];
                     if z < zmax && z >= zmin {
                         if let Some(m) = mask {
                             let u = t.uv0[0][0] * bc[0] + t.uv0[1][0] * bc[1] + t.uv0[2][0] * bc[2];
                             let v = t.uv0[0][1] * bc[0] + t.uv0[1][1] * bc[1] + t.uv0[2][1] * bc[2];
-                            if !m.opaque(u, v) {
+                            let op = match &fp_tex {
+                                Some((tx, fp)) if !*ALPHA_POINT => tx.passes(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge, *ALPHA_ANISO),
+                                _ => m.opaque(u, v),
+                            };
+                            if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}", t.inst, t.tri, t.alpha, frame.z01(z)); } }
+                            if !op {
                                 return;
                             }
-                        }
+                        } else if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): tri {ti} inst {} model tri {} z {z:.3} z01 {:.5}", t.inst, t.tri, frame.z01(z)); } }
                         let k = px.index_of_id(y * res + x);
                         out[(k / sparse_bucket_size) as usize].push((k, Frag { z, tri: ti }));
                     }
@@ -526,8 +556,8 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
     let cull_back = std::env::var("LMTOOL_PEEL_CULL_BACK").map(|v| v == "1").unwrap_or(false);
     let cards_occlude = cards_occlude();
     let d = frame.d;
-    // (a wanted set keeps few fragments: fewer bands and chunks — every band and every chunk is a thread)
-    let bands = if wanted.is_some() { 16u32.min(res_y) } else { 128u32.min(res_y) };
+    let inset = frame.inset_px;
+    let bands = 128u32.min(res_y);
     let band_h = (res_y + bands - 1) / bands;
     // small chunks so the few huge decoration triangles (each covering the whole frame) spread over
     // the threads; the per-chunk overhead is a band vector set
@@ -563,13 +593,14 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                             continue;
                         }
                         let mask = if t.alpha != u16::MAX { masks.get(t.alpha as usize) } else { None };
-                        if raster_stats { RS_TRIS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
-                        raster::triangle_clipped_masked(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], clip, bitmap, |x, y, b| {
-                            if raster_stats { RS_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
-                            if let Some(m) = bitmap {
-                                if !bit(m, (y * res + x) as usize) {
-                                    return;
-                                }
+                        // THE FILTERED ALPHA TEST (PS 17134: the material's opacity texture sampled at TexCoord0 with
+                        // the material sampler, alpha ≥ GbxShadowAlphaThreshold = 128/255): the triangle's uv footprint
+                        // per pixel gives the level of detail (alphatex::Footprint), the sample is trilinear / anisotropic
+                        let fp_tex = mask.and_then(|m| m.tex.as_ref().map(|tx| (tx, crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()))));
+                        raster::triangle(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], |x, y, b| {
+                            // the game's viewport (1, 1, w−2, h−2): the outer ring is never drawn
+                            if x < inset || y < inset || x + inset >= res || y + inset >= res_y {
+                                return;
                             }
                             let z = z0 * b[0] + z1 * b[1] + z2 * b[2];
                             if z < zmax && z >= zmin {
@@ -577,17 +608,16 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                                 if let Some(m) = mask {
                                     let u = t.uv0[0][0] * b[0] + t.uv0[1][0] * b[1] + t.uv0[2][0] * b[2];
                                     let v = t.uv0[0][1] * b[0] + t.uv0[1][1] * b[1] + t.uv0[2][1] * b[2];
-                                    if !m.opaque(u, v) {
+                                    let op = match &fp_tex {
+                                        Some((tx, fp)) if !*ALPHA_POINT => tx.passes(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge, *ALPHA_ANISO),
+                                        _ => m.opaque(u, v),
+                                    };
+                                    if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}", t.inst, t.tri, t.alpha, frame.z01(z)); } }
+                                    if !op {
                                         return;
                                     }
-                                }
-                                if let Some(px) = wanted {
-                                    // (the bit test above passed: the pixel is wanted)
-                                    let k = px.index_of_id(y * res + x);
-                                    out[(k / sparse_bucket_size) as usize].push((k, Frag { z, tri: ti }));
-                                } else {
-                                    out[(y / band_h) as usize].push((y * res + x, Frag { z, tri: ti }));
-                                }
+                                } else if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): tri {ti} inst {} model tri {} z {z:.3} z01 {:.5}", t.inst, t.tri, frame.z01(z)); } }
+                                out[(y / band_h) as usize].push((y * res + x, Frag { z, tri: ti }));
                             }
                         });
                     }
@@ -792,7 +822,15 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
     // of open, at Day); the face turned away from the texel is a back face → black.
     let facing = -dot(ng, d);
     let n = if facing >= 0.0 { ng } else { [-ng[0], -ng[1], -ng[2]] };
-    let is_front = if wt.inst == DECOR_INST {
+    // THE GAME'S FRONT FACE (PS 17131/17134: `and o0.xyz, rgb, isfrontface`; the rasteriser's
+    // FrontCounterClockwise with NoCull): a triangle is front-facing when its vertices wind
+    // counter-clockwise in NDC (y up), i.e. when its winding normal (p1 − p0) × (p2 − p0) points against
+    // the camera's view direction D — read off the capture's dome triangles (the rendered far faces have
+    // n_g·D < 0). The same test for every triangle, the zone tiles and the decoration included (for the
+    // capture's upward directions the seabed's top is a back face → black, as the game's layer shows)
+    let is_front = if prm.game_peel {
+        dot(cross(wt.e1, wt.e2), d) < 0.0
+    } else if wt.inst == DECOR_INST {
         true // the decoration is authored single-sided facing out; take it as front either way
     } else {
         // the mesh's own vertex normal decides the true front side
@@ -920,6 +958,10 @@ pub struct Layers {
     pub max_layers: usize,
     /// The sparse form: `start` indexed by the wanted pixels' dense index.
     pub sparse: Option<std::sync::Arc<PixelIndex>>,
+    /// How many ITEM layers this peel rendered (the game's stop rule or the captured count).
+    pub item_layers: usize,
+    /// The written fraction of every candidate item layer (index k = the k-th item layer).
+    pub fractions: Vec<f64>,
 }
 
 impl Layers {
@@ -984,12 +1026,21 @@ fn tri_slope(wt: &WTri, frame: &PeelFrame) -> (f32, f32) {
 /// Peel the A-buffer into the game's layers (`RenderLightIndirectPeel`): layer 0 = the dome (when
 /// `prm.dome_layer`), then far-to-near, each layer keeping the farthest fragment nearer than the
 /// previous layer's STORED depth by at least the rasteriser bias (fragments within the bias of the
-/// previous layer are never rendered again — merged), at most `MAX_LAYERS` layers. The colour is the
-/// fragment's `ILightInput` radiance at the pixel centre, quantised as the colour target stores it.
-fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<&ShadowMap>, sun_bias: f32, sky: [f32; 3], threads: usize, wanted: Option<&std::sync::Arc<PixelIndex>>) -> Layers {
+/// previous layer are never rendered again — merged), at most `MAX_LAYERS` item layers. The colour is
+/// the fragment's `ILightInput` radiance at the pixel centre, quantised as the colour target stores it.
+///
+/// THE LAYER COUNT (0x140234df0 l.413–437, the capture's per-layer pixel counts — `lmtool peel-layers`):
+/// the game renders item layers until the pixel-count query of a layer reports fewer than 0.1 % of the
+/// viewport's pixels written, read `lag` layers late (the query is polled without waiting), or until
+/// 20 item layers — a GLOBAL rule per peel, applied here after the per-pixel peel: every pixel's list is
+/// cut to the number of item layers the game renders (`fixed_layers` = the captured count when the
+/// harness has it, else `prm.peel_stop`). An empty layer still counts as rendered (the capture's first
+/// direction ran 18 empty layers to the cap while its query never answered).
+fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<&ShadowMap>, sun_bias: f32, sky: [f32; 3], threads: usize, wanted: Option<&std::sync::Arc<PixelIndex>>, fixed_layers: Option<usize>) -> Layers {
     let (w, h) = (frame.res, frame.res_y);
     let n = (w * h) as usize;
     let sky_q = prm.quant_peel.apply(sky, prm.rounding);
+    let skip_n = if prm.dome_layer { 1usize } else { 0 };
     // one pixel's layers appended to `out`
     let derive_pixel = |x: usize, y: usize, out: &mut Vec<LayerFrag>| {
         let list = ab.at_all(x as u32, y as u32);
@@ -1034,7 +1085,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             if z01 < d_prev {
                 continue;
             }
-            if out.len() - before >= MAX_LAYERS {
+            if out.len() - before - skip_n >= MAX_LAYERS {
                 break;
             }
             let wt = &bvh.tris[f.tri as usize];
@@ -1067,17 +1118,58 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             }
             (counts, out)
         });
+        // THE LAYER COUNT on the sparse form: the written fraction per item layer is estimated on the CENSUS
+        // pixels (every 4th pixel in x and y, added to the wanted set when the stop rule is in force — the
+        // wanted pixels alone sit where the items are and would overstate the fractions); with a captured
+        // count nothing is estimated
+        let mut hist = vec![0usize; MAX_LAYERS + 1];
+        let mut n_census = 0usize;
+        let mut ci_all = 0usize;
+        for (counts, _) in &parts {
+            for c in counts {
+                let id = px.pixels[ci_all];
+                ci_all += 1;
+                let (x, y) = (id % w, id / w);
+                if fixed_layers.is_none() && x % CENSUS_STEP == 0 && y % CENSUS_STEP == 0 {
+                    n_census += 1;
+                    let items = (*c as usize).saturating_sub(skip_n).min(MAX_LAYERS);
+                    hist[items] += 1;
+                }
+            }
+        }
+        let mut fractions: Vec<f64> = Vec::with_capacity(MAX_LAYERS);
+        let mut at_least = n_census;
+        for k in 0..MAX_LAYERS {
+            at_least -= hist[k];
+            fractions.push(if n_census > 0 { at_least as f64 / n_census as f64 } else { 0.0 });
+        }
+        let kept = match fixed_layers {
+            Some(k) => k.min(MAX_LAYERS),
+            None => prm.peel_stop.layers_rendered(&fractions),
+        };
+        let candidates = fractions.iter().take_while(|f| **f > 0.0).count();
+        LAYER_STATS.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if kept < candidates {
+            LAYER_STATS.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        if peel_layers_debug() {
+            eprintln!("peel layers (sparse, {n_census} census pixels): {} candidate item layers, fractions {:?} → {} rendered ({})", candidates, fractions.iter().take(candidates).map(|f| format!("{f:.6}")).collect::<Vec<_>>(), kept, if fixed_layers.is_some() { "the captured count" } else { "the stop rule" });
+        }
         let mut start = Vec::with_capacity(npx + 1);
         let mut frags = Vec::with_capacity(parts.iter().map(|p| p.1.len()).sum());
         start.push(0u32);
         for (counts, out) in parts {
+            let mut o = 0usize;
             for c in counts {
+                let c = c as usize;
+                let keep = c.min(skip_n + kept);
+                frags.extend_from_slice(&out[o..o + keep]);
+                o += c;
                 let last = *start.last().unwrap();
-                start.push(last + c);
+                start.push(last + keep as u32);
             }
-            frags.extend(out);
         }
-        return Layers { w, h, start, frags, max_layers: MAX_LAYERS, sparse: Some(px.clone()) };
+        return Layers { w, h, start, frags, max_layers: MAX_LAYERS, sparse: Some(px.clone()), item_layers: kept, fractions };
     }
     let rows_per = ((h as usize) / threads.max(1)).max(1);
     let parts: Vec<(Vec<u32>, Vec<LayerFrag>)> = std::thread::scope(|sc| {
@@ -1102,17 +1194,57 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             .collect();
         hs.into_iter().map(|h| h.join().unwrap()).collect()
     });
+    // THE LAYER COUNT (engineer D, 0x140234df0): the written fraction of every candidate item layer over
+    // the whole viewport, the game's stop rule (or the captured count) → every pixel's list is cut
+    let mut hist = vec![0usize; MAX_LAYERS + 1];
+    for (counts, _) in &parts {
+        for c in counts {
+            let items = (*c as usize).saturating_sub(skip_n).min(MAX_LAYERS);
+            hist[items] += 1;
+        }
+    }
+    let mut fractions: Vec<f64> = Vec::with_capacity(MAX_LAYERS);
+    let mut at_least = n;
+    for k in 0..MAX_LAYERS {
+        at_least -= hist[k];
+        fractions.push(at_least as f64 / n.max(1) as f64);
+    }
+    let kept = match fixed_layers {
+        Some(k) => k.min(MAX_LAYERS),
+        None => prm.peel_stop.layers_rendered(&fractions),
+    };
+    let candidates = fractions.iter().take_while(|f| **f > 0.0).count();
+    LAYER_STATS.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if kept < candidates {
+        LAYER_STATS.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    if peel_layers_debug() {
+        eprintln!("peel layers: {} candidate item layers, fractions {:?} → {} rendered ({})", candidates, fractions.iter().take(candidates).map(|f| format!("{f:.6}")).collect::<Vec<_>>(), kept, if fixed_layers.is_some() { "the captured count" } else { "the stop rule" });
+    }
     let mut start = Vec::with_capacity(n + 1);
     let mut frags = Vec::with_capacity(parts.iter().map(|p| p.1.len()).sum());
     start.push(0u32);
     for (counts, out) in parts {
+        let mut o = 0usize;
         for c in counts {
+            let c = c as usize;
+            let keep = c.min(skip_n + kept);
+            frags.extend_from_slice(&out[o..o + keep]);
+            o += c;
             let last = *start.last().unwrap();
-            start.push(last + c);
+            start.push(last + keep as u32);
         }
-        frags.extend(out);
     }
-    Layers { w, h, start, frags, max_layers: MAX_LAYERS, sparse: None }
+    Layers { w, h, start, frags, max_layers: MAX_LAYERS, sparse: None, item_layers: kept, fractions }
+}
+
+/// The census stride of the sparse layer-count estimate (every 8th pixel in x and y: 1/64 of the frame).
+pub const CENSUS_STEP: u32 = 8;
+
+pub static LAYER_STATS: (std::sync::atomic::AtomicUsize, std::sync::atomic::AtomicUsize) = (std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0));
+fn peel_layers_debug() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var_os("LMTOOL_PEEL_LAYERS_DEBUG").is_some())
 }
 
 /// Stage timers for `--profile` (nanoseconds, summed over the bake).
@@ -1140,6 +1272,8 @@ pub mod prof {
         for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES] { c.store(0, Ordering::Relaxed); }
     }
 }
+
+/// Diagnostics: peels extracted, of which the stop rule cut candidate layers.
 
 /// The game's texel lookup into a layer target: POINT sampling after the one-texel inset
 /// `u = 0.5 + (u − 0.5)·(w − 2)/w` (the Bias rows of `WorldPw01Shadow`), clamped — pixel index of a
@@ -1469,12 +1603,23 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         // THE DOME PER PIXEL (the transcribed sky dome, `SkyGradient::dome_radiance`): the peel pixel's ray
         // meets the ellipsoid at a point whose azimuth/height differ slightly from D's across a frame (the
         // dome sits at the world origin, 22 km out); the colour the layer target holds is R11G11B10
-        let dome_px = |frame: &PeelFrame, px: u32, py: u32| -> [f32; 3] {
+        // THE DOME MESH RASTERISED (domemesh.rs: VS 16773 + the rasteriser state, the game's own dome triangles
+        // covering the frame; `dome_r` per peel below): the pixel's (u, v) and view vector are the screen-space
+        // interpolation of the covering triangle's vertex attributes, then PS 16774 (`sky_ps`). Without the mesh
+        // (--dome-analytic) the analytic ellipsoid model stands in.
+        let dome_px = |frame: &PeelFrame, dome_r: Option<&crate::domemesh::DomeRaster>, px: u32, py: u32| -> [f32; 3] {
             match &prm.sky_grad {
                 Some(sg) if prm.dome_exact => {
-                    let q = frame.unproject(px as f32 + 0.5, py as f32 + 0.5, frame.z_from_z01(1.0));
-                    let c = frame.frustum().center;
-                    let v = sg.dome_radiance(q, *d, c);
+                    let v = match dome_r {
+                        // the mesh: the covering triangle's interpolated attributes; a pixel no front face covers
+                        // (the viewport's outer ring) keeps the clear colour, as the game's target does
+                        Some(r) => match r.at(px, py) { Some((uv, view)) => sg.sky_ps(uv, view), None => [0.0; 3] },
+                        None => {
+                            let q = frame.unproject(px as f32 + 0.5, py as f32 + 0.5, frame.z_from_z01(1.0));
+                            let c = frame.frustum().center;
+                            sg.dome_radiance(q, *d, c)
+                        }
+                    };
                     // (the dome layer's colour goes through the R11G11B10 target, then the ILightDir target)
                     prm.quant_ilightdir.apply(prm.quant_peel.apply(v, prm.rounding), prm.rounding)
                 }
@@ -1487,6 +1632,15 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         let mut frag_total = 0usize;
         for (pi, frame) in peels.iter().enumerate() {
             let tb2 = std::time::Instant::now();
+            // the game's dome mesh rasterised in this peel's frame (the eye = GbxV_EyeInWorld = the frustum's
+            // centre — the scene bbox the frustum is fit to; a metre off moves the 22 km dome's view vector by
+            // 5e-5 rad), the sun shift = LightDirAngle_m11Zx, InvertY on, ForceX off — the capture's GbxSkyV0
+            let dome_r: Option<crate::domemesh::DomeRaster> = match (&prm.dome_mesh, &prm.sky_grad) {
+                (Some(m), Some(sg)) if prm.dome_exact => Some(m.rasterise(frame, frame.frustum().center, sg.light_dir_angle(), -1.0, true)),
+                _ => None,
+            };
+            if let Some(r) = &dome_r { if want_dir_dump || std::env::var_os("LMTOOL_PEEL_LAYERS_DEBUG").is_some() { eprintln!("peel: direction {di} peel {pi}: the dome mesh covers the frame with {} front-facing triangles", r.triangles()); } }
+            let dome_r = dome_r.as_ref();
             // the deepest receiver along this direction: nothing beyond it can occlude
             let zmax = (0..8).map(|i| { let p = [if i & 1 == 0 { bmin[0] } else { bmax[0] }, if i & 2 == 0 { bmin[1] } else { bmax[1] }, if i & 4 == 0 { bmin[2] } else { bmax[2] }]; frame.project(p).2 }).fold(f32::MIN, f32::max);
             // the game's peel renders everything inside the frustum's depth range; beyond the far plane the
@@ -1511,7 +1665,23 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                         m[i >> 6].fetch_or(1u64 << (i & 63), std::sync::atomic::Ordering::Relaxed);
                     }
                 });
-                let m: Vec<u64> = m.into_iter().map(|a| a.into_inner()).collect();
+                let mut m: Vec<u64> = m.into_iter().map(|a| a.into_inner()).collect();
+                // the CENSUS pixels for the layer-count rule's written fractions (every CENSUS_STEP-th pixel in x
+                // and y), unless this peel's item-layer count is known (captured or fixed)
+                let fixed_layers_known = if prm.layers_from_capture { prm.peel_layer_counts.as_ref().and_then(|c| c.get(di)).and_then(|v| v.get(pi)).copied().flatten().is_some() } else { prm.peel_layers_fixed.is_some() };
+                if !fixed_layers_known {
+                    let (w, h) = (frame.res as usize, frame.res_y as usize);
+                    let mut y = 0usize;
+                    while y < h {
+                        let mut x = 0usize;
+                        while x < w {
+                            let i = y * w + x;
+                            m[i >> 6] |= 1u64 << (i & 63);
+                            x += CENSUS_STEP as usize;
+                        }
+                        y += CENSUS_STEP as usize;
+                    }
+                }
                 Some(std::sync::Arc::new(PixelIndex::new(frame.res, frame.res_y, m)))
             } else { None };
             prof::add(&prof::B_INDEX, t_idx);
@@ -1522,9 +1692,17 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // the game's layers of this peel (game-peel mode), and their dump
             // (the layers are also extracted for the dump alone, so the port's own gather can be dumped and compared)
             let tl = std::time::Instant::now();
-            let layers: Option<Layers> = if prm.game_peel || want_dir_dump { Some(extract_layers(&ab, frame, scene, bvh, prm, shadow.as_ref(), sun_bias, sky, threads, wanted.as_ref())) } else { None };
+            // the item-layer count: the captured one for this direction's peel when the harness has it, else the stop rule
+            let fixed_layers: Option<usize> = if prm.layers_from_capture { prm.peel_layer_counts.as_ref().and_then(|c| c.get(di)).and_then(|v| v.get(pi)).copied().flatten() } else { prm.peel_layers_fixed };
+            let layers: Option<Layers> = if prm.game_peel || want_dir_dump { Some(extract_layers(&ab, frame, scene, bvh, prm, shadow.as_ref(), sun_bias, sky, threads, wanted.as_ref(), fixed_layers)) } else { None };
             prof::add(&prof::LAYERS, tl);
             let td = std::time::Instant::now();
+            if let Some(ly) = &layers {
+                if want_dir_dump || std::env::var_os("LMTOOL_PEEL_LAYERS_DEBUG").is_some() {
+                    let cand = ly.fractions.iter().take_while(|f| **f > 0.0).count();
+                    eprintln!("peel: direction {di} peel {pi}: {} item layers rendered of {} with content (fractions {}); {}", ly.item_layers, cand, ly.fractions.iter().take(cand.max(ly.item_layers).min(ly.fractions.len())).map(|f| format!("{f:.6}")).collect::<Vec<_>>().join(" "), match fixed_layers { Some(k) => format!("the captured count {k}"), None => format!("the stop rule (< {}, lag {})", prm.peel_stop.threshold, prm.peel_stop.lag) });
+                }
+            }
             if let (Some(ly), Some(dump), true) = (&layers, &prm.dump, want_dir_dump) {
                 let mut dmp = dump.lock().unwrap();
                 let skip = if prm.dome_layer { 1 } else { 0 };
@@ -1553,9 +1731,12 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                                 let y0 = ti * rows_per;
                                 sc.spawn(move || {
                                     for (i, px) in chunk.iter_mut().enumerate() {
-                                        let (x, y) = ((i % ly.w as usize) as f32 + 0.5, (y0 + i / ly.w as usize) as f32 + 0.5);
-                                        let q = frame.unproject(x, y, frame.z_from_z01(1.0));
-                                        *px = prm.quant_peel.apply(sg.dome_radiance(q, *d, c), prm.rounding);
+                                        let (xi, yi) = ((i % ly.w as usize) as u32, (y0 + i / ly.w as usize) as u32);
+                                        let v = match dome_r {
+                                            Some(r) => match r.at(xi, yi) { Some((uv, view)) => sg.sky_ps(uv, view), None => [0.0; 3] },
+                                            None => { let q = frame.unproject(xi as f32 + 0.5, yi as f32 + 0.5, frame.z_from_z01(1.0)); sg.dome_radiance(q, *d, c) }
+                                        };
+                                        *px = prm.quant_peel.apply(v, prm.rounding);
                                     }
                                 });
                             }
@@ -1633,7 +1814,7 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                                     // (a texel outside this peel's frustum reads nothing from it)
                                     match select_layer(ly.at(px, py), z01) {
                                         Some(f) if f.d > 0.0 || !prm.dome_layer => hit = Some((f.rgb, true)),
-                                        Some(_) => hit = Some((dome_px(frame, px, py), false)), // the dome: the sky at this pixel
+                                        Some(_) => hit = Some((dome_px(frame, dome_r, px, py), false)), // the dome: the sky at this pixel
                                         None => {}
                                     }
                                 }

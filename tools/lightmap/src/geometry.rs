@@ -288,6 +288,9 @@ pub struct Scene {
     pub tex_albedo: BTreeMap<String, [f32; 3]>,
 }
 
+/// LMTOOL_MASK_NOFLIP=1: the cut-out masks in the DDS file's row order (the game flips them: see `opaque`).
+pub static MASK_NOFLIP: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_MASK_NOFLIP").map(|v| v == "1").unwrap_or(false));
+
 /// A binary cut-out mask (alpha ≥ threshold) sampled with wrapping uv, nearest texel.
 #[derive(Clone, Debug)]
 pub struct AlphaMask {
@@ -296,6 +299,9 @@ pub struct AlphaMask {
     pub bits: Vec<u8>,
     /// The texture's mean colour over its opaque texels (sRGB-encoded 0..1): the card's albedo.
     pub albedo: [f32; 3],
+    /// The full alpha mip chain as the GPU samples it (`alphatex`): the peel's alpha test filters it at
+    /// the fragment's level of detail; None = the point-sampled mask above.
+    pub tex: Option<std::sync::Arc<crate::alphatex::AlphaTex>>,
 }
 
 impl AlphaMask {
@@ -310,7 +316,7 @@ impl AlphaMask {
             }
         }
         let albedo = if n > 0 { [(sum[0] / n as f64) as f32, (sum[1] / n as f64) as f32, (sum[2] / n as f64) as f32] } else { [0.3; 3] };
-        AlphaMask { w, h, bits, albedo }
+        AlphaMask { w, h, bits, albedo, tex: None }
     }
     /// Fraction of opaque texels.
     pub fn coverage(&self) -> f32 {
@@ -320,7 +326,13 @@ impl AlphaMask {
     #[inline]
     pub fn opaque(&self, u: f32, v: f32) -> bool {
         let x = ((u.rem_euclid(1.0) * self.w as f32) as usize).min(self.w - 1);
-        let y = ((v.rem_euclid(1.0) * self.h as f32) as usize).min(self.h - 1);
+        // THE GAME'S TEXTURE ROWS RUN BOTTOM-UP RELATIVE TO THE DDS FILE (the capture, pwc-day frame 127448:
+        // the GPU textures 14585 / 14579 the card shaders sample equal the item zip's VegetPalmTreeSugar_D_in0 /
+        // _D DDS with their rows reversed — 100 % of the 128² / 256² texels agree flipped, 64 % unflipped — the
+        // engine's DDS loader reads the files bottom-up, the classic ManiaPlanet skin convention): texture v
+        // addresses file row (1 − v)·h. LMTOOL_MASK_NOFLIP=1 restores the file order.
+        let vv = if *MASK_NOFLIP { v.rem_euclid(1.0) } else { (1.0 - v).rem_euclid(1.0) };
+        let y = ((vv * self.h as f32) as usize).min(self.h - 1);
         let i = y * self.w + x;
         self.bits[i >> 3] & (1 << (i & 7)) != 0
     }
@@ -464,7 +476,9 @@ impl Scene {
                         } else { (w, h, rgba) };
                         // LMTOOL_MASK_THRESHOLD=T (0..255, default 128): the alpha a texel needs to count as leaf
                         let thr: u8 = std::env::var("LMTOOL_MASK_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(128);
-                        let m = AlphaMask::from_rgba(w as usize, h as usize, &rgba, thr);
+                        let mut m = AlphaMask::from_rgba(w as usize, h as usize, &rgba, thr);
+                        // the whole mip chain for the filtered alpha test (the game's rows run bottom-up: `opaque`)
+                        m.tex = match crate::alphatex::AlphaTex::from_dds(bytes, !*MASK_NOFLIP) { Ok(t) => Some(std::sync::Arc::new(t)), Err(e) => { eprintln!("  alpha texture {file}: {e} (point-sampled mask only)"); None } };
                         card_albedo.insert(file.clone(), m.albedo);
                         // a mask that cuts nothing is not worth the lookups
                         if m.coverage() < 0.999 { alpha_masks.insert(file.clone(), m); }

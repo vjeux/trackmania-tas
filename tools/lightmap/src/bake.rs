@@ -179,6 +179,19 @@ pub struct BakeParams {
     pub raster_jitter: bool,
     pub jitter_cycle: [[f32; 2]; 9],
     pub jitter_sign: f32,
+    /// The game's peel layer-count rule (0x140234df0: stop under 0.1 % of the viewport written, read
+    /// `lag` layers late; 20 item layers at most) — `peelcap::PeelStop`.
+    pub peel_stop: crate::peelcap::PeelStop,
+    /// A fixed item-layer count for every peel (`--peel-layers N`; overrides the rule).
+    pub peel_layers_fixed: Option<usize>,
+    /// The captured item-layer counts per direction (indexed like `sphere_dirs`) and peel, taken instead
+    /// of the rule when `layers_from_capture` (the harness: the layer count is timing-dependent in the
+    /// game, so the comparison takes the count the capture shows).
+    pub peel_layer_counts: Option<std::sync::Arc<Vec<Vec<Option<usize>>>>>,
+    pub layers_from_capture: bool,
+    /// The game's sky dome MESH (capture e001051), rasterised per peel with VS 16773's constants; None =
+    /// the analytic ellipsoid model (`SkyGradient::dome_radiance`).
+    pub dome_mesh: Option<std::sync::Arc<crate::domemesh::DomeMesh>>,
 }
 
 impl Default for BakeParams {
@@ -265,6 +278,11 @@ impl Default for BakeParams {
             raster_jitter: false,
             jitter_cycle: [[-4.0, 2.0], [-1.0, 3.0], [2.0, 4.0], [-3.0, -1.0], [0.0, 0.0], [3.0, 1.0], [-2.0, -4.0], [1.0, -3.0], [4.0, -2.0]],
             jitter_sign: -1.0,
+            peel_stop: crate::peelcap::PeelStop::default(),
+            peel_layers_fixed: None,
+            peel_layer_counts: None,
+            layers_from_capture: true,
+            dome_mesh: None,
         }
     }
 }
@@ -372,7 +390,24 @@ pub fn world_tris_masks(scene: &Scene) -> (Vec<WTri>, Vec<crate::geometry::Alpha
         eprintln!("bvh: {skipped} flat ground-tile items left out (receivers only)");
     }
     if cut_tris > 0 {
-        eprintln!("bvh: {cut_tris} alpha-tested triangles ({} cut-out masks)", masks.len());
+        eprintln!("bvh: {cut_tris} alpha-tested triangles ({} cut-out masks: {})", masks.len(), mask_names.iter().enumerate().map(|(i, n)| format!("{i} = {n} {}×{}", masks[i].w, masks[i].h)).collect::<Vec<_>>().join(", "));
+        // LMTOOL_DUMP_CARDS=FILE: every alpha-tested world triangle as text (mask index, the three vertices'
+        // world positions and TexCoord0) — a differential check against a capture's post-VS card vertices
+        if let Ok(path) = std::env::var("LMTOOL_DUMP_CARDS") {
+            let mut txt = String::new();
+            for t in out.iter().filter(|t| t.alpha != u16::MAX) {
+                let p1 = [t.p0[0] + t.e1[0], t.p0[1] + t.e1[1], t.p0[2] + t.e1[2]];
+                let p2 = [t.p0[0] + t.e2[0], t.p0[1] + t.e2[1], t.p0[2] + t.e2[2]];
+                txt.push_str(&format!("{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n", t.alpha, t.inst, t.tri, t.p0[0], t.p0[1], t.p0[2], t.uv0[0][0], t.uv0[0][1], p1[0], p1[1], p1[2], t.uv0[1][0], t.uv0[1][1], p2[0], p2[1], p2[2], t.uv0[2][0], t.uv0[2][1]));
+            }
+            std::fs::write(&path, txt).expect("LMTOOL_DUMP_CARDS");
+            // and the masks as PGM (255 = opaque) next to it
+            for (i, m) in masks.iter().enumerate() {
+                let mut pgm = format!("P5\n{} {}\n255\n", m.w, m.h).into_bytes();
+                for y in 0..m.h { for x in 0..m.w { let bit = m.bits[(y * m.w + x) >> 3] & (1 << ((y * m.w + x) & 7)) != 0; pgm.push(if bit { 255 } else { 0 }); } }
+                std::fs::write(format!("{path}.mask{i}.pgm"), pgm).expect("mask pgm");
+            }
+        }
     }
     for (di, d) in scene.decor.iter().enumerate() {
         out.push(WTri { p0: d.p[0], e1: sub(d.p[1], d.p[0]), e2: sub(d.p[2], d.p[0]), inst: crate::geometry::DECOR_INST, tri: di as u32, alpha: u16::MAX, uv0: [[0.0; 2]; 3] });

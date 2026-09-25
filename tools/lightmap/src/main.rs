@@ -1280,12 +1280,29 @@ fn run(a: Vec<String>) {
             if let Some(k) = f("--hbasis-kappa") { prm.hbasis_kappa = k.parse().expect("--hbasis-kappa"); }
             prm.sweep0_sun = has("--sweep0-sun");
             prm.dome_exact = !has("--dome-per-direction");
+            // THE DOME MESH (domemesh.rs): with --env-from PASSCAP the game's own dome triangles (mesh e001051) are
+            // rasterised per peel and PS 16774 runs on the interpolated (u, v); --dome-analytic keeps the ellipsoid model
+            if !has("--dome-analytic") {
+                if let Some(dir) = f("--env-from") {
+                    match lightmap::domemesh::DomeMesh::load(std::path::Path::new(&dir)) {
+                        Ok(m) => { eprintln!("env-from {dir}: the sky dome mesh ({} vertices, {} triangles) rasterised per peel", m.pos.len(), m.indices.len() / 3); prm.dome_mesh = Some(std::sync::Arc::new(m)); }
+                        Err(e) => eprintln!("env-from {dir}: no dome mesh ({e}) — the analytic dome stands in"),
+                    }
+                }
+            }
             // --raster-jitter / --no-raster-jitter: the game's per-direction LM raster offsets (default on under
             // --game-peel with --ss 1); --jitter-sign +1|-1 (the sampling side of the offset, under test)
             prm.raster_jitter = if has("--no-raster-jitter") { false } else if has("--raster-jitter") { true } else { prm.game_peel };
             if let Some(v) = f("--jitter-sign") { prm.jitter_sign = v.parse().expect("--jitter-sign"); }
             if let Some(v) = f("--max-dirs") { prm.max_dirs = v.parse().expect("--max-dirs"); }
             prm.profile = has("--profile");
+            // the peel layer-count rule (peelcap::PeelStop): --peel-stop-threshold F (0.001 of the viewport), --peel-stop-lag L
+            // (the query readback lag in layers, 2), --peel-layers N (a fixed item-layer count), --layers-by-rule (ignore the
+            // captured counts a --frustum-from manifest carries)
+            if let Some(v) = f("--peel-stop-threshold") { prm.peel_stop.threshold = v.parse().expect("--peel-stop-threshold"); }
+            if let Some(v) = f("--peel-stop-lag") { prm.peel_stop.lag = v.parse().expect("--peel-stop-lag"); }
+            if let Some(v) = f("--peel-layers") { prm.peel_layers_fixed = Some(v.parse().expect("--peel-layers")); }
+            prm.layers_from_capture = !has("--layers-by-rule");
             prm.obj_base = base;
             let game_manifest: Option<lightmap::passdump::Manifest> = f("--frustum-from").map(|p| {
                 let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--frustum-from {p}: {e}"));
@@ -1298,6 +1315,12 @@ fn run(a: Vec<String>) {
                 if has("--shadow-frustum-from-capture") { if let Some(e) = gm.passes.iter().find(|e| e.pass == "sun_shadow") { if let Some(fr) = &e.frustum { prm.shadow_frustum = Some(fr.clone()); eprintln!("frustum-from: the sun shadow map's frustum adopted (centre {:?}, half {:?})", fr.center, fr.half); } } }
                 let fs = lightmap::passdiff::peel_frustums_for(gm, 0, &prm.sphere_dirs);
                 if !fs.is_empty() { eprintln!("frustum-from: sweep 0: {} directions' peels adopted ({} peels per direction) ({:.1}s since start)", fs.len(), fs.iter().map(|v| v.len()).max().unwrap_or(0), t0.elapsed().as_secs_f32()); prm.frustums = Some(std::sync::Arc::new(fs)); }
+                // the captured ITEM-LAYER COUNTS per direction and peel (the game's count is timing-dependent —
+                // the pixel-count query is polled without waiting — so the harness renders as many layers as
+                // the capture shows; --layers-by-rule uses the stop rule instead)
+                let lc = lightmap::peelcap::captured_layer_counts(gm, 0, &prm.sphere_dirs);
+                let n_known = lc.iter().filter(|v| v.iter().any(|c| c.is_some())).count();
+                if n_known > 0 { eprintln!("frustum-from: {} directions' captured item-layer counts adopted: {}", n_known, lc.iter().enumerate().filter(|(_, v)| v.iter().any(|c| c.is_some())).map(|(i, v)| format!("dir {i} {:?}", v)).collect::<Vec<_>>().join(", ")); prm.peel_layer_counts = Some(std::sync::Arc::new(lc)); }
                 if let Some(e) = gm.passes.iter().find(|e| e.pass == "peel_depth") { if e.width > 0 && e.width != prm.peel_res { eprintln!("frustum-from: peel resolution {} → {}", prm.peel_res, e.width); prm.peel_res = e.width; } }
             }
             if let Some(dir) = &dump_dir {
@@ -3089,6 +3112,11 @@ fn run(a: Vec<String>) {
                 }
             }
         }
+        // lmtool peel-layers PASSCAP_ROOT [--game-manifest FILE]: the captured peel layers' pixel counts and the
+        // game's layer-count rule against them (peelcap.rs)
+        "peel-layers" => lightmap::peelcap::run(&a),
+        "quanta-diff" => lightmap::peelcap::quanta_diff(&a),
+        "layer-gap" => lightmap::peelcap::layer_gap(&a),
         "passcap-info" => {
             // lmtool passcap-info DIR [--pass P] [--max N]: per entry of a MANIFEST.json the buffer's statistics
             // (min / max / mean per channel, the fraction of clear pixels) and the derived frustum — a look at a

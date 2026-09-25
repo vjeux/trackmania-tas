@@ -44,6 +44,9 @@ pub struct SkyGradient {
     pub dome_u_mode: u8,
 }
 
+/// LMTOOL_BILINEAR_F32=1: f32 bilinear weights instead of the GPU's 8-bit fractions (a probe).
+static BILINEAR_F32: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_BILINEAR_F32").map(|v| v == "1").unwrap_or(false));
+
 impl SkyGradient {
     pub fn load(path: &str) -> Result<SkyGradient, String> {
         let d = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
@@ -97,7 +100,13 @@ impl SkyGradient {
         let fx = wrap_u(u) * self.w as f32 - 0.5;
         let fy = (v.clamp(0.0, 1.0) * self.h as f32 - 0.5).clamp(0.0, (self.h - 1) as f32);
         let (x0, y0) = (fx.floor(), fy.floor());
-        let (tx, ty) = (fx - x0, fy - y0);
+        let (mut tx, mut ty) = (fx - x0, fy - y0);
+        // the GPU's bilinear weights carry 8 fractional bits (D3D11 3.2.3: at least 8 bits of sub-texel
+        // precision; the fraction is truncated to 1/256 steps) — LMTOOL_BILINEAR_F32=1 keeps the f32 weights
+        if !*BILINEAR_F32 {
+            tx = (tx * 256.0).floor() / 256.0;
+            ty = (ty * 256.0).floor() / 256.0;
+        }
         let xi = |x: f32| -> usize {
             match u_mode {
                 0 => (x.rem_euclid(self.w as f32)) as usize % self.w,
@@ -163,14 +172,23 @@ impl SkyGradient {
         let sun_u = shift.unwrap_or_else(|| (self.sun_dir[0].atan2(self.sun_dir[2]) / std::f32::consts::PI) as f32);
         let u = u_mesh - sun_u;
         let v = 1.0 - v_mesh;
-        // PS: the second gradient × ScaleGrad1 (the first × ScaleGrad0 = 0), the lobes, the fog, GlobalScale
-        let g = self.sample_linear(u, v, self.dome_u_mode);
         static DEBUG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *DEBUG.get_or_init(|| std::env::var_os("LMTOOL_DOME_DEBUG").is_some()) {
+            let g = self.sample_linear(u, v, self.dome_u_mode);
             eprintln!("dome: q ({:.1},{:.1},{:.1}) d ({:.3},{:.3},{:.3}) t {t:.0} P ({:.0},{:.0},{:.0}) u_mesh {u_mesh:.4} v_mesh {v_mesh:.4} sun_u {sun_u:.4} u {u:.4} v {v:.4} tex ({:.4},{:.4},{:.4}) sun_dir ({:.3},{:.3},{:.3}) scale {} fog {:?} global {}", q[0], q[1], q[2], d[0], d[1], d[2], p[0], p[1], p[2], g[0], g[1], g[2], self.sun_dir[0], self.sun_dir[1], self.sun_dir[2], self.scale, self.fog, self.global_scale);
         }
+        self.sky_ps([u, v], [p[0] as f32 - eye[0], p[1] as f32 - eye[1], p[2] as f32 - eye[2]])
+    }
+
+    /// PS 16774 (the sky dome's pixel shader) on the interpolated attributes: `uv` = o1 (the VS's shifted,
+    /// inverted texture coordinate), `view` = o2 = world − eye (normalised here, as the shader does):
+    /// `r1 = TMapGradientV1(uv)·ScaleGrad1` (`scale`; TMapGradientV·ScaleGrad0 = 0 in the capture),
+    /// the Atmo lobes `exp2(Power·log2(max(0, view·−LightDir)))·Scale·Rgb` (`lobes`; the sun disc is off:
+    /// SunIsVisible 0), the fog `lerp(Fog, ·, sat(1 − FogIntens))`, × GlobalScale, min 16375.
+    pub fn sky_ps(&self, uv: [f32; 2], view: [f32; 3]) -> [f32; 3] {
+        let g = self.sample_linear(uv[0], uv[1], self.dome_u_mode);
         let mut out = [g[0] * self.scale, g[1] * self.scale, g[2] * self.scale];
-        let view = { let v = [p[0] as f32 - eye[0], p[1] as f32 - eye[1], p[2] as f32 - eye[2]]; let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-9); [v[0] / l, v[1] / l, v[2] / l] };
+        let view = { let l = (view[0] * view[0] + view[1] * view[1] + view[2] * view[2]).sqrt().max(1e-9); [view[0] / l, view[1] / l, view[2] / l] };
         let cos_t = (view[0] * self.sun_dir[0] + view[1] * self.sun_dir[1] + view[2] * self.sun_dir[2]).max(0.0);
         for (power, rgb, scale) in &self.lobes {
             // log/exp as the shader: exp(power·log(cos)) → 0 at cos = 0
@@ -189,6 +207,13 @@ impl SkyGradient {
             out[k] = (out[k] * self.global_scale).min(16375.0);
         }
         out
+    }
+
+    /// The VS 16773 constant GbxSkyV0.LightDirAngle_m11Zx as the port derives it: the sun's azimuth/π
+    /// (atan2(x, z)/π of the direction TOWARDS the sun) — 0.8138 in the capture for the sun at
+    /// (0.22097, 0.91646, −0.33357).
+    pub fn light_dir_angle(&self) -> f32 {
+        (self.sun_dir[0].atan2(self.sun_dir[2]) / std::f32::consts::PI) as f32
     }
 
     /// The sky radiance in direction `d` (unit).
