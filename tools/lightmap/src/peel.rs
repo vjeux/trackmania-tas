@@ -122,15 +122,24 @@ impl PeelFrame {
     /// it everything beyond the receivers' bbox would pancake onto one far-plane layer and merge.
     pub fn extend_far(&mut self, tris: &[WTri]) {
         let zmax = self.z_from_z01(1.0);
-        let mut zmin = self.z_from_z01(0.0);
-        for t in tris {
-            for p in [t.p0, [t.p0[0] + t.e1[0], t.p0[1] + t.e1[1], t.p0[2] + t.e1[2]], [t.p0[0] + t.e2[0], t.p0[1] + t.e2[1], t.p0[2] + t.e2[2]]] {
-                let z = -dot(p, self.d);
-                if z.is_finite() {
-                    zmin = zmin.min(z);
+        let zmin0 = self.z_from_z01(0.0);
+        let d = self.d;
+        // the minimum over every vertex, in parallel chunks (millions of triangles on the big maps)
+        let chunk = (tris.len() / (crate::pool::pool().threads * 4).max(1)).max(4096);
+        let n_chunks = (tris.len() + chunk - 1) / chunk;
+        let mins: Vec<f32> = crate::pool::pool().map(n_chunks, |ci| {
+            let mut zmin = zmin0;
+            for t in &tris[ci * chunk..((ci + 1) * chunk).min(tris.len())] {
+                for p in [t.p0, [t.p0[0] + t.e1[0], t.p0[1] + t.e1[1], t.p0[2] + t.e1[2]], [t.p0[0] + t.e2[0], t.p0[1] + t.e2[1], t.p0[2] + t.e2[2]]] {
+                    let z = -dot(p, d);
+                    if z.is_finite() {
+                        zmin = zmin.min(z);
+                    }
                 }
             }
-        }
+            zmin
+        });
+        let zmin = mins.into_iter().fold(zmin0, f32::min);
         self.half_d = (0.5 * (zmax - zmin)).max(1e-3);
         self.zc = -0.5 * (zmin + zmax);
     }
@@ -345,10 +354,13 @@ pub fn build_abuffer_sparse(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
         y0: i32,
         y1: i32,
     }
-    let prep: Vec<Prep> = tris
+    let prep_chunk = (tris.len() / (threads * 4).max(1)).max(4096);
+    let n_prep = (tris.len() + prep_chunk - 1) / prep_chunk;
+    let prep_parts: Vec<Vec<Prep>> = crate::pool::pool().map(n_prep, |ci| tris[ci * prep_chunk..((ci + 1) * prep_chunk).min(tris.len())]
         .iter()
         .enumerate()
-        .filter_map(|(ti, t)| {
+        .filter_map(|(k, t)| {
+            let ti = ci * prep_chunk + k;
             let p0 = t.p0;
             let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
             let p2 = [p0[0] + t.e2[0], p0[1] + t.e2[1], p0[2] + t.e2[2]];
@@ -379,7 +391,8 @@ pub fn build_abuffer_sparse(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
             }
             Some(Prep { ti: ti as u32, p: [[x0, y0], [x1, y1], [x2, y2]], z: [z0, z1, z2], y0: ry0, y1: ry1 })
         })
-        .collect();
+        .collect());
+    let prep: Vec<Prep> = prep_parts.into_iter().flatten().collect();
     prof::add(&prof::B_CLIP, t_clip);
     let t_raster = std::time::Instant::now();
     let raster_stats = raster_stats_on();
