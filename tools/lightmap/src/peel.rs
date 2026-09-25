@@ -2359,6 +2359,21 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     eprintln!("peel: direction {di} peel {pi}: {} item layers rendered of {} with content (fractions {}); {}", ly.item_layers, cand, ly.fractions.iter().take(cand.max(ly.item_layers).min(ly.fractions.len())).map(|f| format!("{f:.6}")).collect::<Vec<_>>().join(" "), match fixed_layers { Some(k) => format!("the captured count {k}"), None => format!("the stop rule (< {}, lag {})", prm.peel_stop.threshold, prm.peel_stop.lag) });
                 }
             }
+            // AddAmbient (CS 17125, lmaccum.rs): once per UPWARD direction of the first sweep, after the world peel's environment
+            // render — `accum.xyz += Scale · colour[W/2, H/2]`, `.w += Scale/2`, Scale = 4·w·D.y·Sky with w = 2/N (= D.y/32 at N = 256)
+            // (the accumulator after every direction is kept: entry di = the value once direction di has been issued)
+            if let (Some(acc), Some(ly), true) = (&prm.ambient_out, &layers, prm.sweep == 0 && pi == 0) {
+                let mut g = acc.lock().unwrap();
+                let mut v = g.last().copied().unwrap_or([0.0; 4]);
+                if d[1] > 0.0 {
+                    let img = ly.colour_image(0, 0);
+                    let centre = img[((ly.h / 2) * ly.w + ly.w / 2) as usize];
+                    let scale = 4.0 * (2.0 / prm.sphere_dirs.len().max(1) as f32) * d[1] * 1.0;
+                    crate::lmaccum::cs_17125(&mut v, centre, scale);
+                }
+                while g.len() < di { let l = g.last().copied().unwrap_or([0.0; 4]); g.push(l); }
+                g.push(v);
+            }
             // the transcribed LmILightDir_Set blocks over this peel's layers: block k reads layer k's colour + depth targets
             // (k = 0 the environment render; the clear 1.0 / black where a pixel has fewer layers); the fitted peel's blocks
             // clip to the items' world box (VS 17115)

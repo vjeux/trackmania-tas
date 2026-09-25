@@ -215,6 +215,9 @@ pub struct BakeParams {
     /// the peel loop (SetILightDir per layer, the sky visibility, the folds, the AddAmbient dispatch); the state
     /// lives across the sweeps and is read back by the caller for the file's probe blob / the record's LAmbient.
     pub probe_bake: Option<std::sync::Arc<std::sync::Mutex<crate::probebake::ProbeBake>>>,
+    /// The AddAmbient accumulator (CS 17125, E's transcription) fed by OUR environment renders' centre pixels — the
+    /// first sweep's upward directions, the world peel's layer 0 at (W/2, H/2); read after the sweep.
+    pub ambient_out: Option<std::sync::Arc<std::sync::Mutex<Vec<[f32; 4]>>>>,
     pub fitted_world_box: Option<[[f32; 2]; 2]>,
     pub hbasis_game: Option<(std::path::PathBuf, std::sync::Arc<Vec<crate::lmaccum::CapEntry>>)>,
     /// The ILightInput atlas the peel colour samples (PS 17131 SRV1; `peelcolor`): the capture's texture
@@ -332,6 +335,7 @@ impl Default for BakeParams {
             ilatlas: None,
             hb_out: None,
             probe_bake: None,
+            ambient_out: None,
             fitted_world_box: None,
             hbasis_game: None,
             ilight_atlas: None,

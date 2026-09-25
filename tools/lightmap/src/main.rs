@@ -1377,6 +1377,7 @@ fn run(a: Vec<String>) {
                 eprintln!("ilightinput-from {src}: atlas {}×{}, {} LM instances ({} items, {} tiles by footprint), port items mapped {:?} ({:.1}s)", il.buf.w, il.buf.h, il.insts.len(), n_items, il.tile_of.len(), item_map, ti.elapsed().as_secs_f32());
                 prm.ilatlas = Some(std::sync::Arc::new(lightmap::ilatlas::IlSource { atlas: il, item_map }));
                 prm.hb_out = Some(std::sync::Arc::new(lightmap::ilatlas::HbSlot(std::sync::Mutex::new(None))));
+                prm.ambient_out = Some(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
             }
             if let Some(gm) = &game_manifest {
                 // the sun shadow map's frustum (only with --shadow-frustum-from-capture: the sun pass's
@@ -1850,6 +1851,41 @@ fn run(a: Vec<String>) {
             let mut hb_sweeps: Vec<lightmap::lmaccum::HbTargets> = Vec::new();
             let take_hb = |p: &lightmap::bake::BakeParams| -> Option<lightmap::lmaccum::HbTargets> { p.hb_out.as_ref().and_then(|s| s.0.lock().unwrap().take()) };
             if let Some(hb) = take_hb(&prm) { eprintln!("chain: sweep 0's H-basis MRTs taken ({}×{})", hb.w, hb.h); hb_sweeps.push(hb); }
+            // the AddAmbient accumulator of sweep 0 (E's CS 17125 on OUR environment renders' centre pixels) against every banked
+            // pwc2 snapshot: a snapshot at (frame, eid) holds the directions 0..=k, k = the direction whose H-basis draws come next
+            // (E's ambient-check rule); ours after direction k is compared value for value
+            if let Some(acc) = &prm.ambient_out {
+                let ours = acc.lock().unwrap().clone();
+                let last = ours.last().copied().unwrap_or([0.0; 4]);
+                eprintln!("chain: AddAmbient accumulator after sweep 0 (ours, {} directions): [{:.6}, {:.6}, {:.6}, w {:.6}]", ours.len(), last[0], last[1], last[2], last[3]);
+                if let Some(mp) = f("--frustum-from") {
+                    if let Ok(entries) = lightmap::lmaccum::load_capture_entries(std::path::Path::new(&mp)) {
+                        let root = std::path::PathBuf::from(f("--lm-from").unwrap());
+                        let snaps: Vec<&lightmap::lmaccum::CapEntry> = entries.iter().filter(|e| e.pass == "ambient_accum" && e.capture == "pwc2").collect();
+                        let mut dirs: Vec<(u32, u32, u64)> = entries.iter().filter(|e| e.pass == "hbasis0" && e.capture == "pwc2" && e.sweep_direction_index.is_some()).map(|e| (e.sweep_direction_index.unwrap(), e.frame, e.eid_last)).collect();
+                        dirs.sort_by_key(|d| (d.1, d.2));
+                        let (mut n, mut exact, mut ulp1, mut worst) = (0usize, 0usize, 0usize, 0f32);
+                        let mut shown = 0;
+                        for e in &snaps {
+                            let Ok(b) = lightmap::passdiff::read_entry_bytes(&root, &e.file) else { continue };
+                            if b.len() < 16 { continue; }
+                            let g = |o: usize| f32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+                            let cap = [g(0), g(4), g(8), g(12)];
+                            let Some(k) = dirs.iter().find(|d| (d.1, d.2) > (e.frame, e.eid_last)).map(|d| d.0) else { continue };
+                            let Some(o) = ours.get(k as usize) else { continue };
+                            for c in 0..4 {
+                                n += 1;
+                                let d = (o[c] - cap[c]).abs();
+                                if d == 0.0 { exact += 1; } else if d <= 2.0 * f32::EPSILON * cap[c].abs().max(1e-6) { ulp1 += 1; }
+                                let rel = d / cap[c].abs().max(1e-6);
+                                if rel > worst { worst = rel; }
+                            }
+                            if shown < 4 { eprintln!("chain:   through direction {k}: ours [{:.6}, {:.6}, {:.6}, w {:.6}] captured [{:.6}, {:.6}, {:.6}, w {:.6}]", o[0], o[1], o[2], o[3], cap[0], cap[1], cap[2], cap[3]); shown += 1; }
+                        }
+                        eprintln!("chain: AddAmbient vs {} banked pwc2 snapshots: {exact} of {n} values bit-identical, {ulp1} within 2 f32 ulps, worst relative |Δ| {:.3e}", snaps.len(), worst);
+                    }
+                }
+            }
             let mrt_buf = |hb: &lightmap::lmaccum::HbTargets, m: usize| -> lightmap::passdiff::Buf { let mut b = lightmap::passdiff::Buf::new(hb.w, hb.h, 4); for i in 0..(hb.w * hb.h) as usize { for c in 0..4 { b.data[i * 4 + c] = hb.mrt[m][i][c]; } } b };
             for it in 1..iterations {
                 let mut field = lightmap::bake::RadianceField { charts: vec![None; scene.instances.len()], flip_v: prm.flip_v, uv_bounds: prm.uv_bounds };
