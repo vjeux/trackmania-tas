@@ -117,6 +117,23 @@ impl PeelFrame {
     pub fn pixel_m(&self) -> f32 {
         1.0 / self.scale
     }
+    /// Push the far plane out to cover every vertex of `tris` (the occluders below / beyond the
+    /// receivers: the ground, the sea, the decoration), keeping the near plane where it is — without
+    /// it everything beyond the receivers' bbox would pancake onto one far-plane layer and merge.
+    pub fn extend_far(&mut self, tris: &[WTri]) {
+        let zmax = self.z_from_z01(1.0);
+        let mut zmin = self.z_from_z01(0.0);
+        for t in tris {
+            for p in [t.p0, [t.p0[0] + t.e1[0], t.p0[1] + t.e1[1], t.p0[2] + t.e1[2]], [t.p0[0] + t.e2[0], t.p0[1] + t.e2[1], t.p0[2] + t.e2[2]]] {
+                let z = -dot(p, self.d);
+                if z.is_finite() {
+                    zmin = zmin.min(z);
+                }
+            }
+        }
+        self.half_d = (0.5 * (zmax - zmin)).max(1e-3);
+        self.zc = -0.5 * (zmin + zmax);
+    }
 }
 
 /// One fragment of the A-buffer: depth and the world triangle (index into the BVH's triangle list).
@@ -880,12 +897,23 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
     }
     if let Some((c, _)) = dbg { eprintln!("peel debug: {} sub-samples near {:?}: {:?}", dbg_subs.len(), c, dbg_subs.iter().map(|&i| (subs[i as usize].p, subs[i as usize].n, subs[i as usize].group)).collect::<Vec<_>>()); }
     let dbg_printed = std::sync::atomic::AtomicUsize::new(0);
+    let game_dbg: Option<(usize, usize, usize)> = std::env::var("LMTOOL_GAME_PEEL_DEBUG").ok().and_then(|s| { let v: Vec<usize> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect(); if v.len() == 3 { Some((v[0], v[1], v[2])) } else { None } });
+    let game_dbg = &game_dbg;
+    let dbg_printed = &dbg_printed;
     for (di, d) in dirs.iter().enumerate() {
         let g = di % groups;
         let scale = 4.0 / group_count[g].max(1) as f32;
         let frame = match prm.frustums.as_ref().and_then(|fs| fs.get(di)) {
             Some(fr) => PeelFrame::from_frustum(fr, prm.peel_res, prm.peel_res),
-            None => PeelFrame::new(*d, bmin, bmax, prm.peel_res),
+            None => {
+                let mut fr = PeelFrame::new(*d, bmin, bmax, prm.peel_res);
+                // the game's frustum covers its whole scene (the ground tiles included); ours is fit to
+                // the receivers, so the far plane is pushed out to every occluder — otherwise the ground,
+                // the sea and the decoration would pancake onto one far-plane layer and merge into its
+                // farthest (often invisible / black) member (found by the dry run, 2026-09-24 18:10 PT)
+                if prm.game_peel { fr.extend_far(&bvh.tris); }
+                fr
+            }
         };
         let tb = std::time::Instant::now();
         // the deepest receiver along this direction: nothing beyond it can occlude
@@ -984,6 +1012,18 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                             // stored bias gives the colour (the dome layer catches the open sky); nothing → the clear
                             let (px, py) = (lookup_pixel(x, ly.w, prm.peel_inset), lookup_pixel(y, ly.h, prm.peel_inset));
                             let z01 = frame.z01(z);
+                            // LMTOOL_GAME_PEEL_DEBUG=dir,chart,count: print the layer list and the selection of the
+                            // first `count` gathering sub-samples of that chart for that direction
+                            if let Some(&(dd, cc, nn)) = game_dbg.as_ref() {
+                                if dd == di && cc == s.chart as usize && dbg_printed.load(std::sync::atomic::Ordering::Relaxed) < nn {
+                                    let k = dbg_printed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    if k < nn {
+                                        let list = ly.at(px, py);
+                                        let sel = select_layer(list, z01).map(|f| format!("d {:.5} rgb ({:.3},{:.3},{:.3})", f.d, f.rgb[0], f.rgb[1], f.rgb[2])).unwrap_or("NONE".into());
+                                        eprintln!("game-peel debug: dir {di} d ({:.3},{:.3},{:.3}) chart {} sub ({},{}) p ({:.2},{:.2},{:.2}) n ({:.2},{:.2},{:.2}) ndd {ndd:.3}: px ({x:.2},{y:.2}) → lookup ({px},{py}), z_port {z:.3} z01 {z01:.5}; {} layers: [{}]; selected {sel}", d[0], d[1], d[2], s.chart, s.sx, s.sy, s.p[0], s.p[1], s.p[2], s.n[0], s.n[1], s.n[2], list.len(), list.iter().map(|f| format!("d {:.5} rgb ({:.2},{:.2},{:.2})", f.d, f.rgb[0], f.rgb[1], f.rgb[2])).collect::<Vec<_>>().join(" | "));
+                                    }
+                                }
+                            }
                             match select_layer(ly.at(px, py), z01) {
                                 Some(f) => { l = f.rgb; occluded = f.d > 0.0 || !prm.dome_layer; }
                                 None => { l = if prm.dome_layer { [0.0; 3] } else { sky }; }

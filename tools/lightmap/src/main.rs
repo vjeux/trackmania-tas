@@ -1264,7 +1264,7 @@ fn run(a: Vec<String>) {
                 dmp.convention("chart_ss", serde_json::json!(format!("per-chart buffers at (2·w·{ss})×(2·h·{ss}) = the layout footprint × ss (the game's atlas × ss, cut by chart); `chart` = stored texels", ss = if prm.per_subsample { prm.ss } else { 1 })));
                 dmp.convention("obj_base", serde_json::json!(base));
                 dmp.convention("game_peel", serde_json::json!(prm.game_peel));
-                dmp.convention("frustum_source", serde_json::json!(if game_manifest.is_some() { "the captured MANIFEST (--frustum-from)" } else { "the receivers' bbox + 1 m, square, (res − 1) px over the larger extent" }));
+                dmp.convention("frustum_source", serde_json::json!(if game_manifest.is_some() { "the captured MANIFEST (--frustum-from)" } else { "the receivers' bbox + 1 m, square, (res − 1) px over the larger extent; the far plane pushed out to every occluder (ground, sea, decoration)" }));
                 prm.dump = Some(std::sync::Arc::new(std::sync::Mutex::new(dmp)));
             }
             // --layout-from REF.Map.Gbx: every item chart takes the reference bake's chart SIZE (its object id

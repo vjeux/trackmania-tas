@@ -624,7 +624,9 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
     let ours = read_manifest(&std::fs::read_to_string(ours_root.join("MANIFEST.json")).map_err(|e| format!("{}: {e}", ours_root.join("MANIFEST.json").display()))?)?;
     let mut findings: Vec<String> = Vec::new();
     // the game's chart rects (its layout, or the baked map's mapping); ours from our layout
-    let game_rects = chart_rects(&game, opts.game_map.as_deref().or(if game.map.is_empty() { None } else { Some(game.map.as_str()) }));
+    let game_map_path: Option<String> = opts.game_map.clone().or_else(|| game.baked_map.clone()).or(if game.map.is_empty() { None } else { Some(game.map.clone()) });
+    let game_rects = chart_rects(&game, game_map_path.as_deref());
+    if !game.layout.is_empty() { findings.push(format!("layout: the game's chart rects from its manifest ({} charts)", game.layout.len())); } else if let Some(p) = &game_map_path { findings.push(format!("layout: the game's chart rects from the mapping of {p} ({} charts)", game_rects.len())); } else { findings.push("layout: NO chart rects for the game side (no `layout`, no `baked_map`, no --game-map) — atlas-space passes cannot be cut".into()); }
     let game_rect_of: HashMap<u32, ChartRect> = game_rects.iter().map(|r| (r.obj, r.clone())).collect();
     let our_rect_of: HashMap<u32, ChartRect> = ours.layout.iter().map(|r| (r.obj, r.clone())).collect();
     // layout comparison (a convention pass of its own)
@@ -685,15 +687,22 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
         if let Some(p) = &opts.pass { if &oe.pass != p { continue; } }
         if pipeline_rank(&oe.pass) == PIPELINE.len() { continue; }
         let obj = oe.chart.as_ref().map(|c| c.obj);
-        // the game's matching entry: same chart, or an atlas-space one to cut
+        // the game's matching entry: same chart, or an atlas-space one to cut; our `final_hdr` (E) also
+        // matches the game's `hbasis0` (C0 = √(2π)·E for a flat normal) through a named scale
         let key_chart = (oe.pass.clone(), oe.sweep, oe.direction, oe.layer, obj);
         let key_atlas = (oe.pass.clone(), oe.sweep, oe.direction, oe.layer, None);
-        let ge_i = game_idx.get(&key_chart).and_then(|v| v.first().copied()).or_else(|| if obj.is_some() { game_idx.get(&key_atlas).and_then(|v| v.first().copied()) } else { None });
+        let mut pre_scale: Option<(f32, &str)> = None;
+        let mut ge_i = game_idx.get(&key_chart).and_then(|v| v.first().copied()).or_else(|| if obj.is_some() { game_idx.get(&key_atlas).and_then(|v| v.first().copied()) } else { None });
+        if ge_i.is_none() && oe.pass == "final_hdr" {
+            ge_i = game_idx.get(&("hbasis0".to_string(), None, None, None, None)).and_then(|v| v.first().copied());
+            if ge_i.is_some() { pre_scale = Some((0.398_942_28, "hbasis_c0_to_irradiance(game C0 × 1/√(2π))")); }
+        }
         let Some(ge_i) = ge_i else { *missing.entry(oe.pass.clone()).or_insert(0) += 1; continue };
         let ge = &game.passes[ge_i];
         let mut transforms: Vec<String> = Vec::new();
         let ob = match load_entry(ours_root, oe) { Ok(b) => b, Err(e) => { eprintln!("passdiff: ours {}: {e}", oe.file); continue; } };
-        let gb = match load_entry(game_root, ge) { Ok(b) => b, Err(e) => { eprintln!("passdiff: game {}: {e}", ge.file); continue; } };
+        let mut gb = match load_entry(game_root, ge) { Ok(b) => b, Err(e) => { eprintln!("passdiff: game {}: {e}", ge.file); continue; } };
+        if let Some((s, name)) = pre_scale { for v in gb.data.iter_mut() { *v *= s; } transforms.push(name.into()); }
         let depth = is_depth_pass(&oe.pass);
         let channels = if depth { 1 } else { ob.channels.min(gb.channels).min(3) };
         let floor = if depth { opts.floor.max(1e-3) } else { opts.floor };
@@ -751,7 +760,8 @@ pub fn run(game_root: &std::path::Path, ours_root: &std::path::Path, opts: &Opts
         };
         let mut stats = compare(&g, &o, channels, opts.tol, floor, opts.stride, &mask);
         // quantisation conventions for colour passes: does a storage rounding explain the residual?
-        if !depth && channels >= 3 && stats.n > 0 && stats.pct_within() < 99.99 {
+        // (only when the residual is small — a storage rounding is a few percent at most)
+        if !depth && channels >= 3 && stats.n > 0 && stats.pct_within() < 99.99 && stats.mean_abs <= 0.05 * stats.mean_ref.max(1e-6) {
             let cands = [("quantise_r11g11b10_rtne", Quant::R11G11B10, Rounding::NearestEven), ("quantise_r11g11b10_rtz", Quant::R11G11B10, Rounding::Truncate), ("quantise_f16_rtne", Quant::F16, Rounding::NearestEven)];
             let mut best: Option<(&str, Stats, Buf)> = None;
             for (name, q, r) in cands {

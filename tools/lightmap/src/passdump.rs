@@ -177,6 +177,9 @@ pub struct Manifest {
     pub producer: String,
     #[serde(default)]
     pub map: String,
+    /// The baked output map (the editor's save after ComputeShadows): its mapping gives the chart rects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baked_map: Option<String>,
     #[serde(default)]
     pub quality: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -224,6 +227,7 @@ impl PassDump {
             manifest: Manifest {
                 producer: "lmtool bake --raster --dump-passes".into(),
                 map: map.into(),
+                baked_map: None,
                 quality,
                 daytime_word: None,
                 mood: mood.into(),
@@ -406,7 +410,7 @@ mod tests {
 
     #[test]
     fn manifest_round_trips_through_json() {
-        let mut d = PassDump { root: "/tmp".into(), manifest: Manifest { producer: "t".into(), map: "m".into(), quality: 3, daytime_word: Some(7), mood: "BlueBay/Day".into(), atlas: Atlas { w: 2048, h: 2048, ss: 3, stored_w: 1024, stored_h: 1024 }, sun_dir: [0.0, 1.0, 0.0], sun_rgb: [1.0; 3], sweeps: vec![], layout: vec![], conventions: serde_json::Map::new(), passes: vec![] }, dirs: Some(vec![0, 3]), bytes_written: 0 };
+        let mut d = PassDump { root: "/tmp".into(), manifest: Manifest { producer: "t".into(), map: "m".into(), baked_map: None, quality: 3, daytime_word: Some(7), mood: "BlueBay/Day".into(), atlas: Atlas { w: 2048, h: 2048, ss: 3, stored_w: 1024, stored_h: 1024 }, sun_dir: [0.0, 1.0, 0.0], sun_rgb: [1.0; 3], sweeps: vec![], layout: vec![], conventions: serde_json::Map::new(), passes: vec![] }, dirs: Some(vec![0, 3]), bytes_written: 0 };
         let mut e = entry("peel_depth", "peel_depth/s0/d000/l00.bin".into(), "peel");
         e.sweep = Some(0);
         e.direction = Some(0);
