@@ -192,6 +192,13 @@ pub struct BakeParams {
     /// The game's sky dome MESH (capture e001051), rasterised per peel with VS 16773's constants; None =
     /// the analytic ellipsoid model (`SkyGradient::dome_radiance`).
     pub dome_mesh: Option<std::sync::Arc<crate::domemesh::DomeMesh>>,
+    /// THE TRANSCRIBED ACCUMULATE (lmaccum.rs) in the harness: the capture's LM meshes / instance stream (the game's own
+    /// LM raster geometry: vertex normals, tangents, PSIZE modes, two-sided cards) drive LmILightDir_Set over OUR peel
+    /// layers and the H-basis MRTs; `fitted_world_box` = the fitted blocks' WorldBoxMinXZ / MaxXZ (the clip distances
+    /// of VS 17115); `hbasis_game` = the capture (root, entries) to compare each direction's ilightdir / MRTs with.
+    pub lm_scene: Option<std::sync::Arc<crate::lmaccum::LmScene>>,
+    pub fitted_world_box: Option<[[f32; 2]; 2]>,
+    pub hbasis_game: Option<(std::path::PathBuf, std::sync::Arc<Vec<crate::lmaccum::CapEntry>>)>,
 }
 
 impl Default for BakeParams {
@@ -283,6 +290,9 @@ impl Default for BakeParams {
             peel_layer_counts: None,
             layers_from_capture: true,
             dome_mesh: None,
+            lm_scene: None,
+            fitted_world_box: None,
+            hbasis_game: None,
         }
     }
 }

@@ -745,6 +745,7 @@ use std::path::Path;
 /// (the pad (24 indices, 1 instance), the wall (12, 1), the vegetation item (5751, 1), the zone tile (24, 4096)),
 /// each with its first instance in the instance stream, the 4099 instances (vb_17033.bin) and the chart ST table
 /// (g_TcLM_ST_LM01).
+#[derive(Debug)]
 pub struct LmScene {
     pub meshes: Vec<LmMesh>,
     pub inst_first: Vec<usize>,
@@ -841,6 +842,7 @@ pub struct CapEntry {
     pub frame: u32,
     pub direction: Option<u32>,
     pub sweep_direction_index: Option<u32>,
+    pub sweep: Option<u32>,
     pub phase: Option<String>,
     pub layer: Option<u32>,
     pub eid_first: u64,
@@ -867,6 +869,7 @@ pub fn load_capture_entries(manifest: &Path) -> Result<Vec<CapEntry>, String> {
             frame: u(&e["frame"]).unwrap_or(0) as u32,
             direction: u(&e["direction"]).map(|x| x as u32),
             sweep_direction_index: u(&e["sweep_direction_index"]).map(|x| x as u32),
+            sweep: u(&e["sweep"]).map(|x| x as u32),
             phase: e["phase"].as_str().map(|s| s.to_string()),
             layer: u(&e["layer"]).map(|x| x as u32),
             eid_first: u(&e["eid_first"]).or(eid).unwrap_or(0),

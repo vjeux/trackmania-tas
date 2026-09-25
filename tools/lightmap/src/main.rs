@@ -1308,6 +1308,32 @@ fn run(a: Vec<String>) {
                 let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--frustum-from {p}: {e}"));
                 lightmap::passdiff::read_manifest(&txt).unwrap_or_else(|e| panic!("--frustum-from {p}: {e}"))
             });
+            // --lm-from PASSCAP_ROOT [--lm-env-frame 127448] [--fitted-world-box x0,z0,x1,z1]: the transcribed rows 7–9 in the
+            // harness (lmaccum.rs) — the capture's own LM meshes / instance stream drive LmILightDir_Set over OUR peel
+            // layers and the H-basis MRTs; the fitted blocks' world box from the frame's draws log (VS 17115's cbuffer)
+            // unless given; every direction's ilightdir / MRTs compared with the capture's banked buffers (--frustum-from's
+            // manifest, or --lm-game-manifest FILE) by the true issue index
+            if let Some(lm_root) = f("--lm-from") {
+                let root = std::path::PathBuf::from(&lm_root);
+                let env_frame: u32 = f("--lm-env-frame").map(|v| v.parse().expect("--lm-env-frame")).unwrap_or(127448);
+                let sc = lightmap::lmaccum::load_lm_scene(&root, env_frame).unwrap_or_else(|e| panic!("--lm-from {lm_root}: {e}"));
+                eprintln!("lm-from: {} LM meshes, {} instances from env/frame{env_frame}", sc.meshes.len(), sc.instances.len());
+                prm.fitted_world_box = match f("--fitted-world-box") {
+                    Some(v) => { let c: Vec<f32> = v.split(',').map(|x| x.trim().parse().expect("--fitted-world-box x0,z0,x1,z1")).collect(); Some([[c[0], c[1]], [c[2], c[3]]]) }
+                    None => {
+                        // the first fitted block of the frame's log names the box
+                        let draws = lightmap::lmaccum::load_draws(&root, env_frame).unwrap_or_default();
+                        let blocks = lightmap::lmaccum::set_blocks(&draws, &sc).unwrap_or_default();
+                        blocks.iter().flat_map(|b| b.draws.iter()).find_map(|d| d.world_box)
+                    }
+                };
+                eprintln!("lm-from: the fitted blocks' world box {:?}", prm.fitted_world_box);
+                let mp = f("--lm-game-manifest").map(std::path::PathBuf::from).or_else(|| f("--frustum-from").map(std::path::PathBuf::from)).unwrap_or_else(|| root.join("MANIFEST.json"));
+                let entries = lightmap::lmaccum::load_capture_entries(&mp).unwrap_or_else(|e| panic!("{}: {e}", mp.display()));
+                eprintln!("lm-from: {} capture entries from {} ({} ilightdir_final, {} banked hbasis0)", entries.len(), mp.display(), entries.iter().filter(|e| e.pass == "ilightdir_final").count(), entries.iter().filter(|e| e.pass == "hbasis0" && e.banked).count());
+                prm.hbasis_game = Some((root, std::sync::Arc::new(entries)));
+                prm.lm_scene = Some(std::sync::Arc::new(sc));
+            }
             if let Some(gm) = &game_manifest {
                 // the sun shadow map's frustum (only with --shadow-frustum-from-capture: the sun pass's
                 // conventions are the baker's transcription; the port's own frame otherwise) and the
@@ -3338,6 +3364,18 @@ fn run(a: Vec<String>) {
             }
             // the tiles: the ST of the first few tile instances
             for i in 3..sc.instances.len().min(6) { let t = &sc.instances[i]; println!("tile instance {i}: q {:?} t {:?} scale {} st {:?}", t.q, t.t, t.scale, t.st); }
+            // the items' world-space AABB (the fitted blocks' WorldBoxMinXZ / MaxXZ candidates)
+            {
+                let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                for mi in 0..sc.meshes.len() {
+                    if sc.inst_count[mi] > 1 { continue; }
+                    let inst = &sc.instances[sc.inst_first[mi]];
+                    let rows = lightmap::sunpass::rotation_rows(inst.q);
+                    for v in &sc.meshes[mi].verts { let p = lightmap::lmaccum::world_pos(v, inst, &rows); for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+                }
+                println!("items' world AABB: x {:.4}..{:.4}  y {:.4}..{:.4}  z {:.4}..{:.4} (the captured fitted-block box: x 861.01..880.0, z 336.98..369.0)", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]);
+                for mi in 0..sc.meshes.len() { if sc.inst_count[mi] > 1 { continue; } let inst = &sc.instances[sc.inst_first[mi]]; let rows = lightmap::sunpass::rotation_rows(inst.q); let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]); for v in &sc.meshes[mi].verts { let p = lightmap::lmaccum::world_pos(v, inst, &rows); for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } } println!("  mesh {mi}: translation {:?} scale {}  AABB x {:.4}..{:.4} y {:.4}..{:.4} z {:.4}..{:.4}", inst.t, inst.scale, lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]); }
+            }
             // --mesh M --tri T [--dir x,y,z]: one triangle's vertices and their VS 17118 outputs
             if let (Some(mi), Some(ti)) = (f("--mesh"), f("--tri")) {
                 let (mi, ti): (usize, usize) = (mi.parse().unwrap(), ti.parse().unwrap());
