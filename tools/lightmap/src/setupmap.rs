@@ -429,8 +429,40 @@ pub fn fog_lut_from_tga(tga: &[u8]) -> Result<Texture, String> {
 
 /// Replace the frozen collection constants by the pak's (RE 8's chain): the zone tiles' Pxz texture, the Land item's, the
 /// TrackWall's Pxz texture, the mood's WaterColor.tga. `read(path)` = the pak store's reader (logical game paths).
+/// The collection's water descriptor (RE 8: `Collections\<Coll>.Collection.Gbx` chunk 0x03033038): the water top, the floor,
+/// the fog's maximum depth. BlueBay "Sea" = (7.0, 4.0, 3.5); RedIsland "Deep" (7.7, 2.0, 6.0); GreenCoast (7.2, 0.0, 5.0);
+/// WhiteShore (7.0, 2.0, 6.0); Stadium "Shallow" (7.0, 4.0, 50.0) — read from the pak once RE 8's reader lands.
+#[derive(Clone, Copy, Debug)]
+pub struct WaterDesc {
+    pub top: f32,
+    pub floor: f32,
+    pub fog_max_depth: f32,
+}
+
+impl WaterDesc {
+    pub fn for_collection(c: &str) -> WaterDesc {
+        match c {
+            "RedIsland" => WaterDesc { top: 7.7, floor: 2.0, fog_max_depth: 6.0 },
+            "GreenCoast" => WaterDesc { top: 7.2, floor: 0.0, fog_max_depth: 5.0 },
+            "WhiteShore" => WaterDesc { top: 7.0, floor: 2.0, fog_max_depth: 6.0 },
+            "Stadium" => WaterDesc { top: 7.0, floor: 4.0, fog_max_depth: 50.0 },
+            _ => WaterDesc { top: 7.0, floor: 4.0, fog_max_depth: 3.5 },
+        }
+    }
+}
+
 pub fn tables_from_pak(f: &mut FrozenTables, read: &mut dyn FnMut(&str) -> Option<Vec<u8>>, collection: &str, mood: &str, tile_pxz: &str, notes: &mut Vec<String>) {
     let mut got = Vec::new();
+    // the water tables from the descriptor: g_WaterTop_ByPlanes = the plane heights (one plane: the top), g_WaterDepth_FogMaxDepthInv_ByIds
+    // [id − 1] = (top − floor, 1 / fogMaxDepth); the id map = the water type index + 1 over the water quads — one type over the whole
+    // map here (the general rule, the quads' raster, is RE 8's reader's)
+    let wd = WaterDesc::for_collection(collection);
+    f.top_by_plane = vec![[wd.top, 0.0, 0.0, 1.0]];
+    f.depth_by_id = vec![[wd.top - wd.floor, 1.0 / wd.fog_max_depth, 0.0, 1.0]];
+    // the id map (R8G8_UINT): channel 0 = the water id (type + 1), channel 1 = the plane index (one plane: 0)
+    let ch = f.ids.channels as usize;
+    for (i, v) in f.ids.data.iter_mut().enumerate() { *v = if i % ch == 0 { 1.0 } else { 0.0 }; }
+    got.push(format!("water descriptor {wd:?} → top_by_plane [{}], depth_by_id [({}, {})], id map 1 everywhere", wd.top, wd.top - wd.floor, 1.0 / wd.fog_max_depth));
     if let Some(b) = read(&format!("{collection}\\Media\\Texture\\Image\\{tile_pxz}_D.dds")) {
         match corner_mean(&b) { Ok(c) => { got.push(format!("tiles {tile_pxz}_D → {:?} (frozen {:?})", c, f.tile_rgb)); f.tile_rgb = c; } Err(e) => notes.push(format!("pak: {tile_pxz}_D: {e}")) }
     }
@@ -454,5 +486,11 @@ pub fn tables_from_pak(f: &mut FrozenTables, read: &mut dyn FnMut(&str) -> Optio
             Err(e) => notes.push(format!("pak: WaterColor.tga: {e}")),
         }
     }
-    notes.push(format!("tables FROM THE PAK (RE 8's chain): {}; still frozen: the transmittance LUT 15078, the water-id map, the plane-top / depth tables", got.join("; ")));
+    // the water tables (RE 8: the collection descriptor, chunk 0x03033038 of Collections\<Coll>.Collection.Gbx — BlueBay "Sea" WaterTop 7.0,
+    // WaterFloor 4.0, FogMaxDepth 3.5): g_WaterTop_ByPlanes = the plane heights, g_WaterDepth_FogMaxDepthInv_ByIds[id − 1] =
+    // (WaterTop − WaterFloor, 1 / FogMaxDepth); the id map = the water type index + 1 over the water quads (one type here)
+    let mut hist: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
+    for i in 0..(f.ids.w * f.ids.h) as usize { *hist.entry(f.ids.data[i * f.ids.channels as usize] as u32).or_default() += 1; }
+    notes.push(format!("water tables (captured): top_by_plane {:?}, depth_by_id {:?}, id map {}×{} histogram {:?}; the collection descriptor (RE 8): WaterTop 7.0 WaterFloor 4.0 FogMaxDepth 3.5 → depth 3.0, 1/fogMaxDepth {}", f.top_by_plane, f.depth_by_id, f.ids.w, f.ids.h, hist, 1.0f32 / 3.5));
+    notes.push(format!("tables FROM THE PAK (RE 8's chain): {}; still frozen: the transmittance LUT 15078 (the kind-51 ImageGen)", got.join("; ")));
 }

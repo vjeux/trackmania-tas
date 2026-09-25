@@ -1572,7 +1572,7 @@ fn run(a: Vec<String>) {
                     if pak_notes.is_empty() {
                         eprintln!("setup-from-map: FROZEN from the capture — the terrain constants (tile slices {:?} → {:?}, Land → {:?}), the TrackWall constant {:?}, the water id map / plane tables / LUTs 15075 + 15078 ({:.1}s)", frozen.tile_slices, frozen.tile_rgb, frozen.wall_rgb, frozen.pad_rgb, ti.elapsed().as_secs_f32());
                     } else {
-                        eprintln!("setup-from-map: still FROZEN from the capture — the transmittance LUT 15078, the water-id map, the plane-top / depth tables ({:.1}s)", ti.elapsed().as_secs_f32());
+                        eprintln!("setup-from-map: still FROZEN from the capture — the transmittance LUT 15078 (WaterTransmittance.ImageGen.Gbx, the kind-51 generator) ({:.1}s)", ti.elapsed().as_secs_f32());
                     }
                     // the scene box S = the union of the LM scene's placed vertices (the block records' union on pwc-day: the tiles at
                     // y 3.9999785 over 0..2048, the items)
