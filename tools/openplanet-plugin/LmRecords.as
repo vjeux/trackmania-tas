@@ -316,6 +316,7 @@ void LmWatch() {
                 try {
                     string st0 = LmDumpBoth(c, "L");
                     LmAppend("lmrecords-trace.txt", "== load-time dump L\n" + st0);
+                    LmAppend("lmrecords-trace.txt", "== zone248 at load\n" + LmZone248Dump("lmzone248-L"));
                 } catch {
                     LmAppend("lmrecords-trace.txt", "load-time dump threw at " + g_lmStep + ": " + getExceptionInfo() + "\n");
                 }
@@ -354,6 +355,7 @@ void LmWatch() {
                 // integer on this build, not the alloc pointer RE 7 expected) or the H count changed
                 if ((sc != 0 && sc != s0) || (nH != nH0 && nH0 != 0xffffffff)) {
                     string st = LmDumpBoth(c, "A");
+                    try { LmAppend("lmrecords-trace.txt", "== zone248 at A\n" + LmZone248Dump("lmzone248-A")); } catch { LmAppend("lmrecords-trace.txt", "zone248 at A threw: " + getExceptionInfo() + "\n"); }
                     g_lmStage = 2;
                     g_lmStatus = "A dumped (s=" + Text::Format("%.9g", sc) + "): " + st.Replace("\n", " | ");
                     LmAppend("lmrecords-trace.txt", "== moment A at " + now + "\n" + st);
