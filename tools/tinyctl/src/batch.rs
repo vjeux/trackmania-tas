@@ -276,7 +276,20 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
                             println!("[{:>4.0}s] {}/{} {name}\t{uid}\talready on Nadeo — playlist only", t0.elapsed().as_secs_f64(), i + 1, n);
                             (format!("{}\t{name}\t{uid}\t-\tskip\t0\t{md5}\tIDENTICAL\n", p.display()), true, Some(uid.to_string()))
                         } else {
-                            match upload_one(&mut tw, p, name, outdir) {
+                            // a curl transport failure (HTTP/2 PROTOCOL_ERROR, SSL_read reset — 5 of
+                            // 44 uploads on 2026-09-25) is retried up to 3 times; a map that still
+                            // fails keeps its slot empty in the playlist call below
+                            let mut r = upload_one(&mut tw, p, name, outdir);
+                            for _ in 0..3 {
+                                match &r {
+                                    Err(e) if e.contains("curl") && !e.contains("token expired") => {
+                                        println!("[{:>4.0}s] {}/{} {name}\tretrying after: {}", t0.elapsed().as_secs_f64(), i + 1, n, e.lines().next().unwrap_or("").chars().take(80).collect::<String>());
+                                        r = upload_one(&mut tw, p, name, outdir);
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            match r {
                                 Ok((uid, map_id, how, bytes, md5, verdict)) => {
                                     println!("[{:>4.0}s] {}/{} {name}\t{uid}\t{how}\t{bytes} B\t{verdict}\t({:.0}s)", t0.elapsed().as_secs_f64(), i + 1, n, t1.elapsed().as_secs_f64());
                                     let ok = verdict == "IDENTICAL";
@@ -348,6 +361,17 @@ pub fn publish_batch_cmd(args: &[String]) -> Result<(), String> {
         }
         }
         let mut camp_line = String::from("campaign\tnot set");
+        if failed > 0 && f("--campaign").is_some() {
+            // a playlist written with the failed maps missing DROPPED them from the campaign
+            // (Summer Wood 2026-09-25: 20 of 22 in the playlist) — the campaign is left as it
+            // was; rerun with the failed rows and the rest as skip rows
+            camp_line = format!("campaign\t{}\tNOT SET: {failed} upload(s) failed — the playlist would lose their slots; rerun the failed rows", f("--campaign").unwrap_or_default());
+            println!("{camp_line}");
+            let tail = format!("{}\n", camp_line);
+            out.push_str(&tail);
+            std::fs::write(&results, &out).map_err(|e| format!("{}: {e}", results.display()))?;
+            return Err(format!("{failed} upload(s) failed; {camp_line}"));
+        }
         if let (Some(club), Some(camp), Some(cname)) = (f("--club"), f("--campaign"), f("--campaign-name")) {
             let auth_live = format!("Authorization: {}", t.live);
             match crate::nadeo::campaign_set(&auth_live, &club, &camp, &cname, &uids) {
