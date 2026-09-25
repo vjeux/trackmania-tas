@@ -20,6 +20,7 @@ COMMANDS
   ls [<substring>]              pack entries whose path contains <substring>
   resolve <logical-path>        which pack entry a logical path is stored under
   refs <logical-path>           a file's external reference table
+  who-refs <substring>          every entry whose reference table names a file matching <substring>
   raw <path> --out F            the decoded bytes of any pack entry (dds, tga, xml)
   terrain-material LINK…        a terrain material's layer names, texture arrays (slices in GPU
                                 order), shader ids and g_WorldPosToTc* buffers (mapgeom::terrain)
@@ -452,6 +453,30 @@ fn main() {
                 }
                 i += 1;
             }
+        }
+        // who-refs <substring> : every pack entry whose external reference table names a file containing
+        // <substring> (case-insensitive) — "who uses this texture / material" across the whole pack. One
+        // pass over the entries' headers (the reference table is in the uncompressed header part).
+        "who-refs" => {
+            let mut store = open(&a);
+            let needle = a.rest.get(1).cloned().unwrap_or_default().to_ascii_lowercase();
+            // hashed entries (most of a pack) are stored under a name that is not a path: every entry is
+            // read, its GBX header parsed, and the reference table's names resolved relative to the entry's folder
+            let paths: Vec<String> = store.entries().map(|e| e.path()).collect();
+            let (mut n, mut parsed, mut failed) = (0usize, 0usize, 0usize);
+            for p in &paths {
+                let Ok(bytes) = store.read(p) else { failed += 1; continue };
+                if bytes.len() < 4 || &bytes[..3] != b"GBX" { continue; }
+                let m = match mapgeom::store::Model::parse(&bytes, p) { Ok(m) => m, Err(_) => { failed += 1; continue } };
+                parsed += 1;
+                for (i, ext) in &m.externals {
+                    if ext.to_ascii_lowercase().contains(&needle) {
+                        println!("{p}  (class 0x{:08X})  node {i}  {ext}", m.class_id);
+                        n += 1;
+                    }
+                }
+            }
+            println!("{n} references in {parsed} GBX files ({} entries, {failed} unreadable)", paths.len());
         }
         "refs" => {
             let mut store = open(&a);
@@ -4016,6 +4041,7 @@ fn describe(n: &Node) -> String {
                     m.name, m.pos[0], m.pos[1], m.pos[2], m.rot[0], m.rot[1], m.rot[2], m.rot[3], m.u01, m.flags, m.solid, m.u02, m.prefab
                 ));
             }
+            s.push_str(&format!("\n      weather node {} env bitmaps (water fog, cube reflect hard-spec A, cube reflect hdr-alpha2) {:?} params {:?} u03 {:?} u04 {}", l.weather, l.env_bitmaps, l.params, l.u03, l.u04));
             s
         }
         Node::Tree(t) => format!(
