@@ -40,6 +40,10 @@ pub struct AlphaLevel {
     /// so most fragments of a card skip the taps (`AlphaTex::passes`). Built by `with_blocks`.
     pub blocks: Vec<(u8, u8)>,
     pub bw: usize,
+    /// Per texel (x, y) the CLASS of the 2×2 neighbourhood a bilinear tap reads at it — texels (x, x+1) ×
+    /// (y, y+1), the neighbours clamped to the level: 0 = all ≤ 127 (the tap fails the 128/255 test whatever
+    /// its weights), 1 = all ≥ 129 (it passes), 2 = mixed (the weights decide).
+    pub cls: Vec<u8>,
 }
 
 impl AlphaLevel {
@@ -57,7 +61,17 @@ impl AlphaLevel {
                 b.1 = b.1.max(v);
             }
         }
-        AlphaLevel { w, h, a, blocks, bw }
+        let mut cls = vec![2u8; w * h];
+        for y in 0..h {
+            let y1 = (y + 1).min(h - 1);
+            for x in 0..w {
+                let x1 = (x + 1).min(w - 1);
+                let q = [a[y * w + x], a[y * w + x1], a[y1 * w + x], a[y1 * w + x1]];
+                let (mn, mx) = (q.iter().copied().min().unwrap(), q.iter().copied().max().unwrap());
+                cls[y * w + x] = if mn >= 129 { 1 } else if mx <= 127 { 0 } else { 2 };
+            }
+        }
+        AlphaLevel { w, h, a, blocks, bw, cls }
     }
     /// The (min, max) alpha over the texels [x0, x1] × [y0, y1] (inclusive, clamped to the level).
     #[inline]
@@ -251,6 +265,76 @@ impl AlphaTex {
         sum / n as f32
     }
 
+    /// The part of the test that is constant across a triangle (the footprint is): the level of detail,
+    /// the two levels it blends and the fraction, the taps' axis and count — `passes_planned` per fragment.
+    pub fn plan(&self, fp: &Footprint, aniso: usize) -> TapPlan {
+        let (lod, axis, n) = if aniso > 1 { (fp.lod_aniso(aniso), fp.major_axis(), fp.taps(aniso).max(1)) } else { (fp.lod_iso(), [0.0, 0.0], 1) };
+        let last = (self.levels.len() - 1) as f32;
+        let lc = lod.clamp(0.0, last);
+        let l0 = lc.floor();
+        let t = lc - l0;
+        let two = t > 0.0 && l0 < last;
+        TapPlan { lod, l0: l0 as usize, l1: if two { l0 as usize + 1 } else { l0 as usize }, two, axis, n, aniso }
+    }
+
+    /// `passes` with the triangle's plan: the exact early-outs (the 8×8 block min/max over the taps' span at
+    /// both levels; then every tap's 2×2 class at both levels — all 1 = pass, all 0 = fail), the filtered
+    /// sample only when a tap's neighbourhood straddles the threshold (or the taps disagree). The sampled
+    /// answer is `passes_sampled`'s to the bit (the same lod / axis / tap count feed the same arithmetic).
+    pub fn passes_planned(&self, u: f32, v: f32, p: &TapPlan, threshold: f32, addr: Address) -> bool {
+        let stats = alpha_stats_on();
+        if stats { ALPHA_STATS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed); ALPHA_STATS[4].fetch_add(p.n as u64, std::sync::atomic::Ordering::Relaxed); ALPHA_STATS[5].fetch_add(p.l0 as u64, std::sync::atomic::Ordering::Relaxed); }
+        if addr == Address::ClampEdge && threshold > 127.5 / 255.0 && threshold < 128.5 / 255.0 {
+            let n = p.n;
+            let half = if n > 1 { 0.5 - 0.5 / n as f32 } else { 0.0 };
+            let (u0, u1) = ((u - p.axis[0].abs() * half).clamp(0.0, 1.0), (u + p.axis[0].abs() * half).clamp(0.0, 1.0));
+            let (v0, v1) = ((v - p.axis[1].abs() * half).clamp(0.0, 1.0), (v + p.axis[1].abs() * half).clamp(0.0, 1.0));
+            let mut mn = 255u8;
+            let mut mx = 0u8;
+            for lv in [p.l0, p.l1] {
+                let l = &self.levels[lv];
+                let (x0, x1) = ((u0 * l.w as f32 - 0.5).floor() as i64, (u1 * l.w as f32 - 0.5).floor() as i64 + 1);
+                let (y0, y1) = ((v0 * l.h as f32 - 0.5).floor() as i64, (v1 * l.h as f32 - 0.5).floor() as i64 + 1);
+                let (a, b) = l.minmax(x0, y0, x1, y1);
+                mn = mn.min(a);
+                mx = mx.max(b);
+                if !p.two { break; }
+            }
+            if mn >= 129 { if stats { ALPHA_STATS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed); } return true; }
+            if mx <= 127 { if stats { ALPHA_STATS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed); } return false; }
+            // per tap, per level: the 2×2 class at the tap's bilinear anchor
+            let mut all = 3u8; // bit 0 = a class-0 tap seen, bit 1 = class 1; start as "nothing seen"
+            let mut seen0 = false;
+            let mut seen1 = false;
+            let mut mixed = false;
+            'taps: for i in 0..n {
+                let s = if n > 1 { (i as f32 + 0.5) / n as f32 - 0.5 } else { 0.0 };
+                let (uu, vv) = if n > 1 { (u + p.axis[0] * s, v + p.axis[1] * s) } else { (u, v) };
+                for lv in [p.l0, p.l1] {
+                    let l = &self.levels[lv];
+                    let fx = uu.clamp(0.0, 1.0) * l.w as f32 - 0.5;
+                    let fy = vv.clamp(0.0, 1.0) * l.h as f32 - 0.5;
+                    let xa = (fx.floor() as i64).clamp(0, l.w as i64 - 1) as usize;
+                    let ya = (fy.floor() as i64).clamp(0, l.h as i64 - 1) as usize;
+                    match l.cls[ya * l.w + xa] {
+                        0 => seen0 = true,
+                        1 => seen1 = true,
+                        _ => { mixed = true; break 'taps; }
+                    }
+                    if !p.two { break; }
+                }
+            }
+            let _ = &mut all;
+            if !mixed {
+                if seen1 && !seen0 { if stats { ALPHA_STATS[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed); } return true; }
+                if seen0 && !seen1 { if stats { ALPHA_STATS[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed); } return false; }
+            }
+        }
+        if stats { ALPHA_STATS[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+        let a = if p.aniso > 1 { self.sample_aniso(u, v, p.lod, p.axis, p.n, addr) } else { self.sample_lod(u, v, p.lod, addr) };
+        a - threshold >= 0.0
+    }
+
     /// The alpha test of PS 17134 at one fragment: the filtered alpha ≥ `threshold` (128/255).
     pub fn passes(&self, u: f32, v: f32, fp: &Footprint, threshold: f32, addr: Address, aniso: usize) -> bool {
         // THE EXACT EARLY-OUT: every tap is a convex combination (8-bit weights, 1 − t exact) of texels of
@@ -294,6 +378,32 @@ impl AlphaTex {
         let a = if aniso > 1 { self.sample_aniso(u, v, fp.lod_aniso(aniso), fp.major_axis(), fp.taps(aniso), addr) } else { self.sample_lod(u, v, fp.lod_iso(), addr) };
         a - threshold >= 0.0
     }
+}
+
+/// LMTOOL_ALPHA_STATS=1: [tests, block early-outs, class early-outs, full samples, Σ taps, Σ l0].
+pub static ALPHA_STATS: [std::sync::atomic::AtomicU64; 6] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+pub fn alpha_stats_on() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var_os("LMTOOL_ALPHA_STATS").is_some())
+}
+pub fn alpha_stats_report() {
+    if alpha_stats_on() {
+        let g = |i: usize| ALPHA_STATS[i].load(std::sync::atomic::Ordering::Relaxed);
+        eprintln!("alpha stats: {} tests, {} block early-outs, {} class early-outs, {} full samples; mean taps {:.2}, mean l0 {:.2}", g(0), g(1), g(2), g(3), g(4) as f64 / g(0).max(1) as f64, g(5) as f64 / g(0).max(1) as f64);
+        for c in &ALPHA_STATS { c.store(0, std::sync::atomic::Ordering::Relaxed); }
+    }
+}
+
+/// The per-triangle constants of the alpha test (`AlphaTex::plan`).
+#[derive(Clone, Copy, Debug)]
+pub struct TapPlan {
+    pub lod: f32,
+    pub l0: usize,
+    pub l1: usize,
+    pub two: bool,
+    pub axis: [f32; 2],
+    pub n: usize,
+    pub aniso: usize,
 }
 
 /// A triangle's texture-coordinate footprint per pixel: the screen-space derivatives of (u, v) in
@@ -387,6 +497,8 @@ mod early_out_tests {
             let fp = Footprint { dx: [(rnd() - 0.5) * 6.0, (rnd() - 0.5) * 6.0], dy: [(rnd() - 0.5) * 6.0, (rnd() - 0.5) * 6.0], w: w as f32, h: w as f32 };
             for aniso in [1usize, 16] {
                 assert_eq!(tex.passes(u, v, &fp, thr, Address::ClampEdge, aniso), tex.passes_sampled(u, v, &fp, thr, Address::ClampEdge, aniso), "u {u} v {v} fp {fp:?} aniso {aniso}");
+                let plan = tex.plan(&fp, aniso);
+                assert_eq!(tex.passes_planned(u, v, &plan, thr, Address::ClampEdge), tex.passes_sampled(u, v, &fp, thr, Address::ClampEdge, aniso), "planned: u {u} v {v} fp {fp:?} aniso {aniso}");
             }
         }
     }

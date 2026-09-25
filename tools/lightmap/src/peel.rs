@@ -426,7 +426,10 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
     let raster_stats = raster_stats_on();
     let bitmap: &[u64] = px.words.as_slice();
     let rows = (clip.3 - clip.1 + 1).max(0) as usize;
-    let n_bands = threads.max(1).min(rows.max(1));
+    // BANDS_PER_THREAD bands per pool thread: the pool hands them out dynamically, so a band of dense
+    // forest no longer pins the whole pass to one thread (with one band per thread the slowest band was
+    // 3–4× the mean and the other threads idled — LMTOOL_RASTER_STATS prints the band times)
+    let n_bands = (threads.max(1) * *BANDS_PER_THREAD).min(rows.max(1));
     let band_rows = (rows + n_bands - 1) / n_bands.max(1);
     let band_of = |y: i32| -> usize { (((y - clip.1).max(0) as usize) / band_rows.max(1)).min(n_bands - 1) };
     // a triangle's projected rows (as raster::bounds computes them), clipped to the wanted rectangle
@@ -492,7 +495,9 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
     // (one CSR bucket per pool thread: the per-pixel depth sorts of a dense canopy are the cost)
     let sparse_buckets = (threads as u32).clamp(1, 256);
     let sparse_bucket_size = ((px.len() as u32 + sparse_buckets - 1) / sparse_buckets).max(1);
+    let band_ns: Vec<std::sync::atomic::AtomicU64> = if raster_stats { (0..n_bands).map(|_| std::sync::atomic::AtomicU64::new(0)).collect() } else { Vec::new() };
     let parts_all: Vec<(Vec<Vec<(u32, Frag)>>, Vec<(u32, Frag)>, Vec<f32>)> = crate::pool::pool().map(n_bands, |b| {
+        let t_band = std::time::Instant::now();
         let by0 = clip.1 + (b * band_rows) as i32;
         let by1 = (clip.1 + ((b + 1) * band_rows) as i32 - 1).min(clip.3);
         let mut out: Vec<Vec<(u32, Frag)>> = (0..sparse_buckets).map(|_| Vec::new()).collect();
@@ -517,7 +522,7 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                 // material sampler, alpha ≥ GbxShadowAlphaThreshold): the triangle's uv footprint gives the level of detail
                 // (the footprint is computed on the first fragment that needs it: most leaf triangles cover
                 // no pixel centre at all)
-                let mut fp_tex: Option<Option<(&crate::alphatex::AlphaTex, crate::alphatex::Footprint)>> = None;
+                let mut fp_tex: Option<Option<(&crate::alphatex::AlphaTex, crate::alphatex::TapPlan)>> = None;
                 if raster_stats { RS_TRIS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
                 // (counting) an environment triangle: Some(drawn)
                 let env_t = if counting { env_class(t) } else { None };
@@ -532,9 +537,9 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                         if let Some(m) = mask {
                             let u = t.uv0[0][0] * bc[0] + t.uv0[1][0] * bc[1] + t.uv0[2][0] * bc[2];
                             let v = t.uv0[0][1] * bc[0] + t.uv0[1][1] * bc[1] + t.uv0[2][1] * bc[2];
-                            let fp = fp_tex.get_or_insert_with(|| m.tex.as_ref().map(|tx| (tx.as_ref(), crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()))));
+                            let fp = fp_tex.get_or_insert_with(|| m.tex.as_ref().map(|tx| (tx.as_ref(), tx.plan(&crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()), *ALPHA_ANISO))));
                             let op = match fp {
-                                Some((tx, fp)) if !*ALPHA_POINT => tx.passes(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge, *ALPHA_ANISO),
+                                Some((tx, fp)) if !*ALPHA_POINT => tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge),
                                 _ => m.opaque(u, v),
                             };
                             if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}", t.inst, t.tri, t.alpha, frame.z01(z)); } }
@@ -566,8 +571,15 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                 });
             }
         }
+        if raster_stats { band_ns[b].store(t_band.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed); }
         (out, all, env_max)
     });
+    if raster_stats {
+        let v: Vec<u64> = band_ns.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed)).collect();
+        let mx = v.iter().copied().max().unwrap_or(0);
+        let mean = v.iter().sum::<u64>() as f64 / v.len().max(1) as f64;
+        eprintln!("raster bands: {} bands of {} rows, slowest {:.1} ms, mean {:.1} ms (ratio {:.2}), wall {:.1} ms", n_bands, band_rows, mx as f64 / 1e6, mean / 1e6, mx as f64 / mean.max(1.0), t_raster.elapsed().as_secs_f64() * 1e3);
+    }
     // the exact statistic from the bands' complete fragment lists
     let counted: Option<(usize, Vec<f64>)> = count.map(|cx| {
         let (scene, bvh, prm) = (cx.scene, cx.bvh, cx.prm);
@@ -769,7 +781,7 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                         // per pixel gives the level of detail (alphatex::Footprint), the sample is trilinear / anisotropic
                         // (the footprint is computed on the first fragment that needs it: most leaf triangles cover
                 // no pixel centre at all)
-                let mut fp_tex: Option<Option<(&crate::alphatex::AlphaTex, crate::alphatex::Footprint)>> = None;
+                let mut fp_tex: Option<Option<(&crate::alphatex::AlphaTex, crate::alphatex::TapPlan)>> = None;
                         raster::triangle(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], |x, y, b| {
                             // the game's viewport (1, 1, w−2, h−2): the outer ring is never drawn
                             if x < inset || y < inset || x + inset >= res || y + inset >= res_y {
@@ -781,9 +793,9 @@ pub fn build_abuffer_wanted(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
                                 if let Some(m) = mask {
                                     let u = t.uv0[0][0] * b[0] + t.uv0[1][0] * b[1] + t.uv0[2][0] * b[2];
                                     let v = t.uv0[0][1] * b[0] + t.uv0[1][1] * b[1] + t.uv0[2][1] * b[2];
-                                    let fp = fp_tex.get_or_insert_with(|| m.tex.as_ref().map(|tx| (tx.as_ref(), crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()))));
+                                    let fp = fp_tex.get_or_insert_with(|| m.tex.as_ref().map(|tx| (tx.as_ref(), tx.plan(&crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()), *ALPHA_ANISO))));
                                     let op = match fp {
-                                        Some((tx, fp)) if !*ALPHA_POINT => tx.passes(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge, *ALPHA_ANISO),
+                                        Some((tx, fp)) if !*ALPHA_POINT => tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge),
                                         _ => m.opaque(u, v),
                                     };
                                     if let Some((dx, dy)) = *ABUF_DEBUG { if x == dx && y == dy { eprintln!("abuf debug ({x},{y}): card tri {ti} inst {} model tri {} mask {} uv ({u:.4},{v:.4}) opaque {op} z {z:.3} z01 {:.5}", t.inst, t.tri, t.alpha, frame.z01(z)); } }
@@ -1724,7 +1736,7 @@ pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene,
                 let (x1, y1, z1) = frame.project(p1);
                 let (x2, y2, z2) = frame.project(p2);
                 let mask = if t.alpha != u16::MAX { masks.get(t.alpha as usize) } else { None };
-                let mut fp_tex: Option<Option<(&crate::alphatex::AlphaTex, crate::alphatex::Footprint)>> = None;
+                let mut fp_tex: Option<Option<(&crate::alphatex::AlphaTex, crate::alphatex::TapPlan)>> = None;
                 raster::triangle_clipped_masked(w, h, [[x0, y0], [x1, y1], [x2, y2]], band_clip, None, |x, y, bc| {
                     if x < inset || y < inset || x + inset >= w || y + inset >= h {
                         return;
@@ -1734,9 +1746,9 @@ pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene,
                         if let Some(m) = mask {
                             let u = t.uv0[0][0] * bc[0] + t.uv0[1][0] * bc[1] + t.uv0[2][0] * bc[2];
                             let v = t.uv0[0][1] * bc[0] + t.uv0[1][1] * bc[1] + t.uv0[2][1] * bc[2];
-                            let fp = fp_tex.get_or_insert_with(|| m.tex.as_ref().map(|tx| (tx.as_ref(), crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()))));
+                            let fp = fp_tex.get_or_insert_with(|| m.tex.as_ref().map(|tx| (tx.as_ref(), tx.plan(&crate::alphatex::Footprint::of_triangle([[x0, y0], [x1, y1], [x2, y2]], t.uv0, tx.w(), tx.h()), *ALPHA_ANISO))));
                             let op = match fp {
-                                Some((tx, fp)) if !*ALPHA_POINT => tx.passes(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge, *ALPHA_ANISO),
+                                Some((tx, fp)) if !*ALPHA_POINT => tx.passes_planned(u, v, fp, ALPHA_THRESHOLD, crate::alphatex::Address::ClampEdge),
                                 _ => m.opaque(u, v),
                             };
                             if !op {
@@ -1775,6 +1787,9 @@ pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene,
     (kept, fractions)
 }
 
+/// Raster bands per pool thread (LMTOOL_BANDS_PER_THREAD, default 4).
+pub static BANDS_PER_THREAD: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| std::env::var("LMTOOL_BANDS_PER_THREAD").ok().and_then(|v| v.parse().ok()).unwrap_or(4));
+
 /// The census stride of the sparse layer-count estimate (every 8th pixel in x and y: 1/64 of the frame).
 pub const CENSUS_STEP: u32 = 8;
 
@@ -1807,6 +1822,7 @@ pub mod prof {
     pub fn report(label: &str, total: f32) {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e9;
         let staged = g(&BUILD) + g(&LAYERS) + g(&DUMP) + g(&GATHER) + g(&ACCUM) + g(&SNAP) + g(&FRAMES) + g(&EXACT);
+        crate::alphatex::alpha_stats_report();
         eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s (parallel part {:.2}s), per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&L_PAR), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
         for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR] { c.store(0, Ordering::Relaxed); }
     }
