@@ -414,6 +414,25 @@ pub fn chain_final(a: Vec<String>) {
             let (mut n, mut within, mut so, mut sg, mut sabs) = (0usize, 0usize, 0f64, 0f64, 0f64);
             for i in 0..(W * H) as usize { for c in 0..3 { let g = cap.data[i * 4 + c]; let o = finals[k].data[i * 4 + c]; if g != 0.0 || o != 0.0 { n += 1; so += o as f64; sg += g as f64; sabs += (o - g).abs() as f64; if (o - g).abs() <= 0.02 * g.abs().max(1e-6) { within += 1; } } } }
             println!("[final ×2] image {k} vs captured {} ({:?}): {} — rgb within 2 %: {within}/{n} ({:.2} %); mean ours {:.5} captured {:.5} (ratio {:.4}), mean |Δ| {:.5}", e.file, e.capture, r.line(), 100.0 * within as f64 / n.max(1) as f64, so / n.max(1) as f64, sg / n.max(1) as f64, so / sg.abs().max(1e-12), sabs / n.max(1) as f64);
+            // the misses by nature: |captured| bands (a relative threshold near zero), sign flips, |Δ| ≤ 0.01 absolute, the largest
+            let (mut miss, mut small_g, mut abs_small, mut flips, mut abs_le_1ulp16) = (0usize, 0usize, 0usize, 0usize, 0usize);
+            let mut worst = (0f32, 0u32, 0u32, 0u32, 0f32, 0f32);
+            for i in 0..(W * H) as usize { for c in 0..3 { let g = cap.data[i * 4 + c]; let o = finals[k].data[i * 4 + c]; if g == 0.0 && o == 0.0 { continue; } let d = (o - g).abs(); if d <= 0.02 * g.abs() { continue; } miss += 1; if g.abs() < 0.05 { small_g += 1; } if d <= 0.01 { abs_small += 1; } if o * g < 0.0 { flips += 1; } if d <= crate::gpufmt::f16_ulp(g.abs().max(o.abs())) * 2.0 { abs_le_1ulp16 += 1; } if d > worst.0 { worst = (d, (i as u32) % W, (i as u32) / W, c as u32, g, o); } } }
+            println!("           the {miss} rgb values beyond 2 %: {small_g} have |captured| < 0.05, {abs_small} have |Δ| ≤ 0.01, {abs_le_1ulp16} are within 2 f16 ulps, {flips} sign flips; worst |Δ| {:.5} at ({}, {}) ch {} (captured {:.5}, ours {:.5})", worst.0, worst.1, worst.2, worst.3, worst.4, worst.5);
+            // --insts vb_17033.bin: the misses per LM instance (the smallest chart rect covering the texel: item 0..2 or the tiles)
+            if let Some(insts) = arg(&a, "--insts").map(|p| crate::sunpass::parse_instances(&std::fs::read(&p).unwrap_or_else(|e| panic!("{p}: {e}")))) {
+                let owner = |px: u32, py: u32| -> usize {
+                    let (u, v) = ((px as f32 + 0.5) / W as f32, (py as f32 + 0.5) / H as f32);
+                    let mut best: Option<(f32, usize)> = None;
+                    for (k, i) in insts.iter().enumerate() { let (x0, y0, x1, y1) = (i.st[2], i.st[3], i.st[2] + i.st[0], i.st[3] + i.st[1]); if u >= x0.min(x1) && u <= x0.max(x1) && v >= y0.min(y1) && v <= y0.max(y1) { let area = (i.st[0] * i.st[1]).abs(); if best.map_or(true, |(ba, _)| area < ba) { best = Some((area, k)); } } }
+                    match best { Some((_, k)) if k < 3 => k, Some(_) => 3, None => 4 }
+                };
+                let mut per = [(0usize, 0usize, 0f64); 5];
+                for i in 0..(W * H) as usize { let (px, py) = ((i as u32) % W, (i as u32) / W); let o_i = owner(px, py); for c in 0..3 { let g = cap.data[i * 4 + c]; let o = finals[k].data[i * 4 + c]; if g == 0.0 && o == 0.0 { continue; } per[o_i].0 += 1; let d = (o - g).abs(); if d > 0.02 * g.abs() { per[o_i].1 += 1; per[o_i].2 += d as f64; } } }
+                let names = ["item 0", "item 1", "item 2", "tiles", "uncovered"];
+                let parts: Vec<String> = (0..5).filter(|&o| per[o].0 > 0).map(|o| format!("{} {} of {} ({:.2} %, mean |Δ| of the misses {:.4})", names[o], per[o].1, per[o].0, 100.0 * per[o].1 as f64 / per[o].0 as f64, per[o].2 / per[o].1.max(1) as f64)).collect();
+                println!("           per LM instance: {}", parts.join("; "));
+            }
         }
         // PS 1034: rgb of the ×2 image into the target whose alpha the resolve left (1 where covered; the ×2 add writes alpha × 0,
         // so the bake stores the resolve's alpha in the finals' alpha channel; --from-capture takes final_01's)

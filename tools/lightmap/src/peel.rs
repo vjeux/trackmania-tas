@@ -3005,6 +3005,18 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
                     let row = format!("direction {di} H-basis C0..C3 vs the capture after it: C0 within 2 %: {within}/{n} ({:.2} %);{per}", 100.0 * within as f64 / n.max(1) as f64);
                     eprintln!("lm-accumulate: {row}");
                     lm_rows.push(row);
+                    // per MRT (the signed C1 / C3 residue): exact / within 1 f16 ulp / beyond, and of the beyond values the sign flips,
+                    // the near-zero captured values (|g| < 2^-7), the rel-2 % misses, the largest |Δ|, per object class
+                    for m in 0..4 {
+                        let mut line = String::new();
+                        for (mi, nm) in names.iter().enumerate() {
+                            let (mut n, mut ex, mut u1, mut beyond, mut flips, mut near0, mut rel2, mut mx) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 0f32);
+                            let mut worst = (0u32, 0u32, 0u32, 0f32, 0f32);
+                            for y in 0..2048u32 { for x in 0..2048u32 { let i = (y * 2048 + x) as usize; if owner[i] != mi as u8 + 1 { continue; } for ch in 0..3 { let gg = gs[m].get(x, y, ch as u32); let o = hb.mrt[m][i][ch]; n += 1; if o == gg { ex += 1; continue; } let d = (o - gg).abs(); let ulp = crate::gpufmt::f16_ulp(gg.abs().max(o.abs())); if d <= ulp { u1 += 1; continue; } beyond += 1; if o * gg < 0.0 { flips += 1; } if gg.abs() < 0.0078125 { near0 += 1; } if d > 0.02 * gg.abs() { rel2 += 1; } if d > mx { mx = d; worst = (x, y, ch as u32, gg, o); } } } }
+                            line += &format!(" {nm}: {ex} exact / {u1} ±1 ulp / {beyond} beyond (of {n}; flips {flips}, |g|<2^-7 {near0}, rel>2% {rel2}, max |Δ| {mx:.5} at ({}, {}) ch {} g {:.5} o {:.5});", worst.0, worst.1, worst.2, worst.3, worst.4);
+                        }
+                        eprintln!("lm-accumulate:   MRT {m} after direction {di}:{line}");
+                    }
                 }
             }
         }

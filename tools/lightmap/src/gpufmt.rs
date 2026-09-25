@@ -277,3 +277,13 @@ pub fn linear_to_srgb(v: f32) -> f32 {
 pub fn srgb_to_linear(v: f32) -> f32 {
     if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
 }
+
+/// One f16 ulp at magnitude `v` (the spacing of the half-precision grid there; the subnormal step 2^-24 below 2^-14).
+pub fn f16_ulp(v: f32) -> f32 {
+    let a = v.abs();
+    if a < 6.103_515_6e-5 {
+        return 5.960_464_5e-8;
+    }
+    let e = a.log2().floor() as i32;
+    2f32.powi(e - 10)
+}
