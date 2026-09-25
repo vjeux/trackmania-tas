@@ -52,6 +52,7 @@ pub mod moods;
 pub mod probe;
 pub mod probecheck;
 pub mod probepass;
+pub mod probebake;
 pub mod probes;
 pub mod raster;
 pub mod skycube;

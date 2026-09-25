@@ -323,7 +323,23 @@ pub struct ProbeOut {
 /// Build the probe volume for `scene` over `grid`; `template` supplies the
 /// constants we do not derive (head words, the tail, the unknown counts and
 /// the third image's scale).
-pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, LightDef)], light_k: f32, template: &Volume, vp8_q: u8, grid: &SlotGrid) -> Result<ProbeOut, String> {
+/// The block/tile LAYOUT of a map's probe volume (what `build` and the transcribed probe passes share): the
+/// occupied slots, the blocks (their cell ranges in the label grid, `pos`), the stored slices (level, tile size),
+/// the tile placements in the atlas and the slot table.
+pub struct ProbeLayout {
+    pub occ_slots: Vec<[u32; 3]>,
+    pub blocks: Vec<Block>,
+    /// (block index, level, tile w, tile h) per stored slice, in the order the tiles are listed.
+    pub slices: Vec<(usize, u32, u32, u32)>,
+    pub placements: Vec<(u32, u32)>,
+    pub atlas_w: u32,
+    pub atlas_h: u32,
+    pub slot_table: Vec<i32>,
+    pub cols: u32,
+    pub rows: u32,
+}
+
+pub fn layout(bvh: &Bvh, grid: &SlotGrid) -> Result<ProbeLayout, String> {
     if bvh.tris.is_empty() {
         return Err("no geometry".into());
     }
@@ -381,7 +397,7 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
     let cols = ((n as f32 / 2.0).sqrt().ceil() as u32).max(1);
     let rows = (n as u32 + cols - 1) / cols;
     let mut blocks: Vec<Block> = Vec::new();
-    let mut slices: Vec<Slice> = Vec::new();
+    let mut slices: Vec<(usize, u32, u32, u32)> = Vec::new();
     let mut slot_table = vec![-1i32; grid.slot_count()];
     for (bi, o) in occs.iter().enumerate() {
         let (col, row) = (bi as u32 % cols, bi as u32 / cols);
@@ -419,57 +435,26 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
                 b.slices.push(None); // the two levels under the geometry: not stored
             } else {
                 b.slices.push(Some((0, 0))); // placed below
-                slices.push(Slice { block: bi, level: l, w: xhi - xlo, h: zhi - zlo, px: Vec::new() });
+                slices.push((bi, l, xhi - xlo, zhi - zlo));
             }
         }
         slot_table[grid.index(o.s[0], o.s[1], o.s[2])] = bi as i32;
         blocks.push(b);
     }
-    // shade every slice's probes (threads over slices)
-    {
-        let next = std::sync::atomic::AtomicUsize::new(0);
-        let threads = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(8).min(160);
-        let results: Vec<std::sync::Mutex<Vec<ProbeSample>>> = (0..slices.len()).map(|_| std::sync::Mutex::new(Vec::new())).collect();
-        std::thread::scope(|sc| {
-            for _ in 0..threads {
-                sc.spawn(|| loop {
-                    let si = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if si >= slices.len() {
-                        break;
-                    }
-                    let s = &slices[si];
-                    let b = &blocks[s.block];
-                    let o = &occs[s.block];
-                    let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ ((si as u64 + 1) * 0x2545_F491_4F6C_DD1D));
-                    let mut px = Vec::with_capacity((s.w * s.h) as usize);
-                    for cz in b.min[2]..b.max[2] {
-                        for cx in (b.min[0] - b.origin[0])..(b.max[0] - b.origin[0]) {
-                            let p = grid.probe(o.s, [cx, s.level, cz]);
-                            px.push(shade_probe(bvh, prm, lights, light_k, p, &mut rng));
-                        }
-                    }
-                    *results[si].lock().unwrap() = px;
-                });
-            }
-        });
-        for (s, r) in slices.iter_mut().zip(results) {
-            s.px = r.into_inner().unwrap();
-        }
-    }
     // pack the tiles: shelf packer, tallest first, 1-pixel gutters; grow the atlas until it fits
-    let area: u64 = slices.iter().map(|s| (s.w + 1) as u64 * (s.h + 1) as u64).sum();
+    let area: u64 = slices.iter().map(|s| (s.2 + 1) as u64 * (s.3 + 1) as u64).sum();
     let mut side = ((area as f32 * 1.15).sqrt().ceil() as u32).max(16);
     let placements: Vec<(u32, u32)>;
     let (aw, ah);
     loop {
         let mut order: Vec<usize> = (0..slices.len()).collect();
-        order.sort_by_key(|&i| (std::cmp::Reverse(slices[i].h), std::cmp::Reverse(slices[i].w)));
+        order.sort_by_key(|&i| (std::cmp::Reverse(slices[i].3), std::cmp::Reverse(slices[i].2)));
         let mut pl = vec![(0u32, 0u32); slices.len()];
         let (mut x, mut y, mut row_h) = (0u32, 0u32, 0u32);
         let mut ok = true;
         let mut maxy = 0;
         for &i in &order {
-            let (w, h) = (slices[i].w, slices[i].h);
+            let (w, h) = (slices[i].2, slices[i].3);
             if x + w > side {
                 x = 0;
                 y += row_h + 1;
@@ -491,6 +476,62 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
             break;
         }
         side += 8;
+    }
+    // the tile positions into the blocks' slice tables
+    for (si, s) in slices.iter().enumerate() {
+        let (tx, ty) = placements[si];
+        let sl = (s.1 + blocks[s.0].origin[1] - blocks[s.0].min[1]) as usize;
+        blocks[s.0].slices[sl] = Some((tx, ty));
+    }
+    Ok(ProbeLayout { occ_slots: occs.iter().map(|o| o.s).collect(), blocks, slices, placements, atlas_w: aw, atlas_h: ah, slot_table, cols, rows })
+}
+
+pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, LightDef)], light_k: f32, template: &Volume, vp8_q: u8, grid: &SlotGrid) -> Result<ProbeOut, String> {
+    if bvh.tris.is_empty() {
+        return Err("no geometry".into());
+    }
+    let lay = layout(bvh, grid)?;
+    let [bx, by, bz] = BLOCK_CELLS;
+    let (cols, rows) = (lay.cols, lay.rows);
+    let n = lay.blocks.len();
+    let mut blocks = lay.blocks.clone();
+    let slot_table = lay.slot_table.clone();
+    let placements = lay.placements.clone();
+    let (aw, ah) = (lay.atlas_w, lay.atlas_h);
+    let idx = |cx: u32, l: u32, cz: u32| (cz * bx * by + l * bx + cx) as usize;
+    let _ = idx;
+    let mut slices: Vec<Slice> = lay.slices.iter().map(|&(b, l, w, h)| Slice { block: b, level: l, w, h, px: Vec::new() }).collect();
+    let occs: Vec<[u32; 3]> = lay.occ_slots.clone();
+    // shade every slice's probes (threads over slices)
+    {
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let threads = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(8).min(160);
+        let results: Vec<std::sync::Mutex<Vec<ProbeSample>>> = (0..slices.len()).map(|_| std::sync::Mutex::new(Vec::new())).collect();
+        std::thread::scope(|sc| {
+            for _ in 0..threads {
+                sc.spawn(|| loop {
+                    let si = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if si >= slices.len() {
+                        break;
+                    }
+                    let s = &slices[si];
+                    let b = &blocks[s.block];
+                    let o_s = occs[s.block];
+                    let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ ((si as u64 + 1) * 0x2545_F491_4F6C_DD1D));
+                    let mut px = Vec::with_capacity((s.w * s.h) as usize);
+                    for cz in b.min[2]..b.max[2] {
+                        for cx in (b.min[0] - b.origin[0])..(b.max[0] - b.origin[0]) {
+                            let p = grid.probe(o_s, [cx, s.level, cz]);
+                            px.push(shade_probe(bvh, prm, lights, light_k, p, &mut rng));
+                        }
+                    }
+                    *results[si].lock().unwrap() = px;
+                });
+            }
+        });
+        for (s, r) in slices.iter_mut().zip(results) {
+            s.px = r.into_inner().unwrap();
+        }
     }
     // images
     let mut imgs: Vec<crate::img::Rgb> = (0..4).map(|_| crate::img::Rgb::new(aw, ah)).collect();
@@ -577,4 +618,45 @@ pub fn build(_scene: &Scene, bvh: &Bvh, prm: &BakeParams, lights: &[(usize, Ligh
         tail: template.tail.clone(),
     };
     Ok(ProbeOut { volume, images, blob, atlas_w: aw, atlas_h: ah, blocks: n, slices: slices.len(), grid: *grid })
+}
+
+/// The `volume::Volume` (the trailer) for a layout whose probe images come from the transcribed probe passes
+/// (`probebake::ProbeBake::finish`): the blocks with their tile positions, `frame_info` = the download's scales
+/// with the blob's part ends, the cell4 mask cleared where a probe is invalid (`invalid(ax, ay)` over the atlas).
+pub fn volume_for(lay: &ProbeLayout, template: &Volume, grid: &SlotGrid, scales: [f32; 3], ends: [u32; 3], invalid: &dyn Fn(u32, u32) -> bool) -> Volume {
+    let [bx, by, bz] = BLOCK_CELLS;
+    let (aw, ah) = (lay.atlas_w, lay.atlas_h);
+    let cw4 = (aw + 3) / 4;
+    let mut cell4 = vec![0xffffu16; (cw4 * ((ah + 3) / 4)) as usize];
+    for ay in 0..ah {
+        for ax in 0..aw {
+            if invalid(ax, ay) {
+                let ci = ((ay / 4) * cw4 + ax / 4) as usize;
+                cell4[ci] &= !(1u16 << ((ay % 4) * 4 + ax % 4));
+            }
+        }
+    }
+    let mut frame_info = template.frame_info.clone();
+    while frame_info.len() < 3 {
+        frame_info.push((1.0, 0));
+    }
+    for k in 0..3 {
+        frame_info[k] = (scales[k], ends[k]);
+    }
+    Volume {
+        head_consts: template.head_consts.clone(),
+        frame_info,
+        grid: [bx * lay.cols, by * lay.rows, bz],
+        blocks: lay.blocks.clone(),
+        cell4_dims: Some((cw4, (ah + 3) / 4)),
+        cell4,
+        slot_grid: grid.n,
+        slot_tile: [bx - 2, by - 2, bz - 2],
+        block_size: BLOCK_CELLS,
+        inv_scale: { let p = grid.pitch(); [1.0 / p[0], 1.0 / p[1], 1.0 / p[2]] },
+        unk_f: grid.unk_f(),
+        slots: lay.slot_table.clone(),
+        counts: template.counts,
+        tail: template.tail.clone(),
+    }
 }

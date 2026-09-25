@@ -211,6 +211,10 @@ pub struct BakeParams {
     /// The sweep's transcribed H-basis MRTs handed back to the caller at the end of the sweep (`--lm-from`): the
     /// sweep-transition chain (the next sweep's ILightInput) and the finalisation read them.
     pub hb_out: Option<std::sync::Arc<crate::ilatlas::HbSlot>>,
+    /// THE PROBES (row 10 wired, probebake.rs): the transcribed probe passes run over OUR world-peel layers inside
+    /// the peel loop (SetILightDir per layer, the sky visibility, the folds, the AddAmbient dispatch); the state
+    /// lives across the sweeps and is read back by the caller for the file's probe blob / the record's LAmbient.
+    pub probe_bake: Option<std::sync::Arc<std::sync::Mutex<crate::probebake::ProbeBake>>>,
     pub fitted_world_box: Option<[[f32; 2]; 2]>,
     pub hbasis_game: Option<(std::path::PathBuf, std::sync::Arc<Vec<crate::lmaccum::CapEntry>>)>,
     /// The ILightInput atlas the peel colour samples (PS 17131 SRV1; `peelcolor`): the capture's texture
@@ -327,6 +331,7 @@ impl Default for BakeParams {
             lm_scene: None,
             ilatlas: None,
             hb_out: None,
+            probe_bake: None,
             fitted_world_box: None,
             hbasis_game: None,
             ilight_atlas: None,

@@ -2135,6 +2135,8 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             }
         };
         prof::add(&prof::FRAMES, t_dir);
+        // THE PROBES: the direction's volume is cleared (ClearRenderTargetView right after the direction's start)
+        if let Some(pb) = &prm.probe_bake { pb.lock().unwrap().begin_direction_of(prm.sweep, *d); }
         let tb = std::time::Instant::now();
         // the sky term's per-direction constant is w·4·d.y·SkyFactor (RE child 3, AddSkyVisibility /
         // SetILightDir 0x140234df0): the sky colour along d is weighted by the direction's elevation cosine
@@ -2360,20 +2362,35 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
             // the transcribed LmILightDir_Set blocks over this peel's layers: block k reads layer k's colour + depth targets
             // (k = 0 the environment render; the clear 1.0 / black where a pixel has fewer layers); the fitted peel's blocks
             // clip to the items' world box (VS 17115)
-            if let (Some(lm), Some(ly), Some(dt)) = (&prm.lm_scene, &layers, dir_lm.as_mut()) {
+            // the two consumers of this peel's layer targets: the transcribed accumulate (every peel) and the probes (the
+            // world peel only) — the colour / depth Bufs of a layer are built once for both
+            let want_probes = pi == 0 && prm.probe_bake.is_some();
+            if let Some(ly) = layers.as_ref().filter(|_| prm.lm_scene.is_some() || want_probes) {
                 let tlm = std::time::Instant::now();
                 let nl = (0..(ly.w * ly.h) as usize).map(|i| (ly.start[i + 1] - ly.start[i]) as usize).max().unwrap_or(0);
-                let raster = crate::lmaccum::LmRasterCb::for_offset(di, 2048, 2048);
-                let cb = crate::lmaccum::SetCb { world_pw01_shadow: frame.world_pw01(), peel_dir: *d };
-                let world_box = if pi > 0 { prm.fitted_world_box } else { None };
-                let draws: Vec<crate::lmaccum::SetDraw> = (0..lm.meshes.len()).map(|m| crate::lmaccum::SetDraw { eid: 0, mesh: m, instance_first: lm.inst_first[m], instance_count: lm.inst_count[m], raster, cb, world_box }).collect();
+                let lm_draws: Option<(&crate::lmaccum::LmScene, Vec<crate::lmaccum::SetDraw>)> = prm.lm_scene.as_ref().filter(|_| dir_lm.is_some()).map(|lm| {
+                    let raster = crate::lmaccum::LmRasterCb::for_offset(di, 2048, 2048);
+                    let cb = crate::lmaccum::SetCb { world_pw01_shadow: frame.world_pw01(), peel_dir: *d };
+                    let world_box = if pi > 0 { prm.fitted_world_box } else { None };
+                    (lm.as_ref(), (0..lm.meshes.len()).map(|m| crate::lmaccum::SetDraw { eid: 0, mesh: m, instance_first: lm.inst_first[m], instance_count: lm.inst_count[m], raster, cb, world_box }).collect())
+                });
+                let pw01 = frame.world_pw01();
                 for k in 0..nl {
                     let cimg = ly.colour_image(k, 0);
                     let color = crate::passdiff::Buf { w: ly.w, h: ly.h, channels: 3, data: cimg.iter().flat_map(|c| c.iter().copied()).collect() };
                     let depth = crate::passdiff::Buf { w: ly.w, h: ly.h, channels: 1, data: ly.depth_image(k, 0) };
-                    crate::lmaccum::run_set_block(&lm.meshes, &lm.instances, &lm.table, &draws, &crate::lmaccum::LayerTargets { color: &color, depth: &depth }, crate::lmaccum::DepthCompare::Float, dt);
+                    if let (Some((lm, draws)), Some(dt)) = (&lm_draws, dir_lm.as_mut()) {
+                        crate::lmaccum::run_set_block(&lm.meshes, &lm.instances, &lm.table, draws, &crate::lmaccum::LayerTargets { color: &color, depth: &depth }, crate::lmaccum::DepthCompare::Float, dt);
+                    }
+                    // THE PROBES after every WORLD-peel layer (PS 17151 per block; the sky visibility after layer 1 and the
+                    // AddAmbient dispatch after layer 0 for the sky sweep's upward directions) — probebake.rs
+                    if want_probes {
+                        if let Some(pb) = &prm.probe_bake {
+                            pb.lock().unwrap().world_layer(k, &pw01, &color, &depth, *d, prm.sphere_dirs.len(), prm.sweep == 0);
+                        }
+                    }
                 }
-                if di < 2 || di % 32 == 0 { eprintln!("lm-accumulate: direction {di} peel {pi}: {nl} blocks over the transcribed LM raster ({:.1}s)", tlm.elapsed().as_secs_f32()); }
+                if (di < 2 || di % 32 == 0) && lm_draws.is_some() { eprintln!("lm-accumulate: direction {di} peel {pi}: {nl} blocks over the transcribed LM raster ({:.1}s)", tlm.elapsed().as_secs_f32()); }
             }
             if let (Some(ly), Some(dump), true) = (&layers, &prm.dump, want_dir_dump) {
                 let mut dmp = dump.lock().unwrap();
@@ -2550,6 +2567,9 @@ pub fn bake_peel_raster(scene: &Scene, bvh: &Bvh, prm: &BakeParams, sizes: &[(u3
         }
         let t_build = t_build_total;
         let ta = std::time::Instant::now();
+        // THE PROBES: the direction's two folds (PS 1112) — the game issues them after the H-basis, the order is immaterial
+        // (they read the direction's volume, which the fitted peel and the H-basis never touch)
+        if let Some(pb) = &prm.probe_bake { pb.lock().unwrap().end_direction(*d, prm.sphere_dirs.len(), prm.sweep); }
         // THE ACCUMULATE (LmLBumpILighting): E += 4/N · max(0, n·D) · TMapILightDir[texel]
         // the transcribed H-basis accumulate of this direction, and the comparison with the capture's banked buffers
         if let (Some(lm), Some(dt), Some(hb)) = (&prm.lm_scene, &dir_lm, hb_lm.as_mut()) {

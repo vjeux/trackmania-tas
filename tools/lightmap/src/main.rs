@@ -1762,6 +1762,77 @@ fn run(a: Vec<String>) {
             // (the sweep's direction list goes into the manifest before the sweep bakes, so a manifest written
             // at the end of the sweep already carries it)
             if let Some(d) = &prm.dump { let mut dm = d.lock().unwrap(); let n = prm.sphere_dirs.len() as u32; dm.manifest.sweeps.push(lightmap::passdump::Sweep { sweep: 0, n_dirs: n, scale: 4.0 / n.max(1) as f32, dirs: prm.sphere_dirs.iter().copied().collect() }); }
+            // the template chunk (its constants), loaded before the bake: the transcribed probe passes need its trailer
+            let tpl_path = match f("--template") {
+                Some(p) => p,
+                None => {
+                    let dir = f("--templates").or_else(|| std::env::var("LMTOOL_TEMPLATES").ok()).unwrap_or_else(|| format!("{}/persistent/private-30d/tm-player/tiny/lightmap-re/templates", std::env::var("HOME").unwrap_or_default()));
+                    match xml_sel {
+                        // the template only supplies the constants the baker does not derive: the effective mood's
+                        // chunk when the bank has one, else any chunk of the collection
+                        Some(x) => {
+                            let want = format!("{dir}/{}-{}.lmchunk", x.collection, x.mood);
+                            if std::path::Path::new(&want).exists() { want } else {
+                                let mut any: Vec<String> = std::fs::read_dir(&dir).map(|rd| rd.flatten().map(|e| e.path().to_string_lossy().to_string()).filter(|p| p.rsplit('/').next().unwrap_or("").starts_with(&format!("{}-", x.collection)) && p.ends_with(".lmchunk")).collect()).unwrap_or_default();
+                                any.sort();
+                                any.first().cloned().unwrap_or_else(|| panic!("no template chunk for {} under {dir}", x.collection))
+                            }
+                        }
+                        None => { let p = mood_sel.expect("--template or --mood auto"); format!("{dir}/{}.lmchunk", p.template) }
+                    }
+                }
+            };
+            eprintln!("template {tpl_path}");
+            let tpl = lightmap::mapio::load_template(&tpl_path).expect("template");
+            // the probe SLOT GRID of the map (shared by the port's Monte-Carlo probes and the transcribed probe passes)
+            let build_slot_grid = |prm: &lightmap::bake::BakeParams| -> (lightmap::volume::Volume, lightmap::probes::SlotGrid) {
+                let tv = lightmap::volume::Volume::parse(&tpl.chunk.data.as_ref().unwrap().cache.trailer).expect("template trailer");
+                let _ = prm;
+                // the slot grid: origin per decoration, counts from the map grid (size words) and the lit
+                // geometry; --slots NX,NY,NZ / --slot-origin X,Y,Z override, --slots template copies the template's
+                let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
+                let h = hdr.as_ref().expect("header");
+                let grid_m = [mf.size[0] as f32 * 32.0, mf.size[1] as f32 * 8.0, mf.size[2] as f32 * 32.0];
+                let (mut glo, mut ghi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                for t in bvh.tris.iter().filter(|t| t.inst != lightmap::geometry::DECOR_INST) { for p in [t.p0, lightmap::geometry::add(t.p0, t.e1), lightmap::geometry::add(t.p0, t.e2)] { for k in 0..3 { glo[k] = glo[k].min(p[k]); ghi[k] = ghi[k].max(p[k]); } } }
+                // every item's position counts for the extent, stock (non-embedded) items included: the giant
+                // builds park unused vegetation at (8, −900, 8) and the game's grid follows them
+                for it in &mf.items { for k in 0..3 { glo[k] = glo[k].min(it.pos[k] - 16.0); ghi[k] = ghi[k].max(it.pos[k]); } }
+                let mut grid = lightmap::probes::SlotGrid::for_map(&h.envir, &mf.decoration_id, grid_m, glo, ghi);
+                if let Some(o) = f("--slot-origin") { grid.origin = parse_rgb(&o); }
+                match f("--slots").as_deref() {
+                    Some("template") => { grid.n = tv.slot_grid; grid.origin = tv.world_origin(); grid.cell = tv.cell_size(); }
+                    Some(s) => { let v: Vec<u32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); grid.n = [v[0], v[1], v[2]]; }
+                    None => {}
+                }
+                if let Some(c) = f("--probe-cell") { grid.cell = c.parse().unwrap(); }
+                eprintln!("slot grid {:?} origin {:?} cell {} m (map {:?} = {:.0}×{:.0}×{:.0} m, decoration {}, geometry ({:.0}, {:.0}, {:.0})..({:.0}, {:.0}, {:.0}); template {:?} origin {:?})", grid.n, grid.origin, grid.cell, mf.size, grid_m[0], grid_m[1], grid_m[2], mf.decoration_id, glo[0], glo[1], glo[2], ghi[0], ghi[1], ghi[2], tv.slot_grid, tv.world_origin());
+                (tv, grid)
+            };
+            // THE PROBES IN THE BAKE (probebake.rs): on in the chain mode (--lm-from + --ilightinput-from e2e) or with
+            // --probes transcribed; off with --probes port. The block/tile layout is the port's (probes::layout); the safety
+            // offsets come from the capture when --probe-offsets-from FILE names a DDS volume, else none.
+            // --probes transcribed|port; --probe-layout-from MAP takes the probe BLOCKS (cell ranges, pos, tile table, atlas size)
+            // from a saved map's trailer (the editor's own bake of this map: the same-run comparison the chart --layout-from
+            // gives), else the port's block layout (probes::layout); --probe-offsets-from DDS = the capture's safety offsets
+            let probes_transcribed = match f("--probes").as_deref() { Some("transcribed") => true, Some("port") => false, Some(o) => panic!("--probes {o}: transcribed|port"), None => prm.lm_scene.is_some() && prm.game_peel };
+            let mut probe_layout: Option<lightmap::probebake::ProbeLayoutSrc> = None;
+            if probes_transcribed {
+                let src: Result<lightmap::probebake::ProbeLayoutSrc, String> = match f("--probe-layout-from") {
+                    Some(mp) => lightmap::mapio::load(&mp).and_then(|m| { let d = m.chunk.data.as_ref().ok_or("--probe-layout-from: no lightmap data")?; lightmap::volume::Volume::parse(&d.cache.trailer) }).map(|v| lightmap::probebake::ProbeLayoutSrc::from_volume(v)),
+                    None => { let (tv, grid) = build_slot_grid(&prm); lightmap::probes::layout(&bvh, &grid).map(|lay| lightmap::probebake::ProbeLayoutSrc::from_layout(lay, tv, grid)) }
+                };
+                match src {
+                    Ok(src) => {
+                        let dims = src.dims;
+                        let offsets = f("--probe-offsets-from").map(|p| { let b = lightmap::prepass::read_maybe_gz(std::path::Path::new(&p)).unwrap_or_else(|e| panic!("{e}")); lightmap::probepass::load_dds_volume(&b, None, dims[2]).expect("--probe-offsets-from") });
+                        eprintln!("probes: TRANSCRIBED passes in the bake — volume {:?}, {} blocks ({}), atlas {}×{}, offsets {}, layout {}", dims, src.blocks.len(), src.blocks.iter().map(|b| format!("cells {:?}..{:?} pos {:?}", b.min, b.max, b.pos)).collect::<Vec<_>>().join("; "), src.atlas.0, src.atlas.1, if offsets.is_some() { "the capture's" } else { "none" }, if f("--probe-layout-from").is_some() { "the saved map's trailer" } else { "the port's" });
+                        prm.probe_bake = Some(std::sync::Arc::new(std::sync::Mutex::new(lightmap::probebake::ProbeBake::new(dims, src.blocks.clone(), offsets))));
+                        probe_layout = Some(src);
+                    }
+                    Err(e) => eprintln!("probes: transcribed passes skipped ({e})"),
+                }
+            }
             let mut charts = if prm.raster_peel { lightmap::peel::bake_peel_raster(&scene, &bvh, &prm, &chart_sizes(&prm)) } else { lightmap::bake::bake(&scene, &bvh, &prm, &lights) };
             eprintln!("baked {} charts ({:.1}s)", charts.len(), t0.elapsed().as_secs_f32());
             // --- THE CHAIN through the sweeps (--ilightinput-from): the sweep's transcribed H-basis MRTs (E's lm-from targets)
@@ -1918,27 +1989,6 @@ fn run(a: Vec<String>) {
                 None if mood_sel.is_some() => 1.0,
                 None => { let k = f32::from_bits(IMPLIED_K.load(std::sync::atomic::Ordering::Relaxed)); if k > 0.0 { eprintln!("K matched to the map's own bake: {k:.3}"); k } else { 3.0 } }
             };
-            let tpl_path = match f("--template") {
-                Some(p) => p,
-                None => {
-                    let dir = f("--templates").or_else(|| std::env::var("LMTOOL_TEMPLATES").ok()).unwrap_or_else(|| format!("{}/persistent/private-30d/tm-player/tiny/lightmap-re/templates", std::env::var("HOME").unwrap_or_default()));
-                    match xml_sel {
-                        // the template only supplies the constants the baker does not derive: the effective mood's
-                        // chunk when the bank has one, else any chunk of the collection
-                        Some(x) => {
-                            let want = format!("{dir}/{}-{}.lmchunk", x.collection, x.mood);
-                            if std::path::Path::new(&want).exists() { want } else {
-                                let mut any: Vec<String> = std::fs::read_dir(&dir).map(|rd| rd.flatten().map(|e| e.path().to_string_lossy().to_string()).filter(|p| p.rsplit('/').next().unwrap_or("").starts_with(&format!("{}-", x.collection)) && p.ends_with(".lmchunk")).collect()).unwrap_or_default();
-                                any.sort();
-                                any.first().cloned().unwrap_or_else(|| panic!("no template chunk for {} under {dir}", x.collection))
-                            }
-                        }
-                        None => { let p = mood_sel.expect("--template or --mood auto"); format!("{dir}/{}.lmchunk", p.template) }
-                    }
-                }
-            };
-            eprintln!("template {tpl_path}");
-            let tpl = lightmap::mapio::load_template(&tpl_path).expect("template");
             let m = lightmap::mapio::load(&map_path).expect("map");
             // a ground tile = an open horizontal surface: LA·1.0 + sky (+ the direct sun only when baked)
             let ground_e: [f32; 3] = { let l = prm.sun_dir[1].max(0.0) * prm.direct_sun; [prm.ambient_la[0] + prm.ambient[0] + prm.up[0] + prm.sky[0] + prm.sun[0] * l, prm.ambient_la[1] + prm.ambient[1] + prm.up[1] + prm.sky[1] + prm.sun[1] * l, prm.ambient_la[2] + prm.ambient[2] + prm.up[2] + prm.sky[2] + prm.sun[2] * l] };
@@ -2002,28 +2052,9 @@ fn run(a: Vec<String>) {
             // the probe volume: ours unless --template-probes
             let vp8_q: Option<u8> = f("--vp8").map(|s| s.parse().unwrap());
             let probes = if has("--template-probes") { None } else {
-                let tv = lightmap::volume::Volume::parse(&tpl.chunk.data.as_ref().unwrap().cache.trailer).expect("template trailer");
+                let (tv, grid) = build_slot_grid(&prm);
                 let mut pp = prm.clone();
                 pp.sky_samples = f("--probe-samples").map(|s| s.parse().unwrap()).unwrap_or(48);
-                // the slot grid: origin per decoration, counts from the map grid (size words) and the lit
-                // geometry; --slots NX,NY,NZ / --slot-origin X,Y,Z override, --slots template copies the template's
-                let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
-                let h = hdr.as_ref().expect("header");
-                let grid_m = [mf.size[0] as f32 * 32.0, mf.size[1] as f32 * 8.0, mf.size[2] as f32 * 32.0];
-                let (mut glo, mut ghi) = ([f32::MAX; 3], [f32::MIN; 3]);
-                for t in bvh.tris.iter().filter(|t| t.inst != lightmap::geometry::DECOR_INST) { for p in [t.p0, lightmap::geometry::add(t.p0, t.e1), lightmap::geometry::add(t.p0, t.e2)] { for k in 0..3 { glo[k] = glo[k].min(p[k]); ghi[k] = ghi[k].max(p[k]); } } }
-                // every item's position counts for the extent, stock (non-embedded) items included: the giant
-                // builds park unused vegetation at (8, −900, 8) and the game's grid follows them
-                for it in &mf.items { for k in 0..3 { glo[k] = glo[k].min(it.pos[k] - 16.0); ghi[k] = ghi[k].max(it.pos[k]); } }
-                let mut grid = lightmap::probes::SlotGrid::for_map(&h.envir, &mf.decoration_id, grid_m, glo, ghi);
-                if let Some(o) = f("--slot-origin") { grid.origin = parse_rgb(&o); }
-                match f("--slots").as_deref() {
-                    Some("template") => { grid.n = tv.slot_grid; grid.origin = tv.world_origin(); grid.cell = tv.cell_size(); }
-                    Some(s) => { let v: Vec<u32> = s.split(',').map(|x| x.trim().parse().unwrap()).collect(); grid.n = [v[0], v[1], v[2]]; }
-                    None => {}
-                }
-                if let Some(c) = f("--probe-cell") { grid.cell = c.parse().unwrap(); }
-                eprintln!("slot grid {:?} origin {:?} cell {} m (map {:?} = {:.0}×{:.0}×{:.0} m, decoration {}, geometry ({:.0}, {:.0}, {:.0})..({:.0}, {:.0}, {:.0}); template {:?} origin {:?})", grid.n, grid.origin, grid.cell, mf.size, grid_m[0], grid_m[1], grid_m[2], mf.decoration_id, glo[0], glo[1], glo[2], ghi[0], ghi[1], ghi[2], tv.slot_grid, tv.world_origin());
                 // the probe images are Monte-Carlo noisy: a coarser quantizer than the atlases (Nadeo's 874² probe
                 // blob is 394 KB; ours at q 8 was 1.5 MB — over the 25 MiB file cap on the ×4 maps)
                 let probe_q: u8 = f("--probe-vp8").map(|s| s.parse().unwrap()).unwrap_or(28);
@@ -2061,7 +2092,28 @@ fn run(a: Vec<String>) {
             // over our peels in the bake; the LAmbient triple stays the template's — both flagged in the log.
             let writer_transcribed = match f("--writer").as_deref() { Some("port") => false, Some("transcribed") => true, Some(o) => panic!("--writer {o}: port|transcribed"), None => chain_finals.is_some() };
             let mood_max_hdr_for_encode: f32 = frame_params.as_ref().map(|fp| fp.max_hdr_mood).unwrap_or(7.519885063171387);
-            let probes_for_transcribed = if writer_transcribed { probes.clone() } else { None };
+            // THE PROBES of the transcribed writer: the bake's ProbeBake (probebake.rs) downloaded → the four atlases → the WEBPs
+            // (the blob) + the trailer with the download's scales / validity. (The record's LAmbient = the AddAmbient accumulator
+            // is engineer A's BakeParams::ambient_out → transcribed_images' ambient_xyz; None here until it lands.)
+            let ambient_xyz: Option<[f32; 3]> = None;
+            let probes_for_transcribed: Option<lightmap::synth::ProbeBlob> = match (&prm.probe_bake, &probe_layout) {
+                (Some(pb), Some(src)) if writer_transcribed => {
+                    let tp = std::time::Instant::now();
+                    let pbl = pb.lock().unwrap();
+                    match pbl.finish(&src.tiles, src.atlas) {
+                        Some(r) => {
+                            let aw = src.atlas.0;
+                            let vol = src.volume(r.scales, r.ends, &|x, y| !r.valid[(y * aw + x) as usize]);
+                            if let Some(dir) = f("--chain-final-dir") { let _ = pbl.dump(std::path::Path::new(&dir)); }
+                            eprintln!("probes: TRANSCRIBED — {} directions, {} world layers, {} probe writes, {} sky-visibility adds; {} of {} probes valid; scales max0 {} max2 {}; blob {} B (parts {:?}) ({:.1}s)", pbl.n_dirs, pbl.n_layers, pbl.n_written, pbl.n_sky_adds, r.n_valid, r.n_probes, r.scales[0], r.scales[1], r.blob.len(), r.ends, tp.elapsed().as_secs_f32());
+                            if let Some(dir) = f("--chain-final-dir") { for (k, im) in r.images.iter().enumerate() { let _ = std::fs::write(format!("{dir}/probe-image{k}.rgb"), im); } }
+                            Some(lightmap::synth::ProbeBlob { blob: r.blob, trailer: vol.write() })
+                        }
+                        None => { eprintln!("probes: the transcribed probe WEBPs need libwebp; the port's probes are used"); probes.clone() }
+                    }
+                }
+                _ => if writer_transcribed { probes.clone() } else { None },
+            };
             let frame_params_for_transcribed = if writer_transcribed { frame_params.clone() } else { None };
             let s = lightmap::synth::build_full2_placed(out_charts, (tm.bbox_min, tm.bbox_max), &tpl.chunk, probes, vp8_q, frame_params, fixed_pos.as_ref()).expect("build");
             let s = match (writer_transcribed, &chain_finals) {
@@ -2072,10 +2124,10 @@ fn run(a: Vec<String>) {
                     let atlas8 = s.atlas8.take();
                     // the layout rects (2048 layout units) in the mapping's order = the placed charts (obj, sub) ascending
                     let rects: Vec<(u32, u32, u32, u32)> = s.placed.iter().map(|&(_o, _s, px, py, w, h)| ((2 * px).saturating_sub(1), (2 * py).saturating_sub(1), 2 * w, 2 * h)).collect();
-                    match lightmap::e2e::transcribed_images(&enc, maxhdr, mood_max_hdr_for_encode, &rects, None) {
+                    match lightmap::e2e::transcribed_images(&enc, maxhdr, mood_max_hdr_for_encode, &rects, ambient_xyz) {
                         Some(img) => match lightmap::synth::build_transcribed(&s.placed, (tm.bbox_min, tm.bbox_max), &tpl.chunk, &img, probes_for_transcribed, frame_params_for_transcribed) {
                             Ok(st) => {
-                                eprintln!("writer: TRANSCRIBED — MaxHdr {maxhdr:?} (Mood {mood_max_hdr_for_encode}), record MaxHDR {} / √3κ·max {:?}; blob0 {} B, blob1 {} B, {} charts; probes {} ; LAmbient = the template's ({:.1}s)", img.max_hdr, img.hbasis234, img.blob0.len(), img.blob1.len(), st.charts, if st.chunk.data.as_ref().map(|d| !d.frames[0].images[2].is_empty()).unwrap_or(false) { "the port's/template's blob (transcribed probe passes not yet in the bake)" } else { "none" }, tw.elapsed().as_secs_f32());
+                                eprintln!("writer: TRANSCRIBED — MaxHdr {maxhdr:?} (Mood {mood_max_hdr_for_encode}), record MaxHDR {} / √3κ·max {:?}; blob0 {} B, blob1 {} B, {} charts; probes {} ; LAmbient {} ({:.1}s)", img.max_hdr, img.hbasis234, img.blob0.len(), img.blob1.len(), st.charts, if prm.probe_bake.is_some() && probe_layout.is_some() { "the transcribed passes' blob" } else if st.chunk.data.as_ref().map(|d| !d.frames[0].images[2].is_empty()).unwrap_or(false) { "the port's/template's blob" } else { "none" }, match img.lambient_f16 { Some(l) => format!("= f16(AddAmbient) {l:?}"), None => "= the template's".into() }, tw.elapsed().as_secs_f32());
                                 lightmap::synth::Synth { atlas8, ..st }
                             }
                             Err(e) => { eprintln!("writer: transcribed chunk failed ({e}); the port's writer is used"); s }
@@ -6491,6 +6543,13 @@ fn run(a: Vec<String>) {
                 println!("  vertical: median {:.3} p95 {:.3}; brightest 5 % mean rgb ({:.3}, {:.3}, {:.3}) = hue ({:.2}, {:.2}, {:.2})", vert[vert.len() / 2].0, vert[vert.len() * 95 / 100].0, c[0] / n, c[1] / n, c[2] / n, 1.0, c[1] / c[0].max(1e-6), c[2] / c[0].max(1e-6));
             }
             for (b, (s, rgb, n)) in bins.iter().enumerate() { if *n > 0 { let nn = *n as f64; println!("  az {:>3}–{:<3} n {:>7}  lum {:.4}  rgb ({:.3}, {:.3}, {:.3})", b * 30, (b + 1) * 30, n, s / nn, rgb[0] / nn, rgb[1] / nn, rgb[2] / nn); } }
+        }
+        "probe-chain-check" => {
+            // lmtool probe-chain-check DIR PASSCAP_ROOT MAP [--frame 7537]: the bake's dumped probe accumulators (--chain-final-dir) vs the
+            //   capture's end volumes, and the probe WEBPs rebuilt from them vs the saved map's (probebake::chain_check)
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let frame: u32 = f("--frame").map(|v| v.parse().expect("--frame")).unwrap_or(7537);
+            if let Err(e) = lightmap::probebake::chain_check(std::path::Path::new(&a[1]), std::path::Path::new(&a[2]), &a[3], frame) { eprintln!("probe-chain-check: {e}"); std::process::exit(1); }
         }
         "final-check" => {
             // lmtool final-check PASSCAP_ROOT MAP [--frame 7537] [--q 30,40,50,75,80,91]: the pwc6 END buffers through the CPU steps
