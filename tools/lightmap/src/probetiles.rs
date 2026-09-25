@@ -67,21 +67,20 @@ pub fn pack_tiles(tiles: &[(u32, u32)]) -> (u32, u32, Vec<(u32, u32)>) {
     }
     let areas: Vec<u32> = tiles.iter().map(|&(w, h)| w * h).collect();
     let total: u32 = areas.iter().sum();
-    let s = (total as f32).sqrt() as u32;
+    // W0 = H0 = (int)ceilf(sqrtf(Σ area) · 1.1) (asm 0x140453000–0x14045303c; 0x141d1f420 = 1.1, 0x1419022e0 = ceilf)
+    let s0 = (total as f32).sqrt() * 1.1f32;
+    let s = match std::env::var("LMTOOL_TILES_ROUND").ok().as_deref() { Some("floor") => s0.floor(), Some("round") => s0.round(), _ => s0.ceil() } as u32;
     let (mut w_bin, mut h_bin) = (s, s);
     // stable ascending order by area (LSD radix on the u32 = a stable sort)
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by_key(|&i| areas[i]);
+    if std::env::var_os("LMTOOL_TILES_FWD").is_some() { order.sort_by_key(|&i| (areas[i], std::cmp::Reverse(i))); }
     let mut pos = vec![(0u32, 0u32); n];
     loop {
         let mut packer = Packer::new(w_bin.min(u16::MAX as u32) as u16, h_bin.min(u16::MAX as u32) as u16);
         let mut placed = 0usize;
         for k in 0..n {
             let i = order[n - 1 - k];
-            // the node array's capacity is 4·n (FUN_1404927a0(state, n << 2)); an insert needs room for 4 more
-            if packer.nodes.len() + 4 > 4 * n {
-                break;
-            }
             let r = packer.insert(0, tiles[i].0 as u16, tiles[i].1 as u16);
             if r < 0 {
                 break;
@@ -90,6 +89,7 @@ pub fn pack_tiles(tiles: &[(u32, u32)]) -> (u32, u32, Vec<(u32, u32)>) {
             pos[i] = (nd.x as u32, nd.y as u32);
             placed += 1;
         }
+        if std::env::var_os("LMTOOL_TILES_TRACE").is_some() { eprintln!("  pack_tiles: bin {w_bin}×{h_bin}: placed {placed} of {n}"); }
         if placed == n {
             let mut w_out = 0u32;
             let mut h_out = 0u32;
@@ -101,7 +101,8 @@ pub fn pack_tiles(tiles: &[(u32, u32)]) -> (u32, u32, Vec<(u32, u32)>) {
         }
         // the growth term: the FAILED tile's area (pwc-day: 19×19 → +3 → 22×19 → +3 → 22×22 → the saved 21×21;
         // the sum of the remaining areas would give 30×19 → 28×14)
-        let rest: u32 = if GROW_REMAINING_SUM.load(std::sync::atomic::Ordering::Relaxed) { (placed..n).map(|k| areas[order[n - 1 - k]]).sum() } else { areas[order[n - 1 - placed]] };
+        let mode = std::env::var("LMTOOL_TILES_GROW").ok().and_then(|v| v.parse::<u32>().ok()).unwrap_or(if GROW_REMAINING_SUM.load(std::sync::atomic::Ordering::Relaxed) { 1 } else { 1 });
+        let rest: u32 = match mode { 1 => (placed..n).map(|k| areas[order[n - 1 - k]]).sum(), 2 => 0, _ => areas[order[n - 1 - placed]] };
         if h_bin < w_bin {
             h_bin += ((w_bin - 1 + rest) / w_bin).max(1);
         } else {
@@ -229,7 +230,12 @@ pub fn probe_slices(blocks: &[Block], stored: &[Vec<bool>]) -> (u32, u32, Vec<Ve
             tiles.push(((e.hi[0] - e.lo[0]) as u32, (e.hi[1] - e.lo[1]) as u32));
         }
     }
+    if std::env::var_os("LMTOOL_TILES_TRACE").is_some() {
+        eprintln!("probetiles: {} entries, {} tiles: {:?}", entries.len(), tiles.len(), tiles);
+        for (gi, gr) in groups.iter().enumerate() { eprintln!("  group {gi} key {}: {:?}", gr.key, gr.members.iter().map(|m| (m.slice, m.entry, m.d)).collect::<Vec<_>>()); }
+    }
     let (w, h, pos) = pack_tiles(&tiles);
+    if std::env::var_os("LMTOOL_TILES_TRACE").is_some() { eprintln!("probetiles: image {w}×{h}; positions {:?}", pos); }
     // the slices
     let mut flat: Vec<Option<(u32, u32)>> = slices.iter().flatten().copied().collect();
     for gr in &groups {
