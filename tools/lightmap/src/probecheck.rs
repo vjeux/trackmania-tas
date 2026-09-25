@@ -258,3 +258,72 @@ pub fn probe_images(map: &str, out: Option<&str>) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// `lmtool probe-download-check ROOT MAP.Gbx [--frame 74490]`: the end-state probe volumes through the CPU
+/// download model (`probepass::download_probes`) against the baked map's trailer scales and its four
+/// WEBP probe images (lossy: the comparison is a histogram of byte differences per image).
+pub fn download_check(root: &std::path::Path, map: &str, frame: u32) -> Result<(), String> {
+    let txt = std::fs::read_to_string(root.join("MANIFEST.json")).map_err(|e| format!("MANIFEST.json: {e}"))?;
+    let m = read_manifest(&txt)?;
+    let last = |pass: &str| -> Result<Volume3, String> {
+        let e = m.passes.iter().filter(|e| e.pass == pass && e.frame == Some(frame)).max_by_key(|e| e.eid.unwrap_or(0)).ok_or_else(|| format!("no {pass} entry for frame {frame}"))?;
+        println!("{pass}: {} (eid {:?})", e.file, e.eid);
+        load_volume(root, e)
+    };
+    let colour = last("probe3d_fold0")?;
+    let updown = last("probe3d_fold1")?;
+    let skyvis = m.passes.iter().filter(|e| e.pass == "probe3d_skyvis" && e.frame == Some(frame)).max_by_key(|e| e.eid.unwrap_or(0)).map(|e| load_volume(root, e)).transpose()?;
+    let mm = crate::mapio::load(map)?;
+    let d = mm.chunk.data.as_ref().ok_or("the map has no lightmap data")?;
+    let v = crate::volume::Volume::parse(&d.cache.trailer)?;
+    let b = v.blocks.first().ok_or("no probe block")?;
+    let dl = download_probes(&colour, &updown, skyvis.as_ref(), (b.min, b.max));
+    println!("max0 (colour rgb over all probes) = {} vs trailer scale[0] {} ({} f16 steps); max2 (|updown rgb| over valid) = {} vs trailer scale[1] {} ({} f16 steps)", dl.max0, v.frame_info[0].0, f16_steps(dl.max0, v.frame_info[0].0), dl.max2, v.frame_info[1].0, f16_steps(dl.max2, v.frame_info[1].0));
+    let nvalid = dl.probes.iter().filter(|p| p.2).count();
+    println!("{} probes in the block range, {} valid (α ≥ 0.5); trailer cell4 entries not 0xffff: {}", dl.probes.len(), nvalid, v.cell4.iter().filter(|&&c| c != 0xffff).count());
+    let parts = crate::volume::split_probe_blob(&d.frames[0].images[2], &v.frame_info);
+    let imgs: Vec<crate::img::Rgb> = parts.iter().map(|p| crate::img::decode_webp(p)).collect::<Result<_, _>>()?;
+    let tile = |level: u32| -> Option<(u32, u32)> { b.slices.get((level - b.min[1]) as usize).copied().flatten() };
+    let mut hist0 = std::collections::BTreeMap::<i32, usize>::new();
+    let mut hist1 = std::collections::BTreeMap::<i32, usize>::new();
+    let mut hist2 = std::collections::BTreeMap::<i32, usize>::new();
+    let mut hist2b = std::collections::BTreeMap::<i32, usize>::new();
+    let mut shown = 0;
+    for ((x, y, z), rgb, ok, sky, sq) in &dl.probes {
+        let Some((tx, ty)) = tile(*y) else { continue };
+        let px = (tx + (x - b.min[0]), ty + (z - b.min[2]));
+        let s0 = imgs[0].get(px.0, px.1);
+        let s1 = imgs[1].get(px.0, px.1);
+        let s2 = imgs[2].get(px.0, px.1);
+        for c in 0..3 {
+            *hist0.entry(rgb[c] as i32 - s0[c] as i32).or_default() += 1;
+            // image 2: the signed byte stored as is (two's complement) or offset by 128
+            *hist2.entry((sq[c] as u8) as i32 - s2[c] as i32).or_default() += 1;
+            *hist2b.entry((sq[c] as i32 + 128) - s2[c] as i32).or_default() += 1;
+        }
+        if let Some(sk) = sky {
+            *hist1.entry(*sk as i32 - s1[0] as i32).or_default() += 1;
+        }
+        if shown < 6 && *ok {
+            println!("  probe ({x},{y},{z}) → atlas ({},{}): ours img0 {:?} stored {:?}; img2 signed {:?} stored {:?}; sky {:?} stored {}", px.0, px.1, rgb, s0, sq, s2, sky, s1[0]);
+            shown += 1;
+        }
+    }
+    let summarise = |name: &str, h: &std::collections::BTreeMap<i32, usize>| {
+        let n: usize = h.values().sum();
+        if n == 0 { println!("{name}: no data"); return; }
+        let within = |k: i32| h.iter().filter(|(d, _)| d.abs() <= k).map(|(_, c)| c).sum::<usize>();
+        println!("{name}: {n} bytes — exact {} ({:.1} %), within 1: {} ({:.1} %), within 2: {} ({:.1} %), within 4: {} ({:.1} %); extremes {:?} … {:?}", within(0), 100.0 * within(0) as f64 / n as f64, within(1), 100.0 * within(1) as f64 / n as f64, within(2), 100.0 * within(2) as f64 / n as f64, within(4), 100.0 * within(4) as f64 / n as f64, h.keys().next(), h.keys().next_back());
+    };
+    summarise("image 0 (colour, sRGB(v/max0)) vs stored", &hist0);
+    summarise("image 1 (sky visibility ×255) vs stored", &hist1);
+    summarise("image 2 (signed sqrt) as two's complement vs stored", &hist2);
+    summarise("image 2 (signed sqrt) +128 vs stored", &hist2b);
+    Ok(())
+}
+
+fn f16_steps(a: f32, b: f32) -> i32 {
+    let ha = crate::gpufmt::encode_f16(a, crate::gpufmt::Rounding::NearestEven) as i32;
+    let hb = crate::gpufmt::encode_f16(b, crate::gpufmt::Rounding::NearestEven) as i32;
+    ha - hb
+}

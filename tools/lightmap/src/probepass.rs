@@ -653,3 +653,116 @@ mod tests {
         assert_eq!(snorm16(0), 0.0);
     }
 }
+
+// ───────────────────────────── the CPU download (0x14022d8f0) ─────────────────────────────
+
+/// The three probe accumulators at the end of the bake and how the CPU turns them into the stored
+/// probe images (client decompile `FUN_14022d8f0`, "ProbeGrid download"; `client-re/decomp2`):
+///
+/// * `colour` = the fold 17056 (Σ over both sweeps of 2/N · the first surface's colour, α = Σ 1/N ·
+///   [front face]); `max0` = the largest rgb channel over ALL probes → `frame_info[0].scale`;
+///   image 0 = `byte(v / max0)` through the sRGB curve, the block's probes that are valid, 0 elsewhere;
+///   a valid probe whose three bytes are 0 is written (1, 1, 1);
+/// * `valid` = `colour.a ≥ 0.5` → the trailer's cell4 mask bits;
+/// * `skyvis` = the R16F volume 17160 (Σ over the upward sweep-0 directions of 4·D.y/N · [nothing above
+///   the probe]) → image 1 = `clamp(round(255 · v), 0, 255)`, no scale;
+/// * `updown` = the fold 17059 (Σ 4·D.y/N · colour, signed) → `max2` = max |rgb| over the VALID probes
+///   → `frame_info[1].scale`; image 2 = `clamp(round(127 · sign(v) · sqrt(|v| / max2)), −127, 127)`
+///   per channel (the fourth byte 0) — a signed byte image;
+/// * `frame_info[2].scale` and image 3 belong to the local-light probe pass (not in this bake: 1e-5).
+pub struct ProbeDownload {
+    pub max0: f32,
+    pub max2: f32,
+    /// Per probe (x, y, z) of the block range: image 0 rgb bytes, the validity, image 1 byte (None
+    /// without the sky-visibility volume), image 2 signed bytes.
+    pub probes: Vec<((u32, u32, u32), [u8; 3], bool, Option<u8>, [i8; 3])>,
+}
+
+/// `lroundf` as the client's `FUN_1418f6954` (round half away from zero).
+#[inline]
+pub fn lround(v: f32) -> i32 {
+    v.round() as i32
+}
+
+pub fn download_probes(colour: &Volume3, updown: &Volume3, skyvis: Option<&Volume3>, range: ([u32; 3], [u32; 3])) -> ProbeDownload {
+    let (lo, hi) = range;
+    let mut max0 = 0f32;
+    for z in 0..colour.d { for y in 0..colour.h { for x in 0..colour.w { for c in 0..3 { max0 = max0.max(colour.get(x, y, z, c)); } } } }
+    let valid = |x: u32, y: u32, z: u32| colour.get(x, y, z, 3) >= 0.5;
+    let mut max2 = 0f32;
+    for z in 0..colour.d { for y in 0..colour.h { for x in 0..colour.w { if valid(x, y, z) { for c in 0..3 { max2 = max2.max(updown.get(x, y, z, c).abs()); } } } } }
+    let mut probes = Vec::new();
+    for y in lo[1]..hi[1] {
+        for z in lo[2]..hi[2] {
+            for x in lo[0]..hi[0] {
+                let ok = valid(x, y, z);
+                let mut rgb = [0u8; 3];
+                let mut sq = [0i8; 3];
+                let mut sky = None;
+                if ok {
+                    for c in 0..3 {
+                        let v = colour.get(x, y, z, c) / max0;
+                        rgb[c as usize] = lround(crate::gpufmt::linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0).clamp(0, 255) as u8;
+                        let u = updown.get(x, y, z, c) / max2;
+                        let s = if u < 0.0 { -1.0 } else { 1.0 };
+                        let b = lround(u.abs().sqrt() * s * 127.0);
+                        sq[c as usize] = b.clamp(-127, 127) as i8;
+                    }
+                    if rgb == [0, 0, 0] {
+                        rgb = [1, 1, 1];
+                    }
+                    if let Some(sv) = skyvis {
+                        sky = Some(lround(sv.get(x, y, z, 0) * 255.0).clamp(0, 255) as u8);
+                    }
+                }
+                probes.push(((x, y, z), rgb, ok, sky, sq));
+            }
+        }
+    }
+    ProbeDownload { max0, max2, probes }
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+
+    #[test]
+    fn the_download_scales_and_bytes_follow_the_decompile() {
+        let mut colour = Volume3::new(32, 16, 32, 4);
+        let mut updown = Volume3::new(32, 16, 32, 4);
+        let mut sky = Volume3::new(32, 16, 32, 1);
+        // an open probe: colour (0.4, 0.5, 1.0) valid, updown (0.2, −0.1, 0.5), sky 0.999
+        colour.set(22, 4, 20, 0, 0.4); colour.set(22, 4, 20, 1, 0.5); colour.set(22, 4, 20, 2, 1.0); colour.set(22, 4, 20, 3, 1.0);
+        updown.set(22, 4, 20, 0, 0.2); updown.set(22, 4, 20, 1, -0.1); updown.set(22, 4, 20, 2, 0.5);
+        sky.set(22, 4, 20, 0, 0.999);
+        // an invalid probe (α 0.3) with a brighter updown that must NOT enter max2
+        colour.set(23, 4, 20, 0, 0.1); colour.set(23, 4, 20, 3, 0.3);
+        updown.set(23, 4, 20, 2, 0.9);
+        let dl = download_probes(&colour, &updown, Some(&sky), ([22, 4, 20], [24, 5, 21]));
+        assert_eq!(dl.max0, 1.0);
+        assert_eq!(dl.max2, 0.5);
+        let open = &dl.probes[0];
+        assert_eq!(open.0, (22, 4, 20));
+        assert!(open.2);
+        // sRGB(0.4) = 0.6652 → 170, sRGB(0.5) = 0.7354 → 188, 1.0 → 255
+        assert_eq!(open.1, [170, 188, 255]);
+        assert_eq!(open.3, Some(255)); // round(0.999·255) = 254.7 → 255
+        // signed sqrt: 127·√(0.4) = 80.3 → 80; −127·√(0.2) = −56.8 → −57; 127·1 = 127
+        assert_eq!(open.4, [80, -57, 127]);
+        let closed = &dl.probes[1];
+        assert!(!closed.2);
+        assert_eq!(closed.1, [0, 0, 0]);
+        assert_eq!(closed.3, None);
+    }
+
+    #[test]
+    fn a_valid_black_probe_is_written_one_one_one() {
+        let mut colour = Volume3::new(32, 16, 32, 4);
+        colour.set(0, 0, 0, 3, 1.0);
+        colour.set(1, 0, 0, 0, 0.5);
+        colour.set(1, 0, 0, 3, 1.0);
+        let updown = Volume3::new(32, 16, 32, 4);
+        let dl = download_probes(&colour, &updown, None, ([0, 0, 0], [2, 1, 1]));
+        assert_eq!(dl.probes[0].1, [1, 1, 1]);
+    }
+}

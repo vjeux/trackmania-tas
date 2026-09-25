@@ -3560,6 +3560,13 @@ fn run(a: Vec<String>) {
             let ps = lightmap::dome::PointSets::load(&f("--points").unwrap_or_else(lightmap::dome::default_path)).expect("point sets");
             print!("{}", lightmap::sweep1::report(&m, &ps));
         }
+        "probe-download-check" => {
+            // lmtool probe-download-check PASSCAP_ROOT MAP.Gbx [--frame 74490]: the end-state probe volumes through the CPU download
+            //   model (probepass::download_probes) vs the baked map's trailer scales and its stored WEBP probe images
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let frame: u32 = f("--frame").map(|v| v.parse().expect("--frame")).unwrap_or(74490);
+            if let Err(e) = lightmap::probecheck::download_check(&std::path::PathBuf::from(&a[1]), &a[2], frame) { eprintln!("probe-download-check: {e}"); std::process::exit(1); }
+        }
         "probe-images" => {
             // lmtool probe-images MAP.Gbx [OUTDIR]: the baked map's four probe images level by level (+ ×8 PNGs)
             if let Err(e) = lightmap::probecheck::probe_images(&a[1], a.get(2).map(|s| s.as_str())) { eprintln!("probe-images: {e}"); std::process::exit(1); }
