@@ -681,6 +681,152 @@ pub fn mapping_bbox(centres: &[[f32; 3]]) -> ([f32; 3], [f32; 3]) {
     }
     (mn, mx)
 }
+// THE CLIP RECORD ORDER (RE 7, 2026-09-25 17:55Z; verified 128/128 owner blocks on the baker's stpad dump). The clip
+// blocks a block generates (CGameCtnChallenge::InitChallengeData_Clips 0x140b91ae0 → FUN_140f373a0 → FUN_140f37110)
+// are registered per OWNER CELL in the challenge's cell hash map (+0x3a0; insert FUN_140f39fe0, find FUN_140f39e90,
+// grow FUN_140f3a6c0) and the static-pool records of their prefab entities are emitted by walking that map in SLOT
+// order (each owner's clips in creation order: sides, the vertical clip, the ground). Blocks placed in FREE mode
+// (flag bit 28 of the block's +0x8c, the file's 0x10000000) take another path (`FUN_14013c560(challenge+0x410)`)
+// and come AFTER the map walk, in (x, z, y) order. The normal blocks' own records (one per block, before the tiles)
+// stay in file order.
+//
+// The map: key = a cell (x, y, z) packed `(x & 0xff) << 16 | (y & 0xff) << 8 | (z & 0xff)`; hash h = key;
+// h ^= h >> 16; h *= 0x45d9f3b; h ^= h >> 16; h *= 0x45d9f3b; h ^= h >> 16; slot = h & (cap − 1); collisions by
+// TRIANGULAR probing (slot += 1, 2, 3, …); 2 state bits per slot (bit 1 = free); capacity = next power of two
+// ≥ the request (min 4), the insert requests cap + 1 (= doubling) when count ≥ trunc(cap·0.77 + 0.5); the rehash is
+// IN PLACE: walk the old slots 0..oldcap−1, take each unprocessed entry out and probe the new table; a claimed slot
+// that still holds an unprocessed old entry is SWAPPED (the displaced entry continues the probe), a slot beyond the
+// old range or already processed is filled. Insertion order = the Blocks array (file order).
+
+/// Nadeo's cell hash (FUN_140f39fe0 / FUN_140f3a6c0): 32-bit avalanche of the packed cell.
+pub fn cell_hash(x: i32, y: i32, z: i32) -> u32 {
+    let mut h = ((x as u32 & 0xff) << 16) | ((y as u32 & 0xff) << 8) | (z as u32 & 0xff);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x45d9f3b);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x45d9f3b);
+    h ^= h >> 16;
+    h
+}
+
+/// The game's open-addressing cell map, walked in slot order. `T` is the payload (the owner block's index).
+pub struct CellMap<T: Clone> {
+    cap: usize,
+    keys: Vec<Option<([i32; 3], T)>>,
+    count: usize,
+    limit: usize,
+}
+
+impl<T: Clone> Default for CellMap<T> {
+    fn default() -> Self {
+        let mut m = CellMap { cap: 0, keys: Vec::new(), count: 0, limit: 0 };
+        m.grow(4);
+        m
+    }
+}
+
+impl<T: Clone> CellMap<T> {
+    fn home(&self, c: [i32; 3], cap: usize) -> usize {
+        (cell_hash(c[0], c[1], c[2]) as usize) & (cap - 1)
+    }
+
+    /// FUN_140f3a6c0: enlarge to the next power of two ≥ `req` (min 4) with the in-place rehash.
+    fn grow(&mut self, req: usize) {
+        // the asm's or-shift cascade on (req − 1) then + 1 = the next power of two ≥ req, floored at 4
+        let n = req.max(4).next_power_of_two();
+        let oldcap = self.cap;
+        let mut keys: Vec<Option<([i32; 3], T)>> = std::mem::take(&mut self.keys);
+        keys.resize(n, None);
+        let mut newfree = vec![true; n];
+        // old state: Some(false) = holds an unprocessed old entry
+        let mut processed = vec![false; n];
+        for i in 0..oldcap {
+            if keys[i].is_none() || processed[i] {
+                continue;
+            }
+            let mut e = keys[i].take().unwrap();
+            processed[i] = true;
+            loop {
+                let mut p = self.home(e.0, n);
+                let mut k = 0usize;
+                while !newfree[p] {
+                    k += 1;
+                    p = (p + k) & (n - 1);
+                }
+                newfree[p] = false;
+                if p >= oldcap || processed[p] || keys[p].is_none() {
+                    keys[p] = Some(e);
+                    break;
+                }
+                // the slot still holds an unprocessed old entry: swap and continue with it
+                let displaced = keys[p].take().unwrap();
+                keys[p] = Some(e);
+                processed[p] = true;
+                e = displaced;
+            }
+        }
+        self.cap = n;
+        self.keys = keys;
+        self.limit = (n as f64 * 0.77 + 0.5) as usize;
+    }
+
+    /// FUN_140f39fe0: insert (or find) a cell; a new cell grows the table first when count ≥ limit.
+    pub fn insert(&mut self, c: [i32; 3], v: T) {
+        let mut p = self.home(c, self.cap);
+        let mut k = 0usize;
+        while let Some((kc, _)) = &self.keys[p] {
+            if *kc == c {
+                return;
+            }
+            k += 1;
+            p = (p + k) & (self.cap - 1);
+        }
+        if self.count + 1 > self.limit {
+            self.grow(self.cap + 1);
+            p = self.home(c, self.cap);
+            k = 0;
+            while self.keys[p].is_some() {
+                k += 1;
+                p = (p + k) & (self.cap - 1);
+            }
+        }
+        self.keys[p] = Some((c, v));
+        self.count += 1;
+    }
+
+    /// The slot-order walk (the lightmapper's record order for the clip owners).
+    pub fn walk(&self) -> Vec<([i32; 3], T)> {
+        self.keys.iter().flatten().cloned().collect()
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.cap
+    }
+}
+
+/// The order in which the lightmapper emits the clip records' OWNER blocks: normal blocks (file order insertion) by
+/// the cell map's slot walk, then the free-mode blocks (`free[i]` = flag bit 28) sorted by (x, z, y).
+/// `cells[i]` = the block's cell in file order. Returns block indices.
+pub fn clip_owner_order(cells: &[[i32; 3]], free: &[bool]) -> Vec<usize> {
+    let mut m: CellMap<usize> = CellMap::default();
+    for (i, c) in cells.iter().enumerate() {
+        if !free[i] {
+            m.insert(*c, i);
+        }
+    }
+    let mut out: Vec<usize> = m.walk().into_iter().map(|(_, i)| i).collect();
+    let mut fm: Vec<usize> = (0..cells.len()).filter(|&i| free[i]).collect();
+    fm.sort_by_key(|&i| (cells[i][0], cells[i][2], cells[i][1]));
+    out.extend(fm);
+    out
+}
+
+// THE CLONE IDENTITY (question 2): a Solid2Model clone — and therefore a PreLightGen pointer, the group key — exists
+// per (prefab ENTITY PATH, block CLASS) where the class is normal vs free-mode placement (the two go through
+// different instantiation paths: the free-mode path clones its own models). On stpad: 20 PLG value classes → 40
+// pointers: 11 entities × {normal, free} + 3 × 4 (the L/R end clips: 2 sides × 2 classes) + 6 singles; BarrierSupport
+// 912 (normal) + 360 (free), the base 128 + 52. Within one class the same entity reached through different clips
+// (WaterFCCenter vs the HFC ends) shares the clone.
 
 #[cfg(test)]
 mod tests {
@@ -864,6 +1010,26 @@ mod tests {
         // the 5-record WaterBase object: all five pass the static filter
         assert_eq!(static_item_record(Some(&spot), true, false), Ok(()));
     }
+
+    fn cell_hash_walk_reproduces_stpad() {
+        // the 128 normal WaterBase blocks of stpad in file order → the dump's owner order begins 164, 113, 114, 35, 41,
+        // 122, 54, 1, 18, 81, 52, 87, 161, 55, 28, 90 (cells from refs/stpad-source.Map.Gbx); the full 128 matched
+        // the dump in the study script — the first 16 pin the walk here
+        let cells: Vec<[i32; 3]> = STPAD_CELLS.iter().map(|&(x, y, z)| [x, y, z]).collect();
+        let free: Vec<bool> = STPAD_FREE.iter().map(|&f| f != 0).collect();
+        let order = clip_owner_order(&cells, &free);
+        assert_eq!(order.len(), 180);
+        assert_eq!(&order[..16], &[164, 113, 114, 35, 41, 122, 54, 1, 18, 81, 52, 87, 161, 55, 28, 90]);
+        // the free-mode blocks come last in (x, z, y) order
+        assert_eq!(order[127], 24);
+        assert_eq!(&order[128..132], &[96, 97, 98, 99]);
+        assert_eq!(cell_hash(65, 10, 48) & 255, 255);
+        assert_eq!(cell_hash(47, 22, 59) & 255, 3);
+    }
+
+    /// stpad's 180 WaterBase blocks (file order): cell x, y, z — refs/stpad-source.Map.Gbx via `tmmaps census`.
+    const STPAD_CELLS: [(i32, i32, i32); 180] = [(41, 10, 40), (41, 10, 41), (42, 10, 40), (42, 10, 41), (41, 10, 42), (41, 10, 43), (42, 10, 42), (42, 10, 43), (41, 10, 44), (41, 10, 45), (42, 10, 44), (42, 10, 45), (41, 10, 46), (41, 10, 47), (42, 10, 46), (42, 10, 47), (39, 10, 46), (39, 10, 47), (40, 10, 46), (40, 10, 47), (39, 10, 48), (39, 10, 49), (40, 10, 48), (40, 10, 49), (41, 10, 48), (41, 10, 49), (42, 10, 48), (42, 10, 49), (35, 10, 46), (35, 10, 47), (36, 10, 46), (36, 10, 47), (33, 10, 46), (33, 10, 47), (34, 10, 46), (34, 10, 47), (31, 10, 44), (31, 10, 45), (32, 10, 44), (32, 10, 45), (31, 10, 42), (31, 10, 43), (32, 10, 42), (32, 10, 43), (35, 10, 48), (35, 10, 49), (36, 10, 48), (36, 10, 49), (23, 10, 48), (23, 10, 49), (24, 10, 48), (24, 10, 49), (21, 10, 48), (21, 10, 49), (22, 10, 48), (22, 10, 49), (29, 10, 32), (29, 10, 33), (30, 10, 32), (30, 10, 33), (29, 10, 34), (29, 10, 35), (30, 10, 34), (30, 10, 35), (27, 10, 34), (27, 10, 35), (28, 10, 34), (28, 10, 35), (25, 10, 32), (25, 10, 33), (26, 10, 32), (26, 10, 33), (25, 10, 30), (25, 10, 31), (26, 10, 30), (26, 10, 31), (29, 10, 52), (29, 10, 53), (30, 10, 52), (30, 10, 53), (29, 10, 54), (29, 10, 55), (30, 10, 54), (30, 10, 55), (43, 10, 48), (43, 10, 49), (44, 10, 48), (44, 10, 49), (43, 10, 46), (43, 10, 47), (44, 10, 46), (44, 10, 47), (43, 10, 44), (43, 10, 45), (44, 10, 44), (44, 10, 45), (47, 10, 50), (47, 10, 51), (48, 10, 50), (48, 10, 51), (61, 36, 36), (61, 36, 37), (62, 36, 36), (62, 36, 37), (63, 36, 36), (63, 36, 37), (64, 36, 36), (64, 36, 37), (65, 36, 36), (65, 36, 37), (66, 36, 36), (66, 36, 37), (47, 22, 58), (47, 22, 59), (48, 22, 58), (48, 22, 59), (47, 22, 60), (47, 22, 61), (48, 22, 60), (48, 22, 61), (47, 22, 62), (47, 22, 63), (48, 22, 62), (48, 22, 63), (57, 10, 38), (57, 10, 39), (58, 10, 38), (58, 10, 39), (59, 10, 42), (59, 10, 43), (60, 10, 42), (60, 10, 43), (61, 10, 42), (61, 10, 43), (62, 10, 42), (62, 10, 43), (61, 10, 40), (61, 10, 41), (62, 10, 40), (62, 10, 41), (63, 10, 40), (63, 10, 41), (64, 10, 40), (64, 10, 41), (65, 10, 40), (65, 10, 41), (66, 10, 40), (66, 10, 41), (63, 10, 42), (63, 10, 43), (64, 10, 42), (64, 10, 43), (63, 10, 44), (63, 10, 45), (64, 10, 44), (64, 10, 45), (67, 10, 50), (67, 10, 51), (68, 10, 50), (68, 10, 51), (65, 10, 50), (65, 10, 51), (66, 10, 50), (66, 10, 51), (65, 10, 48), (65, 10, 49), (66, 10, 48), (66, 10, 49), (67, 10, 48), (67, 10, 49), (68, 10, 48), (68, 10, 49), (49, 10, 48), (49, 10, 49), (50, 10, 48), (50, 10, 49), (49, 10, 50), (49, 10, 51), (50, 10, 50), (50, 10, 51)];
+    const STPAD_FREE: [u8; 180] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1];
 
     #[test]
     fn walls_and_legacy_items() {
