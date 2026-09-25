@@ -1,0 +1,6 @@
+# The x86-64 devservers all have AVX2/FMA/BMI2 (x86-64-v3, Haswell 2013+): with it rustc inlines floor/round
+# as single instructions (libm calls otherwise — 9 % of a bake's samples) and vectorises the plain loops. Floating-
+# point results are unchanged: Rust never contracts a·b+c into an FMA or reassociates a sum without explicit
+# fast-math, so every bake stays bit-identical to the generic build (checked on the harness dump).
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
