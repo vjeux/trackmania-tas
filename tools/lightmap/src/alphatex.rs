@@ -44,6 +44,10 @@ pub struct AlphaLevel {
     /// (y, y+1), the neighbours clamped to the level: 0 = all ≤ 127 (the tap fails the 128/255 test whatever
     /// its weights), 1 = all ≥ 129 (it passes), 2 = mixed (the weights decide).
     pub cls: Vec<u8>,
+    /// The fraction of `cls` that is mixed: when most neighbourhoods straddle the threshold (the coarse
+    /// levels of a leaf texture average to ~0.5 everywhere) the early-outs cost more than they save and
+    /// `passes_planned` samples directly.
+    pub mixed_frac: f32,
 }
 
 impl AlphaLevel {
@@ -71,7 +75,8 @@ impl AlphaLevel {
                 cls[y * w + x] = if mn >= 129 { 1 } else if mx <= 127 { 0 } else { 2 };
             }
         }
-        AlphaLevel { w, h, a, blocks, bw, cls }
+        let mixed_frac = cls.iter().filter(|c| **c == 2).count() as f32 / (w * h).max(1) as f32;
+        AlphaLevel { w, h, a, blocks, bw, cls, mixed_frac }
     }
     /// The (min, max) alpha over the texels [x0, x1] × [y0, y1] (inclusive, clamped to the level).
     #[inline]
@@ -274,7 +279,49 @@ impl AlphaTex {
         let l0 = lc.floor();
         let t = lc - l0;
         let two = t > 0.0 && l0 < last;
-        TapPlan { lod, l0: l0 as usize, l1: if two { l0 as usize + 1 } else { l0 as usize }, two, axis, n, aniso }
+        TapPlan { lod, l0: l0 as usize, l1: if two { l0 as usize + 1 } else { l0 as usize }, two, t, axis, n, aniso }
+    }
+
+    /// The bilinear sample of one level with ClampEdge addressing — `sample_level`'s arithmetic, the
+    /// addressing branches resolved (the plan's levels are known).
+    #[inline]
+    fn sample_level_clamp(l: &AlphaLevel, u: f32, v: f32) -> f32 {
+        let (w, h) = (l.w as i64, l.h as i64);
+        let fx = u.clamp(0.0, 1.0) * w as f32 - 0.5;
+        let fy = v.clamp(0.0, 1.0) * h as f32 - 0.5;
+        let (x0, y0) = (fx.floor(), fy.floor());
+        let (tx, ty) = (((fx - x0) * 256.0).floor() / 256.0, ((fy - y0) * 256.0).floor() / 256.0);
+        let (xa, xb) = ((x0 as i64).clamp(0, w - 1) as usize, (x0 as i64 + 1).clamp(0, w - 1) as usize);
+        let (ya, yb) = ((y0 as i64).clamp(0, h - 1) as usize, (y0 as i64 + 1).clamp(0, h - 1) as usize);
+        let p = |x: usize, y: usize| -> f32 { l.a[y * l.w + x] as f32 / 255.0 };
+        (p(xa, ya) * (1.0 - tx) + p(xb, ya) * tx) * (1.0 - ty) + (p(xa, yb) * (1.0 - tx) + p(xb, yb) * tx) * ty
+    }
+
+    /// `sample_aniso` / `sample_lod` with the plan's levels and fraction (the same arithmetic per tap:
+    /// `a + (b − a)·t`, the taps averaged), ClampEdge.
+    #[inline]
+    fn sample_planned_clamp(&self, u: f32, v: f32, p: &TapPlan) -> f32 {
+        let l0 = &self.levels[p.l0];
+        let l1 = &self.levels[p.l1];
+        let one = |uu: f32, vv: f32| -> f32 {
+            let a = Self::sample_level_clamp(l0, uu, vv);
+            if !p.two {
+                return a;
+            }
+            let b = Self::sample_level_clamp(l1, uu, vv);
+            a + (b - a) * p.t
+        };
+        if p.aniso > 1 && p.n > 1 {
+            let n = p.n;
+            let mut sum = 0.0f32;
+            for i in 0..n {
+                let s = (i as f32 + 0.5) / n as f32 - 0.5;
+                sum += one(u + p.axis[0] * s, v + p.axis[1] * s);
+            }
+            sum / n as f32
+        } else {
+            one(u, v)
+        }
     }
 
     /// `passes` with the triangle's plan: the exact early-outs (the 8×8 block min/max over the taps' span at
@@ -284,7 +331,8 @@ impl AlphaTex {
     pub fn passes_planned(&self, u: f32, v: f32, p: &TapPlan, threshold: f32, addr: Address) -> bool {
         let stats = alpha_stats_on();
         if stats { ALPHA_STATS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed); ALPHA_STATS[4].fetch_add(p.n as u64, std::sync::atomic::Ordering::Relaxed); ALPHA_STATS[5].fetch_add(p.l0 as u64, std::sync::atomic::Ordering::Relaxed); }
-        if addr == Address::ClampEdge && threshold > 127.5 / 255.0 && threshold < 128.5 / 255.0 {
+        let clamp_thr = addr == Address::ClampEdge && threshold > 127.5 / 255.0 && threshold < 128.5 / 255.0;
+        if clamp_thr && self.levels[p.l0].mixed_frac < 0.5 {
             let n = p.n;
             let half = if n > 1 { 0.5 - 0.5 / n as f32 } else { 0.0 };
             let (u0, u1) = ((u - p.axis[0].abs() * half).clamp(0.0, 1.0), (u + p.axis[0].abs() * half).clamp(0.0, 1.0));
@@ -331,7 +379,7 @@ impl AlphaTex {
             }
         }
         if stats { ALPHA_STATS[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
-        let a = if p.aniso > 1 { self.sample_aniso(u, v, p.lod, p.axis, p.n, addr) } else { self.sample_lod(u, v, p.lod, addr) };
+        let a = if addr == Address::ClampEdge { self.sample_planned_clamp(u, v, p) } else if p.aniso > 1 { self.sample_aniso(u, v, p.lod, p.axis, p.n, addr) } else { self.sample_lod(u, v, p.lod, addr) };
         a - threshold >= 0.0
     }
 
@@ -401,6 +449,8 @@ pub struct TapPlan {
     pub l0: usize,
     pub l1: usize,
     pub two: bool,
+    /// The blend fraction between `l0` and `l1` (`sample_lod`'s `lod − floor(lod)` after the clamp).
+    pub t: f32,
     pub axis: [f32; 2],
     pub n: usize,
     pub aniso: usize,
@@ -491,7 +541,23 @@ mod early_out_tests {
             cur = n; cw = nw;
         }
         let tex = AlphaTex { levels, flipped: false };
+        // and a second texture hovering around the threshold everywhere (its levels are mostly mixed: the
+        // direct sampling path)
+        let mut b0 = vec![0u8; w * w];
+        for y in 0..w { for x in 0..w { b0[y * w + x] = (128.0 + (rnd() - 0.5) * 40.0 + ((x + y) % 2) as f32 * 3.0) as u8; } }
+        let mut levels2 = vec![AlphaLevel::with_blocks(w, w, b0.clone())];
+        let mut cur = b0; let mut cw = w;
+        while cw > 1 {
+            let nw = cw / 2;
+            let mut n = vec![0u8; nw * nw];
+            for y in 0..nw { for x in 0..nw { let s = cur[2 * y * cw + 2 * x] as u32 + cur[2 * y * cw + 2 * x + 1] as u32 + cur[(2 * y + 1) * cw + 2 * x] as u32 + cur[(2 * y + 1) * cw + 2 * x + 1] as u32; n[y * nw + x] = (s / 4) as u8; } }
+            levels2.push(AlphaLevel::with_blocks(nw, nw, n.clone()));
+            cur = n; cw = nw;
+        }
+        let tex2 = AlphaTex { levels: levels2, flipped: false };
+        assert!(tex2.levels[0].mixed_frac > 0.5 && tex.levels[0].mixed_frac < 0.5, "{} {}", tex2.levels[0].mixed_frac, tex.levels[0].mixed_frac);
         let thr = 0.501_960_813_999_176f32;
+        for tex in [&tex, &tex2] {
         for _ in 0..20000 {
             let (u, v) = (rnd(), rnd());
             let fp = Footprint { dx: [(rnd() - 0.5) * 6.0, (rnd() - 0.5) * 6.0], dy: [(rnd() - 0.5) * 6.0, (rnd() - 0.5) * 6.0], w: w as f32, h: w as f32 };
@@ -500,6 +566,7 @@ mod early_out_tests {
                 let plan = tex.plan(&fp, aniso);
                 assert_eq!(tex.passes_planned(u, v, &plan, thr, Address::ClampEdge), tex.passes_sampled(u, v, &fp, thr, Address::ClampEdge, aniso), "planned: u {u} v {v} fp {fp:?} aniso {aniso}");
             }
+        }
         }
     }
 }

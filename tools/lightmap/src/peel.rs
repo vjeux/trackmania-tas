@@ -438,9 +438,9 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         let p0 = t.p0;
         let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
         let p2 = [p0[0] + t.e2[0], p0[1] + t.e2[1], p0[2] + t.e2[2]];
-        let (_, y0, z0) = frame.project(p0);
-        let (_, y1, z1) = frame.project(p1);
-        let (_, y2, z2) = frame.project(p2);
+        let (x0, y0, z0) = frame.project(p0);
+        let (x1, y1, z1) = frame.project(p1);
+        let (x2, y2, z2) = frame.project(p2);
         if z0.min(z1).min(z2) >= zmax || z0.max(z1).max(z2) < zmin {
             return None;
         }
@@ -460,6 +460,17 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         let ry0 = ((miny - 0.5).ceil() as i64).max(clip.1 as i64) as i32;
         let ry1 = ((maxy - 0.5).floor() as i64).min(clip.3 as i64) as i32;
         if ry0 > ry1 {
+            return None;
+        }
+        // no pixel centre between the columns either → the raster would visit nothing (most leaf
+        // triangles: the same test `raster::bounds` makes, so the visited set is unchanged)
+        let (minx, maxx) = (x0.min(x1).min(x2), x0.max(x1).max(x2));
+        if !(minx.is_finite() && maxx.is_finite()) {
+            return None;
+        }
+        let rx0 = ((minx - 0.5).ceil() as i64).max(clip.0 as i64);
+        let rx1 = ((maxx - 0.5).floor() as i64).min(clip.2 as i64);
+        if rx0 > rx1 {
             return None;
         }
         Some((ry0, ry1))
@@ -1639,9 +1650,9 @@ pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene,
         let p0 = t.p0;
         let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
         let p2 = [p0[0] + t.e2[0], p0[1] + t.e2[1], p0[2] + t.e2[2]];
-        let (_, y0, z0) = frame.project(p0);
-        let (_, y1, z1) = frame.project(p1);
-        let (_, y2, z2) = frame.project(p2);
+        let (x0, y0, z0) = frame.project(p0);
+        let (x1, y1, z1) = frame.project(p1);
+        let (x2, y2, z2) = frame.project(p2);
         if z0.min(z1).min(z2) >= zmax || z0.max(z1).max(z2) < zmin {
             return None;
         }
@@ -1661,6 +1672,17 @@ pub fn exact_item_layers_direct(tris: &[WTri], frame: &PeelFrame, scene: &Scene,
         let ry0 = ((miny - 0.5).ceil() as i64).max(clip.1 as i64) as i32;
         let ry1 = ((maxy - 0.5).floor() as i64).min(clip.3 as i64) as i32;
         if ry0 > ry1 {
+            return None;
+        }
+        // no pixel centre between the columns either → the raster would visit nothing (most leaf
+        // triangles: the same test `raster::bounds` makes, so the visited set is unchanged)
+        let (minx, maxx) = (x0.min(x1).min(x2), x0.max(x1).max(x2));
+        if !(minx.is_finite() && maxx.is_finite()) {
+            return None;
+        }
+        let rx0 = ((minx - 0.5).ceil() as i64).max(clip.0 as i64);
+        let rx1 = ((maxx - 0.5).floor() as i64).min(clip.2 as i64);
+        if rx0 > rx1 {
             return None;
         }
         Some((ry0, ry1))
