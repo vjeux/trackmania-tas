@@ -43,26 +43,36 @@ impl LayerStat {
 /// the pixel-count query of that layer's render is read WITHOUT waiting (0x1402363c0: device vtbl+0x3f0,
 /// flag 0; the fraction at scene+0x228, the previous value — initially 1.0 — kept when the GPU has not
 /// answered yet); the peel stops when the fraction < `threshold` (0.001 of the viewport) or after
-/// `max_layers` (the counter passes 0x13). The no-wait read makes the count timing-dependent: the
-/// captured peels rendered `lag` layers past the first one under the threshold (fitted peels: 2, 2, 3;
-/// world peels: 3, 4, and ≥ 18 on the very first direction, whose 18 trailing layers were all empty).
+/// `max_renders` RENDERS of the peel — the counter at state+0x20 counts every render including the
+/// environment block (`> 0x13` after the increment: indices 0..20 = 21 renders): sweep 0 = the environment
+/// block + 20 item layers (pwc1 d0 world: exactly 20 item layers), sweep 1 (no environment block, pwc6
+/// frame 7534) = 21 item layers per peel (sdi 9: 21 world + 21 fitted). The no-wait read makes the count
+/// timing-dependent: the captured peels rendered `lag` layers past the first one under the threshold
+/// (fitted peels: 2, 2, 3; world peels: 3, 4, and ≥ 18 on the very first direction, whose 18 trailing
+/// layers were all empty).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PeelStop {
     pub threshold: f64,
     pub lag: usize,
-    pub max_layers: usize,
+    /// The cap on renders per peel, the environment block included.
+    pub max_renders: usize,
 }
 
 impl Default for PeelStop {
     fn default() -> Self {
-        PeelStop { threshold: 0.001, lag: 2, max_layers: 20 }
+        PeelStop { threshold: 0.001, lag: 2, max_renders: 21 }
     }
 }
 
 impl PeelStop {
     /// How many item layers the game renders for these per-layer written fractions (in render order).
     pub fn layers_rendered(&self, fractions: &[f64]) -> usize {
-        layers_rendered_with(fractions, self.lag, self.threshold, self.max_layers)
+        layers_rendered_with(fractions, self.lag, self.threshold, self.max_renders.saturating_sub(1))
+    }
+    /// The item layers rendered when the peel has `env_renders` environment renders before them (1 in
+    /// sweep 0, 0 in later sweeps): the cap is on the total.
+    pub fn layers_rendered_after(&self, fractions: &[f64], env_renders: usize) -> usize {
+        layers_rendered_with(fractions, self.lag, self.threshold, self.max_renders.saturating_sub(env_renders))
     }
 }
 
@@ -226,6 +236,10 @@ mod tests {
         assert_eq!(layers_rendered(&[0.5, 0.01, 0.0005, 0.0, 0.0], 2), 5);
         // nothing ever under the threshold: the cap of 20 layers
         assert_eq!(layers_rendered(&[0.5; 40], 0), 20);
+        // the cap counts renders, the environment block included: 20 item layers after it, 21 without it
+        let stop = PeelStop::default();
+        assert_eq!(stop.layers_rendered_after(&[0.5; 40], 1), 20);
+        assert_eq!(stop.layers_rendered_after(&[0.5; 40], 0), 21);
         // an empty scene: the first layer stops it
         assert_eq!(layers_rendered(&[0.0], 0), 1);
         // beyond the captured sequence the fraction is taken as 0
@@ -411,8 +425,79 @@ pub fn lm_st(args: &[String]) {
             println!("instance {ii} item {} at ({:.2}, {:.2}, {:.2}) model {} bounds ({:.5}, {:.5}, {:.5}, {:.5}) rect x {} y {} w {} h {}: A ST = ({:.7}, {:.7}, {:.7}, {:.7}); B ST = ({:.7}, {:.7}, {:.7}, {:.7})", inst.item, inst.xf[9], inst.xf[10], inst.xf[11], scene.model_names.get(inst.model).cloned().unwrap_or_default(), b[0], b[1], b[2], b[3], r.x, r.y, r.w, r.h, sx, sy, tx, ty, sx2, sy2, tx2, ty2);
         }
     }
+    // --rects FILE: every mapping rect as JSON lines (obj, x, y, w, h)
+    if let Some(path) = f("--rects") {
+        let txt: String = rects.iter().map(|r| format!("[{}, {}, {}, {}, {}]\n", r.obj, r.x, r.y, r.w, r.h)).collect();
+        std::fs::write(&path, txt).expect("--rects");
+    }
     for r in rects.iter().filter(|r| r.obj >= base).take(8) {
         let w = 2048.0f32;
         println!("rect obj {} (item {}): x {} y {} w {} h {} → candidates: ((w−1)/W, (h−1)/W, (x+0.5)/W, (y+0.5)/W) = ({:.7}, {:.7}, {:.7}, {:.7}); (w/W, h/W, x/W, y/W) = ({:.7}, {:.7}, {:.7}, {:.7})", r.obj, r.obj - base, r.x, r.y, r.w, r.h, (r.w as f32 - 1.0) / w, (r.h as f32 - 1.0) / w, (r.x as f32 + 0.5) / w, (r.y as f32 + 0.5) / w, r.w as f32 / w, r.h as f32 / w, r.x as f32 / w, r.y as f32 / w);
     }
+}
+
+/// `lmtool sweep1-annotate PASSCAP MANIFEST_IN MANIFEST_OUT [--frames 7533,7534]` — the sweep-1 peel entries
+/// of the capture carry no direction, frustum, layer or phase (raw exports); the draw logs do: every peel
+/// draw's ShaderV holds `GbxWorldPw01Shadow` (the peel camera), so each entry takes the frustum of the last
+/// peel draw in its event range, its forward as the direction, the phase from the frustum's extent (the
+/// world peel spans the environment box, > 500 m half extent; the fitted one the items), and a running
+/// layer index per (frame, direction, phase). Sweep 1 renders NO environment block (the sea box, terrain,
+/// dome and clouds are absent from frame 7534's range 4445–13359: per layer a clear, the item draws, the
+/// probe accumulate and the LM accumulate), so every entry is an item layer.
+pub fn sweep1_annotate(args: &[String]) -> Result<(), String> {
+    let f = |k: &str| args.iter().position(|x| x == k).and_then(|i| args.get(i + 1)).cloned();
+    let root = std::path::PathBuf::from(&args[1]);
+    let txt = std::fs::read_to_string(&args[2]).map_err(|e| format!("{}: {e}", args[2]))?;
+    let mut m = crate::passdiff::read_manifest(&txt)?;
+    let frames: Vec<u32> = f("--frames").unwrap_or_else(|| "7533,7534".into()).split(',').map(|s| s.trim().parse().unwrap()).collect();
+    let mut n_done = 0usize;
+    for frame in frames {
+        let draws = crate::lmaccum::load_draws(&root, frame)?;
+        // (eid, pw01) of every draw carrying the peel camera
+        let cams: Vec<(u64, [[f32; 4]; 4])> = draws.iter().filter_map(|d| {
+            let eid = d["eid"].as_u64()?;
+            let pw = d.pointer("/Vertex/cbuffers/ShaderV/GbxWorldPw01Shadow")?;
+            let rows = pw.as_array()?;
+            let mut mtx = [[0f32; 4]; 4];
+            for (i, r) in rows.iter().enumerate().take(4) { for (k, x) in r.as_array()?.iter().enumerate().take(4) { mtx[i][k] = x.as_f64()? as f32; } }
+            Some((eid, mtx))
+        }).collect();
+        let mut idx: Vec<usize> = m.passes.iter().enumerate().filter(|(_, e)| (e.pass == "peel_depth" || e.pass == "peel_color") && e.sweep == Some(1) && e.frame == Some(frame)).map(|(i, _)| i).collect();
+        idx.sort_by_key(|&i| m.passes[i].eid_last.unwrap_or(0));
+        let mut layer_of: std::collections::HashMap<(String, u32, String), u32> = std::collections::HashMap::new();
+        for i in idx {
+            let e = &m.passes[i];
+            let (lo, hi) = (e.eid_first.unwrap_or(0), e.eid_last.unwrap_or(0));
+            let Some((_, pw)) = cams.iter().filter(|(eid, _)| *eid > lo && *eid <= hi).last() else { eprintln!("sweep1-annotate: frame {frame} {}: no peel draw in ({lo}, {hi}]", e.file); continue };
+            let Some(fr) = crate::passdump::Frustum::from_pw01(pw) else { continue };
+            let phase = if fr.half[0] > 500.0 { "world" } else { "fitted" };
+            let sdi = e.sweep_direction_index.unwrap_or(0);
+            let key = (e.pass.clone(), sdi, phase.to_string());
+            let l = layer_of.entry(key).or_insert(0);
+            let e = &mut m.passes[i];
+            e.dir = Some(fr.forward);
+            e.frustum = Some(fr);
+            e.pw01 = Some(*pw);
+            e.direction = Some(sdi);
+            e.phase = Some(phase.into());
+            e.environment_block = Some(false);
+            e.layer = Some(*l);
+            *l += 1;
+            n_done += 1;
+        }
+    }
+    let out = serde_json::to_string_pretty(&m).map_err(|e| e.to_string())?;
+    std::fs::write(&args[3], out).map_err(|e| format!("{}: {e}", args[3]))?;
+    println!("{n_done} sweep-1 peel entries annotated → {}", args[3]);
+    // a summary per (frame, direction, phase)
+    let mut seen: std::collections::BTreeMap<(u32, u32, String), (usize, [f32; 3], [f32; 3])> = Default::default();
+    for e in m.passes.iter().filter(|e| e.pass == "peel_depth" && e.sweep == Some(1) && e.phase.is_some()) {
+        let k = (e.frame.unwrap_or(0), e.direction.unwrap_or(0), e.phase.clone().unwrap());
+        let ent = seen.entry(k).or_insert((0, e.dir.unwrap_or([0.0; 3]), e.frustum.as_ref().map(|f| f.half).unwrap_or([0.0; 3])));
+        ent.0 += 1;
+    }
+    for ((fr, d, ph), (n, dir, half)) in seen {
+        println!("  frame {fr} sweep-1 direction {d} {ph}: {n} depth layers, D ({:.4}, {:.4}, {:.4}), half ({:.1}, {:.1}, {:.1})", dir[0], dir[1], dir[2], half[0], half[1], half[2]);
+    }
+    Ok(())
 }

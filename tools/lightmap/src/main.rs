@@ -1411,6 +1411,26 @@ fn run(a: Vec<String>) {
                 eprintln!("layout from {rp}: {} item chart sizes", out.len());
                 out
             });
+            // THE ZONE TILES' CHART ST from the capture's instance buffer (`lmaccum::load_lm_scene`: the 4096-instance
+            // object's g_InstanceDatas — t = the cell's corner, st = its chart ST; the mapping's obj index = the instance
+            // index, a traversal RE-6's block records describe): the harness's tile colour path
+            if let (Some(dir), true) = (f("--env-from"), f("--frustum-from").is_some()) {
+                match lightmap::lmaccum::load_lm_scene(std::path::Path::new(&dir), 127448) {
+                    Ok(sc) => {
+                        let mut table: Vec<Option<[f32; 4]>> = vec![None; 64 * 64];
+                        let mut n = 0usize;
+                        for (k, &cnt) in sc.inst_count.iter().enumerate() {
+                            if cnt < 4096 { continue; }
+                            for inst in sc.instances.iter().skip(sc.inst_first[k]).take(cnt) {
+                                let (cx, cz) = ((inst.t[0] / 32.0).round() as i64, (inst.t[2] / 32.0).round() as i64);
+                                if (0..64).contains(&cx) && (0..64).contains(&cz) { table[(cz * 64 + cx) as usize] = Some(inst.st); n += 1; }
+                            }
+                        }
+                        if n > 0 { eprintln!("env-from {dir}: the zone tiles' chart ST of {n} cells from the captured instance buffer"); prm.tile_st = Some(std::sync::Arc::new(table)); }
+                    }
+                    Err(e) => eprintln!("env-from {dir}: no tile ST table ({e})"),
+                }
+            }
             // the items' layout rects per instance (the peel colour's chart ST: `peelcolor::chart_st`)
             if !ref_rects.is_empty() {
                 prm.chart_rects = Some(std::sync::Arc::new(scene.instances.iter().map(|inst| ref_rects.get(&inst.item).copied()).collect()));
@@ -1628,9 +1648,40 @@ fn run(a: Vec<String>) {
                         }
                     }
                 }
+                // THE GAME'S SWEEP ≥ 1 PEEL HAS NO ENVIRONMENT BLOCK (pwc6 frame 7534, sdi 8's range 4445–13359: per layer a
+                // clear, the item draws, the accumulates — no sea box / terrain / dome / clouds): the layers are item layers
+                // from the first, the environment neither drawn nor occluding; its colour is the sweep's ILightInput atlas
+                // (--ilightinput-from-s1 FILE: the captured 8490 for the harness)
+                if p2.game_peel {
+                    p2.dome_layer = false;
+                    p2.env_in_peel = false;
+                    p2.ilight_atlas = None;
+                    if let Some(path) = f("--ilightinput-from-s1") {
+                        let pb = std::path::PathBuf::from(&path);
+                        let (root, file) = (pb.parent().map(|p| p.to_path_buf()).unwrap_or_default(), pb.file_name().unwrap().to_string_lossy().to_string());
+                        let mut e = lightmap::passdump::entry("ilightinput", file, "atlas");
+                        e.format = "R11G11B10_FLOAT".into();
+                        let b = lightmap::passdiff::load_entry(&root, &e).unwrap_or_else(|er| panic!("--ilightinput-from-s1 {path}: {er}"));
+                        eprintln!("ilightinput-from-s1 {path}: {}×{} atlas — sweep {it}'s peel colour samples it at the LM uv", b.w, b.h);
+                        p2.ilight_atlas = Some(std::sync::Arc::new(lightmap::peelcolor::AtlasTex::from_buf(&b)));
+                    }
+                }
                 if let Some(gm) = &game_manifest {
                     let fs = lightmap::passdiff::peel_frustums_for(gm, it as u32, &p2.sphere_dirs);
                     p2.frustums = if fs.is_empty() { None } else { Some(std::sync::Arc::new(fs)) };
+                    let lc = lightmap::peelcap::captured_layer_counts(gm, it as u32, &p2.sphere_dirs);
+                    let n_known = lc.iter().filter(|v| v.iter().any(|c| c.is_some())).count();
+                    p2.peel_layer_counts = if n_known > 0 { Some(std::sync::Arc::new(lc.clone())) } else { None };
+                    // which of our sweep-it directions carry a captured peel
+                    let mut seen: Vec<([f32; 3], String, u32)> = Vec::new();
+                    for e in gm.passes.iter().filter(|e| (e.pass == "peel_depth" || e.pass == "peel_color") && e.sweep == Some(it as u32)) {
+                        if let Some(d) = e.dir { if !seen.iter().any(|(v, _, _)| (v[0] - d[0]).abs() < 1e-4 && (v[1] - d[1]).abs() < 1e-4 && (v[2] - d[2]).abs() < 1e-4) { seen.push((d, e.capture.clone().unwrap_or_default(), e.frame.unwrap_or(0))); } }
+                    }
+                    let hits: Vec<String> = seen.iter().filter_map(|(d, cap, fr)| {
+                        let (i, c) = p2.sphere_dirs.iter().enumerate().map(|(i, o)| (i, o[0] * d[0] + o[1] * d[1] + o[2] * d[2])).max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap();
+                        Some(format!("{cap} frame {fr} ({:.3}, {:.3}, {:.3}) = sweep-{it} direction {i} ({:.3}°){}", d[0], d[1], d[2], c.clamp(-1.0, 1.0).acos().to_degrees(), if n_known > 0 { format!(", captured layer counts {:?}", lc.get(i)) } else { String::new() }))
+                    }).collect();
+                    if !hits.is_empty() { eprintln!("sweep {it}: captured peel directions: {}", hits.join("; ")); }
                     if f("--dump-dirs").as_deref() == Some("game") { if let Some(d) = &prm.dump { let v = lightmap::passdiff::game_dir_indices(gm, it as u32, &p2.sphere_dirs); eprintln!("dump-dirs game: sweep {it} → our directions {:?}", v); d.lock().unwrap().dirs = Some(v); } }
                 }
                 if let Some(d) = &prm.dump { let mut dm = d.lock().unwrap(); let n = p2.sphere_dirs.len() as u32; dm.manifest.sweeps.push(lightmap::passdump::Sweep { sweep: it as u32, n_dirs: n, scale: 4.0 / n.max(1) as f32, dirs: p2.sphere_dirs.iter().copied().collect() }); }
@@ -3210,6 +3261,7 @@ fn run(a: Vec<String>) {
         "quanta-diff" => lightmap::peelcap::quanta_diff(&a),
         "layer-gap" => lightmap::peelcap::layer_gap(&a),
         "lm-st" => lightmap::peelcap::lm_st(&a),
+        "sweep1-annotate" => { if let Err(e) = lightmap::peelcap::sweep1_annotate(&a) { eprintln!("sweep1-annotate: {e}"); std::process::exit(1); } }
         "clouds-check" => { if let Err(e) = lightmap::clouds::check(&a) { eprintln!("clouds-check: {e}"); std::process::exit(1); } }
         "passcap-info" => {
             // lmtool passcap-info DIR [--pass P] [--max N]: per entry of a MANIFEST.json the buffer's statistics

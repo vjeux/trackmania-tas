@@ -207,7 +207,20 @@ pub struct BakeParams {
     pub ilight_atlas: Option<std::sync::Arc<crate::peelcolor::AtlasTex>>,
     /// Per instance the layout rect (x, y, w, h in the 2048-unit layout) — the chart ST's input.
     pub chart_rects: Option<std::sync::Arc<Vec<Option<[i32; 4]>>>>,
+    /// The environment (sea box, terrain, dome, clouds) is part of this sweep's peel (the game's sweep 0);
+    /// false = sweep ≥ 1, where the game renders no environment block: the item layers start at the first
+    /// render and the environment's triangles neither draw nor occlude.
+    pub env_in_peel: bool,
+    /// The zone tiles' chart ST per 32 m cell (index cz·64 + cx), for the peel colour of the tiles
+    /// (their LM uv = the tile mesh's TexCoord1 — `TILE_UV_BOUNDS` over the cell — through this ST);
+    /// the harness fills it from the capture's g_InstanceDatas (`--env-from` + `--frustum-from`), the
+    /// port's own layout will (the tiles' rects in instance order — RE-6's block records).
+    pub tile_st: Option<std::sync::Arc<Vec<Option<[f32; 4]>>>>,
 }
+
+/// The zone tile mesh's TexCoord1 over the 32 m cell (the capture's tile vertex buffer, 9 vertices on a
+/// 3×3 grid): u = b0 + (x/32)·(b2 − b0), v = b3 − (z/32)·(b3 − b1) — the same bounds as the plate's.
+pub const TILE_UV_BOUNDS: [f32; 4] = [0.04798, 0.05277, 0.94705, 0.95944];
 
 impl Default for BakeParams {
     fn default() -> Self {
@@ -304,6 +317,8 @@ impl Default for BakeParams {
             hbasis_game: None,
             ilight_atlas: None,
             chart_rects: None,
+            env_in_peel: true,
+            tile_st: None,
         }
     }
 }

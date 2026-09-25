@@ -172,8 +172,9 @@ pub struct Frag {
 }
 
 /// All fragments of a peel, CSR by pixel, sorted by depth within a pixel.
-/// The peel's layer cap (the client's state machine stops after layer 20).
-pub const MAX_LAYERS: usize = 20;
+/// The peel's item-layer cap: the client's state machine stops after 21 renders, the environment block
+/// included (sweep 0: 20 item layers; sweep ≥ 1, no environment block: 21).
+pub const MAX_LAYERS: usize = 21;
 
 /// The WANTED pixels of a peel as a rank structure: a bitmap over the frame plus the prefix popcount
 /// per 64-pixel word, so a pixel's dense index among the wanted ones is O(1) — the sparse A-buffer and
@@ -891,6 +892,28 @@ fn fragment_radiance(scene: &Scene, bvh: &Bvh, prm: &BakeParams, shadow: Option<
             }
         }
     }
+    // the zone tiles (decoration quads on the 32 m grid): their chart ST per cell, the LM uv from the tile
+    // mesh's TexCoord1 bounds (TILE_UV_BOUNDS), the footprint from the cell's projected corners
+    if let (Some(atlas), Some(tst), true) = (&prm.ilight_atlas, &prm.tile_st, wt.inst == DECOR_INST) {
+        let is_tile = scene.decor.get(wt.tri as usize).map(|d| !d.env && !d.water).unwrap_or(false);
+        if is_tile {
+            let (cx, cz) = ((hit_p[0] / 32.0).floor(), (hit_p[2] / 32.0).floor());
+            if cx >= 0.0 && cx < 64.0 && cz >= 0.0 && cz < 64.0 {
+                if let Some(Some(st)) = tst.get((cz as usize) * 64 + cx as usize) {
+                    let b = crate::bake::TILE_UV_BOUNDS;
+                    let uv1_of = |x: f32, z: f32| -> [f32; 2] { [b[0] + (x - cx * 32.0) / 32.0 * (b[2] - b[0]), b[3] - (z - cz * 32.0) / 32.0 * (b[3] - b[1])] };
+                    let uv_lm_of = |uv: [f32; 2]| [uv[0] * st[0] + st[2], uv[1] * st[1] + st[3]];
+                    let uv_lm = uv_lm_of(uv1_of(hit_p[0], hit_p[2]));
+                    let y = hit_p[1];
+                    let (x0, z0) = (cx * 32.0, cz * 32.0);
+                    let c = [[x0, y, z0], [x0 + 32.0, y, z0], [x0, y, z0 + 32.0]];
+                    let px: Vec<[f32; 2]> = c.iter().map(|q| { let (x, yy, _) = frame.project(*q); [x, yy] }).collect();
+                    let fp = crate::alphatex::Footprint::of_triangle([px[0], px[1], px[2]], [uv_lm_of(uv1_of(c[0][0], c[0][2])), uv_lm_of(uv1_of(c[1][0], c[1][2])), uv_lm_of(uv1_of(c[2][0], c[2][2]))], atlas.w, atlas.h);
+                    return crate::peelcolor::peel_color(atlas, uv_lm, fp.major_axis(), fp.taps(16), true);
+                }
+            }
+        }
+    }
     let h = Hit { t: 0.0, tri };
     let alb = hit_albedo(scene, bvh, prm, &h);
     // the lightmap so far at this surface point (0 on the first sweep), read back ÷ bounce_decode
@@ -1121,8 +1144,9 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
             }
         }
         for f in list {
-            // (the environment is not re-drawn in the geometry layers)
-            if prm.dome_layer && is_env(f.tri) {
+            // (the environment is not re-drawn in the geometry layers; in a sweep without an environment block
+            // it is not drawn at all)
+            if (prm.dome_layer || !prm.env_in_peel) && is_env(f.tri) {
                 continue;
             }
             // pancaking: a fragment beyond the far plane lands on it (z01 = 0)
@@ -1196,7 +1220,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
         }
         let kept = match fixed_layers {
             Some(k) => k.min(MAX_LAYERS),
-            None => prm.peel_stop.layers_rendered(&fractions),
+            None => prm.peel_stop.layers_rendered_after(&fractions, skip_n),
         };
         let candidates = fractions.iter().take_while(|f| **f > 0.0).count();
         LAYER_STATS.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1262,7 +1286,7 @@ fn extract_layers(ab: &ABuffer, frame: &PeelFrame, scene: &Scene, bvh: &Bvh, prm
     }
     let kept = match fixed_layers {
         Some(k) => k.min(MAX_LAYERS),
-        None => prm.peel_stop.layers_rendered(&fractions),
+        None => prm.peel_stop.layers_rendered_after(&fractions, skip_n),
     };
     let candidates = fractions.iter().take_while(|f| **f > 0.0).count();
     LAYER_STATS.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
