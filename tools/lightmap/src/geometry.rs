@@ -460,22 +460,46 @@ impl Scene {
             let start = payload + 4 + m.blocks.len() + m.baked.len();
             m.gbx.body[start.min(payload + size)..(payload + size).min(start + m.items.len())].to_vec()
         }).unwrap_or_default();
+        // the game's STOCK items (a placed item whose model the map does not embed: `Screen2x1Small`, …) live in the packs —
+        // LMTOOL_STOCK_PAKS=FILE:KEY[,FILE:KEY…] names the packs searched under `<Collection>\Items\<name>.Item.Gbx` (the map's
+        // collection first, then Stadium, the shared library)
+        let mut stock_store: Option<mapgeom::store::DataStore> = std::env::var("LMTOOL_STOCK_PAKS").ok().map(|v| {
+            let mut st = mapgeom::store::DataStore::empty();
+            for spec in v.split(',').filter(|s| !s.is_empty()) {
+                if let Some((f, k)) = spec.rsplit_once(':') { if let Err(e) = st.add_pak(f, k) { eprintln!("LMTOOL_STOCK_PAKS {f}: {e}"); } }
+            }
+            st
+        });
+        let collection_name: String = { let c = m.items.first().map(|it| it.collection_raw).unwrap_or(0x1a); match c { 0x1a => "Stadium", 0x1c => "BlueBay", 0x10 => "RedIsland", 0x1d => "WhiteShore", 0xf => "GreenCoast", _ => "Stadium" }.to_string() };
+        let mut stock_bytes: BTreeMap<String, Vec<u8>> = BTreeMap::new();
         for (i, it) in m.items.iter().enumerate() {
             let mi = match index.get(&it.model) {
                 Some(&k) => k,
-                None => match by_name.get(&it.model) {
-                    Some(bytes) => {
-                        let g = load_model(bytes).map_err(|e| format!("{}: {e}", it.model))?;
-                        models.push(g);
-                        model_names.push(it.model.clone());
-                        index.insert(it.model.clone(), models.len() - 1);
-                        models.len() - 1
+                None => {
+                    let embedded: Option<Vec<u8>> = by_name.get(&it.model).map(|b| (*b).clone());
+                    let bytes: Option<Vec<u8>> = embedded.or_else(|| {
+                        let st = stock_store.as_mut()?;
+                        let name = it.model.trim_end_matches(".Item.Gbx");
+                        for coll in [collection_name.as_str(), "Stadium"] {
+                            let logical = format!("{coll}\\Items\\{name}.Item.Gbx");
+                            if let Ok(b) = st.read(&logical) { stock_bytes.insert(it.model.clone(), (*b).clone()); return Some((*b).clone()); }
+                        }
+                        None
+                    });
+                    match bytes {
+                        Some(bytes) => {
+                            let g = load_model(&bytes).map_err(|e| format!("{}: {e}", it.model))?;
+                            models.push(g);
+                            model_names.push(it.model.clone());
+                            index.insert(it.model.clone(), models.len() - 1);
+                            models.len() - 1
+                        }
+                        None => {
+                            *missing.entry(it.model.clone()).or_insert(0) += 1;
+                            continue;
+                        }
                     }
-                    None => {
-                        *missing.entry(it.model.clone()).or_insert(0) += 1;
-                        continue;
-                    }
-                },
+                }
             };
             let xf = mapgeom::place::anchored(it.pos, [it.yaw, it.pitch, it.roll], it.pivot, it.scale);
             let pose = ItemPose { yaw: it.yaw, pitch: it.pitch, roll: it.roll, pos: it.pos, pivot: it.pivot, scale: it.scale };

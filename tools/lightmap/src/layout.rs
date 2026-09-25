@@ -284,7 +284,7 @@ pub fn quality_index_of(own: &crate::mapio::MapLightmap) -> Option<u32> {
 /// The whole allocation of a map: the tiles from its baked records + the 64×64 grid, the items from the scene, the keys
 /// from the block records when a pak is given (`lmtiles`), else the cell/triangle centres. `quality_index` = the game's
 /// enum (tinyctl quality − 1); `base` = the tile count (the item object base).
-pub fn for_map(map_path: &str, scene: &crate::geometry::Scene, base: u32, quality_index: u32, tile_plg: TilePlg, pak: Option<(&str, &str)>, collection: &str, zone: &str) -> Result<GameLayout, String> {
+pub fn for_map(map_path: &str, scene: &crate::geometry::Scene, base: u32, quality_index: u32, tile_plg: TilePlg, pak: Option<(&str, &str)>, collection: &str, zone: &str, kept: Option<&std::collections::HashSet<usize>>) -> Result<GameLayout, String> {
     let mf = tmmaps::map::MapFile::load(std::path::Path::new(map_path));
     let (sx, sz) = (64i32, 64i32);
     let baked: Vec<(i32, i32)> = mf.baked.iter().map(|b| { let (x, _, z) = b.coords(); (x, z) }).collect();
@@ -339,8 +339,14 @@ pub fn for_map(map_path: &str, scene: &crate::geometry::Scene, base: u32, qualit
         }
     }
     let tiles: Vec<([f32; 2], ChartKey)> = (0..base as usize).map(|k| (tile_plg.ext(tq[k]), tile_keys[k])).collect();
-    let items: Vec<(u32, [f32; 2], ChartKey, Charted)> = scene
-        .instances
+    // the records among the items: the kept list when given (RE 7's reduction of the reference bakes), and never a model without
+    // a non-degenerate uv-set-0 bound (the 1-uv-set items get no record)
+    let is_record = |inst: &crate::geometry::Instance| -> bool {
+        if let Some(k) = kept { if !k.contains(&inst.item) { return false; } }
+        match scene.models[inst.model].plg_bounds { Some(b) => b[2] > b[0] && b[3] > b[1], None => false }
+    };
+    let record_instances: Vec<&crate::geometry::Instance> = scene.instances.iter().filter(|i| is_record(i)).collect();
+    let items: Vec<(u32, [f32; 2], ChartKey, Charted)> = record_instances
         .iter()
         .map(|inst| {
             let m = &scene.models[inst.model];
@@ -357,8 +363,141 @@ pub fn for_map(map_path: &str, scene: &crate::geometry::Scene, base: u32, qualit
             (obj, ext, item_keys.get(&obj).copied().unwrap_or(ChartKey { centre: [0.0; 3], h2: 0.0 }), if item_bound(m) { Charted::Bound } else { Charted::Packed })
         })
         .collect();
-    let mut out = allocate(&LayoutInput { tiles, items, w_atlas: 2048, quality_index })?;
+    // the group keys: tiles = (the zone prefab, q); items = (the model, q) — LMTOOL_LAYOUT_PER_RECORD=1 keeps the per-record
+    // allocation (the grouped one coincides with it where every record is solo)
+    let input = LayoutInput { tiles, items, w_atlas: 2048, quality_index };
+    let mut out = if std::env::var_os("LMTOOL_LAYOUT_PER_RECORD").is_some() {
+        allocate(&input)?
+    } else {
+        let mut groups: Vec<u64> = Vec::with_capacity(input.tiles.len() + input.items.len());
+        for k in 0..input.tiles.len() {
+            groups.push(0xF000_0000_0000_0000u64 | tq[k].to_bits() as u64);
+        }
+        for inst in &record_instances {
+            let q = item_quality(inst.lm_quality);
+            groups.push(((inst.model as u64) << 32) | q.to_bits() as u64);
+        }
+        allocate_grouped(&input, &groups)?
+    };
     out.cell_of = cell_of;
     out.tile_quality = tq;
     Ok(out)
+}
+
+/// THE GROUPED ALLOCATION (RE 7, 2026-09-25 14:30Z; `itemrule`): the game packs one chart per (PreLightGen, quality) GROUP
+/// holding an nb × na grid of instance cells — unless the record is SOLO (ext·D₁ > 100 on either axis) — the groups
+/// chunked to at most `c` records per entry, the entries packed by the same walk, every record given the z-order cell of its
+/// Morton ordinal. Where every record is solo (the small maps: D₁ ≈ 110) this is `allocate` exactly.
+///
+/// `groups[k]`: the group key of record k (tiles first, then items, as `LayoutInput` lists them).
+pub fn allocate_grouped(input: &LayoutInput, groups: &[u64]) -> Result<GameLayout, String> {
+    use crate::itemrule as ir;
+    let (g, pad, m) = crate::pack::layout_params(input.w_atlas, input.w_atlas);
+    let max_iter = max_iter_for_quality(input.quality_index);
+    // the records
+    let mut exts: Vec<[f32; 2]> = Vec::new();
+    let mut keys: Vec<ChartKey> = Vec::new();
+    let mut objs: Vec<(u32, Charted)> = Vec::new();
+    for (i, (ext, key)) in input.tiles.iter().enumerate() {
+        exts.push(*ext);
+        keys.push(*key);
+        objs.push((i as u32, Charted::Bound));
+    }
+    for (obj, ext, key, ch) in &input.items {
+        exts.push(*ext);
+        keys.push(*key);
+        objs.push((*obj, *ch));
+    }
+    let n = exts.len();
+    if groups.len() != n {
+        return Err(format!("{} group keys for {n} records", groups.len()));
+    }
+    // Σ₁ (record order, f32) → D₁
+    let sum1 = exts.iter().fold(0f32, |acc, e| acc + e[0] * e[1]);
+    let d1 = (input.w_atlas as f32 * input.w_atlas as f32) / sum1;
+    // the model list: solo records each their own entry; the rest grouped by key in first-appearance order
+    let mut members: Vec<Vec<usize>> = Vec::new();
+    let mut key_of: std::collections::HashMap<u64, usize> = Default::default();
+    let mut model_of_record: Vec<usize> = vec![0; n];
+    for k in 0..n {
+        if ir::is_solo(exts[k], d1) {
+            model_of_record[k] = members.len();
+            members.push(vec![k]);
+            continue;
+        }
+        let gi = *key_of.entry(groups[k]).or_insert_with(|| { members.push(Vec::new()); members.len() - 1 });
+        model_of_record[k] = gi;
+        members[gi].push(k);
+    }
+    // ordinals: per group, the Morton order of the centres — record at group position i gets perm[i]
+    let mut ordinal: Vec<u32> = vec![0; n];
+    for mem in &members {
+        let centres: Vec<[f32; 3]> = mem.iter().map(|&k| keys[k].centre).collect();
+        let perm = ir::group_ordinals(&centres);
+        for (i, &k) in mem.iter().enumerate() {
+            ordinal[k] = perm[i];
+        }
+    }
+    // chunks
+    let counts: Vec<u32> = members.iter().map(|m| m.len() as u32).collect();
+    let chunk = ir::chunk_size(n as u32, members.len() as u32);
+    let entries = ir::split_chunks(&counts, chunk);
+    let c = chunk.unwrap_or(u32::MAX);
+    // the entry of a record: its group's chunk `ordinal / c` — the chunk-0 entry sits at the group's place, the others where
+    // split_chunks appended them
+    let mut entry_of: std::collections::HashMap<(usize, u32), usize> = Default::default();
+    for (ei, e) in entries.iter().enumerate() {
+        entry_of.insert((e.group, e.chunk), ei);
+    }
+    // the entry charts: the grid dims, the grid extent, the key of the first member (chunk order)
+    let mut charts: Vec<ChartExt> = Vec::with_capacity(entries.len());
+    let mut ekeys: Vec<ChartKey> = Vec::with_capacity(entries.len());
+    let mut dims: Vec<(u32, u32)> = Vec::with_capacity(entries.len());
+    let mut first_member: Vec<Option<usize>> = vec![None; entries.len()];
+    for k in 0..n {
+        let ei = entry_of[&(model_of_record[k], if chunk.is_some() { ordinal[k] / c } else { 0 })];
+        if first_member[ei].is_none() {
+            first_member[ei] = Some(k);
+        }
+    }
+    for (ei, e) in entries.iter().enumerate() {
+        let k0 = first_member[ei].unwrap_or(members[e.group][0]);
+        let ext = exts[k0];
+        let (nb, na) = ir::grid_dims(e.count, ext, d1, m as u32);
+        let (gext, _area) = ir::grid_chart(ext, nb, na);
+        charts.push(ChartExt { ext: gext, mins: [nb as u16, na as u16] });
+        ekeys.push(keys[k0]);
+        dims.push((nb, na));
+    }
+    let order = walk_order(&charts, &ekeys);
+    // TotalLmSurfaceMeter: the f32 sum of the entry areas along the ascending-area radix order (ties by index)
+    let sum_area = {
+        let mut idx: Vec<usize> = (0..charts.len()).collect();
+        idx.sort_by(|&p, &q| fcmp(charts[p].ext[0] * charts[p].ext[1], charts[q].ext[0] * charts[q].ext[1]).then(p.cmp(&q)));
+        idx.iter().fold(0f32, |acc, &i| acc + ((dims[i].0 * dims[i].1) as f32 * exts[first_member[i].unwrap()][1]) * exts[first_member[i].unwrap()][0])
+    };
+    crate::pack::SUM_AREA_OVERRIDE.store(sum_area.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    let res = crate::pack::allocate_ordered(&charts, &order, input.w_atlas, input.w_atlas, g, m, max_iter);
+    crate::pack::SUM_AREA_OVERRIDE.store(0, std::sync::atomic::Ordering::Relaxed);
+    let (s, placed) = res.ok_or("the allocation failed (no scale packs)")?;
+    // the cells: each record's rect inside its entry's placed rect
+    let mut out: Vec<LayoutChart> = Vec::with_capacity(n);
+    for k in 0..n {
+        let ei = entry_of[&(model_of_record[k], if chunk.is_some() { ordinal[k] / c } else { 0 })];
+        let (nb, na) = dims[ei];
+        let p = &placed[ei];
+        let cells = ir::zorder_cells(nb, na);
+        let o = if chunk.is_some() { ordinal[k] % c } else { ordinal[k] };
+        let (cx, cy) = cells.get(o as usize).copied().unwrap_or((0, 0));
+        let ex = ir::cell_edges(p.w as u32, nb, g as u32);
+        let ey = ir::cell_edges(p.h as u32, na, g as u32);
+        let (x0, x1) = (ex[cx as usize], ex[cx as usize + 1]);
+        let (y0, y1) = (ey[cy as usize], ey[cy as usize + 1]);
+        out.push(LayoutChart { obj: objs[k].0, ext: exts[k], charted: objs[k].1, x: p.x as i32 + x0 as i32 + pad as i32, y: p.y as i32 + y0 as i32 + pad as i32, w: (x1 - x0) as i32 - 2 * pad as i32, h: (y1 - y0) as i32 - 2 * pad as i32 });
+    }
+    if std::env::var_os("LMTOOL_LAYOUT_TRACE").is_some() {
+        let solos = members.iter().filter(|m| m.len() == 1).count();
+        eprintln!("layout grouped: {n} records, Σ₁ {sum1} D₁ {d1}, {} models ({solos} solo), chunk {chunk:?}, {} entries, Σ {sum_area}, s {s}", members.len(), entries.len());
+    }
+    Ok(GameLayout { charts: out, s, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new() })
 }

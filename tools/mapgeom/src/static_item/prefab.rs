@@ -104,10 +104,16 @@ impl CPlugPrefab {
         let mut ents = Vec::with_capacity(n);
         for i in 0..n {
             let ctx = |e: String| format!("prefab entity {i}/{n}: {e}");
+            let at = r.o;
             let model = read_ref(r).map_err(ctx)?;
+            if std::env::var_os("MAPGEOM_PREFAB_TRACE").is_some() {
+                let kind = match model.inline.as_deref() { Some(n) => format!("inline {:?}", std::mem::discriminant(n)), None => format!("index {} (external/back-ref)", model.index) };
+                eprintln!("prefab entity {i}/{n} at 0x{at:x}: model {kind}, reader now at 0x{:x}", r.o);
+            }
             let rot = r.floats::<4>()?;
             let pos = r.vec3()?;
             let params_id = r.i32()?;
+            if std::env::var_os("MAPGEOM_PREFAB_TRACE").is_some() { eprintln!("  rot {rot:?} pos {pos:?} params id 0x{params_id:08X}"); }
             let params = read_params(r, params_id).map_err(ctx)?;
             let k = r.count()?;
             let u01 = r.take(k)?.to_vec();

@@ -1478,7 +1478,9 @@ fn run(a: Vec<String>) {
                 let pak: Option<(&str, &str)> = pak_arg.as_deref().and_then(|p| p.rsplit_once(':'));
                 let q: u32 = f("--layout-quality").map(|v| v.parse().unwrap()).unwrap_or_else(|| f("--quality").map(|v| v.parse::<u32>().unwrap()).unwrap_or(3).saturating_sub(1));
                 let t0 = std::time::Instant::now();
-                let gl = lightmap::layout::for_map(&map_path, &scene, base, q, lightmap::layout::TilePlg::BLUEBAY_SEA, pak, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into())).unwrap_or_else(|e| panic!("--layout-game: {e}"));
+                // --kept FILE: the items that are records (RE 7's reduction list of the reference bakes) — the rest get no chart
+                let layout_kept: Option<std::collections::HashSet<usize>> = f("--kept").map(|p| std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("--kept {p}: {e}")).split(|c: char| c == ',' || c.is_whitespace()).filter_map(|t| t.trim().parse::<usize>().ok()).collect());
+                let gl = lightmap::layout::for_map(&map_path, &scene, base, q, lightmap::layout::TilePlg::BLUEBAY_SEA, pak, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into()), layout_kept.as_ref()).unwrap_or_else(|e| panic!("--layout-game: {e}"));
                 let bound = gl.charts.iter().filter(|c| c.charted == lightmap::layout::Charted::Bound).count();
                 eprintln!("layout-game: {} charts ({bound} bound), s {} layout units/m, Σarea {} m², quality index {q} ({} iterations), keys from {} ({:.1}s)", gl.charts.len(), gl.s, gl.sum_area, gl.max_iter, if pak.is_some() { "the block records (pak)" } else { "the cell / triangle centres" }, t0.elapsed().as_secs_f32());
                 game_layout = Some(gl);
@@ -5090,7 +5092,7 @@ fn run(a: Vec<String>) {
             if a.iter().any(|x| x == "--scene") {
                 let pak_arg = f("--pak"); let pak: Option<(&str, &str)> = pak_arg.as_deref().and_then(|p| p.rsplit_once(':'));
                 let base = 4096u32;
-                let gl = lightmap::layout::for_map(&a[1], &scene, base, f("--layout-quality").map(|v| v.parse().unwrap()).unwrap_or(2), lightmap::layout::TilePlg::BLUEBAY_SEA, pak, "BlueBay", "Sea").expect("layout");
+                let gl = lightmap::layout::for_map(&a[1], &scene, base, f("--layout-quality").map(|v| v.parse().unwrap()).unwrap_or(2), lightmap::layout::TilePlg::BLUEBAY_SEA, pak, "BlueBay", "Sea", None).expect("layout");
                 let tile_mesh = match pak { Some((pp, key)) => { let mut store = mapgeom::store::DataStore::empty(); store.add_pak(pp, key).expect("pak"); lightmap::lmmesh::lm_mesh_of_zone(&mut store, "BlueBay", "Sea").expect("zone") } None => None };
                 let dir = items_dir.clone();
                 let ours = lightmap::lmmesh::lm_scene_from_map(&scene, &gl, base, &|name| dir.as_ref().and_then(|d| std::fs::read(format!("{d}/Items/{name}")).ok()), tile_mesh, lightmap::layout::TilePlg::BLUEBAY_SEA, 2048.0).expect("lm scene");
@@ -7105,6 +7107,18 @@ fn run(a: Vec<String>) {
                 for it in [1555u32, 2398, 2399, 2400] { match ed.get(&(base + it)) { Some(r) => println!("  stock-screen item {it}: editor chart {}×{} at ({}, {})", r.2, r.3, r.0, r.1), None => println!("  stock-screen item {it}: NOT in the editor's mapping") } }
                 return;
             }
+            // --kept-diag: which kept items are not records (no / degenerate uv-set-0 bounds)
+            if a.iter().any(|x| x == "--kept-diag") {
+                let Some(k) = &kept else { panic!("--kept") };
+                let (mut n, mut no_plg, mut degen) = (0, 0, 0);
+                for inst in &scene.instances {
+                    if !k.contains(&inst.item) { continue; }
+                    n += 1;
+                    match scene.models[inst.model].plg_bounds { None => { no_plg += 1; println!("  item {} {}: no PLG bounds; pos {:?} plg_u02 {} uv range {:?}..{:?}", inst.item, inst.model_name, inst.pose.pos, scene.models[inst.model].plg_u02, scene.models[inst.model].uv_min, scene.models[inst.model].uv_max); } Some(b) => if !(b[2] > b[0] && b[3] > b[1]) { degen += 1; println!("  item {} {}: degenerate bounds {:?}", inst.item, inst.model_name, b); } }
+                }
+                println!("kept-diag: {n} kept items in the scene ({} in the list), {no_plg} without PLG bounds, {degen} degenerate", k.len());
+                return;
+            }
             // --uv-stats-sum: Σ over the charted items of (the MESH's TexCoord1 range × MeterByUv)² against the PLG-bounds form — the
             // TotalLmSurfaceMeter study (tiny 16: the records' PLG form sums to 14.2 M, the editor's total is 15.78 M)
             if a.iter().any(|x| x == "--uv-stats-sum") {
@@ -7212,7 +7226,7 @@ fn run(a: Vec<String>) {
                 let pak_arg = f("--pak");
                 let pak: Option<(&str, &str)> = pak_arg.as_deref().and_then(|p| p.rsplit_once(':'));
                 let q = lightmap::layout::quality_index_of(&own).unwrap_or(2);
-                let gl = lightmap::layout::for_map(&a[1], &scene, base, q, lightmap::layout::TilePlg::BLUEBAY_SEA, pak, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into())).expect("layout");
+                let gl = lightmap::layout::for_map(&a[1], &scene, base, q, lightmap::layout::TilePlg::BLUEBAY_SEA, pak, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into()), kept.as_ref()).expect("layout");
                 let (mut n, mut ok, mut bound) = (0usize, 0usize, 0usize);
                 for c in &gl.charts { if c.charted == lightmap::layout::Charted::Bound { bound += 1; } if let Some(&(ex, ey, ew, eh)) = ed.get(&c.obj) { n += 1; if c.x == ex as i32 && c.y == ey as i32 && c.w == ew as i32 && c.h == eh as i32 { ok += 1; } } }
                 println!("via layout::for_map: s {} Σarea {} maxIter {}; {} charts ({bound} bound), {ok} of {n} equal to the editor's table (of {} editor entries)", gl.s, gl.sum_area, gl.max_iter, gl.charts.len(), ed.len());
