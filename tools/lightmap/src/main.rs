@@ -5812,7 +5812,7 @@ fn run(a: Vec<String>) {
                 let variant = (b.flags & mapgeom::blockmap::FLAG_VARIANT_MASK) as usize;
                 let subvariant = ((b.flags >> mapgeom::blockmap::FLAG_SUBVARIANT_SHIFT) & 63) as usize;
                 let additional = ((b.flags >> mapgeom::blockmap::FLAG_ADDITIONAL_SHIFT) & 127) as usize;
-                let n = lightmap::records::block_records(&mut store, &bi, [x, y, z], b.dir, ground, variant, subvariant, additional, yoff_blocks, "block", 16384 + bi_ as u32, 1.0, &mut recs).unwrap_or_else(|e| { eprintln!("block {bi_}: {e}"); 0 });
+                let n = lightmap::records::block_records_class(&mut store, &bi, [x, y, z], b.dir, ground, variant, subvariant, additional, yoff_blocks, "block", 16384 + bi_ as u32, 1.0, b.flags & 0x1000_0000 != 0, &mut recs).unwrap_or_else(|e| { eprintln!("block {bi_}: {e}"); 0 });
                 n_block_recs += n;
             }
             println!("{} authored blocks → {n_block_recs} records; first {:?}", mf.blocks.len(), recs.first().map(|r| (r.centre, r.half, r.meter_by_uv, r.uv)));
@@ -5824,16 +5824,34 @@ fn run(a: Vec<String>) {
             let mut clips = mapgeom::bake::simulate(&faces, &dirs, &grounds);
             // the game's creation order: the authored blocks in block order, per face, per clip of the face's list (mapgeom's simulate
             // walks its occupant cells sorted) — --clip-order sim keeps mapgeom's order
+            let mut clip_creation_rank: Vec<u32> = Vec::new();
             if f("--clip-order").as_deref() != Some("sim") {
+                // THE OWNER ORDER (RE 7, 17:55Z; stpad: 0 descents against the dump): the challenge's cell hash map walked in slot
+                // order (the normal blocks inserted in file order), then the free-mode blocks in (x, z, y) order —
+                // itemrule::clip_owner_order; per owner the faces N, E, S, W, then the bottom (--face-order overrides), each
+                // face's clips in the unit's list order
+                let cells: Vec<[i32; 3]> = mf.blocks.iter().map(|b| { let (x, y, z) = b.coords(); [x, y, z] }).collect();
+                let frees: Vec<bool> = mf.blocks.iter().map(|b| b.flags & 0x1000_0000 != 0).collect();
+                let owner_order = lightmap::itemrule::clip_owner_order(&cells, &frees);
+                let owner_rank: std::collections::HashMap<usize, usize> = owner_order.iter().enumerate().map(|(r, &bi)| (mf.blocks[bi].index, r)).collect();
+                let face_order: Vec<usize> = f("--face-order").map(|v| v.split(',').map(|t| t.parse().unwrap()).collect()).unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5]);
+                let face_rank = |face: usize| face_order.iter().position(|&x| x == face).unwrap_or(9);
                 let pos_in_list: Vec<usize> = clips.iter().map(|c| faces.occupants.get(&c.cell).and_then(|os| os.iter().find(|o| o.index == c.owner_index && o.unit == c.unit)).and_then(|o| o.faces[c.face].iter().position(|n| *n == c.name)).unwrap_or(0)).collect();
                 let mut idx: Vec<usize> = (0..clips.len()).collect();
-                idx.sort_by_key(|&i| (clips[i].owner_index, clips[i].unit, clips[i].face, pos_in_list[i]));
+                idx.sort_by_key(|&i| (owner_rank.get(&clips[i].owner_index).copied().unwrap_or(usize::MAX), clips[i].unit, face_rank(clips[i].face), pos_in_list[i]));
+                // the CREATION order (file order of the owners × faces × list) as a rank per clip, for --clip-pos creation
+                let mut cidx: Vec<usize> = (0..clips.len()).collect();
+                cidx.sort_by_key(|&i| (clips[i].owner_index, clips[i].unit, face_rank(clips[i].face), pos_in_list[i]));
+                let mut crank: Vec<u32> = vec![0; clips.len()]; for (r, &i) in cidx.iter().enumerate() { crank[i] = r as u32; }
+                clip_creation_rank = idx.iter().map(|&i| crank[i]).collect();
                 clips = idx.iter().map(|&i| clips[i].clone()).collect();
             }
             let mut n_clip_objs = 0u32;
             let mut n_clip_recs = 0usize;
             let clip_obj0: u32 = 16384 + mf.blocks.len() as u32 + (grid * grid) as u32;
-            for c in clips.iter().filter(|c| c.drawn()) {
+            let clip_pos_mode = f("--clip-pos").unwrap_or_default();
+            let n_before_clips = recs.len();
+            for (ci, c) in clips.iter().enumerate().filter(|(_, c)| c.drawn()) {
                 let Some(path) = idx.path_for(&c.name) else { eprintln!("clip {}: no block info", c.name); continue };
                 let bi = match idx.load(&mut store, &path) { Ok(bi) => bi.clone(), Err(e) => { eprintln!("clip {}: {e}", c.name); continue } };
                 // --clip-neighbour-cell: the piece's block cell = the owner's cell + step(face) (fillers.rs: a piece stands on side d
@@ -5872,7 +5890,26 @@ fn run(a: Vec<String>) {
                     let shape = if !occ(lx, lz) { 1 } else if occ(st.0 + lx, st.2 + lz) { 2 } else { 3 };
                     variant = if c.name == "waterhfcleft" { shape * 4 } else { shape };
                 }
-                let n = lightmap::records::block_records(&mut store, &bi, cell, d, c.ground, variant, 0, 0, yoff_blocks, class, clip_obj0 + n_clip_objs, 1.0, &mut recs).unwrap_or_else(|e| { eprintln!("clip {}: {e}", c.name); 0 });
+                let owner_free = owner_b.map(|b| b.flags & 0x1000_0000 != 0).unwrap_or(false);
+                let n0 = recs.len();
+                let n = lightmap::records::block_records_class(&mut store, &bi, cell, d, c.ground, variant, 0, 0, yoff_blocks, class, clip_obj0 + n_clip_objs, 1.0, owner_free, &mut recs).unwrap_or_else(|e| { eprintln!("clip {}: {e}", c.name); 0 });
+                // --ordinal-centre owner|cell|first: the Morton key of a clip record from the owner's cell centre, the clip block's
+                // cell centre, or the object's first record (the study of the clip records' ordinal key)
+                if let Some(mode) = f("--ordinal-centre") {
+                    let kc: Option<[f32; 3]> = match mode.as_str() {
+                        "owner" => Some([owner_cell[0] as f32 * 32.0 + 16.0, owner_cell[1] as f32 * 8.0 + yoff_blocks, owner_cell[2] as f32 * 32.0 + 16.0]),
+                        "cell" => Some([cell[0] as f32 * 32.0 + 16.0, cell[1] as f32 * 8.0 + yoff_blocks, cell[2] as f32 * 32.0 + 16.0]),
+                        "first" => recs.get(n0).map(|r| r.centre),
+                        _ => None,
+                    };
+                    for r in recs[n0..].iter_mut() { r.key_centre = kc; }
+                }
+                // --clip-pos creation: the group position of a clip record follows the clip blocks' CREATION order (file order of
+                // the owners); the records within one object keep their sub order
+                if clip_pos_mode == "creation" && !clip_creation_rank.is_empty() {
+                    let base_rank = n_before_clips as u32;
+                    for (si, r) in recs[n0..].iter_mut().enumerate() { r.pos_rank = Some(base_rank + clip_creation_rank[ci] * 8 + si as u32); }
+                }
                 n_clip_objs += 1;
                 n_clip_recs += n;
             }
@@ -5891,7 +5928,7 @@ fn run(a: Vec<String>) {
                 let Some(ir) = irecs.iter().find(|r| r.item == inst.item) else { continue };
                 let Some(rec) = &ir.record else { continue };
                 let q = lightmap::layout::item_quality(inst.lm_quality);
-                recs.push(lightmap::records::Rec { class: "item", obj: item_obj0 + k as u32, sub: 0, meter_by_uv: m.plg_u02, uv: b, quality: q, centre: rec.world.c, half: rec.world.h, group: ((inst.model as u64) << 32) | q.to_bits() as u64 });
+                recs.push(lightmap::records::Rec { class: "item", obj: item_obj0 + k as u32, sub: 0, meter_by_uv: m.plg_u02, uv: b, quality: q, centre: rec.world.c, half: rec.world.h, group: ((inst.model as u64) << 32) | q.to_bits() as u64, key_centre: None, pos_rank: None });
                 n_item_recs += 1;
             }
             println!("{} items → {n_item_recs} records (objects from {item_obj0})", scene.instances.len());
@@ -5945,6 +5982,26 @@ fn run(a: Vec<String>) {
                     if c.x == ex as i32 && c.y == ey as i32 && c.w == ew as i32 && c.h == eh as i32 { ok += 1; } else { if c.w == ew as i32 && c.h == eh as i32 { same_size += 1; } if misses.len() < 8 { misses.push(format!("{} #{k}: ours ({}, {}) {}×{} editor ({ex}, {ey}) {ew}×{eh}", recs[k].class, c.x, c.y, c.w, c.h)); } }
                 }
                 println!("layout: {} charts, s {} Σ {} (editor TotalLmSurfaceMeter in the chunk: see packtest), {ok} of {n} rects equal to the editor's table ({same_size} same size elsewhere)", gl.charts.len(), gl.s, gl.sum_area);
+                // THE MEMBERSHIP METRIC: a multi-member entry is "tight" when its members' editor rects fit a box ≤ 1.1 × ours — the
+                // chunk membership (ordinals) is right for it whatever the placement; --membership-by-class splits the tally
+                let (mut tight, mut multi) = (0usize, 0usize);
+                let mut by: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+                for (ei, (rect, _, mem)) in gl.entries.iter().enumerate() {
+                    if mem.len() < 2 { continue; }
+                    let mut lo = (i32::MAX, i32::MAX); let mut hi = (i32::MIN, i32::MIN); let mut any = false;
+                    for (k, _) in mem { if let Some(Some(j)) = link.get(*k) { if let Some(&(ex, ey, ew, eh)) = ed.get(&((dump[*j].key >> 32) as u32)) { any = true; lo = (lo.0.min(ex as i32), lo.1.min(ey as i32)); hi = (hi.0.max((ex + ew) as i32), hi.1.max((ey + eh) as i32)); } } }
+                    if !any { continue; }
+                    multi += 1;
+                    let is_tight = ((hi.0 - lo.0) * (hi.1 - lo.1)) as f32 <= 1.1 * (rect.2 * rect.3) as f32;
+                    if is_tight { tight += 1; }
+                    let first = mem.iter().map(|(k, _)| *k).min().unwrap_or(0);
+                    let r = &recs[first];
+                    let chunk = gl.entry_keys.get(ei).map(|k| k.1).unwrap_or(0);
+                    let e = by.entry(format!("{} MBU {:.3} q {:.3} chunk {}", r.class.trim_end_matches(|c: char| c.is_ascii_uppercase()), r.meter_by_uv, r.quality, if chunk == 0 { "0" } else { "≥1" })).or_default();
+                    if is_tight { e.0 += 1; } else { e.1 += 1; }
+                }
+                println!("  membership: {tight} of {multi} multi-member entries have their editor members in a box ≤ 1.1 × ours");
+                if a.iter().any(|x| x == "--membership-by-class") { for (k, (t, nt)) in &by { println!("    {k}: tight {t}, loose {nt}"); } }
                 for m in &misses { println!("  {m}"); }
             }
             // --ring-map: our tile ring index vs the dump's over the marked region (one char per cell: ours/dump differences marked)

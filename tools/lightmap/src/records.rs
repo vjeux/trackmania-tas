@@ -18,6 +18,10 @@ pub struct Rec {
     pub half: [f32; 3],
     /// The group key: (the PreLightGen's identity, q bits).
     pub group: u64,
+    /// The centre the Morton ordinal is taken from when it is not the record box's (the study of the clip records' key).
+    pub key_centre: Option<[f32; 3]>,
+    /// The record's rank in the static pool (its group position) when that is not the record order.
+    pub pos_rank: Option<u32>,
 }
 
 impl Rec {
@@ -108,7 +112,7 @@ pub fn zone_tiles(store: &mut mapgeom::store::DataStore, collection: &str, zone:
             let iso: crate::lmtiles::Iso4 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, cx as f32 * 32.0, cell_y * 8.0 + yoff, cz as f32 * 32.0];
             let w = mb.transformed(&iso);
             let q = quality(cx, cz);
-            out.push(Rec { class: "tile", obj: 0, sub: 0, meter_by_uv: mbu, uv, quality: q, centre: w.c, half: w.h, group: 0xF000_0000_0000_0000 | q.to_bits() as u64 });
+            out.push(Rec { class: "tile", obj: 0, sub: 0, meter_by_uv: mbu, uv, quality: q, centre: w.c, half: w.h, group: 0xF000_0000_0000_0000 | q.to_bits() as u64, key_centre: None, pos_rank: None });
         }
     }
     Ok(out)
@@ -142,9 +146,11 @@ pub fn match_dump(ours: &[Rec], dump: &[DumpRec]) -> Vec<Option<usize>> {
 /// The grouped allocation over a record list (records.rs → layout::allocate_grouped): every record an "item" of the
 /// LayoutInput in record order, its key the record box (centre, |h|²), its group the record's.
 pub fn layout_of(recs: &[Rec], quality_index: u32) -> Result<crate::layout::GameLayout, String> {
-    let items: Vec<(u32, [f32; 2], crate::layout::ChartKey, crate::layout::Charted)> = recs.iter().enumerate().map(|(i, r)| (i as u32, r.ext(), crate::layout::ChartKey { centre: r.centre, h2: (r.half[0] * r.half[0] + r.half[1] * r.half[1]) + r.half[2] * r.half[2] }, crate::layout::Charted::Bound)).collect();
+    let items: Vec<(u32, [f32; 2], crate::layout::ChartKey, crate::layout::Charted)> = recs.iter().enumerate().map(|(i, r)| (i as u32, r.ext(), crate::layout::ChartKey { centre: r.key_centre.unwrap_or(r.centre), h2: (r.half[0] * r.half[0] + r.half[1] * r.half[1]) + r.half[2] * r.half[2] }, crate::layout::Charted::Bound)).collect();
     let groups: Vec<u64> = recs.iter().map(|r| r.group).collect();
-    crate::layout::allocate_grouped(&crate::layout::LayoutInput { tiles: Vec::new(), items, w_atlas: 2048, quality_index }, &groups)
+    let any_pos = recs.iter().any(|r| r.pos_rank.is_some());
+    let pos: Vec<u32> = recs.iter().enumerate().map(|(i, r)| r.pos_rank.unwrap_or(i as u32)).collect();
+    crate::layout::allocate_grouped_pos(&crate::layout::LayoutInput { tiles: Vec::new(), items, w_atlas: 2048, quality_index }, &groups, if any_pos { Some(&pos) } else { None })
 }
 
 /// Match our records to the dump's by centre (within 1e-2 m) and MeterByUv (within 1e-4 relative); prints the per-class
@@ -212,13 +218,15 @@ pub fn compare(ours: &[Rec], dump: &[DumpRec]) {
 /// EXTERNAL prefab entity recursing in place, the records appended in entity order with running `sub`; the record box =
 /// the entity's static object's visual boxes folded (`lmtiles::model_box`) through the entity pose × `xf`.
 pub fn prefab_entity_records(store: &mut mapgeom::store::DataStore, prefab_path: &str, xf: &mapgeom::geom::Xform, class: &'static str, obj: u32, sub: &mut u32, quality: f32, out: &mut Vec<Rec>) -> Result<(), String> {
-    prefab_entity_records_in(store, prefab_path, prefab_path, xf, class, obj, sub, quality, out)
+    prefab_entity_records_in(store, false, prefab_path, xf, class, obj, sub, quality, out)
 }
 
-/// `root` = the mobil's own prefab: THE GROUP KEY IS THE CLONE — the game instantiates one Solid2Model (one PreLightGen
-/// pointer) per (mobil prefab, entity path), so the same nested BarrierSupport reached through FCCenter_Air and through an
-/// HFC piece is two groups (RE 7's 40 model pointers on stpad: 912 + 360).
-fn prefab_entity_records_in(store: &mut mapgeom::store::DataStore, root: &str, prefab_path: &str, xf: &mapgeom::geom::Xform, class: &'static str, obj: u32, sub: &mut u32, quality: f32, out: &mut Vec<Rec>) -> Result<(), String> {
+/// THE GROUP KEY IS THE CLONE (RE 7, 17:55Z): the game instantiates one Solid2Model (one PreLightGen pointer) per
+/// (prefab ENTITY PATH, block CLASS normal | free) — the same nested BarrierSupport reached through FCCenter_Air and
+/// through an HFC piece of the same class shares the clone, the two placement paths (normal / free-mode blocks) clone
+/// independently (stpad: 40 pointers = 11 entities × 2 classes + the L/R end clips 3 × 4 + 6 singles; BarrierSupport
+/// 912 normal + 360 free; 735 model entries). `free` = the owner block's flag bit 28.
+pub fn prefab_entity_records_in(store: &mut mapgeom::store::DataStore, free: bool, prefab_path: &str, xf: &mapgeom::geom::Xform, class: &'static str, obj: u32, sub: &mut u32, quality: f32, out: &mut Vec<Rec>) -> Result<(), String> {
     let pm = store.load_model(prefab_path)?;
     let pf = mapgeom::static_item::prefab::CPlugPrefab::from_model(&pm)?;
     for (ei, e) in pf.ents.iter().enumerate() {
@@ -238,9 +246,9 @@ fn prefab_entity_records_in(store: &mut mapgeom::store::DataStore, root: &str, p
                 let w = mb.transformed(&crate::lmtiles::from_xform(&e_xf));
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 use std::hash::{Hash, Hasher};
-                (root, prefab_path, ei).hash(&mut h);
+                (free, prefab_path, ei).hash(&mut h);
                 let group = (h.finish() & 0x0000_FFFF_FFFF_0000) | quality.to_bits() as u64;
-                out.push(Rec { class, obj, sub: *sub, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality, centre: w.c, half: w.h, group });
+                out.push(Rec { class, obj, sub: *sub, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality, centre: w.c, half: w.h, group, key_centre: None, pos_rank: None });
                 *sub += 1;
             }
             None if e.model.index >= 0 => {
@@ -248,7 +256,7 @@ fn prefab_entity_records_in(store: &mut mapgeom::store::DataStore, root: &str, p
                 let Some((_, path)) = pm.externals.iter().find(|(i, _)| *i == e.model.index as u32) else { continue };
                 if path.ends_with(".Prefab.Gbx") {
                     let path = path.clone();
-                    prefab_entity_records_in(store, root, &path, &e_xf, class, obj, sub, quality, out)?;
+                    prefab_entity_records_in(store, free, &path, &e_xf, class, obj, sub, quality, out)?;
                 }
             }
             _ => {}
@@ -260,6 +268,11 @@ fn prefab_entity_records_in(store: &mut mapgeom::store::DataStore, root: &str, p
 /// The block at `cell` with `dir` (the placement transform of mapgeom::place::grid_block for a 32 × 32 footprint) —
 /// the picked variant's mobils' prefabs, every entity a record.
 pub fn block_records(store: &mut mapgeom::store::DataStore, bi: &mapgeom::blockinfo::BlockInfo, cell: [i32; 3], dir: u8, ground: bool, variant: usize, subvariant: usize, additional: usize, yoff: f32, class: &'static str, obj: u32, quality: f32, out: &mut Vec<Rec>) -> Result<usize, String> {
+    block_records_class(store, bi, cell, dir, ground, variant, subvariant, additional, yoff, class, obj, quality, false, out)
+}
+
+/// `free` = the block class (normal | free-mode) the clones are keyed by.
+pub fn block_records_class(store: &mut mapgeom::store::DataStore, bi: &mapgeom::blockinfo::BlockInfo, cell: [i32; 3], dir: u8, ground: bool, variant: usize, subvariant: usize, additional: usize, yoff: f32, class: &'static str, obj: u32, quality: f32, free: bool, out: &mut Vec<Rec>) -> Result<usize, String> {
     let Some(picked) = bi.pick_placement_add(ground, variant, subvariant, additional) else { return Ok(0) };
     let xf = mapgeom::place::grid_block((cell[0], cell[1], cell[2]), dir, (32.0, 32.0), yoff);
     let mut sub = 0u32;
@@ -271,7 +284,7 @@ pub fn block_records(store: &mut mapgeom::store::DataStore, bi: &mapgeom::blocki
             (Some(t), r) => { let yaw = r.map(|v| v[1]).unwrap_or(0.0); mapgeom::geom::compose(&xf, &mapgeom::geom::yaw(yaw, t)) }
             _ => xf,
         };
-        prefab_entity_records(store, pp, &mxf, class, obj, &mut sub, quality, out)?;
+        prefab_entity_records_in(store, free, pp, &mxf, class, obj, &mut sub, quality, out)?;
     }
     Ok(out.len() - n0)
 }

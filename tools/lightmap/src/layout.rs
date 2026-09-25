@@ -440,7 +440,11 @@ pub fn for_map(map_path: &str, scene: &crate::geometry::Scene, base: u32, qualit
         // geometry — a geom whose MATERIAL takes a lightmap set (the compiled material's texcoord index ≠ −1): the
         // RaceTriggerFX materials take none, so an item made only of them (tiny 16's two AC16497076) has no record; a
         // single-set material (the wall's TrackWallInWorld) lightmaps through its set 0 and counts
-        let fx_only = !m.mat_links.is_empty() && m.mat_links.iter().all(|l| l.contains("RaceTriggerFX"));
+        // (tiny04 GreenCoast's table, 2026-09-25: the 114 DecalPlatform quads — Stadium\Media\Material\DecalPlatform and
+        // Modifier\PlatformDirt\DecalPlatform — get no record either: a DECAL material takes no lightmap set. Both are stand-ins
+        // for the compiled material's lightmap texcoord index; LMTOOL_NO_LM_MATERIALS=a,b,… overrides the substrings.)
+        let no_lm: Vec<String> = std::env::var("LMTOOL_NO_LM_MATERIALS").map(|v| v.split(',').map(|t| t.to_string()).collect()).unwrap_or_else(|_| vec!["RaceTriggerFX".into(), "\\Decal".into()]);
+        let fx_only = !m.mat_links.is_empty() && m.mat_links.iter().all(|l| no_lm.iter().any(|n| l.contains(n.as_str())));
         if fx_only { return false; }
         match m.plg_bounds { Some(b) => b[2] > b[0] && b[3] > b[1], None => false }
     };
@@ -498,6 +502,12 @@ thread_local! {
 }
 
 pub fn allocate_grouped(input: &LayoutInput, groups: &[u64]) -> Result<GameLayout, String> {
+    allocate_grouped_pos(input, groups, None)
+}
+
+/// `pos` = an optional per-record GROUP POSITION rank (the order the records entered the static pool when it is not the
+/// record order — the study of the clip records); the ordinals are computed over the members sorted by it.
+pub fn allocate_grouped_pos(input: &LayoutInput, groups: &[u64], pos: Option<&[u32]>) -> Result<GameLayout, String> {
     use crate::itemrule as ir;
     let (g, pad, m) = crate::pack::layout_params(input.w_atlas, input.w_atlas);
     let max_iter = max_iter_for_quality(input.quality_index);
@@ -539,9 +549,11 @@ pub fn allocate_grouped(input: &LayoutInput, groups: &[u64]) -> Result<GameLayou
     // ordinals: per group, the Morton order of the centres — record at group position i gets perm[i]
     let mut ordinal: Vec<u32> = vec![0; n];
     for mem in &members {
-        let centres: Vec<[f32; 3]> = mem.iter().map(|&k| keys[k].centre).collect();
+        let mut mem_pos: Vec<usize> = mem.clone();
+        if let Some(p) = pos { mem_pos.sort_by_key(|&k| (p[k], k)); }
+        let centres: Vec<[f32; 3]> = mem_pos.iter().map(|&k| keys[k].centre).collect();
         let perm = ir::group_ordinals(&centres);
-        for (i, &k) in mem.iter().enumerate() {
+        for (i, &k) in mem_pos.iter().enumerate() {
             ordinal[k] = perm[i];
         }
     }

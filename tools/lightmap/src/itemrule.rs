@@ -314,7 +314,10 @@ pub fn grid_chart(ext: [f32; 2], nb: u32, na: u32) -> ([f32; 2], f32) {
 /// EITHER side is not grouped. (RE7/0005 read it as AND from the stpad 66×14 charts — wrong: those records are the
 /// DecoWall VFCMiddle WALLS, which leave the grouping before this test; see `wall_facing`.)
 pub fn is_solo(ext: [f32; 2], d1: f32) -> bool {
-    100.0 < ext[0] * d1 || 100.0 < ext[1] * d1
+    // RE 7's 0007 (with the wall strips taken out of the solo grouping) makes this an OR; E's stpad study had AND
+    // reproducing Σ 843 235.75 / s 2.11948 with the walls still inside — LMTOOL_SOLO=and keeps that study switch
+    let and = std::env::var("LMTOOL_SOLO").map(|v| v == "and").unwrap_or(false);
+    if and { 100.0 < ext[0] * d1 && 100.0 < ext[1] * d1 } else { 100.0 < ext[0] * d1 || 100.0 < ext[1] * d1 }
 }
 
 /// FUN_140291b10: the Z-order cell list of an nb × na grid — the k-th instance of the group takes `cells[k]`
