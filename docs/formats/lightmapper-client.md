@@ -1003,6 +1003,105 @@ render lock needed; do that first for any new crash instead of guessing.
   1.833, 1.116); Tiny 11: (1.581, 1.792, 1.614)) — a derived reference the
   runtime scales by; treat as opaque.
 
+## 6b. What the attribute pre-pass reads from the COLLECTION PACK [DISASSEMBLY + FILE, RE child 8, 2026-09-25; every rule bit-exact vs pwc-day frame 127447]
+
+The pre-pass (`Lightmap/…` PS 8401 = `Tech3/Block_PyPxz_ids_p`, PS 17025 = the
+single-texture Py/Pxz shader, the water tint PS 17018) rasterises every LM
+chart with `GbxVisualToWorld = 0`: the world position and normal are 0, the
+normal's normalisation is NaN, both `mul_sat` blend weights land on 0, and a
+material's colour collapses to ONE texture sample at a constant uv. Its inputs
+are collection data — `mapgeom::terrain` + `lightmap::paktables` build them
+from the pack (`lmtool pak-tables --pak F:K … --collection C --material LINK …`):
+
+* **Terrain materials** (`<Coll>\Media\Material\<Name>.Material.Gbx`, parent
+  `Techno3\…\Tech3 Block PyPxz_Ids`): the inline `CPlugMaterialCustom` chunk
+  0x0903A015 v2 holds the layer NAMES (u32 0, then Pxz, Py, X2, H2 — SeaFloor:
+  `"SeaFloor","SeaFloor","SeaFloor",""`; reader 0x1404415c0 into +0xe8/+0xd8/
+  +0xf8/+0x108); chunk 0x0903A013 the slots `BaseColor RoughMetal Normal PyX2
+  PyH2` → `Texture Array\Terrain_{D,R,N,X2,H2}.TextureArray.Gbx`. The
+  `CPlugBitmap` array file: chunk 0x09011034 = `{v4, ref ImageArray, string
+  suffix "_D", n, slice refs[n], ref, 8 B}` — the slices IN GPU ORDER, each
+  uploaded VERTICALLY FLIPPED (BC1 block rows reversed, the four index bytes
+  reversed; 6/6 slices of 5354, 4/4 of 5363, all 13 mips of 14627 identical);
+  chunk 0x09011030 → an inline `CPlugFileGen` kind 0x1d `{4096, 4096, 6, 1, 3,
+  13, 1, 1, 0}` (the generated array's size / slices / mips; archive
+  0x1404179a0: version 0x80000006, kind, u32[], float4[], f32[], string, nodes,
+  refs — no chunk framing). `Image Array\TerrainLayers_DNRM.ImageArray.Gbx`
+  (`CPlugImageArray` 0x0914C000, chunk 0x0914C000 v7, reader 0x1404d4b00):
+  folder + layers `{name, Py size xy, Py offset xy, Pxz size xy, Pxz offset xy,
+  rotation°, side blend start/end°, top blend start/end°, id, id}` (stride 0x50;
+  BlueBay: Land 52/40 m rot 74° blendPy 40–60°, CliffPxz 128, HillPxz 64, Sand
+  32, SeaFloor 64, RocksTop 40; ids 100/110/120/30/54/115).
+* **The per-slice buffers** `g_WorldPosToTcPyPxz` / `PyX2` / `PyH2` (5352 / 5361
+  / 5365) live on the texture-array object (+0x1c0/+0x1c8; the binder
+  0x1409fc550 hands them to the shader by name) and are filled by 0x1409f2e50
+  + 0x1404d49d0, 4 float4 per layer: `a = (rot·3.1415927f)/180f`, `s, c =
+  CRT sinf/cosf(a)`; `[0] = (c, 0, s, offU)·(1/sizeX)`, `[1] = (s, −0, −c,
+  −offV)·(1/sizeY)` (mul by the reciprocal); `[2] = (1/PxzX, 1/PxzY,
+  PxzOffY/PxzY, bits(id[1]))`; `[3] = (cos(sideEnd·k), cos(sideStart·k),
+  cos(topEnd·k), cos(topStart·k))`, `k = f32 0x3c8efa36` — BlueBay's 24 float4
+  reproduce 5352 to the bit (`cos 60° = 0x3efffffc`). `mapgeom::terrain::
+  world_pos_to_tc`.
+* **The ids** `g_CBufferP_Shader.{iPy,iPxz,iPyX2,iPyH2}` = the material's
+  `SubIndexPyPxz` (0x1404424e0 → 0x1404429f0 / 0x140442d80 / 0x140442e00,
+  packed `(iPyH2|0x80)<<24 | iPyX2<<16 | iPxz<<8 | iPy`): iPy / iPxz = the Py /
+  Pxz name's index among the BaseColor array's ImageArray layers (0x1404d4550:
+  first match, else −1), iPyX2 / iPyH2 likewise in the PyX2 / PyH2 arrays', −1
+  for an empty name or a slot without an ImageArray (WhiteShore's PyX2 is the
+  Techno3 `DisabledModX2` texture). SeaFloor → (4, 4, 1, −1), Land → (0, 0, 0,
+  −1) = the captured cbuffers. Quirk: BlueBay's X2 TEXTURE has 4 slices (Land,
+  Dirt2, Dirt, SeaFloor) but its ImageArray 2 layers → iPyX2 = 1 samples
+  Dirt2_X2 with SeaFloor's mapping; irrelevant at the zero matrix (X2 only
+  modulates the Py term, weight 0).
+* **The constant** = `TMapBaseColor` slice iPxz at uv `(0, −[2].z)` through
+  `SGbxWrap_Aniso` with zero derivatives = mip 0, bilinear, wrap; with every
+  BlueBay PxzOffY = 0 that is the mean of the FOUR CORNER TEXELS of the slice
+  image (BC1 Expand8Round, IEC sRGB→linear): SeaFloor_D (0.85107964,
+  0.73398048, 0.32585403), Land_D (0.11575814, 0.17534077, 0.04276802) — the
+  captured 0.8510797 / 0.7339804 / 0.325854 (the last digit is the GPU's
+  filter order). `paktables::terrain_constant`. RedIsland CliffEndsPxz
+  (PxzOff (0, 70)) and WhiteShore WaterBottomPxz (Pxz (80, 7)) leave the
+  corner rule; the formula covers them.
+* **PS 17025 materials** (`…\Modifier\StadiumOnTerrain\TrackWallInWorld`,
+  parent `Tech3 Block PyPxzDiff_Spec_Norm_LM1`): `PyBaseColor = PxzBaseColor =
+  Stadium\Media\Texture\TrackWallPxzInWorld_D.Texture.gbx` (Stadium.pak) whose
+  chunk 0x09011025 `(1/32, 1/32, 0, 0, 0, 0xff000000)` is
+  `GbxSamplerTcScaleTrans_PxzBaseColor` / the `GbxWorldPosToTexCoord` scale;
+  `TMapACosSmoothPy` (5459) = the Techno3 default `ACosSmoothDefaultPyPxz`
+  (Maniaplanet.pak, NOT in a collection pack): texel 0 = 65535 → the Py term's
+  weight `1 − 1 = 0` → the constant = the Pxz image at (0, −trans.y) = its
+  corner mean (0.43576217, 0.40357280, 0.34829098) = the captured (0.436,
+  0.404, 0.348). `paktables::projected_constant`.
+* **Water** (`Collections\<Coll>.Collection.Gbx` chunk 0x03033038 v8, reader
+  0x140d0c580 → 0x14040c720 into the collection +0xf0): `{i32 −1, u32 0, Id
+  name, f32 WaterTop, f32 WaterFloor, f32 FogMaxDepth, ref fog TGA, ref
+  WaterTransmittance.ImageGen, ref normal texture, f32×4, u32, f32, u32, f32}`:
+  BlueBay `Sea 7.0 / 4.0 / 3.5`, RedIsland `Deep 7.7 / 2.0 / 6.0`, GreenCoast
+  `Deep 7.2 / 0.0 / 5.0`, WhiteShore `Deep 7.0 / 2.0 / 6.0`, Stadium `Shallow
+  7.0 / 4.0 / 50.0`. The lightmapper (0x1402255a0): `g_WaterTop_ByPlanes[p]` =
+  the zone's water plane heights (= WaterTop; pwc-day 7.0),
+  `g_WaterDepth_FogMaxDepthInv_ByIds[id−1]` = `(WaterTop − WaterFloor,
+  1/FogMaxDepth)` = (3.0, 0x3e924925) from the zone vision constants' water
+  table (`SHmsZoneVisionCst+0x60`, 4 × `{id, fogMaxDepth, depth}`); the id map
+  = water type + 1 (PS 17012; one type per collection). `TMapWaterFog` (15075,
+  256 BGRA8 sRGB) = COLUMN 0 of the descriptor's fog image
+  (`<Coll>\Media\Texture\Image\WaterSea_Fog.dds`: a 32×256 bottom-up TGA
+  despite the name; = the Day mood's `WaterColor.tga`) read TOP-DOWN, 256/256;
+  the other collections' `WaterFog.dds` are 256×32 → the top row, INFERRED.
+  `TMapWaterTransmittance` (15078, 2048 RGBA8 sRGB) = `WaterTransmittance.
+  ImageGen.Gbx` (`CPlugFileGen` kind 0x33: u32 `{2048, curve}`, f32 `{c.r, c.g,
+  c.b, depth, −1, −1}`; BlueBay (0.15, 0.18, 0.1, 4.0)) generated by
+  0x140418310: `t = i/2048` (f32), `t = (t² + t) − t²·t` when `curve`, `d =
+  t·depth`, `rgb = c^d` (CRT powf), each channel → an sRGB byte through the
+  engine's 4096-entry table (0x141a64760 = `round(255·IEC(i/4095))`, index
+  `trunc(x·4095 + 0.5)` clamped; 0x14018cdf0), alpha 0xff — 2048/2048.
+  `paktables::water_tables`.
+* **Not in the collection packs** (Maniaplanet.pak, `Techno3\Media\…`): the
+  parent materials, `ACosSmoothDefaultPyPxz.Texture.Gbx` (5457/5459),
+  `DisabledModX2.Texture.gbx` (5468 = 127/255), the Techno3 `SeaRender*`
+  water bitmaps. Their pre-pass roles above are the capture's; the values are
+  engine constants shared by every collection.
+
 ## 7. Alignment list for `lmtool bake` (what lmtool does → what the client does → fix)
 
 1. **Encoding is sqrt, not linear.** lmtool `synth.rs from_hdr`: `pixel =
