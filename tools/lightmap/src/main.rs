@@ -5890,7 +5890,9 @@ fn run(a: Vec<String>) {
                     let shape = if !occ(lx, lz) { 1 } else if occ(st.0 + lx, st.2 + lz) { 2 } else { 3 };
                     variant = if c.name == "waterhfcleft" { shape * 4 } else { shape };
                 }
-                let owner_free = owner_b.map(|b| b.flags & 0x1000_0000 != 0).unwrap_or(false);
+                let mut owner_free = owner_b.map(|b| b.flags & 0x1000_0000 != 0).unwrap_or(false);
+                // --one-class NAME[,NAME]: those clip kinds' entities are ONE clone across the normal / free classes (the study)
+                if let Some(list) = f("--one-class") { if list.split(',').any(|n| n == c.name) { owner_free = false; } }
                 let n0 = recs.len();
                 let n = lightmap::records::block_records_class(&mut store, &bi, cell, d, c.ground, variant, 0, 0, yoff_blocks, class, clip_obj0 + n_clip_objs, 1.0, owner_free, &mut recs).unwrap_or_else(|e| { eprintln!("clip {}: {e}", c.name); 0 });
                 // --ordinal-centre owner|cell|first: the Morton key of a clip record from the owner's cell centre, the clip block's
@@ -5906,7 +5908,9 @@ fn run(a: Vec<String>) {
                 }
                 // --clip-pos creation: the group position of a clip record follows the clip blocks' CREATION order (file order of
                 // the owners); the records within one object keep their sub order
-                if clip_pos_mode == "creation" && !clip_creation_rank.is_empty() {
+                let pos_kinds: Option<Vec<String>> = f("--clip-pos-kinds").map(|v| v.split(',').map(|t| t.to_string()).collect());
+                let pos_applies = pos_kinds.as_ref().map(|k| k.iter().any(|n| *n == c.name)).unwrap_or(true);
+                if clip_pos_mode == "creation" && pos_applies && !clip_creation_rank.is_empty() {
                     let base_rank = n_before_clips as u32;
                     for (si, r) in recs[n0..].iter_mut().enumerate() { r.pos_rank = Some(base_rank + clip_creation_rank[ci] * 8 + si as u32); }
                 }
@@ -5970,14 +5974,25 @@ fn run(a: Vec<String>) {
                 let mut ed: std::collections::HashMap<u32, (u16, u16, u16, u16)> = Default::default();
                 for i in 0..mp.count as usize { ed.insert(mp.binds[i].obj_group_idx, (mp.pos[i].0, mp.pos[i].1, mp.size[i].0, mp.size[i].1)); }
                 let link = lightmap::records::match_dump(&recs, &dump);
+                // THE TABLE AGAINST THE DUMP: the dump's own chart rect per record vs the map table's rect under the dump's key — do the
+                // file's object ids match the runtime's?
+                { let (mut same, mut diff, mut none) = (0usize, 0usize, 0usize); let mut ex_shown = 0;
+                  for d in &dump { match ed.get(&((d.key >> 32) as u32)) { Some(&(x, y, w, h)) => { if (x as i32, y as i32, w as i32, h as i32) == d.chart { same += 1; } else { diff += 1; if ex_shown < 4 { ex_shown += 1; println!("  dump #{} key {:#x}: dump rect {:?} vs table rect {:?}", d.i, d.key >> 32, d.chart, (x, y, w, h)); } } } None => none += 1 } }
+                  println!("  table vs dump by key: {same} same rect, {diff} different, {none} keys absent from the table");
+                  if a.iter().any(|x| x == "--table-near") { let mut ks: Vec<u32> = ed.keys().copied().filter(|k| (0x192c0..0x19300).contains(k)).collect(); ks.sort(); for k in ks { println!("    table {:#x} (obj {} sub {}): {:?}", k, k >> 2, k & 3, ed[&k]); } for d in dump.iter().filter(|d| (9396..9420).contains(&d.i)) { println!("    dump #{} key {:#x} lo {} : {:?} MBU {:.4}", d.i, d.key >> 32, d.key & 0xffff_ffff, d.chart, d.meter_by_uv); } }
+                  if a.iter().any(|x| x == "--dump-rects") { println!("  (--dump-rects: the editor's rects are taken from the dump's own chart columns)"); } }
+                // THE EDITOR'S RECT OF A DUMP RECORD: the map's table binds ONE chart per object (obj·4, the last sub's rect — a 5-sub
+                // FCCenter object's four other charts are not in it), so the per-record truth is the dump's own chart columns
+                // (--table-rects keeps the table lookup for the study)
+                let use_table = a.iter().any(|x| x == "--table-rects");
+                let edr = |j: usize| -> Option<(u16, u16, u16, u16)> { if use_table { ed.get(&((dump[j].key >> 32) as u32)).copied() } else { let c = dump[j].chart; if c.2 <= 0 { None } else { Some((c.0 as u16, c.1 as u16, c.2 as u16, c.3 as u16)) } } };
                 let gl = lightmap::records::layout_of(&recs, q).expect("layout");
                 let (mut n, mut ok, mut same_size) = (0usize, 0usize, 0usize);
                 let mut misses: Vec<String> = Vec::new();
                 for c in &gl.charts {
                     let k = c.obj as usize;
                     let Some(Some(j)) = link.get(k) else { continue };
-                    let key = (dump[*j].key >> 32) as u32;
-                    let Some(&(ex, ey, ew, eh)) = ed.get(&key) else { continue };
+                    let Some((ex, ey, ew, eh)) = edr(*j) else { continue };
                     n += 1;
                     if c.x == ex as i32 && c.y == ey as i32 && c.w == ew as i32 && c.h == eh as i32 { ok += 1; } else { if c.w == ew as i32 && c.h == eh as i32 { same_size += 1; } if misses.len() < 8 { misses.push(format!("{} #{k}: ours ({}, {}) {}×{} editor ({ex}, {ey}) {ew}×{eh}", recs[k].class, c.x, c.y, c.w, c.h)); } }
                 }
@@ -5989,7 +6004,7 @@ fn run(a: Vec<String>) {
                 for (ei, (rect, _, mem)) in gl.entries.iter().enumerate() {
                     if mem.len() < 2 { continue; }
                     let mut lo = (i32::MAX, i32::MAX); let mut hi = (i32::MIN, i32::MIN); let mut any = false;
-                    for (k, _) in mem { if let Some(Some(j)) = link.get(*k) { if let Some(&(ex, ey, ew, eh)) = ed.get(&((dump[*j].key >> 32) as u32)) { any = true; lo = (lo.0.min(ex as i32), lo.1.min(ey as i32)); hi = (hi.0.max((ex + ew) as i32), hi.1.max((ey + eh) as i32)); } } }
+                    for (k, _) in mem { if let Some(Some(j)) = link.get(*k) { if let Some((ex, ey, ew, eh)) = edr(*j) { any = true; lo = (lo.0.min(ex as i32), lo.1.min(ey as i32)); hi = (hi.0.max((ex + ew) as i32), hi.1.max((ey + eh) as i32)); } } }
                     if !any { continue; }
                     multi += 1;
                     let is_tight = ((hi.0 - lo.0) * (hi.1 - lo.1)) as f32 <= 1.1 * (rect.2 * rect.3) as f32;
@@ -6001,6 +6016,17 @@ fn run(a: Vec<String>) {
                     if is_tight { e.0 += 1; } else { e.1 += 1; }
                 }
                 println!("  membership: {tight} of {multi} multi-member entries have their editor members in a box ≤ 1.1 × ours");
+                // --group-detail MBU: every record of the groups with that MeterByUv (4 decimals): index, class, centre, Morton key,
+                // our chunk / cell, the editor's rect — the study of the clip records' ordinals
+                if let Some(mbu) = f("--group-detail").and_then(|v| v.parse::<f32>().ok()) {
+                    for (ei, (rect, (nb, na), mem)) in gl.entries.iter().enumerate() {
+                        let Some((k0, _)) = mem.first() else { continue };
+                        if (recs[*k0].meter_by_uv - mbu).abs() > 2e-6 || (f("--group-class").map(|c| !recs[*k0].class.starts_with(c.as_str())).unwrap_or(false)) { continue; }
+                        println!("  entry {ei} key {:?} rect {:?} grid {nb}×{na}:", gl.entry_keys.get(ei), rect);
+                        let mut ms: Vec<(usize, u32)> = mem.clone(); ms.sort_by_key(|(_, o)| *o);
+                        for (k, o) in ms { let r = &recs[k]; let e = link.get(k).and_then(|l| l.as_ref()).and_then(|j| edr(*j)); println!("    #{k} {} obj {} sub {} centre ({:.2}, {:.2}, {:.2}) morton {:#x} cell {o}: editor rect {:?}", r.class, r.obj, r.sub, r.centre[0], r.centre[1], r.centre[2], lightmap::itemrule::morton3(r.centre) & 0xffff_ffff_ffff, e); }
+                    }
+                }
                 if a.iter().any(|x| x == "--membership-by-class") { for (k, (t, nt)) in &by { println!("    {k}: tight {t}, loose {nt}"); } }
                 for m in &misses { println!("  {m}"); }
             }
