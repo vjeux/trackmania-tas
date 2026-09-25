@@ -61,6 +61,10 @@ pub struct Opts {
     /// opens (0 = right away; the race itself starts ~14.7 s in — a mode
     /// script may clear the ghost list when its round starts).
     pub ghost_at_ms: u64,
+    /// `--restart-at-ms MS`: tap DELETE (restart the race) this long after the
+    /// playground opens — ghosts added after the first start re-sync to the
+    /// clock, so a restart lines everyone up on the grid again.
+    pub restart_at_ms: u64,
     /// `--mode SCRIPT`: the game mode PlayMap runs the map in (empty = the
     /// map's own declared mode). `TrackMania/TM_TimeAttack_Local.Script.txt`
     /// is the solo mode with a ghost manager.
@@ -101,6 +105,7 @@ pub fn parse_opts(args: &[String]) -> Result<Opts, String> {
         ghosts: args.iter().enumerate().filter(|(_, a)| *a == "--ghost").filter_map(|(i, _)| args.get(i + 1).cloned()).collect(),
         probes: args.iter().enumerate().filter(|(_, a)| *a == "--probe").filter_map(|(i, _)| args.get(i + 1).cloned()).collect(),
         ghost_at_ms: num("--ghost-at-ms", 0)?,
+        restart_at_ms: num("--restart-at-ms", 0)?,
         mode: val("--mode").unwrap_or_default(),
         skin: val("--skin"),
         detach: args.iter().any(|a| a == "--detach"),
@@ -253,6 +258,15 @@ fn run_shots(opts: &Opts, t0: Instant) -> Result<Vec<String>, String> {
             return Err(format!("the ghost did not load: {}", r.trim()));
         }
         lines.push(format!("ghost\t{game_ghost}\t{}", r.trim()));
+    }
+    if opts.restart_at_ms > 0 {
+        let so_far = load0.elapsed().as_millis() as u64;
+        if opts.restart_at_ms > so_far {
+            std::thread::sleep(Duration::from_millis(opts.restart_at_ms - so_far));
+        }
+        let r = tap_key("DELETE", 80);
+        println!("{} restart (DELETE): {:?}", el(), r);
+        lines.push(format!("restart\t{:?}", r));
     }
     let mut driver: Option<std::thread::JoinHandle<Result<String, String>>> = None;
     let mut camlog: Option<std::thread::JoinHandle<Result<String, String>>> = None;

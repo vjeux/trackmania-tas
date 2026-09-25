@@ -873,6 +873,11 @@ fn ghost_identity(path: &str, skin: &str, name: &str, skin_dir: Option<&std::pat
                 }
             }
             ghost::ident::Role::Nickname => edits.push((f.at, f.len, name.as_bytes().to_vec())),
+            // the donor's account id: the game resolves a ghost's name tag from
+            // it ("hobbi." over every CPU, 2026-09-25) — blanked so the
+            // nickname field is what shows
+            ghost::ident::Role::AccountId | ghost::ident::Role::Login | ghost::ident::Role::Trigram | ghost::ident::Role::ClubTag => edits.push((f.at, f.len, Vec::new())),
+            ghost::ident::Role::Zone => edits.push((f.at, f.len, b"World".to_vec())),
             _ => {}
         }
     }
