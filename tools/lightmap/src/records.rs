@@ -139,9 +139,21 @@ pub fn compare(ours: &[Rec], dump: &[DumpRec]) {
                 if (dump[j].quality - r.quality).abs() > 1e-6 { e.1 += 1; if examples.len() < 8 { examples.push(format!("{} #{i} q {} vs dump #{j} q {} at {:?}", r.class, r.quality, dump[j].quality, r.centre)); } }
                 order_pairs.push((i, j));
             }
-            None => { e.2 += 1; if examples.len() < 8 { examples.push(format!("{} #{i} MISSING in the dump: MBU {} q {} centre {:?} half {:?}", r.class, r.meter_by_uv, r.quality, r.centre, r.half)); } }
+            None => {
+                e.2 += 1;
+                if examples.len() < 12 {
+                    // the nearest dump record of the same MeterByUv (unused or not): where the game put this piece
+                    let nearest = dump.iter().filter(|d| ((d.meter_by_uv - r.meter_by_uv) / d.meter_by_uv.max(1e-6)).abs() < 1e-4).min_by(|a, b| { let da = (0..3).map(|k| (a.centre[k] - r.centre[k]).powi(2)).sum::<f32>(); let db = (0..3).map(|k| (b.centre[k] - r.centre[k]).powi(2)).sum::<f32>(); da.partial_cmp(&db).unwrap() });
+                    examples.push(format!("{} #{i} (obj {} sub {}) MISSING: MBU {} centre {:?} half {:?}; nearest same-MBU dump record #{}: centre {:?} half {:?}", r.class, r.obj, r.sub, r.meter_by_uv, r.centre, r.half, nearest.map(|d| d.i).unwrap_or(0), nearest.map(|d| d.centre).unwrap_or([0.0; 3]), nearest.map(|d| d.half).unwrap_or([0.0; 3])));
+                }
+            }
         }
     }
+    // the clip records by MeterByUv: matched / missing per piece kind
+    let mut kinds: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+    let matched_set: std::collections::HashSet<usize> = order_pairs.iter().map(|(a, _)| *a).collect();
+    for (i, r) in ours.iter().enumerate() { if r.class.starts_with("clip") { let e = kinds.entry(format!("{} {:.4}", r.class, r.meter_by_uv)).or_default(); if matched_set.contains(&i) { e.0 += 1; } else { e.1 += 1; } } }
+    if !kinds.is_empty() { println!("  clip kinds (MeterByUv: matched / missing): {}", kinds.iter().map(|(k, (m, n))| format!("{k}: {m}/{n}")).collect::<Vec<_>>().join(", ")); }
     let extra: Vec<usize> = (0..dump.len()).filter(|j| !used[*j]).collect();
     println!("records-check: {} ours vs {} dump", ours.len(), dump.len());
     for (c, (m, qd, miss)) in &by_class { println!("  {c}: {m} matched ({qd} with another quality), {miss} missing"); }
@@ -155,4 +167,64 @@ pub fn compare(ours: &[Rec], dump: &[DumpRec]) {
     let inversions = order_pairs.windows(2).filter(|w| w[1].1 < w[0].1).count();
     println!("  order: {} matched pairs, {} descents of the dump index along our order (0 = the same order)", order_pairs.len(), inversions);
     if inversions > 0 { for w in order_pairs.windows(2).filter(|w| w[1].1 < w[0].1).take(5) { println!("    ours #{} → dump #{}, then ours #{} → dump #{}", w[0].0, w[0].1, w[1].0, w[1].1); } }
+}
+
+/// THE PREFAB ENTITIES' RECORDS (RE 7, 15:30Z): every entity with a PreLightGen of the prefab at `xf` (world), an
+/// EXTERNAL prefab entity recursing in place, the records appended in entity order with running `sub`; the record box =
+/// the entity's static object's visual boxes folded (`lmtiles::model_box`) through the entity pose × `xf`.
+pub fn prefab_entity_records(store: &mut mapgeom::store::DataStore, prefab_path: &str, xf: &mapgeom::geom::Xform, class: &'static str, obj: u32, sub: &mut u32, quality: f32, out: &mut Vec<Rec>) -> Result<(), String> {
+    let pm = store.load_model(prefab_path)?;
+    let pf = mapgeom::static_item::prefab::CPlugPrefab::from_model(&pm)?;
+    for (ei, e) in pf.ents.iter().enumerate() {
+        let e_xf = mapgeom::geom::compose(xf, &mapgeom::geom::from_quat(e.rot, e.pos));
+        match e.model.inline.as_deref() {
+            Some(mapgeom::static_item::Node::StaticObject(so)) => {
+                let Some(s2) = so.solid2() else { continue };
+                let Some(plg) = &s2.pre_light_gen else { continue };
+                if plg.u01 == 0 { continue; }
+                let mut boxes = Vec::new();
+                for sg in &s2.shaded_geoms {
+                    let Some(vr) = s2.visuals.get(sg.visual_index as usize) else { continue };
+                    let Some(mapgeom::static_item::Node::Visual(vis)) = vr.inline.as_deref() else { continue };
+                    if let Some(mm) = vis.main.as_ref() { let b = mm.bounding_box; boxes.push(crate::lmtiles::CBox::new([b[0], b[1], b[2]], [b[3], b[4], b[5]])); }
+                }
+                let Some(mb) = crate::lmtiles::model_box(&boxes) else { continue };
+                let w = mb.transformed(&crate::lmtiles::from_xform(&e_xf));
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                use std::hash::{Hash, Hasher};
+                (prefab_path, ei).hash(&mut h);
+                let group = (h.finish() & 0x0000_FFFF_FFFF_0000) | quality.to_bits() as u64;
+                out.push(Rec { class, obj, sub: *sub, meter_by_uv: plg.u02, uv: [plg.u04[0], plg.u04[1], plg.u04[2], plg.u04[3]], quality, centre: w.c, half: w.h, group });
+                *sub += 1;
+            }
+            None if e.model.index >= 0 => {
+                // an external reference: a nested prefab (recurse) or a static object file
+                let Some((_, path)) = pm.externals.iter().find(|(i, _)| *i == e.model.index as u32) else { continue };
+                if path.ends_with(".Prefab.Gbx") {
+                    prefab_entity_records(store, path, &e_xf, class, obj, sub, quality, out)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The block at `cell` with `dir` (the placement transform of mapgeom::place::grid_block for a 32 × 32 footprint) —
+/// the picked variant's mobils' prefabs, every entity a record.
+pub fn block_records(store: &mut mapgeom::store::DataStore, bi: &mapgeom::blockinfo::BlockInfo, cell: [i32; 3], dir: u8, ground: bool, variant: usize, subvariant: usize, additional: usize, yoff: f32, class: &'static str, obj: u32, quality: f32, out: &mut Vec<Rec>) -> Result<usize, String> {
+    let Some(picked) = bi.pick_placement_add(ground, variant, subvariant, additional) else { return Ok(0) };
+    let xf = mapgeom::place::grid_block((cell[0], cell[1], cell[2]), dir, (32.0, 32.0), yoff);
+    let mut sub = 0u32;
+    let n0 = out.len();
+    for mb in &picked.mobils {
+        let Some(pp) = &mb.prefab else { continue };
+        // the mobil's own offset inside the block (translation / rotation), when any
+        let mxf = match (mb.translation, mb.rotation) {
+            (Some(t), r) => { let yaw = r.map(|v| v[1]).unwrap_or(0.0); mapgeom::geom::compose(&xf, &mapgeom::geom::yaw(yaw, t)) }
+            _ => xf,
+        };
+        prefab_entity_records(store, pp, &mxf, class, obj, &mut sub, quality, out)?;
+    }
+    Ok(out.len() - n0)
 }
