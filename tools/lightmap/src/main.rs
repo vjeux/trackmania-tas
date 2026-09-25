@@ -1441,6 +1441,36 @@ fn run(a: Vec<String>) {
                 eprintln!("layout from {rp}: {} item chart sizes", out.len());
                 out
             });
+            // --layout-game [--pak FILE:KEY] [--layout-quality Q]: THE GAME'S OWN CHART LAYOUT (layout::for_map — REPORT-5 §4-E.1/2:
+            // the zone tiles' quality rings, the items' PreLightGen extents, the radix keys, the scale search, TryPack): the
+            // items' chart SIZES and POSITIONS and the tiles' chart ST come from it; the mapping written is the game's table
+            // (`lmtool packtest OURS.Map.Gbx --against EDITOR.Map.Gbx`). Supersedes --layout-from.
+            let mut game_layout: Option<lightmap::layout::GameLayout> = None;
+            if has("--layout-game") {
+                let pak_arg = f("--pak");
+                let pak: Option<(&str, &str)> = pak_arg.as_deref().and_then(|p| p.rsplit_once(':'));
+                let q: u32 = f("--layout-quality").map(|v| v.parse().unwrap()).unwrap_or_else(|| f("--quality").map(|v| v.parse::<u32>().unwrap()).unwrap_or(3).saturating_sub(1));
+                let t0 = std::time::Instant::now();
+                let gl = lightmap::layout::for_map(&map_path, &scene, base, q, lightmap::layout::TilePlg::BLUEBAY_SEA, pak, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into())).unwrap_or_else(|e| panic!("--layout-game: {e}"));
+                let bound = gl.charts.iter().filter(|c| c.charted == lightmap::layout::Charted::Bound).count();
+                eprintln!("layout-game: {} charts ({bound} bound), s {} layout units/m, Σarea {} m², quality index {q} ({} iterations), keys from {} ({:.1}s)", gl.charts.len(), gl.s, gl.sum_area, gl.max_iter, if pak.is_some() { "the block records (pak)" } else { "the cell / triangle centres" }, t0.elapsed().as_secs_f32());
+                game_layout = Some(gl);
+            }
+            let game_sizes: Option<std::collections::HashMap<usize, (u32, u32)>> = game_layout.as_ref().map(|gl| {
+                let mut out = std::collections::HashMap::new();
+                for c in &gl.charts { if c.obj >= base && c.charted == lightmap::layout::Charted::Bound { out.insert((c.obj - base) as usize, ((c.w as u32 / 2).max(1), (c.h as u32 / 2).max(1))); ref_rects.insert((c.obj - base) as usize, [c.x, c.y, c.w, c.h]); } }
+                out
+            });
+            let ref_sizes = game_sizes.or(ref_sizes);
+            // the tiles' chart ST from the layout (D's rule, peelcolor::chart_st, the Sea tile's PreLightGen bounds), per cell
+            if let Some(gl) = &game_layout {
+                let mut table: Vec<Option<[f32; 4]>> = vec![None; 64 * 64];
+                for c in gl.charts.iter().filter(|c| c.obj < base) {
+                    let (cx, cz) = gl.cell_of[c.obj as usize];
+                    if (0..64).contains(&cx) && (0..64).contains(&cz) { table[(cz * 64 + cx) as usize] = Some(lightmap::peelcolor::chart_st([c.x, c.y, c.w, c.h], lightmap::layout::TilePlg::BLUEBAY_SEA.bounds, 2048.0)); }
+                }
+                prm.tile_st = Some(std::sync::Arc::new(table));
+            }
             // THE ZONE TILES' CHART ST from the capture's instance buffer (`lmaccum::load_lm_scene`: the 4096-instance
             // object's g_InstanceDatas — t = the cell's corner, st = its chart ST; the mapping's obj index = the instance
             // index, a traversal RE-6's block records describe): the harness's tile colour path
@@ -1867,10 +1897,13 @@ fn run(a: Vec<String>) {
                 }
                 eprintln!("  {deco} decoration charts copied from the template");
             }
-            for obj in deco_const..base { out_charts.push(lightmap::synth::Chart::from_hdr(obj, 2, 2, &[ground_e; 4], k, 128)); }
+            // the zone tiles: flat charts (the tiles' own lighting is not baked here) — sized by the game's layout when --layout-game
+            let tile_size_of: std::collections::HashMap<u32, (u32, u32)> = game_layout.as_ref().map(|gl| gl.charts.iter().filter(|c| c.obj < base).map(|c| (c.obj, ((c.w as u32 / 2).max(1), (c.h as u32 / 2).max(1)))).collect()).unwrap_or_default();
+            for obj in deco_const..base { let (tw, th) = tile_size_of.get(&obj).copied().unwrap_or((2, 2)); out_charts.push(lightmap::synth::Chart::from_hdr(obj, tw, th, &vec![ground_e; (tw * th) as usize], k, 128)); }
+            let unbound: std::collections::HashSet<usize> = game_layout.as_ref().map(|gl| gl.charts.iter().filter(|c| c.obj >= base && c.charted != lightmap::layout::Charted::Bound).map(|c| (c.obj - base) as usize).collect()).unwrap_or_default();
             let mut have = vec![false; scene.item_count];
             if candidates.is_empty() {
-                for c in &charts { have[c.item] = true; out_charts.push(lightmap::synth::Chart::from_hdr2(base + c.item as u32, c.w, c.h, &c.rgb, &c.rgb1, k, 128)); }
+                for c in &charts { have[c.item] = true; if unbound.contains(&c.item) { continue; } out_charts.push(lightmap::synth::Chart::from_hdr2(base + c.item as u32, c.w, c.h, &c.rgb, &c.rgb1, k, 128)); }
             } else {
                 // the candidate test: every item's chart once per candidate base, in that
                 // candidate's hue; overlapping candidate ranges would double-book objects
@@ -1895,7 +1928,7 @@ fn run(a: Vec<String>) {
                 // the ground slots of the primary base stay; slots claimed by a candidate range are dropped
                 out_charts.retain(|ch| !(ch.obj < base && candidates.iter().any(|cb| ch.obj >= *cb && ch.obj < cb + n_items) && ch.w == 2 && ch.h == 2));
             }
-            for (i, h) in have.iter().enumerate() { if !h { out_charts.push(lightmap::synth::Chart::from_hdr(base + i as u32, 2, 2, &[ground_e; 4], k, 128)); } }
+            for (i, h) in have.iter().enumerate() { if !h && !unbound.contains(&i) { out_charts.push(lightmap::synth::Chart::from_hdr(base + i as u32, 2, 2, &[ground_e; 4], k, 128)); } }
             let tm = tpl.chunk.data.as_ref().unwrap().cache.mapping().unwrap();
             // the probe volume: ours unless --template-probes
             let vp8_q: Option<u8> = f("--vp8").map(|s| s.parse().unwrap());
@@ -1948,7 +1981,10 @@ fn run(a: Vec<String>) {
                 let quality: u32 = f("--quality").map(|s| s.parse::<u32>().unwrap()).unwrap_or(3).saturating_sub(1);
                 lightmap::synth::FrameParams { daytime, max_hdr_mood: x.max_hdr, max_hdr: k, bounce: x.bounce_factor, sky: x.sky_factor, sum_area: Some(items_area + 2.0 * n_tiles), quality: Some(quality), decoration: Some(mf0.decoration_id.clone()) }
             });
-            let s = lightmap::synth::build_full2(out_charts, (tm.bbox_min, tm.bbox_max), &tpl.chunk, probes, vp8_q, frame_params).expect("build");
+            // the game's positions when --layout-game: stored texel (px, py) = ((X + 1)/2, (Y + 1)/2) of the layout rect, for every chart
+            // (the tiles included — their objects are the 4096 first)
+            let fixed_pos: Option<std::collections::HashMap<(u32, u32), (u32, u32)>> = game_layout.as_ref().map(|gl| gl.charts.iter().filter(|c| c.charted == lightmap::layout::Charted::Bound).map(|c| ((c.obj, 0u32), (((c.x + 1) / 2) as u32, ((c.y + 1) / 2) as u32))).collect());
+            let s = lightmap::synth::build_full2_placed(out_charts, (tm.bbox_min, tm.bbox_max), &tpl.chunk, probes, vp8_q, frame_params, fixed_pos.as_ref()).expect("build");
             if let Some(d) = &prm.dump {
                 // the final atlas before encode: the 8-bit colour image, the HDR C0 composed on the same layout, and the layout itself
                 let mut dm = d.lock().unwrap();
@@ -6206,6 +6242,21 @@ fn run(a: Vec<String>) {
                 for want in [128u32, 3377, 2169, 2164, 2153, 2148, 2133, 2117, 1828, 116, 104, 2174, 2159] { if let Some(r) = objs.iter().position(|&o| o == want) { println!("  obj {want} at bind rank {r} (cell x {} z {})", want % 64, want / 64); } }
                 return;
             }
+            // --against EDITOR.Map.Gbx: compare THIS map's mapping table with another bake's (the bake's --layout-game output
+            // against the editor's), object by object
+            if let Some(other) = f("--against") {
+                let o2 = lightmap::mapio::load(&other).expect("--against");
+                let d2 = o2.chunk.data.as_ref().unwrap();
+                let mp2 = d2.cache.mapping().unwrap();
+                let mut ed2: std::collections::HashMap<u32, (u16, u16, u16, u16)> = Default::default();
+                for i in 0..mp2.count as usize { ed2.insert(mp2.binds[i].obj_group_idx / 4, (mp2.pos[i].0, mp2.pos[i].1, mp2.size[i].0, mp2.size[i].1)); }
+                let (mut n, mut eq, mut size_eq, mut only_here, mut only_there) = (0usize, 0usize, 0usize, 0usize, 0usize);
+                let mut shown = 0;
+                for (o, r) in ed.iter() { match ed2.get(o) { Some(r2) => { n += 1; if r == r2 { eq += 1; } if r.2 == r2.2 && r.3 == r2.3 { size_eq += 1; } else if shown < 8 { shown += 1; println!("  obj {o}: ours {}×{} at ({}, {}) vs {}×{} at ({}, {})", r.2, r.3, r.0, r.1, r2.2, r2.3, r2.0, r2.1); } } None => only_here += 1 } }
+                for o in ed2.keys() { if !ed.contains_key(o) { only_there += 1; } }
+                println!("against {other}: {n} shared objects, {eq} identical rects, {size_eq} equal sizes; {only_here} only here, {only_there} only there");
+                return;
+            }
             if a.iter().any(|x| x == "--tile-order") {
                 // the editor's tile charts by atlas row then column: the object-id pattern reveals the placement order
                 let mut tiles: Vec<(u32, (u16, u16, u16, u16))> = ed.iter().filter(|(&o, _)| o < base).map(|(&o, &r)| (o, r)).collect();
@@ -6441,6 +6492,18 @@ fn run(a: Vec<String>) {
                 let mut cur = -1; let mut line = String::new();
                 for ((r, w, h), n) in &hist { if *r != cur { if !line.is_empty() { println!("{line}"); } cur = *r; line = format!("  r {r:>2}:"); } line += &format!("  {w}×{h} ×{n}"); }
                 println!("{line}");
+                return;
+            }
+            // --via-layout: the library's `layout::for_map` (what `bake --layout-game` uses) against the editor's table — must agree
+            // with this command's own walk
+            if a.iter().any(|x| x == "--via-layout") {
+                let pak_arg = f("--pak");
+                let pak: Option<(&str, &str)> = pak_arg.as_deref().and_then(|p| p.rsplit_once(':'));
+                let q = lightmap::layout::quality_index_of(&own).unwrap_or(2);
+                let gl = lightmap::layout::for_map(&a[1], &scene, base, q, lightmap::layout::TilePlg::BLUEBAY_SEA, pak, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into())).expect("layout");
+                let (mut n, mut ok, mut bound) = (0usize, 0usize, 0usize);
+                for c in &gl.charts { if c.charted == lightmap::layout::Charted::Bound { bound += 1; } if let Some(&(ex, ey, ew, eh)) = ed.get(&c.obj) { n += 1; if c.x == ex as i32 && c.y == ey as i32 && c.w == ew as i32 && c.h == eh as i32 { ok += 1; } } }
+                println!("via layout::for_map: s {} Σarea {} maxIter {}; {} charts ({bound} bound), {ok} of {n} equal to the editor's table (of {} editor entries)", gl.s, gl.sum_area, gl.max_iter, gl.charts.len(), ed.len());
                 return;
             }
             // --tie KEY: the order among equal areas (the editor sorts by block position-like keys before the

@@ -37,6 +37,7 @@ pub mod sunpass;
 pub mod lmaccum;
 pub mod shadowmap;
 pub mod dxbc;
+pub mod layout;
 pub mod lightcam;
 pub mod lmtiles;
 pub mod probechunk;

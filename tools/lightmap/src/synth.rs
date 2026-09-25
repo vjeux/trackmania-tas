@@ -279,7 +279,13 @@ pub fn build_full(charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: &Lig
     build_full2(charts, bbox, template, probes, vp8_q, None)
 }
 
-pub fn build_full2(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: &LightmapChunk, probes: Option<ProbeBlob>, vp8_q: Option<u8>, frame: Option<FrameParams>) -> Result<Synth, String> {
+pub fn build_full2(charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: &LightmapChunk, probes: Option<ProbeBlob>, vp8_q: Option<u8>, frame: Option<FrameParams>) -> Result<Synth, String> {
+    build_full2_placed(charts, bbox, template, probes, vp8_q, frame, None)
+}
+
+/// `build_full2` with the charts' STORED-TEXEL positions given (obj, sub) → (px, py) — the game's own layout
+/// (`layout::for_map`: px = (X + 1)/2 of the 2048-unit layout x) instead of the shelf packer; no shrinking.
+pub fn build_full2_placed(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template: &LightmapChunk, probes: Option<ProbeBlob>, vp8_q: Option<u8>, frame: Option<FrameParams>, fixed: Option<&std::collections::HashMap<(u32, u32), (u32, u32)>>) -> Result<Synth, String> {
     let td = template.data.as_ref().ok_or("template has no lightmap")?;
     let tm = td.cache.mapping().ok_or("template has no mapping chunk")?;
     // fit: shrink every chart uniformly until the shelf packer accepts the set
@@ -293,6 +299,9 @@ pub fn build_full2(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template:
         eprintln!("  pack debug: {} charts, gutter area {area} px² ({:.1} % of 1024²), {big} charts over 64 px, fits {}; height histogram {:?}", sizes.len(), 100.0 * area as f64 / 1048576.0, shelf_fits(&sizes, 1024), hist.iter().take(12).collect::<Vec<_>>());
     }
     loop {
+        if fixed.is_some() {
+            break;
+        }
         let mut shelf = Shelf::new(1024);
         let mut order: Vec<usize> = (0..charts.len()).collect();
         order.sort_by_key(|&i| (std::cmp::Reverse(charts[i].h), std::cmp::Reverse(charts[i].w)));
@@ -348,6 +357,11 @@ pub fn build_full2(mut charts: Vec<Chart>, bbox: ([f32; 3], [f32; 3]), template:
         order.sort_by_key(|&i| (std::cmp::Reverse(charts[i].h), std::cmp::Reverse(charts[i].w)));
         for &i in &order {
             let c = &charts[i];
+            if let Some(fx) = fixed {
+                let p = *fx.get(&(c.obj, c.sub)).ok_or_else(|| format!("no fixed position for chart obj {} sub {}", c.obj, c.sub))?;
+                placed_by_obj.insert((c.obj, c.sub), p);
+                continue;
+            }
             placed_by_obj.insert((c.obj, c.sub), shelf.place(c.w, c.h)?);
         }
     }
