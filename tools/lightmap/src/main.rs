@@ -391,7 +391,8 @@ fn run(a: Vec<String>) {
                 let ma = ia.mean(px, py, pw, ph);
                 let mb = ib.mean(px, py, pw, ph);
                 let m1 = i1.mean(px, py, pw, ph);
-                println!("{i}\t{}\t{x}\t{y}\t{w}\t{h}\t{}\t{}\t{}\t{:.0} {:.0} {:.0}\t{:.0} {:.0} {:.0}\t{:.0} {:.0} {:.0}", m.binds[i].obj_group_idx / 4, m.frame_bytes[0][i], m.frame_bytes[1][i], m.frame_bytes[2][i], ma[0], ma[1], ma[2], mb[0], mb[1], mb[2], m1[0], m1[1], m1[2]);
+                let fb = |k: usize| m.frame_bytes.get(k).and_then(|v| v.get(i)).copied().unwrap_or(0);
+                println!("{i}\t{}\t{x}\t{y}\t{w}\t{h}\t{}\t{}\t{}\t{:.0} {:.0} {:.0}\t{:.0} {:.0} {:.0}\t{:.0} {:.0} {:.0}", m.binds[i].obj_group_idx / 4, fb(0), fb(1), fb(2), ma[0], ma[1], ma[2], mb[0], mb[1], mb[2], m1[0], m1[1], m1[2]);
             }
         }
         "crop" => {
@@ -5396,6 +5397,37 @@ fn run(a: Vec<String>) {
                 println!("  vertical: median {:.3} p95 {:.3}; brightest 5 % mean rgb ({:.3}, {:.3}, {:.3}) = hue ({:.2}, {:.2}, {:.2})", vert[vert.len() / 2].0, vert[vert.len() * 95 / 100].0, c[0] / n, c[1] / n, c[2] / n, 1.0, c[1] / c[0].max(1e-6), c[2] / c[0].max(1e-6));
             }
             for (b, (s, rgb, n)) in bins.iter().enumerate() { if *n > 0 { let nn = *n as f64; println!("  az {:>3}–{:<3} n {:>7}  lum {:.4}  rgb ({:.3}, {:.3}, {:.3})", b * 30, (b + 1) * 30, n, s / nn, rgb[0] / nn, rgb[1] / nn, rgb[2] / nn); } }
+        }
+        "final-check" => {
+            // lmtool final-check PASSCAP_ROOT MAP [--frame 7537] [--q 30,40,50,75,80,91]: the pwc6 END buffers through the CPU steps
+            //   to the same run's save (filecheck.rs) — first the greys (frame 0 image 1) from Y4's channels 1..3 via libwebp
+            let f = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
+            let frame: u32 = f("--frame").map(|v| v.parse().expect("--frame")).unwrap_or(7537);
+            let qs: Vec<f32> = f("--q").map(|s| s.split(',').map(|t| t.parse().expect("--q")).collect()).unwrap_or_else(|| vec![30.0, 40.0, 50.0, 75.0, 80.0, 91.0]);
+            let has = |k: &str| a.iter().any(|x| x == k);
+            let r = if has("--records") { lightmap::filecheck::check_records(&std::path::PathBuf::from(&a[1]), &a[2], frame) } else if has("--probes") { lightmap::filecheck::check_probes(&std::path::PathBuf::from(&a[1]), &a[2], frame) } else if has("--rects") { lightmap::filecheck::check_rects(&std::path::PathBuf::from(&a[1]), &a[2], frame) } else if has("--colour") { lightmap::filecheck::check_colour(&std::path::PathBuf::from(&a[1]), &a[2], frame) }
+                else if has("--greys2") { lightmap::filecheck::check_greys2(&std::path::PathBuf::from(&a[1]), &a[2], frame, qs[0]) }
+                else { lightmap::filecheck::check_greys(&std::path::PathBuf::from(&a[1]), &a[2], frame, &qs) };
+            if let Err(e) = r { eprintln!("final-check: {e}"); std::process::exit(1); }
+        }
+        "webp-dump" => {
+            // lmtool webp-dump FILE OUT.rgb: decode one WEBP (or the first RIFF of a concatenation; --all splits every RIFF into
+            //   OUT.<k>.rgb) to raw RGB bytes and print the dimensions
+            let b = std::fs::read(&a[1]).expect("read");
+            let mut parts: Vec<&[u8]> = Vec::new();
+            let mut off = 0usize;
+            while off + 12 <= b.len() && &b[off..off + 4] == b"RIFF" {
+                let sz = u32::from_le_bytes([b[off + 4], b[off + 5], b[off + 6], b[off + 7]]) as usize + 8;
+                parts.push(&b[off..(off + sz).min(b.len())]);
+                off += sz;
+            }
+            if parts.is_empty() { parts.push(&b[..]); }
+            for (k, p) in parts.iter().enumerate() {
+                let im = lightmap::img::decode_webp(p).expect("decode");
+                let out = if parts.len() == 1 { a[2].clone() } else { format!("{}.{k}.rgb", a[2]) };
+                std::fs::write(&out, &im.px).expect("write");
+                println!("{out}: part {k} of {}: {} bytes of WEBP → {}×{} RGB", parts.len(), p.len(), im.w, im.h);
+            }
         }
         "webpcmp" => {
             // lmtool webpcmp MAP [--q 91] [--image 0]: re-encode the map's frame-0 image with our libwebp at --q and

@@ -54,7 +54,7 @@ pub fn scissor_for(state: Option<&serde_json::Value>, eid: u64) -> Option<Option
     Some(Some([g("x")?, g("y")?, g("w")?, g("h")?]))
 }
 
-fn load_volume(root: &std::path::Path, e: &Entry) -> Result<Volume3, String> {
+pub fn load_volume(root: &std::path::Path, e: &Entry) -> Result<Volume3, String> {
     let bytes = read_entry_bytes(root, &e.file)?;
     load_dds_volume(&bytes, VolFmt::from_name(&e.format), e.depth.unwrap_or(32)).map_err(|err| format!("{}: {err}", e.file))
 }
