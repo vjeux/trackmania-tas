@@ -2106,7 +2106,7 @@ fn run(a: Vec<String>) {
                                 Some(vol)
                             }
                         };
-                        eprintln!("probes: TRANSCRIBED passes in the bake — volume {:?}, {} blocks ({}), atlas {}×{}, offsets {}, layout {}", dims, src.blocks.len(), src.blocks.iter().map(|b| format!("cells {:?}..{:?} pos {:?}", b.min, b.max, b.pos)).collect::<Vec<_>>().join("; "), src.atlas.0, src.atlas.1, if offsets.is_some() { "the capture's" } else { "none" }, if f("--probe-layout-from").is_some() { "the saved map's trailer" } else if f("--probe-layout").as_deref() == Some("port") { "the port's" } else { "RE-6's chunking" });
+                        eprintln!("probes: TRANSCRIBED passes in the bake — volume {:?}, {} blocks ({}), atlas {}×{}, offsets {}, layout {}", dims, src.blocks.len(), src.blocks.iter().map(|b| format!("cells {:?}..{:?} pos {:?}", b.min, b.max, b.pos)).collect::<Vec<_>>().join("; "), src.atlas.0, src.atlas.1, if f("--probe-offsets-from").is_some() { "the capture's" } else { "from the scene (RE 7's ProbeCpt_SafetyOffset_Compute)" }, if f("--probe-layout-from").is_some() { "the saved map's trailer" } else if f("--probe-layout").as_deref() == Some("port") { "the port's" } else { "the transcribed chunking (RE 6 + RE 7's lroundf: pwc-day bit-exact to the editor's trailer)" });
                         prm.probe_bake = Some(std::sync::Arc::new(std::sync::Mutex::new(lightmap::probebake::ProbeBake::new(dims, src.blocks.clone(), offsets))));
                         probe_layout = Some(src);
                     }
