@@ -373,3 +373,86 @@ pub fn build(scene: &crate::geometry::Scene, lm: &LmScene, sbox: &Aabb, dir_in_w
     if !quiet { eprintln!("setup-from-map: ILightInput chain ({:.1}s)", t0.elapsed().as_secs_f32()); }
     FromMap { cam, pw01, shadow, sun, attr, mdiffuse8, ilightinput, coverage, notes }
 }
+
+// ───────────────────────── the collection tables FROM THE PAK (RE child 8's derivation, 2026-09-25) ─────────────────────────
+
+/// The pre-pass constant of a terrain / pad material at the zero world matrix (RE 8): mip 0 of the Pxz slice at uv (0, 0) with
+/// the wrap sampler and zero derivatives = the mean of the dds's four corner texels, BC1-decoded, sRGB → linear (the vertical
+/// flip of the GPU upload leaves the corner set unchanged). `SeaFloor_D` → (0.8511, 0.7340, 0.3259), `Land_D` →
+/// (0.1158, 0.1753, 0.0428), `TrackWallPxzInWorld_D` → (0.4358, 0.4036, 0.3483) — the captured constants to the printed digit.
+pub fn corner_mean(dds: &[u8]) -> Result<[f32; 3], String> {
+    let mut tex = texsample::parse_dds(dds, Bc1Decode::Expand8Round)?;
+    tex.decode_srgb();
+    let lv = tex.levels.first().and_then(|s| s.first()).ok_or("no mip 0")?;
+    let (w, h) = (lv.w, lv.h);
+    let c = [lv.get(0, 0), lv.get(w - 1, 0), lv.get(0, h - 1), lv.get(w - 1, h - 1)];
+    // the bilinear at uv (0, 0): the four corners at weight 1/4, summed as the filter does (two lerps)
+    let mut out = [0f32; 3];
+    for k in 0..3 {
+        let top = c[0][k] * 0.5 + c[1][k] * 0.5;
+        let bot = c[2][k] * 0.5 + c[3][k] * 0.5;
+        out[k] = top * 0.5 + bot * 0.5;
+    }
+    Ok(out)
+}
+
+/// The fog LUT 15075 (B8G8R8A8_UNORM_SRGB 256 × 1) = column 0 of the mood's `WaterColor.tga` (32 × 256 BGRA, a bottom-up TGA)
+/// read top-down: texel i = image row i from the top = file row 255 − i, pixel x = 0 (RE 8: 256 / 256 bytes identical).
+pub fn fog_lut_from_tga(tga: &[u8]) -> Result<Texture, String> {
+    if tga.len() < 18 {
+        return Err("WaterColor.tga: too short".into());
+    }
+    let id_len = tga[0] as usize;
+    let (w, h, bpp, desc) = (u16::from_le_bytes([tga[12], tga[13]]) as usize, u16::from_le_bytes([tga[14], tga[15]]) as usize, tga[16] as usize, tga[17]);
+    if tga[2] != 2 || bpp != 32 {
+        return Err(format!("WaterColor.tga: type {} bpp {} (expected uncompressed 32-bit truecolor)", tga[2], bpp));
+    }
+    let data = &tga[18 + id_len..];
+    if data.len() < w * h * 4 {
+        return Err("WaterColor.tga: truncated".into());
+    }
+    let top_down = desc & 0x20 != 0;
+    let mut px: Vec<[u8; 4]> = Vec::with_capacity(h);
+    for i in 0..h {
+        let file_row = if top_down { i } else { h - 1 - i };
+        let o = (file_row * w) * 4;
+        // BGRA in the file → the level's (r, g, b, a)
+        px.push([data[o + 2], data[o + 1], data[o], data[o + 3]]);
+    }
+    let mut lut_t = [0f32; 256];
+    for (i, v) in lut_t.iter_mut().enumerate() {
+        *v = crate::gpufmt::srgb_to_linear(i as f32 / 255.0);
+    }
+    let level = texsample::Level { w: h as u32, h: 1, px: texsample::Px::U8(px), lut: std::sync::Arc::new(lut_t) };
+    Ok(Texture { fmt: texsample::TexFmt::Bgra8, w: h as u32, h: 1, mips: 1, slices: 1, levels: vec![vec![level]], complete: true })
+}
+
+/// Replace the frozen collection constants by the pak's (RE 8's chain): the zone tiles' Pxz texture, the Land item's, the
+/// TrackWall's Pxz texture, the mood's WaterColor.tga. `read(path)` = the pak store's reader (logical game paths).
+pub fn tables_from_pak(f: &mut FrozenTables, read: &mut dyn FnMut(&str) -> Option<Vec<u8>>, collection: &str, mood: &str, tile_pxz: &str, notes: &mut Vec<String>) {
+    let mut got = Vec::new();
+    if let Some(b) = read(&format!("{collection}\\Media\\Texture\\Image\\{tile_pxz}_D.dds")) {
+        match corner_mean(&b) { Ok(c) => { got.push(format!("tiles {tile_pxz}_D → {:?} (frozen {:?})", c, f.tile_rgb)); f.tile_rgb = c; } Err(e) => notes.push(format!("pak: {tile_pxz}_D: {e}")) }
+    }
+    if let Some(b) = read(&format!("{collection}\\Media\\Texture\\Image\\Land_D.dds")) {
+        match corner_mean(&b) { Ok(c) => { got.push(format!("Land_D → {:?} (frozen {:?})", c, f.wall_rgb)); f.wall_rgb = c; } Err(e) => notes.push(format!("pak: Land_D: {e}")) }
+    }
+    if let Some(b) = read("Stadium\\Media\\Texture\\Image\\TrackWallPxzInWorld_D.dds") {
+        match corner_mean(&b) { Ok(c) => { got.push(format!("TrackWallPxzInWorld_D → {:?} (frozen {:?})", c, f.pad_rgb)); f.pad_rgb = c; } Err(e) => notes.push(format!("pak: TrackWallPxzInWorld_D: {e}")) }
+    }
+    if let Some(b) = read(&format!("{collection}\\Media\\Moods\\{mood}\\WaterColor.tga")) {
+        match fog_lut_from_tga(&b) {
+            Ok(t) => {
+                // against the frozen LUT: the 256 texels
+                let mut same = 0;
+                if let (Some(a), Some(c)) = (t.levels.first().and_then(|s| s.first()), f.fog.levels.first().and_then(|s| s.first())) {
+                    for i in 0..256u32.min(a.w).min(c.w) { if a.get(i, 0) == c.get(i, 0) { same += 1; } }
+                }
+                got.push(format!("fog LUT = WaterColor.tga column 0 top-down ({same} / 256 texels identical to the captured 15075)"));
+                f.fog = t;
+            }
+            Err(e) => notes.push(format!("pak: WaterColor.tga: {e}")),
+        }
+    }
+    notes.push(format!("tables FROM THE PAK (RE 8's chain): {}; still frozen: the transmittance LUT 15078, the water-id map, the plane-top / depth tables", got.join("; ")));
+}

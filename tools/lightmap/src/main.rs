@@ -1555,8 +1555,25 @@ fn run(a: Vec<String>) {
                     let ti = std::time::Instant::now();
                     let lm = prm.lm_scene.clone().expect("--ilightinput-from map needs --lm-from-map");
                     let env_root = std::path::PathBuf::from(f("--env-from").expect("--ilightinput-from map needs --env-from PASSCAP_ROOT for the frozen collection tables"));
-                    let frozen = lightmap::prepass_check::frozen_tables(&env_root, 127447, 127448).unwrap_or_else(|e| panic!("frozen tables: {e}"));
-                    eprintln!("setup-from-map: FROZEN from the capture — the terrain constants (tile slices {:?} → {:?}, wall → {:?}), the pad constant {:?}, the water id map / plane tables / LUTs 15075 + 15078 ({:.1}s)", frozen.tile_slices, frozen.tile_rgb, frozen.wall_rgb, frozen.pad_rgb, ti.elapsed().as_secs_f32());
+                    let mut frozen = lightmap::prepass_check::frozen_tables(&env_root, 127447, 127448).unwrap_or_else(|e| panic!("frozen tables: {e}"));
+                    // the collection tables from the pak(s) (RE 8's chain): every --pak FILE:KEY on the line opens a store; the zone tiles'
+                    // Pxz texture name from --tile-pxz (SeaFloor for BlueBay's Sea zone), the mood from --mood-name (Day)
+                    let mut pak_notes = Vec::new();
+                    {
+                        let paks: Vec<String> = a.iter().enumerate().filter(|(_, x)| *x == "--pak").filter_map(|(i, _)| a.get(i + 1).cloned()).collect();
+                        if !paks.is_empty() {
+                            let mut store = mapgeom::store::DataStore::empty();
+                            for p in &paks { if let Some((pp, key)) = p.rsplit_once(':') { store.add_pak(pp, key).unwrap_or_else(|e| panic!("--pak {p}: {e}")); } }
+                            let mut read = |path: &str| -> Option<Vec<u8>> { store.read(path).ok().map(|b| b.to_vec()) };
+                            lightmap::setupmap::tables_from_pak(&mut frozen, &mut read, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--mood-name").unwrap_or_else(|| "Day".into()), &f("--tile-pxz").unwrap_or_else(|| "SeaFloor".into()), &mut pak_notes);
+                        }
+                    }
+                    for n in &pak_notes { eprintln!("setup-from-map: {n}"); }
+                    if pak_notes.is_empty() {
+                        eprintln!("setup-from-map: FROZEN from the capture — the terrain constants (tile slices {:?} → {:?}, Land → {:?}), the TrackWall constant {:?}, the water id map / plane tables / LUTs 15075 + 15078 ({:.1}s)", frozen.tile_slices, frozen.tile_rgb, frozen.wall_rgb, frozen.pad_rgb, ti.elapsed().as_secs_f32());
+                    } else {
+                        eprintln!("setup-from-map: still FROZEN from the capture — the transmittance LUT 15078, the water-id map, the plane-top / depth tables ({:.1}s)", ti.elapsed().as_secs_f32());
+                    }
                     // the scene box S = the union of the LM scene's placed vertices (the block records' union on pwc-day: the tiles at
                     // y 3.9999785 over 0..2048, the items)
                     let mut sbox = lightmap::lightcam::Aabb { min: [f32::MAX; 3], max: [f32::MIN; 3] };
