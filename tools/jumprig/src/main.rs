@@ -366,6 +366,28 @@ fn main() {
             reload_stress(lock, n)
         }),
 
+        // DRIVE AND JUMP: accelerator held for the whole take while jumps
+        // fire at intervals, optionally recorded to an mp4 on the box. This
+        // is the jump as a player experiences it -- at speed, mid-track --
+        // rather than a hop at the start line.
+        //   jumprig drivejump [--jumps N] [--every-ms MS] [--record FILE.mp4]
+        "drivejump" => {
+            let jumps: u32 = arg_after(&args, "--jumps").and_then(|v| v.parse().ok()).unwrap_or(4);
+            let every_ms: u64 = arg_after(&args, "--every-ms").and_then(|v| v.parse().ok()).unwrap_or(2500);
+            let record = arg_after(&args, "--record");
+            // A map with ROAD in front of the start. old630's start faces a
+            // drop: the first take drove straight off the map into the void
+            // and every jump was refused as "airborne" while the car fell at
+            // 72 m/s toward y = -9941.
+            let map = arg_after(&args, "--map").unwrap_or_else(|| DRIVE_MAP.to_string());
+            match tmdrive::loadable_map_path(&map) {
+                Ok(map) => with_lock(host.clone(), "jump button: drive-and-jump demo", |lock| {
+                    drive_and_jump(lock, &map, jumps, every_ms, record.as_deref())
+                }),
+                Err(e) => Err(e),
+            }
+        }
+
         // Measure the jump across strengths so the default is chosen from
         // data. Replaces tune.sh.
         "tune" => with_lock(host.clone(), "jump button: strength sweep", |lock| {
@@ -407,6 +429,8 @@ fn main() {
 }
 
 const DEFAULT_MAP: &str = "C:/Users/vjeux/OneDrive/Documents/Trackmania/Maps/Probe/old630.Map.Gbx";
+/// Summer 2025-01: a campaign map with a straight road off the start line.
+const DRIVE_MAP: &str = "C:/Users/vjeux/OneDrive/Documents/Trackmania/Maps/_shoot/S2025-01.Map.Gbx";
 
 /// Game up, Openplanet started, the build supported, the hook installed.
 fn launch_and_hook(lock: &GameLock, t: Duration) -> Result<(), String> {
@@ -581,6 +605,87 @@ fn reload_stress(lock: &GameLock, reloads: u32) -> Result<(), String> {
     wait_for(h, "ticking", Duration::from_secs(60))?;
     wait_for(h, "grounded", Duration::from_secs(60))?;
     jump_test(lock).map(|_| ())
+}
+
+fn arg_after(args: &[String], key: &str) -> Option<String> {
+    args.iter().position(|a| a == key).and_then(|i| args.get(i + 1)).cloned()
+}
+
+/// See the `drivejump` subcommand.
+fn drive_and_jump(lock: &GameLock, map: &str, jumps: u32, every_ms: u64, record: Option<&str>) -> Result<(), String> {
+    let h = lock.host();
+    // Always (re)load the drive map: a running game may be sitting in the
+    // wrong one, or with the car already off the edge. Retried like `run`:
+    // a launch can stall, and a game can be killed from outside mid-launch.
+    let mut last = String::new();
+    let mut ready = false;
+    for attempt in 1..=3 {
+        match launch_and_hook(lock, Duration::from_secs(300)).and_then(|_| enter_map(lock, map)) {
+            Ok(()) => {
+                ready = true;
+                break;
+            }
+            Err(e) => {
+                eprintln!("  setup attempt {attempt} failed: {e}");
+                last = e;
+                let _ = ops::kill(lock);
+                let _ = wait_for(h, "exit", Duration::from_secs(30));
+            }
+        }
+    }
+    if !ready {
+        return Err(format!("could not get a driving car after 3 attempts: {last}"));
+    }
+    wait_for(h, "grounded", Duration::from_secs(60))?;
+    println!("  car ready");
+
+    // Lead-in, the jumps, and a tail to see the last landing.
+    let total_ms = 3000 + u64::from(jumps) * every_ms + 3000;
+
+    // Recording runs on the box, detached, for the whole take.
+    if let Some(file) = record {
+        let secs = (total_ms + 999) / 1000;
+        ops::start_desktop_recording(lock, file, secs).map_err(|e| e.to_string())?;
+        println!("  recording {secs}s -> {file}");
+        std::thread::sleep(Duration::from_millis(1500)); // let the encoder start
+    }
+
+    // Accelerator: one long hold on its own thread, so the jumps below keep
+    // their cadence. The game keeps the key down until keybd_event releases.
+    let drive_lock = tmdrive::acquire(h.clone(), "drivejump: accelerator").map_err(|e| e.to_string())?;
+    let hold_ms = total_ms;
+    let driver = std::thread::spawn(move || ops::accelerate(&drive_lock, hold_ms));
+    std::thread::sleep(Duration::from_millis(2500)); // get some speed first
+
+    let mut gains = Vec::new();
+    for i in 1..=jumps {
+        let before = read_state().map(|s| s.pos[1]).unwrap_or(0.0);
+        let j = send_command(h, "jump", "", Duration::from_secs(10))?;
+        let res = j.state.cmd_result.clone();
+        if res.contains("airborne") || res.contains("cooling") {
+            println!("  jump {i}: skipped ({res})");
+        } else {
+            let apex = wait_for(h, "apex", Duration::from_secs(8))?;
+            let gain = apex.max_y - before;
+            gains.push(gain);
+            let speed = (apex.state.vel[0].powi(2) + apex.state.vel[2].powi(2)).sqrt() * 3.6;
+            println!("  jump {i}: +{gain:.2} m at {speed:.0} km/h");
+            let _ = wait_for(h, "landed", Duration::from_secs(10));
+        }
+        let elapsed_since = Duration::from_millis(every_ms);
+        std::thread::sleep(elapsed_since.saturating_sub(Duration::from_millis(900)));
+    }
+    let _ = driver.join().map_err(|_| "driver thread panicked".to_string())?;
+    if record.is_some() {
+        ops::wait_recording(lock, Duration::from_secs(60)).map_err(|e| e.to_string())?;
+        println!("  recording finished");
+    }
+    if gains.is_empty() {
+        return Err("no jump fired while driving".into());
+    }
+    let mean = gains.iter().sum::<f64>() / gains.len() as f64;
+    println!("RESULT: {} jumps while driving, mean gain {mean:.2} m", gains.len());
+    Ok(())
 }
 
 /// Peak height against strength, from the game's own physics state.

@@ -379,6 +379,113 @@ pub fn play_map(lock: &GameLock, map_path: &str) -> Result<String> {
 }
 
 /// Send OS-level key input to the game window.
+/// Hold a key in the game window for `hold_ms`, focusing the window first.
+///
+/// The one input primitive every driver uses to move the car. It lived as a
+/// PowerShell blob inside shootctl's playshots, which meant driving the game
+/// without the lock and without any Rust type in the way; now it is a guarded
+/// op like the rest. The focus dance (Alt tap, SetForegroundWindow, fall back
+/// to SwitchToThisWindow) is the part that took an evening to get right --
+/// keybd_event goes to the FOREGROUND window, whatever it is.
+///
+/// `vk` is a Windows virtual-key code: UP is 0x26, DOWN 0x28, LEFT 0x25,
+/// RIGHT 0x27, and the scan code is derived for the arrows. Runs on its own
+/// thread inside PowerShell, so a long hold does not block the caller.
+pub fn hold_key(lock: &GameLock, vk: u8, hold_ms: u64) -> Result<String> {
+    let scan: u8 = match vk {
+        0x26 => 0x48, // UP
+        0x28 => 0x50, // DOWN
+        0x25 => 0x4B, // LEFT
+        0x27 => 0x4D, // RIGHT
+        0xA0 | 0x10 => 0x2A, // LSHIFT / SHIFT
+        0x20 => 0x39, // SPACE
+        _ => 0,
+    };
+    // The script goes through a FILE, not a -Command string: three layers of
+    // quoting (sh -c, PowerShell, C# member definitions) is where the
+    // previous version of this spent its bugs.
+    let script = format!(
+        r#"$sig = '[DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, System.UIntPtr dwExtraInfo);
+[DllImport("user32.dll")] public static extern bool SetForegroundWindow(System.IntPtr hWnd);
+[DllImport("user32.dll")] public static extern void SwitchToThisWindow(System.IntPtr hWnd, bool fAltTab);
+[DllImport("user32.dll")] public static extern System.IntPtr GetForegroundWindow();'
+$k = Add-Type -MemberDefinition $sig -Name Keys -Namespace TmDrive -PassThru
+$p = Get-Process Trackmania -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $p) {{ Write-Output 'no Trackmania process'; exit 1 }}
+$h = $p.MainWindowHandle
+$k::keybd_event(0x12, 0x38, 0, [System.UIntPtr]::Zero); [void]$k::SetForegroundWindow($h); $k::keybd_event(0x12, 0x38, 2, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds 150
+if ($k::GetForegroundWindow() -ne $h) {{ $k::SwitchToThisWindow($h, $true); Start-Sleep -Milliseconds 300 }}
+$k::keybd_event({vk}, {scan}, 1, [System.UIntPtr]::Zero); Start-Sleep -Milliseconds {hold_ms}; $k::keybd_event({vk}, {scan}, 3, [System.UIntPtr]::Zero)
+Write-Output 'held'
+"#
+    );
+    let unix_path = format!("/mnt/c/Users/vjeux/tmdrive-holdkey-{}.ps1", std::process::id());
+    let win_path = unix_path.replace("/mnt/c/", "C:/");
+    write_game_file_raw(&lock.host, &unix_path, &script)?;
+    let ps = system32("WindowsPowerShell/v1.0/powershell.exe");
+    let out = lock
+        .host
+        .read_cmd(&format!("'{ps}' -NoProfile -ExecutionPolicy Bypass -File '{win_path}'; rm -f '{unix_path}'"))
+        .map_err(Error::Op);
+    lock.renew();
+    out
+}
+
+/// Write text to a file on the box (helper for scripts that must not be
+/// quoted through a shell).
+fn write_game_file_raw(host: &crate::Host, unix_path: &str, content: &str) -> Result<()> {
+    // Heredoc with a quoted delimiter: no expansion of the body.
+    host.read_cmd(&format!("cat > '{unix_path}' <<'TMDRIVE_EOF'
+{content}
+TMDRIVE_EOF
+"))
+        .map_err(Error::Op)?;
+    Ok(())
+}
+
+/// Start an ffmpeg desktop capture on the box, detached, for `secs` seconds.
+/// 1080p60 h264. A game op because it takes the box's GPU/CPU while the game
+/// is being driven, and because two captures at once would fight.
+pub fn start_desktop_recording(lock: &GameLock, file: &str, secs: u64) -> Result<()> {
+    let f = file.replace('\'', "");
+    lock.host
+        .read_cmd(&format!(
+            "cd /mnt/c/Users/vjeux && rm -f '{f}' && \
+             setsid nohup /mnt/c/Users/vjeux/ffmpeg.exe -y -hide_banner -loglevel error \
+               -f gdigrab -framerate 60 -i desktop -t {secs} \
+               -vf scale=1920:-2 -c:v libx264 -preset veryfast -crf 20 -pix_fmt yuv420p '{f}' \
+               > /tmp/tmdrive-rec.log 2>&1 < /dev/null & echo started"
+        ))
+        .map_err(Error::Op)?;
+    Ok(())
+}
+
+/// Wait for the capture started by [`start_desktop_recording`] to exit.
+pub fn wait_recording(lock: &GameLock, timeout: std::time::Duration) -> Result<()> {
+    let deadline = crate::now_s() + timeout.as_secs();
+    loop {
+        let alive = lock
+            .host
+            // `pgrep -x` on the process NAME: a `pgrep -f` pattern matched the
+            // shell running pgrep itself, and the wait never ended.
+            .read_cmd("pgrep -x ffmpeg.exe >/dev/null && echo yes || echo no")
+            .map_err(Error::Op)?;
+        if alive.trim() == "no" {
+            return Ok(());
+        }
+        if crate::now_s() >= deadline {
+            return Err(Error::Op("the recording did not finish in time".into()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        lock.renew();
+    }
+}
+
+/// Hold the accelerator (UP) for `hold_ms`.
+pub fn accelerate(lock: &GameLock, hold_ms: u64) -> Result<String> {
+    hold_key(lock, 0x26, hold_ms)
+}
+
 pub fn input(lock: &GameLock, keys: &str, hold_ms: u64) -> Result<String> {
     let nav = format!("{}/Users/vjeux/hplnav.exe", drive_c());
     let out = lock
