@@ -5405,7 +5405,7 @@ fn run(a: Vec<String>) {
             let frame: u32 = f("--frame").map(|v| v.parse().expect("--frame")).unwrap_or(7537);
             let qs: Vec<f32> = f("--q").map(|s| s.split(',').map(|t| t.parse().expect("--q")).collect()).unwrap_or_else(|| vec![30.0, 40.0, 50.0, 75.0, 80.0, 91.0]);
             let has = |k: &str| a.iter().any(|x| x == k);
-            let r = if has("--records") { lightmap::filecheck::check_records(&std::path::PathBuf::from(&a[1]), &a[2], frame) } else if has("--probes") { lightmap::filecheck::check_probes(&std::path::PathBuf::from(&a[1]), &a[2], frame) } else if has("--rects") { lightmap::filecheck::check_rects(&std::path::PathBuf::from(&a[1]), &a[2], frame) } else if has("--colour") { lightmap::filecheck::check_colour(&std::path::PathBuf::from(&a[1]), &a[2], frame) }
+            let r = if has("--frame0") { lightmap::filecheck::check_frame0(&std::path::PathBuf::from(&a[1]), &a[2], frame) } else if has("--records") { lightmap::filecheck::check_records(&std::path::PathBuf::from(&a[1]), &a[2], frame) } else if has("--probes") { lightmap::filecheck::check_probes(&std::path::PathBuf::from(&a[1]), &a[2], frame) } else if has("--rects") { lightmap::filecheck::check_rects(&std::path::PathBuf::from(&a[1]), &a[2], frame) } else if has("--colour") { lightmap::filecheck::check_colour(&std::path::PathBuf::from(&a[1]), &a[2], frame) }
                 else if has("--greys2") { lightmap::filecheck::check_greys2(&std::path::PathBuf::from(&a[1]), &a[2], frame, qs[0]) }
                 else { lightmap::filecheck::check_greys(&std::path::PathBuf::from(&a[1]), &a[2], frame, &qs) };
             if let Err(e) = r { eprintln!("final-check: {e}"); std::process::exit(1); }

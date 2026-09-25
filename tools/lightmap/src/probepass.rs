@@ -661,15 +661,20 @@ mod tests {
 ///
 /// * `colour` = the fold 17056 (Σ over both sweeps of 2/N · the first surface's colour, α = Σ 1/N ·
 ///   [front face]); `max0` = the largest rgb channel over ALL probes → `frame_info[0].scale`;
-///   image 0 = `byte(v / max0)` through the sRGB curve, the block's probes that are valid, 0 elsewhere;
-///   a valid probe whose three bytes are 0 is written (1, 1, 1);
+///   image 0 = `t12[(int)(v / max0 · 4095 + 0.5)]` (the client's 4096-entry linear → sRGB byte table) for the
+///   block's valid probes; a valid probe whose three bytes are 0 is written (1, 1, 1);
 /// * `valid` = `colour.a ≥ 0.5` → the trailer's cell4 mask bits;
 /// * `skyvis` = the R16F volume 17160 (Σ over the upward sweep-0 directions of 4·D.y/N · [nothing above
 ///   the probe]) → image 1 = `clamp(round(255 · v), 0, 255)`, no scale;
 /// * `updown` = the fold 17059 (Σ 4·D.y/N · colour, signed) → `max2` = max |rgb| over the VALID probes
 ///   → `frame_info[1].scale`; image 2 = `clamp(round(127 · sign(v) · sqrt(|v| / max2)), −127, 127)`
-///   per channel (the fourth byte 0) — a signed byte image;
+///   per channel (the fourth byte 0) — a signed byte image, stored + 127 (its zero is 127);
 /// * `frame_info[2].scale` and image 3 belong to the local-light probe pass (not in this bake: 1e-5).
+///
+/// The stored atlas (`probe_atlases`): 21×21 for this block's 7×7 tiles in a 3×3 grid; pixels no tile
+/// covers hold 128 (images 0, 1, 3) / 127 (image 2); the four WEBPs = libwebp preset DEFAULT, RGB import at
+/// quality 91 for images 0, 2, 3 and Y-only (U = V = 128) at quality 80 for image 1 — byte-identical to the
+/// pwc6 save's four blobs (`lmtool final-check --probes`).
 pub struct ProbeDownload {
     pub max0: f32,
     pub max2: f32,
@@ -691,6 +696,7 @@ pub fn download_probes(colour: &Volume3, updown: &Volume3, skyvis: Option<&Volum
     let valid = |x: u32, y: u32, z: u32| colour.get(x, y, z, 3) >= 0.5;
     let mut max2 = 0f32;
     for z in 0..colour.d { for y in 0..colour.h { for x in 0..colour.w { if valid(x, y, z) { for c in 0..3 { max2 = max2.max(updown.get(x, y, z, c).abs()); } } } } }
+    let t12 = crate::filecheck::srgb_encode_table();
     let mut probes = Vec::new();
     for y in lo[1]..hi[1] {
         for z in lo[2]..hi[2] {
@@ -702,7 +708,8 @@ pub fn download_probes(colour: &Volume3, updown: &Volume3, skyvis: Option<&Volum
                 if ok {
                     for c in 0..3 {
                         let v = colour.get(x, y, z, c) / max0;
-                        rgb[c as usize] = lround(crate::gpufmt::linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0).clamp(0, 255) as u8;
+                        // the client's LUT: the 4096-entry linear → sRGB byte table indexed by (int)(v · 4095 + 0.5)
+                        rgb[c as usize] = t12[((v.clamp(0.0, 1.0) * 4095.0 + 0.5) as i32).clamp(0, 4095) as usize];
                         let u = updown.get(x, y, z, c) / max2;
                         let s = if u < 0.0 { -1.0 } else { 1.0 };
                         let b = lround(u.abs().sqrt() * s * 127.0);
@@ -712,8 +719,8 @@ pub fn download_probes(colour: &Volume3, updown: &Volume3, skyvis: Option<&Volum
                         rgb = [1, 1, 1];
                     }
                     if let Some(sv) = skyvis {
-                        // the same sRGB curve as image 0 (the table the decompile indexes with the f16 bits)
-                        sky = Some(lround(crate::gpufmt::linear_to_srgb(sv.get(x, y, z, 0).clamp(0.0, 1.0)) * 255.0).clamp(0, 255) as u8);
+                        // linear: round(255 · v) (byte-identical WEBP against the pwc6 save)
+                        sky = Some(lround(sv.get(x, y, z, 0) * 255.0).clamp(0, 255) as u8);
                     }
                 }
                 probes.push(((x, y, z), rgb, ok, sky, sq));
@@ -745,9 +752,9 @@ mod download_tests {
         let open = &dl.probes[0];
         assert_eq!(open.0, (22, 4, 20));
         assert!(open.2);
-        // sRGB(0.4) = 0.6652 → 170, sRGB(0.5) = 0.7354 → 188, 1.0 → 255
+        // through the 4096-entry table: t12[(int)(0.4·4095 + 0.5)] = 170, t12[2048] = 188, t12[4095] = 255
         assert_eq!(open.1, [170, 188, 255]);
-        assert_eq!(open.3, Some(255)); // sRGB(0.999) = 0.9996 → 254.9 → 255
+        assert_eq!(open.3, Some(255)); // round(0.999·255) = 254.7 → 255
         // signed sqrt: 127·√(0.4) = 80.3 → 80; −127·√(0.2) = −56.8 → −57; 127·1 = 127
         assert_eq!(open.4, [80, -57, 127]);
         let closed = &dl.probes[1];
@@ -766,4 +773,40 @@ mod download_tests {
         let dl = download_probes(&colour, &updown, None, ([0, 0, 0], [2, 1, 1]));
         assert_eq!(dl.probes[0].1, [1, 1, 1]);
     }
+}
+
+
+/// The four stored probe atlases (RGB triplets, `w × h`) from a download and the block's tile table
+/// (`tiles[level − min.y]` = the tile's (x, y) in the atlas, None for a missing level).
+pub fn probe_atlases(dl: &ProbeDownload, block_min: [u32; 3], tiles: &[Option<(u32, u32)>], w: u32, h: u32) -> [Vec<u8>; 4] {
+    let n = (w * h * 3) as usize;
+    let mut imgs = [vec![128u8; n], vec![128u8; n], vec![127u8; n], vec![128u8; n]];
+    for ((x, y, z), rgb, ok, sky, sq) in &dl.probes {
+        let Some(Some((tx, ty))) = tiles.get((*y - block_min[1]) as usize) else { continue };
+        if !*ok {
+            continue;
+        }
+        let (px, py) = (tx + (x - block_min[0]), ty + (z - block_min[2]));
+        let o = ((py * w + px) * 3) as usize;
+        imgs[0][o..o + 3].copy_from_slice(rgb);
+        let s = sky.unwrap_or(0);
+        imgs[1][o..o + 3].copy_from_slice(&[s, s, s]);
+        for c in 0..3 {
+            imgs[2][o + c] = (sq[c] as i32 + 127) as u8;
+        }
+        imgs[3][o..o + 3].copy_from_slice(&[0, 0, 0]);
+    }
+    imgs
+}
+
+/// The four probe WEBPs as the client writes them (needs libwebp): images 0, 2, 3 RGB import at quality 91,
+/// image 1 Y-only at quality 80.
+pub fn encode_probe_atlases(imgs: &[Vec<u8>; 4], w: u32, h: u32) -> Option<[Vec<u8>; 4]> {
+    let grey: Vec<u8> = imgs[1].chunks(3).map(|c| c[0]).collect();
+    Some([
+        crate::webpenc::encode_rgb(&imgs[0], w, h, 91.0)?,
+        crate::webpenc::encode_grey(&grey, w, h, 80.0)?,
+        crate::webpenc::encode_rgb(&imgs[2], w, h, 91.0)?,
+        crate::webpenc::encode_rgb(&imgs[3], w, h, 91.0)?,
+    ])
 }
