@@ -591,9 +591,11 @@ pub fn check_probes(root: &std::path::Path, map: &str, frame: u32) -> Result<(),
 }
 
 /// The frame record's scale fields from the captured MaxHdr buffer (client 0x14022be30 l.~430 / 0x14022b370
-/// end): `MaxHDR = f32(max[0] · 0.39894226)` (κ = 1/√(2π)), and the three f32 at the record's end (the docs'
-/// "LAmbient") = `f32(max[k] · 0.6909883)` = √3·κ·max[k] for k = 1..3 — after the CPU's clip
-/// `s = 1 / max(1, max[0] / (Mood_MaxHdr · 2.5066283))` applied to all four when `s < 1`.
+/// end): `MaxHDR = f32(max[0] · 0.39894226)` (κ = 1/√(2π)), and the three f32 at the record's end
+/// (MaxHDR_HBasisScaled234 — RE 5's record layout; the docs called them "LAmbient") = `f32(max[k] · 0.6909883)`
+/// = √3·κ·max[k] for k = 1..3 — after the CPU's clip `s = 1 / max(1, max[0] / (Mood_MaxHdr · 2.5066283))`
+/// applied to all four when `s < 1`. The record's f16 triple (LAmbient) = the AddAmbient accumulator's xyz at
+/// the end of sweep 0, rounded to half (`check_records`).
 pub fn record_scales(maxhdr: [f32; 4], mood_max_hdr: f32) -> (f32, [f32; 3]) {
     let r = maxhdr[0] / (mood_max_hdr * 2.5066283f32);
     let s = 1.0f32 / r.max(1.0);
@@ -622,8 +624,19 @@ pub fn check_records(root: &std::path::Path, map: &str, frame: u32) -> Result<()
     println!("MaxHdr buffer (GPU): {mx:?}; record MaxHDR_Mood {mood}");
     println!("MaxHDR: file {file_max} ours {ours_max} — {}", if file_max.to_bits() == ours_max.to_bits() { "BIT-IDENTICAL" } else { "DIFFERENT" });
     for k in 0..3 { println!("√3·κ·max[{}]: file {} ours {} — {}", k + 1, file_tri[k], ours_tri[k], if file_tri[k].to_bits() == ours_tri[k].to_bits() { "BIT-IDENTICAL" } else { "DIFFERENT" }); }
+    // LAmbient (the f16 triple at record +0x20 = file +0x24): the AddAmbient accumulator's xyz at the end of sweep 0
+    // (the last banked `ambient_accum` snapshot of the sweep-0 frames), rounded to half (RNE)
     let h3: Vec<u16> = (0..3).map(|k| u16::from_le_bytes([r[36 + 2 * k], r[37 + 2 * k]])).collect();
-    println!("MaxHDR_HBasisScaled234 (f16, origin open): {:?} = {:?}", h3, h3.iter().map(|&h| crate::gpufmt::decode_f16(h)).collect::<Vec<_>>());
+    let amb = m.passes.iter().filter(|e| e.pass == "ambient_accum" && e.frame.map_or(false, |f| f < frame)).max_by_key(|e| (e.frame.unwrap_or(0), e.eid.unwrap_or(0)));
+    match amb {
+        Some(e) => {
+            let bytes = crate::passdiff::read_entry_bytes(root, &e.file)?;
+            let acc: [f32; 4] = [0, 4, 8, 12].map(|o| f32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]));
+            let ours: Vec<u16> = (0..3).map(|k| crate::gpufmt::encode_f16(acc[k], crate::gpufmt::Rounding::NearestEven)).collect();
+            println!("LAmbient (f16 ×3): file {:?} = {:?}; f16(AddAmbient accumulator xyz {:?} at frame {:?} eid {:?}) = {:?} — {}", h3, h3.iter().map(|&h| crate::gpufmt::decode_f16(h)).collect::<Vec<_>>(), &acc[..3], e.frame, e.eid, ours, if ours == h3 { "BIT-IDENTICAL" } else { "DIFFERENT" });
+        }
+        None => println!("LAmbient (f16 ×3): file {:?}; no ambient_accum snapshot before frame {frame} in the manifest", h3),
+    }
     Ok(())
 }
 
