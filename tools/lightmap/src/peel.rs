@@ -346,99 +346,106 @@ pub fn build_abuffer_sparse(tris: &[WTri], frame: &PeelFrame, threads: usize, zm
     };
     let cards_occlude = cards_occlude();
     let d = frame.d;
-    // the triangles that reach the frame's depth range, projected once: (index, [x, y, z]×3, y-range)
-    struct Prep {
-        ti: u32,
-        p: [[f32; 2]; 3],
-        z: [f32; 3],
-        y0: i32,
-        y1: i32,
-    }
-    let prep_chunk = (tris.len() / (threads * 4).max(1)).max(4096);
-    let n_prep = (tris.len() + prep_chunk - 1) / prep_chunk;
-    let prep_parts: Vec<Vec<Prep>> = crate::pool::pool().map(n_prep, |ci| tris[ci * prep_chunk..((ci + 1) * prep_chunk).min(tris.len())]
-        .iter()
-        .enumerate()
-        .filter_map(|(k, t)| {
-            let ti = ci * prep_chunk + k;
-            let p0 = t.p0;
-            let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
-            let p2 = [p0[0] + t.e2[0], p0[1] + t.e2[1], p0[2] + t.e2[2]];
-            let (x0, y0, z0) = frame.project(p0);
-            let (x1, y1, z1) = frame.project(p1);
-            let (x2, y2, z2) = frame.project(p2);
-            if z0.min(z1).min(z2) >= zmax || z0.max(z1).max(z2) < zmin {
-                return None;
-            }
-            if cull_back && t.inst != DECOR_INST {
-                let ng = cross(t.e1, t.e2);
-                if dot(ng, d) > 0.0 {
-                    return None;
-                }
-            }
-            if !cards_occlude && t.alpha != u16::MAX {
-                return None;
-            }
-            let (miny, maxy) = (y0.min(y1).min(y2), y0.max(y1).max(y2));
-            if !(miny.is_finite() && maxy.is_finite()) {
-                return None;
-            }
-            // pixel rows whose centres the triangle can reach (as raster::bounds computes them)
-            let ry0 = ((miny - 0.5).ceil() as i64).max(clip.1 as i64) as i32;
-            let ry1 = ((maxy - 0.5).floor() as i64).min(clip.3 as i64) as i32;
-            if ry0 > ry1 {
-                return None;
-            }
-            Some(Prep { ti: ti as u32, p: [[x0, y0], [x1, y1], [x2, y2]], z: [z0, z1, z2], y0: ry0, y1: ry1 })
-        })
-        .collect());
-    let prep: Vec<Prep> = prep_parts.into_iter().flatten().collect();
-    prof::add(&prof::B_CLIP, t_clip);
-    let t_raster = std::time::Instant::now();
+    // THE BANDS: the wanted rectangle's rows split evenly over the threads; every triangle that reaches
+    // the frame's depth range is binned into the bands its rows touch — a per-band list of triangle
+    // indices (4 bytes each: tiny 16 has 2.4 M triangles, the giants 27 M — a projected record per
+    // triangle would be gigabytes per direction) — so a band thread walks its own triangles only and
+    // projects them again (cheaper than storing the projection). Triangle order within a band is the
+    // scene order (chunks concatenated in order), as the dense build's.
     let raster_stats = raster_stats_on();
     let bitmap: &[u64] = px.words.as_slice();
-    let sparse_buckets = 32u32;
-    let sparse_bucket_size = ((px.len() as u32 + sparse_buckets - 1) / sparse_buckets).max(1);
-    // the bands: the wanted rectangle's rows split evenly over the threads
     let rows = (clip.3 - clip.1 + 1).max(0) as usize;
     let n_bands = threads.max(1).min(rows.max(1));
     let band_rows = (rows + n_bands - 1) / n_bands.max(1);
-    let parts: Vec<Vec<Vec<(u32, Frag)>>> = crate::pool::pool().map(n_bands, |b| {
-                let prep = &prep;
-                {
-                    let by0 = clip.1 + (b * band_rows) as i32;
-                    let by1 = (clip.1 + ((b + 1) * band_rows) as i32 - 1).min(clip.3);
-                    let mut out: Vec<Vec<(u32, Frag)>> = (0..sparse_buckets).map(|_| Vec::new()).collect();
-                    if by0 > by1 {
-                        return out;
-                    }
-                    let band_clip = (clip.0, by0, clip.2, by1);
-                    for pr in prep.iter() {
-                        if pr.y1 < by0 || pr.y0 > by1 {
-                            continue;
-                        }
-                        let t = &tris[pr.ti as usize];
-                        let mask = if t.alpha != u16::MAX { masks.get(t.alpha as usize) } else { None };
-                        let [z0, z1, z2] = pr.z;
-                        if raster_stats { RS_TRIS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
-                        raster::triangle_clipped_masked(res, res_y, pr.p, band_clip, Some(bitmap), |x, y, bc| {
-                            if raster_stats { RS_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
-                            let z = z0 * bc[0] + z1 * bc[1] + z2 * bc[2];
-                            if z < zmax && z >= zmin {
-                                if let Some(m) = mask {
-                                    let u = t.uv0[0][0] * bc[0] + t.uv0[1][0] * bc[1] + t.uv0[2][0] * bc[2];
-                                    let v = t.uv0[0][1] * bc[0] + t.uv0[1][1] * bc[1] + t.uv0[2][1] * bc[2];
-                                    if !m.opaque(u, v) {
-                                        return;
-                                    }
-                                }
-                                let k = px.index_of_id(y * res + x);
-                                out[(k / sparse_bucket_size) as usize].push((k, Frag { z, tri: pr.ti }));
-                            }
-                        });
-                    }
-                    out
+    let band_of = |y: i32| -> usize { (((y - clip.1).max(0) as usize) / band_rows.max(1)).min(n_bands - 1) };
+    // a triangle's projected rows (as raster::bounds computes them), clipped to the wanted rectangle
+    let rows_of = |t: &WTri| -> Option<(i32, i32)> {
+        let p0 = t.p0;
+        let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
+        let p2 = [p0[0] + t.e2[0], p0[1] + t.e2[1], p0[2] + t.e2[2]];
+        let (_, y0, z0) = frame.project(p0);
+        let (_, y1, z1) = frame.project(p1);
+        let (_, y2, z2) = frame.project(p2);
+        if z0.min(z1).min(z2) >= zmax || z0.max(z1).max(z2) < zmin {
+            return None;
+        }
+        if cull_back && t.inst != DECOR_INST {
+            let ng = cross(t.e1, t.e2);
+            if dot(ng, d) > 0.0 {
+                return None;
+            }
+        }
+        if !cards_occlude && t.alpha != u16::MAX {
+            return None;
+        }
+        let (miny, maxy) = (y0.min(y1).min(y2), y0.max(y1).max(y2));
+        if !(miny.is_finite() && maxy.is_finite()) {
+            return None;
+        }
+        let ry0 = ((miny - 0.5).ceil() as i64).max(clip.1 as i64) as i32;
+        let ry1 = ((maxy - 0.5).floor() as i64).min(clip.3 as i64) as i32;
+        if ry0 > ry1 {
+            return None;
+        }
+        Some((ry0, ry1))
+    };
+    let prep_chunk = (tris.len() / (threads * 4).max(1)).max(4096);
+    let n_prep = (tris.len() + prep_chunk - 1) / prep_chunk;
+    // per chunk: per band the triangle indices
+    let binned: Vec<Vec<Vec<u32>>> = crate::pool::pool().map(n_prep, |ci| {
+        let mut out: Vec<Vec<u32>> = (0..n_bands).map(|_| Vec::new()).collect();
+        let a = ci * prep_chunk;
+        for (k, t) in tris[a..(a + prep_chunk).min(tris.len())].iter().enumerate() {
+            if let Some((ry0, ry1)) = rows_of(t) {
+                let (b0, b1) = (band_of(ry0), band_of(ry1));
+                for b in b0..=b1 {
+                    out[b].push((a + k) as u32);
                 }
+            }
+        }
+        out
+    });
+    prof::add(&prof::B_CLIP, t_clip);
+    let t_raster = std::time::Instant::now();
+    let sparse_buckets = 32u32;
+    let sparse_bucket_size = ((px.len() as u32 + sparse_buckets - 1) / sparse_buckets).max(1);
+    let parts: Vec<Vec<Vec<(u32, Frag)>>> = crate::pool::pool().map(n_bands, |b| {
+        let by0 = clip.1 + (b * band_rows) as i32;
+        let by1 = (clip.1 + ((b + 1) * band_rows) as i32 - 1).min(clip.3);
+        let mut out: Vec<Vec<(u32, Frag)>> = (0..sparse_buckets).map(|_| Vec::new()).collect();
+        if by0 > by1 {
+            return out;
+        }
+        let band_clip = (clip.0, by0, clip.2, by1);
+        for chunk_lists in &binned {
+            for &ti in &chunk_lists[b] {
+                let t = &tris[ti as usize];
+                let p0 = t.p0;
+                let p1 = [p0[0] + t.e1[0], p0[1] + t.e1[1], p0[2] + t.e1[2]];
+                let p2 = [p0[0] + t.e2[0], p0[1] + t.e2[1], p0[2] + t.e2[2]];
+                let (x0, y0, z0) = frame.project(p0);
+                let (x1, y1, z1) = frame.project(p1);
+                let (x2, y2, z2) = frame.project(p2);
+                let mask = if t.alpha != u16::MAX { masks.get(t.alpha as usize) } else { None };
+                if raster_stats { RS_TRIS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+                raster::triangle_clipped_masked(res, res_y, [[x0, y0], [x1, y1], [x2, y2]], band_clip, Some(bitmap), |x, y, bc| {
+                    if raster_stats { RS_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+                    let z = z0 * bc[0] + z1 * bc[1] + z2 * bc[2];
+                    if z < zmax && z >= zmin {
+                        if let Some(m) = mask {
+                            let u = t.uv0[0][0] * bc[0] + t.uv0[1][0] * bc[1] + t.uv0[2][0] * bc[2];
+                            let v = t.uv0[0][1] * bc[0] + t.uv0[1][1] * bc[1] + t.uv0[2][1] * bc[2];
+                            if !m.opaque(u, v) {
+                                return;
+                            }
+                        }
+                        let k = px.index_of_id(y * res + x);
+                        out[(k / sparse_bucket_size) as usize].push((k, Frag { z, tri: ti }));
+                    }
+                });
+            }
+        }
+        out
     });
     prof::add(&prof::B_RASTER, t_raster);
     if raster_stats { eprintln!("raster stats (sparse, {n_bands} bands): {} triangles rasterised, {} pixel visits, clip {:?}, wanted {}, {:.3}s", RS_TRIS.swap(0, std::sync::atomic::Ordering::Relaxed), RS_VISITS.swap(0, std::sync::atomic::Ordering::Relaxed), clip, px.len(), t_raster.elapsed().as_secs_f32()); }
