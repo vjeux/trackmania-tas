@@ -162,9 +162,11 @@ pub fn add_static(course: &Course, mesh: &mut Mesh, frame: &Frame, obj: &CourseO
                 }
             };
             let full_w = if *mirror { img.w * 2 } else { img.w };
-            let mat_sym = format!("Obj{}", sym.trim_start_matches("gTexture"));
-            let mi = *mats.entry((mat_sym.clone(), true, true)).or_insert_with(|| {
-                mesh.materials.push(Material { sym: mat_sym.clone(), mirror_s: *mirror, mirror_t: false, clamp_s: true, clamp_t: true, w: img.w, h: img.h, fmt: 2, tint: [255, 255, 255] });
+            // the material IS the texture symbol: `material_images` resolves the
+            // picture by `sym` through the asset index (an invented name drew the
+            // magenta placeholder — Rainbow Road's neon signs, 2026-09-25)
+            let mi = *mats.entry((sym.clone(), true, true)).or_insert_with(|| {
+                mesh.materials.push(Material { sym: sym.clone(), mirror_s: *mirror, mirror_t: false, clamp_s: true, clamp_t: true, w: img.w, h: img.h, fmt: 2, tint: [255, 255, 255] });
                 mesh.materials.len() - 1
             });
             let hw = width_units / 2.0;

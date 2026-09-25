@@ -38,6 +38,10 @@ pub const PHYS_ASPHALT: u8 = 16;
 pub const PHYS_SNOW: u8 = 21;
 pub const PHYS_ICE: u8 = 74;
 pub const PHYS_GRASS: u8 = 76;
+/// Wood: the game's `EPlugSurfaceMaterialId::Wood` (14 — the vegetation trunk
+/// hulls' material in the pack; vjeux 2026-09-25: "make banshee boardwalk
+/// bridge wood physics").
+pub const PHYS_WOOD: u8 = 14;
 /// Gameplay ids: Turbo 1.
 pub const GAMEPLAY_TURBO: u8 = 1;
 
@@ -50,7 +54,7 @@ pub fn physics_for_surface(s: u8) -> Option<(u8, u8)> {
         3 | 7 | 10 => (PHYS_SAND, 0),           // SAND, SAND_OFFROAD, WET_SAND
         4 | 12 | 15 => (PHYS_CONCRETE, 0),      // STONE, CLIFF, CAVE
         5 | 11 => (PHYS_SNOW, 0),               // SNOW, SNOW_OFFROAD
-        6 | 16 | 17 => (PHYS_CONCRETE, 0),      // BRIDGE, ROPE_BRIDGE, WOOD_BRIDGE
+        6 | 16 | 17 => (PHYS_WOOD, 0),          // BRIDGE, ROPE_BRIDGE, WOOD_BRIDGE
         8 => (PHYS_GRASS, 0),                   // GRASS
         9 => (PHYS_ICE, 0),                     // ICE
         14 => (PHYS_METAL, 0),                  // TRAIN_TRACK
@@ -1011,6 +1015,10 @@ pub fn material_images(mesh: &Mesh, assets: &AssetIndex, rom: &mut Rom) -> (Hash
         };
         match base {
             Ok(img) => {
+                // the Rainbow Road neon signs are drawn ADDITIVELY by the N64 over an
+                // opaque black background (black adds nothing); here black becomes
+                // transparent so the tubes float
+                let img = if m.sym.contains("RainbowRoadNeon") { img.black_keyed(24) } else { img };
                 out.insert(i, img.mirrored(m.mirror_s, m.mirror_t).tinted(m.tint));
             }
             Err(e) => {

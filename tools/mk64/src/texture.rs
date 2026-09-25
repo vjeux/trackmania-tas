@@ -108,6 +108,16 @@ impl Image {
         let (hard, flat) = self.edge_shares(48);
         hard < 0.08 || flat < 0.3
     }
+    /// Pixels darker than `thr` in every channel made transparent (an
+    /// additive sprite's black background).
+    pub fn black_keyed(&self, thr: u8) -> Image {
+        let rgba = self
+            .rgba
+            .chunks(4)
+            .flat_map(|p| if p[0] < thr && p[1] < thr && p[2] < thr { [0, 0, 0, 0] } else { [p[0], p[1], p[2], p[3]] })
+            .collect();
+        Image { w: self.w, h: self.h, rgba }
+    }
     /// The image mirrored into a 2× tile along the axes asked for (the N64
     /// `G_TX_MIRROR` wrap: texel u in [w, 2w) reads w-1-(u-w)).
     pub fn mirrored(&self, s: bool, t: bool) -> Image {
