@@ -31,7 +31,8 @@ namespace TokenGate {
         "/playmap", "/editmap", "/shoot", "/reload", "/quit", "/setup",
         "/camera", "/cursor", "/input", "/key", "/click", "/save", "/saveas",
         "/inventory", "/place", "/delete", "/move", "/nadeotoken", "/publish",
-        "/thumb", "/mapsave", "/treeinst", "/meshflags", "/mobils"
+        "/thumb", "/mapsave", "/treeinst", "/meshflags", "/mobils",
+        "/kineset", "/kinemove"
     };
 
     string TokenPath() {

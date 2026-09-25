@@ -135,6 +135,10 @@ HttpResponse@ RouteRequests(const string &in type, const string &in route, dicti
     if (r == "/mobils") return HttpResponse(200, SceneMobils(qs));
     // the live forest instances of the vegetation items (TreeInst.as): /treeinst[?raw=1|info=1]
     if (r == "/treeinst") return HttpResponse(200, TreeInst(qs));
+    // Kine.as: the kinematic (moving) items' runtime -- /kine[?name=], /kineset?i=&tmin=&tmax=, /kinemove?i=&dx=
+    if (r == "/kine") return HttpResponse(200, Kine(qs));
+    if (r == "/kineset") return HttpResponse(200, KineSet(qs));
+    if (r == "/kinemove") return HttpResponse(200, KineMove(qs));
     if (r == "/state") return HttpResponse(200, GetState());
     if (r == "/tree") return HttpResponse(200, DumpTree());
     if (r == "/dialogtree") return HttpResponse(200, DumpDialogTree());
