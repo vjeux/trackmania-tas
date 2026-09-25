@@ -7419,8 +7419,137 @@ fn run(a: Vec<String>) {
                 let q = lightmap::layout::quality_index_of(&own).unwrap_or(2);
                 let gl = lightmap::layout::for_map(&a[1], &scene, base, q, lightmap::layout::TilePlg::BLUEBAY_SEA, pak, &f("--collection").unwrap_or_else(|| "BlueBay".into()), &f("--zone").unwrap_or_else(|| "Sea".into()), kept.as_ref()).expect("layout");
                 let (mut n, mut ok, mut bound) = (0usize, 0usize, 0usize);
-                for c in &gl.charts { if c.charted == lightmap::layout::Charted::Bound { bound += 1; } if let Some(&(ex, ey, ew, eh)) = ed.get(&c.obj) { n += 1; if c.x == ex as i32 && c.y == ey as i32 && c.w == ew as i32 && c.h == eh as i32 { ok += 1; } } }
-                println!("via layout::for_map: s {} Σarea {} maxIter {}; {} charts ({bound} bound), {ok} of {n} equal to the editor's table (of {} editor entries)", gl.s, gl.sum_area, gl.max_iter, gl.charts.len(), ed.len());
+                // the mismatch classes: same size elsewhere (a placement / cell-order difference) vs a different size
+                let (mut same_size, mut diff_size, mut shown) = (0usize, 0usize, 0usize);
+                let mut size_hist: std::collections::BTreeMap<(i32, i32, i32, i32), usize> = Default::default();
+                for c in &gl.charts { if c.charted == lightmap::layout::Charted::Bound { bound += 1; } if let Some(&(ex, ey, ew, eh)) = ed.get(&c.obj) { n += 1; if c.x == ex as i32 && c.y == ey as i32 && c.w == ew as i32 && c.h == eh as i32 { ok += 1; } else { if c.w == ew as i32 && c.h == eh as i32 { same_size += 1; } else { diff_size += 1; *size_hist.entry((c.w, c.h, ew as i32, eh as i32)).or_default() += 1; } if shown < 10 && a.iter().any(|x| x == "--show-misses") { shown += 1; println!("  miss obj {}: ours ({}, {}) {}×{} editor ({ex}, {ey}) {ew}×{eh}", c.obj, c.x, c.y, c.w, c.h); } } } }
+                println!("via layout::for_map: s {} Σarea {} maxIter {}; {} charts ({bound} bound), {ok} of {n} equal to the editor's table (of {} editor entries); misses: {same_size} same size elsewhere, {diff_size} other size", gl.s, gl.sum_area, gl.max_iter, gl.charts.len(), ed.len());
+                if diff_size > 0 { let mut v: Vec<_> = size_hist.into_iter().collect(); v.sort_by_key(|(_, n)| std::cmp::Reverse(*n)); println!("  size differences (ours w×h → editor w×h: count): {:?}", v.iter().take(12).map(|((a, b, c, d), n)| format!("{a}×{b}→{c}×{d}:{n}")).collect::<Vec<_>>()); }
+                // --cell-study: per grid entry (nb·na > 1) whose members all have editor rects: the editor's cell edge sequence per axis
+                // (from the members' rects) against ours — the error-diffusion rule study
+                if a.iter().any(|x| x == "--cell-study") {
+                    let (g, pad, _m) = gl.params;
+                    let mut shown = 0;
+                    let mut agree = 0usize; let mut total = 0usize;
+                    let mut miss_kinds: std::collections::BTreeMap<String, usize> = Default::default();
+                    for (rect, (nb, na), mem) in &gl.entries {
+                        if nb * na <= 1 { continue; }
+                        let rects: Vec<Option<(u32, u32, u32, u32)>> = mem.iter().map(|(k, _)| ed.get(&gl.charts[*k].obj).map(|r| (r.0 as u32, r.1 as u32, r.2 as u32, r.3 as u32))).collect();
+                        if rects.iter().any(|r| r.is_none()) { continue; }
+                        total += 1;
+                        // the editor's distinct cell x starts / widths along the row (cells share x per column)
+                        let mut xs: Vec<(u32, u32)> = rects.iter().map(|r| { let r = r.unwrap(); (r.0, r.2) }).collect(); xs.sort(); xs.dedup();
+                        let mut ys: Vec<(u32, u32)> = rects.iter().map(|r| { let r = r.unwrap(); (r.1, r.3) }).collect(); ys.sort(); ys.dedup();
+                        let ex = lightmap::itemrule::cell_edges(rect.2 as u32, *nb, g as u32);
+                        let ey = lightmap::itemrule::cell_edges(rect.3 as u32, *na, g as u32);
+                        let ours_x: Vec<(u32, u32)> = (0..*nb as usize).map(|i| (rect.0 as u32 + ex[i] + pad as u32, ex[i + 1] - ex[i] - 2 * pad as u32)).collect();
+                        let ours_y: Vec<(u32, u32)> = (0..*na as usize).map(|i| (rect.1 as u32 + ey[i] + pad as u32, ey[i + 1] - ey[i] - 2 * pad as u32)).collect();
+                        let ok = xs == ours_x && ys == ours_y;
+                        if ok { agree += 1; } else {
+                            let ed_wx: Vec<u32> = xs.iter().map(|(_, w)| *w).collect(); let our_wx: Vec<u32> = ours_x.iter().map(|(_, w)| *w).collect();
+                            let ed_wy: Vec<u32> = ys.iter().map(|(_, w)| *w).collect(); let our_wy: Vec<u32> = ours_y.iter().map(|(_, w)| *w).collect();
+                            *miss_kinds.entry(format!("w {} nb {nb}: editor {ed_wx:?} ours {our_wx:?}", rect.2)).or_default() += 1;
+                            if ed_wy != our_wy { *miss_kinds.entry(format!("h {} na {na}: editor {ed_wy:?} ours {our_wy:?}", rect.3)).or_default() += 1; }
+                            if shown < 6 { shown += 1; println!("  entry {:?} {nb}×{na}: editor x-cells {:?} ours {:?}; y-cells {:?} ours {:?}", rect, xs, ours_x, ys, ours_y); }
+                        }
+                    }
+                    println!("cell study: {agree} of {total} grid entries with every member in the editor's table have our cell edges");
+                    // the ENTRY rects: the editor's union of the members' rects (outer: minus the pad) vs our placed entry
+                    let (mut e_same, mut e_moved, mut e_size) = (0usize, 0usize, 0usize);
+                    let mut moved_examples: Vec<String> = Vec::new();
+                    let mut size_kinds: std::collections::BTreeMap<(i32, i32, i32, i32), usize> = Default::default();
+                    let mut moved_rows: Vec<String> = Vec::new();
+                    for (ei, (rect, (nb, na), mem)) in gl.entries.iter().enumerate() {
+                        let rects: Vec<Option<(u32, u32, u32, u32)>> = mem.iter().map(|(k, _)| ed.get(&gl.charts[*k].obj).map(|r| (r.0 as u32, r.1 as u32, r.2 as u32, r.3 as u32))).collect();
+                        if rects.iter().any(|r| r.is_none()) { continue; }
+                        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+                        for r in rects.iter().flatten() { x0 = x0.min(r.0 - pad as u32); y0 = y0.min(r.1 - pad as u32); x1 = x1.max(r.0 + r.2 + pad as u32); y1 = y1.max(r.1 + r.3 + pad as u32); }
+                        // a partially filled grid (empty z-last cells) makes the union smaller than the entry: compare sizes only when full
+                        let full = (nb * na) as usize == mem.len();
+                        let ours = (rect.0 as u32, rect.1 as u32, rect.2 as u32, rect.3 as u32);
+                        if (x0, y0) == (ours.0, ours.1) && (!full || (x1 - x0, y1 - y0) == (ours.2, ours.3)) { e_same += 1; }
+                        else if !full || (x1 - x0, y1 - y0) == (ours.2, ours.3) { e_moved += 1; let k = gl.entry_keys[ei]; if moved_examples.len() < 5 { moved_examples.push(format!("{nb}×{na} {}×{} ours ({}, {}) editor ({x0}, {y0})", ours.2, ours.3, ours.0, ours.1)); } moved_rows.push(format!("entry {ei} group {} chunk {} area {:#010x} n {} {nb}×{na}: ours ({}, {}) editor ({x0}, {y0})", k.0, k.1, k.2.to_bits(), mem.len(), ours.0, ours.1)); }
+                        else { e_size += 1; *size_kinds.entry((ours.2 as i32, ours.3 as i32, (x1 - x0) as i32, (y1 - y0) as i32)).or_default() += 1; }
+                    }
+                    println!("entry study: {e_same} entries at the editor's place and size, {e_moved} same size elsewhere, {e_size} another size; moved e.g. {moved_examples:?}");
+                    if a.iter().any(|x| x == "--show-moved") { for r in moved_rows.iter().take(40) { println!("    {r}"); } }
+                    // the first moved entry in WALK order (the packer's processing order): where the placements diverge
+                    let wp = lightmap::layout::WALK_POS.with(|w| w.borrow().clone());
+                    let mut first: Vec<(usize, String)> = Vec::new();
+                    for (ei, (rect, (nb, na), mem)) in gl.entries.iter().enumerate() {
+                        let rects: Vec<Option<(u32, u32, u32, u32)>> = mem.iter().map(|(k, _)| ed.get(&gl.charts[*k].obj).map(|r| (r.0 as u32, r.1 as u32, r.2 as u32, r.3 as u32))).collect();
+                        if rects.iter().any(|r| r.is_none()) { continue; }
+                        let (mut x0, mut y0) = (u32::MAX, u32::MAX);
+                        for r in rects.iter().flatten() { x0 = x0.min(r.0 - pad as u32); y0 = y0.min(r.1 - pad as u32); }
+                        if (x0, y0) != (rect.0 as u32, rect.1 as u32) { let k = gl.entry_keys[ei]; first.push((wp.get(ei).copied().unwrap_or(0), format!("walk {} entry {ei} group {} chunk {} area {:#010x} {nb}×{na} {}×{}: ours ({}, {}) editor ({x0}, {y0})", wp.get(ei).copied().unwrap_or(0), k.0, k.1, k.2.to_bits(), rect.2, rect.3, rect.0, rect.1))); }
+                    }
+                    first.sort();
+                    // the placements around the first divergence, in walk order (ours; the editor's union rect when known)
+                    if let Some((pos0, _)) = first.first() {
+                        let lo = pos0.saturating_sub(10);
+                        let mut by_walk: Vec<(usize, usize)> = wp.iter().enumerate().map(|(ei, p)| (*p, ei)).collect(); by_walk.sort();
+                        println!("  placements at walk {lo}..={}:", pos0 + 3);
+                        for (p, ei) in by_walk.iter().filter(|(p, _)| *p >= lo && *p <= pos0 + 3) {
+                            let (rect, (nb, na), mem) = &gl.entries[*ei];
+                            let k = gl.entry_keys[*ei];
+                            let rects: Vec<Option<(u32, u32, u32, u32)>> = mem.iter().map(|(kk, _)| ed.get(&gl.charts[*kk].obj).map(|r| (r.0 as u32, r.1 as u32, r.2 as u32, r.3 as u32))).collect();
+                            let edp = if rects.iter().all(|r| r.is_some()) { let (mut x0, mut y0) = (u32::MAX, u32::MAX); for r in rects.iter().flatten() { x0 = x0.min(r.0 - pad as u32); y0 = y0.min(r.1 - pad as u32); } format!("({x0}, {y0})") } else { "?".into() };
+                            println!("    walk {p}: entry {ei} g{} c{} area {:#010x} {nb}×{na} {}×{} ours ({}, {}) editor {edp}", k.0, k.1, k.2.to_bits(), rect.2, rect.3, rect.0, rect.1);
+                        }
+                    }
+                    // --region x0,y0,x1,y1: the editor's charts in that region with their entries' walk positions (ours)
+                    if let Some(rg) = f("--region") {
+                        let v: Vec<u32> = rg.split(',').map(|t| t.parse().unwrap()).collect();
+                        let entry_of_chart: std::collections::HashMap<usize, usize> = gl.entries.iter().enumerate().flat_map(|(ei, (_, _, mem))| mem.iter().map(move |(k, _)| (*k, ei))).collect();
+                        let chart_of_obj: std::collections::HashMap<u32, usize> = gl.charts.iter().enumerate().map(|(k, c)| (c.obj, k)).collect();
+                        let mut rows: Vec<(u32, u32, String)> = Vec::new();
+                        let mut seen: std::collections::HashSet<usize> = Default::default();
+                        for (obj, &(ex, ey, ew, eh)) in ed.iter() {
+                            if (ex as u32) >= v[0] && (ey as u32) >= v[1] && (ex as u32 + ew as u32) <= v[2] && (ey as u32 + eh as u32) <= v[3] {
+                                if let Some(&ei) = chart_of_obj.get(obj).and_then(|k| entry_of_chart.get(k)) {
+                                    if !seen.insert(ei) { continue; }
+                                    let k = gl.entry_keys[ei]; let r = gl.entries[ei].0;
+                                    rows.push((ey as u32, ex as u32, format!("entry {ei} g{} c{} area {:#010x} walk {} {}×{}: ours ({}, {}); editor cell at ({ex}, {ey})", k.0, k.1, k.2.to_bits(), wp.get(ei).copied().unwrap_or(0), r.2, r.3, r.0, r.1)));
+                                }
+                            }
+                        }
+                        rows.sort();
+                        println!("  editor entries in region {rg}:");
+                        for (_, _, r) in rows.iter().take(30) { println!("    {r}"); }
+                    }
+                    println!("first moved entries in walk order ({} moved of {} entries):", first.len(), gl.entries.len());
+                    for (_, r) in first.iter().take(12) { println!("    {r}"); }
+                    // what the editor placed inside OUR rect of the first moved entry: the objects there → their entry (group, chunk, walk)
+                    if let Some((pos0, _)) = first.first() {
+                        let ei0 = wp.iter().position(|p| p == pos0).unwrap_or(0);
+                        let r0 = gl.entries[ei0].0;
+                        let mut inside: Vec<(u32, u32, u32, String)> = Vec::new();
+                        let entry_of_chart: std::collections::HashMap<usize, usize> = gl.entries.iter().enumerate().flat_map(|(ei, (_, _, mem))| mem.iter().map(move |(k, _)| (*k, ei))).collect();
+                        let chart_of_obj: std::collections::HashMap<u32, usize> = gl.charts.iter().enumerate().map(|(k, c)| (c.obj, k)).collect();
+                        for (obj, &(ex, ey, ew, eh)) in ed.iter() {
+                            if (ex as i32) >= r0.0 && (ey as i32) >= r0.1 && (ex as i32 + ew as i32) <= r0.0 + r0.2 && (ey as i32 + eh as i32) <= r0.1 + r0.3 {
+                                let desc = chart_of_obj.get(obj).and_then(|k| entry_of_chart.get(k)).map(|&ei| { let k = gl.entry_keys[ei]; format!("entry {ei} group {} chunk {} area {:#010x} walk {} ours at ({}, {})", k.0, k.1, k.2.to_bits(), wp.get(ei).copied().unwrap_or(0), gl.entries[ei].0.0, gl.entries[ei].0.1) }).unwrap_or_else(|| "not in our layout".into());
+                                inside.push((ey as u32, ex as u32, *obj, desc));
+                            }
+                        }
+                        inside.sort();
+                        println!("  the editor's charts inside our first moved entry's rect {:?}:", r0);
+                        for (ey, ex, obj, d) in inside.iter().take(12) { println!("    obj {obj} at ({ex}, {ey}): {d}"); }
+                        // the members of the entry the editor put there, and of ours: record index, ordinal, the record's own area bits
+                        for ei in [ei0].into_iter().chain(inside.first().and_then(|(_, _, obj, _)| chart_of_obj.get(obj).and_then(|k| entry_of_chart.get(k)).copied())) {
+                            let (_, (nb, na), mem) = &gl.entries[ei];
+                            let k = gl.entry_keys[ei];
+                            println!("  entry {ei} (group {} chunk {} {nb}×{na}, entry area {:#010x}): members (record, ordinal, own grid-area bits):", k.0, k.1, k.2.to_bits());
+                            let mut rows: Vec<String> = Vec::new();
+                            for (kk, o) in mem { let e = gl.charts[*kk].ext; let area = ((nb * na) as f32 * e[1]) * e[0]; rows.push(format!("({kk}, {o}, {:#010x})", area.to_bits())); }
+                            println!("    {}", rows.join(" "));
+                        }
+                    }
+                    let mut v: Vec<_> = size_kinds.into_iter().collect(); v.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+                    println!("  entry size differences (ours → editor): {:?}", v.iter().take(10).map(|((a, b, c, d), n)| format!("{a}×{b}→{c}×{d}:{n}")).collect::<Vec<_>>());
+                    let mut v: Vec<_> = miss_kinds.into_iter().collect(); v.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+                    for (k, n) in v.iter().take(14) { println!("    {n:4} × {k}"); }
+                }
                 return;
             }
             // --tie KEY: the order among equal areas (the editor sorts by block position-like keys before the

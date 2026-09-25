@@ -346,7 +346,14 @@ pub fn cell_edges(w: u32, n: u32, g: u32) -> Vec<u32> {
     let mut edges = vec![0u32];
     let mut acc = 0f32;
     let mut pos = 0u32;
-    for _ in 0..n {
+    for i in 0..n {
+        // THE LAST CELL TAKES THE REMAINDER (E, tiny 16's editor table: w 34 / 3 → [10, 12, 12], w 46 / 3 → [14, 16, 16],
+        // h 154 / 3 → [50, 52, 52], w 50 / 3 → [16, 16, 18]; the diffused f32 accumulation alone leaves the last cell short
+        // by g when the remainders sum to 1.9999998)
+        if i + 1 == n {
+            edges.push(w);
+            break;
+        }
         acc += frac;
         let mut c = base;
         if acc >= g as f32 {

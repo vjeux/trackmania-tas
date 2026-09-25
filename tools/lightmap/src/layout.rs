@@ -55,6 +55,11 @@ pub struct GameLayout {
     /// Per object id (tiles): the cell.
     pub cell_of: Vec<(i32, i32)>,
     pub tile_quality: Vec<f32>,
+    /// The grouped allocation's entries: (placed outer rect x, y, w, h; nb, na; the member records' chart indices in
+    /// ordinal order) — empty for the per-record allocation.
+    pub entries: Vec<((i32, i32, i32, i32), (u32, u32), Vec<(usize, u32)>)>,
+    /// Per entry: (group index, chunk index, the area whose bits the walk sorts by).
+    pub entry_keys: Vec<(usize, u32, f32)>,
 }
 
 /// The zone tile's PreLightGen constants: MeterByUv and the uv bounds (u0, v0, u1, v1). The BlueBay `Zone\Sea\Base.Prefab.Gbx`
@@ -214,7 +219,7 @@ pub fn allocate(input: &LayoutInput) -> Result<GameLayout, String> {
         .enumerate()
         .map(|(k, p)| LayoutChart { obj: objs[k].0, ext: charts[k].ext, charted: objs[k].1, x: p.x as i32 + pad as i32, y: p.y as i32 + pad as i32, w: p.w as i32 - 2 * pad as i32, h: p.h as i32 - 2 * pad as i32 })
         .collect();
-    Ok(GameLayout { charts: out, s, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new() })
+    Ok(GameLayout { charts: out, s, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new(), entries: Vec::new(), entry_keys: Vec::new() })
 }
 
 #[cfg(test)]
@@ -343,14 +348,24 @@ pub fn for_map(map_path: &str, scene: &crate::geometry::Scene, base: u32, qualit
     // a non-degenerate uv-set-0 bound (the 1-uv-set items get no record)
     let is_record = |inst: &crate::geometry::Instance| -> bool {
         if let Some(k) = kept { if !k.contains(&inst.item) { return false; } }
-        match scene.models[inst.model].plg_bounds { Some(b) => b[2] > b[0] && b[3] > b[1], None => false }
+        let m = &scene.models[inst.model];
+        // the game's filter (itemrule::static_item_record): a PreLightGen with non-degenerate uv-set-0 bounds AND lightmap
+        // geometry — a geom whose MATERIAL takes a lightmap set (the compiled material's texcoord index ≠ −1): the
+        // RaceTriggerFX materials take none, so an item made only of them (tiny 16's two AC16497076) has no record; a
+        // single-set material (the wall's TrackWallInWorld) lightmaps through its set 0 and counts
+        let fx_only = !m.mat_links.is_empty() && m.mat_links.iter().all(|l| l.contains("RaceTriggerFX"));
+        if fx_only { return false; }
+        match m.plg_bounds { Some(b) => b[2] > b[0] && b[3] > b[1], None => false }
     };
     let record_instances: Vec<&crate::geometry::Instance> = scene.instances.iter().filter(|i| is_record(i)).collect();
     let items: Vec<(u32, [f32; 2], ChartKey, Charted)> = record_instances
         .iter()
         .map(|inst| {
             let m = &scene.models[inst.model];
-            let sc = (inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]).sqrt();
+            // the placement's own scale word (1.0 unless the item is scaled) — not the transform column's norm, whose f32
+            // rounding gave rotated instances of one model extents an ulp apart (and the grid entries different area bits,
+            // breaking the walk's ties: tiny 16's groups 18/19 pack in list order only when their areas tie exactly)
+            let sc = if inst.pose.scale > 0.0 { inst.pose.scale } else { 1.0 };
             let q = item_quality(inst.lm_quality);
             let ext = match m.plg_bounds {
                 Some(b) => {
@@ -390,6 +405,11 @@ pub fn for_map(map_path: &str, scene: &crate::geometry::Scene, base: u32, qualit
 /// Morton ordinal. Where every record is solo (the small maps: D₁ ≈ 110) this is `allocate` exactly.
 ///
 /// `groups[k]`: the group key of record k (tiles first, then items, as `LayoutInput` lists them).
+thread_local! {
+    /// The last grouped allocation's walk position per entry (a study aid for `packtest --cell-study`).
+    pub static WALK_POS: std::cell::RefCell<Vec<usize>> = std::cell::RefCell::new(Vec::new());
+}
+
 pub fn allocate_grouped(input: &LayoutInput, groups: &[u64]) -> Result<GameLayout, String> {
     use crate::itemrule as ir;
     let (g, pad, m) = crate::pack::layout_params(input.w_atlas, input.w_atlas);
@@ -440,7 +460,9 @@ pub fn allocate_grouped(input: &LayoutInput, groups: &[u64]) -> Result<GameLayou
     }
     // chunks
     let counts: Vec<u32> = members.iter().map(|m| m.len() as u32).collect();
-    let chunk = ir::chunk_size(n as u32, members.len() as u32);
+    // the chunk size: RE 7's dumps give c = 8 on tiny 16 (458 models) and on stpad (946 models) where the read formula gives
+    // 8 and 6 — c = 8 whenever chunking applies (k = ceil(1000 / nModels) > 1) until a third map pins the divisor
+    let chunk = ir::chunk_size(n as u32, members.len() as u32).map(|_| 8u32);
     let entries = ir::split_chunks(&counts, chunk);
     let c = chunk.unwrap_or(u32::MAX);
     // the entry of a record: its group's chunk `ordinal / c` — the chunk-0 entry sits at the group's place, the others where
@@ -461,7 +483,11 @@ pub fn allocate_grouped(input: &LayoutInput, groups: &[u64]) -> Result<GameLayou
         }
     }
     for (ei, e) in entries.iter().enumerate() {
-        let k0 = first_member[ei].unwrap_or(members[e.group][0]);
+        // THE ENTRY'S EXTENT IS THE GROUP'S FIRST RECORD'S (record order) — for every chunk of the group: the per-record
+        // extents differ in the last bits (the placement scale's rounding), and tiny 16's editor table places group 59's
+        // chunk 78 (whose own first member has the smaller area bits) with the group's area, right before chunk 77
+        let k0 = members[e.group][0];
+        first_member[ei] = Some(k0);
         let ext = exts[k0];
         let (nb, na) = ir::grid_dims(e.count, ext, d1, m as u32);
         let (gext, _area) = ir::grid_chart(ext, nb, na);
@@ -469,7 +495,20 @@ pub fn allocate_grouped(input: &LayoutInput, groups: &[u64]) -> Result<GameLayou
         ekeys.push(keys[k0]);
         dims.push((nb, na));
     }
-    let order = walk_order(&charts, &ekeys);
+    // THE GROUPED WALK (RE 7, 15:10Z): the sorter sees the entry count differ from the record count and resets to the
+    // identity before its single stable pass by the f32 bits of area → (area bits ascending, then model-list index); the
+    // (z, y, x, |h|²) passes exist only when every record is its own entry — there `walk_order` (the same result up to the
+    // tie rule, which the per-record maps need: LMTOOL_LAYOUT_PER_RECORD keeps that path)
+    let areas: Vec<f32> = (0..charts.len()).map(|i| ((dims[i].0 * dims[i].1) as f32 * exts[first_member[i].unwrap()][1]) * exts[first_member[i].unwrap()][0]).collect();
+    let order = if entries.len() == n { walk_order(&charts, &ekeys) } else {
+        match std::env::var("LMTOOL_GROUP_TIE").ok().as_deref() {
+            // the study: ties by the first member's record index / by the smallest member record index / by the Morton-first member
+            Some("first") => { let mut idx: Vec<usize> = (0..charts.len()).collect(); idx.sort_by_key(|&i| (areas[i].to_bits(), first_member[i].unwrap_or(0))); idx }
+            Some("minrec") => { let mut idx: Vec<usize> = (0..charts.len()).collect(); let minrec: Vec<usize> = (0..charts.len()).map(|ei| (0..n).filter(|&k| entry_of[&(model_of_record[k], if chunk.is_some() { ordinal[k] / c } else { 0 })] == ei).min().unwrap_or(0)).collect(); idx.sort_by_key(|&i| (areas[i].to_bits(), minrec[i])); idx }
+            Some("revidx") => { let mut idx: Vec<usize> = (0..charts.len()).collect(); idx.sort_by_key(|&i| (areas[i].to_bits(), std::cmp::Reverse(i))); idx }
+            _ => ir::grouped_pack_order(&areas),
+        }
+    };
     // TotalLmSurfaceMeter: the f32 sum of the entry areas along the ascending-area radix order (ties by index)
     let sum_area = {
         let mut idx: Vec<usize> = (0..charts.len()).collect();
@@ -499,5 +538,17 @@ pub fn allocate_grouped(input: &LayoutInput, groups: &[u64]) -> Result<GameLayou
         let solos = members.iter().filter(|m| m.len() == 1).count();
         eprintln!("layout grouped: {n} records, Σ₁ {sum1} D₁ {d1}, {} models ({solos} solo), chunk {chunk:?}, {} entries, Σ {sum_area}, s {s}", members.len(), entries.len());
     }
-    Ok(GameLayout { charts: out, s, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new() })
+    let mut entry_out: Vec<((i32, i32, i32, i32), (u32, u32), Vec<(usize, u32)>)> = entries.iter().enumerate().map(|(ei, _)| { let p = &placed[ei]; ((p.x as i32, p.y as i32, p.w as i32, p.h as i32), dims[ei], Vec::new()) }).collect();
+    for k in 0..n {
+        let ei = entry_of[&(model_of_record[k], if chunk.is_some() { ordinal[k] / c } else { 0 })];
+        let o = if chunk.is_some() { ordinal[k] % c } else { ordinal[k] };
+        entry_out[ei].2.push((k, o));
+    }
+    // (the walk position: the packer places `order` from its end — position 0 = placed first)
+    let mut walk_pos: Vec<usize> = vec![0; entries.len()];
+    for (pos, &ei) in order.iter().rev().enumerate() { walk_pos[ei] = pos; }
+    let entry_keys: Vec<(usize, u32, f32)> = entries.iter().enumerate().map(|(ei, e)| (e.group, e.chunk, areas[ei])).collect();
+    let _ = &walk_pos;
+    WALK_POS.with(|w| *w.borrow_mut() = walk_pos.clone());
+    Ok(GameLayout { charts: out, s, sum_area, w_atlas: input.w_atlas, params: (g, pad, m), max_iter, cell_of: Vec::new(), tile_quality: Vec::new(), entries: entry_out, entry_keys })
 }

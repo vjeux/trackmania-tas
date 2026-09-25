@@ -46,6 +46,9 @@ pub struct LightDef {
 pub struct ModelGeom {
     pub tris: Vec<Tri>,
     pub lights: Vec<LightDef>,
+    /// LOD-0 shaded geoms that carry a lightmap uv set (TexCoord1, or the visual's own set 1) — the game's record filter
+    /// needs one (itemrule::lm_geometry_nonempty: a 1-uv-set item gets no chart record).
+    pub lm_uv_geoms: usize,
     /// PreLightGen: u02 (the metres-per-uv the game sizes the chart with) and the uv1 bounds u04[0..4].
     pub plg_u02: f32,
     pub plg_bounds: Option<[f32; 4]>,
@@ -288,6 +291,9 @@ fn geom_from_solid2(s2: &mapgeom::static_item::solid2::CPlugSolid2Model, ent_pos
         } else {
             None
         };
+        if uv1.is_some() || uv1_alt.is_some() {
+            g.lm_uv_geoms += 1;
+        }
         // no lightmap uvs at all (terrain tiles: positions + normals only; the editor still charts
         // them at the default density): TexCoord0 when there is one, else a planar map over the
         // visual's own footprint — the triangles must exist in any case, they occlude

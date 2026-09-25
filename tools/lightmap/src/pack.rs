@@ -36,6 +36,8 @@ struct Packer {
     nodes: Vec<Node>,
 }
 
+static SPLIT_TIE_VERTICAL: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("LMTOOL_SPLIT_TIE_VERTICAL").is_some());
+
 impl Packer {
     fn new(w: u16, h: u16) -> Packer {
         Packer { nodes: vec![Node { x: 0, y: 0, w, h, used: false, child: [-1, -1] }] }
@@ -64,7 +66,10 @@ impl Packer {
                 return n as i32;
             }
             let (dw, dh) = (node.w - w, node.h - h);
-            let (c0, c1) = if dw > dh {
+            // the split of the leftover: by the larger remainder; the tie (dw == dh) — LMTOOL_SPLIT_TIE_VERTICAL=1 splits
+            // vertically (dw ≥ dh) for the study
+            let vertical = if *SPLIT_TIE_VERTICAL { dw >= dh } else { dw > dh };
+            let (c0, c1) = if vertical {
                 (Node { x: node.x, y: node.y, w, h: node.h, used: false, child: [-1, -1] }, Node { x: node.x + w, y: node.y, w: dw, h: node.h, used: false, child: [-1, -1] })
             } else {
                 (Node { x: node.x, y: node.y, w: node.w, h, used: false, child: [-1, -1] }, Node { x: node.x, y: node.y + h, w: node.w, h: dh, used: false, child: [-1, -1] })
@@ -161,6 +166,20 @@ pub fn try_pack(charts: &[ChartExt], order: &[usize], s: f32, w_atlas: u16, h_at
         if PACK_NODE_CAP.load(std::sync::atomic::Ordering::Relaxed) && packer.nodes.len() + 4 > 4 * n {
             if std::env::var_os("LMTOOL_PACK_TRACE").is_some() { eprintln!("pack: s {s}: the node array would exceed 4·N = {} at chart {} of {n} ({} nodes)", 4 * n, n - k, packer.nodes.len()); }
             return None;
+        }
+        if let Some(t) = std::env::var_os("LMTOOL_PACK_LEAVES_AT") {
+            let t: usize = t.to_str().unwrap().parse().unwrap();
+            if n - k - 1 == t {
+                // the free leaves that fit this chart, in the tree's traversal order (child 0 before child 1)
+                let mut leaves: Vec<(u16, u16, u16, u16)> = Vec::new();
+                fn walk(p: &Packer, n: usize, w: u16, h: u16, out: &mut Vec<(u16, u16, u16, u16)>) {
+                    let nd = p.nodes[n];
+                    if nd.child[0] >= 0 { walk(p, nd.child[0] as usize, w, h, out); walk(p, nd.child[1] as usize, w, h, out); return; }
+                    if !nd.used && nd.w >= w && nd.h >= h { out.push((nd.x, nd.y, nd.w, nd.h)); }
+                }
+                walk(&packer, 0, w, h, &mut leaves);
+                eprintln!("pack: at walk {t} ({w}×{h}): {} fitting free leaves in traversal order: {:?}", leaves.len(), leaves.iter().take(12).collect::<Vec<_>>());
+            }
         }
         let r = packer.insert(0, w, h);
         if r < 0 {
