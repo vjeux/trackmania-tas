@@ -95,7 +95,15 @@ pub fn addr_or_default() -> String {
 
 /// Is the plugin answering anywhere?
 pub fn alive() -> bool {
-    addr().is_some()
+    // A LIVE probe every time. `addr()` remembers the address on its first
+    // success, so `addr().is_some()` answered "up" for the rest of the
+    // process's life — a render batch that had seen the game once kept
+    // skipping the relaunch after the game died and spent its holds timing
+    // out against nothing (2026-09-24 21:04, ten minutes under the lock).
+    match ADDR.get() {
+        Some(a) => a.parse::<SocketAddr>().map(|sa| TcpStream::connect_timeout(&sa, Duration::from_millis(400)).is_ok()).unwrap_or(false),
+        None => addr().is_some(),
+    }
 }
 
 /// The token for the lock this process holds.

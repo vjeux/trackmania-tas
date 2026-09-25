@@ -383,6 +383,21 @@ pub fn cmd_build(args: &[String]) {
             Ok(None) => {}
             Err(e) => println!("  item boxes: {e}"),
         }
+        // Moo Moo Farm's moles: mounds + popping moles (kinematic, like the boxes)
+        if dir == "moo_moo_farm" && !args.iter().any(|a| a == "--no-moles") {
+            let name = format!("MK64_{}_{}_moles.Item.Gbx", dir, tag);
+            let path_tm: Vec<[f32; 3]> = c.path.iter().map(|p| frame.to_tm(p.pos)).collect();
+            match crate::moles::build(&mut store, &name, &decomp, &path_tm, &frame, &assets, &mut rom, &tag) {
+                Ok(Some(mo)) => {
+                    pictures.extend(mo.pictures);
+                    let mounds_name = name.replace("_moles.Item.Gbx", "_molemounds.Item.Gbx");
+                    specs.push(ItemSpec { name, bytes: mo.bytes, pos: mo.pos, yaw: 0.0, tag: None, order: 0 });
+                    specs.push(ItemSpec { name: mounds_name, bytes: mo.mounds, pos: mo.pos, yaw: 0.0, tag: None, order: 0 });
+                }
+                Ok(None) => {}
+                Err(e) => println!("  moles: {e}"),
+            }
+        }
     } else if paks.is_empty() {
         println!("  item boxes: skipped (no --pak F:KEY for the dyna template)");
     }

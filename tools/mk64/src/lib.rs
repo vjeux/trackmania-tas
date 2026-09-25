@@ -16,5 +16,6 @@ pub mod render;
 pub mod sprites;
 pub mod skins;
 pub mod ghost;
+pub mod moles;
 pub mod texture;
 pub mod tm;
