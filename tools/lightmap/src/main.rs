@@ -2594,6 +2594,16 @@ fn run(a: Vec<String>) {
                 (Some(pb), Some(src)) => {
                     let tp = std::time::Instant::now();
                     let pbl = pb.lock().unwrap();
+                    // the probe images tiled the game's way (RE 7's probetiles): the stored levels from the baked colour volume,
+                    // unless the layout came from an editor save's trailer (its slices ARE the game's)
+                    let mut src = src.clone();
+                    if f("--probe-layout-from").is_none() {
+                        let stored = src.stored_levels(&pbl.colour);
+                        let before = src.atlas;
+                        let (w, h) = src.retile(&stored);
+                        eprintln!("probes: the images tiled the game's way (probetiles): {} stored levels of {} → image {w}×{h} (the port's packing gave {}×{})", stored.iter().flatten().filter(|s| **s).count(), stored.iter().map(|v| v.len()).sum::<usize>(), before.0, before.1);
+                    }
+                    let src = &src;
                     match pbl.finish(&src.tiles, src.atlas) {
                         Some(r) => {
                             let aw = src.atlas.0;

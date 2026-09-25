@@ -326,6 +326,7 @@ pub struct ProbeOut {
 /// The block/tile LAYOUT of a map's probe volume (what `build` and the transcribed probe passes share): the
 /// occupied slots, the blocks (their cell ranges in the label grid, `pos`), the stored slices (level, tile size),
 /// the tile placements in the atlas and the slot table.
+#[derive(Clone, Debug)]
 pub struct ProbeLayout {
     pub occ_slots: Vec<[u32; 3]>,
     pub blocks: Vec<Block>,

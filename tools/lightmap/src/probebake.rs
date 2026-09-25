@@ -392,6 +392,7 @@ mod tests {
 
 /// Where the probe blocks / tiles come from: the port's layout (`probes::layout` + the template's trailer constants)
 /// or a saved map's trailer (`--probe-layout-from`).
+#[derive(Clone)]
 pub struct ProbeLayoutSrc {
     pub dims: [u32; 3],
     pub blocks: Vec<ProbeBlockDef>,
@@ -400,6 +401,7 @@ pub struct ProbeLayoutSrc {
     kind: ProbeLayoutKind,
 }
 
+#[derive(Clone)]
 enum ProbeLayoutKind {
     Port { lay: crate::probes::ProbeLayout, template: crate::volume::Volume, grid: crate::probes::SlotGrid },
     Trailer(crate::volume::Volume),
@@ -598,4 +600,38 @@ pub fn layout_from_chunking(c: &crate::probechunk::Chunking, template: &crate::v
     let mut src = ProbeLayoutSrc::from_volume(v);
     src.atlas = (aw, ah);
     Some(src)
+}
+
+impl ProbeLayoutSrc {
+    /// The levels that carry content per block (`stored[b][y − min.y]`): the game stores a level iff any voxel of the
+    /// block's (x, z) range at that y is non-zero in the baked colour volume (RE 7's FUN_1402814f0 (a)).
+    pub fn stored_levels(&self, colour: &crate::probepass::Volume3) -> Vec<Vec<bool>> {
+        self.blocks.iter().map(|b| (b.min[1]..b.max[1]).map(|y| {
+            let mut any = false;
+            for z in b.min[2]..b.max[2].min(colour.d) { for x in b.min[0]..b.max[0].min(colour.w) { if y < colour.h && (0..3).any(|c| colour.get(x, y, z, c) != 0.0) { any = true; } } }
+            any
+        }).collect()).collect()
+    }
+
+    /// Re-tile the probe images the game's way (RE 7's `probetiles::probe_slices`: the merged per-level tiles through the
+    /// binary-tree packer — bit-exact on every editor save): the trailer's slices, the image size and `tiles` follow.
+    pub fn retile(&mut self, stored: &[Vec<bool>]) -> (u32, u32) {
+        let blocks: Vec<crate::volume::Block> = match &self.kind {
+            ProbeLayoutKind::Trailer(v) => v.blocks.clone(),
+            ProbeLayoutKind::Port { .. } => return self.atlas,
+        };
+        let (w, h, slices) = crate::probetiles::probe_slices(&blocks, stored);
+        if w == 0 || h == 0 {
+            return self.atlas;
+        }
+        if let ProbeLayoutKind::Trailer(v) = &mut self.kind {
+            for (b, sl) in v.blocks.iter_mut().zip(slices.iter()) { b.slices = sl.clone(); }
+            let cw4 = (w + 3) / 4;
+            v.cell4_dims = Some((cw4, (h + 3) / 4));
+            v.cell4 = vec![0xffffu16; (cw4 * ((h + 3) / 4)) as usize];
+        }
+        self.tiles = slices;
+        self.atlas = (w, h);
+        self.atlas
+    }
 }
