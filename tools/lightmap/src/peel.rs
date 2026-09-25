@@ -624,8 +624,17 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
         }
         items
     };
+    // LMTOOL_BOUND_STATS=1 (measurement): per frame the fragment-count histogram (an upper bound on the layer
+    // fractions) and the exact layer histogram on the census pixels (every 4th / 8th in x and y: a lower
+    // bound) beside the exact one — how often would the two bounds decide the game's stop without the full
+    // exact count?
+    let bound_stats = std::env::var_os("LMTOOL_BOUND_STATS").is_some();
+    let bound_acc: std::sync::Mutex<([usize; MAX_LAYERS + 1], [usize; MAX_LAYERS + 1], [usize; MAX_LAYERS + 1])> = std::sync::Mutex::new(([0; MAX_LAYERS + 1], [0; MAX_LAYERS + 1], [0; MAX_LAYERS + 1]));
     let parts_all: Vec<(Vec<Vec<(u32, Frag)>>, [usize; MAX_LAYERS + 1], usize)> = crate::pool::pool().map(n_bands, |b| {
         let t_band = std::time::Instant::now();
+        let mut hist_u = [0usize; MAX_LAYERS + 1];
+        let mut hist_l4 = [0usize; MAX_LAYERS + 1];
+        let mut hist_l8 = [0usize; MAX_LAYERS + 1];
         let (mut rs_tris, mut rs_tested, mut rs_visits) = (0u64, 0u64, 0u64);
         let by0 = clip.1 + (b * band_rows) as i32;
         let by1 = (clip.1 + ((b + 1) * band_rows) as i32 - 1).min(clip.3);
@@ -766,6 +775,17 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                 if a == c { continue; }
                 covered += 1;
                 let n = c - a;
+                if bound_stats {
+                    hist_u[n.min(MAX_LAYERS)] += 1;
+                    let (x, y) = (li % res as usize, by0 as usize + li / res as usize);
+                    if x % 4 == 0 && y % 4 == 0 {
+                        let mut tmp: Vec<CFrag> = csr[a..c].to_vec();
+                        tmp.sort_by(|p, q| p.z.total_cmp(&q.z).then_with(|| p.tri.cmp(&q.tri)));
+                        let layers = count_run(&tmp, env_d).min(MAX_LAYERS);
+                        hist_l4[layers] += 1;
+                        if x % 8 == 0 && y % 8 == 0 { hist_l8[layers] += 1; }
+                    }
+                }
                 if n == 1 && env_d == 0.0 {
                     // one item fragment, no environment layer at the pixel: the layer logic accepts it
                     // (z01.max(0) ≥ the initial d_prev of 0 or −∞) — one layer, no sort, no z01
@@ -789,6 +809,7 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                 hist[count_run(buf, env_d).min(MAX_LAYERS)] += 1;
             }
         }
+        if bound_stats { let mut g = bound_acc.lock().unwrap(); for k in 0..=MAX_LAYERS { g.0[k] += hist_u[k]; g.1[k] += hist_l4[k]; g.2[k] += hist_l8[k]; } }
         SLOT_BUFS.set((cnt, env_max, list, csr, offs, fill));
         if raster_stats { band_ns[b].store(t_band.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed); RS_TRIS.fetch_add(rs_tris, std::sync::atomic::Ordering::Relaxed); RS_TESTED.fetch_add(rs_tested, std::sync::atomic::Ordering::Relaxed); RS_VISITS.fetch_add(rs_visits, std::sync::atomic::Ordering::Relaxed); }
         (out, hist, covered)
@@ -813,7 +834,42 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
             at_least -= hist[k];
             fractions.push(at_least as f64 / n.max(1) as f64);
         }
-        (prm.peel_stop.layers_rendered(&fractions), fractions)
+        let rendered = prm.peel_stop.layers_rendered(&fractions);
+        if bound_stats {
+            // the bounds' verdict: U from the fragment counts (pixels with ≥ k+1 fragments / N), L from the
+            // census exact counts (pixels with ≥ k+1 layers among the census / N — a subset's count is a
+            // lower bound on the whole's); the stop is certified when every fraction the rule reads is on
+            // one side of the threshold for both bounds
+            let g = bound_acc.lock().unwrap();
+            let frac_of = |h: &[usize; MAX_LAYERS + 1], covered_h: usize| -> Vec<f64> {
+                let mut hh = *h; hh[0] += n - covered_h;
+                let mut out = Vec::with_capacity(MAX_LAYERS); let mut al = n;
+                for k in 0..MAX_LAYERS { al -= hh[k]; out.push(al as f64 / n.max(1) as f64); }
+                out
+            };
+            let cov_u: usize = g.0.iter().sum();
+            let u = frac_of(&g.0, cov_u);
+            let l4 = frac_of(&g.1, g.1.iter().sum());
+            let l8 = frac_of(&g.2, g.2.iter().sum());
+            let certify = |l: &[f64]| -> Option<usize> {
+                // walk the rule with both bounds: certain while U and L agree on each side
+                let mut valid_lo = 1.0f64; let mut valid_hi = 1.0f64; let mut r = 0usize;
+                let lag = 0usize; let thr = 0.001f64; let cap = 20usize;
+                loop {
+                    r += 1;
+                    if r >= lag + 1 { let j = r - 1 - lag; valid_lo = l.get(j).copied().unwrap_or(0.0); valid_hi = u.get(j).copied().unwrap_or(0.0); }
+                    if valid_hi < thr { return Some(r); }
+                    if valid_lo < thr { return None; } // ambiguous: L below, U above
+                    if r >= cap { return Some(r); }
+                }
+            };
+            let c4 = certify(&l4); let c8 = certify(&l8);
+            eprintln!("bound stats: frame {}×{}: exact rendered {rendered} (fractions {:?}); U {:?}; certified with census/4 {:?}, census/8 {:?}", res, res_y, fractions.iter().take(rendered + 1).map(|f| format!("{f:.4}")).collect::<Vec<_>>(), u.iter().take(rendered + 1).map(|f| format!("{f:.4}")).collect::<Vec<_>>(), c4, c8);
+            BOUND_TOTALS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if c4 == Some(rendered) { BOUND_TOTALS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed); } else if c4.is_some() { BOUND_TOTALS[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+            if c8 == Some(rendered) { BOUND_TOTALS[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed); } else if c8.is_some() { BOUND_TOTALS[3].fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+        }
+        (rendered, fractions)
     });
     let parts: Vec<Vec<Vec<(u32, Frag)>>> = parts_all.into_iter().map(|(o, _, _)| o).collect();
     prof::add(&prof::B_RASTER, t_raster);
@@ -2056,6 +2112,9 @@ impl Slot {
     pub const EMPTY: Slot = Slot { n: 0, f: [CFrag { z: 0.0, tri: 0, bias: 0.0 }; SLOT_K] };
 }
 
+/// LMTOOL_BOUND_STATS: [frames, decided-and-right (census/4), decided-and-right (census/8), decided-WRONG].
+pub static BOUND_TOTALS: [std::sync::atomic::AtomicU64; 4] = [std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0)];
+
 thread_local! {
     /// The raster band's slot and environment tables, kept per pool thread across bands (see the fused count).
     static SLOT_BUFS: std::cell::Cell<(Vec<u16>, Vec<f32>, Vec<(u32, CFrag)>, Vec<CFrag>, Vec<u32>, Vec<u32>)> = const { std::cell::Cell::new((Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())) };
@@ -2103,6 +2162,7 @@ pub mod prof {
         let g = |c: &AtomicU64| c.load(Ordering::Relaxed) as f64 / 1e9;
         let staged = g(&BUILD) + g(&LAYERS) + g(&DUMP) + g(&GATHER) + g(&ACCUM) + g(&SNAP) + g(&FRAMES) + g(&EXACT);
         crate::alphatex::alpha_stats_report();
+        if crate::peel::BOUND_TOTALS[0].load(Ordering::Relaxed) > 0 { eprintln!("bound stats [{label}]: {} frames, stop certified right by the census/4 bounds {} and by census/8 {}, certified WRONG {}", crate::peel::BOUND_TOTALS[0].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[1].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[2].swap(0, Ordering::Relaxed), crate::peel::BOUND_TOTALS[3].swap(0, Ordering::Relaxed)); }
         eprintln!("profile [{label}] glue: dome raster {:.2}s, wanted bitmap {:.2}s, BVH cull {:.2}s, sel/occl clear {:.2}s, contribution {:.2}s", g(&DOME), g(&BITMAP), g(&CULL), g(&CLEAR), g(&CONTRIB));
         eprintln!("profile [{label}]: A-buffer build {:.2}s (wanted index {:.2}s, clip {:.2}s, raster {:.2}s, CSR {:.2}s), exact layer count {:.2}s, layer derivation {:.2}s (parallel part {:.2}s), per-direction dumps {:.2}s, gather {:.2}s, accumulate {:.2}s, accumulation snapshots {:.2}s, frames {:.2}s; directions total {:.2}s (unstaged {:.2}s); sweep total {total:.2}s", g(&BUILD), g(&B_INDEX), g(&B_CLIP), g(&B_RASTER), g(&B_SORT), g(&EXACT), g(&LAYERS), g(&L_PAR), g(&DUMP), g(&GATHER), g(&ACCUM), g(&SNAP), g(&FRAMES), g(&DIR), g(&DIR) - staged);
         for c in [&BUILD, &LAYERS, &DUMP, &GATHER, &ACCUM, &SNAP, &B_CLIP, &B_RASTER, &B_SORT, &B_INDEX, &DIR, &FRAMES, &EXACT, &L_PAR, &DOME, &BITMAP, &CLEAR, &CONTRIB, &CULL] { c.store(0, Ordering::Relaxed); }
