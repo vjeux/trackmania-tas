@@ -780,11 +780,9 @@ pub fn race(args: &[String]) -> i32 {
         eprintln!("no CPU ghosts for {course:?} in {dir}");
         return 2;
     }
-    let mut a: Vec<String> = vec!["--map".into(), map, "--mode".into(), "TrackMania/TM_PlayMap_Local".into(), "--outdir".into(), "/mnt/c/Users/vjeux/mk64qa/race".into(), "--tag".into(), "race".into(), "--shots".into(), "0".into(), "--stay".into(), "--ghost-query".into(), "&layer=0".into()];
-    for g in &ghosts {
-        a.push("--ghost".into());
-        a.push(format!("{dir}/{g}"));
-    }
+    // the caller's flags first (the first occurrence of a flag wins), then the
+    // defaults they did not override
+    let mut a: Vec<String> = Vec::new();
     let mut skip = 0;
     for x in &args[1..] {
         if skip > 0 {
@@ -796,6 +794,21 @@ pub fn race(args: &[String]) -> i32 {
             continue;
         }
         a.push(x.clone());
+    }
+    let has = |k: &str| a.iter().any(|x| x == k);
+    let defaults: [(&str, &str); 7] = [("--map", &map), ("--mode", "TrackMania/TM_PlayMap_Local"), ("--outdir", "/mnt/c/Users/vjeux/mk64qa/race"), ("--tag", "race"), ("--shots", "0"), ("--ghost-query", "&layer=0"), ("--timeout", "150")];
+    for (k, v) in defaults {
+        if !has(k) {
+            a.push(k.into());
+            a.push(v.into());
+        }
+    }
+    if !has("--stay") {
+        a.push("--stay".into());
+    }
+    for g in &ghosts {
+        a.push("--ghost".into());
+        a.push(format!("{dir}/{g}"));
     }
     println!("race: {} CPU ghosts", ghosts.len());
     run(&a)
