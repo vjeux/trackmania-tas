@@ -207,24 +207,48 @@ pub struct PixelIndex {
 
 impl PixelIndex {
     pub fn new(res: u32, res_y: u32, words: Vec<u64>) -> PixelIndex {
-        let mut rank = Vec::with_capacity(words.len() + 1);
-        let mut acc = 0u32;
-        let mut pixels = Vec::new();
+        // in parallel chunks of words: the popcounts, a prefix over the chunks, then each chunk fills its
+        // ranks and its slice of the pixel list (a 4096² frame is 262 k words; ten frames per direction)
+        let n = words.len();
+        let threads = crate::pool::pool().threads.max(1);
+        let chunk = (n / (threads * 2).max(1)).max(1024);
+        let n_chunks = (n + chunk - 1) / chunk;
+        let counts: Vec<u32> = crate::pool::pool().map(n_chunks, |ci| words[ci * chunk..((ci + 1) * chunk).min(n)].iter().map(|w| w.count_ones()).sum());
+        let mut base = Vec::with_capacity(n_chunks + 1);
+        base.push(0u32);
+        for c in &counts { let last = *base.last().unwrap(); base.push(last + c); }
+        let total = *base.last().unwrap() as usize;
+        let mut rank: Vec<u32> = Vec::with_capacity(n + 1);
+        let mut pixels: Vec<u32> = Vec::with_capacity(total);
+        // SAFETY: every slot is written exactly once below by the chunk that owns it
+        unsafe { rank.set_len(n + 1); pixels.set_len(total); }
+        rank[n] = total as u32;
+        let (rp, pp) = (rank.as_mut_ptr() as usize, pixels.as_mut_ptr() as usize);
+        let boxes: Vec<(i32, i32, i32, i32)> = {
+            let words = &words;
+            let base = &base;
+            crate::pool::pool().map(n_chunks, |ci| {
+                let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+                let mut acc = base[ci];
+                for wi in ci * chunk..((ci + 1) * chunk).min(n) {
+                    let w = words[wi];
+                    unsafe { *(rp as *mut u32).add(wi) = acc; }
+                    let mut m = w;
+                    while m != 0 {
+                        let b = m.trailing_zeros();
+                        m &= m - 1;
+                        let id = wi as u32 * 64 + b;
+                        unsafe { *(pp as *mut u32).add(acc as usize) = id; }
+                        acc += 1;
+                        let (x, y) = ((id % res) as i32, (id / res) as i32);
+                        x0 = x0.min(x); x1 = x1.max(x); y0 = y0.min(y); y1 = y1.max(y);
+                    }
+                }
+                (x0, y0, x1, y1)
+            })
+        };
         let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
-        for (wi, w) in words.iter().enumerate() {
-            rank.push(acc);
-            acc += w.count_ones();
-            let mut m = *w;
-            while m != 0 {
-                let b = m.trailing_zeros();
-                m &= m - 1;
-                let id = wi as u32 * 64 + b;
-                pixels.push(id);
-                let (x, y) = ((id % res) as i32, (id / res) as i32);
-                x0 = x0.min(x); x1 = x1.max(x); y0 = y0.min(y); y1 = y1.max(y);
-            }
-        }
-        rank.push(acc);
+        for b in &boxes { x0 = x0.min(b.0); y0 = y0.min(b.1); x1 = x1.max(b.2); y1 = y1.max(b.3); }
         let bbox = if x0 > x1 { (0, 0, -1, -1) } else { (x0, y0, x1, y1) };
         PixelIndex { res, res_y, words, rank, pixels, bbox }
     }
@@ -718,15 +742,34 @@ pub fn build_abuffer_sparse_ranges(tris: &[WTri], ranges: &[(u32, u32)], frame: 
                     (count, frags)
                 }
     });
-    let mut start = Vec::with_capacity(npx + 1);
-    let mut frags = Vec::with_capacity(bucket_results.iter().map(|b| b.1.len()).sum());
-    start.push(0u32);
-    for (count, f) in bucket_results {
-        let base = *start.last().unwrap();
-        for c in count.iter().skip(1) {
-            start.push(base + c);
-        }
-        frags.extend(f);
+    // the buckets concatenated in parallel: a prefix over the buckets' totals, each bucket writes its ranks
+    // and copies its fragments into its slice
+    let total: usize = bucket_results.iter().map(|b| b.1.len()).sum();
+    let mut bucket_base: Vec<u32> = Vec::with_capacity(bucket_results.len() + 1);
+    bucket_base.push(0);
+    for (_, f) in &bucket_results { let last = *bucket_base.last().unwrap(); bucket_base.push(last + f.len() as u32); }
+    let mut start: Vec<u32> = Vec::with_capacity(npx + 1);
+    let mut frags: Vec<Frag> = Vec::with_capacity(total);
+    // SAFETY: every slot is written exactly once below by the bucket that owns it
+    unsafe { start.set_len(npx + 1); frags.set_len(total); }
+    start[npx] = total as u32;
+    if npx > 0 { start[0] = 0; }
+    let (sp, fp) = (start.as_mut_ptr() as usize, frags.as_mut_ptr() as usize);
+    {
+        let bucket_results = &bucket_results;
+        let bucket_base = &bucket_base;
+        crate::pool::pool().run(bucket_results.len(), |b| {
+            let (count, f) = &bucket_results[b];
+            let k0 = (b as u32 * sparse_bucket_size) as usize;
+            let base = bucket_base[b];
+            // count[i] = the offset of pixel k0 + i within the bucket (count[0] = 0); the global start of pixel
+            // k0 + i = base + count[i], written for i in 0..nb (pixel npx's entry is the total)
+            let nb = count.len() - 1;
+            for i in 0..nb {
+                unsafe { *(sp as *mut u32).add(k0 + i) = base + count[i]; }
+            }
+            unsafe { std::ptr::copy_nonoverlapping(f.as_ptr(), (fp as *mut Frag).add(base as usize), f.len()); }
+        });
     }
     prof::add(&prof::B_SORT, t_sort);
     (ABuffer { res, band_h: res_y.max(1), bands: vec![(start, frags)], sparse: Some(px.clone()) }, counted)
