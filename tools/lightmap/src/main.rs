@@ -6781,7 +6781,10 @@ fn run(a: Vec<String>) {
                             let w: Vec<f64> = if weights.len() == boxes { weights.clone() } else { vec![1.0; boxes] };
                             let wstr = w.iter().map(|x| format!("{x}")).collect::<Vec<_>>().join(",");
                             let plan = serde_json::json!({ "mode": "split", "map": m, "args": bake_args, "boxes": boxes, "weights": wstr, "work": wroot.to_string_lossy() });
-                            std::fs::write(wroot.join("plan-map.json"), serde_json::to_string_pretty(&plan).unwrap()).expect("plan");
+                            // (written whole: to a temporary name, then renamed — the store shows a file only once closed,
+                            // the rename makes the appearance atomic for the pollers)
+                            std::fs::write(wroot.join("plan-map.json.tmp"), serde_json::to_string_pretty(&plan).unwrap()).expect("plan");
+                            std::fs::rename(wroot.join("plan-map.json.tmp"), wroot.join("plan-map.json")).expect("plan rename");
                             let mut cmd = std::process::Command::new(&exe);
                             cmd.arg("bake").arg(m);
                             for e in &bake_args { cmd.arg(e); }
