@@ -27,6 +27,8 @@ pub struct IlAtlas {
     pub tile_size: f32,
     /// The game instances that are items (index < first tile).
     pub n_items: usize,
+    /// Every instance by its translation rounded to half a metre (any_by_translation).
+    pub by_pos: HashMap<(i32, i32, i32), Vec<usize>>,
     /// Counters (fragments coloured from the atlas, fragments with no mapping).
     pub hits: std::sync::atomic::AtomicUsize,
     pub misses: std::sync::atomic::AtomicUsize,
@@ -101,7 +103,9 @@ impl IlAtlas {
             }
             tile_of.insert(((wx / tile_size).round() as i32, (wz / tile_size).round() as i32), k);
         }
-        IlAtlas { buf: atlas, insts, rows, tile_of, tile_uv, tile_size, n_items, hits: Default::default(), misses: Default::default() }
+        let mut by_pos: HashMap<(i32, i32, i32), Vec<usize>> = HashMap::new();
+        for (k, inst) in insts.iter().enumerate() { by_pos.entry(((inst.t[0] * 2.0).round() as i32, (inst.t[1] * 2.0).round() as i32, (inst.t[2] * 2.0).round() as i32)).or_default().push(k); }
+        IlAtlas { buf: atlas, insts, rows, tile_of, tile_uv, tile_size, n_items, by_pos, hits: Default::default(), misses: Default::default() }
     }
 
     /// The atlas coordinate of a point on a zone tile (world x / z), or None off every tile.
@@ -132,6 +136,25 @@ impl IlAtlas {
                 best = Some((k, d));
             }
         }
+        best.filter(|b| b.1 < 0.5).map(|b| b.0)
+    }
+
+    /// The game instance at translation `t` among EVERY LM instance (the record scene: the block / clip / wall entities and
+    /// the tiles are port instances too) — a hash of the translation rounded to the centimetre, then its 27 neighbours;
+    /// the nearest within 0.5 m.
+    pub fn any_by_translation(&self, t: [f32; 3]) -> Option<usize> {
+        let key = |p: [f32; 3]| ((p[0] * 2.0).round() as i32, (p[1] * 2.0).round() as i32, (p[2] * 2.0).round() as i32);
+        let k0 = key(t);
+        let mut best: Option<(usize, f32)> = None;
+        for dx in -1..=1 { for dy in -1..=1 { for dz in -1..=1 {
+            if let Some(list) = self.by_pos.get(&(k0.0 + dx, k0.1 + dy, k0.2 + dz)) {
+                for &k in list {
+                    let inst = &self.insts[k];
+                    let d = ((inst.t[0] - t[0]).powi(2) + (inst.t[1] - t[1]).powi(2) + (inst.t[2] - t[2]).powi(2)).sqrt();
+                    if best.map_or(true, |b| d < b.1) { best = Some((k, d)); }
+                }
+            }
+        } } }
         best.filter(|b| b.1 < 0.5).map(|b| b.0)
     }
 
@@ -168,7 +191,10 @@ impl IlAtlas {
     /// The port's item instances → the game's instances (by world translation); the result indexes
     /// `scene.instances`.
     pub fn map_items(&self, scene: &crate::geometry::Scene) -> Vec<Option<usize>> {
-        scene.instances.iter().map(|inst| self.item_by_translation(mapgeom::geom::apply(&inst.xf, [0.0, 0.0, 0.0]))).collect()
+        scene.instances.iter().map(|inst| {
+            let t = mapgeom::geom::apply(&inst.xf, [0.0, 0.0, 0.0]);
+            if inst.item < scene.item_count { self.item_by_translation(t) } else { self.any_by_translation(t) }
+        }).collect()
     }
 }
 

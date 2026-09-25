@@ -1698,7 +1698,9 @@ fn run(a: Vec<String>) {
                     Some(v) => { let c: Vec<f32> = v.split(',').map(|x| x.trim().parse().expect("--fitted-world-box x0,z0,x1,z1")).collect(); Some([[c[0], c[1]], [c[2], c[3]]]) }
                     None => {
                         // the items' block records' union box (RE 6: the fitted peel tile = the records' cell of the tiling; pwc-day: one cell)
-                        let recs: Vec<lightmap::lmtiles::BlockRecord> = lightmap::lmtiles::item_records(&scene, 1.0, false).iter().filter_map(|it| it.record).collect();
+                        // the map's ITEMS only (RE 6: pwc-day's box = the three palms' cell, not the 4 096 tile records) — the record scene's
+                        // block / clip / tile instances (item ≥ the map's item count) stay out of it
+                        let recs: Vec<lightmap::lmtiles::BlockRecord> = lightmap::lmtiles::item_records(&scene, 1.0, false).iter().filter(|it| it.item < scene.item_count).filter_map(|it| it.record).collect();
                         if recs.is_empty() { None } else { let sbox = lightmap::lmtiles::scene_box(&recs); Some([[sbox.min()[0], sbox.min()[2]], [sbox.max()[0], sbox.max()[2]]]) }
                     }
                 };
@@ -1862,6 +1864,9 @@ fn run(a: Vec<String>) {
             }
             let chart_sizes = |p: &lightmap::bake::BakeParams| -> Vec<(u32, u32)> {
                 scene.instances.iter().map(|inst| {
+                    // the record scene's instances (blocks, clips, walls, tiles — item ≥ the map's item count) are peel geometry
+                    // only: the port's own chart raster skips them (their texels come from the transcribed H-basis images)
+                    if record_scene.is_some() && inst.item >= scene.item_count { return (0, 0); }
                     if let Some(rs) = &ref_sizes { if let Some(&s) = rs.get(&inst.item) { return s; } }
                     let m = &scene.models[inst.model]; let sc = (inst.xf[0] * inst.xf[0] + inst.xf[1] * inst.xf[1] + inst.xf[2] * inst.xf[2]).sqrt(); lightmap::bake::chart_size(m, sc, p)
                 }).collect()
@@ -2143,12 +2148,25 @@ fn run(a: Vec<String>) {
                     (None, _) => {
                         let tv = lightmap::volume::Volume::parse(&tpl.chunk.data.as_ref().unwrap().cache.trailer).expect("template trailer");
                         let gq: f32 = f("--global-quality").map(|v| v.parse().unwrap()).unwrap_or(1.0);
-                        let recs: Vec<lightmap::lmtiles::BlockRecord> = lightmap::lmtiles::item_records(&scene, gq, has("--lod0")).iter().filter_map(|it| it.record).collect();
+                        // THE PROBE BOXES = every record with quality² > 0.9, the zone tiles included (RE 7, hill4 block 0: the q-1 tiles
+                        // under the items; stpad: 2 933 of 12 141 records) — from the layout's records when the record pipeline ran
+                        // (centre, half and the tile-quality rule's value), else the port's item records; the grid offset and the
+                        // level height from the collection (probechunk::deco_offsets / level_h: BlueBay −40 / 0, Stadium −64 / 8)
+                        let recs: Vec<lightmap::lmtiles::BlockRecord> = match game_layout.as_ref().filter(|gl| !gl.records.is_empty()) {
+                            Some(gl) => gl.records.iter().map(|r| lightmap::lmtiles::BlockRecord { world: lightmap::lmtiles::CBox::new(r.centre, r.half), quality: r.quality }).collect(),
+                            None => lightmap::lmtiles::item_records(&scene, gq, has("--lod0")).iter().filter(|it| it.item < scene.item_count).filter_map(|it| it.record).collect(),
+                        };
                         let mf = tmmaps::map::MapFile::load(std::path::Path::new(&map_path));
                         let size = [mf.size[0].max(0) as u32, mf.size[1].max(0) as u32, mf.size[2].max(0) as u32];
+                        let coll_name = f("--collection").unwrap_or_else(|| hdr.as_ref().map(|h| h.envir.clone()).unwrap_or_else(|| "BlueBay".into()));
+                        let coll_id: u32 = match coll_name.as_str() { "Stadium" | "Stadium256" => 26, "GreenCoast" => 15, "RedIsland" => 16, "WhiteShore" => 29, _ => 28 };
+                        // the aligned probe origin = the decoration offset + 2 (BlueBay −40 → −38 as the port's table carried; Stadium −64 → −62)
+                        let (probe_off_y, probe_level_h) = (lightmap::probechunk::deco_offsets(coll_id).map(|(_, p)| p + 2.0).unwrap_or(-38.0), lightmap::probechunk::level_h(coll_id));
+                        let probe_off = [0.0, probe_off_y, 0.0];
+                        eprintln!("probes: {} probe boxes (quality² > 0.9) of {} records; grid offset y {probe_off_y}, level h {probe_level_h} ({coll_name})", recs.iter().filter(|r| 0.9 < r.quality * r.quality).count(), recs.len());
                         let scene_ch = lightmap::lmtiles::scene_box(&recs);
-                        let (_, _, chunking, _) = lightmap::probechunk::for_records(size, [32.0, 8.0, 32.0], [0.0, -38.0, 0.0], 0.0, &recs, &scene_ch, 2048);
-                        match lightmap::probebake::layout_from_chunking(&chunking, &tv, [0.0, -38.0, 0.0]) {
+                        let (_, _, chunking, _) = lightmap::probechunk::for_records(size, [32.0, 8.0, 32.0], probe_off, probe_level_h, &recs, &scene_ch, 2048);
+                        match lightmap::probebake::layout_from_chunking(&chunking, &tv, probe_off) {
                             Some(src) => Ok(src),
                             None => { let (tv, grid) = build_slot_grid(&prm); lightmap::probes::layout(&bvh, &grid).map(|lay| lightmap::probebake::ProbeLayoutSrc::from_layout(lay, tv, grid)) }
                         }
@@ -2593,7 +2611,7 @@ fn run(a: Vec<String>) {
             let unbound: std::collections::HashSet<usize> = game_layout.as_ref().map(|gl| gl.charts.iter().filter(|c| c.obj >= base && c.charted != lightmap::layout::Charted::Bound).map(|c| (c.obj - base) as usize).collect()).unwrap_or_default();
             let mut have = vec![false; scene.item_count];
             if candidates.is_empty() {
-                for c in &charts { have[c.item] = true; if unbound.contains(&c.item) { continue; } out_charts.push(lightmap::synth::Chart::from_hdr2(base + c.item as u32, c.w, c.h, &c.rgb, &c.rgb1, k, 128)); }
+                for c in &charts { if c.item >= scene.item_count { continue; } have[c.item] = true; if unbound.contains(&c.item) { continue; } out_charts.push(lightmap::synth::Chart::from_hdr2(base + c.item as u32, c.w, c.h, &c.rgb, &c.rgb1, k, 128)); }
             } else {
                 // the candidate test: every item's chart once per candidate base, in that
                 // candidate's hue; overlapping candidate ranges would double-book objects

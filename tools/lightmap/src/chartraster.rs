@@ -52,6 +52,7 @@ pub fn raster_chart(scene: &Scene, ii: usize, w: u32, h: u32, ss: u32, flip_v: b
 /// `raster_chart` with the geometry shifted by `shift` layout pixels before the raster — the game's
 /// `LM01_Trans_RasterSS` sub-texel jitter (the pixel centre then samples the geometry at centre − shift).
 pub fn raster_chart_shifted(scene: &Scene, ii: usize, w: u32, h: u32, ss: u32, flip_v: bool, use_bounds: bool, shift: [f32; 2]) -> ChartRaster {
+    if w == 0 || h == 0 { return ChartRaster { w, h, ss, subs: Vec::new(), count: Vec::new() }; }
     let inst = &scene.instances[ii];
     let m = &scene.models[inst.model];
     let (u0, v0, su, sv) = match (use_bounds, m.plg_bounds) {
