@@ -2088,7 +2088,24 @@ fn run(a: Vec<String>) {
                 match src {
                     Ok(src) => {
                         let dims = src.dims;
-                        let offsets = f("--probe-offsets-from").map(|p| { let b = lightmap::prepass::read_maybe_gz(std::path::Path::new(&p)).unwrap_or_else(|e| panic!("{e}")); lightmap::probepass::load_dds_volume(&b, None, dims[2]).expect("--probe-offsets-from") });
+                        // the safety offsets: the captured volume when --probe-offsets-from names one, else RE 7's transcription
+                        // (probesafety::block_offsets — NHmsLightMap::ProbeCpt_SafetyOffset_Compute on the scene's triangle tree, bit-exact
+                        // on pwc-day's 17045) per probe block, as the SNORM16 the shader reads (÷ 32767 = cells)
+                        let offsets = match f("--probe-offsets-from") {
+                            Some(p) => Some({ let b = lightmap::prepass::read_maybe_gz(std::path::Path::new(&p)).unwrap_or_else(|e| panic!("{e}")); lightmap::probepass::load_dds_volume(&b, None, dims[2]).expect("--probe-offsets-from") }),
+                            None => {
+                                let mut vol = lightmap::probepass::Volume3::new(dims[0], dims[1], dims[2], 4);
+                                let mut n = 0usize;
+                                for b in &src.blocks {
+                                    for (x, y, z, o) in lightmap::probesafety::block_offsets(&bvh, b.min, b.max, b.pos, b.cell) {
+                                        for c in 0..3 { vol.set(x, y, z, c, o[c as usize] as f32 / 32767.0); }
+                                        if o != [0, 0, 0] { n += 1; }
+                                    }
+                                }
+                                eprintln!("probes: safety offsets from the scene (RE 7's ProbeCpt_SafetyOffset_Compute): {n} probes moved");
+                                Some(vol)
+                            }
+                        };
                         eprintln!("probes: TRANSCRIBED passes in the bake — volume {:?}, {} blocks ({}), atlas {}×{}, offsets {}, layout {}", dims, src.blocks.len(), src.blocks.iter().map(|b| format!("cells {:?}..{:?} pos {:?}", b.min, b.max, b.pos)).collect::<Vec<_>>().join("; "), src.atlas.0, src.atlas.1, if offsets.is_some() { "the capture's" } else { "none" }, if f("--probe-layout-from").is_some() { "the saved map's trailer" } else if f("--probe-layout").as_deref() == Some("port") { "the port's" } else { "RE-6's chunking" });
                         prm.probe_bake = Some(std::sync::Arc::new(std::sync::Mutex::new(lightmap::probebake::ProbeBake::new(dims, src.blocks.clone(), offsets))));
                         probe_layout = Some(src);
